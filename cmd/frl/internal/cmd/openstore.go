@@ -113,9 +113,16 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 	}
 	// Adopt the context's addressing when no flag overrides it: a
 	// context may carry database/schema (relational) or keyspace_tuple
-	// (typed path) instead of keyspace_path.
-	if !target.relational() && target.metaFile == "" && target.keyspaceTuple == nil {
+	// (typed path) instead of keyspace_path. --meta-file overrides only
+	// the METADATA source, never the keyspace — a keyspace_tuple context
+	// keeps its tuple. A relational context + --meta-file is the same
+	// two-metadata-sources conflict validate() rejects at flag level
+	// (the catalog IS the metadata source for relational stores).
+	if !target.relational() && target.keyspaceTuple == nil {
 		if cfgCtx.GetDatabase() != "" {
+			if target.metaFile != "" {
+				return nil, fmt.Errorf("conflicting metadata sources: --meta-file cannot be combined with relational context %q (the catalog is the metadata source for relational stores)", cfgCtx.GetName())
+			}
 			target.database = cfgCtx.GetDatabase()
 			target.schema = cfgCtx.GetSchema()
 		} else if cfgCtx.GetKeyspaceTuple() != nil {
@@ -161,6 +168,12 @@ type storeTarget struct {
 	schema          string
 	clusterFileFlag string
 	keyspaceTuple   tuple.Tuple // typed keyspace (flag or context); nil → keyspace_path
+	// bypassFullStoreLock, when non-nil, is passed to the store open as
+	// SetBypassFullStoreLockReason — armed by `store lock`/`store unlock`
+	// with the header's stored reason so a FULL_STORE-locked store's lock
+	// can still be managed (Java's recovery path: open with the matching
+	// bypass reason, then set/clear the state).
+	bypassFullStoreLock *string
 }
 
 func (t *storeTarget) relational() bool { return t.database != "" }
@@ -174,11 +187,18 @@ func (t *storeTarget) clusterFile() string {
 	return t.cfgCtx.GetClusterFile()
 }
 
-// describe renders the target for error messages — the relational
-// address or the context's keyspace path, whichever is active.
+// describe renders the target for error messages and write-confirmation
+// prompts — the relational address, the keyspace tuple, or the context's
+// keyspace path, whichever addressing mode is actually active. The tuple
+// form re-parses through tupleFromJSON, so `store truncate`'s type-back
+// gate compares against the real deletion target, never a stale or empty
+// keyspace_path.
 func (t *storeTarget) describe() string {
 	if t.relational() {
 		return t.database + "/" + t.schema
+	}
+	if t.keyspaceTuple != nil {
+		return tupleToJSON(t.keyspaceTuple)
 	}
 	return t.cfgCtx.GetKeyspacePath()
 }
@@ -344,14 +364,13 @@ func withStore[T any](
 	fn func(store *recordlayer.FDBRecordStore) (T, error),
 ) (T, error) {
 	var zero T
-	cfgCtx := target.cfgCtx
 
 	ss, err := target.subspace()
 	if err != nil {
 		return zero, err
 	}
 
-	db, err := openDatabase(cfgCtx.GetClusterFile())
+	db, err := openDatabase(target.clusterFile())
 	if err != nil {
 		return zero, err
 	}
@@ -374,12 +393,15 @@ func withStore[T any](
 		// A `record scan --meta-file newer.pb` must never mutate the
 		// store it inspects. Write commands (RFC-174 Slice 4) make this
 		// decision explicitly on their own open path.
-		store, err := recordlayer.NewStoreBuilder().
+		b := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(md).
 			SetSubspace(ss).
-			SetSkipPossiblyRebuild(true).
-			Open()
+			SetSkipPossiblyRebuild(true)
+		if target.bypassFullStoreLock != nil {
+			b = b.SetBypassFullStoreLockReason(*target.bypassFullStoreLock)
+		}
+		store, err := b.Open()
 		if err != nil {
 			return nil, fmt.Errorf("open store at %s: %w", target.describe(), err)
 		}

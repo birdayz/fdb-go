@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"bufio"
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -14,6 +17,30 @@ import (
 // is the most destructive command in the CLI and is double-gated: --yes
 // is always required, and an interactive terminal additionally asks for
 // the store address to be typed back.
+
+// armFullStoreLockBypass pre-reads the store header and, when the store
+// is FULL_STORE locked, arms the target with the stored reason so the
+// subsequent open succeeds — Java's recovery path: open with
+// setBypassFullStoreLockReason(<stored reason>), then set/clear the
+// state. Only `store lock`/`store unlock` use this (managing the lock IS
+// their job); everything else, truncate included, keeps refusing on a
+// fully-locked store until it is unlocked.
+func armFullStoreLockBypass(ctx context.Context, target *storeTarget, ss subspace.Subspace) error {
+	db, err := openDatabase(target.clusterFile())
+	if err != nil {
+		return err
+	}
+	rec := recordlayer.NewFDBDatabase(db)
+	info, err := readStoreInfo(ctx, rec, ss)
+	if err != nil {
+		return err
+	}
+	if ls := info.GetStoreLockState(); ls.GetLockState() == gen.DataStoreInfo_StoreLockState_FULL_STORE {
+		reason := ls.GetReason()
+		target.bypassFullStoreLock = &reason
+	}
+	return nil
+}
 
 func newStoreLockCmd() *cobra.Command {
 	var (
@@ -55,6 +82,11 @@ func newStoreLockCmd() *cobra.Command {
 			if err := confirmWrite(cmd, yes, fmt.Sprintf("lock store %s (%s)", target.describe(), args[0])); err != nil {
 				return err
 			}
+			// A store that is ALREADY full-store locked must stay
+			// manageable (change the reason, tighten forbid→full).
+			if err := armFullStoreLockBypass(cmd.Context(), target, ss); err != nil {
+				return err
+			}
 			if _, err := withStore(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) (struct{}, error) {
 					return struct{}{}, store.SetStoreLockState(state, reason)
@@ -94,6 +126,12 @@ func newStoreUnlockCmd() *cobra.Command {
 				return err
 			}
 			if err := confirmWrite(cmd, yes, fmt.Sprintf("unlock store %s", target.describe())); err != nil {
+				return err
+			}
+			// Without this, a full-store lock would be permanent: Open()
+			// rejects the locked store, so the unlock could never run
+			// (codex P1).
+			if err := armFullStoreLockBypass(cmd.Context(), target, ss); err != nil {
 				return err
 			}
 			if _, err := withStore(cmd.Context(), target,
@@ -143,15 +181,18 @@ func newStoreTruncateCmd() *cobra.Command {
 				return fmt.Errorf("refusing to truncate %s without --yes", target.describe())
 			}
 			// Gate 2: on a terminal, type the address back. Scripts
-			// (non-TTY stdin) rely on gate 1 alone.
+			// (non-TTY stdin) rely on gate 1 alone. Read the whole line —
+			// Fscanln stops at whitespace, which would make an address
+			// containing a space (a quoted keyspace-tuple element)
+			// impossible to confirm.
 			if isTerminalReader(cmd.InOrStdin()) {
 				fmt.Fprintf(cmd.ErrOrStderr(), "This DELETES EVERY RECORD in %s. Type the store address to confirm: ", target.describe())
-				var typed string
-				if _, err := fmt.Fscanln(cmd.InOrStdin(), &typed); err != nil {
+				typed, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+				if err != nil && typed == "" {
 					return fmt.Errorf("read confirmation: %w", err)
 				}
 				if strings.TrimSpace(typed) != target.describe() {
-					return fmt.Errorf("aborted — %q does not match %q", typed, target.describe())
+					return fmt.Errorf("aborted — %q does not match %q", strings.TrimSpace(typed), target.describe())
 				}
 			}
 			if _, err := withStore(cmd.Context(), target,

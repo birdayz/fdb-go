@@ -392,3 +392,197 @@ func TestIntegration_Status_AllChecks(t *testing.T) {
 		t.Errorf("status missing catalog line:\n%s", out)
 	}
 }
+
+// A FULL_STORE lock must never be permanent: Open() rejects the locked
+// store, so `store unlock` arms the builder's bypass with the header's
+// stored reason (codex P1 — without that, unlock could never run). The
+// empty-reason variant pins the library fix underneath: the bypass is
+// nullable like Java's @Nullable String, so "" is a valid bypass value.
+func TestIntegration_StoreLock_FullStoreUnlockable(t *testing.T) {
+	requireFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := fdb.OpenDatabase(fixture.clusterFilePath)
+	if err != nil {
+		t.Fatalf("open FDB: %v", err)
+	}
+	rec := recordlayer.NewFDBDatabase(db)
+	md := buildMetaWith(t)
+	ss := subspace.Sub("frl", "fullstore-test")
+	if err := seedStore(ctx, rec, md, ss); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	tmp := t.TempDir()
+	metaFile := filepath.Join(tmp, "meta.pb")
+	writeMetaFile(t, md, metaFile)
+	configFile := filepath.Join(tmp, "config.yaml")
+	cfgYAML := fmt.Sprintf(`current_context: fullstore
+contexts:
+  - name: fullstore
+    cluster_file: %s
+    keyspace_path: /frl/fullstore-test
+    metadata:
+      meta_file: %s
+`, fixture.clusterFilePath, metaFile)
+	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", configFile)
+
+	if out, err := runCmd(t, "store", "lock", "full-store", "--reason", "maintenance", "--yes"); err != nil {
+		t.Fatalf("lock full-store: %v\n%s", err, out)
+	}
+	// The store really is fully locked: plain opens fail.
+	if _, err := runCmd(t, "record", "scan", "--limit", "1"); err == nil {
+		t.Fatal("scan of a fully locked store must fail")
+	}
+	// Managing the lock still works: change the reason while locked…
+	if out, err := runCmd(t, "store", "lock", "full-store", "--reason", "handover", "--yes"); err != nil {
+		t.Fatalf("re-lock with new reason: %v\n%s", err, out)
+	}
+	// …and unlock clears it.
+	if out, err := runCmd(t, "store", "unlock", "--yes"); err != nil {
+		t.Fatalf("unlock full-store: %v\n%s", err, out)
+	}
+	if out, err := runCmd(t, "record", "scan", "--limit", "1"); err != nil {
+		t.Fatalf("scan after unlock: %v\n%s", err, out)
+	}
+
+	// Empty-reason full-store lock: the worst case — still unlockable.
+	if out, err := runCmd(t, "store", "lock", "full-store", "--yes"); err != nil {
+		t.Fatalf("lock full-store (no reason): %v\n%s", err, out)
+	}
+	if _, err := runCmd(t, "record", "scan", "--limit", "1"); err == nil {
+		t.Fatal("scan of a fully locked store must fail (empty reason)")
+	}
+	if out, err := runCmd(t, "store", "unlock", "--yes"); err != nil {
+		t.Fatalf("unlock empty-reason full-store: %v\n%s", err, out)
+	}
+	if out, err := runCmd(t, "record", "scan", "--limit", "1"); err != nil {
+		t.Fatalf("scan after empty-reason unlock: %v\n%s", err, out)
+	}
+}
+
+// A --type typo on record delete must fail loudly, not fall through to
+// the raw primary key (codex P1: on a prefix-keyed store the unprefixed
+// key can address a DIFFERENT record).
+func TestIntegration_RecordDelete_UnknownTypeRefused(t *testing.T) {
+	bindConfig(t)
+	// Nonexistent pk so that even a regression cannot damage the shared
+	// fixture store.
+	_, err := runCmd(t, "record", "delete", "99999", "--type", "Bogus", "--yes")
+	if err == nil {
+		t.Fatal("delete with unknown --type must fail, not fall through to the raw key")
+	}
+	if !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "Order") {
+		t.Errorf("error should be the standard 'not found — available: …' message, got: %v", err)
+	}
+	// Dry-run takes the same gate.
+	if _, err := runCmd(t, "record", "delete", "99999", "--type", "Bogus", "--dry-run"); err == nil {
+		t.Fatal("dry-run delete with unknown --type must fail too")
+	}
+}
+
+// meta apply is idempotent and race-guarded (Graefe impl-review + FDB
+// C++ dev C5): re-applying current metadata is a no-op success, and the
+// save transaction re-checks that the store still holds exactly what the
+// operator confirmed against.
+func TestIntegration_MetaApply_AlreadyCurrentAndRaceGuard(t *testing.T) {
+	requireFixture(t)
+	const metaKeyspace = "/frl/meta-apply-race-test"
+
+	tmp := t.TempDir()
+	configFile := filepath.Join(tmp, "config.yaml")
+	cfgYAML := fmt.Sprintf(`current_context: race
+contexts:
+  - name: race
+    cluster_file: %s
+    keyspace_path: /frl/meta-apply-race-store
+    metadata:
+      meta_store_keyspace: %s
+`, fixture.clusterFilePath, metaKeyspace)
+	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", configFile)
+
+	v1 := buildMetaWith(t)
+	v1Path := filepath.Join(tmp, "v1.pb")
+	writeMetaFile(t, v1, v1Path)
+	if out, err := runCmd(t, "meta", "apply", "--file", v1Path, "--force-initial", "--yes"); err != nil {
+		t.Fatalf("initial apply: %v\n%s", err, out)
+	}
+
+	// Idempotency: the same file again succeeds without writing.
+	out, err := runCmd(t, "meta", "apply", "--file", v1Path, "--yes")
+	if err != nil {
+		t.Fatalf("re-apply of current metadata must succeed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "already current") {
+		t.Errorf("re-apply should report 'already current':\n%s", out)
+	}
+
+	// Race guard, exercised at the transaction helper level (the CLI
+	// cannot interleave a concurrent evolver between its own prompt and
+	// save): the operator confirmed against v1, but the store moved on.
+	v2 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+	})
+	v3 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+		b.AddIndex("Order", recordlayer.NewIndex("Order$quantity", recordlayer.Field("quantity")))
+	})
+	v1Proto, err := v1.ToProto()
+	if err != nil {
+		t.Fatalf("v1 proto: %v", err)
+	}
+	v2Proto, err := v2.ToProto()
+	if err != nil {
+		t.Fatalf("v2 proto: %v", err)
+	}
+	v3Proto, err := v3.ToProto()
+	if err != nil {
+		t.Fatalf("v3 proto: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := fdb.OpenDatabase(fixture.clusterFilePath)
+	if err != nil {
+		t.Fatalf("open FDB: %v", err)
+	}
+	rec := recordlayer.NewFDBDatabase(db)
+	ss, err := parseKeyspacePath(metaKeyspace)
+	if err != nil {
+		t.Fatalf("parse keyspace: %v", err)
+	}
+	metaStore := recordlayer.NewFDBMetaDataStore(ss)
+
+	// A concurrent evolver lands v2 after the operator confirmed v1.
+	if _, err := rec.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		return nil, metaStore.SaveRecordMetaData(rtx.Transaction(), v2Proto)
+	}); err != nil {
+		t.Fatalf("out-of-band evolution: %v", err)
+	}
+
+	// Applying v3 with v1 as the confirmed base must refuse.
+	_, err = rec.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		return metaApplySave(rtx, metaStore, v1Proto, v3Proto)
+	})
+	if err == nil || !strings.Contains(err.Error(), "metadata changed while awaiting confirmation") {
+		t.Fatalf("race guard must trip, got: %v", err)
+	}
+
+	// Maybe-committed retry shape: confirmed v1, writing v2, store
+	// already holds v2 → already-current success, no re-archive.
+	outcomeAny, err := rec.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		return metaApplySave(rtx, metaStore, v1Proto, v2Proto)
+	})
+	if err != nil {
+		t.Fatalf("retry-shaped apply must succeed: %v", err)
+	}
+	if outcome, _ := outcomeAny.(metaApplyOutcome); outcome != metaApplyAlreadyCurrent {
+		t.Fatalf("expected metaApplyAlreadyCurrent, got %v", outcomeAny)
+	}
+}

@@ -1,7 +1,8 @@
 # RFC-174: frl CLI v2 — layered store addressing, scriptable SQL, honest writes
 
-**Status:** Draft — Graefe ACK + FDB C++ dev ACK (conditions folded, see Review record); codex
-review pending on the PR.
+**Status:** Implemented (all six slices, PR #435) — RFC reviews: Graefe ACK + FDB C++ dev ACK +
+codex folded; implementation reviews: round-1 findings from all three reviewers fixed (see
+Review record), re-review in flight.
 **Gate:** Graefe + FDB C++ dev + codex (user-requested reviewer set for this RFC) + Torvalds +
 @claude on the implementation PRs. This is **not** a query-engine change — no
 Cascades/planner/executor code is touched; the `\explain` feature (§3.3) consumes the existing
@@ -27,6 +28,39 @@ rebuild/takeover remediation, kill-and-resume e2e includes a resume-with-differe
 §3.3; (C4) `fdb up`'s `configure new` retry treats "Database already exists" as success (the
 command is not idempotent; a success-then-nonzero-exit currently fails a healthy cluster,
 `fdb.go:72-80`) — another **live v1 bug**, now in Slice 0.
+*Implementation reviews, round 1* (branch at 1b97970d7): Graefe **ACK w/ 3 conditions**, FDB
+C++ dev **ACK w/ 1 condition (C5)**, codex **NAK (2×P1 + 3×P2)** — all seven distinct findings
+fixed with regression tests, several proven red→green:
+1. `withStore` opened the context's cluster file, ignoring `--cluster-file` (Graefe #1 = codex
+   P2) — worst case `index rebuild --cluster-file X` clears the index on the default cluster.
+   Fixed to `target.clusterFile()`.
+2. `meta apply` TOCTOU (Graefe #2 = C++ dev C5): validated in tx1, prompted, raw-persisted in
+   tx2. Root cause was a **library divergence** — Go's `SaveRecordMetaData` was a raw persist
+   while Java's `saveRecordMetaData → saveAndSetCurrent` validates in the same transaction.
+   Ported Java's semantics into `FDBMetaDataStore` (build check, version-must-increase,
+   evolution validator, history archive — all in the caller's tx; `SetEvolutionValidator`
+   mirrors Java's setter) and made the CLI re-load + compare-to-confirmed + save in ONE
+   transaction, with already-current = no-op success (maybe-committed retry semantics).
+   `--allow-no-version-change` removed from `apply` (dead per Java's unconditional hard check;
+   stays on offline `evolve-check`).
+3. `store lock full-store` was permanent (codex P1): `Open()` rejects the locked store and
+   `store unlock` had no bypass. Second library divergence underneath: Go's bypass was a bare
+   string (`!= ""`), Java's is `@Nullable` — an empty-reason lock was unbypassable even in
+   principle. Bypass is now `*string`; `store lock`/`unlock` arm it with the header's stored
+   reason (Java's recovery path). Everything else still refuses fully-locked stores.
+4. `record delete --type <typo>` silently fell through to the raw primary key (codex P1) —
+   wrong-record-delete hazard. `applyTypePrefix` now errors through `lookupRecordType`.
+5. A `keyspace_tuple` context + `--meta-file` fell back to the empty `keyspace_path` (codex
+   P2): the adoption guard skipped ALL context addressing when `--meta-file` was set. Metadata
+   override no longer discards the tuple; a relational context + `--meta-file` now gets the
+   explicit two-metadata-sources error.
+6. `describe()` named tuple-addressed targets by the context's `keyspace_path` (codex P2) —
+   wrong store named in write confirms, `store truncate` type-back impossible. Tuple targets
+   render via `tupleToJSON` (round-trips through `tupleFromJSON`); truncate's gate reads full
+   lines so quoted tuple elements are typeable.
+7. `record_write.go` overclaimed "the CLI never migrates" (Graefe #3): `index build` hands the
+   store to OnlineIndexer, whose opens use the regular check-version path — **Java
+   `IndexingBase.openRecordStore` parity, kept**; comment + operator guide now say so.
 **Origin:** full assessment of `cmd/frl` (all ~10.7k LOC read; live end-to-end run against a
 throwaway FDB via `frl fdb up`; file-by-file sweep; comparison against Java's
 `fdb-relational-cli`). Four live bugs, three doc/impl contradictions, one structural gap.

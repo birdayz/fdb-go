@@ -201,9 +201,11 @@ func writeStoreInfo(out io.Writer, target *storeTarget, info *gen.DataStoreInfo,
 	cfgCtx := target.cfgCtx
 	var b strings.Builder
 	fmt.Fprintf(&b, "Context:           %s\n", cfgCtx.GetName())
-	fmt.Fprintf(&b, "Cluster file:      %s\n", orDefault(cfgCtx.GetClusterFile(), "(default)"))
+	fmt.Fprintf(&b, "Cluster file:      %s\n", orDefault(target.clusterFile(), "(default)"))
 	if target.relational() {
 		fmt.Fprintf(&b, "Database/schema:   %s/%s\n", target.database, target.schema)
+	} else if target.keyspaceTuple != nil {
+		fmt.Fprintf(&b, "Keyspace tuple:    %s\n", tupleToJSON(target.keyspaceTuple))
 	} else {
 		fmt.Fprintf(&b, "Keyspace path:     %s\n", cfgCtx.GetKeyspacePath())
 	}

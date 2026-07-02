@@ -810,3 +810,66 @@ func TestIntegration_KeyspaceTuple_AddressesFixtureStore(t *testing.T) {
 		t.Errorf("scan produced no records:\n%s", out)
 	}
 }
+
+// --cluster-file must win over the context's cluster_file on the
+// withStore path (Graefe impl-review: withStore used to open from the
+// context unconditionally — `index rebuild --cluster-file X` would have
+// cleared the index on the DEFAULT cluster, then built on X).
+func TestIntegration_ClusterFileFlag_OverridesContext(t *testing.T) {
+	requireFixture(t)
+	tmp := t.TempDir()
+	configFile := filepath.Join(tmp, "config.yaml")
+	cfgYAML := fmt.Sprintf(`current_context: bogus
+contexts:
+  - name: bogus
+    cluster_file: %s
+    keyspace_path: /frl/integration
+    metadata:
+      meta_file: %s
+`, filepath.Join(tmp, "missing.cluster"), fixture.metaFilePath)
+	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", configFile)
+
+	// Sanity: the context's nonexistent cluster file fails on its own…
+	if _, err := runCmd(t, "record", "scan", "--limit", "1"); err == nil {
+		t.Fatal("scan via nonexistent context cluster_file must fail")
+	}
+	// …and the flag must actually be used — pointing it at the live
+	// cluster makes the same command work.
+	out, err := runCmd(t, "record", "scan", "--limit", "1", "--cluster-file", fixture.clusterFilePath)
+	if err != nil {
+		t.Fatalf("record scan --cluster-file: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "primary_key") {
+		t.Errorf("scan produced no records:\n%s", out)
+	}
+}
+
+// --meta-file overrides only the METADATA source; a context addressed by
+// keyspace_tuple must keep its tuple (codex P2: this combination used to
+// fall through to the empty keyspace_path and fail).
+func TestIntegration_KeyspaceTupleContext_MetaFileOverride(t *testing.T) {
+	requireFixture(t)
+	tmp := t.TempDir()
+	configFile := filepath.Join(tmp, "config.yaml")
+	cfgYAML := fmt.Sprintf(`current_context: tup
+contexts:
+  - name: tup
+    cluster_file: %s
+    keyspace_tuple: ["frl", "integration"]
+`, fixture.clusterFilePath)
+	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", configFile)
+
+	out, err := runCmd(t, "record", "scan", "--limit", "1", "--meta-file", fixture.metaFilePath)
+	if err != nil {
+		t.Fatalf("record scan with keyspace_tuple context + --meta-file: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "primary_key") {
+		t.Errorf("scan produced no records:\n%s", out)
+	}
+}

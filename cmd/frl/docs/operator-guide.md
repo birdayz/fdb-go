@@ -181,7 +181,11 @@ populated. When you upgrade schema:
 - **Path B**: call `saveRecordMetaData` with the new metadata; the old
   version is auto-archived to a history key. `MetaDataEvolutionValidator`
   runs inside `saveRecordMetaData` — it'll reject invalid transitions
-  (type rename, incompatible field change, removed required field).
+  (type rename, incompatible field change, removed required field) —
+  and the new version must be strictly greater than the stored one.
+  Both checks run in the same transaction as the write (in Go and in
+  Java), so concurrent evolvers serialize through FDB conflict
+  detection.
 
 Both paths produce binary-compatible `MetaData` protos — the same bytes
 work in both.
@@ -277,18 +281,29 @@ bookkeeping — evolve schemas through SQL DDL instead).
   batch-halving), `--rps`/`--limit` tune load, `--time-limit` bounds a
   pass. `index rebuild` clears and starts over; `index set-state`
   flips READABLE / WRITE_ONLY / DISABLED (READABLE refuses unless the
-  index is fully built).
+  index is fully built). One caveat: the indexer opens the store the
+  way an app would (Java `OnlineIndexer` parity, regular check-version
+  path), so building against a NEWER metadata source migrates the
+  store header first — exactly as deploying that metadata would.
 - **`meta apply --file new.pb`** — validates against the
-  FDBMetaDataStore's current metadata (same gate as `evolve-check`,
-  same `--allow-*` knobs) and persists on pass. Requires
-  `meta_store_keyspace` in the context or `--meta-store-keyspace`;
-  `--force-initial` bootstraps an empty store. Path A setups have
-  nothing in FDB to apply to.
+  FDBMetaDataStore's current metadata (same gate as `evolve-check`)
+  and persists on pass; the validation re-runs inside the save
+  transaction, so a concurrent evolution landing between the prompt
+  and the write is detected, never overwritten. Re-applying
+  already-current metadata is a no-op success; the version must
+  strictly increase (no `--allow-no-version-change` here — the store
+  save path rejects equal versions unconditionally, like Java's
+  `saveAndSetCurrent`). Requires `meta_store_keyspace` in the context
+  or `--meta-store-keyspace`; `--force-initial` bootstraps an empty
+  store. Path A setups have nothing in FDB to apply to.
 - **`store lock <state> [--reason …]`** / **`store unlock`** — set or
   clear the header lock (`forbid-record-update` / `full-store`);
-  `store info` shows it. **`store truncate`** deletes every record —
-  double-gated: `--yes` is always required, and a terminal additionally
-  asks you to type the store address back.
+  `store info` shows it. Both commands can manage a store that is
+  already `full-store` locked (they open with the stored reason as the
+  bypass); every other command — truncate included — refuses a fully
+  locked store until you unlock it. **`store truncate`** deletes every
+  record — double-gated: `--yes` is always required, and a terminal
+  additionally asks you to type the store address back.
 
 **Q: What are `frl sql` and `frl meta catalog`?**
 The relational-layer side of the CLI. `frl sql` is a psql-style REPL

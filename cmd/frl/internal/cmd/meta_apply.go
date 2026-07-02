@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/cmd/frl/internal/meta"
 	"fdb.dev/gen"
@@ -22,17 +23,24 @@ import (
 // options. Catalog-backed (relational) metadata is NOT applicable here
 // by design — templates evolve through SQL DDL, never behind the
 // relational layer's back.
+//
+// Concurrency (Graefe impl-review + FDB C++ dev C5): the pre-confirm
+// pass below is only a PREVIEW. The authoritative load + version check +
+// evolution validation happen inside the save transaction —
+// SaveRecordMetaData carries Java's saveAndSetCurrent semantics — with a
+// guard that the store still holds exactly what the operator confirmed
+// against. The interactive prompt therefore cannot become a TOCTOU
+// window for a concurrent evolver.
 func newMetaApplyCmd() *cobra.Command {
 	var (
-		contextName          string
-		clusterFile          string
-		file                 string
-		storeKeyspace        string
-		forceInitial         bool
-		yes                  bool
-		allowNoVersionChange bool
-		allowIndexRebuilds   bool
-		allowUnsplitToSplit  bool
+		contextName         string
+		clusterFile         string
+		file                string
+		storeKeyspace       string
+		forceInitial        bool
+		yes                 bool
+		allowIndexRebuilds  bool
+		allowUnsplitToSplit bool
 	)
 	c := &cobra.Command{
 		Use:   "apply --file <new.pb>",
@@ -45,7 +53,16 @@ func newMetaApplyCmd() *cobra.Command {
 			"`meta evolve-check`) against --file, and on pass persists the " +
 			"new metadata via SaveRecordMetaData. Refuses on validation " +
 			"failure — this command cannot apply an evolution the record " +
-			"layer itself would reject.\n\n" +
+			"layer itself would reject. The validation re-runs inside the " +
+			"save transaction, so a concurrent evolution between the " +
+			"confirmation prompt and the write is detected, never " +
+			"overwritten. Re-applying metadata that is already current " +
+			"succeeds without writing ('already current').\n\n" +
+			"The new version must be strictly greater than the stored one " +
+			"(there is no --allow-no-version-change here: the store-save " +
+			"path rejects equal versions unconditionally, exactly like " +
+			"Java's saveAndSetCurrent — the knob exists only on the " +
+			"offline `meta evolve-check`).\n\n" +
 			"The write target is the context's `meta_store_keyspace` or " +
 			"--meta-store-keyspace. Path A setups (meta_file shipped with " +
 			"binaries) have nothing in FDB to apply to — see the operator " +
@@ -91,9 +108,17 @@ func newMetaApplyCmd() *cobra.Command {
 				return err
 			}
 			rec := recordlayer.NewFDBDatabase(db)
+			validator := recordlayer.NewMetaDataEvolutionValidator().
+				SetAllowIndexRebuilds(allowIndexRebuilds).
+				SetAllowUnsplitToSplit(allowUnsplitToSplit).
+				Build()
 			metaStore := recordlayer.NewFDBMetaDataStore(ss)
+			metaStore.SetEvolutionValidator(validator)
 
-			// Load current metadata for the validation diff.
+			// Preview pass: load current metadata and validate against it
+			// so the operator sees a validation failure BEFORE the
+			// confirmation prompt. Not authoritative — the save
+			// transaction below re-runs everything.
 			result, err := rec.Run(cmd.Context(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				return metaStore.LoadRecordMetaDataProto(rtx.Transaction())
 			})
@@ -102,6 +127,9 @@ func newMetaApplyCmd() *cobra.Command {
 			}
 			oldProto, _ := result.(*gen.MetaData)
 			switch {
+			case oldProto != nil && proto.Equal(oldProto, newProto):
+				fmt.Fprintf(cmd.OutOrStdout(), "metadata version %d already current at %s — nothing to do\n", newMeta.Version(), ksPath)
+				return nil
 			case oldProto == nil && !forceInitial:
 				return fmt.Errorf("no metadata stored at %s — pass --force-initial for the first write into an empty store", ksPath)
 			case oldProto != nil:
@@ -109,11 +137,12 @@ func newMetaApplyCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("current metadata at %s does not build: %w", ksPath, err)
 				}
-				validator := recordlayer.NewMetaDataEvolutionValidator().
-					SetAllowNoVersionChange(allowNoVersionChange).
-					SetAllowIndexRebuilds(allowIndexRebuilds).
-					SetAllowUnsplitToSplit(allowUnsplitToSplit).
-					Build()
+				if newProto.GetVersion() <= oldProto.GetVersion() {
+					return fmt.Errorf("incompatible evolution — refusing to apply: %w", &recordlayer.MetaDataVersionMustIncreaseError{
+						OldVersion: oldProto.GetVersion(),
+						NewVersion: newProto.GetVersion(),
+					})
+				}
 				if err := validator.Validate(oldMeta, newMeta); err != nil {
 					return fmt.Errorf("incompatible evolution — refusing to apply: %w", err)
 				}
@@ -127,10 +156,15 @@ func newMetaApplyCmd() *cobra.Command {
 				return err
 			}
 
-			if _, err := rec.Run(cmd.Context(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				return nil, metaStore.SaveRecordMetaData(rtx.Transaction(), newProto)
-			}); err != nil {
+			outcomeAny, err := rec.Run(cmd.Context(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				return metaApplySave(rtx, metaStore, oldProto, newProto)
+			})
+			if err != nil {
 				return fmt.Errorf("save metadata: %w", err)
+			}
+			if outcome, _ := outcomeAny.(metaApplyOutcome); outcome == metaApplyAlreadyCurrent {
+				fmt.Fprintf(cmd.OutOrStdout(), "metadata version %d already current at %s — nothing to do\n", newMeta.Version(), ksPath)
+				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "applied metadata version %d to %s\n", newMeta.Version(), ksPath)
 			return nil
@@ -142,8 +176,53 @@ func newMetaApplyCmd() *cobra.Command {
 	c.Flags().StringVar(&storeKeyspace, "meta-store-keyspace", "", "FDBMetaDataStore keyspace path; overrides the context's meta_store_keyspace")
 	c.Flags().BoolVar(&forceInitial, "force-initial", false, "allow the first write into an empty metadata store")
 	c.Flags().BoolVar(&yes, "yes", false, "skip the interactive confirmation")
-	c.Flags().BoolVar(&allowNoVersionChange, "allow-no-version-change", false, "permit equal versions (validator knob)")
 	c.Flags().BoolVar(&allowIndexRebuilds, "allow-index-rebuilds", false, "permit changes that force index rebuilds (validator knob)")
 	c.Flags().BoolVar(&allowUnsplitToSplit, "allow-unsplit-to-split", false, "permit the unsplit→split format migration (validator knob)")
 	return c
+}
+
+// metaApplyOutcome distinguishes a real save from the already-current
+// no-op inside the save transaction.
+type metaApplyOutcome int
+
+const (
+	metaApplySaved metaApplyOutcome = iota
+	metaApplyAlreadyCurrent
+)
+
+// metaApplySave is the transactional tail of `meta apply`: re-load the
+// current metadata INSIDE the save transaction, handle the two races the
+// confirmation prompt opens up, and persist through SaveRecordMetaData
+// (which re-runs the version check + evolution validator in this same
+// transaction — Java saveAndSetCurrent semantics):
+//
+//   - current already proto-equal to the new metadata → success without
+//     writing: a maybe-committed retry of this very apply landed (same
+//     already-done semantics as `record delete` on an absent record).
+//   - current differs from what the operator confirmed against →
+//     concurrent-modification error; never validate against a schema
+//     nobody saw.
+//
+// confirmed is the metadata the preview showed the operator (nil for a
+// --force-initial bootstrap of an empty store).
+func metaApplySave(rtx *recordlayer.FDBRecordContext, metaStore *recordlayer.FDBMetaDataStore, confirmed, newProto *gen.MetaData) (metaApplyOutcome, error) {
+	current, err := metaStore.LoadRecordMetaDataProto(rtx.Transaction())
+	if err != nil {
+		return 0, err
+	}
+	if current != nil && proto.Equal(current, newProto) {
+		return metaApplyAlreadyCurrent, nil
+	}
+	switch {
+	case confirmed == nil && current != nil:
+		return 0, fmt.Errorf("metadata changed while awaiting confirmation: the store was empty at validation time but now holds version %d — re-run to validate against it", current.GetVersion())
+	case confirmed != nil && current == nil:
+		return 0, fmt.Errorf("metadata changed while awaiting confirmation: version %d was validated against but the store is now empty — re-run", confirmed.GetVersion())
+	case confirmed != nil && !proto.Equal(confirmed, current):
+		return 0, fmt.Errorf("metadata changed while awaiting confirmation (was version %d, now %d) — re-validate and re-run", confirmed.GetVersion(), current.GetVersion())
+	}
+	if err := metaStore.SaveRecordMetaData(rtx.Transaction(), newProto); err != nil {
+		return 0, err
+	}
+	return metaApplySaved, nil
 }

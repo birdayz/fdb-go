@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"google.golang.org/protobuf/types/known/structpb"
@@ -123,4 +124,36 @@ func taggedTupleElement(m map[string]any) (tuple.TupleElement, error) {
 // subspaceFromTuple packs a parsed keyspace tuple into a subspace.
 func subspaceFromTuple(t tuple.Tuple) subspace.Subspace {
 	return subspace.Sub(t...)
+}
+
+// tupleToJSON renders a keyspace tuple in the exact syntax tupleFromJSON
+// accepts — compact (no spaces) so an operator can type it back at
+// `store truncate`'s confirmation gate. Inverse of tupleFromJSON for
+// every element type that parser produces.
+func tupleToJSON(t tuple.Tuple) string {
+	elems := make([]string, len(t))
+	for i, e := range t {
+		elems[i] = tupleElementToJSON(e)
+	}
+	return "[" + strings.Join(elems, ",") + "]"
+}
+
+func tupleElementToJSON(e tuple.TupleElement) string {
+	switch v := e.(type) {
+	case string:
+		b, _ := json.Marshal(v)
+		return string(b)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	case tuple.UUID:
+		return fmt.Sprintf(`{"uuid":"%x-%x-%x-%x-%x"}`, v[0:4], v[4:6], v[6:8], v[8:10], v[10:16])
+	case []byte:
+		return fmt.Sprintf(`{"bytes_hex":"%s"}`, hex.EncodeToString(v))
+	default:
+		// Unreachable for tuples built by tupleFromAny; keep errors
+		// readable if a future element type slips through.
+		return fmt.Sprintf("%v", v)
+	}
 }

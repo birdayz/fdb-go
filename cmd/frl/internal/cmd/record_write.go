@@ -19,9 +19,15 @@ import (
 // (codex P2-2: put overwrites and bypasses SQL-level constraints, it
 // gets the same gate as delete, not a lighter one).
 //
-// Store opens keep SetSkipPossiblyRebuild(true) like the read commands:
-// the CLI never migrates a store's format as a side effect — `meta
-// apply` is the explicit evolution path.
+// Store opens here go through withStore and keep
+// SetSkipPossiblyRebuild(true): record put/delete never migrate the
+// store's format as a side effect — `meta apply` is the explicit
+// evolution path. `index build` is the one deliberate exception: it
+// hands the store builder to OnlineIndexer, whose internal opens run
+// the regular check-version path exactly like Java's
+// IndexingBase.openRecordStore — building against newer metadata
+// migrates the store first, just as deploying that metadata in an app
+// would.
 
 func newRecordPutCmd() *cobra.Command {
 	var (
@@ -146,7 +152,10 @@ func newRecordDeleteCmd() *cobra.Command {
 			if dryRun {
 				exists, err := withStore(cmd.Context(), target,
 					func(store *recordlayer.FDBRecordStore) (bool, error) {
-						pk = applyTypePrefix(store, recordType, pk)
+						var err error
+						if pk, err = applyTypePrefix(store, recordType, pk); err != nil {
+							return false, err
+						}
 						return store.DryRunDeleteRecord(pk)
 					})
 				if err != nil {
@@ -165,7 +174,10 @@ func newRecordDeleteCmd() *cobra.Command {
 			}
 			deleted, err := withStore(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) (bool, error) {
-					pk = applyTypePrefix(store, recordType, pk)
+					var err error
+					if pk, err = applyTypePrefix(store, recordType, pk); err != nil {
+						return false, err
+					}
 					return store.DeleteRecord(pk)
 				})
 			if err != nil {
@@ -190,16 +202,23 @@ func newRecordDeleteCmd() *cobra.Command {
 }
 
 // applyTypePrefix prepends the record type's key when the type's PK
-// carries a record-type prefix — same convenience as `record get`.
-func applyTypePrefix(store *recordlayer.FDBRecordStore, recordType string, pk tuple.Tuple) tuple.Tuple {
+// carries a record-type prefix — same convenience as `record get`. An
+// unknown type is an error, never a silent fall-through: on a
+// prefix-keyed store the unprefixed key can address a DIFFERENT record,
+// and this feeds `record delete` (codex P1: a --type typo must not
+// delete the wrong record).
+func applyTypePrefix(store *recordlayer.FDBRecordStore, recordType string, pk tuple.Tuple) (tuple.Tuple, error) {
 	if recordType == "" {
-		return pk
+		return pk, nil
 	}
-	rt := store.GetRecordMetaData().GetRecordType(recordType)
-	if rt != nil && rt.PrimaryKeyHasRecordTypePrefix() {
-		return append(tuple.Tuple{rt.GetRecordTypeKey()}, pk...)
+	rt, err := lookupRecordType(store.GetRecordMetaData(), recordType)
+	if err != nil {
+		return nil, err
 	}
-	return pk
+	if rt.PrimaryKeyHasRecordTypePrefix() {
+		return append(tuple.Tuple{rt.GetRecordTypeKey()}, pk...), nil
+	}
+	return pk, nil
 }
 
 // parseRecordJSON builds a dynamic message for the named record type and

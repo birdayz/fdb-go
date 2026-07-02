@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/types/known/structpb"
 
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -83,5 +85,47 @@ func TestTupleFromListValue(t *testing.T) {
 	}
 	if b, ok := got[2].([]byte); !ok || len(b) != 2 {
 		t.Errorf("bytes element = %v (%T)", got[2], got[2])
+	}
+}
+
+// tupleToJSON must render in the exact syntax tupleFromJSON accepts —
+// write confirmations and `store truncate`'s type-back gate depend on
+// the round trip.
+func TestTupleToJSON_RoundTrips(t *testing.T) {
+	t.Parallel()
+	in := `["myapp",42,4.5,{"uuid":"00112233-4455-6677-8899-aabbccddeeff"},{"bytes_hex":"deadbeef"}]`
+	tup, err := tupleFromJSON(in)
+	if err != nil {
+		t.Fatalf("tupleFromJSON: %v", err)
+	}
+	rendered := tupleToJSON(tup)
+	if rendered != in {
+		t.Errorf("rendered = %s; want %s", rendered, in)
+	}
+	tup2, err := tupleFromJSON(rendered)
+	if err != nil {
+		t.Fatalf("re-parse of rendered tuple: %v", err)
+	}
+	if !reflect.DeepEqual(tup, tup2) {
+		t.Errorf("round trip changed the tuple: %v vs %v", tup, tup2)
+	}
+}
+
+// A tuple-addressed target must be DESCRIBED as its tuple: write
+// confirmations name the store they hit, and truncate's type-back gate
+// would otherwise compare against a stale or empty keyspace_path
+// (codex P2).
+func TestStoreTargetDescribe_KeyspaceTuple(t *testing.T) {
+	t.Parallel()
+	tup, err := tupleFromJSON(`["frl",7]`)
+	if err != nil {
+		t.Fatalf("tupleFromJSON: %v", err)
+	}
+	target := &storeTarget{
+		cfgCtx:        &configv1.Context{Name: "x", KeyspacePath: "/stale/path"},
+		keyspaceTuple: tup,
+	}
+	if got := target.describe(); got != `["frl",7]` {
+		t.Errorf("describe() = %q; want the tuple form", got)
 	}
 }
