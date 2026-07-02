@@ -1,7 +1,12 @@
 package cascades
 
 import (
+	"embed"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -16,26 +21,189 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 	}
 }
 
-// TestDefaultRules_ExpectedCount pins the rule count as a regression
-// guard — accidental removal during a refactor would silently shrink
-// the optimiser's reach. CLAUDE.md / TODO.md document the count;
-// keep this test in sync with both.
-func TestDefaultRules_ExpectedCount(t *testing.T) {
+// productionRuleSets returns every production rule-set constructor's
+// members, keyed by constructor name — the runtime side of the RFC-175
+// D2 assertions. This replaces the retired `const expected = 42` count
+// pin, which carried no information (len == N because we chose N) and
+// let real regressions through: a rule type dropped from every set, or
+// duplicated within a set, kept the suite green as long as someone
+// updated the constant.
+//
+// DefaultImplementationRules already appends
+// GoExtensionImplementationRules, and NormalizationRules already
+// prepends DeMorgan onto DefaultSimplifyRules — listing the composites
+// covers the parts. FinalizeExpressionsRule is listed explicitly: it is
+// instantiated directly by NewPlanner (the REWRITING-phase
+// rewritingImplRules), not by a set constructor.
+func productionRuleSets() map[string][]any {
+	return map[string][]any{
+		"DefaultExpressionRules":     anySlice(DefaultExpressionRules()),
+		"PlanningExplorationRules":   anySlice(PlanningExplorationRules()),
+		"BatchAExpressionRules":      anySlice(BatchAExpressionRules()),
+		"DMLImplementationRules":     anySlice(DMLImplementationRules()),
+		"RewritingRules":             anySlice(RewritingRules()),
+		"MatchingRules":              anySlice(MatchingRules()),
+		"DefaultImplementationRules": anySlice(DefaultImplementationRules()),
+		"DefaultSimplifyRules":       anySlice(DefaultSimplifyRules()),
+		"NormalizationRules":         anySlice(NormalizationRules()),
+		"planner rewritingImplRules": {NewFinalizeExpressionsRule()},
+	}
+}
+
+func anySlice[T any](in []T) []any {
+	out := make([]any, len(in))
+	for i, v := range in {
+		out[i] = v
+	}
+	return out
+}
+
+// shortNameOf strips Go's package + pointer prefix from %T output for
+// any rule shape (ExpressionRule / ImplementationRule / CascadesRule).
+func shortNameOf(r any) string {
+	t := fmt.Sprintf("%T", r)
+	for i := len(t) - 1; i >= 0; i-- {
+		if t[i] == '.' || t[i] == '*' {
+			return t[i+1:]
+		}
+	}
+	return t
+}
+
+// TestRuleSets_NoDuplicateRuleTypes asserts every production rule set
+// constructs each rule TYPE at most once (RFC-175 §5 D2: "every rule
+// registered exactly once"). A duplicate within a set doubles the
+// per-iteration matcher work silently — the failure mode the old count
+// pin could not see (a copy-paste duplicate plus a dropped rule keeps
+// the count identical).
+//
+// Cross-SET repetition is deliberate and NOT asserted against:
+// NormalizePredicatesRule and friends fire in both REWRITING
+// (DefaultExpressionRules) and PLANNING (PlanningExplorationRules) by
+// design, mirroring Java's per-phase rule sets.
+func TestRuleSets_NoDuplicateRuleTypes(t *testing.T) {
 	t.Parallel()
-	// 42: PartitionSelectRule + PartitionBinarySelectRule and
-	// MatchLeafRule + MatchIntermediateRule are PLANNING-only
-	// (PlanningExplorationRules) per RFC-042 — join-order enumeration and
-	// index-candidate matching belong in PLANNING (match-then-implement,
-	// matching Java's PlanningRuleSet) so REWRITING stays normalization-only.
-	// (PushProjectionBelowJoinRule was a Go-only rule, now removed entirely —
-	// RFC-042 L1; it never counted here since it was PLANNING-only.)
-	// ZeroLimitRule removed (43 → 42): it was a broken Go-only rewrite —
-	// Limit(0,X) → FullUnorderedScan(nil) is a FULL scan, not an empty source —
-	// that made `LIMIT 0` return all rows; LIMIT 0 now lowers to
-	// RecordQueryLimitPlan(0), which the executor short-circuits to 0 rows.
-	const expected = 42
-	if got := len(DefaultExpressionRules()); got != expected {
-		t.Fatalf("DefaultExpressionRules count = %d, want %d (update CLAUDE.md / TODO.md if intentional)", got, expected)
+	for setName, rules := range productionRuleSets() {
+		seen := map[string]int{}
+		for i, r := range rules {
+			k := shortNameOf(r)
+			if prev, ok := seen[k]; ok {
+				t.Errorf("%s constructs %s twice (indices %d and %d)", setName, k, prev, i)
+			}
+			seen[k] = i
+		}
+	}
+}
+
+// TestRuleRegistry_ResolvesEveryRegisteredSetRule asserts that every
+// rule in the four set constructors the package init registers
+// (registerDefaultRules / registerBatchARules / registerMatchingRules /
+// registerRewritingRules) resolves via LookupRule under its short type
+// name. Diagnostic / explain output relies on LookupRule(name) → rule,
+// so a registration regression breaks rule-trace logs without a clear
+// failure. Generalizes the old hardcoded 11-name spot check to the
+// full registered surface.
+//
+// (No assertion over RegisteredRuleNames() as a whole: tests register
+// scratch names concurrently — rule_registry_test.go — so the global
+// registry contents are not stable under t.Parallel.)
+func TestRuleRegistry_ResolvesEveryRegisteredSetRule(t *testing.T) {
+	t.Parallel()
+	registered := map[string][]ExpressionRule{
+		"DefaultExpressionRules": DefaultExpressionRules(),
+		"BatchAExpressionRules":  BatchAExpressionRules(),
+		"MatchingRules":          MatchingRules(),
+		"RewritingRules":         RewritingRules(),
+	}
+	for setName, rules := range registered {
+		for _, r := range rules {
+			name := shortTypeName(r)
+			if LookupRule(name) == nil {
+				t.Errorf("%s: LookupRule(%q) = nil — package init did not register it", setName, name)
+			}
+		}
+	}
+}
+
+// cascadesSourceFS embeds the package's own sources so the coverage
+// assertion below can enumerate the DECLARED rule types — the
+// enumeration Go reflection cannot provide and an explicit list would
+// rot. Test files are filtered out at parse time.
+//
+//go:embed *.go
+var cascadesSourceFS embed.FS
+
+// TestRuleTypes_EveryExportedRuleTypeInAProductionSet is the RFC-175
+// §5 D2 coverage assertion: every exported `type XxxRule struct` in
+// this package is constructed by at least one production rule set
+// (productionRuleSets). This is the axis the retired count pin was
+// supposed to guard — "accidental removal during a refactor silently
+// shrinks the optimiser's reach" — asserted against the source of
+// truth instead of a hand-maintained integer: a rule type that exists
+// as code but is fired by no set is either dead machinery (delete it —
+// the four orphaned Push/Pull filter rules died with this test's
+// introduction) or a missing set entry (a real reach regression).
+func TestRuleTypes_EveryExportedRuleTypeInAProductionSet(t *testing.T) {
+	t.Parallel()
+	entries, err := cascadesSourceFS.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading embedded sources: %v", err)
+	}
+	fset := token.NewFileSet()
+	declared := map[string]string{} // rule type name → declaring file
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, readErr := cascadesSourceFS.ReadFile(name)
+		if readErr != nil {
+			t.Fatalf("reading embedded %s: %v", name, readErr)
+		}
+		f, parseErr := parser.ParseFile(fset, name, src, parser.SkipObjectResolution)
+		if parseErr != nil {
+			t.Fatalf("parsing %s: %v", name, parseErr)
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				// Struct types only: the rule INTERFACES (ExpressionRule,
+				// ImplementationRule, CascadesRule, …) also end in "Rule".
+				if _, isStruct := ts.Type.(*ast.StructType); !isStruct {
+					continue
+				}
+				tn := ts.Name.Name
+				if !ast.IsExported(tn) || !strings.HasSuffix(tn, "Rule") {
+					continue
+				}
+				declared[tn] = name
+			}
+		}
+	}
+	// Anti-vacuity: if the embed/parse pipeline breaks, the test must go
+	// red, not silently guard an empty set (the package declares 128
+	// rule types at the time of writing).
+	if len(declared) < 100 {
+		t.Fatalf("parsed only %d declared rule types from embedded sources — embed or parse pipeline broken", len(declared))
+	}
+
+	constructed := map[string]struct{}{}
+	for _, rules := range productionRuleSets() {
+		for _, r := range rules {
+			constructed[shortNameOf(r)] = struct{}{}
+		}
+	}
+	for tn, file := range declared {
+		if _, ok := constructed[tn]; !ok {
+			t.Errorf("exported rule type %s (%s) is not constructed by any production rule set — dead machinery or a missing set entry", tn, file)
+		}
 	}
 }
 
@@ -54,61 +222,15 @@ func TestDefaultRules_NoNil(t *testing.T) {
 	}
 }
 
-// TestDefaultRules_DistinctTypes verifies no duplicate rule types in
-// the default set. Same rule registered twice would double the
-// per-iteration work.
-func TestDefaultRules_DistinctTypes(t *testing.T) {
-	t.Parallel()
-	seen := map[string]int{}
-	for i, r := range DefaultExpressionRules() {
-		k := typeName(r)
-		if prev, ok := seen[k]; ok {
-			t.Fatalf("default rule %s appears twice (indices %d and %d)", k, prev, i)
-		}
-		seen[k] = i
-	}
-}
-
 // typeName returns the rule's concrete type name (Go's %T format).
-// Used for collision detection in DistinctTypes test — works on
+// Used for order comparison in the StableOrder test — works on
 // any rule type, including future ones, without per-rule
 // maintenance.
 func typeName(r ExpressionRule) string {
 	if r == nil {
 		return "<nil>"
 	}
-	return reflectTypeName(r)
-}
-
-func reflectTypeName(r ExpressionRule) string {
 	return fmt.Sprintf("%T", r)
-}
-
-// TestDefaultRules_AutoRegistered pins that the package init
-// hook (registerDefaultRules) registers every default rule's short
-// type name in the registry. Diagnostic / explain output relies on
-// LookupRule(name) → rule, so a regression here breaks rule-trace
-// logs without a clear failure.
-func TestDefaultRules_AutoRegistered(t *testing.T) {
-	t.Parallel()
-	wantNames := []string{
-		"FilterMergeRule",
-		"FilterDropTruePredicatesRule",
-		"DistinctMergeRule",
-		"TypeFilterMergeRule",
-		"UnionMergeRule",
-		"IntersectionMergeRule",
-		"NoOpFilterRule",
-		"ProjectionElimRule",
-		"UnsortedSortElimRule",
-		"UnionSingletonElimRule",
-		"IntersectionSingletonElimRule",
-	}
-	for _, n := range wantNames {
-		if got := LookupRule(n); got == nil {
-			t.Errorf("LookupRule(%q) = nil after package init — registerDefaultRules didn't include it", n)
-		}
-	}
 }
 
 // TestDefaultRules_StableOrder pins that DefaultExpressionRules
