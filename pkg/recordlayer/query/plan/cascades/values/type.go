@@ -1,14 +1,13 @@
 package values
 
-// Phase 4.0 Type hierarchy.
+// The Type hierarchy.
 //
 // Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.typing.Type` —
-// the rich type system used throughout the planner. Since Track G1
-// this is the ONLY type representation in the package —
-// the legacy `ValueType` enum + `FromValueType` / `ToValueType` /
-// `ValueRichType` bridges retired. Each Value impl's `Type()` now
-// returns a rich Type directly.
+// the rich type system used throughout the planner, and the ONLY type
+// representation in the package (the legacy `ValueType` enum +
+// `FromValueType` / `ToValueType` / `ValueRichType` bridges are
+// retired). Each Value impl's `Type()` returns a rich Type directly.
 //
 // File contents: TypeCode enum mirroring Java's well-known codes,
 // the Type interface (Code + IsNullable + a few shape predicates),

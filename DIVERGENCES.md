@@ -89,6 +89,19 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Impact:** FDB integration tests pass without `promoteInJoinWinners`/`promoteByDataAccessCost` — `finalMembers` + real statistics is sufficient. Promotion hacks remain for unit tests without statistics.
 
+### Quantifier.GetCorrelatedTo returns the empty set (consumers compensate structurally)
+
+**Java:** `Quantifier.getCorrelatedTo()` delegates to `rangesOver.getCorrelatedTo()` — the transitive correlation set of the inner Reference.
+**Go:** `expressions.Quantifier.GetCorrelatedTo()` returns the EMPTY set, even though `Reference.GetCorrelatedTo` (the transitive, cached walk) is fully implemented. The one-line delegation was never wired.
+
+**Consumers compensate structurally** (each documented at the call site):
+- `rule_push_requested_ordering_through_in_like_select.go` — Java's `containsAll(explodeAliases)` guard is disabled; the downstream `ImplementInJoinRule`/`ImplementInUnionRule` carry the real structural check.
+- `rule_adjust_match.go` `correlatedToEquals` — checks node-local correlations only.
+- `rule_partition_select.go` `computeTransitiveCorrelationOrder` — the `q.GetCorrelatedTo()` term is empty in the flat canonical select (join predicates live on the Select, not inside the legs); buried merge-leg deps are re-exposed separately (`quantifierMergeSeedLegDeps`, RFC-142).
+- `rule_split_select_extract_independent.go` — computes its own walk (`quantifierCorrelationSet`).
+
+**To close:** delegate to `q.GetRangesOver().GetCorrelatedTo()` and re-enable the Java-faithful guards. Plan-shape sensitive (the guards start rejecting): needs its own review cycle with plandiff + the correlated-join sentinels, not a drive-by rewire.
+
 ### Go has explicit Sort/InMemorySort physical operators
 
 **Java:** Relies on `RemoveSortRule` to eliminate sorts; no in-memory sort plan exists.

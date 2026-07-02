@@ -409,21 +409,18 @@ type hashWriter interface {
 const physicalWrapperCostMultiplier = 0.9
 
 // physicalScanWrapper adapts a `*plans.RecordQueryScanPlan` to the
-// `expressions.RelationalExpression` interface so Batch A rules can
-// yield it into the existing Reference dedup machinery without a
-// Memo overhaul.
+// `expressions.RelationalExpression` interface so implementation rules
+// can yield it into the Reference dedup machinery.
 //
-// This is a SEED workaround. Java's planner has a unified
-// RelationalExpression hierarchy where physical plans (RecordQueryPlan)
-// implement RelationalExpressionWithChildren too. Our seed kept the
-// two hierarchies separate (per RFC-022 design choice) — the
-// adapter bridges them until a proper plan-aware Reference lands.
-//
-// The wrapper is leaf-like (no Quantifiers, no children) — the
-// underlying RecordQueryScanPlan IS a leaf physical plan. Future
-// wrappers for filter / sort plans need to expose their inner
-// RecordQueryPlan as a Quantifier-equivalent to enable Memo
-// integration; for the seed, only the leaf wrapper exists.
+// The wrapper family exists because Go keeps the plan and expression
+// hierarchies separate (RFC-022 design choice), where Java's physical
+// plans (RecordQueryPlan) implement RelationalExpression directly —
+// the physical_*_wrapper.go files in this package are the bridge, one
+// per physical operator family. This one is leaf-like (no Quantifiers,
+// no children): the underlying RecordQueryScanPlan is a leaf physical
+// plan. Non-leaf wrappers (filter, union, joins, …) expose their inner
+// plans as Quantifiers over inner References — see e.g.
+// physicalFilterWrapper below and physical_flat_map_wrapper.go.
 type physicalScanWrapper struct {
 	plan *plans.RecordQueryScanPlan
 }
@@ -743,8 +740,11 @@ func (w *physicalFilterWrapper) CanCorrelate() bool { return false }
 // ChildrenAsSet is false — filter has one child.
 func (w *physicalFilterWrapper) ChildrenAsSet() bool { return false }
 
-// GetCorrelatedToWithoutChildren returns the empty set — the seed
-// doesn't surface predicate-side correlation through the wrapper.
+// GetCorrelatedToWithoutChildren returns the empty set — the wrapper
+// does not surface predicate-side correlation. Callers that need
+// correlation visibility through wrapped physical plans recover it
+// from the plan itself (cf. compensationProbeCorrelations, which reads
+// bound-prefix scan correlations out of the comparison ranges).
 func (w *physicalFilterWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}
 }
@@ -1306,7 +1306,8 @@ func (w *physicalUnionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { retu
 
 // GetResultValue returns the first inner's flowed object value.
 // Java's RecordQueryUnionPlan emits rows compatible with all
-// children; the seed picks the first child's row shape.
+// children; Go picks the first child's row shape (union legs are
+// column-aligned by construction, so any child's shape stands in).
 func (w *physicalUnionWrapper) GetResultValue() values.Value {
 	if len(w.innerQuants) == 0 {
 		return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())

@@ -11,8 +11,9 @@ import (
 // alongside exploration rules. MemoizeExpression uses
 // the planner's Memo when available.
 //
-// This enables moving physical implementation rules (BatchA) from the
-// EXPLORE phase to the PLANNING phase without rewriting each rule.
+// This lets the physical-implementation ExpressionRules
+// (BatchAExpressionRules) run inside the PLANNING phase's
+// ImplementationRule driver without rewriting each rule.
 func AsImplementationRule(rule ExpressionRule) ImplementationRule {
 	return &expressionRuleAdapter{rule: rule}
 }

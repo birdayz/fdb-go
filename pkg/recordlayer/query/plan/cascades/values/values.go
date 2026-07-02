@@ -23,7 +23,7 @@
 //     correlation-shape preservation.
 //   - ExpressionFolder + DefaultFolder — testable seam for plan-time
 //     constant folding (RFC-025 §"Closing the leaks").
-//   - Phase 4.0 Type hierarchy (`type.go`) — the rich `Type`
+//   - The Type hierarchy (`type.go`) — the rich `Type`
 //     interface + `TypeCode` enum + concrete impls (`PrimitiveType`,
 //     `RecordType`, `ArrayType`, `EnumType`, `RelationType`),
 //     canonical singletons for every primitive (incl. UUID, VERSION,
@@ -34,9 +34,8 @@
 //     `IsArray`, …). Every Value impl's `Type()`
 //     returns the rich `Type` directly — the legacy `ValueType`
 //     enum + `FromValueType` / `ToValueType` bridges are retired.
-//     Track G1 in TODO.md. Once `type.go` exceeds ~1500 LOC it
-//     splits into a dedicated `cascades/typing/` sub-package per
-//     RFC-025.
+//     Once `type.go` exceeds ~1500 LOC it splits into a dedicated
+//     `cascades/typing/` sub-package per RFC-025.
 //
 // Imports: nothing else from `pkg/recordlayer/query/plan/cascades/...`.
 // `predicates/`, `matching/`, and root `cascades` all import this
@@ -70,7 +69,7 @@ const (
 // keep working — the value's Go type changes (Type instead of int),
 // the constant name doesn't.
 //
-// Track G1 / RFC-025: legacy bridge retirement.
+// Legacy bridge retirement: RFC-025.
 var (
 	// TypeUnknown is the placeholder for "type not yet inferred".
 	// Maps to the canonical UnknownType singleton.
@@ -93,7 +92,7 @@ var (
 	TypeFloat Type = NullableDouble
 )
 
-// Value is the root of the Phase 4.0 seed Value hierarchy.
+// Value is the root of the Value hierarchy.
 // Concrete Values implement Children / Type / Name / Evaluate;
 // matchers downcast via type switches / type assertions on the
 // concrete Go type.
@@ -1021,10 +1020,9 @@ func ExplainValue(v Value) string {
 // explainTypeName renders a Type as a short SQL-ish name for the
 // CAST / PROMOTE rendering in ExplainValue. Mirrors the legacy
 // ValueType.String() output (`INT` / `STRING` / `BOOL` / `FLOAT` /
-// `UNKNOWN`) — the seed conflates LONG/INT into INT and DOUBLE/FLOAT
-// into FLOAT here so the rendered output stays stable across the
-// ValueType retirement (Track G1). Plan-cache keys
-// derived via ExplainValue stay byte-stable across the migration.
+// `UNKNOWN`) — LONG/INT deliberately conflate to INT and DOUBLE/FLOAT
+// to FLOAT so the rendered output, and the plan-cache keys derived via
+// ExplainValue, stay byte-stable with the pre-retirement rendering.
 func explainTypeName(t Type) string {
 	if t == nil {
 		return "UNKNOWN"

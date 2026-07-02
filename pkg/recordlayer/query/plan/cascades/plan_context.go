@@ -12,13 +12,10 @@ import (
 // candidates such as indexes, etc.).
 //
 // Ports the surface of Java's
-// `com.apple.foundationdb.record.query.plan.cascades.PlanContext`. The
-// Java interface depends on `RecordQueryPlannerConfiguration` (a rich
-// planner-config struct) and `MatchCandidate` (per-match-candidate
-// metadata, typically one per index). The seed substitutes
-// PlannerConfiguration as a small struct + an empty match-candidate
-// set, deferring the rich versions to subsequent shifts as their
-// consumer rules port.
+// `com.apple.foundationdb.record.query.plan.cascades.PlanContext`:
+// PlannerConfiguration mirrors the consulted subset of Java's
+// `RecordQueryPlannerConfiguration`, and MatchCandidate the
+// per-candidate (typically per-index) metadata.
 type PlanContext interface {
 	// GetPlannerConfiguration returns the planner's configuration —
 	// flag bag that controls per-feature planning behaviour (use
@@ -26,9 +23,9 @@ type PlanContext interface {
 	GetPlannerConfiguration() PlannerConfiguration
 
 	// GetMatchCandidates returns the set of match candidates available
-	// for index-pushdown rules. The seed returns an empty set; rules
-	// that consult candidates need to wait for the IndexAccessHint /
-	// MatchCandidate ports (B5 Batch A).
+	// for index-pushdown rules — one per index plus the primary scan,
+	// built by plan_context_builder.go from the store's metadata.
+	// EmptyPlanContext returns none (rule unit tests).
 	GetMatchCandidates() []MatchCandidate
 
 	// GetPrimaryKeyColumns returns the primary key column names for
@@ -37,11 +34,10 @@ type PlanContext interface {
 	GetPrimaryKeyColumns(recordType string) []string
 }
 
-// PlannerConfiguration is the seed planner-config struct. Mirrors the
-// subset of Java's `RecordQueryPlannerConfiguration` callers actually
-// consult today — currently empty since the seed has no rules that
-// branch on flags. As config-driven rules port, fields land here in
-// step with their consumers.
+// PlannerConfiguration mirrors the subset of Java's
+// `RecordQueryPlannerConfiguration` that rules actually consult. As
+// further config-driven rules port, fields land here in step with
+// their consumers.
 type PlannerConfiguration struct {
 	// AllowDuplicateProjections — when true, a projection can carry
 	// the same Value twice (a SQL planner concession; the executor
@@ -92,8 +88,7 @@ type MatchCandidate interface {
 	// tree, used by matching rules (MatchLeafRule, MatchIntermediateRule)
 	// to walk the candidate structure. The traversal must be stable once
 	// computed. Returns nil if the candidate has no expression tree
-	// (seed-minimal candidates that don't yet support traversal-based
-	// matching).
+	// (a candidate that does not support traversal-based matching).
 	//
 	// Ports Java's MatchCandidate.getTraversal().
 	GetTraversal() *Traversal

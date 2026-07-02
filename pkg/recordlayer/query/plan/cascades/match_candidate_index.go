@@ -14,10 +14,13 @@ import (
 // alias; predicate matching binds comparisons to these aliases to
 // determine which prefix of the index key can be used for a scan.
 //
-// Ports the seed-minimal surface of Java's
-// `ValueIndexScanMatchCandidate`. The full Java version also carries
-// a Traversal, index-value values, ordering aliases, etc.; those land
-// as their consumer rules port.
+// Ports the consumed surface of Java's `ValueIndexScanMatchCandidate`:
+// the candidate expression Traversal (built lazily), key-column names +
+// sargable aliases, per-column function bridges (CARDINALITY), and
+// duplicate-creation tracking. Java additionally materializes
+// index-value Values and ordering alias lists on the candidate;
+// Go derives ordering from the column list at match-adjustment time
+// (matched_ordering_part.go) instead.
 type ValueIndexScanMatchCandidate struct {
 	indexName       string
 	recordTypes     []string

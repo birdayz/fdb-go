@@ -193,7 +193,8 @@ func (g *GraphExpansion) Seal() *SealedGraphExpansion {
 	// logically combined. Since the Go Placeholder doesn't have
 	// WithExtraRanges (Java merges ComparisonRange lists), we keep the
 	// first occurrence per alias. This matches Java's practical behavior
-	// for the seed where duplicate-alias placeholders carry Empty ranges.
+	// for the case that occurs here: duplicate-alias placeholders carry
+	// Empty ranges.
 	type aliasEntry struct {
 		placeholder *predicates.Placeholder
 		index       int // position in uniquePlaceholders

@@ -20,9 +20,8 @@ import "fmt"
 //
 // Why a free function rather than a CascadesRule: the rule framework
 // targets QueryPredicate matchers; standalone Values have no
-// surrounding predicate to match against. Phase 4.6 introduces a
-// proper Value-rule infrastructure (ValueSimplificationRuleSet in
-// Java) and SimplifyValue retires.
+// surrounding predicate to match against. (Java models this as its
+// ValueSimplificationRuleSet; Go's equivalent is this fold.)
 //
 // Coverage: ArithmeticValue, CastValue, PromoteValue,
 // ScalarFunctionValue, NotValue. Other composites

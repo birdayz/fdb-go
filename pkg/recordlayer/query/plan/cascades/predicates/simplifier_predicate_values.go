@@ -17,8 +17,7 @@ import (
 // level rule fixpoint (ComparisonConstantSimplifyRule, AndFlatten, …);
 // it doesn't fold expression-level constants inside ComparisonPredicate
 // operands. `name = 1+2` survives Simplify with the `1+2` ArithmeticValue
-// intact; SimplifyPredicateValues collapses it to `name = 3`. Phase 4.6
-// merges this into the ValueSimplificationRuleSet.
+// intact; SimplifyPredicateValues collapses it to `name = 3`.
 func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 	if p == nil {
 		return nil

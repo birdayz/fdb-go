@@ -368,11 +368,12 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 	// The guard applies ONLY when there is NO requested ordering: an ordering can
 	// be propagated into this ref AFTER a first consumption at unchanged match
 	// count, and the sort-eliminating ordered scan it unlocks must not be
-	// suppressed (Go has no physical sort — a missed ordered scan is a wrong /
-	// extra-sort plan shape, not merely slower). With an ordering present we
-	// re-consume every round; convergence is bounded by Insert dedup + the
-	// 10-round cap (RFC-148 §3c addendum). The cross-candidate intersection below
-	// keeps its own hasIntersectionFinal guard.
+	// suppressed (a missed ordered scan degrades the plan to the in-memory-sort
+	// fallback — an extra-Sort plan-shape regression, with unbounded
+	// materialization on large inputs). With an ordering present we re-consume
+	// every round; convergence is bounded by Insert dedup + the 10-round cap
+	// (RFC-148 §3c addendum). The cross-candidate intersection below keeps its
+	// own hasIntersectionFinal guard.
 	runConsumption := true
 	if len(requestedOrderings) == 0 {
 		totalMatches := 0

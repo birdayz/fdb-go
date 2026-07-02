@@ -1,39 +1,37 @@
 package cascades
 
-// DefaultExpressionRules returns the curated rule set the
-// optimiser fires by default. Order matters within an exploration
-// round: merge-rules run first (collapse nested operators of the same
-// kind), then no-op-elimination rules run on the merged shapes. Order
-// across rounds doesn't matter because the task-stack driver re-fires
-// every rule against newly-yielded members until the group saturates.
+// DefaultExpressionRules returns the REWRITING-phase exploration rule
+// set the optimiser fires by default: uncontroversial
+// logical-to-logical rewrites that don't need cost-aware decisions
+// (the physical-implementation rules live in BatchAExpressionRules /
+// DefaultImplementationRules, PLANNING phase). Order matters within an
+// exploration round: merge-rules run first (collapse nested operators
+// of the same kind), then no-op-elimination rules run on the merged
+// shapes. Order across rounds doesn't matter because the task-stack
+// driver re-fires every rule against newly-yielded members until the
+// group saturates.
 //
-// As Track B5 Batch A rules port (PrimaryScanRule, ImplementFilterRule,
-// etc.), they join this list. The rules here today are uncontroversial
-// logical-to-logical rewrites that don't need cost-aware decisions.
+// **Alias rebasing caveat**: every Push*Through* and Pull*Above* rule
+// in this set moves a Filter (or TypeFilter) across a Quantifier
+// boundary without rewriting the moved operator's internal alias
+// references — predicates and Values inside the moved operator keep
+// referencing the ORIGINAL quantifier's alias (no TranslationMap
+// rebase at the move site). Harmless for row-set semantics (no
+// evaluator resolves the moved predicates through those aliases), but
+// a rule that inspects correlation structure
+// (GetCorrelatedToWithoutChildren) on a pushed predicate sees the
+// stale alias. Correlation-aware logic must not consume pushed/pulled
+// predicates without a TranslationMap rebase (translation_map.go)
+// first.
 //
-// **Alias rebasing gap (B5 follow-on)**: every Push*Through* and
-// Pull*Above* rule in this set moves a Filter (or TypeFilter) across
-// a Quantifier boundary without rewriting the moved operator's
-// internal alias references. Predicates and Values inside the moved
-// operator continue to reference the OLD outer Quantifier's alias
-// after the structural transformation. Harmless in the seed (no
-// evaluator descends into the rewritten sub-tree to use those
-// aliases), but rules that inspect correlation structure
-// (GetCorrelatedToWithoutChildren) on a pushed predicate would
-// see stale aliases. The proper fix — TranslationMap-based rebasing
-// — lands with B5 Batch A's physical-implementation rules. Until
-// then, push/pull rules are seed-correct for row-set semantics but
-// shouldn't be combined with correlation-aware rules.
-//
-// **ProjectionMergeRule's seed-only soundness**: the merge
+// **ProjectionMergeRule's soundness contract**: the merge
 // `Projection(P1) over Projection(P2) over X → Projection(P1) over X`
-// is sound only because the seed's LogicalProjectionExpression's
-// GetResultValue() passes the inner row through (projection is a
-// pure side channel). When Track C materialises projections — i.e.
-// projection actually narrows the row shape — P1's Values may
-// reference computed columns that only exist in P2's output. At
-// that point the rule needs a column-substitution rewrite path or
-// it must be removed from the default set. See ProjectionMergeRule's
+// is sound only because LogicalProjectionExpression's GetResultValue()
+// passes the inner row through (projection is a pure side channel).
+// If projection ever narrows the row shape (materialized projections),
+// P1's Values may reference computed columns that only exist in P2's
+// output — at that point the rule needs a column-substitution rewrite
+// path or it must leave the default set. See ProjectionMergeRule's
 // own doc for the per-rule discussion.
 //
 // Each call returns a fresh slice — callers may mutate freely. Each
@@ -172,28 +170,6 @@ func PlanningExplorationRules() []ExpressionRule {
 		// index-matched and every join full-scanned its inner.
 		NewMatchLeafRule(),
 		NewMatchIntermediateRule(),
-	}
-}
-
-// PlanningDataAccessRules returns the subset of BatchA rules that are
-// safe to fire during PLANNING's bottom-up implementation pass. These
-// are leaf-level rules (scan, index, values) that produce physical
-// wrappers without looking at sibling plans or making assumptions about
-// the query structure. Compound rules (union, intersection, NLJ, etc.)
-// are excluded because they inspect child References for physical plans
-// and can produce incorrect results when fired on EXPLORE-phase
-// artifacts that persist in the member set.
-//
-// This is the first step of the BatchA→PLANNING migration. Once
-// advancePlannerStage clears EXPLORE artifacts, the full BatchA set
-// can be activated.
-func PlanningDataAccessRules() []ExpressionRule {
-	return []ExpressionRule{
-		NewPrimaryScanRule(),
-		NewImplementValuesRule(),
-		NewOrderedIndexScanRule(),
-		NewOrderedPrimaryScanRule(),
-		NewImplementExplodeRule(),
 	}
 }
 

@@ -145,10 +145,12 @@ regression — "determinism 5×" is not a convergence proof (the cap *masks* non
 **3c addendum (implemented form — the requested-ordering exemption).** The growth-keyed guard applies ONLY
 when the ref carries NO requested ordering. A requested ordering can be propagated into a ref AFTER a first
 consumption at unchanged match count, and `DataAccessForMatchPartition` (which takes the requested orderings)
-would then mint a sort-eliminating ordered scan that a count-only guard would wrongly suppress — and Go has no
-physical sort operator, so a missed ordered scan is a wrong / extra-sort plan shape, not merely a slower one
-(§3d). With an ordering present the consumption re-runs every round; convergence there is bounded by
-`Reference.Insert` dedup + the 10-round exploration cap. Join legs take the same growth-keyed guard (the
+would then mint a sort-eliminating ordered scan that a count-only guard would wrongly suppress. A missed
+ordered scan degrades the plan to the Go-extension in-memory-sort fallback (`ImplementInMemorySortRule`) — an
+extra-Sort plan-shape regression with unbounded materialization on large inputs, cf. §3d. (§3d's original
+"Go has no physical sort" phrasing predates that fallback; the plan-shape stakes stand, the wrong-results
+framing does not.) With an ordering present the consumption re-runs every round; convergence there is bounded
+by `Reference.Insert` dedup + the 10-round exploration cap. Join legs take the same growth-keyed guard (the
 muzzle is retired — RFC-150 §8); the cross-candidate intersection arm keeps its own `hasIntersectionFinal`
 guard. (Rationale relocated from the `planner.go` comment-essay per RFC-175 B3.)
 

@@ -17,8 +17,8 @@ import (
 // any data rows.
 //
 // Mirrors Java's
-// `com.apple.foundationdb.record.query.plan.cascades.AggregateIndexMatchCandidate`
-// but simplified to the structural needs of the seed.
+// `com.apple.foundationdb.record.query.plan.cascades.AggregateIndexMatchCandidate`,
+// carrying the surface AggregateDataAccessRule consumes.
 type AggregateIndexMatchCandidate struct {
 	indexName   string
 	recordTypes []string

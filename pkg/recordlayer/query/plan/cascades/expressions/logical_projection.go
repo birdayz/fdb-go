@@ -91,8 +91,11 @@ func (e *LogicalProjectionExpression) GetCorrelatedToWithoutChildren() map[value
 
 // EqualsWithoutChildren compares two projections by projection-list
 // equality. Two Values are considered equal if their ExplainValue
-// renderings match — bridges the gap until Value gains a real
-// SemanticEquals (which is the Track B2 follow-on).
+// renderings match — a conservative textual bridge (semantically equal
+// but differently-rendered Values compare unequal, so dedup may keep
+// both; distinct semantics are never merged). values.SemanticEquals
+// exists; switching this dedup to it changes memo-dedup behavior and
+// needs its own review cycle.
 func (e *LogicalProjectionExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
 	o, ok := other.(*LogicalProjectionExpression)
 	if !ok {

@@ -79,9 +79,8 @@ func (b *PlannerBindings) MergedWith(other *PlannerBindings) *PlannerBindings {
 	return out
 }
 
-// Get is the generic retrieval helper RFC-023 §Changes item 5
-// promises for Phase 4.0. The matcher interface itself stays
-// non-generic (shape (a)); this free function lets rule bodies
+// Get is the generic retrieval helper (RFC-023). The matcher interface
+// itself stays non-generic; this free function lets rule bodies
 // retrieve the bound value as its concrete type without a `.(T)`
 // downcast at every call site. A type mismatch panics with a typed
 // message — rule authors see the problem immediately.

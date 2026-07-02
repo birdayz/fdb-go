@@ -12,9 +12,9 @@ import (
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalIntersectionExpression`.
 // Java's intersection requires a `comparisonKeyValues` argument that
 // pins how rows are compared for set-intersection semantics. We
-// capture it as a slice of Values; the actual evaluation semantics
-// (which physical operator implements the comparison) lands when
-// Track C / B5 Batch B+ needs it.
+// capture it as a slice of Values; it carries through unchanged into
+// the physical RecordQueryIntersectionPlan (ImplementIntersectionRule),
+// which implements the row-equality comparison.
 type LogicalIntersectionExpression struct {
 	quantifiers         []Quantifier
 	comparisonKeyValues []values.Value

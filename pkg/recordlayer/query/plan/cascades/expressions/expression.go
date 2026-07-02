@@ -9,18 +9,18 @@
 // describing the row shape it emits, and a small bundle of
 // node-information fields specific to the operator.
 //
-// Track B1 (RFC-022 §4.1). Concrete operators:
+// Concrete operators live one-per-file in this package: the Logical*
+// rewrite surface (filter, projection, sort, distinct, unique, limit,
+// type-filter, union, intersection, values), SelectExpression, the DML
+// expressions (insert, update, delete), the leaf/scan expressions
+// (FullUnorderedScan, Explode, TableFunction, TempTableScan), and the
+// structural operators (GroupBy, MatchableSort, RecursiveUnion,
+// TempTableInsert).
 //
-//   - Logical (8): LogicalFilterExpression, LogicalProjectionExpression,
-//     LogicalSortExpression, LogicalTypeFilterExpression,
-//     LogicalDistinctExpression, LogicalUnionExpression,
-//     LogicalIntersectionExpression, SelectExpression.
-//   - DML (3): InsertExpression, UpdateExpression, DeleteExpression.
-//   - Leaf (1): FullUnorderedScanExpression.
-//
-// Foundation types: Quantifier (ForEach kind), Reference (single-member
-// equivalence class with EqualsWithoutChildren-and-children-aware
-// dedup), AliasMap (CorrelationIdentifier bijection).
+// Foundation types: Quantifier (ForEach kind), Reference (an
+// equivalence class carrying exploratory + final member sets with
+// EqualsWithoutChildren-and-children-aware dedup), AliasMap
+// (CorrelationIdentifier bijection).
 //
 // Walk infrastructure: SemanticEquals (positional + permutation-aware
 // for ChildrenAsSet operators with cap at MaxPermutationChildren=8).
@@ -28,13 +28,6 @@
 // Optional interface: RelationalExpressionWithPredicates — implemented
 // by LogicalFilterExpression and SelectExpression for generic predicate-
 // walker rules.
-//
-// Remaining for full B1: TableFunctionExpression (gated on
-// StreamingValue port), Java's TempTableInsert / TempTableScan /
-// RecursiveUnion / Explode / GroupBy expressions (not in TODO.md's
-// listed scope), TranslationMap-based rebasing for push-down rules
-// (B5 follow-on), MaxMatchMap / partial-match infrastructure (B3
-// follow-on).
 package expressions
 
 import (
