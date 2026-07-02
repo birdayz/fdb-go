@@ -683,9 +683,22 @@ func ExplainValue(v Value) string {
 		}
 		return valueLiteralString(cv.Value)
 	case *FieldValue:
-		name := cv.Field
+		// The raw field text has '#' DOUBLED so the '#<ordinal>' suffix below is
+		// unambiguous BY CONSTRUCTION: a quoted identifier may legally contain
+		// '#' (the lexer's DOUBLE_QUOTE_ID accepts any non-quote character), so
+		// without the escape a plain name-read of a field literally named "X#0"
+		// rendered identically to an ordinal read of X at slot 0 and the
+		// ExplainValue-keyed plan identity could memo-unify the two (codex
+		// round-3 on PR #446). With doubling, a rendering ends in an UNPAIRED
+		// '#' + digits iff it is an ordinal read — identity is injective over
+		// (field text, ordinal). Display/identity only: ProjectionColumnName's
+		// FieldValue arm returns Field verbatim, so plain-field Datum keys and
+		// positional slot names never change (a COMPUTED composite over a
+		// #-named field shifts its derived key spelling consistently on writer
+		// and reader, both sides of the shared contract).
+		name := strings.ReplaceAll(cv.Field, "#", "##")
 		if cv.Child != nil {
-			name = ExplainValue(cv.Child) + "." + cv.Field
+			name = ExplainValue(cv.Child) + "." + name
 		}
 		// A plan-time-resolved ordinal accessor renders its ordinal (Java's
 		// FieldPath `#ordinal` syntax) alongside the name. Load-bearing, not

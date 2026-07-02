@@ -604,6 +604,31 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 	}
 }
 
+// TestProjectionPlan_Identity_OrdinalVsLiteralHashField pins the '#'-escape
+// (codex round-3 on PR #446): a quoted identifier may legally contain '#', so
+// a plan projecting a plain NAME-read of a field literally named "X#0" must
+// not be memo-identical to a plan projecting an ORDINAL read of X at slot 0 —
+// pre-escape both rendered "X#0" and the ExplainValue-keyed identity unified
+// them. The raw field text is '#'-doubled ("X##0"), making the identity
+// injective over (field text, ordinal).
+func TestProjectionPlan_Identity_OrdinalVsLiteralHashField(t *testing.T) {
+	t.Parallel()
+	inner := stub("Inner")
+	ordinalPlan := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType)},
+		[]string{"A"}, inner)
+	literalPlan := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{values.NewFlatFieldValue("X#0", values.UnknownType)},
+		[]string{"A"}, inner)
+
+	if ordinalPlan.EqualsWithoutChildren(literalPlan) {
+		t.Fatal("ordinal read of X@0 and a name-read of a field literally named X#0 must NOT compare equal")
+	}
+	if ordinalPlan.HashCodeWithoutChildren() == literalPlan.HashCodeWithoutChildren() {
+		t.Fatal("ordinal read of X@0 and a name-read of field X#0 must not hash equal")
+	}
+}
+
 func TestProjectionPlan_GetResultType(t *testing.T) {
 	t.Parallel()
 	p := NewRecordQueryProjectionPlan(nil, stub("X"))

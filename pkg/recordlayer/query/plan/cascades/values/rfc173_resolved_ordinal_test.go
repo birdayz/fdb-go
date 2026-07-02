@@ -77,3 +77,42 @@ func TestFieldValue_ResolvedOrdinal_RFC173(t *testing.T) {
 		t.Fatal("resolved-ordinal read must not compare equal to a flat name read")
 	}
 }
+
+// TestFieldValue_ExplainOrdinalEscape_RFC173 pins the '#'-escape that keeps
+// ExplainValue injective over (field text, ordinal) — codex round-3 on PR
+// #446: a quoted identifier may legally contain '#' (DOUBLE_QUOTE_ID accepts
+// any non-quote character), so a plain name-read of a field literally named
+// "X#0" would otherwise render identically to an ordinal read of X at slot 0,
+// and the ExplainValue-keyed physical-plan identity could memo-unify two
+// different projections. Raw field text has '#' DOUBLED; only an ordinal read
+// ends in an unpaired '#'+digits.
+func TestFieldValue_ExplainOrdinalEscape_RFC173(t *testing.T) {
+	t.Parallel()
+
+	ordinalRead := NewFieldValueWithResolvedOrdinal("X", 0, UnknownType)
+	literalField := NewFlatFieldValue("X#0", UnknownType)
+
+	if got := ExplainValue(ordinalRead); got != "X#0" {
+		t.Fatalf("ordinal read rendering = %q, want X#0", got)
+	}
+	if got := ExplainValue(literalField); got != "X##0" {
+		t.Fatalf("literal '#'-field rendering = %q, want X##0 (escaped)", got)
+	}
+	if ExplainValue(ordinalRead) == ExplainValue(literalField) {
+		t.Fatal("ordinal read of X@0 and a field literally named X#0 must render distinctly")
+	}
+	// Hash discriminators must not collide either (same escape).
+	if SemanticHashCode(ordinalRead) == SemanticHashCode(literalField) {
+		t.Fatal("hash discriminators of ordinal read vs literal '#'-field must differ")
+	}
+	// An ordinal read of a field that itself contains '#': field text escaped,
+	// ordinal suffix stays a single '#'.
+	if got := ExplainValue(NewFieldValueWithResolvedOrdinal("X#0", 1, UnknownType)); got != "X##0#1" {
+		t.Fatalf("ordinal read of '#'-field rendering = %q, want X##0#1", got)
+	}
+	// Datum-key naming contract untouched: a plain field read keys by Field
+	// verbatim (no escape leaks into names).
+	if got := ProjectionColumnName(literalField); got != "X#0" {
+		t.Fatalf("ProjectionColumnName must stay verbatim, got %q", got)
+	}
+}
