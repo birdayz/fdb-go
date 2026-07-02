@@ -561,6 +561,51 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     Watch-item banked in the S3 substrate map: pinned/unpinned equal-(field,ordinal) nodes are
     identity-equal but guard-different (never co-occur in one tree today — recursive CTEs are
     gate-poison; re-check when S3 widens baked-node reach).
+- **S3 STAGING RULING (Graefe, pre-code, BINDING — issued at S3 start on the substrate map):**
+  - **W1 — separate mergeable PR, DARK.** FieldPath widening: WHOLESALE swap of
+    `Resolved *ResolvedAccessor` to an immutable multi-accessor path (Java FieldValue.java:82-85 —
+    one node, whole path; additive twin representation NAKed: "two representations of one fact
+    drift"). `ResolvedAccessor` stays the per-step `{Field, Ordinal}` element (:645-754).
+    **`FrontierPinned` lives on the PATH, once, not per-accessor** (the contract governs the root
+    read context; N copies of a one-meaning bit desynchronize); excluded from identity/hash/Explain
+    as ruled at S2; dies in S4. Replace-never-mutate carries over (`withSuffix` returns a new path,
+    Java :525-534). **Path identity before the W3 flip: element-wise list equality on S2's
+    (name, ordinal) pair** (Java list-equals :411-420 with the pair refining Java's ordinal-only
+    :676-690 — a refinement can only under-dedup, never conflate). **Compose rule GATED to
+    fully-baked paths in W1** (unreachable today — no chained-over-baked shapes in the S2 wedge —
+    hence genuinely dark; compose-on-lazy rewrites every nested-access chain corpus-wide: memo
+    identity, Explain, every rule matching chained FieldValues). Prove darkness: row-content
+    differential + unchanged task counts. **Do NOT port ExpandFusedFieldValueRule** (Java never
+    co-resides them: Compose in DefaultValueSimplificationRuleSet.java:43, Expand only in
+    MaxMatchMapSimplificationRuleSet.java:50, stack-overflow warning at
+    ComposeFieldValueOverFieldValueRule.java:41-43); instead W2/W3 must VERIFY max-match-map
+    handles fused paths (prefix matching), pinned by the §5 no-spurious-sort EXPLAIN pin + a
+    nested-field-index scan-still-chosen pin; port Expand only if that fails, into matching only.
+  - **W2+W3 — ONE merge unit (multiple commits, one PR).** The coupling is INTERNING AUTHORITY,
+    not soundness: merge-select interning keys on the `AnchoredJoin` RC marker (select.go:243-256);
+    W2's positional unnamed merged row (PartitionSelectRule.java:284-291, Column.unnamedOf) has no
+    marker — merging W2 alone drops merge selects to alias-identity dedup and reproduces the
+    documented 29915→60044 task blowup (partition_select_interning_baseline_test.go:99-104). Do
+    NOT bridge by stamping `AnchoredJoin=true` on the new RC (the marker carries correlation-hiding
+    semantics, value_correlation.go:96-98, which S3 deletes). W2's positional row IS sound on
+    (name, ordinal) identity (unnamed columns share names; ordinals distinguish), so the identity
+    flip may be a LATER COMMIT than the merge-case rewrite — within the same PR. Compose widens to
+    all FieldValues inside this PR. Every new positional-row birth site (N-way executor) extends
+    the `DisablePositionalEmission` oracle gate (standing obligation).
+  - **W4 — separate PR(s) after W2/W3, one per deferred item** (post-rewrite LEFT ordinalization,
+    correlated-scalar seed, single-source unnest), each with its own pins. Gate Pins A/B rewrite
+    at W4. **W5 — separate final PR** (RFC-142 multi-source unnest bipartition rewrite + gauntlet);
+    its safety rests on W2/W3 merged and green first.
+  - **Regression net (survive unchanged):** task-count baseline 8999/30593 ±2% + STAR wall-clock +
+    shadow-delta; NextMergeAlias pins; rfc173_slice2_gate_pins_test.go
+    GroupByHaving/DupNameStar/CoveringIndexLeg; CTE column-rename FDB tests; RFC-142's 16
+    revert-proof pins; rfc173_unified_baked_test.go (mechanically adapted to path); row-content
+    differential. **Delete WITH machinery (same commit):** rfc173_slice2_drift_assert_test.go +
+    both tripwires (rule_partition_select.go:910-914, rule_select_merge.go:141-148) +
+    rebaseBuriedLowerReferences/buildUpperResult/NewReEnumerationAnchoredRecord + the re-enum pins
+    in value_anchored_join_record_test.go. **Rewrite:** rule_partition_select_test.go:157,193 →
+    positional expectations; InternsAliasAware gate test → new merge-select marker (CTE-NULL
+    protection intact).
 - **Slice 3 — THE HARD CORE: N-way re-enumeration + interning, ordinal/group (ATOMIC)**
   (~~3~~ **4–5 shifts — resized honestly per the Graefe W4-deferral ruling: S3 additionally owns
   the three items below that S2's premise correction displaced**). Replace the name-based re-stamp
