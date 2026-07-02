@@ -44,8 +44,8 @@ type SelfSemanticHash interface {
 // "nil" when unset, the pointee otherwise — keeps nil vs &v distinct in the
 // hash exactly as ptrEqual keeps them distinct in equality (RFC-176 §3). "nil"
 // cannot collide with a rendered pointee: the config fields are *int / *bool,
-// whose renderings are digits / true / false.
-func ptrHashToken[T any](p *T) string {
+// whose renderings are digits / true / false — enforced by the constraint, not this comment.
+func ptrHashToken[T int | bool](p *T) string {
 	if p == nil {
 		return "nil"
 	}

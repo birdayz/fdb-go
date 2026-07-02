@@ -288,16 +288,7 @@ func EqualsWithoutChildren(a, b Value) bool {
 		return ok
 	case *BooleanValue:
 		bv, ok := b.(*BooleanValue)
-		if !ok {
-			return false
-		}
-		if av.Value == nil && bv.Value == nil {
-			return true
-		}
-		if av.Value == nil || bv.Value == nil {
-			return false
-		}
-		return *av.Value == *bv.Value
+		return ok && ptrEqual(av.Value, bv.Value)
 	case *ParameterValue:
 		bv, ok := b.(*ParameterValue)
 		if !ok {
