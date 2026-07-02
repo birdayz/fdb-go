@@ -340,16 +340,22 @@ func ConcatCursors[T any](first, second CursorFactory[T], continuation []byte) R
 
 	if len(continuation) > 0 {
 		var cont gen.ConcatContinuation
-		if err := cont.UnmarshalVT(continuation); err == nil {
-			if cont.GetSecond() {
-				c.onSecond = true
-				c.current = second(cont.GetContinuation())
-			} else {
-				c.current = first(cont.GetContinuation())
-			}
+		if err := cont.UnmarshalVT(continuation); err != nil {
+			// Java: throw new RecordCoreException("Error parsing ConcatCursor continuation", ex)
+			//           .addLogInfo("raw_bytes", ...)  (ConcatCursor's constructor).
+			// A corrupt continuation must fail, not silently restart from scratch:
+			// restarting re-emits rows the caller already consumed.
+			return &errorCursor[T]{err: &ContinuationParseError{
+				Message:  "Error parsing ConcatCursor continuation",
+				RawBytes: continuation,
+				Cause:    err,
+			}}
+		}
+		if cont.GetSecond() {
+			c.onSecond = true
+			c.current = second(cont.GetContinuation())
 		} else {
-			// Invalid continuation — start fresh
-			c.current = first(nil)
+			c.current = first(cont.GetContinuation())
 		}
 	} else {
 		c.current = first(nil)
@@ -559,22 +565,26 @@ func FlatMapPipelinedWithCheck[T, V any](
 
 	if len(continuation) > 0 {
 		var cont gen.FlatMapContinuation
-		if err := cont.UnmarshalVT(continuation); err == nil {
-			c.outer = outerFactory(cont.GetOuterContinuation())
-			if cont.InnerContinuation != nil {
-				c.hasPending = true
-				c.pendingInner = cont.InnerContinuation
-				c.pendingCheck = cont.CheckValue
-				// Initialize outerCont so that priorOuterCont is set correctly
-				// when the first outer value is read. Without this, priorOuterCont
-				// would be nil and the next continuation would restart outer from
-				// the beginning instead of from the saved position.
-				if cont.OuterContinuation != nil {
-					c.outerCont = &BytesContinuation{bytes: cont.OuterContinuation}
-				}
+		if err := cont.UnmarshalVT(continuation); err != nil {
+			// Java: RecordCursor.flatMapPipelined:
+			//   throw new RecordCoreException("error parsing continuation", ex)
+			//       .addLogInfo("raw_bytes", ...).
+			// A corrupt continuation must fail, not silently restart from scratch:
+			// restarting re-emits rows the caller already consumed.
+			return &errorCursor[V]{err: &ContinuationParseError{RawBytes: continuation, Cause: err}}
+		}
+		c.outer = outerFactory(cont.GetOuterContinuation())
+		if cont.InnerContinuation != nil {
+			c.hasPending = true
+			c.pendingInner = cont.InnerContinuation
+			c.pendingCheck = cont.CheckValue
+			// Initialize outerCont so that priorOuterCont is set correctly
+			// when the first outer value is read. Without this, priorOuterCont
+			// would be nil and the next continuation would restart outer from
+			// the beginning instead of from the saved position.
+			if cont.OuterContinuation != nil {
+				c.outerCont = &BytesContinuation{bytes: cont.OuterContinuation}
 			}
-		} else {
-			c.outer = outerFactory(nil)
 		}
 	} else {
 		c.outer = outerFactory(nil)

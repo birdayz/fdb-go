@@ -137,13 +137,23 @@ func (e *RecordDeserializationError) Unwrap() error {
 // with the "raw_bytes" log info key (e.g. OrElseCursor's constructor,
 // RecordCursor.fromList): a corrupt continuation is a caller error and must
 // surface, never be silently treated as a fresh start.
+//
+// Message overrides the default "error parsing continuation" text for the Java
+// classes whose RecordCoreException wording differs (ConcatCursor uses
+// "Error parsing ConcatCursor continuation", DedupCursor uses
+// "Error parsing continuation"). Leave empty for the common wording.
 type ContinuationParseError struct {
+	Message  string
 	RawBytes []byte
 	Cause    error
 }
 
 func (e *ContinuationParseError) Error() string {
-	return fmt.Sprintf("error parsing continuation (raw_bytes=%x): %v", e.RawBytes, e.Cause)
+	msg := e.Message
+	if msg == "" {
+		msg = "error parsing continuation"
+	}
+	return fmt.Sprintf("%s (raw_bytes=%x): %v", msg, e.RawBytes, e.Cause)
 }
 
 func (e *ContinuationParseError) Unwrap() error {

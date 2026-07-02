@@ -1956,11 +1956,16 @@ func executeFlatMap(
 	var outerCont, innerCont, checkValue []byte
 	if len(continuation) > 0 {
 		var fmc gen.FlatMapContinuation
-		if err := proto.Unmarshal(continuation, &fmc); err == nil {
-			outerCont = fmc.OuterContinuation
-			innerCont = fmc.InnerContinuation
-			checkValue = fmc.CheckValue
+		if err := proto.Unmarshal(continuation, &fmc); err != nil {
+			// Java: RecordCursor.flatMapPipelined —
+			//   throw new RecordCoreException("error parsing continuation", ex).
+			// A corrupt continuation must fail, not silently restart from
+			// scratch (which re-emits rows the caller already consumed).
+			return nil, &recordlayer.ContinuationParseError{RawBytes: continuation, Cause: err}
 		}
+		outerCont = fmc.OuterContinuation
+		innerCont = fmc.InnerContinuation
+		checkValue = fmc.CheckValue
 	}
 
 	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, outerCont, nestedProps)

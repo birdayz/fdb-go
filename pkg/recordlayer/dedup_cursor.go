@@ -49,17 +49,34 @@ func Dedup[T any](
 
 	if len(continuation) > 0 {
 		var cont gen.DedupContinuation
-		if err := cont.UnmarshalVT(continuation); err == nil {
-			c.inner = innerFactory(cont.GetInnerContinuation())
-			if lv := cont.GetLastValue(); len(lv) > 0 && unpack != nil {
-				if val, ok := unpack(lv); ok {
-					c.lastValue = val
-					c.hasLast = true
-				}
-			}
-		} else {
-			c.inner = innerFactory(nil)
+		if err := cont.UnmarshalVT(continuation); err != nil {
+			// Java: throw new RecordCoreException("Error parsing continuation", ex)
+			//           .addLogInfo("raw_bytes", ...)  (DedupCursor's constructor).
+			// A corrupt continuation must fail, not silently restart from scratch:
+			// restarting re-emits rows the caller already consumed.
+			return &errorCursor[T]{err: &ContinuationParseError{
+				Message:  "Error parsing continuation",
+				RawBytes: continuation,
+				Cause:    err,
+			}}
 		}
+		// LastValue presence check mirrors Java's dedupContinuation.hasLastValue().
+		if lv := cont.LastValue; lv != nil {
+			// Java's constructor calls unpackValue.apply(lastValue) inside the same
+			// try block; a failure there propagates out of the constructor rather
+			// than silently dropping the dedup state (which would re-emit the last
+			// value as a duplicate on resume).
+			if unpack == nil {
+				return &errorCursor[T]{err: fmt.Errorf("dedup continuation carries lastValue but no unpack function was provided")}
+			}
+			val, ok := unpack(lv)
+			if !ok {
+				return &errorCursor[T]{err: fmt.Errorf("dedup continuation: unpack lastValue failed (raw_bytes=%x)", lv)}
+			}
+			c.lastValue = val
+			c.hasLast = true
+		}
+		c.inner = innerFactory(cont.GetInnerContinuation())
 	} else {
 		c.inner = innerFactory(nil)
 	}

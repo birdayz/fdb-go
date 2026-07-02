@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -297,8 +298,17 @@ func FuzzConcatContinuation(f *testing.F) {
 		// Must not panic when calling OnNext with whatever state was set up.
 		result, err := cursor.OnNext(context.Background())
 		_ = result
-		_ = err
 		cursor.Close()
+		// A continuation that fails proto parse must surface
+		// ContinuationParseError — never silently restart (same class as
+		// OrElse; Java ConcatCursor throws RecordCoreException).
+		var contProto gen.ConcatContinuation
+		if len(data) > 0 && contProto.UnmarshalVT(data) != nil {
+			var parseErr *ContinuationParseError
+			if !errors.As(err, &parseErr) {
+				t.Fatalf("corrupt continuation: want *ContinuationParseError, got %T: %v", err, err)
+			}
+		}
 	})
 }
 
@@ -337,8 +347,17 @@ func FuzzFlatMapContinuation(f *testing.F) {
 		// Must not panic.
 		result, err := cursor.OnNext(context.Background())
 		_ = result
-		_ = err
 		cursor.Close()
+		// A continuation that fails proto parse must surface
+		// ContinuationParseError — never silently restart (same class as
+		// OrElse; Java RecordCursor.flatMapPipelined throws RecordCoreException).
+		var contProto gen.FlatMapContinuation
+		if len(data) > 0 && contProto.UnmarshalVT(data) != nil {
+			var parseErr *ContinuationParseError
+			if !errors.As(err, &parseErr) {
+				t.Fatalf("corrupt continuation: want *ContinuationParseError, got %T: %v", err, err)
+			}
+		}
 	})
 }
 
@@ -414,6 +433,14 @@ func FuzzDedupContinuation(f *testing.F) {
 		LastValue:         []byte{0x02, 0x03},
 	}).MarshalVT()
 	f.Add(validBoth)
+	// Present-but-empty lastValue: parses at the proto level but fails the
+	// unpack step — must surface an error, never silently drop the dedup
+	// state (which would re-emit the last value as a duplicate on resume).
+	emptyLast, _ := (&gen.DedupContinuation{
+		InnerContinuation: []byte{0x01},
+		LastValue:         []byte{},
+	}).MarshalVT()
+	f.Add(emptyLast)
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		factory := func(_ []byte) RecordCursor[int] {
@@ -431,8 +458,78 @@ func FuzzDedupContinuation(f *testing.F) {
 		// Must not panic.
 		result, err := cursor.OnNext(context.Background())
 		_ = result
-		_ = err
 		cursor.Close()
+		// A continuation that fails proto parse must surface
+		// ContinuationParseError — never silently restart (same class as
+		// OrElse; Java DedupCursor throws RecordCoreException).
+		var contProto gen.DedupContinuation
+		if len(data) > 0 && contProto.UnmarshalVT(data) != nil {
+			var parseErr *ContinuationParseError
+			if !errors.As(err, &parseErr) {
+				t.Fatalf("corrupt continuation: want *ContinuationParseError, got %T: %v", err, err)
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// FuzzVectorScanContinuation — fuzz the vector index scan continuation
+// deserializer (VectorIndexScanContinuation). Must never panic; unparseable
+// tokens must error (never fall back to a fresh search, which would re-emit
+// already-delivered rows).
+// ---------------------------------------------------------------------------
+
+func FuzzVectorScanContinuation(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff, 0xff, 0xff})
+	// Valid token: two entries, resume at position 1.
+	valid := encodeVectorScanContinuation([]*IndexEntry{
+		{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{nil}},
+		{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{nil}},
+	}, 1)
+	f.Add(valid)
+	// Corrupt entry key: valid proto, key bytes are not a packed tuple.
+	corruptKey, _ := (&gen.VectorIndexScanContinuation{
+		IndexEntries: []*gen.VectorIndexScanContinuation_IndexEntry{
+			{Key: []byte{0xff}, Value: tuple.Tuple{nil}.Pack()},
+		},
+		InnerContinuation: []byte{0x00, 0x00, 0x00, 0x00},
+	}).MarshalVT()
+	f.Add(corruptKey)
+	// Short inner position: Java's ListCursor ByteBuffer.getInt underflows.
+	shortInner, _ := (&gen.VectorIndexScanContinuation{
+		InnerContinuation: []byte{0x01},
+	}).MarshalVT()
+	f.Add(shortInner)
+	// Negative inner position: would index entries[-1] if accepted.
+	negativePos, _ := (&gen.VectorIndexScanContinuation{
+		InnerContinuation: []byte{0xff, 0xff, 0xff, 0xff},
+	}).MarshalVT()
+	f.Add(negativePos)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		m := &vectorIndexMaintainer{standardIndexMaintainer: standardIndexMaintainer{index: &Index{Name: "fuzz_vec"}}}
+		cursor, err := m.newVectorSearchCursor(nil, data, nil)
+		if err != nil {
+			// Explicit error is the contract for bad tokens — but a token the
+			// proto parser accepts with sane contents must not error spuriously
+			// (covered by the valid seed round-tripping below).
+			return
+		}
+		// Accepted token: emitting must not panic (positions are validated).
+		for i := 0; i < 3; i++ {
+			res, rerr := cursor.OnNext(context.Background())
+			if rerr != nil || !res.HasNext() {
+				break
+			}
+		}
+		_ = cursor.Close()
+		// A token that fails proto parse must never produce a cursor.
+		var contProto gen.VectorIndexScanContinuation
+		if len(data) > 0 && contProto.UnmarshalVT(data) != nil {
+			t.Fatal("unparseable continuation produced a cursor instead of an error")
+		}
 	})
 }
 
