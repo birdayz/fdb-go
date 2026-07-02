@@ -499,6 +499,11 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 			values.Replace(c.Operand, collect)
 		}
 	}
+	// RecordQueryNestedLoopJoinPlan also implements GetPredicates but is
+	// DELIBERATELY omitted (Torvalds note, arm-parity precedent): baked
+	// references exist only in gated joins, and join legs are categorically
+	// ineligible in the S2 wedge — a baked-ref-bearing NLJ cannot appear
+	// inside a gated flatMap's inner plan. Re-examine at the S3 gate widening.
 	var walk func(p plans.RecordQueryPlan)
 	walk = func(p plans.RecordQueryPlan) {
 		if p == nil {
