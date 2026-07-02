@@ -160,3 +160,13 @@ start (the tree moves).
   borderline): a baked field access over a non-OrdinalRow non-map binding
   bypasses bakedNameReadGuard — unreachable under the S2 wedge; re-examine at
   gate widening.
+- Unification watch-item (Torvalds + Graefe at the post-merge fold,
+  51e3327ca): a FrontierPinned and an unpinned baked node with equal
+  (field, ordinal) are identity/hash-equal by design (the bit is an
+  evaluation contract, not a value distinction) yet guard-differently on a
+  name-keyed row — memo/CSE interning across the two shapes could silently
+  swap loud for quiet. Only reachable when a plan is already buggy (the
+  shapes never co-occur in one tree today: pinned nodes live in join
+  seeds/pullup copies, unpinned in recursive-CTE wrap projections). The bit
+  and the guard both die in S4; re-check the co-occurrence claim whenever S3
+  widens where baked nodes can appear.
