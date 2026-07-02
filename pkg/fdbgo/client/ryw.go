@@ -33,27 +33,13 @@ type rywCache struct {
 	// that were ClearRange'd.
 	cleared []rywRange
 
-	// unreadableRanges is a sorted, non-overlapping list of [begin, end) candidate
-	// stamp ranges made unreadable by a pending SetVersionstampedKey (RFC-098). C++
-	// marks the whole getVersionstampKeyRange UNMODIFIED+unreadable via
-	// writes.addUnmodifiedAndUnreadableRange (ReadYourWrites.actor.cpp:2271,
-	// WriteMap.cpp:205-242): any read REACHING the range throws accessed_unreadable
-	// (1036) unless bypassed, and a bypassed read of a range position with no local
-	// entry reads through to storage (the range is UNMODIFIED). Clear/ClearRange
-	// SUBTRACT the cleared span (cleared = readable — C++ clear() inserts readable
-	// entries over the span, WriteMap.cpp:195).
-	//
-	// Deliberate divergence: C++ addUnmodifiedAndUnreadableRange
-	// REPLACES the write-map span — wiping pending writes/clears inside the candidate
-	// range from the RYW view. Go keeps them: under !bypass both models throw 1036 for
-	// any read in the range, so the difference is only observable under
-	// BYPASS_UNREADABLE for the obscure write-then-SVK-over-it interleaving (Go returns
-	// the pending write, C++ reads storage). It is ALSO theoretically visible in
-	// committed bytes: C++'s span-wipe (WriteMap.cpp:228-236) drops a prior Set
-	// inside the candidate range from the write-map flush
-	// (ReadYourWrites.actor.cpp:2041), so C++ never commits that Set while Go
-	// does. Pathological (the wiped Set was user-issued and silently lost by
-	// C++); keeping it is the saner behavior and stays deliberate.
+	// unreadableRanges: sorted, non-overlapping SVK candidate-stamp ranges (RFC-098).
+	// Contract: a read REACHING a range throws accessed_unreadable (1036) unless
+	// BYPASS_UNREADABLE; a bypassed read of a position with no local entry reads
+	// through to storage (the range is UNMODIFIED); Clear/ClearRange SUBTRACT their
+	// span. Pending writes inside a range are KEPT — a deliberate divergence from
+	// C++'s span-wipe; rationale + observability analysis in RFC-098 ("the SVK
+	// candidate range in the Go write map").
 	unreadableRanges []rywRange
 
 	// unreadableKeys is the sorted index of write-map keys whose entries carry

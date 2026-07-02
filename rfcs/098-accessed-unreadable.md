@@ -249,6 +249,31 @@ Pinned by matrix rows `commit_poisoned_by_swallowed_read_error` (poison +
 Reset clears) and `commit_poison_precedes_validation` (1036 outranks the
 commit-deferred 2102), plus the differential poisoning asserts on both clients.
 
+### The SVK candidate range in the Go write map: `unreadableRanges` + the deliberate span-wipe divergence
+
+C++ marks the whole `getVersionstampKeyRange` UNMODIFIED+unreadable via
+`writes.addUnmodifiedAndUnreadableRange` (ReadYourWrites.actor.cpp:2271, impl
+WriteMap.cpp:205-242): any read REACHING the range throws `accessed_unreadable`
+(1036) unless bypassed, and a bypassed read of a range position with no local
+entry reads through to storage (the range is UNMODIFIED). Clear/ClearRange
+SUBTRACT the cleared span — C++ `clear()` inserts readable entries over it
+(WriteMap.cpp:195). Go models this as `rywCache.unreadableRanges`, a sorted,
+non-overlapping list of `[begin, end)` candidate stamp ranges.
+
+**Deliberate divergence — the span-wipe.** C++ `addUnmodifiedAndUnreadableRange`
+REPLACES the write-map span it covers, wiping pending writes/clears inside the
+candidate range from the RYW view (WriteMap.cpp:228-236). Go KEEPS them. Under
+`!bypass` both models throw 1036 for any read in the range, so the difference is
+observable only in two corners:
+
+1. Under BYPASS_UNREADABLE for the write-then-SVK-over-it interleaving: Go
+   returns the pending write, C++ reads storage.
+2. Theoretically in committed bytes: C++'s span-wipe drops a prior Set inside
+   the candidate range from the write-map flush (ReadYourWrites.actor.cpp:2041),
+   so C++ never commits that Set while Go does. This is pathological — the wiped
+   Set was user-issued and silently lost by C++ — and keeping it is the saner
+   behavior. The divergence stays deliberate.
+
 ### The unreadable-cap scan must not touch sortedKeys (quadratic blowup)
 
 `unreadableScanCapLocked` runs on EVERY getRange (it computes the window cap

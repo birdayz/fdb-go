@@ -353,27 +353,14 @@ type Transaction struct {
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]
 
-	// readErr: the first error returned by a TRACKED read of this transaction —
-	// the Go analogue of C++'s ryw->reading AndFuture. commit() waits on reading
-	// before any commit work (ReadYourWrites.actor.cpp:1358-1359), and an errored
-	// read future stays in the AndFuture forever (add() keeps errored futures,
-	// isReady() only pops successful ones — flow/genericactors.actor.h:1912-1942),
-	// so a failed read — even one whose error the caller caught and swallowed —
-	// fails a later Commit with that same error until the transaction is reset
-	// (resetRyow() reading = AndFuture(), :2715). Tracked reads mirror C++'s
-	// reading.add sites: get (:1691), getKey (:1707), getRange (:1767),
-	// getAddressesForKey (:1849), watch setup (:1290). NOT tracked, matching C++:
-	// getEstimatedRangeSizeBytes / getRangeSplitPoints (waitOrError, no
-	// reading.add) and eager validation errors (key_outside_legal_range etc.
-	// return before a read future exists). Context cancellation is also excluded:
-	// a per-read ctx has no C++ analogue (C++ cancellation is whole-transaction
-	// via resetPromise), so it must not poison a commit libfdb_c would allow.
-	//
-	// Watch setup failures are NOT tracked: the C++ watch actor sends
-	// done.send(Void()) in every error path before rethrowing
-	// (ReadYourWrites.actor.cpp:1299-1302, :1325-1329), so the done future in
-	// reading completes SUCCESSFULLY — a failed watch read never poisons
-	// commit; reading only barriers on watch-setup completion.
+	// readErr: the FIRST error of a TRACKED read this incarnation — the Go analog
+	// of C++'s ryw->reading AndFuture. Contract: a failed tracked read — even one
+	// whose error the caller swallowed — fails a later Commit with that same error
+	// until reset (commit waits on reading before ANY commit work,
+	// ReadYourWrites.actor.cpp:1358-1359; resetRyow swaps the AndFuture, :2715).
+	// Which reads are tracked vs excluded (metrics ops, eager validation, ctx
+	// cancellation) and why watch-setup failures never poison: RFC-098 ("a failed
+	// read poisons the transaction's commit" + the completion-barrier addendum).
 	//
 	// readErrMu guards readErr, readGen and pendingReads: pipelined read
 	// futures resolve on other goroutines, and the three fields must move
