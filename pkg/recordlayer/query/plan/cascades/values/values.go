@@ -233,17 +233,19 @@ type ResolvedAccessor struct {
 var OracleBakedNameFallback bool
 
 // BakedNameContextError reports a BAKED FieldValue (ordinal authoritative)
-// evaluated against a NAME-keyed row context outside the §5 oracle. Never a
-// silent name read: the display name is diagnostics-only and resolving by it
-// would return the FIRST of duplicate same-named columns — the conflation
-// RFC-173 exists to kill.
+// evaluated against a NAME-keyed or unrecognized row context outside the §5
+// oracle. Never a silent name read or silent NULL: the display name is
+// diagnostics-only and resolving by it would return the FIRST of duplicate
+// same-named columns — the conflation RFC-173 exists to kill. (A nil context
+// stays NULL — that is the sanctioned appendNullLeg / nil-binding path,
+// contract ruling #3.)
 type BakedNameContextError struct {
 	Field   string
 	Ordinal int
 }
 
 func (e *BakedNameContextError) Error() string {
-	return fmt.Sprintf("RFC-173: baked FieldValue %s#%d evaluated against a name-keyed row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
+	return fmt.Sprintf("RFC-173: baked FieldValue %s#%d evaluated against a non-positional row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
 }
 
 // bakedNameReadGuard is called at every NAME-keyed read arm in Evaluate/
@@ -400,6 +402,13 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 			}
 			return v, nil
 		}
+	}
+	// Unrecognized NON-NIL context: a lazy node keeps the historical silent
+	// NULL; a BAKED node fails loudly — silently NULLing an eager ordinal
+	// reference would hide a frontier bug (Torvalds W1 catch). The nil-context
+	// NULL above is the sanctioned appendNullLeg path and stays.
+	if err := f.bakedNameReadGuard(); err != nil {
+		return nil, err
 	}
 	return nil, nil
 }

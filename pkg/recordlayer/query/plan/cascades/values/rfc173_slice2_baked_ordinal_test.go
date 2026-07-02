@@ -424,6 +424,16 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 		t.Fatalf("baked over nil context = (%v, %v), want (nil, nil)", v, err)
 	}
 
+	// An UNRECOGNIZED non-nil context (Evaluate's tail fall-through) is loud
+	// for a baked node — a silent NULL there would hide a frontier bug. Lazy
+	// keeps the historical silent NULL.
+	type weirdCtx struct{}
+	got, err = orphan.Evaluate(weirdCtx{})
+	assertLoud("unrecognized context tail", got, err)
+	if v, err := NewFlatFieldValue("ID", NotNullLong).Evaluate(weirdCtx{}); v != nil || err != nil {
+		t.Fatalf("lazy over unrecognized context = (%v, %v), want silent (nil, nil) — unchanged", v, err)
+	}
+
 	// Lazy node over the same contexts: unchanged name model.
 	lazy := NewFieldValue(qov, "ID", NotNullLong)
 	if v, err := lazy.Evaluate(&RowEvalContext{Datum: nameRow}); err != nil || v != int64(7) {
