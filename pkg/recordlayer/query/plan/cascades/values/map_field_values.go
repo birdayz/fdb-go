@@ -330,7 +330,11 @@ func EqualsWithoutChildren(a, b Value) bool {
 			return false
 		}
 		if av.Resolved != nil {
-			return av.Field == bv.Field && av.Resolved.Ordinal == bv.Resolved.Ordinal
+			// Path identity is element-wise (Field, Ordinal) list equality —
+			// the display Field is NOT separately compared (it duplicates the
+			// last accessor's name by construction; Java compares fieldPath
+			// only, FieldValue.java:214-217).
+			return av.Resolved.Equals(bv.Resolved)
 		}
 		return av.Field == bv.Field
 	case *ConstantValue:

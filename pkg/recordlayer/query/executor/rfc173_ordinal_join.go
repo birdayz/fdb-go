@@ -83,7 +83,11 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 		if !isRT {
 			return nil, nil, false
 		}
-		ord := fv.Resolved.Ordinal
+		acc, single := fv.Resolved.Single()
+		if !single {
+			return nil, nil, false // fused multi-accessor path — not the S2 single-accessor seed shape
+		}
+		ord := acc.Ordinal
 		if len(spans) == 0 || spans[len(spans)-1].Alias != qov.Correlation {
 			if ord != 0 {
 				return nil, nil, false // run must start at leg ordinal 0

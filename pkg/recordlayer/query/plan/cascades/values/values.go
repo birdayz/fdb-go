@@ -204,17 +204,22 @@ type FieldValue struct {
 	//   - NewFieldValueWithResolvedOrdinal (recursive-CTE leg wrap): childless,
 	//     unpinned — no frontier guarantee; off the positional frontier Field
 	//     names the Datum read key, so one Value works under both row models.
+	// Both are SINGLE-accessor paths; multi-accessor paths exist only via the
+	// baked-gated compose rule (S3-W1, dark) until the S3-W2/W3 flip.
 	//
-	// Identity refinement (contract, RFC-173 §4 Slice 2 ruling #2): BAKED nodes
-	// compare by (name, ordinal); baked vs lazy is UNEQUAL (worst case a missed
-	// dedup, never a conflation); lazy vs lazy stays name-only. FrontierPinned
-	// is EXCLUDED from identity/hash/Explain (an evaluation-contract marker,
-	// not a value distinction — like Java excluding name/type from
-	// ResolvedAccessor equality). Every FieldValue copy/rebuild site MUST
-	// preserve this marker — dropping it silently degrades a baked node to
-	// lazy, which conflates duplicate same-named columns at different ordinals
-	// (§5 duplicate-name pin).
-	Resolved *ResolvedAccessor
+	// Identity refinement (contract, RFC-173 §4 Slice 2 ruling #2, widened
+	// element-wise by the S3 staging ruling): BAKED nodes compare by
+	// per-element (Field, Ordinal) list equality (FieldPath.Equals); baked vs
+	// lazy is UNEQUAL (worst case a missed dedup, never a conflation); lazy vs
+	// lazy stays name-only. FrontierPinned is EXCLUDED from
+	// identity/hash/Explain (an evaluation-contract marker, not a value
+	// distinction — like Java excluding name/type from ResolvedAccessor
+	// equality). Every FieldValue copy/rebuild site MUST preserve this marker —
+	// dropping it silently degrades a baked node to lazy, which conflates
+	// duplicate same-named columns at different ordinals (§5 duplicate-name
+	// pin). For baked nodes Field equals the LAST accessor's name (Java
+	// getLastFieldName) — display and name-model coexistence only.
+	Resolved *FieldPath
 }
 
 // ResolvedAccessor is the construction-time-resolved accessor a BAKED
@@ -229,7 +234,30 @@ type FieldValue struct {
 // with a new value, never mutate in place, or every shared copy silently
 // changes identity (review convention pin).
 type ResolvedAccessor struct {
+	// Field is the PER-STEP display name (Java ResolvedAccessor.getField();
+	// "" = pure ordinal access, Java's null name). Part of the path's identity
+	// during the coexistence window (element-wise (Field, Ordinal), the S2
+	// (name, ordinal) refinement applied per element — the S3-W3 flip narrows
+	// to ordinal-only per Java FieldValue.java:676-690).
+	Field   string
 	Ordinal int
+}
+
+// FieldPath is the RFC-173 S3 multi-accessor path — Java's FieldValue.FieldPath
+// (FieldValue.java:373): ONE FieldValue node holds a whole path, never chained
+// nodes. IMMUTABLE after construction (replace-never-mutate, the S2 accessor
+// convention carried over): FieldValue copy sites share the pointer; WithSuffix
+// returns a NEW path (Java :525-534). In the S2-compatible window every
+// production path is single-accessor (the gated-join seed and the
+// recursive-CTE wrap); multi-accessor paths are produced only by the
+// baked-gated compose rule until the S3-W2/W3 flip widens it.
+// INVARIANT: a FieldPath carried by a FieldValue is NON-EMPTY — a zero-step
+// path reads nothing and is not a meaningful accessor (Java's FieldPath.EMPTY
+// exists only for prefix arithmetic Go doesn't port in W1). Both constructors
+// (NewFieldPathOfSingle, WithSuffix) uphold it; Root()/Last() panic on a
+// hand-built violation rather than tolerating it.
+type FieldPath struct {
+	Accessors []ResolvedAccessor
 
 	// FrontierPinned carries the S2 gated-join FRONTIER CONTRACT: the node was
 	// baked at a gated-join seed whose executor births positional rows, so a
@@ -240,10 +268,83 @@ type ResolvedAccessor struct {
 	// transformation — pullup/pushdown passthrough copies strip Child but
 	// share this pointer, so keying the guard on child presence would let a
 	// semantics-preserving rewrite silently demote a loud node (unification
-	// review ruling). EXCLUDED from identity/hash/Explain: an
-	// evaluation-contract marker, not a value distinction. Dies in Slice 4
+	// review ruling). Lives ON THE PATH, once, not per-accessor: the contract
+	// governs the ROOT read context; accessors beyond the first read nested
+	// records, where the bit is meaningless (S3 staging ruling — N copies of
+	// a one-meaning bit desynchronize). EXCLUDED from identity/hash/Explain:
+	// an evaluation-contract marker, not a value distinction. Dies in Slice 4
 	// with the guard and the name model.
 	FrontierPinned bool
+}
+
+// NewFieldPathOfSingle is Java's FieldPath.ofSingle (FieldValue.java:563) —
+// the constructor every S2-era single-accessor bake goes through.
+func NewFieldPathOfSingle(field string, ordinal int, frontierPinned bool) *FieldPath {
+	return &FieldPath{
+		Accessors:      []ResolvedAccessor{{Field: field, Ordinal: ordinal}},
+		FrontierPinned: frontierPinned,
+	}
+}
+
+// WithSuffix returns a NEW path with suffix's accessors appended — Java's
+// FieldPath.withSuffix (FieldValue.java:525-534); neither input is mutated.
+// The frontier pin comes from the RECEIVER: fusing inner.WithSuffix(outer)
+// keeps the INNER path's root read context (the compose rule's shape), and
+// the pin governs exactly that root.
+func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
+	if suffix == nil || len(suffix.Accessors) == 0 {
+		// A nil/empty SUFFIX argument is a degenerate "append nothing" —
+		// tolerated defensively. An empty RECEIVER violates the type's
+		// non-empty invariant and gets no arm (S3-W1 review: don't
+		// half-admit empties); empty+empty therefore passes the violating
+		// receiver through — acceptable because an empty path is
+		// hand-buildable only (both constructors uphold non-empty, verified
+		// tree-wide in the W1 review) and the violation surfaces loudly at
+		// the first Root()/Last().
+		return p
+	}
+	merged := make([]ResolvedAccessor, 0, len(p.Accessors)+len(suffix.Accessors))
+	merged = append(merged, p.Accessors...)
+	merged = append(merged, suffix.Accessors...)
+	return &FieldPath{Accessors: merged, FrontierPinned: p.FrontierPinned}
+}
+
+// Root returns the first accessor — the one the ROOT read context resolves
+// (positional row slot / name-keyed Datum key).
+func (p *FieldPath) Root() ResolvedAccessor { return p.Accessors[0] }
+
+// Last returns the final accessor — the path's display leaf (Java
+// getLastFieldAccessor, FieldValue.java:459).
+func (p *FieldPath) Last() ResolvedAccessor { return p.Accessors[len(p.Accessors)-1] }
+
+// Single returns the path's only accessor when the path is single-step —
+// the S2-era shape every join-seed probe expects; ok=false for multi-accessor
+// paths (probes DECLINE those shapes until S3-W2 makes them real).
+func (p *FieldPath) Single() (ResolvedAccessor, bool) {
+	if len(p.Accessors) != 1 {
+		return ResolvedAccessor{}, false
+	}
+	return p.Accessors[0], true
+}
+
+// Equals is Java FieldPath.equals (FieldValue.java:411-420): element-wise list
+// equality over (Field, Ordinal). FrontierPinned is deliberately NOT compared
+// (evaluation contract, not identity). The per-element Field component is the
+// coexistence-window refinement of Java's ordinal-only accessor equality —
+// narrows at the S3-W3 identity flip.
+func (p *FieldPath) Equals(o *FieldPath) bool {
+	if p == o {
+		return true
+	}
+	if p == nil || o == nil || len(p.Accessors) != len(o.Accessors) {
+		return false
+	}
+	for i := range p.Accessors {
+		if p.Accessors[i] != o.Accessors[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // OracleBakedNameFallback is the §5 dual-window differential's TEST-ONLY
@@ -286,7 +387,7 @@ func (f *FieldValue) bakedNameReadGuard() error {
 	if f.Resolved == nil || !f.Resolved.FrontierPinned || OracleBakedNameFallback {
 		return nil
 	}
-	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Ordinal}
+	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Root().Ordinal}
 }
 
 // ContainsBakedOrdinal reports whether any FieldValue in v's subtree carries
@@ -378,11 +479,13 @@ func ordinalRowNames(row OrdinalRow) []string {
 // evaluateOrdinal reads f's column from an ordinal-model runtime row. It is the
 // authoritative frontier's resolution — NO name-map fallback (RFC-173). A typed
 // child yields an ordinal (resolveOrdinal) read positionally; a flat reference
-// falls to the row's own type (GetByName). A miss on either is loud.
+// falls to the row's own type (GetByName). A miss on either is loud. For a
+// multi-accessor baked path the root read yields the NESTED record, and the
+// remaining accessors descend into it (descendPath).
 func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 	if ord, ok := f.resolveOrdinal(); ok {
 		if v, inRange := row.Get(ord); inRange {
-			return v, nil
+			return f.descendResolvedPath(v)
 		}
 		return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: ord, Available: ordinalRowNames(row)}
 	}
@@ -390,6 +493,66 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 		return v, nil
 	}
 	return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: -1, Available: ordinalRowNames(row)}
+}
+
+// descendResolvedPath applies a baked path's accessors BEYOND the root to the
+// root read's result — Java resolves the whole FieldPath against nested
+// Message fields by ordinal (FieldValue.java fieldOrdinals doc); Go's
+// coexistence-window nested records are name-keyed Datum maps, so a nested
+// step reads by the accessor's per-step name there (exactly what the chained
+// lazy nodes the compose rule fuses did: child evaluates to the map, the
+// outer node reads its Field on it) and by ordinal on a positional nested
+// row. NULL propagates (a nil nested record yields NULL, matching the
+// chained-lazy nil-context arm); an unreadable non-nil nested value is loud
+// for a pinned path (a quiet NULL would hide a frontier bug) and NULL for an
+// unpinned one (the lazy tail's historical behavior).
+// nameReadRootKey is the Datum key a NAME-keyed read starts at: the ROOT
+// accessor's per-step name for a baked path (a fused multi-accessor node must
+// read the root record first and descend — reading the display name, which is
+// the LAST step's name, would look up the leaf at the top level), f.Field for
+// everything else (identical for single-accessor paths by construction).
+func (f *FieldValue) nameReadRootKey() string {
+	if f.Resolved != nil {
+		return f.Resolved.Root().Field
+	}
+	return f.Field
+}
+
+// nameRead is the plain name-keyed map read: root key, then the baked path's
+// nested descent (a no-op for lazy nodes and single-accessor paths).
+func (f *FieldValue) nameRead(row map[string]any) (any, error) {
+	return f.descendResolvedPath(row[f.nameReadRootKey()])
+}
+
+func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
+	// <= 1 (not == 1): a hand-built zero-accessor path violates the type
+	// invariant, but a slice-bounds panic in the eval hot path is the wrong
+	// place to report it (S3-W1 review).
+	if f.Resolved == nil || len(f.Resolved.Accessors) <= 1 {
+		return rootVal, nil
+	}
+	cur := rootVal
+	for _, acc := range f.Resolved.Accessors[1:] {
+		if cur == nil {
+			return nil, nil
+		}
+		switch rec := cur.(type) {
+		case map[string]any:
+			cur = rec[acc.Field]
+		case OrdinalRow:
+			v, inRange := rec.Get(acc.Ordinal)
+			if !inRange {
+				return nil, &OrdinalResolutionError{Field: acc.Field, Ordinal: acc.Ordinal, Available: ordinalRowNames(rec)}
+			}
+			cur = v
+		default:
+			if f.Resolved.FrontierPinned {
+				return nil, &OrdinalResolutionError{Field: acc.Field, Ordinal: acc.Ordinal}
+			}
+			return nil, nil
+		}
+	}
+	return cur, nil
 }
 
 func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
@@ -415,7 +578,7 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 		if err := f.bakedNameReadGuard(); err != nil {
 			return nil, err
 		}
-		return row[f.Field], nil
+		return f.nameRead(row)
 	}
 	if rc, ok := evalCtx.(*RowEvalContext); ok {
 		// RFC-173 Slice 1: an ordinal-model row on the RowEvalContext is
@@ -429,11 +592,11 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 			if err := f.bakedNameReadGuard(); err != nil {
 				return nil, err
 			}
-			v, present := rc.Datum[f.Field]
+			v, present := rc.Datum[f.nameReadRootKey()]
 			if !present && rc.Strict && ReportUnresolvedReference != nil {
 				ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
 			}
-			return v, nil
+			return f.descendResolvedPath(v)
 		}
 	}
 	// Unrecognized NON-NIL context: a lazy node keeps the historical silent
@@ -464,7 +627,15 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 	if evalCtx == nil {
 		return nil, nil
 	}
-	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(f.Field)
+	// Every name-keyed read in this function starts at the ROOT step's key and
+	// descends the remaining accessors (nameReadRootKey/descendResolvedPath) —
+	// a fused multi-accessor node's display Field is the LAST step's name, and
+	// reading it at the top level is the display-name-root-read trap (S3-W1
+	// review catch: this function is the fused node's PRIMARY eval path — the
+	// compose rule's only constructible output is fused-over-QOV). Identical
+	// byte-for-byte to the S2 reads for lazy nodes and single-accessor paths.
+	rootKey := f.nameReadRootKey()
+	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(rootKey)
 	switch ctx := evalCtx.(type) {
 	case OrdinalRow:
 		// RFC-173 Slice 1: a bare ordinal-model row IS the single non-join
@@ -483,12 +654,11 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 					if err := f.bakedNameReadGuard(); err != nil {
 						return nil, err
 					}
-					if v, ok := bm[f.Field]; ok {
-						return v, nil
+					if v, ok := bm[rootKey]; ok {
+						return f.descendResolvedPath(v)
 					}
-					lower := strings.ToLower(f.Field)
-					if v, ok := bm[lower]; ok {
-						return v, nil
+					if v, ok := bm[strings.ToLower(rootKey)]; ok {
+						return f.descendResolvedPath(v)
 					}
 					return nil, nil
 				}
@@ -512,7 +682,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				return nil, err
 			}
 			if v, ok := ctx.Datum[qualKey]; ok {
-				return v, nil
+				return f.descendResolvedPath(v)
 			}
 			// Already-qualified field (e.g. "T3.ID") accessed through a merge
 			// quantifier: a re-enumerated N-way join collapses a buried table
@@ -521,13 +691,13 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			// preserves dotted keys verbatim — they are NOT re-prefixed with the
 			// merge alias). Prepending the merge alias above would invent a key
 			// (e.g. "$M.T3.ID") that was never written. Mirror the binding path
-			// (bm[f.Field]) by resolving the qualified field directly. (RFC-043.)
-			if strings.Contains(f.Field, ".") {
-				if v, ok := ctx.Datum[strings.ToUpper(f.Field)]; ok {
-					return v, nil
+			// (bm[rootKey]) by resolving the qualified field directly. (RFC-043.)
+			if strings.Contains(rootKey, ".") {
+				if v, ok := ctx.Datum[strings.ToUpper(rootKey)]; ok {
+					return f.descendResolvedPath(v)
 				}
-				if v, ok := ctx.Datum[f.Field]; ok {
-					return v, nil
+				if v, ok := ctx.Datum[rootKey]; ok {
+					return f.descendResolvedPath(v)
 				}
 			}
 		}
@@ -541,12 +711,11 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				if err := f.bakedNameReadGuard(); err != nil {
 					return nil, err
 				}
-				if v, ok := bm[f.Field]; ok {
-					return v, nil
+				if v, ok := bm[rootKey]; ok {
+					return f.descendResolvedPath(v)
 				}
-				lower := strings.ToLower(f.Field)
-				if v, ok := bm[lower]; ok {
-					return v, nil
+				if v, ok := bm[strings.ToLower(rootKey)]; ok {
+					return f.descendResolvedPath(v)
 				}
 				return nil, nil
 			}
@@ -560,7 +729,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			if err := f.bakedNameReadGuard(); err != nil {
 				return nil, err
 			}
-			return sub[f.Field], nil
+			return f.descendResolvedPath(sub[rootKey])
 		}
 		return nil, nil
 	case map[string]any:
@@ -568,16 +737,16 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			return nil, err
 		}
 		if v, ok := ctx[qualKey]; ok {
-			return v, nil
+			return f.descendResolvedPath(v)
 		}
 		// Already-qualified field accessed through a merge quantifier — see the
 		// *RowEvalContext branch above for the rationale. (RFC-043.)
-		if strings.Contains(f.Field, ".") {
-			if v, ok := ctx[strings.ToUpper(f.Field)]; ok {
-				return v, nil
+		if strings.Contains(rootKey, ".") {
+			if v, ok := ctx[strings.ToUpper(rootKey)]; ok {
+				return f.descendResolvedPath(v)
 			}
-			if v, ok := ctx[f.Field]; ok {
-				return v, nil
+			if v, ok := ctx[rootKey]; ok {
+				return f.descendResolvedPath(v)
 			}
 		}
 		return nil, nil
@@ -611,9 +780,11 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	// (NewFieldValueOfOrdinal / NewFieldValueWithResolvedOrdinal) — it is
 	// authoritative and returned before any lazy child-type derivation:
 	// positional by construction, duplicate-name-proof. The display name is
-	// diagnostics and off-frontier coexistence only.
+	// diagnostics and off-frontier coexistence only. For a multi-accessor
+	// path this is the ROOT ordinal (the slot the root read context resolves;
+	// evaluateOrdinal descends the remaining accessors).
 	if f.Resolved != nil {
-		return f.Resolved.Ordinal, true
+		return f.Resolved.Root().Ordinal, true
 	}
 	if f.Child == nil {
 		return 0, false
@@ -651,7 +822,7 @@ func NewFlatFieldValue(field string, typ Type) *FieldValue {
 // Distinct from NewOrdinalFieldValue, which is a NAME encoding (`_<ordinal>`
 // Datum key) for anonymous WITH-ORDINALITY fields, not positional access.
 func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *FieldValue {
-	return &FieldValue{Field: field, Typ: typ, Resolved: &ResolvedAccessor{Ordinal: ordinal}}
+	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingle(field, ordinal, false)}
 }
 
 // NewOrdinalFieldValue accesses a record field by ORDINAL position,
@@ -721,7 +892,7 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 		Field:    fld.Name,
 		Typ:      fld.FieldType,
 		Child:    child,
-		Resolved: &ResolvedAccessor{Ordinal: ordinal, FrontierPinned: true},
+		Resolved: NewFieldPathOfSingle(fld.Name, ordinal, true),
 	}, nil
 }
 
@@ -923,6 +1094,21 @@ func ExplainValue(v Value) string {
 		// shifts its derived key spelling consistently on writer and reader,
 		// both sides of the shared contract).
 		name := strings.ReplaceAll(cv.Field, "#", "##")
+		// A multi-accessor baked path renders EVERY step as name#ordinal,
+		// dot-joined (Java FieldPath.toString, FieldValue.java:428-433) — the
+		// single-accessor rendering below is its one-step special case (the
+		// step name IS cv.Field by construction).
+		if cv.Resolved != nil && len(cv.Resolved.Accessors) > 1 {
+			steps := make([]string, len(cv.Resolved.Accessors))
+			for i, acc := range cv.Resolved.Accessors {
+				steps[i] = strings.ReplaceAll(acc.Field, "#", "##") + "#" + strconv.Itoa(acc.Ordinal)
+			}
+			path := strings.Join(steps, ".")
+			if cv.Child != nil {
+				return ExplainValue(cv.Child) + "." + path
+			}
+			return path
+		}
 		if cv.Child != nil {
 			name = ExplainValue(cv.Child) + "." + name
 		}
@@ -933,7 +1119,7 @@ func ExplainValue(v Value) string {
 		// round 2). FrontierPinned deliberately does NOT render: it is an
 		// evaluation-contract marker, not part of the value's identity.
 		if cv.Resolved != nil {
-			return name + "#" + strconv.Itoa(cv.Resolved.Ordinal)
+			return name + "#" + strconv.Itoa(cv.Resolved.Root().Ordinal)
 		}
 		return name
 	case *ArithmeticValue:

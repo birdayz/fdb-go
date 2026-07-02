@@ -35,6 +35,13 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 			// its presence means the wrong constructor built the seed.
 			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) is %T (baked=%v) — the seed bakes EVERY leg column with the frontier-pinned constructor", i, f.Name, f.Value, isFV && fv.Resolved != nil))
 		}
+		acc, single := fv.Resolved.Single()
+		if !single {
+			// The S2-era seed is SINGLE-accessor by construction (contract
+			// ruling #2); a fused multi-accessor path in a join seed means a
+			// compose fired where it must not (the W1 bake gate failed).
+			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) carries a %d-accessor path — the seed bakes single-accessor leg references only", i, f.Name, len(fv.Resolved.Accessors)))
+		}
 		qov, isQOV := fv.Child.(*QuantifiedObjectValue)
 		if !isQOV {
 			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) is baked over a %T child, want *QuantifiedObjectValue (the leg reference)", i, f.Name, fv.Child))
@@ -43,7 +50,7 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 		if !isRT {
 			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) leg %s flows %T, want *RecordType", i, f.Name, qov.Correlation, qov.Type()))
 		}
-		ord := fv.Resolved.Ordinal
+		ord := acc.Ordinal
 		if len(runs) == 0 || runs[len(runs)-1].alias != qov.Correlation {
 			if ord != 0 {
 				panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: leg %s run starts at field %d with baked ordinal %d, want 0 — run ordinals must be exactly 0..width-1 ascending", qov.Correlation, i, ord))

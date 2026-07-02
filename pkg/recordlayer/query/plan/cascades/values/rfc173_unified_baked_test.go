@@ -15,6 +15,13 @@ import (
 // copies strip Child while sharing the accessor pointer). These tests pin the
 // exact seams the fold closed or could have silently changed.
 
+func singleAccessorOf(fv *FieldValue) (ResolvedAccessor, bool) {
+	if fv.Resolved == nil {
+		return ResolvedAccessor{}, false
+	}
+	return fv.Resolved.Single()
+}
+
 func unifiedTestQOV(t *testing.T) (*QuantifiedObjectValue, *RecordType) {
 	t.Helper()
 	rt := NewRecordType("", false, []Field{
@@ -43,7 +50,7 @@ func TestRFC173Unified_WrapNodeSurvivesPassthroughCopies(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s returned %T, want *FieldValue", name, copied)
 		}
-		if fv.Resolved == nil || fv.Resolved.Ordinal != 1 {
+		if acc, single := singleAccessorOf(fv); !single || acc.Ordinal != 1 {
 			t.Fatalf("%s dropped the baked accessor (Resolved=%v) — the pre-unification silent-drop hole is back", name, fv.Resolved)
 		}
 		if fv.Resolved.FrontierPinned {
@@ -141,8 +148,8 @@ func TestRFC173Unified_SeedExplainRendersOrdinal(t *testing.T) {
 
 	// Same (field, ordinal), pin differing: identical render, identical
 	// identity, identical hash — the bit is contract, not identity.
-	pinned := &FieldValue{Field: "X", Typ: UnknownType, Resolved: &ResolvedAccessor{Ordinal: 3, FrontierPinned: true}}
-	unpinned := &FieldValue{Field: "X", Typ: UnknownType, Resolved: &ResolvedAccessor{Ordinal: 3}}
+	pinned := &FieldValue{Field: "X", Typ: UnknownType, Resolved: NewFieldPathOfSingle("X", 3, true)}
+	unpinned := &FieldValue{Field: "X", Typ: UnknownType, Resolved: NewFieldPathOfSingle("X", 3, false)}
 	if ExplainValue(pinned) != ExplainValue(unpinned) {
 		t.Fatalf("FrontierPinned leaked into ExplainValue: %q vs %q", ExplainValue(pinned), ExplainValue(unpinned))
 	}

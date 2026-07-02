@@ -108,14 +108,14 @@ func TestFieldValueBaked_ResolveOrdinal_RFC173S2(t *testing.T) {
 	// Adversarial: display name "A" (lazy would derive 0), baked ordinal 1 —
 	// the marker wins. Hand-built because the constructor never produces a
 	// name/ordinal mismatch; a rebuild against a re-typed child can.
-	mismatch := &FieldValue{Field: "A", Typ: NotNullLong, Child: qov, Resolved: &ResolvedAccessor{Ordinal: 1, FrontierPinned: true}}
+	mismatch := &FieldValue{Field: "A", Typ: NotNullLong, Child: qov, Resolved: NewFieldPathOfSingle("A", 1, true)}
 	if ord, ok := mismatch.resolveOrdinal(); !ok || ord != 1 {
 		t.Fatalf("baked-before-lazy: resolveOrdinal = (%d,%v), want (1,true) — the baked ordinal, not the lazy name derivation", ord, ok)
 	}
 
 	// Baked with nil child (a passthrough copy drops Child but keeps the
 	// marker): still resolves — the marker precedes the nil-Child decline.
-	orphan := &FieldValue{Field: "X", Resolved: &ResolvedAccessor{Ordinal: 2, FrontierPinned: true}}
+	orphan := &FieldValue{Field: "X", Resolved: NewFieldPathOfSingle("X", 2, true)}
 	if ord, ok := orphan.resolveOrdinal(); !ok || ord != 2 {
 		t.Fatalf("nil-child baked resolveOrdinal = (%d,%v), want (2,true)", ord, ok)
 	}
@@ -163,7 +163,7 @@ func TestFieldValueBaked_ConstructorErrors_RFC173S2(t *testing.T) {
 	if baked.Typ != NullableString {
 		t.Fatalf("Typ = %v, want NullableString", baked.Typ)
 	}
-	if baked.Resolved == nil || baked.Resolved.Ordinal != 1 {
+	if baked.Resolved == nil || baked.Resolved.Root().Ordinal != 1 {
 		t.Fatalf("Resolved = %+v, want ordinal 1", baked.Resolved)
 	}
 }
@@ -243,7 +243,7 @@ func TestFieldValueBaked_CopyPreservesResolved_RFC173S2(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: result is %T, want *FieldValue", site, v)
 		}
-		if fv.Resolved == nil || fv.Resolved.Ordinal != 1 {
+		if fv.Resolved == nil || fv.Resolved.Root().Ordinal != 1 {
 			t.Fatalf("%s DROPPED the baked marker: Resolved = %+v, want ordinal 1 — silent baked→lazy degradation", site, fv.Resolved)
 		}
 		if fv.Field != "ID" {
@@ -333,7 +333,7 @@ func TestFieldValueBaked_ComposeOverRC_ByOrdinal_RFC173S2(t *testing.T) {
 	// inconsistency — a planner bug that must be LOUD (Java throws
 	// IndexOutOfBounds), never a silent decline riding the broken node onward
 	// (review catch on the earlier decline shape).
-	stale := &FieldValue{Field: "ID", Typ: NullableString, Child: rc, Resolved: &ResolvedAccessor{Ordinal: 5, FrontierPinned: true}}
+	stale := &FieldValue{Field: "ID", Typ: NullableString, Child: rc, Resolved: NewFieldPathOfSingle("ID", 5, true)}
 	func() {
 		defer func() {
 			if recover() == nil {
@@ -360,11 +360,11 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal_RFC173S2(t *testing.T) {
 	}}
 	upper := NamedCorrelationIdentifier("up")
 
-	baked1 := &FieldValue{Field: "ID", Typ: NullableString, Resolved: &ResolvedAccessor{Ordinal: 1}}
+	baked1 := &FieldValue{Field: "ID", Typ: NullableString, Resolved: NewFieldPathOfSingle("ID", 1, false)}
 	if got := PushDownValue(baked1, rc, upper); got != constB {
 		t.Fatalf("baked ID#1 pushed through RC(ID:a, ID:b) = %v, want the SECOND column (b)", got)
 	}
-	baked0 := &FieldValue{Field: "ID", Typ: NullableString, Resolved: &ResolvedAccessor{Ordinal: 0}}
+	baked0 := &FieldValue{Field: "ID", Typ: NullableString, Resolved: NewFieldPathOfSingle("ID", 0, false)}
 	if got := PushDownValue(baked0, rc, upper); got != constA {
 		t.Fatalf("baked ID#0 pushed through RC(ID:a, ID:b) = %v, want a", got)
 	}
@@ -387,7 +387,7 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal_RFC173S2(t *testing.T) {
 	// RC is the node's OWN child, so a mismatch is a tree inconsistency),
 	// PushDownValue pairs the node with an EXTERNAL result value — nil is the
 	// generic can't-push-down answer.
-	stale := &FieldValue{Field: "ID", Typ: NullableString, Resolved: &ResolvedAccessor{Ordinal: 7}}
+	stale := &FieldValue{Field: "ID", Typ: NullableString, Resolved: NewFieldPathOfSingle("ID", 7, false)}
 	if got := PushDownValue(stale, rc, upper); got != nil {
 		t.Fatalf("out-of-range baked push-down must DECLINE (nil), got %v", got)
 	}
@@ -434,7 +434,7 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	// Non-correlated map arm (childless PINNED baked copy, e.g. a seed ref
 	// post-passthrough — pullup strips Child but shares the accessor, so the
 	// FrontierPinned contract survives and the guard stays loud).
-	orphan := &FieldValue{Field: "ID", Typ: NotNullLong, Resolved: &ResolvedAccessor{Ordinal: 0, FrontierPinned: true}}
+	orphan := &FieldValue{Field: "ID", Typ: NotNullLong, Resolved: NewFieldPathOfSingle("ID", 0, true)}
 	got, err = orphan.Evaluate(nameRow)
 	assertLoud("plain map arm", got, err)
 
@@ -574,7 +574,7 @@ func TestFieldValueBaked_PullUpThroughRC_Bakes_RFC173S2(t *testing.T) {
 	if !ok {
 		t.Fatalf("pull-up through dup RC = %T, want *FieldValue", got)
 	}
-	if fv.Resolved == nil || fv.Resolved.Ordinal != 1 {
+	if fv.Resolved == nil || fv.Resolved.Root().Ordinal != 1 {
 		t.Fatalf("pull-up of the SECOND dup column: Resolved = %+v, want baked ordinal 1 — a lazy name node conflates to the first", fv.Resolved)
 	}
 
@@ -598,7 +598,7 @@ func TestFieldValueBaked_PullUpThroughRC_Bakes_RFC173S2(t *testing.T) {
 	if !ok {
 		t.Fatalf("pull-up of baked input = %T, want *FieldValue", got)
 	}
-	if fv.Resolved == nil || fv.Resolved.Ordinal != 1 || fv.Field != "OUT1" {
+	if fv.Resolved == nil || fv.Resolved.Root().Ordinal != 1 || fv.Field != "OUT1" {
 		t.Fatalf("baked input pull-up = {Field:%s Resolved:%+v}, want OUT1 baked at 1", fv.Field, fv.Resolved)
 	}
 

@@ -226,7 +226,15 @@ func composeFieldOverConstructor(v Value) Value {
 	// loud like Java's IndexOutOfBounds (the fail-loud re-stamp treatment),
 	// never a silent decline that rides the broken node into the plan.
 	if fv.Resolved != nil {
-		o := fv.Resolved.Ordinal
+		acc, single := fv.Resolved.Single()
+		if !single {
+			// A fused multi-accessor path over its own RC: the ROOT ordinal
+			// selects the column; the remaining steps would need re-anchoring
+			// over the column's value tree (S3-W2's compose widening). Decline
+			// the fold — the node stays as-is, no wrong answer possible.
+			return nil
+		}
+		o := acc.Ordinal
 		if o < 0 || o >= len(rc.Fields) {
 			panic(fmt.Sprintf("RFC-173: baked FieldValue %s#%d composed over its own %d-column RecordConstructor — tree inconsistent with the bake (planner bug; Java throws IndexOutOfBounds)", fv.Field, o, len(rc.Fields)))
 		}
@@ -268,20 +276,39 @@ func tryCastConstant(cv *ConstantValue, target Type) (out *ConstantValue) {
 	return nil
 }
 
+// composeFieldOverField is Java's ComposeFieldValueOverFieldValueRule
+// (ComposeFieldValueOverFieldValueRule.java:57-69): field(field(x, p1), p2) →
+// field(x, p1.withSuffix(p2)) — chained FieldValue nodes fuse into ONE node
+// carrying the whole path (Java's canonical form; chained nodes are not).
+//
+// GATED TO FULLY-BAKED CHAINS during the S3-W1 dark window (staging ruling):
+// firing on lazy chains would rewrite every nested-access chain corpus-wide —
+// memo identity, Explain renderings, every rule matching chained FieldValues —
+// making W1 anything but dark. No baked-over-baked chain is constructible in
+// the S2 wedge (seed refs sit directly over leg QOVs; wrap nodes are
+// childless), so the gate makes the rule genuinely unreachable in production
+// until S3-W2 widens it to all FieldValues WITH the shape-change pins.
+// Java's inverse (ExpandFusedFieldValueRule) is deliberately NOT ported:
+// Java never co-resides the two (Compose in DefaultValueSimplificationRuleSet,
+// Expand only in MaxMatchMapSimplification), and compose-only cannot loop.
 func composeFieldOverField(v Value) Value {
 	outer, ok := v.(*FieldValue)
-	if !ok || outer.Child == nil {
+	if !ok || outer.Child == nil || outer.Resolved == nil {
 		return nil
 	}
-	_, ok = outer.Child.(*FieldValue)
-	if !ok {
+	inner, ok := outer.Child.(*FieldValue)
+	if !ok || inner.Resolved == nil || inner.Child == nil {
 		return nil
 	}
-	// Go's FieldValue is single-step (one field name per node), so
-	// field(field(x, "a"), "b") is already the canonical form for
-	// nested access. Java has multi-step FieldPath; Go doesn't.
-	// No simplification possible in Go's single-step model.
-	return nil
+	fused := inner.Resolved.WithSuffix(outer.Resolved)
+	return &FieldValue{
+		// Display = the LAST step's name (Java getLastFieldName); the fused
+		// node reads exactly what the chain read, so Typ is the OUTER's.
+		Field:    fused.Last().Field,
+		Typ:      outer.Typ,
+		Child:    inner.Child,
+		Resolved: fused,
+	}
 }
 
 func isCoalesceValue(v Value) bool {

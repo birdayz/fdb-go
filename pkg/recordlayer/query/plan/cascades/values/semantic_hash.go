@@ -130,9 +130,15 @@ func writeSemanticHash(h io.Writer, v Value) {
 		// same hash stays tight across the refinement. Lazy nodes keep the
 		// name-only bucket; baked vs lazy are UNEQUAL, so their differing
 		// hashes are fine (they must not share a memo bucket anyway).
-		// FrontierPinned is NOT hashed (excluded from identity).
+		// FrontierPinned is NOT hashed (excluded from identity). A
+		// multi-accessor path folds every step's ordinal (equal paths ⟹ equal
+		// ordinal sequences, so equal ⟹ same-hash holds; per-step names ride
+		// on the Field prefix above only for the last step — a coarser bucket
+		// is legal).
 		if t.Resolved != nil {
-			_, _ = fmt.Fprintf(h, "#%d", t.Resolved.Ordinal)
+			for _, acc := range t.Resolved.Accessors {
+				_, _ = fmt.Fprintf(h, "#%d", acc.Ordinal)
+			}
 		}
 	// Windowed/vector family (RFC-176 P1): fold the same discriminator set the
 	// EqualsWithoutChildren arms compare — Metric + EfSearch +

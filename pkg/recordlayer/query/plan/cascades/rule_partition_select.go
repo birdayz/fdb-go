@@ -918,7 +918,7 @@ func rebaseBuriedLowerReferences(
 		if fv.Resolved != nil && fv.Resolved.FrontierPinned {
 			panic(fmt.Sprintf(
 				"RFC-173: PartitionSelectRule re-stamp would re-anchor BAKED FieldValue %s#%d (over %s) to merge alias %s — the cluster-arity gate mis-scoped an ordinal join into an N-way re-enumeration (planner bug)",
-				fv.Field, fv.Resolved.Ordinal, qov.Correlation.Name(), mergeAlias.Name()))
+				fv.Field, fv.Resolved.Root().Ordinal, qov.Correlation.Name(), mergeAlias.Name()))
 		}
 		field := fv.Field
 		if !strings.Contains(field, ".") {
