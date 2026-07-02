@@ -35,20 +35,20 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
+// EqualsWithoutChildren compares the default value by semantic Value identity
+// (RFC-176 P2 — see semanticValueEquals).
 func (p *RecordQueryDefaultOnEmptyPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDefaultOnEmptyPlan)
 	if !ok {
 		return false
 	}
-	return values.ValuesStructurallyEqual(p.defaultValue, o.defaultValue)
+	return semanticValueEquals(p.defaultValue, o.defaultValue)
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("defaultonemptyplan|"))
-	if p.defaultValue != nil {
-		h.Write([]byte(values.ExplainValue(p.defaultValue)))
-	}
+	writeValueHash(h, p.defaultValue)
 	return h.Sum64()
 }
 

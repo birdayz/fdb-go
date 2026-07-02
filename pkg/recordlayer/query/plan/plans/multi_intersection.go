@@ -70,9 +70,9 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) GetResultType() values.Type {
 	return values.UnknownType
 }
 
-// EqualsWithoutChildren matches MultiIntersectionOnValuesPlan with
-// same-length comparison key and same resultValue (by explain string,
-// matching the existing pattern for value-level equality).
+// EqualsWithoutChildren matches MultiIntersectionOnValuesPlan with the same
+// comparison key and resultValue by semantic Value identity (RFC-176 P2 —
+// see semanticValueEquals).
 func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMultiIntersectionOnValuesPlan)
 	if !ok {
@@ -82,34 +82,22 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsWithoutChildren(other R
 		return false
 	}
 	for i, k := range p.comparisonKey {
-		if values.ExplainValue(k) != values.ExplainValue(o.comparisonKey[i]) {
+		if !semanticValueEquals(k, o.comparisonKey[i]) {
 			return false
 		}
 	}
-	// Compare result value.
-	pRV := ""
-	if p.resultValue != nil {
-		pRV = values.ExplainValue(p.resultValue)
-	}
-	oRV := ""
-	if o.resultValue != nil {
-		oRV = values.ExplainValue(o.resultValue)
-	}
-	return pRV == oRV
+	return semanticValueEquals(p.resultValue, o.resultValue)
 }
 
-// HashCodeWithoutChildren hashes the type discriminator, comparison key
-// values, and result value.
+// HashCodeWithoutChildren folds the type discriminator, comparison key
+// values, and result value (semantic Value hashes — see writeValueHash).
 func (p *RecordQueryMultiIntersectionOnValuesPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("multiintersectiononvaluesplan|"))
 	for _, k := range p.comparisonKey {
-		h.Write([]byte(values.ExplainValue(k)))
-		h.Write([]byte{0})
+		writeValueHash(h, k)
 	}
-	if p.resultValue != nil {
-		h.Write([]byte(values.ExplainValue(p.resultValue)))
-	}
+	writeValueHash(h, p.resultValue)
 	return h.Sum64()
 }
 

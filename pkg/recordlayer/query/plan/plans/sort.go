@@ -54,8 +54,8 @@ func (p *RecordQuerySortPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-// EqualsWithoutChildren compares sort key Values (via ExplainValue)
-// + reverse flags pairwise.
+// EqualsWithoutChildren compares sort key Values (semantic Value identity,
+// RFC-176 P2 — see semanticValueEquals) + reverse flags pairwise.
 func (p *RecordQuerySortPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQuerySortPlan)
 	if !ok {
@@ -68,21 +68,20 @@ func (p *RecordQuerySortPlan) EqualsWithoutChildren(other RecordQueryPlan) bool 
 		if p.sortKeys[i].Reverse != o.sortKeys[i].Reverse {
 			return false
 		}
-		if values.ExplainValue(p.sortKeys[i].Value) != values.ExplainValue(o.sortKeys[i].Value) {
+		if !semanticValueEquals(p.sortKeys[i].Value, o.sortKeys[i].Value) {
 			return false
 		}
 	}
 	return true
 }
 
-// HashCodeWithoutChildren mixes the class discriminator + per-key
-// rendered text + reverse flags.
+// HashCodeWithoutChildren mixes the class discriminator + per-key semantic
+// Value hash + reverse flags.
 func (p *RecordQuerySortPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("sortplan|"))
 	for _, k := range p.sortKeys {
-		h.Write([]byte(values.ExplainValue(k.Value)))
-		h.Write([]byte{0})
+		writeValueHash(h, k.Value)
 		if k.Reverse {
 			h.Write([]byte{1})
 		} else {

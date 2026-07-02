@@ -86,8 +86,13 @@ func (p *RecordQueryComparatorPlan) GetResultType() values.Type {
 // GetChildren returns the child plans.
 func (p *RecordQueryComparatorPlan) GetChildren() []RecordQueryPlan { return p.children }
 
-// EqualsWithoutChildren compares comparison keys, reference index,
-// and reverse flag.
+// EqualsWithoutChildren compares comparison keys (semantic Value identity —
+// see semanticValueEquals), reference index, and reverse flag. The keys join
+// equality per RFC-176 §1: before P2, equality checked only the key COUNT
+// while the hash folded the full keys, so two plans with equal counts but
+// different keys compared equal yet hashed apart — a live plan-level
+// equal⟹same-hash violation (a hash-first memo lookup misses the "equal"
+// member and inserts a duplicate).
 func (p *RecordQueryComparatorPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryComparatorPlan)
 	if !ok {
@@ -102,17 +107,21 @@ func (p *RecordQueryComparatorPlan) EqualsWithoutChildren(other RecordQueryPlan)
 	if len(p.comparisonKeyValues) != len(o.comparisonKeyValues) {
 		return false
 	}
+	for i, k := range p.comparisonKeyValues {
+		if !semanticValueEquals(k, o.comparisonKeyValues[i]) {
+			return false
+		}
+	}
 	return true
 }
 
-// HashCodeWithoutChildren mixes comparison key count, reference index,
-// and reverse flag.
+// HashCodeWithoutChildren mixes comparison keys (semantic Value hashes),
+// reference index, and reverse flag.
 func (p *RecordQueryComparatorPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("comparatorplan|"))
 	for _, k := range p.comparisonKeyValues {
-		h.Write([]byte(values.ExplainValue(k)))
-		h.Write([]byte{0})
+		writeValueHash(h, k)
 	}
 	// Mix in referencePlanIndex as two bytes (little-endian).
 	h.Write([]byte{byte(p.referencePlanIndex), byte(p.referencePlanIndex >> 8)})

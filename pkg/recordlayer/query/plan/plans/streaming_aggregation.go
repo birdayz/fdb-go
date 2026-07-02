@@ -64,7 +64,7 @@ func (p *RecordQueryStreamingAggregationPlan) EqualsWithoutChildren(other Record
 		return false
 	}
 	for i, k := range p.groupingKeys {
-		if values.ExplainValue(k) != values.ExplainValue(o.groupingKeys[i]) {
+		if !semanticValueEquals(k, o.groupingKeys[i]) {
 			return false
 		}
 	}
@@ -75,7 +75,7 @@ func (p *RecordQueryStreamingAggregationPlan) EqualsWithoutChildren(other Record
 		if a.Function != o.aggregates[i].Function {
 			return false
 		}
-		if values.ExplainValue(a.Operand) != values.ExplainValue(o.aggregates[i].Operand) {
+		if !semanticValueEquals(a.Operand, o.aggregates[i].Operand) {
 			return false
 		}
 	}
@@ -86,11 +86,11 @@ func (p *RecordQueryStreamingAggregationPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("streamagg|"))
 	for _, k := range p.groupingKeys {
-		h.Write([]byte(values.ExplainValue(k)))
+		writeValueHash(h, k)
 	}
 	for _, a := range p.aggregates {
 		h.Write([]byte{byte(a.Function)})
-		h.Write([]byte(values.ExplainValue(a.Operand)))
+		writeValueHash(h, a.Operand)
 	}
 	return h.Sum64()
 }

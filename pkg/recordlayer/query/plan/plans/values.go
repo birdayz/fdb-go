@@ -34,7 +34,7 @@ func (p *RecordQueryValuesPlan) EqualsWithoutChildren(other RecordQueryPlan) boo
 		return false
 	}
 	for i := range p.columns {
-		if values.ExplainValue(p.columns[i]) != values.ExplainValue(o.columns[i]) {
+		if !semanticValueEquals(p.columns[i], o.columns[i]) {
 			return false
 		}
 	}
@@ -45,8 +45,7 @@ func (p *RecordQueryValuesPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("valuesplan|"))
 	for _, v := range p.columns {
-		h.Write([]byte(values.ExplainValue(v)))
-		h.Write([]byte{0})
+		writeValueHash(h, v)
 	}
 	return h.Sum64()
 }
