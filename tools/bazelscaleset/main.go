@@ -43,7 +43,9 @@ func run() error {
 	logger := cfg.logger()
 
 	// SIGTERM/SIGINT cancel the run context; listener.Run returns and the deferred
-	// teardown (kill runners, close session, delete scale set) executes.
+	// teardown (kill runners, close the message session) executes. The scale set
+	// itself is a durable resource and is never deleted here — see
+	// ensureRunnerScaleSet's doc comment.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -61,36 +63,20 @@ func run() error {
 		groupID = g.ID
 	}
 
-	// A scale set name must be unique within its group. A previous run that crashed
-	// (rather than shutting down cleanly) leaves a stale scale set whose session and
-	// runners are already dead — delete it so a Restart=always daemon doesn't crash-loop.
-	if existing, err := client.GetRunnerScaleSet(ctx, groupID, cfg.name); err != nil {
-		return fmt.Errorf("checking for existing scale set %q: %w", cfg.name, err)
-	} else if existing != nil {
-		logger.Warn("deleting stale runner scale set from a previous run", slog.Int("id", existing.ID))
-		if err := client.DeleteRunnerScaleSet(ctx, existing.ID); err != nil {
-			return fmt.Errorf("deleting stale scale set %d: %w", existing.ID, err)
-		}
-	}
-
-	ss, err := client.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
+	// A scale set is a durable resource: reuse it by name if it already exists
+	// (patching in place if its config drifted), create it only if missing. Never
+	// delete it here — see ensureRunnerScaleSet's doc comment for the production
+	// incident that "delete stale set, then always recreate" caused.
+	ss, err := ensureRunnerScaleSet(ctx, client, logger, groupID, &scaleset.RunnerScaleSet{
 		Name:          cfg.name,
 		RunnerGroupID: groupID,
 		Labels:        cfg.labels(),
 		RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
 	})
 	if err != nil {
-		return fmt.Errorf("creating runner scale set %q: %w", cfg.name, err)
+		return err
 	}
-	logger.Info("runner scale set created", slog.Int("id", ss.ID), slog.String("name", ss.Name))
 	client.SetSystemInfo(systemInfo(ss.ID))
-
-	defer func() {
-		logger.Info("deleting runner scale set", slog.Int("id", ss.ID))
-		if err := client.DeleteRunnerScaleSet(context.WithoutCancel(ctx), ss.ID); err != nil {
-			logger.Error("deleting runner scale set", slog.Int("id", ss.ID), slog.Any("err", err))
-		}
-	}()
 
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
