@@ -622,10 +622,13 @@ func TestResultSet_PositionalMisalignedFallsBack(t *testing.T) {
 	t.Run("qualified_name_leaf_matches", func(t *testing.T) {
 		t.Parallel()
 		// Label-less columns with name-model qualified Names ("A.ID") align by
-		// their bare leaf against the positional slot names.
-		pos := &PositionalRow{Type: srcType, Slots: []any{int64(7), "pos"}}
+		// their bare leaf against the positional slot names. Positional values
+		// deliberately DIFFER from the Datum's (99/"pos" vs 7/"datum") so the
+		// assertions discriminate which read path answered (Torvalds
+		// full-branch catch: equal values made this pin vacuous).
+		pos := &PositionalRow{Type: srcType, Slots: []any{int64(99), "pos"}}
 		cursor := recordlayer.FromList([]QueryResult{
-			{Datum: map[string]any{"A.ID": int64(7), "A.NAME": "pos"}, Positional: pos},
+			{Datum: map[string]any{"A.ID": int64(7), "A.NAME": "datum"}, Positional: pos},
 		})
 		cols := []ColumnDef{
 			{Name: "A.ID", TypeName: "BIGINT"},
@@ -636,8 +639,11 @@ func TestResultSet_PositionalMisalignedFallsBack(t *testing.T) {
 		if !rs.Next() {
 			t.Fatal("expected a row")
 		}
+		if v, _ := rs.Object(1); v != int64(99) {
+			t.Errorf("column 1 = %v, want 99 (the POSITIONAL read — a 7 means the Datum answered)", v)
+		}
 		if v, _ := rs.Object(2); v != "pos" {
-			t.Errorf("column 2 = %v, want pos", v)
+			t.Errorf("column 2 = %v, want pos (the POSITIONAL read — 'datum' means the Datum answered)", v)
 		}
 	})
 }

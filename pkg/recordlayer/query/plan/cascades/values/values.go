@@ -558,13 +558,14 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 // f.Child flows a RecordType containing f.Field; (0, false) for a nil-Child
 // leaf, a non-record child, or an absent/anonymous field.
 //
-// RFC-173 P1: the ordinal substrate for the name -> ordinal column-resolution
-// migration (retiring the name-based AnchoredJoin model). It is DARK — computed
-// but NOT authoritative; the name-lookup path in Evaluate stays the source of
-// truth until P2 provides a positional runtime row and P1's dual-mode assert has
-// proven the ordinal path agrees. Side-effect-free, so computing it can never
-// perturb planning. The nil-Child leaf (legacy flat field, no child type to
-// resolve against) is the case that stays on the name path — see RFC-173 §4 P1.
+// RFC-173: the ordinal substrate for the name -> ordinal column-resolution
+// migration (retiring the name-based AnchoredJoin model). AUTHORITATIVE since
+// Slice 1 on the non-join positional frontier (evaluateOrdinal resolves
+// through it, loud on a miss, no name fallback) and since Slice 2 for BAKED
+// join-leg references (the Resolved fast path below). Side-effect-free, so
+// computing it can never perturb planning. The nil-Child lazy leaf (legacy
+// flat field, no child type to resolve against) is the case that stays on the
+// name path — see RFC-173 §4 P1.
 func (f *FieldValue) resolveOrdinal() (int, bool) {
 	// RFC-173 Slice 2: a BAKED node's position was resolved at construction
 	// (NewFieldValueOfOrdinal) — it is authoritative and returned before any

@@ -8,13 +8,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// This file is the RFC-173 Slice 2 W3a ordinal-join executor substrate: the
-// primitives the 2-way wedge's merged positional row is built from. It is DARK
-// at this stage — no production code path constructs the ordinal join RC yet;
-// W3b (the translator seed flip) is what makes these live. Everything here
-// derives from the W3 pre-code ruling (rfcs/173-ordinal-column-resolution.md
-// §4 Slice 2): spans derive from the RC (condition 1), leg windows are
-// declared window scaffolding (condition 2), the window implements
+// This file is the RFC-173 Slice 2 ordinal-join executor machinery: the
+// primitives the 2-way wedge's merged positional row is built from — LIVE
+// since W3b (the translator seeds gated 2-way joins with the ordinal RC these
+// consume). Everything here derives from the W3 pre-code ruling
+// (rfcs/173-ordinal-column-resolution.md §4 Slice 2): spans derive from the
+// RC (condition 1), leg windows are declared window scaffolding that dies
+// when the uppers bake, S3/S4 (condition 2), the window implements
 // values.OrdinalRow completely so no new eval arm exists (condition 3), and
 // the wrong-slot hazard is pinned red→green (condition 4).
 
@@ -177,11 +177,7 @@ func (w *legWindowRow) TypeNames() []string {
 	if w.legType == nil {
 		return nil
 	}
-	names := make([]string, len(w.legType.Fields))
-	for i, f := range w.legType.Fields {
-		names[i] = f.Name
-	}
-	return names
+	return typeFieldNames(w.legType)
 }
 
 // legWindowBinder is the coexistence-window correlation binder for uppers over
@@ -350,8 +346,8 @@ func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*
 // representation, nothing for S4 to delete). Enabled marks the cursor as an
 // ordinal birth site: its emitted rows carry a positional row evaluated from
 // the RC with per-leg bindings, DUAL with the untouched name-model Datum
-// (dark-stage invariant), gated per emission on the §5
-// DisablePositionalEmission oracle.
+// (the coexistence-window invariant — the name side retires in Slice 4),
+// gated per emission on the §5 DisablePositionalEmission oracle.
 type ordinalJoinBirth struct {
 	// Enabled is true iff the result value contains a baked ordinal reference
 	// (values.ContainsBakedOrdinal, deep). A nil/lazy result value yields a nil
@@ -563,6 +559,10 @@ func (b *ordinalJoinBirth) evaluate(outerAlias, innerAlias string, outer, inner 
 // leg: GetCorrelationBinding returns (nil, true) and the baked node's
 // `return bound, nil` arm yields NULL (contract ruling #3). Anything else
 // delegates to base (outer correlations; nil base = unbound).
+//
+// The map-based binder survives ONLY for flatMap's one-shot evaluate (one
+// binder per EMITTED row — no per-candidate cost there); the NLJ's per-pair
+// hot path uses the fixed twoLegBinder below (Torvalds W3a-2 perf catch).
 type birthLegBinder struct {
 	legs map[values.CorrelationIdentifier]values.OrdinalRow
 	base values.CorrelationBinder
