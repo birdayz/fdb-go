@@ -125,6 +125,12 @@ func runRYWReadDifferential(t *testing.T, label string, seed, pending []fuzzOp) 
 				if (gerr == nil) != (cerr == nil) {
 					t.Fatalf("%s: RYW Get(%s) error mismatch: go=%v cgo=%v\n%s", label, k, gerr, cerr, seq)
 				}
+				// Presence parity is not enough: two clients erroring with DIFFERENT
+				// codes must fail too (both are non-retryable here — retryables
+				// already returned above).
+				if gerr != nil && fdbErrorCode(gerr) != fdbErrorCode(cerr) {
+					t.Fatalf("%s: RYW Get(%s) error CODE differs: go=%v cgo=%v\n%s", label, k, gerr, cerr, seq)
+				}
 				if gerr == nil && !bytes.Equal(gv, cv) {
 					t.Fatalf("%s: RYW Get(%s) differs: go=%x cgo=%x\n%s", label, k, gv, cv, seq)
 				}

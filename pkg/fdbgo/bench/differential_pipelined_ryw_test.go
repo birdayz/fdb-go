@@ -22,24 +22,32 @@ import (
 // the write map, ReadYourWrites.actor.cpp), so any fast-vs-full drift shows up here
 // as a go-vs-cgo mismatch. These NAMED cases pin the boundary mechanically:
 // identical seeded storage, identical pending ops, the same in-txn reads through
-// goClient AND cgoClient, results compared byte-for-byte including error codes
-// (runRYWReadDifferential fails on any Get/GetRange error-presence mismatch).
+// goClient AND cgoClient. Values are compared byte-for-byte; Get errors are
+// compared by CODE when both clients error (runRYWReadDifferential); the
+// RangeOptions runner requires success, so any error there is loud; the 1036
+// cases compare codes explicitly.
 //
 // Boundary arms exercised (client/transaction.go GetPipelined):
 //   - pending-atomic fallback: entry.hasAtomics → ErrNeedFullRYW → server read +
 //     merge (the arm RFC-175 E3 names "pending atomic op on the read key");
+//   - the eager-fold FAST path: an atomic over a same-txn Set/cleared base folds
+//     into a PLAIN entry (ryw.go sites B/C, hasAtomics stays false) — the fast
+//     path must answer identically to what the full path would;
 //   - phantom-absent: a matched CompareAndClear is an is_kv slot for getKey but
 //     ABSENT for a point read (RFC-058);
 //   - plain-entry / cleared-range hits crossed by a straddling range read (the arm
 //     E3 names "a range read straddling a pipelined write");
-//   - the unreadable gate: pending versionstamp under a pending atomic → 1036
-//     (error-code parity, RFC-098).
+//   - snapshot reads: snapshot RYW is ON by default since API 300, so they route
+//     through the SAME RYWIterator merge without conflict ranges
+//     (ReadYourWrites.actor.cpp:402-405);
+//   - the unreadable gate: pending versionstamp on/under a pending-atomic key →
+//     1036 (error-code parity, RFC-098).
 
-// TestDifferential_PipelinedRYWBoundary_PendingAtomicOnReadKey pins the
-// ErrNeedFullRYW fallback: a point read of a key with pending atomics must merge
-// exactly like libfdb_c across base-source (committed / same-txn Set / same-txn
-// Clear / absent) and op semantics (width interplay, present-gated Min, stacked
-// chains, CompareAndClear phantoms, AppendIfFits).
+// TestDifferential_PipelinedRYWBoundary_PendingAtomicOnReadKey pins the point-read
+// boundary: the ErrNeedFullRYW fallback (pending atomics over a COMMITTED server
+// base — width interplay, present-gated Min, stacked chains, CompareAndClear
+// phantoms, AppendIfFits) plus the eager-fold FAST-path cases (atomic over a
+// same-txn Set/cleared base), which must answer identically without the fallback.
 func TestDifferential_PipelinedRYWBoundary_PendingAtomicOnReadKey(t *testing.T) {
 	t.Parallel()
 	b := func(s string) []byte { return []byte(s) }
@@ -66,19 +74,21 @@ func TestDifferential_PipelinedRYWBoundary_PendingAtomicOnReadKey(t *testing.T) 
 			[]fuzzOp{set(0, "\x07\x00\x00\x00")},
 			[]fuzzOp{op(fzMin, 0, b("\x03\x00\x00\x00"))},
 		},
-		{
-			"min_on_absent_base",
-			nil,
-			[]fuzzOp{op(fzMin, 0, b("\x03\x00\x00\x00"))},
-		},
+		// (Min over an ABSENT base — the same fallback arm with no server value — is
+		// already pinned by differential_atomic_test.go's min_missing_o8; not repeated.)
 		// An unresolved multi-op chain folded over the server base in one merge.
 		{
 			"atomic_chain_on_committed_base",
 			[]fuzzOp{set(0, "\x01\x00\x00\x00")},
 			[]fuzzOp{op(fzAdd, 0, b("\x02\x00\x00\x00")), op(fzXor, 0, b("\x0f\x00\x00\x00")), op(fzByteMax, 0, b("\x04\x00\x00\x00"))},
 		},
-		// hasAtomics with a LOCAL base: the fallback must resolve from the write map
-		// without letting the server value bleed through the same-txn Set/Clear.
+		// FAST-PATH arm, not the fallback: the eager fold (ryw.go sites B/C) resolves an
+		// atomic over a same-txn Set / locally-cleared base into a PLAIN entry
+		// (hasAtomics stays false), so GetPipelined answers from the write map without
+		// ErrNeedFullRYW. Pinned here because the fast path must give the same answer
+		// the full path would — the dimension these add over the atomic-fold widths
+		// differential is the STALE COMMITTED VALUE beneath, which must not bleed
+		// through the local base on either the point read or the range merge.
 		{
 			"add_after_set_same_txn",
 			[]fuzzOp{set(0, "\x09\x00\x00\x00")}, // committed value must NOT contribute
@@ -280,29 +290,192 @@ func TestDifferential_PipelinedRYWBoundary_RangeOptionsAcrossPipelinedWrite(t *t
 }
 
 // TestDifferential_PipelinedRYWBoundary_AtomicThenVersionstampSameKey pins
-// error-code parity where the pending-atomic fallback and the unreadable gate
-// stack on ONE key: an Add followed by a SetVersionstampedValue leaves the key
-// with pending atomics AND sticky-unreadable — the read must throw
-// accessed_unreadable (1036) on both clients, not fall back into a merge
-// (C++ WriteMap is_unreadable stickiness, WriteMap.cpp:97; RFC-098).
+// error-code parity where a pending atomic and a versionstamped op land on ONE key,
+// in BOTH orders. C++ resolves the two orders through DIFFERENT WriteMap paths:
+//   - add_then_svv: a versionstamped op landing on a non-unreadable entry REPLACES
+//     the stack (WriteMap.cpp:124-137, gated `!it.is_unreadable()`), dropping the
+//     Add; the entry becomes unreadable;
+//   - svv_then_add: the later Add is pushed UNCOALESCED onto the already-unreadable
+//     entry (WriteMap.cpp:143-147), whose unreadable flag is STICKY (WriteMap.cpp:97).
+//
+// Either way a read must throw accessed_unreadable (1036) on both clients, never
+// fall back into a merge (RFC-098).
 func TestDifferential_PipelinedRYWBoundary_AtomicThenVersionstampSameKey(t *testing.T) {
 	t.Parallel()
 	pfx := fmt.Sprintf("pipeboundary_1036_%d_", os.Getpid())
 	clearPrefix(t, pfx)
-	k := pfx + "atomic_then_svv"
-	goCode := goErrCode(func(tx gofdb.Transaction) error {
-		tx.Add(gofdb.Key(k), []byte("\x01\x00\x00\x00"))
-		tx.SetVersionstampedValue(gofdb.Key(k), unreadableSVVOperand())
-		_, err := tx.Get(gofdb.Key(k)).Get()
-		return err
+
+	t.Run("add_then_svv", func(t *testing.T) {
+		t.Parallel()
+		k := pfx + "atomic_then_svv"
+		goCode := goErrCode(func(tx gofdb.Transaction) error {
+			tx.Add(gofdb.Key(k), []byte("\x01\x00\x00\x00"))
+			tx.SetVersionstampedValue(gofdb.Key(k), unreadableSVVOperand())
+			_, err := tx.Get(gofdb.Key(k)).Get()
+			return err
+		})
+		cCode := cgoErrCode(func(tx cgofdb.Transaction) error {
+			tx.Add(cgofdb.Key(k), []byte("\x01\x00\x00\x00"))
+			tx.SetVersionstampedValue(cgofdb.Key(k), unreadableSVVOperand())
+			_, err := tx.Get(cgofdb.Key(k)).Get()
+			return err
+		})
+		if goCode != cCode || goCode != errAccessedUnreadable {
+			t.Fatalf("Get of Add→SVV key: go=%d cgo=%d, want both %d", goCode, cCode, errAccessedUnreadable)
+		}
 	})
-	cCode := cgoErrCode(func(tx cgofdb.Transaction) error {
-		tx.Add(cgofdb.Key(k), []byte("\x01\x00\x00\x00"))
-		tx.SetVersionstampedValue(cgofdb.Key(k), unreadableSVVOperand())
-		_, err := tx.Get(cgofdb.Key(k)).Get()
-		return err
+
+	t.Run("svv_then_add", func(t *testing.T) {
+		t.Parallel()
+		k := pfx + "svv_then_atomic"
+		goCode := goErrCode(func(tx gofdb.Transaction) error {
+			tx.SetVersionstampedValue(gofdb.Key(k), unreadableSVVOperand())
+			tx.Add(gofdb.Key(k), []byte("\x01\x00\x00\x00"))
+			_, err := tx.Get(gofdb.Key(k)).Get()
+			return err
+		})
+		cCode := cgoErrCode(func(tx cgofdb.Transaction) error {
+			tx.SetVersionstampedValue(cgofdb.Key(k), unreadableSVVOperand())
+			tx.Add(cgofdb.Key(k), []byte("\x01\x00\x00\x00"))
+			_, err := tx.Get(cgofdb.Key(k)).Get()
+			return err
+		})
+		if goCode != cCode || goCode != errAccessedUnreadable {
+			t.Fatalf("Get of SVV→Add key (sticky unreadable): go=%d cgo=%d, want both %d", goCode, cCode, errAccessedUnreadable)
+		}
 	})
-	if goCode != cCode || goCode != errAccessedUnreadable {
-		t.Fatalf("Get of pending atomic+SVV key: go=%d cgo=%d, want both %d", goCode, cCode, errAccessedUnreadable)
+}
+
+// TestDifferential_PipelinedRYWBoundary_SnapshotGetPendingAtomic pins the THIRD point-read
+// path at the boundary: snapshot reads. Snapshot RYW is enabled by default since API 300
+// (NativeAPI.actor.cpp:1603), so a snapshot Get routes through the SAME RYWIterator merge
+// as a regular read — just without conflict ranges (ReadYourWrites.actor.cpp:402-405). A
+// snapshot Get of a key with a pending atomic must produce the identical merged value on
+// both clients, over a committed base and over absent storage.
+func TestDifferential_PipelinedRYWBoundary_SnapshotGetPendingAtomic(t *testing.T) {
+	t.Parallel()
+	pfx := fmt.Sprintf("pipesnap_%d_", os.Getpid())
+	clearPrefix(t, pfx)
+	goCommitted, goAbsent := gofdb.Key(pfx+"go_c"), gofdb.Key(pfx+"go_a")
+	cCommitted, cAbsent := cgofdb.Key(pfx+"c_c"), cgofdb.Key(pfx+"c_a")
+	seedKeys(t, func(tx cgofdb.Transaction) {
+		tx.Set(cgofdb.Key(pfx+"go_c"), []byte("\x05\x00\x00\x00"))
+		tx.Set(cCommitted, []byte("\x05\x00\x00\x00"))
+	})
+
+	type snapRes struct{ committed, absent string }
+	var g, c snapRes
+	if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
+		tx.Add(goCommitted, []byte("\x03\x00\x00\x00"))
+		tx.Add(goAbsent, []byte("\x03\x00\x00\x00"))
+		vc, err := tx.Snapshot().Get(goCommitted).Get()
+		if err != nil {
+			return nil, err
+		}
+		va, err := tx.Snapshot().Get(goAbsent).Get()
+		if err != nil {
+			return nil, err
+		}
+		g = snapRes{hexOrAbsent(vc), hexOrAbsent(va)}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("go txn: %v", err)
+	}
+	if _, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		tx.Add(cCommitted, []byte("\x03\x00\x00\x00"))
+		tx.Add(cAbsent, []byte("\x03\x00\x00\x00"))
+		vc, err := tx.Snapshot().Get(cCommitted).Get()
+		if err != nil {
+			return nil, err
+		}
+		va, err := tx.Snapshot().Get(cAbsent).Get()
+		if err != nil {
+			return nil, err
+		}
+		c = snapRes{hexOrAbsent(vc), hexOrAbsent(va)}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("cgo txn: %v", err)
+	}
+	if g != c {
+		t.Fatalf("snapshot Get over pending atomic differs: go=%+v cgo=%+v", g, c)
+	}
+	// Anti-self-confirming sanity: the merge really happened (5 + 3 = 8 at operand width).
+	if g.committed != "08000000" {
+		t.Fatalf("sanity: snapshot merge over committed 5 + Add 3 should be 08000000, got %s", g.committed)
+	}
+}
+
+// TestDifferential_PipelinedRYWBoundary_RangeStraddlesPendingVersionstamp pins the
+// mid-scan unreadable reach with committed keys on BOTH sides of the pending SVV key
+// (differential_unreadable_test.go's getrange_reach places the SVV at the range END):
+// a limited scan that stops before the SVV key succeeds; an unlimited scan REACHES it
+// mid-span and throws 1036 (RYWIterator.cpp:44-46, :74-76) even though committed data
+// exists beyond; a reverse scan hits it from above. Both clients must agree on rows
+// AND codes.
+func TestDifferential_PipelinedRYWBoundary_RangeStraddlesPendingVersionstamp(t *testing.T) {
+	t.Parallel()
+	pfx := fmt.Sprintf("pipestraddle_svv_%d_", os.Getpid())
+	clearPrefix(t, pfx)
+	// Committed a, c; pending SVV on b — the unreadable key sits MID-SPAN.
+	seedKeys(t, func(tx cgofdb.Transaction) {
+		for _, cl := range []string{"go_", "c_"} {
+			tx.Set(cgofdb.Key(pfx+cl+"a"), []byte("va"))
+			tx.Set(cgofdb.Key(pfx+cl+"c"), []byte("vc"))
+		}
+	})
+
+	type res struct {
+		limitedRows   int
+		limitedCode   int
+		unlimitedCode int
+		reverseCode   int
+	}
+	run := func(limited func(limit int, reverse bool) (int, int)) res {
+		nRows, limCode := limited(1, false)
+		_, unlimCode := limited(0, false)
+		_, revCode := limited(0, true)
+		return res{nRows, limCode, unlimCode, revCode}
+	}
+
+	// Uncommitted txns at a shared read version, explicitly Cancel()ed — the 1036
+	// reads are TRACKED read errors and would poison a commit (RFC-098), so a
+	// Transact-based shape cannot commit cleanly; this matches runRYWReadDifferential.
+	v := freshSharedVersion(t)
+	goTxn, err := goClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("go CreateTransaction: %v", err)
+	}
+	defer goTxn.Cancel()
+	cTxn, err := cgoClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("cgo CreateTransaction: %v", err)
+	}
+	defer cTxn.Cancel()
+	goTxn.SetReadVersion(v)
+	cTxn.SetReadVersion(v)
+
+	var g, c res
+	goTxn.SetVersionstampedValue(gofdb.Key(pfx+"go_b"), unreadableSVVOperand())
+	goR := gofdb.KeyRange{Begin: gofdb.Key(pfx + "go_"), End: gofdb.Key(pfx + "go_\xff")}
+	g = run(func(limit int, reverse bool) (int, int) {
+		kvs, err := goTxn.GetRange(goR, gofdb.RangeOptions{Limit: limit, Reverse: reverse}).GetSliceWithError()
+		return len(kvs), fdbErrorCode(err)
+	})
+	cTxn.SetVersionstampedValue(cgofdb.Key(pfx+"c_b"), unreadableSVVOperand())
+	cR := cgofdb.KeyRange{Begin: cgofdb.Key(pfx + "c_"), End: cgofdb.Key(pfx + "c_\xff")}
+	c = run(func(limit int, reverse bool) (int, int) {
+		kvs, err := cTxn.GetRange(cR, cgofdb.RangeOptions{Limit: limit, Reverse: reverse, Mode: cgofdb.StreamingModeWantAll}).GetSliceWithError()
+		return len(kvs), fdbErrorCode(err)
+	})
+	if g != c {
+		t.Fatalf("SVV mid-scan straddle differs: go=%+v cgo=%+v", g, c)
+	}
+	if g.unlimitedCode != errAccessedUnreadable || g.reverseCode != errAccessedUnreadable {
+		t.Fatalf("unlimited/reverse scans must REACH the mid-span SVV key → 1036, got %+v", g)
+	}
+	if g.limitedCode != 0 || g.limitedRows != 1 {
+		t.Fatalf("limit-1 scan must stop BEFORE the SVV key with one row, got %+v", g)
 	}
 }
