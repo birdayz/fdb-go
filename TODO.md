@@ -125,10 +125,20 @@ validation gate.
     commit W3b-1, Graefe+Torvalds re-request, RFC execution log update.** Then W3b-2 pin batch
     (GROUP-BY-over-2-way E2E, dup-named box-leg, EXPLAIN stability, dualwindow, stress
     before/after).
-  - [ ] **W4** correlated-scalar-subquery 2-leg seed + single-source `UNNEST` port; **NO interning
-    flip** (canonical sequence: Slice 3).
-  - [ ] **W5** remaining §5 pins (gate pins (a)/(b) runtime halves) → gauntlet → PR → merge.
-- [ ] Slice 3 atomic N-way flip (**+ folded P3 bijection interning + FieldValue node-identity flip +
+  - [x] **W4 — DEFERRED TO S3 (Graefe ruling, f034707eb RFC amendment).** The correlated-scalar
+    2-leg seed is a pre-rewrite LEFT OUTER select (the ephemeral object the W3b premise
+    correction covers) and the unnest port needs S3 FieldPaths — both moved into S3's scope with
+    rationale; S3 honestly resized 4–5 shifts; the FINALIZED S2 wedge (pure inner/cross 2-way over
+    non-join legs + FULL boxes over non-join legs) recorded as the definitive statement. **NO
+    interning flip** (canonical sequence: Slice 3, unchanged).
+  - [ ] **W5** gauntlet → PR → merge. Gate pins (a)/(b) runtime halves LANDED in W3b-2 (a3d323808;
+    pin (b) partial per Graefe with the conversion obligation above). PR description MUST state
+    the contract delta (Graefe condition 4: reviewers review against the amended §4, not the
+    stale text): premise correction, LEFT-outer poison, join-legs ineligible, W4 deferral,
+    finalized wedge scope.
+- [ ] Slice 3 atomic N-way flip (**+ W4-deferred items: post-rewrite LEFT ordinalization,
+  correlated-scalar seed, single-source UNNEST — see f034707eb amendment; + folded P3 bijection
+  interning + FieldValue node-identity flip +
   collapsed-FieldPath representation ruling**) · [ ] Slice 4 retire `AnchoredJoin` (+ kill list) ·
   [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
 
