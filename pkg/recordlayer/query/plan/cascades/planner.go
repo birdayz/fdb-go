@@ -302,43 +302,24 @@ func (p *Planner) costModelForPhase(phase PlannerPhase) func(a, b expressions.Re
 
 // pushDataAccessTasks generates data access expressions (index scans)
 // from PartialMatches on the Reference. This is the Go equivalent of
-// Java's TransformMatchPartition tasks.
+// Java's TransformMatchPartition tasks. Four phases, one function
+// each: collect the consumable candidates, look up the propagated
+// ordering constraints, run the (growth-guarded) standalone
+// consumption, then attempt the cross-candidate PK intersection.
+//
+// Join-leg refs take the same standalone consumption path as any other
+// ref. What makes that safe is structural, not a guard here:
+// OptimizeInputsTask is pushed only for PHYSICAL parent members
+// (unified_tasks.go, Java CascadesPlanner.java:524), so a correlated
+// leg's group is pruned to a winner only as the inner child of the
+// binding physical join — never free-standing — and a correlated
+// SUBSEL scan cannot be stamped a standalone winner.
+// compensationSafeForYield's outer-correlation guard is
+// defense-in-depth for the same property (RFC-150 §8).
 func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.RelationalExpression) {
-	// Absorb candidate-side parent expressions (Select → MatchableSort)
-	// onto this ref's matches before consuming them. PLANNING-phase
-	// matches are seeded during exploration, after the phase-start
-	// AdjustMatches walk, so their matched ordering parts (which let an
-	// index scan satisfy a requested ordering and eliminate an in-memory
-	// sort) are only computed here, at consumption time. Java's
-	// AdjustMatchRule is event-driven and fires on each new match; this
-	// is the Go equivalent at the data-access boundary.
-	AdjustPartialMatchesForRef(ref)
-
-	candidates := GetPartialMatchCandidatesTyped(ref)
+	candidates := dataAccessCandidates(ref)
 	if len(candidates) == 0 {
 		return
-	}
-
-	// Drop aggregate-index candidates: they are consumed by AggregateDataAccessRule
-	// (which matches the GroupByExpression and reads the pre-aggregated value), NOT
-	// by the regular value-index data-access path. An aggregate index stores
-	// aggregated rows, not base records — matching its underlying scan here yields
-	// IndexScan(agg_index, [=]) which a StreamingAgg then re-aggregates, counting
-	// the single group row as 1 (or reading the wrong column for SUM). The match
-	// infra seeds these matches once the regular path is active; they must not be
-	// realized as record scans (TestFDB_AggregateIndexUsage count/sum_with_eq_filter).
-	{
-		filtered := candidates[:0]
-		for _, c := range candidates {
-			if _, isAgg := c.(*AggregateIndexMatchCandidate); isAgg {
-				continue
-			}
-			filtered = append(filtered, c)
-		}
-		candidates = filtered
-		if len(candidates) == 0 {
-			return
-		}
 	}
 
 	var requestedOrderings []*RequestedOrdering
@@ -348,49 +329,91 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 	}
 
-	// Join-leg refs take the same standalone consumption path as any other ref.
-	// What makes that safe is structural, not a guard here: OptimizeInputsTask is
-	// pushed only for PHYSICAL parent members (unified_tasks.go, Java
-	// CascadesPlanner.java:524), so a correlated leg's group is pruned to a winner
-	// only as the inner child of the binding physical join — never free-standing —
-	// and a correlated SUBSEL scan cannot be stamped a standalone winner.
-	// compensationSafeForYield's outer-correlation guard is defense-in-depth for
-	// the same property (RFC-150 §8).
-
-	// Re-entry / termination guard (RFC-148 §3c): yieldUnknown routes a logical
-	// compensation into the EXPLORATORY set, so the enclosing ExploreGroupTask
-	// re-explores it and re-enters pushDataAccessTasks on this ref. Run the
-	// standalone consumption ONLY when the partial-match set has GROWN since the
-	// last consumption — a growth key, NOT a "consumed-ever" gate, which would
-	// drop matches seeded mid-exploration (AdjustPartialMatchesForRef seeds
-	// across rounds).
-	//
-	// The guard applies ONLY when there is NO requested ordering: an ordering can
-	// be propagated into this ref AFTER a first consumption at unchanged match
-	// count, and the sort-eliminating ordered scan it unlocks must not be
-	// suppressed (a missed ordered scan degrades the plan to the in-memory-sort
-	// fallback — an extra-Sort plan-shape regression, with unbounded
-	// materialization on large inputs). With an ordering present we re-consume
-	// every round; convergence is bounded by Insert dedup + the 10-round cap
-	// (RFC-148 §3c addendum). The cross-candidate intersection below keeps its
-	// own hasIntersectionFinal guard.
-	runConsumption := true
-	if len(requestedOrderings) == 0 {
-		totalMatches := 0
-		for _, c := range candidates {
-			totalMatches += len(GetPartialMatchesForCandidate(ref, c))
-		}
-		key := ref.Canonical()
-		if last, seen := p.dataAccessConsumed[key]; seen && totalMatches <= last {
-			runConsumption = false
-		}
-		p.dataAccessConsumed[key] = totalMatches
+	if p.shouldConsumeMatches(ref, candidates, requestedOrderings) {
+		p.consumeMatchPartitions(ref, candidates, requestedOrderings)
 	}
+	p.pushCrossCandidateIntersection(ref, candidates, requestedOrderings)
+}
 
-	for _, candidate := range candidates {
-		if !runConsumption {
-			break
+// dataAccessCandidates adjusts this ref's partial matches and returns
+// the match candidates the standalone data-access path may consume.
+//
+// The AdjustPartialMatchesForRef call absorbs candidate-side parent
+// expressions (Select → MatchableSort) onto this ref's matches before
+// they are consumed. PLANNING-phase matches are seeded during
+// exploration, after the phase-start AdjustMatches walk, so their
+// matched ordering parts (which let an index scan satisfy a requested
+// ordering and eliminate an in-memory sort) are only computed here, at
+// consumption time. Java's AdjustMatchRule is event-driven and fires
+// on each new match; this is the Go equivalent at the data-access
+// boundary.
+//
+// Aggregate-index candidates are dropped: they are consumed by
+// AggregateDataAccessRule (which matches the GroupByExpression and
+// reads the pre-aggregated value), NOT by the regular value-index
+// data-access path. An aggregate index stores aggregated rows, not
+// base records — matching its underlying scan here yields
+// IndexScan(agg_index, [=]) which a StreamingAgg then re-aggregates,
+// counting the single group row as 1 (or reading the wrong column for
+// SUM). The match infra seeds these matches once the regular path is
+// active; they must not be realized as record scans
+// (TestFDB_AggregateIndexUsage count/sum_with_eq_filter).
+func dataAccessCandidates(ref *expressions.Reference) []MatchCandidate {
+	AdjustPartialMatchesForRef(ref)
+
+	candidates := GetPartialMatchCandidatesTyped(ref)
+	if len(candidates) == 0 {
+		return nil
+	}
+	filtered := candidates[:0]
+	for _, c := range candidates {
+		if _, isAgg := c.(*AggregateIndexMatchCandidate); isAgg {
+			continue
 		}
+		filtered = append(filtered, c)
+	}
+	return filtered
+}
+
+// shouldConsumeMatches is the re-entry / termination guard
+// (RFC-148 §3c): yieldUnknown routes a logical compensation into the
+// EXPLORATORY set, so the enclosing ExploreGroupTask re-explores it
+// and re-enters pushDataAccessTasks on this ref. Run the standalone
+// consumption ONLY when the partial-match set has GROWN since the last
+// consumption — a growth key, NOT a "consumed-ever" gate, which would
+// drop matches seeded mid-exploration (AdjustPartialMatchesForRef
+// seeds across rounds).
+//
+// The guard applies ONLY when there is NO requested ordering: an
+// ordering can be propagated into this ref AFTER a first consumption
+// at unchanged match count, and the sort-eliminating ordered scan it
+// unlocks must not be suppressed (a missed ordered scan degrades the
+// plan to the in-memory-sort fallback — an extra-Sort plan-shape
+// regression, with unbounded materialization on large inputs). With an
+// ordering present we re-consume every round; convergence is bounded
+// by Insert dedup + the 10-round cap (RFC-148 §3c addendum). The
+// cross-candidate intersection keeps its own hasIntersectionFinal
+// guard.
+func (p *Planner) shouldConsumeMatches(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) bool {
+	if len(requestedOrderings) > 0 {
+		return true
+	}
+	totalMatches := 0
+	for _, c := range candidates {
+		totalMatches += len(GetPartialMatchesForCandidate(ref, c))
+	}
+	key := ref.Canonical()
+	last, seen := p.dataAccessConsumed[key]
+	p.dataAccessConsumed[key] = totalMatches
+	return !(seen && totalMatches <= last)
+}
+
+// consumeMatchPartitions realizes each candidate's match partition
+// into data-access expressions and routes every result by safety:
+// physical plans and SAFE logical compensations go through
+// yieldUnknown; UNSAFE logical compensations go to InsertFinal.
+func (p *Planner) consumeMatchPartitions(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) {
+	for _, candidate := range candidates {
 		matches := GetPartialMatchesForCandidate(ref, candidate)
 		if len(matches) == 0 {
 			continue
@@ -413,82 +436,88 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 			// exploratory set, re-optimized by the normal ExploreExprTask loop
 			// (ImplementFilterRule / InComparisonToExplodeRule / …) until it yields a
 			// RecordQueryPlan (Java CascadesRuleCall.yieldUnknownExpression;
-			// RFC-148 §3a). The re-entry this creates is bounded by the match-growth
-			// guard above.
+			// RFC-148 §3a). The re-entry this creates is bounded by
+			// shouldConsumeMatches' match-growth guard.
 			p.yieldUnknown(ref, expr)
 		}
 		stampOrderingWinners(ref, p.costModel)
 	}
+}
 
-	// Cross-candidate intersection: aggregate matches from different
-	// indexes and create physical intersection plans during PLANNING.
-	// Creates RecordQueryIntersectionPlan directly (not logical) because
-	// there's only one intersection strategy (PK-based). If merge or
-	// hash intersection is added, this should yield LogicalIntersectionExpression
-	// and let ImplementIntersectionRule choose the strategy.
+// pushCrossCandidateIntersection aggregates matches from different
+// indexes and creates physical intersection plans during PLANNING.
+// Creates RecordQueryIntersectionPlan directly (not logical) because
+// there's only one intersection strategy (PK-based). If merge or
+// hash intersection is added, this should yield LogicalIntersectionExpression
+// and let ImplementIntersectionRule choose the strategy.
+//
+// Guards: candidate cap (4) and match cap (8) prevent combinatorial
+// explosion in MaximumCoverageMatches for queries with many indexes
+// (e.g., InList with 5+ candidates). hasIntersectionFinal prevents
+// re-creation when pushDataAccessTasks fires multiple times per ref.
+func (p *Planner) pushCrossCandidateIntersection(ref *expressions.Reference, candidates []MatchCandidate, requestedOrderings []*RequestedOrdering) {
+	if len(candidates) < 2 || len(candidates) > 4 || hasIntersectionFinal(ref) {
+		return
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].CandidateName() < candidates[j].CandidateName()
+	})
+	var allMatches []PartialMatch
+	for _, candidate := range candidates {
+		allMatches = append(allMatches, GetPartialMatchesForCandidate(ref, candidate)...)
+	}
+	// Only include matches with non-empty bound parameter prefix
+	// (i.e., matches that actually restrict the scan). Zero-coverage
+	// matches produce full index scans that don't help with intersection.
 	//
-	// Guards: candidate cap (4) and match cap (8) prevent combinatorial
-	// explosion in MaximumCoverageMatches for queries with many indexes
-	// (e.g., InList with 5+ candidates). hasIntersectionFinal prevents
-	// re-creation when pushDataAccessTasks fires multiple times per ref.
-	if len(candidates) >= 2 && len(candidates) <= 4 && !hasIntersectionFinal(ref) {
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].CandidateName() < candidates[j].CandidateName()
-		})
-		var allMatches []PartialMatch
-		for _, candidate := range candidates {
-			allMatches = append(allMatches, GetPartialMatchesForCandidate(ref, candidate)...)
+	// Also exclude CORRELATED matches: a leg whose bound prefix references
+	// an outer quantifier (a join predicate like customer_id = c.id) is not
+	// independently evaluable and must not be folded into a primary-key
+	// intersection. Java resolves such a predicate via the FlatMap/NLJ
+	// correlation plus a residual filter, never an index intersection;
+	// folding it in produces a plan whose correlated binding the
+	// intersection cursor cannot evaluate, yielding 0 rows (RFC-069).
+	var restrictedMatches []PartialMatch
+	for _, m := range allMatches {
+		// A vector scan must NEVER be a primary-key intersection arm — in
+		// EITHER of its two forms:
+		//   - ORDERED-STREAM (un-partitioned, RFC-156 Phase B): the residual
+		//     must compose ABOVE the un-limited distance-ordered stream
+		//     (Limit → Filter → ordered scan); folding it into the SELF-LIMITING
+		//     intersection combinator would self-limit the scan BELOW the
+		//     residual, the very thing that phase forbids.
+		//   - SELF-LIMITING (partitioned per-partition top-k, RFC-046): the scan
+		//     emits (partition, distance) order, which is NOT primary-key-
+		//     monotonic, so the pk-keyed sorted-merge (merge_cursor.go max-key/
+		//     advance) would drop rows whose distance rank disagrees with their
+		//     pk order (wrong rows for k>1). The safe shape is a Filter above the
+		//     un-intersected scan (compensationSafeForYield's partition-residual
+		//     exception, residualIsPartitionContiguous).
+		// Both reduce to the same invariant — a distance-ordered scan cannot be a
+		// pk-keyed intersection leg — so exclude ALL vector candidates here, the
+		// single home for the rule (RFC-167 Phase 4).
+		if _, ok := m.GetMatchCandidate().(*VectorIndexScanMatchCandidate); ok {
+			continue
 		}
-		// Only include matches with non-empty bound parameter prefix
-		// (i.e., matches that actually restrict the scan). Zero-coverage
-		// matches produce full index scans that don't help with intersection.
-		//
-		// Also exclude CORRELATED matches: a leg whose bound prefix references
-		// an outer quantifier (a join predicate like customer_id = c.id) is not
-		// independently evaluable and must not be folded into a primary-key
-		// intersection. Java resolves such a predicate via the FlatMap/NLJ
-		// correlation plus a residual filter, never an index intersection;
-		// folding it in produces a plan whose correlated binding the
-		// intersection cursor cannot evaluate, yielding 0 rows (RFC-069).
-		var restrictedMatches []PartialMatch
-		for _, m := range allMatches {
-			// A vector scan must NEVER be a primary-key intersection arm — in
-			// EITHER of its two forms:
-			//   - ORDERED-STREAM (un-partitioned, RFC-156 Phase B): the residual
-			//     must compose ABOVE the un-limited distance-ordered stream
-			//     (Limit → Filter → ordered scan); folding it into the SELF-LIMITING
-			//     intersection combinator would self-limit the scan BELOW the
-			//     residual, the very thing that phase forbids.
-			//   - SELF-LIMITING (partitioned per-partition top-k, RFC-046): the scan
-			//     emits (partition, distance) order, which is NOT primary-key-
-			//     monotonic, so the pk-keyed sorted-merge (merge_cursor.go max-key/
-			//     advance) would drop rows whose distance rank disagrees with their
-			//     pk order (wrong rows for k>1). The safe shape is a Filter above the
-			//     un-intersected scan (compensationSafeForYield's partition-residual
-			//     exception, residualIsPartitionContiguous).
-			// Both reduce to the same invariant — a distance-ordered scan cannot be a
-			// pk-keyed intersection leg — so exclude ALL vector candidates here, the
-			// single home for the rule (RFC-167 Phase 4).
-			if _, ok := m.GetMatchCandidate().(*VectorIndexScanMatchCandidate); ok {
-				continue
-			}
-			if hasRestrictedScan(m) && !matchBoundPrefixIsCorrelated(m) {
-				restrictedMatches = append(restrictedMatches, m)
-			}
-		}
-		if len(restrictedMatches) >= 2 && len(restrictedMatches) <= 8 {
-			bestMatches := MaximumCoverageMatches(restrictedMatches, requestedOrderings, p.ctx)
-			if len(bestMatches) >= 2 {
-				result := WithPrimaryKeyIntersector(p.ctx)(bestMatches, requestedOrderings)
-				if result != nil && result.IsViable() {
-					for _, expr := range result.GetExpressions() {
-						ref.InsertFinal(expr)
-					}
-					stampOrderingWinners(ref, p.costModel)
-				}
-			}
+		if hasRestrictedScan(m) && !matchBoundPrefixIsCorrelated(m) {
+			restrictedMatches = append(restrictedMatches, m)
 		}
 	}
+	if len(restrictedMatches) < 2 || len(restrictedMatches) > 8 {
+		return
+	}
+	bestMatches := MaximumCoverageMatches(restrictedMatches, requestedOrderings, p.ctx)
+	if len(bestMatches) < 2 {
+		return
+	}
+	result := WithPrimaryKeyIntersector(p.ctx)(bestMatches, requestedOrderings)
+	if result == nil || !result.IsViable() {
+		return
+	}
+	for _, expr := range result.GetExpressions() {
+		ref.InsertFinal(expr)
+	}
+	stampOrderingWinners(ref, p.costModel)
 }
 
 // yieldUnknown routes a data-access result by physicality, mirroring Java's
@@ -544,10 +573,38 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 	if len(f.GetPredicates()) == 0 {
 		return false
 	}
-	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
-	for _, q := range f.GetQuantifiers() {
-		local[q.GetAlias()] = struct{}{}
-	}
+	return compensationInnerScanSafe(f) && compensationResidualCorrelationSafe(f)
+}
+
+// compensationInnerScanSafe is the inner-scan half of
+// compensationSafeForYield: it rejects a residual filter whose inner
+// scan is a vector top-k or aggregate scan.
+//
+// A residual applied AFTER a self-limiting top-k vector scan changes
+// the result (you would post-filter the K rows, not the underlying
+// set) — UNSAFE, route to InsertFinal. But a residual over an
+// ORDERED-STREAM scan (RFC-156 Phase B) is SAFE and CORRECT: the scan
+// emits its full re-ranked horizon in distance order, so a Filter
+// culls non-matching rows BEFORE the Limit(k) above takes k — the
+// VBASE "filter-during-traversal" shape (Limit → Filter → ordered
+// scan). Route it through yieldUnknown so ImplementFilterRule realizes
+// the physical Filter over the ordered scan (the residual is
+// non-index-only; the index-only distance marker lives only inside the
+// scan binding).
+//
+// SELF-LIMITING (partitioned) exception: a residual over the
+// PARTITION-key columns, contiguous immediately after the bound
+// equality prefix, is ALSO safe over a self-limiting per-partition
+// top-k scan. Such a filter selects WHOLE partitions (drops entire
+// regions ≤ 'r1'), never within-partition rows, so the per-partition
+// top-k the maintainer already enforced is preserved: survivors are
+// exactly top-k per surviving partition. This yields the correct
+// Filter(region>r1) → VectorScan(self-limiting) plan instead of the
+// pk-keyed intersection (which drops rows for k>1 because the vector
+// cursor delivers distance order, not pk order). The contiguity check
+// keeps a leading-column-unbound residual (region='r1', zone unbound)
+// unplannable — a non-contiguous residual is out of scope (RFC-046).
+func compensationInnerScanSafe(f *expressions.LogicalFilterExpression) bool {
 	for _, q := range f.GetQuantifiers() {
 		cref := q.GetRangesOver()
 		if cref == nil {
@@ -556,30 +613,6 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		for _, m := range cref.AllMembers() {
 			switch v := m.(type) {
 			case *physicalVectorIndexScanWrapper:
-				// A residual applied AFTER a self-limiting top-k vector scan
-				// changes the result (you would post-filter the K rows, not the
-				// underlying set) — UNSAFE, route to InsertFinal.
-				// But a residual over an ORDERED-STREAM scan (RFC-156 Phase B) is
-				// SAFE and CORRECT: the scan emits its full re-ranked horizon in
-				// distance order, so a Filter culls non-matching rows BEFORE the
-				// Limit(k) above takes k — the VBASE "filter-during-traversal"
-				// shape (Limit → Filter → ordered scan). Route it through
-				// yieldUnknown so ImplementFilterRule realizes the physical Filter
-				// over the ordered scan (the residual is non-index-only; the
-				// index-only distance marker lives only inside the scan binding).
-				//
-				// SELF-LIMITING (partitioned) exception: a residual over the
-				// PARTITION-key columns, contiguous immediately after the bound
-				// equality prefix, is ALSO safe over a self-limiting per-partition
-				// top-k scan. Such a filter selects WHOLE partitions (drops entire
-				// regions ≤ 'r1'), never within-partition rows, so the per-partition
-				// top-k the maintainer already enforced is preserved: survivors are
-				// exactly top-k per surviving partition. This yields the correct
-				// Filter(region>r1) → VectorScan(self-limiting) plan instead of the
-				// pk-keyed intersection (which drops rows for k>1 because the vector
-				// cursor delivers distance order, not pk order). The contiguity check
-				// keeps a leading-column-unbound residual (region='r1', zone unbound)
-				// unplannable — a non-contiguous residual is out of scope (RFC-046).
 				if v.plan == nil {
 					return false
 				}
@@ -591,32 +624,42 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			}
 		}
 	}
+	return true
+}
+
+// compensationResidualCorrelationSafe is the OUTER-correlation half of
+// compensationSafeForYield (0-row safety). A residual correlated to a
+// non-local (OUTER) quantifier belongs at the JOIN, not a standalone
+// leg filter. The bound-prefix correlation signal
+// (matchBoundPrefixIsCorrelated) only inspects the PREFIX, so a leg
+// whose correlation lives in the RESIDUAL — e.g. an unindexed
+// `t.fk = o.id` alongside an indexed `t.k = 5` — is invisible to it;
+// realizing such a compensation as a physical leg filter severs the
+// join's correlation feed → Fetch(<nil>) / 0 rows. Kept as
+// defense-in-depth even with the task-graph invariant in place
+// (RFC-150 §8). Query-parameter ConstantObjectValue aliases are
+// execution constants (not row correlations), so they are subtracted
+// first.
+//
+// No predicate-SHAPE restriction here: compound/OR and IN residuals
+// yield through yieldUnknown and re-optimize to an index plan
+// (RFC-150 §8) — the guard is correlation SAFETY, not shape.
+// Index-only predicates (vector DistanceRank) are likewise not guarded
+// here — the !isIndexOnly() ImplementFilterRule gate is the single
+// structural authority for that property; a second guard here would be
+// a redundant second authority (RFC-151 §5).
+func compensationResidualCorrelationSafe(f *expressions.LogicalFilterExpression) bool {
+	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
+	for _, q := range f.GetQuantifiers() {
+		local[q.GetAlias()] = struct{}{}
+	}
 	// Bound-prefix correlations carried by the compensation's own scan probe(s) —
-	// the outer aliases the probe already feeds (see the OUTER-correlation guard
-	// below). Computed once: the data-access scan hides these at
+	// the outer aliases the probe already feeds (see the EXCEPTION below).
+	// Computed once: the data-access scan hides these at
 	// GetCorrelatedToWithoutChildren, so they are recovered from the scan's
 	// ComparisonRanges directly.
 	probeCorr := compensationProbeCorrelations(f)
 	for _, pred := range f.GetPredicates() {
-		// No predicate-SHAPE restriction here: compound/OR and IN residuals yield
-		// through yieldUnknown and re-optimize to an index plan (RFC-150 §8). The
-		// guards in this function are correlation / inner-scan SAFETY, not shape.
-		// Index-only predicates (vector DistanceRank) are likewise not guarded
-		// here — the !isIndexOnly() ImplementFilterRule gate is the single
-		// structural authority for that property; a second guard here would be a
-		// redundant second authority (RFC-151 §5).
-		//
-		// OUTER-correlation guard (0-row safety). A residual correlated to a
-		// non-local (OUTER) quantifier belongs at the JOIN, not a standalone leg
-		// filter. The bound-prefix correlation signal
-		// (matchBoundPrefixIsCorrelated) only inspects the PREFIX, so a leg whose
-		// correlation lives in the RESIDUAL — e.g. an unindexed `t.fk = o.id`
-		// alongside an indexed `t.k = 5` — is invisible to it; realizing such a
-		// compensation as a physical leg filter severs the join's correlation
-		// feed → Fetch(<nil>) / 0 rows. Kept as defense-in-depth even with the
-		// task-graph invariant in place (RFC-150 §8). Query-parameter
-		// ConstantObjectValue aliases are execution constants (not row
-		// correlations), so subtract them first.
 		corr := predicates.GetCorrelatedToOfPredicate(pred)
 		deletePredicateConstantObjectAliases(pred, corr)
 		for alias := range corr {
