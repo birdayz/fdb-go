@@ -73,3 +73,4 @@ REVIEW.md
 website/public/
 website/resources/
 website/.hugo_build.lock
+.playwright-mcp/
