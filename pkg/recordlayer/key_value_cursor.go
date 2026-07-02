@@ -62,11 +62,17 @@ func unwrapContinuation(rawBytes []byte) []byte {
 	}
 	msg := &gen.KeyValueCursorContinuation{}
 	if err := msg.UnmarshalVT(rawBytes); err != nil {
-		// Parse failed — treat as old-format raw bytes
+		// Parse failed — treat as old-format raw bytes. This restart-free
+		// tolerance is Java-verified, NOT the swallow-and-restart bug class:
+		// KeyValueCursorBase.Continuation.getInnerContinuation
+		// (KeyValueCursorBase.java:218-223) deliberately returns rawBytes on
+		// InvalidProtocolBufferException so TO_OLD-serialized tokens keep
+		// working across the TO_NEW migration.
 		return rawBytes
 	}
 	if msg.MagicNumber == nil || *msg.MagicNumber != continuationMagicNumber {
 		// Magic number doesn't match — treat as old-format raw bytes
+		// (KeyValueCursorBase.java:212-216, same deliberate tolerance).
 		return rawBytes
 	}
 	return msg.InnerContinuation
