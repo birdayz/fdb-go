@@ -40,4 +40,24 @@ That accidental coupling blocks the Java alignment we want: Java's `ImplementFil
 
 ## 4. Scope
 
-**In:** the partial-match re-trigger; the `!isIndexOnly()` gate; the logical-side error; deletion of `validateNoIndexOnlyResidual` + `compensationSafeForYield`'s index-only branch. **Out:** aggregate `UnmatchedAggregateValue` consumption beyond what the gate already covers; anything RFC-148/150 owns; the `tryFlatMapPlan` retirement (RFC-150 Phase 2b).
+**In:** the partial-match re-trigger; the `!isIndexOnly()` gate; the logical-side error; deletion of `compensationSafeForYield`'s index-only branch (B4 — `validateNoIndexOnlyResidual` itself is RETAINED per B3; an earlier draft planned its deletion, reversed after the join-Select leak repro). **Out:** aggregate `UnmatchedAggregateValue` consumption beyond what the gate already covers; anything RFC-148/150 owns; the `tryFlatMapPlan` retirement (RFC-150 Phase 2b).
+
+## 5. Outcome — implemented; rationale relocated from `planner.go` (RFC-175 B3)
+
+B1–B4 all landed. The permanent division of authority for index-only residuals (previously spelled out as
+comment-essays in `planner.go`; the in-source comments now state the invariant and point here):
+
+- **`ImplementFilterRule`'s `!isIndexOnly()` matcher gate (B2)** is the single structural authority that keeps
+  that producer from realizing an index-only physical filter. `compensationSafeForYield` deliberately does
+  NOT also guard index-only predicates: a yielded index-only `LogicalFilter` can only be realized by the gated
+  rule, so a second guard there would be a redundant second authority for the same property (B4).
+- **`validateNoIndexOnlyResidual` in `Plan()` is RETAINED as the catch-all physical-walk net (B3)**: Go has
+  other physical-filter builders the gate does not see (`ImplementSimpleSelectRule`, the NLJ residual builder,
+  `ImplementIndexScanRule`), and an index-only predicate in the ORIGINAL query (a join's `SelectExpression`
+  predicate) reaches a physical residual through them. `findIndexOnlyLogicalResidual` covers the complementary
+  case where the gate leaves the best plan non-physical. Retiring the net requires gating or retiring every
+  such builder first — registered as RFC-175 §2 C4 (needs its own RFC + review cycle).
+- **Sentinels:** `TestVectorPlan_QualifyPlansToVectorScan` (must plan),
+  `TestVectorPlan_MetricMismatchInJoinDoesNotLeak` (physical-net catch),
+  `TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual` (stays unplannable via
+  `compensationSafeForYield`'s inner-scan guard, which B4 kept).

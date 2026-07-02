@@ -51,9 +51,9 @@ type Planner struct {
 	// planningExpressionRules are ExpressionRules that fire during
 	// PLANNING (not EXPLORE). They yield into InsertFinal so their
 	// results go to finalMembers and are authoritative for plan
-	// selection. This is the "BatchA→PLANNING migration": scan/filter/
-	// agg rules that produce physical wrappers fire here with full
-	// constraint and ordering information available.
+	// selection: the scan/filter/agg rules that produce physical
+	// wrappers (BatchAExpressionRules in production) fire here, with
+	// full constraint and ordering information available.
 	planningExpressionRules []ExpressionRule
 
 	// MaxTasks caps the total tasks executed before the planner
@@ -150,9 +150,9 @@ func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
 // WithPlanningExpressionRules adds ExpressionRules that fire during
 // PLANNING's bottom-up implementation pass. Unlike EXPLORE-phase
 // expression rules (which yield to members via Insert), these yield
-// to finalMembers via InsertFinal. This is the BatchA→PLANNING
-// migration: physical scan/filter/agg wrappers are produced during
-// PLANNING where constraint and ordering information is available.
+// to finalMembers via InsertFinal: physical scan/filter/agg wrappers
+// are produced during PLANNING, where constraint and ordering
+// information is available. Production passes BatchAExpressionRules.
 func (p *Planner) WithPlanningExpressionRules(rules []ExpressionRule) *Planner {
 	p.planningExpressionRules = append(PlanningExplorationRules(), rules...)
 	return p
@@ -348,38 +348,31 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 	}
 
-	// NOTE (RFC-150 Phase 2b — muzzle retired): a join-leg ref (one whose data-access
-	// match binds a parameter correlated to an outer quantifier) used to be muzzled here
-	// — its compensations were force-InsertFinal'd so a re-optimized standalone leg
-	// filter could not win and sever the join's correlation feed → 0 rows. That muzzle
-	// (`!refIsJoinLeg`) was a band-aid for a missing STRUCTURAL property. It is now
-	// replaced by the task-graph invariant (B1, unified_tasks.go): OptimizeInputsTask is
-	// pushed only for PHYSICAL parent members (Java CascadesPlanner.java:524), so a
-	// correlated leg's group is pruned to a winner ONLY as the inner child of the
-	// binding physical FlatMap (outer alias live) — never as a free-standing group. A
-	// correlated SUBSEL scan therefore cannot be stamped a standalone winner, so the
-	// leg compensation goes through the same standalone path as any ref. The
-	// compensationSafeForYield outer-correlation guard below stays as defense-in-depth.
+	// Join-leg refs take the same standalone consumption path as any other ref.
+	// What makes that safe is structural, not a guard here: OptimizeInputsTask is
+	// pushed only for PHYSICAL parent members (unified_tasks.go, Java
+	// CascadesPlanner.java:524), so a correlated leg's group is pruned to a winner
+	// only as the inner child of the binding physical join — never free-standing —
+	// and a correlated SUBSEL scan cannot be stamped a standalone winner.
+	// compensationSafeForYield's outer-correlation guard is defense-in-depth for
+	// the same property (RFC-150 §8).
 
-	// B4 re-entry / termination guard (RFC-148 §3c). yieldUnknown routes a logical
+	// Re-entry / termination guard (RFC-148 §3c): yieldUnknown routes a logical
 	// compensation into the EXPLORATORY set, so the enclosing ExploreGroupTask
-	// re-explores it and re-enters pushDataAccessTasks on this ref. Re-consuming the
-	// same matches re-yields compensations — deduped, but wasted work and a
-	// non-convergence risk if a fresh-alias compensation ever escapes structural
-	// dedup. Run the standalone consumption ONLY when the partial-match set has GROWN
-	// since the last consumption — NOT a "consumed-ever" gate, which would drop
-	// matches seeded mid-exploration (AdjustPartialMatchesForRef seeds across rounds).
+	// re-explores it and re-enters pushDataAccessTasks on this ref. Run the
+	// standalone consumption ONLY when the partial-match set has GROWN since the
+	// last consumption — a growth key, NOT a "consumed-ever" gate, which would
+	// drop matches seeded mid-exploration (AdjustPartialMatchesForRef seeds
+	// across rounds).
 	//
-	// The guard applies ONLY when there is NO requested ordering. A requested ordering
-	// can be propagated into this ref AFTER a first consumption at unchanged match
-	// count, and DataAccessForMatchPartition (which takes requestedOrderings) would
-	// then mint a sort-eliminating ordered scan that a count-only guard would wrongly
-	// suppress — and Go has no physical sort, so a missed ordered scan is a wrong /
-	// extra-sort plan shape, not merely slower. With an ordering present we re-consume
-	// every round (matching OLD, which had no guard at all); convergence there is
-	// bounded by Insert dedup + the 10-round cap. (Join legs are no longer exempt — the
-	// muzzle is retired, B1 above — so they take the same growth-keyed guard; the
-	// cross-candidate intersection below keeps its own hasIntersectionFinal guard.)
+	// The guard applies ONLY when there is NO requested ordering: an ordering can
+	// be propagated into this ref AFTER a first consumption at unchanged match
+	// count, and the sort-eliminating ordered scan it unlocks must not be
+	// suppressed (Go has no physical sort — a missed ordered scan is a wrong /
+	// extra-sort plan shape, not merely slower). With an ordering present we
+	// re-consume every round; convergence is bounded by Insert dedup + the
+	// 10-round cap (RFC-148 §3c addendum). The cross-candidate intersection below
+	// keeps its own hasIntersectionFinal guard.
 	runConsumption := true
 	if len(requestedOrderings) == 0 {
 		totalMatches := 0
@@ -403,19 +396,14 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 		exprs := DataAccessForMatchPartition(requestedOrderings, matches, p.ctx, nil)
 		for _, expr := range exprs {
-			// Every ref — including a join leg — takes the same path now (the muzzle is
-			// retired; B1's task-graph invariant prevents a correlated leg from being
-			// stamped a standalone winner). An UNSAFE logical compensation — one whose
-			// inner scan is a
-			// vector top-K / aggregate — is NOT narrowable by a post-filter (a residual
-			// applied after the top-K / grouping changes the result). It keeps the OLD
-			// InsertFinal path: it stays logical and the query correctly fails to plan if
-			// there is no physical alternative, rather than being re-optimized into a wrong
-			// plan. This inner-scan guard is the remaining SAFETY half of the retired
-			// isSimpleResidualCompensation allowlist (compensationSafeForYield). The
-			// separate index-only-predicate concern is now handled structurally by the Java
-			// !isIndexOnly() ImplementFilterRule gate + the validateNoIndexOnlyResidual
-			// catch-all backstop (Plan()), not by this compensation guard (RFC-151).
+			// An UNSAFE logical compensation — one whose inner scan is a vector
+			// top-K / aggregate — is NOT narrowable by a post-filter (a residual
+			// applied after the top-K / grouping changes the result). It goes to
+			// InsertFinal: it stays logical, and the query correctly fails to plan
+			// when no physical alternative exists rather than being re-optimized
+			// into a wrong plan. Index-only residuals are handled elsewhere — the
+			// ImplementFilterRule !isIndexOnly() gate plus the
+			// validateNoIndexOnlyResidual backstop in Plan() (RFC-151 §5).
 			if !isPhysical(expr) && !compensationSafeForYield(expr) {
 				ref.InsertFinal(expr)
 				continue
@@ -423,11 +411,9 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 			// Physical plan → final set (competes now). A SAFE logical compensation →
 			// exploratory set, re-optimized by the normal ExploreExprTask loop
 			// (ImplementFilterRule / InComparisonToExplodeRule / …) until it yields a
-			// RecordQueryPlan (Java CascadesRuleCall.yieldUnknownExpression). This replaces
-			// the surgical isSimpleResidualCompensation predicate-SHAPE allowlist, whose
-			// non-allowlisted shapes (IN, multi-predicate residuals) silently fell to a
-			// full scan — the rot. (RFC-148 §3a; the re-entry this creates is bounded by
-			// the match-growth guard above.)
+			// RecordQueryPlan (Java CascadesRuleCall.yieldUnknownExpression;
+			// RFC-148 §3a). The re-entry this creates is bounded by the match-growth
+			// guard above.
 			p.yieldUnknown(ref, expr)
 		}
 		stampOrderingWinners(ref, p.costModel)
@@ -509,10 +495,8 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 // physical RecordQueryPlan lands in the FINAL set (competes in winner selection
 // immediately); a logical compensation lands in the EXPLORATORY set and is
 // re-optimized by the normal ExploreExprTask loop (ImplementFilterRule,
-// InComparisonToExplodeRule, …) until it yields a physical plan. This replaces
-// the surgical isSimpleResidualCompensation allowlist + implementDataAccessCompensation
-// arm for standalone (non-join-leg) refs (RFC-148 §3a). Called only from
-// pushDataAccessTasks's standalone branch, under its match-growth re-entry guard.
+// InComparisonToExplodeRule, …) until it yields a physical plan (RFC-148 §3a).
+// Called only from pushDataAccessTasks, under its match-growth re-entry guard.
 func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.RelationalExpression) {
 	if isPhysical(expr) {
 		ref.InsertFinal(expr)
@@ -523,45 +507,39 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 
 // compensationSafeForYield reports whether a standalone logical data-access
 // compensation may be routed through yieldUnknown's exploratory re-optimization.
-// It is UNSAFE (kept on the OLD InsertFinal path) when its inner scan is a vector
+// It is UNSAFE (routed to InsertFinal instead) when its inner scan is a vector
 // top-K or aggregate scan: a residual applied AFTER the top-K / grouping changes
 // the result (you would post-filter the K rows, not the underlying set), so
-// re-optimizing it would mint a wrong plan. This is the remaining SAFETY guard of
-// the retired isSimpleResidualCompensation allowlist; the predicate-SHAPE
-// restrictions it also carried (IN-only, simple-comparison-only) — the actual rot —
-// are gone, so those shapes now yield and realize.
+// re-optimizing it would mint a wrong plan.
 //
-// An index-only predicate (a vector DistanceRank that no index serves) is NOT
-// guarded here anymore: that property is handled outside this function. Java's
-// `ImplementFilterRule` `!isIndexOnly()` matcher gate (rule_implement_filter.go)
-// stops THAT producer from building such a physical filter, and the legitimate
-// vector scan is consumed by the partial-match re-trigger in TransformExprTask
-// (the Java getNewPartialMatches() reaction). But Go has OTHER physical-filter
-// builders the gate does not cover (ImplementSimpleSelectRule, the NLJ residual
-// builder, ImplementIndexScanRule), so the catch-all validateNoIndexOnlyResidual
-// backstop in Plan() is RETAINED — it, not this function, is the authority that
-// rejects an index-only physical residual (pinned by
-// TestVectorPlan_MetricMismatchInJoinDoesNotLeak). Do NOT remove that net until
-// every such builder is gated/retired (TODO follow-up).
+// An index-only predicate (a vector DistanceRank that no index serves) is
+// deliberately NOT guarded here. Java's `ImplementFilterRule` `!isIndexOnly()`
+// matcher gate (rule_implement_filter.go) stops THAT producer from building such
+// a physical filter, and the legitimate vector scan is consumed by the
+// partial-match re-trigger in TransformExprTask (the Java getNewPartialMatches()
+// reaction). But Go has OTHER physical-filter builders the gate does not cover
+// (ImplementSimpleSelectRule, the NLJ residual builder, ImplementIndexScanRule),
+// so the catch-all validateNoIndexOnlyResidual backstop in Plan() is RETAINED —
+// it, not this function, is the authority that rejects an index-only physical
+// residual (pinned by TestVectorPlan_MetricMismatchInJoinDoesNotLeak). Do NOT
+// remove that net until every such builder is gated/retired (RFC-151 §5;
+// registered as RFC-175 §2 C4).
 // Sentinels: TestVectorPlan_QualifyPlansToVectorScan (must still plan) +
 // TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must stay
 // unplannable, via the inner-scan guard).
 func compensationSafeForYield(expr expressions.RelationalExpression) bool {
-	// Only a plain residual FILTER is a yield candidate — byte-identical to the OLD
-	// isSimpleResidualCompensation's leading `f, ok := expr.(*LogicalFilterExpression);
-	// if !ok { return false }`. A non-filter compensation (a SelectExpression with
-	// result compensation / pulled-up quantifiers from ForMatchCompensation.ApplyAllNeeded,
-	// a projection over a vector scan, …) stays on the OLD InsertFinal path. Without this
-	// top-level reject, such shapes would skip every guard below and fall through to
-	// "safe" → yieldUnknown, re-optimizing an unsafe residual the allowlist refused
-	// (review P2).
+	// Only a plain residual FILTER is a yield candidate. A non-filter compensation
+	// (a SelectExpression with result compensation / pulled-up quantifiers from
+	// ForMatchCompensation.ApplyAllNeeded, a projection over a vector scan, …)
+	// goes to InsertFinal. Without this top-level reject, such shapes would skip
+	// every guard below and fall through to "safe" → yieldUnknown, re-optimizing
+	// an unsafe residual.
 	f, ok := expr.(*expressions.LogicalFilterExpression)
 	if !ok {
 		return false
 	}
-	// A residual filter with no predicates is not a yield candidate (byte-identical
-	// to the OLD isSimpleResidualCompensation's `if len(preds) == 0 { return false }`;
-	// ForMatchCompensation.ApplyAllNeeded never produces one, but match the allowlist).
+	// A residual filter with no predicates is not a yield candidate
+	// (ForMatchCompensation.ApplyAllNeeded never produces one; reject defensively).
 	if len(f.GetPredicates()) == 0 {
 		return false
 	}
@@ -579,7 +557,7 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			case *physicalVectorIndexScanWrapper:
 				// A residual applied AFTER a self-limiting top-k vector scan
 				// changes the result (you would post-filter the K rows, not the
-				// underlying set) — UNSAFE, keep on the OLD InsertFinal path.
+				// underlying set) — UNSAFE, route to InsertFinal.
 				// But a residual over an ORDERED-STREAM scan (RFC-156 Phase B) is
 				// SAFE and CORRECT: the scan emits its full re-ranked horizon in
 				// distance order, so a Filter culls non-matching rows BEFORE the
@@ -619,54 +597,43 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 	// ComparisonRanges directly.
 	probeCorr := compensationProbeCorrelations(f)
 	for _, pred := range f.GetPredicates() {
-		// ROT-FIX (RFC-150, post-B1a): the predicate-SHAPE restriction the OLD
-		// isSimpleResidualCompensation carried (ComparisonPredicate-only, non-IN) is
-		// RETIRED. A compound/OR or IN residual now yields through yieldUnknown and
-		// re-optimizes to an index plan instead of silently degrading to a full scan.
-		// This was unsafe in Phase 1 only because materializing such a residual on a
-		// partition-SUBSEL join leg produced a nil-inner
-		// Fetch shell that the NLJ embedded → Fetch(<nil>) / 0 rows. B1a (nil-safe
-		// join-child selection, RFC-150 Phase 2a) closed that, so the materialized leg
-		// filter is no longer a degenerate winner. The outer-correlation +
-		// vector/aggregate-inner SAFETY guards remain.
+		// No predicate-SHAPE restriction here: compound/OR and IN residuals yield
+		// through yieldUnknown and re-optimize to an index plan (RFC-150 §8). The
+		// guards in this function are correlation / inner-scan SAFETY, not shape.
+		// Index-only predicates (vector DistanceRank) are likewise not guarded
+		// here — the !isIndexOnly() ImplementFilterRule gate is the single
+		// structural authority for that property; a second guard here would be a
+		// redundant second authority (RFC-151 §5).
 		//
-		// NOTE: an index-only predicate (vector DistanceRank) is NO LONGER guarded
-		// here. The Java !isIndexOnly() ImplementFilterRule gate (rule_implement_filter.go)
-		// is now the single structural authority: such a residual, even if yielded,
-		// cannot be realized to a physical filter, so it stays logical and surfaces the
-		// clean UnplannableIndexOnlyResidualError (planner.go Plan()). Guarding it here
-		// too would be a redundant second authority for the same property.
-		//
-		// OUTER-correlation guard (M2 0-row safety, NOT shape rot). A residual
-		// correlated to a non-local (OUTER) quantifier belongs at the JOIN, not a
-		// standalone leg filter. The bound-prefix correlation signal
+		// OUTER-correlation guard (0-row safety). A residual correlated to a
+		// non-local (OUTER) quantifier belongs at the JOIN, not a standalone leg
+		// filter. The bound-prefix correlation signal
 		// (matchBoundPrefixIsCorrelated) only inspects the PREFIX, so a leg whose
-		// correlation lives in the RESIDUAL — e.g. an unindexed `t.fk = o.id` alongside
-		// an indexed `t.k = 5` — is invisible to it; realizing such a compensation as a
-		// physical leg filter severs the join's correlation feed → Fetch(<nil>) / 0 rows
-		// (the PR-#201 shape). This guard remains as defense-in-depth even with B1's
-		// task-graph invariant in place (reviewer Piece-1 condition). Query-parameter
-		// ConstantObjectValue aliases are execution constants (not row correlations), so
-		// subtract them first.
+		// correlation lives in the RESIDUAL — e.g. an unindexed `t.fk = o.id`
+		// alongside an indexed `t.k = 5` — is invisible to it; realizing such a
+		// compensation as a physical leg filter severs the join's correlation
+		// feed → Fetch(<nil>) / 0 rows. Kept as defense-in-depth even with the
+		// task-graph invariant in place (RFC-150 §8). Query-parameter
+		// ConstantObjectValue aliases are execution constants (not row
+		// correlations), so subtract them first.
 		corr := predicates.GetCorrelatedToOfPredicate(pred)
 		deletePredicateConstantObjectAliases(pred, corr)
 		for alias := range corr {
 			if _, isLocal := local[alias]; isLocal {
 				continue
 			}
-			// A residual correlated to an OUTER alias is SAFE when the
+			// EXCEPTION: a residual correlated to an OUTER alias is SAFE when the
 			// compensation's own bound-prefix SCAN is already correlated to that
-			// same alias: the probe establishes the join's correlation feed (e.g.
-			// the inner U-leg `Scan(U,[id=t.fk])` is a T-driven PK probe), so this
-			// residual (`u.c = t.a`) is a SECONDARY filter on the already-bound
-			// probe, not the severed primary join key. This is the inverse of the
-			// PR-#201 shape, where the join key itself lives in the residual
-			// (`t.fk = o.id` over a constant-bound `Scan(T,[k=5])`, whose probe
-			// carries NO correlation) — there `o ∉ probeCorr` so the reject stands.
-			// Without this, the data-access path can never produce the cheap
-			// correlated index-nested-loop inner whenever a second, non-sargable
-			// cross-correlation predicate rides along (the probe-fed-residual case: drives the U
-			// full-scan O(N×M) instead of the T-driven U-PK-probe O(N)).
+			// same alias — the probe establishes the join's correlation feed
+			// (e.g. the inner U-leg `Scan(U,[id=t.fk])` is a T-driven PK probe),
+			// so this residual (`u.c = t.a`) is a SECONDARY filter on the
+			// already-bound probe, not the severed primary join key. When the
+			// join key itself lives in the residual (`t.fk = o.id` over a
+			// constant-bound `Scan(T,[k=5])`, whose probe carries NO correlation)
+			// `o ∉ probeCorr` and the reject stands. Without the exception, the
+			// data-access path could never produce the cheap correlated
+			// index-nested-loop inner whenever a second, non-sargable
+			// cross-correlation predicate rides along (RFC-150 §8).
 			if _, fedByProbe := probeCorr[alias]; fedByProbe {
 				continue
 			}
@@ -696,8 +663,8 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 // discriminator is the GAP, not mere unboundedness: a leading INEQUALITY (WHERE
 // zone>'z1' — bound prefix [], residual {zone} at index 0 = boundLen 0) has no gap
 // and IS admitted (LeadingInequalityResidual). A residual touching any
-// non-partition column (or a non-contiguous set) is not certified here and stays
-// on the OLD InsertFinal path.
+// non-partition column (or a non-contiguous set) is not certified here and is
+// routed to InsertFinal.
 func residualIsPartitionContiguous(
 	f *expressions.LogicalFilterExpression,
 	plan *plans.RecordQueryVectorIndexPlan,
@@ -875,9 +842,9 @@ type orderingHinter interface {
 // its ScanComparisons). The data-access scan (scanPlanExpression / the physical
 // scan wrappers) deliberately HIDES these at GetCorrelatedToWithoutChildren — the
 // path can SARG a correlated join key into a bare probe — so they are recovered
-// from the scan's comparison ranges, the value-level twin of D.2's
-// scanComparisonCorrelations. Used by compensationSafeForYield to tell a probe-fed
-// secondary residual (safe) from a severed primary-join-key residual (PR-#201).
+// from the scan's comparison ranges (scanComparisonCorrelations). Used by
+// compensationSafeForYield to tell a probe-fed secondary residual (safe) from a
+// severed primary-join-key residual (RFC-150 §8).
 func compensationProbeCorrelations(f *expressions.LogicalFilterExpression) map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	visited := map[expressions.RelationalExpression]struct{}{}
