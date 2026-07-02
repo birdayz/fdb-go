@@ -7,7 +7,7 @@ package values
 // variant of `AbstractArrayConstructorValue`).
 //
 // All children must produce values compatible with the declared
-// `ElementType`. The seed does NOT enforce per-element type
+// `ElementType`. Go does NOT enforce per-element type
 // validation at construction — Java's `injectPromotions` chain
 // handles type-coercion via `PromoteValue` wrappers; the planner is
 // expected to pre-resolve children to compatible types before
@@ -16,7 +16,7 @@ package values
 //
 // Result type: nullable Array(ElementType). Java's getResultType()
 // returns `Type.Array(elementType)` (always non-nullable since the
-// constructor produces a concrete array literal); the Go seed
+// constructor produces a concrete array literal); Go
 // matches by emitting `&ArrayType{Nullable: false, ElementType: ...}`.
 //
 // Empty-array case: an array constructor with zero children

@@ -7,7 +7,7 @@ package values
 // `CosineDistanceRowNumberValue` / `DotProductDistanceRowNumberValue`
 // — Java has FOUR concrete classes, one per metric.
 //
-// The Go seed UNIFIES the four into a single concrete type with a
+// The Go port UNIFIES the four into a single concrete type with a
 // `Metric` field discriminator. The Java distinction matters
 // because the K-NN match rule selects on the concrete class type;
 // the Go unified design makes K-NN rules switch on Metric instead

@@ -19,8 +19,8 @@ import (
 //
 // Optimization argument: TypeFilter is typically cheap (record-type
 // dispatch). Filter is potentially expensive (predicate evaluation).
-// Putting Filter "lower" in the tree gives downstream physical-plan
-// rules (B5 Batch A) a chance to push the predicate INTO the scan
+// Putting Filter "lower" in the tree gives the downstream data-access
+// / implementation rules a chance to push the predicate INTO the scan
 // itself (e.g. into a covering-index range scan).
 type PushFilterThroughTypeFilterRule struct {
 	matcher matching.BindingMatcher

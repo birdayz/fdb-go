@@ -30,7 +30,7 @@ import (
 // Java's TableFunctionExpression takes a `StreamingValue`
 // (interface marker). The Go port accepts `Value` directly —
 // caller is expected to pass a streaming-capable Value (RangeValue
-// today). The seed defers the type-check to caller; mismatched
+// today), and Go defers the type-check to caller; mismatched
 // callers surface as a degenerate result type.
 //
 // Result type: a QueriedValue typed at the streaming Value's
@@ -85,12 +85,13 @@ func (e *TableFunctionExpression) GetCorrelatedToWithoutChildren() map[values.Co
 // TableFunctionExpression AND its streamValue is pointer-equal to
 // ours.
 //
-// The seed conservatively requires pointer equality. A previous
-// version used a Name() fallback which produces false positives
-// for Values whose Name() returns a class-discriminating constant
-// (e.g. *FieldValue returns "field" for all instances). Same fix
-// as ExplodeExpression — when SemanticEquals over Values is
-// ported as a free function, this can broaden.
+// Pointer equality is deliberately conservative. A Name() fallback
+// is wrong here — it produces false positives for Values whose
+// Name() returns a class-discriminating constant (e.g. *FieldValue
+// returns "field" for all instances). Same contract as
+// ExplodeExpression: broadening to
+// values.SemanticEqualsUnderAliasMap changes memo dedup and needs
+// its own review cycle.
 func (e *TableFunctionExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
 	o, ok := other.(*TableFunctionExpression)
 	if !ok {

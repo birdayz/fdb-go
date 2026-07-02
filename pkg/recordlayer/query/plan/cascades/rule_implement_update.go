@@ -14,12 +14,12 @@ import (
 //	  →  UpdatePlan(target, [transforms], inner-physical)
 //
 // Per-row transform application happens at execution time (not
-// rule-fire time) — transforms pass through unchanged. The seed
-// rule structure is identical to ImplementInsert/Delete; the
+// rule-fire time) — transforms pass through unchanged. The rule
+// structure is identical to ImplementInsert/Delete; the
 // transforms-evaluation gating is in the executor, not the rule.
 //
 // Java's ImplementUpdateRule consults StoredRecordProperty for
-// dispatch; the seed always emits.
+// dispatch; Go always emits.
 type ImplementUpdateRule struct {
 	matcher matching.BindingMatcher
 }

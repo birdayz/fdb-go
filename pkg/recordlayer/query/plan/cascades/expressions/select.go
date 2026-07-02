@@ -33,13 +33,12 @@ const (
 // reference any of them.
 //
 // Three pieces of node-information:
-//   - resultValue: the Value describing the row this SELECT emits.
-//     For the seed, the SQL parser is responsible for constructing
-//     this Value (typically a RecordConstructorValue over the
-//     projection list).
-//   - quantifiers: the FROM-list inputs. Children are commutative
-//     (same caveat as Union — positional SemanticEquals here, full
-//     alias-permutation matcher lands in B2 follow-on).
+//   - resultValue: the Value describing the row this SELECT emits
+//     (constructed by the translator, typically a
+//     RecordConstructorValue over the projection list).
+//   - quantifiers: the FROM-list inputs. Commutative for INNER/CROSS
+//     join types only — see ChildrenAsSet below; the permutation-aware
+//     SemanticEquals covers the reordering for those.
 //   - predicates: the WHERE clause, as a list to be AND'd. Empty
 //     list = no WHERE.
 //
@@ -47,9 +46,9 @@ const (
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.SelectExpression`.
 // Java's full implementation also memoises a PartiallyOrderedSet
 // correlation order, an independent-quantifiers partitioning, and a
-// conjuncted-predicate handle. Those are derived projections on top
-// of the three seed fields and land when their consumers (rules in
-// B5, the Memo in B3) actually need them.
+// conjuncted-predicate handle. Go derives those on demand in their
+// consumers (PartitionSelectRule computes the correlation order and
+// partitioning) instead of memoising them on the node.
 type SelectExpression struct {
 	resultValue     values.Value
 	quantifiers     []Quantifier
@@ -164,8 +163,8 @@ func (e *SelectExpression) CanCorrelate() bool { return true }
 // whose NULL-extension is DIRECTIONAL — `A LEFT JOIN B` != `B LEFT JOIN A`
 // — so the set marker must narrow to the commutative join types. Were it
 // left unconditionally true, matchChildrenInMemo would permute a left
-// join's quantifiers and intern swapped left joins into one Reference
-// (REVIEW.md #215). The swap-EXPLORATION guards (expression_matcher,
+// join's quantifiers and intern swapped left joins into one Reference.
+// The swap-EXPLORATION guards (expression_matcher,
 // implementation_rule, unified_tasks) are a separate concern — they
 // suppress GENERATING an invalid commuted alternative; this controls memo
 // dedup, and findCandidateParents is order-insensitive, so the property

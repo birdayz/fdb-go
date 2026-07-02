@@ -10,20 +10,20 @@ package values
 // `CreatesDynamicTypesValue`) — its primary eval path is
 // `evalAsStream` which returns a `RecordCursor<QueryResult>`. The
 // scalar `eval` method throws because per-row evaluation makes no
-// sense for a table-function. The Go seed mirrors this: Evaluate
+// sense for a table-function. Go mirrors this: Evaluate
 // returns nil per the placeholder pattern, and a separate
 // EvaluateAsStream method materialises the finite range as `[]int64`
 // for testability.
 //
 // Result type: a 1-column record with LONG-valued column "ID" — the
-// row shape Java's currentRangeValue produces. The seed exposes the
+// row shape Java's currentRangeValue produces. Go exposes the
 // element type (NotNullLong) directly via Type since record-typed
 // returns are awkward without StreamingValue / record-type
 // sub-shape support; consumers that care about the row shape can
 // wrap in a RecordConstructorValue.
 //
 // Cardinality is statically known when begin/end/step all evaluate
-// to constants — useful for the cost model to estimate. The seed
+// to constants — useful for the cost model to estimate. Go
 // exposes Cardinality() with the same `floorDiv(end-begin, step)`
 // formula Java uses.
 type RangeValue struct {
@@ -56,7 +56,7 @@ func (*RangeValue) Name() string { return "range" }
 // Type returns NotNullLong — the element type of the produced range.
 //
 // Note: Java's getResultType() returns Type.Record (a 1-column
-// record with LONG-valued "ID"). The Go seed exposes the element
+// record with LONG-valued "ID"). Go exposes the element
 // type directly because record-typed Type wrappers without proper
 // StreamingValue support would force the seed to introduce the
 // streaming infrastructure piecemeal. Wrapping in a
@@ -66,7 +66,7 @@ func (*RangeValue) Type() Type { return NotNullLong }
 
 // Evaluate is a placeholder — RangeValue is a streaming Value;
 // per-row eval makes no sense. Java throws IllegalStateException;
-// the Go seed surfaces nil per the existing placeholder pattern.
+// Go surfaces nil per the existing placeholder pattern.
 //
 // Use EvaluateAsStream for the materialised range expansion.
 func (*RangeValue) Evaluate(any) (any, error) { return nil, nil }

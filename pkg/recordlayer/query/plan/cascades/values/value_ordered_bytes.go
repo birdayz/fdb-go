@@ -58,11 +58,11 @@ func (d OrderedBytesDirection) IsAscending() bool {
 // Java's eval calls `TupleOrdering.pack(Key.Evaluated.scalar(child),
 // direction)` — packs the child as a 1-element FDB tuple, then
 // applies direction-aware encoding (DESC inverts bits / reverses
-// NULL placement). The Go seed defers eval to a future shift that
-// wires `tuple.PackOrdered` (the equivalent Go API) — for now the
-// Value-shape is reachable but eval returns nil per the
-// "non-evaluable yet" placeholder pattern shared with VersionValue
-// / IncarnationValue / ObjectValue.
+// NULL placement). Go's direction-aware encoding exists on the index
+// side (pkg/recordlayer/order_function_key_expression.go) but is NOT
+// wired into this Value's Evaluate — eval returns nil per the
+// non-evaluable placeholder pattern shared with VersionValue /
+// IncarnationValue / ObjectValue.
 //
 // Result type: NotNullBytes. Even when the child is NULL, the
 // encoding produces a sentinel byte sequence, so the byte output is
@@ -159,7 +159,7 @@ func (*FromOrderedBytesValue) Name() string { return "from_ordered_bytes" }
 // Type returns the target type — the decoded value's natural type.
 // Note: Java's getResultType() returns the target type made nullable,
 // since decoding may produce NULL for the NULL-sentinel byte
-// sequence. The Go seed mirrors that — wraps target in nullable.
+// sequence. Go mirrors that — wraps target in nullable.
 func (v *FromOrderedBytesValue) Type() Type {
 	if v.TargetType == nil {
 		return UnknownType

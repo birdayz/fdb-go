@@ -129,22 +129,18 @@ func findInnerQuantifierForInLikeSelect(
 	}
 
 	// Java checks: innerQuantifier.getCorrelatedTo().containsAll(explodeAliases).
-	// Quantifier.GetCorrelatedTo() currently returns the empty set in Go
-	// (seed limitation). However, in the IN-like pattern the inner
-	// quantifier's Reference is structurally correlated to all explode
-	// aliases because the inner plan's predicates bind explode values.
-	// The ImplementInJoinRule / ImplementInUnionRule already validate
-	// this structural property, so the check here is a guard only.
-	// We replicate the Java check structure; when Quantifier.GetCorrelatedTo
-	// gains a real implementation this will be fully functional.
+	// Quantifier.GetCorrelatedTo() returns the empty set in Go (the
+	// divergence registered in DIVERGENCES.md), so this guard CANNOT
+	// reject and is retained structure-only. That is safe here: in the
+	// IN-like pattern the inner quantifier's Reference is structurally
+	// correlated to all explode aliases (the inner plan's predicates
+	// bind explode values), and ImplementInJoinRule /
+	// ImplementInUnionRule perform the real structural check
+	// downstream. If GetCorrelatedTo is ever delegated to the
+	// Reference walk, let this check reject properly.
 	correlatedTo := inner.GetCorrelatedTo()
 	for alias := range explodeAliases {
 		if _, found := correlatedTo[alias]; !found {
-			// Guard disabled: correlatedTo is empty in the seed. Java
-			// would reject, but the downstream implementation rules
-			// (InJoin, InUnion) perform the real structural check.
-			// When GetCorrelatedTo is implemented, remove this comment
-			// and let the check reject properly.
 			_ = alias
 		}
 	}

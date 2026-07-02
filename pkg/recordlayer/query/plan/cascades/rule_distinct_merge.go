@@ -9,9 +9,8 @@ import (
 // a single LogicalDistinct(X) — DISTINCT is idempotent.
 //
 // Java equivalent: there's no dedicated rule (the Cascades cost model
-// would naturally prefer the single-Distinct shape), but the
-// transformation is uncontroversial and lets the seed exercise a
-// second RelationalExpression rule.
+// would naturally prefer the single-Distinct shape); Go applies the
+// uncontroversial static rewrite directly.
 type DistinctMergeRule struct {
 	matcher matching.BindingMatcher
 }

@@ -154,10 +154,11 @@ func (r *Reference) Absorb(loser *Reference) {
 	loser.forwardedTo = r
 }
 
-// Get returns the (first) member. For seed References this is the only
-// member; once the Memo lands, callers will iterate via Members instead.
-// Returns nil if the Reference is empty (shouldn't happen for
-// seed-constructed References — guards against future Memo bugs).
+// Get returns the (first) member — the convenience accessor for
+// single-member References (fresh InitialOf refs, matcher bindings);
+// explored multi-member refs are iterated via Members / AllMembers.
+// Returns nil if the Reference is empty (defensive; InitialOf never
+// constructs one).
 func (r *Reference) Get() RelationalExpression {
 	r = r.Canonical()
 	if len(r.members) == 0 {
@@ -273,7 +274,7 @@ func (r *Reference) HasWinnersOrMatches() bool {
 //  1. Fast path: EqualsWithoutChildren on the local node + pointer-
 //     identity on every Quantifier's child Reference. Hits when a
 //     rule yields output that reuses the input's existing Quantifiers
-//     (the pattern most seed rules follow). O(1) check.
+//     (the pattern most rules follow). O(1) check.
 //  2. SemanticEquals walk (recursive structural match with alias-aware
 //     child comparison, under the EmptyAliasMap = alias-IDENTITY at the
 //     top level). Catches the case where a rule yields output wrapping a
@@ -318,8 +319,8 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	for _, m := range r.members {
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
-		// reuses the input's existing Quantifiers (the pattern most of
-		// the seed rules follow).
+		// reuses the input's existing Quantifiers (the pattern most
+		// rules follow).
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
 			return false
 		}

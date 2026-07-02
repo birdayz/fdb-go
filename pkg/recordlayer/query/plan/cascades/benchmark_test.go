@@ -10,10 +10,9 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// Micro-benchmarks for the Phase 4.0 cascades seed. These aren't
-// a performance gate today — they're here so subsequent shifts can
-// detect regressions as the real Value + predicate hierarchies
-// land.
+// Micro-benchmarks for the cascades planner primitives. These aren't
+// a performance gate — they exist so Value / predicate / planner
+// regressions show up in `just bench` comparisons.
 
 func BenchmarkConstantValue_Evaluate(b *testing.B) {
 	v := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}

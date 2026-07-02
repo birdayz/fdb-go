@@ -36,12 +36,9 @@ func DeconstructRecord(v Value) []Value {
 		return out
 	}
 	// For other record-typed Values, build FieldValue accessors per
-	// field. The seed reads the field-name list from a hypothetical
-	// `RecordType` shape — without a richer Type system the Go port
-	// can't enumerate the field names from v.Type() alone, so this
-	// branch returns nil. When Type.Record gets real GetFields()
-	// support, this branch can build [FieldValue(v, fields[0]),
-	// FieldValue(v, fields[1]), ...] mirroring Java's behaviour.
+	// field by enumerating the *RecordType's Fields — mirroring
+	// Java's behaviour. Record-typed Values whose Type is not a
+	// *RecordType (erased / unknown shapes) return nil below.
 	rt := v.Type()
 	if rt == nil {
 		return nil

@@ -19,8 +19,8 @@ import (
 // no-row-emission no-op.
 //
 // Java equivalent: the planner would naturally derive this via the
-// type-narrowing rules. The seed implements it directly to exercise
-// rule logic that touches node-information set arithmetic.
+// type-narrowing rules. Go implements it directly as a static
+// rewrite.
 type TypeFilterMergeRule struct {
 	matcher matching.BindingMatcher
 }

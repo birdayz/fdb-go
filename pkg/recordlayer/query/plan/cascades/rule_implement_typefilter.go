@@ -17,7 +17,7 @@ import (
 //
 // Java's ImplementTypeFilterRule consults PlanPartition properties
 // to filter only over partitions producing stored records (not
-// covering-index partitions); the seed always emits the simple
+// covering-index partitions); Go always emits the simple
 // type-filter.
 type ImplementTypeFilterRule struct {
 	matcher matching.BindingMatcher

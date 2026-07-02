@@ -20,9 +20,9 @@ import (
 // returns the CollectionValue's correlation set.
 //
 // Result type: the array's element type wrapped in a QueriedValue
-// (the seed exposes Type via the CollectionValue's array element
-// type — caller is expected to verify the CollectionValue's Type
-// is an ArrayType before constructing).
+// (Type is derived from the CollectionValue's array element type —
+// caller is expected to verify the CollectionValue's Type is an
+// ArrayType before constructing).
 type ExplodeExpression struct {
 	collectionValue values.Value
 	// withOrdinality, when true, makes the Explode produce a 2-field
@@ -35,7 +35,7 @@ type ExplodeExpression struct {
 // NewExplodeExpression builds a non-ordinal Explode over the given
 // collection Value. Caller is responsible for ensuring the
 // CollectionValue's Type is an ArrayType (Java's constructor uses
-// Verify.verify; the Go seed defers the check to caller — invalid
+// Verify.verify; Go defers the check to caller — invalid
 // construction surfaces as a degenerate result type).
 func NewExplodeExpression(collection values.Value) *ExplodeExpression {
 	return &ExplodeExpression{collectionValue: collection}
@@ -122,10 +122,12 @@ func (e *ExplodeExpression) GetCorrelatedToWithoutChildren() map[values.Correlat
 // EqualsWithoutChildren is true iff `other` is an ExplodeExpression
 // AND its CollectionValue is pointer-equal to ours.
 //
-// The seed conservatively requires pointer equality on the
-// CollectionValue. Java's `collectionValue.semanticEquals(...)`
-// would dispatch through a structural-equality walker, but that's
-// gated on porting `values.SemanticEquals` as a free function.
+// Pointer equality on the CollectionValue is deliberately
+// conservative: Java's `collectionValue.semanticEquals(...)`
+// dispatches through a structural walker
+// (values.SemanticEqualsUnderAliasMap is the Go equivalent), but
+// loosening memo dedup to it changes which members merge and needs
+// its own review cycle.
 //
 // A previous version used a `Name()`-fallback which produced false
 // positives — `*FieldValue` (and several other concrete Values)

@@ -16,16 +16,17 @@ package values
 // Evaluate semantics:
 //   - Returns true if the child's evaluated value matches ExpectedType.
 //   - Returns nil (UNKNOWN) if the child evaluates to nil — NULL is
-//     compatible with any nullable type but the seed treats it as
-//     UNKNOWN to be conservative; a follow-up shift can extend the
-//     rule when nullable / non-nullable semantics matter.
+//     compatible with any nullable type but Go conservatively
+//     reports UNKNOWN; extend the rule if nullable / non-nullable
+//     semantics ever matter to a consumer.
 //   - Returns false otherwise.
 //
 // Type is always nullable boolean (Kleene-3VL guarded).
 //
-// The seed implementation is a Type-code match (TypeCodeBoolean ==
-// TypeCodeBoolean). It does NOT walk RecordType / ArrayType
-// structurally; that's a future extension.
+// The implementation is a Type-code match (TypeCodeBoolean ==
+// TypeCodeBoolean). It deliberately does NOT walk RecordType /
+// ArrayType structurally — no consumer compares structured types
+// here; extend the match if one appears.
 type OfTypeValue struct {
 	Child        Value
 	ExpectedType Type
@@ -53,10 +54,10 @@ func (*OfTypeValue) Type() Type { return NullableBoolean }
 // Evaluate checks the child's runtime value against ExpectedType
 // via TypeCode match. Returns nil if either operand is nil-shaped.
 //
-// The seed compares only TypeCodes — TypeCodeBoolean matches a
+// Go compares only TypeCodes — TypeCodeBoolean matches a
 // runtime bool, TypeCodeLong matches a runtime int64, etc. Field-
 // level structural comparison (e.g. RecordType field-set match) is
-// gated on a future extension.
+// not implemented; extend if a consumer compares structured types.
 //
 // CONFORMANCE: matches Java's OfTypeValue.eval semantics:
 //  1. NULL probe → returns ExpectedType.IsNullable().
@@ -67,16 +68,14 @@ func (*OfTypeValue) Type() Type { return NullableBoolean }
 //
 // Verified against Java's OfTypeValueTest: `OfType(42 (int), LONG)`
 // returns FALSE in Java even though INT is promotable to LONG in
-// other contexts. The seed matches this strict primitive behavior.
+// other contexts. Go matches this strict primitive behavior.
 //
-// Two Java branches NOT yet replicated:
+// Two Java branches NOT replicated (Go has no consumer that feeds
+// this Value proto messages or non-primitive promotions):
 //   - DynamicMessage probe → returns `expectedType.isRecord()`.
 //   - Non-primitive cross-type promotion via PromoteValue.
 //     resolvePhysicalOperator (only triggers for non-primitive
 //     sources — records, arrays).
-//
-// Both gated on proto-record-shape introspection / cross-type
-// promotion machinery — wired-when-execution-lands.
 func (v *OfTypeValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil || v.ExpectedType == nil {
 		return nil, nil

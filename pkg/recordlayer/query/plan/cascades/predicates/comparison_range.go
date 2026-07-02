@@ -147,7 +147,7 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 		if c.Type != ComparisonEquals {
 			return MergeResult{Ok: false, Residual: c}
 		}
-		// Two equality comparisons must agree. The seed compares via
+		// Two equality comparisons must agree. Go compares via
 		// the wrapped Operand's ExplainValue (structural string
 		// match) — no alias context needed because operands at this
 		// stage are typically literals.
@@ -182,7 +182,7 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 // residual filters); it does NOT silently accept a wrong merge
 // (which would drop a predicate). Sound for SQL semantics; only
 // cost (extra residual filter) is at risk on non-literal Operand
-// rendering drift. The seed's Merge callers pass literal Operands
+// rendering drift. Merge's callers pass literal Operands
 // only, so the renderable-string contract is reliable in practice.
 func comparisonsEqualValue(a, b *Comparison) bool {
 	if a == nil || b == nil {

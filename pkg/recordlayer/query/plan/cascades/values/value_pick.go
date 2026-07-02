@@ -14,7 +14,7 @@ package values
 // CONFORMANCE: matches Java's eval — Selector evaluates to an
 // integer; alternatives[selector] is then evaluated. NULL selector
 // → NULL. Out-of-bounds selector returns nil (defensive; Java
-// would throw IndexOutOfBoundsException — the seed swallows for
+// would throw IndexOutOfBoundsException — Go swallows for
 // the row-eval contract).
 //
 // Type is the bound result type (Java's constructor resolves it

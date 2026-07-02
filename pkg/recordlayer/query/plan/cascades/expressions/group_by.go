@@ -73,7 +73,7 @@ func IsCountStar(agg AggregateSpec) bool {
 // structural level needed for the Cascades planner.
 //
 // Java's version uses rich Value types (RecordConstructorValue for
-// grouping, AggregateValue for aggregates). The seed simplifies:
+// grouping, AggregateValue for aggregates). Go simplifies:
 // groupingKeys is a list of Values (typically FieldValues), aggregates
 // is a list of function+operand pairs.
 type GroupByExpression struct {

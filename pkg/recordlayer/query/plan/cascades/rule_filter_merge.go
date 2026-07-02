@@ -23,13 +23,7 @@ import (
 //	  inner: ForEachQuantifier → Reference holding X
 //
 // Java equivalent: LogicalFilterMergeRule (or the equivalent
-// SimplifyFilterRule) in `cascades/rules/`. Our seed lands the
-// transformation directly here; once the rules sub-package splits
-// (RFC-025 Phase 2) this moves alongside its peers.
-//
-// First RelationalExpression rule in the codebase — proves the B1 +
-// B3 seed plumbing (Reference / Quantifier / ExpressionRuleCall +
-// ExpressionMatcher) holds together end-to-end.
+// SimplifyFilterRule) in `cascades/rules/`.
 type FilterMergeRule struct {
 	matcher matching.BindingMatcher
 }

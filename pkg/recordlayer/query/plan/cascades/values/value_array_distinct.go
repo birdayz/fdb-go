@@ -12,9 +12,9 @@ import "bytes"
 // `Stream.distinct()` applied (first-seen order). NULL input
 // propagates to NULL.
 //
-// Type matches the Child's array Type (the seed assumes the Child
+// Type matches the Child's array Type (Go assumes the Child
 // produces an array — Java's constructor `Verify.verify(innerResultType.isArray())`
-// enforces this; the seed accepts a Value of any Type but the
+// enforces this; Go accepts a Value of any Type but the
 // Evaluate degrades to nil if Child doesn't return a slice).
 type ArrayDistinctValue struct {
 	Child Value

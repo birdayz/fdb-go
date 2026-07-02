@@ -6,7 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// QueryPredicate hierarchy — seed.
+// QueryPredicate hierarchy.
 //
 // Ports Java's
 // `com.apple.foundationdb.record.query.plan.cascades.predicates.
@@ -19,18 +19,20 @@ import (
 // (true / false / nil-for-UNKNOWN) — mirrors the embedded
 // engine's `triBool`.
 //
-// Seed types:
+// Core types:
 //
 //   - ConstantPredicate — literal true / false / UNKNOWN.
 //   - AndPredicate / OrPredicate — Kleene AND/OR over children.
 //   - NotPredicate — Kleene NOT.
 //   - ValuePredicate — bare boolean Value used as predicate.
 //
-// Follow-up work adds: ComparisonRange (see Java's
-// `ComparisonRange` aggregator), `Placeholder` (rule-match
-// parameter binding), `PredicateWithValueAndRanges`.
-// ComparisonPredicate lives in comparisons.go (paired with the
-// Comparison / ComparisonType carriers).
+// Also in this package: ComparisonRange (comparison_range.go, Java's
+// aggregator), Placeholder (placeholder.go, rule-match parameter
+// binding), PredicateWithValueAndRanges
+// (predicate_with_value_and_ranges.go), and the existential bridge
+// (existential_value_predicate.go). ComparisonPredicate lives in
+// comparisons.go (paired with the Comparison / ComparisonType
+// carriers).
 
 // TriBool is the SQL 3-valued logic result. A nil pointer is
 // UNKNOWN; otherwise the bool value is true or false. Chose a
@@ -104,10 +106,10 @@ func PredicateSize(p QueryPredicate) int {
 // compares by operand Name + Comparison (Type + Operand literal);
 // ValuePredicate compares by wrapped Value Name.
 //
-// Used by future dedup rules (e.g. `AND(p, p)` → `p`,
-// `OR(x, NOT x)` → TRUE). Seed doesn't ship those rules yet, but the
-// equality helper belongs with the predicate types themselves so
-// rule authors don't roll their own.
+// Used by the dedup / normalization rules (AndDedupRule /
+// OrDedupRule / the absorption rules in rule_simplify.go,
+// NormalizePredicatesRule); the equality helper belongs with the
+// predicate types themselves so rule authors don't roll their own.
 func PredicateEquals(a, b QueryPredicate) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -193,8 +195,10 @@ type QueryPredicate interface {
 
 	// Eval returns the predicate's truth value given an
 	// opaque evaluation context. Concrete eval context is
-	// impl-defined; the seed predicates ignore it. A non-nil
-	// error signals a runtime evaluation failure (e.g. a
+	// impl-defined: ValuePredicate / ComparisonPredicate thread it
+	// into their operand Values' Evaluate; the boolean connectives
+	// thread it to their children; ConstantPredicate ignores it. A
+	// non-nil error signals a runtime evaluation failure (e.g. a
 	// type-mismatch comparison or an erroring child Value); the
 	// returned TriBool is TriUnknown in that case.
 	Eval(evalCtx any) (TriBool, error)

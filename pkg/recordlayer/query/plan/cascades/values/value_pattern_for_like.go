@@ -35,7 +35,7 @@ import "strings"
 //   - exactly 1 character → escape-aware transformation
 //     (escape+`_` → literal `_`, escape+`%` → literal `%`).
 //   - other length → returns nil (Java throws SemanticException;
-//     Go's seed defers to evaluator-side reporting). Documented as
+//     Go defers to evaluator-side reporting). Documented as
 //     a planner-checked precondition.
 //
 // Java's `LikeOperatorValue.likeOperation` calls
@@ -88,7 +88,7 @@ func (v *PatternForLikeValue) Evaluate(evalCtx any) (any, error) {
 			s, ok := raw.(string)
 			if !ok || len(s) != 1 {
 				// Java throws SemanticException.ESCAPE_CHAR_OF_LIKE_OPERATOR_IS_NOT_SINGLE_CHAR;
-				// the seed surfaces this as nil to the eval contract.
+				// Go surfaces this as nil to the eval contract.
 				return nil, nil
 			}
 			esc = s

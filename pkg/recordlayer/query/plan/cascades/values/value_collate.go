@@ -26,14 +26,14 @@ package values
 //
 // Result type: NotNullBytes. Even when the input string is NULL,
 // the produced sort key is a sentinel byte sequence (Java's
-// behaviour); the seed surfaces nil in that branch and defers the
-// real sentinel to TextCollator integration.
+// behaviour); Go surfaces nil in that branch (no sentinel).
 //
-// Eval is a placeholder — real eval needs Go's collation machinery
-// (`golang.org/x/text/collate.Collator`) wired through. The
-// Value-shape is reachable for parser / planner / serialisation
-// work today; runtime integration lands when collation-aware index
-// construction is needed.
+// Eval is a placeholder: the collation machinery exists on the
+// index side (pkg/recordlayer/collate_function_key_expression.go
+// wires golang.org/x/text/collate) but is NOT wired into this
+// Value's Evaluate. The Value-shape is reachable for parser /
+// planner / serialisation work; a query that needs runtime COLLATE
+// evaluation must wire that machinery through here first.
 type CollateValue struct {
 	StringChild   Value
 	LocaleChild   Value // nil = use registry default locale

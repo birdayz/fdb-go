@@ -14,7 +14,7 @@ package values
 //
 // Non-evaluable: ObjectValue is a placeholder; specialized
 // evaluation paths (quantifier dereferencing, etc.) handle it
-// before reaching the per-row Eval contract. The seed Evaluate
+// before reaching the per-row Eval contract. Evaluate
 // returns nil to make the no-row-eval contract explicit.
 type ObjectValue struct {
 	Alias      CorrelationIdentifier

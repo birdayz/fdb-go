@@ -19,9 +19,9 @@ package expressions
 //
 // Walk visits each RelationalExpression at most once per Reference
 // occurrence — if two Quantifiers in the tree range over the same
-// Reference, the inner expression is visited twice. Future MaxMatchMap
-// integration will introduce visited-Reference tracking; the seed
-// keeps the walk simple.
+// Reference, the inner expression is visited twice. The walk
+// deliberately carries no visited-Reference set; callers that need
+// once-per-Reference semantics track visits in the `visit` callback.
 func Walk(e RelationalExpression, visit func(RelationalExpression) bool) {
 	if e == nil {
 		return

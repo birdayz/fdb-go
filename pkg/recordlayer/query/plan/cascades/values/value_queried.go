@@ -10,7 +10,7 @@ package values
 // specialized planner rewrites resolve it to concrete Field /
 // QuantifiedObject values before reaching the row-eval layer.
 //
-// The seed accepts an optional record-type-name list and a result
+// Go accepts an optional record-type-name list and a result
 // Type. Both are advisory; the actual type comes from the queried
 // record store's metadata at execution time.
 type QueriedValue struct {

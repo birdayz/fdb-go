@@ -18,8 +18,8 @@ import (
 // further (`NOT TRUE` → FALSE, `OR(FALSE, FALSE)` → FALSE, etc.).
 //
 // **Not part of DefaultSimplifyRules.** Java applies De Morgan as a
-// separate normalisation pass (`BooleanNormalizer`); the seed
-// Simplify driver runs only constant-fold + identity-drop +
+// separate normalisation pass (`BooleanNormalizer`); the
+// DefaultSimplifyRules set runs only constant-fold + identity-drop +
 // absorbing-element + leaf-NOT-rewrite. Use NormalizationRules() (or
 // build a custom rule list) when De Morgan is desired.
 type DeMorganRule struct {

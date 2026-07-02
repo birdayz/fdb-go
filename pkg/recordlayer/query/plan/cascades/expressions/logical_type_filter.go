@@ -15,9 +15,9 @@ import (
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalTypeFilterExpression`.
 // Java's full implementation tracks a `recordTypePredicate`, a
 // `resultType`, and integrates with the type-narrowing PullUp /
-// MaxMatchMap machinery. The seed keeps just the record-type set and
-// the inner Quantifier; the result Type narrowing lands when its
-// consumer (the index-pushdown rule batch) is ported.
+// MaxMatchMap machinery. Go keeps just the record-type set and the
+// inner Quantifier — no consumer depends on the narrowed static
+// result Type (see GetResultValue below).
 type LogicalTypeFilterExpression struct {
 	recordTypes []string // sorted; canonical form for equality + hash
 	inner       Quantifier
@@ -53,10 +53,10 @@ func (e *LogicalTypeFilterExpression) GetRecordTypes() []string { return e.recor
 // GetInner returns the inner Quantifier.
 func (e *LogicalTypeFilterExpression) GetInner() Quantifier { return e.inner }
 
-// GetResultValue — the seed passes the inner's flowed object through.
-// When Type narrowing lands (alongside the type-narrow rule batch),
-// this returns a QuantifiedObjectValue whose Type is the narrow
-// union-of-recordTypes.
+// GetResultValue passes the inner's flowed object through UNNARROWED.
+// Java's resultType is the narrowed union-of-recordTypes; narrow here
+// (a QuantifiedObjectValue typed at that union) if a consumer ever
+// depends on the narrowed static Type.
 func (e *LogicalTypeFilterExpression) GetResultValue() values.Value {
 	return e.inner.GetFlowedObjectValue()
 }

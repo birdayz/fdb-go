@@ -57,7 +57,7 @@ func (w *WindowedValue) Children() []Value {
 // Evaluate returns nil — windowed aggregates can't eval per-row
 // without a full partition context. Concrete subclasses MAY override
 // to evaluate against a window-frame harness (see RankValue.Evaluate
-// for the rank-tracking eval seed).
+// for the rank-tracking eval pattern).
 func (*WindowedValue) Evaluate(any) (any, error) { return nil, nil }
 
 // SplitNewChildren splits a flat newChildren slice back into

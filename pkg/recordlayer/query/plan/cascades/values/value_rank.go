@@ -15,13 +15,13 @@ package values
 // Result type: NotNullLong. RANK over an empty partition still
 // produces 1 for the first row; never NULL.
 //
-// Eval: window-aware. The seed accepts a row-shape evalCtx of
+// Eval: window-aware. Go accepts a row-shape evalCtx of
 //
 //	map[string]any{"_rank": int64(N)}
 //
 // — the test harness pattern. Real execution wires a
 // streaming-window accumulator that increments rank counters per
-// partition; the seed exposes the current rank via this side
+// partition; Go exposes the current rank via this side
 // channel so window-tagged Values are testable without the full
 // streaming framework.
 type RankValue struct {
@@ -53,7 +53,7 @@ func (*RankValue) Type() Type { return NotNullLong }
 // computed by the streaming window operator.
 //
 // Returns nil if evalCtx is nil / non-map / has no `_rank` key —
-// matches the placeholder-Value pattern used elsewhere in the seed.
+// matches the placeholder-Value pattern used elsewhere in the package.
 func (*RankValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil

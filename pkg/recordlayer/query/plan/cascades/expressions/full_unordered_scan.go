@@ -15,9 +15,8 @@ import (
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.FullUnorderedScanExpression`.
 // Java's full implementation includes an `AccessHints` set — a
 // hint-plumbing struct used by rules to communicate ordering
-// preferences to the executor. Hints land when a rule actually
-// consults them; the seed accepts the record-types set + flowed Type
-// only.
+// preferences to the executor. No Go rule consults access hints, so
+// Go carries the record-types set + flowed Type only.
 type FullUnorderedScanExpression struct {
 	recordTypes []string // sorted, deduped — canonical form for equality + hash
 	flowedType  values.Type
@@ -52,8 +51,8 @@ func (e *FullUnorderedScanExpression) GetFlowedType() values.Type {
 // CorrelationIdentifier-equivalent. We approximate by re-using a unique
 // CorrelationIdentifier per call, which means every read of
 // GetResultValue produces a distinct Value (Java caches in a
-// Suppliers.memoize). For the seed this is fine — callers that need
-// stable identity should bind via a Quantifier (which ranges over the
+// Suppliers.memoize). That is fine — callers that need stable
+// identity should bind via a Quantifier (which ranges over the
 // Reference holding this expression).
 //
 // The QOV flows e.flowedType (RFC-173 Slice 1): Java's scan quantifier

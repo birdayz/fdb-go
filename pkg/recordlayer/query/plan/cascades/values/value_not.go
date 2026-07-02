@@ -11,8 +11,9 @@ package values
 // route. Cascades rules that float between Value and QueryPredicate
 // representations need a Value-shaped NOT so the rebuild stays a
 // Value tree. Java's NotValue.toQueryPredicate() bridges back to
-// NotPredicate when the surrounding context calls for it; the seed
-// keeps the layers separate for now (no toQueryPredicate yet).
+// NotPredicate when the surrounding context calls for it; Go keeps
+// the layers separate — the only value→predicate bridge is the
+// EXISTS one (predicates/existential_value_predicate.go).
 //
 // Evaluate semantics — Kleene 3VL:
 //   - NOT TRUE = FALSE

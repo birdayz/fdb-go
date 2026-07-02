@@ -6,9 +6,9 @@ import (
 )
 
 // PushLimitThroughProjectionRule pushes a LIMIT below a Projection.
-// The Projection is a pure pass-through in the seed (row shape
-// unchanged) so the LIMIT can safely move below it — reduces the
-// number of rows the projection processes.
+// LogicalProjection is a pure row pass-through (row shape unchanged;
+// the projection list is a side channel) so the LIMIT can safely move
+// below it — reduces the number of rows the projection processes.
 //
 // Pattern:
 //

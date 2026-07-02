@@ -17,7 +17,7 @@ import "bytes"
 //
 // Java's InOpValue carries an `inListValue` Value (typically
 // LiteralValue wrapping a list, or a ListValue node), making it
-// possible to express IN against dynamic lists. The seed accepts a
+// possible to express IN against dynamic lists. Go accepts a
 // generic List Value field that can be a literal []any (for static
 // IN-lists) or any other Value that evaluates to a slice at runtime.
 //

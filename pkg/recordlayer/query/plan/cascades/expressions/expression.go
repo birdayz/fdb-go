@@ -57,11 +57,13 @@ import (
 //     under an alias map. Together they let the memo de-duplicate
 //     equivalent expressions.
 //
-// The full Java surface (TranslationMap rewriting, MaxMatchMap,
-// findMatches, PlannerGraph rendering, PartiallyOrderedSet correlation
-// order) is deliberately not in the seed — these depend on combinatorics
-// and rule machinery that lands in B2 / B3 / B5. They will be added as
-// rules need them.
+// The rest of the Java surface (TranslationMap rewriting, MaxMatchMap,
+// findMatches, PartiallyOrderedSet correlation order) is deliberately
+// not on this interface — Go carries that machinery as free-standing
+// types and functions in the root cascades package (translation_map.go,
+// max_match_map.go, the matching rules) rather than interface methods.
+// PlannerGraph rendering has no Go equivalent (Explain output serves
+// that role).
 type RelationalExpression interface {
 	// GetResultValue returns the Value whose Type describes the rows
 	// this expression emits. For LogicalFilter this is the inner
@@ -156,7 +158,7 @@ func SemanticEquals(a, b RelationalExpression, aliases *AliasMap) bool {
 	// the cost gets prohibitive (8! = 40320, 12! = 479M); fall back to
 	// positional pairing in that case. The planner is free to
 	// canonicalise large commutative children before semantic-equals
-	// to recover dedup precision; the seed prefers cheap-and-imprecise
+	// to recover dedup precision; we prefer cheap-and-imprecise
 	// to slow-and-correct on this rare case.
 	if a.ChildrenAsSet() && b.ChildrenAsSet() && len(aQs) <= MaxPermutationChildren {
 		return matchChildrenPermuted(aQs, bQs, aliases)

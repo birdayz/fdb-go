@@ -11,7 +11,7 @@ package matching
 // matching.structure.MultiMatcher.SomeMatcher`. Java's static
 // factory is `some(downstream)`. Name disambiguated as
 // `SomeElementsMatcher` so it pairs with the existing
-// `AllElementsMatcher` rather than colliding with the seed's `AnyOf`
+// `AllElementsMatcher` rather than colliding with the existing `AnyOf`
 // combinator (which picks one of N alternatives, not "some elements
 // of a slice").
 //

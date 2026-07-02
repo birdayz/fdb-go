@@ -74,7 +74,7 @@ var (
 	// TypeUnknown is the placeholder for "type not yet inferred".
 	// Maps to the canonical UnknownType singleton.
 	TypeUnknown Type = UnknownType
-	// TypeInt is the legacy name for the seed's default integer
+	// TypeInt is the legacy name for the package's default integer
 	// width — bridged to LONG (BIGINT default; matches Java Record
 	// Layer's int64 representation).
 	TypeInt Type = NullableLong
@@ -86,7 +86,7 @@ var (
 	// NotNullBoolean (literals are NOT NULL); compare via
 	// `.Code() != TypeCodeBoolean` when nullability is irrelevant.
 	TypeBool Type = NullableBoolean
-	// TypeFloat is the legacy name for the seed's default float
+	// TypeFloat is the legacy name for the package's default float
 	// width — bridged to DOUBLE (matches Java Record Layer's
 	// float64 representation).
 	TypeFloat Type = NullableDouble
@@ -121,8 +121,8 @@ type Value interface {
 	// against an eval context. Leaf ConstantValue ignores the
 	// context; FieldValue looks up its column; ArithmeticValue
 	// recurses. The context is opaque (`any`) so different
-	// subsystems can pass their own row shape — seed uses
-	// `map[string]any` in tests.
+	// subsystems can pass their own row shape — tests use
+	// `map[string]any`.
 	//
 	// Returns (value, nil) on success — (nil, nil) is SQL NULL.
 	// (nil, err) signals a data-dependent runtime error (arithmetic
@@ -320,7 +320,7 @@ func (f *FieldValue) Children() []Value {
 
 func (f *FieldValue) Name() string { return "field" }
 
-// Type returns the field's rich Type. The seed's FieldValue stores
+// Type returns the field's rich Type. FieldValue stores
 // the column type as-is; callers that know NOT NULL information
 // from the catalog set Typ to the non-nullable form.
 func (f *FieldValue) Type() Type {
@@ -351,7 +351,7 @@ type OrdinalRow interface {
 
 // OrdinalResolutionError is the loud internal error (RFC-173 Slice 1) raised when
 // a FieldValue's column cannot be resolved against the authoritative ordinal
-// runtime row. Per reviewer: authority + a silent name-map fallback means a
+// runtime row. Authority + a silent name-map fallback would mean a
 // resolution bug never surfaces, so this is a query error, not a NULL. Ordinal
 // is the resolved ordinal, or -1 for a flat-reference (name->ordinal) miss.
 // Available carries the row type's column names (when the row exposes them) so
@@ -376,7 +376,7 @@ func ordinalRowNames(row OrdinalRow) []string {
 }
 
 // evaluateOrdinal reads f's column from an ordinal-model runtime row. It is the
-// authoritative frontier's resolution — NO name-map fallback (reviewer). A typed
+// authoritative frontier's resolution — NO name-map fallback (RFC-173). A typed
 // child yields an ordinal (resolveOrdinal) read positionally; a flat reference
 // falls to the row's own type (GetByName). A miss on either is loud.
 func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
@@ -420,7 +420,7 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if rc, ok := evalCtx.(*RowEvalContext); ok {
 		// RFC-173 Slice 1: an ordinal-model row on the RowEvalContext is
 		// authoritative on the non-join frontier — resolve by ordinal, no
-		// name-map fallback, loud on a miss (reviewer). It takes precedence over
+		// name-map fallback, loud on a miss. It takes precedence over
 		// the name-keyed Datum.
 		if rc.Positional != nil {
 			return f.evaluateOrdinal(rc.Positional)
@@ -502,7 +502,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		}
 		// RFC-173 Slice 1: no explicit correlation binding matched, so the
 		// reference is to the frontier quantifier itself — resolve by ordinal
-		// against the authoritative positional row (reviewer: no name fallback,
+		// against the authoritative positional row (no name fallback,
 		// loud on a miss). Precedes the name-keyed Datum path.
 		if ctx.Positional != nil {
 			return f.evaluateOrdinal(ctx.Positional)
@@ -1183,11 +1183,10 @@ func (n *NullValue) Type() Type {
 // different bind-values share the same Explain string — the seam a
 // future plan cache will key on.
 //
-// Seed runtime evaluation is intentionally minimal: a richer
-// EvalContext that threads parameter bindings through every
-// Value.Evaluate is the next step. Until then ParameterValue
-// degrades to NULL at exec time, which is harmless for the
-// plan-time / explain-time work this type unblocks.
+// Runtime evaluation goes through the ParameterBinder interface: an
+// evalCtx that implements it (RowEvalContext.Binder) resolves the
+// binding by ordinal/name; without a binder the value degrades to
+// NULL — acceptable only for plan-time / explain-time evaluation.
 type ParameterValue struct {
 	Ordinal   int    // 1-based positional index; 0 ⇒ named parameter
 	ParamName string // populated when Ordinal == 0
@@ -1232,7 +1231,7 @@ type RowEvalContext struct {
 	// non-join frontier. When non-nil, FieldValue resolution goes through the
 	// ordinal path (resolveOrdinal / GetByName against the row's own type) BEFORE
 	// the name-keyed Datum — a loud OrdinalResolutionError on a miss, NO name-map
-	// fallback (reviewer). It is the single frontier quantifier's row: an outer
+	// fallback (RFC-173). It is the single frontier quantifier's row: an outer
 	// correlation still resolves via Correlations first, and only an unbound
 	// (frontier) quantifier reference falls through to this row.
 	Positional       OrdinalRow
@@ -1443,7 +1442,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH":
 		// Rune count — matches embedded.scalar_functions.go's LENGTH
 		// (utf8.RuneCountInString) so plan-time fold and runtime eval
-		// agree. The seed coerces []byte the same way for symmetry
+		// agree. Go coerces []byte the same way for symmetry
 		// with OCTET_LENGTH (byte count there, rune count here).
 		if len(args) != 1 || args[0] == nil {
 			return nil, nil
@@ -2039,8 +2038,8 @@ func datePartFromTime(name string, t time.Time) int64 {
 }
 
 // compareScalar returns -1 / 0 / 1 for a < b / a == b / a > b under the
-// seed's numeric/string/bool comparison rules. Returns ok=false on
-// cross-type pairs the seed can't compare (the runtime reports the
+// package's numeric/string/bool comparison rules. Returns ok=false on
+// cross-type pairs it can't compare (the runtime reports the
 // CANNOT_CONVERT_TYPE error per Java alignment).
 func compareScalar(a, b any) (int, bool) {
 	switch av := a.(type) {
@@ -2139,7 +2138,7 @@ func float64FitsInt64(f float64) bool {
 // nullifEqual is the equality test used by NULLIF's plan-time fold.
 // Mirrors embedded.functions.CompareValues for the int/float promotion
 // case while staying conservative (declines on mixed-type comparisons
-// the seed Type hierarchy can't model).
+// the Type hierarchy can't model).
 func nullifEqual(a, b any) bool {
 	switch av := a.(type) {
 	case int64:
@@ -2179,14 +2178,15 @@ const (
 )
 
 // ArithmeticValue is a binary arithmetic over two child Values.
-// Evaluate recurses left + right, coerces to int64, and applies
-// the op. NULL on either side propagates (SQL semantics). Division
-// by zero returns nil (UNKNOWN).
+// Evaluate recurses left + right and applies the op with numeric
+// promotion (float arithmetic when either operand is float64, else
+// int64; mixed non-numeric operands are a ScalarTypeMismatchError).
+// NULL on either side propagates (SQL semantics). Division by zero
+// returns nil (UNKNOWN).
 type ArithmeticValue struct {
 	Op    ArithmeticOp
 	Left  Value
 	Right Value
-	// Result type: int for the seed impls; full type inference lands
 }
 
 func (a *ArithmeticValue) Children() []Value { return []Value{a.Left, a.Right} }
@@ -2480,10 +2480,10 @@ func (b *BooleanValue) Evaluate(any) (any, error) {
 }
 
 // CastValue converts a child Value's result to a target Type.
-// Seed handles the trivial conversions our existing corpus needs:
-// int ↔ string (via strconv-free formatting for the seed), bool ↔
-// int (false=0, true=1). Unknown conversions return nil (UNKNOWN).
-// Full type tower lands with the Type hierarchy.
+// Go handles the trivial conversions our existing corpus needs:
+// int ↔ string (via strconv-free formatting), bool ↔
+// int (false=0, true=1). Unknown conversions return nil (UNKNOWN) —
+// extend the Evaluate switch when a corpus query needs a new pair.
 type CastValue struct {
 	Child  Value
 	Target Type
@@ -2499,7 +2499,7 @@ func (c *CastValue) Name() string      { return "cast" }
 
 // Type returns the cast's target Type. CAST may produce NULL on
 // out-of-range / unsupported source (Evaluate returns nil), so cast
-// results are always nullable in the seed.
+// results are always nullable in Go.
 func (c *CastValue) Type() Type {
 	if c.Target == nil {
 		return UnknownType
@@ -2867,7 +2867,7 @@ func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 // the user wrote; Promote is machine-inserted and cost-modelled
 // separately. Mirrors Java's `PromoteValue`.
 //
-// Seed Evaluate currently delegates to Child.Evaluate — the seed's
+// Evaluate currently delegates to Child.Evaluate —
 // cmpAny already promotes numerics at runtime, so an explicit
 // Promote in the tree is a no-op evaluation-wise. The value is in
 // having the coercion visible at plan time so rule matchers can
@@ -2911,7 +2911,7 @@ func (p *PromoteValue) Type() Type {
 func (*PromoteValue) Name() string { return "promote" }
 
 // Evaluate delegates to the child for the numeric/cross-width case —
-// the seed treats Promote as a no-op there since cmpAny already
+// Go treats Promote as a no-op there since cmpAny already
 // handles cross-width promotion, and plan-time inspection (explain,
 // rewrite rules) is where those Promotes earn their keep.
 //
@@ -2960,7 +2960,7 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 // parent expression (`t.col`) then projects a FieldValue with
 // operand = QuantifiedObjectValue{Correlation: t}.
 //
-// Mirrors Java's `QuantifiedObjectValue`. The seed Evaluate reads
+// Mirrors Java's `QuantifiedObjectValue`. Evaluate reads
 // the row directly out of the eval context when it's a
 // `map[CorrelationIdentifier]map[string]any` (the multi-source
 // shape); for the single-source `map[string]any` shape it returns
@@ -2968,10 +2968,10 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 // it.
 type QuantifiedObjectValue struct {
 	Correlation CorrelationIdentifier
-	// Typ is the row type (struct shape) this quantifier produces.
-	// Seed keeps it as UnknownType until proper struct-type
-	// inference lands — the test surface doesn't need real struct
-	// types yet.
+	// Typ is the row type (struct shape) this quantifier produces —
+	// a *RecordType on the typed frontier (RFC-173; the translator
+	// stamps it from the inner expression's result type), or
+	// UnknownType where inference hasn't reached.
 	Typ Type
 }
 
@@ -3078,7 +3078,7 @@ func (q *QuantifiedObjectValue) GetCorrelatedTo() map[CorrelationIdentifier]stru
 // lowers to a Record Layer aggregate-index query.
 type AggregateOp int
 
-// Enum of aggregate operators the seed supports. Ordered to match
+// Enum of aggregate operators Go supports. Ordered to match
 // Java's bi-map so serialised plans round-trip.
 const (
 	AggInvalid   AggregateOp = iota // unassigned — rejects if ever evaluated
@@ -3087,7 +3087,7 @@ const (
 	AggSum                          // SUM(expr)
 	AggMin                          // MIN(expr)
 	AggMax                          // MAX(expr)
-	AggAvg                          // AVG(expr) — seed: rejects at Evaluate, no streaming impl
+	AggAvg                          // AVG(expr) — rejects at Evaluate, no streaming impl
 )
 
 // Symbol returns the canonical SQL function name.

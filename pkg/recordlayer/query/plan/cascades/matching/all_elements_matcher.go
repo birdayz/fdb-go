@@ -10,7 +10,7 @@ import "sync/atomic"
 // Ports Java's `com.apple.foundationdb.record.query.plan.cascades.
 // matching.structure.MultiMatcher.AllMatcher` (the static factory
 // is called `all(downstream)` in Java). Name disambiguated as
-// `AllElementsMatcher` so it isn't confused with the seed's existing
+// `AllElementsMatcher` so it isn't confused with the existing
 // `AllOfMatcher` (the AND combinator over disjoint downstreams; this
 // matcher applies one downstream to every collection element).
 //

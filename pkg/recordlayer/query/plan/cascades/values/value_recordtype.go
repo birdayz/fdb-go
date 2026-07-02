@@ -13,13 +13,13 @@ package values
 //
 // The child Value must evaluate to a record-shaped object that
 // carries a "_recordType" or similar discriminator field. Java
-// gets the type-key from the FDBRecordStore's metadata; the seed
+// gets the type-key from the FDBRecordStore's metadata; Go
 // extracts via map lookup for "_recordType" — the convention used
 // by the Go embedded engine's row-shape.
 //
 // Type is non-null long (the record-type discriminator is an
 // implicit int64 in Java; record-type names map to integer IDs).
-// In practice the seed accepts either string or int64 returns.
+// In practice Go accepts either string or int64 returns.
 type RecordTypeValue struct {
 	Child Value
 }

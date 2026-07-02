@@ -19,9 +19,10 @@ import (
 // hierarchy plan tree.
 //
 // Java has multiple Union variants (key-expression vs values, dedup
-// vs no-dedup); the seed always emits RecordQueryUnionPlan
-// (UNION ALL, no dedup). Rules that need different variants
-// extend this pattern.
+// vs no-dedup); this rule always emits RecordQueryUnionPlan
+// (UNION ALL, no dedup) — the dedup / ordered variants come from
+// their own rules (ImplementDistinctUnionRule,
+// ImplementUnorderedUnionRule, ImplementInUnionRule).
 type ImplementUnionRule struct {
 	matcher matching.BindingMatcher
 }

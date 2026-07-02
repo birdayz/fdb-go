@@ -65,7 +65,7 @@ func (op DistanceOperator) String() string {
 //     representation in Go; Java uses RealVector).
 //   - Mismatched-length vectors → eval returns nil (type-degraded).
 //   - NULL vectors → Java throws RecordCoreException; Go returns nil
-//     (the seed surfaces the error as nil per existing pattern;
+//     (Go surfaces the error as nil per existing pattern;
 //     downstream rules can choose to reject earlier at planner level).
 //
 // Note: eval is functional for `[]float64` operands — vector type

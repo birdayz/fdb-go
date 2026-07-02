@@ -113,10 +113,10 @@ func NamedForEachNullOnEmptyQuantifier(alias values.CorrelationIdentifier, range
 // The flowed-object semantics differ from ForEach: an Existential
 // quantifier doesn't make rows of the inner available to the outer's
 // predicates / projection — only the boolean "any row exists" signal.
-// Most planner rules that operate on Quantifiers care about this
-// distinction; today the seed has no such rule, so the kind is
-// available for the SQL parser to construct EXISTS shapes that future
-// rules will recognise.
+// Consumers that honor the distinction: compensation construction
+// (existential legs stay out of result compensation, compensation.go)
+// and the existential ordering-push rule
+// (PushRequestedOrderingThroughSelectExistentialRule).
 func ExistentialQuantifier(rangesOver *Reference) Quantifier {
 	return Quantifier{
 		kind:       QuantifierExistential,
