@@ -122,6 +122,11 @@ item's acceptance criterion in §5 is "the grep returns zero."
   The content is correct and load-bearing — but at this density the WHY drowns the WHAT.
   Library code carries **250** `RFC-` references; the rationale has a home. Same rule as B3:
   field comment = contract + invariant + RFC pointer; the actor-semantics essay moves to the RFC.
+  **Executed (fdbgo slice): PR #452.** unreadableRanges essay → NEW RFC-098 section ("the SVK
+  candidate range in the Go write map", incl. the deliberate span-wipe divergence analysis);
+  readErr essay was ALREADY fully present in RFC-098 ("a failed read poisons the transaction's
+  commit" + the completion-barrier addendum) — pure shrink to contract + pointer. Package sweep
+  found no other >15-line FIELD comments (remaining long blocks are type/function/package docs).
 - **B5 — stale header comments that lie.** `properties/ordering.go:17-20` claims "the seed
   makes no use of OrderingProperty — Cost ignores ordering… Sort/Distinct rules currently fire
   unconditionally" — false; the planner is saturated with ordering logic (`stampOrderingWinners`,
@@ -146,6 +151,11 @@ item's acceptance criterion in §5 is "the grep returns zero."
   API breadth is inherent to mirroring `fdb_transaction_*`; the struct breadth is not. Extract
   an embedded `txOptions` type for the ~42 trivial option accessors (`SetPriority`,
   `SetLockAware`, `SetCausalReadRisky`, `SetUseGrvCache`, …). Orthogonal to RFC-173 entirely.
+  **Executed: PR #452.** Anonymous embed (field promotion keeps all access sites unchanged);
+  every option-backing field moved (incl. the timeoutNs/deadlineNs atomics and spanParent —
+  synchronization preserved exactly, documented once on txOptions); remaining direct fields
+  grouped per concern with one contract comment per group. bypassUnreadable was never on
+  Transaction (it lives on rywCache).
 - **C3 — planner god-functions.** `pushDataAccessTasks` (planner.go:459-658, ~200 lines) and
   `compensationSafeForYield` (:702-830, ~130 lines). B3's comment relocation alone shrinks
   both substantially; after it lands, re-measure and decompose what remains along the phase
