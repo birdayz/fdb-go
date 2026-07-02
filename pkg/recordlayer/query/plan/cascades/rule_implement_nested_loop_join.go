@@ -907,7 +907,7 @@ func rebaseOuterLegValue(
 					// so it keys on the FrontierPinned contract bit).
 					if fv.Resolved != nil && fv.Resolved.FrontierPinned {
 						panic(fmt.Sprintf("RFC-173: rebaseOuterLegValue would re-anchor BAKED FieldValue %s#%d (leg %s) to merge alias %s — the cluster-arity gate mis-scoped an ordinal join into name-model rebase machinery (planner bug)",
-							fv.Field, fv.Resolved.Ordinal, corr, mergedCorr.Name()))
+							fv.Field, fv.Resolved.Root().Ordinal, corr, mergedCorr.Name()))
 					}
 					qualField := corr + "." + strings.ToUpper(fv.Field)
 					return values.NewFieldValue(

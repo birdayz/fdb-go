@@ -80,7 +80,7 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 				// guard must survive the pull-up. A dup-name disambiguation
 				// bake over a LAZY input establishes no frontier contract —
 				// unpinned.
-				out.Resolved = &ResolvedAccessor{Ordinal: i, FrontierPinned: inPinned}
+				out.Resolved = NewFieldPathOfSingle(field.Name, i, inPinned)
 			}
 			return out
 		}
@@ -156,10 +156,15 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 			// as composeFieldOverConstructor: a name lookup would pick the FIRST
 			// of two duplicate same-named output columns regardless of which the
 			// ordinal denotes (§5 conflation hazard). Out-of-range = malformed;
-			// decline rather than guess.
+			// decline rather than guess. A MULTI-accessor path declines too:
+			// the root ordinal selects the column but the remaining steps would
+			// need re-anchoring over it — S3-W2 territory, and nil is the
+			// generic can't-push-down answer.
 			if fv.Resolved != nil {
-				if o := fv.Resolved.Ordinal; o >= 0 && o < len(rc.Fields) {
-					return rc.Fields[o].Value
+				if acc, single := fv.Resolved.Single(); single {
+					if o := acc.Ordinal; o >= 0 && o < len(rc.Fields) {
+						return rc.Fields[o].Value
+					}
 				}
 				return nil
 			}
