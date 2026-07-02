@@ -442,14 +442,25 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 		t.Fatalf("baked over nil context = (%v, %v), want (nil, nil)", v, err)
 	}
 
-	// An UNRECOGNIZED non-nil context (Evaluate's tail fall-through) is loud
-	// for a baked node — a silent NULL there would hide a frontier bug. Lazy
-	// keeps the historical silent NULL.
+	// An UNRECOGNIZED non-nil context is loud for a baked node — a silent
+	// NULL there would hide a frontier bug — at BOTH tails: Evaluate's
+	// (childless orphan) and evaluateCorrelated's (QOV child, the COMMON
+	// baked shape — Torvalds catch: the first fix guarded only the rare
+	// orphan path). Lazy keeps the historical silent NULL, and a bare nil
+	// context stays NULL through the correlated path too (ruling #3).
 	type weirdCtx struct{}
 	got, err = orphan.Evaluate(weirdCtx{})
-	assertLoud("unrecognized context tail", got, err)
+	assertLoud("unrecognized context: Evaluate tail (orphan)", got, err)
+	got, err = baked.Evaluate(weirdCtx{})
+	assertLoud("unrecognized context: evaluateCorrelated tail (QOV child)", got, err)
 	if v, err := NewFlatFieldValue("ID", NotNullLong).Evaluate(weirdCtx{}); v != nil || err != nil {
-		t.Fatalf("lazy over unrecognized context = (%v, %v), want silent (nil, nil) — unchanged", v, err)
+		t.Fatalf("lazy orphan over unrecognized context = (%v, %v), want silent (nil, nil) — unchanged", v, err)
+	}
+	if v, err := NewFieldValue(qov, "ID", NotNullLong).Evaluate(weirdCtx{}); v != nil || err != nil {
+		t.Fatalf("lazy correlated over unrecognized context = (%v, %v), want silent (nil, nil) — unchanged", v, err)
+	}
+	if v, err := baked.Evaluate(nil); v != nil || err != nil {
+		t.Fatalf("baked correlated over NIL context = (%v, %v), want (nil, nil) — the ruling #3 NULL", v, err)
 	}
 
 	// Lazy node over the same contexts: unchanged name model.

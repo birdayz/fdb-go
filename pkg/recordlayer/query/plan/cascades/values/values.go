@@ -424,6 +424,13 @@ func mapKeys(m map[string]any) []string {
 }
 
 func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) (any, error) {
+	// nil context = NULL for baked and lazy alike — the sanctioned
+	// appendNullLeg / nil-binding NULL (contract ruling #3), mirroring
+	// Evaluate's own nil arm. The loud tail guard below is only for
+	// unrecognized NON-nil contexts.
+	if evalCtx == nil {
+		return nil, nil
+	}
 	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(f.Field)
 	switch ctx := evalCtx.(type) {
 	case OrdinalRow:
@@ -534,6 +541,13 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			}
 		}
 		return nil, nil
+	}
+	// Unrecognized NON-NIL context: same guard as Evaluate's tail — a BAKED
+	// correlated reference (the COMMON baked shape: every real field access
+	// over a quantifier lands here) silently NULLing would hide a frontier
+	// bug; loud instead. Lazy keeps the historical silent NULL.
+	if err := f.bakedNameReadGuard(); err != nil {
+		return nil, err
 	}
 	return nil, nil
 }
