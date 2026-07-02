@@ -11,8 +11,37 @@ on:
   workflow_dispatch: # manual trigger
 
 jobs:
+  # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the actual
+  # JOB whenever a matching runner is free — on our single self-hosted
+  # `hetzner-fdb` slot, a backlog (regular PR CI, or another nightly still
+  # running) can delay that by hours, landing this 2h stress run in the
+  # middle of the workday and starving real CI. This gate runs on a cheap
+  # hosted runner (never touches our one self-hosted slot); the stress job
+  # skips unless it's still actually nighttime. A `workflow_dispatch`
+  # (manual "run it now") always proceeds regardless of time — only a
+  # delayed `schedule` dispatch is gated.
+  gate:
+    name: Nightly window gate
+    runs-on: ubuntu-latest
+    outputs:
+      in_window: ${{ steps.check.outputs.in_window }}
+    steps:
+      - id: check
+        run: |
+          HOUR=$(date -u +%-H)
+          # 00:00-07:00 UTC: generous margin past the 04:23 cron plus this
+          # job's 120m timeout.
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "in_window=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::scheduled dispatch landed at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (GitHub/the runner queue delayed this cron tick) — skipping to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "in_window=false" >> "$GITHUB_OUTPUT"
+          fi
+
   stress:
     name: 1M Stress (planner / cost-model / executor)
+    needs: gate
+    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 120
 

@@ -18,8 +18,37 @@ on:
   workflow_dispatch: # manual trigger
 
 jobs:
+  # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the actual
+  # JOB whenever a matching runner is free — on our single self-hosted
+  # `hetzner-fdb` slot, a backlog (regular PR CI, or another nightly still
+  # running) can delay that by hours, landing this multi-job, ~2-3h fuzz sweep
+  # in the middle of the workday and starving real CI. This gate runs on a
+  # cheap hosted runner (never touches our one self-hosted slot) and every
+  # `hetzner-fdb` job below skips unless it's still actually nighttime. A
+  # `workflow_dispatch` (manual "run it now") always proceeds regardless of
+  # time — only a delayed `schedule` dispatch is gated.
+  gate:
+    name: Nightly window gate
+    runs-on: ubuntu-latest
+    outputs:
+      in_window: ${{ steps.check.outputs.in_window }}
+    steps:
+      - id: check
+        run: |
+          HOUR=$(date -u +%-H)
+          # 00:00-07:00 UTC: generous margin past the 04:17 cron plus this
+          # workflow's longest job timeout (75m for engine-fuzz).
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "in_window=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::scheduled dispatch landed at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (GitHub/the runner queue delayed this cron tick) — skipping to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "in_window=false" >> "$GITHUB_OUTPUT"
+          fi
+
   diff-fuzz:
     name: Differential Serialization Fuzzer
+    needs: gate
+    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 45
 
@@ -103,6 +132,8 @@ jobs:
 
   race-detector:
     name: Race Detector
+    needs: gate
+    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 30
 
@@ -128,6 +159,8 @@ jobs:
 
   binding-stress:
     name: Binding Tester Stress (50 seeds)
+    needs: gate
+    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 60
 
@@ -150,6 +183,8 @@ jobs:
 
   client-fuzz:
     name: Pure-Go Client Fuzz (//pkg/fdbgo)
+    needs: gate
+    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 60
 
@@ -223,6 +258,8 @@ jobs:
 
   engine-fuzz:
     name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer + //pkg/rabitq)
+    needs: gate
+    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 75
 
