@@ -366,12 +366,16 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   proves the ordinal **result value + positional row + ordinal predicate resolution** on live join
   plans — not interning; that residual risk moves to Slice 3, mitigated by the banked spike
   harness. Port the correlated-scalar-subquery 2-leg seed and single-source `UNNEST` here.
-  **Entry gate — name-burial inventory (≤1 shift, mandatory, Round 5):** before any Slice 2 code,
-  enumerate every name-keyed row producer/consumer and alias-swap site and slot each into a slice.
-  The Step 2b blocker proved these must be mapped up front, not discovered mid-slice. Known
-  candidates to sweep: `projNames` source+alias double-writes, `qualifyTypeFallback`,
-  `ambiguousColumnMarker`, the union name-recovery gates, the `RowEvalContext` param/subquery
-  frontier, `ColumnAliasMap` (already being retired by the Slice 1 precursor).
+  **Entry gate — name-burial inventory (≤1 shift, mandatory, Round 5): ✅ SATISFIED** — the
+  full two-axis enumeration lives in **`173-name-burial-inventory.md`** (~95 sites: executor
+  producers/consumers/positional-birth registry + planner/translator anchored-join machinery,
+  dotted classifiers, name identity/interning, resolver plumbing — each slotted S2/S3/S4/S6).
+  Key conclusions: the ordinal frontier dies exactly at `mergeRows`/`qualifyOuterRow`/
+  `remapUnionColumnsByPosition`/aggregate-output (S2/S3 re-birth it there and MUST extend the
+  `DisablePositionalEmission` oracle registry); `executeProjection` straddles (its name map can't
+  fully delete until S3); the `AnchoredJoin` flag is the linchpin (S2 consumes, S3 identity/
+  interning, S4 deletes — every read site enumerated). The Step 2b blocker proved these must be
+  mapped up front, not discovered mid-slice.
   **Coexistence scoping (the corrected hard part, Round 5):** the ordinal↔name boundary is NOT
   just a row-format adapter. The name model *classifies leg dependencies by dotted-name prefixes*
   (`MergeSeedLegsOfValue` reads `fv.Field[:dot]`, `value_correlation.go:47`;

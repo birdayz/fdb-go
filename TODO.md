@@ -65,11 +65,12 @@ validation gate.
     `DisablePositionalEmission`).
 - [~] **Slice 2 2-way wedge** (branch `feat/rfc173-slice2-wedge`) — Round-5 preconditions MET (all
   four §10 Round-5 boxes checked).
-  - [ ] **ENTRY GATE (mandatory, ≤1 shift, before ANY Slice 2 code): the name-burial inventory** —
-    enumerate every name-keyed row producer/consumer and alias-swap site, slot each into a slice
-    (RFC §4 Slice 2). Known candidates to sweep: `projNames` source+alias double-writes,
-    `qualifyTypeFallback`, `ambiguousColumnMarker`, union name-recovery gates, the `RowEvalContext`
-    param/subquery frontier (`ColumnAliasMap` already retired in Slice 1).
+  - [x] **ENTRY GATE: the name-burial inventory — SATISFIED** (`rfcs/173-name-burial-inventory.md`,
+    two-axis sweep, ~95 sites each slotted S2/S3/S4/S6). Key conclusions: ordinal frontier dies at
+    `mergeRows`/`qualifyOuterRow`/union-remap/aggregate-output (S2/S3 re-birth + extend the oracle
+    registry); `executeProjection` straddles until S3; `AnchoredJoin` flag is the linchpin (all read
+    sites enumerated); `qualifyTypeFallback` exists (executor.go:2140 — the "not found" was a
+    directory-scope artifact).
   - [ ] Then the wedge per RFC §4 Slice 2: 2-way ordinal result value (`ofOrdinalNumber` EAGER baking
     — lazy is non-join-frontier-only), positional merged row, ordinal predicate resolution,
     `appendNullLeg`, correlated-scalar-subquery 2-leg seed + single-source `UNNEST`; **NO interning
