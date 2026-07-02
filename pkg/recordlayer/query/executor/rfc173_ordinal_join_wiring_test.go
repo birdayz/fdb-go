@@ -593,9 +593,11 @@ func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 
 // TestRFC173S2_FlatMap_ComputeResult pins the ordinal-birth flatMap: the
 // positional row births from the RC with leg bindings; the coexistence Datum
-// derives FROM the positional row (datumFromPositional — dup names last-wins,
-// matching RecordConstructorValue.Evaluate's name map); the nil inner is the
-// NULL leg.
+// derives FROM the positional row via datumFromSpans (W3b fallout fix: a
+// SEED-shaped RV mirrors the anchored RC's key set — bare keys last-wins on
+// dup names, matching RecordConstructorValue.Evaluate's name map, PLUS the
+// per-leg ALIAS.COL qualified keys downstream name-model consumers resolve
+// dotted references against); the nil inner is the NULL leg.
 func TestRFC173S2_FlatMap_ComputeResult(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
@@ -619,15 +621,19 @@ func TestRFC173S2_FlatMap_ComputeResult(t *testing.T) {
 			t.Fatalf("computeResult: %v", err)
 		}
 		ojAssertSlots(t, got.Positional, int64(1), int64(10), int64(2), int64(20))
-		// Datum derives FROM the positional row; the duplicate ID is
-		// LAST-WINS (B's ID) — exactly what evaluating the RC into a name
-		// map produces.
-		wantDatum := map[string]any{"ID": int64(2), "V": int64(10), "W": int64(20)}
-		if !reflect.DeepEqual(got.Datum, wantDatum) {
-			t.Fatalf("Datum = %v, want datumFromPositional's last-wins map %v", got.Datum, wantDatum)
+		// Datum derives FROM the positional row; bare keys are LAST-WINS on
+		// the duplicate ID (B's ID — exactly what evaluating the RC into a
+		// name map produces), and the seed shape adds the per-leg qualified
+		// keys (datumFromSpans — the anchored RC's key set).
+		wantDatum := map[string]any{
+			"ID": int64(2), "V": int64(10), "W": int64(20),
+			"A.ID": int64(1), "A.V": int64(10), "B.ID": int64(2), "B.W": int64(20),
 		}
-		if !reflect.DeepEqual(got.Datum, map[string]any(datumFromPositional(got.Positional))) {
-			t.Fatal("Datum must be exactly datumFromPositional(Positional)")
+		if !reflect.DeepEqual(got.Datum, wantDatum) {
+			t.Fatalf("Datum = %v, want datumFromSpans' bare+qualified map %v", got.Datum, wantDatum)
+		}
+		if !reflect.DeepEqual(got.Datum, map[string]any(datumFromSpans(got.Positional, c.birth.Spans))) {
+			t.Fatal("Datum must be exactly datumFromSpans(Positional, spans)")
 		}
 	})
 
@@ -640,8 +646,13 @@ func TestRFC173S2_FlatMap_ComputeResult(t *testing.T) {
 		}
 		ojAssertSlots(t, got.Positional, int64(1), int64(10), nil, nil)
 		// Last-wins on the dup ID: B's NULL ID wins the name key — the same
-		// conflation the name model always had (positional keeps both).
-		wantDatum := map[string]any{"ID": nil, "V": int64(10), "W": nil}
+		// conflation the name model always had (positional keeps both). The
+		// null leg's qualified keys are present with NULL values, exactly as
+		// evaluating the anchored RC with an empty inner Datum produced.
+		wantDatum := map[string]any{
+			"ID": nil, "V": int64(10), "W": nil,
+			"A.ID": int64(1), "A.V": int64(10), "B.ID": nil, "B.W": nil,
+		}
 		if !reflect.DeepEqual(got.Datum, wantDatum) {
 			t.Fatalf("null-inner Datum = %v, want %v", got.Datum, wantDatum)
 		}

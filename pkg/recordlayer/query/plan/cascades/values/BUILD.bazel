@@ -10,6 +10,7 @@ go_library(
         "leaf_value.go",
         "like_match.go",
         "map_field_values.go",
+        "ordinal_join_seed.go",
         "pullup.go",
         "rebase.go",
         "replace.go",

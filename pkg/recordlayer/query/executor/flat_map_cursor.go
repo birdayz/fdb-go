@@ -174,8 +174,27 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 
 		// Bind the outer row as a correlation and execute the inner plan.
 		// Use initialInnerCont for the first outer row on resume.
+		//
+		// RFC-173 Slice 2 W3b: for an ORDINAL-birth flatMap (a gated join on
+		// the correlated implementation path) the outer binds as its
+		// POSITIONAL leg row — the inner plan's baked SARG operands
+		// (ofOrdinal over QOV(outer), pushed down as scan-range/index-probe
+		// comparisons) resolve by ordinal through the binder's OrdinalRow
+		// arm, and lazy outer references resolve leg-relative against the
+		// same row. Binding the Datum map here fed baked operands a
+		// name-keyed context — the loud BakedNameContextError the W3b flip
+		// caught on every correlated-probe join. Name-model cursors (and the
+		// §5 oracle) keep the Datum binding bit-identically.
 		outerDatum, _ := outerRow.Datum.(map[string]any)
-		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerDatum)
+		var outerBinding any = outerDatum
+		if c.birth.enabled() && !DisablePositionalEmission {
+			row, aerr := adaptLegPositional(outerRow, c.birth.legType(c.outerAlias))
+			if aerr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
+			}
+			outerBinding = row
+		}
+		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
 		var innerContBytes []byte
 		if c.initialInnerCont != nil {
 			innerContBytes = c.initialInnerCont
@@ -217,7 +236,17 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		if err != nil {
 			return QueryResult{}, err
 		}
-		return QueryResult{Datum: datumFromPositional(pos), Positional: pos}, nil
+		// The coexistence Datum: a SEED-shaped RV mirrors the anchored RC's
+		// bare+qualified key set (downstream name-model consumers — sort
+		// Datum fallback, aggregate group keys — resolve dotted references
+		// against it; the W3b flip's bare-only Datum silently NULLed them).
+		// A folded projection RV keeps bare-only (its name-model counterpart,
+		// the projection map, never carried qualified keys).
+		datum := datumFromPositional(pos)
+		if c.birth.WindowsOK {
+			datum = datumFromSpans(pos, c.birth.Spans)
+		}
+		return QueryResult{Datum: datum, Positional: pos}, nil
 	}
 	innerRow := QueryResult{Datum: map[string]any{}}
 	if inner != nil {
@@ -241,6 +270,20 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// against the outer row, while QOV references to the outer/inner aliases
 	// resolve through the correlation bindings (Correlations).
 	rowCtx := nestedCtx.RowContext(outerDatum)
+	if c.birth.enabled() {
+		// §5 NAME-MODEL ORACLE over an ordinal-birth plan (birth enabled but
+		// DisablePositionalEmission on — the only way to reach here with a
+		// birth): the ordinal RC's bare-named fields would evaluate to a
+		// bare-keys-only map, dropping the ALIAS.COL keys the pre-flip
+		// anchored seed RC carried — every dotted downstream read (projection
+		// over sort, sort comparators) silently NULLed. Reconstruct the
+		// anchored key set with genuine name-model per-field resolution.
+		datum, err := c.birth.oracleNameDatum(rowCtx)
+		if err != nil {
+			return QueryResult{}, err
+		}
+		return QueryResult{Datum: datum}, nil
+	}
 	computed, err := c.resultValue.Evaluate(rowCtx)
 	if err != nil {
 		return QueryResult{}, err

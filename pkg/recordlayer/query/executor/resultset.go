@@ -7,6 +7,7 @@ import (
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -46,6 +47,13 @@ type RecordLayerResultSet struct {
 	wasNull          bool
 	err              error
 	closed           bool
+
+	// posAlignType/posAligned memoize positionalAligned's verdict per row TYPE
+	// (row types are plan-invariant and pointer-shared across a cursor's rows —
+	// projType, ordinalJoinBirth.OutputType, positionalTypeCache — so the
+	// per-column name comparison runs once, not per row).
+	posAlignType *values.RecordType
+	posAligned   bool
 }
 
 // ColumnDef describes one column in the result set.
@@ -120,6 +128,26 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 		return nil, api.NewError(api.ErrCodeInvalidColumnReference,
 			fmt.Sprintf("column index %d out of range [1, %d]", columnIndex, len(rs.columns)))
 	}
+	// RFC-173 §7: when the row carries the ordinal-model positional row and its
+	// slots are PROVABLY parallel to this result set's columns (count + per-slot
+	// name match — positionalAligned), read column i from slot i-1. This is the
+	// §7 duplicate-name `SELECT *` fix arriving via the positional row: a gated
+	// 2-way ordinal join's `SELECT *` output has two same-named columns per leg
+	// pair (bare display names, distinct by ordinal), so the name-keyed Datum —
+	// last-wins by construction (datumFromPositional) — conflates them, while
+	// the positional row keeps each leg's value in its own slot. For every
+	// duplicate-free row the positional slots and the Datum mirror each other
+	// field-for-field (pinned by the shadow test), so this read is
+	// value-identical there; any row whose positional shape does not match the
+	// columns (aggregates, unions, name-model joins — no positional; covering/
+	// projected subsets — count or name mismatch) falls back to the name-keyed
+	// Datum lookup below, unchanged. Retires with the name map in Slice 4, when
+	// the positional row is the only row.
+	if row := rs.current.Positional; row != nil && rs.positionalAligned(row) {
+		v, _ := row.Get(columnIndex - 1)
+		rs.wasNull = v == nil
+		return v, nil
+	}
 	colName := strings.ToUpper(rs.columns[columnIndex-1].Name)
 	m, ok := rs.current.Datum.(map[string]any)
 	if !ok {
@@ -129,6 +157,48 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 	v, exists := m[colName]
 	rs.wasNull = !exists || v == nil
 	return v, nil
+}
+
+// positionalAligned reports whether a positional row's slots are parallel to
+// this result set's columns: one slot per column AND every slot's type name
+// equals the column's unqualified display name (the alias/Label when set, else
+// the bare leaf of Name), case-insensitively. The guard is deliberately
+// all-or-nothing: a single mismatch means the positional row is NOT this
+// result set's output shape (a source row under aliased output, a permuted
+// union leg, a covering superset) and every read falls back to the Datum.
+func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
+	if row.Type == nil {
+		return false
+	}
+	if row.Type == rs.posAlignType {
+		return rs.posAligned // memoized: row types are pointer-shared per plan
+	}
+	aligned := len(row.Type.Fields) == len(rs.columns) && len(row.Slots) == len(rs.columns)
+	if aligned {
+		for i, f := range row.Type.Fields {
+			if !strings.EqualFold(f.Name, columnDisplayName(rs.columns[i])) {
+				aligned = false
+				break
+			}
+		}
+	}
+	rs.posAlignType = row.Type
+	rs.posAligned = aligned
+	return aligned
+}
+
+// columnDisplayName is the column's unqualified user-visible name: the Label
+// (alias) when set, else Name's bare leaf ("A.ID" → "ID" — the name model
+// qualifies datum keys per leg, but a positional slot is named by its bare
+// display name).
+func columnDisplayName(c ColumnDef) string {
+	if c.Label != "" {
+		return c.Label
+	}
+	if dot := strings.LastIndex(c.Name, "."); dot >= 0 {
+		return c.Name[dot+1:]
+	}
+	return c.Name
 }
 
 func (rs *RecordLayerResultSet) columnValueByName(name string) (any, error) {

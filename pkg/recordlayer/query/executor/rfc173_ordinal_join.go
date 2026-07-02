@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -112,60 +113,13 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 	return spans, &values.RecordType{Fields: mergedFields}, true
 }
 
-// assertOrdinalJoinSeed is the LOUD seed-shape validator: the W3b translator
-// calls it on every ordinal join RC it builds, where the pristine shape IS
-// guaranteed by construction — every field a baked reference over a leg QOV
-// flowing a RecordType, exactly two consecutive full-coverage runs with
-// ordinals 0..width-1. Any violation panics: at the SEED a malformed ordinal
-// RC is unconditionally a planner bug (Graefe W3a-1 NAK fix: strictness lives
-// seed-time, where legitimate result-value rewrites — wrapper merges, folded
-// projections, partial coverage — cannot yet have happened; the cursor-side
-// probe above must decline those, never panic).
+// assertOrdinalJoinSeed delegates to values.AssertOrdinalJoinSeed — the LOUD
+// seed-shape validator RELOCATED to the values package (RFC-173 S2 W3b) so
+// the translator, the caller of record, can invoke it at the seed without an
+// executor import. Semantics unchanged; the executor-side pins keep
+// exercising it through this name.
 func assertOrdinalJoinSeed(rc *values.RecordConstructorValue) {
-	if rc == nil || len(rc.Fields) == 0 {
-		panic("RFC-173 ordinal join seed malformed: empty RC")
-	}
-	type run struct {
-		alias   values.CorrelationIdentifier
-		legType *values.RecordType
-		width   int
-	}
-	var runs []run
-	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil {
-			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) is %T (baked=%v) — the seed bakes EVERY leg column", i, f.Name, f.Value, isFV && fv.Resolved != nil))
-		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-		if !isQOV {
-			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) is baked over a %T child, want *QuantifiedObjectValue (the leg reference)", i, f.Name, fv.Child))
-		}
-		legType, isRT := qov.Type().(*values.RecordType)
-		if !isRT {
-			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) leg %s flows %T, want *RecordType", i, f.Name, qov.Correlation, qov.Type()))
-		}
-		ord := fv.Resolved.Ordinal
-		if len(runs) == 0 || runs[len(runs)-1].alias != qov.Correlation {
-			if ord != 0 {
-				panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: leg %s run starts at field %d with baked ordinal %d, want 0 — run ordinals must be exactly 0..width-1 ascending", qov.Correlation, i, ord))
-			}
-			runs = append(runs, run{alias: qov.Correlation, legType: legType, width: 1})
-		} else {
-			cur := &runs[len(runs)-1]
-			if ord != cur.width {
-				panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: leg %s field %d baked at ordinal %d, want %d — run ordinals must be exactly 0..width-1 ascending (no gaps, no reorders)", qov.Correlation, i, ord, cur.width))
-			}
-			cur.width++
-		}
-	}
-	if len(runs) != 2 {
-		panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: %d leg runs — the ordinal wedge seed is 2-way, exactly two consecutive leg runs required (N-way is Slice 3)", len(runs)))
-	}
-	for _, r := range runs {
-		if r.width != len(r.legType.Fields) {
-			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: leg %s run covers %d columns but its leg type has %d — the seed concatenates FULL legs", r.alias, r.width, len(r.legType.Fields)))
-		}
-	}
+	values.AssertOrdinalJoinSeed(rc)
 }
 
 // legWindowRow is a leg-relative view over the join's merged positional row:
@@ -449,6 +403,51 @@ func newOrdinalJoinBirth(rv values.Value) (*ordinalJoinBirth, error) {
 // *ordinalJoinBirth.
 func (b *ordinalJoinBirth) enabled() bool { return b != nil && b.Enabled }
 
+// oracleNameDatum is the §5 NAME-MODEL ORACLE's row for an ordinal-birth
+// flatMap: DisablePositionalEmission promises "the pre-RFC-173 name model
+// end-to-end", but the PLAN still carries the ordinal RC (planning is not
+// oracle-gated), whose bare-named fields evaluate to a bare-keys-only map —
+// while the pre-flip ANCHORED seed RC (NewAnchoredJoinRecord) carried an
+// ALIAS.COL field per leg column PLUS the bare field at the last leg carrying
+// that name. Downstream name-model consumers (a projection over a sort reading
+// "U.NAME", the sort comparator's dotted keys) resolve against those qualified
+// keys, so evaluating the ordinal RC directly silently NULLed every dotted
+// read in the oracle phase (the dualwindow differential's first live catch on
+// W3b).
+//
+// Reconstruct the anchored key set with genuine NAME-model resolution: each RC
+// field evaluates over the name-keyed row context (the baked references read
+// their display name through values.OracleBakedNameFallback — the same lookup
+// the anchored RC's lazy FieldValue(QOV(leg), col) performed), written under
+// the bare name (in-order map writes = the anchored last-leg-wins) and, for a
+// PRISTINE seed (WindowsOK), under the leg-qualified ALIAS.COL key. A FOLDED
+// projection RV gets bare keys only — its pre-flip name-model counterpart is
+// the projection map, which never carried qualified keys. No TYPE.COL keys:
+// the pre-flip flatMap Datum never had them either (qualifyTypeFallback is
+// mergeRows machinery — the NLJ path, whose oracle Datum is mergeRows
+// unchanged). TEST-ONLY (oracle callers); dies with the oracle in Slice 4.
+func (b *ordinalJoinBirth) oracleNameDatum(rowCtx any) (map[string]any, error) {
+	m := make(map[string]any, 2*len(b.RC.Fields))
+	for _, f := range b.RC.Fields {
+		v, err := f.Value.Evaluate(rowCtx)
+		if err != nil {
+			return nil, err
+		}
+		m[f.Name] = v
+		if !b.WindowsOK {
+			continue
+		}
+		fv, isFV := f.Value.(*values.FieldValue)
+		if !isFV || fv.Resolved == nil {
+			continue
+		}
+		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+			m[strings.ToUpper(qov.Correlation.Name())+"."+strings.ToUpper(f.Name)] = v
+		}
+	}
+	return m, nil
+}
+
 // legType resolves the adapter's leg type for a leg alias: from the spans when
 // the RV is the pristine seed (WindowsOK), else from the RV's baked references
 // (LegTypes), else nil (no baked reference names this leg — the adapter then
@@ -613,6 +612,49 @@ func datumFromPositional(row *PositionalRow) map[string]any {
 	return m
 }
 
+// datumFromSpans derives the coexistence-window Datum for a SEED-shaped
+// ordinal join row: bare column keys (last-wins across legs, exactly
+// datumFromPositional/mergeRows semantics) PLUS the qualified "ALIAS.COL"
+// keys per leg — the key set the name-model anchored RC / mergeRows always
+// produced, which downstream name-model consumers (sort comparators'
+// Datum fallback, streaming-aggregate group keys and operands, HAVING
+// filters) resolve dotted references against. The W3b flip's live catch:
+// bare-only Datums silently NULLed every dotted read over a gated FlatMap
+// join (wrong sort order, empty HAVING output). Folded projection RVs keep
+// bare-only datumFromPositional — their name-model counterpart is the
+// projection map, which never carried qualified keys. Retires with the
+// name map in Slice 4.
+func datumFromSpans(row *PositionalRow, spans []legSpan) map[string]any {
+	m := datumFromPositional(row)
+	for _, s := range spans {
+		prefix := strings.ToUpper(s.Alias.Name()) + "."
+		for i := 0; i < s.Width; i++ {
+			if v, ok := row.Get(s.Offset + i); ok {
+				m[prefix+strings.ToUpper(s.LegType.Fields[i].Name)] = v
+			}
+		}
+	}
+	// Table-TYPE-qualified fallback keys (qualifyTypeFallback semantics:
+	// fill-if-absent, only when the type name differs from the alias, only
+	// for base-table legs — RecordName is set exactly there).
+	for _, s := range spans {
+		if s.LegType == nil || s.LegType.RecordName == "" || strings.EqualFold(s.LegType.RecordName, s.Alias.Name()) {
+			continue
+		}
+		prefix := strings.ToUpper(s.LegType.RecordName) + "."
+		for i := 0; i < s.Width; i++ {
+			key := prefix + strings.ToUpper(s.LegType.Fields[i].Name)
+			if _, exists := m[key]; exists {
+				continue
+			}
+			if v, ok := row.Get(s.Offset + i); ok {
+				m[key] = v
+			}
+		}
+	}
+	return m
+}
+
 // downstreamLegWindows computes, ONCE at operator construction, whether a
 // consumer's input plan flows the 2-way ordinal join's MERGED positional row
 // — i.e. whether leg windows apply to the rows this operator reads. It
@@ -671,7 +713,7 @@ func downstreamLegWindows(input plans.RecordQueryPlan) ([]legSpan, bool) {
 // the W3 wrong-slot hazard).
 func legWindowRowContext(pos values.OrdinalRow, ec *EvaluationContext, spans []legSpan) *values.RowEvalContext {
 	rc := &values.RowEvalContext{
-		Positional:   pos,
+		Positional:   &spanAwareRow{parent: pos, spans: spans},
 		Correlations: &legWindowBinder{base: correlationBase(ec), spans: spans, row: pos},
 	}
 	if ec != nil {
@@ -679,4 +721,56 @@ func legWindowRowContext(pos values.OrdinalRow, ec *EvaluationContext, spans []l
 		rc.ScalarSubqueries = ec.scalarSubqueries
 	}
 	return rc
+}
+
+// spanAwareRow is the merged positional row with QUALIFIED-name routing: the
+// name model's physical plans reference merged-row columns as flat DOTTED
+// names ("A.ID" — the executor pipeline's qualified merged-row keys), which
+// carry no leg QOV for the Correlations windows to catch. GetByName splits a
+// dotted name at its first dot and resolves alias → leg window → leg-local
+// column, so window-era flat dotted references (projections, filters, sort
+// keys) stay correct over the ordinal merged row; bare names keep the merged
+// type's first-match (unchanged Slice 1 semantics). Ordinal access passes
+// through untouched. DECLARED WINDOW SCAFFOLDING like the windows themselves
+// (Graefe condition 2): dies when uppers bake, S3/S4.
+type spanAwareRow struct {
+	parent values.OrdinalRow
+	spans  []legSpan
+}
+
+func (r *spanAwareRow) Get(ord int) (any, bool) { return r.parent.Get(ord) }
+
+func (r *spanAwareRow) GetByName(name string) (any, bool) {
+	if dot := strings.IndexByte(name, '.'); dot > 0 {
+		alias, col := name[:dot], name[dot+1:]
+		// Alias namespace first (the name model's qualifyAlias precedence)…
+		for _, s := range r.spans {
+			if strings.EqualFold(s.Alias.Name(), alias) {
+				w := &legWindowRow{parent: r.parent, legType: s.LegType, offset: s.Offset, width: s.Width}
+				return w.GetByName(col)
+			}
+		}
+		// …then the leg's TABLE-type namespace ("PA.ID" over `FROM PA AS s`)
+		// — the ordinal counterpart of qualifyTypeFallback, keyed on the leg
+		// type's RecordName (set only for base-table scan legs, exactly the
+		// rows the name model wrote TYPE.COL fallback keys for).
+		for _, s := range r.spans {
+			if s.LegType != nil && s.LegType.RecordName != "" &&
+				!strings.EqualFold(s.Alias.Name(), s.LegType.RecordName) &&
+				strings.EqualFold(s.LegType.RecordName, alias) {
+				w := &legWindowRow{parent: r.parent, legType: s.LegType, offset: s.Offset, width: s.Width}
+				return w.GetByName(col)
+			}
+		}
+		return nil, false
+	}
+	return r.parent.GetByName(name)
+}
+
+// TypeNames feeds OrdinalResolutionError diagnostics (values.ordinalRowNames).
+func (r *spanAwareRow) TypeNames() []string {
+	if tn, ok := r.parent.(interface{ TypeNames() []string }); ok {
+		return tn.TypeNames()
+	}
+	return nil
 }

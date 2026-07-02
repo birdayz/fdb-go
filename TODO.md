@@ -83,14 +83,37 @@ validation gate.
     pinned red→green), flattening-evasion + enclosure-matrix + HAVING-EXISTS pins. Two Graefe-confirmed
     errata vs the contract shorthand (subquery-carrying filter/project = poison; outer boxes gate
     unconditionally). Graefe ACK, Torvalds NAK→ACK (53ba2a9ac, 089979ea8).
-  - [~] **W3 the coupled 2-way flip** — pre-code ruling BANKED (c255d1829: leg windows for the window
-    with 4 conditions, plan-time rebase at S3/S4, raw RC constructor, per-leg predicate bindings,
-    structural probe detection). Staged: **W3a-1** executor primitives dark (spans/window/binder/
-    adapter/birth-eval + hazard pin — agent in flight); **W3a-2** cursor wiring dark (newNLJCursor
-    resultValue param, flatMap computeResult, 4 downstream dispatch sites + passthrough unwrap,
-    passesJoinPredicates per-leg variant, oracle registry); **W3b** translator seed flip (ordinal RC
-    + baked predicates for gated joins) → LIVE + full pin batch (GROUP-BY-over-2-way E2E, dup-named
-    box-leg, EXPLAIN stability, dualwindow, stress before/after).
+  - [~] **W3 the coupled 2-way flip** — pre-code ruling BANKED (c255d1829). **W3a-1** primitives +
+    **W3a-2** cursor wiring: DONE, committed, Graefe+Torvalds ACKed (36297a253, fd07e2f49,
+    140799069, d98bbac91, 139c6cb94). **W3b LIVE FLIP: in the fallout grind, UNCOMMITTED tree**
+    (~12 files: translator seed rfc173_ordinal_seed.go + gate revisions + executor fixes; commit
+    blocked on green — pre-commit runs the suite). Fallout fixed so far (each = a gate/executor
+    correction, all reviewed-in-principle): (1) LEFT OUTER = POISON — RewriteOuterJoinRule
+    dissolves LEFT boxes post-translation, so translation-time opacity was FALSE (Graefe RE-RULED:
+    poison confirmed; premise correction "opacity must span all phases" + conditions: pin RFC-153
+    shape name-model e2e ✅, pin RewriteOuterJoinRule declines FULL ⏳TODO, dup-alias poison noted as
+    S3/S4 unique-quantifier-alias item ⏳RFC); FULL OUTER stays gated; preserved leg ENCLOSED /
+    null-supplying leg fresh. (2) JOIN legs categorically ineligible (nested bare concat erases
+    buried aliases — S3 FieldPath territory). (3) Dup-leg-alias poison (FROM p JOIN p). (4)
+    SelectMergeRule assert refined to SelectExpression children (filter-merge is legal). (5)
+    flatMap outer binding = positional leg row (baked SARGs). (6) datumFromSpans: coexistence Datum
+    = bare + ALIAS.COL + TYPE.COL fallback keys (mirrors mergeRows/qualifyTypeFallback);
+    spanAwareRow resolves dotted names alias-first-then-type. (7) Predicate baking = CROSS-LEG
+    CONJUNCTS ONLY (single-leg preds are pushdown fodder into name-model legs; lazy is sound there
+    by the load-bearing invariant). **REMAINING RED: TestFDB_AmbiguousColumnStar
+    (select_star_cross_join_all_cols + cte variant) — §5 dup-name SELECT * over cross join reads
+    the wrong leg (cxName gets b's value). Diagnosis: compose-fold through the ordinal RC rewrote
+    projection values from dotted FieldValue{Field:"CX.NAME"} to BAKED refs with display name
+    "NAME" → executeProjection projNames (values.ProjectionColumnName→fv.Field) collide in the
+    projected Datum map (last-wins) and/or ColumnDef.Name (deriveProjectionColumnDef: ExplainValue
+    for Child!=nil) mismatches the Datum key. Fix direction: driver-side POSITIONAL read
+    (resultset.go columnValue: when rs.current.Positional != nil and slots parallel columns, read
+    slot columnIndex-1 — the §7 dup-name fix arriving via the positional row; verify projection
+    slots ARE parallel to ColumnDefs, and guard non-projection rows) OR restore qualified
+    projNames for baked refs. Then: conformance/dualwindow/plandiff targets re-run, full suite,
+    commit W3b-1, Graefe+Torvalds re-request, RFC execution log update.** Then W3b-2 pin batch
+    (GROUP-BY-over-2-way E2E, dup-named box-leg, EXPLAIN stability, dualwindow, stress
+    before/after).
   - [ ] **W4** correlated-scalar-subquery 2-leg seed + single-source `UNNEST` port; **NO interning
     flip** (canonical sequence: Slice 3).
   - [ ] **W5** remaining §5 pins (gate pins (a)/(b) runtime halves) → gauntlet → PR → merge.

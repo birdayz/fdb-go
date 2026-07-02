@@ -1901,7 +1901,20 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 				outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
 				pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)
 			}
-			merged := append(sel.GetPredicates(), pred)
+			toMerge := []predicates.QueryPredicate{pred}
+			// RFC-173 Slice 2 W3b: WHERE conjuncts merged into a GATED join's
+			// select are join predicates too — bake their direct leg
+			// references exactly like the ON predicates at the seed (contract
+			// ruling #2: eager (leg, ordinal), one baking rule for every
+			// predicate the ordinal select carries).
+			if d, gok := t.wedgeGate[join]; gok && d.Gated {
+				legTypes := map[string]*values.RecordType{
+					strings.ToUpper(sourceAlias(join.Left)):  t.ordinalLegType(join.Left),
+					strings.ToUpper(sourceAlias(join.Right)): t.ordinalLegType(join.Right),
+				}
+				toMerge = bakeGatedJoinPredicates(toMerge, legTypes)
+			}
+			merged := append(sel.GetPredicates(), toMerge...)
 			return expressions.NewSelectExpressionWithJoinType(
 				sel.GetResultValue(),
 				sel.GetQuantifiers(),
@@ -3392,22 +3405,33 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	}
 
 	// RFC-173 Slice 2: decide (and record) the ordinal-wedge gate for this
-	// seed BEFORE leg translation mutates the enclosure flag. W2: dark — the
-	// decision is recorded but unconsumed; W3's ordinal seed reads it.
-	_ = t.ordinalWedgeGate(j)
+	// seed BEFORE leg translation mutates the enclosure flag. W3b consumes
+	// it below: a gated join seeds the ORDINAL result value + baked
+	// predicates instead of the name-model anchored RC.
+	gateDecision := t.ordinalWedgeGate(j)
 
 	// Leg enclosure: an INNER (incl. cross) join's legs are part of THIS
 	// cluster — a nested join there merges into a ≥3-way select and must stay
-	// name-model. An OUTER box's legs root fresh clusters (ChildrenAsSet
-	// opacity cuts both ways). Restored before the OnExists subplan loop:
-	// existential subplans are never merged into this select (non-ForEach
-	// quantifiers are not merge targets), so they root fresh clusters too.
+	// name-model. A LEFT-outer box's PRESERVED (left) leg is ALSO enclosed:
+	// RewriteOuterJoinRule dissolves the box into an INNER + null-on-empty
+	// select during REWRITING, and SelectMergeRule then flattens the
+	// preserved child into it (the RFC-153 joined-preserved machinery — the
+	// W3b flip's drift assert caught a gated preserved-leg join being merged
+	// exactly there). The NULL-SUPPLYING (right) leg becomes the
+	// null-on-empty subselect — never a merge target — and FULL-outer boxes
+	// are never rewritten: those legs root fresh clusters. Restored before
+	// the OnExists subplan loop: existential subplans are never merged into
+	// this select, so they root fresh clusters too.
 	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = kind == logical.JoinInner
+	t.inInnerCluster = kind == logical.JoinInner || kind == logical.JoinLeft
 	leftRef := t.translateRef(left)
 	if leftRef == nil {
 		t.inInnerCluster = prevEnclosure
 		return nil
+	}
+	if kind == logical.JoinLeft {
+		// Null-supplying leg: fresh cluster (see above).
+		t.inInnerCluster = false
 	}
 	rightRef := t.translateRef(right)
 	t.inInnerCluster = prevEnclosure
@@ -3470,7 +3494,18 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// the RC keys columns by alias, so leg ORDER only affects `SELECT *` layout.
 	rvLeft, rvRight := j.Left, j.Right
 	rvLeftAlias, rvRightAlias := sourceAlias(rvLeft), sourceAlias(rvRight)
-	resultValue := t.buildJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
+	var resultValue values.Value
+	if gateDecision.Gated {
+		// RFC-173 Slice 2 W3b — the ordinal wedge seed: baked ofOrdinalNumber
+		// concatenation of the two legs + eager (leg, ordinal) predicate
+		// baking (contract ruling #2). Same untranslatable-on-nil rule as the
+		// anchored seed below.
+		var legTypes map[string]*values.RecordType
+		resultValue, legTypes = t.buildOrdinalJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
+		preds = bakeGatedJoinPredicates(preds, legTypes)
+	} else {
+		resultValue = t.buildJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
+	}
 	if resultValue == nil {
 		// A leg's columns are not derivable (only the catalog-free nil-md path;
 		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.

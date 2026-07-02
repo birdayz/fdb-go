@@ -61,13 +61,48 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// partition machinery. Name model (W4 owns the existential seeds).
 		return wedgeGateDecision{Arity: arityPoison, Reason: "existential quantifiers on the join select"}
 	}
+	if strings.EqualFold(sourceAlias(j.Left), sourceAlias(j.Right)) {
+		// Both legs bind the SAME correlation (e.g. `FROM p JOIN p`, a CTE
+		// referenced twice with no aliases): the ordinal seed's two leg QOVs
+		// would be indistinguishable — two runs under one alias, an
+		// unclassifiable shape. Fail toward the name model (whose
+		// same-namespace merge semantics tolerate it) — the contract's
+		// unclassifiable-counts-as->2 direction.
+		return wedgeGateDecision{Arity: arityPoison, Reason: "duplicate leg aliases (indistinguishable leg correlations)"}
+	}
+	if !t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right) {
+		// A leg CONTAINS a name-model join at its own boundary (a 3+-way
+		// inner cluster, or an outer box over one): its output rows are the
+		// name model's merged rows (dotted keys, no leg concat) — an ordinal
+		// seed over it would type the leg wrongly. Mixed nesting stays
+		// name-model until Slice 3 flips N-way (RFC §4 coexistence scoping).
+		// Caught live by the W3b flip: `(A JOIN B JOIN C) LEFT JOIN D` — the
+		// box gated while its left leg stayed name-model, and
+		// ordinalLegColumns' mis-scope panic fired exactly as designed.
+		return wedgeGateDecision{Arity: arityPoison, Reason: "a leg contains a name-model join (mixed nesting stays name-model until S3)"}
+	}
+	if j.Kind == logical.JoinFull {
+		// FULL OUTER is the only genuinely opaque outer box: it is NEVER
+		// rewritten (RewriteOuterJoinRule handles LeftOuter only; FULL stays
+		// on the materialized NLJ) and never merged in either direction
+		// (ChildrenAsSet false as parent and child). Gate it (contract ruling
+		// #3's appendNullLeg — the FULL drain births are wired).
+		return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary FULL-outer box (genuinely opaque both ways)"}
+	}
 	if j.Kind != logical.JoinInner {
-		// Outer-join boxes are structurally binary and opaque on BOTH sides
-		// (ChildrenAsSet opacity: SelectMergeRule neither merges them into a
-		// parent nor merges children into them), so enclosure and cluster
-		// arity are irrelevant — contract ruling #3 (appendNullLeg) flips
-		// them in W3 unconditionally.
-		return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary outer-join box (opaque both ways)"}
+		// LEFT OUTER (and RIGHT, normalized to LEFT) is NOT opaque after
+		// REWRITING: RewriteOuterJoinRule dissolves a correlated
+		// predicate-carrying LEFT box into an INNER select + null-on-empty
+		// quantifier, which then MERGES like any inner select — the
+		// dissolved box flattens into enclosing clusters and its own
+		// preserved-leg child flattens into it (the RFC-153 joined-preserved
+		// machinery). The W2 contract's "outer boxes are opaque both ways"
+		// premise held only at translation time; caught live by the W3b flip
+		// (SelectMergeRule drift assert + ordinalLegColumns mis-scope panic
+		// on the RFC-153 shapes). LEFT OUTER therefore stays NAME-MODEL in
+		// the wedge, pending a Graefe re-ruling on the corrected premise
+		// (recorded in the RFC).
+		return wedgeGateDecision{Arity: arityPoison, Reason: "LEFT-outer box (dissolved by RewriteOuterJoinRule post-translation — not opaque; name model pending re-ruling)"}
 	}
 	if t.inInnerCluster {
 		// This inner join is a leg subtree of an enclosing inner-join cluster
@@ -80,6 +115,64 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		return wedgeGateDecision{Gated: true, Arity: a, Reason: "maximal inner-join cluster of arity 2"}
 	}
 	return wedgeGateDecision{Arity: a, Reason: "maximal cluster arity != 2"}
+}
+
+// ordinalEligible reports whether a gated join could take op as a LEG: op's
+// output boundary must not be a NAME-MODEL join's merged row. Join-free
+// shapes are always eligible (scans, aggregates, unions, sorts — their
+// outputs are single-namespace rows the leg adapter synthesizes by name).
+// A JOIN inside op is eligible only when IT will be ordinal too: an outer
+// box recurses on its legs; an inner join must be a 2-way cluster with
+// eligible legs (a 3+-way inner cluster is Slice 3's name-model territory).
+// Transparent wrappers peel exactly as clusterArity does; a cteScope-scoped
+// scan recurses into the body (the derived-table boundary is transparent to
+// SelectMergeRule); opaque boxes over joins (aggregate/union/sort/distinct)
+// are eligible — their OUTPUT is the box's own row, the buried join never
+// reaches the leg boundary. Unclassifiable shapes: ineligible (name model).
+func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
+	switch o := op.(type) {
+	case *logical.LogicalJoin:
+		// ANY join leg is ineligible in the Slice 2 wedge — including a
+		// would-be-gated one. A nested ordinal box's output type is the BARE
+		// leg concatenation, which ERASES the buried aliases: an upper dotted
+		// reference into the buried leg (`a.id` through `(a JOIN b) FULL JOIN
+		// c`) has no span to resolve against — that is S3's collapsed
+		// FieldPath territory (contract ruling #2: "S2 needs only
+		// single-accessor ordinals"). The name model handles nested legs via
+		// verbatim dotted-key propagation; dual emission keeps that path
+		// alive (an ordinal box consumed as a NAME-model leg reads through
+		// its bare+qualified Datum). Caught live by the W3b flip
+		// (FULL-over-join: "A.ID not resolvable, row columns [ID FLAG ID
+		// A_ID BX ID A_ID BX_REF]").
+		return false
+	case *logical.LogicalFilter:
+		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
+			return false
+		}
+		return t.ordinalEligible(o.Input)
+	case *logical.LogicalProject:
+		if len(o.ScalarSubqueries) > 0 || len(o.CorrelatedScalarSubqueries) > 0 {
+			return false
+		}
+		return t.ordinalEligible(o.Input)
+	case *logical.LogicalScan:
+		key := strings.ToUpper(o.Table)
+		if _, ok := t.cteExprScope[key]; ok {
+			return true // pre-translated opaque reference (temp-table scan)
+		}
+		if body, ok := t.cteScope[key]; ok {
+			delete(t.cteScope, key)
+			eligible := t.ordinalEligible(body)
+			t.cteScope[key] = body
+			return eligible
+		}
+		return true
+	default:
+		// Non-join leaves and opaque boxes (aggregate, union, sort, limit,
+		// distinct, CTE, values, …): the leg boundary sees the box's own
+		// output row, never a buried join's merged row.
+		return true
+	}
 }
 
 // clusterArity computes the post-flattening ForEach arity of the transitive
@@ -126,8 +219,19 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 		if len(o.OnExistsSubqueries) > 0 {
 			return arityPoison
 		}
-		if o.Kind != logical.JoinInner {
+		if o.Kind == logical.JoinFull {
+			// FULL OUTER: genuinely opaque (never rewritten, never merged).
 			return 1
+		}
+		if o.Kind != logical.JoinInner {
+			// LEFT/RIGHT OUTER: RewriteOuterJoinRule dissolves the box into
+			// an INNER + null-on-empty select during REWRITING, whose
+			// preserved side flattens into the enclosing cluster with a
+			// null-on-empty rider — post-flattening arity is not computable
+			// at translation. POISON: any cluster containing a LEFT box
+			// stays name-model (W3b premise correction; see
+			// ordinalWedgeGateDecide).
+			return arityPoison
 		}
 		l := t.clusterArity(o.Left)
 		if l == arityPoison {

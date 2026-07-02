@@ -62,8 +62,14 @@ func TestRFC173S2_ClusterArity_Shapes(t *testing.T) {
 		{"two_way", inner(scan("Order", "o"), scan("Customer", "c")), 2},
 		{"three_way_left_deep", inner(inner(scan("Order", "o"), scan("Customer", "c")), scan("TypedRecord", "t")), 3},
 		{"three_way_right_deep", inner(scan("Order", "o"), inner(scan("Customer", "c"), scan("TypedRecord", "t"))), 3},
-		{"outer_join_opaque", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), 1},
-		{"outer_box_plus_scan", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), scan("TypedRecord", "t")), 2},
+		// LEFT OUTER: POISON — RewriteOuterJoinRule dissolves the box into an
+		// INNER + null-on-empty select during REWRITING, so translation-time
+		// opacity is a false premise (the W3b flip's live catch). FULL OUTER
+		// is the genuinely opaque box (never rewritten, never merged).
+		{"left_outer_poison", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), arityPoison},
+		{"left_outer_box_poisons_cluster", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), scan("TypedRecord", "t")), arityPoison},
+		{"full_outer_opaque", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), 1},
+		{"full_outer_box_plus_scan", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), scan("TypedRecord", "t")), 2},
 		{"filter_transparent", inner(logical.NewFilter(scan("Order", "o"), "x > 1"), scan("Customer", "c")), 2},
 		{"project_transparent", inner(logical.NewProject(scan("Order", "o"), []string{"order_id"}, []string{""}), scan("Customer", "c")), 2},
 		{"aggregate_opaque", inner(logical.NewAggregate(inner(scan("Order", "o"), scan("Customer", "c")), []string{"x"}, nil, nil, ""), scan("TypedRecord", "t")), 2},
@@ -173,17 +179,100 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 	})
 
-	t.Run("outer_box_and_fresh_cluster_under_it", func(t *testing.T) {
+	t.Run("left_outer_not_gated_null_leg_fresh_preserved_enclosed", func(t *testing.T) {
 		t.Parallel()
-		nested := inner(scan("Customer", "c"), scan("TypedRecord", "t"))
-		root := logical.NewJoin(scan("Order", "o"), nested, logical.JoinLeft, "")
+		// The W3b premise correction: a LEFT box is dissolved by
+		// RewriteOuterJoinRule during REWRITING, so (a) the box itself must
+		// NOT gate; (b) its PRESERVED (left) leg flattens into the rewritten
+		// select → a join there is ENCLOSED (name-model); (c) its
+		// NULL-SUPPLYING (right) leg becomes the never-merged null-on-empty
+		// subselect → a join there roots a FRESH cluster and gates.
+		preserved := inner(scan("Customer", "c"), scan("TypedRecord", "t"))
+		root := logical.NewJoin(preserved, scan("Order", "o"), logical.JoinLeft, "")
+		tr := newGateTranslator(t)
+		tr.translateRef(root)
+		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
+			t.Fatalf("LEFT-outer box: %+v (ok=%v), want recorded and NOT gated (dissolved by RewriteOuterJoinRule)", d, ok)
+		}
+		if d, ok := tr.wedgeGate[preserved]; !ok || d.Gated {
+			t.Fatalf("2-way in the PRESERVED leg: %+v (ok=%v), want NOT gated (flattens into the rewritten select)", d, ok)
+		}
+
+		nullSide := inner(scan("Customer", "c2"), scan("TypedRecord", "t2"))
+		root2 := logical.NewJoin(scan("Order", "o2"), nullSide, logical.JoinLeft, "")
+		tr2 := newGateTranslator(t)
+		tr2.translateRef(root2)
+		if d, ok := tr2.wedgeGate[nullSide]; !ok || !d.Gated {
+			t.Fatalf("2-way in the NULL-SUPPLYING leg: %+v (ok=%v), want gated (fresh cluster — the null-on-empty subselect is never merged)", d, ok)
+		}
+	})
+
+	t.Run("full_outer_box_gates_scan_legs_only", func(t *testing.T) {
+		t.Parallel()
+		// FULL OUTER over SCAN legs is the genuinely opaque box: never
+		// rewritten, never merged — it gates (ruling #3's FULL drain wired).
+		root := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
 		tr := newGateTranslator(t)
 		tr.translateRef(root)
 		if d, ok := tr.wedgeGate[root]; !ok || !d.Gated {
-			t.Fatalf("outer-join box: %+v (ok=%v), want gated (binary opaque, ruling #3)", d, ok)
+			t.Fatalf("FULL-outer box over scans: %+v (ok=%v), want gated (genuinely opaque)", d, ok)
+		}
+	})
+
+	t.Run("join_legs_ineligible_nested_still_gates", func(t *testing.T) {
+		t.Parallel()
+		// ANY join leg makes the parent ineligible in the S2 wedge — a
+		// nested ordinal box's bare concat ERASES buried aliases (an upper
+		// `a.id` through `(a JOIN b) FULL JOIN c` has no span to resolve
+		// against; nesting is S3's collapsed-FieldPath work — contract
+		// ruling #2: S2 is single-accessor only). The nested 2-way itself
+		// still gates (fresh cluster under the FULL leg) and is consumed as
+		// a name-model leg through its dual-emitted Datum.
+		nested := inner(scan("Customer", "c"), scan("TypedRecord", "t"))
+		root := logical.NewJoin(scan("Order", "o"), nested, logical.JoinFull, "")
+		tr := newGateTranslator(t)
+		tr.translateRef(root)
+		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
+			t.Fatalf("FULL box with a JOIN leg: %+v (ok=%v), want NOT gated (join legs are S3 territory)", d, ok)
 		}
 		if d, ok := tr.wedgeGate[nested]; !ok || !d.Gated {
-			t.Fatalf("2-way under an outer leg roots a fresh cluster: %+v (ok=%v), want gated", d, ok)
+			t.Fatalf("2-way under a FULL leg roots a fresh cluster: %+v (ok=%v), want gated", d, ok)
+		}
+	})
+
+	t.Run("rfc153_joined_preserved_stays_name_model", func(t *testing.T) {
+		t.Parallel()
+		// Graefe re-ruling condition 1: the EXACT shape whose live fallout
+		// broke the LEFT-outer opacity premise — `a JOIN b LEFT JOIN c` (the
+		// RFC-153 joined-preserved family) — pinned name-model END TO END at
+		// the gate: the LEFT box does not gate (dissolved by
+		// RewriteOuterJoinRule post-translation), and the inner(a,b) in its
+		// PRESERVED leg does not gate either (it flattens into the rewritten
+		// select — the machinery the drift assert caught it inside).
+		ab := inner(scan("Order", "o"), scan("Customer", "c"))
+		root := logical.NewJoin(ab, scan("TypedRecord", "t"), logical.JoinLeft, "")
+		tr := newGateTranslator(t)
+		tr.translateRef(root)
+		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
+			t.Fatalf("joined-preserved LEFT box: %+v (ok=%v), want recorded and NOT gated", d, ok)
+		}
+		if d, ok := tr.wedgeGate[ab]; !ok || d.Gated {
+			t.Fatalf("joined-preserved inner(a,b): %+v (ok=%v), want recorded and NOT gated (preserved leg flattens post-rewrite)", d, ok)
+		}
+	})
+
+	t.Run("mixed_nesting_leg_ineligible", func(t *testing.T) {
+		t.Parallel()
+		// `(A JOIN B JOIN C) FULL JOIN D`: the FULL box's left leg is a
+		// name-model 3-way — the box must NOT gate (an ordinal seed cannot
+		// type a name-model merged-row leg; mixed nesting stays name-model
+		// until S3). Caught live by ordinalLegColumns' mis-scope panic.
+		threeWay := inner(inner(scan("Order", "o"), scan("Customer", "c")), scan("TypedRecord", "t"))
+		root := logical.NewJoin(threeWay, scan("Order", "o2"), logical.JoinFull, "")
+		tr := newGateTranslator(t)
+		tr.translateRef(root)
+		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
+			t.Fatalf("FULL box over a name-model 3-way leg: %+v (ok=%v), want NOT gated (leg ineligible)", d, ok)
 		}
 	})
 

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -893,6 +894,18 @@ func rebaseOuterLegValue(
 			corr := strings.ToUpper(qov.Correlation.String())
 			for _, leg := range legAliases {
 				if leg != "" && strings.ToUpper(leg) == corr {
+					// RFC-173 Slice 2 drift assert (same class as
+					// rebaseBuriedLowerReferences'): this rewrite degrades the
+					// reference to a lazy dotted name over a merge correlation
+					// — a silent baked→lazy degradation for an eager ordinal
+					// node. It only fires on the EXISTS-over-join and RFC-153
+					// buried-preserved-leg paths, which the W2 gate keeps
+					// name-model (existential = poison; merge correlations =
+					// ≥3-way); a baked node here means the gate mis-scoped.
+					if fv.Resolved != nil {
+						panic(fmt.Sprintf("RFC-173: rebaseOuterLegValue would re-anchor BAKED FieldValue %s#%d (leg %s) to merge alias %s — the cluster-arity gate mis-scoped an ordinal join into name-model rebase machinery (planner bug)",
+							fv.Field, fv.Resolved.Ordinal, corr, mergedCorr.Name()))
+					}
 					qualField := corr + "." + strings.ToUpper(fv.Field)
 					return values.NewFieldValue(
 						values.NewQuantifiedObjectValue(mergedCorr),

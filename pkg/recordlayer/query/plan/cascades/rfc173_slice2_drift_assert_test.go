@@ -107,6 +107,45 @@ func TestRFC173S2_SelectMergeDriftAssert_Fires(t *testing.T) {
 	if n := len(merged.GetQuantifiers()); n != 1 {
 		t.Fatalf("merged wrapper has %d quantifiers, want the child's 1", n)
 	}
+
+	// Allowed: a FILTER child whose flowed value is baked, in a
+	// MULTI-quantifier parent — filter-merge only dissolves the filter (its
+	// predicates pull up; the parent quantifier re-ranges over the ordinal
+	// box beneath, which stays a box). This is the W3b flip's first live
+	// shape (RFC-153 joined-preserved) and the earlier any-WithPredicates
+	// assert boundary false-positived on it — pinned as a no-panic merge.
+	child3 := ordinalChildSelect(t)
+	filterPred := &predicates.ComparisonPredicate{
+		Operand:    &values.FieldValue{Field: "ID"},
+		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
+	}
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{filterPred},
+		expressions.ForEachQuantifier(expressions.InitialOf(child3)),
+	)
+	filterQ := expressions.ForEachQuantifier(expressions.InitialOf(filter))
+	otherQ2 := expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{}))
+	multiParent := expressions.NewSelectExpression(
+		filterQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{filterQ, otherQ2},
+		nil,
+	)
+	yielded = FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(multiParent))
+	if len(yielded) == 0 {
+		t.Fatal("filter-over-ordinal-box merge in a multi-quantifier parent must proceed (no panic, no decline), got 0 yields")
+	}
+	// Every yield must keep the parent's 2 ForEach quantifiers — the filter
+	// dissolves (its predicate pulls up) but the ordinal box is NEVER
+	// flattened into the parent.
+	for yi, y := range yielded {
+		fm, ok := y.(*expressions.SelectExpression)
+		if !ok {
+			t.Fatalf("yield %d is %T, want *SelectExpression", yi, y)
+		}
+		if n := len(fm.GetQuantifiers()); n != 2 {
+			t.Fatalf("yield %d changed the quantifier count to %d, want 2 — the ordinal box must stay a box", yi, n)
+		}
+	}
 }
 
 // TestRFC173S2_ReStampDriftAssert_Fires pins that re-anchoring a BAKED
