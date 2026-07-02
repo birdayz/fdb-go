@@ -131,7 +131,7 @@ validation gate.
     rationale; S3 honestly resized 4–5 shifts; the FINALIZED S2 wedge (pure inner/cross 2-way over
     non-join legs + FULL boxes over non-join legs) recorded as the definitive statement. **NO
     interning flip** (canonical sequence: Slice 3, unchanged).
-  - [ ] **W5** gauntlet → PR → merge. Gate pins (a)/(b) runtime halves LANDED in W3b-2 (a3d323808;
+  - [~] **W5** gauntlet → PR #447 OPEN (full-branch Graefe ACK-mergeable + Torvalds mergeable, all findings fixed: 4640d14c3, a5e733237; pushed; @claude review requested; awaiting CI + @claude + codex). Gate pins (a)/(b) runtime halves LANDED in W3b-2 (a3d323808;
     pin (b) partial per Graefe with the conversion obligation above). PR description MUST state
     the contract delta (Graefe condition 4: reviewers review against the amended §4, not the
     stale text): premise correction, LEFT-outer poison, join-legs ineligible, W4 deferral,
