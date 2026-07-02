@@ -2687,6 +2687,25 @@ func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstruc
 	return &RecordConstructorValue{Fields: out}
 }
 
+// NewRawRecordConstructorValue constructs a RecordConstructorValue keeping
+// every field name VERBATIM — duplicate names allowed. It exists for the
+// RFC-173 ordinal-join seeds (Graefe W3 ruling: dedicated raw RC constructor):
+// the 2-way join's ordinal RC concatenates the two legs' columns, each field a
+// BAKED FieldValue over its leg's QOV, and duplicate names across legs
+// (`SELECT * FROM a JOIN b` with same-named columns) MUST survive verbatim —
+// positional access is by ordinal, so duplicates are unambiguous, and §5's
+// duplicate-name identity pin is unconstructible without them.
+//
+// NEVER use this for a name-model RC: NewRecordConstructorValue (above)
+// appends _2/_3 suffixes, which is correct there (SQL projection column
+// naming, name-keyed Datum rows) — a raw duplicate in the name model silently
+// resolves to the first match, the exact conflation RFC-173 exists to kill.
+func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
+	out := make([]RecordConstructorField, len(fields))
+	copy(out, fields)
+	return &RecordConstructorValue{Fields: out}
+}
+
 // Children returns each field's Value as a flat list, in field
 // declaration order. Lets WalkValue traverse the whole tree.
 func (r *RecordConstructorValue) Children() []Value {
