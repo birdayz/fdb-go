@@ -542,6 +542,25 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     clusters. Pins: arity-per-shape table, flattening-evasion (gate pin (b) planner half),
     enclosure-by-translation matrix (2-way gates; same join under 3-way does not; fresh clusters
     under outer legs/aggregates/EXISTS subqueries gate; EXISTS outer legs don't).
+  - **W3b-2 (pin batch) + W5 (gauntlet) — DONE; SLICE 2 MERGED as PR #447 (squash 7f7100199,
+    2026-07-02).** Full-branch four-gate trail: Graefe ACK, Torvalds ACK, codex ACK (planner +
+    executor scoped passes after the full-diff run overflowed), @claude ACK — every reviewer
+    caught ≥1 real bug across the rounds (fail-closed ON-drop, ordinalEligible CTE arm,
+    RV-only LegTypes P1, FlatMap LegTypes widening, index-shaped covering rows), each fixed with
+    a red→green pin. Stress: branch faster than master on all heavy scans. **Post-gauntlet merge
+    saga:** master moved twice (PR #446 recursive-CTE alias frontier; PR #450 RFC-176 P1). #446
+    had independently invented a SECOND baked-ordinal mechanism
+    (`ResolvedOrdinal`/`HasResolvedOrdinal` — childless, quiet name-fallback, the recursive-CTE
+    leg wrap). Merge kept both; then a dedicated reviewed commit (51e3327ca) unified onto
+    `ResolvedAccessor` per a Graefe pre-code ruling: **`FrontierPinned` bit on the accessor**
+    (set at the seed constructor, clear at the wrap constructor) carries the loud-guard
+    contract — child-presence was NAKed (pullup/pushdown passthrough copies strip Child while
+    sharing the accessor pointer, silently demoting loud nodes); the bit is excluded from
+    identity/hash/Explain and dies in S4 with the guard. ExplainValue now renders `#ordinal` for
+    ALL baked nodes (closed a latent dup-slot gap in the ExplainValue-keyed projection identity).
+    Watch-item banked in the S3 substrate map: pinned/unpinned equal-(field,ordinal) nodes are
+    identity-equal but guard-different (never co-occur in one tree today — recursive CTEs are
+    gate-poison; re-check when S3 widens baked-node reach).
 - **Slice 3 — THE HARD CORE: N-way re-enumeration + interning, ordinal/group (ATOMIC)**
   (~~3~~ **4–5 shifts — resized honestly per the Graefe W4-deferral ruling: S3 additionally owns
   the three items below that S2's premise correction displaced**). Replace the name-based re-stamp

@@ -63,8 +63,15 @@ validation gate.
     loud · dualwindow retires with the name map · `legPhysicalOutputNames` must not outlive the window ·
     bound `positionalTypeCache` dynamicpb leak) + Slices 2–3 oracle-gate rule (new birth sites extend
     `DisablePositionalEmission`).
-- [~] **Slice 2 2-way wedge** (branch `feat/rfc173-slice2-wedge`) — Round-5 preconditions MET (all
-  four §10 Round-5 boxes checked).
+- [x] **Slice 2 2-way wedge — DONE, MERGED as PR #447 (squash 7f7100199, 2026-07-02).** All four
+  gates at the final HEAD: Graefe ✅ (design + impl), Torvalds ✅, codex ✅ (clean P1/P2/P3),
+  @claude ✅ ("🟢 Clean"). Master moved twice mid-gauntlet (PR #446 recursive-CTE alias frontier +
+  PR #450 RFC-176 P1); both merged in with the suite green. #446 had independently invented a
+  SECOND baked-ordinal mechanism (`ResolvedOrdinal`/`HasResolvedOrdinal`, childless, quiet) —
+  unified onto `ResolvedAccessor` in 51e3327ca with a `FrontierPinned` contract bit (Graefe
+  pre-code ruling: bit on the accessor, NOT child-presence — passthrough copies strip Child;
+  excluded from identity/hash/Explain; dies in S4). Watch-item banked in the S3 map: pinned vs
+  unpinned equal-(field,ordinal) nodes are identity-equal but guard-different.
   - [x] **ENTRY GATE: the name-burial inventory — SATISFIED** (`rfcs/173-name-burial-inventory.md`,
     two-axis sweep, ~95 sites each slotted S2/S3/S4/S6). Key conclusions: ordinal frontier dies at
     `mergeRows`/`qualifyOuterRow`/union-remap/aggregate-output (S2/S3 re-birth + extend the oracle
@@ -131,7 +138,9 @@ validation gate.
     rationale; S3 honestly resized 4–5 shifts; the FINALIZED S2 wedge (pure inner/cross 2-way over
     non-join legs + FULL boxes over non-join legs) recorded as the definitive statement. **NO
     interning flip** (canonical sequence: Slice 3, unchanged).
-  - [~] **W5** gauntlet → PR #447 OPEN (full-branch Graefe ACK-mergeable + Torvalds mergeable, all findings fixed: 4640d14c3, a5e733237; pushed; @claude review requested; awaiting CI + @claude + codex). Gate pins (a)/(b) runtime halves LANDED in W3b-2 (a3d323808;
+  - [x] **W5** gauntlet → PR #447 MERGED (squash 7f7100199). Full four-gate trail at every HEAD
+    (461c38074 branch content; 51e3327ca unification; final merges mechanically verified —
+    single-parent hunks only). Gate pins (a)/(b) runtime halves LANDED in W3b-2 (a3d323808;
     pin (b) partial per Graefe with the conversion obligation above). PR description MUST state
     the contract delta (Graefe condition 4: reviewers review against the amended §4, not the
     stale text): premise correction, LEFT-outer poison, join-legs ineligible, W4 deferral,
