@@ -296,3 +296,73 @@ func TestPlanIdentity_NilValueArms_RFC176(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanIdentity_VectorLiteralConstant_RFC176 pins slice-carrying constant
+// literals in plan identity (PR #453 review): a projection over a vector
+// literal (ConstantValue carrying []float64 / []float32 — the slice types
+// the executor's evalFloat64Slice accepts beyond []any) must compare by
+// ELEMENT-WISE equality, never Go's `==` on interfaces — which PANICS at
+// runtime for non-comparable dynamic types. The pre-RFC-176 rendering
+// compare never reached `==` for them (valueLiteralString rendered unknown
+// slices as "?", which ALSO collapsed different vectors to one identity);
+// the semantic migration made the panic reachable (projection
+// EqualsWithoutChildren → values.EqualsWithoutChildren →
+// constantValuesEqual). RED (panic) on the pre-fix commit.
+func TestPlanIdentity_VectorLiteralConstant_RFC176(t *testing.T) {
+	t.Parallel()
+	inner := stub("Inner")
+	mk := func(v any) RecordQueryPlan {
+		return NewRecordQueryProjectionPlan(
+			[]values.Value{&values.ConstantValue{Value: v, Typ: values.UnknownType}}, inner)
+	}
+
+	// Equal-content DISTINCT slice instances: equal, no panic, hash coherent.
+	a, b := mk([]float64{1, 0, 0}), mk([]float64{1, 0, 0})
+	if !a.EqualsWithoutChildren(b) {
+		t.Fatal("equal-content []float64 literals must compare equal")
+	}
+	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
+		t.Fatal("equal-content []float64 literals must hash equal (equal⟹same-hash)")
+	}
+	// Different content: unequal AND hash-discriminated (the "?"-rendering
+	// era collapsed different vectors to one identity).
+	c := mk([]float64{0, 1, 0})
+	if a.EqualsWithoutChildren(c) {
+		t.Fatal("different []float64 literals must NOT compare equal")
+	}
+	if a.HashCodeWithoutChildren() == c.HashCodeWithoutChildren() {
+		t.Fatal("different []float64 literals must not share a hash")
+	}
+	if a.EqualsWithoutChildren(mk([]float64{1, 0})) {
+		t.Fatal("different-length []float64 literals must NOT compare equal")
+	}
+
+	// []float32 twin.
+	f1, f2 := mk([]float32{1, 2}), mk([]float32{1, 2})
+	if !f1.EqualsWithoutChildren(f2) {
+		t.Fatal("equal-content []float32 literals must compare equal")
+	}
+	if f1.HashCodeWithoutChildren() != f2.HashCodeWithoutChildren() {
+		t.Fatal("equal-content []float32 literals must hash equal")
+	}
+	if f1.EqualsWithoutChildren(mk([]float32{1, 3})) {
+		t.Fatal("different []float32 literals must NOT compare equal")
+	}
+
+	// Cross-element-type: same numbers, different slice type — distinct
+	// literals (a half-precision vector is not a double vector).
+	if mk([]float64{1, 2}).EqualsWithoutChildren(mk([]float32{1, 2})) {
+		t.Fatal("[]float64 vs []float32 literals must NOT compare equal")
+	}
+
+	// nil vs empty: deliberately EQUAL (len-based, the same choice as the
+	// []byte arm — no caller distinguishes a missing vector from a
+	// zero-length one) and hash-coherent.
+	n, e := mk([]float64(nil)), mk([]float64{})
+	if !n.EqualsWithoutChildren(e) {
+		t.Fatal("nil and empty []float64 literals compare equal (len-based, matches the []byte arm)")
+	}
+	if n.HashCodeWithoutChildren() != e.HashCodeWithoutChildren() {
+		t.Fatal("nil and empty []float64 literals must hash equal (equal⟹same-hash)")
+	}
+}

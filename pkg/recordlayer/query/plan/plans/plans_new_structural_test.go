@@ -474,7 +474,8 @@ func TestFirstOrDefaultPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestFirstOrDefaultPlan_EqualsWithoutChildren_NotEqualToMapPlan(t *testing.T) {
 	t.Parallel()
-	// Both use ExplainValue for equality, but type discriminator should prevent match.
+	// Both compare their single Value semantically (RFC-176 P2), but the
+	// concrete plan type is the first discriminator and must prevent a match.
 	fod := NewRecordQueryFirstOrDefaultPlan(nil, nil)
 	m := NewRecordQueryMapPlan(nil, nil)
 	if fod.EqualsWithoutChildren(m) {

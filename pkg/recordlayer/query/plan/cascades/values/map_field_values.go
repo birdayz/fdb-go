@@ -171,8 +171,10 @@ func ValuesStructurallyEqual(a, b Value) bool {
 	return true
 }
 
-// constantValuesEqual compares two any values for equality, handling
-// the []byte case (slices aren't comparable with ==).
+// constantValuesEqual compares two any values for equality, handling the
+// slice carriers a ConstantValue can hold ([]byte, []any IN-lists,
+// []float64 / []float32 vector literals) element-wise — Go's == on
+// interfaces holding non-comparable dynamic types panics at runtime.
 func constantValuesEqual(a, b any) bool {
 	if a == nil && b == nil {
 		return true
@@ -204,6 +206,39 @@ func constantValuesEqual(a, b any) bool {
 		}
 		for i := range al {
 			if !constantValuesEqual(al[i], bl[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	// Vector literals ([]float64 / []float32 — the slice types the executor's
+	// evalFloat64Slice accepts beyond []any). Slices are non-comparable, so
+	// the `==` fall-through below PANICS at runtime for them; the pre-RFC-176
+	// rendering compare never reached `==` (valueLiteralString rendered
+	// unknown slices as "?" — which also collapsed DIFFERENT vectors to one
+	// identity). Element-wise compare; nil and empty compare EQUAL (len-based,
+	// the same deliberate choice as the []byte arm above — no caller
+	// distinguishes a missing vector from a zero-length one), coherent with
+	// writeSemanticHash's ConstantValue arm, whose %v renders both as "[]".
+	if af, ok := a.([]float64); ok {
+		bf, ok := b.([]float64)
+		if !ok || len(af) != len(bf) {
+			return false
+		}
+		for i := range af {
+			if af[i] != bf[i] {
+				return false
+			}
+		}
+		return true
+	}
+	if af, ok := a.([]float32); ok {
+		bf, ok := b.([]float32)
+		if !ok || len(af) != len(bf) {
+			return false
+		}
+		for i := range af {
+			if af[i] != bf[i] {
 				return false
 			}
 		}
