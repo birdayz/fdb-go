@@ -916,3 +916,66 @@ func TestRFC173S2_NLJ_FoldedRVDroppedLeg_PredTypes(t *testing.T) {
 	// The folded output row: [A.V, 1].
 	ojAssertSlots(t, results[0].Positional, int64(10), int64(1))
 }
+
+// TestRFC173S2_FlatMap_FoldedRVDroppedLeg_PlanTypes pins the FlatMap half of
+// the codex PR-447 P1 (@claude final-pass catch): the correlated FlatMap
+// implementation pushes the gated join's baked ON references INTO the inner
+// plan, so a folded result value that DROPS the outer leg leaves the birth
+// typeless for it even though the inner plan still references it — a
+// Datum-only outer row (aggregate-box shape) then bound zero-width and the
+// baked SARG died loudly on a legitimate plan. newFlatMapCursor must widen
+// LegTypes from the inner plan's predicate surfaces.
+func TestRFC173S2_FlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
+	t.Parallel()
+	legA, _, qovA, qovB, _ := ojWiringLegs(t)
+	outerCorr := values.NamedCorrelationIdentifier("A")
+
+	// Folded RV: only leg B appears — the OUTER leg A dropped.
+	bakedBW, err := values.NewFieldValueOfOrdinal(qovB, 1)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	foldedRV := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "W", Value: bakedBW},
+	)
+
+	// The inner plan carries the baked ON reference to the dropped OUTER leg
+	// (a residual PredicatesFilter — the correlated-implementation shape).
+	bakedAID, err := values.NewFieldValueOfOrdinal(qovA, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	bakedBID, err := values.NewFieldValueOfOrdinal(qovB, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	innerPlan := plans.NewRecordQueryPredicatesFilterPlan(
+		plans.NewRecordQueryScanPlan(nil, values.UnknownType, false),
+		[]predicates.QueryPredicate{ojEqPred(bakedBID, bakedAID)},
+	)
+
+	c, err := newFlatMapCursor(nil, innerPlan, nil, EmptyEvaluationContext(),
+		outerCorr, values.NamedCorrelationIdentifier("B"), foldedRV, false,
+		recordlayer.ExecuteProperties{})
+	if err != nil {
+		t.Fatalf("newFlatMapCursor: %v", err)
+	}
+	// The birth must know the dropped OUTER leg's type from the inner plan's
+	// baked reference…
+	outerType := c.birth.legType(outerCorr)
+	if outerType == nil {
+		t.Fatal("LegTypes missing the RV-dropped OUTER leg — the inner plan's baked SARG/residual references it (the FlatMap P1 half)")
+	}
+	if len(outerType.Fields) != len(legA.Fields) {
+		t.Fatalf("outer leg type has %d fields, want %d", len(outerType.Fields), len(legA.Fields))
+	}
+	// …so a Datum-only outer row (aggregate-box shape) adapts to a full-width
+	// binding the baked reference can read — not the zero-width death row.
+	adapted, aerr := adaptLegPositional(ojNameQR(legA, int64(7), int64(70)), outerType)
+	if aerr != nil {
+		t.Fatalf("adaptLegPositional: %v", aerr)
+	}
+	if v, ok := adapted.Get(0); !ok || v != int64(7) {
+		t.Fatalf("adapted outer slot 0 = (%v, %v), want (7, true) — zero-width binding means the widening failed", v, ok)
+	}
+}

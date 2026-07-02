@@ -451,6 +451,82 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 // *ordinalJoinBirth.
 func (b *ordinalJoinBirth) enabled() bool { return b != nil && b.Enabled }
 
+// widenLegTypesFromPlan widens LegTypes with every BAKED leg reference found
+// in a physical plan tree's predicate surfaces — PredicatesFilter/Filter
+// predicates and scan/index comparison operands. The FlatMap half of the
+// codex PR-447 P1 (@claude final-pass catch): the correlated implementation
+// pushes the join's baked ON references INTO the inner plan as SARGs and
+// residual filters, so a folded result value that DROPPED a leg leaves the
+// birth typeless for it even though the inner plan still references it — a
+// Datum-only row for that leg (aggregate-box outer) then adapts to a
+// zero-width binding and dies loudly on a legitimate plan. Called by
+// newFlatMapCursor with the inner plan; the NLJ path gets the same widening
+// directly from its predicate list in newOrdinalJoinBirth.
+func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
+	if !b.enabled() || plan == nil {
+		return
+	}
+	collect := func(v values.Value) values.Value {
+		fv, isFV := v.(*values.FieldValue)
+		if !isFV || fv.Resolved == nil {
+			return v
+		}
+		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+			if rt, isRT := qov.Type().(*values.RecordType); isRT {
+				if _, seen := b.LegTypes[qov.Correlation]; !seen {
+					b.LegTypes[qov.Correlation] = rt
+				}
+			}
+		}
+		return v
+	}
+	collectComparison := func(c *predicates.Comparison) {
+		if c != nil && c.Operand != nil {
+			values.Replace(c.Operand, collect)
+		}
+	}
+	var walk func(p plans.RecordQueryPlan)
+	walk = func(p plans.RecordQueryPlan) {
+		if p == nil {
+			return
+		}
+		switch t := p.(type) {
+		case *plans.RecordQueryPredicatesFilterPlan:
+			for _, pr := range t.GetPredicates() {
+				predicates.ReplaceValues(pr, collect)
+			}
+		case *plans.RecordQueryFilterPlan:
+			for _, pr := range t.GetPredicates() {
+				predicates.ReplaceValues(pr, collect)
+			}
+		case *plans.RecordQueryScanPlan:
+			for _, cr := range t.GetScanComparisons() {
+				if cr.IsEquality() {
+					collectComparison(cr.GetEqualityComparison())
+				} else if cr.IsInequality() {
+					for _, c := range cr.GetInequalityComparisons() {
+						collectComparison(c)
+					}
+				}
+			}
+		case *plans.RecordQueryIndexPlan:
+			for _, cr := range t.GetScanComparisons() {
+				if cr.IsEquality() {
+					collectComparison(cr.GetEqualityComparison())
+				} else if cr.IsInequality() {
+					for _, c := range cr.GetInequalityComparisons() {
+						collectComparison(c)
+					}
+				}
+			}
+		}
+		for _, ch := range p.GetChildren() {
+			walk(ch)
+		}
+	}
+	walk(plan)
+}
+
 // oracleNameDatum is the §5 NAME-MODEL ORACLE's row for an ordinal-birth
 // flatMap: DisablePositionalEmission promises "the pre-RFC-173 name model
 // end-to-end", but the PLAN still carries the ordinal RC (planning is not

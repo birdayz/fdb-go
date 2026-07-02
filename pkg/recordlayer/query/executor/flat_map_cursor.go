@@ -71,6 +71,12 @@ func newFlatMapCursor(
 	if err != nil {
 		return nil, err
 	}
+	// The FlatMap half of the codex PR-447 P1 (@claude final-pass catch): the
+	// correlated implementation pushes the join's baked ON references INTO
+	// the inner plan (SARGs, residual filters), so LegTypes must be widened
+	// from the inner plan's predicate surfaces — a folded result value can
+	// drop a leg those references still need (see widenLegTypesFromPlan).
+	birth.widenLegTypesFromPlan(innerPlan)
 	return &flatMapCursor{
 		outerCursor: outerCursor,
 		innerPlan:   innerPlan,
