@@ -68,6 +68,18 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 // ordinals are distinct FieldPaths) — joins identity structurally. Two reads
 // of duplicate-named slots differ ONLY by ordinal, so unifying them would let
 // extraction pick a plan reading the WRONG slot.
+//
+// NOTE(explain format, RFC-176 P3): identity was previously keyed on the
+// ExplainValue renderings, which therefore had to be injective over every
+// semantic discriminator — the origin of the '#'-escape (raw '#' doubled,
+// ordinal reads rendered "X#0"; PR #446 rounds 2-3). After P2 no identity
+// code path reads a rendering; rendering is for humans, identity is
+// structural. The escape is RETAINED as an explain-format guarantee —
+// debugging output that collapses two different reads is still a bug — and
+// its tests (TestFieldValue_ExplainOrdinalEscape_RFC173, the plans-level
+// TestProjectionPlan_Identity_OrdinalVsLiteralHashField) now pin exactly
+// that, plus the matching injective discriminator in writeSemanticHash's
+// FieldValue arm.
 func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryProjectionPlan)
 	if !ok {

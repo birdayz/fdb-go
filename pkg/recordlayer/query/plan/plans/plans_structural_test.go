@@ -560,10 +560,14 @@ func TestProjectionPlan_Construction(t *testing.T) {
 // plan-time-resolved ordinal accessors (review round-2 on PR #446): two
 // projection plans whose reads differ ONLY by resolved ordinal (the
 // recursive-CTE duplicate-alias wrap — two slots both named X) must NOT be
-// memo-identical. Plan identity is keyed on ExplainValue renderings, so the
-// rendering carries the ordinal ("X#0"/"X#1", Java's FieldPath `#ordinal`
-// syntax) — rendering both as bare "X" unified the alternatives, and
-// extraction could pick the plan reading the WRONG slot.
+// memo-identical. Under the RFC-176 semantic identity the ordinal is a
+// structural discriminator (FieldValue's EqualsWithoutChildren and
+// writeSemanticHash arms both fold it — Java: distinct ofOrdinalNumber
+// ordinals are distinct FieldPaths); unifying them would let extraction pick
+// the plan reading the WRONG slot. The Explain assertion additionally pins
+// the explain-format rendering ("X#0"/"X#1", Java's FieldPath `#ordinal`
+// syntax): debug output rendering both as bare "X" would make different
+// plans read identically.
 func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
@@ -604,13 +608,17 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 	}
 }
 
-// TestProjectionPlan_Identity_OrdinalVsLiteralHashField pins the '#'-escape
-// (review round-3 on PR #446): a quoted identifier may legally contain '#', so
-// a plan projecting a plain NAME-read of a field literally named "X#0" must
-// not be memo-identical to a plan projecting an ORDINAL read of X at slot 0 —
-// pre-escape both rendered "X#0" and the ExplainValue-keyed identity unified
-// them. The raw field text is '#'-doubled ("X##0"), making the identity
-// injective over (field text, ordinal).
+// TestProjectionPlan_Identity_OrdinalVsLiteralHashField pins that an ORDINAL
+// read of X at slot 0 and a plain NAME-read of a field literally named "X#0"
+// (a quoted identifier may legally contain '#') are distinct plan identities.
+// Under the RFC-176 semantic model this holds structurally (FieldValue
+// equality compares field text + resolved-accessor presence + ordinal) and in the
+// hash (writeSemanticHash's FieldValue arm doubles raw '#', keeping its
+// discriminator injective over (field text, ordinal)). Historic origin
+// (review round-3 on PR #446): when identity was keyed on ExplainValue
+// renderings, both rendered "X#0" pre-escape and the plans memo-unified —
+// the '#'-doubling ("X##0") now also serves as the explain-format
+// injectivity pin (see values.ExplainValue's FieldValue arm).
 func TestProjectionPlan_Identity_OrdinalVsLiteralHashField(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")

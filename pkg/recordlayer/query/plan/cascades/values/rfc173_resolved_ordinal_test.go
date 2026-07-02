@@ -79,13 +79,18 @@ func TestFieldValue_ResolvedOrdinal_RFC173(t *testing.T) {
 }
 
 // TestFieldValue_ExplainOrdinalEscape_RFC173 pins the '#'-escape that keeps
-// ExplainValue injective over (field text, ordinal) — review round-3 on PR
-// #446: a quoted identifier may legally contain '#' (DOUBLE_QUOTE_ID accepts
-// any non-quote character), so a plain name-read of a field literally named
-// "X#0" would otherwise render identically to an ordinal read of X at slot 0,
-// and the ExplainValue-keyed physical-plan identity could memo-unify two
-// different projections. Raw field text has '#' DOUBLED; only an ordinal read
-// ends in an unpaired '#'+digits.
+// ExplainValue injective over (field text, ordinal) — an EXPLAIN-FORMAT pin
+// since RFC-176 P2/P3 (plan identity is semantic; renderings carry no
+// identity): a quoted identifier may legally contain '#' (DOUBLE_QUOTE_ID
+// accepts any non-quote character), so without the escape a plain name-read
+// of a field literally named "X#0" would render identically to an ordinal
+// read of X at slot 0 — debugging output collapsing two DIFFERENT reads.
+// The same doubling keeps writeSemanticHash's FieldValue discriminator
+// injective (a collision there is only a shared hash bucket — equality is
+// structural and stays sound — but injective is strictly better). Raw field
+// text has '#' DOUBLED; only an ordinal read ends in an unpaired '#'+digits.
+// Historic origin: review round-3 on PR #446, when identity WAS keyed on
+// these renderings.
 func TestFieldValue_ExplainOrdinalEscape_RFC173(t *testing.T) {
 	t.Parallel()
 
