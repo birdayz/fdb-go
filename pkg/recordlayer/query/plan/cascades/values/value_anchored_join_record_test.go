@@ -40,8 +40,8 @@ func TestNewAnchoredJoinRecord_ComposeResolvesEveryColumn(t *testing.T) {
 	resolvesToLegField("NAME")
 	resolvesToLegField("AMOUNT")
 	// Unique columns ALSO resolve by their qualified ALIAS.COL name — a qualified
-	// reference (e.g. A.NAME) must compose even when the bare name is unique (codex
-	// P2: the bare-only emission silently read NULL for such references).
+	// reference (e.g. A.NAME) must compose even when the bare name is unique (the
+	// bare-only emission silently read NULL for such references).
 	resolvesToLegField("A.NAME")
 	resolvesToLegField("B.AMOUNT")
 	// The cross-leg duplicate column ID is disambiguated as ALIAS.COL and each resolves.

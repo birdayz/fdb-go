@@ -390,7 +390,7 @@ func (f *spfreshFrontier) advance(demand int) error {
 	s := f.s
 	// cTop = max(s.c, k): gating widening on s.c alone skipped the pruned tail
 	// once the probe set hit the rerank budget, so a k > s.c scan could return
-	// fewer than k rows even with enough records in the pruned postings (codex).
+	// fewer than k rows even with enough records in the pruned postings.
 	// cTop is reused at the top-C cut in finalize.
 	cTop := s.c
 	if cTop < demand {

@@ -13,6 +13,7 @@ go_test(
         "docs_consistency_test.go",
         "panic_boundary_test.go",
         "plan_proto_schema_test.go",
+        "source_hygiene_test.go",
     ],
     # keep: living docs + archived snapshots staged into runfiles so the guard can read
     # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
@@ -40,6 +41,11 @@ go_test(
         "//pkg/relational/core/query:cascades_translator_test.go",
     ],
     embed = [":docscheck"],
+    # keep: "external" defeats Bazel's test-result cache. The RFC-175 F2 hygiene
+    # gate reads the WHOLE source tree (undeclared inputs, resolved via the
+    # MODULE.bazel runfiles symlink), so a cached pass would go stale the moment
+    # any Go file changes; the suite here is filesystem-only and fast.
+    tags = ["external"],
     deps = [
         "//gen",
         "//pkg/linters/norecover",

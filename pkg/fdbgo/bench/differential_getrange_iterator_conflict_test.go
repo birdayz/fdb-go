@@ -10,7 +10,7 @@ import (
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
-// RFC-121 iterator under-conflict guard (codex #319 P1).
+// RFC-121 iterator under-conflict guard.
 //
 // The streaming RangeResult.Iterator() fetches in batches. It used to read the FIRST batch as a
 // serializable read and ALL LATER batches as snapshot reads (no conflict), on the premise that the

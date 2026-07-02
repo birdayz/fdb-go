@@ -1272,7 +1272,7 @@ func assertPlanNotContains(t *testing.T, plan, substr string) {
 // invalid and rejected with ONE converged code, ErrCodeWrongObjectType (42809,
 // Java's WRONG_OBJECT_TYPE). Ignoring the AT alias would let a reference to the
 // ordinal silently resolve to a same-named existing table column and return the
-// wrong value (codex), so the reject is mandatory.
+// wrong value, so the reject is mandatory.
 func TestPlanHarness_AtOrdinalityRejected(t *testing.T) {
 	t.Parallel()
 
@@ -1297,7 +1297,7 @@ CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
 
 // TestPlanHarness_AtOrdinalityRejectedInAggregateIndexDDL pins the aggregate-index DDL path
 // (ddl.go parseAggregateIndexDefinition), a separate AtomTableItem consumer from the query
-// planner (codex). `ga` HAS a column `p`, and the index body embeds `FROM ga AT p GROUP BY p`:
+// planner. `ga` HAS a column `p`, and the index body embeds `FROM ga AT p GROUP BY p`:
 // ignoring the AT clause would build an index grouped by the real column p (wrong semantics).
 // The guard rejects it.
 func TestPlanHarness_AtOrdinalityRejectedInAggregateIndexDDL(t *testing.T) {
@@ -1312,7 +1312,7 @@ CREATE INDEX sum_by_p AS SELECT SUM(v) FROM ga AT p GROUP BY p
 
 // TestPlanHarness_AggregateIndexJoinRejected pins that an aggregate-index definition with a
 // JOIN is rejected rather than silently reduced to its leading table — which previously also
-// dropped any AT-ordinality clause on the joined source (codex). Aggregate indexes are
+// dropped any AT-ordinality clause on the joined source. Aggregate indexes are
 // single-table; the `AT p` on the joined `gb` here would otherwise slip past the leading-atom
 // guard entirely.
 func TestPlanHarness_AggregateIndexJoinRejected(t *testing.T) {
@@ -1406,8 +1406,8 @@ func TestPlanHarness_BareNonBooleanWhereRejected(t *testing.T) {
 }
 
 // TestPlanHarness_BareDoubleWhereRejected — a bare `WHERE <double_col>` must
-// raise 42804, NOT silently lift to `d = TRUE` and filter to nothing (codex
-// catch on #357). sqlTypeToCascadesType now carries the real TypeCodeDouble for
+// raise 42804, NOT silently lift to `d = TRUE` and filter to
+// nothing. sqlTypeToCascadesType now carries the real TypeCodeDouble for
 // FLOAT/DOUBLE (and TypeCodeBytes for BYTES), so the predicate-lift type gate
 // rejects them as non-boolean — while genuinely un-typeable values (params,
 // CTE/derived columns whose projected type isn't propagated) stay permissive.
@@ -1449,7 +1449,7 @@ func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
 // the bound-prefix correlation signal (matchBoundPrefixIsCorrelated) does not flag this
 // ref (it inspects only the bound prefix); materializing
 // the OR residual as a standalone leg filter would win and sever the join feed →
-// FlatMap(... inner=Fetch(<nil>)) → 0 rows (codex's 3-way-join repro). The SHAPE gate in
+// FlatMap(... inner=Fetch(<nil>)) → 0 rows (the 3-way-join repro). The SHAPE gate in
 // compensationSafeForYield keeps the OR residual on the OLD InsertFinal path → byte-
 // identical to pre-yieldUnknown behavior → the join is driven correctly. (Materializing
 // such residuals SAFELY — the rot-fix — is RFC-150, gated on the winner-selection
@@ -1601,7 +1601,7 @@ func TestPlanHarness_RotFix_CompoundResidualUsesIndex(t *testing.T) {
 		// IndexScan(IDX_K…)))`, not a bare `Fetch(IndexScan(IDX_K))`. A plan that used
 		// the index but DROPPED the OR/IN residual would return wrong rows yet still
 		// contain "IndexScan(IDX_K"; this is the dimension that actually matters
-		// (Torvalds: the hazard is "residual survives", not "index used").
+		// (the hazard is "residual survives", not "index used").
 		assertPlanContains(t, plan, "PredicatesFilter(Fetch(IndexScan(IDX_K")
 	}
 

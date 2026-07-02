@@ -24,7 +24,7 @@ func TestDatabaseDefault_SnapshotRYWDisable_Propagates(t *testing.T) {
 // TestDatabaseDefault_SnapshotRYW_IsCounter pins libfdb_c's cumulative-counter semantics
 // (NativeAPI.actor.cpp:2156/2160 snapshotRywEnabled++/--; ReadYourWrites.actor.cpp:2082 seeds each
 // new tx): SetSnapshotRywEnable() then SetSnapshotRywDisable() nets to ZERO — the new tx stays
-// ENABLED — not last-wins-disabled (codex #331; a bool would get this wrong).
+// ENABLED — not last-wins-disabled (a bool would get this wrong).
 func TestDatabaseDefault_SnapshotRYW_IsCounter(t *testing.T) {
 	t.Parallel()
 	idb := &internalDB{}

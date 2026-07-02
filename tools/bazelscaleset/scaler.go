@@ -375,7 +375,7 @@ func removeRunnerPID(slotPath string) {
 // It scans EVERY slot dir on disk (workBase/slot-*), not just the current pool: a
 // restart with a lower --max-runners than a previous run (e.g. 2 -> 1) would otherwise
 // leave a stray runner in a now-out-of-pool higher slot unreaped while the supervisor
-// re-advertises that capacity (codex). Slot dirs persist, so the glob covers every slot
+// re-advertises that capacity. Slot dirs persist, so the glob covers every slot
 // any prior incarnation created.
 func reconcileStrayRunners(logger *slog.Logger, workBase, runnerBase string) {
 	runnerBase = filepath.Clean(runnerBase)

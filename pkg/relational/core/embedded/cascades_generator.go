@@ -790,7 +790,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// already errored above and takes precedence, and (b) a VALID qualifier (or none) has
 	// been stripped to the bare Target, which is checked here — so `DELETE FROM
 	// <session_schema>.missing` and `DELETE FROM missing` both get 42F01, while
-	// `DELETE FROM badschema.missing` keeps its 42F00 (codex/Torvalds). recordTypeCI
+	// `DELETE FROM badschema.missing` keeps its 42F00. recordTypeCI
 	// resolves case-insensitively, matching the WHERE/SELECT analyzer.
 	var dmlTarget string
 	switch dop := logicalOp.(type) {

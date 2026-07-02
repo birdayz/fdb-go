@@ -115,7 +115,7 @@ func goConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel se
 	// Concurrent B writes the probe and commits. Pin B to vSetup too (no fresh GRV) so B does
 	// NOT ratchet the client's minAcceptableReadVersion past vSetup — otherwise A's commit at
 	// vSetup is rejected client-side with transaction_too_old(1007) and the attempt is wasted,
-	// a residual flake under load (codex). B's COMMIT version is still assigned fresh
+	// a residual flake under load. B's COMMIT version is still assigned fresh
 	// (> vSetup), so the probe write remains in A's conflict window (vSetup, A_commit).
 	b, err := goClient.CreateTransaction()
 	if err != nil {
@@ -270,7 +270,7 @@ func TestDifferential_GetKeyConflict(t *testing.T) {
 		// Probe OUTSIDE the span (d, beyond resolved c) → never in the conflict range.
 		{"outside_span_no_conflict", nil, []fuzzOp{set(2, "v")}, fgt(0), "d", false},
 	}
-	// NOTE: the RYW-DISABLED conflict path (codex P2-2 — must use the full span, not the
+	// NOTE: the RYW-DISABLED conflict path (must use the full span, not the
 	// filtered one) is NOT differential-tested here: the only scenario where the filter would
 	// differ from the full span needs a local write INSIDE the read span, but libfdb_c rejects
 	// reading a range overlapping a locally-written key under RYW-disabled with

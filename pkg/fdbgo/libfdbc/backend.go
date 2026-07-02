@@ -816,7 +816,7 @@ func fromCgoKeys(ks []cgofdb.Key) []fdb.Key {
 // context survives the cgofdb round-trip on a terminal failure. Without it,
 // toCgoErr would flatten a wrapped fdb.Error to a bare cgofdb.Error{Code} and the
 // operator would lose the record layer's "save record: …" context that the pure-Go
-// backend keeps (Torvalds review).
+// backend keeps.
 type cgoErrShim struct {
 	code int
 	orig error

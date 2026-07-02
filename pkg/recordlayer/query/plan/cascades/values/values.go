@@ -31,9 +31,9 @@
 //     `IsPromotable` / `MaximumType` / `MaximumTypeOfMany`
 //     promotion lattice (with structural recursion through ARRAY /
 //     RECORD / ENUM / RELATION), and shape predicates (`IsNull`,
-//     `IsArray`, …). Post-swingshift-52, every Value impl's `Type()`
+//     `IsArray`, …). Every Value impl's `Type()`
 //     returns the rich `Type` directly — the legacy `ValueType`
-//     enum + `FromValueType` / `ToValueType` bridges retired.
+//     enum + `FromValueType` / `ToValueType` bridges are retired.
 //     Track G1 in TODO.md. Once `type.go` exceeds ~1500 LOC it
 //     splits into a dedicated `cascades/typing/` sub-package per
 //     RFC-025.
@@ -63,9 +63,9 @@ const (
 	dateLayout      = "2006-01-02"
 )
 
-// Legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
-// TypeBool / TypeFloat) retired in swingshift-52 — every Value impl's
-// Type() now returns the rich Type directly. The names below remain
+// The legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
+// TypeBool / TypeFloat) is retired — every Value impl's
+// Type() returns the rich Type directly. The names below remain
 // as Type-typed vars so existing call sites (`Typ: values.TypeInt`)
 // keep working — the value's Go type changes (Type instead of int),
 // the constant name doesn't.
@@ -110,8 +110,8 @@ type Value interface {
 	// code free of nil checks).
 	Children() []Value
 	// Type is the rich result Type of evaluating this Value
-	// (post-swingshift-52: the legacy ValueType enum retired and
-	// Type() now returns the rich Type directly). Never nil —
+	// (the legacy ValueType enum is retired; Type() returns the
+	// rich Type directly). Never nil —
 	// implementations return UnknownType when the type genuinely
 	// isn't known yet.
 	Type() Type
@@ -610,7 +610,7 @@ func ExplainValue(v Value) string {
 // ValueType.String() output (`INT` / `STRING` / `BOOL` / `FLOAT` /
 // `UNKNOWN`) — the seed conflates LONG/INT into INT and DOUBLE/FLOAT
 // into FLOAT here so the rendered output stays stable across the
-// ValueType retirement (Track G1, swingshift-52). Plan-cache keys
+// ValueType retirement (Track G1). Plan-cache keys
 // derived via ExplainValue stay byte-stable across the migration.
 func explainTypeName(t Type) string {
 	if t == nil {
@@ -1711,7 +1711,7 @@ const twoPow63 = 9223372036854775808.0
 // float64FitsInt64 reports whether a float64 is safely convertible to int64
 // (i.e. int64(f) does not overflow). The upper bound is EXCLUSIVE at 2^63: a
 // `f <= math.MaxInt64` guard rounds the constant up to 2^63 and wrongly admits
-// 2^63 itself, which overflows int64 (codex finding, RFC-087). The lower bound
+// 2^63 itself, which overflows int64 (RFC-087). The lower bound
 // math.MinInt64 (-2^63) IS exactly representable as float64, so it is inclusive.
 func float64FitsInt64(f float64) bool {
 	return f >= math.MinInt64 && f < twoPow63

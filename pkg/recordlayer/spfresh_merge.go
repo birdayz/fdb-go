@@ -77,10 +77,10 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		// Targets: the nearest ACTIVE siblings IN THE SAME CELL, found by
 		// loading the cell directly — the posting HDR can carry only one
 		// cellID, so cross-cell targets would be invisible to stale queries
-		// resolving the FORWARD (codex 094.3 r1 P2); and filtering a GLOBAL
+		// resolving the FORWARD; and filtering a GLOBAL
 		// top-K route down to the cell could come up empty even when the cell
 		// has perfectly good siblings, making an under-Lmin posting a
-		// permanent non-candidate (codex 094.3 r2). The REAL cell read also
+		// permanent non-candidate. The REAL cell read also
 		// fences a racing coarse split of this cell.
 		vec, err := cent.vector()
 		if err != nil {

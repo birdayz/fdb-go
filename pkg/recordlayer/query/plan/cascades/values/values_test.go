@@ -788,7 +788,7 @@ func TestPromoteValue_UnknownTargetPanics(t *testing.T) {
 var _ Value = (*RecordConstructorValue)(nil)
 
 // Compile-time assertions that every other Value impl in this
-// package satisfies Value. Post-G1 (swingshift-52), Value includes
+// package satisfies Value. Post-G1, Value includes
 // Type() Type — this list also pins that every impl returns rich
 // Type without needing a separate Typed-interface assertion. New
 // Value impls in this package MUST add themselves here.

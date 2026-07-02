@@ -174,7 +174,7 @@ func TestEndToEnd_ExtractBestPlanProducesSingletonTree(t *testing.T) {
 //     (cost calibration on physical wrappers is a follow-up);
 //     end-to-end pipeline runs without panic.
 //
-// This is the integration "value moment" for swingshift-59 — every
+// This is the end-to-end integration check — every
 // new piece (B4 cost model, B6 planner, RecordQueryPlan, the 3
 // Batch A rules, physical wrappers) participates in producing the
 // extracted result.

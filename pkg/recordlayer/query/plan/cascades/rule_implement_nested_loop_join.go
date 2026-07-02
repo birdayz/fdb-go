@@ -402,18 +402,18 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 		}
 	}
 
-	// RFC-153 (a-implement, Graefe ACK): rebase BURIED-preserved-leg references in the
+	// RFC-153: rebase BURIED-preserved-leg references in the
 	// inner onto the merge correlation `outerCorr` ($m), which IS known at THIS layer
 	// (Go assigns $m at PLANNING, after RewriteOuterJoinRule, so the rewrite rule could
 	// not). When the preserved side is itself a join/merge (`A JOIN B ... LEFT JOIN C ON
 	// C.a_id = A.id`), the null-supplying inner arrives with the ON-predicate baked in
 	// as a SARG correlated to the buried source `A`; `A` is not bound below the FlatMap
 	// (only $m is), so without the rebase the probe evaluates NULL → wrong null-extension
-	// (codex 2nd P2 / RFC-153 §2). Rebasing `QOV(A).col` → `FieldValue(QOV($m),"A.col")`
+	// (RFC-153 §2). Rebasing `QOV(A).col` → `FieldValue(QOV($m),"A.col")`
 	// (the authoritative qualified key the merged outer row carries) makes the comparand
 	// a field of the BOUND merge row → it resolves AND SARGs Scan(C,[a_id=<$m.A_id>]).
 	//
-	// CRITICAL (Graefe + Torvalds): the broadened RewriteOuterJoinRule guard and this
+	// CRITICAL: the broadened RewriteOuterJoinRule guard and this
 	// rewire are ONE unit. After rebasing, VERIFY no buried reference survives anywhere in
 	// the inner via planReferencesAnyBuriedAlias, which is CONSERVATIVE — it fail-CLOSES on
 	// any node type it does not fully understand (only Scan/Index SARGs, PredicatesFilter/
@@ -455,8 +455,8 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 			// ($m) in the EXECUTABLE plan (innerPlan). The memoized inner EXPRESSION must
 			// report the SAME rebased correlations — otherwise the original innerExpr still
 			// reports the buried alias, the FlatMap wrapper aggregates a correlation to an
-			// UNBOUND alias, and upper join/root/winner bookkeeping mis-routes (codex P2 on
-			// 05c742100: the wrapper's logical correlations and the executable plan diverged).
+			// UNBOUND alias, and upper join/root/winner bookkeeping mis-routes (the
+			// wrapper's logical correlations and the executable plan diverged).
 			// Memoize a plan-backed expression over the rebased inner so its
 			// GetCorrelatedTo reports outerCorr — which THIS FlatMap binds, so the
 			// aggregation correctly subtracts it to nothing (not a dangling buried alias).
@@ -508,8 +508,8 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	// aliases from its children's correlations, so a fresh alias fails to subtract
 	// the bound outer/inner aliases and a COMPLETED (self-contained) inner join
 	// leaks them as if externally correlated → an upper multiway join sees the
-	// subplan as still correlated and skips/misroutes valid alternatives (codex
-	// P2-2). A FlatMap that binds X is not correlated to X; binding with the real
+	// subplan as still correlated and skips/misroutes valid alternatives. A
+	// FlatMap that binds X is not correlated to X; binding with the real
 	// aliases makes the aggregation report so. (The EXISTS / correlated-FOD builders
 	// — implementExistentialSelect, tryExistsFlatMap, buildExistsFlatMap — bind their
 	// wrapper quantifiers the same way: outer via the named outer alias, inner via
@@ -1136,7 +1136,7 @@ func planReferencesAnyBuriedAlias(p plans.RecordQueryPlan, legAliases []string) 
 			*plans.RecordQueryFirstOrDefaultPlan:
 			// skip — children examined by recursion
 		default:
-			// FAIL-CLOSED (Torvalds): any node whose OWN correlation-bearing fields the
+			// FAIL-CLOSED: any node whose OWN correlation-bearing fields the
 			// rebaser's walker does NOT rewrite — a nested FlatMap/NLJ (preds + result
 			// value), an InJoin/InUnion (the IN comparand), an Aggregate/GroupBy/Union/
 			// Sort/Distinct (group/sort key values), or any future plan node — MIGHT carry

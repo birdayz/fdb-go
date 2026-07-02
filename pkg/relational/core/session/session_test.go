@@ -7,7 +7,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// Tests for the Session helpers added in nightshift-45 Phase 1d:
+// Tests for the Session helpers:
 // SchemaCacheKey, InvalidateSchema, ResetSchemaCache, StatementNow,
 // BeginStatement. Pure in-memory state — no FDB required.
 

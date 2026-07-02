@@ -1344,7 +1344,7 @@ func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
 		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 	}
 
-	// (1) Cleared earlier in the txn, then versionstamped (codex's exact repro).
+	// (1) Cleared earlier in the txn, then versionstamped.
 	t.Run("cleared_then_versionstamp", func(t *testing.T) {
 		t.Parallel()
 		c := &rywCache{}

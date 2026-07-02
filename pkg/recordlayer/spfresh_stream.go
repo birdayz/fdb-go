@@ -63,7 +63,7 @@ import (
 // NoNextReason.ScanLimitReached + a positional continuation (NOT SourceExhausted)
 // and fires CountSPFreshFilteredTruncated. "Only N rows match" instead surfaces
 // SourceExhausted with exactly those N — two distinct outcomes, never a silent
-// < k (Torvalds #2).
+// < k.
 //
 // Single-transaction snapshot: all widening happens within ONE transaction's
 // generation-pinned snapshot. The continuation is POSITIONAL over the

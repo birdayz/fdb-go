@@ -1,15 +1,15 @@
 package cascades
 
 // RFC-153 — planReferencesAnyBuriedAlias must FAIL-CLOSED on plan node types the
-// buried-merge rebaser (rebasePlanBuriedRefs) does NOT rewrite (Torvalds/@claude/Graefe
-// 3-reviewer NAK on 769ebfd17). The original verifier only inspected Scan/Index SARG
-// comparands, PredicatesFilter/Filter preds, and Map result values — so a node that
-// carries a buried-preserved correlation in its OWN field (a nested NLJ/FlatMap's preds,
-// an InJoin/InUnion comparand, an Aggregate/StreamingAgg grouping) fell through the
-// switch, `found` stayed false, the node was reported CLEAN, and the probe shipped with
-// an unbound buried correlation → WRONG ROWS (the §2 trap). The fix: any node that is
-// neither an explicitly-inspected type nor a known correlation-free pass-through is
-// treated as MIGHT-reference-buried → decline the probe → materialized NLJ fallback.
+// buried-merge rebaser (rebasePlanBuriedRefs) does NOT rewrite. The original verifier
+// only inspected Scan/Index SARG comparands, PredicatesFilter/Filter preds, and Map
+// result values — so a node that carries a buried-preserved correlation in its OWN field
+// (a nested NLJ/FlatMap's preds, an InJoin/InUnion comparand, an Aggregate/StreamingAgg
+// grouping) fell through the switch, `found` stayed false, the node was reported CLEAN,
+// and the probe shipped with an unbound buried correlation → WRONG ROWS (the §2 trap).
+// The fix: any node that is neither an explicitly-inspected type nor a known
+// correlation-free pass-through is treated as MIGHT-reference-buried → decline the
+// probe → materialized NLJ fallback.
 
 import (
 	"testing"

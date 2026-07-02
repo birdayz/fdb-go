@@ -31,7 +31,7 @@ func TestFDB_GRVCache_OptInOnly(t *testing.T) {
 	// --- DEFAULT transactions: zero cache hits, exactly-N real GRVs ---
 	// Issued strictly serially (each read version fetched before the next
 	// starts) so the batcher cannot coalesce them into one GRV reply, making the
-	// real-GRV count exactly N (Torvalds: no "~N" tolerance).
+	// real-GRV count exactly N (no "~N" tolerance).
 	before := db.db.metrics.Snapshot()
 	const n = 5
 	for i := 0; i < n; i++ {

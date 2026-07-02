@@ -276,7 +276,7 @@ func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC130_DeleteEchoNotDoubleCharged (codex #328): the DELETE result echo IS
+// TestFDB_RFC130_DeleteEchoNotDoubleCharged: the DELETE result echo IS
 // the already-charged target row (same shared QueryResult), so it must NOT be charged
 // a second time — doing so double-counts and trips the budget at ~half its true value.
 // With a budget that fits the target set (~10KB) but would trip under a double-charge
@@ -308,13 +308,13 @@ func TestFDB_RFC130_DeleteEchoNotDoubleCharged(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC130_UpdateEchoChargedNoPartial (codex #328): the UPDATE echo is charged by
+// TestFDB_RFC130_UpdateEchoChargedNoPartial: the UPDATE echo is charged by
 // its ACTUAL post-transform record size, up front (build-all-then-save). The key case is a
 // GROWING update — tiny source rows, SET to a large value: the small target set easily fits
 // the budget, but the large NEW records exceed it, so it trips 54F01 with ZERO rows mutated.
 // The earlier estimate-over-source would have charged only the tiny source and silently
-// bypassed the cap (codex re-review P2); charging the built record catches the growth, and
-// charging it before any SaveRecord keeps the mutation all-or-nothing (codex P1).
+// bypassed the cap; charging the built record catches the growth, and
+// charging it before any SaveRecord keeps the mutation all-or-nothing.
 func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc130_upd", "rfc130upd",
@@ -342,7 +342,7 @@ func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC130_InsertEchoChargedNoPartial (codex #328): the INSERT … SELECT echo is
+// TestFDB_RFC130_InsertEchoChargedNoPartial: the INSERT … SELECT echo is
 // charged UP FRONT over the materialized source (distinct path from UPDATE's targets). A
 // budget that fits the source (~10KB) but not source+echo (~20KB) trips before any write —
 // zero rows land in the destination (no partial INSERT).
@@ -377,7 +377,7 @@ func TestFDB_RFC130_InsertEchoChargedNoPartial(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC130_DMLEchoChargesPrimaryKeyBytes (codex #328 P2): the DML echo charge must
+// TestFDB_RFC130_DMLEchoChargesPrimaryKeyBytes: the DML echo charge must
 // include the packed PK tuple the echo's FDBStoredRecord holds separately — matching the
 // stored-row estimator — not just proto.Size. With a WIDE primary key, the packed key is a
 // large part of each echo's resident bytes; a wide-PK INSERT … SELECT trips a budget that

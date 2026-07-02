@@ -148,8 +148,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// must order by the SAME key — if it sorts by the BARE `V` (which mergeRows keys
 	// last-leg-wins as GW.V=999, a constant → a NO-OP sort), the scan order stays
 	// 1,2,1,2 and the streaming aggregate splits each value into TWO non-contiguous
-	// groups → wrong counts (codex round-19, the streaming-aggregate twin of the
-	// in-memory ORDER BY round-8 P2a). With the fix the pre-aggregate sort carries the
+	// groups → wrong counts (the streaming-aggregate twin of the in-memory
+	// ORDER BY case below). With the fix the pre-aggregate sort carries the
 	// qualified V.V, ordering 1,1,2,2 so each value is ONE group of count 2. RFC-142.
 	// SARR is a STRING array whose element values distinguish an escaped LIKE
 	// wildcard (`!_` = a literal underscore) from an unescaped one (`_` = any
@@ -334,7 +334,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			arrRec(paDesc, 1, []int32{10, 11}),
 			arrRec(pbDesc, 1, []int32{90, 91, 92}),
 			// U: a single row whose scalar V=999 is DISTINCT from every unnested
-			// element value (codex P2). `FROM t, t.arr AS v, u` SELECT v must return
+			// element value. `FROM t, t.arr AS v, u` SELECT v must return
 			// the unnested element, never 999.
 			uRec(1, 999),
 			// D: the REAL table D (array column ARR={50,51}) that a DERIVED table
@@ -345,8 +345,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			// UV: scalar V values that are a PROPER SUBSET of T1.ARR1's elements
 			// {201, 203} (NOT 101, NOT 202) — so a correlated EXISTS over the unnest
 			// ELEMENT (`WHERE UV.V = VAL`) is true for VAL∈{201,203} and false for
-			// VAL∈{101,202}: a non-trivial subset that makes the P2c test
-			// revert-proof. RFC-142 (codex round-9 P2c).
+			// VAL∈{101,202}: a non-trivial subset that makes the test
+			// revert-proof. RFC-142.
 			uvRec(1, 201),
 			uvRec(2, 203),
 			// MA: TWO rows with DIFFERENT scalar C (11 and 5) so ORDER BY C is a
@@ -850,7 +850,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("later FROM source reusing the unnest AS alias is DuplicateAlias", func(t *testing.T) {
-		// Silent-wrong (codex): a LATER comma source (`U AS V`) reuses the lateral
+		// Silent-wrong hazard: a LATER comma source (`U AS V`) reuses the lateral
 		// unnest's AS alias `V`. The translator's collision guard runs at unnest
 		// lowering and only sees the LEFT (earlier) sources — it cannot see a later
 		// source, which is the RIGHT child of an ancestor join. So the parent join was
@@ -1114,7 +1114,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// where BOGUS is not a visible source. AT explicitly requests ordinality
 		// (valid only on a correlated array), so the classifier must still route
 		// it to the unnest path and reject it cleanly — NOT silently drop the AT
-		// and treat BOGUS as a plain table scan. RFC-142 (codex round-4).
+		// and treat BOGUS as a plain table scan. RFC-142.
 		assertRejected(t, md, `SELECT "ID" FROM T1, "BOGUS" AT "AT"`, api.ErrCodeWrongObjectType)
 	})
 
@@ -2049,7 +2049,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// keeps {201,202,203} (101 dropped). id2's three elements all exceed 150 AND
 		// id2 satisfies EXISTS → all three survive; id1's 101 is dropped by V>150.
 		// Before the fix the pre-fix planner pushes `V > 150` onto the unnest's outer
-		// Scan(T1) where V is unbound → EMPTY. RFC-142 (codex round-17).
+		// Scan(T1) where V is unbound → EMPTY. RFC-142.
 		plan := assertRows(t, `SELECT "V" FROM T1, T1."ARR1" AS "V", U WHERE "V" > 150 AND EXISTS (SELECT 1 FROM UV WHERE "UV"."ID" = T1."ID")`, []string{
 			"V=201", "V=202", "V=203",
 		})
@@ -3225,7 +3225,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 }
 
-// TestFDB_ArrayUnnestOrdinalityColumnType is the RFC-142 round-21 (codex)
+// TestFDB_ArrayUnnestOrdinalityColumnType is the RFC-142
 // revert-proof guard for the AT-ordinal COLUMN TYPE metadata. The unnest WITH
 // ORDINALITY ordinal is Java's `Type.primitiveType(INT, false)` — a 1-based,
 // NON-NULL INT — and a query that PROJECTS or COMPUTES from the AT alias must

@@ -648,7 +648,7 @@ func TestScorerMatchesDistance(t *testing.T) {
 				t.Fatalf("exBits=%d trial=%d: third Score diverged: %v vs %v", exBits, trial, got1Again, want)
 			}
 			// Cosine zero-norm queries must ERROR through the scorer exactly
-			// like Distance — not rank as a finite estimate (codex 094.4).
+			// like Distance — not rank as a finite estimate (RFC-094).
 			qc := NewQuantizer(MetricCosine, exBits)
 			zq := make([]float64, dims)
 			zcode := qc.Encode(vec)

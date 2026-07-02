@@ -102,8 +102,7 @@ func spfreshClaimIDBlock(tx fdb.WritableTransaction, s *spfreshStorage) (start i
 // aborts the older build's in-flight transactions at the resolver instead of
 // letting two builds interleave writes into the same generation prefix, and
 // the flip can tell "my own committed flip, retried after
-// commit_unknown_result" (token still mine) apart from a concurrent builder
-// (codex 094.1 r4).
+// commit_unknown_result" (token still mine) apart from a concurrent builder.
 
 // spfreshTakeBuilderToken unconditionally claims build ownership — the
 // maintainer's pre-build clear path, where the generation CAS in the same
@@ -230,7 +229,7 @@ func spfreshLoadCell(tx fdb.ReadTransaction, s *spfreshStorage, cellID int64) (r
 // spfreshLoadCellForWrite REAL-reads a cell's centroid rows — the §6b
 // composability fence: a coarse split clears and rewrites the WHOLE range
 // based on this read, so a fine lifecycle committing a new child/FORWARD row
-// after a snapshot load would be silently wiped (codex 094.3 r1 P1). The
+// after a snapshot load would be silently wiped. The
 // conflict range makes whichever side commits second abort at the resolver.
 func spfreshLoadCellForWrite(tx fdb.WritableTransaction, s *spfreshStorage, cellID int64) (rows []spfreshCellRow, fwdA, fwdB int64, err error) {
 	return spfreshLoadCellRange(tx, s, cellID)
@@ -299,8 +298,8 @@ func spfreshLoadAllCoarse(tx fdb.ReadTransaction, s *spfreshStorage) (ids []int6
 // point: a save whose read version predates the coarse pass's commit decides
 // "pre-coarse window, no-op" — without the range, that save can commit AFTER
 // the assignment scan's read versions and its record is silently never
-// indexed (Torvalds 094.2 #1: the original snapshot read here was a lost
-// record with a comment claiming otherwise). With it, the coarse commit
+// indexed (the original snapshot read here was a lost record with a
+// comment claiming otherwise). With it, the coarse commit
 // aborts the save at the resolver and the retry routes itself.
 func spfreshLoadAllCoarseForWrite(tx fdb.WritableTransaction, s *spfreshStorage) (ids []int64, rows []spfreshCentroidRow, err error) {
 	return spfreshLoadAllCoarseRange(tx, s)
@@ -468,7 +467,7 @@ func spfreshTaskSetIfAbsent(tx fdb.WritableTransaction, s *spfreshStorage, kind,
 // errSPFreshLeaseHeld marks a claim refused because a LIVE foreign lease owns
 // the task. Distinct from errSPFreshNotFound (row absent): callers that skip
 // both still can, but code reasoning about "the task is gone" must not
-// conflate it with "another executor is mid-lifecycle" (Torvalds MT review).
+// conflate it with "another executor is mid-lifecycle".
 var errSPFreshLeaseHeld = errors.New("spfresh: task lease held by another owner")
 
 // spfreshTaskClaim REAL-reads and claims a task row: unclaimed, lease-expired,

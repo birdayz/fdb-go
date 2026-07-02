@@ -1,6 +1,6 @@
 package cascades
 
-// RFC-152 — cost-model materialization for the LEFT-OUTER rewrite (codex P2 on #364).
+// RFC-152 — cost-model materialization for the LEFT-OUTER rewrite.
 //
 // `SELECT a.id FROM a LEFT JOIN b ON a.flag = 1` (ON pred references ONLY the
 // preserved leg). RewriteOuterJoinRule ALWAYS fires (Java-faithful, no cross-leg

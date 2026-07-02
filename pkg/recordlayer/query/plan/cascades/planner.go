@@ -706,8 +706,7 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 	// result compensation / pulled-up quantifiers from ForMatchCompensation.ApplyAllNeeded,
 	// a projection over a vector scan, …) stays on the OLD InsertFinal path. Without this
 	// top-level reject, such shapes would skip every guard below and fall through to
-	// "safe" → yieldUnknown, re-optimizing an unsafe residual the allowlist refused
-	// (codex P2).
+	// "safe" → yieldUnknown, re-optimizing an unsafe residual the allowlist refused.
 	f, ok := expr.(*expressions.LogicalFilterExpression)
 	if !ok {
 		return false

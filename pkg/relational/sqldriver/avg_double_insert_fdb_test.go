@@ -61,7 +61,7 @@ func TestFDB_AvgDoubleInsertPromotion(t *testing.T) {
 		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
-	// The tree-contains-aggregate axis (Torvalds NAK): AVG(v)+1 has a top-level
+	// The tree-contains-aggregate axis: AVG(v)+1 has a top-level
 	// ArithmeticValue but still types DOUBLE; rejected even over an empty source.
 	// A top-level type assert would miss this; the WalkValue provenance catches it.
 	t.Run("avg_plus_one_into_bigint_empty_source_rejected", func(t *testing.T) {

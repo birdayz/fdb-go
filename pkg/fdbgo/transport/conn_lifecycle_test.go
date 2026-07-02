@@ -412,7 +412,7 @@ func TestConn_FailConnectionIdempotent(t *testing.T) {
 }
 
 // TestConn_StrandedSenderStress hammers the Close-vs-SendFrame race so the errCh
-// pool path (ctx.Done arm, no pool-return on that arm — audit #13) is exercised
+// pool path (ctx.Done arm, no pool-return on that arm) is exercised
 // repeatedly under -race. Every SendFrame must return; none may hang or panic.
 func TestConn_StrandedSenderStress(t *testing.T) {
 	t.Parallel()

@@ -12,7 +12,7 @@ import (
 // unit test (TestPageContinuationState) asserts in isolation:
 //   - LIMIT 0 → exactly 0 rows, no error (the ReturnLimitReached→exhausted branch).
 //   - LIMIT N (N>0), incl. a blocking ORDER BY → exactly N rows: the plan yields a BytesContinuation after
-//     the first row, so ReturnLimitReached+StartContinuation is never hit for N>0 (Torvalds fix-2).
+//     the first row, so ReturnLimitReached+StartContinuation is never hit for N>0.
 //   - A full scan and a full ORDER BY (blocking) drain the COMPLETE result set — the regression the bug
 //     produced (a short result) is impossible.
 func TestFDB_PaginationLimit_RFC127(t *testing.T) {

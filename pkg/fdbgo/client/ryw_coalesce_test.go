@@ -131,7 +131,7 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 }
 
 // TestCoalesceCommitVectors_Decision pins the #28 ship-DECISION that Commit delegates to
-// coalesceCommitVectors — the single source of "coalesce vs raw" (Torvalds: the decision must be pinned
+// coalesceCommitVectors — the single source of "coalesce vs raw" (the decision must be pinned
 // outside Commit's inline flow, not reconstructed in a test). Revert-provable per row.
 func TestCoalesceCommitVectors_Decision(t *testing.T) {
 	t.Parallel()
@@ -155,7 +155,7 @@ func TestCoalesceCommitVectors_Decision(t *testing.T) {
 		t.Parallel()
 		// SVK then Set on the SAME template key: the keyed materialize would DROP the SVK (ryw.set replaces
 		// the entry), so the txn must ship raw. Revert (drop the mutationsHaveVersionstamp check) → coalesced
-		// materialize omits the SVK and this assertion fires (codex #28 P2).
+		// materialize omits the SVK and this assertion fires.
 		key := append([]byte("tmpl"), 0, 0, 0, 0)
 		muts := []Mutation{
 			{Type: MutSetVersionstampedKey, Key: key, Value: []byte("sv")},
@@ -237,7 +237,7 @@ func TestCommit_ShipsSelfConflictRange_Wire(t *testing.T) {
 	// maybeMakeSelfConflicting (decides on the snapshot, returns the SC range), then finalizeShip from the
 	// SAME pre-SC snapshot. Feeding the pre-SC snapshot (NOT live tx.writeConflicts, which maybeMakeSelf-
 	// Conflicting mutates to contain the SC) makes SC enter ONLY via the `sc` param — so this test reds if
-	// the P1 sc-append is reverted (Torvalds round-3).
+	// the P1 sc-append is reverted.
 	_, _, coalesced := coalesceCommitVectors(tx.mutations, tx.writeConflicts, tx.rywDisabled)
 	writeSnap := append([]KeyRange(nil), tx.writeConflicts...)
 	sc, scAdded := tx.maybeMakeSelfConflicting(writeSnap)

@@ -316,7 +316,7 @@ func TestWatch_ValueCapturedSyncFiresAfterModify(t *testing.T) {
 }
 
 // TestWatch_ReadVersionSurvivesReset exercises the read-version half of the watch
-// fix (codex's P1): WatchPoll must register the watch at the read version captured
+// fix: WatchPoll must register the watch at the read version captured
 // by WatchSetup, NOT re-read tx.readVersion at poll time — which the common
 // `w := tr.Watch(k)` inside Database.Transact pattern clears to 0 (postCommitReset)
 // before the async poll runs. This drives exactly that state (reset between setup

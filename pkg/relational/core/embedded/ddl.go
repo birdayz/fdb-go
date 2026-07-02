@@ -314,7 +314,7 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName,
 			// Both methods support it; each reads its own option namespace
 			// (the residual quantizer for SPFresh, the node codes for HNSW) —
 			// routing it to the hnsw key made the loud SPFRESH rejection
-			// below swallow a knob SPFresh actually has (Torvalds S2).
+			// below swallow a knob SPFresh actually has.
 			if method == "SPFRESH" {
 				opts[recordlayer.IndexOptionSPFreshRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
 			} else {
@@ -412,7 +412,7 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 	}
 	// The grammar parses `AT atAlias` here too (RFC-140 / R3); reject it rather than silently
 	// ignore the ordinal clause, which would otherwise build an index grouped by a same-named
-	// real column instead. Removed in R5 when the ordinal is bound (codex).
+	// real column instead. Removed in R5 when the ordinal is bound.
 	if err := rejectAtOrdinality(ati); err != nil {
 		return err
 	}

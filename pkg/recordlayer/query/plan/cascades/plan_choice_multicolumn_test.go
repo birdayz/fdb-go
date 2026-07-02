@@ -452,7 +452,7 @@ func extractWinnerPlan(t *testing.T, bestExpr expressions.RelationalExpression) 
 // planHasIndexScan reports whether a RecordQueryIndexPlan appears ANYWHERE in the plan
 // tree. Used by the no-index negative assertions: a root-only check (extractIndexPlan)
 // would miss a nested index scan under a PredicatesFilter/Fetch, letting a regression that
-// wrongly uses the index slip through (codex PR-#257 P3).
+// wrongly uses the index slip through.
 func planHasIndexScan(p plans.RecordQueryPlan) bool {
 	found := false
 	plans.Walk(p, func(n plans.RecordQueryPlan) bool {

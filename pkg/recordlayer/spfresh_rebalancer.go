@@ -38,7 +38,7 @@ var spfreshOwnerSeq atomic.Int64
 // component two live workers on different machines both mint
 // "rebalance-<index>-1" and the same-owner reclaim in spfreshTaskClaim
 // voids mutual exclusion. Lease expiry does NOT cover this: it protects
-// against DEAD owners, not live name collisions (codex P1).
+// against DEAD owners, not live name collisions.
 var spfreshProcessNonce = newSPFreshProcessNonce()
 
 func newSPFreshProcessNonce() string {
@@ -70,8 +70,8 @@ type spfreshTaskRef struct {
 }
 
 // spfreshTaskOutcome classifies one lifecycle-handler invocation for budget
-// and metrics attribution (Torvalds 094.4 r4: lumping cleanup writes into
-// the per-kind action counters made the operator metrics lie):
+// and metrics attribution (lumping cleanup writes into the per-kind action
+// counters made the operator metrics lie):
 //
 //	Skipped  — wrote nothing: task gone or foreign live lease. Budget-free.
 //	Cleaned  — committed a cleanup write (zombie/cooldown/no-target clear).
@@ -127,8 +127,7 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				// that flipped before the flip learned to clear them — an
 				// in-flight build's rows live under its own unpublished
 				// generation, never here. Self-heal: clear on sight, or the
-				// pending-work probe reports this tenant busy forever
-				// (codex MT P2).
+				// pending-work probe reports this tenant busy forever.
 				legacyCellfin = append(legacyCellfin, id)
 				continue
 			}
@@ -185,16 +184,14 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 	// clears (both make progress and cost real transactions). Foreign-lease
 	// and task-gone skips write nothing and consume no budget: a tenant whose
 	// queue head is live-leased by another executor must not have its whole
-	// action budget burned on skips while actionable tasks behind it starve
-	// (codex 094.4).
+	// action budget burned on skips while actionable tasks behind it starve.
 	worked := 0
 	// A failed task is SKIPPED, counted, and surfaced at the end — never
 	// allowed to halt the pass: the scan order is deterministic (kind+id),
 	// so returning on the first handler error would park a poisoned task at
 	// the queue head and silently starve everything behind it on every pass,
-	// with an operator signal identical to "sweeper down" (Torvalds
-	// final-gauntlet S5). The errors still fail the pass loudly; the work
-	// behind the poison still happens.
+	// with an operator signal identical to "sweeper down". The errors still
+	// fail the pass loudly; the work behind the poison still happens.
 	var taskErrs []error
 	fail := func(err error) {
 		timer.Increment(CountSPFreshTaskErrors)
@@ -284,10 +281,10 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 }
 
 // spfreshMeterOutcome attributes one handler outcome to the right counter
-// (Torvalds 094.4 r4: per-kind action counters must count ACTIONS — cleanup
-// clears go to ZombieCleans, csplit defer-bumps to CSplitDefers, skips to
-// LeaseSkips) and returns the budget charge: every committed write consumes
-// budget, skips are free.
+// (per-kind action counters must count ACTIONS — cleanup clears go to
+// ZombieCleans, csplit defer-bumps to CSplitDefers, skips to LeaseSkips)
+// and returns the budget charge: every committed write consumes budget,
+// skips are free.
 func spfreshMeterOutcome(timer *StoreTimer, out spfreshTaskOutcome, acted Event) int {
 	switch out {
 	case spfreshOutcomeActed:

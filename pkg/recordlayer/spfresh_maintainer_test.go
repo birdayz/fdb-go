@@ -239,8 +239,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 				High: tuple.Tuple{int64(1)},
 			}, nil, ScanProperties{})
 			// 094.1 errored here ('build the index first'); since the §6b
-			// insert-first flow an untouched index is simply EMPTY
-			// (Torvalds 094.4 #2).
+			// insert-first flow an untouched index is simply EMPTY.
 			res, cerr := cursor.OnNext(ctx)
 			Expect(cerr).NotTo(HaveOccurred())
 			Expect(res.HasNext()).To(BeFalse())

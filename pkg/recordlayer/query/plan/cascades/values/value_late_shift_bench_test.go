@@ -6,7 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Benchmarks for the late-shift swingshift-59 Value ports — pin
+// Benchmarks for the ConditionSelector / Pick / ArrayConstructor /
+// Range / Rank / Udf / PatternForLike / Distance Value ports — pin
 // baseline allocation + ns/op numbers so future regressions surface
 // in CI bench diff. Sized to run quickly under `just bench`.
 

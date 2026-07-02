@@ -1,7 +1,7 @@
 package client
 
 // Deterministic -race regression tests for the "methods safe for concurrent
-// use" contract (RFC-049 / RFC-010 audit #7). These construct a Transaction
+// use" contract (RFC-049 / RFC-010). These construct a Transaction
 // directly (no FDB cluster) and hammer the conflict/mutation buffers from
 // multiple goroutines so `go test -race` flags any unsynchronized access.
 //

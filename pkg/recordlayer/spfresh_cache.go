@@ -135,7 +135,7 @@ func (c *spfreshRoutingCache) fullReload(tx fdb.ReadTransaction, s *spfreshStora
 	// Floor the cursor at the GC horizon: after a trim that emptied the log,
 	// anchoring at the bare prefix would leave cursor < horizon and the next
 	// refresh would force ANOTHER full reload, every interval, until a new
-	// delta lands (codex 094.3 r2).
+	// delta lands.
 	if horizon, herr := tx.Snapshot().Get(s.metaKey(spfreshMetaHorizon)).Get(); herr != nil {
 		return fmt.Errorf("spfresh: read GC horizon: %w", herr)
 	} else if horizon != nil && string(horizon) > string(last) {
@@ -421,10 +421,10 @@ func (c *spfreshRoutingCache) route(tx fdb.ReadTransaction, s *spfreshStorage, q
 // routeForWrite is the insert variant: SEALED candidates are KEPT (a row
 // cached as SEALED may be FORWARD in storage by now — the write fence must
 // see it to follow the children; dropping it broke the forward-follow
-// recovery during the post-split staleness window, codex 094.2 r3) but they
-// do NOT count toward the kc budget — the fence rejects true-SEALED anyway,
-// so letting them consume slots starved inserts of ACTIVE fallbacks when a
-// split wave sealed many nearby centroids (codex 094.2 r2).
+// recovery during the post-split staleness window) but they do NOT count
+// toward the kc budget — the fence rejects true-SEALED anyway, so letting
+// them consume slots starved inserts of ACTIVE fallbacks when a split wave
+// sealed many nearby centroids.
 func (c *spfreshRoutingCache) routeForWrite(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int) ([]spfreshRouted, error) {
 	return c.routeStates(tx, s, query, w, kc, true)
 }
@@ -503,11 +503,11 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 	if writeBudget {
 		// Separate budgets per state, one sorted pass: up to kc ACTIVE and
 		// up to kc SEALED. SEALED rides along for the fence to resolve (it
-		// may be FORWARD in storage — codex r3) but can never crowd out the
-		// ACTIVE fallbacks: a single combined cap did exactly that when a
-		// split wave left more than the cap's worth of SEALED rows sorted
-		// ahead of the first ACTIVE one (codex r4). Total ≤ 2·kc bounds the
-		// fence's worst-case state reads.
+		// may be FORWARD in storage) but can never crowd out the ACTIVE
+		// fallbacks: a single combined cap did exactly that when a split
+		// wave left more than the cap's worth of SEALED rows sorted ahead
+		// of the first ACTIVE one. Total ≤ 2·kc bounds the fence's
+		// worst-case state reads.
 		kept := routed[:0]
 		active, sealed := 0, 0
 		for _, r := range routed {

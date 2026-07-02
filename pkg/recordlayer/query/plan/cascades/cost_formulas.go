@@ -13,7 +13,7 @@ import (
 // the memo cost framework) and concretePlanCost (which costs the extracted
 // RecordQueryPlan tree for the join-ordering criterion) call these — so a
 // per-operator cost formula has exactly ONE definition and the two paths can
-// never drift (Torvalds, RFC-069). Leaf scan/index cost is NOT here: the
+// never drift (RFC-069). Leaf scan/index cost is NOT here: the
 // wrapper's leaf cost is metadata-aware (unique/covering) for the memo cost
 // framework, while the concrete join-ordering cost uses a metadata-independent
 // selectivity leaf cost (scanLikeCost) — those are deliberately different

@@ -60,7 +60,7 @@ func TestParseClusterString_AcceptanceSet(t *testing.T) {
 		"d:i@h1:4500,h2:4501",
 		"d:i@1.2.3.4:4500,host.example.com:4501",
 		// IPv4 + IPv4-mapped IPv6 are DISTINCT address families in C++ (accepted
-		// together); the dedup key must not collapse them (codex r3).
+		// together); the dedup key must not collapse them.
 		"d:i@1.2.3.4:4500,[::ffff:1.2.3.4]:4500",
 	}
 	// C++ ClusterConnectionString(string) runs trim() — strips ALL whitespace and `#…`
@@ -416,7 +416,7 @@ func TestParseClusterString_RejectsEmptyCoordinators(t *testing.T) {
 		"d:i@1.2.3.4:4500,",              // trailing comma
 		"d:i@,1.2.3.4:4500",              // leading comma
 		"d:i@1.2.3.4:4500,,5.6.7.8:4500", // double comma
-		"d:i@1.2.3.4:4500, # disabled",   // inline comment → trimmed to "...4500," (codex P2)
+		"d:i@1.2.3.4:4500, # disabled",   // inline comment → trimmed to "...4500,"
 		"d:i@",                           // no coordinators at all
 	}
 	for _, s := range reject {

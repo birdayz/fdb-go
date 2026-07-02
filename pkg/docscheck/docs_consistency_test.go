@@ -115,7 +115,7 @@ func unreleasedSection(changelog string) string {
 // currentChangelog returns the changelog PREAMBLE + the Unreleased section — everything up to
 // the first TAGGED release heading. The preamble (which carries a current Java-target claim) and
 // Unreleased must track the live pins; only tagged entries freeze their own versions and are
-// excluded, so a later pin bump doesn't force a history rewrite (codex #330).
+// excluded, so a later pin bump doesn't force a history rewrite.
 func currentChangelog(changelog string) string {
 	for _, loc := range changelogHeading.FindAllStringIndex(changelog, -1) {
 		if changelog[loc[0]:loc[1]] != "## [Unreleased]" {
@@ -168,7 +168,7 @@ func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 			v := body[m[2]:m[3]]
 			// Skip a 4-part version's 3-part prefix (e.g. the Java 4.11.1.0 — its own anchor
 			// handles it): only when the capture is followed by '.<digit>' (a genuine fourth
-			// part), NOT a bare trailing period like "...7.3.77." ending a sentence (Torvalds #330).
+			// part), NOT a bare trailing period like "...7.3.77." ending a sentence.
 			if m[3]+1 < len(body) && body[m[3]] == '.' && body[m[3]+1] >= '0' && body[m[3]+1] <= '9' {
 				continue
 			}
@@ -206,7 +206,7 @@ func TestReleaseDocsExistAndCompat(t *testing.T) {
 		t.Errorf("CHANGELOG.md is missing an `## [Unreleased]` section")
 	}
 	// The Compatibility block must live INSIDE the Unreleased section — not satisfied by an old
-	// release entry's heading (codex #330). A freshly-opened Unreleased without it must go red.
+	// release entry's heading. A freshly-opened Unreleased without it must go red.
 	if !strings.Contains(unreleasedSection(changelog), "### Compatibility") {
 		t.Errorf("CHANGELOG.md `## [Unreleased]` is missing its `### Compatibility` block (wire/SQL/option/version notes)")
 	}

@@ -10,7 +10,7 @@ import (
 
 // TestSetMaxWatches_FacadeConvertsError pins that the public DatabaseOptions.SetMaxWatches returns a
 // converted fdb.Error (not the internal *wire.FDBError) for an out-of-range cap, like every other
-// facade setter (codex). A bare &client.Database{} suffices: SetMaxWatches(-1) returns 2006 before
+// facade setter. A bare &client.Database{} suffices: SetMaxWatches(-1) returns 2006 before
 // it touches the (nil) inner database.
 func TestSetMaxWatches_FacadeConvertsError(t *testing.T) {
 	t.Parallel()
@@ -38,7 +38,7 @@ const absoluteMaxWatchesFacade = 1_000_000
 
 // TestNewFutureNilCancel_CancelRunsHook pins that a Watch future's Cancel() actually runs its cancel
 // hook (which cancels the watch context so the poll drains and releases its outstanding-watch slot),
-// instead of the base futureBase.Cancel() no-op that left the slot charged (codex). The fn here
+// instead of the base futureBase.Cancel() no-op that left the slot charged. The fn here
 // stands in for WatchPoll (blocks until cancelled); the hook for the scoped cancel (releases the poll).
 func TestNewFutureNilCancel_CancelRunsHook(t *testing.T) {
 	t.Parallel()

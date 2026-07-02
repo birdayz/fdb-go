@@ -112,8 +112,8 @@ func TestTransformRowNumberDistanceRank_MetricAndOpMapping(t *testing.T) {
 	}
 }
 
-// TestDistanceRankComparison_EvalPanics covers Finding 2 (Torvalds): a
-// DistanceRank comparison must be lowered to a vector scan during planning. If
+// TestDistanceRankComparison_EvalPanics pins that a DistanceRank comparison
+// must be lowered to a vector scan during planning. If
 // it ever reaches row-by-row evaluation, fail loud rather than silently
 // returning UNKNOWN (which would drop every row and pass green).
 func TestDistanceRankComparison_EvalPanics(t *testing.T) {
@@ -134,9 +134,9 @@ func TestDistanceRankComparison_EvalPanics(t *testing.T) {
 	cmp.EvalAgainst(int64(1), int64(3))
 }
 
-// TestTransformRowNumberDistanceRank_EqualsRejected pins Java conformance
-// (codex Finding 2): `ROW_NUMBER() = K` maps to DISTANCE_RANK_EQUALS in the
-// switch but Java's DistanceRankValueComparison constructor rejects it
+// TestTransformRowNumberDistanceRank_EqualsRejected pins Java conformance:
+// `ROW_NUMBER() = K` maps to DISTANCE_RANK_EQUALS in the switch but Java's
+// DistanceRankValueComparison constructor rejects it
 // (Verify.verify allows only LESS_THAN / LESS_THAN_OR_EQUAL). So the transform
 // must NOT fire for `=`, leaving the row-number comparison un-lowered (which
 // then fails to plan) rather than silently degrading to a top-K scan.

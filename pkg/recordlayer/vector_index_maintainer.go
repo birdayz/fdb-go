@@ -630,7 +630,7 @@ func (m *vectorIndexMaintainer) searchOnePartition(prefix tuple.Tuple, queryVect
 //
 // Deriving from the key (not the HNSW search result) is what lets RESUMED entries
 // — reconstructed from a continuation with no record in hand — pin the same PK as
-// fresh entries (codex Finding 3). key == (prefix..., trimmedPK...), so the
+// fresh entries. key == (prefix..., trimmedPK...), so the
 // non-component-positions PK is the key with the partition prefix stripped, which
 // equals the fresh path's hnswSearchResult.PrimaryKey.
 func (m *vectorIndexMaintainer) entryFullPK(key, prefix tuple.Tuple) tuple.Tuple {
@@ -733,8 +733,8 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 // Returns the saved entries and the inner cursor position.
 // If parsing fails, returns nil (caller falls back to fresh search).
 //
-// Resumed entries are reconstructed to be INDISTINGUISHABLE from fresh ones
-// (codex Finding 3): Index and the pinned full primary key are restored —
+// Resumed entries are reconstructed to be INDISTINGUISHABLE from fresh ones:
+// Index and the pinned full primary key are restored —
 // derived from the persisted key via entryFullPK — so IndexEntry.PrimaryKey()
 // returns the correct key on a resumed page instead of an empty tuple (which
 // would fetch the wrong record / skip the remaining nearest rows).
@@ -834,7 +834,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// partition — so without this an invalid-length vector over a partial prefix
 	// that matches NO partitions would return SourceExhausted instead of the
 	// dimension error, unlike the full-prefix/unpartitioned paths which validate
-	// before touching graph contents (codex P2). Validate once here for
+	// before touching graph contents. Validate once here for
 	// consistent input validation regardless of how many partitions match.
 	if len(queryVector) != m.hnswConfig.NumDimensions {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",

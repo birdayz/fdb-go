@@ -13,8 +13,8 @@ import (
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
-// TestErrorShim_RetryRecognizedAndContextPreserved pins the two-way error bridge
-// (Torvalds review): an fdb.Error the record layer propagated up — wrapped with
+// TestErrorShim_RetryRecognizedAndContextPreserved pins the two-way error
+// bridge: an fdb.Error the record layer propagated up — wrapped with
 // %w context — must (1) still be recognized as a cgofdb.Error by cgofdb's
 // retryable() loop so the retryable code is delegated to libfdb_c's OnError, and
 // (2) on a terminal failure, round-trip back through convErr with its raw code AND
@@ -83,7 +83,7 @@ func TestConvErr_PlainCgoError(t *testing.T) {
 }
 
 // TestWithCancelWatcher_NoCancelAfterCallbackReturns pins the commit-detachment
-// contract (codex #295 r5 P1/P2): once the callback returns successfully, the cancel
+// contract: once the callback returns successfully, the cancel
 // watcher must NEVER cancel the transaction, even if the ctx is canceled immediately
 // afterward. Otherwise cgofdb's auto-commit — which runs after the callback returns —
 // could be aborted with transaction_cancelled, which the pure-Go backend never does

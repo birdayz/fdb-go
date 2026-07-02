@@ -179,8 +179,7 @@ func runAtomicFoldCases(t *testing.T, cases []atomicFoldCase) {
 	// Clear the whole namespace (covers both the go_ and c_ sub-prefixes) before the cases run.
 	// Without this, re-running the binary in one process (e.g. go test -count=2) would leave the
 	// prior run's committed values in storage, and a base==nil (missing-key) case would fold over
-	// them instead of the intended storage-absent path — passing while testing the wrong scenario
-	// (codex review).
+	// them instead of the intended storage-absent path — passing while testing the wrong scenario.
 	clearPrefix(t, pfx)
 	for _, c := range cases {
 		c := c

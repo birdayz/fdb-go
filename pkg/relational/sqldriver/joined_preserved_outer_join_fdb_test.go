@@ -3,7 +3,7 @@ package sqldriver_test
 // RFC-150 Phase-2b Piece-2 follow-up — FDB row-level proof that a LEFT OUTER whose
 // preserved side is a JOIN, correlated to C through a BURIED preserved source alias,
 // produces correct rows (matched + LEFT-OUTER null-extended) via the C index-probe
-// FlatMap (codex P2 on #364). The embedded test pins the typed plan shape; this pins
+// FlatMap. The embedded test pins the typed plan shape; this pins
 // execution correctness.
 
 import (

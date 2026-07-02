@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// PIN (codex P2-1): a query-PARAMETER-bound scan in a join leg must plan and
+// PIN: a query-PARAMETER-bound scan in a join leg must plan and
 // return correct rows — the parameter (ConstantObjectValue) comparand is an
 // execution constant, NOT a row correlation, so scanComparisonCorrelations must
 // NOT report its constant-pool alias. If it did, the parameter-bound scan
@@ -65,7 +65,7 @@ func TestFDB_ParamBoundScanInJoinLeg_NotMisseenAsCorrelated(t *testing.T) {
 	}
 }
 
-// PIN (codex P2-2): a 3-way join whose plan nests an inner FlatMap (a correlated
+// PIN: a 3-way join whose plan nests an inner FlatMap (a correlated
 // probe) as the OUTER of an upper join. The inner FlatMap binds its own outer/inner
 // aliases, so the completed sub-join is NOT externally correlated; yieldGeneralFlat
 // Map must bind the wrapper quantifiers with the plan's real aliases (not fresh

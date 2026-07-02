@@ -1028,7 +1028,7 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, true)
 	case *plans.RecordQueryIndexPlan:
 		// Secondary index: a full-equality bind is a single row only if the index is
-		// UNIQUE. Resolve uniqueness from PlanContext when available (codex review);
+		// UNIQUE. Resolve uniqueness from PlanContext when available;
 		// a nil/empty ctx falls back to non-unique (conservative bucket estimate) so
 		// a non-unique equality (`status = ?`) is never mispriced as a point probe.
 		_, unique := indexMetadata(pl, ctx)
@@ -1145,7 +1145,7 @@ func boundSelectivity(comps []*predicates.ComparisonRange) (sel float64, numBoun
 // PK column bound is unique (pass true); a secondary INDEX scan may be non-unique
 // (pass false) — `status = ?` binds the whole index key but selects a large bucket,
 // and costing that as a point probe would let join ordering drive off a big bucket as
-// if it were one row (codex review). Without PlanContext we cannot prove a secondary
+// if it were one row. Without PlanContext we cannot prove a secondary
 // index unique, so we conservatively fall through to the selectivity estimate; the
 // metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
 func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {

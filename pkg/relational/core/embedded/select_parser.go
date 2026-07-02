@@ -85,8 +85,8 @@ type joinClause struct {
 	// `outer.arr` it is `["OUTER", "ARR"]`. The translator classifies a
 	// comma source as a LATERAL UNNEST (vs a table) by resolving segment 0
 	// against the in-scope source aliases — it MUST NOT re-split tableName,
-	// which is a lossy `strings.Join` of these segments (Torvalds: no
-	// text-heuristic re-split). RFC-142 R5.
+	// which is a lossy `strings.Join` of these segments — no
+	// text-heuristic re-split. RFC-142 R5.
 	segments []string
 	// atAlias is the `AT atAlias` ordinal alias of a lateral array unnest
 	// (`FROM t, t.arr AS x AT ord`), empty when absent. Its presence makes
@@ -805,7 +805,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 	if orderByClauseCtx != nil {
 		// Java errors 42701 (COLUMN_ALREADY_EXISTS) on `ORDER BY b, b`
 		// with the same column repeated. Stricter than Postgres, but
-		// per dayshift-40's 100% Java-alignment direction we match.
+		// per the 100% Java-alignment principle we match.
 		// Expression entries (without a resolved colName) are not
 		// deduped because two identical expressions are syntactically
 		// distinct sort keys (e.g. `ORDER BY a+b, a+b` — Java accepts).
@@ -1071,7 +1071,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			if q != "" {
 				// Java errors 42803 (grouping error) for `SELECT a.* ...
 				// GROUP BY a1` because the star expands to cols not in
-				// GROUP BY. Pre-dayshift-40 Go emitted 0A000 (unsupported).
+				// GROUP BY; Go matches (42803, not 0A000).
 				return nil, api.NewError(api.ErrCodeGroupingError,
 					"SELECT qualifier.* expands to columns not in GROUP BY")
 			}
@@ -1758,7 +1758,7 @@ func unnestAliases(j joinClause) (asAlias, atAlias string) {
 // FullId. `"OUTER"."ARR"` → ["OUTER","ARR"]. Preserved un-flattened on the
 // carried FROM source so the translator can resolve a comma source
 // segment-by-segment against the scope without re-splitting a joined string
-// (Torvalds: no text-heuristic re-split). RFC-142.
+// — no text-heuristic re-split. RFC-142.
 func uidSegments(tableName antlrgen.ITableNameContext) []string {
 	uids := tableName.FullId().AllUid()
 	parts := make([]string, len(uids))

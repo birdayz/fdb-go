@@ -1068,7 +1068,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 	})
 
 	It("cold insert reaching a lonely inlining entry layer succeeds (Java: empty fetch = empty node)", func() {
-		// P4 regression (codex finding #4 — confirmed real). Java's InliningStorageAdapter
+		// P4 regression. Java's InliningStorageAdapter
 		// cannot distinguish "node with no neighbors" from "node absent" (its Javadoc says
 		// so, InliningStorageAdapter.java:94-95); fetchNodeInternal returns a node with an
 		// EMPTY neighbor list for an empty range, never an error. Go returned

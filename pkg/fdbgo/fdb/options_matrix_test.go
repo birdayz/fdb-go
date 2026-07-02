@@ -13,7 +13,7 @@ import (
 // (fdb_test.go's *_RejectUnsupportedOptions / DB-default tests) and honored options take effect
 // (options_internal_test.go). This guard only ensures the *documentation* can't silently fall behind
 // the code: every Set* option method must have a row in OPTIONS.md. Name-presence only — it does not
-// parse the table columns or validate the C++ citations (Torvalds: that's the fragile part).
+// parse the table columns or validate the C++ citations (that's the fragile part).
 
 //go:embed options.go
 var optionsSrc string

@@ -160,7 +160,7 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 		// cursor cycle spans several passes; if an early pass moves rows and the
 		// wrapping tail pass moves none, the tenant is NOT converged — a per-pass
 		// "wrapped && moved==0" signal would falsely say so and make a fleet caller
-		// back off a still-drifting tenant (codex fleet P2).
+		// back off a still-drifting tenant.
 		ks := specSubspace()
 		idx := newVecIndex("spf_refine_cycle", 2)
 		md := buildMeta(idx)

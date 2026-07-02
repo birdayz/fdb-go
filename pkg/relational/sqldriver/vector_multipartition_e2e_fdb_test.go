@@ -213,7 +213,7 @@ func TestFDB_VectorSearch_MultiPartition_InequalityResidualK2(t *testing.T) {
 }
 
 // TestFDB_VectorSearch_MultiPartition_Pagination pins the cross-partition
-// continuation (Torvalds: "the whole risk"). Driving the multi-partition scan
+// continuation — the whole risk of the fan-out. Driving the multi-partition scan
 // page-by-page with a returned-row-limit of 1 must yield, by concatenation, the
 // exact same sequence as an unpaged scan — proving the FlatMapContinuation
 // resume seeds the saved partition's inner position and then advances to the
@@ -292,7 +292,7 @@ func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
 
 	// Capture the cursor error in an outer var — db.Run's own error is the
 	// transaction result, not the per-row scan error we want to assert on
-	// (codex: the closure must not return the cursor error as the `any` result).
+	// (the closure must not return the cursor error as the `any` result).
 	var scanErr error
 	_, runErr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
@@ -365,7 +365,7 @@ func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) 
 }
 
 // TestFDB_VectorSearch_MultiPartition_LeadingInequalityResidual pins the
-// boundLen-0 admit path of residualIsPartitionContiguous (Torvalds nit): a
+// boundLen-0 admit path of residualIsPartitionContiguous: a
 // LEADING partition-column inequality (WHERE zone > 'z1') binds no equality
 // prefix, so the scan fans out over ALL partitions and the whole-partition
 // Filter(zone>'z1') selects those with zone>'z1', preserving each surviving

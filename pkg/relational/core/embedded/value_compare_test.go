@@ -54,7 +54,7 @@ func TestValuesComparable(t *testing.T) {
 
 // TestIsTruthy pins the truthiness coercion used by SELECT-projection
 // boolean coercion, the `IF(cond, a, b)` scalar function, and the
-// bare-bool projection fix shipped earlier nightshift-57. Behaviour
+// bare-bool projection fix. Behaviour
 // is intentionally permissive: nil → false; bool returns its value;
 // numeric zero → false, anything else → true; empty string → false;
 // any other type → true (no-rejection fallback).

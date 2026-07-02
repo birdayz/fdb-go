@@ -90,7 +90,7 @@ func (c *grvCache) tryCache(priority uint32) (int64, bool) {
 // (NativeAPI.actor.cpp:6657, t=now()). Monotonic on both: version only accepts
 // >= current (the CAS loop), lastTime only advances (updateTime's guard).
 // Population is UNCONDITIONAL — it runs for every committing transaction
-// regardless of USE_GRV_CACHE (RFC-104, codex P3); only cache READS are opt-in,
+// regardless of USE_GRV_CACHE (RFC-104); only cache READS are opt-in,
 // so a default transaction's commit can warm the cache for a later opted-in
 // reader. No lock state: the cached path fail-opens (RFC-104; the RFC-096
 // commit-must-not-extend-freshness divergence is reverted now that the cache is
@@ -297,7 +297,7 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 		// lag > MAX_VERSION_CACHE_LAG fell through to a real GRV and the cache never
 		// caught up, defeating the opt-in entirely for sparse workloads.
 		//
-		// EXCEPT for SYSTEM_IMMEDIATE (#16, codex): Go's refresher is PER-BATCHER and issues its periodic
+		// EXCEPT for SYSTEM_IMMEDIATE: Go's refresher is PER-BATCHER and issues its periodic
 		// GRVs at b.priority, so starting the IMMEDIATE batcher's refresher would emit a long-lived stream
 		// of ratekeeper-bypassing PRIORITY_SYSTEM_IMMEDIATE GRVs from a single opted-in read — a real
 		// throttling bug. C++ instead runs ONE cx-level updater at DEFAULT priority (backgroundGrvUpdater,
@@ -353,7 +353,7 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 func (b *grvBatcher) flush(db *database) {
 	// Pop the pending batch under a closure-scoped lock (RFC-110: a panic in any
 	// b.mu-holding region must unwind the lock, else later GRV requests blocking
-	// on b.mu.Lock() deadlock — codex P2a).
+	// on b.mu.Lock() deadlock).
 	batch := func() []grvRequest {
 		b.mu.Lock()
 		defer b.mu.Unlock()
@@ -366,7 +366,7 @@ func (b *grvBatcher) flush(db *database) {
 		return
 	}
 
-	// RFC-110 (codex P1): once the batch is popped, b.pending no longer references
+	// RFC-110: once the batch is popped, b.pending no longer references
 	// it — a panic anywhere below (sendGRVRequest decode, applyGRVReply, the
 	// adaptive-window math) would orphan it, and every waiter blocked on its
 	// req.reply with a non-canceling ctx would hang forever. recoverFlush is the
@@ -449,8 +449,8 @@ func (b *grvBatcher) flush(db *database) {
 }
 
 // recoverFlush is flush's deferred RFC-110 backstop. On a recovered panic it
-// FAILS THE BATCH — delivers an error to every popped waiter so none hangs
-// (codex P1) — counts it, and rate-limited-logs. The batch reply channels are
+// FAILS THE BATCH — delivers an error to every popped waiter so none hangs —
+// counts it, and rate-limited-logs. The batch reply channels are
 // cap-1 and unsent on the panic path (the panic precedes the normal delivery
 // loop), so the sends never block even for a waiter that already took its
 // ctx.Done() branch. On the normal path recover() is nil → no-op. flushes are

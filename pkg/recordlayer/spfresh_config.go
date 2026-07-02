@@ -75,7 +75,7 @@ const (
 	// nearest-cell neighborhood a query for that vector navigates (SPANN
 	// §3.2.1: query and build share the centroid-navigation structure). Two
 	// reasons it is w_q, not larger:
-	//   - codex: w_b > w_q would let the build place a replica in v's cell
+	//   - w_b > w_q would let the build place a replica in v's cell
 	//     ranked w_q+1..w_b, which a query FOR v (probing only w_q cells)
 	//     never reaches — wasted build work, no recall gain;
 	//   - measured (RFC-099 binding A/B, 200k, ~150 cells): recall@10 is
@@ -124,8 +124,8 @@ func (c SPFreshConfig) Lmin() int { return c.Lmax / c.LminRatio }
 // stagingScanBatch bounds the assignment scan's records-per-transaction by
 // BYTES, not just rows: each staged record writes a STAGING and a SIDECAR
 // fp16 vector (2 bytes/dim each) in the scan's own transaction, so a fixed
-// 1000-row batch at 4096 dims would exceed FDB's 10 MB transaction limit
-// (codex 094.2 r1 P2). Capped at spfreshScanBatchSize for small vectors.
+// 1000-row batch at 4096 dims would exceed FDB's 10 MB transaction limit.
+// Capped at spfreshScanBatchSize for small vectors.
 func (c SPFreshConfig) stagingScanBatch() int {
 	perRecord := 2*(2*c.NumDimensions) + 128 // staging + sidecar values, key overhead
 	n := spfreshTxByteBudget / perRecord

@@ -14,10 +14,10 @@ import (
 // `norecover` nogo analyzer (a new recover() outside the documented boundary allowlist fails the
 // build). This test is the other half — the boundary *fuzz net*: each of the four audit-named input
 // boundaries must keep a no-panic fuzz target that has a real seed corpus, so it actually exercises
-// malformed input under `bazelisk test`/`go test` rather than being an empty no-op (Torvalds:
-// name-presence alone is theater — assert the seed corpus, the concrete "it does something" signal).
+// malformed input under `bazelisk test`/`go test` rather than being an empty no-op (name-presence
+// alone is theater — assert the seed corpus, the concrete "it does something" signal).
 // It checks three things per boundary: (a) the fuzz fn exists, (b) its body seeds a corpus (f.Add),
-// and (c) the file is wired into a go_test target's srcs (codex #332: f.Add in the source does not
+// and (c) the file is wired into a go_test target's srcs (f.Add in the source does not
 // prove the fuzzer still compiles/runs in CI — it could be present yet dropped from go_test). A
 // boundary silently losing its fuzz (rename / delete / unwire) or its seeds turns this red. The four
 // fuzz files AND their BUILD.bazel are data-staged into the test's runfiles.
@@ -60,7 +60,7 @@ func TestPanicBoundary_FuzzNetsWired(t *testing.T) {
 
 		// (c) the file is wired into a go_test target's srcs in its dir's BUILD.bazel — i.e. actually
 		// compiled and replayed under `bazelisk test`, not merely present + exported for this test's
-		// data dep (codex #332: f.Add in the source is not proof the fuzzer still runs in CI).
+		// data dep (f.Add in the source is not proof the fuzzer still runs in CI).
 		dir := filepath.Dir(b.file)
 		build := readDoc(t, root, filepath.Join(dir, "BUILD.bazel"))
 		if !goTestWiresSrc(build, filepath.Base(b.file)) {
@@ -82,7 +82,7 @@ var srcsAttrRe = regexp.MustCompile(`\bsrcs\s*=`)
 // balancing []/(){} and skipping strings. That value may be any Starlark expression — a literal
 // `[...]`, a concat `common + [...]`, or `select(...) + [...]` — so the check is correct whatever the
 // formatting (same-line or wrapped), while the same filename in `data`/`embedsrcs`/a comment does NOT
-// count (comments are stripped first). Edge cases pinned by TestGoTestWiresSrc (codex #332).
+// count (comments are stripped first). Edge cases pinned by TestGoTestWiresSrc.
 func goTestWiresSrc(build, srcFile string) bool {
 	build = stripStarlarkComments(build) // a commented-out `# "x_test.go"` is NOT a real srcs entry
 	needle := `"` + srcFile + `"`

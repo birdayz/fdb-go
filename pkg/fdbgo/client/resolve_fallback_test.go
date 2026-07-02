@@ -117,8 +117,8 @@ func TestResolveFallback(t *testing.T) {
 		t.Parallel()
 		// An error matching NO switch arm (not version / timeout / wrong-shard / all-alternatives) with a
 		// LIVE ctx is dropped and the scan continues; with no version error and no timeout remembered, the
-		// post-loop DEFAULT branch flattens to all_alternatives_failed. This exercises that default (Torvalds
-		// nit: the old subtest fed all_alternatives and hit the early-return case, leaving the default untested).
+		// post-loop DEFAULT branch flattens to all_alternatives_failed. This exercises that default (the
+		// old subtest fed all_alternatives and hit the early-return case, leaving the default untested).
 		tried := 0
 		_, err := resolveFallback(live(), nil, servers, 0, 1, func(ServerInfo) ([]byte, error) {
 			tried++

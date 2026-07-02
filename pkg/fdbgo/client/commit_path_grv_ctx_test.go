@@ -144,7 +144,7 @@ func (d *grvBlockDialer) armAll() {
 }
 
 // releaseAll unwedges every held proxyLoop. MUST run before the conns/pipes close
-// or a still-held proxyLoop leaks its goroutine + conn (Torvalds). Idempotent.
+// or a still-held proxyLoop leaks its goroutine + conn. Idempotent.
 func (d *grvBlockDialer) releaseAll() {
 	d.mu.Lock()
 	defer d.mu.Unlock()

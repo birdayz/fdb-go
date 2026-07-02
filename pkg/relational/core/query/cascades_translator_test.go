@@ -363,7 +363,7 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	}
 
 	// COUNT(NULL) — text arg "NULL" LOOKS like an identifier, so only the ConstantValue operand
-	// catches it. This is why the gate combines text + operand (Torvalds/codex class).
+	// catches it. This is why the gate combines text + operand.
 	constNull := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(NULL)"}, []string{""}, "")
 	constNull.AggregateOperands = []values.Value{&values.ConstantValue{Value: nil}}
 	if tr.unionBranchNormalizable(constNull) {
@@ -1005,7 +1005,7 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 // upgradeSortKeyValues copies the EXACT projected Value pointer into the sort
 // key, so the key actually names the pointer-identical field (`b`). A single
 // semantic-equality pass would return the first equal field (`a`) and pull up to
-// the WRONG output column name. The two-pass design (Torvalds round-6 review)
+// the WRONG output column name. The two-pass design
 // keeps the pulled-up name faithful to the aliased column.
 func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
 	t.Parallel()

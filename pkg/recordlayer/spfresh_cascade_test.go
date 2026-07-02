@@ -163,7 +163,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 		b := spfreshRebalanceOwner("idx")
 		Expect(a).NotTo(Equal(b))
 
-		// Cross-PROCESS uniqueness (codex P1): every process counts the
+		// Cross-PROCESS uniqueness: every process counts the
 		// sequence from zero, so the owner must embed a per-process random
 		// nonce or two live workers on different machines collide on
 		// "rebalance-idx-1". Pin: the owner contains this process's nonce,
@@ -218,7 +218,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 			Expect(lerr).NotTo(HaveOccurred())
 			Expect(rows).To(BeEmpty())
 
-			// The all-candidates-stale error must stay CHEAP (codex P2): it
+			// The all-candidates-stale error must stay CHEAP: it
 			// is a normal retryable outcome inside the caller's save
 			// transaction, and embedding the topology dump made every
 			// transient stale route scan the whole index. "hist=" is the
@@ -433,8 +433,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 	// against the committed centroid vectors — the resume must pin that
 	// geometry (no 2-means recompute, no centroid overwrite) and ADD to the
 	// children's counters rather than resetting them, or every drained entry
-	// decodes against the wrong center and the counters lie (codex P1
-	// follow-on; found while moving the HDR write into the chunked planner).
+	// decodes against the wrong center and the counters lie.
 	It("single-tx resume of a partially-drained chunked split pins the children's geometry", func() {
 		config := DefaultSPFreshConfig(2)
 		config.Lmax = 16
@@ -678,9 +677,9 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 			Expect(derr).NotTo(HaveOccurred())
 			Expect(row.childA).To(Equal(int64(100)))
 			// And the keep must RELEASE the stale executor's lease: a
-			// different owner claims it immediately (codex P2 — a kept task
-			// leased to a no-progress invocation stalls the split until
-			// lease expiry, since unique owners never self-reclaim).
+			// different owner claims it immediately (a kept task leased
+			// to a no-progress invocation stalls the split until lease
+			// expiry, since unique owners never self-reclaim).
 			claimed, cerr := spfreshTaskClaim(tx, storage, spfreshTaskSplit, fine, "other-exec", spfreshLeaseDeadline(), spfreshNowMs())
 			Expect(cerr).NotTo(HaveOccurred(), "kept sealed task must be immediately claimable, not lease-stalled")
 			Expect(claimed.childA).To(Equal(int64(100)), "children must survive the keep")

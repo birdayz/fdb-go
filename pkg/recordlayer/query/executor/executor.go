@@ -373,7 +373,7 @@ func executeVectorIndexScan(
 		// `< K` selects the top K-1. K ≤ 1 ⇒ no rows; test BEFORE subtracting so a
 		// K = math.MinInt64 (literal `< -9223372036854775808`, or a bound param)
 		// cannot wrap k-1 to a huge POSITIVE and slip past the ≤0 guard into an
-		// enormous horizon (codex delta P2-A). K ≥ 2 here ⇒ k-1 cannot overflow.
+		// enormous horizon. K ≥ 2 here ⇒ k-1 cannot overflow.
 		if k <= 1 {
 			return recordlayer.Empty[QueryResult](), nil
 		}
@@ -444,7 +444,7 @@ func executeVectorIndexScan(
 		// (Java's VectorIndexScanBounds.getAdjustedLimit: K for <=K, K-1 for <K) —
 		// already computed as rankCap above and proven ≥ 1 by the ≤0 short-circuit
 		// (a non-positive adjusted cap returned EMPTY there). No re-derive, and no
-		// dead ≤0 check (Torvalds + Graefe convergence nits).
+		// dead ≤0 check.
 		limit := rankCap
 		if efSearch != 0 && efSearch < limit {
 			efSearch = limit
@@ -1031,7 +1031,7 @@ func executeLimit(
 	// returned-row cap (e.g. MAX_ROWS) the LIMIT emits at most that many
 	// post-offset, so the child budget is remOffset + min(remLimit, parentCap)
 	// — NOT min(remOffset+remLimit, parentCap), which would stop the child
-	// before it skips the offset (codex: `SELECT COUNT(*) FROM t LIMIT 1 OFFSET 1`
+	// before it skips the offset (`SELECT COUNT(*) FROM t LIMIT 1 OFFSET 1`
 	// under MAX_ROWS=1 erroring on resume instead of returning 0 rows).
 	innerProps := props
 	emit := remLimit // <0 == unbounded (OFFSET-only)
@@ -1667,7 +1667,7 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 		// ImplementUnorderedUnionRule already wrapped in a rename Map reports the SAME
 		// (post-rename) names here. Without this, the union position-remap would see the
 		// pre-rename names, differ from the first branch, and remap a SECOND time over the
-		// already-renamed row → reads missing keys → NULLs (codex). Falls through to the
+		// already-renamed row → reads missing keys → NULLs. Falls through to the
 		// descend/scan path when the Map has no RecordConstructorValue result.
 		if mp, ok := p.(*plans.RecordQueryMapPlan); ok {
 			if rcv, ok := mp.GetResultValue().(*values.RecordConstructorValue); ok && len(rcv.Fields) > 0 {
@@ -1676,7 +1676,7 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 					// Report the EXACT field name — RecordConstructorValue.Evaluate keys the
 					// output row by f.Name verbatim (values.go), so this is the literal row
 					// key the union remap must read. Upper-casing it would mismatch a
-					// non-uppercase Map field and read a missing key → NULL (codex). Union
+					// non-uppercase Map field and read a missing key → NULL. Union
 					// branch fields are upper in practice (SQL upper-cases identifiers/aliases),
 					// so this equals the prior upper-case for every real query.
 					names[i] = f.Name
@@ -2354,7 +2354,7 @@ func executeDelete(
 	// Pre-materialize the full target set BEFORE deleting anything. A resource-limit
 	// cut-off (CollectAllBounded → errIfBufferTruncated → 54F01) must abort the DELETE
 	// with ZERO records removed — never leave a partially-applied DELETE staged in an
-	// explicit transaction that a later commit would persist (codex RFC-106a). DML runs
+	// explicit transaction that a later commit would persist (RFC-106a). DML runs
 	// in one transaction, so the target set is bounded by the tx; the materialization
 	// cap is the memory backstop.
 	targets, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "DELETE target set")
@@ -2364,7 +2364,7 @@ func executeDelete(
 
 	// Re-check the statement deadline AFTER collection and BEFORE any mutation: if the
 	// deadline already passed (collection itself is ctx-gated, but the window after it
-	// is not), abort with ZERO records changed (codex RFC-106a). The mutation loop then
+	// is not), abort with ZERO records changed (RFC-106a). The mutation loop then
 	// runs to completion uninterrupted — checking ctx mid-loop would reintroduce the
 	// partial-mutation hazard pre-materialization exists to prevent; the loop only
 	// stages local writes over a tx-bounded target set.
@@ -2433,7 +2433,7 @@ func executeInsert(
 	}
 
 	// Re-check the statement deadline after collection, before any write — abort
-	// with ZERO records inserted if already expired (codex RFC-106a; see executeDelete).
+	// with ZERO records inserted if already expired (RFC-106a; see executeDelete).
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -2443,8 +2443,8 @@ func executeInsert(
 
 	// Phase 1: build every record to insert and charge its ACTUAL size against the
 	// budget — BEFORE any write. Charging the built record (not the source row) accounts
-	// INSERT … VALUES with a large literal / a growing projection for its true bytes
-	// (codex #328 re-review P2); all charging precedes phase 2's saves, so a budget
+	// INSERT … VALUES with a large literal / a growing projection for its true bytes;
+	// all charging precedes phase 2's saves, so a budget
 	// breach — or any build error — returns with zero SaveRecord calls (no partial
 	// INSERT). The built messages ARE the echo content, so no extra residency.
 	// proto.Size is gated on HasMemLimit (zero-overhead when off).
@@ -2479,7 +2479,7 @@ func executeInsert(
 
 		if props.State.HasMemLimit() {
 			// Match the stored-row estimator: proto wire size PLUS the packed PK tuple
-			// the echo's FDBStoredRecord holds separately (codex #328 P2). The PK is not
+			// the echo's FDBStoredRecord holds separately. The PK is not
 			// assigned until SaveRecord, so derive it from the built record via the target
 			// type's primary-key expression (best-effort: a derivation error charges the
 			// record size alone — still a conservative ceiling for the dominant payload).
@@ -2603,14 +2603,14 @@ func executeUpdate(
 
 	// Pre-materialize the full target set BEFORE applying any update — a resource-limit
 	// cut-off must abort with ZERO records changed, never a partially-applied UPDATE
-	// staged in an explicit transaction (codex RFC-106a; see executeDelete).
+	// staged in an explicit transaction (RFC-106a; see executeDelete).
 	targets, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "UPDATE target set")
 	if err != nil {
 		return nil, err
 	}
 
 	// Re-check the statement deadline after collection, before any mutation — abort
-	// with ZERO records changed if already expired (codex RFC-106a; see executeDelete).
+	// with ZERO records changed if already expired (RFC-106a; see executeDelete).
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -2618,7 +2618,7 @@ func executeUpdate(
 	// Phase 1: build every updated record and charge its ACTUAL post-transform size
 	// against the budget — BEFORE any write is staged. Charging the built record (not
 	// the source row) accounts a growing UPDATE (small row → large value) for its true
-	// bytes (codex #328 re-review P2); doing all of it before phase 2's saves means a
+	// bytes; doing all of it before phase 2's saves means a
 	// budget breach — or any build/transform error — returns with zero SaveRecord calls
 	// (no partial mutation). The built messages ARE the echo content, so no extra
 	// residency. proto.Size is gated on HasMemLimit (zero-overhead when off).
@@ -2663,9 +2663,8 @@ func executeUpdate(
 
 		if props.State.HasMemLimit() {
 			// Match the stored-row estimator (estimateQueryResultBytes): proto wire size
-			// PLUS the packed PK tuple, which the echo's FDBStoredRecord holds separately
-			// (codex #328 P2). An UPDATE does not change the PK, so the target's PK is the
-			// echo's PK.
+			// PLUS the packed PK tuple, which the echo's FDBStoredRecord holds separately.
+			// An UPDATE does not change the PK, so the target's PK is the echo's PK.
 			if err := props.State.ChargeMemory(int64(proto.Size(msg)) + int64(len(qr.Record.PrimaryKey.Pack()))); err != nil {
 				return nil, err
 			}

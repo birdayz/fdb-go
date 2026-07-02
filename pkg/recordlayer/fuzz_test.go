@@ -722,11 +722,11 @@ func FuzzKeyExpressionFromProto(f *testing.F) {
 // file-descriptor rebuild phase walks an arbitrary dependency graph that
 // attackers can shape (each dep names its own deps), so a self-referential
 // A→B→A proto would recurse until the goroutine stack overflows without
-// the in-progress cycle guard added in swingshift-35. This fuzz pins that
-// guard and the upstream proto-unmarshal / FileDescriptor build path.
+// the in-progress cycle guard. This fuzz pins that guard and the upstream
+// proto-unmarshal / FileDescriptor build path.
 //
 // Seeds include real serialised metadata (via builder + build + ToProto),
-// the swingshift-35 4-byte regression bytes, and a handful of proto shapes
+// the 4-byte cycle-guard regression bytes, and a handful of proto shapes
 // known to confuse descriptor resolvers.
 func FuzzRecordMetaDataFromProto(f *testing.F) {
 	// Seed 1: a minimal real MetaData proto.

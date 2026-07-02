@@ -902,7 +902,7 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 // only such call wired today is the CARDINALITY built-in: it parses here
 // rather than as a ScalarFunctionCall because CARDINALITY has no grammar
 // token (it is not in the `scalarFunctionName` keyword set). This is the
-// single by-name built-in dispatch gate (Torvalds' option (b)) — a
+// single by-name built-in dispatch gate — a
 // recognised name builds its dedicated Value; everything else declines so
 // the caller falls back. A quoted name (`"cardinality"`) is a deliberate
 // user-defined reference, not the built-in, so only the unquoted ID form

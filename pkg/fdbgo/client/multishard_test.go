@@ -290,7 +290,7 @@ func testMultiShard_GetRangeWithLimit(t *testing.T, ctx context.Context, env *mu
 }
 
 // GetKey: selector resolution that must cross shard boundaries.
-// This was the nightshift-9 bug — the Go client sent ONE GetKeyRequest
+// Regression pin: the Go client once sent ONE GetKeyRequest
 // and returned the reply key, ignoring offset from the reply when the
 // selector crossed a shard boundary.
 func testMultiShard_GetKey(t *testing.T, ctx context.Context, env *multiShardEnv) {
@@ -1167,7 +1167,7 @@ func testMultiShard_ConcurrentWritesDuringDD(t *testing.T, ctx context.Context, 
 		totalKeys, shardsAfter)
 }
 
-// MoreFlagAtShardBoundary: regression test for swingshift-15 bug.
+// MoreFlagAtShardBoundary: regression test.
 // When limit is met exactly across multiple shards, `more` must be true.
 // Before the fix, `more` was taken from the last shard's response, which
 // could be false even though subsequent shards had data.
@@ -1384,10 +1384,9 @@ func testMultiShard_ContinuationCorrectnessWithCacheInvalidation(t *testing.T, c
 //
 //   - GetRange: full scan correctness across shard boundaries
 //   - GetRangeWithLimit: paged scan with continuation across boundaries
-//     (this is the surface where the nightshift-9 bug + similar bugs
-//     hide)
-//   - GetKey: selector resolution across shard boundaries (also
-//     nightshift-9-prone)
+//     (this is the surface where shard-boundary offset/continuation
+//     bugs hide)
+//   - GetKey: selector resolution across shard boundaries
 //   - ClearRange: range mutation that crosses shard boundaries
 //   - ContinuationCorrectnessWithCacheInvalidation: the most thorough
 //     boundary-correctness test

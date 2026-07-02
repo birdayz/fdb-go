@@ -297,8 +297,8 @@ func TestFDB_Metrics_DummyRetriesCounted(t *testing.T) {
 	// No local `defer db.Close()`: openTestDB registers Close via t.Cleanup,
 	// and the spoiler-join cleanup below is registered AFTER it — cleanups
 	// run LIFO, so the spoiler is joined BEFORE the handle closes on every
-	// exit path, including t.Fatal (Torvalds nit: a dying spoiler Transact
-	// must not race Close).
+	// exit path, including t.Fatal (a dying spoiler Transact must not race
+	// Close).
 	db := openTestDB(t, ctx)
 
 	key := []byte(t.Name() + "_key")
@@ -542,8 +542,8 @@ func TestFDB_Metrics_LatencyRecorded(t *testing.T) {
 // TestFDB_Metrics_PipelinedReadLatencySampled pins RFC-114's pipelined read-latency
 // sample (the Resolve happy path) INDEPENDENTLY of the sync getValue sample: it
 // drives reads only through GetPipelined→Resolve, so deleting the pipelined observe
-// site zeroes the delta and reddens this. (Torvalds revert-proof catch — the main
-// latency test exercises only the sync path.)
+// site zeroes the delta and reddens this. (Revert-proof: the main latency test
+// exercises only the sync path.)
 func TestFDB_Metrics_PipelinedReadLatencySampled(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -593,7 +593,7 @@ func TestFDB_Metrics_PipelinedReadLatencySampled(t *testing.T) {
 }
 
 // TestFDB_Metrics_TransactionLatencyResetsOnReuse pins RFC-114's metricStart reuse
-// boundary (codex catch): a Transaction reused after a successful commit measures the
+// boundary: a Transaction reused after a successful commit measures the
 // NEXT transaction fresh, excluding the idle gap before it begins. Revert-proof: drop
 // the postCommitReset clear (or the first-GRV re-stamp) and commit2 folds in the sleep.
 func TestFDB_Metrics_TransactionLatencyResetsOnReuse(t *testing.T) {
@@ -650,7 +650,7 @@ func assertReusedCommitLatency(t *testing.T, s, base ClientMetricsSnapshot, wall
 }
 
 // TestFDB_Metrics_TransactionLatencyResetsOnUserReset pins the user-Reset() metric
-// boundary (codex + Torvalds catch): a handle that reads then Reset()s without
+// boundary: a handle that reads then Reset()s without
 // committing must measure the NEXT transaction fresh. The clear lives in Reset(), NOT
 // the OnError-shared reset(). Revert-proof: drop the Reset() metricStart clear and the
 // post-Reset commit folds in the idle gap below.

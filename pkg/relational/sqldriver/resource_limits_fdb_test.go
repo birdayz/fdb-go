@@ -4,8 +4,8 @@ package sqldriver_test
 //
 // Each piece is OFF by default; these tests prove (a) that a configured
 // limit surfaces as SQLSTATE 54F01 (api.ErrCodeExecutionLimitReached) and
-// (b) — critically — that the no-option/default path is INERT (Torvalds
-// default-safety). The configs are installed on a pinned *sql.Conn's
+// (b) — critically — that the no-option/default path is INERT
+// (default-safety). The configs are installed on a pinned *sql.Conn's
 // underlying *embedded.EmbeddedConnection via Raw, mirroring the
 // installLogger pattern in plan_logging_fdb_test.go.
 
@@ -509,8 +509,8 @@ func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
 // case exercises; the explicit pre-mutation-loop re-check in executeDelete is
 // defensive-in-depth for the (non-deterministically reproducible) window after
 // collection and is intentionally NOT what this test pins. Driven in an explicit
-// tx + commit-after-error to prove no partial writes become durable (Torvalds:
-// honest scope — this pins atomic abort, not the specific defensive line).
+// tx + commit-after-error to prove no partial writes become durable
+// (honest scope — this pins atomic abort, not the specific defensive line).
 func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc106a_dmldeadline", "dmldeadline",

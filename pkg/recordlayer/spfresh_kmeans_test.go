@@ -311,8 +311,7 @@ func TestSPFreshBuildRouterAssignWidensPastFixedPool(t *testing.T) {
 	// 17 same-direction near-duplicates fill the entire initial pool
 	// (spfreshClosurePool(2) = 16) before the single diverse fine, which is
 	// still within the alpha ratio. A fixed pool truncates ahead of it and
-	// under-replicates to {nearest}; the widening loop must reach it
-	// (codex 094.4 r2).
+	// under-replicates to {nearest}; the widening loop must reach it.
 	var ids0 []int64
 	var cells0 []int64
 	var vecs0 [][]float64
@@ -533,7 +532,7 @@ func TestSPFreshKMeansBuildConvergeFraction(t *testing.T) {
 		t.Fatalf("convergeFraction=0.10 produced the SAME assignment as exact — the early-stop never engaged (regression is vacuous)")
 	}
 
-	// (5) the final-assignment pass is skipped on early-stop (codex perf fix), so
+	// (5) the final-assignment pass is skipped on early-stop, so
 	// assign MUST already be current: every point at its nearest centroid. This
 	// pins that skipping the pass left no stale assignment.
 	cB, aB := spfreshKMeansBuild(vecs, 16, 5, 25)
@@ -639,7 +638,7 @@ func TestSPFreshBuildRouterAssignWideningBoundary(t *testing.T) {
 	// inside (2·base, 4·base] for base 16 — only the third pool (64) reaches
 	// it. A silent regression of the cap to 2×base would miss it and this
 	// test, together with the >4×base negative, pins the boundary from both
-	// sides (Torvalds 094.4 r4).
+	// sides.
 	var ids0 []int64
 	var cells0 []int64
 	var vecs0 [][]float64

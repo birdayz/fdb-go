@@ -19,14 +19,14 @@ import (
 // (true / false / nil-for-UNKNOWN) — mirrors the embedded
 // engine's `triBool`.
 //
-// Seed types (dayshift-46):
+// Seed types:
 //
 //   - ConstantPredicate — literal true / false / UNKNOWN.
 //   - AndPredicate / OrPredicate — Kleene AND/OR over children.
 //   - NotPredicate — Kleene NOT.
 //   - ValuePredicate — bare boolean Value used as predicate.
 //
-// Follow-up shifts add: ComparisonRange (see Java's
+// Follow-up work adds: ComparisonRange (see Java's
 // `ComparisonRange` aggregator), `Placeholder` (rule-match
 // parameter binding), `PredicateWithValueAndRanges`.
 // ComparisonPredicate lives in comparisons.go (paired with the

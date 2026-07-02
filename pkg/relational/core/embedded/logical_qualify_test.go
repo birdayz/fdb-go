@@ -130,7 +130,7 @@ func TestQualify_PlainPredicateNotRejected(t *testing.T) {
 	}
 }
 
-// TestAttachOrSynthesizeFilter covers Finding 1 (Torvalds): a QUALIFY predicate
+// TestAttachOrSynthesizeFilter: a QUALIFY predicate
 // must not be dropped when there is no WHERE (hence no existing LogicalFilter).
 func TestAttachOrSynthesizeFilter(t *testing.T) {
 	t.Parallel()

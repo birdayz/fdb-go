@@ -152,7 +152,7 @@ func TestScalarFunctionValue_PropagatesError(t *testing.T) {
 }
 
 // TestScalarInt64Boundary_NoWrap pins the 2^63 int64-conversion boundary
-// (codex finding, RFC-087). math.MaxInt64 (2^63-1) has no exact float64
+// (RFC-087). math.MaxInt64 (2^63-1) has no exact float64
 // representation and rounds UP to 2^63, so the old `f <= math.MaxInt64` guards
 // admitted 2^63 and int64(2^63) wrapped to math.MinInt64. The fix
 // (float64FitsInt64, exclusive upper bound at 2^63) keeps such values as

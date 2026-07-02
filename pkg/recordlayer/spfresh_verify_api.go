@@ -44,7 +44,7 @@ func SearchSPFreshIndex(store *FDBRecordStore, indexName string, queryVector []f
 	// Validate the query dimension before searching — searchCurrentGeneration's
 	// distance kernel slices centroid vectors to len(queryVector) and would
 	// panic on a longer query. ScanByDistance and the HNSW direct API both
-	// guard this; this wrapper must too (codex P2).
+	// guard this; this wrapper must too.
 	if cfg := parseSPFreshConfig(idx); len(queryVector) != cfg.NumDimensions {
 		return nil, fmt.Errorf("spfresh search: index %q expects %d dimensions, query has %d", indexName, cfg.NumDimensions, len(queryVector))
 	}
@@ -228,7 +228,7 @@ func SPFreshCheckIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 	// Ceil-divide so the stride never samples MORE than `sample` rows: with
 	// floor division, members just above a sample boundary (e.g. 39,999 members
 	// / sample 20,000) gives step=1 and checks every member — defeating the cap
-	// on the expensive per-pk posting reads (codex P3).
+	// on the expensive per-pk posting reads.
 	step := (len(pks) + sample - 1) / sample
 	if step < 1 {
 		step = 1

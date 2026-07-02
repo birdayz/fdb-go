@@ -474,7 +474,7 @@ func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntr
 	}
 
 	// Honor a statement deadline (RFC-106a): draining an already-fetched range
-	// batch must still return on ctx cancellation/timeout (codex), not run to the
+	// batch must still return on ctx cancellation/timeout, not run to the
 	// per-page time limit. context.DeadlineExceeded → 54F01 "statement timeout".
 	if err := ctx.Err(); err != nil {
 		return RecordCursorResult[*IndexEntry]{}, err

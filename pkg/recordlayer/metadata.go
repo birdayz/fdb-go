@@ -1171,8 +1171,8 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 //
 // `[]byte` keys are normalized to `string` because byte slices are
 // unhashable in Go and would panic when used as a map key. Adversarial
-// proto inputs (e.g. via the FuzzRecordMetaDataFromProto fuzz target,
-// nightshift-53) can carry `[]byte` subspace keys; without this branch,
+// proto inputs (e.g. via the FuzzRecordMetaDataFromProto fuzz target)
+// can carry `[]byte` subspace keys; without this branch,
 // `RecordMetaDataBuilder.Build` would panic with "hash of unhashable
 // type: []uint8" rather than returning a typed error. The string-cast
 // preserves byte-equality semantics for keys with the same byte

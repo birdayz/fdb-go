@@ -9,7 +9,7 @@ import (
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
-// Versionstamp-validation ORDER differential vs libfdb_c — RFC-067 P2 (codex follow-up).
+// Versionstamp-validation ORDER differential vs libfdb_c — RFC-067 P2 follow-up.
 //
 // The size-limit RFC made the transaction_too_large (2101) check fire by default. codex
 // flagged that this could pre-empt versionstamp-offset validation. The differential below
