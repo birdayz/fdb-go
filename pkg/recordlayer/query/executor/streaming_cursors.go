@@ -694,7 +694,7 @@ func newNLJCursor(
 	evalCtx *EvaluationContext,
 	st *recordlayer.ExecuteState,
 ) (*nljCursor, error) {
-	birth, err := newOrdinalJoinBirth(resultValue)
+	birth, err := newOrdinalJoinBirth(resultValue, preds)
 	if err != nil {
 		return nil, err
 	}

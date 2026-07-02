@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -404,7 +405,7 @@ type ordinalJoinBirth struct {
 // (the seed, or the wrapper-merge-folded projection RC — the drift asserts
 // pin that); anything else is a planner bug and must die at construction,
 // never be silently demoted to the name model.
-func newOrdinalJoinBirth(rv values.Value) (*ordinalJoinBirth, error) {
+func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBirth, error) {
 	if rv == nil || !values.ContainsBakedOrdinal(rv) {
 		return nil, nil
 	}
@@ -413,13 +414,36 @@ func newOrdinalJoinBirth(rv values.Value) (*ordinalJoinBirth, error) {
 		return nil, fmt.Errorf("RFC-173 ordinal join birth: result value contains baked ordinal references but is a %T, want *RecordConstructorValue (seed or folded projection RC) — planner bug", rv)
 	}
 	spans, _, windowsOK := ordinalJoinSpans(rc)
+	// LegTypes come from the RESULT VALUE *and* the join PREDICATES (codex
+	// PR-447 P1): a folded projection RV can DROP a leg entirely while a
+	// baked cross-leg ON predicate still references it — collecting from the
+	// RV alone left the dropped leg typeless, and a name-model (Datum-only)
+	// row for it adapted to a ZERO-WIDTH binding that blew up the predicate
+	// (loud OrdinalResolutionError, "row columns []") on a legitimate plan.
+	legTypes := legTypesFromResultValue(rc)
+	for _, p := range preds {
+		predicates.ReplaceValues(p, func(v values.Value) values.Value {
+			fv, isFV := v.(*values.FieldValue)
+			if !isFV || fv.Resolved == nil {
+				return v
+			}
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+				if rt, isRT := qov.Type().(*values.RecordType); isRT {
+					if _, seen := legTypes[qov.Correlation]; !seen {
+						legTypes[qov.Correlation] = rt
+					}
+				}
+			}
+			return v
+		})
+	}
 	return &ordinalJoinBirth{
 		Enabled:    true,
 		RC:         rc,
 		OutputType: rcOutputType(rc),
 		Spans:      spans,
 		WindowsOK:  windowsOK,
-		LegTypes:   legTypesFromResultValue(rc),
+		LegTypes:   legTypes,
 	}, nil
 }
 

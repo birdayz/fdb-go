@@ -67,7 +67,7 @@ func newFlatMapCursor(
 	leftOuter bool,
 	props recordlayer.ExecuteProperties,
 ) (*flatMapCursor, error) {
-	birth, err := newOrdinalJoinBirth(resultValue)
+	birth, err := newOrdinalJoinBirth(resultValue, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -121,7 +121,7 @@ func TestRFC173S2_OrdinalJoinBirth_Constructor(t *testing.T) {
 
 	t.Run("nil result value disabled", func(t *testing.T) {
 		t.Parallel()
-		birth, err := newOrdinalJoinBirth(nil)
+		birth, err := newOrdinalJoinBirth(nil, nil)
 		if err != nil || birth != nil {
 			t.Fatalf("nil rv = (%v, %v), want (nil, nil)", birth, err)
 		}
@@ -135,7 +135,7 @@ func TestRFC173S2_OrdinalJoinBirth_Constructor(t *testing.T) {
 		lazy := values.NewRecordConstructorValue(
 			values.RecordConstructorField{Name: "ID", Value: values.NewFieldValue(qovA, "ID", values.NotNullLong)},
 		)
-		birth, err := newOrdinalJoinBirth(lazy)
+		birth, err := newOrdinalJoinBirth(lazy, nil)
 		if err != nil || birth != nil {
 			t.Fatalf("lazy RC = (%v, %v), want (nil, nil) — the name model's RCs are not birth sites", birth, err)
 		}
@@ -143,7 +143,7 @@ func TestRFC173S2_OrdinalJoinBirth_Constructor(t *testing.T) {
 
 	t.Run("pristine seed enabled with windows", func(t *testing.T) {
 		t.Parallel()
-		birth, err := newOrdinalJoinBirth(seed)
+		birth, err := newOrdinalJoinBirth(seed, nil)
 		if err != nil {
 			t.Fatalf("seed birth: %v", err)
 		}
@@ -185,7 +185,7 @@ func TestRFC173S2_OrdinalJoinBirth_Constructor(t *testing.T) {
 			values.RecordConstructorField{Name: "V", Value: bakedAV},
 			values.RecordConstructorField{Name: "C", Value: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}},
 		)
-		birth, err := newOrdinalJoinBirth(folded)
+		birth, err := newOrdinalJoinBirth(folded, nil)
 		if err != nil {
 			t.Fatalf("folded birth: %v", err)
 		}
@@ -209,7 +209,7 @@ func TestRFC173S2_OrdinalJoinBirth_Constructor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
 		}
-		birth, err := newOrdinalJoinBirth(bakedBare)
+		birth, err := newOrdinalJoinBirth(bakedBare, nil)
 		if err == nil || birth != nil {
 			t.Fatalf("baked non-RC = (%v, %v), want a loud error — an ordinal result value that is not an RC is a planner bug", birth, err)
 		}
@@ -229,7 +229,7 @@ func TestRFC173S2_OrdinalJoinBirth_Constructor(t *testing.T) {
 func TestRFC173S2_OrdinalJoinBirth_Evaluate(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, _, seed := ojWiringLegs(t)
-	birth, err := newOrdinalJoinBirth(seed)
+	birth, err := newOrdinalJoinBirth(seed, nil)
 	if err != nil {
 		t.Fatalf("seed birth: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestRFC173S2_OrdinalJoinBirth_Evaluate(t *testing.T) {
 			values.RecordConstructorField{Name: "V", Value: bakedAV},
 			values.RecordConstructorField{Name: "C", Value: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}},
 		)
-		fb, err := newOrdinalJoinBirth(folded)
+		fb, err := newOrdinalJoinBirth(folded, nil)
 		if err != nil {
 			t.Fatalf("folded birth: %v", err)
 		}
@@ -861,4 +861,58 @@ func TestRFC173S2_SpanAware_BareDupName_DivergencePin(t *testing.T) {
 	if m := datumFromSpans(row, spans); m["ID"] != int64(2) {
 		t.Fatalf("datumFromSpans bare ID = %v, want LAST-wins (2)", m["ID"])
 	}
+}
+
+// TestRFC173S2_NLJ_FoldedRVDroppedLeg_PredTypes pins the codex PR-447 P1: a
+// FOLDED result value can DROP a leg entirely while a baked cross-leg ON
+// predicate still references it — LegTypes derived from the RV alone misses
+// the dropped leg, so a NAME-model (Datum-only) row for that leg adapted with
+// a nil leg type became a ZERO-WIDTH binding and the baked predicate blew up
+// (loud OrdinalResolutionError on a legitimate plan). LegTypes must be
+// collected from the result value AND the predicates.
+func TestRFC173S2_NLJ_FoldedRVDroppedLeg_PredTypes(t *testing.T) {
+	t.Parallel()
+	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
+
+	// Folded RV: only leg A appears ({A.V baked, const}) — leg B dropped.
+	bakedAV, err := values.NewFieldValueOfOrdinal(qovA, 1)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	foldedRV := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "V", Value: bakedAV},
+		values.RecordConstructorField{Name: "_1", Value: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}},
+	)
+
+	// Baked cross-leg ON predicate: A.ID = B.ID — references the DROPPED leg.
+	bakedAID, err := values.NewFieldValueOfOrdinal(qovA, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	bakedBID, err := values.NewFieldValueOfOrdinal(qovB, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	pred := ojEqPred(bakedAID, bakedBID)
+
+	outerRows := []QueryResult{
+		ojLegQR(t, legA, int64(1), int64(10)),
+		ojLegQR(t, legA, int64(2), int64(20)),
+	}
+	// Leg B rows are NAME-model (Datum only — an aggregate-box shape): the
+	// adapter must synthesize them from the PREDICATE-derived leg type.
+	innerRows := []QueryResult{
+		ojNameQR(legB, int64(1), int64(100)),
+		ojNameQR(legB, int64(3), int64(300)),
+	}
+
+	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
+		"A", "B", []predicates.QueryPredicate{pred}, foldedRV, EmptyEvaluationContext(), nil)
+	defer c.Close()
+	results := collectCursor(t, c)
+	if len(results) != 1 {
+		t.Fatalf("got %d rows, want 1 (only A.ID=1 matches B.ID=1) — a dropped-leg zero-width binding misfilters or errors", len(results))
+	}
+	// The folded output row: [A.V, 1].
+	ojAssertSlots(t, results[0].Positional, int64(10), int64(1))
 }

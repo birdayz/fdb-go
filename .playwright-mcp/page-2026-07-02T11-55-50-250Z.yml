@@ -1,0 +1,550 @@
+- generic [active] [ref=e1]:
+  - banner:
+    - dialog [ref=e2]:
+      - generic [ref=e5]:
+        - heading "THIS WEBSITE USES COOKIES" [level=3] [ref=e6]
+        - generic [ref=e7]:
+          - generic [ref=e8]:
+            - text: We want you to have the best possible user experience on our website. We use cookies to analyze how visitors like you use our website, so we can make improvements. And we use cookies to make sure that the website functions normally. For more info, see our
+            - link "privacy policy" [ref=e9] [cursor=pointer]:
+              - /url: /legal/privacy-policy
+            - text: . You can edit your cookie settings there at any time.
+          - generic [ref=e10]:
+            - button "Allow all cookies" [ref=e11] [cursor=pointer]
+            - button "Allow necessary cookies" [ref=e12] [cursor=pointer]
+    - button "Open chat widget" [ref=e14] [cursor=pointer]
+    - text: 
+    - navigation [ref=e15]:
+      - text:  
+      - generic [ref=e18]:
+        - text: 
+        - generic [ref=e19]:
+          - generic [ref=e21]:
+            - button "EUR VAT 0%" [ref=e22] [cursor=pointer]:
+              - generic [ref=e26]: EUR
+              - generic [ref=e28]:
+                - text: VAT
+                - generic [ref=e29]: 0%
+            - text:       
+          - link " Support" [ref=e30] [cursor=pointer]:
+            - /url: /support/
+            - generic [ref=e31]: 
+            - text: Support
+          - button " Login " [ref=e33] [cursor=pointer]:
+            - generic [ref=e34]:
+              - generic [ref=e35]: 
+              - text: Login
+              - generic [ref=e36]: 
+      - generic [ref=e37]:
+        - generic [ref=e38]:
+          - button [ref=e39] [cursor=pointer]
+          - link "Logo Hetzner Online" [ref=e43] [cursor=pointer]:
+            - /url: https://www.hetzner.com/
+            - img "Logo Hetzner Online" [ref=e44]
+        - generic [ref=e45]:    
+  - navigation:
+    - generic [ref=e46]:
+      - heading "Close " [level=4]:
+        - text: Close
+        - generic [ref=e47]: 
+    - generic:
+      - link "Server Auction from € 0.00 " [ref=e48] [cursor=pointer]:
+        - /url: /sb/
+        - generic [ref=e50]:
+          - generic [ref=e51]: Server Auction
+          - generic [ref=e55]:
+            - generic: from
+            - generic [ref=e56]: € 0.00
+        - generic [ref=e57]: 
+      - separator [ref=e58]
+      - link "Server Finder from € 0.00 " [ref=e59] [cursor=pointer]:
+        - /url: /dedicated-rootserver/
+        - generic [ref=e61]:
+          - generic [ref=e62]: Server Finder
+          - generic [ref=e66]:
+            - generic: from
+            - generic [ref=e67]: € 0.00
+        - generic [ref=e68]: 
+      - separator [ref=e69]
+      - separator [ref=e70]
+      - generic:
+        - generic:
+          - heading "Dedicated " [level=4]:
+            - text: Dedicated
+            - generic [ref=e71] [cursor=pointer]: 
+        - link "Cloud":
+          - /url: /cloud/
+          - heading "Cloud" [level=4]
+        - generic:
+          - heading "Web & Managed " [level=4]:
+            - text: Web & Managed
+            - generic [ref=e72] [cursor=pointer]: 
+        - generic:
+          - heading "Storage " [level=4]:
+            - text: Storage
+            - generic [ref=e73] [cursor=pointer]: 
+        - generic:
+          - heading "Services " [level=4]:
+            - text: Services
+            - generic [ref=e74] [cursor=pointer]: 
+      - separator [ref=e75]
+      - generic:
+        - link "Blog":
+          - /url: /blog/
+          - heading "Blog" [level=4]
+        - link "Jobs":
+          - /url: https://career.hetzner.com/
+          - heading "Jobs" [level=4]
+        - link "Community":
+          - /url: https://community.hetzner.com/
+          - heading "Community" [level=4]
+        - generic:
+          - heading "About us " [level=4]:
+            - text: About us
+            - generic [ref=e76] [cursor=pointer]: 
+        - link "Support":
+          - /url: /support/
+          - heading "Support" [level=4]
+        - generic:
+          - heading "Login " [level=4]:
+            - text: Login
+            - generic [ref=e77] [cursor=pointer]: 
+  - main [ref=e78]:
+    - generic [ref=e79]:
+      - img "hetzner server auction matrix" [ref=e81]
+      - generic [ref=e86]:
+        - list [ref=e87]:
+          - listitem [ref=e88]:
+            - heading "SERVER AUCTION" [level=1] [ref=e89]
+          - listitem [ref=e90]: BID ON SERVERS AND SAVE!
+          - listitem [ref=e91]: NO MINIMUM CONTRACT PERIOD AND NO SETUP FEES.
+        - paragraph [ref=e92]:
+          - text: Enter your desired specs, and when the moment is right, snap up your offer!
+          - text: But don't wait too long, or somebody else might beat you to the bargain.
+        - list [ref=e93]:
+          - listitem [ref=e94]:
+            - link "Homepage" [ref=e95] [cursor=pointer]:
+              - /url: https://www.hetzner.com/
+          - listitem [ref=e96]:
+            - generic [ref=e97]: 
+          - listitem [ref=e98]: Server auction | Bid on servers and save
+    - generic [ref=e99]:
+      - img [ref=e100]
+      - img [ref=e102]
+      - img [ref=e104]
+    - generic [ref=e110]:
+      - heading "Server auction" [level=2] [ref=e111]
+      - paragraph
+      - paragraph [ref=e112]: Server hardware can be reused even if a product is terminated. This is reasonable in terms of both economic and ecological aspects. Benefit from this advantage.
+      - paragraph [ref=e113]:
+        - text: The server auction not only markets standardized server systems such as those found in our product portfolio but also customized systems that were adapted to customer requirements in the past. Therefore automatic image installers, special software images, the vKVM or other software systems are not possible. To ensure a seamless installation and functionality, the server is delivered in the
+        - link "rescue system " [ref=e114] [cursor=pointer]:
+          - /url: https://docs.hetzner.com/robot/dedicated-server/operating-systems/installimage/
+        - text: .
+      - paragraph
+      - link "Optional Features, Features and Service" [ref=e116] [cursor=pointer]:
+        - /url: /sb/#sb-info
+    - generic [ref=e120]:
+      - text:  € €       
+      - generic [ref=e121]:
+        - generic [ref=e122]:
+          - text:  
+          - generic [ref=e124]:
+            - generic [ref=e125]: 85 results
+            - generic [ref=e127]:
+              - switch [ref=e132]
+              - paragraph [ref=e135]: Enable IPv6 only
+        - list [ref=e136]:
+          - listitem [ref=e137]:
+            - generic [ref=e139]:
+              - generic [ref=e142]:
+                - strong [ref=e143]: 75:53:12left
+                - generic [ref=e144]:
+                  - generic [ref=e145]: €40.70
+                  - generic [ref=e146]: max. per month
+                - generic [ref=e147]:
+                  - generic [ref=e148]: €0.0652
+                  - generic [ref=e149]: per hour
+              - generic [ref=e151]:
+                - generic [ref=e152]: CPU
+                - generic [ref=e153]: Intel Core i7-6700
+                - generic [ref=e154]: RAM
+                - generic [ref=e155]: 64 GB
+                - generic [ref=e156]: Drives
+                - listitem [ref=e158]: 3 x 512 GB SSD
+                - generic [ref=e159]: Location
+                - generic [ref=e160]: "#FSN1-DC8"
+                - generic [ref=e161]: Information
+                - list [ref=e163]:
+                  - listitem [ref=e164]: IPv4
+                  - listitem [ref=e165]: iNIC
+              - generic [ref=e166]:
+                - generic [ref=e167] [cursor=pointer]:
+                  - generic [ref=e168]: 
+                  - text: Order
+                - generic [ref=e169]:
+                  - button "Details " [ref=e170] [cursor=pointer]
+                  - generic [ref=e171]: excl. VAT
+          - listitem [ref=e172]:
+            - generic [ref=e174]:
+              - generic [ref=e177]:
+                - strong [ref=e178]: 69:53:20left
+                - generic [ref=e179]:
+                  - generic [ref=e180]: €48.70
+                  - generic [ref=e181]: max. per month
+                - generic [ref=e182]:
+                  - generic [ref=e183]: €0.0780
+                  - generic [ref=e184]: per hour
+              - generic [ref=e186]:
+                - generic [ref=e187]: CPU
+                - generic [ref=e188]: Intel Core i7-6700
+                - generic [ref=e189]: RAM
+                - generic [ref=e190]: 64 GB
+                - generic [ref=e191]: Drives
+                - listitem [ref=e193]: 2 x 250 GB SSD
+                - generic [ref=e194]: Location
+                - generic [ref=e195]: "#FSN1-DC6"
+                - generic [ref=e196]: Information
+                - list [ref=e198]:
+                  - listitem [ref=e199]: IPv4
+                  - listitem [ref=e200]: iNIC
+              - generic [ref=e201]:
+                - generic [ref=e202] [cursor=pointer]:
+                  - generic [ref=e203]: 
+                  - text: Order
+                - generic [ref=e204]:
+                  - button "Details " [ref=e205] [cursor=pointer]
+                  - generic [ref=e206]: excl. VAT
+          - listitem [ref=e207]:
+            - generic [ref=e209]:
+              - generic [ref=e212]:
+                - strong [ref=e213]: 47:19:17left
+                - generic [ref=e214]:
+                  - generic [ref=e215]: €49.70
+                  - generic [ref=e216]: max. per month
+                - generic [ref=e217]:
+                  - generic [ref=e218]: €0.0796
+                  - generic [ref=e219]: per hour
+              - generic [ref=e221]:
+                - generic [ref=e222]: CPU
+                - generic [ref=e223]: Intel Core i7-6700
+                - generic [ref=e224]: RAM
+                - generic [ref=e225]: 32 GB
+                - generic [ref=e226]: Drives
+                - listitem [ref=e228]: 2 x 480 GB Datacenter SSD
+                - generic [ref=e229]: Location
+                - generic [ref=e230]: "#FSN1-DC8"
+                - generic [ref=e231]: Information
+                - list [ref=e233]:
+                  - listitem [ref=e234]: IPv4
+                  - listitem [ref=e235]: iNIC
+              - generic [ref=e236]:
+                - generic [ref=e237] [cursor=pointer]:
+                  - generic [ref=e238]: 
+                  - text: Order
+                - generic [ref=e239]:
+                  - button "Details " [ref=e240] [cursor=pointer]
+                  - generic [ref=e241]: excl. VAT
+          - listitem [ref=e242]:
+            - generic [ref=e244]:
+              - generic [ref=e247]:
+                - strong [ref=e248]: 67:16:36left
+                - generic [ref=e249]:
+                  - generic [ref=e250]: €49.70
+                  - generic [ref=e251]: max. per month
+                - generic [ref=e252]:
+                  - generic [ref=e253]: €0.0796
+                  - generic [ref=e254]: per hour
+              - generic [ref=e256]:
+                - generic [ref=e257]: CPU
+                - generic [ref=e258]: Intel Core i7-6700
+                - generic [ref=e259]: RAM
+                - generic [ref=e260]: 64 GB
+                - generic [ref=e261]: Drives
+                - listitem [ref=e263]: 2 x 480 GB Datacenter SSD
+                - generic [ref=e264]: Location
+                - generic [ref=e265]: "#FSN1-DC8"
+                - generic [ref=e266]: Information
+                - list [ref=e268]:
+                  - listitem [ref=e269]: IPv4
+                  - listitem [ref=e270]: iNIC
+              - generic [ref=e271]:
+                - generic [ref=e272] [cursor=pointer]:
+                  - generic [ref=e273]: 
+                  - text: Order
+                - generic [ref=e274]:
+                  - button "Details " [ref=e275] [cursor=pointer]
+                  - generic [ref=e276]: excl. VAT
+          - listitem [ref=e277]:
+            - generic [ref=e279]:
+              - generic [ref=e282]:
+                - strong [ref=e283]: 11:05:09left
+                - generic [ref=e284]:
+                  - generic [ref=e285]: €50.70
+                  - generic [ref=e286]: max. per month
+                - generic [ref=e287]:
+                  - generic [ref=e288]: €0.0812
+                  - generic [ref=e289]: per hour
+              - generic [ref=e291]:
+                - generic [ref=e292]: CPU
+                - generic [ref=e293]: Intel Core i7-6700
+                - generic [ref=e294]: RAM
+                - generic [ref=e295]: 64 GB
+                - generic [ref=e296]: Drives
+                - listitem [ref=e298]: 2 x 256 GB SSD
+                - generic [ref=e299]: Location
+                - generic [ref=e300]: "#FSN1-DC13"
+                - generic [ref=e301]: Information
+                - list [ref=e303]:
+                  - listitem [ref=e304]: IPv4
+                  - listitem [ref=e305]: iNIC
+              - generic [ref=e306]:
+                - generic [ref=e307] [cursor=pointer]:
+                  - generic [ref=e308]: 
+                  - text: Order
+                - generic [ref=e309]:
+                  - button "Details " [ref=e310] [cursor=pointer]
+                  - generic [ref=e311]: excl. VAT
+          - listitem [ref=e312]:
+            - generic [ref=e314]:
+              - generic [ref=e317]:
+                - strong [ref=e318]: 16:15:56left
+                - generic [ref=e319]:
+                  - generic [ref=e320]: €50.70
+                  - generic [ref=e321]: max. per month
+                - generic [ref=e322]:
+                  - generic [ref=e323]: €0.0812
+                  - generic [ref=e324]: per hour
+              - generic [ref=e326]:
+                - generic [ref=e327]: CPU
+                - generic [ref=e328]: Intel Core i7-7700
+                - generic [ref=e329]: RAM
+                - generic [ref=e330]: 64 GB
+                - generic [ref=e331]: Drives
+                - listitem [ref=e333]: 2 x 512 GB SSD
+                - generic [ref=e334]: Location
+                - generic [ref=e335]: "#FSN1-DC1"
+                - generic [ref=e336]: Information
+                - list [ref=e338]:
+                  - listitem [ref=e339]: IPv4
+                  - listitem [ref=e340]: iNIC
+              - generic [ref=e341]:
+                - generic [ref=e342] [cursor=pointer]:
+                  - generic [ref=e343]: 
+                  - text: Order
+                - generic [ref=e344]:
+                  - button "Details " [ref=e345] [cursor=pointer]
+                  - generic [ref=e346]: excl. VAT
+          - listitem [ref=e347]:
+            - generic [ref=e349]:
+              - generic [ref=e352]:
+                - strong [ref=e353]: 25:58:42left
+                - generic [ref=e354]:
+                  - generic [ref=e355]: €50.70
+                  - generic [ref=e356]: max. per month
+                - generic [ref=e357]:
+                  - generic [ref=e358]: €0.0812
+                  - generic [ref=e359]: per hour
+              - generic [ref=e361]:
+                - generic [ref=e362]: CPU
+                - generic [ref=e363]: Intel Core i7-6700
+                - generic [ref=e364]: RAM
+                - generic [ref=e365]: 64 GB
+                - generic [ref=e366]: Drives
+                - listitem [ref=e368]: 2 x 512 GB SSD
+                - generic [ref=e369]: Location
+                - generic [ref=e370]: "#FSN1-DC8"
+                - generic [ref=e371]: Information
+                - list [ref=e373]:
+                  - listitem [ref=e374]: IPv4
+                  - listitem [ref=e375]: iNIC
+              - generic [ref=e376]:
+                - generic [ref=e377] [cursor=pointer]:
+                  - generic [ref=e378]: 
+                  - text: Order
+                - generic [ref=e379]:
+                  - button "Details " [ref=e380] [cursor=pointer]
+                  - generic [ref=e381]: excl. VAT
+          - listitem [ref=e382]:
+            - generic [ref=e384]:
+              - generic [ref=e387]:
+                - strong [ref=e388]: 26:52:44left
+                - generic [ref=e389]:
+                  - generic [ref=e390]: €50.70
+                  - generic [ref=e391]: max. per month
+                - generic [ref=e392]:
+                  - generic [ref=e393]: €0.0812
+                  - generic [ref=e394]: per hour
+              - generic [ref=e396]:
+                - generic [ref=e397]: CPU
+                - generic [ref=e398]: Intel Core i7-6700
+                - generic [ref=e399]: RAM
+                - generic [ref=e400]: 64 GB
+                - generic [ref=e401]: Drives
+                - listitem [ref=e403]: 2 x 512 GB SSD
+                - generic [ref=e404]: Location
+                - generic [ref=e405]: "#FSN1-DC8"
+                - generic [ref=e406]: Information
+                - list [ref=e408]:
+                  - listitem [ref=e409]: IPv4
+                  - listitem [ref=e410]: iNIC
+              - generic [ref=e411]:
+                - generic [ref=e412] [cursor=pointer]:
+                  - generic [ref=e413]: 
+                  - text: Order
+                - generic [ref=e414]:
+                  - button "Details " [ref=e415] [cursor=pointer]
+                  - generic [ref=e416]: excl. VAT
+          - listitem [ref=e417]:
+            - generic [ref=e419]:
+              - generic [ref=e422]:
+                - strong [ref=e423]: 32:05:45left
+                - generic [ref=e424]:
+                  - generic [ref=e425]: €50.70
+                  - generic [ref=e426]: max. per month
+                - generic [ref=e427]:
+                  - generic [ref=e428]: €0.0812
+                  - generic [ref=e429]: per hour
+              - generic [ref=e431]:
+                - generic [ref=e432]: CPU
+                - generic [ref=e433]: Intel Core i7-7700
+                - generic [ref=e434]: RAM
+                - generic [ref=e435]: 64 GB
+                - generic [ref=e436]: Drives
+                - listitem [ref=e438]: 2 x 250 GB SSD
+                - generic [ref=e439]: Location
+                - generic [ref=e440]: "#FSN1-DC1"
+                - generic [ref=e441]: Information
+                - list [ref=e443]:
+                  - listitem [ref=e444]: IPv4
+                  - listitem [ref=e445]: iNIC
+              - generic [ref=e446]:
+                - generic [ref=e447] [cursor=pointer]:
+                  - generic [ref=e448]: 
+                  - text: Order
+                - generic [ref=e449]:
+                  - button "Details " [ref=e450] [cursor=pointer]
+                  - generic [ref=e451]: excl. VAT
+          - listitem [ref=e452]:
+            - generic [ref=e454]:
+              - generic [ref=e457]:
+                - strong [ref=e458]: 32:20:59left
+                - generic [ref=e459]:
+                  - generic [ref=e460]: €50.70
+                  - generic [ref=e461]: max. per month
+                - generic [ref=e462]:
+                  - generic [ref=e463]: €0.0812
+                  - generic [ref=e464]: per hour
+              - generic [ref=e466]:
+                - generic [ref=e467]: CPU
+                - generic [ref=e468]: Intel Core i7-7700
+                - generic [ref=e469]: RAM
+                - generic [ref=e470]: 64 GB
+                - generic [ref=e471]: Drives
+                - listitem [ref=e473]: 2 x 256 GB SSD
+                - generic [ref=e474]: Location
+                - generic [ref=e475]: "#FSN1-DC4"
+                - generic [ref=e476]: Information
+                - list [ref=e478]:
+                  - listitem [ref=e479]: IPv4
+                  - listitem [ref=e480]: iNIC
+              - generic [ref=e481]:
+                - generic [ref=e482] [cursor=pointer]:
+                  - generic [ref=e483]: 
+                  - text: Order
+                - generic [ref=e484]:
+                  - button "Details " [ref=e485] [cursor=pointer]
+                  - generic [ref=e486]: excl. VAT
+        - generic [ref=e488]:
+          - generic [ref=e490]:
+            - log [ref=e492]
+            - generic [ref=e493]:
+              - generic [ref=e494]:
+                - generic [ref=e495]: "10"
+                - combobox [ref=e496]
+              - img [ref=e499]
+          - list [ref=e502]:
+            - listitem [ref=e503]:
+              - generic [ref=e504]: "1"
+            - listitem [ref=e505]:
+              - generic [ref=e506] [cursor=pointer]: "2"
+            - listitem [ref=e507]:
+              - generic [ref=e508] [cursor=pointer]: "3"
+            - listitem [ref=e509]:
+              - generic [ref=e510] [cursor=pointer]: "4"
+            - listitem [ref=e511]:
+              - generic [ref=e512]: ...
+            - listitem [ref=e513]:
+              - generic [ref=e514] [cursor=pointer]: "9"
+            - listitem [ref=e515]:
+              - generic [ref=e517] [cursor=pointer]: 
+    - generic [ref=e518]:
+      - generic [ref=e524]:
+        - generic [ref=e525]: 
+        - heading " Features and Services" [level=3] [ref=e526]:
+          - generic [ref=e527]: 
+          - text: Features and Services
+      - generic [ref=e533]:
+        - generic [ref=e534]: 
+        - heading " Optional Features" [level=3] [ref=e535]:
+          - generic [ref=e536]: 
+          - text: Optional Features
+    - generic [ref=e537]:
+      - img [ref=e538]
+      - img [ref=e540]
+      - img [ref=e542]
+  - contentinfo [ref=e544]:
+    - generic [ref=e546]:
+      - generic [ref=e547]:
+        - generic [ref=e548]:
+          - link "Logo Hetzner Online" [ref=e549] [cursor=pointer]:
+            - /url: https://www.hetzner.com/
+            - img "Logo Hetzner Online" [ref=e550]
+          - generic [ref=e551]:
+            - generic [ref=e552]: Subscribe to our Newsletter
+            - generic [ref=e554]:
+              - textbox "mail address" [ref=e555]
+              - button "" [ref=e557] [cursor=pointer]:
+                - generic [ref=e558]: 
+        - generic [ref=e559]:
+          - generic [ref=e561] [cursor=pointer]:
+            - text: Hetzner
+            - generic [ref=e562]: 
+          - generic [ref=e564] [cursor=pointer]:
+            - text: Support
+            - generic [ref=e565]: 
+          - generic [ref=e567] [cursor=pointer]:
+            - text: Legal
+            - generic [ref=e568]: 
+      - generic [ref=e569]:
+        - generic [ref=e570]:
+          - generic [ref=e572]:
+            - button "EUR VAT 0%" [ref=e573] [cursor=pointer]:
+              - generic [ref=e577]: EUR
+              - generic [ref=e579]:
+                - text: VAT
+                - generic [ref=e580]: 0%
+            - text:       
+          - generic [ref=e581]:
+            - text: © 2026 Hetzner Online GmbH. All Rights Reserved. Prices
+            - generic [ref=e583]: incl. 19 % VAT
+        - generic [ref=e584]:
+          - link "Visit us on facebook" [ref=e585] [cursor=pointer]:
+            - /url: https://www.facebook.com/hetzner.de/
+            - img "facebook logo" [ref=e586]
+          - link "Visit us on instagram" [ref=e587] [cursor=pointer]:
+            - /url: https://www.instagram.com/hetzner.online/
+            - img "instagram logo" [ref=e588]
+          - link "Visit us on youtube" [ref=e589] [cursor=pointer]:
+            - /url: https://www.youtube.com/user/HetznerOnline/
+            - img "youtube logo" [ref=e590]
+          - link "Visit us on Mastodon" [ref=e591] [cursor=pointer]:
+            - /url: https://mastodon.hetzner.social/@Hetzner
+            - img "mastodon logo" [ref=e592]
+          - link "Visit us on x.com (formerly twitter)" [ref=e593] [cursor=pointer]:
+            - /url: https://twitter.com/Hetzner_Online/
+            - img "twitter logo" [ref=e594]
+          - link "Visit us on linkedin" [ref=e595] [cursor=pointer]:
+            - /url: https://www.linkedin.com/company/hetzner-online/
+            - img "linkedin logo" [ref=e596]
+  - generic [ref=e598] [cursor=pointer]: 
