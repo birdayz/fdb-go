@@ -282,3 +282,26 @@ start (the tree moves).
   the ReplaceValues spine; max-match-map fused-path verification (no-spurious-sort +
   nested-index-scan pins) is a W2 EXIT CRITERION; keep NextMergeAlias (7.5 ruling) — its
   stability pins survive the rewrite.
+
+## Commit-2 shape note (nested rows, NOT flat concat — recorded before the executor work)
+
+Java's merge row is a RECORD OF RECORDS: `_i` = leg i's WHOLE row
+(Column.unnamedOf(QOV(leg))), and a buried reference fuses to the TWO-step
+path [(_i, i), (col, j)] into the nested record — this is WHY S3 needs
+multi-accessor FieldPaths at all. The S2 wedge's FLAT bare concatenation
+(leg columns spread inline, per-leg ordinal runs, ordinalJoinSpans windows)
+is the 2-way TRANSLATION-seed shape and stays; the PARTITION-RULE merge shape
+is nested and coexists with it (Java likewise: translation RVs are flat/named,
+merge RVs are nested/unnamed).
+
+Executor consequence: the physical plans stay BINARY (PartitionSelectRule
+recursively reduces N to 2 before implementation; a K-leg merge select is a
+tree of binary NLJs whose inner levels were themselves merge-rewritten via
+their own TranslationMaps). So commit 2 is NOT "generalize twoLegBinder to N
+bindings" — it is a NESTED merge-row birth: evaluate the merge RV per output
+pair over the existing two-binding binder (bare QOV field → the bound leg row,
+possibly itself a nested Positional; translated ofOrdinal field → positional
+read through the inner merged row — descendResolvedPath already descends
+nested OrdinalRows), emit Positional = the nested row. New birth site extends
+the DisablePositionalEmission oracle registry (standing obligation). The
+existing evaluateOrdinalJoinRow per-field evaluation is the right spine.
