@@ -106,6 +106,12 @@ func writeSemanticHash(h io.Writer, v Value) {
 		}
 	case *FieldValue:
 		_, _ = io.WriteString(h, "field:"+t.Field)
+		// A plan-time-resolved ordinal accessor is part of the FieldPath
+		// identity (mirrors EqualsWithoutChildren): reads of duplicate-named
+		// output columns differ only by ordinal.
+		if t.HasResolvedOrdinal {
+			_, _ = fmt.Fprintf(h, "#%d", t.ResolvedOrdinal)
+		}
 	// Value-bearing leaves: the literal MUST be in the hash (their
 	// EqualsWithoutChildren distinguishes different literals).
 	case *ConstantValue:

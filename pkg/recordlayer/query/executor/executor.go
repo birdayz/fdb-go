@@ -1388,18 +1388,20 @@ func executeProjection(
 	// RFC-173 P2/Slice 1: the projection's output schema is row-invariant — compute
 	// it ONCE. projNames keys the name-keyed Datum (source column name for a bare
 	// field ref, from projectionColumnName); posNames names the EMITTED positional
-	// row's slots by OUTPUT name (alias-preferring) so a downstream ordinal consumer
-	// resolves this derived table's OUTPUT columns, not the source column a field
-	// ref reads from — the buried-reference fix's ordinal counterpart.
+	// row's slots by OUTPUT name — alias-preferring, via the shared
+	// values.OutputColumnName authority (the recursive-CTE leg wrap re-reads by
+	// the same rule) — so a downstream ordinal consumer resolves this derived
+	// table's OUTPUT columns, not the source column a field ref reads from — the
+	// buried-reference fix's ordinal counterpart.
 	projNames := make([]string, len(projections))
 	posNames := make([]string, len(projections))
 	for i, proj := range projections {
 		projNames[i] = projectionColumnName(proj)
-		if i < len(aliases) && aliases[i] != "" {
-			posNames[i] = strings.ToUpper(aliases[i])
-		} else {
-			posNames[i] = projNames[i]
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
 		}
+		posNames[i] = values.OutputColumnName(proj, alias)
 	}
 	projType := positionalTypeFromNames(posNames)
 	var evalErr error

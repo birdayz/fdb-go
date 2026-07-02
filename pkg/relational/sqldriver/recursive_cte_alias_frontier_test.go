@@ -232,3 +232,67 @@ func TestFDB_RecursiveCTEAliasedJoinBodyColumn_RFC173(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6}))
 }
+
+// TestFDB_RecursiveCTEDuplicateAliases_RFC173 pins DUPLICATE output aliases in
+// a recursive leg (codex P2 on PR #446): `SELECT a + 1 AS x, b + 1 AS x` emits
+// two slots BOTH named X, and any name-based re-read collapses them —
+// positional GetByName resolves the FIRST matching slot (b silently copied a:
+// rows (2,2),(3,3) instead of (2,11),(3,12)), the name-keyed Datum is
+// last-wins (a copied b and the recursion stalled). The leg-normalization wrap
+// therefore reads a projection-top leg by ORDINAL
+// (values.NewFieldValueWithResolvedOrdinal — Java's FieldValue.ofOrdinalNumber
+// model; RFC-173 §4 Slice 1 makes ordinal authoritative on the frontier), so
+// read i hits emitted slot i by construction and duplicate names cease to
+// matter. Duplicate SELECT output names are legal SQL and preserved
+// positionally everywhere else in the engine (positionalTypeFromNames keeps
+// them as distinct fields).
+func TestFDB_RecursiveCTEDuplicateAliases_RFC173(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	dbPath := "/rcte_dup_alias"
+	setup := openTestDB(t, dbPath)
+	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE rcte_dup_alias_tmpl "+
+			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_dup_alias_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+
+	type row struct{ a, b int64 }
+	want := []row{{1, 10}, {2, 11}, {3, 12}}
+
+	// Column-list form (codex's reported shape).
+	rows, err := db.QueryContext(ctx,
+		"WITH RECURSIVE c(a, b) AS (SELECT id, v FROM t UNION ALL SELECT a + 1 AS x, b + 1 AS x FROM c WHERE a < 3) SELECT a, b FROM c ORDER BY a")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.a, &r.b)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal(want),
+		"duplicate aliases must stay positional: b advances independently of a (name-collapsed reads give (2,2),(3,3))")
+
+	// Seed-alias form (no column list) — the corpus shape
+	// recursive_cte_duplicate_alias_branch; sum(b)=33 only if b advances.
+	var sum int64
+	g.Expect(db.QueryRowContext(ctx,
+		"WITH RECURSIVE c AS (SELECT id AS a, v AS b FROM t UNION ALL SELECT a + 1 AS x, b + 1 AS x FROM c WHERE a < 3) SELECT sum(b) FROM c",
+	).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum).To(gomega.Equal(int64(33)), "sum(b): 10+11+12; first-match collapse gives 15, last-wins stall gives 21")
+}

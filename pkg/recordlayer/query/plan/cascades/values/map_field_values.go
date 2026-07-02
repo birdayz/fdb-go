@@ -259,7 +259,13 @@ func EqualsWithoutChildren(a, b Value) bool {
 	switch av := a.(type) {
 	case *FieldValue:
 		bv, ok := b.(*FieldValue)
-		return ok && av.Field == bv.Field
+		// A plan-time-resolved ordinal accessor is part of the FieldPath
+		// identity (Java: ofOrdinalNumber ordinals are distinct FieldPaths) —
+		// two reads of duplicate-named output columns differ ONLY by ordinal
+		// and must not compare equal.
+		return ok && av.Field == bv.Field &&
+			av.HasResolvedOrdinal == bv.HasResolvedOrdinal &&
+			av.ResolvedOrdinal == bv.ResolvedOrdinal
 	case *ConstantValue:
 		bv, ok := b.(*ConstantValue)
 		if !ok {

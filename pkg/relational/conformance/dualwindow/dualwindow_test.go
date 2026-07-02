@@ -85,13 +85,22 @@ func TestMain(m *testing.M) {
 
 // carveOuts enumerates corpus entries where the two models are SUPPOSED to
 // differ (RFC-173 §5 item 1), keyed by entry name with the §-level reason.
-// Empty on the Slice 1 frontier: the buried-reference precursor resolves
+// Near-empty on the Slice 1 frontier: the buried-reference precursor resolves
 // derived/CTE refs to output names under BOTH models (the Datum carries both
 // keys), the `SELECT *` duplicate-name collision fix is not live until Slice 4,
 // and CTE column-rename returns identical rows under both models today. Every
 // future carve-out MUST cite the RFC section that declares the difference
 // intentional.
-var carveOuts = map[string]string{}
+var carveOuts = map[string]string{
+	// RFC-173 §5 (models-must-differ on duplicate-named output; see also the
+	// Slice-4 last-leg-wins collision note on executor.positionalTypeFromNames):
+	// a recursive leg emitting two slots BOTH aliased X is representable only
+	// positionally — the name-keyed Datum is last-wins and cannot carry two X
+	// columns, so the NAME oracle collapses them (b copies a, recursion stalls)
+	// while the ORDINAL model computes both columns correctly. The name model
+	// is retired in Slice 4; until then this shape is a declared difference.
+	"recursive_cte_duplicate_alias_branch": "RFC-173 §5: duplicate-named output columns exist only in the positional model; the last-wins name map cannot represent them",
+}
 
 // outcome is one mode's result for one corpus entry: the rows, or the error.
 type outcome struct {
