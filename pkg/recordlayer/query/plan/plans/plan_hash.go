@@ -11,7 +11,11 @@ import (
 // structural position (depth-first traversal order). Two plans
 // with the same tree shape and same node-info hash to the same key.
 //
-// Used as the cache key for plan caching (RFC-024).
+// Consumed by plan logging (PlanGenerationInfo.PlanHash — the plan's identity
+// in observability output). In-memory only: the plan cache is keyed by
+// normalized SQL text, and no continuation or wire artifact embeds this hash,
+// so its value may change across releases (RFC-176 P2 did) without
+// compatibility impact.
 func PlanHash(p RecordQueryPlan) uint64 {
 	if p == nil {
 		return 0

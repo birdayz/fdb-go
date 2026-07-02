@@ -191,6 +191,44 @@ WS-3 visitor, WS-4 map-lint/tie, WS-1 all remain → the list above.
 > jobs don't contend with per-PR CI. Also: the last two Nightly Fuzz runs FAILED (06-29, 06-30) — a
 > separate real signal to investigate (a fuzz target has been red for two nights; no-unrelated-flakes rule).
 
+> ## [ ] INFRA — stress-1M thresholds violated on MASTER (baseline rot; INVESTIGATE)
+> Discovered by RFC-176 P2's stress gate (PR #453): on an idle box, **current master violates the
+> "Stress test 1M baseline" Threshold column** — in_list 14.97ms (<10ms), needle_pk 5.4ms (<5ms),
+> needle_filter 6.4ms (<5ms), pk lookups 5.0–7.2ms (<5ms) — vs May-baseline values of 10/2.0/2.4/1.5-1.7ms.
+> The P2 branch was noise-identical to master on every violated row with all 23 EXPLAINs
+> byte-identical (P2 exonerated; the gate fails on its own base). Repro:
+> `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed
+> --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v" --nocache_test_results`
+> — box `workstation`, Linux 7.0.10-arch1-1, idle, back-to-back master/branch runs; three-way table
+> in PR #453 (comment "Quiet-box stress-1M: branch AND master control").
+> **Decision path (in order):** (1) re-qualify the environment against the May baseline run —
+> machine, Docker version, FDB image, kernel; if any changed, re-measure and UPDATE the baseline
+> table + thresholds; (2) if the environment is unchanged, bisect May→HEAD on the violated rows
+> (point-lookup latency, in_list). **Terminal state: the baseline table is re-qualified/updated OR
+> the regressing commit is named.** A safety-net table nobody can pass measures nothing.
+
+> ## RFC-176 P2 registrations (review of PR #453) — two follow-up cycles
+>
+> - **[ ] Replace the criterion-#17 cost tie-breaker hash with a canonical semantic total order**
+>   (`planning_cost_model.go:350-358`, `costExprHash`/`concretePlanHash`/`deepHashCode`). Cost-tied
+>   semantically-DISTINCT plans are decided by raw hash ordering, so ANY hash evolution re-rolls the
+>   winner — PR #453 is the existence proof: RFC-176 P2's alias-invariant plan hashes flipped the
+>   vector fold/decline winner and a pinned sentinel went red (fixed there by making the tie a COST
+>   decision — vector scan CPU — but the tie-break CLASS remains for every other equal-cost pair).
+>   Wanted: a canonical order over plan structure (operator kind, arity, discriminators, recursively),
+>   not over hash values, so winners are stable under hash changes and alias renaming. Query-engine
+>   cycle (Graefe).
+> - **[ ] Predicate/selector semantic hash — retire rendering-keyed `HashCodeWithoutChildren`, the
+>   RFC-176 §1 defect class one type-family over.** Five sites fold non-Value renderings into plan
+>   identity hashes while their equality is structural: `predicates_filter.go` + `filter.go` +
+>   `nested_loop_join.go` (per-predicate `pr.Explain()` vs `PredicateEquals`), `load_by_keys.go`
+>   (`keysSource.String()` vs `keysSource.Equals`), `selector.go` (`planSelector.String()` vs
+>   `planSelector.Equals`). equal⟹same-hash holds only while every rendering stays exactly injective
+>   over the structural discriminators — the standing whack-a-mole RFC-176 killed for Values. Wanted:
+>   `predicates.SemanticHashCode` (+ keysSource/planSelector hash methods) mirroring
+>   `values.SemanticHashCode`, tightened in lockstep with `PredicateEquals`/`Equals`. Own cycle;
+>   needs the same gates as RFC-176 P2 (property test, stress, corpus, task-count baseline).
+
 > ## Cascades bug hunt (branch `hunt/cascades-bug-hunt`) — 9 confirmed bugs
 >
 > Multi-agent + differential hunt across the Cascades engine. 6 FIXED in this PR (red→green tests,

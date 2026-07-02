@@ -909,27 +909,29 @@ func ExplainValue(v Value) string {
 		// unambiguous BY CONSTRUCTION: a quoted identifier may legally contain
 		// '#' (the lexer's DOUBLE_QUOTE_ID accepts any non-quote character), so
 		// without the escape a plain name-read of a field literally named "X#0"
-		// rendered identically to an ordinal read of X at slot 0 and the
-		// ExplainValue-keyed plan identity could memo-unify the two (review
-		// round-3 on PR #446). With doubling, a rendering ends in an UNPAIRED
-		// '#' + digits iff it is an ordinal read — identity is injective over
-		// (field text, ordinal). Display/identity only: ProjectionColumnName's
-		// FieldValue arm returns Field verbatim, so plain-field Datum keys and
-		// positional slot names never change (a COMPUTED composite over a
-		// #-named field shifts its derived key spelling consistently on writer
-		// and reader, both sides of the shared contract).
+		// renders identically to an ordinal read of X at slot 0. With doubling,
+		// a rendering ends in an UNPAIRED '#' + digits iff it is an ordinal
+		// read — the rendering is injective over (field text, ordinal).
+		//
+		// EXPLAIN-FORMAT pin, not identity (RFC-176 P3): plan identity was
+		// once keyed on these renderings (the escape's origin, PR #446 round
+		// 3) but is semantic since RFC-176 P2 — the escape stays because
+		// debugging output that collapses two DIFFERENT reads is still a bug
+		// (writeSemanticHash's FieldValue arm keeps the same injective
+		// discriminator). Display only: ProjectionColumnName's FieldValue arm
+		// returns Field verbatim, so plain-field Datum keys and positional
+		// slot names never change (a COMPUTED composite over a #-named field
+		// shifts its derived key spelling consistently on writer and reader,
+		// both sides of the shared contract).
 		name := strings.ReplaceAll(cv.Field, "#", "##")
 		if cv.Child != nil {
 			name = ExplainValue(cv.Child) + "." + name
 		}
 		// A baked ordinal accessor renders its ordinal (Java's FieldPath
-		// `#ordinal` syntax) alongside the name. Load-bearing, not just
-		// display: physical-plan identity (RecordQueryProjectionPlan
-		// EqualsWithoutChildren/HashCodeWithoutChildren) is keyed on these
-		// renderings, and two reads of DUPLICATE-named slots differ only by
-		// ordinal — rendering both as the bare name memo-unified projection
-		// alternatives that read different slots (review round-2 on PR #446).
-		// FrontierPinned deliberately does NOT render: it is an
+		// `#ordinal` syntax) alongside the name: two reads of DUPLICATE-named
+		// slots differ only by ordinal, and explain output rendering both as
+		// the bare name would make different plans read identically (PR #446
+		// round 2). FrontierPinned deliberately does NOT render: it is an
 		// evaluation-contract marker, not part of the value's identity.
 		if cv.Resolved != nil {
 			return name + "#" + strconv.Itoa(cv.Resolved.Ordinal)

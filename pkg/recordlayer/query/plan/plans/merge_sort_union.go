@@ -55,13 +55,28 @@ func (p *RecordQueryMergeSortUnionPlan) GetResultType() values.Type {
 
 func (p *RecordQueryMergeSortUnionPlan) GetChildren() []RecordQueryPlan { return p.inners }
 
+// EqualsWithoutChildren compares reverse + removeDuplicates flags and the
+// comparison keys (semantic Value identity — see semanticValueEquals). The
+// keys join equality per RFC-176 §1: before P2, equality checked only the key
+// COUNT while the hash folded the full keys — different-key plans compared
+// equal yet hashed apart, a live plan-level equal⟹same-hash violation.
 func (p *RecordQueryMergeSortUnionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMergeSortUnionPlan)
 	if !ok {
 		return false
 	}
-	return p.reverse == o.reverse && p.removeDuplicates == o.removeDuplicates &&
-		len(p.comparisonKeys) == len(o.comparisonKeys)
+	if p.reverse != o.reverse || p.removeDuplicates != o.removeDuplicates {
+		return false
+	}
+	if len(p.comparisonKeys) != len(o.comparisonKeys) {
+		return false
+	}
+	for i, k := range p.comparisonKeys {
+		if !semanticValueEquals(k, o.comparisonKeys[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *RecordQueryMergeSortUnionPlan) HashCodeWithoutChildren() uint64 {
@@ -74,8 +89,7 @@ func (p *RecordQueryMergeSortUnionPlan) HashCodeWithoutChildren() uint64 {
 		h.Write([]byte{2})
 	}
 	for _, k := range p.comparisonKeys {
-		h.Write([]byte(values.ExplainValue(k)))
-		h.Write([]byte{0})
+		writeValueHash(h, k)
 	}
 	return h.Sum64()
 }

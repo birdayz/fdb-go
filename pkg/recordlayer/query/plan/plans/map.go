@@ -49,21 +49,23 @@ func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-// EqualsWithoutChildren compares the result value structurally.
+// EqualsWithoutChildren compares the result value by semantic Value identity
+// (RFC-176 P2 — see semanticValueEquals), Java's
+// RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults.
 func (p *RecordQueryMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMapPlan)
 	if !ok {
 		return false
 	}
-	return values.ValuesStructurallyEqual(p.resultValue, o.resultValue)
+	return semanticValueEquals(p.resultValue, o.resultValue)
 }
 
-// HashCodeWithoutChildren mixes the class discriminator + result
-// value's explain text.
+// HashCodeWithoutChildren mixes the class discriminator + result value's
+// semantic hash (see writeValueHash).
 func (p *RecordQueryMapPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("mapplan|"))
-	h.Write([]byte(values.ExplainValue(p.resultValue)))
+	writeValueHash(h, p.resultValue)
 	return h.Sum64()
 }
 

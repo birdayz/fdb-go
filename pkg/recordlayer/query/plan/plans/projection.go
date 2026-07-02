@@ -59,26 +59,27 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-// EqualsWithoutChildren compares the projection lists by their ExplainValue
-// renderings. For this to be a sound identity, the rendering must carry every
-// semantic discriminator a projected Value has — in particular a plan-time-
-// resolved ordinal accessor (values.NewFieldValueWithResolvedOrdinal, the
-// recursive-CTE duplicate-alias wrap) renders as "X#0"/"X#1" (Java's FieldPath
-// `#ordinal` syntax), because two reads of duplicate-named slots differ ONLY by
-// ordinal: rendering both as "X" memo-unified projection alternatives that
-// read DIFFERENT slots, so extraction could pick the wrong one (review round-2
-// on PR #446).
+// EqualsWithoutChildren compares the projection lists by semantic Value
+// identity (RFC-176 P2 — see semanticValueEquals): Java's model
+// (RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults), where
+// every semantic discriminator a projected Value carries — in particular a
+// plan-time-resolved ordinal accessor (values.NewFieldValueWithResolvedOrdinal,
+// the recursive-CTE duplicate-alias wrap; Java: distinct ofOrdinalNumber
+// ordinals are distinct FieldPaths) — joins identity structurally. Two reads
+// of duplicate-named slots differ ONLY by ordinal, so unifying them would let
+// extraction pick a plan reading the WRONG slot.
 //
-// NOTE(Java alignment): Java keys plan identity SEMANTICALLY
-// (RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults;
-// planHash → FieldPath whose ResolvedAccessor identity is the ordinal), never
-// via explain strings. Switching Go to values.SemanticEqualsUnderAliasMap /
-// SemanticHashCode here is blocked by pre-existing TYPE-ONLY equality arms
-// (EqualsWithoutChildren's DistanceRowNumberValue / RowNumberValue / RankValue
-// cases ignore Metric/EfSearch/rank config), which would unify physical
-// alternatives that genuinely differ (TestVectorPlan_TighterOuterLimitDoesNotFold
-// regressed: SinkLimit's fold/decline variants merged, wrong winner). Tighten
-// those arms first, then this can move to the semantic helpers.
+// NOTE(explain format, RFC-176 P3): identity was previously keyed on the
+// ExplainValue renderings, which therefore had to be injective over every
+// semantic discriminator — the origin of the '#'-escape (raw '#' doubled,
+// ordinal reads rendered "X#0"; PR #446 rounds 2-3). After P2 no identity
+// code path reads a rendering; rendering is for humans, identity is
+// structural. The escape is RETAINED as an explain-format guarantee —
+// debugging output that collapses two different reads is still a bug — and
+// its tests (TestFieldValue_ExplainOrdinalEscape_RFC173, the plans-level
+// TestProjectionPlan_Identity_OrdinalVsLiteralHashField) now pin exactly
+// that, plus the matching injective discriminator in writeSemanticHash's
+// FieldValue arm.
 func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryProjectionPlan)
 	if !ok {
@@ -88,7 +89,7 @@ func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other RecordQueryPlan)
 		return false
 	}
 	for i := range p.projections {
-		if values.ExplainValue(p.projections[i]) != values.ExplainValue(o.projections[i]) {
+		if !semanticValueEquals(p.projections[i], o.projections[i]) {
 			return false
 		}
 	}
@@ -99,8 +100,7 @@ func (p *RecordQueryProjectionPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("projplan|"))
 	for _, v := range p.projections {
-		h.Write([]byte(values.ExplainValue(v)))
-		h.Write([]byte{0})
+		writeValueHash(h, v)
 	}
 	return h.Sum64()
 }
