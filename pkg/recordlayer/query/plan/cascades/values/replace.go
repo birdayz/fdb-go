@@ -352,6 +352,23 @@ func withChildren(v Value, newChildren []Value) Value {
 		if len(newChildren) != 1 {
 			return v
 		}
+		// RFC-173 S3-W2: the rebuild FUSES a baked node over a new BAKED
+		// FieldValue child into one multi-accessor node — Java's architecture,
+		// where fuse is a property of the rebuild itself (FieldValue.withNewChild
+		// = ofFieldsAndFuseIfPossible, FieldValue.java:278-280): a TranslationMap
+		// replacing a QOV leaf with ofOrdinalNumber(QOV(upper), i) composes with
+		// the enclosing reference automatically, no map composition. Gated
+		// both-baked — the DEFINITION of fusibility (a lazy node has no path to
+		// concatenate; in Java the condition is vacuously always true) — so lazy
+		// chains keep their shape through the coexistence window and the gate
+		// self-widens as W2/W3 bake everything. Must produce the IDENTICAL node
+		// to composeFieldOverField (pinned by the rebuild≡compose property test).
+		if vt.Resolved != nil {
+			if inner, isFV := newChildren[0].(*FieldValue); isFV && inner.Resolved != nil && inner.Child != nil {
+				fused := inner.Resolved.WithSuffix(vt.Resolved)
+				return &FieldValue{Field: fused.Last().Field, Typ: vt.Typ, Child: inner.Child, Resolved: fused}
+			}
+		}
 		// Preserve the RFC-173 baked-ordinal marker: dropping Resolved would
 		// silently degrade a BAKED node to lazy — a conflation hazard for
 		// duplicate same-named columns (§5 pin). Covers Replace/RebaseValue and
