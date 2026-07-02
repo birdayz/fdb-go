@@ -133,8 +133,11 @@ func TestRFC173S3_TranslateLeafPredicates_ValueBearingFields(t *testing.T) {
 	if outPVR == pvr || !refersNew(outPVR.GetValue()) {
 		t.Fatalf("PVR anchor value not rebased: %v", outPVR.GetValue())
 	}
-	if cmps := outPVR.GetRanges()[0].GetCompilableComparisons(); !refersNew(cmps[0].Operand) {
-		t.Fatalf("PVR range comparison operand not rebased: %v", cmps[0].Operand)
+	// The rebased operand still carries a correlation (dst), so
+	// re-classification files it DEFERRED — even though the fixture had
+	// (mis-)bucketed it compilable; the translated shape decides the split.
+	if cmps := outPVR.GetRanges()[0].GetDeferredRanges(); len(cmps) != 1 || !refersNew(cmps[0].Operand) {
+		t.Fatalf("PVR range comparison must be rebased AND re-classified deferred (still correlated), got %+v", outPVR.GetRanges()[0])
 	}
 
 	// Pointer stability preserved for both when nothing matches.
@@ -147,6 +150,28 @@ func TestRFC173S3_TranslateLeafPredicates_ValueBearingFields(t *testing.T) {
 	}
 	if got := TranslateLeafPredicates(pvr, missMap); got != QueryPredicate(pvr) {
 		t.Fatal("PVR must be pointer-stable on a miss")
+	}
+
+	// RE-CLASSIFICATION (review catch, Java RangeConstraints
+	// .translateCorrelations:349-366): a DEFERRED comparison whose transform
+	// strips its last correlation must land in the COMPILABLE bucket — the
+	// translated shape decides the split, never the old bucket.
+	constMap := values.NewTranslationMapBuilder().
+		When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
+		return &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}
+	}).Build()
+	deferredPVR := NewPredicateWithValueAndRanges(
+		values.NewFlatFieldValue("ID", values.NotNullLong),
+		[]*RangeConstraints{NewRangeConstraints(
+			nil,
+			[]Comparison{{Type: ComparisonEquals, Operand: values.NewQuantifiedObjectValue(oldAlias)}},
+		)},
+	)
+	outConst := TranslateLeafPredicates(deferredPVR, constMap).(*PredicateWithValueAndRanges)
+	reclassified := outConst.GetRanges()[0]
+	if len(reclassified.GetDeferredRanges()) != 0 || len(reclassified.GetCompilableComparisons()) != 1 {
+		t.Fatalf("de-correlated deferred comparison must be re-classified compilable, got compilable=%d deferred=%d",
+			len(reclassified.GetCompilableComparisons()), len(reclassified.GetDeferredRanges()))
 	}
 }
 

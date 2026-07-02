@@ -166,22 +166,27 @@ func transformComparison(cmp Comparison, transform func(values.Value) values.Val
 
 // transformRangeConstraints rebuilds a RangeConstraints with every
 // comparison's value fields transformed; pointer-stable when nothing changed.
+// Every transformed comparison is RE-CLASSIFIED through the builder — Java's
+// RangeConstraints.translateCorrelations (:349-366) does the same, and its
+// comment says why: translation can CHANGE whether a comparison is compilable
+// (a rebase that strips the last correlation turns a deferred comparison into
+// a compile-time one). Blindly preserving the old compilable/deferred split
+// matched only Java's builder-failure fallback (review catch).
 func transformRangeConstraints(rc *RangeConstraints, transform func(values.Value) values.Value) (*RangeConstraints, bool) {
 	changed := false
-	newCompilable := make([]Comparison, len(rc.GetCompilableComparisons()))
-	for i, c := range rc.GetCompilableComparisons() {
+	b := NewRangeConstraintsBuilder()
+	for _, c := range rc.GetCompilableComparisons() {
 		nc, cChanged := transformComparison(c, transform)
-		newCompilable[i] = nc
 		changed = changed || cChanged
+		b.AddComparisonMaybe(nc)
 	}
-	newDeferred := make([]Comparison, len(rc.GetDeferredRanges()))
-	for i, c := range rc.GetDeferredRanges() {
+	for _, c := range rc.GetDeferredRanges() {
 		nc, cChanged := transformComparison(c, transform)
-		newDeferred[i] = nc
 		changed = changed || cChanged
+		b.AddComparisonMaybe(nc)
 	}
 	if !changed {
 		return rc, false
 	}
-	return NewRangeConstraints(newCompilable, newDeferred), true
+	return b.Build(), true
 }
