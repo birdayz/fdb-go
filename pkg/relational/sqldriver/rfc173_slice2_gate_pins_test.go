@@ -261,6 +261,24 @@ func TestFDB_RFC173_GatePinB_FlatteningEvasion(t *testing.T) {
 				"t2 AS (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) "+
 				"SELECT t1.aid, t1.bv, t2.cid, t2.dw FROM t1, t2 WHERE t1.aid = t2.cid")
 	})
+	t.Run("explicit_join_form_fails_closed", func(t *testing.T) {
+		// RED→GREEN for the ON-predicate-drop fix (embedded/
+		// logical_predicate.go, upgradeJoinOnPredicates' !scopeOK early
+		// return): these spellings previously returned the FULL CROSS
+		// PRODUCT — buildDerivedTableSource declines the join-bodied derived
+		// table, scope building fails, and the early return silently skipped
+		// the ON upgrade, bypassing the function's own fail-closed backstop
+		// (the same class as the fixed subquery-in-ON bug). Now a loud clean
+		// decline: better no rows than wrong rows.
+		assertUnsupported(t, db, ctx,
+			"SELECT t1.aid, t1.bv, t2.cid, t2.dw "+
+				"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 "+
+				"JOIN (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 "+
+				"ON t1.aid = t2.cid")
+		assertUnsupported(t, db, ctx,
+			"SELECT s.aid, c.id FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) s "+
+				"JOIN c ON c.id = s.aid")
+	})
 	t.Run("solo_derived_join_control", func(t *testing.T) {
 		// Control: ONE derived-with-join consumed alone hits the same
 		// pre-existing gap — the evasion failure is the derived-with-join

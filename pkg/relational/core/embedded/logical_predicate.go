@@ -478,6 +478,13 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	scope := semantic.NewScope(nil)
 	addUnnestSource := unnestScopeSourceAdder(scope)
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
+	// scopeDropRisk marks scope failures where the query could still PLAN and
+	// return silently-wrong cross-product rows if we fall through: a
+	// resolvable-but-unscopable source (derived-table decline, duplicate
+	// alias). An UNRESOLVABLE table (resolveTable nil) is NOT a drop risk —
+	// the downstream scan produces its precise UndefinedDatabase/Table error,
+	// which the fail-closed check below must not preempt with a generic one.
+	var scopeDropRisk bool
 	addTableSource := func(tableName, alias string) bool {
 		tbl := resolveTable(tableName)
 		if tbl == nil {
@@ -487,11 +494,15 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		if alias == "" {
 			aliasID = semantic.NewUnquoted(tableName)
 		}
-		return scope.AddSource(semantic.ScopeSource{
+		if scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
 			CorrelationName: aliasID.Name(),
-		}) == nil
+		}) != nil {
+			scopeDropRisk = true // duplicate alias: resolvable, unscopable
+			return false
+		}
+		return true
 	}
 	// A derived-table JOIN source (`... JOIN (SELECT ...) AS x ON ...`) is NOT a
 	// real table — register its virtual column schema (derived from the
@@ -503,15 +514,25 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	addDerivedSource := func(j joinClause) bool {
 		src, ok := buildDerivedTableSource(md, j.alias, j.derivedQuery)
 		if !ok {
+			scopeDropRisk = true // join-bodied derived decline: plans, then cross-products
 			return false
 		}
-		return scope.AddSource(src) == nil
+		if scope.AddSource(src) != nil {
+			scopeDropRisk = true
+			return false
+		}
+		return true
 	}
 	var scopeOK bool
 	if sq.derivedQuery != nil {
 		// Primary FROM source is a derived table (`FROM (SELECT ...) x JOIN ...`).
 		if src, ok := buildDerivedTableSource(md, sq.tableAlias, sq.derivedQuery); ok {
 			scopeOK = scope.AddSource(src) == nil
+			if !scopeOK {
+				scopeDropRisk = true
+			}
+		} else {
+			scopeDropRisk = true
 		}
 	} else {
 		scopeOK = addTableSource(sq.tableName, sq.tableAlias)
@@ -532,6 +553,27 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		scopeOK = addTableSource(j.tableName, j.alias)
 	}
 	if !scopeOK {
+		// FAIL-CLOSED (pre-existing silent-wrong-rows bug, caught by the
+		// RFC-173 W3b-2 gate-pin probes): the scope could not be built, so no
+		// ON predicate can be resolved. When the failure is a DROP RISK — a
+		// resolvable-but-unscopable source (JOIN-bodied derived-table
+		// decline, duplicate alias) — returning nil here would leave
+		// OnPredicate nil and the translator silently degrades the join to a
+		// CROSS PRODUCT (it never reads OnText for predicates): the same
+		// failure class as the fixed subquery-in-ON bug and this function's
+		// own fail-closed backstop below, which this early return used to
+		// bypass. ON-less joins (comma cross joins, lateral unnest legs)
+		// have nothing to drop, and UNRESOLVABLE-table failures keep the
+		// silent decline — the downstream scan raises the precise
+		// UndefinedDatabase/Table error this generic one must not preempt.
+		if scopeDropRisk {
+			for _, j := range sq.joins {
+				if j.onExpr != nil {
+					return api.NewErrorf(api.ErrCodeUnsupportedQuery,
+						"unsupported FROM shape: cannot resolve the join's sources for its ON clause (e.g. a JOIN-bodied derived table or duplicate unaliased source); dropping the ON condition would return cross-product rows")
+				}
+			}
+		}
 		return nil
 	}
 	resolver := expr.New(analyzer, scope)
