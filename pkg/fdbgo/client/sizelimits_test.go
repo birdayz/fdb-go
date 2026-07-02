@@ -123,7 +123,7 @@ func TestCommit_SystemKeyHasHigherLimit(t *testing.T) {
 // rawAccess raises the non-system key limit to KEY_SIZE_LIMIT+8. So with
 // writeSystemKeys (ACCESS_SYSTEM_KEYS) or readSystemKeys (READ_SYSTEM_KEYS) set, a
 // non-system key of 10001-10008 bytes must be ACCEPTED (libfdb_c accepts it);
-// passing false would wrongly reject it (the regression codex caught). A key past
+// passing false would wrongly reject it (the pre-fix regression). A key past
 // 10008 is still rejected.
 func TestCommit_RawAccessRaisesNonSystemKeyLimit(t *testing.T) {
 	t.Parallel()
@@ -163,7 +163,7 @@ func TestCommit_RawAccessRaisesNonSystemKeyLimit(t *testing.T) {
 	}
 }
 
-// TestCommit_TenantDeniesRawAccessKeySlack pins codex's third finding: the +8
+// TestCommit_TenantDeniesRawAccessKeySlack pins that the +8
 // raw-access slack IS the tenant-prefix allowance (for raw access, where the caller
 // pre-includes the prefix). When THIS client will prepend the 8-byte prefix itself
 // (tenantId >= 0), a tenant transaction must NOT also get the slack — a 10001-byte
@@ -183,7 +183,7 @@ func TestCommit_TenantDeniesRawAccessKeySlack(t *testing.T) {
 	}
 }
 
-// TestClear_NoOpConsumesNextWriteNoConflict pins codex's second finding: C++ RYW
+// TestClear_NoOpConsumesNextWriteNoConflict pins that C++ RYW
 // clear consumes the NEXT_WRITE_NO_WRITE_CONFLICT_RANGE flag at the top
 // (ReadYourWrites.actor.cpp:2407), above the size no-op. So an oversized single-key
 // Clear (dropped) and a clamped-to-empty ClearRange must STILL consume the flag —

@@ -43,7 +43,7 @@ type rywCache struct {
 	// SUBTRACT the cleared span (cleared = readable — C++ clear() inserts readable
 	// entries over the span, WriteMap.cpp:195).
 	//
-	// Divergence note (deliberate, reviewed): C++ addUnmodifiedAndUnreadableRange
+	// Deliberate divergence: C++ addUnmodifiedAndUnreadableRange
 	// REPLACES the write-map span — wiping pending writes/clears inside the candidate
 	// range from the RYW view. Go keeps them: under !bypass both models throw 1036 for
 	// any read in the range, so the difference is only observable under
@@ -417,7 +417,7 @@ func coalesceWriteConflicts(in []KeyRange) []KeyRange {
 // pushes it, WriteMap.cpp:139-148), and such txns are tiny (never near 2101). A versionstamp txn that also
 // hammers an unrelated key ships uncoalesced — safe (no wrong bytes, no dropped op), identical to pre-#28
 // and the rywDisabled path (FDB-C-dev delta ACK: non-blocking). Extracted from Commit as a PURE function so
-// the ship-decision is unit-testable / revert-provable outside Commit's inline flow (Torvalds).
+// the ship-decision is unit-testable / revert-provable outside Commit's inline flow.
 func coalesceCommitVectors(rawMuts []Mutation, rawConflicts []KeyRange, rywDisabled bool) (shipMuts []Mutation, sizeConflicts []KeyRange, coalesced bool) {
 	if rywDisabled || mutationsHaveVersionstamp(rawMuts) {
 		return rawMuts, rawConflicts, false
@@ -430,7 +430,7 @@ func coalesceCommitVectors(rawMuts []Mutation, rawConflicts []KeyRange, rywDisab
 // NativeAPI.actor.cpp:6858) to the SIZED write-conflict snapshot, re-coalescing when the txn coalesces.
 // Works from the snapshot (rawConflicts) — NOT a live re-read of tx.writeConflicts — so a Set racing this
 // Commit cannot ship an unvalidated/unsized conflict range whose mutation was excluded from the frozen
-// op-log (codex #28 P2b). Pure + unit-testable (Torvalds).
+// op-log. Pure + unit-testable.
 func finalizeShipConflicts(rawConflicts []KeyRange, sc KeyRange, scAdded, coalesced bool) []KeyRange {
 	base := rawConflicts
 	if scAdded {

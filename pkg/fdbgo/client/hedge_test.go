@@ -349,7 +349,7 @@ func TestHedge_ConnErrorOnReply(t *testing.T) {
 }
 
 // TestWaitForReply_AccountsSingleRequest covers the non-hedge (single-server)
-// path's QueueModel accounting (RFC-010 #5 / codex gap 7): on timeout and on
+// path's QueueModel accounting (RFC-010 #5): on timeout and on
 // context-cancel, waitForReply returns the started request's addr/delta so the
 // caller ends it exactly once and outstanding returns to baseline. Complements
 // the raceReplies (two-server) accounting tests.

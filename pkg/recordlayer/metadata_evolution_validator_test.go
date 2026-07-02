@@ -1955,7 +1955,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 
 		It("rewrites under a FanOut (repeated-message) parent at depth ≥2, preserving FanType", func() {
-			// Graefe's flagged axis (Java's `many_middle`): a FanType.FanOut nesting parent at
+			// The flagged axis (Java's `many_middle`): a FanType.FanOut nesting parent at
 			// depth ≥2. Every prior depth spec used an OPTIONAL parent. This renames the FanOut
 			// parent itself (groups→groups_v2, by number) AND the deep leaf (foo→foo_z), and the
 			// rewritten expression must STILL be a FanOut nest — proving the visitor both

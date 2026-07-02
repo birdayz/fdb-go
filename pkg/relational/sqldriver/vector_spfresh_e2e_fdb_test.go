@@ -113,7 +113,7 @@ func TestFDB_VectorSearch_SPFreshE2E(t *testing.T) {
 		}
 		// UNSORTED on purpose: BY_DISTANCE output order is part of the
 		// contract — d²(1)=0.02 < d²(2)=1.62 at this query, so the rows must
-		// arrive [1 2] exactly (Graefe merge-HEAD F3).
+		// arrive [1 2] exactly.
 		if ids[0] != 1 || ids[1] != 2 {
 			t.Errorf("K-NN ids = %v, want [1 2] IN DISTANCE ORDER (nearest to (0.9,0.1,0.0))", ids)
 		}

@@ -130,7 +130,7 @@ func newStoreUnlockCmd() *cobra.Command {
 			}
 			// Without this, a full-store lock would be permanent: Open()
 			// rejects the locked store, so the unlock could never run
-			// (codex P1).
+			// (review P1).
 			if err := armFullStoreLockBypass(cmd.Context(), target, ss); err != nil {
 				return err
 			}

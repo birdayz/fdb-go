@@ -133,7 +133,7 @@ func TestFDB_AggIndexResidualDrop(t *testing.T) {
 
 // Multi-key GROUP BY: an equality on a NON-LEADING grouping key cannot become a
 // scan bound (ToScanPlan breaks at the first gap), so the aggregate index must
-// not serve it. Graefe's repro.
+// not serve it. The review's repro.
 func TestFDB_AggIndexResidualDrop_NonLeadingKey(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

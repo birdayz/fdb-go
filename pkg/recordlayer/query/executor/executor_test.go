@@ -1980,7 +1980,7 @@ func TestScanComparisons_NullComparand_EmptyRange(t *testing.T) {
 	// `a < NULL` (and >, >=, <=) is UNKNOWN for every row (SQL 3VL) →
 	// unsatisfiable → empty result. Must be an empty range (begin == end),
 	// NOT the null-boundary low with an unbounded high (which would strinc to
-	// an inverted FDB range begin > end). Regression for the Codex P2 finding.
+	// an inverted FDB range begin > end).
 	for _, typ := range []predicates.ComparisonType{
 		predicates.ComparisonLessThan,
 		predicates.ComparisonLessThanOrEq,

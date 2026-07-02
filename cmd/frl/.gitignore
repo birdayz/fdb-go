@@ -1,0 +1,5 @@
+# Release build output (frl-release.yml). Must stay ignored: Go's buildvcs
+# stamps `frl version` from the git tree state, so an untracked dist/ would
+# mark the build dirty and produce vX.Y.Z+dirty binaries — which then fail the
+# release smoke test (stamped version != tag).
+/dist/

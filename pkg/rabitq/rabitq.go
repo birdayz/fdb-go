@@ -712,7 +712,7 @@ func (q *Quantizer) NewScorer(query []float64) *Scorer {
 // Distance (EstimateDistance), minus the per-code allocations.
 func (s *Scorer) Score(data []byte, numDimensions int) (float64, error) {
 	// Match EstimateDistance's cosine zero/non-finite query guard: those
-	// inputs must error like Distance does, never rank as finite (codex P2).
+	// inputs must error like Distance does, never rank as finite.
 	if s.metric == MetricCosine && (!(s.gAdd > 0.0) || math.IsInf(s.gAdd, 0) || math.IsNaN(s.gAdd)) {
 		return 0, fmt.Errorf("rabitq: distance estimate is not finite: %v", math.NaN())
 	}

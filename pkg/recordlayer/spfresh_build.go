@@ -124,7 +124,7 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, tot
 		// — BELOW the K0>sample cliff (~1.0B) — so guard it here with a clear
 		// message instead of failing deep in spfreshAppendDeltas with a generic
 		// "too many deltas". Lifting it needs the coarse-table commit to chunk
-		// the changelog across transactions (not yet implemented) (codex).
+		// the changelog across transactions (not yet implemented).
 		return fmt.Errorf("spfresh build: K0 %d exceeds the single-tx changelog limit (%d cells); the coarse-table build does not yet chunk the changelog across transactions",
 			k0, spfreshMaxDeltasPerTx)
 	}
@@ -145,8 +145,8 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, tot
 	// roundtripped vectors — if the builder's own staging routed on the raw
 	// k-means output, a boundary vector could land in DIFFERENT cells on the
 	// two paths, get double-staged, and leave an orphaned posting entry whose
-	// membership row names only the last writer (Torvalds 094.2 #3). One
-	// table, one set of bytes, both routers.
+	// membership row names only the last writer. One table, one set of
+	// bytes, both routers.
 	for i, vec := range coarse {
 		rt, rerr := vectorcodec.Deserialize(vectorcodec.SerializeHalf(vec))
 		if rerr != nil {
@@ -158,8 +158,7 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, tot
 	// Allocate cell IDs and write COARSE rows. IDEMPOTENT under retry: the
 	// build-state row (META, generation-scoped via the task subspace) records
 	// the minted cell block in the SAME tx; a commit_unknown retry re-reads it
-	// and reuses the block instead of minting a second orphaned cell set
-	// (Torvalds 094.1 #1a).
+	// and reuses the block instead of minting a second orphaned cell set.
 	err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
 		tx := rtx.Transaction()
 		// Claim build ownership (or re-find our own claim on a commit_unknown
@@ -239,7 +238,7 @@ func (b *spfreshBuilder) stageBatch(ctx context.Context, batch []spfreshBuildInp
 // a delete committing after the scan read aborts the whole tx at the
 // resolver and the retry's scan no longer returns the record. Staging the
 // batch in a separate tx re-stages pks deleted in between: a permanent ghost,
-// since no future delete clears a pk whose record is gone (Torvalds 094.2 #2).
+// since no future delete clears a pk whose record is gone.
 func (b *spfreshBuilder) stageInTx(rtx *FDBRecordContext, batch []spfreshBuildInput) error {
 	tx := rtx.Transaction()
 	if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
@@ -359,11 +358,11 @@ func (b *spfreshBuilder) finalize(ctx context.Context, seed int64) error {
 }
 
 // flip publishes the built generation — CAS: only from the generation this
-// build was based on (codex r3: a concurrent build that flipped first must not
-// be overwritten; the REAL reads' conflict ranges serialize racing flips).
+// build was based on (a concurrent build that flipped first must not be
+// overwritten; the REAL reads' conflict ranges serialize racing flips).
 // Idempotent under commit_unknown_result: cur == target with OUR token still
 // in place is this build's own committed flip being retried — success, not a
-// concurrent builder (codex r4). The narrow leftover corner — a retry that
+// concurrent builder. The narrow leftover corner — a retry that
 // lands after a NEWER build already took the token — reports a takeover error
 // even though our flip committed; that build's own BuildSPFreshIndex run
 // redoes the completion bookkeeping, so nothing is lost.
@@ -421,8 +420,7 @@ func (b *spfreshBuilder) nearestCell(vec []float64) int64 {
 func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, mapsMu *sync.Mutex, outIDs map[int64][]int64, outVecs map[int64][][]float64) error {
 	// Stage router outputs per ATTEMPT; commit them to the shared maps only
 	// after the transaction succeeds — appending inside the retriable closure
-	// leaked phantom/duplicate fineIDs into the wave-B router on retries
-	// (Torvalds 094.1 #1c, codex P1).
+	// leaked phantom/duplicate fineIDs into the wave-B router on retries.
 	var stagedIDs []int64
 	var stagedVecs [][]float64
 	err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
@@ -443,7 +441,7 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ma
 		if row.state == spfreshCellfinCentroidsDone || row.state == spfreshCellfinFinalized {
 			// Already clustered (commit_unknown retry or crash recovery):
 			// reload the COMMITTED centroids — re-clustering would mint
-			// attempt-fresh IDs and duplicate rows (Torvalds 094.1 #1b).
+			// attempt-fresh IDs and duplicate rows.
 			rows, _, _, lerr := spfreshLoadCell(tx, b.storage, cellID)
 			if lerr != nil {
 				return lerr
@@ -517,7 +515,7 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ma
 		}
 		// The CELL counter is the cell's FINE-CENTROID count (RFC-094 §3, the
 		// 094.3 coarse-split trigger input) — owned here, where the count is
-		// exact by construction (Torvalds 094.1 #2).
+		// exact by construction.
 		spfreshCounterSet(tx, b.storage, spfreshCounterCell, cellID, int64(len(keep)))
 		row.state = spfreshCellfinCentroidsDone
 		tx.Set(b.storage.taskKey(spfreshTaskCellfin, cellID), encodeTaskRow(row))
@@ -594,8 +592,8 @@ func (r *spfreshBuildRouter) precomputePrune() {
 //
 // The candidate pool is wider than the replica target so the closure's RNG
 // rule has same-direction candidates to skip, and it widens past a fixed pool
-// that would truncate just ahead of a diverse in-ratio candidate (codex
-// 094.4 r2) — but the widening is BOUNDED at two doublings (4× the base pool).
+// that would truncate just ahead of a diverse in-ratio candidate — but the
+// widening is BOUNDED at two doublings (4× the base pool).
 // Unbounded "widen until the ratio break" was quadratic at 1M density: hundreds
 // of fines sit inside α²·d²(c1) and the RNG rejects them all as same-direction,
 // so the pool doubled to the entire fine table PER VECTOR. Past the cap the
@@ -639,7 +637,7 @@ func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids 
 // exact arithmetic, but a fixed slack cannot make that safe: when dvc ≈ dcf
 // (a fine almost on the query but far from its cell centroid) the subtraction
 // CANCELS catastrophically and the relative error of dvc-dcf is unbounded as
-// d(v,f) → 0 (codex). So we subtract an ABSOLUTE error term that scales with the
+// d(v,f) → 0. So we subtract an ABSOLUTE error term that scales with the
 // operand magnitude (dvc+dcf), not with the difference: it bounds the two sqrt
 // roundings, the dims-term squared-distance sum roundoff, and the subtraction.
 // The honest per-distance relative error is ~(n/2 + 6.5)·u (Higham: tree-summed
@@ -660,7 +658,7 @@ func spfreshPruneLowerBound(dvc, dcf float64, dims int) float64 {
 // magnitude-scaled error term in spfreshPruneLowerBound is relative, so it
 // underflows in the subnormal regime (squared distances < 0x1p-1022, i.e.
 // coordinates ~1e-160) and the squaring lb*lb can round up by a subnormal ulp at
-// an exact tie — a wrong skip (codex P3). When the pool-th best is subnormal we
+// an exact tie — a wrong skip. When the pool-th best is subnormal we
 // simply don't prune; the fine is scored exactly, so gatherTopK stays
 // byte-identical. If worst is normal, any lb*lb that could exceed it is itself
 // normal, so the proven normal-range analysis holds. No real vector data is
@@ -805,7 +803,7 @@ func (s *spfreshQuantizer) scorer(residualQuery []float64, dims int) func(code [
 	// and keep the 0.5 cosine scale: the estimates stay monotone within the
 	// posting AND comparable across postings (a constant best-case estimate
 	// here created an Lmax-sized tie that could evict the true match from
-	// the top-C cut before the exact re-rank — codex 094.4 r2+r3).
+	// the top-C cut before the exact re-rank).
 	if s.config.Metric == VectorMetricCosine {
 		var norm float64
 		for _, v := range residualQuery {

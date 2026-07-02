@@ -121,8 +121,8 @@ func TestHNSWFatal(t *testing.T) {
 	}
 }
 
-// TestHNSW_DeleteRepair_PropagatesScanError is the operation-level proof of codex's
-// P1: a transient scan error reaching a graph caller must ABORT the operation (so the
+// TestHNSW_DeleteRepair_PropagatesScanError is the operation-level proof that a
+// transient scan error reaching a graph caller must ABORT the operation (so the
 // tx retries), NOT be read as "neighbor doesn't exist" and skipped (which would commit a
 // partially-repaired graph). The delete-repair candidate gather (findDeletionRepairCandidates)
 // loads the deleted node's neighbors via loadNodeLayerInlining (inlining layer), whose scan
@@ -176,7 +176,7 @@ func TestHNSW_DeleteRepair_SkipsAbsentNeighbor(t *testing.T) {
 }
 
 // TestHNSW_Delete_PropagatesAccessInfoReadError pins the point-read swallow class
-// Torvalds caught beyond the dispatch sites: Delete's first read (access info), its
+// beyond the dispatch sites: Delete's first read (access info), its
 // pipelined per-layer reads, and the layer-0 existence probe used to read EVERY error as
 // "empty graph / already deleted" and return nil — so a transient transaction_too_old
 // (1007) made Delete commit a silent no-op instead of retrying. The `get` seam injects

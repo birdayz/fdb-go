@@ -114,7 +114,7 @@ func TestQualify_InvertedComparison(t *testing.T) {
 	}
 }
 
-// TestQualify_PlainPredicateNotRejected guards the codex Finding 1 error gate:
+// TestQualify_PlainPredicateNotRejected guards the unlowered-window error gate:
 // it must fire ONLY for unbuildable/unlowered window shapes, never for a plain
 // non-window QUALIFY predicate (which has no RowNumberValue and stays a normal
 // filter). Regression guard for the new predicateHasUnloweredRowNumber check.
@@ -130,7 +130,7 @@ func TestQualify_PlainPredicateNotRejected(t *testing.T) {
 	}
 }
 
-// TestAttachOrSynthesizeFilter covers Finding 1 (Torvalds): a QUALIFY predicate
+// TestAttachOrSynthesizeFilter: a QUALIFY predicate
 // must not be dropped when there is no WHERE (hence no existing LogicalFilter).
 func TestAttachOrSynthesizeFilter(t *testing.T) {
 	t.Parallel()

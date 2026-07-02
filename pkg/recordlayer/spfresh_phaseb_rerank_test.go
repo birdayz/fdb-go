@@ -11,7 +11,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// RFC-156 Phase B (spfresh-reviewer + Torvalds NAK fix): the distance-ordered
+// RFC-156 Phase B fix: the distance-ordered
 // stream's horizon is the RE-RANK BUDGET (c) and must NOT be threaded as the
 // probe width. The executor passes the ordered High-tuple (k=horizon,
 // efSearch=0 ⇒ index-tuned kc, w=0, c=horizon) so the searcher re-ranks

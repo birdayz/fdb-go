@@ -65,8 +65,8 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 		// This MUST fall back for all of them, not just ErrNeedFullRYW: 1006 is
 		// retried locally by getValue, but Transact.OnError does NOT retry 1006
 		// (the read path is expected to absorb it), so surfacing it here would
-		// turn a transient send failure into a failed transaction (RFC-010 #3,
-		// regression caught by codex review). A genuinely terminal error (e.g.
+		// turn a transient send failure into a failed transaction (RFC-010 #3).
+		// A genuinely terminal error (e.g.
 		// key_outside_legal_range) re-fails identically in inner.Get — nothing is
 		// masked, and the illegal frame was already rejected before send.
 		return newFutureByteSlice(func() ([]byte, error) {
@@ -447,8 +447,8 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	act := inner.WatchActivation()
 	// Cancel() on the returned future cancels THIS watch (its scoped context → WatchPoll drains and
 	// releases the outstanding-watch slot), so an app can free ONE unneeded watch without touching the
-	// transaction's other watches (round 18) — the base future Cancel() is a no-op, which would leave
-	// the slot charged until the key changed (codex). On a setup failure watchCancel is nil (already
+	// transaction's other watches — the base future Cancel() is a no-op, which would leave
+	// the slot charged until the key changed. On a setup failure watchCancel is nil (already
 	// cancelled+deregistered in WatchSetup); guard the hook.
 	cancelHook := func() {}
 	if watchCancel != nil {
@@ -464,7 +464,7 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 		if err != nil {
 			// The watch aborted before reaching WatchPoll — the only path that releases the reserved
 			// outstanding-watch slot + deregisters the scoped context. Do both here, else the slot leaks
-			// → too_many_watches under MAX_WATCHES in retry/cancel-heavy flows (codex #8).
+			// → too_many_watches under MAX_WATCHES in retry/cancel-heavy flows.
 			inner.ReleaseWatch()
 			if watchCancel != nil {
 				watchCancel()

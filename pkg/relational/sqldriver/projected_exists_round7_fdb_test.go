@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestFDB_ProjectedExists_Round7 pins the codex round-7 case: a COMPUTED, non-selected
+// TestFDB_ProjectedExists_Round7 pins the review round-7 case: a COMPUTED, non-selected
 // ORDER BY expression over a projected EXISTS — e.g. `... ORDER BY col1 + 1` where `col1 + 1`
 // is not in the SELECT list. The folded output record carries only the SELECT fields, so the
 // sort re-applied above the FlatMap evaluated `col1 + 1` against a record lacking `col1` →

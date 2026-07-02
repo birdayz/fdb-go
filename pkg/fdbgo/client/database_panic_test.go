@@ -12,7 +12,7 @@ func panicDialFn(context.Context, string, string) (net.Conn, error) {
 	panic("boom in dial")
 }
 
-// TestDialAndPool_RecoverUnpoisonsSingleflight pins RFC-110 Class B (codex P2): a
+// TestDialAndPool_RecoverUnpoisonsSingleflight pins RFC-110 Class B: a
 // panic in transport.Dial must not abort the host. The dialAndPool backstop must
 // wake waiters with an error AND remove the singleflight entry, so the next
 // caller re-dials. Without it, call.done would never close (waiters hang on a
@@ -50,7 +50,7 @@ func TestDialAndPool_RecoverUnpoisonsSingleflight(t *testing.T) {
 	}
 }
 
-// TestTryOneCoordinator_PanicReturnsError pins RFC-110 Class B (codex P3): the
+// TestTryOneCoordinator_PanicReturnsError pins RFC-110 Class B: the
 // single-coordinator fast path calls tryOneCoordinator directly on the caller's
 // goroutine, so a panic in its dial path must surface as a returned error, never
 // a host crash.

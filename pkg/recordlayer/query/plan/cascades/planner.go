@@ -554,7 +554,7 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 	// a projection over a vector scan, …) stays on the OLD InsertFinal path. Without this
 	// top-level reject, such shapes would skip every guard below and fall through to
 	// "safe" → yieldUnknown, re-optimizing an unsafe residual the allowlist refused
-	// (codex P2).
+	// (review P2).
 	f, ok := expr.(*expressions.LogicalFilterExpression)
 	if !ok {
 		return false
@@ -645,7 +645,7 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		// an indexed `t.k = 5` — is invisible to it; realizing such a compensation as a
 		// physical leg filter severs the join's correlation feed → Fetch(<nil>) / 0 rows
 		// (the PR-#201 shape). This guard remains as defense-in-depth even with B1's
-		// task-graph invariant in place (Graefe Piece-1 condition). Query-parameter
+		// task-graph invariant in place (reviewer Piece-1 condition). Query-parameter
 		// ConstantObjectValue aliases are execution constants (not row correlations), so
 		// subtract them first.
 		corr := predicates.GetCorrelatedToOfPredicate(pred)
@@ -665,7 +665,7 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			// carries NO correlation) — there `o ∉ probeCorr` so the reject stands.
 			// Without this, the data-access path can never produce the cheap
 			// correlated index-nested-loop inner whenever a second, non-sargable
-			// cross-correlation predicate rides along (GRAEFE-2: drives the U
+			// cross-correlation predicate rides along (the probe-fed-residual case: drives the U
 			// full-scan O(N×M) instead of the T-driven U-PK-probe O(N)).
 			if _, fedByProbe := probeCorr[alias]; fedByProbe {
 				continue

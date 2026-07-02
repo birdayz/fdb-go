@@ -2,8 +2,8 @@ package semantic
 
 import "testing"
 
-// Microbenchmarks for the semantic package hot paths. Seeded at
-// swingshift-47; no perf gate yet — exists so regressions show up
+// Microbenchmarks for the semantic package hot paths.
+// No perf gate yet — exists so regressions show up
 // once the analyzer wires into the logical-builder.
 
 func BenchmarkNormalizeString_Unquoted(b *testing.B) {

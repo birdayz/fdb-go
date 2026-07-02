@@ -563,7 +563,7 @@ func (db Database) LocalityGetBoundaryKeys(r ExactRange, limit int, readVersion 
 	size := len(kvs)
 	// Clamp only for a POSITIVE limit: limit <= 0 means "unlimited" (matching the
 	// range-read path), so a negative sentinel must not drive size negative and
-	// panic make([]Key, size) (codex). (The Apple binding's `limit != 0` form
+	// panic make([]Key, size). (The Apple binding's `limit != 0` form
 	// panics here on a negative limit; we don't.)
 	if limit > 0 && limit < size {
 		size = limit

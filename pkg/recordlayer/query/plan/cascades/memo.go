@@ -125,7 +125,7 @@ func (m *Memo) MergeCount() int { return m.mergeCount }
 // the resulting name can never include a ". A bare "$m"-prefix is NOT safe on its
 // own: a user could write a quoted alias `AS "$m1"`, which parses to the name
 // "$m1" and would collide with this merge quantifier, corrupting alias-keyed
-// binding/rebasing in a multi-way join (codex P2). (This collision class also
+// binding/rebasing in a multi-way join. (This collision class also
 // affects UniqueCorrelationIdentifier's "q$N" — `AS "q$1"` — a pre-existing,
 // separate hardening item; here we make the merge alias uncollidable outright.)
 //

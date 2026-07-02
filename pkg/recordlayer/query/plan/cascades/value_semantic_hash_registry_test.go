@@ -7,7 +7,7 @@ import (
 )
 
 // TestValueSemanticHashCode_AllCorrelationBearingTypesAreAliasInvariant is the
-// RFC-040 completeness/registry guard (Torvalds #1/#4): EVERY value type that
+// RFC-040 completeness/registry guard: EVERY value type that
 // embeds a CorrelationIdentifier must hash with the alias EXCLUDED, else it
 // silently breaks the hash↔equality consistency the memo dedup gate relies on.
 // Each entry builds two instances differing ONLY by alias and asserts equal

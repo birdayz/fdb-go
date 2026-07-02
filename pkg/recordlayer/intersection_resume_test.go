@@ -177,7 +177,7 @@ func TestIntersectionMultiResume_PagedNoDupNoLoss(t *testing.T) {
 // TestDecodeIntersectionContinuation_RoundTrip pins the encode↔decode symmetry,
 // especially that an exhausted child round-trips as END (started + empty), NOT
 // START — the exact property the per-child started flag exists to guarantee
-// (Graefe + Torvalds RFC-071 review).
+// (RFC-071 review).
 func TestDecodeIntersectionContinuation_RoundTrip(t *testing.T) {
 	t.Parallel()
 	// child0: mid-stream cached continuation (non-empty bytes) → MID.
@@ -220,7 +220,7 @@ func TestDecodeIntersectionContinuation_RoundTrip(t *testing.T) {
 // limitOnceCursor returns a single out-of-band limit stop with a
 // StartContinuation (empty bytes, NOT end) — the shape an index scan produces
 // when it hits a scan/byte limit before emitting its first row. It models the
-// case Graefe's RFC-071 review flagged: such a child must round-trip as START
+// case the RFC-071 review flagged: such a child must round-trip as START
 // (resume re-reads it), never END (which would Empty() it and silently drop the
 // rest of the intersection).
 type limitOnceCursor struct{ closed bool }
@@ -231,8 +231,8 @@ func (c *limitOnceCursor) OnNext(_ context.Context) (RecordCursorResult[int64], 
 func (c *limitOnceCursor) Close() error   { c.closed = true; return nil }
 func (c *limitOnceCursor) IsClosed() bool { return c.closed }
 
-// TestIntersectionResume_LimitBeforeFirstRow_NoLoss is the regression Graefe
-// asked for: child B hits a scan limit before its first row on page 1 (while
+// TestIntersectionResume_LimitBeforeFirstRow_NoLoss is the required
+// regression: child B hits a scan limit before its first row on page 1 (while
 // child A has loaded its first value), the intersection checkpoints, and on
 // resume NO match is lost — in particular the match A had already loaded (2)
 // must survive because its cached continuation was captured BEFORE the held

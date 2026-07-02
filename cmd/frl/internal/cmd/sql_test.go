@@ -214,7 +214,7 @@ func TestRenderCell_TypeDispatch(t *testing.T) {
 	}
 }
 
-// Regression (RFC-174 bug 2 + codex P2-3): piped/scripted output must be
+// Regression (RFC-174 bug 2 + review P2-3): piped/scripted output must be
 // pure 7-bit ASCII with zero ANSI escapes. The \x1b check alone would
 // pass with Unicode box-drawing (`─┼─`) still present, so assert every
 // byte < 0x80 too.

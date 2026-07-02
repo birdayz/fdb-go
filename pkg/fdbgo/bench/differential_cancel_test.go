@@ -25,7 +25,7 @@ import (
 // NOT covered (separate, entangled divergence, see RFC-068): commit→cancel→get returns
 // used_during_commit (2017) in libfdb_c but a cancelled error in Go, because Go auto-resets a txn
 // to active after a successful commit (a deliberate documented extension to match the binding
-// tester's handle reuse, audit #6) whereas C++ leaves it committed. That corner is tied to the
+// tester's handle reuse) whereas C++ leaves it committed. That corner is tied to the
 // auto-reset extension, not this clean cancelled-error-code surface.
 func TestDifferential_CancelLifecycle(t *testing.T) {
 	t.Parallel()

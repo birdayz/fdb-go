@@ -206,8 +206,7 @@ func TestParseSPFreshConfig(t *testing.T) {
 	}
 	// EUCLIDEAN_SQUARE_METRIC must map (the DDL accepts it for USING
 	// SPFRESH; a silent Euclidean fallback made the planner candidate
-	// advertise squared distances while re-rank returned true L2 — Graefe
-	// merge-HEAD F1).
+	// advertise squared distances while re-rank returned true L2).
 	idx.Options[IndexOptionSPFreshMetric] = "EUCLIDEAN_SQUARE_METRIC"
 	if c := parseSPFreshConfig(idx); c.Metric != VectorMetricEuclideanSquare {
 		t.Fatalf("EUCLIDEAN_SQUARE_METRIC parsed to %v, want VectorMetricEuclideanSquare", c.Metric)

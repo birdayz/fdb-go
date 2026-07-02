@@ -188,7 +188,6 @@ var _ = Describe("SPFresh GC + lease recovery", func() {
 	})
 })
 
-// Torvalds 094.3 NAK regressions.
 var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", func() {
 	ctx := context.Background()
 
@@ -243,7 +242,7 @@ var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", fu
 		// ...and the reload must CONVERGE: after an empty-log trim, the
 		// reloaded cursor floors at the horizon — a bare-prefix anchor would
 		// leave cursor < horizon and force ANOTHER reload every interval
-		// until a new delta lands (codex 094.3 r2).
+		// until a new delta lands.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			Expect(cache.fullReload(tx, storage, 1)).To(Succeed())

@@ -262,7 +262,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// with its verbatim dotted key (NewRecordConstructorValue would suffix it
 		// "_2" — a spurious key the opaque merge never produces). A buried column is
 		// referenced via its dotted form after PartitionSelectRule rebasing, never
-		// bare. (RFC-077 7.6; Torvalds nested-parity catch — the unique-bare
+		// bare. (RFC-077 7.6 — the unique-bare
 		// concern is pinned by TestFDB_NestedJoinUnqualifiedProjection.)
 		var fields []values.Field
 		for _, f := range rc.Fields {
@@ -896,7 +896,7 @@ func arrayFieldElementType(fd protoreflect.FieldDescriptor) values.Type {
 //
 // The ImplementNestedLoopJoinRule's correlated-FlatMap path implements the
 // SelectExpression as RecordQueryFlatMapPlan(outer, explode, …, resultValue,
-// false) — the non-existential, no-FirstOrDefault path Graefe confirmed.
+// false) — the review-confirmed non-existential, no-FirstOrDefault path.
 //
 // Returns nil (untranslatable) for a non-scan outer or an unresolvable field;
 // when the source carries an AT alias but is NOT a correlated array, it
@@ -3835,8 +3835,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// (`WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL …)`): the alias
 	// gate below never length-matched, the temp table stayed keyed by the base
 	// columns, and a recursive reference to `a` was a silent NULL under the name
-	// model / a loud OrdinalResolutionError under the ordinal model (codex P2 +
-	// Graefe's pre-existing corner, RFC-173 Slice 1 gauntlet). Derive the seed
+	// model / a loud OrdinalResolutionError under the ordinal model (review P2 +
+	// reviewer's pre-existing corner, RFC-173 Slice 1 gauntlet). Derive the seed
 	// schema from the operator's output — table columns for a scan
 	// (derivedOutputColumns) — so the alias list applies and the seed normalizes
 	// onto it.

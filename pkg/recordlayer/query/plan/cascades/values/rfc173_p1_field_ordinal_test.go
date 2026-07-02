@@ -44,7 +44,7 @@ func TestFieldValue_ResolveOrdinal_RFC173P1(t *testing.T) {
 }
 
 // TestFieldValue_ResolveOrdinal_RawDivergentRecord_RFC173P1 pins the robustness
-// Torvalds + Graefe converged on in P1 review: resolveOrdinal returns the SLICE
+// the P1 review converged on: resolveOrdinal returns the SLICE
 // POSITION (RecordType.FieldIndex), which is the Java ordinal, so it is sound even
 // for a RAW RecordType that bypassed NewRecordType's normalization and carries a
 // stored Field.Ordinal that diverges from position. This is the axis the

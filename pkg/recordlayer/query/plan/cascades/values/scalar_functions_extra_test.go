@@ -7,13 +7,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Extended scalar-function fold tests for the dayshift-49 → swingshift-50
-// growth: ABS, FLOOR, CEILING, ROUND, SQRT, POWER, COALESCE, NULLIF,
-// TRIM family, CONCAT, SUBSTRING, REPLACE. Each row pins one Go-native
-// (input → output) pair through evalScalarFunction. The walker hooks
-// these names up to ScalarFunctionValue at parse time and SimplifyValue
-// folds the constant cases at plan time, so the runtime executor never
-// re-evaluates a fully-constant arithmetic / string sub-tree.
+// Extended scalar-function fold tests: ABS, FLOOR, CEILING, ROUND, SQRT,
+// POWER, COALESCE, NULLIF, TRIM family, CONCAT, SUBSTRING, REPLACE. Each
+// row pins one Go-native (input → output) pair through evalScalarFunction.
+// The walker hooks these names up to ScalarFunctionValue at parse time and
+// SimplifyValue folds the constant cases at plan time, so the runtime
+// executor never re-evaluates a fully-constant arithmetic / string sub-tree.
 
 func TestEvalScalarFunction_ABS(t *testing.T) {
 	t.Parallel()

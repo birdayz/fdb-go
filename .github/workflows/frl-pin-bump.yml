@@ -1,0 +1,105 @@
+# Keep cmd/frl's fdb.dev pin fresh: the "we'll forget to bump it" insurance.
+#
+# cmd/frl is a nested Go module. `go install fdb.dev/cmd/frl@latest` runs in
+# pure module mode (go.work never ships, replace directives are rejected), so
+# its go.mod must pin the root library to a real version. This workflow bumps
+# that pin to current master every night and maintains one rolling PR when it
+# moved, verifying a GOWORK=off build first, so the pin can neither rot
+# silently nor land broken.
+#
+# The frl release workflow builds GOWORK=off too, so even a stale pin can
+# never ship a broken release; this bot just keeps staleness bounded to ~a day.
+#
+# Note: PRs opened with the default GITHUB_TOKEN don't auto-trigger CI
+# (GitHub's anti-loop rule). If the PR shows no checks, close and reopen it.
+
+name: frl pin bump
+
+on:
+  schedule:
+    - cron: "23 4 * * *" # nightly, offset to dodge top-of-hour load
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v5
+        with:
+          ref: master
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cmd/frl/go.mod
+          cache-dependency-path: cmd/frl/go.sum
+
+      - name: Bump fdb.dev pin to master
+        id: bump
+        working-directory: cmd/frl
+        env:
+          GOWORK: "off"
+        run: |
+          set -euo pipefail
+          before="$(go list -m -f '{{.Version}}' fdb.dev)"
+          go get "fdb.dev@master"
+          go mod tidy
+          after="$(go list -m -f '{{.Version}}' fdb.dev)"
+          echo "pin: $before -> $after"
+          if git diff --quiet -- go.mod go.sum; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "changed=true"
+              echo "before=$before"
+              echo "after=$after"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify the bumped module builds (what go install sees)
+        if: steps.bump.outputs.changed == 'true'
+        working-directory: cmd/frl
+        env:
+          GOWORK: "off"
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          go build -trimpath ./...
+          go vet ./...
+
+      - name: Open or update the rolling PR
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: bot/frl-pin-bump
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add cmd/frl/go.mod cmd/frl/go.sum
+          git commit -m "chore(frl): bump fdb.dev pin ${{ steps.bump.outputs.before }} -> ${{ steps.bump.outputs.after }}
+
+          Nightly automated bump so \`go install fdb.dev/cmd/frl@latest\` builds
+          against current master. GOWORK=off build + vet verified in CI before
+          this PR was opened."
+          git push -f origin "$BRANCH"
+          if ! gh pr view "$BRANCH" --json state -q .state 2>/dev/null | grep -q OPEN; then
+            gh pr create \
+              --head "$BRANCH" \
+              --title "chore(frl): bump fdb.dev pin to master" \
+              --body "Automated nightly bump of the \`fdb.dev\` pin in \`cmd/frl/go.mod\` (${{ steps.bump.outputs.before }} → ${{ steps.bump.outputs.after }}) so \`go install fdb.dev/cmd/frl@latest\` tracks master.
+
+          A \`GOWORK=off\` build and vet passed before this PR was opened/updated.
+
+          If no CI checks appear (PRs from the Actions token don't auto-trigger them), close and reopen this PR."
+          fi

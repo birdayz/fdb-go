@@ -15,7 +15,7 @@
 //   - NAME mode: executor.DisablePositionalEmission suppresses the PositionalRow
 //     at the row-birth sites, so no frontier gate fires and the engine runs the
 //     pre-Slice-1 name model end-to-end (an EMISSION switch used as a test
-//     oracle — not a resolution fallback; Graefe's no-fallback rule governs
+//     oracle — not a resolution fallback; reviewer's no-fallback rule governs
 //     resolution).
 //
 // Each RunWithSetup call builds its own ephemeral schema, so the two modes are

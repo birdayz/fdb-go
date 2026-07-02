@@ -53,7 +53,7 @@ func TestFDB_AvgDoubleInsertPromotion(t *testing.T) {
 		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
-	// The empty-source axis (Graefe NAK): even with ZERO rows the rejection
+	// The empty-source axis (reviewer NAK): even with ZERO rows the rejection
 	// fires, because it derives from the structural type, not a materialized
 	// value — the runtime converter never sees a float here.
 	t.Run("avg_into_bigint_empty_source_rejected", func(t *testing.T) {
@@ -61,7 +61,7 @@ func TestFDB_AvgDoubleInsertPromotion(t *testing.T) {
 		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
-	// The tree-contains-aggregate axis (Torvalds NAK): AVG(v)+1 has a top-level
+	// The tree-contains-aggregate axis: AVG(v)+1 has a top-level
 	// ArithmeticValue but still types DOUBLE; rejected even over an empty source.
 	// A top-level type assert would miss this; the WalkValue provenance catches it.
 	t.Run("avg_plus_one_into_bigint_empty_source_rejected", func(t *testing.T) {
@@ -182,7 +182,7 @@ func TestFDB_AvgRuntimeTypeAndNull(t *testing.T) {
 	}
 }
 
-// TestFDB_AvgWithAggregateIndexPresent — Graefe's index-presence axis. AVG has
+// TestFDB_AvgWithAggregateIndexPresent — reviewer's index-presence axis. AVG has
 // NO aggregate index (it always streams), so a SUM aggregate index on the table
 // cannot shift AVG's typing: AVG still types DOUBLE and rejects into BIGINT, and
 // EXPLAIN shows a streaming aggregation, not an AggregateIndex scan.

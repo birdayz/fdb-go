@@ -488,7 +488,7 @@ func TestInComparisonToExplodeRule_ImplementInJoinShape(t *testing.T) {
 }
 
 // TestDistinctInListValues covers IN-list dedup, including the panic-safety
-// case codex flagged: array / vector IN literals fold to non-comparable
+// case: array / vector IN literals fold to non-comparable
 // slices ([]float64, []any), so the comparator must not use a bare `==`.
 func TestDistinctInListValues(t *testing.T) {
 	t.Parallel()

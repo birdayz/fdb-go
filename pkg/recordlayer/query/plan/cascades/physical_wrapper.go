@@ -35,7 +35,7 @@ func scanComparisonCorrelations(comps []*predicates.ComparisonRange) map[values.
 		// A query-parameter (ConstantObjectValue) comparand is an execution constant
 		// bound at run time, NOT a row correlation — its constant-pool alias appears
 		// in GetCorrelatedToOfValue but must not make a `Scan(T,[k=?param])` look
-		// join-correlated to planning (B1 leg detection) or to the GRAEFE-2
+		// join-correlated to planning (B1 leg detection) or to the
 		// probe-fed-residual guard (compensationProbeCorrelations). Subtract any such
 		// aliases — the value-level twin of deletePredicateConstantObjectAliases.
 		values.WalkValue(c.Operand, func(node values.Value) bool {
@@ -85,9 +85,9 @@ func valueCorrelationsNoParams(v values.Value) map[values.CorrelationIdentifier]
 // predicates, and map result values — query-parameter aliases subtracted. Used by the
 // plan-backed leaf expression scanPlanExpression so a SARGed PK-scan probe
 // (`pk = QOV(outer).fk`) and an RFC-153 buried-merge-rebased FlatMap inner report the
-// correlations their executable plan actually carries, instead of nil/stale (codex P2 on
-// 05c742100: an under-reported correlation lets join-leg / winner / root bookkeeping
-// treat a correlated probe as self-contained — a latent planning hazard, the same
+// correlations their executable plan actually carries, instead of nil/stale (an
+// under-reported correlation lets join-leg / winner / root bookkeeping treat a
+// correlated probe as self-contained — a latent planning hazard, the same
 // incomplete-coverage family as the fail-open verifier). Complete for the data-access
 // node shapes scanPlanExpression wraps (a single PK scan; a fully-rebased recognized
 // inner — the verifier declines any inner with an unrecognized node, so a rebased inner

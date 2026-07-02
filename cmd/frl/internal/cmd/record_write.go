@@ -16,7 +16,7 @@ import (
 // model: --dry-run exercises the store's dry-run primitives (all
 // validation and index maintenance planning, no writes), and the real
 // mutation requires --yes or an interactive confirm — put included
-// (codex P2-2: put overwrites and bypasses SQL-level constraints, it
+// (review P2-2: put overwrites and bypasses SQL-level constraints, it
 // gets the same gate as delete, not a lighter one).
 //
 // Store opens here go through withStore and keep
@@ -205,7 +205,7 @@ func newRecordDeleteCmd() *cobra.Command {
 // carries a record-type prefix — same convenience as `record get`. An
 // unknown type is an error, never a silent fall-through: on a
 // prefix-keyed store the unprefixed key can address a DIFFERENT record,
-// and this feeds `record delete` (codex P1: a --type typo must not
+// and this feeds `record delete` (review P1: a --type typo must not
 // delete the wrong record).
 func applyTypePrefix(store *recordlayer.FDBRecordStore, recordType string, pk tuple.Tuple) (tuple.Tuple, error) {
 	if recordType == "" {

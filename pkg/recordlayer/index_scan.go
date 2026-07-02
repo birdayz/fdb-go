@@ -474,7 +474,7 @@ func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntr
 	}
 
 	// Honor a statement deadline (RFC-106a): draining an already-fetched range
-	// batch must still return on ctx cancellation/timeout (codex), not run to the
+	// batch must still return on ctx cancellation/timeout, not run to the
 	// per-page time limit. context.DeadlineExceeded → 54F01 "statement timeout".
 	if err := ctx.Err(); err != nil {
 		return RecordCursorResult[*IndexEntry]{}, err
@@ -793,7 +793,7 @@ func (c *indexRecordCursor) IsClosed() bool { return c.inner.IsClosed() }
 // byDistanceScanner is the BY_DISTANCE access-method contract every vector
 // index maintainer implements (RFC-094 §10): Low = (serialized query vector
 // [, prefix...]), High = (k [, tuning...]); entries ascend by distance.
-// Compile-time assertions catch signature drift at build time (Graefe 094.6).
+// Compile-time assertions catch signature drift at build time.
 type byDistanceScanner interface {
 	ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
 }

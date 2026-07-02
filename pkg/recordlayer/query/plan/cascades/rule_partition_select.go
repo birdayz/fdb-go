@@ -534,7 +534,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// plannings → a STABLE plan hash (the merge alias flows into the NLJ
 			// source alias and thus PlanHash/plan-log identity + the cost-model
 			// tiebreak; a global uniqueId would churn those across a process's
-			// history — codex P2). On test/utility firing paths the memo is nil; fall
+			// history). On test/utility firing paths the memo is nil; fall
 			// back to a process-unique alias there (no plan-hash stability needed).
 			// (RFC-077 7.5.)
 			var mergeAlias values.CorrelationIdentifier

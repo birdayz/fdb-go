@@ -17,7 +17,9 @@
   {{ partialCached "favicons.html" . -}}
   <title>
     {{- if .IsHome -}}
-      {{ .Site.Title -}}
+      {{/* The home <title> is what Google and browser tabs show: carry the
+           value proposition, not just the domain. Falls back to site title. */}}
+      {{ .Title | default .Site.Title -}}
     {{ else -}}
       {{ with .Title }}{{ . }} · {{ end -}}
       {{ .Site.Title -}}

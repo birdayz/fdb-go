@@ -7,7 +7,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
-// TestScanLikeCost_UniqueGating pins the codex-P2 fix (RFC-069): a fully
+// TestScanLikeCost_UniqueGating pins the RFC-069 fix: a fully
 // equality-bound access in the concrete join-ordering leaf cost is priced as a
 // single row ONLY when provably unique. A primary-key scan / unique index passes
 // fullBindUnique=true; a non-unique secondary index passes false and must be

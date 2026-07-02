@@ -34,7 +34,7 @@ type SPFreshSweepOptions struct {
 	// MaxActionsPerTenant is the per-tenant fairness budget: at most this
 	// many lifecycle actions per pass, ENFORCED WITHIN a round too — a
 	// whale tenant whose single scan finds thousands of independent task
-	// rows must not monopolize the pass (codex MT P2). Undrained tenants
+	// rows must not monopolize the pass. Undrained tenants
 	// are reported, not errored — the next pass continues them. 0 means
 	// the default (64).
 	MaxActionsPerTenant int
@@ -131,7 +131,7 @@ func SPFreshHasPendingMaintenance(ctx context.Context, db *FDBDatabase, storeBui
 		// Cellfin (build bookkeeping) rows leaked by pre-cleanup builds
 		// would read as pending forever — the rebalancer skips that kind,
 		// so the sweeper would revisit the tenant every pass for zero
-		// actions (codex MT P2). The rebalancer also clears such rows on
+		// actions. The rebalancer also clears such rows on
 		// sight; this filter covers tenants nobody has rebalanced yet.
 		kinds := spfreshLiveTaskKinds
 		futures := make([]fdb.RangeResult, 0, len(kinds))

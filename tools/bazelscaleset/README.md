@@ -24,9 +24,13 @@ go build -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o bazelscales
 
 ## How it works
 
-1. On start it registers a runner scale set (`--name`, `--labels`) against `--url`, opens a
-   long-poll message session, and runs the listener. A stale scale set left by a crashed
-   previous run (same name) is deleted first so a `Restart=always` daemon never crash-loops.
+1. On start it ensures a runner scale set (`--name`, `--labels`) exists against `--url` —
+   reusing it by name if already present (patching drifted config in place), creating it only
+   if missing — then opens a fresh long-poll message session and runs the listener. The scale
+   set is never deleted by the supervisor: GitHub tracks in-flight job assignment against its
+   stable ID, so deleting and recreating it (the previous behaviour, on every restart) orphans
+   any job already assigned/queued against the old ID. See `ensureRunnerScaleSet` in
+   `scaleset.go`.
 2. When GitHub reports assigned jobs, the listener calls the scaler, which launches the stock
    `actions/runner` (`run.sh`) as a subprocess with `ACTIONS_RUNNER_INPUT_JITCONFIG`. Each
    runner is handed a **stable per-slot `WorkFolder`**, so its bazel `output_base` (server +
@@ -36,7 +40,8 @@ go build -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o bazelscales
    and — when the box goes idle — sweeps orphaned `foundationdb/foundationdb` containers (a dead
    test can leak them) **without** touching the bazel cache.
 4. On `SIGTERM`/`SIGINT` it signals every in-flight runner's process group, waits up to
-   `--grace-period`, force-kills stragglers, then deletes the scale set and closes the session.
+   `--grace-period`, force-kills stragglers, then closes the message session (the scale set
+   itself is left registered so the next start reuses it — see above).
 
 At `--max-runners=1` (the default for a 7.6 GiB box) the backlog is serialized through one
 always-warm slot. Raise it (and add RAM) to run more slots concurrently; each stays
@@ -64,8 +69,13 @@ scaleset long-poll), so the same failure mode is handled head-on:
   writing a slot the pool treats as free. It is scoped to **our** slot pid files (never touches a
   classic/other runner on the host) and leaves warm bazel servers running (a fresh runner
   reconnects; killing the bazel client already frees the `output_base` lock).
-- **Idempotent registration**: a stale scale set left by a crashed run (same name) is deleted
-  before re-creating, so a `Restart=always` daemon can't crash-loop on "name already exists".
+- **Idempotent, non-destructive registration**: a scale set is a durable resource, looked up by
+  name and reused by ID on every start (crash, clean shutdown, or watchdog restart alike); a
+  config drift (e.g. `--labels` changed across a redeploy) is patched in place via
+  `UpdateRunnerScaleSet`, never by deleting and recreating. Deleting would sever the ID GitHub
+  routes in-flight job assignments against — the root cause of a real production incident where
+  a systemd-watchdog restart under heavy CI load orphaned a multi-PR backlog that sat `queued`
+  forever.
 
 ## Configuration
 
@@ -128,7 +138,9 @@ Against a throwaway scale set and label, with the App or a PAT exported:
 ```
 
 Push a trivial workflow with `runs-on: smoke-test`; confirm a JIT runner spawns, runs the job,
-exits, frees its slot, and a second run reuses the warm slot. `Ctrl-C` deletes the scale set.
+exits, frees its slot, and a second run reuses the warm slot. `Ctrl-C` closes the message
+session; the `smoke-test` scale set stays registered and a subsequent run reuses it (delete it
+manually via `DeleteRunnerScaleSet`/the GitHub API once you're done with a throwaway name).
 
 ## Run under systemd
 

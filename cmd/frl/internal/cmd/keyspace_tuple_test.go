@@ -114,7 +114,7 @@ func TestTupleToJSON_RoundTrips(t *testing.T) {
 // A tuple-addressed target must be DESCRIBED as its tuple: write
 // confirmations name the store they hit, and truncate's type-back gate
 // would otherwise compare against a stale or empty keyspace_path
-// (codex P2).
+// (review P2).
 func TestStoreTargetDescribe_KeyspaceTuple(t *testing.T) {
 	t.Parallel()
 	tup, err := tupleFromJSON(`["frl",7]`)

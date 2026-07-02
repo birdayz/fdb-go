@@ -31,9 +31,9 @@
 //     `IsPromotable` / `MaximumType` / `MaximumTypeOfMany`
 //     promotion lattice (with structural recursion through ARRAY /
 //     RECORD / ENUM / RELATION), and shape predicates (`IsNull`,
-//     `IsArray`, …). Post-swingshift-52, every Value impl's `Type()`
+//     `IsArray`, …). Every Value impl's `Type()`
 //     returns the rich `Type` directly — the legacy `ValueType`
-//     enum + `FromValueType` / `ToValueType` bridges retired.
+//     enum + `FromValueType` / `ToValueType` bridges are retired.
 //     Track G1 in TODO.md. Once `type.go` exceeds ~1500 LOC it
 //     splits into a dedicated `cascades/typing/` sub-package per
 //     RFC-025.
@@ -63,9 +63,9 @@ const (
 	dateLayout      = "2006-01-02"
 )
 
-// Legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
-// TypeBool / TypeFloat) retired in swingshift-52 — every Value impl's
-// Type() now returns the rich Type directly. The names below remain
+// The legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
+// TypeBool / TypeFloat) is retired — every Value impl's
+// Type() returns the rich Type directly. The names below remain
 // as Type-typed vars so existing call sites (`Typ: values.TypeInt`)
 // keep working — the value's Go type changes (Type instead of int),
 // the constant name doesn't.
@@ -110,8 +110,8 @@ type Value interface {
 	// code free of nil checks).
 	Children() []Value
 	// Type is the rich result Type of evaluating this Value
-	// (post-swingshift-52: the legacy ValueType enum retired and
-	// Type() now returns the rich Type directly). Never nil —
+	// (the legacy ValueType enum is retired; Type() returns the
+	// rich Type directly). Never nil —
 	// implementations return UnknownType when the type genuinely
 	// isn't known yet.
 	Type() Type
@@ -244,7 +244,7 @@ type OrdinalRow interface {
 
 // OrdinalResolutionError is the loud internal error (RFC-173 Slice 1) raised when
 // a FieldValue's column cannot be resolved against the authoritative ordinal
-// runtime row. Per Graefe: authority + a silent name-map fallback means a
+// runtime row. Per reviewer: authority + a silent name-map fallback means a
 // resolution bug never surfaces, so this is a query error, not a NULL. Ordinal
 // is the resolved ordinal, or -1 for a flat-reference (name->ordinal) miss.
 // Available carries the row type's column names (when the row exposes them) so
@@ -269,7 +269,7 @@ func ordinalRowNames(row OrdinalRow) []string {
 }
 
 // evaluateOrdinal reads f's column from an ordinal-model runtime row. It is the
-// authoritative frontier's resolution — NO name-map fallback (Graefe). A typed
+// authoritative frontier's resolution — NO name-map fallback (reviewer). A typed
 // child yields an ordinal (resolveOrdinal) read positionally; a flat reference
 // falls to the row's own type (GetByName). A miss on either is loud.
 func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
@@ -310,7 +310,7 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if rc, ok := evalCtx.(*RowEvalContext); ok {
 		// RFC-173 Slice 1: an ordinal-model row on the RowEvalContext is
 		// authoritative on the non-join frontier — resolve by ordinal, no
-		// name-map fallback, loud on a miss (Graefe). It takes precedence over
+		// name-map fallback, loud on a miss (reviewer). It takes precedence over
 		// the name-keyed Datum.
 		if rc.Positional != nil {
 			return f.evaluateOrdinal(rc.Positional)
@@ -367,7 +367,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		}
 		// RFC-173 Slice 1: no explicit correlation binding matched, so the
 		// reference is to the frontier quantifier itself — resolve by ordinal
-		// against the authoritative positional row (Graefe: no name fallback,
+		// against the authoritative positional row (reviewer: no name fallback,
 		// loud on a miss). Precedes the name-keyed Datum path.
 		if ctx.Positional != nil {
 			return f.evaluateOrdinal(ctx.Positional)
@@ -465,7 +465,7 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	// Return the field's SLICE POSITION (FieldIndex), not a stored Field.Ordinal —
 	// position IS the Java ordinal (Type.Record.computeFieldNameToOrdinal is list
 	// position), and it is sound even for a raw RecordType that bypassed
-	// NewRecordType's normalization (RFC-173 P1 review: Torvalds/Graefe converged).
+	// NewRecordType's normalization (RFC-173 P1 review decision).
 	return rt.FieldIndex(f.Field)
 }
 
@@ -797,7 +797,7 @@ func ExplainValue(v Value) string {
 // ValueType.String() output (`INT` / `STRING` / `BOOL` / `FLOAT` /
 // `UNKNOWN`) — the seed conflates LONG/INT into INT and DOUBLE/FLOAT
 // into FLOAT here so the rendered output stays stable across the
-// ValueType retirement (Track G1, swingshift-52). Plan-cache keys
+// ValueType retirement (Track G1). Plan-cache keys
 // derived via ExplainValue stay byte-stable across the migration.
 func explainTypeName(t Type) string {
 	if t == nil {
@@ -1008,7 +1008,7 @@ type RowEvalContext struct {
 	// non-join frontier. When non-nil, FieldValue resolution goes through the
 	// ordinal path (resolveOrdinal / GetByName against the row's own type) BEFORE
 	// the name-keyed Datum — a loud OrdinalResolutionError on a miss, NO name-map
-	// fallback (Graefe). It is the single frontier quantifier's row: an outer
+	// fallback (reviewer). It is the single frontier quantifier's row: an outer
 	// correlation still resolves via Correlations first, and only an unbound
 	// (frontier) quantifier reference falls through to this row.
 	Positional       OrdinalRow
@@ -1906,7 +1906,7 @@ const twoPow63 = 9223372036854775808.0
 // float64FitsInt64 reports whether a float64 is safely convertible to int64
 // (i.e. int64(f) does not overflow). The upper bound is EXCLUSIVE at 2^63: a
 // `f <= math.MaxInt64` guard rounds the constant up to 2^63 and wrongly admits
-// 2^63 itself, which overflows int64 (codex finding, RFC-087). The lower bound
+// 2^63 itself, which overflows int64 (RFC-087). The lower bound
 // math.MinInt64 (-2^63) IS exactly representable as float64, so it is inclusive.
 func float64FitsInt64(f float64) bool {
 	return f >= math.MinInt64 && f < twoPow63

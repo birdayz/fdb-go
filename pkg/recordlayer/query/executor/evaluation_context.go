@@ -75,7 +75,7 @@ func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values
 // frontierRowContext returns the eval context a row on the RFC-173 Slice 1
 // authoritative non-join ordinal frontier is resolved against: the bare
 // positional row (FieldValue resolves by ordinal, loud on a miss — NO name-map
-// fallback, Graefe) when no param / scalar-subquery / outer correlation binding
+// fallback, reviewer) when no param / scalar-subquery / outer correlation binding
 // is in play, else a RowContextPositional so an outer correlation resolves via
 // the binder BEFORE the frontier quantifier falls to the positional row. Shared
 // by executeProjection / executeFilter / executePredicatesFilter / executeMap so
@@ -116,7 +116,7 @@ func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowE
 // DIFFERENTIAL (ordinal result == name result row-for-row across the corpus,
 // with enumerated carve-outs), which needs the name model as a live oracle
 // during the dual-representation window (retired with the map side in Slice 4).
-// It is NOT a resolution fallback — Graefe's no-name-fallback rule governs
+// It is NOT a resolution fallback — reviewer's no-name-fallback rule governs
 // resolution; this suppresses EMISSION, in test builds only. Default false;
 // production pays one bool read per scanned row. Tests that flip it must own
 // the whole test binary phase (no concurrent queries in the other mode).

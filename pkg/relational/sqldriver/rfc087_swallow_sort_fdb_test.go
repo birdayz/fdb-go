@@ -2,7 +2,7 @@ package sqldriver_test
 
 // RFC-087 Phase E end-to-end FDB tests:
 //
-//   - The swallow axis (Graefe gate): a both-constant type-mismatch
+//   - The swallow axis (the RFC-087 gate): a both-constant type-mismatch
 //     comparison (`WHERE 5 = 'abc'`) declines to constant-fold at plan
 //     time and must PLAN + RUN without crashing — the per-row error
 //     channel must not turn a declined fold into a goroutine crash.

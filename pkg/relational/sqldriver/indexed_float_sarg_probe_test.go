@@ -17,7 +17,7 @@ package sqldriver_test
 // promoteConstant (value_constant_object.go:150) has no float64→TypeCodeFloat case,
 // and widenIntConstAgainstDouble doesn't handle FLOAT columns. The fix is a
 // cross-WIDTH SARG decision (compare in float32-space, or widen the float32 index
-// scan + residual-filter in double-space) — Graefe's design call (concern C: uniform
+// scan + residual-filter in double-space) — an open design call (concern C: uniform
 // PromoteValue/MaximumType). This test pins the current (buggy) boundary; flip the
 // indexed cases when fixed.
 

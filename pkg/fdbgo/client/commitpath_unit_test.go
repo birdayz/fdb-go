@@ -463,7 +463,7 @@ func TestOnErrorRetryable_NotRetryableSet(t *testing.T) {
 // ============================================================================
 // clearAndReturn — clears a pooled slice's full backing array before returning
 // it, so the pool never retains committed key/value byte slices: mutSlicePool
-// (values up to 100KB) and crSlicePool (conflict-range keys). Codex review on #4.
+// (values up to 100KB) and crSlicePool (conflict-range keys).
 //
 // Each subtest uses a LOCAL sync.Pool, not the package-global mutSlicePool /
 // crSlicePool: clearAndReturn publishes the slice into the pool, so sharing a

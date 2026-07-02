@@ -10,7 +10,7 @@ import (
 // true exhaustion or a clean ReturnLimitReached. A value-only drain (ForEach / First /
 // GetCount / Reduce) discards the continuation and cannot paginate, so an out-of-band
 // stop means the materialized/aggregated result is INCOMPLETE; surfacing it prevents a
-// silently-truncated value (e.g. a partial CountRecords) (codex RFC-106a; mirrors Java's
+// silently-truncated value (e.g. a partial CountRecords) (RFC-106a; mirrors Java's
 // RecordCursor.NoNextReason.isOutOfBand()). Inert when no scan limit is set — leaf
 // cursors then only emit SourceExhausted/ReturnLimitReached. AsListWithContinuation, the
 // paginating variant, instead returns the continuation and must NOT use this.

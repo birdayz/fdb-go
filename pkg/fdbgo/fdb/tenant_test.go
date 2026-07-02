@@ -95,7 +95,7 @@ func TestTenant_CreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
 // scoped to its tenant after Reset() — C++ reset() preserves the tenant. The
 // facade's prior fresh-inner Reset silently dropped tenant scoping, so a reset
 // tenant transaction wrote the DEFAULT keyspace (data corruption). Regression for
-// that wrong-keyspace divergence (Torvalds).
+// that wrong-keyspace divergence.
 func TestTenant_Reset_PreservesTenantScoping(t *testing.T) {
 	t.Parallel()
 	db, _ := openTestDBWithTenants(t)

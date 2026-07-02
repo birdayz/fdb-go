@@ -1001,7 +1001,7 @@ func TestCreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
 // TestCreateTransaction_ResetPreservesDatabaseDefaults verifies Reset() re-applies
 // inherited DB-level option defaults to the fresh inner transaction — matching C++
 // reset(), which re-copies the database persistent options. Regression for the
-// divergence where Reset swapped in a defaults-less inner (codex).
+// divergence where Reset swapped in a defaults-less inner.
 func TestCreateTransaction_ResetPreservesDatabaseDefaults(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -1038,7 +1038,7 @@ func TestCreateTransaction_ResetPreservesDatabaseDefaults(t *testing.T) {
 // user-set per-tx options — matching C++ reset() (clears persistentOptions), which
 // is distinct from the onError-retry reset (resetRyow) that PRESERVES them so
 // retries keep them. If Reset preserved user options, a user-set 1ms timeout would
-// survive and time out the reused transaction (codex).
+// survive and time out the reused transaction.
 func TestCreateTransaction_ResetDropsUserOptions(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t) // no database-level timeout default
@@ -1155,9 +1155,9 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 	}
 
 	// A negative limit means "unlimited" (range-read semantics) and must NOT panic
-	// via make([]Key, negative) (codex). It must equal limit=0 (also unlimited) —
+	// via make([]Key, negative). It must equal limit=0 (also unlimited) —
 	// compared against a fresh limit=0 baseline, not the limit=100 `keys` above,
-	// which would differ on a cluster with >100 boundaries (codex).
+	// which would differ on a cluster with >100 boundaries.
 	full := fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}
 	unlimited, err := db.LocalityGetBoundaryKeys(full, 0, 0)
 	if err != nil {
@@ -1174,7 +1174,7 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 	// limit < -1 is range_limits_invalid (2012): only -1/0/positive are valid
 	// (C++ GetRangeLimits::isValid, FDBTypes.h). Pinned here in the always-run
 	// pure-Go test so the wrapper's rejection is gated per-PR, not only in the
-	// cgo-tagged libfdb_c differential (codex/FDB-C-dev).
+	// cgo-tagged libfdb_c differential.
 	if _, err := db.LocalityGetBoundaryKeys(full, -5, 0); err == nil {
 		t.Fatal("LocalityGetBoundaryKeys(limit=-5) should be range_limits_invalid (2012), got nil")
 	} else {

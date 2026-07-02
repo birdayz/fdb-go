@@ -228,7 +228,7 @@ func spfreshKMeansCore(vectors [][]float64, k int, seed int64, maxIters, workers
 		// already current for `centroids` (the assignment phase above ran against
 		// them and no centroid update follows), so the final pass below is
 		// skipped — re-running it would give back one full O(n·k) Lloyd
-		// assignment, the exact work this early-stop exists to save (codex).
+		// assignment, the exact work this early-stop exists to save.
 		if iter > 0 && changed.Load() <= convergeThresh {
 			converged = true
 			break
@@ -474,7 +474,7 @@ func spfreshClosure(cands []spfreshCandidate, r int, alpha float64) []spfreshCan
 // turn every RNG rejection into a silently smaller copy-set (under-
 // replication instead of diversity). 8× the replica target is SPTAG's
 // headroom (replicaCount 8, candidate set 64). A fixed pool can still
-// truncate ahead of a diverse in-ratio candidate (codex 094.4 r2) — the
+// truncate ahead of a diverse in-ratio candidate — the
 // build path widens iteratively until the RATIO bound terminates the scan;
 // the insert path deliberately caps here (each verified candidate is a
 // sequential REAL read inside the user's save transaction) and leaves the

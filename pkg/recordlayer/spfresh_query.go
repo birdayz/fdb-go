@@ -390,7 +390,7 @@ func (f *spfreshFrontier) advance(demand int) error {
 	s := f.s
 	// cTop = max(s.c, k): gating widening on s.c alone skipped the pruned tail
 	// once the probe set hit the rerank budget, so a k > s.c scan could return
-	// fewer than k rows even with enough records in the pruned postings (codex).
+	// fewer than k rows even with enough records in the pruned postings.
 	// cTop is reused at the top-C cut in finalize.
 	cTop := s.c
 	if cTop < demand {
@@ -766,7 +766,7 @@ func (q *spfreshSmallestQueue) rq() float64 { return q.vals[len(q.vals)-1] }
 
 // resolveForward point-reads the children's centroid rows using the cellID
 // CARRIED IN THE HDR — never the cell the client routed through (the parent
-// may itself have moved cells; RFC-094 §3/§4, codex r4 #3).
+// may itself have moved cells; RFC-094 §3/§4).
 func (s *spfreshSearcher) resolveForward(tx fdb.ReadTransaction, cellID, childA, childB int64) ([]spfreshRouted, error) {
 	var out []spfreshRouted
 	for _, fineID := range []int64{childA, childB} {

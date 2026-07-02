@@ -256,7 +256,7 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 	// treats anything that is not "SPFRESH" as HNSW), so an unknown or
 	// mis-cased method must fail loudly here — AddVectorIndexUsing("SPFresh",
 	// …) silently building an HNSW index is exactly the kind of quiet
-	// misroute a schema author cannot debug (Graefe merge-HEAD F2).
+	// misroute a schema author cannot debug.
 	if method != "HNSW" && method != "SPFRESH" {
 		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"vector index %q: unknown method %q (want HNSW or SPFRESH)", indexName, method))

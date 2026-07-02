@@ -2,7 +2,7 @@ package fdb
 
 import "testing"
 
-// RFC-133 / codex #331: the database-level SetSnapshotRywDisable and SetTransactionBypassUnreadable
+// RFC-133: the database-level SetSnapshotRywDisable and SetTransactionBypassUnreadable
 // options change READ semantics on every new transaction in libfdb_c (snapshot-read-after-own-write;
 // accessed_unreadable→read). The pure-Go client must propagate them as txDefaults like the other
 // honored DB defaults, not silently drop the caller's intent. These pin both the storage of the
@@ -24,7 +24,7 @@ func TestDatabaseDefault_SnapshotRYWDisable_Propagates(t *testing.T) {
 // TestDatabaseDefault_SnapshotRYW_IsCounter pins libfdb_c's cumulative-counter semantics
 // (NativeAPI.actor.cpp:2156/2160 snapshotRywEnabled++/--; ReadYourWrites.actor.cpp:2082 seeds each
 // new tx): SetSnapshotRywEnable() then SetSnapshotRywDisable() nets to ZERO — the new tx stays
-// ENABLED — not last-wins-disabled (codex #331; a bool would get this wrong).
+// ENABLED — not last-wins-disabled (a bool would get this wrong).
 func TestDatabaseDefault_SnapshotRYW_IsCounter(t *testing.T) {
 	t.Parallel()
 	idb := &internalDB{}
@@ -66,7 +66,7 @@ func TestDatabaseDefault_BypassUnreadable_Propagates(t *testing.T) {
 	}
 }
 
-// TestDatabaseDefault_SnapshotRYW_RetryIdempotent pins codex #331: applyTxDefaults re-runs on EVERY
+// TestDatabaseDefault_SnapshotRYW_RetryIdempotent: applyTxDefaults re-runs on EVERY
 // retry attempt against the same inner tx (client.Transact re-invokes the closure) and reset()
 // preserves snapshotRYWDisableCount, so the counter must be SET (idempotent), not incremented — or
 // it drifts (-1,-2,… per attempt) and changes snapshot-read semantics on retries.

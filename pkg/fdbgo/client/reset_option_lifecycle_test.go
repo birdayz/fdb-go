@@ -146,7 +146,7 @@ func TestReset_ClearsGrvCacheAndWriteConflictFlags(t *testing.T) {
 	}
 }
 
-// TestReset_UnlimitedDBRetryDefaultStaysUnlimited pins codex #9/#14: a DB default of "unlimited retries"
+// TestReset_UnlimitedDBRetryDefaultStaysUnlimited pins that a DB default of "unlimited retries"
 // is stored as HasRetryLimit=true with RetryLimit=-1 (SetTransactionRetryLimit(-1)). A raw copy on user
 // Reset would leave hasRetryLimit=true, retryLimit=-1, and the next OnError's `retryCount >= retryLimit`
 // check (0 >= -1) would immediately STOP retrying. Routing through SetRetryLimit collapses the negative to
