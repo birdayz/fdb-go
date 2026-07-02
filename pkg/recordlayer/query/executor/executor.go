@@ -2254,13 +2254,18 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 // Slice 2 ordinal-birth leg bindings. legs nil (every name-model NLJ) keeps
 // today's dispatch bit-identically. legs non-nil (an ordinal-birth cursor,
 // oracle off) evaluates the predicates against a RowEvalContext carrying the
-// DIRECT per-leg bindings (birthLegBinder — Graefe: predicates need no
-// windows at birth): a lazy leg reference QOV(leg).col resolves leg-relative
-// against the adapted leg row (correct even for the second leg), a BAKED one
-// by its baked ordinal, an outer correlation via the base binder, and a
-// name-model qualified-key read ("A.ID", a flat FieldValue) still works via
-// Datum.
-func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext, legs map[values.CorrelationIdentifier]values.OrdinalRow) (bool, error) {
+// DIRECT per-leg bindings (the cursor's pre-built twoLegBinder — Graefe:
+// predicates need no windows at birth; Torvalds: legs PRE-adapted, one small
+// binder per pair, never a map or a re-adaptation): a lazy leg reference
+// QOV(leg).col resolves leg-relative against the adapted leg row (correct
+// even for the second leg), a BAKED one by its baked ordinal, an outer
+// correlation via the binder's base, and a name-model qualified-key read
+// ("A.ID", a flat FieldValue) still works via Datum.
+// legs is the CONCRETE *twoLegBinder (not the CorrelationBinder interface) so
+// the cursor's `var pair *twoLegBinder` typed-nil passes as a genuine nil —
+// an interface-typed param would make a typed-nil non-nil and route the name
+// model through a nil binder.
+func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext, legs *twoLegBinder) (bool, error) {
 	if len(preds) == 0 {
 		return true, nil
 	}
@@ -2269,7 +2274,7 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 		m, _ := combined.Datum.(map[string]any)
 		rc := &values.RowEvalContext{
 			Datum:        m,
-			Correlations: &birthLegBinder{legs: legs, base: correlationBase(evalCtx)},
+			Correlations: legs,
 		}
 		if evalCtx != nil {
 			rc.Binder = evalCtx

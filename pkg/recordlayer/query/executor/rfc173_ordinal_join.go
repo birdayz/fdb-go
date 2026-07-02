@@ -503,6 +503,45 @@ func (b *ordinalJoinBirth) evaluateLegs(legs map[values.CorrelationIdentifier]va
 	return evaluateOrdinalJoinRow(b.RC, b.OutputType, &birthLegBinder{legs: legs, base: base})
 }
 
+// evaluateBound births the positional row from any pre-built leg binder — the
+// zero-rebuild path the NLJ cursor's per-pair twoLegBinder uses (Torvalds
+// W3a-2: no per-pair map, no per-pair re-adaptation).
+func (b *ordinalJoinBirth) evaluateBound(bindings values.CorrelationBinder) (*PositionalRow, error) {
+	return evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings)
+}
+
+// twoLegBinder is the NLJ cursor's per-pair leg binder: exactly the join's
+// two legs, pre-adapted rows plugged in per candidate pair — no map, no
+// re-adaptation (the inner rows are a FIXED slice adapted once at cursor
+// construction; the outer is adapted once per outer-row advance; Torvalds
+// W3a-2 structural-perf catch). A nil row IS the deliberately-NULL leg
+// (LEFT/FULL padding): (nil, true), contract ruling #3. Non-leg correlations
+// delegate to base.
+type twoLegBinder struct {
+	outerID, innerID values.CorrelationIdentifier
+	outer, inner     values.OrdinalRow
+	base             values.CorrelationBinder
+}
+
+func (b *twoLegBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
+	switch id {
+	case b.outerID:
+		if b.outer == nil {
+			return nil, true // the NULL leg
+		}
+		return b.outer, true
+	case b.innerID:
+		if b.inner == nil {
+			return nil, true // the NULL leg
+		}
+		return b.inner, true
+	}
+	if b.base != nil {
+		return b.base.GetCorrelationBinding(id)
+	}
+	return nil, false
+}
+
 // evaluate is the one-shot birth: adapt both legs (nil pointer = NULL leg),
 // then evaluate the RC per-field into a PositionalRow under OutputType. base
 // resolves outer correlations beyond the two legs (may be nil).
@@ -604,11 +643,7 @@ func downstreamLegWindows(input plans.RecordQueryPlan) ([]legSpan, bool) {
 		case *plans.RecordQueryInMemorySortPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryLimitPlan:
-			children := p.GetChildren()
-			if len(children) != 1 {
-				return nil, false
-			}
-			input = children[0]
+			input = p.GetInner()
 		case *plans.RecordQueryDistinctPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryTypeFilterPlan:
