@@ -24,7 +24,8 @@ API_URL="${FRL_API_URL:-https://api.github.com/repos/birdayz/fdb-go}"
 # resolve the exact same version the binary reports.
 TAG_PREFIX="cmd/frl/"
 
-INSTALL_DIR="${FRL_INSTALL_DIR:-$HOME/.local/bin}"
+# Default resolved in main() (needs $HOME, which set -u would trip on if unset).
+INSTALL_DIR="${FRL_INSTALL_DIR:-}"
 VERSION="${FRL_VERSION:-latest}"
 UNINSTALL=0
 
@@ -262,6 +263,12 @@ uninstall() {
 
 main() {
     parse_args "$@"
+    # Resolve the default install dir here so --dir / FRL_INSTALL_DIR win first,
+    # and an unset $HOME dies with a clear message instead of a set -u crash.
+    if [ -z "$INSTALL_DIR" ]; then
+        [ -n "${HOME:-}" ] || die "cannot determine an install dir: \$HOME is unset. Pass --dir <path> or set FRL_INSTALL_DIR."
+        INSTALL_DIR="$HOME/.local/bin"
+    fi
     have curl || have wget || die "need curl or wget"
     have tar || die "need tar"
     [ "$UNINSTALL" = 1 ] && uninstall
