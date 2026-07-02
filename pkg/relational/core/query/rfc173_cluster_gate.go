@@ -20,8 +20,9 @@ import (
 // rule is caught by the loud assert in the rule's target loop — a decline is
 // forbidden (it would change plan shapes, contract ruling #1).
 //
-// W2 status: DARK — decisions are computed and recorded at the translateJoin
-// seed but nothing consumes them until W3 builds the ordinal result value.
+// LIVE since W3b: the gate's per-seed decisions drive the ordinal seed —
+// Gated joins get the baked ofOrdinalNumber result value + cross-leg
+// predicate baking; everything else stays name-model until Slice 3.
 
 // arityPoison marks a subtree that makes its cluster unclassifiable. The
 // contract direction: anything unclassifiable counts as >2, failing toward
