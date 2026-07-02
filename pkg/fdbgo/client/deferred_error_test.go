@@ -148,3 +148,33 @@ func TestDeferredError_FirstWinsAcrossSources(t *testing.T) {
 		t.Fatalf("disable-then-bad-Atomic: want 2000 (first wins), got %v", e)
 	}
 }
+
+// TestWatch_DeferredErrorBeatsWatchesDisabled pins the C++ watch gate order: the
+// deferred error is checked at the ThreadSafeTransaction::watch lambda (:654) BEFORE
+// RYW::watch's options.readYourWritesDisabled throw (ReadYourWrites.actor.cpp:2448-2449).
+// A cleanly-RYW-disabled txn that then records a deferred error (bad Atomic op-code)
+// must surface the stored 2018 from Watch — not watches_disabled (1034).
+func TestWatch_DeferredErrorBeatsWatchesDisabled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	k := []byte(t.Name() + "_k")
+
+	tx := db.CreateTransaction()
+	tx.SetReadYourWritesDisable()            // clean (pre-op) → the option applies
+	tx.Atomic(MutClearRange, k, []byte("v")) // deferred 2018
+	if err := tx.Watch(ctx, k); deferredCodeOf(err) != ErrInvalidMutationType {
+		t.Fatalf("Watch on RYW-disabled + poisoned txn: want 2018 (deferred beats 1034), got %v", err)
+	}
+
+	// Control: the same disabled txn WITHOUT a deferred error still gets 1034.
+	tx2 := db.CreateTransaction()
+	tx2.SetReadYourWritesDisable()
+	if err := tx2.Watch(ctx, k); deferredCodeOf(err) != 1034 {
+		t.Fatalf("Watch on RYW-disabled txn: want watches_disabled (1034), got %v", err)
+	}
+}

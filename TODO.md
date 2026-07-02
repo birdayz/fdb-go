@@ -1118,6 +1118,18 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/client: deferred-error vs cancelled precedence differs from libfdb_c on a BOTH-poisoned-AND-cancelled txn
+
+C++ checks `deferredError` at every ThreadSafeTransaction op lambda (get :431, watch :654, commit
+:669, …) BEFORE the underlying actor observes `resetPromise` — so a transaction that is both
+poisoned (deferred 2000/2018) and Cancel()ed surfaces the deferred code from every op. Go's
+uniform entry order is cancelled-first (checkCancelled → deferredErr → checkTimeout, in
+ensureReadVersion/Commit/WatchSetup), so the same txn surfaces 1025. Observable ONLY on that
+double-terminal corner; deferred-beats-timeout and deferred-beats-1034 are already C++-aligned
+and pinned. Resolution needs a differential probe (poison, Cancel, Get on both clients — mind
+that MultiVersionTransaction may reorder) and, if confirmed, a single swap of the two gates at
+each entry point in one FDB-C-dev cycle.
+
 ### [x] planner: `LIMIT 0` returned ALL rows unless the inner was a bare table scan (Go-only LIMIT extension) — FIXED 2026-06-28
 
 `SELECT id FROM t LIMIT 0` (bare scan) returned 0 rows, but `LIMIT 0` over any non-bare inner (WHERE / ORDER BY /

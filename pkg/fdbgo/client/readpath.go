@@ -1154,11 +1154,24 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	if cerr := ctx.Err(); cerr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, cerr // caller ctx already cancelled / past its deadline
 	}
+	// The deferred error gates the watch — C++ checks it at the
+	// ThreadSafeTransaction::watch lambda (:654) BEFORE anything in RYW::watch,
+	// in particular before the options.readYourWritesDisabled throw
+	// (ReadYourWrites.actor.cpp:2448-2449) — so
+	// SetReadYourWritesDisable();Atomic(badOp);Watch() surfaces the stored 2018,
+	// never 1034. Ordered deferred-before-timeout like every other gate
+	// (ensureReadVersion/Commit), after the cancelled checks per the codebase's
+	// uniform entry order (C++ checks deferred even before the cancel —
+	// observable only on a poisoned AND cancelled txn; that cross-op precedence
+	// question is registered in TODO.md).
+	if e := tx.deferredErr.Load(); e != nil {
+		return nil, 0, types.SpanContext{}, nil, nil, e
+	}
 	if terr := tx.checkTimeout(); terr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, terr // transaction_timed_out (1031)
 	}
-	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
-	// Returns watches_disabled (1034) immediately.
+	// C++ RYW::watch: watches are disabled when RYW is disabled
+	// (ReadYourWrites.actor.cpp:2448-2449). Returns watches_disabled (1034).
 	if tx.rywDisabled {
 		return nil, 0, types.SpanContext{}, nil, nil, &wire.FDBError{Code: 1034} // watches_disabled
 	}
