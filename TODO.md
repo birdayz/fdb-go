@@ -90,9 +90,13 @@ validation gate.
     positional read + oracleNameDatum ratified), Torvalds ACK (nits fixed: ordinalEligible stale
     doc, count_mismatch vacuity, reversed-star differential pin). Suite 54/54; dualwindow
     carve-outs EMPTY; stress: branch FASTER than master on all heavy scans (table below).
-    **W3b-2 remaining pins:** gate pin (a) runtime half (2-way-under-3-way identical
-    before/after), gate pin (b) runtime half (flattening-evasion stays name-model e2e), dedicated
-    GROUP-BY/HAVING-over-2-way EXPLAIN pin. Historical grind record:
+    **W3b-2 pins LANDED** (a3d323808 + fc653b4b0 fail-closed ON-drop fix — a PRE-EXISTING
+    silent-cross-product bug the pins caught; Graefe ACK on both). **STANDING OBLIGATION (Graefe
+    condition): gate pin (b)'s runtime-green half is BLOCKED on the pre-existing derived-with-join
+    planner gap (join-bodied derived tables don't plan; identical on master). The solo control in
+    rfc173_slice2_gate_pins_test.go goes RED the instant the planner learns the shape — when it
+    does, convert the 0AF00 decline pins to rows+plan assertions (the evasion shape must plan
+    name-model with correct rows).** Historical grind record:
     (~12 files: translator seed rfc173_ordinal_seed.go + gate revisions + executor fixes; commit
     blocked on green — pre-commit runs the suite). Fallout fixed so far (each = a gate/executor
     correction, all reviewed-in-principle): (1) LEFT OUTER = POISON — RewriteOuterJoinRule
