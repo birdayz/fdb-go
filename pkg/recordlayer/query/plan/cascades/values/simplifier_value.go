@@ -216,6 +216,18 @@ func composeFieldOverConstructor(v Value) Value {
 	if !ok {
 		return nil
 	}
+	// RFC-173 Slice 2: a BAKED node composes by ORDINAL — Java's
+	// ComposeFieldValueOverRecordConstructorRule.findColumn is
+	// getColumns().get(fieldOrdinal). Composing by the display name would pick
+	// the FIRST of two duplicate same-named columns regardless of which the
+	// ordinal denotes (§5 conflation hazard). An out-of-range ordinal means the
+	// tree is inconsistent with the bake — decline (no fold) rather than guess.
+	if fv.Resolved != nil {
+		if o := fv.Resolved.Ordinal; o >= 0 && o < len(rc.Fields) {
+			return rc.Fields[o].Value
+		}
+		return nil
+	}
 	for _, field := range rc.Fields {
 		if field.Name == fv.Field {
 			return field.Value

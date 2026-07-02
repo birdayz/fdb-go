@@ -78,7 +78,11 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 // FieldAccessValue or prefix the field with the alias ("alias.field").
 func pullUpThroughPassthrough(v Value, alias CorrelationIdentifier) Value {
 	if fv, ok := v.(*FieldValue); ok {
-		return &FieldValue{Field: fv.Field, Typ: fv.Typ}
+		// Preserve the RFC-173 baked-ordinal marker through the copy: the
+		// passthrough is an identity result value (same record flows), so the
+		// baked position stays valid; dropping it would silently degrade a
+		// BAKED node to lazy (§5 conflation hazard).
+		return &FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
 	}
 	return nil
 }
@@ -111,6 +115,17 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 	// FieldValue → resolve the field to its input expression.
 	if rc, ok := resultValue.(*RecordConstructorValue); ok {
 		if fv, ok := v.(*FieldValue); ok {
+			// RFC-173 Slice 2: a BAKED node resolves by ORDINAL — same rationale
+			// as composeFieldOverConstructor: a name lookup would pick the FIRST
+			// of two duplicate same-named output columns regardless of which the
+			// ordinal denotes (§5 conflation hazard). Out-of-range = malformed;
+			// decline rather than guess.
+			if fv.Resolved != nil {
+				if o := fv.Resolved.Ordinal; o >= 0 && o < len(rc.Fields) {
+					return rc.Fields[o].Value
+				}
+				return nil
+			}
 			for _, field := range rc.Fields {
 				if field.Name == fv.Field {
 					return field.Value
@@ -136,7 +151,8 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 // result values. Field accesses pass through unchanged.
 func pushDownThroughPassthrough(v Value) Value {
 	if fv, ok := v.(*FieldValue); ok {
-		return &FieldValue{Field: fv.Field, Typ: fv.Typ}
+		// Preserve the RFC-173 baked-ordinal marker — see pullUpThroughPassthrough.
+		return &FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
 	}
 	return nil
 }

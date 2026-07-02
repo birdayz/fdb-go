@@ -105,7 +105,16 @@ func writeSemanticHash(h io.Writer, v Value) {
 			_, _ = io.WriteString(h, f.Name+",")
 		}
 	case *FieldValue:
-		_, _ = io.WriteString(h, "field:"+t.Field)
+		// RFC-173 Slice 2: a BAKED node's identity is (name, ordinal)
+		// (EqualsWithoutChildren), so the hash mixes the ordinal in — equal ⟹
+		// same hash stays tight across the refinement. Lazy nodes keep the
+		// name-only bucket; baked vs lazy are UNEQUAL, so their differing
+		// hashes are fine (they must not share a memo bucket anyway).
+		if t.Resolved != nil {
+			_, _ = fmt.Fprintf(h, "field:%s#%d", t.Field, t.Resolved.Ordinal)
+		} else {
+			_, _ = io.WriteString(h, "field:"+t.Field)
+		}
 	// Value-bearing leaves: the literal MUST be in the hash (their
 	// EqualsWithoutChildren distinguishes different literals).
 	case *ConstantValue:

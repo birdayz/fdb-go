@@ -186,6 +186,30 @@ type FieldValue struct {
 	Field string
 	Typ   Type
 	Child Value // base value (nil = legacy flat field reference)
+
+	// Resolved is the RFC-173 Slice 2 baked-ordinal marker. nil = LAZY node
+	// (today's model: the column position is re-derived from the child's flowed
+	// type on every resolveOrdinal). Non-nil = BAKED node (Java's eager model:
+	// the position was resolved once, at construction, by
+	// NewFieldValueOfOrdinal — Field is then a DISPLAY name for diagnostics and
+	// name-model coexistence only; the ordinal is authoritative).
+	//
+	// Identity refinement (contract, RFC-173 §4 Slice 2 ruling #2): BAKED nodes
+	// compare by (name, ordinal); baked vs lazy is UNEQUAL (worst case a missed
+	// dedup, never a conflation); lazy vs lazy stays name-only. Every FieldValue
+	// copy/rebuild site MUST preserve this marker — dropping it silently
+	// degrades a baked node to lazy, which conflates duplicate same-named
+	// columns at different ordinals (§5 duplicate-name pin).
+	Resolved *ResolvedAccessor
+}
+
+// ResolvedAccessor is the construction-time-resolved accessor a BAKED
+// FieldValue carries — Java's FieldValue.ResolvedAccessor (FieldValue.java:~630),
+// whose equals/hashCode are ordinal-only. Deliberately minimal for Slice 2's
+// 2-way wedge (a single ordinal); Slice 3 widens it to a multi-accessor path
+// (Java's FieldPath + the compose rule) when nested/buried ordinal paths land.
+type ResolvedAccessor struct {
+	Ordinal int
 }
 
 func (f *FieldValue) Children() []Value {
@@ -434,6 +458,12 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 // perturb planning. The nil-Child leaf (legacy flat field, no child type to
 // resolve against) is the case that stays on the name path — see RFC-173 §4 P1.
 func (f *FieldValue) resolveOrdinal() (int, bool) {
+	// RFC-173 Slice 2: a BAKED node's position was resolved at construction
+	// (NewFieldValueOfOrdinal) — it is authoritative and returned before any
+	// lazy child-type derivation. The display name is diagnostics only.
+	if f.Resolved != nil {
+		return f.Resolved.Ordinal, true
+	}
 	if f.Child == nil {
 		return 0, false
 	}
@@ -470,6 +500,61 @@ func NewFlatFieldValue(field string, typ Type) *FieldValue {
 // (the INT NOT NULL ordinal).
 func NewOrdinalFieldValue(child Value, ordinal int, typ Type) *FieldValue {
 	return &FieldValue{Field: OrdinalFieldName(ordinal), Typ: typ, Child: child}
+}
+
+// OrdinalBakeError is the loud construction-time error NewFieldValueOfOrdinal
+// returns when the requested ordinal cannot be resolved against the child's
+// flowed type — the Go analog of Java's resolveFieldPath raising
+// SemanticException(FIELD_ACCESS_INPUT_NON_RECORD_TYPE) for a non-record child
+// and IndexOutOfBoundsException for an out-of-range ordinal
+// (FieldValue.java:273-296). Never a silent fallback: a bake failure is a
+// planner bug, not a NULL.
+type OrdinalBakeError struct {
+	Ordinal   int
+	ChildType Type // the child's flowed type (nil child, non-record, or too few fields)
+}
+
+func (e *OrdinalBakeError) Error() string {
+	return fmt.Sprintf("RFC-173 ordinal bake: cannot resolve ordinal %d against child type %v — field access by ordinal requires a record type with more than %d fields", e.Ordinal, e.ChildType, e.Ordinal)
+}
+
+// NewFieldValueOfOrdinal constructs a BAKED FieldValue accessing the child's
+// record field by ORDINAL position — Java's
+// `FieldValue.ofOrdinalNumber(childValue, ordinalNumber)` (FieldValue.java:335):
+// the position is resolved ONCE, here, and carried on the node (Resolved);
+// resolveOrdinal returns it without re-deriving from the child type. The
+// DISPLAY name (Field) and Typ are read from the child's RecordType at
+// `ordinal` — the name serves diagnostics and name-model coexistence (Datum
+// keys, explain); the ordinal is authoritative (it survives even when a
+// runtime row's type names disagree with the display name).
+//
+// NOT the same as NewOrdinalFieldValue (above): that is the LEGACY lazy
+// `_<ordinal>` NAME-emulation (ordinal access spelled as name access on the
+// OrdinalFieldName key, used by the lateral-unnest lowering) — it resolves by
+// name at runtime and carries no baked marker. This constructor is the RFC-173
+// Slice 2 eager path; the `_N` emulation dies with the name machinery in
+// Slice 4.
+//
+// Errors loudly (Java raises; no silent fallback) when the child does not
+// flow a *RecordType or the ordinal is out of range.
+func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
+	if child == nil {
+		return nil, &OrdinalBakeError{Ordinal: ordinal}
+	}
+	rt, ok := child.Type().(*RecordType)
+	if !ok {
+		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: child.Type()}
+	}
+	if ordinal < 0 || ordinal >= len(rt.Fields) {
+		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: rt}
+	}
+	fld := rt.Fields[ordinal]
+	return &FieldValue{
+		Field:    fld.Name,
+		Typ:      fld.FieldType,
+		Child:    child,
+		Resolved: &ResolvedAccessor{Ordinal: ordinal},
+	}, nil
 }
 
 // WalkValue applies visit to every node in v's subtree, pre-order.

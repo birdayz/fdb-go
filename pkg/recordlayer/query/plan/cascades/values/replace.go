@@ -352,7 +352,11 @@ func withChildren(v Value, newChildren []Value) Value {
 		if len(newChildren) != 1 {
 			return v
 		}
-		return &FieldValue{Field: vt.Field, Typ: vt.Typ, Child: newChildren[0]}
+		// Preserve the RFC-173 baked-ordinal marker: dropping Resolved would
+		// silently degrade a BAKED node to lazy — a conflation hazard for
+		// duplicate same-named columns (§5 pin). Covers Replace/RebaseValue and
+		// every simplifier rebuild that funnels through WithChildren.
+		return &FieldValue{Field: vt.Field, Typ: vt.Typ, Child: newChildren[0], Resolved: vt.Resolved}
 
 	case *ExistsValue:
 		// Transparent composite (RFC-141) over a single child

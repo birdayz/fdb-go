@@ -97,6 +97,7 @@ go_test(
         "replace_test.go",
         "rfc173_p1_field_ordinal_test.go",
         "rfc173_slice1_ordinal_eval_test.go",
+        "rfc173_slice2_baked_ordinal_test.go",
         "scalar_function_value_evaluate_test.go",
         "scalar_functions_errors_test.go",
         "scalar_functions_extra2_test.go",
