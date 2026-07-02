@@ -20,6 +20,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -238,6 +239,30 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		tr.translateRef(cte)
 		if d, ok := tr.wedgeGate[bodyJoin]; !ok || d.Gated {
 			t.Fatalf("derived join leg of a WHERE-EXISTS select: %+v (ok=%v), want recorded and NOT gated (enclosed by the existential flatten)", d, ok)
+		}
+	})
+
+	t.Run("having_exists_untranslatable", func(t *testing.T) {
+		t.Parallel()
+		// HAVING-EXISTS over a 2-way join input (Graefe W2 matrix addition):
+		// translateAggregate REJECTS HavingExistsSubqueries entirely (Java has
+		// no support either), so no expression exists for the existential
+		// quantifiers to land in — the drift assert is unreachable from this
+		// shape by construction. The nested join is seeded (and gated: the
+		// aggregate boundary roots a fresh cluster) before the rejection, but
+		// the plan dies with it.
+		nested := inner(scan("Order", "o"), scan("Customer", "c"))
+		agg := logical.NewAggregate(nested, []string{"o.order_id"}, []string{"COUNT(*)"}, []string{"cnt"}, "")
+		agg.HavingPredicate = &predicates.ComparisonPredicate{
+			Operand:    &values.FieldValue{Field: "CNT"},
+			Comparison: predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int64(0)}},
+		}
+		agg.HavingExistsSubqueries = []logical.ExistsSubquery{
+			{Alias: values.NamedCorrelationIdentifier("e"), Plan: scan("TypedRecord", "t")},
+		}
+		tr := newGateTranslator(t)
+		if ref := tr.translateRef(agg); ref != nil {
+			t.Fatal("HAVING-EXISTS must be untranslatable (Java parity) — a plan here would put existential quantifiers above the aggregate with no gate coverage")
 		}
 	})
 }

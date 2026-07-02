@@ -233,12 +233,21 @@ func composeFieldOverConstructor(v Value) Value {
 		}
 		return rc.Fields[o].Value
 	}
+	// LAZY compose: name-based, but DECLINE when the name is ambiguous — a
+	// dup-named RC (constructible only by RFC-173 ordinal seeds) matched by a
+	// lazy reference has no defensible first-match answer; a wrong fold here
+	// is the §5 conflation. Ambiguous references are the resolver's to reject
+	// (42702); the simplifier just refuses to guess (Graefe W2 checklist).
+	var match Value
 	for _, field := range rc.Fields {
 		if field.Name == fv.Field {
-			return field.Value
+			if match != nil {
+				return nil
+			}
+			match = field.Value
 		}
 	}
-	return nil
+	return match
 }
 
 // composeFieldOverField implements Java's ComposeFieldValueOverFieldValueRule:

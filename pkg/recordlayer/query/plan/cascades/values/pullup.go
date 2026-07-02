@@ -156,10 +156,20 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 				}
 				return nil
 			}
+			// LAZY push-down: name-based, but DECLINE on an ambiguous name —
+			// same rationale as composeFieldOverConstructor's lazy arm (a
+			// dup-named RC has no defensible first match; Graefe W2 checklist).
+			var match Value
 			for _, field := range rc.Fields {
 				if field.Name == fv.Field {
-					return field.Value
+					if match != nil {
+						return nil
+					}
+					match = field.Value
 				}
+			}
+			if match != nil {
+				return match
 			}
 			return nil // field not found in constructor
 		}

@@ -313,10 +313,20 @@ func TestFieldValueBaked_ComposeOverRC_ByOrdinal_RFC173S2(t *testing.T) {
 		t.Fatalf("baked ID#0 over RC(ID:a, ID:b) simplified to %v, want a", got)
 	}
 
-	// Lazy compose: unchanged name-based first-match.
+	// Lazy compose over an AMBIGUOUS (duplicated) name: DECLINE — no fold, the
+	// node rides unchanged (there is no defensible first match; Graefe W2
+	// checklist). Over a UNIQUE name the fold is unchanged.
 	lazy := NewFieldValue(rc, "ID", NullableString)
-	if got := SimplifyValue(lazy); got != constA {
-		t.Fatalf("lazy ID over RC simplified to %v, want first-match a (unchanged)", got)
+	if got := SimplifyValue(lazy); got != lazy {
+		t.Fatalf("lazy ID over dup-named RC simplified to %v, want DECLINE (node unchanged) — no defensible first match", got)
+	}
+	cleanRC := &RecordConstructorValue{Fields: []RecordConstructorField{
+		{Name: "ID", Value: constA},
+		{Name: "X", Value: constB},
+	}}
+	lazyClean := NewFieldValue(cleanRC, "ID", NullableString)
+	if got := SimplifyValue(lazyClean); got != constA {
+		t.Fatalf("lazy ID over clean RC simplified to %v, want a (unchanged)", got)
 	}
 
 	// A baked ordinal the node's OWN child RC cannot satisfy is a tree
@@ -359,10 +369,18 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal_RFC173S2(t *testing.T) {
 		t.Fatalf("baked ID#0 pushed through RC(ID:a, ID:b) = %v, want a", got)
 	}
 
-	// Lazy: unchanged name-based first-match.
+	// Lazy over an AMBIGUOUS name: DECLINE (nil) — same rationale as the
+	// compose arm. Over a unique name: unchanged.
 	lazy := NewFlatFieldValue("ID", NullableString)
-	if got := PushDownValue(lazy, rc, upper); got != constA {
-		t.Fatalf("lazy ID pushed through RC = %v, want first-match a (unchanged)", got)
+	if got := PushDownValue(lazy, rc, upper); got != nil {
+		t.Fatalf("lazy ID pushed through dup-named RC = %v, want DECLINE (nil)", got)
+	}
+	cleanRC := &RecordConstructorValue{Fields: []RecordConstructorField{
+		{Name: "ID", Value: constA},
+		{Name: "X", Value: constB},
+	}}
+	if got := PushDownValue(lazy, cleanRC, upper); got != constA {
+		t.Fatalf("lazy ID pushed through clean RC = %v, want a (unchanged)", got)
 	}
 
 	// Out-of-range baked ordinal: decline. Unlike the compose rule (where the
@@ -438,6 +456,43 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	lazy := NewFieldValue(qov, "ID", NotNullLong)
 	if v, err := lazy.Evaluate(&RowEvalContext{Datum: nameRow}); err != nil || v != int64(7) {
 		t.Fatalf("lazy over name context = (%v, %v), want (7, nil) — name model unchanged", v, err)
+	}
+}
+
+// TestContainsBakedOrdinal_RFC173S2 pins the drift-assert probe itself: a
+// baked node found at depth, a pure-lazy tree reporting false, and nil
+// safety — the SelectMergeRule assert keys on this walk, so a walk bug would
+// silently kill the assert (Torvalds W2 catch).
+func TestContainsBakedOrdinal_RFC173S2(t *testing.T) {
+	t.Parallel()
+	rt := NewRecordType("", false, []Field{
+		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+	})
+	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), rt)
+	baked, err := NewFieldValueOfOrdinal(qov, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	lazy := NewFieldValue(qov, "ID", NotNullLong)
+
+	// Baked node buried two levels deep inside an RC.
+	deep := NewRecordConstructorValue(
+		RecordConstructorField{Name: "OUT", Value: NewRecordConstructorValue(
+			RecordConstructorField{Name: "INNER", Value: baked},
+		)},
+	)
+	if !ContainsBakedOrdinal(deep) {
+		t.Fatal("ContainsBakedOrdinal missed a deep baked node — the drift assert would be dead")
+	}
+	if !ContainsBakedOrdinal(baked) {
+		t.Fatal("ContainsBakedOrdinal(baked leaf) = false")
+	}
+	lazyTree := NewRecordConstructorValue(RecordConstructorField{Name: "OUT", Value: lazy})
+	if ContainsBakedOrdinal(lazyTree) {
+		t.Fatal("ContainsBakedOrdinal reports true for a pure-lazy tree — the assert would false-positive")
+	}
+	if ContainsBakedOrdinal(nil) {
+		t.Fatal("ContainsBakedOrdinal(nil) must be false")
 	}
 }
 
