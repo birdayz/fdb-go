@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestFDB_RFC173Slice1_NoSpuriousSort is the Graefe §5 ordering-propagation pin
+// TestFDB_RFC173Slice1_NoSpuriousSort is the reviewer §5 ordering-propagation pin
 // for RFC-173 Slice 1: making ordinal column resolution authoritative on the
 // non-join frontier must NOT break the provided-ordering rebase. A column's
 // identity flips name→ordinal, so if the ordering pull-up

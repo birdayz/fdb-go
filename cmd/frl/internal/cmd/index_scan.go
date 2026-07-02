@@ -13,10 +13,9 @@ import (
 
 func newIndexScanCmd() *cobra.Command {
 	var (
-		contextName string
-		metaFile    string
-		limit       int
-		reverse     bool
+		addr    storeAddressFlags
+		limit   int
+		reverse bool
 	)
 	c := &cobra.Command{
 		Use:   "scan <name>",
@@ -34,12 +33,12 @@ func newIndexScanCmd() *cobra.Command {
 			"scan modes which aren't wired into `frl` yet.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
 			name := args[0]
-			return withStoreE(cmd.Context(), cfgCtx, override,
+			return withStoreE(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) error {
 					idx, err := lookupIndex(store.GetRecordMetaData(), name)
 					if err != nil {
@@ -49,8 +48,7 @@ func newIndexScanCmd() *cobra.Command {
 				})
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().IntVar(&limit, "limit", defaultScanLimit, "max entries to return; 0 means unlimited")
 	c.Flags().BoolVar(&reverse, "reverse", false, "scan in reverse order")
 	return c

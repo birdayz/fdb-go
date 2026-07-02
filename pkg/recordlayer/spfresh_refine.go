@@ -32,7 +32,7 @@ const (
 // match the bulk build's MAX pool (4·spfreshClosurePool, the cap the build's
 // router widens to). A narrower pool re-evaluates a converged index with too few
 // candidates and drops replicas the wide build placed — regressing recall and
-// breaking the no-op-on-converged property (codex r1 P2). =64 for the default
+// breaking the no-op-on-converged property. =64 for the default
 // Replication=2, 96/128 for r=3/4.
 func spfreshRefineKc(config SPFreshConfig) int { return 4 * spfreshClosurePool(config.Replication) }
 
@@ -153,7 +153,7 @@ func spfreshRefinePKInTx(tx fdb.WritableTransaction, s *spfreshStorage, config S
 
 // spfreshLoadRefineCache loads the routing cache for the current generation,
 // re-validated each call: a generation flip (bulk rebuild) must not route the
-// remaining pks against dead topology (codex/Torvalds P2).
+// remaining pks against dead topology.
 func spfreshLoadRefineCache(ctx context.Context, db *FDBDatabase, s *spfreshStorage) (*spfreshRoutingCache, error) {
 	cache := newSPFreshRoutingCache(0)
 	if rerr := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
@@ -250,7 +250,7 @@ func spfreshRefineAll(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 // accumulated SINCE the last wrap (so convergence is judged over a full cursor
 // CYCLE, not one budgeted pass — a tenant with n > budget completes a cycle over
 // several passes; an early pass can move rows while the wrapping tail pass moves
-// none, codex), and the raw membership-relative key bytes to resume after (nil =
+// none), and the raw membership-relative key bytes to resume after (nil =
 // start of the keyspace). Format: [generation:8 LE][movedSinceWrap:8 LE][after...].
 type spfreshRefineCursor struct {
 	generation     int64
@@ -296,7 +296,7 @@ func spfreshWriteRefineCursor(tx fdb.WritableTransaction, s *spfreshStorage, cur
 // reaches the end). Returns (moves, cycleConverged): cycleConverged is true only
 // when this pass WRAPS and the whole cursor cycle since the last wrap moved
 // nothing — the honest convergence signal even when n > budget spreads a cycle
-// across several passes (codex). It does NOT drain to quiescence — the caller
+// across several passes. It does NOT drain to quiescence — the caller
 // loops on its own cadence. Cursor advance is idempotent under commit_unknown and
 // tolerates benign double-coverage across executors (every move is idempotent).
 func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, budget int) (int, bool, error) {
@@ -331,13 +331,13 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 	// The budget bounds WORK (pks re-evaluated), not moves: a converged or
 	// low-move index does few moves but must still return promptly and advance
 	// the cursor incrementally — otherwise the first call on a large quiescent
-	// index would walk the entire membership keyspace before returning (codex
-	// rfc104-impl P1). `moved` is only the reported per-pass move count.
+	// index would walk the entire membership keyspace before returning.
+	// `moved` is only the reported per-pass move count.
 	processed := 0
 	// sinceWrap accumulates moves over the WHOLE cursor cycle (across earlier
 	// passes since the last wrap, carried in the cursor): convergence is judged on
 	// it, not the per-pass `moved`, so a budgeted tenant whose tail pass happens to
-	// move nothing isn't falsely declared converged (codex fleet P2).
+	// move nothing isn't falsely declared converged.
 	sinceWrap := cur.movedSinceWrap
 	cycleConverged := false
 	for processed < budget {
@@ -347,8 +347,8 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		short := false
 		// Re-evaluated per ATTEMPT: spfreshRun auto-retries the body on conflict,
 		// so a counter mutated inside the closure would tally aborted attempts.
-		// Fold into the outer `moved` only after the commit succeeds (codex
-		// rfc104-impl P1 — the spfreshRefineAll prototype already does this).
+		// Fold into the outer `moved` only after the commit succeeds (the
+		// spfreshRefineAll prototype already does this).
 		batchMoved := 0
 		if rerr := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 			pks = pks[:0]
@@ -421,7 +421,7 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 // true when this call wrapped the cursor AND the whole cycle since the last wrap
 // moved nothing — the signal a caller uses to back off a converged tenant. It is
 // NOT merely "this pass reached the end": a budgeted pass whose tail moves zero
-// does not imply the cycle's earlier passes did (codex).
+// does not imply the cycle's earlier passes did.
 func RefineSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, budget int) (int, bool, error) {
 	s, config, err := spfreshResolveRefineTarget(ctx, db, storeBuilder, indexName)
 	if err != nil {

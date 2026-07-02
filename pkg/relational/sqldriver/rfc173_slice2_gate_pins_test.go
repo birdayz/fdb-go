@@ -468,7 +468,7 @@ func TestFDB_RFC173_DupNameStarOverGatedJoin(t *testing.T) {
 	})
 }
 
-// TestFDB_RFC173_CoveringIndexLegOverGatedJoin pins the Torvalds PR-447
+// TestFDB_RFC173_CoveringIndexLegOverGatedJoin pins the PR-447 review
 // catch's dimension E2E: a GATED join whose probe leg is served by a
 // COVERING index scan. Covering rows are INDEX-shaped (value-columns-then-PK
 // — [A_ID, ID]) while the seed types the leg in table order ([ID, A_ID]):

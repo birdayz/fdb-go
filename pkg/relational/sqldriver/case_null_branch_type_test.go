@@ -12,7 +12,7 @@ import (
 // TestFDB_CaseNullBranchColumnType pins the result-set column TYPE of a CASE
 // (and COALESCE) expression that has a literal NULL branch: the NULL carries no
 // type and must be ignored, so the result is typed by the concrete branch
-// (BIGINT / STRING), NOT UNKNOWN. Regression for RFC-082 / codex / Graefe: a
+// (BIGINT / STRING), NOT UNKNOWN. Regression for RFC-082: a
 // literal NULL is `NewNullValue(TypeUnknown)` whose type CODE is unknown, so it
 // must be detected by value kind (*values.NullValue) — otherwise commonBranchType
 // poisons the whole CASE to UNKNOWN. A non-NULL genuinely-unknown branch DOES

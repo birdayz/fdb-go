@@ -675,7 +675,7 @@ type nljCursor struct {
 	// innerAdapted is the FIXED inner-rows slice adapted once at construction
 	// (parallel to innerRows); outerAdapted is the current outer row adapted
 	// once per outer-row advance. Together they make the per-candidate-pair
-	// cost one small twoLegBinder — no re-adaptation, no map (Torvalds W3a-2
+	// cost one small twoLegBinder — no re-adaptation, no map (review W3a-2
 	// structural-perf catch: the name model pays no per-pair adapter work, so
 	// neither may the window).
 	innerAdapted []values.OrdinalRow
@@ -713,7 +713,7 @@ func newNLJCursor(
 		c.birthActive = true
 		c.outerCorr = values.NamedCorrelationIdentifier(outerAlias)
 		c.innerCorr = values.NamedCorrelationIdentifier(innerAlias)
-		// Adapt the FIXED inner side once (Torvalds W3a-2: never per pair).
+		// Adapt the FIXED inner side once (review W3a-2: never per pair).
 		innerType := birth.legType(c.innerCorr)
 		c.innerAdapted = make([]values.OrdinalRow, len(innerRows))
 		for i := range innerRows {

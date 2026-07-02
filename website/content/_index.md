@@ -1,5 +1,6 @@
 ---
 title: "fdb.dev: FoundationDB for Go"
+description: "A pure-Go FoundationDB client (no cgo, 2-4x faster reads than libfdb_c), plus a wire-compatible Record Layer and SQL engine. Share a cluster with Java."
 layout: hextra-home
 toc: false
 ---
@@ -22,7 +23,7 @@ toc: false
 
 <div class="hero-cta">
 {{< hextra/hero-button text="Get started  →" link="docs" >}}
-{{< hextra/hero-button text="Star on GitHub" link="https://github.com/birdayz/fdb-go" style="background:transparent;border:1px solid var(--hextra-primary-color, #888);color:inherit" >}}
+{{< hextra/hero-button text="View on GitHub" link="https://github.com/birdayz/fdb-go" style="background:transparent;border:1px solid var(--hextra-primary-color, #888);color:inherit" >}}
 </div>
 
 <div class="hero-code">
@@ -31,12 +32,13 @@ toc: false
 import "fdb.dev/pkg/fdbgo/fdb" // pure Go. CGO_ENABLED=0. no libfdb_c.
 
 fdb.MustAPIVersion(730)
-db, _ := fdb.OpenDatabase("/etc/foundationdb/fdb.cluster")
+db := fdb.MustOpenDatabase("/etc/foundationdb/fdb.cluster")
 
-db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+greeting, err := db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 	tx.Set(fdb.Key("greeting"), []byte("hello"))
 	return tx.Get(fdb.Key("greeting")).MustGet(), nil
 })
+// greeting == []byte("hello"), err == nil. Committed atomically.
 ```
 
 </div>
@@ -72,7 +74,7 @@ Install the driver, then open a database, create a schema, and read and write, a
 </div>
 
 {{< callout type="info" >}}
-  No cluster handy? `frl fdb up` starts a single-node FoundationDB in Docker (the only prerequisite) and points the `frl` CLI at it. Remove it with `frl fdb down`.
+  No cluster handy? Grab the CLI (`curl -fsSL https://fdb.dev/install.sh | sh`), then `frl fdb up` starts a single-node FoundationDB in Docker (the only prerequisite). Remove it with `frl fdb down`. The installer ships a checksum-verified static binary; `go install fdb.dev/cmd/frl@latest` builds the same thing from source.
 {{< /callout >}}
 
 <div class="s-steps">
@@ -114,7 +116,8 @@ func main() {
 	db.Exec(`CREATE SCHEMA /myapp/main WITH TEMPLATE app`)
 
 	// Write a row, then read it back.
-	db.Exec(`INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')`)
+	db.Exec(`INSERT INTO users (id, name, email)
+	    VALUES (1, 'Alice', 'alice@example.com')`)
 
 	var name string
 	if err := db.QueryRow(
@@ -149,7 +152,7 @@ Alice │ alice@example.com
 
 <div class="s-body">
 
-FoundationDB is an ordered, transactional key-value store with strict-serializable ACID, and it's what Snowflake and Apple's CloudKit run on. Higher-level data models are built as **layers** on top of it. fdb.dev is the Go client plus a growing set of those layers.
+FoundationDB is an ordered, transactional key-value store with strict-serializable ACID. Snowflake's metadata store and Apple's CloudKit are built on it. Higher-level data models are built as **layers** on top of it. fdb.dev is the Go client plus a growing set of those layers.
 
 </div>
 

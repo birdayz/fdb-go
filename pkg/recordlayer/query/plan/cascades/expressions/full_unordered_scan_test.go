@@ -35,7 +35,7 @@ func TestFullUnorderedScan_NilFlowedType(t *testing.T) {
 }
 
 // TestFullUnorderedScan_GetResultValueFlowsType_RFC173Slice1 pins the latent bug
-// Graefe caught in RFC-173 Slice 1: GetResultValue hard-coded
+// reviewer caught in RFC-173 Slice 1: GetResultValue hard-coded
 // NewQuantifiedObjectValue → UnknownType, silently DISCARDING the scan's own
 // flowedType. That forced every single-table scan onto name resolution because
 // FieldValue.resolveOrdinal's `f.Child.Type().(*RecordType)` assertion failed on
@@ -71,7 +71,7 @@ func TestFullUnorderedScan_GetResultValueFlowsType_RFC173Slice1(t *testing.T) {
 		t.Fatal("UnknownType scan must not flow a *RecordType — untyped seeds stay on the name path")
 	}
 
-	// Trap 2 (Graefe): two scans of one table build structurally-equal RecordTypes,
+	// Trap 2 (reviewer): two scans of one table build structurally-equal RecordTypes,
 	// so EqualsWithoutChildren (which compares flowedType) still dedups them in the
 	// memo — no pointer cache needed because RecordType.Equals is structural.
 	scanTwin := NewFullUnorderedScanExpression([]string{"T"}, mkType())
@@ -80,7 +80,7 @@ func TestFullUnorderedScan_GetResultValueFlowsType_RFC173Slice1(t *testing.T) {
 	}
 }
 
-// TestFullUnorderedScan_FlowedTypeWildcard_RFC173Slice1 pins Fork B (Graefe's
+// TestFullUnorderedScan_FlowedTypeWildcard_RFC173Slice1 pins Fork B (reviewer's
 // ruling): the scan-leaf flowedType is non-discriminating when either side is
 // UnknownType, matching Java's AnyRecord-on-both-leaves invariant. A typed query
 // scan (RFC-173 Slice 1) must still subsume/dedup against an UnknownType

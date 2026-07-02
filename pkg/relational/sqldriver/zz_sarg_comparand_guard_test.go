@@ -36,7 +36,7 @@ func queryIDs(t *testing.T, db *sql.DB, ctx context.Context, q string) []int64 {
 	return out
 }
 
-// GRAEFE-1 regression: a self-comparison between two columns of the SAME scanned
+// Self-comparison regression: a self-comparison between two columns of the SAME scanned
 // source must NOT SARG either column into a scan range. The commuted orientation
 // of `b = a` (a indexed, b not) would bind the indexed column `a` and seek the
 // circular range `a = <this row's b>`, which returns 0 rows. bindOriented
@@ -96,7 +96,7 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 	}
 }
 
-// GRAEFE-2 regression: a 2-table join with TWO cross-correlation predicates, one
+// Probe-fed-residual regression: a 2-table join with TWO cross-correlation predicates, one
 // of which is a primary-key probe (t.fk = u.id) and one a non-sargable secondary
 // filter (t.a = u.c, u.c unindexed), must drive the SMALL/probe-able side and
 // PK-probe the other — FlatMap(Scan(T), probe(U)) — not full-scan T per U row

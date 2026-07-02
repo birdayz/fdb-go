@@ -2,12 +2,10 @@ package cmd
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
-	"fdb.dev/cmd/frl/internal/config"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -25,7 +23,7 @@ func newTxCmd() *cobra.Command {
 // the cluster file + network path are working. Read-only — never
 // commits anything.
 func newTxReadVersionCmd() *cobra.Command {
-	var contextName, outputFmt string
+	var contextName, outputFmt, clusterFile string
 	c := &cobra.Command{
 		Use:   "read-version",
 		Short: "Print the current FDB global read version",
@@ -43,19 +41,14 @@ func newTxReadVersionCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfg, err := config.Load()
+			// --cluster-file makes this self-contained — the classic
+			// chain: frl tx read-version --cluster-file $(frl fdb up).
+			f := storeAddressFlags{contextName: contextName, clusterFile: clusterFile}
+			target, err := f.resolve()
 			if err != nil {
 				return err
 			}
-			cfgCtx, err := config.ResolveContext(cfg, contextName)
-			if err != nil {
-				if errors.Is(err, config.ErrNoContext) {
-					path, _ := config.Path()
-					return fmt.Errorf("%w (config: %s)", err, path)
-				}
-				return err
-			}
-			db, err := openDatabase(cfgCtx.GetClusterFile())
+			db, err := openDatabase(target.clusterFile())
 			if err != nil {
 				return err
 			}
@@ -77,6 +70,7 @@ func newTxReadVersionCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file — chains with `frl fdb up`")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }

@@ -70,7 +70,7 @@ func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry
 
 	executeProps := c.scanProps.GetExecuteProperties()
 
-	// Check the returned-row limit FIRST (codex RFC-106a): a MAX_ROWS/LIMIT-bounded
+	// Check the returned-row limit FIRST (RFC-106a): a MAX_ROWS/LIMIT-bounded
 	// text scan must stop cleanly with ReturnLimitReached before the scan-record
 	// backstop below can turn a satisfied row cap into a 54F01 (match index_scan).
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {

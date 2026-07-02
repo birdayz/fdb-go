@@ -13,7 +13,7 @@ import (
 // SYNCHRONOUSLY in WatchSetup (registration order), matching C++ Transaction::watch's
 // increaseWatchCounter at watch() time (NativeAPI.actor.cpp:5694) — NOT in the async WatchPoll
 // goroutine. Charging it in the async poll let two Watch() calls under MAX_WATCHES=1 race for the
-// slot, so the first-registered watch could lose to the second (codex). Revert-proof: with the
+// slot, so the first-registered watch could lose to the second. Revert-proof: with the
 // charge back in WatchPoll, the second WatchSetup below returns nil instead of too_many_watches.
 func TestWatchSetup_ChargesSlotAtRegistrationOrder(t *testing.T) {
 	t.Parallel()
@@ -79,7 +79,7 @@ func TestWatchSetup_CancelledTxnDoesNotLeakSlot(t *testing.T) {
 
 // TestWatchSetup_CancellationOutranksWatchCap pins that transaction_cancelled (1025) out-ranks
 // too_many_watches (1032): a Watch() on an already-Cancel()ed txn must report 1025 even when the cap
-// is full/zero, because the cancellation check runs BEFORE the slot acquire (codex). Revert-proof:
+// is full/zero, because the cancellation check runs BEFORE the slot acquire. Revert-proof:
 // with the acquire first, a 0-cap returns 1032 for the cancelled txn.
 func TestWatchSetup_CancellationOutranksWatchCap(t *testing.T) {
 	t.Parallel()
@@ -100,7 +100,7 @@ func TestWatchSetup_CancellationOutranksWatchCap(t *testing.T) {
 // TestWatchSetup_FailedSetupDoesNotPoisonNextWatch pins that a failed WatchSetup (here: a
 // pre-cancelled per-call context fails the GRV) does not poison a later watch on the same active
 // transaction — the later watch mints its OWN fresh, live context (per-watch design, RFC-168), never
-// reusing the failed watch's cancelled one (codex round 13). The failed setup cancels+deregisters only
+// reusing the failed watch's cancelled one. The failed setup cancels+deregisters only
 // its own scoped context.
 func TestWatchSetup_FailedSetupDoesNotPoisonNextWatch(t *testing.T) {
 	t.Parallel()
@@ -134,7 +134,7 @@ func TestWatchSetup_FailedSetupDoesNotPoisonNextWatch(t *testing.T) {
 
 // TestWatchSetup_TerminalErrorsOutrankCap pins that a doomed watch surfaces its REAL terminal error
 // rather than having a full/0 cap mask it with too_many_watches (1032): the caller-ctx and
-// SetTimeout gates run BEFORE the slot acquire (codex). Revert-proof: charge the cap first and a
+// SetTimeout gates run BEFORE the slot acquire. Revert-proof: charge the cap first and a
 // cancelled/timed-out setup returns 1032 instead of context.Canceled / 1031.
 func TestWatchSetup_TerminalErrorsOutrankCap(t *testing.T) {
 	t.Parallel()
@@ -165,7 +165,7 @@ func TestWatchSetup_TerminalErrorsOutrankCap(t *testing.T) {
 
 // TestWatchSetup_CancellationOutranksKeyValidation pins that terminal txn/ctx state out-ranks the
 // key-legality validation: a Cancel()ed txn watching an ILLEGAL (system) key must return 1025, not
-// key_outside_legal_range (2004) — matching the other reads' entry-timebomb precedence (codex).
+// key_outside_legal_range (2004) — matching the other reads' entry-timebomb precedence.
 // Revert-proof: with the key validation before the terminal checks, this returns 2004.
 func TestWatchSetup_CancellationOutranksKeyValidation(t *testing.T) {
 	t.Parallel()

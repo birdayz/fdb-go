@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"io"
 	"strconv"
+	"strings"
 )
 
 // SemanticHashCode returns an ALIAS-INVARIANT structural hash of a Value: the
@@ -74,7 +75,7 @@ func writeSemanticHash(h io.Writer, v Value) {
 	// Structural types whose EqualsWithoutChildren compares a non-alias
 	// discriminator (op / target type / name) the bare Name() default would
 	// drop — fold it so the hash matches equality's resolution (RFC-040
-	// hash-quality, Torvalds review). All alias-free.
+	// hash-quality). All alias-free.
 	case *ArithmeticValue:
 		_, _ = fmt.Fprintf(h, "arith:%v", t.Op)
 	case *AggregateValue:
@@ -105,15 +106,26 @@ func writeSemanticHash(h io.Writer, v Value) {
 			_, _ = io.WriteString(h, f.Name+",")
 		}
 	case *FieldValue:
+		// '#' in the raw field text is doubled — same escape as ExplainValue's
+		// FieldValue arm — so the '#<ordinal>' discriminators below cannot
+		// collide with a field literally named "X#0" (quoted identifiers may
+		// contain '#'). A collision here is only a hash-bucket share (equality
+		// stays sound), but keeping the discriminator injective mirrors the
+		// rendering-keyed plan identity.
+		_, _ = io.WriteString(h, "field:"+strings.ReplaceAll(t.Field, "#", "##"))
 		// RFC-173 Slice 2: a BAKED node's identity is (name, ordinal)
 		// (EqualsWithoutChildren), so the hash mixes the ordinal in — equal ⟹
 		// same hash stays tight across the refinement. Lazy nodes keep the
 		// name-only bucket; baked vs lazy are UNEQUAL, so their differing
 		// hashes are fine (they must not share a memo bucket anyway).
 		if t.Resolved != nil {
-			_, _ = fmt.Fprintf(h, "field:%s#%d", t.Field, t.Resolved.Ordinal)
-		} else {
-			_, _ = io.WriteString(h, "field:"+t.Field)
+			_, _ = fmt.Fprintf(h, "#%d", t.Resolved.Ordinal)
+		}
+		// A plan-time-resolved ordinal accessor is part of the FieldPath
+		// identity (mirrors EqualsWithoutChildren): reads of duplicate-named
+		// output columns differ only by ordinal.
+		if t.HasResolvedOrdinal {
+			_, _ = fmt.Fprintf(h, "#%d", t.ResolvedOrdinal)
 		}
 	// Value-bearing leaves: the literal MUST be in the hash (their
 	// EqualsWithoutChildren distinguishes different literals).

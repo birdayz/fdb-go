@@ -18,7 +18,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// TestRFC106a_DefaultSafety is the Torvalds default-safety gate: a
+// TestRFC106a_DefaultSafety is the default-safety gate: a
 // connection with NO options/config yields per-page ExecuteProperties with
 // ScannedRecordsLimit==0 (the recordlayer "no limit" value),
 // ScannedBytesLimit==0, and FailOnScanLimitReached==false. The only
@@ -132,7 +132,7 @@ func TestRFC106a_SQLSTATEMap(t *testing.T) {
 	}
 }
 
-// TestRFC106a_StatementTimeoutVsCallerDeadline pins the codex PR #291 fix: the
+// TestRFC106a_StatementTimeoutVsCallerDeadline pins the PR #291 fix: the
 // INTERNAL RFC-106a statement-timeout deadline maps to 54F01 "statement timeout", while
 // a CALLER's own QueryContext/ExecContext deadline propagates as context.DeadlineExceeded
 // (never rewritten to 54F01) so errors.Is(err, context.DeadlineExceeded) keeps working

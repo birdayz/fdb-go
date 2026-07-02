@@ -1,6 +1,6 @@
 package cascades
 
-// RFC-152 — cost-model materialization for the LEFT-OUTER rewrite (codex P2 on #364).
+// RFC-152 — cost-model materialization for the LEFT-OUTER rewrite.
 //
 // `SELECT a.id FROM a LEFT JOIN b ON a.flag = 1` (ON pred references ONLY the
 // preserved leg). RewriteOuterJoinRule ALWAYS fires (Java-faithful, no cross-leg
@@ -97,7 +97,7 @@ func TestRFC152_RewriteOuterJoinYieldsNullOnEmpty(t *testing.T) {
 }
 
 // TestRFC173_RewriteOuterJoinDeclinesFullOuter pins that RewriteOuterJoinRule
-// yields NOTHING for a FULL OUTER SelectExpression (Graefe re-ruling condition
+// yields NOTHING for a FULL OUTER SelectExpression (review re-ruling condition
 // 2 on the RFC-173 Slice 2 LEFT-OUTER poison). The fixture is deliberately the
 // EXACT shape the LEFT-OUTER test above fires on — 2 ForEach quantifiers, an
 // ON-predicate correlated to the preserved leg — with ONLY the join type

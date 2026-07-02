@@ -1720,7 +1720,7 @@ func TestConvert_LimitWithOffset(t *testing.T) {
 	}
 }
 
-// TestConvert_RuntimeLimit pins the codex-delta P2-B fix: a runtime
+// TestConvert_RuntimeLimit pins the runtime-limit threading fix: a runtime
 // (parameterized) LIMIT — logical.NewRuntimeLimit, which carries the row cap as
 // a Value and sets the static Limit to the -1 no-cap sentinel (RFC-156 vector
 // rank limit `... <= ?`) — MUST be threaded through convertLimit, not dropped.

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"testing"
 
 	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
@@ -63,5 +64,33 @@ func TestFdbCommandWiring(t *testing.T) {
 		if c, _, err := root.Find([]string{"fdb", sub}); err != nil || c.Name() != sub {
 			t.Fatalf("fdb %s not wired: %v", sub, err)
 		}
+	}
+}
+
+// Regression (FDB C++ dev review, RFC-174 C4): `configure new` is not
+// idempotent — after a half-acknowledged success, fdbcli reports
+// "Database already exists" with a nonzero exit on every retry. The
+// retry loop must treat that as success, not fail a healthy cluster.
+func TestConfigureNewOutcome(t *testing.T) {
+	t.Parallel()
+	someErr := fmt.Errorf("exit status 1")
+	cases := []struct {
+		name    string
+		output  string
+		err     error
+		wantNil bool
+	}{
+		{"clean success", "Database created", nil, true},
+		{"already exists is success", "ERROR: Database already exists! To recreate the database, use the configure command with the \"new\" option.", someErr, true},
+		{"real failure propagates", "ERROR: Unable to connect to cluster", someErr, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := configureNewOutcome(tc.output, tc.err)
+			if (got == nil) != tc.wantNil {
+				t.Errorf("configureNewOutcome(%q, %v) = %v; wantNil=%t", tc.output, tc.err, got, tc.wantNil)
+			}
+		})
 	}
 }

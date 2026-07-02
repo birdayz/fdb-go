@@ -66,8 +66,8 @@ func TestDistinctOverUnionDedupRule_FixpointTerminates(t *testing.T) {
 	t.Parallel()
 	d := distinctOverUnion([]string{"A", "B", "A"})
 	ref := expressions.InitialOf(d)
-	progress, converged := FixpointApply([]ExpressionRule{NewDistinctOverUnionDedupRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewDistinctOverUnionDedupRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

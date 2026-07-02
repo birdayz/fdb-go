@@ -60,8 +60,8 @@ func TestPullFilterAboveProjectionRule_FixpointTerminates(t *testing.T) {
 		[]values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}, innerFQ,
 	)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewPullFilterAboveProjectionRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPullFilterAboveProjectionRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

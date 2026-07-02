@@ -183,7 +183,7 @@ func runGetKeyRYWDifferential(t *testing.T, label string, seed, pending []fuzzOp
 // libfdb_c cgofdb.Error. The differential retries on these (with a fresh read version)
 // instead of treating them as a divergence. Both clients hit the SAME FDB, so both use
 // the SAME canonical predicate (gofdb.IsRetryable) — a hand-maintained per-client code
-// set would be asymmetric and could itself mask or manufacture a false mismatch (codex).
+// set would be asymmetric and could itself mask or manufacture a false mismatch.
 func isFDBRetryable(err error) bool {
 	if err == nil {
 		return false
@@ -263,8 +263,8 @@ func TestDifferential_GetKeyRYW(t *testing.T) {
 // runGetKeyColdSelector resolves ONE selector on a FRESH txn per client (a COLD snapshot
 // cache — no prior selector has warmed it) and compares the resolved key. The shared-cache
 // runGetKeyRYWDifferential runs all selectors on one txn, so an earlier selector's storage
-// read warms the cache and MASKS a cold-path divergence; this isolates it. (codex P2-1: a
-// backward selector landing on a matched-CAC phantom whose preceding storage is uncached must
+// read warms the cache and MASKS a cold-path divergence; this isolates it. (A backward
+// selector landing on a matched-CAC phantom whose preceding storage is uncached must
 // still read down to it — a buggy reverse-read window returned allKeysBegin instead.)
 func runGetKeyColdSelector(t *testing.T, label string, seed, pending []fuzzOp, sel selSpec) {
 	t.Helper()
@@ -339,8 +339,8 @@ func runGetKeyColdSelector(t *testing.T, label string, seed, pending []fuzzOp, s
 	}
 }
 
-// TestDifferential_GetKeyRYW_ColdPhantom isolates the cold-cache backward-skip path (codex
-// P2-1): a matched-CAC phantom with a PRESENT key below it, resolved on a fresh txn so the
+// TestDifferential_GetKeyRYW_ColdPhantom isolates the cold-cache backward-skip path: a
+// matched-CAC phantom with a PRESENT key below it, resolved on a fresh txn so the
 // preceding storage is uncached. A buggy reverse-read window returned allKeysBegin; the fix
 // reads down to the phantom and finds the present key. Runs every selector COLD.
 func TestDifferential_GetKeyRYW_ColdPhantom(t *testing.T) {

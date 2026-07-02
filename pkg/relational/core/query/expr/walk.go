@@ -279,7 +279,7 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 		// UserDefinedScalarFunctionCall (the grammar's `ID '(' args ')'`
 		// fallthrough). Route recognised by-name built-ins here through the
 		// dedicated dispatch; everything else declines so the caller falls
-		// back. This is the SINGLE by-name gate Torvalds blessed — not a
+		// back. This is the SINGLE by-name gate — not a
 		// fourth hand-maintained keyword list.
 		return r.walkUserDefinedScalarFunction(udf)
 	}
@@ -498,7 +498,7 @@ func commonBranchType(branches []values.Value) values.Type {
 		// branches type the result (`CASE WHEN c THEN NULL ELSE v END` is v's
 		// type). NULL is built as NewNullValue(TypeUnknown), so its type code
 		// is TypeCodeUnknown — it must be detected by value KIND, not type
-		// code, or it gets confused with a genuine unknown (Graefe).
+		// code, or it gets confused with a genuine unknown.
 		if _, isNull := b.(*values.NullValue); isNull {
 			continue
 		}
@@ -902,7 +902,7 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 // only such call wired today is the CARDINALITY built-in: it parses here
 // rather than as a ScalarFunctionCall because CARDINALITY has no grammar
 // token (it is not in the `scalarFunctionName` keyword set). This is the
-// single by-name built-in dispatch gate (Torvalds' option (b)) — a
+// single by-name built-in dispatch gate — a
 // recognised name builds its dedicated Value; everything else declines so
 // the caller falls back. A quoted name (`"cardinality"`) is a deliberate
 // user-defined reference, not the built-in, so only the unquoted ID form

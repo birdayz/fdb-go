@@ -8,7 +8,7 @@ import (
 )
 
 // TestRelationalAliasCompleteness is the RFC-040 pre-PR-A completeness gate
-// (Graefe check-in): for EVERY alias-bearing RelationalExpression, two instances
+// (a review check-in): for EVERY alias-bearing RelationalExpression, two instances
 // that differ ONLY by the quantifier alias their node-info references must
 //
 //	(a) be EqualsWithoutChildren under the {q0↦q1} alias map (alias-aware), AND

@@ -1,7 +1,7 @@
 package cascades
 
 // RFC-173 Slice 2 W2 — red→green pins proving the two coexistence-window
-// drift asserts actually FIRE (Torvalds: an unpinned tripwire that looks
+// drift asserts actually FIRE (review: an unpinned tripwire that looks
 // healthy is worse than none — if the assert or its ContainsBakedOrdinal
 // probe had a walk bug, W3 would go live with a dead assert). Both asserts
 // are unreachable from production in W2 (nothing constructs baked result

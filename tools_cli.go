@@ -21,6 +21,7 @@ import (
 	_ "charm.land/fang/v2"
 	_ "charm.land/lipgloss/v2"
 	_ "github.com/birdayz/protobuf-ecosystem/protoconfig"
+	_ "github.com/charmbracelet/x/term"
 	_ "github.com/chzyer/readline"
 	_ "github.com/spf13/cobra"
 )

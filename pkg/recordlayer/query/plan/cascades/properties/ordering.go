@@ -9,15 +9,16 @@
 //
 // Java's `properties/OrderingProperty` is a sophisticated component
 // that tracks per-key ordering directions, equality-bound keys,
-// distinctness, and dependency direction. The seed here is much
-// simpler: a yes/no accessor + the ordering-key Values when known.
-// Production-grade ordering analysis lands when Batch B's index-
-// access rules need it.
+// distinctness, and dependency direction. The Go type is simpler: a
+// yes/no accessor + the ordering-key Values (with per-key direction)
+// when known.
 //
-// Today the seed makes no use of OrderingProperty — Cost ignores
-// ordering. The Sort/Distinct rules currently fire unconditionally;
-// once OrderingProperty is plumbed through Cost, those rules can
-// short-circuit when input is already sorted / distinct.
+// Ordering feeds plan selection through the planner's per-ordering
+// winner stamping (stampOrderingWinners keys winners by the
+// PhysicalProperties derived from a member's HintOrdering) and
+// through sort elimination at extraction (a Sort whose child has an
+// ordering winner for the requested keys extracts to the ordered
+// child directly, dropping the in-memory sort).
 
 package properties
 

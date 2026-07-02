@@ -163,7 +163,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 		b := spfreshRebalanceOwner("idx")
 		Expect(a).NotTo(Equal(b))
 
-		// Cross-PROCESS uniqueness (codex P1): every process counts the
+		// Cross-PROCESS uniqueness: every process counts the
 		// sequence from zero, so the owner must embed a per-process random
 		// nonce or two live workers on different machines collide on
 		// "rebalance-idx-1". Pin: the owner contains this process's nonce,
@@ -218,7 +218,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 			Expect(lerr).NotTo(HaveOccurred())
 			Expect(rows).To(BeEmpty())
 
-			// The all-candidates-stale error must stay CHEAP (codex P2): it
+			// The all-candidates-stale error must stay CHEAP: it
 			// is a normal retryable outcome inside the caller's save
 			// transaction, and embedding the topology dump made every
 			// transient stale route scan the whole index. "hist=" is the
@@ -235,7 +235,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 	})
 })
 
-// Torvalds delta-review findings on dc894af8, pinned: the csplit pause-window
+// Pinned dc894af8 follow-ups: the csplit pause-window
 // repair must not file split tasks for SEALED rows, and the seal zombie-clear
 // must not destroy a sealed task (the only copy of the child IDs).
 var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
@@ -309,7 +309,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// Torvalds final-gauntlet B2: the pause-window repair must run on the
+	// The pause-window repair must run on the
 	// DEGENERATE task-clearing exits too — a csplit that finds its cell
 	// drained below 2 ACTIVE rows (merges won the race) or its 2-means
 	// degenerate clears the task, un-pausing the cell, and without the
@@ -433,8 +433,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 	// against the committed centroid vectors — the resume must pin that
 	// geometry (no 2-means recompute, no centroid overwrite) and ADD to the
 	// children's counters rather than resetting them, or every drained entry
-	// decodes against the wrong center and the counters lie (codex P1
-	// follow-on; found while moving the HDR write into the chunked planner).
+	// decodes against the wrong center and the counters lie.
 	It("single-tx resume of a partially-drained chunked split pins the children's geometry", func() {
 		config := DefaultSPFreshConfig(2)
 		config.Lmax = 16
@@ -530,7 +529,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// Torvalds re-review S-NEW: on a chunked resume the child re-trigger
+	// On a chunked resume the child re-trigger
 	// must gate on the child's TOTAL (drained + remainder via the counter
 	// read), not the remainder alone — a child at 0.9·Lmax drained +
 	// 0.5·Lmax remainder is over the envelope with no other trigger site
@@ -615,7 +614,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// codex delta P2: a pass that skips a poisoned task but commits work
+	// A pass that skips a poisoned task but commits work
 	// behind it must ACCOUNT that work and refresh the process-local cache
 	// before surfacing the error — returning (0, err) reported committed
 	// splits as nothing and left routing on the pre-pass topology.
@@ -678,9 +677,9 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 			Expect(derr).NotTo(HaveOccurred())
 			Expect(row.childA).To(Equal(int64(100)))
 			// And the keep must RELEASE the stale executor's lease: a
-			// different owner claims it immediately (codex P2 — a kept task
-			// leased to a no-progress invocation stalls the split until
-			// lease expiry, since unique owners never self-reclaim).
+			// different owner claims it immediately (a kept task leased
+			// to a no-progress invocation stalls the split until lease
+			// expiry, since unique owners never self-reclaim).
 			claimed, cerr := spfreshTaskClaim(tx, storage, spfreshTaskSplit, fine, "other-exec", spfreshLeaseDeadline(), spfreshNowMs())
 			Expect(cerr).NotTo(HaveOccurred(), "kept sealed task must be immediately claimable, not lease-stalled")
 			Expect(claimed.childA).To(Equal(int64(100)), "children must survive the keep")
@@ -752,7 +751,7 @@ var _ = Describe("SPFresh build sampling", func() {
 	})
 })
 
-// Codex 094.4 review: the insert path stopped verifying candidates once
+// RFC-094 regression: the insert path stopped verifying candidates once
 // Replication of them were ACTIVE, so the closure's RNG rule could only ever
 // SHRINK the copy-set — a same-direction duplicate next to the nearest
 // centroid silently under-replicated the record instead of spending the copy

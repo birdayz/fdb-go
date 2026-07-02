@@ -71,7 +71,7 @@ func newFlatMapCursor(
 	if err != nil {
 		return nil, err
 	}
-	// The FlatMap half of the codex PR-447 P1 (@claude final-pass catch): the
+	// The FlatMap half of the PR-447 review P1 (@claude final-pass catch): the
 	// correlated implementation pushes the join's baked ON references INTO
 	// the inner plan (SARGs, residual filters), so LegTypes must be widened
 	// from the inner plan's predicate surfaces — a folded result value can

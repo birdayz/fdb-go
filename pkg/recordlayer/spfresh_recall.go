@@ -112,7 +112,7 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 			// KeyWithValue(Field("vector_data"), 0) shape the SPFresh benchmarks
 			// and real deployments use). A plain numeric-only conversion would
 			// drop the []byte and silently report an empty corpus on the common
-			// index shape (codex P1).
+			// index shape.
 			t := make(tuple.Tuple, len(values))
 			for i, v := range values {
 				t[i] = v

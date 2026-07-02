@@ -72,7 +72,7 @@ func spfreshSealFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, ow
 						// the claim above just wrote, or every other
 						// invocation (unique owners) skips this task as
 						// live-foreign until expiry, stalling the split for
-						// a full lease interval (codex P2).
+						// a full lease interval.
 						row.owner = ""
 						row.leaseDeadlineMs = 0
 						tx.Set(s.taskKey(spfreshTaskSplit, fineID), encodeTaskRow(row))
@@ -318,8 +318,8 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			// (drained + remainder, via the counter read — RYW covers the add
 			// above), not the remainder alone: a child at 0.9·Lmax drained +
 			// 0.5·Lmax remainder is over the envelope with no other trigger
-			// site left once writes stop (Torvalds re-review S-NEW; the
-			// chunked finalize already did this right).
+			// site left once writes stop (the chunked finalize already did
+			// this right).
 			trigger := counts[i]
 			if childrenExist {
 				count, cterr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, childID)
@@ -599,15 +599,15 @@ func spfreshChunkedSplitPlan(ctx context.Context, db *FDBDatabase, s *spfreshSto
 		// routing cache still holds only the SEALED parent must find the
 		// redirect IN the parent's posting or every entry already moved is
 		// invisible to it until a cache refresh (the single-tx split publishes
-		// children + HDR atomically for exactly this reason; codex
-		// final-gauntlet P1). The searcher scores residual parent entries AND
+		// children + HDR atomically for exactly this reason).
+		// The searcher scores residual parent entries AND
 		// follows the HDR in the same burst, so mid-drain reads see the whole
 		// set; both posting loaders skip HDR rows.
 		tx.Set(s.postingHDRKey(fineID), encodePostingHDR(cellID, childA, childB))
 		// §6b trigger, same as the single-tx path: the cell gained a fine
 		// centroid net (+2 children, −1 parent-to-be) — file the coarse split
 		// past cellMax or maintenance reports drained while the cell stays an
-		// oversized routing hotspot (codex final-gauntlet P2).
+		// oversized routing hotspot.
 		cellCount, ccerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterCell, cellID)
 		if ccerr != nil {
 			return ccerr

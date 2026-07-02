@@ -58,6 +58,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newTxCmd())
 	root.AddCommand(newSQLCmd())
 	root.AddCommand(newFdbCmd())
+	root.AddCommand(newStatusCmd())
 
 	// Wire shell-completion helpers across the whole tree in one pass.
 	// Every subcommand carrying --context gets its completion function

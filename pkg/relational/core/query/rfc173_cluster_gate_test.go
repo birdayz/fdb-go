@@ -242,7 +242,7 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 
 	t.Run("rfc153_joined_preserved_stays_name_model", func(t *testing.T) {
 		t.Parallel()
-		// Graefe re-ruling condition 1: the EXACT shape whose live fallout
+		// review re-ruling condition 1: the EXACT shape whose live fallout
 		// broke the LEFT-outer opacity premise — `a JOIN b LEFT JOIN c` (the
 		// RFC-153 joined-preserved family) — pinned name-model END TO END at
 		// the gate: the LEFT box does not gate (dissolved by
@@ -348,7 +348,7 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 
 	t.Run("having_exists_untranslatable", func(t *testing.T) {
 		t.Parallel()
-		// HAVING-EXISTS over a 2-way join input (Graefe W2 matrix addition):
+		// HAVING-EXISTS over a 2-way join input (review W2 matrix addition):
 		// translateAggregate REJECTS HavingExistsSubqueries entirely (Java has
 		// no support either), so no expression exists for the existential
 		// quantifiers to land in — the drift assert is unreachable from this
@@ -372,7 +372,7 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 }
 
 // TestRFC173S2_WalkArmParity is the dimensional-gap pin from the @claude
-// PR-447 catch (Graefe hardening request): ordinalEligible and clusterArity
+// PR-447 catch (review hardening request): ordinalEligible and clusterArity
 // are the SAME classification asked two questions, and the LogicalCTE arm
 // existed in one but not the other — each walk had been verified against the
 // RULE it shadows, never against its sibling. This table asserts the pair's

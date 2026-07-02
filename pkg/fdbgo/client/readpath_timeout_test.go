@@ -118,7 +118,7 @@ func TestReadPath_ReplyTimeout_SurfacesRetryable(t *testing.T) {
 		// default) GetKey resolves the selector via tx.ryw.getKeyRYW → tx.getRange
 		// (transaction.go:842), which would re-exercise the range path and leave
 		// the getKey three-budget timeout loop (the part of the fix unique to this
-		// path) untested (codex). The raw call hits sendGetKey directly. tx's read
+		// path) untested. The raw call hits sendGetKey directly. tx's read
 		// version is already set via SetReadVersion, so skipping GetKey's
 		// ensureReadVersion is fine.
 		{"getKey", func(tx *Transaction) error { _, e := tx.getKey(ctx, k1, false, 1); return e }}, // firstGreaterOrEqual(k1)

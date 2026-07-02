@@ -76,7 +76,7 @@ var runnerStateNames = map[string]bool{
 // left untouched, so a live runner's in-flight state survives a concurrent re-sync.
 func cloneRunnerDir(src, dst string) error {
 	// Resolve a symlinked --runner-dir so WalkDir traverses the real tree: walking a
-	// symlink root visits only the link, yielding an empty clone with no run.sh (codex).
+	// symlink root visits only the link, yielding an empty clone with no run.sh.
 	if resolved, err := filepath.EvalSymlinks(src); err == nil {
 		src = resolved
 	}
@@ -127,7 +127,7 @@ func cloneRunnerDir(src, dst string) error {
 
 // copyFile copies a regular file's contents into a freshly-created dst with the given
 // mode. It unlinks any existing dst first, which (a) applies the current mode on a resync
-// even when dst already existed (codex P3 — a plain O_CREATE keeps the old perms), and
+// even when dst already existed (a plain O_CREATE keeps the old perms), and
 // (b) avoids ETXTBSY if the old dst is a currently-executing runner binary: the running
 // process keeps the old, now-unlinked inode while we write a brand-new one.
 func copyFile(src, dst string, mode fs.FileMode) error {
@@ -142,7 +142,7 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 		return err
 	}
 	// OpenFile's mode is masked by the process umask, so chmod explicitly to preserve the
-	// template's exact perms (e.g. run.sh's 0755 under a restrictive umask) (codex).
+	// template's exact perms (e.g. run.sh's 0755 under a restrictive umask).
 	if err := out.Chmod(mode); err != nil {
 		_ = out.Close()
 		return err

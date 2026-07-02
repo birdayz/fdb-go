@@ -83,7 +83,7 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 		// base-scan column validation over an intervening derived projection, so
 		// the derived table's OUTPUT namespace [V] is authoritative — a column NOT
 		// in it (ZZZ) must still be rejected by the resolver, not silently pass
-		// through to `a`'s base columns (Torvalds coverage catch). The fail-open
+		// through to `a`'s base columns (reviewer coverage catch). The fail-open
 		// default in projectionInputRedefinesColumns must not swallow a real
 		// undefined-column error.
 		rows, err := db.QueryContext(ctx, "SELECT sub.zzz FROM (SELECT id AS v FROM a) sub")

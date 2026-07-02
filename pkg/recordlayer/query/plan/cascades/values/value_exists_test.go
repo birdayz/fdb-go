@@ -59,7 +59,7 @@ func TestExistsValue_EvaluateChildNonNull(t *testing.T) {
 		t.Fatalf("Evaluate (no row) = %v, want false", got)
 	}
 
-	// codex P2 (revert-proof): a RowEvalContext carrying an outer row (Datum) but NO binding
+	// Revert-proof: a RowEvalContext carrying an outer row (Datum) but NO binding
 	// for the existential alias must be FALSE — never the outer-row fallback. The child QOV's
 	// `ctx.Datum` shim would otherwise return the outer row, making EXISTS wrongly report TRUE
 	// for an empty subquery. ExistsValue.Evaluate looks up the existential binding directly.
@@ -85,7 +85,7 @@ func TestExistsValue_EvaluateChildNonNull(t *testing.T) {
 		t.Fatalf("Evaluate (outer row + bound existential) = %v, want true", got)
 	}
 
-	// codex round 2 (revert-proof): a binder that binds the existential alias to a TYPED nil
+	// Revert-proof: a binder that binds the existential alias to a TYPED nil
 	// (a nil map[string]any boxed into `any`) must be FALSE. A bare `bound != nil` reports TRUE
 	// for a typed nil; isNilBinding treats it as absent.
 	var nilRow map[string]any // typed nil

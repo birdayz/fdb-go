@@ -143,7 +143,7 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 	// oneShotTopK runs the EXHAUSTIVE one-shot search (ScanByDistance with maxed
 	// w/kc/c and ε disabled) — the same RaBitQ-estimate + fp16 sidecar re-rank path
 	// the streaming cursor uses, materialized and sorted. This is the true oracle
-	// the streaming output must equal (Graefe BLOCKER 3: compare to the one-shot,
+	// the streaming output must equal (compare to the one-shot,
 	// not just brute-force, which the grid conflates).
 	oneShotTopK := func(base subspace.Subspace, cfg SPFreshConfig, idx *Index, query []float64, k int) []int64 {
 		var ids []int64
@@ -216,7 +216,7 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 		// the streamed order is IDENTICAL to the one-shot's whole-horizon finalize
 		// (= brute-force sort over the scanned set). Without the barrier a later
 		// batch's closer survivor would emit AFTER an already-emitted farther one →
-		// the wrong k-set under Limit(k) (the Graefe/spfresh blocker).
+		// the wrong k-set under Limit(k) (the review blocker).
 		var inputs []spfreshBuildInput
 		var ids []int64
 		var vecs [][]float64
@@ -273,7 +273,7 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 		// PURE-CENTROID barrier (maxResidual≡0) does not — it emits a farther member
 		// before a closer near-side one. The comparison oracle is the EXHAUSTIVE
 		// ONE-SHOT (same RaBitQ-estimate + fp16 sidecar re-rank path), not just
-		// brute-force (Graefe BLOCKER 3 — the grid conflates the two).
+		// brute-force (the grid conflates the two).
 		var inputs []spfreshBuildInput
 		id := int64(1)
 		for i := 0; i < 8; i++ {

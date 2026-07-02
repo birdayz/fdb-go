@@ -107,7 +107,7 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 // executor binds legs by ALIAS, so RC leg order is independent of cursor
 // outer/inner roles). Returns nil when a leg is untranslatable (same rule as
 // the anchored seed). The seed shape is asserted loud
-// (values.AssertOrdinalJoinSeed — Torvalds' standing condition on W3b).
+// (values.AssertOrdinalJoinSeed — the standing review condition on W3b).
 // The returned legTypes map (UPPER alias → leg RecordType) feeds
 // bakeGatedJoinPredicates at the seed and the WHERE-merge site.
 func (t *cascadesTranslator) buildOrdinalJoinResultValue(left, right logical.LogicalOperator, leftAlias, rightAlias string) (values.Value, map[string]*values.RecordType) {

@@ -48,7 +48,7 @@ func (b *ordEvalBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bo
 // renamed type (the CTE-column-rename fix — the name map, keyed by the
 // UNDERLYING names, would read NULL); (2) a typed QOV-child reference bound to an
 // ordinal row resolves by ordinal; (3)+(4) a resolution miss is a LOUD
-// OrdinalResolutionError, never a silent NULL (Graefe: no name-map fallback on
+// OrdinalResolutionError, never a silent NULL (reviewer: no name-map fallback on
 // the authoritative frontier).
 func TestFieldValue_OrdinalEval_RFC173Slice1(t *testing.T) {
 	t.Parallel()

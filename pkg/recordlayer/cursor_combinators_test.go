@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 
@@ -568,15 +569,19 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 			Expect(r2.GetNoNextReason()).To(Equal(ScanLimitReached))
 		})
 
-		It("invalid continuation bytes starts fresh", func() {
+		It("invalid continuation bytes fail with ContinuationParseError", func() {
+			// Java: ConcatCursor's constructor throws
+			// RecordCoreException("Error parsing ConcatCursor continuation");
+			// a silent restart would re-emit rows the caller already consumed.
 			cursor := ConcatCursors(
 				func(_ []byte) RecordCursor[int] { return FromList([]int{1, 2}) },
 				func(_ []byte) RecordCursor[int] { return FromList([]int{3}) },
 				[]byte{0xFF, 0xFE, 0xFD}, // garbage, not valid proto
 			)
-			result, err := AsList(ctx, cursor)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal([]int{1, 2, 3}))
+			_, err := AsList(ctx, cursor)
+			var parseErr *ContinuationParseError
+			Expect(errors.As(err, &parseErr)).To(BeTrue(), "want *ContinuationParseError, got %T: %v", err, err)
+			Expect(parseErr.RawBytes).To(Equal([]byte{0xFF, 0xFE, 0xFD}))
 		})
 	})
 
@@ -815,7 +820,10 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 			Expect(r.GetNoNextReason()).To(Equal(ByteLimitReached))
 		})
 
-		It("invalid continuation starts fresh", func() {
+		It("invalid continuation fails with ContinuationParseError", func() {
+			// Java: RecordCursor.flatMapPipelined throws
+			// RecordCoreException("error parsing continuation"); a silent
+			// restart would re-emit rows the caller already consumed.
 			cursor := FlatMapPipelined(
 				func(_ []byte) RecordCursor[int] { return FromList([]int{1, 2}) },
 				func(outer int, _ []byte) RecordCursor[int] {
@@ -824,9 +832,10 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 				[]byte{0xFF, 0xFE, 0xFD}, // garbage proto
 				1,
 			)
-			result, err := AsList(ctx, cursor)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal([]int{10, 20}))
+			_, err := AsList(ctx, cursor)
+			var parseErr *ContinuationParseError
+			Expect(errors.As(err, &parseErr)).To(BeTrue(), "want *ContinuationParseError, got %T: %v", err, err)
+			Expect(parseErr.RawBytes).To(Equal([]byte{0xFF, 0xFE, 0xFD}))
 		})
 
 		It("single outer with many inner items", func() {

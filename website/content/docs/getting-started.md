@@ -30,6 +30,24 @@ db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 
 The `fdb` package mirrors Apple's Go binding, so existing FoundationDB code ports with minimal changes.
 
+## The frl CLI
+
+`frl` is the operator CLI: it can run a local FoundationDB, open a SQL shell, and inspect record stores. Install it as a single static binary:
+
+```sh
+curl -fsSL https://fdb.dev/install.sh | sh
+```
+
+The installer verifies the release checksum, installs to `~/.local/bin` (no sudo), and upgrades in place on re-run; `--uninstall` removes it. Prefer the Go toolchain? `go install fdb.dev/cmd/frl@latest` builds the identical version from source.
+
+No cluster yet? This is the fastest path to one (Docker is the only prerequisite):
+
+```sh
+frl fdb up      # start single-node FoundationDB in Docker
+frl sql         # interactive SQL shell against it
+frl fdb down    # remove it
+```
+
 {{< callout type="info" >}}
   Record Layer and SQL apps can build with `CGO_ENABLED=1 go build -tags libfdbc` to run on Apple's libfdb_c client instead of the pure-Go one. Both read and write byte-identical records against the same cluster, so you can switch the tag and keep sharing data.
 {{< /callout >}}

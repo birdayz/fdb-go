@@ -314,7 +314,7 @@ func TestFieldValueBaked_ComposeOverRC_ByOrdinal_RFC173S2(t *testing.T) {
 	}
 
 	// Lazy compose over an AMBIGUOUS (duplicated) name: DECLINE — no fold, the
-	// node rides unchanged (there is no defensible first match; Graefe W2
+	// node rides unchanged (there is no defensible first match; review W2
 	// checklist). Over a UNIQUE name the fold is unchanged.
 	lazy := NewFieldValue(rc, "ID", NullableString)
 	if got := SimplifyValue(lazy); got != lazy {
@@ -332,7 +332,7 @@ func TestFieldValueBaked_ComposeOverRC_ByOrdinal_RFC173S2(t *testing.T) {
 	// A baked ordinal the node's OWN child RC cannot satisfy is a tree
 	// inconsistency — a planner bug that must be LOUD (Java throws
 	// IndexOutOfBounds), never a silent decline riding the broken node onward
-	// (Torvalds catch on the earlier decline shape).
+	// (review catch on the earlier decline shape).
 	stale := &FieldValue{Field: "ID", Typ: NullableString, Child: rc, Resolved: &ResolvedAccessor{Ordinal: 5}}
 	func() {
 		defer func() {
@@ -393,7 +393,7 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal_RFC173S2(t *testing.T) {
 	}
 }
 
-// TestFieldValueBaked_LoudOnNameContext_RFC173S2 pins the guard Torvalds'
+// TestFieldValueBaked_LoudOnNameContext_RFC173S2 pins the guard the
 // review demanded: a BAKED node evaluated against a NAME-keyed row context is
 // a loud *BakedNameContextError at every name-read arm — never a silent
 // display-name read (which would return the FIRST of duplicate same-named
@@ -445,7 +445,7 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	// An UNRECOGNIZED non-nil context is loud for a baked node — a silent
 	// NULL there would hide a frontier bug — at BOTH tails: Evaluate's
 	// (childless orphan) and evaluateCorrelated's (QOV child, the COMMON
-	// baked shape — Torvalds catch: the first fix guarded only the rare
+	// baked shape — review catch: the first fix guarded only the rare
 	// orphan path). Lazy keeps the historical silent NULL, and a bare nil
 	// context stays NULL through the correlated path too (ruling #3).
 	type weirdCtx struct{}
@@ -473,7 +473,7 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 // TestContainsBakedOrdinal_RFC173S2 pins the drift-assert probe itself: a
 // baked node found at depth, a pure-lazy tree reporting false, and nil
 // safety — the SelectMergeRule assert keys on this walk, so a walk bug would
-// silently kill the assert (Torvalds W2 catch).
+// silently kill the assert (review W2 catch).
 func TestContainsBakedOrdinal_RFC173S2(t *testing.T) {
 	t.Parallel()
 	rt := NewRecordType("", false, []Field{
@@ -547,7 +547,7 @@ func TestFieldValueBaked_OracleNameBridge_RFC173S2(t *testing.T) { //nolint:para
 }
 
 // TestFieldValueBaked_PullUpThroughRC_Bakes_RFC173S2 pins the THIRD RC
-// name-lookup consumer (Torvalds catch): pullUpThroughRecordConstructor
+// name-lookup consumer (review catch): pullUpThroughRecordConstructor
 // re-frames the matched value as a reference to the RC's OUTPUT column, so the
 // emitted node carries the matched ordinal BAKED whenever it matters — a baked
 // input (bakedness survives pull-up) or a dup-named RC (where a lazy name node

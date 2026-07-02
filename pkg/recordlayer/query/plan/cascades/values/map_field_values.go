@@ -268,13 +268,23 @@ func EqualsWithoutChildren(a, b Value) bool {
 		// intern as one memo member (§5 duplicate-name pin). Baked vs lazy is
 		// UNEQUAL by contract: worst case a missed dedup, never a conflation.
 		// Lazy vs lazy stays name-only (unchanged; Slice 3 owns the full flip).
+		// Resolved is checked FIRST so a hypothetical node carrying both
+		// markers (the constructors are disjoint, so none exists today) still
+		// compares deterministically.
 		if (av.Resolved != nil) != (bv.Resolved != nil) {
 			return false
 		}
 		if av.Resolved != nil {
 			return av.Field == bv.Field && av.Resolved.Ordinal == bv.Resolved.Ordinal
 		}
-		return av.Field == bv.Field
+		// A plan-time-resolved ordinal accessor is part of the FieldPath
+		// identity (Java: ofOrdinalNumber ordinals are distinct FieldPaths) —
+		// two reads of duplicate-named output columns differ ONLY by ordinal
+		// and must not compare equal. HasResolvedOrdinal vs not is likewise
+		// unequal; nodes carrying NEITHER marker compare name-only (unchanged).
+		return av.Field == bv.Field &&
+			av.HasResolvedOrdinal == bv.HasResolvedOrdinal &&
+			av.ResolvedOrdinal == bv.ResolvedOrdinal
 	case *ConstantValue:
 		bv, ok := b.(*ConstantValue)
 		if !ok {
@@ -335,7 +345,7 @@ func EqualsWithoutChildren(a, b Value) bool {
 		// names are NOT the same value: the anchored form HIDES its leg QOVs from
 		// GetCorrelatedToOfValue (RFC-077 7.6 F2), the plain form reports them. If
 		// they interned as one memo member, partition-time classification would
-		// drop buried columns from the live set → 0-row joins (@claude/codex catch).
+		// drop buried columns from the live set → 0-row joins.
 		if av.AnchoredJoin != bv.AnchoredJoin {
 			return false
 		}

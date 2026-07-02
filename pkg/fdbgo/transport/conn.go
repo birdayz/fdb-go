@@ -446,7 +446,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	// whose frame is still queued when writeLoop exits would block on errCh
 	// forever. On the ctx.Done path errCh is deliberately NOT returned to the
 	// pool: writeLoop may still hold a reference and send to it, which would
-	// surface as a stale buffered value on the next pool user (audit #13).
+	// surface as a stale buffered value on the next pool user.
 	select {
 	case err := <-errCh:
 		errChanPool.Put(errCh)
@@ -485,7 +485,7 @@ func (c *Conn) Flush() error {
 		return errConnClosed
 	}
 	// Bail on connection teardown rather than block forever on errCh (see SendFrame).
-	// errCh is not pooled on the ctx.Done path (stale-value hazard, audit #13).
+	// errCh is not pooled on the ctx.Done path (stale-value hazard).
 	select {
 	case err := <-errCh:
 		c.hasDirty.Store(false)

@@ -60,8 +60,8 @@ func TestPushFilterThroughDistinctRule_FixpointTerminates(t *testing.T) {
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	src := filterOverDistinct(pT)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewPushFilterThroughDistinctRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPushFilterThroughDistinctRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

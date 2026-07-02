@@ -46,7 +46,7 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 
 	// Poison (client_invalid_operation 2000, RFC-059) out-ranks the timeout — same order as
 	// ensureReadVersion (rywPoisonErr before checkTimeout). A txn that is BOTH poisoned AND timed out
-	// returns 2000, not 1031 (codex catch).
+	// returns 2000, not 1031.
 	const clientInvalidOperation = 2000
 	poisonedAndTimedOut := func() *Transaction {
 		tx := timedOut()

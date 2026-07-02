@@ -23,7 +23,7 @@ import (
 // positional row: the leg quantifier's alias, the leg's own RecordType, and
 // the half-open window [Offset, Offset+Width) its columns occupy in the merged
 // row. Spans are DERIVED from the ordinal join RC by ordinalJoinSpans at
-// cursor construction (Graefe W3 condition 1: the RC is the single authority)
+// cursor construction (review W3 condition 1: the RC is the single authority)
 // — never stored or maintained as independent bookkeeping.
 type legSpan struct {
 	Alias   values.CorrelationIdentifier
@@ -41,7 +41,7 @@ type legSpan struct {
 // result value into the parent PROJECTION's RC, which legitimately mixes baked
 // leg references (compose-folded through the seed) with computed values, or
 // covers a leg partially (`SELECT b.y FROM a JOIN b`), or collapses to a
-// single run (Graefe W3a-1 NAK: the earlier any-baked⟹well-formed-or-panic
+// single run (review W3a-1 NAK: the earlier any-baked⟹well-formed-or-panic
 // boundary false-positived on exactly those plans). Downstream consumers use
 // this probe to decide whether LEG WINDOWS apply to the join's output row —
 // windows are only meaningful when the output IS the leg concatenation; a
@@ -105,7 +105,7 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 		}
 		total += s.Width
 	}
-	// Spans-consistency assert (Graefe W3 extra pin). Unreachable given the
+	// Spans-consistency assert (review W3 extra pin). Unreachable given the
 	// run construction above — pinned anyway so a future edit that breaks the
 	// derivation dies here, not in a downstream window misread.
 	if total != len(rc.Fields) {
@@ -125,7 +125,7 @@ func assertOrdinalJoinSeed(rc *values.RecordConstructorValue) {
 
 // legWindowRow is a leg-relative view over the join's merged positional row:
 // leg ordinal i reads merged slot Offset+i. It is DECLARED WINDOW SCAFFOLDING
-// (Graefe W3 condition 2): Java has no merged-row-with-leg-views — its uppers
+// (review W3 condition 2): Java has no merged-row-with-leg-views — its uppers
 // reference the join quantifier after plan-time rewriting — and these windows
 // exist only because window-era uppers still reference LEGS directly
 // (FieldValue(QOV(leg), col)) across the join boundary. They DIE when the
@@ -184,7 +184,7 @@ func (w *legWindowRow) TypeNames() []string {
 // legWindowBinder is the coexistence-window correlation binder for uppers over
 // the 2-way ordinal join: a reference to a leg alias is bound to that leg's
 // window over the merged row, anything else delegates to base. DECLARED WINDOW
-// SCAFFOLDING (Graefe W3 condition 2) — it exists only because window-era
+// SCAFFOLDING (review W3 condition 2) — it exists only because window-era
 // uppers reference legs across the join boundary; when the uppers bake against
 // the merged type (S3 flip, S4 deletions) the windows die with the name model.
 // Must not ossify into the permanent runtime shape of quantifier bindings.
@@ -218,7 +218,7 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 // SQL NULL); a nil or non-map Datum yields an all-nil row of the leg's width.
 //
 // LOUD when the synthesis matches ZERO of the leg's columns against a
-// NON-EMPTY Datum (Torvalds W3a-1 catch): a name-model MERGE-shaped leg
+// NON-EMPTY Datum (review W3a-1 catch): a name-model MERGE-shaped leg
 // carries dotted-qualified keys ("A.ID") the bare leg-type names never match,
 // so the silent path would all-NULL the leg — indistinguishable from a
 // legitimate all-NULL row. The W2 gate makes such legs unreachable for gated
@@ -234,7 +234,7 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.OrdinalRow, error) {
 	if qr.Positional != nil {
 		// The passthrough requires ORDERED per-slot name agreement with the
-		// leg type (Torvalds PR-447 catch, superseding the width-only
+		// leg type (PR-447 review catch, superseding the width-only
 		// tripwire): a COVERING-INDEX leg's positional row is INDEX-shaped —
 		// buildCoveringRow types it value-columns-then-PK ([V, ID]), not
 		// table order ([ID, V]) — same width, different layout, and a baked
@@ -370,7 +370,7 @@ func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*
 }
 
 // ordinalJoinBirth is the per-cursor ordinal-BIRTH state, computed ONCE at
-// cursor construction (Graefe W3 ruling: detection is the structural
+// cursor construction (review W3 ruling: detection is the structural
 // ContainsBakedOrdinal probe on the plan's result value — emergent from the
 // representation, nothing for S4 to delete). Enabled marks the cursor as an
 // ordinal birth site: its emitted rows carry a positional row evaluated from
@@ -414,7 +414,7 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 		return nil, fmt.Errorf("RFC-173 ordinal join birth: result value contains baked ordinal references but is a %T, want *RecordConstructorValue (seed or folded projection RC) — planner bug", rv)
 	}
 	spans, _, windowsOK := ordinalJoinSpans(rc)
-	// LegTypes come from the RESULT VALUE *and* the join PREDICATES (codex
+	// LegTypes come from the RESULT VALUE *and* the join PREDICATES (review
 	// PR-447 P1): a folded projection RV can DROP a leg entirely while a
 	// baked cross-leg ON predicate still references it — collecting from the
 	// RV alone left the dropped leg typeless, and a name-model (Datum-only)
@@ -454,7 +454,7 @@ func (b *ordinalJoinBirth) enabled() bool { return b != nil && b.Enabled }
 // widenLegTypesFromPlan widens LegTypes with every BAKED leg reference found
 // in a physical plan tree's predicate surfaces — PredicatesFilter/Filter
 // predicates and scan/index comparison operands. The FlatMap half of the
-// codex PR-447 P1 (@claude final-pass catch): the correlated implementation
+// PR-447 review P1 (@claude final-pass catch): the correlated implementation
 // pushes the join's baked ON references INTO the inner plan as SARGs and
 // residual filters, so a folded result value that DROPPED a leg leaves the
 // birth typeless for it even though the inner plan still references it — a
@@ -463,7 +463,7 @@ func (b *ordinalJoinBirth) enabled() bool { return b != nil && b.Enabled }
 // newFlatMapCursor with the inner plan; the NLJ path gets the same widening
 // directly from its predicate list in newOrdinalJoinBirth.
 //
-// WINDOW SCAFFOLDING like adaptLegPositional itself (Graefe): the walk exists
+// WINDOW SCAFFOLDING like adaptLegPositional itself (review): the walk exists
 // only because folded RVs and Datum-only legs coexist — it dies with the
 // adapter in Slice 4 (all-positional legs leave nothing to synthesize). Its
 // exact-set plan arms fail SAFE: a missed predicate surface leaves the leg
@@ -500,7 +500,7 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 		}
 	}
 	// RecordQueryNestedLoopJoinPlan also implements GetPredicates but is
-	// DELIBERATELY omitted (Torvalds note, arm-parity precedent): baked
+	// DELIBERATELY omitted (review note, arm-parity precedent): baked
 	// references exist only in gated joins, and join legs are categorically
 	// ineligible in the S2 wedge — a baked-ref-bearing NLJ cannot appear
 	// inside a gated flatMap's inner plan. Re-examine at the S3 gate widening.
@@ -646,7 +646,7 @@ func (b *ordinalJoinBirth) evaluateLegs(legs map[values.CorrelationIdentifier]va
 }
 
 // evaluateBound births the positional row from any pre-built leg binder — the
-// zero-rebuild path the NLJ cursor's per-pair twoLegBinder uses (Torvalds
+// zero-rebuild path the NLJ cursor's per-pair twoLegBinder uses (review
 // W3a-2: no per-pair map, no per-pair re-adaptation).
 func (b *ordinalJoinBirth) evaluateBound(bindings values.CorrelationBinder) (*PositionalRow, error) {
 	return evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings)
@@ -655,7 +655,7 @@ func (b *ordinalJoinBirth) evaluateBound(bindings values.CorrelationBinder) (*Po
 // twoLegBinder is the NLJ cursor's per-pair leg binder: exactly the join's
 // two legs, pre-adapted rows plugged in per candidate pair — no map, no
 // re-adaptation (the inner rows are a FIXED slice adapted once at cursor
-// construction; the outer is adapted once per outer-row advance; Torvalds
+// construction; the outer is adapted once per outer-row advance; review
 // W3a-2 structural-perf catch). A nil row IS the deliberately-NULL leg
 // (LEFT/FULL padding): (nil, true), contract ruling #3. Non-leg correlations
 // delegate to base.
@@ -699,7 +699,7 @@ func (b *ordinalJoinBirth) evaluate(outerAlias, innerAlias string, outer, inner 
 }
 
 // birthLegBinder is the BIRTH-time correlation binder: DIRECT per-leg bindings
-// (Graefe W3 ruling: predicates and result-value evaluation need no windows at
+// (review W3 ruling: predicates and result-value evaluation need no windows at
 // birth — each leg binds to its OWN leg-local row, so both baked (leg ordinal)
 // and lazy (leg-relative resolveOrdinal) references read the right slot, even
 // for the second leg). A key PRESENT with a nil value is the deliberately-NULL
@@ -709,7 +709,7 @@ func (b *ordinalJoinBirth) evaluate(outerAlias, innerAlias string, outer, inner 
 //
 // The map-based binder survives ONLY for flatMap's one-shot evaluate (one
 // binder per EMITTED row — no per-candidate cost there); the NLJ's per-pair
-// hot path uses the fixed twoLegBinder below (Torvalds W3a-2 perf catch).
+// hot path uses the fixed twoLegBinder below (review W3a-2 perf catch).
 type birthLegBinder struct {
 	legs map[values.CorrelationIdentifier]values.OrdinalRow
 	base values.CorrelationBinder
@@ -879,7 +879,7 @@ func legWindowRowContext(pos values.OrdinalRow, ec *EvaluationContext, spans []l
 // keys) stay correct over the ordinal merged row; bare names keep the merged
 // type's first-match (unchanged Slice 1 semantics). Ordinal access passes
 // through untouched. DECLARED WINDOW SCAFFOLDING like the windows themselves
-// (Graefe condition 2): dies when uppers bake, S3/S4.
+// (review condition 2): dies when uppers bake, S3/S4.
 type spanAwareRow struct {
 	parent values.OrdinalRow
 	spans  []legSpan

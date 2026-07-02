@@ -54,7 +54,7 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 	// WHERE references a column that does not exist → 42703 (matches SELECT … WHERE nope).
 	wantCode("delete_where_undefined_col_42703", "s_dwc", "DELETE FROM t WHERE nope = 1", "42703")
 	wantCode("update_where_undefined_col_42703", "s_uwc", "UPDATE t SET a = 1 WHERE nope = 1", "42703")
-	// (codex r4) An EXISTS atom BEFORE the bad column must not mask the 42703: the
+	// An EXISTS atom BEFORE the bad column must not mask the 42703: the
 	// subquery-aware walk sees past EXISTS to the undefined column.
 	wantCode("delete_exists_then_undefined_col_42703", "s_exc", "DELETE FROM t WHERE EXISTS (SELECT 1 FROM t) AND nope = 1", "42703")
 	// Nonexistent (unqualified) table → 42F01 (matches INSERT INTO notable).
@@ -63,13 +63,13 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 	// WHERE-independence (@claude): the table check fires even with NO WHERE clause.
 	wantCode("delete_nonexistent_table_no_where_42F01", "s_dntn", "DELETE FROM notable", "42F01")
 	wantCode("update_nonexistent_table_no_where_42F01", "s_untn", "UPDATE notable SET a = 1", "42F01")
-	// Active-schema-qualified missing table (codex/Torvalds): a VALID qualifier (the
+	// Active-schema-qualified missing table: a VALID qualifier (the
 	// session schema) + a missing table must still get 42F01 — the existence check runs
 	// after resolveQualifiedTableNames strips the (valid) qualifier.
 	wantCode("delete_active_schema_qualified_missing_42F01", "s_aqd", "DELETE FROM s_aqd.notable WHERE id = 1", "42F01")
 	wantCode("update_active_schema_qualified_missing_42F01", "s_aqu", "UPDATE s_aqu.notable SET a = 1 WHERE id = 1", "42F01")
 
-	// Precedence (codex): a schema-qualified target with a bad qualifier must NOT be
+	// Precedence: a schema-qualified target with a bad qualifier must NOT be
 	// preempted by the bare-table 42F01 — the qualifier validation downstream owns the
 	// error. The bare-table existence check only fires for an unqualified name.
 	t.Run("qualified_bad_schema_not_preempted_by_42F01", func(t *testing.T) {
@@ -86,7 +86,7 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 		}
 	})
 
-	// Precedence (codex r3): a BAD qualifier + an EXISTING bare table + a BAD WHERE column
+	// Precedence: a BAD qualifier + an EXISTING bare table + a BAD WHERE column
 	// must surface the qualifier error (42F00), NOT the WHERE-column 42703 — the qualifier
 	// is validated before the WHERE walk error is classified.
 	t.Run("bad_qualifier_existing_table_bad_col_not_42703", func(t *testing.T) {

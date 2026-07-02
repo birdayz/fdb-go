@@ -59,7 +59,7 @@ func authorityCollect(t *testing.T, p plans.RecordQueryPlan, evalCtx *Evaluation
 // `qr.Positional != nil` dispatch were deleted (the silently-dark-flip
 // scenario), that site would read the Datum's 999 and its subtest here would
 // fail — the whole suite otherwise stays green on agreeing rows, which is
-// exactly why this test exists (Torvalds review catch: the previous version
+// exactly why this test exists (reviewer review catch: the previous version
 // called the dispatch HELPER directly and would not have noticed a deleted
 // production dispatch).
 func TestFrontierOrdinalAuthority_RFC173Slice1(t *testing.T) {
@@ -131,7 +131,7 @@ func TestFrontierOrdinalAuthority_RFC173Slice1(t *testing.T) {
 		t.Parallel()
 		evalCtx := EmptyEvaluationContext()
 		// ID exists ONLY in the (wrong) Datum, not in the [V] positional type: the
-		// projection must LOUD-error (no name-map fallback, Graefe), never return 999.
+		// projection must LOUD-error (no name-map fallback, reviewer), never return 999.
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{values.NewFlatFieldValue("ID", values.UnknownType)},
 			authorityInner(t, evalCtx, "auth_miss"))

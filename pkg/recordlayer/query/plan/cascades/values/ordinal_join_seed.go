@@ -8,13 +8,13 @@ import "fmt"
 // FieldValue over a leg QuantifiedObjectValue flowing a *RecordType, exactly
 // TWO consecutive full-coverage leg runs with baked ordinals 0..width-1
 // ascending. Any violation panics: at the SEED a malformed ordinal RC is
-// unconditionally a planner bug (Graefe W3a-1 ruling: strictness lives
+// unconditionally a planner bug (review W3a-1 ruling: strictness lives
 // seed-time, where legitimate result-value rewrites — wrapper merges, folded
 // projections, partial coverage — cannot yet have happened; the executor's
 // cursor-side ordinalJoinSpans probe DECLINES those shapes, never panics).
 //
 // Lives in values (not executor) because the TRANSLATOR is the caller of
-// record — Torvalds' standing condition on the W3b seed: a seed flip that
+// record — the standing review condition on the W3b seed: a seed flip that
 // lands without this assert is a NAK on sight.
 func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 	if rc == nil || len(rc.Fields) == 0 {

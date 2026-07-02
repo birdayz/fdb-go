@@ -59,8 +59,8 @@ func TestPushFilterThroughTypeFilterRule_FixpointTerminates(t *testing.T) {
 	tfQ := expressions.ForEachQuantifier(expressions.InitialOf(tf))
 	src := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, tfQ)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewPushFilterThroughTypeFilterRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPushFilterThroughTypeFilterRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

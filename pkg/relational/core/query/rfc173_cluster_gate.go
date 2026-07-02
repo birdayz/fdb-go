@@ -53,7 +53,7 @@ func (t *cascadesTranslator) ordinalWedgeGate(j *logical.LogicalJoin) wedgeGateD
 func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedgeGateDecision {
 	if _, isUnnest := j.Right.(*logical.LogicalUnnest); isUnnest {
 		// Lateral unnest lowers to FlatMap-over-Explode with dotted-prefix
-		// bipartition machinery (RFC-142) — name model until Slice 3 (Graefe W4-deferral ruling: the ordinal port needs S3 FieldPaths).
+		// bipartition machinery (RFC-142) — name model until Slice 3 (review W4-deferral ruling: the ordinal port needs S3 FieldPaths).
 		return wedgeGateDecision{Arity: arityPoison, Reason: "lateral unnest join (RFC-142 machinery, S3)"}
 	}
 	if len(j.OnExistsSubqueries) > 0 {
@@ -101,7 +101,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// premise held only at translation time; caught live by the W3b flip
 		// (SelectMergeRule drift assert + ordinalLegColumns mis-scope panic
 		// on the RFC-153 shapes). LEFT OUTER therefore stays NAME-MODEL in
-		// the wedge, pending a Graefe re-ruling on the corrected premise
+		// the wedge, pending a review re-ruling on the corrected premise
 		// (recorded in the RFC).
 		return wedgeGateDecision{Arity: arityPoison, Reason: "LEFT-outer box (dissolved by RewriteOuterJoinRule post-translation — not opaque; name model pending re-ruling)"}
 	}

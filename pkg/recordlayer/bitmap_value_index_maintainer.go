@@ -533,7 +533,7 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 	executeProps := c.scanProps.GetExecuteProperties()
 
 	// Check row limit FIRST so a MAX_ROWS/LIMIT-bounded scan stops cleanly with
-	// ReturnLimitReached before the scan-record backstop can fire (codex RFC-106a:
+	// ReturnLimitReached before the scan-record backstop can fire (RFC-106a:
 	// match index_scan ordering).
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
 		if c.iterator.Advance() {

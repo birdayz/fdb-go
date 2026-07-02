@@ -101,7 +101,7 @@ func mustPanicRFC173(t *testing.T, fn func(), want ...string) {
 
 // --- raw RC constructor ------------------------------------------------------
 
-// TestRFC173S2_RawRecordConstructor_DupNamesVerbatim pins the Graefe ruling's
+// TestRFC173S2_RawRecordConstructor_DupNamesVerbatim pins the review ruling's
 // dedicated raw RC constructor: duplicate field names survive VERBATIM (the
 // ordinal join RC's cross-leg duplicates are positional, not name-addressed),
 // while NewRecordConstructorValue — the name-model constructor — still renames
@@ -208,8 +208,8 @@ func TestRFC173S2_OrdinalJoinSpans_NameModelDeclines(t *testing.T) {
 	}
 }
 
-// TestRFC173S2_OrdinalJoinSpans_FoldedProjectionsDecline pins the Graefe/
-// Torvalds W3a-1 NAK boundary: the pure-wrapper merge (allowed by the drift
+// TestRFC173S2_OrdinalJoinSpans_FoldedProjectionsDecline pins the
+// review W3a-1 NAK boundary: the pure-wrapper merge (allowed by the drift
 // assert) rewrites the select's result value into the parent projection's RC —
 // which LEGITIMATELY contains baked leg references without being the seed. The
 // cursor-side probe must DECLINE these (no windows — the output is a plain
@@ -248,7 +248,7 @@ func TestRFC173S2_OrdinalJoinSpans_FoldedProjectionsDecline(t *testing.T) {
 }
 
 // TestRFC173S2_SeedAssert_MalformedPanics pins every malformation panic in
-// assertOrdinalJoinSeed — the SEED-TIME validator (Graefe W3a-1 NAK fix: the
+// assertOrdinalJoinSeed — the SEED-TIME validator (review W3a-1 NAK fix: the
 // loudness lives at the translator seed, where the pristine shape is
 // guaranteed by construction; the cursor-side ordinalJoinSpans probe DECLINES
 // the same shapes, pinned separately, because post-merge result values
@@ -400,7 +400,7 @@ func TestRFC173S2_LegWindowRow(t *testing.T) {
 }
 
 // TestRFC173S2_LegWindow_WrongSlotHazard is the red→green pin on the EXACT
-// hazard the W3 pre-code ruling exists for (Graefe condition 4): a LAZY leg
+// hazard the W3 pre-code ruling exists for (review condition 4): a LAZY leg
 // reference FieldValue(QOV(B), "ID") derives a LEG-relative ordinal (0, from
 // B's type) — evaluated over the MERGED positional row without windows it
 // reads absolute slot 0 and returns A's ID, silently wrong; through the leg
@@ -418,7 +418,7 @@ func TestRFC173S2_LegWindow_WrongSlotHazard(t *testing.T) {
 	}
 	merged := ojMergedRow(t, mergedType) // [A.ID=1, A.V=10, B.ID=2, B.W=20]
 
-	// The discriminating probe is B.W (Torvalds W3a-1: probing B.ID yields
+	// The discriminating probe is B.W (review W3a-1: probing B.ID yields
 	// A's ID=1 under EITHER misread mechanism — leg-relative resolveOrdinal(0)
 	// at absolute slot 0, or first-match GetByName("ID") on the dup-named
 	// merged type. B.W's leg-relative ordinal is 1 → absolute slot 1 = A.V=10,
@@ -579,7 +579,7 @@ func TestRFC173S2_EvaluateOrdinalJoinRow(t *testing.T) {
 
 	t.Run("garbage leg binding pins current behavior", func(t *testing.T) {
 		t.Parallel()
-		// OPEN DECISION (Torvalds W3 borderline, do not change in W3a): a leg
+		// OPEN DECISION (review W3 borderline, do not change in W3a): a leg
 		// bound to a non-nil, non-OrdinalRow, non-map value hits
 		// evaluateCorrelated's `return bound, nil` arm, which returns the RAW
 		// bound object into the slot — no error, no NULL. This pin freezes the
@@ -611,7 +611,7 @@ func TestRFC173S2_EvaluateOrdinalJoinRow(t *testing.T) {
 // boundary: positional passthrough, name-model Datum synthesis by leg-type
 // names (missing key → nil slot), nil / non-map Datum → all-nil row, and the
 // LOUD zero-match tripwire (a dotted-key merge-shaped leg must never silently
-// all-NULL — Torvalds W3a-1 catch).
+// all-NULL — review W3a-1 catch).
 func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 	t.Parallel()
 	legA := ojLegTypeAV()
@@ -784,7 +784,7 @@ func TestRFC173S2_LegWindow_OutOfRangeIsLoud(t *testing.T) {
 	}
 }
 
-// TestRFC173S2_AdaptLegPositional_IndexShapedFallsBack pins the Torvalds
+// TestRFC173S2_AdaptLegPositional_IndexShapedFallsBack pins the review
 // PR-447 catch: a COVERING-INDEX leg's positional row is INDEX-shaped
 // (value-columns-then-PK, e.g. [V, ID]) while the seed typed the leg in table
 // order ([ID, V]) — SAME width, different layout. The passthrough must

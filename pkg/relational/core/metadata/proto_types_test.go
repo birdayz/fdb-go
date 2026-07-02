@@ -316,8 +316,8 @@ func TestMessageTypeFromDescriptor_UUIDFallbackStructShape(t *testing.T) {
 
 // FuzzMessageTypeFromDescriptor feeds arbitrary FileDescriptorProto bytes
 // through protodesc.NewFile + messageTypeFromDescriptor. The walk recurses
-// through nested-message field types; without the visited-set added in
-// swingshift-35, a fuzzer-crafted self-referential shape would stack-overflow.
+// through nested-message field types; without the visited-set guard,
+// a fuzzer-crafted self-referential shape would stack-overflow.
 // This fuzz pins that guard along with the proto-unmarshal + descriptor
 // resolution paths.
 func FuzzMessageTypeFromDescriptor(f *testing.F) {

@@ -423,7 +423,7 @@ func TestFDB_SharedCombinatorResume_RFC128(t *testing.T) {
 	wantInts(t, got, []int64{1, 2, 3, 4}, "shared-combinator MAX_ROWS resume")
 }
 
-// Regression (codex): OFFSET + a parent returned-row cap (MAX_ROWS). The child budget
+// Regression: OFFSET + a parent returned-row cap (MAX_ROWS). The child budget
 // must be remOffset + min(remLimit, parentCap), NOT min(remOffset+remLimit, parentCap):
 // under MAX_ROWS=1 a `LIMIT 1 OFFSET 1` capped the aggregate child at 1 row, so it stopped
 // after the single skipped row with ReturnLimitReached, the enveloped continuation was fed

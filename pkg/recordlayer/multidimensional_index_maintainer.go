@@ -512,7 +512,7 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 		// Row limit check FIRST — clean ReturnLimitReached stop, and avoids
 		// wasting an FDB read when the limit is already reached (ordering matches
 		// index_scan so a satisfied row cap isn't turned into 54F01 by an equal
-		// scan-record cap — codex RFC-106a).
+		// scan-record cap — RFC-106a).
 		if c.limit > 0 && c.delivered >= c.limit {
 			cont := c.buildContinuation()
 			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
@@ -681,7 +681,7 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 		// counter.
 		//
 		// These stops are ALWAYS a terminal error, even when FailOnScanLimitReached
-		// is off (codex): cross-prefix resume is unsupported (see the type comment),
+		// is off: cross-prefix resume is unsupported (see the type comment),
 		// so the skip-scan cannot hand back a valid continuation — a paginating
 		// no-next here carries empty bytes, which a resuming caller reads as "no
 		// continuation" and restarts from the first prefix (an infinite re-scan).
@@ -728,7 +728,7 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			if reason.IsOutOfBand() {
 				// The per-prefix cursor consumed the (remaining) shared scan/byte/time
 				// budget mid-prefix. Like the aggregate checks above, this is a TERMINAL
-				// error even in non-fail mode (codex): the per-prefix continuation has no
+				// error even in non-fail mode: the per-prefix continuation has no
 				// cross-prefix state, so propagating it as a paginating no-next would
 				// resume from the first prefix (infinite re-scan). FailOnScanLimitReached
 				// is moot here — the per-prefix cursor would have errored upstream if set.
@@ -830,7 +830,7 @@ func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
 		return nil, false, nil
 	}
 	// The enumeration read counts against the shared byte budget too, not just
-	// the record budget (codex RFC-106a) — otherwise many-prefix overhead bypasses
+	// the record budget (RFC-106a) — otherwise many-prefix overhead bypasses
 	// ScannedBytesLimit. (The caller adds 1 to totalScanned for the record count.)
 	c.totalBytesScanned += int64(len(kvs[0].Key) + len(kvs[0].Value))
 

@@ -656,8 +656,8 @@ func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 	}
 }
 
-// TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError pins watchSetupErr's precedence (codex #13 +
-// Torvalds): a context cancellation maps to transaction_cancelled (1025) ONLY when the txn was actually
+// TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError pins watchSetupErr's precedence: a context
+// cancellation maps to transaction_cancelled (1025) ONLY when the txn was actually
 // Cancel()ed; a caller-ctx cancellation on a live txn passes through; and a GENUINE read error is NEVER
 // masked by 1025 even on a cancelled txn (whichever surfaced first wins, as in C++). Pure function —
 // deterministic, no scheduling.
@@ -693,7 +693,7 @@ func TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError(t *testing.T) {
 	})
 }
 
-// TestCancel_StateVisibleWhenWatchCancelled probes codex #13's ordering (Torvalds wanted a probe):
+// TestCancel_StateVisibleWhenWatchCancelled probes Cancel's ordering:
 // Cancel() must store txStateCancelled BEFORE cancelWatches(), so EVERY watch context observes the
 // cancelled state at the instant it is cancelled. With the CORRECT order this is guaranteed — the store
 // is sequenced-before the context cancellation, whose Done()-close synchronizes-with the observing read
@@ -745,13 +745,13 @@ func TestCancel_StateVisibleWhenWatchCancelled(t *testing.T) {
 // TestOnError_TerminalAbortCancelsWatches pins that a non-retryable (terminal-abort) OnError cancels
 // in-flight watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
 // a watch registered in a Transact whose txn then fails non-retryably keeps polling and holds its
-// slot until the key changes, starving future watches under a low MAX_WATCHES (codex). The retry path
+// slot until the key changes, starving future watches under a low MAX_WATCHES. The retry path
 // already cancels via reset(); this covers the abort path. Revert-proof: drop the defer and the ctx
 // stays live after OnError.
 // TestOnError_CallerCancelOutranksTxnTimeout pins that when a retryable FDB error reaches OnError
 // with BOTH the txn SetTimeout deadline AND the caller ctx expired, the caller's own cancellation
 // wins over the txn timeout (mapTimeout precedence) — a TransactCtx caller gets context.Canceled,
-// not 1031 (codex). Revert-proof: without the ctx.Err() check the timeout gate returns 1031.
+// not 1031. Revert-proof: without the ctx.Err() check the timeout gate returns 1031.
 func TestOnError_CallerCancelOutranksTxnTimeout(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
@@ -847,7 +847,7 @@ func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
 		t.Fatalf("OnError past the deadline must not sleep a backoff, took %v", elapsed)
 	}
 
-	// Isolate the ENTRY GATE (Torvalds): a NON-retryable error past the deadline must ALSO become
+	// Isolate the ENTRY GATE: a NON-retryable error past the deadline must ALSO become
 	// 1031. This is the gate's unique contribution — a non-retryable code never reaches
 	// backoffSleepBounded (it returns the original error at the !onErrorRetryable branch), so only
 	// the entry checkTimeout turns it into 1031. C++ onError throws transaction_timed_out at ENTRY,
@@ -861,7 +861,7 @@ func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
 		t.Fatalf("entry gate: a NON-retryable FDB error past the deadline must become 1031, got %v", err2)
 	}
 
-	// codex: a NON-FDB application error past the deadline must ESCAPE unchanged — the timeout gate
+	// A NON-FDB application error past the deadline must ESCAPE unchanged — the timeout gate
 	// is for FDB errors (the retry path) only, not the caller's own error. Revert-proof of the gate
 	// POSITION (after errors.As): pre-fix the gate ran first and replaced this with 1031.
 	tx3 := newTestTx()
@@ -969,7 +969,7 @@ func TestAtomic_APIVersionSub520VersionstampSuffix(t *testing.T) {
 	})
 }
 
-// TestValidateMutation_LegacyVersionstampSizeDiscount pins codex's P2 on the api<520 versionstamp fix:
+// TestValidateMutation_LegacyVersionstampSizeDiscount pins a subtlety of the api<520 versionstamp fix:
 // the client-added offset suffix (2B SVK / 4B SVV) must NOT count toward the key/value size limit at the
 // deferred commit-time check, because C++ checks size EAGERLY on the ORIGINAL user bytes (RYW:2237-2242)
 // BEFORE appending the suffix (:2250-2261). Without the discount a boundary-sized legacy value is

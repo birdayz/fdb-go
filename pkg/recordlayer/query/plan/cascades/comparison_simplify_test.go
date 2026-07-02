@@ -29,7 +29,7 @@ func TestComparisonConstantSimplify_NonConstantRHS_NoFold(t *testing.T) {
 	}
 }
 
-// Swallow-axis (RFC-087 Graefe gate): `WHERE 5 = 'abc'` is a both-constant
+// Swallow-axis (the RFC-087 gate): `WHERE 5 = 'abc'` is a both-constant
 // comparison whose Eval raises a type-mismatch on the error channel. The
 // rule must DECLINE to fold — yield nothing, leaving the predicate intact —
 // rather than crashing or surfacing the error from the planner. At runtime

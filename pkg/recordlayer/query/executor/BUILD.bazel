@@ -40,6 +40,7 @@ go_test(
     srcs = [
         "bench_proto_test.go",
         "charge_coverage_test.go",
+        "continuation_decode_test.go",
         "equijoin_columns_test.go",
         "eval_must_test.go",
         "evaluation_context_test.go",
@@ -96,6 +97,7 @@ go_test(
         "rfc173_ordinal_join.go",
         "rfc173_ordinal_join_test.go",
         "rfc173_ordinal_join_wiring_test.go",
+        "continuation_decode_test.go",
     ],
     deps = [
         "//gen",

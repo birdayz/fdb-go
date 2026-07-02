@@ -100,8 +100,8 @@ func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
 	}
 }
 
-// TestMonitor_DroppedPingRePingsInsteadOfStalling pins the codex P2 on RFC-052
-// (#14). Returning a nil channel on a dropped PING fixes the closed-channel
+// TestMonitor_DroppedPingRePingsInsteadOfStalling pins the follow-up to RFC-052
+// (PR #14). Returning a nil channel on a dropped PING fixes the closed-channel
 // false-alive bug, but the inner monitor loop then has NO <-replyCh success path:
 // it can only kill (frozen bytes) or continue (traffic). The re-ping happens only
 // via the outer loop, reached on the dead <-replyCh branch — so a connection whose
@@ -412,7 +412,7 @@ func TestConn_FailConnectionIdempotent(t *testing.T) {
 }
 
 // TestConn_StrandedSenderStress hammers the Close-vs-SendFrame race so the errCh
-// pool path (ctx.Done arm, no pool-return on that arm — audit #13) is exercised
+// pool path (ctx.Done arm, no pool-return on that arm) is exercised
 // repeatedly under -race. Every SendFrame must return; none may hang or panic.
 func TestConn_StrandedSenderStress(t *testing.T) {
 	t.Parallel()

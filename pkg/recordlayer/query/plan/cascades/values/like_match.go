@@ -19,8 +19,7 @@ package values
 // this and Java's `likeMatcher` is a conformance bug.
 //
 // Trailing-escape behaviour: a trailing escape rune (no following
-// character) is MALFORMED → no match. Per nightshift-48's
-// fuzz-found bug fix.
+// character) is MALFORMED → no match (a fuzz-found bug fix).
 func LikeMatch(pattern, s string, escape rune) bool {
 	p := []rune(pattern)
 	str := []rune(s)

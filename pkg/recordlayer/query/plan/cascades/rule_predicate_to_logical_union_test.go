@@ -318,7 +318,7 @@ func TestPredicateToLogicalUnionRule_Convergence(t *testing.T) {
 		NewNormalizePredicatesRule(),
 		NewPredicateToLogicalUnionRule(),
 	}
-	_, converged := FixpointApply(rules, ref, 100)
+	_, converged := exploreRewriting(NewPlanner(rules, nil), ref)
 	if !converged {
 		t.Fatal("did not converge — rule is re-firing on its own output")
 	}

@@ -83,13 +83,11 @@ func TestFilterDropTruePredicatesRule_ComposesWithNoOpFilter(t *testing.T) {
 		NewFilterDropTruePredicatesRule(),
 		NewNoOpFilterRule(),
 	}
-	progress, converged := FixpointApply(rules, ref, 10)
-	if !converged {
+	if _, converged := exploreRewriting(NewPlanner(rules, nil), ref); !converged {
 		t.Fatal("did not converge")
 	}
-	if progress < 2 {
-		t.Fatalf("progress=%d, want at least 2 (DropTrue + NoOp)", progress)
-	}
+	// The Scan member below requires the full DropTrue → NoOp chain
+	// (two dependent rule fires), so finding it pins the composition.
 	// After both rules run, the Reference should contain a Scan member.
 	foundScan := false
 	for _, m := range ref.Members() {

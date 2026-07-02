@@ -31,9 +31,9 @@
 //     `IsPromotable` / `MaximumType` / `MaximumTypeOfMany`
 //     promotion lattice (with structural recursion through ARRAY /
 //     RECORD / ENUM / RELATION), and shape predicates (`IsNull`,
-//     `IsArray`, …). Post-swingshift-52, every Value impl's `Type()`
+//     `IsArray`, …). Every Value impl's `Type()`
 //     returns the rich `Type` directly — the legacy `ValueType`
-//     enum + `FromValueType` / `ToValueType` bridges retired.
+//     enum + `FromValueType` / `ToValueType` bridges are retired.
 //     Track G1 in TODO.md. Once `type.go` exceeds ~1500 LOC it
 //     splits into a dedicated `cascades/typing/` sub-package per
 //     RFC-025.
@@ -63,9 +63,9 @@ const (
 	dateLayout      = "2006-01-02"
 )
 
-// Legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
-// TypeBool / TypeFloat) retired in swingshift-52 — every Value impl's
-// Type() now returns the rich Type directly. The names below remain
+// The legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
+// TypeBool / TypeFloat) is retired — every Value impl's
+// Type() returns the rich Type directly. The names below remain
 // as Type-typed vars so existing call sites (`Typ: values.TypeInt`)
 // keep working — the value's Go type changes (Type instead of int),
 // the constant name doesn't.
@@ -110,8 +110,8 @@ type Value interface {
 	// code free of nil checks).
 	Children() []Value
 	// Type is the rich result Type of evaluating this Value
-	// (post-swingshift-52: the legacy ValueType enum retired and
-	// Type() now returns the rich Type directly). Never nil —
+	// (the legacy ValueType enum is retired; Type() returns the
+	// rich Type directly). Never nil —
 	// implementations return UnknownType when the type genuinely
 	// isn't known yet.
 	Type() Type
@@ -201,6 +201,23 @@ type FieldValue struct {
 	// degrades a baked node to lazy, which conflates duplicate same-named
 	// columns at different ordinals (§5 duplicate-name pin).
 	Resolved *ResolvedAccessor
+
+	// ResolvedOrdinal (+HasResolvedOrdinal) is an optional PLAN-TIME-resolved
+	// ordinal accessor — Java's FieldValue.ofOrdinalNumber, where the FieldPath
+	// element IS an ordinal and runtime access is positional. When set,
+	// resolveOrdinal returns it directly, so an ordinal-frontier read is
+	// row.Get(ordinal) — position-preserving by construction, and therefore
+	// sound under DUPLICATE output names, which every name-based resolution
+	// collapses (RecordType.FieldIndex is first-match; the name-keyed Datum is
+	// last-wins). Off the frontier (name-keyed rows) Field still names the read
+	// key, so one Value works under both row models during the RFC-173
+	// coexistence window. Set by the recursive-CTE leg-normalization wrap for
+	// reads over a projection-top leg (read i ↔ emitted slot i by construction).
+	// Part of the Value's semantic identity (EqualsWithoutChildren /
+	// SemanticHashCode), matching Java where two different ordinal accessors
+	// are different FieldPaths.
+	ResolvedOrdinal    int
+	HasResolvedOrdinal bool
 }
 
 // ResolvedAccessor is the construction-time-resolved accessor a BAKED
@@ -213,7 +230,7 @@ type FieldValue struct {
 // pointer (withChildren, the pullup/pushdown passthrough copies). Any future
 // change to the accessor — including Slice 3's path widening — must REPLACE it
 // with a new value, never mutate in place, or every shared copy silently
-// changes identity (Graefe convention pin).
+// changes identity (review convention pin).
 type ResolvedAccessor struct {
 	Ordinal int
 }
@@ -318,7 +335,7 @@ type OrdinalRow interface {
 
 // OrdinalResolutionError is the loud internal error (RFC-173 Slice 1) raised when
 // a FieldValue's column cannot be resolved against the authoritative ordinal
-// runtime row. Per Graefe: authority + a silent name-map fallback means a
+// runtime row. Per reviewer: authority + a silent name-map fallback means a
 // resolution bug never surfaces, so this is a query error, not a NULL. Ordinal
 // is the resolved ordinal, or -1 for a flat-reference (name->ordinal) miss.
 // Available carries the row type's column names (when the row exposes them) so
@@ -343,7 +360,7 @@ func ordinalRowNames(row OrdinalRow) []string {
 }
 
 // evaluateOrdinal reads f's column from an ordinal-model runtime row. It is the
-// authoritative frontier's resolution — NO name-map fallback (Graefe). A typed
+// authoritative frontier's resolution — NO name-map fallback (reviewer). A typed
 // child yields an ordinal (resolveOrdinal) read positionally; a flat reference
 // falls to the row's own type (GetByName). A miss on either is loud.
 func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
@@ -387,7 +404,7 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if rc, ok := evalCtx.(*RowEvalContext); ok {
 		// RFC-173 Slice 1: an ordinal-model row on the RowEvalContext is
 		// authoritative on the non-join frontier — resolve by ordinal, no
-		// name-map fallback, loud on a miss (Graefe). It takes precedence over
+		// name-map fallback, loud on a miss (reviewer). It takes precedence over
 		// the name-keyed Datum.
 		if rc.Positional != nil {
 			return f.evaluateOrdinal(rc.Positional)
@@ -405,7 +422,7 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	}
 	// Unrecognized NON-NIL context: a lazy node keeps the historical silent
 	// NULL; a BAKED node fails loudly — silently NULLing an eager ordinal
-	// reference would hide a frontier bug (Torvalds W1 catch). The nil-context
+	// reference would hide a frontier bug (review W1 catch). The nil-context
 	// NULL above is the sanctioned appendNullLeg path and stays.
 	if err := f.bakedNameReadGuard(); err != nil {
 		return nil, err
@@ -469,7 +486,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		}
 		// RFC-173 Slice 1: no explicit correlation binding matched, so the
 		// reference is to the frontier quantifier itself — resolve by ordinal
-		// against the authoritative positional row (Graefe: no name fallback,
+		// against the authoritative positional row (reviewer: no name fallback,
 		// loud on a miss). Precedes the name-keyed Datum path.
 		if ctx.Positional != nil {
 			return f.evaluateOrdinal(ctx.Positional)
@@ -580,6 +597,11 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	if f.Resolved != nil {
 		return f.Resolved.Ordinal, true
 	}
+	// A plan-time-resolved ordinal accessor (Java FieldValue.ofOrdinalNumber)
+	// is authoritative: positional by construction, duplicate-name-proof.
+	if f.HasResolvedOrdinal {
+		return f.ResolvedOrdinal, true
+	}
 	if f.Child == nil {
 		return 0, false
 	}
@@ -590,7 +612,7 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	// Return the field's SLICE POSITION (FieldIndex), not a stored Field.Ordinal —
 	// position IS the Java ordinal (Type.Record.computeFieldNameToOrdinal is list
 	// position), and it is sound even for a raw RecordType that bypassed
-	// NewRecordType's normalization (RFC-173 P1 review: Torvalds/Graefe converged).
+	// NewRecordType's normalization (RFC-173 P1 review decision).
 	return rt.FieldIndex(f.Field)
 }
 
@@ -604,6 +626,17 @@ func NewFieldValue(child Value, field string, typ Type) *FieldValue {
 // flat model).
 func NewFlatFieldValue(field string, typ Type) *FieldValue {
 	return &FieldValue{Field: field, Typ: typ}
+}
+
+// NewFieldValueWithResolvedOrdinal constructs a flat FieldValue carrying a
+// plan-time-resolved ordinal accessor — Java's FieldValue.ofOrdinalNumber. On
+// an ordinal-frontier row the read is row.Get(ordinal) (positional by
+// construction, duplicate-name-proof); on a name-keyed row it reads by field
+// name exactly like NewFlatFieldValue. Distinct from NewOrdinalFieldValue,
+// which is a NAME encoding (`_<ordinal>` Datum key) for anonymous
+// WITH-ORDINALITY fields, not positional access.
+func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ, ResolvedOrdinal: ordinal, HasResolvedOrdinal: true}
 }
 
 // NewOrdinalFieldValue accesses a record field by ORDINAL position,
@@ -808,6 +841,23 @@ func ProjectionColumnName(v Value) string {
 	return strings.ToUpper(ExplainValue(v))
 }
 
+// OutputColumnName is the projection OUTPUT-name authority: the name that keys
+// the emitted positional row's slot for a projected column (executeProjection's
+// posNames) and therefore the name any downstream re-reader must use on the
+// ordinal frontier — the upper-cased ALIAS when the column carries one, else
+// the ProjectionColumnName rendering. It lives here so every site derives the
+// name from ONE rule instead of a hand-synchronized copy: the RFC-173 Slice-1
+// alias-frontier bug was exactly two copies of this rule disagreeing (the
+// executor wrote alias-preferring slot names while the recursive-CTE leg wrap
+// re-read by ProjectionColumnName alone — a loud OrdinalResolutionError on
+// valid SQL, no fallback by design). Both sites now delegate here.
+func OutputColumnName(v Value, alias string) string {
+	if alias != "" {
+		return strings.ToUpper(alias)
+	}
+	return ProjectionColumnName(v)
+}
+
 // ExplainValue renders a Value as a readable expression string.
 // Free function rather than a Value-interface method so existing
 // third-party Value impls (once the port grows) don't have to
@@ -836,10 +886,34 @@ func ExplainValue(v Value) string {
 		}
 		return valueLiteralString(cv.Value)
 	case *FieldValue:
+		// The raw field text has '#' DOUBLED so the '#<ordinal>' suffix below is
+		// unambiguous BY CONSTRUCTION: a quoted identifier may legally contain
+		// '#' (the lexer's DOUBLE_QUOTE_ID accepts any non-quote character), so
+		// without the escape a plain name-read of a field literally named "X#0"
+		// rendered identically to an ordinal read of X at slot 0 and the
+		// ExplainValue-keyed plan identity could memo-unify the two (review
+		// round-3 on PR #446). With doubling, a rendering ends in an UNPAIRED
+		// '#' + digits iff it is an ordinal read — identity is injective over
+		// (field text, ordinal). Display/identity only: ProjectionColumnName's
+		// FieldValue arm returns Field verbatim, so plain-field Datum keys and
+		// positional slot names never change (a COMPUTED composite over a
+		// #-named field shifts its derived key spelling consistently on writer
+		// and reader, both sides of the shared contract).
+		name := strings.ReplaceAll(cv.Field, "#", "##")
 		if cv.Child != nil {
-			return ExplainValue(cv.Child) + "." + cv.Field
+			name = ExplainValue(cv.Child) + "." + name
 		}
-		return cv.Field
+		// A plan-time-resolved ordinal accessor renders its ordinal (Java's
+		// FieldPath `#ordinal` syntax) alongside the name. Load-bearing, not
+		// just display: physical-plan identity (RecordQueryProjectionPlan
+		// EqualsWithoutChildren/HashCodeWithoutChildren) is keyed on these
+		// renderings, and two reads of DUPLICATE-named slots differ only by
+		// ordinal — rendering both as the bare name memo-unified projection
+		// alternatives that read different slots (review round-2 on PR #446).
+		if cv.HasResolvedOrdinal {
+			return name + "#" + strconv.Itoa(cv.ResolvedOrdinal)
+		}
+		return name
 	case *ArithmeticValue:
 		return "(" + ExplainValue(cv.Left) + " " + cv.Op.symbol() + " " + ExplainValue(cv.Right) + ")"
 	case *StrictRankLimitValue:
@@ -926,7 +1000,7 @@ func ExplainValue(v Value) string {
 // ValueType.String() output (`INT` / `STRING` / `BOOL` / `FLOAT` /
 // `UNKNOWN`) — the seed conflates LONG/INT into INT and DOUBLE/FLOAT
 // into FLOAT here so the rendered output stays stable across the
-// ValueType retirement (Track G1, swingshift-52). Plan-cache keys
+// ValueType retirement (Track G1). Plan-cache keys
 // derived via ExplainValue stay byte-stable across the migration.
 func explainTypeName(t Type) string {
 	if t == nil {
@@ -1137,7 +1211,7 @@ type RowEvalContext struct {
 	// non-join frontier. When non-nil, FieldValue resolution goes through the
 	// ordinal path (resolveOrdinal / GetByName against the row's own type) BEFORE
 	// the name-keyed Datum — a loud OrdinalResolutionError on a miss, NO name-map
-	// fallback (Graefe). It is the single frontier quantifier's row: an outer
+	// fallback (reviewer). It is the single frontier quantifier's row: an outer
 	// correlation still resolves via Correlations first, and only an unbound
 	// (frontier) quantifier reference falls through to this row.
 	Positional       OrdinalRow
@@ -2035,7 +2109,7 @@ const twoPow63 = 9223372036854775808.0
 // float64FitsInt64 reports whether a float64 is safely convertible to int64
 // (i.e. int64(f) does not overflow). The upper bound is EXCLUSIVE at 2^63: a
 // `f <= math.MaxInt64` guard rounds the constant up to 2^63 and wrongly admits
-// 2^63 itself, which overflows int64 (codex finding, RFC-087). The lower bound
+// 2^63 itself, which overflows int64 (RFC-087). The lower bound
 // math.MinInt64 (-2^63) IS exactly representable as float64, so it is inclusive.
 func float64FitsInt64(f float64) bool {
 	return f >= math.MinInt64 && f < twoPow63
@@ -2697,7 +2771,7 @@ func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstruc
 
 // NewRawRecordConstructorValue constructs a RecordConstructorValue keeping
 // every field name VERBATIM — duplicate names allowed. It exists for the
-// RFC-173 ordinal-join seeds (Graefe W3 ruling: dedicated raw RC constructor):
+// RFC-173 ordinal-join seeds (review W3 ruling: dedicated raw RC constructor):
 // the 2-way join's ordinal RC concatenates the two legs' columns, each field a
 // BAKED FieldValue over its leg's QOV, and duplicate names across legs
 // (`SELECT * FROM a JOIN b` with same-named columns) MUST survive verbatim —

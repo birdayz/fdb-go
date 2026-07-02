@@ -268,9 +268,35 @@ using the **host** Docker for FDB testcontainers and share the warm slot:
    so it never touches a classic or other runner sharing the host (the side-by-side migration).
    Warm bazel *servers* survive (own session); killing the bazel *client* already releases the
    `output_base` lock — we do **not** `bazel shutdown`, which would throw away warmth.
-7. **Idempotent registration.** A scale-set name is unique per group; a stale set left by a crashed
-   run (same name) is deleted before re-creating, so a `Restart=always` daemon can't crash-loop on
-   "name already exists".
+7. **Idempotent, non-destructive registration.** A scale-set name is unique per group. On start the
+   supervisor looks the name up and **reuses the existing scale set's ID** if found — patching
+   drifted config (labels, `DisableUpdate`) in place via `UpdateRunnerScaleSet` (a PATCH) — and
+   creates one only when none exists. It never deletes an existing scale set to "start clean".
+   This was not the original design (see the postmortem below): the first cut deleted any existing
+   scale set with this name on every start, on the theory that only a crash leaves one behind. In
+   production a scale set also survives every *clean* restart (`systemctl restart`, the watchdog
+   restarting under load, a deploy) — deleting it there orphans jobs GitHub has already
+   assigned/queued against that ID, because the Actions Runner Scale Set protocol tracks job
+   assignment by the scale set's stable numeric ID, not its name. Reuse-by-name + patch-in-place is
+   also how `actions-runner-controller` itself treats a scale set: a durable resource reconciled
+   across listener restarts, not recreated by them. See `ensureRunnerScaleSet` in
+   `tools/bazelscaleset/scaleset.go`.
+
+   **Postmortem (why this changed).** Live on `hetzner-fdb`, a systemd-watchdog restart under
+   heavy Bazel+JVM conformance load (swap 2.4–2.8 GiB used, load average 16–17 — the exact
+   condition the watchdog restarts on) fired while GitHub had job assignments in flight. The
+   supervisor's startup path deleted the existing scale set and minted a new one
+   (`listener.lastMessageID` resetting to 0 on every restart is normal — it's a local variable in
+   `listener.Run`, unrelated to the scale set's identity — but the *new scale-set ID* is not: any
+   job GitHub had assigned against the deleted ID had nowhere to land). A 7+ workflow-run backlog
+   across 6+ branches sat `queued` forever — `gh api .../actions/jobs/<id>` never left `queued`
+   even though the runner logs showed it executing and "succeeding" locally — with zero jobs
+   `in_progress` repo-wide, until the next restart happened to create a scale set that picked up
+   the backlog by luck. Confirmed by reading `github.com/actions/scaleset`'s
+   `MessageSessionClient`: a fresh session against an **existing** scale set correctly resumes any
+   backlog (the session-creation response's `Statistics.TotalAssignedJobs` feeds directly into
+   `listener.Run`'s first `HandleDesiredRunnerCount` call) — so reuse-by-name needs no additional
+   protocol-level recovery, only the deletion needed to stop.
 
 ### 5. Cleanup, disk, self-healing
 

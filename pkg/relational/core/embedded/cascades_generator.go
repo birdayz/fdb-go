@@ -790,7 +790,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// already errored above and takes precedence, and (b) a VALID qualifier (or none) has
 	// been stripped to the bare Target, which is checked here — so `DELETE FROM
 	// <session_schema>.missing` and `DELETE FROM missing` both get 42F01, while
-	// `DELETE FROM badschema.missing` keeps its 42F00 (codex/Torvalds). recordTypeCI
+	// `DELETE FROM badschema.missing` keeps its 42F00. recordTypeCI
 	// resolves case-insensitively, matching the WHERE/SELECT analyzer.
 	var dmlTarget string
 	switch dop := logicalOp.(type) {
@@ -1049,7 +1049,7 @@ const txPageTimeLimit = 4 * time.Second
 //     not this function's return, because the ctx must stay live for the
 //     whole iteration across pages.
 //
-//     PER-REQUEST, not per-logical-statement (Graefe Q1): one Execute() is
+//     PER-REQUEST, not per-logical-statement: one Execute() is
 //     bounded. A continuation resumed by a NEW request (a fresh Execute on a
 //     new plan) starts a fresh deadline — there is no cross-continuation
 //     wall-clock, matching Java's per-ExecuteState TimeScanLimiter (reset on
@@ -1478,7 +1478,7 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// with the per-transaction CAP (txPageTimeLimit, 4s) so the FDB 5s hard
 	// wall is never exceeded: the 4s cap is the ceiling and a smaller user
 	// limit only narrows it — a larger user value can never raise the page
-	// budget past the cap (Graefe review).
+	// budget past the cap.
 	timeLimit := txPageTimeLimit
 	if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 		if ut := time.Duration(userMillis) * time.Millisecond; ut < timeLimit {
@@ -1570,7 +1570,7 @@ func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason rec
 // UUID leaves the value layer as a string — every internal path (filter
 // compare, index-scan-range pack, INL join key) keeps it as [16]byte so
 // equality/ordering stay wire-consistent with the tuple.UUID index encoding
-// (RFC-162, Graefe decision (b)). A fixed [16]byte / tuple.UUID at this boundary
+// (RFC-162, reviewer decision (b)). A fixed [16]byte / tuple.UUID at this boundary
 // is unambiguously a UUID: BYTES columns surface as a []byte slice, never a
 // 16-array, so the type switch never misfires.
 func materializeDriverValue(v any) any {
@@ -2189,6 +2189,22 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	}
 	if fm, ok := plan.(*plans.RecordQueryFlatMapPlan); ok {
 		return deriveColumnsFromFlatMap(fm, md)
+	}
+	// A recursive CTE consumed bare (`SELECT * FROM cte`) has the recursive
+	// plan at top — no projection above it. Its output schema is the SEED
+	// leg's: standard SQL defines the CTE's columns from the seed (plus any
+	// column-alias list, which the translator bakes into the seed leg's
+	// normalization projection), and the recursive leg is normalized onto the
+	// same names. Recurse into the seed (through its TempTableInsert wrapper)
+	// exactly like the plain-UNION arm recurses into its first leg — without
+	// this arm the walk fell through to the leaf handler, found no scan, and
+	// returned NO columns: rows flowed but Rows.Columns() was empty, so every
+	// database/sql Scan failed with "expected 0 destination arguments".
+	if rdj, ok := plan.(*plans.RecordQueryRecursiveDfsJoinPlan); ok {
+		return deriveColumnsFromPlan(rdj.GetRoot(), md)
+	}
+	if rlu, ok := plan.(*plans.RecordQueryRecursiveLevelUnionPlan); ok {
+		return deriveColumnsFromPlan(rlu.GetInitialState(), md)
 	}
 	if u := findUnionPlan(plan); u != nil {
 		return deriveColumnsFromPlan(u[0], md)
@@ -3751,7 +3767,7 @@ func schemaQualifiedUnnestTable(u *logical.LogicalUnnest, schemaName string, md 
 // case). Mirrors cascadesTranslator.resolveRecordType's fallback. RFC-142.
 func recordTypeExistsFold(md *recordlayer.RecordMetaData, name string) bool {
 	// Delegates to recordTypeCI (the value-returning form) so the case-insensitive
-	// record-type resolution lives in exactly one place (Graefe review).
+	// record-type resolution lives in exactly one place.
 	return recordTypeCI(md, name) != nil
 }
 

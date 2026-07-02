@@ -173,7 +173,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	// inverted_range (2005) is reported FIRST — libfdb_c constructs a KeyRangeRef from the C args
 	// before entering RYW::getRangeSplitPoints, and the KeyRangeRef ctor throws inverted_range on
 	// begin > end, ahead of the used_during_commit / maxKey checks. So an inverted range — even one
-	// also past maxReadKey — is 2005, not 2004 (codex catch). Go's API takes raw begin/end with no
+	// also past maxReadKey — is 2005, not 2004. Go's API takes raw begin/end with no
 	// constructing range, so the check lives here, before everything else.
 	if bytes.Compare(begin, end) > 0 {
 		return nil, &wire.FDBError{Code: ErrInvertedRange} // 2005
@@ -193,7 +193,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	// (ReadYourWrites.actor.cpp:1872 before :1875), so a timed-out txn returns transaction_timed_out
 	// (1031), not key_outside_legal_range. This path bypasses ensureReadVersion (where checkTimeout
 	// normally runs), so gate it explicitly — else the synchronous maxKey guard below would pre-empt
-	// 1031 with 2004 (codex catch).
+	// 1031 with 2004.
 	if err := tx.checkTimeout(); err != nil {
 		return nil, err
 	}

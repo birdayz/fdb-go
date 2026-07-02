@@ -249,9 +249,9 @@ func TestFDB_GroupByOverJoin_UndefinedKeyStillRejects(t *testing.T) {
 // gate — and is SAFE only because every call site is BRACKETED by a precise
 // semantic resolver gate that overrides it (top-level: resolver runs BEFORE;
 // correlated-scalar: resolver runs AFTER — see the validateGroupByProjection
-// invariant comment). Covers BOTH call sites (Graefe: verify the correlated-scalar
-// site is equally resolver-gated; codex: the existence-check dimension the suite
-// missed).
+// invariant comment). Covers BOTH call sites — the correlated-scalar site must be
+// equally resolver-gated, and the existence-check dimension is one the suite
+// previously missed.
 func TestFDB_GroupByWrongQualifierRejected(t *testing.T) {
 	t.Parallel()
 	db, ctx := gojDB(t, "wrongqual")

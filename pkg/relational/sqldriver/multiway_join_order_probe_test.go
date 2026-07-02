@@ -116,7 +116,7 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 	}
 }
 
-// TestFDB_NestedJoinUnqualifiedProjection pins codex's P2-3 concern (RFC-077 7.6):
+// TestFDB_NestedJoinUnqualifiedProjection pins review's P2-3 concern (RFC-077 7.6):
 // a top-level UNQUALIFIED projection of a column UNIQUE to a (nested) join leg must
 // resolve to the right value, not NULL. With the source-anchored join result and
 // the dotted-only legColumns propagation, a buried leg's columns reach the top via

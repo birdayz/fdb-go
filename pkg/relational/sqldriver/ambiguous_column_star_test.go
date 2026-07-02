@@ -113,7 +113,7 @@ func TestFDB_AmbiguousColumnStar(t *testing.T) {
 			"expected error code 22023, got: %v", err)
 	})
 
-	// RFC-173 W3b pin (Torvalds suggestion): REVERSED qualified stars over a
+	// RFC-173 W3b pin (review suggestion): REVERSED qualified stars over a
 	// same-schema self-join — `SELECT t2.*, t1.*` reverses the leg order
 	// relative to the FROM clause. The driver's positional-read guard cannot
 	// distinguish a reversed same-schema layout by names alone (both legs flow

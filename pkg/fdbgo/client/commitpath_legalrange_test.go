@@ -85,7 +85,7 @@ func TestClear_OversizedSystemKey(t *testing.T) {
 
 // TestAtomic_InvalidOp_DefersToEarlierIllegalMutation pins C++ "the FIRST illegal op throws"
 // (ReadYourWrites.actor.cpp:2226-2234, eager). Go defers Set/Atomic validation to Commit, so the
-// bad-Atomic poison must defer to an EARLIER illegal buffered mutation (codex delta-review): a
+// bad-Atomic poison must defer to an EARLIER illegal buffered mutation: a
 // system-key Set BEFORE an invalid-op Atomic surfaces the Set's key_outside_legal_range (2004), not
 // the Atomic's invalid_mutation_type (2018); the reverse order surfaces 2018. Revert-proof: a poison
 // that out-ranks the buffered-mutation loop returns 2018 for the first (Set-before-Atomic) case.
@@ -120,7 +120,7 @@ func TestAtomic_InvalidOp_DefersToEarlierIllegalMutation(t *testing.T) {
 // TestCommit_InvalidAtomicMarksErrored pins that the invalid-atomic poison marks the transaction
 // errored on the COMMON path (poison set before Commit entry: Atomic(badOp); Commit()), matching the
 // snapshot re-check that also errors it — so the post-failure txn state does not depend on whether
-// the bad Atomic landed before commit entry or raced into the re-check (codex). Revert-proof: drop
+// the bad Atomic landed before commit entry or raced into the re-check. Revert-proof: drop
 // the state.Store on the entry check and the txn stays active after the failed commit.
 func TestCommit_InvalidAtomicMarksErrored(t *testing.T) {
 	t.Parallel()

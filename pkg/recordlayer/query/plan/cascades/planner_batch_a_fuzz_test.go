@@ -33,7 +33,7 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 	f.Add(make([]byte, 16))
 	// Specific seeds exercising shapes the 7-wrapper symmetry fix
 	// enabled — the buildFuzzExpression case selectors map to the
-	// shapes documented in fixpoint_fuzz_test.go.
+	// shapes documented in buildFuzzExpression (planner_fuzz_test.go).
 	//   0 → Filter
 	//   5 → Union(2 children)
 	//   7 → Intersection(2 children)

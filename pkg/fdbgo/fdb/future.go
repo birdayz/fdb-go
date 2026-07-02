@@ -185,7 +185,7 @@ func newFutureNil(fn func() error) FutureNil {
 // cancellableFutureNil is a FutureNil whose Cancel() runs a hook, instead of the base no-op. Watch()
 // uses it so that an app freeing an unneeded watch by Cancel()ing the returned future actually
 // cancels the underlying watch (its context → the long-poll drains and releases its
-// outstanding-watch slot). Without this the slot stays charged until the key changes (codex).
+// outstanding-watch slot). Without this the slot stays charged until the key changes.
 type cancellableFutureNil struct {
 	futureNil
 	cancel func()

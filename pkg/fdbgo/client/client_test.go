@@ -248,7 +248,7 @@ func TestOnError_NonRetryable(t *testing.T) {
 		t.Parallel()
 		// all_alternatives_failed (1006) is absorbed by the read path (getValue's
 		// local invalidate+retry loop), so OnError must NOT retry it. This is the
-		// load-bearing fact behind RFC-010 #3 / the codex finding: fdb.Get must
+		// load-bearing fact behind RFC-010 #3: fdb.Get must
 		// re-drive a pipelined-enqueue 1006 through the full read path, because if
 		// 1006 ever surfaced to OnError it would fail the transaction rather than
 		// retry. If this ever became OnError-retryable, that fallback would be moot
@@ -358,7 +358,7 @@ func TestClusterVersionChanged_SelfConflicting(t *testing.T) {
 	}
 }
 
-// TestApproximateCommitSize_SizesSnapshotNotLiveBuffer pins the codex (RFC-067) finding: the
+// TestApproximateCommitSize_SizesSnapshotNotLiveBuffer pins the RFC-067 finding: the
 // commit-time transaction_too_large (2101) check must size the VALIDATED mutation snapshot, not
 // the live tx.mutations. Under the documented concurrent-use contract a Set racing Commit on
 // another goroutine appends to tx.mutations AFTER Commit snapshots it; sizing the live buffer

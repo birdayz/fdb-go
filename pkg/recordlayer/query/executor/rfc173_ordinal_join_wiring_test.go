@@ -818,7 +818,7 @@ func TestRFC173S2_LegWindowRowContext(t *testing.T) {
 	}
 }
 
-// TestRFC173S2_SpanAware_BareDupName_DivergencePin (Graefe W3b-1 ACK note):
+// TestRFC173S2_SpanAware_BareDupName_DivergencePin (review W3b-1 ACK note):
 // a flat BARE name over a dup-named merged row resolves FIRST-MATCH through
 // spanAwareRow (merged-type FieldIndex) but LAST-WINS through the coexistence
 // Datum (map writes) — a real model divergence that is UNREACHABLE in
@@ -863,7 +863,7 @@ func TestRFC173S2_SpanAware_BareDupName_DivergencePin(t *testing.T) {
 	}
 }
 
-// TestRFC173S2_NLJ_FoldedRVDroppedLeg_PredTypes pins the codex PR-447 P1: a
+// TestRFC173S2_NLJ_FoldedRVDroppedLeg_PredTypes pins the PR-447 review P1: a
 // FOLDED result value can DROP a leg entirely while a baked cross-leg ON
 // predicate still references it — LegTypes derived from the RV alone misses
 // the dropped leg, so a NAME-model (Datum-only) row for that leg adapted with
@@ -918,7 +918,7 @@ func TestRFC173S2_NLJ_FoldedRVDroppedLeg_PredTypes(t *testing.T) {
 }
 
 // TestRFC173S2_FlatMap_FoldedRVDroppedLeg_PlanTypes pins the FlatMap half of
-// the codex PR-447 P1 (@claude final-pass catch): the correlated FlatMap
+// the PR-447 review P1 (@claude final-pass catch): the correlated FlatMap
 // implementation pushes the gated join's baked ON references INTO the inner
 // plan, so a folded result value that DROPS the outer leg leaves the birth
 // typeless for it even though the inner plan still references it — a

@@ -11,7 +11,7 @@ import (
 	"fdb.dev/pkg/fdbgo/libfdbc"
 )
 
-// TestLibFDBC_LocalityNegativeLimit pins the codex findings: the libfdb_c backend
+// TestLibFDBC_LocalityNegativeLimit pins that the libfdb_c backend
 // must match the pure-Go backend's limit validation EXACTLY, not panic and not
 // silently diverge. Apple's binding uses a `limit != 0` form that drives
 // make([]Key, size) negative and PANICS on any negative limit. Pure-Go (via
@@ -44,7 +44,7 @@ func TestLibFDBC_LocalityNegativeLimit(t *testing.T) {
 	}
 
 	// limit < -1: range_limits_invalid (2012) on BOTH backends (no panic, no
-	// silent success — the build-tag divergence codex caught).
+	// silent success — the pre-fix build-tag divergence).
 	cgoErr := mustErrCode(t, func() error { _, e := be.LocalityGetBoundaryKeys(rng, -5, 0); return e })
 	goErr := mustErrCode(t, func() error { _, e := goRaw.LocalityGetBoundaryKeys(rng, -5, 0); return e })
 	if cgoErr != 2012 || goErr != 2012 {

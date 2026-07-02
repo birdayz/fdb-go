@@ -22,7 +22,7 @@ import (
 //     MORE rows. An equality bound out-selects a range; adding ANY bound only
 //     lowers selectivity (each factor is in (0,1)); empty/nil bounds are inert.
 //
-// Scope (Graefe): this is LAYERED protection, not sole coverage. It pins the
+// Scope: this is LAYERED protection, not sole coverage. It pins the
 // in-boundSelectivity invariant — the load-bearing `selEq < selRng` catches a
 // future edit that re-applies FilterSelectivity (0.5) to an equality branch (the
 // exact #405 inversion) even if the constants stay correctly ordered. The actual

@@ -14,7 +14,7 @@ import (
 // divergence still holds exactly as documented. It is a pure function (no FDB),
 // so this is a plain unit test that runs alongside the Ginkgo suite.
 //
-// The headline case is the codex-caught regression: a
+// The headline case: a
 // DivergenceJavaIntermittentGoCorrect entry documents that BOTH engines
 // succeed and only Java's ROW ORDER is intermittent — so if Java starts
 // DETERMINISTICALLY ERRORING (a new, worse divergence) the lock must FAIL, not
@@ -41,7 +41,7 @@ func TestDivergenceHolds(t *testing.T) {
 		go_  plandiff.RunResult
 		want bool
 	}{
-		// --- JavaIntermittentGoCorrect: the codex-caught axis. ---
+		// --- JavaIntermittentGoCorrect: the intermittent-row-order axis. ---
 		{
 			name: "intermittent: Java succeeds + Go pinned rows → holds",
 			div:  &plandiff.Divergence{Direction: plandiff.DivergenceJavaIntermittentGoCorrect, GoExpectedRows: abc},

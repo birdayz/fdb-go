@@ -452,7 +452,7 @@ func extractWinnerPlan(t *testing.T, bestExpr expressions.RelationalExpression) 
 // planHasIndexScan reports whether a RecordQueryIndexPlan appears ANYWHERE in the plan
 // tree. Used by the no-index negative assertions: a root-only check (extractIndexPlan)
 // would miss a nested index scan under a PredicatesFilter/Fetch, letting a regression that
-// wrongly uses the index slip through (codex PR-#257 P3).
+// wrongly uses the index slip through.
 func planHasIndexScan(p plans.RecordQueryPlan) bool {
 	found := false
 	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
@@ -588,7 +588,7 @@ func TestPlanChoice_AllPredicatesResidual(t *testing.T) {
 	}
 }
 
-// TestPlanChoice_ParameterizedResidualKeepsIndex pins codex PR-#257 finding P2: a
+// TestPlanChoice_ParameterizedResidualKeepsIndex pins the PR #257 fix: a
 // query-parameter ($N → ConstantObjectValue) in a residual predicate is an execution
 // constant, NOT a join/row correlation. The data-access compensation gate must subtract
 // it, so `WHERE customer_id = 42 AND total > $1` (total non-indexed) still materializes the

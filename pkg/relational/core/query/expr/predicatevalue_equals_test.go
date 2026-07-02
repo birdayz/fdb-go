@@ -45,8 +45,8 @@ func TestPredicateValue_EqualsWithoutChildren(t *testing.T) {
 	}
 }
 
-// TestPredicateValue_SemanticHash pins the memo-hash folding (Graefe full-stack
-// review): without values.SelfSemanticHash, every predicateValue collided into the
+// TestPredicateValue_SemanticHash pins the memo-hash
+// folding: without values.SelfSemanticHash, every predicateValue collided into the
 // bare "v:predicate" bucket, degrading memo lookup for predicate-in-projection /
 // CASE-heavy SQL. The hash must (a) distinguish predicateValues wrapping different
 // predicates, and (b) keep equal⟹same-hash — equal predicateValues hash

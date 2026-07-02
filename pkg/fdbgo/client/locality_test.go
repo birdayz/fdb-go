@@ -146,7 +146,7 @@ func TestLookupLocked_BackwardSelectorOnBoundary(t *testing.T) {
 	}
 }
 
-// TestLocate_SystemKeyClampIgnoresBackward pins the codex #10 P2: locate clamps the \xff\xff system
+// TestLocate_SystemKeyClampIgnoresBackward: locate clamps the \xff\xff system
 // keyspace to the single 0xff sentinel, so a BACKWARD selector on allKeysEnd must NOT then apply a
 // backward lookup to the sentinel — that would route to the last USER shard ending at 0xff instead of the
 // SYS shard containing 0xff (wrong-shard/retry on a multi-SS cluster). Revert-proof: dropping the
@@ -170,8 +170,8 @@ func TestLocate_SystemKeyClampIgnoresBackward(t *testing.T) {
 	}
 }
 
-// TestInvalidate_BackwardSelectorEvictsShardEndingAtKey pins the backward branch of invalidate (Torvalds
-// gap on #10): getKey's wrong-shard invalidate for a BACKWARD selector must evict the shard ENDING at the
+// TestInvalidate_BackwardSelectorEvictsShardEndingAtKey pins the backward branch of invalidate:
+// getKey's wrong-shard invalidate for a BACKWARD selector must evict the shard ENDING at the
 // boundary key (the one it resolved to), not the one beginning at it. [a,m)@SSA + [m,z)@SSB:
 // invalidate("m", backward) evicts SSA. Revert-proof: dropping the backward branch in invalidate uses the
 // forward logic → evicts SSB (wrong) → SSA stays cached → the getKey loop keeps hitting the stale shard.

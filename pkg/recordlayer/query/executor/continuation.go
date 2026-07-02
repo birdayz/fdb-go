@@ -186,21 +186,25 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 			KeyVals  []any  `json:"k"`
 		}
 		var payload groupKeyPayload
-		if jErr := json.Unmarshal(par.GroupKey, &payload); jErr == nil {
-			groupKey = payload.GroupKey
-			keyVals = payload.KeyVals
-			// Restore tagged UUIDs to [16]byte, then convert JSON float64
-			// numbers back to int64 for integer values (Go SQL type system).
-			for i, v := range keyVals {
-				v = restoreContinuationValue(v)
-				if f, ok := v.(float64); ok && f == float64(int64(f)) {
-					v = int64(f)
-				}
-				keyVals[i] = v
+		if jErr := json.Unmarshal(par.GroupKey, &payload); jErr != nil {
+			// The encoder has always written this JSON payload (the shape and
+			// this decoder shipped in the same commit — there is no raw-string
+			// legacy format), so unparseable bytes are a corrupt continuation
+			// and must error: silently coercing them to a raw group key string
+			// would resume aggregation under a key that never matches the
+			// recomputed keys (wrong results, no error).
+			return nil, "", nil, fmt.Errorf("failed to unmarshal group key in aggregate continuation: %w", jErr)
+		}
+		groupKey = payload.GroupKey
+		keyVals = payload.KeyVals
+		// Restore tagged UUIDs to [16]byte, then convert JSON float64
+		// numbers back to int64 for integer values (Go SQL type system).
+		for i, v := range keyVals {
+			v = restoreContinuationValue(v)
+			if f, ok := v.(float64); ok && f == float64(int64(f)) {
+				v = int64(f)
 			}
-		} else {
-			// Fallback: treat as raw group key string (legacy format).
-			groupKey = string(par.GroupKey)
+			keyVals[i] = v
 		}
 	}
 
@@ -243,26 +247,31 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 			gs.allInt[i] = v.Int64State != 0
 		}
 		idx++
-		// min_i: JSON-encoded bytes
+		// min_i: JSON-encoded bytes. The len > 0 guard is the legitimate
+		// "no MIN state yet" case; corrupt JSON in a present state must error,
+		// not silently drop the partial MIN (which would return a wrong
+		// aggregate on resume).
 		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState); ok && len(v.BytesState) > 0 {
 			var minVal any
-			if jErr := json.Unmarshal(v.BytesState, &minVal); jErr == nil {
-				if f, ok := minVal.(float64); ok && f == float64(int64(f)) {
-					minVal = int64(f)
-				}
-				gs.mins[i] = minVal
+			if jErr := json.Unmarshal(v.BytesState, &minVal); jErr != nil {
+				return nil, "", nil, fmt.Errorf("failed to unmarshal MIN state in aggregate continuation: %w", jErr)
 			}
+			if f, ok := minVal.(float64); ok && f == float64(int64(f)) {
+				minVal = int64(f)
+			}
+			gs.mins[i] = minVal
 		}
 		idx++
-		// max_i: JSON-encoded bytes
+		// max_i: JSON-encoded bytes (same contract as min_i above).
 		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState); ok && len(v.BytesState) > 0 {
 			var maxVal any
-			if jErr := json.Unmarshal(v.BytesState, &maxVal); jErr == nil {
-				if f, ok := maxVal.(float64); ok && f == float64(int64(f)) {
-					maxVal = int64(f)
-				}
-				gs.maxs[i] = maxVal
+			if jErr := json.Unmarshal(v.BytesState, &maxVal); jErr != nil {
+				return nil, "", nil, fmt.Errorf("failed to unmarshal MAX state in aggregate continuation: %w", jErr)
 			}
+			if f, ok := maxVal.(float64); ok && f == float64(int64(f)) {
+				maxVal = int64(f)
+			}
+			gs.maxs[i] = maxVal
 		}
 		idx++
 	}
@@ -293,9 +302,12 @@ func encodeSortContinuation(
 	}
 
 	for _, qr := range buf {
+		// Errors are PROPAGATED, never swallowed into a skipped record: a
+		// dropped buffer row would silently vanish from the sorted output on
+		// resume (wrong results, no error).
 		jsonBytes, jErr := json.Marshal(jsonSafeDatum(qr.Datum))
 		if jErr != nil {
-			continue
+			return nil, fmt.Errorf("failed to marshal sorted record for continuation: %w", jErr)
 		}
 		var pkBytes []byte
 		if qr.PrimaryKey != nil {
@@ -307,7 +319,7 @@ func encodeSortContinuation(
 		}
 		srBytes, srErr := proto.Marshal(sr)
 		if srErr != nil {
-			continue
+			return nil, fmt.Errorf("failed to marshal sorted record for continuation: %w", srErr)
 		}
 		msg.Records = append(msg.Records, srBytes)
 	}
@@ -322,14 +334,17 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 		return nil, nil, fmt.Errorf("failed to unmarshal sort continuation: %w", err)
 	}
 
-	for _, srBytes := range msg.Records {
+	for i, srBytes := range msg.Records {
+		// Errors are PROPAGATED, never swallowed into a skipped record: a
+		// corrupt buffered record must fail the resume, not silently drop a
+		// row from the sorted output (wrong results, no error).
 		sr := &gen.SortedRecord{}
 		if pErr := proto.Unmarshal(srBytes, sr); pErr != nil {
-			continue
+			return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d in continuation: %w", i, pErr)
 		}
 		var datum map[string]any
 		if jErr := json.Unmarshal(sr.Message, &datum); jErr != nil {
-			continue
+			return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
 		}
 		// Restore tagged UUIDs to [16]byte, then convert JSON float64 numbers
 		// back to int64 for integer columns (matching the Go SQL type system).
@@ -342,7 +357,11 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 		}
 		var pk tuple.Tuple
 		if sr.PrimaryKey != nil {
-			pk, _ = tuple.Unpack(sr.PrimaryKey)
+			var pkErr error
+			pk, pkErr = tuple.Unpack(sr.PrimaryKey)
+			if pkErr != nil {
+				return nil, nil, fmt.Errorf("failed to unpack sorted record %d primary key in continuation: %w", i, pkErr)
+			}
 		}
 		buf = append(buf, QueryResult{Datum: datum, PrimaryKey: pk})
 	}
