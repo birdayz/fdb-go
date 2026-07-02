@@ -7,7 +7,7 @@ import (
 // TestFieldValue_ResolvedOrdinal_RFC173 pins the plan-time-resolved ordinal
 // accessor (values.NewFieldValueWithResolvedOrdinal — Java's
 // FieldValue.ofOrdinalNumber model), added for the recursive-CTE
-// leg-normalization wrap (codex P2 on PR #446): a leg emitting DUPLICATE
+// leg-normalization wrap (review P2 on PR #446): a leg emitting DUPLICATE
 // output aliases (`SELECT a + 1 AS x, b + 1 AS x` — two slots both named X)
 // is only readable positionally; any name-based resolution collapses the two
 // columns (OrdinalRow.GetByName is first-match, the name-keyed Datum is
@@ -16,7 +16,7 @@ import (
 //	(1) on an OrdinalRow, the resolved ordinal is authoritative — two reads
 //	    of the same duplicate name hit their OWN slots;
 //	(2) an out-of-range resolved ordinal is a LOUD OrdinalResolutionError
-//	    (no name fallback — Graefe's rule);
+//	    (no name fallback — reviewer's rule);
 //	(3) on a name-keyed row the ordinal is inert and the field NAME reads,
 //	    exactly like a flat FieldValue (both-model coexistence);
 //	(4) the ordinal is part of the Value's semantic identity (equality and
@@ -41,7 +41,7 @@ func TestFieldValue_ResolvedOrdinal_RFC173(t *testing.T) {
 		t.Fatalf("ordinal 1 read: got (%v, %v), want (11, nil) — first-match name collapse would give 2", v1, err)
 	}
 	// Control: a flat (name) read of the duplicate name collapses to slot 0 —
-	// the codex-P2 silent-wrong this accessor exists to prevent.
+	// the review-P2 silent-wrong this accessor exists to prevent.
 	flat := NewFlatFieldValue("X", UnknownType)
 	vf, err := flat.Evaluate(dupRow)
 	if err != nil || vf != int64(2) {
@@ -79,7 +79,7 @@ func TestFieldValue_ResolvedOrdinal_RFC173(t *testing.T) {
 }
 
 // TestFieldValue_ExplainOrdinalEscape_RFC173 pins the '#'-escape that keeps
-// ExplainValue injective over (field text, ordinal) — codex round-3 on PR
+// ExplainValue injective over (field text, ordinal) — review round-3 on PR
 // #446: a quoted identifier may legally contain '#' (DOUBLE_QUOTE_ID accepts
 // any non-quote character), so a plain name-read of a field literally named
 // "X#0" would otherwise render identically to an ordinal read of X at slot 0,

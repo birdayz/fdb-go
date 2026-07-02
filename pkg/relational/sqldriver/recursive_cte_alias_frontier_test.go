@@ -10,7 +10,7 @@ import (
 )
 
 // These tests pin the RFC-173 Slice-1 alias/frontier naming contract for
-// recursive-CTE leg normalization (codex P2). A leg's normalization wrap
+// recursive-CTE leg normalization (review P2). A leg's normalization wrap
 // (normalizeLegToOutputColumns) re-reads the leg's output by its PHYSICAL
 // column names. On the positional frontier the physical slot names are the
 // OUTPUT names — ALIAS-preferring (executeProjection's posNames; RFC-173 §4
@@ -132,7 +132,7 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed_RFC173(t *testing.T) {
 }
 
 // TestFDB_RecursiveCTEColumnListAndAliasedBranches_RFC173 combines both axes —
-// codex's reported shape with a table-backed seed (FROM-less SELECT is
+// review's reported shape with a table-backed seed (FROM-less SELECT is
 // unsupported, matching Java's visitSimpleTable rejection): the column list
 // renames an aliased seed AND the recursive branch aliases its computed
 // column. Both wraps fire; both must read the alias-named frontier slots.
@@ -234,7 +234,7 @@ func TestFDB_RecursiveCTEAliasedJoinBodyColumn_RFC173(t *testing.T) {
 }
 
 // TestFDB_RecursiveCTEDuplicateAliases_RFC173 pins DUPLICATE output aliases in
-// a recursive leg (codex P2 on PR #446): `SELECT a + 1 AS x, b + 1 AS x` emits
+// a recursive leg (review P2 on PR #446): `SELECT a + 1 AS x, b + 1 AS x` emits
 // two slots BOTH named X, and any name-based re-read collapses them —
 // positional GetByName resolves the FIRST matching slot (b silently copied a:
 // rows (2,2),(3,3) instead of (2,11),(3,12)), the name-keyed Datum is
@@ -273,7 +273,7 @@ func TestFDB_RecursiveCTEDuplicateAliases_RFC173(t *testing.T) {
 	type row struct{ a, b int64 }
 	want := []row{{1, 10}, {2, 11}, {3, 12}}
 
-	// Column-list form (codex's reported shape).
+	// Column-list form (review's reported shape).
 	rows, err := db.QueryContext(ctx,
 		"WITH RECURSIVE c(a, b) AS (SELECT id, v FROM t UNION ALL SELECT a + 1 AS x, b + 1 AS x FROM c WHERE a < 3) SELECT a, b FROM c ORDER BY a")
 	g.Expect(err).NotTo(gomega.HaveOccurred())

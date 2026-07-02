@@ -66,7 +66,7 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 // recursive-CTE duplicate-alias wrap) renders as "X#0"/"X#1" (Java's FieldPath
 // `#ordinal` syntax), because two reads of duplicate-named slots differ ONLY by
 // ordinal: rendering both as "X" memo-unified projection alternatives that
-// read DIFFERENT slots, so extraction could pick the wrong one (codex round-2
+// read DIFFERENT slots, so extraction could pick the wrong one (review round-2
 // on PR #446).
 //
 // NOTE(Java alignment): Java keys plan identity SEMANTICALLY

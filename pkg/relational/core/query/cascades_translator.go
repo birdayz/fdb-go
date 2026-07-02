@@ -4055,7 +4055,7 @@ func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, 
 // column list) is re-read by the alias the executor actually writes. Reading
 // the source/computed rendering there is a GetByName miss and the ordinal
 // model is loud on a miss by design: OrdinalResolutionError on a valid
-// recursive CTE (codex P2, Slice-1 follow-up). The name-keyed Datum stores the
+// recursive CTE (review P2, Slice-1 follow-up). The name-keyed Datum stores the
 // alias key alongside the source key, so the alias also resolves on the
 // off-frontier (join-body) name path — one read name valid on both models.
 func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []string) ([]string, bool) {
@@ -4090,7 +4090,7 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // ordinal read is what makes DUPLICATE output aliases sound: `SELECT a+1 AS x,
 // b+1 AS x` emits two slots both named X, and every name-based resolution
 // collapses them (positional GetByName is first-match; the name-keyed Datum is
-// last-wins) — a silent second-column-copies-first wrong result (codex P2 on
+// last-wins) — a silent second-column-copies-first wrong result (review P2 on
 // PR #446). By ordinal each read hits its own slot; the field NAME is kept for
 // the off-frontier Datum path, where a merged join row is name-keyed (and a
 // projection over a join is never on the positional frontier, so the dotted

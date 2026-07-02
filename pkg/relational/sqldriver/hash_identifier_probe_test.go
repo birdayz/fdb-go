@@ -11,7 +11,7 @@ import (
 
 // TestFDB_QuotedHashIdentifier pins that the dialect accepts quoted
 // identifiers containing '#' end-to-end (DOUBLE_QUOTE_ID lexes any non-quote
-// character) — the REACHABILITY premise of the codex round-3 finding on PR
+// character) — the REACHABILITY premise of the review round-3 finding on PR
 // #446: because `AS "X#0"` is legal and an outer scope can reference it, a
 // plain name-read of a field literally named X#0 exists in real plans and
 // must never render identically to an ordinal read of X at slot 0 in the

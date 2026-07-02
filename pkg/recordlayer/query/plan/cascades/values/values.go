@@ -688,7 +688,7 @@ func ExplainValue(v Value) string {
 		// '#' (the lexer's DOUBLE_QUOTE_ID accepts any non-quote character), so
 		// without the escape a plain name-read of a field literally named "X#0"
 		// rendered identically to an ordinal read of X at slot 0 and the
-		// ExplainValue-keyed plan identity could memo-unify the two (codex
+		// ExplainValue-keyed plan identity could memo-unify the two (review
 		// round-3 on PR #446). With doubling, a rendering ends in an UNPAIRED
 		// '#' + digits iff it is an ordinal read — identity is injective over
 		// (field text, ordinal). Display/identity only: ProjectionColumnName's
@@ -706,7 +706,7 @@ func ExplainValue(v Value) string {
 		// EqualsWithoutChildren/HashCodeWithoutChildren) is keyed on these
 		// renderings, and two reads of DUPLICATE-named slots differ only by
 		// ordinal — rendering both as the bare name memo-unified projection
-		// alternatives that read different slots (codex round-2 on PR #446).
+		// alternatives that read different slots (review round-2 on PR #446).
 		if cv.HasResolvedOrdinal {
 			return name + "#" + strconv.Itoa(cv.ResolvedOrdinal)
 		}

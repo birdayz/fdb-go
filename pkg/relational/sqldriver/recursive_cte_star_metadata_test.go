@@ -16,7 +16,7 @@ import (
 // leaf handler, found no scan, and returned NO columns — rows flowed with the
 // right values, but Rows.Columns() was empty and every database/sql Scan
 // failed with "expected 0 destination arguments in Scan". Found while
-// reproducing the alias-frontier bug (the combined codex-P2 shape uses
+// reproducing the alias-frontier bug (the combined review-P2 shape uses
 // `SELECT * FROM c`); alias-free shapes were equally affected, so this is a
 // distinct pre-existing gap, pinned here on its own axis. The fix recurses
 // into the SEED leg — whose (possibly normalization-wrapped) projection

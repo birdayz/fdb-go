@@ -557,7 +557,7 @@ func TestProjectionPlan_Construction(t *testing.T) {
 }
 
 // TestProjectionPlan_Identity_ResolvedOrdinal pins plan-level identity for
-// plan-time-resolved ordinal accessors (codex round-2 on PR #446): two
+// plan-time-resolved ordinal accessors (review round-2 on PR #446): two
 // projection plans whose reads differ ONLY by resolved ordinal (the
 // recursive-CTE duplicate-alias wrap — two slots both named X) must NOT be
 // memo-identical. Plan identity is keyed on ExplainValue renderings, so the
@@ -605,7 +605,7 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 }
 
 // TestProjectionPlan_Identity_OrdinalVsLiteralHashField pins the '#'-escape
-// (codex round-3 on PR #446): a quoted identifier may legally contain '#', so
+// (review round-3 on PR #446): a quoted identifier may legally contain '#', so
 // a plan projecting a plain NAME-read of a field literally named "X#0" must
 // not be memo-identical to a plan projecting an ORDINAL read of X at slot 0 —
 // pre-escape both rendered "X#0" and the ExplainValue-keyed identity unified
