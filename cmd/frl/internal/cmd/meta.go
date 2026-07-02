@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -10,10 +9,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/proto"
 
 	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
-	"fdb.dev/cmd/frl/internal/config"
 	"fdb.dev/cmd/frl/internal/meta"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -68,7 +65,7 @@ func newMetaValidateCmd() *cobra.Command {
 			if outputFmt == "json" {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(map[string]any{"valid": true, "file": path})
+				return enc.Encode(validateResult{Valid: true, File: path})
 			}
 			_, err := fmt.Fprintf(cmd.OutOrStdout(), "ok: %s parses and validates\n", path)
 			return err
@@ -129,11 +126,7 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 			if outputFmt == "json" {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(map[string]any{
-					"valid": true,
-					"old":   oldPath,
-					"new":   newPath,
-				})
+				return enc.Encode(evolveCheckResult{Valid: true, Old: oldPath, New: newPath})
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "ok: %s -> %s is a valid evolution\n", oldPath, newPath)
 			return err
@@ -170,16 +163,16 @@ func newMetaTypesCmd() *cobra.Command {
 }
 
 func newMetaTypesLsCmd() *cobra.Command {
-	var contextName, metaFile, outputFmt string
+	var addr storeAddressFlags
+	var outputFmt string
 	c := &cobra.Command{
 		Use:   "ls",
 		Short: "List record types with primary-key fields",
 		Example: `  frl meta types ls
   frl meta types ls -o json | jq -r '.[].name'`,
 		Long: "Lists every record type in the metadata with its primary-key " +
-			"fields. Note: FDB-store metadata sources are not yet supported " +
-			"by this command; configure `meta_file` in your context or use " +
-			"--meta-file.\n\n" +
+			"fields. All metadata sources work: meta_file, " +
+			"meta_store_keyspace (Path B), --meta-file, --database/--schema.\n\n" +
 			"--output / -o: 'text' (default, tabwriter) or 'json' (array of " +
 			"{name, primary_key, since_version}).",
 		Args: cobra.NoArgs,
@@ -187,15 +180,11 @@ func newMetaTypesLsCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
-			src, err := resolveMetaSourceFile(cfgCtx, override)
-			if err != nil {
-				return err
-			}
-			md, err := src.Load(cmd.Context())
+			md, err := loadTargetMetadata(cmd.Context(), target)
 			if err != nil {
 				return err
 			}
@@ -205,8 +194,7 @@ func newMetaTypesLsCmd() *cobra.Command {
 			return writeTypesList(cmd.OutOrStdout(), md)
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }
@@ -250,7 +238,8 @@ func writeTypesListJSON(out io.Writer, md *recordlayer.RecordMetaData) error {
 }
 
 func newMetaGetCmd() *cobra.Command {
-	var contextName, metaFile, outputFmt string
+	var addr storeAddressFlags
+	var outputFmt string
 	c := &cobra.Command{
 		Use:   "get",
 		Short: "Dump the loaded RecordMetaData",
@@ -259,63 +248,32 @@ func newMetaGetCmd() *cobra.Command {
 			// command has no text form — protojson is the "default").
 			AnnotationOutputYAML: "true",
 		},
-		Long: "Loads the current context's MetaData and prints it. " +
-			"--meta-file overrides the context's metadata source with a " +
-			"file on disk (useful for ad-hoc inspection without editing " +
-			"the config file).\n\n" +
+		Long: "Loads the current context's MetaData and prints it. All " +
+			"metadata sources work: `meta_file` (offline), " +
+			"`meta_store_keyspace` (FDBMetaDataStore — Path B), --meta-file, " +
+			"and --database/--schema (the catalog's schema-pinned template).\n\n" +
 			"--output / -o: 'json' (default — protojson, multiline) or " +
-			"'yaml' (protoyaml, more compact for large schemas).\n\n" +
-			"Note: FDB-store metadata sources are not yet supported by " +
-			"this command; configure `meta_file` in your context or pass " +
-			"--meta-file.",
+			"'yaml' (protoyaml, more compact for large schemas).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateOutputFormat(outputFmt, "json", "yaml"); err != nil {
 				return err
 			}
-			cfg, err := config.Load()
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
-			ctx, err := config.ResolveContext(cfg, contextName)
+			md, err := loadTargetMetadata(cmd.Context(), target)
 			if err != nil {
-				if errors.Is(err, config.ErrNoContext) && metaFile == "" {
-					path, _ := config.Path()
-					return fmt.Errorf("%w (config: %s)", err, path)
-				}
-				if metaFile == "" {
-					return err
-				}
-				// --meta-file was supplied and no context resolves; fall
-				// back to a synthetic context that uses only the file.
-				ctx = &configv1.Context{Name: "(cli-flag)"}
+				return err
 			}
-			if metaFile != "" {
-				ctx = applyMetaFileOverride(ctx, metaFile)
-			}
-			return runMetaGet(cmd, ctx, outputFmt)
+			return writeMetaDataRendered(cmd.OutOrStdout(), md, outputFmt)
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "",
-		"context name to use (default: Config.current_context)")
-	c.Flags().StringVar(&metaFile, "meta-file", "",
-		"path to a serialized MetaData.pb file; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().StringVarP(&outputFmt, "output", "o", "json",
 		"output format: json or yaml")
 	return c
-}
-
-// applyMetaFileOverride returns a proto.Clone of ctx with its metadata
-// source replaced by a file-backed one. Cloning (rather than a shallow
-// struct copy) is required because protobuf messages embed a MessageState
-// containing a sync.Mutex — copylocks nogo analyzer catches raw struct
-// copies as a bug.
-func applyMetaFileOverride(ctx *configv1.Context, path string) *configv1.Context {
-	cp := proto.Clone(ctx).(*configv1.Context)
-	cp.Metadata = &configv1.MetadataSource{
-		Source: &configv1.MetadataSource_MetaFile{MetaFile: path},
-	}
-	return cp
 }
 
 // writeTypesList renders one row per record type: name, primary-key
@@ -337,13 +295,7 @@ func writeTypesList(out io.Writer, md *recordlayer.RecordMetaData) error {
 	fmt.Fprintln(tw, "NAME\tPRIMARY KEY\tSINCE VERSION")
 	for _, name := range names {
 		rt := rts[name]
-		pk := "(unset)"
-		if rt.PrimaryKey != nil {
-			fn := rt.PrimaryKey.FieldNames()
-			if len(fn) > 0 {
-				pk = strings.Join(fn, ",")
-			}
-		}
+		pk := pkFieldsOrUnset(rt.PrimaryKey)
 		since := ""
 		if rt.SinceVersion > 0 {
 			since = fmt.Sprintf("%d", rt.SinceVersion)
@@ -353,17 +305,26 @@ func writeTypesList(out io.Writer, md *recordlayer.RecordMetaData) error {
 	return tw.Flush()
 }
 
+// runMetaGet loads and renders metadata for a context — retained for
+// tests that drive the render path with a synthetic context.
 func runMetaGet(cmd *cobra.Command, cfgCtx *configv1.Context, outputFmt string) error {
-	// Build a Source using only the file-source path (no DB). Any
-	// fdb_store context would require a keyspace resolver and DB handle;
-	// for now `meta get` only supports file sources without opening FDB.
-	src, err := resolveMetaSourceFile(cfgCtx, nil)
-	if err != nil {
-		return err
-	}
-	md, err := src.Load(cmd.Context())
+	md, err := loadTargetMetadata(cmd.Context(), &storeTarget{cfgCtx: cfgCtx})
 	if err != nil {
 		return err
 	}
 	return writeMetaDataRendered(cmd.OutOrStdout(), md, outputFmt)
+}
+
+// validateResult / evolveCheckResult are the typed JSON shapes of
+// `meta validate` / `meta evolve-check` — consistent with the rest of
+// frl's structured output (no ad-hoc maps).
+type validateResult struct {
+	Valid bool   `json:"valid"`
+	File  string `json:"file"`
+}
+
+type evolveCheckResult struct {
+	Valid bool   `json:"valid"`
+	Old   string `json:"old"`
+	New   string `json:"new"`
 }

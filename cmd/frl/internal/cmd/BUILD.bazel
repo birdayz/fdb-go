@@ -25,6 +25,7 @@ go_library(
         "record_write.go",
         "root.go",
         "sql.go",
+        "status.go",
         "store.go",
         "store_dump.go",
         "store_write.go",

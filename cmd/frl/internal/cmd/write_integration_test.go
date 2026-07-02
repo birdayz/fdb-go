@@ -181,6 +181,25 @@ contexts:
 		t.Fatal("apply of an incompatible (backwards) evolution must refuse")
 	}
 
+	// Path B completion (RFC-174 Slice 5): the metadata-only commands
+	// read from the FDBMetaDataStore the context points at — the path
+	// they used to reject with "not supported".
+	out, err := runCmd(t, "meta", "get")
+	if err != nil {
+		t.Fatalf("meta get via meta_store_keyspace: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Order$price") {
+		t.Errorf("meta get missing v2 index:\n%s", out)
+	}
+	out, err = runCmd(t, "meta", "types", "ls")
+	if err != nil || !strings.Contains(out, "Order") {
+		t.Fatalf("meta types ls via meta_store_keyspace: %v\n%s", err, out)
+	}
+	out, err = runCmd(t, "index", "describe", "Order$price")
+	if err != nil || !strings.Contains(out, "price") {
+		t.Fatalf("index describe via meta_store_keyspace: %v\n%s", err, out)
+	}
+
 	// The store really holds v2: read it back directly.
 	db, err := fdb.OpenDatabase(fixture.clusterFilePath)
 	if err != nil {
@@ -352,5 +371,24 @@ func TestIntegration_IndexBuild_InterruptedThenResumed(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("resumed index missing price %s:\n%s", want, out)
 		}
+	}
+}
+
+// frl status reports all four wiring legs against the live fixture.
+func TestIntegration_Status_AllChecks(t *testing.T) {
+	bindConfig(t)
+	out, err := runCmd(t, "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, out)
+	}
+	for _, want := range []string{"cluster:   ok", "store:     ok", "metadata:  ok (3 record types)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status missing %q:\n%s", want, out)
+		}
+	}
+	// Catalog presence depends on whether the sql fixture ran in this
+	// process — accept either verdict, but the line must be present.
+	if !strings.Contains(out, "catalog:   ok") && !strings.Contains(out, "catalog:   missing") {
+		t.Errorf("status missing catalog line:\n%s", out)
 	}
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -55,14 +56,20 @@ func newRecordCountCmd() *cobra.Command {
 					return store.GetRecordCount()
 				})
 			if err != nil {
+				// The record layer's internal wording ("recordCountKey is
+				// nil") tells an operator nothing actionable — say what to
+				// add and where.
+				if strings.Contains(err.Error(), "recordCountKey is nil") {
+					return fmt.Errorf("record counting is not enabled for this store — add a record_count_key to the metadata (RecordMetaDataBuilder.SetRecordCountKey) and redeploy; per-type counts additionally need a RecordTypeKeyExpression count key")
+				}
 				return err
 			}
 			if outputFmt == "json" {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(map[string]any{
-					"count":       count,
-					"record_type": recordType, // "" for store-wide
+				return enc.Encode(recordCountResult{
+					Count:      count,
+					RecordType: recordType, // "" for store-wide
 				})
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%d\n", count)
@@ -73,4 +80,11 @@ func newRecordCountCmd() *cobra.Command {
 	c.Flags().StringVar(&recordType, "type", "", "count only this record type (requires RecordTypeKeyExpression count key)")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
+}
+
+// recordCountResult is the typed JSON shape of `record count -o json` —
+// consistent with the rest of frl's structured output (no ad-hoc maps).
+type recordCountResult struct {
+	Count      int64  `json:"count"`
+	RecordType string `json:"record_type"`
 }

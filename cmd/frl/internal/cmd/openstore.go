@@ -220,6 +220,29 @@ func resolveMetaSource(target *storeTarget, rec *recordlayer.FDBDatabase) (meta.
 	}
 }
 
+// loadTargetMetadata loads a RecordMetaData for metadata-only commands
+// (meta get, meta types, index describe). FDB is dialled ONLY when the
+// source lives there — an fdb_store context (Path B, RFC-174 Slice 5
+// completion: these commands used to reject it) or relational
+// addressing; file sources stay fully offline.
+func loadTargetMetadata(ctx context.Context, target *storeTarget) (*recordlayer.RecordMetaData, error) {
+	var rec *recordlayer.FDBDatabase
+	needsFDB := target.relational() ||
+		(target.metaFile == "" && target.cfgCtx.GetMetadata().GetMetaStoreKeyspace() != "")
+	if needsFDB {
+		db, err := openDatabase(target.clusterFile())
+		if err != nil {
+			return nil, err
+		}
+		rec = recordlayer.NewFDBDatabase(db)
+	}
+	src, err := resolveMetaSource(target, rec)
+	if err != nil {
+		return nil, err
+	}
+	return src.Load(ctx)
+}
+
 // resolveContextAndOverride is the legacy prelude retained for commands
 // that only take --context/--meta-file (sql, meta catalog). Store-
 // touching commands use storeAddressFlags.resolve instead.

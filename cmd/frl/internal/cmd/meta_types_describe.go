@@ -13,7 +13,8 @@ import (
 )
 
 func newMetaTypesDescribeCmd() *cobra.Command {
-	var contextName, metaFile, outputFmt string
+	var addr storeAddressFlags
+	var outputFmt string
 	c := &cobra.Command{
 		Use:   "describe <name>",
 		Short: "Show full definition of one record type",
@@ -35,15 +36,11 @@ func newMetaTypesDescribeCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
-			src, err := resolveMetaSourceFile(cfgCtx, override)
-			if err != nil {
-				return err
-			}
-			md, err := src.Load(cmd.Context())
+			md, err := loadTargetMetadata(cmd.Context(), target)
 			if err != nil {
 				return err
 			}
@@ -57,8 +54,7 @@ func newMetaTypesDescribeCmd() *cobra.Command {
 			return writeRecordTypeDescription(cmd.OutOrStdout(), md, rt)
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }
@@ -85,12 +81,7 @@ type indexSummary struct {
 }
 
 func writeRecordTypeDescriptionJSON(out io.Writer, md *recordlayer.RecordMetaData, rt *recordlayer.RecordType) error {
-	pk := "(unset)"
-	if rt.PrimaryKey != nil {
-		if fn := rt.PrimaryKey.FieldNames(); len(fn) > 0 {
-			pk = strings.Join(fn, ",")
-		}
-	}
+	pk := pkFieldsOrUnset(rt.PrimaryKey)
 	rtk := fmt.Sprintf("(implicit: %d)", rt.RecordTypeIndex)
 	if rt.HasExplicitRecordTypeKey() {
 		rtk = fmt.Sprintf("%v", rt.GetRecordTypeKey())
@@ -141,12 +132,7 @@ func sortedRecordTypeNames(md *recordlayer.RecordMetaData) []string {
 func writeRecordTypeDescription(out io.Writer, md *recordlayer.RecordMetaData, rt *recordlayer.RecordType) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Name:                   %s\n", rt.Name)
-	pk := "(unset)"
-	if rt.PrimaryKey != nil {
-		if fields := rt.PrimaryKey.FieldNames(); len(fields) > 0 {
-			pk = strings.Join(fields, ",")
-		}
-	}
+	pk := pkFieldsOrUnset(rt.PrimaryKey)
 	fmt.Fprintf(&b, "Primary key:            %s\n", pk)
 	if rt.SinceVersion > 0 {
 		fmt.Fprintf(&b, "Since version:          %d\n", rt.SinceVersion)

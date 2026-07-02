@@ -12,6 +12,7 @@ require (
 	github.com/chzyer/readline v1.5.1
 	github.com/spf13/cobra v1.10.2
 	google.golang.org/protobuf v1.36.11
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -103,7 +104,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/grpc v1.80.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 // The CLI module consumes the root library from the same working tree. go.work

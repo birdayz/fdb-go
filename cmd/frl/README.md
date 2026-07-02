@@ -102,8 +102,8 @@ frl config use-context <name>
 frl config current-context [-o json]
 frl config get-contexts [-o json]
 frl config view [--context <name>]
-frl config schema                            # empty Config as JSON (field discovery)
 
+frl status [-o json]                         # one-shot wiring check: cluster/store/metadata/catalog
 frl keyspace resolve <path> [-o json]        # logical path → FDB byte prefix
 frl tx read-version [-o json]                # current GRV (cluster smoke check)
 
@@ -207,7 +207,6 @@ Tab-complete covers:
 
 ## What's not yet wired
 
-`config add-context`, Path B metadata for `meta get`/`meta types`/`index
-describe` (file sources only until RFC-174 Slice 5), `frl status`. See
-`rfcs/174-frl-cli-v2.md` at the repo root for the full v2 design, slice
+`config add-context`. Everything else from the v2 design has landed —
+see `rfcs/174-frl-cli-v2.md` at the repo root for the design, slice
 plan, and review record.

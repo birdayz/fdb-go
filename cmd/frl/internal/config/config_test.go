@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -221,5 +222,70 @@ contexts:
 	}
 	if ctx.GetMetadata().GetMetaStoreKeyspace() != "/myapp/prod/_meta" {
 		t.Errorf("meta_store_keyspace = %q", ctx.GetMetadata().GetMetaStoreKeyspace())
+	}
+}
+
+// Regression (RFC-174 Slice 5): use-context used to Load→mutate→Save,
+// re-marshalling through proto and DESTROYING every YAML comment —
+// including the guidance block `config init` itself writes. The
+// single-field AST edit must keep them.
+func TestSetCurrentContext_PreservesComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("FRL_CONFIG", path)
+	raw := `# top-of-file guidance comment
+current_context: old
+contexts:
+  # per-context comment
+  - name: old
+    cluster_file: /a  # trailing comment
+  - name: new
+    cluster_file: /b
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := SetCurrentContext("new"); err != nil {
+		t.Fatalf("SetCurrentContext: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	for _, want := range []string{
+		"# top-of-file guidance comment",
+		"# per-context comment",
+		"# trailing comment",
+		"current_context: new",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("rewritten config missing %q:\n%s", want, got)
+		}
+	}
+	// And the result still loads.
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.GetCurrentContext() != "new" {
+		t.Errorf("current_context = %q; want new", cfg.GetCurrentContext())
+	}
+}
+
+// A file without a current_context key gains one (prepended).
+func TestSetCurrentContext_AddsMissingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("FRL_CONFIG", path)
+	if err := os.WriteFile(path, []byte("contexts: []\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := SetCurrentContext("x"); err != nil {
+		t.Fatalf("SetCurrentContext: %v", err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.GetCurrentContext() != "x" {
+		t.Errorf("current_context = %q; want x", cfg.GetCurrentContext())
 	}
 }

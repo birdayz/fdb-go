@@ -24,14 +24,12 @@ programmatically and don't persist it. Those apps want Path A. If you
 already adopted `FDBMetaDataStore` for schema-evolution reasons, Path B
 has zero extra steps.
 
-Both paths produce the same `RecordMetaData` for `frl`. Store-reading
-commands (`record get/scan/count`, `index ls/scan`) accept both paths.
-**Path B support is not yet universal**: `meta get`, `meta types
-ls/describe`, and `index describe` currently read `meta_file` sources
-only and reject `meta_store_keyspace` with a clear error (they open no
-FDB connection today; RFC-174 Slice 5 completes them). With Path B,
-point those commands at an exported file via `--meta-file` in the
-meantime.
+Both paths produce the same `RecordMetaData` for `frl`, and every
+command accepts both — the metadata-only commands (`meta get`, `meta
+types ls/describe`, `index describe`) dial FDB only when the source
+actually lives there, so `meta_file` setups stay fully offline. A third
+source exists for relational clusters: `--database`/`--schema` resolves
+metadata from the catalog's schema-pinned template.
 
 ---
 

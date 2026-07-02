@@ -1244,20 +1244,3 @@ func plural(n int) string {
 	}
 	return "s"
 }
-
-// --- sanity on startup ---------------------------------------------------
-
-// sortedStringCopy returns a fresh sorted copy of a string slice. Used
-// for deterministic ordering in error suggestion lists. (Declared here
-// rather than next to other helpers so tests can assert stable output.)
-func sortedStringCopy(in []string) []string {
-	out := make([]string, len(in))
-	copy(out, in)
-	sort.Strings(out)
-	return out
-}
-
-// Assigning to _ so unused-linter doesn't complain about sortedStringCopy
-// on builds that don't yet reference it. (Reserved for future use by
-// meta-command handlers that need to list schemas.)
-var _ = sortedStringCopy
