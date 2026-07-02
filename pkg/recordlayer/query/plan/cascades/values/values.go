@@ -208,8 +208,52 @@ type FieldValue struct {
 // whose equals/hashCode are ordinal-only. Deliberately minimal for Slice 2's
 // 2-way wedge (a single ordinal); Slice 3 widens it to a multi-accessor path
 // (Java's FieldPath + the compose rule) when nested/buried ordinal paths land.
+//
+// IMMUTABLE after construction: FieldValue copy sites deliberately SHARE the
+// pointer (withChildren, the pullup/pushdown passthrough copies). Any future
+// change to the accessor — including Slice 3's path widening — must REPLACE it
+// with a new value, never mutate in place, or every shared copy silently
+// changes identity (Graefe convention pin).
 type ResolvedAccessor struct {
 	Ordinal int
+}
+
+// OracleBakedNameFallback is the §5 dual-window differential's TEST-ONLY
+// bridge: when true, a BAKED FieldValue evaluated against a NAME-keyed row
+// context reads its display name instead of erroring — recreating the
+// pre-RFC-173 name model end-to-end (including its duplicate-name conflation,
+// which is exactly why dup-name corpus shapes are carved out of the
+// differential by RFC citation). It travels WITH executor.
+// DisablePositionalEmission — the dualwindow harness sets both at the phase
+// barrier. NEVER set in production: with the flag false (always, outside the
+// oracle), a baked node hitting a name-keyed context is a loud
+// *BakedNameContextError, because the gated ordinal frontier guarantees
+// positional rows — a name-keyed context there is a planner/executor bug.
+// Retires with the name map in Slice 4.
+var OracleBakedNameFallback bool
+
+// BakedNameContextError reports a BAKED FieldValue (ordinal authoritative)
+// evaluated against a NAME-keyed row context outside the §5 oracle. Never a
+// silent name read: the display name is diagnostics-only and resolving by it
+// would return the FIRST of duplicate same-named columns — the conflation
+// RFC-173 exists to kill.
+type BakedNameContextError struct {
+	Field   string
+	Ordinal int
+}
+
+func (e *BakedNameContextError) Error() string {
+	return fmt.Sprintf("RFC-173: baked FieldValue %s#%d evaluated against a name-keyed row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
+}
+
+// bakedNameReadGuard is called at every NAME-keyed read arm in Evaluate/
+// evaluateCorrelated: lazy nodes pass (the name model is their source of
+// truth); baked nodes fail loudly unless the §5 oracle bridge is active.
+func (f *FieldValue) bakedNameReadGuard() error {
+	if f.Resolved == nil || OracleBakedNameFallback {
+		return nil
+	}
+	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Ordinal}
 }
 
 func (f *FieldValue) Children() []Value {
@@ -313,6 +357,9 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 		return f.evaluateOrdinal(row)
 	}
 	if row, ok := evalCtx.(map[string]any); ok {
+		if err := f.bakedNameReadGuard(); err != nil {
+			return nil, err
+		}
 		return row[f.Field], nil
 	}
 	if rc, ok := evalCtx.(*RowEvalContext); ok {
@@ -324,6 +371,9 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 			return f.evaluateOrdinal(rc.Positional)
 		}
 		if rc.Datum != nil {
+			if err := f.bakedNameReadGuard(); err != nil {
+				return nil, err
+			}
 			v, present := rc.Datum[f.Field]
 			if !present && rc.Strict && ReportUnresolvedReference != nil {
 				ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
@@ -361,6 +411,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 					return f.evaluateOrdinal(row)
 				}
 				if bm, ok := bound.(map[string]any); ok {
+					if err := f.bakedNameReadGuard(); err != nil {
+						return nil, err
+					}
 					if v, ok := bm[f.Field]; ok {
 						return v, nil
 					}
@@ -381,6 +434,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			return f.evaluateOrdinal(ctx.Positional)
 		}
 		if ctx.Datum != nil {
+			if err := f.bakedNameReadGuard(); err != nil {
+				return nil, err
+			}
 			if v, ok := ctx.Datum[qualKey]; ok {
 				return v, nil
 			}
@@ -408,6 +464,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				return f.evaluateOrdinal(row)
 			}
 			if bm, ok := bound.(map[string]any); ok {
+				if err := f.bakedNameReadGuard(); err != nil {
+					return nil, err
+				}
 				if v, ok := bm[f.Field]; ok {
 					return v, nil
 				}
@@ -422,10 +481,16 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		return nil, nil
 	case map[CorrelationIdentifier]map[string]any:
 		if sub, ok := ctx[qov.Correlation]; ok {
+			if err := f.bakedNameReadGuard(); err != nil {
+				return nil, err
+			}
 			return sub[f.Field], nil
 		}
 		return nil, nil
 	case map[string]any:
+		if err := f.bakedNameReadGuard(); err != nil {
+			return nil, err
+		}
 		if v, ok := ctx[qualKey]; ok {
 			return v, nil
 		}
@@ -511,11 +576,12 @@ func NewOrdinalFieldValue(child Value, ordinal int, typ Type) *FieldValue {
 // planner bug, not a NULL.
 type OrdinalBakeError struct {
 	Ordinal   int
-	ChildType Type // the child's flowed type (nil child, non-record, or too few fields)
+	ChildType Type   // the child's flowed type (nil for a nil child)
+	Reason    string // which precondition failed: nil child / non-record child / out of range
 }
 
 func (e *OrdinalBakeError) Error() string {
-	return fmt.Sprintf("RFC-173 ordinal bake: cannot resolve ordinal %d against child type %v — field access by ordinal requires a record type with more than %d fields", e.Ordinal, e.ChildType, e.Ordinal)
+	return fmt.Sprintf("RFC-173 ordinal bake: cannot resolve ordinal %d: %s (child type %v)", e.Ordinal, e.Reason, e.ChildType)
 }
 
 // NewFieldValueOfOrdinal constructs a BAKED FieldValue accessing the child's
@@ -539,14 +605,14 @@ func (e *OrdinalBakeError) Error() string {
 // flow a *RecordType or the ordinal is out of range.
 func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 	if child == nil {
-		return nil, &OrdinalBakeError{Ordinal: ordinal}
+		return nil, &OrdinalBakeError{Ordinal: ordinal, Reason: "nil child value"}
 	}
 	rt, ok := child.Type().(*RecordType)
 	if !ok {
-		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: child.Type()}
+		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: child.Type(), Reason: "child does not flow a record type"}
 	}
 	if ordinal < 0 || ordinal >= len(rt.Fields) {
-		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: rt}
+		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: rt, Reason: fmt.Sprintf("ordinal out of range for a %d-field record type", len(rt.Fields))}
 	}
 	fld := rt.Fields[ordinal]
 	return &FieldValue{

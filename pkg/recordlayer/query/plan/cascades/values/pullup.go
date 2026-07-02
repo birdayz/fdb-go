@@ -55,13 +55,43 @@ func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) Value 
 //
 // For each field in the constructor, check if v equals that field's
 // value. If so, v can be accessed as the output field name.
+//
+// RFC-173 Slice 2: the emitted reference is re-framed to the RC's OUTPUT
+// column i, so when the ordinal matters it is BAKED — a lazy name node over a
+// duplicate-named RC output would later resolve to the FIRST same-named column
+// regardless of which column matched (§5 conflation hazard). Baking is gated
+// to keep the stage dark: only a baked input (bakedness must survive pull-up)
+// or a dup-named RC (unconstructible under the name model — only ordinal
+// seeds build them) bakes; a lazy input over a clean-named RC emits the lazy
+// node it always did.
 func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias CorrelationIdentifier) Value {
-	for _, field := range rc.Fields {
+	inBaked := false
+	if fv, ok := v.(*FieldValue); ok && fv.Resolved != nil {
+		inBaked = true
+	}
+	for i, field := range rc.Fields {
 		if semanticEqual(v, field.Value) {
-			return &FieldValue{Field: field.Name, Typ: field.Value.Type()}
+			out := &FieldValue{Field: field.Name, Typ: field.Value.Type()}
+			if inBaked || rcHasDuplicateNames(rc) {
+				out.Resolved = &ResolvedAccessor{Ordinal: i}
+			}
+			return out
 		}
 	}
 	return nil
+}
+
+// rcHasDuplicateNames reports whether two RC columns share a name — the §5
+// duplicate-name shape, constructible only by ordinal seeds (RFC-173 S2+).
+func rcHasDuplicateNames(rc *RecordConstructorValue) bool {
+	seen := make(map[string]struct{}, len(rc.Fields))
+	for _, f := range rc.Fields {
+		if _, dup := seen[f.Name]; dup {
+			return true
+		}
+		seen[f.Name] = struct{}{}
+	}
+	return false
 }
 
 // pullUpThroughPassthrough handles pull-up through an identity-like

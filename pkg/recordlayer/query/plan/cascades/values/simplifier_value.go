@@ -1,5 +1,7 @@
 package values
 
+import "fmt"
+
 // SimplifyValue is the standalone-Value counterpart to Simplify.
 // Folds constant sub-trees in a Value (e.g. SELECT-list expressions
 // or projection arguments that never reach a comparison and so never
@@ -220,13 +222,16 @@ func composeFieldOverConstructor(v Value) Value {
 	// ComposeFieldValueOverRecordConstructorRule.findColumn is
 	// getColumns().get(fieldOrdinal). Composing by the display name would pick
 	// the FIRST of two duplicate same-named columns regardless of which the
-	// ordinal denotes (§5 conflation hazard). An out-of-range ordinal means the
-	// tree is inconsistent with the bake — decline (no fold) rather than guess.
+	// ordinal denotes (§5 conflation hazard). An out-of-range ordinal against
+	// the node's OWN child RC is always a tree inconsistency — a planner bug,
+	// loud like Java's IndexOutOfBounds (the fail-loud re-stamp treatment),
+	// never a silent decline that rides the broken node into the plan.
 	if fv.Resolved != nil {
-		if o := fv.Resolved.Ordinal; o >= 0 && o < len(rc.Fields) {
-			return rc.Fields[o].Value
+		o := fv.Resolved.Ordinal
+		if o < 0 || o >= len(rc.Fields) {
+			panic(fmt.Sprintf("RFC-173: baked FieldValue %s#%d composed over its own %d-column RecordConstructor — tree inconsistent with the bake (planner bug; Java throws IndexOutOfBounds)", fv.Field, o, len(rc.Fields)))
 		}
-		return nil
+		return rc.Fields[o].Value
 	}
 	for _, field := range rc.Fields {
 		if field.Name == fv.Field {

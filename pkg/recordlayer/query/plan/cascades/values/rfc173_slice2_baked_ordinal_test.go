@@ -319,11 +319,19 @@ func TestFieldValueBaked_ComposeOverRC_ByOrdinal_RFC173S2(t *testing.T) {
 		t.Fatalf("lazy ID over RC simplified to %v, want first-match a (unchanged)", got)
 	}
 
-	// A baked ordinal the RC cannot satisfy: decline (node unchanged), no guess.
+	// A baked ordinal the node's OWN child RC cannot satisfy is a tree
+	// inconsistency — a planner bug that must be LOUD (Java throws
+	// IndexOutOfBounds), never a silent decline riding the broken node onward
+	// (Torvalds catch on the earlier decline shape).
 	stale := &FieldValue{Field: "ID", Typ: NullableString, Child: rc, Resolved: &ResolvedAccessor{Ordinal: 5}}
-	if got := SimplifyValue(stale); got != stale {
-		t.Fatalf("out-of-range baked compose must DECLINE (return the node unchanged), got %v", got)
-	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("out-of-range baked compose must PANIC (tree inconsistent with the bake), got a silent result")
+			}
+		}()
+		SimplifyValue(stale)
+	}()
 }
 
 // TestFieldValueBaked_PushDownThroughRC_ByOrdinal_RFC173S2 pins PushDownValue's
@@ -357,9 +365,176 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal_RFC173S2(t *testing.T) {
 		t.Fatalf("lazy ID pushed through RC = %v, want first-match a (unchanged)", got)
 	}
 
-	// Out-of-range baked ordinal: decline.
+	// Out-of-range baked ordinal: decline. Unlike the compose rule (where the
+	// RC is the node's OWN child, so a mismatch is a tree inconsistency),
+	// PushDownValue pairs the node with an EXTERNAL result value — nil is the
+	// generic can't-push-down answer.
 	stale := &FieldValue{Field: "ID", Typ: NullableString, Resolved: &ResolvedAccessor{Ordinal: 7}}
 	if got := PushDownValue(stale, rc, upper); got != nil {
 		t.Fatalf("out-of-range baked push-down must DECLINE (nil), got %v", got)
+	}
+}
+
+// TestFieldValueBaked_LoudOnNameContext_RFC173S2 pins the guard Torvalds'
+// review demanded: a BAKED node evaluated against a NAME-keyed row context is
+// a loud *BakedNameContextError at every name-read arm — never a silent
+// display-name read (which would return the FIRST of duplicate same-named
+// columns). Lazy nodes on the same contexts keep the name model unchanged.
+func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
+	t.Parallel()
+	rt := NewRecordType("", false, []Field{
+		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+	})
+	corr := NamedCorrelationIdentifier("q")
+	qov := NewQuantifiedObjectValueOfType(corr, rt)
+	baked, err := NewFieldValueOfOrdinal(qov, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	nameRow := map[string]any{"ID": int64(7), "Q.ID": int64(7)}
+
+	assertLoud := func(site string, got any, err error) {
+		t.Helper()
+		var bnce *BakedNameContextError
+		if !errors.As(err, &bnce) {
+			t.Fatalf("%s: baked node over a name-keyed context must be a loud *BakedNameContextError, got (%v, %v)", site, got, err)
+		}
+	}
+
+	// Correlated arms (Child is a QOV, so evaluateCorrelated dispatches).
+	got, err := baked.Evaluate(&RowEvalContext{Datum: nameRow})
+	assertLoud("RowEvalContext.Datum", got, err)
+	got, err = baked.Evaluate(&RowEvalContext{Correlations: &mapBinder{id: corr, m: nameRow}})
+	assertLoud("RowEvalContext correlation map binding", got, err)
+	got, err = baked.Evaluate(&mapBinder{id: corr, m: nameRow})
+	assertLoud("bare CorrelationBinder map binding", got, err)
+	got, err = baked.Evaluate(map[CorrelationIdentifier]map[string]any{corr: nameRow})
+	assertLoud("per-correlation map", got, err)
+	got, err = baked.Evaluate(nameRow)
+	assertLoud("qualified-key map", got, err)
+
+	// Non-correlated map arm (childless baked copy, e.g. post-passthrough).
+	orphan := &FieldValue{Field: "ID", Typ: NotNullLong, Resolved: &ResolvedAccessor{Ordinal: 0}}
+	got, err = orphan.Evaluate(nameRow)
+	assertLoud("plain map arm", got, err)
+
+	// nil context stays NULL (the appendNullLeg / nil-binding path, contract
+	// ruling #3 — the null extension falls out, not an error).
+	if v, err := orphan.Evaluate(nil); v != nil || err != nil {
+		t.Fatalf("baked over nil context = (%v, %v), want (nil, nil)", v, err)
+	}
+
+	// Lazy node over the same contexts: unchanged name model.
+	lazy := NewFieldValue(qov, "ID", NotNullLong)
+	if v, err := lazy.Evaluate(&RowEvalContext{Datum: nameRow}); err != nil || v != int64(7) {
+		t.Fatalf("lazy over name context = (%v, %v), want (7, nil) — name model unchanged", v, err)
+	}
+}
+
+// mapBinder is a test CorrelationBinder that binds one correlation to a
+// name-keyed map row.
+type mapBinder struct {
+	id CorrelationIdentifier
+	m  map[string]any
+}
+
+func (b *mapBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
+	if id == b.id {
+		return b.m, true
+	}
+	return nil, false
+}
+
+// TestFieldValueBaked_OracleNameBridge_RFC173S2 pins the §5 differential's
+// sanctioned exception: with OracleBakedNameFallback set (test-only, travels
+// with executor.DisablePositionalEmission), a baked node reads its display
+// name against name-keyed contexts — recreating the pre-RFC-173 name model the
+// oracle needs. NOT t.Parallel(): flips a process-global; the flag is restored
+// before returning (same discipline as the dualwindow phase barrier).
+func TestFieldValueBaked_OracleNameBridge_RFC173S2(t *testing.T) { //nolint:paralleltest
+	rt := NewRecordType("", false, []Field{
+		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+	})
+	corr := NamedCorrelationIdentifier("q")
+	qov := NewQuantifiedObjectValueOfType(corr, rt)
+	baked, err := NewFieldValueOfOrdinal(qov, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+
+	OracleBakedNameFallback = true
+	defer func() { OracleBakedNameFallback = false }()
+
+	if v, err := baked.Evaluate(&RowEvalContext{Datum: map[string]any{"Q.ID": int64(9)}}); err != nil || v != int64(9) {
+		t.Fatalf("oracle-bridged baked eval = (%v, %v), want (9, nil) — the name-model read", v, err)
+	}
+}
+
+// TestFieldValueBaked_PullUpThroughRC_Bakes_RFC173S2 pins the THIRD RC
+// name-lookup consumer (Torvalds catch): pullUpThroughRecordConstructor
+// re-frames the matched value as a reference to the RC's OUTPUT column, so the
+// emitted node carries the matched ordinal BAKED whenever it matters — a baked
+// input (bakedness survives pull-up) or a dup-named RC (where a lazy name node
+// would later resolve to the FIRST same-named column no matter which matched).
+// A lazy input over a clean-named RC stays lazy (dark: prod behavior
+// unchanged).
+func TestFieldValueBaked_PullUpThroughRC_Bakes_RFC173S2(t *testing.T) {
+	t.Parallel()
+	corr := NamedCorrelationIdentifier("q")
+	up := NamedCorrelationIdentifier("up")
+	constA := &ConstantValue{Value: "a", Typ: NullableString}
+	constB := &ConstantValue{Value: "b", Typ: NullableString}
+
+	// Dup-named RC, LAZY input matching the SECOND column: the pulled-up
+	// reference must be baked at ordinal 1 (a lazy "ID" would resolve to 0).
+	dupRC := &RecordConstructorValue{Fields: []RecordConstructorField{
+		{Name: "ID", Value: constA},
+		{Name: "ID", Value: constB},
+	}}
+	got := PullUpValue(constB, dupRC, up)
+	fv, ok := got.(*FieldValue)
+	if !ok {
+		t.Fatalf("pull-up through dup RC = %T, want *FieldValue", got)
+	}
+	if fv.Resolved == nil || fv.Resolved.Ordinal != 1 {
+		t.Fatalf("pull-up of the SECOND dup column: Resolved = %+v, want baked ordinal 1 — a lazy name node conflates to the first", fv.Resolved)
+	}
+
+	// BAKED input over a clean-named RC: bakedness survives, re-framed to the
+	// OUTPUT ordinal.
+	legRT := NewRecordType("", false, []Field{
+		{Name: "X", FieldType: NullableString, Ordinal: 0},
+		{Name: "Y", FieldType: NullableString, Ordinal: 1},
+	})
+	legQOV := NewQuantifiedObjectValueOfType(corr, legRT)
+	bakedY, err := NewFieldValueOfOrdinal(legQOV, 1)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	cleanRC := &RecordConstructorValue{Fields: []RecordConstructorField{
+		{Name: "OUT0", Value: constA},
+		{Name: "OUT1", Value: bakedY},
+	}}
+	got = PullUpValue(bakedY, cleanRC, up)
+	fv, ok = got.(*FieldValue)
+	if !ok {
+		t.Fatalf("pull-up of baked input = %T, want *FieldValue", got)
+	}
+	if fv.Resolved == nil || fv.Resolved.Ordinal != 1 || fv.Field != "OUT1" {
+		t.Fatalf("baked input pull-up = {Field:%s Resolved:%+v}, want OUT1 baked at 1", fv.Field, fv.Resolved)
+	}
+
+	// LAZY input over a clean-named RC: unchanged — lazy out (dark stage).
+	lazyIn := NewFieldValue(legQOV, "X", NullableString)
+	lazyRC := &RecordConstructorValue{Fields: []RecordConstructorField{
+		{Name: "OUT0", Value: lazyIn},
+	}}
+	got = PullUpValue(lazyIn, lazyRC, up)
+	fv, ok = got.(*FieldValue)
+	if !ok {
+		t.Fatalf("lazy pull-up = %T, want *FieldValue", got)
+	}
+	if fv.Resolved != nil {
+		t.Fatalf("lazy input over clean RC must stay LAZY (prod behavior unchanged), got baked %+v", fv.Resolved)
 	}
 }
