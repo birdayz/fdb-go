@@ -683,10 +683,21 @@ func ExplainValue(v Value) string {
 		}
 		return valueLiteralString(cv.Value)
 	case *FieldValue:
+		name := cv.Field
 		if cv.Child != nil {
-			return ExplainValue(cv.Child) + "." + cv.Field
+			name = ExplainValue(cv.Child) + "." + cv.Field
 		}
-		return cv.Field
+		// A plan-time-resolved ordinal accessor renders its ordinal (Java's
+		// FieldPath `#ordinal` syntax) alongside the name. Load-bearing, not
+		// just display: physical-plan identity (RecordQueryProjectionPlan
+		// EqualsWithoutChildren/HashCodeWithoutChildren) is keyed on these
+		// renderings, and two reads of DUPLICATE-named slots differ only by
+		// ordinal — rendering both as the bare name memo-unified projection
+		// alternatives that read different slots (codex round-2 on PR #446).
+		if cv.HasResolvedOrdinal {
+			return name + "#" + strconv.Itoa(cv.ResolvedOrdinal)
+		}
+		return name
 	case *ArithmeticValue:
 		return "(" + ExplainValue(cv.Left) + " " + cv.Op.symbol() + " " + ExplainValue(cv.Right) + ")"
 	case *StrictRankLimitValue:
