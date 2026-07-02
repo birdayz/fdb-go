@@ -305,3 +305,44 @@ read through the inner merged row — descendResolvedPath already descends
 nested OrdinalRows), emit Positional = the nested row. New birth site extends
 the DisablePositionalEmission oracle registry (standing obligation). The
 existing evaluateOrdinalJoinRow per-field evaluation is the right spine.
+
+## FULCRUM ruling (Graefe, BINDING — issued after commits 1+2)
+
+- **Premise correction: the re-stamp trio does NOT die in the fulcrum.** Post-flip,
+  name-model >=3-quantifier selects still reach the merge case: dissolved-LEFT
+  clusters (poison at rfc173_cluster_gate.go:253-261; RewriteOuterJoinRule:172-178
+  carries the anchored RV onto the INNER select) and multi-source unnest (W5).
+  The trio dies in W5 with the last anchored birth site (per-birth-site kill,
+  same as the W2-Q2 hiding-twins correction). The fulcrum deletes ONLY the
+  SelectMergeRule drift assert (rule_select_merge.go:145-152) — its forbidden
+  shape becomes legitimate.
+- **ONE fulcrum commit, translator flip included:** gate widening (arity >= 2,
+  cluster_gate:114-118) + N-leg FLAT seed at the maximal cluster root (Java
+  flattens inner joins AT TRANSLATION, QueryVisitor.java:429-434 — do NOT seed
+  nested binaries and lean on merge composition) + partition-rule positional ARM
+  + interning-gate arm + column derivation (cascades_generator.go:2876-2900) +
+  executor spans len!=2 → >=2 (rfc173_ordinal_join.go:106) + assert deletion.
+  ARM ROUTING = the existing isAnchoredJoinResult probe (rule_partition_select
+  :397): anchored → kept trio arm (poison shapes); else → the Java arm
+  (PartitionSelectRule.java:283-322), parent-RV-agnostic. Three-commit staging
+  REJECTED: a dark positional arm inside a live rule is a hedge; two arms over
+  DISJOINT structurally-recognized populations with a fail-loud boundary is
+  per-birth-site staging, not the NAKed dual-mechanism window.
+- **SelectMergeRule: NO rewrite.** Already composes via translateValueCorrelations
+  → ReplaceLeavesOnceMaybe (rule_decorrelate_values.go:396-434) — the spine that
+  carries the commit-1 fuse arm, so baked-over-baked fuses free; lazy-over-RC via
+  composeFieldOverConstructor. Add the positive pin (2-way baked child merging
+  into 3-way parent, e2e). Consolidating the rule-side TranslationMap type onto
+  values.TranslationMap = a SEPARATE mechanical commit in this PR, not fulcrum.
+- **Two-shape model confirmed** (flat/named translation seeds; nested/unnamed
+  merge RVs). Root-flattening ⟹ an inner join can never be a leg; a JOIN leg at
+  translation = an outer-box boundary (W2: FULL only). ordinalLegColumns:97 panic
+  LIFTS for GATED join legs (supply the box's flat concat type; ordinalLegType
+  already tolerates dup names); REMAINS for name-model join legs.
+  ordinalEligible: join legs eligible iff the leg itself gates. Pin
+  `(a JOIN b) FULL JOIN c` with an upper a.id reference — the W3b live-catch shape.
+- **LEFT boundary = the anchored-RV routing at :397** (no new gate condition):
+  LEFT clusters stay translator-poison → dissolved selects arrive anchored →
+  trio arm; W4 flips them by making LEFT gate-eligible. KEEP the :910-914
+  tripwire re-purposed ("no baked node enters the anchored arm"); ADD its dual:
+  the positional arm panics on IsNullOnEmpty quantifiers until W4.
