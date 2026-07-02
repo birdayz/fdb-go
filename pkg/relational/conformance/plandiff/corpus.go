@@ -12712,7 +12712,7 @@ func SeedRunCorpus() []RunQuery {
 			// posNames is alias-preferring), so the leg-normalization wrap must
 			// re-read by the ALIAS, not the computed rendering "(N + 1)" — the
 			// pre-fix read was a loud OrdinalResolutionError in ordinal mode and
-			// works only by Datum-double-keying in name mode (codex P2, RFC-173
+			// works only by Datum-double-keying in name mode (review P2, RFC-173
 			// Slice-1 follow-up).
 			Name:           "recursive_cte_aliased_computed_branch",
 			SchemaTemplate: "CREATE TABLE T_RCA1 (id BIGINT, PRIMARY KEY (id))",
@@ -12723,7 +12723,7 @@ func SeedRunCorpus() []RunQuery {
 			// Explicit CTE column list RENAMES a seed that carries its own
 			// alias (`c(v)` over `SELECT id AS x`): the seed-normalization wrap
 			// fires and must re-read the seed by its emitted alias X (the
-			// positional slot name), not the source column ID (same codex-P2
+			// positional slot name), not the source column ID (same review-P2
 			// class as above, seed-side). Annotated JavaErrorsGoCorrect: Java's
 			// recursive-CTE inner type carries the SEED names only (the column
 			// list applies to the union's OUTPUT), so Java can't see `v` inside
@@ -12734,7 +12734,7 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "WITH RECURSIVE c(v) AS (SELECT id AS x FROM T_RCA2 UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT count(*) FROM c",
 		},
 		{
-			// REVERSE direction of the entry above (Graefe's required probe on
+			// REVERSE direction of the entry above (reviewer's required probe on
 			// PR #446): the recursive body references the seed's INNER alias
 			// `x`, not the column-list name `v`. Confirmed empirically:
 			// Java's recursive-CTE inner type carries the SEED's output names
@@ -12749,7 +12749,7 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "WITH RECURSIVE c(v) AS (SELECT id AS x FROM T_RCA3 UNION ALL SELECT x + 1 FROM c WHERE x < 5) SELECT count(*) FROM c",
 		},
 		{
-			// DUPLICATE output aliases in the recursive leg (codex P2 on PR
+			// DUPLICATE output aliases in the recursive leg (review P2 on PR
 			// #446): `SELECT a + 1 AS x, b + 1 AS x` emits two slots BOTH
 			// named X, and any name-based re-read collapses them (positional
 			// GetByName is first-match, the Datum map is last-wins) — the
