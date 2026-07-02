@@ -131,3 +131,19 @@ func TestFormatPK_BinaryTypes(t *testing.T) {
 		t.Errorf("Versionstamp PK formatPK = %q; want contains Versionstamp(…) and user version 7", got)
 	}
 }
+
+// Composite PKs parse as comma-separated tuple elements — the same form
+// formatPK renders, so scan output round-trips into record get.
+func TestParsePrimaryKey_Composite(t *testing.T) {
+	t.Parallel()
+	pk := parsePrimaryKey("1,ITEMS,42x")
+	if len(pk) != 3 {
+		t.Fatalf("len = %d; want 3 (%v)", len(pk), pk)
+	}
+	if pk[0] != int64(1) || pk[1] != "ITEMS" || pk[2] != "42x" {
+		t.Errorf("parsePrimaryKey = %v; want [1 ITEMS 42x]", pk)
+	}
+	if got := formatPK(pk); got != "1,ITEMS,42x" {
+		t.Errorf("formatPK round-trip = %q; want original", got)
+	}
+}

@@ -65,6 +65,42 @@ func BenchmarkProtoToMap_SparseRecord(b *testing.B) {
 	}
 }
 
+// BenchmarkProtoToPositional_Order measures the RFC-173 ordinal-row build alone
+// on the 5-field Order — the ADDED per-row cost of dual emission during the
+// migration window (FromStoredRecord now runs protoToMap AND protoToPositional
+// per scanned row; Slice 4 retires the map side).
+func BenchmarkProtoToPositional_Order(b *testing.B) {
+	msg := makeOrder(1, 100, 5)
+	b.ResetTimer()
+	for b.Loop() {
+		_ = protoToPositional(msg)
+	}
+}
+
+// BenchmarkProtoToPositional_TypedRecord measures the ordinal-row build on the
+// wider 8-field record exercising all scalar kinds.
+func BenchmarkProtoToPositional_TypedRecord(b *testing.B) {
+	msg := makeTypedRecord()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = protoToPositional(msg)
+	}
+}
+
+// BenchmarkDualEmission_Order measures the FULL RFC-173 migration-window scan
+// cost per row (protoToMap + protoToPositional — exactly what FromStoredRecord
+// does). Compare against BenchmarkProtoToMap_Order (the pre-RFC-173 single
+// emission) to read the dual-emission overhead the RFC §4 P2 hard part requires
+// to be measured and bounded.
+func BenchmarkDualEmission_Order(b *testing.B) {
+	msg := makeOrder(1, 100, 5)
+	b.ResetTimer()
+	for b.Loop() {
+		_ = protoToMap(msg)
+		_ = protoToPositional(msg)
+	}
+}
+
 // BenchmarkScalarProtoToGo_Int64 measures the fast path for int64 conversion.
 func BenchmarkScalarProtoToGo_Int64(b *testing.B) {
 	v := protoreflect.ValueOfInt64(42)

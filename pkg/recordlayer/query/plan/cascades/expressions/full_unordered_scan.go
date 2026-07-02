@@ -47,15 +47,25 @@ func (e *FullUnorderedScanExpression) GetFlowedType() values.Type {
 	return e.flowedType
 }
 
-// GetResultValue is a fresh QuantifiedObjectValue. The scan is a
-// source — it allocates its own CorrelationIdentifier-equivalent. We
-// approximate by re-using a unique CorrelationIdentifier per call,
-// which means every read of GetResultValue produces a distinct Value
-// (Java caches in a Suppliers.memoize). For the seed this is fine —
-// callers that need stable identity should bind via a Quantifier
-// (which ranges over the Reference holding this expression).
+// GetResultValue is a fresh QuantifiedObjectValue carrying the scan's
+// flowed record Type. The scan is a source — it allocates its own
+// CorrelationIdentifier-equivalent. We approximate by re-using a unique
+// CorrelationIdentifier per call, which means every read of
+// GetResultValue produces a distinct Value (Java caches in a
+// Suppliers.memoize). For the seed this is fine — callers that need
+// stable identity should bind via a Quantifier (which ranges over the
+// Reference holding this expression).
+//
+// The QOV flows e.flowedType (RFC-173 Slice 1): Java's scan quantifier
+// result type is always the record type, and FieldValue.resolveOrdinal
+// resolves a column name to its ordinal against this child Type. Passing
+// UnknownType here — as this did before — silently discarded the flowed
+// type and forced every single-table scan back onto name resolution
+// (resolveOrdinal's *RecordType assertion failed → (0,false)). A nil/
+// UnknownType flowedType degrades cleanly (NewQuantifiedObjectValueOfType
+// falls back to UnknownType), keeping untyped seeds on the name path.
 func (e *FullUnorderedScanExpression) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	return values.NewQuantifiedObjectValueOfType(values.UniqueCorrelationIdentifier(), e.flowedType)
 }
 
 // GetQuantifiers returns the empty list — leaf.
@@ -75,12 +85,30 @@ func (e *FullUnorderedScanExpression) GetCorrelatedToWithoutChildren() map[value
 }
 
 // EqualsWithoutChildren compares record-type sets + flowed Type.
+//
+// The flowed type is NON-DISCRIMINATING when either side is UnknownType. Java
+// holds this invariant structurally: both the query scan
+// (RelationalExpression.fromRecordQuery) and the candidate scan
+// (ExpansionVisitor.createBaseRef) flow Type.AnyRecord — a constant TOP type —
+// so its flowedType.equals term is always AnyRecord==AnyRecord and never
+// discriminates; the concrete record type rides a TypeFilter ABOVE the scan,
+// never on the leaf. recordTypes NAMES are the sole discriminator.
+//
+// Go's UnknownType is the analog of Java's AnyRecord. RFC-173 Slice 1 types the
+// QUERY scan leaf directly (so FieldValue.resolveOrdinal can resolve a column
+// against it) while candidate scans keep UnknownType. Wildcarding UnknownType
+// here restores Java's names-only match — top subsumes concrete, the direction
+// scan-leaf subsumption (rule_match_leaf.go) needs. Two CONCRETE types still
+// compare structurally, so query-side memo dedup of two scans over one table is
+// preserved. HashCodeWithoutChildren stays names-only (below) so typed and
+// untyped scans over the same types share a bucket and can meet here.
 func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
 	o, ok := other.(*FullUnorderedScanExpression)
 	if !ok {
 		return false
 	}
-	if !typeEquals(e.flowedType, o.flowedType) {
+	if e.flowedType != values.UnknownType && o.flowedType != values.UnknownType &&
+		!typeEquals(e.flowedType, o.flowedType) {
 		return false
 	}
 	if len(e.recordTypes) != len(o.recordTypes) {
@@ -95,7 +123,11 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 }
 
 // HashCodeWithoutChildren mixes a class-discriminating constant with
-// the canonical record-type list.
+// the canonical record-type list. It MUST NOT mix flowedType — matching
+// Java's names-only scan hash. EqualsWithoutChildren treats a UnknownType
+// flowedType as a wildcard (RFC-173 Slice 1), so a typed query scan and an
+// UnknownType candidate scan over the same record types must hash IDENTICALLY
+// or they land in different memo buckets and the wildcard match never fires.
 func (e *FullUnorderedScanExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("scan|"))

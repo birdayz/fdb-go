@@ -229,3 +229,20 @@ func TestWriteIndexListJSON_EmptyMetadata(t *testing.T) {
 		t.Errorf("expected empty array, got %d rows:\n%s", len(rows), buf.String())
 	}
 }
+
+// formatPartlyBuilt must render both stamps and both escape hatches —
+// the raw PartlyBuiltError means nothing to an operator without them
+// (FDB C++ dev C2 on RFC-174).
+func TestFormatPartlyBuilt_RendersStampsAndRemediation(t *testing.T) {
+	t.Parallel()
+	err := formatPartlyBuilt(&recordlayer.PartlyBuiltError{
+		IndexName:     "Order$price",
+		SavedStamp:    "by-records",
+		ExpectedStamp: "mutual",
+	}, "Order$price")
+	for _, want := range []string{"by-records", "mutual", "rebuild", "same settings"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("PartlyBuiltError rendering missing %q:\n%s", want, err)
+		}
+	}
+}

@@ -3868,7 +3868,8 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 			}
 		}
 	}
-	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) && !hasAggregate(op) {
+	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) && !hasAggregate(op) &&
+		!projectionInputRedefinesColumns(proj.Input) {
 		scan := findLogicalScan(op)
 		if scan != nil && !cteNames[strings.ToUpper(scan.Table)] {
 			rt := md.GetRecordType(scan.Table)
@@ -3951,6 +3952,38 @@ func hasJoin(op logical.LogicalOperator) bool {
 	}
 	for _, ch := range op.Children() {
 		if hasJoin(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+// projectionInputRedefinesColumns reports whether a projection's input chain
+// introduces a NEW column namespace (a nested derived-table projection) before
+// reaching a base scan. When it does, the projection's column names are the
+// derived (possibly renamed) OUTPUT names — validating them against the base
+// scan's record type would spuriously reject a legitimately renamed column
+// (e.g. `SELECT v AS y FROM (SELECT id AS v FROM a) i`, where `v` is `i`'s
+// output column, not a field of `a`). Pass-through ops (Filter/Sort/Limit/
+// Distinct) don't rename columns, so we descend through them. An unknown op is
+// treated conservatively as redefining (skip the base-scan check; the resolver
+// and runtime still catch genuinely undefined columns).
+func projectionInputRedefinesColumns(input logical.LogicalOperator) bool {
+	for cur := input; cur != nil; {
+		switch o := cur.(type) {
+		case *logical.LogicalScan:
+			return false
+		case *logical.LogicalFilter:
+			cur = o.Input
+		case *logical.LogicalSort:
+			cur = o.Input
+		case *logical.LogicalLimit:
+			cur = o.Input
+		case *logical.LogicalDistinct:
+			cur = o.Input
+		default:
+			// LogicalProject (derived-table rename), or any op that changes
+			// the column namespace.
 			return true
 		}
 	}

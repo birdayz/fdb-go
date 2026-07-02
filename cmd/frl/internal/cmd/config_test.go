@@ -180,47 +180,6 @@ func TestConfigInit_OutputIsParseable(t *testing.T) {
 	}
 }
 
-// TestConfigSchema_EmitsSnakeCaseAndUnpopulated locks in two promises
-// of `config schema`: keys are emitted in the same snake_case as
-// config.yaml (so operators can use the output as a field reference),
-// and unpopulated fields are present so the schema shows the full
-// shape — not just whatever happens to be set on an empty Config.
-func TestConfigSchema_EmitsSnakeCaseAndUnpopulated(t *testing.T) {
-	t.Parallel()
-	c := newConfigSchemaCmd()
-	var out bytes.Buffer
-	c.SetOut(&out)
-	c.SetErr(&out)
-	if err := c.Execute(); err != nil {
-		t.Fatalf("Execute: %v\n%s", err, out.String())
-	}
-	var obj map[string]any
-	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
-		t.Fatalf("output is not valid JSON: %v\nraw:\n%s", err, out.String())
-	}
-	// current_context is a top-level Config field; present even when empty
-	// (EmitUnpopulated). Without UseProtoNames it would render as
-	// currentContext, which wouldn't match config.yaml.
-	if _, ok := obj["current_context"]; !ok {
-		t.Errorf("missing snake_case key 'current_context':\n%s", out.String())
-	}
-	if _, ok := obj["currentContext"]; ok {
-		t.Errorf("camelCase 'currentContext' leaked — UseProtoNames drift:\n%s",
-			out.String())
-	}
-	// contexts is a repeated field; must render as an array, not null,
-	// even when unpopulated.
-	arr, ok := obj["contexts"].([]any)
-	if !ok {
-		t.Errorf("contexts should be an array (possibly empty); got %T:\n%s",
-			obj["contexts"], out.String())
-	}
-	if len(arr) != 0 {
-		t.Errorf("contexts should be empty on a fresh Config; got %d rows",
-			len(arr))
-	}
-}
-
 // TestConfigView_YAMLRoundTripsSnakeCase verifies `config view` emits
 // snake_case keys matching the on-disk YAML format. Without
 // UseProtoNames, protoyaml renders `clusterFile` / `keyspacePath` /

@@ -38,11 +38,6 @@ type ScopeSource struct {
 	// dependency on cascades/values/CorrelationIdentifier — callers wrap
 	// this into a cascades.values.CorrelationIdentifier themselves.
 	CorrelationName string
-	// ColumnAliasMap maps upper-cased aliased column names to the
-	// underlying real column names. Used by CTE-derived scopes where
-	// the CTE body uses `SELECT col AS alias` — the resolver sees
-	// `alias` but the scan produces `col`. nil when no aliasing.
-	ColumnAliasMap map[string]string
 	// Shadowing marks a source whose columns SHADOW same-named columns of
 	// non-shadowing sources at this scope level (instead of colliding into
 	// an ambiguity error). A lateral array unnest (`FROM t, t.arr AS x`)

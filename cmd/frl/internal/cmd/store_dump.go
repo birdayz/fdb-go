@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"fdb.dev/cmd/frl/internal/config"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -35,7 +33,7 @@ var subspaceLabel = map[int64]string{
 
 func newStoreDumpCmd() *cobra.Command {
 	var (
-		contextName string
+		addr        storeAddressFlags
 		subspaceSel string
 		limit       int
 	)
@@ -60,26 +58,15 @@ func newStoreDumpCmd() *cobra.Command {
 		ValidArgsFunction: cobra.NoFileCompletions,
 		Args:              cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := config.Load()
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
-			cfgCtx, err := config.ResolveContext(cfg, contextName)
-			if err != nil {
-				if errors.Is(err, config.ErrNoContext) {
-					path, _ := config.Path()
-					return fmt.Errorf("%w (config: %s)", err, path)
-				}
-				return err
-			}
-			if cfgCtx.GetKeyspacePath() == "" {
-				return fmt.Errorf("context %q has empty keyspace_path", cfgCtx.GetName())
-			}
-			db, err := openDatabase(cfgCtx.GetClusterFile())
+			ss, err := target.subspace()
 			if err != nil {
 				return err
 			}
-			ss, err := parseKeyspacePath(cfgCtx.GetKeyspacePath())
+			db, err := openDatabase(target.clusterFile())
 			if err != nil {
 				return err
 			}
@@ -95,7 +82,7 @@ func newStoreDumpCmd() *cobra.Command {
 			return runStoreDump(cmd.Context(), cmd.OutOrStdout(), db, ss, scanSS, limit)
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	addr.register(c, false)
 	c.Flags().StringVar(&subspaceSel, "subspace", "",
 		"limit dump to one subspace (record / index / record-version / …)")
 	c.Flags().IntVar(&limit, "limit", defaultScanLimit, "max keys to dump; 0 means unlimited")

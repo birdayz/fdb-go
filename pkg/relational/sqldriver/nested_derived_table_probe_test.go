@@ -1,28 +1,19 @@
 package sqldriver_test
 
-// KNOWN-GAP sentinel — nested derived tables lose ALIAS-introduced column names
-// beyond one level (TODO.md "nested derived-table alias propagation").
-//
-// Derived tables (subquery in FROM) are supported and cross-engine-tested (plandiff
-// corpus). But an alias introduced in an INNER derived table is not visible TWO
-// levels up:
-//   works:  SELECT x FROM (SELECT a AS x FROM t) i              (1-level alias)
-//   works:  SELECT a FROM (SELECT a FROM (SELECT a FROM t) i) s (2-level, NO alias)
-//   FAILS:  SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s  → 42703 "column X"
-// The real column name `a` propagates through any depth; only an alias-introduced
-// name is dropped at depth ≥2. Fail-CLOSED (clean 42703, not wrong rows). Standard
-// SQL allows this and Java supports derived tables, so this is most likely a Go
-// column-anchoring gap (derivedOutputColumns/legColumns not propagating the alias
-// name through a nested derived body) — pending a Java-behavior confirmation +
-// query-engine review. This test pins the current boundary; flip the failing case
-// when fixed.
+// Nested derived-table column resolution. An alias introduced in an INNER
+// derived table is visible at any nesting depth, matching Java:
+//   SELECT x FROM (SELECT a AS x FROM t) i                    (1-level alias)
+//   SELECT a FROM (SELECT a FROM (SELECT a FROM t) i) s       (2-level, NO alias)
+//   SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s  (2-level alias)
+// RFC-173 Slice 1 fixed the last case: identifier resolution keeps the OUTPUT
+// column name verbatim (the source-name reverse-map is retired), so the alias
+// `x` is no longer buried under the source column `a` beyond one level.
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 	"testing"
 )
 
@@ -90,17 +81,18 @@ func TestFDB_NestedDerivedTableProbe(t *testing.T) {
 			t.Errorf("= %v, want [10 20 30]", got)
 		}
 	})
-	t.Run("two_level_inner_alias_currently_42703_BUG", func(t *testing.T) {
-		_, err := vals("SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s")
-		// CURRENT (buggy) behavior: alias name lost two levels up → 42703.
-		// When fixed, this returns [10,20,30] — flip the assertion + update TODO.
-		if err == nil {
-			t.Errorf("2-level inner-alias derived unexpectedly succeeded — the alias-" +
-				"propagation gap may be FIXED; flip this sentinel + update TODO.md")
-			return
+	t.Run("two_level_inner_alias", func(t *testing.T) {
+		// RFC-173 Slice 1 (buried-reference precursor): an alias introduced in an
+		// inner derived table now resolves through any nesting depth, because
+		// identifier resolution keeps the OUTPUT column name verbatim (the
+		// source-name reverse-map is retired). Previously this failed 42703 because
+		// the alias name `x` was buried under the source column `a`.
+		got, err := vals("SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s")
+		if err != nil {
+			t.Fatalf("2-level inner-alias derived should resolve `x`: %v", err)
 		}
-		if !strings.Contains(err.Error(), "42703") {
-			t.Errorf("err = %v, want 42703 (current alias-propagation gap)", err)
+		if !eq(got, []int64{10, 20, 30}) {
+			t.Errorf("= %v, want [10 20 30]", got)
 		}
 	})
 }

@@ -201,7 +201,7 @@ func TestPlanner_MemoDeduplicatesEquivalentScans(t *testing.T) {
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, EmptyPlanContext())
-	tasksRun, conv := p.Explore(topRef)
+	tasksRun, conv := exploreRewriting(p, topRef)
 	if !conv {
 		t.Fatal("planner did not converge")
 	}

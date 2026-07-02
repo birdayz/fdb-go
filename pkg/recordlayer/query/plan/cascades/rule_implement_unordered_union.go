@@ -175,11 +175,14 @@ func physicalPlanColumnNames(p plans.RecordQueryPlan) []string {
 	return nil
 }
 
+// unionProjectionColumnName delegates to the shared values.ProjectionColumnName
+// naming contract — the union's column-name view MUST agree with the key the
+// executor's projection writer emits, or same-named union legs stop lining up.
+// (A previous local copy upper-cased fv.Field where the writer does not: inert
+// while fields are upper everywhere, but a silent divergence waiting for the
+// first mixed-case field.)
 func unionProjectionColumnName(v values.Value) string {
-	if fv, ok := v.(*values.FieldValue); ok {
-		return strings.ToUpper(fv.Field)
-	}
-	return strings.ToUpper(values.ExplainValue(v))
+	return values.ProjectionColumnName(v)
 }
 
 func colNamesEqual(a, b []string) bool {

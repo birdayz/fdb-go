@@ -34,13 +34,18 @@ var rfc082KnownRed = map[string]bool{
 	// nested_derived_col_rename removed: the RFC-141 R4 projected-EXISTS fold's
 	// column metadata/alias-provenance unification fixed the derived-column
 	// rename so Go now matches Java cross-engine (RFC-082 lock shrinks).
-	"greatest_all_nonnull":        true, // integer literal -> BIGINT vs Java INTEGER
-	"greatest_null_propagates":    true,
-	"least_all_nonnull":           true,
-	"least_null_propagates":       true,
-	"proj_literal_column":         true,
-	"select_count_alias":          true, // COUNT(*) AS cnt drops the alias
-	"recursive_cte_depth_counter": true,
+	"greatest_all_nonnull":     true, // integer literal -> BIGINT vs Java INTEGER
+	"greatest_null_propagates": true,
+	"least_all_nonnull":        true,
+	"least_null_propagates":    true,
+	"proj_literal_column":      true,
+	"select_count_alias":       true, // COUNT(*) AS cnt drops the alias
+	// "recursive_cte_depth_counter" was REMOVED (the lock shrank): the recursive
+	// leg's computed column (SELECT n + 1) silently stalled recursion one level
+	// early (count 2 instead of Java's 10) because the normalization wrap read
+	// the leg output by its LOGICAL name while the row is keyed by the PHYSICAL
+	// name. Fixed by legPhysicalOutputNames (values.ProjectionColumnName naming
+	// contract) — found by the RFC-173 §5 dual-window differential.
 	// Pre-existing inline annotations that drifted (now re-classified red):
 	"distinct_count":                               true,
 	"group_by_null_bucket":                         true,

@@ -112,7 +112,7 @@ func TestDefaultRules_AutoRegistered(t *testing.T) {
 }
 
 // TestDefaultRules_StableOrder pins that DefaultExpressionRules
-// returns the rules in the same order on every call. The fixpoint
+// returns the rules in the same order on every call. The exploration
 // driver iterates rules in this order, so a rule reordering would
 // change which equivalent expressions land first in the Reference's
 // member list — fine but worth pinning so nothing accidentally
@@ -165,15 +165,14 @@ func TestDefaultRules_EndToEndOptimisation(t *testing.T) {
 	outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
 	ref := expressions.InitialOf(outerF)
 
-	progress, converged := FixpointApply(DefaultExpressionRules(), ref, 50)
+	tasks, converged := exploreRewriting(NewPlanner(DefaultExpressionRules(), nil), ref)
 	if !converged {
-		t.Fatalf("did not converge — progress=%d", progress)
-	}
-	if progress < 4 {
-		t.Fatalf("progress=%d, want at least 4 (FilterMerge + 2× NoOpFilter + DistinctMerge)", progress)
+		t.Fatalf("did not converge — tasks=%d", tasks)
 	}
 
 	// Find the most-optimised member: Distinct directly over Scan.
+	// Reaching it requires the full FilterMerge + 2× NoOpFilter +
+	// DistinctMerge chain, so finding the shape pins the composition.
 	foundShape := false
 	for _, m := range ref.Members() {
 		d, ok := m.(*expressions.LogicalDistinctExpression)
@@ -187,6 +186,6 @@ func TestDefaultRules_EndToEndOptimisation(t *testing.T) {
 		}
 	}
 	if !foundShape {
-		t.Fatalf("after fixpoint, Reference has no Distinct(Scan) member — members=%d", len(ref.Members()))
+		t.Fatalf("after exploration, Reference has no Distinct(Scan) member — members=%d", len(ref.Members()))
 	}
 }

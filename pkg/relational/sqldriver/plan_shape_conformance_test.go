@@ -16682,16 +16682,20 @@ func TestFDB_NestedDerivedThreeLevels(t *testing.T) {
 		}
 	})
 
-	t.Run("expression_alias_doesnt_propagate_through_3_levels", func(t *testing.T) {
-		_, err := db.QueryContext(ctx, `
+	t.Run("expression_alias_propagates_through_3_levels", func(t *testing.T) {
+		// RFC-173 Slice 1: an aliased computed expression resolves through nested
+		// derived tables by its OUTPUT name `doubled` (the source-name reverse-map
+		// is retired). doubled = val+val over {10,20,30,40,50} → {20,40,60,80,100},
+		// SUM = 300.
+		rows := collectRows(t, db, `
 			SELECT SUM(doubled) FROM (
 				SELECT doubled FROM (
 					SELECT val + val AS doubled FROM nd3_t
 				) l2
 			) l3
 		`)
-		if err == nil {
-			t.Errorf("expected error for aliased expression through 3 nested levels")
+		if toInt64(rows[0][0]) != 300 {
+			t.Errorf("want 300, got %v", rows[0][0])
 		}
 	})
 }

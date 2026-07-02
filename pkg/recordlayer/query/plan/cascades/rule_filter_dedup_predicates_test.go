@@ -53,7 +53,7 @@ func TestFilterDedupPredicatesRule_CooperatesWithFilterMerge(t *testing.T) {
 	// Filter([P], Filter([P, Q], X)) — two filters share predicate P.
 	// FilterMergeRule yields Filter([P, P, Q], X), then
 	// FilterDedupPredicatesRule yields Filter([P, Q], X). Pin the
-	// two-rule chain through FixpointApply.
+	// two-rule chain through the unified exploration driver.
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	pF := predicates.NewConstantPredicate(predicates.TriFalse)
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -70,9 +70,9 @@ func TestFilterDedupPredicatesRule_CooperatesWithFilterMerge(t *testing.T) {
 		NewFilterMergeRule(),
 		NewFilterDedupPredicatesRule(),
 	}
-	progress, converged := FixpointApply(rules, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner(rules, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d", progress)
+		t.Fatalf("exploration did not converge — tasks=%d", progress)
 	}
 	// Look for a Filter([P, F], Scan) member — the deduped form.
 	foundDeduped := false
@@ -104,8 +104,8 @@ func TestFilterDedupPredicatesRule_FixpointTerminates(t *testing.T) {
 		[]predicates.QueryPredicate{pT, pT, pT}, q,
 	)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewFilterDedupPredicatesRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewFilterDedupPredicatesRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

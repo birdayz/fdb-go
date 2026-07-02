@@ -249,9 +249,9 @@ func TestPushFilterBelowJoin_FixpointTerminates(t *testing.T) {
 		[]string{"A", "B"},
 	)
 
-	progress, converged := FixpointApply([]ExpressionRule{NewPushFilterBelowJoinRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPushFilterBelowJoinRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }
 

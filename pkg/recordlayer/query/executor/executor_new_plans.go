@@ -329,6 +329,13 @@ func producesMergedRows(p plans.RecordQueryPlan) bool {
 	return false
 }
 
+// isStringMap reports whether datum is a name-keyed row map. Small readability
+// helper for the predicates-filter row-context dispatch.
+func isStringMap(datum any) bool {
+	_, ok := datum.(map[string]any)
+	return ok
+}
+
 func executePredicatesFilter(
 	ctx context.Context,
 	p *plans.RecordQueryPredicatesFilterPlan,
@@ -357,6 +364,11 @@ func executePredicatesFilter(
 	// pick up the outer row's bare ID instead of NULL.
 	bindAlias := innerAlias.Name() != "" && !producesMergedRows(p.GetInner())
 	needsRowCtx := bindAlias || (evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0))
+	// RFC-173 Slice 1: on the positional frontier a QOV(innerAlias).col resolves
+	// via the bare-positional fallback in evaluateCorrelated (Correlations miss →
+	// Positional), so bindAlias is NOT a reason to wrap — only a genuine
+	// param/subquery/outer-binding is. When none is present, flow the bare row.
+	posNeedsCtx := hasBindingContext(evalCtx)
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) (bool, error) {
@@ -364,7 +376,16 @@ func executePredicatesFilter(
 			// RFC-048 W1: a HAVING/filter reference to a name absent from a
 			// complete row (aggregate output) is a bug, not a NULL.
 			strict := StrictReferenceCheck && qr.Complete
-			if m, ok := qr.Datum.(map[string]any); ok && (strict || needsRowCtx) {
+			switch {
+			case qr.Positional != nil:
+				// RFC-173 Slice 1: the non-join frontier flows an authoritative
+				// ordinal row — resolve predicates by ordinal (loud on a miss, no
+				// name-map fallback). A QOV(innerAlias).col resolves via the
+				// bare-positional fallback in evaluateCorrelated, so no alias
+				// binding is needed here.
+				rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
+			case isStringMap(qr.Datum) && (strict || needsRowCtx):
+				m := qr.Datum.(map[string]any) //nolint:errcheck // guarded by isStringMap
 				ec := evalCtx
 				if ec == nil {
 					ec = EmptyEvaluationContext()
@@ -377,7 +398,7 @@ func executePredicatesFilter(
 				} else {
 					rowCtx = ec.RowContext(m)
 				}
-			} else if _, isMap := qr.Datum.(map[string]any); !isMap && bindAlias {
+			case !isStringMap(qr.Datum) && bindAlias:
 				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
 				// Explode flows int64(101), not a map — RFC-142). A WHERE on the
 				// element references the whole QuantifiedObjectValue(innerAlias)
@@ -422,20 +443,41 @@ func executeMap(
 		return nil, err
 	}
 	resultValue := p.GetResultValue()
+	// RFC-173 Slice 1: on the positional frontier an outer correlation resolves via
+	// the eval context's binder before the bare-positional frontier fallback.
+	posNeedsCtx := hasBindingContext(evalCtx)
+	// RFC-173 Slice 1: the Map output schema is row-invariant — derive the emitted
+	// positional row's OUTPUT names once from the result value's record type (nil
+	// when the result isn't a record; then no positional row is emitted).
+	var mapPosNames []string
+	var mapPosType *values.RecordType
+	if rt, ok := resultValue.Type().(*values.RecordType); ok {
+		mapPosNames = make([]string, len(rt.Fields))
+		for i, fld := range rt.Fields {
+			mapPosNames[i] = fld.Name
+		}
+		mapPosType = positionalTypeFromNames(mapPosNames)
+	}
 	var evalErr error
 	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
 			return qr
 		}
 		var rowCtx any = qr.Datum
-		// RFC-048 W1: a projection reading a name absent from a complete row
-		// (aggregate output) is a bug, not a NULL. Production passes the raw
-		// Datum map here (no parameter binder / scalar-subquery resolver), so
-		// the strict context must carry ONLY Datum + Strict — adding a Binder or
-		// ScalarSubqueries would let a param/subquery resolve in the test binary
-		// while it returns NULL in production, i.e. strict mode would change
-		// results. Bare strict context = identical resolution + miss reporting.
-		if StrictReferenceCheck && qr.Complete {
+		switch {
+		case qr.Positional != nil:
+			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
+			// row — resolve the result value by ordinal (loud on a miss, no
+			// name-map fallback), taking precedence over the name-keyed Datum.
+			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
+		case StrictReferenceCheck && qr.Complete:
+			// RFC-048 W1: a projection reading a name absent from a complete row
+			// (aggregate output) is a bug, not a NULL. Production passes the raw
+			// Datum map here (no parameter binder / scalar-subquery resolver), so
+			// the strict context must carry ONLY Datum + Strict — adding a Binder or
+			// ScalarSubqueries would let a param/subquery resolve in the test binary
+			// while it returns NULL in production, i.e. strict mode would change
+			// results. Bare strict context = identical resolution + miss reporting.
 			if m, ok := qr.Datum.(map[string]any); ok {
 				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
 			}
@@ -445,7 +487,24 @@ func executeMap(
 			evalErr = err
 			return qr
 		}
-		return QueryResult{Datum: m, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
+		// RFC-173 Slice 1: dual-emit the ordinal positional row (OUTPUT-named),
+		// built from the evaluated result so it mirrors the name-keyed Datum
+		// field-for-field — but ONLY when the input is itself on the non-join
+		// frontier (carried a Positional). A Map OVER A JOIN re-emits join-qualified
+		// columns resolved by name; emitting a Positional there would wrongly flip
+		// the consumer onto the ordinal path. Positional propagates along the
+		// frontier and stops at the join/aggregate boundary.
+		var pos *PositionalRow
+		if qr.Positional != nil {
+			if mm, ok := m.(map[string]any); ok && mapPosNames != nil {
+				slots := make([]any, len(mapPosNames))
+				for i, name := range mapPosNames {
+					slots[i] = mm[name]
+				}
+				pos = &PositionalRow{Type: mapPosType, Slots: slots}
+			}
+		}
+		return QueryResult{Datum: m, Positional: pos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
 	return &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}, nil
 }

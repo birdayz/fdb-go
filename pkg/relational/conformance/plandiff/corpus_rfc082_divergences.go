@@ -11,8 +11,8 @@ package plandiff
 //     SQL-correct; column labels are not wire format (see CLAUDE.md
 //     "query reach is not the hard line").
 //   - JavaSucceedsGoRejects: Go has a tracked capability gap (UUID equality
-//     predicates, EXISTS under OR / multiple EXISTS, derived-table/CTE alias
-//     resolution corners) and rejects rather than returning wrong rows.
+//     predicates, EXISTS under OR / multiple EXISTS) and rejects rather than
+//     returning wrong rows.
 //   - BothErrorMessagesDrift: both engines reject; only the message wording
 //     differs (pinned by a cause-specific substring).
 //
@@ -32,6 +32,15 @@ package plandiff
 // `agg_empty_count_having_passes` / `having_count_star_eq_zero_empty` (4.11
 // skipped the empty-table implicit group under HAVING). Full plan-level
 // LEFT/RIGHT-join parity remains RFC-135 §4 R7.
+//
+// RFC-173 Slice 1 (buried-reference precursor): four JavaSucceedsGoRejects
+// entries were LIFTED because Go now resolves a derived-table/CTE column
+// reference to its OUTPUT column name (the source-name reverse-map is retired),
+// matching Java instead of rejecting. They now run as plain cross-engine
+// equivalence: `derived_table_projection_alias` (SELECT s.s over `x + y AS s`),
+// `nested_derived_arithmetic_2deep` / `nested_derived_arithmetic_projection`
+// (aliased expression `doubled` through nested derived tables), and
+// `nested_derived_double_where` (aliased columns `x`/`y` through two levels).
 var rfc082Divergences = map[string]Divergence{
 	"add_int_overflow_rejected":                  {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "integer overflow"},
 	"agg_min_max_with_filter":                    {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(1), float64(20), float64(20)}, {float64(2), float64(30), float64(40)}}},
@@ -42,7 +51,6 @@ var rfc082Divergences = map[string]Divergence{
 	"cast_string_to_bigint_in_order_by":          {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(2), "2"}, {float64(1), "10"}, {float64(3), "100"}}},
 	"cte_basic_with_aggregate":                   {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: order by is not supported in subquery", GoExpectedRows: [][]any{{float64(1), float64(30)}, {float64(2), float64(30)}}},
 	"cte_join_aggregate":                         {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: order by is not supported in subquery", GoExpectedRows: [][]any{{float64(1), float64(30), float64(30)}, {float64(2), float64(30), float64(30)}}},
-	"derived_table_projection_alias":             {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "column \"S\" does not exist"},
 	"distinct_on_join":                           {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{"X"}, {"Y"}}},
 	"double_negative":                            {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(1), float64(-3.14)}, {float64(2), float64(2.71)}}},
 	"error_ambiguous_column_join":                {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "column reference \"NAME\" is ambiguous"},
@@ -69,9 +77,6 @@ var rfc082Divergences = map[string]Divergence{
 	"limit_clause_rejected":                      {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: LIMIT clause is not supported.", GoExpectedRows: [][]any{{float64(1)}, {float64(2)}}},
 	"mul_int_overflow_rejected":                  {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "integer overflow"},
 	"negate_min_int64_overflow":                  {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "integer overflow"},
-	"nested_derived_arithmetic_2deep":            {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "column \"DOUBLED\" does not exist"},
-	"nested_derived_arithmetic_projection":       {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "column \"DOUBLED\" does not exist"},
-	"nested_derived_double_where":                {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "column \"X\" does not exist"},
 	"oby_desc_with_ties":                         {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(2), float64(20)}, {float64(4), float64(20)}, {float64(1), float64(10)}, {float64(3), float64(10)}, {float64(5), float64(10)}}},
 	"oby_multi_col_mixed_dir":                    {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(1), float64(1), float64(30)}, {float64(2), float64(1), float64(10)}, {float64(4), float64(2), float64(40)}, {float64(3), float64(2), float64(20)}}},
 	"oby_null_default_ordering":                  {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(2), nil}, {float64(4), nil}, {float64(1), float64(10)}, {float64(5), float64(20)}, {float64(3), float64(30)}}},

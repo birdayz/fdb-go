@@ -1,5 +1,12 @@
 # RFC: Cross-Transaction Query Pagination
 
+> **ARCHIVED — implemented.** This design doc predates the numbered `rfcs/` series (numbers
+> are taken; it is not renumbered). The proposal shipped: `paginatingRows` in
+> `pkg/relational/core/embedded/cascades_generator.go` owns the cross-transaction pagination
+> loop, and continuation reasons (`TRANSACTION_LIMIT_REACHED`) live in
+> `pkg/relational/api/continuation.go`. Kept as the historical design record; the body below
+> describes the state of the code when it was written.
+
 ## Problem
 
 Every SQL query executes inside a single FDB transaction (`DB.Run()`). FDB transactions have a hard 5-second lifetime. At ~50K rows the scan exceeds 5 seconds, and:
