@@ -211,6 +211,48 @@ func TestRFC173S3_FusedPath_Evaluate(t *testing.T) {
 	}
 }
 
+// TestRFC173S3_FusedPath_CorrelatedContexts is the S3-W1 review's demanded
+// trap pin: evaluateCorrelated is the fused node's PRIMARY eval path (the
+// compose rule's only constructible output is fused-over-QOV), and every one
+// of its name-keyed arms must start at the ROOT step's key and descend — a
+// display-name (last-step) read at the top level returns the planted trap
+// value. The node is UNPINNED so the guard does not mask a misread (pinned
+// fused nodes were loud-by-accident on these arms pre-fix).
+func TestRFC173S3_FusedPath_CorrelatedContexts(t *testing.T) {
+	t.Parallel()
+	qov := s3NestedQOV(t)
+	corr := qov.Correlation
+	fused := &FieldValue{
+		Field: "Y", Typ: NotNullLong, Child: qov,
+		Resolved: NewFieldPathOfSingle("NESTED", 0, false).WithSuffix(NewFieldPathOfSingle("Y", 1, false)),
+	}
+	// The trap: "Y" present at top level everywhere; the correct answer lives
+	// only under NESTED.Y.
+	nested := map[string]any{"X": int64(1), "Y": int64(2)}
+	row := map[string]any{"NESTED": nested, "Y": int64(99)}
+	qualRow := map[string]any{
+		"Q.NESTED": nested, "Q.Y": int64(99),
+		"NESTED": nested, "Y": int64(99),
+	}
+
+	assertReads2 := func(ctxName string, got any, err error) {
+		t.Helper()
+		if err != nil || got != int64(2) {
+			t.Fatalf("%s: fused correlated read = (%v, %v), want (2, nil) — root step key + descent, never the display name", ctxName, got, err)
+		}
+	}
+	got, err := fused.Evaluate(&RowEvalContext{Correlations: &mapBinder{id: corr, m: row}})
+	assertReads2("RowEvalContext correlation map binding", got, err)
+	got, err = fused.Evaluate(&mapBinder{id: corr, m: row})
+	assertReads2("bare CorrelationBinder map binding", got, err)
+	got, err = fused.Evaluate(map[CorrelationIdentifier]map[string]any{corr: row})
+	assertReads2("per-correlation map", got, err)
+	got, err = fused.Evaluate(qualRow)
+	assertReads2("qualified-key map (qualKey = root step)", got, err)
+	got, err = fused.Evaluate(&RowEvalContext{Datum: qualRow})
+	assertReads2("RowEvalContext qualified Datum", got, err)
+}
+
 // TestRFC173S3_FusedPath_IdentityHashExplain pins the fused node's identity
 // surface: element-wise (Field, Ordinal) equality (Java FieldPath list-equals,
 // FieldValue.java:411-420), equal ⟹ same-hash, and the multi-step Explain

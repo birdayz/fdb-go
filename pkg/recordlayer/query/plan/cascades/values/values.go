@@ -252,6 +252,11 @@ type ResolvedAccessor struct {
 // production path is single-accessor (the gated-join seed and the
 // recursive-CTE wrap); multi-accessor paths are produced only by the
 // baked-gated compose rule until the S3-W2/W3 flip widens it.
+// INVARIANT: a FieldPath carried by a FieldValue is NON-EMPTY — a zero-step
+// path reads nothing and is not a meaningful accessor (Java's FieldPath.EMPTY
+// exists only for prefix arithmetic Go doesn't port in W1). Both constructors
+// (NewFieldPathOfSingle, WithSuffix) uphold it; Root()/Last() panic on a
+// hand-built violation rather than tolerating it.
 type FieldPath struct {
 	Accessors []ResolvedAccessor
 
@@ -289,10 +294,11 @@ func NewFieldPathOfSingle(field string, ordinal int, frontierPinned bool) *Field
 // the pin governs exactly that root.
 func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
 	if suffix == nil || len(suffix.Accessors) == 0 {
+		// A nil/empty SUFFIX argument is a degenerate "append nothing" —
+		// tolerated defensively. An empty RECEIVER violates the type's
+		// non-empty invariant and gets no arm (S3-W1 review: don't
+		// half-admit empties).
 		return p
-	}
-	if len(p.Accessors) == 0 {
-		return &FieldPath{Accessors: suffix.Accessors, FrontierPinned: p.FrontierPinned}
 	}
 	merged := make([]ResolvedAccessor, 0, len(p.Accessors)+len(suffix.Accessors))
 	merged = append(merged, p.Accessors...)
@@ -516,7 +522,10 @@ func (f *FieldValue) nameRead(row map[string]any) (any, error) {
 }
 
 func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
-	if f.Resolved == nil || len(f.Resolved.Accessors) == 1 {
+	// <= 1 (not == 1): a hand-built zero-accessor path violates the type
+	// invariant, but a slice-bounds panic in the eval hot path is the wrong
+	// place to report it (S3-W1 review).
+	if f.Resolved == nil || len(f.Resolved.Accessors) <= 1 {
 		return rootVal, nil
 	}
 	cur := rootVal
@@ -615,7 +624,15 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 	if evalCtx == nil {
 		return nil, nil
 	}
-	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(f.Field)
+	// Every name-keyed read in this function starts at the ROOT step's key and
+	// descends the remaining accessors (nameReadRootKey/descendResolvedPath) —
+	// a fused multi-accessor node's display Field is the LAST step's name, and
+	// reading it at the top level is the display-name-root-read trap (S3-W1
+	// review catch: this function is the fused node's PRIMARY eval path — the
+	// compose rule's only constructible output is fused-over-QOV). Identical
+	// byte-for-byte to the S2 reads for lazy nodes and single-accessor paths.
+	rootKey := f.nameReadRootKey()
+	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(rootKey)
 	switch ctx := evalCtx.(type) {
 	case OrdinalRow:
 		// RFC-173 Slice 1: a bare ordinal-model row IS the single non-join
@@ -634,12 +651,11 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 					if err := f.bakedNameReadGuard(); err != nil {
 						return nil, err
 					}
-					if v, ok := bm[f.Field]; ok {
-						return v, nil
+					if v, ok := bm[rootKey]; ok {
+						return f.descendResolvedPath(v)
 					}
-					lower := strings.ToLower(f.Field)
-					if v, ok := bm[lower]; ok {
-						return v, nil
+					if v, ok := bm[strings.ToLower(rootKey)]; ok {
+						return f.descendResolvedPath(v)
 					}
 					return nil, nil
 				}
@@ -663,7 +679,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				return nil, err
 			}
 			if v, ok := ctx.Datum[qualKey]; ok {
-				return v, nil
+				return f.descendResolvedPath(v)
 			}
 			// Already-qualified field (e.g. "T3.ID") accessed through a merge
 			// quantifier: a re-enumerated N-way join collapses a buried table
@@ -672,13 +688,13 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			// preserves dotted keys verbatim — they are NOT re-prefixed with the
 			// merge alias). Prepending the merge alias above would invent a key
 			// (e.g. "$M.T3.ID") that was never written. Mirror the binding path
-			// (bm[f.Field]) by resolving the qualified field directly. (RFC-043.)
-			if strings.Contains(f.Field, ".") {
-				if v, ok := ctx.Datum[strings.ToUpper(f.Field)]; ok {
-					return v, nil
+			// (bm[rootKey]) by resolving the qualified field directly. (RFC-043.)
+			if strings.Contains(rootKey, ".") {
+				if v, ok := ctx.Datum[strings.ToUpper(rootKey)]; ok {
+					return f.descendResolvedPath(v)
 				}
-				if v, ok := ctx.Datum[f.Field]; ok {
-					return v, nil
+				if v, ok := ctx.Datum[rootKey]; ok {
+					return f.descendResolvedPath(v)
 				}
 			}
 		}
@@ -692,12 +708,11 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				if err := f.bakedNameReadGuard(); err != nil {
 					return nil, err
 				}
-				if v, ok := bm[f.Field]; ok {
-					return v, nil
+				if v, ok := bm[rootKey]; ok {
+					return f.descendResolvedPath(v)
 				}
-				lower := strings.ToLower(f.Field)
-				if v, ok := bm[lower]; ok {
-					return v, nil
+				if v, ok := bm[strings.ToLower(rootKey)]; ok {
+					return f.descendResolvedPath(v)
 				}
 				return nil, nil
 			}
@@ -711,7 +726,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			if err := f.bakedNameReadGuard(); err != nil {
 				return nil, err
 			}
-			return sub[f.Field], nil
+			return f.descendResolvedPath(sub[rootKey])
 		}
 		return nil, nil
 	case map[string]any:
@@ -719,16 +734,16 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			return nil, err
 		}
 		if v, ok := ctx[qualKey]; ok {
-			return v, nil
+			return f.descendResolvedPath(v)
 		}
 		// Already-qualified field accessed through a merge quantifier — see the
 		// *RowEvalContext branch above for the rationale. (RFC-043.)
-		if strings.Contains(f.Field, ".") {
-			if v, ok := ctx[strings.ToUpper(f.Field)]; ok {
-				return v, nil
+		if strings.Contains(rootKey, ".") {
+			if v, ok := ctx[strings.ToUpper(rootKey)]; ok {
+				return f.descendResolvedPath(v)
 			}
-			if v, ok := ctx[f.Field]; ok {
-				return v, nil
+			if v, ok := ctx[rootKey]; ok {
+				return f.descendResolvedPath(v)
 			}
 		}
 		return nil, nil
