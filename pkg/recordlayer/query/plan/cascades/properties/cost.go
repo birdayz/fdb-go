@@ -26,7 +26,11 @@
 //     rules only ADD members — Reference.Insert appends, the original
 //     input expression stays at index 0 — so this costs the
 //     unoptimised sub-tree consistently across siblings, which is what
-//     "compare members at THIS Reference" wants. The planner's winner
+//     "compare members at THIS Reference" wants. Caveat: index 0 is
+//     stable under rule yields but NOT under RFC-037 cross-group memo
+//     merges, which re-point the canonical member list — see
+//     FuzzCostSanity for the consequence (first-member cost of an
+//     unchanged parent can shift after a merge). The planner's winner
 //     stamping + selector-driven extraction
 //     (ExtractBestPlanFromSelector) is the production path that avoids
 //     re-costing.
