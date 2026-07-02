@@ -242,3 +242,43 @@ start (the tree moves).
   (flat_map_cursor.go:218-304).
 - Lateral-unnest FlatMap is the ONE runtime evaluator of an anchored RC (flat_map_cursor.go:293)
   — S3-W5 territory, must not break in W2.
+
+## W2 pre-code ruling (Graefe, BINDING — issued at W1 close)
+
+- **Q1 fuse placement: the generic rebuild arm** (replace.go FieldValue withChildren), gated
+  both-baked — Java's fuse is a property of the rebuild (FieldValue.withNewChild =
+  ofFieldsAndFuseIfPossible, :157-160/:326-331), not of the map; the translation function
+  returns PLAIN ofOrdinalNumber (PartitionSelectRule.java:302). Both-baked is the DEFINITION
+  of fusibility (vacuously always true in Java), self-widens as W2/W3 bake everything.
+  Keep the simplifier compose rule too (Java keeps both); pin rebuild(fuse) ≡ compose(chain).
+  Port over ReplaceLeavesOnceMaybe (never-retranslate identity set is load-bearing).
+- **Q2 correlation hiding: emergent for joins, but the arm does NOT die in W2.** Java needs
+  no hiding (the N-legged joined RV lives INSIDE the lower select where leg QOVs are owned;
+  the upper RV references only newUpperQuantifier). The dotted model dies PER BIRTH SITE:
+  joins W2/W3, scalar-subquery W4, unnest W5 (flat_map_cursor.go:293 is the one runtime
+  anchored-RC evaluator — must not break). Hiding + re-exposure twins become inert on the
+  join path and are deleted in W5. W2 adds a structural tripwire: join-only corpus contains
+  ZERO AnchoredJoin RCs post-flip; task-count baseline proves emergent hiding suffices.
+  (Corrects the staging ruling's delete-with-machinery scope — kill list is per-birth-site.)
+- **Q3 merge-select recognition: STRUCTURAL, no marker.** RV is an RC whose every field is
+  auto-generated-named (_i) with a bare QOV of a distinct owned ForEach quantifier, covering
+  the select's quantifiers (PartitionSelectRule.java:284-291's exact shape — unconstructible
+  from SQL, so the CTE-NULL pin holds by construction). W2/W3 gate = AnchoredJoin ||
+  isPositionalMergeRow; recognition lands in the SAME COMMIT as the merge-case rewrite
+  (every intra-PR commit holds the task baseline green); W3's authority flip is separable.
+- **Q4 unnamed columns: literal _0.._N via OrdinalFieldName** (byte-identical to Java's
+  normalized names). Include them in memo identity/hash/Explain (pure function of position —
+  same equivalence either way; Explain inclusion keeps plan-cache keying injective). Java's
+  planHash exclusion (Column.java:93-100) ports only if/when a planHash-byte surface exists.
+- **Q5 column derivation: W2 scope, fulcrum commit, NO compatibility shim** (a name-keyed
+  Datum shadow is two-representations-of-one-fact). cascades_generator.go:2837-2848 is the
+  UNNEST path (untouched until W5); what flips is :2876-2900 leg ordering + join SELECT-*
+  derivation — read leg types off the merge quantifier's flowed Type.Record.
+- **Commit staging within the W2/W3 PR:** (1) TranslationMap + fuse arm, dark; (2) executor
+  N-way positional support behind the wedge gate + DisablePositionalEmission extension,
+  dark; (3) FULCRUM: rule rewrite + gate recognition + column derivation + executor
+  enablement + re-stamp-trio/tripwire deletion, ONE commit, full net green; (4) W3 commits.
+- **Extra conditions:** predicate rebase leaf-only via a translateLeafPredicate analog over
+  the ReplaceValues spine; max-match-map fused-path verification (no-spurious-sort +
+  nested-index-scan pins) is a W2 EXIT CRITERION; keep NextMergeAlias (7.5 ruling) — its
+  stability pins survive the rewrite.
