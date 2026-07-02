@@ -1,4 +1,4 @@
-# RFC-174: Code-health remediation — correctness stragglers, process-noise purge, dead-architecture removal, god-file decomposition
+# RFC-175: Code-health remediation — correctness stragglers, process-noise purge, dead-architecture removal, god-file decomposition
 
 **Status:** DRAFT — needs the standard gauntlet. Items touching the Cascades engine (§3 Track C)
 need Graefe ACK; items touching `pkg/fdbgo` (§3 Track B) need the FDB-C-dev ACK; Torvalds +
