@@ -480,6 +480,32 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   oracle registry, real-PositionalRow eval pins — hand-built plans, nothing emits ordinal RCs
   yet); **W3b** the seed flip (ordinal RC + baked predicates for gated joins) → live end-to-end +
   the full pin batch.
+  - **W3a (executor substrate + cursor wiring, dark) — DONE** (36297a253+fd07e2f49 primitives with
+    the decline-only spans probe / seed-time assertOrdinalJoinSeed split; 140799069+139c6cb94 cursor
+    wiring with pre-adapted legs; all Graefe+Torvalds ACKed).
+  - **W3b-1 (THE LIVE FLIP) — DONE (1aca8addd), suite 54/54.** Gated 2-way joins seed the ordinal RC
+    (baked ofOrdinalNumber legs, declaration order, AssertOrdinalJoinSeed at the seed); CROSS-LEG
+    predicate conjuncts bake, single-leg conjuncts stay lazy (pushdown fodder into name-model legs —
+    sound by the load-bearing invariant: pushdown moves the predicate, never the leg type). Live
+    fallout (7 classes, 4 caught by the drift asserts) and the resulting GATE CORRECTIONS:
+    **PREMISE CORRECTION (Graefe re-ruling, W2 erratum (b) partially retracted): opacity is a
+    property of the whole rule set ACROSS PHASES, not of translation-time structure —
+    RewriteOuterJoinRule dissolves correlated LEFT boxes into INNER + null-on-empty during
+    REWRITING, after which they merge freely (the RFC-153 joined-preserved machinery IS that).**
+    Final wedge scope: pure inner/cross 2-way clusters over NON-JOIN legs + FULL-outer boxes over
+    non-join legs. LEFT/RIGHT outer = poison (S3 ordinalizes the POST-REWRITE inner+nullOnEmpty
+    shape — "the pre-rewrite LEFT box is an ephemeral object; gate where the shape is stable");
+    LEFT preserved legs ENCLOSED / null-supplying legs fresh; JOIN legs categorically ineligible
+    (nested bare concat erases buried aliases — S3 collapsed-FieldPath territory); dup leg aliases
+    poison (proper fix = Java's unique quantifier aliases, S3/S4). Re-ruling conditions landed:
+    RFC-153 shape pinned name-model e2e; RewriteOuterJoinRule-declines-FULL pinned (the gate
+    premise must fail a test before it breaks); merge assert refined to select-children (filter
+    children dissolve legally). Executor fallout: FlatMap outer binding = positional leg row (baked
+    SARGs); coexistence Datum = bare+ALIAS.COL+TYPE.COL (mergeRows' exact key set); spanAwareRow
+    dotted routing (alias-then-type); §7's dup-name SELECT * fix arrived early via driver-side
+    positional reads (column-parallel guard + Datum fallback, both pinned); dualwindow caught the
+    oracle-side bare-only Datum (oracleNameDatum reconstructs the anchored key set through the
+    sanctioned bridge; CARVE-OUTS STILL EMPTY — executor bug, not model divergence).
   - **W2 (cluster-arity gate + drift asserts, dark) — DONE.** `rfc173_cluster_gate.go`:
     `clusterArity` walk + `ordinalWedgeGate` recording per-seed decisions (`wedgeGate` map, W3
     consumes); enclosure flag `inInnerCluster` threaded through translateJoin legs (inner=enclosed,
