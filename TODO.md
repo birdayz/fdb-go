@@ -191,6 +191,22 @@ WS-3 visitor, WS-4 map-lint/tie, WS-1 all remain → the list above.
 > jobs don't contend with per-PR CI. Also: the last two Nightly Fuzz runs FAILED (06-29, 06-30) — a
 > separate real signal to investigate (a fuzz target has been red for two nights; no-unrelated-flakes rule).
 
+> ## [ ] INFRA — stress-1M thresholds violated on MASTER (baseline rot; INVESTIGATE)
+> Discovered by RFC-176 P2's stress gate (PR #453): on an idle box, **current master violates the
+> "Stress test 1M baseline" Threshold column** — in_list 14.97ms (<10ms), needle_pk 5.4ms (<5ms),
+> needle_filter 6.4ms (<5ms), pk lookups 5.0–7.2ms (<5ms) — vs May-baseline values of 10/2.0/2.4/1.5-1.7ms.
+> The P2 branch was noise-identical to master on every violated row with all 23 EXPLAINs
+> byte-identical (P2 exonerated; the gate fails on its own base). Repro:
+> `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed
+> --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v" --nocache_test_results`
+> — box `workstation`, Linux 7.0.10-arch1-1, idle, back-to-back master/branch runs; three-way table
+> in PR #453 (comment "Quiet-box stress-1M: branch AND master control").
+> **Decision path (in order):** (1) re-qualify the environment against the May baseline run —
+> machine, Docker version, FDB image, kernel; if any changed, re-measure and UPDATE the baseline
+> table + thresholds; (2) if the environment is unchanged, bisect May→HEAD on the violated rows
+> (point-lookup latency, in_list). **Terminal state: the baseline table is re-qualified/updated OR
+> the regressing commit is named.** A safety-net table nobody can pass measures nothing.
+
 > ## RFC-176 P2 registrations (review of PR #453) — two follow-up cycles
 >
 > - **[ ] Replace the criterion-#17 cost tie-breaker hash with a canonical semantic total order**
