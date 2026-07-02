@@ -1,0 +1,45 @@
+<!doctype html>
+{{/* Custom 404: the theme default has no way back. Keep it dependency-free
+     (inline styles, prefers-color-scheme) so it renders correctly no matter
+     what asset failed to load. */}}
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>404 · fdb.dev</title>
+    <style>
+      body {
+        margin: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        color: #111;
+        background: #fff;
+      }
+      p { margin: 0; color: #666; }
+      .code { font-size: 3rem; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+      .links { display: flex; gap: 1.25rem; margin-top: 0.5rem; }
+      a { color: #1a6fc4; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      @media (prefers-color-scheme: dark) {
+        body { color: #f3f4f6; background: #111318; }
+        p { color: #9aa3b2; }
+        a { color: #4aa8ff; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1 class="code">404</h1>
+    <p>This page could not be found.</p>
+    <div class="links">
+      <a href="/">fdb.dev</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://github.com/birdayz/fdb-go">GitHub</a>
+    </div>
+  </body>
+</html>

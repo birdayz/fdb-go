@@ -17,16 +17,20 @@
    to their widest code line and blow past the viewport on mobile (and drag the
    fixed sidebar's width:100% out with them). Bounding the width lets long code
    lines scroll inside their own block instead of scrolling the whole page. */
-.s-steps { width: 100%; max-width: 46rem; }
+/* margin-top clears the callout above so its box doesn't crowd step 1's number. */
+.s-steps { width: 100%; max-width: 46rem; margin-top: 2rem; }
 .s-steps pre, .hero-code pre { overflow-x: auto; }
 
-/* Quickstart step number markers. The theme's 33px number circle is sized for a
-   larger heading; against our h3 (24px line) it is top-aligned, so the circle hangs
-   ~4-5px below the heading text and its digit isn't centered inside the circle.
-   Center the digit (line-height = circle height) and lift the circle by half the
-   size difference so its center sits on the heading line. */
+/* Quickstart step number markers. The theme's 33px circle has a 4px border, so its
+   content box is only 25px — line-height-based centering of the digit is therefore
+   unreliable (it sits low). Center the digit with flexbox instead, which ignores the
+   border math. The circle is also sized for a larger heading, so against our h3
+   (24px line) it sits low; lift it half the size difference so its center aligns with
+   the heading line. */
 .s-steps .hextra-steps :where(h2, h3, h4, h5, h6):not(.no-step-marker)::before {
-  line-height: 33px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   margin-top: -4.5px;
 }
 
@@ -139,3 +143,22 @@ main h2.not-prose { font-size: 1.5rem; line-height: 1.2; }   /* 24px on phones *
   .bench-nums { grid-column: 1 / -1; grid-row: 2; }
   .bench-track { grid-column: 1 / -1; grid-row: 3; }
 }
+
+/* ---- Light mode -------------------------------------------------------------
+   The palette above is authored for the dark default. hextra toggles `.dark`
+   on <html>, so anything without it is light — override every hard-coded
+   dark-canvas color or the bench labels vanish into the white background. */
+html:not(.dark) .bench-head { color: #6b7280; }
+html:not(.dark) .bench-name { color: #374151; }
+html:not(.dark) .bench-name small { color: #6b7280; }
+html:not(.dark) .bench-nums { color: #6b7280; }
+html:not(.dark) .bench-nums b { color: var(--color-primary-600, #1a6fc4); }
+html:not(.dark) .bench-track { background: #e5e7eb; }
+html:not(.dark) .bench-fill.is-par { background: #9ca3af; }
+html:not(.dark) .bench-x { color: var(--color-primary-600, #1a6fc4); }
+html:not(.dark) .bench-x.is-par { color: #6b7280; }
+html:not(.dark) .muted-note,
+html:not(.dark) .hero-note { color: #5b6472; }
+html:not(.dark) .muted-note code { color: #374151; }
+html:not(.dark) .muted-note a,
+html:not(.dark) .hero-note a { color: var(--color-primary-600, #1a6fc4); }

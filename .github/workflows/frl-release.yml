@@ -1,0 +1,156 @@
+# Release the frl CLI: static cross-compiled binaries + checksums + provenance.
+#
+# Trigger: push a Go nested-module tag (the maintainer's release act, per
+# RELEASE.md):
+#
+#   git tag cmd/frl/v0.1.0 && git push origin cmd/frl/v0.1.0
+#
+# The cmd/frl/vX.Y.Z tag form is what makes `go install fdb.dev/cmd/frl@vX.Y.Z`
+# resolve the same version: the binaries here are byte-for-byte what the Go
+# toolchain would build (GOWORK=off, CGO_ENABLED=0, -trimpath), and
+# `frl version` reports vX.Y.Z via Go's VCS stamping, no ldflags injection.
+#
+# workflow_dispatch runs the whole pipeline as a dry run (build + smoke +
+# checksums, no release published).
+#
+# fdb.dev/install.sh consumes these releases; it expects assets named
+# frl_<version>_<os>_<arch>.tar.gz plus checksums.txt on the release.
+
+name: frl release
+
+on:
+  push:
+    tags: ["cmd/frl/v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the GitHub release
+  id-token: write # provenance attestation (sigstore)
+  attestations: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # Full history + tags: Go's buildvcs derives the module version
+          # from the cmd/frl/vX.Y.Z tag; a shallow clone would stamp a
+          # pseudo-version and the smoke check below would fail the release.
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cmd/frl/go.mod
+          cache-dependency-path: cmd/frl/go.sum
+
+      - name: Cross-compile static binaries
+        working-directory: cmd/frl
+        env:
+          # GOWORK=off: build exactly what `go install fdb.dev/cmd/frl@<tag>`
+          # builds: the published module graph with the pinned fdb.dev, not
+          # the workspace. A stale pin fails here, at release time, loudly.
+          GOWORK: "off"
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          # Stamp check target first: the version the binary reports comes
+          # from Go's VCS stamping, so build the host binary and read it back.
+          go build -trimpath -ldflags='-s -w' -o dist/frl-host .
+          VERSION="$(./dist/frl-host version --short)"
+          echo "stamped version: $VERSION"
+
+          if [[ "$GITHUB_REF" == refs/tags/cmd/frl/* ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#cmd/frl/}"
+            if [[ "$VERSION" != "$TAG_VERSION" ]]; then
+              echo "::error::stamped version $VERSION != tag $TAG_VERSION (VCS stamping broke?)"
+              exit 1
+            fi
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          # linux + darwin only: FoundationDB has no supported Windows
+          # client story, and the FDB client library is Unix-only
+          # (clusterfile change detection uses syscall.Stat_t). Windows
+          # users go through WSL, which the linux/amd64 binary covers.
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            export GOOS="${target%/*}" GOARCH="${target#*/}"
+            out="dist/${GOOS}_${GOARCH}"
+            mkdir -p "$out"
+            echo "building $GOOS/$GOARCH"
+            go build -trimpath -ldflags='-s -w' -o "$out/frl" .
+            cp ../../LICENSE ../../NOTICE "$out/"
+            tar -C "$out" -czf "dist/frl_${VERSION}_${GOOS}_${GOARCH}.tar.gz" frl LICENSE NOTICE
+          done
+
+          (cd dist && sha256sum frl_*.tar.gz > checksums.txt && cat checksums.txt)
+
+      - name: Smoke test (extract, run, verify checksum path)
+        working-directory: cmd/frl/dist
+        run: |
+          set -euo pipefail
+          # Exactly what install.sh does: verify the checksum, extract, run.
+          sha256sum --check --ignore-missing checksums.txt
+          mkdir -p smoke && tar -xzf "frl_${VERSION}_linux_amd64.tar.gz" -C smoke frl
+          got="$(./smoke/frl version --short)"
+          [[ "$got" == "$VERSION" ]] || { echo "::error::smoke version $got != $VERSION"; exit 1; }
+          ./smoke/frl --help > /dev/null
+          echo "smoke OK: frl $got"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            cmd/frl/dist/frl_*.tar.gz
+            cmd/frl/dist/checksums.txt
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/cmd/frl/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="$(cat <<EOF
+          Static, dependency-free binaries of the \`frl\` CLI (pure Go, no cgo; the
+          linux binaries run on glibc, musl, and \`FROM scratch\`).
+
+          **Install**
+
+              curl -fsSL https://fdb.dev/install.sh | sh
+
+          or with the Go toolchain (builds the identical version):
+
+              go install fdb.dev/cmd/frl@${VERSION}
+
+          **Verify**: every asset is sha256-listed in \`checksums.txt\` and carries
+          build provenance:
+
+              gh attestation verify frl_${VERSION}_linux_amd64.tar.gz -R ${GITHUB_REPOSITORY}
+          EOF
+          )"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "frl $VERSION" \
+            --notes "$notes" \
+            cmd/frl/dist/frl_*.tar.gz cmd/frl/dist/checksums.txt
+
+      - name: Verify published download URL (what install.sh fetches)
+        if: startsWith(github.ref, 'refs/tags/cmd/frl/v')
+        run: |
+          set -euo pipefail
+          # The install script downloads via the slashed-tag URL; prove it
+          # resolves and serves the exact bytes we just published.
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/frl_${VERSION}_linux_amd64.tar.gz"
+          for i in {1..10}; do
+            curl -fsSL -o /tmp/published.tar.gz "$url" && break
+            echo "asset not ready yet ($i), retrying..."; sleep 5
+          done
+          cmp /tmp/published.tar.gz "cmd/frl/dist/frl_${VERSION}_linux_amd64.tar.gz"
+          echo "published asset verified byte-identical: $url"

@@ -6,7 +6,12 @@ require (
 	buf.build/go/protoyaml v0.6.0
 	charm.land/fang/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.3
-	fdb.dev v0.0.0
+	// Pin the root library to a real, proxy-resolvable version instead of a
+	// replace directive, so `go install fdb.dev/cmd/frl@latest` works for users.
+	// Local dev still builds the working tree via the repo-root go.work; the frl
+	// pin-bump bot advances this nightly, and the GOWORK=off release build fails
+	// loudly on a stale pin, so it can never ship broken.
+	fdb.dev v0.0.0-20260702072201-c8be85cd86f3
 	github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/chzyer/readline v1.5.1
@@ -105,9 +110,3 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/grpc v1.80.0 // indirect
 )
-
-// The CLI module consumes the root library from the same working tree. go.work
-// at the repo root also covers local dev, but the replace keeps `go build ./cmd/frl`
-// honest when run outside the workspace (or when a consumer runs `go install`
-// against a future tagged version in a branch without the tag).
-replace fdb.dev => ../..
