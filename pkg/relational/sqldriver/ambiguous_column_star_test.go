@@ -112,4 +112,25 @@ func TestFDB_AmbiguousColumnStar(t *testing.T) {
 		g.Expect(err.Error()).To(gomega.ContainSubstring("22023"),
 			"expected error code 22023, got: %v", err)
 	})
+
+	// RFC-173 W3b pin (Torvalds suggestion): REVERSED qualified stars over a
+	// same-schema self-join — `SELECT t2.*, t1.*` reverses the leg order
+	// relative to the FROM clause. The driver's positional-read guard cannot
+	// distinguish a reversed same-schema layout by names alone (both legs flow
+	// [ID, NAME]); today the star expansion forces a projection plan whose
+	// slots are re-ordered to the SELECT list, so this is correct — if a
+	// future fold ever elides that projection, this differential pin catches
+	// the swap.
+	t.Run("reversed_qualified_stars_self_join", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		rows, err := db.QueryContext(ctx,
+			"SELECT t2.*, t1.* FROM a t1, a t2 WHERE t1.id = t2.id AND t1.id = 1")
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		defer rows.Close()
+		g.Expect(rows.Next()).To(gomega.BeTrue())
+		var id2, id1 int64
+		var name2, name1 string
+		g.Expect(rows.Scan(&id2, &name2, &id1, &name1)).To(gomega.Succeed())
+		g.Expect([]any{id2, name2, id1, name1}).To(gomega.Equal([]any{int64(1), "alpha", int64(1), "alpha"}))
+	})
 }

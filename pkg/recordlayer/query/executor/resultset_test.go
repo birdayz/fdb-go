@@ -601,8 +601,10 @@ func TestResultSet_PositionalMisalignedFallsBack(t *testing.T) {
 	t.Run("count_mismatch", func(t *testing.T) {
 		t.Parallel()
 		// Positional carries the full source record; columns are a subset →
-		// count mismatch → Datum lookup wins.
-		pos := &PositionalRow{Type: srcType, Slots: []any{int64(7), "src"}}
+		// count mismatch → Datum lookup wins. Slot 0 (99) deliberately DIFFERS
+		// from the Datum value (7) so the assertion discriminates which read
+		// path answered (Torvalds: equal values made this pin vacuous).
+		pos := &PositionalRow{Type: srcType, Slots: []any{int64(99), "src"}}
 		cursor := recordlayer.FromList([]QueryResult{
 			{Datum: map[string]any{"ID": int64(7)}, Positional: pos},
 		})

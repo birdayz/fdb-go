@@ -118,12 +118,15 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 }
 
 // ordinalEligible reports whether a gated join could take op as a LEG: op's
-// output boundary must not be a NAME-MODEL join's merged row. Join-free
-// shapes are always eligible (scans, aggregates, unions, sorts — their
+// output boundary must not be a JOIN's merged row AT ALL in the S2 wedge.
+// Join-free shapes are eligible (scans, aggregates, unions, sorts — their
 // outputs are single-namespace rows the leg adapter synthesizes by name).
-// A JOIN inside op is eligible only when IT will be ordinal too: an outer
-// box recurses on its legs; an inner join must be a 2-way cluster with
-// eligible legs (a 3+-way inner cluster is Slice 3's name-model territory).
+// ANY join — ordinal or name-model, inner or outer — is categorically
+// INELIGIBLE: a nested ordinal box's bare concat ERASES buried aliases (an
+// upper dotted reference into the buried leg has no span to resolve
+// against), and a name-model join's merged row can't be ordinal-typed;
+// nesting is S3's collapsed-FieldPath territory (contract ruling #2: S2 is
+// single-accessor only).
 // Transparent wrappers peel exactly as clusterArity does; a cteScope-scoped
 // scan recurses into the body (the derived-table boundary is transparent to
 // SelectMergeRule); opaque boxes over joins (aggregate/union/sort/distinct)
