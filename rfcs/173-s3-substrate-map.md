@@ -149,3 +149,14 @@ start (the tree moves).
   surgery.
 - ResolvedAccessor widening (single Ordinal → path) is the representation
   ruling's prerequisite for porting the compose rule.
+
+## S2 residuals inherited by S3 (Graefe notes at the S2 close)
+- LAZY analog of the codex P1 (b5ff0d4b7): an UNPUSHED single-leg lazy
+  conjunct over a leg that BOTH the folded RV and every baked predicate
+  dropped would bind zero-width — fails LOUDLY (OrdinalResolutionError),
+  never silently, and requires pushdown not to fire. Re-examine when S3
+  widens the reference model.
+- The two evaluateCorrelated `return bound, nil` arms (recorded W3
+  borderline): a baked field access over a non-OrdinalRow non-map binding
+  bypasses bakedNameReadGuard — unreachable under the S2 wedge; re-examine at
+  gate widening.
