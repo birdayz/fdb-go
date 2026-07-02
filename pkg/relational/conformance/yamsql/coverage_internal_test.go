@@ -27,8 +27,8 @@ func TestClassifyTest(t *testing.T) {
 		{"error-path overflow 22003", Test{Query: "x", ErrorCode: "22003"}, OutcomeErrorPath},
 		{"error-path unique violation 23505", Test{Query: "x", ErrorCode: "23505"}, OutcomeErrorPath},
 		{"error-path type mismatch 42804", Test{Query: "x", ErrorCode: "42804"}, OutcomeErrorPath},
-		// Legacy Java `error:` alias must classify identically (codex finding:
-		// an `error:` pin left ErrorCode empty and was mis-counted as supported).
+		// Legacy Java `error:` alias must classify identically (an `error:`
+		// pin left ErrorCode empty and was mis-counted as supported).
 		{"legacy error: feature gap", Test{Query: "x", Error: "0A000"}, OutcomeUnsupported},
 		{"legacy error: error-path", Test{Query: "x", Error: "23505"}, OutcomeErrorPath},
 		{"legacy error: unsupported function", Test{Query: "x", Error: "42883"}, OutcomeUnsupported},

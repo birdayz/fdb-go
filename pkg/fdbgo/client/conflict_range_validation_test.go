@@ -115,7 +115,7 @@ func TestAddConflictRange_ClampsOversizedKeys(t *testing.T) {
 
 	// The clamp runs BEFORE the rywDisabled branch, so the RYW-ENABLED path (updateConflictMap via
 	// conflictRangesLocked) must clamp too. With an empty write map the filter returns the whole range
-	// unchanged, so the clamped [begin,end) lands in readConflicts (Torvalds: the rywDisabled subtests
+	// unchanged, so the clamped [begin,end) lands in readConflicts (the rywDisabled subtests
 	// above left this path unprobed).
 	t.Run("read_clamps_on_ryw_enabled_path", func(t *testing.T) {
 		t.Parallel()

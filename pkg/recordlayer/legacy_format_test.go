@@ -497,7 +497,7 @@ var _ = Describe("Legacy format compatibility", func() {
 	})
 
 	Describe("regression: codex review findings", func() {
-		// Codex P2: a format-<5 store with split_long_records enabled still stores
+		// A format-<5 store with split_long_records enabled still stores
 		// records with suffixes (and may split them), but omitUnsplitRecordSuffix()
 		// returns true for format < 5. The scan cursors must NOT take the bare-key
 		// path for such stores — that gate is `omit && !splitLongRecords`.
@@ -588,7 +588,7 @@ var _ = Describe("Legacy format compatibility", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		// Codex P2: updating then deleting a legacy record in the SAME transaction must
+		// Updating then deleting a legacy record in the SAME transaction must
 		// not orphan the previously-committed version in the RecordVersionKey(8) subspace.
 		It("clears the committed legacy version on a same-transaction update+delete", func() {
 			ss := specSubspace()

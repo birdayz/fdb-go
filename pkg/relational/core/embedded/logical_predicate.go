@@ -3026,7 +3026,7 @@ func buildLogicalPlanForDeleteWithCatalog(
 	}
 	// Validate the schema qualifier (if any) BEFORE classifying WHERE-column errors: a bad
 	// qualifier's 42F00 (Unknown database) must take precedence over a WHERE-column 42703
-	// when the bare table happens to exist in the active schema (codex). For a valid/absent
+	// when the bare table happens to exist in the active schema. For a valid/absent
 	// qualifier this strips to the bare name used below. (Missing-but-valid-qualifier target
 	// tables are caught with 42F01 in planDML after resolveQualifiedTableNames.)
 	if tableName != "" {
@@ -3057,7 +3057,7 @@ func buildLogicalPlanForDeleteWithCatalog(
 	pred, ok, werr := buildWherePredicateForTableE(md, bare, bare, w)
 	if werr != nil {
 		// e.g. 42804 from a bare non-boolean DELETE WHERE — surface it, don't
-		// mask it as a generic DML translation error (RFC-146 / codex).
+		// mask it as a generic DML translation error (RFC-146).
 		return nil, werr
 	}
 	if !ok {
@@ -3149,7 +3149,7 @@ func upgradeDMLWhereWithCatalog(
 		// an undefined / ambiguous column or bad source. This walk (with a SubqueryPlanner),
 		// unlike the plain text fallback, can see PAST an EXISTS atom to a LATER bad column,
 		// so dropping its ColumnNotFoundError would leave `… WHERE EXISTS(…) AND nope = 1`
-		// falling through to a generic 0AF00 (codex). The column genuinely doesn't exist for
+		// falling through to a generic 0AF00. The column genuinely doesn't exist for
 		// the text fallback either, so surfacing it here never masks a fallback-resolvable
 		// WHERE. mapPredicateWalkError maps these to the same 42703/42702 the SELECT path gives.
 		var colNF *semantic.ColumnNotFoundError
@@ -3207,7 +3207,7 @@ func buildLogicalPlanForUpdateWithCatalog(
 	}
 	// Validate the schema qualifier (if any) BEFORE the SET-column / WHERE classification: a
 	// bad qualifier's 42F00 must take precedence over a 42703/42F01 when the bare table
-	// exists in the active schema (codex). Valid/absent qualifier → strips to the bare name.
+	// exists in the active schema. Valid/absent qualifier → strips to the bare name.
 	resolved, qErr := functions.ResolveQualifiedTableName(tableName, schemaName)
 	if qErr != nil {
 		return nil, qErr

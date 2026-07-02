@@ -29,7 +29,7 @@ func TestMatchedSortOrder_IsCounterflowNulls(t *testing.T) {
 	}
 }
 
-// TestOrderingPartitionHash_CounterflowDistinct pins the codex/Torvalds catch:
+// TestOrderingPartitionHash_CounterflowDistinct pins a review catch:
 // orderingPartitionHash must distinguish a counterflow (ASC NULLS LAST) ordering
 // from the natural (ASC NULLS FIRST) ordering of the same column+direction, else
 // they collide into one partition on the RollUpPlanPartitions (set-op /
@@ -128,8 +128,8 @@ func TestRichOrdering_Satisfies_CounterflowNulls(t *testing.T) {
 	}
 }
 
-// TestEnumerateSatisfyingComparisonKeyValues_RefusesCounterflow pins Graefe's
-// must-fix #2: a counterflow request must not be reported as satisfiable through a
+// TestEnumerateSatisfyingComparisonKeyValues_RefusesCounterflow pins a review
+// must-fix: a counterflow request must not be reported as satisfiable through a
 // set-operation comparison key (Go emits a plain Value, not the ToOrderedBytesValue
 // physical encoding), so the merge cannot lie about NULL placement.
 func TestEnumerateSatisfyingComparisonKeyValues_RefusesCounterflow(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestFDB_UnionJoinLeg is the codex regression (RFC-077 7.6): a CTE/derived-table
+// TestFDB_UnionJoinLeg is the review regression (RFC-077 7.6): a CTE/derived-table
 // whose body is a UNION, used as a JOIN LEG, must derive its leg columns (the
 // retired opaque fallback masked this — derivedOutputColumns had no LogicalUnion
 // case, so the leg derived nil → untranslatable). It now anchors to the union's

@@ -253,7 +253,7 @@ func TestParseConsistencyTrace(t *testing.T) {
 		t.Errorf("clean trace flagged %d inconsistencies, want 0 (SevWarn DataInconsistent is transient): %v", len(res.inconsistencies), res.inconsistencies)
 	}
 
-	// Codex sharp edge: two single-replica shards (FirstValidServer x2,
+	// Sharp edge: two single-replica shards (FirstValidServer x2,
 	// GetKeyValuesStream x2) sum to 2 reads but NO shard had a second replica —
 	// must NOT count as a cross-replica comparison.
 	singleRedMultiShard := strings.Join([]string{

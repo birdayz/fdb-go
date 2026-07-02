@@ -166,7 +166,7 @@ func TestFailureMonitorExclusionWindow(t *testing.T) {
 // TestFailureMonitorWindowGrowthAndCap drives the re-admission window through its
 // growth (a probe re-failing PAST the window) and the 30s cap, deterministically via
 // markFailedAt's injectable clock — the dimensions the within-window no-shrink test
-// can't reach (Torvalds §1 follow-up).
+// can't reach.
 func TestFailureMonitorWindowGrowthAndCap(t *testing.T) {
 	t.Parallel()
 	fm := newFailureMonitor()

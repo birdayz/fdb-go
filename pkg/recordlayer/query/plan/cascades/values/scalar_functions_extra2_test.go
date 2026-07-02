@@ -2,7 +2,7 @@ package values
 
 // Second batch of Java-test-suite-inspired scalar function tests
 // (RFC-025 §"Strong unit-test coverage per package"). Adds direct
-// coverage for the swingshift-50 second-batch additions: SIGN, MOD,
+// coverage for the second-batch additions: SIGN, MOD,
 // IFNULL, IF/IIF, GREATEST/LEAST, EXP, LN, LOG, REVERSE, POSITION,
 // LEFT, RIGHT.
 //

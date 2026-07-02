@@ -733,7 +733,7 @@ var _ = Describe("FDBRecordStore API", func() {
 		})
 
 		It("previews on a locked store without checking lock state (Java-faithful)", func() {
-			// RFC-158 / Graefe: Java's saveTypedRecord(isDryRun=true) early-returns at
+			// RFC-158: Java's saveTypedRecord(isDryRun=true) early-returns at
 			// FDBRecordStore.java:578, BEFORE validateRecordUpdateAllowed (line 584). So a
 			// DRY RUN previews SUCCESS on a FORBID_RECORD_UPDATE-locked store — checking the
 			// lock here made Go stricter than Java. (This test previously asserted the lock

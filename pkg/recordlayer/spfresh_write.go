@@ -83,8 +83,8 @@ func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext,
 		// abort leaves every other writer routing on phantoms (caught by the
 		// concurrent foreground-fill benchmark). Seed L1 from the global
 		// cache when it's warm; otherwise load from this tx. Same-tx
-		// searches route on this cache too (RYW; Torvalds final-gauntlet
-		// S1), which is why it lives on the context, not the maintainer:
+		// searches route on this cache too (RYW),
+		// which is why it lives on the context, not the maintainer:
 		// another store instance in this transaction must find it.
 		global := spfreshCacheFor(m.indexSubspace, gen)
 		if !bootstrapped && global.ready(gen) {
@@ -161,7 +161,7 @@ func (m *spfreshIndexMaintainer) spfreshBootstrap(metaStorage *spfreshStorage) (
 	// A builder token with NO generation means a bulk build is in flight (or
 	// died pre-flip): bootstrapping would create a live generation 1 that the
 	// build keeps writing into — and the build's flip would then self-ACK the
-	// BOOTSTRAP's generation as its own committed flip (Torvalds 094.4 #1).
+	// BOOTSTRAP's generation as its own committed flip.
 	// REAL read: a build taking the token concurrently aborts this insert at
 	// the resolver. A crashed build's residue is cleared by rerunning
 	// BuildSPFreshIndex (its entry takeover re-takes the token).
@@ -248,7 +248,7 @@ func (m *spfreshIndexMaintainer) spfreshFirstCentroid(storage *spfreshStorage, v
 	// Evict the process-local cached EMPTY bootstrap cell: queries that ran
 	// before this insert cached it with zero candidates, and the amortized
 	// refresh can be throttled past this window — they would miss the new
-	// record until the next changelog refresh (codex 094.4 P2). Same-process
+	// record until the next changelog refresh. Same-process
 	// only by design; other processes converge via the addFine delta above.
 	spfreshCacheFor(m.indexSubspace, storage.generation).evictCell(cellID)
 	// The TX-LOCAL cache cached the same empty cell while routing this very
@@ -261,7 +261,7 @@ func (m *spfreshIndexMaintainer) spfreshFirstCentroid(storage *spfreshStorage, v
 }
 
 // vectorcodecRoundtrip pins a vector to its stored fp16 form (one table, one
-// set of bytes — the Torvalds 094.2 #3 rule).
+// set of bytes).
 func vectorcodecRoundtrip(vec []float64) ([]float64, error) {
 	return vectorcodec.Deserialize(vectorcodec.SerializeHalf(vec))
 }
@@ -275,13 +275,13 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 	// next-nearest (RFC-094 §5 step 2); FORWARD ⇒ a stale cache routed us to a
 	// split parent — FOLLOW its children from the authoritative row instead of
 	// skipping, or an insert near a freshly split centroid fails with no
-	// candidates until the cache reloads (codex 094.2 r1 P1). Worklist kept
+	// candidates until the cache reloads. Worklist kept
 	// d2-sorted as children are spliced in; visit budget bounds forward chains.
 	// verified is kept d2-ASCENDING by sorted insertion: spfreshClosure
 	// assumes nearest-first (verified[0] is its c1), and a followed FORWARD
 	// child can be NEARER than an already-verified candidate — appending
-	// would hand closure a wrong c1 and mis-assign the insert (codex 094.2
-	// r2). The cutoff is sound for the same reason: stop only when the
+	// would hand closure a wrong c1 and mis-assign the insert. The
+	// cutoff is sound for the same reason: stop only when the
 	// sorted worklist's head can no longer improve the best Replication.
 	verified := make([]spfreshCandidate, 0, m.config.Replication+2)
 	vecs := make(map[int64][]float64, m.config.Replication)
@@ -301,9 +301,9 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 	// Keyed by (cellID, fineID) — the exact key the future was issued for —
 	// so the consumed data and the conflict key can never diverge: a
 	// candidate surfacing at a DIFFERENT cell than the burst read simply
-	// misses the map and takes the direct serializable read (Torvalds 094.4
-	// F13: a conflict fence must be locally correct, not correct via
-	// lifecycle-wide arguments about where a fineID can appear).
+	// misses the map and takes the direct serializable read (a conflict
+	// fence must be locally correct, not correct via lifecycle-wide
+	// arguments about where a fineID can appear).
 	specFuts := make(map[spfreshSpecKey]fdb.FutureByteSlice, spfreshClosurePool(m.config.Replication))
 	for i := 0; i < len(work) && i < spfreshClosurePool(m.config.Replication); i++ {
 		specFuts[spfreshSpecKey{work[i].cellID, work[i].fineID}] = m.tx.Snapshot().Get(storage.centroidKey(work[i].cellID, work[i].fineID))
@@ -312,9 +312,9 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 	// (consumed entries are deleted from the map): a pending future must not
 	// outlive the attempt — Transact may reset and retry this transaction,
 	// and an old-attempt read resolving into the retry's state is exactly
-	// the cross-attempt contamination the RYW machinery cannot guard
-	// (codex 094.4 r3). The burst already paid the round trip, so draining
-	// resolved futures costs nothing on the happy path.
+	// the cross-attempt contamination the RYW machinery cannot guard.
+	// The burst already paid the round trip, so draining resolved
+	// futures costs nothing on the happy path.
 	defer func() {
 		for _, fut := range specFuts {
 			_, _ = fut.Get()
@@ -331,7 +331,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		// PAST the first Replication candidates for a different-direction
 		// replica, so "Replication verified" is not enough to stop (a pool
 		// of exactly r turns every RNG skip into silent under-replication —
-		// codex 094.4). The queue is ascending at every pop, so:
+		// review 094.4). The queue is ascending at every pop, so:
 		//  1. done: r diverse replicas kept and the head can no longer
 		//     enter the kept set;
 		//  2. ratio: the head already fails the closure's ratio bound
@@ -670,7 +670,7 @@ func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 		}
 	}
 	if sample <= 0 {
-		sample = 1 // a non-positive sample would divide-by-zero the stride (codex)
+		sample = 1 // a non-positive sample would divide-by-zero the stride
 	}
 	step := len(pks) / sample
 	if step < 1 {

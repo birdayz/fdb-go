@@ -492,7 +492,7 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 			write, werr := cache.routeForWrite(tx, s, []float64{0, 0}, 8, spfreshInsertCandidates)
 			Expect(werr).NotTo(HaveOccurred())
 			// SEALED candidates ride along (the fence may need to follow a
-			// SEALED-turned-FORWARD parent — codex r3) but don't consume the
+			// SEALED-turned-FORWARD parent) but don't consume the
 			// budget: the ACTIVE fallback beyond all 17 must be present.
 			var fineIDs []int64
 			for _, r := range write {

@@ -10,7 +10,7 @@ import (
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// TestCommit_RYWPoisonBeatsTimeout pins codex's RFC-059 precedence point: a transaction
+// TestCommit_RYWPoisonBeatsTimeout pins the RFC-059 precedence point: a transaction
 // poisoned by SetReadYourWritesDisable-after-an-op AND past its timeout must report
 // client_invalid_operation (2000), NOT transaction_timed_out (1031). Reads check the poison
 // before the timeout, and libfdb_c's checkDeferredError runs before any commit logic, so the
@@ -32,7 +32,7 @@ func TestCommit_RYWPoisonBeatsTimeout(t *testing.T) {
 	}
 }
 
-// TestAddGetKeyConflictRange_RYWDisabledFullSpan pins codex's RFC-058 P2-2: when RYW is
+// TestAddGetKeyConflictRange_RYWDisabledFullSpan pins the RFC-058 full-span rule: when RYW is
 // disabled, GetKey resolves against STORAGE only (Transaction.GetKey uses tx.getKey, not
 // getKeyRYW), so the local write-map did NOT satisfy the read — the read-conflict must be the
 // FULL base↔resolved span, NOT filtered through the bypassed write-map. Filtering would

@@ -314,7 +314,7 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName,
 			// Both methods support it; each reads its own option namespace
 			// (the residual quantizer for SPFresh, the node codes for HNSW) —
 			// routing it to the hnsw key made the loud SPFRESH rejection
-			// below swallow a knob SPFresh actually has (Torvalds S2).
+			// below swallow a knob SPFresh actually has.
 			if method == "SPFRESH" {
 				opts[recordlayer.IndexOptionSPFreshRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
 			} else {
@@ -400,7 +400,7 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 	}
 	// An aggregate index is over a single table; parseAggregateIndexDefinition reads only the
 	// leading table source and would otherwise silently drop any JOIN (and any AT-ordinality
-	// clause on a joined source — codex). Reject JOINs explicitly rather than ignore them.
+	// clause on a joined source). Reject JOINs explicitly rather than ignore them.
 	if len(tsb.AllJoinPart()) > 0 {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"aggregate index %q: JOIN is not supported in an aggregate index definition", indexName)
@@ -412,7 +412,7 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 	}
 	// The grammar parses `AT atAlias` here too (RFC-140 / R3); reject it rather than silently
 	// ignore the ordinal clause, which would otherwise build an index grouped by a same-named
-	// real column instead. Removed in R5 when the ordinal is bound (codex).
+	// real column instead. Removed in R5 when the ordinal is bound.
 	if err := rejectAtOrdinality(ati); err != nil {
 		return err
 	}

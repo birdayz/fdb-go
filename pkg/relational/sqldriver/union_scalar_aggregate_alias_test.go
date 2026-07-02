@@ -144,7 +144,7 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	assertInt64Set(t, db, ctx, miQuery, []int64{1, 1})
 }
 
-// TestFDB_UnionGroupedCountConstantGated pins the RFC-081 codex P2 boundary: a GROUPED
+// TestFDB_UnionGroupedCountConstantGated pins the RFC-081 review P2 boundary: a GROUPED
 // COUNT(<constant>) (e.g. COUNT(1)) union branch stays UNTRANSLATABLE (clean error, never
 // wrong rows). COUNT(1) matches a count-star aggregate index, so its AggregateIndex
 // realization reports the canonical "COUNT(*)" while the logical schema keeps "COUNT(1)";
@@ -187,11 +187,11 @@ func TestFDB_UnionGroupedCountConstantGated(t *testing.T) {
 		[]int64{1, 2, 1, 3})
 }
 
-// TestFDB_UnionQualifiedAggregateGated pins the RFC-081 codex finding: a bare aggregate union
+// TestFDB_UnionQualifiedAggregateGated pins the RFC-081 review finding: a bare aggregate union
 // branch whose aggregate name DIVERGES between the logical leg schema (aggregateOutputColumns,
 // raw text e.g. SUM(GA.V)) and the physical row key (StreamingAgg/AggregateIndex canonical, e.g.
 // SUM(V)) stays UNTRANSLATABLE (clean error, never wrong rows). A QUALIFIED operand is the case
-// the constant-only gate missed and codex flagged. An UNQUALIFIED operand (SUM(v)) is stable and
+// the constant-only gate missed and review flagged. An UNQUALIFIED operand (SUM(v)) is stable and
 // remains normalizable. The gate decides at translation, so a join on the group key suffices to
 // exercise it (no SELECT u.* needed — star expansion over aggregate unions is a separate issue).
 func TestFDB_UnionQualifiedAggregateGated(t *testing.T) {

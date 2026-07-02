@@ -37,7 +37,7 @@ func queryIDCounts(t *testing.T, db *sql.DB, ctx context.Context, q string) []id
 	return out
 }
 
-// PIN 1 (Graefe-required, GRAEFE-2 guard-relaxation DANGER case). The probe-fed
+// PIN 1 (review-required; the probe-fed-residual guard-relaxation DANGER case). The probe-fed
 // exception in compensationSafeForYield is PER-ALIAS: a leg's outer-correlated
 // residual is only kept on the leg when the leg's OWN probe binds that alias.
 //
@@ -91,7 +91,7 @@ func TestFDB_MultiOuterResidual_NotDroppedToUnboundLeg(t *testing.T) {
 	}
 }
 
-// PIN 2 (Graefe-required, condition #5: the GROUP-BY COUNT-value sentinel for the
+// PIN 2 (review-required, condition #5: the GROUP-BY COUNT-value sentinel for the
 // dropped-residual bug, now resolved by conjunct-flatten). Pins the COUNT VALUE,
 // not a plan string (the original false-alarm was a truncated `[N preds]` string).
 //

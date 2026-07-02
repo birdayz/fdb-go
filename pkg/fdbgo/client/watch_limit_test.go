@@ -61,7 +61,7 @@ func TestDatabase_OutstandingWatchLimit(t *testing.T) {
 // TestSetMaxWatches_RejectsOutOfRange pins C++ extractIntOption(v, 0, ABSOLUTE_MAX_WATCHES=1e6)
 // (NativeAPI.actor.cpp:2092-2102 / :2139): an out-of-range MAX_WATCHES THROWS invalid_option_value
 // (2006) and leaves the cap UNCHANGED — it does NOT clamp. Previously SetMaxWatches clamped a
-// negative to 0, so SetMaxWatches(-1) "succeeded" then failed every watch with 1032 (codex).
+// negative to 0, so SetMaxWatches(-1) "succeeded" then failed every watch with 1032.
 func TestSetMaxWatches_RejectsOutOfRange(t *testing.T) {
 	t.Parallel()
 	d := &Database{db: &database{}}

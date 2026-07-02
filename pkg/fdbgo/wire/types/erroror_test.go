@@ -258,7 +258,7 @@ func TestLoadBalancedReplyErrorSlots(t *testing.T) {
 }
 
 // TestReadErrorOr_MalformedPayload pins the malformed-payload arms of ReadErrorOr
-// (#8 / codex gap 9): for both the Error (tag=1) and value (tag=2) alternatives,
+// (#8): for both the Error (tag=1) and value (tag=2) alternatives,
 // a corrupt/zeroed value RelativeOffset yields a deterministic, tag-specific
 // error — never a panic or a false success.
 func TestReadErrorOr_MalformedPayload(t *testing.T) {

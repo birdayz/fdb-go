@@ -109,7 +109,7 @@ var _ = Describe("SPFresh StoreTimer instrumentation", func() {
 			"per-kind counters must decompose exactly the sweep's action count")
 	})
 
-	// Torvalds 094.4 r4: per-kind action counters must count ACTIONS — a
+	// Per-kind action counters must count ACTIONS — a
 	// merge-task cleanup clear is a zombie clean, not a merge; a csplit
 	// pause-window defer-bump is a deferral, not a coarse split.
 	It("attributes cleanup clears and defer-bumps to their own counters", func() {

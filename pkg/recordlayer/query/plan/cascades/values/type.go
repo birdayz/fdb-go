@@ -4,8 +4,8 @@ package values
 //
 // Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.typing.Type` —
-// the rich type system used throughout the planner. Post-swingshift-52
-// (Track G1) this is the ONLY type representation in the package —
+// the rich type system used throughout the planner. Since Track G1
+// this is the ONLY type representation in the package —
 // the legacy `ValueType` enum + `FromValueType` / `ToValueType` /
 // `ValueRichType` bridges retired. Each Value impl's `Type()` now
 // returns a rich Type directly.
@@ -17,7 +17,7 @@ package values
 // IsPromotable / MaximumType / MaximumTypeOfMany promotion lattice,
 // and TypeRepository for named-type lookup.
 //
-// Status (post-swingshift-52):
+// Status (post-Track-G1):
 //   - Structured types: RecordType, ArrayType, EnumType, RelationType ✅
 //   - Primitive singletons: NullableX / NotNullX for every primitive,
 //     plus NullType, UnknownType, NoneType, AnyType ✅

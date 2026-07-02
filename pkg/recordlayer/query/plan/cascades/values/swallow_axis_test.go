@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Swallow-axis tests (RFC-087 Graefe gate). The plan-time constant-fold
+// Swallow-axis tests (the RFC-087 gate). The plan-time constant-fold
 // paths must DECLINE to fold on a data-dependent runtime error — leaving
 // the node for runtime evaluation — rather than crashing or surfacing the
 // error from the planner. These mirror `WHERE 5 = 'abc'`: a fully-constant

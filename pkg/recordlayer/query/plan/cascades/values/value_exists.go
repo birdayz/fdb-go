@@ -86,7 +86,7 @@ func (v *ExistsValue) Evaluate(ctx any) (any, error) {
 			bound, ok := c.GetCorrelationBinding(qov.Correlation)
 			// !isNilBinding (not bare `bound != nil`): the binder returns an `any`, so a
 			// typed-nil row (e.g. a nil map[string]any boxed into the interface) is non-nil to
-			// `!=` and would wrongly report TRUE for an empty subquery (codex).
+			// `!=` and would wrongly report TRUE for an empty subquery.
 			return ok && !isNilBinding(bound), nil
 		case map[CorrelationIdentifier]map[string]any:
 			bound, ok := c[qov.Correlation]

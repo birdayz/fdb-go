@@ -125,7 +125,7 @@ func TestFDB_DmlDryRun(t *testing.T) {
 		}
 	})
 
-	// (Graefe G1) DELETE echo keeps the `if deleted` filter (Java's
+	// (reviewer G1) DELETE echo keeps the `if deleted` filter (Java's
 	// .filter(isDeleted -> isDeleted)): a mixed predicate matching one existing and one
 	// absent PK previews exactly the existing one.
 	t.Run("delete_echo_counts_existing_only", func(t *testing.T) {
@@ -143,11 +143,11 @@ func TestFDB_DmlDryRun(t *testing.T) {
 		}
 	})
 
-	// (Torvalds, DATA-LOSS REGRESSION SENTINEL) The flag is per-statement, NOT sticky on
+	// (DATA-LOSS REGRESSION SENTINEL) The flag is per-statement, NOT sticky on
 	// the connection: a DRY RUN DELETE followed by a PLAIN DELETE on the SAME connection —
 	// the plain one MUST actually mutate. If DRY RUN leaked to the connection, the plain
 	// DELETE would silently no-op (the resurrected data-loss bug). Pinned to ONE db.Conn so
-	// the two statements are guaranteed to share a connection (Torvalds impl review).
+	// the two statements are guaranteed to share a connection.
 	t.Run("not_sticky_plain_delete_after_dry_run_mutates", func(t *testing.T) {
 		db := newDB(t, "s_sticky")
 		t.Parallel()
@@ -174,7 +174,7 @@ func TestFDB_DmlDryRun(t *testing.T) {
 		}
 	})
 
-	// (Torvalds, EXPLAIN) EXPLAIN <DML> OPTIONS (DRY RUN) renders a plan with a live DB —
+	// EXPLAIN <DML> OPTIONS (DRY RUN) renders a plan with a live DB —
 	// no reject, no mutation (EXPLAIN never invokes the executor).
 	t.Run("explain_renders_plan_no_mutation", func(t *testing.T) {
 		db := newDB(t, "s_explain")
@@ -191,7 +191,7 @@ func TestFDB_DmlDryRun(t *testing.T) {
 		}
 	})
 
-	// (Torvalds T1) DRY RUN inside an explicit BeginTx/COMMIT stages nothing across COMMIT:
+	// DRY RUN inside an explicit BeginTx/COMMIT stages nothing across COMMIT:
 	// the dry-run primitives write nothing even when the DML joins the user's transaction
 	// (respectActiveTx).
 	t.Run("in_explicit_tx_stages_nothing_across_commit", func(t *testing.T) {
@@ -230,7 +230,7 @@ func TestFDB_DmlDryRun(t *testing.T) {
 		}
 	})
 
-	// (codex P1, DATA-LOSS) INSERT … SELECT … OPTIONS (DRY RUN): the grammar attaches the
+	// (DATA-LOSS) INSERT … SELECT … OPTIONS (DRY RUN): the grammar attaches the
 	// OPTIONS to the inner SELECT's queryTerm, so insertStatement.queryOptions is nil. DRY
 	// RUN must still be honored (detection walks the whole DML subtree). A missed DRY RUN
 	// here would COMMIT — the resurrected data-loss bug. This is the data-loss sentinel for

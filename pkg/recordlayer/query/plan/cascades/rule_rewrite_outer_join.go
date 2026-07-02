@@ -97,9 +97,9 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// A.id`), the preserved quantifier is a synthetic merge M over A⋈B and the
 	// ON-predicate correlates to the BURIED source A, not to M. Checking only
 	// preserved.GetAlias() missed this → the rewrite was skipped → the planner fell
-	// back to a materialized NLJ over a full Scan(C) (codex 2nd P2 on #364).
+	// back to a materialized NLJ over a full Scan(C).
 	//
-	// CRITICAL (Graefe, RFC-153): broadening this guard to fire on buried-preserved
+	// CRITICAL (RFC-153): broadening this guard to fire on buried-preserved
 	// correlation is safe ONLY because the implementation-layer rewire in
 	// ImplementNestedLoopJoinRule.yieldGeneralFlatMap rebases the buried reference onto
 	// the merge correlation (where Go assigns the $m alias — at PLANNING, after this

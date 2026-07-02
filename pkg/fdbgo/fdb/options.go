@@ -410,7 +410,7 @@ func (o DatabaseOptions) SetSnapshotRywEnable() error {
 	return nil
 }
 
-// SetSnapshotRywDisable is an honored DB default (codex #331): libfdb_c disables snapshot
+// SetSnapshotRywDisable is an honored DB default: libfdb_c disables snapshot
 // read-your-writes on every new transaction, changing snapshot reads after a local write — a
 // read-semantics change, not a hint. Propagate it via txDefaults rather than silently dropping it.
 func (o DatabaseOptions) SetSnapshotRywDisable() error {
@@ -480,7 +480,7 @@ func (o DatabaseOptions) SetTransactionAutomaticIdempotency() error {
 	return &UnsupportedOptionError{Option: "automatic_idempotency"}
 }
 
-// SetTransactionBypassUnreadable is an honored DB default (codex #331): libfdb_c sets
+// SetTransactionBypassUnreadable is an honored DB default: libfdb_c sets
 // bypass_unreadable on every new transaction, turning accessed_unreadable failures into reads —
 // observable behaviour, not a hint. Propagate it via txDefaults.
 func (o DatabaseOptions) SetTransactionBypassUnreadable() error {

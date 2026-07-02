@@ -9,7 +9,7 @@ import (
 
 // allKnownRetryCodes is the fixed enumeration the pin tests iterate so each
 // assertion is "predicate(code) == (code ∈ expectedSet)" for EVERY code — an
-// EXHAUSTIVE check, not a sampled one (codex RFC-105): a code spuriously added to
+// EXHAUSTIVE check, not a sampled one (RFC-105): a code spuriously added to
 // (or dropped from) a predicate is caught whether or not it was hand-picked. Keep
 // this list a superset of every code any retry predicate could classify.
 var allKnownRetryCodes = []int{

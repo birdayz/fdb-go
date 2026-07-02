@@ -12,8 +12,8 @@
 //   - (future)      — table / column / CTE / index lookup, type
 //     inference, star expansion.
 //
-// Phase 3 seed — swingshift-47 ships the identifier machinery; the
-// resolution + type passes land in follow-up shifts.
+// Currently ships only the identifier machinery; the resolution +
+// type passes are follow-up work.
 package semantic
 
 import "strings"

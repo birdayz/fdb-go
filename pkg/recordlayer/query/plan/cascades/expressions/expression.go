@@ -9,7 +9,7 @@
 // describing the row shape it emits, and a small bundle of
 // node-information fields specific to the operator.
 //
-// Track B1 (RFC-022 §4.1) seed shipped dayshift-58. Concrete operators:
+// Track B1 (RFC-022 §4.1). Concrete operators:
 //
 //   - Logical (8): LogicalFilterExpression, LogicalProjectionExpression,
 //     LogicalSortExpression, LogicalTypeFilterExpression,

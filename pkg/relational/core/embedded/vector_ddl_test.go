@@ -187,7 +187,7 @@ func TestVectorDDL_SPFreshErrors(t *testing.T) {
 // must refuse a partitioned SPFresh index even when the metadata was
 // constructed DIRECTLY (bypassing the DDL and schema-builder rejections) —
 // the maintainer cannot execute grouped scans, and an unexecutable candidate
-// is worse than no candidate (Graefe merge-HEAD re-review).
+// is worse than no candidate.
 func TestSPFreshCandidateGate_PartitionedMetadata(t *testing.T) {
 	t.Parallel()
 	opts := map[string]string{

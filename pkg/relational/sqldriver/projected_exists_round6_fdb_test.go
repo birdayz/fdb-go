@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestFDB_ProjectedExists_Round6 pins the two round-6 codex-found regressions,
+// TestFDB_ProjectedExists_Round6 pins the two round-6 review-found regressions,
 // both rooted in the projected-EXISTS fold reconstructing column-metadata and
 // ORDER-BY sort-key derivation PIECEMEAL instead of reusing the normal
 // (non-EXISTS) projection path's logic. The root fix unifies both derivations

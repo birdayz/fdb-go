@@ -112,8 +112,8 @@ const (
 	// NOT a Java port: it lives only inside the Go-only compareJoinOrdering cost
 	// path (flatMapCost), never in criterion #2. Sized as a TIE-BREAKER — small
 	// enough never to flip a clear cardinality/total-cost winner, large enough to
-	// tip a genuinely-close join-order tie toward fewer inner re-executions
-	// (Graefe). 0.1 == FilterCPU: one extra row-equivalent of setup per iteration.
+	// tip a genuinely-close join-order tie toward fewer inner re-executions.
+	// 0.1 == FilterCPU: one extra row-equivalent of setup per iteration.
 	IterationOverhead = 0.1
 )
 

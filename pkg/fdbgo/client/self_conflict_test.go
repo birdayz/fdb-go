@@ -192,7 +192,7 @@ func anySelfConflictKeyRange(rs []KeyRange) bool {
 	return false
 }
 
-// TestCommit_CallsMaybeMakeSelfConflicting closes the LAST revert-hole (Torvalds): the helper-level and
+// TestCommit_CallsMaybeMakeSelfConflicting closes the LAST revert-hole: the helper-level and
 // buildCommit-level tests all invoke maybeMakeSelfConflicting DIRECTLY, so deleting its single production
 // call site (Commit) leaves them green while SC injection silently vanishes in prod. This drives the REAL
 // Commit() end-to-end and asserts the injection actually happened. Trick: Commit runs maybeMakeSelfConflicting
@@ -234,7 +234,7 @@ func TestCommit_CallsMaybeMakeSelfConflicting(t *testing.T) {
 // leave a \xFF/SC/ range in BOTH conflict vectors of the ACTUAL marshaled CommitTransactionRequest
 // for a non-tenant write-only commit whose real ranges don't intersect (non-tenant applies no prefix,
 // so the raw \xFF/SC/ key is visible on the wire). Revert-proof: remove the makeSelfConflictingLocked
-// call and this goes red — the earlier helper-only tests would NOT (Torvalds).
+// call and this goes red — the earlier helper-only tests would NOT.
 func TestCommit_NonTenantWriteOnlyInjectsSelfConflictToWire(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()

@@ -106,7 +106,7 @@ func (r *RecordTypeKeyExpression) ToKeyExpression() *gen.KeyExpression {
 // etc. so a crafted proto with pathological deep nesting cannot blow the
 // goroutine stack. 128 is well above any real schema (typical depth ≤ 10)
 // but small enough that exceeding it signals an adversarial input rather
-// than a legitimate schema. Reviewer-flagged hardening in swingshift-35.
+// than a legitimate schema.
 const maxKeyExpressionDepth = 128
 
 // KeyExpressionFromProto deserializes a protobuf KeyExpression to a Go KeyExpression.

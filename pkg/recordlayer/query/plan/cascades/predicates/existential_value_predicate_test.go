@@ -80,7 +80,7 @@ func TestIsExistentialPredicate(t *testing.T) {
 	}
 
 	// An ExistentialValuePredicate constructed with a non-NOT_NULL comparison must NOT be
-	// classified as a positive EXISTS (codex): the exported constructor permits any comparison,
+	// classified as a positive EXISTS: the exported constructor permits any comparison,
 	// and only "IS NOT NULL over the QOV" is the existential semi-join shape.
 	wrongComp := MustNewExistentialValuePredicate(values.NewQuantifiedObjectValue(alias), Comparison{Type: ComparisonIsNull})
 	if _, ok := IsExistentialPredicate(wrongComp); ok {

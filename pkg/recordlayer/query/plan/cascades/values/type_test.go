@@ -216,7 +216,7 @@ func TestConstantValue_Type_OverridesTypField(t *testing.T) {
 // TestLegacyConstants_Aliases pins that the legacy ValueType-named
 // constants (TypeInt / TypeBool / TypeString / TypeFloat / TypeUnknown)
 // continue to point at the canonical Type singletons after the Track
-// G1 retirement (swingshift-52). Existing call sites of the form
+// G1 retirement. Existing call sites of the form
 // `Typ: values.TypeInt` keep working — only the value's Go type
 // changes (`Type` instead of the retired `ValueType`).
 func TestLegacyConstants_Aliases(t *testing.T) {
@@ -1663,7 +1663,7 @@ func errorsAs(err error, target any) bool {
 
 // --- Value.Type() tests -------------------------------------------
 //
-// Post-Track-G1 (swingshift-52) every Value impl's Type() returns
+// Post-Track-G1 every Value impl's Type() returns
 // the rich Type directly. The tests below pin the per-impl
 // type/nullability outputs against the legacy (now-retired)
 // `ValueRichType` semantics where each impl forced nullable on

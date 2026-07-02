@@ -62,7 +62,7 @@ func TestMemoMerge_SiblingEquivalentGroupsMerge(t *testing.T) {
 	}
 }
 
-// TestMemoMerge_InFlightTaskNotStranded is the Torvalds-#1 regression: a
+// TestMemoMerge_InFlightTaskNotStranded pins a review-found regression: a
 // task still pointing at the merged-away (loser) Reference must keep
 // working via transparent forwarding. A distinct member carried by the
 // loser is preserved (by pointer) in the survivor, so ContainsExactly —
@@ -93,7 +93,7 @@ func TestMemoMerge_InFlightTaskNotStranded(t *testing.T) {
 	}
 }
 
-// TestMemoMerge_RecursiveUpwardReMerge is the Graefe-#1 regression: when
+// TestMemoMerge_RecursiveUpwardReMerge pins upward re-merging: when
 // two groups merge, parents that become equivalent must themselves merge
 // (the paper's bottom-up recursion).
 func TestMemoMerge_RecursiveUpwardReMerge(t *testing.T) {
@@ -266,7 +266,7 @@ func TestMemoMerge_MemoizeExpressionCanonicalAfterMerge(t *testing.T) {
 	}
 }
 
-// TestMemoMerge_CorrelatedToInvariant pins the Torvalds-#2 invariant:
+// TestMemoMerge_CorrelatedToInvariant pins the correlation-set invariant:
 // equivalent groups have equal correlation sets, so the survivor's
 // GetCorrelatedTo is unchanged by the merge (the cache is invalidated and
 // recomputes to the same value).

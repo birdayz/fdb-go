@@ -604,7 +604,7 @@ var _ = Describe("RecordCounting", func() {
 
 			// A ScannedRecordsLimit below the row count (paginate mode) stops the
 			// leaf scan OUT-OF-BAND. GetCount can't paginate, so CountRecords must
-			// error rather than return a silently-truncated partial count (codex).
+			// error rather than return a silently-truncated partial count.
 			scan := ForwardScan()
 			scan.ExecuteProperties = scan.ExecuteProperties.WithScannedRecordsLimit(5)
 			_, cErr := store.CountRecords(ctx, nil, nil, EndpointTypeTreeStart, EndpointTypeTreeEnd, nil, scan)

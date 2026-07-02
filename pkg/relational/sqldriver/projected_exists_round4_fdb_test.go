@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestFDB_ProjectedExists_Round4 pins the two round-4 codex-found silent-wrong
+// TestFDB_ProjectedExists_Round4 pins the two round-4 review-found silent-wrong
 // fold-bypass bugs and the clean-rejection of the newly-rejected shape:
 //
 //	bug 1 — projected EXISTS + a CORRELATED scalar subquery in the same SELECT:

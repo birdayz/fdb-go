@@ -10,7 +10,7 @@ import (
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
-// RFC-121 iterator under-conflict guard (codex #319 P1).
+// RFC-121 iterator under-conflict guard.
 //
 // The streaming RangeResult.Iterator() fetches in batches. It used to read the FIRST batch as a
 // serializable read and ALL LATER batches as snapshot reads (no conflict), on the premise that the
@@ -184,9 +184,10 @@ func cgoRangeIteratorConflictScenario(t *testing.T, pfx string) conflictOutcome 
 	}
 }
 
-// TestDifferential_GetRangeIteratorConflict_RFC121 pins the codex #319 P1 fix: a key read through a
-// LATER iterator batch must register a read-conflict in Go, just as in libfdb_c. Both clients fully
-// iterate [k00,kzz) and then a concurrent write to k15 must abort BOTH. Reverting the iterator fix
+// TestDifferential_GetRangeIteratorConflict_RFC121 pins the RFC-121 iterator under-conflict fix:
+// a key read through a LATER iterator batch must register a read-conflict in Go, just as in
+// libfdb_c. Both clients fully iterate [k00,kzz) and then a concurrent write to k15 must abort
+// BOTH. Reverting the iterator fix
 // (later batches → snapshot, no conflict) makes Go commit (goOut.conflicted=false) while cgo aborts
 // → the agreement assert below fires.
 func TestDifferential_GetRangeIteratorConflict_RFC121(t *testing.T) {

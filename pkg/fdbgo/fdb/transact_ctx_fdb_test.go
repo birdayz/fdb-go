@@ -10,7 +10,7 @@ import (
 )
 
 // TestFDB_TransactCtx_CancelDuringFnAbortsBeforeCommit pins the cancellation contract
-// (RFC-090 + codex review of PR #272): a cancel/deadline that arrives DURING fn — i.e.
+// (RFC-090 + PR #272): a cancel/deadline that arrives DURING fn — i.e.
 // BEFORE the commit is dispatched — must abort the transaction WITHOUT committing.
 //
 // At that point no commit RPC has been sent, so there is no commit_unknown_result

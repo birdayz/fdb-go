@@ -326,7 +326,7 @@ type Transaction struct {
 	// (C++ atomicOp throws invalid_mutation_type, ReadYourWrites.actor.cpp:2234). The bad mutation
 	// is NOT buffered; this deferred error fails the next Commit (2018/2004/2000). An atomic.Pointer
 	// (not a plain field) because Atomic() — a data op the published contract allows concurrently
-	// with Commit — writes it while Commit reads it (codex). CAS keeps the FIRST invalid op.
+	// with Commit — writes it while Commit reads it. CAS keeps the FIRST invalid op.
 	invalidAtomicOpErr atomic.Pointer[wire.FDBError]
 
 	// readErr: the first error returned by a TRACKED read of this transaction —
@@ -864,7 +864,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	// If every dial above failed because the SetTimeout deadline expired (opCtx
 	// cancelled), surface transaction_timed_out (1031) rather than the
 	// non-retryable all_alternatives_failed (1006) — a cold-dial expiry is still a
-	// timeout, matching C++ (the timebomb wins the loadBalance race). RFC-112 (codex).
+	// timeout, matching C++ (the timebomb wins the loadBalance race). RFC-112.
 	if err := opCtx.Err(); err != nil {
 		return nil, nil, tx.mapTimeout(ctx, err)
 	}
@@ -1036,7 +1036,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 // INDEPENDENT writes (plain Set / folded atomic / matched-CAC phantom) and cleared ranges —
 // keeping only UNMODIFIED gaps + DEPENDENT writes (which did read the DB base). With op-type
 // now preserved (RFC-058), this subtraction is SAFE: a Get-folded DEPENDENT atomic keeps its
-// dependent flag, so it is NOT dropped (the unsafe under-conflict codex caught on #235 came
+// dependent flag, so it is NOT dropped (the unsafe under-conflict hazard came
 // from a naive !hasAtomics filter on the lossy pre-fold state — not possible now). Matches
 // libfdb_c exactly instead of over-conflicting on the no-DB-read segments.
 func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offset int32, resolved []byte) {
@@ -1063,7 +1063,7 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 	// tx.getKey, not getKeyRYW) — the local write-map did NOT satisfy the read, so every
 	// segment in the span was a real DB read. Filtering through the (bypassed) write-map
 	// would subtract a local Set/Clear segment and MISS a conflict from a concurrent insert
-	// into that gap (codex). Add the full span, matching C++ (RYW-disabled reads go through
+	// into that gap. Add the full span, matching C++ (RYW-disabled reads go through
 	// the underlying transaction, which records the full read-conflict; updateConflictMap is
 	// an RYW-layer step that does not run).
 	if tx.rywDisabled {
@@ -1073,7 +1073,7 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 	tx.ryw.mu.Lock()
 	ranges := tx.ryw.conflictRangesLocked(begin, end)
 	tx.ryw.mu.Unlock()
-	tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges (codex)
+	tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges
 }
 
 // addReadConflictForKeyRYW records the read-conflict for a single-key Get, routed through the
@@ -1259,7 +1259,7 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 				tx.ryw.mu.Lock()
 				ranges := tx.ryw.conflictRangesLocked(cBegin, cEnd)
 				tx.ryw.mu.Unlock()
-				tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges (codex)
+				tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges
 			}
 		}
 	}
@@ -1405,7 +1405,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		}
 		// C++ throws the FIRST illegal op EAGERLY (ReadYourWrites.actor.cpp:2226-2234). A mutation
 		// buffered BEFORE this bad Atomic that is itself illegal came first and out-ranks the bad-op
-		// code (codex); only if every preceding mutation is legal is THIS bad op the first illegal
+		// code; only if every preceding mutation is legal is THIS bad op the first illegal
 		// one. Compute under conflictMu for a consistent preceding-mutation snapshot; store-if-unset
 		// keeps the first bad Atomic's verdict (race-free vs Commit's lock-free Load).
 		tx.conflictMu.Lock()
@@ -1462,7 +1462,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	// raw key un-transformed keeps the commit-path validateMutation checking the RAW key, so a \xff
 	// placeholder at offset 0 (a raw system key on a non-system txn) still reports key_outside_legal_range
 	// (2004). Transforming it first would hide the leading \xff behind the read-version/zero stamp and
-	// bypass the check (codex). For a placeholder at offset > 0 the leading byte is unchanged by the
+	// bypass the check. For a placeholder at offset > 0 the leading byte is unchanged by the
 	// transform, so the raw/transformed legal-range status is identical; the guard only matters at offset 0.
 	if op == MutSetVersionstampedKey && bytes.Compare(key, tx.maxWriteKey()) < 0 {
 		minVersion := int64(0)
@@ -1557,7 +1557,7 @@ func placeVersionstamp(dst []byte, version int64, txnNumber uint16) {
 // match libfdb_c, and the commit loop walks mutations in call order so the FIRST illegal op wins.
 // Pure (no tx.state mutation): callers mark the txn errored. maxWrite is tx.maxWriteKey(), hoisted.
 // Shared by the commit-time loop AND Atomic()'s invalid-op poison (which must defer to an earlier
-// illegal buffered mutation — codex).
+// illegal buffered mutation).
 func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 	if bytes.Equal(m.Key, metadataVersionKeyBytes) && m.Type != MutClearRange {
 		// C++ RYW::atomicOp (:2226-2229) and set() (:2300): the ONLY legal mutation to
@@ -1596,7 +1596,7 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 	// appending the API<520 versionstamp offset suffix (:2250-2261). Go defers this to commit, where the
 	// buffered mutation already carries that client-added suffix (2B for SVK — the versionstampKeyRange
 	// transform preserves it, transaction.go:1516; 4B for SVV) — so it must be discounted here, else a
-	// boundary-sized legacy value is spuriously value_too_large (codex). At apiVersion>=520 there is no
+	// boundary-sized legacy value is spuriously value_too_large. At apiVersion>=520 there is no
 	// client-added suffix (nothing to discount); the user-provided offset there IS counted by C++, which
 	// len(m.Key)/len(m.Value) as-is already matches.
 	keyLen, valLen := len(m.Key), len(m.Value)
@@ -1649,7 +1649,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// ensureReadVersion's gate and commit successfully) AND before checkTimeout: reads check
 	// the poison before the timeout, and libfdb_c's checkDeferredError runs before any commit
 	// logic, so the poison must out-rank a stale-timeout 1031 for parity. Returns without
-	// resetting (2000 is non-retryable). codex, RFC-059.
+	// resetting (2000 is non-retryable). RFC-059.
 	if tx.rywPoisonErr != nil {
 		return tx.rywPoisonErr
 	}
@@ -1657,7 +1657,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// matching C++ atomicOp's eager throw (ReadYourWrites.actor.cpp:2234). The bad mutation was never
 	// buffered, so nothing reaches the cluster. Non-retryable — mark the txn errored HERE too, so the
 	// post-failure state is identical whether the poison was set before commit entry (this common
-	// Atomic();Commit() path) or raced into the snapshot re-check below, which also errors it (codex).
+	// Atomic();Commit() path) or raced into the snapshot re-check below, which also errors it.
 	// A manual caller that doesn't route through OnError then can't keep issuing ops on a dead txn.
 	if e := tx.invalidAtomicOpErr.Load(); e != nil {
 		tx.state.Store(int32(txStateErrored))
@@ -1712,7 +1712,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	muts := tx.mutations
 	writeConflictsSnap := tx.writeConflicts
 	nWriteConflicts := len(writeConflictsSnap)
-	// Re-read the invalid-atomic poison UNDER the snapshot lock, linearized with `muts` (codex): the
+	// Re-read the invalid-atomic poison UNDER the snapshot lock, linearized with `muts`: the
 	// entry check (above) can miss an Atomic(badOp) that races this Commit and stores the poison —
 	// under conflictMu — AFTER that entry Load but BEFORE this snapshot. Reading it here, in the same
 	// critical section as the mutation snapshot, makes the poison-vs-commit order consistent with the
@@ -1747,7 +1747,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// (call order) to preserve C++'s call-time error precedence; only the SIZED+SHIPPED vector is coalesced,
 	// and it is derived from the already-validated `muts` SNAPSHOT, so a Set racing this Commit can never
 	// ship or be sized unvalidated. The ship-decision (coalesce vs raw; the versionstamp/rywDisabled
-	// carve-outs) lives in coalesceCommitVectors so it is unit-testable outside this inline flow (Torvalds).
+	// carve-outs) lives in coalesceCommitVectors so it is unit-testable outside this inline flow.
 	shipMuts, sizeConflicts, coalesced := coalesceCommitVectors(muts, writeConflictsSnap[:nWriteConflicts], tx.rywDisabled)
 
 	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
@@ -1797,9 +1797,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// pre-#28, buildCommitTransactionRequest read tx.writeConflicts live (post-SC); the size-time
 	// `sizeConflicts` snapshot predates it. The SC DECISION and the ship both work from the frozen
 	// writeConflictsSnap (the shipped set), not live tx.writeConflicts: maybeMakeSelfConflicting decides on
-	// the snapshot (codex round-3), and finalizeShipConflicts folds JUST the returned range into it (not a
+	// the snapshot, and finalizeShipConflicts folds JUST the returned range into it (not a
 	// live re-read), so the RFC-090 self-conflicting retry detects an already-applied commit WITHOUT shipping
-	// a racing Set's unvalidated/unsized conflict range (codex P2b).
+	// a racing Set's unvalidated/unsized conflict range.
 	sc, scAdded := tx.maybeMakeSelfConflicting(writeConflictsSnap[:nWriteConflicts])
 	shipConflicts := finalizeShipConflicts(writeConflictsSnap[:nWriteConflicts], sc, scAdded, coalesced)
 
@@ -1894,7 +1894,7 @@ func (tx *Transaction) Cancel() {
 	// cancelWatches is about to unblock, deterministically observes txStateCancelled when it re-checks
 	// checkCancelled in watchSetupErr → transaction_cancelled (1025). The store is sequenced-before the
 	// context cancellation, whose Done()-close is a happens-before edge to the read goroutine's
-	// state.Load(), so the ordering is guaranteed, not racy (codex: the prior order let the unblocked
+	// state.Load(), so the ordering is guaranteed, not racy (the prior order let the unblocked
 	// read see the not-yet-cancelled state and surface context.Canceled instead of 1025).
 	tx.state.Store(int32(txStateCancelled))
 	tx.cancelWatches()
@@ -2106,7 +2106,7 @@ func (tx *Transaction) AwaitWatchCommit(watchCtx context.Context, act *watchActi
 // normally released by WatchPoll on completion, but when AwaitWatchCommit aborts a watch BEFORE it reaches
 // WatchPoll (never-committed / reset / Cancel / ctx-expiry), WatchPoll never runs — so the async facade
 // calls this on that abort path, else the slot leaks and later watches fail with too_many_watches under
-// MAX_WATCHES (codex #8). Idempotent-safe by construction: WatchPoll runs only on the success path, this
+// MAX_WATCHES. Idempotent-safe by construction: WatchPoll runs only on the success path, this
 // only on the abort path — never both for one watch.
 func (tx *Transaction) ReleaseWatch() {
 	if tx.db != nil {
@@ -2118,7 +2118,7 @@ func (tx *Transaction) ReleaseWatch() {
 // caller's own cancellation still propagates), registers it under a unique id, and returns the
 // context plus a SCOPED cancel that cancels+deregisters only THIS watch (idempotent). The future's
 // Cancel(), a failed WatchSetup, and WatchPoll's completion all call the scoped cancel — so one watch
-// can be freed without touching sibling watches (codex round 18), the map self-cleans, and
+// can be freed without touching sibling watches, the map self-cleans, and
 // Cancel()/reset() (cancelWatches) still cancel every live watch. Captured synchronously in
 // WatchSetup (the async WatchPoll only USES the context) — preserves the race-free bind.
 func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, context.CancelFunc) {
@@ -2213,7 +2213,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// A TERMINAL OnError — any non-nil return, i.e. the txn is aborting, not retrying — must release
 	// any in-flight watch slots. A watch registered in Transact whose txn then fails non-retryably
 	// would otherwise keep long-polling and HOLD its outstanding-watch slot until the key changes, so
-	// under a low MAX_WATCHES one failed transaction starves every future watch (codex). The RETRY
+	// under a low MAX_WATCHES one failed transaction starves every future watch. The RETRY
 	// path (return nil) already cancels in-flight watches via reset()→cancelWatches; this defer covers
 	// the ABORT paths. cancelWatches is idempotent (no-op when no watch context is bound).
 	defer func() {
@@ -2233,7 +2233,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		// A non-FDB application error (e.g. a Database.Transact callback returning errors.New(...))
 		// is the caller's own, NOT an FDB retry concern — it escapes unchanged, even past the
 		// deadline. The timeout gate below applies ONLY to FDB errors (the retry path), so it must
-		// sit AFTER this branch (codex: otherwise an expired deadline would replace the application
+		// sit AFTER this branch (otherwise an expired deadline would replace the application
 		// error with 1031). Pre-bug-hunt behavior, restored.
 		tx.state.Store(int32(txStateErrored))
 		return err
@@ -2245,7 +2245,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// checkTimeout surfaces 1031, overshooting the declared timeout. Non-retryable; mark errored.
 	// BUT a done CALLER ctx out-ranks the txn timeout (mapTimeout precedence, transaction.go:107-116):
 	// if both the SetTimeout deadline and the caller's ctx have expired, a TransactCtx caller must get
-	// their own context.Canceled/DeadlineExceeded, not 1031 (codex).
+	// their own context.Canceled/DeadlineExceeded, not 1031.
 	if cerr := tx.checkTimeout(); cerr != nil {
 		tx.state.Store(int32(txStateErrored))
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -2605,7 +2605,7 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
 // they must land atomically: the published contract makes conflict-range adders and Commit safe to
 // use concurrently, so a concurrent Commit snapshotting `readConflicts` mid-append would otherwise
 // ship a transaction carrying only a PREFIX of the sub-ranges and silently drop the rest of the
-// caller's read-conflict protection (codex). One lock → the snapshot sees all sub-ranges or none.
+// caller's read-conflict protection. One lock → the snapshot sees all sub-ranges or none.
 func (tx *Transaction) addReadConflicts(ranges [][2][]byte) {
 	if len(ranges) == 0 {
 		return
@@ -2779,7 +2779,7 @@ func conflictRangesIntersect(writes, reads []KeyRange) bool {
 // snapshot (excluded from the shipped writes AND the frozen `muts`) cannot flip the SC decision away from
 // what ships: otherwise a racing write intersecting a read range could make scAdded=false while the shipped
 // frozen writes carry NO intersecting range and NO \xFF/SC/ key, leaving the request non-self-conflicting
-// and breaking the commit_unknown_result barrier (codex #28 round-3). Read side stays live — it matches the
+// and breaking the commit_unknown_result barrier. Read side stays live — it matches the
 // live read conflicts buildCommitTransactionRequest ships, and a racing Get only over-conflicts (harmless).
 // Returns the injected \xFF/SC/ WRITE-conflict range and true when it added one, so Commit can ship it on
 // the SIZED snapshot (#28 P2b) rather than re-reading live tx.writeConflicts.
@@ -3056,7 +3056,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 	tx.ryw.mu.Lock()
 	ranges := tx.ryw.conflictRangesLocked(begin, end)
 	tx.ryw.mu.Unlock()
-	tx.addReadConflicts(ranges) // atomic append: a concurrent Commit sees all sub-ranges or none (codex)
+	tx.addReadConflicts(ranges) // atomic append: a concurrent Commit sees all sub-ranges or none
 	return nil
 }
 
@@ -3282,7 +3282,7 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	// getTransactionDefaults re-copy, ReadYourWrites.actor.cpp:2744-2751). Route the retry limit through the
 	// SAME setter CreateTransaction uses so an unlimited (negative) DB default matches: SetRetryLimit(-1) →
 	// hasRetryLimit=false, whereas a raw copy leaves hasRetryLimit=true with retryLimit=-1 and makes the
-	// next OnError stop retrying (0 >= -1, codex #9/#14).
+	// next OnError stop retrying (0 >= -1).
 	tx.timeout = time.Duration(td.Timeout) * time.Millisecond // 0 → disabled (deadline recomputed by reset())
 	if td.HasRetryLimit {
 		tx.SetRetryLimit(int64(td.RetryLimit))

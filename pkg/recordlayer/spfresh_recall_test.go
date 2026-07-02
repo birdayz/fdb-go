@@ -355,7 +355,7 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 		Expect(bad.MaxPostingLen).To(BeNumerically(">", 4*32))
 	})
 
-	// codex-review findings (PR #388): the recall monitor must work on the
+	// PR #388 findings: the recall monitor must work on the
 	// SERIALIZED-vector index shape (vector_data []byte — what the SPFresh
 	// benchmarks and real deployments use), the search wrapper must reject
 	// wrong-dimensional queries instead of panicking, and the integrity sample
@@ -419,7 +419,7 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 			if serr != nil {
 				return nil, serr
 			}
-			// codex P1: the corpus must populate on a serialized-vector index
+			// The corpus must populate on a serialized-vector index
 			// (previously CorpusSize=0 — the monitor silently did nothing).
 			rep, serr := MeasureSPFreshRecall(ctx, store, "spf_recall_serialized", 5, 30, 7)
 			if serr != nil {
@@ -429,12 +429,12 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 			Expect(rep.QueriesRun).To(Equal(30))
 			Expect(rep.MeanRecall).To(BeNumerically(">=", 0.90))
 
-			// codex P2: a wrong-dimensional query returns an error, not a panic.
+			// A wrong-dimensional query returns an error, not a panic.
 			_, derr := SearchSPFreshIndex(store, "spf_recall_serialized", []float64{1, 2, 3}, 5)
 			Expect(derr).To(HaveOccurred(), "wrong-dim query must error, not panic (codex P2)")
 			Expect(derr.Error()).To(ContainSubstring("dimensions"))
 
-			// codex P3: the integrity sample never exceeds the requested cap.
+			// The integrity sample never exceeds the requested cap.
 			irep, serr := SPFreshCheckIntegrity(rtx, store, "spf_recall_serialized", 10)
 			if serr != nil {
 				return nil, serr

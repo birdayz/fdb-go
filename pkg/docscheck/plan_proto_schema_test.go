@@ -16,8 +16,8 @@ import (
 //
 // This is a descriptor-reflection guard, NOT a stored-bytes test (Go marshals no plan through these
 // protos — see RFC-135 §3). It lives in pkg/docscheck, not gen/, because `just generate` does
-// `rm -rf gen/`. A regen against an older proto, or a schema drift, fails here — the sentinel Graefe
-// asked for on RFC-135.
+// `rm -rf gen/`. A regen against an older proto, or a schema drift, fails here — the RFC-135
+// sentinel.
 func TestPlanProtoSchemaMatches412(t *testing.T) {
 	t.Parallel()
 

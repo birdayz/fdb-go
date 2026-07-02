@@ -12,7 +12,7 @@ package sqldriver_test
 //   - non-correlated scalar subquery >1 row errors 21000;
 //   - correlated scalar subquery >1 row currently does NOT enforce 21000 (takes a
 //     row) — the documented inconsistency, see TODO.md "scalar-subquery
-//     cardinality (correlated)". When that Graefe-designed decision lands, flip
+//     cardinality (correlated)". When that designed decision lands, flip
 //     the corr_scalar_multi_row subtest to expect 21000.
 
 import (
@@ -94,7 +94,7 @@ func TestFDB_ScalarSubqueryCorrelationProbe(t *testing.T) {
 		// inconsistency (non-correlated enforces, correlated does not); Java
 		// enforces neither. See TODO.md. Pin: returns exactly one row, value is one
 		// of the dept's salaries, no error. Flip to expect 21000 when the
-		// Graefe-designed decision lands.
+		// designed decision lands.
 		rows, err := db.QueryContext(ctx,
 			"SELECT (SELECT salary FROM emp e WHERE e.dept_id = dept.id) FROM dept WHERE id = 1")
 		if err != nil {

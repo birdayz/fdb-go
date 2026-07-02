@@ -28,7 +28,7 @@ func newScanPlan() plans.RecordQueryPlan {
 }
 
 // TestFindIndexOnlyResidual_NestedUnderUnionArm pins that the PHYSICAL catch-all
-// backstop recurses past the root (Graefe: "leaks at depth > 0"): an index-only
+// backstop recurses past the root (the "leaks at depth > 0" case): an index-only
 // DistanceRank residual nested inside a union arm — not at the root — must still be
 // found, so validateNoIndexOnlyResidual rejects a plan that hides the unevaluable
 // filter beneath a UNION/INTERSECTION. This is the path the ImplementFilterRule

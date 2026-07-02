@@ -527,7 +527,7 @@ func TestSimInlineFutureVersion_QueueModelBackoff(t *testing.T) {
 			}
 			// The read-path wiring fired: the QueueModel recorded the backoff. Copy
 			// the fields out UNDER the lock — prod reads them under queueModel.mu
-			// (loadbalance.go), so the test must too (Torvalds lock-discipline).
+			// (loadbalance.go), so the test must too.
 			db.db.queueModel.mu.Lock()
 			d := db.db.queueModel.servers[addr]
 			var failedUntil, backoff float64

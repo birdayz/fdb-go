@@ -102,7 +102,7 @@ func rfc152Classify(p plans.RecordQueryPlan) rfc152Shape {
 
 // TestRFC152_PreservedOnlyOnPredicate_MaterializedNLJ proves a preserved-only ON
 // predicate plans to the MATERIALIZED NestedLoopJoin (inner scanned once), NOT the
-// re-scan FlatMap. This is the codex P2 regression fix (typed plan-tree assertion).
+// re-scan FlatMap. Pinned with a typed plan-tree assertion.
 func TestRFC152_PreservedOnlyOnPredicate_MaterializedNLJ(t *testing.T) {
 	t.Parallel()
 	plan := planRFC152(t, "SELECT A.id FROM A LEFT JOIN B ON A.flag = 1")

@@ -532,7 +532,7 @@ func executeFirstOrDefault(
 	// An out-of-band (resource-limit) stop before the first row means the input was
 	// TRUNCATED — we can't tell whether a matching row would have followed, so error
 	// (→ 54F01) instead of fabricating the default and returning a wrong EXISTS/scalar
-	// answer from a partial scan (codex RFC-106a).
+	// answer from a partial scan (RFC-106a).
 	if lerr := errIfBufferTruncated(result); lerr != nil {
 		return nil, lerr
 	}
@@ -569,7 +569,7 @@ func executeDefaultOnEmpty(
 	}
 	_ = inner.Close()
 	// Out-of-band (resource-limit) stop before the first row → truncated input;
-	// error rather than fabricate the default (codex RFC-106a; see FirstOrDefault).
+	// error rather than fabricate the default (RFC-106a; see FirstOrDefault).
 	if lerr := errIfBufferTruncated(firstResult); lerr != nil {
 		return nil, lerr
 	}
@@ -775,7 +775,7 @@ func (m *mergeSortCursor) fillPeekBuffers(ctx context.Context) error {
 		} else if result.GetNoNextReason().IsOutOfBand() {
 			// A branch cut off OUT-OF-BAND (resource limit, paginate mode) cannot be
 			// merged correctly — treating it as exhausted would drop the rest of that
-			// sorted run and emit a wrong merge order. Error instead (codex RFC-106a).
+			// sorted run and emit a wrong merge order. Error instead (RFC-106a).
 			return &recordlayer.ScanLimitReachedError{Reason: result.GetNoNextReason()}
 		} else {
 			m.exhausted[i] = true
@@ -1013,7 +1013,7 @@ func (c *concatCursor[T]) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 		// A branch that stopped OUT-OF-BAND (a scan/byte/time resource limit in
 		// paginate mode) cannot be resumed across the concat boundary — concat
 		// carries no per-branch continuation state, so advancing to the next branch
-		// would silently drop the rest of this one. Error instead (codex RFC-106a;
+		// would silently drop the rest of this one. Error instead (RFC-106a;
 		// same reasoning as the multidim skip-scan). SourceExhausted → next branch.
 		// Without a scan limit set, out-of-band never fires, so UNION ALL is unchanged.
 		if result.GetNoNextReason().IsOutOfBand() {

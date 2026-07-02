@@ -141,7 +141,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 		dump := map[string][]byte{}
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			// The staged set is STAGING + SIDECAR — both keyed by the record pk
-			// (sidecar defaults on); compare both keyspaces (codex impl review P3).
+			// (sidecar defaults on); compare both keyspaces.
 			for tag, sub := range map[string]subspace.Subspace{"staging": storage.staging, "sidecar": storage.sidecar} {
 				pr, perr := fdb.PrefixRange(sub.Bytes())
 				if perr != nil {

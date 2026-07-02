@@ -97,7 +97,7 @@ func TestDifferential_ErrorCodes(t *testing.T) {
 			},
 		},
 		{
-			// VALIDATION ORDER (codex P2 / RFC-067): an oversized key in a >10 MB txn must
+			// VALIDATION ORDER (RFC-067): an oversized key in a >10 MB txn must
 			// report key_too_large(2102), NOT transaction_too_large(2101) — C++ validates
 			// per-mutation before the size check (commitMutations runs after set()'s checks).
 			name:     "oversized_key_precedes_size",
@@ -118,7 +118,7 @@ func TestDifferential_ErrorCodes(t *testing.T) {
 			},
 		},
 		{
-			// READ-ONLY fast path (codex P2 / RFC-067): a read-only txn (no mutations, no
+			// READ-ONLY fast path (RFC-067): a read-only txn (no mutations, no
 			// write conflicts) with >10 MB of READ-conflict ranges must NOT be rejected for
 			// size — C++ returns at the read-only fast path (NativeAPI:6800) before getSize.
 			// 800×~16 KB disjoint ranges ≈ 12.8 MB of read-conflict bytes.

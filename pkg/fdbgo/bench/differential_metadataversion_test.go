@@ -7,8 +7,8 @@ import (
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
-// metadataVersionKey write-validation differential vs libfdb_c — RFC-067 follow-up (codex /
-// FDB-C++ / Torvalds review). metadataVersionKey ("\xff/metadataVersion") is a special system
+// metadataVersionKey write-validation differential vs libfdb_c — RFC-067 follow-up.
+// metadataVersionKey ("\xff/metadataVersion") is a special system
 // key with a narrow legal-write contract (C++ ReadYourWrites.actor.cpp):
 //
 //   - atomicOp (:2226-2229): the ONLY legal op is SetVersionstampedValue whose operand ==

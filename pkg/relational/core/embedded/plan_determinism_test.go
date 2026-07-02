@@ -65,7 +65,7 @@ func TestPlanDeterminism_MultiEqualityShellTie_CrossProcess(t *testing.T) {
 
 	// Child mode: plan once in this fresh process, print the plan, return. A
 	// planning error exits NON-ZERO (not a marker) so a deterministic error can't
-	// false-green the parent's "all samples identical" check (codex/Graefe/Torvalds).
+	// false-green the parent's "all samples identical" check.
 	if os.Getenv("FDB_DET_CHILD") == "1" {
 		plan, err := PlanQueryForTest(multiEqQuery, multiEqSchema, nil)
 		if err != nil {
@@ -90,7 +90,7 @@ func TestPlanDeterminism_MultiEqualityShellTie_CrossProcess(t *testing.T) {
 			// Distinguish "child RAN and FAILED" (planning error / panic / assertion →
 			// exit non-zero → *exec.ExitError) from "couldn't START the binary" (restricted
 			// sandbox). The former is a real regression and must FAIL the parent; only the
-			// latter skips. Skipping a child failure would let CI miss it (codex P2).
+			// latter skips. Skipping a child failure would let CI miss it.
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) {
 				t.Fatalf("cross-process subprocess %d ran but failed (%v):\n%s", i, err, out)

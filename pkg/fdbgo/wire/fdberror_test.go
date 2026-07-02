@@ -11,8 +11,8 @@ import (
 // client.onErrorRetryable (Transaction.onError), each C++-pinned exhaustively.)
 
 // TestFDBError_Description_LatentBugFixes pins the description fixes
-// from the wire-side fdbErrorDescriptions cleanup. Five latent bugs
-// found and fixed dayshift-58:
+// from the wire-side fdbErrorDescriptions cleanup, which found and
+// fixed five latent bugs:
 //
 //   - 1006 = "all_alternatives_failed" (added; previously missing).
 //   - 1042 = "commit_proxy_memory_limit_exceeded" (was incorrectly

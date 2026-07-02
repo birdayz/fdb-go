@@ -72,7 +72,7 @@ func TestFDB_UpdatePrimaryKeyProbe(t *testing.T) {
 		if err == nil {
 			t.Fatalf("UPDATE SET id (PK) unexpectedly succeeded; want XXXXX rejection (fail-closed)")
 		}
-		// Anchor BOTH axes (Torvalds): the SQLSTATE (XXXXX) AND the specific path message.
+		// Anchor BOTH axes: the SQLSTATE (XXXXX) AND the specific path message.
 		// XXXXX is the catch-all default, so asserting it alone would stay green if some
 		// OTHER failure (a planner blowup, a different RecordCoreException) regressed into
 		// XXXXX. "record does not exist" is RecordDoesNotExistException's own message — the

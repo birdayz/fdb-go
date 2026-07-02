@@ -15,8 +15,7 @@ import (
 // error-returning method. With the executor control-flow recovers removed (RFC-091
 // A2), that residual panic surfaced only at the db/sql boundary as a generic
 // internal error (or panicked outright for non-SQL callers) instead of flowing
-// through translateExecError as the intended ErrCodeCannotConvertType. Caught by
-// the Codex review of PR #272.
+// through translateExecError as the intended ErrCodeCannotConvertType.
 func TestScalarFunctionValue_Evaluate_GreatestLeastMismatchReturnsError(t *testing.T) {
 	t.Parallel()
 	for _, fn := range []string{"GREATEST", "LEAST"} {

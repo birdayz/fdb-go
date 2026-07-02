@@ -1,6 +1,6 @@
 package cascades
 
-// RFC-153 follow-up — codex P2s on 05c742100: correlation-bookkeeping completeness.
+// RFC-153 follow-up on 05c742100: correlation-bookkeeping completeness.
 // The EXECUTED rows were correct, but the REPORTED correlations were stale/missing — a
 // latent planning hazard (wrong join-leg / winner / root bookkeeping in untested shapes),
 // the same incomplete-coverage family as the fail-open verifier.

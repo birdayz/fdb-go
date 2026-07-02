@@ -1,7 +1,7 @@
 package client
 
 // Deterministic -race regression tests for the "methods safe for concurrent
-// use" contract (RFC-049 / RFC-010 audit #7). These construct a Transaction
+// use" contract (RFC-049 / RFC-010). These construct a Transaction
 // directly (no FDB cluster) and hammer the conflict/mutation buffers from
 // multiple goroutines so `go test -race` flags any unsynchronized access.
 //
@@ -151,7 +151,7 @@ func TestConcurrent_ResetWhileSizing_NoRace(t *testing.T) {
 	wg.Wait()
 }
 
-// TestConcurrent_SetIsAtomic pins the codex finding: a Set must publish its
+// TestConcurrent_SetIsAtomic pins that a Set must publish its
 // mutation and its write-conflict range as ONE atomic unit. With plain Sets
 // (no flags), each Set adds exactly one mutation and one write conflict, so an
 // observer snapshotting both counts under conflictMu must NEVER see them differ.

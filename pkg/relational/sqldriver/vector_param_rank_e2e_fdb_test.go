@@ -149,7 +149,7 @@ func runParamRankQuery(t *testing.T, ctx context.Context, db *recordlayer.FDBDat
 	return ids
 }
 
-// TestFDB_VectorSearch_ZeroCapEmpty is the RFC-156 P1 codex-blocker e2e proof
+// TestFDB_VectorSearch_ZeroCapEmpty is the RFC-156 P1 review-blocker e2e proof
 // for the ZERO-cap branch: a GLOBAL-rank vector query whose adjusted cap is 0
 // (ROW_NUMBER() … < 1) MUST return EMPTY. On HEAD globalRankVectorLimit DECLINED
 // the zero cap (no Limit added) while the un-partitioned scan still emitted the
@@ -298,7 +298,7 @@ func TestFDB_VectorSearch_NonPositiveCapEmpty(t *testing.T) {
 	}
 }
 
-// TestFDB_VectorSearch_ParamRankExact is the RFC-156 P1 codex-blocker e2e proof
+// TestFDB_VectorSearch_ParamRankExact is the RFC-156 P1 review-blocker e2e proof
 // for the PARAMETERIZED-K branch: a GLOBAL-rank vector query bounded by a BOUND
 // PARAMETER (ROW_NUMBER() … <= ? / < ?) MUST return exactly the runtime-K
 // nearest. On HEAD globalRankVectorLimit declined the non-literal K (no Limit),
@@ -431,7 +431,7 @@ func runVecQueryIDs(t *testing.T, ctx context.Context, db *recordlayer.FDBDataba
 	return ids
 }
 
-// TestFDB_VectorSearch_MinInt64CapEmpty pins the RFC-156 codex-delta P2-A
+// TestFDB_VectorSearch_MinInt64CapEmpty pins the RFC-156 review-delta P2-A
 // overflow fix: a GLOBAL-rank vector K-NN whose STRICT rank cap K is
 // math.MinInt64 (literal `< -9223372036854775808`, or a parameter bound to it)
 // MUST return EMPTY — it must NOT wrap K-1 to a huge POSITIVE and escape into an
@@ -536,7 +536,7 @@ func TestFDB_VectorSearch_MinInt64CapEmpty(t *testing.T) {
 	}
 }
 
-// TestFDB_VectorSearch_HorizonExceedsDefaultEf is the RFC-156 P2 codex-blocker
+// TestFDB_VectorSearch_HorizonExceedsDefaultEf is the RFC-156 P2 review-blocker
 // e2e proof: a GLOBAL-rank query whose cap EXCEEDS the default ef_search (200)
 // must still return all K rows. The ordered-stream path is taken whenever a
 // residual Filter sits between the Limit and the scan (the literal-K no-residual

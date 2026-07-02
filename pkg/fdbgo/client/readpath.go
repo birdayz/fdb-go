@@ -162,7 +162,7 @@ func (tx *Transaction) getKey(parentCtx context.Context, selectorKey []byte, orE
 func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
 	// Three independent budgets, because getKey's loop iterates for two
-	// unrelated reasons (codex): successful partial selector resolutions
+	// unrelated reasons: successful partial selector resolutions
 	// (PROGRESS — a deep selector legitimately crosses many shards) and error
 	// retries. Conflating them in one counter forced an impossible choice —
 	// retryable exhaustion infinite-loops a deep selector, non-retryable
@@ -305,7 +305,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 
 			if err := conn.SendFrame(gkToken, reqData); err != nil {
 				// SendFrame error: DROP bufp, don't Put — the frame may be enqueued with writeLoop
-				// still reading reqData in WriteFrame (conn.go:454 post-enqueue ctx.Done race, audit #15).
+				// still reading reqData in WriteFrame (conn.go:454 post-enqueue ctx.Done race).
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
@@ -500,7 +500,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 
 			if err := conn.SendFrame(server.Token, body); err != nil {
 				// SendFrame error: DROP poolBuf, don't Put — the frame may be enqueued with writeLoop
-				// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race, audit #15).
+				// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race).
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
@@ -572,7 +572,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 
 	if err := conn.SendFrame(server.Token, body); err != nil {
 		// SendFrame error: DROP poolBuf, don't Put — the frame may be enqueued with writeLoop
-		// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race, audit #15).
+		// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race).
 		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 		replyHandle.Cancel()
 		tx.db.handleConnError(server.Address)
@@ -847,7 +847,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 
 			if err := conn.SendFrame(gkvToken, body); err != nil {
 				// SendFrame error: DROP poolBuf, don't Put — the frame may be enqueued with writeLoop
-				// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race, audit #15).
+				// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race).
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
@@ -936,7 +936,7 @@ func isFutureVersionOrProcessBehind(err error) bool {
 // (NativeAPI.actor.cpp:3738, `throw e`). The old loop matched only timeout / wrong_shard / all_alternatives
 // and let a version error fall through: silently dropped, then flattened to errReplyTimeout (1007) or
 // all_alternatives_failed (1006), hiding a retryable condition behind a less-actionable code. Timeout
-// still does NOT stop the scan (a slow replica must not pre-empt a healthy one — codex); only
+// still does NOT stop the scan (a slow replica must not pre-empt a healthy one); only
 // wrong_shard/all_alternatives ends it early (all replicas share the shard assignment, so re-locating is
 // the right response). hedgeErr seeds the remembered timeout from the hedge arm's own failure — a
 // transport error, never a reply-carried version error (those surface directly via parseGetValueReply on
@@ -946,7 +946,7 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 	// never a remembered version error or a flattened timeout. Gate on ctx.Err() (the real READ context),
 	// NOT errors.Is on a per-server error: a cold dial / RPC timeout to an unreachable replica surfaces as
 	// a wrapped context.DeadlineExceeded under the db-scoped DefaultRPCTimeout while the read context is
-	// still LIVE, and that must fall back to other replicas rather than abort the scan (codex). Checked at
+	// still LIVE, and that must fall back to other replicas rather than abort the scan. Checked at
 	// entry (covers the no-untried-fallback case) and after each replica in the loop below.
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -994,7 +994,7 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 // cancellation. Such a timeout must be remembered as a timeout — surfaced as errReplyTimeout so getValue
 // re-sends to the same location — NOT dropped and flattened to all_alternatives_failed (1006), which
 // getValueImpl absorbs via the wrong-shard invalidate+relocate path, the wrong retry response to a merely
-// slow server (codex).
+// slow server.
 func isServerTimeout(err error) bool {
 	return isReplyTimeout(err) || errors.Is(err, context.DeadlineExceeded)
 }
@@ -1146,7 +1146,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// timebomb (resetPromise fires before the op's own logic). So a Cancel()ed / timed-out txn or an
 	// already-cancelled caller ctx returns 1025 / the caller's error / 1031 BEFORE the watches-disabled
 	// and legal-range/key-size gates below (and before the cap acquire), the same precedence the other
-	// reads get via ensureReadVersion (codex: else Cancel();WatchSetup(illegalKey) wrongly returned
+	// reads get via ensureReadVersion (else Cancel();WatchSetup(illegalKey) wrongly returned
 	// 2004). mapTimeout precedence: txn-cancelled, then the caller's ctx, then the txn SetTimeout.
 	if cerr := tx.checkCancelled(); cerr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, cerr // transaction_cancelled (1025)
@@ -1178,8 +1178,8 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// Reserve the outstanding-watch slot HERE — synchronously, at registration order — matching C++
 	// Transaction::watch, which calls increaseWatchCounter at watch() time (NativeAPI.actor.cpp:5694),
 	// NOT in the async poll. Charging it inside the async WatchPoll goroutine let two Watch() calls
-	// under MAX_WATCHES=1 race for the slot, so the first-registered watch could lose to the second
-	// (codex). Released by WatchPoll on the success path, or on a setup error below (matching C++'s
+	// under MAX_WATCHES=1 race for the slot, so the first-registered watch could lose to the
+	// second. Released by WatchPoll on the success path, or on a setup error below (matching C++'s
 	// catch → decreaseWatchCounter, NativeAPI:5679). Charged AFTER the malformed-key rejections above
 	// so an illegal/oversized-key watch never holds a slot.
 	if err := tx.db.tryAcquireWatch(); err != nil {
@@ -1187,7 +1187,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	}
 
 	// Mint THIS watch's own cancellable context HERE — right after the acquire and BEFORE the blocking
-	// GRV / value read below (codex). Those reads RUN on watchCtx (below), so a Cancel()/reset() during
+	// GRV / value read below. Those reads RUN on watchCtx (below), so a Cancel()/reset() during
 	// setup cancels THIS context and the setup-error path releases the slot at once; a Cancel during the
 	// async poll is observed by WatchPoll, which drains and releases. watchCancel is the SCOPED cancel
 	// (cancels+deregisters only this watch): the setup-error paths below call it, WatchPoll defers it on
@@ -1203,7 +1203,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// reset decrements the watch counter at once (NativeAPI.actor.cpp:5637-5682). watchCtx is a CHILD of
 	// ctx, so the caller's own ctx cancellation still propagates. Using the caller ctx here instead
 	// (the bug) left the slot charged until the caller ctx / RPC timeout when a stuck read raced a
-	// Cancel — a starve under a low MAX_WATCHES (codex). A Cancel that ran BEFORE the mint above (its
+	// Cancel — a starve under a low MAX_WATCHES. A Cancel that ran BEFORE the mint above (its
 	// cancelWatches was a no-op) is caught by ensureReadVersion's leading checkCancelled.
 	if err := tx.ensureReadVersion(watchCtx); err != nil {
 		tx.db.releaseWatch()
@@ -1229,8 +1229,8 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// future (ReadYourWrites.actor.cpp:1290), but every error path sends
 	// done.send(Void()) BEFORE rethrowing (:1299-1302, :1325-1329) — done
 	// completes successfully, so a failed watch read never poisons commit;
-	// reading only barriers on watch-setup completion (codex P2 on RFC-098,
-	// resolved the opposite way the finding suggested: the C++ source shows
+	// reading only barriers on watch-setup completion (RFC-098 — resolved the
+	// opposite way the original review finding suggested: the C++ source shows
 	// watch errors are deliberately excluded).
 	value, err := tx.ryw.get(watchCtx, key, tx.getValue)
 	if err != nil {
@@ -1251,7 +1251,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 // (1025) — matching what C++'s watch read observes after resetPromise.sendError(transaction_cancelled)
 // fires (ReadYourWrites.actor.cpp:1284-1333). A caller-ctx cancellation (txn not cancelled) is
 // returned as-is, and a GENUINE read error (an FDBError, a decode failure) is NEVER masked by 1025
-// even if a Cancel raced in just after it — whichever surfaced first wins, as in C++ (Torvalds).
+// even if a Cancel raced in just after it — whichever surfaced first wins, as in C++.
 func (tx *Transaction) watchSetupErr(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		if cerr := tx.checkCancelled(); cerr != nil {
@@ -1285,7 +1285,7 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.C
 	// watchCancels map self-cleans across a reused post-commit handle. Idempotent with the future's
 	// Cancel() and the cancelWatches path. Production callers always pass a non-nil watchCancel (from
 	// WatchSetup's success path), but guard defensively so a future caller on an error path can't panic
-	// the async watch goroutine (Torvalds).
+	// the async watch goroutine.
 	if watchCancel != nil {
 		defer watchCancel()
 	}

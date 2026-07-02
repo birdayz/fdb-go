@@ -319,7 +319,7 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 // Container teardown is registered on t.Cleanup with a FRESH context: t.Cleanup
 // runs AFTER the caller's `defer cancel()`, so terminating on the (cancelled)
 // test ctx makes testcontainers bail with context.Canceled and leak the
-// container (RFC-010 codex finding).
+// container (RFC-010).
 func startProxyFDB(t *testing.T, ctx context.Context) *ClusterFile {
 	t.Helper()
 
@@ -762,7 +762,7 @@ func TestCommitDummyTransaction_IsDummyGuard(t *testing.T) {
 }
 
 // TestPipelinedGet_Resolve_TransportErrorRetries covers PendingGet.Resolve's
-// transport-error arm (RFC-010 #3 + the handleConnError parity fix / codex gap 2):
+// transport-error arm (RFC-010 #3 + the handleConnError parity fix):
 // a reply carrying a connection-layer error re-drives through the full getValue
 // path and returns the seeded value. Built by hand-constructing a PendingGet
 // against a real transaction with a pre-loaded error reply.
@@ -808,7 +808,7 @@ func TestPipelinedGet_Resolve_TransportErrorRetries(t *testing.T) {
 }
 
 // TestPipelinedGet_Resolve_TimeoutRetries covers PendingGet.Resolve's RPC-timeout
-// arm (RFC-010 #3 / codex gap 3): when the reply never arrives, the timer fires
+// arm (RFC-010 #3): when the reply never arrives, the timer fires
 // and Resolve re-drives through getValue rather than surfacing DeadlineExceeded.
 func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
 	t.Parallel()

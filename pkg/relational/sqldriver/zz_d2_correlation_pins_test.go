@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// PIN (codex P2-1): a query-PARAMETER-bound scan in a join leg must plan and
+// PIN: a query-PARAMETER-bound scan in a join leg must plan and
 // return correct rows — the parameter (ConstantObjectValue) comparand is an
 // execution constant, NOT a row correlation, so scanComparisonCorrelations must
 // NOT report its constant-pool alias. If it did, the parameter-bound scan
 // `Scan(T,[k=?])` would look join-correlated and could perturb B1 leg detection /
-// the GRAEFE-2 probe-fed-residual guard. Here the t-leg carries both a join probe
+// the probe-fed-residual review guard. Here the t-leg carries both a join probe
 // (t.fk = o.id) and a parameter filter (t.k = ?); rows must be exactly those with
 // k = 5.
 func TestFDB_ParamBoundScanInJoinLeg_NotMisseenAsCorrelated(t *testing.T) {
@@ -65,7 +65,7 @@ func TestFDB_ParamBoundScanInJoinLeg_NotMisseenAsCorrelated(t *testing.T) {
 	}
 }
 
-// PIN (codex P2-2): a 3-way join whose plan nests an inner FlatMap (a correlated
+// PIN: a 3-way join whose plan nests an inner FlatMap (a correlated
 // probe) as the OUTER of an upper join. The inner FlatMap binds its own outer/inner
 // aliases, so the completed sub-join is NOT externally correlated; yieldGeneralFlat
 // Map must bind the wrapper quantifiers with the plan's real aliases (not fresh
@@ -111,7 +111,7 @@ func TestFDB_NestedFlatMapUnderJoin_NoCorrelationLeak(t *testing.T) {
 	}
 }
 
-// PIN (@claude/Torvalds REQUIRED-2, the EXISTS/FOD twin of codex P2-2): a
+// PIN (@claude/reviewer REQUIRED-2, the EXISTS/FOD twin of review P2-2): a
 // correlated EXISTS whose FlatMap sits over an upper join. The EXISTS FlatMap binds
 // its outer with the plan's real outer alias (NamedForEachQuantifier(mergedOuterCorr
 // / outerCorrelation)) and its FOD inner with NamedPhysicalQuantifier(existCorr /

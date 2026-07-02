@@ -1280,7 +1280,7 @@ func TestRYWGetRange_V2AtomicOnPresentEmpty(t *testing.T) {
 	}
 }
 
-// TestRYW_VersionstampedAbsentNoPhantom pins the codex RFC-056a finding: an
+// TestRYW_VersionstampedAbsentNoPhantom pins the RFC-056a finding: an
 // unresolved versionstamped mutation on an ABSENT key (applyAtomic → (nil,false),
 // the stamp is unknown until commit) must NOT surface as a phantom empty key in a
 // pre-commit read. The present-empty normalization is gated to exclude versionstamp
@@ -1310,8 +1310,8 @@ func TestRYW_VersionstampedAbsentNoPhantom(t *testing.T) {
 	assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 }
 
-// TestRYW_VersionstampedOverClearedOrPlainNoPhantom pins the codex re-review
-// finding on RFC-056a: the no-phantom behavior must hold when the key is absent
+// TestRYW_VersionstampedOverClearedOrPlainNoPhantom pins the follow-up RFC-056a
+// finding: the no-phantom behavior must hold when the key is absent
 // NOT because storage lacks it, but because THIS txn made it absent (a prior local
 // clear) — and, symmetrically, when a pending plain Set precedes the versionstamp.
 // Both used to be eagerly folded by atomic() into a plain rywEntry (the cleared
@@ -1344,7 +1344,7 @@ func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
 		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 	}
 
-	// (1) Cleared earlier in the txn, then versionstamped (codex's exact repro).
+	// (1) Cleared earlier in the txn, then versionstamped.
 	t.Run("cleared_then_versionstamp", func(t *testing.T) {
 		t.Parallel()
 		c := &rywCache{}
@@ -1371,9 +1371,9 @@ func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
 // `is_unreadable = it.is_unreadable() || <op is versionstamp>` (line 97) and the
 // stack-replacing fast path for SetValue is guarded by `!it.is_unreadable()`
 // (line 125) — so once a versionstamp poisons the entry, a subsequent SetValue
-// only pushes onto the stack and is_unreadable stays true. (A codex re-review
-// suggested "continue resolving after a SetValue overwrites the versionstamp";
-// that would surface the SetValue value and DIVERGE from C++, which keeps the
+// only pushes onto the stack and is_unreadable stays true. (The tempting
+// alternative — continue resolving after a SetValue overwrites the versionstamp —
+// would surface the SetValue value and DIVERGE from C++, which keeps the
 // key unreadable. Go approximates unreadable as absent, so the key reads absent
 // regardless of a trailing SetValue.) Both orderings are unreadable.
 func TestRYW_VersionstampUnreadableIsSticky(t *testing.T) {

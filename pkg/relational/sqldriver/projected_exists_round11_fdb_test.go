@@ -9,7 +9,7 @@ import (
 )
 
 // TestFDB_ProjectedExistsRound11 pins RFC-141 R4 round-11, the silent-wrong bug
-// codex found in the round-10 predicate-routing fix.
+// review found in the round-10 predicate-routing fix.
 //
 // Round-10 routed a non-EXISTS predicate BELOW the FirstOrDefault iff it
 // referenced ANY non-outer correlation. But an UNCORRELATED SCALAR SUBQUERY in a

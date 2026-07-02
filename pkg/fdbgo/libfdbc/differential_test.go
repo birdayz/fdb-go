@@ -55,7 +55,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 	// The record layer reads the facade version via fdb.GetAPIVersion (tuple.PackWithVersionstamp
 	// — record versions, MAX_EVER, SPFresh), and fdb.OpenDatabase below requires it too, so if
 	// libfdbc.Open had not set the facade version this whole test would fail with
-	// api_version_unset (2200). That makes this the regression for codex #295 r13. Both clients
+	// api_version_unset (2200). That makes this the PR #295 regression. Both clients
 	// run API 730 (the cgofdb binding's header version, matching the 7.3.77 server).
 	cgoBackend, err := libfdbc.Open(clusterFile)
 	if err != nil {
@@ -242,14 +242,14 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
-	// The following pin the three codex-review P2 findings — capability detection in
+	// The following pin three fixes — capability detection in
 	// the backend constructor, ctx honoring on the cgo backend, and the directory
 	// layer not panicking on a non-pure-Go transactor.
 
 	t.Run("pure_go_backend_keeps_direct_paths", func(t *testing.T) {
 		// NewFDBDatabaseWithBackend on the pure-Go backend (what fdbclient.Open returns
 		// in a default build) must KEEP CreateTransaction — the constructor detects the
-		// concrete fdb.Database and populates its db slot. (codex P2 #1)
+		// concrete fdb.Database and populates its db slot.
 		rlGo := recordlayer.NewFDBDatabaseWithBackend(goRaw)
 		tx, err := rlGo.CreateTransaction()
 		if err != nil {
@@ -270,7 +270,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 
 	t.Run("cgo_backend_honors_canceled_ctx", func(t *testing.T) {
 		// A canceled ctx must abort BEFORE the callback runs/commits on the cgo backend
-		// (it implements CtxTransactor now), matching the pure-Go backend. (codex P2 #2)
+		// (it implements CtxTransactor now), matching the pure-Go backend.
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		called := false
@@ -289,7 +289,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 	t.Run("directory_layer_rejects_cgo_backend", func(t *testing.T) {
 		// Directory writes need concrete pure-Go transaction features (out of escape-hatch
 		// scope); with the cgo backend they must return UnsupportedBackendError, NOT panic
-		// on the concrete-type assertion. (codex P2 #3)
+		// on the concrete-type assertion.
 		_, err := directory.CreateOrOpen(cgoBackend, []string{"libfdbc_diff_dir_cgo"}, nil)
 		var ue *directory.UnsupportedBackendError
 		if !errors.As(err, &ue) {
@@ -327,7 +327,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 	})
 
 	t.Run("cgo_backend_deadline_aborts_slow_callback", func(t *testing.T) {
-		// With the deadline→SetTimeout conversion removed (codex #295 r5 P1), the cancel
+		// With the deadline→SetTimeout conversion removed, the cancel
 		// watcher alone must enforce a deadline that expires while the callback runs:
 		// ctx.Done() fires at the deadline, the watcher cancels the cgo transaction
 		// (transaction_cancelled, 1025), the next read aborts, and mapTransactErr
@@ -444,7 +444,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		// code: OnError's backoff is ctx-bounded, so a cancel during it aborts the retry to
 		// ctx.Err() — exactly as the pure-Go loop does (its backoffSleep returns ctx.Err()).
 		// Without that (the removed short-circuit, or an un-ctx-bounded backoff) the caller
-		// sees a spurious not_committed after their context already expired. (codex #295 r10)
+		// sees a spurious not_committed after their context already expired.
 		ct := cgoBackend.(fdb.CtxTransactor)
 		ctx, cancel := context.WithCancel(context.Background())
 		_, err := ct.TransactCtx(ctx, func(tr fdb.WritableTransaction) (any, error) {

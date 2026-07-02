@@ -34,8 +34,8 @@ func TestSemanticEquals_IndexEntryObject_OrdinalPath(t *testing.T) {
 	}
 }
 
-// TestSemanticEquals_IndexEntryObject_Source is the regression for the bug
-// Codex flagged on PR #214: Source (KEY vs VALUE) was dropped from BOTH
+// TestSemanticEquals_IndexEntryObject_Source is the regression for the PR #214
+// bug: Source (KEY vs VALUE) was dropped from BOTH
 // EqualsWithoutChildren and SemanticHashCode, so KEY[p] and VALUE[p] with the
 // same alias + ordinal path collapsed to one value in the memo. But Evaluate
 // reads PrimaryKey() for KEY and IndexValues() for VALUE — different tuples —

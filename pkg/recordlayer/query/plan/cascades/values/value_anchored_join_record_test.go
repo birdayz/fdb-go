@@ -40,8 +40,8 @@ func TestNewAnchoredJoinRecord_ComposeResolvesEveryColumn(t *testing.T) {
 	resolvesToLegField("NAME")
 	resolvesToLegField("AMOUNT")
 	// Unique columns ALSO resolve by their qualified ALIAS.COL name — a qualified
-	// reference (e.g. A.NAME) must compose even when the bare name is unique (codex
-	// P2: the bare-only emission silently read NULL for such references).
+	// reference (e.g. A.NAME) must compose even when the bare name is unique (the
+	// bare-only emission silently read NULL for such references).
 	resolvesToLegField("A.NAME")
 	resolvesToLegField("B.AMOUNT")
 	// The cross-leg duplicate column ID is disambiguated as ALIAS.COL and each resolves.
@@ -79,7 +79,7 @@ func TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow(t *testing.T) {
 	}
 }
 
-// TestNewAnchoredJoinRecord_BareAndQualifiedKeySet pins Graefe's binding
+// TestNewAnchoredJoinRecord_BareAndQualifiedKeySet pins binding
 // condition 2 (RFC-077 v3): on a duplicate-bare-name multi-way join, the anchored
 // RC's key set is EXACTLY the bare+qualified set the retired opaque merge's
 // Evaluate produced — every bare key (last-leg-wins on a shared name) AND every
@@ -204,7 +204,7 @@ func (s staticBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bool
 	return v, ok
 }
 
-// TestAnchoredJoinRecord_NotEqualToPlainRC pins the @claude/codex memo-interning
+// TestAnchoredJoinRecord_NotEqualToPlainRC pins the memo-interning
 // catch (RFC-077 7.6): an anchored-join RC and a plain projection RC with the SAME
 // field set must NOT be equal (they differ in correlation hiding — the anchored
 // form hides its leg QOVs from GetCorrelatedToOfValue), and their SemanticHashCode
@@ -343,7 +343,7 @@ func TestNewReEnumerationAnchoredRecord_PassThroughAndMerge(t *testing.T) {
 	}
 }
 
-// TestNewReEnumerationAnchoredRecord_NoSpuriousDupBareKey is the codex P2-3
+// TestNewReEnumerationAnchoredRecord_NoSpuriousDupBareKey pins a review-found
 // regression: when a SINGLE re-enumeration leg is a merge quantifier collapsing
 // ≥2 tables that share a bare column name (A.ID + B.ID), and no LATER leg carries
 // that bare name, the bare field must be emitted exactly ONCE — not once per

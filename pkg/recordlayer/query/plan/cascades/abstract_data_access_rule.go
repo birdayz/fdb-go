@@ -24,7 +24,7 @@ import (
 //   - createScansForMatches
 //   - dataAccessForMatchPartition
 //
-// Compensation and ordering satisfaction are fully wired (swingshift-86).
+// Compensation and ordering satisfaction are fully wired.
 // Remaining: Pareto filtering in MaximumCoverageMatches (no containment
 // pruning yet — every match is kept, which is conservative/correct).
 
@@ -381,7 +381,7 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) exp
 // pins that the deferral works: a covered projection yields IndexScan(... COVERING)
 // with no Fetch; a non-covered one keeps the Fetch. (Costing nuance: the
 // intermediate Fetch wrapper is costed non-covering during winner selection,
-// before MergeProjectionAndFetch runs — codex P2; it does not change the chosen
+// before MergeProjectionAndFetch runs; it does not change the chosen
 // plan today and is folded into the template-aware costing work, RFC-076 step 3b.)
 //
 // For a bare IndexScan (no Fetch — e.g. a primary scan) isCovering IS applied
@@ -445,11 +445,11 @@ func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
 // carries. A bare PK RecordQueryScanPlan SARGed with a join predicate (`pk =
 // QOV(outer).fk`) is a CORRELATED probe — returning nil here (the prior behaviour) let
 // join-leg detection / winner-stamping treat it as self-contained and materialize/stamp
-// it without tracking the outer alias (codex P2 on 05c742100; a pre-existing gap in the
-// RFC-150 data-access correlation wiring, which reached physicalScanWrapper/
-// physicalIndexScanWrapper but not this plan-backed leaf). dataAccessExprCorrelations
-// reports the full set (SARG comparands + residual preds + map values, params excluded),
-// the same source the physical scan wrappers use.
+// it without tracking the outer alias (a pre-existing gap in the RFC-150 data-access
+// correlation wiring, which reached physicalScanWrapper/physicalIndexScanWrapper but not
+// this plan-backed leaf). dataAccessExprCorrelations reports the full set (SARG
+// comparands + residual preds + map values, params excluded), the same source the
+// physical scan wrappers use.
 func (s *scanPlanExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return dataAccessExprCorrelations(s.plan)
 }
@@ -556,7 +556,7 @@ func matchBoundPrefixIsCorrelated(pm PartialMatch) bool {
 // disqualifies a leg from an independently-evaluable primary-key intersection.
 // (Today the SQL layer lowers WHERE constants as ConstantValue, so the
 // subtraction is belt-and-suspenders, but it keeps the guard correct if literal
-// parameterization to ConstantObjectValue is added later — Graefe review.)
+// parameterization to ConstantObjectValue is added later.)
 func comparisonRowCorrelated(c *predicates.Comparison) bool {
 	if c == nil {
 		return false

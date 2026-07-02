@@ -80,7 +80,7 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		// but they MUST MOVE with the partition, not drop: GC discovers
 		// purgeable fineIDs by scanning cells' centroid rows, so a dropped
 		// tombstone's posting HDR (and any live residual §6's drain protects)
-		// would leak forever (Torvalds 094.3 #2). They're header-sized rows;
+		// would leak forever. They're header-sized rows;
 		// they ride to the nearest new cell and stay out of the k-means and
 		// the cell counters (which count ACTIVE centroids).
 		allRows, _, _, lerr := spfreshLoadCellForWrite(tx, s, cellID)
@@ -116,7 +116,7 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		// lifts the pause, so the re-file must land in the SAME transaction —
 		// including the degenerate exits (cell drained below 2 by merges,
 		// identical-vector 2-means, one-sided partition), which un-pause
-		// without splitting anything (Torvalds final-gauntlet B2). `rows`
+		// without splitting anything. `rows`
 		// holds ACTIVE rows ONLY (the state switch above defers on SEALED and
 		// diverts FORWARD/DEAD to tombstones), so this can never file a
 		// childless task beside an in-flight split's SEALED row.
@@ -163,7 +163,7 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		}
 		// A one-sided partition (k-means collapse on near-duplicate vectors)
 		// would publish an EMPTY ACTIVE cell — which ensureCell treats as an
-		// error, failing every query that probes it (codex 094.3 r1 P2).
+		// error, failing every query that probes it.
 		// Nothing meaningful to split either.
 		partition := make([]int, 2)
 		for _, c := range assign {

@@ -137,7 +137,7 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 	// fields. A join leg propagates ONLY its already-qualified per-table columns
 	// (O.ID, C.PRICE, …) to a parent — NOT the bare-last-wins names (those are the
 	// join's own result-value resolution convenience; propagating them would make a
-	// parent re-qualify them into spurious "_2" keys, Torvalds' nested-parity catch).
+	// parent re-qualify them into spurious "_2" keys — the nested-parity bug).
 	join := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), logical.JoinInner, "")
 	joinLegCols := tr.legColumns(join)
 	wantRC := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
@@ -209,7 +209,7 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 	}
 }
 
-// TestBuildJoinResultValue_NestedNoSpuriousKeys pins Torvalds' nested-parity catch
+// TestBuildJoinResultValue_NestedNoSpuriousKeys pins the nested-parity fix
 // (RFC-077 7.6): a 3-way nested-join seed's anchored RC must carry only
 // SOURCE-ACCURATE keys and NO dedup-suffixed "_2" garbage. Before the
 // dotted-only legColumns fix, a sub-join leg's bare columns were re-qualified
@@ -318,7 +318,7 @@ func TestTranslateUnion(t *testing.T) {
 
 // TestUnionBranchNormalizable_AggregateArity pins the RFC-081 gate boundary. UNGROUPED bare
 // aggregate branches are unchanged from RFC-080 (always StreamingAgg) — always normalizable,
-// NOT re-gated (no regression — codex). A GROUPED bare aggregate is normalizable IFF every
+// NOT re-gated (no regression). A GROUPED bare aggregate is normalizable IFF every
 // aggregate's output name is STABLE between the logical leg schema and the physical row key —
 // i.e. COUNT(*) or FUNC(<bare column>); a qualified operand (SUM(T.C)), a constant
 // (COUNT(1)/COUNT(NULL)), an expression, or DISTINCT canonicalizes differently → gated (clean
@@ -337,7 +337,7 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 		{"ungrouped SUM(V),COUNT(*)", logical.NewAggregate(scan, nil, []string{"SUM(V)", "COUNT(*)"}, []string{"S", "C"}, "")},
 		// Ungrouped is unchanged from RFC-080 (always StreamingAgg) — the stable-name gate applies
 		// only to GROUPED branches, so ungrouped constants/qualified stay normalizable (no
-		// regression of previously-working ungrouped union join legs — codex).
+		// regression of previously-working ungrouped union join legs).
 		{"ungrouped COUNT(1) [not re-gated]", logical.NewAggregate(scan, nil, []string{"COUNT(1)"}, []string{""}, "")},
 		{"ungrouped SUM(T.C) [not re-gated]", logical.NewAggregate(scan, nil, []string{"SUM(T.C)"}, []string{""}, "")},
 		{"grouped COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")},
@@ -363,7 +363,7 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	}
 
 	// COUNT(NULL) — text arg "NULL" LOOKS like an identifier, so only the ConstantValue operand
-	// catches it. This is why the gate combines text + operand (Torvalds/codex class).
+	// catches it. This is why the gate combines text + operand.
 	constNull := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(NULL)"}, []string{""}, "")
 	constNull.AggregateOperands = []values.Value{&values.ConstantValue{Value: nil}}
 	if tr.unionBranchNormalizable(constNull) {
@@ -461,7 +461,7 @@ func TestTranslateJoinNilMd(t *testing.T) {
 	}
 }
 
-// TestTranslateJoinWithExists_NilMdUntranslatable is the Torvalds-review regression:
+// TestTranslateJoinWithExists_NilMdUntranslatable is the nil-guard regression:
 // translateJoinWithExists must guard a nil result value the SAME as translateJoin.
 // Without md the join's leg columns don't derive, so buildJoinResultValue returns
 // nil (the opaque-seed fallback was retired, RFC-077 7.6). A nil result value must
@@ -1005,7 +1005,7 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 // upgradeSortKeyValues copies the EXACT projected Value pointer into the sort
 // key, so the key actually names the pointer-identical field (`b`). A single
 // semantic-equality pass would return the first equal field (`a`) and pull up to
-// the WRONG output column name. The two-pass design (Torvalds round-6 review)
+// the WRONG output column name. The two-pass design
 // keeps the pulled-up name faithful to the aliased column.
 func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
 	t.Parallel()
@@ -1061,7 +1061,7 @@ func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
 	}
 }
 
-// TestTranslateUnnest_NilMetadataIsCleanError pins codex P2b: the
+// TestTranslateUnnest_NilMetadataIsCleanError pins that the
 // metadata-less translation path (TranslateToCascades / the nil-md
 // TranslateToCascadesWithSubqueries, used by scalar-subquery / DML translation
 // and unit tests) must NOT panic when handed a LogicalJoin whose Right is a

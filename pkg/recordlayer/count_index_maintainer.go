@@ -153,7 +153,7 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 	executeProps := c.scanProps.GetExecuteProperties()
 
 	// Check row limit FIRST so a MAX_ROWS/LIMIT-bounded scan stops cleanly with
-	// ReturnLimitReached before the scan-limit backstops can fire (codex RFC-106a:
+	// ReturnLimitReached before the scan-limit backstops can fire (RFC-106a:
 	// match index_scan ordering — a returned-row cap that is satisfied must not be
 	// turned into a 54F01 by an equal scan-record cap).
 	if executeProps.ReturnedRowLimit > 0 && c.returned >= executeProps.ReturnedRowLimit {

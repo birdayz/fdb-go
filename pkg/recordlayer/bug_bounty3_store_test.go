@@ -676,8 +676,8 @@ var _ = Describe("BugBounty3Store", func() {
 	// at line 584 (which lives only in the non-dry-run continuation). So a Java DRY
 	// RUN INSERT/UPDATE on a FORBID_RECORD_UPDATE-locked store PREVIEWS SUCCESS, and
 	// dryRunDeleteRecordAsync skips the check too (line 1735). The old assertion
-	// pinned Go being STRICTER than Java — a conformance divergence (Graefe caught
-	// it on the RFC-158 pre-merge review). DryRunSaveRecord no longer calls
+	// pinned Go being STRICTER than Java — a conformance divergence (caught
+	// in the RFC-158 pre-merge review). DryRunSaveRecord no longer calls
 	// validateRecordUpdateAllowed; this test now pins the Java-faithful behavior for
 	// BOTH dry-run methods. (Real saves are still lock-rejected — see
 	// store_state_test.go "previews a DRY RUN save/delete …".)

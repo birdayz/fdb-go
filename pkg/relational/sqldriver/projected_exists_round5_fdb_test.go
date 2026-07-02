@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestFDB_ProjectedExists_Round5 pins the two round-5 codex-found regressions:
+// TestFDB_ProjectedExists_Round5 pins the two round-5 review-found regressions:
 //
 //	P1 — `SELECT * FROM t1 WHERE EXISTS(...)` reported the INNER subquery's columns.
 //	     The RFC-141 re-architecture plans a plain WHERE-EXISTS as an IDENTITY
@@ -324,7 +324,7 @@ func TestFDB_ProjectedExists_Round5(t *testing.T) {
 	// Sort by the RIGHT leg's selected id. t2.id descends as t1.id ascends, so
 	// ORDER BY t2.id DESC ⇒ t1.id 1,3,5 — the OPPOSITE of `ORDER BY t1.id DESC`.
 	// A wrong-leg sort (bare `ID` last-leg-wins resolving to t1.id) gives 5,3,1
-	// and fails. This is the codex round-5 probe ("ORDER BY t2.id sorts by t1.id").
+	// and fails. This is the review round-5 probe ("ORDER BY t2.id sorts by t1.id").
 	t.Run("join_selected_qualified_desc_t2id", func(t *testing.T) {
 		q := "SELECT t1.id, t2.id, EXISTS (SELECT 1 FROM t3 WHERE t3.t1_id = t1.id) AS has_t3 " +
 			"FROM t1 JOIN t2 ON t2.t1_id = t1.id ORDER BY t2.id DESC"

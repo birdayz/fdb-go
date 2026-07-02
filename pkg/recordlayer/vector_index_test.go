@@ -1068,7 +1068,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 	})
 
 	It("cold insert reaching a lonely inlining entry layer succeeds (Java: empty fetch = empty node)", func() {
-		// P4 regression (codex finding #4 — confirmed real). Java's InliningStorageAdapter
+		// P4 regression. Java's InliningStorageAdapter
 		// cannot distinguish "node with no neighbors" from "node absent" (its Javadoc says
 		// so, InliningStorageAdapter.java:94-95); fetchNodeInternal returns a node with an
 		// EMPTY neighbor list for an empty range, never an error. Go returned
@@ -1139,7 +1139,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 	})
 
 	It("cold insert into a CONNECTED inlining layer succeeds (vector merges into source-cached entries)", func() {
-		// Codex round-3 finding. A node loaded as a SOURCE at an inlining layer is cached
+		// A node loaded as a SOURCE at an inlining layer is cached
 		// with vecBytes nil (inlining nodes don't store their own vector at their layer).
 		// If its vector later arrives — via a threaded neighborVec or an edge value naming
 		// it — the cache write must MERGE the vector into the existing entry, not skip it

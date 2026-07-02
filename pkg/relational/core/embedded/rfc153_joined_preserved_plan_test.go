@@ -207,7 +207,7 @@ CREATE INDEX c_x ON c(x)
 CREATE INDEX s_ak ON s(ak)
 `
 
-// TestRFC153_CorrelatedInInner_RejectedCleanly — Graefe's correlated-IN shape:
+// TestRFC153_CorrelatedInInner_RejectedCleanly — the correlated-IN shape:
 // the null-supplying ON predicate is `c.x IN (SELECT … WHERE s.ak = a.id)`. An
 // IN-subquery in a JOIN ON clause is a shape Go (like Java) does not support
 // anywhere. It used to be silently DROPPED at translation → CROSS PRODUCT (the

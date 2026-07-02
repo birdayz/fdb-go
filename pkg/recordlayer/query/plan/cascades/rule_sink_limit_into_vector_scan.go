@@ -21,7 +21,8 @@ import (
 // scan must stream its re-ranked horizon so the Filter+Limit collect the true k
 // nearest MATCHING rows — the whole point of the Phase B fix.
 //
-// This is the decoupled "sink" half of Graefe's match-then-implement split: the
+// This is the decoupled "sink" half of the Cascades match-then-implement split
+// (Graefe 1995): the
 // match candidate emits ONE canonical ordered-stream form (it never sinks k and
 // never introspects residuals); this rule, and only this rule, folds k into the
 // scan when it is provably safe to do so.

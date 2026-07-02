@@ -202,7 +202,6 @@ var _ = Describe("SPFresh multi-tenant sweeper", func() {
 	})
 })
 
-// The two codex MT-review findings, pinned.
 var _ = Describe("SPFresh sweeper budgets and legacy bookkeeping", func() {
 	ctx := context.Background()
 
@@ -253,7 +252,7 @@ var _ = Describe("SPFresh sweeper budgets and legacy bookkeeping", func() {
 		Expect(worked).To(BeZero())
 	})
 
-	// Codex 094.4: a LIVE foreign lease at the head of the queue used to
+	// A LIVE foreign lease at the head of the queue used to
 	// consume the action budget without doing anything — at limit=1 the
 	// actionable task behind it never ran and the pass over-reported work.
 	It("foreign-leased tasks consume no action budget; cleanups do", func() {

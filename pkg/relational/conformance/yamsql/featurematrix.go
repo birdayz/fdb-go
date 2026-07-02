@@ -145,8 +145,8 @@ var categoryOrder = []string{
 
 func categoryFor(name string) string {
 	lower := strings.ToLower(name)
-	// Substring match, first rule wins. Rules are written to avoid the cross-feature
-	// false matches a codex review found: the over-broad "with_" rule is gone (CTEs
+	// Substring match, first rule wins. Rules are written to avoid known
+	// cross-feature false matches: the over-broad "with_" rule is gone (CTEs
 	// match on "cte"), "distinct_from" (a comparison predicate) precedes "distinct"
 	// (the COUNT(DISTINCT) aggregate), and "case_" (with the trailing underscore)
 	// matches CASE-expression scenarios without catching "..._edge_cases".

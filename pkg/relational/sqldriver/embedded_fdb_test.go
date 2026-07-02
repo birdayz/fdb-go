@@ -3030,7 +3030,7 @@ func TestFDB_DoubleColumnComparison(t *testing.T) {
 // TestFDB_DMLBareNonBooleanWhereRejected pins that a bare non-boolean DML WHERE
 // predicate (`DELETE/UPDATE ... WHERE amount`) raises 42804 — the SAME SQLSTATE
 // the SELECT/JOIN-ON paths give — instead of swallowing it into a generic DML
-// translation error (codex consistency catch on #357). The row must survive
+// translation error (SQLSTATE consistency across statement kinds). The row must survive
 // (both error before executing).
 func TestFDB_DMLBareNonBooleanWhereRejected(t *testing.T) {
 	t.Parallel()
@@ -3697,7 +3697,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	g.Expect(errIf).To(gomega.HaveOccurred(), "IF function-form must be rejected")
 	expectRejectionOrCascadesError(t, errIf, "Unsupported operator IF")
 
-	// Java conformance (swingshift-35): CAST(float AS INT) rounds (not
+	// Java conformance: CAST(float AS INT) rounds (not
 	// truncates) using `Math.round` semantics (floor(x + 0.5)). Previously
 	// Go used `int64(n)` which truncates toward zero and silently wraps
 	// on overflow. Matches Java CastValue.DOUBLE_TO_LONG.
@@ -3822,7 +3822,7 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g.Expect(db.QueryRowContext(ctx, `SELECT SQRT(val) FROM Num WHERE id = 1`).Scan(&sqrt)).To(gomega.Succeed())
 	g.Expect(sqrt).To(gomega.BeNumerically("~", math.Sqrt(7), 1e-9))
 
-	// swingshift-35: bitwise operators (Java has these as bitand/bitor/bitxor
+	// Bitwise operators (Java has these as bitand/bitor/bitxor
 	// in SqlFunctionCatalogImpl; Go was missing the BitExpressionAtomContext
 	// branch entirely, so `SELECT 5 & 3` used to error with "unsupported
 	// expression atom type").
@@ -4311,8 +4311,8 @@ func TestFDB_GreatestLeast(t *testing.T) {
 
 	// Java conformance: GREATEST/LEAST return NULL if any argument is NULL
 	// (VariadicFunctionValue.PhysicalOperator.GREATEST_LONG returns null on
-	// the first null arg). We previously skipped NULLs like Postgres — fixed
-	// swingshift-35.
+	// the first null arg). Go previously skipped NULLs like Postgres — now
+	// Java-aligned.
 	rows2, err := db.QueryContext(ctx, `SELECT GREATEST(a, NULL, c), LEAST(a, b, NULL) FROM Product WHERE id = 1`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows2.Close()
@@ -4603,7 +4603,7 @@ func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 	// purefdb falls back to /etc/foundationdb/fdb.cluster (127.0.0.1:4500)
 	// which isn't listening, producing a 60s timeout flake. Other tests skip
 	// via openTestDB's guard; this one constructed its own DSN so we have
-	// to check here. Flake root-caused swingshift-35.
+	// to check here.
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -6632,7 +6632,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			wantCode: api.ErrCodeUndefinedColumn,
 		},
 		{
-			// swingshift-38: division / modulo by zero returns SQLSTATE
+			// Division / modulo by zero returns SQLSTATE
 			// 22012 (division_by_zero) — the SQL-standard class-22 code.
 			// Previously 22023 (INVALID_PARAMETER); more precise now.
 			// Wrapped with `FROM T WHERE id = 1` so the FROM-less
@@ -7276,8 +7276,7 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 	g.Expect(total.Int64).To(gomega.Equal(int64(10)))
 }
 
-// TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34
-// 5-agent QA audit in one place:
+// TestFDB_MediumAuditFixes covers three MEDIUM QA-audit items in one place:
 //   - CAST(NULL AS <type>) must return NULL of the target type, not error
 //   - ABS / SQRT / POWER are absent from fdb-relational 4.11.1.0's
 //     ArithmeticValue registry — Java's planner emits "Unsupported
@@ -7452,7 +7451,7 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	// Grammar does not allow NULL as a LIKE pattern — the semantic path is
 	// covered in evalLikePredicateTri by NULL input returning triNull.
 
-	// Java conformance (swingshift-35): Java's ExpressionVisitor rewrites
+	// Java conformance: Java's ExpressionVisitor rewrites
 	// NOT BETWEEN as `x < lo OR x > hi`, so NULL in one bound short-circuits
 	// when the other side is definitively TRUE. n=5 (id=1), n=NULL (id=2).
 	//   id=1: 5 NOT BETWEEN 10 AND NULL = 5 < 10 OR 5 > NULL = TRUE OR UNKNOWN = TRUE

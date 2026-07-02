@@ -143,7 +143,7 @@ func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 	}
 }
 
-// TestMemo_NextMergeAlias pins two codex-P2 properties of the merge alias
+// TestMemo_NextMergeAlias pins two properties of the merge alias
 // (RFC-077 7.5). (1) Collision-PROOF: the alias contains a double-quote, the one
 // character no parsed SQL identifier can contain (lexer DOUBLE_QUOTE_ID:
 // '"' ~'"'+ '"'), so no user alias — quoted or not — can ever equal a merge
@@ -171,7 +171,7 @@ func TestMemo_NextMergeAlias(t *testing.T) {
 	}
 }
 
-// TestPartitionSelect_MergeAliasPlanHashStable pins the codex P2-1 fix: the merge
+// TestPartitionSelect_MergeAliasPlanHashStable pins that the merge
 // quantifier alias must NOT make the plan hash depend on process history. The
 // alias flows into RecordQueryNestedLoopJoinPlan.HashCodeWithoutChildren (raw
 // source aliases) → plans.PlanHash (plan-log identity) + the cost-model tiebreak.

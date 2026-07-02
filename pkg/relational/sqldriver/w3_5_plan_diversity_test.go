@@ -172,7 +172,7 @@ func TestFDB_W3_5_NullParamRangeIsEmpty(t *testing.T) {
 	// An ordered inequality against a NULL parameter is UNKNOWN for every row
 	// (SQL 3VL) → empty result. The index range builder must produce an empty
 	// range, not the null-boundary low with an unbounded high (which strinc'd
-	// to an inverted FDB range begin > end). Regression for the Codex P2
+	// to an inverted FDB range begin > end). Regression for the Review P2
 	// finding: pre-fix this errored or returned wrong rows on the indexed plan.
 	for _, q := range []string{
 		"SELECT id FROM t WHERE a < ?",

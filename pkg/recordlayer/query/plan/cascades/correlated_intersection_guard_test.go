@@ -8,7 +8,7 @@ import (
 )
 
 // TestComparisonRowCorrelated pins the correlated-intersection guard's signal
-// (RFC-069, Graefe review): a bound comparison disqualifies its leg from a
+// (RFC-069 review): a bound comparison disqualifies its leg from a
 // primary-key intersection ONLY when its RHS depends on a per-row OUTER
 // quantifier. Constant operands — plain ConstantValue literals AND constant-pool
 // ConstantObjectValue references — must NOT be flagged, or the guard would

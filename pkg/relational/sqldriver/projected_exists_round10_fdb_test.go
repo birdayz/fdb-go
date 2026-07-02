@@ -9,7 +9,7 @@ import (
 )
 
 // TestFDB_ProjectedExistsRound10 pins RFC-141 R4 round-10, two silent-wrong bugs
-// codex found:
+// review found:
 //
 //	P2a — a MULTI-TABLE EXISTS inner (`EXISTS (SELECT 1 FROM t2, t3 WHERE
 //	t2.t1_id = t1.id)`) correlating to a NON-rightmost leg (t2). The NLJ rule

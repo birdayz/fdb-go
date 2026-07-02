@@ -148,7 +148,7 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 			"post-drain postings are within the envelope — no capped reads")
 	})
 
-	// codex final-gauntlet P1: the chunked drain spans many transactions, so
+	// The chunked drain spans many transactions, so
 	// the parent's HDR forward marker must be published WITH the children
 	// (step 1) — not at finalize — or a reader routed by a stale cache to the
 	// SEALED parent has no redirect and every already-moved entry is
@@ -280,7 +280,7 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 			"the HDR path must actually have been exercised — if this is 0 the cache refreshed and the test pinned nothing")
 	})
 
-	// Torvalds final-gauntlet S1: a same-transaction INSERT→SELECT must (a)
+	// A same-transaction INSERT→SELECT must (a)
 	// see the uncommitted record (RYW via the tx-local cache) and (b) never
 	// load the process-global routing cache through the writing transaction —
 	// an aborted bootstrap would otherwise publish phantom topology globally,
@@ -371,7 +371,7 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// codex delta P2: the pause check must resolve the fine's CURRENT cell —
+	// The pause check must resolve the fine's CURRENT cell —
 	// a stale routed cellID (the fine moved in a completed coarse split)
 	// would look up the pause on the OLD cell and file straight through the
 	// starvation guard.

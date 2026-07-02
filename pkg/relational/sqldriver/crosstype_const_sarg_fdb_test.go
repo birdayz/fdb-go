@@ -71,7 +71,7 @@ func TestFDB_CrossTypeConstSarg(t *testing.T) {
 		})
 	}
 
-	// Graefe follow-up: prove the index SARG actually FIRES with the widened
+	// Review follow-up: prove the index SARG actually FIRES with the widened
 	// tuple-double comparand (not a silent degrade to full scan — the residual
 	// path is correct, so a rows-only test would pass green either way).
 	t.Run("uses_index_range_scan", func(t *testing.T) {

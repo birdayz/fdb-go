@@ -57,7 +57,7 @@ var (
 	// drift across ANY major bump (a stale 7.x left after an 8.x bump still sits beside an FDB
 	// keyword) without a numeric range that would hit Bazel 9.x. Case-sensitive "FDB" dodges the
 	// lowercase "fdb-record-layer-core" (the Java artifact); the \n in the negated class keeps the
-	// next table row's Bazel version out of reach. codex #330.
+	// next table row's Bazel version out of reach.
 	fdbContextCited = regexp.MustCompile(`(?:FoundationDB|foundationdb|libfdb_c|FDB)[^0-9\n]{0,30}?(\d+\.\d+\.\d+)`)
 	// goPin extracts the Go toolchain major.minor from go.mod (go 1.26.4 -> 1.26).
 	goPin = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+)`)
@@ -98,7 +98,7 @@ var changelogHeading = regexp.MustCompile(`(?m)^## \[[^\]]*\]`)
 
 // unreleasedSection returns the CHANGELOG text from "## [Unreleased]" up to the next "## ["
 // release heading (or EOF) — the Unreleased entry's body. Used to require the Compatibility
-// block INSIDE Unreleased (not satisfied by a tagged entry's heading). codex #330.
+// block INSIDE Unreleased (not satisfied by a tagged entry's heading).
 func unreleasedSection(changelog string) string {
 	const marker = "## [Unreleased]"
 	i := strings.Index(changelog, marker)
@@ -115,7 +115,7 @@ func unreleasedSection(changelog string) string {
 // currentChangelog returns the changelog PREAMBLE + the Unreleased section — everything up to
 // the first TAGGED release heading. The preamble (which carries a current Java-target claim) and
 // Unreleased must track the live pins; only tagged entries freeze their own versions and are
-// excluded, so a later pin bump doesn't force a history rewrite (codex #330).
+// excluded, so a later pin bump doesn't force a history rewrite.
 func currentChangelog(changelog string) string {
 	for _, loc := range changelogHeading.FindAllStringIndex(changelog, -1) {
 		if changelog[loc[0]:loc[1]] != "## [Unreleased]" {
@@ -157,7 +157,7 @@ func TestLivingDocsCiteCurrentJavaTarget(t *testing.T) {
 
 // TestLivingDocsCiteCurrentFDBVersion: any FDB-style 7.x.y version in a living doc must equal the
 // foundationdb pin in MODULE.bazel (the only 7.x.y in the docs is the FDB C++ client). Closes the
-// gap that the 4-part Java anchor can't catch a stale 3-part FDB version (RFC-132 / Torvalds).
+// gap that the 4-part Java anchor can't catch a stale 3-part FDB version (RFC-132).
 func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
@@ -168,7 +168,7 @@ func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 			v := body[m[2]:m[3]]
 			// Skip a 4-part version's 3-part prefix (e.g. the Java 4.11.1.0 — its own anchor
 			// handles it): only when the capture is followed by '.<digit>' (a genuine fourth
-			// part), NOT a bare trailing period like "...7.3.77." ending a sentence (Torvalds #330).
+			// part), NOT a bare trailing period like "...7.3.77." ending a sentence.
 			if m[3]+1 < len(body) && body[m[3]] == '.' && body[m[3]+1] >= '0' && body[m[3]+1] <= '9' {
 				continue
 			}
@@ -181,7 +181,7 @@ func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 
 // TestLivingDocsCiteCurrentGoVersion: any "Go x.y" reference in a living doc must share the go.mod
 // toolchain major.minor (Go 1.26.x and Go 1.26.4 both pass; Go 1.25 fails). Closes the Go-version
-// half of the gap (RFC-132 / Torvalds).
+// half of the gap (RFC-132).
 func TestLivingDocsCiteCurrentGoVersion(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
@@ -206,7 +206,7 @@ func TestReleaseDocsExistAndCompat(t *testing.T) {
 		t.Errorf("CHANGELOG.md is missing an `## [Unreleased]` section")
 	}
 	// The Compatibility block must live INSIDE the Unreleased section — not satisfied by an old
-	// release entry's heading (codex #330). A freshly-opened Unreleased without it must go red.
+	// release entry's heading. A freshly-opened Unreleased without it must go red.
 	if !strings.Contains(unreleasedSection(changelog), "### Compatibility") {
 		t.Errorf("CHANGELOG.md `## [Unreleased]` is missing its `### Compatibility` block (wire/SQL/option/version notes)")
 	}
