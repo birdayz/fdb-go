@@ -340,7 +340,8 @@ type Transaction struct {
 
 	// Retry-loop state — owned by the Run/OnError driver goroutine (never
 	// touched by concurrent data ops). creationTime anchors the SetTimeout
-	// budget: set on construction and user Reset(), NOT on OnError retry.
+	// budget: set on construction, by user Reset(), and stamped lazily by
+	// SetTimeout when still zero; NOT reset on OnError retry.
 	retryCount   int
 	backoff      time.Duration
 	creationTime time.Time
@@ -431,10 +432,14 @@ type Transaction struct {
 	// whole field race-free.
 	hadRead atomic.Bool
 
-	// GRV-reply bookkeeping — accumulated proxy tag-throttle delay from the GRV
-	// reply's ProxyTagThrottledDuration; reply-only, never serialized back
-	// (CommitProxyInterface.h:318). Written on the GRV path, read by OnError's
-	// backoff — the single retry-driver goroutine.
+	// proxyTagThrottledDuration — accumulated tag-throttle delay consumed by
+	// GetTagThrottledDuration and OnError's backoff. Written ONLY by nextBackoff,
+	// which adds the client-side proxyMaxTagThrottleDuration constant per
+	// proxy_tag_throttled (1223) error (≈ NativeAPI.actor.cpp:7761); the C++
+	// reply-side accumulation from the GRV reply's ProxyTagThrottledDuration
+	// (NativeAPI.actor.cpp:7410) is NOT implemented — the GRV parsers discard
+	// that field (registered gap, TODO.md). Reply-only in C++, never serialized
+	// back (CommitProxyInterface.h:318). Single retry-driver goroutine.
 	proxyTagThrottledDuration float64
 
 	// Per-watch cancellation (watchMu-guarded). Each in-flight Watch() gets its OWN cancellable

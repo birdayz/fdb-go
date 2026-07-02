@@ -1164,6 +1164,27 @@ and pinned. Resolution needs a differential probe (poison, Cancel, Get on both c
 that MultiVersionTransaction may reorder) and, if confirmed, a single swap of the two gates at
 each entry point in one FDB-C-dev cycle.
 
+### [ ] fdbgo/client: GRV reply's ProxyTagThrottledDuration is discarded — GetTagThrottledDuration undercounts vs libfdb_c
+
+C++ accumulates the GRV reply's `proxyTagThrottledDuration` into the transaction state
+(`NativeAPI.actor.cpp:7410`) in addition to the client-side per-1223-error constant add
+(`:7761`). Go implements only the constant add (`nextBackoff`,
+`proxyMaxTagThrottleDuration`); both GRV parsers (`grv.go` sendGRVRequest callers) discard
+the parsed reply field, so `GetTagThrottledDuration` under-reports whenever the proxy
+throttles the GRV itself. Surfaced by the FDB-C-dev review of PR #452 (RFC-175 C2), where
+the field's comment falsely claimed reply-side accumulation — comment fixed there; the
+wiring (batcher → per-waiter accumulation, mind GRV batching fan-out semantics) needs its
+own small FDB-C-dev cycle with a differential pin against libfdb_c.
+
+### [ ] fdbgo/client: rywDisabled is a plain bool read lock-free on every read-path gate — same reset-boundary class as timeoutNs/deadlineNs
+
+Written by SetReadYourWritesDisable and applyOptionDefaults (both reset paths); read lock-free by
+Get/getRangeDir/GetPipelined/WatchSetup (the 1034 gate) and Commit's ship-decision. The sanctioned
+Reset-cancels-watches overlap lets a cancelled watch's teardown read it concurrently with reset()'s
+re-application — the exact class fixed for timeoutNs/deadlineNs (atomics) on the reset boundary.
+Same treatment (atomic.Bool or inclusion in a guarded options snapshot) in a small FDB-C-dev cycle;
+surfaced by the PR #449 gauntlet as a fast-follow candidate.
+
 ### [x] planner: `LIMIT 0` returned ALL rows unless the inner was a bare table scan (Go-only LIMIT extension) — FIXED 2026-06-28
 
 `SELECT id FROM t LIMIT 0` (bare scan) returned 0 rows, but `LIMIT 0` over any non-bare inner (WHERE / ORDER BY /
