@@ -18,51 +18,53 @@ on:
   workflow_dispatch: # manual trigger
 
 jobs:
-  # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the actual
-  # JOB whenever a matching runner is free — on our single self-hosted
-  # `hetzner-fdb` slot, a backlog (regular PR CI, or another nightly still
-  # running) can delay that by hours, landing this multi-job, ~2-3h fuzz sweep
-  # in the middle of the workday and starving real CI. This gate runs on a
-  # cheap hosted runner (never touches our one self-hosted slot) and every
-  # `hetzner-fdb` job below skips unless it's still actually nighttime. A
-  # `workflow_dispatch` (manual "run it now") always proceeds regardless of
-  # time — only a delayed `schedule` dispatch is gated.
-  gate:
-    name: Nightly window gate
-    runs-on: ubuntu-latest
-    outputs:
-      in_window: ${{ steps.check.outputs.in_window }}
-    steps:
-      - id: check
-        run: |
-          HOUR=$(date -u +%-H)
-          # 00:00-07:00 UTC: generous margin past the 04:17 cron plus this
-          # workflow's longest job timeout (75m for engine-fuzz).
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
-            echo "in_window=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::scheduled dispatch landed at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (GitHub/the runner queue delayed this cron tick) — skipping to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
-            echo "in_window=false" >> "$GITHUB_OUTPUT"
-          fi
-
   diff-fuzz:
     name: Differential Serialization Fuzzer
-    needs: gate
-    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 45
 
     steps:
+      - name: Check nightly window
+        # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the
+        # actual JOB whenever hetzner-fdb (our single self-hosted slot) is
+        # free — a backlog (regular PR CI, or another nightly still running)
+        # can delay that by hours, landing this job in the middle of the
+        # workday. The check MUST run here, as the first step on the
+        # runner that was actually allocated, not in a separate gate job
+        # before the queue: a pre-queue check passes at dispatch time and is
+        # stale by the time this runner is finally free hours later (codex,
+        # PR #445 round 1 — the first version of this gate had exactly that
+        # bug). `workflow_dispatch` (manual "run it now") always proceeds.
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          # 00:00-07:00 UTC: generous margin past the 04:17 cron plus this
+          # workflow's longest job timeout (75m for engine-fuzz).
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.window.outputs.ok == 'true'
         uses: actions/checkout@v5
 
       - name: Build C++ oracle
+        if: steps.window.outputs.ok == 'true'
         run: bazelisk build //cmd/fdb-diff-oracle:diff_oracle_bin
 
       - name: Build Go fuzz test
+        if: steps.window.outputs.ok == 'true'
         run: bazelisk build //cmd/fdb-diff-oracle:fdb-diff-oracle_test
 
       - name: Resolve Bazel Go SDK
+        if: steps.window.outputs.ok == 'true'
         id: go-sdk
         run: |
           OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
@@ -80,6 +82,7 @@ jobs:
           echo "Using Go: $GO_BIN ($($GO_BIN version))"
 
       - name: Run deterministic tests (TestDiff + ALL fuzz seed corpora)
+        if: steps.window.outputs.ok == 'true'
         # Runs EVERY night, full set — this is the regression net (replays every
         # known crasher / ground-truth seed). `^Fuzz` is load-bearing: -run=TestDiff
         # alone does NOT replay the Fuzz* seed corpora (same fix as per-PR ci.yml
@@ -89,6 +92,7 @@ jobs:
           DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run='TestDiff|^Fuzz' -v -count=1 ./cmd/fdb-diff-oracle/
 
       - name: Actively fuzz a rotating 1/3 of oracle types (2min each)
+        if: steps.window.outputs.ok == 'true'
         # RFC-107: discover EVERY Fuzz* rather than a hard-coded list. Then fuzz only
         # a rotating third per night (date-based) at 2min each — ~6 targets × 2min ≈
         # 12min, vs the old 17 × 6m ≈ 1h45m. Over 3 nights every target gets an
@@ -122,7 +126,7 @@ jobs:
           exit $FAILED
 
       - name: Upload failing fuzz seeds
-        if: failure()
+        if: steps.window.outputs.ok == 'true' && failure()
         uses: actions/upload-artifact@v7
         with:
           name: diff-oracle-fuzz-seeds
@@ -132,20 +136,38 @@ jobs:
 
   race-detector:
     name: Race Detector
-    needs: gate
-    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 30
 
     steps:
+      - name: Check nightly window
+        # See diff-fuzz's "Check nightly window" step above for the full
+        # rationale (must run on the allocated runner, not a pre-queue gate).
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.window.outputs.ok == 'true'
         uses: actions/checkout@v5
 
       - name: Check Docker (else the race gate silently no-ops)
+        if: steps.window.outputs.ok == 'true'
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
 
       - name: Run tests with race detector
+        if: steps.window.outputs.ok == 'true'
         run: >
           bazelisk test
           //pkg/fdbgo/client:client_test
@@ -159,40 +181,77 @@ jobs:
 
   binding-stress:
     name: Binding Tester Stress (50 seeds)
-    needs: gate
-    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 60
 
     steps:
+      - name: Check nightly window
+        # See diff-fuzz's "Check nightly window" step above for the full
+        # rationale (must run on the allocated runner, not a pre-queue gate).
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.window.outputs.ok == 'true'
         uses: actions/checkout@v5
 
       - name: Check Docker (else binding stress silently no-ops)
+        if: steps.window.outputs.ok == 'true'
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — binding stress would skip and the gate would silently pass"; exit 1; }
 
       - name: Build
+        if: steps.window.outputs.ok == 'true'
         run: bazelisk build //cmd/fdb-binding-stress:fdb-binding-stress //cmd/fdb-stacktester:fdb-stacktester
 
       - name: Run API binding stress (50 seeds × 1000 ops)
+        if: steps.window.outputs.ok == 'true'
         run: bazelisk run //cmd/fdb-binding-stress -- -seeds 50 -ops 1000
 
       - name: Run directory binding stress (30 seeds × 500 ops)
+        if: steps.window.outputs.ok == 'true'
         run: bazelisk run //cmd/fdb-binding-stress -- -seeds 30 -ops 500 -test-name directory
 
   client-fuzz:
     name: Pure-Go Client Fuzz (//pkg/fdbgo)
-    needs: gate
-    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 60
 
     steps:
+      - name: Check nightly window
+        # See diff-fuzz's "Check nightly window" step above for the full
+        # rationale (must run on the allocated runner, not a pre-queue gate).
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.window.outputs.ok == 'true'
         uses: actions/checkout@v5
 
       - name: Check Docker + libfdb_c (mandatory for client/bench fuzz)
+        if: steps.window.outputs.ok == 'true'
         # RFC-107: pkg/fdbgo/client TestMain and pkg/fdbgo/bench always start an FDB
         # testcontainer (bench also exercises the cgo libfdb_c binding), so Docker is a
         # hard prerequisite — fail loudly rather than skip silently.
@@ -200,6 +259,7 @@ jobs:
           docker info >/dev/null 2>&1 || { echo "::error::Docker not available — client/bench fuzz cannot run"; exit 1; }
 
       - name: Fuzz a rotating 1/3 of //pkg/fdbgo Fuzz targets (Bazel-native, 90s each)
+        if: steps.window.outputs.ok == 'true'
         # Bazel-native (NOT plain `go test -fuzz`) so the run is faithful to the
         # MODULE.bazel go_deps.module_override that patches the Apple FDB Go binding.
         # Targets are DISCOVERED, not hard-listed; an empty discovery fails the job
@@ -246,7 +306,7 @@ jobs:
           exit $FAILED
 
       - name: Upload failing fuzz logs + cache
-        if: failure()
+        if: steps.window.outputs.ok == 'true' && failure()
         uses: actions/upload-artifact@v7
         with:
           name: client-fuzz-failure
@@ -258,20 +318,38 @@ jobs:
 
   engine-fuzz:
     name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer + //pkg/rabitq)
-    needs: gate
-    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 75
 
     steps:
+      - name: Check nightly window
+        # See diff-fuzz's "Check nightly window" step above for the full
+        # rationale (must run on the allocated runner, not a pre-queue gate).
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.window.outputs.ok == 'true'
         uses: actions/checkout@v5
 
       - name: Check Docker (a few targets — e.g. FuzzSQL_QueryContext — need a live FDB)
+        if: steps.window.outputs.ok == 'true'
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker not available — engine fuzz cannot run the e2e targets"; exit 1; }
 
       - name: Fuzz a rotating 1/3 of //pkg/relational + //pkg/recordlayer targets (Bazel-native, 90s each)
+        if: steps.window.outputs.ok == 'true'
         # The ~95 SQL-engine + record-layer Fuzz targets (planner suite, value/predicate
         # simplification, continuations, proto/record deserialization, SQL front-end +
         # e2e). Rotating a third per night (~32 targets × 90s ≈ 48min) keeps this inside
@@ -318,7 +396,7 @@ jobs:
           exit $FAILED
 
       - name: Upload failing fuzz logs + cache (crash corpus)
-        if: failure()
+        if: steps.window.outputs.ok == 'true' && failure()
         uses: actions/upload-artifact@v7
         with:
           name: engine-fuzz-failure

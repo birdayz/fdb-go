@@ -11,45 +11,45 @@ on:
   workflow_dispatch: # manual trigger
 
 jobs:
-  # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the actual
-  # JOB whenever a matching runner is free — on our single self-hosted
-  # `hetzner-fdb` slot, a backlog (regular PR CI, or another nightly still
-  # running) can delay that by hours, landing this 2h stress run in the
-  # middle of the workday and starving real CI. This gate runs on a cheap
-  # hosted runner (never touches our one self-hosted slot); the stress job
-  # skips unless it's still actually nighttime. A `workflow_dispatch`
-  # (manual "run it now") always proceeds regardless of time — only a
-  # delayed `schedule` dispatch is gated.
-  gate:
-    name: Nightly window gate
-    runs-on: ubuntu-latest
-    outputs:
-      in_window: ${{ steps.check.outputs.in_window }}
-    steps:
-      - id: check
-        run: |
-          HOUR=$(date -u +%-H)
-          # 00:00-07:00 UTC: generous margin past the 04:23 cron plus this
-          # job's 120m timeout.
-          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
-            echo "in_window=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::scheduled dispatch landed at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (GitHub/the runner queue delayed this cron tick) — skipping to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
-            echo "in_window=false" >> "$GITHUB_OUTPUT"
-          fi
-
   stress:
     name: 1M Stress (planner / cost-model / executor)
-    needs: gate
-    if: github.event_name != 'schedule' || needs.gate.outputs.in_window == 'true'
     runs-on: hetzner-fdb
     timeout-minutes: 120
 
     steps:
+      - name: Check nightly window
+        # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the
+        # actual JOB whenever hetzner-fdb (our single self-hosted slot) is
+        # free — a backlog (regular PR CI, or another nightly still running)
+        # can delay that by hours, landing this 2h stress run in the middle
+        # of the workday. The check MUST run here, as the first step on the
+        # runner that was actually allocated, not in a separate gate job
+        # before the queue: a pre-queue check passes at dispatch time and is
+        # stale by the time this runner is finally free hours later (codex,
+        # PR #445 round 1 — the first version of this gate had exactly that
+        # bug). `workflow_dispatch` (manual "run it now") always proceeds.
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          # 00:00-07:00 UTC: generous margin past the 04:23 cron plus this
+          # job's 120m timeout.
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.window.outputs.ok == 'true'
         uses: actions/checkout@v5
 
       - name: Check Docker (mandatory — else the stress gate silently no-ops)
+        if: steps.window.outputs.ok == 'true'
         # The stress test's TestMain catches a missing FDB container and exits 0 with
         # the allowed `FDB not available (no Docker)` skip — so without Docker the
         # `bazelisk test` below reports SUCCESS while running ZERO stress coverage
@@ -59,6 +59,7 @@ jobs:
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the stress test would skip (exit 0) and the gate would silently pass with no coverage"; exit 1; }
 
       - name: Resolve stress targets (no-op guard)
+        if: steps.window.outputs.ok == 'true'
         id: targets
         # The stress target carries BOTH `stress` and `manual` tags, so a wildcard
         # `//pkg/... --test_tag_filters=stress` drops it (manual targets are excluded
@@ -77,6 +78,7 @@ jobs:
           echo "labels=$(echo $STRESS | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
       - name: Run stress tests
+        if: steps.window.outputs.ok == 'true'
         id: stress
         # Gate ONLY on correctness: the stress test asserts row counts / results, so a
         # cost-model or executor regression that returns wrong rows fails here (bazel
@@ -94,9 +96,9 @@ jobs:
 
       - name: Report latency trend (non-gating)
         # Run on stress success OR failure, but NOT if the stress step was skipped
-        # (Docker preflight aborted) — else this greps a non-existent output file and
-        # reports a misleading empty trend (codex).
-        if: ${{ !cancelled() && steps.stress.outcome != 'skipped' }}
+        # (Docker preflight aborted, or outside the nightly window) — else this greps
+        # a non-existent output file and reports a misleading empty trend (codex).
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.stress.outcome != 'skipped' }}
         # Parse the per-op latency lines the stress test prints and emit them to the job
         # summary as a REPORTED trend. A real regression is visible without flaking the
         # build; an out-of-band alarm on the trend is future work (RFC-107 §1). The
@@ -117,7 +119,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload stress output
-        if: ${{ !cancelled() && steps.stress.outcome != 'skipped' }}
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.stress.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: stress-output
