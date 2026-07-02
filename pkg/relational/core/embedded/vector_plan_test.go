@@ -379,15 +379,27 @@ func TestVectorPlan_NoResidualFoldsToSelfLimiting(t *testing.T) {
 }
 
 // TestVectorPlan_TighterOuterLimitDoesNotFold pins the SinkLimitIntoVectorScanRule
-// DECLINE gate (@claude F3): a QUALIFY rank cap that is LOOSER than an explicit
-// outer LIMIT must NOT be folded into the scan — the tighter outer LIMIT has to
-// survive as an explicit Limit ABOVE the ordered scan, never silently widened up
-// to the scan's k. Concretely, `QUALIFY ROW_NUMBER()<=10 LIMIT 3` on an
-// un-partitioned vector index must plan to Limit(3) over an "ordered" scan — NOT
-// a self-limiting `rank<=` scan, and NOT a widened Limit(10)/rank<=10. The
-// converse (no outer LIMIT, no residual) still folds to the self-limiting fast
-// path. Together they pin: the fold fires IFF the cap equals the scan's adjusted
-// k, so a divergent (tighter) cap is honoured rather than lost.
+// DECLINE gate: a QUALIFY rank cap that is LOOSER than an explicit outer LIMIT
+// must NOT have that tighter LIMIT folded into the scan — the tighter cap has
+// to survive as an explicit Limit ABOVE the scan, never silently widened up to
+// the scan's k. Concretely, `QUALIFY ROW_NUMBER()<=10 LIMIT 3` on an
+// un-partitioned vector index must plan to Limit(3) over the QUALIFY's own
+// self-limiting rank<=10 scan: the fold fires IFF a Limit's cap equals the
+// scan's adjusted k — here it legally fires on the QUALIFY's OWN rank cap
+// (10 == k), never on the divergent LIMIT 3 (no rank<=3, no Limit(10)). The
+// converse (no outer LIMIT, no residual) folds to the bare self-limiting fast
+// path with no Limit at all.
+//
+// Winner determinism (RFC-176 P2 audit): the fold chain
+// Limit(3, rank<=10-scan) and the decline chain Limit(3, ordered-scan) are
+// row-equivalent (self-limiting mode is a top-k BY-DISTANCE scan, so the
+// first 3 rows are the 3 nearest either way — row-level net:
+// TestFDB_VectorSearch_TighterOuterLimitRows). They used to COST-TIE, because
+// the scan's up-front search work lived only in Cardinality, which the Limit
+// caps — dropping the winner to the criterion-#17 hash tie-break, where any
+// hash change re-rolled this plan's shape. The vector scan now carries that
+// work in CPU (physicalVectorIndexScanWrapper.HintCost), so the fold chain —
+// less up-front work (k=10 vs horizon=200) — wins on COST, deterministically.
 func TestVectorPlan_TighterOuterLimitDoesNotFold(t *testing.T) {
 	t.Parallel()
 	schema := `CREATE TABLE docs (
@@ -405,19 +417,19 @@ func TestVectorPlan_TighterOuterLimitDoesNotFold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tighter-outer-LIMIT plan: %v", err)
 	}
-	// The scan stays distance-ORDERED (k NOT sunk into it).
-	if !strings.Contains(eDecline, "VectorIndexScan(DOC_IDX, BY_DISTANCE, prefix=[], ordered") {
-		t.Fatalf("scan was not left in ordered-stream mode (SinkLimit should have declined):\n%s", eDecline)
+	// The QUALIFY's own cap is folded (cap == k fired legally) — and stays the
+	// QUALIFY's 10: the tighter LIMIT 3 was NOT sunk into the scan.
+	if !strings.Contains(eDecline, "VectorIndexScan(DOC_IDX, BY_DISTANCE, prefix=[], rank<=10") {
+		t.Fatalf("expected the QUALIFY's self-limiting rank<=10 scan (cost-determined fold winner):\n%s", eDecline)
 	}
-	// The tighter outer LIMIT survives ABOVE the ordered scan.
+	if strings.Contains(eDecline, "rank<=3") {
+		t.Fatalf("the divergent outer LIMIT 3 was sunk into the scan — SinkLimit must only fold a cap equal to the scan's k:\n%s", eDecline)
+	}
+	// The tighter outer LIMIT survives ABOVE the scan.
 	iLimit := strings.Index(eDecline, "Limit(3")
 	iScan := strings.Index(eDecline, "VectorIndexScan(")
 	if iLimit < 0 || iScan < 0 || iLimit > iScan {
-		t.Fatalf("expected explicit Limit(3) ABOVE the ordered VectorIndexScan:\n%s", eDecline)
-	}
-	// NOT folded into a self-limiting scan, and NOT widened to the scan's k=10.
-	if strings.Contains(eDecline, "rank<") {
-		t.Fatalf("k was sunk into the scan (rank<...) — the tighter outer LIMIT must stay an explicit Limit:\n%s", eDecline)
+		t.Fatalf("expected explicit Limit(3) ABOVE the VectorIndexScan:\n%s", eDecline)
 	}
 	if strings.Contains(eDecline, "Limit(10") {
 		t.Fatalf("outer LIMIT was widened to the scan's k=10 instead of honouring LIMIT 3:\n%s", eDecline)

@@ -81,9 +81,25 @@ func (w *physicalVectorIndexScanWrapper) HintRichOrdering() *RichOrdering {
 // result), so its cardinality is k (defaulting to a small constant when k is
 // not a plan-time literal). Far cheaper than scanning a partition and applying
 // a residual distance filter.
+//
+// CPU carries the scan's UP-FRONT search/re-rank work (card·ScanCPU, the same
+// per-row vocabulary as scanLikeCost): the ANN search materializes its whole
+// result set (k for self-limiting, the re-ranked horizon for ordered-stream)
+// BEFORE the first row streams out, so a Limit above cannot shrink that work.
+// With CPU at 0 this work lived only in Cardinality, which a Limit CAPS —
+// making Limit(k', ordered@horizon) cost-TIE the self-limiting top-k chain and
+// dropping the winner to the criterion-#17 hash tie-break, where any hash
+// change (RFC-176 P2 surfaced this) re-rolls the plan shape. Carrying the work
+// in CPU (which rolls up through the Limit) makes the SinkLimit fold chain win
+// on COST wherever the fold rule yielded it — the design intent stated at
+// defaultVectorHorizon — deterministically, hash-independent. Pinned by
+// TestVectorPlan_TighterOuterLimitDoesNotFold / _NoResidualFoldsToSelfLimiting.
 func (w *physicalVectorIndexScanWrapper) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	card := vectorScanCardinality(w.plan)
-	return properties.Cost{Cardinality: card * physicalWrapperCostMultiplier, CPU: 0}
+	return properties.Cost{
+		Cardinality: card * physicalWrapperCostMultiplier,
+		CPU:         card * properties.ScanCPU * physicalWrapperCostMultiplier,
+	}
 }
 
 // defaultVectorHorizon is the bounded re-ranked horizon an ordered-stream scan
