@@ -505,7 +505,12 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     dotted routing (alias-then-type); §7's dup-name SELECT * fix arrived early via driver-side
     positional reads (column-parallel guard + Datum fallback, both pinned); dualwindow caught the
     oracle-side bare-only Datum (oracleNameDatum reconstructs the anchored key set through the
-    sanctioned bridge; CARVE-OUTS STILL EMPTY — executor bug, not model divergence).
+    sanctioned bridge; CARVE-OUTS STILL EMPTY — executor bug, not model divergence). **Graefe ACK
+    notes (both landed):** the driver-side positional read PARTIALLY DELIVERS §7's dup-name
+    SELECT * fix for 2-way joins — S4's §7 pin planning must not double-count it; the
+    bare-name-over-dup-row first-match(spanAware)-vs-last-wins(Datum) divergence is pinned
+    unconstructible (TestRFC173S2_SpanAware_BareDupName_DivergencePin — reachable only if the
+    resolver ever admits ambiguous bare references).
   - **W2 (cluster-arity gate + drift asserts, dark) — DONE.** `rfc173_cluster_gate.go`:
     `clusterArity` walk + `ordinalWedgeGate` recording per-seed decisions (`wedgeGate` map, W3
     consumes); enclosure flag `inInnerCluster` threaded through translateJoin legs (inner=enclosed,

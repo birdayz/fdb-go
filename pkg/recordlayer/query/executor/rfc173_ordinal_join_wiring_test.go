@@ -817,3 +817,48 @@ func TestRFC173S2_LegWindowRowContext(t *testing.T) {
 		t.Fatalf("outer correlation OUT.X = (%v, %v), want (42, nil) — must resolve via the base binder", got, err)
 	}
 }
+
+// TestRFC173S2_SpanAware_BareDupName_DivergencePin (Graefe W3b-1 ACK note):
+// a flat BARE name over a dup-named merged row resolves FIRST-MATCH through
+// spanAwareRow (merged-type FieldIndex) but LAST-WINS through the coexistence
+// Datum (map writes) — a real model divergence that is UNREACHABLE in
+// production only because the resolver rejects ambiguous bare references
+// (42702) before planning. This pin freezes both behaviors so the divergence
+// stays unconstructible: if either side changes, or a resolver change ever
+// lets an ambiguous bare reference through, this is the axis to re-examine.
+func TestRFC173S2_SpanAware_BareDupName_DivergencePin(t *testing.T) {
+	t.Parallel()
+	corrA := values.NamedCorrelationIdentifier("a")
+	corrB := values.NamedCorrelationIdentifier("b")
+	legA := &values.RecordType{Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}}}
+	legB := &values.RecordType{Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1}}}
+	qovA := values.NewQuantifiedObjectValueOfType(corrA, legA)
+	qovB := values.NewQuantifiedObjectValueOfType(corrB, legB)
+	bA, err := values.NewFieldValueOfOrdinal(qovA, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	bB, err := values.NewFieldValueOfOrdinal(qovB, 0)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+	rc := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "ID", Value: bA},
+		values.RecordConstructorField{Name: "ID", Value: bB},
+	)
+	spans, mergedType, ok := ordinalJoinSpans(rc)
+	if !ok {
+		t.Fatal("fixture RC rejected by ordinalJoinSpans")
+	}
+	row := NewPositionalRow(mergedType)
+	row.Set(0, int64(1)) // a.id
+	row.Set(1, int64(2)) // b.id
+
+	sa := &spanAwareRow{parent: row, spans: spans}
+	if v, found := sa.GetByName("ID"); !found || v != int64(1) {
+		t.Fatalf("spanAwareRow bare ID = (%v, %v), want FIRST-match (1)", v, found)
+	}
+	if m := datumFromSpans(row, spans); m["ID"] != int64(2) {
+		t.Fatalf("datumFromSpans bare ID = %v, want LAST-wins (2)", m["ID"])
+	}
+}
