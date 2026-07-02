@@ -39,7 +39,7 @@ func TestRecordLayerIndex_IndexDef(t *testing.T) {
 // sensitive everywhere downstream (buildVectorIndex treats anything that is
 // not "SPFRESH" as HNSW), so unknown or mis-cased methods must fail loudly —
 // AddVectorIndexUsing("SPFresh", …) silently building an HNSW index is a
-// quiet misroute a schema author cannot debug (Graefe merge-HEAD F2).
+// quiet misroute a schema author cannot debug.
 func TestAddVectorIndexUsingMethodValidation(t *testing.T) {
 	t.Parallel()
 	mk := func(method string) error {

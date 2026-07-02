@@ -400,7 +400,7 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 	}
 	// An aggregate index is over a single table; parseAggregateIndexDefinition reads only the
 	// leading table source and would otherwise silently drop any JOIN (and any AT-ordinality
-	// clause on a joined source — codex). Reject JOINs explicitly rather than ignore them.
+	// clause on a joined source). Reject JOINs explicitly rather than ignore them.
 	if len(tsb.AllJoinPart()) > 0 {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"aggregate index %q: JOIN is not supported in an aggregate index definition", indexName)

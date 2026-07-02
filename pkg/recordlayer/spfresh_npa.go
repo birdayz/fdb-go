@@ -306,13 +306,13 @@ func spfreshFindCentroidCell(tx fdb.WritableTransaction, s *spfreshStorage, fine
 // spfreshFindCentroidCellSnapshot is the QUERY-PATH variant: it resolves the
 // fine's CURRENT cell with snapshot reads only — no conflict ranges. The
 // read-path split re-file uses it for the csplit-pause check (the routed
-// cellID can be stale after a completed coarse split; codex delta P2) while
+// cellID can be stale after a completed coarse split) while
 // keeping queries conflict-free except for the one Set-if-absent that
 // actually files. hintCell (the routed cell) is probed FIRST — one point
 // read in the common still-current case; the moved-fine fallback issues the
 // whole coarse table as ONE parallel burst, never one blocking read per cell
 // (a serial scan added O(cells) round trips to the user query that hit the
-// cap — codex delta r3).
+// cap).
 func spfreshFindCentroidCellSnapshot(tx fdb.WritableTransaction, s *spfreshStorage, fineID, hintCell int64) (int64, error) {
 	if hintCell != 0 {
 		data, gerr := tx.Snapshot().Get(s.centroidKey(hintCell, fineID)).Get()

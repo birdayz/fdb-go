@@ -151,7 +151,7 @@ func TestConcurrent_ResetWhileSizing_NoRace(t *testing.T) {
 	wg.Wait()
 }
 
-// TestConcurrent_SetIsAtomic pins the codex finding: a Set must publish its
+// TestConcurrent_SetIsAtomic pins that a Set must publish its
 // mutation and its write-conflict range as ONE atomic unit. With plain Sets
 // (no flags), each Set adds exactly one mutation and one write conflict, so an
 // observer snapshotting both counts under conflictMu must NEVER see them differ.

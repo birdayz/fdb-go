@@ -1071,7 +1071,7 @@ func VectorDistanceScanRangeWithPrefix(queryVector []float64, k, efSearch int, p
 // (index 3 of the SPFresh (k, kc, w, c, ε) contract), while efSearch stays the
 // index's TUNED probe width (SPFresh kc=64, HNSW ef) rather than being forced up
 // to the horizon. Threading c directly avoids the efSearch>0 path's 4×k re-rank
-// inflation and kc override (spfresh-reviewer / Torvalds Phase B NAK). The
+// inflation and kc override (rejected in Phase B review). The
 // intermediate w slot is 0 ("use the index default fine-probe width"). HNSW
 // reads only (k, efSearch) and ignores the extra slots.
 //

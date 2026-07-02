@@ -182,9 +182,9 @@ func scanGroup(s string, open int, openCh, closeCh byte) (string, int) {
 	return s[open:], len(s)
 }
 
-// TestGoTestWiresSrc pins the BUILD wiring parser against the edge cases codex #332 raised — only a
-// real go_test `srcs` entry counts; data/embedsrcs/comments/exports_files/substrings do not; and any
-// srcs expression (literal, concat, select) is accepted.
+// TestGoTestWiresSrc pins the BUILD wiring parser's edge cases — only a real go_test `srcs` entry
+// counts; data/embedsrcs/comments/exports_files/substrings do not; and any srcs expression
+// (literal, concat, select) is accepted.
 func TestGoTestWiresSrc(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -132,7 +132,7 @@ func TestFDB_RFC106a_ScanLimitFail(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC106a_MaxRowsStatementWide pins the codex ruling: OptMaxRows is
+// TestFDB_RFC106a_MaxRowsStatementWide pins the review ruling: OptMaxRows is
 // a TOTAL returned-row cap across all pages, not a per-page size. With a
 // scanned-records limit forcing multi-page pagination and MAX_ROWS=10 over
 // a 30-row table, EXACTLY 10 rows come back.
@@ -271,7 +271,7 @@ func TestFDB_RFC106a_ResultSizeCap(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC106a_ScalarSubqueryHonorsLimit pins the codex P2: an uncorrelated
+// TestFDB_RFC106a_ScalarSubqueryHonorsLimit pins the review P2: an uncorrelated
 // scalar subquery must respect the statement's scan limit, not bypass it with
 // DefaultExecuteProperties. Isolation uses TWO tables so the outer scan can
 // never trip the limit on its own (a single-table WHERE id < (subquery) fails
@@ -324,7 +324,7 @@ func TestFDB_RFC106a_ScalarSubqueryHonorsLimit(t *testing.T) {
 	wantExecLimit(t, err)
 }
 
-// TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates pins the codex follow-up:
+// TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates pins the review follow-up:
 // in PAGINATE mode (FailOnScanLimitReached=false) a leaf cursor that hits the
 // scan limit returns an out-of-band NoNext + continuation — but a BUFFERED
 // operator (here a scalar subquery) cannot paginate, so silently breaking on
@@ -372,7 +372,7 @@ func TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates(t *testing.T) {
 	wantExecLimit(t, err)
 }
 
-// TestFDB_RFC106a_AggregateIndexScanLimit pins the codex P2: a grouped
+// TestFDB_RFC106a_AggregateIndexScanLimit pins the review P2: a grouped
 // aggregate-index scan (countKVCursor) must honor the wired scan limits — before
 // the fix it checked only ReturnedRowLimit, so a high-cardinality GROUP BY could
 // read every group entry past the cap without 54F01. The COUNT(*) GROUP BY index
@@ -390,7 +390,7 @@ func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
 	const scanLimit = 5
 
 	// Prove the grouped COUNT plans as an AggregateIndex scan (the countKVCursor
-	// leaf codex flagged), not a full-scan fallback that would hit a different
+	// leaf review flagged), not a full-scan fallback that would hit a different
 	// cursor. EXPLAIN is static — no data needed.
 	const groupedCount = "SELECT g, COUNT(*) FROM ga GROUP BY g"
 	if plan := planExplainVia(t, ctx, db, groupedCount); !strings.Contains(plan, "AggregateIndex") {
@@ -421,7 +421,7 @@ func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
 	wantExecLimit(t, qerr)
 }
 
-// TestFDB_RFC106a_RowLimitBeatsScanLimit pins the codex r3 ordering fix: when
+// TestFDB_RFC106a_RowLimitBeatsScanLimit pins the review r3 ordering fix: when
 // pageRowBudget injects MAX_ROWS as the page's ReturnedRowLimit AND a scan limit
 // is set to the SAME value, a leaf cursor must check the returned-row limit FIRST
 // (clean ReturnLimitReached) — the caller asked for and received exactly N rows;
@@ -456,7 +456,7 @@ func TestFDB_RFC106a_RowLimitBeatsScanLimit(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx pins the codex r3 P1: a DML
+// TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx pins the review r3 P1: a DML
 // statement cut off by a resource limit must abort with ZERO mutations, never
 // leave a partially-applied DELETE staged in an explicit transaction that a later
 // commit would persist. Pre-materializing the target set means the 54F01 fires

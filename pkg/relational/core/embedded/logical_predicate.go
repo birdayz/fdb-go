@@ -3100,7 +3100,7 @@ func buildLogicalPlanForDeleteWithCatalog(
 	pred, ok, werr := buildWherePredicateForTableE(md, bare, bare, w)
 	if werr != nil {
 		// e.g. 42804 from a bare non-boolean DELETE WHERE — surface it, don't
-		// mask it as a generic DML translation error (RFC-146 / codex).
+		// mask it as a generic DML translation error (RFC-146).
 		return nil, werr
 	}
 	if !ok {

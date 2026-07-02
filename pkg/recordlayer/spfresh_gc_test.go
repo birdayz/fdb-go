@@ -188,7 +188,6 @@ var _ = Describe("SPFresh GC + lease recovery", func() {
 	})
 })
 
-// Torvalds 094.3 NAK regressions.
 var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", func() {
 	ctx := context.Background()
 

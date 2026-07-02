@@ -111,7 +111,7 @@ func TestDifferential_RYWDisableAfterOp(t *testing.T) {
 				return fdbErrorCode(e)
 			},
 		},
-		// Set → disable → SNAPSHOT Get (snapshot reads poison too — FDB-C-dev/Torvalds).
+		// Set → disable → SNAPSHOT Get (snapshot reads poison too).
 		{
 			"set_disable_snapshot_get",
 			func(tx gofdb.Transaction) int {

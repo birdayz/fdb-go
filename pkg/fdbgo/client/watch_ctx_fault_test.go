@@ -90,8 +90,8 @@ func TestWatchSetup_CancelDuringValueRead_ReleasesSlot(t *testing.T) {
 	db.db.releaseWatch() // free tx2's slot (no WatchPoll runs for it)
 }
 
-// TestWatchSetup_CancelUnblocksStuckSetupRead is the deterministic regression for codex's round-19
-// finding: WatchSetup's blocking setup reads must run on watchCtx (not the caller ctx), so a Cancel()
+// TestWatchSetup_CancelUnblocksStuckSetupRead is the deterministic regression pinning that
+// WatchSetup's blocking setup reads must run on watchCtx (not the caller ctx), so a Cancel()
 // during a PERMANENTLY-stuck value read unblocks the read and releases the reserved slot AT ONCE —
 // matching C++'s watch actor `catch{ decreaseWatchCounter(); throw; }` on cancellation
 // (NativeAPI.actor.cpp:5637-5682). Unlike TestWatchSetup_CancelDuringValueRead_ReleasesSlot (which

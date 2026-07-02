@@ -125,7 +125,7 @@ func TestFDB_DmlDryRun(t *testing.T) {
 		}
 	})
 
-	// (Graefe G1) DELETE echo keeps the `if deleted` filter (Java's
+	// (reviewer G1) DELETE echo keeps the `if deleted` filter (Java's
 	// .filter(isDeleted -> isDeleted)): a mixed predicate matching one existing and one
 	// absent PK previews exactly the existing one.
 	t.Run("delete_echo_counts_existing_only", func(t *testing.T) {

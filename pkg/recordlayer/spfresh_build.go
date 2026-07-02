@@ -803,7 +803,7 @@ func (s *spfreshQuantizer) scorer(residualQuery []float64, dims int) func(code [
 	// and keep the 0.5 cosine scale: the estimates stay monotone within the
 	// posting AND comparable across postings (a constant best-case estimate
 	// here created an Lmax-sized tie that could evict the true match from
-	// the top-C cut before the exact re-rank — codex 094.4 r2+r3).
+	// the top-C cut before the exact re-rank).
 	if s.config.Metric == VectorMetricCosine {
 		var norm float64
 		for _, v := range residualQuery {

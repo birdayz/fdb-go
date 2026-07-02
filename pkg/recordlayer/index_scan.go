@@ -793,7 +793,7 @@ func (c *indexRecordCursor) IsClosed() bool { return c.inner.IsClosed() }
 // byDistanceScanner is the BY_DISTANCE access-method contract every vector
 // index maintainer implements (RFC-094 §10): Low = (serialized query vector
 // [, prefix...]), High = (k [, tuning...]); entries ascend by distance.
-// Compile-time assertions catch signature drift at build time (Graefe 094.6).
+// Compile-time assertions catch signature drift at build time.
 type byDistanceScanner interface {
 	ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
 }

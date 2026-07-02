@@ -146,7 +146,7 @@ func TestLookupLocked_BackwardSelectorOnBoundary(t *testing.T) {
 	}
 }
 
-// TestLocate_SystemKeyClampIgnoresBackward pins the codex #10 P2: locate clamps the \xff\xff system
+// TestLocate_SystemKeyClampIgnoresBackward: locate clamps the \xff\xff system
 // keyspace to the single 0xff sentinel, so a BACKWARD selector on allKeysEnd must NOT then apply a
 // backward lookup to the sentinel — that would route to the last USER shard ending at 0xff instead of the
 // SYS shard containing 0xff (wrong-shard/retry on a multi-SS cluster). Revert-proof: dropping the

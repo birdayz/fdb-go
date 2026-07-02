@@ -35,7 +35,7 @@ func scanComparisonCorrelations(comps []*predicates.ComparisonRange) map[values.
 		// A query-parameter (ConstantObjectValue) comparand is an execution constant
 		// bound at run time, NOT a row correlation — its constant-pool alias appears
 		// in GetCorrelatedToOfValue but must not make a `Scan(T,[k=?param])` look
-		// join-correlated to planning (B1 leg detection) or to the GRAEFE-2
+		// join-correlated to planning (B1 leg detection) or to the
 		// probe-fed-residual guard (compensationProbeCorrelations). Subtract any such
 		// aliases — the value-level twin of deletePredicateConstantObjectAliases.
 		values.WalkValue(c.Operand, func(node values.Value) bool {

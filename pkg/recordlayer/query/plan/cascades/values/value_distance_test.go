@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDistanceValue_DecodesStoredVectorBytes pins codex Finding 2: a distance
+// TestDistanceValue_DecodesStoredVectorBytes pins that a distance
 // expression over a STORED vector column reaches eval as its on-disk bytes
 // (vectorcodec format), not []float64, so the distance must DECODE them and
 // compute the real value instead of silently returning UNKNOWN. Before the fix

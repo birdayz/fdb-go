@@ -130,7 +130,7 @@ var _ = Describe("SPFresh ε-pruning", func() {
 	})
 
 	It("widens past the rerank budget when k > c (large-k under pruning)", func() {
-		// codex full-PR P2: the starvation widening gated on s.c (the rerank
+		// The starvation widening gated on s.c (the rerank
 		// budget), but the re-rank keeps cTop = max(s.c, k). With k > s.c a
 		// pruned query stopped widening once the probe set filled s.c and
 		// returned FEWER than k rows despite enough indexed records. Here the
@@ -189,7 +189,7 @@ var _ = Describe("SPFresh ε-pruning", func() {
 			searcher := newSPFreshSearcher(storage, config, cache)
 			searcher.kc = 32
 			searcher.epsilon = 0.0001 // prune the far cluster's lists
-			searcher.c = 1            // rerank budget BELOW k — the codex k>c case
+			searcher.c = 1            // rerank budget BELOW k — the k>c case
 			results, serr := searcher.search(tx, query, k)
 			if serr != nil {
 				return nil, serr

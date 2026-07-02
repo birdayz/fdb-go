@@ -250,7 +250,7 @@ func spfreshRefineAll(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 // accumulated SINCE the last wrap (so convergence is judged over a full cursor
 // CYCLE, not one budgeted pass — a tenant with n > budget completes a cycle over
 // several passes; an early pass can move rows while the wrapping tail pass moves
-// none, codex), and the raw membership-relative key bytes to resume after (nil =
+// none), and the raw membership-relative key bytes to resume after (nil =
 // start of the keyspace). Format: [generation:8 LE][movedSinceWrap:8 LE][after...].
 type spfreshRefineCursor struct {
 	generation     int64

@@ -83,8 +83,8 @@ func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext,
 		// abort leaves every other writer routing on phantoms (caught by the
 		// concurrent foreground-fill benchmark). Seed L1 from the global
 		// cache when it's warm; otherwise load from this tx. Same-tx
-		// searches route on this cache too (RYW; Torvalds final-gauntlet
-		// S1), which is why it lives on the context, not the maintainer:
+		// searches route on this cache too (RYW),
+		// which is why it lives on the context, not the maintainer:
 		// another store instance in this transaction must find it.
 		global := spfreshCacheFor(m.indexSubspace, gen)
 		if !bootstrapped && global.ready(gen) {
@@ -331,7 +331,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		// PAST the first Replication candidates for a different-direction
 		// replica, so "Replication verified" is not enough to stop (a pool
 		// of exactly r turns every RNG skip into silent under-replication —
-		// codex 094.4). The queue is ascending at every pop, so:
+		// review 094.4). The queue is ascending at every pop, so:
 		//  1. done: r diverse replicas kept and the head can no longer
 		//     enter the kept set;
 		//  2. ratio: the head already fails the closure's ratio bound

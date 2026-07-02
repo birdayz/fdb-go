@@ -57,7 +57,7 @@ var (
 	// drift across ANY major bump (a stale 7.x left after an 8.x bump still sits beside an FDB
 	// keyword) without a numeric range that would hit Bazel 9.x. Case-sensitive "FDB" dodges the
 	// lowercase "fdb-record-layer-core" (the Java artifact); the \n in the negated class keeps the
-	// next table row's Bazel version out of reach. codex #330.
+	// next table row's Bazel version out of reach.
 	fdbContextCited = regexp.MustCompile(`(?:FoundationDB|foundationdb|libfdb_c|FDB)[^0-9\n]{0,30}?(\d+\.\d+\.\d+)`)
 	// goPin extracts the Go toolchain major.minor from go.mod (go 1.26.4 -> 1.26).
 	goPin = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+)`)
@@ -98,7 +98,7 @@ var changelogHeading = regexp.MustCompile(`(?m)^## \[[^\]]*\]`)
 
 // unreleasedSection returns the CHANGELOG text from "## [Unreleased]" up to the next "## ["
 // release heading (or EOF) — the Unreleased entry's body. Used to require the Compatibility
-// block INSIDE Unreleased (not satisfied by a tagged entry's heading). codex #330.
+// block INSIDE Unreleased (not satisfied by a tagged entry's heading).
 func unreleasedSection(changelog string) string {
 	const marker = "## [Unreleased]"
 	i := strings.Index(changelog, marker)
@@ -157,7 +157,7 @@ func TestLivingDocsCiteCurrentJavaTarget(t *testing.T) {
 
 // TestLivingDocsCiteCurrentFDBVersion: any FDB-style 7.x.y version in a living doc must equal the
 // foundationdb pin in MODULE.bazel (the only 7.x.y in the docs is the FDB C++ client). Closes the
-// gap that the 4-part Java anchor can't catch a stale 3-part FDB version (RFC-132 / Torvalds).
+// gap that the 4-part Java anchor can't catch a stale 3-part FDB version (RFC-132).
 func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
@@ -181,7 +181,7 @@ func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 
 // TestLivingDocsCiteCurrentGoVersion: any "Go x.y" reference in a living doc must share the go.mod
 // toolchain major.minor (Go 1.26.x and Go 1.26.4 both pass; Go 1.25 fails). Closes the Go-version
-// half of the gap (RFC-132 / Torvalds).
+// half of the gap (RFC-132).
 func TestLivingDocsCiteCurrentGoVersion(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)

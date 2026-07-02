@@ -94,7 +94,7 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 		}
 	})
 
-	// Torvalds gap: the differential + rows above pinned the combined OPERAND only for ADD. Pin it for
+	// Coverage gap: the differential + rows above pinned the combined OPERAND only for ADD. Pin it for
 	// every fold op with HAND-computed expected values (independent of applyAtomic, which the fold reuses).
 	t.Run("every fold op combines operands correctly", func(t *testing.T) {
 		t.Parallel()
@@ -260,7 +260,7 @@ func TestCommit_ShipsSelfConflictRange_Wire(t *testing.T) {
 	}
 }
 
-// TestMaybeMakeSelfConflicting_DecidesOnFrozenSnapshot pins codex #28 round-3: the SC injection decision
+// TestMaybeMakeSelfConflicting_DecidesOnFrozenSnapshot pins that the SC injection decision
 // must use the FROZEN write snapshot that ships, NOT live tx.writeConflicts. A Set racing this Commit after
 // the snapshot (excluded from the shipped writes) must not flip the decision — else the frozen writes ship
 // with no intersecting range and no \xff/SC/ key, breaking the commit_unknown_result barrier. Revert-proof:

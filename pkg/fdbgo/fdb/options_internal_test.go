@@ -28,7 +28,7 @@ func TestSetMaxWatches_FacadeConvertsError(t *testing.T) {
 	}
 	// The over-max bound converts the same way. (The valid-cap path stores into the inner database
 	// and is covered by client.TestSetMaxWatches_RejectsOutOfRange; the bare facade db here has no
-	// inner store, so we only exercise the reject-and-convert path the codex finding is about.)
+	// inner store, so we only exercise the reject-and-convert path.)
 	if c := opts.SetMaxWatches(absoluteMaxWatchesFacade + 1); c == nil {
 		t.Fatal("facade SetMaxWatches(>1e6) must reject")
 	}

@@ -588,7 +588,7 @@ func TestPlanChoice_AllPredicatesResidual(t *testing.T) {
 	}
 }
 
-// TestPlanChoice_ParameterizedResidualKeepsIndex pins codex PR-#257 finding P2: a
+// TestPlanChoice_ParameterizedResidualKeepsIndex pins the PR #257 fix: a
 // query-parameter ($N → ConstantObjectValue) in a residual predicate is an execution
 // constant, NOT a join/row correlation. The data-access compensation gate must subtract
 // it, so `WHERE customer_id = 42 AND total > $1` (total non-indexed) still materializes the

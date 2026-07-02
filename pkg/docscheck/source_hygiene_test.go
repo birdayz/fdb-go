@@ -38,21 +38,35 @@ import (
 
 // bannedCommentPatterns are the comment-content bans from CLAUDE.md ("Never put
 // shift tags in code comments"; reviewer attribution is git-blame's job).
+// Reviewer names match on WORD BOUNDARIES, case-insensitively: narrower forms
+// (name-plus-colon, parenthesized name) let bare mentions ("per <name> #330",
+// "<name> review") survive the sweep. The WHO-ban has no reviewer exemption —
+// that includes the Cascades-review authority: cite the ROLE ("the
+// architectural review gate"), the artifact (an RFC, a paper title), or the
+// invariant — never the person.
+// Literature/file-path citations that legitimately carry a name (e.g. the
+// Cascades-paper notes under docs/) belong on the allowlist with a
+// justification, not as a pattern exemption.
 var bannedCommentPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(day|night|swing)shift-[0-9]+`),
-	regexp.MustCompile(`\(codex\b`),
-	regexp.MustCompile(`codex:`),
-	regexp.MustCompile(`\(Torvalds`),
+	regexp.MustCompile(`(?i)\bcodex\b`),
+	regexp.MustCompile(`(?i)\btorvalds\b`),
+	regexp.MustCompile(`(?i)\bgraefe\b`),
 	regexp.MustCompile(`audit #[0-9]+`),
 }
 
 // hygieneAllowlist exempts individual offenses from the gate. Entries are
 // matched as substrings of the reported offense string ("rel/path.go:123: the
 // comment line"), so either a "path.go:123" prefix or a distinctive fragment of
-// the comment works. EMPTY at birth — every addition needs review sign-off in
-// the PR that adds it, with the reason the line is a legitimate exception
-// rather than an attribution to sweep.
-var hygieneAllowlist = []string{}
+// the comment works. Every addition needs review sign-off in the PR that adds
+// it, with the reason the line is a legitimate exception rather than an
+// attribution to sweep.
+var hygieneAllowlist = []string{
+	// The academic citation of the Cascades framework paper (notes under
+	// docs/) — a literature source the planner implements, not reviewer
+	// attribution.
+	"Graefe 1995",
+}
 
 // generatedMarker is Go's official generated-file convention
 // (https://go.dev/s/generatedcode), used here as a fast path on the file

@@ -641,7 +641,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 			// Multi-target build presets the gaps then scans the [low, high]+0xff range. A
 			// small limit forces multiple chunks. Without buildRange handling the +0xff end
-			// boundary, this fails with "unpack range end" (revert-proof for the codex P1).
+			// boundary, this fails with "unpack range end" (the revert-proof).
 			indexer, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).SetMetaData(mdWithIdx).
 				AddTargetIndex(priceIdx).AddTargetIndex(qtyIdx).

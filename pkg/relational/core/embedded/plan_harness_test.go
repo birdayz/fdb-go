@@ -1428,7 +1428,7 @@ func TestPlanHarness_BareDoubleWhereRejected(t *testing.T) {
 // rejection: a CTE/derived column holding a boolean expression (`NOT flag`) is
 // UNKNOWN-typed in the outer scope (its projected type isn't propagated), so it
 // MUST stay on the permissive UNKNOWN path and PLAN as a bare WHERE predicate,
-// NOT be rejected 42804. This pins the exact shape the codex #2 rework was
+// NOT be rejected 42804. This pins the exact shape the stricter rework was
 // reverted to protect — a *FieldValue of UNKNOWN type is not always non-boolean.
 // Without this pin, a future "be stricter about UNKNOWN" change re-breaks
 // boolean CTE columns with green CI (the dimensional-gap trap).
@@ -1478,7 +1478,7 @@ func TestPlanHarness_MultiTableJoinCompoundResidualNotMaterialized(t *testing.T)
 // outer-correlation check, backed structurally by B1's task-graph invariant — RFC-150
 // Phase 2b), yieldUnknown realizes a physical correlated leg filter that severs the
 // join's correlation feed → FlatMap(outer=Scan(O), inner=Fetch(<nil>)) → 0 rows (the
-// PR-#201 shape, reproduced by Graefe). The valid plan drives the inner from the outer.
+// PR-#201 shape, reproduced in review). The valid plan drives the inner from the outer.
 func TestPlanHarness_CorrelatedResidualNotStandaloneLeg(t *testing.T) {
 	t.Parallel()
 	schema := `CREATE TABLE o (id bigint, PRIMARY KEY (id))
@@ -1608,8 +1608,8 @@ func TestPlanHarness_RotFix_CompoundResidualUsesIndex(t *testing.T) {
 	// Join-leg IN: a 3-way join where the indexed leg t carries an IN residual and is
 	// consumed correlated. Structurally distinct from the single-table IN (the
 	// explode-or-filter path on a partition-SUBSEL leg) and from the OR/AND join-leg
-	// shapes already pinned — and join legs are where this series repeatedly bit
-	// (Graefe). Must plan valid (no nil inner) with the IN residual realized.
+	// shapes already pinned — and join legs are where this series repeatedly
+	// bit. Must plan valid (no nil inner) with the IN residual realized.
 	joinSchema := `CREATE TABLE o (id bigint, PRIMARY KEY (id))
 		CREATE TABLE t (id bigint, fk bigint, k bigint, m bigint, x bigint, PRIMARY KEY (id))
 		CREATE TABLE u (id bigint, x bigint, PRIMARY KEY (id))

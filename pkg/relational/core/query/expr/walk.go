@@ -279,7 +279,7 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 		// UserDefinedScalarFunctionCall (the grammar's `ID '(' args ')'`
 		// fallthrough). Route recognised by-name built-ins here through the
 		// dedicated dispatch; everything else declines so the caller falls
-		// back. This is the SINGLE by-name gate Torvalds blessed — not a
+		// back. This is the SINGLE by-name gate — not a
 		// fourth hand-maintained keyword list.
 		return r.walkUserDefinedScalarFunction(udf)
 	}
@@ -498,7 +498,7 @@ func commonBranchType(branches []values.Value) values.Type {
 		// branches type the result (`CASE WHEN c THEN NULL ELSE v END` is v's
 		// type). NULL is built as NewNullValue(TypeUnknown), so its type code
 		// is TypeCodeUnknown — it must be detected by value KIND, not type
-		// code, or it gets confused with a genuine unknown (Graefe).
+		// code, or it gets confused with a genuine unknown.
 		if _, isNull := b.(*values.NullValue); isNull {
 			continue
 		}

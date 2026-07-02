@@ -659,7 +659,7 @@ func TestSPFreshBuildRouterAssignWideningBoundary(t *testing.T) {
 	}
 }
 
-// TestSPFreshPruneLowerBoundIsConservative is the regression for codex's P2: the
+// TestSPFreshPruneLowerBoundIsConservative is the near-cancellation regression: the
 // prune bound is dvc-dcf where dvc=d(v,c), dcf=d(c,f) are SEPARATELY-rounded sqrts
 // of dims-term summed squared distances. When dvc≈dcf (a fine almost on the query
 // but far from its cell centroid) the subtraction CANCELS catastrophically and
@@ -669,7 +669,7 @@ func TestSPFreshBuildRouterAssignWideningBoundary(t *testing.T) {
 // its result must NEVER exceed the actual computed d(v,f). This asserts
 // lb*lb <= d²(q,f) (whenever lb>0) across an adversarial sweep that DELIBERATELY
 // drives the near-cancellation regime (fines fractionally off the query, large
-// magnitude, up to 160-D), plus codex's exact reported triple. A naive bound
+// magnitude, up to 160-D), plus the exact originally-reported triple. A naive bound
 // (dvc-dcf without the magnitude-scaled error term) fails this.
 func TestSPFreshPruneLowerBoundIsConservative(t *testing.T) {
 	t.Parallel()
@@ -686,7 +686,7 @@ func TestSPFreshPruneLowerBoundIsConservative(t *testing.T) {
 		}
 	}
 
-	// codex's exact reported case (1-D): q=3000, c=13000, f=3000.0001.
+	// The exact originally-reported case (1-D): q=3000, c=13000, f=3000.0001.
 	check([]float64{3000}, []float64{13000}, []float64{3000.0001}, "codex-1d")
 
 	naiveOvershoots := 0 // how often the NAIVE bound (no error term) would wrong-skip
@@ -711,7 +711,7 @@ func TestSPFreshPruneLowerBoundIsConservative(t *testing.T) {
 		}
 		scale := (rng.Float64()*99 + 1) * mag * 0.1
 		// tf near 0 puts the fine fractionally off the query while the centroid
-		// stays ~scale away — the near-cancellation regime codex exploited.
+		// stays ~scale away — the near-cancellation regime.
 		var tf float64
 		if rng.Intn(2) == 0 {
 			tf = math.Pow(10, -(rng.Float64() * 12)) // 1e-12 .. 1, biased tiny
@@ -742,13 +742,13 @@ func TestSPFreshPruneLowerBoundIsConservative(t *testing.T) {
 	}
 }
 
-// TestSPFreshGatherTopKExactSubnormal is the behavioral regression for codex's
-// subnormal P3: when squared distances are subnormal (coords ~1e-160), the
+// TestSPFreshGatherTopKExactSubnormal is the behavioral regression for the
+// subnormal ulp hazard: when squared distances are subnormal (coords ~1e-160), the
 // relative error term in spfreshPruneLowerBound underflows and the squaring
 // lb*lb can round up by a subnormal ulp at an exact tie. gatherTopK gates the
 // prune to the normal range (spfreshMinPrunableWorst), so subnormal inputs are
-// scored exactly and stay byte-identical to the flat scan. Includes codex's
-// exact reported 1-D triple (which wrong-skips id 1 WITHOUT the gate) plus a
+// scored exactly and stay byte-identical to the flat scan. Includes the exact
+// originally-reported 1-D triple (which wrong-skips id 1 WITHOUT the gate) plus a
 // subnormal-scale sweep.
 func TestSPFreshGatherTopKExactSubnormal(t *testing.T) {
 	t.Parallel()
@@ -773,7 +773,7 @@ func TestSPFreshGatherTopKExactSubnormal(t *testing.T) {
 		}
 	}
 
-	// codex's exact 1-D triple: centroid c far, query q, two fines that tie in
+	// The exact originally-reported 1-D triple: centroid c far, query q, two fines that tie in
 	// distance. id 2 is offered FIRST (becomes the pool worst), then id 1 — whose
 	// ungated bound rounds up by a subnormal ulp past worst and is wrong-skipped,
 	// even though id 1 should win the tie-break. The gate scores it exactly.
@@ -824,7 +824,7 @@ func TestSPFreshGatherTopKExactSubnormal(t *testing.T) {
 // TestSPFreshGatherTopKExactLargeCoords is the behavioral large-magnitude guard:
 // gatherTopK must stay byte-identical to the flat scan even when coordinates are
 // large (~1e6) and fines cluster tightly near the pool boundary — the regime
-// where the sqrt-rounded bound binds at the ulp scale (see codex's P2 and
+// where the sqrt-rounded bound binds at the ulp scale (see
 // TestSPFreshPruneLowerBoundIsConservative). Exercises gatherTopK end-to-end.
 func TestSPFreshGatherTopKExactLargeCoords(t *testing.T) {
 	t.Parallel()

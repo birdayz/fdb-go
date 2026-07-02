@@ -927,7 +927,7 @@ func rebaseOuterLegValue(
 // or a residual (PredicatesFilter) correlated to a buried preserved source `A`. At
 // this layer (yieldGeneralFlatMap) the preserved merge correlation `mergedCorr` ($m)
 // IS known, so we rebase `QOV(A).col` → `FieldValue(QOV($m), "A.col")` — the
-// authoritative qualified key the merged outer row carries (Graefe condition 4) —
+// authoritative qualified key the merged outer row carries (review condition 4) —
 // using the exact rebaseOuterLegValue/rebaseOuterLegRefsToMerged machinery the
 // EXISTS-over-join path uses. Pass-through nodes are rebuilt around their rebased
 // inner; an unhandled node is returned as-is and caught by the post-rebase
@@ -1549,7 +1549,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 
 	// Bind the wrapper quantifiers with the FlatMap plan's REAL outer/inner aliases
 	// (mergedOuterCorr/existCorr), not fresh ones — same EXISTS correlation-leak fix
-	// as buildExistsFlatMap above (the codex P2-2 twin): a fresh outer alias fails to
+	// as buildExistsFlatMap above (the same leak class): a fresh outer alias fails to
 	// subtract the FOD inner's correlation to mergedOuterCorr, leaking it upward.
 	leftMemoRef := call.MemoizeExpression(leftExpr)
 	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
@@ -1769,7 +1769,7 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 	// its correlation to outerCorrelation, so a fresh outer alias would fail to
 	// subtract it and a completed correlated-EXISTS FlatMap would leak
 	// outerCorrelation upward → misroute an enclosing multiway join (the EXISTS twin
-	// of codex P2-2 / yieldGeneralFlatMap:453-454).
+	// of the yieldGeneralFlatMap:453-454 leak).
 	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, call.MemoizeExpression(outerExpr))
 	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
 		expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(innerExpr)))

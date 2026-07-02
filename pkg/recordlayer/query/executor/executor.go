@@ -385,7 +385,7 @@ func executeVectorIndexScan(
 
 	// The default is the INDEX METHOD's own (HNSW efSearch=200; SPFresh's
 	// tuned kc=64 — passing 200 here silently overrode it for every SQL
-	// query, Torvalds 094.4 nit). 0 = "use the maintainer's default"; only
+	// query). 0 = "use the maintainer's default"; only
 	// an explicit per-query efSearch overrides it.
 	efSearch := 0
 	if idx.Type == recordlayer.IndexTypeVector {
@@ -413,7 +413,7 @@ func executeVectorIndexScan(
 		//
 		// The High tuple still carries the re-rank budget c (the Phase B decoupling
 		// from the probe width: efSearch passes UNCHANGED as the probe width, never
-		// forced up to the horizon — the spfresh-reviewer / Torvalds Phase B NAK).
+		// forced up to the horizon — coupling them was rejected in Phase B review).
 		// SPFresh's streaming path ignores k/c and uses the budget cap; the HNSW
 		// fallback reads (k=horizon, efSearch) as before.
 		scanType = recordlayer.IndexScanByDistanceOrderedStream
@@ -1694,7 +1694,7 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 		// and the schema the translator derives (aggregateOutputColumns).
 		//
 		//
-		// INVARIANT (RFC-081, Graefe): every physical realization of a bare aggregate union
+		// INVARIANT (RFC-081): every physical realization of a bare aggregate union
 		// branch MUST report its output schema here — the gate (unionBranchNormalizable)
 		// admits a bare LogicalAggregate on the assumption that whatever it plans as is
 		// reportable. The three realizations are StreamingAgg, AggregateIndex, and
@@ -1718,7 +1718,7 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 		// (RecordConstructorValue.Evaluate). Report them VERBATIM — the GetResultType fallback
 		// below would upper-case them, which only matches because the names are upper in
 		// practice; reading f.Name directly is byte-identical to the row keys regardless
-		// (mirrors the MapPlan arm, RFC-078 codex). RFC-081.
+		// (mirrors the MapPlan arm, RFC-078). RFC-081.
 		if mi, ok := p.(*plans.RecordQueryMultiIntersectionOnValuesPlan); ok {
 			if rcv, ok := mi.GetResultValue().(*values.RecordConstructorValue); ok && len(rcv.Fields) > 0 {
 				names := make([]string, len(rcv.Fields))
@@ -2372,7 +2372,7 @@ func executeDelete(
 		return nil, err
 	}
 
-	// RFC-130 / codex #328: the DML results echo is NOT separately byte-charged.
+	// RFC-130: the DML results echo is NOT separately byte-charged.
 	// The mutation's memory is bounded by its pre-materialized + charged target
 	// set (CollectAllBounded above). Charging the echo here would (a) for DELETE
 	// re-count the same already-charged target rows, and (b) fire AFTER

@@ -8,7 +8,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// TestPlanColumnNames_MapReportsPostRenameNames pins the codex RFC-078 fix: a
+// TestPlanColumnNames_MapReportsPostRenameNames pins the RFC-078 fix: a
 // RecordQueryMapPlan reports its OWN result-value column names, NOT the pre-rename
 // names of its inner. ImplementUnorderedUnionRule wraps a mismatched-named UNION
 // branch in a rename Map; if planColumnNamesWithMD descended through that Map and
@@ -75,8 +75,8 @@ func TestPlanColumnNames_AggregateIndexReportsOutputSchema(t *testing.T) {
 // A MIXED-CASE field name pins the verbatim contract specifically (and makes the explicit MI
 // arm necessary, not redundant with the GetResultType fallback): the fallback upper-cases, so it
 // would report "MixedKey" as "MIXEDKEY" and mismatch the merge cursor's exact-case row key — the
-// RFC-078 codex-P2 NULL-bug class. Production MI field names happen to be upper (so the codex-P2
-// bug can't surface via SQL today), but pinning the verbatim contract guards against that.
+// RFC-078 NULL-bug class. Production MI field names happen to be upper (so the bug can't surface
+// via SQL today), but pinning the verbatim contract guards against that.
 func TestPlanColumnNames_MultiIntersectionReportsResultValueNames(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"GA"}, values.UnknownType, false)

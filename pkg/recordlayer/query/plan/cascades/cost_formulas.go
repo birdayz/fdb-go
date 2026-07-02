@@ -30,7 +30,7 @@ import (
 // driver pays 10x the per-iteration setup. It is a Go-only read-side cost
 // extension that lives ONLY here (the compareJoinOrdering concrete-cost path),
 // sized as a tie-breaker so it never flips a clear cardinality/total-cost winner
-// (Graefe, RFC-041/042).
+// (RFC-041/042).
 func flatMapCost(outer, inner properties.Cost) properties.Cost {
 	outerCard := outer.Cardinality
 	if outerCard == 0 {
@@ -61,7 +61,7 @@ func flatMapCost(outer, inner properties.Cost) properties.Cost {
 // buffer. Charging the NLJ outerCard*inner.CPU (as if it re-scanned) erased that distinction
 // and let a re-scan FlatMap tie/beat the materialized NLJ for a NON-PROBE inner — the
 // RFC-152 preserved-only LEFT-OUTER regression. A card-1 PROBE inner keeps the FlatMap
-// cheapest regardless (its outerCard*~1 work beats materialize+iterate). Graefe ACK.
+// cheapest regardless (its outerCard*~1 work beats materialize+iterate).
 func nestedLoopJoinCost(outer, inner properties.Cost) properties.Cost {
 	outerCard, innerCard := outer.Cardinality, inner.Cardinality
 	if outerCard == 0 {

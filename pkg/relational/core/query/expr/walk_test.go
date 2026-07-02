@@ -264,7 +264,7 @@ func TestWalkPredicate_BareBooleanColumn(t *testing.T) {
 		t.Fatalf("Operand: got %v, want true", cp.Comparison.Operand)
 	}
 
-	// Structural unification with the explicit comparison (Graefe's gate):
+	// Structural unification with the explicit comparison:
 	// `active` and `active = TRUE` must produce structurally-equal predicates
 	// with the same semantic hash, so they unify for index matching / plan
 	// shape rather than just rendering the same EXPLAIN string.

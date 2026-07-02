@@ -101,7 +101,7 @@ func TestExplode_HashCodeNilCollection(t *testing.T) {
 	}
 }
 
-// TestExplode_WithOrdinalityDistinct pins Graefe's RFC-142 concern: an ordinal
+// TestExplode_WithOrdinalityDistinct pins the RFC-142 review concern: an ordinal
 // and a non-ordinal Explode over the SAME array Value must NOT be conflated by
 // EqualsWithoutChildren / HashCodeWithoutChildren — they produce different
 // result shapes (a 2-field record vs the bare element), so the memo must keep

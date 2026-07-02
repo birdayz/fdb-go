@@ -1030,7 +1030,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("having_different_aggregate_than_projection", func(t *testing.T) {
-		// Codex P1: HAVING references COUNT(*) while the projection is SUM —
+		// Review P1: HAVING references COUNT(*) while the projection is SUM —
 		// both aggregates must be computed. Single group per customer
 		// (correlation key) => deterministic.
 		rows := collectRows(t, db, `SELECT name,
@@ -1134,7 +1134,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("decimal_literal_aggregate_arg_in_having", func(t *testing.T) {
-		// RFC-048 Exhibit-A (Codex): a decimal-literal factor (amount*1.5)
+		// RFC-048 Exhibit-A (Review): a decimal-literal factor (amount*1.5)
 		// canonicalises to "SUM(AMOUNT*1.5)" — a DOT in the materialised slot
 		// name. If the dot is mis-parsed as a qualifier separator anywhere on
 		// the producer/consumer path, the HAVING reference resolves to NULL and
@@ -1156,7 +1156,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("nested_arithmetic_aggregate_arg_in_having", func(t *testing.T) {
-		// RFC-048 Exhibit-A (Codex): a nested-arithmetic argument
+		// RFC-048 Exhibit-A (Review): a nested-arithmetic argument
 		// SUM((amount+10)*2) round-trips through parse->explain. If the
 		// materialised slot name and the HAVING-rewrite name disagree (lossy
 		// reparse), the HAVING reads NULL and silently drops groups. Correct:
@@ -1192,7 +1192,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("post_aggregate_expression_rejected", func(t *testing.T) {
-		// Codex delta P2: a post-aggregation expression output (`SUM(x) + 1`)
+		// Review delta P2: a post-aggregation expression output (`SUM(x) + 1`)
 		// is a visible aggCol with empty aggFunc + outExpr. It must NOT be
 		// misclassified as a group-key projection (which would read an
 		// unmaterialized column => NULL). Computing the expression over the
@@ -1206,7 +1206,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("undefined_group_key_rejected", func(t *testing.T) {
-		// Codex P2: a non-existent GROUP BY column (aggregate-only projection,
+		// Review P2: a non-existent GROUP BY column (aggregate-only projection,
 		// so validateGroupByProjection does not catch it) must error, not
 		// silently group every row under a null key.
 		err := expectError(t, db, `SELECT name,
@@ -1218,7 +1218,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("duplicate_alias_multi_column_rejected", func(t *testing.T) {
-		// Codex P2: two visible SELECT items sharing an alias are still two
+		// Review P2: two visible SELECT items sharing an alias are still two
 		// output columns — reject on item count, not distinct name count.
 		err := expectError(t, db, `SELECT name,
 			(SELECT o.status AS x, COUNT(*) AS x FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
@@ -1232,7 +1232,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("qualified_group_key_projection", func(t *testing.T) {
-		// Codex P2: a QUALIFIED group-key projection (`SELECT o.status`) must
+		// Review P2: a QUALIFIED group-key projection (`SELECT o.status`) must
 		// resolve, not double-prefix into O.O.STATUS => NULL. Charlie has one
 		// order so the single group is deterministic.
 		rows := collectRows(t, db, `SELECT name,

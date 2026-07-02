@@ -74,7 +74,7 @@ func writeSemanticHash(h io.Writer, v Value) {
 	// Structural types whose EqualsWithoutChildren compares a non-alias
 	// discriminator (op / target type / name) the bare Name() default would
 	// drop — fold it so the hash matches equality's resolution (RFC-040
-	// hash-quality, Torvalds review). All alias-free.
+	// hash-quality). All alias-free.
 	case *ArithmeticValue:
 		_, _ = fmt.Fprintf(h, "arith:%v", t.Op)
 	case *AggregateValue:

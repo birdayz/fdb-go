@@ -927,7 +927,7 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	// materialization fix (nestedLoopJoinCost charges the inner scanned ONCE), CPU
 	// orders materialized-NLJ < re-scan-FlatMap for a non-probe inner and FlatMap < NLJ
 	// for a card-1 probe inner — the correct plan for each, cost-driven, no rule
-	// heuristic (RFC-152, Graefe).
+	// heuristic (RFC-152).
 	//
 	// For SAME-shape pairs (FlatMap-vs-FlatMap, NLJ-vs-NLJ) the cardinality term is a
 	// CONSISTENT, fair discriminator and is LOAD-BEARING — for two FlatMaps it is the
@@ -1826,7 +1826,7 @@ func costExprHash(e expressions.RelationalExpression) uint64 {
 // the concrete embedded child plan and resolving ONLY a template child through its
 // quantifier Reference — so the buried index/scan identity surfaces into the hash.
 // Resolution is STRUCTURAL (firstPhysicalChild), never cost-driven (no comparator
-// re-entry — Graefe / Java planHash is a pure structural integer).
+// re-entry — Java's planHash is likewise a pure structural integer).
 func exprConcreteHash(e expressions.RelationalExpression, visited map[*expressions.Reference]bool) uint64 {
 	ph, ok := e.(physicalPlanExpression)
 	if !ok {

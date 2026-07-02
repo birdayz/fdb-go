@@ -235,7 +235,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 	})
 })
 
-// Torvalds delta-review findings on dc894af8, pinned: the csplit pause-window
+// Pinned dc894af8 follow-ups: the csplit pause-window
 // repair must not file split tasks for SEALED rows, and the seal zombie-clear
 // must not destroy a sealed task (the only copy of the child IDs).
 var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
@@ -309,7 +309,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// Torvalds final-gauntlet B2: the pause-window repair must run on the
+	// The pause-window repair must run on the
 	// DEGENERATE task-clearing exits too — a csplit that finds its cell
 	// drained below 2 ACTIVE rows (merges won the race) or its 2-means
 	// degenerate clears the task, un-pausing the cell, and without the
@@ -529,7 +529,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// Torvalds re-review S-NEW: on a chunked resume the child re-trigger
+	// On a chunked resume the child re-trigger
 	// must gate on the child's TOTAL (drained + remainder via the counter
 	// read), not the remainder alone — a child at 0.9·Lmax drained +
 	// 0.5·Lmax remainder is over the envelope with no other trigger site
@@ -614,7 +614,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// codex delta P2: a pass that skips a poisoned task but commits work
+	// A pass that skips a poisoned task but commits work
 	// behind it must ACCOUNT that work and refresh the process-local cache
 	// before surfacing the error — returning (0, err) reported committed
 	// splits as nothing and left routing on the pre-pass topology.
@@ -751,7 +751,7 @@ var _ = Describe("SPFresh build sampling", func() {
 	})
 })
 
-// Codex 094.4 review: the insert path stopped verifying candidates once
+// RFC-094 regression: the insert path stopped verifying candidates once
 // Replication of them were ACTIVE, so the closure's RNG rule could only ever
 // SHRINK the copy-set — a same-direction duplicate next to the nearest
 // centroid silently under-replicated the record instead of spending the copy

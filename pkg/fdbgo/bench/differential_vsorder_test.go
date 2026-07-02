@@ -11,8 +11,8 @@ import (
 
 // Versionstamp-validation ORDER differential vs libfdb_c — RFC-067 P2 follow-up.
 //
-// The size-limit RFC made the transaction_too_large (2101) check fire by default. codex
-// flagged that this could pre-empt versionstamp-offset validation. The differential below
+// The size-limit RFC made the transaction_too_large (2101) check fire by default, which
+// could pre-empt versionstamp-offset validation. The differential below
 // establishes the FULL ordering ground truth (this is the spec, not the C++ reading):
 //
 //   - In libfdb_c, key-size (2102), value-size (2103), and versionstamp-offset (2000) are
@@ -41,7 +41,7 @@ func TestDifferential_VersionstampValidationOrder(t *testing.T) {
 		cSetup   func(tx cgofdb.Transaction) error
 	}{
 		{
-			// codex's case: bad versionstamp + >10 MB of otherwise-valid sets. The deferred
+			// Bad versionstamp + >10 MB of otherwise-valid sets. The deferred
 			// 2101 must NOT pre-empt the eager 2000 — order-independent (txn-size is deferred).
 			name:     "vsfirst_then_oversized_txn",
 			wantCode: 2000,

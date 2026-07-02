@@ -83,7 +83,7 @@ const (
 	//     just 21% of cells — the closure's α-bounded replicas span only a few
 	//     cells, so recall is insensitive to w_b above a small floor.
 	// Tying it to spfreshDefaultProbeW (not a separate literal) means a future
-	// query-width sweep moves w_b with it — no silent drift (Graefe).
+	// query-width sweep moves w_b with it — no silent drift.
 	spfreshDefaultBuildAssignCells = spfreshDefaultProbeW
 	// spfreshCSplitDeferLimit: consecutive coarse-split deferrals before
 	// fine-split task issuance for the cell is paused (starvation guard, §6b).
@@ -281,7 +281,7 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 			// The DDL accepts it for USING SPFRESH (same metric grammar as
 			// HNSW), so the maintainer must honor it — a silent fall-through
 			// to Euclidean made the candidate advertise squared distances
-			// while re-rank returned true L2 (Graefe merge-HEAD F1). Same
+			// while re-rank returned true L2 (reviewer merge-HEAD F1). Same
 			// kNN ordering; only the reported distance differs.
 			config.Metric = VectorMetricEuclideanSquare
 		}

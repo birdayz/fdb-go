@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestSPFreshCoarsePassChangelogLimit pins codex's full-PR P2: coarsePass writes
+// TestSPFreshCoarsePassChangelogLimit pins that coarsePass writes
 // one changelog delta per coarse cell in a SINGLE transaction, and the
 // changelog's 2-byte user-version caps a tx at spfreshMaxDeltasPerTx (65536)
 // deltas. At defaults k0 crosses that at ~267M records — BELOW the K0>sample

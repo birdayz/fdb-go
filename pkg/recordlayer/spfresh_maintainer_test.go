@@ -573,7 +573,7 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 	})
 })
 
-// The three Torvalds 094.2 NAK holes, each pinned (red against the pre-fix
+// The three §8 fence holes, each pinned (red against the pre-fix
 // behavior, green now).
 var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 	ctx := context.Background()

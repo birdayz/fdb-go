@@ -14,7 +14,7 @@ import (
 //
 // Deterministic via the grvCacheHits + transactionReadVersionsCompleted counters
 // and the refresherStarted seam — no goroutine-count or timer-vs-reply flakiness
-// (RFC-104 test plan, Torvalds). The grvCacheHits==0 + exactly-N-real-GRVs pair
+// (RFC-104 test plan). The grvCacheHits==0 + exactly-N-real-GRVs pair
 // proves the cache is GATED OFF, not merely that it happened to be stale.
 //
 // openTestDB returns a FRESH database handle (its own grvCache, metrics, and
@@ -83,7 +83,7 @@ func TestFDB_GRVCache_OptInOnly(t *testing.T) {
 	}
 }
 
-// TestFDB_GRVCache_RefresherStartsOnOptInMiss pins the codex PR #291 fix: the background
+// TestFDB_GRVCache_RefresherStartsOnOptInMiss pins the PR #291 fix: the background
 // GRV refresher starts on the FIRST opt-in request even when the cached version is
 // STALE (a cache MISS), not only on a hit — matching C++ getReadVersion, which launches
 // backgroundGrvUpdater inside the opt-in gate BEFORE the freshness check
@@ -154,7 +154,7 @@ func TestFDB_GRVCache_SkipOverridesUse(t *testing.T) {
 	}
 }
 
-// TestFDB_GRVCache_ImmediateServesButStartsNoRefresher pins the #16 codex P2: an opted-in
+// TestFDB_GRVCache_ImmediateServesButStartsNoRefresher pins the other half of #16: an opted-in
 // SYSTEM_IMMEDIATE read SERVES the warm shared cache (the #16 fix) but must NOT start the IMMEDIATE
 // batcher's background refresher. Go's refresher is per-batcher and issues its periodic GRVs at the
 // batcher's priority, so starting the IMMEDIATE refresher would emit a long-lived stream of
@@ -199,7 +199,7 @@ func TestFDB_GRVCache_ImmediateServesButStartsNoRefresher(t *testing.T) {
 	if rv := tx.readVersion; rv != v {
 		t.Fatalf("IMMEDIATE opt-in read version = %d, want the cached %d", rv, v)
 	}
-	// codex #16 P2: but it must NOT start the IMMEDIATE batcher's refresher.
+	// The other half: it must NOT start the IMMEDIATE batcher's refresher.
 	if immBatcher.refresherStarted.Load() {
 		t.Fatal("IMMEDIATE opt-in started the IMMEDIATE refresher — a stream of ratekeeper-bypassing IMMEDIATE GRVs (codex #16 P2)")
 	}

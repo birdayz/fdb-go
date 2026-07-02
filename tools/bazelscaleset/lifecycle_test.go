@@ -98,7 +98,7 @@ func startStrayRunner(t *testing.T, runnerDir string) *exec.Cmd {
 
 func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 
-// TestSlotPoolPerSlotRunnerDirs pins the codex-P2 fix: at maxRunners>1 each slot gets
+// TestSlotPoolPerSlotRunnerDirs pins the review-P2 fix: at maxRunners>1 each slot gets
 // its OWN cloned runner dir (distinct from the base and from each other, each with
 // run.sh), so concurrent runners can't clobber each other's .runner/.credentials.
 func TestSlotPoolPerSlotRunnerDirs(t *testing.T) {
@@ -124,7 +124,7 @@ func TestSlotPoolPerSlotRunnerDirs(t *testing.T) {
 	}
 }
 
-// TestSlotPoolTrailingSlashBase pins codex P2 #1: a trailing slash on --runner-dir must
+// TestSlotPoolTrailingSlashBase pins review P2 #1: a trailing slash on --runner-dir must
 // still yield a SIBLING clone dir (".../actions-runner-slot0"), never a child inside the
 // template (".../actions-runner/-slot0"), which would make the clone recurse into itself.
 func TestSlotPoolTrailingSlashBase(t *testing.T) {
@@ -140,7 +140,7 @@ func TestSlotPoolTrailingSlashBase(t *testing.T) {
 	}
 }
 
-// TestSlotPoolResyncPropagatesTemplateChange pins codex P2 #2: cloning runs on every
+// TestSlotPoolResyncPropagatesTemplateChange pins review P2 #2: cloning runs on every
 // startup (not skipped when run.sh already exists), so a template update (e.g. a pinned-
 // runner upgrade) propagates into an existing slot clone instead of leaving it stale.
 func TestSlotPoolResyncPropagatesTemplateChange(t *testing.T) {
@@ -166,7 +166,7 @@ func TestSlotPoolResyncPropagatesTemplateChange(t *testing.T) {
 	}
 }
 
-// TestCloneRunnerDirSymlinkedSource pins codex P2: a symlinked --runner-dir must still
+// TestCloneRunnerDirSymlinkedSource pins review P2: a symlinked --runner-dir must still
 // produce a populated clone (run.sh present) — the walk must resolve the symlink root.
 func TestCloneRunnerDirSymlinkedSource(t *testing.T) {
 	t.Parallel()
@@ -185,7 +185,7 @@ func TestCloneRunnerDirSymlinkedSource(t *testing.T) {
 	}
 }
 
-// TestCopyFileReplacesContentAndMode pins codex P3 + the umask fix: re-copying onto an
+// TestCopyFileReplacesContentAndMode pins review P3 + the umask fix: re-copying onto an
 // existing file applies the new content AND the exact mode. The 0o775 group-write bit is
 // dropped by the common umask 022 unless copyFile chmods explicitly, so this catches both
 // the stale-perms-on-resync bug and the umask masking.
@@ -322,7 +322,7 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 	}
 }
 
-// TestReconcileKillsGroupAfterLeaderExit pins codex's finding: a process group
+// TestReconcileKillsGroupAfterLeaderExit pins review's finding: a process group
 // outlives its leader, so if run.sh exited but a Runner.Worker child still occupies
 // the slot, reconcile must still reap the group (checking group members, not just the
 // leader's cmdline).
@@ -367,7 +367,7 @@ func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool { return syscall.Kill(-pgid, 0) != nil })
 }
 
-// TestReconcileCoversPriorHigherMaxSlots pins codex P2: a restart with a LOWER
+// TestReconcileCoversPriorHigherMaxSlots pins review P2: a restart with a LOWER
 // --max-runners than a prior run must still reap a stray runner left in a now-out-of-pool
 // higher slot. reconcile scans all slot dirs on disk, not just the current pool.
 func TestReconcileCoversPriorHigherMaxSlots(t *testing.T) {
@@ -414,7 +414,7 @@ func (f *fakeClient) DeleteMessage(context.Context, int) error                  
 func (f *fakeClient) AcquireJobs(_ context.Context, ids []int64) ([]int64, error) { return ids, nil }
 func (f *fakeClient) Session() scaleset.RunnerScaleSetSession                     { return f.session }
 
-// TestTimeoutClientBoundsHangingPoll pins Torvalds PUSHBACK 1 (a): a half-open poll
+// TestTimeoutClientBoundsHangingPoll pins reviewer PUSHBACK 1 (a): a half-open poll
 // is bounded by --poll-timeout rather than hanging forever.
 func TestTimeoutClientBoundsHangingPoll(t *testing.T) {
 	t.Parallel()
@@ -434,7 +434,7 @@ func TestTimeoutClientBoundsHangingPoll(t *testing.T) {
 	}
 }
 
-// TestListenerRunReturnsOnGetMessageError pins Torvalds PUSHBACK 1 (b): listener.Run
+// TestListenerRunReturnsOnGetMessageError pins reviewer PUSHBACK 1 (b): listener.Run
 // propagates a GetMessage error out (so the process exits and systemd restarts),
 // rather than retrying internally. If the Public-Preview library ever changes this,
 // this test fails and we must add an in-process self-exit watchdog.

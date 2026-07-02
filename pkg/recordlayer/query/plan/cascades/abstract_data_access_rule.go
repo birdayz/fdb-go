@@ -381,7 +381,7 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) exp
 // pins that the deferral works: a covered projection yields IndexScan(... COVERING)
 // with no Fetch; a non-covered one keeps the Fetch. (Costing nuance: the
 // intermediate Fetch wrapper is costed non-covering during winner selection,
-// before MergeProjectionAndFetch runs — codex P2; it does not change the chosen
+// before MergeProjectionAndFetch runs; it does not change the chosen
 // plan today and is folded into the template-aware costing work, RFC-076 step 3b.)
 //
 // For a bare IndexScan (no Fetch — e.g. a primary scan) isCovering IS applied
@@ -556,7 +556,7 @@ func matchBoundPrefixIsCorrelated(pm PartialMatch) bool {
 // disqualifies a leg from an independently-evaluable primary-key intersection.
 // (Today the SQL layer lowers WHERE constants as ConstantValue, so the
 // subtraction is belt-and-suspenders, but it keeps the guard correct if literal
-// parameterization to ConstantObjectValue is added later — Graefe review.)
+// parameterization to ConstantObjectValue is added later.)
 func comparisonRowCorrelated(c *predicates.Comparison) bool {
 	if c == nil {
 		return false

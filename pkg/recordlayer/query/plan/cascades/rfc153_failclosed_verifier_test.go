@@ -62,7 +62,7 @@ func TestRFC153_Verifier_RecognizedSargWithBuriedRef_Declines(t *testing.T) {
 	}
 }
 
-// TestRFC153_Verifier_UnrecognizedNode_FailsClosed: THE bug Torvalds/@claude/Graefe
+// TestRFC153_Verifier_UnrecognizedNode_FailsClosed: THE bug every reviewer
 // flagged. A node type the rebaser's walker does NOT rewrite (here a nested
 // NestedLoopJoin — same class as StreamingAgg/InJoin/FlatMap whose own preds/comparand/
 // grouping carry correlation) must FAIL-CLOSED → flagged → decline, EVEN when the

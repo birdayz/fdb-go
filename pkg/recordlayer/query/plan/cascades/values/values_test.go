@@ -1147,8 +1147,8 @@ func TestAggregateValue_Type_SumWithoutOperandFallsBackToLong(t *testing.T) {
 // from a constant-looking Evaluate is a genuine programmer-invariant bug
 // (IsConstantValue should exclude the panicky shapes), and that MUST
 // surface rather than being silently swallowed to (nil, false): hiding a
-// planner bug behind a catch-all recover is exactly the swallow Graefe
-// flagged.
+// planner bug behind a catch-all recover is exactly the swallow the
+// review flagged.
 func TestEvaluateConstant_ProgrammerInvariantPanicSurfaces(t *testing.T) {
 	t.Parallel()
 	v := &panicValue{

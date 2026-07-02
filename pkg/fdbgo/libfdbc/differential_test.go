@@ -55,7 +55,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 	// The record layer reads the facade version via fdb.GetAPIVersion (tuple.PackWithVersionstamp
 	// — record versions, MAX_EVER, SPFresh), and fdb.OpenDatabase below requires it too, so if
 	// libfdbc.Open had not set the facade version this whole test would fail with
-	// api_version_unset (2200). That makes this the regression for codex #295 r13. Both clients
+	// api_version_unset (2200). That makes this the PR #295 regression. Both clients
 	// run API 730 (the cgofdb binding's header version, matching the 7.3.77 server).
 	cgoBackend, err := libfdbc.Open(clusterFile)
 	if err != nil {
@@ -242,7 +242,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
-	// The following pin the three codex-review P2 findings — capability detection in
+	// The following pin three fixes — capability detection in
 	// the backend constructor, ctx honoring on the cgo backend, and the directory
 	// layer not panicking on a non-pure-Go transactor.
 

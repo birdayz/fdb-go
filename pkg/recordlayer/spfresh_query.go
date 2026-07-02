@@ -766,7 +766,7 @@ func (q *spfreshSmallestQueue) rq() float64 { return q.vals[len(q.vals)-1] }
 
 // resolveForward point-reads the children's centroid rows using the cellID
 // CARRIED IN THE HDR — never the cell the client routed through (the parent
-// may itself have moved cells; RFC-094 §3/§4, codex r4 #3).
+// may itself have moved cells; RFC-094 §3/§4).
 func (s *spfreshSearcher) resolveForward(tx fdb.ReadTransaction, cellID, childA, childB int64) ([]spfreshRouted, error) {
 	var out []spfreshRouted
 	for _, fineID := range []int64{childA, childB} {

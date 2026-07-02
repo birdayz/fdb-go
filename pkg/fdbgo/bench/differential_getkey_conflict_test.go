@@ -265,7 +265,7 @@ func TestDifferential_GetKeyConflict(t *testing.T) {
 		{"cleared_range_excluded", []fuzzOp{set(3, "z")}, []fuzzOp{crange(1, 3)}, fgt(0), "b", false},
 		// DEPENDENT atomic (Add onto a committed value) — getKey reads the DB base to resolve,
 		// so C++ KEEPS the conflict. Probe ON c → MUST conflict. Proves the filter does not
-		// UNDER-conflict on a dependent atomic (the codex #235 safety concern).
+		// UNDER-conflict on a dependent atomic (the PR #235 safety concern).
 		{"dependent_atomic_conflicts", []fuzzOp{set(2, "\x05\x00\x00\x00")}, []fuzzOp{add(2, "\x01\x00\x00\x00")}, fgt(0), "c", true},
 		// Probe OUTSIDE the span (d, beyond resolved c) → never in the conflict range.
 		{"outside_span_no_conflict", nil, []fuzzOp{set(2, "v")}, fgt(0), "d", false},

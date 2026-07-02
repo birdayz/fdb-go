@@ -512,7 +512,7 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 		// Row limit check FIRST — clean ReturnLimitReached stop, and avoids
 		// wasting an FDB read when the limit is already reached (ordering matches
 		// index_scan so a satisfied row cap isn't turned into 54F01 by an equal
-		// scan-record cap — codex RFC-106a).
+		// scan-record cap — RFC-106a).
 		if c.limit > 0 && c.delivered >= c.limit {
 			cont := c.buildContinuation()
 			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil

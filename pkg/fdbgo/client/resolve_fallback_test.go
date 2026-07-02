@@ -149,7 +149,7 @@ func TestResolveFallback(t *testing.T) {
 		}
 	})
 
-	// The next three pin the codex context-handling fixes. The discriminator is the CALLER's read context
+	// The next three pin the context-handling fixes. The discriminator is the CALLER's read context
 	// (ctx.Err()), NOT the per-server error type: a cancelled read must return ctx.Err() and never be
 	// masked by a remembered version error, while a per-server dial/RPC timeout (a wrapped
 	// DeadlineExceeded under the db-scoped DefaultRPCTimeout) that arrives while the read ctx is still LIVE
@@ -198,7 +198,7 @@ func TestResolveFallback(t *testing.T) {
 		t.Parallel()
 		// s2's trySingle returns a wrapped context.DeadlineExceeded (a cold-dial timeout under the
 		// db-scoped DefaultRPCTimeout) while the READ ctx is still LIVE — this must fall back to the healthy
-		// s3, NOT abort. Revert-proof for the codex P2-of-P2: gating on errors.Is(err, DeadlineExceeded)
+		// s3, NOT abort. Revert-proof: gating on errors.Is(err, DeadlineExceeded)
 		// instead of ctx.Err() aborts here and returns DeadlineExceeded, never trying s3.
 		ctx := context.Background() // live — never cancelled
 		val, err := resolveFallback(ctx, nil, servers, 0, 1, func(s ServerInfo) ([]byte, error) {

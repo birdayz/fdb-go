@@ -2,7 +2,7 @@ package fdb
 
 import "testing"
 
-// RFC-133 / codex #331: the database-level SetSnapshotRywDisable and SetTransactionBypassUnreadable
+// RFC-133: the database-level SetSnapshotRywDisable and SetTransactionBypassUnreadable
 // options change READ semantics on every new transaction in libfdb_c (snapshot-read-after-own-write;
 // accessed_unreadable→read). The pure-Go client must propagate them as txDefaults like the other
 // honored DB defaults, not silently drop the caller's intent. These pin both the storage of the
@@ -66,7 +66,7 @@ func TestDatabaseDefault_BypassUnreadable_Propagates(t *testing.T) {
 	}
 }
 
-// TestDatabaseDefault_SnapshotRYW_RetryIdempotent pins codex #331: applyTxDefaults re-runs on EVERY
+// TestDatabaseDefault_SnapshotRYW_RetryIdempotent: applyTxDefaults re-runs on EVERY
 // retry attempt against the same inner tx (client.Transact re-invokes the closure) and reset()
 // preserves snapshotRYWDisableCount, so the counter must be SET (idempotent), not incremented — or
 // it drifts (-1,-2,… per attempt) and changes snapshot-read semantics on retries.

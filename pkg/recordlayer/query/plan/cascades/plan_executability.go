@@ -42,7 +42,7 @@ func (e *UnplannableIndexOnlyResidualError) Error() string {
 // distance inside a join → a Select, not a LogicalFilter) reaches a physical
 // residual through one of those, which the gate does not see. This walk is the one
 // place that covers EVERY physical-filter path, so it stays until all builders are
-// gated (Graefe: a cheap catch-all is the correct backstop while Go has more
+// gated (a cheap catch-all is the correct backstop while Go has more
 // filter builders than Java's single compensation-gated path). Pinned by
 // TestVectorPlan_MetricMismatchDoesNotMatchVector (single-table, LogicalFilter) +
 // the join-vector regression (Select path).

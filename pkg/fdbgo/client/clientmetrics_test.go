@@ -168,7 +168,7 @@ func TestFDB_Metrics_CleanCommit(t *testing.T) {
 
 // TestFDB_Metrics_ReadOnlyCommitNotCounted: the read-only fast path must not
 // count commits — C++'s empty-commit fast path returns before the counter
-// (NativeAPI.actor.cpp:6800-6808). Torvalds RFC-097 condition.
+// (NativeAPI.actor.cpp:6800-6808). RFC-097 condition.
 func TestFDB_Metrics_ReadOnlyCommitNotCounted(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -351,10 +351,9 @@ func TestFDB_Metrics_DummyRetriesCounted(t *testing.T) {
 
 // TestFDB_Metrics_OversizedCommitCountsStarted: C++ counts CommitStarted
 // BEFORE its size check (NativeAPI.actor.cpp:6808 vs ~:6835), so a
-// persistently oversized commit is visible as Started-without-Completed.
-// Torvalds impl-review condition. Each mutation stays under the per-value
-// limit (100KB) so the DEFERRED 10MB size check is what fires (RFC-067
-// eager-vs-deferred ordering).
+// persistently oversized commit is visible as Started-without-Completed. Each
+// mutation stays under the per-value limit (100KB) so the DEFERRED 10MB size
+// check is what fires (RFC-067 eager-vs-deferred ordering).
 func TestFDB_Metrics_OversizedCommitCountsStarted(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

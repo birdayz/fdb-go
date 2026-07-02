@@ -79,7 +79,7 @@ var _ = Describe("Store state management", func() {
 			Expect(errors.As(err, &lockErr)).To(BeTrue())
 		})
 
-		// Graefe (RFC-158): a DRY RUN must PREVIEW success on a FORBID_RECORD_UPDATE-locked
+		// RFC-158: a DRY RUN must PREVIEW success on a FORBID_RECORD_UPDATE-locked
 		// store — Java's saveTypedRecord(isDryRun=true) early-returns at FDBRecordStore.java:578,
 		// BEFORE validateRecordUpdateAllowed (line 584). Calling the lock check in
 		// DryRunSaveRecord made Go stricter than Java (rejecting a preview Java allows). This

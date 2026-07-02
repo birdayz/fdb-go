@@ -93,7 +93,7 @@ const (
 // in lifecycle order (splits before NPA before merges — splits enqueue NPAs;
 // merges of split children respect the cooldown anyway), up to `limit` tasks
 // (≤ 0 = unlimited; the sweeper bounds it so a whale tenant's queue cannot
-// monopolize a fleet pass — codex MT P2). Returns the number of tasks acted
+// monopolize a fleet pass). Returns the number of tasks acted
 // on; tasks under live foreign leases are skipped.
 func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64, limit int, timer *StoreTimer) (int, error) {
 	// Scan (snapshot — the queue is advisory; claims are the authority).
@@ -393,8 +393,8 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 		}
 		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919, limit, timer)
 		// A pass can return COMMITTED WORK alongside a joined task error
-		// (poisoned tasks are skipped, the rest of the queue still drains —
-		// codex delta P2): account the work and run the eager cache refresh
+		// (poisoned tasks are skipped, the rest of the queue still
+		// drains): account the work and run the eager cache refresh
 		// below before surfacing the error, or splits committed behind the
 		// poison are reported as zero and the process-local cache routes on
 		// the pre-pass topology until an amortized refresh.

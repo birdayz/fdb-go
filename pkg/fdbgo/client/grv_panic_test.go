@@ -9,7 +9,7 @@ import (
 // recoverFlush is the production backstop and is exercised directly
 // here (deferred around a panic, exactly as flush defers it).
 //
-// It also demonstrates the closure-scoped-lock PATTERN flush uses for codex P2a:
+// It also demonstrates the closure-scoped-lock PATTERN flush uses:
 // a panic inside a `Lock(); defer Unlock()` closure unwinds the mutex. NOTE this
 // is the pattern, not flush's own locked lines — flush's two b.mu regions
 // (pop + adaptive-window arithmetic, grv.go) contain no code that can panic, so
