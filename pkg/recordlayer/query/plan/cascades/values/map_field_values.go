@@ -2,6 +2,7 @@ package values
 
 import (
 	"fmt"
+	"math"
 )
 
 // MapFieldValues recursively walks a Value tree and applies transform to
@@ -220,13 +221,20 @@ func constantValuesEqual(a, b any) bool {
 	// the same deliberate choice as the []byte arm above — no caller
 	// distinguishes a missing vector from a zero-length one), coherent with
 	// writeSemanticHash's ConstantValue arm, whose %v renders both as "[]".
+	// Elements compare BITWISE (math.FloatNNbits), not by float ==: `==` calls
+	// 0.0 equal to -0.0 while %v hashes them as "[0]" vs "[-0]" — an
+	// equal-but-different-hash memo violation (RFC-176 §2's defect class).
+	// Bitwise keeps equality strictly finer than the hash: signed zeros are
+	// UNEQUAL (a refinement split, never a wrong unification), identical-bit
+	// NaNs are EQUAL and hash-coherent ("[NaN]"), differing-bit NaNs are
+	// unequal and merely share a hash bucket — a collision, which is allowed.
 	if af, ok := a.([]float64); ok {
 		bf, ok := b.([]float64)
 		if !ok || len(af) != len(bf) {
 			return false
 		}
 		for i := range af {
-			if af[i] != bf[i] {
+			if math.Float64bits(af[i]) != math.Float64bits(bf[i]) {
 				return false
 			}
 		}
@@ -238,7 +246,7 @@ func constantValuesEqual(a, b any) bool {
 			return false
 		}
 		for i := range af {
-			if af[i] != bf[i] {
+			if math.Float32bits(af[i]) != math.Float32bits(bf[i]) {
 				return false
 			}
 		}

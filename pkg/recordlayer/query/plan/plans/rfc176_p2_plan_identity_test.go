@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -364,5 +365,24 @@ func TestPlanIdentity_VectorLiteralConstant_RFC176(t *testing.T) {
 	}
 	if n.HashCodeWithoutChildren() != e.HashCodeWithoutChildren() {
 		t.Fatal("nil and empty []float64 literals must hash equal (equal⟹same-hash)")
+	}
+
+	// Signed zero: float == calls 0.0 equal to -0.0 while the %v hash renders
+	// "[0]" vs "[-0]" — equal-but-different-hash, the invariant violation this
+	// RFC exists to kill. Elements therefore compare BITWISE: signed zeros are
+	// UNEQUAL (equality strictly finer than the hash — a refinement split,
+	// never a wrong unification). RED under float == on the pre-fix commit.
+	z, nz := mk([]float64{0}), mk([]float64{math.Copysign(0, -1)})
+	if z.EqualsWithoutChildren(nz) {
+		t.Fatal("+0 and -0 vector literals must NOT compare equal (bitwise element identity)")
+	}
+	// Identical-bit NaNs: EQUAL under bitwise identity (float == would call
+	// them unequal) and hash-coherent (%v renders both as NaN).
+	nan1, nan2 := mk([]float64{math.NaN()}), mk([]float64{math.NaN()})
+	if !nan1.EqualsWithoutChildren(nan2) {
+		t.Fatal("identical-bit NaN vector literals must compare equal (bitwise element identity)")
+	}
+	if nan1.HashCodeWithoutChildren() != nan2.HashCodeWithoutChildren() {
+		t.Fatal("equal NaN vector literals must hash equal (equal⟹same-hash)")
 	}
 }
