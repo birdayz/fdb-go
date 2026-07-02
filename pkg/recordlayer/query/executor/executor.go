@@ -1692,11 +1692,11 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 			names := make([]string, len(projs))
 			aliases := proj.GetAliases()
 			for i, v := range projs {
-				if i < len(aliases) && aliases[i] != "" {
-					names[i] = strings.ToUpper(aliases[i])
-				} else {
-					names[i] = projectionColumnName(v)
+				alias := ""
+				if i < len(aliases) {
+					alias = aliases[i]
 				}
+				names[i] = values.OutputColumnName(v, alias)
 			}
 			return names
 		}
