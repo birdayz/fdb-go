@@ -45,6 +45,8 @@ hasCJKLanguage = false
 
 [params]
   description = "A pure-Go FoundationDB client (no cgo, 2-4x faster reads than libfdb_c), plus a wire-compatible Record Layer and SQL engine for Go."
+  # Default og:image / twitter:image for every page (1200x630, static/og.png).
+  images = ["/og.png"]
 
   [params.navbar]
     displayTitle = true

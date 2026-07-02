@@ -20,10 +20,10 @@ No npm step is required — hextra ships precompiled CSS (`themes/hextra/assets/
 ```
 content/
   _index.md          landing page (layout: hextra-home)
-  docs/              user guide (getting started, client, record layer, SQL)
-  performance/       nightly benchmark dashboard
+  docs/              user guide (getting started, record layer, SQL, maturity)
   changelog.md       rendered from the repo CHANGELOG.md (see below)
-data/                site data (package list for vanity imports, benchmark snapshots)
+static/install.sh    the frl CLI installer (curl -fsSL https://fdb.dev/install.sh | sh)
+data/                site data (package list for vanity imports)
 themes/hextra/       vendored theme (no go.mod; not part of the Go/Bazel build — see .bazelignore)
 ```
 
