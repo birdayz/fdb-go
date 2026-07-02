@@ -122,6 +122,21 @@ func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowE
 // the whole test binary phase (no concurrent queries in the other mode).
 var DisablePositionalEmission bool
 
+// SetNameModelOracle flips BOTH §5 name-model oracle globals together:
+// DisablePositionalEmission (suppresses the positional row at every birth
+// site) and values.OracleBakedNameFallback (lets BAKED FieldValues — RFC-173
+// S2+ eager ordinal nodes, whose name reads are otherwise loud errors —
+// resolve by display name against the name-keyed rows the suppression leaves
+// behind). The two flags share ONE meaning — "the process is running the
+// pre-RFC-173 name model" — so this setter is the only sanctioned write site
+// (Graefe hardening: no harness can flip one without the other). Test-only;
+// callers own the whole test-binary phase. Retires with the name map in
+// Slice 4.
+func SetNameModelOracle(v bool) {
+	DisablePositionalEmission = v
+	values.OracleBakedNameFallback = v
+}
+
 // StrictReferenceCheck, when true, makes filter/projection cursors evaluate
 // QueryResult.Complete rows through a Strict RowEvalContext, so a reference to
 // a name absent from the (complete) row is reported via

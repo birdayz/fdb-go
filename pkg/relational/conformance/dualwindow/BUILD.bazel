@@ -5,7 +5,6 @@ go_test(
     srcs = ["dualwindow_test.go"],
     deps = [
         "//pkg/recordlayer/query/executor",
-        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/conformance/plandiff",
         "//pkg/testcontainers/foundationdb",
     ],

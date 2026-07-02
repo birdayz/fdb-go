@@ -432,6 +432,42 @@ validation strategy the adversarial review corrected). Effort figures are rough.
      NLJ-cursor primitive (`executor.go:2167` replacement), PINNED observationally equivalent to
      evaluating the merged RC with `QOV(right)→nil`. Both are positional re-birth sites → extend
      the `DisablePositionalEmission` oracle registry (standing obligation).
+  **Slice 2 execution log:**
+  - **W1 (baked substrate, dark) — DONE.** `FieldValue.Resolved *ResolvedAccessor{Ordinal}` +
+    `NewFieldValueOfOrdinal` (loud `OrdinalBakeError`); identity refinement per ruling #2 (baked =
+    (name, ordinal), baked-vs-lazy UNEQUAL, lazy unchanged; hash mixes the ordinal for baked only);
+    marker preserved through every copy site (withChildren / pullup / pushdown passthroughs —
+    accessor pointer SHARED, replace-never-mutate pinned in the struct comment). §5 duplicate-name
+    identity pin landed (raw `[ID,ID]` type, `ofOrdinal(0) ≠ ofOrdinal(1)`). Torvalds NAK round
+    fixed three latent holes: (1) baked node over a NAME-keyed eval context is a loud
+    `BakedNameContextError` at all seven name-read arms — `values.OracleBakedNameFallback` is the
+    single TEST-ONLY bridge (twinned with `DisablePositionalEmission` behind
+    `executor.SetNameModelOracle`, the only sanctioned write site; dies with the name map in S4);
+    (2) `pullUpThroughRecordConstructor` was a THIRD RC name-lookup consumer — now bakes the
+    matched output ordinal when the input is baked or the RC is dup-named; (3)
+    `composeFieldOverConstructor` panics (Java IndexOutOfBounds) on an out-of-range bake over its
+    OWN child RC; `PushDownValue` keeps the nil decline (external result value). Graefe ACK ×2,
+    Torvalds NAK→ACK. W3 owes: real `executor.PositionalRow` eval pin; loud fall-through for a
+    baked node over an *unrecognized* context type in `Evaluate`'s tail.
+  - **W2 (cluster-arity gate + drift asserts, dark) — DONE.** `rfc173_cluster_gate.go`:
+    `clusterArity` walk + `ordinalWedgeGate` recording per-seed decisions (`wedgeGate` map, W3
+    consumes); enclosure flag `inInnerCluster` threaded through translateJoin legs (inner=enclosed,
+    outer=fresh), the existential flattens (`translateJoinWithExists`/`buildExistentialSelect`/
+    `buildExistentialJoinSelect`/projected-EXISTS), the correlated-scalar 2-leg seed (both legs
+    enclosed until W4), `translateUnnestJoin` (whole subtree name-model until W4), recursive CTE
+    (blanket enclosure until S4), with `translateOp`-entry resets at opaque boundaries and
+    `translateSubqueryRef` rooting EXISTS subquery plans as fresh clusters. Drift asserts landed
+    per ruling #1: SelectMergeRule target loop panics on an ORDINAL child merging into a
+    multi-quantifier parent; `rebaseBuriedLowerReferences` panics on re-anchoring a BAKED node
+    (the re-stamp treatment Graefe requested in the W1 review). **Two deliberate errata vs the
+    contract's shorthand (both fail toward the name model; Graefe to confirm in the W2 review):**
+    (a) filter/project with exists/scalar subqueries = POISON, not opaque leaf 1 — their selects
+    DO merge (ChildrenAsSet true) and would drag existential/NullOnEmpty legs into the ≥3 partition
+    machinery; (b) outer-join boxes are gated UNCONDITIONALLY (not only at maximal-cluster arity
+    2) — they never merge either way, ruling #3 flips them in W3, and their legs root fresh
+    clusters. Pins: arity-per-shape table, flattening-evasion (gate pin (b) planner half),
+    enclosure-by-translation matrix (2-way gates; same join under 3-way does not; fresh clusters
+    under outer legs/aggregates/EXISTS subqueries gate; EXISTS outer legs don't).
 - **Slice 3 — THE HARD CORE: N-way re-enumeration + interning, ordinal/group (ATOMIC)**
   (~3 shifts). Replace the name-based re-stamp machinery
   (`NewReEnumerationAnchoredRecord`/`anchoredColumnsByQuantifier`/`leftmostQOV`/`buildUpperResult`/

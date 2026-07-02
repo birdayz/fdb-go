@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -898,6 +899,18 @@ func rebaseBuriedLowerReferences(
 		}
 		if _, buried := buriedAliases[qov.Correlation]; !buried {
 			return v
+		}
+		// RFC-173 Slice 2 drift assert (same treatment as SelectMergeRule's,
+		// contract ruling #1): re-anchoring to a dotted merge name silently
+		// degrades a BAKED node to the lazy name model over a re-typed child —
+		// exactly the transformation the eager bake exists to forbid. The
+		// cluster-arity gate keeps ordinal values out of N-way partition
+		// re-stamping entirely; reaching here with a baked node means the gate
+		// mis-scoped. Loud, never a silent degradation.
+		if fv.Resolved != nil {
+			panic(fmt.Sprintf(
+				"RFC-173: PartitionSelectRule re-stamp would re-anchor BAKED FieldValue %s#%d (over %s) to merge alias %s — the cluster-arity gate mis-scoped an ordinal join into an N-way re-enumeration (planner bug)",
+				fv.Field, fv.Resolved.Ordinal, qov.Correlation.Name(), mergeAlias.Name()))
 		}
 		field := fv.Field
 		if !strings.Contains(field, ".") {

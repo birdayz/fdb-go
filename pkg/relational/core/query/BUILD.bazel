@@ -6,6 +6,7 @@ go_library(
         "cascades_translator.go",
         "exists_guard.go",
         "plan.go",
+        "rfc173_cluster_gate.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/query",
     visibility = ["//visibility:public"],
@@ -26,6 +27,7 @@ go_test(
     srcs = [
         "cascades_translator_test.go",
         "plan_test.go",
+        "rfc173_cluster_gate_test.go",
     ],
     embed = [":query"],
     deps = [

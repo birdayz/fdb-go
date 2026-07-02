@@ -256,6 +256,26 @@ func (f *FieldValue) bakedNameReadGuard() error {
 	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Ordinal}
 }
 
+// ContainsBakedOrdinal reports whether any FieldValue in v's subtree carries
+// the RFC-173 baked-ordinal marker — the structural "is this an ordinal-model
+// value tree" probe the coexistence-window drift asserts key on
+// (SelectMergeRule target loop, PartitionSelectRule re-stamp). Retires with
+// the name model in Slice 4.
+func ContainsBakedOrdinal(v Value) bool {
+	found := false
+	WalkValue(v, func(n Value) bool {
+		if found {
+			return false
+		}
+		if fv, ok := n.(*FieldValue); ok && fv.Resolved != nil {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 func (f *FieldValue) Children() []Value {
 	if f.Child == nil {
 		return []Value{}

@@ -39,23 +39,16 @@ import (
 	"time"
 
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
-// setDisablePositionalEmission flips the §5 differential oracle switches.
-// Callers must guarantee no query is in flight (phase barrier). The two flags
-// TRAVEL TOGETHER: suppressing positional emission recreates the name model's
-// rows, and the values-level bridge lets BAKED FieldValues (RFC-173 S2+ eager
-// ordinal nodes, whose name reads are otherwise loud errors) resolve by
-// display name against those rows — the full pre-RFC-173 name model, end to
-// end. Dup-name shapes where the name model genuinely conflates are carved
-// out by RFC citation.
-func setDisablePositionalEmission(v bool) {
-	executor.DisablePositionalEmission = v
-	values.OracleBakedNameFallback = v
-}
+// setDisablePositionalEmission flips the §5 differential oracle switches at
+// the phase barrier (callers must guarantee no query is in flight), through
+// the ONE sanctioned write site — executor.SetNameModelOracle — which keeps
+// the emission toggle and the values-level baked-name bridge travelling
+// together (they share one meaning: "run the pre-RFC-173 name model").
+func setDisablePositionalEmission(v bool) { executor.SetNameModelOracle(v) }
 
 // clusterFilePath is set by TestMain when an FDB testcontainer is available.
 // Empty means "skip" (no Docker).
