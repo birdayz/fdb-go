@@ -1454,10 +1454,10 @@ func TestSetTimeout_Preserved(t *testing.T) {
 	}
 
 	// After reset, timeout should still be set.
-	if tx.timeout != 500*time.Millisecond {
-		t.Errorf("timeout not preserved: got %v, want 500ms", tx.timeout)
+	if tx.timeoutDur() != 500*time.Millisecond {
+		t.Errorf("timeout not preserved: got %v, want 500ms", tx.timeoutDur())
 	}
-	if tx.deadline.IsZero() {
+	if tx.deadlineNs.Load() == 0 {
 		t.Error("deadline should be re-computed after reset")
 	}
 
@@ -1498,8 +1498,8 @@ func TestSetTimeout_OverallBudget(t *testing.T) {
 	}
 
 	// Now simulate exhausted budget: set creationTime far in the past.
-	tx.creationTime = time.Now().Add(-1 * time.Second) // 1s ago
-	tx.deadline = tx.creationTime.Add(tx.timeout)      // deadline = 500ms ago
+	tx.creationTime = time.Now().Add(-1 * time.Second)                   // 1s ago
+	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano()) // deadline = 500ms ago
 	if err := tx.checkTimeout(); err == nil {
 		t.Error("timeout should fire: budget exhausted (creationTime 1s ago, 500ms timeout)")
 	}
@@ -1544,10 +1544,10 @@ func TestSetTimeout_Disabled(t *testing.T) {
 	tx.SetTimeout(100) // set a timeout
 	tx.SetTimeout(0)   // then disable it
 
-	if tx.timeout != 0 {
-		t.Errorf("timeout should be 0, got %v", tx.timeout)
+	if tx.timeoutDur() != 0 {
+		t.Errorf("timeout should be 0, got %v", tx.timeoutDur())
 	}
-	if !tx.deadline.IsZero() {
+	if tx.deadlineNs.Load() != 0 {
 		t.Error("deadline should be zero when timeout disabled")
 	}
 

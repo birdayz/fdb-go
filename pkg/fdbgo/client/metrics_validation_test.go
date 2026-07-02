@@ -18,8 +18,8 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 	t.Parallel()
 	timedOut := func() *Transaction {
 		tx := newTestTx()
-		tx.timeout = 1
-		tx.deadline = time.Now().Add(-time.Second) // already expired → checkTimeout returns 1031
+		tx.timeoutNs.Store(1)
+		tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano()) // already expired → checkTimeout returns 1031
 		return tx
 	}
 

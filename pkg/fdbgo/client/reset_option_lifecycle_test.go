@@ -58,8 +58,8 @@ func TestReset_OptionPersistenceSplit(t *testing.T) {
 
 		tx.reset(false) // OnError retry — persistent options survive
 
-		if tx.timeout != 5000*time.Millisecond {
-			t.Errorf("timeout must be PRESERVED on retry, got %v", tx.timeout)
+		if tx.timeoutDur() != 5000*time.Millisecond {
+			t.Errorf("timeout must be PRESERVED on retry, got %v", tx.timeoutDur())
 		}
 		if !tx.hasRetryLimit || tx.retryLimit != 7 {
 			t.Errorf("retryLimit must be PRESERVED on retry, got hasRetryLimit=%v retryLimit=%d", tx.hasRetryLimit, tx.retryLimit)
@@ -78,8 +78,8 @@ func TestReset_OptionPersistenceSplit(t *testing.T) {
 
 		tx.reset(true) // user Reset — persistent options revert to DB defaults
 
-		if tx.timeout != 0 {
-			t.Errorf("timeout must revert to the DB default (0) on user Reset, got %v", tx.timeout)
+		if tx.timeoutDur() != 0 {
+			t.Errorf("timeout must revert to the DB default (0) on user Reset, got %v", tx.timeoutDur())
 		}
 		if tx.hasRetryLimit {
 			t.Errorf("retryLimit must revert to the no-limit DB default on user Reset, got retryLimit=%d", tx.retryLimit)
@@ -97,12 +97,12 @@ func TestReset_OptionPersistenceSplit(t *testing.T) {
 		tx.SetTimeout(5000)
 
 		tx.reset(false) // retry → per-txn override preserved
-		if tx.timeout != 5000*time.Millisecond {
-			t.Errorf("retry: per-txn timeout override must survive, got %v", tx.timeout)
+		if tx.timeoutDur() != 5000*time.Millisecond {
+			t.Errorf("retry: per-txn timeout override must survive, got %v", tx.timeoutDur())
 		}
 		tx.reset(true) // user Reset → reverts to the DB default (3000ms), NOT the per-txn 5000ms
-		if tx.timeout != 3000*time.Millisecond {
-			t.Errorf("user Reset: timeout must revert to the DB default 3000ms, got %v", tx.timeout)
+		if tx.timeoutDur() != 3000*time.Millisecond {
+			t.Errorf("user Reset: timeout must revert to the DB default 3000ms, got %v", tx.timeoutDur())
 		}
 	})
 }

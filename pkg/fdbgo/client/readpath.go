@@ -74,8 +74,8 @@ func (tx *Transaction) readRPCTimeout() time.Duration {
 // readRPCTimeout.
 func (tx *Transaction) pipelineReplyTimeout() time.Duration {
 	d := tx.readRPCTimeout()
-	if tx.timeout > 0 {
-		rem := time.Until(tx.deadline)
+	if tx.timeoutNs.Load() > 0 {
+		rem := time.Until(tx.deadlineTime())
 		if rem < 0 {
 			rem = 0
 		}
@@ -93,10 +93,10 @@ func (tx *Transaction) pipelineReplyTimeout() time.Duration {
 // the way resetPromise does (`resetPromise.getFuture() || op`). With no timeout set
 // it returns ctx unchanged. The caller MUST call the returned cancel. (RFC-112)
 func (tx *Transaction) opContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if tx.timeout <= 0 {
+	if tx.timeoutNs.Load() <= 0 {
 		return ctx, func() {}
 	}
-	return context.WithDeadline(ctx, tx.deadline)
+	return context.WithDeadline(ctx, tx.deadlineTime())
 }
 
 // mapTimeout converts a deadline/cancel error caused by THIS transaction's
@@ -105,11 +105,11 @@ func (tx *Transaction) opContext(ctx context.Context) (context.Context, context.
 // is done it is the caller's cancellation, so the original error is preserved; we
 // synthesize 1031 only when parentCtx is still live and our deadline has passed.
 func (tx *Transaction) mapTimeout(parentCtx context.Context, err error) error {
-	if err == nil || tx.timeout <= 0 || parentCtx.Err() != nil {
+	if err == nil || tx.timeoutNs.Load() <= 0 || parentCtx.Err() != nil {
 		return err
 	}
 	if (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) &&
-		!time.Now().Before(tx.deadline) {
+		!time.Now().Before(tx.deadlineTime()) {
 		return &wire.FDBError{Code: ErrTransactionTimedOut}
 	}
 	return err

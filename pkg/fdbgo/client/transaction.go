@@ -213,8 +213,14 @@ type Transaction struct {
 	// C++ semantics: the timeout is an overall budget across all retries,
 	// NOT per-retry. Internal reset (OnError retry) does NOT restart the timer.
 	// Only user-facing Reset() restarts it by updating creationTime.
-	timeout      time.Duration
-	deadline     time.Time
+	// Atomics (RFC-175 E1): both are read lock-free on every op (checkTimeout,
+	// opContext, mapTimeout) while the reset paths write them — and Reset()'s
+	// cancelWatches runs a cancelled watch's teardown (which calls mapTimeout)
+	// concurrently with reset()'s option re-application, the one sanctioned
+	// op-vs-Reset overlap. timeoutNs is the budget in ns (0 = disabled);
+	// deadlineNs is a unixnano, consulted only while timeoutNs > 0.
+	timeoutNs    atomic.Int64
+	deadlineNs   atomic.Int64
 	creationTime time.Time // set on construction and user Reset(), NOT on OnError retry
 
 	// metricStart anchors the RFC-114 total-transaction-latency sample. Kept SEPARATE
@@ -327,16 +333,19 @@ type Transaction struct {
 	// metrics ops, getApproximateSize :715, getVersionstamp). Cleared only on reset
 	// (resetRyow, ReadYourWrites.actor.cpp:2719).
 	//
-	// Go has no network thread — ops run on caller goroutines and the published contract
-	// (fdb/transaction.go) allows concurrent use — so the slot is an
-	// atomic.Pointer[wire.FDBError]: written at most once per incarnation (CAS /
+	// Go has no network thread — ops run on caller goroutines. The published contract
+	// (fdb/transaction.go) makes DATA ops (Set/Get/Atomic/Commit) concurrent-safe while
+	// option setters are not; the slot's writers span both classes (Atomic is a data op,
+	// SetReadYourWritesDisable an option), so it is an atomic.Pointer[wire.FDBError] —
+	// strictly safer than the narrower contract requires, and equivalent to C++'s
+	// serialize-everything network thread: written at most once per incarnation (CAS /
 	// store-if-unset = first error wins), Load()ed at every gate C++ guards with
 	// checkDeferredError (ensureReadVersion covers Get/GetKey/GetRange/GetReadVersion/
 	// GetPipelined/Watch; Commit, the metrics paths, GetApproximateSize and
 	// GetVersionstamp gate explicitly), Store(nil)ed only on reset.
 	//
 	// Sources, matching C++: an invalid op-code passed to Atomic() (2018/2004/2000 —
-	// RYW::atomicOp's throw, ReadYourWrites.actor.cpp:2234; recorded store-if-unset
+	// RYW::atomicOp's throw, ReadYourWrites.actor.cpp:2235; recorded store-if-unset
 	// under conflictMu, linearized with the preceding-mutation scan — see Atomic()) and
 	// SetReadYourWritesDisable after a read/write (2000 — RYW setOptionImpl's throw,
 	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign).
@@ -482,6 +491,13 @@ const (
 	grvFlagCausalReadRisky     uint32 = 1        // FLAG_CAUSAL_READ_RISKY
 	grvPriorityMask            uint32 = 0xFF000000
 )
+
+// timeoutDur returns the SetTimeout budget (0 = disabled). Atomic — see the field comment.
+func (tx *Transaction) timeoutDur() time.Duration { return time.Duration(tx.timeoutNs.Load()) }
+
+// deadlineTime returns the SetTimeout deadline. Only meaningful while timeoutNs > 0
+// (callers gate on it); the zero deadlineNs maps to the epoch, never consulted.
+func (tx *Transaction) deadlineTime() time.Time { return time.Unix(0, tx.deadlineNs.Load()) }
 
 // Snapshot returns a snapshot view of this transaction.
 // Snapshot reads do not add read conflict ranges, so they don't cause
@@ -1405,7 +1421,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 			op = MutAndV2
 		}
 	}
-	// C++ ReadYourWritesTransaction::atomicOp (ReadYourWrites.actor.cpp:2234) rejects any op that is
+	// C++ ReadYourWritesTransaction::atomicOp (ReadYourWrites.actor.cpp:2235) rejects any op that is
 	// not isValidMutationType && isAtomicOp with invalid_mutation_type, BEFORE adding it to the write
 	// map. In libfdb_c that throw happens on the NETWORK thread inside the onMainThreadVoid functor
 	// (ThreadSafeTransaction.cpp:601-609) and is captured into the transaction's single deferredError
@@ -1417,7 +1433,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	// the shared cluster. The eager record matches "first invalid op wins" call ordering.
 	if !isAtomicOp(op) {
 		// C++ atomicOp checks metadataVersionKey (2000) / legal-range (2004) BEFORE the op-validity
-		// check (2018) — ReadYourWrites.actor.cpp:2226-2234. Surface the same precedence eagerly so
+		// check (2018) — ReadYourWrites.actor.cpp:2226-2235. Surface the same precedence eagerly so
 		// Atomic(invalidOp, systemKey) reports key_outside_legal_range and Atomic(invalidOp,
 		// metadataVersionKey) reports client_invalid_operation — not 2018.
 		var code int
@@ -1429,7 +1445,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		default:
 			code = ErrInvalidMutationType // 2018
 		}
-		// C++ throws the FIRST illegal op EAGERLY (ReadYourWrites.actor.cpp:2226-2234). A mutation
+		// C++ throws the FIRST illegal op EAGERLY (ReadYourWrites.actor.cpp:2226-2235). A mutation
 		// buffered BEFORE this bad Atomic that is itself illegal came first and out-ranks the bad-op
 		// code; only if every preceding mutation is legal is THIS bad op the first illegal
 		// one. Compute under conflictMu for a consistent preceding-mutation snapshot; store-if-unset
@@ -1940,16 +1956,21 @@ func (tx *Transaction) Reset() {
 	tx.backoff = 0
 	// C++ reset() updates creationTime = now(), restarting timeout window.
 	tx.creationTime = time.Now()
+	tx.reset(true) // user Reset(): persistent options (timeout/retryLimit/maxRetryDelay) revert to DB defaults
 	// RFC-114: Reset() begins a NEW logical transaction, so clear the total-latency
 	// anchor here too (re-stamped at the next first GRV) — otherwise a handle that
 	// reads/abandons work then Reset()s without committing would fold that pre-Reset
 	// work + idle into the next commit's total latency. This clear lives in Reset(),
 	// NOT in the OnError-shared reset() (which must preserve metricStart so latency
-	// spans retries).
+	// spans retries). It runs AFTER reset(true): a WatchSetup goroutine can HOLD
+	// readVersionMu across its GRV (ensureReadVersion) waiting on the very watch
+	// context that reset()'s cancelWatches releases — taking the mutex first
+	// deadlocks Reset against it (pinned by TestReset_DoesNotDeadlockWithWatchSetupGRV).
+	// C++ has no such window: reset and the watch share the network thread, and
+	// resetPromise fires before any state is rebuilt.
 	tx.readVersionMu.Lock()
 	tx.metricStart = time.Time{}
 	tx.readVersionMu.Unlock()
-	tx.reset(true) // user Reset(): persistent options (timeout/retryLimit/maxRetryDelay) revert to DB defaults
 }
 
 // regenerateSpan refreshes the transaction's trace span — a fresh span per
@@ -2238,14 +2259,14 @@ func backoffSleep(ctx context.Context, d time.Duration) error {
 // ReadYourWrites.actor.cpp:1517) so the wait aborts the moment the deadline passes. With no timeout
 // set it is exactly backoffSleep. A genuine parent-ctx cancellation still surfaces ctx.Err().
 func (tx *Transaction) backoffSleepBounded(ctx context.Context, delay time.Duration) error {
-	if tx.timeout <= 0 {
+	if tx.timeoutNs.Load() <= 0 {
 		return backoffSleep(ctx, delay)
 	}
-	bctx, cancel := context.WithDeadline(ctx, tx.deadline)
+	bctx, cancel := context.WithDeadline(ctx, tx.deadlineTime())
 	defer cancel()
 	if err := backoffSleep(bctx, delay); err != nil {
 		// The deadline fired (not the caller's ctx) → 1031, matching the timebomb race.
-		if ctx.Err() == nil && time.Now().After(tx.deadline) {
+		if ctx.Err() == nil && time.Now().After(tx.deadlineTime()) {
 			return &wire.FDBError{Code: ErrTransactionTimedOut}
 		}
 		return err
@@ -2443,17 +2464,17 @@ func (tx *Transaction) SetReadVersion(version int64) {
 // A value of 0 disables the timeout. Matches C++ FDB_TR_OPTION_TIMEOUT.
 func (tx *Transaction) SetTimeout(ms int64) {
 	if ms <= 0 {
-		tx.timeout = 0
-		tx.deadline = time.Time{}
+		tx.timeoutNs.Store(0)
+		tx.deadlineNs.Store(0)
 		return
 	}
-	tx.timeout = time.Duration(ms) * time.Millisecond
+	tx.timeoutNs.Store(int64(time.Duration(ms) * time.Millisecond))
 	// Deadline is anchored to creationTime, matching C++:
 	// timebomb(options.timeoutInSeconds + creationTime, resetPromise)
 	if tx.creationTime.IsZero() {
 		tx.creationTime = time.Now()
 	}
-	tx.deadline = tx.creationTime.Add(tx.timeout)
+	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
 }
 
 // SetRetryLimit limits the number of retries in OnError.
@@ -2602,7 +2623,7 @@ func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte)
 
 // checkTimeout returns a timeout error if the deadline has passed.
 func (tx *Transaction) checkTimeout() error {
-	if tx.timeout > 0 && time.Now().After(tx.deadline) {
+	if tx.timeoutNs.Load() > 0 && time.Now().After(tx.deadlineTime()) {
 		return &wire.FDBError{Code: ErrTransactionTimedOut}
 	}
 	return nil
@@ -3278,10 +3299,10 @@ func (tx *Transaction) reset(userReset bool) {
 	// onError does NOT update creationTime, so the timeout is an overall
 	// budget across all retries. Only user-facing Reset() updates creationTime.
 	// A user Reset() that cleared timeout to the (0) DB default clears the deadline too.
-	if tx.timeout > 0 {
-		tx.deadline = tx.creationTime.Add(tx.timeout)
+	if tx.timeoutNs.Load() > 0 {
+		tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
 	} else {
-		tx.deadline = time.Time{}
+		tx.deadlineNs.Store(0)
 	}
 	// Clear accumulated proxy tag throttle duration on retry (tags themselves are cleared to the DB
 	// default by applyOptionDefaults above — they are NON-persistent, C++ TransactionOptions::clear).
@@ -3348,7 +3369,7 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	// SAME setter CreateTransaction uses so an unlimited (negative) DB default matches: SetRetryLimit(-1) →
 	// hasRetryLimit=false, whereas a raw copy leaves hasRetryLimit=true with retryLimit=-1 and makes the
 	// next OnError stop retrying (0 >= -1).
-	tx.timeout = time.Duration(td.Timeout) * time.Millisecond // 0 → disabled (deadline recomputed by reset())
+	tx.timeoutNs.Store(int64(time.Duration(td.Timeout) * time.Millisecond)) // 0 → disabled (deadline recomputed by reset())
 	if td.HasRetryLimit {
 		tx.SetRetryLimit(int64(td.RetryLimit))
 	} else {
