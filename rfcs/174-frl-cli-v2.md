@@ -1,8 +1,10 @@
 # RFC-174: frl CLI v2 — layered store addressing, scriptable SQL, honest writes
 
-**Status:** Implemented (all six slices, PR #435) — RFC reviews: Graefe ACK + FDB C++ dev ACK +
-codex folded; implementation reviews: round-1 findings from all three reviewers fixed (see
-Review record), re-review in flight.
+**Status:** Implemented and fully ACKed (all six slices, PR #435). RFC reviews: Graefe ACK +
+FDB C++ dev ACK + codex folded. Implementation reviews: round-1 findings from all three
+reviewers fixed in 85faea904 (see Review record); round-2 on that HEAD — **Graefe ACK (no
+conditions)**, **FDB C++ dev ACK (no conditions, C1–C5 satisfied)**, **codex clean pass** ("no
+introduced correctness issues", PR #435 comment).
 **Gate:** Graefe + FDB C++ dev + codex (user-requested reviewer set for this RFC) + Torvalds +
 @claude on the implementation PRs. This is **not** a query-engine change — no
 Cascades/planner/executor code is touched; the `\explain` feature (§3.3) consumes the existing
