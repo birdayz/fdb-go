@@ -365,7 +365,19 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   canonical interning sequence there; Slice 2 joins keep name-model dedup. The wedge therefore
   proves the ordinal **result value + positional row + ordinal predicate resolution** on live join
   plans — not interning; that residual risk moves to Slice 3, mitigated by the banked spike
-  harness. Port the correlated-scalar-subquery 2-leg seed and single-source `UNNEST` here.
+  harness. ~~Port the correlated-scalar-subquery 2-leg seed and single-source `UNNEST` here.~~
+  **AMENDED (Graefe W4-deferral ruling, post-premise-correction): both move to Slice 3.** The
+  original sentence was written on the same false premise (translation-time LEFT opacity) the
+  W3b-1 re-ruling corrected: the correlated-scalar seed is a pre-rewrite `JoinLeftOuter` select —
+  exactly the ephemeral object the gate must not classify (RewriteOuterJoinRule dissolves it) —
+  and the unnest lowering runs on the `_N` name-emulation + RFC-142 dotted classifiers whose
+  ordinal port needs S3's collapsed FieldPaths (an S2 port would force the chained-node
+  representation the S3 representation ruling already rejected, or piecemeal-rewrite machinery S3
+  deletes). **FINALIZED S2 WEDGE SCOPE (the definitive statement): pure INNER/CROSS 2-way clusters
+  over NON-JOIN legs, plus FULL-outer boxes over non-join legs — with the W3b-2 gate-pin families
+  as the boundary proof (2-way-under-3-way name-model; flattening-evasion clean-decline;
+  GROUP-BY/HAVING-over-gated-join ordinal; dup-name SELECT *).** Everything else stays name-model
+  behind the gate until S3.
   **Entry gate — name-burial inventory (≤1 shift, mandatory, Round 5): ✅ SATISFIED** — the
   full two-axis enumeration lives in **`173-name-burial-inventory.md`** (~95 sites: executor
   producers/consumers/positional-birth registry + planner/translator anchored-join machinery,
@@ -531,7 +543,9 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     enclosure-by-translation matrix (2-way gates; same join under 3-way does not; fresh clusters
     under outer legs/aggregates/EXISTS subqueries gate; EXISTS outer legs don't).
 - **Slice 3 — THE HARD CORE: N-way re-enumeration + interning, ordinal/group (ATOMIC)**
-  (~3 shifts). Replace the name-based re-stamp machinery
+  (~~3~~ **4–5 shifts — resized honestly per the Graefe W4-deferral ruling: S3 additionally owns
+  the three items below that S2's premise correction displaced**). Replace the name-based re-stamp
+  machinery
   (`NewReEnumerationAnchoredRecord`/`anchoredColumnsByQuantifier`/`leftmostQOV`/`buildUpperResult`/
   `rebaseBuriedLowerReferences`) with positional rebuilds: `pullUpResultColumns` over the merge
   quantifier's flowed `Type` + a `TranslationMap` rebasing a buried leg reference to a `FieldValue`

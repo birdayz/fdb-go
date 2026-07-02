@@ -476,7 +476,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	// unnest leg via the SAME shared helpers every other scope builder uses so the
 	// ON predicate still resolves against the real-table legs. RFC-142.
 	scope := semantic.NewScope(nil)
-	addUnnestSource := unnestScopeSourceAdder(scope)
+	addUnnestSourceRaw := unnestScopeSourceAdder(scope)
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	// scopeDropRisk marks scope failures where the query could still PLAN and
 	// return silently-wrong cross-product rows if we fall through: a
@@ -518,6 +518,19 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			return false
 		}
 		if scope.AddSource(src) != nil {
+			scopeDropRisk = true
+			return false
+		}
+		return true
+	}
+	// A shape that RESOLVED as a lateral unnest but cannot be scoped (its
+	// AS/AT alias collides with an existing source — AddSource duplicate) is
+	// resolvable-but-unscopable: a drop risk by the same taxonomy (Torvalds
+	// catch: the shared adder closure predates the flag and its dup-alias arm
+	// escaped it — `FROM t AS x, t.arr AS x JOIN u ON …` silently dropped the
+	// ON).
+	addUnnestSource := func(j joinClause) bool {
+		if !addUnnestSourceRaw(j) {
 			scopeDropRisk = true
 			return false
 		}

@@ -935,7 +935,7 @@ func arrayFieldElementType(fd protoreflect.FieldDescriptor) values.Type {
 func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
 	// RFC-173 Slice 2: the entire unnest lowering (FlatMap-over-Explode,
 	// dotted-prefix bipartition machinery, multi-source fallback rebuilds via
-	// unnestFallbackOrReject) is name-model until the W4 port — every join
+	// unnestFallbackOrReject) is name-model until Slice 3 (Graefe W4-deferral ruling) — every join
 	// translated beneath it, including the fallback's rebuilt LogicalJoins,
 	// is marked enclosed so it cannot gate ordinal.
 	prevEnclosure := t.inInnerCluster
@@ -3104,7 +3104,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.LogicalProject) expressions.RelationalExpression {
 	csq := p.CorrelatedScalarSubqueries[0]
 
-	// RFC-173 Slice 2: this NAME-MODEL 2-leg anchored seed (W4 flips it to
+	// RFC-173 Slice 2: this NAME-MODEL 2-leg anchored seed (Slice 3 flips it — it is a pre-rewrite LEFT OUTER select, the ephemeral object the W3b premise correction covers; Graefe W4-deferral ruling — to
 	// ordinal) absorbs mergeable leg selects post-flattening — a join nested
 	// in either leg lands in a ≥3-quantifier name-model select, so both legs
 	// translate enclosed.

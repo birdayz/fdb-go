@@ -1397,6 +1397,19 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "V" FROM T1 LEFT JOIN T1."ARR1" AS "V" ON "V" = 1`, api.ErrCodeUndefinedDatabase)
 	})
 
+	t.Run("colliding unnest alias with an ON-carrying join fails closed", func(t *testing.T) {
+		// The unnest leg's AS alias collides with the outer source's alias
+		// (`FROM T1 AS V, T1.ARR1 AS V …`): scope.AddSource duplicates →
+		// resolvable-but-unscopable, a DROP RISK — with a further ON-carrying
+		// join in the FROM, the old silent decline dropped that ON and
+		// cross-producted (the fail-closed fix's unnest arm; Torvalds catch:
+		// the shared adder closure originally escaped the drop-risk
+		// taxonomy). Must be a loud 0AF00, never silent rows.
+		assertRejected(t, md,
+			`SELECT 1 FROM T1 JOIN "U" ON "U"."ID" = T1."ID", T1."ARR1" AS "U"`,
+			api.ErrCodeUnsupportedQuery)
+	})
+
 	t.Run("control: normal explicit INNER JOIN with ON is unaffected", func(t *testing.T) {
 		// `FROM T1 INNER JOIN U ON U.ID = T1.ID` — a plain explicit JOIN over real
 		// tables. The gate must leave it a real join (no Explode/FlatMap unnest):

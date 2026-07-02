@@ -52,13 +52,13 @@ func (t *cascadesTranslator) ordinalWedgeGate(j *logical.LogicalJoin) wedgeGateD
 func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedgeGateDecision {
 	if _, isUnnest := j.Right.(*logical.LogicalUnnest); isUnnest {
 		// Lateral unnest lowers to FlatMap-over-Explode with dotted-prefix
-		// bipartition machinery (RFC-142) — name model until the W4 port.
-		return wedgeGateDecision{Arity: arityPoison, Reason: "lateral unnest join (RFC-142 machinery, W4)"}
+		// bipartition machinery (RFC-142) — name model until Slice 3 (Graefe W4-deferral ruling: the ordinal port needs S3 FieldPaths).
+		return wedgeGateDecision{Arity: arityPoison, Reason: "lateral unnest join (RFC-142 machinery, S3)"}
 	}
 	if len(j.OnExistsSubqueries) > 0 {
 		// The seed select carries existential quantifiers; if it merges, they
 		// ride along and land the merged select in the ≥3-quantifier
-		// partition machinery. Name model (W4 owns the existential seeds).
+		// partition machinery. Name model (S3+ owns the existential seeds).
 		return wedgeGateDecision{Arity: arityPoison, Reason: "existential quantifiers on the join select"}
 	}
 	if strings.EqualFold(sourceAlias(j.Left), sourceAlias(j.Right)) {
