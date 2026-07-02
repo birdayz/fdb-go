@@ -187,37 +187,35 @@ type FieldValue struct {
 	Typ   Type
 	Child Value // base value (nil = legacy flat field reference)
 
-	// Resolved is the RFC-173 Slice 2 baked-ordinal marker. nil = LAZY node
-	// (today's model: the column position is re-derived from the child's flowed
-	// type on every resolveOrdinal). Non-nil = BAKED node (Java's eager model:
-	// the position was resolved once, at construction, by
-	// NewFieldValueOfOrdinal — Field is then a DISPLAY name for diagnostics and
-	// name-model coexistence only; the ordinal is authoritative).
+	// Resolved is the RFC-173 baked-ordinal marker — Java's construction-time
+	// FieldPath resolution, where the accessor IS an ordinal and runtime access
+	// is positional. nil = LAZY node (today's model: the column position is
+	// re-derived from the child's flowed type on every resolveOrdinal). Non-nil
+	// = BAKED node: resolveOrdinal returns the accessor's ordinal directly, so
+	// a positional-row read is row.Get(ordinal) — position-preserving by
+	// construction, and therefore sound under DUPLICATE output names, which
+	// every name-based resolution collapses (RecordType.FieldIndex is
+	// first-match; the name-keyed Datum is last-wins). Field is then a DISPLAY
+	// name for diagnostics and name-model coexistence.
+	//
+	// Two construction shapes during the coexistence window:
+	//   - NewFieldValueOfOrdinal (gated-join seeds): child-bearing over a typed
+	//     leg QOV, FrontierPinned — the executor guarantees positional rows, so
+	//     a name-keyed read is a loud *BakedNameContextError.
+	//   - NewFieldValueWithResolvedOrdinal (recursive-CTE leg wrap): childless,
+	//     unpinned — no frontier guarantee; off the positional frontier Field
+	//     names the Datum read key, so one Value works under both row models.
 	//
 	// Identity refinement (contract, RFC-173 §4 Slice 2 ruling #2): BAKED nodes
 	// compare by (name, ordinal); baked vs lazy is UNEQUAL (worst case a missed
-	// dedup, never a conflation); lazy vs lazy stays name-only. Every FieldValue
-	// copy/rebuild site MUST preserve this marker — dropping it silently
-	// degrades a baked node to lazy, which conflates duplicate same-named
-	// columns at different ordinals (§5 duplicate-name pin).
+	// dedup, never a conflation); lazy vs lazy stays name-only. FrontierPinned
+	// is EXCLUDED from identity/hash/Explain (an evaluation-contract marker,
+	// not a value distinction — like Java excluding name/type from
+	// ResolvedAccessor equality). Every FieldValue copy/rebuild site MUST
+	// preserve this marker — dropping it silently degrades a baked node to
+	// lazy, which conflates duplicate same-named columns at different ordinals
+	// (§5 duplicate-name pin).
 	Resolved *ResolvedAccessor
-
-	// ResolvedOrdinal (+HasResolvedOrdinal) is an optional PLAN-TIME-resolved
-	// ordinal accessor — Java's FieldValue.ofOrdinalNumber, where the FieldPath
-	// element IS an ordinal and runtime access is positional. When set,
-	// resolveOrdinal returns it directly, so an ordinal-frontier read is
-	// row.Get(ordinal) — position-preserving by construction, and therefore
-	// sound under DUPLICATE output names, which every name-based resolution
-	// collapses (RecordType.FieldIndex is first-match; the name-keyed Datum is
-	// last-wins). Off the frontier (name-keyed rows) Field still names the read
-	// key, so one Value works under both row models during the RFC-173
-	// coexistence window. Set by the recursive-CTE leg-normalization wrap for
-	// reads over a projection-top leg (read i ↔ emitted slot i by construction).
-	// Part of the Value's semantic identity (EqualsWithoutChildren /
-	// SemanticHashCode), matching Java where two different ordinal accessors
-	// are different FieldPaths.
-	ResolvedOrdinal    int
-	HasResolvedOrdinal bool
 }
 
 // ResolvedAccessor is the construction-time-resolved accessor a BAKED
@@ -233,6 +231,20 @@ type FieldValue struct {
 // changes identity (review convention pin).
 type ResolvedAccessor struct {
 	Ordinal int
+
+	// FrontierPinned carries the S2 gated-join FRONTIER CONTRACT: the node was
+	// baked at a gated-join seed whose executor births positional rows, so a
+	// name-keyed read is a planner/executor bug (loud *BakedNameContextError,
+	// bakedNameReadGuard). Unpinned baked nodes (the recursive-CTE wrap) have
+	// no such guarantee and keep the quiet name-model read off the positional
+	// frontier. The contract is a property of the VALUE, invariant under
+	// transformation — pullup/pushdown passthrough copies strip Child but
+	// share this pointer, so keying the guard on child presence would let a
+	// semantics-preserving rewrite silently demote a loud node (unification
+	// review ruling). EXCLUDED from identity/hash/Explain: an
+	// evaluation-contract marker, not a value distinction. Dies in Slice 4
+	// with the guard and the name model.
+	FrontierPinned bool
 }
 
 // OracleBakedNameFallback is the §5 dual-window differential's TEST-ONLY
@@ -267,26 +279,31 @@ func (e *BakedNameContextError) Error() string {
 
 // bakedNameReadGuard is called at every NAME-keyed read arm in Evaluate/
 // evaluateCorrelated: lazy nodes pass (the name model is their source of
-// truth); baked nodes fail loudly unless the §5 oracle bridge is active.
+// truth), and so do UNPINNED baked nodes (the recursive-CTE wrap shape — no
+// frontier guarantee, the name-keyed Datum read is their sanctioned
+// off-frontier path); FRONTIER-PINNED nodes fail loudly unless the §5 oracle
+// bridge is active.
 func (f *FieldValue) bakedNameReadGuard() error {
-	if f.Resolved == nil || OracleBakedNameFallback {
+	if f.Resolved == nil || !f.Resolved.FrontierPinned || OracleBakedNameFallback {
 		return nil
 	}
 	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Ordinal}
 }
 
 // ContainsBakedOrdinal reports whether any FieldValue in v's subtree carries
-// the RFC-173 baked-ordinal marker — the structural "is this an ordinal-model
-// value tree" probe the coexistence-window drift asserts key on
-// (SelectMergeRule target loop, PartitionSelectRule re-stamp). Retires with
-// the name model in Slice 4.
+// a FRONTIER-PINNED baked-ordinal marker — the structural "is this an S2
+// gated-join ordinal value tree" probe the coexistence-window drift asserts
+// key on (SelectMergeRule target loop, the executor's ordinal-join birth).
+// Deliberately blind to UNPINNED baked nodes (the recursive-CTE wrap): those
+// carry no join-frontier contract and must not trip join-seed machinery.
+// Retires with the name model in Slice 4.
 func ContainsBakedOrdinal(v Value) bool {
 	found := false
 	WalkValue(v, func(n Value) bool {
 		if found {
 			return false
 		}
-		if fv, ok := n.(*FieldValue); ok && fv.Resolved != nil {
+		if fv, ok := n.(*FieldValue); ok && fv.Resolved != nil && fv.Resolved.FrontierPinned {
 			found = true
 			return false
 		}
@@ -591,16 +608,13 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 // flat field, no child type to resolve against) is the case that stays on the
 // name path — see RFC-173 §4 P1.
 func (f *FieldValue) resolveOrdinal() (int, bool) {
-	// RFC-173 Slice 2: a BAKED node's position was resolved at construction
-	// (NewFieldValueOfOrdinal) — it is authoritative and returned before any
-	// lazy child-type derivation. The display name is diagnostics only.
+	// RFC-173: a BAKED node's position was resolved at construction
+	// (NewFieldValueOfOrdinal / NewFieldValueWithResolvedOrdinal) — it is
+	// authoritative and returned before any lazy child-type derivation:
+	// positional by construction, duplicate-name-proof. The display name is
+	// diagnostics and off-frontier coexistence only.
 	if f.Resolved != nil {
 		return f.Resolved.Ordinal, true
-	}
-	// A plan-time-resolved ordinal accessor (Java FieldValue.ofOrdinalNumber)
-	// is authoritative: positional by construction, duplicate-name-proof.
-	if f.HasResolvedOrdinal {
-		return f.ResolvedOrdinal, true
 	}
 	if f.Child == nil {
 		return 0, false
@@ -632,11 +646,13 @@ func NewFlatFieldValue(field string, typ Type) *FieldValue {
 // plan-time-resolved ordinal accessor — Java's FieldValue.ofOrdinalNumber. On
 // an ordinal-frontier row the read is row.Get(ordinal) (positional by
 // construction, duplicate-name-proof); on a name-keyed row it reads by field
-// name exactly like NewFlatFieldValue. Distinct from NewOrdinalFieldValue,
-// which is a NAME encoding (`_<ordinal>` Datum key) for anonymous
-// WITH-ORDINALITY fields, not positional access.
+// name exactly like NewFlatFieldValue — the accessor is UNPINNED (no
+// join-frontier contract; the caller — the recursive-CTE leg wrap — has legs
+// that legitimately flow name-keyed rows until S3/S4 flips joins positional).
+// Distinct from NewOrdinalFieldValue, which is a NAME encoding (`_<ordinal>`
+// Datum key) for anonymous WITH-ORDINALITY fields, not positional access.
 func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *FieldValue {
-	return &FieldValue{Field: field, Typ: typ, ResolvedOrdinal: ordinal, HasResolvedOrdinal: true}
+	return &FieldValue{Field: field, Typ: typ, Resolved: &ResolvedAccessor{Ordinal: ordinal}}
 }
 
 // NewOrdinalFieldValue accesses a record field by ORDINAL position,
@@ -699,11 +715,14 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: rt, Reason: fmt.Sprintf("ordinal out of range for a %d-field record type", len(rt.Fields))}
 	}
 	fld := rt.Fields[ordinal]
+	// FrontierPinned: this constructor is the gated-join seed's — the executor
+	// births positional rows for every context these nodes evaluate in, so a
+	// name-keyed read is loud (bakedNameReadGuard).
 	return &FieldValue{
 		Field:    fld.Name,
 		Typ:      fld.FieldType,
 		Child:    child,
-		Resolved: &ResolvedAccessor{Ordinal: ordinal},
+		Resolved: &ResolvedAccessor{Ordinal: ordinal, FrontierPinned: true},
 	}, nil
 }
 
@@ -903,15 +922,17 @@ func ExplainValue(v Value) string {
 		if cv.Child != nil {
 			name = ExplainValue(cv.Child) + "." + name
 		}
-		// A plan-time-resolved ordinal accessor renders its ordinal (Java's
-		// FieldPath `#ordinal` syntax) alongside the name. Load-bearing, not
-		// just display: physical-plan identity (RecordQueryProjectionPlan
+		// A baked ordinal accessor renders its ordinal (Java's FieldPath
+		// `#ordinal` syntax) alongside the name. Load-bearing, not just
+		// display: physical-plan identity (RecordQueryProjectionPlan
 		// EqualsWithoutChildren/HashCodeWithoutChildren) is keyed on these
 		// renderings, and two reads of DUPLICATE-named slots differ only by
 		// ordinal — rendering both as the bare name memo-unified projection
 		// alternatives that read different slots (review round-2 on PR #446).
-		if cv.HasResolvedOrdinal {
-			return name + "#" + strconv.Itoa(cv.ResolvedOrdinal)
+		// FrontierPinned deliberately does NOT render: it is an
+		// evaluation-contract marker, not part of the value's identity.
+		if cv.Resolved != nil {
+			return name + "#" + strconv.Itoa(cv.Resolved.Ordinal)
 		}
 		return name
 	case *ArithmeticValue:

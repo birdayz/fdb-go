@@ -108,14 +108,14 @@ func TestFieldValueBaked_ResolveOrdinal_RFC173S2(t *testing.T) {
 	// Adversarial: display name "A" (lazy would derive 0), baked ordinal 1 —
 	// the marker wins. Hand-built because the constructor never produces a
 	// name/ordinal mismatch; a rebuild against a re-typed child can.
-	mismatch := &FieldValue{Field: "A", Typ: NotNullLong, Child: qov, Resolved: &ResolvedAccessor{Ordinal: 1}}
+	mismatch := &FieldValue{Field: "A", Typ: NotNullLong, Child: qov, Resolved: &ResolvedAccessor{Ordinal: 1, FrontierPinned: true}}
 	if ord, ok := mismatch.resolveOrdinal(); !ok || ord != 1 {
 		t.Fatalf("baked-before-lazy: resolveOrdinal = (%d,%v), want (1,true) — the baked ordinal, not the lazy name derivation", ord, ok)
 	}
 
 	// Baked with nil child (a passthrough copy drops Child but keeps the
 	// marker): still resolves — the marker precedes the nil-Child decline.
-	orphan := &FieldValue{Field: "X", Resolved: &ResolvedAccessor{Ordinal: 2}}
+	orphan := &FieldValue{Field: "X", Resolved: &ResolvedAccessor{Ordinal: 2, FrontierPinned: true}}
 	if ord, ok := orphan.resolveOrdinal(); !ok || ord != 2 {
 		t.Fatalf("nil-child baked resolveOrdinal = (%d,%v), want (2,true)", ord, ok)
 	}
@@ -333,7 +333,7 @@ func TestFieldValueBaked_ComposeOverRC_ByOrdinal_RFC173S2(t *testing.T) {
 	// inconsistency — a planner bug that must be LOUD (Java throws
 	// IndexOutOfBounds), never a silent decline riding the broken node onward
 	// (review catch on the earlier decline shape).
-	stale := &FieldValue{Field: "ID", Typ: NullableString, Child: rc, Resolved: &ResolvedAccessor{Ordinal: 5}}
+	stale := &FieldValue{Field: "ID", Typ: NullableString, Child: rc, Resolved: &ResolvedAccessor{Ordinal: 5, FrontierPinned: true}}
 	func() {
 		defer func() {
 			if recover() == nil {
@@ -431,8 +431,10 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	got, err = baked.Evaluate(nameRow)
 	assertLoud("qualified-key map", got, err)
 
-	// Non-correlated map arm (childless baked copy, e.g. post-passthrough).
-	orphan := &FieldValue{Field: "ID", Typ: NotNullLong, Resolved: &ResolvedAccessor{Ordinal: 0}}
+	// Non-correlated map arm (childless PINNED baked copy, e.g. a seed ref
+	// post-passthrough — pullup strips Child but shares the accessor, so the
+	// FrontierPinned contract survives and the guard stays loud).
+	orphan := &FieldValue{Field: "ID", Typ: NotNullLong, Resolved: &ResolvedAccessor{Ordinal: 0, FrontierPinned: true}}
 	got, err = orphan.Evaluate(nameRow)
 	assertLoud("plain map arm", got, err)
 

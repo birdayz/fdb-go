@@ -113,19 +113,14 @@ func writeSemanticHash(h io.Writer, v Value) {
 		// stays sound), but keeping the discriminator injective mirrors the
 		// rendering-keyed plan identity.
 		_, _ = io.WriteString(h, "field:"+strings.ReplaceAll(t.Field, "#", "##"))
-		// RFC-173 Slice 2: a BAKED node's identity is (name, ordinal)
+		// RFC-173: a BAKED node's identity is (name, ordinal)
 		// (EqualsWithoutChildren), so the hash mixes the ordinal in — equal ⟹
 		// same hash stays tight across the refinement. Lazy nodes keep the
 		// name-only bucket; baked vs lazy are UNEQUAL, so their differing
 		// hashes are fine (they must not share a memo bucket anyway).
+		// FrontierPinned is NOT hashed (excluded from identity).
 		if t.Resolved != nil {
 			_, _ = fmt.Fprintf(h, "#%d", t.Resolved.Ordinal)
-		}
-		// A plan-time-resolved ordinal accessor is part of the FieldPath
-		// identity (mirrors EqualsWithoutChildren): reads of duplicate-named
-		// output columns differ only by ordinal.
-		if t.HasResolvedOrdinal {
-			_, _ = fmt.Fprintf(h, "#%d", t.ResolvedOrdinal)
 		}
 	// Value-bearing leaves: the literal MUST be in the hash (their
 	// EqualsWithoutChildren distinguishes different literals).

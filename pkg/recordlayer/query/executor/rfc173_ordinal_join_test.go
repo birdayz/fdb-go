@@ -773,7 +773,7 @@ func TestRFC173S2_LegWindow_OutOfRangeIsLoud(t *testing.T) {
 
 	// Hand-built baked node past leg B's width (the constructor would refuse
 	// the bake, so this models a stale/corrupted plan node).
-	stale := &values.FieldValue{Field: "W", Typ: values.NotNullLong, Child: qovB, Resolved: &values.ResolvedAccessor{Ordinal: 5}}
+	stale := &values.FieldValue{Field: "W", Typ: values.NotNullLong, Child: qovB, Resolved: &values.ResolvedAccessor{Ordinal: 5, FrontierPinned: true}}
 	_, err := stale.Evaluate(&values.RowEvalContext{Correlations: binder})
 	var ore *values.OrdinalResolutionError
 	if !errors.As(err, &ore) {

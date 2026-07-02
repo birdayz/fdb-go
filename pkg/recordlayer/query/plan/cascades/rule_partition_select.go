@@ -905,9 +905,12 @@ func rebaseBuriedLowerReferences(
 		// degrades a BAKED node to the lazy name model over a re-typed child —
 		// exactly the transformation the eager bake exists to forbid. The
 		// cluster-arity gate keeps ordinal values out of N-way partition
-		// re-stamping entirely; reaching here with a baked node means the gate
-		// mis-scoped. Loud, never a silent degradation.
-		if fv.Resolved != nil {
+		// re-stamping entirely; reaching here with a PINNED baked node means
+		// the gate mis-scoped (unpinned wrap nodes are childless and never
+		// reach this arm; the assert polices the gate's frontier, so it keys
+		// on the FrontierPinned contract bit). Loud, never a silent
+		// degradation.
+		if fv.Resolved != nil && fv.Resolved.FrontierPinned {
 			panic(fmt.Sprintf(
 				"RFC-173: PartitionSelectRule re-stamp would re-anchor BAKED FieldValue %s#%d (over %s) to merge alias %s — the cluster-arity gate mis-scoped an ordinal join into an N-way re-enumeration (planner bug)",
 				fv.Field, fv.Resolved.Ordinal, qov.Correlation.Name(), mergeAlias.Name()))

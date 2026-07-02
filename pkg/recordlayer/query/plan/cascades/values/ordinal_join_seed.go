@@ -28,8 +28,12 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 	var runs []run
 	for i, f := range rc.Fields {
 		fv, isFV := f.Value.(*FieldValue)
-		if !isFV || fv.Resolved == nil {
-			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) is %T (baked=%v) — the seed bakes EVERY leg column", i, f.Name, f.Value, isFV && fv.Resolved != nil))
+		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+			// FrontierPinned required: the seed's constructor is
+			// NewFieldValueOfOrdinal, which pins — an UNPINNED baked node here
+			// (the recursive-CTE wrap shape) is not a join-seed reference and
+			// its presence means the wrong constructor built the seed.
+			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) is %T (baked=%v) — the seed bakes EVERY leg column with the frontier-pinned constructor", i, f.Name, f.Value, isFV && fv.Resolved != nil))
 		}
 		qov, isQOV := fv.Child.(*QuantifiedObjectValue)
 		if !isQOV {

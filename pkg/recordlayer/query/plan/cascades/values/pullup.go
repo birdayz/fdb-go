@@ -65,15 +65,22 @@ func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) Value 
 // seeds build them) bakes; a lazy input over a clean-named RC emits the lazy
 // node it always did.
 func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias CorrelationIdentifier) Value {
-	inBaked := false
+	inBaked, inPinned := false, false
 	if fv, ok := v.(*FieldValue); ok && fv.Resolved != nil {
 		inBaked = true
+		inPinned = fv.Resolved.FrontierPinned
 	}
 	for i, field := range rc.Fields {
 		if semanticEqual(v, field.Value) {
 			out := &FieldValue{Field: field.Name, Typ: field.Value.Type()}
 			if inBaked || rcHasDuplicateNames(rc) {
-				out.Resolved = &ResolvedAccessor{Ordinal: i}
+				// The frontier-contract bit INHERITS from the input: a pinned
+				// seed ref pulled through the join's RC still reads a
+				// positional row (the gated join births them), so the loud
+				// guard must survive the pull-up. A dup-name disambiguation
+				// bake over a LAZY input establishes no frontier contract —
+				// unpinned.
+				out.Resolved = &ResolvedAccessor{Ordinal: i, FrontierPinned: inPinned}
 			}
 			return out
 		}

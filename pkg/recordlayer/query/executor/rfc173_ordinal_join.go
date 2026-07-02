@@ -68,8 +68,12 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 	mergedFields := make([]values.Field, len(rc.Fields))
 	for i, f := range rc.Fields {
 		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil {
-			return nil, nil, false // not every field a baked leg ref — not the seed
+		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+			// Not every field a PINNED baked leg ref — not the seed. Unpinned
+			// baked nodes (the recursive-CTE wrap) carry no join-frontier
+			// contract; the probe keys on the FrontierPinned bit, not bare
+			// bakedness (unification review ruling).
+			return nil, nil, false
 		}
 		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
 		if !isQOV {
@@ -354,8 +358,8 @@ func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*
 	legs := make(map[values.CorrelationIdentifier]*values.RecordType)
 	values.WalkValue(rv, func(n values.Value) bool {
 		fv, isFV := n.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil {
-			return true
+		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+			return true // only PINNED seed refs carry join-leg types
 		}
 		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
 		if !isQOV {
@@ -424,7 +428,7 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 	for _, p := range preds {
 		predicates.ReplaceValues(p, func(v values.Value) values.Value {
 			fv, isFV := v.(*values.FieldValue)
-			if !isFV || fv.Resolved == nil {
+			if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 				return v
 			}
 			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
@@ -480,7 +484,7 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 	}
 	collect := func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil {
+		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			return v
 		}
 		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
@@ -581,7 +585,7 @@ func (b *ordinalJoinBirth) oracleNameDatum(rowCtx any) (map[string]any, error) {
 			continue
 		}
 		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil {
+		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			continue
 		}
 		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
