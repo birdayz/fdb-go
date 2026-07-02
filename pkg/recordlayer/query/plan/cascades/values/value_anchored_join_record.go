@@ -235,7 +235,7 @@ type reEnumColumn struct {
 // opaque merge. Each leg's columns are read from the parent
 // anchored RC (grouped by anchoring quantifier) and re-anchored to the leg's
 // quantifier. It emits EXACTLY the retired opaque merge's bare+qualified key set so name
-// resolution is preserved (Graefe condition 2):
+// resolution is preserved (review condition 2):
 //
 //   - a SOURCE-TABLE-qualified field SRC.COL for EVERY column, anchored to
 //     QOV(legAlias). For a pass-through original-table leg the row carries the

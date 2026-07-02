@@ -11,7 +11,7 @@ package sqldriver_test
 //   - UUID PRIMARY KEY scan, INL join on a UUID key (the case a positional-mask
 //     read side would have silently mis-packed), IN-lists, ranges, MIN/MAX-ever.
 // A UUID flows through the engine as a neutral [16]byte; string only at the
-// driver boundary, tuple.UUID only at the FDB wire boundary (Graefe decision b).
+// driver boundary, tuple.UUID only at the FDB wire boundary (RFC-162 decision b).
 
 import (
 	"context"
@@ -111,7 +111,7 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 	// IS [NOT] DISTINCT FROM — null-safe (in)equality. These do NOT SARG an
 	// index (residual, via cmpAny), so the STRING comparand MUST still be typed
 	// to UUID or cmpAny sees string-vs-[16]byte, returns UNKNOWN, and every row
-	// reads as "distinct" — silently wrong on a supported operator. (Graefe r2.)
+	// reads as "distinct" — silently wrong on a supported operator.
 	ck("not_distinct_from", fmt.Sprintf("SELECT id FROM t WHERE v IS NOT DISTINCT FROM '%s'", uuidV1), []int64{1})
 	ck("distinct_from", fmt.Sprintf("SELECT id FROM t WHERE v IS DISTINCT FROM '%s'", uuidV1), []int64{2, 3})
 	ck("in", fmt.Sprintf("SELECT id FROM t WHERE v IN ('%s', '%s')", uuidV1, uuidV3), []int64{1, 3})
@@ -413,7 +413,7 @@ func TestFDB_UUIDPrimaryKey(t *testing.T) {
 
 // INL join on a UUID key: the outer side is index-sourced so its join comparand
 // is ALREADY a UUID value (tuple.UUID→[16]byte), NOT a STRING literal. This is
-// the exact case Graefe flagged that a positional-mask read side would silently
+// the exact review-flagged case that a positional-mask read side would silently
 // mis-pack. With the typed [16]byte flow it just works: the inner index probe
 // packs the outer's [16]byte as a tuple.UUID.
 func TestFDB_UUIDInlJoin(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 // produces a COVERING IndexScan with NO Fetch, while a query that needs a
 // non-indexed column fetches the base record.
 //
-// Regression sentinel for codex PR-#256 finding P2: the data-access path emits
+// Regression sentinel for review PR-#256 finding P2: the data-access path emits
 // Fetch(IndexScan) for every value-index candidate (wrapScanPlanWithCoverage),
 // deferring the covering decision to MergeProjectionAndFetchRule — which does
 // the precise projection-columns-vs-index-columns check (more precise than the

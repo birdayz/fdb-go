@@ -19,7 +19,7 @@ import (
 // Never LoadSchemaTemplate (the latest version): a store whose schema is
 // pinned to template v1 would open with v2 metadata, and anything that
 // honours checkPossiblyRebuild would then WRITE to the store from a read
-// command (Graefe G1 on RFC-174). The pinned version is also simply the
+// command (reviewer G1 on RFC-174). The pinned version is also simply the
 // truth: it is the metadata the records were written under.
 type catalogSource struct {
 	db       *recordlayer.FDBDatabase

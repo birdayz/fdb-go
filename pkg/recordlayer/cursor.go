@@ -232,7 +232,7 @@ func Seq2[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, error
 			if !result.HasNext() {
 				// Surface an out-of-band (resource-limit) stop on the error channel
 				// so a Seq2 consumer doesn't read a truncated scan as clean end-of-data
-				// (codex RFC-106a). SourceExhausted/ReturnLimitReached → clean end.
+				// (RFC-106a). SourceExhausted/ReturnLimitReached → clean end.
 				if e := errIfDrainTruncated(result); e != nil {
 					yield(*new(T), e)
 				}

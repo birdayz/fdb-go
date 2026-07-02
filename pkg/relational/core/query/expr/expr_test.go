@@ -771,7 +771,7 @@ func TestResolver_Nil_InputPanics(t *testing.T) {
 // wrapped in PromoteValue(UUID). Without it the executor packs a string tuple
 // element that misses the 0x30 UUID index entry / residual-compares string vs
 // [16]byte — silently wrong rows. The parameter arm is the one the sqldriver
-// text-substitution masks (Codex r1): only the exported ParameterValue planner
+// text-substitution masks: only the exported ParameterValue planner
 // path (walkPreparedParameter → ResolveComparison) exercises it.
 func TestResolver_ResolveComparison_PromotesUuidComparand(t *testing.T) {
 	t.Parallel()

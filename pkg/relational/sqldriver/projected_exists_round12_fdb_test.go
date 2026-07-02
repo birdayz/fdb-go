@@ -12,7 +12,7 @@ import (
 // TestFDB_ProjectedExistsRound12 pins RFC-141 R4 round-12 — the convergence
 // backstop for EXISTS in WRAPPED / NESTED positions.
 //
-// codex round 12 found that an EXISTS that is NOT in a directly-handled position
+// review round 12 found that an EXISTS that is NOT in a directly-handled position
 // silently produced WRONG results, because the planner only point-handles a few
 // EXISTS shapes:
 //

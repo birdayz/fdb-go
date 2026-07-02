@@ -523,7 +523,7 @@ func TestDifferential_SelfWriteReadConflict(t *testing.T) {
 // conflict-range API for BOTH the read and the write range methods: inverted (begin>end → 2005),
 // empty (begin==end → accept), normal (accept), and an oversized (>10KB) key in the range.
 // go==cgo asserted. (Covers AddWriteConflictRange too — its validation could diverge from the
-// read path independently; codex.)
+// read path independently.)
 func TestDifferential_ConflictRangeEdges(t *testing.T) {
 	t.Parallel()
 	big := make([]byte, 11000)

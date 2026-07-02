@@ -395,7 +395,7 @@ func TestIntegration_Status_AllChecks(t *testing.T) {
 
 // A FULL_STORE lock must never be permanent: Open() rejects the locked
 // store, so `store unlock` arms the builder's bypass with the header's
-// stored reason (codex P1 — without that, unlock could never run). The
+// stored reason (review P1 — without that, unlock could never run). The
 // empty-reason variant pins the library fix underneath: the bypass is
 // nullable like Java's @Nullable String, so "" is a valid bypass value.
 func TestIntegration_StoreLock_FullStoreUnlockable(t *testing.T) {
@@ -465,7 +465,7 @@ contexts:
 }
 
 // A --type typo on record delete must fail loudly, not fall through to
-// the raw primary key (codex P1: on a prefix-keyed store the unprefixed
+// the raw primary key (review P1: on a prefix-keyed store the unprefixed
 // key can address a DIFFERENT record).
 func TestIntegration_RecordDelete_UnknownTypeRefused(t *testing.T) {
 	bindConfig(t)
@@ -484,7 +484,7 @@ func TestIntegration_RecordDelete_UnknownTypeRefused(t *testing.T) {
 	}
 }
 
-// meta apply is idempotent and race-guarded (Graefe impl-review + FDB
+// meta apply is idempotent and race-guarded (reviewer impl-review + FDB
 // C++ dev C5): re-applying current metadata is a no-op success, and the
 // save transaction re-checks that the store still holds exactly what the
 // operator confirmed against.

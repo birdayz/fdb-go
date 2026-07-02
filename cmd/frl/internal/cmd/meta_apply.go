@@ -16,7 +16,7 @@ import (
 // (the exact MetaDataEvolutionValidator gate `meta evolve-check` runs),
 // then persist it with SaveRecordMetaData.
 //
-// Write target (codex P2-1): the command writes to an FDBMetaDataStore,
+// Write target (review P2-1): the command writes to an FDBMetaDataStore,
 // so it needs one — the context's `meta_store_keyspace` (Path B) or an
 // explicit --meta-store-keyspace. A Path A context (meta_file only) has
 // no store in FDB to apply to; the error says exactly that and names the
@@ -24,7 +24,7 @@ import (
 // by design — templates evolve through SQL DDL, never behind the
 // relational layer's back.
 //
-// Concurrency (Graefe impl-review + FDB C++ dev C5): the pre-confirm
+// Concurrency (reviewer impl-review + FDB C++ dev C5): the pre-confirm
 // pass below is only a PREVIEW. The authoritative load + version check +
 // evolution validation happen inside the save transaction —
 // SaveRecordMetaData carries Java's saveAndSetCurrent semantics — with a

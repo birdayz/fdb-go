@@ -8,7 +8,7 @@ import (
 )
 
 // TestSendFrame_PostEnqueueCtxDone_TransportStillOwnsBody pins the transport contract that the
-// client-side buffer-pool fix (audit #15) depends on: when SendFrame's FIRST select enqueues the
+// client-side buffer-pool fix depends on: when SendFrame's FIRST select enqueues the
 // frame onto writeCh but its SECOND select then returns via ctx.Done (conn.go:454) instead of errCh,
 // the returned error does NOT mean the transport is done with `body` — the enqueued writeReq (which
 // writeLoop's WriteFrame reads) still references the SAME backing array. So a caller that owns a

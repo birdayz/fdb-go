@@ -222,7 +222,7 @@ func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCu
 		// GenericContainer returns a non-nil handle even when the container was created but Start/the
 		// readiness wait failed (e.g. it exited during startup). Terminate it before returning: Run retries
 		// a "container exited"/failed-to-start death (isTransientContainerErr), and a leftover container
-		// would name-conflict a WithName caller / be reused by WithReuseByName / just leak (Torvalds+codex).
+		// would name-conflict a WithName caller / be reused by WithReuseByName / just leak.
 		if ctr != nil {
 			_ = ctr.Terminate(ctx)
 		}

@@ -320,7 +320,7 @@ func EqualsWithoutChildren(a, b Value) bool {
 		// names are NOT the same value: the anchored form HIDES its leg QOVs from
 		// GetCorrelatedToOfValue (RFC-077 7.6 F2), the plain form reports them. If
 		// they interned as one memo member, partition-time classification would
-		// drop buried columns from the live set → 0-row joins (@claude/codex catch).
+		// drop buried columns from the live set → 0-row joins.
 		if av.AnchoredJoin != bv.AnchoredJoin {
 			return false
 		}

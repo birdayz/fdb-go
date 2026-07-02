@@ -418,7 +418,7 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 			// resolved key is its begin; for an UNKNOWN segment the BACKWARD server read window
 			// is [unknownBegin, res.key), so res.key must be the segment END — else the window
 			// is empty [begin,begin) and getKey wrongly returns allKeysBegin without reading the
-			// preceding storage (codex P2-1). Mirrors the backward offset walk.
+			// preceding storage. Mirrors the backward offset walk.
 			if cur.typ == segUnknown {
 				keykey = cur.end
 			} else {

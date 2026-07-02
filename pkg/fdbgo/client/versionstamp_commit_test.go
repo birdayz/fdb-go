@@ -51,7 +51,7 @@ func TestAtomic_SVKCommitsMinBoundTransformedKey(t *testing.T) {
 	}
 }
 
-// TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation pins codex #17's P2 on the #26 fix: a
+// TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation pins an edge of the #26 fix: a
 // SetVersionstampedKey whose placeholder is at offset 0 and whose raw placeholder bytes are \xff (a
 // raw system key) must NOT be transformed for a non-system txn — it stays RAW so the commit-path
 // validateMutation checks the raw key and reports key_outside_legal_range (2004). Transforming first

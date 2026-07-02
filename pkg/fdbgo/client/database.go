@@ -493,7 +493,7 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 // incoming connections), but should implement it if we ever add server-side
 // functionality.
 func (db *database) dialAndPool(addr string, call *dialCall) {
-	// RFC-110 (codex P2): a panic in transport.Dial (or the pooling section)
+	// RFC-110: a panic in transport.Dial (or the pooling section)
 	// skips the normal delete(db.dialing)+close(call.done) below, leaving the
 	// singleflight entry for addr in db.dialing with call.done NEVER closed —
 	// every later caller in getOrDialConn coalesces onto it and blocks until its
@@ -688,7 +688,7 @@ func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (
 }
 
 func (db *database) tryOneCoordinator(ctx context.Context, snap *ClusterFile, addr string) (info *DBInfo, err error) {
-	// RFC-110 (codex P3): recover on the WORKER. tryAllCoordinators calls this
+	// RFC-110: recover on the WORKER. tryAllCoordinators calls this
 	// both from the parallel fan-out goroutines AND directly on the caller's
 	// goroutine for a single coordinator (the common test/dev shape), so a panic
 	// in the dial / openDatabaseCoord decode must become a returned error here to
@@ -884,7 +884,7 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 		// under the live ctx was reverted: done unconditionally it regresses Commit's
 		// read-only/no-op fast path (which returns without a GRV when there are no
 		// mutations or write-conflicts — transaction.go:1094), forcing an unnecessary
-		// GRV RPC that can block/fail a no-op txn (codex P2); gating it on "has writes"
+		// GRV RPC that can block/fail a no-op txn; gating it on "has writes"
 		// would duplicate Commit's gate under conflictMu. So Commit owns the split: it
 		// threads this live ctx to its own ensureReadVersion (GRV cancellable, so a
 		// cancel during the commit-path read version aborts promptly) and re-applies

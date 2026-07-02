@@ -41,7 +41,7 @@ func TestVectorPlan_QualifyPlansToVectorScan(t *testing.T) {
 }
 
 // TestVectorPlan_PartitionOnlyDoesNotMatchVector covers the required-for-binding
-// gate (Graefe/Torvalds): a plain WHERE on the partition column WITHOUT a QUALIFY
+// gate: a plain WHERE on the partition column WITHOUT a QUALIFY
 // distance-rank must NOT match the vector candidate (the index-only distance
 // alias is unbound), so it must plan to a non-vector scan — never a vector scan
 // with a nil query vector.
@@ -62,7 +62,7 @@ func TestVectorPlan_PartitionOnlyDoesNotMatchVector(t *testing.T) {
 	}
 }
 
-// TestVectorPlan_UnsupportedQualifyErrors pins codex Finding 1: an unsupported
+// TestVectorPlan_UnsupportedQualifyErrors: an unsupported
 // QUALIFY window shape must FAIL the query, never be silently dropped (which
 // would return rows as if the QUALIFY were absent). Covers the window orderings
 // /functions Java rejects (DESC, RANK()) and the `= K` operator Java rejects at
@@ -141,7 +141,7 @@ func TestVectorPlan_UnsupportedQualifyErrors(t *testing.T) {
 // fanned out) AND `rank<=3` (the K — and therefore the whole query-vector
 // binding — present). Before RFC-046 the partial prefix dropped the distance
 // binding entirely, yielding a nil-query-vector plan (`prefix=[=, *], rank<=`,
-// no K) — the exact codex/Torvalds regression this inverts.
+// no K) — the exact regression this inverts.
 func TestVectorPlan_PartialPrefixPlansMultiPartition(t *testing.T) {
 	t.Parallel()
 	schema := `CREATE TABLE docs (
@@ -175,8 +175,8 @@ func TestVectorPlan_PartialPrefixPlansMultiPartition(t *testing.T) {
 	}
 }
 
-// TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix pins the Graefe/
-// Torvalds RFC-046 condition: a partition-column INEQUALITY must NOT be consumed
+// TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix pins the
+// RFC-046 review condition: a partition-column INEQUALITY must NOT be consumed
 // into the scan prefix (the executor encodes only an equality prefix tuple and
 // would silently ignore an inequality → wrong rows). It must stay unconsumed —
 // the scan prefix shows a wildcard for that column (fanned out), and the
@@ -247,7 +247,7 @@ func TestVectorPlan_MetricMismatchDoesNotMatchVector(t *testing.T) {
 }
 
 // TestVectorPlan_GlobalRankResidualCanonicalShape is the RFC-156 Phase B landing
-// condition (Graefe): a GLOBAL-rank vector K-NN with a NON-partition residual
+// condition: a GLOBAL-rank vector K-NN with a NON-partition residual
 // must plan to the property-driven canonical shape
 //
 //	Limit(k) → Filter(residual) → VectorIndexScan(distance-ordered)
@@ -443,7 +443,7 @@ func TestVectorPlan_TighterOuterLimitDoesNotFold(t *testing.T) {
 }
 
 // TestVectorPlan_MetricMismatchInJoinDoesNotLeak pins the JOIN dimension of the
-// metric-mismatch case — the shape Graefe + Torvalds both reproduced as a
+// metric-mismatch case — the shape both reviews reproduced as a
 // regression when validateNoIndexOnlyResidual was prematurely retired. Here the
 // index-only cosine DistanceRank is a predicate of a SelectExpression (the join
 // body), not a standalone LogicalFilter, so it reaches a PHYSICAL residual filter
@@ -476,7 +476,7 @@ func TestVectorPlan_MetricMismatchInJoinDoesNotLeak(t *testing.T) {
 	}
 }
 
-// TestVectorPlan_ZeroCapAndParamRankAreBounded pins the codex P1 correctness
+// TestVectorPlan_ZeroCapAndParamRankAreBounded pins a correctness
 // blocker: a GLOBAL-rank vector query whose K is an adjusted-zero cap
 // (ROW_NUMBER() < 1) or a NON-LITERAL parameter (`<= ?`) MUST still bound the
 // distance-ordered scan. On HEAD globalRankVectorLimit DECLINED both (no Limit

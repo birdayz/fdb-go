@@ -407,7 +407,7 @@ var _ = Describe("SPFresh cold-start bootstrap (no bulk build)", func() {
 	})
 })
 
-// Torvalds 094.4 NAK regressions: the bootstrap's fencing story.
+// The bootstrap's fencing regressions, pinned.
 var _ = Describe("SPFresh bootstrap fencing (Torvalds 094.4)", func() {
 	ctx := context.Background()
 
@@ -482,7 +482,7 @@ var _ = Describe("SPFresh bootstrap fencing (Torvalds 094.4)", func() {
 	})
 })
 
-// codex 094.4 P2: a query against a bootstrapped-but-centroidless index
+// A query against a bootstrapped-but-centroidless index
 // caches the bootstrap cell with zero candidates; the first centroid mint
 // must evict that cached cell or same-process queries miss the record until
 // the throttled refresh fires. The window is reachable from the public
@@ -582,7 +582,6 @@ var _ = Describe("SPFresh bootstrap cache eviction (codex 094.4)", func() {
 	})
 })
 
-// codex 094.4 r2 regressions.
 var _ = Describe("SPFresh cosine exact-match + build-vs-scan (codex 094.4 r2)", func() {
 	ctx := context.Background()
 
@@ -690,7 +689,7 @@ var _ = Describe("SPFresh cosine exact-match + build-vs-scan (codex 094.4 r2)", 
 	})
 })
 
-// codex 094.4 r3: a zero-residual cosine query must RANK its posting (the
+// A zero-residual cosine query must RANK its posting (the
 // constant-tie workaround could evict the true match from the top-C cut by
 // pk tie-break before the exact re-rank).
 var _ = Describe("SPFresh cosine zero-residual ranking (codex 094.4 r3)", func() {

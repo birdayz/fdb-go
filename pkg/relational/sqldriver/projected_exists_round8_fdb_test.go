@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestFDB_ProjectedExists_Round8 pins the two codex round-8 regressions, both
+// TestFDB_ProjectedExists_Round8 pins the two review round-8 regressions, both
 // rooted in the projected-EXISTS fold RE-DERIVING a projected column's
 // alias/Name/Label from the FOLDED record instead of carrying the ORIGINAL
 // LogicalProject's per-column alias provenance (explicit-alias flag). The root

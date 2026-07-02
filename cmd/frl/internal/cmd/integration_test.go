@@ -633,7 +633,7 @@ func snapshotStoreBytes(t *testing.T, clusterFile string, ss subspace.Subspace) 
 	return result.(string)
 }
 
-// Regression (RFC-174 Slice 0 bug 5, Graefe G2): read-only commands must
+// Regression (RFC-174 Slice 0 bug 5, reviewer G2): read-only commands must
 // NEVER mutate the store they inspect. withStore used to call Open()
 // without SetSkipPossiblyRebuild inside a read-write transaction, so a
 // `record scan --meta-file <newer>` ran checkPossiblyRebuild and wrote —
@@ -812,7 +812,7 @@ func TestIntegration_KeyspaceTuple_AddressesFixtureStore(t *testing.T) {
 }
 
 // --cluster-file must win over the context's cluster_file on the
-// withStore path (Graefe impl-review: withStore used to open from the
+// withStore path (reviewer impl-review: withStore used to open from the
 // context unconditionally — `index rebuild --cluster-file X` would have
 // cleared the index on the DEFAULT cluster, then built on X).
 func TestIntegration_ClusterFileFlag_OverridesContext(t *testing.T) {
@@ -848,7 +848,7 @@ contexts:
 }
 
 // --meta-file overrides only the METADATA source; a context addressed by
-// keyspace_tuple must keep its tuple (codex P2: this combination used to
+// keyspace_tuple must keep its tuple (review P2: this combination used to
 // fall through to the empty keyspace_path and fail).
 func TestIntegration_KeyspaceTupleContext_MetaFileOverride(t *testing.T) {
 	requireFixture(t)

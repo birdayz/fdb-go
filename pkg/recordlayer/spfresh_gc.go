@@ -209,9 +209,9 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 		// (spfreshAppendDeltas → PackWithVersionstamp). The boundary must use
 		// the same shape or it sorts below every real key and the trim clears
 		// NOTHING — the changelog grows unboundedly and refresh()'s
-		// stale-cursor check can never fire (Torvalds 094.3 #1: the original
-		// raw-bytes boundary was exactly that dead code, masked in tests by
-		// young clusters where horizonVersion <= 0 skips the block).
+		// stale-cursor check can never fire (the original raw-bytes
+		// boundary was exactly that dead code, masked in tests by young
+		// clusters where horizonVersion <= 0 skips the block).
 		boundary := make([]byte, 0, 13)
 		boundary = append(boundary, 0x33) // tuple versionstamp type code
 		var ver [8]byte

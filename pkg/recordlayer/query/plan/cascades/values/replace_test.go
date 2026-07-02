@@ -598,7 +598,7 @@ func TestReplace_ConditionSelectorValue(t *testing.T) {
 }
 
 // TestReplaceLeavesOnceMaybe_SelfReferentialTerminates pins the cycle-break
-// (RFC-077 7.6; Torvalds gap): substituting a leaf with a value that itself
+// (RFC-077 7.6): substituting a leaf with a value that itself
 // contains a same-alias leaf must apply replaceFn EXACTLY ONCE and terminate.
 // Plain ReplaceLeavesMaybe re-descends into the replacement, re-matches the
 // same-alias leaf, and recurses forever (the real failure: the source-anchored

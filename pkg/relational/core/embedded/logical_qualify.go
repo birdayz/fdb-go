@@ -16,8 +16,7 @@ import (
 // {<,<=,=} K`, which lowers to a DistanceRank comparison the vector index
 // match candidate can satisfy.
 //
-// Three states, so an unsupported QUALIFY is never silently dropped (codex
-// Finding 1):
+// Three states, so an unsupported QUALIFY is never silently dropped:
 //   - (nil, nil)  — no QUALIFY clause; caller leaves the plan unchanged.
 //   - (nil, err)  — QUALIFY present but unbuildable: the window expression failed
 //     to resolve (e.g. DESC ordering / RANK(), rejected by the walker), OR a
@@ -283,7 +282,7 @@ func wrapGlobalRankVectorLimit(op logical.LogicalOperator, qualPred predicates.Q
 // globalRankVectorLimit lowers a GLOBAL-rank (empty PARTITION BY) vector
 // DistanceRank comparison into a faithful row Limit above the (distance-ordered)
 // vector scan. It ALWAYS produces a Limit for an un-partitioned rank so the
-// ordered scan is never left to stream unbounded (codex correctness blocker):
+// ordered scan is never left to stream unbounded:
 //
 //   - literal positive K (K for rank<=K, K-1 for rank<K) → static limit, ok.
 //   - adjusted-zero / negative cap (e.g. ROW_NUMBER() < 1) → static Limit(0),
@@ -361,7 +360,7 @@ func globalRankVectorLimit(p predicates.QueryPredicate) (int64, values.Value, bo
 			// (ArithmeticValue{Sub, K, 1}) errors at K = math.MinInt64, where K-1
 			// underflows — aborting a query that semantically selects no rows.
 			// StrictRankLimitValue saturates that case to 0, mirroring the
-			// executor's scan-side rank-cap guard (codex delta P2-A, limit half).
+			// executor's scan-side rank-cap guard (the limit half).
 			limitValue = &values.StrictRankLimitValue{K: operand}
 		}
 		found = true

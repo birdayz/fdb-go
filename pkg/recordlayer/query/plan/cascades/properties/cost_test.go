@@ -625,7 +625,7 @@ func TestBestMemberCostWith_RecursesBestMember(t *testing.T) {
 }
 
 // TestBestMemberCostWith_MemberOrderStable pins the member-order-stability
-// invariant (Torvalds): PR-A's union-find merge changes member slice order,
+// invariant: PR-A's union-find merge changes member slice order,
 // so the best-member result must not depend on it.
 func TestBestMemberCostWith_MemberOrderStable(t *testing.T) {
 	t.Parallel()

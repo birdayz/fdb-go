@@ -76,7 +76,7 @@ func TestIntegration_SQL_SelectViaCommandFlag(t *testing.T) {
 	}
 	// The -c path renders through renderTable on a non-TTY writer: the
 	// output must be pure 7-bit ASCII with zero ANSI escapes (RFC-174
-	// bug 2 + codex P2-3, end-to-end on the real driver path — the unit
+	// bug 2 + review P2-3, end-to-end on the real driver path — the unit
 	// test only covers renderStaticTable).
 	if strings.ContainsRune(out, 0x1b) {
 		t.Errorf("piped sql output contains ANSI escape:\n%q", out)

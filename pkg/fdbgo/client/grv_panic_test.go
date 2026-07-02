@@ -4,12 +4,12 @@ import (
 	"testing"
 )
 
-// TestGRVFlush_RecoverFailsBatch is the RFC-110 Class A-batch contract (codex
-// P1): a panic in flush must FAIL the popped batch — every waiter gets an error,
-// none hangs. recoverFlush is the production backstop and is exercised directly
+// TestGRVFlush_RecoverFailsBatch is the RFC-110 Class A-batch contract: a panic
+// in flush must FAIL the popped batch — every waiter gets an error, none hangs.
+// recoverFlush is the production backstop and is exercised directly
 // here (deferred around a panic, exactly as flush defers it).
 //
-// It also demonstrates the closure-scoped-lock PATTERN flush uses for codex P2a:
+// It also demonstrates the closure-scoped-lock PATTERN flush uses:
 // a panic inside a `Lock(); defer Unlock()` closure unwinds the mutex. NOTE this
 // is the pattern, not flush's own locked lines — flush's two b.mu regions
 // (pop + adaptive-window arithmetic, grv.go) contain no code that can panic, so
@@ -45,7 +45,7 @@ func TestGRVFlush_RecoverFailsBatch(t *testing.T) {
 	}
 	b.mu.Unlock()
 
-	// Every waiter received an error result — none hangs (codex P1).
+	// Every waiter received an error result — none hangs.
 	for i := range batch {
 		select {
 		case res := <-batch[i].reply:

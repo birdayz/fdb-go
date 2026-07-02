@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// TestAtomic_InvalidOpPoison_RaceFree pins the atomic.Pointer synchronization of invalidAtomicOpErr
-// (codex P2): Atomic() is a concurrent-safe data op that writes the poison (via CompareAndSwap)
+// TestAtomic_InvalidOpPoison_RaceFree pins the atomic.Pointer synchronization of invalidAtomicOpErr:
+// Atomic() is a concurrent-safe data op that writes the poison (via CompareAndSwap)
 // while Commit reads it at entry. Concurrent write||read must be `-race` clean. MUST be run under
 // -race to catch a regression — reverting the field to a plain `error` makes this a data race.
 func TestAtomic_InvalidOpPoison_RaceFree(t *testing.T) {

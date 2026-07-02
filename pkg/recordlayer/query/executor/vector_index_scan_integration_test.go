@@ -122,7 +122,7 @@ func TestIntegration_VectorIndexScan_KNN(t *testing.T) {
 	}
 }
 
-// TestIntegration_VectorIndexScan_RankLessThan proves codex Finding 2's <-vs-<=
+// TestIntegration_VectorIndexScan_RankLessThan proves the <-vs-<=
 // semantics end-to-end: ROW_NUMBER() < 3 returns the top 2 (Java's
 // getAdjustedLimit: k-1), NOT 3. Same data + query as the <= K test, only the
 // rank operator differs.
@@ -177,7 +177,7 @@ func TestIntegration_VectorIndexScan_RankLessThan(t *testing.T) {
 	}
 }
 
-// TestIntegration_VectorIndexScan_ContinuationPK pins codex Finding 3: a resumed
+// TestIntegration_VectorIndexScan_ContinuationPK pins that a resumed
 // vector scan page must carry the correct primary key. Before the fix,
 // parseVectorScanContinuation rebuilt entries without Index/primaryKey, so
 // IndexEntry.PrimaryKey() returned an empty tuple on resume — loading the wrong

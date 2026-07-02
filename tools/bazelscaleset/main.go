@@ -106,8 +106,8 @@ func run() error {
 	// A previous incarnation that crashed (rather than shutting down cleanly) may have
 	// left a runner still executing from its per-slot clone. Reap it BEFORE building the
 	// pool: newSlotPool re-copies into the clones, and truncating a still-running runner
-	// binary would fail with ETXTBSY and crash startup before the stray is ever reaped
-	// (codex). Reconcile is filesystem-based (scans workBase/slot-*), so it needs no pool.
+	// binary would fail with ETXTBSY and crash startup before the stray is ever
+	// reaped. Reconcile is filesystem-based (scans workBase/slot-*), so it needs no pool.
 	// Scoped to our own slot pid files (never touches a classic/other runner) and leaves
 	// warm bazel servers alone — a new runner reconnects to them.
 	reconcileStrayRunners(logger, cfg.workBase, cfg.runnerDir)

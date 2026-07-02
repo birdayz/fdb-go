@@ -52,7 +52,7 @@ var (
 	// budget cap (max cells probed / max candidates) BEFORE the consumer was
 	// satisfied, and returned NoNextReason.ScanLimitReached + a positional
 	// continuation rather than a silent < k. This is telemetry IN ADDITION to the
-	// reason (RFC-156 §C / Torvalds #2) — the reason is the contract, this counts
+	// reason (RFC-156 §C) — the reason is the contract, this counts
 	// how often the budget bound a filtered KNN.
 	CountSPFreshFilteredTruncated = Event{"spfresh_filtered_truncated", "SPFresh Filtered Truncations"}
 

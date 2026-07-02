@@ -236,7 +236,7 @@ func (c *VectorIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 	// ALWAYS retain the index-only DistanceRank binding, independent of the
 	// partition-prefix length. Without this, a partial prefix would drop the
 	// distance binding (it is last in c.parameters) and ToScanPlan would emit a
-	// nil-query-vector plan (RFC-046; the codex/Torvalds trap).
+	// nil-query-vector plan (RFC-046; the dropped-query-vector trap).
 	if cr, ok := bindings[c.distanceAlias]; ok && cr != nil && !cr.IsEmpty() {
 		prefix[c.distanceAlias] = cr
 	}

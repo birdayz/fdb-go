@@ -27,7 +27,7 @@ func TestImplementUnorderedUnionRule_MatchesLogicalUnionExpression(t *testing.T)
 	}
 }
 
-// TestPhysicalPlanColumnNames_StreamingAggNotUnwrapped pins the RFC-080 / codex fix:
+// TestPhysicalPlanColumnNames_StreamingAggNotUnwrapped pins the RFC-080 fix:
 // physicalPlanColumnNames must NOT unwrap a RecordQueryStreamingAggregationPlan through
 // GetInner() to its pre-aggregation input column names. Those input names are NOT the
 // aggregate's output names, so a union-branch rename Map built from them would read

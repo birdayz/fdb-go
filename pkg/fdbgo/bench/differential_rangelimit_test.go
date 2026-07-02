@@ -151,7 +151,7 @@ func TestDifferential_RangeSplitPointsMaxKey(t *testing.T) {
 	}
 	// Inverted (begin>end) must report inverted_range (2005) — libfdb_c checks inversion FIRST (the
 	// KeyRangeRef ctor throws before the RYW maxKey check), so an inverted-AND-out-of-range range is
-	// 2005, NOT 2004 (codex catch).
+	// 2005, NOT 2004.
 	if gc, cc := splitErr("z", "a"); gc != cc || gc != 2005 {
 		t.Errorf("inverted in-range: go=%d cgo=%d, want both 2005", gc, cc)
 	}

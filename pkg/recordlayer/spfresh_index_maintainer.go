@@ -61,7 +61,7 @@ func newSPFreshIndexMaintainer(
 		// The index stores TrimPrimaryKey'd tails; with PK components shared
 		// into the index key the tail is not the full primary key, and
 		// pinning it on scan entries would make the executor LoadRecord the
-		// wrong key (codex 094.1 r2). Full-PK reconstruction lands with the
+		// wrong key. Full-PK reconstruction lands with the
 		// grouped/prefixed support; reject the shape until then.
 		return nil, fmt.Errorf("spfresh index %q: primary-key components shared with the index key are not supported in 094.1", index.Name)
 	}
@@ -324,7 +324,7 @@ func (m *spfreshIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBS
 			// An undecodable vector was never staged (every staging writer —
 			// the scan and the insert path — errors before writing one), so
 			// skipping the staged-copy clear for it is sound; don't swallow
-			// the distinction silently (Torvalds 094.2 #3).
+			// the distinction silently.
 			vec, verr := spfreshEntryVector(m.index, entry)
 			if verr == nil && vec != nil && len(cellIDs) > 0 {
 				cell := spfreshNearestCellOf(vec, cellIDs, cellRows)
@@ -532,9 +532,9 @@ func (m *spfreshIndexMaintainer) resolveSearcher() (*spfreshSearcher, *spfreshSt
 			// No generation: either nothing was ever inserted or built (§6b
 			// insert-first — zero rows), or a bulk build holds the token and
 			// has not flipped yet — that index is BUILDING, and silently
-			// reporting it empty would be a lie (codex 094.4 r2; same
-			// distinction the insert path draws). Snapshot read: queries
-			// take no conflict ranges.
+			// reporting it empty would be a lie (same distinction the
+			// insert path draws). Snapshot read: queries take no conflict
+			// ranges.
 			tok, terr := m.tx.Snapshot().Get(metaStorage.metaKey(spfreshMetaBuild)).Get()
 			if terr != nil {
 				return nil, nil, terr
@@ -558,9 +558,9 @@ func (m *spfreshIndexMaintainer) resolveSearcher() (*spfreshSearcher, *spfreshSt
 		// an abort leaves every later query routing on a topology that does
 		// not exist (for a §6b cold-start index there is no generation flip
 		// to ever flush it). The write path has guarded against this since
-		// cloneForWrite; this is the read-side half (Torvalds final-gauntlet
-		// S1). No refresh either: the changelog range may contain this tx's
-		// own unresolved versionstamped deltas.
+		// cloneForWrite; this is the read-side half. No refresh either: the
+		// changelog range may contain this tx's own unresolved
+		// versionstamped deltas.
 		cache = wc
 	} else {
 		cache = spfreshCacheFor(m.indexSubspace, gen)
@@ -749,7 +749,7 @@ func (m *spfreshIndexMaintainer) spfreshFileSplitsForCapped(storage *spfreshStor
 		// cell the (possibly stale) cache routed through: a completed coarse
 		// split may have moved the fine into a cell whose own csplit is now
 		// PAUSING, and checking the old cell would file a split straight
-		// through the starvation guard (codex delta P2). Snapshot resolve —
+		// through the starvation guard. Snapshot resolve —
 		// rare path (cap-hit only), and a fine that is gone entirely gets
 		// nothing filed (its lifecycle already retired it).
 		cellID, cerr := spfreshFindCentroidCellSnapshot(m.tx, storage, rt.fineID, rt.cellID)
@@ -854,7 +854,7 @@ func spfreshScanRecordRange(
 			// it writes nothing, so a conflict range over every batch of the
 			// whole dataset buys nothing and thrashes on aborts during
 			// exactly the window UpdateWhileWriteOnly guarantees concurrent
-			// writers exist (Torvalds 094.2 re-review).
+			// writers exist.
 			isolation := IsolationLevelSnapshot
 			if inTx != nil {
 				isolation = IsolationLevelSerializable
@@ -982,8 +982,7 @@ func spfreshStageRecordsSharded(
 	// now calls it from S goroutines. A caller that closes over a REUSABLE
 	// StoreBuilder (SetContext mutates it) would race, so serialize the cheap
 	// store construction behind a mutex — each call binds a fresh store to its
-	// own transaction. The scans themselves still run fully concurrently
-	// (codex impl review P2).
+	// own transaction. The scans themselves still run fully concurrently.
 	var sbMu sync.Mutex
 	safeStoreBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
 		sbMu.Lock()
@@ -1165,7 +1164,7 @@ func buildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 
 	// Builds target generation current+1 (1 for a first build): a REBUILD into
 	// the live generation would mix stale postings with new ones and leave
-	// process caches 'ready' on stale routing (Torvalds/codex 094.1 review).
+	// process caches 'ready' on stale routing.
 	var oldGen int64
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		g, gerr := spfreshReadGenerationSnapshot(rtx.Transaction(), newSPFreshStorage(indexSubspace, 0))
@@ -1186,10 +1185,10 @@ func buildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	// Abandoned-build GC at the entry point (RFC-094 §3): a prior build into
 	// this same target that aborted PRE-FLIP left build-state/cell residue a
 	// fresh run would mistake for its own commit retries — publishing stale
-	// centroids for the newly scanned inputs (codex 094.1 r2). The target is
-	// not readable (the flip never happened), so clearing it is safe.
+	// centroids for the newly scanned inputs. The target is not readable
+	// (the flip never happened), so clearing it is safe.
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
-		// CAS fence (codex r3): another builder may have flipped oldGen+1
+		// CAS fence: another builder may have flipped oldGen+1
 		// readable since the snapshot read above — clearing it then would
 		// destroy the LIVE generation. Re-verify with a REAL read (the
 		// conflict range also serializes against a concurrent flip).
@@ -1208,7 +1207,7 @@ func buildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		// Take build ownership atomically with the clear: an older build
 		// still in flight loses the token and its remaining transactions
 		// abort at the resolver instead of interleaving writes into the
-		// prefix we just cleared (codex 094.1 r4).
+		// prefix we just cleared.
 		spfreshTakeBuilderToken(rtx.Transaction(), storage, builder.token)
 		return nil
 	}); err != nil {
@@ -1222,10 +1221,10 @@ func buildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		return berr
 	}
 	// The staging writes ride INSIDE each scan transaction: the scan's REAL
-	// read of the record range is the delete fence (Torvalds 094.2 #2). The
-	// batch is BYTE-bounded, not just row-bounded — a staging batch writes
-	// fp16 STAGING + SIDECAR per record, and 1000 records × 4096 dims would
-	// blow the 10 MB transaction limit (codex 094.2 r1 P2).
+	// read of the record range is the delete fence. The batch is
+	// BYTE-bounded, not just row-bounded — a staging batch writes fp16
+	// STAGING + SIDECAR per record, and 1000 records × 4096 dims would blow
+	// the 10 MB transaction limit.
 	//
 	// RFC-103: shard the staging scan into S disjoint half-open PK sub-ranges
 	// scanned concurrently — the synchronous client makes a serial scan

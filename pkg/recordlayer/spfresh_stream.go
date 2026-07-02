@@ -31,11 +31,11 @@ import (
 // closes the cursor), the BUDGET CAP is hit, or the index is exhausted.
 //
 // Widening is BATCHED (spfreshStreamBudget.widenBatch cells per pull, ONE
-// parallel range-read burst each), never the one-cell-serial widenStep Torvalds
-// NAK'd in Phase A.
+// parallel range-read burst each), never a one-cell-serial widen step (rejected
+// in Phase A review).
 //
-// RELAXED-MONOTONICITY EMISSION BARRIER (RFC-156 invariant 2; Graefe + spfresh
-// re-review). Cells are admitted in centroid-d2 order, but a survivor in a
+// RELAXED-MONOTONICITY EMISSION BARRIER (RFC-156 invariant 2).
+// Cells are admitted in centroid-d2 order, but a survivor in a
 // later (farther-centroid) batch can be CLOSER than one already scored from a
 // nearer cell. Emitting greedily would latch the wrong k-set under Filter→Limit
 // — recall drift vs the one-shot, which scans its whole horizon BEFORE
@@ -63,13 +63,13 @@ import (
 // NoNextReason.ScanLimitReached + a positional continuation (NOT SourceExhausted)
 // and fires CountSPFreshFilteredTruncated. "Only N rows match" instead surfaces
 // SourceExhausted with exactly those N — two distinct outcomes, never a silent
-// < k (Torvalds #2).
+// < k.
 //
 // Single-transaction snapshot: all widening happens within ONE transaction's
 // generation-pinned snapshot. The continuation is POSITIONAL over the
 // materialized result (mirrors Java's ListCursor + FromListWithContinuation) —
 // the traversal frontier is never serialized; a cross-transaction resume re-runs
-// the search and skips positionally (Java's semantics; RFC-156 §C / Torvalds #3).
+// the search and skips positionally (Java's semantics; RFC-156 §C).
 //
 // Memory is O(budget): the dedup map `best`, the exact-distance cache `reranked`,
 // the emitted-span set, the re-routed centroid list, and the finalized prefix are
@@ -298,7 +298,7 @@ func (f *spfreshFrontier) streamReroute() error {
 // MINUS maxResidual (the largest member-to-centroid residual ‖v−c‖ seen):
 // dist(q,v) >= dist(q,c') − ‖v−c'‖ >= nextCentroidDist − maxResidual.
 //
-// SOUNDNESS (the honest version; Graefe/spfresh BLOCKER 2). This is NOT an
+// SOUNDNESS (the honest version). This is NOT an
 // unconditional triangle bound: maxResidual is a RUNNING max over already-scored
 // members, so a far-centroid cell admitted late could in principle hold a
 // near-query, higher-than-seen-residual member. What actually makes the bound

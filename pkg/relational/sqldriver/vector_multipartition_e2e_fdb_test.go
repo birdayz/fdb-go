@@ -129,8 +129,8 @@ func TestFDB_VectorSearch_MultiPartition_Fanout(t *testing.T) {
 	}
 }
 
-// TestFDB_VectorSearch_MultiPartition_InequalityResidual pins the Graefe/
-// Torvalds RFC-046 condition end-to-end: a partition-column INEQUALITY
+// TestFDB_VectorSearch_MultiPartition_InequalityResidual pins the
+// RFC-046 review condition end-to-end: a partition-column INEQUALITY
 // (region > 'r1') is NOT consumed into the scan prefix (the executor encodes
 // only an equality prefix tuple); it is enforced as a residual filter above the
 // fanned-out scan. The query must therefore exclude r1 and return only r2's
@@ -180,7 +180,7 @@ func TestFDB_VectorSearch_MultiPartition_InequalityResidual(t *testing.T) {
 // top-k) plan. The Filter selects the whole r2 partition and never disturbs its
 // per-partition top-2, so both rows survive. The plan MUST be the self-limiting
 // PredicatesFilter-over-VectorScan shape (rank<=2), NOT an ordered scan and NOT
-// an intersection (Graefe: assert the self-limiting shape).
+// an intersection (assert the self-limiting shape).
 func TestFDB_VectorSearch_MultiPartition_InequalityResidualK2(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -213,7 +213,7 @@ func TestFDB_VectorSearch_MultiPartition_InequalityResidualK2(t *testing.T) {
 }
 
 // TestFDB_VectorSearch_MultiPartition_Pagination pins the cross-partition
-// continuation (Torvalds: "the whole risk"). Driving the multi-partition scan
+// continuation — the whole risk of the fan-out. Driving the multi-partition scan
 // page-by-page with a returned-row-limit of 1 must yield, by concatenation, the
 // exact same sequence as an unpaged scan — proving the FlatMapContinuation
 // resume seeds the saved partition's inner position and then advances to the
@@ -275,7 +275,7 @@ func TestFDB_VectorSearch_MultiPartition_Pagination(t *testing.T) {
 	}
 }
 
-// TestFDB_VectorSearch_MultiPartition_DimensionValidation pins codex P2: the
+// TestFDB_VectorSearch_MultiPartition_DimensionValidation: the
 // partial-prefix fan-out path must validate the query-vector dimension UP FRONT,
 // before any partition is matched — so an invalid-length vector errors
 // consistently even when the partial prefix matches NO partitions (the
@@ -292,7 +292,7 @@ func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
 
 	// Capture the cursor error in an outer var — db.Run's own error is the
 	// transaction result, not the per-row scan error we want to assert on
-	// (codex: the closure must not return the cursor error as the `any` result).
+	// (the closure must not return the cursor error as the `any` result).
 	var scanErr error
 	_, runErr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
@@ -321,8 +321,8 @@ func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
 	}
 }
 
-// TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual addresses codex
-// Finding P1 — which does NOT reproduce as wrong rows. Scenario: a partition
+// TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual addresses a
+// suspected wrong-rows path — which does NOT reproduce. Scenario: a partition
 // equality on a NON-leading column with the LEADING column unbound
 // (`WHERE region = 'r1'`, zone unbound) over a `PARTITION BY (zone, region)`
 // vector index. ComputeBoundParameterPrefixMap consumes the contiguous leading
@@ -331,17 +331,17 @@ func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
 // column 1 while column 0 ranges free (Java's nextPrefixTuple extracts a leading
 // subTuple(key, 0, prefixSize) likewise — Java cannot express this either).
 //
-// Go does NOT silently drop region and return wrong rows (the codex P1 failure
+// Go does NOT silently drop region and return wrong rows (the suspected failure
 // mode). The index-only DistanceRank, AND-combined with the unconsumed
 // region='r1', cannot be lowered to a residual filter and no index serves the
 // composite, so the final-plan guard rejects it with UnplannableIndexOnly-
 // ResidualError. That is a safe outcome (a clean planning error, never wrong
 // results), it matches Java (equally unserviceable; Go's typed error beats
 // Java's Verify blow-up), and it was unplannable before this change too (no
-// regression). Graefe ACK: assert UNPLANNABLE; a Go-only trailing-partition
+// regression). Assert UNPLANNABLE; a Go-only trailing-partition
 // fan-out (plan + residual) is an allowed but out-of-scope follow-up. Pinning
 // the error is the regression sentinel proving the absence of the wrong-rows
-// behavior codex flagged. Plan-only — the query never reaches execution.
+// behavior. Plan-only — the query never reaches execution.
 func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -365,7 +365,7 @@ func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) 
 }
 
 // TestFDB_VectorSearch_MultiPartition_LeadingInequalityResidual pins the
-// boundLen-0 admit path of residualIsPartitionContiguous (Torvalds nit): a
+// boundLen-0 admit path of residualIsPartitionContiguous: a
 // LEADING partition-column inequality (WHERE zone > 'z1') binds no equality
 // prefix, so the scan fans out over ALL partitions and the whole-partition
 // Filter(zone>'z1') selects those with zone>'z1', preserving each surviving

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TestWatch_AbortBeforeCommitReleasesSlot pins codex #8 P1: the RFC-170 deferral added a pre-commit wait
+// TestWatch_AbortBeforeCommitReleasesSlot: the RFC-170 deferral added a pre-commit wait
 // (AwaitWatchCommit). When a watch aborts THERE — reset/Cancel/ctx before the txn commits — WatchPoll (the
 // path that releases the outstanding-watch slot WatchSetup reserved) never runs, so the facade must release
 // the slot on that abort path. Else it leaks and later watches fail with too_many_watches under MAX_WATCHES.

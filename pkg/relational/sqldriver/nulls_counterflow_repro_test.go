@@ -109,7 +109,7 @@ func TestFDB_NullsCounterflowRepro(t *testing.T) {
 	check("distinct_asc_nulls_last", "SELECT DISTINCT a FROM t ORDER BY a ASC NULLS LAST",
 		[]int64{5, 10, 20, -1})
 
-	// codex review catch (RFC-165 impl): a materialized counterflow sort must
+	// review review catch (RFC-165 impl): a materialized counterflow sort must
 	// advertise its NULL placement, else a PARENT sort elides against it as if
 	// natural. Inner produces ASC NULLS LAST = [5,10,20,NULL] (LIMIT 4 keeps the
 	// inner ordering live); the outer ORDER BY a ASC (= NULLS FIRST) must re-sort

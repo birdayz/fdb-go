@@ -4,7 +4,7 @@ import "testing"
 
 // allKnownRetryCodes is the fixed enumeration the pin test iterates so the
 // assertion is "IsRetryable(code) == (code ∈ expectedSet)" for EVERY code — an
-// EXHAUSTIVE check, not a sampled one (codex RFC-105).
+// EXHAUSTIVE check, not a sampled one (RFC-105).
 var allKnownRetryCodes = []int{
 	1000, 1001, 1004, 1006, 1007, 1008, 1009, 1010, 1011, 1015, 1020, 1021,
 	1025, 1031, 1036, 1037, 1038, 1039, 1042, 1049, 1051, 1062, 1078, 1079,

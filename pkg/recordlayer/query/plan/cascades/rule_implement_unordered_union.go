@@ -152,7 +152,7 @@ func physicalPlanColumnNames(p plans.RecordQueryPlan) []string {
 		// A StreamingAgg defines its OWN output schema (group keys + aggregate outputs);
 		// do NOT unwrap through GetInner() to the pre-aggregation input column names — those
 		// are NOT the aggregate's output names, and renaming a later union branch to them
-		// would read columns absent from the aggregate row → NULLs (codex, RFC-080). Return
+		// would read columns absent from the aggregate row → NULLs (RFC-080). Return
 		// nil so no plan-time rename Map is inserted for this branch; the executor's
 		// position-remap (executeUnorderedUnion → planColumnNamesWithMD, which DOES report a
 		// StreamingAgg's output schema, RFC-078) normalizes it at runtime instead.

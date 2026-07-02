@@ -27,7 +27,7 @@
 // items, arithmetic operands). Call WalkPredicate for QueryPredicate-
 // returning expressions (WHERE / HAVING clauses).
 //
-// # Handled shapes (swingshift-47 seed)
+// # Handled shapes
 //
 //   - Columns: bare (`col`) and qualified (`t.col`).
 //   - Constants: integer, string, NULL. Float pending (see

@@ -194,7 +194,7 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 	t.Run("split_size_zero", func(t *testing.T) {
 		t.Parallel()
 		// Crafted proto with Split.split_size = 0 must error, not panic
-		// (pre-swingshift-35 would have hit Split()'s invariant panic).
+		// (would otherwise hit Split()'s invariant panic).
 		zero := int32(0)
 		_, err := KeyExpressionFromProto(&gen.KeyExpression{
 			Split: &gen.Split{
@@ -210,7 +210,7 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 	t.Run("key_with_value_split_point_negative", func(t *testing.T) {
 		t.Parallel()
 		// Crafted proto with KeyWithValue.split_point < 0 must error
-		// (pre-swingshift-35 would have propagated to downstream slicing).
+		// (would otherwise propagate to downstream slicing).
 		ft := gen.Field_SCALAR
 		neg := int32(-1)
 		_, err := KeyExpressionFromProto(&gen.KeyExpression{

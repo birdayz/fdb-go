@@ -42,9 +42,9 @@ var _ = Describe("SPFresh routing cache", func() {
 			// w=2 probes both cells. SEALED fine 21 must be INCLUDED: until
 			// its split commits, the sealed posting is the only place its
 			// members live — queries that skip it miss them for the whole
-			// seal window (codex 094.2 r1; the original assertion here
-			// pinned the bug). The write path rejects SEALED at its REAL
-			// state fence instead.
+			// seal window (the original assertion here pinned the bug).
+			// The write path rejects SEALED at its REAL state fence
+			// instead.
 			routed, rerr := cache.route(tx, s, []float64{1, 0}, 2, 10)
 			Expect(rerr).NotTo(HaveOccurred())
 			ids := []int64{}

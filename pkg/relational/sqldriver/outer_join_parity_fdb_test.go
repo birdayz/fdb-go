@@ -11,8 +11,8 @@ package sqldriver_test
 // LEFT JOIN + ORDER BY, GROUP BY / COUNT over an outer join, chained/nested
 // outer joins, and non-equi ON.
 //
-// Go keeps its materialized RecordQueryNestedLoopJoinPlan mechanism (Graefe
-// ACK'd, RFC-144 §3a) rather than Java's OuterJoinExpression+nullOnEmpty QGM
+// Go keeps its materialized RecordQueryNestedLoopJoinPlan mechanism
+// (RFC-144 §3a) rather than Java's OuterJoinExpression+nullOnEmpty QGM
 // rewrite — the two are functionally equivalent (same result rows). These
 // tests are the reclassification proof: LEFT/RIGHT OUTER are now Java-aligned.
 //
@@ -830,7 +830,7 @@ func TestFDB_OuterParity_BooleanOn(t *testing.T) {
 
 	// ON <non-boolean column> — `ON a.id` (BIGINT) is a type error (42804,
 	// RFC-146), surfaced rather than silently degrading the join to a cross
-	// join (the bug codex caught: the ON-upgrade path used to swallow it).
+	// join (the ON-upgrade path used to swallow it).
 	rows, err := db.QueryContext(context.Background(), "SELECT a.id FROM a JOIN b ON a.id")
 	if err == nil {
 		for rows.Next() {

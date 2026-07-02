@@ -1037,13 +1037,13 @@ func SeedRunCorpus() []RunQuery {
 		// NOTE: ORDER BY <alias> on a non-natural-order column is
 		// rejected by BOTH engines — Java with UnableToPlanException
 		// (Cascades has no rule to satisfy the ordering); Go with
-		// `ErrCodeUnsupportedSort` (the structural mirror landed
-		// nightshift-60 — "no scan satisfies"). Same architectural
+		// `ErrCodeUnsupportedSort` (the structural mirror — "no scan
+		// satisfies"). Same architectural
 		// reason in both engines: no rule generates a satisfying
 		// physical sort. Java's error message references its
 		// exception class ("UnableToPlanException"); Go's references
 		// the column ("ORDER BY amount cannot be satisfied"). The
-		// rejection alignment is real (Go nightshift-60 work) but
+		// rejection alignment is real but
 		// the surface messages differ enough that
 		// `ExpectErrorContains` needs a column-name substring rather
 		// than a Java-internal class name. Pinned cross-engine via
@@ -1057,7 +1057,7 @@ func SeedRunCorpus() []RunQuery {
 		// it's in a context that forces predicate parsing
 		// (CLAUDE.md gotcha "WHERE (boolean_expr) with bare
 		// parentheses is rejected"). Go's embedded engine accepts
-		// the form. Probed nightshift-61 — Java rejection confirmed.
+		// the form. Probed against live Java — rejection confirmed.
 		// Aligning Go to also reject would invalidate Go-only tests
 		// using parenthesised boolean WHERE shapes; defer to a
 		// dedicated cleanup shift. Until then, redundant parens
@@ -1069,7 +1069,7 @@ func SeedRunCorpus() []RunQuery {
 		// SQL spec + Postgres permit the non-self-referencing body
 		// (RECURSIVE is a scope enabler, not a requirement). Go's
 		// embedded engine matches SQL spec / Postgres, so it accepts.
-		// Probed nightshift-61 — Java rejection confirmed. Aligning
+		// Probed against live Java — rejection confirmed. Aligning
 		// Go to also reject would invalidate yamsql `recursive_cte`
 		// scenarios that use the non-self-referencing form. Defer
 		// to a dedicated cleanup shift.
@@ -1079,7 +1079,7 @@ func SeedRunCorpus() []RunQuery {
 		// is not supported in SQL"). Go's embedded engine implements
 		// LIMIT directly. Aligning Go would invalidate dozens of
 		// LIMIT-using yamsql + sqldriver tests; defer to a dedicated
-		// cleanup shift. Probed nightshift-61 — Java's rejection
+		// cleanup shift. Probed against live Java — rejection
 		// confirmed.
 		// NOTE: `SELECT 1+1` (FROM-less SELECT for constant projection)
 		// is a known one-sided divergence: Java rejects standalone
@@ -1092,7 +1092,7 @@ func SeedRunCorpus() []RunQuery {
 		// continuing to accept the CTE base case requires context-
 		// aware parsing (separate parseSelectQuery entry points or a
 		// flag) — deferred as a separate large-scope conformance
-		// task. Probed nightshift-61.
+		// task. Probed against live Java.
 		// NOTE: `col IN (SELECT ...)` is a known one-sided divergence:
 		// Java NPEs on the form (visitor walks `ExpressionsContext`
 		// which is null when the IN list comes from a subquery, per
@@ -1508,7 +1508,7 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_TMC WHERE name > 5",
 		},
 
-		// ===== String handling — swingshift-52 =====
+		// ===== String handling =====
 		// LIKE with ESCAPE clause — pins escape-character handling so
 		// `\_` matches literal underscore, not the single-char wildcard.
 		{
@@ -1829,7 +1829,7 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id, name IS NULL FROM T_NL13 ORDER BY id",
 		},
 
-		// ===== Numeric edge cases & arithmetic — swingshift-52 =====
+		// ===== Numeric edge cases & arithmetic =====
 		{
 			// BIGINT max boundary — pins INT64 round-trip at the upper
 			// edge of the proto INT64 range. Adjacent to the existing
@@ -3401,8 +3401,8 @@ func SeedRunCorpus() []RunQuery {
 		},
 
 		// ===== CASE expression edge cases =====
-		// nightshift-61 documented that simple-CASE form is silently
-		// broken in fdb-relational; we use only searched-CASE here.
+		// The simple-CASE form is silently broken in fdb-relational
+		// (always falls through to ELSE); we use only searched-CASE here.
 		{
 			// CASE WHEN ... THEN ... (no ELSE) — defaults to NULL when
 			// no WHEN matches. Pins three-valued semantics when ELSE is
@@ -4530,8 +4530,8 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_OBA ORDER BY a + b",
 		},
 		// Skipped int32_overflow_insert: wording alignment for INT32
-		// overflow on INSERT (TODO #62). DML-as-test-query support now
-		// exists (nightshift-87), but pinning requires the Java
+		// overflow on INSERT (TODO #62). DML-as-test-query support
+		// exists, but pinning requires the Java
 		// conformance server to capture Java's exact error wording.
 		// Revisit when running cross-engine with Java server.
 		// Skipped not_null_scalar: Java's fdb-relational rejects
@@ -4680,7 +4680,8 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// Probe TODO #58: multi-subquery FROM list cross-engine
-			// behaviour. nightshift-65 reported Go rejects, Java accepts.
+			// behaviour. An earlier probe reported Go rejects while
+			// Java accepts; this entry pins the actual behaviour.
 			Name: "multi_subquery_from_list_probe",
 			SchemaTemplate: "CREATE TABLE T_MS1 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
 				"CREATE TABLE T_MS2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
@@ -4693,8 +4694,8 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// SQL standard: backslash is NOT an escape character in
 			// standard string literals — `'a\nb'` is 4 chars `a`, `\`,
-			// `n`, `b`. Pins cross-engine agreement (TODO #61 dropped
-			// dayshift-66 — divergence didn't reproduce).
+			// `n`, `b`. Pins cross-engine agreement (TODO #61 was
+			// dropped — the reported divergence didn't reproduce).
 			Name:           "string_literal_backslash_n_not_escaped",
 			SchemaTemplate: "CREATE TABLE T_E_BS (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{`INSERT INTO T_E_BS VALUES (1, 'a\nb'), (2, 'no escape')`},
@@ -5150,8 +5151,8 @@ func SeedRunCorpus() []RunQuery {
 		// ===== UPDATE edge cases =====
 		{
 			// Multi-column UPDATE with self-cross-referenced SET — pins
-			// SQL-standard pre-update RHS reads (TODO #63 fix landed
-			// dayshift-66). x and y both read pre-update values.
+			// SQL-standard pre-update RHS reads (the TODO #63 fix).
+			// x and y both read pre-update values.
 			Name:           "update_multi_col_swap",
 			SchemaTemplate: "CREATE TABLE T_UMS (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
@@ -6608,9 +6609,8 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// AVG over BIGINT in a JOIN context must also promote to
-			// DOUBLE. Surfaced nightshift-65: Go reported BIGINT for the
-			// AVG result column type in this shape (TODO #54). Fix landed
-			// dayshift-66.
+			// DOUBLE. Pins the TODO #54 fix: Go once reported BIGINT
+			// for the AVG result column type in this shape.
 			Name: "avg_bigint_returns_double_in_join",
 			SchemaTemplate: "CREATE TABLE T_AGE_J_A (id BIGINT, PRIMARY KEY (id)) " +
 				"CREATE TABLE T_AGE_J_B (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
@@ -8598,8 +8598,8 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Mixed-direction ORDER BY on composite PK is rejected by
 			// both engines (Cascades planner can't satisfy ASC+DESC
-			// prefix from any natural-order scan). TODO #43 fix landed
-			// dayshift-66 — Go's wording now matches Java's
+			// prefix from any natural-order scan). Pins the TODO #43
+			// fix — Go's wording matches Java's
 			// `Cascades planner could not plan query`.
 			Name:           "order_by_pk_asc_desc_mixed_rejected",
 			SchemaTemplate: "CREATE TABLE T_OBM (a BIGINT, b BIGINT, val BIGINT, PRIMARY KEY (a, b))",
@@ -9158,7 +9158,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Lowercase table reference against an uppercase-declared
 			// table — pins SQL-spec case folding of unquoted identifiers
-			// (TODO #56 fix landed dayshift-66).
+			// (the TODO #56 fix).
 			Name:           "ident_lowercase_table_ref",
 			SchemaTemplate: "CREATE TABLE T_IR1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_IR1 VALUES (1, 10), (2, 20)"},
@@ -9244,7 +9244,7 @@ func SeedRunCorpus() []RunQuery {
 			// Double-quoted identifier matches the (already folded)
 			// canonical column name. Both engines: CREATE TABLE folds
 			// `id` to `ID` in the catalog, then `"ID"` preserves case
-			// and resolves directly. Pins TODO #57 fix landed dayshift-66.
+			// and resolves directly. Pins the TODO #57 fix.
 			Name:           "ident_quoted_canonical_col",
 			SchemaTemplate: "CREATE TABLE T_IR11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_IR11 VALUES (1, 10), (2, 20)"},
@@ -9268,8 +9268,7 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// Lowercase reference for BOTH table AND column — exercises
-			// the case-fold fix from end to end (TODO #56 fix landed
-			// dayshift-66).
+			// the case-fold fix from end to end (the TODO #56 fix).
 			Name:           "ident_lowercase_both_table_and_col",
 			SchemaTemplate: "CREATE TABLE T_IR14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_IR14 VALUES (1, 10), (2, 20)"},
@@ -11881,7 +11880,7 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id FROM T_END7 WHERE v <> NULL ORDER BY id",
 		},
 
-		// ===== dayshift-66 batch =====
+		// ===== Mixed predicate & DML arithmetic edge cases =====
 		// Mixed predicate combinations.
 		{
 			// BETWEEN + IN + IS NOT NULL composed with AND — pins
@@ -12742,7 +12741,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Bare arithmetic in VALUES row constructor (no parens) —
 			// pins addition + subtraction inline. Parenthesized arith
-			// `(5+3)` is rejected by both engines (swingshift-64 #60);
+			// `(5+3)` is rejected by both engines (TODO #60);
 			// this form must continue to work.
 			Name:           "dml_insert_arith_addsub",
 			SchemaTemplate: "CREATE TABLE T_DSD_03 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
@@ -12759,8 +12758,8 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// Bare INSERT INTO t SELECT ... FROM s — no filter, full
-			// copy. Explicit-column-list form is rejected (swingshift-64
-			// #55); the bare projection list must still work.
+			// copy. Explicit-column-list form is rejected (TODO #55);
+			// the bare projection list must still work.
 			Name: "dml_insert_select_bare_full_copy",
 			SchemaTemplate: "CREATE TABLE T_DSD_05_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
 				"CREATE TABLE T_DSD_05_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
@@ -13574,7 +13573,7 @@ func SeedRunCorpus() []RunQuery {
 		// Scalar subquery: `(SELECT ...)` used as a value-returning
 		// expression — exactly one column, at most one row, zero rows
 		// returns NULL. Standard SQL feature; Go's embedded engine
-		// implements it (added in nightshift-39); fdb-relational 4.11.1.0
+		// implements it; fdb-relational 4.11.1.0
 		// rejects all forms at parse time ("syntax error" pointing at
 		// the `(SELECT`). Until Java upstream lands the feature OR a
 		// future Phase 1 cleanup removes it from Go, every entry here
@@ -18129,11 +18128,11 @@ func SeedCorpus() []Query {
 				"PRIMARY KEY (id))",
 		},
 		{
-			// Pins the derived-table WHERE path landed nightshift-50:
+			// Pins the derived-table WHERE path:
 			// `(SELECT col, col FROM real) AS x WHERE x.col = ?` synth-
 			// esises a virtual ScopeSource so the WHERE walks through
-			// the catalog-aware path (rather than degrading to text
-			// fallback as it did pre-this-shift).
+			// the catalog-aware path (rather than degrading to the
+			// text fallback).
 			Name: "catalog_derived_table_where",
 			SQL:  "SELECT id FROM (SELECT id, val FROM Item) AS x WHERE val = 5",
 			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +

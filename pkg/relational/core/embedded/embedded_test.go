@@ -98,7 +98,7 @@ func TestSubstituteParams(t *testing.T) {
 			want:  "SELECT * FROM t WHERE name = '?' AND id = 5",
 		},
 		{
-			// swingshift-35: line comments must not consume ? placeholders.
+			// Line comments must not consume ? placeholders.
 			// Previously: `id = ? -- why?` would eat two args (the first for
 			// the real placeholder, the second trying to satisfy the ? in
 			// the comment) and either over-consume or error on arg count.
@@ -574,8 +574,8 @@ func TestLikeMatch(t *testing.T) {
 	}
 }
 
-// TestLikeMatchWithEscape pins the ESCAPE clause behaviour added in
-// swingshift-35. Matches Java ExpressionVisitor.visitLikePredicate which
+// TestLikeMatchWithEscape pins the ESCAPE clause behaviour.
+// Matches Java ExpressionVisitor.visitLikePredicate which
 // passes the escape char into the pattern-compile step so `\_` is literal.
 func TestLikeMatchWithEscape(t *testing.T) {
 	t.Parallel()
@@ -648,7 +648,7 @@ func TestRowKey(t *testing.T) {
 
 // FuzzApplyMathOp pins the arithmetic evaluator. The function must never
 // panic, must reject non-numeric operands cleanly, must propagate NULL, and
-// must error on div/0 for both `/` and `%` (unified in swingshift-35).
+// must error on div/0 for both `/` and `%` (one unified code path).
 func FuzzApplyMathOp(f *testing.F) {
 	f.Add(int64(7), int64(3), "+")
 	f.Add(int64(7), int64(3), "-")
@@ -683,7 +683,7 @@ func FuzzApplyMathOp(f *testing.F) {
 // FuzzApplyBitOp pins the bitwise-operator implementation. The function
 // must never panic, must reject non-integer operands cleanly, must
 // propagate NULL, and must consistently reject the shift operators
-// `<<` / `>>` per the nightshift-61 Java alignment (Java tokenizes
+// `<<` / `>>` per Java alignment (Java tokenizes
 // the shift operators but its function registry has no evaluator).
 func FuzzApplyBitOp(f *testing.F) {
 	f.Add(int64(7), int64(3), "&")
@@ -715,11 +715,11 @@ func FuzzApplyBitOp(f *testing.F) {
 		if _, err := functions.ApplyBitOp("string", b, op); err == nil {
 			t.Fatalf("functions.ApplyBitOp(string, _) must error")
 		}
-		// Shift operators are always rejected (Java parity nightshift-61).
+		// Shift operators are always rejected (Java parity).
 		if op == "<<" || op == ">>" {
 			_, shErr := functions.ApplyBitOp(a, b, op)
 			if shErr == nil {
-				t.Fatalf("functions.ApplyBitOp(%d, %d, %q) must error post-nightshift-61", a, b, op)
+				t.Fatalf("functions.ApplyBitOp(%d, %d, %q) must error (shift operators are always rejected, Java parity)", a, b, op)
 			}
 		}
 	})
@@ -860,8 +860,8 @@ func FuzzCompareValues(f *testing.F) {
 //   - When (v, "INTEGER") fits in int32, ok      — Java alignment
 //   - When (v, "INTEGER") doesn't fit, errors    — vs silent wrap
 //
-// Cross-references the swingshift-52 UUID-CAST plumbing and the
-// CAST-overflow gotchas (CLAUDE.md) — same code path.
+// Cross-references the UUID-CAST plumbing and the
+// CAST-overflow gotchas — same code path.
 func FuzzCastValue(f *testing.F) {
 	// Seed: representative target types × value types.
 	for _, ty := range []string{"INTEGER", "INT", "BIGINT", "LONG", "DOUBLE", "FLOAT", "STRING", "VARCHAR", "BOOLEAN", "BOOL", "UUID", "BYTES", "BINARY", "<unknown>"} {

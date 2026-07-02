@@ -48,7 +48,7 @@ func TestRecordQueryInJoinPlan_BindingAliasInvariant(t *testing.T) {
 }
 
 // TestRecordQueryInUnionPlan_BindingAliasInvariant pins the same RFC-164 WS-4
-// alias-invariance for the IN-UNION path (Graefe follow-up): an `a IN (...)` that
+// alias-invariance for the IN-UNION path (a review follow-up): an `a IN (...)` that
 // plans as a sorted/merge InUnion carries the same UniqueCorrelationIdentifier
 // binding aliases, which were folded into Equals/Hash/Explain → the same
 // plan-cache churn. Only the binding COUNT (number of IN columns) is structural.

@@ -111,7 +111,7 @@ func TestDifferential_RYWDisableAfterOp(t *testing.T) {
 				return fdbErrorCode(e)
 			},
 		},
-		// Set → disable → SNAPSHOT Get (snapshot reads poison too — FDB-C-dev/Torvalds).
+		// Set → disable → SNAPSHOT Get (snapshot reads poison too).
 		{
 			"set_disable_snapshot_get",
 			func(tx gofdb.Transaction) int {
@@ -207,7 +207,7 @@ func TestDifferential_RYWDisableAfterOp(t *testing.T) {
 				return fdbErrorCode(tx.Commit().Get())
 			},
 		},
-		// Set → disable → GetRangeSplitPoints : the metrics sibling poisons too (Torvalds).
+		// Set → disable → GetRangeSplitPoints : the metrics sibling poisons too.
 		{
 			"set_disable_split_points",
 			func(tx gofdb.Transaction) int {
@@ -224,14 +224,14 @@ func TestDifferential_RYWDisableAfterOp(t *testing.T) {
 			},
 		},
 		// READ-ONLY poisoned commit: Get → disable → Commit (no writes) — the read-only commit
-		// fast path skips ensureReadVersion, so this exercises the top-of-Commit gate (codex).
+		// fast path skips ensureReadVersion, so this exercises the top-of-Commit gate.
 		{
 			"get_disable_commit_readonly",
 			func(tx gofdb.Transaction) int { tx.Get(gk).MustGet(); gd(tx); return fdbErrorCode(tx.Commit().Get()) },
 			func(tx cgofdb.Transaction) int { tx.Get(ck).MustGet(); cd(tx); return fdbErrorCode(tx.Commit().Get()) },
 		},
 		// Clean disable → GetKey (reads storage via the rywDisabled getKey choke, setting the
-		// read signal) → re-disable (now poisons) → Get : pins the getKey read choke (Torvalds).
+		// read signal) → re-disable (now poisons) → Get : pins the getKey read choke.
 		{
 			"getkey_rywdisabled_redisable",
 			func(tx gofdb.Transaction) int {

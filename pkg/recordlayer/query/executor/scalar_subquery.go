@@ -24,7 +24,7 @@ func EvaluateScalarSubquery(
 	props recordlayer.ExecuteProperties,
 ) (any, error) {
 	// props carries the statement's scan limits (RFC-106a) so an uncorrelated
-	// subquery respects the same cap as the outer plan (codex). ctx carries the
+	// subquery respects the same cap as the outer plan. ctx carries the
 	// statement timeout.
 	cursor, err := ExecutePlan(ctx, plan, store, evalCtx, nil, props)
 	if err != nil {

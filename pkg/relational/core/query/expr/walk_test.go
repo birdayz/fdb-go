@@ -264,7 +264,7 @@ func TestWalkPredicate_BareBooleanColumn(t *testing.T) {
 		t.Fatalf("Operand: got %v, want true", cp.Comparison.Operand)
 	}
 
-	// Structural unification with the explicit comparison (Graefe's gate):
+	// Structural unification with the explicit comparison:
 	// `active` and `active = TRUE` must produce structurally-equal predicates
 	// with the same semantic hash, so they unify for index matching / plan
 	// shape rather than just rendering the same EXPLAIN string.
@@ -1490,7 +1490,7 @@ func TestWalkExpression_ScalarFunctions(t *testing.T) {
 	}
 }
 
-// Extended scalar-function set added in swingshift-50: ABS / FLOOR /
+// Extended scalar-function set: ABS / FLOOR /
 // CEIL / CEILING / ROUND, SQRT / POWER / POW, COALESCE / NULLIF,
 // TRIM / LTRIM / RTRIM, CONCAT, SUBSTRING / SUBSTR, REPLACE. The
 // walker now recognises these names and the catalog-aware builder
@@ -1526,8 +1526,8 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 		{"SELECT * FROM users WHERE SUBSTRING(name, 1, 3)", "SUBSTRING", values.TypeString, 3},
 		{"SELECT * FROM users WHERE SUBSTR(name, 1)", "SUBSTR", values.TypeString, 2},
 		{"SELECT * FROM users WHERE REPLACE(name, 'a', 'b')", "REPLACE", values.TypeString, 3},
-		// swingshift-50 additions: walker must build ScalarFunctionValue
-		// for the new fn names so the cascades fold path can fire.
+		// Extended-set additions: walker must build ScalarFunctionValue
+		// for these fn names so the cascades fold path can fire.
 		{"SELECT * FROM users WHERE LEN(name)", "LEN", values.TypeInt, 1},
 		{"SELECT * FROM users WHERE CONCAT_WS('-', name, name)", "CONCAT_WS", values.TypeString, 3},
 		// PI() is a zero-arg function — exercises the no-args branch

@@ -164,8 +164,8 @@ func TestFDB_RecursiveCTEComputedColumn_RFC173(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}))
 }
 
-// TestFDB_RecursiveCTEStarSeedAliases_RFC173 pins the twice-flagged (codex P2 +
-// Graefe pre-existing corner) star-seed alias drop: a projection-less seed
+// TestFDB_RecursiveCTEStarSeedAliases_RFC173 pins the twice-flagged (review P2 +
+// reviewer pre-existing corner) star-seed alias drop: a projection-less seed
 // (`SELECT * FROM t`) exposed no projection columns, so an explicit CTE
 // column-alias list (`cte(a, b)`) never length-matched the alias gate and was
 // silently dropped — the temp table stayed keyed by the base columns and a
