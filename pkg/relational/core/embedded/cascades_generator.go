@@ -2190,6 +2190,22 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if fm, ok := plan.(*plans.RecordQueryFlatMapPlan); ok {
 		return deriveColumnsFromFlatMap(fm, md)
 	}
+	// A recursive CTE consumed bare (`SELECT * FROM cte`) has the recursive
+	// plan at top — no projection above it. Its output schema is the SEED
+	// leg's: standard SQL defines the CTE's columns from the seed (plus any
+	// column-alias list, which the translator bakes into the seed leg's
+	// normalization projection), and the recursive leg is normalized onto the
+	// same names. Recurse into the seed (through its TempTableInsert wrapper)
+	// exactly like the plain-UNION arm recurses into its first leg — without
+	// this arm the walk fell through to the leaf handler, found no scan, and
+	// returned NO columns: rows flowed but Rows.Columns() was empty, so every
+	// database/sql Scan failed with "expected 0 destination arguments".
+	if rdj, ok := plan.(*plans.RecordQueryRecursiveDfsJoinPlan); ok {
+		return deriveColumnsFromPlan(rdj.GetRoot(), md)
+	}
+	if rlu, ok := plan.(*plans.RecordQueryRecursiveLevelUnionPlan); ok {
+		return deriveColumnsFromPlan(rlu.GetInitialState(), md)
+	}
 	if u := findUnionPlan(plan); u != nil {
 		return deriveColumnsFromPlan(u[0], md)
 	}

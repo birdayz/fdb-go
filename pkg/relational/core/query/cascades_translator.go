@@ -4038,20 +4038,36 @@ func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, 
 }
 
 // legPhysicalOutputNames returns a recursive-CTE leg's PHYSICAL output column
-// names — the keys its top projection actually emits, via the shared
-// values.ProjectionColumnName naming contract — falling back to the LOGICAL
-// names when the leg's top expression is not a projection (bare-column shapes,
-// where the two coincide; a computed column under a non-projection top would
-// loud-error under ordinal resolution, which the §5 dual-window differential
-// watches for).
+// names — the keys its top projection actually emits — falling back to the
+// LOGICAL names when the leg's top expression is not a projection (bare-column
+// shapes, where the two coincide; a computed column under a non-projection top
+// would loud-error under ordinal resolution, which the §5 dual-window
+// differential watches for).
+//
+// The name mirrors executeProjection's OUTPUT-name contract exactly: the
+// upper-cased ALIAS when the projected column carries one, else the shared
+// values.ProjectionColumnName rendering. The alias is what names the emitted
+// positional row's slot (RFC-173 §4 Slice 1: posNames is alias-preferring), so
+// an aliased leg on the positional frontier (`SELECT v + 1 AS v`, or a seed
+// `SELECT id AS x` renamed by an explicit CTE column list) MUST be re-read by
+// the alias — reading the source/computed rendering there is a GetByName miss
+// and the ordinal model is loud on a miss by design: OrdinalResolutionError on
+// a valid recursive CTE (codex P2, Slice-1 follow-up). The name-keyed Datum
+// stores the alias key alongside the source key, so the alias also resolves on
+// the off-frontier (join-body) name path — one read name valid on both models.
 func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []string) []string {
 	lp, ok := leg.(*expressions.LogicalProjectionExpression)
 	if !ok || len(lp.GetProjectedValues()) != len(logicalCols) {
 		return logicalCols
 	}
+	aliases := lp.GetAliases()
 	out := make([]string, len(logicalCols))
 	for i, v := range lp.GetProjectedValues() {
-		out[i] = values.ProjectionColumnName(v)
+		if i < len(aliases) && aliases[i] != "" {
+			out[i] = strings.ToUpper(aliases[i])
+		} else {
+			out[i] = values.ProjectionColumnName(v)
+		}
 	}
 	return out
 }
