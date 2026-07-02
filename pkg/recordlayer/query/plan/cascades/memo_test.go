@@ -142,12 +142,12 @@ func TestMemo_MemoizeExpression_IntegrationWithPlanner(t *testing.T) {
 	rootRef := expressions.InitialOf(filter)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
-	_, converged := p.Explore(rootRef)
+	_, converged := exploreRewriting(p, rootRef)
 	if !converged {
 		t.Fatal("expected convergence")
 	}
 	if p.Memo() == nil {
-		t.Fatal("expected non-nil Memo after Explore")
+		t.Fatal("expected non-nil Memo after exploration")
 	}
 	if !p.Memo().ContainsReference(rootRef) {
 		t.Fatal("root not in Memo")

@@ -16,10 +16,9 @@ import (
 //
 // Why we keep BOTH this AND PushFilterThroughDistinct: the two
 // shapes coexist in the memo as alternatives. Cost-model extraction
-// (B4 follow-on) picks the cheaper. Without cost, both stay;
-// FixpointApply terminates because Reference.Insert's SemanticEquals
-// fallback absorbs structurally-equivalent re-yields after the first
-// round.
+// picks the cheaper. Without cost, both stay; exploration terminates
+// because Reference.Insert's SemanticEquals fallback absorbs
+// structurally-equivalent re-yields after the first round.
 //
 // Optimization argument: filtering AFTER dedup means evaluating P on
 // fewer rows (Distinct pre-shrinks the set) — the inverse trade-off

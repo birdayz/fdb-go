@@ -128,23 +128,6 @@ func TestPhysicalProperties_Satisfies(t *testing.T) {
 	}
 }
 
-func TestOptimizeReferenceTask_StampsWinner(t *testing.T) {
-	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
-	ref := expressions.InitialOf(scan)
-
-	p := NewPlanner(nil, nil)
-	task := &OptimizeReferenceTask{Ref: ref}
-	task.Run(p)
-
-	if ref.Winner(expressions.NoProperties) != scan {
-		t.Fatal("OptimizeReferenceTask should stamp winner on Reference")
-	}
-	if p.BestMember(ref) != scan {
-		t.Fatal("OptimizeReferenceTask should also stamp bestMember map")
-	}
-}
-
 func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
 	t.Parallel()
 
@@ -174,11 +157,12 @@ func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	// Run BatchA rules (PrimaryScanRule will produce physicalScanWrapper).
+	// Explore so the planner's Memo and exploration state are
+	// populated before the manual winner stamping below.
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
-	p.Explore(sortRef)
+	exploreRewriting(p, sortRef)
 
 	// Now manually stamp an ordered index scan as the ordering winner
 	// on the scan Reference. This simulates the future data-access
@@ -276,7 +260,7 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 	}
 }
 
-func TestOptimizeReferenceTask_StampsOrderingWinner(t *testing.T) {
+func TestPlan_StampsOrderingWinner(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()

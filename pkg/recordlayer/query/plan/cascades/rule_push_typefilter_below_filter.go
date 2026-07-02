@@ -20,10 +20,10 @@ import (
 //
 // Why we keep BOTH this AND PushFilterThroughTypeFilterRule: the two
 // shapes coexist in the memo as alternatives. Cost-model extraction
-// (B4 follow-on) picks the cheaper one. Without cost, both shapes
-// stay; FixpointApply terminates because Reference.Insert's
-// SemanticEquals fallback absorbs structurally-equivalent re-yields
-// after the first round of rule firing.
+// picks the cheaper one. Without cost, both shapes stay; exploration
+// terminates because Reference.Insert's SemanticEquals fallback
+// absorbs structurally-equivalent re-yields after the first round of
+// rule firing.
 //
 // Java equivalent: PushTypeFilterBelowFilterRule.
 type PushTypeFilterBelowFilterRule struct {

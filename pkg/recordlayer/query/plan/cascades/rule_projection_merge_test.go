@@ -89,10 +89,11 @@ func TestProjectionMergeRule_TriplyNested_FlattensInTwoFires(t *testing.T) {
 	midProj := expressions.NewLogicalProjectionExpression(middle, expressions.ForEachQuantifier(expressions.InitialOf(deepProj)))
 	topProj := expressions.NewLogicalProjectionExpression(top, expressions.ForEachQuantifier(expressions.InitialOf(midProj)))
 
-	// Drive through FixpointApply so it iterates until stable.
+	// Drive through the unified exploration driver so the rule
+	// re-fires on its own yields until stable.
 	ref := expressions.InitialOf(topProj)
-	if iters, _ := FixpointApply([]ExpressionRule{NewProjectionMergeRule()}, ref, 8); iters == 0 {
-		t.Fatal("FixpointApply did not fire ProjectionMergeRule at all")
+	if _, conv := exploreRewriting(NewPlanner([]ExpressionRule{NewProjectionMergeRule()}, nil), ref); !conv {
+		t.Fatal("exploration did not converge")
 	}
 	// After the rule applies twice, we should have a 1-deep projection
 	// over the scan. The Reference's last yielded member is the flattest.
@@ -110,6 +111,6 @@ func TestProjectionMergeRule_TriplyNested_FlattensInTwoFires(t *testing.T) {
 		}
 	}
 	if !flatFound {
-		t.Fatalf("FixpointApply did not produce a 1-deep projection over Scan; members=%d", len(members))
+		t.Fatalf("exploration did not produce a 1-deep projection over Scan; members=%d", len(members))
 	}
 }

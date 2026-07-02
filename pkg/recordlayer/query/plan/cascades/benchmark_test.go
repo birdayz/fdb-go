@@ -270,22 +270,6 @@ func BenchmarkFireExpressionRule_FilterMerge(b *testing.B) {
 	}
 }
 
-// BenchmarkFixpointApply_DefaultRules drives the full default rule
-// set via FixpointApply on a small test tree.
-func BenchmarkFixpointApply_DefaultRules(b *testing.B) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	innerD := expressions.NewLogicalDistinctExpression(scanQ)
-	innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
-	outerD := expressions.NewLogicalDistinctExpression(innerDQ)
-	rules := DefaultExpressionRules()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ref := expressions.InitialOf(outerD)
-		_, _ = FixpointApply(rules, ref, 50)
-	}
-}
-
 // BenchmarkExpressionMatcher_BindMatch — the per-call match cost.
 func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -297,44 +281,6 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = matcher.BindMatches(outer, f)
-	}
-}
-
-// BenchmarkOptimise_RealisticTree drives the full default rule set
-// (FixpointApply with all 31 logical-rewrite rules + sub-Reference
-// descent) on a ~6-node query tree representative of a small SELECT:
-//
-//	Distinct
-//	  → Filter([T])
-//	    → Filter([T])
-//	      → Distinct
-//	        → Distinct
-//	          → Scan(Order)
-//
-// Pins the end-to-end cost of one optimisation pass — useful as a
-// macro-benchmark when future tuning changes rule order or adds
-// per-rule short-circuits.
-func BenchmarkOptimise_RealisticTree(b *testing.B) {
-	build := func() *expressions.Reference {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-		innerD := expressions.NewLogicalDistinctExpression(scanQ)
-		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
-		outerD := expressions.NewLogicalDistinctExpression(innerDQ)
-		outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
-		pT := predicates.NewConstantPredicate(predicates.TriTrue)
-		innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
-		innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
-		outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
-		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
-		topD := expressions.NewLogicalDistinctExpression(outerFQ)
-		return expressions.InitialOf(topD)
-	}
-	rules := DefaultExpressionRules()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ref := build()
-		_, _ = FixpointApply(rules, ref, 50)
 	}
 }
 
@@ -366,16 +312,17 @@ func BenchmarkOptimise_StackedSorts(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ref := build()
-		_, _ = FixpointApply(rules, ref, 50)
+		p := NewPlanner(rules, nil)
+		_, _ = exploreRewriting(p, ref)
 	}
 }
 
-// BenchmarkOptimise_GetBest pins the Track B4 cost-driven extraction
-// step: optimise a tree to convergence, then call Reference.GetBest
-// with the cost-based comparator to pull out the cheapest member.
+// BenchmarkOptimise_GetBest pins the cost-driven extraction step:
+// optimise a tree to convergence, then call Reference.GetBest with
+// the cost-based comparator to pull out the cheapest member.
 //
 // The build is the same RealisticTree shape as
-// BenchmarkOptimise_RealisticTree — five operators with a Filter +
+// BenchmarkPlanner_RealisticTree — five operators with a Filter +
 // Distinct + Sort cascade — so the per-iteration delta vs that
 // benchmark is exactly the GetBest call, not the optimiser run.
 func BenchmarkOptimise_GetBest(b *testing.B) {
@@ -398,15 +345,15 @@ func BenchmarkOptimise_GetBest(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ref := build()
-		_, _ = FixpointApply(rules, ref, 50)
+		p := NewPlanner(rules, nil)
+		_, _ = exploreRewriting(p, ref)
 		_ = ref.GetBest(properties.CostLess)
 	}
 }
 
-// BenchmarkPlanner_RealisticTree exercises the new B6 task-stack
-// Planner on the same RealisticTree shape as
-// BenchmarkOptimise_RealisticTree (FixpointApply baseline). Direct
-// comparison reveals the saturation-tracking perf savings.
+// BenchmarkPlanner_RealisticTree exercises the task-stack Planner's
+// REWRITING exploration on a ~6-node query tree representative of a
+// small SELECT (Distinct/Filter/Distinct/Distinct/Scan cascade).
 func BenchmarkPlanner_RealisticTree(b *testing.B) {
 	build := func() *expressions.Reference {
 		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
@@ -428,7 +375,7 @@ func BenchmarkPlanner_RealisticTree(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ref := build()
 		p := NewPlanner(rules, nil)
-		_, _ = p.Explore(ref)
+		_, _ = exploreRewriting(p, ref)
 	}
 }
 
@@ -514,7 +461,7 @@ func BenchmarkPlanner_ExploreWithMemo(b *testing.B) {
 		)
 		rootRef := expressions.InitialOf(filter)
 		p := NewPlanner(DefaultExpressionRules(), nil)
-		p.Explore(rootRef)
+		exploreRewriting(p, rootRef)
 	}
 }
 

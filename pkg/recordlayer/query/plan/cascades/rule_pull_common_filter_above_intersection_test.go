@@ -78,8 +78,8 @@ func TestPullCommonFilterAboveIntersectionRule_FixpointTerminates(t *testing.T) 
 		[]expressions.Quantifier{mkChild("A"), mkChild("B")}, keys,
 	)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewPullCommonFilterAboveIntersectionRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPullCommonFilterAboveIntersectionRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

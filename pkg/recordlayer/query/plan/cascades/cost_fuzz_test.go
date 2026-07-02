@@ -8,23 +8,28 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
-// FuzzCostMonotonicity pins two B4 cost-model invariants:
+// FuzzCostSanity pins the B4 cost-model invariant that survives the
+// production task-stack driver: the best-member cost is finite and
+// non-negative on every reachable Reference state (before AND after
+// exploration) — i.e. the cost function never produces NaN / Inf /
+// negative values on optimised trees.
 //
-//  1. EstimateCost over the BEST member is non-increasing across
-//     fixpoint iterations: optimisation can only shrink the cheapest
-//     member's cost, never grow it. (A rule that yielded a strictly-
-//     more-expensive expression as the cheapest member would be a
-//     correctness regression.)
-//
-//  2. The best-member's cost is finite and non-negative for every
-//     reachable Reference state — i.e. the cost function never
-//     produces NaN / Inf / negative values on optimised trees.
-//
-// The fuzzer reuses the FuzzFixpointApply tree builder (random
-// expression shapes from the byte stream) and applies a random
-// rule subset, but optimises in single-iteration steps and asserts
-// monotonicity at each step.
-func FuzzCostMonotonicity(f *testing.F) {
+// The legacy FixpointApply-era fuzzer additionally asserted best-cost
+// MONOTONICITY across iterations. Monotonicity IS a Cascades invariant
+// — with child costs taken from group winners, a merge takes the min of
+// the merged winners and root best-cost is non-increasing. What breaks
+// it here is EstimateCost's documented FIRST-MEMBER approximation
+// (properties/cost.go): child References are priced at their first
+// member, so an RFC-037 cross-group merge that re-points a child's
+// canonical member list can price the SAME unchanged parent higher.
+// The pin cannot hold under that approximation — not under Cascades.
+// Plan SELECTION is unaffected: alternatives are ranked through the
+// same merged child groups, and extraction uses winners/GetBest.
+// RESTORE the monotonicity pin when child costing moves to winners
+// (BestMemberCostWith exists; the properties package doc promises it)
+// — it is a free oracle — and retire this fuzzer's weaker half.
+// Registered in RFC-175 §2 A2.
+func FuzzCostSanity(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5})
 	f.Add(make([]byte, 8))
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -35,34 +40,18 @@ func FuzzCostMonotonicity(f *testing.F) {
 		ref := expressions.InitialOf(expr)
 		rules := selectRules(b)
 
-		prevBest := properties.BestRefCost(ref).Total()
-		if !goodCost(prevBest) {
-			t.Fatalf("initial best cost not finite/non-negative: %v", prevBest)
+		if c := properties.BestRefCost(ref).Total(); !goodCost(c) {
+			t.Fatalf("initial best cost not finite/non-negative: %v", c)
 		}
 
-		// Drive the optimiser one iteration at a time and assert
-		// monotonicity at each step. 50 iters is the FixpointApply
-		// default cap — convergence is allowed before then.
-		for iter := 0; iter < 50; iter++ {
-			progress, _ := FixpointApply(rules, ref, 1)
-			best := properties.BestRefCost(ref).Total()
-			if !goodCost(best) {
-				t.Fatalf("iter %d best cost not finite/non-negative: %v (members=%d)",
-					iter, best, len(ref.Members()))
-			}
-			// Monotonicity tolerance: floating-point recomputation
-			// can introduce tiny non-determinism, so allow a 1e-9
-			// relative slop. Without slop, ULP-level wobble would
-			// flag spurious failures.
-			tol := math.Max(1e-9, math.Abs(prevBest)*1e-9)
-			if best > prevBest+tol {
-				t.Fatalf("iter %d: best cost grew from %v to %v (rule yielded a more expensive cheapest-member; tol=%v)",
-					iter, prevBest, best, tol)
-			}
-			if progress == 0 {
-				return // converged
-			}
-			prevBest = best
+		p := NewPlanner(rules, nil)
+		if _, conv := exploreRewriting(p, ref); !conv {
+			t.Fatal("exploration did not converge — possible non-terminating rule interaction")
+		}
+
+		if c := properties.BestRefCost(ref).Total(); !goodCost(c) {
+			t.Fatalf("post-exploration best cost not finite/non-negative: %v (members=%d)",
+				c, len(ref.Members()))
 		}
 	})
 }

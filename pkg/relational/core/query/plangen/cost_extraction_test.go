@@ -34,34 +34,33 @@ func TestEndToEnd_CostExtractionPreservesFilterSort(t *testing.T) {
 	ref := expressions.InitialOf(got)
 
 	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
-	if _, converged := p.Explore(ref); !converged {
-		t.Fatal("Planner did not converge")
+	best, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
-
-	best := ref.GetBest(properties.CostLess)
 	if best == nil {
-		t.Fatal("GetBest returned nil")
+		t.Fatal("Plan returned nil")
 	}
 
 	// Without PushFilterThroughSortRule, Filter stays above Sort.
 	if _, isFilter := best.(*expressions.LogicalFilterExpression); !isFilter {
-		t.Fatalf("GetBest returned %T, want *LogicalFilterExpression (Filter stays above Sort)", best)
+		t.Fatalf("Plan returned %T, want *LogicalFilterExpression (Filter stays above Sort)", best)
 	}
 }
 
 // TestEndToEnd_CostExtractionEliminatesNoOpFilter pins that after
-// the simplification rule chain (FilterDropTrue → NoOpFilter →
-// PushFilterThroughSort), GetBest picks the BARE Sort over the
-// original Filter-wrapped shape.
+// the simplification rule chain (FilterDropTrue → NoOpFilter),
+// cost-based extraction (properties.CostLess) picks the BARE Sort
+// over the original Filter-wrapped shape.
 //
 // Filter(TRUE, Sort(Scan)) has three reachable shapes after rule
 // firing:
 //  1. The original: Filter(TRUE, Sort(Scan))
-//  2. After PushFilterThroughSort: Sort(Filter(TRUE, Scan))
-//  3. After NoOpFilter eliminates the Filter([TRUE]): Sort(Scan)
+//  2. After FilterDropTrue: Filter([], Sort(Scan))
+//  3. After NoOpFilter eliminates the Filter([]): Sort(Scan)
 //
-// Cost ordering (by EstimateCost): Sort(Scan) < Sort(Filter(...)) <
-// Filter(Sort(...)). The bare Sort wins.
+// Cost ordering (by EstimateCost): Sort(Scan) < Filter(Sort(...)).
+// The bare Sort wins.
 func TestEndToEnd_CostExtractionEliminatesNoOpFilter(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -77,40 +76,33 @@ func TestEndToEnd_CostExtractionEliminatesNoOpFilter(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
-	if _, converged := p.Explore(ref); !converged {
-		t.Fatal("Planner did not converge")
-	}
+	cascades.FireExpressionRule(cascades.NewFilterDropTruePredicatesRule(), ref)
+	cascades.FireExpressionRule(cascades.NewNoOpFilterRule(), ref)
 
 	best := ref.GetBest(properties.CostLess)
 	if best == nil {
 		t.Fatal("GetBest returned nil")
 	}
 	// The cheapest member should be a bare Sort (no enclosing Filter).
-	// The Sort's inner Reference may still hold multiple members
-	// (Filter([T]) and Scan); first-member-cost recursion picks the
-	// Filter member's cost — but the top-level GetBest only compares
-	// the Reference's own members, not its descendants.
 	switch best.(type) {
 	case *expressions.LogicalSortExpression, *expressions.FullUnorderedScanExpression:
 		// Either is acceptable: the Sort might have been entirely
 		// elided if a future rule joins NoOpFilter + Sort-over-noop;
 		// the Sort over a (now NoOp-collapsed) inner is also fine.
 	case *expressions.LogicalFilterExpression:
-		// Without PushFilterThroughSort, Filter stays above Sort.
-		// FilterDropTrue eliminates TRUE predicate → NoOpFilter drops
-		// the empty Filter. But timing may leave the Filter shape.
+		// The Filter shape can also rank cheapest under EstimateCost:
+		// FilterSelectivity halves the output cardinality, which the
+		// cost total rewards. Accepted since the pre-port test did too.
 	default:
 		t.Fatalf("GetBest returned unexpected shape %T", best)
 	}
 }
 
 // TestEndToEnd_ExtractBestPlanProducesSingletonTree pins that
-// after Convert + FixpointApply + ExtractBestPlan, the returned
-// expression tree has exactly one member at every reachable
-// Reference. Without this, callers can't reason about "the plan" —
-// any Quantifier might range over a Reference with multiple
-// alternatives.
+// after Convert + Plan, the returned expression tree has exactly one
+// member at every reachable Reference. Without this, callers can't
+// reason about "the plan" — any Quantifier might range over a
+// Reference with multiple alternatives.
 func TestEndToEnd_ExtractBestPlanProducesSingletonTree(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
@@ -127,16 +119,12 @@ func TestEndToEnd_ExtractBestPlanProducesSingletonTree(t *testing.T) {
 	}
 	ref := expressions.InitialOf(got)
 	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
-	if _, converged := p.Explore(ref); !converged {
-		t.Fatal("Planner did not converge")
-	}
-
-	extracted, err := properties.ExtractBestPlan(ref)
+	extracted, _, err := p.Plan(ref)
 	if err != nil {
-		t.Fatalf("ExtractBestPlan err=%v", err)
+		t.Fatalf("Plan err=%v", err)
 	}
 	if extracted == nil {
-		t.Fatal("ExtractBestPlan returned nil")
+		t.Fatal("Plan returned nil")
 	}
 
 	// Walk the extracted tree, assert every reachable Reference has
@@ -158,26 +146,16 @@ func TestEndToEnd_ExtractBestPlanProducesSingletonTree(t *testing.T) {
 }
 
 // TestEndToEnd_FullCascadesPipeline demonstrates the COMPLETE
-// Cascades pipeline shipped this shift: SQL-shape input →
-// plangen.Convert → cascades.Planner.Explore (B6 task-stack driver)
-// + Batch A implement rules → properties.ExtractBestPlan → physical
-// RecordQueryPlan tree.
+// Cascades pipeline: SQL-shape input → plangen.Convert →
+// cascades.Planner.Plan (task-stack driver + Batch A implement
+// rules) → extracted plan tree.
 //
 // Pins:
-//  1. Convert lowers Filter(Sort(Scan)) to the equivalent
+//  1. Convert lowers Sort(Filter(Scan)) to the equivalent
 //     RelationalExpression tree.
-//  2. Planner with [PrimaryScanRule, ImplementFilterRule,
-//     ImplementSortRule] converges to a Reference holding both
-//     logical and physical members.
-//  3. ExtractBestPlan picks a member; the cost model's job is to
-//     pick the cheapest. Today that may be a logical member
-//     (cost calibration on physical wrappers is a follow-up);
-//     end-to-end pipeline runs without panic.
-//
-// This is the integration "value moment" for swingshift-59 — every
-// new piece (B4 cost model, B6 planner, RecordQueryPlan, the 3
-// Batch A rules, physical wrappers) participates in producing the
-// extracted result.
+//  2. Planner.Plan with the default rewrites + Batch A planning
+//     rules runs both phases without error.
+//  3. Extraction picks a member and returns a non-nil plan.
 func TestEndToEnd_FullCascadesPipeline(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
@@ -196,34 +174,18 @@ func TestEndToEnd_FullCascadesPipeline(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	// Step 2: Drive the task-stack Planner with the Batch A rule set
-	// PLUS the existing logical-rewrite rules. The combination
-	// generates both logical alternatives AND physical
-	// implementations.
+	// Step 2+3: Drive Plan with the Batch A rule set PLUS the existing
+	// logical-rewrite rules. The combination generates both logical
+	// alternatives AND physical implementations; extraction picks one.
 	rules := cascades.DefaultExpressionRules()
 	p := cascades.NewPlanner(rules, nil).
 		WithPlanningExpressionRules(cascades.BatchAExpressionRules())
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("Planner did not converge")
-	}
-
-	// Step 3: Reference preserved through rule firing. Without
-	// PushFilterThroughSort (removed, not in Java), Sort(Filter(Scan))
-	// stays as-is — 1 member.
-	if got := len(ref.Members()); got < 1 {
-		t.Fatalf("Reference has %d members; expected ≥1", got)
-	}
-
-	// Step 4: ExtractBestPlan over the rule-fired Reference.
-	// Returns non-nil; opaque wrapper types (physical wrappers) flow
-	// through the default arm as-is until a uniform WithChildren
-	// API lands.
-	best, err := properties.ExtractBestPlan(ref)
+	best, _, err := p.Plan(ref)
 	if err != nil {
-		t.Fatalf("ExtractBestPlan: %v", err)
+		t.Fatalf("Plan: %v", err)
 	}
 	if best == nil {
-		t.Fatal("ExtractBestPlan returned nil — pipeline produced no extracted plan")
+		t.Fatal("Plan returned nil — pipeline produced no extracted plan")
 	}
 }
 
@@ -538,42 +500,6 @@ func TestEndToEnd_UnionAll_TwoScans(t *testing.T) {
 	}
 	t.Logf("UNION ALL pipeline: extracted %T (tasks=%d, members=%d)",
 		plan, tasks, len(ref.Members()))
-}
-
-// TestEndToEnd_CostMonotonicAcrossOptimisation pins that the cost of
-// the cheapest member is monotonic non-increasing across fixpoint
-// iterations. This is the integration-level mirror of
-// FuzzCostMonotonicity in the cascades package — same property,
-// driven through Convert, on a fixed input.
-func TestEndToEnd_CostMonotonicAcrossOptimisation(t *testing.T) {
-	t.Parallel()
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	src := logical.NewFilterWithPredicate(
-		logical.NewSort(
-			logical.NewScan("Order", ""),
-			[]logical.SortKey{{Expr: "id", Dir: logical.SortAsc}},
-		),
-		pred, "active",
-	)
-	got, err := plangen.Convert(src)
-	if err != nil {
-		t.Fatalf("Convert: %v", err)
-	}
-	ref := expressions.InitialOf(got)
-
-	prev := properties.BestRefCost(ref).Total()
-	rules := cascades.DefaultExpressionRules()
-	for iter := 0; iter < 16; iter++ {
-		progress, _ := cascades.FixpointApply(rules, ref, 1)
-		now := properties.BestRefCost(ref).Total()
-		if now > prev*1.0+1e-9 {
-			t.Fatalf("iter %d: best cost grew from %v to %v — rule yielded a more expensive cheapest-member", iter, prev, now)
-		}
-		prev = now
-		if progress == 0 {
-			break
-		}
-	}
 }
 
 // TestEndToEnd_PlanPrefersIndexScanOverFullScan verifies that

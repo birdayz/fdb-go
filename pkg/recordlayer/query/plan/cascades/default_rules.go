@@ -1,11 +1,11 @@
 package cascades
 
-// DefaultExpressionRules returns the curated rule set the seed
-// optimiser fires by default. Order matters within a fixpoint pass:
-// merge-rules run first (collapse nested operators of the same kind),
-// then no-op-elimination rules run on the merged shapes. Order across
-// passes doesn't matter because FixpointApply runs each rule against
-// every member each iteration.
+// DefaultExpressionRules returns the curated rule set the
+// optimiser fires by default. Order matters within an exploration
+// round: merge-rules run first (collapse nested operators of the same
+// kind), then no-op-elimination rules run on the merged shapes. Order
+// across rounds doesn't matter because the task-stack driver re-fires
+// every rule against newly-yielded members until the group saturates.
 //
 // As Track B5 Batch A rules port (PrimaryScanRule, ImplementFilterRule,
 // etc.), they join this list. The rules here today are uncontroversial

@@ -12,11 +12,12 @@ import (
 // is a singleton holding the cost-cheapest member chosen under
 // DefaultStatistics. Children are extracted recursively.
 //
-// Use case: callers that have just run FixpointApply on a Reference
-// and want to materialise a single best plan for execution / display
-// / serialisation. Without this, the extracted "plan" is the
-// Reference DAG with multiple alternative members still attached;
-// downstream consumers have no easy way to lock in one shape.
+// Use case: callers holding an explored Reference (rule-generated
+// alternatives attached) who want to materialise a single best plan
+// for execution / display / serialisation. Without this, the
+// extracted "plan" is the Reference DAG with multiple alternative
+// members still attached; downstream consumers have no easy way to
+// lock in one shape.
 //
 // Behaviour:
 //   - Returns nil if `ref` is nil or empty.
@@ -101,8 +102,8 @@ type BestMemberSelector interface {
 // back to CostLess+stats otherwise.
 //
 // Use this when the caller has a pre-populated selector (e.g. the
-// cascades.Planner after Explore). It avoids repeating the OPTIMIZE
-// work that already happened during Explore.
+// cascades.Planner after Plan). It avoids repeating the OPTIMIZE
+// work that already happened during planning.
 //
 // Pass nil sel to fall back to ExtractBestPlanWith(ref, stats)
 // (no selector path).
