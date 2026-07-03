@@ -61,9 +61,12 @@ validation gate.
     clustered outer) never planned — the true enablement is an EXECUTION-CONTEXT property (the
     aggregate cursor inheriting the outer binding through the NLJ context, as Java threads it), not an
     expression rewrite (Graefe ruling on the codex P2-2 fix); (b) box-leg clusters (nested FULL boxes)
-    stay on the pre-W4b path even when gated (@claude scope note — intended W4b narrowing). The
-    parenthesized-column-over-JOIN-inner case was FIXED in the gauntlet (qualified scalarCol from the
-    walked QOV; the ambiguous-column probe returned the WRONG LEG before the fix — pinned).
+    stay on the pre-W4b path even when gated (@claude scope note — intended W4b narrowing). FIXED in
+    the gauntlet (not residuals): parenthesized-column-over-JOIN-inner (qualified scalarCol from the
+    walked QOV; the ambiguous-column probe returned the WRONG LEG before the fix — pinned);
+    OUTER-scope parenthesized columns (scope discrimination via the binder-exact innerSourceAliases;
+    materialized, keyed by the executor's shared naming contract — a wrong-scope read before the fix);
+    the unnest AT-alias scope corner (the collector mirrors unnestSourceCorrelation: AS-else-AT-only).
 - [x] **Slice 1 non-join ordinal — MERGED (#437, `12516e33f`), all four gates ACKed at the merge
   HEAD** (Graefe impl+delta ACK · Torvalds fix-first→ACK incl. MUTATION-TESTING the authority proof ·
   codex clean (P2 fixed; delta finding = documented Go≥1.22 loopvar false positive) · @claude "nothing

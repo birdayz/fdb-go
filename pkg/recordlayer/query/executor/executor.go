@@ -1392,10 +1392,16 @@ func executeProjection(
 
 	projections := p.GetProjections()
 	aliases := p.GetAliases()
-	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
 	// RFC-173 Slice 1: on the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
 	posNeedsCtx := hasBindingContext(evalCtx)
+	// A projection over a NAME-MODEL (Datum) row needs the binder too whenever
+	// correlation bindings exist: a correlated projected value (a materialized
+	// outer-scope scalar inside a correlated subquery's JOIN-inner — the inner
+	// join flows Datum rows) evaluates against the row context, and a bare map
+	// silently NULLs the outer reference (review coverage-gap catch: the
+	// outer-scope × join-inner combination returned NULL).
+	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || posNeedsCtx
 	// RFC-173 P2/Slice 1: the projection's output schema is row-invariant — compute
 	// it ONCE. projNames keys the name-keyed Datum (source column name for a bare
 	// field ref, from projectionColumnName); posNames names the EMITTED positional

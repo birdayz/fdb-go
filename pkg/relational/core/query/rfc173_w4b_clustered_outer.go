@@ -379,6 +379,13 @@ func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[
 // the decline guard tests inner references against. Best-effort by design:
 // the guard's conservative direction on a missed alias is "cannot prove a
 // non-rightmost correlation → keep today's behavior".
+//
+// Deliberately MORE inclusive than the embedded package's binder-exact twin
+// (innerSourceAliases): here an extra entry (e.g. an AT ordinal alias) only
+// pushes toward a decline or a skipped classification — loud or today's
+// behavior, never wrong rows — while an over-inclusion THERE flips an outer
+// field to inner-scoped and mis-keys its read. The asymmetry is load-bearing;
+// do not harmonize the two collectors.
 func outerSubtreeAliases(op logical.LogicalOperator) map[string]struct{} {
 	out := map[string]struct{}{}
 	var walk func(logical.LogicalOperator)
