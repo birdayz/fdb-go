@@ -531,6 +531,13 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				call.Yield(upperSelectExpression)
 				continue
 			}
+			// ANCHORED re-enumeration arm (name-model residual). RFC-173 Slice-3
+			// dispatch-authority pin: an ordinal-seeded corpus must NEVER reach
+			// here (the positional arm above is the sole producer for ordinal
+			// seeds); this arm survives only for the name-model residual seeds
+			// (scalar-subquery / multi-source-unnest), retired with the trio in
+			// Slice 4. MergeArmHits certifies the boundary.
+			call.memo.RecordMergeArmHit()
 			// Merge case: ≥2 live lower tables (referenced by an upper predicate or
 			// the result value). The lower flows a source-anchored join RC carrying
 			// qualified ALIAS.COL keys for every live table; the upper predicates
