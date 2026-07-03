@@ -1762,7 +1762,17 @@ predecessor (W4b → W5 → W4-left+EXISTS+recursive-CTE) is its own slice; then
 CTE-rename `select.go:274` widening and the full-FieldValue-baking lazy-arm deletion are their OWN
 later slices (F2/F3). The demolition is the LAST step of the flag axis.
 
-## W4b — correlated-scalar ordinalization: scope (the immediate next slice; PRE-DESIGN)
+## W4b (residual shapes) — correlated-scalar ordinalization: the S4-prerequisite completion
+
+**Continues the W4b design above** (§"W4b — Correlated-scalar 2-leg ordinal seed", where the SIMPLE
+case landed). **FRAMING (from that section's premise correction):** correlated-scalar-subquery-in-
+projection is a Go-only READ-SIDE EXTENSION — Java does NOT parse a scalar subquery in a projection
+list at all. So this is NOT a parity port; Java is only the **ordinal-SHAPE** reference (`convertToExpressions`
+bakes `FieldValue.ofOrdinalNumber(quantifier.getFlowedObjectValue(), i)`, `LogicalOperator.java:358-372`).
+The "read Java" below means *mirror Java's ordinal-shape mechanisms* (ordinal addressing, unique
+quantifier ids), not "port a Java feature". The item exists because the extension's seed is a name-model
+`NewScalarSubqueryAnchoredRecord` that BREAKS at S4 deletion unless ordinalized — an extension that
+rides along.
 
 The single live caller of `NewScalarSubqueryAnchoredRecord` is `cascades_translator.go:3256`, on the
 DECLINE of the W4b ordinal gate at `:3251`. The SIMPLE case is ALREADY ordinalized
