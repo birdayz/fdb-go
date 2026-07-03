@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func buildOrdinalStar(n int) *expressions.SelectExpression {
 	fields = append(fields, values.RecordConstructorField{Name: hubFV.Field, Value: hubFV})
 
 	for i := 1; i <= n; i++ {
-		a := "S" + string(rune('0'+i))
+		a := "S" + strconv.Itoa(i) // robust for n>9 (spoke aliases S1..Sn)
 		quants = append(quants, scanQuantifier(a))
 		aliases = append(aliases, a)
 		spokeType := values.NewRecordType(a, false, []values.Field{

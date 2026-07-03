@@ -153,8 +153,9 @@ func (m *Memo) AliasAwareDedups() int {
 // TotalMembers sums the exploratory + final member count over every canonical
 // Reference in the memo. With the alias-aware interning tier live this is the
 // deduped population; the shadow-delta pin re-plans with the tier disabled to
-// recover the alias-identity population and asserts the difference equals
-// AliasAwareDedups (each alias-aware dedup collapses exactly one member).
+// recover the alias-identity population. The difference EXCEEDS AliasAwareDedups
+// (the direct dedups): each collapsed merge sub-product would otherwise
+// re-explode, so one direct dedup saves several downstream members (cascade).
 func (m *Memo) TotalMembers() int {
 	total := 0
 	seen := make(map[*expressions.Reference]struct{}, len(m.refs))
