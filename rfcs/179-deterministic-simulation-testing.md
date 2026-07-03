@@ -1,6 +1,11 @@
 # RFC-179 — Deterministic Simulation Testing (DST) for the record & relational layers (Track A)
 
-**Status:** Draft / exploration. No code yet. Seeking direction before committing to a build order.
+**Status:** Draft, ready for ACK review. No code yet, but the four open questions are now **resolved**
+(§9, validated against the C++/Java/Go sources) and the build order is committed (§7). This is a
+corrections-then-ACK direction document, not a redesign: the central `fdb.BackendDatabase`-seam thesis
+is validated (SimFDB is a genuine drop-in third backend), and the load-bearing byte-format /
+version-ownership / watch-deferral facts hold. Not a query-engine planner change, so the Graefe gate is
+**advisory** here, not mandatory.
 **Scope decision (see §1a):** this RFC is **Track A** — *real* DST for the record + relational layers
 (shared Tier 0 + SimFDB + workload/replay). The **client-transport** work (**Track B** — simulation &
 fault injection, honestly *not* full DST) is documented here for context (Tier 3 + the alternatives
@@ -81,10 +86,12 @@ smallest, least bug-dense slice — for ~1000× the cost.
 
 **The record and relational layers reach FDB *only* through interfaces** — `fdb.Transactor`,
 `fdb.ReadTransaction`, `fdb.WritableTransaction`, `fdb.BackendDatabase` (`pkg/fdbgo/fdb/interfaces.go`,
-`backend.go:37`) — and **two backends already implement that exact contract**: the pure-Go client
-(`pkg/fdbgo/client`) and the CGo `libfdbc` backend (`pkg/fdbgo/libfdbc/backend.go:877-891`). The
-build-tag switch `fdbclient.Open() (fdb.BackendDatabase, error)` (`open_purego.go` / `open_libfdbc.go`)
-picks one.
+`backend.go:37`) — and **two backends already implement that exact contract**: the pure-Go
+`fdb.Database` (`pkg/fdbgo/fdb`, wrapping the `pkg/fdbgo/client` transport; conformance asserted at
+`check.go:7`) and the CGo `libfdbc` backend (`pkg/fdbgo/libfdbc/backend.go:877-891` — the
+interface-conformance `var` block). The build-tag switch `fdbclient.Open() (fdb.BackendDatabase, error)`
+(`pkg/internal/fdbclient/open_purego.go` / `open_libfdbc.go`) picks one — but that switch is only the
+production convenience entry point; the actual substitution seam is the runtime constructor below.
 
 In FoundationDB, DST is enabled by two global vtable swaps: `g_network` (`INetwork`) and `g_simulator`
 (`ISimulator`) — the sim replaces the real network/OS wholesale. **We already have that swap, in
@@ -93,8 +100,18 @@ interface shape, done.** A deterministic in-memory MVCC backend is simply a **th
 monitor, load-balancer `rand`, per-RPC timers, sockets — is **replaced, not tamed**. The determinism
 problem for the record/relational layers collapses to: *write a single-goroutine sorted-map MVCC store
 that mints versions deterministically*, behind a seam that is already proven substitutable
-(`recordlayer.NewFDBDatabaseWithBackend`, `database.go:147`, takes the interface with zero layer
+(`recordlayer.NewFDBDatabaseWithBackend`, `database.go:147`, takes the interface with zero **gold-path**
 changes).
+
+One load-bearing caveat, verified against the constructor: `NewFDBDatabaseWithBackend` type-asserts
+`backend.(fdb.Database)` (`database.go:157`) to keep the pure-Go concrete fast paths; a backend that is
+not the concrete `fdb.Database` — libfdb_c today, and SimFDB — falls into the **degraded** capability
+envelope (`d.db` stays empty; the concrete `CreateTransaction` fails fast with `BackendCapabilityError`).
+So `Run`/`RunRead` work with zero changes, but for explicit SQL transactions (`BeginTx` →
+`CreateWritableTransaction`, `connection.go:527`), the `FDBDatabaseRunner`, and online MUTUAL indexing,
+SimFDB **must** implement the interface methods `CreateWritableTransaction()` and
+`LocalityGetBoundaryKeys()` (`backend.go:42-45`). These are load-bearing in v1 — not the deferrable
+locality of Tier 1's line "Deferrable to v2."
 
 ## 3. The Go reality: what determinism you can and cannot buy
 
@@ -114,13 +131,17 @@ The ecosystem's three honest options, in ascending cost:
 |---|---|---|---|
 | **`testing/synctest`** (stdlib, in Go 1.25+; we're on **1.26.4**) | fake clock + quiescence (`synctest.Wait`) inside a "bubble"; no real net/OS allowed | time + quiescence deterministic; **not** raw goroutine interleaving | free, in-tree, no code rewrite |
 | **Forked runtime** (Polar Signals: `GORANDSEED` + `-tags=faketime`, `GOOS=wasip1`) | seed the scheduler's RNG | "mostly" — they admit occasional non-repro | custom toolchain + WASM target |
-| **gosim** (source-translates `go f()`→`gosimruntime.Go`) / **Antithesis** (hypervisor) | full sim runtime | full | gosim: experimental, Go-only, breaks on new linkname rules. Antithesis: ~$168k+/yr |
+| **gosim** (source-translates `go f()`→`gosimruntime.Go`) / **Antithesis** (hypervisor) | full sim runtime | full | gosim: experimental, Go-only, breaks on new linkname rules. Antithesis: ~$100k+/yr (order-of-magnitude) |
 
 **`synctest` is the key stdlib primitive.** It gives a fake clock (advances only when every bubble
 goroutine is durably blocked) and `synctest.Wait()` (block until all others are durably blocked). It
-does **not** seed interleavings of simultaneously-runnable goroutines. Its hard rule — *no real
-network/OS in the bubble* — is exactly satisfiable here because we have a pure-Go client + the
-in-memory SimTransport/`net.Pipe` seam.
+does **not** seed interleavings of simultaneously-runnable goroutines. Its *no-real-network/OS*
+requirement is not a hard panic — socket I/O and syscalls simply aren't "durably blocking," so a stray
+real call **silently** breaks determinism (fake time advances / `Wait` returns early) rather than
+failing loudly; only cross-bubble channel/timer/`WaitGroup`/`Cond` ops are fatal. It is satisfiable here
+because we have a pure-Go client + the in-memory SimTransport/`net.Pipe` seam — but Track B must add a
+`GODEBUG`/lint guard proving the client makes **zero** real `net`/syscall calls under sim, since the
+compiler won't catch a stray one.
 
 **Conclusion:** don't promise "one seed reproduces any interleaving" for the client — it won't survive
 contact with the Go runtime. Split DST into tiers by how much determinism each layer can actually
@@ -138,7 +159,7 @@ care about.
 | `net.Conn` | SimTransport + `synctest` (Tier 3) | Mostly (time + quiescence) | Medium |
 | Syscall (source-translate) | gosim (§8a) | Full incl. interleavings | High — unmaintained, fights Bazel |
 | Syscall (userspace kernel) | **gVisor** | **None** — no determinism engine | High — vendor + fork a kernel |
-| Below the OS (hypervisor) | Antithesis | Full, language-agnostic, no code changes | $$$ (~$168k/yr) |
+| Below the OS (hypervisor) | Antithesis | Full, language-agnostic, no code changes | $$$ (~$100k+/yr, order-of-magnitude) |
 
 **gVisor was evaluated and rejected as a platform.** It is a *security sandbox*, not a deterministic
 hypervisor: the Sentry intercepts guest syscalls in userspace but multiplexes guest threads onto host
@@ -166,14 +187,14 @@ front.
 
 | Asset | What it gives | Reuse verbatim? |
 |---|---|---|
-| `chaos.StoreModel` + `Verify()` (`chaos/model.go`, `verify*.go`) | 13 store↔model invariants (counts, VALUE/COUNT/SUM/MIN-MAX_EVER/RANK/VERSION/VECTOR/BITMAP/TEXT). The DST **oracle**. Backend-agnostic. | **Yes** — keep as the invariant suite. |
+| `chaos.StoreModel` + `Verify()` (`chaos/model.go`, `verify*.go`) | 14 store↔model invariant families (counts, VALUE/COUNT/SUM/MIN-MAX_EVER/PERMUTED_MIN-MAX/RANK/MULTIDIMENSIONAL/VERSION/VECTOR/SPFresh/BITMAP/TEXT — `verify.go:158` numbers 1–13 plus the un-numbered SPFresh 11b). The DST **oracle**. Backend-agnostic. | **Yes** — keep as the invariant suite. |
 | `chaos` seed + failure-report discipline (`scenario.go`, PCG seed) | "violation at op N (seed=…)" → re-run with `--seed`. Exactly the Sim2 replay ergonomic. | **Yes** — extend. |
 | `chaos.RunRandom` single-goroutine driver (`random.go`) | already synchronous, one goroutine, sorts map keys (`sortedModelPKs`) | **Yes** — retarget at the sim backend. |
 | `chaos.RunConcurrent` (`concurrent.go`) | N goroutines, wall-clock pacing, snapshot-only verify | **No** — openly non-replayable; replace. |
 | SimTransport / `fault_test.go` (`wrongShardConn`, `dropReplyConn`, `simConn`, `frameIntercept`) | faithful frame-level BUGGIFY (FDB-C-maintainer ACK); drop/reorder/`More`-flip/inline-error already exist | **Yes** — the `Sim2Conn` analog for Tier 3. |
 | `DialFunc` + `WithDialFunc` (`transport/conn.go:144`, `client/options.go:44`) | production net.Conn factory seam; `net.Pipe()` plugs straight in | **Yes** — the client-network injection point. |
 | RFC-167 `exprConcreteHash` + `FuzzPlanner_Determinism`/`Confluence` subprocess nets | plan-selection total order + "same seed → same plan" oracle | **Yes** — the planning-determinism gate. |
-| Synchronous futures `newReadyFutureByteSlice` / `pendingFutureByteSlice` (`future.go:71,98`) | resolve with **no goroutine, no channel** | **Yes** — lets the sim backend stay single-goroutine. |
+| Synchronous futures `newReadyFutureByteSlice` / `pendingFutureByteSlice` (`pkg/fdbgo/fdb/future.go:71,98`) | resolve with **no goroutine** (the *pending* future is also channel-free; `newReadyFutureByteSlice` at :71 closes a channel). They're unexported, so SimFDB lives in a different package and can't call them. | **Pattern, not verbatim** — SimFDB writes its own ready-future type, as libfdbc did; the point is single-goroutine resolution. |
 
 **Genuinely missing** (the build list): a virtual `Clock`, a threaded seeded RNG source, a
 `Buggify(file,line,prob)` helper, the in-memory MVCC backend, true rollback, and — for the client
@@ -200,13 +221,17 @@ Port the shape of FDB's determinism primitives:
 Wire Clock+RNG into the **persisted-byte** sites first, because those leak nondeterminism into stored
 data and defeat replay:
 - Store header `LastUpdateTime` (`store.go:1447`, `store_builder.go:298,486`), lock-state timestamp
-  (`store.go:1596`), indexer heartbeat (`indexing_heartbeat.go:42,84`), lease TTLs
-  (`online_indexer.go:1625`).
+  (`store.go:1596`), indexer heartbeat (`indexing_heartbeat.go:42` createTimeMs, `:135` the persisted
+  `HeartbeatTimeMilliseconds`; note `:84` is a read-side staleness *comparison* — control-flow
+  nondeterminism, a different class, not a persisted byte), lease TTLs (`online_indexer.go:1625`).
 - R-tree node UUIDs (`rtree_types.go:27`, `crypto/rand` → written into keys — worst byte-determinism
   offender), HNSW sample keys (`hnsw.go:670`), indexer UUID (`indexing_heartbeat.go:40`), rebalancer
   nonce (`spfresh_rebalancer.go:46`), spfresh/build tokens (`spfresh_build.go:73`).
-- SQL `CURRENT_*`: the one seam `Session.StatementNow()` (`session.go:99-105`) — replace its
-  `time.Now()` fallback and every `CURRENT_TIMESTAMP`/`CURRENT_DATE` is deterministic.
+- SQL `CURRENT_*`: route both the `StatementTime` pinned by `BeginStatement` (`session.go:113`,
+  `time.Now().UTC()` — the *primary* in-statement time source) **and** the `Session.StatementNow()`
+  no-statement fallback (`session.go:101`) through the Clock; seaming only the fallback leaves the
+  primary live, so deterministic SQL time needs both. Then every `CURRENT_TIMESTAMP`/`CURRENT_DATE` is
+  deterministic.
 
 ### Tier 1 — SimFDB: deterministic in-memory MVCC backend (**the highest-leverage win**) [TRACK A — real DST]
 
@@ -214,13 +239,38 @@ A third `fdb.BackendDatabase` over a **sorted** in-memory keyspace (btree/sorted
 `map`). Wired in via `NewFDBDatabaseWithBackend`. Requirements, in fidelity-risk order:
 
 1. **SSI conflict detection** over read/write conflict ranges (`AddReadConflictRange` etc.,
-   `interfaces.go:95-98`, plus the implicit read-conflict every `Get`/`GetRange` adds) resolved
-   against commit-version ordering → `not_committed (1020)`. **Highest risk**: get this wrong and the
-   layer's retry/idempotency paths — the whole point of DST — are validated against a false model.
+   `interfaces.go:95-98`). **Highest risk** — a loose rule produces false greens on the exact
+   retry/idempotency class DST exists to catch, so state it precisely: a read conflict range read at
+   the transaction's **read version RV** conflicts iff some committed write to that range has commit
+   version **strictly greater than RV** → `not_committed (1020)`. Note the exact shape: strict `>`, and
+   RV-vs-the-conflicting-write's-**commit**-version — *not* commit-vs-commit; get the direction (`>=`
+   vs `>`) or the operands wrong and every boundary case flips (cf. C++ `SkipList.cpp` `CheckMax`,
+   `Resolver.actor.cpp`). A read version below the 5s MVCC window (`commitVersion − 5,000,000`) yields
+   `transaction_too_old (1007)` instead — a **distinct, earlier** verdict that never fires for
+   write-only transactions, and which a too-old transaction resolves by applying **no** mutations and
+   consuming no version. Every mutation auto-adds a write conflict range **unless**
+   `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` is set (the versionstamp path uses it). The implicit
+   read-conflict that `Get`/`GetRange` add covers **most** reads, not all — SimFDB reimplements the
+   whole `WritableTransaction` surface, so replicating the exclusions is its responsibility, not free:
+   snapshot reads add none (`transaction.go:499-602`), `\xff\xff` special keys add none (`:756-762`), a
+   read already satisfied by the tx's own write adds none (RYW filter, `:1130-1146`), and `GetRange`
+   clamps its read conflict to the data actually returned, not the requested span (`rangeConflictExtent`,
+   `:1148-1172`). **Serialize commits** (assign each one monotonic version, resolve one at a time) to
+   sidestep the C++ batch/`MiniConflictSet` intra-batch path — strictly simpler, still faithful. This
+   is the claim to pin against the existing conflict-outcome differential (Tier 1 differential note, §8).
 2. **Deterministic versions**: a monotonic logical counter → read version, commit version, and the
-   12-byte versionstamp (10-byte tx version + 2-byte user version; overwrite the `0xFF×10` placeholder
-   at commit — `fdb/tuple/tuple.go:124-147`). Need not match a real cluster (store is isolated) but
-   must be monotonic and correctly stamped; the record layer stores versions inline at `pk + -1` and
+   12-byte versionstamp (10-byte tx version + 2-byte user version). The `0xFF×10` placeholder layout is
+   at `pkg/fdbgo/fdb/tuple/tuple.go:129-141`, but the **overwrite is not in the tuple codec** — in real
+   FDB it is **server-side** (`transformVersionstampMutation`, C++ `Atomic.h`, invoked by the commit
+   proxy); the pure-Go client only appends the 4-byte offset (`PackWithVersionstamp`) and reads the
+   stamped value back from the commit reply (`transaction.go:2216-2233`). So SimFDB **plays the server
+   role**: at commit it overwrites the placeholder with the 8-byte commit version + 2-byte batch order,
+   strips exactly the 4 trailing offset bytes (apiVersion ≥ 520), and flips the mutation to a plain
+   `SetValue`; the batch order stamped into the key MUST equal the value returned from `GetVersionstamp`
+   (trivially 0 for one-txn-per-commit). Versions need not match a real cluster (store is isolated) but
+   must be monotonic and correctly stamped; the record layer stores versions inline at `pk + -1`, gated
+   on format version ≥ 6 (`recordVersionSuffix=-1` `constants.go:52-55`,
+   `formatVersionSaveVersionWithRecord=6` `store.go:33`; also gated by `omitUnsplitRecordSuffix`), and
    asserts ordering. Read-version/versionstamp are **backend-owned** — the record layer already defers
    entirely (`database.go:350,861`), so this is clean to introduce.
 3. **RYW mutation buffer + full atomic-op merge set** (`Add`/`Min`/`Max`/`And`/`Or`/`Xor`/`ByteMin`/
@@ -228,26 +278,76 @@ A third `fdb.BackendDatabase` over a **sorted** in-memory keyspace (btree/sorted
    `transaction.go:244-314`). Non-idempotent `Add` under a simulated `1021` retry is precisely the
    bug class DST must catch.
 4. **True rollback** on conflict — fixes the `chaos/fault.go:27` limitation for free.
-5. **The 5s window + `100KB` value / `10MB` tx / `~10KB` key limits** → `1007`/`2101`/`2103`, so
-   split-record and continuation boundaries fire where a real cluster's would.
-6. **Synchronous ready-futures** (reuse `future.go:71,98`) — zero goroutines.
+5. **The 5s window + `100KB` value / `10MB` tx / `~10KB` key limits** → four verdicts, one per limit:
+   5s MVCC window → `transaction_too_old (1007)`; `100KB` value → `value_too_large (2103)`; `10MB` tx →
+   `transaction_too_large (2101)`; `~10KB` key → `key_too_large (2102)` (`transaction.go:1651` — the
+   earlier draft dropped 2102; omitting the guard is a false-green on index-entry-size regressions).
+   What the layer depends on is the **retryable-vs-terminal classification** (1007 retryable;
+   2101/2102/2103 terminal — `fdb/error.go:436-456`, mirrored in `runner.go:243-256`), not byte-exact
+   accounting — so the size guards are ~3-line constant-threshold checks kept as **regression
+   sentinels** (an over-limit online-indexer / delete-where batch would otherwise pass silently in
+   SimFDB while failing on a real cluster). Modeling these codes governs the **error paths**, *not* the
+   firing of split-record/continuation **boundaries** — those are record-layer computations
+   (`splitRecordSize=100_000`, proactive in `saveWithSplit` so 2103 is unreachable on the happy path;
+   `ExecuteProperties` scan limiters, `text_cursor.go:85-106`) that fire regardless of the backend. The
+   5s window is **server-authoritative** (the purego client enforces no client-side wall clock —
+   `grv.go:182-185`), so it lives in SimFDB (the backend): model it as a fixed logical-version knob
+   (default `5,000,000` = `MAX_WRITE_TRANSACTION_LIFE_VERSIONS`) evaluated as pure version arithmetic
+   *before* the conflict check; in v1 do **not** GC the history (retaining it is strictly *safer* —
+   SimFDB always proves conflict exactly, never a false "committed") and inject 1007/1009/1021 at
+   seed-chosen points via BUGGIFY (req #7) rather than building a real MVCC-GC clock. (A client
+   `SetTimeout` deadline surfaces as `transaction_timed_out (1031)`, a different "5s" code SimFDB need
+   not model for continuation correctness.)
+6. **Synchronous ready-futures** — zero goroutines. Reuse the *pattern* of `pkg/fdbgo/fdb/future.go:71,98`
+   (the pending future is channel-free too), but those types are unexported, so SimFDB writes its own in
+   its package, as libfdbc did.
 7. **BUGGIFY commit points**: inject `1021`/`1020`/`1007` at seed-chosen commits.
 
-Deferrable to v2: watches (concurrent long-poll, off the interface per RFC-109 — model as synchronous
-callbacks fired at the committing mutation), `GetEstimatedRangeSizeBytes`/`GetRangeSplitPoints`
-(trivial estimates), locality.
+Deferrable to v2 — **watches** deferral is *free* (Watch is off the `BackendDatabase`/`ReadTransaction`/
+`WritableTransaction` interfaces per RFC-109, concrete-only on the pure-Go `Transaction`, and the
+record/relational core uses **zero** watches, so a v1 SimFDB omits the method entirely with no coverage
+loss). When built, the correct v2 model is a callback that fires when a *later* commit changes the
+watched key to a value **different from the one pinned at the watch's read version**, armed at the
+creating transaction's **committed** version (RFC-170) — *not* "fired at the committing mutation," which
+would self-fire a txn's own `Set` and produce false wakeups; add `MAX_WATCHES`/`too_many_watches (1032)`
+slot-accounting + permitted spurious fires only for a v2 that itself targets watch-limit behavior. Also
+deferrable: `GetEstimatedRangeSizeBytes`/`GetRangeSplitPoints` (trivial estimates) and locality
+**fidelity** — but note the interface method `LocalityGetBoundaryKeys()` must still *exist* (a trivial
+whole-keyspace-as-one-shard stub suffices unless v1 exercises MUTUAL indexing or range-split
+parallelism; real shard boundaries are the deferrable part — cf. §2's load-bearing caveat).
 
 **Payoff:** the *entire record + relational stack runs single-goroutine, no cluster, no Docker,
 seed-reproducible.* Validate against `chaos.StoreModel.Verify` and the existing
-`libfdbc/differential_test.go` shapes. **Oracle to add** (see §8b): alongside `Verify()`'s
-invariants, run an **Elle-style linearizability/isolation check** over the committed history — it
-catches consistency-anomaly bugs (dirty reads, lost updates, G2 anti-dependency cycles) that an
-invariant-only oracle can miss.
+`libfdbc/differential_test.go` shapes.
+
+**Differential note (Tier 1 — co-develop with the SSI detector, don't defer):** `Verify()` is
+store-vs-model (`chaos/model.go:18-21`) and **cannot** self-catch a SimFDB conflict-semantics
+divergence — a systematic under- or over-conflict is a false green. So the SSI detector (item 1) ships
+*with* its own oracle: point the existing two-backend commit/abort-agreement harness
+(`FuzzDifferential_ConflictOutcome`, `bench/differential_conflict_outcome_fuzz_test.go`) and a
+masked-byte-parity diff (mask the inline `pk+-1` version + versionstamps, run serial-from-empty) at
+SimFDB-vs-real as its red/green oracle. This is nearly free (the harness exists — §8) and is the only
+check that catches both conflict directions. The full seeded-workload replay stays in Tier 2.
+
+**Oracle to add** (see §8b): alongside `Verify()`'s invariants, run an **Elle-style
+linearizability/isolation check** over the committed history — it catches consistency-anomaly bugs
+(dirty reads, lost updates, G2 anti-dependency cycles) that an invariant-only oracle can miss (it
+catches under-conflict only when the anomaly is sampled, so it complements — not replaces — the
+differential).
 
 ### Tier 2 — deterministic workload drivers + replay harness [TRACK A — real DST]
 
-- **Record layer:** retarget `chaos.RunRandom` + `Verify()` at SimFDB under one seed. Subsumes all of
-  `Scenario`/`RunRandom` and gains true rollback + version determinism.
+- **Record layer:** retarget `chaos.RunRandom` + `Verify()` at SimFDB under one seed for the
+  single-transaction paths (gains true rollback + version determinism, subsuming `Scenario`/`RunRandom`;
+  widen the driver plumbing `NewScenario`/`RunRandom` from concrete `fdb.Database` to
+  `fdb.BackendDatabase` first). **But `RunRandom` is serial and fakes conflicts** as
+  double-commit-then-re-execute (`fault.go:24-29`), so retargeting it *unchanged* fires **zero** real
+  SSI conflicts — Tier 1 item 1 would be an unexercised checkbox (violates NO-FAKE-CHECKBOXES). So Tier
+  2 also adds an explicit **concurrent-open-transaction interleaving driver**: hold several transactions
+  open, interleave their ops in one goroutine, commit through the serialized resolver. *This* is what
+  makes `1020` and non-idempotent-`Add`-under-`1021` actually fire. Its hard prerequisite is MVCC
+  **reads-at-read-version** (a latest-value map returns writes the reader must not see, corrupting both
+  results and the conflict model) — non-stubbable per Tier 1 item 5.
 - **SQL:** replace the goroutine-based stress driver (`stress_test.go:138-151`, `go func`+`WaitGroup`,
   wall-clock pacing) with a **serial** seed-reproducible SQL workload generator. Execution is already
   deterministic-by-construction (single-goroutine pull cursors, no rand — `executor.go`), so this is
@@ -261,13 +361,18 @@ invariant-only oracle can miss.
 
 For the pure-Go client's *own* concurrency (recovery, hedging, failure monitor, GRV): the dominant
 nondeterminism is **time-driven** ("did the failure detector fire before the hedge timer?"), spread
-over ~51 `time.*` sites with no clock seam, plus timer-vs-reply `select` races
+over ~70 `time.*` sites with no clock seam (77 across `pkg/fdbgo`; the "~51" of an earlier count
+excludes the 26 `time.Since` duration sites), plus timer-vs-reply `select` races
 (`conn.go:900`, `hedge.go:149`, `rpc.go:54`).
 
 Approach — keep the multi-goroutine architecture, control the boundaries:
 - Run inside a **`synctest` bubble** → fake clock makes all backoff/timeout/hedge/failure-window
   behavior deterministic, and `synctest.Wait()` steps the client to a stable state after each injected
-  fault (no sleeps, no polling).
+  fault (no sleeps, no polling). The bubble controls *time*, not *RNG or I/O* — so a bit-reproducible
+  run has two **hard preconditions** the net seam alone doesn't cover: seed the client's `crypto/rand`
+  (`transport/conn.go:1049,1074`) and global `math/rand/v2` (`loadbalance.go:145`) first, and add the
+  no-real-net/syscall guard (§3), since a stray real call silently breaks determinism rather than
+  panicking.
 - Behind `DialFunc`, a **deterministic in-memory `net.Conn`** (the `Sim2Conn` analog; SimTransport's
   `simConn`/`frameIntercept` already does drop/reorder/rewrite) feeding **simulated FDB server
   processes** as deterministic state machines: coordinator (`OpenDatabaseCoordRequest` → ClientDBInfo),
@@ -310,11 +415,15 @@ prove real and frequent.
 
 1. **Tier 0** — `Clock` + seeded `rand.Source` + `Buggify`; wire into persisted-byte sites +
    `Session.StatementNow`. (Unlocks byte-reproducibility; small, mechanical, high value.)
-2. **Tier 1** — SimFDB minimal: sorted store, logical versions/versionstamps, RYW+atomics,
-   SSI conflicts, 5s window/limits, ready-futures, commit BUGGIFY. Validate vs `Verify()` + differential
-   tests. (**The keystone.**)
-3. **Tier 2** — retarget `RunRandom`+`Verify` at SimFDB; serial SQL workload driver; continuation-
-   under-fault replay. (Where bug-hunting starts paying.)
+2. **Tier 1** — SimFDB minimal: sorted store, logical versions/versionstamps (server-role stamping),
+   RYW+atomics, SSI conflicts (strict RV-vs-commit-version `>` rule + distinct `1007`), 5s window +
+   all-three size codes (2101/2102/2103), ready-futures, commit BUGGIFY. Validate vs `Verify()` **and**
+   the conflict-outcome differential co-developed as the SSI detector's red/green oracle (`Verify()`
+   can't self-catch a conflict-semantics divergence). (**The keystone.**)
+3. **Tier 2** — retarget `RunRandom`+`Verify` at SimFDB for single-tx paths **plus** a
+   concurrent-open-transaction interleaving driver (the thing that actually fires SSI `1020` /
+   non-idempotent-`Add`-under-`1021`; `RunRandom` is serial and fakes conflicts); serial SQL workload
+   driver; continuation-under-fault replay. (Where bug-hunting starts paying.)
 4. **Tier 3 [TRACK B — separate RFC / extends RFC-118, not this deliverable]** — SimTransport +
    simulated server processes under `synctest`; thread client Clock/RNG. (Largest build; do only if
    client-layer bugs justify it, and ship under its own RFC with the "not full DST" caveat.)
@@ -331,8 +440,20 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
 - **Fidelity of SimFDB is the whole ballgame.** MVCC read-version monotonicity, SSI conflict
   semantics, and versionstamp byte layout must match real FDB or `Verify()` produces false greens on
   the exact retry/idempotency class DST exists to catch. Same "C++ is the spec" bar the real client is
-  held to. Mitigate with a differential mode: run the same seeded workload against SimFDB *and* a real
-  container, diff observable results.
+  held to. Mitigate with a **differential** — and note `Verify()` **cannot** self-catch this:
+  `chaos.StoreModel` is a shadow driven by the same op stream (`model.go:18-21`), so it checks
+  SimFDB-vs-model, never SimFDB-vs-real; a systematic conflict-detect divergence (under- *or*
+  over-conflict) is a false green, and the Elle oracle catches under-conflict only when the anomaly is
+  sampled. The two-backend harness is **not net-new** — `libfdbc/differential_test.go` already drives
+  two `BackendDatabase`s against one container and diffs persisted bytes/cross-reads, and
+  `FuzzDifferential_ConflictOutcome` (`bench/differential_conflict_outcome_fuzz_test.go`) is already the
+  exact commit/abort-agreement oracle (it caught the RFC-121 conflict-set bugs). SimFDB is a third
+  backend into that fixture. So the targeted conflict-outcome + masked-byte-parity slice is
+  **co-developed with the SSI detector in Tier 1** as its red/green oracle; the full seeded-workload
+  replay is **Tier 2** (needs the Tier-2 drivers, Docker in the loop, and version-byte masking —
+  SimFDB's isolated version domain breaks the read-version pinning the existing differentials use, so
+  it runs serial-from-empty with all version bytes masked, and fault-injected runs can only be diffed
+  fault-free).
 - **Residual planning nondeterminism** (RFC-167 Phases 1b/2/4 unlanded — Map/Filter/Distinct shells,
   intersection ordering, `physical_fetch_from_partial_record_wrapper.go:169` Fetch-only guard) is
   *masked* by the tie-break, not removed. Gate with the existing subprocess determinism nets, not
@@ -407,7 +528,7 @@ is *intercept as high as you can while still covering the code you care about* (
 | **gVisor** | ② | Userspace kernel at syscall boundary | **No** (§3a) — a *sandbox*, no determinism engine; strictly dominated. `netstack` a minor optional component. |
 | **Hermit (Meta)** | ② | "Deterministic gVisor done right" — ptrace/Reverie, purpose-built for determinism, chaos + replay, OSS | **No** — "no longer active development, maintenance mode"; long tail of unsupported syscalls; needs fixed FS + no net; Go runtime is a known-hard case. Same failure mode as gosim. |
 | **rr + Delve** (`dlv replay`) | ② | Record/replay + reverse-debug, **free, today** | **Adopt as Tier −1** — a *debugger*, not DST. Reproduces captured flakes; no seeded exploration / fault injection. |
-| **Antithesis** | ② (hypervisor) | FDB-grade DST on unmodified Docker images, autonomous exploration, time-travel; the **only ② tool that beats Go's runtime** (runs below it) | **The "buy" option** for Tier 3 (see §5 Tier 3). Budget-gated (~$168k+/yr); ship container images. Productized Sim2 by the FDB founders. |
+| **Antithesis** | ② (hypervisor) | FDB-grade DST on unmodified Docker images, autonomous exploration, time-travel; the **only ② tool that beats Go's runtime** (runs below it) | **The "buy" option** for Tier 3 (see §5 Tier 3). Budget-gated: **~$100k+/yr** is an order-of-magnitude marker (a derived ~24-core figure, not a headline quote; public list is ~$0.80/core-hr), not a blocker on the product's health — it is very much alive ($105M Series A, Dec 2025). Ship container images. Productized Sim2 by the FDB founders. |
 | **State-machine modeling + property testing** | ①/③ | Design the concurrency out: seeded single-goroutine state machines + invariant checks | **Already our direction** — `chaos.StoreModel`+`Verify()` *is* this; SimFDB extends it. Validated by Polar Signals' Go→Rust pivot to exactly this. |
 | **Jepsen / Elle** | ③ | Distributed chaos + **linearizability/isolation checking** | **Cherry-pick Elle** as an added SimFDB oracle (§5 Tier 1). Jepsen-the-harness is non-deterministic (we already have that shape via testcontainers + chaos). |
 | **TLA+** | ③ | Model-check the *protocol* (SSI conflict, versionstamp ordering) | **Optional, high-value** for the trickiest invariants. FDB ships TLA+ specs. Verifies design, not the Go code. |
@@ -420,10 +541,28 @@ tool that delivers (Antithesis) delivers by being a paid hypervisor you don't bu
 oracles you complement with, not runtimes you build on. So: **seam high (SimFDB), complement with ③
 oracles (Elle, TLA+), and hold Antithesis as the Tier-3 buy-option.**
 
-## 9. Open questions
+## 9. Resolved decisions (were open questions)
 
-1. Build-tag `//go:build simfdb` third backend variant, or a plain runtime constructor passed to
-   `NewFDBDatabaseWithBackend`? (Latter avoids a build matrix; former matches `open_libfdbc.go`.)
-2. Is a differential SimFDB-vs-real mode worth building in Tier 1, or defer to Tier 2?
-3. How faithful must the 5s-window/size-limit modeling be in v1 vs. stubbed?
-4. Watches in v1 or v2? (Core save/load/query/index doesn't need them.)
+Each resolved against the C++/Java/Go sources; one-line rationale here, detail at the cited section.
+
+1. **Backend wiring → plain runtime constructor, no build tag.** Construct SimFDB in test/harness code
+   and pass it to `NewFDBDatabaseWithBackend(simBackend)` (the proven seam, `database.go:147`); do
+   *not* add `//go:build simfdb`, and do *not* add it to `fdbclient.Open()`. The build-tag switch
+   exists only to gate **CGo linkage** and libfdb_c's once-per-process unrecoverable network thread —
+   SimFDB is pure Go with neither property, so a tag would copy the form without the justification, at
+   zero benefit, and would stop one test binary from running both real-FDB and SimFDB (which the Tier 1
+   differential needs). (§2)
+2. **Differential in Tier 1 *and* Tier 2 — split, not either/or.** The targeted conflict-outcome +
+   masked-byte-parity differential is **co-developed with the SSI detector in Tier 1** as its red/green
+   oracle (the invariant/Elle oracle is structurally blind to conflict-semantics divergence, and the
+   two-backend harness already exists); the full seeded-workload replay is **Tier 2** (needs the Tier-2
+   drivers + Docker + version masking). (§8, Tier 1)
+3. **5s-window/size-limits → per-limit fidelity, not one knob.** SSI/1020 is HIGH-fidelity and
+   non-stubbable; the 5s window is a fixed logical-version knob (no real GC in v1, inject 1007/1009/1021
+   via BUGGIFY); the three size limits are ~3-line constant guards kept as regression sentinels — and
+   **all three codes ship** (2101/2102/2103; the earlier draft dropped `key_too_large 2102`). MVCC
+   reads-at-read-version is the one hard non-stubbable requirement. (Tier 1 item 5)
+4. **Watches → v2, and deferral is free.** Watch is off the `BackendDatabase` interface (RFC-109) and
+   the record/relational core uses zero watches, so a v1 SimFDB omits the method entirely with no
+   coverage loss; the v2 model is fire-on-value-**change** armed at the committed version (RFC-170), not
+   "fired at the committing mutation." (Tier 1 deferrable)
