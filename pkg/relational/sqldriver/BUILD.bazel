@@ -237,6 +237,7 @@ go_test(
         "rows_affected_probe_test.go",
         "scalar_math_probe_test.go",
         "scalar_subq_correlated_card_test.go",
+        "scalar_subq_ordinal_seed_fdb_test.go",
         "scalar_subq_overflow_probe_test.go",
         "scalar_subquery_correlation_probe_test.go",
         "scalar_subquery_cte_test.go",
