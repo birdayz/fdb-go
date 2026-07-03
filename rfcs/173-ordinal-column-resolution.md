@@ -770,8 +770,10 @@ under the resolution model with targeted, revert-proof pins**, not by dark diffe
 The owner's hard constraint: extensions must keep working and be architecturally sound. Two have
 **no Java reference** — porting Java faithfully does not cover them; we design them soundly.
 
-- **RFC-142 multi-source lateral `UNNEST`** (`FROM t, t.arr AS x`) — **no Java analog.** Java's
-  SQL has no lateral array unnest that participates in inner-join re-enumeration, so nothing in
+- **RFC-142 multi-source lateral `UNNEST`** (`FROM A, B, A.arr AS x`) — **no Java analog** (this is
+  the W5 case; the *single-source* `FROM t, t.arr AS x` lowering DOES have a Java analog —
+  `LogicalOperator.generateCorrelatedFieldAccess` — and is ported by W4c, see that section). Java's
+  SQL has no lateral array unnest that participates in inner-join **re-enumeration**, so nothing in
   Java's ordinal model was ever required to keep an unprojected lateral-source array column live
   across a re-enumeration merge or to stop a bipartition stranding an `Explode` from its buried
   source. Today the name model recovers the source from a dotted `'A.ARR'` prefix
@@ -1295,3 +1297,136 @@ and aggregate scalars ordinalize; join and computed scalars stay name-model. Pro
 the InnerAlias/inner-leg aliasing so that join-inner AND computed-scalar correlated subqueries can
 ordinalize — S4 cannot land while any correlated-scalar shape still depends on name-model. Recorded
 here as an S4 blocker.
+
+---
+
+## W4c — Single-source lateral UNNEST ordinal seed (design for Graefe ACK; PROPOSED, pre-impl)
+
+The third W4 per-item PR (after W4-LEFT #458 and W4b #460/#461). Ordinalizes the single-source
+lateral-unnest seed (`FROM t, t.arr AS x [AT ord]`) so it survives the S4 name-model deletion.
+Multi-source unnest (`FROM A, B, A.arr AS x`) stays name-model — that is **W5**.
+
+### PREMISE CORRECTION (verified against Java source, tag 4.12.11.0)
+**The RFC's "RFC-142 multi-source lateral UNNEST — no Java analog" (§ line 773) and the S3-staging
+framing of single-source unnest as a Go-only read-side extension are WRONG for the single-source
+case.** Java implements `FROM t, t.arr AS x [AT ord]` in `LogicalOperator.generateCorrelatedFieldAccess`
+(`LogicalOperator.java:306-355`), reached from `generateAccess` → `resolveCorrelatedIdentifier`
+(:217-224), guarded to require an ARRAY-typed column (:309-311) and supporting the AT/ordinality
+alias. **⇒ W4c is a genuine Java parity port of the ordinal FORMS**, not an extension riding along.
+(W5's *multi-source* bipartition rewrite remains genuinely Go-only — Java has no lateral unnest that
+participates in inner-join *re-enumeration*. The "no Java analog" note is correct for W5, wrong for
+W4c.)
+
+### Java's three-way branch (the ordinal-form spec)
+`generateCorrelatedFieldAccess` (`LogicalOperator.java:318-331`) dispatches by the element shape:
+1. **AT / WITH ORDINALITY** → `element = FieldValue.ofOrdinalNumber(flowedObjectValue, 0)`,
+   `ordinal = ofOrdinalNumber(flowedObjectValue, 1)` over the 2-field `{element, INT}` record.
+2. **primitive/scalar element** → reference `flowedObjectValue` (the whole QOV) **DIRECTLY** — no
+   `ofOrdinalNumber`. `ofOrdinalNumber` on a scalar THROWS `FIELD_ACCESS_INPUT_NON_RECORD_TYPE`
+   (`FieldValue.java:278`); Go's `NewFieldValueOfOrdinal` enforces the identical guard
+   (`values.go:972-975`). The scalar IS the column — you cannot take an ordinal field of it.
+3. **record element (no ordinality)** → `convertToExpressions` = `ofOrdinalNumber` per element field
+   (field flattening). *Diverged from — see the struct question below.*
+
+Go's Explode matches Java's flow (`explode.go:89` / `ExplodeExpression.java:113`,
+`RecordQueryExplodePlan.java:141-145`): bare scalar without ordinality, `{_0,_1}` record with —
+confirmed in the executor (`executor.go:3054` bare element; `:3064` `{_0:elem,_1:ord}` map keyed by
+`OrdinalFieldName`).
+
+### PROPOSED ruling
+1. **Outer leg** (single-source `t`; gate `clusterArity(j.Left)==1`): ordinalize →
+   `ofOrdinal(QOV(outer, ordinalLegType(outer)), i)` per column, exactly as W4b/W4-LEFT. A
+   multi-source outer DECLINES to the name-model builder (`buildUnnestResultValue`) — that path is
+   W5.
+2. **WITH ORDINALITY inner**: bake `element = ofOrdinal(QOV(inner, ExplodeOrdinalityResultType(elementType)), 0)`
+   and `ordinal = ofOrdinal(…, 1)`, replacing the S4-dying lazy `NewOrdinalFieldValue`. All fields
+   baked → this half is a pristine ordinal seed and RUNS `AssertOrdinalJoinSeed`. **ZERO executor
+   change**: the Explode already flows `Datum=map{_0:elem,_1:ord}`, which `adaptLegPositional`
+   (`rfc173_ordinal_join.go:440-447`) matches by name (`matched=2`, never trips the `:448`
+   zero-match guard). RC field **NAMES** are set to the user AS/AT aliases (`X`/`ORD`), NOT `_0`/`_1`
+   (else `SELECT x` reports a column named `_0` — W4b precedent, `w4b_scalar_seed.go:68-71`).
+3. **WITHOUT ORDINALITY inner** (bare scalar OR struct element): reference the element **DIRECTLY**
+   as `NewQuantifiedObjectValueOfType(innerCorr, elementType)` — Java's primitive branch (branch 2).
+   The result value is a **MIXED RC** (baked outer ofOrdinal run + a direct-QOV element field). See
+   the struct question for why this covers struct elements too.
+4. **Executor change (S4-PERMANENT — the one non-translator delta)**: the ordinal-birth binder
+   raw-binds a bare-QOV leg. When a leg is referenced by a BARE QuantifiedObjectValue (not a
+   FrontierPinned baked FieldValue) and its `QueryResult` carries a non-record/non-positional Datum
+   (the RFC-142 bare-scalar element), bind that leg's **RAW Datum** instead of adapting it to an
+   OrdinalRow (`bindLeg`/`legRows`/`birthLegBinder`, `rfc173_ordinal_join.go:846-869` — **NOT**
+   `adaptLegPositional`, which dies at S4). Then `evaluateOrdinalJoinRow` evaluates `QOV(inner)`
+   against the raw scalar and writes it into the positional slot. **Verified necessary by spike**:
+   today the mixed RC's element positional slot births as an *empty* `PositionalRow` (birth
+   force-adapts a nil-legType scalar leg via `adaptLegPositional`), correct ONLY through the
+   coexistence Datum (`flat_map_cursor.go:300-306`) — so it is right today but **broken at S4** when
+   the positional row becomes the sole authority. The raw-bind mirrors the existing name-model inner
+   bind (`flat_map_cursor.go:317-325`) and the pushdown-WHERE bare-scalar arm
+   (`executor_new_plans.go:413-428`) — an established pattern, not a new one. The leg-binding map
+   value widens from `values.OrdinalRow` to `any` (or a parallel raw-leg map); the record-leg path
+   and `widenLegTypesFromPlan`'s divergence assertions must stay intact.
+5. **`AssertOrdinalJoinSeed` scope**: called ONLY on the all-baked WITH-ORDINALITY seed. The mixed
+   no-AT RC has a bare-QOV field that fails the frontier-pin check (`ordinal_join_seed.go:31`), so
+   the assert is WITH-ORDINALITY-conditional (diverging from W4b, which always asserts) — compensate
+   with a dedicated white-box seed-shape pin so the lost tripwire is replaced.
+6. **Metadata**: `deriveColumnsFromFlatMap` (`cascades_generator.go:2773`) keys the unnest arm on
+   `rc.AnchoredJoin`; the non-anchored ordinal/mixed seed exits into the projected-fold arm — re-route
+   so the element reports `elementType` (named by the AS alias) and the ordinal reports `INT NOT NULL`
+   (named by the AT alias), not the leg-type `fv.Field`.
+7. **Qualified `x.x` / `x.ord`**: the one-field-per-column ordinal shape forbids the name model's
+   dotted-duplicate keys; resolve the bare form via the inner QOV correlation and stamp a virtual
+   inner-leg source name (the AS alias) for the qualified form.
+
+### OPEN QUESTION for Graefe — a principled + ANSI divergence from Java (per the "not-only-Java when it's principles-first and ANSI-needed" directive)
+The **struct-array element** (`t.arr` of rows), no ordinality: Java's branch 3 **FLATTENS** the
+struct's fields into separate ordinal columns (`convertToExpressions`); Go today binds the **WHOLE
+struct** as one element (`unnestArrayElementType` returns `UnknownType`; `SELECT x` = the row,
+`x.field` resolves by name — mirroring Postgres / the ANSI whole-composite binding). **PROPOSAL:
+keep Go's whole-object behavior** — extend branch 2 (direct QOV) to struct elements, deliberately
+NOT porting branch 3's flattening. Rationale: (a) preserves Go's current read surface (no RFC-142
+row-pin churn); (b) matches common-SQL/ANSI whole-composite `UNNEST` binding; (c) the direct-QOV +
+raw-bind executor path already carries a struct Datum (a `map`) verbatim, so it costs nothing extra.
+This is the one place W4c is *not* a 1:1 Java port. **Graefe to rule ACK/NAK** on the divergence
+(and whether struct-element field-flattening is instead a separate future item).
+
+### Considered & rejected (the bare-scalar-element crux)
+- **Gate no-AT to name-model** (zero executor change): rejected — defers the COMMON `FROM t, t.arr
+  AS x` to S4 with **no representational blocker** (Java shows the clean direct-QOV form; the
+  executor already raw-binds the scalar on the name-model path). Unlike W4b's join-inner (a genuine
+  two-divergent-typed-QOVs-for-one-alias blocker), this is the CLAUDE.md-forbidden punt on the
+  majority unnest shape.
+- **Synthesized 1-field `{element}` record + `adaptLegPositional` slot-0 arm**: rejected — a TYPE
+  FICTION (the Explode flows a bare scalar, not a record) contradicting both Java and Go's own
+  `NewFieldValueOfOrdinal` guard, resting on the fragile "a non-map width-1 Datum is uniquely the
+  unnest element" assumption (which **breaks struct-array elements** — a struct Datum IS a map), and
+  bolted onto the S4-dying `adaptLegPositional`.
+- **Change Explode to flow a `{_0:element}` record**: rejected — diverges from Java's Explode (bare
+  scalar flow), and perturbs the name-model dual, the §5 oracle window, `rewriteUnnestPredicate`'s
+  non-ordinality arm, and the RFC-142 revert-proof row pins during the coexistence window.
+
+### Gates & pins
+- Single-source gate `clusterArity(j.Left)==1` at the `buildUnnestResultValue` call site
+  (`cascades_translator.go:1178`); multi-source → name-model (W5), pinned.
+- White-box seed-shape pins: with-ordinality single-source → all-baked ordinal seed (no
+  AnchoredJoin, passes AssertOrdinalJoinSeed); no-AT single-source → mixed RC (baked outer +
+  direct-QOV element, no AnchoredJoin); multi-source → name-model AnchoredJoin.
+- **Positional-authority pin (MANDATORY)**: flip `DisablePositionalEmission` and assert the element
+  row-for-row — the spike proved the coexistence Datum MASKS the broken positional slot, so a
+  Datum-only (S3) row assertion would ship the S4-critical raw-bind fix unverified.
+- e2e (extend `array_unnest_ordinality_fdb_test.go`): scalar-array + struct-array non-ordinality;
+  WITH ORDINALITY element+ordinal; empty array → no rows; qualified `x.x` / `x.ord`; the existing
+  collision/shadow cases (`AS v` shadows a real `VAL`; `FROM t, t.arr AS v, u`) stay green.
+- RFC-142's 16 revert-proof pins + the row-content differential survive unchanged.
+
+### S4 impact
+**NONE deferred.** The seed is fully S4-safe: outer + with-ordinality inner baked `ofOrdinal`; the
+no-AT element a direct QOV (orthogonal to what S4 deletes — no `_N` emulation, no `AnchoredJoin`
+marker) bound raw on the positional (S4-surviving) side by the birth-binder change. S4 inherits a
+fully-ordinal, correct single-source lateral unnest. (Contrast W4b, which DID leave join-inner /
+computed-scalar as S4 blockers.) Bonus: the raw-bind converges `datumFromPositional(pos)` with the
+name Datum for the scalar case, letting the bare-QOV Datum-override (`flat_map_cursor.go:291-308`)
+eventually be deleted at S4 — a simplification, not new scaffolding.
+
+### Gates (process)
+Query-engine change → **Graefe ACK on THIS ruling** (especially: the struct-element divergence Q;
+the S4-permanent birth-binder raw-leg change vs the conservative gate) **before any impl**, then the
+full four-gate round (Graefe/Torvalds/codex/@claude) on the implementation.
