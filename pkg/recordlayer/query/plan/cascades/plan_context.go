@@ -68,7 +68,17 @@ type PlannerConfiguration struct {
 // DefaultPlannerConfiguration mirrors Java's
 // `RecordQueryPlannerConfiguration.defaultPlannerConfiguration()`.
 func DefaultPlannerConfiguration() PlannerConfiguration {
-	return PlannerConfiguration{}
+	return PlannerConfiguration{
+		// Java defaults deferCrossProducts ON (RecordQueryPlannerConfiguration:
+		// the DONT_DEFER_CROSS_PRODUCTS flag is unset by default): a select
+		// whose quantifier graph has >1 independent components partitions only
+		// along component boundaries — the unavoidable cross products — and
+		// the components then partition normally inside. With this OFF the
+		// PartitionSelectRule gate at its call site is dead code and a fully
+		// disconnected N-ary select (`FROM a, b, c`) enumerates every
+		// bipartition of a pure cross product.
+		ShouldDeferCrossProducts: true,
+	}
 }
 
 // MatchCandidate represents a scan candidate — typically a secondary

@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"fmt"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -132,24 +130,13 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 				// wrong-model merge (a decline is equally forbidden — it
 				// changes plan shapes).
 				//
-				// The assert fires ONLY for SelectExpression children: only a
-				// child SELECT's quantifiers get SPLICED into the parent
-				// (leg flattening — the hazard). A LogicalFilterExpression
-				// child merely dissolves (its predicates pull up and the
-				// parent quantifier re-ranges over the filter's input — the
-				// ordinal box beneath stays a box), so a filter whose flowed
-				// value is baked is a legitimate merge, not a gate breach —
-				// the W3b flip's first live shape (RFC-153 joined-preserved:
-				// a filter-wrapped ordinal outer box beside another leg)
-				// proved the earlier any-WithPredicates boundary wrong.
-				if childSel, isSel := member.(*expressions.SelectExpression); isSel &&
-					len(quantifiers) > 1 && values.ContainsBakedOrdinal(childSel.GetResultValue()) {
-					panic(fmt.Sprintf(
-						"RFC-173: SelectMergeRule is about to merge an ORDINAL child select (baked result value) into a %d-quantifier parent — the cluster-arity gate mis-scoped a 2-way join as maximal (planner bug); parent result %s, child result %s",
-						len(quantifiers),
-						values.ExplainValue(sel.GetResultValue()),
-						values.ExplainValue(childSel.GetResultValue())))
-				}
+				// S3 fulcrum: an ORDINAL child select merging into a
+				// multi-quantifier parent is LEGITIMATE composition -- the
+				// spliced references compose via translateValueCorrelations
+				// over ReplaceLeavesOnceMaybe, and baked-over-baked rebuilds
+				// FUSE into multi-accessor FieldPaths (the W2 commit-1 arm).
+				// The S2 drift assert that forbade this shape died with the
+				// exactly-2 wedge; the positive compose pin covers it.
 				targets = append(targets, mergeTarget{
 					idx:       i,
 					child:     wp,

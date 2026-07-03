@@ -73,6 +73,7 @@ go_library(
         "pullup.go",
         "referenced_fields.go",
         "requested_ordering.go",
+        "rfc173_positional_merge.go",
         "rich_ordering.go",
         "rule.go",
         "rule_adjust_match.go",
@@ -792,6 +793,7 @@ go_test(
         "winner_lookup.go",
         "winner_lookup_test.go",
         "wrap_physical_plan_test.go",
+        "rfc173_positional_merge.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

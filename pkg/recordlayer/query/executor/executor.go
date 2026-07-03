@@ -1996,7 +1996,7 @@ func executeFlatMap(
 	}
 
 	cursor, err := newFlatMapCursor(
-		outerCursor, p.GetInner(), store, evalCtx,
+		outerCursor, p.GetOuter(), p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetResultValue(),
 		p.IsLeftOuter(),

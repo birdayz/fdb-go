@@ -110,9 +110,14 @@ func TestRFC173S2_ClusterArity_FlatteningEvasion(t *testing.T) {
 	if got := tr.clusterArity(evasion); got != 4 {
 		t.Fatalf("flattening-evasion cluster arity = %d, want 4 (2-way at translation, 4-way post-flattening)", got)
 	}
+	// S3 fulcrum: the shape GATES -- arity >= 2 is the whole wedge now. What
+	// the S2 pin guarded (a 2-way seed mis-typed by post-translation
+	// flattening) is legal composition today: the derived bodies seed their
+	// own ordinal RCs and SelectMergeRule composes them via
+	// translateValueCorrelations + the fuse arm.
 	d := tr.ordinalWedgeGateDecide(evasion)
-	if d.Gated {
-		t.Fatalf("flattening-evasion shape must NOT gate ordinal: %+v", d)
+	if !d.Gated || d.Arity != 4 {
+		t.Fatalf("flattening shape must gate at arity 4 (S3 fulcrum): %+v", d)
 	}
 
 	// Control: ONE derived join consumed alone stays a maximal 2-way cluster.
@@ -164,18 +169,21 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 	})
 
-	t.Run("two_way_under_three_way_does_not", func(t *testing.T) {
+	t.Run("three_way_gathers_flat", func(t *testing.T) {
 		t.Parallel()
+		// S3 fulcrum: the 3-way root GATES (arity 3) and translates FLAT —
+		// the nested inner join is GATHERED into the root's select, so it
+		// never seeds at all (no recorded decision IS the invariant: a
+		// gathered join has no translateJoin of its own).
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
 		root := inner(nested, scan("TypedRecord", "t"))
-		if d := run(t, root, nested); d.Gated {
-			t.Fatalf("2-way nested under 3-way cluster must stay name-model: %+v", d)
-		}
-		// The outer 3-way seed itself must not gate either.
 		tr := newGateTranslator(t)
 		tr.translateRef(root)
-		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
-			t.Fatalf("3-way root: %+v (ok=%v), want recorded and not gated", d, ok)
+		if d, ok := tr.wedgeGate[root]; !ok || !d.Gated || d.Arity != 3 {
+			t.Fatalf("3-way root: %+v (ok=%v), want gated arity 3 (flat N-way seed)", d, ok)
+		}
+		if d, ok := tr.wedgeGate[nested]; ok {
+			t.Fatalf("gathered nested join must not seed separately, got recorded decision %+v", d)
 		}
 	})
 
@@ -219,21 +227,19 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 	})
 
-	t.Run("join_legs_ineligible_nested_still_gates", func(t *testing.T) {
+	t.Run("full_box_over_gated_join_leg_gates", func(t *testing.T) {
 		t.Parallel()
-		// ANY join leg makes the parent ineligible in the S2 wedge — a
-		// nested ordinal box's bare concat ERASES buried aliases (an upper
-		// `a.id` through `(a JOIN b) FULL JOIN c` has no span to resolve
-		// against; nesting is S3's collapsed-FieldPath work — contract
-		// ruling #2: S2 is single-accessor only). The nested 2-way itself
-		// still gates (fresh cluster under the FULL leg) and is consumed as
-		// a name-model leg through its dual-emitted Datum.
+		// S3 fulcrum (the ruling's demanded pin shape): `(a JOIN b) FULL JOIN
+		// c` -- the FULL box's join leg GATES ITSELF, so the leg is eligible
+		// (its output is a typed flat ordinal concat; multi-accessor
+		// FieldPaths resolve upper references through it) and the FULL box
+		// gates too. Both decisions recorded.
 		nested := inner(scan("Customer", "c"), scan("TypedRecord", "t"))
 		root := logical.NewJoin(scan("Order", "o"), nested, logical.JoinFull, "")
 		tr := newGateTranslator(t)
 		tr.translateRef(root)
-		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
-			t.Fatalf("FULL box with a JOIN leg: %+v (ok=%v), want NOT gated (join legs are S3 territory)", d, ok)
+		if d, ok := tr.wedgeGate[root]; !ok || !d.Gated {
+			t.Fatalf("FULL box with a GATED join leg: %+v (ok=%v), want gated (S3 fulcrum)", d, ok)
 		}
 		if d, ok := tr.wedgeGate[nested]; !ok || !d.Gated {
 			t.Fatalf("2-way under a FULL leg roots a fresh cluster: %+v (ok=%v), want gated", d, ok)
@@ -263,31 +269,28 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 
 	t.Run("mixed_nesting_leg_ineligible", func(t *testing.T) {
 		t.Parallel()
-		// `(A JOIN B JOIN C) FULL JOIN D`: the FULL box's left leg is a
-		// name-model 3-way — the box must NOT gate (an ordinal seed cannot
-		// type a name-model merged-row leg; mixed nesting stays name-model
-		// until S3). Caught live by ordinalLegColumns' mis-scope panic.
+		// S3 fulcrum: `(A JOIN B JOIN C) FULL JOIN D` -- the 3-way inner leg
+		// GATES ITSELF (arity 3 >= 2), so it is eligible and the FULL box
+		// gates over it; the leg type is the 3-leg flat concat.
 		threeWay := inner(inner(scan("Order", "o"), scan("Customer", "c")), scan("TypedRecord", "t"))
 		root := logical.NewJoin(threeWay, scan("Order", "o2"), logical.JoinFull, "")
 		tr := newGateTranslator(t)
 		tr.translateRef(root)
-		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
-			t.Fatalf("FULL box over a name-model 3-way leg: %+v (ok=%v), want NOT gated (leg ineligible)", d, ok)
+		if d, ok := tr.wedgeGate[root]; !ok || !d.Gated {
+			t.Fatalf("FULL box over a GATED 3-way leg: %+v (ok=%v), want gated (S3 fulcrum)", d, ok)
 		}
 
-		// The DERIVED-TABLE-wrapped join leg (@claude PR-447 catch): a
-		// derived join source is a LogicalCTE node DIRECTLY in the leg
-		// position (logical_builder NewCTE(alias, body, Scan(alias))) —
-		// without ordinalEligible's CTE arm it fell to the default
-		// (eligible) and the FULL box wrongly gated over a buried join.
+		// The DERIVED-TABLE-wrapped join leg: post-fulcrum the derived body
+		// join gates itself (LogicalCTE transparency now reports ELIGIBLE for
+		// a gating body -- the PR-447 arm still guards NAME-MODEL bodies).
 		derivedJoin := logical.NewCTE("d",
 			inner(scan("Customer", "c4"), scan("TypedRecord", "t4")),
 			logical.NewScan("d", ""), false)
 		root3 := logical.NewJoin(scan("Order", "o4"), derivedJoin, logical.JoinFull, "")
 		tr3 := newGateTranslator(t)
 		tr3.translateRef(root3)
-		if d, ok := tr3.wedgeGate[root3]; !ok || d.Gated {
-			t.Fatalf("FULL box over a DERIVED-wrapped join leg: %+v (ok=%v), want NOT gated (LogicalCTE transparency)", d, ok)
+		if d, ok := tr3.wedgeGate[root3]; !ok || !d.Gated {
+			t.Fatalf("FULL box over a DERIVED-wrapped GATING join leg: %+v (ok=%v), want gated (S3 fulcrum)", d, ok)
 		}
 	})
 
@@ -398,15 +401,15 @@ func TestRFC173S2_WalkArmParity(t *testing.T) {
 		wantArity    int
 	}{
 		{"scan", scan("Order", "o"), true, 1},
-		{"cte_scoped_scan_join_body", scan("bodyjoin", "b"), false, 2},
+		{"cte_scoped_scan_join_body", scan("bodyjoin", "b"), true, 2}, // S3 fulcrum: body join gates; composition is legal
 		{"filter_plain", logical.NewFilter(scan("Order", "o"), "x > 1"), true, 1},
 		{"filter_exists", &logical.LogicalFilter{Input: scan("Order", "o"), ExistsSubqueries: []logical.ExistsSubquery{{Alias: values.NamedCorrelationIdentifier("e")}}}, false, arityPoison},
 		{"project_plain", logical.NewProject(scan("Order", "o"), []string{"order_id"}, []string{""}), true, 1},
 		{"project_scalar_subq", &logical.LogicalProject{Input: scan("Order", "o"), Projections: []string{"order_id"}, ScalarSubqueries: []logical.ScalarSubquery{{Alias: values.NamedCorrelationIdentifier("s")}}}, false, arityPoison},
-		{"inner_join", inner(scan("Order", "o"), scan("Customer", "c")), false, 2}, // legs: categorically ineligible; seed walk: countable
+		{"inner_join", inner(scan("Order", "o"), scan("Customer", "c")), true, 2}, // S3 fulcrum: eligible iff the leg itself gates
 		{"left_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), false, arityPoison},
-		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), false, 1}, // leg: join=ineligible; cluster: opaque box of 1
-		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), false, 2},
+		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), true, 1},                                           // S3 fulcrum: FULL gates unconditionally -> eligible; cluster: opaque box of 1
+		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), true, 2}, // S3 fulcrum: derived body join gates
 		{"cte_recursive", logical.NewCTE("r", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Order", "o2")}, false), logical.NewScan("r", ""), true), false, arityPoison},
 		{"aggregate", logical.NewAggregate(scan("Order", "o"), []string{"x"}, nil, nil, ""), true, 1},
 		{"distinct", logical.NewDistinct(scan("Order", "o")), true, 1},
@@ -424,5 +427,86 @@ func TestRFC173S2_WalkArmParity(t *testing.T) {
 				t.Errorf("clusterArity(%s) = %d, want %d", tc.name, got, tc.wantArity)
 			}
 		})
+	}
+}
+
+// TestRFC173S3_WhereMergeBakesLegRelative pins the WHERE-merge bake site
+// against the nested-binary mismatch: for Filter(join(join(o,c),t)) the
+// merged cross-leg conjunct `c.customer_id = t.id` must bake LEG-RELATIVE
+// ordinals over each table's OWN type (gatedJoinLegTypes — the gathered-leg
+// pairing the seed's quantifiers use). Pairing sourceAlias(join.Left) ("c",
+// the buried rightmost table of the left subtree) with
+// ordinalLegType(join.Left) (the whole {o,c} concat) baked CONCAT-relative
+// ordinals onto the single-table quantifier C — out of range at runtime, or
+// silently the WRONG column when FieldIndex first-matches an earlier leg's
+// duplicate name.
+func TestRFC173S3_WhereMergeBakesLegRelative(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	nested := inner(scan("Order", "o"), scan("Customer", "c"))
+	root := inner(nested, scan("TypedRecord", "t"))
+	pred := &predicates.ComparisonPredicate{
+		Operand: values.NewFieldValue(
+			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("c")),
+			"CUSTOMER_ID", values.NotNullLong),
+		Comparison: predicates.Comparison{
+			Type: predicates.ComparisonEquals,
+			Operand: values.NewFieldValue(
+				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("t")),
+				"ID", values.NotNullLong),
+		},
+	}
+	filter := logical.NewFilterWithPredicate(root, pred, "c.customer_id = t.id")
+
+	ref := tr.translateRef(filter)
+	if ref == nil {
+		t.Fatal("Filter over the gated 3-way cluster must translate")
+	}
+	sel, ok := ref.Members()[0].(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected the merged SelectExpression, got %T", ref.Members()[0])
+	}
+
+	// The expected leg types: each table's OWN type, the seed's pairing.
+	customerType := tr.ordinalLegType(scan("Customer", "c"))
+	orderType := tr.ordinalLegType(scan("Order", "o"))
+	if customerType == nil || orderType == nil {
+		t.Fatal("leg types must derive from metadata")
+	}
+	wantOrd, found := customerType.FieldIndex("CUSTOMER_ID")
+	if !found {
+		t.Fatal("CUSTOMER_ID missing from Customer's own type")
+	}
+
+	var bakedC *values.FieldValue
+	for _, p := range sel.GetPredicates() {
+		predicates.ReplaceValues(p, func(v values.Value) values.Value {
+			fv, isFV := v.(*values.FieldValue)
+			if !isFV || fv.Resolved == nil {
+				return v
+			}
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "c" {
+				bakedC = fv
+			}
+			return v
+		})
+	}
+	if bakedC == nil {
+		t.Fatal("the merged WHERE conjunct's `c` reference must be BAKED (cross-leg conjunct over a gated join)")
+	}
+	acc, single := bakedC.Resolved.Single()
+	if !single {
+		t.Fatalf("want a single-accessor bake, got %v", bakedC.Resolved)
+	}
+	if acc.Ordinal != wantOrd {
+		t.Fatalf("baked ordinal = %d, want %d (CUSTOMER_ID leg-relative in Customer's OWN type; a concat-relative bake is off by Order's width %d)",
+			acc.Ordinal, wantOrd, len(orderType.Fields))
+	}
+	qovC := bakedC.Child.(*values.QuantifiedObjectValue)
+	rt, isRT := qovC.Type().(*values.RecordType)
+	if !isRT || len(rt.Fields) != len(customerType.Fields) {
+		t.Fatalf("baked QOV(c) type width = %v, want Customer's own width %d (not the {o,c} concat %d)",
+			qovC.Type(), len(customerType.Fields), len(orderType.Fields)+len(customerType.Fields))
 	}
 }

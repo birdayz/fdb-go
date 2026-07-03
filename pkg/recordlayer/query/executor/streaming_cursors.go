@@ -682,6 +682,14 @@ type nljCursor struct {
 	outerAdapted values.OrdinalRow
 	// outerCorr/innerCorr are the leg correlation identifiers, resolved once.
 	outerCorr, innerCorr values.CorrelationIdentifier
+	// mergeRC is set iff the result value is the S3 positional-merge RC: the
+	// emitted Datum is then the MERGE SHAPE (slot `_i` = leg i's own Datum,
+	// mergeShapeDatum) on BOTH the live and §5-oracle sides — the partition
+	// rule rebases every upper reference through the merge quantifier, so
+	// mergeRows' flat keys would silently NULL them all (0-row joins on the
+	// oracle side, where no positional row backs the reads). NOT gated on
+	// birthActive: the oracle side is exactly where the flat Datum bites.
+	mergeRC *values.RecordConstructorValue
 }
 
 func newNLJCursor(
@@ -709,10 +717,13 @@ func newNLJCursor(
 		st:         st,
 		birth:      birth,
 	}
+	c.outerCorr = values.NamedCorrelationIdentifier(outerAlias)
+	c.innerCorr = values.NamedCorrelationIdentifier(innerAlias)
+	if rc, isRC := resultValue.(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
+		c.mergeRC = rc
+	}
 	if birth.enabled() && !DisablePositionalEmission {
 		c.birthActive = true
-		c.outerCorr = values.NamedCorrelationIdentifier(outerAlias)
-		c.innerCorr = values.NamedCorrelationIdentifier(innerAlias)
 		// Adapt the FIXED inner side once (review W3a-2: never per pair).
 		innerType := birth.legType(c.innerCorr)
 		c.innerAdapted = make([]values.OrdinalRow, len(innerRows))
@@ -1031,6 +1042,13 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.outerMatched = true
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
+					if c.mergeRC != nil {
+						// EMISSION-time swap, after the predicates ran: the
+						// cursor's own (leg-baked) predicates still read the
+						// mergeRows keys on the oracle side; only the EMITTED
+						// merge row carries the merge-shape Datum consumers read.
+						combined.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, c.currentOuter.Datum, innerRow.Datum)
+					}
 					if pair != nil {
 						pos, berr := c.birth.evaluateBound(pair)
 						if berr != nil {
@@ -1075,6 +1093,13 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
+					if c.mergeRC != nil {
+						// EMISSION-time swap, after the predicates ran: the
+						// cursor's own (leg-baked) predicates still read the
+						// mergeRows keys on the oracle side; only the EMITTED
+						// merge row carries the merge-shape Datum consumers read.
+						combined.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, c.currentOuter.Datum, innerRow.Datum)
+					}
 					if pair != nil {
 						pos, berr := c.birth.evaluateBound(pair)
 						if berr != nil {

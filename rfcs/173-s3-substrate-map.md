@@ -346,3 +346,196 @@ existing evaluateOrdinalJoinRow per-field evaluation is the right spine.
   trio arm; W4 flips them by making LEFT gate-eligible. KEEP the :910-914
   tripwire re-purposed ("no baked node enters the anchored arm"); ADD its dual:
   the positional arm panics on IsNullOnEmpty quantifiers until W4.
+
+## Fulcrum implementation decisions (WIP notes, delete when the commit lands)
+- Gather = DIRECT inner-join nesting only (Java visitSimpleTable's envelope):
+  legs are non-join operands; derived-table/filter boundaries stay legs and
+  compose later via SelectMergeRule (legal post-assert-deletion). A
+  derived-with-join leg keeps the S2 mixed-nesting decline via
+  ordinalEligible's cteScope recursion — the whole cluster stays name-model
+  (gate pin (b) obligation unchanged). clusterArity keeps its transparent
+  model (drift asserts); the gate condition becomes arity >= 2.
+- Nested non-inner joins are unreachable in a gated gather (clusterArity
+  poisons LEFT; FULL contributes arity 1 as a LEG) — gather treats any
+  non-inner nested join defensively as a leg.
+- ordinalEligible join-leg arm → eligible iff the leg itself gates
+  (ordinalWedgeGateDecide with inInnerCluster forced false — FULL legs root
+  fresh clusters; Decide is side-effect-free). ordinalLegColumns for a gated
+  join leg = the flat concat of ITS legs' ordinalLegColumns in rv order;
+  panic remains for name-model join legs.
+
+## Fulcrum WIP state 2 (supersedes the "derived stays declined" line above)
+- FOUND MID-FLIGHT: probe/translate enclosure mismatch. ordinalEligible's join
+  arm probes with enclosure FALSE, but leg translation ran ENCLOSED (legs of a
+  gated parent hit the inInnerCluster gate check and went name-model) — a
+  derived-with-join leg would be declared eligible yet translate name-model.
+  RESOLUTION: legs of a GATED parent translate FRESH (inInnerCluster=false) in
+  BOTH the gathered N-way path and the binary gated path. Post-fulcrum a
+  derived body's inner join gates independently and SelectMergeRule composes
+  it into the ordinal parent via translateValueCorrelations + the fuse arm
+  (Java's model exactly). The enclosure flag stays TRUE only for the
+  name-model parents that survive to W4/W5: existential flattens
+  (translateJoinWithExists), recursive CTE, correlated-scalar seeds.
+- The failing S2 scope pins are LEGITIMATE flips to rewrite to the new scope
+  (not regressions): cascades_translator_test.go:478 (3-way now seeds ordinal
+  flat), rfc173_cluster_gate_test.go:115 (flattening-evasion shape now gates,
+  arity 4), :236 (FULL box with gated-join leg now gates — the ruling's
+  demanded pin shape), :275 (FULL over 3-way leg: leg now gates itself →
+  eligible → box gates), :421 WalkArmParity rows for inner_join/full_join/
+  cte_nonrecursive_derived_join/cte_scoped_scan_join_body (all eligible now).
+  Each rewrite must assert the POSITIVE ordinal behavior, not just delete.
+- REMAINING fulcrum steps after the translator: partition-rule positional arm
+  (route at isAnchoredJoinResult :397; IsNullOnEmpty tripwire), interning-gate
+  arm (AnchoredJoin || IsPositionalMergeRC at select.go:243-256), column
+  derivation (cascades_generator.go:2876-2900 — check how the S2 2-way seed
+  derives SELECT-* and generalize), SelectMergeRule assert deletion
+  (rule_select_merge.go:145-152) + positive compose pin, N-way e2e pins
+  (FROM a,b,c rows; FULL-over-gated), full suite + task baseline + dualwindow.
+- Also flip: executor TestRFC173S2_SeedAssert_MalformedPanics (values
+  AssertOrdinalJoinSeed's exactly-2-runs case — 3 consecutive full runs are
+  now LEGAL; keep the <2-runs and gap/reorder/partial-coverage panics) and
+  the query-package TestTranslateJoin 3-way expectation (now ordinal flat
+  seed with 3 quantifiers — assert the seed shape + baked cross-leg preds).
+  Failing set at this WIP point: TestRFC173S2_SeedAssert_MalformedPanics
+  (executor), TestRFC173S2_ClusterArity_FlatteningEvasion, TestTranslateJoin,
+  TestRFC173S2_WedgeGate_Translation, TestRFC173S2_WalkArmParity (query).
+
+## Fulcrum WIP state 3 — e2e fallout classes (translator+rule halves DONE, executor dispatch remains)
+Done and green in the core packages: gate arity>=2, N-leg gather+flat seed
+(translateGatheredInnerCluster), legsOfGatedJoin, pairwise dup poison,
+ordinalEligible gate-probe arm, ordinalLegColumns gated-leg concat, enclosure
+flip for gated parents, partition-rule positionalMergeCase
+(rfc173_positional_merge.go: routing at !parentIsMerge, IsNullOnEmpty
+tripwire, unnamed _i lower RC, TranslationMap rebase of upper preds+RV),
+interning-gate IsPositionalMergeRC arm, SelectMergeRule assert deleted +
+positive compose pin, S2 scope pins flipped (gate tests, WalkArmParity,
+translator 3-way pin, seed-assert 3-run pin, evasion pin).
+
+Full-suite fallout (sqldriver/dualwindow/conformance), three classes:
+1. "baked FieldValue X#i evaluated against a non-positional row context —
+   building scan range for PK comparisons": a baked SARG pushed into a leg
+   scan gets a NAME-KEYED outer binding. The 3-way physical tree is
+   NLJ(NLJ(a,b),c) / correlated scans; the outer binding for correlated inner
+   plans must bind POSITIONAL (the S2 flatMap fix generalized) — find where
+   scan-range building binds the outer row (executor scan-range builder +
+   evaluation context correlation bindings) and route birthed positional rows.
+2. "field A.ID / C.NAME not resolvable in the runtime row (ordinal -1, row
+   columns [bare concat])": upper DOTTED LAZY references (Projection/Filter
+   above the join) over a POSITIONAL row without windows. S2 resolved these
+   via spanAwareRow over the pristine 2-leg seed's windows (WindowsOK); the
+   N-way TOP select's RV post-merge is a TRANSLATED mixed shape → WindowsOK
+   false → no windows → dotted GetByName fails loud on the bare concat.
+   Direction: the merged positional row for translated tops needs either
+   span recovery (LegTypes-driven windows from the mixed RV — spans per
+   contiguous baked run over the same QOV) or dotted resolution routed to
+   the dual Datum (name model) for lazy refs during coexistence. Check
+   executeProjection/executeFilter's positional-first dispatch conditions.
+3. rfc153_matrix FULL-over-gated-join: "A.ID not resolvable, row columns
+   [ID FLAG ID A_ID BX ...]" — the FULL box's upper reads a dotted leg ref
+   over the box's flat concat (the leg is now a gated join). Same family as
+   class 2 (dotted-over-positional), FULL-box flavor.
+Also: conformance plan_shape failures include ordinal 4 out-of-range
+("PRODUCT_ID ordinal 4, row columns [ID CUSTOMER_ID PRODUCT_ID QTY]") — a
+baked ref evaluated against a SINGLE-LEG row where the ordinal was baked
+against the MERGED concat (offset not leg-relative): pushdown of a baked
+cross-leg pred conjunct into a leg without re-baking — check
+PushFilterBelowJoinRule/SARG extraction paths for baked refs (S2 only baked
+cross-leg conjuncts precisely to avoid this; the N-way WHERE preds arrive as
+ONE And that bakeGatedJoinPredicates bakes per-conjunct — verify the pushdown
+of single-leg conjuncts didn't change, and that spanning conjuncts don't get
+pushed).
+
+## Fulcrum WIP state 4 — ALL FOUR FALLOUT CLASSES RESOLVED (+3 planner gaps found by the full net)
+
+Every class from WIP state 3 is fixed, each with a red-verified regression pin:
+
+1. **Class 1 (baked SARG vs name-keyed outer)** — root cause: the FlatMap
+   merge-RC birth-disable (a W2 P2 stopgap written before the merge shape
+   existed) left the outer leg name-keyed while inner-plan SARGs were baked.
+   Fix: disable deleted; the merge birth's coexistence Datum puts each leg's
+   own DATUM under the `_i` keys (bare-QOV arm in computeResultLegs — the §5
+   oracle's exact shape). Pin: TestRFC173S3_MergeBirth_FlatMapBirths (flipped
+   from the old decline pin).
+2. **Class 4 (concat-relative bake onto single-table quantifiers)** — root
+   cause: the WHERE-merge site paired sourceAlias(join.Left) (buried rightmost
+   table) with ordinalLegType(join.Left) (whole-subtree concat). Fix:
+   gatedJoinLegTypes over legsOfGatedJoin (the seed's own pairing). Pin:
+   TestRFC173S3_WhereMergeBakesLegRelative (verified red: ordinal 8 vs 0).
+3. **Classes 2+3 (dotted lazy uppers over translated tops / FULL-over-gated)**
+   — resolved by SPAN RECOVERY, not per-consumer dispatch: ordinalJoinSpansOf
+   generalizes the S2 probe with fused-path resolution through the plan's leg
+   RVs (resolveSpanLeaf composes TRANSLATED merge slots — a deeper round's
+   rebased refs — into the walk), collectJoinLegRVs recovers merged-away
+   aliases from child merge RCs, spliceLegSpans recursively opens box legs
+   (FULL-over-gated) with a width guard against box/leaf alias shadowing.
+   Consumers keep probing downstreamLegWindows; the FlatMap cursor recovers
+   spans at construction so datumFromSpans/oracleNameDatum emit the qualified
+   ALIAS.COL keys again (oracleNameDatum is now SPAN-driven — the fused
+   field's child QOV is the merge alias, never a user alias). Pins:
+   TestRFC173S3_TranslatedTopSpans, TestRFC173S3_SpliceLegSpans, plus
+   GatePinA/MultiwayJoinOrder_Nway e2e red→green.
+   - Prerequisite found under this: positionalMergeCase's merge slots were
+     UNTYPED (Go's Quantifier.GetFlowedObjectValue flows no type, Java's is
+     always typed) — legRowTypes recovers each leg's row type from the
+     select's own value surfaces and types the merge RC slots.
+
+The full net (54 targets) then surfaced three more fulcrum-induced gaps, all
+fixed:
+
+4. **Oracle-side 0 rows on 3-way counts (dualwindow)** — a baked/fused ref
+   over an UNBOUND merge quantifier read only the qualified `$M._0` Datum key;
+   the merge row's oracle Datum carries `_i` BARE (no qualified form exists
+   for a merge quantifier). Fix: baked paths fall through to the bare root
+   key in the unbound-QOV Datum arm (lazy refs keep qualified-only — the
+   cross-leg last-wins protection). Pin:
+   TestFieldValueBaked_OracleUnboundMergeRead_RFC173S3 + the dualwindow
+   differential (3 corpus entries were diverging).
+5. **MaxTasks blowout on ≥4-way (0AF00)** — the ordinal model's seed and
+   translated-upper selects are the successors of AnchoredJoin-marked selects
+   but fell to alias-IDENTITY dedup. Fix: values.IsOrdinalJoinRV (every field
+   pinned over ≥2 root quantifiers) as the third InternsAliasAware arm.
+6. **Unimplementable N-ary cross products (0AF00)** — `FROM a, b, c`, the
+   EXISTS body `(SELECT 1 FROM t2, t3, t4 WHERE t2.t1_id = t1.id)`, and the
+   spanning-OR join all starved: the Go-only disconnected-lower guard ate the
+   only bipartitions those selects have. Fixes, Java-checked
+   (PartitionSelectRule.java:122-133 + SelectExpression.java:248): (a)
+   DefaultPlannerConfiguration now defers cross products like Java (the
+   component-aligned deferral gate was dead code); (b) the guard exempts
+   multi-component selects (the deferral already restricted their splits to
+   the unavoidable crosses); (c) lower connectivity is judged by ANY select
+   conjunct touching two lower aliases (aliasesConnectedByPredicates over the
+   full conjunct list — a spanning OR connects; binary equijoins unchanged, so
+   the pinned task baselines hold EXACTLY: 11122/45306). Full guard deletion
+   (pure Java) was tried and REVERTED: the anchored 4-chain baseline blows
+   past 100k tasks — Go's memo cannot yet afford Java's exploration breadth;
+   divergence documented at the guard.
+   Pins: TestFDB_RFC173_PureCrossProduct (cross + EXISTS-cross),
+   TestAliasesConnectedByPredicates (incl. the OR case),
+   TestDefaultPlannerConfiguration_JavaDefaults (flipped from ZeroFields),
+   conformance join_or_chained_predicates (was the last cross-engine
+   divergence).
+7. **NLJ merge cursors' Datum (oracle 0 rows on the spanning-OR join)** — the
+   NLJ implementation of a merge select emitted mergeRows' flat Datum; the
+   rebased upper references read `_i` root keys → all NULL on the oracle side
+   (no positional row there). Fix: a positional-merge-RC NLJ swaps in the
+   merge-shape Datum (mergeShapeDatum — slot `_i` = leg i's own Datum) at
+   EMISSION time, after its own leg-baked predicates ran against the mergeRows
+   keys; live and oracle sides identically (not birthActive-gated). The
+   commit-2 NLJ pin's "untouched mergeRows" Datum expectation flipped — the
+   fulcrum owns the merge Datum story and this is its settlement, same shape
+   as the FlatMap side (class 1).
+8. **Unnest AS/AT columns silently NULL (found by the widened exploration)** —
+   the guard rework exposed a MISSING-EDGE hole: Go's
+   Quantifier.GetCorrelatedTo is empty (registered divergence), so a lateral
+   unnest's Explode→source dependency (quantifier-level, no predicate) was
+   invisible to EVERY bipartition check — components, cycle,
+   lower-depends-on-upper. The old predicate-only guard masked it by skipping
+   all predicate-less lowers. Fixes: (a) computeTransitiveCorrelationOrder now
+   recovers each quantifier's rangesOver Reference correlations to siblings
+   (Java's Quantifier.getCorrelatedTo delegation, applied locally); (b) the
+   pure-cross exemption additionally requires the lower to union SINGLETON
+   components (lowerComponentsAreSingletons) — a multi-alias
+   correlation-glued component (unnest + source) never enters a disconnected
+   lower; W5 revisits when the unnest machinery goes ordinal. Pins:
+   TestTransitiveCorrelationOrder_RangesOverEdges (mechanism) +
+   TestFDB_ArrayUnnestOrdinality (behavior, the net that caught it).

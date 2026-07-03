@@ -62,7 +62,10 @@ func ordinalChildSelect(t *testing.T) *expressions.SelectExpression {
 func TestRFC173S2_SelectMergeDriftAssert_Fires(t *testing.T) {
 	t.Parallel()
 
-	// Violation: parent has the ordinal child PLUS a second ForEach.
+	// S3 fulcrum POSITIVE pin (replacing the deleted drift assert): an
+	// ORDINAL child select merging into a multi-quantifier parent is
+	// LEGITIMATE composition -- no panic, and the merged select splices the
+	// child quantifiers in.
 	child := ordinalChildSelect(t)
 	childQ := expressions.ForEachQuantifier(expressions.InitialOf(child))
 	otherQ := expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{}))
@@ -71,19 +74,10 @@ func TestRFC173S2_SelectMergeDriftAssert_Fires(t *testing.T) {
 		[]expressions.Quantifier{childQ, otherQ},
 		nil,
 	)
-	func() {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Error("SelectMergeRule must PANIC when an ORDINAL child merges into a multi-quantifier parent — the drift assert is dead")
-				return
-			}
-			if msg, ok := r.(string); !ok || !strings.Contains(msg, "RFC-173") {
-				t.Errorf("panic is not the RFC-173 drift assert: %v", r)
-			}
-		}()
-		FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(parent))
-	}()
+	yieldedMulti := FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(parent))
+	if len(yieldedMulti) == 0 {
+		t.Fatal("ordinal child into multi-quantifier parent must MERGE (composition is legal post-fulcrum), got no yields")
+	}
 
 	// Allowed: a PURE WRAPPER (single-quantifier) parent over the same child
 	// merges without panicking — the post-merge select is exactly the child's

@@ -36,97 +36,6 @@ func joinPred(a, b string) predicates.QueryPredicate {
 	)
 }
 
-// TestLowerAliasesConnected pins the union-find connectivity check that gates
-// the degenerate cross-product skip in PartitionSelectRule. A disconnected
-// lower (no predicate links its quantifiers, e.g. {A,C} for chain A—B—C or
-// {XX,YY} for a star) flows a multi-alias RecordConstructorValue the executor
-// cannot resolve, so it must be reported as NOT connected → skipped.
-func TestLowerAliasesConnected(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		aliases    map[values.CorrelationIdentifier]struct{}
-		predicates []predicates.QueryPredicate
-		want       bool
-	}{
-		{
-			name:    "single alias is trivially connected",
-			aliases: aliasSet("A"),
-			want:    true,
-		},
-		{
-			name:    "single alias ignores predicates",
-			aliases: aliasSet("A"),
-			predicates: []predicates.QueryPredicate{
-				joinPred("A", "B"), // B not in lower; still connected (size 1)
-			},
-			want: true,
-		},
-		{
-			name:       "two aliases, no predicate → disconnected",
-			aliases:    aliasSet("A", "B"),
-			predicates: nil,
-			want:       false,
-		},
-		{
-			name:    "two aliases linked by one predicate → connected",
-			aliases: aliasSet("A", "B"),
-			predicates: []predicates.QueryPredicate{
-				joinPred("A", "B"),
-			},
-			want: true,
-		},
-		{
-			name:    "two aliases, predicate touches only one (spans to upper) → disconnected",
-			aliases: aliasSet("A", "C"),
-			predicates: []predicates.QueryPredicate{
-				// A—B and C—B: each intersects {A,C} in exactly one alias, so
-				// neither links A to C. This is the chain A—B—C lower {A,C}.
-				joinPred("A", "B"),
-				joinPred("C", "B"),
-			},
-			want: false,
-		},
-		{
-			name:    "three aliases in a chain → connected",
-			aliases: aliasSet("A", "B", "C"),
-			predicates: []predicates.QueryPredicate{
-				joinPred("A", "B"),
-				joinPred("B", "C"),
-			},
-			want: true,
-		},
-		{
-			name:    "three aliases, one isolated → disconnected",
-			aliases: aliasSet("A", "B", "C"),
-			predicates: []predicates.QueryPredicate{
-				joinPred("A", "B"), // C never linked
-			},
-			want: false,
-		},
-		{
-			name:    "star lower {XX,YY} with hub in upper → disconnected",
-			aliases: aliasSet("XX", "YY"),
-			predicates: []predicates.QueryPredicate{
-				joinPred("HUB", "XX"),
-				joinPred("HUB", "YY"),
-			},
-			want: false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := lowerAliasesConnected(tc.aliases, tc.predicates)
-			if got != tc.want {
-				t.Errorf("lowerAliasesConnected(%v) = %v, want %v", tc.name, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestRebaseBuriedLowerReferences pins the RFC-069 correctness fix: a spanning
 // upper predicate referencing a lower table COLLAPSED INTO THE MERGE QUANTIFIER
 // must be rewritten so its column access flows through the merge quantifier by
@@ -342,3 +251,102 @@ func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 // protected is now pinned by the chain task-count gate
 // (TestPartitionSelect_ChainInterningBaseline) instead — a far stronger probe
 // (it measures the actual exploration sharing, not a string-encoding property).
+
+// orPred builds `a.col = b.col OR a.col = c.col` — one N-ary conjunct whose
+// GetCorrelatedToOfPredicate is {a, b, c}.
+func orPred(a, b, c string) predicates.QueryPredicate {
+	return predicates.NewOr(joinPred(a, b), joinPred(a, c))
+}
+
+// TestAliasesConnectedByPredicates pins the union-find connectivity check that
+// gates the disconnected-lower skip in PartitionSelectRule: judged over the
+// select's FULL conjunct list, so a spanning N-ary predicate connects the
+// aliases it touches (a lower-resident-only reading starved
+// `WHERE a.x = b.y OR a.x = c.y` of every bipartition → 0AF00), while a
+// genuinely predicate-less pair stays disconnected (the chain {A,C} /
+// star {XX,YY} pruning that holds the task baseline).
+func TestAliasesConnectedByPredicates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		aliases    map[values.CorrelationIdentifier]struct{}
+		predicates []predicates.QueryPredicate
+		want       bool
+	}{
+		{"single alias is trivially connected", aliasSet("A"), nil, true},
+		{"two aliases, no predicate", aliasSet("A", "B"), nil, false},
+		{
+			"two aliases linked by one predicate", aliasSet("A", "B"),
+			[]predicates.QueryPredicate{joinPred("A", "B")},
+			true,
+		},
+		{
+			"chain lower {A,C}: binary preds touch one each", aliasSet("A", "C"),
+			[]predicates.QueryPredicate{joinPred("A", "B"), joinPred("C", "B")},
+			false,
+		},
+		{
+			"three aliases in a chain", aliasSet("A", "B", "C"),
+			[]predicates.QueryPredicate{joinPred("A", "B"), joinPred("B", "C")},
+			true,
+		},
+		{
+			"three aliases, one isolated", aliasSet("A", "B", "C"),
+			[]predicates.QueryPredicate{joinPred("A", "B")},
+			false,
+		},
+		{
+			"star lower {XX,YY} with hub upper", aliasSet("XX", "YY"),
+			[]predicates.QueryPredicate{joinPred("HUB", "XX"), joinPred("HUB", "YY")},
+			false,
+		},
+		{
+			"spanning OR connects the pair it touches", aliasSet("B", "C"),
+			[]predicates.QueryPredicate{orPred("A", "B", "C")},
+			true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := aliasesConnectedByPredicates(tc.aliases, tc.predicates)
+			if got != tc.want {
+				t.Errorf("aliasesConnectedByPredicates(%v) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTransitiveCorrelationOrder_RangesOverEdges pins the recovered
+// quantifier→sibling correlation edges: Go's Quantifier.GetCorrelatedTo is
+// empty (registered divergence), so computeTransitiveCorrelationOrder must
+// read the rangesOver Reference's transitive correlation set — a lateral
+// unnest's Explode correlates to its array source with NO predicate between
+// them, and without this edge every bipartition check (components, cycle,
+// lower-depends-on-upper) treats the pair as independent: the cross-product
+// paths then tear them apart and the unnest's AS/AT columns silently NULL.
+func TestTransitiveCorrelationOrder_RangesOverEdges(t *testing.T) {
+	t.Parallel()
+	src := scanQuantifier("PB")
+	// A quantifier whose EXPRESSION references PB — the Explode shape (any
+	// correlated member works; a filter carrying a QOV(PB) predicate is the
+	// simplest constructible stand-in).
+	correlated := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{joinPred("PB", "X")},
+		pbForEachOf(&expressions.FullUnorderedScanExpression{}),
+	)
+	x := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("X"),
+		expressions.InitialOf(correlated),
+	)
+
+	order := computeTransitiveCorrelationOrder([]expressions.Quantifier{src, x})
+	if _, ok := order[x.GetAlias()][src.GetAlias()]; !ok {
+		t.Fatalf("X's rangesOver correlation to PB missing from the correlation order: %v", order[x.GetAlias()])
+	}
+	if len(order[src.GetAlias()]) != 0 {
+		t.Fatalf("PB must not depend on X: %v", order[src.GetAlias()])
+	}
+}

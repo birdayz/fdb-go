@@ -423,6 +423,36 @@ func ContainsBakedOrdinal(v Value) bool {
 // the generator names all columns, so CTE column-rename selects never match.
 // Lives beside ContainsBakedOrdinal — the two value-shape probes the ordinal
 // birth triggers on.
+// IsOrdinalJoinRV reports whether v is an ordinal-model JOIN-SELECT result
+// value: a raw (non-anchored) RC whose every field is a FrontierPinned baked
+// reference over a quantifier — the flat N-leg seed and its TranslationMap-
+// translated upper forms (fused multi-accessor paths included) — spanning at
+// least two distinct root quantifiers. This is the ordinal counterpart of the
+// AnchoredJoin marker for the interning gate: the shapes whose quantifiers
+// have no external identity consumer, where alias-IDENTITY dedup re-explodes
+// the join re-enumeration's shared sub-products per bipartition. A lazy field
+// anywhere (CTE column renames, computed projections) declines — those
+// selects keep the alias-identity dedup that Go's column derivation requires.
+func IsOrdinalJoinRV(v Value) bool {
+	rc, isRC := v.(*RecordConstructorValue)
+	if !isRC || rc.AnchoredJoin || len(rc.Fields) < 2 {
+		return false
+	}
+	roots := make(map[CorrelationIdentifier]struct{}, 2)
+	for _, f := range rc.Fields {
+		fv, isFV := f.Value.(*FieldValue)
+		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+			return false
+		}
+		qov, isQOV := fv.Child.(*QuantifiedObjectValue)
+		if !isQOV {
+			return false
+		}
+		roots[qov.Correlation] = struct{}{}
+	}
+	return len(roots) >= 2
+}
+
 func IsPositionalMergeRC(v Value) bool {
 	rc, isRC := v.(*RecordConstructorValue)
 	if !isRC || len(rc.Fields) < 2 || rc.AnchoredJoin {
@@ -716,6 +746,19 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			}
 			if v, ok := ctx.Datum[qualKey]; ok {
 				return f.descendResolvedPath(v)
+			}
+			// BAKED path, oracle window: an unbound quantifier here IS the row's
+			// own frontier quantifier (the ordinal side reads ctx.Positional for
+			// exactly this case), and a baked path's root key is that row's OWN
+			// output column — for the S3 positional-merge row a fused reference's
+			// `_i` slot, which the coexistence Datum carries BARE (no qualified
+			// form ever exists for a merge quantifier). Lazy references keep the
+			// qualified-only read: a bare fallback for them would resurrect the
+			// cross-leg last-wins misread the qualified keys exist to prevent.
+			if f.Resolved != nil {
+				if v, ok := ctx.Datum[rootKey]; ok {
+					return f.descendResolvedPath(v)
+				}
 			}
 			// Already-qualified field (e.g. "T3.ID") accessed through a merge
 			// quantifier: a re-enumerated N-way join collapses a buried table

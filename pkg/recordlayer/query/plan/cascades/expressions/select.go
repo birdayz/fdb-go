@@ -251,6 +251,26 @@ func (e *SelectExpression) InternsAliasAware() bool {
 	if rc, ok := e.resultValue.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
 		return true
 	}
+	// S3 fulcrum: the POSITIONAL merge row (unnamed `_i` columns over bare
+	// QOVs — the exact PartitionSelectRule.java:284-291 shape, structurally
+	// recognized per the W2 ruling: no imperative marker) is the ordinal
+	// model's merge-select marker. Same rationale: the collapsed lower's
+	// quantifiers are planner-internal; alias-identity dedup would re-explode
+	// shared sub-products per bipartition (the documented 29915→60044 task
+	// blowup). The AnchoredJoin arm above retires per birth site (W4/W5);
+	// the whole gate dies in S4 when interning widens to all selects.
+	if values.IsPositionalMergeRC(e.resultValue) {
+		return true
+	}
+	// S3 fulcrum: the ordinal JOIN-SELECT result value (every field a pinned
+	// baked/fused leg reference over >=2 quantifiers - the flat N-leg seed and
+	// its translated upper forms) is the ordinal successor of the AnchoredJoin
+	// marker itself: same shapes, same planner-internal quantifiers, same
+	// re-explosion without alias-aware dedup (the N-way chain blows the task
+	// budget through repeated sub-product exploration per bipartition).
+	if values.IsOrdinalJoinRV(e.resultValue) {
+		return true
+	}
 	return false
 }
 

@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"reflect"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
@@ -64,10 +65,13 @@ func TestRFC173S3_MergeBirth_Constructor(t *testing.T) {
 }
 
 // TestRFC173S3_MergeBirth_NLJCursor_Nested drives the merge RC through the
-// real NLJ cursor: the emitted rows carry the UNTOUCHED mergeRows Datum
-// (dual emission) plus a nested Positional row — slot i IS leg i's
-// positional row — and a fused two-step reference (commit 1's TranslationMap
-// output shape) reads through it end-to-end.
+// real NLJ cursor: the emitted rows carry the MERGE-SHAPE Datum (slot `_i` =
+// leg i's own Datum — the fulcrum's settlement, superseding the pre-fulcrum
+// untouched-mergeRows expectation: the partition rule rebases every upper
+// reference through the merge quantifier, so mergeRows' flat keys silently
+// NULLed them all on the §5 oracle side) plus a nested Positional row — slot
+// i IS leg i's positional row — and a fused two-step reference (commit 1's
+// TranslationMap output shape) reads through it end-to-end.
 func TestRFC173S3_MergeBirth_NLJCursor_Nested(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
@@ -91,10 +95,14 @@ func TestRFC173S3_MergeBirth_NLJCursor_Nested(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (A.ID=1 ⋈ B.ID=1)", len(results))
 	}
 
-	// Dual emission: the name-model Datum is mergeRows', untouched.
-	datum, isMap := results[0].Datum.(map[string]any)
-	if !isMap || datum["A.ID"] != int64(1) || datum["B.W"] != int64(100) {
-		t.Fatalf("Datum must stay the untouched mergeRows map, got %v", results[0].Datum)
+	// The merge-shape Datum: per-leg Datum maps under the `_i` keys — what
+	// the rebased upper references (and the §5 oracle) read.
+	wantDatum := map[string]any{
+		"_0": map[string]any{"ID": int64(1), "V": int64(10)},
+		"_1": map[string]any{"ID": int64(1), "W": int64(100)},
+	}
+	if !reflect.DeepEqual(results[0].Datum, wantDatum) {
+		t.Fatalf("Datum = %#v, want the merge-shape per-leg maps %#v", results[0].Datum, wantDatum)
 	}
 
 	// The nested positional row: slot i is leg i's WHOLE positional row.
@@ -198,18 +206,21 @@ func TestRFC173S3_MergeBirth_MixedUpper(t *testing.T) {
 	}
 }
 
-// TestRFC173S3_MergeBirth_FlatMapDeclines pins the review P2: the all-bare
-// merge RC does NOT birth on the FlatMap (correlated) path — a birth there
-// would derive the coexistence Datum from the positional row (OrdinalRows
-// under _i) while the §5 oracle path evaluates the bare-QOV RC against name
-// bindings (Datum maps under _i), breaking dualwindow row-for-row
-// invariance. The merge row's Datum story is the fulcrum's; until then the
-// shape stays name-model on BOTH oracle sides of the FlatMap.
-func TestRFC173S3_MergeBirth_FlatMapDeclines(t *testing.T) {
+// TestRFC173S3_MergeBirth_FlatMapBirths pins the fulcrum's settlement of the
+// merge Datum story (superseding the pre-fulcrum decline pin): the all-bare
+// merge RC DOES birth on the FlatMap (correlated) path — the partition rule's
+// merge arm produces live merge-RC FlatMaps whose inner plans carry baked leg
+// SARGs, so a name-model outer binding here would feed those baked operands a
+// name-keyed context (BakedNameContextError at scan-range build). The
+// coexistence Datum carries each leg's own DATUM under the `_i` keys — the
+// exact shape the §5 oracle produces by evaluating the bare-QOV RC over name
+// bindings — never raw OrdinalRows, preserving dualwindow row-for-row
+// invariance.
+func TestRFC173S3_MergeBirth_FlatMapBirths(t *testing.T) {
 	t.Parallel()
-	_, _, qovA, qovB, _ := ojWiringLegs(t)
+	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
 	c, err := newFlatMapCursor(
-		recordlayer.FromList([]QueryResult{}), nil, nil, EmptyEvaluationContext(),
+		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
 		qovA.Correlation, qovB.Correlation,
 		s3MergeRC(qovA, qovB), false, recordlayer.ExecuteProperties{},
 	)
@@ -217,9 +228,60 @@ func TestRFC173S3_MergeBirth_FlatMapDeclines(t *testing.T) {
 		t.Fatalf("newFlatMapCursor: %v", err)
 	}
 	defer c.Close()
-	if c.birth.enabled() {
-		t.Fatal("the merge RC must NOT birth on the FlatMap path (oracle invariance — fulcrum owns the merge Datum story)")
+	if !c.birth.enabled() || c.birth.WindowsOK {
+		t.Fatalf("the merge RC must birth on the FlatMap path without windows (enabled=%v windows=%v)", c.birth.enabled(), c.birth.WindowsOK)
 	}
+
+	outerQR := ojLegQR(t, legA, int64(1), int64(10))
+	innerQR := ojLegQR(t, legB, int64(2), int64(20))
+
+	t.Run("both legs", func(t *testing.T) {
+		t.Parallel()
+		got, err := c.computeResult(outerQR, innerQR)
+		if err != nil {
+			t.Fatalf("computeResult: %v", err)
+		}
+		// Nested positional row: slot i is leg i's WHOLE positional row.
+		if got.Positional == nil || len(got.Positional.Slots) != 2 {
+			t.Fatalf("Positional = %v, want the 2-slot nested merge row", got.Positional)
+		}
+		legRow, isRow := got.Positional.Slots[0].(values.OrdinalRow)
+		if !isRow {
+			t.Fatalf("slot 0 = %T, want leg A's positional row", got.Positional.Slots[0])
+		}
+		if v, ok := legRow.Get(1); !ok || v != int64(10) {
+			t.Fatalf("nested leg A slot 1 = (%v, %v), want (10, true)", v, ok)
+		}
+		// The coexistence Datum: per-leg DATUM MAPS under _0/_1 — the oracle's
+		// shape (bare QOV evaluated over name bindings), never OrdinalRows.
+		wantDatum := map[string]any{
+			"_0": map[string]any{"ID": int64(1), "V": int64(10)},
+			"_1": map[string]any{"ID": int64(2), "W": int64(20)},
+		}
+		if !reflect.DeepEqual(got.Datum, wantDatum) {
+			t.Fatalf("Datum = %#v, want per-leg Datum maps %#v", got.Datum, wantDatum)
+		}
+	})
+
+	t.Run("nil inner is the null leg", func(t *testing.T) {
+		t.Parallel()
+		got, err := c.computeResultLegs(outerQR, nil)
+		if err != nil {
+			t.Fatalf("computeResultLegs: %v", err)
+		}
+		if got.Positional == nil || len(got.Positional.Slots) != 2 || got.Positional.Slots[1] != nil {
+			t.Fatalf("Positional = %v, want [legA-row, nil]", got.Positional)
+		}
+		// The name model reconstructs the empty-Datum inner row; the merge
+		// Datum mirrors that as the empty map — exactly the oracle's output.
+		wantDatum := map[string]any{
+			"_0": map[string]any{"ID": int64(1), "V": int64(10)},
+			"_1": map[string]any{},
+		}
+		if !reflect.DeepEqual(got.Datum, wantDatum) {
+			t.Fatalf("null-inner Datum = %#v, want %#v", got.Datum, wantDatum)
+		}
+	})
 }
 
 // ordinalBindingStub binds one correlation to one positional row.
@@ -255,4 +317,152 @@ func (r *fakeExecOrdinalRow) GetByName(name string) (any, bool) {
 		}
 	}
 	return nil, false
+}
+
+// s3FusedRef builds the fused two-step reference the TranslationMap's rebuild
+// produces for a buried leg column: ofOrdinal(merge, slot) composed with the
+// leg-local ordinal (SimplifyValue fires the compose/fuse arm).
+func s3FusedRef(t *testing.T, mergeQOV *values.QuantifiedObjectValue, slot, legOrd int) *values.FieldValue {
+	t.Helper()
+	step0, err := values.NewFieldValueOfOrdinal(mergeQOV, slot)
+	if err != nil {
+		t.Fatalf("bake _%d: %v", slot, err)
+	}
+	inner, err := values.NewFieldValueOfOrdinal(step0, legOrd)
+	if err != nil {
+		t.Fatalf("bake leg ordinal %d over _%d: %v", legOrd, slot, err)
+	}
+	fused, isFV := values.SimplifyValue(inner).(*values.FieldValue)
+	if !isFV || fused.Resolved == nil || len(fused.Resolved.Accessors) != 2 {
+		t.Fatalf("compose must fuse into a two-accessor path, got %T", values.SimplifyValue(inner))
+	}
+	return fused
+}
+
+// TestRFC173S3_TranslatedTopSpans pins the S3 fulcrum's span recovery for a
+// TRANSLATED top result value — the partition rule's post-merge shape: pinned
+// single-accessor refs over the remaining leg mixed with FUSED two-step refs
+// over the merge quantifier. The merged-away legs' aliases survive only in the
+// merge quantifier's child RV (the positional-merge RC), so the probe resolves
+// through legRVs; without it (the S2 nil probe) the shape must decline —
+// fail-safe, never mis-windowed.
+func TestRFC173S3_TranslatedTopSpans(t *testing.T) {
+	t.Parallel()
+	_, legB, qovA, qovB, _ := ojWiringLegs(t)
+	legC := values.NewRecordType("", false, []values.Field{
+		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	qovC := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), legC)
+
+	mergedType := values.NewRecordType("", false, []values.Field{
+		{Name: values.OrdinalFieldName(0), FieldType: legB, Ordinal: 0},
+		{Name: values.OrdinalFieldName(1), FieldType: legC, Ordinal: 1},
+	})
+	mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedType)
+
+	a0, err := values.NewFieldValueOfOrdinal(qovA, 0)
+	if err != nil {
+		t.Fatalf("bake A#0: %v", err)
+	}
+	a1, err := values.NewFieldValueOfOrdinal(qovA, 1)
+	if err != nil {
+		t.Fatalf("bake A#1: %v", err)
+	}
+	top := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "ID", Value: a0},
+		values.RecordConstructorField{Name: "V", Value: a1},
+		values.RecordConstructorField{Name: "ID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
+		values.RecordConstructorField{Name: "W", Value: s3FusedRef(t, mergeQOV, 0, 1)},
+		values.RecordConstructorField{Name: "X", Value: s3FusedRef(t, mergeQOV, 1, 0)},
+	)
+
+	// The S2 probe (no legRVs) must DECLINE the fused shape.
+	if _, _, ok := ordinalJoinSpansOf(top, nil); ok {
+		t.Fatal("fused refs must decline without legRVs (no alias to resolve through)")
+	}
+
+	legRVs := map[values.CorrelationIdentifier]values.Value{
+		mergeQOV.Correlation: s3MergeRC(qovB, qovC),
+	}
+	spans, _, ok := ordinalJoinSpansOf(top, legRVs)
+	if !ok {
+		t.Fatal("translated top must yield spans through the merge RC")
+	}
+	want := []struct {
+		alias         string
+		offset, width int
+	}{{"A", 0, 2}, {"B", 2, 2}, {"C", 4, 1}}
+	if len(spans) != len(want) {
+		t.Fatalf("got %d spans %+v, want %d", len(spans), spans, len(want))
+	}
+	for i, w := range want {
+		s := spans[i]
+		if s.Alias.Name() != w.alias || s.Offset != w.offset || s.Width != w.width {
+			t.Fatalf("span %d = {%s %d %d}, want {%s %d %d}", i, s.Alias.Name(), s.Offset, s.Width, w.alias, w.offset, w.width)
+		}
+		if s.LegType == nil || len(s.LegType.Fields) != w.width {
+			t.Fatalf("span %d leg type = %v, want the LEAF leg's own %d-field type", i, s.LegType, w.width)
+		}
+	}
+	// The recovered windows resolve a dotted read the way spanAwareRow will:
+	// leg-local name against the LEAF type (the whole point of the recovery —
+	// "B.W" over the flat top row).
+	if idx, found := spans[1].LegType.FieldIndex("W"); !found || idx != 1 {
+		t.Fatalf("leg B window must resolve W leg-locally (got %d, %v)", idx, found)
+	}
+}
+
+// TestRFC173S3_SpliceLegSpans pins the recursive box splice: a span whose leg
+// is itself a join plan's output (a FULL box's gated-join leg — an anonymous
+// flat concat named after its buried rightmost table) is replaced by the
+// leg's OWN spans offset into the parent row, exposing the LEAF table aliases
+// dotted upper references actually name. The width guard keeps a
+// non-tiling (shadowed-alias) splice opaque instead of mis-windowed.
+func TestRFC173S3_SpliceLegSpans(t *testing.T) {
+	t.Parallel()
+	_, legB, _, _, boxSeed := ojWiringLegs(t)
+	legC := values.NewRecordType("", false, []values.Field{
+		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	qovC := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), legC)
+
+	// The box leg: alias "B" (sourceAlias names the box after its rightmost
+	// leaf — the shadowing case), type = the flat {A,B} concat. RAW
+	// construction: duplicate names across concat slots are legal.
+	boxType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "W", FieldType: values.NotNullLong, Ordinal: 3},
+	}}
+	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), boxType)
+	top := buildOrdinalJoinRC(t, qovC, boxQOV)
+
+	legRVs := map[values.CorrelationIdentifier]values.Value{
+		boxQOV.Correlation: boxSeed, // the box's own seed over legs A, B
+	}
+	spans, _, ok := ordinalJoinSpansOf(top, legRVs)
+	if !ok {
+		t.Fatal("pristine seed over [C, box] must yield spans")
+	}
+	spliced := spliceLegSpans(spans, legRVs)
+	want := []struct {
+		alias         string
+		offset, width int
+	}{{"C", 0, 1}, {"A", 1, 2}, {"B", 3, 2}}
+	if len(spliced) != len(want) {
+		t.Fatalf("got %d spliced spans %+v, want %d", len(spliced), spliced, len(want))
+	}
+	for i, w := range want {
+		s := spliced[i]
+		if s.Alias.Name() != w.alias || s.Offset != w.offset || s.Width != w.width {
+			t.Fatalf("spliced span %d = {%s %d %d}, want {%s %d %d}", i, s.Alias.Name(), s.Offset, s.Width, w.alias, w.offset, w.width)
+		}
+	}
+	// The LEAF B span resolves leg-locally against table B's own type — and
+	// its own legRVs entry (the shadowed box alias) does NOT re-splice it:
+	// table B's width (2) never tiles the box RV's total (4).
+	if len(spliced[2].LegType.Fields) != len(legB.Fields) {
+		t.Fatalf("leaf B span type = %v, want table B's own type", spliced[2].LegType)
+	}
 }

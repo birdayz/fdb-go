@@ -59,6 +59,7 @@ type flatMapCursor struct {
 
 func newFlatMapCursor(
 	outerCursor recordlayer.RecordCursor[QueryResult],
+	outerPlan plans.RecordQueryPlan,
 	innerPlan plans.RecordQueryPlan,
 	store *recordlayer.FDBRecordStore,
 	evalCtx *EvaluationContext,
@@ -71,16 +72,19 @@ func newFlatMapCursor(
 	if err != nil {
 		return nil, err
 	}
-	// The all-bare positional-merge RC does NOT birth on the FlatMap path
-	// (S3-W2 review P2): computeResultLegs derives the coexistence Datum
-	// from the positional row, so a merge birth here would put OrdinalRows
-	// under the _i keys while the §5 oracle path evaluates the same bare-QOV
-	// RC against name bindings and puts Datum maps there — breaking the
-	// dualwindow row-for-row invariance. The merge row's Datum story is the
-	// fulcrum commit's to settle (no-shim ruling); until then a merge RC on
-	// a correlated implementation stays name-model on BOTH oracle sides.
-	if birth.enabled() && values.IsPositionalMergeRC(resultValue) {
-		birth = nil
+	// A TRANSLATED top RV (fused merge references) yields no spans from the RV
+	// alone — recover them through the leg subplans' result values (the merge
+	// RC is where the merged-away leg aliases survive), so the coexistence
+	// Datum keeps the per-leg qualified ALIAS.COL keys the name model always
+	// carried (datumFromSpans) and downstream dotted reads stay resolvable.
+	if birth.enabled() && !birth.WindowsOK {
+		legRVs := make(map[values.CorrelationIdentifier]values.Value)
+		addJoinLegRV(legRVs, outerAlias, outerPlan)
+		addJoinLegRV(legRVs, innerAlias, innerPlan)
+		if spans, _, ok := ordinalJoinSpansOf(resultValue, legRVs); ok {
+			birth.Spans = spliceLegSpans(spans, legRVs)
+			birth.WindowsOK = true
+		}
 	}
 	// The FlatMap half of the PR-447 review P1 (@claude final-pass catch): the
 	// correlated implementation pushes the join's baked ON references INTO
@@ -262,6 +266,33 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		datum := datumFromPositional(pos)
 		if c.birth.WindowsOK {
 			datum = datumFromSpans(pos, c.birth.Spans)
+		} else {
+			// Bare-QOV fields (the S3 positional-merge RC's `_i` slots, and the
+			// untranslated leg of a MIXED upper RV): the positional slot holds
+			// the leg's OrdinalRow, but the coexistence Datum must carry the
+			// leg's own DATUM — the §5 oracle evaluates the same bare QOV over
+			// name bindings and puts the leg's Datum there, so a raw OrdinalRow
+			// under the `_i` key breaks dualwindow row-for-row invariance. The
+			// outer mirrors the name-model branch's map cast; the inner rides
+			// raw (bare-scalar unnest elements) with the nil-inner NULL leg as
+			// the empty map the name model reconstructs.
+			for _, f := range c.birth.RC.Fields {
+				qov, isQOV := f.Value.(*values.QuantifiedObjectValue)
+				if !isQOV {
+					continue
+				}
+				switch qov.Correlation {
+				case c.outerAlias:
+					od, _ := outerRow.Datum.(map[string]any)
+					datum[f.Name] = od
+				case c.innerAlias:
+					if inner != nil {
+						datum[f.Name] = inner.Datum
+					} else {
+						datum[f.Name] = map[string]any{}
+					}
+				}
+			}
 		}
 		return QueryResult{Datum: datum, Positional: pos}, nil
 	}

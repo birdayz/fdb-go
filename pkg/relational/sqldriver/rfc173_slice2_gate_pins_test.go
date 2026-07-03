@@ -556,3 +556,57 @@ func TestFDB_RFC173_CoveringIndexLegOverGatedJoin(t *testing.T) {
 		}
 	}
 }
+
+// TestFDB_RFC173_PureCrossProduct pins the UNAVOIDABLE cross product through
+// the S3 fulcrum's N-way flat seed: a FROM list with NO join predicates
+// (every quantifier its own independent component) must still plan — the
+// partition rule's disconnected-lower pruning yields to component-aligned
+// splits (Java's shouldDeferCrossProducts, on by default), which are the only
+// partitions a fully disconnected select has. Regression: the pruning ate
+// every bipartition and the 3-ary select had no implementation (0AF00) — the
+// same gap took down `WHERE EXISTS (SELECT 1 FROM t2, t3, t4 ...)`, whose
+// existential body is exactly this shape plus an outer correlation.
+func TestFDB_RFC173_PureCrossProduct(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_rfc173_cross")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc173_cross")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE rfc173_cross_tmpl "+
+			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc173_cross/s WITH TEMPLATE rfc173_cross_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc173_cross?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b (id) VALUES (10), (11), (12)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c (id) VALUES (100)")
+
+	// 2 × 3 × 1 = 6 cross rows; every combination present exactly once.
+	got := rfc173PinRows(t, db, ctx, "SELECT a.id, b.id, c.id FROM a, b, c")
+	sort.Strings(got)
+	want := []string{
+		"1|10|100", "1|11|100", "1|12|100",
+		"2|10|100", "2|11|100", "2|12|100",
+	}
+	if !eqStrSlices(got, want) {
+		t.Errorf("cross rows = %v, want %v", got, want)
+	}
+
+	// The EXISTS flavor: a 3-way cross body correlated only through one leg.
+	got = rfc173PinRows(t, db, ctx,
+		"SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b, c, a a2 WHERE b.id = 10 + a.id - 1)")
+	sort.Strings(got)
+	if !eqStrSlices(got, []string{"1", "2"}) {
+		t.Errorf("exists-cross rows = %v, want [1 2]", got)
+	}
+}

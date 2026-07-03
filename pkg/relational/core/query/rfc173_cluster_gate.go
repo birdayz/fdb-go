@@ -62,14 +62,20 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// partition machinery. Name model (S3+ owns the existential seeds).
 		return wedgeGateDecision{Arity: arityPoison, Reason: "existential quantifiers on the join select"}
 	}
-	if strings.EqualFold(sourceAlias(j.Left), sourceAlias(j.Right)) {
-		// Both legs bind the SAME correlation (e.g. `FROM p JOIN p`, a CTE
-		// referenced twice with no aliases): the ordinal seed's two leg QOVs
-		// would be indistinguishable — two runs under one alias, an
-		// unclassifiable shape. Fail toward the name model (whose
-		// same-namespace merge semantics tolerate it) — the contract's
-		// unclassifiable-counts-as->2 direction.
-		return wedgeGateDecision{Arity: arityPoison, Reason: "duplicate leg aliases (indistinguishable leg correlations)"}
+	// PAIRWISE dup check over the kind-aware leg list (S3 fulcrum: an N-way
+	// gather can collide any two legs, e.g. `FROM p, q, p` — the binary
+	// root-operand compare missed those): two legs binding the SAME
+	// correlation make the seed's QOVs indistinguishable — an unclassifiable
+	// shape. Fail toward the name model (whose same-namespace merge
+	// semantics tolerate it) — the contract's unclassifiable-counts-as->2
+	// direction.
+	seenAliases := make(map[string]struct{})
+	for _, leg := range t.legsOfGatedJoin(j) {
+		key := strings.ToUpper(leg.alias)
+		if _, dup := seenAliases[key]; dup {
+			return wedgeGateDecision{Arity: arityPoison, Reason: "duplicate leg aliases (indistinguishable leg correlations)"}
+		}
+		seenAliases[key] = struct{}{}
 	}
 	if !t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right) {
 		// A leg CONTAINS a name-model join at its own boundary (a 3+-way
@@ -112,10 +118,14 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		return wedgeGateDecision{Reason: "enclosed in an inner-join cluster (leg of a name-model merge)"}
 	}
 	a := t.clusterArity(j)
-	if a == 2 {
-		return wedgeGateDecision{Gated: true, Arity: a, Reason: "maximal inner-join cluster of arity 2"}
+	if a >= 2 {
+		// S3 fulcrum: the exactly-2 wedge lifted — every maximal inner-join
+		// cluster seeds the flat N-leg ordinal RC (Java flattens inner joins
+		// at translation, QueryVisitor.java:429-434; the partition rule's
+		// positional merge case re-collapses subsets during exploration).
+		return wedgeGateDecision{Gated: true, Arity: a, Reason: "maximal inner-join cluster (N-way flat seed, S3)"}
 	}
-	return wedgeGateDecision{Arity: a, Reason: "maximal cluster arity != 2"}
+	return wedgeGateDecision{Arity: a, Reason: "cluster arity below 2 (single quantifier or poison)"}
 }
 
 // ordinalEligible reports whether a gated join could take op as a LEG: op's
@@ -136,19 +146,20 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 	switch o := op.(type) {
 	case *logical.LogicalJoin:
-		// ANY join leg is ineligible in the Slice 2 wedge — including a
-		// would-be-gated one. A nested ordinal box's output type is the BARE
-		// leg concatenation, which ERASES the buried aliases: an upper dotted
-		// reference into the buried leg (`a.id` through `(a JOIN b) FULL JOIN
-		// c`) has no span to resolve against — that is S3's collapsed
-		// FieldPath territory (contract ruling #2: "S2 needs only
-		// single-accessor ordinals"). The name model handles nested legs via
-		// verbatim dotted-key propagation; dual emission keeps that path
-		// alive (an ordinal box consumed as a NAME-model leg reads through
-		// its bare+qualified Datum). Caught live by the W3b flip
-		// (FULL-over-join: "A.ID not resolvable, row columns [ID FLAG ID
-		// A_ID BX ID A_ID BX_REF]").
-		return false
+		// S3 fulcrum ("join legs eligible iff the leg itself gates"): a
+		// GATED join leg's output is its flat ordinal concat — a typed
+		// positional row that multi-accessor FieldPaths resolve through (the
+		// S2 single-accessor restriction that made ANY join leg ineligible
+		// died with W1). A NAME-MODEL join leg (dissolved-LEFT clusters,
+		// unnest, mixed derived nesting) stays ineligible: its merged row
+		// cannot be ordinal-typed. The probe runs Decide with enclosure
+		// forced FALSE — a join leg roots a fresh cluster (it sits at an
+		// outer-box or leg boundary) — and Decide is side-effect-free.
+		prev := t.inInnerCluster
+		t.inInnerCluster = false
+		d := t.ordinalWedgeGateDecide(o)
+		t.inInnerCluster = prev
+		return d.Gated
 	case *logical.LogicalFilter:
 		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
 			return false
@@ -195,7 +206,7 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		return eligible
 	default:
 		// Non-join leaves and opaque boxes (aggregate, union, sort, limit,
-		// distinct, values, …): the leg boundary sees the box's own output
+		// distinct, values, â¦): the leg boundary sees the box's own output
 		// row, never a buried join's merged row. (LogicalCTE has its OWN arm
 		// above — derived-table sources sit directly in leg position.)
 		return true
