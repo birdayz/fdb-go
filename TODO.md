@@ -63,9 +63,11 @@ validation gate.
     expression rewrite (Graefe ruling on the codex P2-2 fix); (b) box-leg clusters (nested FULL boxes)
     stay on the pre-W4b path even when gated (@claude scope note — intended W4b narrowing); (c) the
     UPDATE-transform row-context site (`executor.go` ~:2754) still gates the binder on the old
-    params/scalar-subqueries-only condition — a correlated ref in an UPDATE SET expression over Datum
-    rows would silently NULL, the same class round 5 fixed for projections (`hasBindingContext`);
-    reachability through the DML path unproven — align it with the shared predicate when touched.
+    params/scalar-subqueries-only condition — the same class round 5 fixed for projections
+    (`hasBindingContext`); PROBED: unreachable through SQL today — a subquery in UPDATE ... SET never
+    reached the binder at all (the builder wrote the LITERAL SUBQUERY TEXT into the row — silent data
+    corruption, on master too; now guarded with a clean 0AF00 decline + a no-mutation pin). Align the
+    site with the shared predicate whenever subquery-in-SET support lands.
     FIXED in the gauntlet (not residuals): parenthesized-column-over-JOIN-inner (qualified scalarCol
     from the walked QOV; the ambiguous-column probe returned the WRONG LEG before the fix — pinned);
     OUTER-scope parenthesized columns (scope discrimination via the binder-exact innerSourceAliases;
