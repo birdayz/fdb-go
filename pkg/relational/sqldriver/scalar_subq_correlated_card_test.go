@@ -153,12 +153,23 @@ func TestFDB_ScalarSubqCorrelatedCardinality_SurvivesPushdown(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO dept (id) VALUES (1)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES (10, 1, 100), (11, 1, 200)")
 
+	q := "SELECT (SELECT salary FROM emp e WHERE e.dept_id = d.id) FROM dept d WHERE d.id = 1"
+
+	// First prove the plan actually EXERCISES the index pushdown — otherwise a
+	// full-scan plan would satisfy the 21000 check below without ever testing that
+	// the strictSingle flag survives an inner-predicate SARG (the whole point).
+	var plan string
+	if pErr := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); pErr != nil {
+		t.Fatalf("EXPLAIN: %v", pErr)
+	}
+	if !strings.Contains(plan, "IndexScan(EMP_DEPT") {
+		t.Fatalf("pushdown pin must exercise the emp_dept index SARG (want IndexScan(EMP_DEPT ...) in plan); got: %s", plan)
+	}
+
 	// The correlation SARGs into the emp_dept index; the strict flag must survive
 	// that pushdown so the two-match case still errors 21000.
 	var v sql.NullInt64
-	err = db.QueryRowContext(ctx,
-		"SELECT (SELECT salary FROM emp e WHERE e.dept_id = d.id) FROM dept d WHERE d.id = 1",
-	).Scan(&v)
+	err = db.QueryRowContext(ctx, q).Scan(&v)
 	if err == nil || !strings.Contains(err.Error(), "21000") {
 		t.Fatalf("multi-match correlated scalar with index-SARG pushdown error = %v, want 21000 "+
 			"(strictSingle flag must survive inner-predicate pushdown)", err)
