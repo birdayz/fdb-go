@@ -24,9 +24,9 @@ import (
 // SIZE is alias-collision-safe: a cluster's synthetic quantifier alias
 // (sourceAlias) COINCIDES with its rightmost leaf's, so an alias-name test is
 // ambiguous, but a multi-source cluster always provides ≥2 aliases. Uses the
-// same physicalProvidedAliases machinery preservedProvidedAliases delegates to.
+// same physicalProvidedAliases machinery legProvidedAliases delegates to.
 func singleSourceLeg(q expressions.Quantifier) bool {
-	provided := preservedProvidedAliases(q)
+	provided := legProvidedAliases(q)
 	if len(provided) != 1 {
 		return false
 	}
