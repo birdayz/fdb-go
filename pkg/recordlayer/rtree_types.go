@@ -1,7 +1,6 @@
 package recordlayer
 
 import (
-	"crypto/rand"
 	"fmt"
 	"math/big"
 
@@ -19,16 +18,6 @@ const (
 // rootNodeID is all zeros — the well-known root node ID.
 // Matches Java's NodeHelpers.rootNodeId().
 var rootNodeID = make([]byte, 16)
-
-// newRandomNodeID generates a random 16-byte UUID for a new node.
-// Matches Java's NodeHelpers.newRandomNodeId().
-func newRandomNodeID() ([]byte, error) {
-	id := make([]byte, 16)
-	if _, err := rand.Read(id); err != nil {
-		return nil, fmt.Errorf("rtree: generate node ID: %w", err)
-	}
-	return id, nil
-}
 
 // Point represents an N-dimensional point with int64 coordinates.
 // Null coordinates are represented as nil in the tuple.

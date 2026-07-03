@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -16,10 +17,27 @@ import (
 type rtreeStorage struct {
 	subspace subspace.Subspace
 	config   RTreeConfig
+
+	// env is the DST Tier-0 environment routing node-ID entropy. Nil means
+	// production (crypto/rand); the maintainer sets it from the record
+	// context so a simulation run mints reproducible node IDs. The *dst.Env
+	// accessors are nil-safe, so leaving it unset keeps production byte-identical.
+	env *dst.Env
 }
 
 func newRTreeStorage(ss subspace.Subspace, config RTreeConfig) *rtreeStorage {
 	return &rtreeStorage{subspace: ss, config: config}
+}
+
+// newRandomNodeID generates a random 16-byte UUID for a new node, drawing
+// entropy through the DST randomness seam (crypto/rand in production, the
+// seeded source in simulation). Matches Java's NodeHelpers.newRandomNodeId().
+func (s *rtreeStorage) newRandomNodeID() ([]byte, error) {
+	id := make([]byte, 16)
+	if _, err := s.env.Read(id); err != nil {
+		return nil, fmt.Errorf("rtree: generate node ID: %w", err)
+	}
+	return id, nil
 }
 
 // fetchLeafNode loads a leaf node from FDB. Returns nil if not found.

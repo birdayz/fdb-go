@@ -8,6 +8,7 @@ import (
 	"time"
 	"unsafe"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -1187,6 +1188,11 @@ func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple
 func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error {
 	return store.ResolveUniquenessViolation(index, indexKey, primaryKey)
 }
+
+// Env exposes the record context's DST environment to index maintainers.
+// Nil-safe (a nil *dst.Env means production); index maintainers draw persisted
+// nonces through it so a simulation run is byte-reproducible.
+func (store *FDBRecordStore) Env() *dst.Env { return store.context.Env() }
 
 // lockRegistry delegation — matches Java's LockRegistry on FDBRecordContext.
 func (store *FDBRecordStore) AcquireWriteLock(key string) { store.context.locks.WriteLock(key) }

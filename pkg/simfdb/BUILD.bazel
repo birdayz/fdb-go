@@ -26,6 +26,7 @@ go_test(
         "atomic_test.go",
         "conflict_outcome_test.go",
         "continuation_replay_test.go",
+        "differential_test.go",
         "fault_repro_test.go",
         "fuzz_test.go",
         "integration_test.go",
@@ -41,6 +42,7 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
     ],
 )

@@ -378,11 +378,11 @@ func (rt *RTree) handleLeafOverflow(tx fdb.WritableTransaction, path *updatePath
 func (rt *RTree) splitRootLeaf(tx fdb.WritableTransaction, root *leafNode) error {
 	mid := len(root.slots) / 2
 
-	leftID, err := newRandomNodeID()
+	leftID, err := rt.storage.newRandomNodeID()
 	if err != nil {
 		return err
 	}
-	rightID, err := newRandomNodeID()
+	rightID, err := rt.storage.newRandomNodeID()
 	if err != nil {
 		return err
 	}
@@ -446,7 +446,7 @@ func (rt *RTree) overflowLeaf(tx fdb.WritableTransaction, path *updatePath) erro
 
 	if needSplit {
 		// Split: create one new sibling, redistribute across S+1 nodes.
-		newID, err := newRandomNodeID()
+		newID, err := rt.storage.newRandomNodeID()
 		if err != nil {
 			return err
 		}
@@ -724,11 +724,11 @@ func (rt *RTree) handleIntermediateOverflow(tx fdb.WritableTransaction, path *up
 func (rt *RTree) splitRootIntermediate(tx fdb.WritableTransaction, root *intermediateNode) error {
 	mid := len(root.slots) / 2
 
-	leftID, err := newRandomNodeID()
+	leftID, err := rt.storage.newRandomNodeID()
 	if err != nil {
 		return err
 	}
-	rightID, err := newRandomNodeID()
+	rightID, err := rt.storage.newRandomNodeID()
 	if err != nil {
 		return err
 	}
@@ -794,7 +794,7 @@ func (rt *RTree) overflowIntermediate(tx fdb.WritableTransaction, path *updatePa
 
 	if needSplit {
 		// Split: create one new sibling, redistribute across S+1 nodes.
-		newID, err := newRandomNodeID()
+		newID, err := rt.storage.newRandomNodeID()
 		if err != nil {
 			return err
 		}

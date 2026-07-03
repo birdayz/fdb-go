@@ -1,23 +1,35 @@
 # RFC-179 — Deterministic Simulation Testing (DST) for the record & relational layers (Track A)
 
-**Status:** **Implementing** (Track A landing 0→1→2). The four open questions are **resolved** (§9,
+**Status:** **Implemented** (Track A, Tiers 0→1→2). The four open questions are **resolved** (§9,
 validated against the C++/Java/Go sources) and the build order is committed (§7). Not a query-engine
-planner change, so the Graefe gate is **advisory** here, not mandatory.
+planner change, so the Graefe gate is **advisory** here, not mandatory. Track B (client transport) is a
+separate deliverable (§1a) and out of scope for this RFC.
 
 **Implementation status (this branch):**
-- **Tier 0** — `pkg/dst`: `Clock` (real/sim), seeded `Randomness`, `Buggify` (faithful port of FDB
-  `getSBVar`), `Env` bundle. Env seam threaded `FDBDatabase → FDBRecordContext`; store-header
-  `LastUpdateTime` + lock-state routed through the sim clock. Remaining wiring: indexer heartbeat,
-  vector-index nonces, `Session.StatementNow`.
-- **Tier 1** — `pkg/simfdb`: the third `fdb.BackendDatabase` (MVCC sorted store, logical versions, RYW,
-  all atomics, SSI with the strict-`>` rule + `1007` window + versionstamp server-role WCR re-add, size
-  limits, commit BUGGIFY, synchronous ready-futures). **Proven**: the record layer saves/loads over
-  SimFDB with no Docker; byte-reproducible across runs; validated by `chaos.Verify()`'s 14-invariant
-  oracle (which caught one real SimFDB bug, fixed). Remaining: the differential-vs-libfdb_c oracle
-  (needs the cgo bench harness).
-- **Tier 2** — serial seed-reproducible workload driver + oracle; concurrent-open-transaction
-  interleaving driver (fires real `1020` through the record layer); byte-reproducibility **under
-  injected faults**. Remaining: SQL workload driver, continuation-under-fault replay.
+- **Tier 0** ✅ — `pkg/dst`: `Clock` (real/sim), seeded `Randomness`, `Buggify` (faithful port of FDB
+  `getSBVar`), `Env` bundle. Env seam threaded `FDBDatabase → FDBRecordContext`; every persisted-byte /
+  nondeterminism site routed through it (production byte-identical): store-header `LastUpdateTime` +
+  lock-state, `Session.StatementNow`/`BeginStatement`, indexer heartbeat time + UUID, online-indexer
+  lease TTL, SPFresh token, and the R-tree / HNSW / SPFresh vector-index nonces (via an `Env()` method
+  on the `indexStoreContext` seam).
+- **Tier 1** ✅ — `pkg/simfdb`: the third `fdb.BackendDatabase` (MVCC sorted store, logical versions,
+  RYW, all atomics, SSI with the strict-`>` rule + `1007` window + versionstamp server-role WCR re-add,
+  size limits, commit BUGGIFY, synchronous ready-futures, idempotent commit, lazy versionstamp future).
+  **Validated seven ways**: unit tests; the record layer saves/loads over SimFDB with no Docker;
+  byte-reproducible across runs (incl. under injected faults); `chaos.Verify()`'s 14-invariant oracle;
+  the full SQL/relational stack end-to-end; a conflict-outcome parity check against the known
+  real-FDB/libfdb_c outcomes; and a **live differential** — 200 randomized conflict scenarios whose
+  commit/abort outcome must equal the pure-Go client on a real FDB cluster (transitively libfdb_c, no
+  cgo). Five real SimFDB bugs were found and fixed through these integrations.
+- **Tier 2** ✅ — serial seed-reproducible record-layer workload driver + `Verify()` oracle;
+  concurrent-open-transaction interleaving driver (fires real `1020` end-to-end through the record
+  layer); byte-reproducibility **under injected faults**; SQL-over-SimFDB validation; a serial
+  seed-reproducible SQL workload driver checked against a model; and continuation-under-fault replay
+  (a scan resumes from a continuation across a concurrent modification, no dup/loss).
+- **Documented follow-ups** (not core gaps): the SQL-level *plan-switch* continuation variant (a token
+  minted against plan A resumed against plan B) needs a cross-request SQL continuation-resume hook the
+  engine does not yet expose; a *live* SimFDB-vs-libfdb_c fuzz (the parity + live-vs-pure-Go differential
+  already pin the semantics) would add the cgo bench harness as a third arm.
 **Review:** Torvalds (design) **ACK**, FDB C++ client dev (SSI/versionstamp/error-code fidelity vs
 7.3.75) **ACK**, Graefe (advisory, query-engine touchpoints) **ACK** — their findings are folded in
 (the `SetVersionstampedKey` server-side write-conflict-range re-add in Tier 1 item 1; LRU-eviction as
