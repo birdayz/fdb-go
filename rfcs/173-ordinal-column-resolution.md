@@ -1864,3 +1864,81 @@ column is addressed by ORDINAL (`pullUpResultColumns` → `FieldValue.ofOrdinalN
 3. **Shape 2 (JOIN-inner).** Fresh unique id for `innerQ` threaded through the two mint sites + every
    `csq.InnerAlias` consumer. White-box + FDB pin.
 Exit gate: a test asserting `NewScalarSubqueryAnchoredRecord` has ZERO production callers.
+*(Exit gate amended by impl correction 3 below: the constructor keeps exactly ONE caller — the
+ungated-outer residual — until W4-left/W5 gate every cluster; the gate becomes "one caller, reachable
+only for ungated outers, pinned".)*
+
+### W4b impl correction 3 (shape 1): the clustered outer is BROKEN today, not name-model-working
+**Ground truth (FDB-probed on master, `rfc173_w4b_clustered_outer_fdb_test.go`).** The shape-1 premise
+— "clustered-outer correlated scalars work today via the name model; shape 1 flips them to ordinal" —
+is FALSE. Probed matrix over `FROM customers c, extras e` variants:
+- **(b)/(e) correlation to the RIGHTMOST leg** (comma or LEFT-join outer): **works**. Mechanism: the
+  level-2 outer quantifier is named `sourceAlias(p.Input)` = the rightmost leaf, the executor binds the
+  outer row under exactly that alias, and the inner's lazy `FieldValue(QOV(E), COL)` resolves through
+  the binding (`values.go evaluateCorrelated`). This is the ONLY working clustered-outer class.
+- **(a)/(g) comma cluster + NON-rightmost correlation**: **0AF00 — cannot plan** (with or without
+  multi-leg projections). The inner is correlated to `C`, but the level-2 select's outer quantifier is
+  `E` — `referenceIsCorrelatedTo` never matches, no NLJ implements, no winner.
+- **(c) `JOIN..ON` cluster + non-rightmost correlation**: plans and returns **SILENT NULL** (want 100).
+- **(d) LEFT-join outer + non-rightmost correlation**: plans and returns **SILENT NULL** (want 50).
+So shape 1 is a **silent-NULL/unplannable BUGFIX + capability completion** — the exact pattern of
+shape 3, one level up. Two design premises fall:
+1. **The outer translates ENCLOSED today** (`translateProjectWithCorrelatedScalar` sets
+   `t.inInnerCluster=true` around BOTH legs), so a csq outer cluster NEVER gates — the W3 ruling's
+   "gate on `ordinalWedgeGateDecide(outer).Gated`" requires an **enclosure lift**: probe the gate with
+   enclosure forced false (exactly `ordinalEligible`'s probe), and when Gated, translate the outer
+   FRESH so it actually seeds ordinally.
+2. **W1's "zero callers within W4b" is unreachable**: ungated outers (LEFT-box, unnest-outer,
+   existential-carrying, dup-alias clusters) reach this site, and their RIGHTMOST-correlation class
+   works today — deleting the name-model fallback would regress it. The anchored constructor keeps
+   ONE caller (the ungated-outer residual) until W4-left/W5 gate every cluster; it dies in S4 as
+   planned. S4 gains no new predecessor (W5 + W4-left already precede it).
+
+**Amended shape-1 design (for ruling):**
+- **(i) Enclosure lift, gated outers only.** Peel row-shape-preserving unaries (Filter without
+  subqueries / Limit / Sort / Distinct) off `p.Input` to the cluster join J; probe
+  `ordinalWedgeGateDecide(J)` enclosure-free. Gated → the outer leg translates FRESH (positional
+  select); ungated → today's enclosed name-model translation stays.
+- **(ii) Seed.** Outer leg = ONE full ordinal run over `QOV(sourceAlias(p.Input), concatType)`
+  (`concatType` = `ordinalLegType(J)`), field names DOTTED `LEG.COL` walked per gathered leg — the
+  level-2 output row stays name-addressable, so the shipped W4b level-3 projection mechanism (flat
+  dotted `FieldValue` reads over the seed's named output) is unchanged. Inner leg unchanged
+  (`ofOrdinal(QOV(inner),0)` named `INNER.SCALARCOL`, nullable). `AssertOrdinalJoinSeed` holds (two
+  runs).
+- **(iii) Correlation pull-up (Java `Value.pullUp` / `Quantifier.pullUpResultColumns` equivalent).**
+  The inner plan's correlated leg refs `FieldValue(QOV(leg), COL)` rewrite to
+  `ofOrdinalNumber(QOV(outerAlias, concatType), leafOffset + leafTyp.FieldIndex(COL))` through
+  `gatedJoinLegTypes(J)` — the W3-blessed spine. Runtime resolves through the existing
+  binding→OrdinalRow arm (`values.go` `evaluateCorrelated`); no executor change. The rewrite walks the
+  single-source inner chain's value carriers (filter predicates, projected values, aggregate operands,
+  sort keys) via `predicates.ReplaceValues`/`values.Replace`, building rewritten copies — an UNKNOWN
+  inner node kind marks the refs unbakeable (decline, never a silent miss).
+- **(iv) Decline policy (kills the silent-NULL class).** Non-rightmost leg refs that cannot bake
+  (ungated outer, buried box-leg refs, unbakeable inner, inner-alias/leg-alias collision) →
+  DECLINE nil (clean 0AF00), replacing today's silent NULLs; rightmost-only refs keep the name-model
+  fallback ((b)/(e) unregressed). Every clustered-outer query is then CORRECT (ordinal) or LOUD
+  (0AF00) — never silently NULL.
+- **(v) Bare projections over a cluster + csq** are not resolvable against the dotted seed output:
+  rightmost-only correlation falls back to name-model (today's behavior); non-rightmost declines per
+  (iv). Bare-unique widening is deferred (documented, not silent).
+
+**Graefe ruling on impl correction 3: DESIGN-ACK, all five amendments + exit-gate amendment, with
+conditions.** (i) ACK — reuse the `ordinalEligible` enclosure-free probe verbatim; if Gated but the
+fresh translation/seed fails, that case joins the (iv) DECLINE set (never an enclosed fallback into
+the silent-NULL class). (ii) ACK — box-leg convention consistency outweighs a second convention.
+(iii) ACK-with-conditions: (a) bake ALL legs' refs including the rightmost (no mixed-model lazy reads
+against a concat OrdinalRow); (b) copies, never in-place mutation (the logical tree must survive a
+decline-and-fallback re-translation); (c) the white-box pin must ENUMERATE the walked carrier kinds so
+a new logical node fails the pin, not silently. (iv)/(v) ACK. Exit gate ACK with condition: the pin
+asserts BOTH directions (constructor unreachable for gated outers AND reachable for the ungated
+residual). Q-A: KEEP the 2-leg shape (the seed need not be canonical; exploration reaches the flat
+form) — condition: PIN the SelectMergeRule interaction explicitly (if the gated outer leg merges into
+the LEFT-outer select, the baked concat-QOV refs must compose to per-leg ordinals via
+`translateValueCorrelations`, or the merge must decline; a wrong-ordinal read post-merge is exactly
+the silent class this slice kills). Q-B: translation-time rewrite on copies is correct here because
+the seed is born at the translator. Q-C: no §5 conflation hazard (ordinals authoritative, dotted
+names disambiguate, both residual collisions decline-gated). **Impl detail adopted under the W2
+principle (unique quantifier ids):** the level-2 outer quantifier of the ORDINAL path takes a FRESH
+unique correlation id (not `sourceAlias`'s rightmost-leaf name) — the seed's concat QOV and the
+baked pull-up refs key on it, which structurally rules out the alias-shadowing / DIVERGENT-baked-types
+collision between the level-2 concat type and the cluster's own rightmost leg type.
