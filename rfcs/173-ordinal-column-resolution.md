@@ -1624,12 +1624,17 @@ unnest until W5; scalar-subquery / non-wedge anchored seeds until S4).
    - **task-count within ±2%** of `{3,11122}/{4,45306}` (`partition_select_interning_baseline_test.go`);
      any movement beyond that is a regression to root-cause, NOT a re-baseline (the flip changes
      representation, not exploration sharing — that was the v1 error).
-7. **Rewrite the two tests** to positional (unchanged from v1): `rule_partition_select_test.go` (assert
-   `IsPositionalMergeRC` not `AnchoredJoin`) and the `InternsAliasAware` gate test in
-   `partition_select_interning_baseline_test.go:115` (mergeSel marker → `IsPositionalMergeRC`, keep the
-   projSel non-merge branch so CTE-NULL protection stays intact). `rfc173_slice2_drift_assert_test.go`:
-   only the re-stamp-assert sibling changes; `TestRFC173S2_SelectMergeDriftAssert_Fires` positive
-   compose pins STAY.
+7. **Extend the merge-marker tests to the S3-authoritative markers** (CORRECTED from v1: the reframe
+   keeps the anchored path in S3, so its tests are RESIDUAL coverage that STAYS — the anchored-assertion
+   rewrites move to Slice 4 with the trio deletion, per Q5). Done in S3: the `InternsAliasAware` gate
+   test (`partition_select_interning_baseline_test.go:115`) now pins that ALL THREE merge markers opt in
+   — the name-model `AnchoredJoin` (residual), the S3-authoritative `IsPositionalMergeRC` and
+   `IsOrdinalJoinRV` — while the projSel non-merge branch keeps CTE-NULL protection intact. **Deferred to
+   Slice 4** (they assert the surviving anchored residual, valid until the trio dies):
+   `TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier` (`rule_partition_select_test.go`, asserts
+   the merge-case upper is an `AnchoredJoin` RC) and the re-stamp-assert sibling in
+   `rfc173_slice2_drift_assert_test.go` (`TestRFC173S2_SelectMergeDriftAssert_Fires` positive compose
+   pins STAY regardless).
 
 ### FORKS — Graefe's rulings (RESOLVED; DESIGN-ACK on the reframed text)
 - **Q1 (SEQUENCING) — RESOLVED: (b), scoped, NOT (a).** Do **not** fold W5 into the flip (its safety
