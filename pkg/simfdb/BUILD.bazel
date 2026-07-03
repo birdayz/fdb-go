@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "simfdb",
+    srcs = [
+        "atomic.go",
+        "conflict.go",
+        "futures.go",
+        "options.go",
+        "range_result.go",
+        "simfdb.go",
+        "store.go",
+        "txn.go",
+    ],
+    importpath = "fdb.dev/pkg/simfdb",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+    ],
+)
+
+go_test(
+    name = "simfdb_test",
+    srcs = [
+        "atomic_test.go",
+        "simfdb_test.go",
+    ],
+    embed = [":simfdb"],
+    deps = ["//pkg/fdbgo/fdb"],
+)
