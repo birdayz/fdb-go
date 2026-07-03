@@ -1330,7 +1330,28 @@ operand that is (or could be) the indexed column — wrap only the narrower NON-
 (indexed) operand bare so its index is still matched. Also confirm whether FLOAT↔DOUBLE tuple encodings differ
 (if so they need the same treatment). This is why it needs a Graefe DESIGN review, not just an ACK.
 
-### [ ] query-engine: scalar-subquery cardinality (21000) NOT enforced for CORRELATED subqueries — Go-extension inconsistency (Graefe design, found 2026-06-28)
+### [~] query-engine: scalar-subquery cardinality (21000) NOT enforced for CORRELATED subqueries — Go-extension inconsistency (Graefe design, found 2026-06-28)
+
+**Projection non-aggregate case DONE (option (a) — extend 21000 to the correlated path).** With no user
+LIMIT, the correlated-scalar lowering leaves the inner uncapped and marks
+`CorrelatedScalarSubquery.StrictSingle`; the join lowering
+(`ImplementNestedLoopJoinRule.yieldGeneralFlatMap`) wraps the inner in a STRICT `RecordQueryFirstOrDefaultPlan`
+(new `strict` field) instead of the old default `LIMIT 1`. `executeFirstOrDefault` probes one extra row and
+raises 21000 on a second — a non-pushable barrier that runs fresh per outer row under the driving FlatMap (so
+at-most-one is per outer row). A user-written LIMIT keeps `StrictSingle=false` and truncates (deliberate
+intent). Pinned by `scalar_subq_correlated_card_test.go` (multi-row→21000, single→value, empty→NULL,
+user-LIMIT→top-1) and the flipped `scalar_subquery_correlation_probe_test.go`.
+
+**REMAINING (kept open — `StrictSingle` is projection + non-aggregate only, by design of the focused PR):**
+- **Aggregate correlated scalar WITH GROUP BY, >1 group** (`(SELECT status FROM o WHERE o.cid=c.id GROUP BY
+  status)`, no user LIMIT): the `hasRealAgg` branch (`logical_predicate.go`) still injects `LIMIT 1` and
+  silently truncates. (Bare aggregates — no GROUP key — are always single-row, so no gap there.)
+- **WHERE-clause correlated scalar** (`WHERE v = (SELECT … WHERE correlated)`): a different lowering path;
+  `StrictSingle` is set only in `translateProjectWithCorrelatedScalar`, so a WHERE-comparison correlated
+  scalar with >1 match is still unguarded.
+Each is a focused follow-up in its own path (kept separate per Graefe's single-purpose-PR ruling; not a
+blanket fix bundled here).
+
 
 A scalar subquery `(SELECT ...)` returning >1 row for a given outer row is, by SQL standard, a runtime
 cardinality violation. Findings:

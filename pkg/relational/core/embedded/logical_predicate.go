@@ -5677,6 +5677,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	}
 
 	var scalarCol string
+	// strictSingle is set by the non-aggregate branch below when the subquery has
+	// no user LIMIT, so the lowering enforces at-most-one via a strict FirstOrDefault.
+	var strictSingle bool
 	if hasRealAgg {
 		// Build the aggregate over the correlated filter. With GROUP BY the
 		// aggregate may emit more than one group; the scalar contract is then
@@ -5993,21 +5996,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 
 		// SQL standard: scalar subquery must return at most 1 row.
-		// Use the user's LIMIT if specified (limit < 0 = no limit),
-		// otherwise enforce LIMIT 1.
+		// A user-written LIMIT is the user's deliberate truncation intent — respect
+		// it and do NOT enforce strict cardinality. With NO user LIMIT (limit < 0),
+		// leave the inner UNCAPPED and mark StrictSingle: the lowering then enforces
+		// at-most-one via a strict FirstOrDefault barrier (a second inner row → 21000),
+		// rather than a silent LIMIT 1 truncation (which the planner could also push
+		// into the scan as a returned-row limit, bypassing the check).
 		if sq.limit >= 0 {
 			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
 		} else {
-			innerOp = logical.NewLimit(innerOp, 1, 0)
+			strictSingle = true
 		}
 	}
 
 	alias := values.UniqueCorrelationIdentifier()
 	p.correlatedScalarSubqueries = append(p.correlatedScalarSubqueries, logical.CorrelatedScalarSubquery{
-		Alias:      alias,
-		InnerPlan:  innerOp,
-		InnerAlias: strings.ToUpper(innerAlias),
-		ScalarCol:  scalarCol,
+		Alias:        alias,
+		InnerPlan:    innerOp,
+		InnerAlias:   strings.ToUpper(innerAlias),
+		ScalarCol:    scalarCol,
+		StrictSingle: strictSingle,
 	})
 	return alias, nil
 }
