@@ -175,8 +175,8 @@ pre-existing, not part of this campaign's remainder, and is out of scope here.)
 **C4 reclassified `after 173` → `now`, explicitly (this reverses RFC-175 §4:293).** RFC-175's
 sequencing table queued C4 "after 173, own cycle," but — unlike the C1/C5/D1 rows, whose conflict
 column names a concrete coupling (C1/C5 "**direct** — 173 churns these exact files"; D1 "plan shapes
-converge after 173") — C4's row named no 173 coupling at all, only "planner semantics; needs own RFC
-+ Graefe." The "after 173" was the cautious default, not an identified conflict. Two things resolve
+converge after 173") — C4's row named no 173 coupling at all, only "planner semantics; needs own
+RFC + Graefe." The "after 173" was the cautious default, not an identified conflict. Two things resolve
 it to "now": (i) C4 lives in the Cascades planner *rule/gate* structure (`pushDataAccessTasks`,
 `compensationSafeForYield`, `ImplementSimpleSelectRule`, the net) — files 173 does not touch (173 is
 column-resolution / row-model in `values/`, `embedded/`, the executor); (ii) C3 (#455) just
