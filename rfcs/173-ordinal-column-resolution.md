@@ -1817,16 +1817,36 @@ column is addressed by ORDINAL (`pullUpResultColumns` → `FieldValue.ofOrdinalN
   are unique generated ids, SQL names live only on `LogicalOperator.name` for lookup. Fix mirrors Java:
   give the inner quantifier a UNIQUE correlation id decoupled from the SQL alias.
 
-### FORKS for Graefe (W4b)
-- **W1 (SPLIT?): shape difficulty is wildly uneven** (3 = drop a guard; 1 = buried-map; 2 = a slice of
-  TODO-7.1 namespace unification). Does W4b do all three, or ship shapes 3+1 and DEFER shape 2 to a
-  TODO-7.1 slice? **Consequence:** F1 requires `NewScalarSubqueryAnchoredRecord` to reach ZERO callers
-  to join the S4 kill set — if shape 2 defers, the constructor stays LIVE for JOIN-inner, so **S4 gains
-  a new predecessor (TODO-7.1) in the canonical sequence.** Graefe must rule the split AND the roadmap
-  consequence.
-- **W2: is shape 2 really TODO-7.1, or a local decouple?** Can the inner quantifier get a unique id
-  WITHOUT the full namespace unification (a W4b-local fix: mint a fresh `UniqueCorrelationIdentifier`
-  for the inner quantifier and rewrite the inner join's alias refs through it), or does it require the
-  global 7.1 work? If local, shape 2 stays in W4b.
-- **W3: buried-reference map reuse (shape 1)** — does the cluster-arity infra already expose a
-  per-source→global-ordinal map (from the S2/S3 join wedge), or must W4b build one?
+### FORKS — Graefe's rulings (RESOLVED; DESIGN-ACK) + the impl plan
+- **W1 — RESOLVED: do ALL THREE in W4b.** Because W2 is a local decouple (below), shape 2 needs no
+  deferral, `NewScalarSubqueryAnchoredRecord` reaches ZERO callers within W4b, and **S4 gains NO new
+  predecessor** — the roadmap holds (W4b → W5 → W4-left+EXISTS+recursive-CTE → S4). Three
+  dependency-free commits, exit-gate = a **zero-callers assertion** on the constructor, then the §10
+  four-gate gauntlet.
+- **W2 — RESOLVED: W4b-LOCAL decouple, not TODO-7.1.** The `InnerAlias` collision has exactly TWO
+  reference sites, both minted here: the seed's inner-leg QOV and `replaceScalarSubqueryRef`
+  (`cascades_translator.go:3273-3276`). Give `innerQ` a fresh UNIQUE correlation id (as
+  `namedQuantifier("")` already mints unnamed ids), thread it through BOTH sites, leave the internal
+  first-table `o` untouched (correlation `o.cid=c.id`→outer `c` unaffected). At `widenLegTypesFromPlan`
+  the collision dissolves: seed leg `QOV(freshId,1)` vs internal `QOV(o,N)` — distinct. **Impl
+  condition: audit EVERY `csq.InnerAlias` consumer** (StrictSingle construction `:3210`, executor
+  null-leg / strict-single birth) and thread the id consistently.
+- **W3 — RESOLVED: REUSE, don't build.** `gatedJoinLegTypes(outerCluster)` returns
+  `srcAlias → bakeLegType{typ, leafOffset, leafTyp}`; `leafOffset + leafTyp.FieldIndex(COL)` IS the
+  per-source→global-ordinal of `QOV(outer)`'s flat concat (`rfc173_ordinal_seed.go:190-239`). Shape 1
+  threads dotted `T1.COL` outer refs through that exact spine (as `bakeGatedJoinPredicates` does). Two
+  conditions: (a) gate the outer on `ordinalWedgeGateDecide(outerCluster).Gated`, NOT merely
+  `clusterArity>1` (an ungated outer flows name-model dotted rows → wrong positional read); (b) BAKE the
+  outer projections (a cluster has no single `RecordName` span for one `ofOrdinal` run).
+
+### IMPL PLAN (Graefe-ACK'd; three dependency-free commits, shape 3 → 1 → 2)
+1. **Shape 3 (computed scalar) — FIRST, smallest.** NOT merely "drop the `innerScalarIsRowColumn`
+   guard": the trap (impl-correction-2) is that the computed scalar is applied ABOVE the inner, so
+   ordinal-0 of the flowed row is a SOURCE column, not the scalar. **Relocate the computation into the
+   inner's `resultValue`** (mirroring Java's `SelectExpression.resultValue` = RC of select items, so
+   ordinal-0 = the computed scalar); the guard drop is the consequence. White-box + FDB EXPLAIN/rows pin.
+2. **Shape 1 (clustered outer).** Gate on `ordinalWedgeGateDecide(outer).Gated`; bake outer projections
+   through `gatedJoinLegTypes` (`leafOffset + FieldIndex`). White-box + FDB pin.
+3. **Shape 2 (JOIN-inner).** Fresh unique id for `innerQ` threaded through the two mint sites + every
+   `csq.InnerAlias` consumer. White-box + FDB pin.
+Exit gate: a test asserting `NewScalarSubqueryAnchoredRecord` has ZERO production callers.
