@@ -401,6 +401,13 @@ type aliasAwareInterner interface{ InternsAliasAware() bool }
 // phase, with a happens-before barrier between the phases, so a plain bool is
 // race-free (the write is never concurrent with a read). Mirrors the §5 dual-
 // window differential's values.OracleBakedNameFallback.
+//
+// The non-parallel constraint is enforced by -race, NOT just convention: adding
+// t.Parallel() to the setter's caller makes the write concurrent with a hot-path
+// read, which -race reports — so a regression is loud, not silent. The clean
+// removal (thread the flag through per-Memo state, as mergeAliasCounter does, so
+// no global is read in Insert at all) is tracked in TODO.md as a follow-up; it
+// is deferred because Reference.Insert has no Memo handle today.
 var disableAliasAwareInterning bool
 
 // SetDisableAliasAwareInterning toggles the alias-identity baseline mode. MUST

@@ -47,6 +47,15 @@ validation gate.
   member-count-delta (the pin the spike omitted); (iii) certify no CTE-rename NULL-read via §5
   execution pins + RFC-077 task-count baseline (safety is flip-live-gated, un-shadowable). Full
   analysis banked in RFC §4 P3.
+  - [x] (ii) **shadow-delta pin DONE** (`TestRFC173S3_AliasAwareInterningShadowDelta`, branch
+    `feat/rfc173-slice1-ordinal-nonjoin`): the exact form is shadow (per-`Reference.AliasAwareDedups`)
+    ↔ measured member-count delta (via `SetDisableAliasAwareInterning`), NOT the naive equality —
+    cascade makes delta > shadow (3-chain 4→20, 4-chain load-bearing: converges on / blows budget off).
+  - [ ] Follow-up (non-blocking, Torvalds ACK w/ next-slice defer): `disableAliasAwareInterning` is a
+    test-only process-global read in Insert's hot loop. Race-free today (non-parallel test, -race
+    enforced), but thread it through per-Memo state (like `mergeAliasCounter`) so no global is read in
+    Insert — deferred because `Reference.Insert` has no Memo handle. Do when a slice gives Insert Memo
+    context (the alias-aware tier itself survives S4, so this is not auto-retired).
 - [x] **Slice 1 non-join ordinal — MERGED (#437, `12516e33f`), all four gates ACKed at the merge
   HEAD** (Graefe impl+delta ACK · Torvalds fix-first→ACK incl. MUTATION-TESTING the authority proof ·
   codex clean (P2 fixed; delta finding = documented Go≥1.22 loopvar false positive) · @claude "nothing
