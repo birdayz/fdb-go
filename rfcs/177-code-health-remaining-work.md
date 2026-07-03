@@ -31,7 +31,7 @@ sections. Scattered registration is how work rots — a 30-line TODO entry reads
 is only "written down." This RFC consolidates the remainder into tracks by review gate and blocking
 status, discharges the "C4 needs its own RFC" debt with a real staged design, and states — per item
 — exactly what unblocks it. All citations below are verified against master @ 2026-07-03
-(`bf8809c72`, RFC-173 Slice 3 W1).
+(RFC-173 Slice 3 W1, `bf8809c72`; this branch's own doc commit sits one past it).
 
 ## 2. Inventory by track
 
@@ -45,18 +45,20 @@ parked. Listed here with their unblock condition so they resume deterministicall
   ~a fifth of it: the file also holds the DML builder surface (`buildLogicalPlanForInsertWithCatalog`,
   `…Update…`, `…Delete…`), UNION construction, and aggregate/HAVING rewriting. Mechanical split into
   `dml.go` / `aggregate.go` / `union.go` / `predicate.go`; functions are individually small, so it is
-  tangling-by-aggregation, not spaghetti. **Unblock:** RFC-173 stops churning
-  `pkg/relational/core/embedded/` — a file split under an active migration is rebase poison. Earliest
-  safe point is after 173 Slice 4 (retire `AnchoredJoin`), when the embedded surface stops moving.
+  tangling-by-aggregation, not spaghetti. **Unblock: after RFC-173 completes.** (Corrected from the
+  first draft's "after Slice 4": `logical_predicate.go` has zero `AnchoredJoin` refs — that lives in
+  `cascades_generator.go` — and the file is still edited in Slice 6 name-burial, E2/E4/D15-17. Splitting
+  it before 173 stops touching it is the rebase poison this RFC warns of.)
 - **A2 (was RFC-175 C5) — retire `LogicalAggregate`'s text/typed dual model.**
-  `core/query/logical/operators.go:320-324` still carries `Aggregates []string` alongside
-  `AggregateOperands []values.Value` with the **"nil slot = use text"** contract, and `Having string`
-  alongside `HavingPredicate` (all verified present). The text fallback forces the two re-lexers
-  `aggregateArgText` (cascades_translator.go:571) and `isBareColumnIdentifier` (:584) to re-parse a
-  string that was an AST. End-state: operands + HAVING are always typed Values; the text fields die or
-  become display-only; both re-lexers deleted. **Unblock:** RFC-173's typed/positional row model
-  (Slice 3 flip) settles — it redefines "typed operand," so doing A2 first builds on the model 173
-  retires.
+  `core/query/logical/operators.go:320-325` still carries `Aggregates []string` (:320) alongside
+  `AggregateOperands []values.Value` (:322) with the **"nil slot = use text"** contract, and
+  `Having string` (:324) alongside `HavingPredicate` (:325) (all verified present). The text fallback
+  forces the two re-lexers `aggregateArgText` (cascades_translator.go:571) and `isBareColumnIdentifier`
+  (:584) to re-parse a string that was an AST. End-state: operands + HAVING are always typed Values;
+  the text fields die or become display-only; both re-lexers deleted. **Unblock:** RFC-173 Slice 3's
+  RFC-088 HAVING-over-join work settles — it collides directly with the aggregate/HAVING rewriting at
+  `cascades_translator.go:3234,3255`. (`AggregateOperands` is already populated today
+  (`logical_predicate.go:1551`); the gate is the Slice-3 collision, not a not-yet-typed operand.)
 - **A3 (was RFC-175 D1) — structured plan-shape assertions.**
   `sqldriver/plan_shape_conformance_test.go` is 19,588 lines with 46 `strings.Contains` plan-string
   assertions, some disjunctive (accept `NestedLoopJoin` OR `FlatMap` — a join-strategy regression
@@ -81,7 +83,10 @@ sites; these close the same defect class where it survives.
   methods (mirroring their existing `Equals`), and tighten each in lockstep with its equality (the P1
   lesson: hash and equality must move together or equal⟹same-hash breaks). Same gate battery as
   RFC-176 P2 (property test, stress-1M, plandiff corpus, task-count baseline, tie-breaker-consumer
-  audit).
+  audit). Note (Graefe): `predicates.SemanticHashCode`'s default arm falls back to `Explain()`
+  (semantic_hash.go:54) for predicate types the switch doesn't reach — B1 should close that fallback
+  for the exotic types too, or the whack-a-mole stays ajar inside `predicates/` even after the five
+  `plans/` sites are wired.
 - **B2 — canonical semantic total order for the cost tie-breaker.** When two plans are cost-tied AND
   criteria-tied, the winner is decided by raw hash ordering — `costExprHash` (planning_cost_model.go:350)
   / `deepHashCode` (:841). So ANY hash evolution re-rolls the winner among cost-tied semantically-distinct
@@ -92,38 +97,17 @@ sites; these close the same defect class where it survives.
   changes and alias renaming. This is the deterministic-extraction property RFC-167 wants, made a
   first-class order instead of a hash accident. Gates: determinism 10×, stress, corpus, task-count.
 
-### Track C — the C4 index-only gating end-state (Graefe; EXECUTABLE NOW; the owed RFC)
+### Track C — the C4 index-only gating end-state (Graefe) → **promoted to RFC-178**
 
-RFC-175 C4 registered this as "needs its own RFC." This is it. Today, index-only-residual rejection
-is a **bolted-on net** over the generic planner, not Java's emergent property — with the code's own
-admission at `planner.go` (~the pushDataAccessTasks region): "Do NOT remove that net until every such
-builder is gated/retired." Java has ONE path to a physical filter (match + `Compensation`, gated by
-`anyCompensatablePredicate()`), so the "index-only value can't be a residual" property is enforced
-once, structurally, and cannot leak. Go has three Go-only physical-filter producers plus a catch-all
-net. End-state: make the rejection **emergent** by gating the producers, then retire the net.
-
-Staged (each step its own PR + Graefe ACK; the net retired LAST — Graefe's standing condition from
-PR #442: "retire the net last, keep the sentinels"):
-
-- **C.1** Gate `ImplementSimpleSelectRule` on `!isIndexOnly()` for its predicates — the JOIN-shape
-  analog of the `ImplementFilterRule` gate RFC-151 already landed (`QueryPredicateMatchers` /
-  `!isIndexOnly()`). No index-only predicate is ever built into a `SelectExpression`'s physical filter.
-- **C.2** Gate the NLJ residual builder identically.
-- **C.3** With both physical-filter producers gated, `ImplementIndexScanRule`'s residual loop is the
-  last leak path. Retire `ImplementIndexScanRule` (a Go-only fusion of Java's `ImplementPhysicalScanRule`
-  + candidate matching) in favor of the data-access/compensation match path that Java uses — the
-  compensatability check then lives ONCE (`PredicateMultiMap.ofPredicate` stamps `isImpossible`), as in
-  Java.
-- **C.4** Retire the `validateNoIndexOnlyResidual` physical net + its logical-side twin
-  `findIndexOnlyLogicalResidual`. With no builder able to produce an index-only residual, the net is
-  dead code — deletion is the *proof* the gating is complete, not a hope.
-- **C.5** Reassess the vector-KNN special-cases (`isNilInnerFetch` guards, the
-  `*physicalVectorIndexScanWrapper`/`*physicalAggregateIndexWrapper` type-switches in
-  `compensationSafeForYield`, `residualIsPartitionContiguous`): which are legitimate cost/correctness
-  logic that survives, and which were only propping up the net and retire with it. **Explicitly NOT a
-  blanket delete** — `residualIsPartitionContiguous` carries a real correctness property (whole-partition
-  selection composing above a self-limiting scan, pinned by the K>1 vector sentinels); it stays unless
-  proven redundant.
+RFC-175 C4 registered this as "needs its own RFC." A sketch of the staged plan lived here in the
+first draft; the RFC-177 gauntlet (Graefe NAK + codex) proved a registry line was the wrong shape —
+it scheduled retiring an already-retired rule (`ImplementIndexScanRule`, gone since RFC-076) and
+deleting a *live* diagnostic (`findIndexOnlyLogicalResidual`, the intended-rejection path, not
+net-scaffolding). A 3-5-shift, per-step-Graefe-gated engine refactor with those subtleties is a
+standalone RFC. **See `rfcs/178-index-only-residual-emergent.md`** — the corrected design (two live
+producers not three, `ImplementSimpleSelectRule` gating as a 1:1 Java port, keep-and-expand the
+logical diagnostic, de-stale DIVERGENCES.md as Step 0, net retired last). Track C is discharged by
+RFC-178; nothing further is owed here.
 
 ### Track D — `pkg/fdbgo` client gaps (FDB-C-dev; EXECUTABLE NOW)
 
@@ -177,21 +161,21 @@ pre-existing, not part of this campaign's remainder, and is out of scope here.)
 
 | Track | Gate | 173 interaction | When |
 |---|---|---|---|
-| A1 (C1 split) | Graefe/relational | **direct** — 173 churns `embedded/` | after 173 Slice 4 |
-| A2 (C5 aggregate) | Graefe/relational | **direct** — 173 redefines "typed operand" | after 173 Slice 3 flip |
+| A1 (C1 split) | Graefe/relational | **direct** — 173 edits `logical_predicate.go` through Slice 6 | after 173 complete |
+| A2 (C5 aggregate) | Graefe/relational | **direct** — Slice-3 RFC-088 HAVING-over-join collision | after 173 Slice 3 |
 | A3 (D1 assertions) | Graefe/relational | plan shapes converge post-173 | after 173 complete |
 | B1 (predicate hash) | Graefe | none — `plans/` + `predicates/`, not 173's files | **now** |
 | B2 (tie-break order) | Graefe | none — cost model | **now** |
-| C (index-only end-state) | Graefe, staged | none — planner rule/gate structure (C3 already de-noised these files un-blocked) | **now** |
+| C (RFC-178) | Graefe, staged | none — planner rule/gate structure (C3 de-noised these files un-blocked) | **now** (own RFC) |
 | D1/D2/D3 (fdbgo) | FDB-C-dev | zero — different subsystem | **now** |
 | E (stress baseline) | infra | none | **now** |
 
-Executable immediately: **B, C, D, E**. Blocked: **A** (all three), until the named 173 slices land.
-This is the same keep-the-lights-on lane the owner authorized for the RFC-175/176 execution — Tracks
-B–E are zero-conflict with 173; Track A would be rebase poison and waits. Recommended first pickups
-(highest value / lowest risk): B1 (substrate already half-built), D1/D3 (small, C++-cited, close real
-divergences), E (an hour to requalify, re-arms a broken safety net). C is the largest and wants a
-dedicated Graefe design pass on C.1 before the chain starts.
+Executable immediately: **B, C (via RFC-178), D, E**. Blocked: **A** (all three), until the named 173
+milestones. This is the same keep-the-lights-on lane the owner authorized for the RFC-175/176
+execution — Tracks B–E are zero-conflict with 173; Track A would be rebase poison and waits.
+Recommended first pickups (highest value / lowest risk): B1 (substrate already half-built), D1/D3
+(small, C++-cited, close real divergences), E (an hour to requalify, re-arms a broken safety net). C
+is the largest and runs under its own RFC-178, staged.
 
 ## 5. Acceptance criteria
 
@@ -207,10 +191,9 @@ dedicated Graefe design pass on C.1 before the chain starts.
 - **B2:** the cost tie-breaker uses a structural canonical order, not `costExprHash`/`deepHashCode`
   ordering; a test pins that two cost-tied-and-criteria-tied plans order deterministically under a
   perturbed hash function; determinism 10×, stress, corpus, task-count green.
-- **C:** end-state — `grep -rn "validateNoIndexOnlyResidual\|findIndexOnlyLogicalResidual" pkg/` returns
-  zero (net retired) AND `ImplementIndexScanRule` deleted AND `ImplementSimpleSelectRule`/NLJ gated on
-  `!isIndexOnly()`; every `TestVectorPlan_*` sentinel + the K>1 partition-intersection pins green at each
-  step and at the end; plandiff corpus 0 new mismatches. Per-step Graefe ACK; net retired in the LAST PR.
+- **C:** discharged by RFC-178 — see its §5 (de-stale DIVERGENCES.md; gate `ImplementSimpleSelectRule`
+  + NLJ; keep-and-expand `findIndexOnlyLogicalResidual`; retire the `validateNoIndexOnlyResidual`
+  *physical net* last with a measured-zero-invocation proof; keep `residualIsPartitionContiguous`).
 - **D1:** `rywDisabled` is `atomic.Bool`; `-race` reset/read hammer test (a bare `-race` clean is
   vacuous — it must race the two paths).
 - **D2:** `GetTagThrottledDuration` matches libfdb_c on a GRV-throttled differential case; the reply
@@ -240,6 +223,18 @@ dedicated Graefe design pass on C.1 before the chain starts.
 
 ## 7. Review log
 
-- (pending) Graefe — Tracks A/B/C (query-engine + relational surface) + per-implementation-PR ACKs.
+- **Graefe — NAK → addressed (2026-07-03).** Six factual must-fixes, all folded: Track C's phantom
+  C.3 (`ImplementIndexScanRule` retired by RFC-076), the invented `ImplementPhysicalScanRule` cite, the
+  three-vs-two producer count, C.1-as-1:1-port, A1's wrong Slice-4 gate (→ after 173 complete), A2's
+  unsupported "redefines typed operand" rationale (→ the RFC-088 HAVING-over-join collision). Track C
+  promoted to RFC-178 with the corrected design; Track B ACKed (fallback nit noted in B1). Re-request
+  after the fold.
+- **Torvalds — ACK-with-nits (2026-07-03).** All citations verified against the tree. Nits folded:
+  promote Track C to its own RFC (→ RFC-178), operators.go off-by-one (→ :320-325), stale SHA. Track A
+  parking and D3 probe-then-swap confirmed legitimate method, not dodges.
+- **codex — one P2 folded (2026-07-03).** Track C.4 deleting `findIndexOnlyLogicalResidual` with the net
+  would regress metric-mismatch/no-index vector queries to a generic failure — the logical diagnostic is
+  the intended-rejection path, not net-scaffolding. Corrected in RFC-178 (keep and expand it to the JOIN
+  sentinel; retire only the physical net).
 - (pending) FDB-C-dev — Track D (fdbgo) at execution time, per-PR.
-- (pending) Torvalds, codex, @claude — this RFC PR and each implementation PR.
+- (pending) @claude — this RFC PR.
