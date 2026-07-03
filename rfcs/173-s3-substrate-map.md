@@ -582,3 +582,20 @@ fixed:
   flat_map_cursor's pre-existing `→` mojibake and the gate file's stale
   "until Slice 3" comments repaired. The TranslationMap consolidation stays
   tracked as the separate mechanical commit (this map, pending ledger).
+
+## S3-W3 commit A — the ordinal-only identity flip (LANDED)
+Path element identity narrowed from the coexistence (Field, Ordinal) pair to
+Java's ORDINAL-ONLY (ResolvedAccessor.equals = getOrdinal() alone,
+FieldValue.java:675-689; list equality :411-420 — verified against source).
+Coupled hash: the baked FieldValue hash folds ONLY the ordinal path
+("fieldpath:#o…"; the display-name prefix would split the alias-mapped twins
+the flip makes equal); lazy keeps the name bucket. The per-step Field
+survives on the accessor for the name-model oracle reads
+(descendResolvedPath/nameReadRootKey) and Explain rendering — dies with them
+in S4. Pin flipped: TestRFC173S3_FusedPath_IdentityHashExplain's diff-name
+arm now asserts EQUAL + hash-equal (was UNEQUAL — the refinement that could
+only under-dedup). Task baselines held exactly (the pinned chains carry no
+name-only twins). Remaining W3: (B) max-match-map fused-path verification
+pins (no-spurious-sort EXPLAIN + nested-index-scan-chosen — the W2 exit
+criterion; port ExpandFusedFieldValueRule into matching ONLY if they fail);
+(C) the mechanical TranslationMap consolidation.

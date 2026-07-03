@@ -235,10 +235,12 @@ type FieldValue struct {
 // changes identity (review convention pin).
 type ResolvedAccessor struct {
 	// Field is the PER-STEP display name (Java ResolvedAccessor.getField();
-	// "" = pure ordinal access, Java's null name). Part of the path's identity
-	// during the coexistence window (element-wise (Field, Ordinal), the S2
-	// (name, ordinal) refinement applied per element — the S3-W3 flip narrows
-	// to ordinal-only per Java FieldValue.java:676-690).
+	// "" = pure ordinal access, Java's null name). NOT part of the path's
+	// identity — the S3-W3 flip landed Java's ordinal-only element equality
+	// (FieldValue.java:675-689); the name survives for the coexistence
+	// window's name-model reads (descendResolvedPath map descent,
+	// nameReadRootKey, the §5 oracle) and Explain rendering, and dies with
+	// them in S4.
 	Field   string
 	Ordinal int
 }
@@ -340,7 +342,16 @@ func (p *FieldPath) Equals(o *FieldPath) bool {
 		return false
 	}
 	for i := range p.Accessors {
-		if p.Accessors[i] != o.Accessors[i] {
+		// ORDINAL-ONLY element identity (the S3-W3 flip): Java's
+		// ResolvedAccessor.equals compares getOrdinal() alone
+		// (FieldValue.java:675-689 — name and type excluded), and FieldPath
+		// equality is the accessor-list equality over it (:411-420). The
+		// coexistence window's (Field, Ordinal) pair was a REFINEMENT that
+		// could only under-dedup; the flip closes it — alias-mapped baked
+		// references over same-shaped legs now intern as one memo member,
+		// exactly Java's dedup. The per-step Field survives on the accessor
+		// for the name-model oracle reads and Explain rendering only.
+		if p.Accessors[i].Ordinal != o.Accessors[i].Ordinal {
 			return false
 		}
 	}
