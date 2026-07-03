@@ -2677,12 +2677,25 @@ func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.Messa
 			typeRef = strings.ToUpper(fv.Field)
 		}
 	}
+	return columnDefFromRef(name, label, typeRef, f.Value, descs)
+}
+
+// columnDefFromRef is the shared type+nullability derivation for a single
+// result-set column: name is the datum-map lookup key, label the user-visible
+// display name, typeRef the string descriptorForColumn keys on (the value's
+// qualified reference for a fold, the bare column name for an ordinal seed), and
+// value the defining Value (its Type() supplies a synthesized column's type and
+// nullability). Extracted from foldedColumnDef so the RFC-173 ordinal-unnest arm
+// can reuse the identical resolution while keying the descriptor lookup on the
+// BARE field name (a baked ofOrdinal renders "T1.ID#0" under ExplainValue — the
+// "#0" suffix misses the proto descriptor).
+func columnDefFromRef(name, label, typeRef string, value values.Value, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
 	colDesc := descriptorForColumn(typeRef, descs)
 	typeDesc := colDesc
 	if typeDesc == nil && len(descs) > 0 {
 		typeDesc = descs[0]
 	}
-	typeName := valueTypeName(f.Value, typeDesc)
+	typeName := valueTypeName(value, typeDesc)
 	if typeName == "" && colDesc != nil {
 		typeName = protoFieldTypeName(colDesc, typeRef)
 	}
@@ -2700,7 +2713,7 @@ func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.Messa
 		if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(typeRef).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
 			nullable = api.ColumnNoNulls
 		}
-	} else if f.Value != nil {
+	} else if value != nil {
 		// No proto descriptor field resolves for this column — it is a
 		// SYNTHESIZED value, not a stored field. The unnest WITH-ORDINALITY ordinal
 		// (`AT o`) is the canonical case: its FieldValue carries Type values.NotNullInt
@@ -2712,7 +2725,7 @@ func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.Messa
 		// boolean) reports ColumnNoNulls while a genuinely nullable element column
 		// (a nullable array element type, an UnknownType fallback) still reports
 		// ColumnNullable. RFC-142.
-		if t := f.Value.Type(); t != nil && !t.IsNullable() {
+		if t := value.Type(); t != nil && !t.IsNullable() {
 			nullable = api.ColumnNoNulls
 		}
 	}
@@ -2722,6 +2735,41 @@ func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.Messa
 		TypeName: typeName,
 		Nullable: nullable,
 	}
+}
+
+// ordinalUnnestColumnDef derives ONE result-set column of an RFC-173 lateral-
+// unnest ORDINAL seed (rfc173_w4c_unnest_seed.go / the WITH-ORDINALITY seed).
+// The seed's OUTER leg columns are BAKED ofOrdinal FieldValues whose ExplainValue
+// carries the "#ordinal" suffix (e.g. "T1.ID#0"), which misses the proto
+// descriptor and mis-reports a stored column's type/nullability (a pk drops from
+// NOT NULL to nullable). Because an ordinal seed's field NAMES are exactly the
+// bare column / AS / AT alias names, key the descriptor lookup on the bare name —
+// so an outer stored column resolves its descriptor (pk NOT NULL) exactly as the
+// name-model's LAZY anchored RC did, while the descriptor-less element/ordinal
+// still type from their own Value (element from the array element, ordinal INT
+// NOT NULL). RFC-142/173.
+func ordinalUnnestColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
+	name := strings.ToUpper(f.Name)
+	label := strings.ToUpper(parseColRef(f.Name).bare())
+	return columnDefFromRef(name, label, name, f.Value, descs)
+}
+
+// valueRootCorrelation reports the correlation a seed field ultimately reads
+// from: a bare QuantifiedObjectValue's own correlation (the NO-AT scalar element
+// leg), or the root correlation of a baked ofOrdinal FieldValue chain (an outer
+// column or the WITH-ORDINALITY element/ordinal). Reports false for any other
+// shape. Used to classify an ordinal-unnest seed field as an OUTER column vs an
+// element/ordinal (which reference the FlatMap's INNER correlation).
+func valueRootCorrelation(v values.Value) (values.CorrelationIdentifier, bool) {
+	switch t := v.(type) {
+	case *values.QuantifiedObjectValue:
+		return t.Correlation, true
+	case *values.FieldValue:
+		if t.Child != nil {
+			return valueRootCorrelation(t.Child)
+		}
+	}
+	return values.CorrelationIdentifier{}, false
 }
 
 func deriveColumnsFromAggregation(agg *plans.RecordQueryStreamingAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -2771,6 +2819,47 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 }
 
 func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	// RFC-173 W4c: an ORDINAL lateral-unnest seed (a NON-anchored RC over a
+	// FlatMap-over-Explode, carrying baked ofOrdinal outer columns) replaces the
+	// name-model anchored seed for a single-source unnest. It lands here exactly
+	// like the anchored arm below, but two things differ: its baked outer fields
+	// render "T1.ID#0" under ExplainValue (foldedColumnDef's value-derived
+	// descriptor lookup then misses and mis-reports a pk's nullability), and its
+	// FULL outer run KEEPS a column the element AS/AT alias SHADOWS (the name
+	// model dropped it in buildUnnestResultValue). Derive the SELECT-* columns to
+	// MATCH the name model: outer columns resolved against the scan descriptor by
+	// their BARE name (pk NOT NULL), the shadowed outer column dropped, the
+	// element/ordinal typed from their own Value (element nullable from the array
+	// element, ordinal INT NOT NULL). Scoped by findExplodePlan (the unnest
+	// signature — excludes the W4b correlated-scalar-subquery ordinal seed, whose
+	// inner is not an Explode) AND ContainsBakedOrdinal (excludes name-model /
+	// projected-EXISTS folds). RFC-142/173.
+	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin &&
+		len(rc.Fields) > 0 && findExplodePlan(fm.GetInner()) != nil && values.ContainsBakedOrdinal(rc) {
+		descs := allLeafDescriptors(fm.GetOuter(), md)
+		innerCorr := fm.GetInnerAlias()
+		// The element/ordinal columns reference the INNER correlation; a same-named
+		// OUTER column is SHADOWED by the AS/AT alias (name-model rule).
+		shadowed := map[string]struct{}{}
+		for _, f := range rc.Fields {
+			if corr, ok := valueRootCorrelation(f.Value); ok && corr == innerCorr {
+				shadowed[strings.ToUpper(f.Name)] = struct{}{}
+			}
+		}
+		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
+		for _, f := range rc.Fields {
+			corr, hasCorr := valueRootCorrelation(f.Value)
+			isInner := hasCorr && corr == innerCorr
+			if !isInner {
+				if _, clash := shadowed[strings.ToUpper(f.Name)]; clash {
+					continue // outer column shadowed by the element/ordinal alias
+				}
+			}
+			cols = append(cols, ordinalUnnestColumnDef(f, descs))
+		}
+		return cols
+	}
+
 	// RFC-141 Phase 2: a projected-EXISTS FlatMap folds the SELECT projection
 	// into its result value — an ordinary (non-anchored-join) RecordConstructor.
 	// Its field names ARE the output columns (e.g. ID, HAS_T2), so derive from

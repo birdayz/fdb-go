@@ -1400,10 +1400,22 @@ Datum (a `map`) verbatim. Field-flattening, if ever wanted, is a separate future
    raw arm by leg SHAPE (bare-QOV over a non-record type), NEVER a per-plan flag; keep the record-leg
    `OrdinalRow` path and `widenLegTypesFromPlan`'s divergence asserts intact.
 3. **Struct divergence — ACK** with the premise correction above (mandatory). **Conditions:** (a) RFC
-   premise corrected [done above]; (b) `x.field` MUST resolve via a nested `FieldValue` on the
-   whole-struct QOV — pin it (genuinely Go's path: Java resolves via the flattened column); (c)
-   explicitly pin `SELECT *` → ONE struct column (the intended ANSI divergence); field-flattening is a
-   separate future item.
+   premise corrected [done above]; (b) `x.field` on a struct element — see the impl finding below; (c)
+   explicitly pin `SELECT *` → ONE struct column (the intended ANSI divergence) — **DONE**
+   (`array_unnest_struct_fdb_test.go`: `SELECT *` over a struct array yields the element as ONE column,
+   not flattened); field-flattening is a separate future item.
+
+   **Impl finding on (b) — `x.field` is a GENERAL engine gap, not a W4c concern.** Nested struct-field
+   access is unimplemented ENGINE-WIDE, not just for unnest: `SELECT hdr.sku` on a REGULAR (non-array)
+   struct column fails identically (`walkColumnRef` handles only 1–2 segments; `ResolveQualifiedColumn`
+   does a flat lookup with no struct descent; the executor's `evaluateCorrelated` reads `map`/`OrdinalRow`,
+   never a `proto.Message`). So W4c's struct element is consistent with the engine's general struct
+   handling: `SELECT x` returns the WHOLE struct (the whole-object binding — pinned and working),
+   `x.field` is unsupported the same way it is for any struct column. This does NOT regress struct-array
+   unnest (it works as well as it did) and is NOT a bolt-on gap in W4c. Composite field extraction
+   (whole-object vs field-access disambiguation across ALL struct columns) is a separate cross-cutting
+   query-engine feature needing its own Graefe design ruling — deferred. Graefe's original (b) assumed
+   Go had struct-field access; it does not, so the whole-object binding (c) is what W4c pins.
 4. **Tripwire + pin — ACK.** WITH-ORDINALITY-conditional `AssertOrdinalJoinSeed` is correct (the
    mixed RC's direct-QOV field legitimately fails the `FrontierPinned` check; asserting would
    false-trip); the white-box seed-shape pin replaces it. **Condition:** the mandatory
@@ -1448,7 +1460,36 @@ computed-scalar as S4 blockers.) Bonus: the raw-bind converges `datumFromPositio
 name Datum for the scalar case, letting the bare-QOV Datum-override (`flat_map_cursor.go:291-308`)
 eventually be deleted at S4 — a simplification, not new scaffolding.
 
+### W4c impl correction: ENCLOSURE-decline — only ISOLATED single-source unnest ordinalizes
+Impl surfaced that `clusterArity(j.Left)==1` is necessary but NOT sufficient (the same
+narrowing W4b hit with the join-inner gate and W4-LEFT with buried-eligibility). An ordinal seed
+that is ENCLOSED in a larger name-model composition is flattened by `SelectMergeRule` into a
+name-model parent whose machinery **cannot consume a baked, non-anchored ordinal leg** and PANICS.
+Three enclosure cases, all the established W2/W5 "enclosure = poison, name-model until W5" boundary —
+the W4c gate declines all three (`clusterArity(j.Left)==1 && !prevEnclosure && !unnestUnderExistential`):
+- **Multi-source OUTER** (`FROM A, B, A.arr AS x`): `clusterArity(j.Left) > 1` — flattening the outer
+  cluster to a bare concat erases buried source names (W5).
+- **Enclosed leg** (`FROM A, A.arr AS x, B`): the unnest is a leg of a larger multi-source join
+  (`prevEnclosure`). A GROUP BY / aggregation over it re-enumerates via `PartitionSelectRule`, whose
+  `NewReEnumerationAnchoredRecord` cannot resolve a non-anchored ordinal-seed leg (panic). A bare
+  projection over such a leg WOULD work via the coexistence Datum's qualified keys, but the
+  aggregation path forces the whole class name-model, and the two are **indistinguishable at
+  unnest-lowering** (they differ only by a GROUP BY processed later). So the class stays name-model.
+- **EXISTS-composed** (`… WHERE EXISTS(… unnest …)`): the unnest is the OUTER of a semi-join whose
+  implementation rebases outer-leg refs NAME-model (`rebaseOuterLegValue`) and panics on baked refs.
+
+**Consequence (Graefe to ACK):** W4c's ordinal reach narrows to the **ISOLATED** single-source
+lateral unnest (`FROM t, t.arr AS x [AT ord]` as the whole FROM, or projected/filtered but not merged
+into a larger cluster/aggregation/existential). Enclosing multi-source/aggregation/existential
+compositions ordinalize in **W5** (multi-source unnest + N-way re-enumeration), which is before S4 —
+so no new S4 blocker beyond the already-scheduled W5. The alternative (keep enclosed single-source
+unnest ordinalized) requires `PartitionSelectRule` to support anchored re-enumeration over an
+ordinal-seed leg — genuinely W5-scoped surgery, deferred. This is the same fail-closed decline
+discipline Graefe endorsed for W4b (unrecognized/unconsumable shape → name-model, never a panic).
+
 ### Gates (process)
 Query-engine change → Graefe design-ACK on THIS ruling **before any impl** — **DONE** (DESIGN-ACK on
-all four decisions, conditions folded above). Next: the full four-gate round
-(Graefe/Torvalds/codex/@claude) on the implementation; re-request Graefe on the impl.
+all four decisions, conditions folded above). Impl done (isolated single-source ordinalizes; enclosure
+declines per the correction above; the mixed-seed leg-window + column-metadata + raw-bind executor
+changes). Next: the full four-gate round (Graefe/Torvalds/codex/@claude) on the implementation —
+**Graefe must ACK the enclosure-decline scope narrowing** (the one design-affecting impl correction).

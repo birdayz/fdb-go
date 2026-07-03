@@ -36,6 +36,7 @@ go_test(
         "array_cardinality_fdb_test.go",
         "array_cardinality_index_fdb_test.go",
         "array_unnest_ordinality_fdb_test.go",
+        "array_unnest_struct_fdb_test.go",
         "avg_double_insert_fdb_test.go",
         "avg_fractional_probe_test.go",
         "bare_bool_where_probe_test.go",
@@ -317,7 +318,9 @@ go_test(
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
