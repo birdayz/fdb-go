@@ -36,6 +36,7 @@ type Buggifier struct {
 	activationProb float64
 	fireProb       float64
 	activated      map[string]bool
+	fired          int // total fault firings this run — observability for DST hunters
 }
 
 // NewBuggifier returns a Buggifier seeded by seed. When enabled is false it behaves like
@@ -79,7 +80,23 @@ func (b *Buggifier) BuggifyWithProb(site string, prob float64) bool {
 	if !b.activatedLocked(site) {
 		return false
 	}
-	return b.rng.Float64() < prob
+	if b.rng.Float64() < prob {
+		b.fired++
+		return true
+	}
+	return false
+}
+
+// Fired returns how many fault points have fired this run. A brute-force hunter reads it to
+// confirm a seed actually injected faults (a run with zero firings exercises only the happy
+// path). Deterministic for a given seed. A nil or disabled Buggifier reports 0.
+func (b *Buggifier) Fired() int {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.fired
 }
 
 // activatedLocked returns whether site is active, deciding-and-caching on first hit

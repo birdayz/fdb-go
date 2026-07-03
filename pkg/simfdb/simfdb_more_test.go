@@ -219,6 +219,30 @@ func TestIdempotentDoubleCommit(t *testing.T) {
 	}
 }
 
+func TestNewSelectsAPIVersion(t *testing.T) {
+	t.Parallel()
+	// A SimDB stands in for an opened FDB database, which cannot exist without a selected API
+	// version — the versionstamp/tuple layer reads fdb.GetAPIVersion(). New must enforce that
+	// precondition so the first versionstamp write doesn't fail api_version_unset(2200). (The
+	// DST hunt caught this on its first VERSION-index save.)
+	_ = New(nil)
+	if !fdb.IsAPIVersionSelected() {
+		t.Fatal("New did not select an API version; versionstamp writes would fail 2200")
+	}
+	// A versionstamped-value write must now round-trip without an api_version_unset error.
+	db := New(nil)
+	val := append([]byte{9}, bytes.Repeat([]byte{0xFF}, 10)...)
+	off := make([]byte, 4)
+	binary.LittleEndian.PutUint32(off, 1)
+	val = append(val, off...)
+	if _, err := db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		tx.SetVersionstampedValue(k("vsk"), val)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("versionstamped write over SimFDB: %v", err)
+	}
+}
+
 func TestAddReadConflictRangeExplicit(t *testing.T) {
 	t.Parallel()
 	db := New(nil)

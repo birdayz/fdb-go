@@ -11,19 +11,25 @@ for the design; this skill is the *usage* manual.
 
 ## Honest status (read this first)
 
-**"Real DST" — one seed replays the entire run bit-exactly, no Docker, no cluster — is NOT built yet.**
-That is RFC-179 Tier 1 (SimFDB). Today every bug-hunting tool here runs against **real FoundationDB via
-testcontainers** (Docker) on wall-clock time. So:
+**SimFDB (RFC-179 Tiers 0–2) is built.** The record/relational stack now runs over a deterministic
+in-memory FDB backend (`pkg/simfdb`) with a seeded Env (`pkg/dst`: sim clock + seeded RNG + Buggify),
+so a single `uint64` seed replays the **record-layer** run bit-exactly — no Docker, no cluster — and
+the fault schedule (commit_unknown/conflict/too_old) is part of that seed with **true rollback** (unlike
+chaos's double-commit fake). The brute-force loop-until-bug hunter that rides on this is
+[`pkg/simfdb/hunt`](#hunt). So:
 
-- **Seed-reproducible today:** fuzz-corpus entries (`go test -run=FuzzX/<hash>`) and binding-stress
-  (`-seed-start N`). These replay the exact input from the command line.
-- **Partially reproducible:** chaos `RunRandom` and stress replay the same *op sequence / dataset*
-  (seeds are hardcoded in source), but **not** the same fault interleaving or server-assigned versions —
-  because real FDB + wall-clock time is underneath.
-- **Not reproducible:** chaos `RunConcurrent` (multi-goroutine, wall-clock-paced) — brute-force only.
+- **Seed-reproducible today, no Docker:** the **hunt** harness (`hunt.Run(seed)` over the real record
+  layer + all 7 index types), plus fuzz-corpus entries (`go test -run=FuzzX/<hash>`) and binding-stress
+  (`-seed-start N`).
+- **Partially reproducible:** chaos `RunRandom` and stress replay the same *op sequence / dataset* but
+  **not** the fault interleaving or server versions — real FDB + wall-clock underneath. (For the record
+  layer, prefer **hunt** when you want the full-fidelity seed replay.)
+- **Not built:** the **client-transport** bit-exact replay (a whole simulated network/disk under the
+  pure-Go client) — that's **Track B**, a separate RFC. SimFDB simulates the *backend contract*
+  (`fdb.BackendDatabase`), not the wire transport.
 
-Don't claim "the seed reproduces the run" for chaos/stress — that guarantee is what SimFDB (Tier 1)
-will deliver. When you say a bug is pinned, be precise about *which* kind of replay you have.
+When you say a bug is pinned, be precise about *which* replay you have: a hunt seed reproduces the
+record-layer run exactly; a chaos seed reproduces only the op stream.
 
 ## The two axes (how to think about any tool here)
 
@@ -31,18 +37,19 @@ Every tool sits on two axes. Pick the one that matches your bug.
 
 | | **In-memory / no Docker** | **Real FDB (testcontainers, Docker)** |
 |---|---|---|
-| **Seed-reproducible** | fuzz targets (planner, tuple, RYW, wire, parse) | binding-stress `-seed-start`; fuzz-corpus replay of a `FuzzDifferential*` crash |
+| **Seed-reproducible** | **hunt** (record layer over SimFDB); fuzz targets (planner, tuple, RYW, wire, parse) | binding-stress `-seed-start`; fuzz-corpus replay of a `FuzzDifferential*` crash |
 | **Not (or partially) reproducible** | — | chaos, SQL stress, `-race` loops, the differential battery |
 
 The rule (from RFC-179 §3a): **intercept as high as you can while still covering the code you care
-about.** In-memory + seeded is the fast inner loop; real-FDB is the fidelity gate. SimFDB (Tier 1) will
-move the record/relational stack from the bottom-right cell to the top-left.
+about.** In-memory + seeded is the fast inner loop; real-FDB is the fidelity gate. SimFDB moved the
+record layer into the top-left cell — hunt there first, then confirm anything wire-adjacent on real FDB.
 
 ## Symptom → tool (start here)
 
 | Symptom | Reach for | Section |
 |---|---|---|
-| Index/aggregate count or sum drifts; retry corrupts derived state | **chaos** (`RunRandom` + fault injection) | [chaos](#chaos) |
+| "Find me *any* record-layer bug" — brute-force loop-until-bug, no Docker, seed-reproducible | **hunt** (`hunt.Run` / `TestBruteHunt` / `FuzzHunt`) | [hunt](#hunt) |
+| Index/aggregate count or sum drifts; retry corrupts derived state | **chaos** (`RunRandom` + fault injection), or **hunt** for the seed-exact replay | [chaos](#chaos) / [hunt](#hunt) |
 | Panic / OOB slice on malformed bytes; decode never round-trips | **fuzz** (tuple/wire/parse/RYW) | [fuzz](#fuzz) |
 | Same query/plan differs run-to-run; memo grows on re-explore | **fuzz** (`FuzzPlanner_*`, subprocess) | [fuzz](#fuzz) |
 | Go client persists different bytes / different commit outcome than the C binding | **differential** (`FuzzDifferential*`) | [differential](#differential) |
@@ -81,7 +88,58 @@ go test ./pkg/recordlayer/chaos/ -run TestMaxEverCommitUnknown -count=1 -paralle
 - **`RunConcurrent` is NOT replayable** (per-worker seeds, wall-clock pacing, real-FDB conflict retries).
   Brute-force with `--runs_per_test=50`.
 - **Gotcha:** needs Docker (`TestMain` spins a container; no mock). `fault.go:24-29` fakes conflicts as
-  double-commit-then-re-execute — true rollback is a SimFDB (Tier 1) fix.
+  double-commit-then-re-execute; for **true rollback** (a faulted tx leaves zero trace) use **hunt**
+  over SimFDB. chaos remains the real-FDB fidelity gate; hunt is the fast seeded inner loop.
+
+## hunt
+
+Brute-force, seed-driven bug hunter for the record layer (`pkg/simfdb/hunt/`, RFC-179 Tier 2). It drives
+the **same op vocabulary as chaos `RunRandom`** (save/overwrite/delete/deleteAll over the 7-index
+kitchen-sink schema: VALUE+COUNT+SUM+RANK+MAX_EVER+VERSION+COVERING) but over **SimFDB** — in-process,
+no Docker — under a **seed-derived commit-fault schedule** (Buggify fires 1021/1020/1007 with true
+rollback), checking `chaos.Verify` after every batch. A bug is a single `uint64`: `hunt.Run(seed)`
+replays it, `hunt.Shrink(seed, cfg)` minimizes it. This is the "run in a loop until a bug drops out"
+tool — the brute-force complement to chaos (one fixed seed, real FDB).
+
+```sh
+# Loop-until-bug: time-budgeted parallel sweep, full 300-op profile (the overnight hunt).
+bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestBruteHunt \
+  --test_env=HUNT_SECONDS=3600 --test_env=HUNT_WORKERS=8 \
+  --test_timeout=4000 --test_output=streamed --nocache_test_results
+#   HUNT_SEED_START=N shards disjoint seed space across machines. First failing seed → full reproducer.
+
+# Coverage-guided fuzzer (libFuzzer mutates the seed; crashers saved to testdata/fuzz):
+bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.fuzz=^FuzzHunt$ \
+  --test_arg=-test.fuzztime=120s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+  --sandbox_writable_path=/tmp/fuzz-cache
+
+# Replay ONE suspect seed with per-op verify (pins the exact failing op):
+bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed \
+  --test_env=HUNT_SEED=1099511627776 --test_arg=-test.v --nocache_test_results
+```
+
+- **Reproduce & shrink:** a failing `Report` prints `seed=<S> FAILED after <N> ops` + each violation +
+  the exact replay command. `hunt.Shrink(S, cfg)` scans up from 1 op to the **minimal failing prefix**
+  (verify-every-op) so the reproducer is the fewest ops that still trip the oracle;
+  `hunt.FaultDependent(S, cfg)` tells you if the bug needs faults (a retry/idempotency defect) or
+  reproduces on the happy path (a plain, more serious, logic bug).
+- **Oracle stack (what gives it teeth):** (1) `chaos.Verify` after every `VerifyEvery` ops — index↔record
+  consistency across all 7 maintainers; (2) **determinism** — same seed ⇒ byte-identical `Fingerprint`
+  (sha256 of the whole keyspace) + identical fault count, catching any wall-clock / `crypto/rand` /
+  map-order leak; (3) an **unexpected op error** on this UNIQUE-free schema is itself a bug (faults are
+  retried transparently, so nothing should surface). `TestOracleHasTeethOverSimFDB` proves Verify catches
+  an injected store/model divergence, so a green sweep is meaningful, not a no-op.
+- **Throughput & knobs:** ~470 ms per full 300-op × 7-index run (dominated by per-op store re-open +
+  RankedSet), ≈17 seeds/s on 8 cores → ~1.5M seeds/day. `Config{NumOps, MaxPKs, VerifyEvery, FaultProb,
+  Metadata}` — smaller `MaxPKs` = more overwrite/conflict density; swap `Metadata` to a single-index
+  builder for far higher throughput when hunting one maintainer. The in-suite `smokeCfg` (120 ops, few
+  seeds) keeps `just test` ~8 s; real hunts use `HUNT_SECONDS`/`FuzzHunt`.
+- **What it has already found:** the SimFDB API-version precondition gap (versionstamp/VERSION-index
+  writes failed `api_version_unset 2200` because SimFDB bypassed `fdb.OpenDatabase`'s check — now
+  `simfdb.New` selects 730 if unset). First VERSION-index save, first run.
+- **Gotcha:** hunt exercises the **record layer** (the `fdb.BackendDatabase` contract), not the wire
+  transport — after a hunt finds a bug, confirm anything key-encoding/wire-adjacent on real FDB
+  (chaos/differential) before calling it wire-safe.
 
 ## fuzz
 
@@ -259,6 +317,10 @@ axis). Match the pin to the tool:
 
 - **fuzz / differential:** commit the minimized `testdata/fuzz/<Fuzz>/<hash>` crasher — it replays
   forever. If the package's `go_test` doesn't `glob(testdata/**)`, add the glob first.
+- **hunt:** first `hunt.Shrink(S, cfg)` to the minimal reproducer, then pin the ROOT cause — a hunt
+  failure is a record-layer bug, so the regression is a focused chaos/FDB test (or a `hunt.Run(S)`
+  assertion) on the exact maintainer/op, not the raw seed. If the fix is a SimFDB fidelity gap, pin it
+  in `pkg/simfdb` (see `TestNewSelectsAPIVersion`).
 - **chaos:** add a `NewScenario(t, …, WithSeed(S))` or `RandomConfig{Seed:S}` test at the failing seed
   (and, for a fault bug, `InjectOnce(FaultX)`), so the exact violation is a permanent test.
 - **stress / SQL-visible:** add a **yamsql scenario** with a `plan_contains:`/`EXPLAIN` assertion (prove
@@ -279,13 +341,14 @@ above.
 | Tier | Unlocks | Status |
 |---|---|---|
 | **−1** rr + Delve replay | reverse-debug a *captured* real-FDB flake | ⚠️ **setup** — `rr` not installed; `--backend=rr` |
-| **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ⏳ **planned** (next) |
-| **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ⏳ **planned** (keystone) |
-| **2** workload drivers + replay | seed-reproducible record & SQL workloads; **concurrent-open-tx interleaving driver** (fires real `1020`); continuation-under-fault replay (drive plan switch via **LRU eviction**) | ⏳ **planned** |
+| **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ✅ **Available** (`pkg/dst`) |
+| **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ✅ **Available** (`pkg/simfdb`) |
+| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); continuation-under-fault replay | ✅ **Available** (`pkg/simfdb/hunt`, `continuation_replay_test.go`) — SQL-workload driver + concurrent-open-tx interleaving driver still to come |
 | **3** client sim (Track B) | `synctest`-driven client concurrency + simulated server processes | ⏳ **separate RFC** (not full DST) |
 
-Until Tier 1 lands, the fast/reproducible loop is **fuzz** (in-memory, seeded); real-FDB fidelity comes
-from **chaos / differential / stress / binding-stress**. SimFDB is what merges the two.
+The fast/reproducible inner loop for the record layer is now **hunt** (in-memory, seeded, true-rollback
+faults); real-FDB fidelity still comes from **chaos / differential / stress / binding-stress**. Confirm
+anything wire-adjacent on real FDB before calling it wire-safe.
 
 ## Evolving this skill
 

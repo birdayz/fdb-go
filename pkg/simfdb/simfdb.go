@@ -88,10 +88,26 @@ type committedWrites struct {
 	ranges  []keyRange
 }
 
+// simDefaultAPIVersion is the API version a SimDB selects when the process hasn't already
+// chosen one. It matches the record layer's wire version (7.3 → 730); the versionstamp/tuple
+// layer keys the placeholder-offset encoding off fdb.GetAPIVersion() exactly as against a real
+// cluster (apiVersion >= 520 strips the trailing offset — see conflict.go:stampVersionstamp).
+const simDefaultAPIVersion = 730
+
 // New returns an empty SimDB. env supplies the Buggify fault points for commit-time injection
 // (nil = production, no faults). The sim clock/randomness in env are for the record-layer
 // persisted-byte sites (Tier 0), not the store itself, which uses only logical versions.
+//
+// A SimDB stands in for an *opened* FDB database, and fdb.OpenDatabase refuses to construct one
+// without a selected API version (api_version_unset, 2200) — the versionstamp path reads that
+// global. Since New cannot return an error, it enforces the same precondition by selecting the
+// default version when the process hasn't already chosen one (idempotent; an already-selected
+// version is respected). Without this, the first versionstamp/VERSION-index write over SimFDB
+// fails 2200 — a fidelity gap surfaced by the DST hunt (pkg/simfdb/hunt).
 func New(env *dst.Env) *SimDB {
+	if !fdb.IsAPIVersionSelected() {
+		fdb.MustAPIVersion(simDefaultAPIVersion)
+	}
 	return &SimDB{store: &mvccStore{}, env: env}
 }
 

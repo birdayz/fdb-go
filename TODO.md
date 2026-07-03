@@ -197,11 +197,25 @@ re-derives a zero net delta (`store.go:655,416`; `atomic_mutation.go:83` `remove
 re-pins its read version at the committed one via `Reset()`+`ensureReadVersion`, faithful FDB causal
 reads). RANK, VERSION, and split-record paths were clean at every injection point + BUGGIFY schedule.
 
-**Fixed (SimFDB fidelity gap, not a record-layer bug):**
+**Brute-force hunter (RFC-179 Tier 2 — `pkg/simfdb/hunt`):** a seed-driven loop-until-bug harness that
+drives the chaos op vocabulary (save/delete/deleteAll over the 7-index kitchen-sink schema) over SimFDB
+under a seed-derived commit-fault schedule (true rollback), checking `chaos.Verify` after every batch. A
+bug is a single `uint64`: `hunt.Run(seed)` replays it, `hunt.Shrink` minimizes it. Drivers: `FuzzHunt`
+(coverage-guided), `TestBruteHunt` (`HUNT_SECONDS` time-budgeted parallel sweep), `TestHuntSeed`
+(`HUNT_SEED` replay). ~17 full-profile seeds/s on 8 cores → ~1.5M seeds/day. Clean over 768 full seeds so
+far; in-suite smoke stays ~8 s. See the `## hunt` section of `.claude/skills/dst/SKILL.md`.
+
+**Fixed (SimFDB fidelity gaps, not record-layer bugs):**
 - [x] SimFDB injected faults into a **read-only/empty commit** that real FDB short-circuits client-side
   (no resolver round-trip → no `commit_unknown`, no commit version). Now short-circuited to a versionless
   no-op before any conflict/limit/fault logic (`pkg/simfdb/conflict.go`; pinned by
   `TestReadOnlyCommitShortCircuits`).
+- [x] SimFDB bypassed `fdb.OpenDatabase`'s **API-version precondition**, so the first versionstamp /
+  VERSION-index write over a fresh SimFDB test binary failed `api_version_unset (2200)` (the tuple layer
+  reads the process-global `fdb.GetAPIVersion()`). `simfdb.New` now selects 730 when the process hasn't
+  chosen a version — the same precondition a real opened database enforces (`pkg/simfdb/simfdb.go`; pinned
+  by `TestNewSelectsAPIVersion` and by the hunt kitchen-sink VERSION index). Found by the hunt on its
+  first VERSION-index save.
 
 **Open — SQL autocommit `commit_unknown` hazards (matches Java → conformance question, not a Go bug).**
 DST surfaced these deterministically; data integrity is intact in every case, but the *observed behavior*

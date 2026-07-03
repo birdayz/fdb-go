@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "hunt",
+    srcs = [
+        "hunt.go",
+        "shrink.go",
+    ],
+    importpath = "fdb.dev/pkg/simfdb/hunt",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/chaos",
+        "//pkg/simfdb",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "hunt_test",
+    srcs = ["hunt_test.go"],
+    embed = [":hunt"],
+    deps = [
+        "//gen",
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/chaos",
+        "//pkg/simfdb",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
