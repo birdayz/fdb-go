@@ -2,9 +2,9 @@ package recordlayer
 
 import (
 	"fmt"
-	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"github.com/google/uuid"
@@ -31,18 +31,40 @@ type IndexingHeartbeat struct {
 	createTimeMs  int64  // epoch ms when this indexer was created
 	leaseLengthMs int64  // heartbeat lease duration in ms
 	allowMutual   bool   // true for mutual/concurrent mode
+
+	// env is the RFC-179 Tier-0 environment (Clock + Randomness) inherited from the
+	// indexer's database. Nil means production; read it through the nil-safe *dst.Env
+	// accessors. The indexer UUID, the createTime, and every persisted per-heartbeat
+	// timestamp draw from here so a simulation run is byte-reproducible.
+	env *dst.Env
 }
 
 // NewIndexingHeartbeat creates a heartbeat manager for an indexer.
 // leaseLengthMs is how long a heartbeat remains valid before being considered stale.
-func NewIndexingHeartbeat(info string, leaseLengthMs int64, allowMutual bool) *IndexingHeartbeat {
+// env is the DST environment (from the indexer's database, oi.db.Env()); a nil env means
+// production — the UUID and timestamps then come from crypto/rand and the wall clock,
+// byte-identical to the pre-seam behavior.
+func NewIndexingHeartbeat(info string, leaseLengthMs int64, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
 	return &IndexingHeartbeat{
-		indexerID:     uuid.New(),
+		indexerID:     newIndexerID(env),
 		info:          info,
-		createTimeMs:  time.Now().UnixMilli(),
+		createTimeMs:  env.Now().UnixMilli(),
 		leaseLengthMs: leaseLengthMs,
 		allowMutual:   allowMutual,
+		env:           env,
 	}
+}
+
+// newIndexerID mints the indexer's unique ID, drawing its 16 bytes from the DST randomness
+// seam so a simulation run is reproducible. A nil env reads crypto/rand exactly as uuid.New()
+// does — uuid.NewRandomFromReader over crypto/rand, with the same v4 version/variant bits —
+// so production output is byte-identical. The err path (crypto/rand cannot fail on supported
+// platforms) falls back to uuid.New() so the ID is never the nil UUID.
+func newIndexerID(env *dst.Env) uuid.UUID {
+	if id, err := uuid.NewRandomFromReader(env); err == nil {
+		return id
+	}
+	return uuid.New()
 }
 
 // heartbeatSubspace returns the subspace for all heartbeats of an index.
@@ -81,7 +103,7 @@ func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.WritableTransaction, storeSubs
 		return fmt.Errorf("scan heartbeats: %w", err)
 	}
 
-	now := time.Now().UnixMilli()
+	now := h.env.Now().UnixMilli()
 	for _, kv := range kvs {
 		// Extract the UUID from the key.
 		t, err := fastSubspaceUnpack(kv.Key, len(hbSub.Bytes()))
@@ -132,7 +154,7 @@ func (h *IndexingHeartbeat) update(tx fdb.WritableTransaction, storeSubspace sub
 	hb := &gen.IndexBuildHeartbeat{
 		Info:                      proto.String(h.info),
 		CreateTimeMilliseconds:    proto.Int64(h.createTimeMs),
-		HeartbeatTimeMilliseconds: proto.Int64(time.Now().UnixMilli()),
+		HeartbeatTimeMilliseconds: proto.Int64(h.env.Now().UnixMilli()),
 	}
 	data, err := hb.MarshalVT()
 	if err != nil {

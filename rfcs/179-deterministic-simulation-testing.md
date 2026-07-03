@@ -1,11 +1,23 @@
 # RFC-179 — Deterministic Simulation Testing (DST) for the record & relational layers (Track A)
 
-**Status:** Draft, ready for ACK review. No code yet, but the four open questions are now **resolved**
-(§9, validated against the C++/Java/Go sources) and the build order is committed (§7). This is a
-corrections-then-ACK direction document, not a redesign: the central `fdb.BackendDatabase`-seam thesis
-is validated (SimFDB is a genuine drop-in third backend), and the load-bearing byte-format /
-version-ownership / watch-deferral facts hold. Not a query-engine planner change, so the Graefe gate is
-**advisory** here, not mandatory.
+**Status:** **Implementing** (Track A landing 0→1→2). The four open questions are **resolved** (§9,
+validated against the C++/Java/Go sources) and the build order is committed (§7). Not a query-engine
+planner change, so the Graefe gate is **advisory** here, not mandatory.
+
+**Implementation status (this branch):**
+- **Tier 0** — `pkg/dst`: `Clock` (real/sim), seeded `Randomness`, `Buggify` (faithful port of FDB
+  `getSBVar`), `Env` bundle. Env seam threaded `FDBDatabase → FDBRecordContext`; store-header
+  `LastUpdateTime` + lock-state routed through the sim clock. Remaining wiring: indexer heartbeat,
+  vector-index nonces, `Session.StatementNow`.
+- **Tier 1** — `pkg/simfdb`: the third `fdb.BackendDatabase` (MVCC sorted store, logical versions, RYW,
+  all atomics, SSI with the strict-`>` rule + `1007` window + versionstamp server-role WCR re-add, size
+  limits, commit BUGGIFY, synchronous ready-futures). **Proven**: the record layer saves/loads over
+  SimFDB with no Docker; byte-reproducible across runs; validated by `chaos.Verify()`'s 14-invariant
+  oracle (which caught one real SimFDB bug, fixed). Remaining: the differential-vs-libfdb_c oracle
+  (needs the cgo bench harness).
+- **Tier 2** — serial seed-reproducible workload driver + oracle; concurrent-open-transaction
+  interleaving driver (fires real `1020` through the record layer); byte-reproducibility **under
+  injected faults**. Remaining: SQL workload driver, continuation-under-fault replay.
 **Review:** Torvalds (design) **ACK**, FDB C++ client dev (SSI/versionstamp/error-code fidelity vs
 7.3.75) **ACK**, Graefe (advisory, query-engine touchpoints) **ACK** — their findings are folded in
 (the `SetVersionstampedKey` server-side write-conflict-range re-add in Tier 1 item 1; LRU-eviction as
