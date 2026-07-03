@@ -3,6 +3,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -92,6 +93,8 @@ func TestFDB_RFC173W4b_ClusteredOuterScalar(t *testing.T) {
 	if err := db.QueryRowContext(ctx, qLeft).Scan(&name, &amt); err == nil {
 		t.Errorf("LEFT-join outer with non-rightmost correlation must DECLINE (clean plan error), got rows (%q, %d valid=%v) — a silent NULL regression risk\n  sql: %s",
 			name.String, amt.Int64, amt.Valid, qLeft)
+	} else if !strings.Contains(err.Error(), "0AF00") {
+		t.Errorf("LEFT-join non-rightmost decline error = %v, want the clean plan error (0AF00), not a runtime failure", err)
 	}
 
 	// (e) UNGATED outer, correlation to the RIGHTMOST leg (the outer

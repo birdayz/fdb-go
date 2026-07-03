@@ -235,6 +235,7 @@ go_test(
         "rfc173_slice1_frontier_pin_test.go",
         "rfc173_slice2_gate_pins_test.go",
         "rfc173_w4b_clustered_outer_fdb_test.go",
+        "rfc173_w4b_computed_limit_fdb_test.go",
         "rfc173_w4b_computed_scalar_fdb_test.go",
         "rfc173_w4b_join_inner_fdb_test.go",
         "row_value_constructor_probe_test.go",

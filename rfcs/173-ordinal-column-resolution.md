@@ -1917,7 +1917,10 @@ shape 3, one level up. Two design premises fall:
   (ungated outer, buried box-leg refs, unbakeable inner, inner-alias/leg-alias collision) →
   DECLINE nil (clean 0AF00), replacing today's silent NULLs; rightmost-only refs keep the name-model
   fallback ((b)/(e) unregressed). Every clustered-outer query is then CORRECT (ordinal) or LOUD
-  (0AF00) — never silently NULL.
+  (0AF00) — never silently NULL. **Scope (impl-review condition):** the LOUD guarantee covers
+  PROVABLE refs — a non-exhaustive inner walk whose only non-rightmost refs hide in un-walked
+  carriers falls back to today's behavior (the guard declines on definite refs only; unanalyzable
+  shapes keep the pre-W4b status quo rather than newly rejecting working rightmost-corr queries).
 - **(v) Bare projections over a cluster + csq** are not resolvable against the dotted seed output:
   rightmost-only correlation falls back to name-model (today's behavior); non-rightmost declines per
   (iv). Bare-unique widening is deferred (documented, not silent).
