@@ -3,6 +3,7 @@ package query
 import (
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
@@ -88,16 +89,236 @@ func (t *cascadesTranslator) legScanTableName(op logical.LogicalOperator) string
 // name-model legColumns stays untouched: a name-model PARENT over a gated box
 // still reads the box's dual-emitted Datum by dotted keys.
 func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []values.Field {
-	switch op.(type) {
+	switch o := op.(type) {
 	case *logical.LogicalJoin:
-		// Unreachable when the gate is correct: join legs are categorically
-		// INELIGIBLE in the Slice 2 wedge (ordinalEligible — a nested ordinal
-		// box's bare concat erases buried aliases; nesting is S3's collapsed
-		// FieldPath work). Loud, never a silently mis-typed leg.
-		panic("RFC-173 ordinal seed: a JOIN leg reached the ordinal seed — join legs are ineligible in the S2 wedge (cluster-arity gate mis-scope, planner bug)")
+		// S3 fulcrum: a GATED join leg (a FULL box's gated inner cluster, or
+		// a gated box under a FULL boundary) contributes the flat ordinal
+		// concatenation of ITS legs, in rv (FROM) order — the box's own
+		// output type; duplicates survive (positional access). A NAME-MODEL
+		// join leg reaching here is still a gate mis-scope: loud, never a
+		// silently mis-typed leg.
+		prev := t.inInnerCluster
+		t.inInnerCluster = false
+		d := t.ordinalWedgeGateDecide(o)
+		t.inInnerCluster = prev
+		if !d.Gated {
+			panic("RFC-173 ordinal seed: a NAME-MODEL join leg reached the ordinal seed (cluster-arity gate mis-scope, planner bug)")
+		}
+		var fields []values.Field
+		for _, leg := range t.legsOfGatedJoin(o) {
+			cols := t.ordinalLegColumns(leg.op)
+			if cols == nil {
+				return nil
+			}
+			fields = append(fields, cols...)
+		}
+		return fields
 	default:
 		return t.legColumns(op)
 	}
+}
+
+// clusterLeg is one leg of a gathered inner-join cluster: the leg operator
+// and its FROM-order alias.
+type clusterLeg struct {
+	op    logical.LogicalOperator
+	alias string
+}
+
+// gatherInnerClusterLegs flattens DIRECT inner-join nesting into FROM-order
+// legs — Java flattens inner joins at translation (QueryVisitor.java:429-434
+// accumulates into a single flat SelectExpression); nested binaries are never
+// seeded (fulcrum ruling). Derived-table/filter boundaries stay LEGS and
+// compose later via SelectMergeRule. Nested non-inner joins are unreachable
+// under a gated root (clusterArity poisons LEFT; FULL contributes as an
+// opaque leg) — treated defensively as legs. Uses the ORIGINAL operand order
+// (j.Left, j.Right): the RIGHT-join execution swap never fires for inner
+// kinds, so tree order IS FROM order.
+func (t *cascadesTranslator) gatherInnerClusterLegs(j *logical.LogicalJoin) []clusterLeg {
+	var legs []clusterLeg
+	var walk func(op logical.LogicalOperator)
+	walk = func(op logical.LogicalOperator) {
+		if nj, isJoin := op.(*logical.LogicalJoin); isJoin && nj.Kind == logical.JoinInner &&
+			len(nj.OnExistsSubqueries) == 0 {
+			if _, isUnnest := nj.Right.(*logical.LogicalUnnest); !isUnnest {
+				walk(nj.Left)
+				walk(nj.Right)
+				return
+			}
+		}
+		legs = append(legs, clusterLeg{op: op, alias: sourceAlias(op)})
+	}
+	walk(j.Left)
+	walk(j.Right)
+	return legs
+}
+
+// legsOfGatedJoin is the kind-aware leg list of a GATED join: an INNER root
+// gathers its whole direct-nesting cluster (flat N-way); a FULL box keeps its
+// two box legs verbatim (each leg may itself be a gated inner cluster — ONE
+// leg, not gathered through).
+func (t *cascadesTranslator) legsOfGatedJoin(j *logical.LogicalJoin) []clusterLeg {
+	if j.Kind == logical.JoinInner {
+		return t.gatherInnerClusterLegs(j)
+	}
+	return []clusterLeg{
+		{op: j.Left, alias: sourceAlias(j.Left)},
+		{op: j.Right, alias: sourceAlias(j.Right)},
+	}
+}
+
+// bakeLegType is one gated-join leg's predicate-bake entry: the leg's flowed
+// type (the baked QOV's type — the flat concat for a box leg) plus the BAKE
+// WINDOW bare names resolve within. A box leg is NAMED after its rightmost
+// LEAF (sourceAlias), so a bare reference `b.col` addressing the box alias
+// means THAT LEAF's column: FieldIndex must run against the leaf's own type
+// at its concat offset, never first-match across the whole concat — an
+// earlier leg's duplicate name would silently bake the WRONG column. For a
+// plain (non-join) leg the window IS the whole type at offset 0.
+type bakeLegType struct {
+	typ        *values.RecordType // the leg's flowed type (the baked QOV's type)
+	leafOffset int                // rightmost leaf's column offset within typ
+	leafTyp    *values.RecordType // rightmost leaf's own type (== typ for plain legs)
+}
+
+// legBakeWindow resolves a leg's bake window: the rightmost LEAF's offset and
+// own type, recursing through gated join boxes exactly as sourceAlias recurses
+// to the name (legsOfGatedJoin's last leg IS sourceAlias's j.Right chain, for
+// both gathered inner clusters and FULL box legs). nil leafTyp when a
+// sub-leg's columns are underivable — the caller then omits the entry and the
+// references stay lazy (sound by the load-bearing lazy invariant).
+func (t *cascadesTranslator) legBakeWindow(op logical.LogicalOperator) (int, *values.RecordType) {
+	j, isJoin := op.(*logical.LogicalJoin)
+	if !isJoin {
+		return 0, t.ordinalLegType(op)
+	}
+	legs := t.legsOfGatedJoin(j)
+	offset := 0
+	for _, leg := range legs[:len(legs)-1] {
+		cols := t.ordinalLegColumns(leg.op)
+		if cols == nil {
+			return 0, nil
+		}
+		offset += len(cols)
+	}
+	subOffset, leafTyp := t.legBakeWindow(legs[len(legs)-1].op)
+	if leafTyp == nil {
+		return 0, nil
+	}
+	return offset + subOffset, leafTyp
+}
+
+// gatedJoinLegTypes builds the predicate-bake legTypes map (UPPER alias →
+// bakeLegType) for a GATED join from its GATHERED legs — the exact pairing the
+// seed's quantifiers use. Deriving it from the binary root's two operands is
+// WRONG for a nested-binary cluster: sourceAlias(join-operand) recurses to the
+// buried RIGHTMOST table while ordinalLegType(join-operand) is the whole
+// subtree's concat, so a bake would pin a single table's reference to a
+// concat-relative ordinal (out of range at runtime — or silently the WRONG
+// column when FieldIndex first-matches an earlier leg's duplicate name). A leg
+// with an empty alias or an undeciphered type is simply absent: its references
+// stay lazy, which is sound (the load-bearing lazy invariant).
+func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[string]bakeLegType {
+	legs := t.legsOfGatedJoin(j)
+	legTypes := make(map[string]bakeLegType, len(legs))
+	for _, leg := range legs {
+		if leg.alias == "" {
+			continue
+		}
+		typ := t.ordinalLegType(leg.op)
+		if typ == nil {
+			continue
+		}
+		leafOffset, leafTyp := t.legBakeWindow(leg.op)
+		if leafTyp == nil {
+			continue
+		}
+		legTypes[strings.ToUpper(leg.alias)] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+	}
+	return legTypes
+}
+
+// gatherInnerClusterPreds collects every nested inner join's ON predicate in
+// the gathered cluster (the root's own ON is the caller's — translateJoin
+// already extracts it), post-order so a deterministic pred order rides the
+// seed select.
+func gatherInnerClusterPreds(j *logical.LogicalJoin) []predicates.QueryPredicate {
+	var preds []predicates.QueryPredicate
+	var walk func(op logical.LogicalOperator)
+	walk = func(op logical.LogicalOperator) {
+		nj, isJoin := op.(*logical.LogicalJoin)
+		if !isJoin || nj.Kind != logical.JoinInner || len(nj.OnExistsSubqueries) > 0 {
+			return
+		}
+		if _, isUnnest := nj.Right.(*logical.LogicalUnnest); isUnnest {
+			return
+		}
+		walk(nj.Left)
+		walk(nj.Right)
+		if nj.OnPredicate != nil {
+			if qp, ok := nj.OnPredicate.(predicates.QueryPredicate); ok {
+				preds = append(preds, qp)
+			}
+		}
+	}
+	walk(j.Left)
+	walk(j.Right)
+	return preds
+}
+
+// translateGatheredInnerCluster builds the FLAT N-quantifier select for a
+// gated inner cluster with nested direct joins (the S3 fulcrum's Java-aligned
+// translation shape): one ForEach quantifier per gathered leg in FROM order,
+// the flat N-leg ordinal seed RC, and the union of every nested join's ON
+// predicates with cross-leg conjuncts baked. Legs translate ENCLOSED (their
+// own nested content — derived bodies etc. — is inside this cluster).
+func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoin, legs []clusterLeg) expressions.RelationalExpression {
+	// Legs of a GATED parent translate FRESH (S3 fulcrum): a leg's own inner
+	// joins gate independently and SelectMergeRule composes the leg's ordinal
+	// RV into this parent via translateValueCorrelations + the fuse arm —
+	// Java's model. (Enclosure poisoning survives only for the name-model
+	// parents that live until W4/W5: existential flattens, recursive CTE,
+	// correlated-scalar seeds.)
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = false
+	quantifiers := make([]expressions.Quantifier, 0, len(legs))
+	sourceAliases := make([]string, 0, len(legs))
+	for _, leg := range legs {
+		ref := t.translateRef(leg.op)
+		if ref == nil {
+			t.inInnerCluster = prevEnclosure
+			return nil
+		}
+		quantifiers = append(quantifiers, expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier(leg.alias), ref,
+		))
+		sourceAliases = append(sourceAliases, leg.alias)
+	}
+	t.inInnerCluster = prevEnclosure
+
+	var preds []predicates.QueryPredicate
+	if j.OnPredicate != nil {
+		if qp, ok := j.OnPredicate.(predicates.QueryPredicate); ok {
+			preds = append(preds, qp)
+		}
+	}
+	preds = append(preds, gatherInnerClusterPreds(j)...)
+
+	resultValue, legTypes := t.buildOrdinalJoinResultValue(legs)
+	if resultValue == nil {
+		// A leg's columns are not derivable (catalog-free nil-md path) —
+		// untranslatable, same rule as the binary seed.
+		return nil
+	}
+	preds = bakeGatedJoinPredicates(preds, legTypes)
+
+	return expressions.NewSelectExpressionWithJoinType(
+		resultValue,
+		quantifiers,
+		preds,
+		sourceAliases,
+		expressions.JoinInner,
+	)
 }
 
 // buildOrdinalJoinResultValue builds the gated 2-way join's result value: the
@@ -108,26 +329,26 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 // outer/inner roles). Returns nil when a leg is untranslatable (same rule as
 // the anchored seed). The seed shape is asserted loud
 // (values.AssertOrdinalJoinSeed — the standing review condition on W3b).
-// The returned legTypes map (UPPER alias → leg RecordType) feeds
+// The returned legTypes map (UPPER alias → bakeLegType) feeds
 // bakeGatedJoinPredicates at the seed and the WHERE-merge site.
-func (t *cascadesTranslator) buildOrdinalJoinResultValue(left, right logical.LogicalOperator, leftAlias, rightAlias string) (values.Value, map[string]*values.RecordType) {
-	if leftAlias == "" || rightAlias == "" {
-		return nil, nil
-	}
-	leftType := t.ordinalLegType(left)
-	rightType := t.ordinalLegType(right)
-	if leftType == nil || rightType == nil {
-		return nil, nil
-	}
+func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (values.Value, map[string]bakeLegType) {
 	var fields []values.RecordConstructorField
-	legTypes := make(map[string]*values.RecordType, 2)
-	for _, leg := range []struct {
-		alias string
-		typ   *values.RecordType
-	}{{leftAlias, leftType}, {rightAlias, rightType}} {
-		legTypes[strings.ToUpper(leg.alias)] = leg.typ
-		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg.alias), leg.typ)
-		for i := range leg.typ.Fields {
+	legTypes := make(map[string]bakeLegType, len(legs))
+	for _, leg := range legs {
+		if leg.alias == "" {
+			return nil, nil
+		}
+		typ := t.ordinalLegType(leg.op)
+		if typ == nil {
+			return nil, nil
+		}
+		leafOffset, leafTyp := t.legBakeWindow(leg.op)
+		if leafTyp == nil {
+			return nil, nil
+		}
+		legTypes[strings.ToUpper(leg.alias)] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg.alias), typ)
+		for i := range typ.Fields {
 			fv, err := values.NewFieldValueOfOrdinal(qov, i)
 			if err != nil {
 				// Impossible by construction (the ordinal ranges over the
@@ -164,7 +385,7 @@ func (t *cascadesTranslator) buildOrdinalJoinResultValue(left, right logical.Log
 // correlations, columns absent from the leg type, already-baked nodes) pass
 // through untouched. Shares the exact predicate-walk spine the planner rules
 // use (predicates.ReplaceValues).
-func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[string]*values.RecordType) []predicates.QueryPredicate {
+func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[string]bakeLegType) []predicates.QueryPredicate {
 	if len(preds) == 0 || len(legTypes) == 0 {
 		return preds
 	}
@@ -178,17 +399,21 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 			return v
 		}
 		legType, isLeg := legTypes[strings.ToUpper(qov.Correlation.Name())]
-		if !isLeg || legType == nil {
+		if !isLeg || legType.typ == nil || legType.leafTyp == nil {
 			return v
 		}
-		idx, found := legType.FieldIndex(fv.Field)
+		// Resolve the bare name within the leg's BAKE WINDOW (the rightmost
+		// leaf for a box leg — the alias names that leaf), then offset into
+		// the leg's flowed concat. A whole-concat FieldIndex would first-match
+		// an earlier leg's duplicate name — silently the wrong column.
+		idx, found := legType.leafTyp.FieldIndex(fv.Field)
 		if !found {
 			return v
 		}
-		typedQOV := values.NewQuantifiedObjectValueOfType(qov.Correlation, legType)
-		baked, err := values.NewFieldValueOfOrdinal(typedQOV, idx)
+		typedQOV := values.NewQuantifiedObjectValueOfType(qov.Correlation, legType.typ)
+		baked, err := values.NewFieldValueOfOrdinal(typedQOV, legType.leafOffset+idx)
 		if err != nil {
-			panic("RFC-173 predicate bake: " + err.Error()) // FieldIndex guaranteed the range
+			panic("RFC-173 predicate bake: " + err.Error()) // the window is within the concat by construction
 		}
 		return baked
 	}
@@ -227,7 +452,7 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 // predicateLegAliases counts how many DISTINCT gated-join leg aliases a
 // predicate's value trees reference directly (bare-named lazy FieldValues
 // over a leg QOV — the same references the bake rewrites).
-func predicateLegAliases(p predicates.QueryPredicate, legTypes map[string]*values.RecordType) int {
+func predicateLegAliases(p predicates.QueryPredicate, legTypes map[string]bakeLegType) int {
 	seen := make(map[string]struct{}, 2)
 	predicates.ReplaceValues(p, func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)

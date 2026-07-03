@@ -254,10 +254,13 @@ func TestRFC173S3_FusedPath_CorrelatedContexts(t *testing.T) {
 }
 
 // TestRFC173S3_FusedPath_IdentityHashExplain pins the fused node's identity
-// surface: element-wise (Field, Ordinal) equality (Java FieldPath list-equals,
-// FieldValue.java:411-420), equal ⟹ same-hash, and the multi-step Explain
-// rendering (every step as name#ordinal, dot-joined, '#'-escaped) feeding the
-// ExplainValue-keyed projection-plan identity.
+// surface post-W3-flip: element-wise ORDINAL-ONLY equality (Java FieldPath
+// list-equals over ResolvedAccessor.equals = getOrdinal() alone,
+// FieldValue.java:411-420 + :675-689), equal ⟹ same-hash (the baked hash
+// folds only the ordinal path — a name-bearing hash would split the
+// alias-mapped twins the flip makes equal), and the multi-step Explain
+// rendering (every step as name#ordinal, dot-joined, '#'-escaped — rendering
+// keeps names; identity does not).
 func TestRFC173S3_FusedPath_IdentityHashExplain(t *testing.T) {
 	t.Parallel()
 	_, outer := bakedChain(t)
@@ -290,9 +293,17 @@ func TestRFC173S3_FusedPath_IdentityHashExplain(t *testing.T) {
 	if EqualsWithoutChildren(fused, diffOrd) {
 		t.Fatal("paths differing in a step ordinal must be UNEQUAL")
 	}
-	diffName := &FieldValue{Field: "X", Resolved: NewFieldPathOfSingle("NESTED", 0, true).WithSuffix(NewFieldPathOfSingle("X", 1, true))}
-	if EqualsWithoutChildren(fused, diffName) {
-		t.Fatal("paths differing in a step name must be UNEQUAL (coexistence-window element identity)")
+	// The W3 flip: a step NAME difference is NOT an identity difference —
+	// Java's ResolvedAccessor.equals is ordinal-only (FieldValue.java:675-689).
+	// Same ordinals, different display names: EQUAL and hash-equal (this is
+	// the alias-mapped-twin dedup the flip exists for; pre-flip these were
+	// unequal — the refinement that could only under-dedup).
+	diffName := &FieldValue{Field: "X", Child: fused.Child, Resolved: NewFieldPathOfSingle("OTHER", 0, true).WithSuffix(NewFieldPathOfSingle("X", 1, true))}
+	if !EqualsWithoutChildren(fused, diffName) {
+		t.Fatal("paths differing only in step NAMES must be EQUAL (Java ordinal-only element identity, S3-W3 flip)")
+	}
+	if SemanticHashCode(fused) != SemanticHashCode(diffName) {
+		t.Fatal("name-differing equal paths must hash equal (the baked hash folds ordinals only)")
 	}
 }
 

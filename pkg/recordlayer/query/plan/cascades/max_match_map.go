@@ -876,14 +876,67 @@ func expandValueForMatching(v values.Value) []values.Value {
 		}
 	}
 
-	// ExpandFusedFieldValueRule: if v is a FieldValue with a multi-step
-	// path (e.g. "a.b.c"), split the last step:
-	// FV(v, "a.b.c") → FV(FV(v, "a.b"), "c").
-	// Go's FieldValue uses a single string Field, not a path list,
-	// so this rule doesn't apply to Go's current FieldValue model.
-	// (Java's FieldValue has a FieldPath with multiple accessors.)
+	// ExpandFusedFieldValueRule (Java ExpandFusedFieldValueRule.onMatch,
+	// resident ONLY in MaxMatchMapSimplificationRuleSet.java:50 — never in
+	// the general simplifier, per the stack-overflow warning against
+	// co-residing with the compose rule): a FUSED multi-accessor FieldValue
+	// (live since the S3 fulcrum's TranslationMap rebase) emits every split
+	// form — a p-accessor fused prefix with the remaining suffix chained,
+	// for each p — so a candidate in ANY partial-to-full split shape (the
+	// fully-chained pre-compose shape AND the one-step-split shape a
+	// candidate builder may produce) matches. Matching-only, Java's exact
+	// placement.
+	if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved != nil && len(fv.Resolved.Accessors) >= 2 {
+		results = append(results, expandFusedFieldValue(fv)...)
+	}
 
 	return results
+}
+
+// expandFusedFieldValue emits every split form of a fused path — Java's FULL
+// re-explored member set (ExpandFusedFieldValueRule splits the last accessor
+// and yieldResultAndReExplore re-runs on the prefix, cascading to every
+// member; Go's max-match recursion does NOT re-expand a nested fused prefix
+// before comparing the child, so every member must be emitted DIRECTLY, not
+// left to recursion). For each split point p in [1, n-1]: a p-accessor fused
+// prefix over the child, then the remaining n-p accessors chained as
+// single-accessor nodes. p=1 is fully chained (one node per accessor —
+// matches a pre-compose CHAINED candidate); p=n-1 is the one-step split
+// FV(FV(child,[a1..a(n-1)]),[an]) — matches a partially-fused candidate. The
+// fully-fused form (p=n) needs no expansion: the caller compares v directly.
+// FrontierPinned rides every node (an evaluation-contract marker excluded
+// from identity; these nodes are match-only, never evaluated); every node but
+// the outermost carries UnknownType — the ordinal-only baked identity never
+// consults Typ.
+func expandFusedFieldValue(fv *values.FieldValue) []values.Value {
+	accs := fv.Resolved.Accessors
+	pinned := fv.Resolved.FrontierPinned
+	n := len(accs)
+	forms := make([]values.Value, 0, n-1)
+	for p := 1; p <= n-1; p++ {
+		prefixAccs := make([]values.ResolvedAccessor, p)
+		copy(prefixAccs, accs[:p])
+		var cur values.Value = &values.FieldValue{
+			Field:    accs[p-1].Field,
+			Typ:      values.UnknownType, // intermediate: never the outermost, Typ unread by matching
+			Child:    fv.Child,
+			Resolved: &values.FieldPath{Accessors: prefixAccs, FrontierPinned: pinned},
+		}
+		for i := p; i < n; i++ {
+			typ := values.Type(values.UnknownType)
+			if i == n-1 {
+				typ = fv.Typ // the outermost node keeps the fused node's flowed type
+			}
+			cur = &values.FieldValue{
+				Field:    accs[i].Field,
+				Typ:      typ,
+				Child:    cur,
+				Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{accs[i]}, FrontierPinned: pinned},
+			}
+		}
+		forms = append(forms, cur)
+	}
+	return forms
 }
 
 // expandRecordValue expands a non-RCV value with Record type into a

@@ -1908,11 +1908,13 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// ruling #2: eager (leg, ordinal), one baking rule for every
 			// predicate the ordinal select carries).
 			if d, gok := t.wedgeGate[join]; gok && d.Gated {
-				legTypes := map[string]*values.RecordType{
-					strings.ToUpper(sourceAlias(join.Left)):  t.ordinalLegType(join.Left),
-					strings.ToUpper(sourceAlias(join.Right)): t.ordinalLegType(join.Right),
-				}
-				toMerge = bakeGatedJoinPredicates(toMerge, legTypes)
+				// legTypes MUST pair aliases with types per GATHERED leg
+				// (gatedJoinLegTypes) — pairing sourceAlias(join.Left) with
+				// ordinalLegType(join.Left) breaks on a nested-binary cluster:
+				// the alias recurses to the buried rightmost table while the
+				// type is the whole subtree's concat, baking concat-relative
+				// ordinals onto single-table quantifiers.
+				toMerge = bakeGatedJoinPredicates(toMerge, t.gatedJoinLegTypes(join))
 			}
 			merged := append(sel.GetPredicates(), toMerge...)
 			return expressions.NewSelectExpressionWithJoinType(
@@ -3410,6 +3412,18 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// predicates instead of the name-model anchored RC.
 	gateDecision := t.ordinalWedgeGate(j)
 
+	// S3 fulcrum: a GATED INNER root with NESTED inner joins translates FLAT
+	// — one select over ALL the cluster's direct-nesting legs (Java flattens
+	// inner joins at translation, QueryVisitor.java:429-434; nested binaries
+	// are never seeded). Derived/filter boundaries stay legs and compose via
+	// SelectMergeRule during rewriting. The 2-leg case (no nesting) and the
+	// gated FULL box keep the binary flow below unchanged.
+	if gateDecision.Gated && kind == logical.JoinInner {
+		if legs := t.gatherInnerClusterLegs(j); len(legs) > 2 {
+			return t.translateGatheredInnerCluster(j, legs)
+		}
+	}
+
 	// Leg enclosure: an INNER (incl. cross) join's legs are part of THIS
 	// cluster — a nested join there merges into a ≥3-way select and must stay
 	// name-model. A LEFT-outer box's PRESERVED (left) leg is ALSO enclosed:
@@ -3423,7 +3437,12 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// the OnExists subplan loop: existential subplans are never merged into
 	// this select, so they root fresh clusters too.
 	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = kind == logical.JoinInner || kind == logical.JoinLeft
+	// S3 fulcrum: legs of a GATED parent translate FRESH (their own inner
+	// joins gate independently; SelectMergeRule composes ordinal RVs -- see
+	// translateGatheredInnerCluster). Enclosure poisoning survives only for
+	// NAME-MODEL parents (a non-gated inner cluster, a LEFT box preserved
+	// leg -- the RFC-153 dissolve/flatten machinery stays name-model to W4).
+	t.inInnerCluster = !gateDecision.Gated && (kind == logical.JoinInner || kind == logical.JoinLeft)
 	leftRef := t.translateRef(left)
 	if leftRef == nil {
 		t.inInnerCluster = prevEnclosure
@@ -3500,8 +3519,8 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		// concatenation of the two legs + eager (leg, ordinal) predicate
 		// baking (contract ruling #2). Same untranslatable-on-nil rule as the
 		// anchored seed below.
-		var legTypes map[string]*values.RecordType
-		resultValue, legTypes = t.buildOrdinalJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
+		var legTypes map[string]bakeLegType
+		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{{op: rvLeft, alias: rvLeftAlias}, {op: rvRight, alias: rvRightAlias}})
 		preds = bakeGatedJoinPredicates(preds, legTypes)
 	} else {
 		resultValue = t.buildJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)

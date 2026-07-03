@@ -603,7 +603,7 @@ func TestRFC173S2_FlatMap_ComputeResult(t *testing.T) {
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 	newCursor := func(t *testing.T) *flatMapCursor {
 		t.Helper()
-		c, err := newFlatMapCursor(nil, nil, nil, EmptyEvaluationContext(),
+		c, err := newFlatMapCursor(nil, nil, nil, nil, EmptyEvaluationContext(),
 			qovA.Correlation, qovB.Correlation, seed, false, recordlayer.ExecuteProperties{})
 		if err != nil {
 			t.Fatalf("newFlatMapCursor: %v", err)
@@ -666,7 +666,7 @@ func TestRFC173S2_FlatMap_ComputeResult(t *testing.T) {
 // positional row. Deliberately NOT parallel: owns the oracle globals.
 func TestRFC173S2_FlatMap_Oracle(t *testing.T) { //nolint:paralleltest // owns the §5 oracle globals
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
-	c, err := newFlatMapCursor(nil, nil, nil, EmptyEvaluationContext(),
+	c, err := newFlatMapCursor(nil, nil, nil, nil, EmptyEvaluationContext(),
 		qovA.Correlation, qovB.Correlation, seed, false, recordlayer.ExecuteProperties{})
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)
@@ -954,7 +954,7 @@ func TestRFC173S2_FlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 		[]predicates.QueryPredicate{ojEqPred(bakedBID, bakedAID)},
 	)
 
-	c, err := newFlatMapCursor(nil, innerPlan, nil, EmptyEvaluationContext(),
+	c, err := newFlatMapCursor(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
 		outerCorr, values.NamedCorrelationIdentifier("B"), foldedRV, false,
 		recordlayer.ExecuteProperties{})
 	if err != nil {

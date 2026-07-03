@@ -271,13 +271,13 @@ func TestRFC173S2_SeedAssert_MalformedPanics(t *testing.T) {
 		t.Parallel()
 		qovA := newQOV("a", ojLegTypeAV())
 		rc := values.NewRawRecordConstructorValue(baked(qovA, 0), baked(qovA, 1))
-		mustPanicRFC173(t, func() { assertOrdinalJoinSeed(rc) }, "2-way")
+		mustPanicRFC173(t, func() { assertOrdinalJoinSeed(rc) }, "at least two legs")
 		if _, _, ok := ordinalJoinSpans(rc); ok {
 			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
 		}
 	})
 
-	t.Run("three runs", func(t *testing.T) {
+	t.Run("three runs are LEGAL (S3 fulcrum: N-leg flat seeds)", func(t *testing.T) {
 		t.Parallel()
 		oneCol := func(name string) *values.RecordType {
 			return values.NewRecordType("", false, []values.Field{{Name: name, FieldType: values.NotNullLong, Ordinal: 0}})
@@ -287,9 +287,13 @@ func TestRFC173S2_SeedAssert_MalformedPanics(t *testing.T) {
 			baked(newQOV("b", oneCol("Y")), 0),
 			baked(newQOV("c", oneCol("Z")), 0),
 		)
-		mustPanicRFC173(t, func() { assertOrdinalJoinSeed(rc) }, "2-way")
-		if _, _, ok := ordinalJoinSpans(rc); ok {
-			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
+		assertOrdinalJoinSeed(rc) // must NOT panic — the exactly-2 wedge died at the fulcrum
+		spans, mergedType, ok := ordinalJoinSpans(rc)
+		if !ok || len(spans) != 3 {
+			t.Fatalf("cursor-side probe must accept the 3-leg seed with 3 spans, got (%v, ok=%v)", spans, ok)
+		}
+		if len(mergedType.Fields) != 3 {
+			t.Fatalf("merged type = %v, want 3 slots", mergedType)
 		}
 	})
 

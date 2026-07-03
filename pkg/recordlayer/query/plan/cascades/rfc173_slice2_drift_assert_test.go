@@ -62,7 +62,10 @@ func ordinalChildSelect(t *testing.T) *expressions.SelectExpression {
 func TestRFC173S2_SelectMergeDriftAssert_Fires(t *testing.T) {
 	t.Parallel()
 
-	// Violation: parent has the ordinal child PLUS a second ForEach.
+	// S3 fulcrum POSITIVE pin (replacing the deleted drift assert): an
+	// ORDINAL child select merging into a multi-quantifier parent is
+	// LEGITIMATE composition -- no panic, and the merged select splices the
+	// child quantifiers in.
 	child := ordinalChildSelect(t)
 	childQ := expressions.ForEachQuantifier(expressions.InitialOf(child))
 	otherQ := expressions.ForEachQuantifier(expressions.InitialOf(&expressions.FullUnorderedScanExpression{}))
@@ -71,19 +74,37 @@ func TestRFC173S2_SelectMergeDriftAssert_Fires(t *testing.T) {
 		[]expressions.Quantifier{childQ, otherQ},
 		nil,
 	)
-	func() {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Error("SelectMergeRule must PANIC when an ORDINAL child merges into a multi-quantifier parent — the drift assert is dead")
-				return
-			}
-			if msg, ok := r.(string); !ok || !strings.Contains(msg, "RFC-173") {
-				t.Errorf("panic is not the RFC-173 drift assert: %v", r)
-			}
-		}()
-		FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(parent))
-	}()
+	yieldedMulti := FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(parent))
+	if len(yieldedMulti) == 0 {
+		t.Fatal("ordinal child into multi-quantifier parent must MERGE (composition is legal post-fulcrum), got no yields")
+	}
+	// The yield must actually COMPOSE, not just exist: the merged select
+	// splices the child's quantifiers in place of the child quantifier
+	// (parent 2 − child 1 + child's own 1 = 2, with the child's LEG alias now
+	// a direct quantifier), and the merged result value reads through the
+	// child's leg — no reference to the retired child alias survives.
+	mergedMulti, isSel := yieldedMulti[0].(*expressions.SelectExpression)
+	if !isSel {
+		t.Fatalf("multi-quantifier merge yielded %T, want *SelectExpression", yieldedMulti[0])
+	}
+	var hasLeg bool
+	for _, q := range mergedMulti.GetQuantifiers() {
+		if q.GetAlias() == values.NamedCorrelationIdentifier("leg") {
+			hasLeg = true
+		}
+		if q.GetAlias() == childQ.GetAlias() {
+			t.Fatalf("merged select still binds the RETIRED child quantifier %s — the child was not spliced", childQ.GetAlias())
+		}
+	}
+	if !hasLeg || len(mergedMulti.GetQuantifiers()) != 2 {
+		t.Fatalf("merged select quantifiers = %d (leg present: %v), want 2 with the child's leg spliced in", len(mergedMulti.GetQuantifiers()), hasLeg)
+	}
+	if corr := values.GetCorrelatedToOfValue(mergedMulti.GetResultValue()); func() bool {
+		_, refsRetired := corr[childQ.GetAlias()]
+		return refsRetired
+	}() {
+		t.Fatal("merged result value still references the retired child alias — the fuse/compose rebase did not run")
+	}
 
 	// Allowed: a PURE WRAPPER (single-quantifier) parent over the same child
 	// merges without panicking — the post-merge select is exactly the child's

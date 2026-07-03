@@ -316,24 +316,24 @@ func EqualsWithoutChildren(a, b Value) bool {
 		if !ok {
 			return false
 		}
-		// RFC-173 identity refinement (§4 ruling #2): BAKED nodes
-		// (Resolved != nil) compare by (name, ordinal) — two same-named columns
-		// at different ordinals are genuinely different values and must not
-		// intern as one memo member (§5 duplicate-name pin); Java's
-		// ofOrdinalNumber ordinals are distinct FieldPaths. Baked vs lazy is
-		// UNEQUAL by contract: worst case a missed dedup, never a conflation.
-		// Lazy vs lazy stays name-only (unchanged; Slice 3 owns the full flip).
-		// FrontierPinned is deliberately NOT compared: it is an
-		// evaluation-contract marker, not a value distinction (like Java
-		// excluding name/type from ResolvedAccessor equality).
+		// RFC-173 identity (S3-W3 flip landed): BAKED nodes (Resolved != nil)
+		// compare by their ordinal PATH alone — Java's semantics exactly
+		// (ResolvedAccessor.equals is getOrdinal()-only, FieldValue.java:
+		// 675-689; two same-named columns at different ordinals stay distinct,
+		// §5 duplicate-name pin; alias-mapped twins over same-shaped legs now
+		// intern as one member). Baked vs lazy is UNEQUAL by contract: worst
+		// case a missed dedup, never a conflation. Lazy vs lazy stays
+		// name-only (dies with the name model in S4). FrontierPinned is
+		// deliberately NOT compared: an evaluation-contract marker, not a
+		// value distinction (like Java excluding name/type from
+		// ResolvedAccessor equality).
 		if (av.Resolved != nil) != (bv.Resolved != nil) {
 			return false
 		}
 		if av.Resolved != nil {
-			// Path identity is element-wise (Field, Ordinal) list equality —
-			// the display Field is NOT separately compared (it duplicates the
-			// last accessor's name by construction; Java compares fieldPath
-			// only, FieldValue.java:214-217).
+			// Path identity is element-wise ORDINAL list equality — the
+			// display Field is NOT compared (rendering only; Java compares
+			// fieldPath only, FieldValue.java:214-217).
 			return av.Resolved.Equals(bv.Resolved)
 		}
 		return av.Field == bv.Field

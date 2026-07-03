@@ -462,21 +462,26 @@ func TestTranslateJoin(t *testing.T) {
 		}
 	}
 
-	// Control: a 3-way inner cluster is NOT gated — its seed stays the
-	// name-model anchored RC until Slice 3 flips N-way.
+	// S3 fulcrum: a 3-way inner cluster translates FLAT — one select, three
+	// quantifiers, the N-leg ordinal seed (Java flattens inner joins at
+	// translation; nested binaries are never seeded).
 	three := logical.NewJoin(join, logical.NewScan("TypedRecord", ""), logical.JoinInner, "")
 	ref3, _ := TranslateToCascadesWithSubqueries(three, demoMetaData(t))
 	if ref3 == nil {
-		t.Fatal("expected non-nil reference for the 3-way control")
+		t.Fatal("expected non-nil reference for the 3-way")
 	}
 	sel3, ok := ref3.Members()[0].(*expressions.SelectExpression)
 	if !ok {
 		t.Fatalf("expected SelectExpression for the 3-way, got %T", ref3.Members()[0])
 	}
-	rc3, ok := sel3.GetResultValue().(*values.RecordConstructorValue)
-	if !ok || !rc3.AnchoredJoin {
-		t.Fatalf("a 3-way (non-gated) join must keep the anchored seed, got %T (anchored=%v)", sel3.GetResultValue(), ok && rc3.AnchoredJoin)
+	if got := len(sel3.GetQuantifiers()); got != 3 {
+		t.Fatalf("the 3-way cluster must translate FLAT with 3 quantifiers, got %d", got)
 	}
+	rc3, ok := sel3.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || rc3.AnchoredJoin {
+		t.Fatalf("a 3-way inner cluster must seed the ORDINAL flat RC (S3 fulcrum), got %T (anchored=%v)", sel3.GetResultValue(), ok && rc3.AnchoredJoin)
+	}
+	values.AssertOrdinalJoinSeed(rc3) // three consecutive full-leg runs
 }
 
 // TestTranslateJoinNilMd pins the RFC-077 7.6 contract: without metadata a join's

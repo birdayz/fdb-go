@@ -23,11 +23,13 @@ func TestEmptyPlanContext_NotNil(t *testing.T) {
 	}
 }
 
-func TestDefaultPlannerConfiguration_ZeroFields(t *testing.T) {
+func TestDefaultPlannerConfiguration_JavaDefaults(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultPlannerConfiguration()
-	if cfg != (PlannerConfiguration{}) {
-		t.Fatalf("DefaultPlannerConfiguration not zero-valued: %+v", cfg)
+	// Java defaults deferCrossProducts ON (RecordQueryPlannerConfiguration:
+	// DONT_DEFER_CROSS_PRODUCTS unset); every other flag is zero-valued.
+	if cfg != (PlannerConfiguration{ShouldDeferCrossProducts: true}) {
+		t.Fatalf("DefaultPlannerConfiguration diverges from the Java defaults: %+v", cfg)
 	}
 }
 

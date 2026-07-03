@@ -64,8 +64,8 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 			cur.width++
 		}
 	}
-	if len(runs) != 2 {
-		panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: %d leg runs — the ordinal wedge seed is 2-way, exactly two consecutive leg runs required (N-way is Slice 3)", len(runs)))
+	if len(runs) < 2 {
+		panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: %d leg runs — a join seed concatenates at least two legs (the S3 fulcrum lifted the exactly-2 wedge)", len(runs)))
 	}
 	for _, r := range runs {
 		if r.width != len(r.legType.Fields) {

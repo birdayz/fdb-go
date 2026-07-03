@@ -77,6 +77,13 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 	// cross products when configured to do so.
 	independentPartitioning := computeIndependentQuantifiersPartitioning(sel, fullCorrelationOrder)
 
+	// The select's flattened conjuncts, computed once: the classifier loop
+	// consumes them per bipartition, and the disconnected-lower guard judges
+	// lower connectivity against the FULL set (any predicate touching two
+	// lower aliases connects them — including spanning N-ary predicates that
+	// can only ever live upper).
+	allPredicates := flattenConjuncts(sel.GetPredicates())
+
 	// Enumerate all non-trivial bipartitions of the quantifier set.
 	// "lower" is each non-empty proper subset; "upper" is the complement.
 	allAliases := make([]values.CorrelationIdentifier, len(quantifiers))
@@ -257,7 +264,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		var upperPredicates []predicates.QueryPredicate
 		var deeplyCorrelatedPredicates []predicates.QueryPredicate
 
-		for _, pred := range flattenConjuncts(sel.GetPredicates()) {
+		for _, pred := range allPredicates {
 			// Augment the correlation set with the anchored join RC's source leg
 			// aliases (GetCorrelatedToOfPredicate hides them — see
 			// AddMergeSeedAliases). Without this, a predicate reading a buried
@@ -308,15 +315,37 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// aliases.
 		lowersCorrelatedToByUppers = dedupAliases(lowersCorrelatedToByUppers)
 
-		// Skip a disconnected lower: ≥2 quantifiers that no lower predicate links
-		// (a pure cross product, e.g. {A,C} for chain A—B—C or {xx,yy} for a star).
-		// Its tables share no join, so the partition is a genuine cartesian product
-		// — never the cost-optimal shape, and the connected associativities cover
-		// the same join orders. This holds at any arity. (Java defers cross products
-		// via shouldDeferCrossProducts; for a single connected component that path
-		// does not fire, so Go needs this explicit guard.)
-		disconnectedLower := len(lowerAliases) >= 2 && !lowerAliasesConnected(lowerAliases, lowerPredicates)
-		if disconnectedLower {
+		// Skip a disconnected lower: ≥2 quantifiers no predicate links (a pure
+		// cross product, e.g. {A,C} for chain A—B—C or {xx,yy} for a star). Its
+		// tables share no join, so the partition is a genuine cartesian product
+		// — never the cost-optimal shape, and the connected associativities
+		// cover the same join orders. Go-tighter than Java (Java explores such
+		// lowers and lets cost pruning kill them — dropping this guard blows
+		// the 4-chain task baseline past the MaxTasks budget), so it must
+		// never eat a bipartition Java NEEDS:
+		//   - connectivity is judged by ANY select predicate touching both
+		//     aliases — a spanning N-ary predicate (`a.x = b.y OR a.x = c.y`)
+		//     connects its aliases even though it can only ever live UPPER
+		//     (judging by lowerPredicates alone starved that select of every
+		//     bipartition → 0AF00); binary equijoins behave identically under
+		//     both readings, so the pinned task baselines are unchanged;
+		//   - a COMPONENT-ALIGNED split (isCrossProduct — no component
+		//     straddles the halves) whose lower unions SINGLETON components is
+		//     exempt: those are the UNAVOIDABLE cross products (`FROM a, b,
+		//     c`, the EXISTS body `SELECT 1 FROM t2, t3, t4 …`), the only
+		//     bipartitions such a select has. BOTH restrictions are
+		//     load-bearing: a component-straddling lower ({d,PB} for
+		//     `FROM (derived) d, PB, PB.ARR AS X`) tears a lateral unnest from
+		//     its array source, and a lower containing a MULTI-alias component
+		//     glued only by quantifier correlation ({PB,X} itself — no
+		//     predicate links an unnest to its source) births plans whose
+		//     AS/AT columns silently NULL. The unnest machinery stays
+		//     name-model until W5; Java explores both shapes — revisit with
+		//     the W5 unnest rewrite.
+		disconnectedLower := len(lowerAliases) >= 2 && !aliasesConnectedByPredicates(lowerAliases, allPredicates)
+		if disconnectedLower &&
+			!(isCrossProduct(independentPartitioning, lowerAliases, upperAliases) &&
+				lowerComponentsAreSingletons(independentPartitioning, lowerAliases)) {
 			continue
 		}
 
@@ -494,6 +523,14 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				BuildSelectWithResultValue(buildUpperResult(lowerAliasCorrelatedToByUpperAliases, nil))
 
 		} else if len(lowersCorrelatedToByUppers) >= 2 {
+			if !parentIsMerge {
+				upperSelectExpression = r.positionalMergeCase(call, sel, resultValue, aliasToQ, allAliases, upperAliases, lowersCorrelatedToByUppers, lowerBuilder, upperPredicates)
+				if upperSelectExpression == nil {
+					continue
+				}
+				call.Yield(upperSelectExpression)
+				continue
+			}
 			// Merge case: ≥2 live lower tables (referenced by an upper predicate or
 			// the result value). The lower flows a source-anchored join RC carrying
 			// qualified ALIAS.COL keys for every live table; the upper predicates
@@ -661,6 +698,24 @@ func computeTransitiveCorrelationOrder(
 		for leg := range quantifierMergeSeedLegDeps(q) {
 			if _, ok := owned[leg]; ok {
 				deps[leg] = struct{}{}
+			}
+		}
+		// The quantifier's OWN expression-level correlations to sibling
+		// quantifiers — Java's Quantifier.getCorrelatedTo() delegates to
+		// rangesOver.getCorrelatedTo(), which Go's quantifier does not
+		// (registered divergence); the transitive Reference walk IS
+		// implemented, so recover the edges here. A plain lateral UNNEST's
+		// Explode correlates to its array source with NO predicate between
+		// them: without this edge the source and the unnest are separate
+		// "independent components", and the cross-product paths above happily
+		// bipartition between them — plans whose AS/AT columns silently NULL.
+		// Ordinary table quantifiers have no expression correlations; sibling
+		// edges appear exactly where Java sees them.
+		if ref := q.GetRangesOver(); ref != nil {
+			for dep := range ref.GetCorrelatedTo() {
+				if _, ok := owned[dep]; ok && dep != q.GetAlias() {
+					deps[dep] = struct{}{}
+				}
 			}
 		}
 		directDeps[q.GetAlias()] = deps
@@ -966,19 +1021,26 @@ func dedupAliases(aliases []values.CorrelationIdentifier) []values.CorrelationId
 	return out
 }
 
-// lowerAliasesConnected reports whether lowerAliases form a single connected
-// component under lowerPredicates' correlations (union-find). Used to skip a
-// degenerate cross-product lower whose multi-alias RecordConstructorValue result
-// the executor cannot resolve translated predicates against (RFC-042 L3).
-func lowerAliasesConnected(
-	lowerAliases map[values.CorrelationIdentifier]struct{},
-	lowerPredicates []predicates.QueryPredicate,
+// aliasesConnectedByPredicates reports whether the alias set forms a single
+// connected component, where ANY predicate whose correlation set touches two
+// of the aliases connects them (union-find). Judged over the select's FULL
+// conjunct list, not just the predicates that land in the lower half: a
+// spanning N-ary predicate (`a.x = b.y OR a.x = c.y`) genuinely JOINS the
+// tables it touches even though it can only ever be evaluated upper — judging
+// by lower-resident predicates alone declared every bipartition of such a
+// select disconnected and left it unimplementable. For binary equijoins the
+// two readings coincide (a predicate inside the lower touches exactly the
+// same pair either way), so the join re-enumeration task baselines are
+// unchanged.
+func aliasesConnectedByPredicates(
+	aliases map[values.CorrelationIdentifier]struct{},
+	preds []predicates.QueryPredicate,
 ) bool {
-	if len(lowerAliases) <= 1 {
+	if len(aliases) <= 1 {
 		return true
 	}
-	parent := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(lowerAliases))
-	for a := range lowerAliases {
+	parent := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(aliases))
+	for a := range aliases {
 		parent[a] = a
 	}
 	var find func(values.CorrelationIdentifier) values.CorrelationIdentifier
@@ -989,10 +1051,10 @@ func lowerAliasesConnected(
 		}
 		return a
 	}
-	for _, p := range lowerPredicates {
+	for _, p := range preds {
 		var prev values.CorrelationIdentifier
 		have := false
-		for a := range intersectAliases(lowerAliases, predicates.GetCorrelatedToOfPredicate(p)) {
+		for a := range intersectAliases(aliases, predicates.GetCorrelatedToOfPredicate(p)) {
 			if have {
 				parent[find(prev)] = find(a)
 			}
@@ -1002,7 +1064,7 @@ func lowerAliasesConnected(
 	}
 	var root values.CorrelationIdentifier
 	first := true
-	for a := range lowerAliases {
+	for a := range aliases {
 		if first {
 			root = find(a)
 			first = false
@@ -1010,6 +1072,30 @@ func lowerAliasesConnected(
 		}
 		if find(a) != root {
 			return false
+		}
+	}
+	return true
+}
+
+// lowerComponentsAreSingletons reports whether every independent component
+// intersecting the lower alias set is a SINGLETON — the pure-cross exemption's
+// second gate: a multi-alias component inside a disconnected lower is glued by
+// quantifier correlation, not predicates (a lateral unnest and its source),
+// and such lowers birth plans the name-model unnest machinery cannot evaluate
+// (W5). Singleton components are plain unjoined tables — the genuine
+// unavoidable cross product.
+func lowerComponentsAreSingletons(
+	partitioning []map[values.CorrelationIdentifier]struct{},
+	lowerAliases map[values.CorrelationIdentifier]struct{},
+) bool {
+	for _, comp := range partitioning {
+		if len(comp) == 1 {
+			continue
+		}
+		for a := range comp {
+			if _, inLower := lowerAliases[a]; inLower {
+				return false
+			}
 		}
 	}
 	return true

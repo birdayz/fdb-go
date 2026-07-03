@@ -9,17 +9,18 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// This file is the RFC-173 Slice 2 ordinal-join executor machinery: the
-// primitives the 2-way wedge's merged positional row is built from — LIVE
-// since W3b (the translator seeds gated 2-way joins with the ordinal RC these
-// consume). Everything here derives from the W3 pre-code ruling
+// This file is the RFC-173 ordinal-join executor machinery: the primitives
+// the gated wedge's merged positional row is built from — LIVE since W3b,
+// N-way flat (and positional-merge birthing) since the S3 fulcrum: the
+// translator seeds gated join clusters with the ordinal RC these
+// consume. Everything here derives from the W3 pre-code ruling
 // (rfcs/173-ordinal-column-resolution.md §4 Slice 2): spans derive from the
 // RC (condition 1), leg windows are declared window scaffolding that dies
 // when the uppers bake, S3/S4 (condition 2), the window implements
 // values.OrdinalRow completely so no new eval arm exists (condition 3), and
 // the wrong-slot hazard is pinned red→green (condition 4).
 
-// legSpan is one leg's slot range within the 2-way ordinal join's merged
+// legSpan is one leg's slot range within the ordinal join's merged
 // positional row: the leg quantifier's alias, the leg's own RecordType, and
 // the half-open window [Offset, Offset+Width) its columns occupy in the merged
 // row. Spans are DERIVED from the ordinal join RC by ordinalJoinSpans at
@@ -33,8 +34,8 @@ type legSpan struct {
 }
 
 // ordinalJoinSpans is the cursor-side WINDOWS-ELIGIBILITY probe: it detects
-// whether v is exactly the 2-way ordinal join SEED RC (the concatenation of
-// two full legs, every field a baked leg reference) and derives the leg spans
+// whether v is exactly the ordinal join SEED RC (the concatenation of
+// full legs, every field a baked leg reference) and derives the leg spans
 // + merged type from it. DECLINE-ONLY (ok=false) for every other shape — a
 // result value that is not the pristine seed is NOT a planner bug here: the
 // pure-wrapper merge the drift assert deliberately allows rewrites the select's
@@ -58,6 +59,18 @@ type legSpan struct {
 // legs are legal and preserved verbatim) with one field per RC field: the RC
 // field's name, the baked FieldValue's type, ordinal = position.
 func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
+	return ordinalJoinSpansOf(v, nil)
+}
+
+// ordinalJoinSpansOf is ordinalJoinSpans with FUSED-reference resolution (the
+// S3 fulcrum's translated-top shape): a multi-accessor pinned path rooted at a
+// MERGE quantifier ([( _i, i), (col, j)] — the partition rule's TranslationMap
+// output) resolves to its LEAF leg by descending legRVs — the merge
+// quantifier's child result value (the positional-merge RC mapping _i →
+// QOV(leg)), the ONLY place the merged-away legs' user aliases survive. With
+// legRVs nil, multi-accessor paths decline and this is exactly the S2
+// single-accessor probe.
+func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
 	rc, isRC := v.(*values.RecordConstructorValue)
 	if !isRC {
 		return nil, nil, false
@@ -75,24 +88,15 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 			// bakedness (unification review ruling).
 			return nil, nil, false
 		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-		if !isQOV {
+		alias, legType, ord, resolved := resolveSpanLeaf(fv, legRVs)
+		if !resolved {
 			return nil, nil, false
 		}
-		legType, isRT := qov.Type().(*values.RecordType)
-		if !isRT {
-			return nil, nil, false
-		}
-		acc, single := fv.Resolved.Single()
-		if !single {
-			return nil, nil, false // fused multi-accessor path — not the S2 single-accessor seed shape
-		}
-		ord := acc.Ordinal
-		if len(spans) == 0 || spans[len(spans)-1].Alias != qov.Correlation {
+		if len(spans) == 0 || spans[len(spans)-1].Alias != alias {
 			if ord != 0 {
 				return nil, nil, false // run must start at leg ordinal 0
 			}
-			spans = append(spans, legSpan{Alias: qov.Correlation, LegType: legType, Offset: i, Width: 1})
+			spans = append(spans, legSpan{Alias: alias, LegType: legType, Offset: i, Width: 1})
 		} else {
 			cur := &spans[len(spans)-1]
 			if ord != cur.Width {
@@ -103,8 +107,8 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 		mergedFields[i] = values.Field{Name: f.Name, FieldType: fv.Type(), Ordinal: i}
 	}
 
-	if len(spans) != 2 {
-		return nil, nil, false // the wedge is 2-way; 1 run = folded single leg, 3+ = S3
+	if len(spans) < 2 {
+		return nil, nil, false // 1 run = folded single leg (S3 fulcrum lifted the exactly-2 wedge: N-leg flat seeds are live)
 	}
 	total := 0
 	for _, s := range spans {
@@ -120,6 +124,181 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 		panic(fmt.Sprintf("RFC-173 ordinal join spans inconsistent: sum(widths)=%d, RC has %d fields — spans must derive exactly from the RC", total, len(rc.Fields)))
 	}
 	return spans, &values.RecordType{Fields: mergedFields}, true
+}
+
+// resolveSpanLeaf resolves one RV field to its LEAF leg (alias, leg type,
+// leg-local ordinal). A single-accessor path is the S2 seed shape: the leg is
+// the child QOV itself. A multi-accessor FUSED path descends each intermediate
+// accessor through the current quantifier's child RV in legRVs: the pristine
+// positional-merge RC's `_i` slot is a bare leg QOV (continue with it), and a
+// TRANSLATED merge RV's slot is itself a pinned baked/fused reference (a
+// deeper partition round rebased it) — COMPOSE its path into the walk, exactly
+// what evaluating the two nodes in sequence does at runtime. Any unresolvable
+// step declines (nil legRVs, unrecognized slot shape, out-of-range accessor):
+// fail-safe, the caller reports no windows and downstream stays loud rather
+// than mis-windowed. The depth cap is a defensive backstop — plan-derived
+// legRVs form a tree, so a cycle is impossible by construction.
+func resolveSpanLeaf(fv *values.FieldValue, legRVs map[values.CorrelationIdentifier]values.Value) (alias values.CorrelationIdentifier, legType *values.RecordType, legOrd int, ok bool) {
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
+		return alias, nil, 0, false
+	}
+	alias = qov.Correlation
+	legType, isRT := qov.Type().(*values.RecordType)
+	if !isRT {
+		return alias, nil, 0, false
+	}
+	accs := fv.Resolved.Accessors
+	for depth := 0; len(accs) > 1; depth++ {
+		if depth > 32 {
+			return alias, nil, 0, false
+		}
+		rc, isRC := legRVs[alias].(*values.RecordConstructorValue)
+		if !isRC {
+			return alias, nil, 0, false
+		}
+		i := accs[0].Ordinal
+		if i < 0 || i >= len(rc.Fields) {
+			return alias, nil, 0, false
+		}
+		switch slot := rc.Fields[i].Value.(type) {
+		case *values.QuantifiedObjectValue:
+			alias = slot.Correlation
+			if legType, isRT = slot.Type().(*values.RecordType); !isRT {
+				return alias, nil, 0, false
+			}
+			accs = accs[1:]
+		case *values.FieldValue:
+			if slot.Resolved == nil || !slot.Resolved.FrontierPinned {
+				return alias, nil, 0, false
+			}
+			slotQOV, isQ := slot.Child.(*values.QuantifiedObjectValue)
+			if !isQ {
+				return alias, nil, 0, false
+			}
+			alias = slotQOV.Correlation
+			if legType, isRT = slotQOV.Type().(*values.RecordType); !isRT {
+				return alias, nil, 0, false
+			}
+			composed := make([]values.ResolvedAccessor, 0, len(slot.Resolved.Accessors)+len(accs)-1)
+			composed = append(composed, slot.Resolved.Accessors...)
+			accs = append(composed, accs[1:]...)
+		default:
+			return alias, nil, 0, false
+		}
+	}
+	return alias, legType, accs[0].Ordinal, true
+}
+
+// joinPlanRV returns a join plan's result value; nil for any other plan.
+func joinPlanRV(p plans.RecordQueryPlan) values.Value {
+	switch t := p.(type) {
+	case *plans.RecordQueryNestedLoopJoinPlan:
+		return t.GetResultValue()
+	case *plans.RecordQueryFlatMapPlan:
+		return t.GetResultValue()
+	}
+	return nil
+}
+
+// addJoinLegRV records one leg quantifier's child result value into legRVs
+// (first-seen wins — the top-most binding is the one the top RV's references
+// resolve through) and recurses into the leg's own join plan so deeper merge
+// levels and nested boxes resolve too.
+func addJoinLegRV(out map[values.CorrelationIdentifier]values.Value, alias values.CorrelationIdentifier, leg plans.RecordQueryPlan) {
+	lj := unwrapToJoinPlan(leg)
+	if lj == nil {
+		return
+	}
+	if rv := joinPlanRV(lj); rv != nil {
+		if _, seen := out[alias]; !seen {
+			out[alias] = rv
+		}
+	}
+	collectJoinLegRVs(lj, out)
+}
+
+// collectJoinLegRVs maps each leg quantifier of a join plan — and,
+// recursively, of its join-plan legs — to the result value its rows are born
+// from. This is the alias-recovery substrate for translated tops and box
+// splicing: the partition rule's TranslationMap erases merged-away leg aliases
+// from the upper RV, and a FULL box's leg type is an anonymous concat; both
+// survive only in the leg subplans' own result values.
+func collectJoinLegRVs(join plans.RecordQueryPlan, out map[values.CorrelationIdentifier]values.Value) {
+	switch t := join.(type) {
+	case *plans.RecordQueryFlatMapPlan:
+		addJoinLegRV(out, t.GetOuterAlias(), t.GetOuter())
+		addJoinLegRV(out, t.GetInnerAlias(), t.GetInner())
+	case *plans.RecordQueryNestedLoopJoinPlan:
+		addJoinLegRV(out, values.NamedCorrelationIdentifier(t.GetOuterAlias()), t.GetOuter())
+		addJoinLegRV(out, values.NamedCorrelationIdentifier(t.GetInnerAlias()), t.GetInner())
+	}
+}
+
+// spliceLegSpans recursively replaces a span whose LEG is itself a join plan
+// (a FULL box's gated-join leg, per the fulcrum's ordinalLegColumns concat)
+// with the leg's OWN spans offset into the parent row: dotted upper
+// references name LEAF table aliases — the intermediate box alias
+// (sourceAlias, the buried rightmost table) never appears in a user query.
+// The splice is fail-safe: a leg whose RV yields no spans, or whose spans do
+// not tile the span's width exactly, keeps the opaque parent span unchanged
+// (that width guard also breaks the box-alias/leaf-alias shadowing case —
+// sourceAlias names the box after its rightmost LEAF, whose own width can
+// never equal the whole box's).
+func spliceLegSpans(spans []legSpan, legRVs map[values.CorrelationIdentifier]values.Value) []legSpan {
+	return spliceLegSpansDepth(spans, legRVs, 0)
+}
+
+// spliceLegSpansDepth carries the defensive recursion cap — the same
+// no-cycle-by-construction trust assumption resolveSpanLeaf bounds (plan
+// trees are finite; the cap only matters if a future edit breaks that).
+func spliceLegSpansDepth(spans []legSpan, legRVs map[values.CorrelationIdentifier]values.Value, depth int) []legSpan {
+	if depth > 32 {
+		return spans
+	}
+	out := make([]legSpan, 0, len(spans))
+	for _, s := range spans {
+		rv := legRVs[s.Alias]
+		if rv == nil {
+			out = append(out, s)
+			continue
+		}
+		sub, _, ok := ordinalJoinSpansOf(rv, legRVs)
+		if !ok {
+			out = append(out, s)
+			continue
+		}
+		total := 0
+		for _, ss := range sub {
+			total += ss.Width
+		}
+		if total != s.Width {
+			out = append(out, s)
+			continue
+		}
+		for _, ss := range spliceLegSpansDepth(sub, legRVs, depth+1) {
+			out = append(out, legSpan{Alias: ss.Alias, LegType: ss.LegType, Offset: s.Offset + ss.Offset, Width: ss.Width})
+		}
+	}
+	return out
+}
+
+// joinPlanSpans derives the leg windows for a join plan's output row: the
+// span probe with fused-reference resolution over the plan's leg RVs, then
+// the recursive box splice. Subsumes the bare ordinalJoinSpans probe (a
+// pristine S2 seed needs no legRVs and no splice — identical output).
+func joinPlanSpans(join plans.RecordQueryPlan) ([]legSpan, bool) {
+	rv := joinPlanRV(join)
+	if rv == nil {
+		return nil, false
+	}
+	legRVs := make(map[values.CorrelationIdentifier]values.Value)
+	collectJoinLegRVs(join, legRVs)
+	spans, _, ok := ordinalJoinSpansOf(rv, legRVs)
+	if !ok {
+		return nil, false
+	}
+	return spliceLegSpans(spans, legRVs), true
 }
 
 // assertOrdinalJoinSeed delegates to values.AssertOrdinalJoinSeed — the LOUD
@@ -190,7 +369,7 @@ func (w *legWindowRow) TypeNames() []string {
 }
 
 // legWindowBinder is the coexistence-window correlation binder for uppers over
-// the 2-way ordinal join: a reference to a leg alias is bound to that leg's
+// the ordinal join: a reference to a leg alias is bound to that leg's
 // window over the merged row, anything else delegates to base. DECLARED WINDOW
 // SCAFFOLDING (review W3 condition 2) — it exists only because window-era
 // uppers reference legs across the join boundary; when the uppers bake against
@@ -400,6 +579,18 @@ type ordinalJoinBirth struct {
 	// RV: the output is a plain projection row, downstream gets no windows.
 	Spans     []legSpan
 	WindowsOK bool
+	// DatumSpans are the spans the coexistence Datum derives from
+	// (datumFromSpans / oracleNameDatum's qualified keys): the SPLICED view —
+	// a box leg's window opened to its leaf tables, whose aliases dotted
+	// reads actually name. Kept SEPARATE from Spans, which the cursor's own
+	// leg ADAPTER resolves against (adaptLegPositional needs the box-level
+	// type for the box-alias binding; the spliced leaf window would misfit
+	// the leg's whole concat row). Equal to Spans when no splice applies.
+	// ONLY the FlatMap cursor splices these (its Datum derives from the
+	// birth); the NLJ cursor's Datum is mergeRows/mergeShapeDatum and never
+	// consults them — a future NLJ caller of oracleNameDatum/datumFromSpans
+	// must splice first or it inherits box-alias qualification silently.
+	DatumSpans []legSpan
 	// LegTypes are the leg types recovered from the RV's baked references —
 	// the adapter's leg types when the RV is folded and Spans are unavailable.
 	LegTypes map[values.CorrelationIdentifier]*values.RecordType
@@ -414,7 +605,15 @@ type ordinalJoinBirth struct {
 // pin that); anything else is a planner bug and must die at construction,
 // never be silently demoted to the name model.
 func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBirth, error) {
-	if rv == nil || !values.ContainsBakedOrdinal(rv) {
+	// Two birth triggers during the S3 window:
+	//   - a FrontierPinned baked reference anywhere in the RV (the S2 flat
+	//     seed, its folds, and the post-translation MIXED upper shape whose
+	//     fields are ofOrdinal-over-innerMerge alongside bare leg QOVs);
+	//   - the S3-W2 positional-merge RC (ALL fields bare `_i`-named QOVs —
+	//     the lowest merge level carries no baked refs at all, but its rows
+	//     must birth positional: the level above reads them by ordinal).
+	// Nothing produces the merge shape until the W2 fulcrum — dark.
+	if rv == nil || (!values.ContainsBakedOrdinal(rv) && !values.IsPositionalMergeRC(rv)) {
 		return nil, nil
 	}
 	rc, isRC := rv.(*values.RecordConstructorValue)
@@ -429,6 +628,25 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 	// row for it adapted to a ZERO-WIDTH binding that blew up the predicate
 	// (loud OrdinalResolutionError, "row columns []") on a legitimate plan.
 	legTypes := legTypesFromResultValue(rc)
+	// Bare QOV fields carry their leg's type directly (the S3 merge shape's
+	// `_i` columns and the mixed upper's untranslated leg): without this a
+	// bare-QOV leg is typeless and its adapter degrades to the Datum
+	// synthesis path even when the leg flows a typed row. Same
+	// conflict-impossibility invariant as widenLegTypesFromPlan — every
+	// source copies the one planner-constructed typed QOV — asserted the
+	// same way (a silent first-wins here would be an inconsistent assertion
+	// of a load-bearing invariant, review nit).
+	for _, f := range rc.Fields {
+		if qov, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
+			if rt, isRT := qov.Type().(*values.RecordType); isRT {
+				if prev, seen := legTypes[qov.Correlation]; !seen {
+					legTypes[qov.Correlation] = rt
+				} else if len(prev.Fields) != len(rt.Fields) {
+					panic(fmt.Sprintf("RFC-173: leg %s carries DIVERGENT types (%d vs %d fields) across the RV's bare-QOV and baked-reference sources — all references must copy the one planner-constructed typed QOV (planner bug)", qov.Correlation, len(prev.Fields), len(rt.Fields)))
+				}
+			}
+		}
+	}
 	for _, p := range preds {
 		predicates.ReplaceValues(p, func(v values.Value) values.Value {
 			fv, isFV := v.(*values.FieldValue)
@@ -451,6 +669,7 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 		OutputType: rcOutputType(rc),
 		Spans:      spans,
 		WindowsOK:  windowsOK,
+		DatumSpans: spans,
 		LegTypes:   legTypes,
 	}, nil
 }
@@ -579,7 +798,7 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 // unchanged). TEST-ONLY (oracle callers); dies with the oracle in Slice 4.
 func (b *ordinalJoinBirth) oracleNameDatum(rowCtx any) (map[string]any, error) {
 	m := make(map[string]any, 2*len(b.RC.Fields))
-	for _, f := range b.RC.Fields {
+	for i, f := range b.RC.Fields {
 		v, err := f.Value.Evaluate(rowCtx)
 		if err != nil {
 			return nil, err
@@ -588,12 +807,16 @@ func (b *ordinalJoinBirth) oracleNameDatum(rowCtx any) (map[string]any, error) {
 		if !b.WindowsOK {
 			continue
 		}
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
-			continue
-		}
-		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-			m[strings.ToUpper(qov.Correlation.Name())+"."+strings.ToUpper(f.Name)] = v
+		// Qualified key from the SPAN covering this slot — not the field's
+		// child QOV: for a translated top's FUSED field the child is the MERGE
+		// quantifier (q$N, never a user-visible alias), while the span carries
+		// the resolved LEAF leg alias. For the pristine seed span alias ==
+		// child QOV correlation, so the output is unchanged.
+		for _, s := range b.DatumSpans {
+			if i >= s.Offset && i < s.Offset+s.Width {
+				m[strings.ToUpper(s.Alias.Name())+"."+strings.ToUpper(s.LegType.Fields[i-s.Offset].Name)] = v
+				break
+			}
 		}
 	}
 	return m, nil
@@ -810,8 +1033,41 @@ func datumFromSpans(row *PositionalRow, spans []legSpan) map[string]any {
 	return m
 }
 
+// mergeShapeDatum derives the S3 positional-merge row's coexistence Datum:
+// slot i carries leg i's own DATUM — the shape evaluating the bare-QOV merge
+// RC over name bindings produces (the §5 oracle side), and the shape the
+// partition rule's rebased upper references read through (`_i` root keys).
+// Never mergeRows' flat bare/qualified keys: no consumer addresses a merge
+// quantifier's row by flat names — the rule rebases every upper reference
+// through the merge quantifier, so a flat Datum silently NULLs them all on
+// the oracle side (0-row joins). A nil leg Datum (the NULL leg) mirrors the
+// name model's reconstructed empty inner row.
+func mergeShapeDatum(rc *values.RecordConstructorValue, outerID, innerID values.CorrelationIdentifier, outerDatum, innerDatum any) map[string]any {
+	m := make(map[string]any, len(rc.Fields))
+	for _, f := range rc.Fields {
+		qov, isQOV := f.Value.(*values.QuantifiedObjectValue)
+		if !isQOV {
+			continue
+		}
+		var d any
+		switch qov.Correlation {
+		case outerID:
+			d = outerDatum
+		case innerID:
+			d = innerDatum
+		default:
+			continue
+		}
+		if d == nil {
+			d = map[string]any{}
+		}
+		m[f.Name] = d
+	}
+	return m
+}
+
 // downstreamLegWindows computes, ONCE at operator construction, whether a
-// consumer's input plan flows the 2-way ordinal join's MERGED positional row
+// consumer's input plan flows the ordinal join's MERGED positional row
 // — i.e. whether leg windows apply to the rows this operator reads. It
 // unwraps single-child PASSTHROUGH plans (operators whose cursors re-emit
 // input QueryResults verbatim: sorts reorder, limit/skip/distinct/filters
@@ -827,14 +1083,24 @@ func datumFromSpans(row *PositionalRow, spans []legSpan) map[string]any {
 // genuine passthrough UNDER-provides windows, which fails LOUD downstream
 // (OrdinalResolutionError/BakedNameContextError), never silently wrong.
 func downstreamLegWindows(input plans.RecordQueryPlan) ([]legSpan, bool) {
+	join := unwrapToJoinPlan(input)
+	if join == nil {
+		return nil, false
+	}
+	return joinPlanSpans(join)
+}
+
+// unwrapToJoinPlan walks the EXACT single-child passthrough set down to the
+// join plan (FlatMap/NLJ); nil when the chain ends anywhere else. The
+// passthrough set is downstreamLegWindows' (see its doc for what is
+// deliberately left out and why a miss fails loud, never silently wrong).
+func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 	for input != nil {
 		switch p := input.(type) {
 		case *plans.RecordQueryNestedLoopJoinPlan:
-			spans, _, ok := ordinalJoinSpans(p.GetResultValue())
-			return spans, ok
+			return p
 		case *plans.RecordQueryFlatMapPlan:
-			spans, _, ok := ordinalJoinSpans(p.GetResultValue())
-			return spans, ok
+			return p
 		case *plans.RecordQuerySortPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryInMemorySortPlan:
@@ -850,10 +1116,10 @@ func downstreamLegWindows(input plans.RecordQueryPlan) ([]legSpan, bool) {
 		case *plans.RecordQueryPredicatesFilterPlan:
 			input = p.GetInner()
 		default:
-			return nil, false
+			return nil
 		}
 	}
-	return nil, false
+	return nil
 }
 
 // legWindowRowContext builds the downstream per-row eval context over the
