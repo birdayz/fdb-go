@@ -1647,11 +1647,15 @@ unnest until W5; scalar-subquery / non-wedge anchored seeds until S4).
   — no AnchoredJoin-style hide/expose duality. The RFC-077 F2 duality stays only for the surviving
   anchored residual and dies with it in S4. Slice-5's local-bind subtraction carries the ≥4-way STAR
   budget for the positional path (verified by the S3 STAR wall-clock pin, item 5).
-- **Q4 — RESOLVED: bless `legRowTypes` as the S3 bridge, under three pins.** (i) a **no-untyped-slot**
-  pin (every positional slot recovers a concrete leg Type — never `Type.Any`/untyped); (ii) a
-  **recovered == flowed differential** (the `legRowTypes` reconstruction equals what a typed pull-up
-  over the merge quantifier's flowed Type would yield, on the corpus); (iii) a **named typed-pull-up
-  owner** — Slice 5 ports the first-class typed surface if any N-way shape defeats ad-hoc recovery.
+- **Q4 — RESOLVED: bless `legRowTypes` as the S3 bridge, under three pins** — `TestRFC173S3_LegRowTypesBridge`
+  (`rfc173_s3_legrowtypes_test.go`). (i) **no-untyped-slot**: every live leg of the ordinal-seed corpus
+  (chain 3/4-way, star with mixed leg widths hub[ID]+spokes[ID,HID]) recovers a concrete `*RecordType`
+  — a `_UntypedSlotControl` negative control proves the pin has teeth (a leg referenced nowhere is
+  recovered as absent → the untyped slot the pin forbids). (ii) **recovered == flowed**: the
+  reconstruction equals the leg's authoritative flowed type — the NULLABLE record a typed pull-up over
+  the merge quantifier's flowed QOV yields (Go's `QuantifiedObjectValue.Type` nullable-izes like
+  Java's), asserted per-leg with no conflation/drop/width-drift. (iii) **named typed-pull-up owner** —
+  Slice 5 ports the first-class typed surface if any N-way shape defeats ad-hoc recovery.
 - **Q5 — RESOLVED: trio + `AnchoredJoin` flag + `NewAnchoredJoinRecord`/`NewScalarSubqueryAnchoredRecord`
   + the `InternsAliasAware` AnchoredJoin arm ALL die TOGETHER in S4.** They cannot be split — the flag,
   the seeds, and the consumer are one machine; deleting any subset while the rest is live either

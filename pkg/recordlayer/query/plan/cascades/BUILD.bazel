@@ -297,6 +297,7 @@ go_test(
         "rfc153_failclosed_verifier_test.go",
         "rfc153_p2_correlation_test.go",
         "rfc165_nulls_ordering_test.go",
+        "rfc173_s3_legrowtypes_test.go",
         "rfc173_s3_shadow_delta_test.go",
         "rfc173_s3_star_budget_test.go",
         "rfc173_slice2_drift_assert_test.go",
@@ -808,6 +809,7 @@ go_test(
         "rfc173_slice3_dispatch_authority_test.go",
         "rfc173_s3_star_budget_test.go",
         "rfc173_s3_shadow_delta_test.go",
+        "rfc173_s3_legrowtypes_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
