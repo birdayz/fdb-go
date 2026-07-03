@@ -1569,7 +1569,7 @@ on HEAD, gated/dark in the coexistence window:**
 certify it. The anchored arm + trio SURVIVE as the residual path** for name-model shapes (multi-source
 unnest until W5; scalar-subquery / non-wedge anchored seeds until S4).
 
-1. **Widen is ALREADY DONE.** `rfc173_cluster_gate.go:124` (`if a := t.clusterArity(j); a >= 2`)
+1. **Widen is ALREADY DONE.** `rfc173_cluster_gate.go:124-125` (`a := t.clusterArity(j)` / `if a >= 2`)
    already admits every maximal inner-join cluster to ordinal seeding; `positionalMergeCase` already
    re-collapses subsets. Slice 3 does **not** re-touch the gate — it makes the positional arm the
    **SOLE producer for every ordinal-seeding shape** and certifies that authority with the gate pins
@@ -1639,8 +1639,10 @@ unnest until W5; scalar-subquery / non-wedge anchored seeds until S4).
   the flip PR (item 5).
 
 ### Gates (process)
-Query-engine change → **Graefe design-ACK on the reframed Q1-Q6 above — re-request on THIS corrected
-text** (Graefe's explicit condition). Then the §10 gauntlet (Graefe/Torvalds/codex/@claude sign-off)
-on the flip PR. The flip is now a certification + authority slice, not a deletion: a red gate pin
-(STAR wall-clock, shadow-delta, plandiff-byte-identical, merge-branch-hit-count, or any Q4 pin) BLOCKS
-the slice. Deletions (trio, flag, seeds, interning arm) are **Slice 4**, gated on S3 green.
+Query-engine change → Graefe design-ACK on the reframed Q1-Q6 above — **DESIGN-ACK OBTAINED** on this
+corrected text (first impl commit unblocked; his basis: the `ordinalWedgeGateDecide` declines keep
+anchored seeds constructible, so the trio's producers are live and the consumer cannot die in S3).
+Next: the §10 gauntlet (Graefe/Torvalds/codex/@claude sign-off) on the flip PR. The flip is a
+certification + authority slice, not a deletion: a red gate pin (STAR wall-clock, shadow-delta,
+plandiff-byte-identical, merge-branch-hit-count, or any Q4 pin) BLOCKS the slice. Deletions (trio,
+flag, seeds, interning arm) are **Slice 4**, gated on S3 green.
