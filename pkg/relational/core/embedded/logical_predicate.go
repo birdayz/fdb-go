@@ -5901,9 +5901,21 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// Non-aggregate correlated scalar subquery. The single output column is
 		// either a plain projected column or, under a GROUP BY, a bare
 		// group-key projection stored as a visible aggCol (DISTINCT-of-key).
+		// computedScalarVal is set for a COMPUTED projection (`UPPER(x)`, `a+b`);
+		// it is materialized as the inner's projected output AFTER the sort/limit
+		// below (RFC-173 W4b shape 3).
+		var computedScalarVal values.Value
 		switch {
 		case len(sq.projCols) == 1:
-			// A qualified projection (`SELECT o.amount`) must resolve to the
+			// A COMPUTED projection (`SELECT UPPER(x)`, `a+b`, `CAST(...)`) is NOT
+			// a stored inner column, so — unlike a plain column ref — it is not
+			// present in the inner row. Left as-is it resolves to nothing → a
+			// SILENT NULL (the pre-W4b bug). Walk it here and MATERIALIZE it as
+			// the inner's single projected output below (positional key `_0`,
+			// mirroring Java's inner SelectExpression.resultValue). A plain column
+			// ref keeps the existing bare/qualified path.
+			//
+			// A qualified plain projection (`SELECT o.amount`) must resolve to the
 			// bare datum key the inner row carries. For a single inner table the
 			// row is keyed bare (`AMOUNT`) and replaceScalarSubqueryRef
 			// re-qualifies under the inner alias (`O.AMOUNT`) at read time — a
@@ -5911,7 +5923,15 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			// `O.O.AMOUNT` and resolve to NULL (same failure mode the bare
 			// group-key case below guards). For a join the row is keyed
 			// qualified (see :910), so keep the qualifier there.
-			if len(sq.joins) > 0 {
+			if len(sq.projExprs) > 0 && sq.projExprs[0] != nil {
+				cv, wErr := resolver.WalkExpression(sq.projExprs[0])
+				if wErr != nil {
+					return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+						Message: fmt.Sprintf("correlated scalar subquery: walk computed projection: %v", wErr), Cause: wErr,
+					}
+				}
+				computedScalarVal = cv
+			} else if len(sq.joins) > 0 {
 				scalarCol = strings.ToUpper(sq.projCols[0])
 			} else {
 				scalarCol = strings.ToUpper(parseColRef(sq.projCols[0]).bare())
@@ -6009,6 +6029,20 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			// scalar subquery's OFFSET requires a LIMIT; `… OFFSET n` alone is a
 			// 42601 syntax error, and there is no LIMIT ALL — so sq.offset is 0 here).
 			strictSingle = true
+		}
+
+		// COMPUTED scalar (RFC-173 W4b shape 3): materialize the walked expression
+		// as the inner's single projected output — positional key `_0`, mirroring
+		// Java's inner SelectExpression.resultValue. Placed AFTER sort/limit so
+		// ORDER BY keys resolved over the source rows (the projection drops them).
+		// Now BOTH the name-model scalar ref (<inner>._0) and the ordinal seed
+		// (ofOrdinal(inner,0)) resolve the computed value, fixing the silent NULL.
+		if computedScalarVal != nil {
+			proj := logical.NewProject(innerOp, []string{sq.projCols[0]}, []string{""})
+			proj.ProjectedValues = []values.Value{computedScalarVal}
+			proj.IsComputed = []bool{true}
+			innerOp = proj
+			scalarCol = "_0"
 		}
 	}
 

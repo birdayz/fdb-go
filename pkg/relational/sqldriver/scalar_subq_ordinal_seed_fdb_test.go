@@ -199,11 +199,12 @@ func TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 // TestFDB_RFC173W4b_ScalarInnerShapeProbe maps the inner-shape safety boundary of
 // the ordinal seed: every inner shape must EXECUTE without tripping the ordinal
 // leg adapter ("name-model leg row carries NONE of the leg type's 1 columns"),
-// which is the seed's regression signature. Plain-column and aggregate inners
-// ordinalize; join and computed-expression inners are gated to name-model
-// (innerContainsJoin / innerScalarIsRowColumn), where they behave exactly as
-// on master. This pins that the gate covers every shape — no runtime error from
-// the ordinal path on any of them.
+// which is the seed's regression signature. Plain-column, aggregate, AND
+// computed-expression inners now ordinalize (RFC-173 W4b shape 3 materializes a
+// computed scalar as the inner's projected output, so it is present in the inner
+// row); only a JOIN-inner is still gated to name-model (innerContainsJoin, shape
+// 2). This pins that the ordinal path runs cleanly on every non-join shape — no
+// runtime error. (Correct-rows for the computed shapes: TestFDB_RFC173W4b_ComputedScalar.)
 func TestFDB_RFC173W4b_ScalarInnerShapeProbe(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

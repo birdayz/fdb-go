@@ -234,6 +234,7 @@ go_test(
         "rfc153_matrix_fdb_test.go",
         "rfc173_slice1_frontier_pin_test.go",
         "rfc173_slice2_gate_pins_test.go",
+        "rfc173_w4b_computed_scalar_fdb_test.go",
         "row_value_constructor_probe_test.go",
         "rows_affected_probe_test.go",
         "scalar_math_probe_test.go",
