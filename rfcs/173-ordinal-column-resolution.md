@@ -1761,3 +1761,26 @@ shape still depends on `NewScalarSubqueryAnchoredRecord`"), itself a full four-g
 predecessor (W4b → W5 → W4-left+EXISTS+recursive-CTE) is its own slice; then the S4 demolition; the
 CTE-rename `select.go:274` widening and the full-FieldValue-baking lazy-arm deletion are their OWN
 later slices (F2/F3). The demolition is the LAST step of the flag axis.
+
+## W4b — correlated-scalar ordinalization: scope (the immediate next slice; PRE-DESIGN)
+
+The single live caller of `NewScalarSubqueryAnchoredRecord` is `cascades_translator.go:3256`, on the
+DECLINE of the W4b ordinal gate at `:3251`. The SIMPLE case is ALREADY ordinalized
+(`scalarSubqueryOrdinalSeed`, `:3253`): outer `clusterArity==1` AND `!innerContainsJoin` AND
+`innerScalarIsRowColumn`. W4b must ordinalize the **three residual shapes** that still decline (each
+with a concrete blocker to solve — read Java first per shape):
+
+1. **Clustered / multi-table outer** (`clusterArity(p.Input) > 1`) — ordinalizing a flattened cluster
+   erases buried source names (the same hazard the join wedge faces). Needs the outer leg's per-source
+   columns recoverable positionally without the dotted `SRC.COL` names.
+2. **JOIN-inner** (`innerContainsJoin(csq.InnerPlan)`) — the inner subquery's first table shares
+   `csq.InnerAlias`, so the inner ordinal join's typed `QOV(InnerAlias)` collides with the seed's typed
+   inner leg (`widenLegTypesFromPlan` divergent-baked-types). Needs InnerAlias/inner-leg disambiguation.
+3. **Computed (non-row-column) scalar** (`!innerScalarIsRowColumn`) — the scalar is a computed
+   expression, not a direct row column, so there is no single leg column to anchor/bake.
+
+Each is a distinct sub-problem; the slice ordinalizes all three (or Graefe may split them). Deliverable:
+`NewScalarSubqueryAnchoredRecord` has ZERO live callers → it joins the S4-demolition kill set. Gate:
+Graefe design-ACK on the per-shape approach (read Java's correlated-scalar handling first) BEFORE impl,
+then the §10 four-gate gauntlet. Coverage proof: correlated-scalar yamsql/FDB tests over all three
+shapes return correct rows via the ordinal seed (EXPLAIN + rows), not the name-model fallback.
