@@ -113,4 +113,27 @@ func TestFDB_RFC173W4b_JoinInnerScalar(t *testing.T) {
 	if none.Valid {
 		t.Errorf("empty join-inner scalar = %d, want NULL (LEFT-OUTER null fill)", none.Int64)
 	}
+
+	// (e) PARENTHESIZED plain column through the join-inner (review finding,
+	// round 2): the walked FieldValue's scalarCol resolution over the
+	// QUALIFIED-keyed join row. The unambiguous case rides the merged row's
+	// bare last-leg-wins twin key.
+	if err := db.QueryRowContext(ctx, "SELECT (SELECT (i.qty) FROM orders o JOIN items i ON i.order_id = o.id "+
+		"WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 2").Scan(&qty); err != nil {
+		t.Fatalf("parenthesized column through join-inner: %v", err)
+	}
+	if !qty.Valid || qty.Int64 != 4 {
+		t.Errorf("parenthesized join-inner scalar = %d (valid=%v), want 4", qty.Int64, qty.Valid)
+	}
+
+	// (f) The AMBIGUOUS-column dimension of (e): `id` exists in BOTH join
+	// legs — a bared scalarCol would read the last-leg-wins twin (items.id =
+	// 13, SILENT WRONG); the qualified key must win (orders.id = 3 for bob).
+	if err := db.QueryRowContext(ctx, "SELECT (SELECT (o.id) FROM orders o JOIN items i ON i.order_id = o.id "+
+		"WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 2").Scan(&qty); err != nil {
+		t.Fatalf("ambiguous parenthesized column through join-inner: %v", err)
+	}
+	if !qty.Valid || qty.Int64 != 3 {
+		t.Errorf("ambiguous parenthesized join-inner scalar = %d (valid=%v), want 3 (orders.id — a bared key reads the wrong leg)", qty.Int64, qty.Valid)
+	}
 }

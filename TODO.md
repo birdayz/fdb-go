@@ -56,6 +56,14 @@ validation gate.
     enforced), but thread it through per-Memo state (like `mergeAliasCounter`) so no global is read in
     Insert — deferred because `Reference.Insert` has no Memo handle. Do when a slice gives Insert Memo
     context (the alias-aware tier itself survives S4, so this is not auto-retired).
+  - [ ] Follow-up (W4b review residuals, master-parity — broken on master too, pinned as clean
+    errors): (a) aggregate-local outer refs in a correlated scalar (`SUM(o.amount + e.ref)` over a
+    clustered outer) never planned — the true enablement is an EXECUTION-CONTEXT property (the
+    aggregate cursor inheriting the outer binding through the NLJ context, as Java threads it), not an
+    expression rewrite (Graefe ruling on the codex P2-2 fix); (b) box-leg clusters (nested FULL boxes)
+    stay on the pre-W4b path even when gated (@claude scope note — intended W4b narrowing). The
+    parenthesized-column-over-JOIN-inner case was FIXED in the gauntlet (qualified scalarCol from the
+    walked QOV; the ambiguous-column probe returned the WRONG LEG before the fix — pinned).
 - [x] **Slice 1 non-join ordinal — MERGED (#437, `12516e33f`), all four gates ACKed at the merge
   HEAD** (Graefe impl+delta ACK · Torvalds fix-first→ACK incl. MUTATION-TESTING the authority proof ·
   codex clean (P2 fixed; delta finding = documented Go≥1.22 loopvar false positive) · @claude "nothing
