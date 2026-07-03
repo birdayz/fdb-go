@@ -78,18 +78,22 @@ lists three physical-filter builders when only two are live. De-staling DIVERGEN
   "`ImplementIndexScanRule` retired (RFC-076); two live ungated producers remain"; drop the phantom
   test cite and the invented `ImplementPhysicalScanRule`; §376 → two builders. Land first so the
   remaining steps cite a truthful map.
-- **Step 1 — gate `ImplementSimpleSelectRule` on `anyCompensatablePredicate()`.** This is a **1:1 port**
-  of Java's literal rule, not an analogy: `ImplementSimpleSelectRule.java:90` binds
-  `predicateMatcher = anyCompensatablePredicate()`. After this, no index-only predicate is built into a
-  Select's physical filter. Pin with the JOIN-shape sentinel
-  (`TestVectorPlan_MetricMismatchInJoinDoesNotLeak`) — it must still reject, now via the gate not the net.
-- **Step 2 — gate the NLJ residual builder identically.**
-- **Step 3 — expand `findIndexOnlyLogicalResidual` to the JOIN `SelectExpression` sentinel** (codex).
-  Today it handles `LogicalFilterExpression`; once Steps 1-2 leave the index-only predicate in the
-  logical tree for the JOIN shape too, the logical diagnostic must recognize it there, or those queries
-  regress from the clean `UnplannableIndexOnlyResidualError` to a generic non-physical planning failure.
-  This is the replacement-diagnostic codex required — the logical path *becomes* the sole clean-error
-  surface as the physical net's job disappears.
+- **Step 1 — expand `findIndexOnlyLogicalResidual` to every shape the gates will leave logical** (the
+  JOIN `SelectExpression`, and the NLJ residual shape) — BEFORE any gating (Graefe: the expand MUST
+  precede the gate, or the gating PR's own sentinel goes red). Today it handles only
+  `LogicalFilterExpression`. The expansion is **dormant until a gate fires**: `findIndexOnlyLogicalResidual`
+  runs only when the best plan is non-physical (planner.go:246), and until a producer is gated the plan
+  is still physical — so landing the expanded diagnostic first is safe *and* necessary, giving the clean
+  `UnplannableIndexOnlyResidualError` path a home before the gate routes rejection to it. (Equivalent
+  packaging: fold each shape's expansion into the same PR as the gate that needs it — the invariant is
+  "no gate lands without its shape's diagnostic ready.")
+- **Step 2 — gate `ImplementSimpleSelectRule` on `anyCompensatablePredicate()`.** A **1:1 port** of
+  Java's literal rule, not an analogy: `ImplementSimpleSelectRule.java:90` binds
+  `predicateMatcher = anyCompensatablePredicate()` (used via `all(...)` at :94). After this, no index-only
+  predicate is built into a Select's physical filter; the JOIN sentinel
+  (`TestVectorPlan_MetricMismatchInJoinDoesNotLeak`) must still reject — now via the Step-1 logical
+  diagnostic, provably (disable the physical net in the test and confirm the reject still fires).
+- **Step 3 — gate the NLJ residual builder identically** (its shape's diagnostic landed in Step 1).
 - **Step 4 — retire `validateNoIndexOnlyResidual` (the PHYSICAL net) — LAST PR.** With both producers
   gated and the data-access path already stamping impossibility, no physical builder can emit an
   index-only residual; the physical net is unreachable. Deletion is the proof the gating is complete
@@ -108,22 +112,26 @@ Every step keeps the full vector sentinel set green: `TestVectorPlan_MetricMisma
 (single-table), `TestVectorPlan_MetricMismatchInJoinDoesNotLeak` (JOIN — the regression the net was
 retained for), `TestVectorPlan_QualifyPlansToVectorScan` (legit vector scan still plans), plus the K>1
 partition-intersection pins. Plandiff cross-engine corpus: 0 new mismatches at each step. The net-retirement
-PR (Step 4) additionally proves the physical net is unreachable — instrument it to count invocations across
-the full suite + fuzz and show zero before deleting, so "unreachable" is measured, not asserted.
+PR (Step 4) additionally proves the physical net is unreachable — instrument it to count **catches** (times
+`validateNoIndexOnlyResidual` actually returns a rejection, i.e. finds an index-only residual), NOT calls:
+the net runs unconditionally on every plan (planner.go:238), so a call-counter never reads zero and would
+prove nothing (Graefe + codex). Zero catches across the full suite + fuzz before deleting is the real proof.
 
 ## 5. Acceptance criteria
 
 - **Step 0:** DIVERGENCES.md §33-41/§376 no longer describe `ImplementIndexScanRule` as live, cite no
   non-existent test, invent no Java class, list two producers.
-- **Steps 1-2:** `ImplementSimpleSelectRule` and the NLJ builder return early on any index-only predicate
+- **Step 1:** `findIndexOnlyLogicalResidual` handles the JOIN `SelectExpression` shape (and the NLJ
+  residual shape); a metric-mismatch query in each shape surfaces `UnplannableIndexOnlyResidualError`, not
+  a generic failure, when the physical net is disabled in the test — i.e. the clean path exists BEFORE the
+  gate that will depend on it.
+- **Steps 2-3:** `ImplementSimpleSelectRule` and the NLJ builder return early on any index-only predicate
   (greppable `!isIndexOnly()` / `anyCompensatablePredicate` gate); the JOIN + single-table metric-mismatch
-  sentinels reject via the gate (verify by temporarily disabling the physical net in the test and confirming
-  they still reject).
-- **Step 3:** `findIndexOnlyLogicalResidual` handles the JOIN `SelectExpression` shape; a metric-mismatch
-  JOIN query surfaces `UnplannableIndexOnlyResidualError`, not a generic failure, with the physical net
-  already disabled.
-- **Step 4:** `grep -rn "validateNoIndexOnlyResidual" pkg/` returns zero; the net-invocation counter read
-  zero across suite+fuzz before deletion; `findIndexOnlyLogicalResidual` still present and pinned.
+  sentinels reject via the Step-1 logical diagnostic (verify by temporarily disabling the physical net in
+  the test and confirming they still reject) — each gating PR independently green.
+- **Step 4:** `grep -rn "validateNoIndexOnlyResidual" pkg/` returns zero; the net-**catch** counter (non-nil
+  rejections, not calls) read zero across suite+fuzz before deletion; `findIndexOnlyLogicalResidual` still
+  present and pinned.
 - **Step 5:** `residualIsPartitionContiguous` retained with its K>1 pins green; any retired special-case
   named with the reason it was net-only.
 
@@ -140,7 +148,12 @@ the full suite + fuzz and show zero before deleting, so "unreachable" is measure
 
 ## 7. Review log
 
-- (pending) Graefe — this RFC + per-step implementation ACK. (Design corrections from the RFC-177 gauntlet
-  — phantom C.3 struck, two-not-three producers, C.1 as 1:1 port, keep-the-logical-diagnostic, DIVERGENCES
-  de-stale as Step 0 — are folded in from birth.)
-- (pending) Torvalds, codex, @claude — this RFC PR and each implementation PR.
+- **Graefe — NAK → addressed (2026-07-03).** RFC-177-gauntlet corrections folded from birth (phantom C.3
+  struck, two-not-three producers, C.1 as 1:1 port, keep-the-logical-diagnostic, DIVERGENCES de-stale as
+  Step 0). Re-review NAKed two design specifics, both fixed: (1) the diagnostic-expansion must PRECEDE the
+  gates (else the gating PR's own JOIN sentinel goes red) — steps reordered so expand is Step 1; (2) the
+  net-retirement proof must count **catches** (non-nil rejections), not calls (the net runs
+  unconditionally) — §4/§5 corrected. Re-request after the fold.
+- **codex — P2 (folded).** Same catch-vs-call vacuity as Graefe (2); plus RFC-177 top-matter still claimed
+  to be the C4 RFC after the promotion — de-owned (title/origin/effort now point to RFC-178).
+- (pending) Torvalds, @claude — this RFC PR and each implementation PR.

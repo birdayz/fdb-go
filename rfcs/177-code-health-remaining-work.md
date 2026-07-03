@@ -1,4 +1,4 @@
-# RFC-177: Code-health remaining work — deferred RFC-175/176 tracks, the owed C4 index-only RFC, and the registered client/infra gaps
+# RFC-177: Code-health remaining work — deferred RFC-175/176 tracks, the registered client/infra gaps, and a pointer to the C4 index-only RFC (RFC-178)
 
 **Status:** DRAFT — needs the standard gauntlet. Tracks A/B/C touch the Cascades engine or the
 relational query surface → **Graefe ACK** on this RFC and on each implementation PR. Track D is
@@ -7,8 +7,9 @@ relational query surface → **Graefe ACK** on this RFC and on each implementati
 landed their main phases (RFC-175 A/B/E/F + C2/C3/D2 + B3/B5; RFC-176 P1/P2/P3). What remains is
 (i) the RFC-175 tracks deliberately parked behind the RFC-173 freeze (C1, C5, D1); (ii) the two
 RFC-176 §7 follow-ups (the cost tie-breaker order and the predicate/selector semantic hash); (iii)
-the C4 index-only gating end-state, which RFC-175 registered as **needing its own RFC** — this is
-that RFC; (iv) three `pkg/fdbgo` gaps registered in TODO.md "Known gaps" during the E1/E2/E3 work;
+the C4 index-only gating end-state, which RFC-175 registered as **needing its own RFC** — now
+spun out as **RFC-178** (this document's Track C is a pointer to it); (iv) three `pkg/fdbgo` gaps
+registered in TODO.md "Known gaps" during the E1/E2/E3 work;
 (v) the stress-1M baseline-rot investigation registered by RFC-176 P2's gate. This document is the
 single home + execution order for all of it, so items get executed or explicitly rejected instead
 of decaying in scattered TODO entries.
@@ -16,7 +17,7 @@ of decaying in scattered TODO entries.
 RFC-173 (the active freeze — Track A's gate), RFC-151 (`ImplementFilterRule` `!isIndexOnly()` gate,
 the C4 precedent), RFC-167 (plan determinism — D1's "nondeterminism is a bug" rule), DIVERGENCES.md
 (C4 end-state; the fdbgo gaps' C++ cites).
-**Effort:** Track B ≈ 1-2 shifts each; Track C (C4) ≈ 3-5 shifts, staged, Graefe per step; Track D
+**Effort:** Track B ≈ 1-2 shifts each; Track C is RFC-178 (3-5 shifts, scoped there); Track D
 ≈ 1 shift each; Track E ≈ 1 shift (requalify) or a bisect; Track A ≈ C1 1 shift / C5 1-2 / D1 2-3,
 but **all three stay blocked until RFC-173 lands** (§4). Staged PRs, each independently green.
 
