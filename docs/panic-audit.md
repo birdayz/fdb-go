@@ -26,7 +26,7 @@ The discipline is no longer a one-time audit; it is **enforced on every build**:
 
 - **155** `panic(` and **22** `recover(` text occurrences in non-test code (grep). The grep
   count over-states *callable* recovers — several are in comments/strings. The analyzer's **AST**
-  count of builtin `recover()` calls is **§2's allowlist** (17 across 12 files, of which 15 are in
+  count of builtin `recover()` calls is **§2's allowlist** (19 across 13 files, of which 17 are in
   the default pure-Go build; 2 are behind `cgo && libfdbc` / the binding-tester binary).
 - The vast majority of panics are legitimate invariant asserts or `Must*` APIs (§4).
 - The user-reachable-panic conversion worklist (§3) — adding an error channel to
@@ -54,6 +54,7 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/relational/core/embedded/cascades_generator.go` | 1 | executor eval bridge: panic → SQL error |
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |
 | `cmd/fdb-stacktester/directory_ops.go` | 1 | binding-tester harness binary (cgo-dependent build) |
+| `cmd/dst-hunt/main.go` | 1 | DST overnight hunter: a panicking seed → recorded finding, sweep continues (never aborts an unattended run) |
 
 None silently swallow: each maps to a returned error / failed future / logged-and-failed conn.
 

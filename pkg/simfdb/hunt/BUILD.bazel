@@ -4,6 +4,7 @@ go_library(
     name = "hunt",
     srcs = [
         "hunt.go",
+        "profiles.go",
         "shrink.go",
     ],
     importpath = "fdb.dev/pkg/simfdb/hunt",

@@ -34,9 +34,9 @@ func Shrink(seed uint64, cfg Config) (Config, *Report) {
 	return probe, Run(seed, probe)
 }
 
-// FaultDependent reports whether a failing seed still fails with faults disabled. A false means
-// the bug needs the commit-fault schedule (a retry/idempotency defect); a true means it
-// reproduces on the happy path alone (a plain logic bug, and a more serious one). Only
+// FaultDependent reports whether a failing seed needs the commit-fault schedule to fail:
+// true = it passes with faults disabled (a retry/idempotency defect — the common case),
+// false = it still fails on the happy path (a plain logic bug, and a more serious one). Only
 // meaningful for a seed that already failed under cfg.
 func FaultDependent(seed uint64, cfg Config) bool {
 	cfg = cfg.withDefaults()

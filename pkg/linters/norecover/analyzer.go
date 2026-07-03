@@ -49,6 +49,10 @@ var Allowlist = map[string]int{
 	"pkg/recordlayer/merge_cursor.go": 1,
 	// binding-tester harness binary (cgo-dependent build)
 	"cmd/fdb-stacktester/directory_ops.go": 1,
+	// DST overnight hunter: a seed that panics a maintainer is the severest bug it can find —
+	// caught, recorded as a finding, and the sweep continues (an unattended run must survive
+	// one poisoned seed). The panic is surfaced on the finding, never swallowed.
+	"cmd/dst-hunt/main.go": 1,
 }
 
 // Analyzer is the nogo entry point, bound to the production allowlist above.

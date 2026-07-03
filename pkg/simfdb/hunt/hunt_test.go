@@ -173,6 +173,25 @@ func TestShrinkNoRepro(t *testing.T) {
 	}
 }
 
+// TestProfilesRunClean builds every overnight-sweep profile and runs a few seeds through each,
+// so a broken schema or a per-maintainer regression is caught before a long unattended run.
+func TestProfilesRunClean(t *testing.T) {
+	t.Parallel()
+	for _, p := range Profiles() {
+		p := p
+		t.Run(p.Name, func(t *testing.T) {
+			t.Parallel()
+			cfg := p.Cfg
+			cfg.NumOps = 100
+			for seed := uint64(0); seed < 6; seed++ {
+				if rep := Run(seed, cfg); rep.Failed() {
+					t.Fatalf("profile %s seed %d:\n%s", p.Name, seed, rep)
+				}
+			}
+		})
+	}
+}
+
 // TestConfigDefaults pins the zero-value brute-force profile.
 func TestConfigDefaults(t *testing.T) {
 	t.Parallel()
