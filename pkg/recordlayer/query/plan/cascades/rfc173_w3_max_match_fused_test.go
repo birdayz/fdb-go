@@ -154,3 +154,62 @@ func TestRFC173W3_MaxMatchMap_FusedVsChained_ThreeAccessor(t *testing.T) {
 		t.Fatal("3-accessor fused must match the fully-chained candidate — the last-accessor-only split missed this (full-unchain fix)")
 	}
 }
+
+// TestRFC173W3_MaxMatchMap_FusedVsOneStepSplit pins the PARTIALLY-fused
+// candidate dimension (a delta-review catch): a 3-accessor fused query must
+// also match a ONE-STEP-SPLIT candidate `FV(FV(m,[_0,_0]),[C])` — inner fused
+// (2 accessors), outer single. Emitting only the fully-chained form regressed
+// this shape (the old two-node split had matched it); the expansion now emits
+// every split form (Java's full re-explored member set), so both the
+// fully-chained and the partially-fused candidate shapes match. Red-verified
+// before the all-forms fix.
+func TestRFC173W3_MaxMatchMap_FusedVsOneStepSplit(t *testing.T) {
+	t.Parallel()
+	leaf := values.NewRecordType("", false, []values.Field{{Name: "C", FieldType: values.NotNullLong, Ordinal: 0}})
+	mid := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: leaf, Ordinal: 0}})
+	top := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: mid, Ordinal: 0}})
+	q := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), top)
+
+	s0, err := values.NewFieldValueOfOrdinal(q, 0)
+	if err != nil {
+		t.Fatalf("bake _0: %v", err)
+	}
+	s1, err := values.NewFieldValueOfOrdinal(s0, 0)
+	if err != nil {
+		t.Fatalf("bake _0._0: %v", err)
+	}
+	s2, err := values.NewFieldValueOfOrdinal(s1, 0)
+	if err != nil {
+		t.Fatalf("bake _0._0.C: %v", err)
+	}
+	fused, isFV := values.SimplifyValue(s2).(*values.FieldValue)
+	if !isFV || len(fused.Resolved.Accessors) != 3 {
+		t.Fatalf("query must fuse to 3 accessors, got %v", fused)
+	}
+
+	// One-step-split candidate: inner fused m._0._0 (2 accessors), outer reads C.
+	c0, err := values.NewFieldValueOfOrdinal(q, 0)
+	if err != nil {
+		t.Fatalf("cand _0: %v", err)
+	}
+	c1, err := values.NewFieldValueOfOrdinal(c0, 0)
+	if err != nil {
+		t.Fatalf("cand _0._0: %v", err)
+	}
+	innerFused, isFV := values.SimplifyValue(c1).(*values.FieldValue)
+	if !isFV || len(innerFused.Resolved.Accessors) != 2 {
+		t.Fatalf("candidate inner must fuse to 2 accessors, got %v", innerFused)
+	}
+	outer, err := values.NewFieldValueOfOrdinal(innerFused, 0)
+	if err != nil {
+		t.Fatalf("build one-step outer: %v", err)
+	}
+	if len(outer.Resolved.Accessors) != 1 || len(outer.Child.(*values.FieldValue).Resolved.Accessors) != 2 {
+		t.Fatalf("one-step candidate malformed: outer=%d child=%d accessors",
+			len(outer.Resolved.Accessors), len(outer.Child.(*values.FieldValue).Resolved.Accessors))
+	}
+
+	if mmm := ComputeMaxMatchMap(fused, outer, nil); mmm.Size() < 1 {
+		t.Fatal("3-accessor fused must match the ONE-STEP-SPLIT candidate — all split forms emitted (fully-chained-only regressed this)")
+	}
+}

@@ -626,3 +626,38 @@ Torvalds and Graefe both ACKed without catching it — codex's specific-scenario
 probing did. Fix: expandFusedFieldValue fully unchains in one step (Java's
 re-explored end state, direct). Red-verified pin
 TestRFC173W3_MaxMatchMap_FusedVsChained_ThreeAccessor.
+
+## S3-W3 delta round: codex found a REGRESSION in the first fix (all-forms emission)
+The full-unchain-only fix (d8970ad9e) resolved the 3-accessor CHAINED candidate
+but REGRESSED the one-step-split candidate shape FV(FV(m,[_0,_0]),[C]) the
+prior two-node split had matched (red-verified: match size 0). This is exactly
+the case Graefe flagged as "narrower than Java's member set" and codex flagged
+as a capability regression — the two reviewers disagreed on whether it was
+reachable. Resolution (moots the disagreement): expandFusedFieldValue now emits
+EVERY split form — a p-accessor fused prefix + chained suffix for each p in
+[1,n-1] — Java's FULL re-explored member set (p=1 fully chained … p=n-1
+one-step split; the fully-fused form is the caller's direct compare). Strictly
+safe (more match forms never yield a wrong match), path depth is tiny.
+Red-verified pins: TestRFC173W3_MaxMatchMap_FusedVsOneStepSplit +
+_ThreeAccessor. Torvalds' stale caller-comment and Graefe's end-state-scoping
+nits are subsumed: the doc now describes the full member set. Delta gates:
+Torvalds ACK, Graefe ACK (verified the pin red himself), codex regression fixed.
+
+## S3-W3 commit C (TranslationMap consolidation) — TRACKED FOLLOW-UP, not this PR
+@claude's design-concern (round 1): the values-side TranslationMap builder (W2,
+2 users) and the pre-existing cascades-side one (99 users) share names/APIs
+across packages. Investigated: they sit on OPPOSITE sides of the import
+boundary (values cannot import cascades), so they genuinely cannot merge into
+ONE type — the "duplication" is a Go-layering consequence Java (no cycle
+constraint) doesn't have. The bounded cleanup available: align the
+values.TranslationMap interface's ApplyTranslationFunction to take LeafValue
+(legal — LeafValue is in values), letting cascades.RegularTranslationMap
+satisfy it, then delete the values-side RegularTranslationMap+builder and
+repoint rfc173_positional_merge.go to the cascades builder. Precondition
+verified: ownCorrelationOfLeaf matches {QOV, QuantifiedRecordValue,
+ScalarSubqueryValue, ObjectValue, UnmatchedAggregateValue,
+ConstantObjectValue} — confirm ALL are LeafValue before the signature change
+(a non-LeafValue match would break the assertion). This is a SEPARATE
+mechanical commit/PR per the RFC ruling; deferred from the fulcrum PR to keep a
+converging query-engine PR from carrying a 99-user refactor. Tracked here so
+the design is ready.
