@@ -6005,6 +6005,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		if sq.limit >= 0 {
 			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
 		} else {
+			// No user LIMIT (and, in this grammar, therefore no OFFSET either — a
+			// scalar subquery's OFFSET requires a LIMIT; `… OFFSET n` alone is a
+			// 42601 syntax error, and there is no LIMIT ALL — so sq.offset is 0 here).
 			strictSingle = true
 		}
 	}
