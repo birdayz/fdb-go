@@ -213,3 +213,63 @@ func TestRFC173W3_MaxMatchMap_FusedVsOneStepSplit(t *testing.T) {
 		t.Fatal("3-accessor fused must match the ONE-STEP-SPLIT candidate — all split forms emitted (fully-chained-only regressed this)")
 	}
 }
+
+// TestRFC173W3_MaxMatchMap_FusedVsMidSplit_FourAccessor pins the MIDDLE split
+// form (completeness pin): a 4-accessor fused query vs a p=2 candidate
+// FV(FV(FV(m,[_0,_0]),[_0]),[C]) — a 2-accessor fused prefix AND a 2-node
+// chained suffix simultaneously (neither fully-fused nor fully-chained). The
+// all-forms loop emits this p=2 member; the end pins (fully-chained p=1,
+// one-step p=n-1) don't exercise a form with both a multi-accessor prefix and
+// a multi-node suffix.
+func TestRFC173W3_MaxMatchMap_FusedVsMidSplit_FourAccessor(t *testing.T) {
+	t.Parallel()
+	l3 := values.NewRecordType("", false, []values.Field{{Name: "C", FieldType: values.NotNullLong, Ordinal: 0}})
+	l2 := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: l3, Ordinal: 0}})
+	l1 := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: l2, Ordinal: 0}})
+	top := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: l1, Ordinal: 0}})
+	q := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), top)
+
+	chain := func(depth int) *values.FieldValue {
+		t.Helper()
+		var cur values.Value = q
+		var fv *values.FieldValue
+		for i := 0; i < depth; i++ {
+			next, err := values.NewFieldValueOfOrdinal(cur, 0)
+			if err != nil {
+				t.Fatalf("bake step %d: %v", i, err)
+			}
+			cur, fv = next, next
+		}
+		return fv
+	}
+
+	// Query: 4-accessor fused m._0._0._0.C.
+	fused, isFV := values.SimplifyValue(chain(4)).(*values.FieldValue)
+	if !isFV || len(fused.Resolved.Accessors) != 4 {
+		t.Fatalf("query must fuse to 4 accessors, got %v", fused)
+	}
+
+	// Candidate p=2 form: inner fused m._0._0 (2 accessors), then two single
+	// single-accessor nodes (._0, then .C).
+	innerFused, isFV := values.SimplifyValue(chain(2)).(*values.FieldValue)
+	if !isFV || len(innerFused.Resolved.Accessors) != 2 {
+		t.Fatalf("candidate inner must fuse to 2 accessors, got %v", innerFused)
+	}
+	mid, err := values.NewFieldValueOfOrdinal(innerFused, 0)
+	if err != nil {
+		t.Fatalf("build mid node: %v", err)
+	}
+	outer, err := values.NewFieldValueOfOrdinal(mid, 0)
+	if err != nil {
+		t.Fatalf("build outer node: %v", err)
+	}
+	if len(outer.Resolved.Accessors) != 1 || len(mid.Resolved.Accessors) != 1 ||
+		len(innerFused.Resolved.Accessors) != 2 {
+		t.Fatalf("p=2 candidate malformed: outer=%d mid=%d inner=%d",
+			len(outer.Resolved.Accessors), len(mid.Resolved.Accessors), len(innerFused.Resolved.Accessors))
+	}
+
+	if mmm := ComputeMaxMatchMap(fused, outer, nil); mmm.Size() < 1 {
+		t.Fatal("4-accessor fused must match the p=2 mid-split candidate (2-accessor prefix + 2 chained) — all split forms emitted")
+	}
+}
