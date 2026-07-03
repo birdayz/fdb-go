@@ -645,7 +645,12 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     multi-accessor path and port the compose rule — rather than enshrine chained nodes as a
     permanent divergence. Decided explicitly here, not implicitly by whoever writes the
     `TranslationMap` rebase.
-- **Slice 4 — Retire `AnchoredJoin` (deletions)** (~2 shifts). Delete
+- **Slice 4 — Retire `AnchoredJoin` (deletions)** (~2 shifts).
+  **PREREQUISITE (Graefe W4b design-ACK condition):** before deleting the name model, the W4b
+  correlated-scalar gate's name-model fallbacks must be eliminated — i.e. the InnerAlias/inner-leg
+  aliasing must be resolved so that JOIN-inner and COMPUTED-scalar correlated subqueries can
+  ordinalize (they currently stay name-model, see the W4b impl-correction notes). S4 cannot land
+  while any correlated-scalar shape still depends on `NewScalarSubqueryAnchoredRecord`. Delete
   `value_anchored_join_record.go` entirely; delete `RecordConstructorValue.AnchoredJoin` and its
   preservation through `WithChildren`/`Replace`/simplifier/`Equals`/`semantic_hash`; delete the
   executor's bare/`ALIAS.COL`/`TYPE.COL` key writing and `qualifyAlias`/`qualifyTypeFallback`;
@@ -1270,3 +1275,23 @@ tracked as a W4b follow-up, not this item). Caught by three regressed FDB pins
 before the gate; pinned white-box by `TestRFC173W4b_ScalarSeed_InnerJoinGate`. Single-source
 inners (incl. single-table aggregates) still ordinalize (`TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed`).
 Re-submitted for Graefe design-ACK.
+
+### W4b impl correction 2: the inner gate is THREE conditions, not one (computed-scalar + S4 prerequisite)
+Shape-boundary probing (`TestFDB_RFC173W4b_ScalarInnerShapeProbe`) found a SECOND inner class the
+ordinal seed cannot consume, beyond join-inners: a **COMPUTED scalar** (`(SELECT UPPER(ename) …)`,
+`salary+1`, `CAST(x AS …)`). The inner flows the full NAME-MODEL source row and the expression is
+evaluated ABOVE it, so `scalarCol` (a synthesized name like `UPPER(ENAME)`) is NOT a key in the
+inner row — the ordinal leg adapter rejects it ("name-model leg row carries NONE of the leg type's
+1 columns"). clusterArity/`innerContainsJoin` don't see this (the computed projection isn't in
+`csq.InnerPlan` — it's applied above).
+
+**Final gate** (all three required): `clusterArity(outer)==1 && !innerContainsJoin(inner) &&
+innerScalarIsRowColumn(inner, scalarCol)`, where the last holds iff the inner AGGREGATES (collapses
+to a scalar-keyed row) OR `scalarCol` is a stored column of the inner's single source. Plain-column
+and aggregate scalars ordinalize; join and computed scalars stay name-model. Proven safe across
+`{plain-column, AVG, MAX, UPPER, +1, CAST}` — all execute with no leg-adapter error.
+
+**Graefe S4-prerequisite (design-ACK condition):** the S4 name-model deletion is GATED on resolving
+the InnerAlias/inner-leg aliasing so that join-inner AND computed-scalar correlated subqueries can
+ordinalize — S4 cannot land while any correlated-scalar shape still depends on name-model. Recorded
+here as an S4 blocker.

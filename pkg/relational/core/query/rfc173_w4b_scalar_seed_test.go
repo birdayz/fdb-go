@@ -7,6 +7,7 @@ package query
 // outer-ref resolution.
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -110,5 +111,42 @@ func TestRFC173W4b_ScalarSeed_InnerJoinGate(t *testing.T) {
 	aggOverJoin := logical.NewAggregate(joinInner, nil, []string{"COUNT(*)"}, nil, "")
 	if !innerContainsJoin(aggOverJoin) {
 		t.Fatal("a join buried under an aggregate MUST be gated (clusterArity can't see it)")
+	}
+}
+
+// TestRFC173W4b_ScalarSeed_ComputedGate pins the SECOND inner gate
+// (innerScalarIsRowColumn): the scalar must be present in the inner row the
+// ordinal leg adapter reads — an AGGREGATE output or a stored column. A COMPUTED
+// scalar (whose column is a synthesized expression name, not a stored column and
+// not an aggregate) is NOT, so it stays name-model (else the ordinal leg adapter
+// rejects the name-model merge row). Aggregate detection recurses.
+func TestRFC173W4b_ScalarSeed_ComputedGate(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	// An aggregate inner is always safe (collapses to a scalar-keyed row).
+	agg := logical.NewAggregate(scan("Order", "o"), nil, []string{"COUNT(*)"}, nil, "")
+	if !innerHasAggregate(agg) {
+		t.Error("an aggregate inner must be detected as safe (scalar-keyed row)")
+	}
+	if !tr.innerScalarIsRowColumn(agg, "COUNT(*)") {
+		t.Error("aggregate scalar must ordinalize (innerScalarIsRowColumn)")
+	}
+	if innerHasAggregate(scan("Order", "o")) {
+		t.Error("a bare scan inner has no aggregate")
+	}
+
+	// A plain stored column of the single-source inner ordinalizes; a synthesized
+	// computed name (not a stored column, no aggregate) stays name-model.
+	orderCols := tr.legColumns(scan("Order", "o"))
+	if len(orderCols) == 0 {
+		t.Fatal("expected the Order table to have columns")
+	}
+	storedCol := strings.ToUpper(orderCols[0].Name)
+	if !tr.innerScalarIsRowColumn(scan("Order", "o"), storedCol) {
+		t.Errorf("plain stored column %q must ordinalize", storedCol)
+	}
+	if tr.innerScalarIsRowColumn(scan("Order", "o"), "UPPER(SOMECOL)") {
+		t.Error("a computed scalar (synthesized name, not a stored column) must stay name-model")
 	}
 }
