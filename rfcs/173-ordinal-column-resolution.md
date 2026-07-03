@@ -1590,9 +1590,12 @@ unnest until W5; scalar-subquery / non-wedge anchored seeds until S4).
    typed surface gets ported (named owner: Slice 5, with the local-bind subtraction work).
 5. **Author the two MISSING gate pins** (neither exists in code) — these are the load-bearing S3
    deliverables, authored IN the flip PR (Q6):
-   - **STAR planning wall-clock** bound on a many-identical-legs corpus. The task-count pin is BLIND to
-     bijection-enumeration cost — count can stay flat while per-Insert cost explodes. Bound is
-     wall-clock, on a fixed corpus, with an explicit ceiling.
+   - **STAR planning wall-clock** bound on a many-identical-legs corpus — `TestRFC173S3_OrdinalStarPlanningBudget`
+     (`rfc173_s3_star_budget_test.go`). A fixed 4-way ordinal STAR (hub + 3 identical spokes, all live)
+     pinned four ways: converges (no 100k cap), task-count `51377` ±2% (STAR-topology interning
+     sentinel next to the CHAIN baseline), `MergeArmHits==0`, and wall-clock < a generous 5s ceiling
+     (the per-Insert bijection-cost catch the count is BLIND to; ~90ms observed, catastrophe detector
+     not micro-benchmark). Measured budget-IDENTICAL to the name-model star (representation-neutral).
    - **shadow-delta equivalence**: spike-predicted extra-dedup **exactly equals** actual member-count
      delta (the `feat/rfc173-p3-bijection-interning` spike only `t.Logf`'d ~259 — promote to an
      exact-equality assertion).
