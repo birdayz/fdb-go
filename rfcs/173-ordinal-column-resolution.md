@@ -1535,7 +1535,11 @@ on HEAD, gated/dark in the coexistence window:**
   `av.Resolved.Equals` ordinal-only; `semantic_hash.go` folds `#ordinal` only (Java
   `ResolvedAccessor.equals` getOrdinal()-only, FieldValue.java:676-690). The RFC's cited anchors
   (`map_field_values.go:260-262`, `semantic_hash.go:108`) are STALE (now `ptrEqual` / an RC-hash arm).
-  Only the LAZY-node `av.Field==bv.Field` arm survives — it dies in **Slice 4** with the name model.
+  Only the LAZY-node `av.Field==bv.Field` arm survives — it dies at **full FieldValue baking (its own
+  slice), NOT Slice 4** (Graefe F3 ruling: the lazy-identity arm fires only when BOTH nodes are lazy
+  `Resolved==nil`, gated on the ~22 `NewFieldValue` sites all baking — a strictly broader axis than the
+  anchored-seed flag; deleting it with the flag commit would break equal⟹same-hash on any surviving
+  lazy node).
 - **(f) Collapsed multi-accessor FieldPath + compose rule** — `FieldPath` is the collapsed
   `[]ResolvedAccessor` list (W1); `composeFieldOverField` ported + gated both-baked; the primary
   producer is the `withChildren` rebuild-fuse (`replace.go:369-373` = Java `withNewChild`). A buried
@@ -1688,12 +1692,14 @@ the SHARED `RecordConstructorValue` type, so it — and every flag-keyed branch 
 ANY seed constructor survives, and FOUR seed producers are still live, each gated on a distinct
 prerequisite W-item.
 
-### KILLABLE IN S4 TODAY (one independent unit)
-Only the §5 dual-window differential oracle: `executor/rfc173_ordinal_join.go:oracleNameDatum` +
-globals (`executor.DisablePositionalEmission`, `values.OracleBakedNameFallback`, `SetNameModelOracle`)
-+ caller `flat_map_cursor.go:376` + the differential-harness tests. **CAUTION (my flag, not the
-map's):** the oracle is the ordinal↔name-model differential NET; while any shape is mid-flip (residual
-producers live) it may still be load-bearing. Removing it now is a FORK, not a given — Graefe to rule.
+### KILLABLE IN S4 TODAY — NOTHING (Graefe ruling)
+The §5 dual-window differential oracle (`executor/rfc173_ordinal_join.go:oracleNameDatum` + globals
+`executor.DisablePositionalEmission`, `values.OracleBakedNameFallback`, `SetNameModelOracle` + caller
+`flat_map_cursor.go:376` + the differential-harness tests) is **NOT killable today** — it is the
+ordinal↔name-model differential NET, and with four producers mid-flip it is **load-bearing until the
+LAST producer ordinalizes**. It dies IN the S4-final atomic commit, never before. (My caution was
+right; Graefe reclassified it out of "killable now.") So there is NOTHING to delete before the S4-final
+commit — every prerequisite is an ordinalization slice, not a deletion.
 
 ### SURVIVING RESIDUAL (S4 cannot delete — four live seed producers)
 1. `NewScalarSubqueryAnchoredRecord` (`value_anchored_join_record.go:121`, live at
@@ -1711,25 +1717,30 @@ Because these live, the WHOLE consumer set stays: the trio (`buildUpperResult`,
 `MergeArmHits`), the 8 flag-keyed value-layer branches, the four executor consumers, and
 `select.go:251` interning arm-1.
 
-### FORKS — Graefe's rulings needed BEFORE any deletion
-- **F1 (S4 boundary): the flag/trio deletion is ONE atomic final commit** after W4b + W5 + W4-left +
-  EXISTS + recursive-CTE ordinalize every residual producer. Are those W-items INSIDE Slice 4 (making
-  S4 a multi-step slice ending in the demolition) or PREDECESSOR slices (S4 = only the final delete)?
-  This fixes the whole remaining roadmap shape.
-- **F2 (InternsAliasAware widening splits in two):** deleting arm-1 needs all producers ordinalized;
-  deleting the default `return false` (`select.go:274`, the CTE-rename NULL-read guard) needs CTE
-  column-rename resolution ordinalized (global alias-bijection, `cascades_generator.go ~:2837/:2867`).
-  Is CTE-ordinalization in S4? Replacement = ordinal/collapsed-FieldPath resolution, certified by
-  `TestFDB_CTEChainedColumnAliases` / `TestFDB_CascadesCTEColumnAliases` returning renamed cols not NULL.
-- **F3 (RFC-vs-map DISAGREEMENT — MUST-RESOLVE): the lazy name-identity arm.** RFC §"(d)" says
-  `map_field_values.go:339` + hash twin `semantic_hash.go:138` "die in Slice 4 with the name model."
-  The map rebuts: these are gated on EVERY FieldValue being BAKED (22 lazy `NewFieldValue` sites), a
-  BROADER axis than the anchored seeds — if full baking isn't in S4, this arm SURVIVES S4. Graefe must
-  set the gate.
-- **F4 (same-name twin trap):** delete only the trio's `leftmostQOV`
-  (`value_anchored_join_record.go:192`); KEEP `leftmostQOVOfValue` (`value_correlation.go:56`, feeds
-  `MergeSeedLegsOfValue`/RFC-142). `MergeSeedLegsOfValue`/`leftmostQOVOfValue` die in W5, not the flag
-  commit.
+### FORKS — Graefe's rulings (RESOLVED; DESIGN-ACK on the boundary)
+- **F1 — RESOLVED: PREDECESSOR slices.** W4b, W5, W4-left, EXISTS, recursive-CTE are EACH their own
+  four-gate slice (each is a full ordinalization touching the executor — none rides free inside a
+  "multi-step S4"). **S4 ≡ the single atomic final commit**: delete the flag, the trio, the three seeds
+  + `NewReEnumerationAnchoredRecord`, the 8 value-layer flag branches, the four executor consumers, and
+  `select.go:251` arm-1 — nothing else. **Canonical sequence: W4b → W5 → W4-left+EXISTS+recursive-CTE →
+  S4-demolition.** Item 4 (`NewReEnumerationAnchoredRecord`) needs NO slice — it dies mechanically once
+  1–3 leave no anchored parent.
+- **F2 — RESOLVED: two axes, NOT coupled.** Deleting arm-1 (`select.go:251`) RIDES the flag commit:
+  once the producers bake, every anchored shape flows through `IsPositionalMergeRC`/`IsOrdinalJoinRV`
+  (`:262`/`:271`) which already return true — arm-1 is subsumed, safe to drop IN S4. The default
+  `return false` (`select.go:274`, CTE-rename NULL-read guard) is a **SEPARATE, LATER widening — its
+  OWN slice, NOT in S4** — gated on CTE column-rename ordinalization (`cascades_generator.go
+  ~:2837/:2867`). Keep `return false` through the demolition; widen only when
+  `TestFDB_CTEChainedColumnAliases`/`TestFDB_CascadesCTEColumnAliases` return renamed cols, not NULL.
+- **F3 — RESOLVED: the MAP is correct; the RFC "(d)" text is a DOCUMENTATION BUG (fixed below).**
+  `map_field_values.go:339` + hash twin `semantic_hash.go:138` fire only when BOTH nodes are lazy
+  (`Resolved==nil`) — gated on the ~22 `NewFieldValue` sites all baking, a strictly BROADER axis than
+  the anchored seeds. **Death gate = full FieldValue baking (its own slice), NOT S4.** The lazy arm
+  SURVIVES the demolition; deleting it early breaks equal⟹same-hash on any surviving lazy node.
+- **F4 — RESOLVED (confirmed):** delete only the trio's `leftmostQOV`
+  (`value_anchored_join_record.go:192`) with the trio; KEEP `leftmostQOVOfValue`
+  (`value_correlation.go:56`) — it feeds `MergeSeedLegsOfValue`/RFC-142 and dies in **W5**, not the
+  flag commit.
 
 ### RISK (banked from the map)
 - **WIRE: none.** The entire axis is read-side (column resolution / index selection) — no key encoding,
@@ -1742,8 +1753,11 @@ Because these live, the WHOLE consumer set stays: the trio (`buildUpperResult`,
   columns → 0-row joins. (This is the exact class the S3 shadow-delta + dispatch pins now guard.)
 
 ### Gates (process)
-Query-engine change → **Graefe design-ACK on F1–F4 BEFORE any S4 impl** (esp. F1 the boundary + F3 the
-RFC-vs-map disagreement). The immediate EXECUTABLE next-step is not a deletion at all — it is the
-lowest prerequisite producer's ordinalization (**W4b** correlated-scalar, per RFC §649-653 "S4 cannot
-land while any correlated-scalar shape still depends on `NewScalarSubqueryAnchoredRecord`"), itself a
-full four-gate slice. The demolition is the LAST step.
+Query-engine change → Graefe design-ACK on F1–F4 — **DESIGN-ACK OBTAINED** (boundary rulings folded
+above; the S4-final atomic-demolition commit stays gated on the predecessor ordinalization slices).
+The immediate EXECUTABLE next-step is not a deletion at all — it is the lowest prerequisite producer's
+ordinalization (**W4b** correlated-scalar, per RFC §649-653 "S4 cannot land while any correlated-scalar
+shape still depends on `NewScalarSubqueryAnchoredRecord`"), itself a full four-gate slice. Each
+predecessor (W4b → W5 → W4-left+EXISTS+recursive-CTE) is its own slice; then the S4 demolition; the
+CTE-rename `select.go:274` widening and the full-FieldValue-baking lazy-arm deletion are their OWN
+later slices (F2/F3). The demolition is the LAST step of the flag axis.

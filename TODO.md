@@ -165,11 +165,24 @@ validation gate.
   HEAD: Graefe ✅ (design + impl + delta), Torvalds ✅ (+ delta; nits folded), codex ✅ (caught + fixed
   a real P3 — Absorb dropped the loser's alias-aware dedup counter on `Memo.merge`, pinned by
   `TestReference_AbsorbFoldsAliasAwareDedups`), @claude ✅ ("the fourth ACK"). CI green.
-- [ ] Slice 4 retire `AnchoredJoin` (+ kill list: trio, flag, `NewAnchoredJoinRecord` /
-  `NewScalarSubqueryAnchoredRecord` seed constructors, the `InternsAliasAware` anchored arm, the lazy
-  name-identity arm; widen interning to all selects; CTE-rename execution pins certify) · [ ] Slice 5
-  closure invariant · [ ] Slice 6 extensions + ANSI headroom. **W5** (multi-source unnest) — separate
-  post-green PR.
+- **Slice 4 is a GATED DEMOLITION, not a free delete** (6-agent producer-retirement map + Graefe
+  boundary DESIGN-ACK, RFC §"Slice 4 — retire AnchoredJoin: boundary design"). After S3 the
+  `AnchoredJoin` flag axis has ZERO individually-dead symbols (the flag is a field on the SHARED RC
+  type) — undeletable while ANY of FOUR live seed producers survives. **Canonical sequence (each a full
+  four-gate slice):**
+  - [ ] **W4b — correlated-scalar ordinalization** (retire `NewScalarSubqueryAnchoredRecord`'s live
+    shapes: computed / JOIN-inner / clustered-outer). **THE IMMEDIATE NEXT SLICE.**
+  - [ ] **W5 — multi-source lateral UNNEST** (retire `buildUnnestResultValue` AnchoredJoin; also kills
+    `MergeSeedLegsOfValue`/`leftmostQOVOfValue`).
+  - [ ] **W4-left + EXISTS + recursive-CTE joins** (retire `NewAnchoredJoinRecord` via
+    `buildJoinResultValue`: LEFT/RIGHT-OUTER box, EXISTS-over-join, mixed-nesting, dup-alias,
+    recursive-CTE-enclosed).
+  - [ ] **S4 atomic demolition** (LAST): delete the flag + trio + the three seeds +
+    `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag branches + 4 executor
+    consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until now) — ONE commit.
+  - [ ] SEPARATE later slices (F2/F3): CTE-rename `select.go:274` widening (gated on CTE-column-rename
+    ordinalization); lazy name-identity arm deletion (gated on FULL FieldValue baking, NOT S4).
+- [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
 
 ## 🔖 RESUME AFTER 173 — where we pick up (do not lose this)
 
