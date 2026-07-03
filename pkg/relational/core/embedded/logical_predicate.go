@@ -6115,10 +6115,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 }
 
 // innerSourceAliases collects the UPPER source aliases a correlated scalar
-// subquery's scan/join tree binds (scans by alias-or-table, unnest AS/AT
-// aliases) — the universe that discriminates an INNER-scope projected field
-// from an OUTER-scope one (the latter is not an inner row key and must take
-// the materialized path; see the review-finding comment at the caller).
+// subquery's scan/join tree binds — the universe that discriminates an
+// INNER-scope projected field from an OUTER-scope one (the latter is not an
+// inner row key and must take the materialized path; see the review-finding
+// comment at the caller).
+//
+// This collector must be BINDER-EXACT, not merely inclusive: an
+// over-inclusion flips an outer field to inner-scoped and skips its
+// materialization (a wrong-key read). Its query-package twin
+// (outerSubtreeAliases) is deliberately MORE inclusive — there an extra entry
+// only pushes toward a decline or a skipped classification, never wrong rows.
+// The asymmetry is load-bearing; do not harmonize the two collectors.
 func innerSourceAliases(op logical.LogicalOperator) map[string]struct{} {
 	out := map[string]struct{}{}
 	var walk func(logical.LogicalOperator)

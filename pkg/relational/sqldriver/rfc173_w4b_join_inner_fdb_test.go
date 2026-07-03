@@ -136,4 +136,18 @@ func TestFDB_RFC173W4b_JoinInnerScalar(t *testing.T) {
 	if !qty.Valid || qty.Int64 != 3 {
 		t.Errorf("ambiguous parenthesized join-inner scalar = %d (valid=%v), want 3 (orders.id — a bared key reads the wrong leg)", qty.Int64, qty.Valid)
 	}
+
+	// (g) OUTER-scope parenthesized column COMBINED with a join-inner: the
+	// scope check must route to materialization BEFORE the join-qualification
+	// branch (a wrong check ordering would key the outer c.name as a
+	// nonexistent inner C.NAME). bob's subquery matches exactly one joined
+	// row, so the materialized outer value flows once.
+	var nm sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT (SELECT (c.name) FROM orders o JOIN items i ON i.order_id = o.id "+
+		"WHERE o.customer_id = c.id) FROM customers c WHERE c.id = 2").Scan(&nm); err != nil {
+		t.Fatalf("outer-scope parenthesized column through join-inner: %v", err)
+	}
+	if !nm.Valid || nm.String != "bob" {
+		t.Errorf("outer-scope parenthesized join-inner scalar = %q (valid=%v), want bob (the OUTER c.name, materialized)", nm.String, nm.Valid)
+	}
 }
