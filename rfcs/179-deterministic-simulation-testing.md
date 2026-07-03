@@ -30,10 +30,16 @@ separate deliverable (§1a) and out of scope for this RFC.
   minted against plan A resumed against plan B) needs a cross-request SQL continuation-resume hook the
   engine does not yet expose; a *live* SimFDB-vs-libfdb_c fuzz (the parity + live-vs-pure-Go differential
   already pin the semantics) would add the cgo bench harness as a third arm.
-**Review:** Torvalds (design) **ACK**, FDB C++ client dev (SSI/versionstamp/error-code fidelity vs
-7.3.75) **ACK**, Graefe (advisory, query-engine touchpoints) **ACK** — their findings are folded in
-(the `SetVersionstampedKey` server-side write-conflict-range re-add in Tier 1 item 1; LRU-eviction as
-the continuation-replay lever; versionstamp anatomy). @claude + codex review on the PR.
+**Review:** the RFC-design review ACK'd (Torvalds, FDB C++ client dev, Graefe advisory); their findings
+folded in (`SetVersionstampedKey` server-side WCR re-add, LRU-eviction continuation lever, versionstamp
+anatomy). The *implementation* review then caught — and drove fixes for — two real **under-conflict**
+SSI bugs the initially-rigged tests missed: GetRange under-conflicting on empty/gap reads (fixed by
+porting the client's `rangeConflictExtent`) and GetKey inverting its conflict range for backward
+selectors (fixed via `addGetKeyConflictRange`); the conflict-outcome + live differential tests are now
+adversarial (sparse keyspace, gap/empty probes, GetKey selectors — verified red-first). Both
+implementation reviewers **re-reviewed the fix and ACK'd** (Torvalds confirmed the new tests go red on
+the pre-fix code; the FDB C++ dev confirmed the conflict-range ports are byte-identical to the
+libfdb_c-validated client). @claude + codex review on the PR.
 **Scope decision (see §1a):** this RFC is **Track A** — *real* DST for the record + relational layers
 (shared Tier 0 + SimFDB + workload/replay). The **client-transport** work (**Track B** — simulation &
 fault injection, honestly *not* full DST) is documented here for context (Tier 3 + the alternatives
