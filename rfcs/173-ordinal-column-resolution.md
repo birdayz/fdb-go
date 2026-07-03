@@ -1849,11 +1849,16 @@ column is addressed by ORDINAL (`pullUpResultColumns` → `FieldValue.ofOrdinalN
      `len(sq.projCols)==1`) — it sets `scalarCol` to the projection TEXT (`UPPER(ENAME)` → synthesized
      name) but adds NO inner `LogicalProject` computing it; `innerOp` stays the raw scan+filter. So
      shape 3 must ADD an inner projection whose single output IS the computed expression (ordinal-0),
-     then the ordinal seed's inner leg reads `ofOrdinal(QOV(inner),0)`. **VERIFY FIRST:** the existing
-     `TestRFC173W4b_ScalarSeed_ComputedGate` only asserts the GATE decision (`innerScalarIsRowColumn`
-     false), NOT end-to-end rows — write an FDB test proving a computed correlated scalar returns
-     correct rows on the CURRENT (name-model) path before flipping it, so the ordinal flip is a proven
-     no-op on results (the impl-correction-2 concern is real: confirm where the computation lands today).
+     then the ordinal seed's inner leg reads `ofOrdinal(QOV(inner),0)`.
+   - **⚠ FINDING (FDB-probed on master): computed correlated scalars are SILENTLY BROKEN today.**
+     `SELECT (SELECT UPPER(c2.name) FROM customers c2 WHERE c2.id = c.id) FROM customers c WHERE c.id=1`
+     returns **NULL**, not `ALICE` — the name-model path never computes the scalar (the synthesized name
+     is not an inner-row key; the computation lands nowhere). So **shape 3 is a SILENT-NULL BUGFIX**, not
+     merely an ordinal flip (this validates Graefe's "not just drop the guard" ruling and quantifies it).
+     The shape-3 impl relocates the computation into the inner's `resultValue` so BOTH models resolve it,
+     and ships the now-PASSING `…=ALICE` FDB test (red-first: NULL before the fix). The existing
+     `ComputedGate` unit test only pinned the GATE decision, never end-to-end rows — the classic
+     dimensional gap that let the silent-NULL ship green.
 2. **Shape 1 (clustered outer).** Gate on `ordinalWedgeGateDecide(outer).Gated`; bake outer projections
    through `gatedJoinLegTypes` (`leafOffset + FieldIndex`). White-box + FDB pin.
 3. **Shape 2 (JOIN-inner).** Fresh unique id for `innerQ` threaded through the two mint sites + every
