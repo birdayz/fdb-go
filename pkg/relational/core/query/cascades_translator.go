@@ -3184,11 +3184,26 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	if outerCols == nil || outerAlias == "" || scalarCol == "" {
 		return nil
 	}
-	resultValue := values.NewScalarSubqueryAnchoredRecord(
-		values.AnchoredJoinLeg{Alias: values.NamedCorrelationIdentifier(outerAlias), Columns: outerCols},
-		values.NamedCorrelationIdentifier(csq.InnerAlias),
-		scalarCol,
-	)
+	// RFC-173 W4b: ordinalize the 2-leg seed when the OUTER is a SINGLE SOURCE
+	// (clusterArity==1) AND the INNER subquery contains no JOIN. A multi-table
+	// outer cluster stays name-model — ordinalizing a flattened cluster erases
+	// buried source names. A JOIN-inner also stays name-model: its first table
+	// shares csq.InnerAlias, so the inner ordinal join's typed QOV(InnerAlias)
+	// would collide with the seed's typed inner leg (widenLegTypesFromPlan
+	// DIVERGENT-baked-types — see innerContainsJoin). The name model is deleted in
+	// S4, so this ordinal seed is what keeps the single-source correlated-scalar
+	// extension alive. A decline (nil) falls back to the name model.
+	var resultValue values.Value
+	if t.clusterArity(p.Input) == 1 && !innerContainsJoin(csq.InnerPlan) {
+		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, p.Input, csq.InnerAlias, scalarCol)
+	}
+	if resultValue == nil {
+		resultValue = values.NewScalarSubqueryAnchoredRecord(
+			values.AnchoredJoinLeg{Alias: values.NamedCorrelationIdentifier(outerAlias), Columns: outerCols},
+			values.NamedCorrelationIdentifier(csq.InnerAlias),
+			scalarCol,
+		)
+	}
 
 	joinSelect := expressions.NewSelectExpressionWithJoinType(
 		resultValue,

@@ -1248,3 +1248,25 @@ Graefe design-ACKed the ordinal seed. Framing / translator altitude / **outer-on
    independently revertable); the ordinal seed **stacks on top**. Order: (1) guard PR → (2) seed
    PR stacked on it. The guard needs no Graefe DESIGN-ACK (no architecture content) but still runs
    the four-gate on impl.
+
+### W4b impl correction: the INNER also needs a JOIN gate (outer-only ruling amended)
+The "outer-only gate; the inner needs no gate" ruling was empirically incomplete. Graefe's
+premise — "the inner contributes one positional scalar regardless of its internal structure" — is
+true of the SEED SHAPE (the inner is one field), but the executor's type-consistency machinery
+(`widenLegTypesFromPlan`) keys on the leg ALIAS, not the seed field. A JOIN-inner
+(`(SELECT COUNT(*) FROM orders o JOIN items i … WHERE o.customer_id = c.id)`) names its FIRST table
+under the SAME alias `csq.InnerAlias` carries (`sq.tableAlias` = "o"), and that inner ordinal join
+bakes a typed `QOV(O, 4-field)` leg. The ordinal seed would ALSO type the inner scalar leg as
+`QOV(O, 1-field)` — two DIVERGENT typed QOVs for one alias, which `widenLegTypesFromPlan` rejects
+("leg O carries DIVERGENT baked types (1 vs 4 fields)"). The name model dodged it by referencing
+the inner through an UNTYPED QOV. `clusterArity` cannot detect this — it returns 1 for
+`LogicalAggregate` without recursing into the join beneath a `COUNT(*)`/`SUM(...)`.
+
+**Correction:** ordinalize only when `clusterArity(outer)==1` AND `!innerContainsJoin(csq.InnerPlan)`
+(a recursive join walk of the inner). A join-inner stays name-model (correct today; the S4
+name-model deletion must resolve the InnerAlias/inner-leg aliasing before it can ordinalize —
+tracked as a W4b follow-up, not this item). Caught by three regressed FDB pins
+(`aggregate_with_join`, `group_by_with_join_sum`, `group_by_unqualified_key_in_join`) that panicked
+before the gate; pinned white-box by `TestRFC173W4b_ScalarSeed_InnerJoinGate`. Single-source
+inners (incl. single-table aggregates) still ordinalize (`TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed`).
+Re-submitted for Graefe design-ACK.
