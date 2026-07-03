@@ -161,6 +161,13 @@ func (r *Reference) Absorb(loser *Reference) {
 			r.explState = explorationInProgress
 		}
 	}
+	// Fold the loser's alias-aware dedup shadow into the survivor. The
+	// re-insertions above count only NEW dedups against the survivor's
+	// members; the loser's HISTORICAL dedups (members it already suppressed —
+	// never appended, so not reinserted here) are a disjoint quantity that
+	// would otherwise be discarded when AliasAwareDedups canonicalizes to the
+	// survivor, undercounting the shadow-delta metric after a Memo.merge.
+	r.aliasAwareDedups += loser.aliasAwareDedups
 	r.correlatedToCache = nil
 	loser.forwardedTo = r
 }

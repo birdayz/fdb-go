@@ -71,6 +71,53 @@ func TestReference_AbsorbDedupesEqualMembers(t *testing.T) {
 	}
 }
 
+// posMergeSelect builds a POSITIONAL merge select (IsPositionalMergeRC result
+// value: `_0`/`_1` over bare QOVs) — one of the shapes that opts into the
+// alias-aware interning tier. Two calls with different aliases are MemoEqual
+// (equal up to a consistent quantifier-alias renaming), so inserting the second
+// into a Reference holding the first records an alias-aware dedup.
+func posMergeSelect(a1, a2 string) *SelectExpression {
+	q1 := NamedForEachQuantifier(values.NamedCorrelationIdentifier(a1), InitialOf(scanFixture("T")))
+	q2 := NamedForEachQuantifier(values.NamedCorrelationIdentifier(a2), InitialOf(scanFixture("T")))
+	rv := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "_0", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a1))},
+		values.RecordConstructorField{Name: "_1", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a2))},
+	)
+	return NewSelectExpressionWithAliases(rv, []Quantifier{q1, q2}, nil, []string{a1, a2})
+}
+
+// TestReference_AbsorbFoldsAliasAwareDedups is the RFC-173 Slice-3 regression for
+// the shadow-delta metric under reference merges (review finding): Absorb reinserts
+// only the loser's KEPT members, so the loser's HISTORICAL alias-aware dedups
+// would be discarded when AliasAwareDedups canonicalizes to the survivor —
+// undercounting the shadow. Absorb must FOLD the loser's counter into the survivor.
+func TestReference_AbsorbFoldsAliasAwareDedups(t *testing.T) {
+	t.Parallel()
+
+	// Record a real alias-aware dedup on the loser: the second alias-variant
+	// merge select is MemoEqual to the first, so it collapses.
+	loser := InitialOf(posMergeSelect("qa", "qb"))
+	if loser.Insert(posMergeSelect("qc", "qd")) {
+		t.Fatal("precondition: the alias-variant merge select must dedup (MemoEqual) — test vacuous otherwise")
+	}
+	loserDedups := loser.AliasAwareDedups()
+	if loserDedups == 0 {
+		t.Fatal("precondition: the loser must have recorded an alias-aware dedup")
+	}
+
+	// Survivor holds a structurally DIFFERENT member (a plain scan), so absorbing
+	// the loser's kept merge-select member adds no NEW dedup — isolating the fold.
+	survivor := InitialOf(scanFixture("Z"))
+	before := survivor.AliasAwareDedups()
+
+	survivor.Absorb(loser)
+
+	if got := survivor.AliasAwareDedups(); got != before+loserDedups {
+		t.Errorf("Absorb dropped alias-aware dedups: survivor now %d, want %d (before %d + folded loser %d)",
+			got, before+loserDedups, before, loserDedups)
+	}
+}
+
 func TestReference_CanonicalPathCompression(t *testing.T) {
 	t.Parallel()
 	// Build a forwarding chain c -> b -> a by absorbing in sequence on
