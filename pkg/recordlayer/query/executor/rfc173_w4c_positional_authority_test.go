@@ -202,3 +202,80 @@ func TestRFC173W4c_PositionalAuthority_NullElement(t *testing.T) {
 		t.Fatalf("null element slot = %#v, want nil (NULL)", got.Positional.Slots[1])
 	}
 }
+
+// TestRFC173W4c_OracleOrdinality pins the §5 NAME-MODEL ORACLE (dualwindow dual)
+// for a WITH-ORDINALITY unnest: the ordinal seed's baked element/ordinal fields
+// are named by the AS/AT aliases (V/O), but the oracle reads them BY NAME against
+// the Explode's internal `_0`/`_1` Datum. The oracle path must rebind the
+// ordinality inner under the AS/AT names (producer context) so the reads resolve
+// — matching the pre-W4c name model. Without the rebind, V/O read missing and the
+// oracle returned wrong rows (a latent dualwindow gap). NOT parallel: it flips the
+// global oracle (Go runs non-parallel tests before parallel ones — isolated).
+func TestRFC173W4c_OracleOrdinality(t *testing.T) {
+	outerType := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	outerCorr := values.NamedCorrelationIdentifier("T")
+	innerCorr := values.NamedCorrelationIdentifier("X")
+	outerQOV := values.NewQuantifiedObjectValueOfType(outerCorr, outerType)
+	o0, err := values.NewFieldValueOfOrdinal(outerQOV, 0)
+	if err != nil {
+		t.Fatalf("bake ID: %v", err)
+	}
+	// The WITH-ORDINALITY inner leg type is named by the AS/AT aliases.
+	innerType := values.NewRecordType("", true, []values.Field{
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "O", FieldType: values.NotNullInt, Ordinal: 1},
+	})
+	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
+	elemFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0) // Field = "V"
+	if err != nil {
+		t.Fatalf("bake V: %v", err)
+	}
+	ordFV, err := values.NewFieldValueOfOrdinal(innerQOV, 1) // Field = "O"
+	if err != nil {
+		t.Fatalf("bake O: %v", err)
+	}
+	seed := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "ID", Value: o0},
+		values.RecordConstructorField{Name: "V", Value: elemFV},
+		values.RecordConstructorField{Name: "O", Value: ordFV},
+	)
+	c, err := newFlatMapCursor(
+		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
+		outerCorr, innerCorr, seed, false, recordlayer.ExecuteProperties{},
+	)
+	if err != nil {
+		t.Fatalf("newFlatMapCursor: %v", err)
+	}
+	defer c.Close()
+	// Production newFlatMapCursor marks this from the inner Explode plan; here the
+	// inner plan is nil, so mark the ordinality leg directly.
+	if c.birth.OrdinalityLegs == nil {
+		c.birth.OrdinalityLegs = map[values.CorrelationIdentifier]struct{}{}
+	}
+	c.birth.OrdinalityLegs[innerCorr] = struct{}{}
+
+	SetNameModelOracle(true)
+	defer SetNameModelOracle(false)
+
+	outerRow := QueryResult{Datum: map[string]any{"ID": int64(7)}}
+	innerRow := QueryResult{Datum: map[string]any{
+		values.OrdinalFieldName(0): int64(101), // element
+		values.OrdinalFieldName(1): int64(1),   // 1-based ordinal
+	}}
+	got, err := c.computeResult(outerRow, innerRow)
+	if err != nil {
+		t.Fatalf("computeResult (oracle): %v", err)
+	}
+	m, ok := got.Datum.(map[string]any)
+	if !ok {
+		t.Fatalf("oracle Datum = %T, want map", got.Datum)
+	}
+	if m["V"] != int64(101) {
+		t.Fatalf("oracle element V = %#v, want 101 — the oracle must rebind the ordinality inner under the AS/AT names (else V reads missing against the _0/_1 Explode Datum)", m["V"])
+	}
+	if m["O"] != int64(1) {
+		t.Fatalf("oracle ordinal O = %#v, want 1", m["O"])
+	}
+}

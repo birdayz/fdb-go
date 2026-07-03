@@ -1499,10 +1499,16 @@ from it by shape alone. **Ruling: disambiguate by PRODUCER CONTEXT.** `newFlatMa
 inner leg as an ordinality leg iff its inner plan IS a WITH-ORDINALITY Explode
 (`innerIsOrdinalityExplode` — the FlatMap knows its producer), and the birth binds a marked leg
 STRICTLY POSITIONALLY (`OrdinalityLegs`: slot i = Datum[`_i`]); `adaptLegPositional` reverts to pure
-name-match, so a name-model leg aliased `_0`/`_1` binds correctly by name. Pins:
+name-match, so a name-model leg aliased `_0`/`_1` binds correctly by name. The **§5 name-model
+oracle** path (`DisablePositionalEmission`, test-only, bypasses `bindLeg`) needs the same producer
+context: `oracleNameDatum` reads the baked element/ordinal fields BY NAME (`OracleBakedNameFallback`),
+so the FlatMap rebinds the ordinality inner under its AS/AT alias names (positionally, `_i` → field-i
+name) before the oracle evaluates — else the oracle read `V`/`O` as missing against the `_0`/`_1`
+Explode Datum and returned wrong rows (a latent dualwindow gap). Pins:
 `TestRFC173W4c_OrdinalAliasCollision` (the marked ordinality leg binds positionally for `AS "_1"`,
-`AS "_1" AT "_0"`, AND a shape-identical name-model leg binds by name) + e2e
-`SELECT "_1" … AS "_1" AT "O"`.
+`AS "_1" AT "_0"`, AND a shape-identical name-model leg binds by name); `TestRFC173W4c_OracleOrdinality`
+(the oracle returns the element/ordinal, not missing — red without the rebind); e2e
+`SELECT "_1" … AS "_1" AT "O"` + the WHERE-on-ordinal composition.
 
 ### Gates (process)
 Query-engine change → Graefe design-ACK on THIS ruling **before any impl** — **DONE** (DESIGN-ACK on

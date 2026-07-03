@@ -333,9 +333,31 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// alias read the whole element. A row-shaped inner (a scan/EXISTS
 	// subquery) binds its map[string]any unchanged — FieldValue.evaluateCorrelated
 	// reads the map by key, QOV(inner) reads the whole map.
+	innerBinding := innerRow.Datum
+	if c.birth.enabled() {
+		// §5 NAME-MODEL ORACLE only (production positional returned above): a
+		// WITH-ORDINALITY Explode inner is keyed by the internal `_0`/`_1`
+		// positions, but the ordinal seed's baked element/ordinal fields are named
+		// by the AS/AT aliases and the oracle reads them BY NAME (oracleNameDatum
+		// → OracleBakedNameFallback). Rebind the ordinality inner under those alias
+		// names — positionally (`_i` → the leg type's field-i name) — so the name
+		// reads resolve to the element/ordinal, matching the pre-W4c name model
+		// (whose element/ordinal fields were named `_0`/`_1` and read directly).
+		if _, isOrd := c.birth.OrdinalityLegs[c.innerAlias]; isOrd {
+			if m, ok := innerRow.Datum.(map[string]any); ok {
+				if lt := c.birth.legType(c.innerAlias); lt != nil {
+					renamed := make(map[string]any, len(lt.Fields))
+					for i, fld := range lt.Fields {
+						renamed[fld.Name] = m[values.OrdinalFieldName(i)]
+					}
+					innerBinding = renamed
+				}
+			}
+		}
+	}
 	nestedCtx := c.evalCtx.
 		WithBinding(c.outerAlias, outerDatum).
-		WithBinding(c.innerAlias, innerRow.Datum)
+		WithBinding(c.innerAlias, innerBinding)
 
 	// Evaluate against a RowEvalContext whose Datum is the outer row, so a BARE
 	// outer FieldValue (e.g. a projected `ID` with no QOV qualifier — RFC-141
