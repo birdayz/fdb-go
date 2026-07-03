@@ -223,6 +223,10 @@ func TestRFC173W4b_ClusteredCarrierEnumeration(t *testing.T) {
 		{"Limit.LimitValue", &logical.LogicalLimit{Input: scan("Order", "SQ"), Limit: -1, LimitValue: legRef()}},
 		{"Distinct(passthrough)", logical.NewDistinct(
 			logical.NewFilterWithPredicate(scan("Order", "SQ"), legPred(), ""))},
+		{"Join.OnPredicate", logical.NewJoinWithPredicate(
+			scan("Order", "SQ"), scan("TypedRecord", "sq2"), logical.JoinInner, legPred())},
+		{"Join(children recursed)", inner(
+			logical.NewFilterWithPredicate(scan("Order", "SQ"), legPred(), ""), scan("TypedRecord", "sq2"))},
 	}
 	for _, c := range enumerated {
 		refs, exhaustive := collectClusterOuterRefs(c.op, outer, "SQ")
@@ -239,7 +243,6 @@ func TestRFC173W4b_ClusteredCarrierEnumeration(t *testing.T) {
 		kind string
 		op   logical.LogicalOperator
 	}{
-		{"Join", inner(scan("Order", "SQ"), scan("Customer", "c2"))},
 		{"Union", logical.NewUnion([]logical.LogicalOperator{scan("Order", "SQ"), scan("Order", "SQ2")}, false)},
 		{"Filter+ExistsRider", &logical.LogicalFilter{
 			Input:     scan("Order", "SQ"),
@@ -268,7 +271,7 @@ func TestRFC173W4b_ClusteredSeed_Shape(t *testing.T) {
 	if pu == nil {
 		t.Fatal("pull-up spine")
 	}
-	seed := clusteredOuterOrdinalSeed(pu, "SQ", "ORDER_ID")
+	seed := clusteredOuterOrdinalSeed(pu, values.UniqueCorrelationIdentifier(), "SQ", "ORDER_ID")
 	if seed == nil {
 		t.Fatal("gated cluster must seed")
 	}
@@ -380,5 +383,56 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 	declined := clusteredProject(left, clusteredCSQ("o", "ORDER_ID"))
 	if expr3 := tr3.translateProjectWithCorrelatedScalar(declined); expr3 != nil {
 		t.Fatal("ungated outer + non-rightmost correlation must DECLINE (the name model silently NULLs it)")
+	}
+}
+
+// TestRFC173W4b_JoinInnerDispatch_Ordinal pins shape 2 end-to-end at the
+// translator: a JOIN-inner correlated scalar over a single-source outer takes
+// the ORDINAL seed (the former innerContainsJoin gate is gone), and the inner
+// quantifier carries a fresh unique correlation — never the SQL alias whose
+// typed-QOV collision motivated the gate.
+func TestRFC173W4b_JoinInnerDispatch_Ordinal(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	joinInner := logical.NewFilterWithPredicate(
+		logical.NewJoinWithPredicate(scan("Order", "SQ"), scan("TypedRecord", "i"), logical.JoinInner,
+			corrEq("I", "ID", "SQ", "NEXT_ID")),
+		corrEq("SQ", "ORDER_ID", "c", "CUSTOMER_ID"), "")
+	csq := logical.CorrelatedScalarSubquery{
+		Alias:        values.UniqueCorrelationIdentifier(),
+		InnerPlan:    joinInner,
+		InnerAlias:   "SQ",
+		ScalarCol:    "ORDER_ID",
+		StrictSingle: true,
+	}
+	p := &logical.LogicalProject{
+		Input:                      scan("Customer", "c"),
+		Projections:                []string{"c.name", "(subq)"},
+		Aliases:                    []string{"", ""},
+		ProjectedValues:            []values.Value{nil, &values.ScalarSubqueryValue{Alias: csq.Alias}},
+		IsComputed:                 []bool{false, true},
+		CorrelatedScalarSubqueries: []logical.CorrelatedScalarSubquery{csq},
+	}
+	expr := tr.translateProjectWithCorrelatedScalar(p)
+	if expr == nil {
+		t.Fatal("single-source outer + JOIN-inner must translate")
+	}
+	proj := expr.(*expressions.LogicalProjectionExpression)
+	sel := proj.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
+	rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue)
+	if !isRC || rc.AnchoredJoin {
+		t.Fatalf("JOIN-inner seeded %T (anchored=%v), want the ORDINAL seed — the join-inner gate must be gone", sel.GetResultValue(), isRC && rc.AnchoredJoin)
+	}
+	values.AssertOrdinalJoinSeed(rc)
+	innerQCorr := sel.GetQuantifiers()[1].GetAlias()
+	if innerQCorr.Name() == "SQ" || !strings.HasPrefix(innerQCorr.Name(), "q$") {
+		t.Fatalf("inner quantifier correlation = %q, want a fresh unique id (q$N), never the SQL alias (the widenLegTypesFromPlan collision)", innerQCorr.Name())
+	}
+	// The seed's inner leg must be keyed by the SAME fresh id (quantifier and
+	// leg reference must agree for the executor's binding).
+	lastQOV := rc.Fields[len(rc.Fields)-1].Value.(*values.FieldValue).Child.(*values.QuantifiedObjectValue)
+	if lastQOV.Correlation != innerQCorr {
+		t.Fatalf("seed inner leg keyed %s but the quantifier carries %s — binding mismatch", lastQOV.Correlation, innerQCorr)
 	}
 }

@@ -33,7 +33,19 @@ import (
 // leg is untranslatable. The AssertOrdinalJoinSeed on the constructed output is
 // the executor-contract tripwire (distinct from the input declines): past the
 // shape it can only trip on a code bug, never on declinable input.
-func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerAlias, scalarCol string) values.Value {
+//
+// innerCorr is the FRESH unique correlation id the inner quantifier carries
+// (W4b shape 2, the W2 unique-ids decouple — Java mints a globally-unique
+// CorrelationIdentifier per quantifier, Quantifier.java:175/842): the seed's
+// typed 1-field inner leg is keyed by it, NEVER by the SQL alias. A JOIN-inner
+// names its first table under the same SQL alias csq.InnerAlias carries, and
+// its own ordinal join types QOV(InnerAlias, N-field) during planning — keying
+// the seed leg on the SQL alias collided the two at the executor's
+// widenLegTypesFromPlan (DIVERGENT baked types). With the unique id the two
+// correlations are distinct and JOIN-inners ordinalize. The RC field NAME
+// stays <innerAlias>.<scalarCol> — the name-compat plumbing the projection
+// reads (replaceScalarSubqueryRef) — only the correlation key is decoupled.
+func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string) values.Value {
 	outerType := t.ordinalLegType(outerOp)
 	if outerType == nil || len(outerType.Fields) == 0 {
 		return nil // decline → name-model fallback
@@ -60,7 +72,7 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	innerType := &values.RecordType{Fields: []values.Field{
 		{Name: scalarCol, FieldType: values.WithNullability(values.UnknownType, true), Ordinal: 0},
 	}}
-	innerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(innerAlias), innerType)
+	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
 	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
 	if err != nil {
 		return nil // decline
@@ -75,33 +87,15 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	return rc
 }
 
-// innerContainsJoin reports whether a correlated scalar subquery's inner plan
-// contains a JOIN at any depth. This is one INNER gate the seed needs, and it
-// corrects the original W4b "inner needs no gate" ruling. A join-inner names its
-// FIRST table under the SAME alias csq.InnerAlias carries (sq.tableAlias), and
-// that inner join ordinalizes into a typed QOV(InnerAlias, N-field) leg. The
-// ordinal seed would ALSO type the inner scalar leg as QOV(InnerAlias, 1-field)
-// — two divergent typed QOVs for one alias, which the executor's
-// widenLegTypesFromPlan type-consistency check rejects ("leg X carries DIVERGENT
-// baked types"). The name model dodges it by referencing the inner through an
-// UNTYPED QOV. clusterArity cannot see this: it returns 1 for LogicalAggregate
-// without recursing into the join beneath a COUNT(*)/SUM(...). So a join-inner
-// stays name-model; the seed field-structure argument was sound, but the
-// type-consistency machinery keys on the shared alias, not the seed field.
-func innerContainsJoin(op logical.LogicalOperator) bool {
-	if op == nil {
-		return false
-	}
-	if _, ok := op.(*logical.LogicalJoin); ok {
-		return true
-	}
-	for _, c := range op.Children() {
-		if innerContainsJoin(c) {
-			return true
-		}
-	}
-	return false
-}
+// (RFC-173 W4b shape 2) The former innerContainsJoin gate is GONE with its
+// premise: it declined JOIN-inners because the seed's inner leg was keyed by
+// the SQL alias csq.InnerAlias — the same alias the join-inner's FIRST table
+// carries — and the two typed QOVs (1-field seed leg vs N-field internal join
+// leg) collided at the executor's widenLegTypesFromPlan ("DIVERGENT baked
+// types"). The inner leg is now keyed by a FRESH unique correlation id (the W2
+// unique-ids decouple; Java mints a unique CorrelationIdentifier per
+// quantifier), so the collision is structurally impossible and JOIN-inners
+// ordinalize like any other inner shape.
 
 // (RFC-173 W4b shape 3) The former innerScalarIsRowColumn / innerHasAggregate
 // gate is GONE: a COMPUTED scalar is now MATERIALIZED as the inner subquery's
