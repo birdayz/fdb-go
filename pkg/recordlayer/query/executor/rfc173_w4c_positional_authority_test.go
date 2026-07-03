@@ -85,6 +85,37 @@ func TestRFC173W4c_PositionalAuthority_ScalarElement(t *testing.T) {
 	}
 }
 
+// TestRFC173W4c_OrdinalAliasCollision pins the ordinal-alias-collision bug: a WITH-ORDINALITY
+// unnest whose AS/AT alias SPELLS an internal OrdinalFieldName (`FROM t, t.arr
+// AS "_1" AT "O"`) must still bind the element to slot 0 and the ordinal to slot
+// 1 — the ordinality Datum ({_0:element, _1:ordinal}) is bound STRICTLY
+// POSITIONALLY, so the user alias "_1" naming slot 0 does NOT read the internal
+// `_1` (the ordinal). Before the fix, adaptLegPositional's name-match consumed
+// m["_1"] for the "_1"-named slot 0 and `SELECT "_1"` returned the ordinal.
+func TestRFC173W4c_OrdinalAliasCollision(t *testing.T) {
+	// The inner leg type is named by the user aliases: slot 0 = AS alias "_1"
+	// (the element), slot 1 = AT alias "O" (the ordinal). The Explode Datum keys
+	// are the INTERNAL _0/_1, which must map positionally.
+	legType := values.NewRecordType("", true, []values.Field{
+		{Name: "_1", FieldType: values.NotNullLong, Ordinal: 0}, // AS alias collides with internal _1
+		{Name: "O", FieldType: values.NotNullInt, Ordinal: 1},
+	})
+	datum := map[string]any{
+		values.OrdinalFieldName(0): int64(101), // element
+		values.OrdinalFieldName(1): int64(1),   // 1-based ordinal
+	}
+	row, err := adaptLegPositional(QueryResult{Datum: datum}, legType)
+	if err != nil {
+		t.Fatalf("adaptLegPositional: %v", err)
+	}
+	if got, _ := row.Get(0); got != int64(101) {
+		t.Fatalf("slot 0 (AS alias \"_1\", the element) = %#v, want int64(101) — a user alias spelling _1 must not read the internal ordinal key", got)
+	}
+	if got, _ := row.Get(1); got != int64(1) {
+		t.Fatalf("slot 1 (AT alias O, the ordinal) = %#v, want int64(1)", got)
+	}
+}
+
 // TestRFC173W4c_PositionalAuthority_NullElement pins the NULL element (an array
 // containing a NULL, or the null-leg): a nil Datum raw-binds to nil, so the
 // element slot is NULL — not an empty row, not a panic.

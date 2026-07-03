@@ -533,21 +533,25 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 		return row, nil
 	}
 	if m, isMap := qr.Datum.(map[string]any); isMap {
+		// RFC-142 W4c: a WITH-ORDINALITY Explode flows a PURE ordinality record
+		// keyed by OrdinalFieldName (`_0`..`_(n-1)` — element then 1-based ordinal)
+		// while the unnest leg type is named by the AS/AT ALIASES (the columns'
+		// OUTPUT names). Bind such a record STRICTLY POSITIONALLY (slot i = m[_i]),
+		// never by the leg field NAME: the name is a user alias that may itself
+		// spell `_0`/`_1` (`FROM t, t.arr AS "_1" AT "O"`), and a name lookup would
+		// then read the WRONG internal key. A name-model leg's Datum is
+		// column-name-keyed, not pure-ordinal, so it takes the name path below —
+		// even a leg with a column literally named `_0` carries other named keys,
+		// so isPureOrdinalRecord's exact-coverage test excludes it.
+		if isPureOrdinalRecord(m, len(legType.Fields)) {
+			for i := range legType.Fields {
+				row.Slots[i] = m[values.OrdinalFieldName(i)]
+			}
+			return row, nil
+		}
 		matched := 0
 		for i, f := range legType.Fields {
 			if v, present := m[f.Name]; present {
-				row.Slots[i] = v
-				matched++
-				continue
-			}
-			// RFC-142 W4c: a WITH-ORDINALITY Explode flows an ordinality record
-			// keyed by OrdinalFieldName (`_0`,`_1`) while the unnest leg type is
-			// named by the AS/AT aliases (the columns' OUTPUT names). When a leg
-			// field's NAME is absent from the Datum, fall back to its ordinal key —
-			// a positional bind unambiguous for an ordinal-named record that never
-			// fires for a normal name-model leg (whose field names ARE its Datum
-			// keys, so the name match above already took slot i).
-			if v, present := m[values.OrdinalFieldName(i)]; present {
 				row.Slots[i] = v
 				matched++
 			}
@@ -557,6 +561,26 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 		}
 	}
 	return row, nil
+}
+
+// isPureOrdinalRecord reports whether a Datum map is EXACTLY an ordinality
+// record: n keys, one per OrdinalFieldName(0..n-1). The WITH-ORDINALITY Explode
+// flows this shape ({_0:element, _1:ordinal}); the S3 positional-merge leg also
+// matches (its `_i` keys ARE its type). A name-model leg's Datum is
+// column-name-keyed, so it does NOT match — even a leg with a column literally
+// named `_0` carries other named keys, so the key count / full `_i` coverage
+// differ. When true, adaptLegPositional binds by ORDINAL POSITION, so a user
+// AS/AT alias that spells `_0`/`_1` cannot mis-route the internal key.
+func isPureOrdinalRecord(m map[string]any, n int) bool {
+	if n == 0 || len(m) != n {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		if _, ok := m[values.OrdinalFieldName(i)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // positionalMatchesLegType reports whether a leg's pre-existing positional
@@ -1030,6 +1054,10 @@ func (b *ordinalJoinBirth) evaluateBound(bindings values.CorrelationBinder) (*Po
 // W3a-2 structural-perf catch). A nil row IS the deliberately-NULL leg
 // (LEFT/FULL padding): (nil, true), contract ruling #3. Non-leg correlations
 // delegate to base.
+//
+// No RAW-leg arm (unlike birthLegBinder): a raw bare-QOV-over-non-record leg is
+// the W4c lateral-unnest element, which is ALWAYS a FlatMap seed — the NLJ path
+// never carries one, so twoLegBinder's OrdinalRow-only legs are complete for it.
 type twoLegBinder struct {
 	outerID, innerID values.CorrelationIdentifier
 	outer, inner     values.OrdinalRow

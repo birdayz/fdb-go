@@ -516,6 +516,18 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
+	// Ordinal-alias collision: a user AS/AT alias that SPELLS an internal OrdinalFieldName
+	// (`AS "_1"`, `AT "_0"`) must not collide with the Explode's internal _0/_1
+	// keys — the element must still bind to the AS alias and the ordinal to the
+	// AT alias. `SELECT "_1"` (the element) must return the array VALUE, not the
+	// ordinal (regression: the leg adapter's name match consumed m["_1"] = the
+	// ordinal for the "_1"-named element slot).
+	t.Run("ordinal-spelled AS/AT aliases bind positionally", func(t *testing.T) {
+		assertRows(t, `SELECT "_1", "O" FROM T1, T1."ARR1" AS "_1" AT "O"`, []string{
+			"O=1|_1=101", "O=1|_1=201", "O=2|_1=202", "O=3|_1=203",
+		})
+	})
+
 	t.Run("AT only no AS", func(t *testing.T) {
 		plan := assertRows(t, `SELECT "ID", "AT" FROM T1, T1."ARR1" AT "AT"`, []string{
 			"AT=1|ID=1", "AT=1|ID=2", "AT=2|ID=2", "AT=3|ID=2",

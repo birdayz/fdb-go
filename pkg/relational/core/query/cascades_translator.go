@@ -949,6 +949,12 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// unnestFallbackOrReject) is name-model until Slice 3 (review W4-deferral ruling) — every join
 	// translated beneath it, including the fallback's rebuilt LogicalJoins,
 	// is marked enclosed so it cannot gate ordinal.
+	//
+	// prevEnclosure captures the ENCLOSED bit on entry (t.inInnerCluster BEFORE
+	// this unnest sets it): true iff THIS unnest is itself a leg of a larger
+	// name-model cluster. The W4c ordinal-seed gate below reads it as "enclosed"
+	// (an enclosed unnest declines to name-model — its ordinal seed would be
+	// flattened into a name-model parent that panics on a baked leg).
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = true
 	defer func() { t.inInnerCluster = prevEnclosure }()
