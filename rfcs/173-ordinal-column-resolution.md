@@ -1596,9 +1596,17 @@ unnest until W5; scalar-subquery / non-wedge anchored seeds until S4).
      sentinel next to the CHAIN baseline), `MergeArmHits==0`, and wall-clock < a generous 5s ceiling
      (the per-Insert bijection-cost catch the count is BLIND to; ~90ms observed, catastrophe detector
      not micro-benchmark). Measured budget-IDENTICAL to the name-model star (representation-neutral).
-   - **shadow-delta equivalence**: spike-predicted extra-dedup **exactly equals** actual member-count
-     delta (the `feat/rfc173-p3-bijection-interning` spike only `t.Logf`'d ~259 — promote to an
-     exact-equality assertion).
+   - **shadow-delta equivalence** — `TestRFC173S3_AliasAwareInterningShadowDelta`
+     (`rfc173_s3_shadow_delta_test.go`), promoting the spike's `t.Logf` to EXACT assertions. The
+     alias-aware interning tier is instrumented with a per-Reference dedup counter
+     (`Reference.AliasAwareDedups`, summed by `Memo.AliasAwareDedups` — the "shadow") plus a
+     test-only alias-identity baseline toggle (`SetDisableAliasAwareInterning`, race-free because the
+     pin is non-parallel). 3-chain: shadow **exactly 4**, member-count delta **exactly 20** (68→88
+     with the tier off — shadow < delta because each collapsed sub-product re-explodes). 4-chain:
+     shadow **exactly 56**, and the tier is LOAD-BEARING — planning converges with it on, blows the
+     100k budget with it off (the 29915→60044-class re-explosion the tier exists to prevent). Not
+     the naive shadow==delta (cascade makes delta larger); the equivalence is exact shadow ↔ exact
+     convergent delta ↔ load-bearing at scale.
 6. **Plan-baseline audit is a HARD GATE (Q2)** — a composite of four concrete pins, so a representation
    flip is never mistaken for a plan change:
    - **merge-branch hit-count == 0** on the ordinal-seed corpus — the positional arm, not the anchored

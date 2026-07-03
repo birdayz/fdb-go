@@ -67,6 +67,17 @@ type Reference struct {
 
 	correlatedToCache map[values.CorrelationIdentifier]struct{}
 
+	// aliasAwareDedups counts how many times the ALIAS-AWARE interning tier
+	// (the MemoEqual branch in Insert/InsertFinal, gated to merge
+	// re-enumeration selects) collapsed an incoming member that the two
+	// alias-IDENTITY tiers did NOT catch — the "extra dedup" the alias-aware
+	// tier buys (RFC-077 7.5). Per-Reference (each Plan owns its References),
+	// so it is race-free without a global. Summed via Memo.AliasAwareDedups
+	// for the RFC-173 Slice-3 shadow-delta pin: this count is the shadow of
+	// the sub-product-sharing that keeps the join re-enumeration task count
+	// off the 29915→60044 blowup.
+	aliasAwareDedups int
+
 	// id is a monotonic identity assigned by the Memo on first
 	// registration (0 ⇒ never registered, e.g. standalone-test
 	// References). Merge picks the lower id as the survivor, giving a
@@ -171,6 +182,13 @@ func (r *Reference) Get() RelationalExpression {
 func (r *Reference) Members() []RelationalExpression {
 	r = r.Canonical()
 	return r.members
+}
+
+// AliasAwareDedups returns how many incoming members this Reference collapsed
+// via the alias-aware interning tier (the extra dedup beyond alias-identity).
+// The RFC-173 Slice-3 shadow-delta pin sums this across the memo.
+func (r *Reference) AliasAwareDedups() int {
+	return r.Canonical().aliasAwareDedups
 }
 
 // AllMembers returns all members of this Reference — both exploratory
@@ -316,6 +334,9 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	if interner, ok := e.(aliasAwareInterner); ok {
 		aliasAware = interner.InternsAliasAware()
 	}
+	if disableAliasAwareInterning {
+		aliasAware = false // test-only alias-identity baseline (shadow-delta pin)
+	}
 	for _, m := range r.members {
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
@@ -357,6 +378,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		// a future opt-in type's hash is not alias-invariant (today's only opt-in,
 		// the merge select, has an alias-invariant hash per RFC-074).
 		if aliasAware && m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
+			r.aliasAwareDedups++
 			return false
 		}
 	}
@@ -370,6 +392,20 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 // intern ALIAS-AWARE in Insert/InsertFinal. See SelectExpression.InternsAliasAware
 // (RFC-077 7.5). Only merge re-enumeration selects opt in today.
 type aliasAwareInterner interface{ InternsAliasAware() bool }
+
+// disableAliasAwareInterning is a TEST-ONLY switch (RFC-173 Slice-3 shadow-delta
+// pin) that suppresses the alias-aware interning tier, so a corpus can be planned
+// in the alias-IDENTITY baseline to recover the pre-interning member population.
+// It is read in Insert/InsertFinal's hot path but only ever WRITTEN by a
+// NON-PARALLEL test: Go runs non-parallel tests sequentially, before the parallel
+// phase, with a happens-before barrier between the phases, so a plain bool is
+// race-free (the write is never concurrent with a read). Mirrors the §5 dual-
+// window differential's values.OracleBakedNameFallback.
+var disableAliasAwareInterning bool
+
+// SetDisableAliasAwareInterning toggles the alias-identity baseline mode. MUST
+// be called only from a NON-PARALLEL test and reset via defer (see the var doc).
+func SetDisableAliasAwareInterning(v bool) { disableAliasAwareInterning = v }
 
 // FinalMembers returns PLANNING-phase physical plans. Empty until
 // implementation rules or data access generation populate it.
@@ -391,6 +427,9 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	if interner, ok := e.(aliasAwareInterner); ok {
 		aliasAware = interner.InternsAliasAware()
 	}
+	if disableAliasAwareInterning {
+		aliasAware = false // test-only alias-identity baseline (shadow-delta pin)
+	}
 	for _, m := range r.finalMembers {
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
 			return false
@@ -403,6 +442,7 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		// both must dedup alias-aware or the merge re-enumeration's physical
 		// alternatives duplicate under fresh merge-quantifier aliases.
 		if aliasAware && m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
+			r.aliasAwareDedups++
 			return false
 		}
 	}

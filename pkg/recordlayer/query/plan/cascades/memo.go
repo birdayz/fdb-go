@@ -131,6 +131,44 @@ func (m *Memo) MergeCount() int { return m.mergeCount }
 // dispatch-authority pin asserts this is 0 on an ordinal-seeded corpus.
 func (m *Memo) MergeArmHits() int { return m.mergeArmHits }
 
+// AliasAwareDedups sums, over every Reference in the memo, the extra dedup the
+// alias-aware interning tier performed (Reference.AliasAwareDedups) — the
+// "shadow" of the merge re-enumeration's shared-sub-product collapse. The
+// RFC-173 Slice-3 shadow-delta pin asserts this equals the member-count delta
+// between alias-aware interning and the alias-identity baseline.
+func (m *Memo) AliasAwareDedups() int {
+	total := 0
+	seen := make(map[*expressions.Reference]struct{}, len(m.refs))
+	for ref := range m.refs {
+		c := ref.Canonical()
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		total += c.AliasAwareDedups()
+	}
+	return total
+}
+
+// TotalMembers sums the exploratory + final member count over every canonical
+// Reference in the memo. With the alias-aware interning tier live this is the
+// deduped population; the shadow-delta pin re-plans with the tier disabled to
+// recover the alias-identity population and asserts the difference equals
+// AliasAwareDedups (each alias-aware dedup collapses exactly one member).
+func (m *Memo) TotalMembers() int {
+	total := 0
+	seen := make(map[*expressions.Reference]struct{}, len(m.refs))
+	for ref := range m.refs {
+		c := ref.Canonical()
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		total += len(c.AllMembers())
+	}
+	return total
+}
+
 // RecordMergeArmHit increments the anchored-arm counter. Called by
 // PartitionSelectRule when it takes the parentIsMerge (name-model)
 // re-enumeration dispatch. No-op when the memo is nil (standalone rule tests
