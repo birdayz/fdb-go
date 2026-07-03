@@ -892,29 +892,34 @@ func expandValueForMatching(v values.Value) []values.Value {
 	return results
 }
 
-// expandFusedFieldValue splits a fused path's last accessor into a chained
-// two-node form (Java's ofFields(ofFields(child, prefix), [last])). The
-// FrontierPinned bit rides on both halves (it is a property of the source
-// value's evaluation contract; these expansions exist for MATCHING identity
-// only and are never evaluated). The inner node's Typ is unknown — the
-// ordinal-only baked identity (S3-W3) never consults it.
-func expandFusedFieldValue(fv *values.FieldValue) *values.FieldValue {
-	n := len(fv.Resolved.Accessors)
-	prefix := make([]values.ResolvedAccessor, n-1)
-	copy(prefix, fv.Resolved.Accessors[:n-1])
-	last := fv.Resolved.Accessors[n-1]
-	inner := &values.FieldValue{
-		Field:    prefix[len(prefix)-1].Field,
-		Typ:      values.UnknownType,
-		Child:    fv.Child,
-		Resolved: &values.FieldPath{Accessors: prefix, FrontierPinned: fv.Resolved.FrontierPinned},
+// expandFusedFieldValue FULLY unchains a fused path into single-accessor nodes:
+// path [a1..an] over child C becomes FV(FV(…FV(C,[a1])…,[a(n-1)]),[an]) — one
+// FieldValue per accessor, exactly the pre-compose CHAINED candidate shape.
+// Java splits only the last accessor and re-EXPLORES (ExpandFusedFieldValueRule
+// yieldResultAndReExplore), so its prefix is re-expanded on the next pass; Go's
+// max-match recursion compares the child before the fused prefix could re-split
+// (a 3+-accessor prefix would stay fused and miss the chained candidate), so
+// the port must reach the fully-chained end state in ONE step. FrontierPinned
+// rides every node (an evaluation-contract marker excluded
+// from identity; these nodes are match-only, never evaluated); the intermediate
+// Typs are unknown — the ordinal-only baked identity never consults Typ.
+func expandFusedFieldValue(fv *values.FieldValue) values.Value {
+	accs := fv.Resolved.Accessors
+	pinned := fv.Resolved.FrontierPinned
+	cur := fv.Child
+	for i, acc := range accs {
+		typ := values.Type(values.UnknownType)
+		if i == len(accs)-1 {
+			typ = fv.Typ // the leaf node keeps the fused node's flowed type
+		}
+		cur = &values.FieldValue{
+			Field:    acc.Field,
+			Typ:      typ,
+			Child:    cur,
+			Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{acc}, FrontierPinned: pinned},
+		}
 	}
-	return &values.FieldValue{
-		Field:    last.Field,
-		Typ:      fv.Typ,
-		Child:    inner,
-		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{last}, FrontierPinned: fv.Resolved.FrontierPinned},
-	}
+	return cur
 }
 
 // expandRecordValue expands a non-RCV value with Record type into a

@@ -616,3 +616,13 @@ pre-fulcrum name model also sorted N-way tops, so "no spurious sort" means
 no NEW sort; the §5 single-frontier pin stays the elision guard). Task
 baselines held with the expansion in the matching loop. Remaining W3: (C)
 the mechanical TranslationMap consolidation.
+
+## S3-W3 review round: codex P2 — full-unchain (Torvalds+Graefe ACK, codex found the deeper axis)
+The ExpandFusedFieldValueRule port split only the LAST accessor; a 3+-accessor
+fused path's prefix stayed fused, and Go's matcher compares the child before
+it could re-split (Java re-explores; Go doesn't) → a 3-accessor fused path
+missed a fully-chained candidate. The 2-accessor pin didn't exercise it;
+Torvalds and Graefe both ACKed without catching it — codex's specific-scenario
+probing did. Fix: expandFusedFieldValue fully unchains in one step (Java's
+re-explored end state, direct). Red-verified pin
+TestRFC173W3_MaxMatchMap_FusedVsChained_ThreeAccessor.

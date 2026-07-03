@@ -100,3 +100,57 @@ func TestRFC173W3_MaxMatchMap_FusedVsChained(t *testing.T) {
 		t.Fatal("fused query vs chained candidate must match through the ported ExpandFusedFieldValueRule (red without it)")
 	}
 }
+
+// TestRFC173W3_MaxMatchMap_FusedVsChained_ThreeAccessor pins the DEEPER
+// dimension the two-accessor pin missed (a review catch): a THREE-accessor
+// fused path (a doubly-nested merge — `m._0._0.C`) must match a fully-CHAINED
+// three-node candidate. The last-accessor-only split left the 2-accessor
+// prefix fused, and the matcher compares the child before it could re-split,
+// so this returned NO match (verified red before the full-unchain fix). The
+// port now fully unchains in one step — Java's re-explored end state reached
+// directly.
+func TestRFC173W3_MaxMatchMap_FusedVsChained_ThreeAccessor(t *testing.T) {
+	t.Parallel()
+	leaf := values.NewRecordType("", false, []values.Field{{Name: "C", FieldType: values.NotNullLong, Ordinal: 0}})
+	mid := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: leaf, Ordinal: 0}})
+	top := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: mid, Ordinal: 0}})
+	q := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), top)
+
+	s0, err := values.NewFieldValueOfOrdinal(q, 0)
+	if err != nil {
+		t.Fatalf("bake _0: %v", err)
+	}
+	s1, err := values.NewFieldValueOfOrdinal(s0, 0)
+	if err != nil {
+		t.Fatalf("bake _0._0: %v", err)
+	}
+	s2, err := values.NewFieldValueOfOrdinal(s1, 0)
+	if err != nil {
+		t.Fatalf("bake _0._0.C: %v", err)
+	}
+	fused, isFV := values.SimplifyValue(s2).(*values.FieldValue)
+	if !isFV || len(fused.Resolved.Accessors) != 3 {
+		t.Fatalf("compose must fuse to a 3-accessor path, got %T (accessors=%v)", values.SimplifyValue(s2), fused)
+	}
+
+	// The chained candidate: three single-accessor nodes (never composed).
+	c0, err := values.NewFieldValueOfOrdinal(q, 0)
+	if err != nil {
+		t.Fatalf("chained _0: %v", err)
+	}
+	c1, err := values.NewFieldValueOfOrdinal(c0, 0)
+	if err != nil {
+		t.Fatalf("chained _0._0: %v", err)
+	}
+	c2, err := values.NewFieldValueOfOrdinal(c1, 0)
+	if err != nil {
+		t.Fatalf("chained _0._0.C: %v", err)
+	}
+	if len(c2.Resolved.Accessors) != 1 {
+		t.Fatalf("chained candidate node must carry ONE accessor, got %d", len(c2.Resolved.Accessors))
+	}
+
+	if mmm := ComputeMaxMatchMap(fused, c2, nil); mmm.Size() < 1 {
+		t.Fatal("3-accessor fused must match the fully-chained candidate — the last-accessor-only split missed this (full-unchain fix)")
+	}
+}
