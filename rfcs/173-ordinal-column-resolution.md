@@ -1018,42 +1018,59 @@ stacked PR; W5 (multi-source unnest) still waits for W2/W3 merged.
    ordinals null-extending when the inner is empty (the executor's existing
    null-leg birth). The null-supplying subselect is NOT ordinalized separately —
    it's a filtered scan feeding the outer RC's null-supplying ordinals.
-2. **Leg column types at the rewrite** come from the anchored RC being replaced:
-   `sel.GetResultValue()` is the anchored RC whose fields ARE the per-leg
-   columns (bare + ALIAS.COL). Re-derive `ordinalLegType` per leg from those
-   fields (or from the quantifiers' flowed `RecordType`s where present). [Q1 for
-   Graefe: anchored-RC fields vs quantifier flowed types — which is the sound
-   source at rewrite time, given the preserved leg may itself be a flattened
-   multi-table cluster?]
-3. **Nullability**: the null-supplying leg's ordinal columns must be
-   NULLABLE-typed (Java's `OuterJoinExpression` requirement) — the ordinal
-   seed's null-supplying `ordinalLegType` gets nullability-wrapped. [Q2: does
-   this interact with the coexistence Datum / §5 oracle — does datumFromSpans /
-   the name-model dual need the nullable wrap, or is it identity-invisible like
-   the executor null-leg?]
-4. **Relax the three W4 tripwires, in order after (1) produces the shape:**
+2. **Leg column types at the rewrite come from the ANCHORED RC being replaced**
+   (Graefe Q1 ruling — decided). Go's `Quantifier.GetFlowedObjectValue` is
+   UNTYPED (Java's is always typed), so quantifier flowed `RecordType`s are not
+   a source at rewrite time — there aren't any. `sel.GetResultValue()` is the
+   box's typed flowed row, the full per-leg concat carrying a flattened
+   multi-table preserved cluster's columns verbatim, AND the exact contract the
+   retained name-model dual reads — so deriving `ordinalLegType` from it keeps
+   the §5 windows type-congruent.
+3. **Nullability: apply the nullable wrap; it is identity-invisible** (Graefe Q2
+   ruling — decided, with one check). The null-supplying leg's ordinal columns
+   must be NULLABLE-typed (Java `OuterJoinExpression` :117-125). The executor
+   null-leg emits nil regardless of declared nullability and the §5 oracle
+   compares datum VALUES not type metadata, so the wrap perturbs neither
+   `datumFromSpans` nor the oracle — but it is type-NECESSARY. **Check to honor
+   in impl**: confirm the retained name-model dual already nullable-wraps the
+   SAME null-supplying columns; if not, fix it in the same commit or the windows
+   diverge on type.
+4. **Ordinalization is GATED on BURIED-ELIGIBILITY** (Graefe Q3 ruling — the
+   NAK correction; supersedes the earlier blanket "stop poisoning LEFT"). Only
+   a dissolved LEFT whose null-supplying ON-preds correlate to the TOP-LEVEL
+   preserved alias ordinalizes. If those correlations intersect
+   `preservedProvidedAliases` BELOW the top alias (a BURIED source — the RFC-153
+   `(A⋈B) LEFT JOIN C` with `C→A` shape), the preserved leg is NOT
+   ordinal-eligible and the dissolved shape STAYS NAME-MODEL. Rationale:
+   ordinalizing a flattened preserved cluster M=(A⋈B) to a bare concat erases
+   the name `A`; the innerSelect's ON-pred stays name-model (ruling #1, it is
+   the null-supplying leg's own select, not the ordinal seed) and has no span
+   into the ordinal preserved leg, so `physicalProvidedAliases`/`rightDepsLeft`
+   cannot rebase it and the RFC-153 correlated-FlatMap-probe path breaks
+   (0-row/unresolvable — PR-#201-class). The fulcrum's span-recovery was built
+   for translated TOPS, not a name-model ON-pred crossing the dissolution
+   boundary into a buried ordinal.
+5. **Relax the three W4 tripwires, in order after (1) produces the shape —
+   SCOPED to the top-level-correlated (buried-eligible) case only:**
    - `rfc173_positional_merge.go:39-42` — the null-on-empty tripwire (a
-     null-on-empty leg is now a legitimate ordinal shape, not a dissolved-LEFT-
-     arrives-anchored signal).
-   - `rfc173_cluster_gate.go:103-117` + `clusterArity:268-276` — stop poisoning
-     LEFT/RIGHT; a dissolved LEFT gates, its preserved + null-supplying legs
-     pass `ordinalEligible`.
-   - `rfc173_ordinal_seed.go:104-106` — relax the name-model-join-leg panic for
-     the dissolved-INNER shape.
-5. **RFC-153 joined-preserved** (`(A JOIN B) LEFT JOIN C`, C correlates to
-   BURIED preserved A): the preserved leg is a flattened multi-table cluster; C
-   (null-supplying) correlates to a buried source. [Q3: does the fulcrum's
-   gather/enclosure machinery (gatherInnerClusterLegs, fresh-enclosure leg
-   translation) already handle the buried preserved correlation when the
-   dissolved shape ordinalizes, or does the null-supplying leg's correlation to
-   a buried ordinal need the span-recovery treatment the fulcrum built for
-   translated tops?]
+     null-on-empty leg is now a legitimate ordinal shape for the buried-eligible
+     dissolved LEFT).
+   - `rfc173_cluster_gate.go:103-117` + `clusterArity:268-276` — a
+     top-level-correlated dissolved LEFT gates; its preserved + null-supplying
+     legs pass `ordinalEligible`. A BURIED-correlated dissolved LEFT stays
+     poisoned (name-model) — the buried-eligibility test above is the new gate
+     arm, keyed on the ON-preds' correlation depth into
+     `preservedProvidedAliases`.
+   - `rfc173_ordinal_seed.go:104-106` — the name-model-join-leg panic relaxes
+     only where the preserved leg is a top-level-eligible ordinal cluster.
 6. **Out of W4 scope**: `EliminateNullOnEmptyRule` (strips the flag when a
    predicate rejects null — a Go-side optimization Go doesn't have; not required
    for correctness). FULL-outer stays as-is (already gated, materialized NLJ).
 
 ### Gates
-Query-engine change → Graefe ACK on THIS ruling before any impl, then the full
-four-gate round (Graefe/Torvalds/codex/@claude) on the implementation.
-Regression net: the RFC-153 joined-preserved plan test, the null-on-empty
-executor pins, Gate Pins A/B rewrite at W4, task-count baseline ±2%.
+Query-engine change → Graefe ACK on THIS ruling before any impl (Q1/Q2 ACKed;
+Q3 correction folded above — re-submitted for ACK), then the full four-gate
+round (Graefe/Torvalds/codex/@claude) on the implementation. Regression net: the
+RFC-153 joined-preserved plan test MUST stay name-model (the buried case) AND a
+NEW top-level-correlated dissolved-LEFT pin MUST ordinalize; the null-on-empty
+executor pins; Gate Pins A/B rewrite at W4; task-count baseline ±2%.
