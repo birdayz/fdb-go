@@ -981,3 +981,79 @@ its re-ack **gating** is unchanged by Round 5 (it runs under its own already-ack
 it did pick up the benchmark exit obligation (§4); **Slice 2 must not start until all four
 Round-5 boxes are checked** — it consumes three Round-5 rulings (no-interning-flip, the scoping
 gate, the entry-gate inventory).
+
+## W4 — Post-rewrite LEFT ordinalization (design for Graefe ACK; PROPOSED, pre-impl)
+
+W2/W3 (fulcrum PR #457) landed: INNER clusters + FULL-outer boxes gate into the
+ordinal wedge; LEFT-outer boxes are POISONED (name-model), "pending a review
+re-ruling on the corrected premise". This is that ruling. W4 is a separate,
+stacked PR; W5 (multi-source unnest) still waits for W2/W3 merged.
+
+### Established facts (verified against Java + Go source)
+- **Java** (`RewriteOuterJoinRule`/`OuterJoinExpression`): a LEFT box dissolves
+  into two plain `SelectExpression`s — an OUTER select with NO predicates and
+  quantifiers `[preserved ForEach, forEachWithNullOnEmpty(innerRef)]`, reusing
+  the box's own result value verbatim; an INNER select = the null-supplying leg
+  carrying the ON-preds. Every null-supplying-alias reference in the result
+  value must be NULLABLE-typed (`OuterJoinExpression` :117-125). The
+  `nullOnEmpty` flag emits ONE all-NULL row when the inner select is empty;
+  the outer result value evaluates over that NULL binding. Java is positional
+  throughout — NO dedicated ordinal seed, NO special-casing; the dissolved
+  outer select is just an ordinary select.
+- **Go today** (`rule_rewrite_outer_join.go:172-179`): fires for a correlated
+  LEFT with ON-preds, yields
+  `NewSelectExpressionWithJoinType(sel.GetResultValue(), [preserved, nullOnEmptyQun], nil, aliases, JoinInner)`
+  — result value is the NAME-MODEL anchored RC, IsNullOnEmpty true on leg 2.
+- **Executor is ALREADY DONE**: `evaluateOrdinalJoinRow` + `bindLeg`'s
+  nil-QueryResult → `(nil,true)` → NULL slots (contract ruling #3). A null-leg
+  ordinal birth is exactly the null-on-empty semantics — no executor work.
+
+### PROPOSED ruling
+1. **Ordinalize AT THE REWRITE, not translateJoin.** The gate correctly poisons
+   the pre-rewrite LEFT box (it isn't the stable shape); the stable shape is the
+   dissolved INNER+nullOnEmpty select produced by `RewriteOuterJoinRule`. So the
+   rewrite rule builds the ordinal seed. The whole dissolved shape becomes ONE
+   ordinal seed: `RC(ofOrdinal(preserved, i) for preserved cols ++
+   ofOrdinal(nullSupplying, j) for null-supplying cols)`, the null-supplying
+   ordinals null-extending when the inner is empty (the executor's existing
+   null-leg birth). The null-supplying subselect is NOT ordinalized separately —
+   it's a filtered scan feeding the outer RC's null-supplying ordinals.
+2. **Leg column types at the rewrite** come from the anchored RC being replaced:
+   `sel.GetResultValue()` is the anchored RC whose fields ARE the per-leg
+   columns (bare + ALIAS.COL). Re-derive `ordinalLegType` per leg from those
+   fields (or from the quantifiers' flowed `RecordType`s where present). [Q1 for
+   Graefe: anchored-RC fields vs quantifier flowed types — which is the sound
+   source at rewrite time, given the preserved leg may itself be a flattened
+   multi-table cluster?]
+3. **Nullability**: the null-supplying leg's ordinal columns must be
+   NULLABLE-typed (Java's `OuterJoinExpression` requirement) — the ordinal
+   seed's null-supplying `ordinalLegType` gets nullability-wrapped. [Q2: does
+   this interact with the coexistence Datum / §5 oracle — does datumFromSpans /
+   the name-model dual need the nullable wrap, or is it identity-invisible like
+   the executor null-leg?]
+4. **Relax the three W4 tripwires, in order after (1) produces the shape:**
+   - `rfc173_positional_merge.go:39-42` — the null-on-empty tripwire (a
+     null-on-empty leg is now a legitimate ordinal shape, not a dissolved-LEFT-
+     arrives-anchored signal).
+   - `rfc173_cluster_gate.go:103-117` + `clusterArity:268-276` — stop poisoning
+     LEFT/RIGHT; a dissolved LEFT gates, its preserved + null-supplying legs
+     pass `ordinalEligible`.
+   - `rfc173_ordinal_seed.go:104-106` — relax the name-model-join-leg panic for
+     the dissolved-INNER shape.
+5. **RFC-153 joined-preserved** (`(A JOIN B) LEFT JOIN C`, C correlates to
+   BURIED preserved A): the preserved leg is a flattened multi-table cluster; C
+   (null-supplying) correlates to a buried source. [Q3: does the fulcrum's
+   gather/enclosure machinery (gatherInnerClusterLegs, fresh-enclosure leg
+   translation) already handle the buried preserved correlation when the
+   dissolved shape ordinalizes, or does the null-supplying leg's correlation to
+   a buried ordinal need the span-recovery treatment the fulcrum built for
+   translated tops?]
+6. **Out of W4 scope**: `EliminateNullOnEmptyRule` (strips the flag when a
+   predicate rejects null — a Go-side optimization Go doesn't have; not required
+   for correctness). FULL-outer stays as-is (already gated, materialized NLJ).
+
+### Gates
+Query-engine change → Graefe ACK on THIS ruling before any impl, then the full
+four-gate round (Graefe/Torvalds/codex/@claude) on the implementation.
+Regression net: the RFC-153 joined-preserved plan test, the null-on-empty
+executor pins, Gate Pins A/B rewrite at W4, task-count baseline ±2%.
