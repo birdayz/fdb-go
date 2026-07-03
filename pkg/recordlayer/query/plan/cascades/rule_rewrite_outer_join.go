@@ -108,7 +108,7 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// FlatMap impl declines the probe when it cannot guarantee the rewire, so the
 	// materialized NLJ (which resolves the buried predicate via the merged row's
 	// qualified keys) stays the correct fallback.
-	preservedProvided := preservedProvidedAliases(preserved)
+	preservedProvided := legProvidedAliases(preserved)
 	correlated := false
 	for _, p := range preds {
 		for alias := range predicates.GetCorrelatedToOfPredicate(p) {
@@ -195,22 +195,24 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	call.Yield(outerSelect)
 }
 
-// preservedProvidedAliases returns every correlation alias the preserved leg of a
-// LEFT OUTER provides to an ON-predicate: its own quantifier alias PLUS every source
-// alias buried inside it. When the preserved side is a join/merge, its quantifier is
-// a synthetic merge over a sub-product (e.g. M=(A⋈B) provides {M, A, B}), and an
-// ON-predicate `C.a_id = A.id` correlates to the buried `A`, not to M. Delegates the
-// buried-alias collection to physicalProvidedAliases (the same machinery
-// ImplementNestedLoopJoinRule uses for spanning-join correlation), adapted from its
-// expression entry point to the preserved quantifier's ranged-over members.
-func preservedProvidedAliases(preserved expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{preserved.GetAlias(): {}}
-	ref := preserved.GetRangesOver()
+// legProvidedAliases returns every correlation alias a LEFT-OUTER LEG
+// quantifier provides to an ON-predicate: its own quantifier alias PLUS every
+// source alias buried inside it. When the leg is a join/merge, its quantifier
+// is a synthetic merge over a sub-product (e.g. M=(A⋈B) provides {M, A, B}),
+// and an ON-predicate `C.a_id = A.id` correlates to the buried `A`, not to M.
+// Delegates the buried-alias collection to physicalProvidedAliases (the same
+// machinery ImplementNestedLoopJoinRule uses for spanning-join correlation),
+// adapted from its expression entry point to the leg quantifier's ranged-over
+// members. Called for the preserved leg (the correlation guard) AND, via
+// singleSourceLeg, both legs of the W4 ordinalization gate.
+func legProvidedAliases(leg expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{leg.GetAlias(): {}}
+	ref := leg.GetRangesOver()
 	if ref == nil {
 		return out
 	}
 	for _, m := range ref.AllMembers() {
-		for alias := range physicalProvidedAliases(m, preserved.GetAlias()) {
+		for alias := range physicalProvidedAliases(m, leg.GetAlias()) {
 			out[alias] = struct{}{}
 		}
 	}
