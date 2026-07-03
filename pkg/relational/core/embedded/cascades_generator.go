@@ -680,6 +680,41 @@ func updateHasDefaultAssignment(upd antlrgen.IUpdateStatementContext) bool {
 	return false
 }
 
+// updateHasSubqueryAssignment reports whether any UPDATE ... SET RHS contains
+// a subquery expression atom. Subqueries in SET are unsupported, and without
+// this guard the builder treated the RHS as a plain expression whose CANONICAL
+// TEXT became the written string value — `SET name = (SELECT ...)` wrote the
+// literal subquery text into the row (silent data corruption, review probe;
+// identical on master). Java's ExpressionVisitor has no subquery arm for the
+// SET RHS either, so per the conformance principle the shape gets a CLEAN
+// error, never a corrupt write.
+func updateHasSubqueryAssignment(upd antlrgen.IUpdateStatementContext) bool {
+	if upd == nil {
+		return false
+	}
+	var containsSubquery func(t antlr.Tree) bool
+	containsSubquery = func(t antlr.Tree) bool {
+		if t == nil {
+			return false
+		}
+		if _, ok := t.(*antlrgen.SubqueryExpressionAtomContext); ok {
+			return true
+		}
+		for i := 0; i < t.GetChildCount(); i++ {
+			if containsSubquery(t.GetChild(i)) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, el := range upd.AllUpdatedElement() {
+		if el != nil && el.Expression() != nil && containsSubquery(el.Expression()) {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
 	c := g.c
 
@@ -746,6 +781,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		if updateHasDefaultAssignment(upd) {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"DEFAULT is not supported in UPDATE ... SET")
+		}
+		if updateHasSubqueryAssignment(upd) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"subqueries are not supported in UPDATE ... SET")
 		}
 		if w := upd.WhereExpr(); w != nil && expr.WhereExistsInScalarPosition(w.Expression()) {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
