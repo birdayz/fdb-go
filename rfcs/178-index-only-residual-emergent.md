@@ -74,10 +74,15 @@ lists three physical-filter builders when only two are live. De-staling DIVERGEN
 
 ## 3. Design (staged; net retired LAST)
 
-- **Step 0 — de-stale DIVERGENCES.md** (docs-only, unblocks honest reasoning for the rest). §33-41 →
-  "`ImplementIndexScanRule` retired (RFC-076); two live ungated producers remain"; drop the phantom
-  test cite and the invented `ImplementPhysicalScanRule`; §376 → two builders. Land first so the
-  remaining steps cite a truthful map.
+- **Step 0 — de-stale DIVERGENCES.md AND the stale code comments** (docs/comments-only, unblocks
+  honest reasoning for the rest). §33-41 → "`ImplementIndexScanRule` retired (RFC-076); two live
+  ungated producers remain"; drop the phantom test cite and the invented `ImplementPhysicalScanRule`;
+  §376 → two builders. Also the ~16 code comments still naming `ImplementIndexScanRule` as a live
+  producer (e.g. `planner.go:551`, `rule_implement_filter.go:61`, `plan_executability.go:40` — @claude
+  review catch): the standalone ones land in this Step 0 PR; any co-located with a function a later
+  step edits (e.g. the `pushDataAccessTasks` region a gating step touches) are swept in that step's PR,
+  so no gating PR re-cites the retired rule after Step 0. Land Step 0 first so the remaining steps cite
+  a truthful map.
 - **Step 1 — expand `findIndexOnlyLogicalResidual` to every shape the gates will leave logical** (the
   JOIN `SelectExpression`, and the NLJ residual shape) — BEFORE any gating (Graefe: the expand MUST
   precede the gate, or the gating PR's own sentinel goes red). Today it handles only
@@ -120,7 +125,8 @@ prove nothing (Graefe + codex). Zero catches across the full suite + fuzz before
 ## 5. Acceptance criteria
 
 - **Step 0:** DIVERGENCES.md §33-41/§376 no longer describe `ImplementIndexScanRule` as live, cite no
-  non-existent test, invent no Java class, list two producers.
+  non-existent test, invent no Java class, list two producers; `grep -rn "ImplementIndexScanRule" pkg/`
+  returns only the co-located comments deferred to a later step's PR (zero standalone stale references).
 - **Step 1:** because the expanded diagnostic is DORMANT until a gate fires (the plan is still physical, so
   `findIndexOnlyLogicalResidual` has no live call path yet — codex), Step 1's proof is a **unit test of the
   function directly**: fed a logical tree of the JOIN `SelectExpression` shape (and the NLJ residual shape)
@@ -164,4 +170,9 @@ prove nothing (Graefe + codex). Zero catches across the full suite + fuzz before
   (§6 risk, RFC-177 §5 C) contradicted the corrected catches gate → both → "zero-catch".
 - **Graefe — ACK (design, 2026-07-03).** Both round-2 NAK specifics verified fixed; "dormant until a gate
   fires" safety argument confirmed sound; reorder introduces no new spurious rejection.
-- (pending) Torvalds, @claude — this RFC PR and each implementation PR.
+- **@claude — ACK (2026-07-03).** C4-reversal justification now adequate (RFC-178 stands on its design
+  merits, Graefe-ACKed). Non-blocking scope nit folded: Step 0's de-stale must also own the ~16 stale
+  code comments naming the retired rule (e.g. `planner.go:551`), not just DIVERGENCES.md — Step 0 + §5
+  extended.
+- (pending) Torvalds — this RFC PR (Torvalds ACKed RFC-177's registry framing; RFC-178's design is the
+  Graefe-primary surface) and each implementation PR.
