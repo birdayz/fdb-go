@@ -251,11 +251,28 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 		}
 		cp := *o
 		cp.Input = in
+		// Aggregate-LOCAL carriers (group keys, aggregate operands, HAVING)
+		// evaluate against the aggregate's INNER INPUT row, which never carries
+		// the level-2 outer binding — a baked outer ref here is unresolvable at
+		// runtime (review finding: `SUM(o.amount + e.ref)` died with a loud
+		// baked-ref-on-name-context error). The values are still WALKED so the
+		// decline guard's collector sees outer refs, but any REWRITE marks the
+		// chain un-rebuildable: the ordinal path declines and the shape keeps
+		// its working name-model fallback (rightmost refs) or declines loud
+		// (non-rightmost).
+		changed := false
+		guard := func(v values.Value) values.Value {
+			out := fn(v)
+			if out != v {
+				changed = true
+			}
+			return out
+		}
 		if len(o.GroupKeyValues) > 0 {
 			gk := make([]values.Value, len(o.GroupKeyValues))
 			for i, v := range o.GroupKeyValues {
 				if v != nil {
-					gk[i] = values.Replace(v, fn)
+					gk[i] = values.Replace(v, guard)
 				}
 			}
 			cp.GroupKeyValues = gk
@@ -264,13 +281,16 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 			ao := make([]values.Value, len(o.AggregateOperands))
 			for i, v := range o.AggregateOperands {
 				if v != nil {
-					ao[i] = values.Replace(v, fn)
+					ao[i] = values.Replace(v, guard)
 				}
 			}
 			cp.AggregateOperands = ao
 		}
 		if o.HavingPredicate != nil {
-			cp.HavingPredicate = predicates.ReplaceValues(o.HavingPredicate, fn)
+			cp.HavingPredicate = predicates.ReplaceValues(o.HavingPredicate, guard)
+		}
+		if changed {
+			return nil, false
 		}
 		return &cp, true
 	case *logical.LogicalSort:
@@ -542,7 +562,7 @@ func (t *cascadesTranslator) translateClusteredOuterScalar(p *logical.LogicalPro
 	t.inInnerCluster = prev
 
 	if d.Gated && exhaustive {
-		if sel := t.buildClusteredOuterOrdinalScalar(p, csq, j); sel != nil {
+		if sel := t.buildClusteredOuterOrdinalScalar(p, csq, j, innerOwn); sel != nil {
 			return sel, false
 		}
 	}
@@ -553,9 +573,11 @@ func (t *cascadesTranslator) translateClusteredOuterScalar(p *logical.LogicalPro
 }
 
 // buildClusteredOuterOrdinalScalar performs the full ordinal construction for
-// a gated clustered outer. nil = decline (the dispatch then applies the
-// CORRECT-or-LOUD policy).
-func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.LogicalProject, csq logical.CorrelatedScalarSubquery, j *logical.LogicalJoin) expressions.RelationalExpression {
+// a gated clustered outer. innerOwn is the inner subtree's own-alias universe
+// the dispatch already derived (classifier skip set — the same set the shadow
+// check needs). nil = decline (the dispatch then applies the CORRECT-or-LOUD
+// policy).
+func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.LogicalProject, csq logical.CorrelatedScalarSubquery, j *logical.LogicalJoin, innerOwn map[string]struct{}) expressions.RelationalExpression {
 	scalarCol := strings.ToUpper(csq.ScalarCol)
 	if scalarCol == "" || csq.InnerAlias == "" {
 		return nil
@@ -564,18 +586,15 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	if pu == nil {
 		return nil
 	}
-	// The inner subtree's OWN source aliases (its first table AND any joined
-	// tables — shape 2 admits JOIN-inners) shadow same-named cluster legs under
-	// SQL scoping, but a value-level reference cannot tell the scopes apart —
-	// the pull-up would mis-bake an inner-own reference onto the outer concat.
-	// Any overlap declines.
-	for a := range outerSubtreeAliases(csq.InnerPlan) {
+	// The inner subtree's OWN aliases (subquery alias, its first table AND any
+	// joined tables — shape 2 admits JOIN-inners) shadow same-named cluster
+	// legs under SQL scoping, but a value-level reference cannot tell the
+	// scopes apart — the pull-up would mis-bake an inner-own reference onto
+	// the outer concat. Any overlap declines.
+	for a := range innerOwn {
 		if _, collide := pu.legByAlias[a]; collide {
 			return nil
 		}
-	}
-	if _, collide := pu.legByAlias[strings.ToUpper(csq.InnerAlias)]; collide {
-		return nil
 	}
 	innerKey := strings.ToUpper(csq.InnerAlias) + "." + scalarCol
 	if !clusterProjectionsResolvable(p, csq, pu, innerKey) {

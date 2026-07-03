@@ -5930,11 +5930,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 						Message: fmt.Sprintf("correlated scalar subquery: walk computed projection: %v", wErr), Cause: wErr,
 					}
 				}
-				computedScalarVal = cv
-			} else if len(sq.joins) > 0 {
-				scalarCol = strings.ToUpper(sq.projCols[0])
-			} else {
-				scalarCol = strings.ToUpper(parseColRef(sq.projCols[0]).bare())
+				// A walked value that is a BARE column reference (a parenthesized
+				// column like `(o.amount)`) is NOT a computation: the projection
+				// executor keys field-valued projections by the COLUMN NAME, never
+				// the positional `_0`, so materializing it would leave the seed
+				// reading a key the row does not carry (review finding). Keep it
+				// on the plain-column path — scalarCol comes from the WALKED
+				// field's resolved name (the projection text may carry parens the
+				// textual parse would garble: `(o.amount)` → `AMOUNT)`).
+				if fv, isFV := cv.(*values.FieldValue); isFV {
+					scalarCol = strings.ToUpper(parseColRef(fv.Field).bare())
+				} else {
+					computedScalarVal = cv
+				}
+			}
+			if computedScalarVal == nil && scalarCol == "" {
+				if len(sq.joins) > 0 {
+					scalarCol = strings.ToUpper(sq.projCols[0])
+				} else {
+					scalarCol = strings.ToUpper(parseColRef(sq.projCols[0]).bare())
+				}
 			}
 		case len(sq.projCols) == 0 && len(sq.groupBy) > 0:
 			// The output is the bare group-key projection (stored as a visible
