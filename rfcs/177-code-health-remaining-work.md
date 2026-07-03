@@ -194,7 +194,7 @@ is the largest and runs under its own RFC-178, staged.
   perturbed hash function; determinism 10×, stress, corpus, task-count green.
 - **C:** discharged by RFC-178 — see its §5 (de-stale DIVERGENCES.md; gate `ImplementSimpleSelectRule`
   + NLJ; keep-and-expand `findIndexOnlyLogicalResidual`; retire the `validateNoIndexOnlyResidual`
-  *physical net* last with a measured-zero-invocation proof; keep `residualIsPartitionContiguous`).
+  *physical net* last with a measured-zero-catch proof; keep `residualIsPartitionContiguous`).
 - **D1:** `rywDisabled` is `atomic.Bool`; `-race` reset/read hammer test (a bare `-race` clean is
   vacuous — it must race the two paths).
 - **D2:** `GetTagThrottledDuration` matches libfdb_c on a GRV-throttled differential case; the reply

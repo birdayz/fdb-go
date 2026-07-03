@@ -121,14 +121,17 @@ prove nothing (Graefe + codex). Zero catches across the full suite + fuzz before
 
 - **Step 0:** DIVERGENCES.md §33-41/§376 no longer describe `ImplementIndexScanRule` as live, cite no
   non-existent test, invent no Java class, list two producers.
-- **Step 1:** `findIndexOnlyLogicalResidual` handles the JOIN `SelectExpression` shape (and the NLJ
-  residual shape); a metric-mismatch query in each shape surfaces `UnplannableIndexOnlyResidualError`, not
-  a generic failure, when the physical net is disabled in the test — i.e. the clean path exists BEFORE the
-  gate that will depend on it.
+- **Step 1:** because the expanded diagnostic is DORMANT until a gate fires (the plan is still physical, so
+  `findIndexOnlyLogicalResidual` has no live call path yet — codex), Step 1's proof is a **unit test of the
+  function directly**: fed a logical tree of the JOIN `SelectExpression` shape (and the NLJ residual shape)
+  carrying an index-only-no-index predicate, it returns that predicate (the substrate the clean
+  `UnplannableIndexOnlyResidualError` is built from), and returns nil for the compensatable case. The
+  end-to-end rejection sentinel does NOT belong here — it is unreachable until Step 2 activates the path.
 - **Steps 2-3:** `ImplementSimpleSelectRule` and the NLJ builder return early on any index-only predicate
-  (greppable `!isIndexOnly()` / `anyCompensatablePredicate` gate); the JOIN + single-table metric-mismatch
-  sentinels reject via the Step-1 logical diagnostic (verify by temporarily disabling the physical net in
-  the test and confirming they still reject) — each gating PR independently green.
+  (greppable `!isIndexOnly()` / `anyCompensatablePredicate` gate); the end-to-end JOIN + single-table
+  metric-mismatch sentinels now reach the Step-1 diagnostic and surface `UnplannableIndexOnlyResidualError`
+  — pinned in each gating PR (verify the rejection comes from the logical diagnostic, not the net, by
+  temporarily disabling the physical net in the test) — each gating PR independently green.
 - **Step 4:** `grep -rn "validateNoIndexOnlyResidual" pkg/` returns zero; the net-**catch** counter (non-nil
   rejections, not calls) read zero across suite+fuzz before deletion; `findIndexOnlyLogicalResidual` still
   present and pinned.
@@ -139,7 +142,7 @@ prove nothing (Graefe + codex). Zero catches across the full suite + fuzz before
 
 - **Net retired too early** → reintroduces the vector K-NN panic (index-only `DistanceRank` reaching
   `Comparison.EvalAgainst`). Mitigation: net retired in the LAST PR only, gated on the full sentinel set +
-  the measured-zero-invocation proof.
+  the measured-zero-catch proof.
 - **Deleting the logical diagnostic** (RFC-177's original error) → metric-mismatch/no-index queries regress
   to a generic planning failure. Mitigation: Step 3 expands and keeps `findIndexOnlyLogicalResidual`; it is
   explicitly NOT part of the net retirement.
@@ -154,6 +157,11 @@ prove nothing (Graefe + codex). Zero catches across the full suite + fuzz before
   gates (else the gating PR's own JOIN sentinel goes red) — steps reordered so expand is Step 1; (2) the
   net-retirement proof must count **catches** (non-nil rejections), not calls (the net runs
   unconditionally) — §4/§5 corrected. Re-request after the fold.
-- **codex — P2 (folded).** Same catch-vs-call vacuity as Graefe (2); plus RFC-177 top-matter still claimed
-  to be the C4 RFC after the promotion — de-owned (title/origin/effort now point to RFC-178).
+- **codex — P2 ×2 rounds (folded).** Round A: catch-vs-call vacuity (same as Graefe); RFC-177 top-matter
+  still owned C4 — de-owned. Round B: (i) Step 1's acceptance was unsatisfiable e2e (the diagnostic is
+  dormant at Step 1) → rewritten as a direct unit test of `findIndexOnlyLogicalResidual`, with the e2e
+  sentinel moved to the Steps 2-3 gating PRs where the path is live; (ii) two "zero-invocation" stragglers
+  (§6 risk, RFC-177 §5 C) contradicted the corrected catches gate → both → "zero-catch".
+- **Graefe — ACK (design, 2026-07-03).** Both round-2 NAK specifics verified fixed; "dormant until a gate
+  fires" safety argument confirmed sound; reorder introduces no new spurious rejection.
 - (pending) Torvalds, @claude — this RFC PR and each implementation PR.
