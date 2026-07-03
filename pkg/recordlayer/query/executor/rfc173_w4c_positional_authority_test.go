@@ -85,34 +85,82 @@ func TestRFC173W4c_PositionalAuthority_ScalarElement(t *testing.T) {
 	}
 }
 
-// TestRFC173W4c_OrdinalAliasCollision pins the ordinal-alias-collision bug: a WITH-ORDINALITY
-// unnest whose AS/AT alias SPELLS an internal OrdinalFieldName (`FROM t, t.arr
-// AS "_1" AT "O"`) must still bind the element to slot 0 and the ordinal to slot
-// 1 — the ordinality Datum ({_0:element, _1:ordinal}) is bound STRICTLY
-// POSITIONALLY, so the user alias "_1" naming slot 0 does NOT read the internal
-// `_1` (the ordinal). Before the fix, adaptLegPositional's name-match consumed
-// m["_1"] for the "_1"-named slot 0 and `SELECT "_1"` returned the ordinal.
+// TestRFC173W4c_OrdinalAliasCollision pins the ordinal-alias-collision handling
+// via PRODUCER CONTEXT: a WITH-ORDINALITY Explode leg (marked in OrdinalityLegs
+// by newFlatMapCursor) binds STRICTLY POSITIONALLY (slot i = Datum[_i]) — so a
+// user AS/AT alias that SPELLS an internal OrdinalFieldName (`FROM t, t.arr AS
+// "_1" AT "_0"`) can't route the wrong internal key — while a SHAPE-IDENTICAL
+// name-model leg whose OWN columns are aliased "_0"/"_1" (NOT an ordinality
+// Explode) binds by NAME through adaptLegPositional. The two are indistinguishable
+// by Datum shape; only the producer signal disambiguates them.
 func TestRFC173W4c_OrdinalAliasCollision(t *testing.T) {
-	// The inner leg type is named by the user aliases: slot 0 = AS alias "_1"
-	// (the element), slot 1 = AT alias "O" (the ordinal). The Explode Datum keys
-	// are the INTERNAL _0/_1, which must map positionally.
-	legType := values.NewRecordType("", true, []values.Field{
-		{Name: "_1", FieldType: values.NotNullLong, Ordinal: 0}, // AS alias collides with internal _1
-		{Name: "O", FieldType: values.NotNullInt, Ordinal: 1},
-	})
+	innerCorr := values.NamedCorrelationIdentifier("X")
+	// The internal-keyed ordinality Datum: _0 = element, _1 = 1-based ordinal.
 	datum := map[string]any{
-		values.OrdinalFieldName(0): int64(101), // element
-		values.OrdinalFieldName(1): int64(1),   // 1-based ordinal
+		values.OrdinalFieldName(0): int64(101),
+		values.OrdinalFieldName(1): int64(1),
 	}
-	row, err := adaptLegPositional(QueryResult{Datum: datum}, legType)
-	if err != nil {
-		t.Fatalf("adaptLegPositional: %v", err)
+
+	// bindOrdinality binds a WITH-ORDINALITY leg (marked OrdinalityLegs) whose
+	// type is named by the given AS/AT aliases, over the internal-keyed Datum.
+	bindOrdinality := func(t *testing.T, asName, atName string) values.OrdinalRow {
+		t.Helper()
+		legType := values.NewRecordType("", true, []values.Field{
+			{Name: asName, FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: atName, FieldType: values.NotNullInt, Ordinal: 1},
+		})
+		b := &ordinalJoinBirth{
+			OrdinalityLegs: map[values.CorrelationIdentifier]struct{}{innerCorr: {}},
+			LegTypes:       map[values.CorrelationIdentifier]*values.RecordType{innerCorr: legType},
+		}
+		legs := map[values.CorrelationIdentifier]values.OrdinalRow{}
+		raw := map[values.CorrelationIdentifier]any{}
+		if err := b.bindLeg(legs, raw, innerCorr.Name(), &QueryResult{Datum: datum}); err != nil {
+			t.Fatalf("bindLeg: %v", err)
+		}
+		return legs[innerCorr]
 	}
+
+	// AS "_1" collides with the internal ordinal key; the element (slot 0) must
+	// still be m["_0"], the ordinal (slot 1) m["_1"].
+	row := bindOrdinality(t, "_1", "O")
 	if got, _ := row.Get(0); got != int64(101) {
-		t.Fatalf("slot 0 (AS alias \"_1\", the element) = %#v, want int64(101) — a user alias spelling _1 must not read the internal ordinal key", got)
+		t.Fatalf("AS \"_1\" element slot = %#v, want 101 — a user alias spelling _1 must not read the internal ordinal key", got)
 	}
 	if got, _ := row.Get(1); got != int64(1) {
-		t.Fatalf("slot 1 (AT alias O, the ordinal) = %#v, want int64(1)", got)
+		t.Fatalf("AT O ordinal slot = %#v, want 1", got)
+	}
+
+	// The FULLY-colliding case — BOTH aliases spell ordinal keys, swapped:
+	// `AS "_1" AT "_0"`. No shape discriminator can handle this (leg type {_1,_0}
+	// over Datum {_0,_1} is identical to the name-model union case below);
+	// producer-context positional binding still puts element at slot 0, ordinal 1.
+	rowBoth := bindOrdinality(t, "_1", "_0")
+	if got, _ := rowBoth.Get(0); got != int64(101) {
+		t.Fatalf("AS \"_1\" AT \"_0\" element slot = %#v, want 101", got)
+	}
+	if got, _ := rowBoth.Get(1); got != int64(1) {
+		t.Fatalf("AS \"_1\" AT \"_0\" ordinal slot = %#v, want 1", got)
+	}
+
+	// The producer-context DISTINCTION: a NAME-MODEL leg (NOT an ordinality
+	// Explode — no OrdinalityLegs mark) whose own columns are aliased "_1"/"_0"
+	// is SHAPE-IDENTICAL to rowBoth but must bind BY NAME via adaptLegPositional:
+	// column "_1" reads m["_1"]=1, column "_0" reads m["_0"]=101 (NOT swapped to
+	// positional). This is the case a Datum-shape discriminator would break.
+	nameLegType := values.NewRecordType("", true, []values.Field{
+		{Name: "_1", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "_0", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	nameRow, err := adaptLegPositional(QueryResult{Datum: datum}, nameLegType)
+	if err != nil {
+		t.Fatalf("adaptLegPositional (name-model _1/_0 columns): %v", err)
+	}
+	if got, _ := nameRow.Get(0); got != int64(1) {
+		t.Fatalf("name-model column \"_1\" = %#v, want m[\"_1\"]=1 (NAME binding, not positional)", got)
+	}
+	if got, _ := nameRow.Get(1); got != int64(101) {
+		t.Fatalf("name-model column \"_0\" = %#v, want m[\"_0\"]=101", got)
 	}
 }
 
