@@ -23,7 +23,8 @@ func TestFDB_RFC173W4b_FieldValuedComputedScalar(t *testing.T) {
 	const tmpl = "w4b_fv_tmpl"
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE "+tmpl+
 		" CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id))"+
-		" CREATE TABLE orders (id BIGINT, amount BIGINT, PRIMARY KEY (id))"); err != nil {
+		" CREATE TABLE orders (id BIGINT, amount BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE corders (id BIGINT, customer_id BIGINT, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
@@ -61,6 +62,25 @@ func TestFDB_RFC173W4b_FieldValuedComputedScalar(t *testing.T) {
 	}
 	if !v.Valid || v.Int64 != 100 {
 		t.Errorf("computed-over-parenthesized scalar = %d (valid=%v), want 100", v.Int64, v.Valid)
+	}
+
+	// An OUTER-scope parenthesized column (`(c.id)`) is NOT an inner row key
+	// at all (review finding, round 3): routing it to the plain-column path
+	// strips the outer qualifier and silently reads the INNER column of the
+	// same name (the order id, not the customer id). It must take the
+	// MATERIALIZED path — its value comes from the outer binding, evaluated
+	// per outer row. The seeded order (id=5, customer_id=1) keeps the ids
+	// DISTINCT: want the outer c.id=1, never the inner o.id=5.
+	if _, err := db.ExecContext(ctx, "INSERT INTO corders VALUES (5, 1)"); err != nil {
+		t.Fatalf("seed corder: %v", err)
+	}
+	const qOuter = "SELECT (SELECT (c.id) FROM corders o WHERE o.customer_id = c.id) " +
+		"FROM customers c WHERE c.id = 1"
+	if err := db.QueryRowContext(ctx, qOuter).Scan(&v); err != nil {
+		t.Fatalf("outer-scope parenthesized scalar: %v\n  sql: %s", err, qOuter)
+	}
+	if !v.Valid || v.Int64 != 1 {
+		t.Errorf("outer-scope parenthesized scalar = %d (valid=%v), want 1 (the OUTER c.id; the inner o.id=5 means the bared key read the wrong scope)", v.Int64, v.Valid)
 	}
 }
 
