@@ -727,3 +727,42 @@ func TestFDB_RFC173_SecondaryIndexThroughMerge(t *testing.T) {
 		t.Errorf("ordered rows = %v, want [1|100 2|101]", gotO)
 	}
 }
+
+// TestFDB_RFC173_W4_TopLevelLeftOrdinalizes is the W4 e2e proof: a TOP-LEVEL-
+// correlated LEFT JOIN (ON c.a_id = a.id, preserved `a` a single source)
+// dissolves to an ORDINAL seed and executes correctly — including the
+// NULL-extended row for the unmatched preserved row (the executor's null-leg
+// birth). The buried case (RFC-153 (a JOIN b) LEFT JOIN c) stays name-model,
+// pinned in the embedded plan tests.
+func TestFDB_RFC173_W4_TopLevelLeftOrdinalizes(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_rfc173_w4left")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc173_w4left")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE rfc173_w4left_tmpl "+
+			"CREATE TABLE a (id BIGINT NOT NULL, av BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc173_w4left/s WITH TEMPLATE rfc173_w4left_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc173_w4left?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200), (3, 300)")
+	// c matches a=1 and a=2; a=3 is UNMATCHED → NULL-extended.
+	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (10, 1), (11, 2)")
+
+	got := rfc173PinRows(t, db, ctx, "SELECT a.id, c.id FROM a LEFT JOIN c ON c.a_id = a.id")
+	sort.Strings(got)
+	want := []string{"1|10", "2|11", "3|<nil>"}
+	sort.Strings(want)
+	if !eqStrSlices(got, want) {
+		t.Errorf("LEFT JOIN rows = %v, want %v (a=3 NULL-extended through the ordinal null-leg birth)", got, want)
+	}
+}

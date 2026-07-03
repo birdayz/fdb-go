@@ -167,10 +167,26 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 		aliases = []string{la, ra}
 	}
 
+	// RFC-173 W4: ordinalize the dissolved shape when the LEFT is
+	// TOP-LEVEL-correlated (the null-supplying ON-preds touch only the
+	// preserved quantifier's own alias, never a buried source — the design ruling
+	// ruling). A BURIED-correlated dissolved LEFT keeps the name-model anchored
+	// RC: ordinalizing a flattened preserved cluster erases the buried name and
+	// the name-model ON-pred can't span into the ordinal leg (the RFC-153
+	// FlatMap-probe hazard). The executor's null-leg birth null-extends the
+	// null-supplying ordinals with no executor change (contract ruling #3).
+	resultValue := sel.GetResultValue()
+	if anchored, ok := resultValue.(*values.RecordConstructorValue); ok && anchored.AnchoredJoin &&
+		leftOrdinalizable(preds, preserved.GetAlias(), preservedProvided) {
+		if seed := ordinalSeedFromAnchoredLeft(anchored, preserved.GetAlias(), nullSupplying.GetAlias()); seed != nil {
+			resultValue = seed
+		}
+	}
+
 	// The outer SelectExpression is INNER (outer-join semantics now live entirely in
 	// the null-on-empty quantifier) and carries NO predicates.
 	outerSelect := expressions.NewSelectExpressionWithJoinType(
-		sel.GetResultValue(),
+		resultValue,
 		[]expressions.Quantifier{preserved, nullOnEmptyQun},
 		nil,
 		aliases,

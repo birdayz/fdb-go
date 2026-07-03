@@ -1074,3 +1074,23 @@ round (Graefe/Torvalds/codex/@claude) on the implementation. Regression net: the
 RFC-153 joined-preserved plan test MUST stay name-model (the buried case) AND a
 NEW top-level-correlated dissolved-LEFT pin MUST ordinalize; the null-on-empty
 executor pins; Gate Pins A/B rewrite at W4; task-count baseline ±2%.
+
+### W4 impl note — the buried-eligibility gate is SOURCE-COUNT, not ON-pred-alias
+Graefe's Q3 ruling ("gate on whether the ON-preds correlate below the top
+alias") has an ALIAS-COLLISION edge the first impl tripped: a flattened
+preserved cluster's synthetic quantifier alias is `sourceAlias` = its RIGHTMOST
+leaf's alias. So for `(a JOIN b) LEFT JOIN c ON c.bx_ref = b.bx`, the ON-pred
+correlates to `b`, which EQUALS the preserved cluster's own alias "B" — an
+`alias == topAlias` test wrongly reads it as top-level and ordinalizes, erasing
+the a⋈b structure (the e2e caught it: `field "BX" not resolvable, row columns
+[B.ID B.A_ID B.BX]`). The collision-safe gate keys on SOURCE COUNT:
+`leftOrdinalizable` is true iff `preservedProvidedAliases(preserved) ==
+{topAlias}` exactly (a single source, no buried). A multi-source preserved
+cluster is NEVER eligible — ordinalizing it erases buried names regardless of
+which alias the ON touches. Pins: TestRFC173W4_LeftOrdinalizable (source-count),
+TestRFC173W4_RewriteYieldsOrdinalSeed_TopLevel (the ordinal seed shape),
+TestFDB_RFC173_W4_TopLevelLeftOrdinalizes (e2e NULL-extension), RFC-153
+JoinedPreservedMatrix/buried_other_leg (buried stays name-model, red before the
+fix). No tripwire relaxation needed for the simple case (2-quantifier dissolved
+LEFT → binary join impl, not PartitionSelectRule; the executor null-leg birth
+was already done).
