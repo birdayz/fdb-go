@@ -586,6 +586,10 @@ type ordinalJoinBirth struct {
 	// leg ADAPTER resolves against (adaptLegPositional needs the box-level
 	// type for the box-alias binding; the spliced leaf window would misfit
 	// the leg's whole concat row). Equal to Spans when no splice applies.
+	// ONLY the FlatMap cursor splices these (its Datum derives from the
+	// birth); the NLJ cursor's Datum is mergeRows/mergeShapeDatum and never
+	// consults them — a future NLJ caller of oracleNameDatum/datumFromSpans
+	// must splice first or it inherits box-alias qualification silently.
 	DatumSpans []legSpan
 	// LegTypes are the leg types recovered from the RV's baked references —
 	// the adapter's leg types when the RV is folded and Spans are unavailable.

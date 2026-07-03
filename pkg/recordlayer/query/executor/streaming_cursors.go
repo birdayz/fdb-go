@@ -666,9 +666,9 @@ type nljCursor struct {
 	// additionally carries the positional merged row evaluated from the RC
 	// with per-leg bindings — DUAL emission: the name-model Datum
 	// (mergeRows/qualifyOuterRow) stays byte-identical — gated per emission
-	// on the Â§5 DisablePositionalEmission oracle.
+	// on the §5 DisablePositionalEmission oracle.
 	birth *ordinalJoinBirth
-	// birthActive = birth enabled AND the Â§5 oracle off, read once at
+	// birthActive = birth enabled AND the §5 oracle off, read once at
 	// construction (a cursor's lifetime never straddles an oracle phase —
 	// tests own whole phases). Gates ALL ordinal work below.
 	birthActive bool
@@ -684,7 +684,7 @@ type nljCursor struct {
 	outerCorr, innerCorr values.CorrelationIdentifier
 	// mergeRC is set iff the result value is the S3 positional-merge RC: the
 	// emitted Datum is then the MERGE SHAPE (slot `_i` = leg i's own Datum,
-	// mergeShapeDatum) on BOTH the live and Â§5-oracle sides — the partition
+	// mergeShapeDatum) on BOTH the live and §5-oracle sides — the partition
 	// rule rebases every upper reference through the merge quantifier, so
 	// mergeRows' flat keys would silently NULL them all (0-row joins on the
 	// oracle side, where no positional row backs the reads). NOT gated on
