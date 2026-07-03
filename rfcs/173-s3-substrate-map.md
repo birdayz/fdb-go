@@ -643,21 +643,26 @@ _ThreeAccessor. Torvalds' stale caller-comment and Graefe's end-state-scoping
 nits are subsumed: the doc now describes the full member set. Delta gates:
 Torvalds ACK, Graefe ACK (verified the pin red himself), codex regression fixed.
 
-## S3-W3 commit C (TranslationMap consolidation) — TRACKED FOLLOW-UP, not this PR
+## S3-W3 commit C (TranslationMap consolidation) — RESOLVED: NOT VIABLE as envisioned
 @claude's design-concern (round 1): the values-side TranslationMap builder (W2,
 2 users) and the pre-existing cascades-side one (99 users) share names/APIs
-across packages. Investigated: they sit on OPPOSITE sides of the import
-boundary (values cannot import cascades), so they genuinely cannot merge into
-ONE type — the "duplication" is a Go-layering consequence Java (no cycle
-constraint) doesn't have. The bounded cleanup available: align the
-values.TranslationMap interface's ApplyTranslationFunction to take LeafValue
-(legal — LeafValue is in values), letting cascades.RegularTranslationMap
-satisfy it, then delete the values-side RegularTranslationMap+builder and
-repoint rfc173_positional_merge.go to the cascades builder. Precondition
-verified: ownCorrelationOfLeaf matches {QOV, QuantifiedRecordValue,
-ScalarSubqueryValue, ObjectValue, UnmatchedAggregateValue,
-ConstantObjectValue} — confirm ALL are LeafValue before the signature change
-(a non-LeafValue match would break the assertion). This is a SEPARATE
-mechanical commit/PR per the RFC ruling; deferred from the fulcrum PR to keep a
-converging query-engine PR from carrying a 99-user refactor. Tracked here so
-the design is ready.
+across packages. Investigated to a definitive conclusion — the consolidation is
+architecturally IMPOSSIBLE, not merely deferred:
+1. The two types sit on OPPOSITE sides of the import boundary (values cannot
+   import cascades), so they cannot merge into ONE type. The cascades-side map
+   also carries AliasMap/GetTargetAlias, which live in cascades.
+2. The only signature-alignment path — narrow values.TranslationMap's
+   ApplyTranslationFunction from Value to LeafValue so cascades.RegularTranslationMap
+   satisfies it — is BLOCKED. TranslateCorrelations (translation_map.go:141)
+   applies the fn to every ownCorrelationOfLeaf type: {QOV, QuantifiedRecordValue,
+   ScalarSubqueryValue, ObjectValue, UnmatchedAggregateValue, ConstantObjectValue}.
+   Only QuantifiedObjectValue implements LeafValue (leaf_value.go:27); the other
+   FIVE do NOT (verified by grep for RebaseLeaf). So the values-side interface
+   MUST accept the broader Value — it cannot be narrowed to LeafValue.
+Conclusion: the two TranslationMaps are a LEGITIMATE Go-layering split (a
+consequence of the package cycle Java has no equivalent for), not reducible
+duplication. No consolidation commit. The builders are namespaced by package
+(values.TranslationMapBuilder vs cascades.TranslationMapBuilder) and each builds
+its own interface's impl; a same-name collision across packages is idiomatic Go,
+not a defect. The RFC's "separate mechanical commit" framing assumed a mergeable
+shape the import boundary + the LeafValue/Value domain difference invalidate.
