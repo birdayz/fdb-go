@@ -97,9 +97,14 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 	}
 	n := len(rc.Fields)
 	// The trailing element leg: a bare QOV over a NON-record type (the RawLeg
-	// scalar element, Java's primitive whole-object branch). A struct element
-	// (bare QOV over a RecordType) and every baked/constant field decline here —
-	// keeping this fallback scoped to exactly the scalar-element mixed seed.
+	// whole-object element, Java's primitive branch). Every baked/constant field
+	// declines the isQOV check. The non-record guard is LOAD-BEARING against the
+	// S3 positional-merge RC, whose trailing field is a bare QOV over a RECORD leg
+	// type — it must decline. (It ALSO declines a record-typed element leg, but
+	// that is currently unreachable: a STRUCT array element maps to UnknownType,
+	// NOT a *RecordType — unnestArrayElementType — so struct and scalar elements
+	// both flow through THIS windowing + the RawLeg raw-Datum bind, the whole-
+	// object binding. The guard is the S3-merge exclusion, not a struct branch.)
 	elemQOV, isQOV := rc.Fields[n-1].Value.(*values.QuantifiedObjectValue)
 	if !isQOV {
 		return nil, nil, false
