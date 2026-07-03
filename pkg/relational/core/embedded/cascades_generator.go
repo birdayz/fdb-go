@@ -681,17 +681,18 @@ func updateHasDefaultAssignment(upd antlrgen.IUpdateStatementContext) bool {
 }
 
 // updateHasSubqueryAssignment reports whether any UPDATE ... SET RHS contains
-// a subquery — the scalar atom `(SELECT ...)` or its SIBLING atom type
-// `EXISTS(SELECT ...)` (a separate grammar context a subquery-only check walks
-// past). Subqueries in SET are unsupported, and without this guard the builder
+// a query-bearing form: the scalar atom `(SELECT ...)`, its sibling atom
+// `EXISTS(SELECT ...)`, or an `IN (SELECT ...)` list carrying a query body —
+// three DISTINCT grammar contexts, each probed writing its literal text.
+// Subqueries in SET are unsupported, and without this guard the builder
 // treated the RHS as a plain expression whose CANONICAL TEXT became the
-// written string value — `SET name = (SELECT ...)` and `SET name = EXISTS(...)`
-// both wrote the literal text into the row (silent data corruption, review
-// probes; identical on master). Java's ExpressionVisitor has no subquery arm
-// for the SET RHS either, so per the conformance principle the shape gets a
-// CLEAN error, never a corrupt write. Contains-anywhere by design: the
-// corruption mechanism is whole-RHS text canonicalization, so a subquery
-// nested in CASE/arithmetic in SET hits the identical path.
+// written string value (silent data corruption, review probes; identical on
+// master). Java's ExpressionVisitor has no subquery arm for the SET RHS
+// either, so per the conformance principle the shape gets a CLEAN error,
+// never a corrupt write. Contains-anywhere by design: the corruption
+// mechanism is whole-RHS text canonicalization, so a subquery nested in
+// CASE/arithmetic in SET hits the identical path. A plain value-list IN
+// (`IN (1,2,3)`, no query body) passes through untouched.
 func updateHasSubqueryAssignment(upd antlrgen.IUpdateStatementContext) bool {
 	if upd == nil {
 		return false
@@ -701,9 +702,13 @@ func updateHasSubqueryAssignment(upd antlrgen.IUpdateStatementContext) bool {
 		if t == nil {
 			return false
 		}
-		switch t.(type) {
+		switch n := t.(type) {
 		case *antlrgen.SubqueryExpressionAtomContext, *antlrgen.ExistsExpressionAtomContext:
 			return true
+		case *antlrgen.InListContext:
+			if n.QueryExpressionBody() != nil {
+				return true
+			}
 		}
 		for i := 0; i < t.GetChildCount(); i++ {
 			if containsSubquery(t.GetChild(i)) {

@@ -94,4 +94,25 @@ func TestFDB_RFC173W4b_UpdateSetCorrelatedBinder(t *testing.T) {
 	if !name.Valid || name.String != "alice" {
 		t.Errorf("declined EXISTS UPDATE mutated the row: name = %q (valid=%v), want alice untouched", name.String, name.Valid)
 	}
+
+	// The IN-subquery sibling: `IN (SELECT ...)` is an InListContext carrying
+	// a QueryExpressionBody — a third query-bearing form the atom-type checks
+	// walk past. Same corruption mechanism, same decline, same no-mutation.
+	_, inErr := db.ExecContext(ctx,
+		"UPDATE customers SET name = id IN (SELECT l.customer_id FROM labels l) WHERE id = 1")
+	if inErr == nil {
+		if err := db.QueryRowContext(ctx, "SELECT name FROM customers WHERE id = 1").Scan(&name); err != nil {
+			t.Fatalf("read back after IN SET: %v", err)
+		}
+		t.Fatalf("IN-subquery in UPDATE SET unexpectedly planned; wrote %q — flip this pin to a correctness assertion if the shape gained real support", name.String)
+	}
+	if !strings.Contains(inErr.Error(), "0AF00") {
+		t.Errorf("IN-subquery SET decline error = %v, want the clean unsupported class (0AF00)", inErr)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT name FROM customers WHERE id = 1").Scan(&name); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !name.Valid || name.String != "alice" {
+		t.Errorf("declined IN-subquery UPDATE mutated the row: name = %q (valid=%v), want alice untouched", name.String, name.Valid)
+	}
 }
