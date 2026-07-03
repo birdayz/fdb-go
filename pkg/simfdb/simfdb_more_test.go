@@ -125,6 +125,32 @@ func TestClearRangeRemovesOnlyRange(t *testing.T) {
 	}
 }
 
+func TestReadOnlyCommitShortCircuits(t *testing.T) {
+	t.Parallel()
+	db := New(nil)
+	db.Transact(func(tx fdb.WritableTransaction) (any, error) { tx.Set(k("seed"), []byte("v")); return nil, nil })
+
+	// A read-only transaction's commit is a client-side no-op in real FDB — it never conflicts,
+	// never ages out, and never returns commit_unknown. So an injected fault must NOT fire on it.
+	db.InjectOnce(1021)
+	tx := db.newTxn(false)
+	tx.Get(k("seed")).MustGet() // read only: adds a read conflict, no write
+	if err := tx.Commit().Get(); err != nil {
+		t.Fatalf("read-only commit should short-circuit to success, got %v", err)
+	}
+	// A read-only commit takes no commit version.
+	if cv, _ := tx.GetCommittedVersion(); cv != -1 {
+		t.Fatalf("read-only committedVersion = %d, want -1", cv)
+	}
+	// The injection was NOT consumed by the read-only commit — it is still pending for the next
+	// real (write) commit.
+	tx2 := db.newTxn(false)
+	tx2.Set(k("w"), []byte("v"))
+	if code := errCode(t, tx2.Commit().Get()); code != 1021 {
+		t.Fatalf("injection should still fire on the next write commit, got %d", code)
+	}
+}
+
 func TestInjectOnce(t *testing.T) {
 	t.Parallel()
 	db := New(nil)

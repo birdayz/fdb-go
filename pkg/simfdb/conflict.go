@@ -34,6 +34,17 @@ func (db *SimDB) commit(tx *simTxn) error {
 		return fdb.Error{Code: 1025} // transaction_cancelled-ish: db gone
 	}
 
+	// Read-only / empty commit: a transaction with no mutations and no write conflict ranges is
+	// completed CLIENT-SIDE by real FDB with no commit-proxy round-trip (ReadYourWrites.actor.cpp
+	// commit()'s read-only fast path), so it never conflicts, never ages out, and never returns
+	// commit_unknown — and it takes no commit version (GetCommittedVersion returns -1). Injected
+	// and BUGGIFY faults must NOT fire on it either. Short-circuit before any of that.
+	if len(tx.buffer) == 0 && len(tx.writeConflicts) == 0 {
+		tx.committed = true
+		tx.committedVersion = -1
+		return nil
+	}
+
 	// transaction_too_old(1007): a read version below the MVCC window. A distinct, earlier
 	// verdict than not_committed — and it never fires for a write-only transaction (one with no
 	// read conflict ranges), matching FDB (SkipList.cpp:837 gates on read_conflict_ranges.size()).
