@@ -107,8 +107,9 @@ func planChainTasks(t *testing.T, n int) int {
 // which over-deduped CTE column-rename selects (whose quantifier aliases external
 // consumers resolve by identity — Go has not unified namespaces, TODO 7.1) and
 // silently read a renamed column as NULL (TestFDB_CTEChainedColumnAliases /
-// TestFDB_CascadesCTEColumnAliases). Only a select whose result value is a
-// source-anchored join RC (AnchoredJoin) — the marker of a merge select, whose
+// TestFDB_CascadesCTEColumnAliases). Only a MERGE select — one whose result value
+// is a merge marker (the name-model source-anchored join RC AnchoredJoin, or the
+// S3-authoritative ordinal markers IsPositionalMergeRC / IsOrdinalJoinRV), whose
 // merge quantifier is planner-internal with NO external consumer — may intern
 // alias-aware. Un-gating (returning true for non-merge selects) reopens the
 // silent-NULL regression.
@@ -118,8 +119,10 @@ func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 	t1 := scanQuantifier("T1")
 	t2 := scanQuantifier("T2")
 
-	// A merge re-enumeration select (result value is a source-anchored join RC)
-	// opts in.
+	// The gate opts in on THREE merge-select markers. (a) The name-model
+	// source-anchored join RC (AnchoredJoin) — the RESIDUAL path, still
+	// constructible in Slice 3 (scalar-subquery / multi-source-unnest seeds),
+	// retired with the trio in Slice 4.
 	mergeSel := expressions.NewSelectExpressionWithAliases(
 		values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
 			{Alias: values.NamedCorrelationIdentifier("T1"), Columns: []values.Field{{Name: "ID"}}},
@@ -128,7 +131,30 @@ func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 		[]expressions.Quantifier{t1, t2}, nil, []string{"T1", "T2"},
 	)
 	if !mergeSel.InternsAliasAware() {
-		t.Error("a select with a source-anchored join RC result must intern alias-aware (merge re-enumeration)")
+		t.Error("a select with a source-anchored join RC result must intern alias-aware (anchored residual)")
+	}
+
+	// (b) The S3-AUTHORITATIVE positional merge row (IsPositionalMergeRC: unnamed
+	// `_i` columns over bare QOVs — PartitionSelectRule's positionalMergeCase
+	// shape). Same rationale: the collapsed lower's quantifiers are
+	// planner-internal, so alias-identity dedup would re-explode shared
+	// sub-products per bipartition.
+	posMergeSel := expressions.NewSelectExpressionWithAliases(
+		values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "_0", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1"))},
+			values.RecordConstructorField{Name: "_1", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T2"))},
+		),
+		[]expressions.Quantifier{t1, t2}, nil, []string{"T1", "T2"},
+	)
+	if !posMergeSel.InternsAliasAware() {
+		t.Error("a positional merge row (IsPositionalMergeRC) must intern alias-aware — the S3-authoritative merge marker")
+	}
+
+	// (c) The S3-AUTHORITATIVE ordinal JOIN-SEED result value (IsOrdinalJoinRV:
+	// every field a pinned baked leg reference over ≥2 quantifiers), reusing the
+	// dispatch-authority corpus. The ordinal successor of the AnchoredJoin marker.
+	if !buildOrdinalChainSelect(2).InternsAliasAware() {
+		t.Error("an ordinal join-seed RC (IsOrdinalJoinRV) must intern alias-aware — the S3-authoritative seed marker")
 	}
 
 	// A plain projection select (e.g. a CTE column rename's body) must NOT opt in:
