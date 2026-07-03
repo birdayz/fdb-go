@@ -79,6 +79,7 @@ go_test(
         "cost_selectivity_test.go",
         "embedded_test.go",
         "exists_in_on_plan_test.go",
+        "inner_source_aliases_test.go",
         "logical_builder_test.go",
         "logical_predicate_test.go",
         "logical_qualify_test.go",
