@@ -3169,10 +3169,13 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		return sel
 	}
 
-	// RFC-173 Slice 2: this NAME-MODEL 2-leg anchored seed (Slice 3 flips it — it is a pre-rewrite LEFT OUTER select, the ephemeral object the W3b premise correction covers; review W4-deferral ruling — to
-	// ordinal) absorbs mergeable leg selects post-flattening — a join nested
-	// in either leg lands in a ≥3-quantifier name-model select, so both legs
-	// translate enclosed.
+	// RFC-173: on the residual NAME-MODEL path below (ungated outers; the
+	// single-source ordinal decline), the 2-leg anchored seed absorbs mergeable
+	// leg selects post-flattening — a join nested in either leg lands in a
+	// ≥3-quantifier name-model select, so both legs translate enclosed. (The
+	// gated-cluster ordinal path above lifts the enclosure for its outer leg;
+	// this poisoning survives only for the name-model residual, until
+	// W4-left/W5/S4 retire it.)
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = true
 	defer func() { t.inInnerCluster = prevEnclosure }()

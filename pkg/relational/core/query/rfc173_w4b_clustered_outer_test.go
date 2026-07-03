@@ -179,9 +179,11 @@ func TestRFC173W4b_ClusteredPullUp_BakesAllLegs(t *testing.T) {
 // pull-up walk's carrier enumeration. Every enumerated node kind's value slots
 // are VISITED (a leg ref planted in each is collected), and every kind outside
 // the enumeration reports exhaustive=false so the ordinal path DECLINES rather
-// than silently skipping values. A new logical node kind therefore fails SAFE
-// (falls to the default arm → decline) — this pin documents the enumerated
-// set; extend the rebuild arms AND this table together.
+// than silently skipping values. A new logical node kind falls to the default
+// arm and fails SAFE — the query keeps its pre-W4b behavior instead of
+// mis-baking, at the cost of silently narrowing ordinal coverage (and of the
+// decline guard not seeing refs inside the new kind). This pin documents the
+// enumerated set; extend the rebuild arms AND this table together.
 func TestRFC173W4b_ClusteredCarrierEnumeration(t *testing.T) {
 	t.Parallel()
 
@@ -229,7 +231,7 @@ func TestRFC173W4b_ClusteredCarrierEnumeration(t *testing.T) {
 			logical.NewFilterWithPredicate(scan("Order", "SQ"), legPred(), ""), scan("TypedRecord", "sq2"))},
 	}
 	for _, c := range enumerated {
-		refs, exhaustive := collectClusterOuterRefs(c.op, outer, "SQ")
+		refs, exhaustive := collectClusterOuterRefs(c.op, outer, map[string]struct{}{"SQ": {}})
 		if !exhaustive {
 			t.Errorf("%s: exhaustive=false, want the carrier enumerated", c.kind)
 		}
@@ -254,7 +256,7 @@ func TestRFC173W4b_ClusteredCarrierEnumeration(t *testing.T) {
 		}},
 	}
 	for _, c := range unenumerated {
-		if _, exhaustive := collectClusterOuterRefs(c.op, outer, "SQ"); exhaustive {
+		if _, exhaustive := collectClusterOuterRefs(c.op, outer, map[string]struct{}{"SQ": {}}); exhaustive {
 			t.Errorf("%s: exhaustive=true for an un-enumerated carrier — refs could hide there and mis-bake", c.kind)
 		}
 	}
@@ -383,6 +385,47 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 	declined := clusteredProject(left, clusteredCSQ("o", "ORDER_ID"))
 	if expr3 := tr3.translateProjectWithCorrelatedScalar(declined); expr3 != nil {
 		t.Fatal("ungated outer + non-rightmost correlation must DECLINE (the name model silently NULLs it)")
+	}
+}
+
+// TestRFC173W4b_InnerOwnAliasNotOuterRef pins the classifier's skip set: an
+// inner that JOINS a table the outer FROM also binds (same alias — here the
+// inner joins Order AS o while the outer's FIRST leg is Order o) references
+// its OWN copy under SQL scoping. Misclassifying those refs as outer-leg refs
+// flips nonRightmost and spuriously DECLINES a rightmost-correlated query the
+// name-model fallback handles today (the ordinal path itself correctly
+// declines on the alias shadow — the fallback must then still fire).
+func TestRFC173W4b_InnerOwnAliasNotOuterRef(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	// Inner: SELECT sq.order_id FROM TypedRecord sq JOIN Order o ON o.order_id
+	// = sq.next_id WHERE sq.id = c.customer_id — its own "o" shadows the
+	// outer's first leg; the only OUTER ref is to C (the rightmost leg).
+	innerJoin := logical.NewJoinWithPredicate(
+		scan("TypedRecord", "SQ"), scan("Order", "o"), logical.JoinInner,
+		corrEq("o", "ORDER_ID", "SQ", "NEXT_ID"))
+	csq := logical.CorrelatedScalarSubquery{
+		Alias: values.UniqueCorrelationIdentifier(),
+		InnerPlan: logical.NewFilterWithPredicate(
+			innerJoin, corrEq("SQ", "ID", "c", "CUSTOMER_ID"), ""),
+		InnerAlias:   "SQ",
+		ScalarCol:    "ORDER_ID",
+		StrictSingle: true,
+	}
+	p := clusteredProject(inner(scan("Order", "o"), scan("Customer", "c")), csq)
+	p.Projections = []string{"c.customer_id", "(subq)"}
+
+	expr := tr.translateProjectWithCorrelatedScalar(p)
+	if expr == nil {
+		t.Fatal("rightmost-only correlation with an inner-own alias shadowing an outer leg must NOT decline — the name-model fallback handles it today (skip set = the inner's whole own-alias universe)")
+	}
+	// The ordinal path correctly declines on the alias shadow; the residual
+	// anchored fallback must be what fired.
+	proj := expr.(*expressions.LogicalProjectionExpression)
+	sel := proj.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
+	if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); !isRC || !rc.AnchoredJoin {
+		t.Fatalf("expected the anchored fallback (ordinal path declines on the alias shadow), got %T", sel.GetResultValue())
 	}
 }
 

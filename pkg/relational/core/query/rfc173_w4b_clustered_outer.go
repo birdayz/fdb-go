@@ -33,11 +33,14 @@ import (
 //     mixed-model read.
 // Ungated outers (LEFT-box, unnest, existential-carrying, dup-alias) keep the
 // name-model fallback for rightmost-only correlation (works today) and DECLINE
-// (clean plan error) for known non-rightmost correlation — CORRECT or LOUD,
-// never silently NULL. The fresh-unique outer correlation id (the W2
-// unique-ids principle) structurally rules out the DIVERGENT-baked-types
-// collision between the level-2 concat type and the cluster's own rightmost
-// leg type.
+// (clean plan error) for KNOWN non-rightmost correlation — CORRECT or LOUD for
+// every ref the walk can prove. (A non-rightmost ref hiding in an
+// un-enumerated carrier — union arm, subquery rider — is invisible to the
+// classifier and keeps the pre-W4b fallback behavior; the guarantee is scoped
+// to provable refs, RFC impl-correction-3 (iv).) The fresh-unique outer
+// correlation id (the W2 unique-ids principle) structurally rules out the
+// DIVERGENT-baked-types collision between the level-2 concat type and the
+// cluster's own rightmost leg type.
 
 // clusterPullUp is the resolved spine of the gated clustered-outer ordinal
 // path: the fresh level-2 outer correlation, the cluster's flat concat type,
@@ -311,12 +314,16 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 }
 
 // collectClusterOuterRefs reports which OUTER-subtree source aliases the inner
-// chain references (skipping the inner's own alias — SQL scoping shadows it).
-// exhaustive=false when the chain contains carriers outside the
-// rebuildInnerWithValues enumeration; the refs found up to that point are
-// still definite (sound for the decline guard, which fails toward today's
-// behavior when the walk is incomplete).
-func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases map[string]struct{}, skip string) (map[string]struct{}, bool) {
+// chain references. skip is EVERY alias the inner binds itself — its
+// subquery-level alias AND its own join-leg/unnest sources — because SQL
+// scoping shadows those inside the subquery: an inner that joins a table the
+// outer FROM also binds (same name) references its OWN copy, and classifying
+// that as an outer-leg ref would spuriously decline a query the name-model
+// fallback handles today. exhaustive=false when the chain contains carriers
+// outside the rebuildInnerWithValues enumeration; the refs found up to that
+// point are still definite (sound for the decline guard, which fails toward
+// today's behavior when the walk is incomplete).
+func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[string]struct{}) (map[string]struct{}, bool) {
 	refs := map[string]struct{}{}
 	record := func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)
@@ -335,7 +342,7 @@ func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases map[string
 		} else {
 			return v
 		}
-		if alias == skip {
+		if _, shadowed := skip[alias]; shadowed {
 			return v
 		}
 		if _, isOuter := outerAliases[alias]; isOuter {
@@ -511,8 +518,15 @@ func (t *cascadesTranslator) translateClusteredOuterScalar(p *logical.LogicalPro
 	}
 
 	rightmost := strings.ToUpper(sourceAlias(p.Input))
-	innerAliasU := strings.ToUpper(csq.InnerAlias)
-	refs, exhaustive := collectClusterOuterRefs(csq.InnerPlan, outerSubtreeAliases(p.Input), innerAliasU)
+	// The classifier's skip set is the inner's WHOLE own-alias universe — the
+	// subquery alias plus every source the inner binds (join legs, unnest) —
+	// exactly the universe the ordinal path's shadow check uses. Skipping only
+	// csq.InnerAlias misclassified an inner's own join-leg refs as outer-leg
+	// refs whenever the inner joins a table the outer FROM also binds, and
+	// spuriously DECLINED a query the fallback handles today.
+	innerOwn := outerSubtreeAliases(csq.InnerPlan)
+	innerOwn[strings.ToUpper(csq.InnerAlias)] = struct{}{}
+	refs, exhaustive := collectClusterOuterRefs(csq.InnerPlan, outerSubtreeAliases(p.Input), innerOwn)
 	nonRightmost := false
 	for a := range refs {
 		if a != rightmost {

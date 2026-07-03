@@ -108,7 +108,7 @@ func TestFDB_RFC173W4b_ClusteredOuterScalar(t *testing.T) {
 		t.Errorf("LEFT-join rightmost correlation = %d (valid=%v), want 50", amt.Int64, amt.Valid)
 	}
 
-	// (g) Comma cluster, first-leg correlation, SINGLE projection (isolates the
+	// (f) Comma cluster, first-leg correlation, SINGLE projection (isolates the
 	// correlation axis from the multi-leg projection axis of (a)).
 	const qFirstOnly = "SELECT (SELECT o.amount FROM orders o WHERE o.id = c.id) " +
 		"FROM customers c, extras e WHERE c.id = 1 AND e.id = 10"
