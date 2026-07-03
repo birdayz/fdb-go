@@ -64,6 +64,14 @@ func (db *SimDB) commit(tx *simTxn) error {
 		}
 	}
 
+	// Targeted injection (InjectOnce/InjectSequence): a deterministic fault for this commit.
+	// 1021 fires after apply (below); everything else (1020/1007/1009/size codes) fires here,
+	// before any mutation applies.
+	inject := db.takeInject()
+	if inject != 0 && inject != 1021 {
+		return fdb.Error{Code: inject}
+	}
+
 	// BUGGIFY: seed-chosen commit-time faults so retry/idempotency paths are exercised
 	// deterministically (RFC-179 Tier 1 item 7). Conflict/too-old fire BEFORE apply (nothing
 	// committed); commit_unknown fires AFTER apply (the write is durable but the caller must
@@ -89,7 +97,7 @@ func (db *SimDB) commit(tx *simTxn) error {
 	tx.readConflicts = nil
 	tx.writeConflicts = nil
 
-	if db.env.Fault("simfdb.commit.unknown") {
+	if inject == 1021 || db.env.Fault("simfdb.commit.unknown") {
 		return fdb.Error{Code: 1021} // commit_unknown_result — data applied, outcome "unknown"
 	}
 	return nil

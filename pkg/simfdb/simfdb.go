@@ -37,6 +37,49 @@ type SimDB struct {
 	// added via AddWriteConflictRange without a data write. Never GC'd in v1 (full history is
 	// strictly safer — see mvccStore).
 	recentWrites []committedWrites
+
+	// pendingInject, when non-zero, forces the next commit to return that FDB error code — a
+	// deterministic, targeted fault (the analog of chaos.InjectOnce but with SimFDB's TRUE
+	// rollback). A retryable code (1020/1007) fires BEFORE the mutations apply; commit_unknown
+	// (1021) fires AFTER they apply — the data is durable but the caller sees an ambiguous
+	// result and retries, the exact non-idempotency surface. Cleared after firing once.
+	pendingInject int
+	injectQueue   []int // faults scheduled for successive commits (InjectSequence)
+}
+
+// InjectOnce schedules fault code to be returned by the NEXT commit. Deterministic (no seed):
+// 1020 (not_committed) / 1007 (transaction_too_old) fire before apply; 1021 (commit_unknown)
+// fires after apply. Use to reproduce a precise fault at a chosen point when hunting real
+// record-layer retry/idempotency bugs.
+func (db *SimDB) InjectOnce(code int) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.pendingInject = code
+}
+
+// InjectSequence schedules faults for successive commits (codes[0] on the next commit, codes[1]
+// on the one after, etc.). A zero in the sequence means "no fault on that commit". Lets a hunt
+// drive a whole workload through a fixed fault schedule.
+func (db *SimDB) InjectSequence(codes ...int) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.injectQueue = append(db.injectQueue, codes...)
+}
+
+// takeInject returns the fault to apply to this commit (pendingInject, else the head of
+// injectQueue), consuming it. Caller holds db.mu.
+func (db *SimDB) takeInject() int {
+	if db.pendingInject != 0 {
+		c := db.pendingInject
+		db.pendingInject = 0
+		return c
+	}
+	if len(db.injectQueue) > 0 {
+		c := db.injectQueue[0]
+		db.injectQueue = db.injectQueue[1:]
+		return c
+	}
+	return 0
 }
 
 // committedWrites records one committed transaction's write-conflict ranges at its version.

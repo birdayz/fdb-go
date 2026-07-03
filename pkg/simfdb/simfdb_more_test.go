@@ -125,6 +125,43 @@ func TestClearRangeRemovesOnlyRange(t *testing.T) {
 	}
 }
 
+func TestInjectOnce(t *testing.T) {
+	t.Parallel()
+	db := New(nil)
+
+	// 1020 (not_committed) fires BEFORE apply: the commit fails and the data is NOT written.
+	db.InjectOnce(1020)
+	tx := db.newTxn(false)
+	tx.Set(k("x"), []byte("v"))
+	if code := errCode(t, tx.Commit().Get()); code != 1020 {
+		t.Fatalf("InjectOnce(1020): got %d, want 1020", code)
+	}
+	if got, _ := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		return rtx.Get(k("x")).MustGet(), nil
+	}); got.([]byte) != nil {
+		t.Fatal("1020 fired before apply, but x was written")
+	}
+
+	// 1021 (commit_unknown_result) fires AFTER apply: the commit "fails" but the data IS durable —
+	// the non-idempotent-retry surface a real workload must survive.
+	db.InjectOnce(1021)
+	tx2 := db.newTxn(false)
+	tx2.Set(k("y"), []byte("v"))
+	if code := errCode(t, tx2.Commit().Get()); code != 1021 {
+		t.Fatalf("InjectOnce(1021): got %d, want 1021", code)
+	}
+	if got, _ := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		return string(rtx.Get(k("y")).MustGet()), nil
+	}); got.(string) != "v" {
+		t.Fatal("1021 fired after apply, but y was NOT durable")
+	}
+
+	// Injection is consumed after one commit — the next commit succeeds cleanly.
+	if err := db.run(func(tx fdb.WritableTransaction) { tx.Set(k("z"), []byte("v")) }); err != nil {
+		t.Fatalf("post-injection commit should succeed: %v", err)
+	}
+}
+
 func TestIdempotentDoubleCommit(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
