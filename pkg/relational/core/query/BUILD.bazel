@@ -9,6 +9,7 @@ go_library(
         "rfc173_cluster_gate.go",
         "rfc173_ordinal_seed.go",
         "rfc173_w4b_scalar_seed.go",
+        "rfc173_w4c_unnest_seed.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/query",
     visibility = ["//visibility:public"],
@@ -31,6 +32,7 @@ go_test(
         "plan_test.go",
         "rfc173_cluster_gate_test.go",
         "rfc173_w4b_scalar_seed_test.go",
+        "rfc173_w4c_unnest_seed_test.go",
     ],
     embed = [":query"],
     deps = [

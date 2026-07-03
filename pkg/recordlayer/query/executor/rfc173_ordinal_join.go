@@ -59,7 +59,96 @@ type legSpan struct {
 // legs are legal and preserved verbatim) with one field per RC field: the RC
 // field's name, the baked FieldValue's type, ordinal = position.
 func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
-	return ordinalJoinSpansOf(v, nil)
+	if spans, mergedType, ok = ordinalJoinSpansOf(v, nil); ok {
+		return spans, mergedType, true
+	}
+	// RFC-173 W4c: the MIXED single-source lateral-unnest seed (baked outer run
+	// + a bare-scalar element) is not a pristine all-baked seed, so
+	// ordinalJoinSpansOf declines it; derive its windows (outer leg + a
+	// synthesized 1-field element leg) so the shadowing element gets its own
+	// namespace. Decline-only for every other shape.
+	return unnestMixedSeedSpans(v)
+}
+
+// unnestMixedSeedSpans derives leg windows for the RFC-173 W4c MIXED single-
+// source lateral-unnest ordinal seed (rfc173_w4c_unnest_seed.go): a full baked
+// OUTER leg run followed by EXACTLY ONE trailing bare-QuantifiedObjectValue
+// element field over a NON-record type — Java's isPrimitive() whole-object
+// element (a scalar bound DIRECTLY, never an ofOrdinal baked leg; it binds RAW
+// at birth, see ordinalJoinBirth.RawLegs). ordinalJoinSpansOf DECLINES this
+// shape (the element is a bare QOV, not a FrontierPinned FieldValue), so without
+// windows the FlatMap output resolves references by positional FIRST-match —
+// which mis-resolves a name SHARED by the element AS alias and an outer column
+// (`FROM t, t.arr AS x` where t also has a column x) to the OUTER duplicate, and
+// leaves a qualified outer reference (`t.id`) unresolvable in a wrapping
+// name-model join's merged row. This synthesizes the element's OWN 1-field leg
+// window (Alias = the element QOV correlation = the unnest AS alias; the leg's
+// single column = the RC field's name) so the element and the outer each carry
+// their own ALIAS.COL namespace — mirroring the WITH-ORDINALITY inner leg (a
+// genuine 2-field record leg, which ordinalJoinSpansOf already windows) and the
+// name-model buildUnnestResultValue's AS-alias shadowing. DECLINE-only
+// (ok=false) for every other shape: the trailing-bare-QOV-over-non-record
+// discriminator never matches a folded projection, a baked+constant fold, or the
+// S3 positional-merge RC (whose bare QOVs are over RECORD leg types).
+func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
+	rc, isRC := v.(*values.RecordConstructorValue)
+	if !isRC || len(rc.Fields) < 2 {
+		return nil, nil, false
+	}
+	n := len(rc.Fields)
+	// The trailing element leg: a bare QOV over a NON-record type (the RawLeg
+	// scalar element, Java's primitive whole-object branch). A struct element
+	// (bare QOV over a RecordType) and every baked/constant field decline here —
+	// keeping this fallback scoped to exactly the scalar-element mixed seed.
+	elemQOV, isQOV := rc.Fields[n-1].Value.(*values.QuantifiedObjectValue)
+	if !isQOV {
+		return nil, nil, false
+	}
+	if _, isRecord := elemQOV.Type().(*values.RecordType); isRecord {
+		return nil, nil, false
+	}
+	// The OUTER leg: a single FULL baked run from ordinal 0 over one alias — the
+	// same run/coverage discipline ordinalJoinSpansOf enforces per leg.
+	mergedFields := make([]values.Field, n)
+	var outer *legSpan
+	for i := 0; i < n-1; i++ {
+		f := rc.Fields[i]
+		fv, isFV := f.Value.(*values.FieldValue)
+		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+			return nil, nil, false
+		}
+		alias, legType, ord, resolved := resolveSpanLeaf(fv, nil)
+		if !resolved {
+			return nil, nil, false
+		}
+		if outer == nil {
+			if ord != 0 {
+				return nil, nil, false
+			}
+			outer = &legSpan{Alias: alias, LegType: legType, Offset: 0, Width: 1}
+		} else {
+			if alias != outer.Alias || ord != outer.Width {
+				return nil, nil, false // a second baked leg or a gap — not this seed
+			}
+			outer.Width++
+		}
+		mergedFields[i] = values.Field{Name: f.Name, FieldType: fv.Type(), Ordinal: i}
+	}
+	if outer == nil || outer.LegType == nil || outer.Width != len(outer.LegType.Fields) {
+		return nil, nil, false // partial outer coverage — a folded projection, not the seed
+	}
+	// Synthesize the element's 1-field leg window so `<AS>.<AS>` resolves
+	// alias → element window → the sole column, exactly as datumFromSpans/the
+	// name model qualify the element leg.
+	elemName := strings.ToUpper(rc.Fields[n-1].Name)
+	elemType := elemQOV.Type()
+	elemLegType := &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: elemType, Ordinal: 0}}}
+	mergedFields[n-1] = values.Field{Name: elemName, FieldType: elemType, Ordinal: n - 1}
+	spans = []legSpan{
+		*outer,
+		{Alias: elemQOV.Correlation, LegType: elemLegType, Offset: n - 1, Width: 1},
+	}
+	return spans, &values.RecordType{Fields: mergedFields}, true
 }
 
 // ordinalJoinSpansOf is ordinalJoinSpans with FUSED-reference resolution (the
@@ -296,6 +385,12 @@ func joinPlanSpans(join plans.RecordQueryPlan) ([]legSpan, bool) {
 	collectJoinLegRVs(join, legRVs)
 	spans, _, ok := ordinalJoinSpansOf(rv, legRVs)
 	if !ok {
+		// RFC-173 W4c: the MIXED single-source lateral-unnest seed windows via
+		// the dedicated derivation (bare-scalar element leg). It has no fused/box
+		// legs, so the spans stand without a splice.
+		if ms, _, mok := unnestMixedSeedSpans(rv); mok {
+			return ms, true
+		}
 		return nil, false
 	}
 	return spliceLegSpans(spans, legRVs), true
@@ -441,6 +536,18 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 		matched := 0
 		for i, f := range legType.Fields {
 			if v, present := m[f.Name]; present {
+				row.Slots[i] = v
+				matched++
+				continue
+			}
+			// RFC-142 W4c: a WITH-ORDINALITY Explode flows an ordinality record
+			// keyed by OrdinalFieldName (`_0`,`_1`) while the unnest leg type is
+			// named by the AS/AT aliases (the columns' OUTPUT names). When a leg
+			// field's NAME is absent from the Datum, fall back to its ordinal key —
+			// a positional bind unambiguous for an ordinal-named record that never
+			// fires for a normal name-model leg (whose field names ARE its Datum
+			// keys, so the name match above already took slot i).
+			if v, present := m[values.OrdinalFieldName(i)]; present {
 				row.Slots[i] = v
 				matched++
 			}
@@ -594,6 +701,17 @@ type ordinalJoinBirth struct {
 	// LegTypes are the leg types recovered from the RV's baked references —
 	// the adapter's leg types when the RV is folded and Spans are unavailable.
 	LegTypes map[values.CorrelationIdentifier]*values.RecordType
+	// RawLegs are legs referenced by a BARE QuantifiedObjectValue over a
+	// NON-record type — the RFC-142 W4c lateral-unnest bare-scalar (or struct)
+	// element leg, whose whole flowed Datum IS the column (Java's isPrimitive()
+	// branch: the element is referenced directly, never ofOrdinal — ofOrdinal
+	// over a scalar throws). Such a leg must bind its RAW Datum, never be adapted
+	// to an OrdinalRow: adaptLegPositional would synthesize an EMPTY positional
+	// row for a non-record Datum, so the element would birth NULL (the coexistence
+	// Datum masks it today; the positional row — S4's sole authority — would be
+	// wrong). Discriminated by leg SHAPE at construction, never a per-plan flag.
+	// The record-leg OrdinalRow path (adaptLegPositional) is unchanged.
+	RawLegs map[values.CorrelationIdentifier]struct{}
 }
 
 // newOrdinalJoinBirth probes a join plan's result value at cursor
@@ -636,6 +754,7 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 	// source copies the one planner-constructed typed QOV — asserted the
 	// same way (a silent first-wins here would be an inconsistent assertion
 	// of a load-bearing invariant, review nit).
+	var rawLegs map[values.CorrelationIdentifier]struct{}
 	for _, f := range rc.Fields {
 		if qov, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
 			if rt, isRT := qov.Type().(*values.RecordType); isRT {
@@ -644,6 +763,14 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 				} else if len(prev.Fields) != len(rt.Fields) {
 					panic(fmt.Sprintf("RFC-173: leg %s carries DIVERGENT types (%d vs %d fields) across the RV's bare-QOV and baked-reference sources — all references must copy the one planner-constructed typed QOV (planner bug)", qov.Correlation, len(prev.Fields), len(rt.Fields)))
 				}
+			} else {
+				// A bare QOV over a NON-record type: the W4c lateral-unnest
+				// bare-scalar/struct element leg — bind its whole flowed Datum
+				// raw (see RawLegs).
+				if rawLegs == nil {
+					rawLegs = map[values.CorrelationIdentifier]struct{}{}
+				}
+				rawLegs[qov.Correlation] = struct{}{}
 			}
 		}
 	}
@@ -671,6 +798,7 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 		WindowsOK:  windowsOK,
 		DatumSpans: spans,
 		LegTypes:   legTypes,
+		RawLegs:    rawLegs,
 	}, nil
 }
 
@@ -843,19 +971,31 @@ func (b *ordinalJoinBirth) legType(id values.CorrelationIdentifier) *values.Reco
 // NULL leg (LEFT/FULL null padding): its alias maps to nil, PRESENT — the
 // binder then returns (nil, true) and the leg's baked references evaluate to
 // NULL (contract ruling #3; the null extension falls out of evaluation).
-func (b *ordinalJoinBirth) legRows(outerAlias, innerAlias string, outer, inner *QueryResult) (map[values.CorrelationIdentifier]values.OrdinalRow, error) {
+func (b *ordinalJoinBirth) legRows(outerAlias, innerAlias string, outer, inner *QueryResult) (map[values.CorrelationIdentifier]values.OrdinalRow, map[values.CorrelationIdentifier]any, error) {
 	legs := make(map[values.CorrelationIdentifier]values.OrdinalRow, 2)
-	if err := b.bindLeg(legs, outerAlias, outer); err != nil {
-		return nil, err
+	raw := make(map[values.CorrelationIdentifier]any)
+	if err := b.bindLeg(legs, raw, outerAlias, outer); err != nil {
+		return nil, nil, err
 	}
-	if err := b.bindLeg(legs, innerAlias, inner); err != nil {
-		return nil, err
+	if err := b.bindLeg(legs, raw, innerAlias, inner); err != nil {
+		return nil, nil, err
 	}
-	return legs, nil
+	return legs, raw, nil
 }
 
-func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, alias string, qr *QueryResult) error {
+func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, alias string, qr *QueryResult) error {
 	id := values.NamedCorrelationIdentifier(alias)
+	// A RAW leg (a bare-QOV non-record W4c unnest element) binds its whole flowed
+	// Datum — never adapted to a (non-record → empty) OrdinalRow. A nil pointer is
+	// the deliberately-NULL leg: raw nil, which QOV(inner).Evaluate flows as NULL.
+	if _, isRaw := b.RawLegs[id]; isRaw {
+		if qr == nil {
+			raw[id] = nil
+		} else {
+			raw[id] = qr.Datum
+		}
+		return nil
+	}
 	if qr == nil {
 		legs[id] = nil // the deliberately-NULL leg: present, bound to nil
 		return nil
@@ -872,8 +1012,8 @@ func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.
 // the SINGLE eval path (evaluateOrdinalJoinRow) under a birthLegBinder. Split
 // from evaluate so the NLJ cursor can share one legRows adaptation between
 // the predicate context and the birth.
-func (b *ordinalJoinBirth) evaluateLegs(legs map[values.CorrelationIdentifier]values.OrdinalRow, base values.CorrelationBinder) (*PositionalRow, error) {
-	return evaluateOrdinalJoinRow(b.RC, b.OutputType, &birthLegBinder{legs: legs, base: base})
+func (b *ordinalJoinBirth) evaluateLegs(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, base values.CorrelationBinder) (*PositionalRow, error) {
+	return evaluateOrdinalJoinRow(b.RC, b.OutputType, &birthLegBinder{legs: legs, raw: raw, base: base})
 }
 
 // evaluateBound births the positional row from any pre-built leg binder — the
@@ -922,11 +1062,11 @@ func (b *twoLegBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (a
 // Callers respect executor.DisablePositionalEmission (the §5 oracle): this is
 // the primitive, oracle gating lives at the birth sites.
 func (b *ordinalJoinBirth) evaluate(outerAlias, innerAlias string, outer, inner *QueryResult, base values.CorrelationBinder) (*PositionalRow, error) {
-	legs, err := b.legRows(outerAlias, innerAlias, outer, inner)
+	legs, raw, err := b.legRows(outerAlias, innerAlias, outer, inner)
 	if err != nil {
 		return nil, err
 	}
-	return b.evaluateLegs(legs, base)
+	return b.evaluateLegs(legs, raw, base)
 }
 
 // birthLegBinder is the BIRTH-time correlation binder: DIRECT per-leg bindings
@@ -943,11 +1083,19 @@ func (b *ordinalJoinBirth) evaluate(outerAlias, innerAlias string, outer, inner 
 // hot path uses the fixed twoLegBinder below (review W3a-2 perf catch).
 type birthLegBinder struct {
 	legs map[values.CorrelationIdentifier]values.OrdinalRow
+	// raw carries bare-QOV non-record legs (the W4c unnest element) bound to
+	// their WHOLE flowed Datum — QOV(inner).Evaluate returns the scalar/struct
+	// itself, not a positional row. A key present with a nil value is that leg's
+	// NULL binding.
+	raw  map[values.CorrelationIdentifier]any
 	base values.CorrelationBinder
 }
 
 // GetCorrelationBinding implements values.CorrelationBinder.
 func (b *birthLegBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
+	if v, present := b.raw[id]; present {
+		return v, true // raw leg — the whole flowed Datum (nil = NULL leg)
+	}
 	if row, present := b.legs[id]; present {
 		if row == nil {
 			return nil, true // NULL leg — untyped nil, the sanctioned nil-binding

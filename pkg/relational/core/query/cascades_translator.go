@@ -103,6 +103,17 @@ type cascadesTranslator struct {
 	// the flag true → the nested join under-gates to the name model — never
 	// the reverse.
 	inInnerCluster bool
+	// unnestUnderExistential is set while lowering a lateral unnest that is the
+	// OUTER of a name-model EXISTS composition (translateUnnestExistsFilter). Such
+	// an unnest MUST stay name-model: SelectMergeRule flattens it into the
+	// existential SelectExpression, and the existential-join implementation
+	// (ImplementNestedLoopJoinRule.rebaseOuterLegRefsToMerged) rebases the outer
+	// leg references NAME-model — an ordinal seed's baked ofOrdinal outer refs
+	// panic that rebase (the "existential = poison" boundary the W2 cluster gate
+	// enforces; ordinalizing the EXISTS-composed unnest is a later slice). The W4c
+	// ordinal-seed gate declines when this is set. Preserved across the unnest
+	// lowering only; reset at every other seed by the translator's normal flow.
+	unnestUnderExistential bool
 	// wedgeGate records the Slice 2 gate decision per translateJoin seed —
 	// consumed by the W3 ordinal seed, pinned by tests. Lazily initialized so
 	// hand-built test translators need no constructor change.
@@ -1175,7 +1186,36 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	innerQ := expressions.NamedForEachQuantifier(innerCorr, explodeRef)
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
 
-	resultValue := t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType)
+	// RFC-173 W4c: ordinalize the seed when the OUTER is a SINGLE SOURCE
+	// (clusterArity==1) AND the unnest is NOT ENCLOSED in a larger name-model
+	// composition. The name model is deleted in S4, so this ordinal seed is what
+	// keeps the ISOLATED single-source lateral unnest alive. Three decline gates,
+	// all the W2/W5 "enclosure = poison" boundary — an ENCLOSED unnest's ordinal
+	// seed (baked ofOrdinal refs, non-anchored RC) is flattened by SelectMergeRule
+	// into a name-model parent whose machinery cannot consume it:
+	//   - clusterArity(j.Left) > 1: a multi-source OUTER (`FROM A, B, A.arr AS x`)
+	//     — ordinalizing a flattened multi-table outer cluster erases the buried
+	//     source names (W5).
+	//   - prevEnclosure: the unnest is a LEG of a larger multi-source join cluster
+	//     (`FROM A, A.arr AS x, B`). It flattens into the (unnest × B) select; a
+	//     GROUP BY / aggregation over it re-enumerates via PartitionSelectRule,
+	//     whose anchored re-enumeration (NewReEnumerationAnchoredRecord) cannot
+	//     resolve a non-anchored ordinal-seed leg (a loud panic). Stays name-model
+	//     until W5 ordinalizes the enclosing multi-source cluster. (A projection
+	//     over such a leg WOULD work via the coexistence Datum's qualified keys,
+	//     but the aggregation path forces the whole class name-model — the two are
+	//     indistinguishable here, at lowering.)
+	//   - unnestUnderExistential: the unnest is the OUTER of an EXISTS semi-join;
+	//     the existential-join implementation rebases outer-leg refs NAME-model and
+	//     panics on the baked ofOrdinal refs (rebaseOuterLegValue). See the field.
+	// A decline (nil) falls back to the name-model builder.
+	var resultValue values.Value
+	if t.clusterArity(j.Left) == 1 && !prevEnclosure && !t.unnestUnderExistential {
+		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
+	}
+	if resultValue == nil {
+		resultValue = t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType)
+	}
 	if resultValue == nil {
 		return nil
 	}
@@ -1992,7 +2032,15 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 ) expressions.RelationalExpression {
 	// Lower the unnest leg (validates the array field; records a faithful
 	// diagnostic + returns nil for an invalid unnest, e.g. AT-on-a-non-array).
+	// The unnest is the OUTER of a name-model EXISTS composition — SelectMergeRule
+	// flattens it into the existential SelectExpression whose implementation
+	// rebases outer-leg references NAME-model. Keep the unnest name-model (decline
+	// the W4c ordinal seed): an ordinal seed's baked ofOrdinal outer refs panic
+	// that rebase ("existential = poison"). RFC-173 W4c / W2 gate.
+	prevUnderExist := t.unnestUnderExistential
+	t.unnestUnderExistential = true
 	unnestExpr := t.translateUnnestJoin(join, u)
+	t.unnestUnderExistential = prevUnderExist
 	if unnestExpr == nil {
 		return nil
 	}
