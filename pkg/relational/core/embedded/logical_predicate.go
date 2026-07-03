@@ -5945,14 +5945,33 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				// WRONG LEG when both legs carry the column (`(o.id)` returned
 				// items.id). Derive `ALIAS.COL` from the walked value's QOV child;
 				// a flat dotted field passes verbatim.
+				//
+				// Only INNER-scope fields are inner row keys at all (review
+				// finding, round 3): an OUTER-scope parenthesized column
+				// (`(c.id)`) bared to `ID` silently read the INNER column of the
+				// same name (the order id, not the customer id). An outer-scoped
+				// FieldValue takes the MATERIALIZED path like any computation —
+				// its value comes from the outer binding, evaluated per outer row.
 				if fv, isFV := cv.(*values.FieldValue); isFV {
-					if len(sq.joins) > 0 {
+					innerScoped, alias := true, ""
+					if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+						alias = strings.ToUpper(qov.Correlation.Name())
+					} else if ref := parseColRef(fv.Field); ref.isQualified() {
+						alias = strings.ToUpper(ref.table)
+					}
+					if alias != "" {
+						_, innerScoped = innerSourceAliases(op)[alias]
+					}
+					switch {
+					case !innerScoped:
+						computedScalarVal = cv
+					case len(sq.joins) > 0:
 						if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
 							scalarCol = strings.ToUpper(qov.Correlation.Name()) + "." + strings.ToUpper(fv.Field)
 						} else {
 							scalarCol = strings.ToUpper(fv.Field)
 						}
-					} else {
+					default:
 						scalarCol = strings.ToUpper(parseColRef(fv.Field).bare())
 					}
 				} else {
@@ -6072,7 +6091,15 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			proj.ProjectedValues = []values.Value{computedScalarVal}
 			proj.IsComputed = []bool{true}
 			innerOp = proj
-			scalarCol = "_0"
+			// The seed must read the EXACT key the projection executor writes
+			// (the shared naming contract): `_0` is only emitted for
+			// non-FieldValue projections; a FIELD-VALUED materialized slot (an
+			// outer-scope column like `(c.id)`) is keyed by its column name.
+			if _, isFV := computedScalarVal.(*values.FieldValue); isFV {
+				scalarCol = values.ProjectionColumnName(computedScalarVal)
+			} else {
+				scalarCol = "_0"
+			}
 		}
 	}
 
@@ -6085,6 +6112,41 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		StrictSingle: strictSingle,
 	})
 	return alias, nil
+}
+
+// innerSourceAliases collects the UPPER source aliases a correlated scalar
+// subquery's scan/join tree binds (scans by alias-or-table, unnest AS/AT
+// aliases) — the universe that discriminates an INNER-scope projected field
+// from an OUTER-scope one (the latter is not an inner row key and must take
+// the materialized path; see the review-finding comment at the caller).
+func innerSourceAliases(op logical.LogicalOperator) map[string]struct{} {
+	out := map[string]struct{}{}
+	var walk func(logical.LogicalOperator)
+	walk = func(op logical.LogicalOperator) {
+		if op == nil {
+			return
+		}
+		switch o := op.(type) {
+		case *logical.LogicalScan:
+			a := o.Alias
+			if a == "" {
+				a = o.Table
+			}
+			out[strings.ToUpper(a)] = struct{}{}
+		case *logical.LogicalUnnest:
+			if o.Alias != "" {
+				out[strings.ToUpper(o.Alias)] = struct{}{}
+			}
+			if o.AtAlias != "" {
+				out[strings.ToUpper(o.AtAlias)] = struct{}{}
+			}
+		}
+		for _, c := range op.Children() {
+			walk(c)
+		}
+	}
+	walk(op)
+	return out
 }
 
 // wrapWithOuterCTEs wraps op with LogicalCTE nodes for every outer CTE
