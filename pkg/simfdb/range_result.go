@@ -27,7 +27,10 @@ func (it *rangeIter) Advance() bool {
 
 func (it *rangeIter) Get() (fdb.KeyValue, error) {
 	if it.idx < 0 || it.idx >= len(it.kvs) {
-		return fdb.KeyValue{}, fdb.Error{Code: 2017} // no current element
+		// Zero value, no error — matches the pure-Go client / Apple binding, where Get()
+		// before the first Advance() or past the end returns an empty KeyValue rather than
+		// erroring. The record layer's cursors rely on this (they call Advance() then Get()).
+		return fdb.KeyValue{}, nil
 	}
 	return it.kvs[it.idx], nil
 }
