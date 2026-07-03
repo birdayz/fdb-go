@@ -681,13 +681,17 @@ func updateHasDefaultAssignment(upd antlrgen.IUpdateStatementContext) bool {
 }
 
 // updateHasSubqueryAssignment reports whether any UPDATE ... SET RHS contains
-// a subquery expression atom. Subqueries in SET are unsupported, and without
-// this guard the builder treated the RHS as a plain expression whose CANONICAL
-// TEXT became the written string value — `SET name = (SELECT ...)` wrote the
-// literal subquery text into the row (silent data corruption, review probe;
-// identical on master). Java's ExpressionVisitor has no subquery arm for the
-// SET RHS either, so per the conformance principle the shape gets a CLEAN
-// error, never a corrupt write.
+// a subquery — the scalar atom `(SELECT ...)` or its SIBLING atom type
+// `EXISTS(SELECT ...)` (a separate grammar context a subquery-only check walks
+// past). Subqueries in SET are unsupported, and without this guard the builder
+// treated the RHS as a plain expression whose CANONICAL TEXT became the
+// written string value — `SET name = (SELECT ...)` and `SET name = EXISTS(...)`
+// both wrote the literal text into the row (silent data corruption, review
+// probes; identical on master). Java's ExpressionVisitor has no subquery arm
+// for the SET RHS either, so per the conformance principle the shape gets a
+// CLEAN error, never a corrupt write. Contains-anywhere by design: the
+// corruption mechanism is whole-RHS text canonicalization, so a subquery
+// nested in CASE/arithmetic in SET hits the identical path.
 func updateHasSubqueryAssignment(upd antlrgen.IUpdateStatementContext) bool {
 	if upd == nil {
 		return false
@@ -697,7 +701,8 @@ func updateHasSubqueryAssignment(upd antlrgen.IUpdateStatementContext) bool {
 		if t == nil {
 			return false
 		}
-		if _, ok := t.(*antlrgen.SubqueryExpressionAtomContext); ok {
+		switch t.(type) {
+		case *antlrgen.SubqueryExpressionAtomContext, *antlrgen.ExistsExpressionAtomContext:
 			return true
 		}
 		for i := 0; i < t.GetChildCount(); i++ {
