@@ -1596,12 +1596,23 @@ unnest until W5; scalar-subquery / non-wedge anchored seeds until S4).
    - **shadow-delta equivalence**: spike-predicted extra-dedup **exactly equals** actual member-count
      delta (the `feat/rfc173-p3-bijection-interning` spike only `t.Logf`'d ~259 — promote to an
      exact-equality assertion).
-6. **Plan-baseline audit is a HARD GATE (Q2):** **plandiff BYTE-IDENTICAL** before/after the flip (it
-   is a representation flip, not a plan change) **AND merge-branch hit-count == 0** on the ordinal-seed
-   corpus (proves the positional arm, not the anchored arm, produced every ordinal-seed plan). The
-   task-count numbers `{3,11122}/{4,45306}` must stay within ±2%; any movement beyond that is a
-   regression to root-cause, NOT a re-baseline (the flip changes representation, not exploration
-   sharing — that was the v1 error).
+6. **Plan-baseline audit is a HARD GATE (Q2)** — a composite of four concrete pins, so a representation
+   flip is never mistaken for a plan change:
+   - **merge-branch hit-count == 0** on the ordinal-seed corpus — the positional arm, not the anchored
+     arm, produced every ordinal-seed plan. `TestRFC173S3_OrdinalSeedDispatchAuthority`
+     (`rfc173_slice3_dispatch_authority_test.go`); the anchored control observes 4/42 hits (the 42
+     matches the interning-baseline prose), every ordinal chain 0.
+   - **plan-SHAPE byte-stable** on the N-way ordinal-seed corpus (arity ≥ 3, catalog-aware so the
+     ordinal seed actually fires) — the Java-independent half of "plandiff byte-identical", planned 5×
+     for determinism. `TestRFC173S3_OrdinalPlanShapeStable`
+     (`plandiff/rfc173_slice3_ordinal_plan_stability_test.go`). This is the forward-looking Slice-4
+     safety net: deleting the trio must NOT move these shapes.
+   - **plandiff BYTE-IDENTICAL vs Java** — cross-engine half: `select_inner_join` in `SeedCorpus` pins
+     the 2-way ordinal plan TREE == Java; the N-way inner-join `SeedRunCorpus` entries pin Go ROWS ==
+     Java rows (a wrong ordinal plan yields wrong rows). Both green.
+   - **task-count within ±2%** of `{3,11122}/{4,45306}` (`partition_select_interning_baseline_test.go`);
+     any movement beyond that is a regression to root-cause, NOT a re-baseline (the flip changes
+     representation, not exploration sharing — that was the v1 error).
 7. **Rewrite the two tests** to positional (unchanged from v1): `rule_partition_select_test.go` (assert
    `IsPositionalMergeRC` not `AnchoredJoin`) and the `InternsAliasAware` gate test in
    `partition_select_interning_baseline_test.go:115` (mergeSel marker → `IsPositionalMergeRC`, keep the
