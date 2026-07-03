@@ -72,4 +72,26 @@ func TestFDB_RFC173W4b_UpdateSetCorrelatedBinder(t *testing.T) {
 	if !name.Valid || name.String != "alice" {
 		t.Errorf("declined UPDATE mutated the row: name = %q (valid=%v), want alice untouched", name.String, name.Valid)
 	}
+
+	// The EXISTS sibling: the grammar has a SEPARATE atom type for EXISTS
+	// (ExistsExpressionAtomContext), so a subquery-only guard walks right past
+	// `SET name = EXISTS(SELECT ...)` — same text-corruption mechanism, same
+	// decline required, same no-mutation assertion.
+	_, existsErr := db.ExecContext(ctx,
+		"UPDATE customers SET name = EXISTS(SELECT l.tag FROM labels l WHERE l.customer_id = customers.id) WHERE id = 1")
+	if existsErr == nil {
+		if err := db.QueryRowContext(ctx, "SELECT name FROM customers WHERE id = 1").Scan(&name); err != nil {
+			t.Fatalf("read back after EXISTS SET: %v", err)
+		}
+		t.Fatalf("EXISTS in UPDATE SET unexpectedly planned; wrote %q — flip this pin to a correctness assertion if the shape gained real support", name.String)
+	}
+	if !strings.Contains(existsErr.Error(), "0AF00") {
+		t.Errorf("EXISTS SET decline error = %v, want the clean unsupported class (0AF00)", existsErr)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT name FROM customers WHERE id = 1").Scan(&name); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !name.Valid || name.String != "alice" {
+		t.Errorf("declined EXISTS UPDATE mutated the row: name = %q (valid=%v), want alice untouched", name.String, name.Valid)
+	}
 }
