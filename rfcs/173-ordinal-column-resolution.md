@@ -1845,6 +1845,15 @@ column is addressed by ORDINAL (`pullUpResultColumns` → `FieldValue.ofOrdinalN
    ordinal-0 of the flowed row is a SOURCE column, not the scalar. **Relocate the computation into the
    inner's `resultValue`** (mirroring Java's `SelectExpression.resultValue` = RC of select items, so
    ordinal-0 = the computed scalar); the guard drop is the consequence. White-box + FDB EXPLAIN/rows pin.
+   - **Impl investigation (banked):** the construction is `logical_predicate.go:5900-5918` (non-aggregate
+     `len(sq.projCols)==1`) — it sets `scalarCol` to the projection TEXT (`UPPER(ENAME)` → synthesized
+     name) but adds NO inner `LogicalProject` computing it; `innerOp` stays the raw scan+filter. So
+     shape 3 must ADD an inner projection whose single output IS the computed expression (ordinal-0),
+     then the ordinal seed's inner leg reads `ofOrdinal(QOV(inner),0)`. **VERIFY FIRST:** the existing
+     `TestRFC173W4b_ScalarSeed_ComputedGate` only asserts the GATE decision (`innerScalarIsRowColumn`
+     false), NOT end-to-end rows — write an FDB test proving a computed correlated scalar returns
+     correct rows on the CURRENT (name-model) path before flipping it, so the ordinal flip is a proven
+     no-op on results (the impl-correction-2 concern is real: confirm where the computation lands today).
 2. **Shape 1 (clustered outer).** Gate on `ordinalWedgeGateDecide(outer).Gated`; bake outer projections
    through `gatedJoinLegTypes` (`leafOffset + FieldIndex`). White-box + FDB pin.
 3. **Shape 2 (JOIN-inner).** Fresh unique id for `innerQ` threaded through the two mint sites + every
