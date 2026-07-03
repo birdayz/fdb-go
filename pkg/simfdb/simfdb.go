@@ -1,11 +1,17 @@
 package simfdb
 
 import (
+	"errors"
 	"sync"
 
 	"fdb.dev/pkg/dst"
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
+
+// maxRetries bounds Transact's retry loop so a Buggify point that keeps injecting a retryable
+// fault cannot spin forever. Real FDB bounds retries by a wall-clock timeout; the sim has no
+// wall clock, so a generous attempt count serves the same backstop.
+const maxRetries = 100
 
 // SimDB is a deterministic, in-memory MVCC FoundationDB backend — the third
 // fdb.BackendDatabase alongside the pure-Go client and libfdb_c (RFC-179 Tier 1). It mints
@@ -53,25 +59,46 @@ var _ fdb.BackendDatabase = (*SimDB)(nil)
 // version. Caller holds db.mu.
 func (db *SimDB) currentReadVersion() int64 { return db.lastVersion }
 
-// Transact runs fn inside a standalone writable transaction with no retry loop. The record
-// layer's own runner (recordlayer.Run / FDBDatabaseRunner) drives retries on OnError, exactly
-// as with the real backends, so the backend Transact itself does not retry.
+// Transact runs fn inside a writable transaction with the retry loop the real backends'
+// Transact also provides (recordlayer.Run delegates to it): run fn, commit, and on a retryable
+// error (conflict 1020 / too_old 1007 / commit_unknown 1021) reset and retry, up to maxRetries.
+// A non-retryable error or exhausted retries propagates. This is what makes SimFDB a drop-in
+// backend — the record layer relies on Transact retrying, exactly as with the pure-Go client.
 func (db *SimDB) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	tx := db.newTxn(false)
-	result, err := fn(tx)
-	if err != nil {
+	for attempt := 0; ; attempt++ {
+		result, err := fn(tx)
+		if err == nil {
+			err = tx.Commit().Get()
+		}
+		if err == nil {
+			return result, nil
+		}
+		var fe fdb.Error
+		if attempt < maxRetries && errors.As(err, &fe) && fdb.IsOnErrorRetryable(fe.Code) {
+			tx.Reset()
+			continue
+		}
 		return nil, err
 	}
-	if err := tx.Commit().Get(); err != nil {
-		return nil, err
-	}
-	return result, nil
 }
 
-// ReadTransact runs fn inside a read-only transaction (no commit needed).
+// ReadTransact runs fn inside a read-only transaction. Reads retry on a retryable error for
+// symmetry with Transact, though the sim's synchronous reads rarely produce one.
 func (db *SimDB) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
 	tx := db.newTxn(false)
-	return fn(tx)
+	for attempt := 0; ; attempt++ {
+		result, err := fn(tx)
+		if err == nil {
+			return result, nil
+		}
+		var fe fdb.Error
+		if attempt < maxRetries && errors.As(err, &fe) && fdb.IsOnErrorRetryable(fe.Code) {
+			tx.Reset()
+			continue
+		}
+		return nil, err
+	}
 }
 
 // CreateWritableTransaction returns a standalone, non-retry writable transaction whose

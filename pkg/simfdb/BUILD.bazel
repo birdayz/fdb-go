@@ -24,8 +24,17 @@ go_test(
     name = "simfdb_test",
     srcs = [
         "atomic_test.go",
+        "integration_test.go",
         "simfdb_test.go",
     ],
     embed = [":simfdb"],
-    deps = ["//pkg/fdbgo/fdb"],
+    deps = [
+        "//gen",
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
 )
