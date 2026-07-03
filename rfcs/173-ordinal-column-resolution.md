@@ -1511,8 +1511,109 @@ Explode Datum and returned wrong rows (a latent dualwindow gap). Pins:
 `SELECT "_1" … AS "_1" AT "O"` + the WHERE-on-ordinal composition.
 
 ### Gates (process)
-Query-engine change → Graefe design-ACK on THIS ruling **before any impl** — **DONE** (DESIGN-ACK on
-all four decisions, conditions folded above). Impl done (isolated single-source ordinalizes; enclosure
-declines per the correction above; the mixed-seed leg-window + column-metadata + raw-bind executor
-changes). Next: the full four-gate round (Graefe/Torvalds/codex/@claude) on the implementation —
-**Graefe must ACK the enclosure-decline scope narrowing** (the one design-affecting impl correction).
+Query-engine change → Graefe design-ACK **before impl** DONE, then the full four-gate round on the
+impl — **ALL DONE. MERGED as PR #463** (rebase-merge; Graefe/Torvalds/codex/@claude all ACK'd the
+final SHA; codex caught 3 real edge bugs across rounds — ordinal-alias collision → producer-context
+disambiguation → §5 oracle-path gap — each fixed with a red→green pin). The enclosure-decline scope
+narrowing was ACK'd by Graefe. **The entire W4 tier (W4-LEFT/W4b/W4c) is now merged.**
+
+---
+
+## Slice 3 — atomic flip: impl design (for Graefe design gauntlet; PRE-IMPL)
+
+W4c merged (PR #463) — the entire **W4 tier is done** (W4-LEFT #458, W4b #460/#461, W4c #463). Slice 3
+is the atomic hard core (§4 slice order; §8 risk 1; §10 requires reviewer sign-off BEFORE the first
+impl commit). This section is that design.
+
+### STATE RE-SYNC — the RFC's Slice-3 map is STALE; most of the "atomic core" already landed dark
+A 6-agent code map (banked) found that the Slice-3 prose over-states remaining work. **Already landed
+on HEAD, gated/dark in the coexistence window:**
+- **(d) FieldValue node-identity flip (name→ordinal) for BAKED nodes** — `map_field_values.go`
+  `av.Resolved.Equals` ordinal-only; `semantic_hash.go` folds `#ordinal` only (Java
+  `ResolvedAccessor.equals` getOrdinal()-only, FieldValue.java:676-690). The RFC's cited anchors
+  (`map_field_values.go:260-262`, `semantic_hash.go:108`) are STALE (now `ptrEqual` / an RC-hash arm).
+  Only the LAZY-node `av.Field==bv.Field` arm survives — it dies in **Slice 4** with the name model.
+- **(f) Collapsed multi-accessor FieldPath + compose rule** — `FieldPath` is the collapsed
+  `[]ResolvedAccessor` list (W1); `composeFieldOverField` ported + gated both-baked; the primary
+  producer is the `withChildren` rebuild-fuse (`replace.go:369-373` = Java `withNewChild`). A buried
+  leg ref is a COLLAPSED multi-accessor node, never chained `FieldValue(FieldValue(...))`.
+  `ExpandFusedFieldValueRule` correctly NOT in the simplification ruleset (matching-only,
+  `max_match_map.go`).
+- **Positional re-enumeration** — `positionalMergeCase` (`rfc173_positional_merge.go`) is a live 1:1
+  port of Java `PartitionSelectRule.java:283-322` (unnamed positional row `RC(_i: QOV(live_i))` + a
+  `TranslationMap.When(live_i).Then(ofOrdinalNumber(QOV($m), i))`) — it runs TODAY on the
+  `!parentIsMerge` (ordinal) arm.
+- **Alias-bijection interning tier** (`MemoEqual`) + the two ORDINAL structural merge-select probes
+  (`IsPositionalMergeRC`, `IsOrdinalJoinRV`) — live, additive/dark alongside the name-model
+  `AnchoredJoin` arm of `InternsAliasAware` (`select.go:242-271`).
+- The live task-count baseline is **`{3, 11122}` / `{4, 45306}` ±2%** (`partition_select_interning_baseline_test.go:259-260`),
+  re-baselined by RFC-150/152 — the RFC's `8999/30593` is the OLD master number.
+
+### The ATOMIC FLIP — what genuinely remains (one merge unit, P1/P2/P3 authoritative together)
+1. **Widen the cluster-arity gate** (`rfc173_cluster_gate.go`) so ALL joins seed ordinal → the memo
+   re-enumerates every join positionally → `parentIsMerge` (`rule_partition_select.go:426,526`) is
+   never true → the anchored-trio dispatch arm (`:528-598`) is dead code.
+2. **Delete, in the SAME commit** (the trio is one machine): `NewReEnumerationAnchoredRecord`
+   (`value_anchored_join_record.go:259`), `anchoredColumnsByQuantifier` (`:155`), `leftmostQOV`
+   (`:192`), `buildUpperResult` (`rule_partition_select.go:455`), `rebaseBuriedLowerReferences`
+   (`:942`), `isAnchoredJoinResult` + the anchored dispatch arm; the two fail-loud re-stamp panics
+   (`:466`,`:555`) and the FrontierPinned drift tripwire (`:963-977`) — load-bearing coexistence
+   alarms whose invariant the positional pull-up now guarantees structurally (an ordinal rebuild over
+   the merge quantifier's own flowed Type cannot fail to find a leg).
+3. **Delete the `AnchoredJoin` arm of `InternsAliasAware`** (`select.go:251`) → the ordinal structural
+   probes become the SOLE merge-select interning key. (Do NOT stamp `AnchoredJoin=true` on the
+   positional RC — that re-imports the correlation-hiding S3 deletes; recognize the positional row
+   STRUCTURALLY, RFC §589-590.)
+4. **`pullUpResultColumns`** — Java pulls up over the merge quantifier's TYPED flowed Type
+   (`Quantifier.java:759`); Go's `GetFlowedObjectValue` is UNTYPED, so `positionalMergeCase` recovers
+   leg types ad-hoc via `legRowTypes`. **Fork Q4 below.**
+5. **Rewrite two tests** to positional: `rule_partition_select_test.go` (seed `NewAnchoredJoinRecord`
+   → ordinal positional seed; assert `IsPositionalMergeRC` not `AnchoredJoin`) and the
+   `InternsAliasAware` gate test in `partition_select_interning_baseline_test.go:115` (mergeSel marker
+   → `IsPositionalMergeRC`, keep the projSel non-merge branch so CTE-NULL protection stays intact).
+   `rfc173_slice2_drift_assert_test.go` is only PARTLY deletable — `TestRFC173S2_SelectMergeDriftAssert_Fires`
+   holds live positive compose pins that must STAY; only the re-stamp-assert sibling dies.
+6. **Author the two MISSING gate pins** (neither exists in code): the **STAR planning wall-clock**
+   bound on a many-identical-legs corpus (the task-count pin is BLIND to bijection-enumeration cost —
+   count can stay flat while per-Insert cost explodes) and the **shadow-delta equivalence** assertion
+   (spike-predicted extra-dedup == actual member-count delta; the spike on
+   `feat/rfc173-p3-bijection-interning` only `t.Logf`'d ~259).
+
+### FORKS — Graefe's rulings needed BEFORE the first impl commit
+- **Q1 (the load-bearing fork): W5 vs the trio deletion — SEQUENCING.** Deleting the anchored trio
+  requires NO surviving shape to seed anchored. But **multi-source lateral UNNEST stays name-model
+  until W5** (the RFC calls W5 a *separate final PR after P2/P3 green*, §587), and general ≥3-way
+  joins beyond the current gated wedge, dissolved-LEFT, and correlated-scalar seeds still build
+  `AnchoredJoin` parents that reach the merge arm. So either (a) **W5 is FOLDED INTO the atomic
+  commit** (gate-widen + trio-delete + multi-source-unnest bipartition rewrite all land together —
+  larger, but the trio genuinely dies), or (b) **the trio deletion is SCOPED to the non-unnest join
+  surface** (the anchored arm survives ONLY for the multi-source-unnest shape until a follow-on W5
+  PR). (b) contradicts "delete the trio in Slice 3"; (a) makes Slice 3 bigger but honest. Which?
+- **Q2: post-flip task-count numbers.** The positional arm CHANGES sub-product exploration sharing, so
+  the flip LEGITIMATELY re-baselines `{3,11122}/{4,45306}`. Ruling needed: the new pinned numbers +
+  the mandatory **plan-baseline audit** (plandiff byte-identical + merge-branch hit-count) BEFORE the
+  flip, so a legitimate re-baseline is not mistaken for the `29915→60044` interning blowup (or vice
+  versa). What is the accepted re-baseline delta bound?
+- **Q3: correlation-hiding (RFC-077 F2) replacement.** `GetCorrelatedToOfValue`'s AnchoredJoin
+  hide/expose duality (`value_correlation.go:96-98`) keeps ≥4-way STAR under the task budget; it dies
+  with the trio. Does the unnamed positional row need equivalent hide/expose treatment, or does the
+  ordinal QOV correlation surface naturally (and Slice-5's local-bind subtraction carry the budget)?
+- **Q4: `pullUpResultColumns` — port a typed pull-up, or bless `legRowTypes`?** Java's typed
+  merge-quantifier flow vs Go's untyped `GetFlowedObjectValue` + the ad-hoc `legRowTypes`
+  reconstruction. Is `positionalMergeCase`'s `legRowTypes` the accepted Go equivalent, or does the
+  N-way generalization need a first-class typed pull-up (and does every live leg then need a typed
+  reference surface)?
+- **Q5: Slice 3/4 deletion boundary.** Slice 3 deletes the anchored dispatch arm + the re-stamp trio;
+  Slice 4 retires the `AnchoredJoin` FLAG itself + widens `InternsAliasAware` to ALL selects + deletes
+  the lazy name-identity arm + the CTE-rename execution pins certify. Can the trio die in S3 while the
+  `AnchoredJoin` flag + `NewAnchoredJoinRecord`/`NewScalarSubqueryAnchoredRecord` survive to S4 (for
+  the non-re-enumeration seed sites)? Confirm the exact S3/S4 line.
+- **Q6: re-sync the RFC staging text to HEAD.** The Slice-3 prose anchors are stale across the board
+  (task-count 8999/30593→11122/45306; tripwires `:910-914`/`:141-148`→`:963-977`/deleted; identity
+  `:260-262`/`:108`→landed at `:319-339`/`:120-139`; items (d)/(f) landed but framed as TODO). Re-sync
+  before the flip PR so reviewers read an accurate map. (This section is the start of that re-sync.)
+
+### Gates (process)
+Query-engine change → Graefe design-ACK on Q1-Q6 (esp. Q1 the sequencing fork) **before any impl**,
+then the §10 gauntlet (Graefe/Torvalds/codex/@claude sign-off) on the flip PR — a regression-net pin
+red BLOCKS the whole atomic slice (it cannot be split).
