@@ -330,10 +330,10 @@ func (p *FieldPath) Single() (ResolvedAccessor, bool) {
 }
 
 // Equals is Java FieldPath.equals (FieldValue.java:411-420): element-wise list
-// equality over (Field, Ordinal). FrontierPinned is deliberately NOT compared
-// (evaluation contract, not identity). The per-element Field component is the
-// coexistence-window refinement of Java's ordinal-only accessor equality —
-// narrows at the S3-W3 identity flip.
+// equality over the accessors' ORDINALS (the S3-W3 flip landed Java's
+// ResolvedAccessor.equals = getOrdinal()-only, :675-689). The per-step Field
+// is NOT compared — display/rendering, not identity. FrontierPinned is
+// likewise excluded (evaluation contract, not identity).
 func (p *FieldPath) Equals(o *FieldPath) bool {
 	if p == o {
 		return true
