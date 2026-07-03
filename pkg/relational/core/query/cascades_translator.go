@@ -3210,18 +3210,6 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		innerRef = expressions.InitialOf(limitExpr)
 	}
 
-	// With no user LIMIT, the scalar must yield AT MOST ONE inner row per outer
-	// row: mark the inner quantifier strict-single so ImplementNestedLoopJoinRule
-	// wraps it in a strict FirstOrDefault (a second row → 21000). A user LIMIT
-	// leaves StrictSingle false — the LIMIT is the user's deliberate truncation.
-	var innerQ expressions.Quantifier
-	if csq.StrictSingle {
-		innerQ = expressions.NamedForEachStrictSingleQuantifier(
-			values.NamedCorrelationIdentifier(csq.InnerAlias), innerRef)
-	} else {
-		innerQ = t.namedQuantifier(csq.InnerAlias, innerRef)
-	}
-
 	// Source-anchored correlated-scalar-subquery join seed (RFC-077 7.6).
 	//
 	// The inner is a scalar SUBQUERY exposing exactly ONE value. The projection
@@ -3244,18 +3232,14 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// in RFC-077 7.6, so there is no result value to flow.
 	scalarCol := strings.ToUpper(csq.ScalarCol)
 	outerCols := t.legColumns(p.Input)
-	if outerCols == nil || outerAlias == "" || scalarCol == "" {
+	if outerCols == nil || outerAlias == "" || scalarCol == "" || csq.InnerAlias == "" {
 		return nil
 	}
 	// RFC-173 W4b: ordinalize the 2-leg seed when the OUTER is a SINGLE SOURCE
-	// (clusterArity==1) AND the INNER subquery contains no JOIN. A multi-table
-	// outer cluster stays name-model — ordinalizing a flattened cluster erases
-	// buried source names (shape 1). A JOIN-inner also stays name-model: its first
-	// table shares csq.InnerAlias, so the inner ordinal join's typed QOV(InnerAlias)
-	// would collide with the seed's typed inner leg (widenLegTypesFromPlan
-	// DIVERGENT-baked-types — see innerContainsJoin) (shape 2). The name model is
-	// deleted in S4, so this ordinal seed is what keeps the single-source
-	// correlated-scalar extension alive. A decline (nil) falls back to the name model.
+	// (clusterArity==1); the clustered-outer dispatch above already ordinalized
+	// the gated multi-table outers (shape 1). The name model is deleted in S4,
+	// so this ordinal seed is what keeps the single-source correlated-scalar
+	// extension alive. A decline (nil) falls back to the name model.
 	//
 	// The former innerScalarIsRowColumn guard (shape 3) is GONE: a COMPUTED scalar
 	// is now MATERIALIZED as the inner's projected output (buildCorrelatedScalar,
@@ -3264,9 +3248,20 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// scalar in the inner row" question is unconditionally yes. The single inner
 	// leg reads ofOrdinal(inner, 0) regardless of whether the scalar is a stored
 	// column or a computed expression.
+	//
+	// The former innerContainsJoin gate (shape 2) is GONE too: the ordinal
+	// seed's inner leg is keyed by a FRESH unique correlation id, not the SQL
+	// alias, so a JOIN-inner's own typed QOV(InnerAlias, N-field) can no longer
+	// collide with the seed's 1-field inner leg at widenLegTypesFromPlan
+	// (see scalarSubqueryOrdinalSeed).
 	var resultValue values.Value
-	if t.clusterArity(p.Input) == 1 && !innerContainsJoin(csq.InnerPlan) {
-		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, p.Input, csq.InnerAlias, scalarCol)
+	innerLegCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
+	if t.clusterArity(p.Input) == 1 {
+		ordinalInnerCorr := values.UniqueCorrelationIdentifier()
+		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, p.Input, ordinalInnerCorr, csq.InnerAlias, scalarCol)
+		if resultValue != nil {
+			innerLegCorr = ordinalInnerCorr
+		}
 	}
 	if resultValue == nil {
 		resultValue = values.NewScalarSubqueryAnchoredRecord(
@@ -3276,11 +3271,24 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		)
 	}
 
+	// With no user LIMIT, the scalar must yield AT MOST ONE inner row per outer
+	// row: mark the inner quantifier strict-single so ImplementNestedLoopJoinRule
+	// wraps it in a strict FirstOrDefault (a second row → 21000). A user LIMIT
+	// leaves StrictSingle false — the LIMIT is the user's deliberate truncation.
+	// The quantifier carries innerLegCorr — the seed's fresh unique id on the
+	// ordinal path, the SQL alias on the name-model fallback.
+	var innerQ expressions.Quantifier
+	if csq.StrictSingle {
+		innerQ = expressions.NamedForEachStrictSingleQuantifier(innerLegCorr, innerRef)
+	} else {
+		innerQ = expressions.NamedForEachQuantifier(innerLegCorr, innerRef)
+	}
+
 	joinSelect := expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{outerQ, innerQ},
 		nil,
-		[]string{outerAlias, csq.InnerAlias},
+		[]string{outerAlias, innerLegCorr.Name()},
 		expressions.JoinLeftOuter,
 	)
 	joinRef := expressions.InitialOf(joinSelect)

@@ -23,7 +23,7 @@ func TestRFC173W4b_ScalarSeed_Shape(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
 
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), "SQ", "MAXORDER")
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
 	if seed == nil {
 		t.Fatal("single-source outer must ordinalize, got nil (declined)")
 	}
@@ -59,11 +59,11 @@ func TestRFC173W4b_ScalarSeed_Shape(t *testing.T) {
 	}
 }
 
-// TestRFC173W4b_ScalarSeed_OuterGate pins the OUTER-ONLY single-source gate: a
-// single-table outer ordinalizes (clusterArity==1), a multi-table outer cluster
-// stays name-model (clusterArity>1 — the caller declines the ordinal seed). This
-// is the divergence from W4-LEFT (which gates both legs): ordinalizing a
-// flattened outer cluster would erase its buried source names.
+// TestRFC173W4b_ScalarSeed_OuterGate pins the single-source arity facts the
+// dispatch routes on: a single-table outer is clusterArity==1 (THIS seed), a
+// multi-table outer cluster is clusterArity>1 — routed to the shape-1
+// clustered-outer path (gated clusters ordinalize with dotted leg naming;
+// ungated ones keep the name-model fallback or decline).
 func TestRFC173W4b_ScalarSeed_OuterGate(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
@@ -80,36 +80,42 @@ func TestRFC173W4b_ScalarSeed_OuterGate(t *testing.T) {
 	var _ logical.LogicalOperator = cluster
 }
 
-// TestRFC173W4b_ScalarSeed_InnerJoinGate pins the INNER-JOIN gate (the correction
-// to the original "inner needs no gate" ruling). A join-inner scalar subquery
-// names its first table under the same alias csq.InnerAlias carries, so the inner
-// ordinal join's typed QOV(InnerAlias) collides with the seed's typed inner leg
-// (the executor's widenLegTypesFromPlan DIVERGENT-baked-types panic). Such an
-// inner MUST stay name-model. A single-table inner (even wrapped in an aggregate)
-// ordinalizes.
-func TestRFC173W4b_ScalarSeed_InnerJoinGate(t *testing.T) {
+// TestRFC173W4b_ScalarSeed_UniqueInnerCorrelation pins the shape-2 decouple
+// (and buries the former InnerJoinGate test with its gate): the seed's inner
+// leg is keyed by a FRESH unique correlation id, never the SQL alias — a
+// JOIN-inner's own typed QOV(InnerAlias, N-field) would collide with an
+// alias-keyed 1-field seed leg at the executor's widenLegTypesFromPlan (the
+// DIVERGENT-baked-types tripwire that used to force join-inners to the name
+// model). The RC field NAME keeps the SQL alias (the projection's read key);
+// only the correlation is decoupled, and two seeds never share an id.
+func TestRFC173W4b_ScalarSeed_UniqueInnerCorrelation(t *testing.T) {
 	t.Parallel()
+	tr := newGateTranslator(t)
 
-	// Single-table inner (possibly aggregated/filtered/limited) → no join → ordinalizes.
-	single := logical.NewLimit(scan("Order", "o"), 1, 0)
-	if innerContainsJoin(single) {
-		t.Error("a single-table inner (Limit(Scan)) must NOT be gated as a join-inner")
+	innerCorr := values.UniqueCorrelationIdentifier()
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), innerCorr, "SQ", "MAXORDER")
+	if seed == nil {
+		t.Fatal("single-source outer must ordinalize")
 	}
-	if innerContainsJoin(scan("Order", "o")) {
-		t.Error("a bare single-table scan inner must NOT be gated as a join-inner")
+	rc := seed.(*values.RecordConstructorValue)
+	last := rc.Fields[len(rc.Fields)-1]
+	if last.Name != "SQ.MAXORDER" {
+		t.Errorf("inner field name = %q, want SQ.MAXORDER (the SQL-alias read key)", last.Name)
+	}
+	qov := last.Value.(*values.FieldValue).Child.(*values.QuantifiedObjectValue)
+	if qov.Correlation != innerCorr {
+		t.Errorf("inner leg keyed by %s, want the fresh unique id %s", qov.Correlation, innerCorr)
+	}
+	if qov.Correlation.Name() == "SQ" {
+		t.Error("inner leg keyed by the SQL alias — the JOIN-inner type collision returns")
 	}
 
-	// Join inner → the collision case → MUST be gated to name-model.
-	joinInner := inner(scan("Order", "o"), scan("Customer", "c"))
-	if !innerContainsJoin(joinInner) {
-		t.Fatal("a join inner MUST be gated (its first-table alias collides with the seed's typed inner QOV)")
-	}
-	// A join buried under an aggregate (SELECT COUNT(*) FROM a JOIN b …) — the exact
-	// shape that panicked, since clusterArity returns 1 for the aggregate without
-	// recursing into the join.
-	aggOverJoin := logical.NewAggregate(joinInner, nil, []string{"COUNT(*)"}, nil, "")
-	if !innerContainsJoin(aggOverJoin) {
-		t.Fatal("a join buried under an aggregate MUST be gated (clusterArity can't see it)")
+	// Two seeds must never share an inner correlation (uniqueness is the whole
+	// decouple).
+	seed2 := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), values.UniqueCorrelationIdentifier(), "SQ", "MAXORDER")
+	qov2 := seed2.(*values.RecordConstructorValue).Fields[len(rc.Fields)-1].Value.(*values.FieldValue).Child.(*values.QuantifiedObjectValue)
+	if qov2.Correlation == qov.Correlation {
+		t.Error("two seeds share an inner correlation id")
 	}
 }
 

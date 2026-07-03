@@ -1922,6 +1922,25 @@ shape 3, one level up. Two design premises fall:
   rightmost-only correlation falls back to name-model (today's behavior); non-rightmost declines per
   (iv). Bare-unique widening is deferred (documented, not silent).
 
+### W4b shape-2 impl notes (fresh-id decouple, landed)
+Shape 2 landed per the W2 ruling: the ordinal seed's inner leg + inner quantifier + level-2
+`sourceAliases` entry all carry a FRESH `UniqueCorrelationIdentifier` (`q$N`); the RC field NAME keeps
+`<InnerAlias>.<scalarCol>` (the projection's read key, `replaceScalarSubqueryRef` unchanged). The
+`innerContainsJoin` gate is deleted from BOTH dispatch paths (single-source + clustered) — the typed-QOV
+collision it guarded is structurally impossible with distinct correlation keys. The clustered pull-up
+walk gained a `Join.OnPredicate` carrier arm (JOIN-inners under clustered outers bake through the same
+spine), and the inner-vs-cluster alias-shadowing decline generalizes to ALL inner-subtree source
+aliases (a JOIN-inner's second table could shadow a cluster leg).
+**Finding (executor):** the fresh-id quantifier exposed a routing gap in `spanAwareRow.GetByName`
+(`rfc173_ordinal_join.go`): a flat DOTTED read ("O.AMOUNT") resolved ONLY through span-alias /
+RecordName routing — with the inner span now `q$N`, the read missed even though the output type
+literally carries the column (loud `OrdinalResolutionError`, caught by the shape-1 FDB matrix on the
+first shape-2 run). Fixed by falling back to the row's OWN output naming after both routings miss
+(ordered LAST — a leg alias always wins over a same-spelled literal; for seed-born rows both denote
+the same value). Exit-gate status after shape 2: `NewScalarSubqueryAnchoredRecord` has exactly ONE
+production call site (the translator's ungated-outer fallback), reachability pinned both directions
+(`TestRFC173W4b_ClusteredDispatch_BothDirections`, `TestRFC173W4b_JoinInnerDispatch_Ordinal`).
+
 **Graefe ruling on impl correction 3: DESIGN-ACK, all five amendments + exit-gate amendment, with
 conditions.** (i) ACK — reuse the `ordinalEligible` enclosure-free probe verbatim; if Gated but the
 fresh translation/seed fails, that case joins the (iv) DECLINE set (never an enclosed fallback into

@@ -1385,7 +1385,16 @@ func (r *spanAwareRow) GetByName(name string) (any, bool) {
 				return w.GetByName(col)
 			}
 		}
-		return nil, false
+		// …then the row's OWN output naming: a dotted string can be a LITERAL
+		// column name of the merged type, not a leg-qualified path — the W4b
+		// correlated-scalar seeds name their fields `LEG.COL` / `INNER.SCALARCOL`
+		// while the QUANTIFIERS carry fresh unique ids (`q$N`, the shape-2
+		// decouple), so a flat projection read like "O.AMOUNT" matches no span
+		// alias yet is exactly an output column. Ordered LAST: a leg alias always
+		// wins over a same-spelled literal (the leg-local read and the seed-born
+		// literal denote the same value for seed rows, and alias precedence is
+		// the name model's qualifyAlias order).
+		return r.parent.GetByName(name)
 	}
 	return r.parent.GetByName(name)
 }

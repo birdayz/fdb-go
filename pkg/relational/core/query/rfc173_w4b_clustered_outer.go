@@ -179,12 +179,31 @@ func (pu *clusterPullUp) bake(v values.Value) values.Value {
 //
 // Carriers: Filter.Predicate; Project.ProjectedValues; Aggregate
 // .GroupKeyValues/.AggregateOperands/.HavingPredicate; Sort.Keys[].Value;
-// Limit.LimitValue. Scan and Distinct carry no values. Joins are excluded by
-// the shape-2 innerContainsJoin gate before this runs.
+// Limit.LimitValue; Join.OnPredicate (both children recursed — W4b shape 2
+// admits JOIN-inners; a join with existential riders declines). Scan and
+// Distinct carry no values.
 func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) values.Value) (logical.LogicalOperator, bool) {
 	switch o := op.(type) {
 	case *logical.LogicalScan:
 		return o, true
+	case *logical.LogicalJoin:
+		if len(o.OnExistsSubqueries) > 0 {
+			return nil, false
+		}
+		l, ok := rebuildInnerWithValues(o.Left, fn)
+		if !ok {
+			return nil, false
+		}
+		r, ok := rebuildInnerWithValues(o.Right, fn)
+		if !ok {
+			return nil, false
+		}
+		cp := *o
+		cp.Left, cp.Right = l, r
+		if qp, isQP := o.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
+			cp.OnPredicate = predicates.ReplaceValues(qp, fn)
+		}
+		return &cp, true
 	case *logical.LogicalFilter:
 		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
 			return nil, false
@@ -370,8 +389,10 @@ func outerSubtreeAliases(op logical.LogicalOperator) map[string]struct{} {
 // named DOTTED `LEG.COL` per gathered leg, so the level-2 output row stays
 // name-addressable for the flat projection reads above (the shipped W4b
 // mechanism) — then the single nullable inner scalar leg at ordinal 0, named
-// exactly `INNER.SCALARCOL` (what replaceScalarSubqueryRef reads).
-func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerAlias, scalarCol string) values.Value {
+// exactly `INNER.SCALARCOL` (what replaceScalarSubqueryRef reads) but KEYED by
+// the fresh unique innerCorr (shape 2: the SQL alias would collide with a
+// JOIN-inner's own typed QOV at widenLegTypesFromPlan).
+func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string) values.Value {
 	outerQOV := values.NewQuantifiedObjectValueOfType(pu.outerCorr, pu.concatType)
 	var fields []values.RecordConstructorField
 	for _, leg := range pu.legs {
@@ -392,7 +413,7 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerAlias, scalarCol string) 
 	innerType := &values.RecordType{Fields: []values.Field{
 		{Name: scalarCol, FieldType: values.WithNullability(values.UnknownType, true), Ordinal: 0},
 	}}
-	innerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(innerAlias), innerType)
+	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
 	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
 	if err != nil {
 		return nil // decline
@@ -506,7 +527,7 @@ func (t *cascadesTranslator) translateClusteredOuterScalar(p *logical.LogicalPro
 	d := t.ordinalWedgeGateDecide(j)
 	t.inInnerCluster = prev
 
-	if d.Gated && exhaustive && !innerContainsJoin(csq.InnerPlan) {
+	if d.Gated && exhaustive {
 		if sel := t.buildClusteredOuterOrdinalScalar(p, csq, j); sel != nil {
 			return sel, false
 		}
@@ -529,9 +550,17 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	if pu == nil {
 		return nil
 	}
+	// The inner subtree's OWN source aliases (its first table AND any joined
+	// tables — shape 2 admits JOIN-inners) shadow same-named cluster legs under
+	// SQL scoping, but a value-level reference cannot tell the scopes apart —
+	// the pull-up would mis-bake an inner-own reference onto the outer concat.
+	// Any overlap declines.
+	for a := range outerSubtreeAliases(csq.InnerPlan) {
+		if _, collide := pu.legByAlias[a]; collide {
+			return nil
+		}
+	}
 	if _, collide := pu.legByAlias[strings.ToUpper(csq.InnerAlias)]; collide {
-		// The inner's alias shadows a cluster leg — a value-level reference to
-		// that alias is ambiguous between the scopes. Decline.
 		return nil
 	}
 	innerKey := strings.ToUpper(csq.InnerAlias) + "." + scalarCol
@@ -574,15 +603,20 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 		limitExpr := newLimitExprFromLogical(innerLimit, limitQ)
 		innerRef = expressions.InitialOf(limitExpr)
 	}
+	// The inner quantifier carries a FRESH unique id (W4b shape 2, the W2
+	// unique-ids decouple): the seed's typed 1-field inner leg keyed by the SQL
+	// alias would collide with a JOIN-inner's own typed QOV(InnerAlias) at
+	// widenLegTypesFromPlan. The RC field NAME keeps the SQL alias — the
+	// name-compat key the projection reads.
+	innerCorr := values.UniqueCorrelationIdentifier()
 	var innerQ expressions.Quantifier
 	if csq.StrictSingle {
-		innerQ = expressions.NamedForEachStrictSingleQuantifier(
-			values.NamedCorrelationIdentifier(csq.InnerAlias), innerRef)
+		innerQ = expressions.NamedForEachStrictSingleQuantifier(innerCorr, innerRef)
 	} else {
-		innerQ = t.namedQuantifier(csq.InnerAlias, innerRef)
+		innerQ = expressions.NamedForEachQuantifier(innerCorr, innerRef)
 	}
 
-	seed := clusteredOuterOrdinalSeed(pu, csq.InnerAlias, scalarCol)
+	seed := clusteredOuterOrdinalSeed(pu, innerCorr, csq.InnerAlias, scalarCol)
 	if seed == nil {
 		return nil
 	}
@@ -590,16 +624,18 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 		seed,
 		[]expressions.Quantifier{outerQ, innerQ},
 		nil,
-		[]string{pu.outerCorr.Name(), csq.InnerAlias},
+		[]string{pu.outerCorr.Name(), innerCorr.Name()},
 		expressions.JoinLeftOuter,
 	)
 	joinRef := expressions.InitialOf(joinSelect)
 
 	projected := make([]values.Value, len(p.Projections))
-	innerCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
+	// The projection reads the seed field by its SQL-alias-based NAME — the
+	// unique correlation is a leg-typing key only.
+	innerNameCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
 	for i, col := range p.Projections {
 		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
-			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerCorr)
+			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerNameCorr)
 			continue
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
