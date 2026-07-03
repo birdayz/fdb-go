@@ -3194,7 +3194,8 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// S4, so this ordinal seed is what keeps the single-source correlated-scalar
 	// extension alive. A decline (nil) falls back to the name model.
 	var resultValue values.Value
-	if t.clusterArity(p.Input) == 1 && !innerContainsJoin(csq.InnerPlan) {
+	if t.clusterArity(p.Input) == 1 && !innerContainsJoin(csq.InnerPlan) &&
+		t.innerScalarIsRowColumn(csq.InnerPlan, scalarCol) {
 		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, p.Input, csq.InnerAlias, scalarCol)
 	}
 	if resultValue == nil {

@@ -2797,9 +2797,40 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 		// EXISTS boolean reports BOOLEAN via ExistsValue.Type(); a column resolves
 		// against its defining leg descriptor).
 		descs := allLeafDescriptors(fm.GetOuter(), md)
+
+		// RFC-173 W4b: the correlated-scalar-subquery-in-projection ordinal seed
+		// (scalarSubqueryOrdinalSeed) is ALSO a raw (non-anchored) RC and lands
+		// here. Unlike a regular gated-join ordinal seed — whose legs are BOTH
+		// typed via ordinalLegType — its INNER scalar leg is typed UnknownType at
+		// translation (Go quantifier flowed types are untyped). foldedColumnDef
+		// resolves types only against the OUTER leaf descriptors, so it cannot
+		// reach the inner subquery's type and falls back to BIGINT — regressing a
+		// DOUBLE (AVG) / STRING / etc. scalar to BIGINT. Derive that one field's
+		// type from the INNER plan (a scalar subquery exposes exactly ONE output
+		// column), exactly as the retired name-model path did via its outer+inner
+		// merge. Scoping: IsOrdinalJoinRV excludes RFC-141 projected-EXISTS folds
+		// (their result value is not an ordinal-join RC), and the per-field
+		// untyped-inner-leg test excludes regular gated-join seeds (their inner
+		// legs are already typed, so isCorrelatedScalarInnerLeg is false for them).
+		innerScalarType := ""
+		if values.IsOrdinalJoinRV(rc) {
+			if innerCols := deriveColumnsFromPlan(fm.GetInner(), md); len(innerCols) == 1 {
+				innerScalarType = innerCols[0].TypeName
+			}
+		}
+		innerAlias := fm.GetInnerAlias().Name()
+
 		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
 		for _, f := range rc.Fields {
-			cols = append(cols, foldedColumnDef(f, descs))
+			col := foldedColumnDef(f, descs)
+			if innerScalarType != "" && isCorrelatedScalarInnerLeg(f, innerAlias) {
+				// Only the TYPE is corrected; Name/Label/Nullable from
+				// foldedColumnDef stay (the inner scalar leg is LEFT-OUTER
+				// null-supplying, so it must remain nullable regardless of the
+				// inner column's own nullability).
+				col.TypeName = innerScalarType
+			}
+			cols = append(cols, col)
 		}
 		return cols
 	}
@@ -2864,6 +2895,27 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 	}
 
 	return qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
+}
+
+// isCorrelatedScalarInnerLeg reports whether an ordinal-seed field is the INNER
+// scalar leg of a correlated-scalar-subquery ordinal seed (RFC-173 W4b): a
+// FieldValue over the inner-alias QOV whose flowed type is UnknownType (the
+// scalarSubqueryOrdinalSeed types this one leg UnknownType because Go quantifier
+// flowed types are untyped at translation). A regular gated-join seed's inner
+// legs are typed via ordinalLegType, so this is false for them — keeping the
+// type correction scoped to the correlated-scalar seed. Caller has already
+// gated on values.IsOrdinalJoinRV.
+func isCorrelatedScalarInnerLeg(f values.RecordConstructorField, innerAlias string) bool {
+	fv, ok := f.Value.(*values.FieldValue)
+	if !ok {
+		return false
+	}
+	qov, ok := fv.Child.(*values.QuantifiedObjectValue)
+	if !ok || !strings.EqualFold(qov.Correlation.Name(), innerAlias) {
+		return false
+	}
+	t := fv.Type()
+	return t == nil || t.Code() == values.TypeCodeUnknown
 }
 
 // joinResultValueIsReversed checks whether the plan's resultValue
