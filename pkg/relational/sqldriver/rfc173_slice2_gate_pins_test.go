@@ -764,17 +764,21 @@ func TestFDB_RFC173_W4_TopLevelLeftOrdinalizes(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (10, 1), (11, 2)")
 
 	const q = "SELECT a.id, c.id FROM a LEFT JOIN c ON c.a_id = a.id"
-	// The dissolved FlatMap (index probe) must WIN — proving the ordinal-seed
-	// dissolved shape executes. For a single-source LEFT the rule yields ONLY
-	// the ordinal seed as the dissolved form, so a FlatMap win IS the ordinal
-	// path (a materialized NestedLoopJoin(LEFT OUTER) would mean the
-	// ordinalization never ran).
+	// The dissolved FlatMap (index probe) must WIN over the materialized LEFT
+	// NLJ — this pins that the DISSOLVED path is the plan and executes correct
+	// NULL-extended rows. It does NOT by itself prove the ordinal-SEED variant
+	// (a hypothetical seed-decline would still produce a dissolved FlatMap over
+	// the name-model RC, same rows): the ordinal seed firing is pinned
+	// white-box by TestRFC173W4_RewriteYieldsOrdinalSeed_TopLevel (the rule
+	// yields !AnchoredJoin + AssertOrdinalJoinSeed). EXPLAIN carries no
+	// ordinal-vs-name-model marker, so this is the strongest SQL-level shape
+	// assertion available.
 	plan := rfc173PinExplain(t, db, ctx, q)
 	if !strings.Contains(plan, "FlatMap(") {
-		t.Fatalf("expected the dissolved FlatMap (ordinal seed executes) to win, got the materialized NLJ:\n%s", plan)
+		t.Fatalf("expected the dissolved FlatMap to win, got the materialized NLJ:\n%s", plan)
 	}
 	if strings.Contains(plan, "NestedLoopJoin(LEFT OUTER") {
-		t.Fatalf("the materialized LEFT-OUTER NLJ won — the ordinalized dissolved LEFT did not execute:\n%s", plan)
+		t.Fatalf("the materialized LEFT-OUTER NLJ won — the dissolved LEFT did not execute:\n%s", plan)
 	}
 	got := rfc173PinRows(t, db, ctx, q)
 	sort.Strings(got)

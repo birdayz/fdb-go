@@ -107,5 +107,11 @@ func ordinalSeedFromAnchoredLeft(anchored *values.RecordConstructorValue, preser
 			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
 		}
 	}
-	return values.NewRawRecordConstructorValue(fields...)
+	rc := values.NewRawRecordConstructorValue(fields...)
+	// Executor-contract tripwire on the CONSTRUCTED output (distinct from the
+	// input-decompose declines above): past the shape checks this can only
+	// trip on a code bug, never on declinable input — a cheap regression net
+	// on the seed the executor consumes.
+	values.AssertOrdinalJoinSeed(rc)
+	return rc
 }
