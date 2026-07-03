@@ -89,8 +89,9 @@ sites; these close the same defect class where it survives.
   for the exotic types too, or the whack-a-mole stays ajar inside `predicates/` even after the five
   `plans/` sites are wired.
 - **B2 — canonical semantic total order for the cost tie-breaker.** When two plans are cost-tied AND
-  criteria-tied, the winner is decided by raw hash ordering — `costExprHash` (planning_cost_model.go:350)
-  / `deepHashCode` (:841). So ANY hash evolution re-rolls the winner among cost-tied semantically-distinct
+  criteria-tied, the winner is decided by raw hash ordering — `costExprHash` (planning_cost_model.go:350,
+  whose chain also folds `concretePlanHash`) / `deepHashCode` (:841). So ANY hash evolution re-rolls the
+  winner among cost-tied semantically-distinct
   plans; RFC-176 P2 is the existence proof (its alias-invariant hashes flipped a pinned vector winner,
   fixed there by turning that specific tie into a *cost* decision — but the tie-break CLASS remains for
   every other equal-cost pair). Replace the hash ordering with a **canonical total order over plan
@@ -171,6 +172,19 @@ pre-existing, not part of this campaign's remainder, and is out of scope here.)
 | D1/D2/D3 (fdbgo) | FDB-C-dev | zero — different subsystem | **now** |
 | E (stress baseline) | infra | none | **now** |
 
+**C4 reclassified `after 173` → `now`, explicitly (this reverses RFC-175 §4:293).** RFC-175's
+sequencing table queued C4 "after 173, own cycle," but — unlike the C1/C5/D1 rows, whose conflict
+column names a concrete coupling (C1/C5 "**direct** — 173 churns these exact files"; D1 "plan shapes
+converge after 173") — C4's row named no 173 coupling at all, only "planner semantics; needs own RFC
++ Graefe." The "after 173" was the cautious default, not an identified conflict. Two things resolve
+it to "now": (i) C4 lives in the Cascades planner *rule/gate* structure (`pushDataAccessTasks`,
+`compensationSafeForYield`, `ImplementSimpleSelectRule`, the net) — files 173 does not touch (173 is
+column-resolution / row-model in `values/`, `embedded/`, the executor); (ii) C3 (#455) just
+decomposed those exact two functions with zero 173 conflict, empirically proving the files are
+173-independent. The "own RFC + Graefe" half of RFC-175's note is honored — that RFC is RFC-178.
+Graefe reviewed this reclassification (it is the §4 row he ACKed) and did not object; this paragraph
+makes the implicit acceptance explicit so the reversal is on the record, not buried.
+
 Executable immediately: **B, C (via RFC-178), D, E**. Blocked: **A** (all three), until the named 173
 milestones. This is the same keep-the-lights-on lane the owner authorized for the RFC-175/176
 execution — Tracks B–E are zero-conflict with 173; Track A would be rebase poison and waits.
@@ -237,5 +251,15 @@ is the largest and runs under its own RFC-178, staged.
   would regress metric-mismatch/no-index vector queries to a generic failure — the logical diagnostic is
   the intended-rejection path, not net-scaffolding. Corrected in RFC-178 (keep and expand it to the JOIN
   sentinel; retire only the physical net).
+- **@claude — one substantive + three minors (2026-07-03).** Substantive (folded): the C4 `after 173`
+  → `now` reclassification reverses RFC-175 §4:293 and needed explicit justification for Graefe rather than
+  a parenthetical — §4 now carries the reversal paragraph (C4's RFC-175 row named no 173 coupling; C3/#455
+  proved the files 173-independent). Minors: (a) `concretePlanHash` added to B2 (folded); (b) cross-ref
+  backfill — RFC-177 adds itself but doesn't yet point TODO.md/RFC-175/176 back at it, so the work briefly
+  lives in more places — **tracked: back-references land in the first implementation PR of each track, not
+  this doc PR** (touching RFC-175/176/TODO here would collide with concurrent 173 edits); (c) Track D's
+  `D1/D2/D3` collide on a cross-RFC grep with RFC-175's own `D1` (now this RFC's A3, tagged "(was RFC-175
+  D1)") — **left as-is: RFC-177-track-local and traceable via the A3 tag**, renumbering would only trade one
+  inconsistency for another.
 - (pending) FDB-C-dev — Track D (fdbgo) at execution time, per-PR.
-- (pending) @claude — this RFC PR.
+- (pending) @claude re-confirm — this RFC PR (final HEAD).
