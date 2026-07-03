@@ -1784,3 +1784,39 @@ Each is a distinct sub-problem; the slice ordinalizes all three (or Graefe may s
 Graefe design-ACK on the per-shape approach (read Java's correlated-scalar handling first) BEFORE impl,
 then the §10 four-gate gauntlet. Coverage proof: correlated-scalar yamsql/FDB tests over all three
 shapes return correct rows via the ordinal seed (EXPLAIN + rows), not the name-model fallback.
+
+### W4b design (Java-grounded; for Graefe design gauntlet)
+Java's model (confirmed by source read): a quantifier's SQL name and its correlation KEY are distinct —
+`Quantifier.forEach` mints a globally-unique `CorrelationIdentifier` (`Quantifier.java:175/842`), every
+column is addressed by ORDINAL (`pullUpResultColumns` → `FieldValue.ofOrdinalNumber(QOV(alias,rt), i)`,
+`Quantifier.java:759-769`), and correlated refs rewrite to ordinals via `Value.pullUp`. Per shape:
+
+- **Shape 3 (computed scalar) — TRIVIAL, do first.** Java's inner `resultValue` is a
+  `RecordConstructorValue` of the SELECT items; a scalar subquery flows ONE column at ordinal 0, so
+  `ofOrdinalNumber(innerQOV, 0)` reads it whether it's `c.name` or `c.a+c.b` (`SelectExpression.java:112-132`).
+  Go's `innerScalarIsRowColumn` guard (`cascades_translator.go:3252`) is STRICTER than Java — DROP it;
+  the ordinal seed's inner leg is `ofOrdinalNumber(QOV(innerAlias, innerType), 0)`.
+- **Shape 1 (clustered outer) — MODERATE.** Java never name-erases the cluster: N distinct aliased
+  operators, `SemanticAnalyzer.lookup` matches `t1.col` → `ofOrdinalNumber(QOV(t1), ord)`
+  (`SemanticAnalyzer.java:442-490`). Go's flatten works ONLY if it retains a per-source→global-ordinal
+  map over the flat cluster record type (the buried-reference map — reuse the join-wedge's, if the
+  cluster infra already exposes it). The outer leg becomes `ofOrdinalNumber(clusterQOV, globalOrd)`.
+- **Shape 2 (JOIN-inner) — HARD, entangled with TODO-7.1.** The `InnerAlias` collision is Go's
+  namespace non-unification: Go keys the inner QOV by `NamedCorrelationIdentifier(InnerAlias)`, so a
+  JOIN-inner whose first table shares that SQL alias collides. Java has NO collision — quantifier keys
+  are unique generated ids, SQL names live only on `LogicalOperator.name` for lookup. Fix mirrors Java:
+  give the inner quantifier a UNIQUE correlation id decoupled from the SQL alias.
+
+### FORKS for Graefe (W4b)
+- **W1 (SPLIT?): shape difficulty is wildly uneven** (3 = drop a guard; 1 = buried-map; 2 = a slice of
+  TODO-7.1 namespace unification). Does W4b do all three, or ship shapes 3+1 and DEFER shape 2 to a
+  TODO-7.1 slice? **Consequence:** F1 requires `NewScalarSubqueryAnchoredRecord` to reach ZERO callers
+  to join the S4 kill set — if shape 2 defers, the constructor stays LIVE for JOIN-inner, so **S4 gains
+  a new predecessor (TODO-7.1) in the canonical sequence.** Graefe must rule the split AND the roadmap
+  consequence.
+- **W2: is shape 2 really TODO-7.1, or a local decouple?** Can the inner quantifier get a unique id
+  WITHOUT the full namespace unification (a W4b-local fix: mint a fresh `UniqueCorrelationIdentifier`
+  for the inner quantifier and rewrite the inner join's alias refs through it), or does it require the
+  global 7.1 work? If local, shape 2 stays in W4b.
+- **W3: buried-reference map reuse (shape 1)** — does the cluster-arity infra already expose a
+  per-source→global-ordinal map (from the S2/S3 join wedge), or must W4b build one?
