@@ -1519,11 +1519,14 @@ narrowing was ACK'd by Graefe. **The entire W4 tier (W4-LEFT/W4b/W4c) is now mer
 
 ---
 
-## Slice 3 — atomic flip: impl design (for Graefe design gauntlet; PRE-IMPL)
+## Slice 3 — dispatch-authority flip: impl design (Graefe DESIGN-ACK on reframe; PRE-IMPL)
 
 W4c merged (PR #463) — the entire **W4 tier is done** (W4-LEFT #458, W4b #460/#461, W4c #463). Slice 3
-is the atomic hard core (§4 slice order; §8 risk 1; §10 requires reviewer sign-off BEFORE the first
-impl commit). This section is that design.
+is the hard core (§4 slice order; §8 risk 1; §10 requires reviewer sign-off BEFORE the first impl
+commit). **Graefe's design gauntlet reframed it** from an "atomic deletion" to a **dispatch-authority
+flip + certification** slice: make the already-live positional/identity/ordinal-interning machinery
+authoritative and pin it; the anchored trio and its machine are deleted in **Slice 4**. This section
+is that (corrected) design.
 
 ### STATE RE-SYNC — the RFC's Slice-3 map is STALE; most of the "atomic core" already landed dark
 A 6-agent code map (banked) found that the Slice-3 prose over-states remaining work. **Already landed
@@ -1549,71 +1552,95 @@ on HEAD, gated/dark in the coexistence window:**
 - The live task-count baseline is **`{3, 11122}` / `{4, 45306}` ±2%** (`partition_select_interning_baseline_test.go:259-260`),
   re-baselined by RFC-150/152 — the RFC's `8999/30593` is the OLD master number.
 
-### The ATOMIC FLIP — what genuinely remains (one merge unit, P1/P2/P3 authoritative together)
-1. **Widen the cluster-arity gate** (`rfc173_cluster_gate.go`) so ALL joins seed ordinal → the memo
-   re-enumerates every join positionally → `parentIsMerge` (`rule_partition_select.go:426,526`) is
-   never true → the anchored-trio dispatch arm (`:528-598`) is dead code.
-2. **Delete, in the SAME commit** (the trio is one machine): `NewReEnumerationAnchoredRecord`
-   (`value_anchored_join_record.go:259`), `anchoredColumnsByQuantifier` (`:155`), `leftmostQOV`
-   (`:192`), `buildUpperResult` (`rule_partition_select.go:455`), `rebaseBuriedLowerReferences`
-   (`:942`), `isAnchoredJoinResult` + the anchored dispatch arm; the two fail-loud re-stamp panics
-   (`:466`,`:555`) and the FrontierPinned drift tripwire (`:963-977`) — load-bearing coexistence
-   alarms whose invariant the positional pull-up now guarantees structurally (an ordinal rebuild over
-   the merge quantifier's own flowed Type cannot fail to find a leg).
-3. **Delete the `AnchoredJoin` arm of `InternsAliasAware`** (`select.go:251`) → the ordinal structural
-   probes become the SOLE merge-select interning key. (Do NOT stamp `AnchoredJoin=true` on the
-   positional RC — that re-imports the correlation-hiding S3 deletes; recognize the positional row
-   STRUCTURALLY, RFC §589-590.)
-4. **`pullUpResultColumns`** — Java pulls up over the merge quantifier's TYPED flowed Type
-   (`Quantifier.java:759`); Go's `GetFlowedObjectValue` is UNTYPED, so `positionalMergeCase` recovers
-   leg types ad-hoc via `legRowTypes`. **Fork Q4 below.**
-5. **Rewrite two tests** to positional: `rule_partition_select_test.go` (seed `NewAnchoredJoinRecord`
-   → ordinal positional seed; assert `IsPositionalMergeRC` not `AnchoredJoin`) and the
-   `InternsAliasAware` gate test in `partition_select_interning_baseline_test.go:115` (mergeSel marker
-   → `IsPositionalMergeRC`, keep the projSel non-merge branch so CTE-NULL protection stays intact).
-   `rfc173_slice2_drift_assert_test.go` is only PARTLY deletable — `TestRFC173S2_SelectMergeDriftAssert_Fires`
-   holds live positive compose pins that must STAY; only the re-stamp-assert sibling dies.
-6. **Author the two MISSING gate pins** (neither exists in code): the **STAR planning wall-clock**
-   bound on a many-identical-legs corpus (the task-count pin is BLIND to bijection-enumeration cost —
-   count can stay flat while per-Insert cost explodes) and the **shadow-delta equivalence** assertion
-   (spike-predicted extra-dedup == actual member-count delta; the spike on
-   `feat/rfc173-p3-bijection-interning` only `t.Logf`'d ~259).
+### The FLIP — reframed per Graefe's design gauntlet (DESIGN-ACK'd; trio deletion moved to S4)
+> **Graefe NAK'd the v1 plan** (delete the re-stamp trio + `InternsAliasAware` AnchoredJoin arm IN
+> Slice 3) and gave the correct reframe. The v1 premise — "widen the gate → `parentIsMerge` is never
+> true → the trio is dead code" — is **FALSE**: anchored seeds stay CONSTRUCTIBLE after the widen.
+> `NewScalarSubqueryAnchoredRecord` (computed-scalar / join-inner / clustered-outer correlated
+> subqueries decline the ordinal wedge and seed anchored), the multi-source lateral-UNNEST bipartition
+> (name-model until W5), and same-quantifier anchored selects all still reach the merge arm with
+> `parentIsMerge=true`. **You cannot delete the consumer (trio) while its producers (anchored seeds)
+> are live.** Deleting the `InternsAliasAware` AnchoredJoin arm with those seeds present reproduces the
+> `29915→60044` interning blowup un-gated. So the trio + interning arm + the `AnchoredJoin` flag +
+> seed constructors ALL die together in **Slice 4**; W5 stays a **separate post-green PR**. Slice 3 is
+> a **dispatch-authority flip**, not a deletion.
 
-### FORKS — Graefe's rulings needed BEFORE the first impl commit
-- **Q1 (the load-bearing fork): W5 vs the trio deletion — SEQUENCING.** Deleting the anchored trio
-  requires NO surviving shape to seed anchored. But **multi-source lateral UNNEST stays name-model
-  until W5** (the RFC calls W5 a *separate final PR after P2/P3 green*, §587), and general ≥3-way
-  joins beyond the current gated wedge, dissolved-LEFT, and correlated-scalar seeds still build
-  `AnchoredJoin` parents that reach the merge arm. So either (a) **W5 is FOLDED INTO the atomic
-  commit** (gate-widen + trio-delete + multi-source-unnest bipartition rewrite all land together —
-  larger, but the trio genuinely dies), or (b) **the trio deletion is SCOPED to the non-unnest join
-  surface** (the anchored arm survives ONLY for the multi-source-unnest shape until a follow-on W5
-  PR). (b) contradicts "delete the trio in Slice 3"; (a) makes Slice 3 bigger but honest. Which?
-- **Q2: post-flip task-count numbers.** The positional arm CHANGES sub-product exploration sharing, so
-  the flip LEGITIMATELY re-baselines `{3,11122}/{4,45306}`. Ruling needed: the new pinned numbers +
-  the mandatory **plan-baseline audit** (plandiff byte-identical + merge-branch hit-count) BEFORE the
-  flip, so a legitimate re-baseline is not mistaken for the `29915→60044` interning blowup (or vice
-  versa). What is the accepted re-baseline delta bound?
-- **Q3: correlation-hiding (RFC-077 F2) replacement.** `GetCorrelatedToOfValue`'s AnchoredJoin
-  hide/expose duality (`value_correlation.go:96-98`) keeps ≥4-way STAR under the task budget; it dies
-  with the trio. Does the unnamed positional row need equivalent hide/expose treatment, or does the
-  ordinal QOV correlation surface naturally (and Slice-5's local-bind subtraction carry the budget)?
-- **Q4: `pullUpResultColumns` — port a typed pull-up, or bless `legRowTypes`?** Java's typed
-  merge-quantifier flow vs Go's untyped `GetFlowedObjectValue` + the ad-hoc `legRowTypes`
-  reconstruction. Is `positionalMergeCase`'s `legRowTypes` the accepted Go equivalent, or does the
-  N-way generalization need a first-class typed pull-up (and does every live leg then need a typed
-  reference surface)?
-- **Q5: Slice 3/4 deletion boundary.** Slice 3 deletes the anchored dispatch arm + the re-stamp trio;
-  Slice 4 retires the `AnchoredJoin` FLAG itself + widens `InternsAliasAware` to ALL selects + deletes
-  the lazy name-identity arm + the CTE-rename execution pins certify. Can the trio die in S3 while the
-  `AnchoredJoin` flag + `NewAnchoredJoinRecord`/`NewScalarSubqueryAnchoredRecord` survive to S4 (for
-  the non-re-enumeration seed sites)? Confirm the exact S3/S4 line.
-- **Q6: re-sync the RFC staging text to HEAD.** The Slice-3 prose anchors are stale across the board
-  (task-count 8999/30593→11122/45306; tripwires `:910-914`/`:141-148`→`:963-977`/deleted; identity
-  `:260-262`/`:108`→landed at `:319-339`/`:120-139`; items (d)/(f) landed but framed as TODO). Re-sync
-  before the flip PR so reviewers read an accurate map. (This section is the start of that re-sync.)
+**Slice 3 = make the already-live positional/identity/ordinal-interning machinery AUTHORITATIVE, and
+certify it. The anchored arm + trio SURVIVE as the residual path** for name-model shapes (multi-source
+unnest until W5; scalar-subquery / non-wedge anchored seeds until S4).
+
+1. **Widen is ALREADY DONE.** `rfc173_cluster_gate.go:124` (`if a := t.clusterArity(j); a >= 2`)
+   already admits every maximal inner-join cluster to ordinal seeding; `positionalMergeCase` already
+   re-collapses subsets. Slice 3 does **not** re-touch the gate — it makes the positional arm the
+   **SOLE producer for every ordinal-seeding shape** and certifies that authority with the gate pins
+   below. (No `parentIsMerge`-goes-dead claim; the anchored arm keeps firing for the residual shapes.)
+2. **Node-identity + collapsed-FieldPath + compose** (items (d)/(f) in the re-sync above) are the
+   authoritative baked-node behaviour in S3 — the lazy name-identity arm and the anchored trio remain
+   only as the name-model residual, deleted in S4.
+3. **Ordinal interning is authoritative in S3, additively.** The two ORDINAL structural probes
+   (`IsPositionalMergeRC`, `IsOrdinalJoinRV`) are the interning key for every POSITIONAL merge-select.
+   The `AnchoredJoin` arm of `InternsAliasAware` (`select.go:251`) **STAYS** — it is the interning key
+   for the surviving anchored residual. Do NOT stamp `AnchoredJoin=true` on the positional RC
+   (recognize the positional row STRUCTURALLY). Deleting that arm is **S4**, gated on the seeds being
+   gone.
+4. **`pullUpResultColumns` — `legRowTypes` is BLESSED as the Go bridge (Q4).** `positionalMergeCase`'s
+   ad-hoc leg-type recovery is the accepted equivalent of Java's typed merge-quantifier pull-up
+   (`Quantifier.java:759`) for S3 — **conditioned on the three Q4 pins** (below). A first-class typed
+   pull-up is NOT required for S3; if a future N-way shape can't recover a leg type, THAT is when the
+   typed surface gets ported (named owner: Slice 5, with the local-bind subtraction work).
+5. **Author the two MISSING gate pins** (neither exists in code) — these are the load-bearing S3
+   deliverables, authored IN the flip PR (Q6):
+   - **STAR planning wall-clock** bound on a many-identical-legs corpus. The task-count pin is BLIND to
+     bijection-enumeration cost — count can stay flat while per-Insert cost explodes. Bound is
+     wall-clock, on a fixed corpus, with an explicit ceiling.
+   - **shadow-delta equivalence**: spike-predicted extra-dedup **exactly equals** actual member-count
+     delta (the `feat/rfc173-p3-bijection-interning` spike only `t.Logf`'d ~259 — promote to an
+     exact-equality assertion).
+6. **Plan-baseline audit is a HARD GATE (Q2):** **plandiff BYTE-IDENTICAL** before/after the flip (it
+   is a representation flip, not a plan change) **AND merge-branch hit-count == 0** on the ordinal-seed
+   corpus (proves the positional arm, not the anchored arm, produced every ordinal-seed plan). The
+   task-count numbers `{3,11122}/{4,45306}` must stay within ±2%; any movement beyond that is a
+   regression to root-cause, NOT a re-baseline (the flip changes representation, not exploration
+   sharing — that was the v1 error).
+7. **Rewrite the two tests** to positional (unchanged from v1): `rule_partition_select_test.go` (assert
+   `IsPositionalMergeRC` not `AnchoredJoin`) and the `InternsAliasAware` gate test in
+   `partition_select_interning_baseline_test.go:115` (mergeSel marker → `IsPositionalMergeRC`, keep the
+   projSel non-merge branch so CTE-NULL protection stays intact). `rfc173_slice2_drift_assert_test.go`:
+   only the re-stamp-assert sibling changes; `TestRFC173S2_SelectMergeDriftAssert_Fires` positive
+   compose pins STAY.
+
+### FORKS — Graefe's rulings (RESOLVED; DESIGN-ACK on the reframed text)
+- **Q1 (SEQUENCING) — RESOLVED: (b), scoped, NOT (a).** Do **not** fold W5 into the flip (its safety
+  rests on P2/P3 merged-and-green; folding its least-proven rewrite un-gated is exactly the risk the
+  gauntlet exists to catch). Do **not** delete the trio in S3. Slice 3 is the dispatch-authority flip;
+  the anchored arm survives as the residual for multi-source unnest (→ W5) and non-wedge anchored seeds
+  (→ S4). W5 remains a separate post-green PR.
+- **Q2 — RESOLVED: no re-baseline; it's a HARD equality gate.** The flip is a representation flip, so
+  plandiff is BYTE-IDENTICAL and merge-branch hit-count on the ordinal-seed corpus is 0. Task-count
+  stays within ±2% of `{3,11122}/{4,45306}`; anything past that is a regression, not a re-baseline.
+  (v1's "the flip legitimately re-baselines exploration sharing" was wrong — the positional arm was
+  already live; making it authoritative doesn't change what's explored, only which arm stamps it.)
+- **Q3 — RESOLVED: no hide/expose replacement needed.** The unnamed positional row's QOVs are the
+  select's OWN bound quantifiers, so their correlations subtract naturally in `GetCorrelatedToOfValue`
+  — no AnchoredJoin-style hide/expose duality. The RFC-077 F2 duality stays only for the surviving
+  anchored residual and dies with it in S4. Slice-5's local-bind subtraction carries the ≥4-way STAR
+  budget for the positional path (verified by the S3 STAR wall-clock pin, item 5).
+- **Q4 — RESOLVED: bless `legRowTypes` as the S3 bridge, under three pins.** (i) a **no-untyped-slot**
+  pin (every positional slot recovers a concrete leg Type — never `Type.Any`/untyped); (ii) a
+  **recovered == flowed differential** (the `legRowTypes` reconstruction equals what a typed pull-up
+  over the merge quantifier's flowed Type would yield, on the corpus); (iii) a **named typed-pull-up
+  owner** — Slice 5 ports the first-class typed surface if any N-way shape defeats ad-hoc recovery.
+- **Q5 — RESOLVED: trio + `AnchoredJoin` flag + `NewAnchoredJoinRecord`/`NewScalarSubqueryAnchoredRecord`
+  + the `InternsAliasAware` AnchoredJoin arm ALL die TOGETHER in S4.** They cannot be split — the flag,
+  the seeds, and the consumer are one machine; deleting any subset while the rest is live either
+  breaks a live seed or un-gates the interning blowup. S3 touches NONE of them.
+- **Q6 — RESOLVED: this section IS the re-sync; the two gate pins are authored IN the flip PR.** Stale
+  anchors corrected in the STATE RE-SYNC block above. The STAR wall-clock + shadow-delta pins ship in
+  the flip PR (item 5).
 
 ### Gates (process)
-Query-engine change → Graefe design-ACK on Q1-Q6 (esp. Q1 the sequencing fork) **before any impl**,
-then the §10 gauntlet (Graefe/Torvalds/codex/@claude sign-off) on the flip PR — a regression-net pin
-red BLOCKS the whole atomic slice (it cannot be split).
+Query-engine change → **Graefe design-ACK on the reframed Q1-Q6 above — re-request on THIS corrected
+text** (Graefe's explicit condition). Then the §10 gauntlet (Graefe/Torvalds/codex/@claude sign-off)
+on the flip PR. The flip is now a certification + authority slice, not a deletion: a red gate pin
+(STAR wall-clock, shadow-delta, plandiff-byte-identical, merge-branch-hit-count, or any Q4 pin) BLOCKS
+the slice. Deletions (trio, flag, seeds, interning arm) are **Slice 4**, gated on S3 green.
