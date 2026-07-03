@@ -876,14 +876,45 @@ func expandValueForMatching(v values.Value) []values.Value {
 		}
 	}
 
-	// ExpandFusedFieldValueRule: if v is a FieldValue with a multi-step
-	// path (e.g. "a.b.c"), split the last step:
-	// FV(v, "a.b.c") → FV(FV(v, "a.b"), "c").
-	// Go's FieldValue uses a single string Field, not a path list,
-	// so this rule doesn't apply to Go's current FieldValue model.
-	// (Java's FieldValue has a FieldPath with multiple accessors.)
+	// ExpandFusedFieldValueRule (Java ExpandFusedFieldValueRule.onMatch,
+	// resident ONLY in MaxMatchMapSimplificationRuleSet.java:50 — never in
+	// the general simplifier, per the stack-overflow warning against
+	// co-residing with the compose rule): a FUSED multi-accessor FieldValue
+	// (live since the S3 fulcrum's TranslationMap rebase) splits its LAST
+	// step off — FV(path[a1..an]) → FV(FV(child, path[a1..a(n-1)]), [an]) —
+	// so a CHAINED candidate (two nodes, one accessor each: the pre-compose
+	// shape candidate builders produce) matches the pieces. Matching-only,
+	// exactly Java's placement.
+	if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved != nil && len(fv.Resolved.Accessors) >= 2 {
+		results = append(results, expandFusedFieldValue(fv))
+	}
 
 	return results
+}
+
+// expandFusedFieldValue splits a fused path's last accessor into a chained
+// two-node form (Java's ofFields(ofFields(child, prefix), [last])). The
+// FrontierPinned bit rides on both halves (it is a property of the source
+// value's evaluation contract; these expansions exist for MATCHING identity
+// only and are never evaluated). The inner node's Typ is unknown — the
+// ordinal-only baked identity (S3-W3) never consults it.
+func expandFusedFieldValue(fv *values.FieldValue) *values.FieldValue {
+	n := len(fv.Resolved.Accessors)
+	prefix := make([]values.ResolvedAccessor, n-1)
+	copy(prefix, fv.Resolved.Accessors[:n-1])
+	last := fv.Resolved.Accessors[n-1]
+	inner := &values.FieldValue{
+		Field:    prefix[len(prefix)-1].Field,
+		Typ:      values.UnknownType,
+		Child:    fv.Child,
+		Resolved: &values.FieldPath{Accessors: prefix, FrontierPinned: fv.Resolved.FrontierPinned},
+	}
+	return &values.FieldValue{
+		Field:    last.Field,
+		Typ:      fv.Typ,
+		Child:    inner,
+		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{last}, FrontierPinned: fv.Resolved.FrontierPinned},
+	}
 }
 
 // expandRecordValue expands a non-RCV value with Record type into a

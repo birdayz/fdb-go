@@ -665,3 +665,65 @@ func TestFDB_RFC173_FullOverGatedBuriedRef(t *testing.T) {
 		t.Errorf("FULL-over-gated buried-ref rows = %v, want %v", got, want)
 	}
 }
+
+// TestFDB_RFC173_SecondaryIndexThroughMerge is the W2 exit criterion's e2e
+// half (S3-W3): SECONDARY-index selection must survive the fused/N-way
+// substrate — the 3-way chain's winning plan probes c through its index
+// inside the merge machinery, and the ORDER BY variant introduces no NEW
+// spurious sort (the pre-fulcrum name model also sorted here; the §5
+// no-spurious-sort pin guards the single-table frontier). The matching half
+// (fused-vs-chained max-match through the ported ExpandFusedFieldValueRule)
+// is pinned at the unit level in rfc173_w3_max_match_fused_test.go.
+func TestFDB_RFC173_SecondaryIndexThroughMerge(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_rfc173_idxmerge")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc173_idxmerge")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE rfc173_idxmerge_tmpl "+
+			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT NOT NULL, y BIGINT, z BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT NOT NULL, b_z BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX c_b_z ON c (b_z)")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc173_idxmerge/s WITH TEMPLATE rfc173_idxmerge_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc173_idxmerge?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 10), (2, 20)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, y, z) VALUES (10, 10, 7), (20, 20, 8)")
+	// c(102) dangles (b_z=9): a full-scan-shaped mistake would leak it into
+	// a cross product; the index probe never sees it.
+	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, b_z) VALUES (100, 7), (101, 8), (102, 9)")
+
+	const q = "SELECT a.id, c.id FROM a, b, c WHERE a.x = b.y AND b.z = c.b_z"
+	plan := rfc173PinExplain(t, db, ctx, q)
+	if !strings.Contains(plan, "Fetch(IndexScan(C_B_Z") {
+		t.Fatalf("the c-leg must probe through its secondary index inside the merge machinery — plan: %s", plan)
+	}
+	got := rfc173PinRows(t, db, ctx, q)
+	sort.Strings(got)
+	if want := []string{"1|100", "2|101"}; !eqStrSlices(got, want) {
+		t.Errorf("rows = %v, want %v", got, want)
+	}
+
+	// ORDER BY variant: same probe, sort present but exactly ONE (no
+	// fused-substrate-induced double sort), rows ordered.
+	const qo = q + " ORDER BY a.id"
+	planO := rfc173PinExplain(t, db, ctx, qo)
+	if !strings.Contains(planO, "Fetch(IndexScan(C_B_Z") {
+		t.Fatalf("ORDER BY variant lost the index probe — plan: %s", planO)
+	}
+	if strings.Count(planO, "InMemorySort") > 1 {
+		t.Fatalf("more than one sort in the ordered plan (spurious sort) — plan: %s", planO)
+	}
+	if gotO := rfc173PinRows(t, db, ctx, qo); !eqStrSlices(gotO, []string{"1|100", "2|101"}) {
+		t.Errorf("ordered rows = %v, want [1|100 2|101]", gotO)
+	}
+}

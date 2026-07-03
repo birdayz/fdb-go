@@ -599,3 +599,20 @@ name-only twins). Remaining W3: (B) max-match-map fused-path verification
 pins (no-spurious-sort EXPLAIN + nested-index-scan-chosen — the W2 exit
 criterion; port ExpandFusedFieldValueRule into matching ONLY if they fail);
 (C) the mechanical TranslationMap consolidation.
+
+## S3-W3 commit B — max-match-map fused-path verification (the W2 exit criterion)
+Probed, triggered, ported: fused-vs-chained max-matching returned NO match
+(the probe went red exactly as the ruling anticipated), so
+ExpandFusedFieldValueRule is ported into expandValueForMatching — MATCHING
+ONLY, Java's exact placement (MaxMatchMapSimplificationRuleSet.java:50;
+never the general simplifier, per the compose-co-residence stack-overflow
+warning). The stale "doesn't apply to Go's FieldValue model" comment (true
+pre-W1) is gone. Pins: rfc173_w3_max_match_fused_test.go — fused-vs-fused,
+the NAME-DIVERGENT twin (the identity flip's dedup feeding matching), and
+fused-vs-chained (red without the port); e2e
+TestFDB_RFC173_SecondaryIndexThroughMerge (secondary-index probe survives
+the merge machinery, ORDER BY variant carries exactly one sort — the
+pre-fulcrum name model also sorted N-way tops, so "no spurious sort" means
+no NEW sort; the §5 single-frontier pin stays the elision guard). Task
+baselines held with the expansion in the matching loop. Remaining W3: (C)
+the mechanical TranslationMap consolidation.
