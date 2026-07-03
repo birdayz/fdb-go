@@ -3241,15 +3241,22 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// RFC-173 W4b: ordinalize the 2-leg seed when the OUTER is a SINGLE SOURCE
 	// (clusterArity==1) AND the INNER subquery contains no JOIN. A multi-table
 	// outer cluster stays name-model — ordinalizing a flattened cluster erases
-	// buried source names. A JOIN-inner also stays name-model: its first table
-	// shares csq.InnerAlias, so the inner ordinal join's typed QOV(InnerAlias)
+	// buried source names (shape 1). A JOIN-inner also stays name-model: its first
+	// table shares csq.InnerAlias, so the inner ordinal join's typed QOV(InnerAlias)
 	// would collide with the seed's typed inner leg (widenLegTypesFromPlan
-	// DIVERGENT-baked-types — see innerContainsJoin). The name model is deleted in
-	// S4, so this ordinal seed is what keeps the single-source correlated-scalar
-	// extension alive. A decline (nil) falls back to the name model.
+	// DIVERGENT-baked-types — see innerContainsJoin) (shape 2). The name model is
+	// deleted in S4, so this ordinal seed is what keeps the single-source
+	// correlated-scalar extension alive. A decline (nil) falls back to the name model.
+	//
+	// The former innerScalarIsRowColumn guard (shape 3) is GONE: a COMPUTED scalar
+	// is now MATERIALIZED as the inner's projected output (buildCorrelatedScalar,
+	// positional `_0`), so the scalar is ALWAYS present in the inner row (plain
+	// column, aggregate output, or projected computation) — the guard's "is the
+	// scalar in the inner row" question is unconditionally yes. The single inner
+	// leg reads ofOrdinal(inner, 0) regardless of whether the scalar is a stored
+	// column or a computed expression.
 	var resultValue values.Value
-	if t.clusterArity(p.Input) == 1 && !innerContainsJoin(csq.InnerPlan) &&
-		t.innerScalarIsRowColumn(csq.InnerPlan, scalarCol) {
+	if t.clusterArity(p.Input) == 1 && !innerContainsJoin(csq.InnerPlan) {
 		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, p.Input, csq.InnerAlias, scalarCol)
 	}
 	if resultValue == nil {

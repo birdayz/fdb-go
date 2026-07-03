@@ -103,47 +103,11 @@ func innerContainsJoin(op logical.LogicalOperator) bool {
 	return false
 }
 
-// innerScalarIsRowColumn reports whether the correlated scalar subquery's scalar
-// column will be PRESENT in the inner row the ordinal leg adapter reads — the
-// second condition for ordinalizing. Two safe shapes:
-//   - an AGGREGATE inner (COUNT/SUM/AVG/…): the aggregate COLLAPSES to a single
-//     row keyed by the aggregate output name (scalarCol), so the ordinal leg
-//     finds it;
-//   - a PLAIN COLUMN scalar: scalarCol is a stored column of the inner's single
-//     source, present in every inner row.
-//
-// A COMPUTED scalar (`UPPER(ename)`, `salary+1`, `CAST(x AS …)`) is NEITHER: the
-// inner flows the full NAME-MODEL source row and the expression is evaluated
-// ABOVE it, so scalarCol (a synthesized name like "UPPER(ENAME)") is NOT a key in
-// the inner row. Ordinalizing that trips the executor's ordinal leg adapter
-// ("name-model leg row carries NONE of the leg type's 1 columns"). So a computed
-// scalar stays NAME-MODEL, where the scalar resolves by name against the merged
-// row.
-func (t *cascadesTranslator) innerScalarIsRowColumn(innerPlan logical.LogicalOperator, scalarCol string) bool {
-	if innerHasAggregate(innerPlan) {
-		return true
-	}
-	for _, c := range t.legColumns(innerPlan) {
-		if strings.EqualFold(strings.ToUpper(c.Name), scalarCol) {
-			return true
-		}
-	}
-	return false
-}
-
-// innerHasAggregate reports whether the inner plan aggregates at any depth (the
-// aggregate collapses to a single scalar-keyed row).
-func innerHasAggregate(op logical.LogicalOperator) bool {
-	if op == nil {
-		return false
-	}
-	if _, ok := op.(*logical.LogicalAggregate); ok {
-		return true
-	}
-	for _, c := range op.Children() {
-		if innerHasAggregate(c) {
-			return true
-		}
-	}
-	return false
-}
+// (RFC-173 W4b shape 3) The former innerScalarIsRowColumn / innerHasAggregate
+// gate is GONE: a COMPUTED scalar is now MATERIALIZED as the inner subquery's
+// projected output (buildCorrelatedScalar, positional `_0`), so the scalar is
+// ALWAYS present in the inner row — plain column, aggregate output, or projected
+// computation alike — and the single inner leg reads ofOrdinal(inner, 0)
+// unconditionally. The old guard declined computed scalars to the name model,
+// where they resolved to nothing (a silent NULL); the materialization fixes that
+// AND lets them ordinalize.
