@@ -154,11 +154,22 @@ validation gate.
     the contract delta (Graefe condition 4: reviewers review against the amended §4, not the
     stale text): premise correction, LEFT-outer poison, join-legs ineligible, W4 deferral,
     finalized wedge scope.
-- [ ] Slice 3 atomic N-way flip (**+ W4-deferred items: post-rewrite LEFT ordinalization,
-  correlated-scalar seed, single-source UNNEST — see f034707eb amendment; + folded P3 bijection
-  interning + FieldValue node-identity flip +
-  collapsed-FieldPath representation ruling**) · [ ] Slice 4 retire `AnchoredJoin` (+ kill list) ·
-  [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
+- [x] **Slice 3 — DONE, MERGED as PR #464 (rebase-merge `38454886a`, 2026-07-03).** Graefe's design
+  gauntlet REFRAMED it from an "atomic deletion" to a **dispatch-authority flip + certification**
+  slice: the premise "widen gate → `parentIsMerge` never true → trio dead" is FALSE (anchored seeds —
+  scalar-subquery, multi-source unnest, non-wedge — stay constructible), so the trio + `AnchoredJoin`
+  flag + seed constructors + `InternsAliasAware` anchored arm ALL move to Slice 4; W5 stays a separate
+  post-green PR. This slice is strictly ADDITIVE instrumentation + six Q1–Q6 gate pins (dispatch
+  `MergeArmHits`==0; Q2 plan-shape stability + byte-identical; Q6 STAR wall-clock; Q6 shadow-delta
+  exact + load-bearing; Q4 legRowTypes bridge), no planner behavior change. All four gates at the final
+  HEAD: Graefe ✅ (design + impl + delta), Torvalds ✅ (+ delta; nits folded), codex ✅ (caught + fixed
+  a real P3 — Absorb dropped the loser's alias-aware dedup counter on `Memo.merge`, pinned by
+  `TestReference_AbsorbFoldsAliasAwareDedups`), @claude ✅ ("the fourth ACK"). CI green.
+- [ ] Slice 4 retire `AnchoredJoin` (+ kill list: trio, flag, `NewAnchoredJoinRecord` /
+  `NewScalarSubqueryAnchoredRecord` seed constructors, the `InternsAliasAware` anchored arm, the lazy
+  name-identity arm; widen interning to all selects; CTE-rename execution pins certify) · [ ] Slice 5
+  closure invariant · [ ] Slice 6 extensions + ANSI headroom. **W5** (multi-source unnest) — separate
+  post-green PR.
 
 ## 🔖 RESUME AFTER 173 — where we pick up (do not lose this)
 
