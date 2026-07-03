@@ -9,9 +9,11 @@ import (
 // TestFDB_RFC173W4b_ComputedScalarWithLimit pins the shape-3 × user-LIMIT
 // dimension (impl-review condition): the materializing Project (positional
 // `_0`) wraps ABOVE the builder's Sort/Limit, so the translator's limit-peel
-// must see THROUGH it — a LIMIT left in-position inside a correlated inner
-// risks being applied once globally instead of per outer row (one row gets a
-// value, every other outer row gets NULL — silent wrong rows).
+// does NOT see the Limit and it translates IN-POSITION inside the correlated
+// inner. This pin proves the in-position translation still applies PER OUTER
+// ROW — the hazard was a once-globally LIMIT (one outer row gets a value,
+// every other gets NULL — silent wrong rows), which a discriminating
+// two-outer-row probe would catch.
 func TestFDB_RFC173W4b_ComputedScalarWithLimit(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
