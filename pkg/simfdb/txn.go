@@ -249,8 +249,32 @@ func (tx *simTxn) GetKey(sel fdb.Selectable) fdb.FutureKey {
 		result = append(fdb.Key(nil), view[idx].Key...)
 	}
 	if !tx.snapshot {
-		// The read touched the resolved key; conservatively conflict on it.
-		tx.addReadConflict([]byte(ks.Key.FDBKey()), keyAfter([]byte(result)))
+		// GetKey conflicts over the span between the selector base and the resolved key,
+		// ORIENTED BY THE OFFSET SIGN — a port of the client's addGetKeyConflictRange
+		// (C++ addConflictRange(GetKeyReq)). A backward selector (offset <= 0) resolves to a key
+		// BELOW the base, so the span is [resolved, base); a naive [base, keyAfter(resolved))
+		// would be inverted and add no conflict at all on reverse cursors.
+		selKey := []byte(ks.Key.FDBKey())
+		resolved := []byte(result)
+		var cBegin, cEnd []byte
+		if ks.Offset <= 0 {
+			cBegin = resolved
+			if ks.OrEqual {
+				cEnd = keyAfter(selKey)
+			} else {
+				cEnd = selKey
+			}
+		} else {
+			if ks.OrEqual {
+				cBegin = keyAfter(selKey)
+			} else {
+				cBegin = selKey
+			}
+			cEnd = keyAfter(resolved)
+		}
+		if bytes.Compare(cBegin, cEnd) < 0 {
+			tx.addReadConflict(cBegin, cEnd)
+		}
 	}
 	return newReadyKey(result, nil)
 }
@@ -268,22 +292,39 @@ func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResul
 	if options.Reverse {
 		reverseKVs(kvs)
 	}
+	more := false
 	if options.Limit > 0 && len(kvs) > options.Limit {
 		kvs = kvs[:options.Limit]
+		more = true // the scan stopped at the limit; unread rows remain in the requested range
 	}
 	if !tx.snapshot {
-		// Clamp the read conflict range to the data actually returned (RFC-179: GetRange
-		// conflicts on the returned extent, not the requested span) so SimFDB does not
-		// over-conflict relative to real FDB.
-		if len(kvs) > 0 {
-			lo, hi := kvs[0].Key, kvs[len(kvs)-1].Key
-			if bytes.Compare(lo, hi) > 0 {
-				lo, hi = hi, lo
-			}
-			tx.addReadConflict([]byte(lo), keyAfter([]byte(hi)))
-		}
+		// The read conflict range is the REQUESTED [begin,end) clamped exactly as the pure-Go
+		// client / libfdb_c clamp it (rangeConflictExtent). Only a limit-truncated (more)
+		// non-empty read narrows to the returned data; an exhausted or EMPTY read keeps the full
+		// requested range so a concurrent insert ANYWHERE in it — including the leading/trailing
+		// gaps and an entirely empty range — still conflicts (phantom / write-skew protection).
+		reqBegin := []byte(beginSel.FDBKeySelector().Key.FDBKey())
+		reqEnd := []byte(endSel.FDBKeySelector().Key.FDBKey())
+		cBegin, cEnd := rangeConflictExtent(reqBegin, reqEnd, kvs, more, options.Reverse)
+		tx.addReadConflict(cBegin, cEnd)
 	}
 	return newReadyRangeResult(kvs)
+}
+
+// rangeConflictExtent clamps a GetRange's read-conflict range exactly as the pure-Go client and
+// libfdb_c do (client transaction.go rangeConflictExtent). begin/end are the requested range
+// bounds. A !more (exhausted) or empty read keeps the full [begin,end) — phantom protection; only
+// a limit-truncated non-empty read narrows to the returned data (forward: [begin,keyAfter(last));
+// reverse: [first,end)). kvs[len-1] is the highest returned (forward) or lowest (reverse).
+func rangeConflictExtent(begin, end []byte, kvs []fdb.KeyValue, more, reverse bool) (cBegin, cEnd []byte) {
+	if !more || len(kvs) == 0 {
+		return begin, end
+	}
+	last := []byte(kvs[len(kvs)-1].Key)
+	if reverse {
+		return last, end
+	}
+	return begin, keyAfter(last)
 }
 
 func clampIndex(i, n int) int {

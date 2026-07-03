@@ -63,28 +63,39 @@ func getRealDB(t *testing.T) fdb.BackendDatabase {
 	return realDB
 }
 
-// conflictScenario describes a read shape + a concurrent probe write. It is applied identically
-// to any fdb.BackendDatabase (SimFDB and the real pure-Go client) via the shared interface.
+const nKeys = 20
+
+// conflictScenario is a randomized read + a concurrent probe write over a SPARSE keyspace
+// (k00..k19, each seeded with ~50% probability so gaps and entirely-empty sub-ranges occur). It
+// is applied identically to any fdb.BackendDatabase (SimFDB and the real pure-Go client). The
+// sparse seed + arbitrary read range + arbitrary probe deliberately exercise the empty-range /
+// leading-gap / trailing-gap axis where a naive clamp-to-returned-data implementation
+// under-conflicts (write-skew / phantom protection).
 type conflictScenario struct {
 	prefix   string
-	readKind int // 0 = point Get, 1 = forward range, 2 = reverse range
-	readKey  int // 0..9, for a point read
-	limit    int // range row limit (0 = unlimited)
-	probe    int // 0..9, the concurrently-written key
+	seeded   [nKeys]bool
+	readMode int // 0 = point Get, 1 = GetKey, 2 = range
+	readPt   int // point / GetKey base key
+	selKind  int // GetKey selector: 0 = FGE, 1 = FGT, 2 = LLE, 3 = LLT
+	readLo   int // range read [readLo, readHi)
+	readHi   int
+	limit    int // 0 = unlimited
+	reverse  bool
+	probe    int // the concurrently-written key
 }
 
-// runConflictScenario seeds k00..k09 (under the scenario's unique prefix), performs txnA's read,
-// commits a concurrent probe write to k<probe>, then commits txnA (writing a disjoint key).
-// Returns whether txnA committed. The outcome is a pure function of whether the probe fell in
-// txnA's read-conflict set — the SSI semantics under test.
+// runConflictScenario seeds the masked keys, performs txnA's read, commits a concurrent probe
+// write, then commits txnA (writing a disjoint key). Returns whether txnA committed — the SSI
+// outcome under test.
 func runConflictScenario(t *testing.T, db fdb.BackendDatabase, s conflictScenario) bool {
 	t.Helper()
 	kk := func(i int) fdb.Key { return fdb.Key(fmt.Sprintf("%sk%02d", s.prefix, i)) }
-	fullRange := fdb.KeyRange{Begin: kk(0), End: kk(10)}
 
 	if _, err := db.Transact(func(tx fdb.WritableTransaction) (any, error) {
-		for i := 0; i < 10; i++ {
-			tx.Set(kk(i), []byte{byte(i)})
+		for i := 0; i < nKeys; i++ {
+			if s.seeded[i] {
+				tx.Set(kk(i), []byte{byte(i)})
+			}
 		}
 		return nil, nil
 	}); err != nil {
@@ -95,13 +106,26 @@ func runConflictScenario(t *testing.T, db fdb.BackendDatabase, s conflictScenari
 	if err != nil {
 		t.Fatalf("create txA: %v", err)
 	}
-	switch s.readKind {
+	switch s.readMode {
 	case 0:
-		txA.Get(kk(s.readKey)).MustGet()
+		txA.Get(kk(s.readPt)).MustGet()
 	case 1:
-		txA.GetRange(fullRange, fdb.RangeOptions{Limit: s.limit}).GetSliceOrPanic()
-	case 2:
-		txA.GetRange(fullRange, fdb.RangeOptions{Reverse: true, Limit: s.limit}).GetSliceOrPanic()
+		base := kk(s.readPt)
+		var sel fdb.KeySelector
+		switch s.selKind {
+		case 0:
+			sel = fdb.FirstGreaterOrEqual(base)
+		case 1:
+			sel = fdb.FirstGreaterThan(base)
+		case 2:
+			sel = fdb.LastLessOrEqual(base)
+		default:
+			sel = fdb.LastLessThan(base)
+		}
+		txA.GetKey(sel).MustGet()
+	default:
+		txA.GetRange(fdb.KeyRange{Begin: kk(s.readLo), End: kk(s.readHi)},
+			fdb.RangeOptions{Limit: s.limit, Reverse: s.reverse}).GetSliceOrPanic()
 	}
 
 	if _, err := db.Transact(func(tx fdb.WritableTransaction) (any, error) {
@@ -111,32 +135,42 @@ func runConflictScenario(t *testing.T, db fdb.BackendDatabase, s conflictScenari
 		t.Fatalf("probe commit: %v", err)
 	}
 
-	txA.Set(kk(50), []byte("x")) // disjoint write, outside [k00,k10)
+	txA.Set(kk(nKeys+5), []byte("x")) // disjoint write, above the k00..k19 range
 	return txA.Commit().Get() == nil
 }
 
 // TestSimFDB_DifferentialConflictOutcome is RFC-179 Tier 1's differential oracle: for hundreds of
-// randomized conflict scenarios, SimFDB's commit/abort outcome must equal the pure-Go client's on
-// a real FDB cluster. A divergence is the under-/over-conflict class the differential exists to
-// catch (it caught the RFC-121 conflict-set bugs in its go-vs-cgo form). Because the pure-Go
-// client is outcome-validated against libfdb_c, this transitively checks SimFDB against the C
-// client without linking cgo.
+// randomized conflict scenarios over a sparse keyspace, SimFDB's commit/abort outcome must equal
+// the pure-Go client's on a real FDB cluster. The sparse seed + random range + random probe cover
+// the empty-range / gap / phantom axis (not just dense in-range probes). A divergence is the
+// under-/over-conflict class the differential exists to catch. Because the pure-Go client is
+// outcome-validated against libfdb_c, this transitively checks SimFDB against the C client without
+// linking cgo.
 func TestSimFDB_DifferentialConflictOutcome(t *testing.T) {
 	t.Parallel()
 	real := getRealDB(t)
 	rng := mrand.New(mrand.NewPCG(1, 0))
 
-	const scenarios = 200
+	const scenarios = 400
 	for i := 0; i < scenarios; i++ {
+		var seeded [nKeys]bool
+		for j := 0; j < nKeys; j++ {
+			seeded[j] = rng.IntN(2) == 0 // ~50% → sparse: gaps, sometimes empty sub-ranges
+		}
+		lo := rng.IntN(nKeys)
+		hi := lo + 1 + rng.IntN(nKeys-lo) // (lo, nKeys]
 		s := conflictScenario{
 			prefix:   fmt.Sprintf("diff/%d/%d/", os.Getpid(), i),
-			readKind: rng.IntN(3),
-			readKey:  rng.IntN(10),
-			limit:    rng.IntN(11), // 0..10 (0 = unlimited)
-			probe:    rng.IntN(10),
+			seeded:   seeded,
+			readMode: rng.IntN(3), // point Get / GetKey / range
+			readPt:   rng.IntN(nKeys),
+			selKind:  rng.IntN(4),
+			readLo:   lo,
+			readHi:   hi,
+			limit:    rng.IntN(6), // 0..5 (0 = unlimited)
+			reverse:  rng.IntN(2) == 0,
+			probe:    rng.IntN(nKeys),
 		}
-		// SimFDB gets a fresh isolated store per scenario; the real cluster is isolated by the
-		// per-scenario key prefix.
 		simOut := runConflictScenario(t, simfdb.New(nil), s)
 		realOut := runConflictScenario(t, real, s)
 		if simOut != realOut {

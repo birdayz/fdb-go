@@ -94,25 +94,6 @@ func (s *mvccStore) valueAtEntry(e *storeEntry, readVersion int64) []byte {
 	return nil
 }
 
-// hasWriteInRangeAfter reports whether any key in [begin, end) has a committed version
-// strictly greater than afterVersion. This is the core SSI predicate: a read conflict range
-// [begin,end) read at read-version RV conflicts iff some committed write to that range has a
-// commit version strictly > RV (see conflict.go). Because history is ascending, the newest
-// version of each entry is its last element.
-func (s *mvccStore) hasWriteInRangeAfter(begin, end []byte, afterVersion int64) bool {
-	lo, _ := s.search(begin)
-	for i := lo; i < len(s.entries); i++ {
-		e := s.entries[i]
-		if bytes.Compare(e.key, end) >= 0 {
-			break
-		}
-		if n := len(e.history); n > 0 && e.history[n-1].version > afterVersion {
-			return true
-		}
-	}
-	return false
-}
-
 // put appends a new committed version for key at commitVersion (value nil = tombstone),
 // inserting a new sorted entry if the key is new. commitVersion must exceed any existing
 // version for the key (guaranteed by the monotonic commit counter).
