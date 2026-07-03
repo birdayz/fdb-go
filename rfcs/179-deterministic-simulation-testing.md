@@ -448,10 +448,13 @@ prove real and frequent.
    simulated server processes under `synctest`; thread client Clock/RNG. (Largest build; do only if
    client-layer bugs justify it, and ship under its own RFC with the "not full DST" caveat.)
 
-**Tier −1 (free, do immediately, orthogonal):** wire up **`rr` + Delve replay** (`dlv replay`) for
-root-causing real-FDB / testcontainer flakes today — record a flaky run, replay it deterministically
-with reverse-debugging. Zero build; it reproduces *captured* failures (it is not seeded exploration or
-fault injection), so it complements DST rather than replacing it.
+**Tier −1 (near-free, orthogonal):** wire up **`rr` + Delve reverse-replay** for root-causing real-FDB /
+testcontainer flakes — record a flaky run, replay it deterministically with reverse-debugging. Small
+setup, not zero: `dlv` is present but **`rr` is not installed**, and the literal `dlv replay <trace>`
+is *not* a command in dlv 1.26.3 — the integration is `dlv test/exec --backend=rr` (or standalone `rr
+record`/`rr replay`), which needs `rr` on PATH, a hardware PMU, and `perf_event_paranoid ≤ 1` (fails in
+most containers). It reproduces *captured* failures (not seeded exploration or fault injection), so it
+complements DST rather than replacing it.
 
 Land 0→1→2 before touching 3. Each tier is independently valuable and revert-safe.
 
@@ -547,7 +550,7 @@ is *intercept as high as you can while still covering the code you care about* (
 | **gosim** | ② | Full determinism incl. interleavings via source translation | **No** (§8a) — dormant, Go 1.24+ broken, fights Bazel. Borrow design. |
 | **gVisor** | ② | Userspace kernel at syscall boundary | **No** (§3a) — a *sandbox*, no determinism engine; strictly dominated. `netstack` a minor optional component. |
 | **Hermit (Meta)** | ② | "Deterministic gVisor done right" — ptrace/Reverie, purpose-built for determinism, chaos + replay, OSS | **No** — "no longer active development, maintenance mode"; long tail of unsupported syscalls; needs fixed FS + no net; Go runtime is a known-hard case. Same failure mode as gosim. |
-| **rr + Delve** (`dlv replay`) | ② | Record/replay + reverse-debug, **free, today** | **Adopt as Tier −1** — a *debugger*, not DST. Reproduces captured flakes; no seeded exploration / fault injection. |
+| **rr + Delve** (`dlv --backend=rr`) | ② | Record/replay + reverse-debug | **Adopt as Tier −1** — a *debugger*, not DST. Reproduces captured flakes; no seeded exploration / fault injection. Small setup: `dlv` present, but `rr` needs installing + a PMU (`dlv replay` is not a 1.26.3 command). |
 | **Antithesis** | ② (hypervisor) | FDB-grade DST on unmodified Docker images, autonomous exploration, time-travel; the **only ② tool that beats Go's runtime** (runs below it) | **The "buy" option** for Tier 3 (see §5 Tier 3). Budget-gated: **~$100k+/yr** is an order-of-magnitude marker (a derived ~24-core figure, not a headline quote; public list is ~$0.80/core-hr), not a blocker on the product's health — it is very much alive ($105M Series A, Dec 2025). Ship container images. Productized Sim2 by the FDB founders. |
 | **State-machine modeling + property testing** | ①/③ | Design the concurrency out: seeded single-goroutine state machines + invariant checks | **Already our direction** — `chaos.StoreModel`+`Verify()` *is* this; SimFDB extends it. Validated by Polar Signals' Go→Rust pivot to exactly this. |
 | **Jepsen / Elle** | ③ | Distributed chaos + **linearizability/isolation checking** | **Cherry-pick Elle** as an added SimFDB oracle (§5 Tier 1). Jepsen-the-harness is non-deterministic (we already have that shape via testcontainers + chaos). |
