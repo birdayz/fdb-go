@@ -539,3 +539,46 @@ fixed:
    lower; W5 revisits when the unnest machinery goes ordinal. Pins:
    TestTransitiveCorrelationOrder_RangesOverEdges (mechanism) +
    TestFDB_ArrayUnnestOrdinality (behavior, the net that caught it).
+
+## Fulcrum review round 1 (commit 757d64e30): Graefe ACK-with-conditions, Torvalds NAK, codex 2 findings — all addressed
+- **Box-leg bake window** (Torvalds P1): bakeGatedJoinPredicates resolved bare
+  names by whole-concat FieldIndex first-match — `(o FULL JOIN c) JOIN t ON
+  c.price = …` silently baked ORDER's price. legTypes entries are now
+  bakeLegType{typ, leafOffset, leafTyp}: names resolve within the rightmost
+  LEAF's window (the alias names that leaf, matching sourceAlias) at its
+  concat offset. Red-verified pin: TestRFC173S3_BoxLegBakeResolvesLeafLocal.
+- **Hash-join fused-pred guard** (codex P1): fieldName declines multi-accessor
+  paths — a fused `m._i.col` has no name-keyed hash key; the ≥100-row index
+  keyed on its display name came up empty and silently dropped every match.
+  Red-verified pin: TestRFC173S3_HashJoinDeclinesFusedPred.
+- **Cursor-side splice for pristine seeds** (codex P2): a seed whose leg is a
+  gated-join BOX kept the box-alias span, so datumFromSpans qualified the
+  whole concat under one alias. The FlatMap cursor now splices DatumSpans (a
+  NEW field — the Datum/oracle view) while Spans stays unspliced for the leg
+  ADAPTER (the box binding flows the whole concat row). Red-verified pin:
+  TestRFC173S3_FlatMapSeedBoxLegDatumSplice.
+- **NLJ null-pad merge Datum** (Torvalds P2/Graefe cond. 4): handled rather
+  than half-covered — the unmatched-outer emission swaps the merge shape in
+  with the empty-map NULL leg (unreachable until LEFT gates in W4; ready).
+- **Oracle bare-`_i` fallback tightened to FrontierPinned** (Graefe cond. 3):
+  unpinned baked refs (recursive-CTE wrap) keep their historical NULL; pinned
+  in TestFieldValueBaked_OracleUnboundMergeRead_RFC173S3's unpinned arm.
+- Mojibake repaired (rfc173_cluster_gate.go), IsPositionalMergeRC/IsOrdinalJoinRV
+  godoc placement fixed, stale "2-way"/"dark" docs refreshed (Graefe cond.
+  1-2, Torvalds P3-5).
+- Coverage repairs (Torvalds P6): the SelectMerge positive pin now asserts
+  actual composition (child quantifiers spliced, retired alias unreferenced);
+  the pure-cross EXISTS pin gained a genuine negative row.
+- **@claude round additions**: the 🔴 buried-alias-erasure concern is REFUTED
+  at runtime (the buried non-rightmost leg resolves through the spliced
+  spans/leaf-qualified Datum — the FULL box's select never needs an `a`
+  quantifier) and now explicitly pinned by the ruling's demanded e2e:
+  TestFDB_RFC173_FullOverGatedBuriedRef (matched + left-only + right-only
+  NULL-extended rows, buried `a.id` in both ON and SELECT). Also applied: the
+  FULL-outer DRAIN emission (unmatched-inner) gets the merge-shape swap (all
+  three NLJ emission paths now agree); spliceLegSpans carries the same
+  defensive depth cap as resolveSpanLeaf; positionalMergeCase's stale
+  returns-nil doc fixed (always yields; caller nil-check is defense);
+  flat_map_cursor's pre-existing `→` mojibake and the gate file's stale
+  "until Slice 3" comments repaired. The TranslationMap consolidation stays
+  tracked as the separate mechanical commit (this map, pending ledger).

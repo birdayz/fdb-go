@@ -510,3 +510,82 @@ func TestRFC173S3_WhereMergeBakesLegRelative(t *testing.T) {
 			qovC.Type(), len(customerType.Fields), len(orderType.Fields)+len(customerType.Fields))
 	}
 }
+
+// TestRFC173S3_BoxLegBakeResolvesLeafLocal pins the bake window for a BOX leg
+// (review catch on the fulcrum): in `(o FULL JOIN c) JOIN t ON c.price = t.id`
+// the FULL box enters the binary seed as ONE leg NAMED after its rightmost
+// leaf ("c", sourceAlias) and TYPED as the {o,c} concat. The bare reference
+// `c.price` addresses THAT LEAF's column — but Order also has a PRICE column
+// earlier in the concat, so a whole-concat FieldIndex first-match silently
+// baked ORDER's price (wrong column, right range: undetectable at runtime).
+// The bake must resolve within the rightmost leaf's own window and offset
+// into the concat.
+func TestRFC173S3_BoxLegBakeResolvesLeafLocal(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
+	pred := &predicates.ComparisonPredicate{
+		Operand: values.NewFieldValue(
+			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("c")),
+			"PRICE", values.NotNullLong),
+		Comparison: predicates.Comparison{
+			Type: predicates.ComparisonEquals,
+			Operand: values.NewFieldValue(
+				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("t")),
+				"ID", values.NotNullLong),
+		},
+	}
+	root := logical.NewJoinWithPredicate(box, scan("TypedRecord", "t"), logical.JoinInner, pred)
+
+	ref := tr.translateRef(root)
+	if ref == nil {
+		t.Fatal("the gated join over a FULL box leg must translate")
+	}
+	sel, ok := ref.Members()[0].(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected the seed SelectExpression, got %T", ref.Members()[0])
+	}
+
+	orderType := tr.ordinalLegType(scan("Order", "o"))
+	customerType := tr.ordinalLegType(scan("Customer", "c"))
+	if orderType == nil || customerType == nil {
+		t.Fatal("leg types must derive from metadata")
+	}
+	leafIdx, found := customerType.FieldIndex("PRICE")
+	if !found {
+		t.Fatal("PRICE missing from Customer's own type")
+	}
+	firstMatch, found := orderType.FieldIndex("PRICE")
+	if !found {
+		t.Fatal("the collision premise needs PRICE on Order too")
+	}
+	wantOrd := len(orderType.Fields) + leafIdx
+
+	var bakedC *values.FieldValue
+	for _, p := range sel.GetPredicates() {
+		predicates.ReplaceValues(p, func(v values.Value) values.Value {
+			fv, isFV := v.(*values.FieldValue)
+			if !isFV || fv.Resolved == nil {
+				return v
+			}
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "c" {
+				bakedC = fv
+			}
+			return v
+		})
+	}
+	if bakedC == nil {
+		t.Fatal("the ON conjunct's `c` reference must be BAKED (cross-leg over the gated join)")
+	}
+	acc, single := bakedC.Resolved.Single()
+	if !single {
+		t.Fatalf("want a single-accessor bake, got %v", bakedC.Resolved)
+	}
+	if acc.Ordinal == firstMatch {
+		t.Fatalf("baked ordinal %d is the whole-concat FIRST MATCH (Order's PRICE) — the silent wrong-column bake", acc.Ordinal)
+	}
+	if acc.Ordinal != wantOrd {
+		t.Fatalf("baked ordinal = %d, want %d (Customer's PRICE leaf-local at the box offset %d)", acc.Ordinal, wantOrd, len(orderType.Fields))
+	}
+}

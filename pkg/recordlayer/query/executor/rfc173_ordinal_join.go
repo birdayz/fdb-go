@@ -9,17 +9,18 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// This file is the RFC-173 Slice 2 ordinal-join executor machinery: the
-// primitives the 2-way wedge's merged positional row is built from — LIVE
-// since W3b (the translator seeds gated 2-way joins with the ordinal RC these
-// consume). Everything here derives from the W3 pre-code ruling
+// This file is the RFC-173 ordinal-join executor machinery: the primitives
+// the gated wedge's merged positional row is built from — LIVE since W3b,
+// N-way flat (and positional-merge birthing) since the S3 fulcrum: the
+// translator seeds gated join clusters with the ordinal RC these
+// consume. Everything here derives from the W3 pre-code ruling
 // (rfcs/173-ordinal-column-resolution.md §4 Slice 2): spans derive from the
 // RC (condition 1), leg windows are declared window scaffolding that dies
 // when the uppers bake, S3/S4 (condition 2), the window implements
 // values.OrdinalRow completely so no new eval arm exists (condition 3), and
 // the wrong-slot hazard is pinned red→green (condition 4).
 
-// legSpan is one leg's slot range within the 2-way ordinal join's merged
+// legSpan is one leg's slot range within the ordinal join's merged
 // positional row: the leg quantifier's alias, the leg's own RecordType, and
 // the half-open window [Offset, Offset+Width) its columns occupy in the merged
 // row. Spans are DERIVED from the ordinal join RC by ordinalJoinSpans at
@@ -33,8 +34,8 @@ type legSpan struct {
 }
 
 // ordinalJoinSpans is the cursor-side WINDOWS-ELIGIBILITY probe: it detects
-// whether v is exactly the 2-way ordinal join SEED RC (the concatenation of
-// two full legs, every field a baked leg reference) and derives the leg spans
+// whether v is exactly the ordinal join SEED RC (the concatenation of
+// full legs, every field a baked leg reference) and derives the leg spans
 // + merged type from it. DECLINE-ONLY (ok=false) for every other shape — a
 // result value that is not the pristine seed is NOT a planner bug here: the
 // pure-wrapper merge the drift assert deliberately allows rewrites the select's
@@ -245,6 +246,16 @@ func collectJoinLegRVs(join plans.RecordQueryPlan, out map[values.CorrelationIde
 // sourceAlias names the box after its rightmost LEAF, whose own width can
 // never equal the whole box's).
 func spliceLegSpans(spans []legSpan, legRVs map[values.CorrelationIdentifier]values.Value) []legSpan {
+	return spliceLegSpansDepth(spans, legRVs, 0)
+}
+
+// spliceLegSpansDepth carries the defensive recursion cap — the same
+// no-cycle-by-construction trust assumption resolveSpanLeaf bounds (plan
+// trees are finite; the cap only matters if a future edit breaks that).
+func spliceLegSpansDepth(spans []legSpan, legRVs map[values.CorrelationIdentifier]values.Value, depth int) []legSpan {
+	if depth > 32 {
+		return spans
+	}
 	out := make([]legSpan, 0, len(spans))
 	for _, s := range spans {
 		rv := legRVs[s.Alias]
@@ -265,7 +276,7 @@ func spliceLegSpans(spans []legSpan, legRVs map[values.CorrelationIdentifier]val
 			out = append(out, s)
 			continue
 		}
-		for _, ss := range spliceLegSpans(sub, legRVs) {
+		for _, ss := range spliceLegSpansDepth(sub, legRVs, depth+1) {
 			out = append(out, legSpan{Alias: ss.Alias, LegType: ss.LegType, Offset: s.Offset + ss.Offset, Width: ss.Width})
 		}
 	}
@@ -358,7 +369,7 @@ func (w *legWindowRow) TypeNames() []string {
 }
 
 // legWindowBinder is the coexistence-window correlation binder for uppers over
-// the 2-way ordinal join: a reference to a leg alias is bound to that leg's
+// the ordinal join: a reference to a leg alias is bound to that leg's
 // window over the merged row, anything else delegates to base. DECLARED WINDOW
 // SCAFFOLDING (review W3 condition 2) — it exists only because window-era
 // uppers reference legs across the join boundary; when the uppers bake against
@@ -568,6 +579,14 @@ type ordinalJoinBirth struct {
 	// RV: the output is a plain projection row, downstream gets no windows.
 	Spans     []legSpan
 	WindowsOK bool
+	// DatumSpans are the spans the coexistence Datum derives from
+	// (datumFromSpans / oracleNameDatum's qualified keys): the SPLICED view —
+	// a box leg's window opened to its leaf tables, whose aliases dotted
+	// reads actually name. Kept SEPARATE from Spans, which the cursor's own
+	// leg ADAPTER resolves against (adaptLegPositional needs the box-level
+	// type for the box-alias binding; the spliced leaf window would misfit
+	// the leg's whole concat row). Equal to Spans when no splice applies.
+	DatumSpans []legSpan
 	// LegTypes are the leg types recovered from the RV's baked references —
 	// the adapter's leg types when the RV is folded and Spans are unavailable.
 	LegTypes map[values.CorrelationIdentifier]*values.RecordType
@@ -646,6 +665,7 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 		OutputType: rcOutputType(rc),
 		Spans:      spans,
 		WindowsOK:  windowsOK,
+		DatumSpans: spans,
 		LegTypes:   legTypes,
 	}, nil
 }
@@ -788,7 +808,7 @@ func (b *ordinalJoinBirth) oracleNameDatum(rowCtx any) (map[string]any, error) {
 		// quantifier (q$N, never a user-visible alias), while the span carries
 		// the resolved LEAF leg alias. For the pristine seed span alias ==
 		// child QOV correlation, so the output is unchanged.
-		for _, s := range b.Spans {
+		for _, s := range b.DatumSpans {
 			if i >= s.Offset && i < s.Offset+s.Width {
 				m[strings.ToUpper(s.Alias.Name())+"."+strings.ToUpper(s.LegType.Fields[i-s.Offset].Name)] = v
 				break
@@ -1043,7 +1063,7 @@ func mergeShapeDatum(rc *values.RecordConstructorValue, outerID, innerID values.
 }
 
 // downstreamLegWindows computes, ONCE at operator construction, whether a
-// consumer's input plan flows the 2-way ordinal join's MERGED positional row
+// consumer's input plan flows the ordinal join's MERGED positional row
 // — i.e. whether leg windows apply to the rows this operator reads. It
 // unwraps single-child PASSTHROUGH plans (operators whose cursors re-emit
 // input QueryResults verbatim: sorts reorder, limit/skip/distinct/filters

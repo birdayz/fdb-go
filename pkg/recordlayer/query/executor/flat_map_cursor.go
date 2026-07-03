@@ -77,13 +77,25 @@ func newFlatMapCursor(
 	// RC is where the merged-away leg aliases survive), so the coexistence
 	// Datum keeps the per-leg qualified ALIAS.COL keys the name model always
 	// carried (datumFromSpans) and downstream dotted reads stay resolvable.
-	if birth.enabled() && !birth.WindowsOK {
+	// The SPLICE applies to pristine-seed spans too (review catch): a seed
+	// whose leg is a gated-join BOX has a span named after the box alias
+	// covering the whole concat — datumFromSpans would qualify every column
+	// under that one alias instead of the leaf aliases dotted reads name.
+	if birth.enabled() {
 		legRVs := make(map[values.CorrelationIdentifier]values.Value)
 		addJoinLegRV(legRVs, outerAlias, outerPlan)
 		addJoinLegRV(legRVs, innerAlias, innerPlan)
-		if spans, _, ok := ordinalJoinSpansOf(resultValue, legRVs); ok {
-			birth.Spans = spliceLegSpans(spans, legRVs)
-			birth.WindowsOK = true
+		if !birth.WindowsOK {
+			if spans, _, ok := ordinalJoinSpansOf(resultValue, legRVs); ok {
+				birth.Spans = spans
+				birth.WindowsOK = true
+				birth.DatumSpans = spans
+			}
+		}
+		// Only DatumSpans splice: the leg ADAPTER (legType via Spans) keeps
+		// the box-level windows its outer/inner bindings actually flow.
+		if birth.WindowsOK && len(legRVs) > 0 {
+			birth.DatumSpans = spliceLegSpans(birth.DatumSpans, legRVs)
 		}
 	}
 	// The FlatMap half of the PR-447 review P1 (@claude final-pass catch): the
@@ -243,7 +255,7 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
 // the LEFT-OUTER null-inner emission. For an ordinal-birth cursor (RFC-173
 // S2, oracle off) it births the positional row from the RC with per-leg
-// bindings — the nil inner pointer becomes the NULL leg (QOV(inner)ânil,
+// bindings — the nil inner pointer becomes the NULL leg (QOV(inner)→nil,
 // contract ruling #3) — and derives the coexistence Datum FROM the positional
 // row (datumFromPositional, last-wins on duplicate names): evaluating an
 // ordinal RC over the name-model row context would hit baked references over
@@ -265,7 +277,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		// the projection map, never carried qualified keys).
 		datum := datumFromPositional(pos)
 		if c.birth.WindowsOK {
-			datum = datumFromSpans(pos, c.birth.Spans)
+			datum = datumFromSpans(pos, c.birth.DatumSpans)
 		} else {
 			// Bare-QOV fields (the S3 positional-merge RC's `_i` slots, and the
 			// untranslated leg of a MIXED upper RV): the positional slot holds

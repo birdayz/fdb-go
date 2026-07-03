@@ -666,9 +666,9 @@ type nljCursor struct {
 	// additionally carries the positional merged row evaluated from the RC
 	// with per-leg bindings — DUAL emission: the name-model Datum
 	// (mergeRows/qualifyOuterRow) stays byte-identical — gated per emission
-	// on the §5 DisablePositionalEmission oracle.
+	// on the Â§5 DisablePositionalEmission oracle.
 	birth *ordinalJoinBirth
-	// birthActive = birth enabled AND the §5 oracle off, read once at
+	// birthActive = birth enabled AND the Â§5 oracle off, read once at
 	// construction (a cursor's lifetime never straddles an oracle phase —
 	// tests own whole phases). Gates ALL ordinal work below.
 	birthActive bool
@@ -684,7 +684,7 @@ type nljCursor struct {
 	outerCorr, innerCorr values.CorrelationIdentifier
 	// mergeRC is set iff the result value is the S3 positional-merge RC: the
 	// emitted Datum is then the MERGE SHAPE (slot `_i` = leg i's own Datum,
-	// mergeShapeDatum) on BOTH the live and §5-oracle sides — the partition
+	// mergeShapeDatum) on BOTH the live and Â§5-oracle sides — the partition
 	// rule rebases every upper reference through the merge quantifier, so
 	// mergeRows' flat keys would silently NULL them all (0-row joins on the
 	// oracle side, where no positional row backs the reads). NOT gated on
@@ -855,6 +855,16 @@ func fieldName(v values.Value) string {
 		return ""
 	}
 	if fv, ok := v.(*values.FieldValue); ok {
+		// A FUSED multi-accessor path (the S3 merge rebase: `m._i.col`) has NO
+		// name-keyed hash key: its display Field is the LEAF column, but the
+		// quantifier's rows are merge-shaped (`_i` slots) — keying the hash
+		// index on "M.col" probes a key the rows never carry, so the index
+		// comes up empty and the ≥100-row fast path silently drops every
+		// match. Decline; the linear path evaluates the fused reference
+		// correctly.
+		if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
+			return ""
+		}
 		// A FieldValue qualified via a QuantifiedObjectValue child
 		// (QOV(alias).col — the form re-enumerated join predicates use)
 		// carries its table alias in the child's correlation, not in the
@@ -956,6 +966,13 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// downstream qualified refs to the outer side resolve
 						// to NULL.
 						qr := qualifyOuterRow(c.innerRows[i], c.innerAlias)
+						// The merge-shape swap on the FULL drain too (the OUTER leg is
+						// the empty-map NULL leg) — unreachable until LEFT/FULL gate in
+						// W4 (the merge arm's IsNullOnEmpty tripwire), handled so all
+						// three emission paths agree.
+						if c.mergeRC != nil {
+							qr.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, nil, c.innerRows[i].Datum)
+						}
 						// RFC-173 S2: ordinal birth of the drain row — the
 						// OUTER leg is the NULL leg (nil row), symmetric to
 						// the unmatched-outer emission below. The inner was
@@ -1127,6 +1144,15 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			switch c.joinType {
 			case plans.JoinLeftOuter, plans.JoinFullOuter:
 				qr := qualifyOuterRow(outerRow, c.outerAlias)
+				// A merge-RC cursor's null extension carries the merge SHAPE
+				// too — the NULL leg is the empty map, exactly the name
+				// model's reconstructed empty inner row (unreachable today:
+				// the merge arm's IsNullOnEmpty tripwire keeps LEFT/FULL
+				// selects anchored until W4; handled rather than half-covered
+				// so the shape is ready when LEFT gates).
+				if c.mergeRC != nil {
+					qr.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, outerRow.Datum, nil)
+				}
 				// RFC-173 S2: ordinal birth of the null-padded row — the
 				// INNER leg is the NULL leg (nil row): the RC evaluates with
 				// QOV(inner)→nil and the inner slots fall out NULL (contract

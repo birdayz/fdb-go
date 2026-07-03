@@ -466,3 +466,151 @@ func TestRFC173S3_SpliceLegSpans(t *testing.T) {
 		t.Fatalf("leaf B span type = %v, want table B's own type", spliced[2].LegType)
 	}
 }
+
+// TestRFC173S3_HashJoinDeclinesFusedPred pins the hash-join fast path against
+// FUSED merge references (review catch on the fulcrum): an upper NLJ whose
+// inner leg is a materialized MERGE select carries preds like
+// `a.id = m._0.id`; the equijoin extractor read the fused ref's display name
+// as a plain "M.ID" hash key, probed the merge-shaped rows (which carry only
+// `_i` slots) for "ID", built an EMPTY index, and the ≥100-row fast path
+// silently dropped every match — while the linear path (and the slow
+// evaluation the index is supposed to accelerate) resolves the fused
+// reference correctly. Fused refs must decline hash extraction.
+func TestRFC173S3_HashJoinDeclinesFusedPred(t *testing.T) {
+	t.Parallel()
+	legA, legB, qovA, _, _ := ojWiringLegs(t)
+	legC := values.NewRecordType("", false, []values.Field{
+		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	mergedType := values.NewRecordType("", false, []values.Field{
+		{Name: values.OrdinalFieldName(0), FieldType: legB, Ordinal: 0},
+		{Name: values.OrdinalFieldName(1), FieldType: legC, Ordinal: 1},
+	})
+	mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
+
+	// 150 merge-shaped inner rows (≥100 arms the hash index), DUAL like the
+	// real merge emission: Datum {_i: leg map} + nested positional. Leg B's
+	// ID runs 0..149, so every outer row finds exactly one match.
+	innerRows := make([]QueryResult, 150)
+	for i := range innerRows {
+		legBRow := &fakeExecOrdinalRow{names: []string{"ID", "W"}, slots: []any{int64(i), int64(i * 10)}}
+		legCRow := &fakeExecOrdinalRow{names: []string{"X"}, slots: []any{int64(i)}}
+		pos := NewPositionalRow(mergedType)
+		pos.Set(0, legBRow)
+		pos.Set(1, legCRow)
+		innerRows[i] = QueryResult{
+			Datum: map[string]any{
+				"_0": map[string]any{"ID": int64(i), "W": int64(i * 10)},
+				"_1": map[string]any{"X": int64(i)},
+			},
+			Positional: pos,
+		}
+	}
+	outerRows := []QueryResult{
+		ojLegQR(t, legA, int64(3), int64(30)),
+		ojLegQR(t, legA, int64(7), int64(70)),
+	}
+
+	// a.id = m._0.id — the fused two-step rebase shape; the MIXED upper RV
+	// (baked over both legs) makes this a real ordinal-birth cursor.
+	aRef, err := values.NewFieldValueOfOrdinal(qovA, 0)
+	if err != nil {
+		t.Fatalf("bake A#0: %v", err)
+	}
+	mixed := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "AID", Value: aRef},
+		values.RecordConstructorField{Name: "BID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
+	)
+	pred := ojEqPred(
+		values.NewFieldValue(qovA, "ID", values.NotNullLong),
+		s3FusedRef(t, mergeQOV, 0, 0),
+	)
+	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
+		"A", "M", []predicates.QueryPredicate{pred}, mixed, EmptyEvaluationContext(), nil)
+	defer c.Close()
+	results := collectCursor(t, c)
+	if len(results) != 2 {
+		t.Fatalf("got %d rows, want 2 (a.id 3 and 7 each match one merge row) — a hash index keyed on the fused ref's display name drops them all", len(results))
+	}
+}
+
+// TestRFC173S3_FlatMapSeedBoxLegDatumSplice pins the cursor-side SPLICE for a
+// PRISTINE seed whose leg is a gated-join BOX (review catch on the fulcrum):
+// the seed's span names the box after its rightmost leaf and covers the whole
+// concat, so without the splice datumFromSpans qualifies every concat column
+// under that ONE alias — "B.ID" carrying leg A's ID — and dotted reads above
+// ("A.ID") silently miss. With the box leg's own RV available through the
+// outer plan, the coexistence Datum must qualify by LEAF alias. The leg
+// ADAPTER meanwhile keeps the box-level window (Spans, unspliced): the outer
+// binding flows the whole concat row.
+func TestRFC173S3_FlatMapSeedBoxLegDatumSplice(t *testing.T) {
+	t.Parallel()
+	legA, legB, qovA, qovB, boxSeedRV := ojWiringLegs(t)
+	legC := values.NewRecordType("", false, []values.Field{
+		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	qovC := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), legC)
+
+	// The box leg: alias "B" (sourceAlias names it after its rightmost leaf),
+	// type = the flat {A,B} concat (RAW: duplicate names legal).
+	boxType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "W", FieldType: values.NotNullLong, Ordinal: 3},
+	}}
+	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), boxType)
+	topRV := buildOrdinalJoinRC(t, boxQOV, qovC)
+
+	// The outer plan carries the box's OWN seed RV — where the leaf aliases
+	// survive for the splice.
+	outerPlan := plans.NewRecordQueryFlatMapPlan(nil, nil,
+		qovA.Correlation, qovB.Correlation, boxSeedRV, false)
+
+	c, err := newFlatMapCursor(
+		nil, outerPlan, nil, nil, EmptyEvaluationContext(),
+		boxQOV.Correlation, qovC.Correlation,
+		topRV, false, recordlayer.ExecuteProperties{},
+	)
+	if err != nil {
+		t.Fatalf("newFlatMapCursor: %v", err)
+	}
+	if !c.birth.enabled() || !c.birth.WindowsOK {
+		t.Fatalf("seed over [box, C] must birth with windows (enabled=%v windows=%v)", c.birth.enabled(), c.birth.WindowsOK)
+	}
+	// The adapter keeps the BOX window; the Datum spans open to the leaves.
+	if got := c.birth.legType(boxQOV.Correlation); got == nil || len(got.Fields) != 4 {
+		t.Fatalf("adapter leg type for the box alias = %v, want the whole 4-col concat", got)
+	}
+	if len(c.birth.DatumSpans) != 3 {
+		t.Fatalf("DatumSpans = %+v, want 3 spliced spans (A, B leaf, C)", c.birth.DatumSpans)
+	}
+
+	// Drive a row through: the box flows its flat concat positional.
+	boxRow := QueryResult{Datum: map[string]any{}, Positional: func() *PositionalRow {
+		p := NewPositionalRow(boxType)
+		for i, v := range []any{int64(1), int64(10), int64(2), int64(20)} {
+			p.Set(i, v)
+		}
+		return p
+	}()}
+	cRow := ojLegQR(t, legC, int64(7))
+	got, err := c.computeResult(boxRow, cRow)
+	if err != nil {
+		t.Fatalf("computeResult: %v", err)
+	}
+	datum, isMap := got.Datum.(map[string]any)
+	if !isMap {
+		t.Fatalf("Datum = %T, want map", got.Datum)
+	}
+	// Leaf-alias qualified keys — the whole point of the splice.
+	for k, want := range map[string]any{
+		"A.ID": int64(1), "A.V": int64(10), "B.ID": int64(2), "B.W": int64(20), "C.X": int64(7),
+	} {
+		if datum[k] != want {
+			t.Fatalf("Datum[%q] = %v, want %v (full Datum: %#v)", k, datum[k], want, datum)
+		}
+	}
+	_ = legA
+	_ = legB
+}

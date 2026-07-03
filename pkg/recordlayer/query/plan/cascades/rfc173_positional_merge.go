@@ -18,8 +18,9 @@ import (
 // trio never runs on this arm; it survives on the ANCHORED arm for the
 // name-model shapes that die per birth site (dissolved-LEFT W4, unnest W5).
 //
-// Returns nil when the arm must decline the bipartition (no valid shape) —
-// the caller skips it, mirroring the anchored arm's continue semantics.
+// The arm currently ALWAYS yields (invalid shapes die loudly at the tripwire
+// or the constructors); the caller's nil-check is cheap defense for future
+// decline arms, not a live contract.
 func (r *PartitionSelectRule) positionalMergeCase(
 	call *ExpressionRuleCall,
 	sel *expressions.SelectExpression,

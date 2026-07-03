@@ -587,26 +587,81 @@ func TestFDB_RFC173_PureCrossProduct(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
+	// a(9) is the NEGATIVE row for the exists-cross pin below: its probe
+	// needs b.id=18, which is absent — an always-true EXISTS would leak it.
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2), (9)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO b (id) VALUES (10), (11), (12)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c (id) VALUES (100)")
 
-	// 2 × 3 × 1 = 6 cross rows; every combination present exactly once.
+	// 3 × 3 × 1 = 9 cross rows; every combination present exactly once.
 	got := rfc173PinRows(t, db, ctx, "SELECT a.id, b.id, c.id FROM a, b, c")
 	sort.Strings(got)
 	want := []string{
 		"1|10|100", "1|11|100", "1|12|100",
 		"2|10|100", "2|11|100", "2|12|100",
+		"9|10|100", "9|11|100", "9|12|100",
 	}
 	if !eqStrSlices(got, want) {
 		t.Errorf("cross rows = %v, want %v", got, want)
 	}
 
 	// The EXISTS flavor: a 3-way cross body correlated only through one leg.
+	// a(1)→b.id 10 ✓, a(2)→b.id 11 ✓, a(9)→b.id 18 ✗ — the negative row
+	// proves the existential actually filters.
 	got = rfc173PinRows(t, db, ctx,
 		"SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b, c, a a2 WHERE b.id = 10 + a.id - 1)")
 	sort.Strings(got)
 	if !eqStrSlices(got, []string{"1", "2"}) {
-		t.Errorf("exists-cross rows = %v, want [1 2]", got)
+		t.Errorf("exists-cross rows = %v, want [1 2] (a=9 has no matching b.id=18)", got)
+	}
+}
+
+// TestFDB_RFC173_FullOverGatedBuriedRef is the fulcrum ruling's demanded pin
+// (echoed by PR review): `(a JOIN b) FULL JOIN c` where the FULL box's ON and
+// the SELECT list both reference the BURIED, non-rightmost leg `a`. The FULL
+// select binds ONE quantifier for the whole gated leg, named after its
+// RIGHTMOST leaf (`b`, sourceAlias) — no quantifier anywhere is named `a`, so
+// `a.id` resolves ONLY through the coexistence machinery: the spliced spans /
+// leaf-alias-qualified Datum the executor recovers from the leg's own seed
+// RV. All three FULL row classes exercised: matched, left-only, right-only
+// (NULL-extended a side).
+func TestFDB_RFC173_FullOverGatedBuriedRef(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_rfc173_fullburied")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc173_fullburied")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE rfc173_fullburied_tmpl "+
+			"CREATE TABLE a (id BIGINT NOT NULL, av BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc173_fullburied/s WITH TEMPLATE rfc173_fullburied_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc173_fullburied?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (11, 2)")
+	// c(100)→a1 matched; c(101)→a_id 99 unmatched: the right-only FULL row
+	// NULL-extends the whole (a JOIN b) leg, so the buried a.id reads NULL.
+	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (100, 1), (101, 99)")
+
+	got := rfc173PinRows(t, db, ctx,
+		"SELECT a.id, b.id, c.id FROM a JOIN b ON b.a_id = a.id FULL OUTER JOIN c ON c.a_id = a.id")
+	sort.Strings(got)
+	want := []string{
+		"1|10|100",        // matched through the buried a.id
+		"2|11|<nil>",      // left-only: (a2,b11) with no c
+		"<nil>|<nil>|101", // right-only: c101, buried leg NULL-extended
+	}
+	sort.Strings(want)
+	if !eqStrSlices(got, want) {
+		t.Errorf("FULL-over-gated buried-ref rows = %v, want %v", got, want)
 	}
 }

@@ -423,6 +423,28 @@ func ContainsBakedOrdinal(v Value) bool {
 // the generator names all columns, so CTE column-rename selects never match.
 // Lives beside ContainsBakedOrdinal — the two value-shape probes the ordinal
 // birth triggers on.
+func IsPositionalMergeRC(v Value) bool {
+	rc, isRC := v.(*RecordConstructorValue)
+	if !isRC || len(rc.Fields) < 2 || rc.AnchoredJoin {
+		return false
+	}
+	seen := make(map[CorrelationIdentifier]struct{}, len(rc.Fields))
+	for i, f := range rc.Fields {
+		if f.Name != OrdinalFieldName(i) {
+			return false
+		}
+		qov, isQOV := f.Value.(*QuantifiedObjectValue)
+		if !isQOV {
+			return false
+		}
+		if _, dup := seen[qov.Correlation]; dup {
+			return false
+		}
+		seen[qov.Correlation] = struct{}{}
+	}
+	return true
+}
+
 // IsOrdinalJoinRV reports whether v is an ordinal-model JOIN-SELECT result
 // value: a raw (non-anchored) RC whose every field is a FrontierPinned baked
 // reference over a quantifier — the flat N-leg seed and its TranslationMap-
@@ -451,28 +473,6 @@ func IsOrdinalJoinRV(v Value) bool {
 		roots[qov.Correlation] = struct{}{}
 	}
 	return len(roots) >= 2
-}
-
-func IsPositionalMergeRC(v Value) bool {
-	rc, isRC := v.(*RecordConstructorValue)
-	if !isRC || len(rc.Fields) < 2 || rc.AnchoredJoin {
-		return false
-	}
-	seen := make(map[CorrelationIdentifier]struct{}, len(rc.Fields))
-	for i, f := range rc.Fields {
-		if f.Name != OrdinalFieldName(i) {
-			return false
-		}
-		qov, isQOV := f.Value.(*QuantifiedObjectValue)
-		if !isQOV {
-			return false
-		}
-		if _, dup := seen[qov.Correlation]; dup {
-			return false
-		}
-		seen[qov.Correlation] = struct{}{}
-	}
-	return true
 }
 
 func (f *FieldValue) Children() []Value {
@@ -747,15 +747,20 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			if v, ok := ctx.Datum[qualKey]; ok {
 				return f.descendResolvedPath(v)
 			}
-			// BAKED path, oracle window: an unbound quantifier here IS the row's
-			// own frontier quantifier (the ordinal side reads ctx.Positional for
-			// exactly this case), and a baked path's root key is that row's OWN
-			// output column — for the S3 positional-merge row a fused reference's
-			// `_i` slot, which the coexistence Datum carries BARE (no qualified
-			// form ever exists for a merge quantifier). Lazy references keep the
-			// qualified-only read: a bare fallback for them would resurrect the
-			// cross-leg last-wins misread the qualified keys exist to prevent.
-			if f.Resolved != nil {
+			// PINNED baked path, oracle window: an unbound quantifier here IS
+			// the row's own frontier quantifier (the ordinal side reads
+			// ctx.Positional for exactly this case), and a pinned path's root
+			// key is that row's OWN output column — for the S3 positional-merge
+			// row a fused reference's `_i` slot, which the coexistence Datum
+			// carries BARE (no qualified form ever exists for a merge
+			// quantifier). Pinned-only, deliberately twice-guarded: LAZY
+			// references keep the qualified-only read (a bare fallback would
+			// resurrect the cross-leg last-wins misread the qualified keys
+			// exist to prevent), and UNPINNED baked paths (the recursive-CTE
+			// wrap) keep their historical live-side NULL — the guard above
+			// already stops pinned+live, so this arm is reachable pinned only
+			// under the §5 oracle.
+			if f.Resolved != nil && f.Resolved.FrontierPinned {
 				if v, ok := ctx.Datum[rootKey]; ok {
 					return f.descendResolvedPath(v)
 				}

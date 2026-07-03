@@ -662,4 +662,18 @@ func TestFieldValueBaked_OracleUnboundMergeRead_RFC173S3(t *testing.T) { //nolin
 	if v, err := lazy.Evaluate(lazyCtx); err != nil || v != nil {
 		t.Fatalf("lazy unbound read = (%v, %v), want (nil, nil) — qualified-only", v, err)
 	}
+
+	// An UNPINNED baked reference (the recursive-CTE wrap) keeps its
+	// historical NULL too — the bare fallback is PINNED-only, so tightening
+	// or widening the pin condition surfaces here, not as a silent behavior
+	// change on the live side (where unpinned baked nodes pass the guard).
+	unpinned := &FieldValue{
+		Field:    "ID",
+		Typ:      NotNullLong,
+		Child:    NewQuantifiedObjectValue(NamedCorrelationIdentifier("x")),
+		Resolved: NewFieldPathOfSingle("ID", 0, false),
+	}
+	if v, err := unpinned.Evaluate(lazyCtx); err != nil || v != nil {
+		t.Fatalf("unpinned baked unbound read = (%v, %v), want (nil, nil) — bare fallback is pinned-only", v, err)
+	}
 }

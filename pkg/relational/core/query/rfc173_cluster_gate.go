@@ -22,7 +22,9 @@ import (
 //
 // LIVE since W3b: the gate's per-seed decisions drive the ordinal seed —
 // Gated joins get the baked ofOrdinalNumber result value + cross-leg
-// predicate baking; everything else stays name-model until Slice 3.
+// predicate baking; the S3 fulcrum widened the wedge to N-way inner
+// clusters (arity >= 2) — the name model survives only for the W4/W5
+// shapes (dissolved-LEFT, unnest, recursive CTE, correlated scalar).
 
 // arityPoison marks a subtree that makes its cluster unclassifiable. The
 // contract direction: anything unclassifiable counts as >2, failing toward
@@ -53,7 +55,8 @@ func (t *cascadesTranslator) ordinalWedgeGate(j *logical.LogicalJoin) wedgeGateD
 func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedgeGateDecision {
 	if _, isUnnest := j.Right.(*logical.LogicalUnnest); isUnnest {
 		// Lateral unnest lowers to FlatMap-over-Explode with dotted-prefix
-		// bipartition machinery (RFC-142) — name model until Slice 3 (review W4-deferral ruling: the ordinal port needs S3 FieldPaths).
+		// bipartition machinery (RFC-142): name model until the W5 unnest
+		// rewrite (review W4-deferral ruling).
 		return wedgeGateDecision{Arity: arityPoison, Reason: "lateral unnest join (RFC-142 machinery, S3)"}
 	}
 	if len(j.OnExistsSubqueries) > 0 {
@@ -82,7 +85,8 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// inner cluster, or an outer box over one): its output rows are the
 		// name model's merged rows (dotted keys, no leg concat) — an ordinal
 		// seed over it would type the leg wrongly. Mixed nesting stays
-		// name-model until Slice 3 flips N-way (RFC §4 coexistence scoping).
+		// name-model until the W4/W5 rewrites retire those parents (RFC §4
+		// coexistence scoping; inner clusters flipped at the S3 fulcrum).
 		// Caught live by the W3b flip: `(A JOIN B JOIN C) LEFT JOIN D` — the
 		// box gated while its left leg stayed name-model, and
 		// ordinalLegColumns' mis-scope panic fired exactly as designed.
@@ -206,7 +210,7 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		return eligible
 	default:
 		// Non-join leaves and opaque boxes (aggregate, union, sort, limit,
-		// distinct, values, â¦): the leg boundary sees the box's own output
+		// distinct, values, …): the leg boundary sees the box's own output
 		// row, never a buried join's merged row. (LogicalCTE has its OWN arm
 		// above — derived-table sources sit directly in leg position.)
 		return true

@@ -167,8 +167,49 @@ func (t *cascadesTranslator) legsOfGatedJoin(j *logical.LogicalJoin) []clusterLe
 	}
 }
 
-// gatedJoinLegTypes builds the predicate-bake legTypes map (UPPER alias → leg
-// RecordType) for a GATED join from its GATHERED legs — the exact pairing the
+// bakeLegType is one gated-join leg's predicate-bake entry: the leg's flowed
+// type (the baked QOV's type — the flat concat for a box leg) plus the BAKE
+// WINDOW bare names resolve within. A box leg is NAMED after its rightmost
+// LEAF (sourceAlias), so a bare reference `b.col` addressing the box alias
+// means THAT LEAF's column: FieldIndex must run against the leaf's own type
+// at its concat offset, never first-match across the whole concat — an
+// earlier leg's duplicate name would silently bake the WRONG column. For a
+// plain (non-join) leg the window IS the whole type at offset 0.
+type bakeLegType struct {
+	typ        *values.RecordType // the leg's flowed type (the baked QOV's type)
+	leafOffset int                // rightmost leaf's column offset within typ
+	leafTyp    *values.RecordType // rightmost leaf's own type (== typ for plain legs)
+}
+
+// legBakeWindow resolves a leg's bake window: the rightmost LEAF's offset and
+// own type, recursing through gated join boxes exactly as sourceAlias recurses
+// to the name (legsOfGatedJoin's last leg IS sourceAlias's j.Right chain, for
+// both gathered inner clusters and FULL box legs). nil leafTyp when a
+// sub-leg's columns are underivable — the caller then omits the entry and the
+// references stay lazy (sound by the load-bearing lazy invariant).
+func (t *cascadesTranslator) legBakeWindow(op logical.LogicalOperator) (int, *values.RecordType) {
+	j, isJoin := op.(*logical.LogicalJoin)
+	if !isJoin {
+		return 0, t.ordinalLegType(op)
+	}
+	legs := t.legsOfGatedJoin(j)
+	offset := 0
+	for _, leg := range legs[:len(legs)-1] {
+		cols := t.ordinalLegColumns(leg.op)
+		if cols == nil {
+			return 0, nil
+		}
+		offset += len(cols)
+	}
+	subOffset, leafTyp := t.legBakeWindow(legs[len(legs)-1].op)
+	if leafTyp == nil {
+		return 0, nil
+	}
+	return offset + subOffset, leafTyp
+}
+
+// gatedJoinLegTypes builds the predicate-bake legTypes map (UPPER alias →
+// bakeLegType) for a GATED join from its GATHERED legs — the exact pairing the
 // seed's quantifiers use. Deriving it from the binary root's two operands is
 // WRONG for a nested-binary cluster: sourceAlias(join-operand) recurses to the
 // buried RIGHTMOST table while ordinalLegType(join-operand) is the whole
@@ -177,16 +218,22 @@ func (t *cascadesTranslator) legsOfGatedJoin(j *logical.LogicalJoin) []clusterLe
 // column when FieldIndex first-matches an earlier leg's duplicate name). A leg
 // with an empty alias or an undeciphered type is simply absent: its references
 // stay lazy, which is sound (the load-bearing lazy invariant).
-func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[string]*values.RecordType {
+func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[string]bakeLegType {
 	legs := t.legsOfGatedJoin(j)
-	legTypes := make(map[string]*values.RecordType, len(legs))
+	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
 		if leg.alias == "" {
 			continue
 		}
-		if typ := t.ordinalLegType(leg.op); typ != nil {
-			legTypes[strings.ToUpper(leg.alias)] = typ
+		typ := t.ordinalLegType(leg.op)
+		if typ == nil {
+			continue
 		}
+		leafOffset, leafTyp := t.legBakeWindow(leg.op)
+		if leafTyp == nil {
+			continue
+		}
+		legTypes[strings.ToUpper(leg.alias)] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
 	}
 	return legTypes
 }
@@ -282,11 +329,11 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 // outer/inner roles). Returns nil when a leg is untranslatable (same rule as
 // the anchored seed). The seed shape is asserted loud
 // (values.AssertOrdinalJoinSeed — the standing review condition on W3b).
-// The returned legTypes map (UPPER alias → leg RecordType) feeds
+// The returned legTypes map (UPPER alias → bakeLegType) feeds
 // bakeGatedJoinPredicates at the seed and the WHERE-merge site.
-func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (values.Value, map[string]*values.RecordType) {
+func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (values.Value, map[string]bakeLegType) {
 	var fields []values.RecordConstructorField
-	legTypes := make(map[string]*values.RecordType, len(legs))
+	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
 		if leg.alias == "" {
 			return nil, nil
@@ -295,7 +342,11 @@ func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (val
 		if typ == nil {
 			return nil, nil
 		}
-		legTypes[strings.ToUpper(leg.alias)] = typ
+		leafOffset, leafTyp := t.legBakeWindow(leg.op)
+		if leafTyp == nil {
+			return nil, nil
+		}
+		legTypes[strings.ToUpper(leg.alias)] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
 		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg.alias), typ)
 		for i := range typ.Fields {
 			fv, err := values.NewFieldValueOfOrdinal(qov, i)
@@ -334,7 +385,7 @@ func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (val
 // correlations, columns absent from the leg type, already-baked nodes) pass
 // through untouched. Shares the exact predicate-walk spine the planner rules
 // use (predicates.ReplaceValues).
-func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[string]*values.RecordType) []predicates.QueryPredicate {
+func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[string]bakeLegType) []predicates.QueryPredicate {
 	if len(preds) == 0 || len(legTypes) == 0 {
 		return preds
 	}
@@ -348,17 +399,21 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 			return v
 		}
 		legType, isLeg := legTypes[strings.ToUpper(qov.Correlation.Name())]
-		if !isLeg || legType == nil {
+		if !isLeg || legType.typ == nil || legType.leafTyp == nil {
 			return v
 		}
-		idx, found := legType.FieldIndex(fv.Field)
+		// Resolve the bare name within the leg's BAKE WINDOW (the rightmost
+		// leaf for a box leg — the alias names that leaf), then offset into
+		// the leg's flowed concat. A whole-concat FieldIndex would first-match
+		// an earlier leg's duplicate name — silently the wrong column.
+		idx, found := legType.leafTyp.FieldIndex(fv.Field)
 		if !found {
 			return v
 		}
-		typedQOV := values.NewQuantifiedObjectValueOfType(qov.Correlation, legType)
-		baked, err := values.NewFieldValueOfOrdinal(typedQOV, idx)
+		typedQOV := values.NewQuantifiedObjectValueOfType(qov.Correlation, legType.typ)
+		baked, err := values.NewFieldValueOfOrdinal(typedQOV, legType.leafOffset+idx)
 		if err != nil {
-			panic("RFC-173 predicate bake: " + err.Error()) // FieldIndex guaranteed the range
+			panic("RFC-173 predicate bake: " + err.Error()) // the window is within the concat by construction
 		}
 		return baked
 	}
@@ -397,7 +452,7 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 // predicateLegAliases counts how many DISTINCT gated-join leg aliases a
 // predicate's value trees reference directly (bare-named lazy FieldValues
 // over a leg QOV — the same references the bake rewrites).
-func predicateLegAliases(p predicates.QueryPredicate, legTypes map[string]*values.RecordType) int {
+func predicateLegAliases(p predicates.QueryPredicate, legTypes map[string]bakeLegType) int {
 	seen := make(map[string]struct{}, 2)
 	predicates.ReplaceValues(p, func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)

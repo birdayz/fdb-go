@@ -3519,7 +3519,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		// concatenation of the two legs + eager (leg, ordinal) predicate
 		// baking (contract ruling #2). Same untranslatable-on-nil rule as the
 		// anchored seed below.
-		var legTypes map[string]*values.RecordType
+		var legTypes map[string]bakeLegType
 		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{{op: rvLeft, alias: rvLeftAlias}, {op: rvRight, alias: rvRightAlias}})
 		preds = bakeGatedJoinPredicates(preds, legTypes)
 	} else {
