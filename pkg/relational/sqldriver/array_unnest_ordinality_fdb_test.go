@@ -528,6 +528,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
+	// COMPOSITION axis: a WHERE-on-ordinal (which pushes a PredicatesFilter OVER
+	// the Explode) AND an ordinal-spelled element alias. innerIsOrdinalityExplode
+	// must walk THROUGH the PredicatesFilter to reach the WITH-ORDINALITY Explode,
+	// mark the leg, and bind positionally — so `SELECT "_1"` (the element) is still
+	// the array value under the ordinal filter, not the ordinal.
+	t.Run("WHERE-on-ordinal with ordinal-spelled element alias", func(t *testing.T) {
+		assertRows(t, `SELECT "_1", "O" FROM T1, T1."ARR1" AS "_1" AT "O" WHERE "O" = 2`, []string{
+			"O=2|_1=202", // only id2's 2nd element (202); id1 has no 2nd element
+		})
+	})
+
 	t.Run("AT only no AS", func(t *testing.T) {
 		plan := assertRows(t, `SELECT "ID", "AT" FROM T1, T1."ARR1" AT "AT"`, []string{
 			"AT=1|ID=1", "AT=1|ID=2", "AT=2|ID=2", "AT=3|ID=2",
