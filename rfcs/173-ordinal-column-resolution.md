@@ -1487,6 +1487,23 @@ unnest ordinalized) requires `PartitionSelectRule` to support anchored re-enumer
 ordinal-seed leg — genuinely W5-scoped surgery, deferred. This is the same fail-closed decline
 discipline Graefe endorsed for W4b (unrecognized/unconsumable shape → name-model, never a panic).
 
+### W4c impl correction: ordinal-alias collision → bind the ordinality leg by PRODUCER CONTEXT
+A WITH-ORDINALITY Explode flows a per-row Datum keyed by the INTERNAL `OrdinalFieldName` positions
+(`_0`=element, `_1`=ordinal), while the seed names the inner leg type by the user AS/AT aliases. If a
+user spells an alias `_0`/`_1` (`FROM t, t.arr AS "_1" AT "_0"` — valid quoted identifiers), a
+NAME-based leg bind reads the wrong internal key and `SELECT "_1"` returns the ordinal. A
+Datum-SHAPE discriminator (bind positionally iff the Datum keys are exactly `_0..n-1`) does NOT
+suffice: a **name-model** leg (e.g. a UNION box) whose own columns are aliased `_0`/`_1` is
+shape-identical yet must bind by NAME — and the fully-colliding `AS "_1" AT "_0"` is indistinguishable
+from it by shape alone. **Ruling: disambiguate by PRODUCER CONTEXT.** `newFlatMapCursor` marks the
+inner leg as an ordinality leg iff its inner plan IS a WITH-ORDINALITY Explode
+(`innerIsOrdinalityExplode` — the FlatMap knows its producer), and the birth binds a marked leg
+STRICTLY POSITIONALLY (`OrdinalityLegs`: slot i = Datum[`_i`]); `adaptLegPositional` reverts to pure
+name-match, so a name-model leg aliased `_0`/`_1` binds correctly by name. Pins:
+`TestRFC173W4c_OrdinalAliasCollision` (the marked ordinality leg binds positionally for `AS "_1"`,
+`AS "_1" AT "_0"`, AND a shape-identical name-model leg binds by name) + e2e
+`SELECT "_1" … AS "_1" AT "O"`.
+
 ### Gates (process)
 Query-engine change → Graefe design-ACK on THIS ruling **before any impl** — **DONE** (DESIGN-ACK on
 all four decisions, conditions folded above). Impl done (isolated single-source ordinalizes; enclosure

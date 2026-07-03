@@ -104,6 +104,19 @@ func newFlatMapCursor(
 	// from the inner plan's predicate surfaces — a folded result value can
 	// drop a leg those references still need (see widenLegTypesFromPlan).
 	birth.widenLegTypesFromPlan(innerPlan)
+	// Producer context (RFC-142 W4c): a WITH-ORDINALITY unnest's inner IS an
+	// ordinality Explode, flowing a Datum keyed by the internal `_0`/`_1`
+	// positions. Mark the inner leg so it binds STRICTLY POSITIONALLY (see
+	// ordinalJoinBirth.OrdinalityLegs) — a user AS/AT alias spelling `_0`/`_1`
+	// then cannot route the wrong internal key, and a name-model leg whose own
+	// columns are aliased `_0`/`_1` (shape-identical, but NOT an ordinality
+	// Explode) still binds correctly by name.
+	if birth.enabled() && innerIsOrdinalityExplode(innerPlan) {
+		if birth.OrdinalityLegs == nil {
+			birth.OrdinalityLegs = map[values.CorrelationIdentifier]struct{}{}
+		}
+		birth.OrdinalityLegs[innerAlias] = struct{}{}
+	}
 	return &flatMapCursor{
 		outerCursor: outerCursor,
 		innerPlan:   innerPlan,
