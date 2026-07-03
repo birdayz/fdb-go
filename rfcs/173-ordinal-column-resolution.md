@@ -1376,17 +1376,39 @@ confirmed in the executor (`executor.go:3054` bare element; `:3064` `{_0:elem,_1
    dotted-duplicate keys; resolve the bare form via the inner QOV correlation and stamp a virtual
    inner-leg source name (the AS alias) for the qualified form.
 
-### OPEN QUESTION for Graefe — a principled + ANSI divergence from Java (per the "not-only-Java when it's principles-first and ANSI-needed" directive)
-The **struct-array element** (`t.arr` of rows), no ordinality: Java's branch 3 **FLATTENS** the
-struct's fields into separate ordinal columns (`convertToExpressions`); Go today binds the **WHOLE
-struct** as one element (`unnestArrayElementType` returns `UnknownType`; `SELECT x` = the row,
-`x.field` resolves by name — mirroring Postgres / the ANSI whole-composite binding). **PROPOSAL:
-keep Go's whole-object behavior** — extend branch 2 (direct QOV) to struct elements, deliberately
-NOT porting branch 3's flattening. Rationale: (a) preserves Go's current read surface (no RFC-142
-row-pin churn); (b) matches common-SQL/ANSI whole-composite `UNNEST` binding; (c) the direct-QOV +
-raw-bind executor path already carries a struct Datum (a `map`) verbatim, so it costs nothing extra.
-This is the one place W4c is *not* a 1:1 Java port. **Graefe to rule ACK/NAK** on the divergence
-(and whether struct-element field-flattening is instead a separate future item).
+### STRUCT-ARRAY element — narrow, ANSI-aligned divergence (Graefe-ACKed; premise corrected)
+**Corrected premise (Graefe verified against `LogicalOperator.java:341-353`):** Java's struct
+branch does BOTH — it flattens the element's fields via `convertToExpressions` (the `else` arm) AND
+**prepends a whole-struct `EphemeralExpression` named by the alias**, so a struct element resolves as
+the WHOLE struct (`item` → the row, used e.g. as a UDF argument `get_price(item)`) *and*, redundantly,
+as flattened columns (`item.b` → a flat column). So Go's whole-object binding is **Java's own primary
+struct binding minus the redundant flattened columns** — a far narrower divergence than "Go diverges
+from Java's flattening." **Ruling: keep Go's whole-object binding** (extend branch 2 / direct-QOV to
+struct elements; `x.field` resolves via a **nested `FieldValue` on the whole-struct QOV** rather than
+a flattened column). Whole-composite is ANSI/Postgres-correct (`UNNEST(row[])` yields one composite
+column; flattening requires `(x).*`). The direct-QOV + raw-bind executor path already carries a struct
+Datum (a `map`) verbatim. Field-flattening, if ever wanted, is a separate future item.
+
+### Graefe DESIGN-ACK (all four decisions; conditions binding on impl)
+1. **Core shape / mixed RC — ACK.** A mixed RC is architecturally sound: an RCV's fields are
+   independent Values, nothing in the ordinal model requires field homogeneity, and the "mixedness"
+   is a property READ OFF the element type, not an imperative flag. Scalar-element-is-direct-QOV is
+   FORCED (both Java and Go throw `FIELD_ACCESS_INPUT_NON_RECORD_TYPE` on `ofOrdinal` of a scalar).
+2. **Raw-bind — ACK; the gate — NAK.** The raw-bind is the honest move (a direct-QOV element must
+   evaluate against the leg's actual flowed Datum; it is the SAME bind the name path and pushdown arm
+   already do; `OrdinalRow` is the wrong type for a non-record leg). **Condition:** discriminate the
+   raw arm by leg SHAPE (bare-QOV over a non-record type), NEVER a per-plan flag; keep the record-leg
+   `OrdinalRow` path and `widenLegTypesFromPlan`'s divergence asserts intact.
+3. **Struct divergence — ACK** with the premise correction above (mandatory). **Conditions:** (a) RFC
+   premise corrected [done above]; (b) `x.field` MUST resolve via a nested `FieldValue` on the
+   whole-struct QOV — pin it (genuinely Go's path: Java resolves via the flattened column); (c)
+   explicitly pin `SELECT *` → ONE struct column (the intended ANSI divergence); field-flattening is a
+   separate future item.
+4. **Tripwire + pin — ACK.** WITH-ORDINALITY-conditional `AssertOrdinalJoinSeed` is correct (the
+   mixed RC's direct-QOV field legitimately fails the `FrontierPinned` check; asserting would
+   false-trip); the white-box seed-shape pin replaces it. **Condition:** the mandatory
+   positional-authority pin (flip `DisablePositionalEmission`) must assert the element slot VALUE, not
+   just row count.
 
 ### Considered & rejected (the bare-scalar-element crux)
 - **Gate no-AT to name-model** (zero executor change): rejected — defers the COMMON `FROM t, t.arr
@@ -1427,6 +1449,6 @@ name Datum for the scalar case, letting the bare-QOV Datum-override (`flat_map_c
 eventually be deleted at S4 — a simplification, not new scaffolding.
 
 ### Gates (process)
-Query-engine change → **Graefe ACK on THIS ruling** (especially: the struct-element divergence Q;
-the S4-permanent birth-binder raw-leg change vs the conservative gate) **before any impl**, then the
-full four-gate round (Graefe/Torvalds/codex/@claude) on the implementation.
+Query-engine change → Graefe design-ACK on THIS ruling **before any impl** — **DONE** (DESIGN-ACK on
+all four decisions, conditions folded above). Next: the full four-gate round
+(Graefe/Torvalds/codex/@claude) on the implementation; re-request Graefe on the impl.
