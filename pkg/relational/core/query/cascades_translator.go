@@ -3160,6 +3160,15 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.LogicalProject) expressions.RelationalExpression {
 	csq := p.CorrelatedScalarSubqueries[0]
 
+	// RFC-173 W4b shape 1: a MULTI-TABLE outer cluster dispatches to the
+	// clustered-outer ordinal path first. decline=true is the CORRECT-or-LOUD
+	// policy: a known non-rightmost correlation that did not ordinalize would
+	// silently NULL (JOIN..ON / LEFT outers) or mis-plan (comma clusters) on
+	// the name model below — refuse to translate instead.
+	if sel, decline := t.translateClusteredOuterScalar(p, csq); sel != nil || decline {
+		return sel
+	}
+
 	// RFC-173 Slice 2: this NAME-MODEL 2-leg anchored seed (Slice 3 flips it — it is a pre-rewrite LEFT OUTER select, the ephemeral object the W3b premise correction covers; review W4-deferral ruling — to
 	// ordinal) absorbs mergeable leg selects post-flattening — a join nested
 	// in either leg lands in a ≥3-quantifier name-model select, so both legs
