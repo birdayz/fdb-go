@@ -82,6 +82,12 @@ func (db *SimDB) commit(tx *simTxn) error {
 	tx.committed = true
 	tx.committedVersion = cv
 	tx.versionstamp = versionstampBytes(cv, 0)
+	// Post-commit reset (matching the client's postCommitReset): drop the write buffer and
+	// conflict ranges so a second Commit() on this transaction is a no-op. committedVersion and
+	// versionstamp are retained for post-commit reads (GetCommittedVersion/GetVersionstamp).
+	tx.buffer = nil
+	tx.readConflicts = nil
+	tx.writeConflicts = nil
 
 	if db.env.Fault("simfdb.commit.unknown") {
 		return fdb.Error{Code: 1021} // commit_unknown_result — data applied, outcome "unknown"

@@ -248,6 +248,7 @@ go_test(
         "selfjoin_having_probe_test.go",
         "setops_distinct_probe_test.go",
         "setops_null_probe_test.go",
+        "sim_sql_test.go",
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
         "star_expansion_join_probe_test.go",
@@ -304,6 +305,7 @@ go_test(
     ],
     embed = [":sqldriver"],
     deps = [
+        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -314,6 +316,7 @@ go_test(
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/metadata",
+        "//pkg/simfdb",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//proto",

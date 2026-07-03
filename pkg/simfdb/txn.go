@@ -444,8 +444,16 @@ func (tx *simTxn) Commit() fdb.FutureNil {
 	if tx.cancelled {
 		return newReadyNil(fdb.Error{Code: 1025})
 	}
+	if tx.committed && len(tx.buffer) == 0 {
+		// Idempotent no-op: real FDB resets the transaction to active+empty after a
+		// successful commit (client postCommitReset), so committing again with nothing new
+		// buffered succeeds as a no-op. The record layer relies on this — the SQL DDL path
+		// commits inside a db.Run closure (ddl.go:829 txn.Commit()), then Run's Transact
+		// commits the same transaction again.
+		return newReadyNil(nil)
+	}
 	if tx.committed {
-		return newReadyNil(fdb.Error{Code: 2017}) // used_during_commit-ish; committed twice
+		tx.committed = false // re-commit newly-buffered mutations
 	}
 	if err := tx.db.commit(tx); err != nil {
 		return newReadyNil(err)
@@ -490,17 +498,39 @@ func (tx *simTxn) SetReadVersion(version int64) {
 
 func (tx *simTxn) GetCommittedVersion() (int64, error) {
 	if !tx.committed {
-		return -1, fdb.Error{Code: 2017} // commit not yet called / no committed version
+		return -1, fdb.Error{Code: 2017}
 	}
 	return tx.committedVersion, nil
 }
 
+// GetVersionstamp returns a LAZY future: the record layer obtains it BEFORE commit
+// (database.go:372) and resolves it AFTER commit, so it must read the versionstamp at Get()
+// time, not at construction. A ready future capturing the (nil) pre-commit stamp would surface
+// as used_during_commit(2017) on the metadata-version-stamp path.
 func (tx *simTxn) GetVersionstamp() fdb.FutureKey {
-	if !tx.committed || tx.versionstamp == nil {
-		return newReadyKey(nil, fdb.Error{Code: 2017})
-	}
-	return newReadyKey(append(fdb.Key(nil), tx.versionstamp...), nil)
+	return &lazyVersionstamp{tx: tx}
 }
+
+type lazyVersionstamp struct{ tx *simTxn }
+
+func (f *lazyVersionstamp) Get() (fdb.Key, error) {
+	if !f.tx.committed || f.tx.versionstamp == nil {
+		return nil, fdb.Error{Code: 2017}
+	}
+	return append(fdb.Key(nil), f.tx.versionstamp...), nil
+}
+
+func (f *lazyVersionstamp) MustGet() fdb.Key {
+	k, err := f.Get()
+	if err != nil {
+		panic(err)
+	}
+	return k
+}
+
+func (f *lazyVersionstamp) BlockUntilReady() {}
+func (f *lazyVersionstamp) IsReady() bool    { return f.tx.committed }
+func (f *lazyVersionstamp) Cancel()          {}
 
 func (tx *simTxn) GetApproximateSize() fdb.FutureInt64 {
 	var size int64

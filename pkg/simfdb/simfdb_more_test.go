@@ -125,6 +125,37 @@ func TestClearRangeRemovesOnlyRange(t *testing.T) {
 	}
 }
 
+func TestIdempotentDoubleCommit(t *testing.T) {
+	t.Parallel()
+	db := New(nil)
+	tx := db.newTxn(false)
+	tx.Add(k("cnt"), []byte{1, 0, 0, 0, 0, 0, 0, 0}) // +1 little-endian
+	tx.Set(k("x"), []byte("v"))
+	if err := tx.Commit().Get(); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	// A second commit with nothing new buffered is a no-op — matches real FDB's post-commit
+	// reset (the SQL DDL path commits inside a Run closure, then Transact commits again). It
+	// must NOT error and must NOT double-apply the atomic Add.
+	if err := tx.Commit().Get(); err != nil {
+		t.Fatalf("double commit should be a no-op, got %v", err)
+	}
+	// Post-commit reads still resolve.
+	if cv, err := tx.GetCommittedVersion(); err != nil || cv <= 0 {
+		t.Fatalf("GetCommittedVersion after double commit: cv=%d err=%v", cv, err)
+	}
+	if vs := tx.GetVersionstamp().MustGet(); len(vs) != 10 {
+		t.Fatalf("versionstamp len = %d, want 10", len(vs))
+	}
+	// The Add applied exactly once (not doubled), and the Set persisted once.
+	got, _ := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		return rtx.Get(k("cnt")).MustGet(), nil
+	})
+	if binary.LittleEndian.Uint64(got.([]byte)) != 1 {
+		t.Fatalf("Add double-applied under double commit: cnt = %d, want 1", binary.LittleEndian.Uint64(got.([]byte)))
+	}
+}
+
 func TestAddReadConflictRangeExplicit(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
