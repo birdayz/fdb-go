@@ -55,6 +55,12 @@ type Quantifier struct {
 	alias       values.CorrelationIdentifier
 	rangesOver  *Reference
 	nullOnEmpty bool
+	// strictSingle marks a correlated-scalar-subquery inner quantifier that must
+	// yield AT MOST ONE row per outer row: the physical join lowering wraps such an
+	// inner in a strict FirstOrDefault (a second row is a 21000 cardinality
+	// violation). Distinct from nullOnEmpty (LEFT-JOIN null-extension, which keeps
+	// all rows) — see ImplementNestedLoopJoinRule.yieldGeneralFlatMap.
+	strictSingle bool
 }
 
 // ForEachQuantifier builds a ForEach quantifier ranging over the given
@@ -103,6 +109,20 @@ func NamedForEachNullOnEmptyQuantifier(alias values.CorrelationIdentifier, range
 		alias:       alias,
 		rangesOver:  rangesOver,
 		nullOnEmpty: true,
+	}
+}
+
+// NamedForEachStrictSingleQuantifier builds a ForEach quantifier with an explicit
+// alias AND strictSingle=true. Used for a correlated scalar subquery with no user
+// LIMIT: the join lowering wraps the inner in a strict FirstOrDefault so a second
+// inner row per outer row raises a cardinality violation (21000) instead of being
+// silently truncated.
+func NamedForEachStrictSingleQuantifier(alias values.CorrelationIdentifier, rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:         QuantifierForEach,
+		alias:        alias,
+		rangesOver:   rangesOver,
+		strictSingle: true,
 	}
 }
 
@@ -163,10 +183,11 @@ func NamedPhysicalQuantifier(alias values.CorrelationIdentifier, rangesOver *Ref
 // Mirrors Java's Quantifier.toBuilder().build(reference).
 func RebuildQuantifier(q Quantifier, newRef *Reference) Quantifier {
 	return Quantifier{
-		kind:        q.kind,
-		alias:       q.alias,
-		nullOnEmpty: q.nullOnEmpty,
-		rangesOver:  newRef,
+		kind:         q.kind,
+		alias:        q.alias,
+		nullOnEmpty:  q.nullOnEmpty,
+		strictSingle: q.strictSingle,
+		rangesOver:   newRef,
 	}
 }
 
@@ -189,6 +210,10 @@ func (q Quantifier) GetRangesOver() *Reference { return q.rangesOver.Canonical()
 // IsNullOnEmpty returns true for ForEach quantifiers that should
 // produce a NULL row when the inner is empty (LEFT JOIN semantics).
 func (q Quantifier) IsNullOnEmpty() bool { return q.nullOnEmpty }
+
+// IsStrictSingle returns true for a correlated-scalar-subquery inner quantifier
+// that must yield at most one row per outer row (a second row → 21000).
+func (q Quantifier) IsStrictSingle() bool { return q.strictSingle }
 
 // GetFlowedObjectValue returns a Value representing "the row currently
 // flowing along this Quantifier". Predicates / projections in the

@@ -248,12 +248,14 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		r.yieldGeneralFlatMap(call, sel,
 			rightPlan, leftPlan, rightCorr, leftCorr,
 			rightExpr, leftExpr, joinType,
-			selQuantifierIsNullOnEmpty(sel, leftCorr))
+			selQuantifierIsNullOnEmpty(sel, leftCorr),
+			selQuantifierIsStrictSingle(sel, leftCorr))
 	} else if rightDepsLeft && !leftDepsRight {
 		r.yieldGeneralFlatMap(call, sel,
 			leftPlan, rightPlan, leftCorr, rightCorr,
 			leftExpr, rightExpr, joinType,
-			selQuantifierIsNullOnEmpty(sel, rightCorr))
+			selQuantifierIsNullOnEmpty(sel, rightCorr),
+			selQuantifierIsStrictSingle(sel, rightCorr))
 	}
 }
 
@@ -380,6 +382,19 @@ func selQuantifierIsNullOnEmpty(sel *expressions.SelectExpression, alias values.
 	return false
 }
 
+// selQuantifierIsStrictSingle reports whether sel's quantifier with the given alias
+// is a strict-single correlated-scalar-subquery inner (the translator marks it when
+// the subquery has no user LIMIT). Drives the strict FirstOrDefault wrap in
+// yieldGeneralFlatMap.
+func selQuantifierIsStrictSingle(sel *expressions.SelectExpression, alias values.CorrelationIdentifier) bool {
+	for _, q := range sel.GetQuantifiers() {
+		if q.GetAlias() == alias {
+			return q.IsStrictSingle()
+		}
+	}
+	return false
+}
+
 func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	call *ExpressionRuleCall,
 	sel *expressions.SelectExpression,
@@ -388,6 +403,7 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	outerExpr, innerExpr expressions.RelationalExpression,
 	joinType plans.JoinType,
 	innerNullOnEmpty bool,
+	innerStrictSingle bool,
 ) {
 	preds := flattenAndPredicates(sel.GetPredicates())
 
@@ -477,7 +493,19 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	// outer-join semantics are emergent from this wrapper, exactly like Java's FlatMap.
 	// The ON-predicates already sit BELOW this boundary (inside the rewritten inner
 	// SUBSEL), so they filter before the null-fill — correct LEFT-OUTER semantics.
-	if innerNullOnEmpty {
+	if innerStrictSingle {
+		// Correlated scalar subquery, no user LIMIT: enforce SQL at-most-one-row.
+		// A strict FirstOrDefault collapses the inner to one row per outer (NULL
+		// default on empty) AND raises 21000 on a second row. It is a non-pushable
+		// barrier (unlike a LIMIT the planner could push into the scan) and, because
+		// the FlatMap re-executes the inner per outer row, the check runs fresh per
+		// outer row. The FlatMap's LEFT-OUTER flag becomes moot (the FirstOrDefault
+		// already supplies the empty→NULL row), so this fully replaces the prior
+		// LIMIT-1 + leftOuter mechanism for the strict scalar case.
+		innerWrapped = plans.NewRecordQueryFirstOrDefaultPlanStrict(
+			innerWrapped, values.NewNullValue(values.UnknownType),
+		)
+	} else if innerNullOnEmpty {
 		innerWrapped = plans.NewRecordQueryDefaultOnEmptyPlan(
 			innerWrapped, values.NewNullValue(values.UnknownType),
 		)
@@ -1010,6 +1038,9 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
 		if inner == pl.GetInner() {
 			return p
+		}
+		if pl.IsStrict() {
+			return plans.NewRecordQueryFirstOrDefaultPlanStrict(inner, pl.GetDefaultValue())
 		}
 		return plans.NewRecordQueryFirstOrDefaultPlan(inner, pl.GetDefaultValue())
 	case *plans.RecordQueryTypeFilterPlan:

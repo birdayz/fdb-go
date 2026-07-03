@@ -3147,7 +3147,17 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		innerRef = expressions.InitialOf(limitExpr)
 	}
 
-	innerQ := t.namedQuantifier(csq.InnerAlias, innerRef)
+	// With no user LIMIT, the scalar must yield AT MOST ONE inner row per outer
+	// row: mark the inner quantifier strict-single so ImplementNestedLoopJoinRule
+	// wraps it in a strict FirstOrDefault (a second row → 21000). A user LIMIT
+	// leaves StrictSingle false — the LIMIT is the user's deliberate truncation.
+	var innerQ expressions.Quantifier
+	if csq.StrictSingle {
+		innerQ = expressions.NamedForEachStrictSingleQuantifier(
+			values.NamedCorrelationIdentifier(csq.InnerAlias), innerRef)
+	} else {
+		innerQ = t.namedQuantifier(csq.InnerAlias, innerRef)
+	}
 
 	// Source-anchored correlated-scalar-subquery join seed (RFC-077 7.6).
 	//

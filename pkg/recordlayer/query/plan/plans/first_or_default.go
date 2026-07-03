@@ -10,9 +10,17 @@ import (
 // RecordQueryFirstOrDefaultPlan takes the first row from the inner
 // plan, or returns a default value if the inner plan produces no
 // rows. Mirrors Java's `RecordQueryFirstOrDefaultPlan`.
+//
+// When strict is set, the plan additionally enforces the SQL scalar-subquery
+// cardinality rule: if the inner produces MORE THAN ONE row it is a cardinality
+// violation (21000), not a silent truncation to the first row. This is the
+// correlated-scalar-subquery barrier — a non-pushable, per-outer-row check that
+// mirrors the uncorrelated path (executor.EvaluateScalarSubquery). A user-written
+// LIMIT never sets strict: truncation is then the user's deliberate intent.
 type RecordQueryFirstOrDefaultPlan struct {
 	inner        RecordQueryPlan
 	defaultValue values.Value
+	strict       bool
 }
 
 // NewRecordQueryFirstOrDefaultPlan constructs a first-or-default plan
@@ -24,12 +32,26 @@ func NewRecordQueryFirstOrDefaultPlan(inner RecordQueryPlan, defaultValue values
 	}
 }
 
+// NewRecordQueryFirstOrDefaultPlanStrict constructs a first-or-default plan that
+// raises a cardinality violation (21000) when the inner yields more than one row.
+func NewRecordQueryFirstOrDefaultPlanStrict(inner RecordQueryPlan, defaultValue values.Value) *RecordQueryFirstOrDefaultPlan {
+	return &RecordQueryFirstOrDefaultPlan{
+		inner:        inner,
+		defaultValue: defaultValue,
+		strict:       true,
+	}
+}
+
 // GetInner returns the wrapped inner plan.
 func (p *RecordQueryFirstOrDefaultPlan) GetInner() RecordQueryPlan { return p.inner }
 
 // GetDefaultValue returns the fallback value used when the inner plan
 // is empty.
 func (p *RecordQueryFirstOrDefaultPlan) GetDefaultValue() values.Value { return p.defaultValue }
+
+// IsStrict reports whether the plan enforces the at-most-one-row scalar-subquery
+// cardinality rule (error 21000 on a second row).
+func (p *RecordQueryFirstOrDefaultPlan) IsStrict() bool { return p.strict }
 
 // GetResultType returns the inner's result type.
 func (p *RecordQueryFirstOrDefaultPlan) GetResultType() values.Type {
@@ -54,7 +76,7 @@ func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other RecordQueryP
 	if !ok {
 		return false
 	}
-	return semanticValueEquals(p.defaultValue, o.defaultValue)
+	return p.strict == o.strict && semanticValueEquals(p.defaultValue, o.defaultValue)
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + default value's
@@ -62,17 +84,24 @@ func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other RecordQueryP
 func (p *RecordQueryFirstOrDefaultPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("firstordefaultplan|"))
+	if p.strict {
+		h.Write([]byte("strict|"))
+	}
 	writeValueHash(h, p.defaultValue)
 	return h.Sum64()
 }
 
-// Explain renders FirstOrDefault(inner).
+// Explain renders FirstOrDefault(inner) (StrictFirstOrDefault when strict).
 func (p *RecordQueryFirstOrDefaultPlan) Explain() string {
 	innerLabel := "<nil>"
 	if p.inner != nil {
 		innerLabel = p.inner.Explain()
 	}
-	return fmt.Sprintf("FirstOrDefault(%s)", innerLabel)
+	name := "FirstOrDefault"
+	if p.strict {
+		name = "StrictFirstOrDefault"
+	}
+	return fmt.Sprintf("%s(%s)", name, innerLabel)
 }
 
 var _ RecordQueryPlan = (*RecordQueryFirstOrDefaultPlan)(nil)

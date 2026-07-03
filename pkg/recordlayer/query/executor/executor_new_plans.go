@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 )
 
 // executeAggregateIndexScan scans an aggregate index (SUM, COUNT, etc.)
@@ -542,13 +543,40 @@ func executeFirstOrDefault(
 		return nil, err
 	}
 	result, err := inner.OnNext(ctx)
-	_ = inner.Close()
 	if err != nil {
+		_ = inner.Close()
 		return nil, err
 	}
 	if result.HasNext() {
-		return newSingleResultCursor(result.GetValue()), nil
+		first := result.GetValue()
+		if p.IsStrict() {
+			// SQL scalar-subquery cardinality: a second row is a violation (21000),
+			// not a silent truncation. Probe exactly one more row. This runs fresh
+			// per outer row under the driving FlatMap, so at-most-one is enforced
+			// per outer (mirrors the uncorrelated executor.EvaluateScalarSubquery).
+			second, serr := inner.OnNext(ctx)
+			if serr != nil {
+				_ = inner.Close()
+				return nil, serr
+			}
+			if second.HasNext() {
+				_ = inner.Close()
+				return nil, api.NewErrorf(api.ErrCodeCardinalityViolation,
+					"scalar subquery returned more than one row")
+			}
+			// An out-of-band (resource-limit) stop after the first row means the input
+			// was TRUNCATED — a second matching row may exist beyond the cap, so we can
+			// no longer prove at-most-one. Error (→ 54F01) rather than silently accept
+			// the first row (RFC-106a; same guard as the uncorrelated path).
+			if lerr := errIfBufferTruncated(second); lerr != nil {
+				_ = inner.Close()
+				return nil, lerr
+			}
+		}
+		_ = inner.Close()
+		return newSingleResultCursor(first), nil
 	}
+	_ = inner.Close()
 	// An out-of-band (resource-limit) stop before the first row means the input was
 	// TRUNCATED — we can't tell whether a matching row would have followed, so error
 	// (→ 54F01) instead of fabricating the default and returning a wrong EXISTS/scalar

@@ -4,16 +4,15 @@ package sqldriver_test
 // extension over Java) and the scalar-subquery cardinality (21000) behavior.
 //
 // Java enforces NO scalar-subquery cardinality (its ErrorCode enum has no 21000 /
-// CARDINALITY_VIOLATION); Go ADDED 21000 enforcement (SQL-standard, stricter) but
-// ONLY on the NON-correlated path. The correlated path (RFC-077 source-anchored
-// join) silently takes the first inner row. This pins:
+// CARDINALITY_VIOLATION); Go ADDED 21000 enforcement (SQL-standard, stricter) on
+// BOTH paths. This pins:
 //   - correlated COUNT/MAX in SELECT return correct per-row values (the valuable,
 //     correct behavior);
 //   - non-correlated scalar subquery >1 row errors 21000;
-//   - correlated scalar subquery >1 row currently does NOT enforce 21000 (takes a
-//     row) — the documented inconsistency, see TODO.md "scalar-subquery
-//     cardinality (correlated)". When that designed decision lands, flip
-//     the corr_scalar_multi_row subtest to expect 21000.
+//   - correlated scalar subquery >1 row also errors 21000 — a strict FirstOrDefault
+//     barrier in the join lowering replaced the old default LIMIT 1 that silently
+//     took the first inner row. A user-written LIMIT still truncates (deliberate).
+//     The dedicated end-to-end coverage lives in scalar_subq_correlated_card_test.go.
 
 import (
 	"context"
@@ -87,33 +86,30 @@ func TestFDB_ScalarSubqueryCorrelationProbe(t *testing.T) {
 		}
 	})
 
-	t.Run("corr_scalar_multi_row_currently_unenforced", func(t *testing.T) {
-		// CURRENT behavior: a correlated scalar subquery that matches >1 inner row
-		// (eng has salaries 100 AND 200) does NOT raise 21000 — it returns one of
-		// the rows via the RFC-077 join. This is a documented Go-extension
-		// inconsistency (non-correlated enforces, correlated does not); Java
-		// enforces neither. See TODO.md. Pin: returns exactly one row, value is one
-		// of the dept's salaries, no error. Flip to expect 21000 when the
-		// designed decision lands.
+	t.Run("corr_scalar_multi_row_errors_21000", func(t *testing.T) {
+		// A correlated scalar subquery that matches >1 inner row (eng has salaries
+		// 100 AND 200) must raise 21000 — same SQL-standard contract as the
+		// non-correlated path. The strict FirstOrDefault barrier in the join
+		// lowering enforces at-most-one per outer row instead of silently taking
+		// the first inner row via the RFC-077 join.
 		rows, err := db.QueryContext(ctx,
 			"SELECT (SELECT salary FROM emp e WHERE e.dept_id = dept.id) FROM dept WHERE id = 1")
-		if err != nil {
-			t.Fatalf("correlated scalar >1 row unexpectedly errored (behavior changed — "+
-				"if 21000 is now enforced, update this test): %v", err)
-		}
-		defer rows.Close()
-		var vals []int64
-		for rows.Next() {
-			var v sql.NullInt64
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
+		if err == nil {
+			// The violation may surface only while streaming rows.
+			for rows.Next() {
+				var v sql.NullInt64
+				if sErr := rows.Scan(&v); sErr != nil {
+					err = sErr
+					break
+				}
 			}
-			if v.Valid {
-				vals = append(vals, v.Int64)
+			if err == nil {
+				err = rows.Err()
 			}
+			rows.Close()
 		}
-		if len(vals) != 1 || (vals[0] != 100 && vals[0] != 200) {
-			t.Errorf("correlated scalar >1 row = %v, want exactly one of [100 200] (current take-first behavior)", vals)
+		if err == nil || !strings.Contains(err.Error(), "21000") {
+			t.Errorf("correlated scalar >1 row error = %v, want 21000", err)
 		}
 	})
 }

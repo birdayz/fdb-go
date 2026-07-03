@@ -39,6 +39,11 @@ type CorrelatedScalarSubquery struct {
 	InnerPlan  LogicalOperator
 	InnerAlias string
 	ScalarCol  string // output column name from the inner aggregate
+	// StrictSingle is true when the subquery has NO user-written LIMIT, so SQL
+	// standard at-most-one-row semantics apply: matching more than one inner row
+	// per outer row is a cardinality violation (21000), not a silent truncation.
+	// A user LIMIT clears it — truncation is then the user's deliberate intent.
+	StrictSingle bool
 }
 
 // --- Leaf operators (no children) ----------------------------------
