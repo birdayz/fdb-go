@@ -1125,3 +1125,126 @@ was already done).
   it. The name-model dual IS nullable; the ordinal seed is congruent (preserved
   = fv.Typ, nullable in production; null-supplying explicitly wrapped). No gap,
   no fix needed. The RFC's "confirm the dual nullable-wraps" check is satisfied.
+
+---
+
+## W4b — Correlated-scalar 2-leg ordinal seed (design for Graefe ACK; PROPOSED, pre-impl)
+
+The second W4 per-item PR (after W4-LEFT #458; stacked on it). Ordinalizes the
+correlated-scalar-subquery-in-projection seed so it survives the S4 name-model
+deletion, and folds in the RFC:807 at-most-one guard.
+
+### PREMISE CORRECTION (verified against Java source, tag 4.12.11.0)
+**Java does NOT support scalar subqueries in a projection list — at all, correlated
+or not.** The grammar's `expressionAtom` (`RelationalParser.g4:1240-1251`) has no
+`'(' query ')'` alternative; `query` appears in an expression position only in
+`existsExpressionAtom` (:1228, a boolean) and `inList` (:1254, which `visitInPredicate`
+rejects: `ErrorCode.UNSUPPORTED_QUERY` "IN predicate does not support nested SELECT",
+`ExpressionVisitor.java:624`). So `SELECT c.name, (SELECT … WHERE … = c.id) FROM c` is
+a PARSE ERROR in Java. **⇒ Go's correlated-scalar-in-projection is a READ-SIDE
+EXTENSION, not a parity port** ("query reach is not the hard line" — CLAUDE.md; wire
+compat is untouched, the extension only lets Go *express* more).
+
+**Why it is still an RFC-173 item:** the name model is DELETED in S4. This extension's
+seed is a NAME-MODEL `NewScalarSubqueryAnchoredRecord` today (`cascades_translator.go:
+3177`), so it BREAKS at name-model deletion unless ordinalized now — an "extension that
+rides along" (§ line 806-807). Java is still the *ordinal-shape* reference:
+`convertToExpressions` (`LogicalOperator.java:358-372`) bakes each flowed leg column as
+`FieldValue.ofOrdinalNumber(quantifier.getFlowedObjectValue(), colCount++)` — the pattern
+the Go extension emits for both legs.
+
+### Established facts (Go source)
+- **Site** `translateProjectWithCorrelatedScalar` (`cascades_translator.go:3106`): builds a
+  `JoinLeftOuter` `SelectExpression` over `[outerQ, innerQ]` with **nil top-level preds** —
+  the correlation is baked into `innerRef` as a filter child, so `RewriteOuterJoinRule`
+  does NOT fire (it guards on `len(preds)==0`). This is the correlated-LEFT-OUTER-FlatMap
+  data-access shape, **distinct from W4-LEFT** (which ordinalizes the *dissolved* form). The
+  seed here is built directly at translation, so W4b ordinalizes at the translator, not the
+  rewrite. Result value = `NewScalarSubqueryAnchoredRecord(outerLeg, innerAlias, scalarCol)`
+  (`value_anchored_join_record.go:121`): outer leg = its derivable columns; inner leg = ONE
+  field `<innerAlias>.<scalarCol>` = `FieldValue(QOV(innerAlias), scalarCol)`. Both legs
+  enclosed (`inInnerCluster=true`) → name-model in the W2 gate.
+- **Null-on-empty** already correct: `innerQ` is the LEFT-OUTER null-supplying leg; an outer
+  row with no inner match yields the scalar as NULL (Go's `IsNullOnEmpty` = Java's
+  `Quantifier.forEachWithNullOnEmpty`, `Quantifier.java:317-338`; the only Java
+  forEachWithNullOnEmpty is bare-aggregate group-by, `LogicalOperator.java:449-451`).
+- **At-most-one today** (`logical_predicate.go:5995-6002`): when the user wrote a LIMIT it is
+  respected; otherwise the inner is wrapped in a DEFAULT `LIMIT 1`. That default **silently
+  truncates** a >1-row correlated subquery to an arbitrary first row (non-deterministic
+  without ORDER BY) instead of raising the cardinality violation. The UNCORRELATED path
+  (`EvaluateScalarSubquery`, `scalar_subquery.go`) already collects-2-and-errors **21000**;
+  the correlated path is inconsistent with it and with the SQL standard. Java has NO guard
+  (it can't express the feature), so this is an EXTENSION-QUALITY decision, no Java oracle.
+
+### PROPOSED ruling
+1. **Ordinal seed (the RFC-173 core).** Replace the name-model
+   `NewScalarSubqueryAnchoredRecord` result value with an ordinal seed —
+   `RC(ofOrdinal(QOV(outerAlias), i) for outer cols ++ ofOrdinal(QOV(innerAlias), 0))` (the
+   inner exposes exactly one scalar column, ordinal 0). Follows `convertToExpressions`. The
+   inner scalar ordinal is **NULLABLE-wrapped** (LEFT-OUTER empty → NULL; executor null-leg
+   birth, contract ruling #3 — no executor change). Leg types derive from the anchored RC
+   being replaced (same Q1-ruling source as W4-LEFT: quantifier flowed types are untyped at
+   translation). `AssertOrdinalJoinSeed` tripwire on the constructed output;
+   decline-not-panic (return the name-model RC) on any malformation.
+2. **Single-source gate — OUTER LEG ONLY** (asymmetric, and this is the key divergence from
+   W4-LEFT — flagged for Graefe). W4-LEFT gated BOTH legs because BOTH contribute multiple
+   columns to the seed (a full row concat), so a cluster on either side erases buried names.
+   W4b's seed is different: the OUTER contributes its columns, but the INNER contributes exactly
+   ONE scalar column, referenced `ofOrdinal(QOV(innerAlias), 0)`. The inner's INTERNAL structure
+   (even `(SELECT x FROM a JOIN b WHERE … = outer.id)`) never exposes sub-names in the seed — it
+   is one positional scalar — so the inner needs NO single-source gate. Ordinal 0 is correct by
+   the scalar-subquery contract (the inner projects exactly the scalar; `EvaluateScalarSubquery`
+   enforces one column; Go flowed types are untyped at translation per the Q1 ruling, so a
+   translation-time column-count assert isn't possible — the executor's existing one-column check
+   is the backstop). **Gating the inner on single-source would be a latent bug**: it would leave
+   every internally-joining scalar subquery name-model, which then BREAKS at the S4 name-model
+   deletion — the exact failure this item exists to prevent. So: gate ONLY the OUTER on
+   `singleSourceLeg` (a multi-table outer cluster `SELECT …, (subquery) FROM a JOIN b` stays
+   name-model — buried-name erasure, same as W4-LEFT); ordinalize the inner unconditionally as
+   ordinal 0.
+3. **At-most-one guard (the RFC:807 rider, extension-quality).** When there is NO user LIMIT,
+   STOP injecting the default `LIMIT 1`; instead enforce at-most-one in the correlated
+   evaluation and raise **21000** on >1 rows, mirroring `EvaluateScalarSubquery`. An EXPLICIT
+   user LIMIT is respected verbatim (a deliberate top-N/top-1, e.g. `… ORDER BY amount LIMIT
+   1` — the common existing shape). Net effect: `SELECT (SELECT salary FROM emp e WHERE
+   e.dept_id = dept.id) FROM dept` errors 21000 when a dept has >1 emp, instead of returning a
+   non-deterministic salary. **This is a user-visible behavior change to the extension** (silent
+   wrong → explicit error) — flagged for the four-gate round. Sequencing: this guard is
+   independent of the ordinal seed (inner-plan change vs result-value change); per RFC:807
+   "add it early", do it as the FIRST commit of the PR, the ordinal seed as the second.
+   **Graefe scope question:** bundle both in this PR (RFC's stated intent), or split the guard
+   to its own correctness PR? Both touch only `translateProjectWithCorrelatedScalar`'s
+   neighborhood; I lean bundle-but-separate-commits.
+
+### Out of scope
+The uncorrelated scalar-subquery seed (pre-evaluated, `EvaluateScalarSubquery`) — it flows a
+bound literal, not a join seed, so there is no anchored RC to ordinalize. GROUP BY / ORDER BY
+inside the subquery (orthogonal; already handled).
+
+### Gates & pins
+Graefe design-ACK on THIS ruling before impl, then the four-gate round (Graefe/Torvalds/
+codex/@claude) on the implementation. Pins: white-box ordinal-seed shape
+(`TestRFC173W4b_ScalarSeedShape` — baked ofOrdinal refs, inner ordinal-0 nullable,
+AssertOrdinalJoinSeed); **multi-source OUTER stays name-model** (`…_ClusteredOuterDeclines`);
+**internally-joining INNER still ordinalizes** (`…_JoinedInnerStillOrdinalizes` — pins the
+outer-only gate; a same-shape all-both-gates design would wrongly decline this); e2e correct
+rows + EXPLAIN (`TestFDB_RFC173_W4b_CorrelatedScalarOrdinalizes`); **correlated multi-row →
+21000** (`TestFDB_RFC173_W4b_CorrelatedScalarCardinality`, red before the guard);
+explicit-user-LIMIT still returns top-1 (no regression). Task-count baseline ±2%.
+
+### W4b design review: Graefe ACK (conditioned) + SPLIT scope ruling
+Graefe design-ACKed the ordinal seed. Framing / translator altitude / **outer-only gate**
+("the crux, and it holds") all validated. Two conditions folded into the impl plan:
+1. **No dup ordinals.** `AssertOrdinalJoinSeed` forbids duplicate ordinals, so — UNLIKE the
+   name-model `NewScalarSubqueryAnchoredRecord` (which emits bare + qualified + dotted forms
+   per column) — the ordinal seed emits ONE field per column. (a) the inner RC field stays named
+   EXACTLY `<innerAlias>.<scalarCol>` (what unconditional `replaceScalarSubqueryRef` emits)
+   valued `ofOrdinal(QOV(inner),0)`, else lazy `composeFieldOverConstructor` misses it; (b) the
+   e2e pin MUST exercise a **qualified** outer ref AND a **bare** one (not bare-only), proving
+   single-source alias-normalization resolves both to the one ordinal field.
+2. **SPLIT scope (Graefe overrides RFC:807 "bundle").** The at-most-one guard is an
+   executor/evaluation-semantics change with NO Cascades-architecture content and a user-visible
+   behavior flip — it lands as its OWN single-purpose PR **first** (its own correctness four-gate,
+   independently revertable); the ordinal seed **stacks on top**. Order: (1) guard PR → (2) seed
+   PR stacked on it. The guard needs no Graefe DESIGN-ACK (no architecture content) but still runs
+   the four-gate on impl.
