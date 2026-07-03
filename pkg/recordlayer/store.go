@@ -1444,7 +1444,7 @@ func (store *FDBRecordStore) SetUserVersion(version int32) error {
 		return &RecordStoreStateNotLoadedError{}
 	}
 	store.storeHeader.UserVersion = &version
-	lastUpdateTime := uint64(time.Now().UnixMilli())
+	lastUpdateTime := uint64(store.context.Env().Now().UnixMilli())
 	store.storeHeader.LastUpdateTime = &lastUpdateTime
 	return store.writeStoreHeader(store.storeHeader)
 }
@@ -1593,7 +1593,7 @@ func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLock
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
-	ts := time.Now().UnixMilli()
+	ts := store.context.Env().Now().UnixMilli()
 	store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
 		LockState: &state,
 		Reason:    &reason,

@@ -125,6 +125,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -195,6 +196,7 @@ go_test(
         "database_runctx_test.go",
         "database_test.go",
         "dedup_cursor_test.go",
+        "dst_wiring_test.go",
         "edge_case_test.go",
         "error_path_test.go",
         "errors_test.go",
@@ -356,6 +358,7 @@ go_test(
     embed = [":recordlayer"],
     deps = [
         "//gen",
+        "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
