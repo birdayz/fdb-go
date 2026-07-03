@@ -125,8 +125,12 @@ prove nothing (Graefe + codex). Zero catches across the full suite + fuzz before
 ## 5. Acceptance criteria
 
 - **Step 0:** DIVERGENCES.md §33-41/§376 no longer describe `ImplementIndexScanRule` as live, cite no
-  non-existent test, invent no Java class, list two producers; `grep -rn "ImplementIndexScanRule" pkg/`
-  returns only the co-located comments deferred to a later step's PR (zero standalone stale references).
+  non-existent test, invent no Java class, list two producers. Criterion is by PROPERTY, not by name-grep:
+  no comment describes the rule as a **live/current producer**. Accurate historical references that name
+  it while correctly saying it is *retired* (e.g. `phase2_fuzz_test.go:12` "after RFC-076 retired
+  ImplementIndexScanRule") STAY — they are true (codex catch: a bare `grep "ImplementIndexScanRule"`
+  criterion would force deleting correct history). The only deferred stale-as-live comments are those
+  co-located with a function a later step edits.
 - **Step 1:** because the expanded diagnostic is DORMANT until a gate fires (the plan is still physical, so
   `findIndexOnlyLogicalResidual` has no live call path yet — codex), Step 1's proof is a **unit test of the
   function directly**: fed a logical tree of the JOIN `SelectExpression` shape (and the NLJ residual shape)
