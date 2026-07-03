@@ -6,6 +6,10 @@ corrections-then-ACK direction document, not a redesign: the central `fdb.Backen
 is validated (SimFDB is a genuine drop-in third backend), and the load-bearing byte-format /
 version-ownership / watch-deferral facts hold. Not a query-engine planner change, so the Graefe gate is
 **advisory** here, not mandatory.
+**Review:** Torvalds (design) **ACK**, FDB C++ client dev (SSI/versionstamp/error-code fidelity vs
+7.3.75) **ACK**, Graefe (advisory, query-engine touchpoints) **ACK** — their findings are folded in
+(the `SetVersionstampedKey` server-side write-conflict-range re-add in Tier 1 item 1; LRU-eviction as
+the continuation-replay lever; versionstamp anatomy). @claude + codex review on the PR.
 **Scope decision (see §1a):** this RFC is **Track A** — *real* DST for the record + relational layers
 (shared Tier 0 + SimFDB + workload/replay). The **client-transport** work (**Track B** — simulation &
 fault injection, honestly *not* full DST) is documented here for context (Tier 3 + the alternatives
@@ -210,8 +214,11 @@ Grouped by the §1a split: **Tier 0** is the shared foundation; **Tiers 1–2 ar
 Port the shape of FDB's determinism primitives:
 
 1. **`Clock` interface** replacing `time.Now`/`time.After`/`time.NewTimer`/`time.Since`. There is
-   **no clock seam anywhere in `pkg/fdbgo` or the record layer today** — this is the single largest
-   missing piece. A sim clock is a scalar advanced by the driver.
+   **no clock seam anywhere in `pkg/fdbgo` or the record layer today** — the single largest *missing
+   abstraction*. That is not a contradiction with "small, mechanical": **Track A** needs only the
+   persisted-byte + `Session.StatementNow` subset seamed (a handful of sites, below), which is small;
+   the full ~70-site client seam is **Track B** and is the large part. A sim clock is a scalar advanced
+   by the driver.
 2. **Seeded `rand.Source`** (the `math/rand/v2.NewPCG` pattern `chaos/fault.go:96` already uses),
    threaded through the offenders and **banning `crypto/rand`** on the sim path.
 3. **`Buggify(file, line, prob) bool`** — direct port of FDB's `getSBVar` (`flow/flow.cpp:356-370`):
@@ -247,23 +254,31 @@ A third `fdb.BackendDatabase` over a **sorted** in-memory keyspace (btree/sorted
    vs `>`) or the operands wrong and every boundary case flips (cf. C++ `SkipList.cpp` `CheckMax`,
    `Resolver.actor.cpp`). A read version below the 5s MVCC window (`commitVersion − 5,000,000`) yields
    `transaction_too_old (1007)` instead — a **distinct, earlier** verdict that never fires for
-   write-only transactions, and which a too-old transaction resolves by applying **no** mutations and
-   consuming no version. Every mutation auto-adds a write conflict range **unless**
-   `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` is set (the versionstamp path uses it). The implicit
+   write-only transactions, and which a too-old transaction resolves by applying **no** mutations (its
+   assigned batch version is still consumed — harmless in the isolated store). Every mutation auto-adds
+   a write conflict range **unless** `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` is set — **and mind the
+   versionstamp path**: `SetVersionstampedKey` suppresses the *client* write-conflict range (the key
+   isn't known yet), and the **server** re-adds it at the *stamped* key (C++
+   `CommitProxyServer.actor.cpp:213`). SimFDB plays the server role, so it **must** re-add the write
+   conflict range at the finished key *after* stamping — skip it and every versionstamped-key write
+   gets no conflict range → systematic under-conflict, a false green on exactly the class DST exists to
+   catch. The implicit
    read-conflict that `Get`/`GetRange` add covers **most** reads, not all — SimFDB reimplements the
    whole `WritableTransaction` surface, so replicating the exclusions is its responsibility, not free:
-   snapshot reads add none (`transaction.go:499-602`), `\xff\xff` special keys add none (`:756-762`), a
+   snapshot reads add none (`client/transaction.go:499-602`), `\xff\xff` special keys add none (`:756-762`), a
    read already satisfied by the tx's own write adds none (RYW filter, `:1130-1146`), and `GetRange`
    clamps its read conflict to the data actually returned, not the requested span (`rangeConflictExtent`,
    `:1148-1172`). **Serialize commits** (assign each one monotonic version, resolve one at a time) to
    sidestep the C++ batch/`MiniConflictSet` intra-batch path — strictly simpler, still faithful. This
    is the claim to pin against the existing conflict-outcome differential (Tier 1 differential note, §8).
 2. **Deterministic versions**: a monotonic logical counter → read version, commit version, and the
-   12-byte versionstamp (10-byte tx version + 2-byte user version). The `0xFF×10` placeholder layout is
+   12-byte versionstamp = **10-byte tx version** (8-byte commit version + 2-byte batch order, both
+   big-endian, *server*-written) + **2-byte user version** (client tuple data, never server-written —
+   don't conflate it with the batch order inside the 10 bytes). The `0xFF×10` placeholder layout is
    at `pkg/fdbgo/fdb/tuple/tuple.go:129-141`, but the **overwrite is not in the tuple codec** — in real
    FDB it is **server-side** (`transformVersionstampMutation`, C++ `Atomic.h`, invoked by the commit
    proxy); the pure-Go client only appends the 4-byte offset (`PackWithVersionstamp`) and reads the
-   stamped value back from the commit reply (`transaction.go:2216-2233`). So SimFDB **plays the server
+   stamped value back from the commit reply (`client/transaction.go:2216-2233`). So SimFDB **plays the server
    role**: at commit it overwrites the placeholder with the 8-byte commit version + 2-byte batch order,
    strips exactly the 4 trailing offset bytes (apiVersion ≥ 520), and flips the mutation to a plain
    `SetValue`; the batch order stamped into the key MUST equal the value returned from `GetVersionstamp`
@@ -275,12 +290,12 @@ A third `fdb.BackendDatabase` over a **sorted** in-memory keyspace (btree/sorted
    entirely (`database.go:350,861`), so this is clean to introduce.
 3. **RYW mutation buffer + full atomic-op merge set** (`Add`/`Min`/`Max`/`And`/`Or`/`Xor`/`ByteMin`/
    `ByteMax`/`AppendIfFits`/`CompareAndClear`/`SetVersionstamped{Key,Value}`, little-endian `Add` —
-   `transaction.go:244-314`). Non-idempotent `Add` under a simulated `1021` retry is precisely the
+   `client/transaction.go:244-314`). Non-idempotent `Add` under a simulated `1021` retry is precisely the
    bug class DST must catch.
 4. **True rollback** on conflict — fixes the `chaos/fault.go:27` limitation for free.
 5. **The 5s window + `100KB` value / `10MB` tx / `~10KB` key limits** → four verdicts, one per limit:
    5s MVCC window → `transaction_too_old (1007)`; `100KB` value → `value_too_large (2103)`; `10MB` tx →
-   `transaction_too_large (2101)`; `~10KB` key → `key_too_large (2102)` (`transaction.go:1651` — the
+   `transaction_too_large (2101)`; `~10KB` key → `key_too_large (2102)` (`client/transaction.go:1651` — the
    earlier draft dropped 2102; omitting the guard is a false-green on index-entry-size regressions).
    What the layer depends on is the **retryable-vs-terminal classification** (1007 retryable;
    2101/2102/2103 terminal — `fdb/error.go:436-456`, mirrored in `runner.go:243-256`), not byte-exact
@@ -324,7 +339,7 @@ seed-reproducible.* Validate against `chaos.StoreModel.Verify` and the existing
 store-vs-model (`chaos/model.go:18-21`) and **cannot** self-catch a SimFDB conflict-semantics
 divergence — a systematic under- or over-conflict is a false green. So the SSI detector (item 1) ships
 *with* its own oracle: point the existing two-backend commit/abort-agreement harness
-(`FuzzDifferential_ConflictOutcome`, `bench/differential_conflict_outcome_fuzz_test.go`) and a
+(`FuzzDifferential_ConflictOutcome`, `pkg/fdbgo/bench/differential_conflict_outcome_fuzz_test.go`) and a
 masked-byte-parity diff (mask the inline `pk+-1` version + versionstamps, run serial-from-empty) at
 SimFDB-vs-real as its red/green oracle. This is nearly free (the harness exists — §8) and is the only
 check that catches both conflict directions. The full seeded-workload replay stays in Tier 2.
@@ -353,9 +368,14 @@ differential).
   deterministic-by-construction (single-goroutine pull cursors, no rand — `executor.go`), so this is
   mostly a driver swap.
 - **Continuation-under-fault replay** (net-new capability): mint a continuation, inject a
-  conflict-retry or plan-cache invalidation, resume the token, assert rows. This catches a class no
-  current harness can — a continuation minted against one commit version/plan resumed after the plan
-  switches underneath it (RYW + plan-cache hit/miss path-dependence, `connection.go:265-267,566`).
+  conflict-retry or a plan switch, resume the token, assert rows. This catches a class no current
+  harness can — a continuation is a serialized cursor tree keyed to the *original* plan's operator
+  structure, but resume re-derives the plan via the cache (`cascades_generator.go:264`) and Go embeds
+  **no plan-hash in the token and does no bind-validation on resume** (Java does), so a token minted
+  against plan A resumed against a re-optimized plan B is decoded with zero guard → silently wrong rows
+  or a decode error, not a clean rejection (RYW + plan-cache hit/miss path-dependence,
+  `connection.go:265-267,566`). Drive the plan switch primarily via **LRU eviction** (`maxSize`) — the
+  natural, frequent trigger that needs no DDL — not only `Invalidate()`.
 
 ### Tier 3 — client simulation & fault injection [TRACK B — *not* "DST"; own RFC / extends RFC-118]
 
@@ -446,7 +466,7 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
   over-conflict) is a false green, and the Elle oracle catches under-conflict only when the anomaly is
   sampled. The two-backend harness is **not net-new** — `libfdbc/differential_test.go` already drives
   two `BackendDatabase`s against one container and diffs persisted bytes/cross-reads, and
-  `FuzzDifferential_ConflictOutcome` (`bench/differential_conflict_outcome_fuzz_test.go`) is already the
+  `FuzzDifferential_ConflictOutcome` (`pkg/fdbgo/bench/differential_conflict_outcome_fuzz_test.go`) is already the
   exact commit/abort-agreement oracle (it caught the RFC-121 conflict-set bugs). SimFDB is a third
   backend into that fixture. So the targeted conflict-outcome + masked-byte-parity slice is
   **co-developed with the SSI detector in Tier 1** as its red/green oracle; the full seeded-workload
