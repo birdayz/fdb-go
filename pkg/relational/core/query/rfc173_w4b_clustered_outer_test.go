@@ -240,6 +240,30 @@ func TestRFC173W4b_ClusteredCarrierEnumeration(t *testing.T) {
 		}
 	}
 
+	// Aggregate-LOCAL carriers are WALK-ONLY: the collector sees refs there
+	// (asserted above), but a REWRITE into one marks the chain un-rebuildable —
+	// aggregate operands evaluate against the aggregate's inner input row,
+	// which never carries the level-2 outer binding, so a baked ref there is
+	// unresolvable at runtime (review finding). The enumeration table above
+	// cannot distinguish walk-semantics from rewrite-semantics; this pin does.
+	rewriteAll := func(v values.Value) values.Value {
+		if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved == nil {
+			return &values.FieldValue{Field: fv.Field, Typ: values.UnknownType}
+		}
+		return v
+	}
+	aggLocal := &logical.LogicalAggregate{
+		Input: scan("Order", "SQ"), Aggregates: []string{"SUM(x)"}, Aliases: []string{""},
+		AggregateOperands: []values.Value{legRef()},
+	}
+	if _, ok := rebuildInnerWithValues(aggLocal, rewriteAll); ok {
+		t.Error("a REWRITE into an aggregate-local carrier must mark the chain un-rebuildable (ok=false) — the ordinal path declines")
+	}
+	if _, ok := rebuildInnerWithValues(
+		logical.NewFilterWithPredicate(scan("Order", "SQ"), legPred(), ""), rewriteAll); !ok {
+		t.Error("the same rewrite through a NON-aggregate carrier must rebuild (the walk-only rule is aggregate-local)")
+	}
+
 	// Outside the enumeration → exhaustive=false (decline direction).
 	unenumerated := []struct {
 		kind string

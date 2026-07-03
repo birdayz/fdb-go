@@ -5938,8 +5938,23 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				// on the plain-column path — scalarCol comes from the WALKED
 				// field's resolved name (the projection text may carry parens the
 				// textual parse would garble: `(o.amount)` → `AMOUNT)`).
+				//
+				// A JOIN-inner keys its rows QUALIFIED, so the key must carry the
+				// resolved qualifier (review finding, round 2): a bared key rides
+				// the merged row's bare last-leg-wins TWIN and silently reads the
+				// WRONG LEG when both legs carry the column (`(o.id)` returned
+				// items.id). Derive `ALIAS.COL` from the walked value's QOV child;
+				// a flat dotted field passes verbatim.
 				if fv, isFV := cv.(*values.FieldValue); isFV {
-					scalarCol = strings.ToUpper(parseColRef(fv.Field).bare())
+					if len(sq.joins) > 0 {
+						if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+							scalarCol = strings.ToUpper(qov.Correlation.Name()) + "." + strings.ToUpper(fv.Field)
+						} else {
+							scalarCol = strings.ToUpper(fv.Field)
+						}
+					} else {
+						scalarCol = strings.ToUpper(parseColRef(fv.Field).bare())
+					}
 				} else {
 					computedScalarVal = cv
 				}
