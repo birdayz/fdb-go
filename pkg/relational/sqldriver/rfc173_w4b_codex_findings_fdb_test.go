@@ -82,6 +82,11 @@ func TestFDB_RFC173W4b_FieldValuedComputedScalar(t *testing.T) {
 	if !v.Valid || v.Int64 != 1 {
 		t.Errorf("outer-scope parenthesized scalar = %d (valid=%v), want 1 (the OUTER c.id; the inner o.id=5 means the bared key read the wrong scope)", v.Int64, v.Valid)
 	}
+
+	// (The AT-ordinal-alias scope corner — `AS v AT c` colliding with an outer
+	// alias `c` — is pinned white-box in the embedded package
+	// (TestInnerSourceAliases_MirrorsUnnestBinder): SQL INSERT cannot seed
+	// array columns, and the rule under test is exactly the binder mirror.)
 }
 
 // TestFDB_RFC173W4b_AggregateLocalOuterRef pins the review finding P2-2: a

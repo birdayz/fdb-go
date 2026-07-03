@@ -6134,10 +6134,17 @@ func innerSourceAliases(op logical.LogicalOperator) map[string]struct{} {
 			}
 			out[strings.ToUpper(a)] = struct{}{}
 		case *logical.LogicalUnnest:
-			if o.Alias != "" {
+			// Mirror the unnest BINDER's correlation rule
+			// (unnestSourceCorrelation): the source correlation is the AS
+			// alias, falling back to the AT alias only in the AT-only form.
+			// With `AS v AT c` the ordinal alias `c` is NOT a source — it is a
+			// column bound THROUGH v's row — so a same-named OUTER alias must
+			// still classify as outer-scoped (review finding: adding the AT
+			// alias here skipped materialization of an outer `(c.id)`).
+			switch {
+			case o.Alias != "":
 				out[strings.ToUpper(o.Alias)] = struct{}{}
-			}
-			if o.AtAlias != "" {
+			case o.AtAlias != "":
 				out[strings.ToUpper(o.AtAlias)] = struct{}{}
 			}
 		}
