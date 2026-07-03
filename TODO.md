@@ -171,7 +171,13 @@ validation gate.
   type) — undeletable while ANY of FOUR live seed producers survives. **Canonical sequence (each a full
   four-gate slice):**
   - [ ] **W4b — correlated-scalar ordinalization** (retire `NewScalarSubqueryAnchoredRecord`'s live
-    shapes: computed / JOIN-inner / clustered-outer). **THE IMMEDIATE NEXT SLICE.**
+    shapes: computed / JOIN-inner / clustered-outer). **IMPL COMPLETE on
+    `feat/rfc173-w4b-correlated-scalar-ordinal` — in the four-gate gauntlet.** All three shapes landed
+    (shape 3 computed = silent-NULL bugfix; shape 1 clustered-outer = unplannable/silent-NULL fix with
+    Graefe-ruled amendments, RFC impl correction 3; shape 2 JOIN-inner = fresh-id decouple +
+    spanAwareRow literal-name routing fix). Exit gate AMENDED per ruling: the constructor keeps exactly
+    ONE production call site (the ungated-outer rightmost-corr residual, reachability pinned both
+    directions) until W4-left/W5 gate every cluster; it dies in S4.
   - [ ] **W5 — multi-source lateral UNNEST** (retire `buildUnnestResultValue` AnchoredJoin; also kills
     `MergeSeedLegsOfValue`/`leftmostQOVOfValue`).
   - [ ] **W4-left + EXISTS + recursive-CTE joins** (retire `NewAnchoredJoinRecord` via
