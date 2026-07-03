@@ -8,36 +8,61 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// TestRFC173W4_LeftOrdinalizable pins the buried-eligibility gate (RFC-173 W4 Q3),
-// keyed on preserved-leg SOURCE COUNT (the alias-collision-safe reading): a
-// dissolved LEFT ordinalizes iff its preserved leg is a SINGLE SOURCE
-// (provides only its own top alias). A MULTI-source preserved cluster is never
-// eligible — its synthetic quantifier alias collides with its rightmost leaf's,
-// so an ON-pred touching that alias is really touching a BURIED source whose
-// column lives in the erased ordinal concat (the RFC-153 hazard).
-func TestRFC173W4_LeftOrdinalizable(t *testing.T) {
+// TestRFC173W4_SeedDeclinesClusteredLeg pins the seed builder's symmetric
+// decline: an anchored RC that decomposes into more than the TWO expected legs
+// (a clustered leg on EITHER side exposing sub-aliases — the null-side gap the
+// preserved-only gate missed) yields no ordinal seed (nil → name-model
+// fallback), never a wrong under-covered seed.
+func TestRFC173W4_SeedDeclinesClusteredLeg(t *testing.T) {
 	t.Parallel()
-	top := values.NamedCorrelationIdentifier("A")
-	buried := values.NamedCorrelationIdentifier("B")
+	a := values.NamedCorrelationIdentifier("A")
+	b := values.NamedCorrelationIdentifier("B")
+	c := values.NamedCorrelationIdentifier("C")
 
-	// Single-source preserved: provides only {A}. Eligible.
-	single := map[values.CorrelationIdentifier]struct{}{top: {}}
-	if !leftOrdinalizable(nil, top, single) {
-		t.Fatal("single-source preserved (provides only its top alias) must be ORDINALIZABLE")
+	// Clean 2-leg anchored RC (A preserved, C null) → ordinalizes.
+	if ordinalSeedFromAnchoredLeft(leftAnchoredRC(t, a, c), a, c) == nil {
+		t.Fatal("a clean 2-leg anchored RC must produce an ordinal seed")
 	}
 
-	// Multi-source preserved cluster: provides {A, B} — flattened (A JOIN B).
-	// NOT eligible even though the ON-pred (elided; the gate is source-count
-	// based) may touch the top-or-rightmost alias.
-	cluster := map[values.CorrelationIdentifier]struct{}{top: {}, buried: {}}
-	if leftOrdinalizable(nil, top, cluster) {
-		t.Fatal("multi-source preserved cluster must NOT be ordinalizable — ordinalizing erases the buried names (RFC-153 hazard)")
+	// 3-leg anchored RC — a clustered null side (B JOIN C) exposes B and C as
+	// sub-aliases. The seed builder must DECLINE (nil), not emit a seed that
+	// under-covers the cluster's columns.
+	clustered := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+		{Alias: a, Columns: []values.Field{{Name: "ID", FieldType: values.NotNullLong}}},
+		{Alias: b, Columns: []values.Field{{Name: "ID", FieldType: values.NotNullLong}}},
+		{Alias: c, Columns: []values.Field{{Name: "ID", FieldType: values.NotNullLong}}},
+	})
+	if ordinalSeedFromAnchoredLeft(clustered, a, c) != nil {
+		t.Fatal("a 3-leg (clustered) anchored RC must DECLINE — an under-covered seed would drop the buried leg's columns")
 	}
+}
 
-	// Defensive: the sole provided alias must be the top.
-	wrong := map[values.CorrelationIdentifier]struct{}{buried: {}}
-	if leftOrdinalizable(nil, top, wrong) {
-		t.Fatal("a single provided alias that is NOT the top must decline (defensive)")
+// TestRFC173W4_SeedPreservesDeclarationOrder pins the RIGHT-JOIN column-order
+// fix: a RIGHT JOIN normalizes to LEFT with swapped children (preserved/null
+// swapped), but the anchored RC stays in SQL DECLARATION order. The seed must
+// follow the anchored order, nullable-wrapping only the null-supplying leg —
+// not reorder to preserved-then-null (which would corrupt SELECT */positional
+// output). Here the null-supplying leg A is declared FIRST, preserved C second.
+func TestRFC173W4_SeedPreservesDeclarationOrder(t *testing.T) {
+	t.Parallel()
+	a := values.NamedCorrelationIdentifier("A") // null-supplying, declared first
+	c := values.NamedCorrelationIdentifier("C") // preserved, declared second
+	anchored := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+		{Alias: a, Columns: []values.Field{{Name: "AID", FieldType: values.NotNullLong}, {Name: "AV", FieldType: values.NotNullLong}}},
+		{Alias: c, Columns: []values.Field{{Name: "CID", FieldType: values.NotNullLong}}},
+	})
+	// A is the NULL-supplying side even though it's declared first.
+	rc, ok := ordinalSeedFromAnchoredLeft(anchored, c, a).(*values.RecordConstructorValue)
+	if !ok || len(rc.Fields) != 3 {
+		t.Fatalf("seed must be a 3-field RC in declaration order (A.AID, A.AV, C.CID), got %v", rc)
+	}
+	// A's two columns FIRST (nullable — null-supplying), then C's (non-nullable).
+	wantNullable := []bool{true, true, false}
+	for i, f := range rc.Fields {
+		fv := f.Value.(*values.FieldValue)
+		if fv.Typ.IsNullable() != wantNullable[i] {
+			t.Fatalf("field %d (%s) nullable=%v, want %v (A declared first + null-supplying → nullable; C preserved → not)", i, f.Name, fv.Typ.IsNullable(), wantNullable[i])
+		}
 	}
 }
 

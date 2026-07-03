@@ -177,7 +177,7 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// null-supplying ordinals with no executor change (contract ruling #3).
 	resultValue := sel.GetResultValue()
 	if anchored, ok := resultValue.(*values.RecordConstructorValue); ok && anchored.AnchoredJoin &&
-		leftOrdinalizable(preds, preserved.GetAlias(), preservedProvided) {
+		singleSourceLeg(preserved) && singleSourceLeg(nullSupplying) {
 		if seed := ordinalSeedFromAnchoredLeft(anchored, preserved.GetAlias(), nullSupplying.GetAlias()); seed != nil {
 			resultValue = seed
 		}

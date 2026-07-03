@@ -1094,3 +1094,34 @@ JoinedPreservedMatrix/buried_other_leg (buried stays name-model, red before the
 fix). No tripwire relaxation needed for the simple case (2-quantifier dissolved
 LEFT → binary join impl, not PartitionSelectRule; the executor null-leg birth
 was already done).
+
+### W4 impl review round (PR #458): Graefe ACK, Torvalds NAK, codex P2, @claude findings — all resolved
+- **Symmetric single-source gate** (Torvalds): the gate now requires BOTH legs
+  single-source (singleSourceLeg each) PLUS the seed builder declines any
+  anchored RC decomposing into != 2 legs. Dropped the dead preds param.
+  (@claude argued the null side can't be a raw cluster at the SQL surface —
+  extractJoinClause only accepts atom/subquery RHS — so the asymmetric gate was
+  "sound not oversight"; the symmetric gate is strictly safer and the net
+  confirms it doesn't over-reject derived-table null sides.)
+- **Declaration order** (codex P2): a RIGHT JOIN normalizes to LEFT with swapped
+  children but the anchored RC stays in SQL declaration order; the seed now
+  walks the anchored RC in field order (aliases identify only the nullable leg),
+  so SELECT */positional output is stable. Pin: SeedPreservesDeclarationOrder
+  (null-leg-first, red with the old preserved-then-null emission).
+- **Decline not panic** (Torvalds): the seed builder returns nil (name-model
+  fallback) on malformation; the AssertOrdinalJoinSeed panic (translator
+  altitude) is gone from the rule path.
+- **Real e2e** (Torvalds/@claude no-fake-checkbox): the prior e2e's winning plan
+  was the materialized LEFT NLJ (ordinal seed never executed). Added an index on
+  the null-supplying side so the correlated dissolved FlatMap WINS, asserted the
+  plan is the FlatMap (not NestedLoopJoin(LEFT OUTER)); for a single-source LEFT
+  the rule yields only the ordinal seed as the dissolved form, so a FlatMap win
+  IS the ordinal path executing.
+- **Nullability reconciliation** (@claude vs Graefe): @claude flagged the retained
+  name-model dual as not nullable-wrapping the null-supplying columns (a
+  type-gap). RESOLVED — Graefe is right: fieldTypeForFD (cascades_translator.go:
+  177-201) constructs EVERY anchored leg column nullable at the source
+  ("Columns are nullable"), not via WithNullability, so @claude's grep missed
+  it. The name-model dual IS nullable; the ordinal seed is congruent (preserved
+  = fv.Typ, nullable in production; null-supplying explicitly wrapped). No gap,
+  no fix needed. The RFC's "confirm the dual nullable-wraps" check is satisfied.

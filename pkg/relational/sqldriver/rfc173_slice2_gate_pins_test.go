@@ -745,7 +745,12 @@ func TestFDB_RFC173_W4_TopLevelLeftOrdinalizes(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rfc173_w4left_tmpl "+
 			"CREATE TABLE a (id BIGINT NOT NULL, av BIGINT, PRIMARY KEY (id)) "+
-			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id))")
+			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			// The index on the null-supplying side makes the CORRELATED
+			// dissolved FlatMap (an index probe) beat the materialized LEFT
+			// NLJ, so the ordinalized dissolved shape is the WINNER and is
+			// actually executed (not just a memo alternative).
+			"CREATE INDEX c_a_id ON c (a_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc173_w4left/s WITH TEMPLATE rfc173_w4left_tmpl")
 	dsn := fmt.Sprintf("fdbsql:///testdb_rfc173_w4left?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -758,7 +763,20 @@ func TestFDB_RFC173_W4_TopLevelLeftOrdinalizes(t *testing.T) {
 	// c matches a=1 and a=2; a=3 is UNMATCHED → NULL-extended.
 	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (10, 1), (11, 2)")
 
-	got := rfc173PinRows(t, db, ctx, "SELECT a.id, c.id FROM a LEFT JOIN c ON c.a_id = a.id")
+	const q = "SELECT a.id, c.id FROM a LEFT JOIN c ON c.a_id = a.id"
+	// The dissolved FlatMap (index probe) must WIN — proving the ordinal-seed
+	// dissolved shape executes. For a single-source LEFT the rule yields ONLY
+	// the ordinal seed as the dissolved form, so a FlatMap win IS the ordinal
+	// path (a materialized NestedLoopJoin(LEFT OUTER) would mean the
+	// ordinalization never ran).
+	plan := rfc173PinExplain(t, db, ctx, q)
+	if !strings.Contains(plan, "FlatMap(") {
+		t.Fatalf("expected the dissolved FlatMap (ordinal seed executes) to win, got the materialized NLJ:\n%s", plan)
+	}
+	if strings.Contains(plan, "NestedLoopJoin(LEFT OUTER") {
+		t.Fatalf("the materialized LEFT-OUTER NLJ won — the ordinalized dissolved LEFT did not execute:\n%s", plan)
+	}
+	got := rfc173PinRows(t, db, ctx, q)
 	sort.Strings(got)
 	want := []string{"1|10", "2|11", "3|<nil>"}
 	sort.Strings(want)
