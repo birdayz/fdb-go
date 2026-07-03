@@ -182,6 +182,50 @@ WS-3 visitor, WS-4 map-lint/tie, WS-1 all remain → the list above.
 
 ---
 
+## DST findings
+
+Findings from the RFC-179 DST bug hunt (`feat/rfc179-dst`): SimFDB — the deterministic in-memory FDB
+backend — pointed at the real record/relational layer with **true rollback + targeted fault injection**
+(`simfdb.SimDB.InjectOnce`/`InjectSequence`), checked against `chaos.Verify()` + row correctness across
+8 fault-injection harnesses (COUNT/SUM/MAX_EVER/MIN_EVER, RANK/PERMUTED, UNIQUE/write-skew, continuation
+resume, SQL, VERSION/versionstamp, split-record) with an independent verify pass.
+
+**Headline: 0 real record-layer bugs.** The core save/load/index-maintenance paths are *proven*
+idempotent under `commit_unknown(1021)` / `not_committed(1020)` / `transaction_too_old(1007)` retry —
+the layer reads committed state and recomputes index deltas, so a durable-then-retried commit
+re-derives a zero net delta (`store.go:655,416`; `atomic_mutation.go:83` `removeCommon`; the retry
+re-pins its read version at the committed one via `Reset()`+`ensureReadVersion`, faithful FDB causal
+reads). RANK, VERSION, and split-record paths were clean at every injection point + BUGGIFY schedule.
+
+**Fixed (SimFDB fidelity gap, not a record-layer bug):**
+- [x] SimFDB injected faults into a **read-only/empty commit** that real FDB short-circuits client-side
+  (no resolver round-trip → no `commit_unknown`, no commit version). Now short-circuited to a versionless
+  no-op before any conflict/limit/fault logic (`pkg/simfdb/conflict.go`; pinned by
+  `TestReadOnlyCommitShortCircuits`).
+
+**Open — SQL autocommit `commit_unknown` hazards (matches Java → conformance question, not a Go bug).**
+DST surfaced these deterministically; data integrity is intact in every case, but the *observed behavior*
+under `commit_unknown_result` is a real robustness concern for the autocommit path. Java's fdb-relational
+uses the identical `FDBDatabase.run` retry-on-1021, so per the conformance principle these are inherited
+FDB hazards, not Go-specific defects — surface to the owner; hardening the autocommit retry (idempotency
+token / don't-retry-non-idempotent) is a design change beyond RFC-179's scope:
+- [ ] **Relative `UPDATE … SET a=a+1` double-applies under `commit_unknown(1021)`** — the write commits
+  durably, the autocommit `FDBDatabase.Run` (`database.go:224`) retries the whole statement, the retry
+  re-reads the now-durable value and re-increments (`+1` silently becomes `+2`). Composition of 1021
+  being retryable (`fdb/error.go:475`) + autocommit-in-a-retrying-Run + the relative value re-derived per
+  execution (`executor.go:~2751`). Repro: `sqldriver TestSQLFault_UpdateRelative_DoubleApply`.
+- [ ] **Autocommit `INSERT` surfaces a spurious `23505` (record already exists) on a durably-committed
+  row under 1021** — the row commits durably, the retry re-INSERTs with `RecordExistenceCheckErrorIfExists`
+  (`executor.go:~2618`), sees the durable row, throws → the caller gets a duplicate-key error for a
+  statement that *succeeded*. Data intact (row present once, `COUNT(*)==1`).
+
+**Open — test-infra coverage gap (record-layer test infra, not production):**
+- [ ] **`chaos/verify_rank.go` cannot verify *grouped* RANK indexes**, so grouped RANK had zero fault
+  coverage in the chaos suite (the hunt built a bespoke group-aware `RankForScore`/`ScoreForRank` checker
+  and proved grouped RANK idempotent, but the shipped oracle should be extended to thread the group prefix).
+- Also noted (matches Java, documented weak-scan contract, **not** bugs): `COUNT_UPDATES` double-counts
+  under 1021 retry; an unsplit→split record can be double-emitted across a continuation boundary.
+
 # NEXT
 
 > ## [ ] INFRA — scheduled nightlies dispatch HOURS late ("nightly" fuzz runs at noon)
