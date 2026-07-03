@@ -297,6 +297,7 @@ go_test(
         "rfc153_p2_correlation_test.go",
         "rfc165_nulls_ordering_test.go",
         "rfc173_slice2_drift_assert_test.go",
+        "rfc173_w3_fused_fuzz_test.go",
         "rfc173_w3_max_match_fused_test.go",
         "rich_ordering_fuzz_test.go",
         "rich_ordering_test.go",
@@ -796,6 +797,7 @@ go_test(
         "wrap_physical_plan_test.go",
         "rfc173_positional_merge.go",
         "rfc173_w3_max_match_fused_test.go",
+        "rfc173_w3_fused_fuzz_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
