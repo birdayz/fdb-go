@@ -3,10 +3,10 @@ package sqldriver_test
 // RFC-173 W4-left commit 4 — duplicate FROM-source aliases reject with
 // Java's AMBIGUOUS code (42702). Java allows the duplicate at FROM (unique
 // quantifier ids) and errors at reference resolution — which every practical
-// query over the duplicate hits; Go rejects at the FROM walk (the 7.1
-// namespace unification owns the exact per-reference check). Pre-rejection,
-// a referenced duplicate silently bound LAST-LEG-WINS (wrong rows, never an
-// error) and SELECT * died with an internal planner error.
+// query over the duplicate hits; Go rejects at the FROM walk (QP-REF-BIND,
+// TODO.md, owns the exact per-reference check). Pre-rejection, a referenced
+// duplicate silently bound LAST-LEG-WINS (wrong rows, never an error) and
+// SELECT * died with an internal planner error.
 
 import (
 	"context"
@@ -70,7 +70,7 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	// second marked divergence corner (DIVERGENCES.md).
 	var aid int64
 	if err := db.QueryRowContext(ctx, "SELECT a.id FROM p AS a, q AS a WHERE a.id = 2").Scan(&aid); err == nil {
-		t.Errorf("disjoint-column dup alias unexpectedly ANSWERED %d — if the 7.1 binding landed, flip this pin to (2) and unmark the divergence", aid)
+		t.Errorf("disjoint-column dup alias unexpectedly ANSWERED %d — if the QP-REF-BIND binding landed, flip this pin to (2) and unmark the divergence", aid)
 	} else if !strings.Contains(err.Error(), "0AF00") {
 		t.Errorf("disjoint-column dup alias decline = %v, want the clean 0AF00 (never wrong rows)", err)
 	}
@@ -89,4 +89,33 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	if n != 2 {
 		t.Errorf("self-join count = %d, want 2", n)
 	}
+
+	// The COLUMN-AWARE dimensions the first cut shipped without (review
+	// findings, each red-first against the pre-fix walk):
+	rejectWith := func(t *testing.T, q, wantSub string) {
+		t.Helper()
+		var x any
+		err := db.QueryRowContext(ctx, q).Scan(&x)
+		if err == nil {
+			t.Errorf("must reject, got rows\n  sql: %s", q)
+			return
+		}
+		if !strings.Contains(err.Error(), wantSub) {
+			t.Errorf("error = %v, want it to contain %q\n  sql: %s", err, wantSub, q)
+		}
+	}
+
+	// Later-pair three-way duplicate: the FIRST source (q) is disjoint from
+	// both later p's, which collide with each other — first-source-only
+	// tracking planned this silently with last-leg-wins rows.
+	rejectWith(t, "SELECT x.id FROM q AS x, p AS x, p AS x", "42702")
+
+	// Derived-table and CTE legs derive their REAL columns — the rejection
+	// names them, never the garbage "?" the opaque treatment printed.
+	rejectWith(t, "WITH w AS (SELECT id FROM p) SELECT * FROM w, w", "Ambiguous reference W.ID")
+	rejectWith(t, "SELECT * FROM (SELECT id FROM p) AS d, (SELECT id FROM p) AS d", "Ambiguous reference D.ID")
+
+	// A duplicate alias naming an UNDEFINED table is the undefined-table
+	// error's territory (42F01) — the ambiguity approximation masked it.
+	rejectWith(t, "SELECT * FROM nosuch AS a, p AS a", "42F01")
 }
