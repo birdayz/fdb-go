@@ -24,75 +24,15 @@ import (
 // Any reference the windows cannot map DECLINES the yield (CORRECT-or-LOUD;
 // the name-model machinery stays dead for gated seeds).
 
-// ordinalLegWindow is one leg's window in the merged positional row.
-type ordinalLegWindow struct {
-	Offset int
-	Typ    *values.RecordType
-}
+// ordinalLegWindow aliases the values-level layout window (the derivation
+// was CONSOLIDATED into values.OrdinalSeedLegWindows per the impl-review
+// condition: the executor's span derivation is pinned to agree with the
+// same function by a cross-agreement fixture — independent walks drift,
+// and layout drift is wrong-offset wrong-rows).
+type ordinalLegWindow = values.OrdinalSeedLegWindow
 
-// ordinalSeedLegWindows derives per-leg windows (UPPER alias → offset+type)
-// from a PRISTINE gated ordinal seed RC — every field a single-accessor
-// frontier-pinned bake over a leg QOV, consecutive full-coverage runs (the
-// AssertOrdinalJoinSeed shape, decline-not-panic). Also returns the merged
-// row's RecordType (the birthed positional row's layout: output field names
-// in seed order — duplicates SURVIVE, positional access is by ordinal, so
-// the raw composite literal is deliberate). nil windows = not a pristine
-// seed (anchored, translated/fused, folded) — the caller keeps the
-// name-model path or declines.
 func ordinalSeedLegWindows(rc *values.RecordConstructorValue) (map[string]ordinalLegWindow, *values.RecordType) {
-	if rc == nil || rc.AnchoredJoin || len(rc.Fields) == 0 {
-		return nil, nil
-	}
-	windows := map[string]ordinalLegWindow{}
-	mergedFields := make([]values.Field, 0, len(rc.Fields))
-	var curAlias string
-	var curStart int
-	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
-			return nil, nil
-		}
-		acc, single := fv.Resolved.Single()
-		if !single {
-			return nil, nil
-		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-		if !isQOV {
-			return nil, nil
-		}
-		legType, isRT := qov.Typ.(*values.RecordType)
-		if !isRT {
-			return nil, nil
-		}
-		alias := strings.ToUpper(qov.Correlation.Name())
-		if alias != curAlias {
-			if _, dup := windows[alias]; dup {
-				return nil, nil // a split run — not pristine
-			}
-			if acc.Ordinal != 0 {
-				return nil, nil
-			}
-			curAlias = alias
-			curStart = i
-			windows[alias] = ordinalLegWindow{Offset: curStart, Typ: legType}
-		} else if acc.Ordinal != i-curStart {
-			return nil, nil
-		}
-		mergedFields = append(mergedFields, values.Field{Name: f.Name, FieldType: fv.Typ, Ordinal: i})
-	}
-	// Full coverage per leg (the run width equals the leg type's field count).
-	counts := map[string]int{}
-	for _, f := range rc.Fields {
-		fv := f.Value.(*values.FieldValue)
-		qov := fv.Child.(*values.QuantifiedObjectValue)
-		counts[strings.ToUpper(qov.Correlation.Name())]++
-	}
-	for alias, w := range windows {
-		if counts[alias] != len(w.Typ.Fields) {
-			return nil, nil
-		}
-	}
-	return windows, &values.RecordType{Fields: mergedFields}
+	return values.OrdinalSeedLegWindows(rc)
 }
 
 // rebaseOuterLegValueOrdinal rewrites leg references in v to baked ordinals

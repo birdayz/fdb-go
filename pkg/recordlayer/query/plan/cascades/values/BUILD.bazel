@@ -11,6 +11,7 @@ go_library(
         "like_match.go",
         "map_field_values.go",
         "ordinal_join_seed.go",
+        "ordinal_seed_layout.go",
         "pullup.go",
         "rebase.go",
         "replace.go",

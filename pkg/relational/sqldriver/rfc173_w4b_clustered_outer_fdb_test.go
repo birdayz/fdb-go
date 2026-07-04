@@ -97,7 +97,7 @@ func TestFDB_RFC173W4b_ClusteredOuterScalar(t *testing.T) {
 	}
 
 	// (d') The STILL-UNGATED shape (joined-preserved: a clustered preserved
-	// leg keeps the LEFT box name-model until the mixed-nesting commit) +
+	// leg keeps the LEFT box name-model until QP-REF-BIND item 3, TODO.md) +
 	// NON-rightmost correlation keeps the W4b CORRECT-or-LOUD decline.
 	const qLeftClustered = "SELECT (SELECT o.amount FROM orders o WHERE o.id = d.cid) " +
 		"FROM (SELECT c.id AS cid, e2.tag AS t2 FROM customers c, extras e2 WHERE e2.id = 10) AS d LEFT JOIN extras e ON e.ref = d.cid WHERE d.cid = 2"

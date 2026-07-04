@@ -217,3 +217,83 @@ func TestRFC173W5_OracleSpanSpliceOnPristineBirth(t *testing.T) {
 		t.Fatalf("DatumSpans after recovery = [%s], want the box span OPENED to leaf aliases [P,Q,C] — the pre-fix early return skipped the splice and oracleNameDatum qualified buried columns under the BOX alias", got)
 	}
 }
+
+// TestRFC173W4Left_SpanLayoutCrossAgreement pins the impl-review condition:
+// the executor's span derivation (ordinalJoinSpans — the birth's layout
+// authority) and the values-level layout (values.OrdinalSeedLegWindows —
+// the planner's existential-rebase authority) must agree per leg on
+// (offset, width, leg type) for pristine seeds. Independent walks drift,
+// and layout drift between the rebase and the birth is wrong-offset
+// wrong-rows.
+func TestRFC173W4Left_SpanLayoutCrossAgreement(t *testing.T) {
+	t.Parallel()
+	mk := func(alias string, cols ...string) *values.QuantifiedObjectValue {
+		fields := make([]values.Field, len(cols))
+		for i, c := range cols {
+			fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
+		}
+		return values.NewQuantifiedObjectValueOfType(
+			values.NamedCorrelationIdentifier(alias),
+			values.NewRecordType("", false, fields))
+	}
+	bake := func(qov *values.QuantifiedObjectValue, i int) values.RecordConstructorField {
+		fv, err := values.NewFieldValueOfOrdinal(qov, i)
+		if err != nil {
+			t.Fatalf("bake: %v", err)
+		}
+		return values.RecordConstructorField{Name: fv.Field, Value: fv}
+	}
+	a := mk("A", "AID", "AV")
+	b := mk("B", "BID")
+	c := mk("C", "CID", "CV", "CW")
+	rc := values.NewRawRecordConstructorValue(
+		bake(a, 0), bake(a, 1), bake(b, 0), bake(c, 0), bake(c, 1), bake(c, 2),
+	)
+
+	spans, mergedFromSpans, ok := ordinalJoinSpans(rc)
+	if !ok {
+		t.Fatal("executor spans must derive for the pristine 3-leg seed")
+	}
+	windows, mergedFromWindows := values.OrdinalSeedLegWindows(rc)
+	if windows == nil {
+		t.Fatal("values windows must derive for the pristine 3-leg seed")
+	}
+	if len(spans) != len(windows) {
+		t.Fatalf("leg count disagreement: %d spans vs %d windows", len(spans), len(windows))
+	}
+	for _, s := range spans {
+		w, present := windows[strings.ToUpper(s.Alias.Name())]
+		if !present {
+			t.Fatalf("leg %s in spans but not windows", s.Alias)
+		}
+		if w.Offset != s.Offset || len(w.Typ.Fields) != s.Width {
+			t.Fatalf("leg %s LAYOUT DISAGREEMENT: window (offset %d, width %d) vs span (offset %d, width %d) — the rebase and the birth would read different slots",
+				s.Alias, w.Offset, len(w.Typ.Fields), s.Offset, s.Width)
+		}
+	}
+	if len(mergedFromSpans.Fields) != len(mergedFromWindows.Fields) {
+		t.Fatalf("merged-type width disagreement: %d vs %d", len(mergedFromSpans.Fields), len(mergedFromWindows.Fields))
+	}
+	for i := range mergedFromSpans.Fields {
+		if mergedFromSpans.Fields[i].Name != mergedFromWindows.Fields[i].Name {
+			t.Fatalf("merged field %d name disagreement: %q vs %q",
+				i, mergedFromSpans.Fields[i].Name, mergedFromWindows.Fields[i].Name)
+		}
+	}
+
+	// Both must DECLINE the same non-pristine shape (a translated top whose
+	// ref FUSED to a multi-accessor path through a merge quantifier).
+	mergedType := values.NewRecordType("", false, []values.Field{
+		{Name: values.OrdinalFieldName(0), FieldType: a.Typ, Ordinal: 0},
+	})
+	mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedType)
+	nonPristine := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "AID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
+		values.RecordConstructorField{Name: "AV", Value: s3FusedRef(t, mergeQOV, 0, 1)},
+	)
+	_, _, spansOK := ordinalJoinSpans(nonPristine)
+	winDeclined, _ := values.OrdinalSeedLegWindows(nonPristine)
+	if spansOK || winDeclined != nil {
+		t.Fatalf("both authorities must DECLINE the fused top: spans ok=%v windows derived=%v", spansOK, winDeclined != nil)
+	}
+}

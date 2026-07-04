@@ -3260,3 +3260,18 @@ is tagged — never by hand-editing the doc.
       but unverified. As A3 cross-engine coverage grows, diff each tagged feature's `Java?` against the
       conformance server so the fact becomes *verified*, not asserted, and flag any mismatch. Per
       Torvalds + Graefe review of PR #400.
+
+### [ ] QP-REF-BIND: per-reference binding + the deferred ordinal classes (impl-review condition, W4-left)
+
+One authority for three deferred pieces the W4-left review flagged (previously scattered as
+"the 7.1 charter" — TODO 7.1 [alias-namespace unification] is DONE; this is the SUCCESSOR item):
+1. **Per-reference ambiguity + fresh-id gating for duplicate FROM aliases** — Java's exact
+   per-attribute 42702 at reference resolution (Go approximates at the FROM walk today; two
+   marked divergence corners in the corpus: SELECT-*-over-duplicates, the predicated
+   disjoint-column form).
+2. **Existential-flatten ordinalization** — translateJoinWithExists keeps the ANCHORED seed
+   until the 2+1 select's data-access/correlated-FlatMap implementation paths bind legs
+   POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).
+3. **Mixed-nesting LEFT widening** — the joined-preserved class (clustered legs under a
+   LEFT/RIGHT box) stays pinned residual until the flattened-cluster seed can name buried
+   sources (the W4 dissolution ruling's scope).

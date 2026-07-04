@@ -19,7 +19,7 @@ import (
 //     leads with its LEFT operand's run while the null-supplying ROLE moves
 //     to that leg;
 //   - the single-source gate scope: a clustered leg declines (joined-
-//     preserved stays name-model until the mixed-nesting commit).
+//     preserved stays name-model until QP-REF-BIND item 3, TODO.md).
 func TestRFC173W4Left_SeedShape(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
@@ -66,7 +66,7 @@ func TestRFC173W4Left_SeedShape(t *testing.T) {
 	clustered := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")),
 		scan("AUX2", "y"), logical.JoinLeft, "")
 	if d := tr.ordinalWedgeGateDecide(clustered); d.Gated {
-		t.Fatal("a LEFT box with a CLUSTERED leg must stay name-model (joined-preserved; mixed-nesting commit's charter)")
+		t.Fatal("a LEFT box with a CLUSTERED leg must stay name-model (joined-preserved; QP-REF-BIND item 3, TODO.md)")
 	}
 
 	// Leg-position ineligibility: the gated-as-root LEFT box is NOT

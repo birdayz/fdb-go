@@ -406,7 +406,7 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 		t.Fatal("ungated outer + rightmost-only correlation must keep the name-model fallback (it works today)")
 	}
 	if rc2 := seedOf(t, expr2); !rc2.AnchoredJoin {
-		t.Fatal("ungated-outer residual must seed the anchored record (the surviving constructor caller until the mixed-nesting commit)")
+		t.Fatal("ungated-outer residual must seed the anchored record (the surviving constructor caller until QP-REF-BIND item 3, TODO.md)")
 	}
 
 	// Direction 3: UNGATED outer + NON-rightmost correlation → decline.
