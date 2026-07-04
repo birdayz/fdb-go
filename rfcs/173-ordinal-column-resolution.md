@@ -2574,19 +2574,31 @@ decline reasons), never by inventory argument.
 Slice 3 (fulcrum, N-way clusters) · W4b (clustered-outer correlated scalars, PR #465) ·
 W5 (multi-source unnest gather, PR #466) · W4-left (LEFT/RIGHT + EXISTS + recursive-CTE,
 PR #467, four-gate ACK) · S4-riders (positionalTypeCache bound + rcte remap provenance,
-PR #468, four-gate ACK) · **item-2 commit 1 (PR #469 MERGED, master 33291617d, four-gate
+PR #468, four-gate ACK) · item-2 commit 1 (PR #469 MERGED, master 33291617d, four-gate
 ACK: Graefe design+audit+impl, Torvalds after two converted NAKs, codex clean with P1+P2
 fixed-and-pinned, @claude clean ×4 — the no-op existential residual via the Java-shaped
 correlated step-1, plus the review-found classes: Java predicate placement, merge-seed
 split, derived-alias EXISTS with all three derived-arm alias carriers, the CTE-shadow
-lexical-scoping regression).**
+lexical-scoping regression) · **item-2 commit 2 (PR #471 MERGED, master 12c39e032,
+four-gate ACK: Graefe ACK ×2 + Torvalds ACK ×2 (impl + adapted-row delta), codex P2
+found→fixed-and-pinned→clean delta, @claude LGTM ×2 with the delta confirmed, CI 6/6 —
+the E2 disabled-birth binder (walkBakedRefs + probeOuterBakedType + the loud positional
+binding arm), the PROBE-GATED identity-FlatMap positional pass-through publishing the
+ADAPTED row, and the unwrapToJoinPlan identity arm; two live catches in the commit-2
+delta record: the flat-dotted name-model upper class and the mismatched-layout
+covering-outer class).**
 
-**← WE ARE HERE:** QP-REF-BIND item 2, commit 2 — the E2-validated executor binder +
-identity-FlatMap positional pass-through (fresh branch). Its landing also retires the
-loud-limitation exit gates booked on PR #469 (matrix class K scalar-in-EXISTS; the
-fetch-shell walk-terminators; the alias-unchecked frontier fallback's loud replacement,
-per design-ruling amendment B). Item 1 (per-reference dup-alias binding) is parallelizable
-with item 2.
+**← WE ARE HERE:** QP-REF-BIND item 2, commit 3 — the flatten gate arm + ordinal seed
+(translateJoinWithExists consults the wedge gate; the W4-left rebase machinery and the
+commit-2 binder are landed and waiting). Commit 3's seed makes the binder LIVE on SQL
+and flips the PR #469 loud-limitation exit gates (matrix class K scalar-in-EXISTS; the
+fetch-shell walk-terminators; the alias-unchecked frontier fallback's loud replacement)
+— verify each pin at landing (commit 2 flipped NONE, verified). Commit-3 bookings from
+the c2 reviews: derive the pass-through era from the OUTER plan's seed authority when
+widening the gate (Graefe); the unwrap-arm/probe implicit coupling wants a cross-check
+assertion if touched (@claude); a third baked-QOV-extraction copy triggers
+forEachBakedQOVType (Torvalds). Item 1 (per-reference dup-alias binding) is
+parallelizable with item 2.
 
 **Remaining, in ruling order:** (item 2 ∥ item 1) → item 3 (mixed-nesting LEFT widening; MUST
 follow item 2) → unnest-residual completion slice → S4 atomic demolition (kill list above;
