@@ -2597,8 +2597,12 @@ minted-q$N/commutative-XOR double blindness) and the order-DEPENDENT unnest arra
 (qualified SEG0.FIELD on any multi-namespace outer — authority is outerBoundAliases,
 not clusterArity, so the FULL-OUTER merge-opaque box is covered)).**
 
-**item-2 commit 4 (IMPLEMENTED, in review — the enclosure lift making the W4-left
-ordinal existential rebase LIVE):** the generic filter arm (cascades_translator.go
+**item-2 commit 4 (PR #475 MERGED, master b96ba7d8a, four-gate ACK: Graefe ACK ×2
+(core + the one-way-door P2 delta), Torvalds ACK ×2 (reverted the fix to prove the pin
+real), codex P2 found→fixed-and-pinned→clean delta, @claude round-1 no-correctness +
+both suggestions folded (RIGHT + FULL pins) + config-only confirm, CI 6/6 — the
+enclosure lift making the W4-left ordinal existential rebase LIVE):** the generic
+filter arm (cascades_translator.go
 translateFilter) forced enclosure under EXISTS unconditionally, so a single-source
 LEFT/RIGHT box under WHERE-EXISTS gated arityPoison (name model) and
 rfc173_w4left_existential.go's rebaseOuterLegRefsOrdinal was DEAD. Commit 4 routes the
@@ -2616,6 +2620,20 @@ without rebasing, so a colliding column name (GID in both legs of `la LEFT JOIN 
 read the WRONG (rightmost) leg last-leg-wins. Fixed by declining the fast path when the
 correlation targets a buried leg (outerValRefsBuriedLeg) → routes to the below-FOD
 rebase, leg-correct for both name-model (qualified) and ordinal (baked) boxes.
+
+**Review round (banked): codex P2 (nested enclosure), fixed-and-pinned.** The lift
+`t.inInnerCluster = !existsOuterGatesFresh(f.Input)` cleared enclosure whenever the box
+gated FRESH — but existsOuterGatesFresh probes with a FRESH position and cannot see an
+AMBIENT enclosure, so a WHERE-EXISTS box that is itself a leg of a larger name-model
+merge (prevEnclosure true) got un-enclosed and seeded ordinal, which the parent then
+mis-binds. Graefe's "one-way door" applied to a nested context. Fixed:
+`prevEnclosure || !existsOuterGatesFresh(f.Input)` — already-enclosed stays enclosed.
+De Morgan: enclosure clears iff `!prevEnclosure && gates-fresh`. Red-first pinned; @claude
+folded RIGHT-box-gates + FULL-box-excluded pins. **CI-resilience fix:** dualwindow_test
+(a dual-model full-corpus FDB differential) was on the default size="medium" (300s)
+while its FDB-container siblings are size="large" — it TIMED OUT (not failed) under a
+contended runner (~31s local, ~10x stretch past 300s). Bumped to size="large"
+(pre-existing config oversight, surfaced on this PR's CI).
 
 **CORRECTION to the commit-4 pre-banking claim (verified empirically):** commit 4 flips
 NONE of the PR #469 loud-limitation exit gates. Class K (scalar-in-EXISTS) is a
