@@ -2141,9 +2141,18 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// name-model parent the outer ForEach leg merges into (post-flattening
 	// arity ≥ 3 counting the existential). A join inside the leg (derived
 	// table over a join) must therefore gate name-model: mark it enclosed.
+	//
+	// RFC-173 item-2 commit 4 — the ENCLOSURE LIFT: a gate-eligible OUTER box
+	// (a single-source LEFT/RIGHT box that gates as W4-left) is NOT enclosed,
+	// so it gates ORDINAL and implementExistentialSelect's below-FOD ordinal
+	// rebase fires (the W4-left machinery was dead until now purely because
+	// this arm poisoned the gate). Everything else keeps the name-model
+	// enclosure — a buried/clustered/FULL box, a non-join input. The decision
+	// routes through the ONE gate authority (existsOuterGatesFresh →
+	// ordinalWedgeGateDecide, ruling condition 4).
 	prevEnclosure := t.inInnerCluster
 	if len(f.ExistsSubqueries) > 0 {
-		t.inInnerCluster = true
+		t.inInnerCluster = !t.existsOuterGatesFresh(f.Input)
 	}
 	innerRef := t.translateRef(f.Input)
 	t.inInnerCluster = prevEnclosure

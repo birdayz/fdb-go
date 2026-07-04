@@ -59,6 +59,43 @@ func (t *cascadesTranslator) ordinalWedgeGate(j *logical.LogicalJoin) wedgeGateD
 	return d
 }
 
+// existsOuterGatesFresh is the RFC-173 item-2 commit-4 enclosure-lift
+// predicate: it reports whether a WHERE-EXISTS filter's OUTER input would gate
+// ordinal AS A FRESH CLUSTER (design ruling condition 4 — the decision routes
+// through the ONE gate authority, no parallel re-derivation). The generic
+// filter arm used to force enclosure under EXISTS unconditionally, so a gated
+// LEFT/RIGHT box stayed name-model and the W4-left ordinal existential rebase
+// was dead; when this returns true the caller LEAVES enclosure off so the box
+// gates ordinal and implementExistentialSelect's below-FOD ordinal rebase
+// fires.
+//
+// Only a DIRECT LogicalJoin input qualifies: a buried join (a derived table /
+// aggregate over a join) keeps the name-model enclosure — its OUTPUT row is
+// the box's own opaque row that the outer ForEach merges as ONE leg, never a
+// leg concat. LEFT/RIGHT only: the single-source LEFT/RIGHT box is the
+// W4-left gated class the ordinal below-FOD rebase handles (it dissolves to
+// INNER + null-on-empty, the shape the machinery implements). FULL-outer
+// under EXISTS stays name-model — its drain births compose with the
+// existential semi-join in ways the LEFT/RIGHT class does not exercise; a
+// dedicated FULL slice widens it. The INNER case never reaches here (it routes
+// to translateJoinWithExists upstream). The probe runs Decide with enclosure
+// forced FALSE (the fresh-cluster position a box roots) — side-effect-free,
+// mirroring ordinalEligible.
+func (t *cascadesTranslator) existsOuterGatesFresh(input logical.LogicalOperator) bool {
+	j, ok := input.(*logical.LogicalJoin)
+	if !ok {
+		return false
+	}
+	if j.Kind != logical.JoinLeft && j.Kind != logical.JoinRight {
+		return false
+	}
+	prev := t.inInnerCluster
+	t.inInnerCluster = false
+	d := t.ordinalWedgeGateDecide(j)
+	t.inInnerCluster = prev
+	return d.Gated
+}
+
 func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedgeGateDecision {
 	if _, isUnnest := j.Right.(*logical.LogicalUnnest); isUnnest {
 		// Lateral unnest lowers to FlatMap-over-Explode with dotted-prefix
