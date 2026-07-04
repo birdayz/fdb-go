@@ -132,14 +132,19 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	tr := newDisjointUnnestTranslator(t)
 	innerCorr := values.NamedCorrelationIdentifier("EL")
 
-	// (a) ON-carrying cluster: dotted-projection resolution over the
-	// partitioned flat output is the next commit's leg-window work (R18).
+	// (a) ON-carrying cluster GATHERS (the commit-1 decline lifted with the
+	// span-derivation extension): the ON conjunct rides the flat select baked
+	// through the cluster spine.
 	uOn := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	onLeft := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), logical.JoinInner,
 		corrEq("x", "XID", "s", "SID"))
 	jOn := logical.NewJoin(onLeft, uOn, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jOn, uOn, innerCorr, values.NotNullLong, "ARR"); got != nil {
-		t.Fatal("an ON-carrying cluster must DECLINE (commit-1 scope; R18's class)")
+	gotOn := tr.translateGatheredUnnestCluster(jOn, uOn, innerCorr, values.NotNullLong, "ARR")
+	if gotOn == nil {
+		t.Fatal("an ON-carrying cluster must GATHER (the commit-2 lift; R18 class)")
+	}
+	if len(gotOn.(*expressions.SelectExpression).GetPredicates()) == 0 {
+		t.Fatal("the gathered ON-carrying select must carry the ON conjunct")
 	}
 
 	// (b) NAME-AMBIGUOUS: a column name shared by two legs (same table twice)
