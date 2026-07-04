@@ -206,10 +206,20 @@ validation gate.
     the partition connectivity revisit, the gathered WHERE arm, white-box seed/decline pins, and the
     disjoint-schema FDB e2e (WSRC/WAUX — the only disjoint pair; every other corpus pair shares
     column names and correctly declines through the commit-1 ambiguity gate to the residual).
-    Remaining commits: 2 leg-window/compose resolution (unblocks the declined ON-carrying R18,
-    shadowed R16, name-ambiguous, and spanning-WHERE classes), 3 Q2 interning widening + budget pins,
-    4 §5 oracle rebind + the SELECT*-over-multi-source fix target (cannot plan on master), 5
-    classifier dead-for-gated pins; then the four-gate gauntlet.
+    Commit 2 LANDED (+riders): the span-derivation extension (single-accessor bare-non-record-QOV
+    terminal synthesis), the ON-carrying/shadowed-element decline lifts, the phantom fail-open
+    removal, case authority (bake emits UPPER), the Q6 nil-legRVs dimension pin. Commit 3a LANDED:
+    the Q2 interning widening (IsOrdinalJoinRV admits bare TYPED QOV fields; STAR re-baselined
+    51377→42788, -17%, chain/dispatch pins unchanged; typed/untyped pins). Commit 3b LANDED: the
+    ENCLOSED class (`FROM A, A.arr AS x, B`) — rotation to the root form (gatherLegsWithBuriedUnnest
+    → Join(Join(plain legs, FROM order), Unnest), collected ONs on the rebuilt root where the
+    element is in scope), the translateFilter enclosed merge arm (rewrite+bake, the root form's
+    treatment), and the pushBuriedUnnestPredicateDown stand-down when the gather fires — FIXING a
+    pre-existing SILENT 0-ROW class (spanning WHERE over a buried unnest, `FROM A, A.arr AS x, B
+    WHERE x > B.c`: the unpushable conjunct landed raw on the residual NLJ with the element unbound).
+    Rotation/decline white-box pins + 5 enclosed FDB pins (incl. the fixed spanning class).
+    Remaining commits: 4 §5 oracle rebind + the SELECT*-over-multi-source fix target (cannot plan on
+    master), 5 classifier dead-for-gated pins; then the four-gate gauntlet.
     - RETRACTED (probe-verified with discriminating data): the "KNOWN-BROKEN spanning residual" was
       a PHANTOM — the commit-1 seeds (WV {5,6} vs elements {7,8}) made `EL > WV` all-true, so the
       all-rows result briefly read as a dropped predicate was the CORRECT answer. With WV {5,6,7}

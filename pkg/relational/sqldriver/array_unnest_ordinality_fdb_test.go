@@ -3378,6 +3378,41 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if !strings.Contains(shadowExplain, "FlatMap(outer=Scan(WSRC)") {
 			t.Fatalf("the shadowed-element query must plan through the GATHERED path (the shadow decline is lifted):\n%s", shadowExplain)
 		}
+
+		// The ENCLOSED class (commit 3): the unnest BETWEEN the sources in
+		// FROM order (`FROM A, A.arr AS x, B`) — the unnest join is a buried
+		// LEG of the enclosing cluster, rotated into the same gathered flat
+		// select. Same rows as the trailing-unnest form (inner-join
+		// commutativity), gathered plan signature.
+		enclosedExplain := assertRows(t, `SELECT "EL", "WV" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"EL=7|WV=5", "EL=7|WV=6", "EL=7|WV=7", "EL=8|WV=5", "EL=8|WV=6", "EL=8|WV=7",
+		})
+		if !strings.Contains(enclosedExplain, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("the ENCLOSED unnest (`FROM A, A.arr, B`) must plan through the GATHERED path:\n%s", enclosedExplain)
+		}
+		// Enclosed + the DISCRIMINATING spanning WHERE (EL>WV drops (7,7)+(8,8)-less rows).
+		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WSRC."WARR" AS "EL", WAUX WHERE "EL" > "WV"`, []string{
+			"EL=7|WV=5", "EL=7|WV=6", "EL=8|WV=5", "EL=8|WV=6", "EL=8|WV=7",
+		})
+		// Enclosed + a plain-leg-only cross-leg WHERE (the join condition as a
+		// WHERE conjunct — comma FROM lists reject JOIN..ON syntactically, so
+		// WHERE is the only spelling of a cross-leg condition here). XID=1
+		// keeps WV=5 only.
+		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WSRC."WARR" AS "EL", WAUX WHERE WAUX."XID" = WSRC."SID"`, []string{
+			"EL=7|WV=5", "EL=8|WV=5",
+		})
+		// Enclosed + an element-equality spanning WHERE (the conjunct is only
+		// in scope at the flat select — the class the pre-W5 residual silently
+		// returned 0 rows for).
+		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WSRC."WARR" AS "EL", WAUX WHERE WAUX."WV" = "EL"`, []string{
+			"EL=7|WV=7",
+		})
+		// Enclosed + a pushable element-only WHERE + AT ordinal: with the
+		// gathered stand-down the push no longer restructures the tree; the
+		// element conjunct merges into the gathered select like every other.
+		assertRows(t, `SELECT "EL", "O", "WV" FROM WSRC, WSRC."WARR" AS "EL" AT "O", WAUX WHERE "EL" > 7`, []string{
+			"EL=8|O=2|WV=5", "EL=8|O=2|WV=6", "EL=8|O=2|WV=7",
+		})
 	})
 }
 

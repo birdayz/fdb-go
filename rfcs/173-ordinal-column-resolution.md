@@ -2184,3 +2184,40 @@ cheap shadow-qualification probe — lift shadow only if green; bare-twin waits 
 exit-gate both-direction pins re-run per commit). Q6 the NLJ-birth nil-legRVs dimension is PIN-ONLY
 in commit 2 and an S4-rider fix — it PROMOTES to commit-2 scope immediately if the pin exposes a
 wrong ANSWER rather than a loud decline.
+
+### W5 commit 3 (landed): interning widening + the ENCLOSED class
+
+**3a — the Q2 interning widening** (per the Q5-revised split). `IsOrdinalJoinRV` admits a bare
+TYPED `QuantifiedObjectValue` field toward its roots: a whole-leg reference is as
+position-determined as a FrontierPinned bake (no name resolution can hide in it), so the gathered
+unnest select — and, as the ruling's before/after condition anticipated, the post-translation MIXED
+upper RVs — intern ALIAS-AWARE. Typed only: an untyped bare QOV carries no leg contract and keeps
+declining (the CTE-rename/lazy rationale untouched). Measured: STAR sentinel re-baselined
+51377→42788 (−17 % tasks, determinism 4×-stable), chain/dispatch/shadow-delta pins unchanged.
+Typed/untyped classification pinned in the interning baseline test.
+
+**3b — the ENCLOSED class** (`FROM A, A.arr AS x, B` — the unnest join buried as a LEG of the
+enclosing inner cluster). Mechanism: **rotation to the root form**, not a second builder.
+`gatherLegsWithBuriedUnnest` walks the inner spine (exactly one buried unnest; multi/existential/
+non-inner declines), and `rotateEnclosedUnnest` rebuilds `Join(Join(plain legs, FROM order),
+Unnest)` — inner-join-equivalent because the lateral dependency needs only the owner in scope. Two
+scope decisions, both pinned white-box: (i) every collected ON conjunct rides the rebuilt ROOT's
+OnPredicate — an ON may reference the ELEMENT alias, in scope only at the flat select the builder
+folds the root ON into; the plain-leg chain stays ON-free (also keeping the gate probe on the pure
+comma cluster the commit-1 corpus pinned); (ii) the P1/P2b collision minima widen to ALL plain legs
+— after rotation the flat select binds legs AFTER the unnest in FROM order, which the original
+before-the-unnest gauntlet scope never saw. Classification is minimal and fail-open: a decline
+keeps the ORIGINAL tree, whose residual path still yields the faithful diagnostics. Seed-field
+order places the element LAST (not at its FROM position) — observable only via
+SELECT-*-over-multi-source, which cannot plan today (the commit-4 fix target).
+
+Two filter-side consequences, both required for correctness: (a) `translateFilter`'s gathered merge
+arm extends to the enclosed form (rewrite element refs + bake leg refs through the rotated plain
+cluster's leg types — the root form's exact treatment, guarded by the gathered-select signature);
+(b) `pushBuriedUnnestPredicateDown` STANDS DOWN when the enclosed gather fires — its restructured
+tree (a Filter wrapping the unnest join) un-gathers the cluster, and a spanning conjunct (never
+pushable) would land raw on the residual NLJ with the element unbound. That un-pushed-spanning
+shape was a PRE-EXISTING SILENT 0-ROW class (`FROM A, A.arr AS x, B WHERE x > B.c` returned
+nothing on master); the gathered path fixes it, pinned by a discriminating FDB e2e. With the
+stand-down, ALL conjunct classes (element-only, cross-leg, spanning) reach the gathered select
+uniformly, matching the root form. Declined shapes keep today's push semantics (fail-open).
