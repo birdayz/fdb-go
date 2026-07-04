@@ -68,7 +68,7 @@ func TestRFC173W5_GatheredSeed_Shape(t *testing.T) {
 
 	j, u := gatheredFixture("EL", "ORD")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
-	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR")
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 	if sel == nil {
 		t.Fatal("a gated 2-source cluster + owned unnest must gather, got nil (declined)")
 	}
@@ -140,7 +140,7 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	onLeft := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), logical.JoinInner,
 		corrEq("x", "XID", "s", "SID"))
 	jOn := logical.NewJoin(onLeft, uOn, logical.JoinInner, "")
-	gotOn := tr.translateGatheredUnnestCluster(jOn, uOn, innerCorr, values.NotNullLong, "ARR")
+	gotOn := tr.translateGatheredUnnestCluster(jOn, uOn, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 	if gotOn == nil {
 		t.Fatal("an ON-carrying cluster must GATHER (the commit-2 lift; R18 class)")
 	}
@@ -153,7 +153,7 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	// last-binding-wins.
 	uDup := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	jDup := logical.NewJoin(inner(scan("SRC", "s"), scan("SRC", "s2")), uDup, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jDup, uDup, innerCorr, values.NotNullLong, "ARR"); got != nil {
+	if got := tr.translateGatheredUnnestCluster(jDup, uDup, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
 		t.Fatal("cross-leg duplicate column names must DECLINE (bare-name ambiguity)")
 	}
 
@@ -163,7 +163,7 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	// qualified read to the ELEMENT leg (last-binding-wins preserved).
 	uShadow := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "V"}
 	jShadow := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uShadow, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jShadow, uShadow, values.NamedCorrelationIdentifier("V"), values.NotNullLong, "ARR"); got == nil {
+	if got := tr.translateGatheredUnnestCluster(jShadow, uShadow, values.NamedCorrelationIdentifier("V"), values.NotNullLong, "ARR", unnestTrailing); got == nil {
 		t.Fatal("an element alias shadowing an outer column must GATHER (the commit-2 shadow lift)")
 	}
 
@@ -173,14 +173,14 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	jLeft := logical.NewJoin(
 		logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, ""),
 		uLeft, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jLeft, uLeft, innerCorr, values.NotNullLong, "ARR"); got != nil {
+	if got := tr.translateGatheredUnnestCluster(jLeft, uLeft, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
 		t.Fatal("an ungated (LEFT-box) cluster must DECLINE")
 	}
 
 	// (e) SINGLE-SOURCE left: the W4c binary path owns N=1.
 	uSingle := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	jSingle := logical.NewJoin(scan("SRC", "s"), uSingle, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jSingle, uSingle, innerCorr, values.NotNullLong, "ARR"); got != nil {
+	if got := tr.translateGatheredUnnestCluster(jSingle, uSingle, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
 		t.Fatal("a single-source outer must DECLINE the gather (the W4c binary seed owns it)")
 	}
 
@@ -188,7 +188,7 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	// declines (an out-of-scope or derived owner).
 	uNoOwner := &logical.LogicalUnnest{Segments: []string{"z", "ORDER_ID"}, Alias: "EL"}
 	jNoOwner := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uNoOwner, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jNoOwner, uNoOwner, innerCorr, values.NotNullLong, "ARR"); got != nil {
+	if got := tr.translateGatheredUnnestCluster(jNoOwner, uNoOwner, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
 		t.Fatal("segment 0 naming no gathered leg must DECLINE")
 	}
 
@@ -196,7 +196,7 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	// the owner's type).
 	uDeep := &logical.LogicalUnnest{Segments: []string{"s", "A", "B"}, Alias: "EL"}
 	jDeep := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uDeep, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jDeep, uDeep, innerCorr, values.NotNullLong, "A"); got != nil {
+	if got := tr.translateGatheredUnnestCluster(jDeep, uDeep, innerCorr, values.NotNullLong, "A", unnestTrailing); got != nil {
 		t.Fatal("a multi-segment array path must DECLINE (single-ordinal bake)")
 	}
 }
@@ -209,7 +209,7 @@ func TestRFC173W5_Gathered_MixedElementSkipsAssert(t *testing.T) {
 	tr := newDisjointUnnestTranslator(t)
 
 	j, u := gatheredFixture("EL", "")
-	sel := tr.translateGatheredUnnestCluster(j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, "ARR")
+	sel := tr.translateGatheredUnnestCluster(j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, "ARR", unnestTrailing)
 	if sel == nil {
 		t.Fatal("the no-AT gathered form must translate")
 	}
@@ -290,7 +290,7 @@ func TestRFC173W5_EnclosedRotation(t *testing.T) {
 	tr := newDisjointUnnestTranslator(t)
 
 	root := enclosedFixture("EL", "")
-	rebuilt, u, elementType, fieldName, ok := tr.rotateEnclosedUnnest(root)
+	rebuilt, u, elementType, fieldName, pos, ok := tr.rotateEnclosedUnnest(root)
 	if !ok {
 		t.Fatal("the enclosed 2-plain-leg cluster must classify and rotate, got ok=false")
 	}
@@ -312,6 +312,9 @@ func TestRFC173W5_EnclosedRotation(t *testing.T) {
 	if rebuilt.OnPredicate != nil || lj.OnPredicate != nil {
 		t.Fatal("a pure comma cluster must rotate ON-free at both levels")
 	}
+	if pos != 1 {
+		t.Fatalf("unnestPos = %d, want 1 (`FROM SRC, SRC.arr, AUX` — one plain leg precedes)", pos)
+	}
 
 	sel := tr.translateEnclosedUnnestGather(root)
 	if sel == nil {
@@ -325,8 +328,21 @@ func TestRFC173W5_EnclosedRotation(t *testing.T) {
 	if len(quants) != 3 {
 		t.Fatalf("gathered select has %d quantifiers, want 3", len(quants))
 	}
-	if quants[2].GetAlias().Name() != "EL" {
-		t.Fatalf("last quantifier = %s, want the Explode EL", quants[2].GetAlias())
+	// FROM order preserved: the Explode sits at the unnest's position (after
+	// SRC, before AUX) so a SELECT * expansion matches the user's FROM list.
+	if quants[1].GetAlias().Name() != "EL" || quants[0].GetAlias().Name() != "S" || quants[1+1].GetAlias().Name() != "X" {
+		t.Fatalf("quantifier order = [%s %s %s], want FROM order [S EL X]",
+			quants[0].GetAlias(), quants[1].GetAlias(), quants[2].GetAlias())
+	}
+	// The seed fields mirror the same order: SRC's run, the element, AUX's run.
+	rc := gathered.GetResultValue().(*values.RecordConstructorValue)
+	names := make([]string, 0, len(rc.Fields))
+	for _, f := range rc.Fields {
+		names = append(names, f.Name)
+	}
+	want := []string{"SID", "ARR", "EL", "XID", "V"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("seed field order = %v, want FROM order %v", names, want)
 	}
 }
 
@@ -343,7 +359,7 @@ func TestRFC173W5_EnclosedRotation_ONCollection(t *testing.T) {
 	onPred := chainEqPredLocal("x", "XID", "s", "SID")
 	root := logical.NewJoinWithPredicate(unnestJoin, scan("AUX", "x"), logical.JoinInner, onPred)
 
-	rebuilt, _, _, _, ok := tr.rotateEnclosedUnnest(root)
+	rebuilt, _, _, _, _, ok := tr.rotateEnclosedUnnest(root)
 	if !ok {
 		t.Fatal("the ON-carrying enclosed cluster must rotate")
 	}
@@ -370,13 +386,13 @@ func TestRFC173W5_EnclosedRotation_DeclineBoundary(t *testing.T) {
 	twoUnnests := logical.NewJoin(
 		logical.NewJoin(enclosedFixture("EL", ""), u2, logical.JoinInner, ""),
 		scan("AUX", "y"), logical.JoinInner, "")
-	if _, _, _, _, ok := tr.rotateEnclosedUnnest(twoUnnests); ok {
+	if _, _, _, _, _, ok := tr.rotateEnclosedUnnest(twoUnnests); ok {
 		t.Error("two buried unnests must decline (chained/multi is out of scope)")
 	}
 
 	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	singleLeg := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
-	if _, _, _, _, ok := tr.rotateEnclosedUnnest(singleLeg); ok {
+	if _, _, _, _, _, ok := tr.rotateEnclosedUnnest(singleLeg); ok {
 		t.Error("the root form (unnest at root-right) must decline — translateUnnestJoin owns it")
 	}
 
@@ -384,14 +400,14 @@ func TestRFC173W5_EnclosedRotation_DeclineBoundary(t *testing.T) {
 	collideRoot := logical.NewJoin(
 		logical.NewJoin(scan("SRC", "s"), uCollide, logical.JoinInner, ""),
 		scan("AUX", "x"), logical.JoinInner, "")
-	if _, _, _, _, ok := tr.rotateEnclosedUnnest(collideRoot); ok {
+	if _, _, _, _, _, ok := tr.rotateEnclosedUnnest(collideRoot); ok {
 		t.Error("an element alias colliding with a TRAILING leg alias must decline (all-legs scope)")
 	}
 
 	leftRoot := logical.NewJoin(
 		logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, ""),
 		scan("AUX", "x"), logical.JoinLeft, "")
-	if _, _, _, _, ok := tr.rotateEnclosedUnnest(leftRoot); ok {
+	if _, _, _, _, _, ok := tr.rotateEnclosedUnnest(leftRoot); ok {
 		t.Error("a LEFT-kind enclosing root must decline (inner-only rotation)")
 	}
 }

@@ -2221,3 +2221,49 @@ shape was a PRE-EXISTING SILENT 0-ROW class (`FROM A, A.arr AS x, B WHERE x > B.
 nothing on master); the gathered path fixes it, pinned by a discriminating FDB e2e. With the
 stand-down, ALL conjunct classes (element-only, cross-leg, spanning) reach the gathered select
 uniformly, matching the root form. Declined shapes keep today's push semantics (fail-open).
+
+### W5 commit 4 (landed): §5 oracle rebind for the gathered N-way + `SELECT *`
+
+**The `SELECT *` fix target.** `SELECT * FROM A, B, A.arr AS x` PLANS since the gathered path
+(it could not on master) but its column metadata leaked the partition sub-product's
+planner-internal names (`[_0 _1 XID WV]`): `deriveColumnsFromJoin` merges the LEG subplans'
+columns, and a FlatMap leg that is a positional-merge sub-product derives `_0`/`_1`. Fix: an
+ordinal-top arm in `deriveColumnsFromJoin` — when the NLJ's RV is a raw baked-ordinal RC AND the
+leg merge leaks a `_N` column, derive from the RV fields directly (each `f.Name` IS the
+datum/positional key by construction; bare-name descriptor keying via `ordinalUnnestColumnDef`;
+the MIXED element's type recovered from the Explode's collection element, which the partition
+collapse erased). Scoped to the LEAK: every today-working join keeps byte-identical metadata.
+Values then flow through the EXISTING §7 positional-aligned result-set read (the positional row
+already carried `[SID WARR EL XID WV]` correctly). The enclosed form's FROM order is preserved
+END-TO-END: the rotation now threads the unnest's FROM position (`unnestPos`) into the builder,
+which inserts the element fields/quantifier at that position (the seed assert accepts runs in any
+order; consumers resolve by span offset) — retiring the commit-3 element-last wart before it
+became observable.
+
+**The §5 oracle rebind (the MANDATORY hazard-1 pin).** A dedicated dual-mode FDB differential
+(`TestFDB_RFC173W5_OracleDualWindow`; the gathered classes cannot ride the SQL-seeded dualwindow
+corpus — no array literals) ran RED across the gathered family: projections read NIL and the
+spanning WHERE dropped every row oracle-side — and the PLAIN 3-way merge-sub-product class
+(`SELECT PA.AV, PB.BV FROM PA, PB, PC WHERE PA.AV > PB.BV`) was silently broken the SAME way,
+undetected because the corpus never partitions a projection through a merge sub-product. Three
+root causes, three fixes:
+1. **The NLJ never recovers spans** (the Q6 nil-legRV dimension): `recoverOracleDatumSpans` — the
+   NLJ twin of `newFlatMapCursor`'s legRV recovery — feeds ONLY `DatumSpans` (spliced); the
+   adapter-side `Spans`/`WindowsOK` stay untouched (flipping them would re-route live legType
+   lookups). `oracleNameDatum`'s qualified keys now gate on `DatumSpans` (identical for every
+   FlatMap birth, where the two travel together).
+2. **The NLJ's oracle Datum is mergeRows**, whose flat keys never carry a fused top's OUTPUT
+   names: `oracleSwapFusedDatum` — the emission-time swap mirroring the mergeShapeDatum arm —
+   reconstructs the output row per-field over the leg bindings (bare + ALIAS.COL from the
+   recovered spans), at all four emission sites (hash/linear/LEFT-pad/FULL-drain; nil leg = NULL,
+   ruling #3).
+3. **The values raw-map arm** (NLJ predicates evaluate over the raw merged map): a PINNED fused
+   ref through a merge quantifier roots at the bare `_i` slot key (the qualified form carries the
+   merge alias's original case, which the upper-cased qualKey never matches). The arm is
+   MERGE-SLOT-ONLY (`isOrdinalFieldName`): cut wider (any pinned rootKey), the dualwindow corpus
+   caught it immediately — a pinned direct-leg ref reading the bare last-wins spill turned
+   `a.k = b.k` into `k = k` (full cross product on the NULL-key entry). Lazy refs keep the
+   qualified-only read; pinned+live keeps the loud BakedNameContextError. Pinned three-direction
+   at the values level.
+All seven differential queries (gathered five + plain-3-way two) now agree row-for-row; the full
+1621-entry dualwindow corpus stays green.

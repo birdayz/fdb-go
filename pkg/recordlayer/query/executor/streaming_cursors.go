@@ -742,6 +742,65 @@ func newNLJCursor(
 	return c, nil
 }
 
+// recoverOracleDatumSpans recovers the DATUM spans for a TRANSLATED
+// (fused-reference) NLJ top from the leg subplans' result values — the NLJ
+// twin of newFlatMapCursor's legRV recovery, feeding ONLY the §5 oracle's
+// qualified keys (oracleFusedDatum → oracleNameDatum). The adapter-side
+// Spans/WindowsOK stay untouched: the live NLJ never consults DatumSpans
+// (its Datum is mergeRows/mergeShapeDatum), and flipping WindowsOK would
+// re-route the leg adapter's legType lookups (the Q6-pinned dimension).
+// Spliced per the DatumSpans contract (a box leg's window opens to the leaf
+// aliases dotted reads actually name).
+func (c *nljCursor) recoverOracleDatumSpans(outerPlan, innerPlan plans.RecordQueryPlan) {
+	if !c.birth.enabled() || c.birthActive || len(c.birth.DatumSpans) > 0 {
+		return
+	}
+	legRVs := make(map[values.CorrelationIdentifier]values.Value)
+	addJoinLegRV(legRVs, c.outerCorr, outerPlan)
+	addJoinLegRV(legRVs, c.innerCorr, innerPlan)
+	if spans, _, ok := ordinalJoinSpansOf(c.birth.RC, legRVs); ok {
+		c.birth.DatumSpans = spliceLegSpans(spans, legRVs)
+	}
+}
+
+// oracleFusedDatum is the §5 NAME-MODEL ORACLE's emitted row for a
+// TRANSLATED ordinal-RC NLJ top (fused post-merge references — the gathered
+// N-way join/unnest star): mergeRows' flat keys never carry the RC's OUTPUT
+// names (a merge leg's columns live inside its nested `_i` map, under the
+// merge alias's original case), so every bare or dotted downstream read —
+// the projection's lazy `EL.EL`, a sort key — silently NULLed oracle-side
+// (the dualwindow differential's first W5/3-way catch). Reconstruct the
+// output row exactly like the FlatMap's oracle arm: evaluate the RC per
+// field over the leg bindings (values.OracleBakedNameFallback bridges the
+// baked reads), bare names plus ALIAS.COL keys from the recovered
+// DatumSpans. A nil leg Datum is the LEFT/FULL null leg — its references
+// evaluate NULL (contract ruling #3). TEST-ONLY (oracle emissions); dies
+// with the oracle in Slice 4.
+func (c *nljCursor) oracleFusedDatum(outerDatum, innerDatum any) (map[string]any, error) {
+	od, _ := outerDatum.(map[string]any)
+	rowCtx := c.evalCtx.
+		WithBinding(c.outerCorr, outerDatum).
+		WithBinding(c.innerCorr, innerDatum).
+		RowContext(od)
+	return c.birth.oracleNameDatum(rowCtx)
+}
+
+// oracleSwapFusedDatum applies the emission-time Datum swap for a fused top
+// on the oracle side (mirroring the mergeRC swap): predicates already ran
+// over the mergeRows keys; only the EMITTED row carries the reconstructed
+// output-shaped Datum consumers read.
+func (c *nljCursor) oracleSwapFusedDatum(combined *QueryResult, outerDatum, innerDatum any) error {
+	if c.birthActive || !c.birth.enabled() || c.mergeRC != nil {
+		return nil
+	}
+	m, err := c.oracleFusedDatum(outerDatum, innerDatum)
+	if err != nil {
+		return err
+	}
+	combined.Datum = m
+	return nil
+}
+
 // pairBinder builds the per-candidate-pair leg binder from PRE-adapted leg
 // rows. A nil OrdinalRow is the deliberately-NULL leg (LEFT/FULL padding —
 // the binder returns (nil, true), contract ruling #3). Only called when
@@ -973,6 +1032,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						if c.mergeRC != nil {
 							qr.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, nil, c.innerRows[i].Datum)
 						}
+						if serr := c.oracleSwapFusedDatum(&qr, nil, c.innerRows[i].Datum); serr != nil {
+							return recordlayer.RecordCursorResult[QueryResult]{}, serr
+						}
 						// RFC-173 S2: ordinal birth of the drain row — the
 						// OUTER leg is the NULL leg (nil row), symmetric to
 						// the unmatched-outer emission below. The inner was
@@ -1066,6 +1128,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// merge row carries the merge-shape Datum consumers read.
 						combined.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, c.currentOuter.Datum, innerRow.Datum)
 					}
+					if serr := c.oracleSwapFusedDatum(&combined, c.currentOuter.Datum, innerRow.Datum); serr != nil {
+						return recordlayer.RecordCursorResult[QueryResult]{}, serr
+					}
 					if pair != nil {
 						pos, berr := c.birth.evaluateBound(pair)
 						if berr != nil {
@@ -1117,6 +1182,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// merge row carries the merge-shape Datum consumers read.
 						combined.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, c.currentOuter.Datum, innerRow.Datum)
 					}
+					if serr := c.oracleSwapFusedDatum(&combined, c.currentOuter.Datum, innerRow.Datum); serr != nil {
+						return recordlayer.RecordCursorResult[QueryResult]{}, serr
+					}
 					if pair != nil {
 						pos, berr := c.birth.evaluateBound(pair)
 						if berr != nil {
@@ -1152,6 +1220,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				// so the shape is ready when LEFT gates).
 				if c.mergeRC != nil {
 					qr.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, outerRow.Datum, nil)
+				}
+				if serr := c.oracleSwapFusedDatum(&qr, outerRow.Datum, nil); serr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, serr
 				}
 				// RFC-173 S2: ordinal birth of the null-padded row — the
 				// INNER leg is the NULL leg (nil row): the RC evaluates with

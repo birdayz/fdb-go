@@ -957,7 +957,12 @@ func (b *ordinalJoinBirth) oracleNameDatum(rowCtx any) (map[string]any, error) {
 			return nil, err
 		}
 		m[f.Name] = v
-		if !b.WindowsOK {
+		// Qualified keys ride the DATUM spans (not WindowsOK): an NLJ fused
+		// top recovers DatumSpans from the leg subplans while its adapter-side
+		// WindowsOK stays false (the birth has no legRVs — the Q6 dimension);
+		// for every FlatMap birth the two are set together, so this gate is
+		// behavior-identical there.
+		if len(b.DatumSpans) == 0 {
 			continue
 		}
 		// Qualified key from the SPAN covering this slot — not the field's

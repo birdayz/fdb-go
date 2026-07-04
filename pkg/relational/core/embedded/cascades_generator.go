@@ -10,6 +10,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2864,7 +2865,95 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 		firstAlias, secondAlias = innerAlias, outerAlias
 	}
 
-	return qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
+	merged := qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
+
+	// RFC-173 W5: the GATHERED multi-source unnest star (`SELECT * FROM A, B,
+	// A.arr AS x`) plans as an NLJ whose FlatMap leg is a PARTITION SUB-PRODUCT
+	// — a positional-merge RC whose fields are planner-internal `_N` names —
+	// so the leg-merge above leaks `_0`/`_1` into the user-visible columns
+	// (and misses the element entirely). The translated ordinal TOP RV carries
+	// the true SQL-order output names (each f.Name IS the datum/positional key
+	// by construction — the same rule the FlatMap fold arm relies on), and the
+	// §7 positional-aligned read then serves the VALUES from the positional
+	// row's matching slots. Derive from the RV, keyed on bare names against
+	// BOTH legs' leaf descriptors (ordinalUnnestColumnDef). Scoped to the
+	// LEAK: any today-working join (anchored, plain gated 2-way, name-model)
+	// derives no `_N` column and keeps its metadata byte-identical.
+	if rc, ok := nlj.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin &&
+		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) && hasPlannerInternalColumn(merged) {
+		descs := allLeafDescriptors(nlj.GetOuter(), md)
+		descs = append(descs, allLeafDescriptors(nlj.GetInner(), md)...)
+		elemAlias, elemValue := gatheredExplodeElement(nlj)
+		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
+		for _, f := range rc.Fields {
+			col := ordinalUnnestColumnDef(f, descs)
+			// The MIXED (no-AT) element rides a single-accessor merge-slot ref
+			// whose type the partition collapse erased (the Explode quantifier
+			// flows untyped); no descriptor names it either. Its authoritative
+			// type is the Explode's own collection element (the AS+AT form's
+			// refs stay typed through fusion and never reach this).
+			if elemValue != nil && strings.EqualFold(f.Name, elemAlias) && unknownTypedValue(f.Value) {
+				if tn := valueTypeName(elemValue, nil); tn != "" && tn != "UNKNOWN" {
+					col.TypeName = tn
+				}
+			}
+			cols = append(cols, col)
+		}
+		return cols
+	}
+	return merged
+}
+
+// hasPlannerInternalColumn reports whether a derived column set leaks a
+// planner-internal positional-merge field (`_0`, `_1`, …) — the signature of a
+// partition sub-product surfacing where user column names belong.
+func hasPlannerInternalColumn(cols []executor.ColumnDef) bool {
+	for _, c := range cols {
+		bare := parseColRef(c.Name).bare()
+		if len(bare) >= 2 && bare[0] == '_' {
+			if _, err := strconv.Atoi(bare[1:]); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unknownTypedValue reports whether a value's own type is absent/unknown —
+// the shape whose column type needs an out-of-band source.
+func unknownTypedValue(v values.Value) bool {
+	t := v.Type()
+	return t == nil || t.Code() == values.TypeCodeUnknown
+}
+
+// gatheredExplodeElement finds the gathered unnest's Explode leg under an NLJ
+// (the FlatMap pairing the owning source with its Explode — possibly nested
+// under further NLJ levels for a wider cluster) and returns the element's
+// binding alias (the FlatMap's inner correlation, the AS alias) plus a value
+// typed as the Explode's collection ELEMENT — the authoritative element type
+// the partition collapse erased. ("", nil) when no such leg exists.
+func gatheredExplodeElement(p plans.RecordQueryPlan) (string, values.Value) {
+	if fm, ok := p.(*plans.RecordQueryFlatMapPlan); ok {
+		if findExplodePlan(fm.GetInner()) != nil {
+			exp := findExplodePlan(fm.GetInner())
+			collType := exp.GetCollectionValue().Type()
+			if arr, isArr := collType.(*values.ArrayType); isArr && arr.ElementType != nil {
+				return fm.GetInnerAlias().Name(), values.NewQuantifiedObjectValueOfType(
+					fm.GetInnerAlias(), arr.ElementType)
+			}
+			return fm.GetInnerAlias().Name(), nil
+		}
+	}
+	if nlj, ok := p.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+		if a, v := gatheredExplodeElement(nlj.GetOuter()); v != nil {
+			return a, v
+		}
+		return gatheredExplodeElement(nlj.GetInner())
+	}
+	if ip, ok := p.(innerPlan); ok {
+		return gatheredExplodeElement(ip.GetInner())
+	}
+	return "", nil
 }
 
 func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {

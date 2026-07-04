@@ -677,3 +677,77 @@ func TestFieldValueBaked_OracleUnboundMergeRead_RFC173S3(t *testing.T) { //nolin
 		t.Fatalf("unpinned baked unbound read = (%v, %v), want (nil, nil) — bare fallback is pinned-only", v, err)
 	}
 }
+
+// TestRFC173W5_OracleRawMapPinnedBareRead pins the §5-oracle raw-map arm for
+// a PINNED fused reference through a MERGE quantifier (the W5 commit-4 NLJ
+// catch): the NLJ evaluates its predicates over the RAW merged map, whose
+// merge-slot key exists only BARE (`_0` — the qualified form carries the
+// merge alias's ORIGINAL case, which the upper-cased qualKey never matches).
+// Three directions:
+//   - pinned + oracle: the bare root key resolves (pre-fix: nil — a gathered
+//     spanning WHERE dropped every row oracle-side);
+//   - LAZY + oracle: the bare fallback must NOT fire (qualified-only read —
+//     a bare read would resurrect the cross-leg last-wins misread);
+//   - pinned + LIVE: stays the loud BakedNameContextError (the guard, not
+//     this arm, owns the live side).
+func TestRFC173W5_OracleRawMapPinnedBareRead(t *testing.T) {
+	legS := NewRecordType("", false, []Field{
+		{Name: "SID", FieldType: NotNullLong, Ordinal: 0},
+	})
+	mergedType := NewRecordType("", false, []Field{
+		{Name: OrdinalFieldName(0), FieldType: NotNullLong, Ordinal: 0},
+		{Name: OrdinalFieldName(1), FieldType: legS, Ordinal: 1},
+	})
+	mergeQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier(`$m"1`), mergedType)
+	pinned, err := NewFieldValueOfOrdinal(mergeQOV, 0)
+	if err != nil {
+		t.Fatalf("bake merge slot: %v", err)
+	}
+	raw := map[string]any{
+		`$m"1._0`: int64(7), // mergeRows' original-case qualified key
+		"_0":      int64(7), // the bare merge-slot key
+	}
+
+	OracleBakedNameFallback = true
+	defer func() { OracleBakedNameFallback = false }()
+	got, err := pinned.Evaluate(raw)
+	if err != nil {
+		t.Fatalf("pinned oracle read: %v", err)
+	}
+	if got != int64(7) {
+		t.Fatalf("pinned fused ref over the raw merged map = %#v, want 7 via the bare merge-slot key (the oracle spanning-WHERE fix)", got)
+	}
+
+	lazy := NewFieldValue(mergeQOV, "_0", UnknownType)
+	lv, err := lazy.Evaluate(raw)
+	if err != nil {
+		t.Fatalf("lazy oracle read: %v", err)
+	}
+	if lv != nil {
+		t.Fatalf("a LAZY ref must keep the qualified-only read over a raw map (got %#v) — the bare fallback is pinned-only", lv)
+	}
+
+	// A pinned ref over a DIRECT leg (rootKey = a USER column) must NOT take
+	// the bare arm: mergeRows' bare key is the last-wins spill, and reading
+	// it turns `a.k = b.k` into `k = k` — the cross-leg conflation the
+	// dualwindow NULL-key corpus entry caught when this arm was first cut
+	// too wide (full cross product oracle-side). Merge-slot `_i` roots only.
+	legA := NewRecordType("", false, []Field{{Name: "K", FieldType: NotNullLong, Ordinal: 0}})
+	aQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("a"), legA)
+	directPinned, derr := NewFieldValueOfOrdinal(aQOV, 0)
+	if derr != nil {
+		t.Fatalf("bake direct leg ref: %v", derr)
+	}
+	dv, err := directPinned.Evaluate(map[string]any{"K": int64(9)}) // bare last-wins spill only
+	if err != nil {
+		t.Fatalf("direct pinned oracle read: %v", err)
+	}
+	if dv != nil {
+		t.Fatalf("a pinned DIRECT-leg ref must keep the qualified-only read (got %#v) — the bare arm is merge-slot-only", dv)
+	}
+
+	OracleBakedNameFallback = false
+	if _, err := pinned.Evaluate(raw); err == nil {
+		t.Fatal("pinned + LIVE over a name-keyed map must stay the loud BakedNameContextError")
+	}
+}
