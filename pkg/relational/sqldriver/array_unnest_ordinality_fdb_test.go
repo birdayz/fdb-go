@@ -3414,6 +3414,16 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			"EL=8|O=2|WV=5", "EL=8|O=2|WV=6", "EL=8|O=2|WV=7",
 		})
 
+		// Enclosed + spanning WHERE + a CORRELATED EXISTS referencing the
+		// ELEMENT (the review coverage ask): the EXISTS routes the filter
+		// through the existential dispatch, whose enclosure flag makes the
+		// gather decline — the residual must still produce correct rows.
+		// EXISTS(W2.WV = EL) holds only for EL=7 (WAUX carries WV in
+		// {5,6,7}); EL > WV then keeps (7,5) and (7,6).
+		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WSRC."WARR" AS "EL", WAUX WHERE "EL" > "WV" AND EXISTS (SELECT 1 FROM WAUX AS "W2" WHERE "W2"."WV" = "EL")`, []string{
+			"EL=7|WV=5", "EL=7|WV=6",
+		})
+
 		// SELECT * over the gathered multi-source star (commit 4's fix
 		// target — could not PLAN before W5). Columns must be the SQL FROM
 		// order with the element/ordinal at the unnest's position (the
