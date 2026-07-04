@@ -188,6 +188,19 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	b.AddTable("EXB", []metadata.ColumnSpec{
 		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
 	}, []string{"ID"})
+	// WSRC/WAUX: FULLY DISJOINT column names — the only pair in this schema
+	// with no shared bare name, so a multi-source unnest over them passes the
+	// W5 commit-1 name-ambiguity gate and exercises the GATHERED flat path
+	// (every other pair here shares ID/ARR and correctly declines to the
+	// name-model residual).
+	b.AddTable("WSRC", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("SID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("WARR", api.NewArrayType(api.NewIntegerType(false), true), 2),
+	}, []string{"SID"})
+	b.AddTable("WAUX", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("XID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("WV", api.NewIntegerType(true), 2),
+	}, []string{"XID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -207,6 +220,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	gwDesc := md.GetRecordType("GW").Descriptor
 	exaDesc := md.GetRecordType("EXA").Descriptor
 	exbDesc := md.GetRecordType("EXB").Descriptor
+	wsrcDesc := md.GetRecordType("WSRC").Descriptor
+	wauxDesc := md.GetRecordType("WAUX").Descriptor
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
@@ -381,6 +396,26 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			// 300 (no EXA match) so the predicate genuinely discriminates within EXB.
 			idRec(exaDesc, 100), idRec(exaDesc, 200),
 			idRec(exbDesc, 200), idRec(exbDesc, 300),
+			// WSRC/WAUX (W5): one array-bearing source row, two aux rows so the
+			// gathered flat cross is a real 2x2 = elements {7,8} x aux {5,6}.
+			func() proto.Message {
+				m := dynamicpb.NewMessage(wsrcDesc)
+				m.Set(wsrcDesc.Fields().ByName("SID"), protoreflect.ValueOfInt64(1))
+				setIntArr(m, wsrcDesc, "WARR", []int32{7, 8})
+				return m
+			}(),
+			func() proto.Message {
+				m := dynamicpb.NewMessage(wauxDesc)
+				m.Set(wauxDesc.Fields().ByName("XID"), protoreflect.ValueOfInt64(1))
+				m.Set(wauxDesc.Fields().ByName("WV"), protoreflect.ValueOfInt32(5))
+				return m
+			}(),
+			func() proto.Message {
+				m := dynamicpb.NewMessage(wauxDesc)
+				m.Set(wauxDesc.Fields().ByName("XID"), protoreflect.ValueOfInt64(2))
+				m.Set(wauxDesc.Fields().ByName("WV"), protoreflect.ValueOfInt32(6))
+				return m
+			}(),
 		}
 		for _, r := range recs {
 			if _, e := store.SaveRecord(r); e != nil {
@@ -3258,6 +3293,50 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM EXA, "s"."EXB" AS "B" WHERE "B"."ID" = 200)`, []string{
 			"ID=0", "ID=1", "ID=2", "ID=3",
 		})
+	})
+
+	t.Run("W5 gathered flat multi-source unnest over disjoint legs", func(t *testing.T) {
+		// WSRC/WAUX are the schema's ONLY disjoint-column pair, so this is the
+		// one shape that passes the W5 commit-1 name-ambiguity gate and takes
+		// the GATHERED flat path end-to-end. Rows: elements {7,8} x aux rows
+		// {5,6}. The PLAN discriminates the path: gathered = the FlatMap pairs
+		// the OWNING source scan directly with the Explode (its outer is
+		// Scan(WSRC)); the declined/residual shape would FlatMap over the
+		// MERGED outer join instead.
+		explain := assertRows(t, `SELECT "EL" FROM WSRC, WAUX, WSRC."WARR" AS "EL"`, []string{
+			"EL=7", "EL=7", "EL=8", "EL=8",
+		})
+		if !strings.Contains(explain, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("plan does not pair the owning source directly with its Explode (the gathered path's signature):\n%s", explain)
+		}
+
+		// WITH ORDINALITY through the gathered path: the AS+AT (full-baked)
+		// seed form; ordinals reset per source row, unaffected by the aux leg.
+		assertRows(t, `SELECT "EL", "O" FROM WSRC, WAUX, WSRC."WARR" AS "EL" AT "O"`, []string{
+			"EL=7|O=1", "EL=7|O=1", "EL=8|O=2", "EL=8|O=2",
+		})
+
+		// Single-side WHEREs route through the GATHERED select: a cluster-leg
+		// conjunct and an element conjunct each filter correctly.
+		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WAUX, WSRC."WARR" AS "EL" WHERE "WV" = 5`, []string{
+			"EL=7|WV=5", "EL=8|WV=5",
+		})
+		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WAUX, WSRC."WARR" AS "EL" WHERE "EL" > 7`, []string{
+			"EL=8|WV=5", "EL=8|WV=6",
+		})
+
+		// A conjunct SPANNING the element and a cluster leg forces the
+		// RESIDUAL translation (commit-1 fail-open: the spanning predicate
+		// silently dropped through the gathered re-enumeration — probed red).
+		// KNOWN-BROKEN residual: over THIS disjoint schema the spanning WHERE
+		// (`"EL" > "WV"`, bare or WAUX-qualified) mis-filters on the residual
+		// too — and the forced-residual path IS master's code path by
+		// construction, so it is a PRE-EXISTING name-model gap in a
+		// previously-unpinned shape (the P2a corpus's MA/MB spanning pins
+		// pass; the divergence axis is under investigation). Booked in TODO;
+		// the leg-window commit ordinalizes the spanning class through the
+		// GATHERED path and pins correct rows then. No row assertion here —
+		// asserting today's wrong rows would pin a bug as behavior.
 	})
 }
 

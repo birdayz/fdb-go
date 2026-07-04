@@ -186,6 +186,46 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	)
 }
 
+// predSpansUnnestAndLeg reports whether any conjunct of the (already
+// unnest-rewritten) WHERE references BOTH the unnest's element/ordinal
+// correlation AND a cluster-leg alias — the spanning class whose predicate
+// silently DROPPED through the gathered select's re-enumeration during
+// bring-up (probed: `WHERE EL > WV` filtered nothing while the leg-only and
+// element-only conjuncts each routed correctly). Commit-1 fail-open: such
+// filters force the RESIDUAL translation; the spanning-pred re-enumeration is
+// the leg-window commit's work.
+func predSpansUnnestAndLeg(pred predicates.QueryPredicate, innerCorr values.CorrelationIdentifier, legTypes map[string]bakeLegType) bool {
+	var conjuncts func(p predicates.QueryPredicate) []predicates.QueryPredicate
+	conjuncts = func(p predicates.QueryPredicate) []predicates.QueryPredicate {
+		if and, isAnd := p.(*predicates.AndPredicate); isAnd {
+			var out []predicates.QueryPredicate
+			for _, s := range and.SubPredicates {
+				out = append(out, conjuncts(s)...)
+			}
+			return out
+		}
+		return []predicates.QueryPredicate{p}
+	}
+	for _, c := range conjuncts(pred) {
+		refs := predicates.GetCorrelatedToOfPredicate(c)
+		touchesUnnest := false
+		touchesLeg := false
+		for r := range refs {
+			if r == innerCorr {
+				touchesUnnest = true
+				continue
+			}
+			if _, isLeg := legTypes[strings.ToUpper(r.Name())]; isLeg {
+				touchesLeg = true
+			}
+		}
+		if touchesUnnest && touchesLeg {
+			return true
+		}
+	}
+	return false
+}
+
 // gatheredPlainLegType resolves a gathered PLAIN (non-box) leg's flowed type
 // by alias. A box leg declines: its alias names the rightmost leaf while its
 // type is the whole concat — a first-position bake would read the wrong slot.

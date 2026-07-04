@@ -114,6 +114,13 @@ type cascadesTranslator struct {
 	// ordinal-seed gate declines when this is set. Preserved across the unnest
 	// lowering only; reset at every other seed by the translator's normal flow.
 	unnestUnderExistential bool
+	// forceUnnestResidual forces translateUnnestJoin onto the name-model
+	// residual path for ONE re-translation — set by translateFilter's gathered
+	// WHERE arm when a conjunct SPANS the unnest element and a cluster leg
+	// (the class whose predicate silently dropped through the gathered
+	// re-enumeration; commit-1 fail-open, RFC-173 W5 — the spanning-pred
+	// re-enumeration is the leg-window commit's work).
+	forceUnnestResidual bool
 	// wedgeGate records the Slice 2 gate decision per translateJoin seed —
 	// consumed by the W3 ordinal seed, pinned by tests. Lazily initialized so
 	// hand-built test translators need no constructor change.
@@ -1168,7 +1175,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// and under-existential unnests keep today's paths (the enclosed class is
 	// the next W5 commit; the existential class is re-chartered to the
 	// W4-left+EXISTS slice). A nil is a DECLINE — the binary fallback below.
-	if !prevEnclosure && !t.unnestUnderExistential {
+	if !prevEnclosure && !t.unnestUnderExistential && !t.forceUnnestResidual {
 		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName); sel != nil {
 			return sel
 		}
@@ -1968,17 +1975,36 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					// point refs at a key the flat select never flows). Bake
 					// cross-leg conjuncts through the cluster's own spine
 					// instead, exactly as a gated join's WHERE merge does.
-					toMerge := []predicates.QueryPredicate{pred}
-					if lj, isLJ := join.Left.(*logical.LogicalJoin); isLJ {
-						toMerge = bakeGatedJoinPredicates(toMerge, t.gatedJoinLegTypes(lj))
+					//
+					// EXCEPT a conjunct SPANNING the unnest element and a
+					// cluster leg (commit-1 fail-open): its predicate silently
+					// dropped through the gathered re-enumeration — force the
+					// RESIDUAL translation, which handles the class today; the
+					// spanning-pred re-enumeration is the leg-window commit's.
+					lj, isLJ := join.Left.(*logical.LogicalJoin)
+					if isLJ && predSpansUnnestAndLeg(pred, unnestSourceCorrelation(u), t.gatedJoinLegTypes(lj)) {
+						t.forceUnnestResidual = true
+						redo := t.translateJoin(join)
+						t.forceUnnestResidual = false
+						rs, isRS := redo.(*expressions.SelectExpression)
+						if !isRS {
+							return nil
+						}
+						sel = rs
+						// Fall through to the residual (merged-row rebase) arm.
+					} else {
+						toMerge := []predicates.QueryPredicate{pred}
+						if isLJ {
+							toMerge = bakeGatedJoinPredicates(toMerge, t.gatedJoinLegTypes(lj))
+						}
+						return expressions.NewSelectExpressionWithJoinType(
+							sel.GetResultValue(),
+							sel.GetQuantifiers(),
+							append(sel.GetPredicates(), toMerge...),
+							sel.GetSourceAliases(),
+							sel.GetJoinType(),
+						)
 					}
-					return expressions.NewSelectExpressionWithJoinType(
-						sel.GetResultValue(),
-						sel.GetQuantifiers(),
-						append(sel.GetPredicates(), toMerge...),
-						sel.GetSourceAliases(),
-						sel.GetJoinType(),
-					)
 				}
 				mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
 				outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
