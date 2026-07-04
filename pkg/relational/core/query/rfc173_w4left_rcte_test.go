@@ -68,13 +68,18 @@ func TestRFC173W4Left_RecursiveRefJoinGatesOrdinal(t *testing.T) {
 // qualifiers regardless of rendering shape.
 func TestRFC173Rcte_RemapComputedRenderingNotSplit(t *testing.T) {
 	t.Parallel()
-	names := []string{"(B.ID + 1)", "1.5", "B.ID", "PLAIN"}
-	plainField := []bool{false, false, true, true}
-	vals := recursiveRemapValues(names, plainField, true)
+	// "A.B" at index 1 is an ALIAS-derived name (a quoted alias may legally
+	// contain a dot — one identifier, never qualifier syntax): verbatim
+	// false, must NOT split into QOV("A") (review finding, provenance not
+	// value type).
+	names := []string{"(B.ID + 1)", "A.B", "1.5", "B.ID", "PLAIN"}
+	verbatimField := []bool{false, false, false, true, true}
+	vals := recursiveRemapValues(names, verbatimField, true)
 
-	// Computed renderings (expression, float literal): NOT split — a
-	// resolved-ordinal read named by the full rendering, no QOV child.
-	for _, i := range []int{0, 1} {
+	// Non-verbatim names (expression rendering, dotted quoted alias, float
+	// literal): NOT split — a resolved-ordinal read named by the full
+	// rendering, no QOV child.
+	for _, i := range []int{0, 1, 2} {
 		fv, ok := vals[i].(*values.FieldValue)
 		if !ok || fv.Child != nil {
 			t.Fatalf("computed rendering %q = %#v, want a flat FieldValue (no QOV split)", names[i], vals[i])
@@ -87,16 +92,17 @@ func TestRFC173Rcte_RemapComputedRenderingNotSplit(t *testing.T) {
 		}
 	}
 
-	// A plain FieldValue's genuinely-dotted lazy name: the QOV read stays.
-	fv2, ok := vals[2].(*values.FieldValue)
-	if !ok || fv2.Child == nil || fv2.Field != "ID" {
-		t.Fatalf("qualified reference = %#v, want QOV(B).ID", vals[2])
+	// A plain unaliased FieldValue's genuinely-dotted lazy name: the QOV
+	// read stays.
+	fv3, ok := vals[3].(*values.FieldValue)
+	if !ok || fv3.Child == nil || fv3.Field != "ID" {
+		t.Fatalf("qualified reference = %#v, want QOV(B).ID", vals[3])
 	}
 
 	// Bare column: resolved-ordinal read.
-	fv3, ok := vals[3].(*values.FieldValue)
-	if !ok || fv3.Child != nil || fv3.Field != "PLAIN" || fv3.Resolved == nil {
-		t.Fatalf("bare column = %#v, want resolved-ordinal PLAIN", vals[3])
+	fv4, ok := vals[4].(*values.FieldValue)
+	if !ok || fv4.Child != nil || fv4.Field != "PLAIN" || fv4.Resolved == nil {
+		t.Fatalf("bare column = %#v, want resolved-ordinal PLAIN", vals[4])
 	}
 
 	// The fallback path (nil classification — logical column names,
@@ -108,13 +114,17 @@ func TestRFC173Rcte_RemapComputedRenderingNotSplit(t *testing.T) {
 	}
 }
 
-// legPhysicalOutputNames' structural classification: plain FieldValues are
-// the ONLY values whose rendered name is an identifier by construction.
+// legPhysicalOutputNames classifies the NAME'S PROVENANCE: only an UNALIASED
+// plain FieldValue's name is its Field string verbatim (identifier by
+// construction). An ALIASED FieldValue's name is the alias — one identifier,
+// never qualifier syntax, and a quoted alias may legally contain a dot
+// (`AS "A.B"` — splitting it manufactured QOV("A"); review finding).
 func TestRFC173Rcte_LegClassificationStructural(t *testing.T) {
 	t.Parallel()
 	lp := expressions.NewLogicalProjectionExpressionWithAliases(
 		[]values.Value{
 			&values.FieldValue{Field: "B.ID", Typ: values.UnknownType},
+			&values.FieldValue{Field: "ID", Typ: values.UnknownType},
 			&values.ArithmeticValue{
 				Op:    values.OpAdd,
 				Left:  &values.FieldValue{Field: "ID", Typ: values.UnknownType},
@@ -122,18 +132,21 @@ func TestRFC173Rcte_LegClassificationStructural(t *testing.T) {
 			},
 			&values.ConstantValue{Value: 1.5, Typ: values.NullableDouble},
 		},
-		[]string{"", "", ""},
+		[]string{"", "A.B", "", ""},
 		expressions.ForEachQuantifier(expressions.InitialOf(
 			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
 	)
-	names, plainField, fromProjection := legPhysicalOutputNames(lp, []string{"a", "b", "c"})
+	names, verbatimField, fromProjection := legPhysicalOutputNames(lp, []string{"a", "b", "c", "d"})
 	if !fromProjection {
 		t.Fatal("projection-topped leg must classify fromProjection")
 	}
-	if len(names) != 3 || len(plainField) != 3 {
-		t.Fatalf("names/classification arity = %d/%d, want 3/3", len(names), len(plainField))
+	if len(names) != 4 || len(verbatimField) != 4 {
+		t.Fatalf("names/classification arity = %d/%d, want 4/4", len(names), len(verbatimField))
 	}
-	if !plainField[0] || plainField[1] || plainField[2] {
-		t.Fatalf("classification = %v, want [true false false] (FieldValue vs computed vs literal)", plainField)
+	if !verbatimField[0] || verbatimField[1] || verbatimField[2] || verbatimField[3] {
+		t.Fatalf("classification = %v, want [true false false false] (unaliased FieldValue vs aliased/computed/literal)", verbatimField)
+	}
+	if names[1] != "A.B" {
+		t.Fatalf("aliased column name = %q, want the alias A.B verbatim", names[1])
 	}
 }
