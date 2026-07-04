@@ -359,6 +359,12 @@ func (t *cascadesTranslator) translateEnclosedUnnestGather(j *logical.LogicalJoi
 	if t.inInnerCluster || t.unnestUnderExistential {
 		return nil
 	}
+	// The translateFilter probe already built this select — consume it
+	// (once) instead of translating the cluster a second time.
+	if sel, cached := t.enclosedGatherCache[j]; cached {
+		delete(t.enclosedGatherCache, j)
+		return sel
+	}
 	rebuilt, u, elementType, fieldName, unnestPos, ok := t.rotateEnclosedUnnest(j)
 	if !ok {
 		return nil

@@ -10,7 +10,6 @@ import (
 	"math"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -2909,11 +2908,8 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 // partition sub-product surfacing where user column names belong.
 func hasPlannerInternalColumn(cols []executor.ColumnDef) bool {
 	for _, c := range cols {
-		bare := parseColRef(c.Name).bare()
-		if len(bare) >= 2 && bare[0] == '_' {
-			if _, err := strconv.Atoi(bare[1:]); err == nil {
-				return true
-			}
+		if values.IsOrdinalFieldName(parseColRef(c.Name).bare()) {
+			return true
 		}
 	}
 	return false
@@ -2934,8 +2930,7 @@ func unknownTypedValue(v values.Value) bool {
 // the partition collapse erased. ("", nil) when no such leg exists.
 func gatheredExplodeElement(p plans.RecordQueryPlan) (string, values.Value) {
 	if fm, ok := p.(*plans.RecordQueryFlatMapPlan); ok {
-		if findExplodePlan(fm.GetInner()) != nil {
-			exp := findExplodePlan(fm.GetInner())
+		if exp := findExplodePlan(fm.GetInner()); exp != nil {
 			collType := exp.GetCollectionValue().Type()
 			if arr, isArr := collType.(*values.ArrayType); isArr && arr.ElementType != nil {
 				return fm.GetInnerAlias().Name(), values.NewQuantifiedObjectValueOfType(

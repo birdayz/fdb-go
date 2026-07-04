@@ -230,6 +230,12 @@ validation gate.
     Commit 5 LANDED: the F4-rider dead-for-gated pins (gated=empty, emergent owner edge,
     residual dotted still classifies — the reachability proof deferring physical deletion).
     Remaining: the four-gate gauntlet (Graefe impl / Torvalds / codex / @claude on the PR).
+    Graefe impl ACK (follow-ups booked): (a) probe-purity split — translateFilter's enclosed
+    stand-down probe TRANSLATES the rotated cluster and discards it; split classify/build or
+    memoize the built select (the purity invariant is implicit today — admitted legs are
+    scans/gated boxes with no side state); (b) S4 rider: flip deriveColumnsFromJoin's ordinal-top
+    arm from leak-keyed (_N observable) to RV-SHAPE-keyed when S4 makes the positional read the
+    sole authority.
     - RETRACTED (probe-verified with discriminating data): the "KNOWN-BROKEN spanning residual" was
       a PHANTOM — the commit-1 seeds (WV {5,6} vs elements {7,8}) made `EL > WV` all-true, so the
       all-rows result briefly read as a dropped predicate was the CORRECT answer. With WV {5,6,7}

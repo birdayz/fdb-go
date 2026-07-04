@@ -508,17 +508,22 @@ func OrdinalFieldName(ordinal int) string {
 	return "_" + strconv.Itoa(ordinal)
 }
 
-// isOrdinalFieldName reports whether name is a planner-internal
-// ordinal-addressed field key (`_0`, `_1`, …) — OrdinalFieldName's inverse.
-// User columns cannot take this form (a parsed identifier's leading `_` is
-// legal, but the S3 positional-merge and Explode-ordinality producers are the
-// only writers of these keys in a merged row).
-func isOrdinalFieldName(name string) bool {
+// IsOrdinalFieldName reports whether name is a planner-internal
+// ordinal-addressed field key (`_0`, `_1`, …) — OrdinalFieldName's inverse,
+// digits-only (OrdinalFieldName never emits signs, so `_-1`/`_+0` are NOT
+// ordinal keys). User columns cannot take this form (a parsed identifier's
+// leading `_` is legal, but the S3 positional-merge and Explode-ordinality
+// producers are the only writers of these keys in a merged row).
+func IsOrdinalFieldName(name string) bool {
 	if len(name) < 2 || name[0] != '_' {
 		return false
 	}
-	_, err := strconv.Atoi(name[1:])
-	return err == nil
+	for i := 1; i < len(name); i++ {
+		if name[i] < '0' || name[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ExplodeOrdinalityResultType builds the result type of a WITH-ORDINALITY
