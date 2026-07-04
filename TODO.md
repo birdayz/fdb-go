@@ -3293,8 +3293,9 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    **DESIGN SUBSTRATE BANKED (RFC § "QP-REF-BIND item 2 — design substrate"): E2-validated
    executor binder; the W4-left rebase machinery is currently DEAD on live SQL (enclosure
    forced under EXISTS — the slice's commit-4 lift). DESIGN RULING: ACK with amendments
-   (RFC § "design ruling + commit-1 record"). COMMIT 1 IMPLEMENTED on
-   feat/rfc173-qprefbind-item2: the no-op existential residual (EXISTS == NOT EXISTS rows on
+   (RFC § "design ruling + commit-1 record"). COMMIT 1 MERGED (PR #469, master 33291617d,
+   four-gate ACK — Graefe, Torvalds after two converted NAKs, codex P1+P2 fixed-and-pinned,
+   @claude ×4): the no-op existential residual (EXISTS == NOT EXISTS rows on
    LEFT+EXISTS) root-caused across four layers and fixed with the Java-shaped correlated
    step-1 (buildCorrelatedFlatMapPlan; the audited decline-only fix was insufficient —
    REWRITING promotion drops the unmerged member; full record in the RFC) + the 1+1 path's

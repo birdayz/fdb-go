@@ -2567,15 +2567,19 @@ decline reasons), never by inventory argument.
 Slice 3 (fulcrum, N-way clusters) · W4b (clustered-outer correlated scalars, PR #465) ·
 W5 (multi-source unnest gather, PR #466) · W4-left (LEFT/RIGHT + EXISTS + recursive-CTE,
 PR #467, four-gate ACK) · S4-riders (positionalTypeCache bound + rcte remap provenance,
-PR #468, four-gate ACK).
+PR #468, four-gate ACK) · **item-2 commit 1 (PR #469 MERGED, master 33291617d, four-gate
+ACK: Graefe design+audit+impl, Torvalds after two converted NAKs, codex clean with P1+P2
+fixed-and-pinned, @claude clean ×4 — the no-op existential residual via the Java-shaped
+correlated step-1, plus the review-found classes: Java predicate placement, merge-seed
+split, derived-alias EXISTS with all three derived-arm alias carriers, the CTE-shadow
+lexical-scoping regression).**
 
-**← WE ARE HERE:** QP-REF-BIND item 2 (existential-flatten ordinalization) — design ruling
-BANKED (ACK with amendments A–C + findings 4–5, below); commit 1 (the no-op existential
-residual) IMPLEMENTED on feat/rfc173-qprefbind-item2 (full record below — root cause, audit,
-and the post-audit correction: decline was insufficient, the fix is the Java-shaped
-correlated step-1). NEXT STEP: land the derived-alias EXISTS-correlation fix (the F-class
-42703 discovered by commit 1's matrix, below), then commit 2 (the executor binder). Item 1
-(per-reference dup-alias binding) is parallelizable with item 2.
+**← WE ARE HERE:** QP-REF-BIND item 2, commit 2 — the E2-validated executor binder +
+identity-FlatMap positional pass-through (fresh branch). Its landing also retires the
+loud-limitation exit gates booked on PR #469 (matrix class K scalar-in-EXISTS; the
+fetch-shell walk-terminators; the alias-unchecked frontier fallback's loud replacement,
+per design-ruling amendment B). Item 1 (per-reference dup-alias binding) is parallelizable
+with item 2.
 
 **Remaining, in ruling order:** (item 2 ∥ item 1) → item 3 (mixed-nesting LEFT widening; MUST
 follow item 2) → unnest-residual completion slice → S4 atomic demolition (kill list above;
