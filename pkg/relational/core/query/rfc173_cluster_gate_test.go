@@ -143,9 +143,10 @@ func TestRFC173S2_ClusterArity_FlatteningEvasion(t *testing.T) {
 //     gates; the outer box itself gates (binary opaque, ruling #3);
 //   - a 2-way join inside an aggregate (derived GROUP BY) roots a fresh
 //     cluster and gates — the §5 GROUP-BY-over-2-way pin's planner half;
-//   - a 2-way join under a WHERE-EXISTS outer leg is enclosed (existential
-//     flatten) and does NOT gate, while a 2-way join INSIDE the EXISTS
-//     subquery roots a fresh cluster and DOES.
+//   - a maximal 2-way join under a WHERE-EXISTS filter GATES (the item-2
+//     commit-3 flatten gate arm — the 2+1 select seeds the baked ordinal
+//     RC), and a 2-way join INSIDE the EXISTS subquery roots a fresh
+//     cluster and gates too.
 func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 	t.Parallel()
 
@@ -347,19 +348,18 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 		tr := newGateTranslator(t)
 		tr.translateRef(f)
-		// The join+EXISTS flatten (translateJoinWithExists) encloses BOTH
-		// ForEach legs — outerJoin here IS the flattened select's leg pair, so
-		// its seed decision must be name-model? No: outerJoin is the join
-		// being flattened WITH the existential — translateJoinWithExists
-		// translates its legs directly and never seeds outerJoin itself. What
-		// must hold: the SUBQUERY join roots a fresh cluster and gates.
+		// The SUBQUERY join roots a fresh cluster and gates, unchanged.
 		if d, ok := tr.wedgeGate[subJoin]; !ok || !d.Gated {
 			t.Fatalf("2-way join inside an EXISTS subquery: %+v (ok=%v), want gated (fresh cluster)", d, ok)
 		}
-		// And if outerJoin was seeded at all (it is not, on the flatten path),
-		// it must not have gated.
-		if d, ok := tr.wedgeGate[outerJoin]; ok && d.Gated {
-			t.Fatalf("join flattened with an existential must not gate: %+v", d)
+		// RFC-173 item-2 commit 3: the flatten CONSULTS the gate and a
+		// maximal 2-way INNER join under WHERE-EXISTS now GATES — the flat
+		// 2+1 select seeds the baked ordinal RC (the flatten-gate pins in
+		// rfc173_item2_c3_flatten_gate_test.go assert the seed itself; this
+		// pin holds the recorded decision). Pre-commit-3 the flatten never
+		// consulted the gate and its legs were unconditionally enclosed.
+		if d, ok := tr.wedgeGate[outerJoin]; !ok || !d.Gated || d.Arity != 2 {
+			t.Fatalf("flattened 2-way join under EXISTS must gate at arity 2 (item-2 commit 3): %+v (ok=%v)", d, ok)
 		}
 	})
 

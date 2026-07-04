@@ -19,7 +19,7 @@ package embedded
 // tie over several single-column indexes (`WHERE a=5 AND b=7 AND c=9` with
 // idx_a/idx_b/idx_c). Those three competing plans are SAME-TYPE nil-inner shells
 // (Fetch(PredicatesFilter(IndexScan))) whose embedded plan has GetChildren()==[],
-// so the bare concretePlanHash criterion-#17 tie-break was blind to the buried
+// so the bare stablePlanHash criterion-#17 tie-break was blind to the buried
 // index and the comparator returned a tie → selection fell to member-iteration
 // order. costExprHash now resolves the shell's inner STRUCTURALLY through the
 // quantifier graph (exprConcreteHash), surfacing the index identity so the

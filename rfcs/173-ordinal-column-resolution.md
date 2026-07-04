@@ -2950,3 +2950,88 @@ pass-through gate widens, derive the shape's era from the OUTER plan's seed auth
 inner-probe heuristic; (Torvalds) a THIRD copy of the baked-QOV extraction preamble
 triggers the shared `forEachBakedQOVType` refactor, and the loud-widening commitment
 (probe-negative + baked uppers ⇒ BakedNameContextError, never silent) is held.
+
+## Item-2 commit 3 — implementation record (flatten gate arm + ordinal seed)
+
+**Landed on the c3 branch in three pieces, each red-first:**
+
+1. **Planner-determinism prerequisite (found by the c3 pins before the seed went in):**
+   the c3 EXPLAIN-determinism pins caught the existential flatten's step-1 NLJ operand
+   order flipping ACROSS PLANNINGS of the same query. Root cause, two layers: the #17
+   cost tie-break's child fold was a commutative XOR (swapped operands hashed equal),
+   and the per-node hash (HashCodeWithoutChildren) folds MINTED correlation
+   identifiers (q$N — fresh every planning) both directly (FlatMap aliases) and via
+   predicate Explain text — so the two cost-tied candidates ranked differently on
+   every planning (debug-verified: both candidates coexist in one ref; their hashes
+   change per planning; which is smaller is effectively random). Fix: `stablePlanHash`
+   — per-node type tag + alias-blind stable content (predicates/values through the
+   alias-blind SemanticHashCode) + ORDER-SENSITIVE child fold. Java-exact doctrine:
+   planHash is alias-blind at every node (QuantifiedObjectValue.planHash folds
+   BASE_HASH only) and an ordered list hash. HashCodeWithoutChildren untouched (memo
+   identity — aliases are sometimes semantic there, e.g. TempTable). Pinned: unit
+   (order sensitivity + minted-alias blindness) and e2e (EXPLAIN ×10 both polarities +
+   plain-join control).
+
+2. **The deterministic tie-break exposed a LATENT wrong-rows bug on master:** the
+   lateral-unnest Explode read its array via the BARE merged-row key whenever the
+   unnest source was the RIGHTMOST FROM leg — last-leg-wins, i.e. correct only while
+   the join's execution operand order cooperated. Under the swapped operands,
+   `SELECT X FROM PA, PB, PB.ARR AS X` exploded PA's array. Fix: every MERGED outer
+   (cluster arity != 1) reads the QUALIFIED SEG0.FIELD key (order-independent, present
+   for every leg); single-source outers keep the bare read. Pinned by the existing
+   unnest matrix, which the deterministic tie-break now drives through the swapped
+   order.
+
+3. **The seed itself:** translateJoinWithExists consults ordinalWedgeGate (ONE
+   authority, ruling condition 4) with two flatten-specific narrowings — arity
+   EXACTLY 2 (the arm builds exactly two ForEach legs; a nested-cluster leg would
+   drift the seed against SelectMergeRule's post-flattening arity) and no
+   existential-alias collisions (fail toward the name model). Gated: legs translate
+   FRESH (the translateJoin gated-parent convention), the RV is the baked ordinal RC
+   over the two ForEach legs (existentials contribute NO columns — Java's model), and
+   the COMBINED predicate list (ON + WHERE conjuncts + EXISTS correlation predicates)
+   bakes via bakeGatedJoinPredicates — the baked correlation predicates are what flow
+   into the existential FlatMap's inner plan and trigger the commit-2 binder. The
+   W4-left F2 scope note is retired at the site. Proof the seed FIRES (the e2e
+   EXPLAIN summary renders gated and anchored identically):
+   rfc173_item2_c3_flatten_gate_test.go asserts the recorded gate decision AND the RV
+   shape (FrontierPinned baked RC, never anchored) with all three narrowings pinned
+   declining; rfc173_item2_c3_flatten_seed_fdb_test.go pins the e2e row matrix (star
+   both polarities over dup-named legs, qualified projections, conjunct mix,
+   uncorrelated scalar rider absorbed, second-leg correlation) + EXPLAIN determinism.
+   One stale pin updated to the new contract
+   (TestRFC173S2_WedgeGate_Translation/exists_outer_leg: the flattened 2-way join now
+   GATES at arity 2).
+
+**Exit-gate verification at the seed:** the full suite (incl. dualwindow, which now
+exercises the LIVE seed — corr_exists_join_outer runs ordinal end-to-end) is green
+with the PR #469 loud-limitation pins UNCHANGED: matrix class K (scalar-in-EXISTS)
+routes through the 1+1 buildExistentialSelect path, untouched by the flatten seed —
+it flips with commit 4's enclosure lift, as do the fetch-shell terminators. The
+alias-unchecked frontier fallback's loud replacement remains booked on the item-2
+completion follow-up.
+
+**@claude round 1 on the c3 PR (banked; fixed-and-pinned vs booked):** RESOLVED
+NOT-A-BUG (round 2, after a false "deduped" claim — corrected here): the "BUILD
+duplicate" is srcs (:290) + embedsrcs (:814), two DIFFERENT attributes of the one
+go_test — default_rules_test.go carries `//go:embed *.go` (the rule-registration
+completeness check embeds the package's own sources), so gazelle correctly
+maintains EVERY .go file in both lists; the round-2 sed "dedup" was a no-op gazelle
+rightly reverted, and the commit message's "deduped" claim was WRONG. FIXED — the
+stale W3b-assert citation in the arity-narrowing comment (the decline itself is the
+safety mechanism; the S2 drift assert died at the S3 fulcrum); the dup-alias pin
+matrix now covers all three collision axes (left leg, right leg, EXISTS-vs-EXISTS);
+the MintedAliasBlind pin threads a predicate REFERENCING the minted alias (the inert
+filterAlias scaffold exercised nothing); a translation-level unnest pin makes the
+qualified-read fix order-INDEPENDENT of cost-model internals (the e2e matrix coverage
+of the swapped order was contingent on the tie-break's outcome). BOOKED —
+stablePlanNodeHash's type switch covers the 8 content-bearing node types of the
+observed nondeterminism class; the ~30 remaining types fold as type tags (residual
+ties resolve by the DETERMINISTIC first-arrived fallback — stable across plannings
+now that hash values are). Widen the switch (StreamingAggregation grouping keys,
+TypeFilter type lists, AggregateIndex identity) if an EXPLAIN flip is ever observed
+on those shapes, or as S4-adjacent hygiene; deepHashCode's REWRITING-path
+physical-member recursion (a child ref already holding an NLJ/FlatMap member) is
+currently unreachable within one top-level pass (rewritingImplRules =
+FinalizeExpressionsRule only) — the deepHashCode comment names the extension site if
+that changes.

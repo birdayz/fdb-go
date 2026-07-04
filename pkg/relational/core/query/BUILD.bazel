@@ -33,6 +33,7 @@ go_test(
         "cascades_translator_test.go",
         "plan_test.go",
         "rfc173_cluster_gate_test.go",
+        "rfc173_item2_c3_flatten_gate_test.go",
         "rfc173_w4b_clustered_outer_test.go",
         "rfc173_w4b_scalar_seed_test.go",
         "rfc173_w4c_unnest_seed_test.go",

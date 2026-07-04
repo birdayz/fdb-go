@@ -1,6 +1,11 @@
 package cascades
 
 import (
+	"encoding/binary"
+	"fmt"
+	"hash"
+	"hash/fnv"
+	"io"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -838,6 +843,18 @@ func isSingularIndexScanWithFetch(ops expressionCounts) bool {
 // deepHashCode computes a recursive hash of the expression tree,
 // matching Java's planHash(CURRENT_FOR_CONTINUATION). Combines the
 // node's own hash with children's hashes via FNV mixing.
+//
+// Unlike stablePlanHash, this LOGICAL-path hash still folds
+// HashCodeWithoutChildren — which carries minted correlation identifiers
+// (q$N) — so REWRITING-phase ties between alias-only twins resolve by
+// arrival order, not hash order. Tolerated deliberately: REWRITING's
+// criteria (select/table-function/conjunct counts, predicate depth) are
+// structural and rarely tie across genuinely different rewrites, no
+// nondeterminism has been observed there (the PLANNING-phase flip that
+// motivated stablePlanHash came from cost-tied PHYSICAL candidates), and a
+// logical alias-blind hash needs per-expression-type stable content that
+// does not exist yet. If a REWRITING-phase EXPLAIN flip ever surfaces,
+// this is the site to extend.
 func deepHashCode(e expressions.RelationalExpression) uint64 {
 	if e == nil {
 		return 0
@@ -850,7 +867,9 @@ func deepHashCode(e expressions.RelationalExpression) uint64 {
 		}
 		if child := firstPhysicalChild(ref); child != nil {
 			childHash := deepHashCode(child)
-			h ^= childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142
+			// ORDER-SENSITIVE fold — see stablePlanHash: a commutative XOR
+			// made swapped join operands hash equal and the tie-break blind.
+			h = h*0x100000001b3 ^ (childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142)
 		}
 	}
 	return h
@@ -1766,17 +1785,145 @@ func concretePlanDepth(p plans.RecordQueryPlan, kind planMatchKind) int {
 	return best
 }
 
-// concretePlanHash hashes a concrete plan tree deterministically (criterion's final
-// tiebreak), matching deepHashCode's mixing but over the concrete children.
-func concretePlanHash(p plans.RecordQueryPlan) uint64 {
+// stablePlanNodeHash is the #17 tie-break's per-node hash: the node's TYPE
+// plus its ALIAS-BLIND stable content. It deliberately does NOT reuse
+// HashCodeWithoutChildren — that is the memo-interning identity hash, where
+// correlation aliases are sometimes semantic (TempTable identity) and where
+// predicate content is folded via Explain text that RENDERS minted aliases
+// (q$N). Minted identifiers differ on every planning of the same query, so a
+// tie-break that hashes them ranks two cost-tied candidates in a different
+// order each planning — the nondeterministic-EXPLAIN class the item-2
+// commit-3 pins caught live (the existential step-1 NLJ's operand order
+// flipped across runs). Java's planHash is alias-blind at every node
+// (QuantifiedObjectValue.planHash folds BASE_HASH only); predicates and
+// values fold through the alias-blind SemanticHashCode here for the same
+// property. Content the switch does not know folds as the type tag alone —
+// COARSER stays deterministic: a residual tie keeps the first-arrived
+// winner, which is stable once hash values stop varying per planning (the
+// safety argument is the fallback, NOT rendering equivalence — hash-equal
+// plans may still EXPLAIN differently where a discriminator is unhashed).
+func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
+	h := fnv.New64a()
+	fmt.Fprintf(h, "%T|", p)
+	switch t := p.(type) {
+	case *plans.RecordQueryScanPlan:
+		for _, rt := range t.GetRecordTypes() {
+			_, _ = io.WriteString(h, rt)
+			_, _ = h.Write([]byte{0})
+		}
+		// Unconditional 0/1 framing byte (not write-only-when-set): the
+		// range tags that follow also start at 1, so a conditional write
+		// would make "reverse + ranges" prefix-ambiguous with "forward + an
+		// equality range".
+		_, _ = h.Write([]byte{boolByte(t.IsReverse())})
+		stableHashComparisonRanges(h, t.GetScanComparisons())
+	case *plans.RecordQueryIndexPlan:
+		_, _ = io.WriteString(h, t.GetIndexName())
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte{boolByte(t.IsReverse())})
+		stableHashComparisonRanges(h, t.GetScanComparisons())
+	case *plans.RecordQueryPredicatesFilterPlan:
+		for _, pr := range t.GetPredicates() {
+			stableHashU64(h, predicates.SemanticHashCode(pr))
+		}
+	case *plans.RecordQueryFilterPlan:
+		for _, pr := range t.GetPredicates() {
+			stableHashU64(h, predicates.SemanticHashCode(pr))
+		}
+	case *plans.RecordQueryNestedLoopJoinPlan:
+		stableHashU64(h, uint64(t.GetJoinType()))
+		for _, pr := range t.GetPredicates() {
+			stableHashU64(h, predicates.SemanticHashCode(pr))
+		}
+		if rv := t.GetResultValue(); rv != nil {
+			stableHashU64(h, values.SemanticHashCode(rv))
+		}
+	case *plans.RecordQueryFlatMapPlan:
+		if t.IsLeftOuter() {
+			_, _ = h.Write([]byte{1})
+		}
+		if rv := t.GetResultValue(); rv != nil {
+			stableHashU64(h, values.SemanticHashCode(rv))
+		}
+	case *plans.RecordQueryMapPlan:
+		if rv := t.GetResultValue(); rv != nil {
+			stableHashU64(h, values.SemanticHashCode(rv))
+		}
+	case *plans.RecordQueryInMemorySortPlan:
+		for _, k := range t.GetSortKeys() {
+			_, _ = io.WriteString(h, k.Field)
+			if k.ValueExpr != nil {
+				stableHashU64(h, values.SemanticHashCode(k.ValueExpr))
+			}
+			if k.Desc {
+				_, _ = h.Write([]byte{1})
+			}
+			_, _ = h.Write([]byte{0})
+		}
+	}
+	return h.Sum64()
+}
+
+// stablePlanHash is the tie-break hash over a concrete plan tree: the
+// alias-blind node head folded with the ORDERED children (FNV-style: the
+// accumulator multiplies before each child mixes in — a bare `h ^= f(child)`
+// is commutative, so the two operand orders of a symmetric join hashed
+// IDENTICALLY and #17 returned 0 for exactly the swapped-operand pairs it
+// exists to discriminate).
+func stablePlanHash(p plans.RecordQueryPlan) uint64 {
 	if p == nil {
 		return 0
 	}
-	h := p.HashCodeWithoutChildren()
+	h := stablePlanNodeHash(p)
 	for _, c := range p.GetChildren() {
-		h ^= concretePlanHash(c)*0x517cc1b727220a95 + 0x6c62272e07bb0142
+		h = h*0x100000001b3 ^ (stablePlanHash(c)*0x517cc1b727220a95 + 0x6c62272e07bb0142)
 	}
 	return h
+}
+
+func boolByte(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func stableHashU64(h hash.Hash64, v uint64) {
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], v)
+	_, _ = h.Write(buf[:])
+}
+
+// stableHashComparisonRanges folds scan/index comparison ranges alias-blind:
+// range shape (equality/inequality) + each comparison's type and operand
+// value folded via values.SemanticHashCode (never Explain text — it renders
+// minted correlation names).
+func stableHashComparisonRanges(h hash.Hash64, ranges []*predicates.ComparisonRange) {
+	for _, cr := range ranges {
+		switch {
+		case cr == nil || cr.IsEmpty():
+			_, _ = h.Write([]byte{0})
+		case cr.IsEquality():
+			_, _ = h.Write([]byte{1})
+			stableHashComparison(h, cr.GetEqualityComparison())
+		case cr.IsInequality():
+			_, _ = h.Write([]byte{2})
+			for _, c := range cr.GetInequalityComparisons() {
+				stableHashComparison(h, c)
+			}
+		}
+	}
+}
+
+func stableHashComparison(h hash.Hash64, c *predicates.Comparison) {
+	if c == nil {
+		_, _ = h.Write([]byte{0})
+		return
+	}
+	stableHashU64(h, uint64(c.Type))
+	if c.Operand != nil {
+		stableHashU64(h, values.SemanticHashCode(c.Operand))
+	}
 }
 
 // costExprDepth returns the depth of a target operator, walking the concrete plan
@@ -1802,17 +1949,17 @@ func costExprDepth(e expressions.RelationalExpression, kind planMatchKind) int {
 // concrete plan for a physical expression and the logical memo otherwise.
 //
 // For a nil-inner SHELL (a push-through Fetch/Filter/Map/Distinct/InJoin template),
-// the embedded plan's GetChildren() is empty, so the bare concretePlanHash is blind
+// the embedded plan's GetChildren() is empty, so the bare stablePlanHash is blind
 // to the buried index — idx_a/idx_b/idx_c shells collapse to the SAME hash and the
 // tie-break returns 0, leaving selection to resolve by member-iteration order
 // (RFC-167 NONDETERMINISM). exprConcreteHash resolves the buried inner STRUCTURALLY
 // through the quantifier graph (mirroring exprConcreteCost) so the hash carries the
-// index identity. The fast path (no template below) keeps the cheap concretePlanHash.
+// index identity. The fast path (no template below) keeps the cheap stablePlanHash.
 func costExprHash(e expressions.RelationalExpression) uint64 {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {
 			if !planTreeHasStub(plan) {
-				return concretePlanHash(plan)
+				return stablePlanHash(plan)
 			}
 			return exprConcreteHash(e, map[*expressions.Reference]bool{})
 		}
@@ -1837,20 +1984,20 @@ func exprConcreteHash(e expressions.RelationalExpression, visited map[*expressio
 		return deepHashCode(e)
 	}
 	if !planTreeHasStub(plan) {
-		return concretePlanHash(plan)
+		return stablePlanHash(plan)
 	}
-	h := plan.HashCodeWithoutChildren()
+	h := stablePlanNodeHash(plan)
 	quants := e.GetQuantifiers()
 	planKids := plan.GetChildren()
 	for i, q := range quants {
 		var childHash uint64
 		if i < len(planKids) && planKids[i] != nil && !planTreeHasStub(planKids[i]) {
-			childHash = concretePlanHash(planKids[i])
+			childHash = stablePlanHash(planKids[i])
 		} else if ref := q.GetRangesOver(); ref != nil && !visited[ref] {
 			visited[ref] = true
 			// firstPhysicalChild (structural, AllMembers-order) — NOT bestPhysicalChild
 			// (cost). This matches what extraction relinks to for every shell type via
-			// findPhysicalPlan, so the hash equals concretePlanHash(the plan extraction
+			// findPhysicalPlan, so the hash equals stablePlanHash(the plan extraction
 			// emits). The lone exception is InMemorySort, which extracts via
 			// findBestPhysicalPlan (cost-best); harmless here because the sort-count
 			// discriminator (#~9) fires before #17, but a Phase-1b net should pin it.
@@ -1862,7 +2009,9 @@ func exprConcreteHash(e expressions.RelationalExpression, visited map[*expressio
 		// concrete child as-is), an unresolvable child folds a constant (childHash==0):
 		// deterministic, and that branch is DAG-unreachable for a genuine nil-inner
 		// shell (its inner ref resolves down to a physical scan that never points back up).
-		h ^= childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142
+		// ORDER-SENSITIVE fold — see stablePlanHash: a commutative XOR made
+		// swapped join operands hash equal and the tie-break blind.
+		h = h*0x100000001b3 ^ (childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142)
 	}
 	return h
 }

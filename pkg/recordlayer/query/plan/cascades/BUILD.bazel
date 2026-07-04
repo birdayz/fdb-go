@@ -287,6 +287,7 @@ go_test(
         "planner_pipeline_test.go",
         "planner_planning_phase_test.go",
         "planner_test.go",
+        "planning_cost_model_hash_test.go",
         "planning_cost_model_test.go",
         "predicate_matchers_test.go",
         "predicate_multi_map_test.go",
@@ -810,6 +811,7 @@ go_test(
         "rfc173_s3_legrowtypes_test.go",
         "rfc173_w5_classifier_dead_test.go",
         "rfc173_w4left_existential.go",
+        "planning_cost_model_hash_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
