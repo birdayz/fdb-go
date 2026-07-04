@@ -98,7 +98,9 @@ test:
 stress:
     bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_timeout=600 --test_output=streamed
 
-# Run conformance server
+# Run conformance server. NOTE: stdin is load-bearing — the server halts on
+# stdin EOF (parent-death watchdog), so run it with a live stdin (a terminal
+# is fine); `< /dev/null` or a non-TTY wrapper with closed stdin exits at once.
 run-conformance-server:
     bazelisk run //conformance/java:conformance_server
 

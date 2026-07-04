@@ -104,6 +104,8 @@ class ConformanceServer {
     }
 
     public static void main(String[] args) throws IOException {
+        startParentDeathWatchdog();
+
         // Bind to random available port
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setExecutor(Executors.newCachedThreadPool());
@@ -121,6 +123,42 @@ class ConformanceServer {
         System.out.flush();
 
         System.err.println("Conformance server listening on port " + port);
+    }
+
+    /**
+     * Parent-death watchdog. The Go invoker (java_invoker_test.go
+     * startJavaServer) hands this process a pipe as stdin and holds the write
+     * end without ever writing to it. If the Go test process dies — including
+     * SIGKILL from a bazel timeout, where none of its cleanup code runs — the
+     * kernel closes the pipe's write end and the read below returns EOF; we
+     * exit. This is what keeps a killed test run from leaving orphaned JVMs
+     * behind: accumulated -Xmx2g orphans exhausted swap on the CI runner box
+     * and the kernel OOM-killer took the whole runner unit down mid-job.
+     *
+     * Runtime.halt (not System.exit): an orphan's FDB cluster died with its
+     * parent, and shutdown hooks that talk to FDB can block forever — an
+     * orphan cleaner that can hang is no cleaner at all.
+     *
+     * Note this makes stdin load-bearing: launched with stdin at EOF (e.g.
+     * redirected from /dev/null), the server exits immediately by design. Run
+     * it interactively (TTY stdin) or behind a held-open pipe.
+     */
+    private static void startParentDeathWatchdog() {
+        Thread watchdog = new Thread(() -> {
+            try {
+                byte[] discard = new byte[256];
+                while (System.in.read(discard) != -1) {
+                    // Nothing is ever written on stdin; drain until EOF regardless.
+                }
+            } catch (IOException ignored) {
+                // An unreadable stdin gives the same signal as EOF: the parent
+                // is unreachable.
+            }
+            System.err.println("stdin EOF — parent process is gone, halting");
+            Runtime.getRuntime().halt(0);
+        }, "parent-death-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
     }
 
     private static void handleHealth(HttpExchange exchange) throws IOException {

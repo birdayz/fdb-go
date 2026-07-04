@@ -230,11 +230,31 @@ write_files:
       ExecStart=/usr/local/bin/bazelscaleset-run.sh
       Restart=always
       RestartSec=5
+      # A leaked/oversized job process getting OOM-killed must fail THAT job, not
+      # stop the whole supervisor. The systemd default (OOMPolicy=stop) tore the
+      # unit down mid-job when the kernel OOM-killed one leaked conformance JVM:
+      # the running job was canceled, the supervisor exited, and (pre-PR-#444
+      # binaries) the scale set was deleted+recreated on the restart. The main
+      # process dying is still handled by Restart=always.
+      OOMPolicy=continue
 
       [Install]
       WantedBy=multi-user.target
 
+  # Cap journal disk usage. Uncapped, journald had accumulated 2.3G on the 75G
+  # root disk that also hosts Docker images and bazel install bases — disk
+  # pressure on this box turns into failed CI jobs. 500M keeps ~days of
+  # runner/job logs, which is all incident forensics has ever needed here.
+  - path: /etc/systemd/journald.conf.d/cap.conf
+    content: |
+      [Journal]
+      SystemMaxUse=500M
+
 runcmd:
+  # journald starts before cloud-init writes the 500M cap drop-in above; restart
+  # so the cap applies from first boot (it also vacuums any existing overage).
+  - systemctl restart systemd-journald
+
   # CI data volume (RFC-115 §7): the 100GB ext4 volume (hcloud_volume.runner_data) is
   # ext4-formatted by tofu and auto-mounted by Hetzner at /mnt/HC_Volume_<id>. Link it to a
   # STABLE /mnt/ci-data and create Docker + Bazel subdirs on it BEFORE Docker starts, so
