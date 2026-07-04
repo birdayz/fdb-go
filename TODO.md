@@ -230,12 +230,15 @@ validation gate.
     Commit 5 LANDED: the F4-rider dead-for-gated pins (gated=empty, emergent owner edge,
     residual dotted still classifies — the reachability proof deferring physical deletion).
     Remaining: the four-gate gauntlet (Graefe impl / Torvalds / codex / @claude on the PR).
-    Graefe impl ACK (follow-ups booked): (a) probe-purity split — translateFilter's enclosed
-    stand-down probe TRANSLATES the rotated cluster and discards it; split classify/build or
-    memoize the built select (the purity invariant is implicit today — admitted legs are
-    scans/gated boxes with no side state); (b) S4 rider: flip deriveColumnsFromJoin's ordinal-top
-    arm from leak-keyed (_N observable) to RV-SHAPE-keyed when S4 makes the positional read the
-    sole authority.
+    Review nit booked (metadata-only, later pass): arrayElementTypeNameFromDescs resolves a BARE
+    collection-field name via descriptorForColumn, whose ambiguity rule is first-match — two
+    joined tables sharing a repeated-field NAME with different element kinds could mistype the
+    erased-type fall-through's STRUCT/scalar metadata (reachable only when the plan-level element
+    type is erased AND the bare name is ambiguous across legs).
+    Gauntlet ledger: probe-purity DONE (consume-once enclosedGatherCache, round 2). S4 rider
+    kept: revisit deriveColumnsFromJoin's ordinal-top arm when S4 makes the positional read the
+    sole authority (the structural IsPositionalMergeRC discriminator landed in round 4 and
+    closed the leak-keying note; S4 may retire the arm outright).
     - RETRACTED (probe-verified with discriminating data): the "KNOWN-BROKEN spanning residual" was
       a PHANTOM — the commit-1 seeds (WV {5,6} vs elements {7,8}) made `EL > WV` all-true, so the
       all-rows result briefly read as a dropped predicate was the CORRECT answer. With WV {5,6,7}
