@@ -2799,6 +2799,23 @@ codex P1 — all landed:
 - planResultValue is now an explicit ROW-SHAPE-PRESERVING whitelist (filter/FOD/DoE), never
   a generic GetInner walk — a schema-changing plan (aggregation, projection) terminates the
   walk instead of handing the rebase a pre-aggregation schema as authority (Torvalds
-  finding 1). The fail-closed alias checks use EXACT identifier comparison (fails closed on
+  finding 1). Note: FETCH SHELLS are walk-terminators under the whitelist where the generic
+  walk unwrapped them — a fetch-wrapped box winner now fails closed (loud plan loss, not
+  silent misbinding); acceptable until the positional binders land (the same exit gate as
+  class K). The fail-closed alias checks use EXACT identifier comparison (fails closed on
   a case mismatch; the fold failed open — finding 2). Merge-seed split coarseness accepted
   (over-routing to the correlated inner is semantically harmless — Graefe finding 2b).
+
+**codex P2 (round 3) — a REGRESSION the wrapper introduced, caught and fixed:** the
+LogicalCTE alias-carrier reuses cteScope, so a derived alias named like an enclosing
+WITH-CTE (`WITH c AS (…) SELECT … FROM (SELECT * FROM c) c`) clobbered the outer binding:
+registration overwrote without saving, and the body — translated LAZILY at scan
+resolution — resolved its own name to the real table (delete-while-recursing), returning
+ZERO rows where the base returned the CTE rows. Fixed with a proper LEXICAL-SCOPE shadow
+stack (cteShadowStack): translateCTE pushes the shadowed outer binding (nil = unbound) and
+restores it; every cteScope body expansion goes through inCTEDefiningScope, which pops one
+level so the body's own name resolves against its DEFINING scope. Pinned: plain,
+qualified-star, and EXISTS-correlated shadow forms (the EXISTS form is a loud 0AF00
+limitation — buildDerivedTableSource resolves derived bodies against the CATALOG only, a
+WITH-CTE body is not derivable there; never-wrong-rows pinned, booked with the
+derived-alias follow-ons).

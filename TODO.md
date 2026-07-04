@@ -3298,9 +3298,16 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    LEFT+EXISTS) root-caused across four layers and fixed with the Java-shaped correlated
    step-1 (buildCorrelatedFlatMapPlan; the audited decline-only fix was insufficient —
    REWRITING promotion drops the unmerged member; full record in the RFC) + the 1+1 path's
-   buried-leg rebase; unmasked matrix A–H pinned. DISCOVERED + booked NEXT on the branch:
-   derived-alias EXISTS correlation 42703 (semantic scope gap); the alias-unchecked frontier
-   fallback follow-up (values.go evaluateCorrelated) dies with commits 2–4.**
+   buried-leg rebase; unmasked matrix A–H pinned. DISCOVERED + FIXED on the branch:
+   derived-alias EXISTS correlation 42703 (scope registration + the LogicalCTE alias
+   carrier on all three derived arms) and the codex-caught CTE-shadow regression
+   (cteShadowStack lexical scoping). LOUD-LIMITATION pins with exit gates (never wrong
+   rows; flip to rows asserts): scalar-subquery-inside-EXISTS over a bare-scan outer
+   (matrix class K — exit gate = the item-2 positional binders, commits 2–4);
+   CTE-shadowed derived alias + EXISTS (buildDerivedTableSource resolves derived bodies
+   against the catalog only — teach it CTE bodies); fetch-shell walk-terminators under
+   planResultValue (same binder exit gate). The alias-unchecked frontier fallback
+   follow-up (values.go evaluateCorrelated) dies with commits 2–4.**
    **CHARTER EXTENDED (post-W4-left sequencing ruling): absorbs the under-existential unnest
    class (`FROM t, t.arr AS v WHERE EXISTS(…)` — the W5 F4 rider's booking gap, closed here)
    and the EXISTS-rider clusterArity poison (a cluster whose leg filter/project carries

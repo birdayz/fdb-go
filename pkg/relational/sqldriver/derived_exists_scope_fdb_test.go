@@ -139,6 +139,67 @@ func TestFDB_DerivedAliasExistsCorrelation(t *testing.T) {
 			"WHERE NOT EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)",
 		[]string{"empty", "ops"})
 
+	// (h) A derived-table alias that SHADOWS an enclosing WITH-CTE of the
+	// same name, the derived body referencing that CTE: the alias-carrier
+	// wrapper reuses the CTE scope, so without the shadow-stack pop the
+	// body's `FROM c` rebound to the wrapper itself (dropping the WITH
+	// binding) and the query returned ZERO rows. Plain, qualified-star
+	// (the rebuild path), and EXISTS-correlated forms.
+	want(t, "cte-shadow/plain",
+		"WITH c AS (SELECT id, fname FROM emp WHERE id = 1) "+
+			"SELECT c.fname FROM (SELECT * FROM c) c",
+		[]string{"alice"})
+	// The EXISTS-correlated shadow form is a CURRENT LIMITATION: the EXISTS
+	// outer-scope builder (buildDerivedTableSource) resolves the derived
+	// body against the CATALOG only — a body reading a WITH-CTE is not
+	// derivable there, and the query REJECTS LOUDLY (0AF00; it has never
+	// returned rows). Wrong rows are the one forbidden outcome; flip to the
+	// rows assert when the scope builder learns CTE bodies (booked in
+	// TODO.md with the derived-alias follow-ons).
+	{
+		q := "WITH c AS (SELECT id, fname FROM emp) " +
+			"SELECT c.fname FROM (SELECT * FROM c) c " +
+			"WHERE EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = c.id)"
+		r, err := db.QueryContext(ctx, q)
+		if err == nil {
+			var got []string
+			for r.Next() {
+				var n sql.NullString
+				if err := r.Scan(&n); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				got = append(got, n.String)
+			}
+			r.Close()
+			if len(got) != 1 || got[0] != "alice" {
+				t.Errorf("cte-shadow/exists returned WRONG rows: %v, want the loud rejection or exactly [alice]\n  sql: %s", got, q)
+			}
+		}
+	}
+	{
+		q := "WITH c AS (SELECT id, fname FROM emp WHERE id = 1) " +
+			"SELECT c.* FROM (SELECT * FROM c) c"
+		r, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Errorf("cte-shadow/qstar: query error: %v\n  sql: %s", err, q)
+		} else {
+			n := 0
+			var id sql.NullInt64
+			var name sql.NullString
+			for r.Next() {
+				if err := r.Scan(&id, &name); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				n++
+			}
+			r.Close()
+			if n != 1 || id.Int64 != 1 || name.String != "alice" {
+				t.Errorf("cte-shadow/qstar: got %d rows (last id=%v name=%v), want exactly (1, alice)\n  sql: %s",
+					n, id.Int64, name.String, q)
+			}
+		}
+	}
+
 	// (f) QUALIFIED STAR over the derived source + correlated EXISTS:
 	// `SELECT e.*` routes the no-joins derived build through the
 	// qualified-star REBUILD (needRebuild → buildLogicalPlanForSelect) — a

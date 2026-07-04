@@ -785,7 +785,14 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		var legAliases []string
 		if rv := planResultValue(outerPlan); rv != nil {
 			for _, a := range mergedOuterLegAliases(rv, "", "") {
-				if strings.EqualFold(a, outerCorr.Name()) {
+				// EXACT comparison (identifiers are case-sensitive by
+				// design): a fold here silently EXCLUDED a case-variant leg
+				// alias from the rebase set — its buried references then
+				// skipped the rebase into the non-declining branch. A
+				// case-variant binding alias kept in the set merely gets a
+				// qualified rewrite that the merged row's qualified keys
+				// still satisfy.
+				if a == outerCorr.Name() {
 					continue
 				}
 				legAliases = append(legAliases, a)

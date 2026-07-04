@@ -228,6 +228,9 @@ func TestFDB_RFC173Item2_LeftJoinExistsResidual(t *testing.T) {
 		q := "SELECT e.fname FROM emp e WHERE EXISTS (SELECT 1 FROM badge b " +
 			"WHERE b.emp_id = e.id AND b.id > (SELECT MIN(id) FROM dept d2))"
 		r, err := db.QueryContext(ctx, q)
+		if err != nil && !strings.Contains(err.Error(), "0AF00") {
+			t.Errorf("scalar-in-EXISTS declined with the WRONG error class (want the planner's 0AF00 decline): %v", err)
+		}
 		if err == nil {
 			var got []string
 			for r.Next() {
