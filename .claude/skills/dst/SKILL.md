@@ -156,6 +156,35 @@ bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed \
   FDB (chaos/differential) before calling it wire-safe. (The serialization fix above *is* wire-adjacent —
   it was cross-checked against Java's field ordering.)
 
+## interleave (concurrent-transaction SSI driver)
+
+Concurrent-open-transaction driver (`pkg/simfdb/hunt/interleave/`, RFC-179 Tier 2, a `hunt.Workload`).
+Every other hunt workload is single-writer, so SimFDB's SSI resolver never resolved a real conflict —
+`1020` never fired. This one holds N transactions open, interleaves **RMW-increment** (`Get`+`Set`, a
+read conflict) and **atomic-add** (`Add`, no read conflict) ops through one deterministic goroutine, and
+commits through the serialized resolver. That makes `not_committed(1020)` fire for real: **5,317 across
+2,000 pure-RMW seeds**, and **zero** on the pure-add profile (the "why atomic ops exist" contrast).
+
+```sh
+bazelisk test //pkg/simfdb/hunt/interleave:interleave_test --test_output=errors
+# TestConflictsFire logs the live 1020 count; TestClean sweeps every profile × 3000 seeds.
+# Runs inside the overnight sweep too: dst-hunt -profiles interleave
+```
+
+- **Two intrinsic oracles, no external reference.** *Verdict:* independently recompute the SSI verdict
+  from point-key read/write sets + a model version counter kept in lockstep with SimFDB's `lastVersion`
+  (pin the read version at the first `Get`, exactly as SimFDB's lazy GRV does) — catches a **missed
+  conflict** (committed a lost update) AND a **spurious abort**; the point-set-vs-byte-range gap is its
+  teeth against the resolver's range arithmetic. *State:* retry-drain every abort so each program applies
+  exactly once, then assert the final keyspace equals the **seed-derived** sum of every program's effect
+  (increment +1, add +delta) — catches lost updates, rolled-back-write leaks, atomic-add miscounts.
+- **Faithfulness rule:** the verdict oracle only works because the model tracks read-version pinning and
+  commit-version bumps in lockstep (single goroutine, serialized commits). If you extend the op set, keep
+  the model's read/write-set bookkeeping exact — a model drift shows up as a false `verdict oracle` diff.
+- **v1 is fault-free** (the resolver is under test; injected commit faults would confound the
+  serializability oracles). The fault-enabled variant — teach the state oracle about post-apply
+  `commit_unknown(1021)`, the non-idempotent-`Add`-under-true-rollback surface — is the next extension.
+
 ## golden (characterization gate)
 
 Behavior lock for the SQL engine (`pkg/simfdb/hunt/golden/`, RFC-179 Tier 2 oracle). For a curated
@@ -385,7 +414,7 @@ above.
 | **−1** rr + Delve replay | reverse-debug a *captured* real-FDB flake | ⚠️ **setup** — `rr` not installed; `--backend=rr` |
 | **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ✅ **Available** (`pkg/dst`) |
 | **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ✅ **Available** (`pkg/simfdb`) |
-| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); continuation-under-fault replay | ✅ **Available** (`pkg/simfdb/hunt`, `continuation_replay_test.go`) — SQL-workload driver + concurrent-open-tx interleaving driver still to come |
+| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** concurrent-tx SSI driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave`) — continuation-under-fault replay + fault-enabled interleave still to come |
 | **3** client sim (Track B) | `synctest`-driven client concurrency + simulated server processes | ⏳ **separate RFC** (not full DST) |
 
 The fast/reproducible inner loop for the record layer is now **hunt** (in-memory, seeded, true-rollback

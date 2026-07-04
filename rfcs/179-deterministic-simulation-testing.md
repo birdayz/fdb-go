@@ -633,18 +633,29 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
     shrink, `cmd/dst-hunt` overnight runner. Found/fixed the dynamic-record wire-serialization bug.
   - Golden / characterization oracle ✅ `pkg/simfdb/hunt/golden` (result + `EXPLAIN` baseline, diff on
     merge; determinism-proven across 160+ fresh processes).
-  - Independent-model + (partial) metamorphic SQL oracles ✅ in `sqlhunt`; full **metamorphic** oracle
-    (plan-diversity equivalence + partition invariants) ⏳ **not yet built**.
-  - **Concurrent-open-transaction interleaving driver ⏳ NOT YET BUILT — the selected next build**
-    (after operationalizing golden). **Why it is the priority:** every workload to date is single-writer,
-    so SimFDB's SSI resolver has **not fired a single real `1020`** — Tier 1's conflict resolution is an
-    *unexercised checkbox* (NO-FAKE-CHECKBOXES). This driver — hold several transactions open, interleave
-    their ops in one goroutine, commit through the serialized resolver — is what makes `1020` and
-    non-idempotent-`Add`-under-true-rollback-`1021` actually fire. Hard prerequisite: MVCC
-    reads-at-read-version (Tier 1 item 5).
+  - Independent-model + metamorphic SQL oracles ✅ in `sqlhunt` and `pkg/simfdb/hunt/metamorphic`
+    (`Check` runs each group of asserted-equivalent queries over SimFDB and diffs the multisets — the
+    WRONG-catcher; `dst-generate` is its runner). The partition-invariant variant is deferred: the
+    scalar-subquery arithmetic it needs (`SELECT (..)+(..)`) is unsupported SQL today.
+  - **Concurrent-open-transaction interleaving driver ✅ BUILT** — `pkg/simfdb/hunt/interleave`. Holds
+    N transactions open, interleaves RMW-increment / atomic-add ops through one deterministic goroutine,
+    and commits through the serialized SSI resolver. Every prior workload is single-writer, so the
+    resolver had **never fired a real `1020`** — an *unexercised checkbox* (NO-FAKE-CHECKBOXES). It now
+    fires **5,317 real `1020`s across 2,000 pure-RMW seeds** (and **zero** on the pure-atomic-add
+    profile — the commutativity contrast). Two intrinsic oracles judge each run: a **verdict** oracle
+    (independently recompute the SSI verdict from point-key read/write sets + a lockstep model version
+    counter — catches missed conflicts AND spurious aborts; the point-vs-byte-range representation gap is
+    its teeth) and a **state** oracle (retry-drain every abort so each program applies exactly once, then
+    assert the final keyspace equals the seed-derived sum of every program's effect — catches lost
+    updates, rolled-back-write leaks, atomic-add miscounts). v1 is fault-free (the resolver itself is
+    under test); a fault-enabled variant that teaches the state oracle about post-apply
+    `commit_unknown`(1021) — the non-idempotent-`Add`-under-rollback surface — is the follow-up.
   - **LLM-guided adversarial input generator** (the "clanker" analog — Claude proposes inputs, oracles
-    judge) ⏳ design only; build after the metamorphic oracle it feeds.
-  - Continuation-under-fault replay ⏳ not yet built (plan-hash-not-in-token bug class).
+    judge) ✅ v1 built + run: the `llm-metamorphic-generate` workflow proposes equivalence scenarios,
+    `dst-generate` judges them over SimFDB. First run found **2 real query-engine bugs** (aggregate-index
+    all-NULL-group drop; inconsistent NULL ordering — both in `TODO.md ## DST findings`).
+  - **Selected next build:** continuation-under-fault replay ⏳ not yet built (plan-hash-not-in-token
+    bug class) — resume a cursor across an injected fault and assert the replayed page set is exact.
 - **Tier 3** — Track B, separate RFC, not started (out of scope here).
 
 ## 8. Risks & non-goals
