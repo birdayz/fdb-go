@@ -287,8 +287,10 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 	// joins gate independently and SelectMergeRule composes the leg's ordinal
 	// RV into this parent via translateValueCorrelations + the fuse arm —
 	// Java's model. (Enclosure poisoning survives only for the name-model
-	// parents that live until W4/W5: existential flattens, recursive CTE,
-	// correlated-scalar seeds.)
+	// parents still standing after W4-left/W5: the residual unnest
+	// compositions and ungated correlated-scalar outers — recursive-CTE
+	// REFERENCE joins gate ordinal, and gated existential selects take the
+	// ordinal rebase.)
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = false
 	quantifiers := make([]expressions.Quantifier, 0, len(legs))

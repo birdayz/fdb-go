@@ -23,8 +23,15 @@ import (
 // LIVE since W3b: the gate's per-seed decisions drive the ordinal seed —
 // Gated joins get the baked ofOrdinalNumber result value + cross-leg
 // predicate baking; the S3 fulcrum widened the wedge to N-way inner
-// clusters (arity >= 2) — the name model survives only for the W4/W5
-// shapes (dissolved-LEFT, unnest, recursive CTE, correlated scalar).
+// clusters (arity >= 2); W4-left gates single-source LEFT/RIGHT boxes and
+// routes EXISTS-over-gated-joins through the ordinal existential rebase. A
+// join over a RECURSIVE-CTE REFERENCE (a cteExprScope temp-table scan) has
+// gated since the fulcrum — the reference is an ordinal-eligible arity-1
+// leaf typed by cteColumnsScope (W4-left commit-3 pin); only the recursive
+// DEFINITION node in leg position stays poison, and that shape is
+// production-unreachable (derived-table WITH is 42F01). The name model
+// survives only for the PINNED residuals (joined-preserved LEFT clusters,
+// unnest declines, ungated correlated-scalar outers, dup-alias clusters).
 
 // arityPoison marks a subtree that makes its cluster unclassifiable. The
 // contract direction: anything unclassifiable counts as >2, failing toward
