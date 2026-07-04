@@ -416,6 +416,16 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				m.Set(wauxDesc.Fields().ByName("WV"), protoreflect.ValueOfInt32(6))
 				return m
 			}(),
+			// WV=7 makes the spanning WHERE genuinely DISCRIMINATING: with only
+			// {5,6}, EL>WV was all-true over elements {7,8} and an all-rows
+			// result was indistinguishable from a dropped predicate (the exact
+			// mistake that briefly booked a phantom "spanning drop" bug).
+			func() proto.Message {
+				m := dynamicpb.NewMessage(wauxDesc)
+				m.Set(wauxDesc.Fields().ByName("XID"), protoreflect.ValueOfInt64(3))
+				m.Set(wauxDesc.Fields().ByName("WV"), protoreflect.ValueOfInt32(7))
+				return m
+			}(),
 		}
 		for _, r := range recs {
 			if _, e := store.SaveRecord(r); e != nil {
@@ -3304,7 +3314,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// Scan(WSRC)); the declined/residual shape would FlatMap over the
 		// MERGED outer join instead.
 		explain := assertRows(t, `SELECT "EL" FROM WSRC, WAUX, WSRC."WARR" AS "EL"`, []string{
-			"EL=7", "EL=7", "EL=8", "EL=8",
+			"EL=7", "EL=7", "EL=7", "EL=8", "EL=8", "EL=8",
 		})
 		if !strings.Contains(explain, "FlatMap(outer=Scan(WSRC)") {
 			t.Fatalf("plan does not pair the owning source directly with its Explode (the gathered path's signature):\n%s", explain)
@@ -3313,7 +3323,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// WITH ORDINALITY through the gathered path: the AS+AT (full-baked)
 		// seed form; ordinals reset per source row, unaffected by the aux leg.
 		assertRows(t, `SELECT "EL", "O" FROM WSRC, WAUX, WSRC."WARR" AS "EL" AT "O"`, []string{
-			"EL=7|O=1", "EL=7|O=1", "EL=8|O=2", "EL=8|O=2",
+			"EL=7|O=1", "EL=7|O=1", "EL=7|O=1", "EL=8|O=2", "EL=8|O=2", "EL=8|O=2",
 		})
 
 		// Single-side WHEREs route through the GATHERED select: a cluster-leg
@@ -3322,21 +3332,19 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			"EL=7|WV=5", "EL=8|WV=5",
 		})
 		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WAUX, WSRC."WARR" AS "EL" WHERE "EL" > 7`, []string{
-			"EL=8|WV=5", "EL=8|WV=6",
+			"EL=8|WV=5", "EL=8|WV=6", "EL=8|WV=7",
 		})
 
-		// A conjunct SPANNING the element and a cluster leg forces the
-		// RESIDUAL translation (commit-1 fail-open: the spanning predicate
-		// silently dropped through the gathered re-enumeration — probed red).
-		// KNOWN-BROKEN residual: over THIS disjoint schema the spanning WHERE
-		// (`"EL" > "WV"`, bare or WAUX-qualified) mis-filters on the residual
-		// too — and the forced-residual path IS master's code path by
-		// construction, so it is a PRE-EXISTING name-model gap in a
-		// previously-unpinned shape (the P2a corpus's MA/MB spanning pins
-		// pass; the divergence axis is under investigation). Booked in TODO;
-		// the leg-window commit ordinalizes the spanning class through the
-		// GATHERED path and pins correct rows then. No row assertion here —
-		// asserting today's wrong rows would pin a bug as behavior.
+		// A conjunct SPANNING the element and a cluster leg — with GENUINELY
+		// DISCRIMINATING data (WV=7 excludes EL=7 but not EL=8; the commit-1
+		// seeds {5,6} made EL>WV all-true, and an all-rows result was briefly
+		// misread as a dropped predicate — a phantom bug the investigation
+		// retracted). Today the commit-1 fail-open routes this conjunct to the
+		// residual; the rows are CORRECT on both paths (probe-verified), so
+		// this pin is path-agnostic and flips nothing when the fail-open lifts.
+		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WAUX, WSRC."WARR" AS "EL" WHERE "EL" > "WV"`, []string{
+			"EL=7|WV=5", "EL=7|WV=6", "EL=8|WV=5", "EL=8|WV=6", "EL=8|WV=7",
+		})
 	})
 }
 

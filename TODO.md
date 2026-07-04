@@ -210,20 +210,27 @@ validation gate.
     shadowed R16, name-ambiguous, and spanning-WHERE classes), 3 Q2 interning widening + budget pins,
     4 §5 oracle rebind + the SELECT*-over-multi-source fix target (cannot plan on master), 5
     classifier dead-for-gated pins; then the four-gate gauntlet.
-    - [ ] KNOWN-BROKEN residual (pre-existing, found by the W5 e2e work): a WHERE conjunct SPANNING
-      the unnest element and a cluster leg over the DISJOINT-column schema mis-filters on the
-      name-model residual — `SELECT EL, WV FROM WSRC, WAUX, WSRC.WARR AS EL WHERE EL > WAUX.WV`
-      returns all 4 rows (want 3) via the residual, which is master's code path by construction
-      (forceUnnestResidual only selects the old builder). The P2a MA/MB spanning pins pass — the
-      divergence axis (disjoint columns? aliasless FROM?) needs root-causing; the leg-window commit
-      ordinalizes the class through the GATHERED path and pins correct rows.
-    - Commit-2 investigation ground truth (worktree-verified on master, both identical): a plain
-      3-way comma cluster with DOTTED projections and NO WHERE plans and returns correct rows (the
-      flat-bare-output dotted resolution mechanism EXISTS — find it; R18's gathered failure must
-      diverge from it somewhere reachable); the same cluster with per-leg WHERE conjuncts only
-      (`FROM ca a, cb b, cc c WHERE a.id=1 AND b.bid=10`, a filtered cartesian with no cross-leg
-      predicate) CANNOT PLAN (0AF00) on master either — a pre-existing partition gap, out of W5
-      scope, booked here so it is not mistaken for a W5 regression.
+    - RETRACTED (probe-verified with discriminating data): the "KNOWN-BROKEN spanning residual" was
+      a PHANTOM — the commit-1 seeds (WV {5,6} vs elements {7,8}) made `EL > WV` all-true, so the
+      all-rows result briefly read as a dropped predicate was the CORRECT answer. With WV {5,6,7}
+      the spanning WHERE filters correctly through BOTH the gathered path and the residual (and the
+      "P2a-vs-disjoint divergence axis" does not exist). Pins corrected to discriminating data.
+      Commit 2 lifts the now-unnecessary `predSpansUnnestAndLeg`/`forceUnnestResidual` fail-open.
+    - Commit-2 investigation results (probe-verified end-to-end): the case-A dotted-resolution
+      mechanism over the flat output = LAZY dotted names + runtime span routing
+      (`downstreamLegWindows` → `ordinalJoinSpansOf` with legRVs → `spanAwareRow.GetByName`); the
+      R18 divergence = `resolveSpanLeaf` stops at merge quantifiers for SINGLE-accessor paths, so
+      the mixed (no-AT) bare-QOV element yields partial leg coverage → windows decline → strict
+      positional context → loud miss (the AS+AT full-baked ON-carrying gathered shape ALREADY WORKS
+      end-to-end). Commit-2 core = the ~40-line span-derivation extension (synthesize the 1-field
+      element leg for a single-accessor bare-non-record-QOV merge slot — the existing :145-155
+      synthesis pattern), then lift the ON-carrying decline AND the spanning fail-open. Latent
+      hazards flagged: alias-case at the gather boundary (bake preserves original case, gather
+      uppercases — normalize + pin); the NLJ birth's nil-legRVs Datum dimension.
+    - Pre-existing (NOT W5, worktree-verified on master): a filtered cartesian with only per-leg
+      WHERE conjuncts (`FROM ca a, cb b, cc c WHERE a.id=1 AND b.bid=10`, no cross-leg predicate)
+      CANNOT PLAN (0AF00) — a partition gap, booked so it is not mistaken for a W5 regression.
+      (The no-WHERE dotted 3-way works.)
   - [ ] **W4-left + EXISTS + recursive-CTE joins** (retire `NewAnchoredJoinRecord` via
     `buildJoinResultValue`: LEFT/RIGHT-OUTER box, EXISTS-over-join, mixed-nesting, dup-alias,
     recursive-CTE-enclosed).
