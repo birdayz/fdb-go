@@ -4529,7 +4529,7 @@ func recursiveRemapValues(cols []string, ordinalReads bool) []values.Value {
 	out := make([]values.Value, len(cols))
 	for i, c := range cols {
 		cu := strings.ToUpper(c)
-		if dot := strings.IndexByte(cu, '.'); dot >= 0 {
+		if dot := strings.IndexByte(cu, '.'); dot >= 0 && isQualifiedIdentPair(cu, dot) {
 			out[i] = &values.FieldValue{
 				Field: cu[dot+1:],
 				Typ:   values.UnknownType,
@@ -4542,6 +4542,33 @@ func recursiveRemapValues(cols []string, ordinalReads bool) []values.Value {
 		}
 	}
 	return out
+}
+
+// isQualifiedIdentPair reports whether an upper-cased physical output name
+// with a dot at `dot` is a GENUINE qualified reference (IDENT.IDENT) rather
+// than a computed rendering whose dot sits INSIDE an expression. The dotted
+// read arm splits at the first dot and builds QOV(prefix) — applied to a
+// rendering like "(B.ID + 1)" that manufactured the garbage correlation
+// "(B" (the S4 kill-list first-dot-split hazard; pre-hardening the ordinal
+// model loud-errored there and the §5 differential watched). A computed
+// rendering now falls through to the ordinal / bare-name arms, whose read
+// name is the FULL rendering — exactly the key the projection writes.
+func isQualifiedIdentPair(cu string, dot int) bool {
+	isIdent := func(s string) bool {
+		if s == "" {
+			return false
+		}
+		for i := 0; i < len(s); i++ {
+			ch := s[i]
+			switch {
+			case ch >= 'A' && ch <= 'Z', ch >= '0' && ch <= '9', ch == '_':
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	return isIdent(cu[:dot]) && isIdent(cu[dot+1:])
 }
 
 // equalFoldSlices reports whether two string slices are element-wise equal

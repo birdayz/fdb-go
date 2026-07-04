@@ -56,3 +56,39 @@ func TestRFC173W4Left_RecursiveRefJoinGatesOrdinal(t *testing.T) {
 		t.Fatal("a recursive DEFINITION node in leg position must stay poison (defensive; production-unreachable)")
 	}
 }
+
+// The recursive-CTE leg remap's dotted arm is for GENUINE qualified
+// references (IDENT.IDENT) only: a computed rendering whose dot sits inside
+// the expression ("(B.ID + 1)") used to split at the first dot and
+// manufacture the garbage correlation "(B" (the S4 kill-list hazard). Such a
+// name now takes the ordinal / bare-name arms — the read name is the full
+// rendering, the key the projection writes.
+func TestRFC173Rcte_RemapComputedRenderingNotSplit(t *testing.T) {
+	t.Parallel()
+	vals := recursiveRemapValues([]string{"(B.ID + 1)", "B.ID", "PLAIN"}, true)
+
+	// Computed rendering: NOT split — a resolved-ordinal read named by the
+	// full rendering, no QOV child.
+	fv0, ok := vals[0].(*values.FieldValue)
+	if !ok || fv0.Child != nil {
+		t.Fatalf("computed rendering = %#v, want a flat FieldValue (no QOV split)", vals[0])
+	}
+	if fv0.Field != "(B.ID + 1)" {
+		t.Fatalf("computed rendering read name = %q, want the full rendering", fv0.Field)
+	}
+	if fv0.Resolved == nil {
+		t.Fatal("computed rendering under ordinalReads must carry the resolved ordinal")
+	}
+
+	// Genuine qualified reference: the dotted QOV read stays.
+	fv1, ok := vals[1].(*values.FieldValue)
+	if !ok || fv1.Child == nil || fv1.Field != "ID" {
+		t.Fatalf("qualified reference = %#v, want QOV(B).ID", vals[1])
+	}
+
+	// Bare column: resolved-ordinal read.
+	fv2, ok := vals[2].(*values.FieldValue)
+	if !ok || fv2.Child != nil || fv2.Field != "PLAIN" || fv2.Resolved == nil {
+		t.Fatalf("bare column = %#v, want resolved-ordinal PLAIN", vals[2])
+	}
+}
