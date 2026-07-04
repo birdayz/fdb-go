@@ -29,8 +29,18 @@ type JavaInvoker struct {
 	baseURL    string
 	serverCmd  *exec.Cmd
 	httpClient *http.Client
-	mu         sync.Mutex
-	closed     bool
+	// stdinW is the write end of the pipe passed to the Java server as stdin.
+	// Nothing is ever written to it — it exists so the KERNEL closes it when
+	// this Go process dies (including SIGKILL from a bazel timeout, where no
+	// Go cleanup code runs), which the server's parent-death watchdog sees as
+	// stdin EOF and halts. This is the mechanism that prevents orphaned JVMs
+	// from outliving an abruptly-killed test run; accumulated orphans (-Xmx2g
+	// each) once exhausted swap on the CI runner and got the whole runner unit
+	// OOM-killed mid-job. Kept referenced here so GC can't finalize (close) it
+	// while the server should stay alive; Close() closes it explicitly.
+	stdinW *os.File
+	mu     sync.Mutex
+	closed bool
 	// borrows counts how many times this server has been handed out by a
 	// JavaServerPool. The pool recycles a server once it reaches the pool's
 	// maxInvocations bound. Guarded by mu.
@@ -292,19 +302,43 @@ func startJavaServer() (*JavaInvoker, error) {
 	cmd.Env = append(os.Environ(), r.Env()...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	// Parent-death tether: hand the server a pipe as stdin and hold the write
+	// end for the invoker's lifetime. The group-kill in Close() only works when
+	// Close actually runs; when bazel SIGKILLs the test process on timeout,
+	// nothing Go-side runs and the JVM used to survive as an orphan. The kernel,
+	// however, always closes this process's fds on death — the server's
+	// stdin-EOF watchdog (conformance_server.java) turns that into an exit.
+	// stdinR is an *os.File, so exec passes the fd directly to the child (no
+	// copier goroutine holding extra handles).
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdin tether pipe: %w", err)
+	}
+	cmd.Stdin = stdinR
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return nil, fmt.Errorf("failed to get stdout pipe: %w", err)
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return nil, fmt.Errorf("failed to get stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
 		return nil, fmt.Errorf("failed to start server: %w", err)
 	}
+	// The child holds its own copy of the read end now; close ours so the only
+	// fd we keep is the write end whose closure (explicit or by process death)
+	// signals the server.
+	_ = stdinR.Close()
 
 	// Read port from stdout
 	scanner := bufio.NewScanner(stdout)
@@ -318,8 +352,13 @@ func startJavaServer() (*JavaInvoker, error) {
 	}
 
 	if port == "" {
-		// Try to read stderr for error details
+		// stdout EOF'd without a port line — the server is dead or dying. Try to
+		// read stderr for error details, then make sure nothing lingers: sever
+		// the stdin tether, kill the group, and reap the wrapper.
 		stderrBytes, _ := io.ReadAll(stderr)
+		_ = stdinW.Close()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		go func() { _, _ = cmd.Process.Wait() }()
 		return nil, fmt.Errorf("failed to read port from server stdout\nstderr: %s", string(stderrBytes))
 	}
 
@@ -375,6 +414,7 @@ func startJavaServer() (*JavaInvoker, error) {
 	invoker := &JavaInvoker{
 		baseURL:   baseURL,
 		serverCmd: cmd,
+		stdinW:    stdinW,
 		httpClient: &http.Client{
 			Timeout: 2 * time.Minute,
 		},
@@ -426,6 +466,13 @@ func (j *JavaInvoker) Close() error {
 			_ = resp.Body.Close()
 		}
 		cancel()
+	}
+
+	// Sever the stdin tether: even if the group kill below misses the JVM,
+	// stdin EOF makes the server's parent-death watchdog halt it. Also releases
+	// the pipe fd (pools spawn many servers over a run).
+	if j.stdinW != nil {
+		_ = j.stdinW.Close()
 	}
 
 	if j.serverCmd == nil || j.serverCmd.Process == nil {

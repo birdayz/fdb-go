@@ -101,6 +101,7 @@ go_test(
         "multidimensional_index_conformance_test.go",
         "nesting_index_conformance_test.go",
         "online_indexer_conformance_test.go",
+        "orphan_jvm_regression_test.go",
         "permuted_min_max_index_conformance_test.go",
         "plan_diff_conformance_test.go",
         "rangeset_conformance_test.go",
