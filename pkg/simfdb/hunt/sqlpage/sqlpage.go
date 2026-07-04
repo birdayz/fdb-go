@@ -179,12 +179,14 @@ func queries(rng *rand.Rand) []query {
 		{fmt.Sprintf("SELECT id, val FROM t ORDER BY val, id LIMIT %d", n), true},
 		{"SELECT cat, COUNT(*) FROM t GROUP BY cat", false},
 		{"SELECT cat, SUM(val) FROM t GROUP BY cat", false},
-		// QUARANTINED (two known executor-continuation bugs, both TODO.md "## DST findings", pinned by
-		// fix-detector tests, kept out of the sweep so it hunts other shapes):
-		//  1. bare `SELECT DISTINCT cat FROM t` — streaming DISTINCT drops its dedup state across a
-		//     continuation resume (TestKnownBug_DistinctContinuation). GROUP BY (correct) stays in.
-		//  2. multi-value `SELECT id FROM t WHERE cat IN (2,3)` — the InJoin/concat has no per-branch
-		//     continuation, so it errors 54F01 under a tiny scanned-rows limit (TestKnownBug_InJoinContinuation).
+		// QUARANTINED (known executor-continuation bugs, all TODO.md "## DST findings", pinned by
+		// fix-detector tests, kept out of the sweep so it hunts other shapes) — all "operator resume
+		// state not in the continuation token":
+		//  1. bare `SELECT DISTINCT cat FROM t` — streaming DISTINCT drops its in-memory dedup state
+		//     across a resume → DUP rows (TestKnownBug_DistinctContinuation). GROUP BY (correct) stays in.
+		//  2. multi-value `SELECT id FROM t WHERE cat IN (2,3)` — InJoin/concat has no per-branch
+		//     continuation → 54F01 under a tiny limit (TestKnownBug_InJoinContinuation).
+		//  3. `... UNION ALL ...` — same concatCursor root as (2) → 54F01 (TestKnownBug_UnionAllContinuation).
 		// Re-add each here once its executor gains continuation support.
 		{"SELECT a.id, b.id FROM t a, t2 b WHERE b.ref = a.id", false},
 		{"SELECT a.id, b.id FROM t a, t2 b WHERE b.ref > a.id", false},

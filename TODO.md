@@ -336,6 +336,27 @@ needs Java-alignment + a Graefe ACK.**
   out. **Cascades/executor bug — surface to Graefe; fix needs Java-alignment (port `InJoinCursor`'s
   continuation) + an ACK.** Not fixed. Repro (committed): `go test ./pkg/simfdb/hunt/sqlpage/ -run
   TestKnownBug_InJoinContinuation -v`. Quarantined out of the `sqlpage` sweep (comment at the site).
+- [ ] **`UNION ALL` errors `54F01` under pagination — same concat root as multi-value IN.** A systematic
+  executor-continuation audit (via the `sqlpage` harness) confirmed a third instance of the family:
+  `SELECT id FROM t WHERE cat=0 UNION ALL SELECT id FROM t WHERE cat=1` returns its rows unpaged but
+  **errors `54F01` under `EXECUTION_SCANNED_ROWS_LIMIT=1`** (also composed with ORDER BY/LIMIT). Distinct
+  SQL surface from the InJoin finding (a set operation, not an IN predicate) but the SAME root:
+  `RecordQueryUnionPlan` → `executeUnion`/`executeUnionStreaming` (`executor.go` ~L1611) → `newConcatCursor`,
+  and `concatCursor.OnNext` (`executor_new_plans.go` ~L1060) errors on any out-of-band child stop because
+  it carries no per-branch continuation. **Cascades/executor — Graefe-gated; not fixed.** Repro (committed):
+  `go test ./pkg/simfdb/hunt/sqlpage/ -run TestKnownBug_UnionAllContinuation -v`. Pinned by that
+  fix-detector.
+
+  **Audit scope (the family, for the owner):** ~14 operator classes audited under a tiny scanned-rows
+  limit. **Safe** (serialize resume state or are stateless passthrough): Scan/IndexScan, Project/Map,
+  Filter, Sort, StreamingAggregation (GROUP BY / HAVING / ordered), FlatMap (EXISTS / correlated / cross /
+  self join), Limit; Intersection is safe by source (RFC-071 per-child resume) but not SQL-reachable.
+  **Broken — one root, "operator resume state not in the continuation token":** `Distinct` (in-memory seen
+  set → silent DUP), and the concat combinators `InJoin` / `UNION ALL` (→ `54F01`); `UnorderedUnion` and
+  the `MergeSortUnion`/`InUnion` comp-key path are suspect-by-source but not reachable through this SQL
+  dialect. **A single fix — serialize `{branch-index, branch-continuation}` in `concatCursor` (as the
+  intersection combinator already does) — closes InJoin + InUnion + UnorderedUnion + UNION ALL together;
+  Distinct needs its seen-set serialized separately.**
 
 # NEXT
 
