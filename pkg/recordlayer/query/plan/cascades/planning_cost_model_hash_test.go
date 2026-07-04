@@ -71,10 +71,32 @@ func TestCostModel_PlanHashMintedAliasBlind(t *testing.T) {
 	if stablePlanHash(p1) != stablePlanHash(p2) {
 		t.Fatal("stablePlanHash depends on minted correlation identifiers — cost-tied candidates rank differently on every planning and the EXPLAIN'd winner flips")
 	}
-	// Contrast pin: a REAL content difference (a different literal in the
-	// predicate) must NOT collide — alias-blind is not content-blind.
+	// Structural-identity sanity: the same aliases and content rebuilt is
+	// the same hash.
 	p3 := build("q$100", "q$101", "q$102")
 	if stablePlanHash(p1) != stablePlanHash(p3) {
 		t.Fatal("stablePlanHash is not structural: identical trees hashed differently")
+	}
+}
+
+// TestCostModel_PlanHashContentSensitive pins the other half of alias
+// blindness: a REAL content difference — a different literal inside an
+// otherwise identical predicate tree — MUST change the hash. Alias-blind is
+// not content-blind: the predicate folds through SemanticHashCode, which
+// keeps literals (a content-blind hash would tie plans that filter
+// differently and hand the winner to arrival order).
+func TestCostModel_PlanHashContentSensitive(t *testing.T) {
+	t.Parallel()
+	build := func(lit int64) plans.RecordQueryPlan {
+		scanG := plans.NewRecordQueryScanPlan([]string{"PG"}, nil, false)
+		pred := predicates.NewComparisonPredicate(
+			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q$1")), "GID", values.NotNullLong),
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(lit)},
+		)
+		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(scanG,
+			[]predicates.QueryPredicate{pred}, values.NamedCorrelationIdentifier("q$1"))
+	}
+	if stablePlanHash(build(1)) == stablePlanHash(build(2)) {
+		t.Fatal("stablePlanHash is content-blind: predicates differing only in their literal hashed equal — such ties fall to arrival order")
 	}
 }

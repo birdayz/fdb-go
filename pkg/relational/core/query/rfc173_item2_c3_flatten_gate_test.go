@@ -218,6 +218,36 @@ func TestRFC173Item2C3_UnnestQualifiedReadRightmostSource(t *testing.T) {
 		}
 	})
 
+	t.Run("full-outer box outer reads qualified", func(t *testing.T) {
+		t.Parallel()
+		// A FULL OUTER box is merge-OPAQUE (clusterArity counts it as ONE
+		// post-flattening quantifier) yet its output row is MERGED — bare
+		// keys are last-leg-wins across both legs. clusterArity is therefore
+		// the WRONG proxy for row shape here: the authority is the outer
+		// row's visible namespace count (outerBoundAliases). A bare read
+		// over `FROM a FULL JOIN b, a.arr AS x` explodes whichever leg's
+		// array merged last.
+		tr := newGateTranslator(t)
+		tr.inInnerCluster = true
+		outer := logical.NewJoin(scan("Customer", "c"), scan("Order", "o"), logical.JoinFull, "")
+		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+		ref := tr.translateRef(j)
+		if ref == nil {
+			t.Fatalf("translation failed: %v", tr.translateErr)
+		}
+		ex := c3FindExplode(ref, map[*expressions.Reference]bool{})
+		if ex == nil {
+			t.Fatal("no ExplodeExpression in the translated unnest join")
+		}
+		fv, isFV := ex.GetCollectionValue().(*values.FieldValue)
+		if !isFV {
+			t.Fatalf("Explode collection = %T, want a FieldValue", ex.GetCollectionValue())
+		}
+		if !strings.EqualFold(fv.Field, "O.TAGS") {
+			t.Fatalf("FULL-box Explode reads %q, want the QUALIFIED %q — the box is merge-opaque (arity 1) but its ROW is merged (bare keys last-leg-wins)", fv.Field, "O.TAGS")
+		}
+	})
+
 	t.Run("single-source outer keeps the bare read", func(t *testing.T) {
 		t.Parallel()
 		tr := newGateTranslator(t)

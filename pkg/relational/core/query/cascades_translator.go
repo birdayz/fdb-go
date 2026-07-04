@@ -1221,13 +1221,20 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// correct only while the step-1 join kept declaration order, and returned
 	// A's elements the moment the cost model preferred the swapped operands
 	// (caught by the stable-tie-break landing). Read the QUALIFIED
-	// `SEG0.FIELD` key for EVERY merged outer — the anchored merged record
-	// carries it for every leg under either operand order. Only a genuine
-	// SINGLE-SOURCE outer (`FROM t, t.arr` — a scan/derived row, bare keys
-	// only, arity 1) reads the bare field. RFC-142.
+	// `SEG0.FIELD` key whenever the outer row carries MORE THAN ONE source
+	// namespace — the anchored merged record carries the qualified key for
+	// every leg under either operand order.
+	//
+	// The authority is outerBoundAliases (the outer row's VISIBLE namespace
+	// count), NOT clusterArity: a FULL OUTER box is merge-OPAQUE (arity 1 —
+	// correct for SelectMergeRule purposes) yet its output row is MERGED
+	// (`FROM a FULL JOIN b, a.arr AS x` — bare keys last-leg-wins across
+	// both legs), so the arity proxy left exactly that shape on the bare
+	// read. Only a genuine SINGLE-NAMESPACE outer (`FROM t, t.arr` — a
+	// scan/derived row, bare keys only) reads the bare field. RFC-142.
 	arrayFieldKey := fieldName
 	seg0 := strings.ToUpper(u.Segments[0])
-	if t.clusterArity(j.Left) != 1 {
+	if len(outerBoundAliases(j.Left)) != 1 {
 		arrayFieldKey = seg0 + "." + fieldName
 	}
 	arrayValue := values.NewFieldValue(
