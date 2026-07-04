@@ -218,13 +218,24 @@ far; in-suite smoke stays ~8 s. See the `## hunt` section of `.claude/skills/dst
   by `TestNewSelectsAPIVersion` and by the hunt kitchen-sink VERSION index). Found by the hunt on its
   first VERSION-index save.
 
-**Workloads are pluggable (`hunt.Workload`).** The hunter now dispatches to a `Workload` (record-layer is
-the default); a new surface = implement `Run(seed,cfg)`, export `Profiles()`, add to `cmd/dst-hunt`. The
-first added workload is **`sqlhunt.SQLWorkload`** (`pkg/simfdb/hunt/sqlhunt`): it drives the full
-parser→Cascades→executor→record-layer stack over SimFDB (via the new `sqldriver.RegisterBackend` seam),
-runs idempotent DML (absolute `UPDATE`+`DELETE`) under the fault schedule, and compares the table to a Go
-row-model. Bare `INSERT`/relative `UPDATE` are excluded (their commit_unknown non-idempotency is the known
-hazard above, not a hunt target).
+**Workloads are pluggable (`hunt.Workload`).** The hunter dispatches to a `Workload` (record-layer is the
+default); a new surface = implement `Run(seed,cfg)`, export `Profiles()`, add to `cmd/dst-hunt`. Four SQL
+workloads exist in `pkg/simfdb/hunt/sqlhunt`, all driving the full parser→Cascades→executor→record-layer
+stack over SimFDB (via the `sqldriver.RegisterBackend` seam):
+- **`SQLWorkload`** (sql-dml) — idempotent DML (absolute `UPDATE`+`DELETE`) under the commit-fault schedule
+  vs a row-model. Hunts fault-idempotency of the autocommit path.
+- **`QueryCorrectnessWorkload`** (sql-query, faults off) — a query battery (COUNT/SUM/MIN/MAX + filters,
+  ORDER BY, LIMIT) over a 3-column + secondary-indexed table vs an independent Go model. Hunts planner/
+  executor wrong answers.
+- **`SQLIndexWorkload`** (sql-index) — secondary index `idx_k` under faults; checks base-table + index-
+  covered queries stay consistent under retry.
+- **`NullWorkload`** (sql-null, faults off) — NULL three-valued logic (`COUNT(col)` vs `COUNT(*)`, NULL-
+  skipping aggregates, `IS [NOT] NULL`, comparison filters) vs a NULL-aware model.
+Bare `INSERT`/relative `UPDATE` under faults are excluded (the known commit_unknown hazard above, not a
+hunt target). **Deep hunt (4 subagents): ~10,100 seeds across all four, 0 bugs** — sql-dml/sql-index
+survived tens of thousands of injected commit faults (idempotency holds), sql-query/sql-null returned no
+wrong answers. `cmd/dst-hunt` gained a `-profiles` filter and a `faults_fired` heartbeat so a clean
+fault-on sweep proves faults actually fired.
 
 **Fixed (real record-layer WIRE bug — found by the SQL workload's determinism oracle):**
 - [x] **Non-deterministic record-body serialization for dynamic messages.** `store.go serializeUnion`'s

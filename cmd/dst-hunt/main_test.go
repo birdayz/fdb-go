@@ -30,7 +30,7 @@ func TestRecorderWritesFinding(t *testing.T) {
 	rep := &hunt.Report{Seed: 123, Ops: 3, FaultsFired: 2, Violations: []string{"synthetic: index drift at op 3"}}
 
 	rec.finding(p, 123, p.Cfg, rep)
-	rec.heartbeat(time.Now(), 10, 1, 0, 10, "test")
+	rec.heartbeat(time.Now(), 10, 1, 7, 0, 10, "test")
 	rec.close()
 
 	data, err := os.ReadFile(filepath.Join(dir, "findings.jsonl"))
@@ -63,7 +63,7 @@ func TestRecorderWritesFinding(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(prog), &pl); err != nil {
 		t.Fatalf("unmarshal progress: %v", err)
 	}
-	if pl.Checked != 10 || pl.Bugs != 1 {
+	if pl.Checked != 10 || pl.Bugs != 1 || pl.Faults != 7 {
 		t.Fatalf("progress fields wrong: %+v", pl)
 	}
 }

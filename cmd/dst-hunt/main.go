@@ -103,6 +103,7 @@ func main() {
 		nextSeed atomic.Uint64
 		checked  atomic.Uint64
 		bugs     atomic.Uint64
+		faults   atomic.Uint64 // total commit faults injected — proves a clean sweep actually exercised faults
 	)
 	nextSeed.Store(*seedStart)
 
@@ -119,10 +120,10 @@ func main() {
 		for {
 			select {
 			case <-done:
-				rec.heartbeat(start, checked.Load(), bugs.Load(), *seedStart, nextSeed.Load(), "final")
+				rec.heartbeat(start, checked.Load(), bugs.Load(), faults.Load(), *seedStart, nextSeed.Load(), "final")
 				return
 			case <-tick.C:
-				rec.heartbeat(start, checked.Load(), bugs.Load(), *seedStart, nextSeed.Load(), "tick")
+				rec.heartbeat(start, checked.Load(), bugs.Load(), faults.Load(), *seedStart, nextSeed.Load(), "tick")
 			}
 		}
 	}()
@@ -151,6 +152,7 @@ func main() {
 					rep = &hunt.Report{Seed: seed, Err: msg}
 				}
 				checked.Add(1)
+				faults.Add(uint64(rep.FaultsFired))
 				if rep.Failed() {
 					bugs.Add(1)
 					rec.finding(p, seed, cfg, rep)
@@ -162,8 +164,8 @@ func main() {
 	hbWG.Wait()
 
 	elapsed := time.Since(start).Seconds()
-	rec.logf("done: checked=%d bugs=%d elapsed=%.0fs rate=%.1f seeds/s high-water-seed=%d",
-		checked.Load(), bugs.Load(), elapsed, float64(checked.Load())/elapsed, nextSeed.Load())
+	rec.logf("done: checked=%d bugs=%d faults=%d elapsed=%.0fs rate=%.1f seeds/s high-water-seed=%d",
+		checked.Load(), bugs.Load(), faults.Load(), elapsed, float64(checked.Load())/elapsed, nextSeed.Load())
 }
 
 // recorder serializes durable output to the results directory.
@@ -206,12 +208,13 @@ type progressLine struct {
 	ElapsedS  float64 `json:"elapsed_s"`
 	Checked   uint64  `json:"checked"`
 	Bugs      uint64  `json:"bugs"`
+	Faults    uint64  `json:"faults_fired"`
 	SeedStart uint64  `json:"seed_start"`
 	HighWater uint64  `json:"high_water_seed"`
 	SeedsPerS float64 `json:"seeds_per_s"`
 }
 
-func (r *recorder) heartbeat(start time.Time, checked, bugs, seedStart, highWater uint64, kind string) {
+func (r *recorder) heartbeat(start time.Time, checked, bugs, faults, seedStart, highWater uint64, kind string) {
 	el := time.Since(start).Seconds()
 	rate := 0.0
 	if el > 0 {
@@ -219,15 +222,15 @@ func (r *recorder) heartbeat(start time.Time, checked, bugs, seedStart, highWate
 	}
 	line := progressLine{
 		Time: time.Now().Format(time.RFC3339), Label: r.label, Kind: kind,
-		ElapsedS: el, Checked: checked, Bugs: bugs,
+		ElapsedS: el, Checked: checked, Bugs: bugs, Faults: faults,
 		SeedStart: seedStart, HighWater: highWater, SeedsPerS: rate,
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.writeJSON(r.progress, line)
 	r.progress.Sync()
-	fmt.Printf("[%s] %s checked=%d bugs=%d rate=%.1f/s high-water=%d\n",
-		time.Now().Format("15:04:05"), kind, checked, bugs, rate, highWater)
+	fmt.Printf("[%s] %s checked=%d bugs=%d faults=%d rate=%.1f/s high-water=%d\n",
+		time.Now().Format("15:04:05"), kind, checked, bugs, faults, rate, highWater)
 }
 
 type findingLine struct {
