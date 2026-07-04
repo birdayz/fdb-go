@@ -407,6 +407,61 @@ differential).
   `connection.go:265-267,566`). Drive the plan switch primarily via **LRU eviction** (`maxSize`) — the
   natural, frequent trigger that needs no DDL — not only `Invalidate()`.
 
+#### Tier 2 oracles — intrinsic query-layer correctness (metamorphic + golden), no external reference
+
+The record layer has a model oracle (`chaos.Verify`, 14 invariants). The **query layer has no cheap
+model** for "is this result set correct?". The tempting answer — **differential vs a reference engine
+(SQLite/Java)** — is **rejected**: it relocates the definition of "correct" to a system whose SQL
+semantics differ, makes our suite parasitic, and cannot cover the read-side surface we intend to extend
+*beyond* Java (query reach is not the wire line, §1a). Two **intrinsic** oracles — both newly enabled by
+SimFDB's determinism, neither needing an external reference — cover it. They are complements, not
+alternatives:
+
+**(a) Metamorphic — catches WRONG.** The oracle is a web of invariants the engine must satisfy *against
+itself*, no known-correct answer required; a single buggy rule/executor path cannot keep satisfying
+diverse relations while producing a wrong result. Strongest first:
+- **Plan-diversity equivalence** (the key one for Cascades): the *same data* queried through *different
+  physical plans* must return identical rows. Force diversity via identical-data tables with/without an
+  index (full-scan vs index-scan), algebraic rewrites the optimizer normalizes differently, or rules
+  on/off; `EXPLAIN` confirms the plans actually differ so the check is non-trivial. **This directly tests
+  that the transformation rules preserve semantics** — the exact property PR #201's 0-row bug violated.
+- **Partition invariants:** `COUNT(*) == COUNT WHERE p + COUNT WHERE ¬p + COUNT WHERE p IS NULL`;
+  `SUM(x) == Σ over GROUP BY g of SUM(x)`; a predicate and its complement partition the table.
+- **Rewrite equivalence:** `x IN (a,b) ≡ x=a OR x=b`; De Morgan; predicate reorder/redundancy;
+  `ORDER BY k LIMIT n` is a prefix of the full `ORDER BY k`.
+Not circular — it is a constraint system, not "engine == engine". Its one blind spot (a bug *consistent
+across all transformations*, e.g. every plan drops the same row) is covered by the simple independent Go
+model already in `sqlhunt` (sql-query/sql-null).
+
+**(b) Golden / characterization — catches CHANGED.** Capture the engine's behavior for a curated corpus —
+**result rows + `EXPLAIN` plan** — as a committed baseline, and **diff on merge/release**: every behavior
+delta becomes a reviewable artifact, and a silent cost-model/rule regression that alters a plan (or a
+result) surfaces as a golden diff the author + Graefe must approve. **Newly feasible because SimFDB makes
+engine output a deterministic function of (schema, data, query)** — pre-SimFDB the baseline was noise
+(versions/timing/map-order). Precedent: RFC-109 already golden-gates the record-layer *wire bytes*; this
+extends it to the *plan + result*.
+- **Granularity:** result rows (locks correctness — a diff is almost always a bug, loud) + plan shape
+  (locks the optimizer — catches silent regressions). Full execution traces are too fragile; omit them.
+- **Honest limitation:** golden locks in *current* behavior, right or wrong — it catches CHANGED, not
+  WRONG. A bug baked into the baseline stays green until noticed. It is the **complement** of metamorphic,
+  never a substitute.
+- **Noise / approval-fatigue mitigation:** a stable curated corpus, canonical serialization, and
+  separating "**result** changed" (loud — almost always a bug) from "**plan** changed, result identical"
+  (often a real optimization — reviewed with its cost delta, not rubber-stamped). Wire it into the
+  query-engine merge gate: a plan-golden diff is precisely what Graefe reviews per PR.
+
+**The four intrinsic layers** (zero external reference): independent Go model (absolute wrong answer) ·
+metamorphic invariants (WRONG) · golden baseline (CHANGED) · planner-internal fuzz
+(`FuzzPlanner_Determinism/_Idempotence/_MemoConsistency/_Invariants`, in-tree). Differential-vs-reference
+is explicitly out.
+
+| oracle | catches | needs | status |
+|---|---|---|---|
+| independent Go model | wrong absolute answer | a naive recompute | ✅ `sqlhunt` sql-query/null |
+| metamorphic | wrong (inconsistent) | invariants | ⏳ build |
+| golden / characterization | changed (regression) | determinism (✓ SimFDB) | ⏳ build (next) |
+| planner-internal fuzz | memo/plan invariants | in-process | ✅ in-tree |
+
 ### Tier 3 — client simulation & fault injection [TRACK B — *not* "DST"; own RFC / extends RFC-118]
 
 For the pure-Go client's *own* concurrency (recovery, hedging, failure monitor, GRV): the dominant
@@ -460,6 +515,11 @@ prove real and frequent.
 - **Conflict-storm behavior**, deterministically replayable instead of a CI flake.
 - **SQL correctness under fault**, bisected to a seed + `Verify()` oracle — the cross-engine and
   stress harnesses check plan-equality and throughput, never fault-triggered wrong-rows to a seed.
+- **Wrong query answers with no reference engine** — metamorphic invariants (plan-diversity, partition,
+  rewrite equivalence) catch rule/executor bugs intrinsically (Tier 2 oracles §5).
+- **Silent plan/result regressions across changes** — a golden result+`EXPLAIN` baseline over the
+  deterministic SimFDB corpus turns every behavior delta into a reviewable diff at merge/release (would
+  have caught PR #201's 0-row plan regression).
 
 ## 7. Phased roadmap
 
