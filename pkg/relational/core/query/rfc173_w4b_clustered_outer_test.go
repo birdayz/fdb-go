@@ -391,24 +391,45 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 	}
 	values.AssertOrdinalJoinSeed(rc)
 
-	// Direction 2: UNGATED (LEFT box) outer, correlation to the RIGHTMOST leg
-	// (sourceAlias recurses to c) — the anchored residual must stay reachable.
+	// Direction 2: UNGATED outer, correlation to the RIGHTMOST leg — the
+	// anchored residual must stay reachable. W4-left made SINGLE-SOURCE
+	// LEFT boxes gate, so the ungated fixture is now the JOINED-PRESERVED
+	// class (a clustered preserved leg — poison until the mixed-nesting
+	// commit).
 	tr2 := newGateTranslator(t)
-	left := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
+	left := logical.NewJoin(
+		inner(scan("Order", "o2"), scan("Order", "o")),
+		scan("Customer", "c"), logical.JoinLeft, "")
 	ungated := clusteredProject(left, clusteredCSQ("c", "CUSTOMER_ID"))
 	expr2 := tr2.translateProjectWithCorrelatedScalar(ungated)
 	if expr2 == nil {
 		t.Fatal("ungated outer + rightmost-only correlation must keep the name-model fallback (it works today)")
 	}
 	if rc2 := seedOf(t, expr2); !rc2.AnchoredJoin {
-		t.Fatal("ungated-outer residual must seed the anchored record (the ONE surviving constructor caller until W4-left/W5)")
+		t.Fatal("ungated-outer residual must seed the anchored record (the surviving constructor caller until the mixed-nesting commit)")
 	}
 
 	// Direction 3: UNGATED outer + NON-rightmost correlation → decline.
 	tr3 := newGateTranslator(t)
-	declined := clusteredProject(left, clusteredCSQ("o", "ORDER_ID"))
+	declined := clusteredProject(left, clusteredCSQ("o2", "ORDER_ID"))
 	if expr3 := tr3.translateProjectWithCorrelatedScalar(declined); expr3 != nil {
 		t.Fatal("ungated outer + non-rightmost correlation must DECLINE (the name model silently NULLs it)")
+	}
+
+	// Direction 4 (W4-left): a SINGLE-SOURCE LEFT box outer now GATES — the
+	// scalar dispatch routes it through the ordinal seed exactly like the
+	// comma cluster of direction 1 (the null-supplying role rides the leg
+	// marking; e2e pinned in the FDB LEFT matrix).
+	tr4 := newGateTranslator(t)
+	singleLeft := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
+	gatedLeft := clusteredProject(singleLeft, clusteredCSQ("c", "CUSTOMER_ID"))
+	expr4 := tr4.translateProjectWithCorrelatedScalar(gatedLeft)
+	if expr4 == nil {
+		t.Fatal("gated single-source LEFT outer + correlated scalar must translate ordinal (W4-left)")
+	}
+	rc4 := seedOf(t, expr4)
+	if rc4.AnchoredJoin {
+		t.Fatal("gated single-source LEFT outer seeded the ANCHORED record — W4-left's gate flip must route it ordinal")
 	}
 }
 

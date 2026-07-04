@@ -3232,6 +3232,18 @@ func joinResultValueIsReversed(rv values.Value, physOuterAlias, physInnerAlias s
 	if first, ok := anchoredJoinFirstLeg(rv); ok {
 		return first != "" && first == physInnerAlias
 	}
+	// RFC-173 W4-left: the gated LEFT/RIGHT ordinal seed keeps DECLARATION
+	// order (design ruling I2) while the physical legs run in EXECUTION
+	// (swapped) order — the SQL-first leg is the FIRST field's root baked
+	// QOV. Without this arm a RIGHT join's SELECT * metadata derived in
+	// execution order while the positional row followed the seed: the driver
+	// scanned dept values against emp columns (caught by the parity matrix).
+	if rc, isRC := rv.(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin &&
+		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) {
+		if corr, ok := valueRootCorrelation(rc.Fields[0].Value); ok {
+			return strings.EqualFold(corr.Name(), physInnerAlias)
+		}
+	}
 	return false
 }
 

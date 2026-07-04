@@ -60,6 +60,14 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if !isJoin {
 		return nil // single-source outer — the W4c binary path owns it
 	}
+	if leftJoin.Kind != logical.JoinInner {
+		// W4-left made single-source LEFT/RIGHT boxes GATE — but the W5
+		// gather is chartered for INNER clusters only (the flat comma
+		// FROM list); a gated OUTER box as the unnest's left is not a
+		// gatherable cluster (its legs carry null-supplying roles the flat
+		// seed has no arm for). Decline to the residual.
+		return nil
+	}
 	// The left cluster must be a GATED-if-fresh inner cluster (the enclosure-
 	// free probe, side-effect-free Decide — the ordinalEligible pattern): an
 	// ungated cluster flows name-model rows the baked collection read cannot
