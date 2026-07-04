@@ -940,12 +940,15 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		// detects a derived table with no joins, it returns directly via
 		// buildOuterPlanOnDerived(sq, innerOp). So the needRebuild path
 		// only fires for the non-derived case. Safe.
-		if len(fs.joins) > 0 {
-			op = logical.NewCTE(fs.tableName, innerOp,
-				logical.NewScan(fs.tableName, ""), false)
-		} else {
-			op = innerOp
-		}
+		// The CTE wrapper is the logical tree's ONLY carrier of a derived
+		// table's alias — wrap the no-joins case too. Bare innerOp loses the
+		// alias: sourceAlias() then walks through to the BASE table, a
+		// correlated EXISTS on the derived alias (`FROM (SELECT …) e WHERE
+		// EXISTS(… = e.id)`) binds the outer row under the WRONG name, and
+		// the correlation reads NULL (silently wrong on a column-name
+		// collision, loud OrdinalResolutionError without one).
+		op = logical.NewCTE(fs.tableName, innerOp,
+			logical.NewScan(fs.tableName, ""), false)
 	} else {
 		op = logical.NewScan(fs.tableName, fs.tableAlias)
 	}
