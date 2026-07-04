@@ -288,13 +288,14 @@ needs Java-alignment + a Graefe ACK.**
   The identical query with a no-op `WHERE id IS NOT NULL` (defeats index matching → `StreamingAgg`/`Scan`)
   correctly returns `[1,10],[2,NULL]`. SQL requires GROUP BY to emit one row per group with `SUM`=NULL;
   the aggregate-index read/maintenance path fails to. Removing the index makes both agree. Cross-check
-  Java's aggregate-index null-group handling. Repro: `mm-generated/agg-7.json` group
-  `grouped-sum-vs-noop-filter`.
+  Java's aggregate-index null-group handling. Repro (committed): `dst-generate -dir
+  pkg/simfdb/hunt/metamorphic/testdata/findings/` → `agg-7.json` group `grouped-sum-vs-noop-filter`.
 - [ ] **NULL ordering inconsistent between DISTINCT and GROUP BY sort paths.** For `a ∈ {5,7,NULL}`,
   `SELECT DISTINCT a FROM t ORDER BY a` → `NULL,5,7` (NULL first, matching FDB tuple order) but
   `SELECT a FROM t GROUP BY a ORDER BY a` → `5,7,NULL` (NULL last). Same relation + same `ORDER BY`, so
   the ordered output must match; the GROUP BY (`StreamingAgg`) sort places NULL inconsistently with the
-  DISTINCT/scan path. Repro: `mm-generated/olp-*.json` group `groupby_orderby_null_placement_BUG`.
+  DISTINCT/scan path. Repro (committed): `dst-generate -dir pkg/simfdb/hunt/metamorphic/testdata/findings/`
+  → `order-2.json` group `groupby_orderby_null_placement_BUG`.
 
 # NEXT
 
