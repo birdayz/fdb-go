@@ -1964,3 +1964,116 @@ principle (unique quantifier ids):** the level-2 outer quantifier of the ORDINAL
 unique correlation id (not `sourceAlias`'s rightmost-leaf name) — the seed's concat QOV and the
 baked pull-up refs key on it, which structurally rules out the alias-shadowing / DIVERGENT-baked-types
 collision between the level-2 concat type and the cluster's own rightmost leg type.
+
+## W5 — multi-source lateral UNNEST ordinalization (design for Graefe ACK; PROPOSED, pre-impl)
+
+**Charter (S4-map residual item 2):** retire `buildUnnestResultValue`'s AnchoredJoin — the
+multi-source / enclosed / under-existential lateral-unnest classes that W4c left name-model — and
+with it kill `MergeSeedLegsOfValue` / `leftmostQOVOfValue` (the F4 ruling: these die in W5, not S4).
+W4b is MERGED (PR #465): `NewScalarSubqueryAnchoredRecord` is down to the one pinned ungated-outer
+residual caller. Canonical sequence: **W5 → W4-left+EXISTS+recursive-CTE → S4**.
+
+### Go current state (precise map)
+- `translateUnnestJoin` (`cascades_translator.go:946-1236`): sets `t.inInnerCluster=true` for the
+  whole subtree (:958-960 — the outer cluster translates ENCLOSED, name-model); `outerAlias =
+  sourceAlias(j.Left)` = the RIGHTMOST leg (:992); the **buried dotted read** at :1125-1134 —
+  `arrayValue = FieldValue(QOV(outerCorr), "SEG0.FIELD")` when segment 0 is not the rightmost flow
+  leg (the name-model linchpin W5 replaces); chained unnest rejected (:1101); W4c gate at :1219
+  (`clusterArity(j.Left)==1 && !prevEnclosure && !t.unnestUnderExistential` → `unnestOrdinalSeed`,
+  else `buildUnnestResultValue` at :1223). Always a 2-quantifier `JoinInner` select.
+- `unnestOrdinalSeed` (`rfc173_w4c_unnest_seed.go:44-122`): the W4c single-source precedent — outer
+  full ordinal run; WITH-ORDINALITY inner = 2-field `ofOrdinal(inner, 0/1)` (full-baked,
+  AssertOrdinalJoinSeed); no-AT = direct-QOV element (mixed RC, raw-bound).
+- `buildUnnestResultValue` (`cascades_translator.go:1277-1407`): the name-model builder W5 retires —
+  anchored outer leg (dotted-only for multi-source via `legColumns(join)`), bare last-leg-wins twins,
+  AS/AT shadowing, `rc.AnchoredJoin = true` (:1405).
+- Poison arms keeping multi-source name-model: `ordinalWedgeGateDecide:56-61` (unnest join),
+  `clusterArity:258-260` (unnest join = arityPoison → ANY FROM containing an unnest poisons the
+  enclosing cluster), `gatherInnerClusterLegs:141-148` (stops at the unnest join),
+  `ordinalEligible:152-166` (never eligible since it never gates).
+- Dotted-prefix bipartition machinery (RFC-142) — the W5 kill set: `values.MergeSeedLegsOfValue`
+  (`value_correlation.go:27-51`, sole production caller `quantifierMergeSeedLegDeps`,
+  `rule_partition_select.go:796-808`, consumed at :705 in `computeTransitiveCorrelationOrder`);
+  `leftmostQOVOfValue` (`value_correlation.go:56-70`). The `rangesOver` sibling-edge recovery
+  (:721-727) is generic correlation plumbing and SURVIVES (it is what the ordinal model relies on).
+- Name-model rebase machinery that dies with the dotted model: `rebaseUnnestOuterLegPredicate`
+  (:2152-2185) + `unnestOuterLegAliases` (:799); `pushBuriedUnnestPredicateDown` (:1539) — the
+  "buried" shape ceases to exist structurally if the enclosing cluster gathers the unnest.
+- Executor: `RawLegs` (bare-QOV non-record element leg, raw-bound) and `OrdinalityLegs` (strictly
+  positional `_0`/`_1`) are S4-PERMANENT per the W4c ruling — W5 reuses them as-is, zero new executor
+  machinery expected. `deriveColumnsFromFlatMap`'s anchored arm (`cascades_generator.go:2957`) needs
+  an ordinal-seed metadata twin for `SELECT *` over a multi-source unnest (currently UNPINNED — probe
+  first, the W4b tradition).
+
+### Java reference (the model to copy)
+Java models `FROM A, B, A.arr AS x` as **ONE SelectExpression with N ForEach quantifiers** — never a
+merged-row-under-the-rightmost-alias: the FROM traversal accumulates flat operators
+(`QueryVisitor.visitTableSourceBase:376`), the unnest lowers via
+`LogicalOperator.generateCorrelatedFieldAccess` (LogicalOperator.java:306-355) to an
+`ExplodeExpression` whose collection is a `FieldValue` over `QOV(A's unique id)` — **the lateral
+dependency is a genuine correlation** (`ExplodeExpression.computeCorrelatedToWithoutChildren` =
+`collectionValue.getCorrelatedTo()`), visible to every Cascades rule; `Quantifier.forEach` mints a
+fresh unique alias; output columns per the W4c spec (AT → `ofOrdinalNumber(flowed, 0/1)`; primitive →
+the bare flowed QOV; struct → per-field ordinals). Bipartition validity is EMERGENT — Java has no
+dotted-prefix classifiers because no source is ever buried. (Per the premise correction, Java has no
+lateral unnest in inner-join re-enumeration — the multi-source rewrite is Go-only in reach, but the
+MODEL to copy is exactly this.)
+
+### The multi-source gap (why the W4c gate declines)
+1. **Buried source-name erasure:** the array read is a name-model dotted key over the rightmost leg's
+   QOV; a bare ordinal run over the flattened concat has nothing to resolve `A.` against — the W4b
+   shape-1 hazard, solved there by dotted-named runs over a fresh concat QOV.
+2. **Executor binding mismatch:** the FlatMap binds the merged outer row under the rightmost alias; a
+   gated (positional) outer under a name-keyed dotted read is a mixed-model read; the reverse is a
+   `BakedNameContextError`.
+3. **Correlation invisibility:** `GetCorrelatedTo` on the Explode's collection reports only the
+   rightmost leg; the genuine dependency on the buried source is recovered ONLY by the dotted-prefix
+   classifiers — an ordinal seed under the name-model merge would emit refs those classifiers
+   mis-handle (wrong bipartition → materialized Explode against an unbound row → silent zero rows).
+4. **Anchored re-enumeration:** `PartitionSelectRule`'s anchored arm panics on a non-anchored ordinal
+   leg (the `prevEnclosure` decline); the POSITIONAL arm (`positionalMergeCase`) already exists —
+   whether it consumes an Explode-quantifier leg is a W5 impl question, not a from-scratch build.
+5. **Existential rebase is name-model:** `translateUnnestExistsFilter` + `rebaseOuterLegValue`
+   (panics on baked nodes) — the `unnestUnderExistential` decline.
+
+### Proposed design (Java-grounded)
+Stop building the unnest as a binary FlatMap-over-merged-outer: extend
+`gatherInnerClusterLegs`/`translateGatheredInnerCluster` (`rfc173_ordinal_seed.go:137-322`) so a
+lateral unnest contributes its Explode as an ORDINARY GATHERED QUANTIFIER — `FROM A, B, A.arr AS x` =
+one select over `{QOV(A), QOV(B), ForEach(Explode)}`, the Explode's collection baked
+`ofOrdinal(QOV(A, typA), FieldIndex(ARR))` — **a genuine correlation to A's own quantifier** (Java's
+`generateCorrelatedFieldAccess` in ordinal form). Seed RV = flat ordinal leg runs (dotted `LEG.COL`
+names per the W4b (ii) convention) + the W4c inner element/ordinal fields; the W4c seed becomes the
+degenerate N=1 case. Bipartition validity becomes emergent (the `rangesOver` edge keeps A with its
+Explode); the dotted classifiers go dead. Executor: inner leg rides the existing
+`RawLegs`/`OrdinalityLegs`; the NLJ rule already pairs correlated Explodes.
+
+### FORKS for Graefe ruling
+- **Q1 — flat-at-translation (Option A, Java's shape) vs W4b-style binary concat-QOV seed (Option B,
+  enclosure-lift + `clusterPullUp` reuse).** They converge post-SelectMergeRule; A does at translation
+  what B defers to exploration, matches `generateSimpleSelect`, directly kills the buried-source
+  concept; B is more incremental.
+- **Q2 — interning classifier:** the mixed unnest RV (direct-QOV element field) FAILS `IsOrdinalJoinRV`
+  (`values.go:469-487` FrontierPinned check) — the ordinalized unnest select drops out of alias-aware
+  interning that AnchoredJoin gave it. Widen `IsOrdinalJoinRV` to admit bare-QOV fields (the
+  `IsPositionalMergeRC` precedent), or accept identity dedup for unnest selects? Task-count pin
+  required either way.
+- **Q3 — does W5 own the under-existential class?** The S4 map assigns it to W5, but its blocker is
+  the existential rebase the W4-left+EXISTS slice owns. Either W5 ordinalizes the existential-outer
+  rebase for unnest, or the `unnestUnderExistential` decline survives W5 into the EXISTS slice
+  (charter amendment).
+- **Q4 — chained unnest** (`FROM t, t.a AS x, x.b AS y`): the flat model makes it natural (the second
+  Explode correlates to the first's quantifier — Java supports the analog); lift the :1101 guard in
+  W5 or keep it a separate extension?
+- **Q5 — residual fallback:** do ungated outer clusters (LEFT-box / dup-alias / CTE-derived) keep a
+  `buildUnnestResultValue` residual until W4-left (several such compositions WORK today name-model —
+  decline-loud would regress them), or decline? (The W4b exit-gate amendment is the precedent for
+  fail-open + pinned-residual.)
+
+### Pins required (from the shape inventory)
+Multi-source white-box seed pins (the missing analog of `rfc173_w4c_unnest_seed_test.go`);
+byte-identical rows on the ENTIRE name-model corpus (`TestFDB_ArrayUnnestOrdinality` multi-source /
+enclosed / existential families — R5-R31, P1a/P2a/P2b/P2c); the §6 mandatory execution pin (RFC-142
+suite green under ordinal recovery); positional-authority pin (`DisablePositionalEmission` flip);
+`MergeArmHits == 0` for ordinalized unnest shapes; task-count/STAR budget unchanged; a NEW
+`SELECT *`-over-multi-source metadata pin (currently unpinned — probe first).
