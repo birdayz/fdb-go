@@ -843,6 +843,18 @@ func isSingularIndexScanWithFetch(ops expressionCounts) bool {
 // deepHashCode computes a recursive hash of the expression tree,
 // matching Java's planHash(CURRENT_FOR_CONTINUATION). Combines the
 // node's own hash with children's hashes via FNV mixing.
+//
+// Unlike stablePlanHash, this LOGICAL-path hash still folds
+// HashCodeWithoutChildren — which carries minted correlation identifiers
+// (q$N) — so REWRITING-phase ties between alias-only twins resolve by
+// arrival order, not hash order. Tolerated deliberately: REWRITING's
+// criteria (select/table-function/conjunct counts, predicate depth) are
+// structural and rarely tie across genuinely different rewrites, no
+// nondeterminism has been observed there (the PLANNING-phase flip that
+// motivated stablePlanHash came from cost-tied PHYSICAL candidates), and a
+// logical alias-blind hash needs per-expression-type stable content that
+// does not exist yet. If a REWRITING-phase EXPLAIN flip ever surfaces,
+// this is the site to extend.
 func deepHashCode(e expressions.RelationalExpression) uint64 {
 	if e == nil {
 		return 0
@@ -1786,8 +1798,10 @@ func concretePlanDepth(p plans.RecordQueryPlan, kind planMatchKind) int {
 // (QuantifiedObjectValue.planHash folds BASE_HASH only); predicates and
 // values fold through the alias-blind SemanticHashCode here for the same
 // property. Content the switch does not know folds as the type tag alone —
-// COARSER is safe (a residual tie keeps the first-arrived winner, and two
-// plans identical under this hash render identical EXPLAINs).
+// COARSER stays deterministic: a residual tie keeps the first-arrived
+// winner, which is stable once hash values stop varying per planning (the
+// safety argument is the fallback, NOT rendering equivalence — hash-equal
+// plans may still EXPLAIN differently where a discriminator is unhashed).
 func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "%T|", p)
@@ -1797,10 +1811,16 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 			_, _ = io.WriteString(h, rt)
 			_, _ = h.Write([]byte{0})
 		}
+		if t.IsReverse() {
+			_, _ = h.Write([]byte{1})
+		}
 		stableHashComparisonRanges(h, t.GetScanComparisons())
 	case *plans.RecordQueryIndexPlan:
 		_, _ = io.WriteString(h, t.GetIndexName())
 		_, _ = h.Write([]byte{0})
+		if t.IsReverse() {
+			_, _ = h.Write([]byte{1})
+		}
 		stableHashComparisonRanges(h, t.GetScanComparisons())
 	case *plans.RecordQueryPredicatesFilterPlan:
 		for _, pr := range t.GetPredicates() {
