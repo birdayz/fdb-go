@@ -181,9 +181,16 @@ bazelisk test //pkg/simfdb/hunt/interleave:interleave_test --test_output=errors
 - **Faithfulness rule:** the verdict oracle only works because the model tracks read-version pinning and
   commit-version bumps in lockstep (single goroutine, serialized commits). If you extend the op set, keep
   the model's read/write-set bookkeeping exact — a model drift shows up as a false `verdict oracle` diff.
-- **v1 is fault-free** (the resolver is under test; injected commit faults would confound the
-  serializability oracles). The fault-enabled variant — teach the state oracle about post-apply
-  `commit_unknown(1021)`, the non-idempotent-`Add`-under-true-rollback surface — is the next extension.
+- **Fault mode (`Faults > 0`):** activates SimFDB's commit BUGGIFY so `commit_unknown(1021)` (writes
+  durable, outcome ambiguous) races the other open transactions — a dimension the single-writer record
+  workload can't reach. The **state oracle is unchanged** (every program still applies exactly once: a
+  1021 applied and is NOT retried — retrying would double-apply its atomic adds; a 1020/1007 applied
+  nothing and is retry-drained). The **verdict oracle goes one-directional**: the resolver runs BEFORE
+  fault injection (`conflict.go`), so a real conflict still surfaces as `1020`, but an injected fault on
+  a clean txn isn't predicted — assert only the missed-conflict direction. `TestFaultsApply1021` proves
+  the 1021 path fires (1,017 applied-and-committed across 4,000 seeds) — it's what shows a 1021 txn
+  correctly PARTICIPATES in later conflict detection and applies exactly once. Profiles:
+  `interleave-faults`, `interleave-faults-add`.
 
 ## rangeconflict (range-aware SSI driver)
 
@@ -476,7 +483,7 @@ above.
 | **−1** rr + Delve replay | reverse-debug a *captured* real-FDB flake | ⚠️ **setup** — `rr` not installed; `--backend=rr` |
 | **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ✅ **Available** (`pkg/dst`) |
 | **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ✅ **Available** (`pkg/simfdb`) |
-| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** + **[rangeconflict](#rangeconflict-range-aware-ssi-driver)** SSI drivers; **[continuation](#continuation-cursor-resume-replay-driver)** cursor-resume replay driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave`/`rangeconflict`/`continuation`) — fault-enabled interleave (post-apply 1021) still to come |
+| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** + **[rangeconflict](#rangeconflict-range-aware-ssi-driver)** SSI drivers; **[continuation](#continuation-cursor-resume-replay-driver)** cursor-resume replay driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave` [+ fault mode]/`rangeconflict`/`continuation`) — continuation-under-injected-fault + SQL-query pagination next |
 | **3** client sim (Track B) | `synctest`-driven client concurrency + simulated server processes | ⏳ **separate RFC** (not full DST) |
 
 The fast/reproducible inner loop for the record layer is now **hunt** (in-memory, seeded, true-rollback

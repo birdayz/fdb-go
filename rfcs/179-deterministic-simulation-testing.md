@@ -669,9 +669,17 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
     round-trips every row through a token), prefix-delete invariance, tail-delete reflected (both under a
     between-page version bump). The independent model — proven faithful by a one-shot-scan fidelity test —
     catches a wrong scan order that a metamorphic paginated-vs-one-shot check would miss.
-  - **Selected next build:** fault-enabled interleave variant ⏳ — inject post-apply `commit_unknown`(1021)
-    into the interleave driver and teach the state oracle that a 1021'd transaction's writes DID land
-    (the non-idempotent-`Add`-under-true-rollback surface, now in a concurrent setting).
+  - **Fault-enabled interleave ✅ BUILT** — the interleave driver's `Faults > 0` mode activates commit
+    BUGGIFY so `commit_unknown`(1021) races the other open transactions. The state oracle is unchanged (a
+    1021 applied its writes and is not retried; a 1020/1007 applied nothing and is retry-drained — every
+    program still applies exactly once); the verdict oracle goes one-directional (a real conflict still
+    surfaces as 1020 because the resolver runs before injection). **1,017 `commit_unknown`(1021) applied-
+    and-committed + 6,900 `1020` aborts across 4,000 fault seeds**, both oracles holding — proving a 1021
+    transaction participates correctly in concurrent conflict detection and applies exactly once.
+  - **Selected next build:** continuation under an INJECTED fault (not just pagination) — resume a scan
+    across a `commit_unknown`/`too_old` on the resume transaction and assert the page set stays exact,
+    and/or a SQL-query pagination oracle (paginate an executor cursor tree — filter/sort/join/group — and
+    assert paginated == one-shot), which reaches the query engine's continuation handling.
 - **Tier 3** — Track B, separate RFC, not started (out of scope here).
 
 ## 8. Risks & non-goals

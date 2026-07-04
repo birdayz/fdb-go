@@ -33,10 +33,15 @@
 //     rolled-back-write LEAK (a rollback that failed to discard a mutation), and any atomic-add
 //     miscount.
 //
-// v1 runs fault-free (no injected commit faults): the resolver itself is under test, and commit-
-// fault injection — already the record workload's job — would confound the serializability
-// oracles by making an aborted-but-applied (1021) attempt land. A fault-enabled variant that
-// teaches the state oracle about post-apply commit_unknown is a follow-up.
+// By default the driver runs fault-free: the resolver itself is under test. Setting Faults > 0
+// activates SimFDB's commit BUGGIFY, which adds the fault dimension the record workload's single
+// writer cannot reach — a commit_unknown(1021) transaction whose writes ARE durable but whose outcome
+// is ambiguous, RACING with other open transactions. The state oracle is unchanged (every program
+// still applies exactly once: a 1021 applied and is not retried; a 1020/1007 applied nothing and is
+// retry-drained), and the verdict oracle goes one-directional (a real conflict still surfaces as 1020
+// because the resolver runs before fault injection, but an injected fault on a clean transaction is
+// not predicted). This is what proves a 1021 transaction correctly PARTICIPATES in concurrent
+// conflict detection and applies exactly once — a property no single-writer workload exercises.
 package interleave
 
 import (
@@ -60,19 +65,27 @@ import (
 const ilStream = uint64(11)
 
 // Workload is the concurrent-open-transaction interleaving driver, a hunt.Workload. Its knobs are
-// self-contained (it ignores the record-oriented hunt.Config) and it runs fault-free by design —
-// see the package doc.
+// self-contained (it ignores the record-oriented hunt.Config).
 type Workload struct {
 	Keys      int // counter keyspace size; smaller = more contention = more conflicts (default 4)
 	Txns      int // transactions held open and interleaved per run (default 4)
 	OpsPerTxn int // steps in each transaction's program (default 3)
 	AddPct    int // percent of steps that are atomic-add vs RMW-increment, in [0,100] (default 40)
+
+	// Faults, when > 0, activates SimFDB's commit BUGGIFY at that probability so commits are hit by
+	// injected not_committed(1020) / transaction_too_old(1007) BEFORE apply and commit_unknown(1021)
+	// AFTER apply. 0 (default) is the clean, fault-free path — the pristine resolver oracle. With
+	// faults on, the 1021 path is the point: a commit_unknown transaction APPLIED its writes and took
+	// a commit version, so it must participate in later conflict detection and count once toward the
+	// state total, and must NOT be retried (retrying would double-apply its atomic adds). See the
+	// package doc's fault-mode note.
+	Faults float64
 }
 
 func (Workload) Name() string { return "interleave" }
 
 // Run adapts the driver to the hunt.Workload interface. cfg is ignored: the interleave workload is
-// parameterized entirely by its own fields and deliberately runs without injected commit faults.
+// parameterized entirely by its own fields (including its own Faults knob).
 func (w Workload) Run(seed uint64, _ hunt.Config) *hunt.Report { return w.run(seed).Report }
 
 func (w Workload) withDefaults() Workload {
@@ -91,6 +104,12 @@ func (w Workload) withDefaults() Workload {
 	if w.AddPct > 100 {
 		w.AddPct = 100
 	}
+	if w.Faults < 0 {
+		w.Faults = 0
+	}
+	if w.Faults > 0.9 {
+		w.Faults = 0.9 // keep a fault-free fraction so a serial drain still converges
+	}
 	return w
 }
 
@@ -98,11 +117,12 @@ func (w Workload) withDefaults() Workload {
 // plus resolver-exercise metrics the tests assert on (Conflicts must be > 0 for the RMW profile —
 // the NO-FAKE-CHECKBOX proof that 1020 truly fires).
 type Result struct {
-	Report    *hunt.Report
-	Conflicts int // phase-1 transactions SimFDB aborted with 1020 (real resolver activity)
-	Predicted int // phase-1 transactions the verdict oracle predicted would abort
-	Txns      int
-	opsRun    int
+	Report      *hunt.Report
+	Conflicts   int // phase-1 transactions SimFDB aborted with 1020 (real + injected)
+	Predicted   int // phase-1 transactions the verdict oracle predicted would abort
+	Applied1021 int // phase-1 transactions that returned commit_unknown(1021) — applied-but-ambiguous
+	Txns        int
+	opsRun      int
 }
 
 // opKind is one program step.
@@ -143,7 +163,7 @@ func (w Workload) run(seed uint64) *Result {
 	w = w.withDefaults()
 	rng := rand.New(rand.NewPCG(seed, ilStream))
 
-	env := hunt.NewSimEnv(seed, 0) // faultProb 0 ⇒ DisabledBuggifier: clean SSI, resolver under test
+	env := hunt.NewSimEnv(seed, w.Faults) // Faults 0 ⇒ DisabledBuggifier: clean SSI, resolver under test
 	db := simfdb.New(env)
 	defer db.Close()
 
@@ -205,23 +225,46 @@ func (w Workload) run(seed uint64) *Result {
 		if predict {
 			res.Predicted++
 		}
-		conflict, other := classifyCommit(ts.tx.Commit().Get())
-		if other != nil {
+		code, bad := commitOutcome(ts.tx.Commit().Get())
+		if bad != nil {
 			rep.Ops = res.opsRun
-			rep.Err = fmt.Sprintf("txn %d commit: unexpected error %v", ts.id, other)
+			rep.Err = fmt.Sprintf("txn %d commit: unexpected error %v", ts.id, bad)
 			return res
 		}
-		if conflict != predict {
+		// Verdict oracle. Fault-free: exact — a real conflict iff 1020. With faults: one-directional.
+		// The resolver runs BEFORE fault injection (conflict.go), so a genuine read-write conflict
+		// still surfaces as 1020; but a clean transaction may ALSO be hit by an injected 1020/1007/1021
+		// we don't predict, so we only assert the missed-conflict direction.
+		if w.Faults == 0 {
+			if conflict := code == 1020; conflict != predict {
+				rep.Ops = res.opsRun
+				rep.Violations = append(rep.Violations, verdictViolation(ts, predict, conflict))
+				return res
+			}
+		} else if predict && code != 1020 {
 			rep.Ops = res.opsRun
-			rep.Violations = append(rep.Violations, verdictViolation(ts, predict, conflict))
+			rep.Violations = append(rep.Violations, fmt.Sprintf(
+				"verdict oracle (faults on): txn %d readVer=%d readSet=%v had a real read-write conflict but "+
+					"SimFDB returned code %d, not 1020 — the resolver runs before fault injection, so a genuine "+
+					"conflict must surface as not_committed(1020)", ts.id, ts.readVer, sortedKeys(ts.readSet), code,
+			))
 			return res
 		}
-		if conflict {
-			res.Conflicts++
-			aborted = append(aborted, ts)
-		} else {
+		switch code {
+		case 0, 1021:
+			// Committed and APPLIED. A commit_unknown(1021) applied its writes and took a commit
+			// version exactly like a clean commit, so it joins the committed log (later transactions
+			// must conflict against it) and counts once toward the state total. It is NOT retried.
 			modelVersion++
 			committed = append(committed, committedTxn{version: modelVersion, writeSet: copySet(ts.writeSet)})
+			if code == 1021 {
+				res.Applied1021++
+			}
+		case 1020:
+			res.Conflicts++
+			aborted = append(aborted, ts)
+		default: // 1007 transaction_too_old (injected) — nothing applied; retry
+			aborted = append(aborted, ts)
 		}
 		ready[i] = ready[len(ready)-1] // remove ts (swap-with-last; deterministic under fixed draws)
 		ready = ready[:len(ready)-1]
@@ -283,37 +326,49 @@ func (w Workload) execStep(ts *txnState, keyBytes [][]byte, modelVersion int64) 
 	return nil
 }
 
-// drain re-runs an aborted transaction's program in a fresh, serially-committed transaction. Being
-// strictly serial (no other transaction is open), it reads at the latest version, so a correct
-// resolver cannot conflict it: any 1020 here is a spurious abort. Returns "" on success or a
-// violation string.
+// drain re-runs an aborted transaction's program in a fresh, serially-committed transaction until it
+// applies exactly once. Being strictly serial (no other transaction is open), a correct resolver
+// cannot conflict it, so with faults OFF any 1020 is a spurious abort. With faults ON an injected
+// 1020/1007 (nothing applied) is retried, and a 1021 (applied) ends the drain — the program's writes
+// are blind and deterministic, so one successful-or-applied commit is exactly one application.
+// Returns "" on success or a violation string.
 func (w Workload) drain(db *simfdb.SimDB, ts *txnState, keyBytes [][]byte) string {
-	tx, err := db.CreateWritableTransaction()
-	if err != nil {
-		return fmt.Sprintf("drain txn %d: create: %v", ts.id, err)
-	}
-	for _, s := range ts.prog {
-		key := fdb.Key(keyBytes[s.key])
-		switch s.kind {
-		case opInc:
-			v, gerr := tx.Get(key).Get()
-			if gerr != nil {
-				return fmt.Sprintf("drain txn %d: get: %v", ts.id, gerr)
+	const drainCap = 500
+	for attempt := 0; attempt < drainCap; attempt++ {
+		tx, err := db.CreateWritableTransaction()
+		if err != nil {
+			return fmt.Sprintf("drain txn %d: create: %v", ts.id, err)
+		}
+		for _, s := range ts.prog {
+			key := fdb.Key(keyBytes[s.key])
+			switch s.kind {
+			case opInc:
+				v, gerr := tx.Get(key).Get()
+				if gerr != nil {
+					return fmt.Sprintf("drain txn %d: get: %v", ts.id, gerr)
+				}
+				tx.Set(key, encodeInt(decodeInt(v)+1))
+			case opAdd:
+				tx.Add(key, encodeInt(s.delta))
 			}
-			tx.Set(key, encodeInt(decodeInt(v)+1))
-		case opAdd:
-			tx.Add(key, encodeInt(s.delta))
+		}
+		code, other := commitOutcome(tx.Commit().Get())
+		if other != nil {
+			return fmt.Sprintf("drain txn %d: unexpected commit error %v", ts.id, other)
+		}
+		switch code {
+		case 0, 1021:
+			return "" // applied exactly once
+		case 1020:
+			if w.Faults == 0 {
+				return fmt.Sprintf("txn %d spuriously aborted (1020) during SERIAL drain: no concurrent "+
+					"writer exists, so the resolver must not abort it", ts.id)
+			}
+			// faults on: injected 1020 with no concurrent writer — nothing applied; retry
+		default: // 1007 injected too_old — nothing applied; retry
 		}
 	}
-	conflict, other := classifyCommit(tx.Commit().Get())
-	if other != nil {
-		return fmt.Sprintf("drain txn %d: unexpected commit error %v", ts.id, other)
-	}
-	if conflict {
-		return fmt.Sprintf("txn %d spuriously aborted (1020) during SERIAL drain: no concurrent "+
-			"writer exists, so the resolver must not abort it", ts.id)
-	}
-	return ""
+	return fmt.Sprintf("drain txn %d did not converge in %d attempts (injected faults never cleared)", ts.id, drainCap)
 }
 
 // predictConflict is the verdict oracle's model of SimFDB's SSI resolution (conflict.go): a
@@ -336,16 +391,23 @@ func predictConflict(ts *txnState, committed []committedTxn) bool {
 	return false
 }
 
-// classifyCommit splits a commit outcome into (conflict=1020, otherError). nil ⇒ (false, nil).
-func classifyCommit(err error) (conflict bool, other error) {
+// commitOutcome maps a commit result to an FDB error code (0 = success) and flags anything
+// unexpected. Handled: 0 (committed), 1020 (not_committed), 1021 (commit_unknown — APPLIED), 1007
+// (transaction_too_old). Any other error is a harness/logic failure, not a hunt finding. With faults
+// off, the only nonzero code SimFDB can return here is 1020.
+func commitOutcome(err error) (code int, unexpected error) {
 	if err == nil {
-		return false, nil
+		return 0, nil
 	}
 	var fe fdb.Error
-	if errors.As(err, &fe) && fe.Code == 1020 {
-		return true, nil
+	if errors.As(err, &fe) {
+		switch fe.Code {
+		case 1020, 1021, 1007:
+			return fe.Code, nil
+		}
+		return fe.Code, err
 	}
-	return false, err
+	return -1, err
 }
 
 func verdictViolation(ts *txnState, predicted, actual bool) string {
@@ -450,5 +512,8 @@ func Profiles() []hunt.Profile {
 		{Name: "interleave-hot", Cfg: hunt.Config{Workload: Workload{Keys: 2, Txns: 6, OpsPerTxn: 3, AddPct: 30}}},
 		{Name: "interleave-rmw", Cfg: hunt.Config{Workload: Workload{Keys: 3, Txns: 5, OpsPerTxn: 2, AddPct: 0}}},
 		{Name: "interleave-add", Cfg: hunt.Config{Workload: Workload{Keys: 3, Txns: 5, OpsPerTxn: 3, AddPct: 100}}},
+		// Fault-enabled: commit BUGGIFY on, so commit_unknown(1021) races concurrent transactions.
+		{Name: "interleave-faults", Cfg: hunt.Config{Workload: Workload{Keys: 4, Txns: 4, OpsPerTxn: 3, AddPct: 50, Faults: 0.25}}},
+		{Name: "interleave-faults-add", Cfg: hunt.Config{Workload: Workload{Keys: 3, Txns: 5, OpsPerTxn: 3, AddPct: 100, Faults: 0.3}}},
 	}
 }

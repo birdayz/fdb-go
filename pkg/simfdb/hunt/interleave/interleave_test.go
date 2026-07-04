@@ -9,6 +9,46 @@ import (
 	"fdb.dev/pkg/simfdb/hunt"
 )
 
+// TestFaultsApply1021 is the NO-FAKE-CHECKBOX proof for the fault mode: with commit BUGGIFY on, the
+// commit_unknown(1021) path — a transaction whose writes are durable but whose outcome is ambiguous,
+// racing other open transactions — MUST actually fire, and every fault-mode run must still pass both
+// oracles (a 1021 transaction applies exactly once and participates in conflict detection). If not one
+// 1021 lands across the band, the fault dimension is not being exercised.
+func TestFaultsApply1021(t *testing.T) {
+	t.Parallel()
+	w := Workload{Keys: 4, Txns: 4, OpsPerTxn: 3, AddPct: 50, Faults: 0.35}
+	var applied, conflicts int
+	for seed := uint64(0); seed < 4000; seed++ {
+		res := w.run(seed)
+		if res.Report.Failed() {
+			t.Fatalf("seed %d: %s", seed, res.Report)
+		}
+		applied += res.Applied1021
+		conflicts += res.Conflicts
+	}
+	if applied == 0 {
+		t.Fatal("no commit_unknown(1021) fired across 4000 fault-enabled seeds: the fault dimension is not being exercised")
+	}
+	t.Logf("faults: %d commit_unknown(1021) applied-and-committed + %d 1020 aborts across 4000 seeds (state + verdict oracles held)", applied, conflicts)
+}
+
+// TestFaultsDeterminism: even with BUGGIFY on, a run is a pure function of its seed — the fault
+// schedule is seed-derived, so the fingerprint and the 1021 count are stable across reruns.
+func TestFaultsDeterminism(t *testing.T) {
+	t.Parallel()
+	w := Workload{Keys: 4, Txns: 4, OpsPerTxn: 3, AddPct: 50, Faults: 0.35}
+	for seed := uint64(0); seed < 500; seed++ {
+		a, b := w.run(seed), w.run(seed)
+		if a.Report.Failed() || b.Report.Failed() {
+			t.Fatalf("seed %d unexpectedly failed: %s", seed, a.Report)
+		}
+		if a.Report.Fingerprint != b.Report.Fingerprint || a.Applied1021 != b.Applied1021 {
+			t.Fatalf("seed %d nondeterministic under faults: fp %s/%s, 1021 %d/%d",
+				seed, a.Report.Fingerprint, b.Report.Fingerprint, a.Applied1021, b.Applied1021)
+		}
+	}
+}
+
 // TestClean sweeps every profile across a wide seed band and asserts no run ever fails: SimFDB's
 // resolver is correct on every interleaving AND the verdict/state oracles agree with it. A failure
 // is a reproducible seed — either a real resolver bug or an oracle-fidelity gap, both worth a stop.
