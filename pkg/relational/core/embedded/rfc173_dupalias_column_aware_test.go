@@ -80,6 +80,31 @@ func TestRFC173W4Left_DupAliasColumnAware(t *testing.T) {
 			wantCode: api.ErrCodeAmbiguousColumn,
 			wantMsg:  "Ambiguous reference A.NOTE",
 		},
+		// GENERATED output names participate in the collision check: an
+		// unaliased aggregate/computed output is referenceable by its
+		// generated name (`a."COUNT(*)"`), so two duplicate legs exposing
+		// the SAME generated name are ambiguous — omitting them made the
+		// legs look disjoint and the reference read ONE side (review
+		// finding, red-first: both rejecting shapes below PLANNED before
+		// the fix).
+		{
+			name:     "aggregate_dup_generated_name",
+			sql:      `SELECT a."COUNT(*)" FROM (SELECT COUNT(*) FROM orders) AS a, (SELECT COUNT(*) FROM quotes) AS a`,
+			wantCode: api.ErrCodeAmbiguousColumn,
+			wantMsg:  "Ambiguous reference A.COUNT(*)",
+		},
+		{
+			name:     "computed_dup_same_expression",
+			sql:      `SELECT * FROM (SELECT id + 1 FROM orders) AS a, (SELECT id + 1 FROM orders) AS a`,
+			wantCode: api.ErrCodeAmbiguousColumn,
+			wantMsg:  "Ambiguous reference A.",
+		},
+		// ... while DIFFERENT generated names are genuinely disjoint — the
+		// per-attribute model answers references to either.
+		{
+			name: "computed_dup_different_expressions",
+			sql:  `SELECT * FROM (SELECT id + 1 FROM orders) AS a, (SELECT qid + 7 FROM quotes) AS a`,
+		},
 		// A duplicate alias naming an UNDEFINED table is table validation's
 		// failure (42F01), not the ambiguity approximation's.
 		{

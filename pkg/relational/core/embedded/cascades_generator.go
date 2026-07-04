@@ -4899,10 +4899,18 @@ func fromLegColumnsUpper(op logical.LogicalOperator, md *recordlayer.RecordMetaD
 				out = append(out, strings.ToUpper(o.Aliases[i]))
 				continue
 			}
+			upper := strings.ToUpper(p)
 			if i < len(o.IsComputed) && o.IsComputed[i] {
+				// An unaliased computed column's OUTPUT NAME is its generated
+				// (expression-text) name, and that name IS referenceable
+				// (`a."(ID + 1)"`), so it participates in the collision check
+				// — omitting it made same-expression duplicate legs look
+				// disjoint and a reference read ONE side, silently (review
+				// finding). Raw text, never parseColRef: a dot inside the
+				// expression is not a qualifier.
+				out = append(out, upper)
 				continue
 			}
-			upper := strings.ToUpper(p)
 			if upper == "*" || strings.HasSuffix(upper, ".*") {
 				// A star mixed among named projections — the expansion is
 				// not derived here.
@@ -4912,17 +4920,25 @@ func fromLegColumnsUpper(op logical.LogicalOperator, md *recordlayer.RecordMetaD
 		}
 		return out, true
 	case *logical.LogicalAggregate:
+		// Mirrors the translator's aggregateOutputColumns: group keys AND
+		// aggregates contribute output names, with the raw expression /
+		// aggregate text as the generated name when unaliased —
+		// `a."COUNT(*)"` is referenceable, so omitting it let duplicate
+		// aggregate legs plan and read one side, silently (review finding).
 		out := make([]string, 0, len(o.GroupKeys)+len(o.Aggregates))
 		for i, k := range o.GroupKeys {
 			if i < len(o.GroupKeyValues) && o.GroupKeyValues[i] != nil {
-				continue // expression key — no simple output name
+				out = append(out, strings.ToUpper(k)) // expression key — text name
+				continue
 			}
 			out = append(out, parseColRef(strings.ToUpper(k)).bare())
 		}
-		for i := range o.Aggregates {
+		for i, agg := range o.Aggregates {
 			if i < len(o.Aliases) && o.Aliases[i] != "" {
 				out = append(out, strings.ToUpper(o.Aliases[i]))
+				continue
 			}
+			out = append(out, strings.ToUpper(agg))
 		}
 		return out, true
 	case *logical.LogicalFilter:
