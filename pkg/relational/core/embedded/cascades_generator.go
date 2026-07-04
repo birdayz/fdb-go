@@ -3973,8 +3973,27 @@ func lookupFieldFold(desc protoreflect.MessageDescriptor, name string) protorefl
 // Table) covers an unnest whose colliding later source lives in an EXISTS / scalar
 // subquery's own FROM scope. RFC-142.
 func rejectDuplicateUnnestAlias(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
+	return rejectDuplicateUnnestAliasInner(op, md, nil)
+}
+
+// rejectDuplicateUnnestAliasInner carries the in-scope WITH definitions so a
+// FROM chain's Scan-on-a-CTE-name legs can derive their output columns from
+// the CTE Body (the ambiguity check is column-aware for them, exactly like
+// base tables).
+func rejectDuplicateUnnestAliasInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, ctes map[string]*logical.LogicalCTE) error {
 	if op == nil {
 		return nil
+	}
+	// A WITH definition is visible to its Main subtree (and to its own Body —
+	// recursive CTEs self-reference; for a non-recursive Body the extra
+	// visibility is inert, its scans can't name the CTE).
+	if cte, ok := op.(*logical.LogicalCTE); ok {
+		sub := make(map[string]*logical.LogicalCTE, len(ctes)+1)
+		for k, v := range ctes {
+			sub[k] = v
+		}
+		sub[strings.ToUpper(cte.Name)] = cte
+		ctes = sub
 	}
 	// A LogicalJoin is the root of a FROM-scope join chain. Collect every source
 	// alias in that chain and reject any unnest whose AS/AT alias duplicates
@@ -3982,21 +4001,37 @@ func rejectDuplicateUnnestAlias(op logical.LogicalOperator, md *recordlayer.Reco
 	// source is its own FROM scope — exactly like outerBoundAliases /
 	// buriedUnnestLegs; the recursion below then re-enters those nested scopes.
 	if j, ok := op.(*logical.LogicalJoin); ok {
-		if err := checkFromScopeUnnestAliases(j, md); err != nil {
+		if err := checkFromScopeUnnestAliases(j, md, ctes); err != nil {
 			return err
 		}
 	}
 	for _, ch := range op.Children() {
-		if err := rejectDuplicateUnnestAlias(ch, md); err != nil {
+		if err := rejectDuplicateUnnestAliasInner(ch, md, ctes); err != nil {
 			return err
 		}
 	}
 	for _, sub := range subqueryPlans(op) {
-		if err := rejectDuplicateUnnestAlias(sub, md); err != nil {
+		if err := rejectDuplicateUnnestAliasInner(sub, md, ctes); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// fromLegSchema describes one FROM-chain leaf source for the duplicate-alias
+// check: its UPPER alias plus what is known about its output columns.
+type fromLegSchema struct {
+	alias string
+	cols  []string // UPPER output column names (colsKnown true), declaration order
+	// colsKnown distinguishes "columns derived" (possibly empty — a leg of
+	// only unnamed computed columns) from "columns unknowable" (a derived/CTE
+	// body shape the derivation declines → conservative all-colliding).
+	colsKnown bool
+	// undefinedTable marks a base-table leg whose name resolves to neither an
+	// in-scope CTE nor a record type: an UNDEFINED table. The ambiguity
+	// approximation skips its pairs — masking the 42F01 undefined-table error
+	// behind a 42702 would report the wrong problem.
+	undefinedTable bool
 }
 
 // checkFromScopeUnnestAliases gathers every leaf source alias of the FROM-scope
@@ -4005,41 +4040,50 @@ func rejectDuplicateUnnestAlias(op logical.LogicalOperator, md *recordlayer.Reco
 // scope) and rejects any lateral-unnest leg in that chain whose AS or AT alias also
 // names another source in the same chain. The check is symmetric across the chain,
 // so it catches both an earlier and a later collision. RFC-142.
-func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordMetaData) error {
-	var scans []string      // every leaf source alias (Scan / derived leg) in the chain
-	var scanTables []string // parallel: the source's TABLE name ("" = columns unknown)
+func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordMetaData, ctes map[string]*logical.LogicalCTE) error {
+	var legs []fromLegSchema // every leaf source (Scan / derived leg) in the chain
 	var unnests []*logical.LogicalUnnest
-	var walk func(logical.LogicalOperator)
-	walk = func(o logical.LogicalOperator) {
+	var walk func(logical.LogicalOperator, map[string]*logical.LogicalCTE)
+	walk = func(o logical.LogicalOperator, ctes map[string]*logical.LogicalCTE) {
 		switch n := o.(type) {
 		case *logical.LogicalScan:
 			a := n.Alias
 			if a == "" {
 				a = n.Table
 			}
-			if a != "" {
-				scans = append(scans, strings.ToUpper(a))
-				scanTables = append(scanTables, n.Table)
+			if a == "" {
+				return
 			}
+			leg := fromLegSchema{alias: strings.ToUpper(a)}
+			if cte, ok := ctes[strings.ToUpper(n.Table)]; ok {
+				leg.cols, leg.colsKnown = cteColumnsUpper(cte, md, ctes, map[string]bool{})
+			} else if rt := recordTypeCI(md, n.Table); rt != nil && rt.Descriptor != nil {
+				leg.cols, leg.colsKnown = descriptorColumnsUpper(rt), true
+			} else if md != nil {
+				leg.undefinedTable = true
+			}
+			legs = append(legs, leg)
 		case *logical.LogicalUnnest:
 			unnests = append(unnests, n)
 		case *logical.LogicalCTE:
-			// A derived/CTE leg contributes only its OUTER alias (its Main is a
-			// Scan(name)); its Body is a separate FROM scope, not descended here.
-			// Its columns are unknown to md — the dup check treats "" as
-			// all-colliding (conservative).
-			preLen := len(scans)
-			walk(n.Main)
-			for k := preLen; k < len(scans); k++ {
-				scanTables[k] = ""
+			// A derived/CTE leg contributes only its OUTER alias (its Main is
+			// a Scan on the definition name); its Body is a separate FROM
+			// scope, not descended here. Registering the definition makes the
+			// Scan arm derive the leg's OUTPUT columns from the Body — a
+			// derived leg is column-aware, exactly like a base table.
+			sub := make(map[string]*logical.LogicalCTE, len(ctes)+1)
+			for k, v := range ctes {
+				sub[k] = v
 			}
+			sub[strings.ToUpper(n.Name)] = n
+			walk(n.Main, sub)
 		default:
 			for _, c := range o.Children() {
-				walk(c)
+				walk(c, ctes)
 			}
 		}
 	}
-	walk(j)
+	walk(j, ctes)
 	// RFC-173 W4-left: a FROM chain binding the SAME source alias twice
 	// (`FROM p, q, p` / `FROM p AS a, q AS a`) rejects with Java's
 	// AMBIGUOUS-reference code. Java allows the duplicate at FROM (its
@@ -4055,30 +4099,41 @@ func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordM
 	// DIVERGENCES.md. Pre-rejection behavior was strictly worse on BOTH
 	// axes: a referenced duplicate silently bound last-leg-wins (wrong rows,
 	// never Java's error) and SELECT * died with an internal planner error.
-	seenSrc := map[string]string{} // UPPER alias → table
-	for i, a := range scans {
-		prevTable, dup := seenSrc[a]
-		if !dup {
-			seenSrc[a] = scanTables[i]
-			continue
-		}
-		// Java's ambiguity is PER-ATTRIBUTE (SemanticAnalyzer's
-		// attributes.size()==1 asserts): a duplicated alias errors only for
-		// a reference whose (qualifier, column) matches BOTH sources —
-		// conformance-verified: `SELECT a.id FROM ta AS a, tb AS a` ANSWERS
-		// when only ta has id. The FROM-level approximation rejects when the
-		// duplicate sources SHARE any column (every shared-column reference
-		// would be ambiguous — the practical class, e.g. the same table
-		// twice), with Java's message naming the first shared column; a
-		// source whose columns are unknown here (CTE/derived legs) counts as
-		// all-colliding, conservative. Disjoint-column duplicates pass
-		// through — the name model's per-leg qualified keys bind them
-		// correctly (conformance parity entry).
-		shared := sharedColumnUpper(md, prevTable, scanTables[i])
-		if shared != "" {
+	//
+	// Java's ambiguity is PER-ATTRIBUTE: a duplicated alias errors only for
+	// a reference whose (qualifier, column) matches BOTH sources —
+	// conformance-verified: `SELECT a.id FROM ta AS a, tb AS a` ANSWERS when
+	// only ta has id. The FROM-level approximation rejects when any TWO
+	// sources under the alias SHARE a column (every shared-column reference
+	// would be ambiguous — the practical class, e.g. the same table twice),
+	// with Java's message naming the first shared column. Each later
+	// duplicate is compared against EVERY prior source under the alias —
+	// `A AS x, B AS x, C AS x` is ambiguous when any pair collides, not just
+	// pairs involving A. Disjoint-column duplicates pass through — the name
+	// model's per-leg qualified keys bind them correctly (conformance parity
+	// entry). A pair with an UNDEFINED table is skipped: table validation
+	// owns that failure (42F01), the ambiguity approximation must not mask
+	// it.
+	seen := map[string][]fromLegSchema{} // UPPER alias → all prior sources
+	for _, leg := range legs {
+		for _, prev := range seen[leg.alias] {
+			if leg.undefinedTable || prev.undefinedTable {
+				continue
+			}
+			col, collide := legSharedColumn(prev, leg)
+			if !collide {
+				continue
+			}
+			if col == "" {
+				// Neither side has a nameable column to report (both
+				// underivable) — still ambiguous, name the alias alone.
+				return api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"Ambiguous reference %s", leg.alias)
+			}
 			return api.NewErrorf(api.ErrCodeAmbiguousColumn,
-				"Ambiguous reference %s.%s", a, shared)
+				"Ambiguous reference %s.%s", leg.alias, col)
 		}
+		seen[leg.alias] = append(seen[leg.alias], leg)
 	}
 	if len(unnests) == 0 {
 		return nil
@@ -4087,9 +4142,9 @@ func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordM
 	// plus every OTHER unnest's AS/AT aliases. A collision against any of them is a
 	// duplicate range-variable name.
 	for _, u := range unnests {
-		others := make(map[string]struct{}, len(scans)+2*len(unnests))
-		for _, a := range scans {
-			others[a] = struct{}{}
+		others := make(map[string]struct{}, len(legs)+2*len(unnests))
+		for _, leg := range legs {
+			others[leg.alias] = struct{}{}
 		}
 		for _, ou := range unnests {
 			if ou == u {
@@ -4755,56 +4810,164 @@ func rowsOrEmpty(rows driver.Rows) driver.Rows {
 	return rows
 }
 
-// sharedColumnUpper returns the FIRST column name (UPPER, declaration order
-// of tableA) present in BOTH tables' descriptors, or "" when the column sets
-// are disjoint. An unresolvable table ("" — a CTE/derived leg — or a name md
-// does not know) counts as ALL-colliding and returns the other table's first
-// column (or "?" when neither resolves): the FROM-level ambiguity
-// approximation must fail toward Java's error for sources whose columns it
-// cannot see.
-func sharedColumnUpper(md *recordlayer.RecordMetaData, tableA, tableB string) string {
-	colsOf := func(table string) []string {
-		if md == nil || table == "" {
-			return nil
+// legSharedColumn reports whether two same-aliased FROM legs collide for the
+// duplicate-alias ambiguity approximation, and on which column. Both sides
+// column-known → the FIRST column (a's declaration order) present in both, or
+// no collision when disjoint. A side whose columns are unknowable (a
+// derived/CTE body shape the derivation declines) counts as ALL-colliding —
+// the approximation must fail toward Java's error for sources it cannot see —
+// reporting the known side's first column, or "" when neither side has one.
+func legSharedColumn(a, b fromLegSchema) (string, bool) {
+	if a.colsKnown && b.colsKnown {
+		setB := make(map[string]struct{}, len(b.cols))
+		for _, c := range b.cols {
+			setB[c] = struct{}{}
 		}
-		rt := md.GetRecordType(table)
-		if rt == nil {
-			for name, cand := range md.RecordTypes() {
-				if strings.EqualFold(name, table) {
-					rt = cand
-					break
-				}
+		for _, c := range a.cols {
+			if _, ok := setB[c]; ok {
+				return c, true
 			}
 		}
-		if rt == nil || rt.Descriptor == nil {
-			return nil
+		return "", false
+	}
+	if a.colsKnown && len(a.cols) > 0 {
+		return a.cols[0], true
+	}
+	if b.colsKnown && len(b.cols) > 0 {
+		return b.cols[0], true
+	}
+	return "", true
+}
+
+// descriptorColumnsUpper returns rt's column names, UPPER, declaration order.
+func descriptorColumnsUpper(rt *recordlayer.RecordType) []string {
+	fields := rt.Descriptor.Fields()
+	out := make([]string, 0, fields.Len())
+	for i := 0; i < fields.Len(); i++ {
+		out = append(out, strings.ToUpper(string(fields.Get(i).Name())))
+	}
+	return out
+}
+
+// cteColumnsUpper derives a WITH definition's output column names: the
+// explicit column-alias list when present (`WITH w(a, b) AS …`), else the
+// Body's derived output. `deriving` breaks recursive-CTE self-reference
+// cycles (a self Scan inside the Body while the Body's own derivation is in
+// flight declines rather than recursing forever).
+func cteColumnsUpper(cte *logical.LogicalCTE, md *recordlayer.RecordMetaData, ctes map[string]*logical.LogicalCTE, deriving map[string]bool) ([]string, bool) {
+	if len(cte.ColumnAliases) > 0 {
+		out := make([]string, len(cte.ColumnAliases))
+		for i, a := range cte.ColumnAliases {
+			out[i] = strings.ToUpper(a)
 		}
-		fields := rt.Descriptor.Fields()
-		out := make([]string, 0, fields.Len())
-		for i := 0; i < fields.Len(); i++ {
-			out = append(out, strings.ToUpper(string(fields.Get(i).Name())))
+		return out, true
+	}
+	name := strings.ToUpper(cte.Name)
+	if deriving[name] {
+		return nil, false
+	}
+	deriving[name] = true
+	defer delete(deriving, name)
+	return fromLegColumnsUpper(cte.Body, md, ctes, deriving)
+}
+
+// fromLegColumnsUpper derives the UPPER output column names of a FROM-leg
+// subtree (a derived table / CTE body) for the duplicate-alias check. It
+// mirrors the translator's derivedOutputColumns shape set, but yields NAMES
+// only and omits columns with no simple identifier (an unaliased computed
+// projection / aggregate — nothing a qualified reference could collide on;
+// Java's per-attribute ambiguity fires only on references). Returns
+// (nil, false) for a shape it cannot derive — the caller treats that side as
+// all-colliding, conservative.
+func fromLegColumnsUpper(op logical.LogicalOperator, md *recordlayer.RecordMetaData, ctes map[string]*logical.LogicalCTE, deriving map[string]bool) ([]string, bool) {
+	switch o := op.(type) {
+	case *logical.LogicalScan:
+		if cte, ok := ctes[strings.ToUpper(o.Table)]; ok {
+			return cteColumnsUpper(cte, md, ctes, deriving)
 		}
-		return out
-	}
-	colsA := colsOf(tableA)
-	colsB := colsOf(tableB)
-	if colsA == nil && colsB == nil {
-		return "?"
-	}
-	if colsA == nil {
-		return colsB[0]
-	}
-	if colsB == nil {
-		return colsA[0]
-	}
-	setB := make(map[string]struct{}, len(colsB))
-	for _, c := range colsB {
-		setB[c] = struct{}{}
-	}
-	for _, c := range colsA {
-		if _, ok := setB[c]; ok {
-			return c
+		if rt := recordTypeCI(md, o.Table); rt != nil && rt.Descriptor != nil {
+			return descriptorColumnsUpper(rt), true
 		}
+		return nil, false
+	case *logical.LogicalProject:
+		if len(o.Projections) == 1 && o.Projections[0] == "*" {
+			return fromLegColumnsUpper(o.Input, md, ctes, deriving)
+		}
+		out := make([]string, 0, len(o.Projections))
+		for i, p := range o.Projections {
+			if i < len(o.Aliases) && o.Aliases[i] != "" {
+				out = append(out, strings.ToUpper(o.Aliases[i]))
+				continue
+			}
+			if i < len(o.IsComputed) && o.IsComputed[i] {
+				continue
+			}
+			upper := strings.ToUpper(p)
+			if upper == "*" || strings.HasSuffix(upper, ".*") {
+				// A star mixed among named projections — the expansion is
+				// not derived here.
+				return nil, false
+			}
+			out = append(out, parseColRef(upper).bare())
+		}
+		return out, true
+	case *logical.LogicalAggregate:
+		out := make([]string, 0, len(o.GroupKeys)+len(o.Aggregates))
+		for i, k := range o.GroupKeys {
+			if i < len(o.GroupKeyValues) && o.GroupKeyValues[i] != nil {
+				continue // expression key — no simple output name
+			}
+			out = append(out, parseColRef(strings.ToUpper(k)).bare())
+		}
+		for i := range o.Aggregates {
+			if i < len(o.Aliases) && o.Aliases[i] != "" {
+				out = append(out, strings.ToUpper(o.Aliases[i]))
+			}
+		}
+		return out, true
+	case *logical.LogicalFilter:
+		return fromLegColumnsUpper(o.Input, md, ctes, deriving)
+	case *logical.LogicalSort:
+		return fromLegColumnsUpper(o.Input, md, ctes, deriving)
+	case *logical.LogicalLimit:
+		return fromLegColumnsUpper(o.Input, md, ctes, deriving)
+	case *logical.LogicalDistinct:
+		return fromLegColumnsUpper(o.Input, md, ctes, deriving)
+	case *logical.LogicalUnion:
+		// SQL exposes the FIRST branch's names.
+		if len(o.Inputs) == 0 {
+			return nil, false
+		}
+		return fromLegColumnsUpper(o.Inputs[0], md, ctes, deriving)
+	case *logical.LogicalValues:
+		out := make([]string, 0, len(o.Aliases))
+		for _, a := range o.Aliases {
+			if a != "" {
+				out = append(out, strings.ToUpper(a))
+			}
+		}
+		return out, true
+	case *logical.LogicalJoin:
+		// A join body's star expansion concatenates the leg columns in
+		// declaration order (duplicates survive — they collide, correctly).
+		left, okL := fromLegColumnsUpper(o.Left, md, ctes, deriving)
+		if !okL {
+			return nil, false
+		}
+		right, okR := fromLegColumnsUpper(o.Right, md, ctes, deriving)
+		if !okR {
+			return nil, false
+		}
+		return append(left, right...), true
+	case *logical.LogicalCTE:
+		// A WITH nested inside a derived body: its Main is the output shape,
+		// with the definition in scope.
+		sub := make(map[string]*logical.LogicalCTE, len(ctes)+1)
+		for k, v := range ctes {
+			sub[k] = v
+		}
+		sub[strings.ToUpper(o.Name)] = o
+		return fromLegColumnsUpper(o.Main, md, sub, deriving)
 	}
-	return ""
+	return nil, false
 }

@@ -18020,6 +18020,66 @@ func SeedRunCorpus() []RunQuery {
 				GoErrorContains: "Ambiguous reference",
 			},
 		},
+		// RFC-173 W4-left — the column-aware duplicate-alias dimensions the
+		// first cut shipped without (review findings). Three-source
+		// duplicates compare EVERY pair (the colliding pair need not involve
+		// the first source); derived/CTE legs derive their real output
+		// columns; an undefined table under a duplicate alias stays the
+		// undefined-table error.
+		{
+			// The colliding pair (F, G — both carry qid) does not involve
+			// the FIRST source under the alias (E, disjoint). Java resolves
+			// x.qid per-attribute → two candidates → ambiguous. PARITY.
+			Name: "dup_from_alias_three_way_later_pair",
+			SchemaTemplate: "CREATE TABLE T_DUP_E (pid BIGINT, PRIMARY KEY (pid))" +
+				" CREATE TABLE T_DUP_F (qid BIGINT, PRIMARY KEY (qid))" +
+				" CREATE TABLE T_DUP_G (qid BIGINT, gv BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DUP_E VALUES (1)",
+				"INSERT INTO T_DUP_F VALUES (7)",
+				"INSERT INTO T_DUP_G VALUES (7, 70)",
+			},
+			Query: "SELECT x.qid FROM T_DUP_E AS x, T_DUP_F AS x, T_DUP_G AS x",
+		},
+		{
+			// Both engines reject — Java at table resolution, Go at
+			// validateTablesAndColumns (42F01). The ambiguity approximation
+			// must NOT mask this as a 42702.
+			Name:           "dup_from_alias_undefined_table",
+			SchemaTemplate: "CREATE TABLE T_DUP_H (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_H VALUES (1)"},
+			Query:          "SELECT * FROM nosuch_dup AS a, T_DUP_H AS a",
+			Divergence: &Divergence{
+				Reason:          "Both engines reject the undefined table; cosmetic message wording differs. The RFC-173 W4-left dup-alias check skips undefined-table pairs so 42F01 is not masked as 42702.",
+				Direction:       DivergenceBothErrorMessagesDrift,
+				GoErrorContains: "table \"NOSUCH_DUP\" does not exist",
+			},
+		},
+		{
+			// A CTE bound twice: the referenced form is ambiguous in BOTH
+			// engines (Java per-attribute over two quantifiers; Go derives
+			// the CTE body's output columns at the FROM walk). PARITY.
+			Name:           "dup_from_alias_cte_referenced",
+			SchemaTemplate: "CREATE TABLE T_DUP_W (id BIGINT, wv BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_W VALUES (1, 10)"},
+			Query:          "WITH w AS (SELECT id FROM T_DUP_W) SELECT w.id FROM w, w",
+		},
+		{
+			// The unreferenced CTE star corner — same class as
+			// dup_from_alias_select_star: Java answers with duplicate
+			// columns, Go over-rejects until QP-REF-BIND. The message names
+			// the CTE's REAL derived column (the opaque treatment printed a
+			// garbage "?").
+			Name:           "dup_from_alias_cte_star",
+			SchemaTemplate: "CREATE TABLE T_DUP_X (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_X VALUES (1)"},
+			Query:          "WITH w AS (SELECT id FROM T_DUP_X) SELECT * FROM w, w",
+			Divergence: &Divergence{
+				Reason:          "RFC-173 W4-left: Go rejects duplicate FROM aliases at the FROM walk (42702, naming the CTE's derived column); Java answers SELECT * over the duplicate with duplicate columns (unique quantifier ids). QP-REF-BIND charter; see DIVERGENCES.md.",
+				Direction:       DivergenceJavaSucceedsGoRejects,
+				GoErrorContains: "Ambiguous reference W.ID",
+			},
+		},
 	}
 }
 
