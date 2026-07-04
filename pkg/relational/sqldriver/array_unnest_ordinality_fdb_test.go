@@ -3339,11 +3339,32 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// DISCRIMINATING data (WV=7 excludes EL=7 but not EL=8; the commit-1
 		// seeds {5,6} made EL>WV all-true, and an all-rows result was briefly
 		// misread as a dropped predicate — a phantom bug the investigation
-		// retracted). Today the commit-1 fail-open routes this conjunct to the
-		// residual; the rows are CORRECT on both paths (probe-verified), so
-		// this pin is path-agnostic and flips nothing when the fail-open lifts.
-		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WAUX, WSRC."WARR" AS "EL" WHERE "EL" > "WV"`, []string{
+		// retracted; the fail-open that guarded it is REMOVED). The spanning
+		// conjunct routes through the GATHERED path — pinned by the plan
+		// signature, not just rows (the design-ruling condition on the
+		// fail-open removal).
+		spanExplain := assertRows(t, `SELECT "EL", "WV" FROM WSRC, WAUX, WSRC."WARR" AS "EL" WHERE "EL" > "WV"`, []string{
 			"EL=7|WV=5", "EL=7|WV=6", "EL=8|WV=5", "EL=8|WV=6", "EL=8|WV=7",
+		})
+		if !strings.Contains(spanExplain, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("the spanning WHERE must plan through the GATHERED path (the fail-open is gone):\n%s", spanExplain)
+		}
+
+		// The R18 CLASS through the gathered path (the commit-2 lift): an
+		// explicit JOIN..ON cluster before the comma unnest, DOTTED outer
+		// projections, MIXED (no-AT) element — the exact shape whose windows
+		// declined before the span-derivation extension (the merge-collapsed
+		// bare-QOV element yielded partial leg coverage; the strict positional
+		// context then loudly missed the dotted read). ON keeps XID=1 only.
+		r18Explain := assertRows(t, `SELECT WSRC."SID", WAUX."WV", "EL" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL"`, []string{
+			"EL=7|WAUX.WV=5|WSRC.SID=1", "EL=8|WAUX.WV=5|WSRC.SID=1",
+		})
+		if !strings.Contains(r18Explain, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("the ON-carrying dotted-projection query must plan through the GATHERED path:\n%s", r18Explain)
+		}
+		// The AS+AT (full-baked) form of the same shape, plus an element WHERE.
+		assertRows(t, `SELECT WSRC."SID", "EL", "O" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL" AT "O" WHERE "EL" > 7`, []string{
+			"EL=8|O=2|WSRC.SID=1",
 		})
 	})
 }

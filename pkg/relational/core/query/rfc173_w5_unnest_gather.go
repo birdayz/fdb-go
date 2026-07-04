@@ -60,15 +60,6 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		return nil
 	}
 
-	// Commit-1 scope: ON-carrying clusters decline (fail-open residual). Their
-	// dotted-projection resolution over the partitioned flat output needs the
-	// leg-window/compose machinery of the next W5 commit — the name model
-	// handles them correctly today, and a partial gather regressed exactly
-	// those pins (R18).
-	if leftJoin.OnPredicate != nil || len(gatherInnerClusterPreds(leftJoin)) > 0 {
-		return nil
-	}
-
 	legs := t.legsOfGatedJoin(leftJoin)
 	fields, legTypes := t.ordinalJoinSeedFields(legs)
 	if fields == nil {
@@ -165,10 +156,15 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		values.AssertOrdinalJoinSeed(rc)
 	}
 
-	// Predicates: the nested inner joins' ON conjuncts (the root unnest join
-	// itself is a comma join — no ON), cross-leg conjuncts baked through the
+	// Predicates: the cluster root's OWN ON conjunct (gatherInnerClusterPreds
+	// deliberately skips its argument's own ON — "the root's own ON is the
+	// caller's") + the nested inner joins' ON conjuncts + the unnest join's
+	// (a comma join — normally none), cross-leg conjuncts baked through the
 	// same legTypes the seed used.
 	var preds []predicates.QueryPredicate
+	if qp, isQP := leftJoin.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
+		preds = append(preds, qp)
+	}
 	if j.OnPredicate != nil {
 		if qp, isQP := j.OnPredicate.(predicates.QueryPredicate); isQP {
 			preds = append(preds, qp)
@@ -184,46 +180,6 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		sourceAliases,
 		expressions.JoinInner,
 	)
-}
-
-// predSpansUnnestAndLeg reports whether any conjunct of the (already
-// unnest-rewritten) WHERE references BOTH the unnest's element/ordinal
-// correlation AND a cluster-leg alias — the spanning class whose predicate
-// silently DROPPED through the gathered select's re-enumeration during
-// bring-up (probed: `WHERE EL > WV` filtered nothing while the leg-only and
-// element-only conjuncts each routed correctly). Commit-1 fail-open: such
-// filters force the RESIDUAL translation; the spanning-pred re-enumeration is
-// the leg-window commit's work.
-func predSpansUnnestAndLeg(pred predicates.QueryPredicate, innerCorr values.CorrelationIdentifier, legTypes map[string]bakeLegType) bool {
-	var conjuncts func(p predicates.QueryPredicate) []predicates.QueryPredicate
-	conjuncts = func(p predicates.QueryPredicate) []predicates.QueryPredicate {
-		if and, isAnd := p.(*predicates.AndPredicate); isAnd {
-			var out []predicates.QueryPredicate
-			for _, s := range and.SubPredicates {
-				out = append(out, conjuncts(s)...)
-			}
-			return out
-		}
-		return []predicates.QueryPredicate{p}
-	}
-	for _, c := range conjuncts(pred) {
-		refs := predicates.GetCorrelatedToOfPredicate(c)
-		touchesUnnest := false
-		touchesLeg := false
-		for r := range refs {
-			if r == innerCorr {
-				touchesUnnest = true
-				continue
-			}
-			if _, isLeg := legTypes[strings.ToUpper(r.Name())]; isLeg {
-				touchesLeg = true
-			}
-		}
-		if touchesUnnest && touchesLeg {
-			return true
-		}
-	}
-	return false
 }
 
 // gatheredPlainLegType resolves a gathered PLAIN (non-box) leg's flowed type

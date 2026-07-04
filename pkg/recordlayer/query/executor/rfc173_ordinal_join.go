@@ -122,7 +122,7 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			return nil, nil, false
 		}
-		alias, legType, ord, resolved := resolveSpanLeaf(fv, nil)
+		alias, legType, ord, resolved := resolveSpanLeaf(fv, f.Name, nil)
 		if !resolved {
 			return nil, nil, false
 		}
@@ -182,7 +182,7 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 			// bakedness (unification review ruling).
 			return nil, nil, false
 		}
-		alias, legType, ord, resolved := resolveSpanLeaf(fv, legRVs)
+		alias, legType, ord, resolved := resolveSpanLeaf(fv, f.Name, legRVs)
 		if !resolved {
 			return nil, nil, false
 		}
@@ -232,7 +232,7 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 // fail-safe, the caller reports no windows and downstream stays loud rather
 // than mis-windowed. The depth cap is a defensive backstop — plan-derived
 // legRVs form a tree, so a cycle is impossible by construction.
-func resolveSpanLeaf(fv *values.FieldValue, legRVs map[values.CorrelationIdentifier]values.Value) (alias values.CorrelationIdentifier, legType *values.RecordType, legOrd int, ok bool) {
+func resolveSpanLeaf(fv *values.FieldValue, fieldName string, legRVs map[values.CorrelationIdentifier]values.Value) (alias values.CorrelationIdentifier, legType *values.RecordType, legOrd int, ok bool) {
 	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
 	if !isQOV {
 		return alias, nil, 0, false
@@ -281,7 +281,29 @@ func resolveSpanLeaf(fv *values.FieldValue, legRVs map[values.CorrelationIdentif
 			return alias, nil, 0, false
 		}
 	}
-	return alias, legType, accs[0].Ordinal, true
+	// RFC-173 W5 commit 2: a TERMINAL slot that is a bare NON-RECORD QOV of a
+	// quantifier we hold a legRV for is the gathered unnest's MIXED element
+	// carried through a partition collapse — unnestMixedSeedSpans' trailing-
+	// element synthesis lifted one level (the merge translated the seed's
+	// direct-QOV element into this single-accessor pinned ref). Synthesize the
+	// element's 1-field leg: alias = the SLOT QOV's correlation (the AS alias,
+	// never the merge alias), the sole column named from the enclosing RC
+	// field (fieldName — the same naming authority as the top-level
+	// synthesis). The discriminator is the SLOT SHAPE: the non-record guard is
+	// load-bearing against whole-leg record slots (the pristine positional-
+	// merge RC), which must keep resolving as merge-leg runs.
+	term := accs[0].Ordinal
+	if rc, isRC := legRVs[alias].(*values.RecordConstructorValue); isRC && term >= 0 && term < len(rc.Fields) {
+		if slotQOV, isQ := rc.Fields[term].Value.(*values.QuantifiedObjectValue); isQ {
+			if _, isRecord := slotQOV.Type().(*values.RecordType); !isRecord {
+				elemName := strings.ToUpper(fieldName)
+				return slotQOV.Correlation, &values.RecordType{Fields: []values.Field{
+					{Name: elemName, FieldType: slotQOV.Type(), Ordinal: 0},
+				}}, 0, true
+			}
+		}
+	}
+	return alias, legType, term, true
 }
 
 // joinPlanRV returns a join plan's result value; nil for any other plan.
