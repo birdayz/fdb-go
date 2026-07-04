@@ -18065,6 +18065,32 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "WITH w AS (SELECT id FROM T_DUP_W) SELECT w.id FROM w, w",
 		},
 		{
+			// A computed UNALIASED projection in a JOIN-bodied recursive leg
+			// — its physical rendering carries a dot; the leg remap must
+			// never first-dot-split it (the S4 kill-list hazard, hardened).
+			Name:           "rcte_computed_join_leg",
+			SchemaTemplate: "CREATE TABLE T_RCC_01 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RCC_01 VALUES (1), (2), (3), (4)"},
+			Query: "WITH RECURSIVE r AS (SELECT id FROM T_RCC_01 WHERE id = 1" +
+				" UNION ALL SELECT b.id + 1 FROM r, T_RCC_01 b WHERE b.id = r.id AND b.id < 4)" +
+				" SELECT * FROM r",
+		},
+		{
+			// Positional ORDER BY over a star SELECT: BOTH engines reject
+			// (live-classified — Java cannot plan it either); Go's message
+			// names the actual problem, Java's is the generic planner
+			// decline. Message drift, not a capability gap.
+			Name:           "order_by_position_over_star",
+			SchemaTemplate: "CREATE TABLE T_OBP_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBP_01 VALUES (2, 20), (1, 10)"},
+			Query:          "SELECT * FROM T_OBP_01 ORDER BY 1",
+			Divergence: &Divergence{
+				Reason:          "Both engines reject positional ORDER BY over a star SELECT (live-verified: Java 'Cascades planner could not plan query'); Go's 22023 names the empty positional SELECT list. Cosmetic message drift.",
+				Direction:       DivergenceBothErrorMessagesDrift,
+				GoErrorContains: "ORDER BY position 1 is out of range",
+			},
+		},
+		{
 			// GENERATED output names under duplicate aliases: an unaliased
 			// aggregate's output is referenceable by its generated name, and
 			// two duplicate legs exposing the same one are ambiguous (the
