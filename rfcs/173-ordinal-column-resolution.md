@@ -3010,3 +3010,23 @@ routes through the 1+1 buildExistentialSelect path, untouched by the flatten see
 it flips with commit 4's enclosure lift, as do the fetch-shell terminators. The
 alias-unchecked frontier fallback's loud replacement remains booked on the item-2
 completion follow-up.
+
+**@claude round 1 on the c3 PR (banked; fixed-and-pinned vs booked):** FIXED — the
+BUILD duplicate srcs entry (a real manual artifact bazel tolerated silently); the
+stale W3b-assert citation in the arity-narrowing comment (the decline itself is the
+safety mechanism; the S2 drift assert died at the S3 fulcrum); the dup-alias pin
+matrix now covers all three collision axes (left leg, right leg, EXISTS-vs-EXISTS);
+the MintedAliasBlind pin threads a predicate REFERENCING the minted alias (the inert
+filterAlias scaffold exercised nothing); a translation-level unnest pin makes the
+qualified-read fix order-INDEPENDENT of cost-model internals (the e2e matrix coverage
+of the swapped order was contingent on the tie-break's outcome). BOOKED —
+stablePlanNodeHash's type switch covers the 8 content-bearing node types of the
+observed nondeterminism class; the ~30 remaining types fold as type tags (residual
+ties resolve by the DETERMINISTIC first-arrived fallback — stable across plannings
+now that hash values are). Widen the switch (StreamingAggregation grouping keys,
+TypeFilter type lists, AggregateIndex identity) if an EXPLAIN flip is ever observed
+on those shapes, or as S4-adjacent hygiene; deepHashCode's REWRITING-path
+physical-member recursion (a child ref already holding an NLJ/FlatMap member) is
+currently unreachable within one top-level pass (rewritingImplRules =
+FinalizeExpressionsRule only) — the deepHashCode comment names the extension site if
+that changes.

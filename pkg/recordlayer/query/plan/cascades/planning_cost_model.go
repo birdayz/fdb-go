@@ -1811,16 +1811,16 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 			_, _ = io.WriteString(h, rt)
 			_, _ = h.Write([]byte{0})
 		}
-		if t.IsReverse() {
-			_, _ = h.Write([]byte{1})
-		}
+		// Unconditional 0/1 framing byte (not write-only-when-set): the
+		// range tags that follow also start at 1, so a conditional write
+		// would make "reverse + ranges" prefix-ambiguous with "forward + an
+		// equality range".
+		_, _ = h.Write([]byte{boolByte(t.IsReverse())})
 		stableHashComparisonRanges(h, t.GetScanComparisons())
 	case *plans.RecordQueryIndexPlan:
 		_, _ = io.WriteString(h, t.GetIndexName())
 		_, _ = h.Write([]byte{0})
-		if t.IsReverse() {
-			_, _ = h.Write([]byte{1})
-		}
+		_, _ = h.Write([]byte{boolByte(t.IsReverse())})
 		stableHashComparisonRanges(h, t.GetScanComparisons())
 	case *plans.RecordQueryPredicatesFilterPlan:
 		for _, pr := range t.GetPredicates() {
@@ -1879,6 +1879,13 @@ func stablePlanHash(p plans.RecordQueryPlan) uint64 {
 		h = h*0x100000001b3 ^ (stablePlanHash(c)*0x517cc1b727220a95 + 0x6c62272e07bb0142)
 	}
 	return h
+}
+
+func boolByte(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func stableHashU64(h hash.Hash64, v uint64) {

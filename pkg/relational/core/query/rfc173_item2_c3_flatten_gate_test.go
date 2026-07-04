@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -117,13 +118,35 @@ func TestRFC173Item2C3_FlattenGateArm(t *testing.T) {
 
 	t.Run("duplicate existential alias declines", func(t *testing.T) {
 		t.Parallel()
-		tr := newGateTranslator(t)
-		j := inner(scan("Order", "o"), scan("Customer", "c"))
-		// The EXISTS alias collides with the right leg's alias.
-		sel := c3TranslateFlatten(t, tr, c3ExistsFilter(j, "c"))
-		c3AssertAnchoredSeed(t, sel)
-		if d, ok := tr.wedgeGate[j]; !ok || d.Gated {
-			t.Fatalf("dup-alias flatten's record = %+v (ok=%v), want recorded NOT gated (record must match the anchored seed)", d, ok)
+		// All three collision axes the `seen` map guards: EXISTS-vs-right-leg,
+		// EXISTS-vs-left-leg, and EXISTS-vs-EXISTS.
+		for name, mk := range map[string]func() *logical.LogicalFilter{
+			"right leg": func() *logical.LogicalFilter {
+				return c3ExistsFilter(inner(scan("Order", "o"), scan("Customer", "c")), "c")
+			},
+			"left leg": func() *logical.LogicalFilter {
+				return c3ExistsFilter(inner(scan("Order", "o"), scan("Customer", "c")), "o")
+			},
+			"exists vs exists": func() *logical.LogicalFilter {
+				f := c3ExistsFilter(inner(scan("Order", "o"), scan("Customer", "c")), "q$e")
+				f.ExistsSubqueries = append(f.ExistsSubqueries, logical.ExistsSubquery{
+					Alias: values.NamedCorrelationIdentifier("q$e"),
+					Plan:  scan("TypedRecord", "g2"),
+				})
+				return f
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				tr := newGateTranslator(t)
+				f := mk()
+				j := f.Input.(*logical.LogicalJoin) //nolint:errcheck // fixture shape
+				sel := c3TranslateFlatten(t, tr, f)
+				c3AssertAnchoredSeed(t, sel)
+				if d, ok := tr.wedgeGate[j]; !ok || d.Gated {
+					t.Fatalf("dup-alias flatten's record = %+v (ok=%v), want recorded NOT gated (record must match the anchored seed)", d, ok)
+				}
+			})
 		}
 	})
 
@@ -134,5 +157,86 @@ func TestRFC173Item2C3_FlattenGateArm(t *testing.T) {
 		j := inner(scan("Order", "o"), scan("Customer", "c"))
 		sel := c3TranslateFlatten(t, tr, c3ExistsFilter(j, "q$e"))
 		c3AssertAnchoredSeed(t, sel)
+	})
+}
+
+// c3FindExplode walks a translated reference for the ExplodeExpression.
+func c3FindExplode(ref *expressions.Reference, seen map[*expressions.Reference]bool) *expressions.ExplodeExpression {
+	if ref == nil || seen[ref] {
+		return nil
+	}
+	seen[ref] = true
+	for _, m := range ref.AllMembers() {
+		if ex, ok := m.(*expressions.ExplodeExpression); ok {
+			return ex
+		}
+		for _, q := range m.GetQuantifiers() {
+			if ex := c3FindExplode(q.GetRangesOver(), seen); ex != nil {
+				return ex
+			}
+		}
+	}
+	return nil
+}
+
+// TestRFC173Item2C3_UnnestQualifiedReadRightmostSource pins the
+// order-INDEPENDENCE of the binary unnest path's array read at the layer
+// that builds it: for a MULTI-SOURCE outer the Explode's collection
+// reference reads the QUALIFIED SEG0.FIELD key even when the unnest source
+// is the RIGHTMOST FROM leg. The bare read was last-leg-wins over the
+// merged row — correct only while the join's execution operand order
+// cooperated; the deterministic tie-break drove the swapped order and the
+// Explode returned the OTHER leg's array (silent wrong rows, caught by the
+// unnest matrix). A translation-level pin holds regardless of which operand
+// order the cost model picks — the e2e matrix coverage of the swapped order
+// is contingent on cost-model internals.
+func TestRFC173Item2C3_UnnestQualifiedReadRightmostSource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("multi-source outer reads qualified (rightmost source)", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		// Enclosed: routes the BINARY unnest path (the W5 gathered path owns
+		// un-enclosed multi-source shapes with its own baked correlation).
+		tr.inInnerCluster = true
+		outer := inner(scan("Customer", "c"), scan("Order", "o"))
+		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+		ref := tr.translateRef(j)
+		if ref == nil {
+			t.Fatalf("translation failed: %v", tr.translateErr)
+		}
+		ex := c3FindExplode(ref, map[*expressions.Reference]bool{})
+		if ex == nil {
+			t.Fatal("no ExplodeExpression in the translated unnest join")
+		}
+		fv, isFV := ex.GetCollectionValue().(*values.FieldValue)
+		if !isFV {
+			t.Fatalf("Explode collection = %T, want a FieldValue over the outer QOV", ex.GetCollectionValue())
+		}
+		if !strings.EqualFold(fv.Field, "O.TAGS") {
+			t.Fatalf("Explode reads %q, want the QUALIFIED %q — a bare read is last-leg-wins over the merged row and follows the join's execution operand order", fv.Field, "O.TAGS")
+		}
+	})
+
+	t.Run("single-source outer keeps the bare read", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		tr.inInnerCluster = true
+		j := logical.NewJoin(scan("Order", "o"), &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+		ref := tr.translateRef(j)
+		if ref == nil {
+			t.Fatalf("translation failed: %v", tr.translateErr)
+		}
+		ex := c3FindExplode(ref, map[*expressions.Reference]bool{})
+		if ex == nil {
+			t.Fatal("no ExplodeExpression in the translated unnest join")
+		}
+		fv, isFV := ex.GetCollectionValue().(*values.FieldValue)
+		if !isFV {
+			t.Fatalf("Explode collection = %T, want a FieldValue", ex.GetCollectionValue())
+		}
+		if strings.Contains(fv.Field, ".") {
+			t.Fatalf("single-source Explode reads %q, want the BARE field (scan rows carry bare keys only)", fv.Field)
+		}
 	})
 }

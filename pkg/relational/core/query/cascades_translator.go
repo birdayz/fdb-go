@@ -3878,9 +3878,12 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// anchored one. Decided BEFORE leg translation mutates the enclosure flag
 	// (the translateJoin convention). Two flatten-specific narrowings on top
 	// of the shared decision:
-	//   - Arity EXACTLY 2: this arm builds exactly two ForEach legs, so a
-	//     nested-cluster leg (post-flattening arity > 2) would drift the seed
-	//     against SelectMergeRule's flattening (the W3b loud-assert class).
+	//   - Arity EXACTLY 2: this arm builds exactly two ForEach legs, and
+	//     buildOrdinalJoinResultValue types them as single-source legs — a
+	//     nested-cluster leg would seed a 2-leg concat whose windows
+	//     disagree with the arity SelectMergeRule's flattening produces.
+	//     The DECLINE is the safety mechanism itself (the historical S2
+	//     drift assert died with the exactly-2 wedge at the S3 fulcrum).
 	//     The N-way flatten rides the gathered-cluster machinery when a
 	//     later slice routes it here.
 	//   - No existential-alias collisions: an EXISTS alias colliding with a

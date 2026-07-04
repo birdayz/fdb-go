@@ -3,6 +3,7 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -47,7 +48,17 @@ func TestCostModel_PlanHashMintedAliasBlind(t *testing.T) {
 	build := func(outerAlias, innerAlias, filterAlias string) plans.RecordQueryPlan {
 		scanA := plans.NewRecordQueryScanPlan([]string{"PA"}, nil, false)
 		scanG := plans.NewRecordQueryScanPlan([]string{"PG"}, nil, false)
-		filtered := plans.NewRecordQueryPredicatesFilterPlanWithAlias(scanG, nil, values.NamedCorrelationIdentifier(filterAlias))
+		// The predicate REFERENCES the minted alias (a correlated comparison
+		// over QOV(filterAlias)) — the shape the rebased existential
+		// correlation predicates actually carry — so the PredicatesFilter
+		// arm's alias-blindness is genuinely exercised, not just its (never
+		// hashed) alias field.
+		pred := predicates.NewComparisonPredicate(
+			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(filterAlias)), "GID", values.NotNullLong),
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
+		)
+		filtered := plans.NewRecordQueryPredicatesFilterPlanWithAlias(scanG,
+			[]predicates.QueryPredicate{pred}, values.NamedCorrelationIdentifier(filterAlias))
 		return plans.NewRecordQueryFlatMapPlan(
 			scanA, filtered,
 			values.NamedCorrelationIdentifier(outerAlias),
@@ -59,5 +70,11 @@ func TestCostModel_PlanHashMintedAliasBlind(t *testing.T) {
 	p2 := build("q$900", "q$901", "q$902")
 	if stablePlanHash(p1) != stablePlanHash(p2) {
 		t.Fatal("stablePlanHash depends on minted correlation identifiers — cost-tied candidates rank differently on every planning and the EXPLAIN'd winner flips")
+	}
+	// Contrast pin: a REAL content difference (a different literal in the
+	// predicate) must NOT collide — alias-blind is not content-blind.
+	p3 := build("q$100", "q$101", "q$102")
+	if stablePlanHash(p1) != stablePlanHash(p3) {
+		t.Fatal("stablePlanHash is not structural: identical trees hashed differently")
 	}
 }
