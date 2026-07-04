@@ -1,4 +1,9 @@
-//go:build bazelrunfiles
+// The process-group liveness probe below walks /proc directly, so this test is
+// Linux-only. That costs no coverage: the leak it pins (orphaned JVMs on a
+// SIGKILLed parent) only ever bites the Linux CI runner, and the tether under
+// test is exercised on every platform by the ordinary suite (each server now
+// runs with the stdin watchdog).
+//go:build bazelrunfiles && linux
 
 package conformance_test
 
