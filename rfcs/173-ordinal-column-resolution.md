@@ -2165,3 +2165,22 @@ a FIX TARGET for W5, not a regression constraint.
    waits for the S4 compose direction).
 6. The ENCLOSED-leg class (`FROM A, A.arr AS x, B` — prevEnclosure) moves to commit 3 (with the Q2
    interning widening); the original commit-2/3 split is re-drawn accordingly.
+
+**Graefe ruling on the revised commit 2: DESIGN-ACK.** Q1 span-derivation ACK ("unnestMixedSeedSpans
+lifted one level"; extends declared S4-scaffolding, no new eval arm, oracle untouched) with
+conditions: (i) discriminate on the SLOT shape — a bare non-record QOV in the merge RC at the
+accessor's ordinal, never the ref shape alone; (ii) the synthesized leg's alias = the slot QOV's
+correlation (the AS alias), never the merge alias; (iii) the sole column named from the enclosing RC
+field per the existing synthesis pattern, keeping the FrontierPinned/full-coverage gates; (iv) pin
+the SHADOWING dimension through the gathered+merged path. Q2 ON-lift ACK conditioned on #1 landing
+first with the R18-class FDB pin RED→GREEN (both forms; ON + dotted projections + element WHERE in
+one query); the fail-open residual remains the fallback for underivable windows. Q3 remove the
+phantom fail-open ACK, NO narrowed version (a guard for a retracted non-bug suppresses the
+re-enumeration W5 exists for — principle 10); post-removal the spanning pin must assert the GATHERED
+plan signature. Q4 normalize case AT THE GATHER (one case authority) + ASSERT at the bake (loud on a
+case-insensitive leg-alias mismatch) + white-box pin (production SQL cannot reach it). Q5 revised
+split ACK (enclosed-leg → commit 3 with the interning widening; R16/dup stay declined pending the
+cheap shadow-qualification probe — lift shadow only if green; bare-twin waits for S4 compose;
+exit-gate both-direction pins re-run per commit). Q6 the NLJ-birth nil-legRVs dimension is PIN-ONLY
+in commit 2 and an S4-rider fix — it PROMOTES to commit-2 scope immediately if the pin exposes a
+wrong ANSWER rather than a loud decline.
