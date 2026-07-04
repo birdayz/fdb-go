@@ -241,6 +241,7 @@ go_test(
         "rfc173_w4b_join_inner_fdb_test.go",
         "rfc173_w4b_update_binder_fdb_test.go",
         "rfc173_w5_oracle_dualwindow_fdb_test.go",
+        "rfc173_w5_star_metadata_test.go",
         "row_value_constructor_probe_test.go",
         "rows_affected_probe_test.go",
         "scalar_math_probe_test.go",

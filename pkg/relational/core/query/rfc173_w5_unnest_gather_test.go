@@ -34,6 +34,10 @@ func newDisjointUnnestTranslator(t *testing.T) *cascadesTranslator {
 		metadata.NewColumnSpec("XID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("V", api.NewLongType(true), 2),
 	}, []string{"XID"})
+	b.AddTable("AUX2", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("YID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("W", api.NewLongType(true), 2),
+	}, []string{"YID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -461,5 +465,48 @@ func TestRFC173W5_EnclosedRotation_ONElementRewrite(t *testing.T) {
 	}
 	if !sawBareElementQOV {
 		t.Fatal("the rewritten ON must reference the element as the bare QOV(EL) (the no-AT scalar collapse)")
+	}
+}
+
+// TestRFC173W5_EnclosedRotation_ThreeLegsMidUnnest pins the wider-cluster
+// bookkeeping the 2-leg pins cannot (the review coverage ask): with THREE
+// plain legs and the unnest strictly in the middle of the FROM list
+// (`FROM SRC s, s.ARR AS EL, AUX x, AUX2 y`), the rotation reports the right
+// unnestPos and the built select preserves FROM order in BOTH the quantifier
+// list and the seed-field offsets (the per-leg run-width summation).
+func TestRFC173W5_EnclosedRotation_ThreeLegsMidUnnest(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
+	mid := logical.NewJoin(unnestJoin, scan("AUX", "x"), logical.JoinInner, "")
+	root := logical.NewJoin(mid, scan("AUX2", "y"), logical.JoinInner, "")
+
+	_, _, _, _, pos, ok := tr.rotateEnclosedUnnest(root)
+	if !ok || pos != 1 {
+		t.Fatalf("rotate: ok=%v pos=%d, want ok with unnestPos 1 (one plain leg precedes)", ok, pos)
+	}
+
+	sel := tr.translateEnclosedUnnestGather(root)
+	if sel == nil {
+		t.Fatal("the 3-plain-leg mid-unnest cluster must gather")
+	}
+	gathered := sel.(*expressions.SelectExpression)
+	quants := gathered.GetQuantifiers()
+	order := make([]string, 0, len(quants))
+	for _, q := range quants {
+		order = append(order, q.GetAlias().Name())
+	}
+	if strings.Join(order, ",") != "S,EL,X,Y" {
+		t.Fatalf("quantifier order = %v, want FROM order [S EL X Y]", order)
+	}
+	rc := gathered.GetResultValue().(*values.RecordConstructorValue)
+	names := make([]string, 0, len(rc.Fields))
+	for _, f := range rc.Fields {
+		names = append(names, f.Name)
+	}
+	if strings.Join(names, ",") != "SID,ARR,EL,XID,V,YID,W" {
+		t.Fatalf("seed field order = %v, want [SID ARR EL XID V YID W] (element at its FROM offset, per-leg runs intact)", names)
 	}
 }

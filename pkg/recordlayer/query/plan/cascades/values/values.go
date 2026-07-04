@@ -850,8 +850,10 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		// reference through a MERGE quantifier roots at the row's own `_i`
 		// slot, which mergeRows carries BARE (its qualified form uses the
 		// merge alias's ORIGINAL case, `$m"1._0`, which the upper-cased
-		// qualKey never matches — and no user column can be named `_i`, so
-		// the bare read cannot conflate). A pinned ref over a DIRECT leg
+		// qualKey never matches; a QUOTED user identifier `"_0"` is legal SQL,
+		// but the S3 positional-merge and Explode-ordinality producers are
+		// the only `_i` WRITERS in a merged row, and this arm is pinned- and
+		// oracle-only, dying in S4). A pinned ref over a DIRECT leg
 		// (rootKey = a user column) must NOT take this arm: the bare key is
 		// mergeRows' last-wins spill, and reading it turns `a.k = b.k` into
 		// `k = k` — the cross-leg conflation that produced a full cross

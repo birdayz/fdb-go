@@ -2875,14 +2875,17 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	// by construction — the same rule the FlatMap fold arm relies on), and the
 	// §7 positional-aligned read then serves the VALUES from the positional
 	// row's matching slots. Derive from the RV, keyed on bare names against
-	// BOTH legs' leaf descriptors (ordinalUnnestColumnDef). Scoped to the
-	// LEAK: any today-working join (anchored, plain gated 2-way, name-model)
-	// derives no `_N` column and keeps its metadata byte-identical.
+	// BOTH legs' leaf descriptors (ordinalUnnestColumnDef). Scoped by the
+	// STRUCTURAL discriminator — a leg subplan whose RV is the S3
+	// positional-merge RC (the sub-product that folds to `_N` columns) —
+	// never by the derived NAMES: a user column literally named `_0` over a
+	// plain gated join is a legal identifier and must keep the merge path's
+	// qualified metadata byte-identical (review finding, pinned).
 	if rc, ok := nlj.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin &&
-		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) && hasPlannerInternalColumn(merged) {
+		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) && hasPositionalMergeLeg(nlj) {
 		descs := allLeafDescriptors(nlj.GetOuter(), md)
 		descs = append(descs, allLeafDescriptors(nlj.GetInner(), md)...)
-		elemAlias, elemValue := gatheredExplodeElement(nlj)
+		elemAlias, collField, elemValue := gatheredExplodeElement(nlj)
 		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
 		for _, f := range rc.Fields {
 			col := ordinalUnnestColumnDef(f, descs)
@@ -2890,9 +2893,22 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 			// whose type the partition collapse erased (the Explode quantifier
 			// flows untyped); no descriptor names it either. Its authoritative
 			// type is the Explode's own collection element (the AS+AT form's
-			// refs stay typed through fusion and never reach this).
-			if elemValue != nil && strings.EqualFold(f.Name, elemAlias) && unknownTypedValue(f.Value) {
-				if tn := valueTypeName(elemValue, nil); tn != "" && tn != "UNKNOWN" {
+			// refs stay typed through fusion and never reach this). A STRUCT
+			// element's values.Type is ALSO unknown (7.6 does not model
+			// message element types), so fall through to the array column's
+			// own proto descriptor — the ground truth: a repeated field's
+			// Kind IS its element kind, with non-UUID messages reporting
+			// STRUCT (java.sql.Types.STRUCT), never the BIGINT fallback that
+			// silently mistyped struct elements (review finding, pinned).
+			if strings.EqualFold(f.Name, elemAlias) && unknownTypedValue(f.Value) {
+				tn := ""
+				if elemValue != nil {
+					tn = valueTypeName(elemValue, nil)
+				}
+				if tn == "" || tn == "UNKNOWN" {
+					tn = arrayElementTypeNameFromDescs(collField, descs)
+				}
+				if tn != "" && tn != "UNKNOWN" {
 					col.TypeName = tn
 				}
 			}
@@ -2903,16 +2919,38 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	return merged
 }
 
-// hasPlannerInternalColumn reports whether a derived column set leaks a
-// planner-internal positional-merge field (`_0`, `_1`, …) — the signature of a
-// partition sub-product surfacing where user column names belong.
-func hasPlannerInternalColumn(cols []executor.ColumnDef) bool {
-	for _, c := range cols {
-		if values.IsOrdinalFieldName(parseColRef(c.Name).bare()) {
-			return true
+// hasPositionalMergeLeg reports whether a leg subplan (transitively, through
+// inner-plan wrappers and nested join plans) carries the S3 POSITIONAL-MERGE
+// RC as its result value — the partition sub-product whose column fold
+// renders planner-internal `_N` names. The STRUCTURAL twin of the retired
+// name-based check: keying on derived names misfired on a user column
+// literally named `_0` (a legal identifier), rerouting a today-working
+// join's metadata off the qualified merge path.
+func hasPositionalMergeLeg(p plans.RecordQueryPlan) bool {
+	var legHas func(plans.RecordQueryPlan) bool
+	legHas = func(leg plans.RecordQueryPlan) bool {
+		switch tp := leg.(type) {
+		case *plans.RecordQueryFlatMapPlan:
+			if rc, isRC := tp.GetResultValue().(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
+				return true
+			}
+			return legHas(tp.GetOuter()) || legHas(tp.GetInner())
+		case *plans.RecordQueryNestedLoopJoinPlan:
+			if rc, isRC := tp.GetResultValue().(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
+				return true
+			}
+			return legHas(tp.GetOuter()) || legHas(tp.GetInner())
 		}
+		if ip, isIP := leg.(innerPlan); isIP {
+			return legHas(ip.GetInner())
+		}
+		return false
 	}
-	return false
+	nlj, isNLJ := p.(*plans.RecordQueryNestedLoopJoinPlan)
+	if !isNLJ {
+		return false
+	}
+	return legHas(nlj.GetOuter()) || legHas(nlj.GetInner())
 }
 
 // unknownTypedValue reports whether a value's own type is absent/unknown —
@@ -2925,30 +2963,63 @@ func unknownTypedValue(v values.Value) bool {
 // gatheredExplodeElement finds the gathered unnest's Explode leg under an NLJ
 // (the FlatMap pairing the owning source with its Explode — possibly nested
 // under further NLJ levels for a wider cluster) and returns the element's
-// binding alias (the FlatMap's inner correlation, the AS alias) plus a value
-// typed as the Explode's collection ELEMENT — the authoritative element type
-// the partition collapse erased. ("", nil) when no such leg exists.
-func gatheredExplodeElement(p plans.RecordQueryPlan) (string, values.Value) {
+// binding alias (the FlatMap's inner correlation, the AS alias), the ARRAY
+// COLUMN's bare field name (the baked collection reference's display field —
+// the descriptor key for element-kind resolution), and a value typed as the
+// Explode's collection ELEMENT when the plan-level type survived (a STRUCT
+// element's values.Type is Unknown — 7.6 does not model message element
+// types — so the caller falls through to the descriptor). ("", "", nil) when
+// no such leg exists.
+func gatheredExplodeElement(p plans.RecordQueryPlan) (string, string, values.Value) {
 	if fm, ok := p.(*plans.RecordQueryFlatMapPlan); ok {
 		if exp := findExplodePlan(fm.GetInner()); exp != nil {
+			collField := ""
+			if fv, isFV := exp.GetCollectionValue().(*values.FieldValue); isFV {
+				collField = fv.Field
+			}
 			collType := exp.GetCollectionValue().Type()
 			if arr, isArr := collType.(*values.ArrayType); isArr && arr.ElementType != nil {
-				return fm.GetInnerAlias().Name(), values.NewQuantifiedObjectValueOfType(
+				return fm.GetInnerAlias().Name(), collField, values.NewQuantifiedObjectValueOfType(
 					fm.GetInnerAlias(), arr.ElementType)
 			}
-			return fm.GetInnerAlias().Name(), nil
+			return fm.GetInnerAlias().Name(), collField, nil
 		}
 	}
 	if nlj, ok := p.(*plans.RecordQueryNestedLoopJoinPlan); ok {
-		if a, v := gatheredExplodeElement(nlj.GetOuter()); v != nil {
-			return a, v
+		if a, cf, v := gatheredExplodeElement(nlj.GetOuter()); a != "" {
+			return a, cf, v
 		}
 		return gatheredExplodeElement(nlj.GetInner())
 	}
 	if ip, ok := p.(innerPlan); ok {
 		return gatheredExplodeElement(ip.GetInner())
 	}
-	return "", nil
+	return "", "", nil
+}
+
+// arrayElementTypeNameFromDescs resolves an array column's ELEMENT type name
+// from its proto descriptor — the ground truth when the plan-level element
+// type was erased (message elements). A repeated field's Kind IS its element
+// kind; a non-UUID message element is a STRUCT column (java.sql.Types.STRUCT).
+func arrayElementTypeNameFromDescs(collField string, descs []protoreflect.MessageDescriptor) string {
+	if collField == "" {
+		return ""
+	}
+	colDesc := descriptorForColumn(collField, descs)
+	if colDesc == nil {
+		return ""
+	}
+	fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(collField).bare()))
+	if fd == nil || !fd.IsList() {
+		return ""
+	}
+	if fd.Kind() == protoreflect.MessageKind {
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
+			return "OTHER"
+		}
+		return "STRUCT"
+	}
+	return protoKindToTypeName(fd.Kind())
 }
 
 func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -3373,6 +3444,12 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 			// (Java: DataType.Code.UUID → Types.OTHER → "OTHER"), matching the
 			// field-path protoFieldTypeName so all metadata paths agree.
 			return "OTHER"
+		case values.TypeCodeRecord:
+			// A STRUCT column (java.sql.Types.STRUCT; api.SQLTypeNameStruct) —
+			// without this case a record-typed value (a struct-array unnest
+			// ELEMENT) fell through to "" and the BIGINT fallback silently
+			// mistyped it (review finding, pinned).
+			return "STRUCT"
 		}
 	}
 	return ""

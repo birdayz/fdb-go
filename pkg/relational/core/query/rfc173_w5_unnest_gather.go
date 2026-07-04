@@ -228,9 +228,12 @@ func gatheredPlainLegType(t *cascadesTranslator, legs []clusterLeg, alias string
 // gatherLegsWithBuriedUnnest walks j's direct inner-join spine collecting the
 // PLAIN legs (FROM order), every nested ON conjunct, and exactly ONE buried
 // unnest (a nested `Join(L, Unnest)` — the `FROM A, A.arr AS x, B` enclosed
-// class). ok=false when there is no unnest, more than one, an existential
-// rider, or a non-inner nesting — the caller then leaves the original tree to
-// today's paths.
+// class). ok=false when there is no unnest or more than one — the caller then
+// leaves the original tree to today's paths. A NON-INNER (or existential-
+// rider) nested join is NOT a decline: the walk absorbs that whole subtree as
+// ONE OPAQUE plain leg (never decomposing across it), which is exactly what
+// makes rotating the remaining inner legs safe — an unnest buried UNDER such
+// a subtree is invisible here and stays on the residual path.
 func gatherLegsWithBuriedUnnest(j *logical.LogicalJoin) (plainLegs []logical.LogicalOperator, preds []predicates.QueryPredicate, uLeft logical.LogicalOperator, u *logical.LogicalUnnest, unnestPos int, ok bool) {
 	ok = true
 	var walk func(op logical.LogicalOperator)
