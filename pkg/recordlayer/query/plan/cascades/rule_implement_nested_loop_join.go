@@ -1528,9 +1528,28 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// scan's own binding below the FOD. Without this rebase E.ID evaluates to
 	// NULL ⇒ the correlation never matches ⇒ WHERE EXISTS drops every joined
 	// row and NOT EXISTS admits all.
+	// RFC-173 W4-left: a GATED ordinal seed takes the ORDINAL rebase — leg
+	// references become baked ofOrdinalNumber over the merged POSITIONAL row
+	// (offsets from the seed's own runs); the name-model qualified-key
+	// rewrite stays for anchored seeds and is DEAD for gated ones (its
+	// FrontierPinned panic polices exactly that). An un-mappable reference
+	// DECLINES the yield (CORRECT-or-LOUD, never a half-rebased tree).
+	ordinalWindows, mergedRowType := ordinalSeedLegWindowsOf(sel.GetResultValue())
+	var mergedQOV *values.QuantifiedObjectValue
+	if ordinalWindows != nil {
+		mergedQOV = values.NewQuantifiedObjectValueOfType(mergedOuterCorr, mergedRowType)
+	}
 	if len(existPreds) > 0 {
 		rebased := make([]predicates.QueryPredicate, len(existPreds))
 		for i, p := range existPreds {
+			if ordinalWindows != nil {
+				np, ok := rebaseOuterLegRefsOrdinal(p, ordinalWindows, mergedQOV)
+				if !ok {
+					return
+				}
+				rebased[i] = np
+				continue
+			}
 			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr)
 		}
 		existPreds = rebased
@@ -1578,7 +1597,19 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		// the existential-residual rebase above. For a folded projection (the common
 		// projected-EXISTS result value, AnchoredJoin=false) the set degenerates to
 		// {leftAlias,rightAlias}, so this is a no-op for that path. RFC-142.
-		projected := rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr)
+		var projected values.Value
+		if ordinalWindows != nil {
+			// Gated ordinal seed: the projected-EXISTS fold's leg references
+			// rebase to baked merged ordinals (the name-model rewrite would
+			// panic on the baked refs — same policing as the predicate side).
+			var ok bool
+			projected, ok = rebaseOuterLegValueOrdinal(sel.GetResultValue(), ordinalWindows, mergedQOV)
+			if !ok {
+				return
+			}
+		} else {
+			projected = rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr)
+		}
 		// Existential quantifier alias → the FlatMap inner binding (existCorr).
 		if quants[2].GetAlias() != existCorr {
 			projected = values.RebaseValue(projected, values.AliasMap{quants[2].GetAlias(): existCorr})

@@ -1954,7 +1954,22 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			if u, isUnnest := join.Right.(*logical.LogicalUnnest); isUnnest {
 				return t.translateUnnestExistsFilter(f, join, u)
 			}
-			return t.translateJoinWithExists(join, f)
+			// The join+EXISTS FLATTEN is INNER-only: it merges the WHERE's
+			// non-EXISTS conjuncts into the select's predicate list, which
+			// the existential implementation feeds to the NLJ as JOIN
+			// predicates — for an OUTER join that turns a preserved-side
+			// WHERE conjunct into ON semantics (the failing row NULL-PADS
+			// instead of dropping: `dept d LEFT JOIN emp e ... WHERE d.id=3
+			// AND NOT EXISTS(...)` returned every dept — W4-left red-first
+			// pin g; master-identical, a pre-existing silent-wrong). OUTER
+			// kinds fall through to the generic arm below: the join
+			// translates as its own (enclosed) select with proper
+			// WHERE-above-LEFT placement and the existential select wraps
+			// it — post-rewriting the box dissolves and merges back into
+			// the 2+1 shape with the predicates at their correct levels.
+			if join.Kind == logical.JoinInner {
+				return t.translateJoinWithExists(join, f)
+			}
 		}
 	}
 
@@ -3908,7 +3923,13 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := t.buildJoinResultValue(left, right, leftAlias, rightAlias)
+	// The RV uses DECLARATION order (design ruling I2: Java assembles the
+	// result value in source order regardless of join type — only the
+	// preserved/null-supplying ROLES swap). Building it from the post-swap
+	// left/right made a RIGHT JOIN + EXISTS SELECT * emit the right table's
+	// columns first — a latent declaration-order divergence the plain-join
+	// path (translateJoin :3745) never had (red-first FDB pin f).
+	resultValue := t.buildJoinResultValue(j.Left, j.Right, sourceAlias(j.Left), sourceAlias(j.Right))
 	if resultValue == nil {
 		// A leg's columns are not derivable (only the catalog-free nil-md path;
 		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
