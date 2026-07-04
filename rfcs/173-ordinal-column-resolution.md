@@ -2823,3 +2823,27 @@ qualified-star, and EXISTS-correlated shadow forms (the EXISTS form is a loud 0A
 limitation — buildDerivedTableSource resolves derived bodies against the CATALOG only, a
 WITH-CTE body is not derivable there; never-wrong-rows pinned, booked with the
 derived-alias follow-ons).
+
+## Item-2 commit 2 — site plan (banked at branch open; implement next)
+
+The E2 binder + identity-FlatMap positional pass-through, concrete sites:
+1. **One walker (design-ruling amendment B — single derivation path):** factor the
+   baked-ref plan walk out of ordinalJoinBirth.widenLegTypesFromPlan
+   (executor/rfc173_ordinal_join.go:857 — note it EARLY-RETURNS on disabled births today)
+   into a shared walkBakedRefs(plan, collect); widenLegTypesFromPlan keeps its
+   width-divergence panic on top.
+2. **The probe:** in newFlatMapCursor (executor/flat_map_cursor.go:71 block), when
+   !birth.enabled(), probe the INNER plan via the shared walker for FrontierPinned refs
+   whose QOV correlation == outerAlias; a hit yields the typed RecordType → record on the
+   cursor (outerBakedType).
+3. **The binding (amendment B, loud):** at the outer-binding site (flat_map_cursor.go
+   :234-243), outerBakedType non-nil ⇒ bind via adaptLegPositional(outerRow, type);
+   adaptation failure is a LOUD error (zero-match tripwire), never the Datum fallback.
+4. **The pass-through (I1):** in computeResult, identity-QOV(outerAlias) result value +
+   outer row carrying Positional ⇒ emit the outer's Positional on the output QueryResult
+   (today the positional row dies at the FlatMap boundary).
+5. **Tests:** E2-style executor-level FDB tests constructing baked-inner/name-outer
+   FlatMap shapes directly; e2e activation of the class-K / fetch-shell exit-gate pins
+   arrives with commit 3's flatten seed (verify and document which pins flip WHEN).
+6. **Amendment A booking:** the probe + pass-through go on the S4 kill list (dead
+   scaffolding once the name model dies; the empirical zero-producers gate covers them).
