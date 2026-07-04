@@ -1,0 +1,32 @@
+{
+  "name": "aggindex-minmax-allnull-group-dropped",
+  "seed": 191,
+  "tables": [
+    "CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+    "CREATE INDEX max_by_g AS SELECT MAX(v) FROM t GROUP BY g",
+    "CREATE INDEX min_by_g AS SELECT MIN(v) FROM t GROUP BY g"
+  ],
+  "data": [
+    "INSERT INTO t (id,g,v) VALUES (1,1,10)",
+    "INSERT INTO t (id,g,v) VALUES (2,2,NULL)",
+    "INSERT INTO t (id,g,v) VALUES (3,2,NULL)"
+  ],
+  "groups": [
+    {
+      "name": "max-allnull-group-dropped_BUG",
+      "reason": "ENGINE BUG: GROUP BY g over the table yields a group for every distinct g present; g=2 has two rows (all v NULL) so MAX(v)=NULL and [2, NULL] MUST appear. `WHERE id IS NOT NULL` is always true (id is a NOT NULL PK) so it selects the identical rows and must yield the identical grouped result. It does not: the index-backed MAX (q0) omits the all-NULL group g=2 entirely, while the scan-backed MAX (q1) correctly returns [2, NULL]. The max_ever_long aggregate index writes no entry for a group whose aggregate is NULL, so a GROUP BY served by that index loses the whole group.",
+      "queries": [
+        "SELECT g, MAX(v) FROM t GROUP BY g",
+        "SELECT g, MAX(v) FROM t WHERE id IS NOT NULL GROUP BY g"
+      ]
+    },
+    {
+      "name": "min-allnull-group-dropped_BUG",
+      "reason": "ENGINE BUG: same defect for the MIN aggregate index. g=2 (all v NULL) must appear as [2, NULL]; the index-backed MIN (q0) drops it, the scan-backed MIN (q1) returns it.",
+      "queries": [
+        "SELECT g, MIN(v) FROM t GROUP BY g",
+        "SELECT g, MIN(v) FROM t WHERE id IS NOT NULL GROUP BY g"
+      ]
+    }
+  ]
+}

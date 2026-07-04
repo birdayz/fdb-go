@@ -290,6 +290,14 @@ needs Java-alignment + a Graefe ACK.**
   the aggregate-index read/maintenance path fails to. Removing the index makes both agree. Cross-check
   Java's aggregate-index null-group handling. Repro (committed): `dst-generate -dir
   pkg/simfdb/hunt/metamorphic/testdata/findings/` → `agg-7.json` group `grouped-sum-vs-noop-filter`.
+  **Extends to MIN and MAX** (`max_ever_long`/`min_ever_long` indexes): a second LLM-adversarial run
+  proved the identical drop for `CREATE INDEX max_by_g AS SELECT MAX(v) …`/`MIN(v)` — for data
+  `(1,1,10),(2,2,NULL),(3,2,NULL)`, `SELECT g, MAX(v) FROM t GROUP BY g` (index) returns `{[1,10]}`
+  (drops g=2) vs `{[1,10],[2,NULL]}` (scan). Root cause confirmed: the value-aggregate index writes NO
+  entry for a group whose aggregate is NULL, so a GROUP BY served by that index loses the whole group.
+  `COUNT` is NOT affected (its all-NULL-group value is the row count, non-NULL, so the entry exists) —
+  the defect is specific to SUM/MIN/MAX indexes that evaluate to NULL over an all-NULL group. Repro
+  (committed): same dir → `aggindex-minmax-allnull-group-dropped.json` (3-row minimal case, MIN+MAX).
 - [ ] **NULL ordering inconsistent between DISTINCT and GROUP BY sort paths.** For `a ∈ {5,7,NULL}`,
   `SELECT DISTINCT a FROM t ORDER BY a` → `NULL,5,7` (NULL first, matching FDB tuple order) but
   `SELECT a FROM t GROUP BY a ORDER BY a` → `5,7,NULL` (NULL last). Same relation + same `ORDER BY`, so
