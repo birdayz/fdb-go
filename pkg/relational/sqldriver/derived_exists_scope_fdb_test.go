@@ -14,6 +14,7 @@ import (
 	"context"
 	"database/sql"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -161,6 +162,9 @@ func TestFDB_DerivedAliasExistsCorrelation(t *testing.T) {
 			"SELECT c.fname FROM (SELECT * FROM c) c " +
 			"WHERE EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = c.id)"
 		r, err := db.QueryContext(ctx, q)
+		if err != nil && !strings.Contains(err.Error(), "0AF00") {
+			t.Errorf("cte-shadow/exists declined with the WRONG error class (want the planner's 0AF00): %v", err)
+		}
 		if err == nil {
 			var got []string
 			for r.Next() {

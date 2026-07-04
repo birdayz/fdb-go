@@ -4171,6 +4171,8 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	// the outer binding (via the shadow-stack pop at scan resolution), and
 	// siblings after this CTE keep resolving the outer name.
 	prevBody, hadPrev := t.cteScope[name]
+	// Lazy init: unit tests build translators as bare struct literals,
+	// bypassing the constructor.
 	if t.cteShadowStack == nil {
 		t.cteShadowStack = make(map[string][]logical.LogicalOperator)
 	}
@@ -4216,6 +4218,11 @@ func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.Logical
 	fn()
 	t.cteScope[key] = body
 	if popped {
+		// Restoring the pre-pop slice is safe despite sharing its backing
+		// array with any nested push during fn: a nested registration that
+		// appended into the freed slot wrote the SAME enclosing binding this
+		// restore reinstates (scope chains share their prefix), so the write
+		// is idempotent by construction.
 		t.cteShadowStack[key] = st
 	}
 }
