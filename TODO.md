@@ -230,6 +230,11 @@ validation gate.
     Commit 5 LANDED: the F4-rider dead-for-gated pins (gated=empty, emergent owner edge,
     residual dotted still classifies — the reachability proof deferring physical deletion).
     Remaining: the four-gate gauntlet (Graefe impl / Torvalds / codex / @claude on the PR).
+    Pre-existing wart surfaced by the round-5 fix (NOT W5; master-identical, worktree-verified):
+    an EQUIJOIN multi-way join plans through the correlated FlatMap path whose fold arm emits
+    BARE duplicate column Names ([TAID K TBID K TCID K]) — the NLJ-planned cross form keeps
+    qualified names. A by-name dup-column read over the FlatMap-planned form conflates today.
+    Out of W5 scope; investigate with the metadata follow-ups.
     Review nit booked (metadata-only, later pass): arrayElementTypeNameFromDescs resolves a BARE
     collection-field name via descriptorForColumn, whose ambiguity rule is first-match — two
     joined tables sharing a repeated-field NAME with different element kinds could mistype the

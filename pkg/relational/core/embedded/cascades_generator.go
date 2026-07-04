@@ -2881,11 +2881,17 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	// never by the derived NAMES: a user column literally named `_0` over a
 	// plain gated join is a legal identifier and must keep the merge path's
 	// qualified metadata byte-identical (review finding, pinned).
+	// AND the GATHERED-UNNEST signature — an Explode-bearing FlatMap leg
+	// (gatheredExplodeElement): a PLAIN multi-way join's partition also
+	// leaves a positional-merge subplan, but ITS fold keeps qualified
+	// duplicate-name keys (deriveColumnsFromJoin handles an NLJ-shaped
+	// sub-product), so rerouting it dropped the `A.K`/`B.K` names by-name
+	// reads rely on (second review finding, pinned).
+	elemAlias, collField, elemValue := gatheredExplodeElement(nlj)
 	if rc, ok := nlj.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin &&
-		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) && hasPositionalMergeLeg(nlj) {
+		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) && hasPositionalMergeLeg(nlj) && elemAlias != "" {
 		descs := allLeafDescriptors(nlj.GetOuter(), md)
 		descs = append(descs, allLeafDescriptors(nlj.GetInner(), md)...)
-		elemAlias, collField, elemValue := gatheredExplodeElement(nlj)
 		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
 		for _, f := range rc.Fields {
 			col := ordinalUnnestColumnDef(f, descs)
