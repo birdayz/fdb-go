@@ -119,10 +119,15 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 }
 
 // clusterLeg is one leg of a gathered inner-join cluster: the leg operator
-// and its FROM-order alias.
+// and its FROM-order alias. nullSupplying marks a LEFT-outer box's null side
+// (RFC-173 W4-left): the seed types that leg's QOV RECORD-LEVEL nullable —
+// Java's `pullUpResultColumnsWithNullability(true)` re-pulls through
+// `QOV(alias, type.withNullability(true))`, and OuterJoinExpression VERIFIES
+// nullability on the QOV's result type, never per column (design ruling I3).
 type clusterLeg struct {
-	op    logical.LogicalOperator
-	alias string
+	op            logical.LogicalOperator
+	alias         string
+	nullSupplying bool
 }
 
 // gatherInnerClusterLegs flattens DIRECT inner-join nesting into FROM-order
@@ -154,16 +159,21 @@ func (t *cascadesTranslator) gatherInnerClusterLegs(j *logical.LogicalJoin) []cl
 }
 
 // legsOfGatedJoin is the kind-aware leg list of a GATED join: an INNER root
-// gathers its whole direct-nesting cluster (flat N-way); a FULL box keeps its
-// two box legs verbatim (each leg may itself be a gated inner cluster — ONE
-// leg, not gathered through).
+// gathers its whole direct-nesting cluster (flat N-way); an outer box keeps
+// its two box legs verbatim (each leg may itself be a gated inner cluster —
+// ONE leg, not gathered through), in DECLARATION order with only the
+// null-supplying ROLE keyed by kind (design ruling I2: Java assembles the RV
+// in source order regardless of join type; a RIGHT join's null side is its
+// LEFT operand). W4-left: LEFT/RIGHT mark exactly one null-supplying leg;
+// FULL marks neither yet (its nullability alignment is a booked follow-up —
+// the existing FULL seed shipped without record-level nullable legs).
 func (t *cascadesTranslator) legsOfGatedJoin(j *logical.LogicalJoin) []clusterLeg {
 	if j.Kind == logical.JoinInner {
 		return t.gatherInnerClusterLegs(j)
 	}
 	return []clusterLeg{
-		{op: j.Left, alias: sourceAlias(j.Left)},
-		{op: j.Right, alias: sourceAlias(j.Right)},
+		{op: j.Left, alias: sourceAlias(j.Left), nullSupplying: j.Kind == logical.JoinRight},
+		{op: j.Right, alias: sourceAlias(j.Right), nullSupplying: j.Kind == logical.JoinLeft},
 	}
 }
 
@@ -363,6 +373,14 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 			return nil, nil
 		}
 		legTypes[strings.ToUpper(leg.alias)] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		if leg.nullSupplying {
+			// The LEFT-outer null side: the QOV's RECORD TYPE goes nullable
+			// (Java's type.withNullability(true) at the pull-up; the verify
+			// keys on the QOV's result type — design ruling I3). Column
+			// types stay their own; the record-level bit is what the
+			// executor's null-leg birth and the metadata nullability read.
+			typ = values.NewRecordType(typ.RecordName, true, typ.Fields)
+		}
 		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg.alias), typ)
 		for i := range typ.Fields {
 			fv, err := values.NewFieldValueOfOrdinal(qov, i)

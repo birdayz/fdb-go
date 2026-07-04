@@ -83,18 +83,30 @@ func TestFDB_RFC173W4b_ClusteredOuterScalar(t *testing.T) {
 		t.Errorf("JOIN..ON cluster = (%q, %d valid=%v), want (alice, 100)", name.String, amt.Int64, amt.Valid)
 	}
 
-	// (d) UNGATED outer (LEFT-join box) + NON-rightmost correlation: the LEFT
-	// cluster cannot ordinalize until W4-left, and the name model returned a
-	// SILENT NULL here (the first leg's alias is unbound at eval) — the ruled
-	// CORRECT-or-LOUD policy DECLINES the query instead (clean plan error,
-	// never silently wrong rows). W4-left flips this pin to (bob, 50).
+	// (d) SINGLE-SOURCE LEFT-join outer + NON-rightmost correlation: GATED
+	// since W4-left (the flip this pin's W4b-era text pre-chartered: "W4-left
+	// flips this pin to (bob, 50)"). The W4b decline existed because the
+	// UNGATED name model silently NULLed the first leg's alias; the gated
+	// ordinal seed binds it correctly — the query now ANSWERS.
 	const qLeft = "SELECT c.name, (SELECT o.amount FROM orders o WHERE o.id = c.id) " +
 		"FROM customers c LEFT JOIN extras e ON e.ref = c.id WHERE c.id = 2"
-	if err := db.QueryRowContext(ctx, qLeft).Scan(&name, &amt); err == nil {
-		t.Errorf("LEFT-join outer with non-rightmost correlation must DECLINE (clean plan error), got rows (%q, %d valid=%v) — a silent NULL regression risk\n  sql: %s",
-			name.String, amt.Int64, amt.Valid, qLeft)
+	if err := db.QueryRowContext(ctx, qLeft).Scan(&name, &amt); err != nil {
+		t.Errorf("csq over gated LEFT-join outer (non-rightmost correlation): %v\n  sql: %s", err, qLeft)
+	} else if name.String != "bob" || !amt.Valid || amt.Int64 != 50 {
+		t.Errorf("gated-LEFT non-rightmost correlation = (%q, %d valid=%v), want (bob, 50)", name.String, amt.Int64, amt.Valid)
+	}
+
+	// (d') The STILL-UNGATED shape (joined-preserved: a clustered preserved
+	// leg keeps the LEFT box name-model until the mixed-nesting commit) +
+	// NON-rightmost correlation keeps the W4b CORRECT-or-LOUD decline.
+	const qLeftClustered = "SELECT (SELECT o.amount FROM orders o WHERE o.id = d.cid) " +
+		"FROM (SELECT c.id AS cid, e2.tag AS t2 FROM customers c, extras e2 WHERE e2.id = 10) AS d LEFT JOIN extras e ON e.ref = d.cid WHERE d.cid = 2"
+	var amtDecl sql.NullInt64
+	if err := db.QueryRowContext(ctx, qLeftClustered).Scan(&amtDecl); err == nil {
+		t.Errorf("clustered-LEFT outer with non-rightmost correlation must still DECLINE (0AF00), got rows (%d valid=%v)\n  sql: %s",
+			amtDecl.Int64, amtDecl.Valid, qLeftClustered)
 	} else if !strings.Contains(err.Error(), "0AF00") {
-		t.Errorf("LEFT-join non-rightmost decline error = %v, want the clean plan error (0AF00), not a runtime failure", err)
+		t.Errorf("clustered-LEFT non-rightmost decline error = %v, want the clean plan error (0AF00), not a runtime failure", err)
 	}
 
 	// (e) UNGATED outer, correlation to the RIGHTMOST leg (the outer
