@@ -1160,7 +1160,15 @@ func TestFDB_AggregateIndex_MaxMinHaving(t *testing.T) {
 	})
 }
 
-func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
+// TestFDB_AggregateIndex_MinMaxCurrentSemantics pins that SQL-standard
+// MIN/MAX GROUP BY tracks the CURRENT per-group extremum: deleting the row
+// that holds the current max/min re-derives the extremum from the remaining
+// rows. This is the permuted_min/permuted_max behavior, matching Java's
+// NumericAggregationValue.Min/Max → PERMUTED_MIN/MAX. (Plain MIN/MAX used to
+// wrongly map to MAX_EVER_LONG/MIN_EVER_LONG, whose monotonic "ever" value
+// never dropped after a delete — the separate MIN_EVER()/MAX_EVER() functions
+// keep those _EVER indexes.)
+func TestFDB_AggregateIndex_MinMaxCurrentSemantics(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -1220,8 +1228,10 @@ func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 		}
 	})
 
-	t.Run("delete_max_holder_ever_persists", func(t *testing.T) {
-		// Delete alice's 250-score record. _EVER semantics: MAX stays 250.
+	t.Run("delete_max_holder_updates_current", func(t *testing.T) {
+		// Delete alice's 250-score record (the current max). Current-max
+		// semantics: MAX re-derives from the remaining rows {100, 50} → 100.
+		// (A MAX_EVER index would wrongly keep 250.)
 		if _, err := db.ExecContext(ctx, "DELETE FROM highscores WHERE id = 2"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
@@ -1243,8 +1253,8 @@ func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 			}
 			got = append(got, r)
 		}
-		// _EVER: alice's MAX is still 250 even though that record is deleted
-		want := []row{{"alice", 250}, {"bob", 300}}
+		// Current max: alice's remaining rows are {100, 50} → 100; bob still 300.
+		want := []row{{"alice", 100}, {"bob", 300}}
 		if len(got) != len(want) {
 			t.Fatalf("row count: got %d, want %d", len(got), len(want))
 		}
@@ -1255,7 +1265,7 @@ func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 		}
 	})
 
-	t.Run("new_max_updates_ever", func(t *testing.T) {
+	t.Run("new_max_updates_current", func(t *testing.T) {
 		// Insert a new high score for alice → MAX should update to 500
 		if _, err := db.ExecContext(ctx, "INSERT INTO highscores VALUES (6, 'alice', 500)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
@@ -1290,8 +1300,10 @@ func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 		}
 	})
 
-	t.Run("min_ever_persists_after_delete", func(t *testing.T) {
-		// alice's min is 50 (id=3). Delete it. MIN_EVER: min stays 50.
+	t.Run("delete_min_holder_updates_current", func(t *testing.T) {
+		// alice's current min is 50 (id=3). Delete it. Current-min semantics:
+		// MIN re-derives from alice's remaining rows {100, 500} → 100.
+		// (A MIN_EVER index would wrongly keep 50.)
 		if _, err := db.ExecContext(ctx, "DELETE FROM highscores WHERE id = 3"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
@@ -1313,8 +1325,8 @@ func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 			}
 			got = append(got, r)
 		}
-		// _EVER: alice's MIN is still 50, bob's MIN is still 150
-		want := []row{{"alice", 50}, {"bob", 150}}
+		// Current min: alice's remaining rows are {100, 500} → 100; bob still 150.
+		want := []row{{"alice", 100}, {"bob", 150}}
 		if len(got) != len(want) {
 			t.Fatalf("row count: got %d, want %d", len(got), len(want))
 		}

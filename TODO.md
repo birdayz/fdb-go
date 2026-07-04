@@ -281,23 +281,33 @@ proposing adversarial equivalence scenarios) ran 30 scenarios / 131 groups on it
 two genuine engine defects, both independently reproduced (actual rows + plans). Both are plan-dependent
 NULL edge cases result-only tests can't see. **These are Cascades/executor bugs — surface to Graefe; fix
 needs Java-alignment + a Graefe ACK.**
-- [ ] **Aggregate-index `SUM` drops all-NULL groups (silent wrong rows).** With
-  `CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g`, the query
-  `SELECT g, SUM(v) FROM t GROUP BY g` plans `AggregateIndex(SUM, SUM_BY_G)` and **omits any group whose
-  `v` are all NULL** (returns `[1,10]` for data `(1,g1,10),(2,g2,NULL),(3,g2,NULL)` — drops `[2,NULL]`).
-  The identical query with a no-op `WHERE id IS NOT NULL` (defeats index matching → `StreamingAgg`/`Scan`)
-  correctly returns `[1,10],[2,NULL]`. SQL requires GROUP BY to emit one row per group with `SUM`=NULL;
-  the aggregate-index read/maintenance path fails to. Removing the index makes both agree. Cross-check
-  Java's aggregate-index null-group handling. Repro (committed): `dst-generate -dir
-  pkg/simfdb/hunt/metamorphic/testdata/findings/` → `agg-7.json` group `grouped-sum-vs-noop-filter`.
-  **Extends to MIN and MAX** (`max_ever_long`/`min_ever_long` indexes): a second LLM-adversarial run
-  proved the identical drop for `CREATE INDEX max_by_g AS SELECT MAX(v) …`/`MIN(v)` — for data
-  `(1,1,10),(2,2,NULL),(3,2,NULL)`, `SELECT g, MAX(v) FROM t GROUP BY g` (index) returns `{[1,10]}`
-  (drops g=2) vs `{[1,10],[2,NULL]}` (scan). Root cause confirmed: the value-aggregate index writes NO
-  entry for a group whose aggregate is NULL, so a GROUP BY served by that index loses the whole group.
-  `COUNT` is NOT affected (its all-NULL-group value is the row count, non-NULL, so the entry exists) —
-  the defect is specific to SUM/MIN/MAX indexes that evaluate to NULL over an all-NULL group. Repro
-  (committed): same dir → `aggindex-minmax-allnull-group-dropped.json` (3-row minimal case, MIN+MAX).
+- [x] **Aggregate-index MIN/MAX dropped all-NULL groups — FIXED (root cause: wrong index type).**
+  Investigation (Java source cited) split the original "SUM/MIN/MAX drop all-NULL groups" finding into two
+  genuinely different verdicts:
+  - **SUM → Java-matching, NOT a Go bug (retracted).** SQL `SUM(v)` maps to `IndexTypes.SUM` (atomic
+    `SUM_LONG` ADD mutation) in BOTH engines; `AtomicMutation.getMutationParam` returns `null` for a NULL
+    value (`AtomicMutation.java:184-189`) so the mutation is skipped and an all-NULL group gets NO index
+    entry — in Java too. The index-served `SELECT g, SUM(v) … GROUP BY g` therefore drops the group in
+    both engines; only the scan-served form emits `[g,NULL]`. The two queries are genuinely *not*
+    equivalent (in Go and Java), so the metamorphic equivalence claim `agg-7.json` group
+    `grouped-sum-vs-noop-filter` is FALSE — removed from the corpus (was a wrong oracle input, not a bug).
+  - **MIN/MAX → real Go divergence, FIXED.** Go mapped SQL-standard `MIN(v)`/`MAX(v)` to
+    `MIN_EVER_LONG`/`MAX_EVER_LONG` (monotonic "ever" indexes that skip NULLs and never drop after a
+    delete). Java maps them to `PERMUTED_MIN`/`PERMUTED_MAX` (`NumericAggregationValue.Min/Max`
+    `getIndexTypeName`; `SqlFunctionCatalogImpl` `min`/`max`; `MaterializedViewIndexGenerator` builds a
+    permuted index with `PERMUTED_SIZE=0`), a proper current-grouped extremum that tracks deletes/downward
+    updates AND indexes the all-NULL group's NULL extremum. Fix = align Go's DDL + Cascades read path with
+    Java (the permuted maintainer was already ported): `buildAggregateIndex` (`MAX`→`NewPermutedMaxIndex`,
+    `MIN`→`NewPermutedMinIndex`, size 0); `tryAggregateIndexCandidate` maps `permuted_max`/`permuted_min` →
+    `AggMax`/`AggMin`; `executeAggregateIndexScan` scans BY_GROUP (secondary subspace) and reads the
+    extremum from the KEY for permuted indexes. The explicit `MAX_EVER()`/`MIN_EVER()` functions still map
+    to the `*_ever` indexes (unchanged). Wire-safe: no new index format — Go now *emits* the same index
+    type Java does for the same DDL. **Query-engine change → needs a Graefe ACK.** Regressions:
+    `TestFDB_AggregateIndexMinMax_NullGroupAndCurrentExtremum` (all-NULL group kept as `[g,NULL]` + current
+    max after delete), and `TestFDB_AggregateIndex_MinMaxCurrentSemantics` (rewritten from the old
+    "_EVER"-pinning test that encoded the bug). `aggindex-minmax-allnull-group-dropped.json` now shows
+    equivalent (annotated FIXED). `COUNT` was never affected (its all-NULL-group value is the non-NULL row
+    count).
 - [ ] **NULL ordering inconsistent between DISTINCT and GROUP BY sort paths.** For `a ∈ {5,7,NULL}`,
   `SELECT DISTINCT a FROM t ORDER BY a` → `NULL,5,7` (NULL first, matching FDB tuple order) but
   `SELECT a FROM t GROUP BY a ORDER BY a` → `5,7,NULL` (NULL last). Same relation + same `ORDER BY`, so
@@ -370,6 +380,15 @@ needs Java-alignment + a Graefe ACK.**
   `RETURN_LIMIT_REACHED → c.idx++` branch. Fixed by aligning `executeInJoin` with `executeInUnion`/Java
   (`props.ClearSkipAndLimit()` on the inner + `applySkipLimit` on the concat); pinned by an `IN … LIMIT`
   test.
+- [ ] **Aggregate MAX/MAX_EVER share the coarse `AggMax` identity (pre-existing, Graefe follow-up).** The
+  query aggregate enum collapses both `permuted_max`/`max_ever_*` (and `permuted_min`/`min_ever_*`) to
+  `AggMax`/`AggMin`, so `tryAggregateIndexCandidate` matches SQL `MAX(v)` against BOTH a permuted_max and a
+  max_ever index on the identical group+value → two candidates → wrong-index / nondeterministic-plan risk.
+  Not reachable by any current query (the translator has no `MAX_EVER()` query function; MAX_EVER indexes
+  are only populated, never queried via SQL), and the coarse enum predates this change (max_ever_long vs
+  max_ever_tuple were already both `AggMax`). Java gives the query aggregate a distinct ever-identity via
+  separate Value classes (`NumericAggregationValue.Max` vs `IndexOnlyAggregateValue.MaxEverValue`). Fix:
+  give the Go query aggregate a distinct ever-identity so matching is unambiguous. Cascades — Graefe-gated.
 
 # NEXT
 

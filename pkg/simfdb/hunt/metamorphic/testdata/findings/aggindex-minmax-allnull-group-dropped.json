@@ -13,16 +13,16 @@
   ],
   "groups": [
     {
-      "name": "max-allnull-group-dropped_BUG",
-      "reason": "ENGINE BUG: GROUP BY g over the table yields a group for every distinct g present; g=2 has two rows (all v NULL) so MAX(v)=NULL and [2, NULL] MUST appear. `WHERE id IS NOT NULL` is always true (id is a NOT NULL PK) so it selects the identical rows and must yield the identical grouped result. It does not: the index-backed MAX (q0) omits the all-NULL group g=2 entirely, while the scan-backed MAX (q1) correctly returns [2, NULL]. The max_ever_long aggregate index writes no entry for a group whose aggregate is NULL, so a GROUP BY served by that index loses the whole group.",
+      "name": "max-allnull-group-kept",
+      "reason": "FIXED (was an engine bug): GROUP BY g yields a group for every distinct g present; g=2 has two rows (all v NULL) so MAX(v)=NULL and [2, NULL] MUST appear. `WHERE id IS NOT NULL` is a no-op (id is a NOT NULL PK), so the two queries select the identical rows and must yield the identical grouped result. Previously the index-backed MAX dropped the all-NULL group g=2 because SQL MAX wrongly mapped to a MAX_EVER_LONG index (which skips NULL values, so an all-NULL group has no index entry). Now SQL MAX maps to a PERMUTED_MAX index (matching Java's NumericAggregationValue.Max), which indexes the all-NULL group's NULL extremum, so both queries return [1,10],[2,NULL]. Regression sentinel: this equivalence must keep holding.",
       "queries": [
         "SELECT g, MAX(v) FROM t GROUP BY g",
         "SELECT g, MAX(v) FROM t WHERE id IS NOT NULL GROUP BY g"
       ]
     },
     {
-      "name": "min-allnull-group-dropped_BUG",
-      "reason": "ENGINE BUG: same defect for the MIN aggregate index. g=2 (all v NULL) must appear as [2, NULL]; the index-backed MIN (q0) drops it, the scan-backed MIN (q1) returns it.",
+      "name": "min-allnull-group-kept",
+      "reason": "FIXED (was an engine bug): same as the MAX case for the MIN aggregate index. g=2 (all v NULL) must appear as [2, NULL]; SQL MIN now maps to a PERMUTED_MIN index (matching Java's NumericAggregationValue.Min) which keeps the all-NULL group, so index-backed and scan-backed MIN agree at [1,10],[2,NULL].",
       "queries": [
         "SELECT g, MIN(v) FROM t GROUP BY g",
         "SELECT g, MIN(v) FROM t WHERE id IS NOT NULL GROUP BY g"

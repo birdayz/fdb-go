@@ -628,9 +628,18 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 	case "COUNT_NOT_NULL":
 		return recordlayer.NewCountNotNullIndex(idx.name, gke), nil
 	case "MAX":
-		return recordlayer.NewMaxEverLongIndex(idx.name, gke), nil
+		// SQL-standard MAX(v) GROUP BY g maps to a PERMUTED_MAX index — a proper
+		// current-max grouped aggregate that tracks deletes/downward updates AND
+		// indexes an all-NULL group's NULL extremum (so a GROUP BY served by it
+		// emits [g, NULL], matching a scan). This mirrors Java: SQL `max` resolves
+		// to NumericAggregationValue.Max (getIndexTypeName → PERMUTED_MAX), and
+		// MaterializedViewIndexGenerator builds a PERMUTED_MAX index with
+		// PERMUTED_SIZE=0 when the aggregate is not in an ORDER BY. The explicit
+		// MAX_EVER() function maps to MAX_EVER_TUPLE below; MAX_EVER_LONG has no
+		// DDL surface (programmatic API only).
+		return recordlayer.NewPermutedMaxIndex(idx.name, gke, 0), nil
 	case "MIN":
-		return recordlayer.NewMinEverLongIndex(idx.name, gke), nil
+		return recordlayer.NewPermutedMinIndex(idx.name, gke, 0), nil
 	case "MAX_EVER_TUPLE":
 		return recordlayer.NewMaxEverTupleIndex(idx.name, gke), nil
 	case "MIN_EVER_TUPLE":

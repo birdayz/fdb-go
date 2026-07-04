@@ -2037,9 +2037,12 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		aggFunc = expressions.AggSum
 	case recordlayer.IndexTypeCount, recordlayer.IndexTypeCountNotNull:
 		aggFunc = expressions.AggCount
-	case recordlayer.IndexTypeMaxEverLong, recordlayer.IndexTypeMaxEverTuple:
+	case recordlayer.IndexTypeMaxEverLong, recordlayer.IndexTypeMaxEverTuple, recordlayer.IndexTypePermutedMax:
+		// PERMUTED_MAX backs SQL-standard MAX(v) GROUP BY g (see
+		// buildAggregateIndex); the MAX_EVER_* variants back the explicit
+		// MAX_EVER() function. Both surface as the AggMax function for matching.
 		aggFunc = expressions.AggMax
-	case recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple:
+	case recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple, recordlayer.IndexTypePermutedMin:
 		aggFunc = expressions.AggMin
 	default:
 		return nil

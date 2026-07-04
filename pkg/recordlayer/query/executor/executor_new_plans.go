@@ -51,7 +51,28 @@ func executeAggregateIndexScan(
 		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
 
-	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
+	// PERMUTED_MIN / PERMUTED_MAX (SQL-standard MIN/MAX) store the current
+	// per-group extremum in a SECONDARY (permuted) subspace, keyed by
+	// [group..., value] with an EMPTY index value — unlike the atomic-mutation
+	// aggregate indexes (SUM/COUNT/MAX_EVER), which key by group with the
+	// aggregate IN the value. So we scan BY_GROUP (the permuted subspace) and
+	// read the aggregate out of the KEY. This is also why an all-NULL group HAS
+	// an entry (its extremum is the NULL element): a GROUP BY served by a
+	// permuted index emits [g, NULL], matching a scan+StreamingAgg — whereas
+	// MAX_EVER_LONG skipped NULLs and dropped the whole group. Mirrors Java's
+	// RecordQueryAggregateIndexPlan reading a PermutedMinMaxIndexMaintainer.
+	isPermuted := idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax
+
+	var indexCursor recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	if isPermuted {
+		bg, ok := maintainer.(byGroupScanner)
+		if !ok {
+			return nil, fmt.Errorf("executor: permuted aggregate index %q maintainer does not support BY_GROUP scan", idxPlan.GetIndexName())
+		}
+		indexCursor = bg.ScanByGroup(scanRange, continuation, scanProps)
+	} else {
+		indexCursor = maintainer.Scan(scanRange, continuation, scanProps)
+	}
 
 	return &aggregateIndexCursor{
 		inner:     indexCursor,
@@ -61,14 +82,27 @@ func executeAggregateIndexScan(
 		// OutputColumnNames, so the cursor's row key and the reported name can't
 		// drift (RFC-081).
 		canonicalName: p.CanonicalAggColumnName(),
+		aggFromKey:    isPermuted,
 	}, nil
+}
+
+// byGroupScanner is implemented by aggregate-index maintainers (permuted
+// min/max) that keep the per-group extremum in a secondary subspace scanned
+// BY_GROUP. Mirrors Java's IndexMaintainer.scan(IndexScanType.BY_GROUP).
+type byGroupScanner interface {
+	ScanByGroup(scanRange recordlayer.TupleRange, continuation []byte, scanProperties recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
 }
 
 type aggregateIndexCursor struct {
 	inner         recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	groupCols     []string
 	canonicalName string
-	closed        bool
+	// aggFromKey is true for a PERMUTED_MIN/MAX index, whose entry stores the
+	// aggregate in the KEY (right after the grouping columns) with an empty
+	// value; false for atomic aggregate indexes (SUM/COUNT/MAX_EVER), whose
+	// entry stores the aggregate in the value.
+	aggFromKey bool
+	closed     bool
 }
 
 func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -93,7 +127,18 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 		}
 	}
 
-	if len(entry.Value) > 0 {
+	if c.aggFromKey {
+		// PERMUTED_MIN/MAX: the extremum is the tuple element right after the
+		// grouping columns (the SQL DDL always builds these with permuted size 0,
+		// so the value is not permuted past the group). A NULL element here is the
+		// all-NULL group's NULL extremum and flows as SQL NULL. Normalize a UUID
+		// extremum the same way group keys are, so a downstream compare matches.
+		if len(entry.Key) > len(c.groupCols) {
+			datum[c.canonicalName] = tupleElementToUUID(entry.Key[len(c.groupCols)])
+		} else {
+			datum[c.canonicalName] = nil
+		}
+	} else if len(entry.Value) > 0 {
 		datum[c.canonicalName] = entry.Value[0]
 	}
 

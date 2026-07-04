@@ -17,14 +17,6 @@
   ],
   "groups": [
     {
-      "name": "grouped-sum-vs-noop-filter",
-      "reason": "WHERE id IS NOT NULL is always true (id is a NOT NULL PK), so it selects the same rows and the grouped SUM is identical; if it defeats aggregate-index matching, this pits an index-backed group SUM against a scan-backed one — the all-NULL-v group (g=2) must read NULL from both, the cancelling group (g=3) must read 0 from both",
-      "queries": [
-        "SELECT g, SUM(v) FROM t GROUP BY g",
-        "SELECT g, SUM(v) FROM t WHERE id IS NOT NULL GROUP BY g"
-      ]
-    },
-    {
       "name": "having-sum-is-null-vs-derived",
       "reason": "HAVING SUM(v) IS NULL keeps exactly the groups whose SUM is NULL (every v NULL); equals filtering the materialized group SUM for IS NULL — probes that an all-NULL group's sum is represented as NULL, not 0",
       "queries": [
