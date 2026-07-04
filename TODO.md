@@ -217,6 +217,13 @@ validation gate.
       (forceUnnestResidual only selects the old builder). The P2a MA/MB spanning pins pass — the
       divergence axis (disjoint columns? aliasless FROM?) needs root-causing; the leg-window commit
       ordinalizes the class through the GATHERED path and pins correct rows.
+    - Commit-2 investigation ground truth (worktree-verified on master, both identical): a plain
+      3-way comma cluster with DOTTED projections and NO WHERE plans and returns correct rows (the
+      flat-bare-output dotted resolution mechanism EXISTS — find it; R18's gathered failure must
+      diverge from it somewhere reachable); the same cluster with per-leg WHERE conjuncts only
+      (`FROM ca a, cb b, cc c WHERE a.id=1 AND b.bid=10`, a filtered cartesian with no cross-leg
+      predicate) CANNOT PLAN (0AF00) on master either — a pre-existing partition gap, out of W5
+      scope, booked here so it is not mistaken for a W5 regression.
   - [ ] **W4-left + EXISTS + recursive-CTE joins** (retire `NewAnchoredJoinRecord` via
     `buildJoinResultValue`: LEFT/RIGHT-OUTER box, EXISTS-over-join, mixed-nesting, dup-alias,
     recursive-CTE-enclosed).
