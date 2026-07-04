@@ -752,14 +752,26 @@ func newNLJCursor(
 // Spliced per the DatumSpans contract (a box leg's window opens to the leaf
 // aliases dotted reads actually name).
 func (c *nljCursor) recoverOracleDatumSpans(outerPlan, innerPlan plans.RecordQueryPlan) {
-	if !c.birth.enabled() || c.birthActive || len(c.birth.DatumSpans) > 0 {
+	if !c.birth.enabled() || c.birthActive {
 		return
 	}
 	legRVs := make(map[values.CorrelationIdentifier]values.Value)
 	addJoinLegRV(legRVs, c.outerCorr, outerPlan)
 	addJoinLegRV(legRVs, c.innerCorr, innerPlan)
-	if spans, _, ok := ordinalJoinSpansOf(c.birth.RC, legRVs); ok {
-		c.birth.DatumSpans = spliceLegSpans(spans, legRVs)
+	if len(c.birth.DatumSpans) == 0 {
+		if spans, _, ok := ordinalJoinSpansOf(c.birth.RC, legRVs); ok {
+			c.birth.DatumSpans = spans
+		}
+	}
+	// Splice even when the birth arrived with PRISTINE seed spans — the exact
+	// FlatMap ordering (flat_map_cursor.go runs the splice as a separate step
+	// after recovery): a seed whose leg is a gated-join BOX carries a span
+	// named after the box alias covering the whole concat, and oracleNameDatum
+	// would qualify every column under that one alias instead of the leaf
+	// aliases dotted reads actually name (review finding: the early
+	// return skipped the splice for already-windowed births).
+	if len(c.birth.DatumSpans) > 0 && len(legRVs) > 0 {
+		c.birth.DatumSpans = spliceLegSpans(c.birth.DatumSpans, legRVs)
 	}
 }
 
