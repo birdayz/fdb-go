@@ -405,8 +405,53 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	innerNullOnEmpty bool,
 	innerStrictSingle bool,
 ) {
-	preds := flattenAndPredicates(sel.GetPredicates())
+	flatMapPlan, innerExprForMemo, ok := buildCorrelatedFlatMapPlan(
+		flattenAndPredicates(sel.GetPredicates()), sel.GetResultValue(),
+		outerPlan, innerPlan, outerCorr, innerCorr, outerExpr, innerExpr,
+		joinType, innerNullOnEmpty, innerStrictSingle,
+	)
+	if !ok {
+		return
+	}
 
+	// Bind the wrapper's quantifiers with the FlatMap plan's ACTUAL outer/inner
+	// correlation aliases (outerCorr/innerCorr) — NOT fresh ForEach aliases. The
+	// inner probe reports (D.2) its correlation to the bound outer alias; the
+	// Reference.GetCorrelatedTo aggregation subtracts each member's quantifier
+	// aliases from its children's correlations, so a fresh alias fails to subtract
+	// the bound outer/inner aliases and a COMPLETED (self-contained) inner join
+	// leaks them as if externally correlated → an upper multiway join sees the
+	// subplan as still correlated and skips/misroutes valid alternatives. A
+	// FlatMap that binds X is not correlated to X; binding with the real
+	// aliases makes the aggregation report so. (The EXISTS / correlated-FOD builders
+	// — implementExistentialSelect, tryExistsFlatMap, buildExistsFlatMap — bind their
+	// wrapper quantifiers the same way: outer via the named outer alias, inner via
+	// NamedPhysicalQuantifier(inner alias) over the FOD wrapper.)
+	outerQ := expressions.NamedForEachQuantifier(outerCorr, call.MemoizeExpression(outerExpr))
+	innerQ := expressions.NamedForEachQuantifier(innerCorr, call.MemoizeExpression(innerExprForMemo))
+	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
+}
+
+// buildCorrelatedFlatMapPlan constructs the correlated-FlatMap join plan —
+// the per-quantifier-property lowering shared by the 2-quantifier
+// leftDepsRight/rightDepsLeft branches (yieldGeneralFlatMap) and the
+// 3-quantifier existential arm's step-1 (implementJoinWithExistential): the
+// inner leg re-executes per outer row with the outer bound under outerCorr;
+// a null-on-empty inner wraps in DefaultOnEmpty (Java's
+// planPartitionToPhysical); a strict-single inner wraps in the strict
+// FirstOrDefault. Returns the plan, the inner expression to memoize (rebased
+// when the RFC-153 buried-reference rewire replaced the inner plan), and
+// ok=false when the fail-closed buried-reference verifier declines.
+func buildCorrelatedFlatMapPlan(
+	preds []predicates.QueryPredicate,
+	resultValue values.Value,
+	outerPlan, innerPlan plans.RecordQueryPlan,
+	outerCorr, innerCorr values.CorrelationIdentifier,
+	outerExpr, innerExpr expressions.RelationalExpression,
+	joinType plans.JoinType,
+	innerNullOnEmpty bool,
+	innerStrictSingle bool,
+) (*plans.RecordQueryFlatMapPlan, expressions.RelationalExpression, bool) {
 	var outerPreds, joinPreds []predicates.QueryPredicate
 	for _, pred := range preds {
 		corrSet := predicates.GetCorrelatedToOfPredicate(pred)
@@ -463,7 +508,7 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr)
 		}
 		if planReferencesAnyBuriedAlias(innerPlan, buriedLegAliases) || predsReferenceAlias(joinPreds, buriedAliasUpperSet(buriedLegAliases)) {
-			return
+			return nil, nil, false
 		}
 		if innerPlan != origInnerPlan {
 			// The rebase rewrote the inner's buried-preserved correlation onto outerCorr
@@ -521,29 +566,13 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
 		outerWrapped, innerWrapped,
 		outerCorr, innerCorr,
-		sel.GetResultValue(), false,
+		resultValue, false,
 	)
 	switch joinType {
 	case plans.JoinLeftOuter:
 		flatMapPlan.SetLeftOuter(true)
 	}
-
-	// Bind the wrapper's quantifiers with the FlatMap plan's ACTUAL outer/inner
-	// correlation aliases (outerCorr/innerCorr) — NOT fresh ForEach aliases. The
-	// inner probe reports (D.2) its correlation to the bound outer alias; the
-	// Reference.GetCorrelatedTo aggregation subtracts each member's quantifier
-	// aliases from its children's correlations, so a fresh alias fails to subtract
-	// the bound outer/inner aliases and a COMPLETED (self-contained) inner join
-	// leaks them as if externally correlated → an upper multiway join sees the
-	// subplan as still correlated and skips/misroutes valid alternatives. A
-	// FlatMap that binds X is not correlated to X; binding with the real
-	// aliases makes the aggregation report so. (The EXISTS / correlated-FOD builders
-	// — implementExistentialSelect, tryExistsFlatMap, buildExistsFlatMap — bind their
-	// wrapper quantifiers the same way: outer via the named outer alias, inner via
-	// NamedPhysicalQuantifier(inner alias) over the FOD wrapper.)
-	outerQ := expressions.NamedForEachQuantifier(outerCorr, call.MemoizeExpression(outerExpr))
-	innerQ := expressions.NamedForEachQuantifier(innerCorr, call.MemoizeExpression(innerExprForMemo))
-	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
+	return flatMapPlan, innerExprForMemo, true
 }
 
 // implementExistentialSelect handles a SelectExpression with a
@@ -691,6 +720,49 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 			joinPreds = append(joinPreds, p)
 		} else {
 			outerOnlyPreds = append(outerOnlyPreds, p)
+		}
+	}
+
+	// Rebase OUTER-LEG references in the below-FOD predicates onto the
+	// FlatMap's outer binding. The outer here may be a JOIN BOX (a WHERE-EXISTS
+	// over a join whose flatten declined — the unmerged nesting of an
+	// outer-join box), and its quantifier is named by
+	// ONE source alias (the translator's rightmost-leg sourceAlias), while a
+	// correlated EXISTS may reference ANY leg buried inside it (`dept d LEFT
+	// JOIN emp e … EXISTS(… b.emp_id = e.id)` under a box bound as "D"). Below
+	// the FOD the row context is the INNER scan's row, so an un-rebased buried
+	// reference resolves against the wrong row (the correlation-unchecked
+	// frontier fallback) or NULL — EXISTS dropped every row and NOT EXISTS
+	// admitted all. Rewrite each buried reference to the merged row's
+	// qualified "LEG.COL" key through the outer binding — the identical
+	// rebase the 3-quantifier arm applies to its existential predicates,
+	// with the SAME schema authority: the outer plan's anchored result value
+	// IS the merged-row key inventory (its dotted prefixes are the buried
+	// source aliases), regardless of which physical form won the box
+	// (materialized NLJ or dissolved correlated FlatMap). Wrapper-quantifier
+	// walks are NOT that authority — a materialized NLJ wrapper carries
+	// unnamed quantifiers, hiding every buried alias.
+	// Only aliases OTHER than the binding alias rebase: a reference to
+	// outerCorr itself already resolves through the FlatMap binding (and for
+	// a single-table outer the row carries only BARE keys — a qualified
+	// rewrite of the binding alias would miss on every row; such an outer has
+	// no anchored-RC result value, so it contributes no aliases here).
+	if len(joinPreds) > 0 && outerCorr.Name() != "" {
+		var legAliases []string
+		if rvp, ok := outerPlan.(interface{ GetResultValue() values.Value }); ok {
+			for _, a := range mergedOuterLegAliases(rvp.GetResultValue(), "", "") {
+				if strings.EqualFold(a, outerCorr.Name()) {
+					continue
+				}
+				legAliases = append(legAliases, a)
+			}
+		}
+		if len(legAliases) > 0 {
+			rebased := make([]predicates.QueryPredicate, len(joinPreds))
+			for i, p := range joinPreds {
+				rebased[i] = rebaseOuterLegRefsToMerged(p, legAliases, outerCorr)
+			}
+			joinPreds = rebased
 		}
 	}
 
@@ -1407,6 +1479,22 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		return
 	}
 
+	// An EXPLODE leg (a lateral array unnest merged into the existential
+	// select during rewriting) is not this arm's shape: the unnest+EXISTS
+	// composition has its own dedicated nested lowering
+	// (translateUnnestExistsFilter — the unnest FlatMap as the existential's
+	// outer), which binds the element under its own alias with the BARE row
+	// key. The two-level plan built here addresses outer legs through the
+	// merged row's QUALIFIED keys, which an exploded element's row never
+	// carries — the existential correlation would read NULL and drop every
+	// row. Decline; the dedicated nested member carries the query (it always
+	// has: this arm's previous materialized NLJ over a correlated Explode
+	// materialized the element against an unbound context, yielded zero
+	// rows, and never won).
+	if getExplodeExpression(leftRef) != nil || getExplodeExpression(rightRef) != nil {
+		return
+	}
+
 	leftExpr := getWinnerForOrdering(leftRef, PreserveOrdering(), call.CostModel())
 	rightExpr := getWinnerForOrdering(rightRef, PreserveOrdering(), call.CostModel())
 	existExpr := getWinnerForOrdering(existRef, PreserveOrdering(), call.CostModel())
@@ -1433,6 +1521,53 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	}
 	if len(aliases) >= 3 {
 		existAlias = aliases[2]
+	}
+
+	// The materialized step-1 NLJ executes each leg INDEPENDENTLY, so it
+	// cannot implement (a) a NULL-ON-EMPTY leg (a dissolved LEFT box pulled
+	// up by SelectMergeRule carries its outer-join semantics entirely on
+	// that quantifier flag — a materialized INNER execution drops the
+	// per-outer-row null-extension, and the EXISTS/NOT EXISTS twins over
+	// `dept LEFT JOIN emp` returned identical rows), nor (b) a leg whose
+	// subtree references its sibling (the dissolved box's ON predicate lives
+	// INSIDE the null-supplying leg's subselect; embedded standalone, the
+	// sibling reference resolves against the leg's own row through the
+	// correlation-unchecked frontier fallback — E.DEPT_ID = D.ID degenerated
+	// to emp.dept_id = emp.id → cross product). A decline is NOT enough:
+	// REWRITING promotes one winner per group, and when the merged select
+	// wins, the unmerged alternative is gone at PLANNING — a `SELECT *`
+	// root then fails to plan at all. Implement the shape the way Java's
+	// per-quantifier-property lowering does (ImplementNestedLoopJoinRule.
+	// planPartitionToPhysical: null-on-empty → DefaultOnEmpty wrap, join
+	// executes the inner correlated): orient the dependent/null-extended
+	// leg INNER and build step 1 as the correlated FlatMap — the identical
+	// construction (and identical provided-alias authority) as the
+	// 2-quantifier hasCorrelation branches. Orientation keys on the
+	// correlation topology, so the ChildrenAsSet swapped firing converges
+	// to the same plan.
+	leftProvided := physicalProvidedAliases(leftExpr, quants[0].GetAlias())
+	rightProvided := physicalProvidedAliases(rightExpr, quants[1].GetAlias())
+	leftDeps := legReferencesAny(leftRef, rightProvided)
+	rightDeps := legReferencesAny(rightRef, leftProvided)
+	if leftDeps && rightDeps {
+		// Mutually correlated legs: neither orientation binds both. No
+		// translation produces this today; decline rather than mis-execute.
+		return
+	}
+	q0, q1 := quants[0], quants[1]
+	correlatedStep1 := leftDeps || rightDeps || q0.IsNullOnEmpty() || q1.IsNullOnEmpty()
+	if correlatedStep1 && (leftDeps || (q0.IsNullOnEmpty() && !rightDeps)) {
+		leftPlan, rightPlan = rightPlan, leftPlan
+		leftExpr, rightExpr = rightExpr, leftExpr
+		leftAlias, rightAlias = rightAlias, leftAlias
+		q0, q1 = q1, q0
+	}
+	if correlatedStep1 && q0.IsNullOnEmpty() {
+		// A null-extended OUTER leg after orientation (both legs
+		// null-on-empty, or a null-on-empty leg the other leg depends on):
+		// no translation produces this; decline rather than drop the
+		// extension.
+		return
 	}
 
 	// Split predicates into join predicates (for the inner join) and
@@ -1485,15 +1620,38 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		joinType = plans.JoinInner
 	}
 
-	// Step 1: build inner join (left × right). Its merged row is the outer
-	// of the existential FlatMap.
-	innerJoinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-		leftPlan, rightPlan,
-		joinPreds,
-		joinType,
-		leftAlias, rightAlias,
-		sel.GetResultValue(),
-	)
+	// Step 1: build the inner join (left × right). Its merged row is the
+	// outer of the existential FlatMap. Independent legs take the
+	// materialized NLJ; a null-on-empty or sibling-correlated leg takes the
+	// correlated FlatMap (oriented above), whose DefaultOnEmpty wrap and
+	// per-outer-row re-execution carry the semantics the NLJ cannot.
+	// step1Expr is what the step-2 wrapper's outer quantifier ranges over.
+	var innerJoinPlan plans.RecordQueryPlan
+	step1Expr := leftExpr
+	if correlatedStep1 {
+		leftCorrID := values.NamedCorrelationIdentifier(leftAlias)
+		rightCorrID := values.NamedCorrelationIdentifier(rightAlias)
+		fmPlan, innerMemoExpr, ok := buildCorrelatedFlatMapPlan(
+			joinPreds, sel.GetResultValue(),
+			leftPlan, rightPlan, leftCorrID, rightCorrID, leftExpr, rightExpr,
+			joinType, q1.IsNullOnEmpty(), false,
+		)
+		if !ok {
+			return
+		}
+		innerJoinPlan = fmPlan
+		step1Expr = newPhysicalFlatMapWrapper(fmPlan,
+			expressions.NamedForEachQuantifier(leftCorrID, call.MemoizeExpression(leftExpr)),
+			expressions.NamedForEachQuantifier(rightCorrID, call.MemoizeExpression(innerMemoExpr)))
+	} else {
+		innerJoinPlan = plans.NewRecordQueryNestedLoopJoinPlan(
+			leftPlan, rightPlan,
+			joinPreds,
+			joinType,
+			leftAlias, rightAlias,
+			sel.GetResultValue(),
+		)
+	}
 
 	// The inner-join's merged row is bound under a FRESH outer correlation in
 	// the existential FlatMap (Go's 3-quantifier join+EXISTS is a two-level
@@ -1627,7 +1785,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// (mergedOuterCorr/existCorr), not fresh ones — same EXISTS correlation-leak fix
 	// as buildExistsFlatMap above (the same leak class): a fresh outer alias fails to
 	// subtract the FOD inner's correlation to mergedOuterCorr, leaking it upward.
-	leftMemoRef := call.MemoizeExpression(leftExpr)
+	leftMemoRef := call.MemoizeExpression(step1Expr)
 	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
 		expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr)))
 	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(fodWrapper))
