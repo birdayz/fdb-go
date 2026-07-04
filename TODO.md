@@ -218,8 +218,18 @@ validation gate.
     pre-existing SILENT 0-ROW class (spanning WHERE over a buried unnest, `FROM A, A.arr AS x, B
     WHERE x > B.c`: the unpushable conjunct landed raw on the residual NLJ with the element unbound).
     Rotation/decline white-box pins + 5 enclosed FDB pins (incl. the fixed spanning class).
-    Remaining commits: 4 §5 oracle rebind + the SELECT*-over-multi-source fix target (cannot plan on
-    master), 5 classifier dead-for-gated pins; then the four-gate gauntlet.
+    Commit 4 LANDED: SELECT-*-over-multi-source metadata (the ordinal-top arm in
+    deriveColumnsFromJoin, scoped to the _N leak; mixed-element INTEGER from the Explode; values
+    via the §7 positional-aligned read) + FROM-order preservation through the rotation (unnestPos
+    threaded; element mid-list) + the MANDATORY §5 oracle rebind: the dual-mode FDB differential
+    ran RED (gathered family NIL/0-row oracle-side; the PLAIN 3-way merge-sub-product class was
+    silently broken the same way, corpus-blind) → recoverOracleDatumSpans (NLJ twin of the
+    FlatMap legRV recovery, DatumSpans-only), oracleSwapFusedDatum (output-shaped oracle Datum at
+    all 4 emission sites), the values raw-map MERGE-SLOT-ONLY pinned bare arm (cut wider, the
+    corpus caught a.k=b.k→k=k instantly). 7-query differential + 1621-entry corpus green.
+    Commit 5 LANDED: the F4-rider dead-for-gated pins (gated=empty, emergent owner edge,
+    residual dotted still classifies — the reachability proof deferring physical deletion).
+    Remaining: the four-gate gauntlet (Graefe impl / Torvalds / codex / @claude on the PR).
     - RETRACTED (probe-verified with discriminating data): the "KNOWN-BROKEN spanning residual" was
       a PHANTOM — the commit-1 seeds (WV {5,6} vs elements {7,8}) made `EL > WV` all-true, so the
       all-rows result briefly read as a dropped predicate was the CORRECT answer. With WV {5,6,7}

@@ -305,6 +305,7 @@ go_test(
         "rfc173_w3_fused_fuzz_test.go",
         "rfc173_w3_max_match_fused_test.go",
         "rfc173_w4_left_ordinal_test.go",
+        "rfc173_w5_classifier_dead_test.go",
         "rich_ordering_fuzz_test.go",
         "rich_ordering_test.go",
         "rule_adjust_match_test.go",
@@ -810,6 +811,7 @@ go_test(
         "rfc173_s3_star_budget_test.go",
         "rfc173_s3_shadow_delta_test.go",
         "rfc173_s3_legrowtypes_test.go",
+        "rfc173_w5_classifier_dead_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
