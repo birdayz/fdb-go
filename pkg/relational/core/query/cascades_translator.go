@@ -114,6 +114,18 @@ type cascadesTranslator struct {
 	// ordinal-seed gate declines when this is set. Preserved across the unnest
 	// lowering only; reset at every other seed by the translator's normal flow.
 	unnestUnderExistential bool
+	// enclosedGatherCache memoizes the flat select translateFilter's
+	// enclosed-gather PROBE built, keyed by the ORIGINAL join root, so the
+	// dispatch (translateEnclosedUnnestGather via translateJoin) consumes it
+	// instead of translating the whole cluster a second time. Consume-once
+	// (deleted on read): the probe runs immediately before the dispatch on
+	// the same tree, and a stale entry surviving a decline elsewhere would be
+	// a wrong-tree translation. This also closes the latent side-state
+	// hazard both W5 impl reviews flagged: a discarded probe translation
+	// re-runs translateRef per leg, which is pure ONLY while ordinalEligible
+	// bars subquery-bearing legs (a scalar-subquery leg would double-append
+	// t.scalarSubqueries — the translateUnnestJoin call-ordering hazard).
+	enclosedGatherCache map[*logical.LogicalJoin]expressions.RelationalExpression
 	// wedgeGate records the Slice 2 gate decision per translateJoin seed —
 	// consumed by the W3 ordinal seed, pinned by tests. Lazily initialized so
 	// hand-built test translators need no constructor change.
@@ -1864,14 +1876,22 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// reaches the gathered merge arm below, which rewrites element refs and
 	// bakes leg refs uniformly (the root form's exact treatment — pushBuried
 	// already skips the root form for the same reason). The probe TRANSLATES
-	// the rotated cluster (pure construction, discarded); fail-open: a
-	// declined gather keeps today's push semantics.
+	// the rotated cluster; the built select is MEMOIZED on the translator
+	// (enclosedGatherCache, consume-once) so the dispatch below returns it
+	// instead of translating the cluster twice. Fail-open: a declined gather
+	// keeps today's push semantics.
 	enclosedGathered := false
 	if f.Predicate != nil && len(f.ExistsSubqueries) == 0 && !t.inInnerCluster && !t.unnestUnderExistential {
 		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
 			if rebuilt, ru, et, fn, rpos, rok := t.rotateEnclosedUnnest(join); rok {
-				enclosedGathered = t.translateGatheredUnnestCluster(
-					rebuilt, ru, unnestSourceCorrelation(ru), et, fn, rpos) != nil
+				if sel := t.translateGatheredUnnestCluster(
+					rebuilt, ru, unnestSourceCorrelation(ru), et, fn, rpos); sel != nil {
+					enclosedGathered = true
+					if t.enclosedGatherCache == nil {
+						t.enclosedGatherCache = make(map[*logical.LogicalJoin]expressions.RelationalExpression)
+					}
+					t.enclosedGatherCache[join] = sel
+				}
 			}
 		}
 	}

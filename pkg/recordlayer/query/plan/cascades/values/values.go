@@ -860,7 +860,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		// so this arm is reachable only under the §5 oracle. Without it a
 		// gathered join's spanning WHERE — evaluated by the NLJ over the raw
 		// merged map — silently dropped every row oracle-side.
-		if f.Resolved != nil && f.Resolved.FrontierPinned && isOrdinalFieldName(rootKey) {
+		if f.Resolved != nil && f.Resolved.FrontierPinned && IsOrdinalFieldName(rootKey) {
 			if v, ok := ctx[rootKey]; ok {
 				return f.descendResolvedPath(v)
 			}

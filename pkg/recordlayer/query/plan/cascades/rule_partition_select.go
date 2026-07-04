@@ -1052,45 +1052,7 @@ func aliasesConnectedByPredicates(
 	aliases map[values.CorrelationIdentifier]struct{},
 	preds []predicates.QueryPredicate,
 ) bool {
-	if len(aliases) <= 1 {
-		return true
-	}
-	parent := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(aliases))
-	for a := range aliases {
-		parent[a] = a
-	}
-	var find func(values.CorrelationIdentifier) values.CorrelationIdentifier
-	find = func(a values.CorrelationIdentifier) values.CorrelationIdentifier {
-		for parent[a] != a {
-			parent[a] = parent[parent[a]]
-			a = parent[a]
-		}
-		return a
-	}
-	for _, p := range preds {
-		var prev values.CorrelationIdentifier
-		have := false
-		for a := range intersectAliases(aliases, predicates.GetCorrelatedToOfPredicate(p)) {
-			if have {
-				parent[find(prev)] = find(a)
-			}
-			prev = a
-			have = true
-		}
-	}
-	var root values.CorrelationIdentifier
-	first := true
-	for a := range aliases {
-		if first {
-			root = find(a)
-			first = false
-			continue
-		}
-		if find(a) != root {
-			return false
-		}
-	}
-	return true
+	return aliasesConnectedByPredicatesOrCorrelation(aliases, preds, nil)
 }
 
 // aliasesConnectedByPredicatesOrCorrelation is the RFC-173 W5 connectivity
@@ -1098,9 +1060,9 @@ func aliasesConnectedByPredicates(
 // quantifier-level correlation edges (fullCorrelationOrder — an Explode's
 // genuine dependency on its array source, the edge Java's
 // Quantifier.getCorrelatedTo carries). Plain table quantifiers have no
-// correlation edges, so for predicate-only selects this coincides exactly
-// with aliasesConnectedByPredicates; the widening admits only the
-// unnest-with-source pairings the flat gathered seed relies on.
+// correlation edges, so with a nil correlationOrder this IS
+// aliasesConnectedByPredicates (which delegates here); the widening admits
+// only the unnest-with-source pairings the flat gathered seed relies on.
 func aliasesConnectedByPredicatesOrCorrelation(
 	aliases map[values.CorrelationIdentifier]struct{},
 	preds []predicates.QueryPredicate,

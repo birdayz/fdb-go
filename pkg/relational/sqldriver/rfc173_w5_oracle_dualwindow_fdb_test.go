@@ -136,7 +136,12 @@ func TestFDB_RFC173W5_OracleDualWindow(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, isMap := r.Datum.(map[string]any)
+				if !isMap {
+					// A non-map Datum stringifying to "" on BOTH sides would
+					// make the differential vacuously green — fail loudly.
+					t.Fatalf("query %q: non-map row Datum %T — the differential compares map rows only", sql, r.Datum)
+				}
 				keys := make([]string, 0, len(m))
 				for k := range m {
 					keys = append(keys, k)
