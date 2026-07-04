@@ -34,6 +34,7 @@ import (
 	"fdb.dev/pkg/simfdb/hunt/interleave"
 	"fdb.dev/pkg/simfdb/hunt/rangeconflict"
 	"fdb.dev/pkg/simfdb/hunt/sqlhunt"
+	"fdb.dev/pkg/simfdb/hunt/sqlpage"
 )
 
 func main() {
@@ -74,6 +75,7 @@ func main() {
 	profiles = append(profiles, interleave.Profiles()...)
 	profiles = append(profiles, continuation.Profiles()...)
 	profiles = append(profiles, rangeconflict.Profiles()...)
+	profiles = append(profiles, sqlpage.Profiles()...)
 	if *only != "" {
 		profiles = filterProfiles(profiles, strings.Split(*only, ","))
 		if len(profiles) == 0 {

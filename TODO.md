@@ -296,6 +296,21 @@ needs Java-alignment + a Graefe ACK.**
   the ordered output must match; the GROUP BY (`StreamingAgg`) sort places NULL inconsistently with the
   DISTINCT/scan path. Repro (committed): `dst-generate -dir pkg/simfdb/hunt/metamorphic/testdata/findings/`
   → `order-2.json` group `groupby_orderby_null_placement_BUG`.
+- [ ] **`SELECT DISTINCT` drops its dedup across a continuation resume (silent duplicate rows).** Found by
+  the SQL-pagination oracle (`pkg/simfdb/hunt/sqlpage`): running a query under a tiny execution
+  scanned-rows limit forces the executor to resume through internal continuations, which must yield the
+  same rows as an unpaginated run. For `cat ∈ {0,1}` scattered over 8 rows, `SELECT DISTINCT cat FROM t`
+  returns `[0,1]` unpaged but **`[0,1,0,1,1,0,1,0]` (every row, no dedup) under `EXECUTION_SCANNED_ROWS_LIMIT=1`** —
+  and it stays broken **even with `ORDER BY cat`** (`[0,0,0,0,1,1,1,1]`, sorted but still not distinct).
+  The streaming DISTINCT operator does not carry its dedup state (last-emitted value / seen set) in the
+  continuation, so every resume re-emits. `GROUP BY cat` over the same data stays correct under
+  pagination (`[0,1]`) — the aggregate continuation IS serialized — which is the proof DISTINCT should be
+  fixable the same way. Reachable in production: a large `SELECT DISTINCT` that exceeds the transaction /
+  scanned-rows limit paginates mid-stream and returns duplicates. **Cascades/executor bug — surface to
+  Graefe; fix needs Java-alignment (compare Java's streaming-distinct continuation) + a Graefe ACK.**
+  Repro (committed): `go test ./pkg/simfdb/hunt/sqlpage/ -run TestKnownBug_DistinctContinuation -v`.
+  Until fixed, bare `DISTINCT` is quarantined out of the `sqlpage` sweep's query set (comment at the
+  quarantine site) so the driver stays green and hunts other executor-continuation bugs.
 
 # NEXT
 

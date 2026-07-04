@@ -11,6 +11,7 @@ go_library(
         "//pkg/simfdb/hunt/interleave",
         "//pkg/simfdb/hunt/rangeconflict",
         "//pkg/simfdb/hunt/sqlhunt",
+        "//pkg/simfdb/hunt/sqlpage",
     ],
 )
 

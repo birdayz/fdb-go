@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sqlpage",
+    srcs = ["sqlpage.go"],
+    importpath = "fdb.dev/pkg/simfdb/hunt/sqlpage",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/sqldriver",
+        "//pkg/simfdb",
+        "//pkg/simfdb/hunt",
+    ],
+)
+
+go_test(
+    name = "sqlpage_test",
+    srcs = [
+        "distinct_known_bug_test.go",
+        "sqlpage_test.go",
+    ],
+    embed = [":sqlpage"],
+)
