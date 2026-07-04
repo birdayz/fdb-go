@@ -282,9 +282,14 @@ validation gate.
     existential rebase (baked merged-positional offsets; name-model rebase dead-for-gated,
     FrontierPinned-policed; un-mappable refs decline CORRECT-or-LOUD). I1 closed by
     construction + pinned e2e (condition-4 matrix: EXISTS/NOT/non-correlated all green).
-    Remaining: commit 3 recursive-CTE-enclosed, commit 4 dup-alias fresh-ids, commit 5
-    mixed-nesting + exit gates (producer audit, budgets, stress, both-direction pins), then
-    the four-gate gauntlet.
+    Commit 3 LANDED (recursive-CTE truth pins: reference joins gate ordinal since the fulcrum;
+    definition-node poison production-unreachable). Commit 4 LANDED (column-aware dup-alias
+    rejection, Java 42702 byte-equal, F3 REVISED against live Java runs — 2 marked divergences
+    + 1 parity entry). Commit 5 LANDED (exit gates: producer audit in the RFC — the INNER
+    flatten stays anchored, its ordinal seed corpus-reverted twice pending data-access
+    positional binders; the W5 F4 rider resolves to S4 for classifier deletion; budgets held;
+    1M stress green; Java harness green). Remaining: the four-gate gauntlet (the F3 revision
+    and the flatten scope-note flagged for the Graefe impl ruling).
 
   - [ ] **S4 atomic demolition** (LAST): delete the flag + trio + the three seeds +
     `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag branches + 4 executor

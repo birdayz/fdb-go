@@ -2443,3 +2443,35 @@ all row-verified). Coexistence note, booked for S4: the identity FlatMap passes 
 but drops the POSITIONAL row — sound today (downstream reads fall back to the merged Datum's
 bare+qualified keys; names unique for the gated classes), but S4's positional-only world needs
 the pass-through.
+
+### W4-left commits 3-5 (landed) + the exit-gate producer audit
+
+**Commit 3** — recursive-CTE truth pins (reference joins gate ordinal since the fulcrum; stale
+header comments corrected; the definition-node poison is production-unreachable, probed).
+**Commit 4** — column-aware duplicate-FROM-alias rejection with Java's 42702 (the F3 fresh-id
+premise REVISED against LIVE Java conformance runs — per-attribute ambiguity, exact message
+text byte-equal in the harness; two marked divergence corners + one parity entry; details in
+DIVERGENCES.md). **Commit 5** — the exit gates.
+
+**Producer audit (F4/F5 condition; post-commits-1-4 surviving anchored producers):**
+1. `translateJoin`'s ungated arm — the JOINED-PRESERVED LEFT class (clustered legs; the W4
+   dissolution ruling's scope) and ENCLOSED legs of existential/unnest flattens. PINNED residual.
+2. `translateJoinWithExists` (the INNER flatten) — stays ANCHORED. The F2 ordinal seed for the
+   flatten was cut and REVERTED under the dualwindow corpus (corr_exists_join_outer): the 2+1
+   existential select also implements through data-access/correlated-FlatMap paths whose
+   bindings are NAME maps — the seed's baked refs hit the loud BakedNameContextError on the
+   LIVE side. Ordinalizing the flatten needs those paths' positional binders (booked). The
+   gated existential classes that DO run ordinal arrive via the generic filter arm (gated
+   LEFT/RIGHT boxes and gated clusters under buildExistentialSelect) with the implementation's
+   ordinal rebase — landed in commit 2 and corpus-green.
+3. `buildUnnestResultValue` — the W5 residual (unnest declines + under-existential). The DOTTED
+   producer is therefore STILL LIVE → the W5 F4 rider resolves to: the dotted classifiers'
+   physical deletion rides S4 (this slice did not kill the last producer).
+4. `NewScalarSubqueryAnchoredRecord` — the W4b pinned residual (ungated-outer rightmost-corr).
+5. `NewReEnumerationAnchoredRecord` — GROUP-BY over any anchored parent; dies after 1-4 (S4).
+
+**Exit gates:** both-direction pins re-ran per commit (each commit's suites + the FDB matrices);
+the 1621→1625-entry dualwindow corpus green (and it CAUGHT two over-reaches during the slice —
+the flatten seed twice — exactly its job); task budgets (chain 11122/45306, STAR 42788) held
+unchanged through every commit; 1M stress green on the slice head; the live Java conformance
+harness green including the new dup-alias entries (byte-equal error text).
