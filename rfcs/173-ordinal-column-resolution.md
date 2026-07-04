@@ -2586,18 +2586,37 @@ the E2 disabled-birth binder (walkBakedRefs + probeOuterBakedType + the loud pos
 binding arm), the PROBE-GATED identity-FlatMap positional pass-through publishing the
 ADAPTED row, and the unwrapToJoinPlan identity arm; two live catches in the commit-2
 delta record: the flat-dotted name-model upper class and the mismatched-layout
-covering-outer class).**
+covering-outer class) · **item-2 commit 3 (PR #472 MERGED, master f847f7c58, four-gate
+ACK: Graefe ACK ×3 (impl + reverse-byte condition + the clusterArity→outerBoundAliases
+authority ruling), Torvalds ACK ×2, codex P2+P3 found→fixed-and-pinned→clean delta,
+@claude two findings-rounds resolved incl. the false-"deduped"-claim correction, CI
+6/6 — translateJoinWithExists' gated flatten seeds the baked ordinal RC (existentials
+carry no columns); TWO prerequisite bugs the c3 pins forced out: the nondeterministic
+#17 cost tie-break (stablePlanHash — alias-blind per-node + order-sensitive fold, the
+minted-q$N/commutative-XOR double blindness) and the order-DEPENDENT unnest array read
+(qualified SEG0.FIELD on any multi-namespace outer — authority is outerBoundAliases,
+not clusterArity, so the FULL-OUTER merge-opaque box is covered)).**
 
-**← WE ARE HERE:** QP-REF-BIND item 2, commit 3 — the flatten gate arm + ordinal seed
-(translateJoinWithExists consults the wedge gate; the W4-left rebase machinery and the
-commit-2 binder are landed and waiting). Commit 3's seed makes the binder LIVE on SQL
-and flips the PR #469 loud-limitation exit gates (matrix class K scalar-in-EXISTS; the
-fetch-shell walk-terminators; the alias-unchecked frontier fallback's loud replacement)
-— verify each pin at landing (commit 2 flipped NONE, verified). Commit-3 bookings from
-the c2 reviews: derive the pass-through era from the OUTER plan's seed authority when
-widening the gate (Graefe); the unwrap-arm/probe implicit coupling wants a cross-check
-assertion if touched (@claude); a third baked-QOV-extraction copy triggers
-forEachBakedQOVType (Torvalds). Item 1 (per-reference dup-alias binding) is
+**← WE ARE HERE:** QP-REF-BIND item 2, commit 4 — the enclosure lift at the generic
+filter arm (cascades_translator.go:2109-2119, the LIVE-CORRECTION site): the generic
+filter arm forces enclosure under EXISTS, poisoning every join class beneath, so the
+W4-left ordinal existential rebase (rfc173_w4left_existential.go) is still DEAD on the
+gated-cluster-under-EXISTS classes commit 3 did NOT reach (commit 3 lit the 2-way
+SINGLE-SOURCE flatten; the clustered/box classes route through the generic arm).
+Commit 4 routes gate-eligibility through ordinalWedgeGateDecide/clusterArity (design
+ruling condition 4, one authority) so gate-eligible inputs are NOT enclosed. **THIS is
+where the PR #469 loud-limitation exit gates flip** — matrix class K scalar-in-EXISTS
+(1+1 buildExistentialSelect path), the fetch-shell walk-terminators, the
+alias-unchecked frontier fallback's loud replacement. Verify each pin at landing
+(commit 3 flipped NONE — its seed is the 2-way single-source flatten, which routes
+through translateJoinWithExists, not the class-K 1+1 path; confirmed by the suite
+staying green with the pins unchanged). Per-class gate reasons + dualwindow pins.
+Commit-3 bookings still open (fold into commit 4/5 as touched): the unwrap-arm/probe
+implicit coupling wants a cross-check assertion if touched (@claude c2); a third
+baked-QOV-extraction copy triggers forEachBakedQOVType (Torvalds c2); the
+stablePlanNodeHash type-switch widening (remaining ~30 tag-only node types) if a
+REWRITING/PLANNING EXPLAIN flip ever surfaces on those shapes (@claude c3). Item 1
+(per-reference dup-alias binding) is
 parallelizable with item 2.
 
 **Remaining, in ruling order:** (item 2 ∥ item 1) → item 3 (mixed-nesting LEFT widening; MUST
