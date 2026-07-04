@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -57,38 +58,82 @@ func TestRFC173W4Left_RecursiveRefJoinGatesOrdinal(t *testing.T) {
 	}
 }
 
-// The recursive-CTE leg remap's dotted arm is for GENUINE qualified
-// references (IDENT.IDENT) only: a computed rendering whose dot sits inside
-// the expression ("(B.ID + 1)") used to split at the first dot and
-// manufacture the garbage correlation "(B" (the S4 kill-list hazard). Such a
-// name now takes the ordinal / bare-name arms — the read name is the full
-// rendering, the key the projection writes.
+// The recursive-CTE leg remap's dotted arm fires from the STRUCTURAL
+// classification (the projected value was a plain FieldValue — its rendered
+// name is an identifier by construction), never from the string's shape. A
+// string-grammar discriminator here misread computed renderings twice
+// (review findings): "(B.ID + 1)" split into the garbage correlation "(B",
+// and a float literal's "1.5" — digit-only segments pass an [A-Z0-9_] test —
+// into QOV("1"). Structurally classified, a computed value's dots are never
+// qualifiers regardless of rendering shape.
 func TestRFC173Rcte_RemapComputedRenderingNotSplit(t *testing.T) {
 	t.Parallel()
-	vals := recursiveRemapValues([]string{"(B.ID + 1)", "B.ID", "PLAIN"}, true)
+	names := []string{"(B.ID + 1)", "1.5", "B.ID", "PLAIN"}
+	plainField := []bool{false, false, true, true}
+	vals := recursiveRemapValues(names, plainField, true)
 
-	// Computed rendering: NOT split — a resolved-ordinal read named by the
-	// full rendering, no QOV child.
-	fv0, ok := vals[0].(*values.FieldValue)
-	if !ok || fv0.Child != nil {
-		t.Fatalf("computed rendering = %#v, want a flat FieldValue (no QOV split)", vals[0])
-	}
-	if fv0.Field != "(B.ID + 1)" {
-		t.Fatalf("computed rendering read name = %q, want the full rendering", fv0.Field)
-	}
-	if fv0.Resolved == nil {
-		t.Fatal("computed rendering under ordinalReads must carry the resolved ordinal")
+	// Computed renderings (expression, float literal): NOT split — a
+	// resolved-ordinal read named by the full rendering, no QOV child.
+	for _, i := range []int{0, 1} {
+		fv, ok := vals[i].(*values.FieldValue)
+		if !ok || fv.Child != nil {
+			t.Fatalf("computed rendering %q = %#v, want a flat FieldValue (no QOV split)", names[i], vals[i])
+		}
+		if fv.Field != names[i] {
+			t.Fatalf("computed rendering read name = %q, want the full rendering %q", fv.Field, names[i])
+		}
+		if fv.Resolved == nil {
+			t.Fatalf("computed rendering %q under ordinalReads must carry the resolved ordinal", names[i])
+		}
 	}
 
-	// Genuine qualified reference: the dotted QOV read stays.
-	fv1, ok := vals[1].(*values.FieldValue)
-	if !ok || fv1.Child == nil || fv1.Field != "ID" {
-		t.Fatalf("qualified reference = %#v, want QOV(B).ID", vals[1])
+	// A plain FieldValue's genuinely-dotted lazy name: the QOV read stays.
+	fv2, ok := vals[2].(*values.FieldValue)
+	if !ok || fv2.Child == nil || fv2.Field != "ID" {
+		t.Fatalf("qualified reference = %#v, want QOV(B).ID", vals[2])
 	}
 
 	// Bare column: resolved-ordinal read.
-	fv2, ok := vals[2].(*values.FieldValue)
-	if !ok || fv2.Child != nil || fv2.Field != "PLAIN" || fv2.Resolved == nil {
-		t.Fatalf("bare column = %#v, want resolved-ordinal PLAIN", vals[2])
+	fv3, ok := vals[3].(*values.FieldValue)
+	if !ok || fv3.Child != nil || fv3.Field != "PLAIN" || fv3.Resolved == nil {
+		t.Fatalf("bare column = %#v, want resolved-ordinal PLAIN", vals[3])
+	}
+
+	// The fallback path (nil classification — logical column names,
+	// identifiers by construction): dotted names still split.
+	fb := recursiveRemapValues([]string{"B.ID"}, nil, false)
+	fv, ok := fb[0].(*values.FieldValue)
+	if !ok || fv.Child == nil || fv.Field != "ID" {
+		t.Fatalf("fallback qualified reference = %#v, want QOV(B).ID", fb[0])
+	}
+}
+
+// legPhysicalOutputNames' structural classification: plain FieldValues are
+// the ONLY values whose rendered name is an identifier by construction.
+func TestRFC173Rcte_LegClassificationStructural(t *testing.T) {
+	t.Parallel()
+	lp := expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{
+			&values.FieldValue{Field: "B.ID", Typ: values.UnknownType},
+			&values.ArithmeticValue{
+				Op:    values.OpAdd,
+				Left:  &values.FieldValue{Field: "ID", Typ: values.UnknownType},
+				Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+			},
+			&values.ConstantValue{Value: 1.5, Typ: values.NullableDouble},
+		},
+		[]string{"", "", ""},
+		expressions.ForEachQuantifier(expressions.InitialOf(
+			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
+	)
+	names, plainField, fromProjection := legPhysicalOutputNames(lp, []string{"a", "b", "c"})
+	if !fromProjection {
+		t.Fatal("projection-topped leg must classify fromProjection")
+	}
+	if len(names) != 3 || len(plainField) != 3 {
+		t.Fatalf("names/classification arity = %d/%d, want 3/3", len(names), len(plainField))
+	}
+	if !plainField[0] || plainField[1] || plainField[2] {
+		t.Fatalf("classification = %v, want [true false false] (FieldValue vs computed vs literal)", plainField)
 	}
 }
