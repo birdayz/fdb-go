@@ -459,7 +459,7 @@ is explicitly out.
 |---|---|---|---|
 | independent Go model | wrong absolute answer | a naive recompute | ✅ `sqlhunt` sql-query/null |
 | metamorphic | wrong (inconsistent) | invariants | ⏳ build |
-| golden / characterization | changed (regression) | determinism (✓ SimFDB) | ⏳ build (next) |
+| golden / characterization | changed (regression) | determinism (✓ SimFDB) | ✅ `pkg/simfdb/hunt/golden` (result+`EXPLAIN` baseline, diff on merge) |
 | planner-internal fuzz | memo/plan invariants | in-process | ✅ in-tree |
 
 ### Tier 3 — client simulation & fault injection [TRACK B — *not* "DST"; own RFC / extends RFC-118]

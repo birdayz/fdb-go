@@ -1,0 +1,103 @@
+# scenario: orders (seed 1)
+#   CREATE TABLE t (id BIGINT NOT NULL, cat BIGINT, val BIGINT, name STRING, flag BOOLEAN, PRIMARY KEY (id))
+#   CREATE INDEX idx_cat ON t(cat)
+#   CREATE INDEX idx_val ON t(val)
+
+=== SELECT id, cat, val, name, flag FROM t ORDER BY id
+PLAN: Project([ID, CAT, VAL, NAME, FLAG], Scan(T))
+ROWS(8) cols=[ID, CAT, VAL, NAME, FLAG]:
+  [1, 1, 100, "a", true]
+  [2, 1, 200, "b", false]
+  [3, 2, 150, "c", true]
+  [4, 2, 150, "d", false]
+  [5, 3, NULL, "e", true]
+  [6, 3, 300, NULL, false]
+  [7, 1, 50, "g", true]
+  [8, 2, 250, "h", NULL]
+
+=== SELECT COUNT(*) FROM t
+PLAN: StreamingAgg(keys=[], Scan(T))
+ROWS(1) cols=[COUNT(*)]:
+  [8]
+
+=== SELECT COUNT(val), COUNT(name), COUNT(flag) FROM t
+PLAN: StreamingAgg(keys=[], Scan(T))
+ROWS(1) cols=[COUNT(VAL), COUNT(NAME), COUNT(FLAG)]:
+  [7, 7, 7]
+
+=== SELECT MIN(val), MAX(val), SUM(val) FROM t
+PLAN: StreamingAgg(keys=[], Scan(T))
+ROWS(1) cols=[MIN(VAL), MAX(VAL), SUM(VAL)]:
+  [50, 300, 1200]
+
+=== SELECT cat, COUNT(*), SUM(val) FROM t GROUP BY cat ORDER BY cat
+PLAN: StreamingAgg(keys=[CAT], InMemorySort([CAT ASC], Scan(T)))
+ROWS(3) cols=[CAT, COUNT(*), SUM(VAL)]:
+  [1, 3, 350]
+  [2, 3, 550]
+  [3, 2, 300]
+
+=== SELECT id FROM t WHERE cat = 2 ORDER BY id
+PLAN: Project([ID], InMemorySort([ID ASC], Fetch(IndexScan(IDX_CAT, [=]))))
+ROWS(3) cols=[ID]:
+  [3]
+  [4]
+  [8]
+
+=== SELECT id, val FROM t WHERE val > 150 ORDER BY id
+PLAN: Project([ID, VAL], InMemorySort([ID ASC], Fetch(IndexScan(IDX_VAL, [<>]))))
+ROWS(3) cols=[ID, VAL]:
+  [2, 200]
+  [6, 300]
+  [8, 250]
+
+=== SELECT id FROM t WHERE val IS NULL ORDER BY id
+PLAN: Project([ID], InMemorySort([ID ASC], Fetch(IndexScan(IDX_VAL, [=]))))
+ROWS(1) cols=[ID]:
+  [5]
+
+=== SELECT id FROM t WHERE val IS NOT NULL AND val <= 150 ORDER BY id
+PLAN: Project([ID], PredicatesFilter(Scan(T), [1 preds]))
+ROWS(4) cols=[ID]:
+  [1]
+  [3]
+  [4]
+  [7]
+
+=== SELECT id FROM t WHERE cat IN (1, 3) ORDER BY id
+PLAN: Project([ID], InMemorySort([ID ASC], InJoin(Fetch(IndexScan(IDX_CAT, [=])), binding ASC)))
+ROWS(5) cols=[ID]:
+  [1]
+  [2]
+  [5]
+  [6]
+  [7]
+
+=== SELECT id, val FROM t ORDER BY val, id LIMIT 4
+PLAN: Project([ID, VAL], Limit(4, InMemorySort([VAL ASC, ID ASC], Scan(T))))
+ROWS(4) cols=[ID, VAL]:
+  [5, NULL]
+  [7, 50]
+  [1, 100]
+  [3, 150]
+
+=== SELECT DISTINCT cat FROM t ORDER BY cat
+PLAN: Distinct(Project([CAT], IndexScan(IDX_CAT, [*])))
+ROWS(3) cols=[CAT]:
+  [1]
+  [2]
+  [3]
+
+=== SELECT id FROM t WHERE flag = true ORDER BY id
+PLAN: Project([ID], PredicatesFilter(Scan(T), [1 preds]))
+ROWS(4) cols=[ID]:
+  [1]
+  [3]
+  [5]
+  [7]
+
+=== SELECT id, name FROM t WHERE name IS NULL ORDER BY id
+PLAN: Project([ID, NAME], PredicatesFilter(Scan(T), [1 preds]))
+ROWS(1) cols=[ID, NAME]:
+  [6, NULL]
+

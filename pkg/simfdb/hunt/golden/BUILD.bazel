@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "golden",
+    srcs = ["golden.go"],
+    importpath = "fdb.dev/pkg/simfdb/hunt/golden",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/recordlayer",
+        "//pkg/relational/sqldriver",
+        "//pkg/simfdb",
+    ],
+)
+
+go_test(
+    name = "golden_test",
+    srcs = ["golden_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":golden"],
+)
