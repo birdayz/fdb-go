@@ -476,6 +476,15 @@ the fixes) is the proof of pattern. Our determinism + oracle stack lets us do a 
 Ground truth stays with the deterministic oracles above. This is the line between a sound tool and "ask
 the model if the output looks right" (which is not testing).
 
+**The input level — valid *user* input, not bytes or internal state.** The LLM plays an adversarial
+DBA + analyst: it emits well-formed SQL (schema DDL, seed `INSERT`s, queries) — the same shapes a user
+hands the database, chosen adversarially — which then run through the real parser → planner → executor.
+It is *not* a byte-fuzzer (random/mutated bytes for decode robustness — that is `FuzzParse`/`FuzzUnpack`)
+and it does *not* fabricate plan trees or internal state (it hands the engine a query and lets it plan).
+Pointed at the record layer instead of SQL, the same idea generates metadata + records + operation
+sequences (the app-developer's input). Three input levels stack: raw bytes (existing byte-fuzzers) ·
+**user-level SQL/schema/records (this)** · planner internals (existing `FuzzPlanner_*`).
+
 **What it generates** — a structured, replayable corpus (not free text):
 - Schemas + indexes + seed data (boundary values, NULLs, duplicates, empty sets).
 - Queries aimed at historically-fragile semantics.

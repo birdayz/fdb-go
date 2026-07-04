@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "metamorphic",
+    srcs = [
+        "corpus.go",
+        "metamorphic.go",
+    ],
+    importpath = "fdb.dev/pkg/simfdb/hunt/metamorphic",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/recordlayer",
+        "//pkg/relational/sqldriver",
+        "//pkg/simfdb",
+    ],
+)
+
+go_test(
+    name = "metamorphic_test",
+    srcs = ["metamorphic_test.go"],
+    embed = [":metamorphic"],
+)

@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "dst-generate_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/dst-generate",
+    visibility = ["//visibility:private"],
+    deps = ["//pkg/simfdb/hunt/metamorphic"],
+)
+
+go_binary(
+    name = "dst-generate",
+    embed = [":dst-generate_lib"],
+    visibility = ["//visibility:public"],
+)
