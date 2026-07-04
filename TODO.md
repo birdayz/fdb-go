@@ -272,9 +272,20 @@ validation gate.
       WHERE conjuncts (`FROM ca a, cb b, cc c WHERE a.id=1 AND b.bid=10`, no cross-leg predicate)
       CANNOT PLAN (0AF00) — a partition gap, booked so it is not mistaken for a W5 regression.
       (The no-WHERE dotted 3-way works.)
-  - [ ] **W4-left + EXISTS + recursive-CTE joins** (retire `NewAnchoredJoinRecord` via
-    `buildJoinResultValue`: LEFT/RIGHT-OUTER box, EXISTS-over-join, mixed-nesting, dup-alias,
-    recursive-CTE-enclosed).
+  - [ ] **W4-left + EXISTS + recursive-CTE joins** — IN PROGRESS on feat/rfc173-w4left-exists
+    (Graefe DESIGN-ACK, 4 conditions; the F3 divergence recorded in DIVERGENCES.md). Commit 1
+    LANDED: single-source LEFT/RIGHT boxes gate with the at-translation ordinal seed (I2
+    declaration order, I3 record-level nullability); the RIGHT SELECT * metadata reversed-check
+    ordinal arm; the W4b decline class now ANSWERS (pre-chartered pin flip). Commit 2 LANDED:
+    EXISTS-over-join — the I2 latent RIGHT+EXISTS column-order fix, the OUTER-flatten
+    WHERE-as-ON silent-wrong fix (both master-identical, red-first), and the F2 ORDINAL
+    existential rebase (baked merged-positional offsets; name-model rebase dead-for-gated,
+    FrontierPinned-policed; un-mappable refs decline CORRECT-or-LOUD). I1 closed by
+    construction + pinned e2e (condition-4 matrix: EXISTS/NOT/non-correlated all green).
+    Remaining: commit 3 recursive-CTE-enclosed, commit 4 dup-alias fresh-ids, commit 5
+    mixed-nesting + exit gates (producer audit, budgets, stress, both-direction pins), then
+    the four-gate gauntlet.
+
   - [ ] **S4 atomic demolition** (LAST): delete the flag + trio + the three seeds +
     `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag branches + 4 executor
     consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until now) — ONE commit.

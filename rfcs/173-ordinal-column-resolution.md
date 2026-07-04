@@ -2422,3 +2422,24 @@ Java's shape), and the verify lands on the seed builder.
 close BEFORE commit 2 merges — the one place correctness can silently invert (a 0-row class).
 (4) F5 pins MUST include NOT EXISTS and NON-CORRELATED EXISTS shapes (the codebase's known
 blind axis).
+
+### W4-left commits 1-2 (landed) + I1 closure
+
+**Commit 1** (single-source LEFT/RIGHT gate + at-translation seed) and **commit 2**
+(EXISTS-over-join) are landed; see the commit messages for the mechanics. Two pre-existing bugs
+fixed along the way, both worktree-verified master-identical and red-first pinned: the I2 latent
+RIGHT+EXISTS SELECT * post-swap column order, and the OUTER-join flatten misclassifying WHERE
+conjuncts as JOIN predicates (a preserved-side WHERE null-padded instead of filtering — silent
+wrong rows). The W4b clustered-outer scalar decline class now ANSWERS (the pin flip its own
+W4b-era text pre-chartered).
+
+**I1 is closed by construction (condition 3):** the existential leg never reaches an ordinal
+birth — the 2+1 implementation's step-1 NLJ carries only the seed's two ForEach legs (ordinal
+birth as any gated join), and the existential level is a separate identity FlatMap
+(RV = bare QOV over the merged row → birth disabled) with the FOD inner bound under the
+existential correlation for its predicates. The condition's silent-invert hazard (a 0-row class)
+is pinned e2e by the condition-4 matrix (correlated/NOT/non-correlated EXISTS over gated joins,
+all row-verified). Coexistence note, booked for S4: the identity FlatMap passes the DATUM through
+but drops the POSITIONAL row — sound today (downstream reads fall back to the merged Datum's
+bare+qualified keys; names unique for the gated classes), but S4's positional-only world needs
+the pass-through.
