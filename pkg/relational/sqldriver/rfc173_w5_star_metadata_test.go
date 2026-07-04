@@ -174,3 +174,46 @@ func TestRFC173W5_StarMetadata_StructElementType(t *testing.T) {
 		t.Fatalf("element column type = %q (all types %v), want STRUCT — the TypeCodeRecord case is missing and the BIGINT fallback silently mistyped the struct element", types[len(types)-1], types)
 	}
 }
+
+// TestRFC173W5_StarMetadata_PlainThreeWayKeepsQualifiedNames pins the
+// round-4 over-broadening (review finding): a PLAIN 3-way join's partition
+// can also leave a positional-merge subplan — with NO unnest and NO `_N`
+// leak in the merged columns — and the structural leg check alone then
+// rerouted its SELECT * metadata to bare RC names, dropping the
+// alias-qualified duplicate-name keys (`TA.K`/`TB.K`/`TC.K`) by-name reads
+// rely on. The arm must ALSO require the gathered-unnest signature (an
+// Explode-bearing FlatMap leg).
+func TestRFC173W5_StarMetadata_PlainThreeWayKeepsQualifiedNames(t *testing.T) {
+	t.Parallel()
+	b := metadata.NewSchemaTemplateBuilder().SetName("w5star3way")
+	for _, tbl := range []string{"TA", "TB", "TC"} {
+		b.AddTable(tbl, []metadata.ColumnSpec{
+			metadata.NewColumnSpec(tbl+"ID", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("K", api.NewLongType(true), 2),
+		}, []string{tbl + "ID"})
+	}
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := tmpl.Underlying()
+	plan, perr := embedded.PlanRecordQueryWithMetadata(
+		// The CROSS form plans NLJ-shaped (the equijoin form goes through the
+		// correlated FlatMap path, whose bare-name fold predates W5 on master
+		// — a separate wart, not this arm's regression surface).
+		`SELECT * FROM TA, TB, TC`, md, nil)
+	if perr != nil {
+		t.Fatalf("plan: %v", perr)
+	}
+	defs := embedded.ResultColumnDefsForPlan(plan, md)
+	qualifiedK := 0
+	for _, d := range defs {
+		up := strings.ToUpper(d.Name)
+		if strings.HasSuffix(up, ".K") {
+			qualifiedK++
+		}
+	}
+	if qualifiedK < 2 {
+		t.Fatalf("only %d alias-qualified K columns in %+v — the ordinal-top arm misfired on a plain 3-way join (positional-merge leg without any unnest) and dropped the qualified duplicate-name keys", qualifiedK, defs)
+	}
+}
