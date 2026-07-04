@@ -177,15 +177,23 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// Predicates: the cluster root's OWN ON conjunct (gatherInnerClusterPreds
 	// deliberately skips its argument's own ON — "the root's own ON is the
 	// caller's") + the nested inner joins' ON conjuncts + the unnest join's
-	// (a comma join — normally none), cross-leg conjuncts baked through the
-	// same legTypes the seed used.
+	// (a comma join carries none itself, but the ROTATION parks every
+	// collected enclosed-spine conjunct here), cross-leg conjuncts baked
+	// through the same legTypes the seed used. The root ON may reference the
+	// ELEMENT/ordinal alias (that is WHY the rotation parks it at the root),
+	// so it takes rewriteUnnestPredicate — the WHERE merge arm's exact
+	// treatment: the Explode flows a bare scalar (no-AT) or `_0`/`_1` fields,
+	// and an unrewritten `FieldValue(QOV(EL), "EL")` evaluates NIL, silently
+	// dropping or misfiltering every row (review finding, pinned). The
+	// LEFT-cluster ONs cannot reference the element (SQL scope: bound after
+	// them) and stay unrewritten.
 	var preds []predicates.QueryPredicate
 	if qp, isQP := leftJoin.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
 		preds = append(preds, qp)
 	}
 	if j.OnPredicate != nil {
 		if qp, isQP := j.OnPredicate.(predicates.QueryPredicate); isQP {
-			preds = append(preds, qp)
+			preds = append(preds, rewriteUnnestPredicate(qp, u))
 		}
 	}
 	preds = append(preds, gatherInnerClusterPreds(leftJoin)...)

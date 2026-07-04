@@ -411,3 +411,55 @@ func TestRFC173W5_EnclosedRotation_DeclineBoundary(t *testing.T) {
 		t.Error("a LEFT-kind enclosing root must decline (inner-only rotation)")
 	}
 }
+
+// TestRFC173W5_EnclosedRotation_ONElementRewrite pins the review finding:
+// a collected ON conjunct referencing the ELEMENT alias rides the rebuilt
+// root's OnPredicate, and the builder must REWRITE it (rewriteUnnestPredicate
+// — the WHERE merge arm's exact treatment) before baking: the Explode flows a
+// bare scalar (no-AT), so an unrewritten `FieldValue(QOV(EL), "EL")`
+// evaluates NIL and the join silently drops or misfilters every row.
+func TestRFC173W5_EnclosedRotation_ONElementRewrite(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
+	onPred := chainEqPredLocal("x", "V", "EL", "EL") // B.V = EL — references the element
+	root := logical.NewJoinWithPredicate(unnestJoin, scan("AUX", "x"), logical.JoinInner, onPred)
+
+	sel := tr.translateEnclosedUnnestGather(root)
+	if sel == nil {
+		t.Fatal("the ON-carrying enclosed cluster must gather")
+	}
+	gathered := sel.(*expressions.SelectExpression)
+	var sawBareElementQOV, sawUnrewritten bool
+	inspect := func(v values.Value) {
+		if v == nil {
+			return
+		}
+		values.WalkValue(v, func(node values.Value) bool {
+			if fv, isFV := node.(*values.FieldValue); isFV {
+				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV &&
+					strings.EqualFold(qov.Correlation.Name(), "EL") && strings.EqualFold(fv.Field, "EL") {
+					sawUnrewritten = true
+				}
+			}
+			if qov, isQOV := node.(*values.QuantifiedObjectValue); isQOV && strings.EqualFold(qov.Correlation.Name(), "EL") {
+				sawBareElementQOV = true
+			}
+			return true
+		})
+	}
+	for _, p := range gathered.GetPredicates() {
+		if cp, isCP := p.(*predicates.ComparisonPredicate); isCP {
+			inspect(cp.Operand)
+			inspect(cp.Comparison.Operand)
+		}
+	}
+	if sawUnrewritten {
+		t.Fatal("the collected ON's element ref survived UNREWRITTEN (FieldValue(QOV(EL), EL)) — it evaluates NIL over the bare-scalar Explode (silent drop/misfilter)")
+	}
+	if !sawBareElementQOV {
+		t.Fatal("the rewritten ON must reference the element as the bare QOV(EL) (the no-AT scalar collapse)")
+	}
+}
