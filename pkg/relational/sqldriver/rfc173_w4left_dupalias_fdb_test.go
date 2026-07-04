@@ -65,7 +65,7 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	// DISJOINT-column duplicate aliases pass the FROM check (Java's
 	// ambiguity is per-ATTRIBUTE — conformance-verified, a.id resolves
 	// uniquely and Java ANSWERS) but Go cannot EXECUTE the
-	// indistinguishable-correlation cluster without the 7.1 per-reference
+	// indistinguishable-correlation cluster without the QP-REF-BIND per-reference
 	// binding: the decline is the CLEAN 0AF00 (never wrong rows) — the
 	// second marked divergence corner (DIVERGENCES.md).
 	var aid int64
@@ -75,7 +75,7 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 		t.Errorf("disjoint-column dup alias decline = %v, want the clean 0AF00 (never wrong rows)", err)
 	}
 	// The documented over-rejection corner: Java answers SELECT * over the
-	// duplicate with duplicate columns; Go rejects until the 7.1 unification
+	// duplicate with duplicate columns; Go rejects until the QP-REF-BIND unification (TODO.md)
 	// (pre-fix this died with an INTERNAL planner error, not even a clean
 	// code). DIVERGENCES.md records it.
 	reject(t, "SELECT * FROM p, q, p")

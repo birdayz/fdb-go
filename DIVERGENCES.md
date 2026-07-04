@@ -407,5 +407,5 @@ never wrong rows.
 The rejection is COLUMN-AWARE (shared-column duplicates only, message = Java's exact
 "Ambiguous reference ALIAS.COL"); pre-rejection Go was strictly worse on BOTH axes (referenced
 shared-column duplicates silently bound LAST-LEG-WINS — wrong rows; SELECT * died with an
-internal planner error). The exact per-reference check + fresh-id gating is the 7.1
-namespace-unification charter.
+internal planner error). The exact per-reference check + fresh-id gating is the QP-REF-BIND
+charter (TODO.md QP-REF-BIND).

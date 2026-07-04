@@ -17975,7 +17975,7 @@ func SeedRunCorpus() []RunQuery {
 		// allows the duplicate at FROM (unique quantifier ids) and raises
 		// AMBIGUOUS_COLUMN (42702, "Ambiguous reference p") at REFERENCE
 		// resolution; Go rejects at the FROM walk with the same code/text
-		// (the exact per-reference check is the 7.1 namespace-unification
+		// (the exact per-reference check is the QP-REF-BIND (per-reference binding)
 		// charter). Referenced duplicates are PARITY entries (both engines
 		// error identically); the unreferenced SELECT * corner is a marked
 		// divergence (Java answers with duplicate columns; DIVERGENCES.md).
@@ -17997,14 +17997,14 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// The PREDICATED disjoint-dup form: Java still answers; Go's
 			// planner cannot bind predicates over the indistinguishable
-			// correlations without the 7.1 per-reference binding — the clean
+			// correlations without the QP-REF-BIND per-reference binding — the clean
 			// 0AF00 decline (never wrong rows), marked.
 			Name:           "dup_from_alias_disjoint_where",
 			SchemaTemplate: "CREATE TABLE T_DUP_C (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_D (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_C VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_D VALUES (7)"},
 			Query:          "SELECT a.id FROM T_DUP_C AS a, T_DUP_D AS a WHERE a.id = 2",
 			Divergence: &Divergence{
-				Reason:          "RFC-173 W4-left commit 4: Java answers the predicated disjoint-column dup-alias form (per-attribute ambiguity, unique quantifier ids); Go cannot bind predicates over indistinguishable correlations without the 7.1 per-reference binding — clean 0AF00 decline, never wrong rows. See DIVERGENCES.md.",
+				Reason:          "RFC-173 W4-left commit 4: Java answers the predicated disjoint-column dup-alias form (per-attribute ambiguity, unique quantifier ids); Go cannot bind predicates over indistinguishable correlations without the QP-REF-BIND per-reference binding — clean 0AF00 decline, never wrong rows. See DIVERGENCES.md.",
 				Direction:       DivergenceJavaSucceedsGoRejects,
 				GoErrorContains: "could not plan",
 			},
@@ -18015,7 +18015,7 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_DUP_S VALUES (1, 10)", "INSERT INTO T_DUP_T VALUES (7)"},
 			Query:          "SELECT * FROM T_DUP_S, T_DUP_T, T_DUP_S",
 			Divergence: &Divergence{
-				Reason:          "RFC-173 W4-left commit 4: Go rejects duplicate FROM aliases at the FROM walk (42702); Java answers SELECT * over the duplicate with duplicate columns (unique quantifier ids). The per-reference check is the 7.1 namespace-unification charter; see DIVERGENCES.md.",
+				Reason:          "RFC-173 W4-left commit 4: Go rejects duplicate FROM aliases at the FROM walk (42702); Java answers SELECT * over the duplicate with duplicate columns (unique quantifier ids). The per-reference check is the QP-REF-BIND (per-reference binding) charter; see DIVERGENCES.md.",
 				Direction:       DivergenceJavaSucceedsGoRejects,
 				GoErrorContains: "Ambiguous reference",
 			},

@@ -121,12 +121,11 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// singleSourceLeg) keeps the RFC-153 joined-preserved class
 		// name-model: a flattened preserved/null-supplying CLUSTER erases
 		// buried names into a bare concat the name-model ON-pred cannot
-		// span (the W4 dissolution ruling's exact scope). Widening to
-		// clustered legs is the mixed-nesting commit's charter.
+		// clustered legs is QP-REF-BIND item 3 (TODO.md — one authority).
 		if t.clusterArity(j.Left) == 1 && t.clusterArity(j.Right) == 1 {
 			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary LEFT/RIGHT-outer box, single-source legs (ordinal seed at translation, W4-left)"}
 		}
-		return wedgeGateDecision{Arity: arityPoison, Reason: "LEFT-outer box with a clustered leg (joined-preserved class stays name-model until the mixed-nesting commit)"}
+		return wedgeGateDecision{Arity: arityPoison, Reason: "LEFT-outer box with a clustered leg (joined-preserved class stays name-model until QP-REF-BIND item 3, TODO.md)"}
 	}
 	if t.inInnerCluster {
 		// This inner join is a leg subtree of an enclosing inner-join cluster
@@ -180,7 +179,7 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		// joined-preserved machinery), so a parent that typed the box as
 		// ONE leg would drift against post-flattening arity (the W3b loud
 		// assert's exact class). Leg-position widening rides the
-		// mixed-nesting commit.
+		// QP-REF-BIND item 3 (TODO.md).
 		if o.Kind == logical.JoinLeft || o.Kind == logical.JoinRight {
 			return false
 		}

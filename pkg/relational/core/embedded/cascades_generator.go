@@ -4047,7 +4047,7 @@ func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordM
 	// (SemanticAnalyzer's attributes.size()==1 asserts, 42702) — which every
 	// practical query over the duplicate hits. Go's lazy name-model
 	// resolution has no translation-time reference binding to hang the exact
-	// per-reference check on (the 7.1 namespace unification's charter), so
+	// per-reference check on (the QP-REF-BIND charter, TODO.md), so
 	// the FROM-level rejection approximates it: same code, same practical
 	// class (and Java's exact message text, conformance-shared); the
 	// unreferenced corner (`SELECT * FROM p, q, p`, which Java
