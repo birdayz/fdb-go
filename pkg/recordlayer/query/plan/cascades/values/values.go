@@ -473,6 +473,20 @@ func IsOrdinalJoinRV(v Value) bool {
 	}
 	roots := make(map[CorrelationIdentifier]struct{}, 2)
 	for _, f := range rc.Fields {
+		// RFC-173 W5 (the interning-widening ruling): a bare TYPED
+		// QuantifiedObjectValue field is the gathered unnest's whole-object
+		// element leg (the mixed no-AT seed) — as position-determined as a
+		// FrontierPinned bake (a whole-leg reference; no name resolution can
+		// hide in it), so it counts toward the roots. TYPED only: an untyped
+		// bare QOV carries no leg contract and keeps declining — the
+		// CTE-rename/lazy-field decline rationale is untouched.
+		if qov, isQOV := f.Value.(*QuantifiedObjectValue); isQOV {
+			if qov.Type() == nil || qov.Type().Code() == TypeCodeUnknown {
+				return false
+			}
+			roots[qov.Correlation] = struct{}{}
+			continue
+		}
 		fv, isFV := f.Value.(*FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			return false
