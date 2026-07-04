@@ -3306,11 +3306,16 @@ One authority for three deferred pieces the W4-left review flagged (previously s
 
 **Sequencing (Graefe ruling, banked in the RFC):** (riders ∥ item 2 ∥ item 1) → item 3 →
 unnest-residual slice → S4. The riders are standalone and start immediately:
-- [ ] **Rider: bound `positionalTypeCache`** (executor/query_result.go — unbounded
-      descriptor-keyed sync.Map; a dynamicpb miss Stores forever — live leak on master).
-- [ ] **Rider: recursive-CTE ordinal leg read** — retire `legPhysicalOutputNames` /
-      `recursiveRemapValues`' rendered-name reads (first-dot split hazard on computed
-      physical names); read leg slot i by `ofOrdinalNumber` over the leg quantifier.
+- [x] **Rider: bound `positionalTypeCache`** — MERGED (PR #468): wipe-at-cap 4096 with a
+      miss-path mutex (exact bound, 8-worker -race churn pin; the lock-free variant
+      transiently overshot — review finding).
+- [x] **Rider: recursive-CTE leg remap hardening** — MERGED (PR #468): the read arm now
+      fires from NAME-PROVENANCE classification (verbatim iff unaliased plain FieldValue),
+      killing three garbage-correlation classes the string grammar misread (expression
+      renderings, float literals, dotted quoted aliases — all red-first pinned + live-Java
+      corpus entries). The FULL rendered-name-read retirement (ofOrdinalNumber at the
+      insert boundary, Java's model) rides S4 with the name machinery; the quoted-dotted
+      verbatim-Field residual is documented at the site (pre-existing, S4-scoped).
 - [ ] **Unnest-residual completion slice** (books A3's W5 fail-open declines: box-leg
       owners, multi-segment `t.a.b` paths, CTE/derived rotation owners, chained unnests;
       under-existential arrives via item 2's binders; the BARE-TWIN duplicate-column decline
