@@ -845,6 +845,26 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		if v, ok := ctx[qualKey]; ok {
 			return f.descendResolvedPath(v)
 		}
+		// PINNED baked path, oracle window — the raw-map twin of the
+		// *RowEvalContext arm above, NARROWED to MERGE-SLOT roots: a fused
+		// reference through a MERGE quantifier roots at the row's own `_i`
+		// slot, which mergeRows carries BARE (its qualified form uses the
+		// merge alias's ORIGINAL case, `$m"1._0`, which the upper-cased
+		// qualKey never matches — and no user column can be named `_i`, so
+		// the bare read cannot conflate). A pinned ref over a DIRECT leg
+		// (rootKey = a user column) must NOT take this arm: the bare key is
+		// mergeRows' last-wins spill, and reading it turns `a.k = b.k` into
+		// `k = k` — the cross-leg conflation that produced a full cross
+		// product on the NULL-key corpus entry when this arm was first cut
+		// too wide. Pinned-only; the guard above already stops pinned+live,
+		// so this arm is reachable only under the §5 oracle. Without it a
+		// gathered join's spanning WHERE — evaluated by the NLJ over the raw
+		// merged map — silently dropped every row oracle-side.
+		if f.Resolved != nil && f.Resolved.FrontierPinned && isOrdinalFieldName(rootKey) {
+			if v, ok := ctx[rootKey]; ok {
+				return f.descendResolvedPath(v)
+			}
+		}
 		// Already-qualified field accessed through a merge quantifier — see the
 		// *RowEvalContext branch above for the rationale. (RFC-043.)
 		if strings.Contains(rootKey, ".") {

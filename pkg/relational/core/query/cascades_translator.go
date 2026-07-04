@@ -1169,7 +1169,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// the next W5 commit; the existential class is re-chartered to the
 	// W4-left+EXISTS slice). A nil is a DECLINE — the binary fallback below.
 	if !prevEnclosure && !t.unnestUnderExistential {
-		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName); sel != nil {
+		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName, unnestTrailing); sel != nil {
 			return sel
 		}
 	}
@@ -1869,9 +1869,9 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	enclosedGathered := false
 	if f.Predicate != nil && len(f.ExistsSubqueries) == 0 && !t.inInnerCluster && !t.unnestUnderExistential {
 		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
-			if rebuilt, ru, et, fn, rok := t.rotateEnclosedUnnest(join); rok {
+			if rebuilt, ru, et, fn, rpos, rok := t.rotateEnclosedUnnest(join); rok {
 				enclosedGathered = t.translateGatheredUnnestCluster(
-					rebuilt, ru, unnestSourceCorrelation(ru), et, fn) != nil
+					rebuilt, ru, unnestSourceCorrelation(ru), et, fn, rpos) != nil
 			}
 		}
 	}
@@ -1984,13 +1984,21 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// gathered select via rotation). Same WHERE treatment as the
 			// root-form gathered arm below: rewrite element/ordinal refs to
 			// what the Explode flows, bake leg refs through the rotated plain
-			// cluster's own leg types. The signature check (last quantifier
-			// bound to the unnest correlation, >2 quantifiers) keeps declined
-			// residual translations on the name-model path below.
+			// cluster's own leg types. The signature check (>2 quantifiers,
+			// SOME quantifier binds the unnest correlation — the Explode sits
+			// at its FROM position, mid-list for the enclosed form) keeps
+			// declined residual translations on the name-model path below.
 			if _, rootUnnest := join.Right.(*logical.LogicalUnnest); !rootUnnest && enclosedGathered {
-				if rebuilt, ru, _, _, rok := t.rotateEnclosedUnnest(join); rok {
+				if rebuilt, ru, _, _, _, rok := t.rotateEnclosedUnnest(join); rok {
 					quants := sel.GetQuantifiers()
-					if len(quants) > 2 && quants[len(quants)-1].GetAlias() == unnestSourceCorrelation(ru) {
+					bindsUnnest := false
+					for _, q := range quants {
+						if q.GetAlias() == unnestSourceCorrelation(ru) {
+							bindsUnnest = true
+							break
+						}
+					}
+					if len(quants) > 2 && bindsUnnest {
 						toMerge := []predicates.QueryPredicate{rewriteUnnestPredicate(pred, ru)}
 						if lj, isLJ := rebuilt.Left.(*logical.LogicalJoin); isLJ {
 							toMerge = bakeGatedJoinPredicates(toMerge, t.gatedJoinLegTypes(lj))

@@ -3413,6 +3413,86 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT "EL", "O", "WV" FROM WSRC, WSRC."WARR" AS "EL" AT "O", WAUX WHERE "EL" > 7`, []string{
 			"EL=8|O=2|WV=5", "EL=8|O=2|WV=6", "EL=8|O=2|WV=7",
 		})
+
+		// SELECT * over the gathered multi-source star (commit 4's fix
+		// target — could not PLAN before W5). Columns must be the SQL FROM
+		// order with the element/ordinal at the unnest's position (the
+		// enclosed form preserves FROM order through the rotation), and the
+		// VALUES must arrive through the REAL result-set read path — the §7
+		// positional-aligned column read serving the ordinal row's slots (the
+		// name-keyed Datum of the translated NLJ top never carries the bare
+		// output keys; without the aligned read every column reads NULL).
+		starRows := func(t *testing.T, sql string, wantCols, wantRows []string) {
+			t.Helper()
+			plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+			if perr != nil {
+				t.Fatalf("plan %q: %v", sql, perr)
+			}
+			if got := embedded.ResultColumnLabelsForPlan(plan, md); fmt.Sprintf("%v", got) != fmt.Sprintf("%v", wantCols) {
+				t.Fatalf("star columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, wantCols, plan.Explain())
+			}
+			defs := embedded.ResultColumnDefsForPlan(plan, md)
+			var got []string
+			_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, sErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if sErr != nil {
+					return nil, sErr
+				}
+				cursor, cErr := executor.ExecutePlan(ctx, plan, store,
+					executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+				if cErr != nil {
+					return nil, cErr
+				}
+				rs := executor.NewRecordLayerResultSet(ctx, cursor, defs)
+				defer rs.Close()
+				for rs.Next() {
+					parts := make([]string, len(defs))
+					for i := range defs {
+						v, vErr := rs.Object(i + 1)
+						if vErr != nil {
+							return nil, vErr
+						}
+						parts[i] = unnestSprint(v)
+					}
+					got = append(got, strings.Join(parts, "|"))
+				}
+				return nil, rs.Err()
+			})
+			if eerr != nil {
+				t.Fatalf("exec %q: %v", sql, eerr)
+			}
+			sort.Strings(got)
+			sort.Strings(wantRows)
+			if !unnestEqualStrs(got, wantRows) {
+				t.Fatalf("star rows %q\n got=%v\nwant=%v\nplan=%s", sql, got, wantRows, plan.Explain())
+			}
+		}
+		// Trailing form: elements {7,8} x aux {(1,5),(2,6),(3,7)}.
+		starRows(t, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL"`,
+			[]string{"SID", "WARR", "XID", "WV", "EL"},
+			[]string{
+				"1|[7 8]|1|5|7", "1|[7 8]|2|6|7", "1|[7 8]|3|7|7",
+				"1|[7 8]|1|5|8", "1|[7 8]|2|6|8", "1|[7 8]|3|7|8",
+			})
+		// Enclosed form: the element column sits at its FROM position.
+		starRows(t, `SELECT * FROM WSRC, WSRC."WARR" AS "EL", WAUX`,
+			[]string{"SID", "WARR", "EL", "XID", "WV"},
+			[]string{
+				"1|[7 8]|7|1|5", "1|[7 8]|7|2|6", "1|[7 8]|7|3|7",
+				"1|[7 8]|8|1|5", "1|[7 8]|8|2|6", "1|[7 8]|8|3|7",
+			})
+		// AT form: element + ordinal, both typed (full-baked refs survive
+		// fusion typed; the mixed element's INTEGER comes from the Explode).
+		starRows(t, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL" AT "O"`,
+			[]string{"SID", "WARR", "XID", "WV", "EL", "O"},
+			[]string{
+				"1|[7 8]|1|5|7|1", "1|[7 8]|2|6|7|1", "1|[7 8]|3|7|7|1",
+				"1|[7 8]|1|5|8|2", "1|[7 8]|2|6|8|2", "1|[7 8]|3|7|8|2",
+			})
+		if types := embedded.ResultColumnTypesForPlan(mustPlan(t, md, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL"`), md); fmt.Sprintf("%v", types) != "[BIGINT INTEGER BIGINT INTEGER INTEGER]" {
+			t.Fatalf("star column types = %v, want [BIGINT INTEGER BIGINT INTEGER INTEGER] (the mixed element's INTEGER from the Explode collection)", types)
+		}
 	})
 }
 
@@ -4112,4 +4192,14 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 			t.Fatalf("control INSERT RowsAffected = %d, want 0 (T1.arr is NULL → no elements)", n)
 		}
 	})
+}
+
+// mustPlan plans a query against md or fails the test.
+func mustPlan(t *testing.T, md *recordlayer.RecordMetaData, sql string) plans.RecordQueryPlan {
+	t.Helper()
+	plan, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+	if err != nil {
+		t.Fatalf("plan %q: %v", sql, err)
+	}
+	return plan
 }
