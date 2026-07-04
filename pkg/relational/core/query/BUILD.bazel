@@ -36,6 +36,7 @@ go_test(
         "rfc173_w4b_clustered_outer_test.go",
         "rfc173_w4b_scalar_seed_test.go",
         "rfc173_w4c_unnest_seed_test.go",
+        "rfc173_w5_unnest_gather_test.go",
     ],
     embed = [":query"],
     deps = [
@@ -45,6 +46,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
+        "//pkg/relational/core/metadata",
         "//pkg/relational/core/query/logical",
     ],
 )
