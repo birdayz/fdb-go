@@ -188,14 +188,16 @@ validation gate.
   `AnchoredJoin` flag axis has ZERO individually-dead symbols (the flag is a field on the SHARED RC
   type) — undeletable while ANY of FOUR live seed producers survives. **Canonical sequence (each a full
   four-gate slice):**
-  - [ ] **W4b — correlated-scalar ordinalization** (retire `NewScalarSubqueryAnchoredRecord`'s live
-    shapes: computed / JOIN-inner / clustered-outer). **IMPL COMPLETE on
-    `feat/rfc173-w4b-correlated-scalar-ordinal` — in the four-gate gauntlet.** All three shapes landed
-    (shape 3 computed = silent-NULL bugfix; shape 1 clustered-outer = unplannable/silent-NULL fix with
-    Graefe-ruled amendments, RFC impl correction 3; shape 2 JOIN-inner = fresh-id decouple +
-    spanAwareRow literal-name routing fix). Exit gate AMENDED per ruling: the constructor keeps exactly
-    ONE production call site (the ungated-outer rightmost-corr residual, reachability pinned both
-    directions) until W4-left/W5 gate every cluster; it dies in S4.
+  - [x] **W4b — correlated-scalar ordinalization — MERGED (PR #465), all four gates ACKed at the
+    merge HEAD** (Graefe design+impl+5 delta ACKs · Torvalds 2 NAKs fixed → "merge it" ·
+    codex 4 P2-class findings fixed → clean · @claude 2 passes + coverage-gap catch → gate closed).
+    All three shapes landed; the gauntlet additionally found+fixed: silent-NULL computed scalars,
+    unplannable/silent-NULL clustered outers, wrong-leg + wrong-scope parenthesized-column reads, the
+    spanAwareRow literal-name routing gap, the name-model projection binder gap, and THREE silent
+    text-corruption writes in UPDATE...SET (subquery/EXISTS/IN-subquery RHS — pre-existing on master,
+    now clean 0AF00 declines with no-mutation pins). Exit gate amended per ruling: the constructor
+    keeps exactly ONE production call site (ungated-outer rightmost-corr residual, pinned both
+    directions) until W4-left/W5 gate every cluster; dies in S4.
   - [ ] **W5 — multi-source lateral UNNEST** (retire `buildUnnestResultValue` AnchoredJoin; also kills
     `MergeSeedLegsOfValue`/`leftmostQOVOfValue`).
   - [ ] **W4-left + EXISTS + recursive-CTE joins** (retire `NewAnchoredJoinRecord` via
