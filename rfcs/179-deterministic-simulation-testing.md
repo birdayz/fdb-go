@@ -679,10 +679,12 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
   - **SQL-query pagination oracle ✅ BUILT** — `pkg/simfdb/hunt/sqlpage`. Runs each query at the default
     execution scanned-rows limit (reference) vs a tiny one (forcing the executor to resume through
     internal continuations repeatedly), asserting paged == one-shot across filter/sort/GROUP BY/join —
-    reaching the query engine's cursor-tree continuation handling. **Found a real bug on its first seed:**
-    streaming `DISTINCT` drops its dedup state across a continuation resume (returns duplicates when
-    paginated mid-stream, even with ORDER BY; GROUP BY is unaffected). Recorded in TODO.md "## DST
-    findings", Graefe-gated, quarantined + pinned by a fix-detector; not fixed here.
+    reaching the query engine's cursor-tree continuation handling. **Found two real executor-continuation
+    bugs:** (1) streaming `DISTINCT` drops its dedup state across a resume (returns duplicates paginated,
+    even with ORDER BY; GROUP BY unaffected); (2) multi-value `IN (a,b)` (InJoin/concat) has no per-branch
+    continuation, so it errors `54F01` under a tiny scanned-rows limit instead of resuming (same gap in
+    `executeInUnion`; Java's `InJoinCursor` resumes). Both recorded in TODO.md "## DST findings",
+    Graefe-gated, quarantined + pinned by fix-detectors; not fixed here.
   - **Continuation across an INJECTED between-page fault ✅ BUILT** — `pkg/simfdb`
     `TestSimFDB_ContinuationResumeAcrossFaultedWrite`. A scan mints a continuation on page 1; a
     between-page delete of un-scanned data commits through a targeted `InjectOnce` fault in a raw

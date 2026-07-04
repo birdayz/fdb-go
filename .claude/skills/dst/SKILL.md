@@ -273,12 +273,16 @@ bazelisk test //pkg/simfdb/hunt/sqlpage:sqlpage_test --test_output=errors
   api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, N).Build()) })` on a pinned `*sql.Conn`,
   then query — the driver auto-resumes across internal continuations to a full result, so paged==unpaged
   must hold. This is the same knob the `flatmap_continuation_drop_fdb_test` uses.
-- **FOUND A BUG (first seed):** streaming `DISTINCT` drops its dedup state across a continuation resume
-  — `SELECT DISTINCT cat` returns every row (no dedup) under a tiny scanned-rows limit, even with ORDER
-  BY, while `GROUP BY` stays correct (its aggregate continuation IS serialized). Recorded in TODO.md
-  "## DST findings", pinned by `TestKnownBug_DistinctContinuation` (a fix-detector), quarantined out of
-  the sweep so the driver hunts other operators. Reachable in prod: a large `SELECT DISTINCT` that
-  exceeds the txn/scanned-rows limit paginates mid-stream and returns duplicates.
+- **FOUND TWO BUGS** (both executor-continuation gaps, both TODO.md "## DST findings", both pinned by
+  fix-detector tests + quarantined out of the sweep): (1) streaming `DISTINCT` drops its dedup state
+  across a continuation resume — returns every row under a tiny scanned-rows limit, even with ORDER BY,
+  while `GROUP BY` stays correct (`TestKnownBug_DistinctContinuation`); (2) multi-value `IN (a,b)` (an
+  InJoin over a concat of per-value scans) has **no per-branch continuation** — the concat errors
+  `54F01` under a tiny limit instead of resuming, so pagination changes whether the query executes
+  (`TestKnownBug_InJoinContinuation`; same gap in `executeInUnion`; Java's `InJoinCursor` resumes). Both
+  reachable in prod when the scan exceeds the txn/scanned-rows budget. The lesson: **an operator whose
+  continuation doesn't serialize its per-operator state (DISTINCT's seen-value, concat's branch cursor)
+  is a bug the moment it paginates mid-stream — this oracle finds exactly that class.**
 - **Building a query-pagination oracle:** make total-order queries `ordered:true` (append the PK so
   ties are deterministic — else a legit tie-order difference reads as a false drop); a query that errors
   unpaged is unsupported SQL → skip it, but a query that errors ONLY when paged is a finding.
