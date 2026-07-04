@@ -18065,6 +18065,22 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "WITH w AS (SELECT id FROM T_DUP_W) SELECT w.id FROM w, w",
 		},
 		{
+			// GENERATED output names under duplicate aliases: an unaliased
+			// aggregate's output is referenceable by its generated name, and
+			// two duplicate legs exposing the same one are ambiguous (the
+			// review-found silent one-side read).
+			Name: "dup_from_alias_generated_aggregate",
+			SchemaTemplate: "CREATE TABLE T_DUP_GA (id BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_DUP_GB (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{"INSERT INTO T_DUP_GA VALUES (1)", "INSERT INTO T_DUP_GB VALUES (2)"},
+			Query:     `SELECT a."COUNT(*)" FROM (SELECT COUNT(*) FROM T_DUP_GA) AS a, (SELECT COUNT(*) FROM T_DUP_GB) AS a`,
+			Divergence: &Divergence{
+				Reason:          "Both engines reject; Java's generated aggregate output name differs from the text 'COUNT(*)', so the quoted reference is a NON-EXISTING column there ('Attempting to query non existing column A.COUNT(*)'), while Go's generated name matches both duplicate legs and rejects as ambiguous (the review-found silent one-side read, RFC-173 W4-left).",
+				Direction:       DivergenceBothErrorMessagesDrift,
+				GoErrorContains: "Ambiguous reference A.COUNT(*)",
+			},
+		},
+		{
 			// The unreferenced CTE star corner — same class as
 			// dup_from_alias_select_star: Java answers with duplicate
 			// columns, Go over-rejects until QP-REF-BIND. The message names
