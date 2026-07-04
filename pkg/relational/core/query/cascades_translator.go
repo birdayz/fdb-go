@@ -4458,9 +4458,9 @@ func extractOutputProjectionNames(op logical.LogicalOperator) []string {
 // memory budget is calibrated to (an alias override leaks the qualified keys
 // into the temp rows: TestFDB_RFC130_RecursiveCTE_NoDoubleCharge regressed).
 func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, outCols []string) expressions.RelationalExpression {
-	physNames, plainField, fromProjection := legPhysicalOutputNames(leg, legCols)
+	physNames, verbatimField, fromProjection := legPhysicalOutputNames(leg, legCols)
 	return expressions.NewLogicalProjectionExpressionWithAliases(
-		recursiveRemapValues(physNames, plainField, fromProjection),
+		recursiveRemapValues(physNames, verbatimField, fromProjection),
 		append([]string(nil), outCols...),
 		expressions.ForEachQuantifier(expressions.InitialOf(leg)),
 	)
@@ -4486,16 +4486,20 @@ func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, 
 // recursive CTE (review P2, Slice-1 follow-up). The name-keyed Datum stores the
 // alias key alongside the source key, so the alias also resolves on the
 // off-frontier (join-body) name path — one read name valid on both models.
-// The second return is the per-column STRUCTURAL classification: true when
-// the projected value is a plain *values.FieldValue — whose rendered name is
-// its Field string VERBATIM, an identifier (possibly a genuinely-dotted lazy
-// "B.ID") by construction. Anything else renders as an EXPRESSION string
-// ("(B.ID + 1)", "1.5"), whose dots are never qualifiers. recursiveRemapValues
-// picks the read arm from this classification, never from the string's shape
-// (review finding: a string-grammar discriminator misread a float literal's
-// rendering as IDENT.IDENT and re-manufactured the garbage correlation).
-// nil classification = the logical-name fallback path, where every name is a
-// column identifier by construction.
+// The second return is the per-column classification of the NAME'S
+// PROVENANCE: true when the emitted name is a plain *values.FieldValue's
+// Field string VERBATIM (unaliased — an identifier, possibly a
+// genuinely-dotted lazy "B.ID", by construction), so a dot in it IS a
+// qualifier. False for everything else: an EXPRESSION rendering
+// ("(B.ID + 1)", "1.5") whose dots are never qualifiers, AND an
+// ALIAS-derived name — an alias is ONE identifier, never qualifier syntax,
+// and a QUOTED alias may legally contain a dot (`AS "A.B"` — splitting it
+// manufactured QOV("A"), the same garbage-correlation class; review
+// finding, provenance not value type). recursiveRemapValues picks the read
+// arm from this classification, never from the string's shape (an earlier
+// string-grammar discriminator misread a float literal's rendering as
+// IDENT.IDENT). nil classification = the logical-name fallback path, where
+// every name is a column identifier by construction.
 func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []string) ([]string, []bool, bool) {
 	lp, ok := leg.(*expressions.LogicalProjectionExpression)
 	if !ok || len(lp.GetProjectedValues()) != len(logicalCols) {
@@ -4503,16 +4507,17 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 	}
 	aliases := lp.GetAliases()
 	out := make([]string, len(logicalCols))
-	plainField := make([]bool, len(logicalCols))
+	verbatimField := make([]bool, len(logicalCols))
 	for i, v := range lp.GetProjectedValues() {
 		alias := ""
 		if i < len(aliases) {
 			alias = aliases[i]
 		}
 		out[i] = values.OutputColumnName(v, alias)
-		_, plainField[i] = v.(*values.FieldValue)
+		_, isField := v.(*values.FieldValue)
+		verbatimField[i] = alias == "" && isField
 	}
-	return out, plainField, true
+	return out, verbatimField, true
 }
 
 // recursiveRemapValues builds the read-side Values for a recursive-CTE leg's
@@ -4537,21 +4542,22 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // QOV reads below never need ordinals). Non-projection legs (ordinalReads
 // false: scan-top star seeds, multi-branch unions) keep pure name reads —
 // their columns are table columns, which cannot be duplicate-named.
-// The dotted split fires from the STRUCTURAL classification, never from the
-// string's shape: plainField[i] marks a projected value that is a plain
-// *values.FieldValue, whose rendered name is its Field string verbatim — an
-// identifier by construction, so a dot in it IS a qualifier. A computed
-// value's rendering ("(B.ID + 1)", a float literal's "1.5") may contain dots
-// that are never qualifiers; a string-grammar discriminator here misread
-// those and manufactured garbage correlations like QOV("(B") / QOV("1") —
-// the S4 kill-list first-dot-split hazard (review finding, twice: the
-// expression class and the float-literal class). plainField nil = the
+// The dotted split fires from the NAME-PROVENANCE classification, never from
+// the string's shape: verbatimField[i] marks a name that is an UNALIASED
+// plain *values.FieldValue's Field string verbatim — an identifier by
+// construction, so a dot in it IS a qualifier. Everything else never splits:
+// a computed rendering ("(B.ID + 1)", a float literal's "1.5") whose dots
+// are not qualifiers, and an ALIAS-derived name (one identifier by
+// definition; a QUOTED alias may legally contain a dot). A string-grammar
+// discriminator here misread those and manufactured garbage correlations
+// like QOV("(B") / QOV("1") / QOV("A") — the S4 kill-list first-dot-split
+// hazard (review findings, three classes). verbatimField nil = the
 // logical-name fallback path, identifiers by construction.
-func recursiveRemapValues(cols []string, plainField []bool, ordinalReads bool) []values.Value {
+func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads bool) []values.Value {
 	out := make([]values.Value, len(cols))
 	for i, c := range cols {
 		cu := strings.ToUpper(c)
-		identName := plainField == nil || plainField[i]
+		identName := verbatimField == nil || verbatimField[i]
 		if dot := strings.IndexByte(cu, '.'); dot >= 0 && identName {
 			out[i] = &values.FieldValue{
 				Field: cu[dot+1:],
