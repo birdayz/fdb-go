@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/simfdb/hunt"
+	"fdb.dev/pkg/simfdb/hunt/continuation"
 	"fdb.dev/pkg/simfdb/hunt/interleave"
 	"fdb.dev/pkg/simfdb/hunt/sqlhunt"
 )
@@ -70,6 +71,7 @@ func main() {
 	// to fold it into the sweep (RFC-179 Tier 2 — "add a workload, hunt a new surface").
 	profiles := append(hunt.Profiles(), sqlhunt.AllProfiles()...)
 	profiles = append(profiles, interleave.Profiles()...)
+	profiles = append(profiles, continuation.Profiles()...)
 	if *only != "" {
 		profiles = filterProfiles(profiles, strings.Split(*only, ","))
 		if len(profiles) == 0 {

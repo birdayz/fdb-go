@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "continuation",
+    srcs = ["continuation.go"],
+    importpath = "fdb.dev/pkg/simfdb/hunt/continuation",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/simfdb",
+        "//pkg/simfdb/hunt",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "continuation_test",
+    srcs = ["continuation_test.go"],
+    embed = [":continuation"],
+)
