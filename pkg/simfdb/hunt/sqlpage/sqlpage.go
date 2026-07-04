@@ -179,10 +179,13 @@ func queries(rng *rand.Rand) []query {
 		{fmt.Sprintf("SELECT id, val FROM t ORDER BY val, id LIMIT %d", n), true},
 		{"SELECT cat, COUNT(*) FROM t GROUP BY cat", false},
 		{"SELECT cat, SUM(val) FROM t GROUP BY cat", false},
-		// QUARANTINED: bare `SELECT DISTINCT cat FROM t` — the streaming DISTINCT operator drops its
-		// dedup state across a continuation resume, so it re-emits duplicates when paginated mid-stream
-		// (TODO.md "## DST findings"; pinned by TestKnownBug_DistinctContinuation). Once fixed, re-add it
-		// here. GROUP BY (which dedups correctly under pagination) stays in the sweep.
+		// QUARANTINED (two known executor-continuation bugs, both TODO.md "## DST findings", pinned by
+		// fix-detector tests, kept out of the sweep so it hunts other shapes):
+		//  1. bare `SELECT DISTINCT cat FROM t` — streaming DISTINCT drops its dedup state across a
+		//     continuation resume (TestKnownBug_DistinctContinuation). GROUP BY (correct) stays in.
+		//  2. multi-value `SELECT id FROM t WHERE cat IN (2,3)` — the InJoin/concat has no per-branch
+		//     continuation, so it errors 54F01 under a tiny scanned-rows limit (TestKnownBug_InJoinContinuation).
+		// Re-add each here once its executor gains continuation support.
 		{"SELECT a.id, b.id FROM t a, t2 b WHERE b.ref = a.id", false},
 		{"SELECT a.id, b.id FROM t a, t2 b WHERE b.ref > a.id", false},
 	}

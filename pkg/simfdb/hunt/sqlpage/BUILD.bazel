@@ -20,6 +20,7 @@ go_test(
     name = "sqlpage_test",
     srcs = [
         "distinct_known_bug_test.go",
+        "injoin_known_bug_test.go",
         "sqlpage_test.go",
     ],
     embed = [":sqlpage"],

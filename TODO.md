@@ -319,6 +319,23 @@ needs Java-alignment + a Graefe ACK.**
   Repro (committed): `go test ./pkg/simfdb/hunt/sqlpage/ -run TestKnownBug_DistinctContinuation -v`.
   Until fixed, bare `DISTINCT` is quarantined out of the `sqlpage` sweep's query set (comment at the
   quarantine site) so the driver stays green and hunts other executor-continuation bugs.
+- [ ] **Multi-value `IN (a,b)` (InJoin) errors `54F01` under pagination instead of resuming.** Found by
+  the `sqlpage` oracle's extended matrix. `SELECT id FROM t WHERE cat IN (2,3)` plans
+  `Project([ID], InJoin(IndexScan(IDX_CAT,[=]), binding ASC))`; unpaged it returns the correct rows, but
+  under `EXECUTION_SCANNED_ROWS_LIMIT=1` (and 2, 3) it **errors** `54F01: scan limit reached` rather than
+  paginating — pagination changes whether the query executes. Root cause: `executeInJoin`
+  (`pkg/recordlayer/query/executor/executor_new_plans.go` ~L635) runs each IN-value's inner scan with a
+  **nil continuation** and wraps them in `newConcatCursor`, which carries **no per-branch continuation
+  state**; when the first inner hits the scanned-rows budget, `concatCursor.OnNext` (~L1063) deliberately
+  returns `ScanLimitReachedError` (RFC-106a guard — correctly avoids a *silent drop*, but exposes the
+  gap). There is no InJoin continuation envelope (contrast the FlatMap join, which resumes via
+  `FlatMapContinuation`). Same structural gap in `executeInUnion` (~L690/L715/L827). Java's
+  `RecordQueryInJoinPlan` produces a continuation-aware `InJoinCursor` that resumes across the limit — Go
+  diverges. Single-value `IN (1)` is unaffected (degenerates to a bare equality scan, no concat).
+  Reachable in production: a multi-value IN whose per-value scans exceed the scanned-rows/txn budget errors
+  out. **Cascades/executor bug — surface to Graefe; fix needs Java-alignment (port `InJoinCursor`'s
+  continuation) + an ACK.** Not fixed. Repro (committed): `go test ./pkg/simfdb/hunt/sqlpage/ -run
+  TestKnownBug_InJoinContinuation -v`. Quarantined out of the `sqlpage` sweep (comment at the site).
 
 # NEXT
 
