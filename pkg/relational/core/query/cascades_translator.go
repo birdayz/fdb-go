@@ -3872,13 +3872,47 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		})
 	}
 
+	// RFC-173 QP-REF-BIND item 2, commit 3: the flatten consults the wedge
+	// gate (ONE authority — ordinalWedgeGate; design-ruling condition 4) and,
+	// when the join gates, seeds the baked ordinal RC below instead of the
+	// anchored one. Decided BEFORE leg translation mutates the enclosure flag
+	// (the translateJoin convention). Two flatten-specific narrowings on top
+	// of the shared decision:
+	//   - Arity EXACTLY 2: this arm builds exactly two ForEach legs, so a
+	//     nested-cluster leg (post-flattening arity > 2) would drift the seed
+	//     against SelectMergeRule's flattening (the W3b loud-assert class).
+	//     The N-way flatten rides the gathered-cluster machinery when a
+	//     later slice routes it here.
+	//   - No existential-alias collisions: an EXISTS alias colliding with a
+	//     leg alias (or another EXISTS alias) makes the flat select's
+	//     correlations indistinguishable — fail toward the name model, the
+	//     gate's unclassifiable direction.
+	gateDecision := t.ordinalWedgeGate(j)
+	gatedFlatten := gateDecision.Gated && gateDecision.Arity == 2
+	if gatedFlatten {
+		seen := map[string]struct{}{
+			strings.ToUpper(sourceAlias(left)):  {},
+			strings.ToUpper(sourceAlias(right)): {},
+		}
+		for _, esq := range f.ExistsSubqueries {
+			key := strings.ToUpper(esq.Alias.Name())
+			if _, dup := seen[key]; dup {
+				gatedFlatten = false
+				break
+			}
+			seen[key] = struct{}{}
+		}
+	}
+
 	// Flatten join + EXISTS into a single SelectExpression
 	// with ForEach(left), ForEach(right), and Existential quantifiers.
-	// RFC-173 Slice 2: this flat select is a name-model merge-absorbing
-	// parent (existential quantifiers → never in the ordinal wedge), so its
-	// ForEach legs are ENCLOSED — a nested join there must not gate ordinal.
+	// RFC-173 Slice 2 (pre-commit-3 residual): a NON-gated flat select is a
+	// name-model merge-absorbing parent, so its ForEach legs are ENCLOSED — a
+	// nested join there must not gate ordinal. Legs of a GATED flatten
+	// translate FRESH (the translateJoin gated-parent convention: their own
+	// inner joins gate independently).
 	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = true
+	t.inInnerCluster = !gatedFlatten
 	leftRef := t.translateRef(left)
 	if leftRef == nil {
 		t.inInnerCluster = prevEnclosure
@@ -3935,18 +3969,31 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// The RV uses DECLARATION order (design ruling I2: Java assembles the
 	// result value in source order regardless of join type).
 	//
-	// W4-left F2 SCOPE NOTE (producer audit): the INNER flatten's seed
-	// stays ANCHORED. An ordinal seed here was cut and REVERTED twice by
-	// the dualwindow corpus (corr_exists_join_outer): the 2+1 existential
-	// select also implements through data-access/correlated-FlatMap paths
-	// whose bindings are NAME maps — the seed's baked leg refs hit the
-	// loud BakedNameContextError on the LIVE side. Ordinalizing the
-	// flatten needs those paths' positional binders first (the QP-REF-BIND
-	// charter, TODO.md). The GATED existential classes that DO run
-	// ordinal today arrive via the generic filter arm (a gated LEFT/RIGHT
-	// box or gated cluster under buildExistentialSelect), where the
-	// implementation's ordinal rebase handles the merged references.
-	resultValue := t.buildJoinResultValue(j.Left, j.Right, sourceAlias(j.Left), sourceAlias(j.Right))
+	// RFC-173 QP-REF-BIND item 2, commit 3: a GATED flatten seeds the baked
+	// ordinal RC over its two ForEach legs — existential quantifiers
+	// contribute NO columns (Java's model: existentials carry no output) —
+	// and bakes the COMBINED predicate list (join ON + WHERE conjuncts + the
+	// EXISTS correlation predicates). The baked correlation predicates are
+	// what flow into the existential FlatMap's inner plan as FrontierPinned
+	// references over the merged outer, where the item-2 commit-2
+	// disabled-birth binder binds the outer positionally and the ordinal
+	// existential rebase (W4-left machinery) handles the merged references.
+	// This retires the W4-left F2 scope note: the ordinal seed here was
+	// twice REVERTED because those executor binders did not exist — the 2+1
+	// select's correlated-FlatMap path bound name maps and the seed's baked
+	// refs died loudly (E1). Commit 2 landed the binders; E2 validated this
+	// exact seed end-to-end.
+	var resultValue values.Value
+	if gatedFlatten {
+		var legTypes map[string]bakeLegType
+		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{
+			{op: j.Left, alias: sourceAlias(j.Left)},
+			{op: j.Right, alias: sourceAlias(j.Right)},
+		})
+		allPreds = bakeGatedJoinPredicates(allPreds, legTypes)
+	} else {
+		resultValue = t.buildJoinResultValue(j.Left, j.Right, sourceAlias(j.Left), sourceAlias(j.Right))
+	}
 	if resultValue == nil {
 		// A leg's columns are not derivable (only the catalog-free nil-md path;
 		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
