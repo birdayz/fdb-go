@@ -130,11 +130,11 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// with the rule REUSING it unchanged. The seed marks the
 		// null-supplying leg's QOV record-level nullable (legsOfGatedJoin,
 		// design ruling I3). The single-source condition (clusterArity==1
-		// per leg — the translation twin of the dissolution converter's
-		// singleSourceLeg) keeps the RFC-153 joined-preserved class
+		// per leg) keeps the RFC-153 joined-preserved class
 		// name-model: a flattened preserved/null-supplying CLUSTER erases
 		// buried names into a bare concat the name-model ON-pred cannot
-		// clustered legs is QP-REF-BIND item 3 (TODO.md — one authority).
+		// span. Widening to clustered legs is QP-REF-BIND item 3 (TODO.md —
+		// one authority).
 		if t.clusterArity(j.Left) == 1 && t.clusterArity(j.Right) == 1 {
 			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary LEFT/RIGHT-outer box, single-source legs (ordinal seed at translation, W4-left)"}
 		}
