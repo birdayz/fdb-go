@@ -25,6 +25,7 @@ go_test(
     srcs = [
         "atomic_test.go",
         "conflict_outcome_test.go",
+        "continuation_fault_test.go",
         "continuation_replay_test.go",
         "differential_test.go",
         "fault_repro_test.go",

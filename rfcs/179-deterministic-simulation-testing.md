@@ -683,9 +683,15 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
     streaming `DISTINCT` drops its dedup state across a continuation resume (returns duplicates when
     paginated mid-stream, even with ORDER BY; GROUP BY is unaffected). Recorded in TODO.md "## DST
     findings", Graefe-gated, quarantined + pinned by a fix-detector; not fixed here.
-  - **Selected next build:** continuation under an INJECTED fault — resume a read-write cursor across a
-    `commit_unknown`/`too_old` on the resume transaction and assert the page set stays exact (the
-    plan-hash-not-in-token / lost-resume-state bug class, now with a fault rather than just a page limit).
+  - **Continuation across an INJECTED between-page fault ✅ BUILT** — `pkg/simfdb`
+    `TestSimFDB_ContinuationResumeAcrossFaultedWrite`. A scan mints a continuation on page 1; a
+    between-page delete of un-scanned data commits through a targeted `InjectOnce` fault in a raw
+    single-commit transaction (db.Run would retry the fault away); the scan resumes and must reflect the
+    fault's TRUE outcome — `not_committed`(1020) leaves the record present, `commit_unknown`(1021) leaves
+    it deleted — with no dup/loss. Pairs the continuation path with true-rollback fault injection.
+  - **Selected next build:** widen the above into a seeded sweep, and cover the resume TRANSACTION
+    itself faulting (a read-write cursor whose resume commit hits 1021/1007) — the remaining
+    lost-resume-state surface.
 - **Tier 3** — Track B, separate RFC, not started (out of scope here).
 
 ## 8. Risks & non-goals
