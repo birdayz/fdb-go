@@ -2597,27 +2597,50 @@ minted-q$N/commutative-XOR double blindness) and the order-DEPENDENT unnest arra
 (qualified SEG0.FIELD on any multi-namespace outer — authority is outerBoundAliases,
 not clusterArity, so the FULL-OUTER merge-opaque box is covered)).**
 
-**← WE ARE HERE:** QP-REF-BIND item 2, commit 4 — the enclosure lift at the generic
-filter arm (cascades_translator.go:2109-2119, the LIVE-CORRECTION site): the generic
-filter arm forces enclosure under EXISTS, poisoning every join class beneath, so the
-W4-left ordinal existential rebase (rfc173_w4left_existential.go) is still DEAD on the
-gated-cluster-under-EXISTS classes commit 3 did NOT reach (commit 3 lit the 2-way
-SINGLE-SOURCE flatten; the clustered/box classes route through the generic arm).
-Commit 4 routes gate-eligibility through ordinalWedgeGateDecide/clusterArity (design
-ruling condition 4, one authority) so gate-eligible inputs are NOT enclosed. **THIS is
-where the PR #469 loud-limitation exit gates flip** — matrix class K scalar-in-EXISTS
-(1+1 buildExistentialSelect path), the fetch-shell walk-terminators, the
-alias-unchecked frontier fallback's loud replacement. Verify each pin at landing
-(commit 3 flipped NONE — its seed is the 2-way single-source flatten, which routes
-through translateJoinWithExists, not the class-K 1+1 path; confirmed by the suite
-staying green with the pins unchanged). Per-class gate reasons + dualwindow pins.
-Commit-3 bookings still open (fold into commit 4/5 as touched): the unwrap-arm/probe
-implicit coupling wants a cross-check assertion if touched (@claude c2); a third
+**item-2 commit 4 (IMPLEMENTED, in review — the enclosure lift making the W4-left
+ordinal existential rebase LIVE):** the generic filter arm (cascades_translator.go
+translateFilter) forced enclosure under EXISTS unconditionally, so a single-source
+LEFT/RIGHT box under WHERE-EXISTS gated arityPoison (name model) and
+rfc173_w4left_existential.go's rebaseOuterLegRefsOrdinal was DEAD. Commit 4 routes the
+EXISTS enclosure through the ONE gate authority (existsOuterGatesFresh →
+ordinalWedgeGateDecide, ruling condition 4): a gate-eligible LEFT/RIGHT box is NOT
+enclosed, gates ordinal, and implementExistentialSelect's below-FOD ordinal rebase
+fires (the 1+1 twin of the 2+1 implementJoinWithExistential rebase — binds the box
+row's baked ordinals under the box's own outerCorr, resolved positionally by the
+commit-2 disabled-birth probe). Buried/clustered/FULL boxes and non-join inputs keep
+the name-model enclosure. **PLUS a PRE-EXISTING wrong-rows bug the class surfaced (bug
+found → fixed → red-first pinned, confirmed on master):** the existential FAST PATH
+(tryExistsFlatMap/buildExistsFlatMap) built `QOV(boxAlias).<bareCol>` for a correlation
+into a BURIED box leg — matchJoinPKPredicate's deep-flowed arm accepted the buried ref
+without rebasing, so a colliding column name (GID in both legs of `la LEFT JOIN lb`)
+read the WRONG (rightmost) leg last-leg-wins. Fixed by declining the fast path when the
+correlation targets a buried leg (outerValRefsBuriedLeg) → routes to the below-FOD
+rebase, leg-correct for both name-model (qualified) and ordinal (baked) boxes.
+
+**CORRECTION to the commit-4 pre-banking claim (verified empirically):** commit 4 flips
+NONE of the PR #469 loud-limitation exit gates. Class K (scalar-in-EXISTS) is a
+BARE-SCAN outer, not a box, so ordinalSeedLegWindowsOf yields nil and its scalar
+binding STILL hits the below-FOD fail-closed 0AF00 decline (probed live: still
+declines). The fetch-shell walk-terminators and the alias-unchecked frontier fallback
+are likewise bare-outer / fetch-wrapped classes untouched by the box enclosure lift.
+Those flip with the SCALAR-RIDER / absorbed-class work (commit 5) or when the
+fail-closed decline itself is replaced — NOT here. Commit 4's observable is the LEFT/
+RIGHT-box-under-EXISTS class running ordinal (dualwindow-equivalent today; S4-ready)
+plus the fast-path wrong-rows fix.
+
+**← WE ARE HERE:** QP-REF-BIND item 2, commits 5a/5b/5c (absorbed classes, per the
+ruling): under-existential unnest (translateUnnestExistsFilter — needs the W4c seed +
+ordinal replacements for the two rebaseUnnestOuterLegPredicate sites), the EXISTS-rider
+clusterArity poison, and the UNCORRELATED scalar riders. The class-K / fetch-shell /
+alias-unchecked exit gates flip with these (the fail-closed decline's replacement).
+Commit-3/4 bookings still open (fold in as touched): the unwrap-arm/probe implicit
+coupling wants a cross-check assertion if touched (@claude c2); a third
 baked-QOV-extraction copy triggers forEachBakedQOVType (Torvalds c2); the
 stablePlanNodeHash type-switch widening (remaining ~30 tag-only node types) if a
-REWRITING/PLANNING EXPLAIN flip ever surfaces on those shapes (@claude c3). Item 1
-(per-reference dup-alias binding) is
-parallelizable with item 2.
+REWRITING/PLANNING EXPLAIN flip ever surfaces (@claude c3); and the below-FOD FULL-box
+enclosure lift + the fast-path buried-leg optimization (declined for correctness in
+commit 4, could be restored via a qualified/ordinal rebase in the fast path) if a perf
+need arises. Item 1 (per-reference dup-alias binding) is parallelizable.
 
 **Remaining, in ruling order:** (item 2 ∥ item 1) → item 3 (mixed-nesting LEFT widening; MUST
 follow item 2) → unnest-residual completion slice → S4 atomic demolition (kill list above;

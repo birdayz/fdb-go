@@ -782,56 +782,87 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// rewrite of the binding alias would miss on every row; such an outer has
 	// no anchored-RC result value, so it contributes no aliases here).
 	if len(joinPreds) > 0 && outerCorr.Name() != "" {
-		var legAliases []string
-		if rv := planResultValue(outerPlan); rv != nil {
-			for _, a := range mergedOuterLegAliases(rv, "", "") {
-				// EXACT comparison (identifiers are case-sensitive by
-				// design): a fold here silently EXCLUDED a case-variant leg
-				// alias from the rebase set — its buried references then
-				// skipped the rebase into the non-declining branch. A
-				// case-variant binding alias kept in the set merely gets a
-				// qualified rewrite that the merged row's qualified keys
-				// still satisfy.
-				if a == outerCorr.Name() {
-					continue
-				}
-				legAliases = append(legAliases, a)
-			}
-		}
-		if len(legAliases) > 0 {
+		// RFC-173 item-2 commit 4 — the ORDINAL below-FOD rebase for a GATED
+		// outer box. The enclosure lift (translateFilter) now lets a
+		// single-source LEFT/RIGHT box (or an inner cluster) gate ORDINAL
+		// under EXISTS, so the box plan's result value is a baked ordinal
+		// seed and its output row is the merged POSITIONAL row. A below-FOD
+		// buried-leg reference (`b.emp_id = e.id`, e a leg of the box) must
+		// rebase to a BAKED ofOrdinalNumber over the box's binding (outerCorr)
+		// at legOffset+columnOrdinal — the name-model rebaseOuterLegRefsToMerged
+		// below produces LAZY qualified reads the FrontierPinned panic bars
+		// from baked refs (a silent baked→lazy degradation). This is the 1+1
+		// twin of implementJoinWithExistential's 2+1 ordinal rebase; the
+		// executor binds the box row positionally via the commit-2
+		// disabled-birth probe (the FlatMap's identity RV + these baked inner
+		// refs over outerCorr). CORRECT-or-LOUD: an unmappable reference
+		// DECLINES the yield, never a half-rebased tree — the name-model
+		// machinery stays dead for gated seeds (its FrontierPinned panic
+		// polices exactly that). Until commit 4 this branch never fired: no
+		// ordinal seed reached here, because the enclosure poisoned the gate.
+		if windows, mergedRowType := ordinalSeedLegWindowsOf(planResultValue(outerPlan)); windows != nil {
+			mergedQOV := values.NewQuantifiedObjectValueOfType(outerCorr, mergedRowType)
 			rebased := make([]predicates.QueryPredicate, len(joinPreds))
 			for i, p := range joinPreds {
-				rebased[i] = rebaseOuterLegRefsToMerged(p, legAliases, outerCorr)
+				np, ok := rebaseOuterLegRefsOrdinal(p, windows, mergedQOV)
+				if !ok {
+					return
+				}
+				rebased[i] = np
 			}
 			joinPreds = rebased
 		} else {
-			// FAIL CLOSED (no rebase authority): with no anchored result
-			// value to name the outer's buried legs, a below-FOD predicate
-			// referencing any alias beyond the binding alias and the
-			// existential inner's own legs is a buried reference this
-			// builder cannot bind — it would silently resolve against the
-			// wrong frontier row. Decline the yield; do not gamble on the
-			// correlation-unchecked fallback (its loud replacement arrives
-			// with the positional binders).
-			for _, p := range joinPreds {
-				corrSet := predicates.GetCorrelatedToOfPredicate(p)
-				if corrSet == nil {
-					corrSet = map[values.CorrelationIdentifier]struct{}{}
+			var legAliases []string
+			if rv := planResultValue(outerPlan); rv != nil {
+				for _, a := range mergedOuterLegAliases(rv, "", "") {
+					// EXACT comparison (identifiers are case-sensitive by
+					// design): a fold here silently EXCLUDED a case-variant leg
+					// alias from the rebase set — its buried references then
+					// skipped the rebase into the non-declining branch. A
+					// case-variant binding alias kept in the set merely gets a
+					// qualified rewrite that the merged row's qualified keys
+					// still satisfy.
+					if a == outerCorr.Name() {
+						continue
+					}
+					legAliases = append(legAliases, a)
 				}
-				predicates.AddMergeSeedAliases(p, corrSet)
-				for a := range corrSet {
-					// EXACT identifier comparisons (like the innerLegs
-					// lookup): CorrelationIdentifier is case-sensitive by
-					// design, and a fold here would fail OPEN — a
-					// case-variant alias would skip the decline this guard
-					// exists for. A mismatch declines (fails closed).
-					if a == outerCorr {
-						continue
+			}
+			if len(legAliases) > 0 {
+				rebased := make([]predicates.QueryPredicate, len(joinPreds))
+				for i, p := range joinPreds {
+					rebased[i] = rebaseOuterLegRefsToMerged(p, legAliases, outerCorr)
+				}
+				joinPreds = rebased
+			} else {
+				// FAIL CLOSED (no rebase authority): with no anchored result
+				// value to name the outer's buried legs, a below-FOD predicate
+				// referencing any alias beyond the binding alias and the
+				// existential inner's own legs is a buried reference this
+				// builder cannot bind — it would silently resolve against the
+				// wrong frontier row. Decline the yield; do not gamble on the
+				// correlation-unchecked fallback (its loud replacement arrives
+				// with the positional binders).
+				for _, p := range joinPreds {
+					corrSet := predicates.GetCorrelatedToOfPredicate(p)
+					if corrSet == nil {
+						corrSet = map[values.CorrelationIdentifier]struct{}{}
 					}
-					if _, ok := innerLegs[a]; ok {
-						continue
+					predicates.AddMergeSeedAliases(p, corrSet)
+					for a := range corrSet {
+						// EXACT identifier comparisons (like the innerLegs
+						// lookup): CorrelationIdentifier is case-sensitive by
+						// design, and a fold here would fail OPEN — a
+						// case-variant alias would skip the decline this guard
+						// exists for. A mismatch declines (fails closed).
+						if a == outerCorr {
+							continue
+						}
+						if _, ok := innerLegs[a]; ok {
+							continue
+						}
+						return
 					}
-					return
 				}
 			}
 		}
@@ -1985,6 +2016,9 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			if outerVal == nil {
 				continue
 			}
+			if outerValRefsBuriedLeg(outerVal, outerAlias) {
+				continue
+			}
 			return r.buildExistsFlatMap(call, resultValue, outerPlan, innerScan, outerAlias, innerAlias, outerExpr, innerExpr, hasExistsFilter, negated, outerVal, pred, preds)
 		}
 	}
@@ -2010,6 +2044,9 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			}
 			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, idxFirstCol)
 			if outerVal == nil {
+				continue
+			}
+			if outerValRefsBuriedLeg(outerVal, outerAlias) {
 				continue
 			}
 			// Build correlated index scan.
@@ -2217,6 +2254,25 @@ func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
 		return upper[:dot], upper[dot+1:]
 	}
 	return "", upper
+}
+
+// outerValRefsBuriedLeg reports whether a fast-path correlation's outer
+// FieldValue references a BURIED leg of a merged-box outer — its alias differs
+// from the binding alias (the box's rightmost-leg source alias). RFC-173
+// item-2 commit 4: the fast path (buildExistsFlatMap / the correlated index
+// scan) builds QOV(outerAlias).<bareCol>, which reads the box's rightmost leg;
+// for a correlation into a NON-rightmost buried leg (`a.gid` over a
+// `la LEFT JOIN lb` box bound as B) the bare read is last-leg-wins and reads
+// the WRONG leg on a colliding column name — a pre-existing wrong-rows bug
+// (matchJoinPKPredicate's deep-flowed arm accepted the buried ref without
+// rebasing it). Declining routes it to the below-FOD rebase, which rewrites
+// the buried reference to the merged row's QUALIFIED key (name model) or a
+// BAKED ordinal (gated box) — both leg-correct. The optimization is only lost
+// for existential correlations into a buried box leg; the common
+// single-source and rightmost-leg cases still take the fast path.
+func outerValRefsBuriedLeg(outerVal *values.FieldValue, outerAlias string) bool {
+	a, _ := fieldValueAliasAndCol(outerVal)
+	return a != "" && a != strings.ToUpper(outerAlias)
 }
 
 // bareColumnName returns the unqualified column name from a FieldValue,
