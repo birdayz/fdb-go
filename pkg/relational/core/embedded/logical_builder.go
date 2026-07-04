@@ -213,17 +213,16 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			// rather than emit a misleading partial tree.
 			return nil
 		}
-		// Wrap as CTE so the alias surfaces in the logical tree.
-		// When there are no joins the outer operators (filter, sort,
-		// project) can reference the inner plan directly — the CTE
-		// wrapper would add an unnecessary indirection and change
-		// datum key layout. Only wrap when joins are present.
-		if len(sq.joins) > 0 {
-			op = logical.NewCTE(sq.tableName, innerOp,
-				logical.NewScan(sq.tableName, ""), false)
-		} else {
-			op = innerOp
-		}
+		// Wrap as CTE so the alias surfaces in the logical tree — for
+		// the no-joins case too: the wrapper is the tree's one alias
+		// carrier for derived tables, and a bare innerOp loses it
+		// (sourceAlias walks to the BASE table; a correlated EXISTS on
+		// the derived alias then binds the outer row under the wrong
+		// name). The qualified-star rebuild re-enters THIS builder, so
+		// dropping the wrapper here silently undid the visitor path's
+		// alias fidelity.
+		op = logical.NewCTE(sq.tableName, innerOp,
+			logical.NewScan(sq.tableName, ""), false)
 	} else {
 		op = logical.NewScan(sq.tableName, sq.tableAlias)
 	}

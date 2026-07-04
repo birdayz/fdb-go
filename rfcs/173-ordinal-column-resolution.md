@@ -2780,3 +2780,25 @@ Non-blocking Graefe notes booked: the NLJ arm's step-2 wrapper still ranges over
 only (pre-existing asymmetry; clean up with commits 2–4); the Explode decline re-creates the
 decline+one-winner pattern for a class whose dedicated lowering owns it — P2c pins it, watch
 it at the unnest-residual slice.
+
+**Delta reviews (round 2, banked).** Torvalds ACK (4 findings) + Graefe ACK-with-condition +
+codex P1 — all landed:
+- **The rebuild-path alias loss (Torvalds finding 4 + codex P1):** a THIRD bare-innerOp
+  derived arm lived in the plain builder (buildLogicalPlanForSelect), which the
+  qualified-star rebuild re-enters — `SELECT e.* FROM (SELECT …) e WHERE EXISTS(… e.id)`
+  failed loudly (42703 pre-scope-fix, 0AF00 mid-fix; never wrong rows). All THREE derived
+  arms (visitor, catalog rebuild, plain rebuild) now carry the LogicalCTE(alias) wrapper,
+  and the qualified-star + correlated-EXISTS class now returns CORRECT rows end-to-end
+  (positive pin f in derived_exists_scope_fdb_test.go).
+- **Graefe's condition — the fail-closed 0AF00 shape pinned with its exit gate:** a scalar
+  subquery inside a correlated EXISTS body over a bare-scan outer hits the fail-closed
+  decline (loud 0AF00; it silently returned ZERO rows before the guard — the scalar binding
+  never resolved below the FOD). Matrix class K pins never-wrong-rows; the pin flips to the
+  rows assert when the positional binders land (item-2 commits 2–4 — THE EXIT GATE for both
+  this class and the correlation-unchecked fallback's loud replacement).
+- planResultValue is now an explicit ROW-SHAPE-PRESERVING whitelist (filter/FOD/DoE), never
+  a generic GetInner walk — a schema-changing plan (aggregation, projection) terminates the
+  walk instead of handing the rebase a pre-aggregation schema as authority (Torvalds
+  finding 1). The fail-closed alias checks use EXACT identifier comparison (fails closed on
+  a case mismatch; the fold failed open — finding 2). Merge-seed split coarseness accepted
+  (over-routing to the correlated inner is semantically harmless — Graefe finding 2b).

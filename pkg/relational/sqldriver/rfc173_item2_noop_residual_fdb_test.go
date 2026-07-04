@@ -215,6 +215,35 @@ func TestFDB_RFC173Item2_LeftJoinExistsResidual(t *testing.T) {
 		t.Error("projected EXISTS over LEFT JOIN must reject cleanly (INNER-only fold), got rows")
 	}
 
+	// (K) Scalar subquery INSIDE a correlated EXISTS body over a bare-scan
+	// outer: the below-FOD predicate carries the pre-evaluated scalar's
+	// binding alias — neither the outer binding nor an existential leg — and
+	// the fail-closed rebase authority DECLINES the yield (loud 0AF00).
+	// Before the fail-closed guard this shape silently returned ZERO rows
+	// (the scalar binding never resolved below the FOD). Wrong rows are the
+	// one forbidden outcome; the pin flips to the rows assert when the
+	// positional binders land (the slice's later commits — the booked exit
+	// gate).
+	{
+		q := "SELECT e.fname FROM emp e WHERE EXISTS (SELECT 1 FROM badge b " +
+			"WHERE b.emp_id = e.id AND b.id > (SELECT MIN(id) FROM dept d2))"
+		r, err := db.QueryContext(ctx, q)
+		if err == nil {
+			var got []string
+			for r.Next() {
+				var n sql.NullString
+				if err := r.Scan(&n); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				got = append(got, n.String)
+			}
+			r.Close()
+			if len(got) != 1 || got[0] != "alice" {
+				t.Errorf("scalar-in-EXISTS returned WRONG rows: %v, want the loud decline or exactly [alice]\n  sql: %s", got, q)
+			}
+		}
+	}
+
 	// (H) EXPLAIN shape + determinism for the bug class, both polarities:
 	// the winner must carry the correlated step-1 (DefaultOnEmpty preserves
 	// the LEFT null-extension under the existential FlatMap — the fix's

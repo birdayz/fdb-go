@@ -4478,7 +4478,14 @@ func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
 // table). Delegates to buildSelectShell with the derived table qualifier
 // as the strip prefix.
 func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) logical.LogicalOperator {
-	op := innerOp
+	// Keep the derived alias on the logical tree — the same LogicalCTE
+	// wrapper the visitor path uses (the tree's one alias carrier for
+	// derived tables). A bare innerOp loses the alias: sourceAlias() walks
+	// to the BASE table and a correlated EXISTS on the derived alias binds
+	// the outer row under the wrong name (`SELECT e.*` routes here via the
+	// qualified-star rebuild — the visitor-path fix's rebuild-path twin).
+	var op logical.LogicalOperator = logical.NewCTE(sq.tableName, innerOp,
+		logical.NewScan(sq.tableName, ""), false)
 	if sq.whereExpr != nil {
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
 	}

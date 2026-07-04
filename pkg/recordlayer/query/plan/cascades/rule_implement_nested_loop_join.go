@@ -813,7 +813,12 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 				}
 				predicates.AddMergeSeedAliases(p, corrSet)
 				for a := range corrSet {
-					if strings.EqualFold(a.Name(), outerCorr.Name()) {
+					// EXACT identifier comparisons (like the innerLegs
+					// lookup): CorrelationIdentifier is case-sensitive by
+					// design, and a fold here would fail OPEN — a
+					// case-variant alias would skip the decline this guard
+					// exists for. A mismatch declines (fails closed).
+					if a == outerCorr {
 						continue
 					}
 					if _, ok := innerLegs[a]; ok {
@@ -958,11 +963,16 @@ func mergedOuterLegAliases(rv values.Value, leftAlias, rightAlias string) []stri
 	return out
 }
 
-// planResultValue unwraps single-child pass-through plans (predicate filters,
-// first-or-default, default-on-empty, fetch shells) to the first plan carrying
-// a non-nil result value — the merged-row schema authority for the buried-leg
-// rebase, independent of which wrappers the winner accrued. Returns nil when
-// no wrapped plan carries one (bare scans: single-table rows, bare keys).
+// planResultValue unwraps ROW-SHAPE-PRESERVING single-child wrappers
+// (predicate filters, first-or-default, default-on-empty) to the first plan
+// carrying a non-nil result value — the merged-row schema authority for the
+// buried-leg rebase, independent of which wrappers the winner accrued. The
+// unwrap is an explicit WHITELIST, not a generic GetInner walk: a
+// schema-CHANGING plan with an inner (aggregation, projection) must terminate
+// the walk — its inner's result value is NOT the authority for the rows this
+// plan emits, and handing it to the rebase would lie about the row schema.
+// Returns nil when no whitelisted plan carries one (bare scans: single-table
+// rows, bare keys; the caller then fails closed on buried references).
 func planResultValue(p plans.RecordQueryPlan) values.Value {
 	for p != nil {
 		if rvp, ok := p.(interface{ GetResultValue() values.Value }); ok {
@@ -970,11 +980,16 @@ func planResultValue(p plans.RecordQueryPlan) values.Value {
 				return rv
 			}
 		}
-		inner, ok := p.(interface{ GetInner() plans.RecordQueryPlan })
-		if !ok {
+		switch w := p.(type) {
+		case *plans.RecordQueryPredicatesFilterPlan:
+			p = w.GetInner()
+		case *plans.RecordQueryFirstOrDefaultPlan:
+			p = w.GetInner()
+		case *plans.RecordQueryDefaultOnEmptyPlan:
+			p = w.GetInner()
+		default:
 			return nil
 		}
-		p = inner.GetInner()
 	}
 	return nil
 }

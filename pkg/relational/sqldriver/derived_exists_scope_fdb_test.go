@@ -125,4 +125,49 @@ func TestFDB_DerivedAliasExistsCorrelation(t *testing.T) {
 		"SELECT e.fname FROM (SELECT * FROM emp) e "+
 			"WHERE EXISTS (SELECT 1 FROM badge b)",
 		[]string{"alice", "bob"})
+
+	// (g) The INTERSECTION of the two fixed classes: a LEFT JOIN against a
+	// DERIVED leg with the EXISTS correlated to the derived alias — the
+	// derived-source scope registration and the correlated step-1
+	// orientation (null-on-empty leg + dissolved box) meet here.
+	want(t, "left-derived/EXISTS",
+		"SELECT d.dname FROM dept d LEFT JOIN (SELECT * FROM emp) e ON e.dept_id = d.id "+
+			"WHERE EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)",
+		[]string{"eng"})
+	want(t, "left-derived/NOT EXISTS",
+		"SELECT d.dname FROM dept d LEFT JOIN (SELECT * FROM emp) e ON e.dept_id = d.id "+
+			"WHERE NOT EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)",
+		[]string{"empty", "ops"})
+
+	// (f) QUALIFIED STAR over the derived source + correlated EXISTS:
+	// `SELECT e.*` routes the no-joins derived build through the
+	// qualified-star REBUILD (needRebuild → buildLogicalPlanForSelect) — a
+	// third derived arm that also dropped the alias wrapper (bare innerOp),
+	// silently undoing the visitor path's alias fidelity for exactly this
+	// shape (it rejected 42703 pre-scope-fix, 0AF00 mid-fix; wrong rows were
+	// never possible only because the failures were loud). All three
+	// derived arms now carry the LogicalCTE(alias) wrapper.
+	{
+		q := "SELECT e.* FROM (SELECT id, fname FROM emp) e " +
+			"WHERE EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)"
+		r, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Errorf("qualified-star/EXISTS: query error: %v\n  sql: %s", err, q)
+		} else {
+			n := 0
+			var id sql.NullInt64
+			var name sql.NullString
+			for r.Next() {
+				if err := r.Scan(&id, &name); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				n++
+			}
+			r.Close()
+			if n != 1 || id.Int64 != 1 || name.String != "alice" {
+				t.Errorf("qualified-star/EXISTS: got %d rows (last id=%v name=%v), want exactly (1, alice)\n  sql: %s",
+					n, id.Int64, name.String, q)
+			}
+		}
+	}
 }
