@@ -56,6 +56,7 @@ go_test(
         "positional_row_test.go",
         "positional_type_cache_test.go",
         "resultset_test.go",
+        "rfc173_item2_e2_binder_test.go",
         "rfc173_ordinal_join_test.go",
         "rfc173_ordinal_join_wiring_test.go",
         "rfc173_projection_shadow_test.go",
@@ -106,6 +107,7 @@ go_test(
         "rfc173_w4c_positional_authority_test.go",
         "rfc173_w5_span_test.go",
         "positional_type_cache_test.go",
+        "rfc173_item2_e2_binder_test.go",
     ],
     deps = [
         "//gen",

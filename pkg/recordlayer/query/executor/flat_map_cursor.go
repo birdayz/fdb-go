@@ -49,6 +49,17 @@ type flatMapCursor struct {
 	// path, bridged by values.OracleBakedNameFallback).
 	birth *ordinalJoinBirth
 
+	// outerBakedType is the RFC-173 item-2 commit-2 DISABLED-BIRTH probe
+	// result: the outer's typed RecordType recovered from the inner plan's
+	// FrontierPinned baked references over outerAlias, when this cursor has
+	// NO birth of its own (an identity-RV existential FlatMap over an
+	// ordinal outer — the E2 shape). Non-nil flips the outer binding
+	// positional (adaptLegPositional); adaptation failure is LOUD
+	// (design-ruling amendment B — never the Datum fallback, which would
+	// feed the baked references a name-keyed context). S4 KILL LIST
+	// (amendment A): dead scaffolding once the name model dies.
+	outerBakedType *values.RecordType
+
 	// Continuation state for cross-transaction resume.
 	priorOuterContinuation recordlayer.RecordCursorContinuation
 	lastOuterContinuation  recordlayer.RecordCursorContinuation
@@ -117,17 +128,26 @@ func newFlatMapCursor(
 		}
 		birth.OrdinalityLegs[innerAlias] = struct{}{}
 	}
+	// RFC-173 item-2 commit 2: a DISABLED-birth FlatMap (identity RV — the
+	// WHERE-EXISTS pass-through) probes its inner plan for baked references
+	// over the outer alias; a hit means the outer must bind positionally
+	// (see outerBakedType).
+	var outerBakedType *values.RecordType
+	if !birth.enabled() {
+		outerBakedType = probeOuterBakedType(innerPlan, outerAlias)
+	}
 	return &flatMapCursor{
-		outerCursor: outerCursor,
-		innerPlan:   innerPlan,
-		store:       store,
-		evalCtx:     evalCtx,
-		outerAlias:  outerAlias,
-		innerAlias:  innerAlias,
-		resultValue: resultValue,
-		leftOuter:   leftOuter,
-		props:       props,
-		birth:       birth,
+		outerCursor:    outerCursor,
+		innerPlan:      innerPlan,
+		store:          store,
+		evalCtx:        evalCtx,
+		outerAlias:     outerAlias,
+		innerAlias:     innerAlias,
+		resultValue:    resultValue,
+		leftOuter:      leftOuter,
+		props:          props,
+		birth:          birth,
+		outerBakedType: outerBakedType,
 	}, nil
 }
 
@@ -235,6 +255,21 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		var outerBinding any = outerDatum
 		if c.birth.enabled() && !DisablePositionalEmission {
 			row, aerr := adaptLegPositional(outerRow, c.birth.legType(c.outerAlias))
+			if aerr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
+			}
+			outerBinding = row
+		} else if c.outerBakedType != nil && !DisablePositionalEmission {
+			// RFC-173 item-2 commit 2 (the E2 binder): a DISABLED-birth FlatMap
+			// whose inner plan carries baked references over the outer alias —
+			// bind the outer positionally so those references resolve by
+			// ordinal. Adaptation failure is LOUD (design-ruling amendment B):
+			// the Datum fallback would feed the baked operands a name-keyed
+			// context — a BakedNameContextError on every inner row at best,
+			// silent misbinding at worst. Under the §5 oracle the Datum binding
+			// stays and the baked reads bridge by display name
+			// (values.OracleBakedNameFallback), like every other birth site.
+			row, aerr := adaptLegPositional(outerRow, c.outerBakedType)
 			if aerr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
@@ -392,7 +427,46 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// Java's outer-record-under-outer-quantifier flow.
 	if qov, ok := c.resultValue.(*values.QuantifiedObjectValue); ok && qov.Correlation == c.outerAlias {
 		if m, ok := computed.(map[string]any); ok {
-			return qualifyOuterRow(QueryResult{Datum: m, Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}, c.outerAlias.Name()), nil
+			out := qualifyOuterRow(QueryResult{Datum: m, Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}, c.outerAlias.Name())
+			// RFC-173 item-2 commit 2, the I1 pass-through: the identity
+			// FlatMap's output IS the outer row, so the outer's positional row
+			// flows through instead of dying at the FlatMap boundary —
+			// downstream ordinal consumers keep resolving against it (merged
+			// outers keep their leg windows via the unwrapToJoinPlan identity
+			// arm). PROBE-GATED: outerBakedType is the ordinal-era
+			// discriminator. A NAME-model existential (probe negative — lazy
+			// inner refs) has name-shaped uppers reading qualifyOuterRow's
+			// qualified Datum keys as flat dotted fields ("E.FNAME"); an
+			// unconditional pass-through flipped those consumers onto the
+			// ordinal path where the dotted name loud-misses the bare-named
+			// row (the live TestFDB_CorrelatedExistsCrossJoin catch). An
+			// ordinal-era shape whose probe is negative but whose uppers are
+			// baked fails LOUD downstream (BakedNameContextError), never
+			// silent — widen the gate when that shape materializes (commit 3).
+			// The published row is the ADAPTED row — the same derivation the
+			// outer-binding arm uses: an INDEX-shaped outer positional (a
+			// covering row [V, ID] under a baked [ID, V] QOV) passes the
+			// binding through synthesis, but publishing the ORIGINAL row
+			// verbatim hands downstream baked ordinals the wrong layout — a
+			// silent wrong-slot read. Layout-matching outers flow
+			// the same row object through; adaptation failure is LOUD
+			// (amendment B). Gated on the outer actually CARRYING a
+			// positional row: propagation, not a birth — under the §5 oracle
+			// the outer never carries one, so re-synthesizing from a
+			// Datum-only outer here would be a new birth site violating the
+			// oracle registry (the executeMap frontier-propagation
+			// precedent). S4 KILL LIST (amendment A) with the disabled-birth
+			// probe.
+			if c.outerBakedType != nil && outerRow.Positional != nil {
+				adapted, aerr := adaptLegPositional(outerRow, c.outerBakedType)
+				if aerr != nil {
+					return QueryResult{}, aerr
+				}
+				if pos, isPos := adapted.(*PositionalRow); isPos {
+					out.Positional = pos
+				}
+			}
+			return out, nil
 		}
 	}
 	return QueryResult{Datum: computed}, nil

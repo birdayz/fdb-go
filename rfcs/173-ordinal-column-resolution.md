@@ -679,6 +679,13 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   - `recursiveRemapValues`' first-dot split turns a qualified COMPUTED physical name
     (`"(B.ID + 1)"`) into garbage (`QOV("(B")`) — pre-existing class, dies with the name machinery;
     until then the ordinal model loud-errors it and the differential watches.
+  - **Item-2 commit-2 scaffolding (design-ruling amendment A, booked at landing):** the
+    DISABLED-BIRTH probe (`probeOuterBakedType` + flatMapCursor's `outerBakedType` positional
+    binding arm) and the identity-FlatMap positional PASS-THROUGH (the computeResultLegs
+    identity-arm propagation + `unwrapToJoinPlan`'s identity-FlatMap passthrough case) —
+    coexistence-window scaffolding: once the name model dies, every row and binding is
+    positional, the probe decides nothing, and the pass-through is the only path. The
+    empirical zero-producers gate covers them.
   **Slices 2–3 standing obligation (Graefe):** every NEW positional-row birth site added for the
   join producers must extend the `DisablePositionalEmission` oracle gate, or the §5 differential
   silently loses coverage of the new frontier.
@@ -2823,3 +2830,111 @@ qualified-star, and EXISTS-correlated shadow forms (the EXISTS form is a loud 0A
 limitation — buildDerivedTableSource resolves derived bodies against the CATALOG only, a
 WITH-CTE body is not derivable there; never-wrong-rows pinned, booked with the
 derived-alias follow-ons).
+
+## Item-2 commit 2 — site plan (banked at branch open; IMPLEMENTED — see the delta record below)
+
+The E2 binder + identity-FlatMap positional pass-through, concrete sites:
+1. **One walker (design-ruling amendment B — single derivation path):** factor the
+   baked-ref plan walk out of ordinalJoinBirth.widenLegTypesFromPlan
+   (executor/rfc173_ordinal_join.go:857 — note it EARLY-RETURNS on disabled births today)
+   into a shared walkBakedRefs(plan, collect); widenLegTypesFromPlan keeps its
+   width-divergence panic on top.
+2. **The probe:** in newFlatMapCursor (executor/flat_map_cursor.go:71 block), when
+   !birth.enabled(), probe the INNER plan via the shared walker for FrontierPinned refs
+   whose QOV correlation == outerAlias; a hit yields the typed RecordType → record on the
+   cursor (outerBakedType).
+3. **The binding (amendment B, loud):** at the outer-binding site (flat_map_cursor.go
+   :234-243), outerBakedType non-nil ⇒ bind via adaptLegPositional(outerRow, type);
+   adaptation failure is a LOUD error (zero-match tripwire), never the Datum fallback.
+4. **The pass-through (I1):** in computeResult, identity-QOV(outerAlias) result value +
+   outer row carrying Positional ⇒ emit the outer's Positional on the output QueryResult
+   (today the positional row dies at the FlatMap boundary).
+5. **Tests:** E2-style executor-level FDB tests constructing baked-inner/name-outer
+   FlatMap shapes directly; e2e activation of the class-K / fetch-shell exit-gate pins
+   arrives with commit 3's flatten seed (verify and document which pins flip WHEN).
+6. **Amendment A booking:** the probe + pass-through go on the S4 kill list (dead
+   scaffolding once the name model dies; the empirical zero-producers gate covers them).
+
+### Commit-2 implementation delta record
+
+All six steps landed as planned, plus TWO amendments the site plan missed — one
+required companion and one live-caught gate:
+
+1. **`unwrapToJoinPlan` gained an identity-FlatMap passthrough case.** The I1
+   pass-through flows a MERGED outer's positional row (the E1/commit-3 shape: seed NLJ
+   under the existential FlatMap) across the boundary, but `downstreamLegWindows`
+   stopped its unwrap at the FIRST FlatMap — consumers above the identity FlatMap would
+   have read the merged row through `frontierRowContext` with LEG-RELATIVE ordinals
+   against ABSOLUTE slots (the W3 wrong-slot hazard, silent for any non-first leg). The
+   identity-over-OUTER FlatMap is a row-preserving passthrough by construction (the
+   cursor re-emits the outer row — qualifyOuterRow + the I1 positional), so the unwrap
+   continues into `GetOuter()`; INNER-identity RVs and every other RV shape keep the
+   FlatMap terminal. Pinned by TestRFC173Item2_UnwrapIdentityFlatMap (both bounds).
+
+2. **The pass-through is PROBE-GATED (live catch, first full-suite run):** the site
+   plan's "identity RV + outer row carrying Positional ⇒ emit" was too wide. A
+   NAME-model existential (probe negative — lazy inner refs) has name-shaped uppers
+   that read qualifyOuterRow's qualified Datum keys as FLAT DOTTED fields
+   (`FieldValue{Field: "E.FNAME"}`); the unconditional pass-through flipped those
+   consumers onto the ordinal path, where the dotted name loud-misses the bare-named
+   positional row — TestFDB_CorrelatedExistsCrossJoin failed with
+   `OrdinalResolutionError{Field: "E.FNAME", Available: [ID FNAME]}`. `outerBakedType
+   != nil` is the ordinal-era discriminator, so the emission now rides the probe. NOT
+   name-fallback leniency (banned): an ordinal-era shape whose probe is negative but
+   whose uppers are baked fails LOUD downstream (BakedNameContextError) — widen the
+   gate when commit 3 materializes such a shape, with the loud error as the tripwire.
+   Pinned both ways (probe-positive emits verbatim; probe-negative emits none —
+   executor unit + FDB e2e).
+
+Implementation notes: the probe reuses the factored `walkBakedRefs` (amendment B's one
+derivation path) with its own width-divergence panic; the binding arm mirrors the
+enabled-birth arm's oracle gate (`!DisablePositionalEmission` — under the §5 oracle the
+Datum binding stays and baked reads bridge via OracleBakedNameFallback, pinned by the
+FDB oracle test); the pass-through is PROPAGATION, not a birth (no oracle gate needed —
+the executeMap frontier-propagation precedent; a Datum-only outer emits nothing).
+
+**Exit-gate pin verification (the "which flips WHEN" obligation):** commit 2 is
+DARK-live — no live SQL path produces a disabled-birth FlatMap with baked inner refs
+until commit 3 seeds the flatten, so the class-K / fetch-shell / alias-unchecked
+loud-limitation pins booked on PR #469 do NOT flip with this commit (full suite green
+with the pins unchanged). They flip with commit 3's seed.
+
+RED-first record: TestIntegration_RFC173Item2_DisabledBirthBinder_BakedInner failed
+pre-fix with the exact predicted BakedNameContextError (`baked FieldValue CUSTOMER_ID#0
+evaluated against a non-positional row context`) and went green with the binder.
+
+**codex round 1 (P2, fixed-and-pinned):** the pass-through published the outer's
+ORIGINAL positional row even when its layout diverged from the baked type (a
+covering-index outer [V, ID] under a baked [ID, V] QOV) — the binding arm adapted
+correctly for the inner, but downstream baked ordinals above the FlatMap got the wrong
+layout: a SILENT wrong-slot read, the exact class this RFC kills. The pass-through now
+publishes the ADAPTED row (same derivation as the binding arm — same object on a
+layout match, baked-layout synthesis on a mismatch, LOUD on failure), still gated on
+the outer actually carrying a positional row (propagation, not a birth — a Datum-only
+re-synthesis here would be an unregistered §5 birth site). Pinned red-first
+(mismatched-layout subtest, TestRFC173Item2_ComputeResult_PassThrough).
+
+**Impl reviews, round 2 on the adapted-row fix (banked): Graefe ACK + Torvalds ACK +
+codex clean delta.** Single-derivation confirmed (pass-through and binding arm share
+adaptLegPositional on identical inputs — pure, no drift); the propagation boundary
+ruled principled (a probe-positive Datum-only outer must NOT synthesize — that would
+be an unregistered §5 birth site; the loud downstream error is the correct commit-3
+widening posture). Non-blocking notes banked for commit 3: (Graefe) a LOUD else-branch
+on the pass-through's `adapted.(*PositionalRow)` assertion would match amendment B —
+Torvalds' counter-analysis: the nil-skip already degrades LOUD downstream
+(BakedNameContextError), so current behavior is CORRECT-or-LOUD; revisit if the
+adapter ever returns another OrdinalRow type. (@claude) the unwrap arm's RV-shape gate
+and the runtime probe gate are IMPLICITLY coupled (windowsOK only matters when
+Positional is non-nil, which requires the probe positive on the same outer plan) —
+worth a cross-check assertion if either side is touched again.
+
+**Impl reviews, round 1 (banked): Graefe ACK + Torvalds ACK.** Both verified the
+factoring behavior-identical, the probe a property derivation (not a smuggled flag),
+the probe gate a real discriminator with both mismatch quadrants CORRECT-or-LOUD, and
+the unwrap-arm/runtime-gate asymmetry closed by the consumers' `Positional != nil &&
+windowsOK` conjunction. Forward bookings for commit 3: (Graefe, non-blocking) when the
+pass-through gate widens, derive the shape's era from the OUTER plan's seed authority
+(the joinPlanSpans authority the unwrap arm already uses), not by stretching the
+inner-probe heuristic; (Torvalds) a THIRD copy of the baked-QOV extraction preamble
+triggers the shared `forEachBakedQOVType` refactor, and the loud-widening commitment
+(probe-negative + baked uppers ⇒ BakedNameContextError, never silent) is held.
