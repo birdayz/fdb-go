@@ -15,6 +15,7 @@ package query
 // pins are pure planner-side and need no FDB.
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/gen"
@@ -243,6 +244,37 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 		if d, ok := tr.wedgeGate[nested]; !ok || !d.Gated {
 			t.Fatalf("2-way under a FULL leg roots a fresh cluster: %+v (ok=%v), want gated", d, ok)
+		}
+	})
+
+	t.Run("enclosed_outer_box_stays_name_model", func(t *testing.T) {
+		t.Parallel()
+		// Review finding (mixed outer nesting): an outer box that is a LEG
+		// of an enclosing name-model join must NOT gate — the parent's merge
+		// binds leg rows by name, so a positional box row under it reads the
+		// wrong source (`d LEFT JOIN e ON … JOIN c ON …` returned d.id as
+		// e.id, the FDB runtime pins). The INNER arm has carried this
+		// enclosure guard since Slice 2; the outer arms shipped without it.
+		// A LEFT/RIGHT box leg poisons its parent (ordinal-ineligible leg),
+		// so the box translates ENCLOSED and must stay name-model. A FULL
+		// box leg is ordinal-ELIGIBLE — its parent GATES and the composition
+		// is ordinal-over-ordinal (the S3-fulcrum pin above), so FULL only
+		// meets the guard under a parent poisoned for other reasons.
+		for _, kind := range []logical.JoinKind{logical.JoinLeft, logical.JoinRight} {
+			box := logical.NewJoin(scan("Order", "d"), scan("Customer", "e"), kind, "")
+			root := inner(box, scan("TypedRecord", "c"))
+			tr := newGateTranslator(t)
+			tr.translateRef(root)
+			d, ok := tr.wedgeGate[box]
+			if !ok {
+				t.Fatalf("kind %v: no gate decision recorded for the enclosed box", kind)
+			}
+			if d.Gated {
+				t.Fatalf("kind %v: enclosed outer box gated (%+v), want name-model (enclosure guard)", kind, d)
+			}
+			if !strings.Contains(d.Reason, "enclosed") {
+				t.Fatalf("kind %v: reason %q, want the enclosure-guard reason", kind, d.Reason)
+			}
 		}
 	})
 
