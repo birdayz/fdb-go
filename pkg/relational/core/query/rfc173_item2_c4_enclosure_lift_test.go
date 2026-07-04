@@ -55,6 +55,38 @@ func TestRFC173Item2C4_EnclosureLift(t *testing.T) {
 		}
 	})
 
+	t.Run("single-source RIGHT box under EXISTS gates ordinal", func(t *testing.T) {
+		t.Parallel()
+		// RIGHT is the mirror of LEFT in the W4-left gated class (normalized to
+		// LEFT with swapped operands at execution); the lift covers both.
+		box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinRight, "")
+		tr := newGateTranslator(t)
+		if ref := tr.translateRef(c4ExistsFilterOver(box, "q$e")); ref == nil {
+			t.Fatalf("translation failed: %v", tr.translateErr)
+		}
+		d, ok := tr.wedgeGate[box]
+		if !ok || !d.Gated || d.Arity != 2 {
+			t.Fatalf("RIGHT box under EXISTS = %+v (recorded=%v), want gated arity 2", d, ok)
+		}
+	})
+
+	t.Run("FULL box under EXISTS stays name-model", func(t *testing.T) {
+		t.Parallel()
+		// FULL genuinely GATES as a root (opaque both ways), but existsOuterGatesFresh
+		// deliberately EXCLUDES it: its drain-birth composition with the existential
+		// semi-join is unvalidated, so the lift keeps it name-model (a dedicated FULL
+		// slice widens it). The gate authority still gates FULL as a root — the
+		// scoping is on the LIFT, not on gating.
+		box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
+		tr := newGateTranslator(t)
+		if ref := tr.translateRef(c4ExistsFilterOver(box, "q$e")); ref == nil {
+			t.Fatalf("translation failed: %v", tr.translateErr)
+		}
+		if d, ok := tr.wedgeGate[box]; !ok || d.Gated {
+			t.Fatalf("FULL box under EXISTS = %+v (recorded=%v), want recorded NOT gated (lift excludes FULL)", d, ok)
+		}
+	})
+
 	t.Run("clustered-leg LEFT box under EXISTS stays name-model", func(t *testing.T) {
 		t.Parallel()
 		// A LEFT box whose preserved leg is itself a CLUSTER is the RFC-153
