@@ -751,3 +751,30 @@ func TestRFC173W5_OracleRawMapPinnedBareRead(t *testing.T) {
 		t.Fatal("pinned + LIVE over a name-keyed map must stay the loud BakedNameContextError")
 	}
 }
+
+// TestIsOrdinalFieldName pins OrdinalFieldName's inverse, DIGITS-ONLY: the
+// producer never emits signs, so Atoi-style acceptance of `_-1`/`_+0` would
+// widen the oracle bare-read arm past planner-written keys.
+func TestIsOrdinalFieldName(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{OrdinalFieldName(0), true},
+		{OrdinalFieldName(12), true},
+		{"_007", true}, // digits-only, even non-canonical
+		{"_-1", false},
+		{"_+0", false},
+		{"_", false},
+		{"", false},
+		{"X", false},
+		{"_A", false},
+		{"0", false},
+		{"_1x", false},
+	} {
+		if got := IsOrdinalFieldName(tc.in); got != tc.want {
+			t.Errorf("IsOrdinalFieldName(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}

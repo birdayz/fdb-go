@@ -5,9 +5,12 @@ package executor
 // the design-ruling Q6 dimension pin (the NLJ birth's nil-legRVs windows).
 
 import (
+	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // TestRFC173W5_MixedElementSpanSynthesis pins the terminal synthesis: a
@@ -132,5 +135,85 @@ func TestRFC173W5_NLJBirthNilLegRVsDimension(t *testing.T) {
 	}
 	if birth.WindowsOK {
 		t.Fatal("the NLJ birth has no legRVs — a translated top's windows must NOT derive at birth (they are recovered downstream); if this ever flips silently, re-check the Datum name-model reads of this shape")
+	}
+}
+
+// TestRFC173W5_OracleSpanSpliceOnPristineBirth pins the review-round-2 splice
+// fix: recoverOracleDatumSpans must SPLICE even when the birth arrived with
+// PRISTINE seed spans. A seed whose leg is a gated-join BOX carries a span
+// named after the BOX alias covering the whole concat; without the splice,
+// oracleNameDatum qualifies every buried column under the box alias
+// ("B.PID") instead of the leaf aliases dotted reads actually name ("P.PID").
+// The pre-fix early return (`len(DatumSpans) > 0 → return`) left the box
+// span unopened — this test is RED against it. NOT parallel: flips the
+// process-global oracle (birthActive must read the oracle ON).
+func TestRFC173W5_OracleSpanSpliceOnPristineBirth(t *testing.T) {
+	legP := values.NewRecordType("", false, []values.Field{
+		{Name: "PID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	legQ := values.NewRecordType("", false, []values.Field{
+		{Name: "QID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	legC := values.NewRecordType("", false, []values.Field{
+		{Name: "CID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	bake := func(t *testing.T, qov *values.QuantifiedObjectValue, ord int) *values.FieldValue {
+		t.Helper()
+		fv, err := values.NewFieldValueOfOrdinal(qov, ord)
+		if err != nil {
+			t.Fatalf("bake: %v", err)
+		}
+		return fv
+	}
+
+	// The BOX: an inner join over P and Q whose RV is the pristine 2-leg seed.
+	pQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("P"), legP)
+	qQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("Q"), legQ)
+	boxRV := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "PID", Value: bake(t, pQOV, 0)},
+		values.RecordConstructorField{Name: "QID", Value: bake(t, qQOV, 0)},
+	)
+	boxPlan := plans.NewRecordQueryNestedLoopJoinPlan(nil, nil, nil, plans.JoinInner, "P", "Q", boxRV)
+
+	// The TOP: a pristine seed whose OUTER leg is the BOX (alias B, flowing
+	// the 2-column concat) and whose inner is a plain leg C.
+	boxConcat := values.NewRecordType("", false, []values.Field{
+		{Name: "PID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "QID", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	bQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), boxConcat)
+	cQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), legC)
+	topRV := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "PID", Value: bake(t, bQOV, 0)},
+		values.RecordConstructorField{Name: "QID", Value: bake(t, bQOV, 1)},
+		values.RecordConstructorField{Name: "CID", Value: bake(t, cQOV, 0)},
+	)
+
+	SetNameModelOracle(true)
+	defer SetNameModelOracle(false)
+
+	c, err := newNLJCursor(
+		recordlayer.FromList([]QueryResult{}), nil, plans.JoinInner,
+		"B", "C", nil, topRV, EmptyEvaluationContext(), nil,
+	)
+	if err != nil {
+		t.Fatalf("newNLJCursor: %v", err)
+	}
+	if !c.birth.enabled() || c.birthActive {
+		t.Fatal("fixture must be an oracle-side (birth enabled, inactive) cursor")
+	}
+	if len(c.birth.DatumSpans) == 0 {
+		t.Fatal("fixture must arrive with PRISTINE seed spans (the pre-fix early-return trigger)")
+	}
+
+	c.recoverOracleDatumSpans(boxPlan, nil)
+
+	aliases := make([]string, 0, len(c.birth.DatumSpans))
+	for _, s := range c.birth.DatumSpans {
+		aliases = append(aliases, s.Alias.Name())
+	}
+	got := strings.Join(aliases, ",")
+	if got != "P,Q,C" {
+		t.Fatalf("DatumSpans after recovery = [%s], want the box span OPENED to leaf aliases [P,Q,C] — the pre-fix early return skipped the splice and oracleNameDatum qualified buried columns under the BOX alias", got)
 	}
 }
