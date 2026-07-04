@@ -1600,7 +1600,7 @@ func executeUnion(
 			}
 		}
 		if allKnown {
-			return executeUnionStreaming(ctx, inners, store, evalCtx, props, md, firstBranchKeys)
+			return executeUnionStreaming(ctx, inners, store, evalCtx, continuation, props, md, firstBranchKeys)
 		}
 	}
 
@@ -1613,18 +1613,34 @@ func executeUnionStreaming(
 	inners []plans.RecordQueryPlan,
 	store *recordlayer.FDBRecordStore,
 	evalCtx *EvaluationContext,
+	continuation []byte,
 	props recordlayer.ExecuteProperties,
 	md *recordlayer.RecordMetaData,
 	targetKeys []string,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners))
-	for i, inner := range inners {
-		c, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
-		if err != nil {
+	// Resume the concat over the union branches: {branch, child-continuation}.
+	// A fresh start decodes to {0, nil}; a resumed page rebuilds from the active
+	// branch, seeding only it with the saved child continuation.
+	startIdx, childCont, err := decodeConcatContinuation(continuation)
+	if err != nil {
+		return nil, err
+	}
+	if startIdx >= len(inners) {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners)-startIdx)
+	for i := startIdx; i < len(inners); i++ {
+		inner := inners[i]
+		var innerCont []byte
+		if i == startIdx {
+			innerCont = childCont
+		}
+		c, cErr := ExecutePlan(ctx, inner, store, evalCtx, innerCont, props.ClearSkipAndLimit())
+		if cErr != nil {
 			for _, prev := range cursors {
 				prev.Close()
 			}
-			return nil, err
+			return nil, cErr
 		}
 		if i > 0 {
 			srcKeys := planColumnNamesWithMD(inner, md)
@@ -1636,7 +1652,7 @@ func executeUnionStreaming(
 		}
 		cursors = append(cursors, c)
 	}
-	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(newConcatCursorResume(cursors, startIdx), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeUnionBuffered(

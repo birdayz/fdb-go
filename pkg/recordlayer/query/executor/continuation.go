@@ -77,6 +77,62 @@ func jsonSafeDatum(d any) any {
 	return out
 }
 
+// buildConcatContinuation encodes a concat cursor's resume point as
+// {active-branch index, that branch's child continuation}. It mirrors Java's
+// ConcatCursor continuation (RecordCursorProto.ConcatContinuation), which
+// carries the currently-active child plus that child's continuation so a resume
+// re-enters the right branch at the right offset — generalized here from Java's
+// binary {second, continuation} to an n-ary {branch-index, continuation} (Go's
+// concat is a flat n-ary combinator; Java nests binary ConcatCursors).
+//
+// The encoding reuses SelectorPlanContinuation, the existing continuation proto
+// whose shape is exactly {index, inner-continuation}: Java's
+// RecordQuerySelectorPlan uses it for the same structural purpose (which child
+// is active + that child's continuation). ConcatContinuation itself is
+// binary-only (a bool, not an index) and so cannot carry an n-ary branch index,
+// while SelectorPlanContinuation can, with no change to any mirrored proto. This
+// continuation is produced and consumed ONLY by the Go concat executors
+// (executeInJoin / executeInUnion / executeUnion / executeUnorderedUnion); it
+// never crosses the wire to Java.
+func buildConcatContinuation(branchIdx int, child recordlayer.RecordCursorContinuation) (recordlayer.RecordCursorContinuation, error) {
+	var childBytes []byte
+	if child != nil {
+		var err error
+		childBytes, err = child.ToBytes()
+		if err != nil {
+			return nil, fmt.Errorf("concat continuation branch %d: %w", branchIdx, err)
+		}
+	}
+	data, err := proto.Marshal(&gen.SelectorPlanContinuation{
+		SelectedPlan:      proto.Uint64(uint64(branchIdx)),
+		InnerContinuation: childBytes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("concat continuation marshal: %w", err)
+	}
+	return recordlayer.NewBytesContinuation(data), nil
+}
+
+// decodeConcatContinuation is the inverse of buildConcatContinuation: it splits
+// an incoming concat continuation into the branch to resume and that branch's
+// child continuation. Empty bytes → start fresh at branch 0. A parse error
+// propagates rather than restarting from scratch (which would re-emit already-
+// returned rows). This is not a strong malformed-input guard — proto.Unmarshal
+// rarely rejects arbitrary bytes and would more likely yield a wrong branch
+// index; it is safe because a concat token is only ever produced here and only
+// ever routed back to a concat executor (dispatch is deterministic), so the
+// bytes are always a SelectorPlanContinuation this code wrote.
+func decodeConcatContinuation(data []byte) (branchIdx int, childCont []byte, err error) {
+	if len(data) == 0 {
+		return 0, nil, nil
+	}
+	msg := &gen.SelectorPlanContinuation{}
+	if uerr := proto.Unmarshal(data, msg); uerr != nil {
+		return 0, nil, fmt.Errorf("decode concat continuation: %w", uerr)
+	}
+	return int(msg.GetSelectedPlan()), msg.GetInnerContinuation(), nil
+}
+
 // encodeAggregateContinuation serializes the streaming aggregate
 // cursor's partial state using Java's AggregateCursorContinuation proto.
 // Carries the inner cursor position + the single in-progress group's

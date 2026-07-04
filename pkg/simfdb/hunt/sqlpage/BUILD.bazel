@@ -19,12 +19,10 @@ go_library(
 go_test(
     name = "sqlpage_test",
     srcs = [
-        "audit_test.go",
         "distinct_known_bug_test.go",
-        "injoin_known_bug_test.go",
+        "injoin_continuation_test.go",
         "sqlpage_test.go",
-        "unionall_known_bug_test.go",
+        "unionall_continuation_test.go",
     ],
     embed = [":sqlpage"],
-    deps = ["//pkg/relational/core/embedded"],
 )

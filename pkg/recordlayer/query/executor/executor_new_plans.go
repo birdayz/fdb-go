@@ -287,14 +287,31 @@ func executeUnorderedUnion(
 	// union does. A no-op when names already agree (the common case).
 	firstBranchKeys := planColumnNamesWithMD(inners[0], md)
 	childProps := props.ClearSkipAndLimit()
-	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners))
-	for i, inner := range inners {
-		c, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, childProps)
-		if err != nil {
+
+	// Resume the concat over the union branches: {branch, child-continuation}.
+	// A fresh start decodes to {0, nil}. This also fixes a latent resume bug —
+	// the prior code passed the SAME incoming continuation to every branch — by
+	// seeding only the active branch and starting all later branches fresh.
+	startIdx, childCont, err := decodeConcatContinuation(continuation)
+	if err != nil {
+		return nil, err
+	}
+	if startIdx >= len(inners) {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners)-startIdx)
+	for i := startIdx; i < len(inners); i++ {
+		inner := inners[i]
+		var innerCont []byte
+		if i == startIdx {
+			innerCont = childCont
+		}
+		c, cErr := ExecutePlan(ctx, inner, store, evalCtx, innerCont, childProps)
+		if cErr != nil {
 			for _, prev := range cursors {
 				_ = prev.Close()
 			}
-			return nil, err
+			return nil, cErr
 		}
 		if i > 0 && firstBranchKeys != nil {
 			srcKeys := planColumnNamesWithMD(inner, md)
@@ -307,7 +324,7 @@ func executeUnorderedUnion(
 		}
 		cursors = append(cursors, c)
 	}
-	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(newConcatCursorResume(cursors, startIdx), props.Skip, props.ReturnedRowLimit), nil
 }
 
 // producesMergedRows reports whether a plan emits merged join rows
@@ -645,25 +662,42 @@ func executeInJoin(
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	}
 
+	// Resume the concat over the per-IN-value inner scans: {branch, child-cont}.
+	// A fresh start decodes to {0, nil}. Every value builds one branch, so the
+	// concat wrapper is kept even for a single branch — its continuation format
+	// must stay consistent across pages (a bare child continuation would misparse
+	// as a concat token on the next resume).
+	startIdx, childCont, err := decodeConcatContinuation(continuation)
+	if err != nil {
+		return nil, err
+	}
+	if startIdx >= len(inValues) {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+
 	bindingID := values.NamedCorrelationIdentifier(p.GetBindingName())
 	var cursors []recordlayer.RecordCursor[QueryResult]
-	for _, val := range inValues {
-		boundCtx := evalCtx.WithBinding(bindingID, val)
-		cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, nil, props)
-		if err != nil {
+	for i := startIdx; i < len(inValues); i++ {
+		boundCtx := evalCtx.WithBinding(bindingID, inValues[i])
+		// Seed the resumed branch with its saved child continuation; all later
+		// branches start fresh. Clear skip+limit on each inner and re-apply once at
+		// the concat (matching executeInUnion and Java RecordQueryInJoinPlan, which
+		// limits at the pipeline) — a per-branch limit would over-return under LIMIT.
+		var innerCont []byte
+		if i == startIdx {
+			innerCont = childCont
+		}
+		cursor, cErr := ExecutePlan(ctx, p.GetInner(), store, boundCtx, innerCont, props.ClearSkipAndLimit())
+		if cErr != nil {
 			for _, c := range cursors {
 				c.Close()
 			}
-			return nil, err
+			return nil, cErr
 		}
 		cursors = append(cursors, cursor)
 	}
 
-	if len(cursors) == 1 {
-		return cursors[0], nil
-	}
-
-	return newConcatCursor(cursors), nil
+	return applySkipLimit(newConcatCursorResume(cursors, startIdx), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeInUnion(
@@ -684,8 +718,42 @@ func executeInUnion(
 	// merge-sort if comparison keys exist, otherwise concat.
 	if len(bindingNames) == 1 && len(inSources[0]) > 0 {
 		bindingID := values.NamedCorrelationIdentifier(bindingNames[0])
+		vals := inSources[0]
+		compKeys := p.GetComparisonKeys()
+
+		// No comparison keys → the branches concat in order. This is the
+		// resumable concat path (identical to executeInJoin): decode
+		// {branch, child-continuation} and rebuild from the active branch.
+		if len(compKeys) == 0 {
+			startIdx, childCont, err := decodeConcatContinuation(continuation)
+			if err != nil {
+				return nil, err
+			}
+			if startIdx >= len(vals) {
+				return recordlayer.Empty[QueryResult](), nil
+			}
+			var cursors []recordlayer.RecordCursor[QueryResult]
+			for i := startIdx; i < len(vals); i++ {
+				boundCtx := evalCtx.WithBinding(bindingID, vals[i])
+				var innerCont []byte
+				if i == startIdx {
+					innerCont = childCont
+				}
+				cursor, cErr := ExecutePlan(ctx, p.GetInner(), store, boundCtx, innerCont, props.ClearSkipAndLimit())
+				if cErr != nil {
+					for _, c := range cursors {
+						c.Close()
+					}
+					return nil, cErr
+				}
+				cursors = append(cursors, cursor)
+			}
+			return applySkipLimit(newConcatCursorResume(cursors, startIdx), props.Skip, props.ReturnedRowLimit), nil
+		}
+
+		// Comparison keys present → merge-sort union (unchanged).
 		var cursors []recordlayer.RecordCursor[QueryResult]
-		for _, val := range inSources[0] {
+		for _, val := range vals {
 			boundCtx := evalCtx.WithBinding(bindingID, val)
 			cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, nil, props.ClearSkipAndLimit())
 			if err != nil {
@@ -699,20 +767,16 @@ func executeInUnion(
 		if len(cursors) == 1 {
 			return applySkipLimit(cursors[0], props.Skip, props.ReturnedRowLimit), nil
 		}
-		compKeys := p.GetComparisonKeys()
-		if len(compKeys) > 0 {
-			merged := &mergeSortCursor{
-				cursors:   cursors,
-				compKeys:  compKeys,
-				reverse:   p.IsReverse(),
-				dedup:     true,
-				peeked:    make([]QueryResult, len(cursors)),
-				hasPeeked: make([]bool, len(cursors)),
-				exhausted: make([]bool, len(cursors)),
-			}
-			return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
+		merged := &mergeSortCursor{
+			cursors:   cursors,
+			compKeys:  compKeys,
+			reverse:   p.IsReverse(),
+			dedup:     true,
+			peeked:    make([]QueryResult, len(cursors)),
+			hasPeeked: make([]bool, len(cursors)),
+			exhausted: make([]bool, len(cursors)),
 		}
-		return applySkipLimit(newConcatCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+		return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
 	}
 
 	return nil, fmt.Errorf("executeInUnion: multi-binding IN union (%d bindings) not yet implemented", len(bindingNames))
@@ -1039,11 +1103,25 @@ func (c *emptyCursor[T]) Close() error   { c.closed = true; return nil }
 type concatCursor[T any] struct {
 	cursors []recordlayer.RecordCursor[T]
 	idx     int
+	// baseIdx is the absolute index (among the plan's original branches) of
+	// cursors[0]. It is nonzero when the concat was rebuilt to resume a prior
+	// page: the branches before baseIdx were fully consumed and are not
+	// reconstructed, so the emitted continuation must report absolute branch
+	// numbers (baseIdx + idx), not the local slice offset.
+	baseIdx int
 	closed  bool
 }
 
 func newConcatCursor[T any](cursors []recordlayer.RecordCursor[T]) *concatCursor[T] {
 	return &concatCursor[T]{cursors: cursors}
+}
+
+// newConcatCursorResume is newConcatCursor for a concat rebuilt to resume from a
+// prior page: cursors are the branches starting at absolute index baseIdx (the
+// earlier branches are already exhausted and not rebuilt), and cursors[0] has
+// been seeded with its saved child continuation by the caller.
+func newConcatCursorResume[T any](cursors []recordlayer.RecordCursor[T], baseIdx int) *concatCursor[T] {
+	return &concatCursor[T]{cursors: cursors, baseIdx: baseIdx}
 }
 
 func (c *concatCursor[T]) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[T], error) {
@@ -1055,17 +1133,30 @@ func (c *concatCursor[T]) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 		if err != nil {
 			return result, err
 		}
+		absBranch := c.baseIdx + c.idx
 		if result.HasNext() {
-			return result, nil
+			// Wrap the child's continuation as {branch, child-continuation} so a
+			// checkpoint at ANY row resumes the right branch at the right offset
+			// (Java ConcatCursor wraps every result's continuation likewise).
+			cont, cerr := buildConcatContinuation(absBranch, result.GetContinuation())
+			if cerr != nil {
+				return recordlayer.RecordCursorResult[T]{}, cerr
+			}
+			return recordlayer.NewResultWithValue(result.GetValue(), cont), nil
 		}
 		// A branch that stopped OUT-OF-BAND (a scan/byte/time resource limit in
-		// paginate mode) cannot be resumed across the concat boundary — concat
-		// carries no per-branch continuation state, so advancing to the next branch
-		// would silently drop the rest of this one. Error instead (RFC-106a;
-		// same reasoning as the multidim skip-scan). SourceExhausted → next branch.
-		// Without a scan limit set, out-of-band never fires, so UNION ALL is unchanged.
+		// paginate mode) is RESUMABLE: mint a {branch, child-continuation} token
+		// so the next page rebuilds this branch at its saved offset and continues
+		// the concat from there (mirrors Java ConcatCursor, which carries the
+		// active child + that child's continuation). Without a scan limit set,
+		// out-of-band never fires, so UNION ALL / multi-value IN are unchanged.
+		// SourceExhausted (and in-band ReturnLimitReached) → advance to next branch.
 		if result.GetNoNextReason().IsOutOfBand() {
-			return recordlayer.RecordCursorResult[T]{}, &recordlayer.ScanLimitReachedError{Reason: result.GetNoNextReason()}
+			cont, cerr := buildConcatContinuation(absBranch, result.GetContinuation())
+			if cerr != nil {
+				return recordlayer.RecordCursorResult[T]{}, cerr
+			}
+			return recordlayer.NewResultNoNext[T](result.GetNoNextReason(), cont), nil
 		}
 		c.idx++
 	}

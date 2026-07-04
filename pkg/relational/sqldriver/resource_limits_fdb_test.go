@@ -545,14 +545,15 @@ func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC106a_UnionAllBranchTruncationErrors pins the streaming-cursor
-// out-of-band fix: a UNION ALL branch cut off by a scan limit (paginate mode)
-// must error rather than silently advance to the next branch and drop the rest of
-// the truncated one. The concat cursor carries no per-branch continuation state,
-// so a mid-branch out-of-band stop is terminal. Without a scan limit set,
-// out-of-band never fires and UNION ALL is unchanged. Revert-proof: drop the
-// IsOutOfBand error in concatCursor → the query returns a truncated row set.
-func TestFDB_RFC106a_UnionAllBranchTruncationErrors(t *testing.T) {
+// TestFDB_RFC106a_UnionAllBranchTruncationResumes pins the concat continuation
+// fix (RFC-179): a UNION ALL branch cut off by a scan limit (paginate mode) must
+// RESUME across the page boundary — the concat serializes {branch, child-
+// continuation}, so a mid-branch out-of-band stop mints a resumable token and
+// the driver drains every row instead of erroring 54F01 or dropping the rest of
+// the truncated branch. Without a scan limit set, out-of-band never fires and
+// UNION ALL is unchanged. Revert-proof: drop the concat continuation → the query
+// errors 54F01 (the old bug) or returns a truncated row set.
+func TestFDB_RFC106a_UnionAllBranchTruncationResumes(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc106a_unionall", "unionall",
 		"CREATE TABLE A (id BIGINT, PRIMARY KEY (id)) "+
@@ -562,7 +563,7 @@ func TestFDB_RFC106a_UnionAllBranchTruncationErrors(t *testing.T) {
 	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 5).Build())
-		// non-fail: the first branch's scan stops OUT-OF-BAND at 5 → concat errors.
+		// non-fail: the first branch's scan stops OUT-OF-BAND at 5 → concat resumes.
 	})
 	for i := 0; i < 50; i++ {
 		if _, err := conn.ExecContext(ctx, fmt.Sprintf("INSERT INTO A (id) VALUES (%d)", i)); err != nil {
@@ -573,10 +574,16 @@ func TestFDB_RFC106a_UnionAllBranchTruncationErrors(t *testing.T) {
 		t.Fatalf("INSERT B: %v", err)
 	}
 
-	// Branch A (50 rows) truncates at the scan limit of 5; concat must error, not
-	// drop A's remaining rows and continue to B.
-	_, err := drainIDs(ctx, conn, "SELECT id FROM A UNION ALL SELECT id FROM B")
-	wantExecLimit(t, err)
+	// Branch A (50 rows) truncates at the scan limit of 5 many times over; the
+	// concat must resume across every page boundary and return all 51 rows (50
+	// from A + 1 from B), not error and not drop A's remaining rows.
+	n, err := drainIDs(ctx, conn, "SELECT id FROM A UNION ALL SELECT id FROM B")
+	if err != nil {
+		t.Fatalf("paged UNION ALL errored instead of resuming: %v", err)
+	}
+	if n != 51 {
+		t.Fatalf("paged UNION ALL returned %d rows, want 51 (50 from A + 1 from B)", n)
+	}
 }
 
 // drainPairs runs sql scanning two columns (int, int), returning the row count.

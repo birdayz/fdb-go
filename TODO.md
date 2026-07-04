@@ -319,7 +319,11 @@ needs Java-alignment + a Graefe ACK.**
   Repro (committed): `go test ./pkg/simfdb/hunt/sqlpage/ -run TestKnownBug_DistinctContinuation -v`.
   Until fixed, bare `DISTINCT` is quarantined out of the `sqlpage` sweep's query set (comment at the
   quarantine site) so the driver stays green and hunts other executor-continuation bugs.
-- [ ] **Multi-value `IN (a,b)` (InJoin) errors `54F01` under pagination instead of resuming.** Found by
+- [x] **Multi-value `IN (a,b)` (InJoin) errors `54F01` under pagination instead of resuming.** FIXED:
+  concatCursor now serializes `{branch, child-continuation}` (via `SelectorPlanContinuation`, mirroring
+  Java's `ConcatCursor` continuation + the intersection combinator), and `executeInJoin` decodes it to
+  resume the right branch at the right offset — the paged run now equals the unpaged multiset. Pinned by
+  `TestInJoinContinuation` and re-added to the `sqlpage` sweep. Found by
   the `sqlpage` oracle's extended matrix. `SELECT id FROM t WHERE cat IN (2,3)` plans
   `Project([ID], InJoin(IndexScan(IDX_CAT,[=]), binding ASC))`; unpaged it returns the correct rows, but
   under `EXECUTION_SCANNED_ROWS_LIMIT=1` (and 2, 3) it **errors** `54F01: scan limit reached` rather than
@@ -332,20 +336,22 @@ needs Java-alignment + a Graefe ACK.**
   `FlatMapContinuation`). Same structural gap in `executeInUnion` (~L690/L715/L827). Java's
   `RecordQueryInJoinPlan` produces a continuation-aware `InJoinCursor` that resumes across the limit — Go
   diverges. Single-value `IN (1)` is unaffected (degenerates to a bare equality scan, no concat).
-  Reachable in production: a multi-value IN whose per-value scans exceed the scanned-rows/txn budget errors
-  out. **Cascades/executor bug — surface to Graefe; fix needs Java-alignment (port `InJoinCursor`'s
-  continuation) + an ACK.** Not fixed. Repro (committed): `go test ./pkg/simfdb/hunt/sqlpage/ -run
-  TestKnownBug_InJoinContinuation -v`. Quarantined out of the `sqlpage` sweep (comment at the site).
-- [ ] **`UNION ALL` errors `54F01` under pagination — same concat root as multi-value IN.** A systematic
+  Reachable in production: a multi-value IN whose per-value scans exceed the scanned-rows/txn budget
+  errored out. Fixed on `feat/rfc179-fix-concat-continuation` (Graefe + Torvalds ACK); pinned by
+  `TestInJoinContinuation`.
+- [x] **`UNION ALL` errors `54F01` under pagination — same concat root as multi-value IN.** FIXED by the
+  same change: concatCursor now serializes `{branch, child-continuation}`, and
+  `executeUnion`/`executeUnionStreaming` (plus `executeInUnion`'s concat path and `executeUnorderedUnion`)
+  thread the incoming continuation into it — the paged run now equals the unpaged multiset. Pinned by
+  `TestUnionAllContinuation` and re-added to the `sqlpage` sweep. A systematic
   executor-continuation audit (via the `sqlpage` harness) confirmed a third instance of the family:
   `SELECT id FROM t WHERE cat=0 UNION ALL SELECT id FROM t WHERE cat=1` returns its rows unpaged but
   **errors `54F01` under `EXECUTION_SCANNED_ROWS_LIMIT=1`** (also composed with ORDER BY/LIMIT). Distinct
   SQL surface from the InJoin finding (a set operation, not an IN predicate) but the SAME root:
   `RecordQueryUnionPlan` → `executeUnion`/`executeUnionStreaming` (`executor.go` ~L1611) → `newConcatCursor`,
-  and `concatCursor.OnNext` (`executor_new_plans.go` ~L1060) errors on any out-of-band child stop because
-  it carries no per-branch continuation. **Cascades/executor — Graefe-gated; not fixed.** Repro (committed):
-  `go test ./pkg/simfdb/hunt/sqlpage/ -run TestKnownBug_UnionAllContinuation -v`. Pinned by that
-  fix-detector.
+  and `concatCursor.OnNext` errored on any out-of-band child stop because it carried no per-branch
+  continuation. Fixed on `feat/rfc179-fix-concat-continuation` (Graefe + Torvalds ACK); pinned by
+  `TestUnionAllContinuation`.
 
   **Audit scope (the family, for the owner):** ~14 operator classes audited under a tiny scanned-rows
   limit. **Safe** (serialize resume state or are stateless passthrough): Scan/IndexScan, Project/Map,
@@ -357,6 +363,13 @@ needs Java-alignment + a Graefe ACK.**
   dialect. **A single fix — serialize `{branch-index, branch-continuation}` in `concatCursor` (as the
   intersection combinator already does) — closes InJoin + InUnion + UnorderedUnion + UNION ALL together;
   Distinct needs its seen-set serialized separately.**
+- [x] **InJoin over-returned under `LIMIT` (pre-existing, fixed with the concat fix).** Graefe + Torvalds
+  both flagged that `executeInJoin` passed the *uncleared* `props` (skip+limit) to each inner scan and did
+  not `applySkipLimit` on the concat, whereas Java (`RecordQueryInJoinPlan.java:121`) clears skip+limit on
+  the inner and limits at the pipeline — so a multi-value `IN … LIMIT n` could over-return via the in-band
+  `RETURN_LIMIT_REACHED → c.idx++` branch. Fixed by aligning `executeInJoin` with `executeInUnion`/Java
+  (`props.ClearSkipAndLimit()` on the inner + `applySkipLimit` on the concat); pinned by an `IN … LIMIT`
+  test.
 
 # NEXT
 

@@ -179,15 +179,16 @@ func queries(rng *rand.Rand) []query {
 		{fmt.Sprintf("SELECT id, val FROM t ORDER BY val, id LIMIT %d", n), true},
 		{"SELECT cat, COUNT(*) FROM t GROUP BY cat", false},
 		{"SELECT cat, SUM(val) FROM t GROUP BY cat", false},
-		// QUARANTINED (known executor-continuation bugs, all TODO.md "## DST findings", pinned by
-		// fix-detector tests, kept out of the sweep so it hunts other shapes) — all "operator resume
-		// state not in the continuation token":
-		//  1. bare `SELECT DISTINCT cat FROM t` — streaming DISTINCT drops its in-memory dedup state
-		//     across a resume → DUP rows (TestKnownBug_DistinctContinuation). GROUP BY (correct) stays in.
-		//  2. multi-value `SELECT id FROM t WHERE cat IN (2,3)` — InJoin/concat has no per-branch
-		//     continuation → 54F01 under a tiny limit (TestKnownBug_InJoinContinuation).
-		//  3. `... UNION ALL ...` — same concatCursor root as (2) → 54F01 (TestKnownBug_UnionAllContinuation).
-		// Re-add each here once its executor gains continuation support.
+		// Multi-value IN (InJoin over a concat) and UNION ALL (RecordQueryUnionPlan over the same concat)
+		// now serialize {branch, child-continuation}, so they resume across the scanned-rows limit instead
+		// of erroring 54F01 — pinned by TestInJoinContinuation / TestUnionAllContinuation and swept here.
+		{fmt.Sprintf("SELECT id FROM t WHERE cat IN (%d, %d)", k, (k+1)%4), false},
+		{"SELECT id FROM t WHERE cat = 0 UNION ALL SELECT id FROM t WHERE cat = 1", false},
+		// QUARANTINED (known executor-continuation bug, TODO.md "## DST findings", pinned by a fix-detector
+		// test, kept out of the sweep so it hunts other shapes) — "operator resume state not in the
+		// continuation token": bare `SELECT DISTINCT cat FROM t` — streaming DISTINCT drops its in-memory
+		// dedup state across a resume → DUP rows (TestKnownBug_DistinctContinuation). GROUP BY (correct)
+		// stays in. Re-add once DISTINCT's executor gains continuation support.
 		{"SELECT a.id, b.id FROM t a, t2 b WHERE b.ref = a.id", false},
 		{"SELECT a.id, b.id FROM t a, t2 b WHERE b.ref > a.id", false},
 	}
