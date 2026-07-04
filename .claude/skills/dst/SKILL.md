@@ -254,6 +254,35 @@ bazelisk test //pkg/simfdb/hunt/continuation:continuation_test --test_output=err
 - **Fresh-tx-per-page is the point:** each page runs in its own `db.Run`, so the token must survive a
   transaction/read-version boundary. The between-page delete (a committed version bump) is the "fault".
 
+## sqlpage (SQL-query pagination oracle)
+
+Goes a layer above the raw-scan `continuation` driver: it paginates whole SQL QUERIES
+(`pkg/simfdb/hunt/sqlpage/`, RFC-179 Tier 2, a `hunt.Workload`), so the **executor's cursor tree** —
+filter/sort/GROUP BY/join — and its per-operator continuation logic is what's under test. It runs each
+query on one pinned connection at the default execution scanned-rows limit (no pagination = reference)
+and again at a tiny limit (forcing the executor to exhaust its budget and resume through internal
+continuations over and over), and asserts the two results match (multiset, or ordered for a total
+ORDER BY). Metamorphic — the engine judges itself.
+
+```sh
+bazelisk test //pkg/simfdb/hunt/sqlpage:sqlpage_test --test_output=errors
+# dst-hunt -profiles sqlpage   (SQL runs are ~1-2/sec/core — far slower than the raw drivers)
+```
+
+- **Mechanism:** `conn.Raw(func(dc any){ dc.(*embedded.EmbeddedConnection).SetOptions(
+  api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, N).Build()) })` on a pinned `*sql.Conn`,
+  then query — the driver auto-resumes across internal continuations to a full result, so paged==unpaged
+  must hold. This is the same knob the `flatmap_continuation_drop_fdb_test` uses.
+- **FOUND A BUG (first seed):** streaming `DISTINCT` drops its dedup state across a continuation resume
+  — `SELECT DISTINCT cat` returns every row (no dedup) under a tiny scanned-rows limit, even with ORDER
+  BY, while `GROUP BY` stays correct (its aggregate continuation IS serialized). Recorded in TODO.md
+  "## DST findings", pinned by `TestKnownBug_DistinctContinuation` (a fix-detector), quarantined out of
+  the sweep so the driver hunts other operators. Reachable in prod: a large `SELECT DISTINCT` that
+  exceeds the txn/scanned-rows limit paginates mid-stream and returns duplicates.
+- **Building a query-pagination oracle:** make total-order queries `ordered:true` (append the PK so
+  ties are deterministic — else a legit tie-order difference reads as a false drop); a query that errors
+  unpaged is unsupported SQL → skip it, but a query that errors ONLY when paged is a finding.
+
 ## golden (characterization gate)
 
 Behavior lock for the SQL engine (`pkg/simfdb/hunt/golden/`, RFC-179 Tier 2 oracle). For a curated
@@ -483,7 +512,7 @@ above.
 | **−1** rr + Delve replay | reverse-debug a *captured* real-FDB flake | ⚠️ **setup** — `rr` not installed; `--backend=rr` |
 | **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ✅ **Available** (`pkg/dst`) |
 | **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ✅ **Available** (`pkg/simfdb`) |
-| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** + **[rangeconflict](#rangeconflict-range-aware-ssi-driver)** SSI drivers; **[continuation](#continuation-cursor-resume-replay-driver)** cursor-resume replay driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave` [+ fault mode]/`rangeconflict`/`continuation`) — continuation-under-injected-fault + SQL-query pagination next |
+| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** + **[rangeconflict](#rangeconflict-range-aware-ssi-driver)** SSI drivers; **[continuation](#continuation-cursor-resume-replay-driver)** cursor-resume replay driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave` [+ fault mode]/`rangeconflict`/`continuation`/`sqlpage`) — continuation-under-injected-fault next |
 | **3** client sim (Track B) | `synctest`-driven client concurrency + simulated server processes | ⏳ **separate RFC** (not full DST) |
 
 The fast/reproducible inner loop for the record layer is now **hunt** (in-memory, seeded, true-rollback

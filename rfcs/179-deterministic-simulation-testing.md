@@ -676,10 +676,16 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
     surfaces as 1020 because the resolver runs before injection). **1,017 `commit_unknown`(1021) applied-
     and-committed + 6,900 `1020` aborts across 4,000 fault seeds**, both oracles holding — proving a 1021
     transaction participates correctly in concurrent conflict detection and applies exactly once.
-  - **Selected next build:** continuation under an INJECTED fault (not just pagination) — resume a scan
-    across a `commit_unknown`/`too_old` on the resume transaction and assert the page set stays exact,
-    and/or a SQL-query pagination oracle (paginate an executor cursor tree — filter/sort/join/group — and
-    assert paginated == one-shot), which reaches the query engine's continuation handling.
+  - **SQL-query pagination oracle ✅ BUILT** — `pkg/simfdb/hunt/sqlpage`. Runs each query at the default
+    execution scanned-rows limit (reference) vs a tiny one (forcing the executor to resume through
+    internal continuations repeatedly), asserting paged == one-shot across filter/sort/GROUP BY/join —
+    reaching the query engine's cursor-tree continuation handling. **Found a real bug on its first seed:**
+    streaming `DISTINCT` drops its dedup state across a continuation resume (returns duplicates when
+    paginated mid-stream, even with ORDER BY; GROUP BY is unaffected). Recorded in TODO.md "## DST
+    findings", Graefe-gated, quarantined + pinned by a fix-detector; not fixed here.
+  - **Selected next build:** continuation under an INJECTED fault — resume a read-write cursor across a
+    `commit_unknown`/`too_old` on the resume transaction and assert the page set stays exact (the
+    plan-hash-not-in-token / lost-resume-state bug class, now with a fault rather than just a page limit).
 - **Tier 3** — Track B, separate RFC, not started (out of scope here).
 
 ## 8. Risks & non-goals
