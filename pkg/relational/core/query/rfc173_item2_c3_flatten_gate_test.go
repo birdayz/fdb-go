@@ -107,6 +107,12 @@ func TestRFC173Item2C3_FlattenGateArm(t *testing.T) {
 		j := inner(nested, scan("TypedRecord", "tr"))
 		sel := c3TranslateFlatten(t, tr, c3ExistsFilter(j, "q$e"))
 		c3AssertAnchoredSeed(t, sel)
+		// The RECORD matches the seed built — a Gated record over an
+		// anchored seed would misroute downstream consumers (the
+		// WHERE-conjunct baking arm, commit 4's enclosure lift).
+		if d, ok := tr.wedgeGate[j]; !ok || d.Gated {
+			t.Fatalf("narrowed flatten's record = %+v (ok=%v), want recorded NOT gated", d, ok)
+		}
 	})
 
 	t.Run("duplicate existential alias declines", func(t *testing.T) {
@@ -116,6 +122,9 @@ func TestRFC173Item2C3_FlattenGateArm(t *testing.T) {
 		// The EXISTS alias collides with the right leg's alias.
 		sel := c3TranslateFlatten(t, tr, c3ExistsFilter(j, "c"))
 		c3AssertAnchoredSeed(t, sel)
+		if d, ok := tr.wedgeGate[j]; !ok || d.Gated {
+			t.Fatalf("dup-alias flatten's record = %+v (ok=%v), want recorded NOT gated (record must match the anchored seed)", d, ok)
+		}
 	})
 
 	t.Run("enclosed flatten declines", func(t *testing.T) {

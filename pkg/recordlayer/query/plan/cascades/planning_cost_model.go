@@ -855,7 +855,7 @@ func deepHashCode(e expressions.RelationalExpression) uint64 {
 		}
 		if child := firstPhysicalChild(ref); child != nil {
 			childHash := deepHashCode(child)
-			// ORDER-SENSITIVE fold — see concretePlanHash: a commutative XOR
+			// ORDER-SENSITIVE fold — see stablePlanHash: a commutative XOR
 			// made swapped join operands hash equal and the tie-break blind.
 			h = h*0x100000001b3 ^ (childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142)
 		}
@@ -1773,8 +1773,6 @@ func concretePlanDepth(p plans.RecordQueryPlan, kind planMatchKind) int {
 	return best
 }
 
-// concretePlanHash hashes a concrete plan tree deterministically (criterion's final
-// tiebreak), matching deepHashCode's mixing but over the concrete children.
 // stablePlanNodeHash is the #17 tie-break's per-node hash: the node's TYPE
 // plus its ALIAS-BLIND stable content. It deliberately does NOT reuse
 // HashCodeWithoutChildren — that is the memo-interning identity hash, where
@@ -1924,12 +1922,12 @@ func costExprDepth(e expressions.RelationalExpression, kind planMatchKind) int {
 // concrete plan for a physical expression and the logical memo otherwise.
 //
 // For a nil-inner SHELL (a push-through Fetch/Filter/Map/Distinct/InJoin template),
-// the embedded plan's GetChildren() is empty, so the bare concretePlanHash is blind
+// the embedded plan's GetChildren() is empty, so the bare stablePlanHash is blind
 // to the buried index — idx_a/idx_b/idx_c shells collapse to the SAME hash and the
 // tie-break returns 0, leaving selection to resolve by member-iteration order
 // (RFC-167 NONDETERMINISM). exprConcreteHash resolves the buried inner STRUCTURALLY
 // through the quantifier graph (mirroring exprConcreteCost) so the hash carries the
-// index identity. The fast path (no template below) keeps the cheap concretePlanHash.
+// index identity. The fast path (no template below) keeps the cheap stablePlanHash.
 func costExprHash(e expressions.RelationalExpression) uint64 {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {
@@ -1972,7 +1970,7 @@ func exprConcreteHash(e expressions.RelationalExpression, visited map[*expressio
 			visited[ref] = true
 			// firstPhysicalChild (structural, AllMembers-order) — NOT bestPhysicalChild
 			// (cost). This matches what extraction relinks to for every shell type via
-			// findPhysicalPlan, so the hash equals concretePlanHash(the plan extraction
+			// findPhysicalPlan, so the hash equals stablePlanHash(the plan extraction
 			// emits). The lone exception is InMemorySort, which extracts via
 			// findBestPhysicalPlan (cost-best); harmless here because the sort-count
 			// discriminator (#~9) fires before #17, but a Phase-1b net should pin it.
@@ -1984,7 +1982,7 @@ func exprConcreteHash(e expressions.RelationalExpression, visited map[*expressio
 		// concrete child as-is), an unresolvable child folds a constant (childHash==0):
 		// deterministic, and that branch is DAG-unreachable for a genuine nil-inner
 		// shell (its inner ref resolves down to a physical scan that never points back up).
-		// ORDER-SENSITIVE fold — see concretePlanHash: a commutative XOR made
+		// ORDER-SENSITIVE fold — see stablePlanHash: a commutative XOR made
 		// swapped join operands hash equal and the tie-break blind.
 		h = h*0x100000001b3 ^ (childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142)
 	}

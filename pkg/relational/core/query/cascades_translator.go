@@ -3887,8 +3887,15 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	//     leg alias (or another EXISTS alias) makes the flat select's
 	//     correlations indistinguishable — fail toward the name model, the
 	//     gate's unclassifiable direction.
-	gateDecision := t.ordinalWedgeGate(j)
-	gatedFlatten := gateDecision.Gated && gateDecision.Arity == 2
+	gateDecision := t.ordinalWedgeGateDecide(j)
+	gatedFlatten := gateDecision.Gated
+	if gatedFlatten && gateDecision.Arity != 2 {
+		gatedFlatten = false
+		gateDecision = wedgeGateDecision{
+			Arity:  gateDecision.Arity,
+			Reason: "existential flatten builds exactly two ForEach legs (nested-cluster leg would drift the seed against post-flattening arity)",
+		}
+	}
 	if gatedFlatten {
 		seen := map[string]struct{}{
 			strings.ToUpper(sourceAlias(left)):  {},
@@ -3898,11 +3905,23 @@ func (t *cascadesTranslator) translateJoinWithExists(
 			key := strings.ToUpper(esq.Alias.Name())
 			if _, dup := seen[key]; dup {
 				gatedFlatten = false
+				gateDecision = wedgeGateDecision{
+					Arity:  gateDecision.Arity,
+					Reason: "existential alias collides with a leg alias (indistinguishable correlations)",
+				}
 				break
 			}
 			seen[key] = struct{}{}
 		}
 	}
+	// Record the NARROWED decision — the map is the one truth downstream
+	// consumers (the WHERE-conjunct baking arm today, commit 4's enclosure
+	// lift) read, and a Gated record over an ANCHORED seed would misroute
+	// them. The record always matches the seed actually built below.
+	if t.wedgeGate == nil {
+		t.wedgeGate = make(map[*logical.LogicalJoin]wedgeGateDecision)
+	}
+	t.wedgeGate[j] = gateDecision
 
 	// Flatten join + EXISTS into a single SelectExpression
 	// with ForEach(left), ForEach(right), and Existential quantifiers.
