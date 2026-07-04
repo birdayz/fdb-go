@@ -198,8 +198,25 @@ validation gate.
     now clean 0AF00 declines with no-mutation pins). Exit gate amended per ruling: the constructor
     keeps exactly ONE production call site (ungated-outer rightmost-corr residual, pinned both
     directions) until W4-left/W5 gate every cluster; dies in S4.
-  - [ ] **W5 — multi-source lateral UNNEST** (retire `buildUnnestResultValue` AnchoredJoin; also kills
-    `MergeSeedLegsOfValue`/`leftmostQOVOfValue`).
+  - [ ] **W5 — multi-source lateral UNNEST** — IN PROGRESS on `feat/rfc173-w5-multisource-unnest`
+    (Graefe DESIGN-ACK, five forks ruled; charter amended per the F4 rider: the dotted classifiers go
+    DEAD-FOR-GATED in W5, physical deletion rides the last dotted producer's killer; the
+    under-existential class is re-chartered to the W4-left+EXISTS slice). Commit 1 LANDED: the
+    gathered flat (N+1)-quantifier translation (Java's shape, per-source baked Explode correlation),
+    the partition connectivity revisit, the gathered WHERE arm, white-box seed/decline pins, and the
+    disjoint-schema FDB e2e (WSRC/WAUX — the only disjoint pair; every other corpus pair shares
+    column names and correctly declines through the commit-1 ambiguity gate to the residual).
+    Remaining commits: 2 leg-window/compose resolution (unblocks the declined ON-carrying R18,
+    shadowed R16, name-ambiguous, and spanning-WHERE classes), 3 Q2 interning widening + budget pins,
+    4 §5 oracle rebind + the SELECT*-over-multi-source fix target (cannot plan on master), 5
+    classifier dead-for-gated pins; then the four-gate gauntlet.
+    - [ ] KNOWN-BROKEN residual (pre-existing, found by the W5 e2e work): a WHERE conjunct SPANNING
+      the unnest element and a cluster leg over the DISJOINT-column schema mis-filters on the
+      name-model residual — `SELECT EL, WV FROM WSRC, WAUX, WSRC.WARR AS EL WHERE EL > WAUX.WV`
+      returns all 4 rows (want 3) via the residual, which is master's code path by construction
+      (forceUnnestResidual only selects the old builder). The P2a MA/MB spanning pins pass — the
+      divergence axis (disjoint columns? aliasless FROM?) needs root-causing; the leg-window commit
+      ordinalizes the class through the GATHERED path and pins correct rows.
   - [ ] **W4-left + EXISTS + recursive-CTE joins** (retire `NewAnchoredJoinRecord` via
     `buildJoinResultValue`: LEFT/RIGHT-OUTER box, EXISTS-over-join, mixed-nesting, dup-alias,
     recursive-CTE-enclosed).
