@@ -4553,6 +4553,16 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // like QOV("(B") / QOV("1") / QOV("A") — the S4 kill-list first-dot-split
 // hazard (review findings, three classes). verbatimField nil = the
 // logical-name fallback path, identifiers by construction.
+//
+// RESIDUAL (pre-existing, dies with the name machinery in S4): within a
+// verbatim Field string itself, "is this dot a qualifier?" stays ambiguous —
+// the lazy name-model FieldValue spells both the qualified "B.ID" and a
+// QUOTED identifier containing a dot ("A-B.C", reachable only through a
+// quoted CTE column alias re-projected in a recursive leg; proto field names
+// cannot carry dots) in the same string. Master's unconditional first-dot
+// split broke the quoted class identically; disambiguating needs the lazy
+// dotted-Field constructor to mark qualifier provenance — the name-model
+// machinery S4 deletes.
 func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads bool) []values.Value {
 	out := make([]values.Value, len(cols))
 	for i, c := range cols {
