@@ -2118,3 +2118,50 @@ a FIX TARGET for W5, not a regression constraint.
   re-enumeration via `positionalMergeCase`; 3. Q2 interning widening + STAR/task pins; 4. §5 oracle
   rebind + positional-authority pin + `SELECT *` metadata; 5. classifier dead-for-gated pins
   (physical delete deferred per the F4 rider). Exit gate both directions.
+
+### W5 commit-2 design (investigation-grounded; for Graefe ruling)
+**Probe-verified ground truth (all end-to-end, live FDB where applicable):**
+- The case-A dotted-resolution mechanism over the flat bare-named output is LAZY dotted names +
+  RUNTIME SPAN ROUTING: childless flat `FieldValue{"A.NAME"}` projections survive every rule
+  untranslated (TranslationMap only rewrites correlation-bearing leaves), and resolve at
+  `executeProjection` via `downstreamLegWindows` → `joinPlanSpans` → `ordinalJoinSpansOf(rv, legRVs)`
+  (fused post-merge refs DESCEND the merge quantifier's child RV via `resolveSpanLeaf` to leaf legs)
+  → `spanAwareRow.GetByName` alias→window→leg-local routing. NOT baked projections.
+- The R18 divergence: `resolveSpanLeaf` descends only MULTI-accessor paths; the gathered MIXED
+  (no-AT) element — a bare non-record QOV seed slot, translated by the merge into a SINGLE-accessor
+  pinned ref over the merge quantifier — stops at the merge, yielding a partial-coverage span set →
+  windows decline → the STRICT positional context → the loud name-miss. **The AS+AT (full-baked)
+  ON-carrying gathered shape ALREADY WORKS end-to-end** (its element/ordinal refs fuse to
+  multi-accessor paths that descend fully).
+- **RETRACTION:** the commit-1 "spanning WHERE drops through the gathered re-enumeration" finding
+  was a PHANTOM — non-discriminating seed data (`EL > WV` all-true) misread as a dropped predicate;
+  with discriminating data the spanning conjunct classifies (spanning→upper), rewrites (bare QOVs
+  ARE translated by TranslateLeafPredicates), and filters correctly through BOTH paths. The
+  `predSpansUnnestAndLeg`/`forceUnnestResidual` fail-open guards a non-bug. The "P2a-vs-disjoint
+  residual divergence" was equally phantom.
+- Latent hazards: (1) gather-boundary alias case — gathered quantifiers are UPPER while
+  `bakeGatedJoinPredicates` preserves the baked correlation's original case; a lowercase correlation
+  mis-classifies the ON pred as deeply-correlated (unreachable via production SQL today — normalize
+  + assert + pin); (2) `newOrdinalJoinBirth` derives spans with nil legRVs — the NLJ cursor (unlike
+  the FlatMap's) never recovers them, so a translated NLJ top has WindowsOK=false and name-model
+  reads of ITS OWN Datum on such shapes are an untested dimension.
+
+**Proposed commit-2 scope (REVISED from the original "enclosed-leg + GROUP-BY re-enumeration"):**
+1. **The span-derivation extension (the core; executor-only, ~40 lines):** when a SINGLE-accessor
+   pinned ref's child is a merge quantifier (has a legRV) and the referenced slot is a bare
+   NON-RECORD QOV, synthesize the 1-field element leg (alias = the slot QOV's correlation; legType =
+   one field named by the RC field name — the existing `rfc173_ordinal_join.go:145-155` synthesis
+   pattern). Probe-verified: with the windows, `GetByName("S.SID")` and bare `"EL"` both resolve.
+   Windows are DECLARED SCAFFOLDING that dies in S4 — this extends existing scaffolding, adds no new
+   eval arm.
+2. **Lift the ON-carrying decline** (both unnest forms — AT already works, the mixed form works with
+   #1); pin R18-class FDB (ON + dotted projections + element WHERE through the gathered path).
+3. **Remove the phantom fail-open** (`predSpansUnnestAndLeg`, `forceUnnestResidual`) + pin the
+   spanning matrix through the gathered path with discriminating data (done for the residual side).
+4. **Alias-case normalization + assert at the gather boundary** (hazard 1) + a pin.
+5. R16 shadowing / name-ambiguous dups STAY DECLINED in commit 2 (one cheap probe first: the visitor
+   already qualifies shadowed bare projections to `V.V`, which #1's windows may route — if green,
+   lift the shadow decline too; the bare-twin dup class genuinely needs ordinal projections and
+   waits for the S4 compose direction).
+6. The ENCLOSED-leg class (`FROM A, A.arr AS x, B` — prevEnclosure) moves to commit 3 (with the Q2
+   interning widening); the original commit-2/3 split is re-drawn accordingly.
