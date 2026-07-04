@@ -55,6 +55,9 @@ func TestJavaServerExitsOnParentDeath(t *testing.T) {
 	// kernel closes its fds — nothing more. Closing the tether's write end is
 	// that exact event, minus everything Close() would normally also do (HTTP
 	// /shutdown, group SIGKILL): the server must now exit BY ITSELF.
+	// The deferred Close() above will close stdinW a second time; that double
+	// close is deliberate (kernel action here, normal backstop there) and its
+	// error is discarded.
 	if err := inv.stdinW.Close(); err != nil {
 		t.Fatalf("failed to close parent-side stdin handle: %v", err)
 	}
