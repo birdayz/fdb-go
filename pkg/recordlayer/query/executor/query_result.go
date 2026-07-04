@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
 
@@ -73,10 +74,23 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 // protoToPositional cost more than the sparse protoToMap itself
 // (BenchmarkProtoToPositional_Order). The cached type is shared across rows and
 // goroutines — read-only after construction (FieldIndex / shadow reads only).
-// Keyed by the descriptor (a per-message-type singleton for generated code;
-// dynamicpb descriptors miss and rebuild, which is correct, just uncached). A
-// racy duplicate Store is harmless: both values are structurally equal.
+// Keyed by the descriptor: a per-message-type singleton for generated code,
+// and per-schema-load for dynamicpb — a long-lived multi-tenant process that
+// keeps loading schemas mints fresh descriptor instances forever, so the cache
+// is BOUNDED (wipe-at-cap in protoToPositional): entries are pure derivations,
+// a rare wipe just re-warms. A racy duplicate Store is harmless: both values
+// are structurally equal.
 var positionalTypeCache sync.Map // protoreflect.MessageDescriptor -> *values.RecordType
+
+// positionalTypeCacheSize approximates the entry count (duplicate Stores may
+// overcount, a concurrent wipe may briefly undercount — the bound only needs
+// to hold within a small epsilon, never exactly).
+var positionalTypeCacheSize atomic.Int64
+
+// positionalTypeCacheCap bounds the cache. Far above any real live-schema
+// population, so a wipe only fires under descriptor churn — the
+// unbounded-growth class it exists to stop.
+const positionalTypeCacheCap = 4096
 
 // protoToPositional is the RFC-173 ordinal-model counterpart of protoToMap: it
 // builds a PositionalRow from a proto message, one slot per descriptor field in
@@ -103,6 +117,15 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 			rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
 		}
 		rt = values.NewRecordType("", false, rtFields)
+		if positionalTypeCacheSize.Add(1) > positionalTypeCacheCap {
+			// Descriptor churn (dynamicpb across many schema loads) must not
+			// grow the cache without bound: wipe and re-warm.
+			positionalTypeCache.Range(func(k, _ any) bool {
+				positionalTypeCache.Delete(k)
+				return true
+			})
+			positionalTypeCacheSize.Store(1)
+		}
 		positionalTypeCache.Store(desc, rt)
 	}
 	slots := make([]any, n)
