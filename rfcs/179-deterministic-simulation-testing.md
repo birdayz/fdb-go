@@ -548,6 +548,27 @@ complements DST rather than replacing it.
 
 Land 0→1→2 before touching 3. Each tier is independently valuable and revert-safe.
 
+### 7a. Implementation status & the selected next build
+
+- **Tier 0** ✅ `pkg/dst` (Clock/Randomness/Buggifier) wired into persisted-byte sites.
+- **Tier 1** ✅ `pkg/simfdb` (SSI resolver, versions, RYW+atomics, size codes, commit BUGGIFY, targeted injection).
+- **Tier 2:**
+  - Record-layer + SQL hunt workloads ✅ `pkg/simfdb/hunt` (+ `sqlhunt`): brute-force loop-until-bug,
+    shrink, `cmd/dst-hunt` overnight runner. Found/fixed the dynamic-record wire-serialization bug.
+  - Golden / characterization oracle ✅ `pkg/simfdb/hunt/golden` (result + `EXPLAIN` baseline, diff on
+    merge; determinism-proven across 160+ fresh processes).
+  - Independent-model + (partial) metamorphic SQL oracles ✅ in `sqlhunt`; full **metamorphic** oracle
+    (plan-diversity equivalence + partition invariants) ⏳ **not yet built**.
+  - **Concurrent-open-transaction interleaving driver ⏳ NOT YET BUILT — the selected next build**
+    (after operationalizing golden). **Why it is the priority:** every workload to date is single-writer,
+    so SimFDB's SSI resolver has **not fired a single real `1020`** — Tier 1's conflict resolution is an
+    *unexercised checkbox* (NO-FAKE-CHECKBOXES). This driver — hold several transactions open, interleave
+    their ops in one goroutine, commit through the serialized resolver — is what makes `1020` and
+    non-idempotent-`Add`-under-true-rollback-`1021` actually fire. Hard prerequisite: MVCC
+    reads-at-read-version (Tier 1 item 5).
+  - Continuation-under-fault replay ⏳ not yet built (plan-hash-not-in-token bug class).
+- **Tier 3** — Track B, separate RFC, not started (out of scope here).
+
 ## 8. Risks & non-goals
 
 - **Fidelity of SimFDB is the whole ballgame.** MVCC read-version monotonicity, SSI conflict

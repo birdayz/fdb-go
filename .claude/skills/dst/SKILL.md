@@ -156,6 +156,33 @@ bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed \
   FDB (chaos/differential) before calling it wire-safe. (The serialization fix above *is* wire-adjacent —
   it was cross-checked against Java's field ordering.)
 
+## golden (characterization gate)
+
+Behavior lock for the SQL engine (`pkg/simfdb/hunt/golden/`, RFC-179 Tier 2 oracle). For a curated
+corpus of (schema, seeded data, queries) it captures the engine's **`EXPLAIN` plan + result rows** over
+SimFDB into a committed baseline (`testdata/*.golden`) and diffs a fresh capture every run. Catches
+**CHANGED, not WRONG** — a silent plan/result regression (right rows, wrong/slower plan — the PR #201
+class) that *no result-based or metamorphic test sees*. It's the merge/release gate: the diff is the
+review artifact. Only trustworthy because SimFDB makes engine output deterministic — verified byte-stable
+across 160+ fresh processes, `-race`, and every `GOMAXPROCS`.
+
+```sh
+just golden           # check current behavior vs the committed baseline (also runs in `just test`)
+just golden-update    # after an INTENTIONAL engine change: regenerate, then review the diff
+git diff pkg/simfdb/hunt/golden/testdata/   # THE review artifact
+```
+
+- **Reviewing a golden diff (author + Graefe):** a **result-row** change is loud → almost always a bug;
+  a **plan** change with identical rows is a query-engine change → intended optimization or a regression,
+  reviewed with its cost delta (a `IndexScan(X)` → `Scan(T)` swap is a red flag). A PR that changes engine
+  behavior *must* regenerate + commit the baseline, or `just test` fails — that's the gate.
+- **Add coverage:** append a `Scenario` to `corpus()` in `golden_test.go` (new schema / index / query
+  shapes — joins, composite PK, aggregate indexes are in already), then `just golden-update`. Keep it
+  curated (not a random dump) so the baseline stays reviewable. A query that can't plan shows as
+  `PLAN-ERR`/`ROWS-ERR` in the golden — fix or drop it, never bake an error into the baseline.
+- **Limit:** locks *current* behavior, right or wrong — pair it with the metamorphic/model oracles (which
+  catch WRONG). Golden alone would keep a day-one bug green.
+
 ## fuzz
 
 125 targets across 61 files. Property/no-panic fuzzers: wire byte-identity to libfdb_c, tuple/RYW/wire

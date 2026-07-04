@@ -48,7 +48,86 @@ func corpus() []Scenario {
 			"SELECT id, name FROM t WHERE name IS NULL ORDER BY id",
 		},
 	}
-	return []Scenario{orders}
+	// joins: two tables + a secondary index on the FK, so the planner has a real join-order /
+	// join-method choice, plus grouped aggregation over the join.
+	joins := Scenario{
+		Name: "joins",
+		Seed: 2,
+		Tables: []string{
+			"CREATE TABLE cust (cid BIGINT NOT NULL, region BIGINT, PRIMARY KEY (cid))",
+			"CREATE TABLE ord (oid BIGINT NOT NULL, cid BIGINT, amt BIGINT, PRIMARY KEY (oid))",
+			"CREATE INDEX ord_cid ON ord(cid)",
+		},
+		Data: []string{
+			"INSERT INTO cust (cid, region) VALUES (1, 10)",
+			"INSERT INTO cust (cid, region) VALUES (2, 20)",
+			"INSERT INTO cust (cid, region) VALUES (3, 10)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (100, 1, 50)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (101, 1, 70)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (102, 2, 30)",
+			"INSERT INTO ord (oid, cid, amt) VALUES (103, 3, 90)",
+		},
+		Queries: []string{
+			"SELECT c.cid, o.oid, o.amt FROM cust c JOIN ord o ON c.cid = o.cid ORDER BY c.cid, o.oid",
+			"SELECT c.region, SUM(o.amt) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region ORDER BY c.region",
+			"SELECT o.oid FROM ord o JOIN cust c ON o.cid = c.cid WHERE c.region = 10 ORDER BY o.oid",
+			"SELECT COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid",
+		},
+	}
+
+	// multikey: a composite primary key (region, id) — locks composite key encoding and
+	// prefix-range planning (WHERE region = ? [AND id > ?]).
+	multikey := Scenario{
+		Name: "multikey",
+		Seed: 3,
+		Tables: []string{
+			"CREATE TABLE t (region BIGINT NOT NULL, id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (region, id))",
+		},
+		Data: []string{
+			"INSERT INTO t (region, id, v) VALUES (1, 1, 100)",
+			"INSERT INTO t (region, id, v) VALUES (1, 2, 200)",
+			"INSERT INTO t (region, id, v) VALUES (1, 3, 300)",
+			"INSERT INTO t (region, id, v) VALUES (2, 1, 400)",
+			"INSERT INTO t (region, id, v) VALUES (2, 2, 500)",
+			"INSERT INTO t (region, id, v) VALUES (3, 1, 600)",
+		},
+		Queries: []string{
+			"SELECT region, id, v FROM t ORDER BY region, id",
+			"SELECT id, v FROM t WHERE region = 1 ORDER BY id",
+			"SELECT v FROM t WHERE region = 2 AND id = 2",
+			"SELECT region, id FROM t WHERE region = 2 AND id > 1 ORDER BY id",
+			"SELECT region, COUNT(*), SUM(v) FROM t GROUP BY region ORDER BY region",
+		},
+	}
+
+	// aggidx: aggregate indexes (SUM/COUNT grouped) — the planner should answer the matching
+	// grouped aggregate straight from the index (an AggregateIndex scan), a shape the golden
+	// locks so a cost-model change that stops using the index shows up as a plan diff.
+	aggidx := Scenario{
+		Name: "aggidx",
+		Seed: 4,
+		Tables: []string{
+			"CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g",
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g",
+		},
+		Data: []string{
+			"INSERT INTO t (id, g, v) VALUES (1, 1, 10)",
+			"INSERT INTO t (id, g, v) VALUES (2, 1, 20)",
+			"INSERT INTO t (id, g, v) VALUES (3, 2, 30)",
+			"INSERT INTO t (id, g, v) VALUES (4, 2, 40)",
+			"INSERT INTO t (id, g, v) VALUES (5, 3, 50)",
+			"INSERT INTO t (id, g, v) VALUES (6, 1, 60)",
+		},
+		Queries: []string{
+			"SELECT g, SUM(v) FROM t GROUP BY g ORDER BY g",
+			"SELECT g, COUNT(*) FROM t GROUP BY g ORDER BY g",
+			"SELECT SUM(v) FROM t",
+			"SELECT MIN(v), MAX(v) FROM t",
+		},
+	}
+
+	return []Scenario{orders, joins, multikey, aggidx}
 }
 
 // TestGolden captures each scenario over SimFDB and diffs it against the committed baseline in
