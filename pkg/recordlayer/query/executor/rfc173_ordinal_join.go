@@ -858,7 +858,7 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 	if !b.enabled() || plan == nil {
 		return
 	}
-	collect := func(v values.Value) values.Value {
+	walkBakedRefs(plan, func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			return v
@@ -873,17 +873,31 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 			}
 		}
 		return v
-	}
+	})
+}
+
+// walkBakedRefs walks a physical plan tree's predicate surfaces —
+// PredicatesFilter/Filter predicates and scan/index comparison operands —
+// applying collect to every value found there. It is the ONE baked-reference
+// plan walk (design-ruling amendment B: a single derivation path), shared by
+// widenLegTypesFromPlan (the birth-side type widening, width-divergence panic
+// in its collector) and probeOuterBakedType (the item-2 commit-2
+// disabled-birth probe).
+//
+// RecordQueryNestedLoopJoinPlan also implements GetPredicates but is
+// DELIBERATELY omitted (review note, arm-parity precedent): baked
+// references exist only in gated joins, and join legs are categorically
+// ineligible in the S2 wedge — a baked-ref-bearing NLJ cannot appear
+// inside a gated flatMap's inner plan. Re-examine at the S3 gate widening.
+// The exact-set plan arms fail SAFE: a missed predicate surface leaves a leg
+// typeless / a probe negative — a loud zero-width death or the name-model
+// Datum binding downstream, never silent misbinding.
+func walkBakedRefs(plan plans.RecordQueryPlan, collect func(values.Value) values.Value) {
 	collectComparison := func(c *predicates.Comparison) {
 		if c != nil && c.Operand != nil {
 			values.Replace(c.Operand, collect)
 		}
 	}
-	// RecordQueryNestedLoopJoinPlan also implements GetPredicates but is
-	// DELIBERATELY omitted (review note, arm-parity precedent): baked
-	// references exist only in gated joins, and join legs are categorically
-	// ineligible in the S2 wedge — a baked-ref-bearing NLJ cannot appear
-	// inside a gated flatMap's inner plan. Re-examine at the S3 gate widening.
 	var walk func(p plans.RecordQueryPlan)
 	walk = func(p plans.RecordQueryPlan) {
 		if p == nil {
@@ -924,6 +938,44 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 		}
 	}
 	walk(plan)
+}
+
+// probeOuterBakedType is the RFC-173 item-2 commit-2 DISABLED-BIRTH probe: a
+// FlatMap whose own result value births no ordinal state (the identity-RV
+// existential FlatMap — WHERE-EXISTS over a gated join) can still carry BAKED
+// FrontierPinned references to the OUTER alias inside its inner plan (the
+// correlated implementation pushes the join's ON references down as SARGs and
+// residual filters). Those references resolve by ordinal and die loudly on a
+// name-keyed Datum binding (BakedNameContextError), so the cursor must bind
+// the outer positionally. The probe recovers the outer's typed RecordType
+// from those references through the shared walker; the width-divergence panic
+// asserts the same one-seed invariant widenLegTypesFromPlan pins.
+//
+// S4 KILL LIST (design-ruling amendment A): this probe and the identity-RV
+// positional pass-through are coexistence-window scaffolding — once the name
+// model dies, every row and binding is positional and the probe decides
+// nothing. The empirical zero-producers gate covers them.
+func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) *values.RecordType {
+	var found *values.RecordType
+	walkBakedRefs(plan, func(v values.Value) values.Value {
+		fv, isFV := v.(*values.FieldValue)
+		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+			return v
+		}
+		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		if !isQOV || qov.Correlation != outerAlias {
+			return v
+		}
+		if rt, isRT := qov.Type().(*values.RecordType); isRT {
+			if found == nil {
+				found = rt
+			} else if len(found.Fields) != len(rt.Fields) {
+				panic(fmt.Sprintf("RFC-173: outer %s carries DIVERGENT baked types (%d vs %d fields) across the inner plan's references — all baked references must copy the one seed-constructed typed QOV (planner bug)", outerAlias, len(found.Fields), len(rt.Fields)))
+			}
+		}
+		return v
+	})
+	return found
 }
 
 // oracleNameDatum is the §5 NAME-MODEL ORACLE's row for an ordinal-birth
@@ -1304,6 +1356,19 @@ func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 		case *plans.RecordQueryNestedLoopJoinPlan:
 			return p
 		case *plans.RecordQueryFlatMapPlan:
+			// An identity-over-OUTER FlatMap (the WHERE-EXISTS pass-through,
+			// RFC-141) is a row-preserving passthrough toward its OUTER plan:
+			// the cursor re-emits the outer row verbatim (qualifyOuterRow +
+			// the item-2 commit-2 I1 positional pass-through), so the window
+			// authority is the outer's join — this FlatMap's own bare-QOV RV
+			// yields no spans. Any other RV keeps the FlatMap as the terminal:
+			// the seed RC is its own authority, everything else declines in
+			// joinPlanSpans. An INNER-identity RV (FirstOrDefault-style
+			// shapes) re-emits INNER rows and must NOT unwrap to the outer.
+			if qov, ok := p.GetResultValue().(*values.QuantifiedObjectValue); ok && qov.Correlation == p.GetOuterAlias() {
+				input = p.GetOuter()
+				continue
+			}
 			return p
 		case *plans.RecordQuerySortPlan:
 			input = p.GetInner()
