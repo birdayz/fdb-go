@@ -3830,22 +3830,16 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	j *logical.LogicalJoin,
 	f *logical.LogicalFilter,
 ) expressions.RelationalExpression {
-	// FULL OUTER cannot be expressed through the join+EXISTS flatten shape
-	// (the semi-join cannot carry the FULL drain). The production path
-	// rejects this earlier with a clear error (findFullOuterWithExists),
-	// but harness callers (plan_harness) invoke the translator directly and
-	// bypass that guard — refuse here too so FULL+EXISTS is never silently
-	// mistranslated to INNER (the kind switch below defaults to JoinInner).
-	if j.Kind == logical.JoinFull {
+	// The flatten is INNER-only BY CONTRACT: the dispatch in translateFilter
+	// routes every OUTER kind to the generic arm (merging a preserved-side
+	// WHERE conjunct into the flat select would turn it into ON semantics —
+	// null-padding rows that must drop). A non-INNER join here is a caller
+	// bug; decline rather than silently mistranslate it to INNER.
+	if j.Kind != logical.JoinInner {
 		return nil
 	}
 	left := j.Left
 	right := j.Right
-	kind := j.Kind
-	if kind == logical.JoinRight {
-		left, right = right, left
-		kind = logical.JoinLeft
-	}
 
 	// Collect scalar subquery plans from the filter.
 	for _, ssq := range f.ScalarSubqueries {
@@ -3915,20 +3909,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
-	var joinType expressions.JoinType
-	switch kind {
-	case logical.JoinLeft:
-		joinType = expressions.JoinLeftOuter
-	default:
-		joinType = expressions.JoinInner
-	}
-
 	// The RV uses DECLARATION order (design ruling I2: Java assembles the
-	// result value in source order regardless of join type — only the
-	// preserved/null-supplying ROLES swap). Building it from the post-swap
-	// left/right made a RIGHT JOIN + EXISTS SELECT * emit the right table's
-	// columns first — a latent declaration-order divergence the plain-join
-	// path (translateJoin :3745) never had (red-first FDB pin f).
+	// result value in source order regardless of join type).
 	//
 	// W4-left F2 SCOPE NOTE (producer audit): the INNER flatten's seed
 	// stays ANCHORED. An ordinal seed here was cut and REVERTED twice by
@@ -3936,8 +3918,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// select also implements through data-access/correlated-FlatMap paths
 	// whose bindings are NAME maps — the seed's baked leg refs hit the
 	// loud BakedNameContextError on the LIVE side. Ordinalizing the
-	// flatten needs those paths' positional binders first (booked with the
-	// 7.1-adjacent follow-ups). The GATED existential classes that DO run
+	// flatten needs those paths' positional binders first (the QP-REF-BIND
+	// charter, TODO.md). The GATED existential classes that DO run
 	// ordinal today arrive via the generic filter arm (a gated LEFT/RIGHT
 	// box or gated cluster under buildExistentialSelect), where the
 	// implementation's ordinal rebase handles the merged references.
@@ -3955,7 +3937,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		quantifiers,
 		allPreds,
 		sourceAliases,
-		joinType,
+		expressions.JoinInner,
 	)
 }
 

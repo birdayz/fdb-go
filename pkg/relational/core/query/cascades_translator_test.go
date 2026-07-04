@@ -519,6 +519,28 @@ func TestTranslateJoinWithExists_NilMdUntranslatable(t *testing.T) {
 	}
 }
 
+// The join+EXISTS flatten is INNER-only BY CONTRACT — translateFilter routes
+// every OUTER kind to the generic arm (W4-left pin g: merging a
+// preserved-side WHERE conjunct into the flat select turns it into ON
+// semantics, null-padding rows that must drop). A non-INNER join reaching the
+// flatten is a caller bug and must DECLINE, never mistranslate to INNER.
+func TestTranslateJoinWithExists_NonInnerDeclines(t *testing.T) {
+	t.Parallel()
+	tr := &cascadesTranslator{}
+	for _, kind := range []logical.JoinKind{logical.JoinLeft, logical.JoinRight, logical.JoinFull} {
+		join := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), kind, "")
+		filter := &logical.LogicalFilter{
+			Input: join,
+			ExistsSubqueries: []logical.ExistsSubquery{
+				{Alias: values.NamedCorrelationIdentifier("E"), Plan: logical.NewScan("TypedRecord", "TR")},
+			},
+		}
+		if got := tr.translateJoinWithExists(join, filter); got != nil {
+			t.Fatalf("kind %v must decline the INNER-only flatten, got %T", kind, got)
+		}
+	}
+}
+
 func TestTranslateNil(t *testing.T) {
 	t.Parallel()
 	ref := TranslateToCascades(nil)
