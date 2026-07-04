@@ -322,7 +322,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// translator's bottom-up lowering cannot see (`FROM T1, T1.arr AS V, U AS V`).
 	// Run before column resolution so the duplicate-alias error is not masked.
 	// RFC-142.
-	if err := rejectDuplicateUnnestAlias(logicalOp); err != nil {
+	if err := rejectDuplicateUnnestAlias(logicalOp, g.c.cachedMetaData()); err != nil {
 		return nil, err
 	}
 
@@ -862,7 +862,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// LogicalInsert.Source / LogicalUpdate.Input / LogicalDelete.Input (their
 	// Children) and subquery plans, so a colliding alias anywhere in the DML's FROM
 	// scope is rejected. RFC-142.
-	if err := rejectDuplicateUnnestAlias(logicalOp); err != nil {
+	if err := rejectDuplicateUnnestAlias(logicalOp, g.c.cachedMetaData()); err != nil {
 		return nil, err
 	}
 
@@ -3972,7 +3972,7 @@ func lookupFieldFold(desc protoreflect.MessageDescriptor, name string) protorefl
 // Running it over the full tree (and into subquery plans, like rejectAtOrdinalityOn
 // Table) covers an unnest whose colliding later source lives in an EXISTS / scalar
 // subquery's own FROM scope. RFC-142.
-func rejectDuplicateUnnestAlias(op logical.LogicalOperator) error {
+func rejectDuplicateUnnestAlias(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
 	if op == nil {
 		return nil
 	}
@@ -3982,17 +3982,17 @@ func rejectDuplicateUnnestAlias(op logical.LogicalOperator) error {
 	// source is its own FROM scope — exactly like outerBoundAliases /
 	// buriedUnnestLegs; the recursion below then re-enters those nested scopes.
 	if j, ok := op.(*logical.LogicalJoin); ok {
-		if err := checkFromScopeUnnestAliases(j); err != nil {
+		if err := checkFromScopeUnnestAliases(j, md); err != nil {
 			return err
 		}
 	}
 	for _, ch := range op.Children() {
-		if err := rejectDuplicateUnnestAlias(ch); err != nil {
+		if err := rejectDuplicateUnnestAlias(ch, md); err != nil {
 			return err
 		}
 	}
 	for _, sub := range subqueryPlans(op) {
-		if err := rejectDuplicateUnnestAlias(sub); err != nil {
+		if err := rejectDuplicateUnnestAlias(sub, md); err != nil {
 			return err
 		}
 	}
@@ -4005,8 +4005,9 @@ func rejectDuplicateUnnestAlias(op logical.LogicalOperator) error {
 // scope) and rejects any lateral-unnest leg in that chain whose AS or AT alias also
 // names another source in the same chain. The check is symmetric across the chain,
 // so it catches both an earlier and a later collision. RFC-142.
-func checkFromScopeUnnestAliases(j *logical.LogicalJoin) error {
-	var scans []string // every leaf source alias (Scan / derived leg) in the chain
+func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordMetaData) error {
+	var scans []string      // every leaf source alias (Scan / derived leg) in the chain
+	var scanTables []string // parallel: the source's TABLE name ("" = columns unknown)
 	var unnests []*logical.LogicalUnnest
 	var walk func(logical.LogicalOperator)
 	walk = func(o logical.LogicalOperator) {
@@ -4018,13 +4019,20 @@ func checkFromScopeUnnestAliases(j *logical.LogicalJoin) error {
 			}
 			if a != "" {
 				scans = append(scans, strings.ToUpper(a))
+				scanTables = append(scanTables, n.Table)
 			}
 		case *logical.LogicalUnnest:
 			unnests = append(unnests, n)
 		case *logical.LogicalCTE:
 			// A derived/CTE leg contributes only its OUTER alias (its Main is a
 			// Scan(name)); its Body is a separate FROM scope, not descended here.
+			// Its columns are unknown to md — the dup check treats "" as
+			// all-colliding (conservative).
+			preLen := len(scans)
 			walk(n.Main)
+			for k := preLen; k < len(scans); k++ {
+				scanTables[k] = ""
+			}
 		default:
 			for _, c := range o.Children() {
 				walk(c)
@@ -4032,6 +4040,46 @@ func checkFromScopeUnnestAliases(j *logical.LogicalJoin) error {
 		}
 	}
 	walk(j)
+	// RFC-173 W4-left: a FROM chain binding the SAME source alias twice
+	// (`FROM p, q, p` / `FROM p AS a, q AS a`) rejects with Java's
+	// AMBIGUOUS-reference code. Java allows the duplicate at FROM (its
+	// quantifiers mint unique ids) and errors at REFERENCE resolution
+	// (SemanticAnalyzer's attributes.size()==1 asserts, 42702) — which every
+	// practical query over the duplicate hits. Go's lazy name-model
+	// resolution has no translation-time reference binding to hang the exact
+	// per-reference check on (the 7.1 namespace unification's charter), so
+	// the FROM-level rejection approximates it: same code, same practical
+	// class (and Java's exact message text, conformance-shared); the
+	// unreferenced corner (`SELECT * FROM p, q, p`, which Java
+	// answers with duplicate columns) over-rejects — recorded in
+	// DIVERGENCES.md. Pre-rejection behavior was strictly worse on BOTH
+	// axes: a referenced duplicate silently bound last-leg-wins (wrong rows,
+	// never Java's error) and SELECT * died with an internal planner error.
+	seenSrc := map[string]string{} // UPPER alias → table
+	for i, a := range scans {
+		prevTable, dup := seenSrc[a]
+		if !dup {
+			seenSrc[a] = scanTables[i]
+			continue
+		}
+		// Java's ambiguity is PER-ATTRIBUTE (SemanticAnalyzer's
+		// attributes.size()==1 asserts): a duplicated alias errors only for
+		// a reference whose (qualifier, column) matches BOTH sources —
+		// conformance-verified: `SELECT a.id FROM ta AS a, tb AS a` ANSWERS
+		// when only ta has id. The FROM-level approximation rejects when the
+		// duplicate sources SHARE any column (every shared-column reference
+		// would be ambiguous — the practical class, e.g. the same table
+		// twice), with Java's message naming the first shared column; a
+		// source whose columns are unknown here (CTE/derived legs) counts as
+		// all-colliding, conservative. Disjoint-column duplicates pass
+		// through — the name model's per-leg qualified keys bind them
+		// correctly (conformance parity entry).
+		shared := sharedColumnUpper(md, prevTable, scanTables[i])
+		if shared != "" {
+			return api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"Ambiguous reference %s.%s", a, shared)
+		}
+	}
 	if len(unnests) == 0 {
 		return nil
 	}
@@ -4705,4 +4753,58 @@ func rowsOrEmpty(rows driver.Rows) driver.Rows {
 		return emptyRows{}
 	}
 	return rows
+}
+
+// sharedColumnUpper returns the FIRST column name (UPPER, declaration order
+// of tableA) present in BOTH tables' descriptors, or "" when the column sets
+// are disjoint. An unresolvable table ("" — a CTE/derived leg — or a name md
+// does not know) counts as ALL-colliding and returns the other table's first
+// column (or "?" when neither resolves): the FROM-level ambiguity
+// approximation must fail toward Java's error for sources whose columns it
+// cannot see.
+func sharedColumnUpper(md *recordlayer.RecordMetaData, tableA, tableB string) string {
+	colsOf := func(table string) []string {
+		if md == nil || table == "" {
+			return nil
+		}
+		rt := md.GetRecordType(table)
+		if rt == nil {
+			for name, cand := range md.RecordTypes() {
+				if strings.EqualFold(name, table) {
+					rt = cand
+					break
+				}
+			}
+		}
+		if rt == nil || rt.Descriptor == nil {
+			return nil
+		}
+		fields := rt.Descriptor.Fields()
+		out := make([]string, 0, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			out = append(out, strings.ToUpper(string(fields.Get(i).Name())))
+		}
+		return out
+	}
+	colsA := colsOf(tableA)
+	colsB := colsOf(tableB)
+	if colsA == nil && colsB == nil {
+		return "?"
+	}
+	if colsA == nil {
+		return colsB[0]
+	}
+	if colsB == nil {
+		return colsA[0]
+	}
+	setB := make(map[string]struct{}, len(colsB))
+	for _, c := range colsB {
+		setB[c] = struct{}{}
+	}
+	for _, c := range colsA {
+		if _, ok := setB[c]; ok {
+			return c
+		}
+	}
+	return ""
 }

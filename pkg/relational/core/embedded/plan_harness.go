@@ -257,7 +257,7 @@ func PlanRecordQueryWithMetadataSchema(sql string, md *recordlayer.RecordMetaDat
 	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
 	// alias (earlier OR later) in the same scope — the later-source collision the
 	// translator's bottom-up lowering cannot see. RFC-142.
-	if err := rejectDuplicateUnnestAlias(logicalOp); err != nil {
+	if err := rejectDuplicateUnnestAlias(logicalOp, md); err != nil {
 		return nil, err
 	}
 	if err := resolveQualifiedTableNames(logicalOp, schemaName); err != nil {

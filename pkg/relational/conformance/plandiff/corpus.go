@@ -17971,6 +17971,55 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_SSA_01 VALUES (1, 10), (2, 20), (3, 30)"},
 			Query:          "SELECT id, v, v - (SELECT AVG(v) FROM T_SSA_01) AS diff FROM T_SSA_01 ORDER BY id",
 		},
+		// RFC-173 W4-left commit 4 — duplicate FROM-source aliases. Java
+		// allows the duplicate at FROM (unique quantifier ids) and raises
+		// AMBIGUOUS_COLUMN (42702, "Ambiguous reference p") at REFERENCE
+		// resolution; Go rejects at the FROM walk with the same code/text
+		// (the exact per-reference check is the 7.1 namespace-unification
+		// charter). Referenced duplicates are PARITY entries (both engines
+		// error identically); the unreferenced SELECT * corner is a marked
+		// divergence (Java answers with duplicate columns; DIVERGENCES.md).
+		{
+			Name:           "dup_from_alias_referenced_unaliased",
+			SchemaTemplate: "CREATE TABLE T_DUP_P (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_Q (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_P VALUES (1, 10)", "INSERT INTO T_DUP_Q VALUES (7)"},
+			Query:          "SELECT T_DUP_P.id FROM T_DUP_P, T_DUP_Q, T_DUP_P",
+		},
+		{
+			// DISJOINT-column duplicate aliases: Java answers per-attribute
+			// (a.id is unambiguous), and the PREDICATE-FREE form answers in Go
+			// too (the name model's per-leg qualified keys — PARITY).
+			Name:           "dup_from_alias_referenced_aliased",
+			SchemaTemplate: "CREATE TABLE T_DUP_A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_B (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_A VALUES (1, 10)", "INSERT INTO T_DUP_B VALUES (7)"},
+			Query:          "SELECT a.id FROM T_DUP_A AS a, T_DUP_B AS a",
+		},
+		{
+			// The PREDICATED disjoint-dup form: Java still answers; Go's
+			// planner cannot bind predicates over the indistinguishable
+			// correlations without the 7.1 per-reference binding — the clean
+			// 0AF00 decline (never wrong rows), marked.
+			Name:           "dup_from_alias_disjoint_where",
+			SchemaTemplate: "CREATE TABLE T_DUP_C (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_D (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_C VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_D VALUES (7)"},
+			Query:          "SELECT a.id FROM T_DUP_C AS a, T_DUP_D AS a WHERE a.id = 2",
+			Divergence: &Divergence{
+				Reason:          "RFC-173 W4-left commit 4: Java answers the predicated disjoint-column dup-alias form (per-attribute ambiguity, unique quantifier ids); Go cannot bind predicates over indistinguishable correlations without the 7.1 per-reference binding — clean 0AF00 decline, never wrong rows. See DIVERGENCES.md.",
+				Direction:       DivergenceJavaSucceedsGoRejects,
+				GoErrorContains: "could not plan",
+			},
+		},
+		{
+			Name:           "dup_from_alias_select_star",
+			SchemaTemplate: "CREATE TABLE T_DUP_S (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_T (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_S VALUES (1, 10)", "INSERT INTO T_DUP_T VALUES (7)"},
+			Query:          "SELECT * FROM T_DUP_S, T_DUP_T, T_DUP_S",
+			Divergence: &Divergence{
+				Reason:          "RFC-173 W4-left commit 4: Go rejects duplicate FROM aliases at the FROM walk (42702); Java answers SELECT * over the duplicate with duplicate columns (unique quantifier ids). The per-reference check is the 7.1 namespace-unification charter; see DIVERGENCES.md.",
+				Direction:       DivergenceJavaSucceedsGoRejects,
+				GoErrorContains: "Ambiguous reference",
+			},
+		},
 	}
 }
 
