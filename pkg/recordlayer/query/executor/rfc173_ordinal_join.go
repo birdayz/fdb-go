@@ -173,6 +173,14 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 		return nil, nil, false
 	}
 	mergedFields := make([]values.Field, len(rc.Fields))
+	// A leg alias never legitimately RECURS: a seed is a concat of DISTINCT
+	// contiguous legs. Rejecting a re-appearing alias (a split run) makes this
+	// run-LIST walk accept-equivalent to values.OrdinalSeedLegWindows' run-MAP,
+	// whose dup-alias check declines the same shape — closing the last (unreachable,
+	// but real) cross-agreement drift surface: a 1-field-leg `[A,B,A]` would
+	// otherwise be accepted here (each 1-field run trivially full-coverage) while
+	// values declines it. Pinned as a both-decline case in the cross-agreement fixture.
+	seen := make(map[values.CorrelationIdentifier]struct{}, len(rc.Fields))
 	for i, f := range rc.Fields {
 		fv, isFV := f.Value.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
@@ -190,6 +198,10 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 			if ord != 0 {
 				return nil, nil, false // run must start at leg ordinal 0
 			}
+			if _, dup := seen[alias]; dup {
+				return nil, nil, false // a split run (leg recurs) — not the concat
+			}
+			seen[alias] = struct{}{}
 			spans = append(spans, legSpan{Alias: alias, LegType: legType, Offset: i, Width: 1})
 		} else {
 			cur := &spans[len(spans)-1]

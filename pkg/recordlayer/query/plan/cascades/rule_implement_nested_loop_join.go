@@ -707,6 +707,41 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	resultValue := remapExistentialResultValue(sel.GetResultValue(),
 		quants[0].GetAlias(), outerCorr, quants[1].GetAlias(), innerCorr)
 
+	// The inner-leg alias set — the below-FOD-vs-outer routing authority (see the
+	// detailed note at the below-FOD rebase). Computed here so the hoist can rebase
+	// exactly the inner-residual preds.
+	innerLegs := collectInnerLegAliases(innerRef, innerCorr)
+
+	// RFC-173 item-2 — HOIST the below-FOD window rebase ABOVE the fast path.
+	// A fully-baked (AS+AT) seed's outer-leg refs must rebase to baked ofOrdinals
+	// over the merged positional row BEFORE tryExistsFlatMap. An equality on the
+	// element/ordinal can be swallowed by the fast path (a parameterized inner
+	// scan) which RETURNS before the old below-FOD rebase ran — leaving a SIBLING
+	// inner-residual's outer-table ref (`JU.K < MA.ID + 1000`) unrebased, evaluated
+	// against the inner row → wrong rows. Rebase, ONCE, only the INNER-RESIDUAL
+	// preds (predicateReferencesInnerLeg): those are evaluated BELOW the FOD against
+	// the merged positional row. An OUTER-ONLY pred is evaluated in the outer-row
+	// context, whose row lacks the merged row's higher slots — baking it there
+	// reads a non-existent ordinal (a LEFT-box residual on the null-supplied leg).
+	// Both the fast path and the below-FOD path then see correct refs; the below-FOD
+	// window branch is a no-op (single rebase authority — no double-rebase).
+	// CORRECT-or-LOUD: an unmappable ref declines the yield.
+	windowsHoisted := false
+	if windows, mergedRowType := ordinalSeedLegWindowsOf(planResultValue(outerPlan)); windows != nil {
+		windowsHoisted = true
+		mergedQOV := values.NewQuantifiedObjectValueOfType(outerCorr, mergedRowType)
+		for i, p := range regularPreds {
+			if !predicateReferencesInnerLeg(p, innerLegs) {
+				continue // outer-only: evaluated in the outer context — do not bake
+			}
+			np, ok := rebaseOuterLegRefsOrdinal(p, windows, mergedQOV)
+			if !ok {
+				return
+			}
+			regularPreds[i] = np
+		}
+	}
+
 	// Try correlated-scan FlatMap: if a correlated predicate matches the
 	// inner table's PK or index, push the correlation into a parameterized
 	// inner scan (fast path). This is the pure-map FlatMap with the FOD
@@ -745,8 +780,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// route below, where the merged inner row's qualified leg keys T2.T1_ID and
 	// the live outer binding both resolve) AND keeps scalar-subquery / parameter /
 	// other external-binding predicates outer (where their pre-evaluated value is
-	// read and the comparison actually filters the outer row).
-	innerLegs := collectInnerLegAliases(innerRef, innerCorr)
+	// read and the comparison actually filters the outer row). innerLegs is
+	// computed above (the hoist uses the same routing authority).
 	var joinPreds []predicates.QueryPredicate
 	var outerOnlyPreds []predicates.QueryPredicate
 	for _, p := range regularPreds {
@@ -800,17 +835,12 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		// machinery stays dead for gated seeds (its FrontierPinned panic
 		// polices exactly that). Until commit 4 this branch never fired: no
 		// ordinal seed reached here, because the enclosure poisoned the gate.
-		if windows, mergedRowType := ordinalSeedLegWindowsOf(planResultValue(outerPlan)); windows != nil {
-			mergedQOV := values.NewQuantifiedObjectValueOfType(outerCorr, mergedRowType)
-			rebased := make([]predicates.QueryPredicate, len(joinPreds))
-			for i, p := range joinPreds {
-				np, ok := rebaseOuterLegRefsOrdinal(p, windows, mergedQOV)
-				if !ok {
-					return
-				}
-				rebased[i] = np
-			}
-			joinPreds = rebased
+		if windowsHoisted {
+			// Already rebased above the fast path (single rebase authority):
+			// joinPreds, a subset of the hoisted regularPreds, carry baked
+			// ofOrdinals. Re-running the window rebase here would DOUBLE-rebase
+			// (the merged corr coincides with the inner-leg window key), so it is
+			// a no-op — the whole reason the rebase was hoisted.
 		} else {
 			var legAliases []string
 			if rv := planResultValue(outerPlan); rv != nil {
@@ -2051,11 +2081,7 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			}
 			// Build correlated index scan.
 			outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
-			bareField := bareColumnName(outerVal, outerAlias)
-			correlatedOperand := values.NewFieldValue(
-				values.NewQuantifiedObjectValue(outerCorrelation),
-				bareField, outerVal.Typ,
-			)
+			correlatedOperand := correlatedFastPathOperand(outerVal, outerCorrelation, outerAlias)
 			correlatedComp := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: correlatedOperand}
 			cr := predicates.EmptyComparisonRange()
 			mergeResult := cr.Merge(correlatedComp)
@@ -2102,11 +2128,7 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	allPreds []predicates.QueryPredicate,
 ) bool {
 	outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
-	bareField := bareColumnName(outerVal, outerAlias)
-	correlatedOperand := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(outerCorrelation),
-		bareField, outerVal.Typ,
-	)
+	correlatedOperand := correlatedFastPathOperand(outerVal, outerCorrelation, outerAlias)
 	correlatedComp := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: correlatedOperand}
 	cr := predicates.EmptyComparisonRange()
 	mergeResult := cr.Merge(correlatedComp)
@@ -2288,6 +2310,31 @@ func bareColumnName(fv *values.FieldValue, expectedAlias string) string {
 		return col
 	}
 	return fv.Field
+}
+
+// correlatedFastPathOperand builds the outer-side operand pushed into the
+// parameterized inner PK/index scan. A BAKED ordinal ref (FrontierPinned — the
+// gated-seed contract) is used AS-IS: it already reads its outer column
+// POSITIONALLY off the merged row bound under outerCorrelation, and re-deriving
+// it by bare NAME (the name-model branch) would misread a SHADOWED or duplicate
+// column name in the merged row — the unnest's AS/AT alias and an outer column
+// can share a name, and a bare `QOV(outer).<name>` read then resolves to the
+// element instead of the outer column (RFC-173 item-2 commit 5a: `FROM t,
+// t.arr AS ID WHERE EXISTS(u.id = t.id)` probed U with the element and dropped
+// every row). A name-model ref carries no positional bake and is rebuilt bare
+// over outerCorrelation exactly as before.
+func correlatedFastPathOperand(
+	outerVal *values.FieldValue,
+	outerCorrelation values.CorrelationIdentifier,
+	outerAlias string,
+) values.Value {
+	if outerVal.Resolved != nil && outerVal.Resolved.FrontierPinned {
+		return outerVal
+	}
+	return values.NewFieldValue(
+		values.NewQuantifiedObjectValue(outerCorrelation),
+		bareColumnName(outerVal, outerAlias), outerVal.Typ,
+	)
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)

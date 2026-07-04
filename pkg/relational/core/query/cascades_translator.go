@@ -117,16 +117,27 @@ type cascadesTranslator struct {
 	// the reverse.
 	inInnerCluster bool
 	// unnestUnderExistential is set while lowering a lateral unnest that is the
-	// OUTER of a name-model EXISTS composition (translateUnnestExistsFilter). Such
-	// an unnest MUST stay name-model: SelectMergeRule flattens it into the
-	// existential SelectExpression, and the existential-join implementation
-	// (ImplementNestedLoopJoinRule.rebaseOuterLegRefsToMerged) rebases the outer
-	// leg references NAME-model — an ordinal seed's baked ofOrdinal outer refs
-	// panic that rebase (the "existential = poison" boundary the W2 cluster gate
-	// enforces; ordinalizing the EXISTS-composed unnest is a later slice). The W4c
-	// ordinal-seed gate declines when this is set. Preserved across the unnest
-	// lowering only; reset at every other seed by the translator's normal flow.
+	// OUTER of an EXISTS composition (translateUnnestExistsFilter). RFC-173 commit
+	// 5a ORDINALIZES this class: the W4c ordinal-seed gate is taken when the outer
+	// is a SINGLE ALIAS (unnestExistsSeedSafe), and the EXISTS correlation rebases
+	// on ONE layout authority (translateUnnestExistsFilter) — the translator
+	// pre-bakes when the seed has no executor windows (mixed/AT-only), else the
+	// executor's below-FOD window branch owns it (fully-baked AS+AT). A MULTI-ALIAS
+	// outer (a merge-opaque FULL OUTER box) still stays name-model: the ordinal
+	// rebase cannot disambiguate two aliases' same-named columns. The flag is what
+	// unnestExistsSeedSafe keys the single-alias restriction on. Preserved across
+	// the unnest lowering only; reset at every other seed by the translator's
+	// normal flow.
 	unnestUnderExistential bool
+	// unnestExistsScopeCollision forces the under-EXISTS unnest to the ANCHORED
+	// (name-model) seed when an EXISTS inner subquery scans a table aliased the
+	// SAME as an outer FROM leg (`FROM MA, MA.arr AS X WHERE EXISTS(SELECT 1 FROM
+	// MA WHERE MA.c < X)`). A leg-relative outer ref `QOV(MA).c` would then be
+	// captured by existsInnerCorrelation's inner-alias rename (MA → unique) and
+	// mis-bound to the inner row; the name-model rebase moves it to the merged
+	// corr's qualified key `QOV(X)."MA.c"`, which the rename does not touch. This
+	// is a SCOPE collision, not a routing prediction. Scoped like unnestUnderExistential.
+	unnestExistsScopeCollision bool
 	// enclosedGatherCache memoizes the flat select translateFilter's
 	// enclosed-gather PROBE built, keyed by the ORIGINAL join root, so the
 	// dispatch (translateEnclosedUnnestGather via translateJoin) consumes it
@@ -814,6 +825,47 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 	return set
 }
 
+// unnestExistsSeedSafe reports whether a lateral unnest may take the ordinal
+// seed given its EXISTS context. Exactly ONE shape stays NAME-MODEL — a
+// MULTI-ALIAS outer (a merge-opaque FULL OUTER box has clusterArity 1 but binds
+// two aliases whose same-named columns the single-source ordinal windows cannot
+// disambiguate; positionally handling it needs the W5 leg-splice, out of scope).
+// This is a genuine single-source SCOPE gate, not a prediction of the executor's
+// predicate routing: the shadow / outer-only-conjunct / inner-alias-collision
+// shapes that earlier declines guarded are now handled POSITIONALLY by the
+// executor — the mixed seed carries per-leg windows (including a synthesized
+// element window, values.OrdinalSeedLegWindows), the below-FOD hoist rebases
+// every inner-residual outer ref to a baked ofOrdinal, and the rule routes by
+// the renamed correlation identity, not by name. The translator no longer
+// predicts any of that. A plain (non-EXISTS) unnest is unaffected.
+func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator) bool {
+	if !t.unnestUnderExistential {
+		return true
+	}
+	if t.unnestExistsScopeCollision {
+		return false
+	}
+	return len(outerBoundAliases(left)) == 1
+}
+
+// existsInnerScopeCollidesOuter reports whether any EXISTS inner subquery scans a
+// table aliased the SAME as an outer FROM leg — a scope collision that would let
+// existsInnerCorrelation's inner-alias rename capture a leg-relative outer ref
+// (see unnestExistsScopeCollision). Such a shape stays name-model.
+func existsInnerScopeCollidesOuter(esqs []logical.ExistsSubquery, outerLegs map[string]struct{}) bool {
+	if len(outerLegs) == 0 {
+		return false
+	}
+	for _, esq := range esqs {
+		for a := range outerBoundAliases(esq.Plan) {
+			if _, ok := outerLegs[a]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // unnestOuterLegAliases returns the outer leg aliases of a lateral unnest's outer
 // sub-plan EXCEPT the one the merged row flows under (mergedCorr =
 // sourceAlias(j.Left), the RIGHTMOST leg). It is the set rebaseUnnestOuterLegPredicate
@@ -1268,12 +1320,19 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	//     over such a leg WOULD work via the coexistence Datum's qualified keys,
 	//     but the aggregation path forces the whole class name-model — the two are
 	//     indistinguishable here, at lowering.)
-	//   - unnestUnderExistential: the unnest is the OUTER of an EXISTS semi-join;
-	//     the existential-join implementation rebases outer-leg refs NAME-model and
-	//     panics on the baked ofOrdinal refs (rebaseOuterLegValue). See the field.
+	//   - unnestUnderExistential (RFC-173 commit 5a — LIFTED, but only for a
+	//     SINGLE-ALIAS outer, see unnestExistsSeedSafe): the unnest is the OUTER of
+	//     an EXISTS semi-join. This used to force name-model because the existential
+	//     rebase read outer-leg refs by name and panicked on baked ofOrdinal refs;
+	//     commit 5a leaves the EXISTS correlation's outer-leg refs LEG-RELATIVE (the
+	//     mixed seed now carries executor windows) and the executor's below-FOD hoist
+	//     rebases them POSITIONALLY — so a single-source unnest under EXISTS gates
+	//     ordinal like any other. A MULTI-ALIAS outer (a merge-opaque FULL OUTER box),
+	//     or an EXISTS inner scanning a table aliased the same as an outer leg, stays
+	//     name-model (see unnestExistsSeedSafe / existsInnerScopeCollidesOuter).
 	// A decline (nil) falls back to the name-model builder.
 	var resultValue values.Value
-	if t.clusterArity(j.Left) == 1 && !prevEnclosure && !t.unnestUnderExistential {
+	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 	}
 	if resultValue == nil {
@@ -2218,15 +2277,17 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 ) expressions.RelationalExpression {
 	// Lower the unnest leg (validates the array field; records a faithful
 	// diagnostic + returns nil for an invalid unnest, e.g. AT-on-a-non-array).
-	// The unnest is the OUTER of a name-model EXISTS composition — SelectMergeRule
-	// flattens it into the existential SelectExpression whose implementation
-	// rebases outer-leg references NAME-model. Keep the unnest name-model (decline
-	// the W4c ordinal seed): an ordinal seed's baked ofOrdinal outer refs panic
-	// that rebase ("existential = poison"). RFC-173 W4c / W2 gate.
+	// unnestUnderExistential is set so unnestExistsSeedSafe applies the single-alias
+	// SCOPE gate: RFC-173 commit 5a ORDINALIZES a single-source unnest under EXISTS
+	// (the W4c ordinal seed) and leaves the EXISTS correlation LEG-RELATIVE for the
+	// executor's positional rebase. A MULTI-ALIAS outer stays name-model.
+	prevCollision := t.unnestExistsScopeCollision
+	t.unnestExistsScopeCollision = existsInnerScopeCollidesOuter(f.ExistsSubqueries, outerBoundAliases(join.Left))
 	prevUnderExist := t.unnestUnderExistential
 	t.unnestUnderExistential = true
 	unnestExpr := t.translateUnnestJoin(join, u)
 	t.unnestUnderExistential = prevUnderExist
+	t.unnestExistsScopeCollision = prevCollision
 	if unnestExpr == nil {
 		return nil
 	}
@@ -2289,8 +2350,30 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	// RFC-142.
 	mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join))
 	outerLegs := outerBoundAliases(join.Left)
+	// RFC-173 commit 5a — the EXISTS correlation's outer-leg refs, routed by whether
+	// the seed carries executor WINDOWS, checked DIRECTLY (not proxied through
+	// !rc.AnchoredJoin):
+	//   - WINDOWED ordinal seed (mixed no-AT → 1 outer window, fully-baked AS+AT →
+	//     2 windows; accept-equivalent to the executor's ordinalJoinSpans): leave the
+	//     refs LEG-RELATIVE. The executor's below-FOD hoist rebases each inner-residual
+	//     outer ref POSITIONALLY — one layout authority, no translator prediction.
+	//   - otherwise (an ANCHORED name-model seed — a MULTI-ALIAS outer or an
+	//     inner-scope collision; a non-RC/non-Select unnest; or the unreachable
+	//     windowless-ordinal seed): rebase to the qualified "LEG.COL" key. Every
+	//     REACHABLE non-anchored seed IS windowed, so this equals !rc.AnchoredJoin
+	//     today — but the direct window check keeps the routing correct-or-name-model
+	//     (never a positional ref over a windowless row) if a windowless ordinal seed
+	//     ever becomes reachable, rather than silently mis-routing it leg-relative.
+	seedWindowed := false
+	if sel, ok := unnestExpr.(*expressions.SelectExpression); ok {
+		if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin {
+			if w, _ := values.OrdinalSeedLegWindows(rc); w != nil {
+				seedWindowed = true
+			}
+		}
+	}
 	existsSubqueries := f.ExistsSubqueries
-	if len(outerLegs) > 0 && mergedCorr.Name() != "" {
+	if !seedWindowed && len(outerLegs) > 0 && mergedCorr.Name() != "" {
 		existsSubqueries = make([]logical.ExistsSubquery, len(f.ExistsSubqueries))
 		for i, esq := range f.ExistsSubqueries {
 			esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr)
