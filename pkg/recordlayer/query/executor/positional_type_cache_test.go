@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -45,7 +46,9 @@ func TestPositionalTypeCacheBounded(t *testing.T) {
 		}
 		fd, err := protodesc.NewFile(fdp, nil)
 		if err != nil {
-			t.Fatalf("build file descriptor %d: %v", i, err)
+			// panic, not t.Fatalf: the builder also runs on worker
+			// goroutines in the concurrent-churn phase.
+			panic(fmt.Sprintf("build file descriptor %d: %v", i, err))
 		}
 		md := fd.Messages().Get(0)
 		m := dynamicpb.NewMessage(md)
@@ -77,10 +80,41 @@ func TestPositionalTypeCacheBounded(t *testing.T) {
 		entries++
 		return true
 	})
-	// The bound is approximate (racy epsilon), never the churn count: after
-	// 1.5x-cap distinct descriptors the map must have wiped at least once.
-	if entries > positionalTypeCacheCap+64 {
+	// The miss path is serialized, so the bound is EXACT — never the churn
+	// count: after 1.5x-cap distinct descriptors the map must have wiped.
+	if entries > positionalTypeCacheCap {
 		t.Fatalf("cache holds %d entries after %d-descriptor churn — the wipe-at-cap bound is not holding (cap %d)",
 			entries, churn, positionalTypeCacheCap)
+	}
+
+	// CONCURRENT churn (the review finding): misses racing a wipe must not
+	// re-store past the reset and overshoot the cap. Fan out well past the
+	// cap across goroutines; the miss lock makes the bound hold exactly at
+	// every instant, asserted after the join.
+	const workers = 8
+	perWorker := (positionalTypeCacheCap/workers + 64)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				row := protoToPositional(freshDynamicMessage(1_000_000 + w*perWorker + i))
+				if row == nil || row.Type == nil {
+					t.Errorf("worker %d iteration %d: positional row not built", w, i)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	entries = 0
+	positionalTypeCache.Range(func(_, _ any) bool {
+		entries++
+		return true
+	})
+	if entries > positionalTypeCacheCap {
+		t.Fatalf("cache holds %d entries after concurrent churn — the miss-path lock is not enforcing the bound (cap %d)",
+			entries, positionalTypeCacheCap)
 	}
 }

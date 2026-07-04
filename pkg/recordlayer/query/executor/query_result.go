@@ -82,9 +82,15 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 // are structurally equal.
 var positionalTypeCache sync.Map // protoreflect.MessageDescriptor -> *values.RecordType
 
-// positionalTypeCacheSize approximates the entry count (duplicate Stores may
-// overcount, a concurrent wipe may briefly undercount — the bound only needs
-// to hold within a small epsilon, never exactly).
+// positionalTypeCacheMu serializes the MISS path (build + wipe-at-cap +
+// store) so the bound is exact: without it, misses racing a wipe re-stored
+// after the counter reset and the map transiently overshot the cap (review
+// finding). Cache HITS stay lock-free on the sync.Map — misses are
+// first-sight-of-a-descriptor rare, so the lock is off the hot path.
+var positionalTypeCacheMu sync.Mutex
+
+// positionalTypeCacheSize is the entry count, mutated only under
+// positionalTypeCacheMu.
 var positionalTypeCacheSize atomic.Int64
 
 // positionalTypeCacheCap bounds the cache. Far above any real live-schema
@@ -112,21 +118,32 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 	if v, ok := positionalTypeCache.Load(desc); ok {
 		rt = v.(*values.RecordType)
 	} else {
-		rtFields := make([]values.Field, n)
-		for i := 0; i < n; i++ {
-			rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
+		positionalTypeCacheMu.Lock()
+		// Re-check under the lock: a racing miss on the same descriptor may
+		// have stored while we waited.
+		if v, ok := positionalTypeCache.Load(desc); ok {
+			rt = v.(*values.RecordType)
+		} else {
+			rtFields := make([]values.Field, n)
+			for i := 0; i < n; i++ {
+				rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
+			}
+			rt = values.NewRecordType("", false, rtFields)
+			if positionalTypeCacheSize.Add(1) > positionalTypeCacheCap {
+				// Descriptor churn (dynamicpb across many schema loads) must
+				// not grow the cache without bound: wipe and re-warm. Under
+				// the miss lock the bound is EXACT — no racing store can
+				// land after the reset (review finding: the lock-free wipe
+				// let concurrent misses transiently overshoot the cap).
+				positionalTypeCache.Range(func(k, _ any) bool {
+					positionalTypeCache.Delete(k)
+					return true
+				})
+				positionalTypeCacheSize.Store(1)
+			}
+			positionalTypeCache.Store(desc, rt)
 		}
-		rt = values.NewRecordType("", false, rtFields)
-		if positionalTypeCacheSize.Add(1) > positionalTypeCacheCap {
-			// Descriptor churn (dynamicpb across many schema loads) must not
-			// grow the cache without bound: wipe and re-warm.
-			positionalTypeCache.Range(func(k, _ any) bool {
-				positionalTypeCache.Delete(k)
-				return true
-			})
-			positionalTypeCacheSize.Store(1)
-		}
-		positionalTypeCache.Store(desc, rt)
+		positionalTypeCacheMu.Unlock()
 	}
 	slots := make([]any, n)
 	for i := 0; i < n; i++ {
