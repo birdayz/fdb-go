@@ -1104,38 +1104,6 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		return nil
 	}
 
-	outerRef := t.translateRef(j.Left)
-	if outerRef == nil {
-		return nil
-	}
-	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
-
-	// The correlated array Value: FieldValue{arrField} over QOV(outer).
-	//
-	// When the outer is a MERGED row (the array's source is not the rightmost
-	// FROM leg, e.g. `FROM A, B, A.arr AS X`), the merged row flows under the
-	// rightmost leg's alias (`sourceAlias(j.Left)`) and exposes every source's
-	// columns BOTH bare (last-leg-wins) AND qualified `LEG.COL`. Reading the bare
-	// `arr` here would explode the LAST leg's array (`B.arr`), not the array the
-	// classifier type-checked (`A.arr`) — silent wrong rows. So when segment 0 is
-	// not the merged row's flow leg, read the QUALIFIED `SEG0.FIELD` key, which
-	// the anchored merged record always carries for the classified source. For a
-	// single outer scan (`FROM t, t.arr`) the flow alias IS segment 0 and the row
-	// carries only bare keys, so the bare field is read. RFC-142.
-	arrayFieldKey := fieldName
-	seg0 := strings.ToUpper(u.Segments[0])
-	if seg0 != outerAlias {
-		arrayFieldKey = seg0 + "." + fieldName
-	}
-	arrayValue := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(outerCorr),
-		arrayFieldKey,
-		values.NewArrayType(true, elementType),
-	)
-	withOrdinality := u.AtAlias != ""
-	explode := expressions.NewExplodeExpressionWithOrdinality(arrayValue, withOrdinality)
-	explodeRef := expressions.InitialOf(explode)
-
 	// The inner quantifier's correlation MUST be the VISIBLE unnest alias — the
 	// AS alias, or, in the AT-only form (`FROM t, t.arr AT a`), the AT alias.
 	// This is exactly the correlation `unnestScopeSourceAdder` registers the
@@ -1188,6 +1156,55 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 			"lateral unnest AS and AT aliases must be distinct; use different names for the element and the ordinal"))
 		return nil
 	}
+
+	// RFC-173 W5: a MULTI-SOURCE outer over a gated inner cluster gathers FLAT
+	// — the Explode becomes an ordinary quantifier of one (N+1)-way select whose
+	// collection is a genuine baked correlation to the OWNING source's own
+	// quantifier (Java's shape; the flat-at-translation design ruling). Runs
+	// AFTER the full validation gauntlet above (the rejections are shared
+	// verbatim) and BEFORE the binary path translates j.Left as one enclosed
+	// ref (the gathered path translates legs FRESH; translating both ways would
+	// double-append side state, e.g. collected scalar-subquery plans). Enclosed
+	// and under-existential unnests keep today's paths (the enclosed class is
+	// the next W5 commit; the existential class is re-chartered to the
+	// W4-left+EXISTS slice). A nil is a DECLINE — the binary fallback below.
+	if !prevEnclosure && !t.unnestUnderExistential {
+		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName); sel != nil {
+			return sel
+		}
+	}
+
+	outerRef := t.translateRef(j.Left)
+	if outerRef == nil {
+		return nil
+	}
+	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
+
+	// The correlated array Value: FieldValue{arrField} over QOV(outer).
+	//
+	// When the outer is a MERGED row (the array's source is not the rightmost
+	// FROM leg, e.g. `FROM A, B, A.arr AS X`), the merged row flows under the
+	// rightmost leg's alias (`sourceAlias(j.Left)`) and exposes every source's
+	// columns BOTH bare (last-leg-wins) AND qualified `LEG.COL`. Reading the bare
+	// `arr` here would explode the LAST leg's array (`B.arr`), not the array the
+	// classifier type-checked (`A.arr`) — silent wrong rows. So when segment 0 is
+	// not the merged row's flow leg, read the QUALIFIED `SEG0.FIELD` key, which
+	// the anchored merged record always carries for the classified source. For a
+	// single outer scan (`FROM t, t.arr`) the flow alias IS segment 0 and the row
+	// carries only bare keys, so the bare field is read. RFC-142.
+	arrayFieldKey := fieldName
+	seg0 := strings.ToUpper(u.Segments[0])
+	if seg0 != outerAlias {
+		arrayFieldKey = seg0 + "." + fieldName
+	}
+	arrayValue := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(outerCorr),
+		arrayFieldKey,
+		values.NewArrayType(true, elementType),
+	)
+	withOrdinality := u.AtAlias != ""
+	explode := expressions.NewExplodeExpressionWithOrdinality(arrayValue, withOrdinality)
+	explodeRef := expressions.InitialOf(explode)
 
 	innerQ := expressions.NamedForEachQuantifier(innerCorr, explodeRef)
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
@@ -1943,6 +1960,26 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// the merged corr itself and the rebase is a no-op. RFC-142.
 			if u, ok := join.Right.(*logical.LogicalUnnest); ok {
 				pred = rewriteUnnestPredicate(pred, u)
+				if len(sel.GetQuantifiers()) > 2 {
+					// RFC-173 W5: the GATHERED flat unnest select — the cluster
+					// legs are the select's OWN quantifiers, so an outer-leg
+					// reference (`FieldValue(QOV(MA), c)`) is a GENUINE leg ref;
+					// there is no merged row to rebase onto (the rebase would
+					// point refs at a key the flat select never flows). Bake
+					// cross-leg conjuncts through the cluster's own spine
+					// instead, exactly as a gated join's WHERE merge does.
+					toMerge := []predicates.QueryPredicate{pred}
+					if lj, isLJ := join.Left.(*logical.LogicalJoin); isLJ {
+						toMerge = bakeGatedJoinPredicates(toMerge, t.gatedJoinLegTypes(lj))
+					}
+					return expressions.NewSelectExpressionWithJoinType(
+						sel.GetResultValue(),
+						sel.GetQuantifiers(),
+						append(sel.GetPredicates(), toMerge...),
+						sel.GetSourceAliases(),
+						sel.GetJoinType(),
+					)
+				}
 				mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
 				outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
 				pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)

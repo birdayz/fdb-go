@@ -64,9 +64,40 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 		fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
 	}
 
-	withOrdinality := u.AtAlias != ""
-	fullBakedSeed := false
-	if withOrdinality {
+	innerFields, fullBakedSeed, ok := unnestSeedInnerFields(innerCorr, u, elementType)
+	if !ok {
+		return nil // degenerate no-AS/no-AT shape — name-model
+	}
+	fields = append(fields, innerFields...)
+
+	rc := values.NewRawRecordConstructorValue(fields...)
+	if fullBakedSeed {
+		// A full all-baked 2-leg seed (outer run + element+ordinal run): assert
+		// the pristine ordinal-join shape. The mixed no-AT RC (direct-QOV
+		// element) and the AT-only partial inner run legitimately carry a
+		// non-frontier-pinned or partial-run field, so they skip the assert.
+		values.AssertOrdinalJoinSeed(rc)
+	}
+	return rc
+}
+
+// unnestSeedInnerFields builds the unnest INNER leg's seed fields — the W4c
+// three-way branch (Java LogicalOperator.java:318-353 in ordinal form), shared
+// by the single-source binary seed above and the W5 gathered N-way seed:
+//
+//   - WITH ORDINALITY (AT): {element=ofOrdinal(inner,0) [when AS binds it],
+//     ordinal=ofOrdinal(inner,1)} over the alias-named 2-field leg type;
+//     fullBaked reports whether the pair covers the whole inner run (AS+AT);
+//   - WITHOUT: the element is the WHOLE flowed object — a direct inner QOV
+//     (the mixed-RC form whose leg binds RAW at the executor birth).
+//
+// ok=false is the degenerate no-AS/no-AT shape (no bindable unnest column).
+func unnestSeedInnerFields(
+	innerCorr values.CorrelationIdentifier,
+	u *logical.LogicalUnnest,
+	elementType values.Type,
+) (fields []values.RecordConstructorField, fullBaked, ok bool) {
+	if u.AtAlias != "" {
 		// The Explode flows {_0:element, _1:ordinal} — a genuine 2-field record
 		// leg. NAME the leg type by the AS/AT ALIASES (not the Explode's `_0`/`_1`)
 		// so the coexistence leg-window resolution — legWindowRow.GetByName keys on
@@ -91,32 +122,23 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 			// column name correct.
 			elemFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
 			if err != nil {
-				return nil
+				return nil, false, false
 			}
 			fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.Alias), Value: elemFV})
-			fullBakedSeed = true // element+ordinal cover the whole inner leg
+			fullBaked = true // element+ordinal cover the whole inner leg
 		}
 		ordFV, err := values.NewFieldValueOfOrdinal(innerQOV, 1)
 		if err != nil {
-			return nil
+			return nil, false, false
 		}
 		fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.AtAlias), Value: ordFV})
-	} else {
-		// The element is the whole flowed object — Java's primitive branch.
-		if u.Alias == "" {
-			return nil // neither AS nor AT: no bindable unnest column — name-model
-		}
-		elementValue := values.NewQuantifiedObjectValueOfType(innerCorr, elementType)
-		fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.Alias), Value: elementValue})
+		return fields, fullBaked, true
 	}
-
-	rc := values.NewRawRecordConstructorValue(fields...)
-	if fullBakedSeed {
-		// A full all-baked 2-leg seed (outer run + element+ordinal run): assert
-		// the pristine ordinal-join shape. The mixed no-AT RC (direct-QOV
-		// element) and the AT-only partial inner run legitimately carry a
-		// non-frontier-pinned or partial-run field, so they skip the assert.
-		values.AssertOrdinalJoinSeed(rc)
+	// The element is the whole flowed object — Java's primitive branch.
+	if u.Alias == "" {
+		return nil, false, false // neither AS nor AT: no bindable unnest column
 	}
-	return rc
+	elementValue := values.NewQuantifiedObjectValueOfType(innerCorr, elementType)
+	fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.Alias), Value: elementValue})
+	return fields, false, true
 }
