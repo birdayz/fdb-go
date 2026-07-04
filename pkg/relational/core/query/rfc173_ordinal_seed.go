@@ -332,6 +332,22 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 // The returned legTypes map (UPPER alias → bakeLegType) feeds
 // bakeGatedJoinPredicates at the seed and the WHERE-merge site.
 func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (values.Value, map[string]bakeLegType) {
+	fields, legTypes := t.ordinalJoinSeedFields(legs)
+	if fields == nil {
+		return nil, nil
+	}
+	rc := values.NewRawRecordConstructorValue(fields...)
+	values.AssertOrdinalJoinSeed(rc)
+	return rc, legTypes
+}
+
+// ordinalJoinSeedFields builds the flat ordinal leg runs + the predicate-bake
+// legTypes map WITHOUT constructing/asserting the RC — the W5 gathered-unnest
+// seed composes these outer runs with the unnest inner-leg fields (whose
+// mixed/partial shapes legitimately skip AssertOrdinalJoinSeed) before
+// deciding on the assert. nil fields = a leg is untranslatable (same decline
+// rule as the seed).
+func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.RecordConstructorField, map[string]bakeLegType) {
 	var fields []values.RecordConstructorField
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
@@ -352,15 +368,13 @@ func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (val
 			fv, err := values.NewFieldValueOfOrdinal(qov, i)
 			if err != nil {
 				// Impossible by construction (the ordinal ranges over the
-				// type's own fields) — loud, matching the seed assert below.
+				// type's own fields) — loud, matching the seed assert.
 				panic("RFC-173 ordinal seed: " + err.Error())
 			}
 			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
 		}
 	}
-	rc := values.NewRawRecordConstructorValue(fields...)
-	values.AssertOrdinalJoinSeed(rc)
-	return rc, legTypes
+	return fields, legTypes
 }
 
 // bakeGatedJoinPredicates rewrites a gated join's CROSS-LEG predicates so

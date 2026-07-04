@@ -336,13 +336,22 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		//     bipartitions such a select has. BOTH restrictions are
 		//     load-bearing: a component-straddling lower ({d,PB} for
 		//     `FROM (derived) d, PB, PB.ARR AS X`) tears a lateral unnest from
-		//     its array source, and a lower containing a MULTI-alias component
-		//     glued only by quantifier correlation ({PB,X} itself — no
-		//     predicate links an unnest to its source) births plans whose
-		//     AS/AT columns silently NULL. The unnest machinery stays
-		//     name-model until W5; Java explores both shapes — revisit with
-		//     the W5 unnest rewrite.
-		disconnectedLower := len(lowerAliases) >= 2 && !aliasesConnectedByPredicates(lowerAliases, allPredicates)
+		//     its array source, and — on the NAME-MODEL residual — a lower
+		//     containing a MULTI-alias component glued only by quantifier
+		//     correlation ({PB,X} itself — no predicate links an unnest to its
+		//     source) births plans whose AS/AT columns silently NULL.
+		//   - RFC-173 W5 (the banked revisit): for an ORDINAL parent (a
+		//     non-anchored result value — the gathered flat unnest seed), a
+		//     quantifier-level correlation edge IS connectivity: a lower of
+		//     {source, Explode} is exactly the correct FlatMap pairing (the W4c
+		//     binary shape), and rejecting it left the flat (N+1)-way select
+		//     unimplementable. The name-model residual (anchored parent) keeps
+		//     the old rejection verbatim — its birth machinery still NULLs.
+		lowerConnected := aliasesConnectedByPredicates(lowerAliases, allPredicates)
+		if !lowerConnected && !anchoredSeed {
+			lowerConnected = aliasesConnectedByPredicatesOrCorrelation(lowerAliases, allPredicates, fullCorrelationOrder)
+		}
+		disconnectedLower := len(lowerAliases) >= 2 && !lowerConnected
 		if disconnectedLower &&
 			!(isCrossProduct(independentPartitioning, lowerAliases, upperAliases) &&
 				lowerComponentsAreSingletons(independentPartitioning, lowerAliases)) {
@@ -1067,6 +1076,67 @@ func aliasesConnectedByPredicates(
 			}
 			prev = a
 			have = true
+		}
+	}
+	var root values.CorrelationIdentifier
+	first := true
+	for a := range aliases {
+		if first {
+			root = find(a)
+			first = false
+			continue
+		}
+		if find(a) != root {
+			return false
+		}
+	}
+	return true
+}
+
+// aliasesConnectedByPredicatesOrCorrelation is the RFC-173 W5 connectivity
+// reading for ORDINAL parents: the union graph of predicate edges AND
+// quantifier-level correlation edges (fullCorrelationOrder — an Explode's
+// genuine dependency on its array source, the edge Java's
+// Quantifier.getCorrelatedTo carries). Plain table quantifiers have no
+// correlation edges, so for predicate-only selects this coincides exactly
+// with aliasesConnectedByPredicates; the widening admits only the
+// unnest-with-source pairings the flat gathered seed relies on.
+func aliasesConnectedByPredicatesOrCorrelation(
+	aliases map[values.CorrelationIdentifier]struct{},
+	preds []predicates.QueryPredicate,
+	correlationOrder map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
+) bool {
+	if len(aliases) <= 1 {
+		return true
+	}
+	parent := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(aliases))
+	for a := range aliases {
+		parent[a] = a
+	}
+	var find func(values.CorrelationIdentifier) values.CorrelationIdentifier
+	find = func(a values.CorrelationIdentifier) values.CorrelationIdentifier {
+		for parent[a] != a {
+			parent[a] = parent[parent[a]]
+			a = parent[a]
+		}
+		return a
+	}
+	for _, p := range preds {
+		var prev values.CorrelationIdentifier
+		have := false
+		for a := range intersectAliases(aliases, predicates.GetCorrelatedToOfPredicate(p)) {
+			if have {
+				parent[find(prev)] = find(a)
+			}
+			prev = a
+			have = true
+		}
+	}
+	for a := range aliases {
+		for dep := range correlationOrder[a] {
+			if _, in := aliases[dep]; in {
+				parent[find(a)] = find(dep)
+			}
 		}
 	}
 	var root values.CorrelationIdentifier
