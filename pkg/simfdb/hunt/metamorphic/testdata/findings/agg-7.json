@@ -1,0 +1,52 @@
+{
+  "name": "aggregate-index-edge-sums",
+  "seed": 7,
+  "tables": [
+    "CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+    "CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g"
+  ],
+  "data": [
+    "INSERT INTO t (id,g,v) VALUES (1,1,10)",
+    "INSERT INTO t (id,g,v) VALUES (2,1,20)",
+    "INSERT INTO t (id,g,v) VALUES (3,2,NULL)",
+    "INSERT INTO t (id,g,v) VALUES (4,2,NULL)",
+    "INSERT INTO t (id,g,v) VALUES (5,3,100)",
+    "INSERT INTO t (id,g,v) VALUES (6,3,-100)",
+    "INSERT INTO t (id,g,v) VALUES (7,NULL,5)",
+    "INSERT INTO t (id,g,v) VALUES (8,4,42)"
+  ],
+  "groups": [
+    {
+      "name": "grouped-sum-vs-noop-filter",
+      "reason": "WHERE id IS NOT NULL is always true (id is a NOT NULL PK), so it selects the same rows and the grouped SUM is identical; if it defeats aggregate-index matching, this pits an index-backed group SUM against a scan-backed one — the all-NULL-v group (g=2) must read NULL from both, the cancelling group (g=3) must read 0 from both",
+      "queries": [
+        "SELECT g, SUM(v) FROM t GROUP BY g",
+        "SELECT g, SUM(v) FROM t WHERE id IS NOT NULL GROUP BY g"
+      ]
+    },
+    {
+      "name": "having-sum-is-null-vs-derived",
+      "reason": "HAVING SUM(v) IS NULL keeps exactly the groups whose SUM is NULL (every v NULL); equals filtering the materialized group SUM for IS NULL — probes that an all-NULL group's sum is represented as NULL, not 0",
+      "queries": [
+        "SELECT g FROM t GROUP BY g HAVING SUM(v) IS NULL",
+        "SELECT g FROM (SELECT g, SUM(v) AS s FROM t GROUP BY g) x WHERE s IS NULL"
+      ]
+    },
+    {
+      "name": "having-sum-zero-vs-derived",
+      "reason": "HAVING SUM(v) = 0 keeps groups whose values cancel to zero; an all-NULL group's SUM is NULL and fails =0 under 3VL (excluded by both forms); equals the derived WHERE s = 0 on any data",
+      "queries": [
+        "SELECT g FROM t GROUP BY g HAVING SUM(v) = 0",
+        "SELECT g FROM (SELECT g, SUM(v) AS s FROM t GROUP BY g) x WHERE s = 0"
+      ]
+    },
+    {
+      "name": "having-sum-notnull-vs-derived",
+      "reason": "HAVING SUM(v) IS NOT NULL keeps groups with at least one non-NULL v; complements the IS NULL group and equals the derived WHERE s IS NOT NULL",
+      "queries": [
+        "SELECT g, SUM(v) FROM t GROUP BY g HAVING SUM(v) IS NOT NULL",
+        "SELECT g, s FROM (SELECT g, SUM(v) AS s FROM t GROUP BY g) x WHERE s IS NOT NULL"
+      ]
+    }
+  ]
+}

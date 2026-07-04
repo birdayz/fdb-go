@@ -274,6 +274,28 @@ token / don't-retry-non-idempotent) is a design change beyond RFC-179's scope:
 - Also noted (matches Java, documented weak-scan contract, **not** bugs): `COUNT_UPDATES` double-counts
   under 1021 retry; an unsplit→split record can be double-emitted across a continuation boundary.
 
+**Open — 2 real query-engine bugs found by the LLM-adversarial metamorphic loop (⇒ Graefe/owner).**
+The metamorphic oracle (`pkg/simfdb/hunt/metamorphic` — queries asserted equivalent must return the same
+rows over SimFDB; the engine is the judge, no external reference) + an LLM generator (5 Claude agents
+proposing adversarial equivalence scenarios) ran 30 scenarios / 131 groups on its first run and surfaced
+two genuine engine defects, both independently reproduced (actual rows + plans). Both are plan-dependent
+NULL edge cases result-only tests can't see. **These are Cascades/executor bugs — surface to Graefe; fix
+needs Java-alignment + a Graefe ACK.**
+- [ ] **Aggregate-index `SUM` drops all-NULL groups (silent wrong rows).** With
+  `CREATE INDEX sum_by_g AS SELECT SUM(v) FROM t GROUP BY g`, the query
+  `SELECT g, SUM(v) FROM t GROUP BY g` plans `AggregateIndex(SUM, SUM_BY_G)` and **omits any group whose
+  `v` are all NULL** (returns `[1,10]` for data `(1,g1,10),(2,g2,NULL),(3,g2,NULL)` — drops `[2,NULL]`).
+  The identical query with a no-op `WHERE id IS NOT NULL` (defeats index matching → `StreamingAgg`/`Scan`)
+  correctly returns `[1,10],[2,NULL]`. SQL requires GROUP BY to emit one row per group with `SUM`=NULL;
+  the aggregate-index read/maintenance path fails to. Removing the index makes both agree. Cross-check
+  Java's aggregate-index null-group handling. Repro: `mm-generated/agg-7.json` group
+  `grouped-sum-vs-noop-filter`.
+- [ ] **NULL ordering inconsistent between DISTINCT and GROUP BY sort paths.** For `a ∈ {5,7,NULL}`,
+  `SELECT DISTINCT a FROM t ORDER BY a` → `NULL,5,7` (NULL first, matching FDB tuple order) but
+  `SELECT a FROM t GROUP BY a ORDER BY a` → `5,7,NULL` (NULL last). Same relation + same `ORDER BY`, so
+  the ordered output must match; the GROUP BY (`StreamingAgg`) sort places NULL inconsistently with the
+  DISTINCT/scan path. Repro: `mm-generated/olp-*.json` group `groupby_orderby_null_placement_BUG`.
+
 # NEXT
 
 > ## [ ] INFRA — scheduled nightlies dispatch HOURS late ("nightly" fuzz runs at noon)

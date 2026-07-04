@@ -19,5 +19,6 @@ go_library(
 go_test(
     name = "metamorphic_test",
     srcs = ["metamorphic_test.go"],
+    data = glob(["testdata/**"]),
     embed = [":metamorphic"],
 )

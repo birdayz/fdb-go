@@ -1,0 +1,60 @@
+{
+  "name": "olp-distinct-groupby-alias",
+  "seed": 2,
+  "tables": [
+    "CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))"
+  ],
+  "data": [
+    "INSERT INTO t (id,a,b) VALUES (1,5,1)",
+    "INSERT INTO t (id,a,b) VALUES (2,5,1)",
+    "INSERT INTO t (id,a,b) VALUES (3,7,2)",
+    "INSERT INTO t (id,a,b) VALUES (4,NULL,2)",
+    "INSERT INTO t (id,a,b) VALUES (5,NULL,9)",
+    "INSERT INTO t (id,a,b) VALUES (6,7,2)"
+  ],
+  "groups": [
+    {
+      "name": "distinct_idempotent",
+      "reason": "DISTINCT is idempotent: distinct of an already-distinct set (or of a plain projection) yields the same multiset; NULLs collapse to a single NULL row in every form",
+      "queries": [
+        "SELECT DISTINCT a FROM t",
+        "SELECT DISTINCT a FROM (SELECT DISTINCT a FROM t) s",
+        "SELECT DISTINCT a FROM (SELECT a FROM t) s"
+      ]
+    },
+    {
+      "name": "distinct_eq_groupby",
+      "reason": "SELECT DISTINCT a and GROUP BY a produce the same set of distinct a values; SQL GROUP BY puts all NULLs in one group, matching DISTINCT's single NULL row",
+      "queries": [
+        "SELECT DISTINCT a FROM t",
+        "SELECT a FROM t GROUP BY a"
+      ]
+    },
+    {
+      "name": "distinct_multicol_eq_groupby",
+      "reason": "multi-column DISTINCT equals GROUP BY on the same columns; each (a,b) combination appears once, NULL treated as a single group value per column",
+      "queries": [
+        "SELECT DISTINCT a, b FROM t",
+        "SELECT a, b FROM t GROUP BY a, b"
+      ]
+    },
+    {
+      "name": "alias_invariance",
+      "reason": "column aliases are cosmetic; the produced row values are identical regardless of the alias name or its absence",
+      "queries": [
+        "SELECT a, b FROM t",
+        "SELECT a AS x, b AS y FROM t",
+        "SELECT a AS foo, b AS anything_here FROM t"
+      ]
+    },
+    {
+      "name": "groupby_orderby_null_placement_BUG",
+      "reason": "ENGINE-BUG SENTINEL (expected to fail until fixed): both queries return the identical relation (the distinct values of a = {5,7,NULL}) under the identical ORDER BY a ASC, so they must produce the identical ordered sequence. They do not: DISTINCT+ORDER BY orders NULL FIRST (consistent with FDB tuple encoding, where NULL sorts before all values, and with the plain-scan ORDER BY path), while GROUP BY+ORDER BY orders NULL LAST. NULL placement under ORDER BY ASC is a property of the ORDER BY clause, not of the chosen plan, so this internal inconsistency is an engine defect in the GROUP BY aggregation+sort path.",
+      "ordered": true,
+      "queries": [
+        "SELECT DISTINCT a FROM t ORDER BY a",
+        "SELECT a FROM t GROUP BY a ORDER BY a"
+      ]
+    }
+  ]
+}
