@@ -2279,3 +2279,26 @@ name-model buried read (`FieldValue{Field:"A.ARR", Child:QOV(rightmost)}`) still
 {A}, the reachability proof that keeps the classifier code alive for the decline and
 under-existential classes until the W4-left+EXISTS slice retires the last dotted producer
 (physical deletion deferred, per the F4 rider).
+
+### W5 four-gate gauntlet (PR #466): five rounds, five real bugs, all red-first pinned
+
+Round 1 (full-branch): Graefe ACK (rotation sound; stand-down correctly scoped; oracle separation
+right; all ruled conditions verified); Torvalds ACK (4 cleanups); codex found P2 (the rotation's
+collected element-referencing ON conjuncts baked UNREWRITTEN — silent drop/misfilter) and P3 (the
+NLJ oracle span recovery skipped the splice for pristine births); the @claude gate found the
+SELECT * metadata arm's NAME-keyed leak discriminator (misfires on a user column named `_0`) and
+STRUCT elements mistyped BIGINT. Rounds 2-5 fixed every finding red-first: the ON rewrite
+(rewriteUnnestPredicate on the rebuilt root's ON), the splice (FlatMap ordering) + its pin
+(Torvalds proved the fix unpinned by reverting it — the pin now fails against the old guard), the
+probe memoization (consume-once enclosedGatherCache, closing both reviews' purity flag), the
+union-find fold, the STRUCTURAL leak discriminator (hasPositionalMergeLeg) — which codex then
+proved STILL too broad on plain multi-way joins (positional-merge sub-products exist without
+unnests; the NLJ-shaped fold keeps qualified names) → the arm now also requires the
+Explode-bearing-FlatMap signature, with Graefe's adversarial both-direction probes confirming the
+conjunction exact for constructible SQL; STRUCT element typing via the array column's proto
+descriptor (source-level record typing deliberately deferred — it would flip RawLeg
+classification mid-coexistence). Surfaced and booked, NOT swept: master's own equijoin multi-way
+bare-name fold wart (worktree-verified pre-existing, independently reproduced by the Torvalds
+gate), the arrayElementTypeNameFromDescs bare-name ambiguity nit, the enclosed+EXISTS residual
+class pin, the 3-plain-leg mid-unnest rotation pin. Final tally on ca59ecbf1: Graefe ACK,
+Torvalds ACK, codex clean, @claude ACK; 1M stress green; 1621-entry dualwindow corpus green.
