@@ -61,6 +61,7 @@ go_test(
         "rfc173_s3_merge_birth_test.go",
         "rfc173_slice1_authority_test.go",
         "rfc173_w4c_positional_authority_test.go",
+        "rfc173_w5_span_test.go",
         "vector_index_scan_integration_test.go",
     ],
     embed = [":executor"],
@@ -102,6 +103,7 @@ go_test(
         "continuation_decode_test.go",
         "rfc173_s3_merge_birth_test.go",
         "rfc173_w4c_positional_authority_test.go",
+        "rfc173_w5_span_test.go",
     ],
     deps = [
         "//gen",

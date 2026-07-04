@@ -66,15 +66,14 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		return nil // a leg untranslatable — same decline rule as the seed
 	}
 
-	// Commit-1 scope: NAME-AMBIGUOUS shapes decline (fail-open residual). The
-	// flat seed's output names are bare; a bare projection/reference over it
-	// resolves by name, so (a) an element/ordinal alias SHADOWING an outer
-	// column (the R16 class — the name model resolves it with dedicated
-	// shadowing machinery, last-binding-wins) and (b) a column name shared by
-	// two legs (the name model's last-leg-wins bare twin) would resolve
-	// DIFFERENTLY over the flat row. Both keep today's name-model path until
-	// the leg-window/compose commit gives the flat output dual bare+qualified
-	// resolution.
+	// NAME-AMBIGUOUS decline (fail-open residual): a column name shared by two
+	// LEGS (the name model's last-leg-wins bare twin) would resolve
+	// DIFFERENTLY over the flat row — the bare-twin class waits for the S4
+	// compose direction (ordinal projections). The element/ordinal alias
+	// SHADOWING an outer column (the R16 class) is LIFTED (commit 2): the
+	// visitor qualifies shadowed bare projections (`WV` → `WV.WV`) and the
+	// span windows route the qualified read to the ELEMENT leg — probed green
+	// through the gathered path with the correct last-binding-wins semantics.
 	seen := map[string]struct{}{}
 	for _, lt := range legTypes {
 		for _, f := range lt.typ.Fields {
@@ -83,14 +82,6 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 				return nil
 			}
 			seen[n] = struct{}{}
-		}
-	}
-	for _, a := range []string{u.Alias, u.AtAlias} {
-		if a == "" {
-			continue
-		}
-		if _, shadow := seen[strings.ToUpper(a)]; shadow {
-			return nil
 		}
 	}
 
