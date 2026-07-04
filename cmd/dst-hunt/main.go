@@ -32,6 +32,7 @@ import (
 	"fdb.dev/pkg/simfdb/hunt"
 	"fdb.dev/pkg/simfdb/hunt/continuation"
 	"fdb.dev/pkg/simfdb/hunt/interleave"
+	"fdb.dev/pkg/simfdb/hunt/rangeconflict"
 	"fdb.dev/pkg/simfdb/hunt/sqlhunt"
 )
 
@@ -72,6 +73,7 @@ func main() {
 	profiles := append(hunt.Profiles(), sqlhunt.AllProfiles()...)
 	profiles = append(profiles, interleave.Profiles()...)
 	profiles = append(profiles, continuation.Profiles()...)
+	profiles = append(profiles, rangeconflict.Profiles()...)
 	if *only != "" {
 		profiles = filterProfiles(profiles, strings.Split(*only, ","))
 		if len(profiles) == 0 {

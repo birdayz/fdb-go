@@ -185,6 +185,68 @@ bazelisk test //pkg/simfdb/hunt/interleave:interleave_test --test_output=errors
   serializability oracles). The fault-enabled variant — teach the state oracle about post-apply
   `commit_unknown(1021)`, the non-idempotent-`Add`-under-true-rollback surface — is the next extension.
 
+## rangeconflict (range-aware SSI driver)
+
+The interleave driver only makes *point-width* conflict ranges, so the resolver's arithmetic over
+genuine **spans** (`rangesOverlap` on wide ranges, the GetRange read-conflict extent, ClearRange write
+conflicts, the `keyAfter` boundary between adjacent keys) went untested. This driver
+(`pkg/simfdb/hunt/rangeconflict/`, RFC-179 Tier 2, a `hunt.Workload`) interleaves point AND range ops
+— `GetRange` (read conflict over a span), `ClearRange` (write conflict over a span), point Get/Set/
+Clear — across open transactions and commits through the serialized resolver. **9,238 real `1020`s +
+30,417 range ops across 3,000 hot seeds**, verdict model in lockstep.
+
+```sh
+bazelisk test //pkg/simfdb/hunt/rangeconflict:rangeconflict_test --test_output=errors
+# dst-hunt -profiles rangeconflict
+```
+
+- **The oracle is airtight because byte-range overlap ≡ integer-interval overlap** for ascending
+  tuple-encoded keys: point key `i` = `[i, i+1)`, range `[lo,hi)` = `[lo,hi)`, `keyAfter(k_i)` sorts
+  strictly between `k_i` and `k_{i+1}` so it never bridges a gap. The verdict model resolves over plain
+  integer intervals (simpler than the resolver's byte ranges — that gap is its teeth); the state oracle
+  replays blind Set/Clear writes in commit order.
+- **Unlimited `GetRange` reads** keep the read-conflict extent the full span (SimFDB narrows it only for
+  a limit-truncated read) — so the interval model matches the resolver exactly. If you add limited range
+  reads, model the narrowed extent too.
+- **GOTCHA the clean sweep caught (read-only fast path):** a transaction with **no writes** never
+  reaches conflict resolution — FDB completes a read-only commit client-side (SimFDB `conflict.go`
+  short-circuits when `buffer` and `writeConflicts` are both empty), taking version `-1` (no
+  `lastVersion` bump). A verdict model MUST treat a read-only txn as never-conflicting AND must not
+  advance its model version on that commit, or every later verdict drifts. The interleave driver never
+  hit this (every op there writes); rangeconflict did on its first sweep. When a new driver's model
+  tracks a version counter, replicate the read-only fast path.
+
+## continuation (cursor-resume replay driver)
+
+Continuation-under-fault replay driver (`pkg/simfdb/hunt/continuation/`, RFC-179 Tier 2, a
+`hunt.Workload`). A scan that hits a row/byte/time limit mints a **continuation token** and the
+caller resumes in a fresh transaction from those bytes — every byte is a place a bug hides (page-
+boundary off-by-one, plan-hash-in-token, resume skip/dup, version-path-dependence). The record layer
+has *point* tests for a few cases (`continuation_stability_test.go`); this is the seeded sweep that
+fuzzes the whole space over SimFDB.
+
+The oracle is an **independent Go model**, not the engine judging itself: for a seeded record set the
+scan order is known a priori (records in primary-key order, a VALUE index in `(indexed-value, pk)`
+order), so it's computed straight from the `(pk, price)` pairs. Three airtight checks: **pagination
+equivalence** (concatenated pages == model at *every* page size — size 1 round-trips every row
+through a token, the hard case), **prefix-delete invariance** (delete an already-scanned key mid-scan
+→ tail untouched), **tail-delete reflected** (delete a not-yet-scanned key → tail == model minus that
+row).
+
+```sh
+bazelisk test //pkg/simfdb/hunt/continuation:continuation_test --test_output=errors
+# in the overnight sweep: dst-hunt -profiles continuation
+```
+
+- **Why an independent model, not metamorphic self-comparison:** a metamorphic "paginated == one-shot"
+  check misses a bug both paths share (e.g. a consistently wrong scan order). The model is proven
+  faithful by `TestModelMatchesEngine` (a one-shot engine scan of a known dataset == the model), so a
+  `TestClean` divergence is a real engine bug, not a wrong expectation.
+- **Non-advancing token guard:** `drainWithLimit` caps pages at `4*(expected+1)+16` — a token that
+  never advances is reported as a violation, not an infinite loop.
+- **Fresh-tx-per-page is the point:** each page runs in its own `db.Run`, so the token must survive a
+  transaction/read-version boundary. The between-page delete (a committed version bump) is the "fault".
+
 ## golden (characterization gate)
 
 Behavior lock for the SQL engine (`pkg/simfdb/hunt/golden/`, RFC-179 Tier 2 oracle). For a curated
@@ -414,12 +476,59 @@ above.
 | **−1** rr + Delve replay | reverse-debug a *captured* real-FDB flake | ⚠️ **setup** — `rr` not installed; `--backend=rr` |
 | **0** Clock + seeded RNG + Buggify | byte-reproducible persisted state; deterministic `CURRENT_*`; fault points | ✅ **Available** (`pkg/dst`) |
 | **1** SimFDB (in-mem MVCC backend) | **single-seed bit-exact replay, no Docker**; true rollback; SSI-conflict + idempotency bug hunting; the conflict-outcome differential as its oracle | ✅ **Available** (`pkg/simfdb`) |
-| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** concurrent-tx SSI driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave`) — continuation-under-fault replay + fault-enabled interleave still to come |
+| **2** workload drivers + replay | seed-reproducible record workloads (**[hunt](#hunt)**: brute-force loop-until-bug + shrink); SQL workloads (`sqlhunt`); metamorphic + golden oracles; **[interleave](#interleave-concurrent-transaction-ssi-driver)** + **[rangeconflict](#rangeconflict-range-aware-ssi-driver)** SSI drivers; **[continuation](#continuation-cursor-resume-replay-driver)** cursor-resume replay driver | ✅ **Available** (`pkg/simfdb/hunt` + `sqlhunt`/`metamorphic`/`golden`/`interleave`/`rangeconflict`/`continuation`) — fault-enabled interleave (post-apply 1021) still to come |
 | **3** client sim (Track B) | `synctest`-driven client concurrency + simulated server processes | ⏳ **separate RFC** (not full DST) |
 
 The fast/reproducible inner loop for the record layer is now **hunt** (in-memory, seeded, true-rollback
 faults); real-FDB fidelity still comes from **chaos / differential / stress / binding-stress**. Confirm
 anything wire-adjacent on real FDB before calling it wire-safe.
+
+## Building a new DST driver (the repeatable recipe)
+
+Every Tier-2 driver so far (`interleave`, `continuation`, the `sqlhunt` family) followed the same
+rhythm. When you add a surface, follow it — one driver at a time, fixed to completion, committed, and
+handed to a background hunter.
+
+1. **Find the unexercised checkbox.** Read the existing hand-written tests for the surface. If they're
+   *point samples* of a space (one fixed schedule, one fixed dataset), the driver is the *seeded sweep*
+   over that whole space. Name the bug class it makes fire (interleave → real `1020`; continuation →
+   token/resume defects). If a capability is only proven by one fixed test, it is a fake checkbox until a
+   seeded driver sweeps it — that's the NO-FAKE-CHECKBOX bar.
+2. **Design an INDEPENDENT oracle before writing the driver.** Rank by strength: an independent Go model
+   (know the right answer a priori — `continuation`'s PK-order model, `interleave`'s point-key verdict +
+   summed-effect state) beats metamorphic self-comparison (engine judges itself — catches WRONG-
+   inconsistent but misses a bug both paths share) beats golden (catches CHANGED only). Prefer a model
+   when the correct answer is computable from the seed; it catches bugs a metamorphic check can't. Keep
+   the model *simpler* than the engine (point-keys vs byte-ranges) — the representation gap is its teeth.
+3. **Implement as a `hunt.Workload`** in `pkg/simfdb/hunt/<name>/`: `Name()` + `Run(seed, hunt.Config)
+   *hunt.Report`. Own your knobs on the struct (ignore the record-oriented `hunt.Config` fields), build
+   the env with `hunt.NewSimEnv(seed, faultProb)`, run **fault-free** unless commit-fault injection is
+   itself what you're testing (injected faults confound a serializability/exactness oracle — say so in
+   the package doc). Never panic on a found bug — capture it in the `Report`. Fingerprint the final
+   keyspace (`hunt.Fingerprint` or a local range-hash) for the determinism probe.
+4. **Tests that earn trust, not padding:** a wide **clean sweep** (seeds × profiles, 0 `Failed()`); a
+   **teeth** test proving the oracle discriminates (white-box unit-test the predicate, AND — for a model
+   oracle — a *fidelity* test that the engine's one-shot output equals the model, so a sweep divergence is
+   a real bug not a wrong expectation); **determinism** (same seed → same fingerprint twice). Keep the
+   in-suite seed band small (≈10–15 s total — siblings target that); volume is the hunter's job, not
+   `just test`'s.
+5. **Wire `Profiles()`** into `cmd/dst-hunt/main.go`'s `profiles` slice so it joins the overnight sweep.
+6. **Ship:** `go vet` → `gofumpt -w` (nogo enforces it) → `just gazelle` → `bazelisk test //pkg/simfdb/hunt/<name>:...` → commit (the pre-commit runs the full `just generate && lint && build && test`; no `--no-verify`, ever).
+7. **Dispatch a background hunter** (general-purpose subagent, `run_in_background`, **`isolation:
+   worktree`**): give it (a) a *gated* white-box brute `_test.go` (env-var guarded like `TestBruteHunt`)
+   sweeping WIDER configs than the shipped profiles across millions of seeds for a wall-clock budget,
+   failing with a full reproducer on the first `.Failed()`; and (b) the operational `dst-hunt -seconds N`
+   across all profiles. Tell it to **reproduce → shrink → root-cause but NOT fix** (a Tier-1 resolver or
+   query-engine bug needs the lead, and query-engine fixes need a Graefe ACK), and to **delete the gated
+   harness if clean**. **Use `isolation: worktree`** — a hunter that writes its gated `_test.go` into the
+   *shared* worktree makes the next commit's pre-commit `gazelle` regenerate that package's BUILD.bazel
+   to reference a file the hunter is about to delete, and the commit fails until the hunter finishes. An
+   isolated worktree keeps its scratch files off your commit path so you can keep building in parallel. A
+   clean result is only meaningful if the machinery has teeth — have it report the live count of the bug
+   class it fires (interleave/rangeconflict: `1020`s; continuation: pages), so "0 findings" is backed by
+   "N million conflicts actually resolved", not silence.
+8. **Codify here.** Add a `## <name>` section (what it drives, the oracle, the run command, the
+   gotchas), flip the roadmap row, and record any bug + its regression.
 
 ## Evolving this skill
 

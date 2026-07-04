@@ -9,6 +9,7 @@ go_library(
         "//pkg/simfdb/hunt",
         "//pkg/simfdb/hunt/continuation",
         "//pkg/simfdb/hunt/interleave",
+        "//pkg/simfdb/hunt/rangeconflict",
         "//pkg/simfdb/hunt/sqlhunt",
     ],
 )

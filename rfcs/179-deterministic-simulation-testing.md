@@ -654,8 +654,24 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
     judge) ✅ v1 built + run: the `llm-metamorphic-generate` workflow proposes equivalence scenarios,
     `dst-generate` judges them over SimFDB. First run found **2 real query-engine bugs** (aggregate-index
     all-NULL-group drop; inconsistent NULL ordering — both in `TODO.md ## DST findings`).
-  - **Selected next build:** continuation-under-fault replay ⏳ not yet built (plan-hash-not-in-token
-    bug class) — resume a cursor across an injected fault and assert the replayed page set is exact.
+  - **Range-conflict interleaving driver ✅ BUILT** — `pkg/simfdb/hunt/rangeconflict`. The interleave
+    driver only makes point-width conflict ranges; this one interleaves `GetRange`/`ClearRange`/point ops
+    to exercise the resolver's SPAN arithmetic (`rangesOverlap`, `keyAfter`, the GetRange conflict
+    extent). Verdict oracle resolves over integer intervals (byte-range overlap ≡ interval overlap for
+    ordered keys); state oracle replays blind Set/Clear writes in commit order. **9,238 real `1020`s +
+    30,417 range ops across 3,000 hot seeds.** Its first clean sweep caught a model-fidelity bug — a
+    read-only transaction takes FDB's client-side fast path (no conflict check, no version bump), which
+    a verdict model must replicate.
+  - **Continuation-under-fault replay ✅ BUILT** — `pkg/simfdb/hunt/continuation`. Paginates record +
+    index scans (forward/reverse) at every page size, resuming from the continuation token each page in a
+    FRESH transaction, and checks against an INDEPENDENT Go model (records in primary-key order, the VALUE
+    index in `(indexed-value, pk)` order). Three airtight oracles: pagination equivalence (page size 1
+    round-trips every row through a token), prefix-delete invariance, tail-delete reflected (both under a
+    between-page version bump). The independent model — proven faithful by a one-shot-scan fidelity test —
+    catches a wrong scan order that a metamorphic paginated-vs-one-shot check would miss.
+  - **Selected next build:** fault-enabled interleave variant ⏳ — inject post-apply `commit_unknown`(1021)
+    into the interleave driver and teach the state oracle that a 1021'd transaction's writes DID land
+    (the non-idempotent-`Add`-under-true-rollback surface, now in a concurrent setting).
 - **Tier 3** — Track B, separate RFC, not started (out of scope here).
 
 ## 8. Risks & non-goals
