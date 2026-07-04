@@ -4458,9 +4458,9 @@ func extractOutputProjectionNames(op logical.LogicalOperator) []string {
 // memory budget is calibrated to (an alias override leaks the qualified keys
 // into the temp rows: TestFDB_RFC130_RecursiveCTE_NoDoubleCharge regressed).
 func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, outCols []string) expressions.RelationalExpression {
-	physNames, fromProjection := legPhysicalOutputNames(leg, legCols)
+	physNames, plainField, fromProjection := legPhysicalOutputNames(leg, legCols)
 	return expressions.NewLogicalProjectionExpressionWithAliases(
-		recursiveRemapValues(physNames, fromProjection),
+		recursiveRemapValues(physNames, plainField, fromProjection),
 		append([]string(nil), outCols...),
 		expressions.ForEachQuantifier(expressions.InitialOf(leg)),
 	)
@@ -4486,21 +4486,33 @@ func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, 
 // recursive CTE (review P2, Slice-1 follow-up). The name-keyed Datum stores the
 // alias key alongside the source key, so the alias also resolves on the
 // off-frontier (join-body) name path — one read name valid on both models.
-func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []string) ([]string, bool) {
+// The second return is the per-column STRUCTURAL classification: true when
+// the projected value is a plain *values.FieldValue — whose rendered name is
+// its Field string VERBATIM, an identifier (possibly a genuinely-dotted lazy
+// "B.ID") by construction. Anything else renders as an EXPRESSION string
+// ("(B.ID + 1)", "1.5"), whose dots are never qualifiers. recursiveRemapValues
+// picks the read arm from this classification, never from the string's shape
+// (review finding: a string-grammar discriminator misread a float literal's
+// rendering as IDENT.IDENT and re-manufactured the garbage correlation).
+// nil classification = the logical-name fallback path, where every name is a
+// column identifier by construction.
+func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []string) ([]string, []bool, bool) {
 	lp, ok := leg.(*expressions.LogicalProjectionExpression)
 	if !ok || len(lp.GetProjectedValues()) != len(logicalCols) {
-		return logicalCols, false
+		return logicalCols, nil, false
 	}
 	aliases := lp.GetAliases()
 	out := make([]string, len(logicalCols))
+	plainField := make([]bool, len(logicalCols))
 	for i, v := range lp.GetProjectedValues() {
 		alias := ""
 		if i < len(aliases) {
 			alias = aliases[i]
 		}
 		out[i] = values.OutputColumnName(v, alias)
+		_, plainField[i] = v.(*values.FieldValue)
 	}
-	return out, true
+	return out, plainField, true
 }
 
 // recursiveRemapValues builds the read-side Values for a recursive-CTE leg's
@@ -4525,11 +4537,22 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // QOV reads below never need ordinals). Non-projection legs (ordinalReads
 // false: scan-top star seeds, multi-branch unions) keep pure name reads —
 // their columns are table columns, which cannot be duplicate-named.
-func recursiveRemapValues(cols []string, ordinalReads bool) []values.Value {
+// The dotted split fires from the STRUCTURAL classification, never from the
+// string's shape: plainField[i] marks a projected value that is a plain
+// *values.FieldValue, whose rendered name is its Field string verbatim — an
+// identifier by construction, so a dot in it IS a qualifier. A computed
+// value's rendering ("(B.ID + 1)", a float literal's "1.5") may contain dots
+// that are never qualifiers; a string-grammar discriminator here misread
+// those and manufactured garbage correlations like QOV("(B") / QOV("1") —
+// the S4 kill-list first-dot-split hazard (review finding, twice: the
+// expression class and the float-literal class). plainField nil = the
+// logical-name fallback path, identifiers by construction.
+func recursiveRemapValues(cols []string, plainField []bool, ordinalReads bool) []values.Value {
 	out := make([]values.Value, len(cols))
 	for i, c := range cols {
 		cu := strings.ToUpper(c)
-		if dot := strings.IndexByte(cu, '.'); dot >= 0 && isQualifiedIdentPair(cu, dot) {
+		identName := plainField == nil || plainField[i]
+		if dot := strings.IndexByte(cu, '.'); dot >= 0 && identName {
 			out[i] = &values.FieldValue{
 				Field: cu[dot+1:],
 				Typ:   values.UnknownType,
@@ -4542,33 +4565,6 @@ func recursiveRemapValues(cols []string, ordinalReads bool) []values.Value {
 		}
 	}
 	return out
-}
-
-// isQualifiedIdentPair reports whether an upper-cased physical output name
-// with a dot at `dot` is a GENUINE qualified reference (IDENT.IDENT) rather
-// than a computed rendering whose dot sits INSIDE an expression. The dotted
-// read arm splits at the first dot and builds QOV(prefix) — applied to a
-// rendering like "(B.ID + 1)" that manufactured the garbage correlation
-// "(B" (the S4 kill-list first-dot-split hazard; pre-hardening the ordinal
-// model loud-errored there and the §5 differential watched). A computed
-// rendering now falls through to the ordinal / bare-name arms, whose read
-// name is the FULL rendering — exactly the key the projection writes.
-func isQualifiedIdentPair(cu string, dot int) bool {
-	isIdent := func(s string) bool {
-		if s == "" {
-			return false
-		}
-		for i := 0; i < len(s); i++ {
-			ch := s[i]
-			switch {
-			case ch >= 'A' && ch <= 'Z', ch >= '0' && ch <= '9', ch == '_':
-			default:
-				return false
-			}
-		}
-		return true
-	}
-	return isIdent(cu[:dot]) && isIdent(cu[dot+1:])
 }
 
 // equalFoldSlices reports whether two string slices are element-wise equal
