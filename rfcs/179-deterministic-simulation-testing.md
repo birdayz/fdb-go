@@ -685,15 +685,15 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
     continuation, so it errors `54F01` under a tiny scanned-rows limit instead of resuming (same gap in
     `executeInUnion`; Java's `InJoinCursor` resumes). Both recorded in TODO.md "## DST findings",
     Graefe-gated, quarantined + pinned by fix-detectors; not fixed here.
-  - **Continuation across an INJECTED between-page fault ✅ BUILT** — `pkg/simfdb`
-    `TestSimFDB_ContinuationResumeAcrossFaultedWrite`. A scan mints a continuation on page 1; a
-    between-page delete of un-scanned data commits through a targeted `InjectOnce` fault in a raw
-    single-commit transaction (db.Run would retry the fault away); the scan resumes and must reflect the
-    fault's TRUE outcome — `not_committed`(1020) leaves the record present, `commit_unknown`(1021) leaves
-    it deleted — with no dup/loss. Pairs the continuation path with true-rollback fault injection.
-  - **Selected next build:** widen the above into a seeded sweep, and cover the resume TRANSACTION
-    itself faulting (a read-write cursor whose resume commit hits 1021/1007) — the remaining
-    lost-resume-state surface.
+  - **Continuation across an INJECTED between-page fault ✅ BUILT** — both a fixed regression (`pkg/simfdb`
+    `TestSimFDB_ContinuationResumeAcrossFaultedWrite`/`…Insert`, delete+insert × 1020/1021) and a **seeded
+    sweep** (a fourth oracle in `pkg/simfdb/hunt/continuation`: a not-yet-scanned key is deleted in a raw
+    single-commit transaction hit by a targeted `InjectOnce` fault — db.Run would retry it away — and the
+    resume must reflect the true outcome: `1020` rolled back → tail unchanged, `1021` applied → tail minus
+    the key; the delete asserts the injected code actually surfaces, so a green sweep proves the fault
+    fired). Pairs the continuation path with true-rollback fault injection across every seed.
+  - **Selected next build:** the resume TRANSACTION itself faulting — a read-write cursor whose resume
+    commit hits `commit_unknown`(1021)/`too_old`(1007), the remaining lost-resume-state surface.
 - **Tier 3** — Track B, separate RFC, not started (out of scope here).
 
 ## 8. Risks & non-goals
