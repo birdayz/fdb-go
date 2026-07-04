@@ -198,7 +198,14 @@ validation gate.
     now clean 0AF00 declines with no-mutation pins). Exit gate amended per ruling: the constructor
     keeps exactly ONE production call site (ungated-outer rightmost-corr residual, pinned both
     directions) until W4-left/W5 gate every cluster; dies in S4.
-  - [ ] **W5 — multi-source lateral UNNEST** — IN PROGRESS on `feat/rfc173-w5-multisource-unnest`
+  - [x] **W5 — multi-source lateral UNNEST** — MERGED (PR #466, master 1050831ff). Five commits
+    + five gauntlet rounds; five real review findings fixed red-first (two silent-wrong
+    production classes among them: unrewritten element-referencing ON conjuncts, and the
+    PRE-EXISTING buried-unnest spanning-WHERE 0-row class); the §5 oracle rebuilt for gathered
+    N-way tops (which also fixed the silently-broken plain-3-way oracle class); SELECT * over
+    multi-source newly plannable with correct FROM-order metadata. Final tally on the merged
+    HEAD: Graefe ACK, Torvalds ACK, codex clean, @claude clean; 1M stress green; 1621-entry
+    dualwindow corpus green. Was IN PROGRESS on feat/rfc173-w5-multisource-unnest:
     (Graefe DESIGN-ACK, five forks ruled; charter amended per the F4 rider: the dotted classifiers go
     DEAD-FOR-GATED in W5, physical deletion rides the last dotted producer's killer; the
     under-existential class is re-chartered to the W4-left+EXISTS slice). Commit 1 LANDED: the
