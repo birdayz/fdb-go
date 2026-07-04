@@ -2302,3 +2302,101 @@ bare-name fold wart (worktree-verified pre-existing, independently reproduced by
 gate), the arrayElementTypeNameFromDescs bare-name ambiguity nit, the enclosed+EXISTS residual
 class pin, the 3-plain-leg mid-unnest rotation pin. Final tally on ca59ecbf1: Graefe ACK,
 Torvalds ACK, codex clean, @claude ACK; 1M stress green; 1621-entry dualwindow corpus green.
+
+## W4-left + EXISTS + recursive-CTE slice — design (for Graefe ruling)
+
+**Charter.** Retire producer 3 (`buildJoinResultValue` → `NewAnchoredJoinRecord`) across its five
+classes — LEFT/RIGHT-outer box, EXISTS-over-join, mixed nesting, dup-alias, recursive-CTE-enclosed
+— plus the Q3-re-chartered under-existential unnest (blocker: `rebaseOuterLegRefsToMerged`). After
+this slice the only surviving anchored producers are `NewReEnumerationAnchoredRecord` (dies in S4)
+and the two PINNED residuals (W4b ungated-outer scalar; W5's ungated/dup declines) — so the F4
+rider's PHYSICAL deletion of the dotted classifiers is chartered to ride this slice's exit if it
+kills the last dotted producer, else S4.
+
+**Java ground truth (4.12.11.0, agent-verified file:line).**
+- LEFT OUTER: `QueryVisitor.wrapOperandsForOuterJoin` (fdb-relational :604-669) builds the result
+  value AT TRANSLATION as a flat RCV of per-leg `FieldValue.ofOrdinalNumber` pull-ups where the
+  null-supplying leg pulls through `QOV(alias, type.withNullability(true))`
+  (`Quantifier.pullUpResultColumnsWithNullability`, core :790-799); `OuterJoinExpression` VERIFIES
+  every null-side QOV is nullable (:111-132). Execution: `RewriteOuterJoinRule` (:79-147) → outer
+  select over {preserved, `forEachWithNullOnEmpty`} reusing the SAME result value;
+  `ImplementNestedLoopJoinRule` wraps null-on-empty legs in `RecordQueryDefaultOnEmptyPlan`.
+- EXISTS: the existential leg NEVER appears in result columns (star expansion skips it); the
+  select references it only via `ExistsValue.toQueryPredicate` → `ExistentialValuePredicate(QOV)`.
+  Correlated inner refs to outer legs are PER-QUANTIFIER ordinal correlations — never a merged
+  row. `ImplementNestedLoopJoinRule` yields FlatMap with `inheritOuterRecordProperties=true` for
+  existential inners + `RecordQueryFirstOrDefaultPlan(NullValue)` (:313-316).
+- Recursive CTE legs: `TempTableScanExpression.ofCorrelated` flows `QueriedValue(innerType)` —
+  ordinal columns; every reference is a FRESH `Quantifier.forEach` over the shared Reference with
+  outputs `rewireQov`'d by ordinal.
+- Dup aliases: Java quantifiers ALWAYS mint `CorrelationIdentifier.uniqueId`; SQL-visible names
+  are Expression qualifiers, never quantifier aliases.
+
+**Go surface (agent-verified).** `buildJoinResultValue` lives at translateJoin's ungated arm
+(:3760, declaration order) and translateJoinWithExists (:3905, UNCONDITIONAL, post-swap order).
+Gate arms routing name-model: EXISTS-in-ON, pairwise dup-alias, mixed nesting (ordinalEligible),
+LEFT/RIGHT (post-W3b "pending re-ruling"), enclosure, arity poison (exists/scalar-subquery
+filters, recursive LogicalCTE legs). The dissolution-side ordinal seed EXISTS
+(`ordinalSeedFromAnchoredLeft`, rfc173_w4_left_ordinal.go:49-117) for exactly-two single-source
+legs. The existential implementation rebases outer-leg refs onto the MERGED row
+(`rebaseOuterLegRefsToMerged` :832 → `QOV($m)."LEG.COL"`) with the FrontierPinned panic boundary
+(:919-937). Recursive-CTE references ANCHOR via cteColumnsScope and already gate ordinal as
+leaves; `LogicalCTE{Recursive:true}` in leg position is poison. `NewAnchoredJoinRecord` tolerates
+dup legs by last-leg-wins.
+
+**Proposed model (1:1 with Java where reachable).**
+1. **LEFT/RIGHT (commit 1):** ordinalize AT TRANSLATION — translateJoin's LEFT arm builds the
+   Java-shaped seed directly: per-leg baked runs with the null-supplying leg's QOV typed
+   NULLABLE (`ordinalSeedFromAnchoredLeft`'s construction, generalized to gated-eligible legs and
+   moved to the seed site); the gate's JoinLeft arm flips to Gated (the W3b re-ruling this
+   section requests — the dissolved form is INNER+null-on-empty, which the ordinal machinery
+   already implements; the "not opaque" finding becomes the reason it CAN gate, not the reason it
+   cannot). RewriteOuterJoinRule keeps reusing the seed unchanged (Java-exact). The dissolution
+   converter retires (dead-for-gated, deleted when the anchored input class dies).
+2. **EXISTS-over-join (commit 2):** translateJoinWithExists builds the ordinal seed for the
+   JOIN legs (the flat gathered seed when the outer is a gated cluster — the W5 builder;
+   the binary ordinal seed otherwise) with existential quantifiers riding the SAME select
+   (Java: existential legs excluded from the RV). The gate's EXISTS-in-ON arm flips for
+   gated-eligible outers. `rebaseOuterLegRefsToMerged` goes DEAD-FOR-GATED: with per-leg baked
+   refs the NLJ existential arm binds legs by correlation (twoLegBinder) — no merged row exists
+   to rebase onto; the FrontierPinned panic boundary becomes the enforcement that the rebase
+   never sees an ordinal seed. The under-existential unnest class (W5 Q3 re-charter) lifts with
+   it: translateUnnestExistsFilter's `unnestUnderExistential` decline narrows to shapes whose
+   existential SELECT is itself ungated.
+3. **Recursive-CTE-enclosed (commit 3):** the recursive `LogicalCTE` leg-position poison narrows:
+   a reference leg (TempTableScan-backed, cteColumnsScope-typed) is ordinal-eligible (Java:
+   QueriedValue ordinal columns); only the DEFINITION expression stays opaque. Both-direction
+   pins on the recursive corpus (the dualwindow recursive entries are the net).
+4. **Dup-alias (commit 4):** mint FRESH correlation ids for later duplicate legs at the seed
+   (Java-aligned: quantifier ids are never SQL names; the SQL alias stays the projection
+   qualifier — the W5 gather already fresh-ids one shape, innerLegCorr). The gate's pairwise
+   dup arm then admits the cluster. The name model's last-leg-wins is preserved OBSERVABLY by
+   the visitor's qualification rules (last-binding-wins pins both directions).
+5. **Mixed nesting** falls out: with 1-4 ordinalized, ordinalEligible's "leg contains a
+   name-model join" arm has no producers left in the wedge except the pinned residuals —
+   the arm stays as the residual guard (fail-open, Q5 discipline).
+
+**Fork questions.**
+- F1 (LEFT at-translation vs at-dissolution): Java builds ordinal at translation;
+  the existing Go seed converts at dissolution. Proposal: at-translation (1:1), keeping the
+  dissolution converter as the residual bridge until the anchored LEFT class is unreachable.
+- F2 (EXISTS): retire-the-rebase-for-gated (proposed) vs extend-the-rebase-to-baked-refs
+  (rejected: builds MORE name-model machinery). The existential select's RV = outer legs only
+  (Java) — needs the executor's existential FlatMap to bind the inner existential leg for the
+  PREDICATE while excluding it from the birth (the current birth already RawLeg-binds
+  existential inners? — investigation item I1).
+- F3 (dup-alias scope): fresh-ids for DUPLICATE legs only (proposed, minimal) vs all quantifiers
+  (Java-exact, huge blast radius across every alias-keyed subsystem — rejected for the
+  coexistence window; S4+ can revisit).
+- F4 (classifier deletion): if commit 2 kills the last dotted producer
+  (buildUnnestResultValue's under-existential arm), the W5 F4 rider's physical deletion of
+  MergeSeedLegsOfValue/leftmostQOVOfValue rides THIS slice's exit gate.
+- F5 (exit gate): both-direction pins per commit; the dualwindow corpus stays the net;
+  MergeArmHits==0 extends to LEFT/EXISTS ordinalized shapes; 1M stress before/after;
+  task budgets re-run (LEFT/EXISTS gating changes enumeration).
+
+**Investigation items before commit 1:** I1 (executor existential-leg binding under an ordinal
+birth), I2 (RIGHT normalization order at the seed — :3760 uses declaration order, :3905
+post-swap; the ordinal seed must pick ONE authority), I3 (OuterJoinExpression-equivalent
+nullability verify site in Go — the wrapper type does not exist; the verify lands on the seed
+builder).
