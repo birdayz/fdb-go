@@ -389,3 +389,23 @@ inner-leg fresh-id; the W4-left dup-alias legs). Ruled ACCEPTABLE as a coexisten
 justification, and the blast radius of always-unique ids spans every alias-keyed subsystem.
 REVISIT AT S4+: once the name model is gone, converge on Java's structure (unique ids + name
 qualifiers on projections).
+
+W4-left commit-4 REVISION (flagged for the impl-review ruling): the ruled fresh-id mechanism
+assumed the dup-alias cluster should GATE with last-binding-wins observables — but Java's
+actual observable is an AMBIGUOUS-reference ERROR (42702) for every reference to the
+duplicated alias (SemanticAnalyzer attributes.size()==1 asserts; no FROM-level rejection
+exists in Java). Go's lazy name-model resolution has no translation-time reference binding to
+hang the per-reference check on, so commit 4 rejects AT THE FROM WALK with the same code —
+matching Java on the practical class. DIVERGENT CORNERS (both marked in the corpus,
+conformance-harness-verified against the live Java server): (a) `SELECT * FROM p, q, p`
+answers in Java (duplicate columns, unique ids) but rejects 42702 in Go — the FROM-level
+approximation cannot see references; (b) DISJOINT-COLUMN duplicate aliases (`ta AS a, tb AS a`
+with no shared column) pass the narrowed FROM check (Java answers per-attribute); the
+PREDICATE-FREE form answers in Go too (per-leg qualified keys — conformance PARITY), while the
+PREDICATED form cannot bind over indistinguishable correlations — the clean 0AF00 decline,
+never wrong rows.
+The rejection is COLUMN-AWARE (shared-column duplicates only, message = Java's exact
+"Ambiguous reference ALIAS.COL"); pre-rejection Go was strictly worse on BOTH axes (referenced
+shared-column duplicates silently bound LAST-LEG-WINS — wrong rows; SELECT * died with an
+internal planner error). The exact per-reference check + fresh-id gating is the 7.1
+namespace-unification charter.
