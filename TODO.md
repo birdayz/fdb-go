@@ -272,7 +272,9 @@ validation gate.
       WHERE conjuncts (`FROM ca a, cb b, cc c WHERE a.id=1 AND b.bid=10`, no cross-leg predicate)
       CANNOT PLAN (0AF00) — a partition gap, booked so it is not mistaken for a W5 regression.
       (The no-WHERE dotted 3-way works.)
-  - [ ] **W4-left + EXISTS + recursive-CTE joins** — IN PROGRESS on feat/rfc173-w4left-exists
+  - [x] **W4-left + EXISTS + recursive-CTE joins** — MERGED (PR #467, rebase; four-gate tally:
+    Graefe ACK, Torvalds ACK, codex clean over three delta rounds, @claude clean over two
+    hand-traced passes + tail; CI green; 1M stress green; live-Java SeedRunCorpus green)
     (Graefe DESIGN-ACK, 4 conditions; the F3 divergence recorded in DIVERGENCES.md). Commit 1
     LANDED: single-source LEFT/RIGHT boxes gate with the at-translation ordinal seed (I2
     declaration order, I3 record-level nullability); the RIGHT SELECT * metadata reversed-check
@@ -296,7 +298,10 @@ validation gate.
     MASTER bugs — fabricated ALIAS.* keys from merged-row bare keys = wrong-source rows, and
     the nondeterministic anchored re-enumeration panic — both fixed; enclosure guard on the
     outer gate arms; ordinalSeedFromAnchoredLeft deleted); the INNER-only flatten contract.
-    Remaining: the delta re-request round on the new HEAD (all four gates).
+    Gauntlet round 3 LANDED: generated output names (unaliased aggregate/computed text) join
+    the dup-alias collision check (a."COUNT(*)" over duplicate legs read one side silently —
+    red-first both directions; live-Java-classified corpus entry, message drift) + the two
+    review-condition comment fixes. All four gates ACK'd the final HEAD.
 
   - [ ] **S4 atomic demolition** (LAST): delete the flag + trio + the three seeds +
     `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag branches + 4 executor
