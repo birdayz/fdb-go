@@ -2400,3 +2400,25 @@ birth), I2 (RIGHT normalization order at the seed — :3760 uses declaration ord
 post-swap; the ordinal seed must pick ONE authority), I3 (OuterJoinExpression-equivalent
 nullability verify site in Go — the wrapper type does not exist; the verify lands on the seed
 builder).
+
+**Design ruling: DESIGN-ACK, all five forks, four conditions.** F1 at-translation ACK (the W3b
+re-ruling GRANTED on the corrected premise: dissolution-into-INNER+null-on-empty is exactly why
+LEFT can gate; RewriteOuterJoinRule must keep reusing the RV unchanged, Java-exact). F2 ACK
+(RV = outer legs only; the merged-row rebase is a name-model artifact — extending it to baked
+refs "would be building the wrong abstraction taller"; the FrontierPinned panic stays as frontier
+police; the unnest lift rides the same gate predicate). F3 ACK as a COEXISTENCE measure only —
+record in DIVERGENCES.md with the S4+ revisit; last-binding-wins needs both-direction pins
+including SELECT * layout. F4/F5 ACK (producer audit at exit; task budgets re-run — gating
+LEFT/EXISTS changes memo enumeration). Commit ordering ACK. Conditions:
+(1) I2 is RULED, not investigated: Java assembles the RV in SOURCE order (left-then-right
+regardless of join type; only preserved/null-supplying ROLES swap) — declaration order (:3760)
+is the sole authority, and :3905's post-swap RV is a LATENT RIGHT-JOIN+EXISTS SELECT * column-
+order divergence TODAY (fix in commit 2, pin both directions).
+(2) I3 sharpened: nullability lives on the null-supplying QOV's RECORD TYPE
+(type.withNullability(true)); the Verify keys on qov.getResultType().isNullable() — the
+generalized seed types the QOV record-level nullable (the existing per-column wrap is not
+Java's shape), and the verify lands on the seed builder.
+(3) I1 (executor birth excluding the existential leg while the predicate still binds it) must
+close BEFORE commit 2 merges — the one place correctness can silently invert (a 0-row class).
+(4) F5 pins MUST include NOT EXISTS and NON-CORRELATED EXISTS shapes (the codebase's known
+blind axis).
