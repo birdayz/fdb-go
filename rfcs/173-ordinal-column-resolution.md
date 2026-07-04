@@ -2475,3 +2475,39 @@ the 1621→1625-entry dualwindow corpus green (and it CAUGHT two over-reaches du
 the flatten seed twice — exactly its job); task budgets (chain 11122/45306, STAR 42788) held
 unchanged through every commit; 1M stress green on the slice head; the live Java conformance
 harness green including the new dup-alias entries (byte-equal error text).
+
+### W4-left gauntlet round 2 — the impl NAK cluster (three fix commits)
+
+The impl reviews converged on the commit-4 dup-alias machinery and the outer-box gate. What
+REPRODUCED and what didn't, verdict by verdict:
+
+- **Dup-alias (both reviewers, four real defects, one commit):** later-pair three-way
+  duplicates planned SILENTLY (first-source-only tracking — wrong rows); derived/CTE legs
+  rejected with the garbage user-visible column `?`; an undefined table under a dup alias was
+  masked 42F01→42702; the both-underivable corner had no defined message. The claim that
+  derived/CTE dups "plan silently" did NOT reproduce (they rejected — with the garbage
+  message). Fix: per-leg column derivation for EVERY leg kind (derived/CTE bodies via
+  `fromLegColumnsUpper` + a threaded CTE registry), all-priors tracking, undefined-table pairs
+  skipped. Two new PARITY corpus entries verified byte-equal against live Java; the CTE star
+  corner extends the marked over-rejection divergence.
+- **Mixed outer nesting (the NAK driver's strongest catch):** the demanded runtime pins
+  immediately caught TWO PRE-EXISTING master bugs the plan-only probes could not see:
+  unmatched `d LEFT JOIN e ON … JOIN c ON …` rows returned d.id AS e.id (the parent merge
+  FABRICATED `E.*` keys from the box row's bare last-leg-wins keys), and the RIGHT variant
+  nondeterministically panicked in the RFC-077 anchored re-enumeration. Fixes: merged rows
+  (any dotted key) never seed `ALIAS.COL` fabrication; the re-enumeration DECLINES the
+  unresolvable bipartition; the outer gate arms now respect enclosure (LEFT/RIGHT box legs of
+  a name-model parent stay name-model — a FULL box leg is ordinal-eligible, so its parent
+  gates and the composition is ordinal-over-ordinal, already pinned).
+- **`ordinalSeedFromAnchoredLeft` deleted** — but NOT on the reviewer's "production-dead"
+  premise, which the enclosure guard falsified: post-guard, enclosed dissolved boxes DO reach
+  the converter (tripwire-verified), where it would re-create exactly the
+  ordinal-under-name-model mix the guard prevents. Deleted as architecturally wrong (plus the
+  I3 per-column-nullability contradiction), with the executor fix carrying the shape.
+- **`translateJoinWithExists` dead OUTER arms** — collapsed into one INNER-only contract
+  decline, pinned per kind; the misleading pin-f comment trimmed.
+
+Method note for the record: first-round worktree baseline runs were VACUOUS (the copied pin
+file was absent from the worktrees' explicit BUILD srcs — bare bazel PASS with "no tests to
+run"), which briefly inverted the regression attribution; re-running with gazelle in each
+worktree established the true baseline (master fails both mixed-nesting bugs).

@@ -288,8 +288,15 @@ validation gate.
     + 1 parity entry). Commit 5 LANDED (exit gates: producer audit in the RFC — the INNER
     flatten stays anchored, its ordinal seed corpus-reverted twice pending data-access
     positional binders; the W5 F4 rider resolves to S4 for classifier deletion; budgets held;
-    1M stress green; Java harness green). Remaining: the four-gate gauntlet (the F3 revision
-    and the flatten scope-note flagged for the Graefe impl ruling).
+    1M stress green; Java harness green). Graefe IMPL-ACK conditions LANDED (layout
+    consolidation into values.OrdinalSeedLegWindows + the QP-REF-BIND charter). Gauntlet
+    round 2 LANDED (three commits): column-aware dup-alias for EVERY leg kind (derived/CTE
+    column derivation, all-priors tracking, 42F01 unmasked — live-Java-verified corpus
+    entries); mixed outer-nesting soundness (the demanded runtime pins caught TWO pre-existing
+    MASTER bugs — fabricated ALIAS.* keys from merged-row bare keys = wrong-source rows, and
+    the nondeterministic anchored re-enumeration panic — both fixed; enclosure guard on the
+    outer gate arms; ordinalSeedFromAnchoredLeft deleted); the INNER-only flatten contract.
+    Remaining: the delta re-request round on the new HEAD (all four gates).
 
   - [ ] **S4 atomic demolition** (LAST): delete the flag + trio + the three seeds +
     `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag branches + 4 executor
