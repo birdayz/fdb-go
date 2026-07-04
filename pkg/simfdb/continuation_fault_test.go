@@ -3,6 +3,7 @@ package simfdb_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -249,6 +250,119 @@ func TestSimFDB_ContinuationResumeAcrossFaultedInsert(t *testing.T) {
 			}
 			if len(all) != len(want) {
 				t.Fatalf("resumed scan = %v (%d rows), want %v (%d)", all, len(all), want, len(want))
+			}
+			for i := range want {
+				if all[i] != want[i] {
+					t.Fatalf("at index %d: got %d, want %d (full: %v)", i, all[i], want[i], all)
+				}
+			}
+		})
+	}
+}
+
+// TestSimFDB_ContinuationResumeUnderRetryingTransaction resumes a scan inside a db.Run whose commit is
+// hit by an injected fault, so the record layer's retry loop re-runs the whole resume closure at a
+// FRESH read version. The continuation token — minted at the page-1 version — must resume correctly
+// across that retry (the "does the token survive a resume-transaction fault + retry" surface). The
+// resume closure deletes an ALREADY-SCANNED prefix key (pk 0) so its commit is non-empty (a read-only
+// commit short-circuits and no fault would fire); because that key is in the scanned prefix, the
+// resumed tail is invariant to whether the delete rolled back (1020) or applied (1021), so
+// page1 ++ tail == 0..19 either way. A retry MUST occur (attempts >= 2), proving the fault fired.
+func TestSimFDB_ContinuationResumeUnderRetryingTransaction(t *testing.T) {
+	t.Parallel()
+	for _, faultCode := range []int{1020, 1021} {
+		faultCode := faultCode
+		t.Run(fmt.Sprintf("resume-commit-faults-%d", faultCode), func(t *testing.T) {
+			t.Parallel()
+			sim, db, sub := newInjectableSim(fmt.Sprintf("retry-%d", faultCode))
+			md := buildOrderMetadata(t)
+			ctx := context.Background()
+
+			if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := openStore(rtx, md, sub)
+				if err != nil {
+					return nil, err
+				}
+				for i := 0; i < 20; i++ {
+					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			// Page 1 (read-only): 0..4, capture the continuation.
+			var page1 []int64
+			var cont []byte
+			if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := openStore(rtx, md, sub)
+				if err != nil {
+					return nil, err
+				}
+				cur := store.ScanRecords(nil, recordlayer.ScanProperties{
+					ExecuteProperties:   recordlayer.ExecuteProperties{ReturnedRowLimit: 5},
+					CursorStreamingMode: recordlayer.StreamingModeWantAll,
+				})
+				recs, c, err := recordlayer.AsListWithContinuation(ctx, cur)
+				if err != nil {
+					return nil, err
+				}
+				for _, r := range recs {
+					page1 = append(page1, r.Record.(*gen.Order).GetOrderId())
+				}
+				cont = c
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("page1: %v", err)
+			}
+			if len(page1) != 5 || len(cont) == 0 {
+				t.Fatalf("page1 = %v, cont len %d", page1, len(cont))
+			}
+
+			// Resume the tail inside a db.Run whose first commit is faulted, forcing a retry.
+			sim.InjectOnce(faultCode)
+			var tail []int64
+			attempts := 0
+			if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				attempts++
+				store, err := openStore(rtx, md, sub)
+				if err != nil {
+					return nil, err
+				}
+				cur := store.ScanRecords(cont, recordlayer.ScanProperties{
+					ExecuteProperties:   recordlayer.ExecuteProperties{ReturnedRowLimit: 1000},
+					CursorStreamingMode: recordlayer.StreamingModeWantAll,
+				})
+				recs, _, err := recordlayer.AsListWithContinuation(ctx, cur)
+				if err != nil {
+					return nil, err
+				}
+				tail = tail[:0] // reset per attempt — keep only the final successful attempt's rows
+				for _, r := range recs {
+					tail = append(tail, r.Record.(*gen.Order).GetOrderId())
+				}
+				// Non-empty mutation on an already-scanned key so the commit isn't short-circuited
+				// and the tail stays invariant to it.
+				if _, err := store.DeleteRecord(tuple.Tuple{int64(0)}); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("resume under fault %d: %v", faultCode, err)
+			}
+			if attempts < 2 {
+				t.Fatalf("expected the injected fault to force a retry, but the resume committed in %d attempt(s)", attempts)
+			}
+
+			all := append(append([]int64(nil), page1...), tail...)
+			var want []int64
+			for i := int64(0); i < 20; i++ {
+				want = append(want, i)
+			}
+			if len(all) != len(want) {
+				t.Fatalf("page1++tail = %v (%d rows), want 0..19 (%d)", all, len(all), len(want))
 			}
 			for i := range want {
 				if all[i] != want[i] {
