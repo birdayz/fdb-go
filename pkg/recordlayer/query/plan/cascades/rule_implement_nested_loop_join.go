@@ -454,7 +454,20 @@ func buildCorrelatedFlatMapPlan(
 ) (*plans.RecordQueryFlatMapPlan, expressions.RelationalExpression, bool) {
 	var outerPreds, joinPreds []predicates.QueryPredicate
 	for _, pred := range preds {
+		// Classification must be MERGE-SEED-AWARE (the same authority as
+		// legReferencesAny): a predicate rebased through a merge's anchored
+		// record constructor (SelectMergeRule's multi-quantifier-child
+		// translation rewrites QOV(box) into the box's RC) HIDES its leg
+		// correlations — GetCorrelatedToOfPredicate alone classified the
+		// RC-rebased WHERE conjunct as outer-only and stranded it on the
+		// outer leg, where its inner-leg reads hit the wrong frontier row
+		// (loud OrdinalResolutionError; a silent misread under a name
+		// collision).
 		corrSet := predicates.GetCorrelatedToOfPredicate(pred)
+		if corrSet == nil {
+			corrSet = map[values.CorrelationIdentifier]struct{}{}
+		}
+		predicates.AddMergeSeedAliases(pred, corrSet)
 		if _, ok := corrSet[innerCorr]; ok {
 			joinPreds = append(joinPreds, pred)
 		} else {
@@ -524,13 +537,7 @@ func buildCorrelatedFlatMapPlan(
 		}
 	}
 
-	var innerWrapped plans.RecordQueryPlan = innerPlan
-	if len(joinPreds) > 0 {
-		innerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			innerPlan, joinPreds, innerCorr,
-		)
-	}
-	// LEFT-OUTER null-extension, the Java way (ImplementNestedLoopJoinRule.java:317-322
+	// LEFT-OUTER null-extension, the Java way (ImplementNestedLoopJoinRule.java:310-330
 	// / ImplementSimpleSelectRule:100-109): when the inner quantifier is null-on-empty
 	// (produced by RewriteOuterJoinRule for a LEFT OUTER), wrap the inner in
 	// DefaultOnEmpty so a non-matching outer row yields one all-NULL inner row instead
@@ -538,7 +545,25 @@ func buildCorrelatedFlatMapPlan(
 	// outer-join semantics are emergent from this wrapper, exactly like Java's FlatMap.
 	// The ON-predicates already sit BELOW this boundary (inside the rewritten inner
 	// SUBSEL), so they filter before the null-fill — correct LEFT-OUTER semantics.
+	//
+	// Predicate placement follows Java's planPartitionToPhysical: the wrap
+	// (DefaultOnEmpty) comes FIRST, the select-level predicates filter ABOVE
+	// it. Every select-level predicate reaching a null-on-empty inner is
+	// WHERE-class (the ON-predicates live inside the leg subsel by the
+	// rewrite contract), so it must see the null-extended row and drop it on
+	// a non-matching comparison (`… LEFT JOIN e ON … WHERE e.fname = 'x'`
+	// drops the null-extended rows; placed below the wrap, the filter ran
+	// before the null-fill and the extended row survived unfiltered — rows
+	// Java drops). The strict-single (scalar subquery) wrap keeps its
+	// predicates BELOW: they are the subquery's own correlation, part of the
+	// subquery body the at-most-one-row check applies to.
+	var innerWrapped plans.RecordQueryPlan = innerPlan
 	if innerStrictSingle {
+		if len(joinPreds) > 0 {
+			innerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+				innerWrapped, joinPreds, innerCorr,
+			)
+		}
 		// Correlated scalar subquery, no user LIMIT: enforce SQL at-most-one-row.
 		// A strict FirstOrDefault collapses the inner to one row per outer (NULL
 		// default on empty) AND raises 21000 on a second row. It is a non-pushable
@@ -553,6 +578,15 @@ func buildCorrelatedFlatMapPlan(
 	} else if innerNullOnEmpty {
 		innerWrapped = plans.NewRecordQueryDefaultOnEmptyPlan(
 			innerWrapped, values.NewNullValue(values.UnknownType),
+		)
+		if len(joinPreds) > 0 {
+			innerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+				innerWrapped, joinPreds, innerCorr,
+			)
+		}
+	} else if len(joinPreds) > 0 {
+		innerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			innerWrapped, joinPreds, innerCorr,
 		)
 	}
 
@@ -749,8 +783,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// no anchored-RC result value, so it contributes no aliases here).
 	if len(joinPreds) > 0 && outerCorr.Name() != "" {
 		var legAliases []string
-		if rvp, ok := outerPlan.(interface{ GetResultValue() values.Value }); ok {
-			for _, a := range mergedOuterLegAliases(rvp.GetResultValue(), "", "") {
+		if rv := planResultValue(outerPlan); rv != nil {
+			for _, a := range mergedOuterLegAliases(rv, "", "") {
 				if strings.EqualFold(a, outerCorr.Name()) {
 					continue
 				}
@@ -763,6 +797,31 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 				rebased[i] = rebaseOuterLegRefsToMerged(p, legAliases, outerCorr)
 			}
 			joinPreds = rebased
+		} else {
+			// FAIL CLOSED (no rebase authority): with no anchored result
+			// value to name the outer's buried legs, a below-FOD predicate
+			// referencing any alias beyond the binding alias and the
+			// existential inner's own legs is a buried reference this
+			// builder cannot bind — it would silently resolve against the
+			// wrong frontier row. Decline the yield; do not gamble on the
+			// correlation-unchecked fallback (its loud replacement arrives
+			// with the positional binders).
+			for _, p := range joinPreds {
+				corrSet := predicates.GetCorrelatedToOfPredicate(p)
+				if corrSet == nil {
+					corrSet = map[values.CorrelationIdentifier]struct{}{}
+				}
+				predicates.AddMergeSeedAliases(p, corrSet)
+				for a := range corrSet {
+					if strings.EqualFold(a.Name(), outerCorr.Name()) {
+						continue
+					}
+					if _, ok := innerLegs[a]; ok {
+						continue
+					}
+					return
+				}
+			}
 		}
 	}
 
@@ -789,6 +848,14 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorr)
 	}
 
+	// outerOnlyPreds deliberately keep the buried-leg references the
+	// below-FOD rebase above rewrites: this filter runs ABOVE the FlatMap on
+	// the outer's OWN row, where the merged-row producer doesn't alias-bind
+	// (producesMergedRows suppresses the binding) and a buried QOV(D).ID
+	// resolves through the row's QUALIFIED "D.ID" Datum key directly — the
+	// masked-conjunct pin (`d.id = 3 AND NOT EXISTS …`) exercises exactly
+	// this path. The below-FOD preds needed the rebase because THEIR row
+	// context is the inner scan's frontier row, not the outer's.
 	var flatMapOuter plans.RecordQueryPlan = outerPlan
 	if len(outerOnlyPreds) > 0 {
 		flatMapOuter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
@@ -889,6 +956,27 @@ func mergedOuterLegAliases(rv values.Value, leftAlias, rightAlias string) []stri
 		}
 	}
 	return out
+}
+
+// planResultValue unwraps single-child pass-through plans (predicate filters,
+// first-or-default, default-on-empty, fetch shells) to the first plan carrying
+// a non-nil result value — the merged-row schema authority for the buried-leg
+// rebase, independent of which wrappers the winner accrued. Returns nil when
+// no wrapped plan carries one (bare scans: single-table rows, bare keys).
+func planResultValue(p plans.RecordQueryPlan) values.Value {
+	for p != nil {
+		if rvp, ok := p.(interface{ GetResultValue() values.Value }); ok {
+			if rv := rvp.GetResultValue(); rv != nil {
+				return rv
+			}
+		}
+		inner, ok := p.(interface{ GetInner() plans.RecordQueryPlan })
+		if !ok {
+			return nil
+		}
+		p = inner.GetInner()
+	}
+	return nil
 }
 
 // rebaseOuterLegRefsToMerged rewrites references to the original join-outer leg
@@ -1568,6 +1656,42 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		// no translation produces this; decline rather than drop the
 		// extension.
 		return
+	}
+	if correlatedStep1 && sel.GetJoinType() != expressions.JoinInner {
+		// A select-level OUTER join type in the correlated arm is not
+		// constructible today (the flatten and EXISTS-in-ON are INNER-only;
+		// an undissolved outer box never gains an existential quantifier),
+		// and the orientation swap above would hand
+		// buildCorrelatedFlatMapPlan's SetLeftOuter the WRONG side. Decline
+		// defensively rather than null-extend the preserved leg.
+		return
+	}
+	if correlatedStep1 && resultValueReferencesAlias(sel.GetResultValue(), quants[2].GetAlias()) {
+		// A PROJECTED-EXISTS fold (the result value reads the existential
+		// quantifier) over a correlated/null-extended step 1: the step-1
+		// FlatMap would evaluate the folded ExistsValue with a DEAD
+		// existential binding, and the step-2 rebase would read qualified
+		// keys off the fold's bare-keyed row. Not constructible today (the
+		// projected fold is INNER-only upstream; the outer-join variant is
+		// rejected before planning); decline defensively rather than yield
+		// either wrongness.
+		return
+	}
+	if correlatedStep1 {
+		// The correlated step-1 binds the outer row under leftAlias and the
+		// inner under rightAlias — an empty alias would bind under the zero
+		// correlation identifier and every leg reference would miss.
+		// Backfill from the quantifier aliases (the 2-quantifier path's
+		// convention); decline if genuinely unnamed.
+		if leftAlias == "" {
+			leftAlias = q0.GetAlias().Name()
+		}
+		if rightAlias == "" {
+			rightAlias = q1.GetAlias().Name()
+		}
+		if leftAlias == "" || rightAlias == "" {
+			return
+		}
 	}
 
 	// Split predicates into join predicates (for the inner join) and

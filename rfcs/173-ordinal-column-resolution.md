@@ -2739,10 +2739,44 @@ derived-table leg with table-alias correlation; G: plain LEFT null-extension gua
 EXPLAIN determinism ×10 both polarities). The ID column-name collision across all three
 tables is deliberate (it is what made the orphan resolve silently).
 
-**Discovered during commit 1 (booked, NEXT on this branch):** correlated EXISTS referencing a
-DERIVED-TABLE alias is rejected at translation — join form: 42703 `column reference with
-qualifier "E" cannot be resolved`; single-source form: 42703 `no FROM source aliased as E`
-(`FROM (SELECT * FROM emp) e [JOIN d] WHERE EXISTS(... = e.id)`). Table-alias correlation,
-uncorrelated EXISTS, and plain derived joins all work — the gap is the EXISTS subquery's
-outer semantic scope not registering derived-table aliases. Two error sites (plan_visitor /
-logical_predicate SourceNotFoundError handlers). Own red-first fix, own commit.
+**Discovered during commit 1 (fixed on this branch, own commit):** correlated EXISTS
+referencing a DERIVED-TABLE alias was rejected at translation — join form: 42703 `column
+reference with qualifier "E" cannot be resolved`; single-source form: 42703 `no FROM source
+aliased as E`. Two gaps, both fixed: buildOuterScopeSources never registered derived sources
+(now via buildDerivedTableSource, the SELECT scope's own authority, for the primary source
+and join legs), and the no-joins derived table dropped its alias from the logical tree
+(op = innerOp — sourceAlias walked to the BASE table and the existential FlatMap bound the
+outer under the wrong name; now wrapped in the same LogicalCTE(alias) the joins case uses).
+Pinned by derived_exists_scope_fdb_test.go (single/join forms both polarities, either join
+side, renamed projection body, guards).
+
+**Commit-1 implementation reviews (banked).** Torvalds: ACK, four findings — all landed
+(select-level-OUTER decline in the correlated arm; empty-alias backfill/decline; the
+outerOnlyPreds asymmetry documented at the site — those preds resolve through the outer
+row's qualified Datum keys, the masked-conjunct pin exercises it; the bug class's plan-shape
+pin added). Graefe: ACK with conditions — the deviation from the audited decline-only fix is
+RULED CORRECT (Java's stage promotion has the same one-winner property; Java implements the
+shape rather than declining — the fix converges to Java). Conditions, all landed:
+1. **DefaultOnEmpty/predicate placement (Java divergence, pre-existing in
+   yieldGeneralFlatMap):** select-level WHERE-class predicates now filter ABOVE the
+   null-extension (planPartitionToPhysical's order: wrap first, predicates above); the
+   strict-single (scalar subquery) wrap keeps its predicates below (they are the subquery's
+   own correlation). This surfaced a second latent hole: the WHERE conjunct arrives REBASED
+   through the box's anchored record constructor (SelectMergeRule's multi-quantifier-child
+   translation — the box quantifier is named by the rightmost leg), whose leg correlations
+   the anchored RC HIDES — the pred split classified it outer-only and stranded it on the
+   wrong leg. The split is now MERGE-SEED-AWARE (predicates.AddMergeSeedAliases — the same
+   authority legReferencesAny uses). Matrix class I pins the conjunct classes
+   (`WHERE e.fname='alice' AND [NOT] EXISTS`, the IS-NULL anti-join + NOT EXISTS): I2/I3
+   returned cross-product rows on master.
+2. **Projected-EXISTS × correlated step-1:** defensively declined (the fold is INNER-only
+   upstream; the outer-join variant rejects before planning — matrix class J pins the clean
+   rejection).
+3. **Fail-closed rebase authority:** the 1+1 buried-leg rebase resolves the outer's result
+   value through single-child wrappers (planResultValue); with NO authority and a below-FOD
+   predicate referencing anything beyond the binding alias + the existential's own legs, the
+   yield DECLINES (never the correlation-unchecked fallback).
+Non-blocking Graefe notes booked: the NLJ arm's step-2 wrapper still ranges over leftExpr
+only (pre-existing asymmetry; clean up with commits 2–4); the Explode decline re-creates the
+decline+one-winner pattern for a class whose dedicated lowering owns it — P2c pins it, watch
+it at the unnest-residual slice.

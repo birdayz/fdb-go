@@ -183,12 +183,50 @@ func TestFDB_RFC173Item2_LeftJoinExistsResidual(t *testing.T) {
 		"SELECT e.fname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id",
 		[]string{"<NULL>", "alice", "bob"})
 
-	// (H) EXPLAIN determinism for the bug class, both polarities: one
-	// deterministic winner per shape.
+	// (I) WHERE-conjunct classes over LEFT + EXISTS: the conjunct is
+	// WHERE-class and must see the null-extended row (filter ABOVE the
+	// DefaultOnEmpty — Java's placement). I2 and I3 were silently wrong on
+	// master (cross-product rows); the merge rebases the conjunct through
+	// the box's anchored record constructor, whose hidden leg correlations
+	// the split must re-expose (merge-seed-aware classification).
+	want(t, "I1/conj+NOT EXISTS",
+		"SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id "+
+			"WHERE e.fname = 'alice' AND NOT EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)",
+		nil)
+	want(t, "I2/conj+EXISTS",
+		"SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id "+
+			"WHERE e.fname = 'alice' AND EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)",
+		[]string{"eng"})
+	want(t, "I3/antijoin+NOT EXISTS",
+		"SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id "+
+			"WHERE e.id IS NULL AND NOT EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)",
+		[]string{"empty"})
+	// The plain anti-join guard (no EXISTS): WHERE above the box, unchanged.
+	want(t, "I4/plain antijoin",
+		"SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id WHERE e.id IS NULL",
+		[]string{"empty"})
+
+	// (J) Projected EXISTS over an outer join: the fold is INNER-only and
+	// the shape must REJECT cleanly (never wrong rows through a dead
+	// existential binding).
+	if _, err := db.QueryContext(ctx,
+		"SELECT d.dname, EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id) "+
+			"FROM dept d LEFT JOIN emp e ON e.dept_id = d.id"); err == nil {
+		t.Error("projected EXISTS over LEFT JOIN must reject cleanly (INNER-only fold), got rows")
+	}
+
+	// (H) EXPLAIN shape + determinism for the bug class, both polarities:
+	// the winner must carry the correlated step-1 (DefaultOnEmpty preserves
+	// the LEFT null-extension under the existential FlatMap — the fix's
+	// plan shape, not merely its rows), and one deterministic winner per
+	// shape.
 	for _, q := range []string{qA, qAn} {
 		var first string
 		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&first); err != nil {
 			t.Fatalf("explain: %v", err)
+		}
+		if !containsAll(first, "FlatMap", "DefaultOnEmpty", "FirstOrDefault") {
+			t.Errorf("bug-class plan lost the correlated step-1 shape: %s", first)
 		}
 		for i := 0; i < 9; i++ {
 			var again string
