@@ -654,9 +654,13 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   `value_anchored_join_record.go` entirely; delete `RecordConstructorValue.AnchoredJoin` and its
   preservation through `WithChildren`/`Replace`/simplifier/`Equals`/`semantic_hash`; delete the
   executor's bare/`ALIAS.COL`/`TYPE.COL` key writing and `qualifyAlias`/`qualifyTypeFallback`;
-  delete `producesMergedRows`/`bindAlias` suppression (the operator allowlist trap); widen
-  `InternsAliasAware` to **all** selects and delete the gate (`select.go:221-256`); delete the
-  fake `_<ordinal>` `OrdinalFieldName`; fold the `LogicalProjection` that used to stack over the
+  delete `producesMergedRows`/`bindAlias` suppression (the operator allowlist trap); delete
+  `InternsAliasAware`'s AnchoredJoin arm only (`select.go:251` — the default-false arm at
+  `select.go:274` is the CTE-rename NULL-read guard and survives for its own later slice, F2);
+  ~~delete the fake `_<ordinal>` `OrdinalFieldName`~~ **STRUCK (post-W4-left sequencing
+  ruling): `OrdinalFieldName` is load-bearing ORDINAL-model infrastructure** (materialized-
+  scalar `_0`, WITH-ORDINALITY positions, positional-merge RC — Java's `_i` anonymous-column
+  naming) and SURVIVES S4; fold the `LogicalProjection` that used to stack over the
   join. **Observable change:** `SELECT *` last-leg-wins bare-name collision is **fixed** (both
   duplicated columns coexist positionally) — a deliberate correctness improvement that moves
   goldens (§7). Hard part: output column order/reversal (`cascades_generator.go:2733-2876`) must
@@ -2511,3 +2515,48 @@ Method note for the record: first-round worktree baseline runs were VACUOUS (the
 file was absent from the worktrees' explicit BUILD srcs — bare bazel PASS with "no tests to
 run"), which briefly inverted the regression attribution; re-running with gazelle in each
 worktree established the true baseline (master fails both mixed-nesting bugs).
+
+## Post-W4-left S4 blocking inventory + the sequencing ruling (Graefe)
+
+W4-left merged (PR #467, four-gate ACK). The compiled S4 blocking inventory, code-verified,
+supersedes the "W4-left → S4" roadmap step — the W4-left producer audit's surviving anchored
+producers plus the gauntlet-round-2 enclosure guard mean S4 sits behind prerequisite slices:
+
+**Live anchored producers.** (A1) `translateJoin`'s ungated arm behind the gate's poison
+ladder — EXISTS-in-ON (:69-74, item 2), dup leg aliases (:82-89, item 1), mixed nesting /
+leg-ineligible LEFT/RIGHT (:90-100 + the :102-113 enclosure guard + :138-141 clustered-leg,
+item 3), and the subquery-RIDER poison (`clusterArity` :324-332 — a cluster whose leg
+filter/project carries exists/scalar subqueries). (A2) `translateJoinWithExists` — the INNER
+2+1 flatten, anchored per the F2 scope note (seed twice corpus-reverted; the
+data-access/correlated-FlatMap existential paths bind legs by NAME) — item 2. (A3)
+`buildUnnestResultValue` residuals — under-existential unnests (the W5 F4 rider's re-charter
+was NOT covered by the merged slice — booking gap, now closed into item 2) + W5's fail-open
+declines (bare-twin duplicate cross-leg names, box-leg owners, multi-segment paths,
+CTE/derived rotation owners, chained unnests). (A4) `NewScalarSubqueryAnchoredRecord` — one
+production caller (the ungated-outer rightmost-correlation fallback); dies when items 1+2+3
+JOINTLY zero the poison classes (not item 3 alone — the fallback arm also catches item-1/2
+poison). (A5) `NewReEnumerationAnchoredRecord` — strictly downstream, dies mechanically (F1).
+
+**The sequencing ruling (three questions):**
+- **Bare-twin circularity → fold into the S4 atomic commit.** W5's duplicate-cross-leg-column
+  decline waits on S4's ordinal-projection compose direction while S4 waited on the unnest
+  residuals; the cycle cuts at S4 (the decline is fail-open name-model, costs nothing to
+  ride; pulling positional duplicate-name coexistence forward would fork the coexistence
+  regime and churn goldens twice). Condition: the S4 e2e matrix row-verifies the bare-twin
+  unnest class, and the differential covers it name-model-side until then.
+- **Item-2 charter absorption.** QP-REF-BIND item 2 formally absorbs the under-existential
+  unnest class and the EXISTS-rider poison (same root cause: the existential machinery binds
+  legs by name). The SCALAR-rider absorbs CONDITIONALLY — if the same positional binders
+  unlock it, same slice, one review; if it needs W4b-seed rework it books as an immediate
+  item-2 follow-on. Condition: each absorbed class gets its own gate-reason string and
+  dualwindow pins.
+- **Sequence: (riders ∥ item 2 ∥ item 1) → item 3 → unnest-residual slice → S4.**
+  2-before-3 is load-bearing (the enclosure guard names existential/unnest parents; retiring
+  it before positional binders exist re-opens the wrong-rows class). The riders — bound
+  `positionalTypeCache` (a live leak on master today) and the recursive-CTE ordinal
+  leg-normalization read — are standalone and start immediately.
+
+**Standing S4 conditions:** the kill list is amended above (OrdinalFieldName struck —
+load-bearing ordinal infrastructure; `select.go:274` survives for the CTE-rename slice); the
+S4 exit gate proves zero anchored producers EMPIRICALLY (caller-free constructors, exhausted
+decline reasons), never by inventory argument.

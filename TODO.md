@@ -303,9 +303,15 @@ validation gate.
     red-first both directions; live-Java-classified corpus entry, message drift) + the two
     review-condition comment fixes. All four gates ACK'd the final HEAD.
 
-  - [ ] **S4 atomic demolition** (LAST): delete the flag + trio + the three seeds +
-    `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag branches + 4 executor
-    consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until now) — ONE commit.
+  - [ ] **S4 atomic demolition** (LAST — gated on QP-REF-BIND items 1+2+3, the riders, and the
+    unnest-residual slice; sequencing ruling banked in the RFC): delete the flag + trio + the
+    three seeds + `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag
+    branches + 4 executor consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until
+    now) — ONE commit, which also LIFTS the W5 bare-twin duplicate-column decline (the
+    circularity cut: e2e matrix must row-verify that class). Kill-list amendments recorded:
+    OrdinalFieldName SURVIVES (ordinal infrastructure); `select.go:274` survives for the
+    CTE-rename slice. Exit gate: EMPIRICAL zero-anchored-producers proof (caller-free
+    constructors, exhausted decline reasons), never inventory argument.
   - [ ] SEPARATE later slices (F2/F3): CTE-rename `select.go:274` widening (gated on CTE-column-rename
     ordinalization); lazy name-identity arm deletion (gated on FULL FieldValue baking, NOT S4).
 - [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
@@ -3284,6 +3290,29 @@ One authority for three deferred pieces the W4-left review flagged (previously s
 2. **Existential-flatten ordinalization** — translateJoinWithExists keeps the ANCHORED seed
    until the 2+1 select's data-access/correlated-FlatMap implementation paths bind legs
    POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).
+   **CHARTER EXTENDED (post-W4-left sequencing ruling): absorbs the under-existential unnest
+   class (`FROM t, t.arr AS v WHERE EXISTS(…)` — the W5 F4 rider's booking gap, closed here)
+   and the EXISTS-rider clusterArity poison (a cluster whose leg filter/project carries
+   exists subqueries) — same root cause, one slice, one review. The SCALAR-rider poison
+   absorbs CONDITIONALLY: same binders → same slice; W4b-seed rework needed → immediate
+   follow-on. Each absorbed class gets its own gate-reason string + dualwindow pins.**
 3. **Mixed-nesting LEFT widening** — the joined-preserved class (clustered legs under a
    LEFT/RIGHT box) stays pinned residual until the flattened-cluster seed can name buried
-   sources (the W4 dissolution ruling's scope).
+   sources (the W4 dissolution ruling's scope). Retires the gate's :138-141 clustered-leg
+   poison, the :102-113 enclosure guard, and ordinalEligible's LEFT/RIGHT leg-ineligibility;
+   with items 1+2 it JOINTLY drives NewScalarSubqueryAnchoredRecord to zero callers.
+   **MUST land AFTER item 2** (the enclosure guard names existential/unnest parents;
+   retiring it before positional binders exist re-opens the mixed-nesting wrong-rows class).
+
+**Sequencing (Graefe ruling, banked in the RFC):** (riders ∥ item 2 ∥ item 1) → item 3 →
+unnest-residual slice → S4. The riders are standalone and start immediately:
+- [ ] **Rider: bound `positionalTypeCache`** (executor/query_result.go — unbounded
+      descriptor-keyed sync.Map; a dynamicpb miss Stores forever — live leak on master).
+- [ ] **Rider: recursive-CTE ordinal leg read** — retire `legPhysicalOutputNames` /
+      `recursiveRemapValues`' rendered-name reads (first-dot split hazard on computed
+      physical names); read leg slot i by `ofOrdinalNumber` over the leg quantifier.
+- [ ] **Unnest-residual completion slice** (books A3's W5 fail-open declines: box-leg
+      owners, multi-segment `t.a.b` paths, CTE/derived rotation owners, chained unnests;
+      under-existential arrives via item 2's binders; the BARE-TWIN duplicate-column decline
+      rides until S4 — folded into the atomic commit per the circularity ruling, with the
+      differential covering it name-model-side until then).
