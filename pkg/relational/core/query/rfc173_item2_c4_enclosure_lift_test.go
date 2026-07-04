@@ -72,6 +72,27 @@ func TestRFC173Item2C4_EnclosureLift(t *testing.T) {
 		}
 	})
 
+	t.Run("EXISTS box already enclosed stays name-model", func(t *testing.T) {
+		t.Parallel()
+		// When the WHERE-EXISTS filter is ITSELF translated inside
+		// an enclosing name-model merge (prevEnclosure true — the box is a leg of
+		// a larger transparent join / derived body that will flatten-merge it),
+		// the lift must NOT clear the enclosure. existsOuterGatesFresh probes with
+		// a FRESH position, so it would report the box as gate-eligible; lifting
+		// on that alone lets the child seed an ordinal positional row the parent
+		// then name-model merges (wrong binding). The lift only fires when
+		// prevEnclosure is false.
+		box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
+		tr := newGateTranslator(t)
+		tr.inInnerCluster = true // the enclosing name-model context
+		if ref := tr.translateRef(c4ExistsFilterOver(box, "q$e")); ref == nil {
+			t.Fatalf("translation failed: %v", tr.translateErr)
+		}
+		if d, ok := tr.wedgeGate[box]; !ok || d.Gated {
+			t.Fatalf("already-enclosed EXISTS box = %+v (recorded=%v), want recorded NOT gated (the parent name-model merges it)", d, ok)
+		}
+	})
+
 	t.Run("non-existential LEFT box still gates (regression guard)", func(t *testing.T) {
 		t.Parallel()
 		// The same single-source LEFT box with NO EXISTS gates as it did before

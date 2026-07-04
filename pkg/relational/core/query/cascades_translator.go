@@ -2152,7 +2152,15 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// ordinalWedgeGateDecide, ruling condition 4).
 	prevEnclosure := t.inInnerCluster
 	if len(f.ExistsSubqueries) > 0 {
-		t.inInnerCluster = !t.existsOuterGatesFresh(f.Input)
+		// Lift the enclosure ONLY when not ALREADY enclosed: if this
+		// WHERE-EXISTS filter is itself a leg of a larger name-model merge
+		// (prevEnclosure true — a transparent join / derived body that will
+		// flatten-merge the box), the parent name-models the box regardless, so
+		// letting the child gate ordinal here seeds a positional row the merge
+		// then mis-binds. existsOuterGatesFresh probes with a FRESH position, so
+		// it cannot see the enclosing context on its own — prevEnclosure carries
+		// it. When already enclosed, stay enclosed.
+		t.inInnerCluster = prevEnclosure || !t.existsOuterGatesFresh(f.Input)
 	}
 	innerRef := t.translateRef(f.Input)
 	t.inInnerCluster = prevEnclosure
