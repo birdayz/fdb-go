@@ -2076,4 +2076,45 @@ byte-identical rows on the ENTIRE name-model corpus (`TestFDB_ArrayUnnestOrdinal
 enclosed / existential families — R5-R31, P1a/P2a/P2b/P2c); the §6 mandatory execution pin (RFC-142
 suite green under ordinal recovery); positional-authority pin (`DisablePositionalEmission` flip);
 `MergeArmHits == 0` for ordinalized unnest shapes; task-count/STAR budget unchanged; a NEW
-`SELECT *`-over-multi-source metadata pin (currently unpinned — probe first).
+`SELECT *`-over-multi-source metadata pin. **PROBED (master):** `SELECT * FROM T1, U, T1."ARR1" AS
+"VAL"` CANNOT PLAN today ("best expression is not a physical plan" — planner non-convergence on the
+star-over-buried-unnest shape, while the same FROM with explicit projections works) — the star pin is
+a FIX TARGET for W5, not a regression constraint.
+
+### W5 design review: Graefe DESIGN-ACK (all five forks ruled; conditions folded)
+- **Q1 — Option A (flat-at-translation) ACK.** Decisive: under Option B the Explode correlates to the
+  WHOLE-CLUSTER concat QOV — strictly coarser than Java's per-source edge, over-constraining
+  bipartition ({A, Explode} could never separate from B) and defeating the re-enumeration W5 exists to
+  enable. A's per-source correlation makes the `rangesOver` recovery carry exactly Java's
+  `Quantifier.getCorrelatedTo` edge — emergent validity. Conditions: (i) the `gatherInnerClusterLegs`
+  unnest-stop becomes an Explode-leg contribution preserving FROM order; (ii) the P1/P2b
+  alias-collision rejections survive verbatim; (iii) the Explode's collection bakes ONLY when its
+  source is itself a gated ordinal leg — else decline (feeds Q5).
+- **Q2 — widen `IsOrdinalJoinRV` NARROWLY, ACK.** Identity dedup is unacceptable (W5 puts unnest
+  selects INTO re-enumeration — the 29915→60044 interning-blowout class). Admit a field that is a bare
+  TYPED QuantifiedObjectValue (counts toward roots): a whole-leg reference is as position-determined
+  as a FrontierPinned bake — no name resolution can hide in it; the CTE-rename decline rationale is
+  untouched. Conditions: typed-QOV only; task-count/STAR pins before/after; a dedup-dimension pin (two
+  alias-differing structurally-identical unnest selects intern to one).
+- **Q3 — CHARTER AMENDMENT, ACK: the W4-left+EXISTS slice owns the under-existential class** (its
+  blocker is `rebaseOuterLegValue`, owned there; EXISTS still precedes S4). **F4 RIDER (charter fix):**
+  a multi-source under-existential unnest still emits dotted buried reads, so
+  `MergeSeedLegsOfValue`/`leftmostQOVOfValue` CANNOT physically die in W5 — W5 makes them
+  DEAD-FOR-GATED (pinned); physical deletion rides whichever slice kills the last dotted producer.
+- **Q4 — chained unnest NAK for W5 scope:** gated on the engine-wide nested struct-field-access gap
+  (the W4c cross-cutting deferral), not on the flat model. Keep the guard as a gather-time decline
+  that doesn't foreclose the extension; file the slice after (or with) struct-field access.
+- **Q5 — fail-open pinned residual, ACK** (the W4b exit-gate-amendment precedent; decline-loud would
+  regress working compositions). `buildUnnestResultValue` keeps the ungated-outer + under-existential
+  classes until W4-left/EXISTS. Exit gate pinned BOTH directions (ordinal shapes prove the seed path,
+  white-box + MergeArmHits==0; residual shapes prove reachability + today's rows).
+- **Hazards folded:** (1) the §5 dual-window oracle's producer-context rebind (`oracleNameDatum`) must
+  extend to the gathered N-way Explode leg — MANDATORY pin (the exact latent class W4c caught);
+  (2) `SELECT *` metadata probed (cannot plan on master — fix target); (3) Go binds the VISIBLE alias
+  where Java mints fresh quantifier ids — acceptable ONLY because the alias-collision rejections
+  exist; documented here as the standing justification.
+- **Commit structure (dependency-free, each white-box + FDB pinned):** 1. gather extension + isolated
+  multi-source (seed pin + R-family byte-identical rows); 2. enclosed-leg class + GROUP-BY
+  re-enumeration via `positionalMergeCase`; 3. Q2 interning widening + STAR/task pins; 4. §5 oracle
+  rebind + positional-authority pin + `SELECT *` metadata; 5. classifier dead-for-gated pins
+  (physical delete deferred per the F4 rider). Exit gate both directions.
