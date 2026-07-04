@@ -1209,19 +1209,25 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 
 	// The correlated array Value: FieldValue{arrField} over QOV(outer).
 	//
-	// When the outer is a MERGED row (the array's source is not the rightmost
-	// FROM leg, e.g. `FROM A, B, A.arr AS X`), the merged row flows under the
-	// rightmost leg's alias (`sourceAlias(j.Left)`) and exposes every source's
-	// columns BOTH bare (last-leg-wins) AND qualified `LEG.COL`. Reading the bare
-	// `arr` here would explode the LAST leg's array (`B.arr`), not the array the
-	// classifier type-checked (`A.arr`) — silent wrong rows. So when segment 0 is
-	// not the merged row's flow leg, read the QUALIFIED `SEG0.FIELD` key, which
-	// the anchored merged record always carries for the classified source. For a
-	// single outer scan (`FROM t, t.arr`) the flow alias IS segment 0 and the row
-	// carries only bare keys, so the bare field is read. RFC-142.
+	// When the outer is a MERGED row (a multi-source FROM, e.g. `FROM A, B,
+	// A.arr AS X`), the merged row flows under the rightmost leg's alias
+	// (`sourceAlias(j.Left)`) and exposes every source's columns BOTH bare
+	// (last-leg-wins) AND qualified `LEG.COL`. The bare key's winner follows
+	// the join's EXECUTION operand order — an order the planner may legally
+	// swap (cost model, tie-breaks) — so a bare read here is order-dependent:
+	// it explodes whichever leg's array happened to merge LAST, not the array
+	// the classifier type-checked. That includes the RIGHTMOST source
+	// (`FROM A, B, B.arr AS X`): the old seg0==flow-alias bare-read arm was
+	// correct only while the step-1 join kept declaration order, and returned
+	// A's elements the moment the cost model preferred the swapped operands
+	// (caught by the stable-tie-break landing). Read the QUALIFIED
+	// `SEG0.FIELD` key for EVERY merged outer — the anchored merged record
+	// carries it for every leg under either operand order. Only a genuine
+	// SINGLE-SOURCE outer (`FROM t, t.arr` — a scan/derived row, bare keys
+	// only, arity 1) reads the bare field. RFC-142.
 	arrayFieldKey := fieldName
 	seg0 := strings.ToUpper(u.Segments[0])
-	if seg0 != outerAlias {
+	if t.clusterArity(j.Left) != 1 {
 		arrayFieldKey = seg0 + "." + fieldName
 	}
 	arrayValue := values.NewFieldValue(
