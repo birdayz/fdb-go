@@ -462,6 +462,73 @@ is explicitly out.
 | golden / characterization | changed (regression) | determinism (✓ SimFDB) | ✅ `pkg/simfdb/hunt/golden` (result+`EXPLAIN` baseline, diff on merge) |
 | planner-internal fuzz | memo/plan invariants | in-process | ✅ in-tree |
 
+#### Tier 2 generators — LLM-guided adversarial input (the "clanker" analog)
+
+**Motivation.** Random seeds explore a huge but *unstructured* slice of the input space; for a SQL engine
+the interesting bugs hide in *semantically* structured inputs random generation almost never reaches
+(correlated subqueries, empty-group aggregates, NULL/type-coercion corners, LIMIT/DISTINCT/ORDER-BY
+interactions, adversarial join shapes). Greg KH's "clanker" (a local LLM fuzzing the kernel, human owns
+the fixes) is the proof of pattern. Our determinism + oracle stack lets us do a *sounder* version: an LLM
+(Claude, driven by a skill) proposes inputs; the deterministic oracles judge.
+
+**The one hard rule — the LLM generates INPUTS, never the ORACLE.** The LLM is untrusted for correctness
+(it hallucinates the "right answer"); it is trusted only to produce *valid, diverse, adversarial* input.
+Ground truth stays with the deterministic oracles above. This is the line between a sound tool and "ask
+the model if the output looks right" (which is not testing).
+
+**What it generates** — a structured, replayable corpus (not free text):
+- Schemas + indexes + seed data (boundary values, NULLs, duplicates, empty sets).
+- Queries aimed at historically-fragile semantics.
+- **Metamorphic relations — the highest-value output:** families of queries the LLM *asserts* are
+  equivalent (or predictably related), which the engine then checks against itself. The LLM's *semantic*
+  knowledge writes the equivalence claim; the engine's execution is the judge (e.g. it emits `a IN (1,2,3)`
+  beside `a=1 OR a=2 OR a=3`, or a query beside its predicate-pushed / join-reordered rewrite). This is
+  what makes the LLM the natural *feeder* for the metamorphic oracle.
+- Operation sequences for the fault-injection hunters.
+
+**The loop** (generate → execute → observe → refine):
+1. Claude (skill / subagent) emits a batch of candidate inputs as structured data.
+2. The deterministic harness runs each over SimFDB; oracles return pass/violation; coverage is recorded
+   (plan shapes, rules fired, operators, code paths).
+3. The signal — *coverage gaps* ("no correlated subquery yet", "no plan used the RankedSet path"),
+   *violations* (a finding to minimize + amplify), *novelty* (dedup vs the committed corpus) — feeds back.
+4. Claude generates the next batch, steering at the frontier, within a token/time budget (like the
+   overnight seed budget). Repeat.
+
+**Corpus promotion — what makes it cumulative.** An input is *promoted* into the committed corpus only if
+it (a) finds a bug, (b) increases coverage, or (c) exercises a new plan shape; the rest are ephemeral.
+Promoted queries become golden entries; promoted+validated relations become permanent metamorphic checks;
+promoted sequences become regression seeds. The corpus is thus a growing, curated, LLM-built asset — the
+analog of clanker's accumulating patches, but accumulating *coverage*.
+
+**Soundness guards:**
+- *The LLM never judges correctness* — the §5 oracles do.
+- *A proposed equivalence that fails is triaged, not trusted:* it is EITHER an engine bug OR a wrong LLM
+  claim. A relation that holds across many data instances on the assumed-correct engine joins the
+  permanent suite; the rest are surfaced for review. A hallucinated equivalence costs a triage, never a
+  false green.
+- *Determinism is preserved:* the *generator* is nondeterministic (explores differently each run), but
+  every generated input runs over SimFDB, so every *finding* is a reproducible, committed artifact. The
+  loop wanders; the results do not.
+- *Human/Graefe ratifies promotions:* the LLM *proposes* corpus additions (golden baselines, metamorphic
+  relations); a human reviews the diff before commit — mirroring clanker's "AI finds, human owns" and the
+  query-engine merge gate.
+- *Invalid SQL is filtered, not corpus'd* — a parse/plan error is logged; a query that *should* parse but
+  errors is itself a finding.
+
+**Mechanism & governance.** A Claude skill (e.g. `/dst-generate`) drives the loop on-demand or nightly,
+locally (no cloud dependency, like clanker). Batches are structured JSON/Go so they replay
+deterministically. A fix for a found bug carries a `Found-by: dst-generate (<corpus-entry>)` trailer — tool
+attribution, not model co-authorship, disclosing AI-assisted *discovery* in the clanker spirit while the
+human authors and owns the fix.
+
+**Relationship to the rest.** This is a *generator that feeds the existing judges*, not a new judge. It
+complements random fuzzing (random finds the unexpected; the LLM finds the semantically deep — additive)
+and is the natural feeder for the metamorphic oracle. **Status:** ⏳ design (this section); build after the
+metamorphic oracle it feeds. **Honest limits:** LLM token cost (budget-scoped); coverage bounded by what
+the LLM "knows" (keep random fuzzing beside it); nondeterministic *exploration* (mitigated — findings are
+deterministic, committed).
+
 ### Tier 3 — client simulation & fault injection [TRACK B — *not* "DST"; own RFC / extends RFC-118]
 
 For the pure-Go client's *own* concurrency (recovery, hedging, failure monitor, GRV): the dominant
@@ -566,6 +633,8 @@ Land 0→1→2 before touching 3. Each tier is independently valuable and revert
     their ops in one goroutine, commit through the serialized resolver — is what makes `1020` and
     non-idempotent-`Add`-under-true-rollback-`1021` actually fire. Hard prerequisite: MVCC
     reads-at-read-version (Tier 1 item 5).
+  - **LLM-guided adversarial input generator** (the "clanker" analog — Claude proposes inputs, oracles
+    judge) ⏳ design only; build after the metamorphic oracle it feeds.
   - Continuation-under-fault replay ⏳ not yet built (plan-hash-not-in-token bug class).
 - **Tier 3** — Track B, separate RFC, not started (out of scope here).
 
