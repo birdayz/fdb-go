@@ -234,11 +234,15 @@ fuzzes the whole space over SimFDB.
 
 The oracle is an **independent Go model**, not the engine judging itself: for a seeded record set the
 scan order is known a priori (records in primary-key order, a VALUE index in `(indexed-value, pk)`
-order), so it's computed straight from the `(pk, price)` pairs. Three airtight checks: **pagination
+order), so it's computed straight from the `(pk, price)` pairs. Four airtight checks: **pagination
 equivalence** (concatenated pages == model at *every* page size — size 1 round-trips every row
 through a token, the hard case), **prefix-delete invariance** (delete an already-scanned key mid-scan
 → tail untouched), **tail-delete reflected** (delete a not-yet-scanned key → tail == model minus that
-row).
+row), and **tail-delete under an injected fault** (the between-page delete commits through an
+`InjectOnce` fault in a *raw single-commit* transaction — db.Run would retry it away — so the resume
+reflects the true outcome: `1020` rolled back → tail unchanged, `1021` applied → tail minus the key;
+`deleteUnderFault`'s assertion fails the run if the injected fault doesn't fire, so a passing sweep
+proves the fault path is genuinely exercised).
 
 ```sh
 bazelisk test //pkg/simfdb/hunt/continuation:continuation_test --test_output=errors

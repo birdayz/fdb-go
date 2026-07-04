@@ -12,7 +12,7 @@
 // The oracle is an INDEPENDENT Go model, not the engine judging itself. For a seeded record set the
 // exact scan order is known a priori — records come back in primary-key (tuple) order, a VALUE index
 // comes back in (indexed-value, primary-key) order — so the model is computed directly from the
-// seeded (pk, price) pairs. Three checks, all airtight:
+// seeded (pk, price) pairs. Four checks, all airtight:
 //
 //   - PAGINATION EQUIVALENCE — paginate each scan (record / index, forward / reverse) at every page
 //     size, resuming from the continuation each page in a FRESH transaction, and assert the
@@ -24,19 +24,25 @@
 //   - TAIL-DELETE REFLECTED — mint a continuation mid-scan, delete a record the scan has NOT yet
 //     reached, resume, and assert the tail equals the model with exactly that row removed: a delete
 //     past the continuation point must be skipped, not double-counted or lost.
+//   - TAIL-DELETE UNDER AN INJECTED FAULT — the same tail delete, but committed through a targeted
+//     fault (InjectOnce) in a raw single-commit transaction (db.Run would retry the fault away): the
+//     resume must reflect the fault's TRUE outcome — not_committed(1020) rolls the delete back (tail
+//     unchanged), commit_unknown(1021) leaves it durable (tail minus the key).
 //
-// Faults here are the continuation itself (each page boundary is a "the transaction ended, resume
-// from bytes" event) and the between-page version bump — not injected commit faults, so the model
-// stays exact. Fully deterministic over SimFDB: same seed ⇒ same pages, same verdict.
+// The continuation itself is a fault (each page boundary is a "the transaction ended, resume from
+// bytes" event) as is the between-page version bump; the fourth check adds a targeted commit fault on
+// top. Fully deterministic over SimFDB: same seed ⇒ same pages, same verdict.
 package continuation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sort"
 
 	"fdb.dev/gen"
+	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -51,8 +57,8 @@ import (
 const contStream = uint64(17)
 
 // Workload is the continuation-replay driver, a hunt.Workload. It ignores the record-oriented
-// hunt.Config and runs fault-free (the continuation and the between-page version bump ARE the
-// faults under test).
+// hunt.Config. The scans run fault-free; the fourth oracle injects a targeted commit fault on the
+// between-page write only (via a raw single-commit transaction), so the scan model stays exact.
 type Workload struct {
 	Records  int   // records seeded per run (default 40)
 	PKDomain int64 // primary keys drawn from [0,PKDomain); > Records leaves gaps (default 200)
@@ -108,15 +114,17 @@ func (w Workload) run(seed uint64) *Result {
 
 	// The mutating oracles draw their parameters up-front so the whole run is a pure function of
 	// the seed regardless of which oracle short-circuits first.
-	prefixL := 1 + rng.IntN(w.Records-1)         // page-1 size for the prefix/tail oracles
-	tailL := 1 + rng.IntN(w.Records-1)           // page-1 size for the tail-delete oracle
-	prefixDel := rng.IntN(prefixL)               // index (in model order) of the already-scanned pk to delete
-	tailDel := tailL + rng.IntN(w.Records-tailL) // index of the not-yet-scanned pk to delete
+	prefixL := 1 + rng.IntN(w.Records-1)            // page-1 size for the prefix/tail oracles
+	tailL := 1 + rng.IntN(w.Records-1)              // page-1 size for the tail-delete oracle
+	prefixDel := rng.IntN(prefixL)                  // index (in model order) of the already-scanned pk to delete
+	tailDel := tailL + rng.IntN(w.Records-tailL)    // index of the not-yet-scanned pk to delete
+	faultL := 1 + rng.IntN(w.Records-1)             // page-1 size for the fault oracle
+	faultDel := faultL + rng.IntN(w.Records-faultL) // index of the not-yet-scanned pk deleted under fault
 
 	ctx := context.Background()
 
 	// ---- Oracle 1: pagination equivalence vs the independent model ----
-	db1, sub, md, index, err := w.setup(seed, recs)
+	_, db1, sub, md, index, err := w.setup(seed, recs)
 	if err != nil {
 		rep.Err = fmt.Sprintf("setup: %v", err)
 		return res
@@ -164,6 +172,23 @@ func (w Workload) run(seed uint64) *Result {
 		}
 	}
 
+	// ---- Oracle 4: tail-delete under an INJECTED between-page fault (record forward) ----
+	// The between-page delete commits through a targeted fault: not_committed(1020) rolls it back
+	// (tail unchanged), commit_unknown(1021) leaves it applied (tail minus the key). Pairs the
+	// continuation resume with true-rollback fault injection across the seeded sweep.
+	for _, faultCode := range []int{1020, 1021} {
+		v, pages, err := w.tailDeleteUnderFault(ctx, seed, recs, model["record-fwd"], faultL, faultDel, faultCode)
+		if err != nil {
+			rep.Err = err.Error()
+			return res
+		}
+		res.Pages += pages
+		if v != "" {
+			rep.Violations = append(rep.Violations, v)
+			return res
+		}
+	}
+
 	rep.Ops = res.Pages
 	return res
 }
@@ -173,7 +198,7 @@ func (w Workload) run(seed uint64) *Result {
 // asserts the resumed tail equals recordFwd[prefixL:]. A change to the scanned prefix must not
 // perturb the resume.
 func (w Workload) prefixDeleteInvariance(ctx context.Context, seed uint64, recs []rec, recordFwd []string, prefixL, delIdx int) (string, int, error) {
-	db, sub, md, _, err := w.setup(seed, recs)
+	_, db, sub, md, _, err := w.setup(seed, recs)
 	if err != nil {
 		return "", 0, fmt.Errorf("prefix-delete setup: %w", err)
 	}
@@ -204,7 +229,7 @@ func (w Workload) prefixDeleteInvariance(ctx context.Context, seed uint64, recs 
 // primary key (recordFwd[delIdx], delIdx >= tailL), resumes, and asserts the tail equals
 // recordFwd[tailL:] with exactly that key removed.
 func (w Workload) tailDeleteReflected(ctx context.Context, seed uint64, recs []rec, recordFwd []string, tailL, delIdx int) (string, int, error) {
-	db, sub, md, _, err := w.setup(seed, recs)
+	_, db, sub, md, _, err := w.setup(seed, recs)
 	if err != nil {
 		return "", 0, fmt.Errorf("tail-delete setup: %w", err)
 	}
@@ -227,6 +252,64 @@ func (w Workload) tailDeleteReflected(ctx context.Context, seed uint64, recs []r
 			delPK, delIdx, d), 1 + pages, nil
 	}
 	return "", 1 + pages, nil
+}
+
+// tailDeleteUnderFault mints a continuation after a page of tailL records, then deletes a not-yet-
+// scanned key (recordFwd[delIdx], delIdx >= tailL) in a RAW single-commit transaction that an injected
+// fault hits, and resumes. The tail must reflect the fault's TRUE outcome: not_committed(1020) rolls
+// the delete back so the tail is unchanged; commit_unknown(1021) leaves it applied so the tail loses
+// that key. The raw transaction is required — db.Run would retry the retryable fault away.
+func (w Workload) tailDeleteUnderFault(ctx context.Context, seed uint64, recs []rec, recordFwd []string, tailL, delIdx, faultCode int) (string, int, error) {
+	sim, db, sub, md, _, err := w.setup(seed, recs)
+	if err != nil {
+		return "", 0, fmt.Errorf("tail-fault setup: %w", err)
+	}
+	sc := recordScan(false)
+	_, cont, err := w.scanPage(ctx, db, md, sub, sc, nil, tailL)
+	if err != nil {
+		return "", 1, fmt.Errorf("tail-fault page1: %w", err)
+	}
+	delPK := pkFromRow(recordFwd[delIdx])
+	applied, err := deleteUnderFault(ctx, db, sim, md, sub, delPK, faultCode)
+	if err != nil {
+		return "", 1, fmt.Errorf("tail-fault delete pk=%d code=%d: %w", delPK, faultCode, err)
+	}
+	tail, pages, err := w.drainWithLimit(ctx, db, md, sub, sc, cont, len(recordFwd), 3)
+	if err != nil {
+		return "", 1 + pages, fmt.Errorf("tail-fault resume: %w", err)
+	}
+	want := recordFwd[tailL:]
+	if applied {
+		want = removeRow(recordFwd[tailL:], recordFwd[delIdx])
+	}
+	if d := diff(want, tail); d != "" {
+		return fmt.Sprintf("tail-delete under fault %d (applied=%v): resumed tail wrong for pk=%d (idx %d) — %s",
+			faultCode, applied, delPK, delIdx, d), 1 + pages, nil
+	}
+	return "", 1 + pages, nil
+}
+
+// deleteUnderFault deletes pk in a RAW single-commit transaction with an injected fault, returning
+// whether the delete APPLIED: commit_unknown(1021) applies after the fault, not_committed(1020) /
+// transaction_too_old(1007) roll back before it. The injected code must be the one that surfaces.
+func deleteUnderFault(ctx context.Context, db *recordlayer.FDBDatabase, sim *simfdb.SimDB, md *recordlayer.RecordMetaData, sub subspace.Subspace, pk int64, faultCode int) (bool, error) {
+	tx, err := db.CreateWritableTransaction()
+	if err != nil {
+		return false, err
+	}
+	store, err := openStore(recordlayer.NewFDBRecordContext(tx), md, sub)
+	if err != nil {
+		return false, err
+	}
+	if _, err := store.DeleteRecord(tuple.Tuple{pk}); err != nil {
+		return false, err
+	}
+	sim.InjectOnce(faultCode)
+	var fe fdb.Error
+	if cerr := tx.Commit().Get(); !errors.As(cerr, &fe) || fe.Code != faultCode {
+		return false, fmt.Errorf("commit = %v, want injected code %d", cerr, faultCode)
+	}
+	return faultCode == 1021, nil
 }
 
 // ---- scan plumbing --------------------------------------------------------------------------
@@ -357,7 +440,7 @@ func (w Workload) seedData(rng *rand.Rand) []rec {
 
 // setup builds a fresh SimFDB-backed store and seeds recs. Returns the db, subspace, metadata, and
 // the price index. Fault-free env (the continuation/version-bump is the fault under test).
-func (w Workload) setup(seed uint64, recs []rec) (*recordlayer.FDBDatabase, subspace.Subspace, *recordlayer.RecordMetaData, *recordlayer.Index, error) {
+func (w Workload) setup(seed uint64, recs []rec) (*simfdb.SimDB, *recordlayer.FDBDatabase, subspace.Subspace, *recordlayer.RecordMetaData, *recordlayer.Index, error) {
 	env := hunt.NewSimEnv(seed, 0)
 	backend := simfdb.New(env)
 	db := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
@@ -377,9 +460,9 @@ func (w Workload) setup(seed uint64, recs []rec) (*recordlayer.FDBDatabase, subs
 		return nil, nil
 	})
 	if err != nil {
-		return nil, sub, md, index, err
+		return backend, nil, sub, md, index, err
 	}
-	return db, sub, md, index, nil
+	return backend, db, sub, md, index, nil
 }
 
 func buildMetadata() (*recordlayer.RecordMetaData, *recordlayer.Index) {

@@ -43,7 +43,7 @@ func TestModelMatchesEngine(t *testing.T) {
 	}
 
 	w := Workload{Records: len(recs), PKDomain: 100}
-	db, sub, md, index, err := w.setup(7, recs)
+	_, db, sub, md, index, err := w.setup(7, recs)
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
