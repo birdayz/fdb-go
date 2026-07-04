@@ -1,14 +1,17 @@
 package sqldriver_test
 
-// RFC-173 W4-left — MIXED outer nesting runtime pins. The cluster gate
-// ordinalizes a single-source LEFT/RIGHT box even when that box is a leg of
-// an ENCLOSING name-model INNER join (`d LEFT JOIN e ON … JOIN c ON …`);
-// the reverse nesting (`a JOIN b ON … LEFT JOIN c ON …`) poisons — the
-// LEFT's preserved leg is a cluster, which stays name-model. Both classes
-// planned clean but shipped with ZERO row-level pins (review finding): a
-// wrong merge between the ordinal box and the name-model parent would have
-// been invisible to the suite. Row values, NULL-padding, and INNER drops
-// are asserted for each nesting direction.
+// RFC-173 W4-left — MIXED outer nesting runtime pins. BOTH nesting
+// directions stay name-model: a single-source LEFT/RIGHT box that is a leg
+// of an enclosing name-model INNER join (`d LEFT JOIN e ON … JOIN c ON …`)
+// is kept name-model by the gate's enclosure guard (a positional box row
+// under a name-merge parent reads the wrong source), and the reverse
+// nesting (`a JOIN b ON … LEFT JOIN c ON …`) poisons — the LEFT's preserved
+// leg is a cluster. Both classes planned clean but shipped with ZERO
+// row-level pins (review finding), and the pins immediately caught two
+// pre-existing master bugs: fabricated ALIAS.* keys on the null-padded box
+// row (wrong-source rows) and the nondeterministic anchored re-enumeration
+// planning panic. Row values, NULL-padding, and INNER drops are asserted
+// for each nesting direction.
 
 import (
 	"context"
