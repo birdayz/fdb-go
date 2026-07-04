@@ -378,3 +378,14 @@ written down with **"what invariant does Java carry that this drops?"** and each
 **Method for the next reservoir found:** name the Java invariant it drops, classify the risk
 (wrong-rows / nondeterminism / panic), and either wire a WS-2/4 structural invariant that makes
 the class un-shippable or file a tracked TODO — never leave it as a silent reservoir.
+
+## Quantifier identity: SQL-visible aliases vs Java's always-unique ids (W4-left F3 ruling)
+
+Java mints `CorrelationIdentifier.uniqueId` for EVERY quantifier; SQL-visible names exist only as
+Expression qualifiers (`LogicalOperator.newNamedOperator`). Go binds the VISIBLE alias as the
+quantifier correlation, minting fresh ids only where collision forces it (the W5 gather's
+inner-leg fresh-id; the W4-left dup-alias legs). Ruled ACCEPTABLE as a coexistence measure only
+(design ruling on the W4-left slice, F3): the alias-collision rejections are the standing
+justification, and the blast radius of always-unique ids spans every alias-keyed subsystem.
+REVISIT AT S4+: once the name model is gone, converge on Java's structure (unique ids + name
+qualifiers on projections).
