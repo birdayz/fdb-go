@@ -3929,6 +3929,18 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// left/right made a RIGHT JOIN + EXISTS SELECT * emit the right table's
 	// columns first — a latent declaration-order divergence the plain-join
 	// path (translateJoin :3745) never had (red-first FDB pin f).
+	//
+	// W4-left F2 SCOPE NOTE (producer audit): the INNER flatten's seed
+	// stays ANCHORED. An ordinal seed here was cut and REVERTED twice by
+	// the dualwindow corpus (corr_exists_join_outer): the 2+1 existential
+	// select also implements through data-access/correlated-FlatMap paths
+	// whose bindings are NAME maps — the seed's baked leg refs hit the
+	// loud BakedNameContextError on the LIVE side. Ordinalizing the
+	// flatten needs those paths' positional binders first (booked with the
+	// 7.1-adjacent follow-ups). The GATED existential classes that DO run
+	// ordinal today arrive via the generic filter arm (a gated LEFT/RIGHT
+	// box or gated cluster under buildExistentialSelect), where the
+	// implementation's ordinal rebase handles the merged references.
 	resultValue := t.buildJoinResultValue(j.Left, j.Right, sourceAlias(j.Left), sourceAlias(j.Right))
 	if resultValue == nil {
 		// A leg's columns are not derivable (only the catalog-free nil-md path;
