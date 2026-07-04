@@ -2914,6 +2914,20 @@ the outer actually carrying a positional row (propagation, not a birth — a Dat
 re-synthesis here would be an unregistered §5 birth site). Pinned red-first
 (mismatched-layout subtest, TestRFC173Item2_ComputeResult_PassThrough).
 
+**Impl reviews, round 2 on the adapted-row fix (banked): Graefe ACK + Torvalds ACK +
+codex clean delta.** Single-derivation confirmed (pass-through and binding arm share
+adaptLegPositional on identical inputs — pure, no drift); the propagation boundary
+ruled principled (a probe-positive Datum-only outer must NOT synthesize — that would
+be an unregistered §5 birth site; the loud downstream error is the correct commit-3
+widening posture). Non-blocking notes banked for commit 3: (Graefe) a LOUD else-branch
+on the pass-through's `adapted.(*PositionalRow)` assertion would match amendment B —
+Torvalds' counter-analysis: the nil-skip already degrades LOUD downstream
+(BakedNameContextError), so current behavior is CORRECT-or-LOUD; revisit if the
+adapter ever returns another OrdinalRow type. (@claude) the unwrap arm's RV-shape gate
+and the runtime probe gate are IMPLICITLY coupled (windowsOK only matters when
+Positional is non-nil, which requires the probe positive on the same outer plan) —
+worth a cross-check assertion if either side is touched again.
+
 **Impl reviews, round 1 (banked): Graefe ACK + Torvalds ACK.** Both verified the
 factoring behavior-identical, the probe a property derivation (not a smuggled flag),
 the probe gate a real discriminator with both mismatch quadrants CORRECT-or-LOUD, and
