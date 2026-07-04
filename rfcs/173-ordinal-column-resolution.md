@@ -3011,8 +3011,13 @@ it flips with commit 4's enclosure lift, as do the fetch-shell terminators. The
 alias-unchecked frontier fallback's loud replacement remains booked on the item-2
 completion follow-up.
 
-**@claude round 1 on the c3 PR (banked; fixed-and-pinned vs booked):** FIXED — the
-BUILD duplicate srcs entry (a real manual artifact bazel tolerated silently); the
+**@claude round 1 on the c3 PR (banked; fixed-and-pinned vs booked):** RESOLVED
+NOT-A-BUG (round 2, after a false "deduped" claim — corrected here): the "BUILD
+duplicate" is srcs (:290) + embedsrcs (:814), two DIFFERENT attributes of the one
+go_test — default_rules_test.go carries `//go:embed *.go` (the rule-registration
+completeness check embeds the package's own sources), so gazelle correctly
+maintains EVERY .go file in both lists; the round-2 sed "dedup" was a no-op gazelle
+rightly reverted, and the commit message's "deduped" claim was WRONG. FIXED — the
 stale W3b-assert citation in the arity-narrowing comment (the decline itself is the
 safety mechanism; the S2 drift assert died at the S3 fulcrum); the dup-alias pin
 matrix now covers all three collision axes (left leg, right leg, EXISTS-vs-EXISTS);
