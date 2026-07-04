@@ -2267,3 +2267,15 @@ root causes, three fixes:
    at the values level.
 All seven differential queries (gathered five + plain-3-way two) now agree row-for-row; the full
 1621-entry dualwindow corpus stays green.
+
+### W5 commit 5 (landed): the F4-rider dead-for-gated classifier pins
+
+`TestRFC173W5_ClassifierDeadForGated` pins all three directions: (i) GATED —
+`MergeSeedLegsOfValue` on the gathered Explode's baked per-source collection is EMPTY (no dotted
+prefix exists to recover), and the rule-level `quantifierMergeSeedLegDeps` wrapper agrees; (ii)
+EMERGENT — the same quantifier's `GetCorrelatedTo` reports the OWNER (the genuine sibling edge
+that replaces the dotted recovery, Java's `Quantifier.getCorrelatedTo`); (iii) RESIDUAL — the
+name-model buried read (`FieldValue{Field:"A.ARR", Child:QOV(rightmost)}`) still classifies to
+{A}, the reachability proof that keeps the classifier code alive for the decline and
+under-existential classes until the W4-left+EXISTS slice retires the last dotted producer
+(physical deletion deferred, per the F4 rider).
