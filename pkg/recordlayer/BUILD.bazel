@@ -281,6 +281,7 @@ go_test(
         "scan_properties_test.go",
         "scan_test.go",
         "schema_migration_test.go",
+        "serialize_determinism_test.go",
         "sparse_index_test.go",
         "spfresh_build_bench_test.go",
         "spfresh_build_limits_test.go",

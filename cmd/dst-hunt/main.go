@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/simfdb/hunt"
+	"fdb.dev/pkg/simfdb/hunt/sqlhunt"
 )
 
 func main() {
@@ -62,7 +63,9 @@ func main() {
 	}
 	defer rec.close()
 
-	profiles := hunt.Profiles()
+	// Record-layer profiles + SQL-workload profiles. Add a workload package's Profiles() here to
+	// fold it into the sweep (RFC-179 Tier 2 — "add a workload, hunt a new surface").
+	profiles := append(hunt.Profiles(), sqlhunt.Profiles()...)
 
 	// Stop on either the time budget or a signal. done is closed once; workers observe it and
 	// drain.

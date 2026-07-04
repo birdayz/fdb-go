@@ -134,12 +134,27 @@ bazelisk test //pkg/simfdb/hunt:hunt_test --test_arg=-test.run=TestHuntSeed \
   Metadata}` — smaller `MaxPKs` = more overwrite/conflict density; swap `Metadata` to a single-index
   builder for far higher throughput when hunting one maintainer. The in-suite `smokeCfg` (120 ops, few
   seeds) keeps `just test` ~8 s; real hunts use `HUNT_SECONDS`/`FuzzHunt`.
-- **What it has already found:** the SimFDB API-version precondition gap (versionstamp/VERSION-index
-  writes failed `api_version_unset 2200` because SimFDB bypassed `fdb.OpenDatabase`'s check — now
-  `simfdb.New` selects 730 if unset). First VERSION-index save, first run.
-- **Gotcha:** hunt exercises the **record layer** (the `fdb.BackendDatabase` contract), not the wire
-  transport — after a hunt finds a bug, confirm anything key-encoding/wire-adjacent on real FDB
-  (chaos/differential) before calling it wire-safe.
+- **What it has already found:** (1) the SimFDB API-version precondition gap (versionstamp writes failed
+  `api_version_unset 2200` — `simfdb.New` now selects 730); (2) a **real record-layer wire bug** — the
+  SQL workload's determinism oracle caught non-deterministic record-body serialization: the slow-path
+  `proto.Marshal(record)` in `store.go serializeUnion` iterated a *dynamic* message's fields in map order,
+  so the same SQL row persisted to different bytes each write (and diverged from Java's ascending
+  field-order). Fixed with `Deterministic:true`. Both found on the first relevant run.
+- **Workloads (add a surface over time).** A `Workload` (interface in `hunt.go`: `Name()` + `Run(seed,
+  cfg) *Report`) is the extension point — implement one, drop it in a `Config`, and the whole loop /
+  fault schedule / shrink / recording works unchanged. Two exist: the default **record-layer** workload
+  (`recordWorkload`, chaos vocab + `chaos.Verify`) and **`sqlhunt.SQLWorkload`** (`pkg/simfdb/hunt/sqlhunt`)
+  which drives the full parser→Cascades→executor stack over SimFDB via `sqldriver.RegisterBackend` +
+  `sql.Open("fdbsql", …cluster_file=<key>)`, runs idempotent DML (absolute `UPDATE`+`DELETE`) under the
+  fault schedule, and compares the table to a Go row-model. To add one: new package, implement `Workload`,
+  build the seeded env with `hunt.NewSimEnv`, fingerprint with `hunt.Fingerprint`, export `Profiles()`,
+  and add it to the `profiles` slice in `cmd/dst-hunt/main.go`. Design an oracle that avoids KNOWN-hazard
+  noise (the SQL workload excludes bare `INSERT` / relative `UPDATE` — their commit_unknown
+  non-idempotency is a known Java-matching hazard, not a hunt target).
+- **Gotcha:** hunt exercises the **record + relational** layers (the `fdb.BackendDatabase` contract),
+  not the wire transport — after a hunt finds a bug, confirm anything key-encoding/wire-adjacent on real
+  FDB (chaos/differential) before calling it wire-safe. (The serialization fix above *is* wire-adjacent —
+  it was cross-checked against Java's field ordering.)
 
 ## fuzz
 

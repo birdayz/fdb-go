@@ -48,10 +48,25 @@ type Config struct {
 	VerifyEvery int     // run the oracle every N ops, plus once at the end (default 25)
 	FaultProb   float64 // Buggify activation+fire probability for the commit faults (default 0.25; 0 = fault-free)
 
-	// Metadata builds the schema + indexes under test. Nil uses the kitchen-sink schema
-	// (VALUE + COUNT + SUM + RANK + MAX_EVER + VERSION + COVERING) so every maintainer is
-	// exercised and Verify has maximal teeth.
+	// Workload is the surface under test — record layer, SQL, or a future one. Nil selects the
+	// record-layer workload over Metadata (or the kitchen-sink schema). This is the extension
+	// point: implement Workload, drop it in a Config, and the whole loop-until-bug machinery
+	// (seed sweep, fault schedule, shrink, findings recording) works unchanged.
+	Workload Workload
+
+	// Metadata builds the schema + indexes for the DEFAULT record-layer workload. Nil uses the
+	// kitchen-sink schema (VALUE + COUNT + SUM + RANK + MAX_EVER + VERSION + COVERING) so every
+	// maintainer is exercised and Verify has maximal teeth. Ignored when Workload is set.
 	Metadata func() *recordlayer.RecordMetaData
+}
+
+// Workload is one kind of seeded, fault-injected exercise of the stack over SimFDB. The hunter
+// treats it as a black box: Run(seed, cfg) must be deterministic in (seed, cfg) and return a
+// Report capturing any oracle violation (never panic on a found bug — record it in the Report).
+// Add a Workload to hunt a new surface; the seed loop, shrink, and recording are shared.
+type Workload interface {
+	Name() string
+	Run(seed uint64, cfg Config) *Report
 }
 
 func (c Config) withDefaults() Config {
@@ -67,10 +82,28 @@ func (c Config) withDefaults() Config {
 	if c.FaultProb == 0 {
 		c.FaultProb = 0.25
 	}
-	if c.Metadata == nil {
-		c.Metadata = KitchenSinkMetadata
+	if c.Workload == nil {
+		md := c.Metadata
+		if md == nil {
+			md = KitchenSinkMetadata
+		}
+		c.Workload = recordWorkload{metadata: md}
 	}
 	return c
+}
+
+// NewSimEnv builds the seeded simulation environment a workload runs under: deterministic clock
+// + RNG, and Buggify set to faultProb (activation and fire). faultProb <= 0 disables faults. A
+// workload that needs a clean setup phase can pass the built env, run setup, then raise the
+// probability — but for a one-phase workload this is the whole story.
+func NewSimEnv(seed uint64, faultProb float64) *dst.Env {
+	env := dst.NewSim(seed)
+	if faultProb <= 0 {
+		env.Buggify = dst.DisabledBuggifier()
+	} else {
+		env.Buggify.SetProbabilities(faultProb, faultProb)
+	}
+	return env
 }
 
 // Report is the outcome of one Run: clean, or a reproducible failure keyed by Seed.
@@ -104,21 +137,28 @@ func (r *Report) String() string {
 	return s
 }
 
-// Run replays seed deterministically and returns its Report. Never panics on a record-layer
-// bug — it captures the divergence in the Report so a driver (fuzzer / brute loop) can decide
-// how to surface it. Same (seed, cfg) always yields the same Report.
+// Run replays seed deterministically under cfg's workload and returns its Report. Never panics
+// on a found bug — it captures the divergence in the Report so a driver (fuzzer / brute loop)
+// can decide how to surface it. Same (seed, cfg) always yields the same Report.
 func Run(seed uint64, cfg Config) *Report {
 	cfg = cfg.withDefaults()
+	return cfg.Workload.Run(seed, cfg)
+}
+
+// recordWorkload is the default workload: the chaos op vocabulary (save/overwrite/delete/
+// deleteAll) over the record layer on SimFDB, checked by chaos.Verify. It carries the schema
+// builder; the shared knobs (NumOps/MaxPKs/VerifyEvery/FaultProb) come from the Config.
+type recordWorkload struct {
+	metadata func() *recordlayer.RecordMetaData
+}
+
+func (recordWorkload) Name() string { return "record" }
+
+func (rw recordWorkload) Run(seed uint64, cfg Config) *Report {
 	ctx := context.Background()
 
-	env := dst.NewSim(seed)
-	if cfg.FaultProb <= 0 {
-		env.Buggify = dst.DisabledBuggifier()
-	} else {
-		env.Buggify.SetProbabilities(cfg.FaultProb, cfg.FaultProb)
-	}
-
-	md := cfg.Metadata()
+	env := NewSimEnv(seed, cfg.FaultProb)
+	md := rw.metadata()
 	backend := simfdb.New(env)
 	db := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
 	// A fault-free view of the SAME backend for the oracle, so an injected fault can never
@@ -282,11 +322,14 @@ func (d *driver) verify(ctx context.Context) []string {
 	return out
 }
 
-// fingerprint hashes the entire persisted keyspace, so two runs of the same seed can be
-// asserted byte-identical (the determinism oracle) without shipping the whole dump around.
-func (d *driver) fingerprint(ctx context.Context) string {
+func (d *driver) fingerprint(ctx context.Context) string { return Fingerprint(d.cleanDB) }
+
+// Fingerprint hashes db's entire persisted keyspace — the determinism probe (same seed ⇒ same
+// fingerprint) that any workload can use to assert byte-identical replay. The read is read-only
+// (no commit), so it draws no fault and never perturbs the run.
+func Fingerprint(db *recordlayer.FDBDatabase) string {
 	h := sha256.New()
-	_, _ = d.cleanDB.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+	_, _ = db.RunRead(context.Background(), func(rtx fdb.ReadTransaction) (any, error) {
 		kvs := rtx.GetRange(fdb.KeyRange{Begin: fdb.Key{}, End: fdb.Key{0xff}}, fdb.RangeOptions{}).GetSliceOrPanic()
 		for _, kv := range kvs {
 			// length-prefix so key/value boundaries can't alias across entries

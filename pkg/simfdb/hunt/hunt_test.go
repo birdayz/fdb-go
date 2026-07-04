@@ -196,8 +196,11 @@ func TestProfilesRunClean(t *testing.T) {
 func TestConfigDefaults(t *testing.T) {
 	t.Parallel()
 	c := Config{}.withDefaults()
-	if c.NumOps != 300 || c.MaxPKs != 30 || c.VerifyEvery != 25 || c.FaultProb != 0.25 || c.Metadata == nil {
+	if c.NumOps != 300 || c.MaxPKs != 30 || c.VerifyEvery != 25 || c.FaultProb != 0.25 || c.Workload == nil {
 		t.Fatalf("unexpected defaults: %+v", c)
+	}
+	if c.Workload.Name() != "record" {
+		t.Fatalf("default workload = %q, want record", c.Workload.Name())
 	}
 }
 

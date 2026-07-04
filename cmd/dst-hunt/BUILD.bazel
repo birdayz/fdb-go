@@ -5,7 +5,10 @@ go_library(
     srcs = ["main.go"],
     importpath = "fdb.dev/cmd/dst-hunt",
     visibility = ["//visibility:private"],
-    deps = ["//pkg/simfdb/hunt"],
+    deps = [
+        "//pkg/simfdb/hunt",
+        "//pkg/simfdb/hunt/sqlhunt",
+    ],
 )
 
 go_binary(

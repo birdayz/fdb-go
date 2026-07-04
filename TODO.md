@@ -190,8 +190,9 @@ backend — pointed at the real record/relational layer with **true rollback + t
 8 fault-injection harnesses (COUNT/SUM/MAX_EVER/MIN_EVER, RANK/PERMUTED, UNIQUE/write-skew, continuation
 resume, SQL, VERSION/versionstamp, split-record) with an independent verify pass.
 
-**Headline: 0 real record-layer bugs.** The core save/load/index-maintenance paths are *proven*
-idempotent under `commit_unknown(1021)` / `not_committed(1020)` / `transaction_too_old(1007)` retry —
+**Headline: 0 idempotency bugs; 1 wire-determinism bug (found later by the SQL workload, fixed below).**
+The core save/load/index-maintenance paths are *proven* idempotent under `commit_unknown(1021)` /
+`not_committed(1020)` / `transaction_too_old(1007)` retry —
 the layer reads committed state and recomputes index deltas, so a durable-then-retried commit
 re-derives a zero net delta (`store.go:655,416`; `atomic_mutation.go:83` `removeCommon`; the retry
 re-pins its read version at the committed one via `Reset()`+`ensureReadVersion`, faithful FDB causal
@@ -216,6 +217,28 @@ far; in-suite smoke stays ~8 s. See the `## hunt` section of `.claude/skills/dst
   chosen a version — the same precondition a real opened database enforces (`pkg/simfdb/simfdb.go`; pinned
   by `TestNewSelectsAPIVersion` and by the hunt kitchen-sink VERSION index). Found by the hunt on its
   first VERSION-index save.
+
+**Workloads are pluggable (`hunt.Workload`).** The hunter now dispatches to a `Workload` (record-layer is
+the default); a new surface = implement `Run(seed,cfg)`, export `Profiles()`, add to `cmd/dst-hunt`. The
+first added workload is **`sqlhunt.SQLWorkload`** (`pkg/simfdb/hunt/sqlhunt`): it drives the full
+parser→Cascades→executor→record-layer stack over SimFDB (via the new `sqldriver.RegisterBackend` seam),
+runs idempotent DML (absolute `UPDATE`+`DELETE`) under the fault schedule, and compares the table to a Go
+row-model. Bare `INSERT`/relative `UPDATE` are excluded (their commit_unknown non-idempotency is the known
+hazard above, not a hunt target).
+
+**Fixed (real record-layer WIRE bug — found by the SQL workload's determinism oracle):**
+- [x] **Non-deterministic record-body serialization for dynamic messages.** `store.go serializeUnion`'s
+  reflection slow path used plain `proto.Marshal(record)`; generated protos take the VT fast path (field-
+  ordered), but a `*dynamicpb.Message` (every SQL/relational row) has no VT marshaler and hits this path,
+  where `proto.Marshal` iterates the field-set in Go **map order** — so the same row persisted to
+  **different bytes on each write**, and diverged from Java (which writes ascending field-number order).
+  Fixed with `proto.MarshalOptions{Deterministic: true}.Marshal` (`pkg/recordlayer/store.go`; pinned by
+  `TestSerializeUnion_DynamicMessageDeterministic` + `TestSerializeUnion_DeterministicBeatsPlainMarshal`,
+  and by `sqlhunt`'s determinism oracle). **Wire-parity (verified against Java source):** SAFE — for
+  scalar/repeated fields Deterministic ⇒ ascending order = byte-identical to Java; for map/oneof/extension
+  fields the byte *order* differs (Go sorts, Java hash-orders) but decodes identically either way (not a
+  wire break), and Go/Java never matched there anyway. No record-layer code byte-compares or hashes
+  serialized records, so zero functional impact. First SQL determinism check, first run.
 
 **Open — SQL autocommit `commit_unknown` hazards (matches Java → conformance question, not a Go bug).**
 DST surfaced these deterministically; data integrity is intact in every case, but the *observed behavior*
