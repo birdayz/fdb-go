@@ -4478,7 +4478,14 @@ func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
 // table). Delegates to buildSelectShell with the derived table qualifier
 // as the strip prefix.
 func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) logical.LogicalOperator {
-	op := innerOp
+	// Keep the derived alias on the logical tree — the same LogicalCTE
+	// wrapper the visitor path uses (the tree's one alias carrier for
+	// derived tables). A bare innerOp loses the alias: sourceAlias() walks
+	// to the BASE table and a correlated EXISTS on the derived alias binds
+	// the outer row under the wrong name (`SELECT e.*` routes here via the
+	// qualified-star rebuild — the visitor-path fix's rebuild-path twin).
+	var op logical.LogicalOperator = logical.NewCTE(sq.tableName, innerOp,
+		logical.NewScan(sq.tableName, ""), false)
 	if sq.whereExpr != nil {
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
 	}
@@ -4971,7 +4978,32 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 			Table: tbl, Alias: a, CorrelationName: a.Name(),
 		}
 	}
-	addSrc(sq.tableName, sq.tableAlias)
+	// A DERIVED-TABLE source (`FROM (SELECT ...) e`) is NOT a real table
+	// either — register its VIRTUAL column schema (the SAME
+	// buildDerivedTableSource the SELECT scope uses) so a CORRELATED
+	// subquery referencing the derived alias resolves it. Without this,
+	// addSrc's ResolveTable fails silently and the correlated reference
+	// dies 42703 ("no FROM source aliased as E" single-source, `qualifier
+	// "E" cannot be resolved` join form) — while the identical correlation
+	// to a REAL table alias works. Mirrors the lateral-unnest leg
+	// registration below.
+	addDerived := func(alias string, body antlrgen.IQueryContext) {
+		if src, ok := buildDerivedTableSource(md, alias, body); ok {
+			sources[strings.ToUpper(src.CorrelationName)] = src
+		}
+	}
+	if sq.derivedQuery != nil {
+		// The primary derived source: the parser carries the alias in
+		// tableAlias when present, else in tableName (the same convention
+		// buildWherePredicateForDerived resolves against).
+		alias := sq.tableAlias
+		if alias == "" {
+			alias = sq.tableName
+		}
+		addDerived(alias, sq.derivedQuery)
+	} else {
+		addSrc(sq.tableName, sq.tableAlias)
+	}
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	for i, j := range sq.joins {
 		// A lateral array unnest leg (`FROM t, t.arr AS x [AT ord]`) is NOT a real
@@ -4987,6 +5019,10 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 			if src, ok := unnestVirtualScopeSource(j); ok {
 				sources[strings.ToUpper(src.CorrelationName)] = src
 			}
+			continue
+		}
+		if j.derivedQuery != nil {
+			addDerived(j.alias, j.derivedQuery)
 			continue
 		}
 		addSrc(j.tableName, j.alias)

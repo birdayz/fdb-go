@@ -3292,10 +3292,22 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).
    **DESIGN SUBSTRATE BANKED (RFC § "QP-REF-BIND item 2 — design substrate"): E2-validated
    executor binder; the W4-left rebase machinery is currently DEAD on live SQL (enclosure
-   forced under EXISTS — the slice's commit-4 lift); a DISCOVERED pre-existing wrong-rows
-   bug (no-op existential residual on LEFT+EXISTS-into-null-supplying-leg, EXISTS ==
-   NOT EXISTS rows) is the slice's first red-first obligation. NEXT: Graefe slice ruling
-   on the 5-commit plan, then implement.**
+   forced under EXISTS — the slice's commit-4 lift). DESIGN RULING: ACK with amendments
+   (RFC § "design ruling + commit-1 record"). COMMIT 1 IMPLEMENTED on
+   feat/rfc173-qprefbind-item2: the no-op existential residual (EXISTS == NOT EXISTS rows on
+   LEFT+EXISTS) root-caused across four layers and fixed with the Java-shaped correlated
+   step-1 (buildCorrelatedFlatMapPlan; the audited decline-only fix was insufficient —
+   REWRITING promotion drops the unmerged member; full record in the RFC) + the 1+1 path's
+   buried-leg rebase; unmasked matrix A–H pinned. DISCOVERED + FIXED on the branch:
+   derived-alias EXISTS correlation 42703 (scope registration + the LogicalCTE alias
+   carrier on all three derived arms) and the codex-caught CTE-shadow regression
+   (cteShadowStack lexical scoping). LOUD-LIMITATION pins with exit gates (never wrong
+   rows; flip to rows asserts): scalar-subquery-inside-EXISTS over a bare-scan outer
+   (matrix class K — exit gate = the item-2 positional binders, commits 2–4);
+   CTE-shadowed derived alias + EXISTS (buildDerivedTableSource resolves derived bodies
+   against the catalog only — teach it CTE bodies); fetch-shell walk-terminators under
+   planResultValue (same binder exit gate). The alias-unchecked frontier fallback
+   follow-up (values.go evaluateCorrelated) dies with commits 2–4.**
    **CHARTER EXTENDED (post-W4-left sequencing ruling): absorbs the under-existential unnest
    class (`FROM t, t.arr AS v WHERE EXISTS(…)` — the W5 F4 rider's booking gap, closed here)
    and the EXISTS-rider clusterArity poison (a cluster whose leg filter/project carries

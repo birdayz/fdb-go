@@ -2569,11 +2569,13 @@ W5 (multi-source unnest gather, PR #466) · W4-left (LEFT/RIGHT + EXISTS + recur
 PR #467, four-gate ACK) · S4-riders (positionalTypeCache bound + rcte remap provenance,
 PR #468, four-gate ACK).
 
-**← WE ARE HERE:** QP-REF-BIND item 2 (existential-flatten ordinalization) — design substrate
-banked below; NEXT STEP: send the proposed slice plan to Graefe for the design ruling, then
-implement on a fresh branch. Item 1 (per-reference dup-alias binding) is parallelizable with
-item 2. The §6-class discovered bug (no-op existential residual on LEFT+EXISTS, below) is the
-slice's first red-first obligation.
+**← WE ARE HERE:** QP-REF-BIND item 2 (existential-flatten ordinalization) — design ruling
+BANKED (ACK with amendments A–C + findings 4–5, below); commit 1 (the no-op existential
+residual) IMPLEMENTED on feat/rfc173-qprefbind-item2 (full record below — root cause, audit,
+and the post-audit correction: decline was insufficient, the fix is the Java-shaped
+correlated step-1). NEXT STEP: land the derived-alias EXISTS-correlation fix (the F-class
+42703 discovered by commit 1's matrix, below), then commit 2 (the executor binder). Item 1
+(per-reference dup-alias binding) is parallelizable with item 2.
 
 **Remaining, in ruling order:** (item 2 ∥ item 1) → item 3 (mixed-nesting LEFT widening; MUST
 follow item 2) → unnest-residual completion slice → S4 atomic demolition (kill list above;
@@ -2583,7 +2585,13 @@ baking) → Slice 5 closure invariant → Slice 6 extensions → un-freeze RFC-1
 
 **Known follow-ons booked:** correlated-scalar-on-a-leg (item-2 split-hatch, below) ·
 quoted-dotted verbatim-Field ambiguity (dies in S4, documented at recursiveRemapValues) ·
-W5/W4-left S4 riders recorded in the kill list.
+W5/W4-left S4 riders recorded in the kill list · the alias-unchecked frontier fallback
+(values.go evaluateCorrelated OrdinalRow/Positional arms — "no binding ⇒ frontier-self"
+never checks the QOV's correlation against the frontier quantifier; commit-1's audit flags
+it as a CORRECT-or-LOUD violation; item-2 commits 2–4 replace these binding paths, the
+follow-up verifies the class dies loudly) · EXPLAIN rendering divergence (ad-hoc Sprintf vs
+Java's typed ExplainTokens; DIVERGENCES.md entry; post-RFC-173) · derived-alias EXISTS
+correlation (F-class 42703, NEXT — see the commit-1 record below).
 
 ## QP-REF-BIND item 2 — design substrate (banked; for the Graefe slice ruling)
 
@@ -2658,3 +2666,156 @@ correction above), per-class gate reasons + dualwindow pins; (5) absorbed classe
 (under-existential unnest, EXISTS-rider, uncorrelated scalar riders). Exit gates: the
 dualwindow two-phase corpus, the unmasked EXISTS matrix, MergeArmHits discipline, budgets,
 1M stress.
+
+## QP-REF-BIND item 2 — design ruling + commit-1 record
+
+**Design ruling (banked): ACK with amendments.** (A) the commit-2 probe + identity-RV
+pass-through go on the S4 kill list at booking time; the empirical zero-producers gate covers
+them. (B) probe-positive + failed positional adaptation errors LOUDLY (adaptLegPositional's
+zero-match tripwire), never a Datum fallback; widenLegTypesFromPlan's width-divergence panic
+stays the single derivation path. (C) the bipartition question resolves no later than the
+unnest-residual slice. (4) commit 4's enclosure lift routes gate-eligibility through
+ordinalWedgeGateDecide/clusterArity — one authority, no parallel re-derivation. (5) commit 5
+lands as 5a/5b/5c (one commit per absorbed class, per-class gate reasons + dualwindow pins).
+Commit-1-first confirmed load-bearing: the dualwindow baseline for the LEFT+EXISTS class is
+WRONG until the no-op residual is fixed.
+
+**Commit 1 root cause (audited; the audit verified every layer at file:line).** The query
+`dept d LEFT JOIN emp e ON e.dept_id = d.id WHERE [NOT] EXISTS(badge b: b.emp_id = e.id)`
+returned ALL depts for BOTH polarities. Four layers:
+1. **Translation** (correct): LEFT+EXISTS declines the 2+1 flatten by contract and routes to
+   buildExistentialSelect — Select{ForEach(box), exist}; the box quantifier is named by
+   sourceAlias(join) = the RIGHTMOST leg.
+2. **Rewriting** (correct): RewriteOuterJoinRule dissolves the box (INNER + null-on-empty E
+   over a subsel carrying the ON pred, correlated to D); SelectMergeRule merges the dissolved
+   select into the existential parent → {D, E-noe, exist}. Java merges the analog (its
+   javadoc condition (2) is STALE — the code rebases correlated siblings); no merge guard.
+3. **Planning** (the defect): implementJoinWithExistential built a MATERIALIZED INNER step-1
+   NLJ — never checking IsNullOnEmpty() (null-extension dropped; joinType read from the
+   dissolved select = INNER) and never checking leg-to-leg correlation (the ON pred buried in
+   the E-leg subsel embedded standalone). The ChildrenAsSet swapped firing
+   (implementation_rule.go) yielded BOTH orders; cost picked E-outer. EXPLAIN = executed
+   (deterministic); the substrate's EXPLAIN-vs-executed aggravator hypothesis is corrected.
+4. **Execution** (the enabler): the orphaned QOV(D).ID inside the EMP leg resolved via the
+   ALIAS-UNCHECKED frontier fallback (values.go evaluateCorrelated: "no binding ⇒ the
+   frontier quantifier itself", OrdinalRow + Positional arms — neither checks the QOV's
+   correlation) — D.ID read slot ID off the EMP row (name collision is load-bearing) →
+   E.DEPT_ID = D.ID degenerated to emp.dept_id = emp.id → cross product → the residual then
+   filtered per-row CORRECTLY → alice's pairs pass EXISTS, bob's pass NOT EXISTS → identical
+   3-dept sets. Booked follow-up: make that fallback loud (dies with item-2 commits 2–4).
+
+**Post-audit correction (implemented fix ≠ audited fix).** The audit ruled decline-only
+(kill the merged member's implementation; the unmerged member carries). Empirically FALSE for
+`SELECT *` roots: REWRITING promotes winners per group (AdvancePlannerStage: PLANNING's
+members = REWRITING's finals), the merged select won the group, and with the decline the root
+had NO winner → 0AF00 "could not plan" (W4-left pin f). The star probes proved named-column
+variants plan (a Project group above carries the alternative) while bare-select roots die —
+the "REWRITING pruning destroys PLANNING alternatives" trap. The implemented fix is the
+Java-shaped lowering the audit called the eventual destination, pulled forward:
+- buildCorrelatedFlatMapPlan factored out of yieldGeneralFlatMap (the per-quantifier-property
+  lowering: correlated inner re-execution, DefaultOnEmpty for null-on-empty — Java's
+  planPartitionToPhysical; the RFC-153 buried-rebase + fail-closed verifier ride along).
+- implementJoinWithExistential's step-1 now keys on the correlation topology: independent
+  legs keep the materialized NLJ (the INNER flatten path, unchanged); a null-on-empty or
+  sibling-correlated leg orients INNER and takes the correlated FlatMap step-1. Declines
+  remain only for genuinely unimplementable shapes: mutually-correlated legs, a null-extended
+  leg forced OUTER, and EXPLODE legs (the unnest+EXISTS composition owns its dedicated nested
+  lowering via translateUnnestExistsFilter; the merged variant's qualified-key addressing
+  cannot reach a bare-keyed exploded element — declining restores the pre-fix winner).
+- The 1+1 path (implementExistentialSelect) gained the missing BURIED-LEG rebase for its
+  below-FOD predicates: a WHERE-EXISTS over a join box binds the box under ONE alias
+  (rightmost-leg sourceAlias) while the EXISTS may correlate to ANY buried leg; the rebase
+  authority is the outer plan's anchored result value's dotted prefixes
+  (mergedOuterLegAliases — the merged-row key inventory), binding alias excluded (a
+  single-table outer carries only bare keys). This fixed the B/C/D matrix classes
+  (correlation into the preserved leg; mirrored declaration order; RIGHT twins), which were
+  differently-wrong on master (cross-product rows) — wrapper-quantifier walks are NOT a
+  buried-alias authority (a materialized-NLJ wrapper carries unnamed quantifiers).
+
+**Commit-1 pins:** rfc173_item2_noop_residual_fdb_test.go — the unmasked matrix (A: the bug
+class + the historical masked pin; B: correlation into the preserved leg; C: mirrored
+declaration order; D: RIGHT twins; E: INNER regression guard + plan-shape assert; F:
+derived-table leg with table-alias correlation; G: plain LEFT null-extension guard; H:
+EXPLAIN determinism ×10 both polarities). The ID column-name collision across all three
+tables is deliberate (it is what made the orphan resolve silently).
+
+**Discovered during commit 1 (fixed on this branch, own commit):** correlated EXISTS
+referencing a DERIVED-TABLE alias was rejected at translation — join form: 42703 `column
+reference with qualifier "E" cannot be resolved`; single-source form: 42703 `no FROM source
+aliased as E`. Two gaps, both fixed: buildOuterScopeSources never registered derived sources
+(now via buildDerivedTableSource, the SELECT scope's own authority, for the primary source
+and join legs), and the no-joins derived table dropped its alias from the logical tree
+(op = innerOp — sourceAlias walked to the BASE table and the existential FlatMap bound the
+outer under the wrong name; now wrapped in the same LogicalCTE(alias) the joins case uses).
+Pinned by derived_exists_scope_fdb_test.go (single/join forms both polarities, either join
+side, renamed projection body, guards).
+
+**Commit-1 implementation reviews (banked).** Torvalds: ACK, four findings — all landed
+(select-level-OUTER decline in the correlated arm; empty-alias backfill/decline; the
+outerOnlyPreds asymmetry documented at the site — those preds resolve through the outer
+row's qualified Datum keys, the masked-conjunct pin exercises it; the bug class's plan-shape
+pin added). Graefe: ACK with conditions — the deviation from the audited decline-only fix is
+RULED CORRECT (Java's stage promotion has the same one-winner property; Java implements the
+shape rather than declining — the fix converges to Java). Conditions, all landed:
+1. **DefaultOnEmpty/predicate placement (Java divergence, pre-existing in
+   yieldGeneralFlatMap):** select-level WHERE-class predicates now filter ABOVE the
+   null-extension (planPartitionToPhysical's order: wrap first, predicates above); the
+   strict-single (scalar subquery) wrap keeps its predicates below (they are the subquery's
+   own correlation). This surfaced a second latent hole: the WHERE conjunct arrives REBASED
+   through the box's anchored record constructor (SelectMergeRule's multi-quantifier-child
+   translation — the box quantifier is named by the rightmost leg), whose leg correlations
+   the anchored RC HIDES — the pred split classified it outer-only and stranded it on the
+   wrong leg. The split is now MERGE-SEED-AWARE (predicates.AddMergeSeedAliases — the same
+   authority legReferencesAny uses). Matrix class I pins the conjunct classes
+   (`WHERE e.fname='alice' AND [NOT] EXISTS`, the IS-NULL anti-join + NOT EXISTS): I2/I3
+   returned cross-product rows on master.
+2. **Projected-EXISTS × correlated step-1:** defensively declined (the fold is INNER-only
+   upstream; the outer-join variant rejects before planning — matrix class J pins the clean
+   rejection).
+3. **Fail-closed rebase authority:** the 1+1 buried-leg rebase resolves the outer's result
+   value through single-child wrappers (planResultValue); with NO authority and a below-FOD
+   predicate referencing anything beyond the binding alias + the existential's own legs, the
+   yield DECLINES (never the correlation-unchecked fallback).
+Non-blocking Graefe notes booked: the NLJ arm's step-2 wrapper still ranges over leftExpr
+only (pre-existing asymmetry; clean up with commits 2–4); the Explode decline re-creates the
+decline+one-winner pattern for a class whose dedicated lowering owns it — P2c pins it, watch
+it at the unnest-residual slice.
+
+**Delta reviews (round 2, banked).** Torvalds ACK (4 findings) + Graefe ACK-with-condition +
+codex P1 — all landed:
+- **The rebuild-path alias loss (Torvalds finding 4 + codex P1):** a THIRD bare-innerOp
+  derived arm lived in the plain builder (buildLogicalPlanForSelect), which the
+  qualified-star rebuild re-enters — `SELECT e.* FROM (SELECT …) e WHERE EXISTS(… e.id)`
+  failed loudly (42703 pre-scope-fix, 0AF00 mid-fix; never wrong rows). All THREE derived
+  arms (visitor, catalog rebuild, plain rebuild) now carry the LogicalCTE(alias) wrapper,
+  and the qualified-star + correlated-EXISTS class now returns CORRECT rows end-to-end
+  (positive pin f in derived_exists_scope_fdb_test.go).
+- **Graefe's condition — the fail-closed 0AF00 shape pinned with its exit gate:** a scalar
+  subquery inside a correlated EXISTS body over a bare-scan outer hits the fail-closed
+  decline (loud 0AF00; it silently returned ZERO rows before the guard — the scalar binding
+  never resolved below the FOD). Matrix class K pins never-wrong-rows; the pin flips to the
+  rows assert when the positional binders land (item-2 commits 2–4 — THE EXIT GATE for both
+  this class and the correlation-unchecked fallback's loud replacement).
+- planResultValue is now an explicit ROW-SHAPE-PRESERVING whitelist (filter/FOD/DoE), never
+  a generic GetInner walk — a schema-changing plan (aggregation, projection) terminates the
+  walk instead of handing the rebase a pre-aggregation schema as authority (Torvalds
+  finding 1). Note: FETCH SHELLS are walk-terminators under the whitelist where the generic
+  walk unwrapped them — a fetch-wrapped box winner now fails closed (loud plan loss, not
+  silent misbinding); acceptable until the positional binders land (the same exit gate as
+  class K). The fail-closed alias checks use EXACT identifier comparison (fails closed on
+  a case mismatch; the fold failed open — finding 2). Merge-seed split coarseness accepted
+  (over-routing to the correlated inner is semantically harmless — Graefe finding 2b).
+
+**codex P2 (round 3) — a REGRESSION the wrapper introduced, caught and fixed:** the
+LogicalCTE alias-carrier reuses cteScope, so a derived alias named like an enclosing
+WITH-CTE (`WITH c AS (…) SELECT … FROM (SELECT * FROM c) c`) clobbered the outer binding:
+registration overwrote without saving, and the body — translated LAZILY at scan
+resolution — resolved its own name to the real table (delete-while-recursing), returning
+ZERO rows where the base returned the CTE rows. Fixed with a proper LEXICAL-SCOPE shadow
+stack (cteShadowStack): translateCTE pushes the shadowed outer binding (nil = unbound) and
+restores it; every cteScope body expansion goes through inCTEDefiningScope, which pops one
+level so the body's own name resolves against its DEFINING scope. Pinned: plain,
+qualified-star, and EXISTS-correlated shadow forms (the EXISTS form is a loud 0AF00
+limitation — buildDerivedTableSource resolves derived bodies against the CATALOG only, a
+WITH-CTE body is not derivable there; never-wrong-rows pinned, booked with the
+derived-alias follow-ons).

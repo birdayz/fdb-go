@@ -931,21 +931,19 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		if innerOp == nil {
 			return nil, nil
 		}
-		// For derived tables without joins, the _postBuild needRebuild
-		// path (qualified star expansion) calls buildLogicalPlanForSelect(sq)
-		// which re-builds the whole tree. That function uses
-		// buildOuterPlanOnDerived for derived tables — it falls back to
-		// extractFromSimpleTable for the inner plan, losing the visitor's
-		// recursive CTE-scope-aware build. Short-circuit: when _postBuild
-		// detects a derived table with no joins, it returns directly via
-		// buildOuterPlanOnDerived(sq, innerOp). So the needRebuild path
-		// only fires for the non-derived case. Safe.
-		if len(fs.joins) > 0 {
-			op = logical.NewCTE(fs.tableName, innerOp,
-				logical.NewScan(fs.tableName, ""), false)
-		} else {
-			op = innerOp
-		}
+		// The CTE wrapper is the logical tree's ONLY carrier of a derived
+		// table's alias — wrap the no-joins case too. Bare innerOp loses the
+		// alias: sourceAlias() then walks through to the BASE table, a
+		// correlated EXISTS on the derived alias (`FROM (SELECT …) e WHERE
+		// EXISTS(… = e.id)`) binds the outer row under the WRONG name, and
+		// the correlation reads NULL (silently wrong on a column-name
+		// collision, loud OrdinalResolutionError without one). The
+		// qualified-star rebuild (needRebuild → buildLogicalPlanForSelect)
+		// DOES fire for derived-no-joins and re-enters the plain builder —
+		// every derived arm (this one, the plain builder, the catalog
+		// rebuild's buildOuterPlanOnDerived) must carry the same wrapper.
+		op = logical.NewCTE(fs.tableName, innerOp,
+			logical.NewScan(fs.tableName, ""), false)
 	} else {
 		op = logical.NewScan(fs.tableName, fs.tableAlias)
 	}

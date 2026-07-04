@@ -130,6 +130,13 @@ Correctness improvement — ensures ORDER BY works even when no index satisfies 
 
 Functionally equivalent for current query shapes — all generated plans use single-step field access. Java's `FieldPath` matters for deeply-nested protobuf message fields; Go would need the multi-step model if/when nested record types are ported.
 
+### Explain rendering: ad-hoc Sprintf vs Java's typed ExplainTokens
+
+**Java:** a dedicated explain package (`query.plan.explain`): every plan/value/predicate emits `ExplainTokens` — a typed token stream (keyword/identifier/alias tokens, precedence-aware nesting via `ExplainTokensWithPrecedence`) — rendered by a pluggable `ExplainFormatter` with an `ExplainSymbolMap` for stable alias naming and `ExplainLevel` for detail control. No node concatenates strings.
+**Go:** every `Explain()` method hand-builds its own `fmt.Sprintf` string; predicates and values are elided or rendered inconsistently (`[N preds]`), and there is no detail-level or formatter abstraction.
+
+Consequence: Go's EXPLAIN output cannot show predicate/value detail without editing each node's `Explain()`, and the rendering logic is scattered. Port target: `ExplainTokens` + `DefaultExplainFormatter` + the per-node `explain()` visitors. Not on the RFC-173 critical path (frozen behind it per owner directive); food for a post-RFC-173 slice.
+
 ## Planning-Layer: Fully Aligned
 
 ### Cost Model: PlanningCostModelLess

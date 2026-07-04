@@ -63,6 +63,7 @@ func TranslateToCascadesWithError(op logical.LogicalOperator, md *recordlayer.Re
 	t := &cascadesTranslator{
 		md:              md,
 		cteScope:        make(map[string]logical.LogicalOperator),
+		cteShadowStack:  make(map[string][]logical.LogicalOperator),
 		cteExprScope:    make(map[string]expressions.RelationalExpression),
 		cteColumnsScope: make(map[string][]values.Field),
 	}
@@ -71,9 +72,21 @@ func TranslateToCascadesWithError(op logical.LogicalOperator, md *recordlayer.Re
 }
 
 type cascadesTranslator struct {
-	md           *recordlayer.RecordMetaData
-	cteScope     map[string]logical.LogicalOperator
-	cteExprScope map[string]expressions.RelationalExpression
+	md       *recordlayer.RecordMetaData
+	cteScope map[string]logical.LogicalOperator
+	// cteShadowStack tracks, per upper-cased name, the OUTER bindings a
+	// same-named registration shadowed (translateCTE pushes; nil = the name
+	// was unbound outside). CTE bodies translate LAZILY at scan resolution,
+	// so lexical scoping must be reconstructed there: resolving a name to a
+	// registered body pops one level for the body's own translation — the
+	// body's references to its OWN name then resolve against the DEFINING
+	// scope (the shadowed outer binding: a derived-table alias-carrier
+	// wrapping `SELECT * FROM c` inside `WITH c AS (…)` reads the WITH
+	// body — or the real table when nothing was shadowed). Without this,
+	// the wrapper's registration silently rebound the outer name to itself
+	// and `WITH c … FROM (SELECT * FROM c) c` returned zero rows.
+	cteShadowStack map[string][]logical.LogicalOperator
+	cteExprScope   map[string]expressions.RelationalExpression
 	// cteColumnsScope holds the OUTPUT column schema of each pre-translated CTE
 	// (recursive CTE / temp-table self-reference) registered in cteExprScope,
 	// keyed by upper-cased CTE name (RFC-077 7.6). cteExprScope stores an opaque
@@ -268,9 +281,10 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			return t.cteColumnsScope[key]
 		}
 		if body, ok := t.cteScope[key]; ok {
-			delete(t.cteScope, key)
-			cols := t.derivedOutputColumns(body)
-			t.cteScope[key] = body
+			var cols []values.Field
+			t.inCTEDefiningScope(key, body, func() {
+				cols = t.derivedOutputColumns(body)
+			})
 			return cols
 		}
 		return t.tableColumns(o.Table)
@@ -492,9 +506,10 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 			return false
 		}
 		if body, ok := t.cteScope[key]; ok {
-			delete(t.cteScope, key)
-			n := t.unionBranchNormalizable(body)
-			t.cteScope[key] = body
+			var n bool
+			t.inCTEDefiningScope(key, body, func() {
+				n = t.unionBranchNormalizable(body)
+			})
 			return n
 		}
 		return true
@@ -1812,13 +1827,15 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 		return expr
 	}
 	if body, ok := t.cteScope[key]; ok {
-		// Remove this CTE from scope while translating its body so that
-		// scans inside the body resolve to real tables, not back to the
-		// CTE itself (which would cause infinite recursion when the CTE
-		// name shadows the underlying table name).
-		delete(t.cteScope, key)
-		result := t.translateOp(body)
-		t.cteScope[key] = body
+		// Translate the body in its DEFINING scope (shadow-stack pop): its
+		// own references to this name resolve to the shadowed outer binding
+		// when one exists (the derived alias-carrier over `SELECT * FROM c`
+		// inside `WITH c AS (…)`), to the real table otherwise — never back
+		// to the CTE itself (infinite recursion).
+		var result expressions.RelationalExpression
+		t.inCTEDefiningScope(key, body, func() {
+			result = t.translateOp(body)
+		})
 		return result
 	}
 	// Type the scan leaf with the table's canonical record type (RFC-173
@@ -4147,10 +4164,67 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 			body = logical.NewProject(body, origCols, c.ColumnAliases)
 		}
 	}
-	t.cteScope[strings.ToUpper(c.Name)] = body
+	name := strings.ToUpper(c.Name)
+	// Save the OUTER binding this registration shadows (nil = unbound): the
+	// derived-table alias-carrier reuses cteScope, so a wrapper named like
+	// an enclosing WITH-CTE must not clobber it — the wrapper's body reads
+	// the outer binding (via the shadow-stack pop at scan resolution), and
+	// siblings after this CTE keep resolving the outer name.
+	prevBody, hadPrev := t.cteScope[name]
+	// Lazy init: unit tests build translators as bare struct literals,
+	// bypassing the constructor.
+	if t.cteShadowStack == nil {
+		t.cteShadowStack = make(map[string][]logical.LogicalOperator)
+	}
+	if hadPrev {
+		t.cteShadowStack[name] = append(t.cteShadowStack[name], prevBody)
+	} else {
+		t.cteShadowStack[name] = append(t.cteShadowStack[name], nil)
+	}
+	t.cteScope[name] = body
 	result := t.translateOp(c.Main)
-	delete(t.cteScope, strings.ToUpper(c.Name))
+	st := t.cteShadowStack[name]
+	t.cteShadowStack[name] = st[:len(st)-1]
+	if hadPrev {
+		t.cteScope[name] = prevBody
+	} else {
+		delete(t.cteScope, name)
+	}
 	return result
+}
+
+// inCTEDefiningScope runs fn with `key` resolving as it does in the DEFINING
+// scope of the cteScope body being expanded: the shadow stack pops one level
+// (the body's own references to `key` then hit the shadowed outer binding
+// when one exists, the real table otherwise) and is restored afterwards,
+// together with the body's registration. Every cteScope body expansion must
+// go through this — a bare delete-while-recursing loses the outer binding
+// (`WITH c AS (…) … FROM (SELECT * FROM c) c` read the real table instead of
+// the WITH body), and a bare re-register loops forever on self-reference.
+func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.LogicalOperator, fn func()) {
+	st := t.cteShadowStack[key]
+	var outer logical.LogicalOperator
+	popped := false
+	if n := len(st); n > 0 {
+		outer = st[n-1]
+		t.cteShadowStack[key] = st[:n-1]
+		popped = true
+	}
+	if outer != nil {
+		t.cteScope[key] = outer
+	} else {
+		delete(t.cteScope, key)
+	}
+	fn()
+	t.cteScope[key] = body
+	if popped {
+		// Restoring the pre-pop slice is safe despite sharing its backing
+		// array with any nested push during fn: a nested registration that
+		// appended into the freed slot wrote the SAME enclosing binding this
+		// restore reinstates (scope chains share their prefix), so the write
+		// is idempotent by construction.
+		t.cteShadowStack[key] = st
+	}
 }
 
 func extractOutputColumns(op logical.LogicalOperator) []string {
