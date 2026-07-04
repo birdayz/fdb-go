@@ -3366,6 +3366,18 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT WSRC."SID", "EL", "O" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL" AT "O" WHERE "EL" > 7`, []string{
 			"EL=8|O=2|WSRC.SID=1",
 		})
+
+		// SHADOWING through the gathered path (the commit-2 lift, R16's class):
+		// the element alias WV shadows WAUX's column WV — the projection must
+		// return the ELEMENT values (last-binding-wins), never the aux column.
+		// The visitor qualifies the shadowed bare projection (WV → WV.WV) and
+		// the span windows route it to the synthesized element leg.
+		shadowExplain := assertRows(t, `SELECT "WV" FROM WSRC, WAUX, WSRC."WARR" AS "WV"`, []string{
+			"WV=7", "WV=7", "WV=7", "WV=8", "WV=8", "WV=8",
+		})
+		if !strings.Contains(shadowExplain, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("the shadowed-element query must plan through the GATHERED path (the shadow decline is lifted):\n%s", shadowExplain)
+		}
 	})
 }
 

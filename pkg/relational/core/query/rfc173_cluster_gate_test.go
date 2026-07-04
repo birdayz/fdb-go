@@ -486,7 +486,7 @@ func TestRFC173S3_WhereMergeBakesLegRelative(t *testing.T) {
 			if !isFV || fv.Resolved == nil {
 				return v
 			}
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "c" {
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "C" {
 				bakedC = fv
 			}
 			return v
@@ -569,7 +569,7 @@ func TestRFC173S3_BoxLegBakeResolvesLeafLocal(t *testing.T) {
 			if !isFV || fv.Resolved == nil {
 				return v
 			}
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "c" {
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "C" {
 				bakedC = fv
 			}
 			return v

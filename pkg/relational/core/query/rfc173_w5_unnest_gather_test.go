@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -156,12 +157,14 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatal("cross-leg duplicate column names must DECLINE (bare-name ambiguity)")
 	}
 
-	// (c) SHADOWING: the element alias equals an outer column name (R16's
-	// class — the name model resolves it with dedicated shadowing machinery).
+	// (c) SHADOWING now GATHERS (the commit-2 lift): the element alias
+	// equaling an outer column name resolves correctly — the visitor
+	// qualifies the shadowed bare projection and the span windows route the
+	// qualified read to the ELEMENT leg (last-binding-wins preserved).
 	uShadow := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "V"}
 	jShadow := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uShadow, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jShadow, uShadow, values.NamedCorrelationIdentifier("V"), values.NotNullLong, "ARR"); got != nil {
-		t.Fatal("an element alias shadowing an outer column must DECLINE (R16's class)")
+	if got := tr.translateGatheredUnnestCluster(jShadow, uShadow, values.NamedCorrelationIdentifier("V"), values.NotNullLong, "ARR"); got == nil {
+		t.Fatal("an element alias shadowing an outer column must GATHER (the commit-2 shadow lift)")
 	}
 
 	// (d) UNGATED left cluster (LEFT-outer box): flows name-model rows the
@@ -217,5 +220,42 @@ func TestRFC173W5_Gathered_MixedElementSkipsAssert(t *testing.T) {
 	}
 	if last.Name != "EL" {
 		t.Fatalf("element field name = %q, want the AS alias EL", last.Name)
+	}
+}
+
+// TestRFC173W5_BakeNormalizesCorrelationCase pins the gather-boundary case
+// authority: bakeGatedJoinPredicates matches leg aliases case-insensitively
+// but must EMIT the baked node under the leg-alias case the gather minted
+// (UPPER via sourceAlias) — a baked correlation in the reference's original
+// case diverges from the quantifier it binds to, and downstream
+// classification (exact-compare) silently misrouted a lowercase ON conjunct
+// as deeply-correlated during commit-2 bring-up. Unreachable via production
+// SQL (uppercased upstream) — pinned white-box.
+func TestRFC173W5_BakeNormalizesCorrelationCase(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+
+	pu := tr.ordinalLegType(scan("SRC", "s"))
+	aux := tr.ordinalLegType(scan("AUX", "x"))
+	legTypes := map[string]bakeLegType{
+		"S": {typ: pu, leafOffset: 0, leafTyp: pu},
+		"X": {typ: aux, leafOffset: 0, leafTyp: aux},
+	}
+	// A cross-leg conjunct whose references carry LOWERCASE correlations.
+	pred := corrEq("s", "SID", "x", "XID")
+	baked := bakeGatedJoinPredicates([]predicates.QueryPredicate{pred}, legTypes)
+	found := 0
+	predicates.ReplaceValues(baked[0], func(v values.Value) values.Value {
+		if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved != nil {
+			qov := fv.Child.(*values.QuantifiedObjectValue)
+			if n := qov.Correlation.Name(); n != strings.ToUpper(n) {
+				t.Errorf("baked correlation %q keeps the reference's original case — must take the gather's UPPER case authority", n)
+			}
+			found++
+		}
+		return v
+	})
+	if found != 2 {
+		t.Fatalf("expected both cross-leg references baked, got %d", found)
 	}
 }

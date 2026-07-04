@@ -424,7 +424,16 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 		if !found {
 			return v
 		}
-		typedQOV := values.NewQuantifiedObjectValueOfType(qov.Correlation, legType.typ)
+		// The baked node's correlation takes the LEG-ALIAS CASE the gather
+		// minted (UPPER via sourceAlias — the one case authority): the lookup
+		// above matches case-insensitively, but emitting the reference's
+		// ORIGINAL case would let a baked node's correlation diverge from the
+		// quantifier it must bind to — downstream classification compares
+		// correlations exactly, and a case-mismatched ON conjunct silently
+		// classified as deeply-correlated during commit-2 bring-up (unreachable
+		// via production SQL, which uppercases upstream; pinned white-box).
+		typedQOV := values.NewQuantifiedObjectValueOfType(
+			values.NamedCorrelationIdentifier(strings.ToUpper(qov.Correlation.Name())), legType.typ)
 		baked, err := values.NewFieldValueOfOrdinal(typedQOV, legType.leafOffset+idx)
 		if err != nil {
 			panic("RFC-173 predicate bake: " + err.Error()) // the window is within the concat by construction
