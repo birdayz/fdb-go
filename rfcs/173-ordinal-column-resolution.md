@@ -2903,6 +2903,17 @@ RED-first record: TestIntegration_RFC173Item2_DisabledBirthBinder_BakedInner fai
 pre-fix with the exact predicted BakedNameContextError (`baked FieldValue CUSTOMER_ID#0
 evaluated against a non-positional row context`) and went green with the binder.
 
+**codex round 1 (P2, fixed-and-pinned):** the pass-through published the outer's
+ORIGINAL positional row even when its layout diverged from the baked type (a
+covering-index outer [V, ID] under a baked [ID, V] QOV) — the binding arm adapted
+correctly for the inner, but downstream baked ordinals above the FlatMap got the wrong
+layout: a SILENT wrong-slot read, the exact class this RFC kills. The pass-through now
+publishes the ADAPTED row (same derivation as the binding arm — same object on a
+layout match, baked-layout synthesis on a mismatch, LOUD on failure), still gated on
+the outer actually carrying a positional row (propagation, not a birth — a Datum-only
+re-synthesis here would be an unregistered §5 birth site). Pinned red-first
+(mismatched-layout subtest, TestRFC173Item2_ComputeResult_PassThrough).
+
 **Impl reviews, round 1 (banked): Graefe ACK + Torvalds ACK.** Both verified the
 factoring behavior-identical, the probe a property derivation (not a smuggled flag),
 the probe gate a real discriminator with both mismatch quadrants CORRECT-or-LOUD, and

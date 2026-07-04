@@ -420,6 +420,39 @@ func TestRFC173Item2_ComputeResult_PassThrough(t *testing.T) {
 			t.Fatalf("Datum-only outer produced Positional %v — the pass-through is propagation, never a birth", got.Positional)
 		}
 	})
+	t.Run("mismatched outer layout re-adapts to the baked type", func(t *testing.T) {
+		t.Parallel()
+		// A probe-positive cursor whose outer positional row is INDEX-shaped
+		// ([V, ID] — a covering row) while the baked QOV expects table order
+		// ([ID, V]). The binding arm adapts correctly, but a pass-through
+		// publishing the ORIGINAL mismatched row hands downstream baked
+		// ordinals the wrong layout — a silent wrong-slot read (V where ID
+		// was baked). The pass-through must publish the ADAPTED row.
+		coveringType := values.NewRecordType("", false, []values.Field{
+			{Name: "V", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		})
+		covering := NewPositionalRow(coveringType)
+		covering.Set(0, int64(10)) // V
+		covering.Set(1, int64(1))  // ID
+		outer := QueryResult{
+			Datum:      map[string]any{"ID": int64(1), "V": int64(10)},
+			Positional: covering,
+		}
+		c := newIdentityCursor(t, bakedInner)
+		got, err := c.computeResult(outer, innerQR)
+		if err != nil {
+			t.Fatalf("computeResult: %v", err)
+		}
+		if got.Positional == nil {
+			t.Fatal("mismatched-layout outer must still emit (adapted), not drop the positional")
+		}
+		if got.Positional == covering {
+			t.Fatal("pass-through published the ORIGINAL index-shaped row — downstream baked ordinals read the wrong slot (the codex P2)")
+		}
+		// The adapted row is in the BAKED layout: slot 0 = ID, slot 1 = V.
+		ojAssertSlots(t, got.Positional, int64(1), int64(10))
+	})
 	t.Run("probe-negative cursor emits none", func(t *testing.T) {
 		t.Parallel()
 		c := newIdentityCursor(t, nil)

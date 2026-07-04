@@ -430,7 +430,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			out := qualifyOuterRow(QueryResult{Datum: m, Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}, c.outerAlias.Name())
 			// RFC-173 item-2 commit 2, the I1 pass-through: the identity
 			// FlatMap's output IS the outer row, so the outer's positional row
-			// flows through verbatim instead of dying at the FlatMap boundary —
+			// flows through instead of dying at the FlatMap boundary —
 			// downstream ordinal consumers keep resolving against it (merged
 			// outers keep their leg windows via the unwrapToJoinPlan identity
 			// arm). PROBE-GATED: outerBakedType is the ordinal-era
@@ -443,12 +443,28 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			// ordinal-era shape whose probe is negative but whose uppers are
 			// baked fails LOUD downstream (BakedNameContextError), never
 			// silent — widen the gate when that shape materializes (commit 3).
-			// Propagation, not a birth: under the §5 oracle the outer never
-			// carries one, so no oracle gate is needed (the executeMap
-			// frontier-propagation precedent). S4 KILL LIST (amendment A) with
-			// the disabled-birth probe.
-			if c.outerBakedType != nil {
-				out.Positional = outerRow.Positional
+			// The published row is the ADAPTED row — the same derivation the
+			// outer-binding arm uses: an INDEX-shaped outer positional (a
+			// covering row [V, ID] under a baked [ID, V] QOV) passes the
+			// binding through synthesis, but publishing the ORIGINAL row
+			// verbatim hands downstream baked ordinals the wrong layout — a
+			// silent wrong-slot read. Layout-matching outers flow
+			// the same row object through; adaptation failure is LOUD
+			// (amendment B). Gated on the outer actually CARRYING a
+			// positional row: propagation, not a birth — under the §5 oracle
+			// the outer never carries one, so re-synthesizing from a
+			// Datum-only outer here would be a new birth site violating the
+			// oracle registry (the executeMap frontier-propagation
+			// precedent). S4 KILL LIST (amendment A) with the disabled-birth
+			// probe.
+			if c.outerBakedType != nil && outerRow.Positional != nil {
+				adapted, aerr := adaptLegPositional(outerRow, c.outerBakedType)
+				if aerr != nil {
+					return QueryResult{}, aerr
+				}
+				if pos, isPos := adapted.(*PositionalRow); isPos {
+					out.Positional = pos
+				}
 			}
 			return out, nil
 		}
