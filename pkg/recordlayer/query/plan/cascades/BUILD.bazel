@@ -75,6 +75,7 @@ go_library(
         "requested_ordering.go",
         "rfc173_positional_merge.go",
         "rfc173_w4_left_ordinal.go",
+        "rfc173_w4left_existential.go",
         "rich_ordering.go",
         "rule.go",
         "rule_adjust_match.go",
@@ -812,6 +813,7 @@ go_test(
         "rfc173_s3_shadow_delta_test.go",
         "rfc173_s3_legrowtypes_test.go",
         "rfc173_w5_classifier_dead_test.go",
+        "rfc173_w4left_existential.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
