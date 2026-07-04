@@ -2560,3 +2560,101 @@ poison). (A5) `NewReEnumerationAnchoredRecord` — strictly downstream, dies mec
 load-bearing ordinal infrastructure; `select.go:274` survives for the CTE-rename slice); the
 S4 exit gate proves zero anchored producers EMPIRICALLY (caller-free constructors, exhausted
 decline reasons), never by inventory argument.
+
+## ROADMAP STATE (authoritative; update this block as slices land)
+
+**Done:** Slice 1 (non-join frontier + §5 oracle) · Slice 2 (wedge gate, 2-way seeds) ·
+Slice 3 (fulcrum, N-way clusters) · W4b (clustered-outer correlated scalars, PR #465) ·
+W5 (multi-source unnest gather, PR #466) · W4-left (LEFT/RIGHT + EXISTS + recursive-CTE,
+PR #467, four-gate ACK) · S4-riders (positionalTypeCache bound + rcte remap provenance,
+PR #468, four-gate ACK).
+
+**← WE ARE HERE:** QP-REF-BIND item 2 (existential-flatten ordinalization) — design substrate
+banked below; NEXT STEP: send the proposed slice plan to Graefe for the design ruling, then
+implement on a fresh branch. Item 1 (per-reference dup-alias binding) is parallelizable with
+item 2. The §6-class discovered bug (no-op existential residual on LEFT+EXISTS, below) is the
+slice's first red-first obligation.
+
+**Remaining, in ruling order:** (item 2 ∥ item 1) → item 3 (mixed-nesting LEFT widening; MUST
+follow item 2) → unnest-residual completion slice → S4 atomic demolition (kill list above;
+bare-twin decline-lift folded in; empirical zero-producers exit gate) → post-S4 separate
+slices (CTE-rename select.go:274 widening; lazy name-identity deletion / full FieldValue
+baking) → Slice 5 closure invariant → Slice 6 extensions → un-freeze RFC-164 (the /goal).
+
+**Known follow-ons booked:** correlated-scalar-on-a-leg (item-2 split-hatch, below) ·
+quoted-dotted verbatim-Field ambiguity (dies in S4, documented at recursiveRemapValues) ·
+W5/W4-left S4 riders recorded in the kill list.
+
+## QP-REF-BIND item 2 — design substrate (banked; for the Graefe slice ruling)
+
+Research method: code trace + two live worktree experiments (E1 reproduced the twice-reverted
+flatten-seed failure exactly; E2 validated a minimal executor binder end-to-end). The S4-riders
+slice merged first (PR #468: bounded positionalTypeCache; the recursive-CTE leg remap classifies
+name PROVENANCE — verbatim iff unaliased plain FieldValue — after three review rounds each
+caught a string-shape hole; full four-gate ACK).
+
+**Failing-path anatomy.** The 2+1 flatten (`translateJoinWithExists`,
+cascades_translator.go:3829-3942) seeds the ANCHORED RV unconditionally (:3926) and never
+consults the wedge gate. The only implementer is `implementJoinWithExistential`
+(rule_implement_nested_loop_join.go:1389-1639): step-1 NLJ carries the seed RV; the existential
+FlatMap's RV is the bare identity `QOV(mergedOuterCorr)` for WHERE-EXISTS (:1591). The executor
+probes ordinal birth SOLELY from the FlatMap's own RV (flat_map_cursor.go:71) — identity RV ⇒
+no birth ⇒ the outer row binds as the name-keyed Datum map (:234-243), and any baked ofOrdinal
+ref over the outer alias dies at the BakedNameContextError arms (values.go:742 via
+RowEvalContext, :817 via bare CorrelationBinder). E1: with the flatten seeded ordinally, the
+thrower is the ordinal existential path's OWN plan (the NLJ births positionally; the FlatMap
+above it drops to the name map) — a precision correction to the F2 scope note's "other
+data-access paths" framing.
+
+**LIVE CORRECTION to the W4-left record:** the ordinal existential rebase
+(rfc173_w4left_existential.go) is currently DEAD on live SQL. The generic filter arm forces
+enclosure under EXISTS (cascades_translator.go:2109-2119), and the gate's enclosure arms then
+poison every join class beneath (:102-113 outer boxes, :143-147 inner clusters) — so every RV
+reaching `implementJoinWithExistential` is anchored, `ordinalSeedLegWindowsOf` yields nil, and
+the "gated existential classes run ordinal today" claim is false at HEAD. The machinery itself
+is sound (E1: windows resolve and the rebase bakes correctly the moment a seed arrives); the
+executor binding is what reverted the seed.
+
+**Java model (agent-verified):** no 2+1 flatten exists — Java bipartitions N≥3 selects and
+existentials ride partitions (ImplementNestedLoopJoinRule.java:96-98 matches exactly two
+quantifiers). Existential leg = FirstOrDefault(inner, NULL) under the existential's own alias;
+`ExistentialValuePredicate.toResidualPredicate()` → `QOV(alias) NOT_NULL`; existentials
+contribute NO columns. Runtime binding is always alias-keyed with typed values and ordinal
+field access (RecordQueryFlatMapPlan.java:122-149, FieldValue.java:163-175) — no name-map row
+exists anywhere. The item-2 target in Go's two-level shape: the merged positional row is the
+binding the inner leg sees.
+
+**The E2-validated minimal binder:** in newFlatMapCursor, when birth is disabled, probe the
+INNER plan for FrontierPinned refs over outerAlias (reusing widenLegTypesFromPlan,
+rfc173_ordinal_join.go:857-927); if found, bind the outer via adaptLegPositional instead of the
+Datum map (~20 lines). With the E1 seed this returned CORRECT rows on corr_exists_join_outer
+end-to-end. A real slice adds: a gate arm for the flatten (dup-alias/eligibility); Positional
+PASS-THROUGH on the identity FlatMap's output (the I1 booking — today the positional row dies
+at the FlatMap boundary); the N-leg generalization (birthLegBinder is already map-shaped).
+
+**Absorbed classes (ruling's absorption, resolved):** under-existential unnest
+(translateUnnestExistsFilter, :2167-2271 — needs the W4c seed to stop declining under the flag
+plus ordinal replacements for the two rebaseUnnestOuterLegPredicate sites) and the EXISTS-rider
+clusterArity poison (:324-332) share the root cause — absorbed. The SCALAR-rider split-hatch
+resolves: UNCORRELATED riders absorb (pre-evaluated scalar bindings are shape-agnostic);
+CORRELATED-scalar-on-a-leg needs W4b-seed rework (a level-1 clusterPullUp variant) — the
+"immediate follow-on" case.
+
+**⚠ DISCOVERED BUG (pre-existing on master, unpatched — the item-2 slice's first red-first
+obligation):** `SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id WHERE EXISTS
+(SELECT 1 FROM badge b WHERE b.emp_id = e.id)` returns ALL depts, and the NOT EXISTS twin
+returns the IDENTICAL rows — the existential residual is a NO-OP on the LEFT-join +
+correlated-EXISTS-into-null-supplying-leg class when no other WHERE conjunct exists. Two
+aggravators: the EXPLAIN'd winner differs from the executed winner, and the W4-left pin matrix
+missed it because its LEFT variant carries a masking `d.id = 3` conjunct
+(rfc173_w4left_exists_fdb_test.go:130-131). Root-cause with/before the slice; pin without
+masking conjuncts + an EXPLAIN-vs-executed coherence check.
+
+**Proposed slice plan (for ruling):** (1) root-cause + fix the no-op-residual bug, red-first
+unmasked matrix; (2) the executor binder (E2) + identity-FlatMap positional pass-through;
+(3) flatten gate arm + ordinal seed (rebase machinery already landed); (4) the enclosure lift
+at :2109-2119 for gate-eligible inputs — making the W4-left rebase machinery live (closes the
+correction above), per-class gate reasons + dualwindow pins; (5) absorbed classes
+(under-existential unnest, EXISTS-rider, uncorrelated scalar riders). Exit gates: the
+dualwindow two-phase corpus, the unmasked EXISTS matrix, MergeArmHits discipline, budgets,
+1M stress.

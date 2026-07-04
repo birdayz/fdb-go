@@ -3290,6 +3290,12 @@ One authority for three deferred pieces the W4-left review flagged (previously s
 2. **Existential-flatten ordinalization** — translateJoinWithExists keeps the ANCHORED seed
    until the 2+1 select's data-access/correlated-FlatMap implementation paths bind legs
    POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).
+   **DESIGN SUBSTRATE BANKED (RFC § "QP-REF-BIND item 2 — design substrate"): E2-validated
+   executor binder; the W4-left rebase machinery is currently DEAD on live SQL (enclosure
+   forced under EXISTS — the slice's commit-4 lift); a DISCOVERED pre-existing wrong-rows
+   bug (no-op existential residual on LEFT+EXISTS-into-null-supplying-leg, EXISTS ==
+   NOT EXISTS rows) is the slice's first red-first obligation. NEXT: Graefe slice ruling
+   on the 5-commit plan, then implement.**
    **CHARTER EXTENDED (post-W4-left sequencing ruling): absorbs the under-existential unnest
    class (`FROM t, t.arr AS v WHERE EXISTS(…)` — the W5 F4 rider's booking gap, closed here)
    and the EXISTS-rider clusterArity poison (a cluster whose leg filter/project carries
