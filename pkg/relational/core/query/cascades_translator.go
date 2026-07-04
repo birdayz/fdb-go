@@ -1855,8 +1855,29 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// Explode and preserves the EXISTS subqueries + existential markers in the
 	// residual outer filter, so the EXISTS dispatch then handles only the remaining
 	// existential + outer conjuncts. RFC-142.
+	// RFC-173 W5 commit 3: when the input is an ENCLOSED-unnest cluster the
+	// gathered path will take (`FROM A, A.arr AS x, B WHERE …`), the push must
+	// STAND DOWN — its restructured tree (a Filter wrapping the unnest join)
+	// un-gathers the cluster, and a spanning conjunct (`x > B.c`, never
+	// pushable) would then land raw on the residual NLJ where the element is
+	// unbound → silent 0 rows. With the push skipped, the WHOLE conjunct set
+	// reaches the gathered merge arm below, which rewrites element refs and
+	// bakes leg refs uniformly (the root form's exact treatment — pushBuried
+	// already skips the root form for the same reason). The probe TRANSLATES
+	// the rotated cluster (pure construction, discarded); fail-open: a
+	// declined gather keeps today's push semantics.
+	enclosedGathered := false
+	if f.Predicate != nil && len(f.ExistsSubqueries) == 0 && !t.inInnerCluster && !t.unnestUnderExistential {
+		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
+			if rebuilt, ru, et, fn, rok := t.rotateEnclosedUnnest(join); rok {
+				enclosedGathered = t.translateGatheredUnnestCluster(
+					rebuilt, ru, unnestSourceCorrelation(ru), et, fn) != nil
+			}
+		}
+	}
+
 	pushedAllBuried := false
-	if f.Predicate != nil {
+	if f.Predicate != nil && !enclosedGathered {
 		pushed := pushBuriedUnnestPredicateDown(f)
 		if pushed != f && pushed.Predicate == nil && len(pushed.ExistsSubqueries) == 0 {
 			// Every conjunct was pushed below the join (the buried-unnest
@@ -1958,6 +1979,32 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// (rebaseOuterLegRefsToMerged) perform. A single outer scan
 			// (`FROM t, t.arr`) flows under segment-0's own alias, so its leg is
 			// the merged corr itself and the rebase is a no-op. RFC-142.
+			// RFC-173 W5 commit 3: the ENCLOSED gathered form (`FROM A, A.arr
+			// AS x, B WHERE …` — translateJoin above returned the flat
+			// gathered select via rotation). Same WHERE treatment as the
+			// root-form gathered arm below: rewrite element/ordinal refs to
+			// what the Explode flows, bake leg refs through the rotated plain
+			// cluster's own leg types. The signature check (last quantifier
+			// bound to the unnest correlation, >2 quantifiers) keeps declined
+			// residual translations on the name-model path below.
+			if _, rootUnnest := join.Right.(*logical.LogicalUnnest); !rootUnnest && enclosedGathered {
+				if rebuilt, ru, _, _, rok := t.rotateEnclosedUnnest(join); rok {
+					quants := sel.GetQuantifiers()
+					if len(quants) > 2 && quants[len(quants)-1].GetAlias() == unnestSourceCorrelation(ru) {
+						toMerge := []predicates.QueryPredicate{rewriteUnnestPredicate(pred, ru)}
+						if lj, isLJ := rebuilt.Left.(*logical.LogicalJoin); isLJ {
+							toMerge = bakeGatedJoinPredicates(toMerge, t.gatedJoinLegTypes(lj))
+						}
+						return expressions.NewSelectExpressionWithJoinType(
+							sel.GetResultValue(),
+							sel.GetQuantifiers(),
+							append(sel.GetPredicates(), toMerge...),
+							sel.GetSourceAliases(),
+							sel.GetJoinType(),
+						)
+					}
+				}
+			}
 			if u, ok := join.Right.(*logical.LogicalUnnest); ok {
 				pred = rewriteUnnestPredicate(pred, u)
 				if len(sel.GetQuantifiers()) > 2 {
@@ -3546,6 +3593,15 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// than a generic join (RFC-142).
 	if u, ok := j.Right.(*logical.LogicalUnnest); ok {
 		return t.translateUnnestJoin(j, u)
+	}
+
+	// RFC-173 W5 commit 3: the ENCLOSED unnest class (`FROM A, A.arr AS x, B`
+	// — an unnest join buried as a leg of this inner cluster) gathers into
+	// the same flat (N+1)-quantifier select via rotation. Fail-open: nil
+	// falls through to the paths below, which translate the buried unnest
+	// ENCLOSED (the name-model residual) with the faithful diagnostics.
+	if sel := t.translateEnclosedUnnestGather(j); sel != nil {
+		return sel
 	}
 
 	left := j.Left

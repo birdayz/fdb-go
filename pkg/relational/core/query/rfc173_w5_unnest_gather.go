@@ -189,3 +189,151 @@ func gatheredPlainLegType(t *cascadesTranslator, legs []clusterLeg, alias string
 	}
 	return nil, false
 }
+
+// gatherLegsWithBuriedUnnest walks j's direct inner-join spine collecting the
+// PLAIN legs (FROM order), every nested ON conjunct, and exactly ONE buried
+// unnest (a nested `Join(L, Unnest)` — the `FROM A, A.arr AS x, B` enclosed
+// class). ok=false when there is no unnest, more than one, an existential
+// rider, or a non-inner nesting — the caller then leaves the original tree to
+// today's paths.
+func gatherLegsWithBuriedUnnest(j *logical.LogicalJoin) (plainLegs []logical.LogicalOperator, preds []predicates.QueryPredicate, uLeft logical.LogicalOperator, u *logical.LogicalUnnest, ok bool) {
+	ok = true
+	var walk func(op logical.LogicalOperator)
+	walk = func(op logical.LogicalOperator) {
+		if !ok {
+			return
+		}
+		nj, isJoin := op.(*logical.LogicalJoin)
+		if !isJoin || nj.Kind != logical.JoinInner || len(nj.OnExistsSubqueries) > 0 {
+			plainLegs = append(plainLegs, op)
+			return
+		}
+		if un, isUn := nj.Right.(*logical.LogicalUnnest); isUn {
+			if u != nil {
+				ok = false // a second unnest — out of scope (chained/multi)
+				return
+			}
+			walk(nj.Left)
+			u = un
+			uLeft = nj.Left
+			if qp, isQP := nj.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
+				preds = append(preds, qp)
+			}
+			return
+		}
+		walk(nj.Left)
+		walk(nj.Right)
+		if qp, isQP := nj.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
+			preds = append(preds, qp)
+		}
+	}
+	walk(j)
+	if !ok || u == nil {
+		return nil, nil, nil, nil, false
+	}
+	return plainLegs, preds, uLeft, u, true
+}
+
+// rotateEnclosedUnnest probes the ENCLOSED unnest class (`FROM A, A.arr AS x,
+// B` — the unnest join buried as a LEG of a larger inner cluster) and, when
+// it classifies, ROTATES the cluster to the root form the commit-1 builder
+// owns: Join(Join(plain legs, FROM order), Unnest). The rotation is
+// inner-join-equivalent — the lateral dependency needs only the owner in
+// scope, and every collected ON conjunct rides the rebuilt ROOT's
+// OnPredicate (a conjunct may reference the ELEMENT/ordinal alias, `... INNER
+// JOIN B ON B.K = EL`, which is only in scope at the flat select the builder
+// folds the root ON into; an ON-free left also keeps the gate probe on the
+// pure comma cluster the commit-1 corpus pinned).
+//
+// The classification is MINIMAL and fail-open (ok=false — the caller keeps
+// the ORIGINAL tree, whose residual path still produces the faithful
+// diagnostics), mirroring translateUnnestJoin's gauntlet with DECLINES
+// instead of errors. Seed-field order places the element LAST (not at its
+// FROM position) — observable only via SELECT-*-over-multi-source, which
+// cannot plan today (the banked commit-4 fix target).
+func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebuilt *logical.LogicalJoin, u *logical.LogicalUnnest, elementType values.Type, fieldName string, ok bool) {
+	if t.md == nil || j.Kind != logical.JoinInner || len(j.OnExistsSubqueries) > 0 {
+		return nil, nil, nil, "", false
+	}
+	if _, rootUnnest := j.Right.(*logical.LogicalUnnest); rootUnnest {
+		return nil, nil, nil, "", false // the root form — translateUnnestJoin owns it
+	}
+	plainLegs, preds, uLeft, u, gok := gatherLegsWithBuriedUnnest(j)
+	if !gok || len(plainLegs) < 2 {
+		return nil, nil, nil, "", false
+	}
+
+	// Classification against the unnest's OWN scope (uLeft — the sources
+	// before it in FROM order).
+	if len(u.Segments) != 2 {
+		return nil, nil, nil, "", false
+	}
+	outerTable := findOuterScanTable(uLeft, u.Segments[0])
+	if outerTable == "" {
+		return nil, nil, nil, "", false
+	}
+	if t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(uLeft, u.Segments[0]) {
+		return nil, nil, nil, "", false
+	}
+	elementType, fieldName, isArray, _ := t.unnestArrayElementType(outerTable, u.Segments[1:])
+	if !isArray {
+		return nil, nil, nil, "", false
+	}
+	if containsLateralUnnest(uLeft) {
+		return nil, nil, nil, "", false
+	}
+
+	newLeft := plainLegs[0]
+	for _, leg := range plainLegs[1:] {
+		newLeft = logical.NewJoin(newLeft, leg, logical.JoinInner, "")
+	}
+	if _, isLJ := newLeft.(*logical.LogicalJoin); !isLJ {
+		return nil, nil, nil, "", false
+	}
+
+	// P1/P2b collision minima against ALL plain legs — the flat select binds
+	// every leg alias (including legs AFTER the unnest in FROM order), which
+	// is the root-form gauntlet's scope after the rotation. The residual
+	// rejects these faithfully when this declines.
+	bound := outerBoundAliases(newLeft)
+	collide := func(name string) bool {
+		if name == "" {
+			return false
+		}
+		if strings.EqualFold(name, sourceAlias(newLeft)) {
+			return true
+		}
+		_, isBound := bound[strings.ToUpper(name)]
+		return isBound
+	}
+	if collide(u.Alias) || collide(u.AtAlias) {
+		return nil, nil, nil, "", false
+	}
+	if u.Alias != "" && u.AtAlias != "" && strings.EqualFold(u.Alias, u.AtAlias) {
+		return nil, nil, nil, "", false
+	}
+
+	var onPred predicates.QueryPredicate
+	if len(preds) > 0 {
+		onPred = preds[0]
+		if len(preds) > 1 {
+			onPred = predicates.NewAnd(preds...)
+		}
+	}
+	return logical.NewJoinWithPredicate(newLeft, u, logical.JoinInner, onPred), u, elementType, fieldName, true
+}
+
+// translateEnclosedUnnestGather is the W5 commit-3 dispatch for the enclosed
+// unnest class: rotate (rotateEnclosedUnnest), then hand the root form to the
+// shared gathered builder. Fail-open — nil falls back to the caller's
+// name-model paths.
+func (t *cascadesTranslator) translateEnclosedUnnestGather(j *logical.LogicalJoin) expressions.RelationalExpression {
+	if t.inInnerCluster || t.unnestUnderExistential {
+		return nil
+	}
+	rebuilt, u, elementType, fieldName, ok := t.rotateEnclosedUnnest(j)
+	if !ok {
+		return nil
+	}
+	return t.translateGatheredUnnestCluster(rebuilt, u, unnestSourceCorrelation(u), elementType, fieldName)
+}

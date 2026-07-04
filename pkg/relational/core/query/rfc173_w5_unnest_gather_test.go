@@ -259,3 +259,139 @@ func TestRFC173W5_BakeNormalizesCorrelationCase(t *testing.T) {
 		t.Fatalf("expected both cross-leg references baked, got %d", found)
 	}
 }
+
+// chainEqPredLocal builds a cross-leg equality conjunct over two named
+// correlations (the white-box twin of the SQL WHERE/ON spelling).
+func chainEqPredLocal(a, aCol, b, bCol string) predicates.QueryPredicate {
+	return predicates.NewComparisonPredicate(
+		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a)), aCol, values.UnknownType),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(b)), bCol, values.UnknownType),
+		},
+	)
+}
+
+// enclosedFixture builds the ENCLOSED shape `FROM SRC s, s.ARR AS EL, AUX x`
+// — the unnest join buried as the LEFT leg of the enclosing cluster, the
+// commit-3 rotation's canonical input.
+func enclosedFixture(asAlias, atAlias string) *logical.LogicalJoin {
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: asAlias, AtAlias: atAlias}
+	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
+	return logical.NewJoin(unnestJoin, scan("AUX", "x"), logical.JoinInner, "")
+}
+
+// TestRFC173W5_EnclosedRotation pins the commit-3 rotation: the buried-unnest
+// cluster rebuilds as Join(Join(plain legs, FROM order), Unnest) — the exact
+// root form the commit-1 builder owns — and the full dispatch produces the
+// same flat gathered select the trailing form does.
+func TestRFC173W5_EnclosedRotation(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+
+	root := enclosedFixture("EL", "")
+	rebuilt, u, elementType, fieldName, ok := tr.rotateEnclosedUnnest(root)
+	if !ok {
+		t.Fatal("the enclosed 2-plain-leg cluster must classify and rotate, got ok=false")
+	}
+	if u == nil || fieldName != "ARR" || elementType == nil {
+		t.Fatalf("classification: u=%v field=%q type=%v", u != nil, fieldName, elementType)
+	}
+	if _, isU := rebuilt.Right.(*logical.LogicalUnnest); !isU {
+		t.Fatalf("rotation must place the unnest at root-right, got %T", rebuilt.Right)
+	}
+	lj, isJ := rebuilt.Left.(*logical.LogicalJoin)
+	if !isJ {
+		t.Fatalf("rotated left = %T, want the plain-leg join", rebuilt.Left)
+	}
+	ls, lok := lj.Left.(*logical.LogicalScan)
+	rs, rok := lj.Right.(*logical.LogicalScan)
+	if !lok || !rok || ls.Table != "SRC" || rs.Table != "AUX" {
+		t.Fatalf("rotated plain legs = (%T, %T), want (Scan(SRC), Scan(AUX)) in FROM order", lj.Left, lj.Right)
+	}
+	if rebuilt.OnPredicate != nil || lj.OnPredicate != nil {
+		t.Fatal("a pure comma cluster must rotate ON-free at both levels")
+	}
+
+	sel := tr.translateEnclosedUnnestGather(root)
+	if sel == nil {
+		t.Fatal("the enclosed dispatch must gather, got nil")
+	}
+	gathered, isSel := sel.(*expressions.SelectExpression)
+	if !isSel {
+		t.Fatalf("gathered = %T, want *SelectExpression", sel)
+	}
+	quants := gathered.GetQuantifiers()
+	if len(quants) != 3 {
+		t.Fatalf("gathered select has %d quantifiers, want 3", len(quants))
+	}
+	if quants[2].GetAlias().Name() != "EL" {
+		t.Fatalf("last quantifier = %s, want the Explode EL", quants[2].GetAlias())
+	}
+}
+
+// TestRFC173W5_EnclosedRotation_ONCollection pins the ON handling: every ON
+// conjunct collected along the buried spine (including one referencing the
+// ELEMENT alias) rides the rebuilt ROOT's OnPredicate — never the plain-leg
+// chain, where the element is out of scope.
+func TestRFC173W5_EnclosedRotation_ONCollection(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
+	onPred := chainEqPredLocal("x", "XID", "s", "SID")
+	root := logical.NewJoinWithPredicate(unnestJoin, scan("AUX", "x"), logical.JoinInner, onPred)
+
+	rebuilt, _, _, _, ok := tr.rotateEnclosedUnnest(root)
+	if !ok {
+		t.Fatal("the ON-carrying enclosed cluster must rotate")
+	}
+	lj := rebuilt.Left.(*logical.LogicalJoin)
+	if lj.OnPredicate != nil {
+		t.Fatal("the rotated plain-leg chain must stay ON-free (the element may be referenced)")
+	}
+	got, isQP := rebuilt.OnPredicate.(predicates.QueryPredicate)
+	if !isQP || got == nil {
+		t.Fatalf("the collected ON conjunct must ride the rebuilt ROOT, got %T", rebuilt.OnPredicate)
+	}
+}
+
+// TestRFC173W5_EnclosedRotation_DeclineBoundary pins the fail-open declines:
+// (a) two buried unnests; (b) a single plain leg (nothing to enclose);
+// (c) the element alias colliding with a leg AFTER the unnest in FROM order —
+// the widened all-legs collision scope the rotation demands (the original
+// gauntlet only sees the legs BEFORE the unnest); (d) a LEFT-kind root.
+func TestRFC173W5_EnclosedRotation_DeclineBoundary(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+
+	u2 := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "E2"}
+	twoUnnests := logical.NewJoin(
+		logical.NewJoin(enclosedFixture("EL", ""), u2, logical.JoinInner, ""),
+		scan("AUX", "y"), logical.JoinInner, "")
+	if _, _, _, _, ok := tr.rotateEnclosedUnnest(twoUnnests); ok {
+		t.Error("two buried unnests must decline (chained/multi is out of scope)")
+	}
+
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	singleLeg := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
+	if _, _, _, _, ok := tr.rotateEnclosedUnnest(singleLeg); ok {
+		t.Error("the root form (unnest at root-right) must decline — translateUnnestJoin owns it")
+	}
+
+	uCollide := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "X"}
+	collideRoot := logical.NewJoin(
+		logical.NewJoin(scan("SRC", "s"), uCollide, logical.JoinInner, ""),
+		scan("AUX", "x"), logical.JoinInner, "")
+	if _, _, _, _, ok := tr.rotateEnclosedUnnest(collideRoot); ok {
+		t.Error("an element alias colliding with a TRAILING leg alias must decline (all-legs scope)")
+	}
+
+	leftRoot := logical.NewJoin(
+		logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, ""),
+		scan("AUX", "x"), logical.JoinLeft, "")
+	if _, _, _, _, ok := tr.rotateEnclosedUnnest(leftRoot); ok {
+		t.Error("a LEFT-kind enclosing root must decline (inner-only rotation)")
+	}
+}
