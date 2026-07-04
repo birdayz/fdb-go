@@ -2902,3 +2902,14 @@ with the pins unchanged). They flip with commit 3's seed.
 RED-first record: TestIntegration_RFC173Item2_DisabledBirthBinder_BakedInner failed
 pre-fix with the exact predicted BakedNameContextError (`baked FieldValue CUSTOMER_ID#0
 evaluated against a non-positional row context`) and went green with the binder.
+
+**Impl reviews, round 1 (banked): Graefe ACK + Torvalds ACK.** Both verified the
+factoring behavior-identical, the probe a property derivation (not a smuggled flag),
+the probe gate a real discriminator with both mismatch quadrants CORRECT-or-LOUD, and
+the unwrap-arm/runtime-gate asymmetry closed by the consumers' `Positional != nil &&
+windowsOK` conjunction. Forward bookings for commit 3: (Graefe, non-blocking) when the
+pass-through gate widens, derive the shape's era from the OUTER plan's seed authority
+(the joinPlanSpans authority the unwrap arm already uses), not by stretching the
+inner-probe heuristic; (Torvalds) a THIRD copy of the baked-QOV extraction preamble
+triggers the shared `forEachBakedQOVType` refactor, and the loud-widening commitment
+(probe-negative + baked uppers ⇒ BakedNameContextError, never silent) is held.
