@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -41,6 +42,7 @@ func main() {
 		numOps      = flag.Int("numops", 0, "override ops per run (0 = each profile's default)")
 		progressGap = flag.Float64("progress-secs", 30, "heartbeat interval")
 		label       = flag.String("label", "", "free-text label recorded in every progress/finding line")
+		only        = flag.String("profiles", "", "comma-separated name substrings; only profiles whose name contains one are swept (empty = all)")
 	)
 	flag.Parse()
 
@@ -65,7 +67,14 @@ func main() {
 
 	// Record-layer profiles + SQL-workload profiles. Add a workload package's Profiles() here to
 	// fold it into the sweep (RFC-179 Tier 2 — "add a workload, hunt a new surface").
-	profiles := append(hunt.Profiles(), sqlhunt.Profiles()...)
+	profiles := append(hunt.Profiles(), sqlhunt.AllProfiles()...)
+	if *only != "" {
+		profiles = filterProfiles(profiles, strings.Split(*only, ","))
+		if len(profiles) == 0 {
+			fmt.Fprintf(os.Stderr, "dst-hunt: -profiles %q matched no profiles\n", *only)
+			os.Exit(2)
+		}
+	}
 
 	// Stop on either the time budget or a signal. done is closed once; workers observe it and
 	// drain.
@@ -283,6 +292,20 @@ func (r *recorder) writeJSON(f *os.File, v any) {
 // record-layer maintainer is the most severe bug the hunt can find, so a worker catches it,
 // records it as a finding, and keeps sweeping — one poisoned seed must not abort an overnight
 // unattended run. The panic is surfaced (as an Err on the recorded finding), never swallowed.
+// filterProfiles keeps profiles whose name contains any of the given substrings.
+func filterProfiles(all []hunt.Profile, subs []string) []hunt.Profile {
+	var out []hunt.Profile
+	for _, p := range all {
+		for _, s := range subs {
+			if s = strings.TrimSpace(s); s != "" && strings.Contains(p.Name, s) {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func protect(fn func()) (msg string) {
 	defer func() {
 		if r := recover(); r != nil {

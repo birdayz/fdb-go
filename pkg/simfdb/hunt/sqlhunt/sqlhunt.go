@@ -52,6 +52,18 @@ func Profiles() []hunt.Profile {
 	}
 }
 
+// AllProfiles returns every SQL workload's profiles: the sql-dml fault-idempotency workload plus
+// the query-correctness, secondary-index, and NULL-semantics workloads. cmd/dst-hunt folds these
+// into the sweep — add a new workload's Profiles() here to include it in every hunt.
+func AllProfiles() []hunt.Profile {
+	var ps []hunt.Profile
+	ps = append(ps, Profiles()...)
+	ps = append(ps, QueryProfiles()...)
+	ps = append(ps, SQLIndexProfiles()...)
+	ps = append(ps, NullProfiles()...)
+	return ps
+}
+
 func (SQLWorkload) Run(seed uint64, cfg hunt.Config) *hunt.Report {
 	rep := &hunt.Report{Seed: seed}
 	ctx := context.Background()
