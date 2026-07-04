@@ -157,6 +157,37 @@ func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 		t.Error("an ordinal join-seed RC (IsOrdinalJoinRV) must intern alias-aware — the S3-authoritative seed marker")
 	}
 
+	// (c') The W5 MIXED unnest seed (interning-widening ruling): baked outer
+	// run + a bare TYPED non-record QOV element — a whole-leg reference is as
+	// position-determined as a pinned bake, so the gathered unnest select
+	// interns alias-aware too (it participates in re-enumeration; identity
+	// dedup would re-explode its sub-products). An UNTYPED bare QOV keeps
+	// declining — the CTE-rename/lazy rationale is untouched.
+	srcType := values.NewRecordType("SRC", false, []values.Field{
+		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	srcQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("S"), srcType)
+	srcFV, sErr := values.NewFieldValueOfOrdinal(srcQOV, 0)
+	if sErr != nil {
+		t.Fatalf("bake SRC#0: %v", sErr)
+	}
+	mixedRC := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "SID", Value: srcFV},
+		values.RecordConstructorField{Name: "EL", Value: values.NewQuantifiedObjectValueOfType(
+			values.NamedCorrelationIdentifier("EL"), values.NotNullLong)},
+	)
+	if !values.IsOrdinalJoinRV(mixedRC) {
+		t.Error("the W5 mixed unnest seed (baked run + bare TYPED element QOV) must classify IsOrdinalJoinRV")
+	}
+	untypedRC := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "SID", Value: srcFV},
+		values.RecordConstructorField{Name: "EL", Value: values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("EL"))},
+	)
+	if values.IsOrdinalJoinRV(untypedRC) {
+		t.Error("an UNTYPED bare QOV field must keep declining IsOrdinalJoinRV (no leg contract)")
+	}
+
 	// A plain projection select (e.g. a CTE column rename's body) must NOT opt in:
 	// its quantifier aliases are externally resolved by identity, so alias-aware
 	// dedup would pick a survivor whose columns the consumer reads as NULL.

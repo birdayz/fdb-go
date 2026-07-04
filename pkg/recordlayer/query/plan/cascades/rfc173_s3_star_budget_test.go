@@ -74,9 +74,14 @@ const starWallClockCeiling = 5 * time.Second
 //   - CONVERGES (no MaxTasks cap) — a count-level interning regression that
 //     re-explodes shared sub-products blows past the 100k budget (measured: the
 //     5-way all-live star already caps; the 4-way is the largest that converges).
-//   - task-count == 51377 ±2% — the STAR-topology interning sentinel,
+//   - task-count == 42788 ±2% — the STAR-topology interning sentinel,
 //     complementing the CHAIN baseline (11122/45306): a different topology
-//     stresses sub-product sharing differently.
+//     stresses sub-product sharing differently. RE-BASELINED from 51377 by
+//     the W5 interning widening (design-ruled): IsOrdinalJoinRV now admits
+//     bare TYPED QOV fields, which pulls the post-translation MIXED upper
+//     RVs (ofOrdinal-over-merge alongside bare leg QOVs) into alias-aware
+//     interning — MORE sub-product sharing (-17% tasks), the win direction;
+//     the chain baselines were unaffected (within tolerance).
 //   - MergeArmHits == 0 — the ordinal star routes wholly through the positional
 //     arm (dispatch authority holds for the STAR shape too).
 //   - wall-clock < ceiling — the per-Insert bijection-cost catch the count pin
@@ -89,7 +94,7 @@ const starWallClockCeiling = 5 * time.Second
 func TestRFC173S3_OrdinalStarPlanningBudget(t *testing.T) {
 	t.Parallel()
 	const spokes = 3
-	const wantTasks = 51377
+	const wantTasks = 42788
 	tol := wantTasks / 50 // ±2%
 
 	best := time.Hour
