@@ -2161,27 +2161,41 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 // alias is empty (unaliased reference — handled by qualifyTypeFallback).
 // Pre-qualified keys (containing a dot) carry their own namespace from a
 // prior join level and are left untouched.
+//
+// No-op for a src that is itself a JOIN-MERGE output (it carries dotted
+// keys): there is no single source behind that leg's alias, and its BARE
+// keys are last-leg-wins leftovers on cross-leg name collisions. Fabricating
+// "ALIAS.COL" from them invents rows — an unmatched `d LEFT JOIN e` row
+// under an enclosing INNER join has no E.* keys (the null extension emits
+// only the preserved leg), and fabricating E.ID from the row's bare ID
+// (dept's) read the WRONG SOURCE with no error (the mixed-nesting runtime
+// pins). The merged row's own dotted keys pass through verbatim above and
+// are the only authoritative resolution.
 func qualifyAlias(dst, src map[string]any, alias string) {
-	if alias == "" {
+	if alias == "" || hasQualifiedKeys(src) {
 		return
 	}
 	for k, v := range src {
-		if strings.Contains(k, ".") {
-			continue
-		}
-		qualKey := alias + "." + strings.ToUpper(k)
-		if _, exists := src[qualKey]; exists {
-			// Already qualified under this alias by a prior level — keep it.
-			continue
-		}
-		dst[qualKey] = v
+		dst[alias+"."+strings.ToUpper(k)] = v
 	}
+}
+
+// hasQualifiedKeys reports whether a row datum carries any dot-qualified key
+// — the signature of a join-merge output (mergeRows / qualifyOuterRow).
+func hasQualifiedKeys(m map[string]any) bool {
+	for k := range m {
+		if strings.Contains(k, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // qualifyTypeFallback writes record-type-qualified keys ("TYPE.COL") for
 // unaliased table references. It only fills keys not already claimed by an
 // explicit alias (qualifyAlias runs first), so a leg whose record type
 // happens to equal another leg's explicit alias cannot shadow that alias.
+// Like qualifyAlias, a join-merge src (dotted keys) never fabricates.
 func qualifyTypeFallback(dst, src map[string]any, alias, recType string) {
 	if recType == "" {
 		return
@@ -2193,10 +2207,10 @@ func qualifyTypeFallback(dst, src map[string]any, alias, recType string) {
 	if alias == recType {
 		return
 	}
+	if hasQualifiedKeys(src) {
+		return
+	}
 	for k, v := range src {
-		if strings.Contains(k, ".") {
-			continue
-		}
 		qualKey := recType + "." + strings.ToUpper(k)
 		if _, exists := dst[qualKey]; exists {
 			continue
@@ -2226,30 +2240,22 @@ func qualifyOuterRow(outer QueryResult, outerAlias string) QueryResult {
 	for k, v := range outerMap {
 		qualified[k] = v
 	}
-	// Pass 2 — add alias/type-qualified keys for each BARE column, but NEVER
-	// overwrite a qualified key already present. Re-qualifying a merged row's
-	// BARE column (which is last-leg-wins on a cross-leg name collision, e.g.
-	// bare "ID" == the inner leg's id) under a SINGLE leg's alias/type would
-	// otherwise clobber that leg's correct "A.ID" with the other leg's value —
-	// and since Pass-1's verbatim copy and this re-qualification race on Go map
-	// iteration order, the clobber was nondeterministic (a.id/b.id collapsing to
-	// one leg on some process seeds; the EXISTS-over-join misroute, RFC-077).
-	// The two-pass "copy first, fill-if-absent second" makes the authoritative
-	// qualified keys always win.
-	for k, v := range outerMap {
-		if strings.Contains(k, ".") {
-			continue
-		}
-		if outerQual != "" {
-			qk := outerQual + "." + strings.ToUpper(k)
-			if _, exists := qualified[qk]; !exists {
-				qualified[qk] = v
+	// Pass 2 — add alias/type-qualified keys for each BARE column, for a
+	// SINGLE-SOURCE row only. A MERGED row (any dotted key present) already
+	// carries its authoritative per-leg namespaces from Pass 1, and its bare
+	// keys are last-leg-wins leftovers — fabricating "ALIAS.COL" from them
+	// reads the wrong source (the same disease qualifyAlias documents; the
+	// historical fill-if-absent variant here still fabricated on the
+	// null-padded box row, where the authoritative key is ABSENT — the
+	// EXISTS-over-join misroute of RFC-077 was the clobber flavour, the
+	// mixed-nesting wrong-source rows the fabrication flavour).
+	if !hasQualifiedKeys(outerMap) {
+		for k, v := range outerMap {
+			if outerQual != "" {
+				qualified[outerQual+"."+strings.ToUpper(k)] = v
 			}
-		}
-		if outerAlias != "" && outerType != "" && outerAlias != outerType {
-			qk := outerType + "." + strings.ToUpper(k)
-			if _, exists := qualified[qk]; !exists {
-				qualified[qk] = v
+			if outerAlias != "" && outerType != "" && outerAlias != outerType {
+				qualified[outerType+"."+strings.ToUpper(k)] = v
 			}
 		}
 	}

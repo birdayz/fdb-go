@@ -99,6 +99,19 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// ordinalLegColumns' mis-scope panic fired exactly as designed.
 		return wedgeGateDecision{Arity: arityPoison, Reason: "a leg contains a name-model join (mixed nesting stays name-model until S3)"}
 	}
+	if j.Kind != logical.JoinInner && t.inInnerCluster {
+		// An OUTER box that is a LEG of an enclosing name-model join (or of
+		// an existential/unnest flatten) stays name-model: the parent's
+		// merge binds leg rows by NAME, so a gated box's POSITIONAL row
+		// under it reads the wrong source (`d LEFT JOIN e ON … JOIN c ON …`
+		// returned d.id as e.id — the mixed-nesting runtime pins) or breaks
+		// the partition rule's anchored re-enumeration (the RIGHT variant
+		// panicked). The INNER arm has carried this exact enclosure guard
+		// since Slice 2; the outer arms shipped without it — plans looked
+		// clean while rows were wrong. Ordinalizing outer boxes inside
+		// name-model parents is the QP-REF-BIND LEFT-widening item (TODO.md).
+		return wedgeGateDecision{Arity: arityPoison, Reason: "outer box enclosed in a name-model parent (mixed nesting stays name-model, QP-REF-BIND)"}
+	}
 	if j.Kind == logical.JoinFull {
 		// FULL OUTER is the only genuinely opaque outer box: it is NEVER
 		// rewritten (RewriteOuterJoinRule handles LeftOuter only; FULL stays

@@ -566,9 +566,19 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			}
 			lowerResult := values.NewReEnumerationAnchoredRecord(parentAnchored, legs)
 			if lowerResult == nil {
-				// Unreachable by construction (every live lower is a parent quantifier);
-				// fail LOUD rather than store nil silently → wrong rows. RFC-077 7.6.
-				panic("RFC-077 7.6: anchored re-enumeration must resolve an anchored parent's legs (lower)")
+				// A live lower whose columns the parent's anchored RC does not
+				// supply under that alias. Believed unreachable for the plain
+				// name-model seeds this arm survives for, but a DISSOLVED outer
+				// box merged into an inner parent gets here: the box leg's
+				// columns are anchored under the box's own quantifier alias
+				// with DOTTED field names (E."D.ID"), which no per-alias leg
+				// re-enumeration resolves (mixed outer nesting, the runtime
+				// pins; reached nondeterministically by exploration order).
+				// DECLINE this bipartition — never a nil RV (wrong rows), never
+				// a planning panic: the surviving alternatives (the correlated
+				// FlatMap implementation) carry the shape, and a query with no
+				// alternative fails with the clean could-not-plan error.
+				continue
 			}
 			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerResult)
 
