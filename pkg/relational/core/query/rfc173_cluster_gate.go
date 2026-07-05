@@ -16,9 +16,11 @@ import (
 // 4-way post-flattening), so the gate computes the POST-FLATTENING ForEach
 // arity of the transitive inner-join-equivalent cluster, at translation time,
 // by walking the logical tree with the same transparency/opacity the rule
-// actually implements (rule_select_merge.go). Drift between this walk and the
-// rule is caught by the loud assert in the rule's target loop — a decline is
-// forbidden (it would change plan shapes, contract ruling #1).
+// actually implements (rule_select_merge.go). The rule's original target-loop
+// drift assert was retired at the S3 fulcrum (positional merges are legal
+// now); drift between this walk and the rule is held by the contract pins
+// (ClusterArity_Shapes / WalkArmParity) and the seed-side loud asserts — a
+// decline is forbidden (it would change plan shapes, contract ruling #1).
 //
 // LIVE since W3b: the gate's per-seed decisions drive the ordinal seed —
 // Gated joins get the baked ofOrdinalNumber result value + cross-leg
@@ -375,6 +377,11 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 		// shape-agnostic. Neither adds a ForEach quantifier, so the filter
 		// contributes its input's arity — the poison here made every cluster
 		// with a subquery-bearing leg name-model for no structural reason.
+		// TODO(rfc-173): two PRE-EXISTING reach limits are newly VISIBLE on
+		// gated paths (loud 0AF00 on master too, proven at the 5b review): a
+		// rider filter OVER A JOIN body consumed as a leg, and multiple
+		// existential riders on one filter — both bail in the single-
+		// existential 2+1 implementation, never wrong rows.
 		return t.clusterArity(o.Input)
 	case *logical.LogicalProject:
 		if len(o.CorrelatedScalarSubqueries) > 0 {
