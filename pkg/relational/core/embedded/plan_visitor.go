@@ -976,8 +976,10 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		if j.catalogAwareInnerPlan != nil {
 			// Use the pre-built inner plan from the visitor.
 			if j.alias != "" {
-				right = logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
+				cte := logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
 					logical.NewScan(j.alias, ""), false)
+				cte.Binding = j.bindingID
+				right = cte
 			} else {
 				right = j.catalogAwareInnerPlan
 			}
@@ -992,8 +994,10 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 				return nil, nil
 			}
 			if j.alias != "" {
-				right = logical.NewCTE(j.alias, innerRight,
+				cte := logical.NewCTE(j.alias, innerRight,
 					logical.NewScan(j.alias, ""), false)
+				cte.Binding = j.bindingID
+				right = cte
 			} else {
 				right = innerRight
 			}
@@ -1005,7 +1009,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 			// preserved the uid segments + AT alias for exactly this. RFC-142.
 			right = u
 		} else {
-			right = logical.NewScan(j.tableName, j.alias)
+			sc := logical.NewScan(j.tableName, j.alias)
+			sc.Binding = j.bindingID
+			right = sc
 		}
 		var kind logical.JoinKind
 		switch j.joinType {

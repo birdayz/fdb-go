@@ -3399,3 +3399,82 @@ Go runner twin) surfaced:
   become byte-equal once the check moves to the reference); JOIN-ON and LEFT-JOIN dup
   shapes decline via the ON-clause source-resolution 0AF00 (loud, correct-or-loud
   holds there); `..., a AS b` is Go 42702 vs Java 42712 — both-reject code drift, book.
+
+## QP-REF-BIND item 1 — design ruling (Graefe, on 77d06c33a): ACK-with-amendments
+
+**Rulings on the forks:**
+1. **M1–M6 overall — ACK.** Java premises verified in source by the reviewer
+   (Quantifier.uniqueId minting incl. withNewSharedReferenceAndAlias's fresh id +
+   rewireQov; per-attribute 42702 ambiguity-before-existence, inner-ambiguity
+   terminal). M2's dup-legs-only fresh ids is the F3-ruled coexistence mechanism;
+   all-quantifiers-unique stays REJECTED until S4+. First-leg-keeps-alias zeroes the
+   blast radius for non-dup queries.
+2. **F-A → IN-SLICE (option a).** The bare-twin/S4 coexistence ruling is scoped to
+   W5's UNNEST class (fail-open name-model goldens); the dup-alias star class cannot
+   run at all today and exists only in the gated regime (the raw RC already tolerates
+   positional duplicates). S4-deferral would CREATE a new 42702→0AF00 divergence —
+   backwards. **Condition:** the FDB pin asserts duplicate labels AND per-position
+   values (first-leg vs later-leg values differ); column metadata stays a list;
+   byte-equal to Java's `[ID V QID ID V]`.
+3. **F-B → UNIFY-ALL, one carve-out.** Java's resolveIdentifier asserts all use
+   "Ambiguous reference %s", but lookupAlias (SemanticAnalyzer.java:515-536) uses
+   "Ambiguous alias %s" — classify each of the six Go sites against its Java path
+   before unifying; any SELECT-list-alias lookup site keeps/gets the alias wording.
+4. **Commit plan — ACK.** c1-dark acceptable (same slice, white-box pinned, the
+   item-2 commit-1 precedent). **Binding condition:** c2 lands red-first LOUD-decline
+   pins for every still-poisoned dup class (LEFT-box dup, unnest dup, rider dup)
+   proving a resolver-emitted QOV(bindingId) over a name-model class structurally
+   fails to translate (0AF00) — never binds by name into the wrong leg. The
+   never-live-separately constraint made empirical.
+
+**Amendments (binding on impl):**
+- **(a) Qualified parent-fallthrough.** Java's resolveAcrossFragments falls to the
+  PARENT fragment on a zero-match pass even when the alias exists locally without
+  the column (correlated shadow shape). Live-probe; align or book with citation —
+  item 3's LEFT widening trips this otherwise. (Probe shapes added:
+  qual_parent_fallthrough / _ctl / _inner_ambig — results banked below.)
+- **(b) One mint authority, structurally carried.** The binding id is minted ONCE at
+  FROM-leg registration and READ everywhere — sourceAlias/legsOfGatedJoin must read
+  the carried id, never re-derive the SQL alias (outer-box legs re-collide at item 3
+  otherwise). Minted ids DETERMINISTIC per query (the #17 stablePlanHash lesson) —
+  an atomic-counter q$N would make two plannings of the same SQL hash differently;
+  use a FROM-position-keyed deterministic form.
+- **(c)** DuplicateAliasError (scope.go:91) goes dead for FROM sources — delete or
+  re-scope to the surviving RFC-142 unnest arm IN c2, not later.
+
+The ruling covered 77d06c33a; the substrate addendum (97c164e4e — the dual-probe
+baseline with the two discovered master bugs) goes to the reviewer as a delta with
+the amendment-(a) probe results.
+
+**Amendment-(a) probe results (live, both engines):** Java CONFIRMS the qualified
+parent-fallthrough — `SELECT p.v FROM T_P1 AS p WHERE EXISTS (SELECT 1 FROM T_Q1 AS p
+WHERE p.v = 10)` ANSWERS `[[10]]` in Java (inner fragment zero-match → parent; the
+inner alias p existing WITHOUT the column does not stop the walk) while Go rejects
+42703 `column "V" does not exist` — a THIRD discovered divergence, ALIGNED in M1's
+rewrite (zero matches at a level → parent chain; SourceNotFound only when no alias
+matches anywhere; ColumnNotFound only at chain exhaustion). The inner-ambiguity-
+is-terminal twin is byte-equal parity in both engines TODAY (`Ambiguous reference
+P.ID`; Java does NOT fall through past a local ambiguity — M1 keeps that). The
+control (distinct inner alias) is parity. Note the fallthrough fix reaches beyond
+the dup class (any correlated subquery whose inner alias lacks a referenced column);
+it is Java-aligned by construction and rides c2 with its own red-first pin + corpus
+entries (the three probe shapes).
+
+**Delta-ACK (Graefe, on the 97c164e4e addendum + amendment-(a) probe):** the ruling
+EXTENDS — (1) both discovered bugs are c2 red-first obligations; the bare-nil
+wrong-rows finding CORRECTS the substrate's "decline, never wrong rows" premise (it
+was already wrong rows on master for the bare-unique disjoint class) and RAISES the
+never-live-separately stakes without reordering; (2) amendment-(a) ALIGN ACK
+(zero-match falls to parent, ambiguity terminal — the reach beyond the dup class is
+Java-aligned by construction, red-first pin + corpus entries satisfy the condition);
+(3) the position-keyed mint ACK (`q$dupN` by FROM ordinal, first occurrence keeps
+alias, carried structurally, sourceAlias display-only — deterministic per query, no
+atomic counter); (4) NO pull-forward — c1-dark → c2 stands. **Contingency condition:
+if the slice stalls after c1 merges, land a minimal loud decline for the
+bare-ref-over-dup class immediately — wrong rows may not outlive the slice
+boundary.** C1 SCOPE REFINEMENT (recorded here, tightening the substrate's plan): c1
+carries the mint plumbing + binding-keyed seed/gate KEYING only, with the dup
+poison arm INTACT — lifting it in c1 would flip the predicate-free disjoint class
+(today name-model, answering) to the ordinal seed, an observable plan change in the
+"dark" commit; the lift lands in c2 with the front-end, honoring
+never-live-separately strictly.

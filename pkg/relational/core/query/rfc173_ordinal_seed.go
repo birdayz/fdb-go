@@ -125,9 +125,25 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 // `QOV(alias, type.withNullability(true))`, and OuterJoinExpression VERIFIES
 // nullability on the QOV's result type, never per column (design ruling I3).
 type clusterLeg struct {
-	op            logical.LogicalOperator
-	alias         string
+	op    logical.LogicalOperator
+	alias string
+	// binding is the leg's BINDING correlation name (sourceBinding): equal
+	// to alias for every non-duplicate leg; the parser-minted `q$dupN` for
+	// a later duplicate-alias leg (RFC-173 QP-REF-BIND item 1). Seed
+	// quantifiers, bake maps and windows key on THIS; alias stays display.
+	// While the gate's dup poison arm stands (pre-item-1-c2) binding ==
+	// alias on every leg that reaches a seed.
+	binding       string
 	nullSupplying bool
+}
+
+// clusterLegOf is the ONLY way to build a clusterLeg from a leg operator: it
+// fills alias AND binding together so no construction site can forget the
+// binding (an alias-only leg nils the seed via the binding=="" decline — the
+// exact re-derivation hazard the design ruling's carried-not-rederived condition
+// names).
+func clusterLegOf(op logical.LogicalOperator, nullSupplying bool) clusterLeg {
+	return clusterLeg{op: op, alias: sourceAlias(op), binding: sourceBinding(op), nullSupplying: nullSupplying}
 }
 
 // gatherInnerClusterLegs flattens DIRECT inner-join nesting into FROM-order
@@ -151,7 +167,7 @@ func (t *cascadesTranslator) gatherInnerClusterLegs(j *logical.LogicalJoin) []cl
 				return
 			}
 		}
-		legs = append(legs, clusterLeg{op: op, alias: sourceAlias(op)})
+		legs = append(legs, clusterLegOf(op, false))
 	}
 	walk(j.Left)
 	walk(j.Right)
@@ -172,8 +188,8 @@ func (t *cascadesTranslator) legsOfGatedJoin(j *logical.LogicalJoin) []clusterLe
 		return t.gatherInnerClusterLegs(j)
 	}
 	return []clusterLeg{
-		{op: j.Left, alias: sourceAlias(j.Left), nullSupplying: j.Kind == logical.JoinRight},
-		{op: j.Right, alias: sourceAlias(j.Right), nullSupplying: j.Kind == logical.JoinLeft},
+		clusterLegOf(j.Left, j.Kind == logical.JoinRight),
+		clusterLegOf(j.Right, j.Kind == logical.JoinLeft),
 	}
 }
 
@@ -232,7 +248,7 @@ func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[strin
 	legs := t.legsOfGatedJoin(j)
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
-		if leg.alias == "" {
+		if leg.binding == "" {
 			continue
 		}
 		typ := t.ordinalLegType(leg.op)
@@ -243,7 +259,10 @@ func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[strin
 		if leafTyp == nil {
 			continue
 		}
-		legTypes[strings.ToUpper(leg.alias)] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		// Keyed by the BINDING correlation name (== UPPER alias for every
+		// non-duplicate leg; the parser-minted id for a later duplicate —
+		// RFC-173 QP-REF-BIND item 1, the map key an alias would collide).
+		legTypes[leg.binding] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
 	}
 	return legTypes
 }
@@ -302,9 +321,9 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 			return nil
 		}
 		quantifiers = append(quantifiers, expressions.NamedForEachQuantifier(
-			values.NamedCorrelationIdentifier(leg.alias), ref,
+			values.NamedCorrelationIdentifier(leg.binding), ref,
 		))
-		sourceAliases = append(sourceAliases, leg.alias)
+		sourceAliases = append(sourceAliases, leg.binding)
 	}
 	t.inInnerCluster = prevEnclosure
 
@@ -363,7 +382,7 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 	var fields []values.RecordConstructorField
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
-		if leg.alias == "" {
+		if leg.binding == "" {
 			return nil, nil
 		}
 		typ := t.ordinalLegType(leg.op)
@@ -374,7 +393,10 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 		if leafTyp == nil {
 			return nil, nil
 		}
-		legTypes[strings.ToUpper(leg.alias)] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		// BINDING-keyed (RFC-173 QP-REF-BIND item 1): == UPPER alias for
+		// every non-duplicate leg; the parser-minted id for later duplicates
+		// keeps the map and the QOV correlations collision-free.
+		legTypes[leg.binding] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
 		if leg.nullSupplying {
 			// The LEFT-outer null side: the QOV's RECORD TYPE goes nullable
 			// (Java's type.withNullability(true) at the pull-up; the verify
@@ -383,7 +405,7 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 			// executor's null-leg birth and the metadata nullability read.
 			typ = values.NewRecordType(typ.RecordName, true, typ.Fields)
 		}
-		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg.alias), typ)
+		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg.binding), typ)
 		for i := range typ.Fields {
 			fv, err := values.NewFieldValueOfOrdinal(qov, i)
 			if err != nil {

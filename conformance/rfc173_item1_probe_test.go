@@ -73,6 +73,16 @@ var _ = Describe("RFC173Item1Probe", func() {
 			{"alias_as_from_source", "SELECT * FROM T_P1 AS a, T_P1 AS a, a AS b"},
 			{"join_on_dup_unique", "SELECT a.v FROM T_P1 AS a JOIN T_Q1 AS a ON a.v > 0"},
 			{"left_join_dup", "SELECT a.v FROM T_P1 AS a LEFT JOIN T_Q1 AS a ON a.qid = 7"},
+			// RFC-173 item-1 design-ruling amendment (a): does a QUALIFIED reference whose alias
+			// exists in the INNER scope WITHOUT the column fall through to a
+			// same-aliased OUTER scope source (Java resolveAcrossFragments
+			// zero-match → parent), or stop at the local alias?
+			{"qual_parent_fallthrough", "SELECT p.v FROM T_P1 AS p WHERE EXISTS (SELECT 1 FROM T_Q1 AS p WHERE p.v = 10)"},
+			{"qual_parent_fallthrough_ctl", "SELECT p.v FROM T_P1 AS p WHERE EXISTS (SELECT 1 FROM T_Q1 AS q WHERE p.v = 10)"},
+			// The inner-scope AMBIGUITY-is-terminal twin: the inner scope has
+			// TWO same-aliased sources sharing the column; the outer also has
+			// the alias. Java: inner ambiguity must NOT fall through.
+			{"qual_parent_inner_ambig", "SELECT p.id FROM T_P1 AS p WHERE EXISTS (SELECT 1 FROM T_P1 AS p, T_R1 AS p WHERE p.id = 1)"},
 		}
 
 		render := func(engine string, r plandiff.RunResult) string {

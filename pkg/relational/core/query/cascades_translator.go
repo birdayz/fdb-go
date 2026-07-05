@@ -4049,8 +4049,8 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		// side is its LEFT operand).
 		var legTypes map[string]bakeLegType
 		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{
-			{op: rvLeft, alias: rvLeftAlias, nullSupplying: j.Kind == logical.JoinRight},
-			{op: rvRight, alias: rvRightAlias, nullSupplying: j.Kind == logical.JoinLeft},
+			clusterLegOf(rvLeft, j.Kind == logical.JoinRight),
+			clusterLegOf(rvRight, j.Kind == logical.JoinLeft),
 		})
 		preds = bakeGatedJoinPredicates(preds, legTypes)
 	} else {
@@ -4262,8 +4262,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	if gatedFlatten {
 		var legTypes map[string]bakeLegType
 		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{
-			{op: j.Left, alias: sourceAlias(j.Left)},
-			{op: j.Right, alias: sourceAlias(j.Right)},
+			clusterLegOf(j.Left, false),
+			clusterLegOf(j.Right, false),
 		})
 		allPreds = bakeGatedJoinPredicates(allPreds, legTypes)
 	} else {
@@ -4470,6 +4470,43 @@ func sourceAlias(op logical.LogicalOperator) string {
 			// the user specified (e.g. "sq1"), not the underlying
 			// table name buried inside the CTE body.
 			return strings.ToUpper(o.Name)
+		default:
+			ch := cur.Children()
+			if len(ch) == 1 {
+				cur = ch[0]
+				continue
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// sourceBinding is the leg's BINDING correlation name: sourceAlias unless the
+// parser minted a duplicate-alias binding id (RFC-173 QP-REF-BIND item 1 —
+// LogicalScan/LogicalCTE/LogicalUnnest.Binding, carried from the single mint
+// authority assignFromLegBindingIDs). Every correlation / bake-map / window
+// key reads THIS; display surfaces keep sourceAlias. Minted ids are
+// FOLD-STABLE upper form (`Q$DUPN`) so the existing UPPER-fold lookups treat
+// them exactly like aliases; alias-bound legs return sourceAlias's UPPER
+// form, so non-duplicate queries are byte-identical to the pre-item-1 keying.
+func sourceBinding(op logical.LogicalOperator) string {
+	for cur := op; cur != nil; {
+		switch o := cur.(type) {
+		case *logical.LogicalScan:
+			if o.Binding != "" {
+				return o.Binding
+			}
+			return sourceAlias(cur)
+		case *logical.LogicalUnnest:
+			return sourceAlias(cur)
+		case *logical.LogicalJoin:
+			return sourceBinding(o.Right)
+		case *logical.LogicalCTE:
+			if o.Binding != "" {
+				return o.Binding
+			}
+			return sourceAlias(cur)
 		default:
 			ch := cur.Children()
 			if len(ch) == 1 {

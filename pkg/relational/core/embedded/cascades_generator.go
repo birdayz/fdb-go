@@ -3753,7 +3753,9 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 					return api.NewError(api.ErrCodeWrongObjectType,
 						"AT ordinality is only valid on a correlated array source, not a table")
 				}
-				j.Right = logical.NewScan(table, alias)
+				demoted := logical.NewScan(table, alias)
+				demoted.Binding = u.Binding
+				j.Right = demoted
 			}
 		}
 	}

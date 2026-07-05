@@ -95,6 +95,7 @@ go_test(
         "rfc152_outer_join_materialization_test.go",
         "rfc153_joined_preserved_plan_test.go",
         "rfc173_dupalias_column_aware_test.go",
+        "rfc173_item1_mint_test.go",
         "select_helpers_test.go",
         "sql_plan_fuzz_test.go",
         "system_rows_test.go",
