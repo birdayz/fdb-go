@@ -2646,8 +2646,17 @@ fail-closed decline itself is replaced — NOT here. Commit 4's observable is th
 RIGHT-box-under-EXISTS class running ordinal (dualwindow-equivalent today; S4-ready)
 plus the fast-path wrong-rows fix.
 
-**← WE ARE HERE:** QP-REF-BIND item 2, commit **5a LANDED** (under-existential unnest gates
-ordinal — PR #476); 5b/5c next. 5a decline-lift at translateUnnestJoin removes the blanket
+**← WE ARE HERE:** QP-REF-BIND item 2, commit **5a MERGED** (PR #476, master 2dbe743d5,
+four-gate tally across ELEVEN review rounds: architecture gate ACK round-10 substance +
+round-11 delta — adversarial battery of 16,104 constructible RC shapes, 0 cross-agreement
+disagreements; Java differential oracle 1632 corpus entries, 0 mismatches — code-quality gate
+ACK round-11 after two NAK rounds whose findings were closed with revert-tested load-bearing
+pins; codex CLEAN rounds 9/10/11; the @claude Action runs were starved by the CI-runner
+infra failure, best-effort, no NAK). The saga's yield: the STRUCTURAL exit gate (translator
+never predicts executor routing), a truly bit-for-bit cross-agreement invariant, ONE rebase
+authority, and −110 lines of prediction apparatus. NEXT: the B/C/D/E pre-existing EXISTS
+wrong-rows bugs (booked below, bug-B fix design banked), then 5b/5c.
+5a decline-lift at translateUnnestJoin removes the blanket
 `!unnestUnderExistential` guard but keeps a `unnestExistsSeedSafe` gate: the ordinal seed is
 taken under EXISTS only for a SINGLE-ALIAS outer (outerBoundAliases==1, not clusterArity==1 —
 a merge-opaque FULL OUTER box has arity 1 yet two aliases whose same-named columns the ordinal
