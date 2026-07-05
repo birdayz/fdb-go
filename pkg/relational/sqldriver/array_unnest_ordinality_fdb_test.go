@@ -1963,6 +1963,29 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
+	t.Run("R5t NOT EXISTS with an outer-only conjunct INSIDE the subquery", func(t *testing.T) {
+		// The unnest twin of the NOT-EXISTS pre-filter bug: an outer-only conjunct
+		// inside the subquery must evaluate UNDER the ∃ — ¬∃(MA.ID=1 ∧ JU-nonempty)
+		// keeps MA2's elements {20,21} — never as an outer pre-filter, which
+		// computes MA.ID=1 ∧ ¬∃ and returned [] (red-first). The conjunct stays
+		// BURIED in the subquery plan; the translator bakes its leg ref to an
+		// ofOrdinal over the merged QOV (ordinal seed) so it binds positionally
+		// below the FOD (rebaseUnnestOuterLegPredicateOrdinal — the buried channel
+		// the executor's rule-level hoist cannot reach).
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
+			"X=20", "X=21",
+		})
+	})
+
+	t.Run("R5u the R5t POSITIVE twin keeps its rows through the buried path", func(t *testing.T) {
+		// ∃(MA.ID=1 ∧ JU-nonempty) keeps MA1's elements only. Same buried baked
+		// conjunct as R5t, positive polarity — pins that the placement fix did not
+		// flip the positive-EXISTS semantics (P ∧ ∃(Q) ≡ ∃(P∧Q) for outer-only P).
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
+			"X=10", "X=11", "X=12",
+		})
+	})
+
 	// NOTE: the AS-alias-shadows-outer-column shape where the EXISTS ALSO
 	// references the element via that alias (e.g. `FROM TCOLL, TCOLL.ARR AS ID
 	// WHERE EXISTS (SELECT 1 FROM U WHERE U.ID = ID AND U.V > TCOLL.ID)`) is a
