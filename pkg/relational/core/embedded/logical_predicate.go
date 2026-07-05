@@ -2539,7 +2539,14 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	}
 	operands := make([]values.Value, len(agg.Aggregates))
 	for _, ac := range sq.aggCols {
-		if ac.aggFunc == "" || ac.aggExpr == nil {
+		// A PLAIN-column aggregate arg (`MIN(pid)`, `MIN(c2.pid)`) carries
+		// aggArg only — the parser's resolveArg captures no aggExpr for a bare
+		// FullColumnName. It must STILL resolve here: the text fallback
+		// (parseAggregateText) keeps a qualified arg as ONE opaque dotted
+		// FieldValue{"C2.PID"}, which key-misses the scan row's bare "PID" at
+		// accumulation and silently aggregates NULL (a sub-planned scalar
+		// subquery's rows carry bare keys only). COUNT(*) has neither and skips.
+		if ac.aggFunc == "" || (ac.aggExpr == nil && ac.aggArg == "") {
 			continue
 		}
 		idx := -1
@@ -2560,13 +2567,44 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 				idx = i
 				break
 			}
+			// The aggregate node's text may carry the BARE column while the
+			// parsed arg is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main
+			// builder strips a same-source qualifier when naming the slot. Match
+			// the bare form too so the resolved-operand path engages for it.
+			if ref := parseColRef(arg); ref.isQualified() {
+				bareExpected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + ref.bare() + ")")
+				if strings.ToUpper(aggText) == bareExpected {
+					idx = i
+					break
+				}
+			}
 		}
 		if idx < 0 {
 			continue
 		}
-		v, err := resolver.WalkExpression(ac.aggExpr)
-		if err != nil {
-			continue
+		var v values.Value
+		if ac.aggExpr != nil {
+			walked, err := resolver.WalkExpression(ac.aggExpr)
+			if err != nil {
+				continue
+			}
+			v = walked
+		} else {
+			// Plain-column arg: resolve through the semantic scope
+			// (ResolveIdentifier — the same resolution a WHERE reference gets),
+			// so a qualified `c2.pid` binds against its FROM source instead of
+			// surviving as opaque dotted text. Unresolvable → fall through to
+			// the text path (fail-soft).
+			ref := parseColRef(ac.aggArg)
+			var qualID semantic.Identifier
+			if ref.isQualified() {
+				qualID = semantic.NewUnquoted(ref.table)
+			}
+			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(ref.bare()))
+			if rerr != nil || qv == nil {
+				continue
+			}
+			v = qv
 		}
 		operands[idx] = v
 	}
@@ -5256,6 +5294,27 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: walk predicate: %v", walkErr), Cause: walkErr}
 	}
 
+	// Propagate SCALAR subquery plans the nested planner collected while walking
+	// the inner WHERE (`… EXISTS (SELECT 1 FROM c WHERE p.id > (SELECT MIN(id)
+	// FROM c2))`). The walked predicate references the scalar's ALIAS; without
+	// the plan the executor never pre-evaluates it, the alias binding stays
+	// unset, and the comparison is silently NULL → every outer row dropped.
+	// Bubbling them into THIS planner routes them to the enclosing filter/
+	// projection exactly like a top-level scalar subquery (an uncorrelated
+	// scalar is a query-constant external binding — its evaluation point is
+	// scope-free). Correlated scalars propagate the same way; their per-row
+	// evaluation would need per-row re-execution (below).
+	p.scalarSubqueries = append(p.scalarSubqueries, nestedPlanner.scalarSubqueries...)
+	// A CORRELATED scalar inside an EXISTS WHERE has NO evaluation path: the
+	// one-shot pre-eval cannot re-run it per row, and the WHERE channel has no
+	// CorrelatedScalarSubquery consumer (only projections and HAVING do).
+	// Dropping it silently NULLed the comparison and returned zero rows for
+	// every outer row; decline LOUDLY instead (CORRECT-or-LOUD — the per-row
+	// evaluation is tracked follow-on work with the EXISTS wrong-rows batch).
+	if len(nestedPlanner.correlatedScalarSubqueries) > 0 {
+		return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlated scalar subquery inside an EXISTS WHERE clause is not supported"}
+	}
+
 	// If the nested planner collected EXISTS subqueries, check whether
 	// the middle level has its own correlation predicate (non-EXISTS).
 	if len(nestedPlanner.subqueries) > 0 {
@@ -5294,9 +5353,85 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// through when the inner row has a NULL (absent-from-map) field.
 	innerCorr := strings.ToUpper(aliasID.Name())
 	qualifyBareFields(pred, innerCorr)
+	pred = predicates.SimplifyPredicateValues(pred)
 
-	p.lastJoinPredicate = predicates.SimplifyPredicateValues(pred)
+	// OUTER-ONLY conjuncts (`… WHERE p.id = 1` — no inner-source reference) stay
+	// INSIDE the subquery as a filter on the inner plan, so they evaluate UNDER
+	// the ∃ in both polarities: ¬∃(P∧Q) ≡ ¬P ∨ ¬∃(Q). Threading them through the
+	// join predicate instead hands them to the semi-join implementation's
+	// inner/outer routing, which pre-filters the OUTER on outer-only conjuncts —
+	// an equivalence that holds ONLY for the positive polarity (P ∧ ∃(Q) ≡
+	// ∃(P∧Q)); under NOT EXISTS it computes P ∧ ¬∃(Q) and wrongly drops every
+	// ¬P outer row. Placement, not polarity, is the invariant: subquery-origin
+	// conjuncts never leave the subquery. That INCLUDES conjuncts referencing a
+	// SCALAR-subquery alias: the pre-evaluated binding lives in the root
+	// evaluation context and IS visible below the FirstOrDefault (the filter
+	// contexts thread it) — the RFC-141 R4 outer-routing rationale concerns
+	// SIBLING predicates outside the ∃ (which must not be skipped when the
+	// inner is empty), never subquery-internal conjuncts. Routing a
+	// scalar-referencing internal conjunct outward reproduced the pre-filter
+	// polarity bug for exactly the NOT-EXISTS + scalar shape.
+	// The inner-source universe comes from the BINDER-EXACT collector over the
+	// built op tree (the same helper the correlated-scalar scope discriminator
+	// uses, pinned by TestInnerSourceAliases_MirrorsUnnestBinder) — one
+	// inner-source authority, not a second joins-walk.
+	outerOnly, rest := splitOuterOnlyConjuncts(pred, innerSourceAliases(op))
+	if outerOnly != nil {
+		op = &logical.LogicalFilter{Input: op, Predicate: outerOnly}
+	}
+	p.lastJoinPredicate = rest
 	return op, nil
+}
+
+// splitOuterOnlyConjuncts partitions a subquery WHERE's top-level AND tree into
+// (outerOnly, rest): a conjunct is OUTER-ONLY iff it references at least one
+// correlation and none of them is an inner FROM source. A scalar-subquery
+// alias counts as OUTER here — the pre-evaluated binding lives in the root
+// evaluation context and is visible under the ∃, and the placement invariant
+// (subquery conjuncts evaluate under the ∃, both polarities) applies to it
+// like any other outer-only conjunct. Inner-only conjuncts, genuine
+// correlation conjuncts, and reference-free constants stay in rest (the join
+// predicate), preserving the existing routing. An OR tree is one conjunct,
+// classified atomically by its whole correlation set.
+func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases map[string]struct{}) (outerOnly, rest predicates.QueryPredicate) {
+	if pred == nil {
+		return nil, nil
+	}
+	var outer, keep []predicates.QueryPredicate
+	var walk func(p predicates.QueryPredicate)
+	walk = func(p predicates.QueryPredicate) {
+		if and, ok := p.(*predicates.AndPredicate); ok {
+			for _, sub := range and.SubPredicates {
+				walk(sub)
+			}
+			return
+		}
+		corrs := predicates.GetCorrelatedToOfPredicate(p)
+		if len(corrs) == 0 {
+			keep = append(keep, p)
+			return
+		}
+		for c := range corrs {
+			name := strings.ToUpper(c.Name())
+			if _, isInner := innerAliases[name]; isInner {
+				keep = append(keep, p)
+				return
+			}
+		}
+		outer = append(outer, p)
+	}
+	walk(pred)
+	andOf := func(ps []predicates.QueryPredicate) predicates.QueryPredicate {
+		switch len(ps) {
+		case 0:
+			return nil
+		case 1:
+			return ps[0]
+		default:
+			return predicates.NewAnd(ps...)
+		}
+	}
+	return andOf(outer), andOf(keep)
 }
 
 // qualifyBareFields walks a predicate tree and prepends qualifier+"."

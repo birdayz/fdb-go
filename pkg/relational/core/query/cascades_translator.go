@@ -2365,18 +2365,82 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	//     (never a positional ref over a windowless row) if a windowless ordinal seed
 	//     ever becomes reachable, rather than silently mis-routing it leg-relative.
 	seedWindowed := false
+	var ordMergedType *values.RecordType
 	if sel, ok := unnestExpr.(*expressions.SelectExpression); ok {
 		if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin {
-			if w, _ := values.OrdinalSeedLegWindows(rc); w != nil {
+			if w, mt := values.OrdinalSeedLegWindows(rc); w != nil {
 				seedWindowed = true
+				ordMergedType = mt
 			}
 		}
 	}
 	existsSubqueries := f.ExistsSubqueries
-	if !seedWindowed && len(outerLegs) > 0 && mergedCorr.Name() != "" {
+	if len(outerLegs) > 0 && mergedCorr.Name() != "" {
 		existsSubqueries = make([]logical.ExistsSubquery, len(f.ExistsSubqueries))
 		for i, esq := range f.ExistsSubqueries {
-			esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr)
+			// A MULTI-TABLE EXISTS inner whose correlation references the unnest
+			// ELEMENT (or ordinal) has no working evaluation path: the conjunct
+			// must evaluate below the FirstOrDefault against the inner join's
+			// rows with the element bound from the OUTER row, and the
+			// multi-table threading for that binding does not exist yet — the
+			// predicate silently evaluated NULL and dropped every inner row
+			// (EXISTS ≡ false for all outers). Decline LOUDLY (CORRECT-or-LOUD);
+			// the element-scoped multi-table threading is tracked follow-on work.
+			if len(outerBoundAliases(esq.Plan)) > 1 && esq.JoinPredicate != nil {
+				corrs := predicates.GetCorrelatedToOfPredicate(esq.JoinPredicate)
+				for c := range corrs {
+					name := strings.ToUpper(c.Name())
+					if (u.Alias != "" && name == strings.ToUpper(u.Alias)) ||
+						(u.AtAlias != "" && name == strings.ToUpper(u.AtAlias)) {
+						t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+							"EXISTS with a multi-table FROM referencing the unnest element is not supported"))
+						return nil
+					}
+				}
+			}
+			// A BURIED subquery-internal OUTER-ONLY filter (buildCorrelatedExists
+			// keeps an outer-only conjunct INSIDE the subquery so it evaluates
+			// under the ∃ in both polarities — the NOT-EXISTS pre-filter fix).
+			// Below the FOD an outer-LEG ref has no direct binding here (the
+			// unnest FlatMap binds its merged output, never the leg alias), and
+			// the executor's positional hoist covers RULE-level predicates only —
+			// a buried leg ref would fall to the alias-unchecked frontier
+			// fallback and silently read the INNER row. Make it bindable IN
+			// PLACE, keeping the under-∃ placement:
+			//   - WINDOWED ordinal seed: BAKE the leg ref to an ofOrdinal over
+			//     the typed merged QOV (the single-alias outer is the pristine
+			//     prefix at offset 0, so the leg-type ordinal IS the merged
+			//     ordinal). A baked FrontierPinned outer ref inside an
+			//     existential inner plan is exactly the shape the disabled-birth
+			//     probe binds positionally. The translator is the SINGLE rebase
+			//     authority for buried refs (the hoist never sees them), so this
+			//     cannot double-rebase.
+			//   - ANCHORED seed: the qualified "LEG.COL" read off the merged
+			//     binding — the same rebase the JoinPredicate channel gets.
+			if lf, isLF := esq.Plan.(*logical.LogicalFilter); isLF &&
+				len(lf.ExistsSubqueries) == 0 && len(lf.ScalarSubqueries) == 0 &&
+				predicateIsOuterOnly(lf.Predicate, outerBoundAliases(lf.Input)) {
+				var rebased predicates.QueryPredicate
+				if seedWindowed {
+					baked, ok := rebaseUnnestOuterLegPredicateOrdinal(lf.Predicate, t.ordinalLegType(join.Left), ordMergedType, outerLegs, mergedCorr)
+					if !ok {
+						// CORRECT-or-LOUD: an outer ref the seed's outer leg type
+						// cannot map is never a valid correlation — decline the
+						// whole composition rather than ship a half-baked tree.
+						return nil
+					}
+					rebased = baked
+				} else {
+					rebased = rebaseUnnestOuterLegPredicate(lf.Predicate, outerLegs, mergedCorr)
+				}
+				esq.Plan = &logical.LogicalFilter{Input: lf.Input, Predicate: rebased, PredicateText: lf.PredicateText}
+			}
+			// The JoinPredicate channel: name-model rebase for an anchored seed;
+			// leg-relative for a windowed ordinal seed (the executor's below-FOD
+			// hoist rebases it positionally — RULE-level, unlike the buried refs).
+			if !seedWindowed {
+				esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr)
+			}
 			existsSubqueries[i] = esq
 		}
 	}
@@ -2445,6 +2509,88 @@ func rebaseUnnestOuterLegPredicate(
 		})
 	}
 	return mapPredicateValues(p, rewrite)
+}
+
+// rebaseUnnestOuterLegPredicateOrdinal bakes outer-table-leg references in a
+// BURIED subquery predicate to FrontierPinned ofOrdinals over the typed merged
+// QOV — the ordinal-seed twin of rebaseUnnestOuterLegPredicate, for the ONE
+// channel the executor's positional hoist cannot reach: a predicate INSIDE an
+// existential inner plan (the under-∃ placement of a subquery-internal
+// outer-only conjunct). The single-alias scope gate guarantees the outer leg is
+// the pristine merged PREFIX at offset 0, so an outer column's ordinal in the
+// outer leg type IS its merged-row ordinal; the baked ref is then exactly the
+// shape the disabled-birth probe binds positionally below the FOD. The
+// translator is the SINGLE rebase authority for buried refs (RULE-level
+// predicates stay the executor hoist's), so no double-rebase exists. Returns
+// ok=false (caller declines, CORRECT-or-LOUD) for an outer ref the leg type
+// cannot map or a missing type authority — never a half-baked tree.
+func rebaseUnnestOuterLegPredicateOrdinal(
+	p predicates.QueryPredicate,
+	outerLegType, mergedType *values.RecordType,
+	outerLegs map[string]struct{},
+	mergedCorr values.CorrelationIdentifier,
+) (predicates.QueryPredicate, bool) {
+	if p == nil || len(outerLegs) == 0 {
+		return p, true // genuinely nothing to rebase
+	}
+	if outerLegType == nil || mergedType == nil {
+		return p, false // no positional authority to bake against — fail closed
+	}
+	mergedQOV := values.NewQuantifiedObjectValueOfType(mergedCorr, mergedType)
+	ok := true
+	rewrite := func(v values.Value) values.Value {
+		if v == nil {
+			return v
+		}
+		return values.Replace(v, func(node values.Value) values.Value {
+			fv, isFV := node.(*values.FieldValue)
+			if !isFV || fv.Child == nil {
+				return node
+			}
+			qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+			if !isQOV {
+				return node
+			}
+			leg := strings.ToUpper(qov.Correlation.Name())
+			if _, isOuterLeg := outerLegs[leg]; !isOuterLeg {
+				return node
+			}
+			ord, found := outerLegType.FieldIndex(strings.ToUpper(fv.Field))
+			if !found {
+				ok = false
+				return node
+			}
+			baked, err := values.NewFieldValueOfOrdinal(mergedQOV, ord)
+			if err != nil {
+				ok = false
+				return node
+			}
+			return baked
+		})
+	}
+	np := mapPredicateValues(p, rewrite)
+	return np, ok
+}
+
+// predicateIsOuterOnly reports whether a predicate references at least one
+// correlation and NONE of them is in innerAliases — the discriminator for a
+// subquery-internal OUTER-ONLY filter (buildCorrelatedExists places one; an
+// UNCORRELATED subquery's own filter references its inner sources and must
+// never match). Nil/reference-free predicates are not outer-only.
+func predicateIsOuterOnly(p predicates.QueryPredicate, innerAliases map[string]struct{}) bool {
+	if p == nil {
+		return false
+	}
+	corrs := predicates.GetCorrelatedToOfPredicate(p)
+	if len(corrs) == 0 {
+		return false
+	}
+	for c := range corrs {
+		if _, isInner := innerAliases[strings.ToUpper(c.Name())]; isInner {
+			return false
+		}
+	}
+	return true
 }
 
 // andOf combines predicates into a single QueryPredicate: nil for an empty list,

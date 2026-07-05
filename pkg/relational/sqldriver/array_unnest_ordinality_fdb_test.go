@@ -1906,32 +1906,27 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	t.Run("R5j EXISTS with an OUTER-ONLY conjunct forces the anchored seed", func(t *testing.T) {
-		// RFC-173 commit 5a: an EXISTS subquery predicate that references ONLY the
-		// outer leg (`MA.ID = 1`, no JU column) is an OUTER-ONLY conjunct. The
-		// executor classifies it outer-only and pushes it as a filter on the unnest
-		// FlatMap OUTPUT, evaluated BEFORE the existential FlatMap's positional
-		// birth — where an ORDINAL seed has projected the row down to the merged
-		// element columns and MA.ID is not resolvable at all ("field MA.ID not
-		// resolvable in the runtime row, columns [X]"). existsHasOuterOnlyLegConjunct
-		// declines the ordinal seed for this shape so it stays name-model (the
-		// anchored record carries the full qualified leg columns at that boundary —
-		// its pre-5a behavior). EXISTS(SELECT 1 FROM JU WHERE MA.ID=1) == (MA.ID=1
-		// AND JU non-empty); JU is non-empty, so only MA1 (ID=1) survives → {10,11,12}.
+	t.Run("R5j EXISTS with an OUTER-ONLY conjunct", func(t *testing.T) {
+		// An EXISTS subquery predicate that references ONLY the outer leg
+		// (`MA.ID = 1`, no JU column). The conjunct stays INSIDE the subquery
+		// (under the ∃ — the placement invariant) and the ordinal seed's buried
+		// rebase bakes the leg ref positionally, so it evaluates below the
+		// FirstOrDefault against the merged row. EXISTS(SELECT 1 FROM JU WHERE
+		// MA.ID=1) == (MA.ID=1 AND JU non-empty); JU is non-empty, so only MA1
+		// (ID=1) survives → {10,11,12}.
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
 			"X=10", "X=11", "X=12",
 		})
 	})
 
-	t.Run("R5o EXISTS inner scans a table aliased the same as an outer leg (shadow guard)", func(t *testing.T) {
-		// The SHADOW guard in existsHasOuterOnlyLegConjunct: the EXISTS inner scans
-		// MA — the SAME table (and raw alias) as the outer leg MA. A ref to `MA.C`
-		// is then ambiguous (outer leg or inner shadow), and the rule routes the
-		// shared-name ref OUTER, so the ordinal seed cannot resolve it. The guard
-		// (innerLegs ∩ outerLegs ≠ ∅) forces the anchored seed for the whole esq.
-		// Red-first provable by dropping the `|| shadow` arm (→ malformed plan).
-		// The inner MA is non-empty; the outer `MA.C < X` keeps MA1's 12 and MA2's
-		// {20,21}. → {12,20,21}.
+	t.Run("R5o EXISTS inner scans a table aliased the same as an outer leg (scope collision)", func(t *testing.T) {
+		// The existsInnerScopeCollidesOuter gate: the EXISTS inner scans MA — the
+		// SAME table (and raw alias) as the outer leg MA. A leg-relative outer ref
+		// `QOV(MA).C` would be captured by existsInnerCorrelation's inner-alias
+		// rename (MA → unique), so the gate forces the ANCHORED seed (the
+		// name-model rebase moves the ref to the merged corr's qualified key,
+		// which the rename does not touch). The inner MA is non-empty; the outer
+		// `MA.C < X` keeps MA1's 12 and MA2's {20,21}. → {12,20,21}.
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X")`, []string{
 			"X=12", "X=20", "X=21",
 		})
@@ -1963,6 +1958,97 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
+	t.Run("R5t NOT EXISTS with an outer-only conjunct INSIDE the subquery", func(t *testing.T) {
+		// The unnest twin of the NOT-EXISTS pre-filter bug: an outer-only conjunct
+		// inside the subquery must evaluate UNDER the ∃ — ¬∃(MA.ID=1 ∧ JU-nonempty)
+		// keeps MA2's elements {20,21} — never as an outer pre-filter, which
+		// computes MA.ID=1 ∧ ¬∃ and returned [] (red-first). The conjunct stays
+		// BURIED in the subquery plan; the translator bakes its leg ref to an
+		// ofOrdinal over the merged QOV (ordinal seed) so it binds positionally
+		// below the FOD (rebaseUnnestOuterLegPredicateOrdinal — the buried channel
+		// the executor's rule-level hoist cannot reach).
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
+			"X=20", "X=21",
+		})
+	})
+
+	t.Run("R5v EXISTS references the element through an alias shadowing an OUTER column", func(t *testing.T) {
+		// SQL scoping, two layers: (1) inside the subquery a bare column binds
+		// INNERMOST-first — U carries no VAL column, so `VAL` binds OUTWARD;
+		// (2) in the outer scope the unnest AS alias VAL SHADOWS TCOLL's real
+		// VAL column (=777). So `VAL` here is the ELEMENT (101..203):
+		// U.ID(=1) < VAL - 100 ⇔ element > 101 → {201,202,203}. Mis-binding to
+		// TCOLL.VAL (777) would admit every element (1 < 677) → 4 rows.
+		assertRows(t, `SELECT "VAL" FROM TCOLL, TCOLL."ARR" AS "VAL" WHERE EXISTS (SELECT 1 FROM U WHERE U."ID" < "VAL" - 100)`, []string{
+			"VAL=201", "VAL=202", "VAL=203",
+		})
+	})
+
+	t.Run("R5w bare inner-colliding name binds the INNER column, not the element", func(t *testing.T) {
+		// The scoping CONTROL for R5v: `ID` inside the subquery binds to U's OWN
+		// ID column (innermost scope wins over the outer element alias `ID`), so
+		// `U.ID = ID` is a tautology on non-null U.ID and EXISTS reduces to
+		// `U.V > TCOLL.ID` (999 > 1/2 → true) → ALL four element rows survive.
+		assertRows(t, `SELECT "VAL" FROM TCOLL, TCOLL."ARR" AS "ID" WHERE EXISTS (SELECT 1 FROM U WHERE U."ID" = "ID" AND U."V" > TCOLL."ID")`, []string{
+			"VAL=777", "VAL=777", "VAL=777", "VAL=777",
+		})
+	})
+
+	t.Run("R5x multi-table-inner EXISTS with an element conjunct stays LOUD or correct", func(t *testing.T) {
+		// The booked multi-table-inner class: the element-referencing conjunct
+		// (`MB.D + 3 > X - MA.ID`) historically landed as a filter on the Explode
+		// INSIDE the unnest box — outer side, where the inner legs are unbound —
+		// silently returning [] at the name-model base. The current baked refs
+		// turn that into a LOUD error (correct-or-loud, strictly better). Pin:
+		// either the loud failure (plan OR execution) OR, once the element-scoped
+		// threading for multi-table inners lands, the correct rows {10,11,12}.
+		q := `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MB, JU WHERE MB."D" + 3 > "X" - MA."ID")`
+		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		if perr != nil {
+			return // loud at planning — acceptable arm of the pin
+		}
+		var got []string
+		_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, sErr := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if sErr != nil {
+				return nil, sErr
+			}
+			cursor, cErr := executor.ExecutePlan(ctx, plan, store,
+				executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+			if cErr != nil {
+				return nil, cErr
+			}
+			defer cursor.Close()
+			rows, rErr := executor.CollectAll(ctx, cursor)
+			if rErr != nil {
+				return nil, rErr
+			}
+			for _, r := range rows {
+				m, _ := r.Datum.(map[string]any)
+				got = append(got, unnestSprint(m["X"]))
+			}
+			return nil, nil
+		})
+		if eerr != nil {
+			return // loud at execution — acceptable arm of the pin
+		}
+		sort.Strings(got)
+		want := []string{"10", "11", "12"}
+		if !unnestEqualStrs(got, want) {
+			t.Errorf("multi-table-inner element conjunct returned WRONG rows silently: %v (want the loud decline or exactly %v)", got, want)
+		}
+	})
+
+	t.Run("R5u the R5t POSITIVE twin keeps its rows through the buried path", func(t *testing.T) {
+		// ∃(MA.ID=1 ∧ JU-nonempty) keeps MA1's elements only. Same buried baked
+		// conjunct as R5t, positive polarity — pins that the placement fix did not
+		// flip the positive-EXISTS semantics (P ∧ ∃(Q) ≡ ∃(P∧Q) for outer-only P).
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
+			"X=10", "X=11", "X=12",
+		})
+	})
+
 	// NOTE: the AS-alias-shadows-outer-column shape where the EXISTS ALSO
 	// references the element via that alias (e.g. `FROM TCOLL, TCOLL.ARR AS ID
 	// WHERE EXISTS (SELECT 1 FROM U WHERE U.ID = ID AND U.V > TCOLL.ID)`) is a
@@ -1989,13 +2075,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5l AT + an OUTER-ONLY EXISTS conjunct (coverage, not red-first)", func(t *testing.T) {
-		// The WITH-ORDINALITY twin of R5j. existsHasOuterOnlyLegConjunct declines the
-		// ordinal seed for ANY outer-only leg conjunct regardless of AT, so this
-		// takes the anchored path uniformly with R5j. COVERAGE ONLY — a fully-baked
-		// AT seed's leg windows can already bind MA.ID at the outer filter, so this
-		// shape is green with OR without the decline; the uniform anchoring is a
-		// conservative-correctness choice, not an optimization win. Same rows as R5j
-		// (the AT ordinal is projected away by SELECT "X"): only MA1 → {10,11,12}.
+		// The WITH-ORDINALITY twin of R5j: the fully-baked AS+AT ordinal seed with
+		// the outer-only conjunct buried under the ∃ and baked positionally — the
+		// same placement as R5j, exercised over the 2-window (outer + inner) seed.
+		// Same rows as R5j (the AT ordinal is projected away by SELECT "X"):
+		// only MA1 → {10,11,12}.
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" AT "O" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
 			"X=10", "X=11", "X=12",
 		})
