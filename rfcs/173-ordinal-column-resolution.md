@@ -2672,10 +2672,16 @@ PRESERVE a FrontierPinned outer operand (correlatedFastPathOperand) instead of r
 bare name — a name re-derivation misreads a shadowed/duplicate merged-row column (round-1
 findings: shadowing dropped every row; the AT+equality fast path swallows the correlation so the
 double-rebase was LIVE, not latent, on any AT+non-equality shape — R5e pins it). Four-gate:
-Graefe + Torvalds ACK (round 2); codex round-2 flagged a PERF asymmetry (booked, below). 5b
-(EXISTS-rider clusterArity poison, rfc173_cluster_gate.go:361-370 — the N-way partition
-machinery) and 5c (uncorrelated scalar rider — pin-only; c3 flatten-seed case F already pins
-rows) remain.
+Graefe + Torvalds ACK (round 2); codex round-2 flagged a PERF asymmetry (booked, below).
+**5c MERGED (PR #479):** the below-FOD fail-closed rebase authority passes SCALAR-SUBQUERY
+aliases through (structural ScalarSubqueryValue detection; root-context bindings, not buried
+legs) — class-K flipped to rows (see the exit-gate flip note below). **5b IMPLEMENTED (this
+branch):** rider subqueries are TRANSPARENT to the cluster gate — clusterArity and
+ordinalEligible recurse through EXISTS-rider filters (the existential rides the
+post-flattening merge, which the 2+1 flatten's seed threads; the leg's output boundary is the
+identity RV — the source row) and through uncorrelated-scalar riders (root-context bindings);
+a CORRELATED projection scalar still poisons (the W4b clusterPullUp rework, booked). Pins:
+white-box red-first gate flips + the CTE-EXISTS-body-as-join-leg e2e shape, both polarities.
 **RESOLVED in 5a (was a deferred perf item, turned out to be CORRECTNESS):** an AT+EQUALITY EXISTS
 correlation (fully-baked seed → executor authority) was left leg-relative for the below-FOD rebase,
 which ran AFTER tryExistsFlatMap. Deferred round-2 as a mere perf loss (the fast path declined the
