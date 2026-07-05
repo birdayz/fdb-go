@@ -2771,8 +2771,12 @@ compares field TYPES, closing the drift the round-9 review measured (values acce
 executor declined while the pin stayed green). The pre-existing name-model bugs B/C/D/E are
 RESOLVED in the PR #478 batch (fixed / loud / dissolved — see the follow-ons block); only their
 two booked residuals (per-row correlated-scalar eval; multi-table element threading) precede S4.
-The class-K / fetch-shell /
-alias-unchecked exit gates flip with these (the fail-closed decline's replacement).
+**Class-K FLIPPED (commit 5c):** the fail-closed rebase authority now passes SCALAR-SUBQUERY
+aliases through (structural ScalarSubqueryValue detection — a pre-evaluated ROOT-context
+binding every below-FOD filter arm threads, not a buried leg), so scalar-in-EXISTS over a
+bare-scan outer plans and returns rows; the matrix class-K pin is tightened to ROWS-ONLY
+([alice]), retiring its loud 0AF00 arm. The fetch-shell / alias-unchecked exit gates still
+flip with the remaining residuals (the fail-closed decline's replacement).
 Commit-3/4 bookings still open (fold in as touched): the unwrap-arm/probe implicit
 coupling wants a cross-check assertion if touched (@claude c2); a third
 baked-QOV-extraction copy triggers forEachBakedQOVType (Torvalds c2); the

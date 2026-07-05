@@ -217,21 +217,20 @@ func TestFDB_RFC173Item2_LeftJoinExistsResidual(t *testing.T) {
 
 	// (K) Scalar subquery INSIDE a correlated EXISTS body over a bare-scan
 	// outer: the below-FOD predicate carries the pre-evaluated scalar's
-	// binding alias — neither the outer binding nor an existential leg — and
-	// the fail-closed rebase authority DECLINES the yield (loud 0AF00).
-	// Before the fail-closed guard this shape silently returned ZERO rows
-	// (the scalar binding never resolved below the FOD). Wrong rows are the
-	// one forbidden outcome; the pin flips to the rows assert when the
-	// positional binders land (the slice's later commits — the booked exit
-	// gate).
+	// binding alias — neither the outer binding nor an existential leg. The
+	// fail-closed rebase authority used to DECLINE the yield (loud 0AF00);
+	// before THAT guard the shape silently returned zero rows (the binding
+	// never resolved below the FOD). The scalar alias is a ROOT-context
+	// external binding — visible below the FOD in every filter arm — so the
+	// authority now passes it through and the pin asserts the ROWS: badge
+	// ids {1,2} > MIN(dept.id)=1 admits badge 2 (emp 1) → [alice].
 	{
 		q := "SELECT e.fname FROM emp e WHERE EXISTS (SELECT 1 FROM badge b " +
 			"WHERE b.emp_id = e.id AND b.id > (SELECT MIN(id) FROM dept d2))"
 		r, err := db.QueryContext(ctx, q)
-		if err != nil && !strings.Contains(err.Error(), "0AF00") {
-			t.Errorf("scalar-in-EXISTS declined with the WRONG error class (want the planner's 0AF00 decline): %v", err)
-		}
-		if err == nil {
+		if err != nil {
+			t.Errorf("scalar-in-EXISTS must plan and execute (the scalar alias is a root-context binding): %v", err)
+		} else {
 			var got []string
 			for r.Next() {
 				var n sql.NullString
@@ -242,7 +241,7 @@ func TestFDB_RFC173Item2_LeftJoinExistsResidual(t *testing.T) {
 			}
 			r.Close()
 			if len(got) != 1 || got[0] != "alice" {
-				t.Errorf("scalar-in-EXISTS returned WRONG rows: %v, want the loud decline or exactly [alice]\n  sql: %s", got, q)
+				t.Errorf("scalar-in-EXISTS returned WRONG rows: %v, want exactly [alice]\n  sql: %s", got, q)
 			}
 		}
 	}
