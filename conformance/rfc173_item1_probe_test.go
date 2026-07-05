@@ -17,7 +17,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -36,6 +38,9 @@ var _ = Describe("RFC173Item1Probe", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = srv.Close() }()
 		runner := plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner)
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
 
 		// T_P1 and T_R1 SHARE column id (v / rv unique); T_Q1 is DISJOINT
 		// from both.
@@ -70,23 +75,29 @@ var _ = Describe("RFC173Item1Probe", func() {
 			{"left_join_dup", "SELECT a.v FROM T_P1 AS a LEFT JOIN T_Q1 AS a ON a.qid = 7"},
 		}
 
-		for _, p := range probes {
-			r := runner.RunWithSetup(ctx, schema, setup, p.sql)
+		render := func(engine string, r plandiff.RunResult) string {
 			if r.Err != nil {
 				var je *plandiff.JavaError
 				if errors.As(r.Err, &je) {
-					fmt.Fprintf(GinkgoWriter, "PROBE %s | ERROR class=%s sqlstate=%q msg=%q\n  sql: %s\n",
-						p.name, je.ExceptionClass, je.SQLState, je.Message, p.sql)
-				} else {
-					fmt.Fprintf(GinkgoWriter, "PROBE %s | NON-JAVA ERROR %v\n  sql: %s\n", p.name, r.Err, p.sql)
+					return fmt.Sprintf("%s ERROR sqlstate=%q msg=%q", engine, je.SQLState, je.Message)
 				}
-				continue
+				var ge *api.Error
+				if errors.As(r.Err, &ge) {
+					return fmt.Sprintf("%s ERROR sqlstate=%q msg=%q", engine, string(ge.Code), ge.Message)
+				}
+				return fmt.Sprintf("%s ERROR %v", engine, r.Err)
 			}
 			cols := make([]string, 0, len(r.Rows.Columns))
 			for _, c := range r.Rows.Columns {
 				cols = append(cols, fmt.Sprintf("%s(%s)", c.Name, c.Type))
 			}
-			fmt.Fprintf(GinkgoWriter, "PROBE %s | OK cols=%v rows=%v\n  sql: %s\n", p.name, cols, r.Rows.Rows, p.sql)
+			return fmt.Sprintf("%s OK cols=%v rows=%v", engine, cols, r.Rows.Rows)
+		}
+		for _, p := range probes {
+			jr := runner.RunWithSetup(ctx, schema, setup, p.sql)
+			gr := goRunner.RunWithSetup(ctx, schema, setup, p.sql)
+			fmt.Fprintf(GinkgoWriter, "PROBE %s\n  %s\n  %s\n  sql: %s\n",
+				p.name, render("JAVA", jr), render("GO  ", gr), p.sql)
 		}
 	})
 })

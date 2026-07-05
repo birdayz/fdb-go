@@ -3292,6 +3292,15 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    per-attribute 42702 at reference resolution (Go approximates at the FROM walk today; two
    marked divergence corners in the corpus: SELECT-*-over-duplicates, the predicated
    disjoint-column form).
+   **DESIGN SUBSTRATE BANKED (2026-07-05, RFC § "QP-REF-BIND item 1 — design substrate"):
+   19-shape live-Java probe verified every premise (SELECT * answers with duplicate labels;
+   per-attribute WHERE binding; "Ambiguous reference X" byte-text for dup AND distinct
+   aliases; qualified-star/table-row findFirst leftmost; the `..., a AS b` 42712 lazy quirk).
+   Mechanism M1–M6: scope accepts duplicates + per-attribute qualified resolution; F3-ruled
+   per-leg binding ids (later duplicates mint fresh); gate lift + binding-keyed seed; star
+   layout fork F-A and message-unification fork F-B for the Graefe design ruling; ordering
+   constraint — front-end acceptance and back-end binding never live separately
+   (mis-pushdown wrong-rows hazard). Awaiting the Graefe design ruling.**
 2. **Existential-flatten ordinalization** — translateJoinWithExists keeps the ANCHORED seed
    until the 2+1 select's data-access/correlated-FlatMap implementation paths bind legs
    POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).

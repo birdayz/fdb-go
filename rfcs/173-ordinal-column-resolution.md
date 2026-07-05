@@ -3372,3 +3372,30 @@ agree across both models or carve out with a citation). The live Java harness gr
 including every new entry (byte-equal error text). 1M stress before/after. Task
 budgets unchanged. The A4 anchored-producer inventory re-audited (item 1's
 contribution: dup-alias outer clusters leave the ungated-fallback class).
+
+**SUBSTRATE ADDENDUM — the dual-engine probe run (Go baseline; two DISCOVERED BUGS,
+pre-existing on master).** Re-running the 19 shapes through BOTH engines (the probe's
+Go runner twin) surfaced:
+- **⚠ WRONG ROWS on master:** `SELECT v FROM p AS a, q AS a` (bare unique reference,
+  DISJOINT-column duplicate) — Java `[[10],[20]]`, Go silently `[[nil],[nil]]`. The
+  FROM-walk approximation passes disjoint pairs, buildSelectScope nil-resolvers the dup,
+  and the bare projection reads nothing — silent NULL VALUES, not a decline. The
+  "clean 0AF00, never wrong rows" claim held only for the QUALIFIED predicated form;
+  the BARE predicate-free twin was the unprobed dimension. Red-first obligation of c2
+  (root-cause with the fix; the corpus entry dup_from_alias_referenced_aliased pinned
+  only the qualified twin).
+- **⚠ Silent-nil table-row projection:** `SELECT a FROM p AS a, q AS a` — Java answers
+  one STRUCT column (leftmost leg, findFirst); Go answers `A(UNKNOWN)` with nil values.
+  The row form is a pre-existing Go gap ACROSS all shapes (not dup-specific); book the
+  divergence with the live-verified Java answer, pin Go's current shape or fix if the
+  root cause is shared with the bare-nil bug above (decide at impl).
+- Baseline facts that narrow the work: qualified star over dups is ALREADY byte-equal
+  parity (both engines first-leg `[[1,10],[2,20]]` — M6's star quirk needs only a pin);
+  ORDER BY / GROUP BY / shared-column 42702s are ALREADY byte-equal (`Ambiguous
+  reference A.ID` both sides — the FROM-walk text matches because it names alias+first
+  shared column, which coincides for these shapes); the BARE ambiguity messages are the
+  ones M5 fixes (`Ambiguous reference ID` vs Go's FROM-walk `Ambiguous reference A.ID`
+  for dup aliases / `column reference "ID" is ambiguous` for distinct aliases — both
+  become byte-equal once the check moves to the reference); JOIN-ON and LEFT-JOIN dup
+  shapes decline via the ON-clause source-resolution 0AF00 (loud, correct-or-loud
+  holds there); `..., a AS b` is Go 42702 vs Java 42712 — both-reject code drift, book.
