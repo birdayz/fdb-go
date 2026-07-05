@@ -229,12 +229,20 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		// RFC-173 QP-REF-BIND item 1: a PARENT-scope resolution (Java's
 		// zero-match fallthrough, live-verified) whose correlation name is
 		// SHADOWED by a local source's is emitted-uncorrelatable — QOV(name)
-		// would bind the INNER leg's quantifier at runtime (the executor's
-		// rebase cannot tell the two apart). Decline LOUDLY here; the class
-		// answers in Java (unique quantifier ids everywhere) and flips when
-		// cross-scope binding ids land (booked — the item-3-adjacent
-		// follow-on). The UNSHADOWED fallthrough (distinct inner alias)
-		// emits normally below and answers end-to-end.
+		// would bind the INNER leg's quantifier (the executor's rebase cannot
+		// tell the two apart). Decline LOUDLY here; the class answers in Java
+		// (unique quantifier ids everywhere) and flips when cross-scope binding
+		// ids land (booked — the item-3-adjacent follow-on). The UNSHADOWED
+		// fallthrough (distinct inner alias) emits normally below and answers.
+		//
+		// This branch is the MULTI-SOURCE-inner catch: with ≥2 inner sources
+		// needsQualification is already true, so a shadowing local leg that
+		// LACKS the column is caught here at PLAN time (CorrelatedShadowError →
+		// 42703). The SINGLE-source-inner shadow (`… EXISTS (SELECT 1 FROM q AS
+		// p …)`) short-circuits above via isLocal (one source == its own
+		// correlation), so it declines one step later at the executor's
+		// ordinal-resolution guard — a same-loud, never-wrong-rows catch. Both
+		// variants are pinned by TestFDB_RFC173W4Left_DuplicateFromAliases.
 		for _, localSrc := range r.scope.Sources() {
 			if localSrc.CorrelationName != src.CorrelationName {
 				continue
@@ -244,7 +252,7 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 				// local (resolution never fell through).
 				continue
 			}
-			return nil, fmt.Errorf("expr: outer reference %s.%s is shadowed by a same-named local source (cross-scope binding pending QP-REF-BIND follow-on)", qualifier.Name(), field)
+			return nil, &semantic.CorrelatedShadowError{Qualifier: qualifier.Name(), Field: field}
 		}
 		corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
 		return values.NewFieldValue(

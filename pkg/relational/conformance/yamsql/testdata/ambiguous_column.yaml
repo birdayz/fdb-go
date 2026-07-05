@@ -2,10 +2,11 @@
 #
 # Java's join-tests.yamsql: SELECT unqualified column that appears in
 # multiple joined tables errors 42702 (ambiguous_column_reference).
-# Aligned with Java at dayshift-40 — execSelectJoin poisons ambiguous
-# bare columns with an ambiguousColumnMarker sentinel and the evaluator
-# + SELECT projection surface 42702 on lookup. Qualified references and
-# SELECT * (which expands all columns from all sources) remain unaffected.
+# Aligned with Java: the semantic scope resolves the bare reference
+# per-attribute (Scope.ResolveColumn) and raises AmbiguousColumnError →
+# 42702 when >1 FROM source exposes the name (RFC-173 QP-REF-BIND item 1).
+# Qualified references and SELECT * (which expands all columns from all
+# sources, duplicates allowed) remain unaffected.
 name: ambiguous_column
 schema_template: |
   CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))

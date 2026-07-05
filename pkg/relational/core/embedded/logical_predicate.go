@@ -428,6 +428,20 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	return nil
 }
 
+// bindingOrAlias resolves a FROM leg's binding correlation name: the
+// parser-minted duplicate-leg id when present, else the alias (RFC-173
+// QP-REF-BIND item 1). The single mint authority (assignFromLegBindingIDs)
+// sets bindingID only on LATER duplicate legs; every non-duplicate leg keeps
+// its alias as the correlation, so the resolver emits QOV(binding) addressing
+// the leg's own quantifier — never the colliding alias namespace. Every scope
+// builder reads THIS one helper so no site re-derives the fallback.
+func bindingOrAlias(bindingID string, aliasID semantic.Identifier) string {
+	if bindingID != "" {
+		return bindingID
+	}
+	return aliasID.Name()
+}
+
 // upgradeJoinOnPredicates walks the logical plan tree to find LogicalJoin
 // nodes and upgrades their OnText to OnPredicate using the full join scope.
 // The join nodes are created in order matching sq.joins, so we match
@@ -502,10 +516,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		// ambiguity); only a shadowing (unnest) duplicate still errors, and
 		// that keeps the drop-risk taxonomy exactly as before for the class
 		// AddSource can still reject.
-		binding := bindingID
-		if binding == "" {
-			binding = aliasID.Name()
-		}
+		binding := bindingOrAlias(bindingID, aliasID)
 		if scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
@@ -926,10 +937,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
 		// present, else the alias (RFC-173 QP-REF-BIND item 1).
-		binding := bindingID
-		if binding == "" {
-			binding = aliasID.Name()
-		}
+		binding := bindingOrAlias(bindingID, aliasID)
 		// Try metadata first, then CTE scopes.
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err == nil {
@@ -1007,10 +1015,7 @@ func buildWherePredicateForJoins(
 		if alias == "" {
 			aliasID = semantic.NewUnquoted(tableName)
 		}
-		binding := bindingID
-		if binding == "" {
-			binding = aliasID.Name()
-		}
+		binding := bindingOrAlias(bindingID, aliasID)
 		return scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
@@ -1815,17 +1820,6 @@ func buildSelectScope(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 
-	// bindingOr resolves a FROM leg's binding correlation name: the
-	// parser-minted duplicate-leg id when present, else the alias (RFC-173
-	// QP-REF-BIND item 1 — the resolver then emits QOV(binding) so a
-	// reference resolved to a duplicate leg addresses THAT leg's
-	// quantifier, never the colliding alias namespace).
-	bindingOr := func(bindingID string, aliasID semantic.Identifier) string {
-		if bindingID != "" {
-			return bindingID
-		}
-		return aliasID.Name()
-	}
 	addSource := func(tableName, alias, bindingID string) bool {
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil && cteScopes != nil {
@@ -1837,7 +1831,7 @@ func buildSelectScope(
 				return scope.AddSource(semantic.ScopeSource{
 					Table:           src.Table,
 					Alias:           aliasID,
-					CorrelationName: bindingOr(bindingID, aliasID),
+					CorrelationName: bindingOrAlias(bindingID, aliasID),
 				}) == nil
 			}
 			return false
@@ -1852,7 +1846,7 @@ func buildSelectScope(
 		return scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
-			CorrelationName: bindingOr(bindingID, aliasID),
+			CorrelationName: bindingOrAlias(bindingID, aliasID),
 		}) == nil
 	}
 
@@ -3068,10 +3062,7 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
 		// present, else the alias (RFC-173 QP-REF-BIND item 1).
-		binding := bindingID
-		if binding == "" {
-			binding = aliasID.Name()
-		}
+		binding := bindingOrAlias(bindingID, aliasID)
 		if src, ok := cteScopes[strings.ToUpper(tableName)]; ok {
 			src.Alias = aliasID
 			src.CorrelationName = binding

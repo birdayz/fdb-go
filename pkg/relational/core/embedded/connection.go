@@ -33,18 +33,6 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// ambiguousColumnMarker is the sentinel stored in a JOIN row map's bare
-// column slot when the same column name is defined on more than one
-// FROM-clause source. The map keeps qualified `alias.col` slots intact;
-// the bare slot is poisoned so any unqualified reference surfaces the
-// ambiguity as SQLSTATE 42702 at lookup time instead of silently
-// returning last-write-wins data. Matches Java's
-// AmbiguousColumnReferenceException (plan-time) behavior at the runtime
-// map-eval boundary we have today.
-type ambiguousColumnMarker struct {
-	Col string
-}
-
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
 //
 // Implements driver.Conn and driver.ExecerContext so DDL statements can

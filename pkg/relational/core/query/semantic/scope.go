@@ -324,3 +324,20 @@ type DuplicateAliasError struct {
 func (e *DuplicateAliasError) Error() string {
 	return fmt.Sprintf("duplicate alias %s in FROM clause", e.Alias)
 }
+
+// CorrelatedShadowError is returned when a qualified reference resolves to a
+// PARENT-scope source (Java's zero-match fallthrough) whose correlation name is
+// SHADOWED by a local FROM source that lacks the column — the RFC-173
+// QP-REF-BIND item-1 emitted-uncorrelatable case. Emitting QOV(correlation)
+// would bind the local (inner) leg's quantifier, so resolution declines LOUDLY
+// (never wrong rows); the class answers in Java (unique quantifier ids) and
+// flips when cross-scope binding ids land. Carries the reference as written for
+// the surfaced message.
+type CorrelatedShadowError struct {
+	Qualifier string
+	Field     string
+}
+
+func (e *CorrelatedShadowError) Error() string {
+	return fmt.Sprintf("correlated reference %s.%s is shadowed by a same-named FROM source that lacks the column; cross-scope binding is not yet supported (RFC-173 QP-REF-BIND follow-on)", e.Qualifier, e.Field)
+}

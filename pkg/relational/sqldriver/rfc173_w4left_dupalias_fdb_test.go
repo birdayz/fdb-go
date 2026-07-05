@@ -124,11 +124,12 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	// product). The architecture-gate condition: duplicate labels AND
 	// per-position values (the two p legs' slots vary independently across
 	// the cross product — never a single-leg echo).
-	starRows, err := db.QueryContext(ctx, "SELECT * FROM p, q, p ORDER BY 1")
-	if err != nil {
-		// ORDER BY 1 over star may be its own limitation; retry without.
-		starRows, err = db.QueryContext(ctx, "SELECT * FROM p, q, p")
-	}
+	// No ORDER BY: positional ORDER BY over a star SELECT is a SEPARATE
+	// both-reject class (Java "Cascades planner could not plan query"; corpus
+	// order_by_position_over_star) — not this test's subject. Row order is
+	// immaterial here; the assertions below are set-membership over the cross
+	// product.
+	starRows, err := db.QueryContext(ctx, "SELECT * FROM p, q, p")
 	if err != nil {
 		t.Errorf("SELECT * over duplicates must ANSWER (Java: duplicate columns): %v", err)
 	} else {
@@ -195,6 +196,39 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	checkTwoColStar(t, "WITH w AS (SELECT id FROM p) SELECT * FROM w, w")
 	checkTwoColStar(t, "SELECT * FROM (SELECT id FROM p) AS d, (SELECT id FROM p) AS d")
 
+	// The SAME-TABLE self-cross star (`p, p`) — the corner deriveColumnsFromJoin's
+	// display-sequence check does NOT trip (both legs have IDENTICAL display
+	// names, so the merge sequence [ID V ID V] equals the RC's regardless of any
+	// leg regroup), yet the result must still be per-position correct. It is:
+	// the positional row and the columns align by construction, so serving is by
+	// slot. Cols [ID V ID V]; the 4-row cross product with independently-varying
+	// leg slots — a same-bare/different-binding reorder must not silently echo
+	// one leg.
+	ppRows, err := db.QueryContext(ctx, "SELECT * FROM p, p")
+	if err != nil {
+		t.Errorf("SELECT * FROM p, p must ANSWER: %v", err)
+	} else {
+		defer ppRows.Close()
+		cols, _ := ppRows.Columns()
+		if !reflect.DeepEqual(cols, []string{"ID", "V", "ID", "V"}) {
+			t.Errorf("p,p star columns = %v, want [ID V ID V]", cols)
+		}
+		got := map[[4]int64]bool{}
+		for ppRows.Next() {
+			var a, b, c, d int64
+			if err := ppRows.Scan(&a, &b, &c, &d); err != nil {
+				t.Errorf("p,p scan: %v", err)
+				break
+			}
+			got[[4]int64{a, b, c, d}] = true
+		}
+		for _, w := range [][4]int64{{1, 10, 1, 10}, {1, 10, 2, 20}, {2, 20, 1, 10}, {2, 20, 2, 20}} {
+			if !got[w] {
+				t.Errorf("p,p star missing row %v (per-position leg values must vary independently)", w)
+			}
+		}
+	}
+
 	// A legitimate self-join with DISTINCT aliases keeps working.
 	var n int64
 	if err := db.QueryRowContext(ctx,
@@ -211,16 +245,31 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	reject(t, "SELECT * FROM nosuch AS a, p AS a", "42F01")
 
 	// The correlated-shadow qualified fallthrough (design-ruling amendment
-	// (a), live-verified: Java ANSWERS): RESOLUTION falls through (M1), but
-	// the SHADOWED variant — inner alias == outer alias — cannot yet be
-	// EMITTED (QOV(P) would bind the inner leg's quantifier; cross-scope
-	// binding ids are the booked follow-on). It declines LOUDLY at the
-	// resolver: never wrong rows, flip this pin to (10) when the follow-on
-	// lands. The UNSHADOWED control answers end-to-end today.
+	// (a), live-verified: Java ANSWERS): RESOLUTION falls through (M1), but the
+	// SHADOWED variant — inner alias == outer alias — cannot yet be EMITTED
+	// (QOV(P) would bind the inner leg's quantifier; cross-scope binding ids
+	// are the booked follow-on). It declines LOUDLY: NEVER wrong rows. Two
+	// decline mechanisms depending on inner arity, both pinned here:
+	//
+	//  (1) SINGLE inner source (`q AS p`): the resolver's isLocal short-circuit
+	//      leaves needsQualification false, so it declines one step later at the
+	//      executor's ordinal-resolution guard — the field is unresolvable in
+	//      the inner row. Loud, never wrong rows.
 	var fv int64
 	if err := db.QueryRowContext(ctx,
 		"SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM q AS p WHERE p.v = 10)").Scan(&fv); err == nil {
-		t.Errorf("shadowed fallthrough unexpectedly ANSWERED %d — if cross-scope binding landed, flip this pin to (10) and unmark the divergence", fv)
+		t.Errorf("single-source shadowed fallthrough unexpectedly ANSWERED %d — if cross-scope binding landed, flip this pin to (10) and unmark the divergence", fv)
+	} else if !strings.Contains(err.Error(), "not resolvable in the runtime row") {
+		t.Errorf("single-source shadow must decline at the ordinal guard, got: %v", err)
+	}
+	//  (2) MULTI inner source (`q AS p, r AS x`): needsQualification is true, so
+	//      the resolver catches the shadow at PLAN time — CorrelatedShadowError
+	//      → 42703. This is the load-bearing expr.ResolveIdentifier decline.
+	if err := db.QueryRowContext(ctx,
+		"SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM q AS p, q AS x WHERE p.v = 10)").Scan(&fv); err == nil {
+		t.Errorf("multi-source shadowed fallthrough unexpectedly ANSWERED %d — if cross-scope binding landed, flip this pin to (10)", fv)
+	} else if !strings.Contains(err.Error(), "42703") || !strings.Contains(err.Error(), "shadowed by a same-named FROM source") {
+		t.Errorf("multi-source shadow must decline 42703 CorrelatedShadowError, got: %v", err)
 	}
 	var cv int64
 	if err := db.QueryRowContext(ctx,

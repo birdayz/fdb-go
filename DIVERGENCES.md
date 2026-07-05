@@ -418,4 +418,9 @@ Remaining marked corners are message-drift only (undefined table under a dup ali
 the generated-aggregate quoted reference; the `…, a AS b` 42712-vs-42F01 lazy quirk) and the
 cross-scope-shadowed correlated fallthrough (`SELECT p.v FROM p WHERE EXISTS(… q AS p WHERE
 p.v=…)`) — resolution falls through (Java-aligned M1), but EMITTING a QOV bound to the inner
-leg's quantifier awaits cross-scope binding ids; it declines LOUDLY (never wrong rows).
+leg's quantifier awaits cross-scope binding ids; it declines LOUDLY (never wrong rows) via one
+of two mechanisms depending on the inner scope's arity: a MULTI-source inner scope trips the
+plan-time `CorrelatedShadowError` (42703) in `expr.ResolveIdentifier`, while a SINGLE-source
+inner scope short-circuits the resolver's `isLocal` guard and declines one step later at the
+executor's ordinal-resolution guard (field unresolvable in the inner row). Both are pinned by
+`TestFDB_RFC173W4Left_DuplicateFromAliases`.
