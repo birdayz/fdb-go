@@ -307,11 +307,15 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 //     inner-equivalent parents and absorbs mergeable children;
 //   - filter/project WITHOUT subqueries: transparent — they lower to selects
 //     the rule merges through (rule_select_merge.go TranslationMap path);
-//   - filter/project WITH exists/scalar subqueries: POISON, not an opaque
-//     leaf. Their selects still merge (ChildrenAsSet is true), and the rule
-//     splices ALL child quantifiers — the existential/NullOnEmpty legs ride
-//     along, landing the merged select in the ≥3-quantifier partition
-//     machinery whose dotted-name classifiers the wedge must never feed;
+//   - filter/project WITH rider subqueries (RFC-173 commit 5b): TRANSPARENT
+//     for EXISTS riders and UNCORRELATED scalar riders. Their selects merge
+//     (ChildrenAsSet is true) and the rule splices ALL child quantifiers —
+//     the existential legs ride the merged select, which the 2+1 flatten's
+//     ordinal seed threads (commit 3); an uncorrelated scalar is a
+//     pre-evaluated root-context binding (shape-agnostic, the 5c ruling).
+//     Neither adds a ForEach quantifier. A CORRELATED projection scalar
+//     still POISONS: per-outer-row evaluation needs the W4b clusterPullUp
+//     rework (booked);
 //   - outer join: opaque leaf of 1 (ChildrenAsSet opacity, both directions);
 //   - aggregate / DISTINCT / sort / limit / union: opaque leaf of 1 — they
 //     lower to non-SelectExpression boxes (not
