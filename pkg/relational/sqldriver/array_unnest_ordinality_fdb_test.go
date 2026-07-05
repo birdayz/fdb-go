@@ -1799,6 +1799,249 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
 
+	t.Run("R5c AT+EXISTS correlating on the outer table", func(t *testing.T) {
+		// RFC-173 commit 5a: a WITH-ORDINALITY unnest under EXISTS whose
+		// correlation reads the OUTER TABLE column MA.ID (id ∈ {1,2} differs from
+		// every element {10..21} and every ordinal {1,2,3}). JU.ID ∈ {1,2} → both
+		// outer rows match → all 5 elements survive. The AS+AT seed is fully
+		// baked, so the translator LEAVES the correlation leg-relative for the
+		// executor's below-FOD window branch (the ONE-authority branch, gated on
+		// OrdinalSeedLegWindows); pre-rebasing here would double-rebase over a
+		// fully-baked seed. NOTE this AT+EQUALITY shape is NOT the discriminating
+		// pin: its equality correlation is swallowed by the EXISTS fast path
+		// before the below-FOD branch, so it is green under a double-rebase too.
+		// R5e (AT + NON-equality) is the pin that routes through the below-FOD
+		// window branch and turns red under the double-rebase.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" AT "O" WHERE EXISTS (SELECT 1 FROM JU WHERE "JU"."ID" = MA."ID")`, []string{
+			"X=10", "X=11", "X=12", "X=20", "X=21",
+		})
+	})
+
+	t.Run("R5d AS alias shadows the EXISTS-correlation outer column", func(t *testing.T) {
+		// RFC-173 commit 5a: the unnest AS alias `ID` SHADOWS the outer correlation
+		// column TCOLL.ID (also U's PK). The merged ordinal row would carry two
+		// columns named "ID" (the outer TCOLL.ID and the element), so any name-level
+		// read is ambiguous — unnestExistsSeedSafe declines the ordinal seed for a
+		// shadowing alias and keeps this shape NAME-MODEL, where the anchored record
+		// keys the outer column (TCOLL.ID) and the element distinctly. Correct rows:
+		// TCOLL.ID=1 (ARR={101}) is the only row whose ID is in U ({1}); TCOLL.ID=2
+		// (ARR={201,202,203}) is not, so EXISTS keeps only id1's element → {101}.
+		assertRows(t, `SELECT "ID" FROM TCOLL, TCOLL."ARR" AS "ID" WHERE EXISTS (SELECT 1 FROM U WHERE "U"."ID" = TCOLL."ID")`, []string{
+			"ID=101",
+		})
+	})
+
+	t.Run("R5e AT+EXISTS NON-equality correlation discriminates the double-rebase", func(t *testing.T) {
+		// RFC-173 commit 5a — the DISCRIMINATING pin for the one-authority gate
+		// (the branch-selection fix). A WITH-ORDINALITY (AS+AT) seed is FULLY
+		// baked, so the EXECUTOR (commit-4's below-FOD window branch) owns the
+		// leg-relative rebase of the outer correlation; the translator must NOT
+		// pre-rebase. A NON-equality correlation (`JU.K < MA.ID + 1000`) cannot be
+		// swallowed by the equality fast path, so it routes THROUGH the below-FOD
+		// window branch — the exact path a double-rebase corrupts. Under the pre-fix
+		// double-rebase the translator-baked slot-0 ref was re-shifted by the inner
+		// leg's window offset and every element survived; with the gate it is left
+		// leg-relative and the executor rebases it once. MA1.ID+1000=1001, and
+		// JU.K∈{1001,2002} has none < 1001 → MA1 dropped; MA2.ID+1000=1002 and
+		// JU.K=1001 < 1002 → MA2 kept. Only MA2's elements {20,21} survive.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" AT "O" WHERE EXISTS (SELECT 1 FROM JU WHERE "JU"."K" < MA."ID" + 1000)`, []string{
+			"X=20", "X=21",
+		})
+	})
+
+	t.Run("R5r AS+AT: a fast-path equality sibling must not bypass the outer-ref rebase", func(t *testing.T) {
+		// The AS+AT (executor-windows) branch leaves the correlation leg-relative for
+		// the executor's below-FOD window rebase. But an EQUALITY conjunct on the
+		// element/ordinal (`JU.ID = O`) can be swallowed by the EXISTS fast path
+		// (parameterized inner scan), which returns BEFORE the below-FOD rebase runs —
+		// so a SIBLING inner-residual referencing the outer (`JU.K < MA.ID + 1000`) is
+		// left unrebased and MA.ID evaluates against the inner JU row. The rebase must
+		// happen ABOVE the fast path. Correct rows:
+		//   JU.ID = O matches when O ∈ {1,2} (JU ids). JU.K < MA.ID+1000:
+		//   MA1(ID=1,+1000=1001): O=1→JU.K=1001 (not <1001); O=2→JU.K=2002 (not<1001)
+		//     → no elements. MA2(ID=2,+1000=1002): O=1(elem 20)→JU.K=1001<1002 ✓;
+		//     O=2(elem 21)→JU.K=2002 (not<1002) → only 20. → {20}.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" AT "O" WHERE EXISTS (SELECT 1 FROM JU WHERE "JU"."ID" = "O" AND "JU"."K" < MA."ID" + 1000)`, []string{
+			"X=20",
+		})
+	})
+
+	t.Run("R5f mixed no-AT EXISTS equality preserves the baked correlation", func(t *testing.T) {
+		// RFC-173 commit 5a — the mixed (no-AT) twin of R5c, the translator
+		// PRE-REBASE branch (OrdinalSeedLegWindows nil → the executor has no window
+		// authority). The translator bakes MA.ID to an ofOrdinal; the EXISTS fast
+		// path must PRESERVE that bake (correlatedFastPathOperand) rather than
+		// re-derive it by name. Here the AS alias `X` does not collide, so a
+		// bake-stripped name read would resolve correctly too — this pins the
+		// baked-equality cell for coverage; R5d is the shadowing case that turns
+		// red without the bake preservation. Both MA rows match JU (ids 1,2) so all
+		// five elements survive.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE "JU"."ID" = MA."ID")`, []string{
+			"X=10", "X=11", "X=12", "X=20", "X=21",
+		})
+	})
+
+	t.Run("R5g mixed no-AT + NON-equality EXISTS through the below-FOD pass-through arm", func(t *testing.T) {
+		// RFC-173 commit 5a — pins the THIRD one-authority arm. A mixed no-AT seed
+		// has OrdinalSeedLegWindows nil (bare-QOV element), so the TRANSLATOR
+		// pre-rebases MA.ID to a baked ofOrdinal. A NON-equality correlation
+		// (`JU.K < MA.ID + 1000`) is NOT swallowed by the equality fast path, so the
+		// baked predicate flows to the executor's 1+1 below-FOD path — which (windows
+		// nil, empty mergedOuterLegAliases) passes the already-baked ref THROUGH to
+		// positional evaluation. R5f (equality) is swallowed by the fast path and
+		// never reaches this arm; R5e is the AT (executor-authority) twin. MA1.ID+
+		// 1000=1001, no JU.K<1001 → MA1 dropped; MA2.ID+1000=1002, JU.K=1001<1002 →
+		// MA2 kept → {20,21}.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE "JU"."K" < MA."ID" + 1000)`, []string{
+			"X=20", "X=21",
+		})
+	})
+
+	t.Run("R5h mixed no-AT + NON-equality NOT EXISTS (negated residual, same arm)", func(t *testing.T) {
+		// The negated complement of R5g — exercises the same below-FOD pass-through
+		// arm through the NOT-EXISTS residual (QOV IS NULL). MA1 (no JU.K<1001) now
+		// SURVIVES the anti-join → {10,11,12}; MA2 is dropped.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM JU WHERE "JU"."K" < MA."ID" + 1000)`, []string{
+			"X=10", "X=11", "X=12",
+		})
+	})
+
+	t.Run("R5j EXISTS with an OUTER-ONLY conjunct forces the anchored seed", func(t *testing.T) {
+		// RFC-173 commit 5a: an EXISTS subquery predicate that references ONLY the
+		// outer leg (`MA.ID = 1`, no JU column) is an OUTER-ONLY conjunct. The
+		// executor classifies it outer-only and pushes it as a filter on the unnest
+		// FlatMap OUTPUT, evaluated BEFORE the existential FlatMap's positional
+		// birth — where an ORDINAL seed has projected the row down to the merged
+		// element columns and MA.ID is not resolvable at all ("field MA.ID not
+		// resolvable in the runtime row, columns [X]"). existsHasOuterOnlyLegConjunct
+		// declines the ordinal seed for this shape so it stays name-model (the
+		// anchored record carries the full qualified leg columns at that boundary —
+		// its pre-5a behavior). EXISTS(SELECT 1 FROM JU WHERE MA.ID=1) == (MA.ID=1
+		// AND JU non-empty); JU is non-empty, so only MA1 (ID=1) survives → {10,11,12}.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
+			"X=10", "X=11", "X=12",
+		})
+	})
+
+	t.Run("R5o EXISTS inner scans a table aliased the same as an outer leg (shadow guard)", func(t *testing.T) {
+		// The SHADOW guard in existsHasOuterOnlyLegConjunct: the EXISTS inner scans
+		// MA — the SAME table (and raw alias) as the outer leg MA. A ref to `MA.C`
+		// is then ambiguous (outer leg or inner shadow), and the rule routes the
+		// shared-name ref OUTER, so the ordinal seed cannot resolve it. The guard
+		// (innerLegs ∩ outerLegs ≠ ∅) forces the anchored seed for the whole esq.
+		// Red-first provable by dropping the `|| shadow` arm (→ malformed plan).
+		// The inner MA is non-empty; the outer `MA.C < X` keeps MA1's 12 and MA2's
+		// {20,21}. → {12,20,21}.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X")`, []string{
+			"X=12", "X=20", "X=21",
+		})
+	})
+
+	t.Run("R5q EXISTS inner aliased the same as the unnest OUTPUT alias (5a fixed)", func(t *testing.T) {
+		// A shape commit 5a fixed (malformed plan at the PR base, correct now): the
+		// EXISTS inner JU is aliased `X` — the SAME as the unnest AS alias. The inner
+		// ref `X.ID` binds the inner JU (not the element), correlated to the outer
+		// MA.ID. Both MA rows match a JU id, so all elements survive. Pinned so the
+		// fix can't silently regress. → all 5 elements.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU AS "X" WHERE "X"."ID" = MA."ID")`, []string{
+			"X=10", "X=11", "X=12", "X=20", "X=21",
+		})
+	})
+
+	t.Run("R5s EXISTS inner aliased same as unnest output, DISCRIMINATING outer ref", func(t *testing.T) {
+		// The discriminating NON-equality variant of R5q (inner JU aliased `X`, the
+		// unnest output alias). Under the OLD pre-baking design the translator baked
+		// MA.ID to QOV(X), which existsInnerCorrelation's inner-alias rename (X →
+		// unique) then captured — silent wrong rows, masked by R5q's equality. The
+		// STRUCTURAL fix leaves the correlation LEG-RELATIVE (QOV(MA).ID, not
+		// QOV(X)), so there is no QOV(X) outer ref for the rename to capture and the
+		// executor rebases it positionally. Deterministically correct now.
+		// EXISTS(JU AS X WHERE X.K < MA.ID + 1000). JU.K∈{1001,2002}: MA1(+1000=1001)
+		// → none < 1001 → dropped; MA2(+1000=1002) → 1001<1002 → kept → {20,21}.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU AS "X" WHERE "X"."K" < MA."ID" + 1000)`, []string{
+			"X=20", "X=21",
+		})
+	})
+
+	// NOTE: the AS-alias-shadows-outer-column shape where the EXISTS ALSO
+	// references the element via that alias (e.g. `FROM TCOLL, TCOLL.ARR AS ID
+	// WHERE EXISTS (SELECT 1 FROM U WHERE U.ID = ID AND U.V > TCOLL.ID)`) is a
+	// PRE-EXISTING name-model bug (the shadowed element ref resolves wrong at the
+	// PR base too) — it is NOT pinned here to correct rows because name-model
+	// cannot deliver them. Commit 5a's job is only to not REGRESS it: round-5's
+	// ordinal path made it NON-DETERMINISTIC (map-order slot pick), and
+	// unnestExistsSeedSafe's shadow decline restores the deterministic base
+	// behavior. The decline is pinned white-box by TestRFC173Item2C5a_
+	// ShadowAliasDeclines; the underlying name-model shadowed-element bug is booked
+	// as a follow-on (RFC + tracked, with the pre-existing NOT-EXISTS / scalar bugs).
+
+	t.Run("R5k EXISTS mixing an inner correlation AND an outer-only conjunct", func(t *testing.T) {
+		// The MIXED shape: one EXISTS predicate carries BOTH a genuine inner
+		// correlation (`JU.ID = MA.ID`) AND an outer-only leg conjunct (`MA.C < 10`).
+		// The outer-only conjunct forces the anchored seed for the whole unnest
+		// (conservative — the inner-correlated half loses the ordinal path too, but
+		// correctness over the optimization). MA1 (ID=1,C=11): JU.ID=1 exists but
+		// C<10 false → dropped; MA2 (ID=2,C=5): JU.ID=2 exists and C<10 true → kept.
+		// Only MA2's elements survive → {20,21}.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE "JU"."ID" = MA."ID" AND MA."C" < 10)`, []string{
+			"X=20", "X=21",
+		})
+	})
+
+	t.Run("R5l AT + an OUTER-ONLY EXISTS conjunct (coverage, not red-first)", func(t *testing.T) {
+		// The WITH-ORDINALITY twin of R5j. existsHasOuterOnlyLegConjunct declines the
+		// ordinal seed for ANY outer-only leg conjunct regardless of AT, so this
+		// takes the anchored path uniformly with R5j. COVERAGE ONLY — a fully-baked
+		// AT seed's leg windows can already bind MA.ID at the outer filter, so this
+		// shape is green with OR without the decline; the uniform anchoring is a
+		// conservative-correctness choice, not an optimization win. Same rows as R5j
+		// (the AT ordinal is projected away by SELECT "X"): only MA1 → {10,11,12}.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" AT "O" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
+			"X=10", "X=11", "X=12",
+		})
+	})
+
+	t.Run("R5m EXISTS conjunct references an outer leg AND the unnest element but not the inner", func(t *testing.T) {
+		// RFC-173 commit 5a: `MA.C = X` references the outer leg MA AND the unnest
+		// element X, but NOT the EXISTS inner (JU). It is still outer-only relative
+		// to the EXISTS (the executor routes it outer-side — no inner-leg ref), and
+		// MA.C is unresolvable over the ordinal row. The classifier keys on the
+		// EXISTS INNER's aliases (outerBoundAliases(esq.Plan)), not "any non-outer-
+		// leg alias" — the unnest element/ordinal are outer-scope, not inner.
+		// EXISTS(SELECT 1 FROM JU WHERE MA.C = X) == (MA.C = X AND JU non-empty).
+		// MA1 (C=11): X∈{10,11,12}, only X=11 matches → {11}; MA2 (C=5): none. → {11}.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."C" = "X")`, []string{
+			"X=11",
+		})
+	})
+
+	t.Run("R5n EXISTS with outer-leg + element and an INEQUALITY (the classifier discriminator)", func(t *testing.T) {
+		// The pin the round-4 classifier missed (an earlier version keyed on "outer
+		// leg and nothing else", which the unnest element X defeated). `MA.C < X`
+		// references the outer leg MA AND the unnest element X but
+		// NOT the inner JU — the executor routes it outer-side (no inner-leg ref), so
+		// MA.C must resolve at the outer filter, which the ordinal seed cannot. The
+		// classifier keys on "references an outer leg AND NOT an inner leg" (mirroring
+		// predicateReferencesInnerLeg), not "outer leg and nothing else", so it
+		// declines to anchored. EXISTS(SELECT 1 FROM JU WHERE MA.C < X) == (MA.C < X
+		// AND JU non-empty). MA1 (C=11): X∈{10,11,12}, 11<X → X=12; MA2 (C=5):
+		// X∈{20,21}, 5<X → both. → {12,20,21}. Malformed-plan error without the fix.
+		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."C" < "X")`, []string{
+			"X=12", "X=20", "X=21",
+		})
+	})
+
+	t.Run("R5i NOT EXISTS with the AS alias shadowing the correlation column", func(t *testing.T) {
+		// The negated twin of R5d — the shadowing (`AS "ID"` over TCOLL.ID) bake
+		// preservation on the anti-join path. TCOLL.ID=1 IS in U so its element is
+		// dropped by NOT EXISTS; TCOLL.ID=2 is NOT, so its elements survive. A
+		// bake-stripped name read would probe U with the element and (no id present
+		// in U) keep EVERY row. → {201,202,203}.
+		assertRows(t, `SELECT "ID" FROM TCOLL, TCOLL."ARR" AS "ID" WHERE NOT EXISTS (SELECT 1 FROM U WHERE "U"."ID" = TCOLL."ID")`, []string{
+			"ID=201", "ID=202", "ID=203",
+		})
+	})
+
 	// --- probe round 9: computed ORDER BY over an unnest column (P2a) +
 	// duplicate AS==AT alias (P2b) + correlated subquery over the unnest
 	// binding (P2c) ------------------------------------------------------------

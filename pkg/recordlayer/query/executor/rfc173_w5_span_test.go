@@ -297,3 +297,161 @@ func TestRFC173W4Left_SpanLayoutCrossAgreement(t *testing.T) {
 		t.Fatalf("both authorities must DECLINE the fused top: spans ok=%v windows derived=%v", spansOK, winDeclined != nil)
 	}
 }
+
+// mixedSeedOuter builds a 2-column baked outer leg QOV keyed by the given alias.
+func mixedSeedOuter(alias string) *values.QuantifiedObjectValue {
+	return values.NewQuantifiedObjectValueOfType(
+		values.NamedCorrelationIdentifier(alias),
+		values.NewRecordType("", false, []values.Field{
+			{Name: alias + "ID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: alias + "V", FieldType: values.NotNullLong, Ordinal: 1},
+		}))
+}
+
+// bakeOrdinal bakes a frontier-pinned ofOrdinal field over a leg QOV.
+func bakeOrdinal(t *testing.T, qov *values.QuantifiedObjectValue, i int) values.RecordConstructorField {
+	t.Helper()
+	fv, err := values.NewFieldValueOfOrdinal(qov, i)
+	if err != nil {
+		t.Fatalf("bake: %v", err)
+	}
+	return values.RecordConstructorField{Name: fv.Field, Value: fv}
+}
+
+// assertSpanWindowAgreement asserts the executor's ordinalJoinSpans and the
+// planner's values.OrdinalSeedLegWindows agree BIT-FOR-BIT on the seed rc: same
+// accept/decline, and — when accepted — identical leg count, per-leg offset,
+// per-leg type (names AND types), and merged type (names AND types). The
+// architectural-review exit gate: a fixture that only checks one happy shape by
+// NAME lets the two walks drift on the accept boundary and on field types while
+// staying green (a sentinel that goes green on a measured divergence is none).
+func assertSpanWindowAgreement(t *testing.T, label string, rc *values.RecordConstructorValue, wantAccept bool) {
+	t.Helper()
+	spans, mergedFromSpans, spansOK := ordinalJoinSpans(rc)
+	windows, mergedFromWindows := values.OrdinalSeedLegWindows(rc)
+	winOK := windows != nil
+	if spansOK != winOK {
+		t.Fatalf("%s: ACCEPT DISAGREEMENT — executor spans ok=%v, values windows ok=%v", label, spansOK, winOK)
+	}
+	if spansOK != wantAccept {
+		t.Fatalf("%s: want accept=%v, got %v", label, wantAccept, spansOK)
+	}
+	if !wantAccept {
+		return
+	}
+	if len(spans) != len(windows) {
+		t.Fatalf("%s: leg count disagreement: %d spans vs %d windows", label, len(spans), len(windows))
+	}
+	for _, s := range spans {
+		w, present := windows[strings.ToUpper(s.Alias.Name())]
+		if !present {
+			t.Fatalf("%s: leg %s in spans but not windows", label, s.Alias)
+		}
+		if w.Offset != s.Offset || len(w.Typ.Fields) != s.Width {
+			t.Fatalf("%s: leg %s LAYOUT DISAGREEMENT: window (offset %d, width %d) vs span (offset %d, width %d)",
+				label, s.Alias, w.Offset, len(w.Typ.Fields), s.Offset, s.Width)
+		}
+		for i := range s.LegType.Fields {
+			sf, wf := s.LegType.Fields[i], w.Typ.Fields[i]
+			if !strings.EqualFold(sf.Name, wf.Name) || sf.FieldType.String() != wf.FieldType.String() {
+				t.Fatalf("%s: leg %s field %d TYPE DISAGREEMENT: span {%s %s} vs window {%s %s}",
+					label, s.Alias, i, sf.Name, sf.FieldType, wf.Name, wf.FieldType)
+			}
+		}
+	}
+	if len(mergedFromSpans.Fields) != len(mergedFromWindows.Fields) {
+		t.Fatalf("%s: merged-type width disagreement: %d vs %d", label, len(mergedFromSpans.Fields), len(mergedFromWindows.Fields))
+	}
+	for i := range mergedFromSpans.Fields {
+		sf, wf := mergedFromSpans.Fields[i], mergedFromWindows.Fields[i]
+		if sf.Name != wf.Name || sf.FieldType.String() != wf.FieldType.String() {
+			t.Fatalf("%s: merged field %d DISAGREEMENT: span {%s %s} vs window {%s %s}",
+				label, i, sf.Name, sf.FieldType, wf.Name, wf.FieldType)
+		}
+	}
+}
+
+// TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement pins the cross-agreement
+// invariant for the MIXED single-source lateral-unnest seed (a baked outer prefix
+// + a trailing bare-QOV whole-object element). The executor's ordinalJoinSpans/
+// unnestMixedSeedSpans and the planner's values.OrdinalSeedLegWindows must agree
+// BIT-FOR-BIT — accept/decline, leg layout, AND field types. This is the exact
+// invariant whose ABSENCE — the executor accepted the mixed seed while the values
+// layer declined it — forced the translator to PREDICT the executor's routing and
+// cost eight review rounds.
+//
+// It locks the ACCEPT BOUNDARY, not just one happy shape (the exit-gate
+// ruling): the two walks must BOTH DECLINE a multi-leg outer prefix and a
+// single-leg pristine seed — the shapes where they were measured to drift (values
+// accepted, executor declined) before the accept-equivalence bounds
+// (`len(windows) != 1` mixed, `len(windows) < 2` pristine) closed it.
+func TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement(t *testing.T) {
+	t.Parallel()
+	tLeg := mixedSeedOuter("T")
+
+	// ACCEPT: multi-col outer + a bare-QOV scalar element (the whole-object element
+	// the seed cannot ofOrdinal-bake), keyed by the AS alias X.
+	scalarElem := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("X"), values.NotNullLong)
+	assertSpanWindowAgreement(t, "mixed/scalar-element", values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
+		values.RecordConstructorField{Name: "X", Value: scalarElem},
+	), true)
+
+	// ACCEPT: a STRUCT array element maps to UnknownType (NOT a *RecordType), so it
+	// flows the same mixed path as a scalar (unnestArrayElementType / isMixedSeedElement).
+	structElem := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("W"), values.UnknownType)
+	assertSpanWindowAgreement(t, "mixed/struct-element", values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
+		values.RecordConstructorField{Name: "W", Value: structElem},
+	), true)
+
+	// DECLINE BOUNDARY (the drift shapes). A multi-LEG outer prefix (T then B, BOTH
+	// FULLY covered) + element: unnestMixedSeedSpans bails on the second leg (alias
+	// != outer.Alias); values now bails on len(windows) != 1. BOTH decline. The
+	// second leg is FULLY baked (both ordinals) ON PURPOSE — a partial second leg
+	// would decline on the full-coverage check FIRST, leaving the len(windows) != 1
+	// bound unexercised (a green pin that does not test the bound it exists for).
+	// This is the exact fully-covered 2-outer-leg shape the round-9 layout accepted
+	// while the executor declined it.
+	bLeg := mixedSeedOuter("B")
+	assertSpanWindowAgreement(t, "decline/multi-leg-prefix", values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
+		bakeOrdinal(t, bLeg, 0), bakeOrdinal(t, bLeg, 1),
+		values.RecordConstructorField{Name: "X", Value: scalarElem},
+	), false)
+
+	// A single baked leg, no element: ordinalJoinSpansOf bails on len(spans) < 2,
+	// unnestMixedSeedSpans on the non-QOV trailing field; values now bails on
+	// len(windows) < 2. BOTH decline (a folded projection, not the pristine concat).
+	assertSpanWindowAgreement(t, "decline/single-leg-pristine", values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
+	), false)
+
+	// A SPLIT RUN — a leg alias RECURS (`[A.0, B.0, A.0]`, 1-field legs). Each
+	// 1-field run is trivially full-coverage, so the executor's run-LIST would
+	// accept it without the seen-alias reject; values' run-MAP declines on the
+	// dup-alias check. This pins the truly-bit-for-bit reject (the last drift
+	// residual): BOTH decline now. Unreachable from SQL (a seed is a concat of
+	// DISTINCT contiguous legs) but the invariant is that the two walks agree.
+	a1 := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"),
+		values.NewRecordType("", false, []values.Field{{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0}}))
+	b1 := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"),
+		values.NewRecordType("", false, []values.Field{{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0}}))
+	assertSpanWindowAgreement(t, "decline/split-run", values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, a1, 0), bakeOrdinal(t, b1, 0), bakeOrdinal(t, a1, 0),
+	), false)
+
+	// A RECORD-typed trailing bare QOV (the S3 positional-merge RC's shape): the
+	// non-record guard (isMixedSeedElement / unnestMixedSeedSpans) excludes it. BOTH decline.
+	recElem := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("R"),
+		values.NewRecordType("", false, []values.Field{{Name: "RC0", FieldType: values.NotNullLong, Ordinal: 0}}))
+	assertSpanWindowAgreement(t, "decline/record-element", values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
+		values.RecordConstructorField{Name: "R", Value: recElem},
+	), false)
+
+	// A lone element (no baked outer prefix): fewer than 2 fields / empty windows. BOTH decline.
+	assertSpanWindowAgreement(t, "decline/lone-element", values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "X", Value: scalarElem},
+	), false)
+}

@@ -2646,10 +2646,116 @@ fail-closed decline itself is replaced — NOT here. Commit 4's observable is th
 RIGHT-box-under-EXISTS class running ordinal (dualwindow-equivalent today; S4-ready)
 plus the fast-path wrong-rows fix.
 
-**← WE ARE HERE:** QP-REF-BIND item 2, commits 5a/5b/5c (absorbed classes, per the
-ruling): under-existential unnest (translateUnnestExistsFilter — needs the W4c seed +
-ordinal replacements for the two rebaseUnnestOuterLegPredicate sites), the EXISTS-rider
-clusterArity poison, and the UNCORRELATED scalar riders. The class-K / fetch-shell /
+**← WE ARE HERE:** QP-REF-BIND item 2, commit **5a LANDED** (under-existential unnest gates
+ordinal — PR #476); 5b/5c next. 5a decline-lift at translateUnnestJoin removes the blanket
+`!unnestUnderExistential` guard but keeps a `unnestExistsSeedSafe` gate: the ordinal seed is
+taken under EXISTS only for a SINGLE-ALIAS outer (outerBoundAliases==1, not clusterArity==1 —
+a merge-opaque FULL OUTER box has arity 1 yet two aliases whose same-named columns the ordinal
+rebase's FieldIndex cannot disambiguate → stays name-model). The EXISTS correlation is left
+LEG-RELATIVE for an ordinal seed: EVERY ordinal seed — mixed no-AT AND fully-baked AS+AT — now
+carries executor windows (OrdinalSeedLegWindows, accept-equivalent to the executor's
+ordinalJoinSpans by construction), so the executor's below-FOD hoist rebases each inner-residual
+outer ref POSITIONALLY; only an ANCHORED seed (a multi-alias outer, or an inner-scope collision)
+rebases by name. ONE layout authority — round-10 DELETED the translator's ordinal pre-rebase
+(rebaseUnnestOuterLegPredicateOrdinal), no more per-shape prediction. Executor
+`tryExistsFlatMap`/`buildExistsFlatMap`
+PRESERVE a FrontierPinned outer operand (correlatedFastPathOperand) instead of re-deriving it by
+bare name — a name re-derivation misreads a shadowed/duplicate merged-row column (round-1
+findings: shadowing dropped every row; the AT+equality fast path swallows the correlation so the
+double-rebase was LIVE, not latent, on any AT+non-equality shape — R5e pins it). Four-gate:
+Graefe + Torvalds ACK (round 2); codex round-2 flagged a PERF asymmetry (booked, below). 5b
+(EXISTS-rider clusterArity poison, rfc173_cluster_gate.go:361-370 — the N-way partition
+machinery) and 5c (uncorrelated scalar rider — pin-only; c3 flatten-seed case F already pins
+rows) remain.
+**RESOLVED in 5a (was a deferred perf item, turned out to be CORRECTNESS):** an AT+EQUALITY EXISTS
+correlation (fully-baked seed → executor authority) was left leg-relative for the below-FOD rebase,
+which ran AFTER tryExistsFlatMap. Deferred round-2 as a mere perf loss (the fast path declined the
+parameterized scan → per-row full inner scan). Round-6 (codex) showed it is CORRECTNESS: when a
+fast-path EQUALITY on the element/ordinal (`JU.ID = O`) is swallowed by the fast path, a SIBLING
+inner-residual referencing the outer (`JU.K < MA.ID + 1000`) is left UNREBASED and MA.ID evaluates
+against the inner row → non-deterministic wrong rows. Fixed by HOISTING the window rebase
+(ordinalSeedLegWindowsOf + rebaseOuterLegRefsOrdinal) ABOVE the tryExistsFlatMap call (once, over
+all regularPreds), so BOTH the fast path and the below-FOD path see baked positional refs — single
+rebase authority, no double-rebase (the below-FOD window branch becomes a no-op, guarded by
+windowsHoisted). This ALSO restores the AT index-scan perf. Pinned by R5r (AS+AT fast-path sibling
+→ {20}); NOT a master regression (master was full-scan / name-model for both AT and no-AT).
+
+**IMMEDIATE 5a follow-ons (pre-existing wrong-rows bugs surfaced by the 5a review, NOT 5a
+regressions — present at PR base f8c6eddad; fix BEFORE 5b/5c):**
+(B) **NOT-EXISTS negation-blind outer-residual push.** yieldExistsFlatMap (rule_implement_nested_loop_join.go
+~:2166) pushes outerResiduals as an outer PRE-FILTER regardless of `negated`. For NOT EXISTS,
+`¬∃(P∧Q) ≡ ¬P ∨ ¬∃(Q)`, NOT `P ∧ ¬∃(Q)` — so an outer-only conjunct P drops outer rows that
+should survive. Repro: `SELECT ID FROM MA WHERE NOT EXISTS (SELECT 1 FROM JU WHERE MA.ID = 1)`
+→ got [], want {2} (non-unnest — no RFC-173 code involved; Java returns {2}). Fix: under negation,
+route outer-only conjuncts BELOW the FOD (so the FOD sees `∃ inner: P∧Q` and the negation applies
+on top), never as an outer pre-filter. PR #336-era. The negated unnest twin is the same machinery.
+(C) **Scalar subquery inside EXISTS WHERE (uncorrelated AND correlated).** `EXISTS (SELECT 1 FROM
+JU WHERE MA.ID > (SELECT MIN(ID) FROM JU))` → the hoisted conjunct compares against an unevaluated
+NULL binding → all rows dropped (got [], want {2}). The CORRELATED form fails identically
+(`... WHERE MA.C < (SELECT MAX(D) FROM MB WHERE MB.ID = JU.ID)` → got [], base and HEAD), so the
+fix must cover both. Seed-independent (fails name-model too); related to the RFC-141 R4
+external-binding routing at predicateReferencesInnerLeg:1486.
+(D) **Shadowed ELEMENT ref inside EXISTS (name-model bug).** `FROM TCOLL, TCOLL.ARR AS ID WHERE
+EXISTS (SELECT 1 FROM U WHERE U.ID = ID AND U.V > TCOLL.ID)` → the AS alias `ID` shadows the outer
+column TCOLL.ID, and the element ref `ID` resolves to the WRONG "ID" slot — name-model returns
+{101,201,202,203} (all elements), want {} (U.ID = element never matches U's id=1). Broken at the
+PR base (name-model); commit 5a's round-5 ordinal path made it NON-DETERMINISTIC (map-order slot
+pick), and unnestExistsSeedSafe's shadow decline restores the deterministic base. Real fix: bind
+the element ref to innerCorr DIRECTLY instead of name-resolving over the merged row — likely the
+same root as the whole shadow class, folds into the structural refactor (below).
+(E) **Multi-table-inner EXISTS with an element-referencing correlated conjunct.** `FROM MA,
+MA.ARR AS X WHERE EXISTS (SELECT 1 FROM MB, JU WHERE MB.D + 3 > X - MA.ID)` (want {10,11,12}) and
+the `JU.K < MA.ID + X + 980` variant (want {20,21}): the conjunct lands as a filter on the Explode
+INSIDE the unnest box — outer side, where the inner legs MB/JU are unbound — never reaching the
+existential level's routing (it fails even referencing the rightmost inner leg, so it is NOT the
+classifier / collectInnerLegAliases; the mis-placement is upstream in the element-scoped EXISTS
+threading for multi-table inners). Base: silent []; HEAD: LOUD `baked FieldValue evaluated against
+a non-positional row context` (5a's baked refs turn silent-wrong into CORRECT-or-LOUD — strictly
+better). While fixing, also align the fast-path residual routers
+(rule_implement_nested_loop_join.go:2073, :2117) which still split on `{existInnerCorr}` membership
+alone (the pre-RFC-141-R4 test), a second latent divergence.
+
+**Booked structural refactor (both Graefe + Torvalds, round-4/5):** the translator's
+existsHasOuterOnlyLegConjunct hand-maintains a PREDICTION of the NLJ rule's inner-vs-outer routing;
+each divergence between the two copies has cost a review round (R5m/R5n were one such). Round-5
+aligns the predicate EXACTLY to the rule's (references-outer-leg ∧ ¬references-inner-leg, inner
+legs from esq.Plan — the complement of predicateReferencesInnerLeg), closing the known divergence.
+DURABLE exit (principle 10, emergent > bolted-on): either (a) move the ordinal-decline decision
+INTO the rule at the point of routing authority (CORRECT-or-LOUD), or (b) give the no-AT mixed seed
+the same per-leg WINDOWS the AT seed carries (a partial outer-leg window over the baked prefix,
+element excluded) so outer-routed predicates always bind positionally — then the flag AND the
+detection predicate evaporate. (b) is blocked on OrdinalSeedLegWindows accepting a partial
+(outer-run-only) window.
+**★ SLICE EXIT GATE (Torvalds round-7, mandatory):** this refactor is NOT optional post-5a polish
+— it is the EXIT GATE for the under-existential-unnest slice.
+**★ DONE (option b) — the exit gate is met.** After codex round-8 (the inner-alias==output-alias
+collision), the structural fix landed: values.OrdinalSeedLegWindows now accepts the MIXED no-AT
+seed and synthesizes the whole-object element's OWN 1-field window (matching the executor's
+unnestMixedSeedSpans, pinned bit-for-bit by the cross-agreement fixture — the invariant whose
+absence caused every round). So the mixed seed carries executor windows too; the translator NEVER
+pre-rebases an ordinal EXISTS correlation and NEVER predicts the rule's inner-vs-outer routing —
+the executor's below-FOD hoist rebases every inner-residual outer ref POSITIONALLY, and the rule
+routes by the renamed correlation identity. DELETED: existsHasOuterOnlyLegConjunct (the classifier),
+the unnestExistsAnchored flag, the shadow-column decline. The shadow-column / outer-only-conjunct /
+element-shadow / round-8 shapes are all handled positionally now (R5d/j/k/m/n/p/s green without any
+decline). TWO scope gates SURVIVE in unnestExistsSeedSafe (genuine single-source boundaries, NOT
+routing predictions): (1) a MULTI-ALIAS outer (needs the W5 leg-splice to positionalize; deferred);
+(2) an EXISTS inner scanning a table aliased the SAME as an outer FROM leg (existsInnerScopeCollidesOuter
+— a leg-relative outer ref would be captured by existsInnerCorrelation's inner-alias rename; stays
+name-model). **Round-10 (the four-gate exit):** the residual ordinal pre-rebase
+(rebaseUnnestOuterLegPredicateOrdinal + values.MergedSeedType + the executorHasWindows plumbing) is
+DELETED — one rebase authority remains (anchored → name-model qualified key; ordinal → leg-relative
+for the executor). The AT-ONLY partial-coverage seed it guarded is UNREACHABLE: the parser's
+unnestAliases always defaults the AS alias to the last path segment, so every AT unnest is
+fully-baked → windowed (a panic on the old arm fired 0/32 across the R5 EXISTS suite; the full R5 +
+AT matrix stays green with the arm gone). And OrdinalSeedLegWindows is now ACCEPT-EQUIVALENT to the
+executor by construction (mixed → exactly one outer leg, `len(windows) != 1` declines; pristine →
+`len(windows) < 2` declines, mirroring ordinalJoinSpansOf) — the cross-agreement fixture locks the
+DECLINE boundary (multi-leg / single-leg / record-element / lone-element decline in both walks) and
+compares field TYPES, closing the drift the round-9 review measured (values accepting a shape the
+executor declined while the pin stayed green). The pre-existing name-model bugs B/C/D/E remain
+booked (below), gating S4.
+The class-K / fetch-shell /
 alias-unchecked exit gates flip with these (the fail-closed decline's replacement).
 Commit-3/4 bookings still open (fold in as touched): the unwrap-arm/probe implicit
 coupling wants a cross-check assertion if touched (@claude c2); a third
