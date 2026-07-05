@@ -3523,3 +3523,18 @@ each class at the lift):**
   class must structurally fail to translate (0AF00), never bind by name into the
   wrong leg (ruling condition 4, the never-live-separately constraint made
   empirical).
+
+**c1 round 2 (the fix commit 7f0f6848e) — all gates ACK:** architecture gate
+**delta-ACK, conditions discharged** — the match-by-alias/correlate-by-binding
+split ruled correct ("exactly the display/binding separation the ruling demands");
+the early forgery guard ruled strictly safer ("the coexistence analog of
+unforgeable uniqueIds, correctly scoped"). **One NEW c2 obligation:**
+gatheredPlainLeg is first-match-wins on a duplicate owner alias — dark in c1
+(gate-poisoned + pinned), but at the lift either the front end provably 42702s an
+ambiguous unnest-source reference BEFORE translation reaches it, or the loop
+declines on a second EqualFold match — correct-or-loud, never silent first-leg.
+Code-quality gate **ACK on the delta** (docs no longer oversell; the bump loop's
+determinism verified — membership-only, monotone, finite; the zero-value decline
+hole ruled absent: one caller, bool-checked, and empty-binding legs are already
+declined by the seed). codex **CLEAN round 2** (prior comment superseded). Branch
+1M stress green (23/23; baseline comparison recorded in TODO.md).

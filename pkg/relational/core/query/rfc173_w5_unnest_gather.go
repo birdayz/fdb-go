@@ -166,8 +166,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	for i := 0; i < unnestPos; i++ {
 		// BINDING-keyed, matching ordinalJoinSeedFields' map — an alias
 		// lookup would nil-miss a duplicate leg's entry and panic on .typ
-		// (the c1 review catch: the seed and this consumer must share ONE
-		// key discipline).
+		// (the seed and this consumer must share ONE key discipline).
 		fieldsAt += len(legTypes[legs[i].binding].typ.Fields)
 	}
 

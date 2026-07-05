@@ -2444,6 +2444,13 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-05 (RFC-173 item-1 commit 1 + fix round, PR #481 — dup-alias binding-id
+mint + binding-keyed seed, dark):** baseline master `8c179a025` 161.68s total vs
+branch `7f0f6848e` 165.14s (noise; branch equal-or-faster per metric: full scans
+4.03–4.35s vs 4.28–4.49s, sparse filter 3.58s vs 3.77s, needles 5.6/6.3ms vs
+5.4/7.7ms, IN-list 14.6ms vs 14.9ms). All 23 subtests PASS both sides. No
+regression.
+
 **2026-07-05 (RFC-173 item-2 commit 5b, PR #480 — cluster-gate rider transparency):**
 baseline master `4f836f941` 156.14s total vs branch `bd802e83d` 156.32s (+0.1%, noise);
 every subtest within measurement resolution (pk lookups 10–60ms both, index equality 20ms,
