@@ -222,8 +222,9 @@ func TestFDB_RFC173Item2_LeftJoinExistsResidual(t *testing.T) {
 	// before THAT guard the shape silently returned zero rows (the binding
 	// never resolved below the FOD). The scalar alias is a ROOT-context
 	// external binding — visible below the FOD in every filter arm — so the
-	// authority now passes it through and the pin asserts the ROWS: badge
-	// ids {1,2} > MIN(dept.id)=1 admits badge 2 (emp 1) → [alice].
+	// authority now passes it through and the pin asserts the ROWS: the one
+	// badge (id=10, emp 1) satisfies 10 > MIN(dept.id)=1 → alice qualifies;
+	// bob has no badge → [alice].
 	{
 		q := "SELECT e.fname FROM emp e WHERE EXISTS (SELECT 1 FROM badge b " +
 			"WHERE b.emp_id = e.id AND b.id > (SELECT MIN(id) FROM dept d2))"

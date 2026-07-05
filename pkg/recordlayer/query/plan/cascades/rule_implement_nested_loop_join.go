@@ -2235,13 +2235,12 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 // declines must pass them through.
 func scalarSubqueryAliasesOfPredicate(p predicates.QueryPredicate) map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
+	// ReplaceValues already visits every value node pre-order (the legRowTypes
+	// idiom) — inspect v directly, no nested walk.
 	predicates.ReplaceValues(p, func(v values.Value) values.Value {
-		values.WalkValue(v, func(node values.Value) bool {
-			if ssv, ok := node.(*values.ScalarSubqueryValue); ok {
-				out[ssv.Alias] = struct{}{}
-			}
-			return true
-		})
+		if ssv, ok := v.(*values.ScalarSubqueryValue); ok {
+			out[ssv.Alias] = struct{}{}
+		}
 		return v
 	})
 	return out
