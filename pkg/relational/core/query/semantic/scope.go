@@ -82,12 +82,21 @@ func (s *Scope) AllSourcesRecursive() []ScopeSource {
 	return out
 }
 
-// AddSource appends a FROM-clause source. Returns an error on
-// duplicate alias within the same scope (SQL forbids two sources
-// sharing an alias at the same level).
+// AddSource appends a FROM-clause source. Duplicate PLAIN aliases at the
+// same level are ACCEPTED — Java registers quantifiers freely (unique ids;
+// the SQL alias is only a display qualifier) and errors per-ATTRIBUTE at
+// reference resolution (RFC-173 QP-REF-BIND item 1); the caller
+// distinguishes duplicate legs via CorrelationName (the parser-minted
+// binding id). A duplicate involving a SHADOWING source (a lateral-unnest
+// AS/AT binding, either direction) still errors: Java genuinely forbids a
+// duplicate unnest alias at FROM (RFC-142), and the scope-level signal is
+// what the join-ON builder's drop-risk taxonomy keys on.
 func (s *Scope) AddSource(src ScopeSource) error {
 	for _, existing := range s.sources {
-		if existing.Alias.EqualsIgnoreQuoting(src.Alias) {
+		if !existing.Alias.EqualsIgnoreQuoting(src.Alias) {
+			continue
+		}
+		if existing.Shadowing || src.Shadowing {
 			return &DuplicateAliasError{Alias: src.Alias}
 		}
 	}
@@ -157,23 +166,59 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 	}
 }
 
-// ResolveQualifiedColumn handles `alias.col` — looks up a source
-// whose Alias matches the qualifier, then the column on that
-// source's Table. Unlike ResolveColumn, a qualifier-matched source
-// is unambiguous; if the qualifier doesn't match any source in any
-// enclosing scope, returns SourceNotFoundError.
+// ResolveQualifiedColumn handles `alias.col` with Java's PER-ATTRIBUTE
+// semantics (SemanticAnalyzer.resolveIdentifierMaybe + resolveAcrossFragments,
+// RFC-173 QP-REF-BIND item 1):
+//   - ALL alias-matching sources at a level are candidates; >1 carrying the
+//     column is ambiguous (42702 at the caller) — ambiguity is TERMINAL, it
+//     never falls through to a parent scope;
+//   - ZERO matches at a level fall through to the PARENT — even when the
+//     alias exists locally without the column (the correlated shadow shape:
+//     `SELECT p.v FROM t1 AS p WHERE EXISTS(SELECT 1 FROM t2 AS p WHERE
+//     p.v = 10)` ANSWERS in Java, live-verified);
+//   - at chain exhaustion: ColumnNotFoundError when some alias-matching
+//     source existed anywhere on the chain (named after the innermost one),
+//     SourceNotFoundError when the qualifier matched nothing.
 func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, ScopeSource, error) {
-	for _, src := range s.sources {
-		if src.Alias.EqualsIgnoreQuoting(qualifier) {
-			c, ok := src.Table.LookupColumn(col)
-			if !ok {
-				return Column{}, ScopeSource{}, &ColumnNotFoundError{TableName: src.Table.Name(), Id: col}
+	var firstAliasTable QualifiedName
+	aliasSeen := false
+	for cur := s; cur != nil; cur = cur.parent {
+		var matches []struct {
+			col Column
+			src ScopeSource
+		}
+		for _, src := range cur.sources {
+			if !src.Alias.EqualsIgnoreQuoting(qualifier) {
+				continue
 			}
-			return c, src, nil
+			if !aliasSeen {
+				aliasSeen = true
+				firstAliasTable = src.Table.Name()
+			}
+			if c, ok := src.Table.LookupColumn(col); ok {
+				matches = append(matches, struct {
+					col Column
+					src ScopeSource
+				}{c, src})
+			}
+		}
+		switch len(matches) {
+		case 1:
+			return matches[0].col, matches[0].src, nil
+		case 0:
+			continue // zero-match level: fall through to the parent (Java)
+		default:
+			sources := make([]Identifier, 0, len(matches))
+			for _, m := range matches {
+				sources = append(sources, m.src.Alias)
+			}
+			return Column{}, ScopeSource{}, &AmbiguousColumnError{
+				Id: col, Qualifier: qualifier, Matches: len(matches), Sources: sources,
+			}
 		}
 	}
-	if s.parent != nil {
-		return s.parent.ResolveQualifiedColumn(qualifier, col)
+	if aliasSeen {
+		return Column{}, ScopeSource{}, &ColumnNotFoundError{TableName: firstAliasTable, Id: col}
 	}
 	// Collect all visible aliases across the chain for a better
 	// error message.
@@ -187,12 +232,19 @@ func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, Scope
 	}
 }
 
-// AmbiguousColumnError is returned when a bare column reference
-// matches multiple sources at the same scope level. Carries the
-// conflicting identifier and the conflicting source aliases so the
-// user knows which tables to qualify against.
+// AmbiguousColumnError is returned when a column reference matches
+// multiple sources at the same scope level — bare (two tables expose
+// the name) or qualified (two same-aliased sources both carry the
+// column, Java's per-attribute 42702). Carries the conflicting
+// identifier and the conflicting source aliases so the user knows
+// which tables to qualify against.
 type AmbiguousColumnError struct {
 	Id Identifier
+	// Qualifier is the reference's qualifier for the QUALIFIED form
+	// (`a.id` over duplicate aliases both carrying id); zero for a bare
+	// reference. Callers render Java's exact message from the reference
+	// as written: `Ambiguous reference A.ID` / `Ambiguous reference ID`.
+	Qualifier Identifier
 	// Matches is always equal to len(Sources); exists as a
 	// convenience accessor for callers who don't need the full
 	// alias list. Future API tightening may remove it — prefer
@@ -204,15 +256,27 @@ type AmbiguousColumnError struct {
 	Sources []Identifier
 }
 
+// Reference renders the ambiguous reference AS WRITTEN (normalized) — Java's
+// message operand: `A.ID` for a qualified reference, `ID` for a bare one.
+// The callers' user-facing mapping is `Ambiguous reference %s` byte-equal to
+// Java's SemanticAnalyzer text (RFC-173 QP-REF-BIND item 1, live-verified for
+// duplicate AND distinct aliases, bare AND qualified).
+func (e *AmbiguousColumnError) Reference() string {
+	if e.Qualifier.Name() != "" {
+		return e.Qualifier.Name() + "." + e.Id.Name()
+	}
+	return e.Id.Name()
+}
+
 func (e *AmbiguousColumnError) Error() string {
 	if len(e.Sources) == 0 {
-		return fmt.Sprintf("ambiguous column %s (matches %d sources)", e.Id, e.Matches)
+		return fmt.Sprintf("ambiguous column %s (matches %d sources)", e.Reference(), e.Matches)
 	}
 	names := make([]string, 0, len(e.Sources))
 	for _, s := range e.Sources {
 		names = append(names, s.Name())
 	}
-	return fmt.Sprintf("ambiguous column %s (matched by: %s)", e.Id, joinStrings(names, ", "))
+	return fmt.Sprintf("ambiguous column %s (matched by: %s)", e.Reference(), joinStrings(names, ", "))
 }
 
 // joinStrings is a tiny strings.Join to avoid pulling strings into

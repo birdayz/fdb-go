@@ -1,24 +1,23 @@
 package query
 
-// RFC-173 QP-REF-BIND item 1, commit 1 (dark infrastructure) — white-box pins
-// for the binding-keyed seed plumbing. Three design-ruling properties (RFC-173 item 1):
+// RFC-173 QP-REF-BIND item 1 — white-box pins for the binding-keyed seed
+// plumbing (commit 1) and the gate lift (commit 2). Design-ruling properties:
 //   - CARRIED, NOT RE-DERIVED: sourceBinding reads the logical leg's Binding
 //     field (the parser's single mint authority); it never re-derives binding
 //     identity from the SQL alias.
 //   - BINDING-KEYED SEED: legTypes / QOV correlations / windows key on the
 //     binding, so two duplicate-alias legs stay distinguishable end-to-end
 //     (== the UPPER alias for every non-duplicate leg — byte-identical keying
-//     for every query that plans today).
-//   - C1 IS DARK: the gate's duplicate-alias poison arm stands even when the
-//     parser minted a binding — the lift is commit 2's, landing WITH the
-//     front-end per-reference resolution (the never-live-separately
-//     constraint; a c1 lift would observably flip the predicate-free
-//     disjoint class from the name model to the ordinal seed).
+//     for every query that planned before item 1).
+//   - THE LIFT IS BINDING-GUARDED: duplicate aliases gate only when their
+//     bindings are distinct; a same-binding pair (unminted duplicate) stays
+//     poisoned — correct-or-loud.
 
 import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -120,18 +119,15 @@ func TestRFC173Item1_SeedKeyedByBinding(t *testing.T) {
 	}
 }
 
-// TestRFC173Item1_W5GatherBindingConsistency covers the review catch: the W5
-// gathered-unnest translation consumes the seed's legTypes map, so its
-// quantifier correlations, sourceAliases and span-offset lookups now share the
-// seed's BINDING key discipline (an alias-keyed lookup against the
-// binding-keyed map would nil-miss a duplicate leg's entry and panic on
-// .typ). In c1 the converted path is DARK the same way the seed keying is —
-// the W5 gather consults the ONE gate authority, whose dup poison arm
-// declines a duplicate-alias cluster even with a minted binding present
-// (pinned here, the W5 twin of GatePoisonIntactC1); the c2 lift's red-first
-// suite activates the binding-keyed quantifier/span asserts e2e. The non-dup
-// path (binding == alias) is byte-identical and stays covered by the W5
-// gather suite.
+// TestRFC173Item1_W5GatherBindingConsistency covers the review catch made
+// LIVE by the c2 gate lift: the W5 gathered-unnest translation consumes the
+// seed's binding-keyed legTypes map, so its quantifier correlations,
+// sourceAliases and span-offset lookups share the seed's key discipline (an
+// alias-keyed lookup would nil-miss a duplicate leg's entry and panic on
+// .typ). The gathered fixture's shape with a minted binding on the second
+// leg must translate with the binding as that quantifier's correlation; the
+// unnest OWNER resolves by SQL alias (first match — the front end owns
+// ambiguity) while correlating by the matched leg's binding.
 func TestRFC173Item1_W5GatherBindingConsistency(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
@@ -140,28 +136,49 @@ func TestRFC173Item1_W5GatherBindingConsistency(t *testing.T) {
 	left := inner(scan("SRC", "s"), scanWithBinding("AUX", "s", "Q$DUP1"))
 	j := logical.NewJoin(left, u, logical.JoinInner, "")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
-	if got := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-		t.Fatalf("c1: a duplicate-alias gathered cluster must DECLINE at the gate even with a minted binding (got %T) — the lift is commit 2's", got)
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("a binding-distinguished duplicate-alias gathered cluster must translate (the c2 lift)")
+	}
+	gathered, isSel := sel.(*expressions.SelectExpression)
+	if !isSel {
+		t.Fatalf("gathered = %T, want *SelectExpression", sel)
+	}
+	quants := gathered.GetQuantifiers()
+	if len(quants) != 3 {
+		t.Fatalf("quantifiers = %d, want 3 (S, Q$DUP1, EL in FROM order)", len(quants))
+	}
+	want := []string{"S", "Q$DUP1", "EL"}
+	for i, q := range quants {
+		if q.GetAlias().Name() != want[i] {
+			t.Fatalf("quantifier %d correlation = %s, want %s (the dup leg correlates by its BINDING)",
+				i, q.GetAlias().Name(), want[i])
+		}
 	}
 }
 
-// TestRFC173Item1_GatePoisonIntactC1 pins commit 1's DARKNESS: the gate's
-// duplicate-alias arm still poisons a dup cluster even when the parser minted
-// a binding id for it. The lift lands in commit 2 WITH the per-reference
-// front end — never separately (a c1 lift would flip the predicate-free
-// disjoint class's plan shape, and a front-end-less ordinal dup cluster has
-// no resolver emitting binding-correlated references to bake).
-func TestRFC173Item1_GatePoisonIntactC1(t *testing.T) {
+// TestRFC173Item1_GateLiftedC2 pins commit 2's LIFT: duplicate SQL aliases
+// with DISTINCT parser-minted bindings GATE (the seed/bake/window keying is
+// binding-collision-free, so the cluster is classifiable — Java's model,
+// where quantifier ids are never SQL names); two legs binding the SAME
+// correlation stay poisoned (an unminted duplicate reaches the gate only
+// through a path the mint authority does not cover — correct-or-loud).
+func TestRFC173Item1_GateLiftedC2(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
+	// Distinct bindings → the dup-alias cluster gates ordinal (arity 2).
 	j := inner(scan("SRC", "s"), scanWithBinding("AUX", "s", "Q$DUP1"))
 	d := tr.ordinalWedgeGateDecide(j)
-	if d.Gated {
-		t.Fatal("c1 must keep the duplicate-alias cluster POISONED (the lift is commit 2's, with the front end)")
+	if !d.Gated || d.Arity != 2 {
+		t.Fatalf("binding-distinguished dup cluster decision = %+v, want Gated arity 2 (the c2 lift)", d)
 	}
-	if d.Arity != arityPoison || !strings.Contains(d.Reason, "duplicate leg aliases") {
-		t.Fatalf("dup cluster decision = %+v, want the arityPoison duplicate-leg-aliases arm", d)
+
+	// Same binding (unminted duplicate) → still poison.
+	jSame := inner(scan("SRC", "s"), scan("AUX", "s"))
+	dSame := tr.ordinalWedgeGateDecide(jSame)
+	if dSame.Gated || dSame.Arity != arityPoison || !strings.Contains(dSame.Reason, "duplicate leg bindings") {
+		t.Fatalf("same-binding dup cluster decision = %+v, want the arityPoison duplicate-leg-bindings arm", dSame)
 	}
 }
 

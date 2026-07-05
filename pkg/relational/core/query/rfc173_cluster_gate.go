@@ -111,20 +111,23 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// partition machinery. Name model (S3+ owns the existential seeds).
 		return wedgeGateDecision{Arity: arityPoison, Reason: "existential quantifiers on the join select"}
 	}
-	// PAIRWISE dup check over the kind-aware leg list (S3 fulcrum: an N-way
-	// gather can collide any two legs, e.g. `FROM p, q, p` — the binary
-	// root-operand compare missed those): two legs binding the SAME
-	// correlation make the seed's QOVs indistinguishable — an unclassifiable
-	// shape. Fail toward the name model (whose same-namespace merge
-	// semantics tolerate it) — the contract's unclassifiable-counts-as->2
-	// direction.
-	seenAliases := make(map[string]struct{})
+	// PAIRWISE dup check over the kind-aware leg list, keyed by the BINDING
+	// correlation (RFC-173 QP-REF-BIND item 1): duplicate SQL aliases with
+	// DISTINCT parser-minted bindings are admissible — the seed's QOVs, bake
+	// maps and windows key on the binding, so the legs stay distinguishable
+	// end-to-end and per-attribute resolution owns any reference ambiguity
+	// (Java's model: quantifier ids are never SQL names). Two legs binding
+	// the SAME correlation remain unclassifiable — an unminted duplicate can
+	// only reach here through a path the mint authority does not cover, and
+	// failing toward the name model keeps that class correct-or-loud (the
+	// contract's unclassifiable-counts-as->2 direction).
+	seenBindings := make(map[string]struct{})
 	for _, leg := range t.legsOfGatedJoin(j) {
-		key := strings.ToUpper(leg.alias)
-		if _, dup := seenAliases[key]; dup {
-			return wedgeGateDecision{Arity: arityPoison, Reason: "duplicate leg aliases (indistinguishable leg correlations)"}
+		key := strings.ToUpper(leg.binding)
+		if _, dup := seenBindings[key]; dup {
+			return wedgeGateDecision{Arity: arityPoison, Reason: "duplicate leg bindings (indistinguishable leg correlations)"}
 		}
-		seenAliases[key] = struct{}{}
+		seenBindings[key] = struct{}{}
 	}
 	if !t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right) {
 		// A leg CONTAINS a name-model join at its own boundary (a 3+-way

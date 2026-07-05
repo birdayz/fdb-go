@@ -17995,30 +17995,28 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT a.id FROM T_DUP_A AS a, T_DUP_B AS a",
 		},
 		{
-			// The PREDICATED disjoint-dup form: Java still answers; Go's
-			// planner cannot bind predicates over the indistinguishable
-			// correlations without the QP-REF-BIND per-reference binding — the clean
-			// 0AF00 decline (never wrong rows), marked.
+			// The PREDICATED disjoint-dup form: per-attribute binding (a.id is
+			// unambiguous — only T_DUP_C carries id) resolves to that leg and the
+			// predicate pushes into it. PARITY since RFC-173 QP-REF-BIND item 1 c2
+			// (the front-end flip): Java answers [[2]], Go now answers [[2]]
+			// (live-verified). Pre-item-1 Go declined 0AF00 (indistinguishable
+			// correlations); the binding-id mint made the legs distinguishable.
 			Name:           "dup_from_alias_disjoint_where",
 			SchemaTemplate: "CREATE TABLE T_DUP_C (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_D (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_C VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_D VALUES (7)"},
 			Query:          "SELECT a.id FROM T_DUP_C AS a, T_DUP_D AS a WHERE a.id = 2",
-			Divergence: &Divergence{
-				Reason:          "RFC-173 W4-left commit 4: Java answers the predicated disjoint-column dup-alias form (per-attribute ambiguity, unique quantifier ids); Go cannot bind predicates over indistinguishable correlations without the QP-REF-BIND per-reference binding — clean 0AF00 decline, never wrong rows. See DIVERGENCES.md.",
-				Direction:       DivergenceJavaSucceedsGoRejects,
-				GoErrorContains: "could not plan",
-			},
 		},
 		{
+			// SELECT * over duplicate aliases: Java answers with DUPLICATE columns
+			// in FROM order (unique quantifier ids; no dedup). PARITY since RFC-173
+			// QP-REF-BIND item 1 c2/c3: Go now answers cols [ID V QID ID V], full
+			// cross product (the ordinal seed's positional row serves the duplicate
+			// labels — deriveColumnsFromJoin's RV-divergence arm). Pre-item-1 Go
+			// rejected 42702 at the FROM walk.
 			Name:           "dup_from_alias_select_star",
 			SchemaTemplate: "CREATE TABLE T_DUP_S (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_T (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_S VALUES (1, 10)", "INSERT INTO T_DUP_T VALUES (7)"},
 			Query:          "SELECT * FROM T_DUP_S, T_DUP_T, T_DUP_S",
-			Divergence: &Divergence{
-				Reason:          "RFC-173 W4-left commit 4: Go rejects duplicate FROM aliases at the FROM walk (42702); Java answers SELECT * over the duplicate with duplicate columns (unique quantifier ids). The per-reference check is the QP-REF-BIND (per-reference binding) charter; see DIVERGENCES.md.",
-				Direction:       DivergenceJavaSucceedsGoRejects,
-				GoErrorContains: "Ambiguous reference",
-			},
 		},
 		// RFC-173 W4-left — the column-aware duplicate-alias dimensions the
 		// first cut shipped without (review findings). Three-source
@@ -18108,19 +18106,14 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// The unreferenced CTE star corner — same class as
-			// dup_from_alias_select_star: Java answers with duplicate
-			// columns, Go over-rejects until QP-REF-BIND. The message names
-			// the CTE's REAL derived column (the opaque treatment printed a
-			// garbage "?").
+			// dup_from_alias_select_star: Java answers with duplicate columns.
+			// PARITY since RFC-173 QP-REF-BIND item 1 c2/c3: Go now answers cols
+			// [ID ID], full cross product (live-verified). Pre-item-1 Go rejected
+			// 42702 at the FROM walk (naming the CTE's derived column).
 			Name:           "dup_from_alias_cte_star",
 			SchemaTemplate: "CREATE TABLE T_DUP_X (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_X VALUES (1)"},
 			Query:          "WITH w AS (SELECT id FROM T_DUP_X) SELECT * FROM w, w",
-			Divergence: &Divergence{
-				Reason:          "RFC-173 W4-left: Go rejects duplicate FROM aliases at the FROM walk (42702, naming the CTE's derived column); Java answers SELECT * over the duplicate with duplicate columns (unique quantifier ids). QP-REF-BIND charter; see DIVERGENCES.md.",
-				Direction:       DivergenceJavaSucceedsGoRejects,
-				GoErrorContains: "Ambiguous reference W.ID",
-			},
 		},
 	}
 }

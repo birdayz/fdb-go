@@ -53,8 +53,10 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in row", name)
 		}
 		if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+			// Java's exact SemanticAnalyzer text (M5) — the runtime marker is
+			// the map-eval twin of the resolution-time 42702; one wording.
 			return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-				"column reference %q is ambiguous", m.Col)
+				"Ambiguous reference %s", m.Col)
 		}
 		return v, nil
 	case *antlrgen.BinaryComparisonPredicateContext:

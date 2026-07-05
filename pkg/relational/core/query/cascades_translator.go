@@ -3984,6 +3984,19 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	}
 	leftAlias := sourceAlias(left)
 	rightAlias := sourceAlias(right)
+	// RFC-173 QP-REF-BIND item 1: a GATED binary join's quantifiers and
+	// row namespaces carry the BINDING correlation (== the alias for every
+	// non-duplicate leg; the parser-minted id for a later duplicate) —
+	// matching the ordinal seed RC's QOVs, the bake maps and the executor's
+	// span windows, and matching what the resolver emits for a reference
+	// bound to a duplicate leg. The NAME-MODEL arm keeps the DISPLAY alias:
+	// its anchored RC and merged-row keys are alias-qualified, and swapping
+	// namespaces there would nil every qualified read (the still-poisoned
+	// dup classes stay correct-or-loud via per-attribute 42702 + the gate).
+	if gateDecision.Gated {
+		leftAlias = sourceBinding(left)
+		rightAlias = sourceBinding(right)
+	}
 
 	// Use named quantifiers so aliases match the predicate QOV
 	// correlations created by the SQL resolver.

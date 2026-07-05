@@ -2797,6 +2797,43 @@ func columnDefFromRef(name, label, typeRef string, value values.Value, descs []p
 // name-model's LAZY anchored RC did, while the descriptor-less element/ordinal
 // still type from their own Value (element from the array element, ordinal INT
 // NOT NULL). RFC-142/173.
+// columnDefDisplayName is the column's unqualified user-visible name — the
+// exact value RecordLayerResultSet.positionalAligned compares each positional
+// slot's field name against: the Label (alias) when set, else the bare leaf of
+// the qualified datum-key Name ("Q$DUP2.ID" → "ID"). Kept in lockstep with the
+// executor's columnDisplayName so deriveColumnsFromJoin's divergence check (does
+// the name-model merge render the same output sequence the positional row does?)
+// asks exactly the question positionalAligned will answer at serve time.
+func columnDefDisplayName(c executor.ColumnDef) string {
+	if c.Label != "" {
+		return c.Label
+	}
+	return parseColRef(c.Name).bare()
+}
+
+// mergedRVSequenceDiverges reports whether the name-model leg-merge (merged)
+// fails to render the ordinal RC's authoritative output sequence: a different
+// column count, or any position whose merged DISPLAY name (the value
+// positionalAligned compares) differs from the RC field's bare name. It is the
+// RFC-173 QP-REF-BIND item-1 trigger for `SELECT *` over a duplicate-alias
+// cluster: the planner may group same-table dup legs (physical `P ⋈ (P ⋈ Q)`),
+// so the structural merge reorders to `[ID V ID V QID]` while the RC — which
+// the positional row mirrors — keeps FROM order `[ID V QID ID V]` with duplicate
+// bare labels. When the sequences AGREE (every non-reordered case, incl.
+// distinct-alias `A.K`/`B.K`), the merge path is authoritative-equivalent and
+// kept byte-identical.
+func mergedRVSequenceDiverges(rc *values.RecordConstructorValue, merged []executor.ColumnDef) bool {
+	if len(rc.Fields) != len(merged) {
+		return true
+	}
+	for i, f := range rc.Fields {
+		if !strings.EqualFold(parseColRef(f.Name).bare(), columnDefDisplayName(merged[i])) {
+			return true
+		}
+	}
+	return false
+}
+
 func ordinalUnnestColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
 	name := strings.ToUpper(f.Name)
 	label := strings.ToUpper(parseColRef(f.Name).bare())
@@ -2887,9 +2924,26 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	// duplicate-name keys (deriveColumnsFromJoin handles an NLJ-shaped
 	// sub-product), so rerouting it dropped the `A.K`/`B.K` names by-name
 	// reads rely on (second review finding, pinned).
+	// RFC-173 QP-REF-BIND item 1 — the second structural trigger: the
+	// name-model merge DIVERGES from the ordinal RV's authoritative output
+	// sequence. A duplicate-alias `SELECT *` (`SELECT * FROM p, q, p`) lets the
+	// planner GROUP the same-table legs (physical `P ⋈ (P ⋈ Q)`), so the
+	// structural leg-merge reorders to `[ID V ID V QID]`, while the ordinal TOP
+	// RV carries every slot in FROM order with duplicate BARE labels (Java's
+	// exact star layout, live-verified `[ID V QID ID V]`) — the sequence the
+	// positional row mirrors and positionalAligned reads by slot. Item-1 c2's
+	// binding-keyed qualification made each dup leg's qualified name DISTINCT
+	// (`P.ID` vs `Q$DUP2.ID`), so the pre-c2 same-qualified-name collision check
+	// no longer fires; the divergence of the DISPLAY sequences is the faithful
+	// signal. Distinct-alias duplicates ("A.K" / "B.K") whose merge is NOT
+	// reordered keep the byte-identical merge path (their display sequence
+	// equals the RV's), exactly as before.
+	rc, isOrdinalRC := nlj.GetResultValue().(*values.RecordConstructorValue)
+	isOrdinalRC = isOrdinalRC && !rc.AnchoredJoin
+	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
 	elemAlias, collField, elemValue := gatheredExplodeElement(nlj)
-	if rc, ok := nlj.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin &&
-		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) && hasPositionalMergeLeg(nlj) && elemAlias != "" {
+	if isOrdinalRC && len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) &&
+		((hasPositionalMergeLeg(nlj) && elemAlias != "") || mergedDivergesFromRV) {
 		descs := allLeafDescriptors(nlj.GetOuter(), md)
 		descs = append(descs, allLeafDescriptors(nlj.GetInner(), md)...)
 		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
@@ -4020,20 +4074,12 @@ func rejectDuplicateUnnestAliasInner(op logical.LogicalOperator, md *recordlayer
 	return nil
 }
 
-// fromLegSchema describes one FROM-chain leaf source for the duplicate-alias
-// check: its UPPER alias plus what is known about its output columns.
+// fromLegSchema describes one FROM-chain leaf source for the RFC-142
+// duplicate unnest-alias check: its UPPER alias. (The column-derivation
+// fields died with the FROM-level 42702 approximation — RFC-173 QP-REF-BIND
+// item 1 moved ambiguity to per-attribute reference resolution.)
 type fromLegSchema struct {
 	alias string
-	cols  []string // UPPER output column names (colsKnown true), declaration order
-	// colsKnown distinguishes "columns derived" (possibly empty — a leg of
-	// only unnamed computed columns) from "columns unknowable" (a derived/CTE
-	// body shape the derivation declines → conservative all-colliding).
-	colsKnown bool
-	// undefinedTable marks a base-table leg whose name resolves to neither an
-	// in-scope CTE nor a record type: an UNDEFINED table. The ambiguity
-	// approximation skips its pairs — masking the 42F01 undefined-table error
-	// behind a 42702 would report the wrong problem.
-	undefinedTable bool
 }
 
 // checkFromScopeUnnestAliases gathers every leaf source alias of the FROM-scope
@@ -4056,15 +4102,7 @@ func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordM
 			if a == "" {
 				return
 			}
-			leg := fromLegSchema{alias: strings.ToUpper(a)}
-			if cte, ok := ctes[strings.ToUpper(n.Table)]; ok {
-				leg.cols, leg.colsKnown = cteColumnsUpper(cte, md, ctes, map[string]bool{})
-			} else if rt := recordTypeCI(md, n.Table); rt != nil && rt.Descriptor != nil {
-				leg.cols, leg.colsKnown = descriptorColumnsUpper(rt), true
-			} else if md != nil {
-				leg.undefinedTable = true
-			}
-			legs = append(legs, leg)
+			legs = append(legs, fromLegSchema{alias: strings.ToUpper(a)})
 		case *logical.LogicalUnnest:
 			unnests = append(unnests, n)
 		case *logical.LogicalCTE:
@@ -4086,57 +4124,18 @@ func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordM
 		}
 	}
 	walk(j, ctes)
-	// RFC-173 W4-left: a FROM chain binding the SAME source alias twice
-	// (`FROM p, q, p` / `FROM p AS a, q AS a`) rejects with Java's
-	// AMBIGUOUS-reference code. Java allows the duplicate at FROM (its
-	// quantifiers mint unique ids) and errors at REFERENCE resolution
-	// (SemanticAnalyzer's attributes.size()==1 asserts, 42702) — which every
-	// practical query over the duplicate hits. Go's lazy name-model
-	// resolution has no translation-time reference binding to hang the exact
-	// per-reference check on (the QP-REF-BIND charter, TODO.md), so
-	// the FROM-level rejection approximates it: same code, same practical
-	// class (and Java's exact message text, conformance-shared); the
-	// unreferenced corner (`SELECT * FROM p, q, p`, which Java
-	// answers with duplicate columns) over-rejects — recorded in
-	// DIVERGENCES.md. Pre-rejection behavior was strictly worse on BOTH
-	// axes: a referenced duplicate silently bound last-leg-wins (wrong rows,
-	// never Java's error) and SELECT * died with an internal planner error.
-	//
-	// Java's ambiguity is PER-ATTRIBUTE: a duplicated alias errors only for
-	// a reference whose (qualifier, column) matches BOTH sources —
-	// conformance-verified: `SELECT a.id FROM ta AS a, tb AS a` ANSWERS when
-	// only ta has id. The FROM-level approximation rejects when any TWO
-	// sources under the alias SHARE a column (every shared-column reference
-	// would be ambiguous — the practical class, e.g. the same table twice),
-	// with Java's message naming the first shared column. Each later
-	// duplicate is compared against EVERY prior source under the alias —
-	// `A AS x, B AS x, C AS x` is ambiguous when any pair collides, not just
-	// pairs involving A. Disjoint-column duplicates pass through — the name
-	// model's per-leg qualified keys bind them correctly (conformance parity
-	// entry). A pair with an UNDEFINED table is skipped: table validation
-	// owns that failure (42F01), the ambiguity approximation must not mask
-	// it.
-	seen := map[string][]fromLegSchema{} // UPPER alias → all prior sources
-	for _, leg := range legs {
-		for _, prev := range seen[leg.alias] {
-			if leg.undefinedTable || prev.undefinedTable {
-				continue
-			}
-			col, collide := legSharedColumn(prev, leg)
-			if !collide {
-				continue
-			}
-			if col == "" {
-				// Neither side has a nameable column to report (both
-				// underivable) — still ambiguous, name the alias alone.
-				return api.NewErrorf(api.ErrCodeAmbiguousColumn,
-					"Ambiguous reference %s", leg.alias)
-			}
-			return api.NewErrorf(api.ErrCodeAmbiguousColumn,
-				"Ambiguous reference %s.%s", leg.alias, col)
-		}
-		seen[leg.alias] = append(seen[leg.alias], leg)
-	}
+	// RFC-173 QP-REF-BIND item 1: the W4-left FROM-level duplicate-alias
+	// 42702 approximation is RETIRED — Java's model is live. Duplicate FROM
+	// aliases register freely (the parser mints per-leg binding ids,
+	// assignFromLegBindingIDs), every reference resolves per-ATTRIBUTE at
+	// the semantic scope (Scope.ResolveQualifiedColumn/ResolveColumn — ≥2
+	// matches raise Java's exact `Ambiguous reference X` 42702), and the
+	// cluster gate admits binding-distinguished duplicate legs into the
+	// ordinal seed. Undefined tables keep failing through
+	// validateTablesAndColumns (42F01 — resolution declines on unknowable
+	// tables, so the ambiguity path cannot mask it). Only the RFC-142
+	// unnest-alias half below remains: Java genuinely forbids a duplicate
+	// unnest AS/AT alias at FROM.
 	if len(unnests) == 0 {
 		return nil
 	}
@@ -4810,182 +4809,4 @@ func rowsOrEmpty(rows driver.Rows) driver.Rows {
 		return emptyRows{}
 	}
 	return rows
-}
-
-// legSharedColumn reports whether two same-aliased FROM legs collide for the
-// duplicate-alias ambiguity approximation, and on which column. Both sides
-// column-known → the FIRST column (a's declaration order) present in both, or
-// no collision when disjoint. A side whose columns are unknowable (a
-// derived/CTE body shape the derivation declines) counts as ALL-colliding —
-// the approximation must fail toward Java's error for sources it cannot see —
-// reporting the known side's first column, or "" when neither side has one.
-func legSharedColumn(a, b fromLegSchema) (string, bool) {
-	if a.colsKnown && b.colsKnown {
-		setB := make(map[string]struct{}, len(b.cols))
-		for _, c := range b.cols {
-			setB[c] = struct{}{}
-		}
-		for _, c := range a.cols {
-			if _, ok := setB[c]; ok {
-				return c, true
-			}
-		}
-		return "", false
-	}
-	if a.colsKnown && len(a.cols) > 0 {
-		return a.cols[0], true
-	}
-	if b.colsKnown && len(b.cols) > 0 {
-		return b.cols[0], true
-	}
-	return "", true
-}
-
-// descriptorColumnsUpper returns rt's column names, UPPER, declaration order.
-func descriptorColumnsUpper(rt *recordlayer.RecordType) []string {
-	fields := rt.Descriptor.Fields()
-	out := make([]string, 0, fields.Len())
-	for i := 0; i < fields.Len(); i++ {
-		out = append(out, strings.ToUpper(string(fields.Get(i).Name())))
-	}
-	return out
-}
-
-// cteColumnsUpper derives a WITH definition's output column names: the
-// explicit column-alias list when present (`WITH w(a, b) AS …`), else the
-// Body's derived output. `deriving` breaks recursive-CTE self-reference
-// cycles (a self Scan inside the Body while the Body's own derivation is in
-// flight declines rather than recursing forever).
-func cteColumnsUpper(cte *logical.LogicalCTE, md *recordlayer.RecordMetaData, ctes map[string]*logical.LogicalCTE, deriving map[string]bool) ([]string, bool) {
-	if len(cte.ColumnAliases) > 0 {
-		out := make([]string, len(cte.ColumnAliases))
-		for i, a := range cte.ColumnAliases {
-			out[i] = strings.ToUpper(a)
-		}
-		return out, true
-	}
-	name := strings.ToUpper(cte.Name)
-	if deriving[name] {
-		return nil, false
-	}
-	deriving[name] = true
-	defer delete(deriving, name)
-	return fromLegColumnsUpper(cte.Body, md, ctes, deriving)
-}
-
-// fromLegColumnsUpper derives the UPPER output column names of a FROM-leg
-// subtree (a derived table / CTE body) for the duplicate-alias check. It
-// mirrors the translator's derivedOutputColumns shape set, but yields NAMES
-// only and omits columns with no simple identifier (an unaliased computed
-// projection / aggregate — nothing a qualified reference could collide on;
-// Java's per-attribute ambiguity fires only on references). Returns
-// (nil, false) for a shape it cannot derive — the caller treats that side as
-// all-colliding, conservative.
-func fromLegColumnsUpper(op logical.LogicalOperator, md *recordlayer.RecordMetaData, ctes map[string]*logical.LogicalCTE, deriving map[string]bool) ([]string, bool) {
-	switch o := op.(type) {
-	case *logical.LogicalScan:
-		if cte, ok := ctes[strings.ToUpper(o.Table)]; ok {
-			return cteColumnsUpper(cte, md, ctes, deriving)
-		}
-		if rt := recordTypeCI(md, o.Table); rt != nil && rt.Descriptor != nil {
-			return descriptorColumnsUpper(rt), true
-		}
-		return nil, false
-	case *logical.LogicalProject:
-		if len(o.Projections) == 1 && o.Projections[0] == "*" {
-			return fromLegColumnsUpper(o.Input, md, ctes, deriving)
-		}
-		out := make([]string, 0, len(o.Projections))
-		for i, p := range o.Projections {
-			if i < len(o.Aliases) && o.Aliases[i] != "" {
-				out = append(out, strings.ToUpper(o.Aliases[i]))
-				continue
-			}
-			upper := strings.ToUpper(p)
-			if i < len(o.IsComputed) && o.IsComputed[i] {
-				// An unaliased computed column's OUTPUT NAME is its generated
-				// (expression-text) name, and that name IS referenceable
-				// (`a."(ID + 1)"`), so it participates in the collision check
-				// — omitting it made same-expression duplicate legs look
-				// disjoint and a reference read ONE side, silently (review
-				// finding). Raw text, never parseColRef: a dot inside the
-				// expression is not a qualifier.
-				out = append(out, upper)
-				continue
-			}
-			if upper == "*" || strings.HasSuffix(upper, ".*") {
-				// A star mixed among named projections — the expansion is
-				// not derived here.
-				return nil, false
-			}
-			out = append(out, parseColRef(upper).bare())
-		}
-		return out, true
-	case *logical.LogicalAggregate:
-		// Mirrors the translator's aggregateOutputColumns: group keys AND
-		// aggregates contribute output names, with the raw expression /
-		// aggregate text as the generated name when unaliased —
-		// `a."COUNT(*)"` is referenceable, so omitting it let duplicate
-		// aggregate legs plan and read one side, silently (review finding).
-		out := make([]string, 0, len(o.GroupKeys)+len(o.Aggregates))
-		for i, k := range o.GroupKeys {
-			if i < len(o.GroupKeyValues) && o.GroupKeyValues[i] != nil {
-				out = append(out, strings.ToUpper(k)) // expression key — text name
-				continue
-			}
-			out = append(out, parseColRef(strings.ToUpper(k)).bare())
-		}
-		for i, agg := range o.Aggregates {
-			if i < len(o.Aliases) && o.Aliases[i] != "" {
-				out = append(out, strings.ToUpper(o.Aliases[i]))
-				continue
-			}
-			out = append(out, strings.ToUpper(agg))
-		}
-		return out, true
-	case *logical.LogicalFilter:
-		return fromLegColumnsUpper(o.Input, md, ctes, deriving)
-	case *logical.LogicalSort:
-		return fromLegColumnsUpper(o.Input, md, ctes, deriving)
-	case *logical.LogicalLimit:
-		return fromLegColumnsUpper(o.Input, md, ctes, deriving)
-	case *logical.LogicalDistinct:
-		return fromLegColumnsUpper(o.Input, md, ctes, deriving)
-	case *logical.LogicalUnion:
-		// SQL exposes the FIRST branch's names.
-		if len(o.Inputs) == 0 {
-			return nil, false
-		}
-		return fromLegColumnsUpper(o.Inputs[0], md, ctes, deriving)
-	case *logical.LogicalValues:
-		out := make([]string, 0, len(o.Aliases))
-		for _, a := range o.Aliases {
-			if a != "" {
-				out = append(out, strings.ToUpper(a))
-			}
-		}
-		return out, true
-	case *logical.LogicalJoin:
-		// A join body's star expansion concatenates the leg columns in
-		// declaration order (duplicates survive — they collide, correctly).
-		left, okL := fromLegColumnsUpper(o.Left, md, ctes, deriving)
-		if !okL {
-			return nil, false
-		}
-		right, okR := fromLegColumnsUpper(o.Right, md, ctes, deriving)
-		if !okR {
-			return nil, false
-		}
-		return append(left, right...), true
-	case *logical.LogicalCTE:
-		// A WITH nested inside a derived body: its Main is the output shape,
-		// with the definition in scope.
-		sub := make(map[string]*logical.LogicalCTE, len(ctes)+1)
-		for k, v := range ctes {
-			sub[k] = v
-		}
-		sub[strings.ToUpper(o.Name)] = o
-		return fromLegColumnsUpper(o.Main, md, sub, deriving)
-	}
-	return nil, false
 }

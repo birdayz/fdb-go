@@ -530,10 +530,32 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
 				if len(sq.joins) > 0 {
+					// RFC-173 QP-REF-BIND item 1: qualified projections over
+					// joins run the per-attribute check (Java's 42702 — the
+					// pre-item-1 bypass never resolved them), and a reference
+					// binding to a LATER duplicate-alias leg is emitted
+					// QOV-correlated to that leg's binding so the gated
+					// seed's bake addresses the right quantifier. Every other
+					// reference keeps the alias-keyed merged-row read.
+					ref := parseColRef(col)
+					qv, qerr := resolver.ResolveQualifiedProjection(
+						semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
+					if qerr != nil {
+						var ambigErr *semantic.AmbiguousColumnError
+						if errors.As(qerr, &ambigErr) {
+							return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+								"Ambiguous reference %s", ambigErr.Reference())
+						}
+						return nil, qerr
+					}
 					if i < len(proj.ProjectedValues) {
-						proj.ProjectedValues[i] = &values.FieldValue{
-							Field: strings.ToUpper(col),
-							Typ:   values.UnknownType,
+						if qv != nil {
+							proj.ProjectedValues[i] = qv
+						} else {
+							proj.ProjectedValues[i] = &values.FieldValue{
+								Field: strings.ToUpper(col),
+								Typ:   values.UnknownType,
+							}
 						}
 					}
 				} else {
@@ -595,8 +617,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
+						// Java's exact SemanticAnalyzer text — the reference as
+						// written, byte-equal in the conformance harness
+						// (RFC-173 QP-REF-BIND item 1, M5; live-verified for
+						// duplicate AND distinct aliases).
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-							"column reference %q is ambiguous", ob.colName)
+							"Ambiguous reference %s", ambigErr.Reference())
 					}
 					var srcNotFound *semantic.SourceNotFoundError
 					if errors.As(walkErr, &srcNotFound) {
@@ -798,8 +824,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		if walkErr != nil {
 			var ambigErr *semantic.AmbiguousColumnError
 			if errors.As(walkErr, &ambigErr) {
+				// Java's exact text, from the reference as written (M5).
 				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-					"column reference is ambiguous")
+					"Ambiguous reference %s", ambigErr.Reference())
 			}
 			var inListNull *expr.InListNullError
 			if errors.As(walkErr, &inListNull) {

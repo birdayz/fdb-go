@@ -2451,6 +2451,13 @@ branch `7f0f6848e` 165.14s (noise; branch equal-or-faster per metric: full scans
 5.4/7.7ms, IN-list 14.6ms vs 14.9ms). All 23 subtests PASS both sides. No
 regression.
 
+**2026-07-05 (RFC-173 item-1 c2+c3 — the front-end flip + SELECT-* star layout):**
+branch (item-1 lift) 171.41s total, all 23 subtests PASS. Every metric within the
+c1-baseline band (full_scan_count 3.75s, order_by_pk_full 4.60s, scan_all_narrow
+4.13s / _wide 4.44s, sparse_filter 3.63s, group_by ~5ms, join_10 0.05s). The change
+only adds a column-metadata derivation arm for duplicate-alias `SELECT *` (no
+plan-shape / cost change for non-dup queries). No regression.
+
 **2026-07-05 (RFC-173 item-2 commit 5b, PR #480 — cluster-gate rider transparency):**
 baseline master `4f836f941` 156.14s total vs branch `bd802e83d` 156.32s (+0.1%, noise);
 every subtest within measurement resolution (pk lookups 10–60ms both, index equality 20ms,
