@@ -3662,16 +3662,23 @@ minted-binding projection upper reads NULL; the pass-through site had booked
 exactly this widening).
 
 The guard: `mintedBindingLeg` (the subtree probe for a parser-minted duplicate
-binding) declines LOUDLY (typed — ErrCodeUnsupportedQuery; the scalar path's
-0A000 CorrelatedExistsError) at every display-keyed sink a minted-binding query
+binding; deliberately descends CTE/derived bodies — the over-approximation's
+failure direction is a loud decline) declines LOUDLY (typed —
+ErrCodeUnsupportedQuery; the scalar path's CorrelatedExistsError, surfacing
+0A000 in SELECT position and wrapped 42703 in WHERE position) at every
+display-keyed sink a minted-binding query
 can reach — translateJoin's name-model arm, translateJoinWithExists' narrowed
 arms AND its gated leg-independent-EXISTS shape, buildCorrelatedScalar. The
 projected-EXISTS fold needed the inverse fix: translateProjectOverExistsFilter no
 longer pre-translates a JOIN input (buildExistentialJoinSelect re-translates the
 legs itself; the wasted enclosed translation tripped the new guard for a shape
-the binding-keyed fold serves fine). Never wrong rows: every declared-loud shape
-is pinned with a drain assert (any served row must be non-NULL, so a future flip
-is observed), and the flip obligations are booked as the TODO rider with
-per-shape exit gates (the pass-through gate widening; per-path ordinal seeds;
-the binding-aware scalar lowering). The arity-2 scope boundary of the c4
-buried-reference rebase is booked in the same rider.
+the binding-keyed fold serves fine). Never wrong rows: every declared-loud shape is
+pinned with a drain assert (P4a–P4f — any served row must be non-NULL, so a
+future flip is observed; P4e pins the gated leg-independent-EXISTS face, P4f
+the UNION face, whose per-attribute branch reference stays display-keyed and
+dies loud at the executor's ordinal guard — the typed translation-time decline
+is the booked upgrade), and the flip obligations are booked as the TODO rider
+with per-shape exit gates (the pass-through gate widening; per-path ordinal
+seeds; the binding-aware scalar lowering; the UNION branch seed). The arity-2
+scope boundary of the c4 buried-reference rebase and the dup-alias unnest-owner
+first-match residual are booked in the same rider.

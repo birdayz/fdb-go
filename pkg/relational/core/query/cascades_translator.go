@@ -4303,18 +4303,24 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 
-	// Add EXISTS subqueries as existential quantifiers.
+	// Add EXISTS subqueries as existential quantifiers. The leg-correlation
+	// scan feeds ONLY the minted-binding decline below — skipped entirely for
+	// the non-duplicate common case.
 	sourceAliases := []string{leftAlias, rightAlias}
+	mintedLeg := mintedBindingLeg(left, right)
 	anyExistsRefsLegs := false
 	for _, esq := range f.ExistsSubqueries {
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
 		}
-		for corr := range subRef.GetCorrelatedTo() {
-			name := corr.Name()
-			if strings.EqualFold(name, leftAlias) || strings.EqualFold(name, rightAlias) {
-				anyExistsRefsLegs = true
+		if mintedLeg != "" && !anyExistsRefsLegs {
+			for corr := range subRef.GetCorrelatedTo() {
+				name := corr.Name()
+				if strings.EqualFold(name, leftAlias) || strings.EqualFold(name, rightAlias) {
+					anyExistsRefsLegs = true
+					break
+				}
 			}
 		}
 		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
@@ -4327,7 +4333,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 	if gatedFlatten && !anyExistsRefsLegs {
-		if leg := mintedBindingLeg(left, right); leg != "" {
+		if leg := mintedLeg; leg != "" {
 			// A LEG-INDEPENDENT existential over a minted-binding join: the
 			// executor's identity-FlatMap positional pass-through is
 			// probe-gated on baked outer references INSIDE the exists inner
@@ -4603,7 +4609,12 @@ func sourceAlias(op logical.LogicalOperator) string {
 // decline LOUDLY at every name-model construction a minted-binding query can
 // narrow into — never silent wrong rows (RFC-173 QP-REF-BIND item 1). It does
 // NOT descend into existential/scalar subquery plans: those translate their
-// own FROM and guard themselves.
+// own FROM and guard themselves. It DOES descend through CTE/derived bodies
+// (Children()): deliberate — a dup buried in a body that reaches a name-model
+// parent is the same silent-NULL hazard, and the failure direction of the
+// over-approximation is a loud decline, never wrong rows (unlike the
+// FindOuterScanTable convention, which must NOT cross body scopes because it
+// NAMES a table for the caller's own scope).
 func mintedBindingLeg(ops ...logical.LogicalOperator) string {
 	for _, op := range ops {
 		if op == nil {

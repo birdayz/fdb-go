@@ -238,6 +238,9 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 					nulls++
 				}
 			}
+			if rerr := rows.Err(); rerr != nil {
+				t.Fatalf("rows: %v", rerr)
+			}
 			t.Errorf("must decline loudly, got %d rows (%d NULL — silent wrong rows)\n  sql: %s", n, nulls, q)
 			return
 		}
@@ -266,5 +269,23 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 	t.Run("P4d_scalar_dup_outer_agg", func(t *testing.T) {
 		loudDecline(t, "SELECT (SELECT MAX(qid) FROM q WHERE a.id = 1) FROM p AS a, q AS a",
 			"duplicate outer FROM alias")
+	})
+	// (e) The GATED flatten's leg-independent EXISTS — nothing narrows off
+	// the gate, but the executor's identity-FlatMap positional pass-through
+	// is probe-gated on baked outer refs inside the exists inner, which a
+	// leg-independent inner never has (pre-guard: 6 rows, all NULL). The
+	// correlated control is P2_second_leg_dup above.
+	t.Run("P4e_leg_independent_exists_dup", func(t *testing.T) {
+		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM p)",
+			"duplicate FROM alias")
+	})
+	// (f) The UNION face: a dup-alias branch under UNION ALL keeps its
+	// per-attribute reference display-keyed and dies LOUD at the executor's
+	// ordinal-resolution guard (zero rows served; the distinct-alias control
+	// answers). Correct-or-loud holds; the typed-decline-at-translation
+	// upgrade rides the flip rider.
+	t.Run("P4f_union_dup_branch", func(t *testing.T) {
+		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a UNION ALL SELECT id FROM p",
+			"not resolvable in the runtime row")
 	})
 }

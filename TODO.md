@@ -3404,20 +3404,27 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       rides until S4 — folded into the atomic commit per the circularity ruling, with the
       differential covering it name-model-side until then).
 - [ ] **Rider: the minted-binding loud-decline class flips to rows** (item-1 c5 —
-      the review-round guard): three declared-loud shapes over duplicate FROM aliases,
-      each pinned in rfc173_item1_keybinding_exists_fdb_test.go (P4a–P4d) with the
+      the review-round guard): the declared-loud shapes over duplicate FROM aliases,
+      each pinned in rfc173_item1_keybinding_exists_fdb_test.go (P4a–P4f) with the
       never-wrong-rows drain assert. Exit gates per shape: (a) leg-independent EXISTS
-      over a minted-binding gated flatten — flips when the executor's identity-FlatMap
-      positional pass-through gate widens to key on the outer's own ordinal seed
-      (probeOuterBakedType is the probe; flat_map_cursor.go documents the widening as
-      the follow-on); (b) narrowed-off-the-gate flattens/joins (existential-alias
-      collision, arity ≠ 2, enclosure) — flip per-path as each learns the ordinal seed
-      (item 3 / the N-way flatten); (c) correlated SCALAR subqueries over a dup outer —
-      flips when the scalar lowering speaks bindings (buildCorrelatedScalar's guard
-      names the gap). ALSO booked here (arity-scope boundary): the dup-alias ARITY-3
-      correlated buried-EXISTS stays a LOUD ordinal decline (the c4 buried-reference
-      rebase is arity-2 — implementJoinWithExistential's 2+1 shape); the N-way flatten
-      slice widens it.
+      over a minted-binding gated flatten (P4e) — flips when the executor's
+      identity-FlatMap positional pass-through gate widens to key on the outer's own
+      ordinal seed (probeOuterBakedType is the probe; flat_map_cursor.go documents the
+      widening as the follow-on); (b) narrowed-off-the-gate flattens/joins
+      (existential-alias collision P4a, arity ≠ 2 P4b, enclosure) — flip per-path as
+      each learns the ordinal seed (item 3 / the N-way flatten); (c) correlated SCALAR
+      subqueries over a dup outer (P4c/P4d) — flips when the scalar lowering speaks
+      bindings (buildCorrelatedScalar's guard names the gap; label note: surfaces
+      0A000 in SELECT position, wrapped 42703 in WHERE position); (d) the UNION face
+      (P4f) — a dup-alias branch's per-attribute reference stays display-keyed and
+      dies loud at the executor's ordinal guard; UPGRADE to a typed
+      translation-time decline, then flip with the branch's ordinal seed. ALSO booked
+      here: (arity-scope boundary) the dup-alias ARITY-3 correlated buried-EXISTS
+      stays a LOUD ordinal decline (the c4 buried-reference rebase is arity-2 —
+      implementJoinWithExistential's 2+1 shape), the N-way flatten slice widens it;
+      (unnest owner) dup-alias unnest OWNER resolution is first-match-by-alias, not
+      per-attribute (`q AS a, u AS a, a.arr AS e` → loud 42703 naming the wrong
+      source) — classify vs live Java when the unnest-residual slice lands.
 - [ ] **Rider: aggregate output METADATA drift vs Java** (item-1 c4 probe finding —
       rows are parity, metadata is not; live-verified 4.12.11.0): (a) a DISTINCT-alias
       qualified group key labels the output column `A.QID` where Java labels the bare
