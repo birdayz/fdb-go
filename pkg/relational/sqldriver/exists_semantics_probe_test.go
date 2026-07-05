@@ -125,6 +125,14 @@ func TestFDB_ExistsSemanticsProbe(t *testing.T) {
 	// Outer-only comparison against the scalar (no inner correlation at all).
 	ck("exists_with_uncorrelated_scalar_outer_only",
 		"SELECT id FROM parent p WHERE EXISTS (SELECT 1 FROM child c WHERE p.id > (SELECT MIN(c2.id) FROM child c2) - 9)", []int64{2, 3})
+	// The NEGATED polarity of the scalar-inside shape (a review catch on this
+	// batch): the scalar-referencing conjunct must ALSO evaluate under the
+	// ∃ — routing it to the pre-filter channel reproduces the P ∧ ¬∃(Q) polarity
+	// bug for exactly this shape. ¬∃(p.id > MIN-9 ∧ child-nonempty): p1 keeps
+	// (comparison false), p2/p3 drop → {1}.
+	ck("not_exists_with_uncorrelated_scalar_inside",
+		"SELECT id FROM parent p WHERE NOT EXISTS (SELECT 1 FROM child c WHERE p.id > (SELECT MIN(c2.id) FROM child c2) - 9)", []int64{1})
+
 	// CORRELATED scalar inside the EXISTS WHERE (`MAX(c2.id) WHERE c2.pid =
 	// c.pid` — per-inner-row): NO evaluation path exists (the one-shot pre-eval
 	// cannot re-run per row; the WHERE channel has no CorrelatedScalarSubquery

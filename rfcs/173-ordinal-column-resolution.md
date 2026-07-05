@@ -2654,8 +2654,8 @@ ACK round-11 after two NAK rounds whose findings were closed with revert-tested 
 pins; codex CLEAN rounds 9/10/11; the @claude Action runs were starved by the CI-runner
 infra failure, best-effort, no NAK). The saga's yield: the STRUCTURAL exit gate (translator
 never predicts executor routing), a truly bit-for-bit cross-agreement invariant, ONE rebase
-authority, and −110 lines of prediction apparatus. NEXT: the B/C/D/E pre-existing EXISTS
-wrong-rows bugs (booked below, bug-B fix design banked), then 5b/5c.
+authority, and −110 lines of prediction apparatus. NEXT was the B/C/D/E batch — RESOLVED in
+PR #478 (see the follow-ons block below); then 5b/5c.
 5a decline-lift at translateUnnestJoin removes the blanket
 `!unnestUnderExistential` guard but keeps a `unnestExistsSeedSafe` gate: the ordinal seed is
 taken under EXISTS only for a SINGLE-ALIAS outer (outerBoundAliases==1, not clusterArity==1 —
@@ -2689,40 +2689,43 @@ rebase authority, no double-rebase (the below-FOD window branch becomes a no-op,
 windowsHoisted). This ALSO restores the AT index-scan perf. Pinned by R5r (AS+AT fast-path sibling
 → {20}); NOT a master regression (master was full-scan / name-model for both AT and no-AT).
 
-**IMMEDIATE 5a follow-ons (pre-existing wrong-rows bugs surfaced by the 5a review, NOT 5a
-regressions — present at PR base f8c6eddad; fix BEFORE 5b/5c):**
-(B) **NOT-EXISTS negation-blind outer-residual push.** yieldExistsFlatMap (rule_implement_nested_loop_join.go
-~:2166) pushes outerResiduals as an outer PRE-FILTER regardless of `negated`. For NOT EXISTS,
-`¬∃(P∧Q) ≡ ¬P ∨ ¬∃(Q)`, NOT `P ∧ ¬∃(Q)` — so an outer-only conjunct P drops outer rows that
-should survive. Repro: `SELECT ID FROM MA WHERE NOT EXISTS (SELECT 1 FROM JU WHERE MA.ID = 1)`
-→ got [], want {2} (non-unnest — no RFC-173 code involved; Java returns {2}). Fix: under negation,
-route outer-only conjuncts BELOW the FOD (so the FOD sees `∃ inner: P∧Q` and the negation applies
-on top), never as an outer pre-filter. PR #336-era. The negated unnest twin is the same machinery.
-(C) **Scalar subquery inside EXISTS WHERE (uncorrelated AND correlated).** `EXISTS (SELECT 1 FROM
-JU WHERE MA.ID > (SELECT MIN(ID) FROM JU))` → the hoisted conjunct compares against an unevaluated
-NULL binding → all rows dropped (got [], want {2}). The CORRELATED form fails identically
-(`... WHERE MA.C < (SELECT MAX(D) FROM MB WHERE MB.ID = JU.ID)` → got [], base and HEAD), so the
-fix must cover both. Seed-independent (fails name-model too); related to the RFC-141 R4
-external-binding routing at predicateReferencesInnerLeg:1486.
-(D) **Shadowed ELEMENT ref inside EXISTS (name-model bug).** `FROM TCOLL, TCOLL.ARR AS ID WHERE
-EXISTS (SELECT 1 FROM U WHERE U.ID = ID AND U.V > TCOLL.ID)` → the AS alias `ID` shadows the outer
-column TCOLL.ID, and the element ref `ID` resolves to the WRONG "ID" slot — name-model returns
-{101,201,202,203} (all elements), want {} (U.ID = element never matches U's id=1). Broken at the
-PR base (name-model); commit 5a's round-5 ordinal path made it NON-DETERMINISTIC (map-order slot
-pick), and unnestExistsSeedSafe's shadow decline restores the deterministic base. Real fix: bind
-the element ref to innerCorr DIRECTLY instead of name-resolving over the merged row — likely the
-same root as the whole shadow class, folds into the structural refactor (below).
-(E) **Multi-table-inner EXISTS with an element-referencing correlated conjunct.** `FROM MA,
-MA.ARR AS X WHERE EXISTS (SELECT 1 FROM MB, JU WHERE MB.D + 3 > X - MA.ID)` (want {10,11,12}) and
-the `JU.K < MA.ID + X + 980` variant (want {20,21}): the conjunct lands as a filter on the Explode
-INSIDE the unnest box — outer side, where the inner legs MB/JU are unbound — never reaching the
-existential level's routing (it fails even referencing the rightmost inner leg, so it is NOT the
-classifier / collectInnerLegAliases; the mis-placement is upstream in the element-scoped EXISTS
-threading for multi-table inners). Base: silent []; HEAD: LOUD `baked FieldValue evaluated against
-a non-positional row context` (5a's baked refs turn silent-wrong into CORRECT-or-LOUD — strictly
-better). While fixing, also align the fast-path residual routers
-(rule_implement_nested_loop_join.go:2073, :2117) which still split on `{existInnerCorr}` membership
-alone (the pre-RFC-141-R4 test), a second latent divergence.
+**5a follow-ons (pre-existing wrong-rows bugs surfaced by the 5a review) — RESOLVED in the
+B/C/D/E batch (PR #478), except the two booked residuals below:**
+(B) **FIXED — NOT-EXISTS outer-only-conjunct pre-filter.** Not negation-blind ROUTING but
+PLACEMENT: an outer-only conjunct from INSIDE the subquery's WHERE rode the JoinPredicate
+channel into the polarity-blind outer pre-filter (`P ∧ ¬∃(Q)` instead of `¬∃(P∧Q)`).
+buildCorrelatedExists now keeps subquery-origin outer-only conjuncts INSIDE the subquery
+(a LogicalFilter on the inner plan — under the ∃ in both polarities); the lateral-unnest arm
+makes the buried predicate BINDABLE in place (ordinal seed: baked ofOrdinals over the typed
+merged QOV — rebaseUnnestOuterLegPredicateOrdinal returned for the BURIED channel, the one
+place the executor's rule-level hoist cannot reach, so the translator is its single rebase
+authority; anchored seed: the qualified LEG.COL rebase). Pins: the exists_semantics_probe
+outer-only dimension (both polarities, mixed, sibling control) + R5t/R5u.
+(C) **FIXED (uncorrelated) / LOUD (correlated) — scalar subquery inside EXISTS WHERE.** Three
+stacked defects: buildCorrelatedExists DROPPED the nested planner's scalar plans; a
+scalar-alias conjunct must stay on the JoinPredicate channel (the pre-evaluated external
+binding exists only above the FOD — RFC-141 R4); and — not subquery-specific — a PLAIN-COLUMN
+aggregate arg (parser: aggArg text, NO aggExpr) never reached the resolver, so the lossy text
+reparse kept a qualified arg as ONE opaque dotted FieldValue that key-missed bare-keyed rows →
+MIN/MAX/SUM silently aggregated NULL. upgradeAggregateOperands now resolves plain-column args
+via the semantic scope (ResolveIdentifier) with a bare-form slot-matcher fallback. A CORRELATED
+scalar inside an EXISTS WHERE (per-inner-row — no evaluation path) now declines LOUDLY
+(CorrelatedExistsError; was silent []). **Residual booked:** per-row correlated-scalar
+evaluation under the semi-join (flips the loud pin to rows).
+(D) **NOT A BUG — dissolved by analysis, pinned.** The booked expectation violated SQL scoping:
+inside the subquery a bare column binds INNERMOST-first, so `U.ID = ID` with an inner table
+that HAS an ID column is a tautology on non-null U.ID — 'all rows' is the CORRECT answer (the
+booked want-{} was wrong). The genuine shadowed-element shape (element alias shadows an OUTER
+column, no inner collision) already binds correctly through the structural fix's element
+window. Pins: R5v (discriminating values prove the ELEMENT is read over shadowed TCOLL.VAL) +
+R5w (the inner-collision scoping control).
+(E) **LOUD (was silent) — multi-table-inner EXISTS with an element-referencing conjunct.**
+The conjunct needs below-FOD evaluation with the element bound from the outer row; that
+multi-table threading does not exist, and the shape silently returned []. translateUnnestExistsFilter
+now declines it loudly (ErrCodeUnsupportedQuery). Pin: R5x (loud-or-correct-rows; fails on the
+silent []). **Residuals booked:** the element-scoped multi-table threading (flips R5x to rows:
+{10,11,12} / {20,21}), and the fast-path residual routers (rule_implement_nested_loop_join.go
+:2073/:2117) still splitting on `{existInnerCorr}` membership alone (pre-RFC-141-R4 test).
 
 **Booked structural refactor (both Graefe + Torvalds, round-4/5):** the translator's
 existsHasOuterOnlyLegConjunct hand-maintains a PREDICTION of the NLJ rule's inner-vs-outer routing;
@@ -2762,8 +2765,9 @@ executor by construction (mixed → exactly one outer leg, `len(windows) != 1` d
 `len(windows) < 2` declines, mirroring ordinalJoinSpansOf) — the cross-agreement fixture locks the
 DECLINE boundary (multi-leg / single-leg / record-element / lone-element decline in both walks) and
 compares field TYPES, closing the drift the round-9 review measured (values accepting a shape the
-executor declined while the pin stayed green). The pre-existing name-model bugs B/C/D/E remain
-booked (below), gating S4.
+executor declined while the pin stayed green). The pre-existing name-model bugs B/C/D/E are
+RESOLVED in the PR #478 batch (fixed / loud / dissolved — see the follow-ons block); only their
+two booked residuals (per-row correlated-scalar eval; multi-table element threading) precede S4.
 The class-K / fetch-shell /
 alias-unchecked exit gates flip with these (the fail-closed decline's replacement).
 Commit-3/4 bookings still open (fold in as touched): the unwrap-arm/probe implicit

@@ -5363,21 +5363,15 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// an equivalence that holds ONLY for the positive polarity (P ∧ ∃(Q) ≡
 	// ∃(P∧Q)); under NOT EXISTS it computes P ∧ ¬∃(Q) and wrongly drops every
 	// ¬P outer row. Placement, not polarity, is the invariant: subquery-origin
-	// conjuncts never leave the subquery.
-	// Conjuncts referencing a SCALAR-subquery alias are pinned to the join-
-	// predicate channel regardless of their other refs: the scalar is a
-	// PRE-EVALUATED EXTERNAL binding, visible only where the semi-join
-	// implementation reads externals (the RFC-141 R4 routing) — never below
-	// the FirstOrDefault. Burying such a conjunct would compare against an
-	// unset binding (silent NULL, zero rows).
-	externals := make(map[string]struct{}, len(nestedPlanner.scalarSubqueries)+len(nestedPlanner.correlatedScalarSubqueries))
-	for _, ssq := range nestedPlanner.scalarSubqueries {
-		externals[strings.ToUpper(ssq.Alias.Name())] = struct{}{}
-	}
-	for _, cssq := range nestedPlanner.correlatedScalarSubqueries {
-		externals[strings.ToUpper(cssq.Alias.Name())] = struct{}{}
-	}
-	outerOnly, rest := splitOuterOnlyConjuncts(pred, p.innerSourceAliases(innerCorr, sq), externals)
+	// conjuncts never leave the subquery. That INCLUDES conjuncts referencing a
+	// SCALAR-subquery alias: the pre-evaluated binding lives in the root
+	// evaluation context and IS visible below the FirstOrDefault (the filter
+	// contexts thread it) — the RFC-141 R4 outer-routing rationale concerns
+	// SIBLING predicates outside the ∃ (which must not be skipped when the
+	// inner is empty), never subquery-internal conjuncts. Routing a
+	// scalar-referencing internal conjunct outward reproduced the pre-filter
+	// polarity bug for exactly the NOT-EXISTS + scalar shape.
+	outerOnly, rest := splitOuterOnlyConjuncts(pred, p.innerSourceAliases(innerCorr, sq))
 	if outerOnly != nil {
 		op = &logical.LogicalFilter{Input: op, Predicate: outerOnly}
 	}
@@ -5405,13 +5399,15 @@ func (p *existsSubqueryPlanner) innerSourceAliases(innerCorr string, sq *selectQ
 
 // splitOuterOnlyConjuncts partitions a subquery WHERE's top-level AND tree into
 // (outerOnly, rest): a conjunct is OUTER-ONLY iff it references at least one
-// correlation and none of them is an inner FROM source or an EXTERNAL
-// (scalar-subquery) binding alias. Everything else — inner-only conjuncts,
-// genuine correlation conjuncts, external-binding comparisons, and
-// reference-free constants — stays in rest (the join predicate), preserving
-// the existing routing for every shape except the one that was wrong. An OR
-// tree is one conjunct, classified atomically by its whole correlation set.
-func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases, externalAliases map[string]struct{}) (outerOnly, rest predicates.QueryPredicate) {
+// correlation and none of them is an inner FROM source. A scalar-subquery
+// alias counts as OUTER here — the pre-evaluated binding lives in the root
+// evaluation context and is visible under the ∃, and the placement invariant
+// (subquery conjuncts evaluate under the ∃, both polarities) applies to it
+// like any other outer-only conjunct. Inner-only conjuncts, genuine
+// correlation conjuncts, and reference-free constants stay in rest (the join
+// predicate), preserving the existing routing. An OR tree is one conjunct,
+// classified atomically by its whole correlation set.
+func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases map[string]struct{}) (outerOnly, rest predicates.QueryPredicate) {
 	if pred == nil {
 		return nil, nil
 	}
@@ -5432,10 +5428,6 @@ func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases, exter
 		for c := range corrs {
 			name := strings.ToUpper(c.Name())
 			if _, isInner := innerAliases[name]; isInner {
-				keep = append(keep, p)
-				return
-			}
-			if _, isExternal := externalAliases[name]; isExternal {
 				keep = append(keep, p)
 				return
 			}
