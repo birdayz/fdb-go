@@ -3538,3 +3538,39 @@ determinism verified — membership-only, monotone, finite; the zero-value decli
 hole ruled absent: one caller, bool-checked, and empty-binding legs are already
 declined by the seed). codex **CLEAN round 2** (prior comment superseded). Branch
 1M stress green (23/23; baseline comparison recorded in TODO.md).
+
+## QP-REF-BIND item 1 — c2+c3 record (PR #481, commits 5860e3454 + 4e78ef2c2)
+
+**c2+c3 (5860e3454) — the dup-alias lift.** The front-end flip (M1 per-attribute
+resolution + M5 message unification + the FROM-walk 42702 retirement) and the
+SELECT-* star layout (M4/F-A in-slice) landed together (the never-live-separately
+constraint made them one atomic change; the FDB test asserts both). Key mechanics:
+scope accepts duplicate PLAIN aliases and resolves references per-attribute
+(1→bind, 0→parent fallthrough per amendment (a), ≥2→terminal 42702); the wedge
+gate keys its pairwise dup check on the BINDING correlation so binding-distinguished
+dup legs enter the ordinal seed; `deriveColumnsFromJoin` derives the star columns
+from the ordinal RESULT VALUE (positional, duplicate-label safe) via
+`mergedRVSequenceDiverges` when the name-model leg-merge's DISPLAY sequence diverges
+from the RC's authoritative FROM-order sequence (the planner may regroup same-table
+dup legs; the RV is order-invariant, the leg-merge is not).
+
+**Exit gates all green:** dup_from_alias_{disjoint_where,select_star,cte_star} flipped
+to parity (Go answers `[[2]]` / `[ID V QID ID V]` / `[ID ID]`, live-verified byte-equal
+to Java — the annotations deleted); the error_ambiguous_column_join RFC-082 annotation
+removed (M5 made Go's bare-ambiguity message byte-equal to Java's `Ambiguous reference
+NAME`); referenced/three_way_later_pair/cte_referenced stay parity; undefined_table
+stays 42F01; generated_aggregate stays message-drift. Dual-window differential green
+(1632 entries, 1 pre-existing carve-out). Live-Java conformance green (54/54 in the
+pre-commit). 1M stress green (23/23, no regression vs the c1 baseline).
+
+**Four-gate status: Graefe ACK, Torvalds ACK** (both on HEAD 4e78ef2c2, after the
+review-response commit). Graefe IMPLEMENTATION-ACK ruled all three seams correct
+(binding-keyed gate, per-attribute resolution, RV-authoritative star derivation) with
+two non-blocker debts, both discharged: (a) the divergence gate is a bridge toward
+RV-authoritative-always (recorded as a follow-on), (b) the same-bare/different-binding
+`FROM p, p` reorder pinned. Torvalds' four findings all resolved in 4e78ef2c2: the dead
+`ambiguousColumnMarker` removed; the untested cross-scope-shadow decline traced (two
+mechanisms by inner-scope arity — multi-source→plan-time 42703 CorrelatedShadowError,
+single-source→runtime ordinal guard), both pinned, the bare fmt.Errorf typed; the
+ORDER-BY-1 tolerance gate removed; `bindingOrAlias` deduped across every scope builder.
+codex + @claude remain the PR-side gauntlet.

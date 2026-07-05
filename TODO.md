@@ -3314,7 +3314,15 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    per-leg binding ids (later duplicates mint fresh); gate lift + binding-keyed seed; star
    layout fork F-A and message-unification fork F-B for the Graefe design ruling; ordering
    constraint — front-end acceptance and back-end binding never live separately
-   (mis-pushdown wrong-rows hazard). Awaiting the Graefe design ruling.**
+   (mis-pushdown wrong-rows hazard).
+   **ITEM-1 COMPLETE (2026-07-05, PR #481): c1 (dark mint + binding-keyed seed, 34872539b +
+   fix round) + c2+c3 (the lift — per-attribute resolution + FROM-walk 42702 retirement +
+   SELECT-* star layout, 5860e3454) + the review-response (4e78ef2c2), Graefe ACK + Torvalds
+   ACK on HEAD. Java's per-attribute model is LIVE: duplicate FROM aliases register per-leg,
+   references resolve per-attribute (42702 at resolution, byte-equal to Java), SELECT * answers
+   with Java's positional duplicate-column layout. All three flip corpus entries at parity
+   (annotations deleted); dual-window + live-Java conformance + 1M stress green. Full record in
+   RFC § "QP-REF-BIND item 1 — c2+c3 record". codex + @claude remain the PR-side gauntlet.**
 2. **Existential-flatten ordinalization** — translateJoinWithExists keeps the ANCHORED seed
    until the 2+1 select's data-access/correlated-FlatMap implementation paths bind legs
    POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).
