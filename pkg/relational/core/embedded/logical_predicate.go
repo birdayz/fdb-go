@@ -2539,7 +2539,14 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	}
 	operands := make([]values.Value, len(agg.Aggregates))
 	for _, ac := range sq.aggCols {
-		if ac.aggFunc == "" || ac.aggExpr == nil {
+		// A PLAIN-column aggregate arg (`MIN(pid)`, `MIN(c2.pid)`) carries
+		// aggArg only — the parser's resolveArg captures no aggExpr for a bare
+		// FullColumnName. It must STILL resolve here: the text fallback
+		// (parseAggregateText) keeps a qualified arg as ONE opaque dotted
+		// FieldValue{"C2.PID"}, which key-misses the scan row's bare "PID" at
+		// accumulation and silently aggregates NULL (a sub-planned scalar
+		// subquery's rows carry bare keys only). COUNT(*) has neither and skips.
+		if ac.aggFunc == "" || (ac.aggExpr == nil && ac.aggArg == "") {
 			continue
 		}
 		idx := -1
@@ -2560,13 +2567,44 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 				idx = i
 				break
 			}
+			// The aggregate node's text may carry the BARE column while the
+			// parsed arg is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main
+			// builder strips a same-source qualifier when naming the slot. Match
+			// the bare form too so the resolved-operand path engages for it.
+			if ref := parseColRef(arg); ref.isQualified() {
+				bareExpected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + ref.bare() + ")")
+				if strings.ToUpper(aggText) == bareExpected {
+					idx = i
+					break
+				}
+			}
 		}
 		if idx < 0 {
 			continue
 		}
-		v, err := resolver.WalkExpression(ac.aggExpr)
-		if err != nil {
-			continue
+		var v values.Value
+		if ac.aggExpr != nil {
+			walked, err := resolver.WalkExpression(ac.aggExpr)
+			if err != nil {
+				continue
+			}
+			v = walked
+		} else {
+			// Plain-column arg: resolve through the semantic scope
+			// (ResolveIdentifier — the same resolution a WHERE reference gets),
+			// so a qualified `c2.pid` binds against its FROM source instead of
+			// surviving as opaque dotted text. Unresolvable → fall through to
+			// the text path (fail-soft).
+			ref := parseColRef(ac.aggArg)
+			var qualID semantic.Identifier
+			if ref.isQualified() {
+				qualID = semantic.NewUnquoted(ref.table)
+			}
+			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(ref.bare()))
+			if rerr != nil || qv == nil {
+				continue
+			}
+			v = qv
 		}
 		operands[idx] = v
 	}
@@ -5256,6 +5294,27 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: walk predicate: %v", walkErr), Cause: walkErr}
 	}
 
+	// Propagate SCALAR subquery plans the nested planner collected while walking
+	// the inner WHERE (`… EXISTS (SELECT 1 FROM c WHERE p.id > (SELECT MIN(id)
+	// FROM c2))`). The walked predicate references the scalar's ALIAS; without
+	// the plan the executor never pre-evaluates it, the alias binding stays
+	// unset, and the comparison is silently NULL → every outer row dropped.
+	// Bubbling them into THIS planner routes them to the enclosing filter/
+	// projection exactly like a top-level scalar subquery (an uncorrelated
+	// scalar is a query-constant external binding — its evaluation point is
+	// scope-free). Correlated scalars propagate the same way; their per-row
+	// evaluation would need per-row re-execution (below).
+	p.scalarSubqueries = append(p.scalarSubqueries, nestedPlanner.scalarSubqueries...)
+	// A CORRELATED scalar inside an EXISTS WHERE has NO evaluation path: the
+	// one-shot pre-eval cannot re-run it per row, and the WHERE channel has no
+	// CorrelatedScalarSubquery consumer (only projections and HAVING do).
+	// Dropping it silently NULLed the comparison and returned zero rows for
+	// every outer row; decline LOUDLY instead (CORRECT-or-LOUD — the per-row
+	// evaluation is tracked follow-on work with the EXISTS wrong-rows batch).
+	if len(nestedPlanner.correlatedScalarSubqueries) > 0 {
+		return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlated scalar subquery inside an EXISTS WHERE clause is not supported"}
+	}
+
 	// If the nested planner collected EXISTS subqueries, check whether
 	// the middle level has its own correlation predicate (non-EXISTS).
 	if len(nestedPlanner.subqueries) > 0 {
@@ -5305,7 +5364,20 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// ∃(P∧Q)); under NOT EXISTS it computes P ∧ ¬∃(Q) and wrongly drops every
 	// ¬P outer row. Placement, not polarity, is the invariant: subquery-origin
 	// conjuncts never leave the subquery.
-	outerOnly, rest := splitOuterOnlyConjuncts(pred, p.innerSourceAliases(innerCorr, sq))
+	// Conjuncts referencing a SCALAR-subquery alias are pinned to the join-
+	// predicate channel regardless of their other refs: the scalar is a
+	// PRE-EVALUATED EXTERNAL binding, visible only where the semi-join
+	// implementation reads externals (the RFC-141 R4 routing) — never below
+	// the FirstOrDefault. Burying such a conjunct would compare against an
+	// unset binding (silent NULL, zero rows).
+	externals := make(map[string]struct{}, len(nestedPlanner.scalarSubqueries)+len(nestedPlanner.correlatedScalarSubqueries))
+	for _, ssq := range nestedPlanner.scalarSubqueries {
+		externals[strings.ToUpper(ssq.Alias.Name())] = struct{}{}
+	}
+	for _, cssq := range nestedPlanner.correlatedScalarSubqueries {
+		externals[strings.ToUpper(cssq.Alias.Name())] = struct{}{}
+	}
+	outerOnly, rest := splitOuterOnlyConjuncts(pred, p.innerSourceAliases(innerCorr, sq), externals)
 	if outerOnly != nil {
 		op = &logical.LogicalFilter{Input: op, Predicate: outerOnly}
 	}
@@ -5333,12 +5405,13 @@ func (p *existsSubqueryPlanner) innerSourceAliases(innerCorr string, sq *selectQ
 
 // splitOuterOnlyConjuncts partitions a subquery WHERE's top-level AND tree into
 // (outerOnly, rest): a conjunct is OUTER-ONLY iff it references at least one
-// correlation and none of them is an inner FROM source. Everything else —
-// inner-only conjuncts, genuine correlation conjuncts, and reference-free
-// constants — stays in rest (the join predicate), preserving the existing
-// routing for every shape except the one that was wrong. An OR tree is one
-// conjunct, classified atomically by its whole correlation set.
-func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases map[string]struct{}) (outerOnly, rest predicates.QueryPredicate) {
+// correlation and none of them is an inner FROM source or an EXTERNAL
+// (scalar-subquery) binding alias. Everything else — inner-only conjuncts,
+// genuine correlation conjuncts, external-binding comparisons, and
+// reference-free constants — stays in rest (the join predicate), preserving
+// the existing routing for every shape except the one that was wrong. An OR
+// tree is one conjunct, classified atomically by its whole correlation set.
+func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases, externalAliases map[string]struct{}) (outerOnly, rest predicates.QueryPredicate) {
 	if pred == nil {
 		return nil, nil
 	}
@@ -5357,7 +5430,12 @@ func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases map[st
 			return
 		}
 		for c := range corrs {
-			if _, isInner := innerAliases[strings.ToUpper(c.Name())]; isInner {
+			name := strings.ToUpper(c.Name())
+			if _, isInner := innerAliases[name]; isInner {
+				keep = append(keep, p)
+				return
+			}
+			if _, isExternal := externalAliases[name]; isExternal {
 				keep = append(keep, p)
 				return
 			}
