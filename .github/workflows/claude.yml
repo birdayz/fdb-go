@@ -10,16 +10,25 @@ on:
   pull_request_review:
     types: [submitted]
 
-# One live run per issue/PR, newest wins. This job shares the SINGLE-slot
-# hetzner-fdb scale set with the real CI gates, so a wedged or superseded
-# review run starves every PR's CI behind it (a 3h-wedged run + its queued
-# re-requests once held the slot while CI sat queued for an hour).
-concurrency:
-  group: claude-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
   claude:
+    # One live run per issue/PR, newest wins. This job shares the SINGLE-slot
+    # hetzner-fdb scale set with the real CI gates, so a wedged or superseded
+    # review run starves every PR's CI behind it (a 3h-wedged run + its queued
+    # re-requests once held the slot while CI sat queued for an hour).
+    #
+    # JOB-level concurrency, deliberately NOT workflow-level: the workflow
+    # fires on EVERY issue_comment, and a workflow-level group is entered by
+    # every run BEFORE the job's `if` filter runs — so the action's own
+    # "working…" placeholder comment (claude[bot]) and any unrelated comment
+    # (a codex review, a human note) spawned a run that CANCELLED the live
+    # review and then skipped itself on the author allowlist below: every
+    # @claude review self-cancelled ~30s in. A job-level group is entered
+    # only by jobs that actually RUN (skipped jobs never join), so only a
+    # genuine newer @claude trigger supersedes a live one.
+    concurrency:
+      group: claude-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
     # SECURITY: this runs on a SELF-HOSTED runner with write perms + secrets on a
     # PUBLIC repo. Only the owner, org members, and invited collaborators may trigger
     # it — never untrusted commenters (CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / NONE).
