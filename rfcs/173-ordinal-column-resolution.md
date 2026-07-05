@@ -2701,10 +2701,13 @@ merged QOV — rebaseUnnestOuterLegPredicateOrdinal returned for the BURIED chan
 place the executor's rule-level hoist cannot reach, so the translator is its single rebase
 authority; anchored seed: the qualified LEG.COL rebase). Pins: the exists_semantics_probe
 outer-only dimension (both polarities, mixed, sibling control) + R5t/R5u.
-(C) **FIXED (uncorrelated) / LOUD (correlated) — scalar subquery inside EXISTS WHERE.** Three
-stacked defects: buildCorrelatedExists DROPPED the nested planner's scalar plans; a
-scalar-alias conjunct must stay on the JoinPredicate channel (the pre-evaluated external
-binding exists only above the FOD — RFC-141 R4); and — not subquery-specific — a PLAIN-COLUMN
+(C) **FIXED (uncorrelated) / LOUD (correlated) — scalar subquery inside EXISTS WHERE.** Two
+stacked defects: buildCorrelatedExists DROPPED the nested planner's scalar plans (the
+pre-evaluated binding lives in the ROOT evaluation context and is visible below the FOD too,
+so a scalar-referencing subquery-internal conjunct buries under the ∃ like every other
+outer-only conjunct — the round-1 review's NOT-EXISTS+scalar catch proved a
+JoinPredicate-channel exception reproduces the pre-filter polarity bug; RFC-141 R4's outer
+routing concerns SIBLING predicates outside the ∃ only); and — not subquery-specific — a PLAIN-COLUMN
 aggregate arg (parser: aggArg text, NO aggExpr) never reached the resolver, so the lossy text
 reparse kept a qualified arg as ONE opaque dotted FieldValue that key-missed bare-keyed rows →
 MIN/MAX/SUM silently aggregated NULL. upgradeAggregateOperands now resolves plain-column args
