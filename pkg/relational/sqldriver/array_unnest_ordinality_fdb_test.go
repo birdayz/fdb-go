@@ -1977,6 +1977,74 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
+	t.Run("R5v EXISTS references the element through an alias shadowing an OUTER column", func(t *testing.T) {
+		// SQL scoping, two layers: (1) inside the subquery a bare column binds
+		// INNERMOST-first — U carries no VAL column, so `VAL` binds OUTWARD;
+		// (2) in the outer scope the unnest AS alias VAL SHADOWS TCOLL's real
+		// VAL column (=777). So `VAL` here is the ELEMENT (101..203):
+		// U.ID(=1) < VAL - 100 ⇔ element > 101 → {201,202,203}. Mis-binding to
+		// TCOLL.VAL (777) would admit every element (1 < 677) → 4 rows.
+		assertRows(t, `SELECT "VAL" FROM TCOLL, TCOLL."ARR" AS "VAL" WHERE EXISTS (SELECT 1 FROM U WHERE U."ID" < "VAL" - 100)`, []string{
+			"VAL=201", "VAL=202", "VAL=203",
+		})
+	})
+
+	t.Run("R5w bare inner-colliding name binds the INNER column, not the element", func(t *testing.T) {
+		// The scoping CONTROL for R5v: `ID` inside the subquery binds to U's OWN
+		// ID column (innermost scope wins over the outer element alias `ID`), so
+		// `U.ID = ID` is a tautology on non-null U.ID and EXISTS reduces to
+		// `U.V > TCOLL.ID` (999 > 1/2 → true) → ALL four element rows survive.
+		assertRows(t, `SELECT "VAL" FROM TCOLL, TCOLL."ARR" AS "ID" WHERE EXISTS (SELECT 1 FROM U WHERE U."ID" = "ID" AND U."V" > TCOLL."ID")`, []string{
+			"VAL=777", "VAL=777", "VAL=777", "VAL=777",
+		})
+	})
+
+	t.Run("R5x multi-table-inner EXISTS with an element conjunct stays LOUD or correct", func(t *testing.T) {
+		// The booked multi-table-inner class: the element-referencing conjunct
+		// (`MB.D + 3 > X - MA.ID`) historically landed as a filter on the Explode
+		// INSIDE the unnest box — outer side, where the inner legs are unbound —
+		// silently returning [] at the name-model base. The current baked refs
+		// turn that into a LOUD error (correct-or-loud, strictly better). Pin:
+		// either the loud failure (plan OR execution) OR, once the element-scoped
+		// threading for multi-table inners lands, the correct rows {10,11,12}.
+		q := `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MB, JU WHERE MB."D" + 3 > "X" - MA."ID")`
+		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		if perr != nil {
+			return // loud at planning — acceptable arm of the pin
+		}
+		var got []string
+		_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, sErr := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if sErr != nil {
+				return nil, sErr
+			}
+			cursor, cErr := executor.ExecutePlan(ctx, plan, store,
+				executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+			if cErr != nil {
+				return nil, cErr
+			}
+			defer cursor.Close()
+			rows, rErr := executor.CollectAll(ctx, cursor)
+			if rErr != nil {
+				return nil, rErr
+			}
+			for _, r := range rows {
+				m, _ := r.Datum.(map[string]any)
+				got = append(got, unnestSprint(m["X"]))
+			}
+			return nil, nil
+		})
+		if eerr != nil {
+			return // loud at execution — acceptable arm of the pin
+		}
+		sort.Strings(got)
+		want := []string{"10", "11", "12"}
+		if !unnestEqualStrs(got, want) {
+			t.Errorf("multi-table-inner element conjunct returned WRONG rows silently: %v (want the loud decline or exactly %v)", got, want)
+		}
+	})
+
 	t.Run("R5u the R5t POSITIVE twin keeps its rows through the buried path", func(t *testing.T) {
 		// ∃(MA.ID=1 ∧ JU-nonempty) keeps MA1's elements only. Same buried baked
 		// conjunct as R5t, positive polarity — pins that the placement fix did not

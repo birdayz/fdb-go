@@ -2378,6 +2378,26 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	if len(outerLegs) > 0 && mergedCorr.Name() != "" {
 		existsSubqueries = make([]logical.ExistsSubquery, len(f.ExistsSubqueries))
 		for i, esq := range f.ExistsSubqueries {
+			// A MULTI-TABLE EXISTS inner whose correlation references the unnest
+			// ELEMENT (or ordinal) has no working evaluation path: the conjunct
+			// must evaluate below the FirstOrDefault against the inner join's
+			// rows with the element bound from the OUTER row, and the
+			// multi-table threading for that binding does not exist yet — the
+			// predicate silently evaluated NULL and dropped every inner row
+			// (EXISTS ≡ false for all outers). Decline LOUDLY (CORRECT-or-LOUD);
+			// the element-scoped multi-table threading is tracked follow-on work.
+			if len(outerBoundAliases(esq.Plan)) > 1 && esq.JoinPredicate != nil {
+				corrs := predicates.GetCorrelatedToOfPredicate(esq.JoinPredicate)
+				for c := range corrs {
+					name := strings.ToUpper(c.Name())
+					if (u.Alias != "" && name == strings.ToUpper(u.Alias)) ||
+						(u.AtAlias != "" && name == strings.ToUpper(u.AtAlias)) {
+						t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+							"EXISTS with a multi-table FROM referencing the unnest element is not supported"))
+						return nil
+					}
+				}
+			}
 			// A BURIED subquery-internal OUTER-ONLY filter (buildCorrelatedExists
 			// keeps an outer-only conjunct INSIDE the subquery so it evaluates
 			// under the ∃ in both polarities — the NOT-EXISTS pre-filter fix).
