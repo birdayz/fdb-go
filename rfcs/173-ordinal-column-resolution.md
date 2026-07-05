@@ -2646,7 +2646,12 @@ fail-closed decline itself is replaced — NOT here. Commit 4's observable is th
 RIGHT-box-under-EXISTS class running ordinal (dualwindow-equivalent today; S4-ready)
 plus the fast-path wrong-rows fix.
 
-**← WE ARE HERE:** QP-REF-BIND item 2, commit **5a MERGED** (PR #476, master 2dbe743d5,
+**← WE ARE HERE:** QP-REF-BIND **item 1 — design substrate BANKED, awaiting the
+Graefe design ruling** (see § "QP-REF-BIND item 1 — design substrate" at the end of
+this file; forks F-A [star layout in-slice vs S4] and F-B [message unification scope]
+need rulings BEFORE the first impl commit). Item 2 is CHARTER-COMPLETE (2026-07-05):
+commits 1–4 (PRs #469/#471/#472/#475) + 5a (#476) + B/C/D/E (#478) + 5c (#479) +
+5b (#480) ALL MERGED. The item-2 5a record follows: commit **5a MERGED** (PR #476, master 2dbe743d5,
 four-gate tally across ELEVEN review rounds: architecture gate ACK round-10 substance +
 round-11 delta — adversarial battery of 16,104 constructible RC shapes, 0 cross-agreement
 disagreements; Java differential oracle 1632 corpus entries, 0 mismatches — code-quality gate
@@ -3227,3 +3232,143 @@ physical-member recursion (a child ref already holding an NLJ/FlatMap member) is
 currently unreachable within one top-level pass (rewritingImplRules =
 FinalizeExpressionsRule only) — the deepHashCode comment names the extension site if
 that changes.
+
+## QP-REF-BIND item 1 — design substrate (banked; for the Graefe design ruling)
+
+Research method: five-agent code trace (Java SemanticAnalyzer + quantifier minting;
+Go resolution map; the 0AF00 decline trace; the constraint inventory) + a 19-shape
+LIVE-Java probe (conformance/rfc173_item1_probe_test.go, temporary — deleted once its
+findings are corpus-pinned). The F3 lesson applied: every Java-behaviour premise below
+is live-verified against the 4.12.11.0 conformance server, none assumed.
+
+**Java spec (source receipts + live probe).** Java has NO FROM-level duplicate-alias
+check (QueryVisitor.visitTableSources → bare fragment concat; the only DUPLICATE_ALIAS
+raise is SemanticAnalyzer.findCteMaybe:180-181, firing LAZILY when a LATER FROM-source
+identifier lookup finds two same-named operators — live: `FROM p AS a, p AS a, a AS b`
+→ 42712 "found 'A' more than once"). EVERY quantifier mints a unique
+CorrelationIdentifier (Quantifier.uniqueId; a second access to the same table goes
+through withNewSharedReferenceAndAlias — shared memo Reference, SECOND fresh id,
+rewireQov). The SQL alias exists only as the operator name + the qualifier prefix on
+output Expression identifiers (newNamedOperator → output.withQualifier). Reference
+resolution (SemanticAnalyzer.resolveIdentifier:413-424) is two-pass over ALL operators'
+attributes — qualified-only, then bare — and asserts the candidate count: ≥2 → 42702
+`Ambiguous reference %s` (the reference AS WRITTEN, normalize-uppercased; qualified
+prints `A.ID`), 0 → 42703, ambiguity checked BEFORE existence per pass; an inner-scope
+ambiguity is terminal (never falls through to parents). Unqualified `SELECT *` expands
+ALL forEach operators in FROM order — duplicate output names allowed, no dedup
+(expandStar case 1; StructType.from does no duplicate validation). Qualified star
+`a.*` and the table-row fallback (`SELECT a`) are findFirst() — LEFTMOST leg wins
+silently, never ambiguous.
+
+Live probe (all 19 shapes; schema P1(id,v)/Q1(qid)/R1(id,rv) — P1,R1 share id):
+
+| shape | Java live |
+|---|---|
+| `SELECT * FROM p, q, p` | ANSWERS, cols `[ID V QID ID V]` (dup labels), full cross product |
+| CTE star `FROM w, w` / derived star `AS d, AS d` | ANSWERS, `[ID ID]` |
+| `SELECT a.id FROM p AS a, q AS a WHERE a.id = 2` | ANSWERS `[[2]]` (per-attribute) |
+| `SELECT a.qid … WHERE a.qid = 7` (2nd leg) | ANSWERS `[[7],[7]]` |
+| `SELECT a.v FROM p AS a, r AS a` (share id; v unique) ± WHERE | ANSWERS |
+| `a.id` over sharing legs (SELECT or WHERE) | 42702 `Ambiguous reference A.ID` |
+| bare unique / bare ambiguous (dup AND distinct aliases) | ANSWERS / 42702 `Ambiguous reference ID` |
+| `SELECT a.* FROM p AS a, q AS a` | ANSWERS first leg only `[[1,10],[2,20]]` |
+| `SELECT a FROM p AS a, q AS a` | ANSWERS one STRUCT column A |
+| ORDER BY / GROUP BY on `a.id` over sharing legs | 42702 `Ambiguous reference A.ID` |
+| `JOIN … AS a ON a.v > 0` (unique ref) | ANSWERS |
+| `p AS a LEFT JOIN q AS a ON a.qid = 7` | ANSWERS |
+
+**Go anatomy (why the predicated disjoint form declines).** The decline is front-end:
+`Scope.AddSource` (semantic/scope.go:88-96) rejects the second same-alias source →
+`buildSelectScope` returns a NIL resolver (logical_predicate.go:1854-1856) → reference
+resolution is SILENTLY DISABLED → the WHERE stays a text-only filter →
+`translateFilter` returns nil (cascades_translator.go:1933-1935) → the generic 0AF00.
+The FROM-walk approximation (cascades_generator.go:4087-4137) is the correctness
+backstop; the gate's dup arm (rfc173_cluster_gate.go:114-128, arityPoison) keeps the
+seed name-model. The alias-keyed collision inventory that makes a naive front-end lift
+UNSAFE: both legs' quantifiers bind the SAME NamedCorrelationIdentifier (translateJoin
+:3990-3995), the seed's bake maps key `strings.ToUpper(leg.alias)`
+(rfc173_ordinal_seed.go:246,377), the anchored RC suffixes duplicate `A.COL` fields
+`_2`, mergeRows' qualified namespace is last-writer-wins, and the NLJ partition keys
+predicates by correlation id (rule_implement_nested_loop_join.go:466-476) — a
+front-end-resolved `QOV(A).id` over two legs claiming `A` can be PUSHED INTO THE WRONG
+LEG (wrong rows). **Ordering constraint: the front-end acceptance and the back-end
+binding identity must never be live separately** — any intermediate state keeps a loud
+decline between them.
+
+**Mechanism (M1–M6).**
+- **M1 — scope accepts duplicates; per-attribute resolution.** AddSource stops
+  rejecting duplicate aliases (Java registers freely). `ResolveQualifiedColumn`
+  collects across ALL alias-matching sources at the level: >1 carrying the column →
+  `AmbiguousColumnError` (new qualified rendering), exactly 1 → THAT source, alias
+  matches but none carries it → ColumnNotFound, no alias match → parent chain
+  (unchanged). The bare path (ResolveColumn) already collects-and-errors; duplicate
+  sources feed it with no structural change. The nil-resolver swallows in
+  buildSelectScope / the :3040 join-WHERE variant / buildWherePredicateForJoins
+  become dead for the dup class (other failure modes keep current behaviour).
+- **M2 — per-leg binding ids (the F3-ruled coexistence mechanism).** Each FROM leg
+  gets a binding correlation id at ONE mint authority readable by every scope builder
+  AND the logical/translator side: the FIRST leg under an alias keeps the alias
+  (today's id — zero change for every non-dup query); each LATER duplicate leg mints
+  `values.UniqueCorrelationIdentifier()` (the W4b/EXISTS precedent). ScopeSource
+  .CorrelationName carries it → expr.Resolver emits `QOV(bindingId).col` for
+  references it resolves to a dup leg; the logical leg (LogicalScan / derived / CTE
+  leg) carries the same id for translateJoin's quantifier minting. All-quantifiers
+  fresh ids stay REJECTED until S4+ (the F3 ruling stands).
+- **M3 — gate lift + binding-keyed seed.** The dup arm flips from arityPoison to
+  gate-with-binding-ids for INNER clusters: clusterLeg gains the binding id;
+  legTypes / typed QOVs / OrdinalSeedLegWindows / sourceAliases key by binding name
+  (fresh ids keep ordinalJoinSpans' run detection distinct for adjacent same-alias
+  legs for free). Classes poisoned for OTHER reasons (LEFT/RIGHT boxed legs → item 3,
+  unnest, existential riders) keep their reasons: dup-alias references in them still
+  42702 at the front end when ambiguous; per-attribute-RESOLVABLE references over a
+  still-unbindable class DECLINE LOUDLY (0AF00) — never wrong rows (the LEFT-box dup
+  class books as a new marked divergence: Java answers, live-verified above).
+- **M4 — the SELECT-* duplicate-column layout (FORK F-A, needs the ruling).**
+  Shared-column dup clusters need duplicate output names end-to-end: the raw ordinal
+  RC (NewRawRecordConstructorValue — duplicates verbatim, the §5 primitive) +
+  positional column defs (the deriveColumnsFromJoin ordinal-top arm as template),
+  scoped to GATED DUP-ALIAS clusters only. (a) IN-SLICE (recommended): no coexistence
+  fork — no existing shape emits duplicate names (the W5 bare-twin unnest class and
+  its S4 ruling are untouched; this regime applies only to a class that today cannot
+  run at all), and the star corpus entries flip to parity. (b) S4-DEFERRAL: star
+  over shared-column dups gets an explicit loud translation decline (annotation
+  flips 42702→0AF00, stays marked). Disjoint-column dup stars already answer today
+  (per-leg qualified keys) and keep answering either way.
+- **M5 — message unification (FORK F-B).** The AmbiguousColumnError mappings emit
+  Java's exact `Ambiguous reference %s` (reference as written, case-normalized) at
+  all six sites (logical_predicate.go:396,1463,1880; plan_visitor.go:599,802;
+  eval_map.go:57) — live-verified as Java's text for dup AND distinct aliases, bare
+  AND qualified, WHERE/ORDER BY/GROUP BY. Recommended over dup-only special-casing
+  (no special cases; the live corpus byte-equal net catches any over-reach).
+- **M6 — quirk parity + bookings.** Qualified star over dups: match Java's leftmost-
+  wins silently + pin. Table-row projection (`SELECT a`): Go lacks the row form —
+  book the divergence with the live-verified Java answer. `…, a AS b` alias-as-source:
+  book message/code drift (Java 42712 lazy quirk vs Go 42F01). JOIN-ON dup resolution
+  rides M1 (same fragment). The FROM-walk's RFC-142 unnest-alias half
+  (:4138-4169) STAYS — a different rule, genuinely FROM-level.
+
+**Commit plan (each four-gated, pinned SHAs).**
+- **c1 (dark infrastructure):** M2 mint plumbing + M3 gate/seed keying, no
+  SQL-observable change (front-end still nil-resolvers dup FROMs → the FROM-walk
+  42702 / text-filter declines hold). White-box pins: gate-reason flip, binding-key
+  seed tests, spans/windows distinctness.
+- **c2 (the flip):** M1 + M5 + retire the FROM-walk 42702 half (the walk's
+  undefined-table skip dimension transfers: validateTablesAndColumns still owns
+  42F01 — resolution declines on unknowable tables). Observables: disjoint_where →
+  `[[2]]` (corpus flip + the FDB pin flip at rfc173_w4left_dupalias_fdb_test.go:73);
+  referenced classes keep 42702 with byte-equal text, now AT RESOLUTION (parity
+  entries stay green through the move); new live-verified corpus entries for every
+  probe shape (bare, second-leg, ORDER BY/GROUP BY, JOIN-ON, qualified star,
+  table-row booking, 42712 booking, LEFT-box booking).
+- **c3 (star, per F-A):** raw RC + positional defs for gated dup clusters →
+  select_star + cte_star flip to parity (or the deferral bookkeeping if F-A=b).
+
+**Exit gates.** Corpus: dup_from_alias_disjoint_where + dup_from_alias_select_star +
+dup_from_alias_cte_star flip (annotations DELETED — the drift guard forces it);
+dup_from_alias_referenced_unaliased/_aliased, three_way_later_pair, cte_referenced
+stay byte-equal parity; undefined_table stays 42F01; generated_aggregate stays
+message-drift with its GoErrorContains re-verified. Dualwindow green (dup classes
+agree across both models or carve out with a citation). The live Java harness green
+including every new entry (byte-equal error text). 1M stress before/after. Task
+budgets unchanged. The A4 anchored-producer inventory re-audited (item 1's
+contribution: dup-alias outer clusters leave the ungated-fallback class).

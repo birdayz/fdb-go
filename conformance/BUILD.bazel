@@ -108,6 +108,7 @@ go_test(
         "rank_index_conformance_test.go",
         "rebuild_index_conformance_test.go",
         "reverse_scan_conformance_test.go",
+        "rfc173_item1_probe_test.go",
         "run_sql_conformance_test.go",
         "scan_conformance_test.go",
         "schema_template_catalog_conformance_test.go",
