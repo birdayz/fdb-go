@@ -2444,6 +2444,11 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-05 (RFC-173 item-2 commit 5b, PR #480 — cluster-gate rider transparency):**
+baseline master `4f836f941` 156.14s total vs branch `bd802e83d` 156.32s (+0.1%, noise);
+every subtest within measurement resolution (pk lookups 10–60ms both, index equality 20ms,
+full scans 3.6–4.4s both sides). No regression.
+
 | Query | Rows | Time | Threshold |
 |-------|------|------|-----------|
 | pk_lookup_first | 1 | 1.5ms | <5ms |
@@ -3315,6 +3320,11 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    exists subqueries) — same root cause, one slice, one review. The SCALAR-rider poison
    absorbs CONDITIONALLY: same binders → same slice; W4b-seed rework needed → immediate
    follow-on. Each absorbed class gets its own gate-reason string + dualwindow pins.**
+   **ITEM-2 CHARTER COMPLETE (2026-07-05): commits 1–4 (PRs #469/#471/#472/#475) + 5a (#476,
+   the structural exit gate) + the B/C/D/E wrong-rows batch (#478) + 5c (#479, class-K →
+   rows) + 5b (#480, rider transparency) ALL MERGED, four-gate each; the EXISTS-rider and
+   uncorrelated-scalar-rider poisons are LIFTED and the under-existential unnest is ordinal.
+   Item 3 (below) now unblocked.**
 3. **Mixed-nesting LEFT widening** — the joined-preserved class (clustered legs under a
    LEFT/RIGHT box) stays pinned residual until the flattened-cluster seed can name buried
    sources (the W4 dissolution ruling's scope). Retires the gate's :138-141 clustered-leg
