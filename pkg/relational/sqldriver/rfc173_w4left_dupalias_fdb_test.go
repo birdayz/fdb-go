@@ -283,3 +283,139 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	reject(t, "SELECT x.id FROM p AS x WHERE EXISTS (SELECT 1 FROM p AS x, p AS x WHERE x.id = 1)",
 		"Ambiguous reference X.ID")
 }
+
+// TestFDB_RFC173Item1_DupAliasOrderGroupCorrelated pins the two c4-found
+// gaps in the item-1 lift (the c4 review round): a per-attribute
+// reference that binds a LATER duplicate leg must keep binding through (1)
+// ORDER BY / GROUP BY keys — the sort/group key must resolve to the minted
+// binding's namespace (Q$DUP1.QID), never silently miss as the SQL alias
+// (A.QID) and return scan-order/NULL-grouped rows — and (2) a CORRELATED
+// subquery's outer scope — the outer-scope carrier must stay duplicate-
+// preserving and binding-aware, so an inner reference resolves per-attribute
+// across ALL same-aliased outer legs (1→bind, 0→fallthrough, ≥2→terminal
+// 42702 — the design ruling's ladder at any scope depth). Expectations follow
+// the ruling's live-verified per-attribute semantics; error-text byte-parity
+// for the correlated shapes is flagged for the next live-Java probe run.
+func TestFDB_RFC173Item1_DupAliasOrderGroupCorrelated(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := "/w4l_dupsg"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE w4l_dupsg_tmpl"+
+		" CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE w4l_dupsg_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.ExecContext(ctx, "INSERT INTO p VALUES (1, 10), (2, 20)"); err != nil {
+		t.Fatalf("seed p: %v", err)
+	}
+	// TWO q rows so a second-leg sort/group key has distinguishable values.
+	if _, err := db.ExecContext(ctx, "INSERT INTO q VALUES (1), (7)"); err != nil {
+		t.Fatalf("seed q: %v", err)
+	}
+
+	queryInts := func(t *testing.T, q string) ([]int64, error) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				return nil, err
+			}
+			if !v.Valid {
+				t.Errorf("NULL value — the dup-leg key silently missed\n  sql: %s", q)
+			}
+			got = append(got, v.Int64)
+		}
+		return got, rows.Err()
+	}
+
+	// (P1) ORDER BY a SECOND-leg-bound key: qid lives only on q (the later
+	// duplicate, binding Q$DUP1) — the sort must order by the leg's values,
+	// in both directions, and through LIMIT.
+	if got, err := queryInts(t, "SELECT a.qid FROM p AS a, q AS a ORDER BY a.qid"); err != nil {
+		t.Errorf("second-leg ORDER BY must ANSWER: %v", err)
+	} else if !reflect.DeepEqual(got, []int64{1, 1, 7, 7}) {
+		t.Errorf("second-leg ORDER BY ASC rows = %v, want [1 1 7 7] (sorted by the DUP leg's values, never scan order)", got)
+	}
+	if got, err := queryInts(t, "SELECT a.qid FROM p AS a, q AS a ORDER BY a.qid DESC LIMIT 1"); err != nil {
+		t.Errorf("second-leg ORDER BY DESC LIMIT must ANSWER: %v", err)
+	} else if !reflect.DeepEqual(got, []int64{7}) {
+		t.Errorf("second-leg ORDER BY DESC LIMIT 1 = %v, want [7] (a missed sort key returns the scan-order row)", got)
+	}
+	// First-leg control: v lives only on p (the FIRST occurrence keeps the
+	// alias as its binding) — must keep working alongside the dup fix.
+	if got, err := queryInts(t, "SELECT a.v FROM p AS a, q AS a ORDER BY a.v DESC"); err != nil {
+		t.Errorf("first-leg ORDER BY control must ANSWER: %v", err)
+	} else if !reflect.DeepEqual(got, []int64{20, 20, 10, 10}) {
+		t.Errorf("first-leg ORDER BY DESC rows = %v, want [20 20 10 10]", got)
+	}
+
+	// (P1) GROUP BY the second-leg-bound key: grouping must key the DUP leg's
+	// values — a missed key groups everything under NULL.
+	groupRows, err := db.QueryContext(ctx, "SELECT a.qid, COUNT(*) FROM p AS a, q AS a GROUP BY a.qid")
+	if err != nil {
+		t.Errorf("second-leg GROUP BY must ANSWER: %v", err)
+	} else {
+		counts := map[int64]int64{}
+		n := 0
+		for groupRows.Next() {
+			var k, c sql.NullInt64
+			if err := groupRows.Scan(&k, &c); err != nil {
+				t.Errorf("group scan: %v", err)
+				break
+			}
+			if !k.Valid {
+				t.Errorf("GROUP BY key is NULL — the dup-leg group key silently missed")
+				continue
+			}
+			counts[k.Int64] = c.Int64
+			n++
+		}
+		groupRows.Close()
+		if n != 2 || counts[1] != 2 || counts[7] != 2 {
+			t.Errorf("second-leg GROUP BY = %v (%d groups), want {1:2, 7:2}", counts, n)
+		}
+	}
+
+	// (P2) A CORRELATED subquery referencing the duplicate outer alias
+	// resolves per-attribute across ALL same-aliased outer legs. qid is
+	// unique to the SECOND leg: the inner reference must bind it (never
+	// 42703 from an alias-collapsed outer-scope map, never the wrong leg).
+	if got, err := queryInts(t, "SELECT a.qid FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM p AS z WHERE z.id = a.qid)"); err != nil {
+		t.Errorf("correlated second-leg outer dup must ANSWER per-attribute: %v", err)
+	} else if !reflect.DeepEqual(got, []int64{1, 1}) {
+		t.Errorf("correlated second-leg rows = %v, want [1 1] (qid=1 matches p.id=1; qid=7 matches nothing)", got)
+	}
+	// First-leg control: v unique to p.
+	if got, err := queryInts(t, "SELECT a.v FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM q AS z WHERE a.v = 10)"); err != nil {
+		t.Errorf("correlated first-leg outer dup must ANSWER: %v", err)
+	} else if !reflect.DeepEqual(got, []int64{10, 10}) {
+		t.Errorf("correlated first-leg rows = %v, want [10 10]", got)
+	}
+	// Ambiguous inner reference over duplicate outer legs is TERMINAL 42702
+	// (the ladder's ≥2 arm at correlation depth): id lives on BOTH p legs.
+	var x any
+	if err := db.QueryRowContext(ctx,
+		"SELECT 1 FROM p AS a, p AS a WHERE EXISTS (SELECT 1 FROM q AS z WHERE a.id = 1)").Scan(&x); err == nil {
+		t.Errorf("ambiguous correlated outer dup must reject 42702, got rows")
+	} else if !strings.Contains(err.Error(), "Ambiguous reference A.ID") {
+		t.Errorf("ambiguous correlated outer dup error = %v, want Ambiguous reference A.ID", err)
+	}
+}

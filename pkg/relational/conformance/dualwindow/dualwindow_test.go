@@ -103,6 +103,15 @@ var carveOuts = map[string]string{
 	// while the ORDINAL model computes both columns correctly. The name model
 	// is retired in Slice 4; until then this shape is a declared difference.
 	"recursive_cte_duplicate_alias_branch": "RFC-173 §5: duplicate-named output columns exist only in the positional model; the last-wins name map cannot represent them",
+	// Same class, the QP-REF-BIND item-1 duplicate-FROM-alias face: a
+	// reference bound to a LATER duplicate leg reads the binding-qualified
+	// key (Q$DUPn.COL) off the join row, which only the positional model
+	// carries — the name-keyed merged row is display-alias-keyed and
+	// last-wins, so the NAME oracle serves NULL for the later leg's values
+	// while the ORDINAL model answers Java's rows (live-verified). The name
+	// model is retired in Slice 4; until then a declared difference.
+	"dup_from_alias_exists_second_leg":   "RFC-173 §5: a later duplicate leg's binding-qualified read exists only in the positional model (name-keyed rows are display-alias last-wins)",
+	"dup_from_alias_order_by_second_leg": "RFC-173 §5: a later duplicate leg's binding-qualified read exists only in the positional model (name-keyed rows are display-alias last-wins)",
 }
 
 // outcome is one mode's result for one corpus entry: the rows, or the error.

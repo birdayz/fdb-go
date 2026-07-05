@@ -1310,6 +1310,21 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 			return p
 		}
 		return plans.NewRecordQueryMapPlan(inner, newResult)
+	case *plans.RecordQueryProjectionPlan:
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
+		projs := pl.GetProjections()
+		newProjs := make([]values.Value, len(projs))
+		changed := inner != pl.GetInner()
+		for i, v := range projs {
+			newProjs[i] = rebaseOuterLegValue(v, legAliases, mergedCorr)
+			if newProjs[i] != v {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return plans.NewRecordQueryProjectionPlanWithAliases(newProjs, pl.GetAliases(), inner)
 	default:
 		// Unhandled node — return unchanged. planReferencesAnyBuriedAlias will detect
 		// any buried reference that survives here and decline the probe.
@@ -1425,6 +1440,18 @@ func planReferencesAnyBuriedAlias(p plans.RecordQueryPlan, legAliases []string) 
 		case *plans.RecordQueryMapPlan:
 			if valueReferencesAlias(sp.GetResultValue(), upper) {
 				found = true
+			}
+		case *plans.RecordQueryProjectionPlan:
+			// The rebase walkers rewrite the projection VALUES (the node's only
+			// correlation-bearing fields), so inspect exactly those — an
+			// existential inner is routinely Projection-wrapped (`SELECT 1
+			// FROM …`), and the fail-closed default arm would spuriously
+			// decline every such correlation-free inner.
+			for _, v := range sp.GetProjections() {
+				if valueReferencesAlias(v, upper) {
+					found = true
+					break
+				}
 			}
 		// KNOWN correlation-free pass-throughs — these carry no buried correlation in
 		// their OWN fields (default value / record types / fetch translation), so skip
@@ -1929,6 +1956,51 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr)
 		}
 		existPreds = rebased
+	}
+
+	// RFC-173: outer-leg references BURIED INSIDE the existential subplan get
+	// the SAME rebase as the lifted existPreds above. An EXISTS whose inner
+	// WHERE references only outer legs (`EXISTS (SELECT 1 FROM q WHERE
+	// a.v = 10)`) keeps that predicate in its own plan tree —
+	// existsInnerCorrelation lifts only inner↔outer correlation predicates —
+	// and the step-2 FlatMap binds ONLY mergedOuterCorr, so the buried
+	// QOV(leg) is unbound at runtime: the frontier fallback then evaluates
+	// the field against the inner scan's own row (loud OrdinalResolutionError
+	// on the ordinal frontier; silent wrong rows pre-ordinal). Gate on the
+	// EXPRESSION-level correlation set (the same authority the step-1
+	// orientation reads): an existential subtree that references NO outer leg
+	// skips both the rebase and the fail-closed verification, keeping every
+	// leg-independent EXISTS — including plan shapes the rebase walk does not
+	// enumerate — byte-identical. A leg-referencing subtree is rebased, then
+	// verified: a surviving leg reference declines the yield
+	// (CORRECT-or-LOUD, the 1+1 path's convention; those shapes evaluated an
+	// unbound correlation before, so a decline is strictly no worse).
+	verifyAliases := append([]string{}, outerLegAliases...)
+	for alias := range ordinalWindows {
+		verifyAliases = append(verifyAliases, alias)
+	}
+	existLegCorrs := map[values.CorrelationIdentifier]struct{}{
+		q0.GetAlias(): {},
+		q1.GetAlias(): {},
+	}
+	for _, a := range verifyAliases {
+		if a != "" {
+			existLegCorrs[values.NamedCorrelationIdentifier(a)] = struct{}{}
+		}
+	}
+	if legReferencesAny(existRef, existLegCorrs) {
+		if ordinalWindows != nil {
+			np, ok := rebasePlanOuterRefsOrdinal(existPlan, ordinalWindows, mergedQOV)
+			if !ok {
+				return
+			}
+			existPlan = np
+		} else {
+			existPlan = rebasePlanBuriedRefs(existPlan, outerLegAliases, mergedOuterCorr)
+		}
+		if planReferencesAnyBuriedAlias(existPlan, verifyAliases) {
+			return
+		}
 	}
 
 	var belowFOD plans.RecordQueryPlan = existPlan

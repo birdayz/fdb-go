@@ -1373,6 +1373,16 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 // function therefore only ever qualifies a PRE-aggregate (non-grouped) bare
 // ORDER BY over an unnest — the shadowing case where the sort sits
 // BELOW the merge and a later FROM item could clobber the bare key. RFC-142.
+// A QUALIFIED sort key has the dup-alias twin of the same silent-wrong-order
+// hazard (RFC-173 QP-REF-BIND item 1): the sort sits BELOW the projection over
+// the JOIN row, whose namespace carries the BINDING correlation (`Q$DUP1.QID`)
+// for a later duplicate-alias leg — a key left as the SQL alias (`A.QID`)
+// silently misses and the rows come back in scan order (the projection reads
+// the binding, the sort read the display alias). Route qualified keys through
+// ResolveQualifiedProjection — the SAME helper the projection path uses, so
+// the two cannot diverge: it returns a value ONLY when the reference binds a
+// later duplicate leg (binding != alias); every other qualified key (distinct
+// aliases, first-occurrence legs) is untouched.
 func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) {
 	sort := findSort(op)
 	if sort == nil {
@@ -1385,14 +1395,18 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 			continue
 		}
 		ref := parseColRef(sort.Keys[i].Expr)
-		if ref.isQualified() {
-			continue
-		}
 		bare := ref.bare()
 		if bare == "" {
 			continue
 		}
 		id := semantic.NewUnquoted(bare)
+		if ref.isQualified() {
+			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(ref.table), id)
+			if err == nil && qv != nil {
+				sort.Keys[i].Value = qv
+			}
+			continue
+		}
 		qv, ok, err := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
 		if err != nil || !ok {
 			continue

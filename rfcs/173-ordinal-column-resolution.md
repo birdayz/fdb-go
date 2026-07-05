@@ -3574,3 +3574,72 @@ mechanisms by inner-scope arity — multi-source→plan-time 42703 CorrelatedSha
 single-source→runtime ordinal guard), both pinned, the bare fmt.Errorf typed; the
 ORDER-BY-1 tolerance gate removed; `bindingOrAlias` deduped across every scope builder.
 codex + @claude remain the PR-side gauntlet.
+
+## QP-REF-BIND item 1 — c4 record (the codex round)
+
+codex's PR review of the c2+c3 delta (HEAD 71974de67) surfaced two findings, both
+REPRODUCED against FDB and both real; the item-1 "COMPLETE" claim was premature until
+this round. Both fixed, red-first (`rfc173_item1_codex_fdb_test.go` pinned the Java
+answers before the fixes; live-Java probe verified every premise on 4.12.11.0).
+
+**P1 — dup-alias sort/group keys kept the display alias while the gated join row is
+binding-keyed** (silent wrong rows: `ORDER BY a.qid DESC LIMIT 1` over `p AS a, q AS a`
+returned 5-not-9 plan-dependently; `GROUP BY a.qid` grouped every row under NULL). The
+dimensional gap: the item-1 suite probed projections/WHERE/star/ambiguity but never
+sort/group keys through the binding-namespace swap. Fix: qualified sort keys
+(`qualifyShadowedSortKeys`) and aggregate group keys (`upgradeAggregateOperands`) route
+through `ResolveQualifiedProjection` — the SAME helper the projection path uses, so the
+three cannot diverge — and `buildAggColumns` keys the group-key datum by the bare
+`FieldValue.Field` (the name the aggregate cursor writes), not the qualified
+ExplainValue.
+
+**P2 — correlated EXISTS over an un-collapsed cross join failed four ways** (42702 on
+the dup outer scope; wrong-leg ordinal misses both directions; a leg-adapter W2-breach
+on the dup second leg). Bisect: the buried-reference class REGRESSED AT ITEM-2 (worked
+at 86ddd85d7, died at 8c179a025) — codex saw the dup-alias symptom, the root predates
+item-1. Root cause: an EXISTS whose inner WHERE references ONLY outer legs keeps that
+predicate buried in its own subplan (`existsInnerCorrelation` lifts only inner↔outer
+correlation predicates), and the step-2 FlatMap binds ONLY the merged correlation — the
+buried QOV(leg) was unbound, and the frontier fallback evaluated it against the inner
+scan's own row. Fixes: (i) `buildOuterScopeSources` became a duplicate-preserving
+FROM-ordered slice carrying `bindingOrAlias` (the alias-keyed map collapsed dup legs
+last-wins; nested-EXISTS shadow semantics preserved by filtered append); (ii) the gated
+flatten's quantifiers/source aliases carry the BINDING correlation (`sourceBinding`),
+exactly as translateJoin's gated binary arm; (iii) `rebasePlanOuterRefsOrdinal` — the
+plan-tree twin of `rebasePlanBuriedRefs` — rebases buried outer-leg references inside
+the existential subplan onto the merged positional row (name-model plans take
+`rebasePlanBuriedRefs`), gated on the EXPRESSION-level correlation set
+(`legReferencesAny`, the same authority the step-1 orientation reads) and verified
+fail-closed (`planReferencesAnyBuriedAlias`; both walks + the verifier learned
+`RecordQueryProjectionPlan`, whose projection values are now inspected precisely).
+
+**P3 — the projected-EXISTS fold served NULL for a later duplicate leg's columns**
+(found by pinning the fold twin of P1 — the @claude PR review independently confirmed
+codex's P1/P2 with the same call chains and its trace named the fold sort seam; the pin
+then exposed the deeper serve bug: `SELECT a.qid, EXISTS(…) FROM p AS a, q AS a`
+returned NULL qid on every row, sort or no sort). Root cause:
+`buildExistentialJoinSelect` — the fold twin of translateJoinWithExists — still named
+its quantifiers and source aliases by DISPLAY alias ([A, A]), so the resolver's
+binding-qualified RV references (QOV(Q$DUP1).QID) bound nothing: the implementation
+arm's `mergedOuterLegAliases` deduped to [A], the rebase left the reference untouched,
+and the frontier fallback served NULL. Fix: the fold speaks BINDINGS end-to-end —
+`sourceBinding` for its quantifiers/source aliases and for `classifySortSource`'s
+legAliases (identical to the alias for every non-duplicate leg) — the name-model merged
+row distinguishes duplicate legs exactly when the leg keys are the distinct bindings
+(qualified `Q$DUP1.QID` merged-row keys; the RV rebase, hidden ORDER BY columns and
+mergeRows all line up). Pinned: P1_fold_order_by_dup ([9 9 7 7 5 5] + non-NULL + the
+EXISTS boolean).
+
+**Exit gates:** the 7-shape FDB pin green (P1a/P1b/fold/P2×4, exact Java rows); 6 new
+corpus entries live-verified (exists_crossjoin_buried_{first,second}_leg,
+dup_from_alias_exists_{first,second}_leg, dup_from_alias_order_by_second_leg parity;
+dup_from_alias_order_by_first_leg pinned JavaErrorsGoCorrect — Java cannot plan the
+first-leg sort, Go orders correctly); full sqldriver + embedded + cascades + query
+suites green; docscheck green; dual-window green with TWO new declared-difference
+carve-outs (dup_from_alias_{exists,order_by}_second_leg — a later duplicate leg's
+binding-qualified read exists only in the positional model; same class as the
+recursive-CTE carve-out, retired with the name model in Slice 4); SeedRunCorpus live
+cross-engine green. Booked follow-on (pre-existing, NOT this slice): aggregate output
+METADATA drift vs Java — group-key label `A.QID` vs `QID` on distinct-alias qualified
+keys, group-key type UNKNOWN vs BIGINT over joins, `COUNT(*)` label vs Java's `_1`
+(probe-verified; rows are parity).

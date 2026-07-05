@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // RFC-173 W4-left commit 2 — the ORDINAL existential rebase. The
@@ -192,4 +193,251 @@ func ordinalSeedLegWindowsOf(rv values.Value) (map[string]ordinalLegWindow, *val
 		return nil, nil
 	}
 	return ordinalSeedLegWindows(rc)
+}
+
+// rebasePlanOuterRefsOrdinal is the PLAN-TREE twin of the name-model
+// rebasePlanBuriedRefs for a GATED ordinal seed: it rewrites every outer-leg
+// reference BURIED INSIDE an already-built plan tree to a baked
+// ofOrdinalNumber over the merged positional row, exactly as
+// rebaseOuterLegRefsOrdinal does for the LIFTED existential predicates. The
+// buried class exists because an EXISTS whose inner WHERE references ONLY
+// outer legs (`EXISTS (SELECT 1 FROM q WHERE a.v = 10)`) keeps that
+// predicate in its own subplan — existsInnerCorrelation lifts only
+// inner↔outer correlation predicates — and the step-2 FlatMap binds ONLY
+// the merged correlation: the buried QOV(leg) is unbound at runtime and the
+// frontier fallback evaluates the field against the inner scan's own row
+// (a loud OrdinalResolutionError on the ordinal frontier; silent wrong rows
+// pre-ordinal). ok=false when a leg reference exists that the windows cannot
+// map — the caller must DECLINE the yield (CORRECT-or-LOUD). Unhandled node
+// kinds are returned unchanged; the caller's planReferencesAnyBuriedAlias
+// verification catches any leg reference that survives there (the 1+1
+// path's fail-closed convention).
+func rebasePlanOuterRefsOrdinal(
+	p plans.RecordQueryPlan,
+	windows map[string]ordinalLegWindow,
+	mergedQOV *values.QuantifiedObjectValue,
+) (plans.RecordQueryPlan, bool) {
+	if p == nil || len(windows) == 0 {
+		return p, true
+	}
+	switch pl := p.(type) {
+	case *plans.RecordQueryIndexPlan:
+		newComps, changed, ok := rebaseComparisonRangesOrdinal(pl.GetScanComparisons(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		if !changed {
+			return p, true
+		}
+		return pl.WithScanComparisons(newComps), true
+	case *plans.RecordQueryScanPlan:
+		newComps, changed, ok := rebaseComparisonRangesOrdinal(pl.GetScanComparisons(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		if !changed {
+			return p, true
+		}
+		return pl.WithScanComparisons(newComps), true
+	case *plans.RecordQueryPredicatesFilterPlan:
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		preds := pl.GetPredicates()
+		newPreds := make([]predicates.QueryPredicate, len(preds))
+		changed := inner != pl.GetInner()
+		for i, pr := range preds {
+			np, prOK := rebaseOuterLegRefsOrdinal(pr, windows, mergedQOV)
+			if !prOK {
+				return p, false
+			}
+			newPreds[i] = np
+			if np != pr {
+				changed = true
+			}
+		}
+		if !changed {
+			return p, true
+		}
+		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(inner, newPreds, pl.GetInnerAlias()), true
+	case *plans.RecordQueryFilterPlan:
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		preds := pl.GetPredicates()
+		newPreds := make([]predicates.QueryPredicate, len(preds))
+		changed := inner != pl.GetInner()
+		for i, pr := range preds {
+			np, prOK := rebaseOuterLegRefsOrdinal(pr, windows, mergedQOV)
+			if !prOK {
+				return p, false
+			}
+			newPreds[i] = np
+			if np != pr {
+				changed = true
+			}
+		}
+		if !changed {
+			return p, true
+		}
+		return plans.NewRecordQueryFilterPlan(newPreds, inner), true
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		if inner == pl.GetInner() {
+			return p, true
+		}
+		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, pl.GetTranslateValueFunction(), pl.GetResultType(), pl.GetFetchIndexRecords()), true
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		if inner == pl.GetInner() {
+			return p, true
+		}
+		return plans.NewRecordQueryDefaultOnEmptyPlan(inner, pl.GetDefaultValue()), true
+	case *plans.RecordQueryFirstOrDefaultPlan:
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		if inner == pl.GetInner() {
+			return p, true
+		}
+		if pl.IsStrict() {
+			return plans.NewRecordQueryFirstOrDefaultPlanStrict(inner, pl.GetDefaultValue()), true
+		}
+		return plans.NewRecordQueryFirstOrDefaultPlan(inner, pl.GetDefaultValue()), true
+	case *plans.RecordQueryTypeFilterPlan:
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		if inner == pl.GetInner() {
+			return p, true
+		}
+		return plans.NewRecordQueryTypeFilterPlan(pl.GetRecordTypes(), inner), true
+	case *plans.RecordQueryMapPlan:
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		newResult, rvOK := rebaseOuterLegValueOrdinal(pl.GetResultValue(), windows, mergedQOV)
+		if !rvOK {
+			return p, false
+		}
+		if inner == pl.GetInner() && newResult == pl.GetResultValue() {
+			return p, true
+		}
+		return plans.NewRecordQueryMapPlan(inner, newResult), true
+	case *plans.RecordQueryProjectionPlan:
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		if !ok {
+			return p, false
+		}
+		projs := pl.GetProjections()
+		newProjs := make([]values.Value, len(projs))
+		changed := inner != pl.GetInner()
+		for i, v := range projs {
+			nv, vOK := rebaseOuterLegValueOrdinal(v, windows, mergedQOV)
+			if !vOK {
+				return p, false
+			}
+			newProjs[i] = nv
+			if nv != v {
+				changed = true
+			}
+		}
+		if !changed {
+			return p, true
+		}
+		return plans.NewRecordQueryProjectionPlanWithAliases(newProjs, pl.GetAliases(), inner), true
+	default:
+		// Unhandled node — return unchanged. The caller's
+		// planReferencesAnyBuriedAlias verification declines any buried leg
+		// reference that survives here.
+		return p, true
+	}
+}
+
+// rebaseComparisonRangesOrdinal rebases the outer-leg references in SARG
+// comparison ranges to baked ordinals over mergedQOV (the ordinal twin of
+// rebaseComparisonRanges). Returns the new ranges, whether any changed, and
+// ok=false when a leg reference cannot be mapped.
+func rebaseComparisonRangesOrdinal(
+	comps []*predicates.ComparisonRange,
+	windows map[string]ordinalLegWindow,
+	mergedQOV *values.QuantifiedObjectValue,
+) ([]*predicates.ComparisonRange, bool, bool) {
+	out := make([]*predicates.ComparisonRange, len(comps))
+	changed := false
+	for i, cr := range comps {
+		nc, ch, ok := rebaseComparisonRangeOrdinal(cr, windows, mergedQOV)
+		if !ok {
+			return comps, false, false
+		}
+		out[i] = nc
+		if ch {
+			changed = true
+		}
+	}
+	return out, changed, true
+}
+
+// rebaseComparisonRangeOrdinal rebases one comparison range's operands (the
+// ordinal twin of rebaseComparisonRange). A rebuilt range that cannot be
+// re-merged fails closed (ok=false) — never a half-rebased SARG.
+func rebaseComparisonRangeOrdinal(
+	cr *predicates.ComparisonRange,
+	windows map[string]ordinalLegWindow,
+	mergedQOV *values.QuantifiedObjectValue,
+) (*predicates.ComparisonRange, bool, bool) {
+	if cr == nil || cr.IsEmpty() {
+		return cr, false, true
+	}
+	var comparisons []*predicates.Comparison
+	if cr.IsEquality() {
+		comparisons = []*predicates.Comparison{cr.GetEqualityComparison()}
+	} else {
+		comparisons = cr.GetInequalityComparisons()
+	}
+	// Rebase pass first; an untouched range returns unchanged WITHOUT the
+	// Merge round-trip below (mirroring rebaseComparisonRange: a range whose
+	// comparisons don't re-merge must not fail a plan the rebase never
+	// touched — only a genuinely-rebased range that cannot re-merge fails).
+	rebased := make([]*predicates.Comparison, len(comparisons))
+	changed := false
+	for i, c := range comparisons {
+		rebased[i] = c
+		if c == nil || c.Operand == nil {
+			continue
+		}
+		newOperand, ok := rebaseOuterLegValueOrdinal(c.Operand, windows, mergedQOV)
+		if !ok {
+			return cr, false, false
+		}
+		if newOperand != c.Operand {
+			cp := *c
+			cp.Operand = newOperand
+			rebased[i] = &cp
+			changed = true
+		}
+	}
+	if !changed {
+		return cr, false, true
+	}
+	rebuilt := predicates.EmptyComparisonRange()
+	for _, nc := range rebased {
+		res := rebuilt.Merge(nc)
+		if !res.Ok {
+			return cr, false, false
+		}
+		rebuilt = res.Range
+	}
+	return rebuilt, true, true
 }

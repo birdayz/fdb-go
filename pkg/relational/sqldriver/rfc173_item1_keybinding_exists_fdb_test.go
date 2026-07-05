@@ -1,0 +1,204 @@
+package sqldriver_test
+
+// RFC-173 QP-REF-BIND item 1 c4 — sort/group keys over duplicate FROM
+// aliases must bind the minted binding correlation, and a correlated EXISTS
+// over an un-collapsed cross join must read the merged outer row for
+// references buried in the existential subplan. Asserts Java-expected
+// behavior (live-verified 4.12.11.0) so a failure prints the actual result.
+// Richer q seed ({5,7,9}) so the ORDER BY discriminates.
+
+import (
+	"context"
+	"database/sql"
+	"reflect"
+	"testing"
+)
+
+func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	dbPath := "/rfc173i1c4"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc173i1c4_tmpl"+
+		" CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rfc173i1c4_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.ExecContext(ctx, "INSERT INTO p VALUES (1, 10), (2, 20)"); err != nil {
+		t.Fatalf("seed p: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO q VALUES (5), (7), (9)"); err != nil {
+		t.Fatalf("seed q: %v", err)
+	}
+
+	// ---- P1a: ORDER BY over a duplicate-alias leg's unique column ----
+	// a.qid resolves per-attribute to the q leg (binding-keyed row). Cross
+	// product p(2) × q(3) = 6 rows, qid ∈ {5,7,9} each twice. DESC LIMIT 1 → 9.
+	// If the sort key keeps the DISPLAY alias while the row is binding-keyed,
+	// it sorts on a missing key and returns a scan-order row.
+	t.Run("P1a_order_by", func(t *testing.T) {
+		var got int64
+		err := db.QueryRowContext(ctx,
+			"SELECT a.qid FROM p AS a, q AS a ORDER BY a.qid DESC LIMIT 1").Scan(&got)
+		if err != nil {
+			t.Fatalf("ORDER BY over dup-alias leg errored: %v", err)
+		}
+		t.Logf("ACTUAL ORDER BY a.qid DESC LIMIT 1 = %d (want 9)", got)
+		if got != 9 {
+			t.Errorf("ORDER BY a.qid DESC LIMIT 1 = %d, want 9 (sort key not rebound to binding)", got)
+		}
+	})
+
+	// ---- P1b: GROUP BY over a duplicate-alias leg's unique column ----
+	// Each q row × 2 p rows → count 2 per qid.
+	t.Run("P1b_group_by", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT a.qid, COUNT(*) FROM p AS a, q AS a GROUP BY a.qid")
+		if err != nil {
+			t.Fatalf("GROUP BY over dup-alias leg errored: %v", err)
+		}
+		defer rows.Close()
+		got := map[int64]int64{}
+		for rows.Next() {
+			var k sql.NullInt64
+			var c int64
+			if err := rows.Scan(&k, &c); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !k.Valid {
+				t.Errorf("GROUP BY key is NULL — group key not rebound to binding")
+				continue
+			}
+			got[k.Int64] = c
+		}
+		t.Logf("ACTUAL GROUP BY a.qid = %v (want {5:2 7:2 9:2})", got)
+		want := map[int64]int64{5: 2, 7: 2, 9: 2}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("GROUP BY a.qid = %v, want %v", got, want)
+		}
+	})
+
+	// ---- P2: correlated EXISTS referencing a duplicate outer alias ----
+	// a.id is unique to the p leg. EXISTS is true for outer rows with a.id=1.
+	// Java binds the unique p leg and answers; an alias-keyed outer-scope
+	// map loses a leg and falsely reports 42703.
+	t.Run("P2_correlated_exists", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT a.id FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM q WHERE a.id = 1)")
+		if err != nil {
+			t.Fatalf("correlated EXISTS over dup outer alias errored: %v", err)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var v int64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, v)
+		}
+		t.Logf("ACTUAL correlated-EXISTS ids = %v (want [1 1 1] — id=1 × q(3))", got)
+		if !reflect.DeepEqual(got, []int64{1, 1, 1}) {
+			t.Errorf("correlated EXISTS ids = %v, want [1 1 1]", got)
+		}
+	})
+
+	// ---- P2 control: DISTINCT outer aliases must answer identically ----
+	t.Run("P2_control_distinct", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT a.id FROM p AS a, q AS b WHERE EXISTS (SELECT 1 FROM q WHERE a.id = 1)")
+		if err != nil {
+			t.Fatalf("distinct-alias control errored: %v", err)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var v int64
+			_ = rows.Scan(&v)
+			got = append(got, v)
+		}
+		t.Logf("ACTUAL distinct-alias control ids = %v (want [1 1 1])", got)
+		if !reflect.DeepEqual(got, []int64{1, 1, 1}) {
+			t.Errorf("distinct-alias control = %v, want [1 1 1]", got)
+		}
+	})
+
+	// ---- P2: the SECOND-leg twins (Java live-verified: [7 7]) ----
+	// The correlated reference binds the SECOND outer leg (q's qid; two p
+	// rows survive as the EXISTS is true only where qid matches). The dup
+	// variant additionally exercises the gated flatten's binding-correlation
+	// quantifier naming (pre-fix: a leg-adapter W2-breach error) on top of
+	// the buried-reference rebase.
+	secondLeg := func(t *testing.T, q string) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("second-leg correlated EXISTS errored: %v\n  sql: %s", err, q)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var v int64
+			_ = rows.Scan(&v)
+			got = append(got, v)
+		}
+		t.Logf("ACTUAL second-leg ids = %v (want [7 7])\n  sql: %s", got, q)
+		if !reflect.DeepEqual(got, []int64{7, 7}) {
+			t.Errorf("second-leg correlated EXISTS = %v, want [7 7]\n  sql: %s", got, q)
+		}
+	}
+	t.Run("P2_second_leg_distinct", func(t *testing.T) {
+		secondLeg(t, "SELECT b.qid FROM p AS a, q AS b WHERE EXISTS (SELECT 1 FROM p WHERE b.qid = 7)")
+	})
+	t.Run("P2_second_leg_dup", func(t *testing.T) {
+		secondLeg(t, "SELECT a.qid FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM p WHERE a.qid = 7)")
+	})
+
+	// ---- P1 fold twin: projected-EXISTS + dup-alias ORDER BY ----
+	// The FOLD sort path (classifySortSource / sortKeySourceValue) is a
+	// separate seam from qualifyShadowedSortKeys: its legAliases carry the
+	// DISPLAY aliases. The dup-alias sort key must still order by the bound
+	// leg's values through the fold.
+	t.Run("P1_fold_order_by_dup", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT a.qid, EXISTS (SELECT 1 FROM p WHERE id = 1) AS e FROM p AS a, q AS a ORDER BY a.qid DESC")
+		if err != nil {
+			t.Fatalf("projected-EXISTS + dup ORDER BY errored: %v", err)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var qid sql.NullInt64
+			var e bool
+			if err := rows.Scan(&qid, &e); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !qid.Valid {
+				t.Errorf("fold sort key served NULL — the dup-leg key silently missed")
+				continue
+			}
+			if !e {
+				t.Errorf("projected EXISTS = false, want true (p has id=1)")
+			}
+			got = append(got, qid.Int64)
+		}
+		t.Logf("ACTUAL fold ORDER BY qid DESC = %v (want [9 9 7 7 5 5])", got)
+		if !reflect.DeepEqual(got, []int64{9, 9, 7, 7, 5, 5}) {
+			t.Errorf("fold ORDER BY a.qid DESC = %v, want [9 9 7 7 5 5]", got)
+		}
+	})
+}

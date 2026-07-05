@@ -2458,6 +2458,13 @@ c1-baseline band (full_scan_count 3.75s, order_by_pk_full 4.60s, scan_all_narrow
 only adds a column-metadata derivation arm for duplicate-alias `SELECT *` (no
 plan-shape / cost change for non-dup queries). No regression.
 
+**2026-07-06 (RFC-173 item-1 c4 — the review-round fixes: binding-keyed sort/group
+keys, buried-EXISTS rebase, fold binding correlations):** branch 161.84s total, all
+23 subtests PASS — equal to the master `8c179a025` baseline (161.68s) and faster
+than the c2 run (171.41s). Key metrics inside every band: full_scan_count 3.72s,
+order_by_pk_full 4.10s, scan_all_narrow 4.06s / _wide 4.34s, sparse_filter 3.61s,
+needles/in_list ~10ms. No regression.
+
 **2026-07-05 (RFC-173 item-2 commit 5b, PR #480 — cluster-gate rider transparency):**
 baseline master `4f836f941` 156.14s total vs branch `bd802e83d` 156.32s (+0.1%, noise);
 every subtest within measurement resolution (pk lookups 10–60ms both, index equality 20ms,
@@ -3323,6 +3330,21 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    with Java's positional duplicate-column layout. All three flip corpus entries at parity
    (annotations deleted); dual-window + live-Java conformance + 1M stress green. Full record in
    RFC § "QP-REF-BIND item 1 — c2+c3 record". codex + @claude remain the PR-side gauntlet.**
+   **c4 — the review round (2026-07-05): the PR gauntlet caught two REAL post-"COMPLETE"
+   bugs (independently confirmed by both PR-side reviewers), both reproduced red-first and
+   fixed; pinning their fold twin exposed a third. P1: dup-alias ORDER BY/GROUP BY keys kept
+   the display alias while the gated join row is binding-keyed (silent wrong rows / NULL
+   group keys) — sort+group keys now route through ResolveQualifiedProjection, group-key
+   datum keyed by bare Field. P2: correlated EXISTS over an un-collapsed cross join — bisect
+   pinned the buried-reference class as an ITEM-2 regression (worked pre-item-2) —
+   duplicate-preserving outer scopes + gated flatten binding correlations +
+   rebasePlanOuterRefsOrdinal (buried refs in the existential subplan → merged positional
+   row, expression-gated, fail-closed verified). P3: the projected-EXISTS fold served NULL
+   for a later dup leg's columns — buildExistentialJoinSelect + classifySortSource now speak
+   bindings end-to-end. 7-shape FDB pin + 6 corpus entries live-verified + 2 dual-window
+   declared-difference carve-outs (binding-qualified reads exist only positionally). Full
+   record in RFC § "QP-REF-BIND item 1 — c4 record". Follow-on booked below: aggregate
+   output metadata drift (labels/types) vs Java.**
 2. **Existential-flatten ordinalization** — translateJoinWithExists keeps the ANCHORED seed
    until the 2+1 select's data-access/correlated-FlatMap implementation paths bind legs
    POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).
@@ -3381,3 +3403,14 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       under-existential arrives via item 2's binders; the BARE-TWIN duplicate-column decline
       rides until S4 — folded into the atomic commit per the circularity ruling, with the
       differential covering it name-model-side until then).
+- [ ] **Rider: aggregate output METADATA drift vs Java** (item-1 c4 probe finding —
+      rows are parity, metadata is not; live-verified 4.12.11.0): (a) a DISTINCT-alias
+      qualified group key labels the output column `A.QID` where Java labels the bare
+      `QID` (the dup-alias path already labels bare via the c4 fix — unify); (b) a
+      group key over a join reports type UNKNOWN where Java reports the column type
+      (BIGINT) — `buildAggColumns`' protoFieldTypeName misses join-shaped descriptors;
+      (c) unaliased `COUNT(*)` labels `COUNT(*)` where Java generates `_1`. Blocks
+      GROUP-BY-over-join corpus entries (normaliseRows compares name|type byte-equal —
+      the c4 group-by shape is FDB-test-pinned instead). Read Java's output-name
+      generation first (SemanticAnalyzer/Expression.toResultColumn) — (c) may be a
+      both-quirks booking, not a Go fix.

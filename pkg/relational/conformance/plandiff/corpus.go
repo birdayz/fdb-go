@@ -18115,6 +18115,102 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_DUP_X VALUES (1)"},
 			Query:          "WITH w AS (SELECT id FROM T_DUP_X) SELECT * FROM w, w",
 		},
+		// RFC-173 item-1 c4 — the EXISTS-over-un-collapsed-cross-join class
+		// (an inner predicate referencing ONLY outer legs stays buried in the
+		// existential subplan; the buried-reference ordinal rebase makes it
+		// read the merged outer row) and the dup-alias sort/group key
+		// binding. All live-verified vs 4.12.11.0.
+		{
+			// Correlated EXISTS over an un-collapsed cross join, correlation on
+			// the FIRST leg, DISTINCT aliases — the item-2 regression shape
+			// (worked pre-item-2, then died on the ordinal frontier). PARITY:
+			// both answer [[1] [1] [1]] (id=1 row × three q rows).
+			Name: "exists_crossjoin_buried_first_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_A (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_B (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_A VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_B VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.id FROM T_XCJ_A AS a, T_XCJ_B AS b WHERE EXISTS (SELECT 1 FROM T_XCJ_B WHERE a.id = 1)",
+		},
+		{
+			// The SECOND-leg twin (correlation binds b.qid). PARITY: [[7] [7]].
+			Name: "exists_crossjoin_buried_second_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_C (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_D (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_C VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_D VALUES (5), (7), (9)",
+			},
+			Query: "SELECT b.qid FROM T_XCJ_C AS a, T_XCJ_D AS b WHERE EXISTS (SELECT 1 FROM T_XCJ_C WHERE b.qid = 7)",
+		},
+		{
+			// The DUPLICATE-alias variants: per-attribute resolution binds the
+			// unique leg, and the duplicate-preserving outer scope carries both
+			// legs into the subquery planner. PARITY: [[1] [1] [1]].
+			Name: "dup_from_alias_exists_first_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_E (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_F (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_E VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_F VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.id FROM T_XCJ_E AS a, T_XCJ_F AS a WHERE EXISTS (SELECT 1 FROM T_XCJ_F WHERE a.id = 1)",
+		},
+		{
+			// Dup-alias, second leg (the gated flatten's binding-correlation
+			// quantifier naming on top of the buried rebase). PARITY: [[7] [7]].
+			Name: "dup_from_alias_exists_second_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_G (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_H (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_G VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_H VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.qid FROM T_XCJ_G AS a, T_XCJ_H AS a WHERE EXISTS (SELECT 1 FROM T_XCJ_G WHERE a.qid = 7)",
+		},
+		{
+			// ORDER BY over a duplicate-alias leg's unique column (second leg):
+			// the sort key resolves per-attribute to the q leg and rebinds to
+			// the minted binding correlation (a key left as the display alias
+			// silently missed the binding-keyed join row and served scan order). PARITY: both order
+			// [[9] [9] [7] [7] [5] [5]].
+			Name: "dup_from_alias_order_by_second_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_I (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_J (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_I VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_J VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.qid FROM T_XCJ_I AS a, T_XCJ_J AS a ORDER BY a.qid DESC",
+		},
+		{
+			// The FIRST-leg twin: Java cannot plan it (generic planner decline,
+			// live-verified — while the second-leg form above answers), Go
+			// orders correctly. Go exceeding Java on the read side is the
+			// permitted direction; the rows are pinned.
+			Name: "dup_from_alias_order_by_first_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_K (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_L (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_K VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_L VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.v FROM T_XCJ_K AS a, T_XCJ_L AS a ORDER BY a.v DESC",
+			Divergence: &Divergence{
+				Reason:    "Java cannot plan ORDER BY over the FIRST duplicate-alias leg's unique column ('Cascades planner could not plan query', live-verified 4.12.11.0 — the second-leg form answers there); Go binds the sort key per-attribute and orders correctly. Go exceeds Java on the read side.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(20)},
+					{float64(20)},
+					{float64(20)},
+					{float64(10)},
+					{float64(10)},
+					{float64(10)},
+				},
+			},
+		},
 	}
 }
 

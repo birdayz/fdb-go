@@ -2719,8 +2719,18 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	if rightRef == nil {
 		return nil
 	}
-	leftAlias := sourceAlias(j.Left)
-	rightAlias := sourceAlias(j.Right)
+	// RFC-173 QP-REF-BIND item 1: the fold's quantifiers and source aliases
+	// carry the BINDING correlation (== the alias for every non-duplicate
+	// leg; the parser-minted id for a later duplicate). The resolver emits
+	// binding-qualified references for a duplicate leg (QOV(Q$DUPn).COL), and
+	// every downstream consumer — the implementation arm's rebase, the NLJ
+	// merged row's qualified LEG.COL keys, the hidden ORDER BY columns — keys
+	// legs by these names: display-named [A, A] quantifiers left the second
+	// leg's binding unbound and its columns served NULL. The name-model
+	// merged row distinguishes duplicate legs exactly when the leg keys are
+	// the distinct bindings.
+	leftAlias := sourceBinding(j.Left)
+	rightAlias := sourceBinding(j.Right)
 
 	leftQ := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(leftAlias), leftRef,
@@ -3008,9 +3018,16 @@ type sortSource struct {
 // joins), so we classify only that shape as a join.
 func classifySortSource(input logical.LogicalOperator) sortSource {
 	if j, ok := input.(*logical.LogicalJoin); ok && j.Kind == logical.JoinInner {
+		// BINDING correlations, not display aliases (RFC-173 QP-REF-BIND
+		// item 1): the fold's quantifiers and merged-row keys carry the
+		// binding (buildExistentialJoinSelect), and a duplicate-alias sort
+		// key resolves to a binding-qualified value — display-named
+		// legAliases ([A, A]) failed to attribute it and the key silently
+		// degraded to the bare last-leg-wins read. Identical to the alias
+		// for every non-duplicate leg.
 		return sortSource{
 			isJoin:     true,
-			legAliases: []string{sourceAlias(j.Left), sourceAlias(j.Right)},
+			legAliases: []string{sourceBinding(j.Left), sourceBinding(j.Right)},
 		}
 	}
 	return sortSource{isJoin: false}
@@ -4166,9 +4183,13 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 	if gatedFlatten {
+		// Key the collision namespace on the BINDING correlations — the names
+		// the gated quantifiers actually carry (a later duplicate leg is
+		// Q$DUPn, its display alias shared): an existential alias must not
+		// collide with either.
 		seen := map[string]struct{}{
-			strings.ToUpper(sourceAlias(left)):  {},
-			strings.ToUpper(sourceAlias(right)): {},
+			strings.ToUpper(sourceBinding(left)):  {},
+			strings.ToUpper(sourceBinding(right)): {},
 		}
 		for _, esq := range f.ExistsSubqueries {
 			key := strings.ToUpper(esq.Alias.Name())
@@ -4214,6 +4235,20 @@ func (t *cascadesTranslator) translateJoinWithExists(
 
 	leftAlias := sourceAlias(left)
 	rightAlias := sourceAlias(right)
+	// RFC-173 QP-REF-BIND item 1: a GATED flatten's quantifiers and source
+	// aliases carry the BINDING correlation (== the alias for every
+	// non-duplicate leg; the parser-minted id for a later duplicate) —
+	// matching the ordinal seed RC's QOVs and the executor's span windows,
+	// exactly as translateJoin's gated binary arm. Without this the dup
+	// flatten seeded [A, Q$DUP1] while naming BOTH quantifiers [A, A]; the
+	// step-1 NLJ then adapted the second leg's row against the first leg's
+	// type and died loudly in the leg adapter. The NAME-MODEL arm keeps the
+	// DISPLAY aliases (its anchored RC and merged-row keys are
+	// alias-qualified).
+	if gatedFlatten {
+		leftAlias = sourceBinding(left)
+		rightAlias = sourceBinding(right)
+	}
 
 	leftQ := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(leftAlias), leftRef,

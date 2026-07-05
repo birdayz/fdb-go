@@ -2680,6 +2680,18 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		var qualID semantic.Identifier
 		if ref.isQualified() {
 			qualID = semantic.NewUnquoted(ref.table)
+			// The dup-alias twin (RFC-173 QP-REF-BIND item 1): a qualified key
+			// binding a LATER duplicate-alias leg must group by the BINDING
+			// correlation (`Q$DUP1.QID`) — the join row's actual namespace —
+			// never the display alias, whose bare FieldValue fallback misses
+			// and silently groups every row under NULL. Same helper as the
+			// projection and ORDER-BY paths (qualifyShadowedSortKeys), so the
+			// three cannot diverge; nil for every non-duplicate reference.
+			if qv, err := resolver.ResolveQualifiedProjection(qualID, semantic.NewUnquoted(ref.bare())); err == nil && qv != nil {
+				keyValues[i] = qv
+				filled = true
+				continue
+			}
 		}
 		qv, ok, err := resolver.ResolveColumnShadowingQualified(qualID, semantic.NewUnquoted(ref.bare()))
 		if err == nil && ok {
@@ -5035,14 +5047,24 @@ func buildLogicalPlanForUnionWithCatalog(
 // logical plans for EXISTS and scalar subqueries and collects the
 // (alias, plan) pairs that the LogicalFilter/LogicalProject need to
 // carry to the Cascades translator.
-func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) map[string]semantic.ScopeSource {
+func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) []semantic.ScopeSource {
+	// A DUPLICATE-PRESERVING slice in FROM order, never an alias-keyed map
+	// (RFC-173 QP-REF-BIND item 1): duplicate outer aliases are legal, and a
+	// map collapsed them last-wins — an inner correlated reference then saw
+	// only ONE leg (false 42703 for the lost leg's columns; a missed terminal
+	// ambiguity for shared ones) and bound the survivor under the DISPLAY
+	// alias, mis-correlating a later duplicate leg whose row namespace is its
+	// minted BINDING. Every source carries bindingOrAlias — the same
+	// convention as the SELECT/WHERE scope builders — so per-attribute
+	// resolution and QOV emission work across scope depth exactly as at the
+	// top level (the ladder: 1→bind, 0→fallthrough, ≥2→terminal 42702).
 	if sq == nil || md == nil || sq.tableName == "" {
 		return nil
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
-	sources := make(map[string]semantic.ScopeSource)
-	addSrc := func(tableName, alias string) {
+	var sources []semantic.ScopeSource
+	addSrc := func(tableName, alias, bindingID string) {
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil {
 			return
@@ -5051,9 +5073,9 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 		if alias == "" {
 			a = semantic.NewUnquoted(tableName)
 		}
-		sources[strings.ToUpper(a.Name())] = semantic.ScopeSource{
-			Table: tbl, Alias: a, CorrelationName: a.Name(),
-		}
+		sources = append(sources, semantic.ScopeSource{
+			Table: tbl, Alias: a, CorrelationName: bindingOrAlias(bindingID, a),
+		})
 	}
 	// A DERIVED-TABLE source (`FROM (SELECT ...) e`) is NOT a real table
 	// either — register its VIRTUAL column schema (the SAME
@@ -5064,22 +5086,27 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 	// "E" cannot be resolved` join form) — while the identical correlation
 	// to a REAL table alias works. Mirrors the lateral-unnest leg
 	// registration below.
-	addDerived := func(alias string, body antlrgen.IQueryContext) {
+	addDerived := func(alias, bindingID string, body antlrgen.IQueryContext) {
 		if src, ok := buildDerivedTableSource(md, alias, body); ok {
-			sources[strings.ToUpper(src.CorrelationName)] = src
+			if bindingID != "" {
+				src.CorrelationName = bindingID
+			}
+			sources = append(sources, src)
 		}
 	}
 	if sq.derivedQuery != nil {
 		// The primary derived source: the parser carries the alias in
 		// tableAlias when present, else in tableName (the same convention
-		// buildWherePredicateForDerived resolves against).
+		// buildWherePredicateForDerived resolves against). The primary leg is
+		// always a FIRST occurrence — the mint renames later duplicates only —
+		// so it carries no binding id.
 		alias := sq.tableAlias
 		if alias == "" {
 			alias = sq.tableName
 		}
-		addDerived(alias, sq.derivedQuery)
+		addDerived(alias, "", sq.derivedQuery)
 	} else {
-		addSrc(sq.tableName, sq.tableAlias)
+		addSrc(sq.tableName, sq.tableAlias, "")
 	}
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	for i, j := range sq.joins {
@@ -5094,15 +5121,15 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
 		if isLateralUnnestJoin(j, visible, resolvesToTable) {
 			if src, ok := unnestVirtualScopeSource(j); ok {
-				sources[strings.ToUpper(src.CorrelationName)] = src
+				sources = append(sources, src)
 			}
 			continue
 		}
 		if j.derivedQuery != nil {
-			addDerived(j.alias, j.derivedQuery)
+			addDerived(j.alias, j.bindingID, j.derivedQuery)
 			continue
 		}
-		addSrc(j.tableName, j.alias)
+		addSrc(j.tableName, j.alias, j.bindingID)
 	}
 	return sources
 }
@@ -5116,8 +5143,10 @@ type existsSubqueryPlanner struct {
 	// main.PB AS B)` in a session whose schema is `main` resolves `main.PB` as the
 	// schema-qualified TABLE against the ACTIVE schema, not the hardcoded default
 	// `s`. Empty falls back to defaultEmbeddedSchema. RFC-142 (P2b).
-	schemaName                 string
-	outerScopes                map[string]semantic.ScopeSource
+	schemaName string
+	// outerScopes is a DUPLICATE-PRESERVING slice in FROM order (RFC-173
+	// QP-REF-BIND item 1) — see buildOuterScopeSources.
+	outerScopes                []semantic.ScopeSource
 	cteScopes                  map[string]semantic.ScopeSource
 	cteBodies                  map[string]logical.LogicalOperator // CTE name → body plan, for wrapping scalar subquery plans
 	subqueries                 []logical.ExistsSubquery
@@ -5313,13 +5342,20 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// outer scopes include both the current planner's outer scopes and
 	// the inner table — this enables correlation across multiple levels
 	// (e.g. innermost EXISTS referencing outermost emp.id).
-	nestedOuterScopes := make(map[string]semantic.ScopeSource, len(p.outerScopes)+1)
-	for k, v := range p.outerScopes {
-		nestedOuterScopes[k] = v
+	// The inner source SHADOWS a same-aliased outer for the next nesting
+	// level (the semantics the alias-keyed map's overwrite used to encode):
+	// drop same-aliased outers before appending, so a doubly-nested EXISTS
+	// still resolves the nearer source first — never a same-level duplicate
+	// of an outer leg with the inner table.
+	nestedOuterScopes := make([]semantic.ScopeSource, 0, len(p.outerScopes)+1)
+	for _, v := range p.outerScopes {
+		if !v.Alias.EqualsIgnoreQuoting(aliasID) {
+			nestedOuterScopes = append(nestedOuterScopes, v)
+		}
 	}
-	nestedOuterScopes[strings.ToUpper(aliasID.Name())] = semantic.ScopeSource{
+	nestedOuterScopes = append(nestedOuterScopes, semantic.ScopeSource{
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
-	}
+	})
 	nestedPlanner := &existsSubqueryPlanner{
 		md:          p.md,
 		schemaName:  p.schemaName,

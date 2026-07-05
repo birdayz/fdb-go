@@ -3369,7 +3369,19 @@ func buildAggColumns(
 ) []executor.ColumnDef {
 	cols := make([]executor.ColumnDef, 0, len(groupKeys)+len(aggregates))
 	for _, k := range groupKeys {
+		// The datum lookup key MUST be the name the aggregate cursor writes —
+		// executor aggKeyName: a FieldValue keys by its bare Field, everything
+		// else by ExplainValue. A resolved group key carrying a correlation
+		// Child (the RFC-173 dup-alias binding FieldValue(QOV(Q$DUP1), QID);
+		// the RFC-142 shadow-qualified twin) explains as the QUALIFIED
+		// "Q$DUP1.QID" while the cursor keys the output row by the bare "QID"
+		// — deriving the column Name from ExplainValue read the missing
+		// qualified key off the bare-named row and served NULL for a
+		// correctly-grouped result.
 		name := values.ExplainValue(k)
+		if fv, ok := k.(*values.FieldValue); ok {
+			name = fv.Field
+		}
 		typeName := "UNKNOWN"
 		if desc != nil {
 			typeName = protoFieldTypeName(desc, name)
