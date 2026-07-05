@@ -1906,32 +1906,27 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	t.Run("R5j EXISTS with an OUTER-ONLY conjunct forces the anchored seed", func(t *testing.T) {
-		// RFC-173 commit 5a: an EXISTS subquery predicate that references ONLY the
-		// outer leg (`MA.ID = 1`, no JU column) is an OUTER-ONLY conjunct. The
-		// executor classifies it outer-only and pushes it as a filter on the unnest
-		// FlatMap OUTPUT, evaluated BEFORE the existential FlatMap's positional
-		// birth — where an ORDINAL seed has projected the row down to the merged
-		// element columns and MA.ID is not resolvable at all ("field MA.ID not
-		// resolvable in the runtime row, columns [X]"). existsHasOuterOnlyLegConjunct
-		// declines the ordinal seed for this shape so it stays name-model (the
-		// anchored record carries the full qualified leg columns at that boundary —
-		// its pre-5a behavior). EXISTS(SELECT 1 FROM JU WHERE MA.ID=1) == (MA.ID=1
-		// AND JU non-empty); JU is non-empty, so only MA1 (ID=1) survives → {10,11,12}.
+	t.Run("R5j EXISTS with an OUTER-ONLY conjunct", func(t *testing.T) {
+		// An EXISTS subquery predicate that references ONLY the outer leg
+		// (`MA.ID = 1`, no JU column). The conjunct stays INSIDE the subquery
+		// (under the ∃ — the placement invariant) and the ordinal seed's buried
+		// rebase bakes the leg ref positionally, so it evaluates below the
+		// FirstOrDefault against the merged row. EXISTS(SELECT 1 FROM JU WHERE
+		// MA.ID=1) == (MA.ID=1 AND JU non-empty); JU is non-empty, so only MA1
+		// (ID=1) survives → {10,11,12}.
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
 			"X=10", "X=11", "X=12",
 		})
 	})
 
-	t.Run("R5o EXISTS inner scans a table aliased the same as an outer leg (shadow guard)", func(t *testing.T) {
-		// The SHADOW guard in existsHasOuterOnlyLegConjunct: the EXISTS inner scans
-		// MA — the SAME table (and raw alias) as the outer leg MA. A ref to `MA.C`
-		// is then ambiguous (outer leg or inner shadow), and the rule routes the
-		// shared-name ref OUTER, so the ordinal seed cannot resolve it. The guard
-		// (innerLegs ∩ outerLegs ≠ ∅) forces the anchored seed for the whole esq.
-		// Red-first provable by dropping the `|| shadow` arm (→ malformed plan).
-		// The inner MA is non-empty; the outer `MA.C < X` keeps MA1's 12 and MA2's
-		// {20,21}. → {12,20,21}.
+	t.Run("R5o EXISTS inner scans a table aliased the same as an outer leg (scope collision)", func(t *testing.T) {
+		// The existsInnerScopeCollidesOuter gate: the EXISTS inner scans MA — the
+		// SAME table (and raw alias) as the outer leg MA. A leg-relative outer ref
+		// `QOV(MA).C` would be captured by existsInnerCorrelation's inner-alias
+		// rename (MA → unique), so the gate forces the ANCHORED seed (the
+		// name-model rebase moves the ref to the merged corr's qualified key,
+		// which the rename does not touch). The inner MA is non-empty; the outer
+		// `MA.C < X` keeps MA1's 12 and MA2's {20,21}. → {12,20,21}.
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X")`, []string{
 			"X=12", "X=20", "X=21",
 		})
@@ -2080,13 +2075,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5l AT + an OUTER-ONLY EXISTS conjunct (coverage, not red-first)", func(t *testing.T) {
-		// The WITH-ORDINALITY twin of R5j. existsHasOuterOnlyLegConjunct declines the
-		// ordinal seed for ANY outer-only leg conjunct regardless of AT, so this
-		// takes the anchored path uniformly with R5j. COVERAGE ONLY — a fully-baked
-		// AT seed's leg windows can already bind MA.ID at the outer filter, so this
-		// shape is green with OR without the decline; the uniform anchoring is a
-		// conservative-correctness choice, not an optimization win. Same rows as R5j
-		// (the AT ordinal is projected away by SELECT "X"): only MA1 → {10,11,12}.
+		// The WITH-ORDINALITY twin of R5j: the fully-baked AS+AT ordinal seed with
+		// the outer-only conjunct buried under the ∃ and baked positionally — the
+		// same placement as R5j, exercised over the 2-window (outer + inner) seed.
+		// Same rows as R5j (the AT ordinal is projected away by SELECT "X"):
+		// only MA1 → {10,11,12}.
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" AT "O" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`, []string{
 			"X=10", "X=11", "X=12",
 		})
