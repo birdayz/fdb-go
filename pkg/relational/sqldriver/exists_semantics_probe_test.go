@@ -93,4 +93,21 @@ func TestFDB_ExistsSemanticsProbe(t *testing.T) {
 	// Correlated NOT EXISTS unaffected by orphan/NULL children (pid=99, pid=NULL
 	// match no parent, but p1/p2 still have real children).
 	ck("correlated_not_exists_with_orphans", "SELECT id FROM parent p WHERE NOT EXISTS (SELECT 1 FROM child c WHERE c.pid = p.id)", []int64{3})
+
+	// OUTER-ONLY conjunct INSIDE the subquery's WHERE. It must evaluate UNDER the
+	// ∃ — ¬∃(P∧Q) ≡ ¬P ∨ ¬∃(Q) — never as an outer PRE-filter, which computes
+	// P ∧ ¬∃(Q) and wrongly drops every ¬P outer row. (The positive polarity is
+	// insensitive: P ∧ ∃(Q) ≡ ∃(P∧Q) for an outer-only P — which is exactly how
+	// the pre-filter bug shipped green: every existing test was either positive
+	// or had the conjunct OUTSIDE the subquery.)
+	ck("exists_outer_only_conjunct",
+		"SELECT id FROM parent p WHERE EXISTS (SELECT 1 FROM child c WHERE p.id = 1)", []int64{1})
+	ck("not_exists_outer_only_conjunct",
+		"SELECT id FROM parent p WHERE NOT EXISTS (SELECT 1 FROM child c WHERE p.id = 1)", []int64{2, 3})
+	ck("not_exists_outer_only_plus_correlated",
+		"SELECT id FROM parent p WHERE NOT EXISTS (SELECT 1 FROM child c WHERE c.pid = p.id AND p.id = 1)", []int64{2, 3})
+	// Control: a conjunct OUTSIDE the subquery (a sibling of the NOT EXISTS
+	// marker) legitimately pre-filters the outer in BOTH polarities.
+	ck("not_exists_sibling_conjunct_prefilters",
+		"SELECT id FROM parent p WHERE p.id <> 1 AND NOT EXISTS (SELECT 1 FROM child c WHERE c.pid = p.id)", []int64{3})
 }

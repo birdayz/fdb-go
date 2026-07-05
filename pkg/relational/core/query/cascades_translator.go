@@ -2275,6 +2275,44 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	join *logical.LogicalJoin,
 	u *logical.LogicalUnnest,
 ) expressions.RelationalExpression {
+	// UNWRAP a subquery-internal OUTER-ONLY filter back into the JoinPredicate
+	// channel. buildCorrelatedExists keeps an outer-only conjunct (`… WHERE
+	// MA.ID = 1`, no inner-source ref) INSIDE the subquery plan so it evaluates
+	// under the ∃ (the NOT-EXISTS pre-filter fix) — the right placement for the
+	// flat path, whose FlatMap binds the outer under its OWN alias so the buried
+	// ref resolves. THIS path's outer is the unnest FlatMap: an outer-LEG ref
+	// only resolves through the rebase machinery (anchored: the qualified
+	// LEG.COL key; ordinal: the executor's positional hoist), and BOTH cover the
+	// JoinPredicate channel only — a buried QOV(leg) ref would fall to the
+	// alias-unchecked frontier fallback and silently read the INNER row.
+	// Re-threading through JoinPredicate keeps the proven routing. (The negated
+	// unnest twin therefore still pre-filters — the pre-existing bug B unnest
+	// variant, tracked with the B/C/D/E follow-ons; fixing it needs the buried
+	// ref to bind below the FOD, not a placement flip.)
+	if len(f.ExistsSubqueries) > 0 {
+		unwrapped := make([]logical.ExistsSubquery, len(f.ExistsSubqueries))
+		for i, esq := range f.ExistsSubqueries {
+			if lf, isLF := esq.Plan.(*logical.LogicalFilter); isLF &&
+				len(lf.ExistsSubqueries) == 0 && len(lf.ScalarSubqueries) == 0 &&
+				predicateIsOuterOnly(lf.Predicate, outerBoundAliases(lf.Input)) {
+				esq.Plan = lf.Input
+				if esq.JoinPredicate == nil {
+					esq.JoinPredicate = lf.Predicate
+				} else {
+					esq.JoinPredicate = predicates.NewAnd(esq.JoinPredicate, lf.Predicate)
+				}
+			}
+			unwrapped[i] = esq
+		}
+		f = &logical.LogicalFilter{
+			Input:            f.Input,
+			Predicate:        f.Predicate,
+			PredicateText:    f.PredicateText,
+			ExistsSubqueries: unwrapped,
+			ScalarSubqueries: f.ScalarSubqueries,
+		}
+	}
+
 	// Lower the unnest leg (validates the array field; records a faithful
 	// diagnostic + returns nil for an invalid unnest, e.g. AT-on-a-non-array).
 	// unnestUnderExistential is set so unnestExistsSeedSafe applies the single-alias
@@ -2445,6 +2483,27 @@ func rebaseUnnestOuterLegPredicate(
 		})
 	}
 	return mapPredicateValues(p, rewrite)
+}
+
+// predicateIsOuterOnly reports whether a predicate references at least one
+// correlation and NONE of them is in innerAliases — the discriminator for a
+// subquery-internal OUTER-ONLY filter (buildCorrelatedExists places one; an
+// UNCORRELATED subquery's own filter references its inner sources and must
+// never match). Nil/reference-free predicates are not outer-only.
+func predicateIsOuterOnly(p predicates.QueryPredicate, innerAliases map[string]struct{}) bool {
+	if p == nil {
+		return false
+	}
+	corrs := predicates.GetCorrelatedToOfPredicate(p)
+	if len(corrs) == 0 {
+		return false
+	}
+	for c := range corrs {
+		if _, isInner := innerAliases[strings.ToUpper(c.Name())]; isInner {
+			return false
+		}
+	}
+	return true
 }
 
 // andOf combines predicates into a single QueryPredicate: nil for an empty list,

@@ -5294,9 +5294,88 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// through when the inner row has a NULL (absent-from-map) field.
 	innerCorr := strings.ToUpper(aliasID.Name())
 	qualifyBareFields(pred, innerCorr)
+	pred = predicates.SimplifyPredicateValues(pred)
 
-	p.lastJoinPredicate = predicates.SimplifyPredicateValues(pred)
+	// OUTER-ONLY conjuncts (`… WHERE p.id = 1` — no inner-source reference) stay
+	// INSIDE the subquery as a filter on the inner plan, so they evaluate UNDER
+	// the ∃ in both polarities: ¬∃(P∧Q) ≡ ¬P ∨ ¬∃(Q). Threading them through the
+	// join predicate instead hands them to the semi-join implementation's
+	// inner/outer routing, which pre-filters the OUTER on outer-only conjuncts —
+	// an equivalence that holds ONLY for the positive polarity (P ∧ ∃(Q) ≡
+	// ∃(P∧Q)); under NOT EXISTS it computes P ∧ ¬∃(Q) and wrongly drops every
+	// ¬P outer row. Placement, not polarity, is the invariant: subquery-origin
+	// conjuncts never leave the subquery.
+	outerOnly, rest := splitOuterOnlyConjuncts(pred, p.innerSourceAliases(innerCorr, sq))
+	if outerOnly != nil {
+		op = &logical.LogicalFilter{Input: op, Predicate: outerOnly}
+	}
+	p.lastJoinPredicate = rest
 	return op, nil
+}
+
+// innerSourceAliases collects the UPPER-CASE correlation names of every FROM
+// source INSIDE a correlated subquery: the primary table's alias plus each
+// join/comma leg's alias (a lateral-unnest leg's AS alias included — its
+// element binding is an inner source).
+func (p *existsSubqueryPlanner) innerSourceAliases(innerCorr string, sq *selectQuery) map[string]struct{} {
+	inner := map[string]struct{}{innerCorr: {}}
+	for _, j := range sq.joins {
+		alias := j.alias
+		if alias == "" {
+			alias = j.tableName
+		}
+		if alias != "" {
+			inner[strings.ToUpper(alias)] = struct{}{}
+		}
+	}
+	return inner
+}
+
+// splitOuterOnlyConjuncts partitions a subquery WHERE's top-level AND tree into
+// (outerOnly, rest): a conjunct is OUTER-ONLY iff it references at least one
+// correlation and none of them is an inner FROM source. Everything else —
+// inner-only conjuncts, genuine correlation conjuncts, and reference-free
+// constants — stays in rest (the join predicate), preserving the existing
+// routing for every shape except the one that was wrong. An OR tree is one
+// conjunct, classified atomically by its whole correlation set.
+func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases map[string]struct{}) (outerOnly, rest predicates.QueryPredicate) {
+	if pred == nil {
+		return nil, nil
+	}
+	var outer, keep []predicates.QueryPredicate
+	var walk func(p predicates.QueryPredicate)
+	walk = func(p predicates.QueryPredicate) {
+		if and, ok := p.(*predicates.AndPredicate); ok {
+			for _, sub := range and.SubPredicates {
+				walk(sub)
+			}
+			return
+		}
+		corrs := predicates.GetCorrelatedToOfPredicate(p)
+		if len(corrs) == 0 {
+			keep = append(keep, p)
+			return
+		}
+		for c := range corrs {
+			if _, isInner := innerAliases[strings.ToUpper(c.Name())]; isInner {
+				keep = append(keep, p)
+				return
+			}
+		}
+		outer = append(outer, p)
+	}
+	walk(pred)
+	andOf := func(ps []predicates.QueryPredicate) predicates.QueryPredicate {
+		switch len(ps) {
+		case 0:
+			return nil
+		case 1:
+			return ps[0]
+		default:
+			return predicates.NewAnd(ps...)
+		}
+	}
+	return andOf(outer), andOf(keep)
 }
 
 // qualifyBareFields walks a predicate tree and prepends qualifier+"."
