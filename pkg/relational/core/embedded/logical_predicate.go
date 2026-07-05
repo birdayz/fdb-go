@@ -5371,30 +5371,16 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// inner is empty), never subquery-internal conjuncts. Routing a
 	// scalar-referencing internal conjunct outward reproduced the pre-filter
 	// polarity bug for exactly the NOT-EXISTS + scalar shape.
-	outerOnly, rest := splitOuterOnlyConjuncts(pred, p.innerSourceAliases(innerCorr, sq))
+	// The inner-source universe comes from the BINDER-EXACT collector over the
+	// built op tree (the same helper the correlated-scalar scope discriminator
+	// uses, pinned by TestInnerSourceAliases_MirrorsUnnestBinder) — one
+	// inner-source authority, not a second joins-walk.
+	outerOnly, rest := splitOuterOnlyConjuncts(pred, innerSourceAliases(op))
 	if outerOnly != nil {
 		op = &logical.LogicalFilter{Input: op, Predicate: outerOnly}
 	}
 	p.lastJoinPredicate = rest
 	return op, nil
-}
-
-// innerSourceAliases collects the UPPER-CASE correlation names of every FROM
-// source INSIDE a correlated subquery: the primary table's alias plus each
-// join/comma leg's alias (a lateral-unnest leg's AS alias included — its
-// element binding is an inner source).
-func (p *existsSubqueryPlanner) innerSourceAliases(innerCorr string, sq *selectQuery) map[string]struct{} {
-	inner := map[string]struct{}{innerCorr: {}}
-	for _, j := range sq.joins {
-		alias := j.alias
-		if alias == "" {
-			alias = j.tableName
-		}
-		if alias != "" {
-			inner[strings.ToUpper(alias)] = struct{}{}
-		}
-	}
-	return inner
 }
 
 // splitOuterOnlyConjuncts partitions a subquery WHERE's top-level AND tree into
