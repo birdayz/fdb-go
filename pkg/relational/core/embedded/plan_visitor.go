@@ -1401,6 +1401,10 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 		}
 		id := semantic.NewUnquoted(bare)
 		if ref.isQualified() {
+			// An AmbiguousColumnError here is DISCARDED on purpose: the
+			// upstream sort-key reference validation already terminated an
+			// ambiguous key with 42702 before this qualification pass runs
+			// (the ladder's >=2 arm is owned there, not here).
 			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(ref.table), id)
 			if err == nil && qv != nil {
 				sort.Keys[i].Value = qv

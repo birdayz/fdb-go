@@ -2687,6 +2687,10 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			// and silently groups every row under NULL. Same helper as the
 			// projection and ORDER-BY paths (qualifyShadowedSortKeys), so the
 			// three cannot diverge; nil for every non-duplicate reference.
+			// An AmbiguousColumnError here is DISCARDED on purpose: the
+			// upstream group-key reference validation already terminated an
+			// ambiguous key with 42702 before this pass runs (the ladder's
+			// >=2 arm is owned there, not here).
 			if qv, err := resolver.ResolveQualifiedProjection(qualID, semantic.NewUnquoted(ref.bare())); err == nil && qv != nil {
 				keyValues[i] = qv
 				filled = true
@@ -5747,6 +5751,20 @@ func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]lo
 func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
+	}
+	// RFC-173 QP-REF-BIND item 1: the correlated-scalar lowering keys legs by
+	// DISPLAY alias — its inner plan and scalar output naming are not
+	// binding-aware — so a duplicate outer alias in scope (a minted Q$DUPn
+	// binding) would resolve per-attribute at the front end and then serve a
+	// silent-NULL scalar at execution (the outer projection is planned as an
+	// inner-row column). Decline LOUDLY until this path speaks bindings; the
+	// EXISTS twin (buildCorrelatedExists) is binding-aware and answers.
+	for _, src := range p.outerScopes {
+		if src.CorrelationName != "" && !strings.EqualFold(src.CorrelationName, src.Alias.Name()) {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: fmt.Sprintf("correlated scalar subquery: duplicate outer FROM alias %s is not supported (the scalar lowering is not binding-aware)", src.Alias.Name()),
+			}
+		}
 	}
 	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {

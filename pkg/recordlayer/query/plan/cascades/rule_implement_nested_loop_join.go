@@ -1225,7 +1225,10 @@ func rebaseOuterLegValue(
 // IS known, so we rebase `QOV(A).col` → `FieldValue(QOV($m), "A.col")` — the
 // authoritative qualified key the merged outer row carries (review condition 4) —
 // using the exact rebaseOuterLegValue/rebaseOuterLegRefsToMerged machinery the
-// EXISTS-over-join path uses. Pass-through nodes are rebuilt around their rebased
+// EXISTS-over-join path uses. The GATED ordinal twin is
+// rebasePlanOuterRefsOrdinal (rfc173_w4left_existential.go) — the two walks
+// and planReferencesAnyBuriedAlias enumerate the same node kinds and must
+// move together. Pass-through nodes are rebuilt around their rebased
 // inner; an unhandled node is returned as-is and caught by the post-rebase
 // verification (planReferencesAnyBuriedAlias) which declines the probe so the
 // correct materialized NLJ fallback wins.
@@ -1975,6 +1978,8 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// verified: a surviving leg reference declines the yield
 	// (CORRECT-or-LOUD, the 1+1 path's convention; those shapes evaluated an
 	// unbound correlation before, so a decline is strictly no worse).
+	// Window keys usually repeat the leg aliases — duplicates and map order
+	// are irrelevant (every consumer builds a set).
 	verifyAliases := append([]string{}, outerLegAliases...)
 	for alias := range ordinalWindows {
 		verifyAliases = append(verifyAliases, alias)

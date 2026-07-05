@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -128,8 +129,13 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 		var got []int64
 		for rows.Next() {
 			var v int64
-			_ = rows.Scan(&v)
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
 			got = append(got, v)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
 		}
 		t.Logf("ACTUAL distinct-alias control ids = %v (want [1 1 1])", got)
 		if !reflect.DeepEqual(got, []int64{1, 1, 1}) {
@@ -153,8 +159,13 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 		var got []int64
 		for rows.Next() {
 			var v int64
-			_ = rows.Scan(&v)
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
 			got = append(got, v)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
 		}
 		t.Logf("ACTUAL second-leg ids = %v (want [7 7])\n  sql: %s", got, q)
 		if !reflect.DeepEqual(got, []int64{7, 7}) {
@@ -200,5 +211,60 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 		if !reflect.DeepEqual(got, []int64{9, 9, 7, 7, 5, 5}) {
 			t.Errorf("fold ORDER BY a.qid DESC = %v, want [9 9 7 7 5 5]", got)
 		}
+	})
+
+	// ---- P4: minted-binding queries that reach a DISPLAY-keyed (name-model)
+	// construction must decline LOUDLY — never silent NULLs. The name-keyed
+	// merged row cannot represent a later duplicate leg (the dual-window
+	// carve-out class); until those paths speak bindings, correct-or-loud
+	// means a typed decline. Each shape below served silent NULL rows (or
+	// did at some point of the lift) when it fell off the wedge gate.
+	loudDecline := func(t *testing.T, q, wantSub string) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err == nil {
+			// Drain: if it answers, every value must be non-NULL (never
+			// silent wrong rows) — and the shape should not answer at all
+			// until the path speaks bindings.
+			defer rows.Close()
+			n, nulls := 0, 0
+			for rows.Next() {
+				var v sql.NullInt64
+				if err := rows.Scan(&v); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				n++
+				if !v.Valid {
+					nulls++
+				}
+			}
+			t.Errorf("must decline loudly, got %d rows (%d NULL — silent wrong rows)\n  sql: %s", n, nulls, q)
+			return
+		}
+		if wantSub != "" && !strings.Contains(err.Error(), wantSub) {
+			t.Errorf("decline error = %v, want it to contain %q\n  sql: %s", err, wantSub, q)
+		}
+	}
+	// (a) Existential alias colliding with the dup display alias — the
+	// collision guard narrows OFF the gate toward the name model.
+	t.Run("P4a_exists_alias_collision_dup", func(t *testing.T) {
+		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM p AS a WHERE a.id = 1)",
+			"duplicate FROM alias")
+	})
+	// (b) Arity-3 FROM with a dup pair + uncorrelated EXISTS — the arity
+	// narrowing routes OFF the gate.
+	t.Run("P4b_arity3_dup_exists", func(t *testing.T) {
+		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a, q AS b WHERE EXISTS (SELECT 1 FROM p)",
+			"duplicate FROM alias")
+	})
+	// (c) Correlated SCALAR subquery over a dup outer — the scalar lowering
+	// keys legs by display alias (not yet binding-aware).
+	t.Run("P4c_scalar_dup_outer", func(t *testing.T) {
+		loudDecline(t, "SELECT (SELECT a.id FROM q WHERE a.id = 1) FROM p AS a, q AS a",
+			"duplicate outer FROM alias")
+	})
+	t.Run("P4d_scalar_dup_outer_agg", func(t *testing.T) {
+		loudDecline(t, "SELECT (SELECT MAX(qid) FROM q WHERE a.id = 1) FROM p AS a, q AS a",
+			"duplicate outer FROM alias")
 	})
 }

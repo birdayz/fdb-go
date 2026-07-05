@@ -2817,12 +2817,20 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	// RFC-173 Slice 2: the projected-EXISTS fold attaches existential
 	// quantifiers to the select this leg merges into — same enclosure rule as
 	// translateFilter's WHERE-EXISTS path (a nested join stays name-model).
-	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = true
-	innerRef := t.translateRef(f.Input)
-	t.inInnerCluster = prevEnclosure
-	if innerRef == nil {
-		return nil
+	// A JOIN input is NOT translated here: buildExistentialJoinSelect
+	// re-translates the legs itself and ignores innerRef, and translating the
+	// enclosed join anyway both wastes work and trips the name-model
+	// minted-binding decline for a duplicate-alias FROM the fold serves fine
+	// (its binding-keyed select owns the whole construction).
+	var innerRef *expressions.Reference
+	if _, isJoin := f.Input.(*logical.LogicalJoin); !isJoin {
+		prevEnclosure := t.inInnerCluster
+		t.inInnerCluster = true
+		innerRef = t.translateRef(f.Input)
+		t.inInnerCluster = prevEnclosure
+		if innerRef == nil {
+			return nil
+		}
 	}
 
 	fields := make([]values.RecordConstructorField, len(p.Projections))
@@ -4013,6 +4021,17 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	if gateDecision.Gated {
 		leftAlias = sourceBinding(left)
 		rightAlias = sourceBinding(right)
+	} else if leg := mintedBindingLeg(left, right); leg != "" {
+		// A minted-binding leg reached the NAME-MODEL arm (the gate narrowed
+		// off — nesting, arity, poison): its display-keyed anchored RC and
+		// merged rows cannot carry the binding, so the resolver's
+		// binding-qualified reads would serve silent NULLs. Decline LOUDLY
+		// (correct-or-loud; the ordinal seed is the only representation for
+		// duplicate legs — the dual-window carve-out class).
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"duplicate FROM alias: leg %s requires the ordinal seed; the name-model join cannot serve it (%s)",
+			leg, gateDecision.Reason))
+		return nil
 	}
 
 	// Use named quantifiers so aliases match the predicate QOV
@@ -4248,6 +4267,17 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	if gatedFlatten {
 		leftAlias = sourceBinding(left)
 		rightAlias = sourceBinding(right)
+	} else if leg := mintedBindingLeg(left, right); leg != "" {
+		// A minted-binding leg while the flatten narrowed off the gate
+		// (arity ≠ 2, existential-alias collision): the name-model flat
+		// select keys legs by display alias and would serve silent NULLs
+		// for the binding's columns. Decline LOUDLY (correct-or-loud) —
+		// "fail toward the name model" is not a safe direction for a
+		// duplicate-alias query.
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"duplicate FROM alias: leg %s requires the gated existential flatten; narrowed to the name model (%s)",
+			leg, gateDecision.Reason))
+		return nil
 	}
 
 	leftQ := expressions.NamedForEachQuantifier(
@@ -4275,18 +4305,43 @@ func (t *cascadesTranslator) translateJoinWithExists(
 
 	// Add EXISTS subqueries as existential quantifiers.
 	sourceAliases := []string{leftAlias, rightAlias}
+	anyExistsRefsLegs := false
 	for _, esq := range f.ExistsSubqueries {
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
+		}
+		for corr := range subRef.GetCorrelatedTo() {
+			name := corr.Name()
+			if strings.EqualFold(name, leftAlias) || strings.EqualFold(name, rightAlias) {
+				anyExistsRefsLegs = true
+			}
 		}
 		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
 		quantifiers = append(quantifiers, existQ)
 		innerCorrName, joinPred := existsInnerCorrelation(esq)
 		if joinPred != nil {
 			allPreds = append(allPreds, joinPred)
+			anyExistsRefsLegs = true
 		}
 		sourceAliases = append(sourceAliases, innerCorrName)
+	}
+	if gatedFlatten && !anyExistsRefsLegs {
+		if leg := mintedBindingLeg(left, right); leg != "" {
+			// A LEG-INDEPENDENT existential over a minted-binding join: the
+			// executor's identity-FlatMap positional pass-through is
+			// probe-gated on baked outer references INSIDE the exists inner
+			// (probeOuterBakedType) — a leg-independent inner leaves the
+			// probe negative, the outer flows as the name Datum, and a lazy
+			// minted-binding upper (the projection's QOV(Q$DUPn) read) would
+			// serve silent NULLs. Decline LOUDLY until the pass-through gate
+			// widens to key on the outer's own ordinal seed (the executor's
+			// booked follow-on); correlated existentials keep answering (the
+			// probe finds their baked refs).
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"duplicate FROM alias: leg %s with a leg-independent EXISTS cannot yet flow the positional row (probe-gated pass-through)", leg))
+			return nil
+		}
 	}
 
 	// The RV uses DECLARATION order (design ruling I2: Java assembles the
@@ -4538,6 +4593,43 @@ func sourceAlias(op logical.LogicalOperator) string {
 // FOLD-STABLE upper form (`Q$DUPN`) so the existing UPPER-fold lookups treat
 // them exactly like aliases; alias-bound legs return sourceAlias's UPPER
 // form, so non-duplicate queries are byte-identical to the pre-item-1 keying.
+// mintedBindingLeg returns the first FROM-leg source in the given subtrees
+// carrying a parser-minted duplicate-alias binding (Scan/CTE/Unnest .Binding
+// — set ONLY when a later duplicate leg was renamed; "" everywhere else), or
+// "" when none. The name-model join machinery keys its anchored RC and merged
+// rows by DISPLAY alias, which cannot represent a minted binding (two
+// same-named legs collide last-wins; the resolver's binding-qualified
+// references read NULL off the display-keyed row). Callers use this to
+// decline LOUDLY at every name-model construction a minted-binding query can
+// narrow into — never silent wrong rows (RFC-173 QP-REF-BIND item 1). It does
+// NOT descend into existential/scalar subquery plans: those translate their
+// own FROM and guard themselves.
+func mintedBindingLeg(ops ...logical.LogicalOperator) string {
+	for _, op := range ops {
+		if op == nil {
+			continue
+		}
+		switch o := op.(type) {
+		case *logical.LogicalScan:
+			if o.Binding != "" {
+				return o.Binding
+			}
+		case *logical.LogicalUnnest:
+			if o.Binding != "" {
+				return o.Binding
+			}
+		case *logical.LogicalCTE:
+			if o.Binding != "" {
+				return o.Binding
+			}
+		}
+		if b := mintedBindingLeg(op.Children()...); b != "" {
+			return b
+		}
+	}
+	return ""
+}
+
 func sourceBinding(op logical.LogicalOperator) string {
 	for cur := op; cur != nil; {
 		switch o := cur.(type) {

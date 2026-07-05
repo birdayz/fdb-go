@@ -284,8 +284,8 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 		"Ambiguous reference X.ID")
 }
 
-// TestFDB_RFC173Item1_DupAliasOrderGroupCorrelated pins the two c4-found
-// gaps in the item-1 lift (the c4 review round): a per-attribute
+// TestFDB_RFC173Item1_DupAliasOrderGroupCorrelated pins two lift gaps
+// (RFC-173 § "QP-REF-BIND item 1 — c4 record"): a per-attribute
 // reference that binds a LATER duplicate leg must keep binding through (1)
 // ORDER BY / GROUP BY keys — the sort/group key must resolve to the minted
 // binding's namespace (Q$DUP1.QID), never silently miss as the SQL alias
@@ -294,8 +294,8 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 // preserving and binding-aware, so an inner reference resolves per-attribute
 // across ALL same-aliased outer legs (1→bind, 0→fallthrough, ≥2→terminal
 // 42702 — the design ruling's ladder at any scope depth). Expectations follow
-// the ruling's live-verified per-attribute semantics; error-text byte-parity
-// for the correlated shapes is flagged for the next live-Java probe run.
+// the ruling's live-verified per-attribute semantics; the corpus governs
+// error-text parity for the correlated shapes.
 func TestFDB_RFC173Item1_DupAliasOrderGroupCorrelated(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -3403,6 +3403,21 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       under-existential arrives via item 2's binders; the BARE-TWIN duplicate-column decline
       rides until S4 — folded into the atomic commit per the circularity ruling, with the
       differential covering it name-model-side until then).
+- [ ] **Rider: the minted-binding loud-decline class flips to rows** (item-1 c5 —
+      the review-round guard): three declared-loud shapes over duplicate FROM aliases,
+      each pinned in rfc173_item1_keybinding_exists_fdb_test.go (P4a–P4d) with the
+      never-wrong-rows drain assert. Exit gates per shape: (a) leg-independent EXISTS
+      over a minted-binding gated flatten — flips when the executor's identity-FlatMap
+      positional pass-through gate widens to key on the outer's own ordinal seed
+      (probeOuterBakedType is the probe; flat_map_cursor.go documents the widening as
+      the follow-on); (b) narrowed-off-the-gate flattens/joins (existential-alias
+      collision, arity ≠ 2, enclosure) — flip per-path as each learns the ordinal seed
+      (item 3 / the N-way flatten); (c) correlated SCALAR subqueries over a dup outer —
+      flips when the scalar lowering speaks bindings (buildCorrelatedScalar's guard
+      names the gap). ALSO booked here (arity-scope boundary): the dup-alias ARITY-3
+      correlated buried-EXISTS stays a LOUD ordinal decline (the c4 buried-reference
+      rebase is arity-2 — implementJoinWithExistential's 2+1 shape); the N-way flatten
+      slice widens it.
 - [ ] **Rider: aggregate output METADATA drift vs Java** (item-1 c4 probe finding —
       rows are parity, metadata is not; live-verified 4.12.11.0): (a) a DISTINCT-alias
       qualified group key labels the output column `A.QID` where Java labels the bare

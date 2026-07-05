@@ -3579,7 +3579,7 @@ codex + @claude remain the PR-side gauntlet.
 
 codex's PR review of the c2+c3 delta (HEAD 71974de67) surfaced two findings, both
 REPRODUCED against FDB and both real; the item-1 "COMPLETE" claim was premature until
-this round. Both fixed, red-first (`rfc173_item1_codex_fdb_test.go` pinned the Java
+this round. Both fixed, red-first (`rfc173_item1_keybinding_exists_fdb_test.go` pinned the Java
 answers before the fixes; live-Java probe verified every premise on 4.12.11.0).
 
 **P1 — dup-alias sort/group keys kept the display alias while the gated join row is
@@ -3643,3 +3643,35 @@ cross-engine green. Booked follow-on (pre-existing, NOT this slice): aggregate o
 METADATA drift vs Java — group-key label `A.QID` vs `QID` on distinct-alias qualified
 keys, group-key type UNKNOWN vs BIGINT over joins, `COUNT(*)` label vs Java's `_1`
 (probe-verified; rows are parity).
+
+## QP-REF-BIND item 1 — c5 record (the minted-binding loud-decline guard)
+
+The c4 round's re-review converged on one structural finding from both directions:
+the architecture gate NAK'd (a minted-binding query that narrows OFF the wedge gate
+reaches the display-keyed name model and serves silent NULLs — at the c2+c3
+baseline the same shapes failed LOUD, so c4's binding changes inverted
+correct-or-loud within the delta), and the PR-side review independently found the
+correlated-SCALAR twin (the c4 duplicate-preserving outer scope feeds BuildScalar,
+whose lowering is not binding-aware: `SELECT (SELECT a.id FROM q WHERE a.id = 1)
+FROM p AS a, q AS a` went loud-0A000 → silent NULL). Both reproduced red-first; a
+third face surfaced while pinning (leg-independent EXISTS over a minted-binding
+GATED flatten: the executor's identity-FlatMap positional pass-through is
+probe-gated on baked outer references inside the exists inner — a leg-independent
+inner leaves the probe negative, the outer flows as the name Datum, and the lazy
+minted-binding projection upper reads NULL; the pass-through site had booked
+exactly this widening).
+
+The guard: `mintedBindingLeg` (the subtree probe for a parser-minted duplicate
+binding) declines LOUDLY (typed — ErrCodeUnsupportedQuery; the scalar path's
+0A000 CorrelatedExistsError) at every display-keyed sink a minted-binding query
+can reach — translateJoin's name-model arm, translateJoinWithExists' narrowed
+arms AND its gated leg-independent-EXISTS shape, buildCorrelatedScalar. The
+projected-EXISTS fold needed the inverse fix: translateProjectOverExistsFilter no
+longer pre-translates a JOIN input (buildExistentialJoinSelect re-translates the
+legs itself; the wasted enclosed translation tripped the new guard for a shape
+the binding-keyed fold serves fine). Never wrong rows: every declared-loud shape
+is pinned with a drain assert (any served row must be non-NULL, so a future flip
+is observed), and the flip obligations are booked as the TODO rider with
+per-shape exit gates (the pass-through gate widening; per-path ordinal seeds;
+the binding-aware scalar lowering). The arity-2 scope boundary of the c4
+buried-reference rebase is booked in the same rider.

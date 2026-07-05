@@ -3377,7 +3377,10 @@ func buildAggColumns(
 		// "Q$DUP1.QID" while the cursor keys the output row by the bare "QID"
 		// — deriving the column Name from ExplainValue read the missing
 		// qualified key off the bare-named row and served NULL for a
-		// correctly-grouped result.
+		// correctly-grouped result. This bare-Field-vs-ExplainValue convention
+		// has three mirrors that must agree: executor aggKeyName,
+		// aggregateGroupKeyOutputName (logical_predicate.go), and this
+		// derivation.
 		name := values.ExplainValue(k)
 		if fv, ok := k.(*values.FieldValue); ok {
 			name = fv.Field

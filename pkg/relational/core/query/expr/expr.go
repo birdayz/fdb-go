@@ -268,15 +268,20 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 }
 
 // ResolveQualifiedProjection resolves a QUALIFIED projection reference on the
-// join path: it ALWAYS runs the per-attribute ambiguity check (Java's 42702 —
-// the caller surfaces an AmbiguousColumnError; RFC-173 QP-REF-BIND item 1)
-// and returns a non-nil Value only when the reference binds to a LATER
-// duplicate-alias leg (src.CorrelationName differs from the alias) — the
-// QOV-correlated read addressing THAT leg's quantifier, which the gated
-// seed's bake resolves positionally. nil Value + nil error keeps the
-// caller's legacy alias-keyed emission (behavior-preserving for every
-// non-duplicate query); non-ambiguity resolution misses also return nil,nil
-// (column validation owns 42703 on this path, as before).
+// join path: it ALWAYS runs the per-attribute ambiguity check (Java's 42702;
+// RFC-173 QP-REF-BIND item 1) and returns a non-nil Value only when the
+// reference binds to a LATER duplicate-alias leg (src.CorrelationName differs
+// from the alias) — the QOV-correlated read addressing THAT leg's quantifier,
+// which the gated seed's bake resolves positionally. nil Value + nil error
+// keeps the caller's legacy alias-keyed emission (behavior-preserving for
+// every non-duplicate query); non-ambiguity resolution misses also return
+// nil,nil (column validation owns 42703 on this path, as before). The
+// AmbiguousColumnError disposition is per-caller: the projection path
+// SURFACES it; the ORDER BY (qualifyShadowedSortKeys) and GROUP BY
+// (upgradeAggregateOperands) callers deliberately DISCARD it, because the
+// upstream reference validation has already terminated an ambiguous
+// sort/group key with 42702 before those helpers run — the swallow is not a
+// dead error path, do not "fix" it into one.
 func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier) (values.Value, error) {
 	col, src, err := r.analyzer.ResolveColumnRef(r.scope, qualifier, id)
 	if err != nil {
