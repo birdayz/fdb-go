@@ -16,9 +16,11 @@ import (
 // 4-way post-flattening), so the gate computes the POST-FLATTENING ForEach
 // arity of the transitive inner-join-equivalent cluster, at translation time,
 // by walking the logical tree with the same transparency/opacity the rule
-// actually implements (rule_select_merge.go). Drift between this walk and the
-// rule is caught by the loud assert in the rule's target loop — a decline is
-// forbidden (it would change plan shapes, contract ruling #1).
+// actually implements (rule_select_merge.go). The rule's original target-loop
+// drift assert was retired at the S3 fulcrum (positional merges are legal
+// now); drift between this walk and the rule is held by the contract pins
+// (ClusterArity_Shapes / WalkArmParity) and the seed-side loud asserts — a
+// decline is forbidden (it would change plan shapes, contract ruling #1).
 //
 // LIVE since W3b: the gate's per-seed decisions drive the ordinal seed —
 // Gated joins get the baked ofOrdinalNumber result value + cross-leg
@@ -239,13 +241,16 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		t.inInnerCluster = prev
 		return d.Gated
 	case *logical.LogicalFilter:
-		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
-			return false
-		}
+		// RFC-173 commit 5b: rider subqueries are transparent to eligibility,
+		// mirroring clusterArity. A WHERE-EXISTS leg's output boundary is the
+		// existential FlatMap's IDENTITY RV — the source row itself, a
+		// single-namespace row the leg adapter types like any scan — and an
+		// uncorrelated scalar rider is a root-context binding. Neither turns
+		// the leg's output into a merged row.
 		return t.ordinalEligible(o.Input)
 	case *logical.LogicalProject:
-		if len(o.ScalarSubqueries) > 0 || len(o.CorrelatedScalarSubqueries) > 0 {
-			return false
+		if len(o.CorrelatedScalarSubqueries) > 0 {
+			return false // per-row scalar — the W4b clusterPullUp rework, booked
 		}
 		return t.ordinalEligible(o.Input)
 	case *logical.LogicalScan:
@@ -304,11 +309,15 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 //     inner-equivalent parents and absorbs mergeable children;
 //   - filter/project WITHOUT subqueries: transparent — they lower to selects
 //     the rule merges through (rule_select_merge.go TranslationMap path);
-//   - filter/project WITH exists/scalar subqueries: POISON, not an opaque
-//     leaf. Their selects still merge (ChildrenAsSet is true), and the rule
-//     splices ALL child quantifiers — the existential/NullOnEmpty legs ride
-//     along, landing the merged select in the ≥3-quantifier partition
-//     machinery whose dotted-name classifiers the wedge must never feed;
+//   - filter/project WITH rider subqueries (RFC-173 commit 5b): TRANSPARENT
+//     for EXISTS riders and UNCORRELATED scalar riders. Their selects merge
+//     (ChildrenAsSet is true) and the rule splices ALL child quantifiers —
+//     the existential legs ride the merged select, which the 2+1 flatten's
+//     ordinal seed threads (commit 3); an uncorrelated scalar is a
+//     pre-evaluated root-context binding (shape-agnostic, the 5c ruling).
+//     Neither adds a ForEach quantifier. A CORRELATED projection scalar
+//     still POISONS: per-outer-row evaluation needs the W4b clusterPullUp
+//     rework (booked);
 //   - outer join: opaque leaf of 1 (ChildrenAsSet opacity, both directions);
 //   - aggregate / DISTINCT / sort / limit / union: opaque leaf of 1 — they
 //     lower to non-SelectExpression boxes (not
@@ -359,14 +368,30 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 		}
 		return l + r
 	case *logical.LogicalFilter:
-		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
-			return arityPoison
-		}
+		// RFC-173 commit 5b: rider subqueries are TRANSPARENT to arity. An
+		// EXISTS rider's existential quantifier rides the post-flattening
+		// merge (the 2+1 flatten's ordinal seed threads existential
+		// quantifiers on the seed select), and an uncorrelated scalar rider
+		// (all a filter can carry — correlated ones never land on
+		// LogicalFilter) is a pre-evaluated ROOT-context binding,
+		// shape-agnostic. Neither adds a ForEach quantifier, so the filter
+		// contributes its input's arity — the poison here made every cluster
+		// with a subquery-bearing leg name-model for no structural reason.
+		// TODO(rfc-173): two PRE-EXISTING reach limits are newly VISIBLE on
+		// gated paths (loud 0AF00 on master too, proven at the 5b review): a
+		// rider filter OVER A JOIN body consumed as a leg, and multiple
+		// existential riders on one filter — both bail in the single-
+		// existential 2+1 implementation, never wrong rows.
 		return t.clusterArity(o.Input)
 	case *logical.LogicalProject:
-		if len(o.ScalarSubqueries) > 0 || len(o.CorrelatedScalarSubqueries) > 0 {
+		if len(o.CorrelatedScalarSubqueries) > 0 {
+			// A CORRELATED scalar needs per-outer-row evaluation the flat
+			// seed cannot express (the W4b clusterPullUp rework, booked) —
+			// still poison.
 			return arityPoison
 		}
+		// Uncorrelated projection scalars: root-context bindings — transparent
+		// (the same 5c ruling that flipped class-K).
 		return t.clusterArity(o.Input)
 	case *logical.LogicalScan:
 		key := strings.ToUpper(o.Table)
