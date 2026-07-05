@@ -239,13 +239,16 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		t.inInnerCluster = prev
 		return d.Gated
 	case *logical.LogicalFilter:
-		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
-			return false
-		}
+		// RFC-173 commit 5b: rider subqueries are transparent to eligibility,
+		// mirroring clusterArity. A WHERE-EXISTS leg's output boundary is the
+		// existential FlatMap's IDENTITY RV — the source row itself, a
+		// single-namespace row the leg adapter types like any scan — and an
+		// uncorrelated scalar rider is a root-context binding. Neither turns
+		// the leg's output into a merged row.
 		return t.ordinalEligible(o.Input)
 	case *logical.LogicalProject:
-		if len(o.ScalarSubqueries) > 0 || len(o.CorrelatedScalarSubqueries) > 0 {
-			return false
+		if len(o.CorrelatedScalarSubqueries) > 0 {
+			return false // per-row scalar — the W4b clusterPullUp rework, booked
 		}
 		return t.ordinalEligible(o.Input)
 	case *logical.LogicalScan:
@@ -359,14 +362,25 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 		}
 		return l + r
 	case *logical.LogicalFilter:
-		if len(o.ExistsSubqueries) > 0 || len(o.ScalarSubqueries) > 0 {
-			return arityPoison
-		}
+		// RFC-173 commit 5b: rider subqueries are TRANSPARENT to arity. An
+		// EXISTS rider's existential quantifier rides the post-flattening
+		// merge (the 2+1 flatten's ordinal seed threads existential
+		// quantifiers on the seed select), and an uncorrelated scalar rider
+		// (all a filter can carry — correlated ones never land on
+		// LogicalFilter) is a pre-evaluated ROOT-context binding,
+		// shape-agnostic. Neither adds a ForEach quantifier, so the filter
+		// contributes its input's arity — the poison here made every cluster
+		// with a subquery-bearing leg name-model for no structural reason.
 		return t.clusterArity(o.Input)
 	case *logical.LogicalProject:
-		if len(o.ScalarSubqueries) > 0 || len(o.CorrelatedScalarSubqueries) > 0 {
+		if len(o.CorrelatedScalarSubqueries) > 0 {
+			// A CORRELATED scalar needs per-outer-row evaluation the flat
+			// seed cannot express (the W4b clusterPullUp rework, booked) —
+			// still poison.
 			return arityPoison
 		}
+		// Uncorrelated projection scalars: root-context bindings — transparent
+		// (the same 5c ruling that flipped class-K).
 		return t.clusterArity(o.Input)
 	case *logical.LogicalScan:
 		key := strings.ToUpper(o.Table)

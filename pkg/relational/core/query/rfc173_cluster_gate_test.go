@@ -77,15 +77,15 @@ func TestRFC173S2_ClusterArity_Shapes(t *testing.T) {
 		{"distinct_opaque", logical.NewDistinct(scan("Order", "o")), 1},
 		{"sort_opaque", inner(logical.NewSort(inner(scan("Order", "o"), scan("Customer", "c")), nil), scan("TypedRecord", "t")), 2},
 		{"union_opaque", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Customer", "c")}, false), 1},
-		{"filter_with_exists_poison", logical.LogicalOperator(&logical.LogicalFilter{
+		{"filter_with_exists_rider_transparent", logical.LogicalOperator(&logical.LogicalFilter{
 			Input:            scan("Order", "o"),
 			ExistsSubqueries: []logical.ExistsSubquery{{Alias: values.NamedCorrelationIdentifier("e")}},
-		}), arityPoison},
-		{"project_with_scalar_poison", logical.LogicalOperator(&logical.LogicalProject{
+		}), 1}, // commit 5b: the existential rides the merge; no ForEach added
+		{"project_with_scalar_rider_transparent", logical.LogicalOperator(&logical.LogicalProject{
 			Input:            scan("Order", "o"),
 			Projections:      []string{"order_id"},
 			ScalarSubqueries: []logical.ScalarSubquery{{Alias: values.NamedCorrelationIdentifier("s")}},
-		}), arityPoison},
+		}), 1}, // commit 5b: uncorrelated scalar = root-context binding, transparent
 	}
 	for _, tc := range cases {
 		if got := tr.clusterArity(tc.op); got != tc.want {
@@ -435,10 +435,10 @@ func TestRFC173S2_WalkArmParity(t *testing.T) {
 		{"scan", scan("Order", "o"), true, 1},
 		{"cte_scoped_scan_join_body", scan("bodyjoin", "b"), true, 2}, // S3 fulcrum: body join gates; composition is legal
 		{"filter_plain", logical.NewFilter(scan("Order", "o"), "x > 1"), true, 1},
-		{"filter_exists", &logical.LogicalFilter{Input: scan("Order", "o"), ExistsSubqueries: []logical.ExistsSubquery{{Alias: values.NamedCorrelationIdentifier("e")}}}, false, arityPoison},
+		{"filter_exists", &logical.LogicalFilter{Input: scan("Order", "o"), ExistsSubqueries: []logical.ExistsSubquery{{Alias: values.NamedCorrelationIdentifier("e")}}}, true, 1}, // commit 5b rider lift
 		{"project_plain", logical.NewProject(scan("Order", "o"), []string{"order_id"}, []string{""}), true, 1},
-		{"project_scalar_subq", &logical.LogicalProject{Input: scan("Order", "o"), Projections: []string{"order_id"}, ScalarSubqueries: []logical.ScalarSubquery{{Alias: values.NamedCorrelationIdentifier("s")}}}, false, arityPoison},
-		{"inner_join", inner(scan("Order", "o"), scan("Customer", "c")), true, 2}, // S3 fulcrum: eligible iff the leg itself gates
+		{"project_scalar_subq", &logical.LogicalProject{Input: scan("Order", "o"), Projections: []string{"order_id"}, ScalarSubqueries: []logical.ScalarSubquery{{Alias: values.NamedCorrelationIdentifier("s")}}}, true, 1}, // commit 5b rider lift
+		{"inner_join", inner(scan("Order", "o"), scan("Customer", "c")), true, 2},                                                                                                                                            // S3 fulcrum: eligible iff the leg itself gates
 		{"left_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), false, arityPoison},
 		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), true, 1},                                           // S3 fulcrum: FULL gates unconditionally -> eligible; cluster: opaque box of 1
 		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), true, 2}, // S3 fulcrum: derived body join gates

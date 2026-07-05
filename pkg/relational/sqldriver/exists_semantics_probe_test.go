@@ -133,6 +133,17 @@ func TestFDB_ExistsSemanticsProbe(t *testing.T) {
 	ck("not_exists_with_uncorrelated_scalar_inside",
 		"SELECT id FROM parent p WHERE NOT EXISTS (SELECT 1 FROM child c WHERE p.id > (SELECT MIN(c2.id) FROM child c2) - 9)", []int64{1})
 
+	// A CTE whose body carries a WHERE-EXISTS, consumed as a JOIN LEG (RFC-173
+	// commit 5b): the EXISTS rider used to poison clusterArity for the whole
+	// enclosing cluster (name-model); the rider is transparent now and the
+	// cluster gates ordinal — d = parents with children = {1,2}; the join
+	// keeps p2 ∈ {1,2}.
+	ck("cte_exists_body_as_join_leg",
+		"WITH d AS (SELECT id FROM parent p WHERE EXISTS (SELECT 1 FROM child c WHERE c.pid = p.id)) SELECT p2.id FROM parent p2, d WHERE p2.id = d.id", []int64{1, 2})
+	// The rider-leg NOT-EXISTS twin: d = parents WITHOUT children = {3}.
+	ck("cte_not_exists_body_as_join_leg",
+		"WITH d AS (SELECT id FROM parent p WHERE NOT EXISTS (SELECT 1 FROM child c WHERE c.pid = p.id)) SELECT p2.id FROM parent p2, d WHERE p2.id = d.id", []int64{3})
+
 	// CORRELATED scalar inside the EXISTS WHERE (`MAX(c2.id) WHERE c2.pid =
 	// c.pid` — per-inner-row): NO evaluation path exists (the one-shot pre-eval
 	// cannot re-run per row; the WHERE channel has no CorrelatedScalarSubquery
