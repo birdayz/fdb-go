@@ -879,6 +879,14 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 						corrSet = map[values.CorrelationIdentifier]struct{}{}
 					}
 					predicates.AddMergeSeedAliases(p, corrSet)
+					// A scalar-subquery alias is NOT a buried leg: its value is
+					// pre-evaluated into the ROOT evaluation context, which every
+					// below-FOD filter arm threads (RowContext/positional/strict
+					// and passesJoinPredicatesLegs all attach ScalarSubqueries) —
+					// so the reference resolves without any rebase authority.
+					// Declining on it turned a valid scalar-in-EXISTS conjunct
+					// into a loud 0AF00 (the class-K limitation).
+					scalarAliases := scalarSubqueryAliasesOfPredicate(p)
 					for a := range corrSet {
 						// EXACT identifier comparisons (like the innerLegs
 						// lookup): CorrelationIdentifier is case-sensitive by
@@ -889,6 +897,9 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 							continue
 						}
 						if _, ok := innerLegs[a]; ok {
+							continue
+						}
+						if _, ok := scalarAliases[a]; ok {
 							continue
 						}
 						return
@@ -2214,6 +2225,25 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 		expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(innerExpr)))
 	rightQ := expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(fodWrapper))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+}
+
+// scalarSubqueryAliasesOfPredicate collects the correlation aliases a
+// predicate references through ScalarSubqueryValue nodes — STRUCTURAL
+// detection (the node type carries its own alias), never name matching. These
+// aliases are pre-evaluated external bindings resolved from the root
+// evaluation context, not quantifier legs: rebase authorities and buried-ref
+// declines must pass them through.
+func scalarSubqueryAliasesOfPredicate(p predicates.QueryPredicate) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	// ReplaceValues already visits every value node pre-order (the legRowTypes
+	// idiom) — inspect v directly, no nested walk.
+	predicates.ReplaceValues(p, func(v values.Value) values.Value {
+		if ssv, ok := v.(*values.ScalarSubqueryValue); ok {
+			out[ssv.Alias] = struct{}{}
+		}
+		return v
+	})
+	return out
 }
 
 // matchJoinPKPredicate checks if a comparison predicate matches the
