@@ -170,6 +170,40 @@ write_files:
       [Install]
       WantedBy=timers.target
 
+  # Bazel-cache LRU prune. The /etc/bazel.bazelrc GC flags below
+  # (--experimental_disk_cache_gc_*) run IN-SERVER during IDLE only — and this
+  # box's servers rarely idle long enough (jobs `bazelisk shutdown` up front, the
+  # watchdog reaps residents), so the native GC never engaged and the disk cache
+  # grew unbounded until the 98 GB CI volume hit 100% (ENOSPC failed CI builds
+  # with empty compiler diagnostics). This timer is the lifecycle-independent
+  # backstop: mtime is a true LRU signal (Bazel >=7 touches disk-cache entries on
+  # hit). Also sweeps stale per-workspace-path output bases (layout churn strands
+  # dead multi-GB _bazel_runner/<hash> dirs).
+  - path: /etc/systemd/system/bazel-cache-prune.service
+    content: |
+      [Unit]
+      Description=LRU-prune the shared bazel disk cache and stale output bases
+
+      [Service]
+      Type=oneshot
+      # $$ = literal $ for the shell (systemd would otherwise expand $var/$( to
+      # empty in ExecStart and silently no-op the tighten branch and the sweep).
+      ExecStart=/bin/sh -c "find /mnt/ci-data/bazel-disk-cache -type f -mtime +14 -delete 2>/dev/null; use=$$(df --output=pcent /mnt/ci-data | tail -1 | tr -dc 0-9); [ \"$$use\" -gt 70 ] && find /mnt/ci-data/bazel-disk-cache -type f -mtime +7 -delete 2>/dev/null; exit 0"
+      ExecStart=/bin/sh -c "for d in /mnt/ci-data/bazel/_bazel_runner/*/; do case $$d in *cache*|*install*) continue;; esac; [ -n \"$$(find $$d -maxdepth 0 -mtime +14 2>/dev/null)\" ] && rm -rf $$d; done; exit 0"
+
+  - path: /etc/systemd/system/bazel-cache-prune.timer
+    content: |
+      [Unit]
+      Description=Weekly bazel cache prune
+
+      [Timer]
+      OnCalendar=Sun 04:00
+      RandomizedDelaySec=1h
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
   # --- bazelscaleset (RFC-155) — runner scale-set supervisor (runner_mode=scaleset) ---
 
   # CI-box-only Bazel config (NOT the committed repo .bazelrc). Read as the system rc
@@ -362,3 +396,5 @@ runcmd:
   # Orphan FDB sweep timer (both modes; bazelscaleset also sweeps per-job, this is the net).
   - systemctl daemon-reload
   - systemctl enable --now orphan-fdb-sweep.timer
+  # Weekly bazel-cache LRU prune (deployed live 2026-07-05 after the volume-full CI outage).
+  - systemctl enable --now bazel-cache-prune.timer
