@@ -128,7 +128,7 @@ type clusterLeg struct {
 	op    logical.LogicalOperator
 	alias string
 	// binding is the leg's BINDING correlation name (sourceBinding): equal
-	// to alias for every non-duplicate leg; the parser-minted `q$dupN` for
+	// to alias for every non-duplicate leg; the parser-minted `Q$DUPN` for
 	// a later duplicate-alias leg (RFC-173 QP-REF-BIND item 1). Seed
 	// quantifiers, bake maps and windows key on THIS; alias stays display.
 	// While the gate's dup poison arm stands (pre-item-1-c2) binding ==

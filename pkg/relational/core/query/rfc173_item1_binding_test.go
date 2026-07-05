@@ -120,6 +120,31 @@ func TestRFC173Item1_SeedKeyedByBinding(t *testing.T) {
 	}
 }
 
+// TestRFC173Item1_W5GatherBindingConsistency covers the review catch: the W5
+// gathered-unnest translation consumes the seed's legTypes map, so its
+// quantifier correlations, sourceAliases and span-offset lookups now share the
+// seed's BINDING key discipline (an alias-keyed lookup against the
+// binding-keyed map would nil-miss a duplicate leg's entry and panic on
+// .typ). In c1 the converted path is DARK the same way the seed keying is —
+// the W5 gather consults the ONE gate authority, whose dup poison arm
+// declines a duplicate-alias cluster even with a minted binding present
+// (pinned here, the W5 twin of GatePoisonIntactC1); the c2 lift's red-first
+// suite activates the binding-keyed quantifier/span asserts e2e. The non-dup
+// path (binding == alias) is byte-identical and stays covered by the W5
+// gather suite.
+func TestRFC173Item1_W5GatherBindingConsistency(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	left := inner(scan("SRC", "s"), scanWithBinding("AUX", "s", "Q$DUP1"))
+	j := logical.NewJoin(left, u, logical.JoinInner, "")
+	innerCorr := values.NamedCorrelationIdentifier("EL")
+	if got := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
+		t.Fatalf("c1: a duplicate-alias gathered cluster must DECLINE at the gate even with a minted binding (got %T) — the lift is commit 2's", got)
+	}
+}
+
 // TestRFC173Item1_GatePoisonIntactC1 pins commit 1's DARKNESS: the gate's
 // duplicate-alias arm still poisons a dup cluster even when the parser minted
 // a binding id for it. The lift lands in commit 2 WITH the per-reference

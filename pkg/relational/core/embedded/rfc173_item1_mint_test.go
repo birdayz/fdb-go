@@ -62,6 +62,13 @@ func TestRFC173Item1_MintDuplicateFromAliases(t *testing.T) {
 	// Derived-table duplicate aliases.
 	check("SELECT * FROM (SELECT id FROM p) AS d, (SELECT id FROM p) AS d", []string{"Q$DUP1"})
 
+	// Mint forgery guard (review catch, both gates): a QUOTED user alias can
+	// spell a mint-shaped name — the mint must dodge the FULL leg-key
+	// namespace deterministically (a `$`-suffix bump), including a forged
+	// alias LATER in the FROM list than the mint position.
+	check(`SELECT * FROM p, p, x AS "Q$DUP1"`, []string{"Q$DUP1$", ""})
+	check(`SELECT * FROM p, p, x AS "Q$DUP1", y AS "Q$DUP1$"`, []string{"Q$DUP1$$", "", ""})
+
 	// Determinism: two parses of the same SQL mint identical ids.
 	a := joinBindings(parseSelect(t, "SELECT * FROM p, q, p, p"))
 	b := joinBindings(parseSelect(t, "SELECT * FROM p, q, p, p"))

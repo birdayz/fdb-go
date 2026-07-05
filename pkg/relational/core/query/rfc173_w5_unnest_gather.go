@@ -111,15 +111,23 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// array field must be a column of that leg's own type. Multi-segment field
 	// paths (`t.a.b`) decline: the bake addresses ONE ordinal of the leg type.
 	seg0 := strings.ToUpper(u.Segments[0])
-	ownerType, isPlainLeg := gatheredPlainLegType(t, legs, seg0)
+	ownerLeg, isPlainLeg := gatheredPlainLeg(legs, seg0)
 	if !isPlainLeg || len(u.Segments) != 2 {
+		return nil
+	}
+	ownerType := t.ordinalLegType(ownerLeg.op)
+	if ownerType == nil {
 		return nil
 	}
 	arrIdx, found := ownerType.FieldIndex(strings.ToUpper(fieldName))
 	if !found {
 		return nil
 	}
-	ownerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(seg0), ownerType)
+	// The owner is MATCHED by its SQL alias (seg0 is a name reference the
+	// user wrote) but CORRELATED by its binding — with duplicate aliases the
+	// first match wins the name lookup while the QOV must still address that
+	// specific leg's quantifier (RFC-173 QP-REF-BIND item 1).
+	ownerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(ownerLeg.binding), ownerType)
 	collection, err := values.NewFieldValueOfOrdinal(ownerQOV, arrIdx)
 	if err != nil {
 		return nil
@@ -143,9 +151,9 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 			return nil
 		}
 		quantifiers = append(quantifiers, expressions.NamedForEachQuantifier(
-			values.NamedCorrelationIdentifier(leg.alias), ref,
+			values.NamedCorrelationIdentifier(leg.binding), ref,
 		))
-		sourceAliases = append(sourceAliases, leg.alias)
+		sourceAliases = append(sourceAliases, leg.binding)
 	}
 	t.inInnerCluster = prevEnclosure
 
@@ -156,7 +164,11 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	}
 	fieldsAt := 0
 	for i := 0; i < unnestPos; i++ {
-		fieldsAt += len(legTypes[strings.ToUpper(legs[i].alias)].typ.Fields)
+		// BINDING-keyed, matching ordinalJoinSeedFields' map — an alias
+		// lookup would nil-miss a duplicate leg's entry and panic on .typ
+		// (the c1 review catch: the seed and this consumer must share ONE
+		// key discipline).
+		fieldsAt += len(legTypes[legs[i].binding].typ.Fields)
 	}
 
 	explode := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
@@ -216,21 +228,22 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	)
 }
 
-// gatheredPlainLegType resolves a gathered PLAIN (non-box) leg's flowed type
-// by alias. A box leg declines: its alias names the rightmost leaf while its
-// type is the whole concat — a first-position bake would read the wrong slot.
-func gatheredPlainLegType(t *cascadesTranslator, legs []clusterLeg, alias string) (*values.RecordType, bool) {
+// gatheredPlainLeg resolves a gathered PLAIN (non-box) leg by its SQL alias
+// (the match is a NAME lookup — seg0 is the alias the user wrote; the caller
+// correlates the result by leg.binding). A box leg declines: its alias names
+// the rightmost leaf while its type is the whole concat — a first-position
+// bake would read the wrong slot.
+func gatheredPlainLeg(legs []clusterLeg, alias string) (clusterLeg, bool) {
 	for _, leg := range legs {
 		if !strings.EqualFold(leg.alias, alias) {
 			continue
 		}
 		if _, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
-			return nil, false
+			return clusterLeg{}, false
 		}
-		typ := t.ordinalLegType(leg.op)
-		return typ, typ != nil
+		return leg, true
 	}
-	return nil, false
+	return clusterLeg{}, false
 }
 
 // gatherLegsWithBuriedUnnest walks j's direct inner-join spine collecting the

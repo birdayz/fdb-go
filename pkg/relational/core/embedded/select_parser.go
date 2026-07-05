@@ -122,8 +122,9 @@ type joinClause struct {
 	// plannings of the same query produce identical correlation ids (the
 	// stablePlanHash determinism lesson — never an atomic counter).
 	// Assigned ONCE by assignFromLegBindingIDs (the single mint authority);
-	// scope builders and the logical builder READ it, never re-derive it
-	// from the alias.
+	// consumers READ it, never re-derive it from the alias. The logical
+	// builders carry it today (LogicalScan/LogicalCTE/LogicalUnnest.Binding);
+	// the semantic-scope builders wire up in the item-1 lift commit.
 	bindingID string
 	// catalogAwareInnerPlan is set by the catalog-aware builder when
 	// it pre-builds the derived table's inner plan with upgraded
@@ -1784,11 +1785,6 @@ func uidSegments(tableName antlrgen.ITableNameContext) []string {
 	return parts
 }
 
-// parseFromSource walks the FROM clause of a SimpleTableContext and
-// returns the parsed source metadata. Returns an error for unsupported
-// shapes (missing FROM, CROSS JOIN on extras, etc.). This is the
-// single source of truth for FROM parsing — both extractFromSimpleTable
-// and PlanVisitor.visitFrom delegate here.
 // assignFromLegBindingIDs mints the per-leg binding correlation ids for
 // duplicate FROM-source aliases (RFC-173 QP-REF-BIND item 1 design ruling).
 // The FIRST leg under an alias binds the alias itself; each LATER duplicate
@@ -1799,16 +1795,32 @@ func uidSegments(tableName antlrgen.ITableNameContext) []string {
 // participate like any other leg: a duplicate unnest AS/AT alias is REJECTED
 // outright (RFC-142), so a minted id for one is inert.
 //
-// This is the SINGLE mint authority: every scope builder and the logical
-// builder read the minted id; nothing re-derives binding identity from the
-// SQL alias (a re-derivation would re-collide the legs — the design ruling's
-// carried-not-rederived condition).
+// A mint candidate is collision-checked against the FULL leg-key namespace:
+// a QUOTED user alias can spell a mint-shaped name (`AS "Q$DUP1"` — the
+// lexer admits `$` in quoted identifiers), and an unchecked mint would make
+// two legs' correlations indistinguishable, the exact class the mint
+// dissolves. Java's quantifier ids are unforgeable from SQL; the
+// deterministic mint bumps with `$` suffixes instead (still a pure function
+// of the query's leg keys — no randomness, no counter).
+//
+// This is the SINGLE mint authority; consumers read the minted id and never
+// re-derive binding identity from the SQL alias (a re-derivation would
+// re-collide the legs — the design ruling's carried-not-rederived
+// condition). In this commit the LOGICAL builders carry it
+// (LogicalScan/LogicalCTE/LogicalUnnest.Binding → sourceBinding); commit 2
+// wires the semantic-scope builders to read it too.
 func assignFromLegBindingIDs(fs *fromSource) {
 	legKey := func(alias, table string) string {
 		if alias != "" {
 			return strings.ToUpper(alias)
 		}
 		return strings.ToUpper(table)
+	}
+	// The full alias namespace, pre-collected: mints must dodge LATER legs'
+	// (possibly forged) aliases too, not just the prefix walked so far.
+	taken := map[string]struct{}{legKey(fs.tableAlias, fs.tableName): {}}
+	for i := range fs.joins {
+		taken[legKey(fs.joins[i].alias, fs.joins[i].tableName)] = struct{}{}
 	}
 	seen := map[string]struct{}{legKey(fs.tableAlias, fs.tableName): {}}
 	for i := range fs.joins {
@@ -1819,13 +1831,26 @@ func assignFromLegBindingIDs(fs *fromSource) {
 			// at several bake/lookup sites (bakeGatedJoinPredicates et al.),
 			// and a fold-stable id behaves exactly like an alias under every
 			// existing fold — no case sweep needed.
-			j.bindingID = fmt.Sprintf("Q$DUP%d", i+1)
+			id := fmt.Sprintf("Q$DUP%d", i+1)
+			for {
+				if _, forged := taken[id]; !forged {
+					break
+				}
+				id += "$"
+			}
+			j.bindingID = id
+			taken[id] = struct{}{}
 			continue
 		}
 		seen[k] = struct{}{}
 	}
 }
 
+// parseFromSource walks the FROM clause of a SimpleTableContext and
+// returns the parsed source metadata. Returns an error for unsupported
+// shapes (missing FROM, CROSS JOIN on extras, etc.). This is the
+// single source of truth for FROM parsing — both extractFromSimpleTable
+// and PlanVisitor.visitFrom delegate here.
 func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, error) {
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {

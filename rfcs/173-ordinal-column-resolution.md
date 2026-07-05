@@ -3478,3 +3478,48 @@ poison arm INTACT — lifting it in c1 would flip the predicate-free disjoint cl
 (today name-model, answering) to the ordinal seed, an observable plan change in the
 "dark" commit; the lift lands in c2 with the front-end, honoring
 never-live-separately strictly.
+
+## QP-REF-BIND item 1 — commit-1 record (PR #481)
+
+**c1 (34872539b) four-gate round 1:** architecture gate **ACK-with-conditions**
+(all four ruling conditions verified: darkness holds and is pinned; single mint
+authority, structurally carried incl. the demotion restore; keying byte-identical
+for non-dup queries — windows need no conversion, they derive from the RC's QOVs;
+the fold-stable UPPER `Q$DUPN` mint RATIFIED over the ruling's lowercase spelling —
+"same identity, better spelling"; the ruling's condition-3 form note is hereby
+recorded: the final mint form is `Q$DUPN`, upper). Code-quality gate **ACK** (mint
+coverage exhaustive — one `sq.joins` producer, extraCrossJoins fold in pre-mint;
+builder arms symmetric across both logical builders; no clusterLeg literal outside
+clusterLegOf; all four pins fail under plumbing deletion). codex **CLEAN** (no
+actionable correctness issues; posted on the PR). @claude best-effort (single CI
+slot).
+
+**Converged findings → FIXED on the branch (the c1 fix commit):**
+- **W5 gather alias-keyed consumers** (both gates; latent nil-deref + a false
+  commit-message claim): rfc173_w5_unnest_gather.go quantifier correlations,
+  sourceAliases, and the span-offset lookup now read leg.binding (matching the
+  seed's map keys); gatheredPlainLeg returns the LEG so the owner is matched by
+  its SQL alias (a name reference) but CORRELATED by its binding. Dark in c1 (the
+  gather consults the one gate authority — pinned: a minted binding does NOT
+  bypass the W5 gate); the c2 lift's red-first suite activates the e2e asserts.
+- **Mint forgery guard** (both gates): a QUOTED user alias can spell a mint-shaped
+  name (`AS "Q$DUP1"` — the lexer admits `$`); the mint now pre-collects the FULL
+  leg-key namespace and bumps deterministically with `$` suffixes (still a pure
+  function of the query text). Pinned incl. the forged-later-leg and
+  forged-bump-chain shapes.
+- Godoc restoration (the mint doc had displaced parseFromSource's), the
+  present-tense overclaim ("scope builders read it" → the logical builders carry
+  it today; c2 wires the scope builders), and the lowercase `q$dupN` comment nit.
+
+**C2 OBLIGATIONS (architecture-gate condition 1 — convert or loud-decline-pin
+each class at the lift):**
+- rfc173_w4b_clustered_outer.go:547, :642 — clusterPullUp correlations off
+  sourceAlias (the dup-alias outer-cluster class stays ungated/poisoned until its
+  own conversion; the W4b scalar dispatch declines dup clusters defensively at
+  legByAlias today).
+- The mint-forgery pin rides (landed early in the c1 fix commit, above).
+- Red-first LOUD-decline pins for every still-poisoned dup class (LEFT-box dup,
+  unnest dup, rider dup): a resolver-emitted QOV(bindingId) over a name-model
+  class must structurally fail to translate (0AF00), never bind by name into the
+  wrong leg (ruling condition 4, the never-live-separately constraint made
+  empirical).
