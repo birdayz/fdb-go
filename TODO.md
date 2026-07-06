@@ -3469,14 +3469,20 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       (unnest owner) dup-alias unnest OWNER resolution is first-match-by-alias, not
       per-attribute (`q AS a, u AS a, a.arr AS e` → loud 42703 naming the wrong
       source) — classify vs live Java when the unnest-residual slice lands.
-- [ ] **Rider: aggregate output METADATA drift vs Java** (item-1 c4 probe finding —
-      rows are parity, metadata is not; live-verified 4.12.11.0): (a) a DISTINCT-alias
-      qualified group key labels the output column `A.QID` where Java labels the bare
-      `QID` (the dup-alias path already labels bare via the c4 fix — unify); (b) a
-      group key over a join reports type UNKNOWN where Java reports the column type
-      (BIGINT) — `buildAggColumns`' protoFieldTypeName misses join-shaped descriptors;
-      (c) unaliased `COUNT(*)` labels `COUNT(*)` where Java generates `_1`. Blocks
-      GROUP-BY-over-join corpus entries (normaliseRows compares name|type byte-equal —
-      the c4 group-by shape is FDB-test-pinned instead). Read Java's output-name
-      generation first (SemanticAnalyzer/Expression.toResultColumn) — (c) may be a
-      both-quirks booking, not a Go fix.
+- [x] **Rider: aggregate output METADATA drift vs Java** (item-1 c4 probe finding —
+      rows are parity, metadata is not; live-verified 4.12.11.0). DONE. Java rule
+      (Expressions.getStructType): output name = `expression.getName()` bare (top-level
+      clearQualifier) or `_N` positional if unnamed; type = the resolved
+      `Value.getResultType()` off the flowed join-output record. Fixed (a)+(b) in
+      `buildAggColumns`/`deriveColumnsFromAggregation`: (a) a QUALIFIED group key
+      `d.dname` now labels the BARE `DNAME` (carried as ColumnDef.Label; the qualified
+      Name stays the datum-lookup key the aggregate cursor writes — three-mirror
+      agreement intact, values still resolve); (b) the group-key TYPE resolves against
+      ALL join-leaf descriptors (allLeafDescriptors + descriptorForColumn), not just
+      findLeafDescriptor's first leaf, so a far-leg key reports STRING/BIGINT not
+      UNKNOWN. (c) is NOT a fix: plandiff ConformColumns already accepts Go's
+      descriptive `COUNT(*)` against Java's anonymous `_N` when the type matches — a
+      conformance-blessed wire-neutral read-side nicety; kept descriptive, pinned so an
+      accidental relabel is caught. Pinned by `rfc173_rider2_agg_metadata_fdb_test.go`
+      (6 subtests, red-first proven: D.DNAME + UNKNOWN drift reproduced with the fix
+      disabled) + the value-flow pin.

@@ -2901,8 +2901,12 @@ func valueRootCorrelation(v values.Value) (values.CorrelationIdentifier, bool) {
 }
 
 func deriveColumnsFromAggregation(agg *plans.RecordQueryStreamingAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	desc := findLeafDescriptor(agg.GetInner(), md)
-	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
+	// ALL leaf descriptors, not just the first: a GROUP BY over a JOIN can key
+	// on a column from any leg, and its type must resolve against the leg it
+	// lives on (Java reads the type off the flowed join-output record). A single
+	// first-leaf descriptor served UNKNOWN for a far-leg group key.
+	descs := allLeafDescriptors(agg.GetInner(), md)
+	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), descs)
 }
 
 type multiInnerPlan interface {
@@ -3407,45 +3411,67 @@ func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAli
 func buildAggColumns(
 	groupKeys []values.Value,
 	aggregates []expressions.AggregateSpec,
-	desc protoreflect.MessageDescriptor,
+	descs []protoreflect.MessageDescriptor,
 ) []executor.ColumnDef {
+	var firstDesc protoreflect.MessageDescriptor
+	if len(descs) > 0 {
+		firstDesc = descs[0]
+	}
 	cols := make([]executor.ColumnDef, 0, len(groupKeys)+len(aggregates))
 	for _, k := range groupKeys {
-		// The datum lookup key MUST be the name the aggregate cursor writes —
-		// executor aggKeyName: a FieldValue keys by its bare Field, everything
-		// else by ExplainValue. A resolved group key carrying a correlation
-		// Child (the RFC-173 dup-alias binding FieldValue(QOV(Q$DUP1), QID);
-		// the RFC-142 shadow-qualified twin) explains as the QUALIFIED
-		// "Q$DUP1.QID" while the cursor keys the output row by the bare "QID"
-		// — deriving the column Name from ExplainValue read the missing
-		// qualified key off the bare-named row and served NULL for a
+		// The datum lookup key (ColumnDef.Name) MUST be the name the aggregate
+		// cursor writes — executor aggKeyName: a FieldValue keys by its bare
+		// Field, everything else by ExplainValue. A resolved group key carrying
+		// a correlation Child (the RFC-173 dup-alias binding FieldValue(
+		// QOV(Q$DUP1), QID); the RFC-142 shadow-qualified twin) explains as the
+		// QUALIFIED "Q$DUP1.QID" while the cursor keys the output row by the
+		// bare "QID" — deriving the column Name from ExplainValue read the
+		// missing qualified key off the bare-named row and served NULL for a
 		// correctly-grouped result. This bare-Field-vs-ExplainValue convention
 		// has three mirrors that must agree: executor aggKeyName,
 		// aggregateGroupKeyOutputName (logical_predicate.go), and this
-		// derivation.
+		// derivation. So the qualified Name is load-bearing and stays.
 		name := values.ExplainValue(k)
 		if fv, ok := k.(*values.FieldValue); ok {
 			name = fv.Field
 		}
-		typeName := "UNKNOWN"
-		if desc != nil {
-			typeName = protoFieldTypeName(desc, name)
+		// The DISPLAY label is always BARE: Java clears the qualifier on the
+		// top-level projection (Expression.clearQualifier), so a qualified group
+		// key `d.dname` labels the output column `DNAME`, never `D.DNAME`. Carry
+		// it as Label (bare) and keep Name qualified for the datum lookup — the
+		// driver's Rows.Columns() surfaces Label when set (paginatingRows).
+		bare := parseColRef(name).bare()
+		label := ""
+		if !strings.EqualFold(name, bare) {
+			label = strings.ToUpper(bare)
 		}
+		// The TYPE resolves against ALL join-leaf descriptors, not just the
+		// first: a group key from a FAR join leg (`GROUP BY d.dname` over
+		// `emp JOIN dept`) lives on the second leg and served UNKNOWN under a
+		// single first-leaf descriptor. Java reads the type off the flowed
+		// join-output record's field.
+		typeName := "UNKNOWN"
 		nullable := api.ColumnNullable
-		if desc != nil {
-			if fd := desc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
+		if d := descriptorForColumn(bare, descs); d != nil {
+			typeName = protoFieldTypeName(d, bare)
+			if fd := d.Fields().ByName(protoreflect.Name(bare)); fd != nil && fd.Cardinality() == protoreflect.Required {
 				nullable = api.ColumnNoNulls
 			}
 		}
 		cols = append(cols, executor.ColumnDef{
 			Name:     strings.ToUpper(name),
+			Label:    label,
 			TypeName: typeName,
 			Nullable: nullable,
 		})
 	}
 	for _, a := range aggregates {
 		name := aggregateSpecName(a)
-		typeName := aggregateResultType(a, desc)
+		// Aggregate result type stays first-leaf-resolved (unchanged): COUNT/AVG
+		// are operator-fixed and a SUM/MIN/MAX operand is overwhelmingly the
+		// aggregated leg's own column. Far-leg aggregate-operand typing is a
+		// separate axis outside this rider's group-key scope.
+		typeName := aggregateResultType(a, firstDesc)
 		cols = append(cols, executor.ColumnDef{
 			Name:     strings.ToUpper(name),
 			TypeName: typeName,
