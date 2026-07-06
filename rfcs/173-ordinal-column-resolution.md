@@ -3919,3 +3919,130 @@ pinned (union retains a branch's free correlation past a sibling-alias
 coincidence), WithNullability-Legs + computeResultType nullability pinned
 Docker-independent, and the first-member rebuild documented (the original
 multi-member group stays reachable through the pre-merge expression).
+
+## Unnest-residual completion slice — design (pre-implementation)
+
+The W5 gather (flat (N+1)-quantifier select, ruling Q1) chartered four
+fail-open decline classes to this slice. Reconnaissance against Java
+4.12.11.0 (`LogicalOperator.generateCorrelatedFieldAccess` +
+`SemanticAnalyzer.resolveCorrelatedIdentifier`): Java resolves a lateral
+unnest's owner UNIFORMLY against the in-scope quantifiers — any dotted
+depth, any owner kind (base table, join output, derived table) — and hands
+the resolved multi-accessor `FieldValue` to `ExplodeExpression` directly.
+Go's four declines are all narrower than Java's reach; classes 3-4 are
+HARD 0A000 errors today ("not yet supported"), making them parity gaps,
+not extensions.
+
+**Class 1 — box-leg owners** (`gatheredPlainLeg` declines join legs;
+`FROM (a JOIN b), c, a.arr AS x`): the collection bakes through the
+amendment-C window the seed's legTypes already carry for every buried
+leaf — `ofOrdinal(QOV(boxBinding, boxConcat), leafOffset + arrIdx)`.
+Consumers (span windows, the flat seed, predicate bakes) already speak
+box-level ordinals; the ONLY change is the owner lookup widening from
+plain legs to any leg with a bake window. Also lifts the sibling decline
+at the gather root: a gated OUTER box as the unnest's left
+(`a LEFT b, a.arr AS x`) is a legs-carrying cluster like any other — the
+Explode's owner correlation targets the box quantifier, and a
+null-supplying owner's NULL array explodes to zero rows exactly as Java's
+Explode over a NULL collection does (verify against live Java; pin both
+polarities).
+
+**Class 2 — multi-segment paths** (`len(u.Segments) != 2` declines;
+`FROM t, t.a.b AS x`): Java's model IS the fused path
+(`FieldValue.ofFields` — root accessor + suffix). The collection becomes
+a multi-accessor baked FieldValue: root ordinal = FieldIndex(segment 1)
+in the owner window, then per-segment descent through each intermediate
+RECORD type (declining any segment that is not a record field — same
+loud-vs-lazy rule as every bake). The S3-W2 fuse construction
+(`NewFieldValueOfOrdinal` + `WithSuffix`) is the constructor; the
+executor's `resolveSpanLeaf` multi-accessor walk already consumes fused
+paths. Composes with class 1 (a buried owner's multi-segment path roots
+at the box window's offset).
+
+**Class 3 — CTE/derived owners** (HARD error today;
+`FROM (SELECT ...) d, d.arr AS v`): Java supports this — the derived leg
+is just another quantifier. Mechanism decision needed at design review:
+  (a) NAME-MODEL residual arm — teach the residual binary FlatMap path to
+      resolve the owner against the translated derived leg's OUTPUT
+      columns (cteColumnsScope carries them), keeping the gather out of
+      it entirely (no ordinalization of name-model legs; the unnest reads
+      the owner row's Datum key). Smallest change, no model mixing; the
+      Explode's collection is a LAZY FieldValue over the derived leg's
+      quantifier — sound by the load-bearing lazy invariant.
+  (b) Ordinalize derived legs first (S4-adjacent) and route through the
+      gather. Rejected for this slice: it front-runs S4's demolition
+      order and mixes models exactly where the enclosure guards forbid.
+  Proposal: (a), with the 0A000 error deleted and replaced by row-pinned
+  behavior; classify remaining unsupported sub-shapes (e.g. a derived
+  output column that is not an array) against live Java before pinning
+  error parity.
+
+**Class 4 — chained unnests** (`x.sub AS y` — the gather's second-unnest
+decline and the residual's chained guard; `FROM t, t.arr AS x, x.sub AS y`):
+Java nests laterally without special casing. Mechanism: recursive
+composition — the FIRST unnest translates (gather or residual), and the
+SECOND treats the first's output as its outer scope, exactly as the
+residual already nests FlatMaps for `translateUnnestExistsFilter`. The
+gather path composes iteratively: each chained Explode is one more
+quantifier whose collection bakes against the PRIOR element leg's window
+(the element leg's type carries the sub-array column). Scope guard: only
+INNER-comma chains; an under-existential chain stays with item-2's
+binders.
+
+**Sequencing:** three commits — c1 = classes 1+2 (both are gather-side
+owner-lookup/constructor widenings sharing the legTypes window plumbing;
+red-first FDB row pins per class, incl. the outer-box owner polarities);
+c2 = class 3 (residual-arm owner resolution, error deletion, live-Java
+classification of sub-shapes); c3 = class 4 (chained composition on both
+paths) + the slice's exit gates (dual-window, stress, RFC record). The
+bare-twin duplicate-column decline stays booked to S4 (circularity
+ruling) — NOT this slice.
+
+**Design review rulings (Graefe, DESIGN ACK — binding conditions):**
+
+1. Class 1 ACK. (i) an OUTER box stays ONE opaque quantifier — the Kind
+   decline lifts in LEG position only; the flat inner select never gathers
+   an outer box's legs. (ii) The SelectMerge/Explode stranded-collection
+   hole closes IN c1: translateQuantifierCorrelations rebuilds only
+   SelectExpression members today, so an Explode-ranging sibling keeps a
+   dangling reference when the box leg merges — extend the retained-
+   quantifier translation to Explode members (collection through the
+   bakedBoxRefCallback collapse; Java: ExplodeExpression.
+   translateCorrelations), red-first pinned on a query where the box leg
+   actually merges. (iii) Owner lookup: FROM-order first-match by alias,
+   correlate by binding/bakeCorr from the CARRIED legTypes map, dup-alias
+   (Q$DUP) pin.
+2. Class 2 ACK. The blocker is the CLASSIFIER, not the gather:
+   unnestArrayElementType declines multi-segment paths before the gather
+   ever sees them (a hard UNDEFINED_COLUMN today), and
+   rotateEnclosedUnnest carries a twin decline — widen both to
+   per-segment proto-descriptor descent (record intermediates only,
+   Java's STRUCT rule). Bad-path error surface live-Java classified.
+3. Class 3 ACK on mechanism (a). Pins mechanism-agnostic (rows + error
+   parity — no name-model plan-shape pins except marked coexistence
+   markers) so S4 swaps the mechanism under a green suite; array-ness
+   classification runs against the TRANSLATED derived leg's flowed
+   cascades type (never the UnknownType name-scope columns — the P2a
+   silent-wrong class); class-3 re-absorption is BOOKED into S4's
+   demolition checklist.
+4. Class 4: the gather-side iterative claim as first drafted is
+   WITHDRAWN — struct/message array elements map to UnknownType
+   (arrayFieldElementType), so a chained bake against the prior element
+   window cannot fire, and typing them RecordType collides with the
+   executor's load-bearing non-record element discriminator
+   (rfc173_ordinal_join.go S3-merge exclusion). c3 ships the RESIDUAL
+   recursive composition (the translateUnnestExistsFilter nesting
+   pattern); the gather declines chains to it, pinned as such. A
+   struct-element RecordType amendment (incl. the executor-guard rework)
+   is a separately designed follow-on, not a parenthetical. INNER-comma
+   scope guard stands; under-existential chains stay with item-2 binders.
+5. Exit-gate amendments: class-1 red-first pins are PLAN-SHAPE red (the
+   class works today via the residual — row pins are born green; EXPLAIN
+   must prove the gathered flat select replaces the binary FlatMap);
+   white-box seed-shape pin for box-leg + element runs incl. the
+   dup-alias variant; the SelectMerge-fires-on-the-box-leg pin; a
+   SELECT * expansion pin for box-leg + mid-list unnestPos. Dual-window,
+   1M stress, rfc153 verbatim, live-Java error classification as listed.
+   Verified in review: Explode over NULL → zero rows is Java's spec
+   (RecordQueryExplodePlan:139), and the seed assert is untouched by
+   collection values (it walks RC fields only).

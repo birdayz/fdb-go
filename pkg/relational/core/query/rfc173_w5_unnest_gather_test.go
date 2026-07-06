@@ -171,14 +171,18 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatal("an element alias shadowing an outer column must GATHER (the commit-2 shadow lift)")
 	}
 
-	// (d) UNGATED left cluster (LEFT-outer box): flows name-model rows the
-	// baked collection cannot consume.
+	// (d) UNGATED left cluster: flows name-model rows the baked collection
+	// cannot consume. Re-fixtured (amendment-H) when the unnest-residual
+	// slice lifted the LEFT-box decline (a gated outer box now gathers as
+	// ONE opaque leg — TestRFC173UR_C1_OuterBoxLeft_Gathers): the still-
+	// ungated class is a DUPLICATE-BINDING cluster, poisoned by the wedge
+	// gate before any leg translates.
 	uLeft := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	jLeft := logical.NewJoin(
-		logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, ""),
+		inner(scan("SRC", "s"), scan("SRC", "s")),
 		uLeft, logical.JoinInner, "")
 	if got := tr.translateGatheredUnnestCluster(jLeft, uLeft, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-		t.Fatal("an ungated (LEFT-box) cluster must DECLINE")
+		t.Fatal("an UNGATED (duplicate-binding) cluster must DECLINE")
 	}
 
 	// (e) SINGLE-SOURCE left: the W4c binary path owns N=1.
@@ -508,5 +512,84 @@ func TestRFC173W5_EnclosedRotation_ThreeLegsMidUnnest(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "SID,ARR,EL,XID,V,YID,W" {
 		t.Fatalf("seed field order = %v, want [SID ARR EL XID V YID W] (element at its FROM offset, per-leg runs intact)", names)
+	}
+}
+
+// TestRFC173UR_C1_BoxLegOwner_Gathers pins unnest-residual class 1: an owner
+// BURIED inside a box leg of the gathered cluster (`FROM (s LEFT x), y,
+// s.ARR AS EL`) gathers — the collection bakes at the amendment-C WINDOW
+// (the box quantifier's correlation, the buried leaf's offset in the
+// concat), never a leg-local ordinal over a quantifier that does not exist
+// at this select. Pre-slice this shape declined to the residual (the
+// gatheredPlainLeg box decline).
+func TestRFC173UR_C1_BoxLegOwner_Gathers(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	box := logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, "")
+	left := inner(box, scan("AUX2", "y"))
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	j := logical.NewJoin(left, u, logical.JoinInner, "")
+	innerCorr := values.NamedCorrelationIdentifier("EL")
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("a buried box-leg owner must GATHER (class 1), got nil (declined)")
+	}
+	gathered := sel.(*expressions.SelectExpression)
+	quants := gathered.GetQuantifiers()
+	if len(quants) != 3 {
+		t.Fatalf("quantifiers = %d, want 3 (box leg, y, EL)", len(quants))
+	}
+	explode := quants[2].GetRangesOver().Members()[0]
+	exp, isExp := explode.(*expressions.ExplodeExpression)
+	if !isExp {
+		t.Fatalf("inner quantifier ranges over %T, want *ExplodeExpression", explode)
+	}
+	coll, isFV := exp.GetCollectionValue().(*values.FieldValue)
+	if !isFV || coll.Resolved == nil || !coll.Resolved.FrontierPinned {
+		t.Fatalf("collection = %T, want a frontier-pinned baked FieldValue", exp.GetCollectionValue())
+	}
+	qov := coll.Child.(*values.QuantifiedObjectValue)
+	// The box quantifier's binding carries the leg's minted $BOX name; the
+	// concat is 4 wide (SID, ARR, XID, V) with s's window at offset 0 —
+	// ARR = concat ordinal 1.
+	if qov.Correlation != quants[0].GetAlias() {
+		t.Fatalf("collection correlates to %s, want the BOX leg quantifier %s (amendment-C window)", qov.Correlation, quants[0].GetAlias())
+	}
+	rt := qov.Typ.(*values.RecordType)
+	if len(rt.Fields) != 4 {
+		t.Fatalf("collection QOV type = %d fields, want the 4-wide box concat", len(rt.Fields))
+	}
+	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != 1 {
+		t.Fatalf("collection ordinal = %v, want box-level 1 (offset 0 + ARR idx 1)", coll.Resolved.Accessors)
+	}
+}
+
+// TestRFC173UR_C1_OuterBoxLeft_Gathers pins the sibling lift (design ruling
+// 1(i)): a gated OUTER box as the unnest's LEFT gathers as ONE OPAQUE leg —
+// never its legs into the flat select — plus the Explode. The padded row's
+// NULL array explodes to zero rows downstream (Java's Explode-over-NULL).
+func TestRFC173UR_C1_OuterBoxLeft_Gathers(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	box := logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, "")
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	j := logical.NewJoin(box, u, logical.JoinInner, "")
+	innerCorr := values.NamedCorrelationIdentifier("EL")
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("an outer box as unnest-left must GATHER as one leg (class 1), got nil")
+	}
+	gathered := sel.(*expressions.SelectExpression)
+	quants := gathered.GetQuantifiers()
+	if len(quants) != 2 {
+		t.Fatalf("quantifiers = %d, want 2 (the OPAQUE box + EL — the box's legs are never gathered)", len(quants))
+	}
+	coll := quants[1].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue().(*values.FieldValue)
+	qov := coll.Child.(*values.QuantifiedObjectValue)
+	if qov.Correlation != quants[0].GetAlias() {
+		t.Fatalf("collection correlates to %s, want the box quantifier %s", qov.Correlation, quants[0].GetAlias())
+	}
+	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != 1 {
+		t.Fatalf("collection ordinal = %v, want box-level 1", coll.Resolved.Accessors)
 	}
 }

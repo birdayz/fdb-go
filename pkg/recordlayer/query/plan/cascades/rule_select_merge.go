@@ -387,19 +387,35 @@ func translateQuantifierCorrelations(
 	if !hit {
 		return q, false
 	}
-	var newSel *expressions.SelectExpression
+	var newMember expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
-		sel, isSel := m.(*expressions.SelectExpression)
-		if !isSel {
-			continue
+		switch me := m.(type) {
+		case *expressions.SelectExpression:
+			if ns := translateSelectCorrelations(me, mergedAliases, aliasMap, rcByAlias, call); ns != nil {
+				newMember = ns
+			}
+		case *expressions.ExplodeExpression:
+			// A lateral unnest's Explode sibling: its COLLECTION is a baked
+			// reference to the owning leg — for a BOX-leg owner (RFC-173
+			// unnest-residual class 1) that reference targets the box
+			// quantifier this merge just dissolved, and leaving it intact
+			// dangles it (Java: Quantifier.translateCorrelations reaches
+			// ExplodeExpression.translateCorrelations the same way).
+			cb := bakedBoxRefCallback(rcByAlias)
+			col := values.RebaseValue(me.GetCollectionValue(), aliasMap)
+			col = values.Replace(col, cb)
+			if col != me.GetCollectionValue() {
+				newMember = expressions.NewExplodeExpressionWithOrdinality(col, me.GetWithOrdinality())
+			}
 		}
-		newSel = translateSelectCorrelations(sel, mergedAliases, aliasMap, rcByAlias, call)
-		break
+		if newMember != nil {
+			break
+		}
 	}
-	if newSel == nil {
+	if newMember == nil {
 		return q, false
 	}
-	newRef := call.MemoizeExpression(newSel)
+	newRef := call.MemoizeExpression(newMember)
 	switch {
 	case q.IsNullOnEmpty():
 		return expressions.NamedForEachNullOnEmptyQuantifier(q.GetAlias(), newRef), true
