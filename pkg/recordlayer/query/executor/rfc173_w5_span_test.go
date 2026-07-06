@@ -342,6 +342,10 @@ func assertSpanWindowAgreement(t *testing.T, label string, rc *values.RecordCons
 	// The windows map keys every ADDRESSABLE name (a box run's SUBS included —
 	// the box's name means its rightmost LEAF); spans are RUN-level. Compare
 	// per addressable name: a plain run 1:1, a box run per sub-leg.
+	// Assumes the LEAF-NAMED box regime (a sub leg carries the run alias, so
+	// the values twin REPLACES the run window): a $BOX-minted fixture would
+	// retain the whole-run window under the minted key and mis-count here —
+	// extend the accounting before adding such a fixture.
 	wantWindows := 0
 	for _, s := range spans {
 		if len(s.LegType.Legs) > 0 {

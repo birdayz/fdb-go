@@ -3893,3 +3893,29 @@ previously-panicking `SELECT c.id, COUNT(e.id) … LEFT … JOIN … GROUP BY`
 shape pins green), G3 (stale gate reasons → S4). The rfc153 typed plan pins
 stayed VERBATIM green; the item-2 residual + enclosure-lift FDB pins
 (previously red on this branch) are green both orientations.
+
+**c4 fix round (review verdicts on the two c4 commits).** Torvalds ACK
+(five red-first claims independently revert-proven; nits applied: the
+box-naming comment now scopes the alias-collision to the dissolved-LEFT
+regime, the executor's malformed-Legs bounds go NOT-FOUND instead of the
+silent run-wide window, the agreement helper documents its leaf-named-box
+accounting assumption). codex P2: multi-accessor baked paths over a merged
+box alias were left stranded by the Single() guard — both the merge
+callback and the rebuild's RC arm now collapse the ROOT accessor through
+the RC and fuse the suffix onto the slot's baked reference (associative
+path composition; white-box pin red-first). Graefe NAK, one finding: the
+G1 matrix omitted the clustered NULL-SUPPLYING × enclosed cell, and the c4
+keystone had converted that cell's base-state panic into silent zero
+aggregates. Root cause: datumFromSpans was a FOURTH layout site missing
+the subs-only rule — it emitted run-level ALIAS.COL keys for box spans, so
+a lazy qualified aggregate operand (Datum["C2.RANK"], qualified-only by
+design) read a key never written. Fixed with per-sub emission (the same
+rule as the other three sites); the run-level emission for leaf-named box
+spans was itself writing wrong-alias keys for every non-rightmost slot.
+Pinned: the inversion cell red-first (exact zeros reproduced), plus the
+leaf-arg, unenclosed, NULL-group-key, and row-level-enclosed cells as
+plan-shape tripwires. @claude items: the CanCorrelate retention branch
+pinned (union retains a branch's free correlation past a sibling-alias
+coincidence), WithNullability-Legs + computeResultType nullability pinned
+Docker-independent, and the first-member rebuild documented (the original
+multi-member group stays reachable through the pre-merge expression).

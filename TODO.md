@@ -2463,6 +2463,12 @@ legs): branch 154.35s total, all 23 subtests PASS — FASTER than the master bas
 (161.68s). Key metrics: full_scan_count 3.38s, order_by_pk_full 4.07s, scan_all_narrow
 4.01s / _wide 4.28s, sparse_filter 3.55s, needles/in_list ~10-20ms. No regression.
 
+**2026-07-06 (RFC-173 item-3 c4 — stranded-correlation keystone + review batch:
+GetCorrelatedTo own-alias filter, SelectMerge surgical box-ref translation, twin
+Legs alignment, ofOrdinal nullability flow): branch 160.51s total, PASS — faster
+than the master baseline (161.68s), within noise of the c1+c2 row (154.35s). No
+regression.
+
 **2026-07-06 (RFC-173 item-1 c4 — the review-round fixes: binding-keyed sort/group
 keys, buried-EXISTS rebase, fold binding correlations):** branch 161.84s total, all
 23 subtests PASS — equal to the master `8c179a025` baseline (161.68s) and faster

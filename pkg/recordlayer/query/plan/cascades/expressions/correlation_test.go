@@ -182,3 +182,34 @@ func TestReference_GetCorrelatedTo_OwnAliasNotFree(t *testing.T) {
 		t.Fatalf("outer alias %v missing from the free correlation set: %v", outer, got)
 	}
 }
+
+// TestReference_GetCorrelatedTo_NonCorrelatableParentRetains pins the OTHER
+// half of Java's computeCorrelatedTo (the `!canCorrelate() || !bound`
+// disjunct on child correlations): a parent that CANNOT anchor correlation
+// (a union — evaluating one branch never binds another's alias) must RETAIN
+// a child's correlation even when it coincides with a sibling quantifier's
+// alias — filtering it would hide a genuinely FREE dependency behind a name
+// coincidence. Contrast: a SelectExpression (canCorrelate) filters the same
+// alias, because there the sibling genuinely binds it.
+func TestReference_GetCorrelatedTo_NonCorrelatableParentRetains(t *testing.T) {
+	t.Parallel()
+	// Branch 1: plain scan quantifier, aliased A.
+	qA := NamedForEachQuantifier(values.NamedCorrelationIdentifier("A"), InitialOf(&leafScan{name: "T"}))
+	// Branch 2: a select whose predicate references A — a FREE correlation
+	// from branch 2's perspective (nothing in its own subtree binds A).
+	inner := ForEachQuantifier(InitialOf(&leafScan{name: "U"}))
+	pred := predicates.NewComparisonPredicate(
+		inner.GetFlowedObjectValue(),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")),
+		},
+	)
+	branch2 := NewSelectExpression(inner.GetFlowedObjectValue(), []Quantifier{inner}, []predicates.QueryPredicate{pred})
+	qB := ForEachQuantifier(InitialOf(branch2))
+	union := NewLogicalUnionExpression([]Quantifier{qA, qB})
+	got := InitialOf(union).GetCorrelatedTo()
+	if _, retained := got[values.NamedCorrelationIdentifier("A")]; !retained {
+		t.Fatalf("union (CanCorrelate=false) must RETAIN the branch's free correlation A despite the sibling alias coincidence: %v", got)
+	}
+}

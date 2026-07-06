@@ -367,7 +367,7 @@ func withChildren(v Value, newChildren []Value) Value {
 		// inner (the recursive-CTE wrap shape) stays chained through BOTH
 		// mechanisms — there is no base to re-anchor the fused path onto.
 		if vt.Resolved != nil {
-			// RFC-173 item 3: COLLAPSE a baked single-accessor ordinal over an
+			// RFC-173 item 3: COLLAPSE a baked ordinal path over an
 			// RC LITERAL child — the merge's TranslationMap replaces a box
 			// quantifier with the box's ordinal RC, and the parent's window
 			// ref then IS the RC field's own value (a planner-constructed
@@ -375,8 +375,23 @@ func withChildren(v Value, newChildren []Value) Value {
 			// RC would strand data access (no sarg extraction), materializing
 			// the correlated probe the rfc153 plan pins forbid.
 			if rc, isRC := newChildren[0].(*RecordConstructorValue); isRC {
-				if acc, single := vt.Resolved.Single(); single && acc.Ordinal >= 0 && acc.Ordinal < len(rc.Fields) && rc.Fields[acc.Ordinal].Value != nil {
-					return rc.Fields[acc.Ordinal].Value
+				accs := vt.Resolved.Accessors
+				if len(accs) >= 1 && accs[0].Ordinal >= 0 && accs[0].Ordinal < len(rc.Fields) && rc.Fields[accs[0].Ordinal].Value != nil {
+					slot := rc.Fields[accs[0].Ordinal].Value
+					if len(accs) == 1 {
+						return slot
+					}
+					// A MULTI-accessor path (fused by an earlier merge round)
+					// collapses its ROOT through the RC and fuses the suffix
+					// onto the slot's own baked reference — the identical
+					// construction the FieldValue-over-FieldValue fuse below
+					// produces. A whole fused path left over an RC literal
+					// strands data access exactly like the single-accessor
+					// case this arm exists for.
+					if inner, isFV := slot.(*FieldValue); isFV && inner.Resolved != nil && inner.Child != nil {
+						fused := inner.Resolved.WithSuffix(&FieldPath{Accessors: accs[1:]})
+						return &FieldValue{Field: fused.Last().Field, Typ: vt.Typ, Child: inner.Child, Resolved: fused}
+					}
 				}
 			}
 			if inner, isFV := newChildren[0].(*FieldValue); isFV && inner.Resolved != nil && inner.Child != nil {

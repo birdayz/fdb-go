@@ -1330,6 +1330,33 @@ func datumFromPositional(row *PositionalRow) map[string]any {
 func datumFromSpans(row *PositionalRow, spans []legSpan) map[string]any {
 	m := datumFromPositional(row)
 	for _, s := range spans {
+		// A BOX span (its type carries buried-leg boundaries) emits its
+		// SUBS ONLY — the same rule as every other layout list
+		// (rcOutputType, ordinalJoinSpansOf, the values twin): qualified
+		// reads address the box's contents by the LEAF aliases; a run-level
+		// emission would qualify every concat slot under the run's name
+		// (wrong-alias keys for all but the rightmost leaf, and a
+		// last-wins collision on the leaf's own names). This was the
+		// fourth site — the first three aligned while the Datum kept
+		// run-level keys, silently NULLing every lazy qualified read of a
+		// buried column (an aggregate operand over the buried leg of a
+		// clustered null-supplying box read Datum["C2.RANK"], which was
+		// never written → COUNT of zeros).
+		if s.LegType != nil && len(s.LegType.Legs) > 0 {
+			for _, bl := range s.LegType.Legs {
+				end := bl.Start + bl.Width
+				if bl.Name == "" || bl.Start < 0 || end > len(s.LegType.Fields) {
+					continue
+				}
+				prefix := strings.ToUpper(bl.Name) + "."
+				for i := bl.Start; i < end; i++ {
+					if v, ok := row.Get(s.Offset + i); ok {
+						m[prefix+strings.ToUpper(s.LegType.Fields[i].Name)] = v
+					}
+				}
+			}
+			continue
+		}
 		prefix := strings.ToUpper(s.Alias.Name()) + "."
 		for i := 0; i < s.Width; i++ {
 			if v, ok := row.Get(s.Offset + i); ok {
@@ -1543,7 +1570,12 @@ func (r *spanAwareRow) GetByName(name string) (any, bool) {
 						}
 						end := bl.Start + bl.Width
 						if bl.Start < 0 || end > len(s.LegType.Fields) {
-							break
+							// Malformed bounds: NOT FOUND, never the run-wide
+							// window — a whole-concat FieldIndex would silently
+							// first-match another leg's duplicate column. Same
+							// loud disposition as the values twin's bounds
+							// guard (OrdinalSeedLegWindows).
+							return nil, false
 						}
 						sub := &values.RecordType{Nullable: s.LegType.Nullable, Fields: s.LegType.Fields[bl.Start:end]}
 						w := &legWindowRow{parent: r.parent, legType: sub, offset: s.Offset + bl.Start, width: bl.Width}

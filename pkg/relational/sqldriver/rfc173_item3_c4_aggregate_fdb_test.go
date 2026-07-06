@@ -17,6 +17,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 )
 
@@ -269,4 +270,172 @@ func TestFDB_RFC173Item3_WhereConjunctBuriedSource(t *testing.T) {
 	if len(got) != 1 || got[0] != [3]int64{1, 50, 10} {
 		t.Fatalf("rows = %v, want exactly [[1 50 10]] (buried d crossed with e in WHERE)", got)
 	}
+}
+
+// TestFDB_RFC173Item3_AggregateOverClusteredNullSupplying fills the G1
+// matrix cell whose absence let a correct-or-loud inversion ship: the
+// clustered NULL-SUPPLYING leg (emp ⋈ cat2, via RIGHT) under an ENCLOSING
+// inner join, with the aggregate argument INSIDE the null cluster. At the
+// c1-c3 base this shape panicked (divergent baked types); the c4 keystone
+// made the plan sound but the coexistence Datum (datumFromSpans) still
+// emitted run-level keys for box spans — a lazy qualified aggregate operand
+// (Datum["C2.RANK"]) read a key never written and served COUNT of zeros.
+// The row-level and unenclosed shapes ride different plans (materialized
+// NLJ) and were correct throughout — pinned here as the tripwire against
+// plan-shape drift.
+func TestFDB_RFC173Item3_AggregateOverClusteredNullSupplying(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	dbPath := "/rfc173i3aggns"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc173i3aggns_tmpl"+
+		" CREATE TABLE dept (id BIGINT, cid BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE emp (id BIGINT, did BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE cat (id BIGINT, rank BIGINT, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rfc173i3aggns_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	// Same fixture as the G1 matrix: cat 1 (rank 7) ← depts 1,2; cat 2
+	// (rank 8) ← dept 3. dept 1: emps 10,11 (both did=1 → cat2 join on
+	// did hits cat 1); dept 2: none (padded); dept 3: emp 12 (did=3, no cat).
+	if _, err := db.ExecContext(ctx, "INSERT INTO cat VALUES (1, 7), (2, 8)"); err != nil {
+		t.Fatalf("seed cat: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 1), (2, 1), (3, 2)"); err != nil {
+		t.Fatalf("seed dept: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO emp VALUES (10, 1), (11, 1), (12, 3)"); err != nil {
+		t.Fatalf("seed emp: %v", err)
+	}
+
+	type aggRow struct{ key, cnt int64 }
+	check := func(t *testing.T, q string, want []aggRow) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query: %v\n  sql: %s", err, q)
+		}
+		defer rows.Close()
+		got := map[int64]int64{}
+		for rows.Next() {
+			var r aggRow
+			if err := rows.Scan(&r.key, &r.cnt); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got[r.key] = r.cnt
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("groups = %v, want %v\n  sql: %s", got, want, q)
+		}
+		for _, w := range want {
+			if got[w.key] != w.cnt {
+				t.Errorf("group %d = %d, want %d\n  sql: %s", w.key, got[w.key], w.cnt, q)
+			}
+		}
+	}
+
+	// The inversion cell: BURIED argument (c2.rank) in the null cluster,
+	// enclosed. emp 10,11 (did=1) join cat2 1 → 2 rows under dept 1 → cat 1
+	// counts 2; emp 12 (did=3) has no cat2 → the cluster is empty for dept 3
+	// → padded → COUNT 0; dept 2 padded → 0. Want {1:2, 2:0}.
+	t.Run("enclosed_count_buried_arg", func(t *testing.T) {
+		check(t,
+			"SELECT c.id, COUNT(c2.rank) FROM emp e JOIN cat c2 ON c2.id = e.did RIGHT JOIN dept d ON e.did = d.id JOIN cat c ON c.id = d.cid GROUP BY c.id",
+			[]aggRow{{1, 2}, {2, 0}})
+	})
+	// LEAF argument (e.id — the null cluster's other leg), enclosed.
+	t.Run("enclosed_count_leaf_arg", func(t *testing.T) {
+		check(t,
+			"SELECT c.id, COUNT(e.id) FROM emp e JOIN cat c2 ON c2.id = e.did RIGHT JOIN dept d ON e.did = d.id JOIN cat c ON c.id = d.cid GROUP BY c.id",
+			[]aggRow{{1, 2}, {2, 0}})
+	})
+	// UNENCLOSED aggregate over the same null cluster (rides the NLJ plan
+	// today — the tripwire if the plan shape drifts onto the dissolved path).
+	t.Run("unenclosed_count_buried_arg", func(t *testing.T) {
+		check(t,
+			"SELECT d.id, COUNT(c2.rank) FROM emp e JOIN cat c2 ON c2.id = e.did RIGHT JOIN dept d ON e.did = d.id GROUP BY d.id",
+			[]aggRow{{1, 2}, {2, 0}, {3, 0}})
+	})
+	// NULL group key: GROUP BY a null-cluster column — padded rows form the
+	// NULL group. COUNT(d.id) counts every dept row in each group: c2.rank 7
+	// ← emps 10,11 → depts 1,1 → 2; NULL group ← depts 2,3 → 2.
+	t.Run("group_by_null_cluster_column", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT c2.rank, COUNT(d.id) FROM emp e JOIN cat c2 ON c2.id = e.did RIGHT JOIN dept d ON e.did = d.id GROUP BY c2.rank")
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		got := map[string]int64{}
+		for rows.Next() {
+			var k sql.NullInt64
+			var n int64
+			if err := rows.Scan(&k, &n); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			key := "<NULL>"
+			if k.Valid {
+				key = fmt.Sprintf("%d", k.Int64)
+			}
+			got[key] = n
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		want := map[string]int64{"7": 2, "<NULL>": 2}
+		if len(got) != len(want) || got["7"] != 2 || got["<NULL>"] != 2 {
+			t.Errorf("groups = %v, want %v", got, want)
+		}
+	})
+	// Row-level enclosed (probe D): the null cluster's columns project
+	// correctly under the enclosing join.
+	t.Run("row_level_enclosed", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT d.id, c2.rank FROM emp e JOIN cat c2 ON c2.id = e.did RIGHT JOIN dept d ON e.did = d.id JOIN cat c ON c.id = d.cid ORDER BY d.id")
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var d int64
+			var r sql.NullInt64
+			if err := rows.Scan(&d, &r); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if r.Valid {
+				got = append(got, fmt.Sprintf("%d|%d", d, r.Int64))
+			} else {
+				got = append(got, fmt.Sprintf("%d|<NULL>", d))
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		want := []string{"1|7", "1|7", "2|<NULL>", "3|<NULL>"}
+		if len(got) != len(want) {
+			t.Fatalf("rows = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("rows = %v, want %v", got, want)
+			}
+		}
+	})
 }

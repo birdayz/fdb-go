@@ -359,6 +359,13 @@ var _ ExpressionRule = (*SelectMergeRule)(nil)
 // null-on-empty leg reuses the null-supplying leg's alias, which also names
 // the box — is NOT correlated to the merge and must not be rewritten
 // (rewriting it would capture the inner binding).
+//
+// The rebuild takes the FIRST SelectExpression member of the reference and
+// re-memoizes only its translation — deliberate, not lossy: OnMatch YIELDS
+// the merged select alongside the ORIGINAL, whose quantifier still ranges
+// over the full multi-member group, so alternative members stay reachable
+// through the pre-merge expression; the translated quantifier only needs
+// one sound member to plan through.
 func translateQuantifierCorrelations(
 	q expressions.Quantifier,
 	mergedAliases map[values.CorrelationIdentifier]struct{},
@@ -494,16 +501,28 @@ func translateSelectCorrelations(
 }
 
 // bakedBoxRefCallback returns a values.Replace callback (pre-order) that
-// collapses BAKED single-accessor references over a merged-away box alias
-// through the box's result-value RC — the exact leg reference the ordinal
-// named. LAZY references over the same alias are skipped whole (their QOV
-// child is pointer-marked before the walk descends): a name-model read
-// re-binds to the pulled-up leg quantifier of the same name, which is the
-// correct binding by Go's rightmost-leaf box naming. A bare box QOV
-// substitutes the whole RC (the merged child's row), with the RC's own leg
-// QOVs marked so a leg alias that equals the box alias (the rightmost leaf)
-// is never re-substituted — the self-reference loop ReplaceLeavesOnceMaybe
-// documents.
+// collapses BAKED references over a merged-away box alias through the box's
+// result-value RC — the exact leg reference the ordinal named (a
+// multi-accessor path collapses its root and fuses the suffix). LAZY
+// references over the same alias are skipped whole (their QOV child is
+// pointer-marked before the walk descends): a name-model read re-binds to
+// the pulled-up leg quantifier of the same name. The alias collision is a
+// property of the PLANNING-time dissolved-LEFT regime specifically —
+// RewriteOuterJoinRule's box select is quantified by its rightmost leaf's
+// name and its dissolution REUSES the null-supplying leg's alias;
+// translation-time gated boxes mint <leaf>$BOX bindings, where same-name
+// lazy refs cannot arise and this callback's lazy-keep arm is inert. A bare
+// box QOV substitutes the whole RC (the merged child's row), with the RC's
+// own leg QOVs marked so a leg alias that equals the box alias is never
+// re-substituted — the self-reference loop ReplaceLeavesOnceMaybe documents.
+//
+// Residual hazard (review note, no known trigger): the collapse output (leg
+// QOV references) is not protected against capture by a binder BETWEEN the
+// merge level and the reference site — Java's unique mints preclude the
+// class structurally; in Go, SQL name shadowing makes the shape
+// unreachable from user syntax and the $BOX minting closes the gated
+// regime. If a new rewrite ever interposes a binder that reuses a leg
+// alias, revisit this callback's scoping.
 func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value) func(values.Value) values.Value {
 	// skip holds every node of a subtree the callback RETURNED (the RC
 	// itself, a collapsed leg reference) plus the children of kept-intact
@@ -551,10 +570,27 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 				return node
 			}
 			if rcv, isRC := rc.(*values.RecordConstructorValue); isRC && n.Resolved != nil && boxLevel(qov.Typ, rcv) {
-				if acc, single := n.Resolved.Single(); single && acc.Ordinal >= 0 && acc.Ordinal < len(rcv.Fields) && rcv.Fields[acc.Ordinal].Value != nil {
-					out := rcv.Fields[acc.Ordinal].Value
-					mark(out)
-					return out
+				accs := n.Resolved.Accessors
+				if len(accs) >= 1 && accs[0].Ordinal >= 0 && accs[0].Ordinal < len(rcv.Fields) && rcv.Fields[accs[0].Ordinal].Value != nil {
+					slot := rcv.Fields[accs[0].Ordinal].Value
+					if len(accs) == 1 {
+						mark(slot)
+						return slot
+					}
+					// A MULTI-accessor path over the box (a path fused by an
+					// earlier merge round): collapse the ROOT accessor
+					// through the RC and preserve the suffix — fused onto
+					// the slot's own baked leg reference, the identical
+					// construction the rebuild's fuse arm produces. Leaving
+					// it whole would strand the reference on the
+					// merged-away alias (dangling, or re-bound to the
+					// same-named pulled-up leg with the wrong window).
+					if slotFV, isFV := slot.(*values.FieldValue); isFV && slotFV.Resolved != nil && slotFV.Child != nil {
+						fused := slotFV.Resolved.WithSuffix(&values.FieldPath{Accessors: accs[1:]})
+						out := &values.FieldValue{Field: fused.Last().Field, Typ: n.Typ, Child: slotFV.Child, Resolved: fused}
+						mark(out)
+						return out
+					}
 				}
 			}
 			// Lazy, leg-level, or non-collapsible reference: keep it INTACT,

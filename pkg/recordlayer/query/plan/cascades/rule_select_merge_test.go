@@ -1025,3 +1025,69 @@ func TestSelectMergeRule_MergeUpWithRenamedCorrelations(t *testing.T) {
 		t.Fatalf("expected at least 2 predicates, got %d", len(mergedPreds))
 	}
 }
+
+// TestSelectMerge_BakedBoxRefCallback_MultiAccessor pins the multi-accessor
+// arm of the box-reference collapse: a path FUSED by an earlier merge round
+// (root accessor indexing the box RC, suffix descending a nested record)
+// must collapse its ROOT through the RC and fuse the suffix onto the slot's
+// own baked leg reference. Leaving it whole strands the reference on the
+// merged-away box alias — post-splice that name binds the pulled-up LEG (or
+// nothing), so the positional read lands in the wrong window.
+func TestSelectMerge_BakedBoxRefCallback_MultiAccessor(t *testing.T) {
+	t.Parallel()
+	// Leg D: 1 col. Leg E: a nested record column at leg ordinal 0.
+	nested := values.NewRecordType("", false, []values.Field{
+		{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	legD := values.NewRecordType("", false, []values.Field{
+		{Name: "DID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	legE := values.NewRecordType("", false, []values.Field{
+		{Name: "REC", FieldType: nested, Ordinal: 0},
+	})
+	qovD := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("D"), legD)
+	qovE := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), legE)
+	d0, err := values.NewFieldValueOfOrdinal(qovD, 0)
+	if err != nil {
+		t.Fatalf("bake D#0: %v", err)
+	}
+	e0, err := values.NewFieldValueOfOrdinal(qovE, 0)
+	if err != nil {
+		t.Fatalf("bake E#0: %v", err)
+	}
+	rc := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "DID", Value: d0},
+		values.RecordConstructorField{Name: "REC", Value: e0},
+	)
+	boxTyp := values.NewRecordType("", false, []values.Field{
+		{Name: "DID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "REC", FieldType: nested, Ordinal: 1},
+	})
+	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), boxTyp)
+	// The fused 2-accessor path: box ordinal 1 (REC) then nested ordinal 0 (SUB).
+	fusedRef := &values.FieldValue{
+		Field: "SUB",
+		Typ:   values.NotNullLong,
+		Child: boxQOV,
+		Resolved: &values.FieldPath{
+			Accessors:      []values.ResolvedAccessor{{Field: "REC", Ordinal: 1}, {Field: "SUB", Ordinal: 0}},
+			FrontierPinned: true,
+		},
+	}
+	cb := bakedBoxRefCallback(map[values.CorrelationIdentifier]values.Value{
+		values.NamedCorrelationIdentifier("E"): rc,
+	})
+	out := values.Replace(fusedRef, cb)
+	fv, isFV := out.(*values.FieldValue)
+	if !isFV || fv.Resolved == nil {
+		t.Fatalf("collapse produced %T (%v), want a baked FieldValue", out, out)
+	}
+	child, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV || child.Correlation.Name() != "E" || child != qovE {
+		t.Fatalf("collapsed child = %v, want the LEG quantifier E (the slot's own base)", fv.Child)
+	}
+	accs := fv.Resolved.Accessors
+	if len(accs) != 2 || accs[0].Ordinal != 0 || accs[1].Ordinal != 0 || accs[1].Field != "SUB" {
+		t.Fatalf("collapsed path = %v, want the slot's leg ordinal (0) fused with the suffix (SUB#0)", accs)
+	}
+}

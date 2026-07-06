@@ -1827,3 +1827,56 @@ func TestValue_Type_RecordConstructor(t *testing.T) {
 		t.Errorf("Fields[1]: got %v", rt.Fields[1])
 	}
 }
+
+// TestWithNullability_RecordCarriesLegs pins the RFC-173 buried-leg boundary
+// metadata through the nullability flip: WithNullability on a RecordType must
+// carry Legs — dropping it silently strips a clustered outer-join leg's
+// dotted-read windows exactly at the null-supplying wrap, the one place the
+// flip always happens (Docker-independent twin of the FDB metadata pin).
+func TestWithNullability_RecordCarriesLegs(t *testing.T) {
+	t.Parallel()
+	rt := &RecordType{
+		Fields: []Field{
+			{Name: "A", FieldType: NotNullLong, Ordinal: 0},
+			{Name: "B", FieldType: NotNullLong, Ordinal: 1},
+		},
+		Legs: []RecordTypeLeg{{Name: "X", Start: 0, Width: 1}, {Name: "Y", Start: 1, Width: 1}},
+	}
+	wrapped, ok := WithNullability(rt, true).(*RecordType)
+	if !ok || !wrapped.Nullable {
+		t.Fatalf("WithNullability(record, true) = %T nullable=%v", wrapped, wrapped != nil && wrapped.Nullable)
+	}
+	if len(wrapped.Legs) != 2 || wrapped.Legs[0] != rt.Legs[0] || wrapped.Legs[1] != rt.Legs[1] {
+		t.Fatalf("Legs dropped through the nullability flip: %v, want %v", wrapped.Legs, rt.Legs)
+	}
+}
+
+// TestNewFieldValueOfOrdinal_NullableRecordNullablesColumn pins Java's
+// FieldValue.computeResultType port: a column baked over a record-level
+// NULLABLE child (the LEFT-outer null-supplying leg's wrap, ruling I3) gets
+// a NULLABLE column type — the padded row serves NULL in every slot. Keyed
+// on the STORED QOV Typ (QOV.Type() blanket-wraps nullable, so the marker is
+// only observable there). A NOT NULL child record keeps the column type
+// verbatim.
+func TestNewFieldValueOfOrdinal_NullableRecordNullablesColumn(t *testing.T) {
+	t.Parallel()
+	fields := []Field{{Name: "ID", FieldType: NotNullLong, Ordinal: 0}}
+	notNullQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("P"),
+		&RecordType{Fields: fields})
+	fv, err := NewFieldValueOfOrdinal(notNullQOV, 0)
+	if err != nil {
+		t.Fatalf("bake: %v", err)
+	}
+	if fv.Typ.IsNullable() {
+		t.Fatalf("NOT NULL record: column type = %v, want NOT NULL passthrough", fv.Typ)
+	}
+	nullableQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("N"),
+		&RecordType{Nullable: true, Fields: fields})
+	fv, err = NewFieldValueOfOrdinal(nullableQOV, 0)
+	if err != nil {
+		t.Fatalf("bake: %v", err)
+	}
+	if !fv.Typ.IsNullable() {
+		t.Fatalf("record-level NULLABLE child: column type = %v, want NULLABLE (Java computeResultType)", fv.Typ)
+	}
+}
