@@ -763,6 +763,20 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     off-vs-on differential harness + the fail-closed narrowing + EXPLAIN/ordering pins + fuzz is the
     next-phase B1 slice (codex-gated review). The committed spike flag was reverted (a flag with only
     a vacuous isolated harness is dead code); it re-lands with the corpus-level harness.
+    **B1 NARROWING implementation requirement (found by attempting it — the gate contract pins
+    caught a fail-open):** the `:190` arm is NOT purely circular — it conflates TWO enclosure
+    reasons: (a) a CIRCULAR inner-cluster enclosure (the parent gates post-flattening at arity ≥ 3
+    → the nested inner join should gate too — LIFT), and (b) a GENUINELY-name-model existential /
+    unnest FLATTEN enclosure (the parent stays name-model → the nested inner join MUST keep
+    declining — KEEP). A naive lift of `:190` gates (b) and fails the pins
+    `TestRFC173S2_WedgeGate_Translation/derived_join_leg_under_exists_filter_enclosed` +
+    `TestRFC173Item2C3_FlattenGateArm/enclosed_flatten_declines` ("a narrowing failed open"). So the
+    fail-closed narrowing must DISTINGUISH enclosure reason: `t.inInnerCluster` is a single flag set
+    at ~8 sites (cascades_translator.go:1058 unnest, :3751 existential/scalar, :4399 flatten, :4954,
+    the genuinely-name-model group; :4151 the circular join-leg group). The slice must thread the
+    reason (a new "name-model-flatten enclosure" bit distinct from "inner-cluster enclosure") so
+    `:190` declines only (b). That enclosure-reason classification across the 8 sites + the
+    corpus-level certificate + EXPLAIN/ordering pins + fuzz is the precisely-scoped B1 slice.
   - **Exit gate = 3-layer PROOF, never an inventory:** (1) static caller-free grep; (2) dynamic
     loud-marker panic in each of the 4 constructors, full corpus + fuzz, assert ZERO dynamic hits;
     (3) exhausted-decline matrix — one constructed query per gate `Reason` string (rfc173_cluster_
