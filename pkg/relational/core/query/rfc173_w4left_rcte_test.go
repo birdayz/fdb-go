@@ -74,7 +74,7 @@ func TestRFC173Rcte_RemapComputedRenderingNotSplit(t *testing.T) {
 	// value type).
 	names := []string{"(B.ID + 1)", "A.B", "1.5", "B.ID", "PLAIN"}
 	verbatimField := []bool{false, false, false, true, true}
-	vals := recursiveRemapValues(names, verbatimField, true)
+	vals := recursiveRemapValues(names, verbatimField, true, false)
 
 	// Non-verbatim names (expression rendering, dotted quoted alias, float
 	// literal): NOT split — a resolved-ordinal read named by the full
@@ -107,7 +107,7 @@ func TestRFC173Rcte_RemapComputedRenderingNotSplit(t *testing.T) {
 
 	// The fallback path (nil classification — logical column names,
 	// identifiers by construction): dotted names still split.
-	fb := recursiveRemapValues([]string{"B.ID"}, nil, false)
+	fb := recursiveRemapValues([]string{"B.ID"}, nil, false, false)
 	fv, ok := fb[0].(*values.FieldValue)
 	if !ok || fv.Child == nil || fv.Field != "ID" {
 		t.Fatalf("fallback qualified reference = %#v, want QOV(B).ID", fb[0])

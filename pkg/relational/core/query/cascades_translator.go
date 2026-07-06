@@ -4946,18 +4946,21 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	cteName := strings.ToUpper(c.Name)
 
-	// RFC-173 Slice 2: the ENTIRE recursive-CTE lowering — both legs and Main
-	// — is name-model machinery until Slice 4 retires it (leg normalization
-	// via legPhysicalOutputNames, recursiveRemapValues' dot-split re-keying,
-	// name-keyed temp tables). A join translated anywhere beneath it is
-	// marked enclosed so no baked node can reach that machinery. Blanket over
-	// Main too: Main is usually a bare CTE scan; when it does hold a join,
-	// under-gating to the name model is the safe direction. Recursive CTEs
-	// are also poison in clusterArity — this flag closes the translation-side
-	// half.
-	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = true
-	defer func() { t.inInnerCluster = prevEnclosure }()
+	// RFC-173 S4 (R1): the recursive-CTE body is ORDINALIZED. The old blanket
+	// `t.inInnerCluster = true` forced every body join name-model; lifting it
+	// (surgically — this site only; inInnerCluster is a genuine enclosure flag
+	// at the non-recursive unnest/existential/w4b sites, where a broad lift
+	// breaks multi-source unnest) lets the gate's own arms classify each body
+	// sub-join: a plain inner/outer body GATES and takes the ordinal branch
+	// (buildOrdinalJoinResultValue → a positional row aligned by position to the
+	// CTE output — Java's seed-typed frontier, RecursiveUnionExpression.mergeValues);
+	// an unnest/existential body stays name-model via the gate's :106/:112/:143
+	// arms and keeps the dotted-split normalization arm (which survives to
+	// convergence). normalizeLegToOutputColumns detects the ordinalized body
+	// (any baked-ordinal projected value) and re-emits POSITIONALLY; the temp
+	// table stays a positional QueryResult buffer keyed by outCols in
+	// NAME-METADATA only, the coexisting bare-outCols Datum riding alongside for
+	// UNION-DISTINCT dedup and Main name resolution until Slice 4 retires Datum.
 
 	// The body must be a UNION ALL or UNION DISTINCT.
 	union, ok := c.Body.(*logical.LogicalUnion)
@@ -5039,7 +5042,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// alias list, or the seed uses AS matching the list), keeping the common
 	// recursive-CTE plan unchanged.
 	if len(seedSrc) > 0 && len(outCols) == len(seedSrc) && !equalFoldSlices(outCols, seedOut) {
-		seedExpr = normalizeLegToOutputColumns(seedExpr, seedSrc, outCols)
+		seedExpr = normalizeLegToOutputColumns(seedExpr, seedSrc, outCols, t.recursiveBodyIsPositional(seedBranches[0]))
 	}
 
 	// Wrap seed in TempTableInsert.
@@ -5086,7 +5089,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// (unqualified, re-qualified under the scan alias at the next level).
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(outCols) > 0 && len(recCols) > 0 && len(outCols) == len(recCols) {
-		recursiveExpr = normalizeLegToOutputColumns(recursiveExpr, recCols, outCols)
+		recursiveExpr = normalizeLegToOutputColumns(recursiveExpr, recCols, outCols, t.recursiveBodyIsPositional(recursiveBranches[0]))
 	}
 
 	// Wrap recursive leg in TempTableInsert.
@@ -5208,13 +5211,38 @@ func extractOutputProjectionNames(op logical.LogicalOperator) []string {
 // persist a qualified key" invariant AND the temp-table row size the RFC-130
 // memory budget is calibrated to (an alias override leaks the qualified keys
 // into the temp rows: TestFDB_RFC130_RecursiveCTE_NoDoubleCharge regressed).
-func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, outCols []string) expressions.RelationalExpression {
+func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, outCols []string, positional bool) expressions.RelationalExpression {
 	physNames, verbatimField, fromProjection := legPhysicalOutputNames(leg, legCols)
 	return expressions.NewLogicalProjectionExpressionWithAliases(
-		recursiveRemapValues(physNames, verbatimField, fromProjection),
+		recursiveRemapValues(physNames, verbatimField, fromProjection, positional),
 		append([]string(nil), outCols...),
 		expressions.ForEachQuantifier(expressions.InitialOf(leg)),
 	)
+}
+
+// recursiveBodyIsPositional reports whether a recursive-CTE branch's output row
+// is POSITIONAL (RFC-173 S4 R1): its FROM is a GATED (ordinal) join, so the
+// branch emits a positional flat concat rather than name-keyed dotted datums,
+// and the leg normalization must read by ordinal (recursiveRemapValues'
+// positional arm). Peels the branch's top projection + transparent filters to
+// the FROM join and reads the gate decision recorded during translation (baking
+// is post-translation, so the projected values aren't yet baked here — the gate
+// decision is the authoritative translation-time signal). A scan/aggregate/union
+// body (no direct gated join) stays name-model and keeps the dotted-split arm.
+func (t *cascadesTranslator) recursiveBodyIsPositional(op logical.LogicalOperator) bool {
+	for {
+		switch o := op.(type) {
+		case *logical.LogicalProject:
+			op = o.Input
+		case *logical.LogicalFilter:
+			op = o.Input
+		case *logical.LogicalJoin:
+			d, found := t.wedgeGate[o]
+			return found && d.Gated
+		default:
+			return false
+		}
+	}
 }
 
 // legPhysicalOutputNames returns a recursive-CTE leg's PHYSICAL output column
@@ -5314,10 +5342,37 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // split broke the quoted class identically; disambiguating needs the lazy
 // dotted-Field constructor to mark qualifier provenance — the name-model
 // machinery S4 deletes.
-func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads bool) []values.Value {
+func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, positional bool) []values.Value {
 	out := make([]values.Value, len(cols))
 	for i, c := range cols {
 		cu := strings.ToUpper(c)
+		if positional {
+			// RFC-173 S4 (R1): an ORDINALIZED recursive body emits a positional
+			// row; read EVERY column by ordinal (slot i) — the dotted-split name
+			// arm below mis-reads a positional row (QOV(<qualifier>) has no
+			// namespace on it → OrdinalResolutionError). This node is an UNPINNED
+			// baked node (values.go:411) — dual-window by design: the ORDINAL
+			// window reads slot i (authoritative), the §5 name-model window
+			// (OracleBakedNameFallback) falls back to Datum[nameReadRootKey], i.e.
+			// Datum[Resolved.Root().Field]. So the two names DECOUPLE:
+			//   - Field = BARE column → ProjectionColumnName emits the temp-row
+			//     key BARE (no dotted key: a "C.ID" key would DOUBLE the row and
+			//     bust the RFC-130 budget);
+			//   - Resolved.Root() = the FULL physName cu ("C.ID") → the name-window
+			//     fallback reads the body's QUALIFIED output Datum key, matching
+			//     the pre-lift dotted-split's read (the body's projection keys its
+			//     Datum by the qualified ProjectionColumnName).
+			bare := cu
+			if dot := strings.IndexByte(cu, '.'); dot >= 0 {
+				bare = cu[dot+1:]
+			}
+			out[i] = &values.FieldValue{
+				Field:    bare,
+				Typ:      values.UnknownType,
+				Resolved: values.NewFieldPathOfSingle(cu, i, false),
+			}
+			continue
+		}
 		identName := verbatimField == nil || verbatimField[i]
 		if dot := strings.IndexByte(cu, '.'); dot >= 0 && identName {
 			out[i] = &values.FieldValue{

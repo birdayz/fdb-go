@@ -3250,7 +3250,14 @@ func executeRecursiveDfsJoin(
 		return nil, fmt.Errorf("executor: recursive dfs join root: %w", err)
 	}
 
-	rootRows, err := CollectAllBounded(ctx, rootCursor, props.State, props.GetMaterializationLimit(), "recursive DFS join root")
+	// RFC-130 (code-review #328, extended to the DFS path): the root/child
+	// cursors have a TempTableInsertPlan at the top that already charges each row
+	// in tt.Add — draining with the byte-charging CollectAllBounded would
+	// double-count and trip the budget at ~half its true value (the same defect
+	// collectAllRowCapped fixes for executeRecursiveLevelUnion's initial state).
+	// Surfaced by RFC-173 S4 R1: ordinalizing the recursive body flips the cost
+	// so this DFS plan wins over the level union for wide-payload recursive CTEs.
+	rootRows, err := collectAllRowCapped(ctx, rootCursor, props.GetMaterializationLimit(), "recursive DFS join root")
 	rootCursor.Close()
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive dfs join root collect: %w", err)
@@ -3339,7 +3346,10 @@ func dfsVisit(
 		return fmt.Errorf("recursive DFS child plan: %w", err)
 	}
 
-	children, err := CollectAllBounded(ctx, childCursor, props.State, props.GetMaterializationLimit(), "recursive DFS children")
+	// RFC-130: the child's TempTableInsertPlan already charged these rows in
+	// tt.Add — use the row-capped (non-byte-charging) drain to avoid the
+	// double-count (see the root collect above).
+	children, err := collectAllRowCapped(ctx, childCursor, props.GetMaterializationLimit(), "recursive DFS children")
 	childCursor.Close()
 	if err != nil {
 		return fmt.Errorf("recursive DFS collect children: %w", err)
