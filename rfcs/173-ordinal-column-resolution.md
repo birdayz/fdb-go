@@ -3807,3 +3807,41 @@ the F-C guard, the pin flips incl. LEFT-box-dup live-Java parity). c2 = boxes
 in leg position (S3 + fourth site + amendments A/B/G/H/I, S2 comment
 narrowing). c3 = residual disposition + exit gates (amendment J, records,
 dual-window, 1M stress, live-Java batch). Graefe holds ACK until after c3.
+
+## QP-REF-BIND item 3 — c1+c2 record
+
+**c1 (1ac0fe54f) — box roots with clustered legs (S1 class).** The gate's
+single-source condition retired; every consumer in the atomic unit: amendment C
+(per-buried-leg bake windows, bakeCorr — cross-leg ON conjuncts spanning buried
+sources bake positionally), amendment D (buildClusterPullUp recurses gated box
+legs; W4b Dir 3 buried correlation flips decline→ordinal), amendment E's serve
+side (RecordType.Legs boundaries recorded by ordinalLegType, carried through
+the nullable wraps — dropping them there was the last silent link — and the
+dotted name-model read resolves per-leg on positional-only rows via
+spanAwareRow's buried arm + PositionalRow.GetByName's dotted bridge + merged
+types carrying boundaries in BOTH derivation twins), amendment F
+(existsOuterGatesFresh auto-widened, pinned through the below-FOD rebase), the
+F-C gated-outer loud-decline guard at the anchored fallback, the positional
+merge arm's null-on-empty tripwire → scoped decline (splice-not-collapse), and
+the fold's no-pre-translate fix. The rfc153 typed plan pins stayed VERBATIM
+green (the hard performance gate).
+
+**c2 (e0fcd2496) — boxes in leg position (S3 + the fourth site).**
+ordinalEligible admits LEFT/RIGHT boxes as legs; clusterArity's LEFT/RIGHT arm
+= clusterArity(preserved) + 1 (amendment A — the rules' actual mergeability).
+The round's live catch: the RIGHT-box NAME COLLISION — a box quantifier is
+named by its rightmost leaf, which for a RIGHT box is the PRESERVED leg, so the
+layout-boundary lists carried a box-run entry shadowing the buried entry of the
+same name; the dotted bridge first-matched the run and read the null-supplying
+leg's slot (`ORDER BY d.id` over the RIGHT-normalized mixed shape silently
+sorted by e.id). Per the established bake-window rule ("the box's name means
+THAT LEAF"), a clustered box run emits its SUBS ONLY in every layout list —
+rcOutputType, ordinalJoinSpansOf, and the values twin. classifySortSource
+collects buried bindings structurally. Pins re-cut per amendment H (the
+enclosure-guard pin re-fixtured onto a dup-poisoned genuinely-name-model
+parent; the guard survives verbatim); amendment G pinned (FULL-over-LEFT
+serves with the whole-box drain pad).
+
+**c3 flips banked so far:** the LEFT-box-dup booked divergence SERVES
+(P5 pins: first leg [10 20] through the pad; second leg exactly one NULL pad)
+— the item-1 c5 loud-decline class narrows exactly as designed.

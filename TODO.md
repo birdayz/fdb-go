@@ -2458,6 +2458,11 @@ c1-baseline band (full_scan_count 3.75s, order_by_pk_full 4.60s, scan_all_narrow
 only adds a column-metadata derivation arm for duplicate-alias `SELECT *` (no
 plan-shape / cost change for non-dup queries). No regression.
 
+**2026-07-06 (RFC-173 item-3 c1+c2 — mixed-nesting LEFT widening: box roots + boxes as
+legs): branch 154.35s total, all 23 subtests PASS — FASTER than the master baseline
+(161.68s). Key metrics: full_scan_count 3.38s, order_by_pk_full 4.07s, scan_all_narrow
+4.01s / _wide 4.28s, sparse_filter 3.55s, needles/in_list ~10-20ms. No regression.
+
 **2026-07-06 (RFC-173 item-1 c4 — the review-round fixes: binding-keyed sort/group
 keys, buried-EXISTS rebase, fold binding correlations):** branch 161.84s total, all
 23 subtests PASS — equal to the master `8c179a025` baseline (161.68s) and faster
@@ -3389,6 +3394,13 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    with items 1+2 it JOINTLY drives NewScalarSubqueryAnchoredRecord to zero callers.
    **MUST land AFTER item 2** (the enclosure guard names existential/unnest parents;
    retiring it before positional binders exist re-opens the mixed-nesting wrong-rows class).
+   **IN FLIGHT (PR #483, feat/rfc173-item3): design ruling banked (three gate-arm commits,
+   amendments A–J; the zero-callers claim STRICKEN — deletion rides S4; the FOURTH site
+   recorded). c1 MERGED-to-branch 1ac0fe54f (S1 box roots + amendments C/D/E/F + the F-C
+   guard; rfc153 plan pins verbatim green). c2 e0fcd2496 (S3 + clusterArity preserved+1;
+   the RIGHT-box name-collision subs-only rule at all three layout sites; amendment G
+   FULL-over-LEFT pin; pins re-cut per H). c3 in flight: LEFT-box-dup flip PINNED (P5 —
+   the item-1 c5 loud class narrows as designed), records, exit gates.**
 
 **Sequencing (Graefe ruling, banked in the RFC):** (riders ∥ item 2 ∥ item 1) → item 3 →
 unnest-residual slice → S4. The riders are standalone and start immediately:
