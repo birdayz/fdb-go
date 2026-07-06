@@ -4547,17 +4547,51 @@ Ran the join-name-model gate change (skip the three join declines :143/:157/:190
 - query_test: the unit gate-decision pins (TestRFC173Item2C3_FlattenGateArm, WedgeGate) — EXPECTED
   (they assert the OLD decision; update with the change).
 
-**Every NON-recursive-CTE join shape passes under the ordinalization.** So the join name-model
-retirement is CLEAN except recursive CTEs — the recursive-CTE join is a genuine name-model residual
-(NewReEnumerationAnchoredRecord anchors the frontier by name; the recursive DEFINITION node in leg
-position is the :143 poison). This reframes S4 from "sprawling multi-shift atomic mess" to a
-DESIGN FORK:
-  (A) PARTIAL cap: ordinalize non-recursive-CTE joins now (keep :143/:190 declining ONLY for
-      recursive-CTE legs), keep recursive-CTE + its NewAnchoredJoinRecord/NewReEnumerationAnchoredRecord
-      machinery as a residual deferred to a later slice (F2/F3). Ships the SELECT-* duplicate-column
-      fix + the goldens now; the machinery deletion waits.
-  (B) FULL cap: also ordinalize recursive-CTE (the re-enumeration machinery must go positional) so
-      the whole AnchoredJoin machine deletes in one commit — bigger, needs the recursive frontier
-      ordinalized.
-Needs a Graefe design ruling on (A) vs (B). Either way the gate refinement is "decline :143/:190
-ONLY for a recursive-CTE-definition leg, gate everything else" — a bounded, detectable condition.
+**Every NON-recursive-CTE join shape passes under this crude blanket-skip — BUT that is a coverage
+artifact, not a license** (Graefe ruling af259dec): the FDB corpus doesn't stress "inner cluster
+directly under an existential/unnest flatten," so the blanket-skip's over-lift of those residuals
+went unpunished. The recursive-CTE break is real: `translateRecursiveCTE` blankets its whole
+lowering with `t.inInnerCluster = true` (cascades_translator.go:4953-4955); its name-keyed
+temp-table / `recursiveRemapValues` machinery reads by NAME, so ordinalizing interior joins
+mis-reads them.
+
+### GRAEFE RULING — (A), with a premise correction and the CORRECT gate condition
+
+**Premise correction:** `NewReEnumerationAnchoredRecord` is the GENERAL N-way join partition
+re-enumeration producer (PartitionSelectRule, rule_partition_select.go:469/567), NOT the recursive
+frontier. Recursive-CTE machinery has ZERO trio references — it is firewalled from the ordinal join
+machine by the `FrontierPinned` bit (values.go:411). Java has no AnchoredJoin at all (Go-only
+bridge). So **(B) as posed is a phantom**: no single commit deletes the AnchoredJoin trio by
+ordinalizing the recursive frontier, because the trio has THREE independent name-model blockers —
+(1) recursive-body joins (4954 → NewAnchoredJoinRecord :698), (2) multi-source lateral unnest
+(:1528), (3) correlated-scalar-subquery projection (NewScalarSubqueryAnchoredRecord :3860) — gated
+by :106/:112/:401, none in the {:143,:157,:190} skip set. The trio dies at the CONVERGENCE of
+R1∧R2∧R3, not at the recursive one.
+
+**RULE: (A) — the pre-cap join-ordinalization slice — as the next stacked PR.** Correct gate
+condition is a DISTINCT name-model-enclosure bit (NOT the blanket skip, which fails the existential
+residual):
+- `:143` unchanged (`ordinalEligible` already recurses with enclosure forced false → name-model
+  constructs decline, plain cluster legs are eligible; the circular chain self-resolves once
+  parents gate).
+- `:190`/`:157` read a new `inNameModelEnclosure` bit set (defer-scoped) at the GENUINE name-model
+  sites — :1058 (unnest), :2833/:2950/:3751 (existential), :2344 (existential cond), :4399 (flatten
+  cond), :4954 (recursive) — NOT `inInnerCluster`. The circular site :4151 leaves the bit unchanged
+  → inherits the ancestor's name-model-ness → circular class gates, genuine residuals stay
+  name-model. DELETE `:157` (dead since item 3).
+- Net residual after (A): {recursive-CTE, existential, lateral unnest, correlated-scalar,
+  dup-binding}. Everything else gates.
+
+**ACCEPTANCE GATE (hard, before impl-ACK):** (i) the two contested pins stay GREEN —
+`TestRFC173S2_WedgeGate_Translation/derived_join_leg_under_exists_filter_enclosed` and
+`TestRFC173Item2C3_FlattenGateArm/"enclosed flatten declines"` (they pin the existential residual;
+a blanket skip that fails them = automatic NAK); (ii) the duplicate-bare-name IDENTITY pin —
+`FieldValue` node identity is still name-based (map_field_values.go:260-262; semantic_hash.go:108),
+so once dup bare names coexist positionally they can conflate into one memo member → wrong plans;
+prove distinct memo members before shipping the SELECT-* win.
+
+**After (A):** three independent residual slices (none gates another) — R1 recursive-CTE
+ordinalization (lift the 4954 blanket, positional temp-table norm; Java already consumes the ordinal
+model), R2 multi-source lateral unnest seed (:1528), R3 correlated-scalar-subquery seed (:3860).
+**Trio demolition = the convergence commit after R1∧R2∧R3** — that, not "B," is the real atomic cap;
+(A) is its load-bearing first stack.
