@@ -650,12 +650,23 @@ func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} 
 	}
 	result := make(map[values.CorrelationIdentifier]struct{})
 	for _, m := range r.AllMembers() {
-		for k := range m.GetCorrelatedToWithoutChildren() {
-			result[k] = struct{}{}
-		}
 		ownAliases := make(map[values.CorrelationIdentifier]struct{})
 		for _, q := range m.GetQuantifiers() {
 			ownAliases[q.GetAlias()] = struct{}{}
+		}
+		// Java's AbstractRelationalExpressionWithChildren.computeCorrelatedTo:
+		// the expression's OWN predicates/result-value correlations are
+		// filtered by its own quantifier aliases — a select whose ON
+		// predicate references its own quantifier is NOT free on that alias.
+		// Go reuses human-readable aliases (Java mints globally unique ones),
+		// so without this filter a dissolved outer-join box — whose
+		// null-on-empty quantifier REUSES the null-supplying leg's alias —
+		// reports its inner select as "correlated to" the very alias it
+		// binds, and correlation-driven rewrites capture the inner binding.
+		for k := range m.GetCorrelatedToWithoutChildren() {
+			if _, bound := ownAliases[k]; !bound {
+				result[k] = struct{}{}
+			}
 		}
 		for _, q := range m.GetQuantifiers() {
 			childRef := q.GetRangesOver()
@@ -663,7 +674,10 @@ func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} 
 				continue
 			}
 			for k := range childRef.GetCorrelatedTo() {
-				if _, bound := ownAliases[k]; !bound {
+				// Java keeps a child's correlation when the parent cannot
+				// correlate (a union's legs can't bind sibling aliases) OR
+				// the alias is not bound here.
+				if _, bound := ownAliases[k]; !m.CanCorrelate() || !bound {
 					result[k] = struct{}{}
 				}
 			}

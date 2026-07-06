@@ -367,6 +367,18 @@ func withChildren(v Value, newChildren []Value) Value {
 		// inner (the recursive-CTE wrap shape) stays chained through BOTH
 		// mechanisms — there is no base to re-anchor the fused path onto.
 		if vt.Resolved != nil {
+			// RFC-173 item 3: COLLAPSE a baked single-accessor ordinal over an
+			// RC LITERAL child — the merge's TranslationMap replaces a box
+			// quantifier with the box's ordinal RC, and the parent's window
+			// ref then IS the RC field's own value (a planner-constructed
+			// baked leaf ref, types and markers intact). A fused path over an
+			// RC would strand data access (no sarg extraction), materializing
+			// the correlated probe the rfc153 plan pins forbid.
+			if rc, isRC := newChildren[0].(*RecordConstructorValue); isRC {
+				if acc, single := vt.Resolved.Single(); single && acc.Ordinal >= 0 && acc.Ordinal < len(rc.Fields) && rc.Fields[acc.Ordinal].Value != nil {
+					return rc.Fields[acc.Ordinal].Value
+				}
+			}
 			if inner, isFV := newChildren[0].(*FieldValue); isFV && inner.Resolved != nil && inner.Child != nil {
 				fused := inner.Resolved.WithSuffix(vt.Resolved)
 				return &FieldValue{Field: fused.Last().Field, Typ: vt.Typ, Child: inner.Child, Resolved: fused}

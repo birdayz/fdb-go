@@ -258,12 +258,13 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		// Item-3 S3: a LEFT/RIGHT box leg is ordinal-ELIGIBLE, so a plain
 		// inner parent GATES and the box translates FRESH — the enclosure
 		// guard survives VERBATIM (amendment H) but needs a GENUINELY
-		// name-model parent to fire: dup leg bindings poison the gate
-		// (unminted white-box duplicates), so the box under that parent
-		// stays enclosed and name-model.
+		// name-model parent to fire: a white-box scan alias spelling the
+		// box's MINTED binding (E$BOX) collides in the gate's dup arm —
+		// poison — so the box under that parent stays enclosed and
+		// name-model. (Unreachable from SQL: $ is mint-namespace only.)
 		for _, kind := range []logical.JoinKind{logical.JoinLeft, logical.JoinRight} {
 			box := logical.NewJoin(scan("Order", "d"), scan("Customer", "e"), kind, "")
-			root := inner(box, scan("TypedRecord", "e"))
+			root := inner(box, scan("TypedRecord", "E$BOX"))
 			tr := newGateTranslator(t)
 			tr.translateRef(root)
 			d, ok := tr.wedgeGate[box]
@@ -599,7 +600,7 @@ func TestRFC173S3_BoxLegBakeResolvesLeafLocal(t *testing.T) {
 			if !isFV || fv.Resolved == nil {
 				return v
 			}
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "C" {
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "C$BOX" { // item-3 c4: the box quantifier is MINTED (leaf+$BOX)
 				bakedC = fv
 			}
 			return v

@@ -4053,8 +4053,8 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// namespaces there would nil every qualified read (the still-poisoned
 	// dup classes stay correct-or-loud via per-attribute 42702 + the gate).
 	if gateDecision.Gated {
-		leftAlias = sourceBinding(left)
-		rightAlias = sourceBinding(right)
+		leftAlias = legBinding(left)
+		rightAlias = legBinding(right)
 	} else if leg := mintedBindingLeg(left, right); leg != "" {
 		// A minted-binding leg reached the NAME-MODEL arm (the gate narrowed
 		// off — nesting, arity, poison): its display-keyed anchored RC and
@@ -4299,8 +4299,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// DISPLAY aliases (its anchored RC and merged-row keys are
 	// alias-qualified).
 	if gatedFlatten {
-		leftAlias = sourceBinding(left)
-		rightAlias = sourceBinding(right)
+		leftAlias = legBinding(left)
+		rightAlias = legBinding(right)
 	} else if leg := mintedBindingLeg(left, right); leg != "" {
 		// A minted-binding leg while the flatten narrowed off the gate
 		// (arity ≠ 2, existential-alias collision): the name-model flat

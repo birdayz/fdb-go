@@ -148,3 +148,37 @@ func TestCorrelationWalking_PicksUpDeepReference(t *testing.T) {
 		t.Fatalf("walker didn't descend into nested Arithmetic — got %v", got)
 	}
 }
+
+// TestReference_GetCorrelatedTo_OwnAliasNotFree pins Java's
+// AbstractRelationalExpressionWithChildren.computeCorrelatedTo semantics on
+// the Reference aggregate: an expression's OWN predicates referencing its OWN
+// quantifier are BOUND, not free — the alias must not surface in the
+// reference's correlation set. Go reuses human-readable aliases (Java mints
+// unique ones), so before this filter a dissolved outer-join box — whose
+// null-on-empty quantifier reuses the null-supplying leg's alias — reported
+// its inner select as "correlated to" the alias it binds, and
+// SelectMergeRule's retained-quantifier translation captured the inner
+// binding (the 42804 wrong-window bake on LEFT JOIN + correlated EXISTS).
+func TestReference_GetCorrelatedTo_OwnAliasNotFree(t *testing.T) {
+	t.Parallel()
+	inner := ForEachQuantifier(InitialOf(&leafScan{name: "E"}))
+	outer := values.NamedCorrelationIdentifier("D")
+	// Select over inner with a predicate referencing BOTH its own quantifier
+	// (bound) and an outer alias (free).
+	pred := predicates.NewComparisonPredicate(
+		inner.GetFlowedObjectValue(),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: values.NewQuantifiedObjectValue(outer),
+		},
+	)
+	sel := NewSelectExpression(inner.GetFlowedObjectValue(), []Quantifier{inner}, []predicates.QueryPredicate{pred})
+	ref := InitialOf(sel)
+	got := ref.GetCorrelatedTo()
+	if _, leak := got[inner.GetAlias()]; leak {
+		t.Fatalf("own quantifier alias %v leaked as a FREE correlation: %v (Java filters bound aliases)", inner.GetAlias(), got)
+	}
+	if _, free := got[outer]; !free {
+		t.Fatalf("outer alias %v missing from the free correlation set: %v", outer, got)
+	}
+}

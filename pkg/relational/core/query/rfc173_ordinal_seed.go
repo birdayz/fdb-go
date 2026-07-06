@@ -173,7 +173,25 @@ type clusterLeg struct {
 // exact re-derivation hazard the design ruling's carried-not-rederived condition
 // names).
 func clusterLegOf(op logical.LogicalOperator, nullSupplying bool) clusterLeg {
-	return clusterLeg{op: op, alias: sourceAlias(op), binding: sourceBinding(op), nullSupplying: nullSupplying}
+	return clusterLeg{op: op, alias: sourceAlias(op), binding: legBinding(op), nullSupplying: nullSupplying}
+}
+
+// legBinding is clusterLegOf's binding derivation: sourceBinding, except a
+// JOIN consumed AS A LEG (a clustered box) gets a DETERMINISTIC minted
+// binding — its rightmost leaf's binding + "$BOX" (RFC-173 item 3). The bare
+// leaf name cannot serve both levels: at the box's OWN select it names the
+// leaf quantifier (typed by the leaf), while at the parent it would name the
+// box (typed by the whole concat), and one plan carries both — the widen
+// invariant's divergent-baked-types panic (aggregates over the mixed class).
+// Fold-stable and unique (leaf bindings are dup-minted unique) — the Q$DUP
+// discipline: internal plumbing users can never reference; display surfaces
+// keep sourceAlias. Applied ONLY in leg contexts (here and the gated
+// quantifier naming) — sourceBinding's non-leg consumers keep the leaf name.
+func legBinding(op logical.LogicalOperator) string {
+	if _, isJoin := op.(*logical.LogicalJoin); isJoin {
+		return sourceBinding(op) + "$BOX"
+	}
+	return sourceBinding(op)
 }
 
 // gatherInnerClusterLegs flattens DIRECT inner-join nesting into FROM-order
