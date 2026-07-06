@@ -393,7 +393,9 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.Sco
 func mapPredicateWalkError(walkErr error) *api.Error {
 	var ambigErr *semantic.AmbiguousColumnError
 	if errors.As(walkErr, &ambigErr) {
-		return api.NewErrorf(api.ErrCodeAmbiguousColumn, "column reference is ambiguous")
+		// Java's exact SemanticAnalyzer text, from the reference as written
+		// (RFC-173 QP-REF-BIND item 1, M5).
+		return api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", ambigErr.Reference())
 	}
 	var inListNull *expr.InListNullError
 	if errors.As(walkErr, &inListNull) {
@@ -424,6 +426,20 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 		return apiErr
 	}
 	return nil
+}
+
+// bindingOrAlias resolves a FROM leg's binding correlation name: the
+// parser-minted duplicate-leg id when present, else the alias (RFC-173
+// QP-REF-BIND item 1). The single mint authority (assignFromLegBindingIDs)
+// sets bindingID only on LATER duplicate legs; every non-duplicate leg keeps
+// its alias as the correlation, so the resolver emits QOV(binding) addressing
+// the leg's own quantifier — never the colliding alias namespace. Every scope
+// builder reads THIS one helper so no site re-derives the fallback.
+func bindingOrAlias(bindingID string, aliasID semantic.Identifier) string {
+	if bindingID != "" {
+		return bindingID
+	}
+	return aliasID.Name()
 }
 
 // upgradeJoinOnPredicates walks the logical plan tree to find LogicalJoin
@@ -485,7 +501,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	// the downstream scan produces its precise UndefinedDatabase/Table error,
 	// which the fail-closed check below must not preempt with a generic one.
 	var scopeDropRisk bool
-	addTableSource := func(tableName, alias string) bool {
+	addTableSource := func(tableName, alias, bindingID string) bool {
 		tbl := resolveTable(tableName)
 		if tbl == nil {
 			return false
@@ -494,12 +510,19 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		if alias == "" {
 			aliasID = semantic.NewUnquoted(tableName)
 		}
+		// The binding correlation: the parser-minted duplicate-leg id when
+		// present, else the alias (RFC-173 QP-REF-BIND item 1). Duplicate
+		// PLAIN aliases now REGISTER (per-attribute resolution owns the
+		// ambiguity); only a shadowing (unnest) duplicate still errors, and
+		// that keeps the drop-risk taxonomy exactly as before for the class
+		// AddSource can still reject.
+		binding := bindingOrAlias(bindingID, aliasID)
 		if scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
-			CorrelationName: aliasID.Name(),
+			CorrelationName: binding,
 		}) != nil {
-			scopeDropRisk = true // duplicate alias: resolvable, unscopable
+			scopeDropRisk = true // shadowing-duplicate alias: resolvable, unscopable
 			return false
 		}
 		return true
@@ -516,6 +539,9 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		if !ok {
 			scopeDropRisk = true // join-bodied derived decline: plans, then cross-products
 			return false
+		}
+		if j.bindingID != "" {
+			src.CorrelationName = j.bindingID
 		}
 		if scope.AddSource(src) != nil {
 			scopeDropRisk = true
@@ -548,7 +574,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			scopeDropRisk = true
 		}
 	} else {
-		scopeOK = addTableSource(sq.tableName, sq.tableAlias)
+		scopeOK = addTableSource(sq.tableName, sq.tableAlias, "")
 	}
 	for i, j := range sq.joins {
 		if !scopeOK {
@@ -563,7 +589,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			scopeOK = addUnnestSource(j)
 			continue
 		}
-		scopeOK = addTableSource(j.tableName, j.alias)
+		scopeOK = addTableSource(j.tableName, j.alias, j.bindingID)
 	}
 	if !scopeOK {
 		// FAIL-CLOSED (pre-existing silent-wrong-rows bug, caught by the
@@ -904,23 +930,26 @@ func buildWherePredicateForJoinsWithCTEScopes(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 
-	addSource := func(tableName, alias string) bool {
+	addSource := func(tableName, alias, bindingID string) bool {
 		aliasID := semantic.NewUnquoted(alias)
 		if alias == "" {
 			aliasID = semantic.NewUnquoted(tableName)
 		}
+		// The binding correlation: the parser-minted duplicate-leg id when
+		// present, else the alias (RFC-173 QP-REF-BIND item 1).
+		binding := bindingOrAlias(bindingID, aliasID)
 		// Try metadata first, then CTE scopes.
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err == nil {
 			return scope.AddSource(semantic.ScopeSource{
 				Table:           tbl,
 				Alias:           aliasID,
-				CorrelationName: aliasID.Name(),
+				CorrelationName: binding,
 			}) == nil
 		}
 		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
 			src.Alias = aliasID
-			src.CorrelationName = aliasID.Name()
+			src.CorrelationName = binding
 			return scope.AddSource(src) == nil
 		}
 		return false
@@ -931,7 +960,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 	// element/ordinal resolves here instead of declining and degrading to text. RFC-142.
 	addUnnestSource := unnestScopeSourceAdder(scope)
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
-	if !addSource(sq.tableName, sq.tableAlias) {
+	if !addSource(sq.tableName, sq.tableAlias, "") {
 		return nil, false
 	}
 	for i, j := range sq.joins {
@@ -942,7 +971,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 			}
 			continue
 		}
-		if !addSource(j.tableName, j.alias) {
+		if !addSource(j.tableName, j.alias, j.bindingID) {
 			return nil, false
 		}
 	}
@@ -977,7 +1006,7 @@ func buildWherePredicateForJoins(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 
-	addSource := func(tableName, alias string) bool {
+	addSource := func(tableName, alias, bindingID string) bool {
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil {
 			return false
@@ -986,15 +1015,16 @@ func buildWherePredicateForJoins(
 		if alias == "" {
 			aliasID = semantic.NewUnquoted(tableName)
 		}
+		binding := bindingOrAlias(bindingID, aliasID)
 		return scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
-			CorrelationName: aliasID.Name(),
+			CorrelationName: binding,
 		}) == nil
 	}
 	addUnnestSource := unnestScopeSourceAdder(scope)
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
-	if !addSource(sq.tableName, sq.tableAlias) {
+	if !addSource(sq.tableName, sq.tableAlias, "") {
 		return nil, false
 	}
 	for i, j := range sq.joins {
@@ -1005,7 +1035,7 @@ func buildWherePredicateForJoins(
 			}
 			continue
 		}
-		if !addSource(j.tableName, j.alias) {
+		if !addSource(j.tableName, j.alias, j.bindingID) {
 			return nil, false
 		}
 	}
@@ -1459,8 +1489,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
+						// Java's exact text, from the reference as written (M5).
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-							"column reference %q is ambiguous", ob.colName)
+							"Ambiguous reference %s", ambigErr.Reference())
 					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
@@ -1789,7 +1820,7 @@ func buildSelectScope(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 
-	addSource := func(tableName, alias string) bool {
+	addSource := func(tableName, alias, bindingID string) bool {
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil && cteScopes != nil {
 			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
@@ -1800,7 +1831,7 @@ func buildSelectScope(
 				return scope.AddSource(semantic.ScopeSource{
 					Table:           src.Table,
 					Alias:           aliasID,
-					CorrelationName: aliasID.Name(),
+					CorrelationName: bindingOrAlias(bindingID, aliasID),
 				}) == nil
 			}
 			return false
@@ -1815,7 +1846,7 @@ func buildSelectScope(
 		return scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
-			CorrelationName: aliasID.Name(),
+			CorrelationName: bindingOrAlias(bindingID, aliasID),
 		}) == nil
 	}
 
@@ -1827,7 +1858,7 @@ func buildSelectScope(
 		} else {
 			return nil
 		}
-	} else if !addSource(sq.tableName, sq.tableAlias) {
+	} else if !addSource(sq.tableName, sq.tableAlias, "") {
 		return nil
 	}
 	addUnnestSource := unnestScopeSourceAdder(scope)
@@ -1835,6 +1866,9 @@ func buildSelectScope(
 	for i, j := range sq.joins {
 		if j.derivedQuery != nil {
 			if src, ok := buildDerivedTableSource(md, j.alias, j.derivedQuery); ok {
+				if j.bindingID != "" {
+					src.CorrelationName = j.bindingID
+				}
 				if scope.AddSource(src) != nil {
 					return nil
 				}
@@ -1851,7 +1885,7 @@ func buildSelectScope(
 			}
 			continue
 		}
-		if !addSource(j.tableName, j.alias) {
+		if !addSource(j.tableName, j.alias, j.bindingID) {
 			return nil
 		}
 	}
@@ -1876,8 +1910,11 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 	if err != nil {
 		var ambigErr *semantic.AmbiguousColumnError
 		if errors.As(err, &ambigErr) {
+			// Java's exact SemanticAnalyzer text, from the reference as
+			// written (RFC-173 QP-REF-BIND item 1, M5 — live-verified for
+			// duplicate AND distinct aliases, bare AND qualified).
 			return api.NewErrorf(api.ErrCodeAmbiguousColumn,
-				"column reference %q is ambiguous", col)
+				"Ambiguous reference %s", ambigErr.Reference())
 		}
 		var notFoundErr *semantic.ColumnNotFoundError
 		if errors.As(err, &notFoundErr) {
@@ -2643,6 +2680,22 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		var qualID semantic.Identifier
 		if ref.isQualified() {
 			qualID = semantic.NewUnquoted(ref.table)
+			// The dup-alias twin (RFC-173 QP-REF-BIND item 1): a qualified key
+			// binding a LATER duplicate-alias leg must group by the BINDING
+			// correlation (`Q$DUP1.QID`) — the join row's actual namespace —
+			// never the display alias, whose bare FieldValue fallback misses
+			// and silently groups every row under NULL. Same helper as the
+			// projection and ORDER-BY paths (qualifyShadowedSortKeys), so the
+			// three cannot diverge; nil for every non-duplicate reference.
+			// An AmbiguousColumnError here is DISCARDED on purpose: the
+			// upstream group-key reference validation already terminated an
+			// ambiguous key with 42702 before this pass runs (the ladder's
+			// >=2 arm is owned there, not here).
+			if qv, err := resolver.ResolveQualifiedProjection(qualID, semantic.NewUnquoted(ref.bare())); err == nil && qv != nil {
+				keyValues[i] = qv
+				filled = true
+				continue
+			}
 		}
 		qv, ok, err := resolver.ResolveColumnShadowingQualified(qualID, semantic.NewUnquoted(ref.bare()))
 		if err == nil && ok {
@@ -3018,32 +3071,34 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
-	addSource := func(tableName, alias string) bool {
+	addSource := func(tableName, alias, bindingID string) bool {
+		aliasID := semantic.NewUnquoted(alias)
+		if alias == "" {
+			aliasID = semantic.NewUnquoted(tableName)
+		}
+		// The binding correlation: the parser-minted duplicate-leg id when
+		// present, else the alias (RFC-173 QP-REF-BIND item 1).
+		binding := bindingOrAlias(bindingID, aliasID)
 		if src, ok := cteScopes[strings.ToUpper(tableName)]; ok {
-			aliasID := semantic.NewUnquoted(alias)
-			if alias == "" {
-				aliasID = semantic.NewUnquoted(tableName)
-			}
 			src.Alias = aliasID
-			src.CorrelationName = aliasID.Name()
+			src.CorrelationName = binding
 			return scope.AddSource(src) == nil
 		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil {
 			return false
 		}
-		aliasID := semantic.NewUnquoted(alias)
-		if alias == "" {
-			aliasID = semantic.NewUnquoted(tableName)
-		}
 		return scope.AddSource(semantic.ScopeSource{
 			Table:           tbl,
 			Alias:           aliasID,
-			CorrelationName: aliasID.Name(),
+			CorrelationName: binding,
 		}) == nil
 	}
-	addDerived := func(alias string, derivedQuery antlrgen.IQueryContext) bool {
+	addDerived := func(alias string, derivedQuery antlrgen.IQueryContext, bindingID string) bool {
 		if src, ok := buildDerivedTableSource(md, alias, derivedQuery); ok {
+			if bindingID != "" {
+				src.CorrelationName = bindingID
+			}
 			return scope.AddSource(src) == nil
 		}
 		return false
@@ -3057,16 +3112,16 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	if sq.tableName != "" {
 		if sq.derivedQuery != nil {
-			if !addDerived(sq.tableName, sq.derivedQuery) {
+			if !addDerived(sq.tableName, sq.derivedQuery, "") {
 				return nil
 			}
-		} else if !addSource(sq.tableName, sq.tableAlias) {
+		} else if !addSource(sq.tableName, sq.tableAlias, "") {
 			return nil
 		}
 	}
 	for i, j := range sq.joins {
 		if j.derivedQuery != nil {
-			if !addDerived(j.alias, j.derivedQuery) {
+			if !addDerived(j.alias, j.derivedQuery, j.bindingID) {
 				return nil
 			}
 			continue
@@ -3078,7 +3133,7 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 			}
 			continue
 		}
-		if !addSource(j.tableName, j.alias) {
+		if !addSource(j.tableName, j.alias, j.bindingID) {
 			return nil
 		}
 	}
@@ -4996,14 +5051,24 @@ func buildLogicalPlanForUnionWithCatalog(
 // logical plans for EXISTS and scalar subqueries and collects the
 // (alias, plan) pairs that the LogicalFilter/LogicalProject need to
 // carry to the Cascades translator.
-func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) map[string]semantic.ScopeSource {
+func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) []semantic.ScopeSource {
+	// A DUPLICATE-PRESERVING slice in FROM order, never an alias-keyed map
+	// (RFC-173 QP-REF-BIND item 1): duplicate outer aliases are legal, and a
+	// map collapsed them last-wins — an inner correlated reference then saw
+	// only ONE leg (false 42703 for the lost leg's columns; a missed terminal
+	// ambiguity for shared ones) and bound the survivor under the DISPLAY
+	// alias, mis-correlating a later duplicate leg whose row namespace is its
+	// minted BINDING. Every source carries bindingOrAlias — the same
+	// convention as the SELECT/WHERE scope builders — so per-attribute
+	// resolution and QOV emission work across scope depth exactly as at the
+	// top level (the ladder: 1→bind, 0→fallthrough, ≥2→terminal 42702).
 	if sq == nil || md == nil || sq.tableName == "" {
 		return nil
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
-	sources := make(map[string]semantic.ScopeSource)
-	addSrc := func(tableName, alias string) {
+	var sources []semantic.ScopeSource
+	addSrc := func(tableName, alias, bindingID string) {
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil {
 			return
@@ -5012,9 +5077,9 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 		if alias == "" {
 			a = semantic.NewUnquoted(tableName)
 		}
-		sources[strings.ToUpper(a.Name())] = semantic.ScopeSource{
-			Table: tbl, Alias: a, CorrelationName: a.Name(),
-		}
+		sources = append(sources, semantic.ScopeSource{
+			Table: tbl, Alias: a, CorrelationName: bindingOrAlias(bindingID, a),
+		})
 	}
 	// A DERIVED-TABLE source (`FROM (SELECT ...) e`) is NOT a real table
 	// either — register its VIRTUAL column schema (the SAME
@@ -5025,22 +5090,27 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 	// "E" cannot be resolved` join form) — while the identical correlation
 	// to a REAL table alias works. Mirrors the lateral-unnest leg
 	// registration below.
-	addDerived := func(alias string, body antlrgen.IQueryContext) {
+	addDerived := func(alias, bindingID string, body antlrgen.IQueryContext) {
 		if src, ok := buildDerivedTableSource(md, alias, body); ok {
-			sources[strings.ToUpper(src.CorrelationName)] = src
+			if bindingID != "" {
+				src.CorrelationName = bindingID
+			}
+			sources = append(sources, src)
 		}
 	}
 	if sq.derivedQuery != nil {
 		// The primary derived source: the parser carries the alias in
 		// tableAlias when present, else in tableName (the same convention
-		// buildWherePredicateForDerived resolves against).
+		// buildWherePredicateForDerived resolves against). The primary leg is
+		// always a FIRST occurrence — the mint renames later duplicates only —
+		// so it carries no binding id.
 		alias := sq.tableAlias
 		if alias == "" {
 			alias = sq.tableName
 		}
-		addDerived(alias, sq.derivedQuery)
+		addDerived(alias, "", sq.derivedQuery)
 	} else {
-		addSrc(sq.tableName, sq.tableAlias)
+		addSrc(sq.tableName, sq.tableAlias, "")
 	}
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	for i, j := range sq.joins {
@@ -5055,15 +5125,15 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
 		if isLateralUnnestJoin(j, visible, resolvesToTable) {
 			if src, ok := unnestVirtualScopeSource(j); ok {
-				sources[strings.ToUpper(src.CorrelationName)] = src
+				sources = append(sources, src)
 			}
 			continue
 		}
 		if j.derivedQuery != nil {
-			addDerived(j.alias, j.derivedQuery)
+			addDerived(j.alias, j.bindingID, j.derivedQuery)
 			continue
 		}
-		addSrc(j.tableName, j.alias)
+		addSrc(j.tableName, j.alias, j.bindingID)
 	}
 	return sources
 }
@@ -5077,8 +5147,10 @@ type existsSubqueryPlanner struct {
 	// main.PB AS B)` in a session whose schema is `main` resolves `main.PB` as the
 	// schema-qualified TABLE against the ACTIVE schema, not the hardcoded default
 	// `s`. Empty falls back to defaultEmbeddedSchema. RFC-142 (P2b).
-	schemaName                 string
-	outerScopes                map[string]semantic.ScopeSource
+	schemaName string
+	// outerScopes is a DUPLICATE-PRESERVING slice in FROM order (RFC-173
+	// QP-REF-BIND item 1) — see buildOuterScopeSources.
+	outerScopes                []semantic.ScopeSource
 	cteScopes                  map[string]semantic.ScopeSource
 	cteBodies                  map[string]logical.LogicalOperator // CTE name → body plan, for wrapping scalar subquery plans
 	subqueries                 []logical.ExistsSubquery
@@ -5274,13 +5346,20 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// outer scopes include both the current planner's outer scopes and
 	// the inner table — this enables correlation across multiple levels
 	// (e.g. innermost EXISTS referencing outermost emp.id).
-	nestedOuterScopes := make(map[string]semantic.ScopeSource, len(p.outerScopes)+1)
-	for k, v := range p.outerScopes {
-		nestedOuterScopes[k] = v
+	// The inner source SHADOWS a same-aliased outer for the next nesting
+	// level (the semantics the alias-keyed map's overwrite used to encode):
+	// drop same-aliased outers before appending, so a doubly-nested EXISTS
+	// still resolves the nearer source first — never a same-level duplicate
+	// of an outer leg with the inner table.
+	nestedOuterScopes := make([]semantic.ScopeSource, 0, len(p.outerScopes)+1)
+	for _, v := range p.outerScopes {
+		if !v.Alias.EqualsIgnoreQuoting(aliasID) {
+			nestedOuterScopes = append(nestedOuterScopes, v)
+		}
 	}
-	nestedOuterScopes[strings.ToUpper(aliasID.Name())] = semantic.ScopeSource{
+	nestedOuterScopes = append(nestedOuterScopes, semantic.ScopeSource{
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
-	}
+	})
 	nestedPlanner := &existsSubqueryPlanner{
 		md:          p.md,
 		schemaName:  p.schemaName,
@@ -5672,6 +5751,20 @@ func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]lo
 func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
+	}
+	// RFC-173 QP-REF-BIND item 1: the correlated-scalar lowering keys legs by
+	// DISPLAY alias — its inner plan and scalar output naming are not
+	// binding-aware — so a duplicate outer alias in scope (a minted Q$DUPn
+	// binding) would resolve per-attribute at the front end and then serve a
+	// silent-NULL scalar at execution (the outer projection is planned as an
+	// inner-row column). Decline LOUDLY until this path speaks bindings; the
+	// EXISTS twin (buildCorrelatedExists) is binding-aware and answers.
+	for _, src := range p.outerScopes {
+		if src.CorrelationName != "" && !strings.EqualFold(src.CorrelationName, src.Alias.Name()) {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: fmt.Sprintf("correlated scalar subquery: duplicate outer FROM alias %s is not supported (the scalar lowering is not binding-aware)", src.Alias.Name()),
+			}
+		}
 	}
 	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {

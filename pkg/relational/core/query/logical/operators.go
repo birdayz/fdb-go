@@ -53,6 +53,13 @@ type CorrelatedScalarSubquery struct {
 type LogicalScan struct {
 	Table string
 	Alias string
+	// Binding is the scan's binding correlation name when its FROM alias
+	// DUPLICATES an earlier leg's at the same level ("" = the alias binds —
+	// every non-duplicate leg). RFC-173 QP-REF-BIND item 1: carried from the
+	// parser's single mint authority (assignFromLegBindingIDs); consumers
+	// read it via sourceBinding and never re-derive binding identity from
+	// the alias. The SQL alias stays the DISPLAY qualifier (sourceAlias).
+	Binding string
 }
 
 // NewScan constructs a LogicalScan.
@@ -81,6 +88,13 @@ type LogicalUnnest struct {
 	// un-flattened (no re-split of a joined string) so the translator
 	// resolves segment-by-segment against the scope.
 	Segments []string
+	// Binding carries the comma source's duplicate-alias binding id
+	// (RFC-173 QP-REF-BIND item 1, see LogicalScan.Binding) so the
+	// TABLE-FIRST demotion (demoteSchemaQualifiedUnnest) can restore it on
+	// the demoted LogicalScan — a mis-classified schema-qualified TABLE leg
+	// is a table leg for binding purposes. A GENUINE unnest never consumes
+	// it: a duplicate unnest AS/AT alias is rejected outright (RFC-142).
+	Binding string
 	// Alias is the AS alias (`x` in `... AS x`) bound to each unnested
 	// element. Empty when the AS alias is omitted (AT-only form).
 	Alias string
@@ -617,6 +631,10 @@ type LogicalCTE struct {
 	Recursive      bool
 	ColumnAliases  []string // WITH c(a, b) AS (...) → renames body's output columns
 	TraversalOrder TraversalOrder
+	// Binding is the derived/CTE leg's binding correlation name when its
+	// FROM alias duplicates an earlier leg's ("" = Name binds). RFC-173
+	// QP-REF-BIND item 1 — see LogicalScan.Binding.
+	Binding string
 }
 
 type TraversalOrder int

@@ -240,6 +240,7 @@ go_test(
         "returning_clause_probe_test.go",
         "rfc087_swallow_sort_fdb_test.go",
         "rfc153_matrix_fdb_test.go",
+        "rfc173_item1_keybinding_exists_fdb_test.go",
         "rfc173_item2_c3_flatten_seed_fdb_test.go",
         "rfc173_item2_c4_enclosure_lift_fdb_test.go",
         "rfc173_item2_noop_residual_fdb_test.go",

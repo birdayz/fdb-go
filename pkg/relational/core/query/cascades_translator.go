@@ -2719,8 +2719,18 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	if rightRef == nil {
 		return nil
 	}
-	leftAlias := sourceAlias(j.Left)
-	rightAlias := sourceAlias(j.Right)
+	// RFC-173 QP-REF-BIND item 1: the fold's quantifiers and source aliases
+	// carry the BINDING correlation (== the alias for every non-duplicate
+	// leg; the parser-minted id for a later duplicate). The resolver emits
+	// binding-qualified references for a duplicate leg (QOV(Q$DUPn).COL), and
+	// every downstream consumer — the implementation arm's rebase, the NLJ
+	// merged row's qualified LEG.COL keys, the hidden ORDER BY columns — keys
+	// legs by these names: display-named [A, A] quantifiers left the second
+	// leg's binding unbound and its columns served NULL. The name-model
+	// merged row distinguishes duplicate legs exactly when the leg keys are
+	// the distinct bindings.
+	leftAlias := sourceBinding(j.Left)
+	rightAlias := sourceBinding(j.Right)
 
 	leftQ := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(leftAlias), leftRef,
@@ -2807,12 +2817,20 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	// RFC-173 Slice 2: the projected-EXISTS fold attaches existential
 	// quantifiers to the select this leg merges into — same enclosure rule as
 	// translateFilter's WHERE-EXISTS path (a nested join stays name-model).
-	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = true
-	innerRef := t.translateRef(f.Input)
-	t.inInnerCluster = prevEnclosure
-	if innerRef == nil {
-		return nil
+	// A JOIN input is NOT translated here: buildExistentialJoinSelect
+	// re-translates the legs itself and ignores innerRef, and translating the
+	// enclosed join anyway both wastes work and trips the name-model
+	// minted-binding decline for a duplicate-alias FROM the fold serves fine
+	// (its binding-keyed select owns the whole construction).
+	var innerRef *expressions.Reference
+	if _, isJoin := f.Input.(*logical.LogicalJoin); !isJoin {
+		prevEnclosure := t.inInnerCluster
+		t.inInnerCluster = true
+		innerRef = t.translateRef(f.Input)
+		t.inInnerCluster = prevEnclosure
+		if innerRef == nil {
+			return nil
+		}
 	}
 
 	fields := make([]values.RecordConstructorField, len(p.Projections))
@@ -3008,9 +3026,16 @@ type sortSource struct {
 // joins), so we classify only that shape as a join.
 func classifySortSource(input logical.LogicalOperator) sortSource {
 	if j, ok := input.(*logical.LogicalJoin); ok && j.Kind == logical.JoinInner {
+		// BINDING correlations, not display aliases (RFC-173 QP-REF-BIND
+		// item 1): the fold's quantifiers and merged-row keys carry the
+		// binding (buildExistentialJoinSelect), and a duplicate-alias sort
+		// key resolves to a binding-qualified value — display-named
+		// legAliases ([A, A]) failed to attribute it and the key silently
+		// degraded to the bare last-leg-wins read. Identical to the alias
+		// for every non-duplicate leg.
 		return sortSource{
 			isJoin:     true,
-			legAliases: []string{sourceAlias(j.Left), sourceAlias(j.Right)},
+			legAliases: []string{sourceBinding(j.Left), sourceBinding(j.Right)},
 		}
 	}
 	return sortSource{isJoin: false}
@@ -3984,6 +4009,30 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	}
 	leftAlias := sourceAlias(left)
 	rightAlias := sourceAlias(right)
+	// RFC-173 QP-REF-BIND item 1: a GATED binary join's quantifiers and
+	// row namespaces carry the BINDING correlation (== the alias for every
+	// non-duplicate leg; the parser-minted id for a later duplicate) —
+	// matching the ordinal seed RC's QOVs, the bake maps and the executor's
+	// span windows, and matching what the resolver emits for a reference
+	// bound to a duplicate leg. The NAME-MODEL arm keeps the DISPLAY alias:
+	// its anchored RC and merged-row keys are alias-qualified, and swapping
+	// namespaces there would nil every qualified read (the still-poisoned
+	// dup classes stay correct-or-loud via per-attribute 42702 + the gate).
+	if gateDecision.Gated {
+		leftAlias = sourceBinding(left)
+		rightAlias = sourceBinding(right)
+	} else if leg := mintedBindingLeg(left, right); leg != "" {
+		// A minted-binding leg reached the NAME-MODEL arm (the gate narrowed
+		// off — nesting, arity, poison): its display-keyed anchored RC and
+		// merged rows cannot carry the binding, so the resolver's
+		// binding-qualified reads would serve silent NULLs. Decline LOUDLY
+		// (correct-or-loud; the ordinal seed is the only representation for
+		// duplicate legs — the dual-window carve-out class).
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"duplicate FROM alias: leg %s requires the ordinal seed; the name-model join cannot serve it (%s)",
+			leg, gateDecision.Reason))
+		return nil
+	}
 
 	// Use named quantifiers so aliases match the predicate QOV
 	// correlations created by the SQL resolver.
@@ -4049,8 +4098,8 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		// side is its LEFT operand).
 		var legTypes map[string]bakeLegType
 		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{
-			{op: rvLeft, alias: rvLeftAlias, nullSupplying: j.Kind == logical.JoinRight},
-			{op: rvRight, alias: rvRightAlias, nullSupplying: j.Kind == logical.JoinLeft},
+			clusterLegOf(rvLeft, j.Kind == logical.JoinRight),
+			clusterLegOf(rvRight, j.Kind == logical.JoinLeft),
 		})
 		preds = bakeGatedJoinPredicates(preds, legTypes)
 	} else {
@@ -4153,9 +4202,13 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 	if gatedFlatten {
+		// Key the collision namespace on the BINDING correlations — the names
+		// the gated quantifiers actually carry (a later duplicate leg is
+		// Q$DUPn, its display alias shared): an existential alias must not
+		// collide with either.
 		seen := map[string]struct{}{
-			strings.ToUpper(sourceAlias(left)):  {},
-			strings.ToUpper(sourceAlias(right)): {},
+			strings.ToUpper(sourceBinding(left)):  {},
+			strings.ToUpper(sourceBinding(right)): {},
 		}
 		for _, esq := range f.ExistsSubqueries {
 			key := strings.ToUpper(esq.Alias.Name())
@@ -4201,6 +4254,31 @@ func (t *cascadesTranslator) translateJoinWithExists(
 
 	leftAlias := sourceAlias(left)
 	rightAlias := sourceAlias(right)
+	// RFC-173 QP-REF-BIND item 1: a GATED flatten's quantifiers and source
+	// aliases carry the BINDING correlation (== the alias for every
+	// non-duplicate leg; the parser-minted id for a later duplicate) —
+	// matching the ordinal seed RC's QOVs and the executor's span windows,
+	// exactly as translateJoin's gated binary arm. Without this the dup
+	// flatten seeded [A, Q$DUP1] while naming BOTH quantifiers [A, A]; the
+	// step-1 NLJ then adapted the second leg's row against the first leg's
+	// type and died loudly in the leg adapter. The NAME-MODEL arm keeps the
+	// DISPLAY aliases (its anchored RC and merged-row keys are
+	// alias-qualified).
+	if gatedFlatten {
+		leftAlias = sourceBinding(left)
+		rightAlias = sourceBinding(right)
+	} else if leg := mintedBindingLeg(left, right); leg != "" {
+		// A minted-binding leg while the flatten narrowed off the gate
+		// (arity ≠ 2, existential-alias collision): the name-model flat
+		// select keys legs by display alias and would serve silent NULLs
+		// for the binding's columns. Decline LOUDLY (correct-or-loud) —
+		// "fail toward the name model" is not a safe direction for a
+		// duplicate-alias query.
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"duplicate FROM alias: leg %s requires the gated existential flatten; narrowed to the name model (%s)",
+			leg, gateDecision.Reason))
+		return nil
+	}
 
 	leftQ := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier(leftAlias), leftRef,
@@ -4225,20 +4303,51 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 
-	// Add EXISTS subqueries as existential quantifiers.
+	// Add EXISTS subqueries as existential quantifiers. The leg-correlation
+	// scan feeds ONLY the minted-binding decline below — skipped entirely for
+	// the non-duplicate common case.
 	sourceAliases := []string{leftAlias, rightAlias}
+	mintedLeg := mintedBindingLeg(left, right)
+	anyExistsRefsLegs := false
 	for _, esq := range f.ExistsSubqueries {
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
+		}
+		if mintedLeg != "" && !anyExistsRefsLegs {
+			for corr := range subRef.GetCorrelatedTo() {
+				name := corr.Name()
+				if strings.EqualFold(name, leftAlias) || strings.EqualFold(name, rightAlias) {
+					anyExistsRefsLegs = true
+					break
+				}
+			}
 		}
 		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
 		quantifiers = append(quantifiers, existQ)
 		innerCorrName, joinPred := existsInnerCorrelation(esq)
 		if joinPred != nil {
 			allPreds = append(allPreds, joinPred)
+			anyExistsRefsLegs = true
 		}
 		sourceAliases = append(sourceAliases, innerCorrName)
+	}
+	if gatedFlatten && !anyExistsRefsLegs {
+		if leg := mintedLeg; leg != "" {
+			// A LEG-INDEPENDENT existential over a minted-binding join: the
+			// executor's identity-FlatMap positional pass-through is
+			// probe-gated on baked outer references INSIDE the exists inner
+			// (probeOuterBakedType) — a leg-independent inner leaves the
+			// probe negative, the outer flows as the name Datum, and a lazy
+			// minted-binding upper (the projection's QOV(Q$DUPn) read) would
+			// serve silent NULLs. Decline LOUDLY until the pass-through gate
+			// widens to key on the outer's own ordinal seed (the executor's
+			// booked follow-on); correlated existentials keep answering (the
+			// probe finds their baked refs).
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"duplicate FROM alias: leg %s with a leg-independent EXISTS cannot yet flow the positional row (probe-gated pass-through)", leg))
+			return nil
+		}
 	}
 
 	// The RV uses DECLARATION order (design ruling I2: Java assembles the
@@ -4262,8 +4371,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	if gatedFlatten {
 		var legTypes map[string]bakeLegType
 		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{
-			{op: j.Left, alias: sourceAlias(j.Left)},
-			{op: j.Right, alias: sourceAlias(j.Right)},
+			clusterLegOf(j.Left, false),
+			clusterLegOf(j.Right, false),
 		})
 		allPreds = bakeGatedJoinPredicates(allPreds, legTypes)
 	} else {
@@ -4470,6 +4579,85 @@ func sourceAlias(op logical.LogicalOperator) string {
 			// the user specified (e.g. "sq1"), not the underlying
 			// table name buried inside the CTE body.
 			return strings.ToUpper(o.Name)
+		default:
+			ch := cur.Children()
+			if len(ch) == 1 {
+				cur = ch[0]
+				continue
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// sourceBinding is the leg's BINDING correlation name: sourceAlias unless the
+// parser minted a duplicate-alias binding id (RFC-173 QP-REF-BIND item 1 —
+// LogicalScan/LogicalCTE/LogicalUnnest.Binding, carried from the single mint
+// authority assignFromLegBindingIDs). Every correlation / bake-map / window
+// key reads THIS; display surfaces keep sourceAlias. Minted ids are
+// FOLD-STABLE upper form (`Q$DUPN`) so the existing UPPER-fold lookups treat
+// them exactly like aliases; alias-bound legs return sourceAlias's UPPER
+// form, so non-duplicate queries are byte-identical to the pre-item-1 keying.
+// mintedBindingLeg returns the first FROM-leg source in the given subtrees
+// carrying a parser-minted duplicate-alias binding (Scan/CTE/Unnest .Binding
+// — set ONLY when a later duplicate leg was renamed; "" everywhere else), or
+// "" when none. The name-model join machinery keys its anchored RC and merged
+// rows by DISPLAY alias, which cannot represent a minted binding (two
+// same-named legs collide last-wins; the resolver's binding-qualified
+// references read NULL off the display-keyed row). Callers use this to
+// decline LOUDLY at every name-model construction a minted-binding query can
+// narrow into — never silent wrong rows (RFC-173 QP-REF-BIND item 1). It does
+// NOT descend into existential/scalar subquery plans: those translate their
+// own FROM and guard themselves. It DOES descend through CTE/derived bodies
+// (Children()): deliberate — a dup buried in a body that reaches a name-model
+// parent is the same silent-NULL hazard, and the failure direction of the
+// over-approximation is a loud decline, never wrong rows (unlike the
+// FindOuterScanTable convention, which must NOT cross body scopes because it
+// NAMES a table for the caller's own scope).
+func mintedBindingLeg(ops ...logical.LogicalOperator) string {
+	for _, op := range ops {
+		if op == nil {
+			continue
+		}
+		switch o := op.(type) {
+		case *logical.LogicalScan:
+			if o.Binding != "" {
+				return o.Binding
+			}
+		case *logical.LogicalUnnest:
+			if o.Binding != "" {
+				return o.Binding
+			}
+		case *logical.LogicalCTE:
+			if o.Binding != "" {
+				return o.Binding
+			}
+		}
+		if b := mintedBindingLeg(op.Children()...); b != "" {
+			return b
+		}
+	}
+	return ""
+}
+
+func sourceBinding(op logical.LogicalOperator) string {
+	for cur := op; cur != nil; {
+		switch o := cur.(type) {
+		case *logical.LogicalScan:
+			if o.Binding != "" {
+				return o.Binding
+			}
+			return sourceAlias(cur)
+		case *logical.LogicalUnnest:
+			return sourceAlias(cur)
+		case *logical.LogicalJoin:
+			return sourceBinding(o.Right)
+		case *logical.LogicalCTE:
+			if o.Binding != "" {
+				return o.Binding
+			}
+			return sourceAlias(cur)
 		default:
 			ch := cur.Children()
 			if len(ch) == 1 {

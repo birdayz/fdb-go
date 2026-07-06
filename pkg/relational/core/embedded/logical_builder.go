@@ -238,8 +238,10 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			// catalog-aware path. Wrap it in a CTE so the join alias
 			// is preserved (same logic as the primary source above).
 			if j.alias != "" {
-				right = logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
+				cte := logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
 					logical.NewScan(j.alias, ""), false)
+				cte.Binding = j.bindingID
+				right = cte
 			} else {
 				right = j.catalogAwareInnerPlan
 			}
@@ -258,8 +260,10 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			}
 			// Wrap as CTE so the alias surfaces in sourceAlias.
 			if j.alias != "" {
-				right = logical.NewCTE(j.alias, innerRight,
+				cte := logical.NewCTE(j.alias, innerRight,
 					logical.NewScan(j.alias, ""), false)
+				cte.Binding = j.bindingID
+				right = cte
 			} else {
 				right = innerRight
 			}
@@ -272,7 +276,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			// demoteSchemaQualifiedUnnest once metadata is in scope. RFC-142.
 			right = u
 		} else {
-			right = logical.NewScan(j.tableName, j.alias)
+			sc := logical.NewScan(j.tableName, j.alias)
+			sc.Binding = j.bindingID
+			right = sc
 		}
 		var kind logical.JoinKind
 		switch j.joinType {

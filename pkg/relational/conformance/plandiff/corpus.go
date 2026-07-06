@@ -17995,30 +17995,28 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT a.id FROM T_DUP_A AS a, T_DUP_B AS a",
 		},
 		{
-			// The PREDICATED disjoint-dup form: Java still answers; Go's
-			// planner cannot bind predicates over the indistinguishable
-			// correlations without the QP-REF-BIND per-reference binding — the clean
-			// 0AF00 decline (never wrong rows), marked.
+			// The PREDICATED disjoint-dup form: per-attribute binding (a.id is
+			// unambiguous — only T_DUP_C carries id) resolves to that leg and the
+			// predicate pushes into it. PARITY since RFC-173 QP-REF-BIND item 1 c2
+			// (the front-end flip): Java answers [[2]], Go now answers [[2]]
+			// (live-verified). Pre-item-1 Go declined 0AF00 (indistinguishable
+			// correlations); the binding-id mint made the legs distinguishable.
 			Name:           "dup_from_alias_disjoint_where",
 			SchemaTemplate: "CREATE TABLE T_DUP_C (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_D (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_C VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_D VALUES (7)"},
 			Query:          "SELECT a.id FROM T_DUP_C AS a, T_DUP_D AS a WHERE a.id = 2",
-			Divergence: &Divergence{
-				Reason:          "RFC-173 W4-left commit 4: Java answers the predicated disjoint-column dup-alias form (per-attribute ambiguity, unique quantifier ids); Go cannot bind predicates over indistinguishable correlations without the QP-REF-BIND per-reference binding — clean 0AF00 decline, never wrong rows. See DIVERGENCES.md.",
-				Direction:       DivergenceJavaSucceedsGoRejects,
-				GoErrorContains: "could not plan",
-			},
 		},
 		{
+			// SELECT * over duplicate aliases: Java answers with DUPLICATE columns
+			// in FROM order (unique quantifier ids; no dedup). PARITY since RFC-173
+			// QP-REF-BIND item 1 c2/c3: Go now answers cols [ID V QID ID V], full
+			// cross product (the ordinal seed's positional row serves the duplicate
+			// labels — deriveColumnsFromJoin's RV-divergence arm). Pre-item-1 Go
+			// rejected 42702 at the FROM walk.
 			Name:           "dup_from_alias_select_star",
 			SchemaTemplate: "CREATE TABLE T_DUP_S (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_T (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_S VALUES (1, 10)", "INSERT INTO T_DUP_T VALUES (7)"},
 			Query:          "SELECT * FROM T_DUP_S, T_DUP_T, T_DUP_S",
-			Divergence: &Divergence{
-				Reason:          "RFC-173 W4-left commit 4: Go rejects duplicate FROM aliases at the FROM walk (42702); Java answers SELECT * over the duplicate with duplicate columns (unique quantifier ids). The per-reference check is the QP-REF-BIND (per-reference binding) charter; see DIVERGENCES.md.",
-				Direction:       DivergenceJavaSucceedsGoRejects,
-				GoErrorContains: "Ambiguous reference",
-			},
 		},
 		// RFC-173 W4-left — the column-aware duplicate-alias dimensions the
 		// first cut shipped without (review findings). Three-source
@@ -18108,18 +18106,109 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// The unreferenced CTE star corner — same class as
-			// dup_from_alias_select_star: Java answers with duplicate
-			// columns, Go over-rejects until QP-REF-BIND. The message names
-			// the CTE's REAL derived column (the opaque treatment printed a
-			// garbage "?").
+			// dup_from_alias_select_star: Java answers with duplicate columns.
+			// PARITY since RFC-173 QP-REF-BIND item 1 c2/c3: Go now answers cols
+			// [ID ID], full cross product (live-verified). Pre-item-1 Go rejected
+			// 42702 at the FROM walk (naming the CTE's derived column).
 			Name:           "dup_from_alias_cte_star",
 			SchemaTemplate: "CREATE TABLE T_DUP_X (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_X VALUES (1)"},
 			Query:          "WITH w AS (SELECT id FROM T_DUP_X) SELECT * FROM w, w",
+		},
+		// RFC-173 item-1 c4 — the EXISTS-over-un-collapsed-cross-join class
+		// (an inner predicate referencing ONLY outer legs stays buried in the
+		// existential subplan; the buried-reference ordinal rebase makes it
+		// read the merged outer row) and the dup-alias sort/group key
+		// binding. All live-verified vs 4.12.11.0.
+		{
+			// Correlated EXISTS over an un-collapsed cross join, correlation on
+			// the FIRST leg, DISTINCT aliases — the item-2 regression shape
+			// (worked pre-item-2, then died on the ordinal frontier). PARITY:
+			// both answer [[1] [1] [1]] (id=1 row × three q rows).
+			Name: "exists_crossjoin_buried_first_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_A (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_B (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_A VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_B VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.id FROM T_XCJ_A AS a, T_XCJ_B AS b WHERE EXISTS (SELECT 1 FROM T_XCJ_B WHERE a.id = 1)",
+		},
+		{
+			// The SECOND-leg twin (correlation binds b.qid). PARITY: [[7] [7]].
+			Name: "exists_crossjoin_buried_second_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_C (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_D (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_C VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_D VALUES (5), (7), (9)",
+			},
+			Query: "SELECT b.qid FROM T_XCJ_C AS a, T_XCJ_D AS b WHERE EXISTS (SELECT 1 FROM T_XCJ_C WHERE b.qid = 7)",
+		},
+		{
+			// The DUPLICATE-alias variants: per-attribute resolution binds the
+			// unique leg, and the duplicate-preserving outer scope carries both
+			// legs into the subquery planner. PARITY: [[1] [1] [1]].
+			Name: "dup_from_alias_exists_first_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_E (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_F (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_E VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_F VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.id FROM T_XCJ_E AS a, T_XCJ_F AS a WHERE EXISTS (SELECT 1 FROM T_XCJ_F WHERE a.id = 1)",
+		},
+		{
+			// Dup-alias, second leg (the gated flatten's binding-correlation
+			// quantifier naming on top of the buried rebase). PARITY: [[7] [7]].
+			Name: "dup_from_alias_exists_second_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_G (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_H (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_G VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_H VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.qid FROM T_XCJ_G AS a, T_XCJ_H AS a WHERE EXISTS (SELECT 1 FROM T_XCJ_G WHERE a.qid = 7)",
+		},
+		{
+			// ORDER BY over a duplicate-alias leg's unique column (second leg):
+			// the sort key resolves per-attribute to the q leg and rebinds to
+			// the minted binding correlation (a key left as the display alias
+			// silently missed the binding-keyed join row and served scan order). PARITY: both order
+			// [[9] [9] [7] [7] [5] [5]].
+			Name: "dup_from_alias_order_by_second_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_I (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_J (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_I VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_J VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.qid FROM T_XCJ_I AS a, T_XCJ_J AS a ORDER BY a.qid DESC",
+		},
+		{
+			// The FIRST-leg twin: Java cannot plan it (generic planner decline,
+			// live-verified — while the second-leg form above answers), Go
+			// orders correctly. Go exceeding Java on the read side is the
+			// permitted direction; the rows are pinned.
+			Name: "dup_from_alias_order_by_first_leg",
+			SchemaTemplate: "CREATE TABLE T_XCJ_K (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_XCJ_L (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls: []string{
+				"INSERT INTO T_XCJ_K VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_XCJ_L VALUES (5), (7), (9)",
+			},
+			Query: "SELECT a.v FROM T_XCJ_K AS a, T_XCJ_L AS a ORDER BY a.v DESC",
 			Divergence: &Divergence{
-				Reason:          "RFC-173 W4-left: Go rejects duplicate FROM aliases at the FROM walk (42702, naming the CTE's derived column); Java answers SELECT * over the duplicate with duplicate columns (unique quantifier ids). QP-REF-BIND charter; see DIVERGENCES.md.",
-				Direction:       DivergenceJavaSucceedsGoRejects,
-				GoErrorContains: "Ambiguous reference W.ID",
+				Reason:    "Java cannot plan ORDER BY over the FIRST duplicate-alias leg's unique column ('Cascades planner could not plan query', live-verified 4.12.11.0 — the second-leg form answers there); Go binds the sort key per-attribute and orders correctly. Go exceeds Java on the read side.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(20)},
+					{float64(20)},
+					{float64(20)},
+					{float64(10)},
+					{float64(10)},
+					{float64(10)},
+				},
 			},
 		},
 	}

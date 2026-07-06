@@ -52,10 +52,6 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if !found {
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in row", name)
 		}
-		if m, isAmb := v.(ambiguousColumnMarker); isAmb {
-			return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-				"column reference %q is ambiguous", m.Col)
-		}
 		return v, nil
 	case *antlrgen.BinaryComparisonPredicateContext:
 		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())

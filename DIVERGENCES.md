@@ -397,22 +397,30 @@ justification, and the blast radius of always-unique ids spans every alias-keyed
 REVISIT AT S4+: once the name model is gone, converge on Java's structure (unique ids + name
 qualifiers on projections).
 
-W4-left commit-4 REVISION (flagged for the impl-review ruling): the ruled fresh-id mechanism
-assumed the dup-alias cluster should GATE with last-binding-wins observables — but Java's
-actual observable is an AMBIGUOUS-reference ERROR (42702) for every reference to the
-duplicated alias (SemanticAnalyzer attributes.size()==1 asserts; no FROM-level rejection
-exists in Java). Go's lazy name-model resolution has no translation-time reference binding to
-hang the per-reference check on, so commit 4 rejects AT THE FROM WALK with the same code —
-matching Java on the practical class. DIVERGENT CORNERS (both marked in the corpus,
-conformance-harness-verified against the live Java server): (a) `SELECT * FROM p, q, p`
-answers in Java (duplicate columns, unique ids) but rejects 42702 in Go — the FROM-level
-approximation cannot see references; (b) DISJOINT-COLUMN duplicate aliases (`ta AS a, tb AS a`
-with no shared column) pass the narrowed FROM check (Java answers per-attribute); the
-PREDICATE-FREE form answers in Go too (per-leg qualified keys — conformance PARITY), while the
-PREDICATED form cannot bind over indistinguishable correlations — the clean 0AF00 decline,
-never wrong rows.
-The rejection is COLUMN-AWARE (shared-column duplicates only, message = Java's exact
-"Ambiguous reference ALIAS.COL"); pre-rejection Go was strictly worse on BOTH axes (referenced
-shared-column duplicates silently bound LAST-LEG-WINS — wrong rows; SELECT * died with an
-internal planner error). The exact per-reference check + fresh-id gating is the QP-REF-BIND
-charter (TODO.md QP-REF-BIND).
+W4-left commit-4 → QP-REF-BIND item 1 (RESOLVED). The W4-left commit-4 cut approximated Java's
+per-attribute 42702 at the FROM WALK (a column-aware rejection of shared-column duplicates),
+leaving two DIVERGENT CORNERS the FROM-level view could not reach: (a) `SELECT * FROM p, q, p`
+answered in Java (duplicate columns, unique ids) but rejected 42702 in Go; (b) the PREDICATED
+disjoint-column dup form (`ta AS a, tb AS a WHERE a.id = …`) answered in Java per-attribute but
+declined 0AF00 in Go (predicates could not bind over indistinguishable correlations).
+
+**QP-REF-BIND item 1 (c1 mint plumbing + c2 front-end flip + c3 star layout) CLOSES both corners.**
+Each FROM leg now carries a deterministic binding id (`Q$DUPN` minted once at leg registration,
+first occurrence keeps the alias), the semantic scope accepts duplicate aliases and resolves
+references PER-ATTRIBUTE (a reference matching >1 same-aliased source carrying the column →
+Java's exact `Ambiguous reference X` at resolution; a uniquely-matching reference binds to that
+leg), and the wedge gate keys on the binding so the ordinal seed distinguishes the legs
+end-to-end. `SELECT *` over duplicates answers with Java's positional duplicate-column layout
+(`[ID V QID ID V]`, served by the ordinal seed's positional row —
+`deriveColumnsFromJoin`'s RV-divergence arm). Corpus PARITY: `dup_from_alias_disjoint_where`,
+`dup_from_alias_select_star`, `dup_from_alias_cte_star` all flipped (annotations deleted).
+Remaining marked corners are message-drift only (undefined table under a dup alias stays 42F01;
+the generated-aggregate quoted reference; the `…, a AS b` 42712-vs-42F01 lazy quirk) and the
+cross-scope-shadowed correlated fallthrough (`SELECT p.v FROM p WHERE EXISTS(… q AS p WHERE
+p.v=…)`) — resolution falls through (Java-aligned M1), but EMITTING a QOV bound to the inner
+leg's quantifier awaits cross-scope binding ids; it declines LOUDLY (never wrong rows) via one
+of two mechanisms depending on the inner scope's arity: a MULTI-source inner scope trips the
+plan-time `CorrelatedShadowError` (42703) in `expr.ResolveIdentifier`, while a SINGLE-source
+inner scope short-circuits the resolver's `isLocal` guard and declines one step later at the
+executor's ordinal-resolution guard (field unresolvable in the inner row). Both are pinned by
+`TestFDB_RFC173W4Left_DuplicateFromAliases`.

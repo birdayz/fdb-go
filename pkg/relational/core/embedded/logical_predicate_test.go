@@ -811,15 +811,13 @@ func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
 }
 
 // Self-join without explicit alias — `Order JOIN Order ON ...` produces two
-// sources both named ORDER. AddSource trips DuplicateAlias → scope building
-// fails. This used to "fall back to text", which silently DROPPED the ON
-// predicate (the translator never reads OnText for predicates) — the join
-// degraded to a cross product, masked in the old pin only because its ON was
-// a tautology. The RFC-173 W3b-2 fail-closed fix (upgradeJoinOnPredicates'
-// !scopeOK path) now rejects the shape LOUDLY whenever any join carries an
-// ON expression: better no rows than wrong rows. (Java parity: duplicate
-// unaliased sources are ambiguous; unique quantifier aliases are the S3/S4
-// end state — RFC-173.)
+// sources both named ORDER. RFC-173 QP-REF-BIND item 1: the duplicate
+// sources now REGISTER (per-leg binding ids) and the ON reference resolves
+// per-ATTRIBUTE — both ORDER legs carry order_id, so the loud error is
+// Java's exact 42702 (`Ambiguous reference ORDER.ORDER_ID`, the live-probed
+// class), replacing the pre-item-1 generic ON-clause drop-hazard decline.
+// Still fail-closed — better a precise error than wrong rows; the silent
+// ON-drop cross-product class this pin was born for stays impossible.
 func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FailsClosed(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
@@ -827,10 +825,10 @@ func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FailsClosed(t *testing
 		"SELECT * FROM Order JOIN Order ON Order.order_id = Order.order_id WHERE price > 5")
 	op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
 	if err == nil {
-		t.Fatalf("expected a loud fail-closed error for the unaliased self-join ON (silent drop = cross product), got op:\n%v", op)
+		t.Fatalf("expected a loud error for the unaliased self-join ON (silent drop = cross product), got op:\n%v", op)
 	}
-	if !strings.Contains(err.Error(), "ON clause") {
-		t.Errorf("error should name the ON-clause drop hazard, got: %v", err)
+	if !strings.Contains(err.Error(), "Ambiguous reference ORDER.ORDER_ID") {
+		t.Errorf("error should be Java's per-attribute 42702, got: %v", err)
 	}
 }
 

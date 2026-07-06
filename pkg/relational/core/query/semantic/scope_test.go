@@ -160,15 +160,35 @@ func TestScope_AddSource_DuplicateAlias(t *testing.T) {
 	c := buildTestCatalog()
 	users, _ := c.LookupTable(ParseQualifiedName("users", false))
 
+	// RFC-173 QP-REF-BIND item 1: duplicate PLAIN aliases are ACCEPTED —
+	// Java registers quantifiers freely (unique ids) and errors
+	// per-ATTRIBUTE at reference resolution; the two sources are
+	// distinguished by CorrelationName (the parser-minted binding id).
 	s := NewScope(nil)
-	_ = s.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u")})
-	err := s.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u")})
-	if err == nil {
-		t.Fatal("expected error for duplicate alias")
+	if err := s.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u"), CorrelationName: "U"}); err != nil {
+		t.Fatalf("first source: %v", err)
 	}
+	if err := s.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u"), CorrelationName: "Q$DUP1"}); err != nil {
+		t.Fatalf("duplicate PLAIN alias must be accepted (per-attribute resolution owns the ambiguity), got %v", err)
+	}
+	if got := len(s.Sources()); got != 2 {
+		t.Fatalf("sources = %d, want both duplicate legs registered", got)
+	}
+
+	// A duplicate involving a SHADOWING source (lateral-unnest AS/AT
+	// binding) still errors in BOTH directions — Java genuinely forbids a
+	// duplicate unnest alias at FROM (RFC-142), and the join-ON builder's
+	// drop-risk taxonomy keys on this signal.
+	err := s.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u"), Shadowing: true})
 	var dae *DuplicateAliasError
 	if !errors.As(err, &dae) {
-		t.Fatalf("expected DuplicateAliasError, got %T", err)
+		t.Fatalf("shadowing duplicate must keep erroring (RFC-142), got %T: %v", err, err)
+	}
+	s2 := NewScope(nil)
+	_ = s2.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("x"), Shadowing: true})
+	err = s2.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("x")})
+	if !errors.As(err, &dae) {
+		t.Fatalf("plain-over-shadowing duplicate must keep erroring (RFC-142), got %T: %v", err, err)
 	}
 }
 

@@ -2444,6 +2444,27 @@ wedge LIVE on every gated 2-way join. **No regression; branch faster on all heav
 
 **Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
 
+**2026-07-05 (RFC-173 item-1 commit 1 + fix round, PR #481 — dup-alias binding-id
+mint + binding-keyed seed, dark):** baseline master `8c179a025` 161.68s total vs
+branch `7f0f6848e` 165.14s (noise; branch equal-or-faster per metric: full scans
+4.03–4.35s vs 4.28–4.49s, sparse filter 3.58s vs 3.77s, needles 5.6/6.3ms vs
+5.4/7.7ms, IN-list 14.6ms vs 14.9ms). All 23 subtests PASS both sides. No
+regression.
+
+**2026-07-05 (RFC-173 item-1 c2+c3 — the front-end flip + SELECT-* star layout):**
+branch (item-1 lift) 171.41s total, all 23 subtests PASS. Every metric within the
+c1-baseline band (full_scan_count 3.75s, order_by_pk_full 4.60s, scan_all_narrow
+4.13s / _wide 4.44s, sparse_filter 3.63s, group_by ~5ms, join_10 0.05s). The change
+only adds a column-metadata derivation arm for duplicate-alias `SELECT *` (no
+plan-shape / cost change for non-dup queries). No regression.
+
+**2026-07-06 (RFC-173 item-1 c4 — the review-round fixes: binding-keyed sort/group
+keys, buried-EXISTS rebase, fold binding correlations):** branch 161.84s total, all
+23 subtests PASS — equal to the master `8c179a025` baseline (161.68s) and faster
+than the c2 run (171.41s). Key metrics inside every band: full_scan_count 3.72s,
+order_by_pk_full 4.10s, scan_all_narrow 4.06s / _wide 4.34s, sparse_filter 3.61s,
+needles/in_list ~10ms. No regression.
+
 **2026-07-05 (RFC-173 item-2 commit 5b, PR #480 — cluster-gate rider transparency):**
 baseline master `4f836f941` 156.14s total vs branch `bd802e83d` 156.32s (+0.1%, noise);
 every subtest within measurement resolution (pk lookups 10–60ms both, index equality 20ms,
@@ -3292,6 +3313,38 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    per-attribute 42702 at reference resolution (Go approximates at the FROM walk today; two
    marked divergence corners in the corpus: SELECT-*-over-duplicates, the predicated
    disjoint-column form).
+   **DESIGN SUBSTRATE BANKED (2026-07-05, RFC § "QP-REF-BIND item 1 — design substrate"):
+   19-shape live-Java probe verified every premise (SELECT * answers with duplicate labels;
+   per-attribute WHERE binding; "Ambiguous reference X" byte-text for dup AND distinct
+   aliases; qualified-star/table-row findFirst leftmost; the `..., a AS b` 42712 lazy quirk).
+   Mechanism M1–M6: scope accepts duplicates + per-attribute qualified resolution; F3-ruled
+   per-leg binding ids (later duplicates mint fresh); gate lift + binding-keyed seed; star
+   layout fork F-A and message-unification fork F-B for the Graefe design ruling; ordering
+   constraint — front-end acceptance and back-end binding never live separately
+   (mis-pushdown wrong-rows hazard).
+   **ITEM-1 COMPLETE (2026-07-05, PR #481): c1 (dark mint + binding-keyed seed, 34872539b +
+   fix round) + c2+c3 (the lift — per-attribute resolution + FROM-walk 42702 retirement +
+   SELECT-* star layout, 5860e3454) + the review-response (4e78ef2c2), Graefe ACK + Torvalds
+   ACK on HEAD. Java's per-attribute model is LIVE: duplicate FROM aliases register per-leg,
+   references resolve per-attribute (42702 at resolution, byte-equal to Java), SELECT * answers
+   with Java's positional duplicate-column layout. All three flip corpus entries at parity
+   (annotations deleted); dual-window + live-Java conformance + 1M stress green. Full record in
+   RFC § "QP-REF-BIND item 1 — c2+c3 record". codex + @claude remain the PR-side gauntlet.**
+   **c4 — the review round (2026-07-05): the PR gauntlet caught two REAL post-"COMPLETE"
+   bugs (independently confirmed by both PR-side reviewers), both reproduced red-first and
+   fixed; pinning their fold twin exposed a third. P1: dup-alias ORDER BY/GROUP BY keys kept
+   the display alias while the gated join row is binding-keyed (silent wrong rows / NULL
+   group keys) — sort+group keys now route through ResolveQualifiedProjection, group-key
+   datum keyed by bare Field. P2: correlated EXISTS over an un-collapsed cross join — bisect
+   pinned the buried-reference class as an ITEM-2 regression (worked pre-item-2) —
+   duplicate-preserving outer scopes + gated flatten binding correlations +
+   rebasePlanOuterRefsOrdinal (buried refs in the existential subplan → merged positional
+   row, expression-gated, fail-closed verified). P3: the projected-EXISTS fold served NULL
+   for a later dup leg's columns — buildExistentialJoinSelect + classifySortSource now speak
+   bindings end-to-end. 7-shape FDB pin + 6 corpus entries live-verified + 2 dual-window
+   declared-difference carve-outs (binding-qualified reads exist only positionally). Full
+   record in RFC § "QP-REF-BIND item 1 — c4 record". Follow-on booked below: aggregate
+   output metadata drift (labels/types) vs Java.**
 2. **Existential-flatten ordinalization** — translateJoinWithExists keeps the ANCHORED seed
    until the 2+1 select's data-access/correlated-FlatMap implementation paths bind legs
    POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).
@@ -3350,3 +3403,36 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       under-existential arrives via item 2's binders; the BARE-TWIN duplicate-column decline
       rides until S4 — folded into the atomic commit per the circularity ruling, with the
       differential covering it name-model-side until then).
+- [ ] **Rider: the minted-binding loud-decline class flips to rows** (item-1 c5 —
+      the review-round guard): the declared-loud shapes over duplicate FROM aliases,
+      each pinned in rfc173_item1_keybinding_exists_fdb_test.go (P4a–P4f) with the
+      never-wrong-rows drain assert. Exit gates per shape: (a) leg-independent EXISTS
+      over a minted-binding gated flatten (P4e) — flips when the executor's
+      identity-FlatMap positional pass-through gate widens to key on the outer's own
+      ordinal seed (probeOuterBakedType is the probe; flat_map_cursor.go documents the
+      widening as the follow-on); (b) narrowed-off-the-gate flattens/joins
+      (existential-alias collision P4a, arity ≠ 2 P4b, enclosure) — flip per-path as
+      each learns the ordinal seed (item 3 / the N-way flatten); (c) correlated SCALAR
+      subqueries over a dup outer (P4c/P4d) — flips when the scalar lowering speaks
+      bindings (buildCorrelatedScalar's guard names the gap; label note: surfaces
+      0A000 in SELECT position, wrapped 42703 in WHERE position); (d) the UNION face
+      (P4f) — a dup-alias branch's per-attribute reference stays display-keyed and
+      dies loud at the executor's ordinal guard; UPGRADE to a typed
+      translation-time decline, then flip with the branch's ordinal seed. ALSO booked
+      here: (arity-scope boundary) the dup-alias ARITY-3 correlated buried-EXISTS
+      stays a LOUD ordinal decline (the c4 buried-reference rebase is arity-2 —
+      implementJoinWithExistential's 2+1 shape), the N-way flatten slice widens it;
+      (unnest owner) dup-alias unnest OWNER resolution is first-match-by-alias, not
+      per-attribute (`q AS a, u AS a, a.arr AS e` → loud 42703 naming the wrong
+      source) — classify vs live Java when the unnest-residual slice lands.
+- [ ] **Rider: aggregate output METADATA drift vs Java** (item-1 c4 probe finding —
+      rows are parity, metadata is not; live-verified 4.12.11.0): (a) a DISTINCT-alias
+      qualified group key labels the output column `A.QID` where Java labels the bare
+      `QID` (the dup-alias path already labels bare via the c4 fix — unify); (b) a
+      group key over a join reports type UNKNOWN where Java reports the column type
+      (BIGINT) — `buildAggColumns`' protoFieldTypeName misses join-shaped descriptors;
+      (c) unaliased `COUNT(*)` labels `COUNT(*)` where Java generates `_1`. Blocks
+      GROUP-BY-over-join corpus entries (normaliseRows compares name|type byte-equal —
+      the c4 group-by shape is FDB-test-pinned instead). Read Java's output-name
+      generation first (SemanticAnalyzer/Expression.toResultColumn) — (c) may be a
+      both-quirks booking, not a Go fix.

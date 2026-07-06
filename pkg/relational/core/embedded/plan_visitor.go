@@ -530,10 +530,32 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
 				if len(sq.joins) > 0 {
+					// RFC-173 QP-REF-BIND item 1: qualified projections over
+					// joins run the per-attribute check (Java's 42702 — the
+					// pre-item-1 bypass never resolved them), and a reference
+					// binding to a LATER duplicate-alias leg is emitted
+					// QOV-correlated to that leg's binding so the gated
+					// seed's bake addresses the right quantifier. Every other
+					// reference keeps the alias-keyed merged-row read.
+					ref := parseColRef(col)
+					qv, qerr := resolver.ResolveQualifiedProjection(
+						semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
+					if qerr != nil {
+						var ambigErr *semantic.AmbiguousColumnError
+						if errors.As(qerr, &ambigErr) {
+							return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+								"Ambiguous reference %s", ambigErr.Reference())
+						}
+						return nil, qerr
+					}
 					if i < len(proj.ProjectedValues) {
-						proj.ProjectedValues[i] = &values.FieldValue{
-							Field: strings.ToUpper(col),
-							Typ:   values.UnknownType,
+						if qv != nil {
+							proj.ProjectedValues[i] = qv
+						} else {
+							proj.ProjectedValues[i] = &values.FieldValue{
+								Field: strings.ToUpper(col),
+								Typ:   values.UnknownType,
+							}
 						}
 					}
 				} else {
@@ -595,8 +617,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
+						// Java's exact SemanticAnalyzer text — the reference as
+						// written, byte-equal in the conformance harness
+						// (RFC-173 QP-REF-BIND item 1, M5; live-verified for
+						// duplicate AND distinct aliases).
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-							"column reference %q is ambiguous", ob.colName)
+							"Ambiguous reference %s", ambigErr.Reference())
 					}
 					var srcNotFound *semantic.SourceNotFoundError
 					if errors.As(walkErr, &srcNotFound) {
@@ -798,8 +824,9 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		if walkErr != nil {
 			var ambigErr *semantic.AmbiguousColumnError
 			if errors.As(walkErr, &ambigErr) {
+				// Java's exact text, from the reference as written (M5).
 				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-					"column reference is ambiguous")
+					"Ambiguous reference %s", ambigErr.Reference())
 			}
 			var inListNull *expr.InListNullError
 			if errors.As(walkErr, &inListNull) {
@@ -976,8 +1003,10 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		if j.catalogAwareInnerPlan != nil {
 			// Use the pre-built inner plan from the visitor.
 			if j.alias != "" {
-				right = logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
+				cte := logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
 					logical.NewScan(j.alias, ""), false)
+				cte.Binding = j.bindingID
+				right = cte
 			} else {
 				right = j.catalogAwareInnerPlan
 			}
@@ -992,8 +1021,10 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 				return nil, nil
 			}
 			if j.alias != "" {
-				right = logical.NewCTE(j.alias, innerRight,
+				cte := logical.NewCTE(j.alias, innerRight,
 					logical.NewScan(j.alias, ""), false)
+				cte.Binding = j.bindingID
+				right = cte
 			} else {
 				right = innerRight
 			}
@@ -1005,7 +1036,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 			// preserved the uid segments + AT alias for exactly this. RFC-142.
 			right = u
 		} else {
-			right = logical.NewScan(j.tableName, j.alias)
+			sc := logical.NewScan(j.tableName, j.alias)
+			sc.Binding = j.bindingID
+			right = sc
 		}
 		var kind logical.JoinKind
 		switch j.joinType {
@@ -1340,6 +1373,16 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 // function therefore only ever qualifies a PRE-aggregate (non-grouped) bare
 // ORDER BY over an unnest — the shadowing case where the sort sits
 // BELOW the merge and a later FROM item could clobber the bare key. RFC-142.
+// A QUALIFIED sort key has the dup-alias twin of the same silent-wrong-order
+// hazard (RFC-173 QP-REF-BIND item 1): the sort sits BELOW the projection over
+// the JOIN row, whose namespace carries the BINDING correlation (`Q$DUP1.QID`)
+// for a later duplicate-alias leg — a key left as the SQL alias (`A.QID`)
+// silently misses and the rows come back in scan order (the projection reads
+// the binding, the sort read the display alias). Route qualified keys through
+// ResolveQualifiedProjection — the SAME helper the projection path uses, so
+// the two cannot diverge: it returns a value ONLY when the reference binds a
+// later duplicate leg (binding != alias); every other qualified key (distinct
+// aliases, first-occurrence legs) is untouched.
 func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) {
 	sort := findSort(op)
 	if sort == nil {
@@ -1352,14 +1395,22 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 			continue
 		}
 		ref := parseColRef(sort.Keys[i].Expr)
-		if ref.isQualified() {
-			continue
-		}
 		bare := ref.bare()
 		if bare == "" {
 			continue
 		}
 		id := semantic.NewUnquoted(bare)
+		if ref.isQualified() {
+			// An AmbiguousColumnError here is DISCARDED on purpose: the
+			// upstream sort-key reference validation already terminated an
+			// ambiguous key with 42702 before this qualification pass runs
+			// (the ladder's >=2 arm is owned there, not here).
+			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(ref.table), id)
+			if err == nil && qv != nil {
+				sort.Keys[i].Value = qv
+			}
+			continue
+		}
 		qv, ok, err := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
 		if err != nil || !ok {
 			continue
