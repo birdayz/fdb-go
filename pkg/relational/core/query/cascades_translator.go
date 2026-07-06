@@ -904,50 +904,55 @@ func unnestOuterLegAliases(op logical.LogicalOperator, mergedCorr values.Correla
 // RFC-142.
 func (t *cascadesTranslator) unnestArrayElementType(outerTable string, fieldSegments []string) (elementType values.Type, fieldName string, isArray, fieldPresent bool) {
 	rt := t.resolveRecordType(outerTable)
-	if rt == nil || rt.Descriptor == nil || len(fieldSegments) == 0 {
+	if rt == nil || rt.Descriptor == nil {
 		return values.UnknownType, "", false, false
 	}
-	fields := rt.Descriptor.Fields()
-	// Per-segment descent (unnest-residual class 2 — Java's
-	// SemanticAnalyzer.lookupNestedField STRUCT rule): every INTERMEDIATE
-	// segment must be a singular MESSAGE field (a repeated or non-message
-	// intermediate is not a descendable step; Java returns Optional.empty
-	// and the resolution falls through), and the FINAL segment must be
-	// repeated. A single-segment path takes zero descents — the prior
-	// behavior verbatim.
-	lookup := func(fs protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
-		if fd := fs.ByName(protoreflect.Name(strings.ToLower(name))); fd != nil {
-			return fd
+	return arrayFieldFromDescriptor(rt.Descriptor.Fields(), fieldSegments)
+}
+
+// protoFieldLookup resolves a field by SQL identifier (case-insensitive —
+// proto names are lower/snake, SQL upper).
+func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
+	if fd := fs.ByName(protoreflect.Name(strings.ToLower(name))); fd != nil {
+		return fd
+	}
+	for i := 0; i < fs.Len(); i++ {
+		if f := fs.Get(i); strings.EqualFold(string(f.Name()), name) {
+			return f
 		}
-		// Case-insensitive fallback: proto field names are typically lower /
-		// snake, but the SQL identifier may be upper-cased.
-		for i := 0; i < fs.Len(); i++ {
-			if f := fs.Get(i); strings.EqualFold(string(f.Name()), name) {
-				return f
-			}
-		}
-		return nil
+	}
+	return nil
+}
+
+// arrayFieldFromDescriptor classifies a lateral unnest's array field by
+// per-segment descent over a proto record's fields (Java's
+// SemanticAnalyzer.lookupNestedField STRUCT rule): every INTERMEDIATE segment
+// must be a singular MESSAGE field; the FINAL segment must be repeated. Shared
+// by the base-table path (unnestArrayElementType) and the chained path (which
+// descends the OWNER unnest's element message). Returns:
+//   - (elemType, name, true, true) for a repeated final — a valid array;
+//   - (Unknown, "", false, true) for a present-but-scalar final, or a
+//     non-record/repeated intermediate — Java's "repeated type" assert;
+//   - (Unknown, "", false, false) for an absent field.
+func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegments []string) (elementType values.Type, fieldName string, isArray, fieldPresent bool) {
+	if len(fieldSegments) == 0 {
+		return values.UnknownType, "", false, false
 	}
 	for _, seg := range fieldSegments[:len(fieldSegments)-1] {
-		fd := lookup(fields, seg)
+		fd := protoFieldLookup(fields, seg)
 		if fd == nil {
-			// No such field on the source → not an unnest; table path tries.
 			return values.UnknownType, "", false, false
 		}
 		if fd.IsList() || fd.Kind() != protoreflect.MessageKind {
-			// A non-record (or repeated) INTERMEDIATE step: not a
-			// descendable path — present but not unnestable.
 			return values.UnknownType, "", false, true
 		}
 		fields = fd.Message().Fields()
 	}
-	fd := lookup(fields, fieldSegments[len(fieldSegments)-1])
+	fd := protoFieldLookup(fields, fieldSegments[len(fieldSegments)-1])
 	if fd == nil {
-		// No such field on the source → not an unnest; let the table path try.
 		return values.UnknownType, "", false, false
 	}
 	if !fd.IsList() {
-		// Present but scalar → WRONG_OBJECT_TYPE (a non-array correlated source).
 		return values.UnknownType, "", false, true
 	}
 	return arrayFieldElementType(fd), strings.ToUpper(string(fd.Name())), true, true
@@ -1095,6 +1100,32 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// path handles it; an AT alias is then invalid.
 	outerTable := findOuterScanTable(j.Left, u.Segments[0])
 	if outerTable == "" {
+		// RFC-173 unnest-residual class 4 (chained unnest): segment 0 names a
+		// PRIOR lateral unnest's element, not a scan. Positively gated on
+		// findOwnerUnnest (design ruling 4 condition 2 — never merely
+		// outerTable==""), and only for INNER-comma chains
+		// (!unnestUnderExistential — an under-existential chain keeps item-2's
+		// binders). A resolvable chain routes to translateChainedUnnestJoin;
+		// anything else (schema-qualified, derived-hidden) falls through to the
+		// existing fallback.
+		//
+		// NOT gated on prevEnclosure: a chained unnest is always name-model
+		// residual, and a 3+-link chain translates its OUTER (which contains the
+		// PRIOR chained link) with the enclosure bit set — so an inner chained
+		// link would observe prevEnclosure=true. Gating on !prevEnclosure would
+		// collapse the chain there (the inner link declines and the outer's
+		// translateRef returns nil). The chain shape is decided by
+		// isChainedUnnest alone, exactly as Java nests each link the same way.
+		if !t.unnestUnderExistential && isChainedUnnest(j.Left, u) {
+			if sel := t.translateChainedUnnestJoin(j, u); sel != nil {
+				return sel
+			}
+			// A chained unnest that classified to a loud error set the
+			// translate error; return nil so the caller surfaces it.
+			if t.translateErr != nil {
+				return nil
+			}
+		}
 		return t.unnestFallbackOrReject(j, u)
 	}
 	// Java's `generateCorrelatedFieldAccess` validates the array field against the

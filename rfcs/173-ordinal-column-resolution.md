@@ -4353,3 +4353,36 @@ dual-window, 1M stress, rfc153 verbatim, live-Java classification.
 7. Pin WITH ORDINALITY at each chain level (element-under-key is the proto
    message under ordinality) + a key-collision/shadow-precedence pin where the
    second element's bare name overlaps a first-level surfaced column.
+
+**c3 IMPLEMENTED — all 7 conditions discharged (pending gate re-ACK on HEAD):**
+The chained residual lowers as nested FlatMap-over-FlatMap (translateRef recurses
+the left-deep join tree; the chained link's collection is a multi-accessor
+FieldValue `[{seg0,-1},{seg1,-1}]` rooted at `QOV(sourceAlias(j.Left))`).
+Two REAL bugs surfaced by the FDB e2e and fixed inline:
+- **3+-link chain collapse:** a chained unnest's `translateUnnestJoin` flips
+  `t.inInnerCluster=true` (its name-model enclosure bit) and holds it (defer)
+  across the OUTER translation; a nested chained link then observed
+  `prevEnclosure=true` and — under the old `!prevEnclosure` dispatch gate —
+  declined its own chained dispatch, so the outer's `translateRef` returned nil
+  and the whole chain 0AF00'd. Fix: the chained dispatch is gated on
+  `isChainedUnnest` ALONE (drop `!prevEnclosure`) — a chained unnest is always
+  name-model residual regardless of enclosure, and a base-table link nested in
+  the outer still relies on the enclosure bit to stay name-model.
+- **AT-on-chained-owner false reject:** the early `atOnNonArraySource` pass read
+  a chained owner (`x.sub AS y AT o`, segment 0 = a prior unnest element) as a
+  bare table source (`findOuterScanTable==""`) and raised 42809. Fix: recognize
+  `FindOwnerUnnest(left, seg0) != nil` before the reject and leave it to the
+  translator's per-case disposition (the translator's chained path supports AT).
+
+Conditions → pins (`rfc173_w5_chained_unnest_fdb_test.go` unless noted):
+(1) barrier — `TestSelectMergeRule_ChainedUnnestBarrier` (cascades, white-box,
+RED-first revert-proven; barrier scoped to a free-correlated retained EXPLODE
+sibling so a legit correlated SelectExpression-sibling merge still fires);
+(2) positive `findOwnerUnnest` gate + `!unnestUnderExistential`; (3) accessor
+layout via `chainedUnnestCollection`; (4) CTE-rooted chain → 0AF00 loud decline;
+(5) scalar-element → 42703, present-scalar sub → 42F10 (twin at
+array_unnest_ordinality_fdb_test.go:1370); (6) gather-decline — nested-FlatMap
+plan-shape assert (`FlatMap(outer=FlatMap(` + exactly 2 Explode legs);
+(7) WITH ORDINALITY inner + BOTH levels (independent ordinals) + shadow-
+precedence (top-level `SUB` column shadowed by the element's `x.SUB`). Plus
+3-chain rows, empty/NULL owner → zero rows, SELECT * columns.

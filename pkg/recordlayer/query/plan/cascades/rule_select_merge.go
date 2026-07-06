@@ -115,6 +115,24 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			if childSel, ok := member.(*expressions.SelectExpression); ok && !childSel.ChildrenAsSet() {
 				continue
 			}
+			// RFC-173 unnest-residual class 4 (chained-unnest correlation
+			// barrier): decline to merge a ForEach target when a RETAINED
+			// sibling quantifier is FREE-correlated to it AND the target's
+			// child result value is NAME-MODEL. A chained `FROM t, t.arr AS x,
+			// x.sub AS y` reuses the alias `x` for both the first unnest's
+			// output (this target) and the second unnest's Explode collection
+			// (a retained sibling correlated to `x`); flattening the first
+			// unnest up would strand that collection on the merged-away alias
+			// (the retained-sibling rebase only runs for POSITIONAL-seed
+			// children — rcByAlias empty for a name-model child — so the
+			// Explode arm below would not fire). Java never flattens a lateral
+			// chain either (generateCorrelatedFieldAccess nests them). Keep the
+			// nested FlatMap-over-FlatMap; the positional-seed rebase path is
+			// unaffected. Conservative — worst case a missed flattening, never
+			// wrong rows.
+			if childRefResultIsNameModel(childRef) && siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
+				break
+			}
 			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
 				// RFC-173 Slice 2 drift assert (contract ruling #1): the
 				// translation-time cluster-arity gate SHADOWS this rule's
@@ -636,4 +654,52 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 		}
 		return node
 	}
+}
+
+// childRefResultIsNameModel reports whether a merge candidate's child result
+// value is NAME-MODEL (not a positional ordinal seed). A positional seed
+// child routes through the rcByAlias/bakedBoxRefCallback rebase (which handles
+// a retained Explode sibling); a name-model child does not, so the chained
+// barrier applies only to name-model children.
+func childRefResultIsNameModel(childRef *expressions.Reference) bool {
+	for _, m := range childRef.AllMembers() {
+		sel, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC {
+			if w, _ := values.OrdinalSeedLegWindows(rc); w != nil {
+				return false // positional ordinal seed — not name-model
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// siblingFreeCorrelatedTo reports whether some quantifier OTHER than index
+// `self` ranges over an EXPLODE that is free-correlated to `alias` — the
+// chained-unnest signature (the second unnest's Explode collection references
+// the first unnest's output alias). Scoped to Explode siblings so the barrier
+// never fires for a legitimate correlated SelectExpression-sibling merge
+// (RFC-040), which the name-model rebase handles.
+func siblingFreeCorrelatedTo(quantifiers []expressions.Quantifier, self int, alias values.CorrelationIdentifier) bool {
+	for j, q := range quantifiers {
+		if j == self {
+			continue
+		}
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		if _, corr := ref.GetCorrelatedTo()[alias]; !corr {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			if _, isExplode := m.(*expressions.ExplodeExpression); isExplode {
+				return true
+			}
+		}
+	}
+	return false
 }

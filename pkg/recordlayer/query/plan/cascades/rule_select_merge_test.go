@@ -1187,3 +1187,78 @@ func TestSelectMergeRule_TranslatesExplodeSiblingCollection(t *testing.T) {
 		t.Fatal("no Explode quantifier survived the merge — fixture did not exercise the arm")
 	}
 }
+
+// TestSelectMergeRule_ChainedUnnestBarrier is the RFC-173 class-4 (chained
+// unnest) merge barrier pin. It builds the memo shape a `FROM t, t.arr AS x,
+// x.sub AS y` chain lowers to — a NAME-MODEL ForEach target (the first unnest's
+// SelectExpression, whose result value is a plain QOV, NOT an ordinal-seed RC)
+// with a RETAINED sibling that ranges over an Explode whose collection is
+// free-correlated to that target's alias (the second unnest reading `x.sub`).
+//
+// RED-first: WITHOUT the barrier at rule_select_merge.go, the target is a
+// mergeable single-quantifier Select, so the rule flattens it — pulling up the
+// inner scan and stranding the Explode collection on the merged-away alias (a
+// name-model child records NO rcByAlias entry, so the positional-seed Explode
+// rebase never runs → dangling correlation → latent wrong rows). WITH the
+// barrier, `childRefResultIsNameModel && siblingFreeCorrelatedTo` fires, the
+// target is skipped, and the rule yields no broken alternative. Assert exactly
+// that: no yielded alternative carries an Explode collection still correlated
+// to the target alias that is absent from that alternative's own quantifiers.
+func TestSelectMergeRule_ChainedUnnestBarrier(t *testing.T) {
+	t.Parallel()
+
+	// The chain's first-unnest analog: a NAME-MODEL select over a scan. Its
+	// result value is qun.GetFlowedObjectValue() (a QOV, not an ordinal-seed
+	// RC) → childRefResultIsNameModel returns true.
+	tQun, _ := baseLeaf()
+	targetSel := selectWithPreds(tQun)
+	targetQun := forEachOf(targetSel)
+	targetAlias := targetQun.GetAlias()
+
+	// The chain's second-unnest analog: an Explode whose collection reads
+	// `x.sub` off the first unnest's output — free-correlated to targetAlias.
+	explode := expressions.NewExplodeExpression(qFieldValue(targetQun, "sub"))
+	explodeQun := forEachOf(explode)
+
+	upper := expressions.NewSelectExpression(
+		targetQun.GetFlowedObjectValue(),
+		[]expressions.Quantifier{targetQun, explodeQun},
+		nil,
+	)
+
+	yielded := FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(upper))
+
+	// Every yielded alternative must be well-formed: no retained Explode may
+	// dangle on the merged-away target alias.
+	for yi, y := range yielded {
+		sel, ok := y.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		aliveAliases := map[values.CorrelationIdentifier]bool{}
+		for _, q := range sel.GetQuantifiers() {
+			aliveAliases[q.GetAlias()] = true
+		}
+		for _, q := range sel.GetQuantifiers() {
+			for _, m := range q.GetRangesOver().AllMembers() {
+				exp, isExp := m.(*expressions.ExplodeExpression)
+				if !isExp {
+					continue
+				}
+				cv, isFV := exp.GetCollectionValue().(*values.FieldValue)
+				if !isFV {
+					continue
+				}
+				qov, isQOV := cv.Child.(*values.QuantifiedObjectValue)
+				if !isQOV {
+					continue
+				}
+				// A collection correlated to the (merged-away) target alias with
+				// no live quantifier binding it is the dangling-strand bug.
+				if qov.Correlation == targetAlias && !aliveAliases[targetAlias] {
+					t.Fatalf("yield[%d]: chained-unnest Explode collection dangles on merged-away target alias %s (%v) — the SelectMerge barrier failed to decline the name-model chained merge (latent wrong rows)", yi, targetAlias, cv)
+				}
+			}
+		}
+	}
+}

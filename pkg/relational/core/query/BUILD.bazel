@@ -11,6 +11,7 @@ go_library(
         "rfc173_w4b_clustered_outer.go",
         "rfc173_w4b_scalar_seed.go",
         "rfc173_w4c_unnest_seed.go",
+        "rfc173_w5_chained_unnest.go",
         "rfc173_w5_derived_unnest.go",
         "rfc173_w5_unnest_gather.go",
     ],

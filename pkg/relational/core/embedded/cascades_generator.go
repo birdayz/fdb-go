@@ -4010,6 +4010,16 @@ func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, 
 	if logical.OuterSourceIsDerivedTable(left, u.Segments[0]) {
 		return false
 	}
+	// RFC-173 class 4: segment 0 names a PRIOR lateral unnest's element (a
+	// CHAINED unnest, `… t.arr AS x, x.sub AS y AT o`). The translator lowers it
+	// (translateChainedUnnestJoin) with ordinality support, so AT here is VALID,
+	// not "AT on a table" — leave it to the translator's per-case disposition
+	// (array→plan, scalar sub→UNDEFINED_COLUMN, present-scalar sub→INVALID_
+	// COLUMN_REFERENCE). Checked before the outerTable=="" reject below, which
+	// would otherwise mistake the unnest-element owner for a bare table source.
+	if logical.FindOwnerUnnest(left, u.Segments[0]) != nil {
+		return false
+	}
 	outerTable := logical.FindOuterScanTable(left, u.Segments[0])
 	if outerTable == "" {
 		// (1) segment 0 not a visible in-scope scan: a table / schema-qualified /

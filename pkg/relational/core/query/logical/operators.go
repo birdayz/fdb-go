@@ -737,6 +737,37 @@ func FindOuterScanTable(op LogicalOperator, alias string) string {
 	return walk(op)
 }
 
+// FindOwnerUnnest returns the LogicalUnnest in the outer sub-plan `op` whose
+// AS or AT alias matches `alias` — the OWNER of a CHAINED lateral unnest
+// (`FROM t, t.arr AS x, x.sub AS y`: the second unnest's segment-0 `x` names
+// the first unnest's element). Mirrors FindOuterScanTable's walk (does not
+// descend into a CTE/derived Body — a derived table is its own FROM scope, so
+// a chain rooted inside a derived body is out of scope), but matches unnest
+// element aliases instead of scans. nil when no such prior unnest.
+func FindOwnerUnnest(op LogicalOperator, alias string) *LogicalUnnest {
+	want := strings.ToUpper(alias)
+	var walk func(LogicalOperator) *LogicalUnnest
+	walk = func(o LogicalOperator) *LogicalUnnest {
+		switch n := o.(type) {
+		case *LogicalUnnest:
+			if strings.EqualFold(n.Alias, want) || (n.AtAlias != "" && strings.EqualFold(n.AtAlias, want)) {
+				return n
+			}
+			return nil
+		case *LogicalCTE:
+			return walk(n.Main)
+		default:
+			for _, c := range o.Children() {
+				if r := walk(c); r != nil {
+					return r
+				}
+			}
+			return nil
+		}
+	}
+	return walk(op)
+}
+
 // OuterSourceIsDerivedTable reports whether `alias` (a lateral unnest's
 // segment-0 outer source name) is bound, in the outer sub-plan `op`, to a
 // DERIVED-TABLE / CTE leg — i.e. a `LogicalCTE` whose Name equals `alias`. It

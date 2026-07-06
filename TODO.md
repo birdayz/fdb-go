@@ -3436,6 +3436,17 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       under-existential arrives via item 2's binders; the BARE-TWIN duplicate-column decline
       rides until S4 — folded into the atomic commit per the circularity ruling, with the
       differential covering it name-model-side until then).
+      **Progress (on `feat/rfc173-item3`, pending atomic-slice merge + gate re-ACK):**
+      c1 (classes 1+2 — box-leg owners + multi-segment struct paths) DONE, both in-session
+      gates ACK + codex re-confirm tracked for quota. c2 (class 3 — CTE/derived owners via
+      body-projection→descriptor, positive whitelist, P2a-closed) DONE, both in-session
+      gates ACK. c3 (class 4 — chained unnests `t.arr AS x, x.sub AS y`) DONE: nested
+      FlatMap-over-FlatMap residual, all 7 Graefe conditions pinned
+      (`rfc173_w5_chained_unnest_fdb_test.go` 11 subtests + `TestSelectMergeRule_ChainedUnnestBarrier`
+      white-box). Two real bugs found + fixed by the FDB e2e: 3+-link enclosure collapse
+      (chained dispatch de-gated from `!prevEnclosure`) and AT-on-chained-owner false 42809
+      (`atOnNonArraySource` now recognizes `FindOwnerUnnest`). Remaining before merge: slice
+      exit gates (dual-window, 1M stress, rfc153 verbatim, live-Java), codex on quota reset.
 - [ ] **Rider: the minted-binding loud-decline class flips to rows** (item-1 c5 —
       the review-round guard): the declared-loud shapes over duplicate FROM aliases,
       each pinned in rfc173_item1_keybinding_exists_fdb_test.go (P4a–P4f) with the
