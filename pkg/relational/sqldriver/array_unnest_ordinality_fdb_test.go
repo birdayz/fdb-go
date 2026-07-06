@@ -1157,13 +1157,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// silently exploding the derived row's SCALAR — one wrong scalar row per
 		// outer row. The RFC-173 class-3 classifier now traces the derived output
 		// `ARR` back through the body's projection to its BASE column (T1.ID, a
-		// scalar) and reports the honest "repeated type" WRONG_OBJECT_TYPE — the
+		// scalar) and reports the honest "repeated type" INVALID_COLUMN_REFERENCE — the
 		// precise disposition (superseding the earlier blanket UNSUPPORTED_QUERY),
 		// definitively NOT the real D.ARR array (which would have PLANNED, not
 		// errored). The base column is reached through the BODY's own scan, never
 		// the outer alias, so the same-named real table is structurally never
 		// consulted.
-		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR" FROM T1) AS "D", "D"."ARR" AS "V"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR" FROM T1) AS "D", "D"."ARR" AS "V"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("P1 real table D unnest (no derived shadow) still works", func(t *testing.T) {
@@ -1298,11 +1298,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// `d` is the visible derived source; its OUTPUT ARR1 is the scalar `ID`, not
 		// an array. The RFC-173 class-3 classifier traces the derived output ARR1
 		// back through the body's projection to its base column (T1.ID, a scalar)
-		// and reports the honest "repeated type" WRONG_OBJECT_TYPE — never a silent
+		// and reports the honest "repeated type" INVALID_COLUMN_REFERENCE — never a silent
 		// explode. (Pre-class-3 the element type was unrecoverable, so this was a
 		// blanket UNSUPPORTED_QUERY; class-3 recovers the base type and gives the
 		// precise wrong-type code.)
-		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR1" FROM T1) AS "d", "d"."ARR1" AS "V"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR1" FROM T1) AS "d", "d"."ARR1" AS "V"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("R5a normal CTE and derived queries are unaffected (no over-rejection)", func(t *testing.T) {
@@ -1349,7 +1349,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// WRONG_OBJECT_TYPE (superseding the earlier blanket UNSUPPORTED_QUERY). Only
 		// a real table SHADOWING the CTE name (the test above) plans; a genuine
 		// CTE-scalar-output unnest rejects.
-		assertRejected(t, md, `WITH "X" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "V" FROM "X", "X"."ARR" AS "V"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `WITH "X" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "V" FROM "X", "X"."ARR" AS "V"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("P2b dotted ref to a table hidden behind a derived table is not unnest", func(t *testing.T) {
@@ -1362,12 +1362,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "X" FROM (SELECT "ID" FROM T1) AS "d", T1."ARR1" AS "X"`, api.ErrCodeUndefinedDatabase)
 	})
 
-	t.Run("P2c scalar correlated field is WRONG_OBJECT_TYPE", func(t *testing.T) {
+	t.Run("P2c scalar correlated field is INVALID_COLUMN_REFERENCE", func(t *testing.T) {
 		// `FROM TCOLL, TCOLL.val AS x` where TCOLL.VAL is a real SCALAR INT — a
 		// present but NON-array correlated field. Java's
-		// generateCorrelatedFieldAccess asserts repeated type → WRONG_OBJECT_TYPE.
+		// generateCorrelatedFieldAccess asserts repeated type → INVALID_COLUMN_REFERENCE (42F10).
 		// (Before the fix it fell to the table path and gave a generic failure.)
-		assertRejected(t, md, `SELECT "ID" FROM TCOLL, TCOLL."VAL" AS "X"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `SELECT "ID" FROM TCOLL, TCOLL."VAL" AS "X"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("AT on a single-name non-source comma source is WRONG_OBJECT_TYPE", func(t *testing.T) {
@@ -2830,14 +2830,14 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V", U AT "O"`, api.ErrCodeWrongObjectType)
 	})
 
-	t.Run("P3 scalar source after a prior unnest is WRONG_OBJECT_TYPE not multiple-unnest", func(t *testing.T) {
+	t.Run("P3 scalar source after a prior unnest is INVALID_COLUMN_REFERENCE not multiple-unnest", func(t *testing.T) {
 		// The scalar-field variant: `FROM T1, T1.ARR1 AS V, T1.ID AS X` — after the
 		// real unnest T1.ARR1, the second dotted source T1.ID is a PRESENT SCALAR
 		// (not an array). Java's generateCorrelatedFieldAccess asserts the field is
-		// repeated → WRONG_OBJECT_TYPE. The array validation must fire BEFORE the
-		// multiple-unnest guard, so this is WRONG_OBJECT_TYPE, not the (misleading)
+		// repeated → INVALID_COLUMN_REFERENCE (42F10). The array validation fires BEFORE the
+		// multiple-unnest guard, so this is INVALID_COLUMN_REFERENCE, not the (misleading)
 		// multiple-unnest UNSUPPORTED_QUERY. RFC-142.
-		assertRejected(t, md, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V", T1."ID" AS "X"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V", T1."ID" AS "X"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("P3 control: a genuine second array unnest is still UNSUPPORTED_QUERY", func(t *testing.T) {

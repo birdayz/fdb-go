@@ -70,8 +70,8 @@ func TestRFC173DerivedUnnest_Dispositions(t *testing.T) {
 
 	// Declined loudly (honest unsupported / wrong-type / absent — never
 	// silent-wrong).
-	t.Run("scalar_source_wrongtype", func(t *testing.T) {
-		code(t, `SELECT x FROM (SELECT id AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeWrongObjectType)
+	t.Run("scalar_source_invalidref", func(t *testing.T) {
+		code(t, `SELECT x FROM (SELECT id AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeInvalidColumnReference)
 	})
 	t.Run("computed_unsupported", func(t *testing.T) {
 		code(t, `SELECT x FROM (SELECT id + 1 AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeUnsupportedQuery)
@@ -86,7 +86,7 @@ func TestRFC173DerivedUnnest_Dispositions(t *testing.T) {
 		// Base table `d` has an ARRAY `arr`; the derived `d` projects scalar
 		// `id AS arr`. Must WRONG_TYPE via the body (td.id scalar), never plan
 		// against base d.arr.
-		code(t, `SELECT x FROM (SELECT id AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeWrongObjectType)
+		code(t, `SELECT x FROM (SELECT id AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeInvalidColumnReference)
 	})
 	t.Run("p2a_nested_derived", func(t *testing.T) {
 		// The body's source `inr` is a CTE (also a real base table with array

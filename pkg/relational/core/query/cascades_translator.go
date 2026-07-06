@@ -1145,7 +1145,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 			// Fall through to the shared build path below (skip the base-table
 			// unnestArrayElementType classification — already done via the body).
 		case derivedUnnestWrongType:
-			t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+			t.setTranslateErr(api.NewError(api.ErrCodeInvalidColumnReference,
 				"join correlation can occur only on a column of repeated (array) type"))
 			return nil
 		case derivedUnnestUndefined:
@@ -1175,7 +1175,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 			//   - source is NOT a real table (a derived-table alias `d` whose record
 			//     type doesn't resolve): the field can't be checked here → table path.
 			if fieldPresent {
-				t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+				t.setTranslateErr(api.NewError(api.ErrCodeInvalidColumnReference,
 					"join correlation can occur only on a column of repeated (array) type"))
 				return nil
 			}

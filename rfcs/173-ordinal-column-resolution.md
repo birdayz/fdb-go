@@ -4242,3 +4242,114 @@ inr) — no silent-wrong at either level. Class-3's more-precise scalar-source
 disposition (42809 vs the old blanket 0AF00) re-fixtured 5 stale single-table
 rejection pins to the codes the plan-level pins codify. Red-proven: the
 pre-c2 tree returns 0A000 "not yet supported" for every supported shape.
+
+## Unnest-residual c3 (class 4, chained unnests) — mechanism design
+
+Research (read-only trace, verified) refines ruling 4's residual composition.
+The real blocker is NOT the sibling guard (containsLateralUnnest, which fires
+for `t.arr, t.arr2` — SAME table, stays rejected) but OWNER RESOLUTION: a
+chained `FROM t, t.arr AS x, x.sub AS y` has the second unnest's owner `x` =
+the FIRST unnest's element, so seg0=`X` is not a scan → findOuterScanTable
+returns "" → unnestFallbackOrReject rebuilds with Scan("X.SUB") →
+table-not-found. Class 4 fixes this path.
+
+**Mechanism (residual recursive composition, gather declines):**
+- The nested-FlatMap shape is ALREADY wired: translateUnnestJoin builds its
+  outer from `translateRef(j.Left)`, which recurses through the left-deep join
+  tree — so `SelectExpr_2(outer=SelectExpr_1(outer=Scan(t)))` falls out with no
+  new nesting code. The EXISTS precedent (translateUnnestExistsFilter) is the
+  template.
+- The ONE new value-tree: the second unnest's collection is a MULTI-ACCESSOR
+  FieldValue rooted at the owner alias + suffix — `FieldValue{Field:"SUB",
+  Child:QOV("X"), Resolved:[{X,-1},{SUB,-1}]}` (root reads Datum["X"] = the
+  element proto message; suffix "SUB" descends by name). Structurally the
+  class-2 multi-segment construction, but that currently only builds for
+  len(Segments)>2; a 2-chain is len==2 — generalize the constructor to run for
+  a chained owner.
+- RUNTIME: reuse class-2 struct-descent VERBATIM. A struct-array element flows
+  as a raw proto.Message; descendResolvedPath's proto arm descends "SUB" by
+  name (protoFieldByName), a repeated sub → []any the Explode iterates. NO
+  executor change. Caveat: the root read must go through the name-keyed Datum
+  path (Datum["X"] present via buildUnnestResultValue's addField), never the
+  evaluateCorrelated raw-object arm.
+- CLASSIFICATION: new recursive descriptor walk. arrayFieldElementType
+  collapses message-array elements to UnknownType and outerTable=="" for a
+  chained owner, so the existing classifier can't type x.sub. New:
+  resolveChainedOwnerElementDescriptor — find the owner LogicalUnnest
+  (findOwnerUnnest, Alias/AtAlias match, mirroring FindOuterScanTable),
+  recursively resolve ITS owner's element message descriptor (base = scan →
+  resolveRecordType.Descriptor; step = prior unnest → walk its array field to
+  .Message()), then look up segments[1:] on it (reusing unnestArrayElementType's
+  per-segment loop), final must be repeated. The descriptor is the only place
+  the real type survives Go's UnknownType collapse (same finding as class 3).
+
+**Guard changes:** (1) add the owner-unnest dispatch BEFORE the outerTable==""
+fallback (cascades_translator.go:1096), gated `!t.unnestUnderExistential`; (2)
+keep containsLateralUnnest for SIBLINGS (seg0 is a scan → never enters the
+chained branch); (3) INNER-comma scope only — an under-existential chain keeps
+item-2's binders (ruling 4 scope); (4) the gather naturally declines a chain
+(legTypes[X] has no plain-leg window → ownerWindow.leafTyp==nil) → residual;
+pin the plan-shape.
+
+**N-chain (3+): fully recursive**, no 2-cap — nesting via translateRef
+recursion, classification via the recursive descriptor walk, runtime via each
+level binding its element under its alias.
+
+**HIGHEST RISK — SelectMerge/name-reuse (mirrors the c4 stranded-correlation
+keystone):** alias `X` is reused for SelectExpr_1's inner Explode quantifier
+AND SelectExpr_2's outer quantifier. SelectMergeRule may try to merge
+SelectExpr_1 up, materializing the correlated Explode1 against an unbound
+context (the failure translateUnnestExistsFilter guards against) and/or
+colliding the two X bindings. The chained composition must keep the inner
+unnest UN-MERGED (EXISTS precedent) or Q$DUP-mint to disambiguate. RED-FIRST
+white-box pin on a query where the merge would otherwise fire.
+
+**Error parity:** scalar-element owner (`t.intarr AS x, x.sub`) → x is scalar,
+no field sub → UNDEFINED_COLUMN 42703 (classify vs live Java 4.12.11.0 —
+Java's resolveIdentifier miss; the RFC repeatedly books this ambiguity).
+Struct-element non-array sub (`x.scalarfield AS y`) → present-but-scalar →
+WRONG_OBJECT_TYPE 42809 (the single-table twin's code; 42F10 alignment booked
+condition 4). Both loud, never silent-wrong.
+
+**Pin matrix:** 2-chain struct→sub-array (red-first: today table-not-found);
+3-chain (X/Y/Z name-reuse); WITH ORDINALITY each level; scalar-element →42703;
+struct-non-array-sub →42809; sibling control → still UNSUPPORTED; gather
+decline (residual not gathered); SelectMerge white-box (inner un-merged,
+revert-proven); under-existential chain stays item-2 binders (scope pin); NULL
+owner sub-array → zero rows; SELECT * over a 2-chain. Standard exit gates:
+dual-window, 1M stress, rfc153 verbatim, live-Java classification.
+
+**c3 design review rulings (Graefe DESIGN ACK — binding conditions):**
+1. SelectMerge BARRIER mandatory — the "EXISTS precedent" does NOT transfer
+   (SelectMergeRule's existential-skip protects EXISTS; a chained INNER-comma
+   outer is a plain ForEach with no such guard, so the rule fires and strands
+   the retained Explode's collection — PR#201 class). Add a correlation-aware
+   barrier: decline to merge a ForEach target when a RETAINED sibling is
+   free-correlated to it AND the target's child result is NAME-MODEL
+   (positional-seed false, so the working Explode-rebase arm won't run). Keep
+   the positional-seed rebase path unblocked. NOT Q$DUP alone. RED-first
+   white-box pin on a hand-built memo forcing the merge (no broken alternative
+   yielded + correct rows), revert-proven.
+2. Gate the dispatch POSITIVELY on findOwnerUnnest(j.Left, seg0) matching a
+   LogicalUnnest by Alias/AtAlias — never merely outerTable=="" (which also
+   covers schema-qualified + derived-hidden); else fall through to
+   unnestFallbackOrReject. Keep !unnestUnderExistential.
+3. Build the chained accessor layout [{seg0,-1},{seg1,-1},…] with
+   Child=QOV(sourceAlias(j.Left)); do NOT just lower the len(Segments)>2
+   threshold (class-2's root is seg1; the chained root is seg0).
+4. resolveChainedOwnerElementDescriptor bottoms out at a REAL-TABLE scan; a
+   chain rooted at a CTE/derived/box owner declines LOUDLY (class-3×/class-1×
+   composition is a separate follow-on), pinned as a loud decline.
+5. Scalar-element owner → UNDEFINED_COLUMN 42703 (Java-verified:
+   lookupNestedField soft-returns empty for a non-struct base → resolveIdentifier
+   miss; the "live-Java" question is CLOSED). Struct-present-but-scalar sub →
+   Java's INVALID_COLUMN_REFERENCE 42F10 (the array assert). ALIGN twin +
+   chained TOGETHER to 42F10 NOW (one constant, message already matches) —
+   never split the two; the single-table path (cascades_translator.go:1178)
+   and the c2 derived scalar path flip too. Condition-4's 42F10 booking is
+   thereby discharged.
+6. Pin the gather-decline on the actual gates (findOuterScanTable=="" /
+   containsLateralUnnest / plainLegs<2), not the "legTypes window" text.
+7. Pin WITH ORDINALITY at each chain level (element-under-key is the proto
+   message under ordinality) + a key-collision/shadow-precedence pin where the
+   second element's bare name overlaps a first-level surfaced column.
