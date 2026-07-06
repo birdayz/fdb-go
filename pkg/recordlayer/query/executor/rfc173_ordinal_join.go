@@ -1530,6 +1530,26 @@ func (r *spanAwareRow) GetByName(name string) (any, bool) {
 		// Alias namespace first (the name model's qualifyAlias precedence)…
 		for _, s := range r.spans {
 			if strings.EqualFold(s.Alias.Name(), alias) {
+				// A BOX span is NAMED by its rightmost LEAF (sourceBinding),
+				// so the alias-qualified read must window that LEAF's slice —
+				// the whole-concat window would FieldIndex across the box and
+				// first-match an earlier buried leg's duplicate column name.
+				// Same rule as the values twin's window replacement
+				// (OrdinalSeedLegWindows) and rcOutputType's subs-only Legs.
+				if s.LegType != nil {
+					for _, bl := range s.LegType.Legs {
+						if !strings.EqualFold(bl.Name, alias) {
+							continue
+						}
+						end := bl.Start + bl.Width
+						if bl.Start < 0 || end > len(s.LegType.Fields) {
+							break
+						}
+						sub := &values.RecordType{Nullable: s.LegType.Nullable, Fields: s.LegType.Fields[bl.Start:end]}
+						w := &legWindowRow{parent: r.parent, legType: sub, offset: s.Offset + bl.Start, width: bl.Width}
+						return w.GetByName(col)
+					}
+				}
 				w := &legWindowRow{parent: r.parent, legType: s.LegType, offset: s.Offset, width: s.Width}
 				return w.GetByName(col)
 			}

@@ -119,11 +119,13 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 		// top-level run's own window.
 		for alias, w := range windows {
 			for li, leg := range w.Typ.Legs {
-				if leg.Name == "" || leg.Name == alias {
+				if leg.Name == "" {
 					continue
 				}
-				if _, taken := windows[leg.Name]; taken {
-					continue
+				if leg.Name != alias {
+					if _, taken := windows[leg.Name]; taken {
+						continue
+					}
 				}
 				end := len(w.Typ.Fields)
 				if li+1 < len(w.Typ.Legs) {
@@ -137,6 +139,14 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 					f := w.Typ.Fields[leg.Start+k]
 					sub[k] = Field{Name: f.Name, FieldType: f.FieldType, Ordinal: k}
 				}
+				// leg.Name == alias REPLACES the box-run window with the
+				// rightmost LEAF's sub-window: the box's name MEANS its
+				// rightmost leaf (sourceBinding), so an alias-qualified read
+				// must window the leaf — the run-wide window would FieldIndex
+				// across the concat and first-match an earlier buried leg's
+				// duplicate name. Also what keeps the merged type's Legs in
+				// lockstep with the executor twin, which emits EVERY sub of a
+				// box run (ordinalJoinSpansOf).
 				windows[leg.Name] = OrdinalSeedLegWindow{
 					Offset: w.Offset + leg.Start,
 					Typ:    &RecordType{Nullable: w.Typ.Nullable, Fields: sub},

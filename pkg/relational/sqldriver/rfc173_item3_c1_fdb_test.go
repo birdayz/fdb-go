@@ -72,7 +72,6 @@ func TestFDB_RFC173Item3_ClusteredBoxRows(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
 		}
-		t.Logf("ACTUAL: %v", got)
 		if len(got) != 2 {
 			t.Fatalf("rows = %d, want 2 (one matched, one padded)", len(got))
 		}
@@ -106,7 +105,6 @@ func TestFDB_RFC173Item3_ClusteredBoxRows(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
 		}
-		t.Logf("ACTUAL: %v", got)
 		// pa(1)⋈pb(1): c.cid=5 → w=50. (pa 9 has no pb match — inner drops.)
 		if len(got) != 1 || !got[1].Valid || got[1].Int64 != 50 {
 			t.Errorf("rows = %v, want {1: 50}", got)
@@ -141,7 +139,6 @@ func TestFDB_RFC173Item3_ClusteredBoxRows(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
 		}
-		t.Logf("ACTUAL: %d rows, %d box-padded", n, boxPadded)
 		// pa(1,10): v/2=5 → c2.cid=5 matches. pa(9,90): v/2=45 → no c2 → c2 NULL.
 		// c2(6) unmatched → the FULL drain births a box-padded row.
 		if n != 3 || boxPadded != 1 {
@@ -171,7 +168,6 @@ func TestFDB_RFC173Item3_ClusteredBoxRows(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
 		}
-		t.Logf("ACTUAL: %v", got)
 		if !reflect.DeepEqual(got, []int64{1}) {
 			t.Errorf("EXISTS over clustered box = %v, want [1] (pa.id=1 has a pb match; 9 does not)", got)
 		}

@@ -111,7 +111,13 @@ func unnestSeedInnerFields(
 		if elemName == "" {
 			elemName = values.OrdinalFieldName(0)
 		}
-		innerType := values.NewRecordType("", true, []values.Field{
+		// NOT record-level nullable: the unnest inner leg always produces a
+		// row per element (this is not an outer join's null-supplying side),
+		// and ofOrdinal inherits the record's nullability into its column
+		// types per Java's FieldValue.computeResultType — a nullable marker
+		// here would flip the AT ordinal column (INT NOT NULL, the 1-based
+		// position) to nullable in the flowed metadata.
+		innerType := values.NewRecordType("", false, []values.Field{
 			{Name: elemName, FieldType: elementType, Ordinal: 0},
 			{Name: strings.ToUpper(u.AtAlias), FieldType: values.NotNullInt, Ordinal: 1},
 		})

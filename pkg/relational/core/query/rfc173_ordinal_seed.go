@@ -140,6 +140,20 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			if cols == nil {
 				return nil
 			}
+			if leg.nullSupplying {
+				// Amendment B (ruling I3's second half): the NULL-SUPPLYING
+				// window's COLUMN types go nullable through the box's own
+				// output type — Java's pullUpResultColumnsWithNullability
+				// (true). The padded rows serve NULL in these slots, so the
+				// flowed metadata (driver column nullability) must say so.
+				// Copy-on-wrap: legColumns may hand back shared slices.
+				wrapped := make([]values.Field, len(cols))
+				for i, c := range cols {
+					c.FieldType = values.WithNullability(c.FieldType, true)
+					wrapped[i] = c
+				}
+				cols = wrapped
+			}
 			fields = append(fields, cols...)
 		}
 		return fields
@@ -261,11 +275,6 @@ type bakeLegType struct {
 	// its own offset within the box concat. Empty = the referenced alias
 	// itself (every top-level leg and the rightmost leaf).
 	bakeCorr string
-	// nullBorn marks a buried entry under a NULL-SUPPLYING box leg: its
-	// padded rows birth positional-only (no name Datum), so PROJECTION
-	// reads must bake at translation (the preserved side keeps its pinned
-	// Datum path; the predicate bake uses every entry regardless).
-	nullBorn bool
 }
 
 // legBakeWindow resolves a leg's bake window: the rightmost LEAF's offset and
@@ -324,6 +333,14 @@ func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[strin
 		// non-duplicate leg; the parser-minted id for a later duplicate —
 		// RFC-173 QP-REF-BIND item 1, the map key an alias would collide).
 		legTypes[leg.binding] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		// A CLUSTERED box leg buries sources whose references bake onto the
+		// BOX quantifier at each buried leaf's offset within the concat
+		// (amendment C) — the same registration the seed's own legTypes get
+		// in ordinalJoinSeedFields. Without it a WHERE conjunct naming a
+		// buried source stays lazy at the box select and grandchild-binds.
+		if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
+			t.addBuriedBakeWindows(bj, leg.binding, typ, 0, legTypes)
+		}
 	}
 	return legTypes
 }
@@ -467,7 +484,7 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 		// single-leg and leaves a grandchild-correlated lazy reference on
 		// the box select.
 		if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
-			t.addBuriedBakeWindows(bj, leg.binding, typ, 0, legTypes, leg.nullSupplying)
+			t.addBuriedBakeWindows(bj, leg.binding, typ, 0, legTypes)
 		}
 		if leg.nullSupplying {
 			// The LEFT-outer null side: the QOV's RECORD TYPE goes nullable
@@ -475,12 +492,12 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 			// keys on the QOV's result type — design ruling I3). Column
 			// types stay their own; the record-level bit is what the
 			// executor's null-leg birth and the metadata nullability read.
-			// Struct-literal copy, NOT NewRecordType: a CLUSTERED
+			// WithNullability, NOT NewRecordType: a CLUSTERED
 			// null-supplying leg (item 3) concatenates its buried legs'
 			// columns positionally and duplicate bare names legitimately
 			// survive (the same rule as ordinalLegType's own construction);
 			// the constructor's duplicate check is for name-addressed types.
-			typ = &values.RecordType{RecordName: typ.RecordName, Nullable: true, Fields: typ.Fields, Legs: typ.Legs}
+			typ = values.WithNullability(typ, true).(*values.RecordType)
 		}
 		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg.binding), typ)
 		for i := range typ.Fields {
@@ -527,7 +544,7 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 // to its single quantifier. The rightmost leaf's own-keyed entry (written by
 // the caller) is preserved (first-writer wins). An underivable sub-leg stops
 // the walk — its references stay lazy (the load-bearing lazy invariant).
-func (t *cascadesTranslator) addBuriedBakeWindows(j *logical.LogicalJoin, boxCorr string, boxTyp *values.RecordType, base int, legTypes map[string]bakeLegType, nullBorn bool) {
+func (t *cascadesTranslator) addBuriedBakeWindows(j *logical.LogicalJoin, boxCorr string, boxTyp *values.RecordType, base int, legTypes map[string]bakeLegType) {
 	off := base
 	for _, sub := range t.legsOfGatedJoin(j) {
 		subTyp := t.ordinalLegType(sub.op)
@@ -535,9 +552,9 @@ func (t *cascadesTranslator) addBuriedBakeWindows(j *logical.LogicalJoin, boxCor
 			return
 		}
 		if sj, isJ := sub.op.(*logical.LogicalJoin); isJ {
-			t.addBuriedBakeWindows(sj, boxCorr, boxTyp, off, legTypes, nullBorn || sub.nullSupplying)
+			t.addBuriedBakeWindows(sj, boxCorr, boxTyp, off, legTypes)
 		} else if _, exists := legTypes[sub.binding]; !exists && sub.binding != "" {
-			legTypes[sub.binding] = bakeLegType{typ: boxTyp, leafOffset: off, leafTyp: subTyp, bakeCorr: boxCorr, nullBorn: nullBorn || sub.nullSupplying}
+			legTypes[sub.binding] = bakeLegType{typ: boxTyp, leafOffset: off, leafTyp: subTyp, bakeCorr: boxCorr}
 		}
 		off += len(subTyp.Fields)
 	}

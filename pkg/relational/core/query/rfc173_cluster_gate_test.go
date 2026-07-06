@@ -620,3 +620,43 @@ func TestRFC173S3_BoxLegBakeResolvesLeafLocal(t *testing.T) {
 		t.Fatalf("baked ordinal = %d, want %d (Customer's PRICE leaf-local at the box offset %d)", acc.Ordinal, wantOrd, len(orderType.Fields))
 	}
 }
+
+// TestRFC173Item3_GatedJoinLegTypes_BuriedConsistency pins the two
+// predicate-bake legTypes maps in lockstep (the boundary-consistency class):
+// the WHERE-pred map (gatedJoinLegTypes) must register the SAME buried bake
+// windows for a clustered box leg as the seed's own map
+// (ordinalJoinSeedFields via addBuriedBakeWindows). A WHERE cross-leg
+// conjunct naming a buried source (`WHERE a.x = c.y` over `(A⋈B) LEFT C`)
+// bakes through this map; without the buried entries predicateLegAliases
+// counts it single-leg and the reference stays a grandchild-correlated lazy
+// read — the exact divergence class the seed map closed at amendment C.
+func TestRFC173Item3_GatedJoinLegTypes_BuriedConsistency(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	// (SRC ⋈ AUX) LEFT AUX2 — the preserved leg is a cluster burying SRC.
+	j := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")),
+		scan("AUX2", "y"), logical.JoinLeft, "")
+	if d := tr.ordinalWedgeGateDecide(j); !d.Gated {
+		t.Fatalf("fixture must gate, got %+v", d)
+	}
+	legTypes := tr.gatedJoinLegTypes(j)
+	// The buried source S must have a window: box-corr = the cluster's
+	// binding (its rightmost leaf X), offset 0 within the cluster concat.
+	s, ok := legTypes["S"]
+	if !ok {
+		t.Fatalf("gatedJoinLegTypes lacks the BURIED leg S: %v — the WHERE-pred bake map diverged from the seed's (amendment C)", keysOf(legTypes))
+	}
+	if s.bakeCorr == "" || s.leafOffset != 0 || s.leafTyp == nil || len(s.typ.Fields) <= len(s.leafTyp.Fields) {
+		t.Fatalf("buried S window = {corr %q offset %d leaf %v concat %v} — want a box-corr window into the cluster concat", s.bakeCorr, s.leafOffset, s.leafTyp, s.typ)
+	}
+	// And it must AGREE with the seed map's entry bit-for-bit.
+	_, seedTypes := tr.ordinalJoinSeedFields(tr.legsOfGatedJoin(j))
+	seedS, ok := seedTypes["S"]
+	if !ok {
+		t.Fatal("seed legTypes lacks buried S — fixture invalid")
+	}
+	if s.bakeCorr != seedS.bakeCorr || s.leafOffset != seedS.leafOffset ||
+		len(s.typ.Fields) != len(seedS.typ.Fields) || len(s.leafTyp.Fields) != len(seedS.leafTyp.Fields) {
+		t.Fatalf("WHERE-pred buried window %+v disagrees with the seed's %+v", s, seedS)
+	}
+}

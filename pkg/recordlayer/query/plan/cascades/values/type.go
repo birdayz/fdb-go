@@ -1250,7 +1250,11 @@ func WithNullability(t Type, nullable bool) Type {
 		}
 		return &PrimitiveType{TypeCode: tt.TypeCode, Nullable: nullable}
 	case *RecordType:
-		return &RecordType{RecordName: tt.RecordName, Nullable: nullable, Fields: tt.Fields}
+		// Legs carries the RFC-173 buried-leg boundary metadata — dropping
+		// it on the nullability flip silently strips a clustered outer-join
+		// leg's dotted-read windows (the null-supplying wrap is exactly
+		// where the flip happens).
+		return &RecordType{RecordName: tt.RecordName, Nullable: nullable, Fields: tt.Fields, Legs: tt.Legs}
 	case *ArrayType:
 		return &ArrayType{Nullable: nullable, ElementType: tt.ElementType}
 	case *EnumType:

@@ -126,9 +126,9 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 				return false
 			}
 			if nullSupplying || leg.nullSupplying {
-				// Struct-literal copy (duplicate bare names survive
+				// WithNullability (duplicate bare names survive
 				// positionally — the same rule as the seed's nullable wrap).
-				typ = &values.RecordType{RecordName: typ.RecordName, Nullable: true, Fields: typ.Fields, Legs: typ.Legs}
+				typ = values.WithNullability(typ, true).(*values.RecordType)
 			}
 			span := clusterLegSpan{alias: strings.ToUpper(leg.alias), start: offset, typ: typ}
 			if _, dup := pu.legByAlias[span.alias]; dup {

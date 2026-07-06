@@ -130,16 +130,17 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		seenBindings[key] = struct{}{}
 	}
 	if !t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right) {
-		// A leg CONTAINS a name-model join at its own boundary (a 3+-way
-		// inner cluster, or an outer box over one): its output rows are the
-		// name model's merged rows (dotted keys, no leg concat) — an ordinal
-		// seed over it would type the leg wrongly. Mixed nesting stays
-		// name-model until the W4/W5 rewrites retire those parents (RFC §4
-		// coexistence scoping; inner clusters flipped at the S3 fulcrum).
-		// Caught live by the W3b flip: `(A JOIN B JOIN C) LEFT JOIN D` — the
-		// box gated while its left leg stayed name-model, and
-		// ordinalLegColumns' mis-scope panic fired exactly as designed.
-		return wedgeGateDecision{Arity: arityPoison, Reason: "a leg contains a name-model join (mixed nesting stays name-model until S3)"}
+		// A leg CONTAINS a name-model join at its own boundary (an
+		// aggregate/CTE/derived body the gate keeps anchored): its output
+		// rows are the name model's merged rows (dotted keys, no leg concat)
+		// — an ordinal seed over it would type the leg wrongly. The
+		// remaining name-model residency retires at S4, the atomic
+		// demolition (RFC §4 coexistence scoping; inner clusters flipped at
+		// the S3 fulcrum, outer boxes at item 3). Caught live by the W3b
+		// flip: `(A JOIN B JOIN C) LEFT JOIN D` — the box gated while its
+		// left leg stayed name-model, and ordinalLegColumns' mis-scope panic
+		// fired exactly as designed.
+		return wedgeGateDecision{Arity: arityPoison, Reason: "a leg contains a name-model join (name-model residency retires at S4)"}
 	}
 	if j.Kind != logical.JoinInner && t.inInnerCluster {
 		// An OUTER box that is a LEG of an enclosing name-model join (or of
@@ -150,9 +151,10 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// the partition rule's anchored re-enumeration (the RIGHT variant
 		// panicked). The INNER arm has carried this exact enclosure guard
 		// since Slice 2; the outer arms shipped without it — plans looked
-		// clean while rows were wrong. Ordinalizing outer boxes inside
-		// name-model parents is the QP-REF-BIND LEFT-widening item (TODO.md).
-		return wedgeGateDecision{Arity: arityPoison, Reason: "outer box enclosed in a name-model parent (mixed nesting stays name-model, QP-REF-BIND)"}
+		// clean while rows were wrong. The residual name-model parents here
+		// (existential/unnest flattens, aggregate boxes) retire at S4, the
+		// atomic demolition — this guard dies with them.
+		return wedgeGateDecision{Arity: arityPoison, Reason: "outer box enclosed in a name-model parent (name-model residency retires at S4)"}
 	}
 	if j.Kind == logical.JoinFull {
 		// FULL OUTER is the only genuinely opaque outer box: it is NEVER

@@ -3845,3 +3845,51 @@ serves with the whole-box drain pad).
 **c3 flips banked so far:** the LEFT-box-dup booked divergence SERVES
 (P5 pins: first leg [10 20] through the pad; second leg exactly one NULL pad)
 — the item-1 c5 loud-decline class narrows exactly as designed.
+
+**Correction to the c1 record (review round, Torvalds T1):** the c1 bullet
+claiming boundaries were carried "in BOTH derivation twins" was PREMATURE —
+the values twin (`OrdinalSeedLegWindows`) skipped the sub-window whose name
+equals the box run's alias, dropping the rightmost LEAF's boundary from its
+merged type while the executor twin emitted it. Fixed in c4 (the skip replaced
+by window REPLACEMENT per the naming rule: the box's name means its rightmost
+leaf), and the cross-agreement fixture now compares merged LEGS — the
+dimension whose absence let the drift ship green.
+
+## QP-REF-BIND item 3 — c4 record
+
+**c4 — the stranded-correlation keystone + review batch.** The three-reviewer
+NAK round's common root: after a dissolved LEFT box's child select merges up
+(SelectMergeRule), references to the merged-away box alias in RETAINED
+quantifiers' subtrees and in parent predicates re-bound BY NAME to the
+same-named pulled-up LEG (Go's rightmost-leaf box naming + the dissolution's
+alias reuse make the collision structural where Java's unique mints make it
+impossible). Two Java-parity fixes:
+
+1. `Reference.GetCorrelatedTo` now filters each member's own predicate/RV
+   correlations by its own quantifier aliases —
+   `AbstractRelationalExpressionWithChildren.computeCorrelatedTo` verbatim
+   (plus the canCorrelate disjunct on the child filter). Without it the
+   dissolved box's inner select looked FREE on the alias it binds and the
+   merge's translation captured the inner binding (the 42804 wrong-window
+   bake).
+2. SelectMergeRule translates retained subtrees SURGICALLY (Java's
+   `Quantifier.translateCorrelations` analog under Go's name collisions):
+   only BAKED references whose QOV carries the box's CONCAT type (arity ==
+   RC arity) collapse through the merged child's RC to the exact leg
+   reference; LAZY and LEG-level references stay intact and re-bind by name
+   to the pulled-up leg — substituting the RC under a lazy read would
+   FieldIndex first-match across the dup-bare-named concat. Positional-seed
+   children route via `OrdinalSeedLegWindows`; name-model children keep the
+   TranslationMap path unchanged.
+
+Batch: T1/codex#3 (values-twin leaf-window replacement + merged-LEGS
+cross-agreement, above), codex#2 (`gatedJoinLegTypes` registers buried bake
+windows), codex#4 (`spanAwareRow` box-alias reads window the LEAF — the
+first-match dup trap pinned white-box), T2 (`nullBorn` deleted — dead),
+T3/codex#1 (`WithNullability` carries `Legs`; both hand-rolled nullable
+copies collapsed onto it), G1 (the aggregate matrix over mixed-nesting
+clusters — both gate-arm classes × argument residence × orientations — the
+previously-panicking `SELECT c.id, COUNT(e.id) … LEFT … JOIN … GROUP BY`
+shape pins green), G3 (stale gate reasons → S4). The rfc153 typed plan pins
+stayed VERBATIM green; the item-2 residual + enclosure-lift FDB pins
+(previously red on this branch) are green both orientations.
