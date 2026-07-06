@@ -739,6 +739,18 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     matrix, prove green WITH ROW AGREEMENT. Graefe wants to design-ACK the harness design before it
     is built. **B2: item 3 + the unnest-residual slice must reach master** (they retire the last
     Group-B classes + the :157 guard).
+    **B1 PROTOTYPE FINDING (feat/rfc173-next, scratch spike, reverted — PROMISING):** a whole-gate
+    `forceOrdinalSpike` flag guarding the three circular declines (`&& !forceOrdinalSpike`), run over
+    the FULL sqldriver corpus (real FDB): (1) `:157` fires **0×** — already DEAD (item 3 retired it);
+    (2) `:143` fires 51×, `:190` fires 45× — heavily live; (3) the ENTIRE sqldriver corpus PASSES
+    under forced ordinalization of `:143`/`:190` — no panics (incl. the RFC153 joined-preserved
+    mixed-nesting matrix), all row/plan assertions hold. This partly CONTRADICTS the
+    "untestable-incrementally / forcing one panics ordinalLegColumns" concern: forcing the WHOLE gate
+    at once (no sibling stays name-model) ordinalizes CLEANLY — item 1/2/3's machinery appears
+    already ready for `:143`/`:190`. Preliminary (sqldriver only, not yet the dual-window differential
+    + embedded/core-query + fuzz + the Q4 row matrix). Open with Graefe: does this narrow B1 to a
+    coverage-completion + a PRE-CAP `:143`/`:190` retirement slice, or must the flip ride the cap
+    because the name-keyed executor reads (L1) only die there?
   - **Exit gate = 3-layer PROOF, never an inventory:** (1) static caller-free grep; (2) dynamic
     loud-marker panic in each of the 4 constructors, full corpus + fuzz, assert ZERO dynamic hits;
     (3) exhausted-decline matrix — one constructed query per gate `Reason` string (rfc173_cluster_
