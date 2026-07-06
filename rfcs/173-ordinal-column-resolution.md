@@ -710,6 +710,58 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   **Slices 2–3 standing obligation (Graefe):** every NEW positional-row birth site added for the
   join producers must extend the `DisablePositionalEmission` oracle gate, or the §5 differential
   silently loses coverage of the new frontier.
+
+  **S4 demolition DESIGN-ACK (Graefe, banked — verdict: ACK the sequencing + atomic-cap SHAPE;
+  NOT-YET on firing the cap).** The F1 "S4 ≡ one ~2-shift atomic commit, producers near-dead"
+  framing is SUPERSEDED — the anchored producers are the live DEFAULT fallback of a per-join binary
+  dispatch (`gateDecision.Gated ? buildOrdinalJoinResultValue : buildJoinResultValue→
+  NewAnchoredJoinRecord`, cascades_translator.go:4247-4262/:4527-4535; unnest :1223/:1461; group-by
+  rule_partition_select.go:536/:469). They die only when the GATE (`ordinalWedgeGateDecide`,
+  rfc173_cluster_gate.go:101) stops declining — i.e. S4 = make the gate ordinalize (or die loud) on
+  EVERY class. Rulings:
+  - **Sequencing (ACK):** incremental pre-cap ordinalization slices (item 1 ✓, item 2 ✓, item 3 +
+    unnest-residual in flight) each retire ONE decline class with CI green and the producer still
+    standing — the right model, keep it. The FINAL flag/trio/seeds/oracle deletion is IRREDUCIBLY
+    ONE atomic commit (the `AnchoredJoin` bool is a single shared flag threaded through ~8
+    value-layer branches + 5 rules + the executor oracle — no half-delete compiles).
+  - **Decline classes, not producers.** GROUP A — CIRCULAR declines (`:143` leg-contains-name-join,
+    `:157` outer-box-enclosed [item 3 retiring], `:190` inner-cluster-leg; + the bare-twin
+    `w5_unnest_gather.go:97`): lift FREE and SIMULTANEOUSLY when the name model is gone, but are
+    UNTESTABLE incrementally (force one to Gated and its still-name-model sibling panics
+    ordinalLegColumns). GROUP B — genuinely-blocked (`:112` existential-on-join ✓ item 2; `:106`
+    lateral-unnest = W4c/W5 + unnest-residual; `:128` dup-binding STAYS loud-decline, Java has no
+    such shape; `:200` arity<2 = nothing). Producer #4 (NewReEnumerationAnchoredRecord) DIES
+    MECHANICALLY (positionalMergeCase :536 + dispatch pin :544 already built) — no slice.
+  - **Two BLOCKERS before the cap fires. B1: build the POSITIVE whole-gate force-ordinalize SPIKE
+    HARNESS** (the twin of DisablePositionalEmission — there is no positive switch today; the
+    circular Group-A classes have NO other proof surface). Flip `ordinalWedgeGateDecide` to
+    unconditional Gated-or-loud, run the FULL corpus + dual-window differential + the Q4 FDB row
+    matrix, prove green WITH ROW AGREEMENT. Graefe wants to design-ACK the harness design before it
+    is built. **B2: item 3 + the unnest-residual slice must reach master** (they retire the last
+    Group-B classes + the :157 guard).
+  - **Exit gate = 3-layer PROOF, never an inventory:** (1) static caller-free grep; (2) dynamic
+    loud-marker panic in each of the 4 constructors, full corpus + fuzz, assert ZERO dynamic hits;
+    (3) exhausted-decline matrix — one constructed query per gate `Reason` string (rfc173_cluster_
+    gate.go:106/112/128/143/157/190/200) asserting ordinal EXPLAIN or loud 0AF00, never a silent
+    anchored plan. `AssertOrdinalJoinSeed` does NOT catch name-model regressions — rest on positive
+    ordinal coverage.
+  - **Bare-twin lift = MANDATORY row-level FDB e2e** (a plan-shape pin is structurally blind — the
+    class was declined precisely because last-leg-wins and positional-coexist resolve to DIFFERENT
+    datums): `SELECT * FROM a JOIN b` where both carry `ID` (and a `NAME` case) → assert BOTH columns,
+    declaration order, BOTH source datums correct; + a memo duplicate-name-identity pin; + a
+    column-ORDER pin (from Type ordinals); + an ordering-property pin (no spurious sort reappears on
+    an index-ordered join after the name→ordinal flip).
+  - **Landmines (cap conditions):** L1 — convert silent name-keyed reads to LOUD at the cap
+    (sortKeyFromResult/compareByField, legPhysicalOutputNames, recursiveRemapValues first-dot split)
+    — never nil-yielding. L2 — interning blowup: `select.go:251` arm-1 + Equals/semantic_hash flag
+    branches survive every pre-cap slice, die only in the cap; gate on the interning baseline pin +
+    a planning wall-clock bound on a many-identical-legs STAR corpus. L3 — CARVE-OUTS the cap must
+    NOT delete: `OrdinalFieldName` (ordinal infra), `select.go:274` default-false arm (F2 CTE-rename),
+    the lazy FieldValue identity arm (F3, gated on full FieldValue baking). L4 — verify
+    positionalTypeCache still bounded (rider #468). L5 — the §5 dualwindow differential + oracle die
+    WITH the name map (the Q3 dynamic marker must replace its coverage first).
+  Re-request Graefe's ACK on the spike-harness DESIGN before building it, and on the atomic cap's
+  actual diff (an ACK covers only the HEAD it reviewed).
 - **Slice 5 — Correlation-closure invariant always-on** (~1.5 shifts). Delete the
   exploration-hiding / re-exposure duality (§1.1 item 2). Make `computeCorrelatedTo` subtract
   locally-bound aliases when `canCorrelate` (Java parity). **Now** turn RFC-164 WS-2's
