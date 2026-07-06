@@ -3344,7 +3344,11 @@ One authority for three deferred pieces the W4-left review flagged (previously s
    bindings end-to-end. 7-shape FDB pin + 6 corpus entries live-verified + 2 dual-window
    declared-difference carve-outs (binding-qualified reads exist only positionally). Full
    record in RFC § "QP-REF-BIND item 1 — c4 record". Follow-on booked below: aggregate
-   output metadata drift (labels/types) vs Java.**
+   output metadata drift (labels/types) vs Java.
+   MERGED (2026-07-06): PR #481 squashed to master 36c938f0a after c5 (the minted-binding
+   loud-decline guard, RFC § c5 record) and c5b (P4e/P4f pins) — four-gate ACK on a789b66a9
+   (architecture + code-quality + both PR-side reviewers), CI 6/6, stress at master parity
+   (161.84s vs 161.68s). Item 3 UNBLOCKED.**
 2. **Existential-flatten ordinalization** — translateJoinWithExists keeps the ANCHORED seed
    until the 2+1 select's data-access/correlated-FlatMap implementation paths bind legs
    POSITIONALLY (the ordinal seed was corpus-reverted twice: BakedNameContextError live).
