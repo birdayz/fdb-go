@@ -304,7 +304,16 @@ validation gate.
     review-condition comment fixes. All four gates ACK'd the final HEAD.
 
   - [ ] **S4 atomic demolition** (LAST — gated on QP-REF-BIND items 1+2+3, the riders, and the
-    unnest-residual slice; sequencing ruling banked in the RFC): delete the flag + trio + the
+    unnest-residual slice; sequencing ruling banked in the RFC). **Gates now satisfied:** items
+    1+2+3 merged (item 3 = #483); rider 2 (aggregate metadata) DONE on feat/rfc173-next; rider 1
+    folds into S4 (flips as the ordinal seed widens); unnest-residual c1/c2/c3 DONE on
+    feat/rfc173-next. **The correlated-scalar prerequisite is DISCHARGED (W4b #465)** — JOIN-inner
+    + COMPUTED-scalar ordinalize; the lone `NewScalarSubqueryAnchoredRecord` producer is now the
+    UNGATED-OUTER residual (cascades_translator.go:3860). **Reachability baseline established:** no
+    existing sqldriver/core-query/embedded test hits :3860 (probed with a loud marker). S4's exit
+    gate = complete the empirical zero-producers proof over the ungated-outer shapes (unnest-outer,
+    existential-ON-outer), then delete. See the corrected RFC Slice-4 PREREQUISITE block. Then:
+    delete the flag + trio + the
     three seeds + `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag
     branches + 4 executor consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until
     now) — ONE commit, which also LIFTS the W5 bare-twin duplicate-column decline (the

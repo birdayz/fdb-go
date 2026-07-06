@@ -646,11 +646,32 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     permanent divergence. Decided explicitly here, not implicitly by whoever writes the
     `TranslationMap` rebase.
 - **Slice 4 — Retire `AnchoredJoin` (deletions)** (~2 shifts).
-  **PREREQUISITE (Graefe W4b design-ACK condition):** before deleting the name model, the W4b
-  correlated-scalar gate's name-model fallbacks must be eliminated — i.e. the InnerAlias/inner-leg
-  aliasing must be resolved so that JOIN-inner and COMPUTED-scalar correlated subqueries can
-  ordinalize (they currently stay name-model, see the W4b impl-correction notes). S4 cannot land
-  while any correlated-scalar shape still depends on `NewScalarSubqueryAnchoredRecord`. Delete
+  **PREREQUISITE (Graefe W4b design-ACK condition) — DISCHARGED (W4b, PR #465).** The prerequisite
+  as originally worded (JOIN-inner and COMPUTED-scalar correlated subqueries "currently stay
+  name-model"; InnerAlias/inner-leg aliasing unresolved) is **no longer accurate** — those shapes
+  already ordinalize. The `innerContainsJoin` (shape 2) and `innerScalarIsRowColumn`/
+  `innerHasAggregate` (shape 3) gates are DELETED; the InnerAlias type-collision
+  (`widenLegTypesFromPlan` twin-panic) is resolved by keying the inner leg on a FRESH
+  `UniqueCorrelationIdentifier()` (Java's `CorrelationIdentifier.uniqueID()`) instead of the SQL
+  alias — `cascades_translator.go:3834`, `rfc173_w4b_scalar_seed.go`. The COMPUTED scalar is
+  materialized at inner ordinal `_0` in `buildCorrelatedScalar`. So the INNER side ordinalizes
+  unconditionally now; what still touches `NewScalarSubqueryAnchoredRecord` is only the **OUTER**
+  side, and only for UNGATED outer clusters (below).
+  **Actual remaining S4 correlated-scalar work — a REACHABILITY PROOF + deletion, not an
+  implementation.** `NewScalarSubqueryAnchoredRecord` has exactly ONE production call site:
+  `cascades_translator.go:3860`, reached only when the single-source ordinal seed didn't fire AND
+  the outer is NOT a gated cluster (a gated outer declines LOUDLY at :3849-3858). The genuinely
+  ungated residual shapes are correlated scalars over an unnest-bearing / existential-ON outer
+  (dup-alias outers already decline loudly in `buildCorrelatedScalar`, the binding-unaware gap).
+  **Reachability baseline (established, feat/rfc173-next):** with :3860 instrumented as a loud
+  marker, the FULL sqldriver + core-query + embedded suites pass — i.e. no EXISTING test reaches
+  the anchored fallback. S4's exit gate must complete this into an EMPIRICAL zero-producers proof:
+  construct each ungated-outer shape (unnest-outer, existential-ON-outer) and assert it either
+  ordinalizes or declines cleanly (0AF00) — never :3860 — then delete the call site (replacing it
+  with the loud decline already above it). NOTE: Java has NO scalar-subquery-in-projection at all
+  (the grammar lacks `'(' query ')'` in expression position — verified 4.12.11.0), so this is a
+  Go read-side EXTENSION; Java is the reference only for the ordinal SHAPE, not the feature.
+  The mechanical deletions once :3860 is dead: Delete
   `value_anchored_join_record.go` entirely; delete `RecordConstructorValue.AnchoredJoin` and its
   preservation through `WithChildren`/`Replace`/simplifier/`Equals`/`semantic_hash`; delete the
   executor's bare/`ALIAS.COL`/`TYPE.COL` key writing and `qualifyAlias`/`qualifyTypeFallback`;
@@ -1290,6 +1311,12 @@ inners (incl. single-table aggregates) still ordinalize (`TestFDB_RFC173W4b_Scal
 Re-submitted for Graefe design-ACK.
 
 ### W4b impl correction 2: the inner gate is THREE conditions, not one (computed-scalar + S4 prerequisite)
+**[SUPERSEDED — shipped in W4b (PR #465).]** Both inner shapes below (JOIN-inner and COMPUTED
+scalar) now ordinalize; the gates described here as future work are DELETED. The COMPUTED scalar is
+materialized at inner ordinal `_0` in `buildCorrelatedScalar`; the JOIN-inner keys its leg on a
+fresh `UniqueCorrelationIdentifier()`. See the corrected Slice-4 PREREQUISITE block. The historical
+analysis below is retained for provenance.
+
 Shape-boundary probing (`TestFDB_RFC173W4b_ScalarInnerShapeProbe`) found a SECOND inner class the
 ordinal seed cannot consume, beyond join-inners: a **COMPUTED scalar** (`(SELECT UPPER(ename) …)`,
 `salary+1`, `CAST(x AS …)`). The inner flows the full NAME-MODEL source row and the expression is
@@ -1714,7 +1741,11 @@ commit — every prerequisite is an ordinalization slice, not a deletion.
 
 ### SURVIVING RESIDUAL (S4 cannot delete — four live seed producers)
 1. `NewScalarSubqueryAnchoredRecord` (`value_anchored_join_record.go:121`, live at
-   `cascades_translator.go:3256`) — computed / JOIN-inner / clustered-outer correlated scalars → **W4b**.
+   `cascades_translator.go:3860`) — **NARROWED (W4b #465):** computed / JOIN-inner / clustered-outer
+   correlated scalars now ORDINALIZE (inner-side done). The lone surviving producer is the
+   UNGATED-OUTER residual (correlated scalar over an unnest-bearing / existential-ON outer); dup-alias
+   outers decline loudly. No existing test reaches it — S4 completes the empirical zero-producers proof
+   over the ungated-outer shapes, then deletes. See the corrected Slice-4 PREREQUISITE block.
 2. `buildUnnestResultValue` AnchoredJoin (`cascades_translator.go:1405`, live at :1223) — multi-source
    / enclosed / under-existential lateral unnest → **W5**.
 3. `buildJoinResultValue`→`NewAnchoredJoinRecord` (:660, live at :3606/:3751) — LEFT/RIGHT-OUTER box,
