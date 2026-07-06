@@ -4046,3 +4046,22 @@ ruling) — NOT this slice.
    Verified in review: Explode over NULL → zero rows is Java's spec
    (RecordQueryExplodePlan:139), and the seed assert is untouched by
    collection values (it walks RC fields only).
+
+**Class-2 implementation note (pre-code, for the impl review):** the design
+review verified the CONSTRUCTOR (fused root+suffix) and the executor's
+span-side multi-accessor walk, but the RUNTIME leaf descent has a gap the
+review did not examine: Go materializes STRUCT columns as raw
+proto.Message values (query_result.go scalarProtoToGo MessageKind arm),
+and values.FieldValue.descendResolvedPath has no proto arm — a fused
+suffix over a struct column dies at the default arm (loud
+OrdinalResolutionError for pinned paths — fail-safe, never silent). The
+values package is deliberately protobuf-free today; Java's FieldValue
+evaluates MessageOrBuilder natively (FieldValue.eval →
+MessageHelpers.getFieldOnMessage). Proposed: port the Java behavior — a
+protoreflect descent arm in descendResolvedPath (field lookup by accessor
+name, case-insensitive, scalar conversion mirroring the executor's
+scalarProtoToGo) — accepting the protobuf import into values as Java
+parity (the no-proto purity was a Go-side layering choice, not a
+contract). The alternative (wrapping struct values at row
+materialization) touches every row path for one consumer. To be ruled on
+at the c1 implementation review.

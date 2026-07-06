@@ -128,10 +128,23 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// own type, own binding).
 	seg0 := strings.ToUpper(u.Segments[0])
 	ownerWindow, isOwner := legTypes[seg0]
-	if !isOwner || ownerWindow.typ == nil || ownerWindow.leafTyp == nil || len(u.Segments) != 2 {
+	if !isOwner || ownerWindow.typ == nil || ownerWindow.leafTyp == nil || len(u.Segments) < 2 {
 		return nil
 	}
-	arrIdx, found := ownerWindow.leafTyp.FieldIndex(strings.ToUpper(fieldName))
+	// The ROOT column of the collection path: for a single-segment path the
+	// classifier's proto-derived name; for a MULTI-SEGMENT path
+	// (unnest-residual class 2) the FIRST field segment — the remaining
+	// segments ride as a FUSED suffix (Java's lookupNestedField →
+	// ofFieldsAndFuseIfPossible shape) and descend the struct value at eval
+	// through FieldValue's proto-message arm. Suffix accessors are
+	// NAME-addressed (the proto descent resolves by field name); the
+	// classifier has already validated every intermediate as a singular
+	// record field.
+	rootField := strings.ToUpper(fieldName)
+	if len(u.Segments) > 2 {
+		rootField = strings.ToUpper(u.Segments[1])
+	}
+	arrIdx, found := ownerWindow.leafTyp.FieldIndex(rootField)
 	if !found {
 		return nil
 	}
@@ -143,6 +156,14 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	collection, err := values.NewFieldValueOfOrdinal(ownerQOV, ownerWindow.leafOffset+arrIdx)
 	if err != nil {
 		return nil
+	}
+	if len(u.Segments) > 2 {
+		suffix := make([]values.ResolvedAccessor, 0, len(u.Segments)-2)
+		for _, seg := range u.Segments[2:] {
+			suffix = append(suffix, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: 0})
+		}
+		fused := collection.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
+		collection = &values.FieldValue{Field: strings.ToUpper(fieldName), Typ: collection.Typ, Child: collection.Child, Resolved: fused}
 	}
 	// The baked node carries the leg type's field TYPE for the array column;
 	// the classifier's proto-derived element type is authoritative for the
@@ -219,8 +240,17 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// LEFT-cluster ONs cannot reference the element (SQL scope: bound after
 	// them) and stay unrewritten.
 	var preds []predicates.QueryPredicate
-	if qp, isQP := leftJoin.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
-		preds = append(preds, qp)
+	// INNER root only: an inner cluster root's ON is WHERE-equivalent and the
+	// gather (via gatherInnerClusterPreds' "the root's own ON is the caller's"
+	// contract) must hoist it here. A NON-inner root is the class-1 OPAQUE
+	// OUTER box: its ON is the outer join's GATING condition, already carried
+	// inside the box leg's own translation — hoisting it too would re-apply it
+	// as a flat-select filter and silently convert LEFT to INNER (the padded
+	// row's NULL-supplied columns fail the re-applied ON and the row drops).
+	if leftJoin.Kind == logical.JoinInner {
+		if qp, isQP := leftJoin.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
+			preds = append(preds, qp)
+		}
 	}
 	if j.OnPredicate != nil {
 		if qp, isQP := j.OnPredicate.(predicates.QueryPredicate); isQP {

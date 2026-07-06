@@ -51,6 +51,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // Canonical ISO 8601 layouts for temporal value formatting/parsing.
@@ -633,6 +635,20 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 				return nil, &OrdinalResolutionError{Field: acc.Field, Ordinal: acc.Ordinal, Available: ordinalRowNames(rec)}
 			}
 			cur = v
+		case proto.Message:
+			// A STRUCT column materializes as its raw proto message (the
+			// executor's row layer flows nested records verbatim) — descend
+			// by field NAME, Java's FieldValue.eval →
+			// MessageHelpers.getFieldOnMessage. Unset singular field = NULL
+			// (proto3 presence rules ride protoreflect.Has).
+			v, found := protoFieldByName(rec.ProtoReflect(), acc.Field)
+			if !found {
+				if f.Resolved.FrontierPinned {
+					return nil, &OrdinalResolutionError{Field: acc.Field, Ordinal: acc.Ordinal}
+				}
+				return nil, nil
+			}
+			cur = v
 		default:
 			if f.Resolved.FrontierPinned {
 				return nil, &OrdinalResolutionError{Field: acc.Field, Ordinal: acc.Ordinal}
@@ -641,6 +657,69 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 		}
 	}
 	return cur, nil
+}
+
+// protoFieldByName reads one field of a proto message by SQL identifier
+// (case-insensitive — proto fields are lower/snake, SQL identifiers upper),
+// converting scalars to the engine's row-value domain exactly as the
+// executor's record→row layer does (int widths → int64, enums → int64,
+// nested messages stay raw for further descent, repeated fields stay lists
+// for a downstream Explode). found=false when the descriptor has no such
+// field; an unset field returns (nil, true) — SQL NULL.
+func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
+	fields := m.Descriptor().Fields()
+	fd := fields.ByName(protoreflect.Name(strings.ToLower(name)))
+	if fd == nil {
+		for i := 0; i < fields.Len(); i++ {
+			if f := fields.Get(i); strings.EqualFold(string(f.Name()), name) {
+				fd = f
+				break
+			}
+		}
+	}
+	if fd == nil {
+		return nil, false
+	}
+	if !m.Has(fd) && fd.HasPresence() {
+		return nil, true
+	}
+	v := m.Get(fd)
+	if fd.IsList() {
+		list := v.List()
+		out := make([]any, 0, list.Len())
+		for i := 0; i < list.Len(); i++ {
+			out = append(out, protoScalarToRowValue(fd, list.Get(i)))
+		}
+		return out, true
+	}
+	return protoScalarToRowValue(fd, v), true
+}
+
+// protoScalarToRowValue converts one proto value to the engine's row-value
+// domain — the values-layer twin of the executor's scalarProtoToGo (kept in
+// lockstep; a divergence here surfaces as a comparison-type mismatch).
+func protoScalarToRowValue(fd protoreflect.FieldDescriptor, v protoreflect.Value) any {
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return v.Bool()
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return v.Int()
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind, protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return int64(v.Uint()) //nolint:gosec
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		return v.Float()
+	case protoreflect.StringKind:
+		return v.String()
+	case protoreflect.BytesKind:
+		return v.Bytes()
+	case protoreflect.EnumKind:
+		return int64(v.Enum())
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		return v.Message().Interface()
+	default:
+		return v.Interface()
+	}
 }
 
 func (f *FieldValue) Evaluate(evalCtx any) (any, error) {

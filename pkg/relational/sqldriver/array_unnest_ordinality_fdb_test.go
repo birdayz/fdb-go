@@ -201,6 +201,26 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		metadata.NewColumnSpec("XID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("WV", api.NewIntegerType(true), 2),
 	}, []string{"XID"})
+	// BXA/BXB/BXC: the RFC-173 unnest-residual class-1 trio, column names FULLY
+	// DISJOINT from every other table AND from each other (the W5 name-ambiguity
+	// gate declines shared bare names, and class 1 is specifically about the
+	// GATHERED path). BXA owns the array; BXB is the NULL-supplying side of a
+	// LEFT JOIN against BXA (BAREF matches BAID 1 and 3, NOT 2 — so id 2 is a
+	// padded row and the unnest of the PRESERVED side's own array must still
+	// fire); BXC is an extra inner leg that buries the outer box inside a
+	// larger cluster (the box-leg-owner shape).
+	b.AddTable("BXA", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("BAID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("BARR", api.NewArrayType(api.NewIntegerType(false), true), 2),
+	}, []string{"BAID"})
+	b.AddTable("BXB", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("BBID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("BAREF", api.NewLongType(true), 2),
+	}, []string{"BBID"})
+	b.AddTable("BXC", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("BCID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("BCW", api.NewLongType(true), 2),
+	}, []string{"BCID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -222,6 +242,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	exbDesc := md.GetRecordType("EXB").Descriptor
 	wsrcDesc := md.GetRecordType("WSRC").Descriptor
 	wauxDesc := md.GetRecordType("WAUX").Descriptor
+	bxaDesc := md.GetRecordType("BXA").Descriptor
+	bxbDesc := md.GetRecordType("BXB").Descriptor
+	bxcDesc := md.GetRecordType("BXC").Descriptor
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
@@ -327,6 +350,28 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		m.Set(d.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		return m
 	}
+	// bxaRec builds a BXA record; arr=nil leaves BARR unset (NULL) — the
+	// Explode-over-NULL → zero rows axis of the class-1 matrix.
+	bxaRec := func(id int64, arr []int32) proto.Message {
+		m := dynamicpb.NewMessage(bxaDesc)
+		m.Set(bxaDesc.Fields().ByName("BAID"), protoreflect.ValueOfInt64(id))
+		if arr != nil {
+			setIntArr(m, bxaDesc, "BARR", arr)
+		}
+		return m
+	}
+	bxbRec := func(id, ref int64) proto.Message {
+		m := dynamicpb.NewMessage(bxbDesc)
+		m.Set(bxbDesc.Fields().ByName("BBID"), protoreflect.ValueOfInt64(id))
+		m.Set(bxbDesc.Fields().ByName("BAREF"), protoreflect.ValueOfInt64(ref))
+		return m
+	}
+	bxcRec := func(id, w int64) proto.Message {
+		m := dynamicpb.NewMessage(bxcDesc)
+		m.Set(bxcDesc.Fields().ByName("BCID"), protoreflect.ValueOfInt64(id))
+		m.Set(bxcDesc.Fields().ByName("BCW"), protoreflect.ValueOfInt64(w))
+		return m
+	}
 
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
@@ -426,6 +471,18 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				m.Set(wauxDesc.Fields().ByName("WV"), protoreflect.ValueOfInt32(7))
 				return m
 			}(),
+			// BXA/BXB/BXC (RFC-173 unnest-residual class 1): BXB references BAID 1
+			// and 3 only, so BAID 2 is a LEFT-JOIN padded row (its own array must
+			// still explode) and BAID 3's matched row carries a NULL array (zero
+			// rows). BXC has the single id 5 the constant inner-leg ON keeps, and
+			// no BAID=5 twin — the reversed-polarity LEFT (BXC LEFT BXA) pads
+			// with a NULL array that must explode to zero rows.
+			bxaRec(1, []int32{10, 11}),
+			bxaRec(2, []int32{20}),
+			bxaRec(3, nil),
+			bxbRec(100, 1),
+			bxbRec(300, 3),
+			bxcRec(5, 50),
 		}
 		for _, r := range recs {
 			if _, e := store.SaveRecord(r); e != nil {
@@ -3830,6 +3887,73 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if types := embedded.ResultColumnTypesForPlan(mustPlan(t, md, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL"`), md); fmt.Sprintf("%v", types) != "[BIGINT INTEGER BIGINT INTEGER INTEGER]" {
 			t.Fatalf("star column types = %v, want [BIGINT INTEGER BIGINT INTEGER INTEGER] (the mixed element's INTEGER from the Explode collection)", types)
 		}
+	})
+
+	t.Run("RFC-173 unnest-residual class 1: box-leg and outer-box owners gather", func(t *testing.T) {
+		// Class 1: the unnest OWNER (BXA) is not a plain leg of the gathered
+		// cluster — it is buried inside a gated OUTER box (`BXA LEFT JOIN BXB`),
+		// optionally itself a LEG of a larger inner cluster (`... INNER JOIN
+		// BXC`). Pre-slice both shapes declined the gather: the outer-box-left
+		// form fell to the RESIDUAL binary FlatMap (one top-level FlatMap whose
+		// OUTER is the whole merged cluster and whose inner is the Explode); the
+		// box-LEG form could not plan AT ALL (SelectMerge stranded the declined
+		// residual's Explode collection — the ruling-1(ii) hole). Class 1
+		// GATHERS them: the flat select pairs the OPAQUE box leg with the
+		// Explode directly, so the Explode's FlatMap has the BOX (not the whole
+		// cluster) as its outer and Scan(BXC) joins OUTSIDE that Explode-FlatMap.
+
+		// (1)+(2) PLAN-SHAPE discriminator + row matrix, inner-cluster box-leg
+		// owner. Rows: BAID 1 explodes {10,11}; BAID 2 is BXB-padded but its
+		// OWN array {20} still explodes; BAID 3's NULL array explodes to zero
+		// rows. BXC's constant ON keeps its single row, contributing nothing
+		// but presence (it is what buries the box as a LEG of a larger inner
+		// cluster).
+		boxLegExplain := assertRowsOrdered(t,
+			`SELECT "BAID", "EL" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID" INNER JOIN BXC ON "BCID" = 5, BXA."BARR" AS "EL" ORDER BY "BAID", "EL"`,
+			[]string{"BAID=1|EL=10", "BAID=1|EL=11", "BAID=2|EL=20"})
+		// GATHERED signature: the Explode's FlatMap pairs the OPAQUE box
+		// directly (its outer IS the LEFT OUTER join, ON intact inside), and
+		// Scan(BXC) joins OUTSIDE that FlatMap. The RESIDUAL shape is one
+		// FlatMap over the WHOLE merged cluster — Scan(BXC) inside its outer.
+		if !strings.Contains(boxLegExplain,
+			"FlatMap(outer=NestedLoopJoin(LEFT OUTER, [1 preds], Scan(BXA), Scan(BXB)), inner=Explode") {
+			t.Fatalf("box-leg owner did not GATHER (the Explode FlatMap must pair the opaque LEFT box directly):\n%s", boxLegExplain)
+		}
+		if !strings.Contains(boxLegExplain, "Scan(BXC") {
+			t.Fatalf("Scan(BXC) missing entirely — the inside/outside check below would be vacuous:\n%s", boxLegExplain)
+		}
+		fmStart := strings.Index(boxLegExplain, "FlatMap(outer=")
+		fmInner := strings.Index(boxLegExplain[fmStart:], "inner=Explode")
+		if strings.Contains(boxLegExplain[fmStart:fmStart+fmInner], "Scan(BXC") {
+			t.Fatalf("RESIDUAL shape: Scan(BXC) sits INSIDE the Explode FlatMap's outer (the whole-cluster binary FlatMap), want it OUTSIDE:\n%s", boxLegExplain)
+		}
+
+		// (3) OUTER box directly as the unnest's left (no extra inner leg).
+		// Same rows; the load-bearing extra dimension is the ABSENCE of a
+		// hoisted PredicatesFilter: the box's gating ON must stay INSIDE the
+		// LEFT OUTER join. A hoisted copy re-applies it as a WHERE and drops
+		// the padded BAID=2 row (LEFT→INNER corruption — the regression this
+		// row matrix caught).
+		outerBoxExplain := assertRowsOrdered(t,
+			`SELECT "BAID", "EL" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID", BXA."BARR" AS "EL" ORDER BY "BAID", "EL"`,
+			[]string{"BAID=1|EL=10", "BAID=1|EL=11", "BAID=2|EL=20"})
+		if !strings.Contains(outerBoxExplain, "FlatMap(outer=NestedLoopJoin(LEFT OUTER") {
+			t.Fatalf("outer-box-left did not pair the box with its Explode:\n%s", outerBoxExplain)
+		}
+		if strings.Contains(outerBoxExplain, "PredicatesFilter") {
+			t.Fatalf("the box's gating ON leaked into a hoisted filter (LEFT→INNER corruption):\n%s", outerBoxExplain)
+		}
+
+		// (4) NULL-supplying owner polarity: BXA is the PADDED side (BXC 5 has
+		// no BAID 5 twin), so the lateral array is NULL on the padded row and
+		// explodes to zero rows — an empty result, not a NULL element row.
+		assertRows(t, `SELECT "BCID", "EL" FROM BXC LEFT JOIN BXA ON "BAID" = "BCID", BXA."BARR" AS "EL"`, nil)
+
+		// (5) AT-ordinality through the gathered box shape: ordinals restart
+		// per owner row (1,2 for BAID 1; 1 for the padded BAID 2).
+		assertRowsOrdered(t,
+			`SELECT "BAID", "EL", "ORDX" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID", BXA."BARR" AS "EL" AT "ORDX" ORDER BY "BAID", "EL"`,
+			[]string{"BAID=1|EL=10|ORDX=1", "BAID=1|EL=11|ORDX=2", "BAID=2|EL=20|ORDX=1"})
 	})
 }
 

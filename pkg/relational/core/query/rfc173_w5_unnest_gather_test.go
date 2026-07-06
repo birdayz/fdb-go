@@ -200,12 +200,14 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatal("segment 0 naming no gathered leg must DECLINE")
 	}
 
-	// (g) Multi-segment field paths decline (the bake addresses ONE ordinal of
-	// the owner's type).
+	// (g) A multi-segment path whose ROOT segment is not a column of the
+	// owner window declines (the class-2 lift routes VALID struct paths
+	// through the fused suffix; SRC has no column A, so the root lookup
+	// misses — re-fixtured when the lift landed, amendment-H discipline).
 	uDeep := &logical.LogicalUnnest{Segments: []string{"s", "A", "B"}, Alias: "EL"}
 	jDeep := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uDeep, logical.JoinInner, "")
 	if got := tr.translateGatheredUnnestCluster(jDeep, uDeep, innerCorr, values.NotNullLong, "A", unnestTrailing); got != nil {
-		t.Fatal("a multi-segment array path must DECLINE (single-ordinal bake)")
+		t.Fatal("a multi-segment path with a MISSING root column must DECLINE")
 	}
 }
 
@@ -568,10 +570,16 @@ func TestRFC173UR_C1_BoxLegOwner_Gathers(t *testing.T) {
 // 1(i)): a gated OUTER box as the unnest's LEFT gathers as ONE OPAQUE leg —
 // never its legs into the flat select — plus the Explode. The padded row's
 // NULL array explodes to zero rows downstream (Java's Explode-over-NULL).
+// The box carries a REAL ON predicate: the box's gating ON must stay INSIDE
+// the box leg and never hoist into the flat select's predicates (a hoisted
+// copy re-applies the ON as a WHERE and converts LEFT to INNER — the padded
+// row's NULL-supplied columns fail it and the row silently drops; the FDB
+// row-matrix pin caught exactly that with an ON-free box here).
 func TestRFC173UR_C1_OuterBoxLeft_Gathers(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
-	box := logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, "")
+	box := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft,
+		chainEqPredLocal("x", "XID", "s", "SID"))
 	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
 	j := logical.NewJoin(box, u, logical.JoinInner, "")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
@@ -583,6 +591,9 @@ func TestRFC173UR_C1_OuterBoxLeft_Gathers(t *testing.T) {
 	quants := gathered.GetQuantifiers()
 	if len(quants) != 2 {
 		t.Fatalf("quantifiers = %d, want 2 (the OPAQUE box + EL — the box's legs are never gathered)", len(quants))
+	}
+	if got := len(gathered.GetPredicates()); got != 0 {
+		t.Fatalf("flat select carries %d predicates, want 0 — the OUTER box's gating ON must stay inside the box, never hoist (LEFT→INNER corruption)", got)
 	}
 	coll := quants[1].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue().(*values.FieldValue)
 	qov := coll.Child.(*values.QuantifiedObjectValue)

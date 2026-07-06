@@ -908,25 +908,40 @@ func (t *cascadesTranslator) unnestArrayElementType(outerTable string, fieldSegm
 		return values.UnknownType, "", false, false
 	}
 	fields := rt.Descriptor.Fields()
-	// Only single-segment array fields are supported (the column directly on
-	// the outer source). A multi-segment path (t.struct.arr) is not a top-level
-	// FROM unnest shape in the yamsql corpus; treat as a missing field (the
-	// nested-struct unnest shape is not yet supported — table fallback).
-	if len(fieldSegments) != 1 {
-		return values.UnknownType, "", false, false
-	}
-	fd := fields.ByName(protoreflect.Name(strings.ToLower(fieldSegments[0])))
-	if fd == nil {
+	// Per-segment descent (unnest-residual class 2 — Java's
+	// SemanticAnalyzer.lookupNestedField STRUCT rule): every INTERMEDIATE
+	// segment must be a singular MESSAGE field (a repeated or non-message
+	// intermediate is not a descendable step; Java returns Optional.empty
+	// and the resolution falls through), and the FINAL segment must be
+	// repeated. A single-segment path takes zero descents — the prior
+	// behavior verbatim.
+	lookup := func(fs protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
+		if fd := fs.ByName(protoreflect.Name(strings.ToLower(name))); fd != nil {
+			return fd
+		}
 		// Case-insensitive fallback: proto field names are typically lower /
 		// snake, but the SQL identifier may be upper-cased.
-		for i := 0; i < fields.Len(); i++ {
-			f := fields.Get(i)
-			if strings.EqualFold(string(f.Name()), fieldSegments[0]) {
-				fd = f
-				break
+		for i := 0; i < fs.Len(); i++ {
+			if f := fs.Get(i); strings.EqualFold(string(f.Name()), name) {
+				return f
 			}
 		}
+		return nil
 	}
+	for _, seg := range fieldSegments[:len(fieldSegments)-1] {
+		fd := lookup(fields, seg)
+		if fd == nil {
+			// No such field on the source → not an unnest; table path tries.
+			return values.UnknownType, "", false, false
+		}
+		if fd.IsList() || fd.Kind() != protoreflect.MessageKind {
+			// A non-record (or repeated) INTERMEDIATE step: not a
+			// descendable path — present but not unnestable.
+			return values.UnknownType, "", false, true
+		}
+		fields = fd.Message().Fields()
+	}
+	fd := lookup(fields, fieldSegments[len(fieldSegments)-1])
 	if fd == nil {
 		// No such field on the source → not an unnest; let the table path try.
 		return values.UnknownType, "", false, false
@@ -1284,16 +1299,42 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// both legs), so the arity proxy left exactly that shape on the bare
 	// read. Only a genuine SINGLE-NAMESPACE outer (`FROM t, t.arr` — a
 	// scan/derived row, bare keys only) reads the bare field. RFC-142.
-	arrayFieldKey := fieldName
+	// For a MULTI-SEGMENT path (`t.a.b`, unnest-residual class 2) the root
+	// read is the FIRST field segment; the remaining segments descend the
+	// struct value at eval (the unpinned multi-accessor path — root by name
+	// key, suffix through FieldValue's proto-message arm, Java's
+	// FieldValue.ofFields shape).
+	rootField := fieldName
+	if len(u.Segments) > 2 {
+		rootField = strings.ToUpper(u.Segments[1])
+	}
+	arrayFieldKey := rootField
 	seg0 := strings.ToUpper(u.Segments[0])
 	if len(outerBoundAliases(j.Left)) != 1 {
-		arrayFieldKey = seg0 + "." + fieldName
+		arrayFieldKey = seg0 + "." + rootField
 	}
-	arrayValue := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(outerCorr),
-		arrayFieldKey,
-		values.NewArrayType(true, elementType),
-	)
+	var arrayValue values.Value
+	if len(u.Segments) > 2 {
+		accs := []values.ResolvedAccessor{{Field: arrayFieldKey, Ordinal: 0}}
+		for _, seg := range u.Segments[2:] {
+			accs = append(accs, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: 0})
+		}
+		arrayValue = &values.FieldValue{
+			Field: fieldName,
+			Typ:   values.NewArrayType(true, elementType),
+			Child: values.NewQuantifiedObjectValue(outerCorr),
+			// UNPINNED: the residual's rows are name-model — the root key
+			// resolves against the Datum; only the suffix descends
+			// positionally-agnostic through the struct value.
+			Resolved: &values.FieldPath{Accessors: accs},
+		}
+	} else {
+		arrayValue = values.NewFieldValue(
+			values.NewQuantifiedObjectValue(outerCorr),
+			arrayFieldKey,
+			values.NewArrayType(true, elementType),
+		)
+	}
 	withOrdinality := u.AtAlias != ""
 	explode := expressions.NewExplodeExpressionWithOrdinality(arrayValue, withOrdinality)
 	explodeRef := expressions.InitialOf(explode)
@@ -1332,7 +1373,12 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	//     name-model (see unnestExistsSeedSafe / existsInnerScopeCollidesOuter).
 	// A decline (nil) falls back to the name-model builder.
 	var resultValue values.Value
-	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) {
+	// len(u.Segments) == 2: a MULTI-SEGMENT collection is the UNPINNED
+	// name-root form (unnest-residual class 2) — the W4c ordinal seed's
+	// positional outer row cannot serve its root name-read; it stays on the
+	// name-model builder until the baked fused-collection form lands with
+	// the gather-side class-2 wiring.
+	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) && len(u.Segments) == 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 	}
 	if resultValue == nil {
