@@ -316,11 +316,17 @@ validation gate.
     :3860 (it declines at PLANNING, "could not plan query" 0AF00 — a pre-existing limitation, not
     the anchored fallback); a dup-alias outer declines loudly in buildCorrelatedScalar; a
     plain-single outer ordinalizes. So the research's assumption that unnest-outer "keeps the
-    anchored record" is WRONG — it declines elsewhere. **Remaining for the S4 exit gate:** probe the
-    last candidate (correlated scalar over an existential-ON outer) + any exotic shape, to complete
-    the empirical zero-producers proof; if all decline/ordinalize (never :3860), delete the call
-    site (replace with the loud decline already above it). See the corrected RFC Slice-4
-    PREREQUISITE block. Then:
+    anchored record" is WRONG — it declines elsewhere. **BUT S4 is NOT near-done: only the SCALAR
+    producer (#1) is near-dead. The name model's CORE is heavily live** — `NewAnchoredJoinRecord`
+    (producers #2 unnest + #3 join) at cascades_translator.go:318/:698/:1528 (every join + unnest
+    result value), and `NewReEnumerationAnchoredRecord` (#4) at rule_partition_select.go:469
+    (GROUP-BY over an anchored parent). Retiring these = making EVERY join/unnest/group-by
+    ORDINALIZE = the full RFC-173 endgame, a fresh multi-shift campaign (the RFC's ~2-shift estimate
+    is on top of these three producers, NOT just :3860). **Remaining for the S4 exit gate:** the
+    empirical zero-producers proof must cover ALL FOUR producers (probe #1's last existential-ON
+    shape; then retire #2/#3/#4 by ordinalizing their shapes), then the atomic deletion. Gated on a
+    Graefe RFC DESIGN-ACK of the demolition plan + all four impl gates (codex incl.). See the
+    corrected RFC Slice-4 PREREQUISITE block. Then:
     delete the flag + trio + the
     three seeds + `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag
     branches + 4 executor consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until
