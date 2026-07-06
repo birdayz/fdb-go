@@ -98,39 +98,6 @@ func NewAnchoredJoinRecord(legs []AnchoredJoinLeg) *RecordConstructorValue {
 	return rc
 }
 
-// NewScalarSubqueryAnchoredRecord builds the source-anchored result value for a
-// correlated-scalar-subquery join seed (RFC-077 7.6), replacing the retired opaque
-// merge seed. The outer leg is anchored exactly
-// as a binary join leg (bare + qualified + dotted-verbatim, via NewAnchoredJoinRecord),
-// so the outer projections resolve both bare and qualified. The inner leg is the
-// scalar subquery's SINGLE exposed value, anchored with one field:
-//
-//   - Name: <innerAlias>.<scalarColKey> (upper-cased) — EXACTLY the field name
-//     replaceScalarSubqueryRef reads (it qualifies the scalar reference under the
-//     inner quantifier's alias), so composeFieldOverConstructor resolves it by name;
-//   - Value: FieldValue(QOV(innerAlias), scalarColKey) — reads the inner row's
-//     scalar by the key the inner quantifier's row carries it under.
-//
-// This re-qualifies scalarColKey under innerAlias even when scalarColKey is itself
-// DOTTED (a non-aggregate subquery keeps its source qualifier, e.g. "C.NAME"),
-// which NewAnchoredJoinRecord cannot do (it propagates dotted leg columns verbatim).
-// The inner field has NO bare form: the projection always reads the scalar via the
-// qualified name, and the executor's runtime mergeRows likewise only ever exposes
-// the inner scalar prefixed under innerAlias — so a bare inner field would have no
-// consumer and could spuriously shadow an outer column of the same bare name.
-func NewScalarSubqueryAnchoredRecord(outer AnchoredJoinLeg, innerAlias CorrelationIdentifier, scalarColKey string) *RecordConstructorValue {
-	base := NewAnchoredJoinRecord([]AnchoredJoinLeg{outer})
-	fields := append([]RecordConstructorField(nil), base.Fields...)
-	innerQOV := NewQuantifiedObjectValue(innerAlias)
-	fields = append(fields, RecordConstructorField{
-		Name:  strings.ToUpper(innerAlias.Name()) + "." + strings.ToUpper(scalarColKey),
-		Value: NewFieldValue(innerQOV, scalarColKey, UnknownType),
-	})
-	rc := NewRecordConstructorValue(fields...)
-	rc.AnchoredJoin = true
-	return rc
-}
-
 // anchoredColumnsByQuantifier groups a parent source-anchored join record's
 // DOTTED fields by the QUANTIFIER each field's value is anchored to (RFC-077 7.6
 // re-enumeration). Each parent field is FieldValue(QOV(q), "<dottedKey>") (or a

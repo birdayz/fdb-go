@@ -3,8 +3,9 @@ package query
 // RFC-173 W4b shape 1 — white-box pins for the clustered-outer correlated-
 // scalar ordinal path: the pull-up spine, the dotted seed shape, the
 // carrier-kind enumeration, non-mutation, and the BOTH-DIRECTION dispatch pin
-// (ordinal reachable for gated outers / anchored residual still reachable for
-// ungated outers / decline for the silent-NULL class). The FDB e2e matrix
+// (ordinal reachable for gated outers / loud decline for the ungated
+// dup-poisoned class since the S4/R3 anchored-fallback retirement / decline for
+// the silent-NULL class). The FDB e2e matrix
 // (rfc173_w4b_clustered_outer_fdb_test.go) proves rows + plan stability.
 
 import (
@@ -408,17 +409,20 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 	}
 
 	// Direction 2b: a GENUINELY-UNGATED outer (dup leg bindings poison the
-	// gate) + rightmost-only correlation — the anchored residual stays
-	// reachable until S4 (ruling F-C: the constructor survives for ungated
-	// classes).
+	// gate) + a correlated scalar. RFC-173 S4 (R3) RETIRED the name-model
+	// NewScalarSubqueryAnchoredRecord fallback — it was this constructor's sole
+	// caller and no SQL query reaches it (the binder rejects the `FROM x, x`
+	// duplicate table alias; only this direct-tree white-box path builds it).
+	// The shape is genuinely ambiguous (which `x` does the correlation mean?),
+	// so it now declines LOUDLY (correct-or-loud) instead of seeding an anchored
+	// record over indistinguishable legs.
 	tr2b := newGateTranslator(t)
 	dupUngated := clusteredProject(inner(scan("Order", "x"), scan("Customer", "x")), clusteredCSQ("x", "CUSTOMER_ID"))
-	expr2b := tr2b.translateProjectWithCorrelatedScalar(dupUngated)
-	if expr2b == nil {
-		t.Fatalf("ungated (dup-poisoned) outer + rightmost-only correlation must keep the anchored fallback, err=%v", tr2b.translateErr)
+	if expr2b := tr2b.translateProjectWithCorrelatedScalar(dupUngated); expr2b != nil {
+		t.Fatal("dup-poisoned outer + correlated scalar must decline LOUDLY (anchored fallback retired in S4), got a translation")
 	}
-	if rc2b := seedOf(t, expr2b); !rc2b.AnchoredJoin {
-		t.Fatal("ungated-outer residual must seed the anchored record (the surviving constructor caller until S4, ruling F-C)")
+	if tr2b.translateErr == nil || !strings.Contains(tr2b.translateErr.Error(), "duplicate leg bindings") {
+		t.Fatalf("dup-poisoned outer decline = %v, want the ungated-cause (gate reason: duplicate leg bindings) decline", tr2b.translateErr)
 	}
 
 	// Direction 3 (item-3 flip): the gated joined-preserved outer +
@@ -452,10 +456,12 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 // TestRFC173W4b_InnerOwnAliasNotOuterRef pins the classifier's skip set: an
 // inner that JOINS a table the outer FROM also binds (same alias — here the
 // inner joins Order AS o while the outer's FIRST leg is Order o) references
-// its OWN copy under SQL scoping. Misclassifying those refs as outer-leg refs
-// flips nonRightmost and spuriously DECLINES a rightmost-correlated query the
-// name-model fallback handles today (the ordinal path itself correctly
-// declines on the alias shadow — the fallback must then still fire).
+// its OWN copy under SQL scoping. This query IS correctly classified (the only
+// outer ref is the rightmost leg C), so the ordinal dispatch declines on the
+// alias shadow and the shape reaches the GATED loud decline (item-3 ruling F-C:
+// anchored alias-keyed reads over a positional row are the mixed-model class).
+// Misclassifying those refs as outer-leg refs would instead flip nonRightmost
+// and spuriously EARLY-decline via the shape-1 top-decline, masking that path.
 func TestRFC173W4b_InnerOwnAliasNotOuterRef(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)

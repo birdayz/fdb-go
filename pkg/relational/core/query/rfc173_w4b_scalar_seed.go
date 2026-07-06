@@ -8,12 +8,13 @@ import (
 )
 
 // scalarSubqueryOrdinalSeed builds the ORDINAL result-value seed for a
-// correlated-scalar-subquery-in-projection join (RFC-173 W4b), replacing the
-// name-model NewScalarSubqueryAnchoredRecord so the seed survives the S4
-// name-model deletion. Emitted ONLY when the caller has verified the OUTER leg
-// is a SINGLE SOURCE (clusterArity(p.Input)==1): ordinalizing a flattened
-// multi-table outer cluster to a bare positional concat erases the buried
-// source names, so a clustered outer stays name-model.
+// correlated-scalar-subquery-in-projection join (RFC-173 W4b). It is the
+// ordinal counterpart to the name-model correlated-scalar anchored record,
+// which was DELETED in S4 (R3) — the single-source ordinal seed and the
+// clustered-outer ordinal dispatch (translateClusteredOuterScalar) between them
+// own every reachable correlated-scalar shape. Emitted ONLY when the caller has
+// verified the OUTER leg is a SINGLE SOURCE (clusterArity(p.Input)==1): a
+// multi-table outer cluster is owned by the clustered-outer ordinal dispatch.
 //
 // Shape (Java LogicalOperator.convertToExpressions — ofOrdinalNumber per flowed
 // column): the OUTER leg's columns become ofOrdinal(QOV(outer), 0..n-1), and the
@@ -29,8 +30,9 @@ import (
 // resolves through the span type, exactly as the name model's qualified form
 // did).
 //
-// Returns nil (DECLINE — the caller falls back to the name model) when the outer
-// leg is untranslatable. The AssertOrdinalJoinSeed on the constructed output is
+// Returns nil (DECLINE — the caller loud-declines; the name-model fallback was
+// retired in S4/R3) when the outer leg is untranslatable. The
+// AssertOrdinalJoinSeed on the constructed output is
 // the executor-contract tripwire (distinct from the input declines): past the
 // shape it can only trip on a code bug, never on declinable input.
 //
@@ -48,7 +50,7 @@ import (
 func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string) values.Value {
 	outerType := t.ordinalLegType(outerOp)
 	if outerType == nil || len(outerType.Fields) == 0 {
-		return nil // decline → name-model fallback
+		return nil // decline → caller loud-declines
 	}
 
 	var fields []values.RecordConstructorField

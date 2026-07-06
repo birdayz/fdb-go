@@ -74,3 +74,6 @@ website/public/
 website/resources/
 website/.hugo_build.lock
 .playwright-mcp/
+
+# ephemeral working notes (belong in /tmp scratchpad or shifts/ handovers)
+scratchpad/

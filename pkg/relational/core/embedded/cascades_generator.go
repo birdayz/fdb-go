@@ -3735,8 +3735,8 @@ func findUnfoldableProjectedExists(op logical.LogicalOperator) string {
 		// existential SelectExpression whose result value is the projection
 		// RecordConstructor evaluated by the FlatMap, while the correlated-scalar
 		// path (translateProjectWithCorrelatedScalar) builds a DIFFERENT structure
-		// — a LEFT-OUTER join select anchored on the outer row with
-		// NewScalarSubqueryAnchoredRecord and its own per-row LIMIT-peel. Composing
+		// — a LEFT-OUTER join select over the outer row (the ordinal scalar seed)
+		// with its own per-row LIMIT-peel. Composing
 		// both into one SelectExpression is a 3-way quantifier nest the NLJ rule
 		// does not implement (the multi-quantifier boundary the port rejects).
 		// Without this check the fold's early return in translateProject bypasses

@@ -3734,19 +3734,18 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// RFC-173 W4b shape 1: a MULTI-TABLE outer cluster dispatches to the
 	// clustered-outer ordinal path first. decline=true is the CORRECT-or-LOUD
 	// policy: a known non-rightmost correlation that did not ordinalize would
-	// silently NULL (JOIN..ON / LEFT outers) or mis-plan (comma clusters) on
-	// the name model below — refuse to translate instead.
+	// silently NULL (JOIN..ON / LEFT outers) or mis-plan (comma clusters) under
+	// an anchored fallback — refuse to translate instead.
 	if sel, decline := t.translateClusteredOuterScalar(p, csq); sel != nil || decline {
 		return sel
 	}
 
-	// RFC-173: on the residual NAME-MODEL path below (ungated outers; the
-	// single-source ordinal decline), the 2-leg anchored seed absorbs mergeable
-	// leg selects post-flattening — a join nested in either leg lands in a
-	// ≥3-quantifier name-model select, so both legs translate enclosed. (The
-	// gated-cluster ordinal path above lifts the enclosure for its outer leg;
-	// this poisoning survives only for the name-model residual, until
-	// W4-left/W5/S4 retire it.)
+	// The outer of the correlated scalar translates ENCLOSED (a join nested in
+	// it stays name-model). This originally fed the 2-leg name-model anchored
+	// seed, RETIRED in S4 (R3); it is kept for the outer's own translation. The
+	// gated-cluster ordinal path above (shape 1) handles every multi-table
+	// outer; only single-source outers (the ordinal seed's domain) and ungated
+	// outers (which decline below) reach here.
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = true
 	defer func() { t.inInnerCluster = prevEnclosure }()
@@ -3792,14 +3791,14 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// quantifier's row carries the scalar under the key scalarCol (the runtime
 	// mergeRows PREFIXES every inner key with innerAlias, dots and all, so
 	// <innerAlias>.<scalarCol> resolves iff the inner key == scalarCol; it does).
-	// NewScalarSubqueryAnchoredRecord anchors the inner leg with that SINGLE field —
-	// named EXACTLY <innerAlias>.<scalarCol> and valued FieldValue(QOV(innerAlias),
-	// scalarCol) — so composeFieldOverConstructor folds the scalar reference onto the
-	// inner leg with no NULL, whether or not scalarCol is itself dotted (a
-	// non-aggregate subquery keeps its table qualifier, "C.NAME"; the dedicated
-	// builder re-qualifies it under innerAlias rather than propagating it verbatim as
-	// NewAnchoredJoinRecord would). The outer leg carries its derivable columns so the
-	// (bare or qualified) outer projections resolve too.
+	// The ordinal seed (scalarSubqueryOrdinalSeed) names the inner leg's SINGLE
+	// field EXACTLY <innerAlias>.<scalarCol> and values it ofOrdinal(QOV(innerCorr),
+	// 0) — so composeFieldOverConstructor folds the scalar reference onto the inner
+	// leg with no NULL, whether or not scalarCol is itself dotted (a non-aggregate
+	// subquery keeps its table qualifier, "C.NAME"; the RC field NAME carries the
+	// qualified form the projection reads while the leg is keyed by a fresh unique
+	// correlation). The outer leg carries its derivable columns so the (bare or
+	// qualified) outer projections resolve too.
 	//
 	// Untranslatable when the outer columns are not derivable (only the catalog-free
 	// nil-md path — production always passes md): the opaque-seed fallback was RETIRED
@@ -3811,9 +3810,9 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	}
 	// RFC-173 W4b: ordinalize the 2-leg seed when the OUTER is a SINGLE SOURCE
 	// (clusterArity==1); the clustered-outer dispatch above already ordinalized
-	// the gated multi-table outers (shape 1). The name model is deleted in S4,
-	// so this ordinal seed is what keeps the single-source correlated-scalar
-	// extension alive. A decline (nil) falls back to the name model.
+	// the gated multi-table outers (shape 1). The name-model anchored fallback
+	// was RETIRED in S4 (R3), so this ordinal seed is the sole surviving
+	// correlated-scalar seed; a decline (nil) loud-declines below.
 	//
 	// The former innerScalarIsRowColumn guard (shape 3) is GONE: a COMPUTED scalar
 	// is now MATERIALIZED as the inner's projected output (buildCorrelatedScalar,
@@ -3829,7 +3828,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// collide with the seed's 1-field inner leg at widenLegTypesFromPlan
 	// (see scalarSubqueryOrdinalSeed).
 	var resultValue values.Value
-	innerLegCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
+	var innerLegCorr values.CorrelationIdentifier
 	if t.clusterArity(p.Input) == 1 {
 		ordinalInnerCorr := values.UniqueCorrelationIdentifier()
 		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, p.Input, ordinalInnerCorr, csq.InnerAlias, scalarCol)
@@ -3838,38 +3837,44 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		}
 	}
 	if resultValue == nil {
-		// RFC-173 item 3 (ruling F-C): a GATED outer must never seed the
-		// name-model anchored record — the gated cluster's rows are
-		// POSITIONAL, and the anchored record's alias-keyed reads over them
-		// are the mixed-model silent-NULL class. The pull-up/ordinal paths
-		// above own every gated shape; a gated outer reaching this fallback
-		// is a dispatch gap — decline LOUDLY. Genuinely UNGATED outers
-		// (unnest joins, existential-ON, unminted-dup residuals,
-		// seed-declined single sources) keep the anchored record until S4.
+		// RFC-173 S4 (R3): the name-model NewScalarSubqueryAnchoredRecord
+		// fallback is RETIRED — a full-corpus census reached it from no SQL
+		// query. A correlated scalar whose outer did not ordinalize declines
+		// LOUDLY (correct-or-loud, never a silent name-model result). Probe the
+		// gate ONCE for the diagnosis:
+		//   - a GATED outer reaching here is a dispatch gap — its rows are
+		//     POSITIONAL, so an anchored (alias-keyed) read would silent-NULL;
+		//   - an UNGATED outer never had a correct anchored home either (the
+		//     retired fallback resolved only single-source outers; every merged
+		//     multi-source row it would have silent-NULLed). The gate's own
+		//     Reason names the real ungated cause (dup-poisoned `FROM x,x`,
+		//     lateral unnest, existential-ON, …) — none reachable from SQL today,
+		//     but a loud decline with the accurate reason beats a hand-guessed one.
 		if cj := peelToClusterJoin(p.Input); cj != nil {
 			prevEnclosure := t.inInnerCluster
 			t.inInnerCluster = false
-			gated := t.ordinalWedgeGateDecide(cj).Gated
+			d := t.ordinalWedgeGateDecide(cj)
 			t.inInnerCluster = prevEnclosure
-			if gated {
+			if d.Gated {
 				t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-					"correlated scalar subquery: the gated outer cluster's ordinal dispatch declined (positional rows cannot take the anchored fallback)"))
-				return nil
+					"correlated scalar subquery: the gated outer cluster's ordinal dispatch declined (positional rows cannot take an anchored fallback)"))
+			} else {
+				t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+					"correlated scalar subquery: the outer did not ordinalize (%s) — unclassifiable for the ordinal seed", d.Reason))
 			}
+		} else {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"correlated scalar subquery: the single-source outer is not derivable for the ordinal seed"))
 		}
-		resultValue = values.NewScalarSubqueryAnchoredRecord(
-			values.AnchoredJoinLeg{Alias: values.NamedCorrelationIdentifier(outerAlias), Columns: outerCols},
-			values.NamedCorrelationIdentifier(csq.InnerAlias),
-			scalarCol,
-		)
+		return nil
 	}
 
 	// With no user LIMIT, the scalar must yield AT MOST ONE inner row per outer
 	// row: mark the inner quantifier strict-single so ImplementNestedLoopJoinRule
 	// wraps it in a strict FirstOrDefault (a second row → 21000). A user LIMIT
 	// leaves StrictSingle false — the LIMIT is the user's deliberate truncation.
-	// The quantifier carries innerLegCorr — the seed's fresh unique id on the
-	// ordinal path, the SQL alias on the name-model fallback.
+	// The quantifier carries innerLegCorr — the ordinal seed's fresh unique id
+	// (the sole surviving path; the name-model fallback was retired in S4/R3).
 	var innerQ expressions.Quantifier
 	if csq.StrictSingle {
 		innerQ = expressions.NamedForEachStrictSingleQuantifier(innerLegCorr, innerRef)
