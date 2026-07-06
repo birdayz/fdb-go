@@ -312,6 +312,12 @@ validation gate.
     OrdinalFieldName SURVIVES (ordinal infrastructure); `select.go:274` survives for the
     CTE-rename slice. Exit gate: EMPIRICAL zero-anchored-producers proof (caller-free
     constructors, exhausted decline reasons), never inventory argument.
+    S4 rider (item-3 c4 review follow-up): extend the span/window cross-agreement
+    harness with DATUM-KEY accounting — datumFromSpans was a fourth layout site that
+    stayed misaligned while the three window sites agreed (the silent-zero aggregate
+    inversion); the FDB cells tripwire it per-shape today, but the class closes
+    structurally only when the harness compares Datum keys too. Moot if S4 retires
+    the coexistence Datum outright — decide at demolition time.
   - [ ] SEPARATE later slices (F2/F3): CTE-rename `select.go:274` widening (gated on CTE-column-rename
     ordinalization); lazy name-identity arm deletion (gated on FULL FieldValue baking, NOT S4).
 - [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
