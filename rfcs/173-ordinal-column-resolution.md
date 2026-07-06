@@ -747,10 +747,22 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     mixed-nesting matrix), all row/plan assertions hold. This partly CONTRADICTS the
     "untestable-incrementally / forcing one panics ordinalLegColumns" concern: forcing the WHOLE gate
     at once (no sibling stays name-model) ordinalizes CLEANLY — item 1/2/3's machinery appears
-    already ready for `:143`/`:190`. Preliminary (sqldriver only, not yet the dual-window differential
-    + embedded/core-query + fuzz + the Q4 row matrix). Open with Graefe: does this narrow B1 to a
-    coverage-completion + a PRE-CAP `:143`/`:190` retirement slice, or must the flip ride the cap
-    because the name-keyed executor reads (L1) only die there?
+    already ready for `:143`/`:190`. **Graefe design-ACK'd (2nd round): retire `:143`/`:190` as a
+    PRE-CAP NARROWING slice** (not a blanket delete — a fail-closed guard that gates iff the subtree
+    fully ordinalizes, declines iff a genuinely-name-model leaf [dup-binding/unnest/scalar]; the
+    ordinalEligible recursion is the shape). L1 does NOT gate them (a gated join never touches the
+    name-keyed reads), so they go pre-cap. The CERTIFICATE is a spike-OFF-vs-ON ROW DIFFERENTIAL
+    (NOT the dual-window, which degenerates on the new frontier — both its modes carry the ordinal
+    RV). **B1-harness WALL (this session):** an ISOLATED off-vs-on differential could NOT be built —
+    11 constructed join shapes (incl. group-by/distinct/aggregate/union/ORDER-BY over 3-way joins)
+    fire `:143`/`:190` **zero** times (markers), because SelectMergeRule flattens the seed decisions
+    away; the 51+45 corpus firings come from specific queries the gate cannot trace back to SQL (it
+    works on logical operators, no query text). **Conclusion: the B1 certificate must be
+    CORPUS-LEVEL** — run the real SQL corpus (sqldriver + embedded + core-query) twice, spike-off vs
+    spike-on, assert identical result sets — not a hand-constructed shape set. That corpus-level
+    off-vs-on differential harness + the fail-closed narrowing + EXPLAIN/ordering pins + fuzz is the
+    next-phase B1 slice (codex-gated review). The committed spike flag was reverted (a flag with only
+    a vacuous isolated harness is dead code); it re-lands with the corpus-level harness.
   - **Exit gate = 3-layer PROOF, never an inventory:** (1) static caller-free grep; (2) dynamic
     loud-marker panic in each of the 4 constructors, full corpus + fuzz, assert ZERO dynamic hits;
     (3) exhausted-decline matrix — one constructed query per gate `Reason` string (rfc173_cluster_
