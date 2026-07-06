@@ -4074,3 +4074,54 @@ the wording; classify against live Java 4.12.11.0 before the slice's
 exit (Java's lookupNestedField returns empty for a non-STRUCT
 intermediate and the resolution falls through — the error CLASS may
 differ).
+
+**Unnest-residual c1 review NAK round (codex + Graefe + Torvalds).**
+Both in-session gates and codex NAK'd; every finding fixed, each red-first
+where discriminable:
+
+- **codex P1 / Graefe #1 (silent LEFT→INNER):** gatherInnerClusterPreds ran
+  UNCONDITIONALLY for the opaque outer box, re-applying the box's nested
+  inner-cluster ON flat over the NULL-padded rows and dropping the preserved
+  row — the ON-hoist bug's twin. Guarded with JoinInner; pinned
+  TestRFC173UR_C1_OpaqueBox_NestedClusterPredsStayInside (red-proven: the
+  reverted guard leaks 1 predicate).
+- **Torvalds #1 / Graefe #2 (the SelectMerge/Explode arm is dead + false
+  claim):** Graefe proved the arm NEVER fires in the real pipeline — box legs
+  are structurally unmergeable (outer boxes opaque per the ChildrenAsSet
+  guard, inner boxes pre-flattened by legsOfGatedJoin). The arm is retained
+  as DEFENSIVE (if a future rewrite makes box legs mergeable it prevents the
+  stranding), with the comment corrected to say so and a white-box sentinel
+  (TestSelectMergeRule_TranslatesExplodeSiblingCollection, a hand-built
+  FireExpressionRule memo) that red-proves it — deleting the arm now fails a
+  test, closing the no-sentinel gap. The false "SelectMerge stranded the
+  residual's Explode collection" mechanism claim is corrected in the c1
+  commit record and the FDB test comment (the box-leg form failed to plan
+  pre-slice because the residual cannot resolve an owner buried in a box, not
+  because of this arm).
+- **codex P2 / Graefe #3 / Torvalds #2 (shape guard lie + self-ref + no
+  tests):** the one-name-one-shape guard compared field COUNT only. Now full
+  api.StructType.Equal (names + indexes + recursive types), with an identity
+  short-circuit so a self-referential struct is accepted rather than
+  mis-flagged mid-recursion. Five new unit tests
+  (metadata/struct_column_test.go: nested descriptor, struct-in-struct, dup
+  same-shape accept, dup different-shape REJECT red-proven, unnamed reject).
+- **Graefe #4 (Java-parity claim wrong):** the builder emits struct
+  descriptors PER-TABLE nested; Java emits FILE-LEVEL template-wide. Corrected
+  to a documented DIVERGENCE (wire-safe: struct bytes are placement-
+  independent, and DDL can't declare struct columns).
+- **Graefe #5 (proto import ruling + drift):** the proto import into values
+  is accepted (Java's MessageHelpers.getFieldOnMessage is exactly this
+  layer). The lockstep duplication is collapsed: values exports
+  ProtoScalarKindToRowValue + ProtoFieldToRowValue, the executor's
+  scalarProtoToGo / protoFieldToGo delegate — ONE conversion, no drift. UUID
+  now surfaces as the neutral [16]byte in the struct-descent path too
+  (matched the executor's fieldProtoToGo, not the UUID-blind scalarProtoToGo
+  the "lockstep" comment mis-named). The unset-explicit-default divergence
+  from Java is documented at protoFieldByName.
+- **Graefe #6 (pin gaps):** the box-leg seed RC run layout is now asserted
+  (TestRFC173UR_C1_BoxLegOwner_Gathers extended); SELECT * over the box-leg
+  shape, the class1×class2 composition, and the enclosed-form multi-segment
+  rotation are FDB-pinned.
+- **Graefe #7 (silent slot-0 risk):** name-addressed struct suffix accessors
+  carry a LOUD sentinel ordinal (-1) — Get(-1) fails out-of-range rather than
+  silently reading slot 0 if a struct ever materialized positionally.

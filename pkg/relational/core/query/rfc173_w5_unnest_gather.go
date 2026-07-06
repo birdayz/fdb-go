@@ -160,7 +160,13 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if len(u.Segments) > 2 {
 		suffix := make([]values.ResolvedAccessor, 0, len(u.Segments)-2)
 		for _, seg := range u.Segments[2:] {
-			suffix = append(suffix, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: 0})
+			// NAME-addressed: the struct descent (FieldValue's proto-message
+			// arm) resolves each suffix step by field NAME. Ordinal is the
+			// LOUD sentinel -1 — a struct materializes as a proto message, not
+			// a positional row, so the ordinal is never consulted; should one
+			// ever reach the OrdinalRow descent arm, Get(-1) fails
+			// out-of-range (a clean error) rather than silently reading slot 0.
+			suffix = append(suffix, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
 		}
 		fused := collection.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
 		collection = &values.FieldValue{Field: strings.ToUpper(fieldName), Typ: collection.Typ, Child: collection.Child, Resolved: fused}
@@ -257,7 +263,18 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 			preds = append(preds, rewriteUnnestPredicate(qp, u))
 		}
 	}
-	preds = append(preds, gatherInnerClusterPreds(leftJoin)...)
+	// INNER root only — the SAME opaque-box barrier as the ON-hoist guard
+	// above, for the NESTED cluster ONs. A non-inner root is the class-1
+	// opaque OUTER box; its whole internal predicate spine (e.g. the nested
+	// inner cluster ON of `SRC LEFT JOIN (AUX JOIN AUX2 ON x.XID = y.YID)`)
+	// is already enforced inside the box leg's own translation. Re-collecting
+	// those here and re-applying them flat over the box's NULL-padded rows
+	// fails on the null-supplied slots and silently drops the preserved row
+	// (LEFT→INNER — the ON-hoist bug's twin). Only an INNER root's nested ONs
+	// are WHERE-equivalent and belong on the flat select.
+	if leftJoin.Kind == logical.JoinInner {
+		preds = append(preds, gatherInnerClusterPreds(leftJoin)...)
+	}
 	preds = bakeGatedJoinPredicates(preds, legTypes)
 
 	return expressions.NewSelectExpressionWithJoinType(

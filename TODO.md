@@ -2475,6 +2475,11 @@ Legs alignment, ofOrdinal nullability flow): branch 160.51s total, PASS — fast
 than the master baseline (161.68s), within noise of the c1+c2 row (154.35s). No
 regression.
 
+**2026-07-06 (RFC-173 unnest-residual c1 — box-leg owners gather, multi-segment
+struct paths, SelectMerge/Explode arm, struct-column schema surface): branch
+156.73s total, PASS — faster than the master baseline (161.68s). No regression.
+
+
 **2026-07-06 (RFC-173 item-1 c4 — the review-round fixes: binding-keyed sort/group
 keys, buried-EXISTS rebase, fold binding correlations):** branch 161.84s total, all
 23 subtests PASS — equal to the master `8c179a025` baseline (161.68s) and faster

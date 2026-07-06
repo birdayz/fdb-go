@@ -564,6 +564,38 @@ func TestRFC173UR_C1_BoxLegOwner_Gathers(t *testing.T) {
 	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != 1 {
 		t.Fatalf("collection ordinal = %v, want box-level 1 (offset 0 + ARR idx 1)", coll.Resolved.Accessors)
 	}
+
+	// Seed RC run layout (design ruling 5): the leg runs must be the flat
+	// concat the box + y contribute, in FROM order — box concat [SID ARR XID
+	// V] baked over the box quantifier, then y's [YID W] baked over y, then
+	// the element/ordinal run over EL. Assert the RUN structure, not just the
+	// collection: a wrong run layout mis-windows every downstream read.
+	rc := gathered.GetResultValue().(*values.RecordConstructorValue)
+	wantNames := []string{"SID", "ARR", "XID", "V", "YID", "W", "EL", "ORD"}
+	if len(rc.Fields) != len(wantNames) {
+		t.Fatalf("seed RC has %d fields, want %d (box concat + y + element/ordinal)", len(rc.Fields), len(wantNames))
+	}
+	boxAlias := quants[0].GetAlias()
+	yAlias := quants[1].GetAlias()
+	for i, want := range wantNames {
+		f := rc.Fields[i]
+		if !strings.EqualFold(f.Name, want) {
+			t.Fatalf("seed field %d = %q, want %q (FROM-order concat)", i, f.Name, want)
+		}
+		fv, ok := f.Value.(*values.FieldValue)
+		if !ok || fv.Resolved == nil {
+			t.Fatalf("seed field %d (%s) is %T, want a baked FieldValue", i, f.Name, f.Value)
+		}
+		child := fv.Child.(*values.QuantifiedObjectValue).Correlation
+		switch {
+		case i < 4 && child != boxAlias: // the 4-wide box concat run
+			t.Fatalf("seed field %d (%s) correlates to %s, want the box leg %s", i, f.Name, child, boxAlias)
+		case i >= 4 && i < 6 && child != yAlias: // y's run
+			t.Fatalf("seed field %d (%s) correlates to %s, want leg y %s", i, f.Name, child, yAlias)
+		case i >= 6 && child != innerCorr: // the element/ordinal run
+			t.Fatalf("seed field %d (%s) correlates to %s, want the element %s", i, f.Name, child, innerCorr)
+		}
+	}
 }
 
 // TestRFC173UR_C1_OuterBoxLeft_Gathers pins the sibling lift (design ruling
@@ -633,5 +665,30 @@ func TestRFC173UR_C1_DupAliasOwner_FirstMatch(t *testing.T) {
 	qov := coll.Child.(*values.QuantifiedObjectValue)
 	if qov.Correlation.Name() != "S" {
 		t.Fatalf("collection correlates to %s, want the FIRST duplicate's binding S (first-match by alias, correlate by binding)", qov.Correlation)
+	}
+}
+
+// TestRFC173UR_C1_OpaqueBox_NestedClusterPredsStayInside pins the twin of the
+// ON-hoist guard: a class-1 opaque OUTER box whose null side is itself a
+// nested inner cluster (`SRC LEFT JOIN (AUX JOIN AUX2 ON x.XID = y.YID), s.ARR
+// AS EL`) must NOT leak that nested cluster's ON into the flat gathered
+// select. The ON is already enforced inside the box leg's own translation;
+// re-applying it flat over the box's NULL-padded rows fails the null-supplied
+// AUX/AUX2 slots and silently drops the preserved SRC row (LEFT→INNER). The
+// gather's flat select carries ZERO predicates for this shape.
+func TestRFC173UR_C1_OpaqueBox_NestedClusterPredsStayInside(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	innerCluster := logical.NewJoin(scan("AUX", "x"), scan("AUX2", "y"), logical.JoinInner, "")
+	innerCluster.OnPredicate = chainEqPredLocal("x", "XID", "y", "YID")
+	box := logical.NewJoin(scan("SRC", "s"), innerCluster, logical.JoinLeft, "")
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	j := logical.NewJoin(box, u, logical.JoinInner, "")
+	sel := tr.translateGatheredUnnestCluster(j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("a nested-cluster opaque box must GATHER, got nil")
+	}
+	if n := len(sel.(*expressions.SelectExpression).GetPredicates()); n != 0 {
+		t.Fatalf("opaque outer box leaked %d nested-cluster predicates into the flat select, want 0 (the box's ONs stay inside)", n)
 	}
 }

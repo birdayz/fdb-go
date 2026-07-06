@@ -1315,9 +1315,14 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	}
 	var arrayValue values.Value
 	if len(u.Segments) > 2 {
-		accs := []values.ResolvedAccessor{{Field: arrayFieldKey, Ordinal: 0}}
+		// The root reads by Datum key; the suffix descends the struct value
+		// by field NAME (FieldValue's proto-message arm). Both ordinals are
+		// the LOUD sentinel -1 — never consulted on the name-model / proto
+		// paths, and out-of-range (a clean error) rather than a silent slot
+		// read if either ever reached the positional descent arm.
+		accs := []values.ResolvedAccessor{{Field: arrayFieldKey, Ordinal: -1}}
 		for _, seg := range u.Segments[2:] {
-			accs = append(accs, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: 0})
+			accs = append(accs, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
 		}
 		arrayValue = &values.FieldValue{
 			Field: fieldName,
@@ -1373,11 +1378,13 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	//     name-model (see unnestExistsSeedSafe / existsInnerScopeCollidesOuter).
 	// A decline (nil) falls back to the name-model builder.
 	var resultValue values.Value
-	// len(u.Segments) == 2: a MULTI-SEGMENT collection is the UNPINNED
-	// name-root form (unnest-residual class 2) — the W4c ordinal seed's
-	// positional outer row cannot serve its root name-read; it stays on the
-	// name-model builder until the baked fused-collection form lands with
-	// the gather-side class-2 wiring.
+	// len(u.Segments) == 2: a SINGLE-SOURCE multi-segment path (`FROM t,
+	// t.rec.arr AS x`) stays on the name-model builder. The gather's fused
+	// baked collection (unnest-residual class 2) is the MULTI-source path
+	// (this builder is single-source, clusterArity==1); the single-source
+	// W4c ordinal seed would need its own fused-collection form, which it
+	// does not build — the name-model residual serves it correctly via the
+	// unpinned name-root collection (buildUnnestResultValue below).
 	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) && len(u.Segments) == 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 	}

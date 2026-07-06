@@ -235,6 +235,26 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			api.NewStructField("NARR", api.NewArrayType(api.NewIntegerType(false), true), 1),
 		}, true), 2),
 	}, []string{"NSID"})
+	// CXA/CXB: the RFC-173 class-1 × class-2 COMPOSITION — the unnest owner
+	// (CXA) both sits inside a gated OUTER box (`CXA LEFT JOIN CXB`, class 1)
+	// AND holds its array BEHIND a multi-segment struct path (`CXA.REC.ARR`,
+	// class 2). CXA is the PRESERVED side of the LEFT box, so a padded owner
+	// row (no CXB match) must STILL explode its own nested array — the class-1
+	// preserved-side rule flowing through the class-2 fused root+suffix
+	// collection. Column and struct-field names are FULLY DISJOINT from every
+	// other table (and from each other) so the box's opaque-leg concat passes
+	// the W5 name-ambiguity gate.
+	b.AddTable("CXA", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("CXAID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("REC", api.NewStructType("CXARECT", []api.StructField{
+			api.NewStructField("SUB", api.NewLongType(true), 0),
+			api.NewStructField("ARR", api.NewArrayType(api.NewIntegerType(false), true), 1),
+		}, true), 2),
+	}, []string{"CXAID"})
+	b.AddTable("CXB", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("CBID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("CBREF", api.NewLongType(true), 2),
+	}, []string{"CBID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -260,6 +280,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	bxbDesc := md.GetRecordType("BXB").Descriptor
 	bxcDesc := md.GetRecordType("BXC").Descriptor
 	nstDesc := md.GetRecordType("NST").Descriptor
+	cxaDesc := md.GetRecordType("CXA").Descriptor
+	cxbDesc := md.GetRecordType("CXB").Descriptor
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
@@ -405,6 +427,30 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 		return m
 	}
+	// cxaRec builds a CXA record (class-1 × class-2 composition). hasRec=false
+	// leaves the struct column REC unset (NULL struct → zero rows); arr=nil
+	// inside a set struct leaves the nested array unset (also zero rows). A
+	// populated array behind a set struct is the only exploding shape.
+	cxaRec := func(id int64, hasRec bool, sub int64, arr []int32) proto.Message {
+		m := dynamicpb.NewMessage(cxaDesc)
+		m.Set(cxaDesc.Fields().ByName("CXAID"), protoreflect.ValueOfInt64(id))
+		if hasRec {
+			recFD := cxaDesc.Fields().ByName("REC")
+			recMsg := dynamicpb.NewMessage(recFD.Message())
+			recMsg.Set(recFD.Message().Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
+			if arr != nil {
+				setIntArr(recMsg, recFD.Message(), "ARR", arr)
+			}
+			m.Set(recFD, protoreflect.ValueOfMessage(recMsg))
+		}
+		return m
+	}
+	cxbRec := func(id, ref int64) proto.Message {
+		m := dynamicpb.NewMessage(cxbDesc)
+		m.Set(cxbDesc.Fields().ByName("CBID"), protoreflect.ValueOfInt64(id))
+		m.Set(cxbDesc.Fields().ByName("CBREF"), protoreflect.ValueOfInt64(ref))
+		return m
+	}
 
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
@@ -524,6 +570,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			nstRec(1, true, 7, []int32{70, 71}),
 			nstRec(2, true, 8, nil),
 			nstRec(3, false, 0, nil),
+			// CXA/CXB (RFC-173 class-1 × class-2 composition): CXB references
+			// CXAID 1 ONLY, so CXAID 2 is a LEFT-padded owner (no CXB match)
+			// whose OWN nested array {82} must STILL explode — the class-1
+			// preserved-side rule through a class-2 multi-segment struct path.
+			// CXAID 3's whole struct is unset → zero rows.
+			cxaRec(1, true, 1, []int32{80, 81}),
+			cxaRec(2, true, 2, []int32{82}),
+			cxaRec(3, false, 0, nil),
+			cxbRec(10, 1),
 		}
 		for _, r := range recs {
 			if _, e := store.SaveRecord(r); e != nil {
@@ -3934,14 +3989,16 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// Class 1: the unnest OWNER (BXA) is not a plain leg of the gathered
 		// cluster — it is buried inside a gated OUTER box (`BXA LEFT JOIN BXB`),
 		// optionally itself a LEG of a larger inner cluster (`... INNER JOIN
-		// BXC`). Pre-slice both shapes declined the gather: the outer-box-left
-		// form fell to the RESIDUAL binary FlatMap (one top-level FlatMap whose
-		// OUTER is the whole merged cluster and whose inner is the Explode); the
-		// box-LEG form could not plan AT ALL (SelectMerge stranded the declined
-		// residual's Explode collection — the ruling-1(ii) hole). Class 1
-		// GATHERS them: the flat select pairs the OPAQUE box leg with the
-		// Explode directly, so the Explode's FlatMap has the BOX (not the whole
-		// cluster) as its outer and Scan(BXC) joins OUTSIDE that Explode-FlatMap.
+		// BXC`). Pre-slice the gather's owner lookup rejected any box leg
+		// (gatheredPlainLeg accepted only plain legs), so both shapes declined
+		// to the RESIDUAL binary FlatMap — which cannot resolve an owner buried
+		// inside the box (the residual reads the owner off the merged outer row
+		// by name; a box leg's own alias names its rightmost leaf, not the
+		// buried owner), so the box-leg form failed to plan at 29d77a846. Class
+		// 1 GATHERS them via the amendment-C bake windows: the flat select
+		// pairs the OPAQUE box leg with the Explode directly, so the Explode's
+		// FlatMap has the BOX (not the whole cluster) as its outer and
+		// Scan(BXC) joins OUTSIDE that Explode-FlatMap.
 
 		// (1)+(2) PLAN-SHAPE discriminator + row matrix, inner-cluster box-leg
 		// owner. Rows: BAID 1 explodes {10,11}; BAID 2 is BXB-padded but its
@@ -3995,6 +4052,23 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRowsOrdered(t,
 			`SELECT "BAID", "EL", "ORDX" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID", BXA."BARR" AS "EL" AT "ORDX" ORDER BY "BAID", "EL"`,
 			[]string{"BAID=1|EL=10|ORDX=1", "BAID=1|EL=11|ORDX=2", "BAID=2|EL=20|ORDX=1"})
+
+		// (6) SELECT-* expansion over the box-leg shape (design ruling 5). The
+		// star expands to the FROM-order concat of every source's columns —
+		// BXA's, then the padded BXB's, then the buried BXC's, then the lateral
+		// element EL — exactly the labels the driver advertises via
+		// rows.Columns() (ResultColumnLabelsForPlan → deriveColumnsFromPlan).
+		// The explicit-column pins above never exercise the star's expansion
+		// through the gathered box cluster; this is that column-metadata pin.
+		starSQL := `SELECT * FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID" INNER JOIN BXC ON "BCID" = 5, BXA."BARR" AS "EL" ORDER BY "BAID"`
+		assertColumns(t, starSQL,
+			[]string{"BAID", "BARR", "BBID", "BAREF", "BCID", "BCW", "EL"})
+		// The star's ROW COUNT matches the explicit-column matrix: BAID 1 → 2
+		// element rows, BAID 2 (BXB-padded, its BXB columns NULL) → 1, BAID 3
+		// (NULL array) → 0 = 3 rows.
+		if _, starRows := query(t, starSQL); len(starRows) != 3 {
+			t.Fatalf("SELECT-* over the box-leg shape: got %d rows, want 3:\n%v", len(starRows), starRows)
+		}
 	})
 
 	t.Run("RFC-173 unnest-residual class 2: multi-segment struct paths", func(t *testing.T) {
@@ -4047,6 +4121,59 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("multi-segment path through the scalar intermediate NSID must ERROR, got a plan")
 		} else {
 			t.Logf("scalar-intermediate path rejected with: %v", perr)
+		}
+	})
+
+	t.Run("RFC-173 unnest-residual class 1x2: box-leg owner with a multi-segment struct path", func(t *testing.T) {
+		// The COMPOSITION of the two residual classes at once: the unnest owner
+		// (CXA) is buried inside a gated OUTER box (`CXA LEFT JOIN CXB`, class
+		// 1) AND its array lives behind a multi-segment struct path
+		// (`CXA.REC.ARR`, class 2). The gathered builder must open the
+		// buried-box window for CXA (the opaque-leg concat) AND bake the fused
+		// root-ordinal + name-suffix collection for the struct descent — both
+		// in one flat select. CXA is the PRESERVED side, so the LEFT-padded
+		// CXAID 2 (no CXB match) still explodes its own {82}; CXAID 3's unset
+		// struct explodes to zero rows (never a NULL-element row).
+		compExplain := assertRowsOrdered(t,
+			`SELECT "CXAID", "EL" FROM CXA LEFT JOIN CXB ON "CBREF" = "CXAID", CXA."REC"."ARR" AS "EL" ORDER BY "CXAID", "EL"`,
+			[]string{"CXAID=1|EL=80", "CXAID=1|EL=81", "CXAID=2|EL=82"})
+		// GATHERED signature (class 1): the Explode's FlatMap pairs the OPAQUE
+		// LEFT box directly (its ON stays inside the join), never a
+		// whole-cluster residual FlatMap — the residual cannot resolve the
+		// owner buried inside the box.
+		if !strings.Contains(compExplain,
+			"FlatMap(outer=NestedLoopJoin(LEFT OUTER, [1 preds], Scan(CXA), Scan(CXB)), inner=Explode") {
+			t.Fatalf("class-1x2 composition did not GATHER (the Explode FlatMap must pair the opaque LEFT box directly):\n%s", compExplain)
+		}
+		// A hoisted PredicatesFilter re-applying the box ON as a WHERE would
+		// drop the padded CXAID 2 row (LEFT->INNER corruption) — its ABSENCE is
+		// load-bearing, the same guard the class-1 outer-box pin protects.
+		if strings.Contains(compExplain, "PredicatesFilter") {
+			t.Fatalf("the box's gating ON leaked into a hoisted filter (LEFT->INNER corruption):\n%s", compExplain)
+		}
+	})
+
+	t.Run("RFC-173 rotateEnclosedUnnest multi-segment: struct-path unnest before a plain leg", func(t *testing.T) {
+		// The ENCLOSED unnest class with a MULTI-SEGMENT path: the struct-path
+		// unnest is NOT trailing — it sits BEFORE a later plain leg (U), so the
+		// cluster reaches translateEnclosedUnnestGather -> rotateEnclosedUnnest,
+		// which rotates `Join(Join(NST, U), Unnest)` to the root form the
+		// gathered builder owns. The multi-segment path (`NST.NREC.NARR`) must
+		// survive the rotation (rotateEnclosedUnnest's len(Segments)>=2 lift)
+		// and bake as the fused root+suffix collection. Only NSID 1 has
+		// elements ({70,71}); U's single row (V=999) crosses each exploded
+		// element once, and the WHERE on the trailing plain leg must ride the
+		// rotated root's flat select.
+		encExplain := assertRowsOrdered(t,
+			`SELECT "NSID", "EL", "V" FROM NST, NST."NREC"."NARR" AS "EL", U WHERE "V" = 999 ORDER BY "NSID", "EL"`,
+			[]string{"EL=70|NSID=1|V=999", "EL=71|NSID=1|V=999"})
+		unnestMustContain(t, encExplain, "FlatMap")
+		unnestMustContain(t, encExplain, "Explode")
+		// GATHERED (not residual): the Explode's FlatMap pairs Scan(NST) — the
+		// OWNING source — directly as its outer, the fused root-ordinal+suffix
+		// collection, never a whole-cluster residual FlatMap.
+		if !strings.Contains(encExplain, "FlatMap(outer=Scan(NST)") {
+			t.Fatalf("enclosed multi-segment unnest did not GATHER over Scan(NST):\n%s", encExplain)
 		}
 	})
 }

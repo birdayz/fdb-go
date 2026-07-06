@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"encoding/binary"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -189,78 +188,20 @@ func protoToMap(msg proto.Message) map[string]any {
 	return m
 }
 
-// protoFieldToGo converts a protoreflect.Value to a native Go value
-// suitable for Value.Evaluate consumption.
+// protoFieldToGo converts a protoreflect.Value to a native Go value suitable
+// for Value.Evaluate consumption. Delegates to values.ProtoFieldToRowValue —
+// the SINGLE conversion shared with the cascades values layer's struct
+// descent, so the record→row materialization here and the fused-path descent
+// there cannot drift (a UUID leaf surfaces as the neutral [16]byte in both,
+// nested messages stay raw, repeated fields become []any). See that function
+// for why UUID is [16]byte, not a string.
 func protoFieldToGo(fd protoreflect.FieldDescriptor, v protoreflect.Value) any {
-	if fd.IsList() {
-		list := v.List()
-		out := make([]any, list.Len())
-		for i := 0; i < list.Len(); i++ {
-			out[i] = scalarProtoToGo(fd.Kind(), list.Get(i))
-		}
-		return out
-	}
-	if fd.IsMap() {
-		return v.Interface()
-	}
-	// UUID columns are stored as the tuple_fields.UUID message. Surface the
-	// value as a neutral 16-byte array ([16]byte, msb‖lsb big-endian —
-	// matching Java's java.util.UUID and the tuple.UUID wire layout) rather
-	// than the canonical string. This lets the filter path compare
-	// [16]byte==[16]byte (predicates.cmpAny) and the index-scan-range packer
-	// seek the exact 0x30 entry; the [16]byte → canonical-string conversion
-	// happens once, at the result-materialization boundary. Returning a string
-	// here instead would make `WHERE v = '<uuid>'` and INL UUID join keys pack
-	// a 0x02 string that never matches the 0x30 index entry.
-	if fd.Kind() == protoreflect.MessageKind {
-		if msg := fd.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {
-			return uuidMessageToBytes(v.Message())
-		}
-	}
-	return scalarProtoToGo(fd.Kind(), v)
+	return values.ProtoFieldToRowValue(fd, v)
 }
 
-// uuidMessageToBytes reads a tuple_fields.UUID message (most/least
-// _significant_bits) into a neutral 16-byte array, msb‖lsb big-endian — the
-// same layout tuple.UUID and Java's java.util.UUID use.
-func uuidMessageToBytes(msg protoreflect.Message) [16]byte {
-	fields := msg.Descriptor().Fields()
-	mostFD := fields.ByName("most_significant_bits")
-	leastFD := fields.ByName("least_significant_bits")
-	var b [16]byte
-	if mostFD == nil || leastFD == nil {
-		return b
-	}
-	binary.BigEndian.PutUint64(b[0:8], uint64(msg.Get(mostFD).Int()))   //nolint:gosec
-	binary.BigEndian.PutUint64(b[8:16], uint64(msg.Get(leastFD).Int())) //nolint:gosec
-	return b
-}
-
+// scalarProtoToGo delegates to the single kind-based scalar converter in the
+// values layer (no drift between record→row and struct descent). Kept as a
+// named executor helper for its exhaustive per-kind tests.
 func scalarProtoToGo(kind protoreflect.Kind, v protoreflect.Value) any {
-	switch kind {
-	case protoreflect.BoolKind:
-		return v.Bool()
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		return int64(v.Int())
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return v.Int()
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		return int64(v.Uint())
-	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		return int64(v.Uint())
-	case protoreflect.FloatKind:
-		return v.Float()
-	case protoreflect.DoubleKind:
-		return v.Float()
-	case protoreflect.StringKind:
-		return v.String()
-	case protoreflect.BytesKind:
-		return v.Bytes()
-	case protoreflect.EnumKind:
-		return int64(v.Enum())
-	case protoreflect.MessageKind, protoreflect.GroupKind:
-		return v.Message().Interface()
-	default:
-		return v.Interface()
-	}
+	return values.ProtoScalarKindToRowValue(kind, v)
 }

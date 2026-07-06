@@ -346,13 +346,14 @@ var _ ExpressionRule = (*SelectMergeRule)(nil)
 
 // translateQuantifierCorrelations rebuilds a RETAINED quantifier whose
 // subtree references a merged-away alias FREELY (see the call site in
-// OnMatch): the referenced SelectExpression's predicates and result value are
-// translated through the merge's aliasMap/RC substitutions (recursively — a
-// nested select may bury the reference another level down), re-memoized, and
-// wrapped in a quantifier preserving the original's alias and flags
-// (nullOnEmpty carries the dissolved-LEFT pad; strictSingle the scalar
-// contract). ok=false when nothing references a merged alias or the subtree
-// shape is not a SelectExpression — the caller keeps the original quantifier
+// OnMatch): the first rebuildable member of the referenced group — a
+// SelectExpression (predicates + result value translated through the merge's
+// aliasMap/RC substitutions, recursively) or an ExplodeExpression (its
+// collection translated — the RFC-173 unnest-residual arm) — is translated,
+// re-memoized, and wrapped in a quantifier preserving the original's alias
+// and flags (nullOnEmpty carries the dissolved-LEFT pad; strictSingle the
+// scalar contract). ok=false when nothing references a merged alias or no
+// member is a rebuildable shape — the caller keeps the original quantifier
 // (a dangling reference stays LOUD, never silently rebound). The hit test is
 // on the reference's FREE correlations (Java-aligned GetCorrelatedTo): a
 // subtree whose OWN quantifier rebinds a merged name — the dissolved box's
@@ -360,12 +361,12 @@ var _ ExpressionRule = (*SelectMergeRule)(nil)
 // the box — is NOT correlated to the merge and must not be rewritten
 // (rewriting it would capture the inner binding).
 //
-// The rebuild takes the FIRST SelectExpression member of the reference and
-// re-memoizes only its translation — deliberate, not lossy: OnMatch YIELDS
-// the merged select alongside the ORIGINAL, whose quantifier still ranges
-// over the full multi-member group, so alternative members stay reachable
-// through the pre-merge expression; the translated quantifier only needs
-// one sound member to plan through.
+// The rebuild takes the FIRST rebuildable member and re-memoizes only its
+// translation — deliberate, not lossy: OnMatch YIELDS the merged select
+// alongside the ORIGINAL, whose quantifier still ranges over the full
+// multi-member group, so alternative members stay reachable through the
+// pre-merge expression; the translated quantifier only needs one sound
+// member to plan through.
 func translateQuantifierCorrelations(
 	q expressions.Quantifier,
 	mergedAliases map[values.CorrelationIdentifier]struct{},
@@ -395,12 +396,21 @@ func translateQuantifierCorrelations(
 				newMember = ns
 			}
 		case *expressions.ExplodeExpression:
-			// A lateral unnest's Explode sibling: its COLLECTION is a baked
-			// reference to the owning leg — for a BOX-leg owner (RFC-173
-			// unnest-residual class 1) that reference targets the box
-			// quantifier this merge just dissolved, and leaving it intact
-			// dangles it (Java: Quantifier.translateCorrelations reaches
-			// ExplodeExpression.translateCorrelations the same way).
+			// A lateral unnest's Explode sibling whose COLLECTION baked-
+			// references a merged-away box alias gets that reference
+			// translated the same way a SelectExpression member would
+			// (Java: Quantifier.translateCorrelations reaches
+			// ExplodeExpression.translateCorrelations). DEFENSIVE, not a
+			// live-bug fix: no CURRENT path makes a box leg mergeable while
+			// a sibling Explode references it — outer boxes are opaque to
+			// this rule (the ChildrenAsSet guard above) and inner boxes are
+			// pre-flattened by legsOfGatedJoin before they reach the memo as
+			// a mergeable child. The arm exists so that if a future rewrite
+			// DOES make box legs mergeable, the stranded-collection shape is
+			// handled rather than silently dangling; it is pinned white-box
+			// by TestSelectMergeRule_TranslatesExplodeSiblingCollection
+			// (a hand-built memo that forces the merge), which is its only
+			// exercise today.
 			cb := bakedBoxRefCallback(rcByAlias)
 			col := values.RebaseValue(me.GetCollectionValue(), aliasMap)
 			col = values.Replace(col, cb)

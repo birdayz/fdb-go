@@ -43,6 +43,7 @@
 package values
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
@@ -659,16 +660,32 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 	return cur, nil
 }
 
-// protoFieldByName reads one field of a proto message by SQL identifier
-// (case-insensitive — proto fields are lower/snake, SQL identifiers upper),
-// converting scalars to the engine's row-value domain exactly as the
-// executor's record→row layer does (int widths → int64, enums → int64,
-// nested messages stay raw for further descent, repeated fields stay lists
-// for a downstream Explode). found=false when the descriptor has no such
-// field; an unset field returns (nil, true) — SQL NULL.
+// uuidProtoMessageName is the fully-qualified tuple_fields.UUID message —
+// UUID columns store as this message and surface as a neutral [16]byte (see
+// protoScalarToRowValue). Kept equal to the executor's constant of the same
+// name (query_result.go); a mismatch is a lockstep break.
+const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
+
+// protoFieldByName reads one field of a proto message by SQL identifier,
+// converting to the engine's row-value domain exactly as the executor's
+// record→row layer (protoFieldToGo) does. found=false when the descriptor
+// has no such field; an unset field with proto2 presence returns (nil, true)
+// — SQL NULL.
+//
+// DIVERGENCE from Java (MessageHelpers.getFieldOnMessage): for a field UNSET
+// but carrying an explicit proto2 default, Java returns the declared default;
+// Go returns NULL (unset → nil). Unreachable through Go's own metadata
+// builder — it never emits explicit field defaults — but a Java-authored
+// descriptor read on the Go side would differ here.
 func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 	fields := m.Descriptor().Fields()
-	fd := fields.ByName(protoreflect.Name(strings.ToLower(name)))
+	// Builder-emitted descriptors carry UPPER field names, Java's stored
+	// protos lower/snake — try the SQL identifier verbatim, its lower-case,
+	// then a full case-insensitive scan (both real shapes hit within these).
+	fd := fields.ByName(protoreflect.Name(name))
+	if fd == nil {
+		fd = fields.ByName(protoreflect.Name(strings.ToLower(name)))
+	}
 	if fd == nil {
 		for i := 0; i < fields.Len(); i++ {
 			if f := fields.Get(i); strings.EqualFold(string(f.Name()), name) {
@@ -683,23 +700,58 @@ func protoFieldByName(m protoreflect.Message, name string) (any, bool) {
 	if !m.Has(fd) && fd.HasPresence() {
 		return nil, true
 	}
-	v := m.Get(fd)
+	return ProtoFieldToRowValue(fd, m.Get(fd)), true
+}
+
+// ProtoFieldToRowValue converts one proto FIELD value to the engine's
+// row-value domain — the SINGLE conversion both the executor's record→row
+// materialization and this package's struct descent use (exported so the two
+// cannot drift; the executor's protoFieldToGo delegates here). Repeated
+// fields become []any (a downstream Explode's collection); a proto map stays
+// its raw Go value; scalars and UUID/message leaves go through
+// protoScalarToRowValue.
+func ProtoFieldToRowValue(fd protoreflect.FieldDescriptor, v protoreflect.Value) any {
 	if fd.IsList() {
 		list := v.List()
-		out := make([]any, 0, list.Len())
+		out := make([]any, list.Len())
 		for i := 0; i < list.Len(); i++ {
-			out = append(out, protoScalarToRowValue(fd, list.Get(i)))
+			out[i] = protoScalarToRowValue(fd, list.Get(i))
 		}
-		return out, true
+		return out
 	}
-	return protoScalarToRowValue(fd, v), true
+	if fd.IsMap() {
+		return v.Interface()
+	}
+	return protoScalarToRowValue(fd, v)
 }
 
 // protoScalarToRowValue converts one proto value to the engine's row-value
-// domain — the values-layer twin of the executor's scalarProtoToGo (kept in
-// lockstep; a divergence here surfaces as a comparison-type mismatch).
+// domain — the values-layer twin of the executor's fieldProtoToGo
+// (query_result.go), kept in lockstep; a divergence surfaces as a
+// comparison-type mismatch. Notably a UUID field surfaces as the neutral
+// [16]byte (msb‖lsb) the executor uses so a struct-nested UUID compares and
+// index-packs identically to a top-level UUID column; nested non-UUID
+// messages stay raw for further descent; repeated fields are handled by the
+// caller (protoFieldByName), which keeps them as lists for a downstream
+// Explode.
 func protoScalarToRowValue(fd protoreflect.FieldDescriptor, v protoreflect.Value) any {
-	switch fd.Kind() {
+	if k := fd.Kind(); k == protoreflect.MessageKind || k == protoreflect.GroupKind {
+		msg := v.Message()
+		if string(msg.Descriptor().FullName()) == uuidProtoMessageName {
+			return uuidMessageToRowBytes(msg)
+		}
+		return msg.Interface()
+	}
+	return ProtoScalarKindToRowValue(fd.Kind(), v)
+}
+
+// ProtoScalarKindToRowValue is the kind-keyed scalar conversion (no UUID/
+// message handling — that needs the descriptor, see protoScalarToRowValue).
+// Exported as the single source of truth the executor's kind-based
+// scalarProtoToGo delegates to, so the record→row and struct-descent
+// conversions cannot drift on the scalar arms.
+func ProtoScalarKindToRowValue(kind protoreflect.Kind, v protoreflect.Value) any {
+	switch kind {
 	case protoreflect.BoolKind:
 		return v.Bool()
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
@@ -720,6 +772,22 @@ func protoScalarToRowValue(fd protoreflect.FieldDescriptor, v protoreflect.Value
 	default:
 		return v.Interface()
 	}
+}
+
+// uuidMessageToRowBytes reads a tuple_fields.UUID message (most/least
+// significant bits) into a neutral 16-byte array, msb‖lsb big-endian — the
+// same layout the executor's uuidMessageToBytes produces (kept in lockstep).
+func uuidMessageToRowBytes(msg protoreflect.Message) [16]byte {
+	fields := msg.Descriptor().Fields()
+	mostFD := fields.ByName("most_significant_bits")
+	leastFD := fields.ByName("least_significant_bits")
+	var b [16]byte
+	if mostFD == nil || leastFD == nil {
+		return b
+	}
+	binary.BigEndian.PutUint64(b[0:8], uint64(msg.Get(mostFD).Int()))   //nolint:gosec
+	binary.BigEndian.PutUint64(b[8:16], uint64(msg.Get(leastFD).Int())) //nolint:gosec
+	return b
 }
 
 func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
