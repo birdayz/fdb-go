@@ -777,6 +777,22 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     reason (a new "name-model-flatten enclosure" bit distinct from "inner-cluster enclosure") so
     `:190` declines only (b). That enclosure-reason classification across the 8 sites + the
     corpus-level certificate + EXPLAIN/ordering pins + fuzz is the precisely-scoped B1 slice.
+    **CORRECTION (traced the mechanism at cascades_translator.go:4151):
+    `t.inInnerCluster = !gateDecision.Gated && (kind==Inner||kind==Left)` — the enclosure flag is
+    set ONLY when the PARENT is name-model ("enclosure poisoning survives only for name-model
+    parents"). So `:190` is NOT a circular class — it is a FAITHFUL SYMPTOM of a name-model parent:
+    an inner join under a name-model parent MUST stay name-model (its positional rows would be read
+    by-name → wrong rows). It CANNOT be lifted incrementally — a child gates iff its PARENT gates,
+    which requires the name model to be GONE. This RE-CONFIRMS the original F1 framing over the
+    second-round pre-cap-narrowing optimism (which read the sqldriver-green whole-gate spike too
+    favorably — that worked only because the corpus's name-model parents were all circular AND the
+    spike blanket-forced the declines off, not a safe fail-closed guard). **The join name-model
+    retirement is genuinely ATOMIC: :143/:190 lift together, and only when every circular parent
+    gates (= the name model deleted). There is no safe incremental :143/:190 narrowing.** So B1's
+    real content is the CORPUS-LEVEL off-vs-on certificate (proving the whole-gate flip preserves
+    rows) as the gate on the ATOMIC cap, not a separable pre-cap slice. The cap itself
+    (flag+trio+seeds+oracle deletion, making all circular parents gate) remains codex-gated
+    multi-shift work.
   - **Exit gate = 3-layer PROOF, never an inventory:** (1) static caller-free grep; (2) dynamic
     loud-marker panic in each of the 4 constructors, full corpus + fuzz, assert ZERO dynamic hits;
     (3) exhausted-decline matrix — one constructed query per gate `Reason` string (rfc173_cluster_
