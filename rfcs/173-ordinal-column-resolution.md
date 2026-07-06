@@ -793,6 +793,15 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     rows) as the gate on the ATOMIC cap, not a separable pre-cap slice. The cap itself
     (flag+trio+seeds+oracle deletion, making all circular parents gate) remains codex-gated
     multi-shift work.
+    **ROW-LEVEL CONFIRMATION (experiment, reverted):** lifting `:190` ALONE (keeping `:143`) fails the
+    FDB row suite (sqldriver), not just the unit gate-decision pins — direct proof that gating an
+    inner join under a still-name-model parent produces wrong rows. The whole-gate spike passed only
+    because it lifted `:143`+`:190` TOGETHER (every parent gates → consistent). And even the atomic
+    cap must KEEP `:190` for the genuine existential/unnest-flatten residuals (their parents stay
+    name-model via `:112`/`:106`, which the cap does not remove) — so the cap needs the
+    enclosure-reason distinction (circular inner-cluster → lift; existential/unnest flatten → keep),
+    the 8-site classification, NOT a blanket skip. Net: S4 has no safe incremental step; it is the
+    coupled atomic deletion + the enclosure-reason refinement + the corpus certificate, codex-gated.
   - **Exit gate = 3-layer PROOF, never an inventory:** (1) static caller-free grep; (2) dynamic
     loud-marker panic in each of the 4 constructors, full corpus + fuzz, assert ZERO dynamic hits;
     (3) exhausted-decline matrix — one constructed query per gate `Reason` string (rfc173_cluster_
