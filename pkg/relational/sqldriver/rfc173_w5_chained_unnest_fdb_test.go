@@ -407,6 +407,26 @@ func TestFDB_RFC173ChainedUnnest(t *testing.T) {
 		}
 	})
 
+	t.Run("chain rooted at an AT ordinal alias declines loudly, never silent zero rows", func(t *testing.T) {
+		// `t.arr AS x AT o, o.sub AS y` roots the second unnest on the AT ORDINAL
+		// alias `o` (a scalar bigint), not the AS element `x`. `o.sub` is a field
+		// access on a scalar — Java rejects it as UNDEFINED_COLUMN. Go must NOT
+		// misclassify `o` as the chain owner and silently return zero rows:
+		// FindOwnerUnnest matches only the AS element alias, and
+		// IsUnnestOrdinalAlias surfaces the honest 42703 (never the generic 0AF00
+		// fallback, and never a silent empty result).
+		const q = `SELECT "Y" FROM T4, T4."SARR" AS "X" AT "O", "O"."SUB" AS "Y"`
+		if code := planErr(t, q); code != api.ErrCodeUndefinedColumn {
+			t.Fatalf("AT-ordinal chain owner: got SQLSTATE %s, want 42703 (UNDEFINED_COLUMN) — never a silent zero-row plan", code)
+		}
+		// And the legit sibling `x.SUB` (AS element) STILL chains — dropping the
+		// AtAlias match must not break the real element-rooted chain.
+		_, rows := queryRows(t, `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X" AT "O", "X"."SUB" AS "Y"`)
+		if len(rows) != 4 {
+			t.Fatalf("legit x.SUB chain alongside AT o: got %d rows, want 4", len(rows))
+		}
+	})
+
 	t.Run("chain rooted at a CTE owner declines loudly (UNSUPPORTED_QUERY)", func(t *testing.T) {
 		// Condition 4 — a chained unnest whose chain bottoms at a CTE/derived
 		// owner (not a real-table scan) declines LOUDLY. Here the first link
@@ -418,6 +438,38 @@ func TestFDB_RFC173ChainedUnnest(t *testing.T) {
 		const q = `WITH "C" AS (SELECT * FROM T4) SELECT "Y" FROM "C", "C"."SARR" AS "X", "X"."SUB" AS "Y"`
 		if code := planErr(t, q); code != api.ErrCodeUnsupportedQuery {
 			t.Fatalf("CTE-rooted chain: got SQLSTATE %s, want 0AF00 (UNSUPPORTED_QUERY)", code)
+		}
+	})
+
+	t.Run("chain rooted at a DERIVED-TABLE owner declines loudly (UNSUPPORTED_QUERY)", func(t *testing.T) {
+		// Condition 4, derived-table primary form: `(SELECT * FROM T4) AS D` is a
+		// derived owner; the chained `X.SUB AS Y` bottoms at D (not a base scan),
+		// so chainedOwnerElementMessage's real-table branch (guarded by
+		// outerSourceIsDerivedTable) declines — never resolving against a real
+		// same-named table's descriptor (the P2a shadow the class-3 structural
+		// guard closes). Loud 0AF00, never wrong-type metadata or wrong rows.
+		const q = `SELECT "Y" FROM (SELECT * FROM T4) AS "D", "D"."SARR" AS "X", "X"."SUB" AS "Y"`
+		if code := planErr(t, q); code != api.ErrCodeUnsupportedQuery {
+			t.Fatalf("derived-owner chain: got SQLSTATE %s, want 0AF00 (UNSUPPORTED_QUERY)", code)
+		}
+	})
+
+	t.Run("multi-segment chained sub-path (x.a.b) declines with its OWN cause", func(t *testing.T) {
+		// A multi-HOP sub-path on the element (`x.SUBSTRUCT.DEEP AS y`, 3 segments)
+		// is a Go reach gap Java DOES support — it must decline with the honest
+		// "multi-segment" message, not be mislabeled a CTE/derived-root decline
+		// (both are 0AF00; the message is the distinguishing signal).
+		const q = `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT"."DEEP" AS "Y"`
+		_, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		if perr == nil {
+			t.Fatalf("multi-segment sub-path: expected a loud decline, got nil")
+		}
+		var se *api.Error
+		if !errors.As(perr, &se) || se.Code != api.ErrCodeUnsupportedQuery {
+			t.Fatalf("multi-segment sub-path: got %v, want 0AF00 (UNSUPPORTED_QUERY)", perr)
+		}
+		if !strings.Contains(se.Message, "multi-segment") {
+			t.Fatalf("multi-segment sub-path: message %q should name the real cause (multi-segment), not a CTE/derived-root decline", se.Message)
 		}
 	})
 

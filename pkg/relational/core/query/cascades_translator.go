@@ -1126,6 +1126,19 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 				return nil
 			}
 		}
+		// segment 0 names a prior unnest's AT ORDINAL alias (`t.arr AS x AT o,
+		// o.sub AS y`): `o` binds a scalar integer, so `o.sub` is a field access
+		// on a scalar — Java rejects it at resolution (UNDEFINED_COLUMN). Surface
+		// that honest error instead of the generic fallback reject (which would
+		// rebuild `o.sub` as a phantom scan and fail with 0AF00). Only the
+		// field-access shape (a sub-path past the ordinal name) reaches here — a
+		// bare `o AS y` is a different, earlier-handled shape.
+		if len(u.Segments) >= 2 && logical.IsUnnestOrdinalAlias(j.Left, u.Segments[0]) {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q does not exist on source %q",
+				strings.Join(u.Segments[1:], "."), u.Segments[0]))
+			return nil
+		}
 		return t.unnestFallbackOrReject(j, u)
 	}
 	// Java's `generateCorrelatedFieldAccess` validates the array field against the

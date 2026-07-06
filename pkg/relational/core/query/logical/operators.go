@@ -738,19 +738,25 @@ func FindOuterScanTable(op LogicalOperator, alias string) string {
 }
 
 // FindOwnerUnnest returns the LogicalUnnest in the outer sub-plan `op` whose
-// AS or AT alias matches `alias` — the OWNER of a CHAINED lateral unnest
+// element (AS) alias matches `alias` — the OWNER of a CHAINED lateral unnest
 // (`FROM t, t.arr AS x, x.sub AS y`: the second unnest's segment-0 `x` names
 // the first unnest's element). Mirrors FindOuterScanTable's walk (does not
 // descend into a CTE/derived Body — a derived table is its own FROM scope, so
 // a chain rooted inside a derived body is out of scope), but matches unnest
 // element aliases instead of scans. nil when no such prior unnest.
+//
+// The AT ordinal alias (`t.arr AS x AT o`) is deliberately NOT matched: `o`
+// binds a scalar INTEGER ordinal, not a struct, so `o.sub` can never be a valid
+// chain root. Matching it would misclassify `o.sub` as owned by this unnest and
+// resolve `sub` against the ELEMENT's descriptor — emitting a plan that
+// silently returns zero rows where Java rejects `o.sub` (a field access on a
+// scalar). Only the AS element alias carries a chainable struct.
 func FindOwnerUnnest(op LogicalOperator, alias string) *LogicalUnnest {
-	want := strings.ToUpper(alias)
 	var walk func(LogicalOperator) *LogicalUnnest
 	walk = func(o LogicalOperator) *LogicalUnnest {
 		switch n := o.(type) {
 		case *LogicalUnnest:
-			if strings.EqualFold(n.Alias, want) || (n.AtAlias != "" && strings.EqualFold(n.AtAlias, want)) {
+			if strings.EqualFold(n.Alias, alias) {
 				return n
 			}
 			return nil
@@ -763,6 +769,32 @@ func FindOwnerUnnest(op LogicalOperator, alias string) *LogicalUnnest {
 				}
 			}
 			return nil
+		}
+	}
+	return walk(op)
+}
+
+// IsUnnestOrdinalAlias reports whether `alias` names a prior lateral unnest's AT
+// ORDINAL alias (`t.arr AS x AT o` → `o`) in the outer sub-plan `op`. That alias
+// binds a scalar INTEGER ordinal, so a field access on it (`o.sub`) is a
+// resolution error, not a chainable source — the caller surfaces the honest
+// UNDEFINED_COLUMN Java produces instead of the generic unnest fallback. Same
+// walk as FindOwnerUnnest (no CTE-Body descent), matching the AT alias only.
+func IsUnnestOrdinalAlias(op LogicalOperator, alias string) bool {
+	var walk func(LogicalOperator) bool
+	walk = func(o LogicalOperator) bool {
+		switch n := o.(type) {
+		case *LogicalUnnest:
+			return n.AtAlias != "" && strings.EqualFold(n.AtAlias, alias)
+		case *LogicalCTE:
+			return walk(n.Main)
+		default:
+			for _, c := range o.Children() {
+				if walk(c) {
+					return true
+				}
+			}
+			return false
 		}
 	}
 	return walk(op)

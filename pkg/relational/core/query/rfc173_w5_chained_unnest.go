@@ -78,9 +78,19 @@ func (t *cascadesTranslator) chainedOwnerElementMessage(outerLeft logical.Logica
 	if u == nil || len(u.Segments) != 2 {
 		return nil, false, false
 	}
-	// The record the owner's array field `u.Segments[1]` lives on.
+	// The record the owner's array field `u.Segments[1]` lives on. The base
+	// branch is a REAL-TABLE scan ONLY: exclude both a CTE reference
+	// (outerSourceIsCTE) AND a derived-table primary `(SELECT…) AS D`
+	// (outerSourceIsDerivedTable) — condition 4 declines a CTE/derived-rooted
+	// chain loudly. The derived guard is structural, not just a resolveRecordType
+	// miss: a derived alias `D` that SHADOWS a real table `D` (with a matching
+	// struct-array) would otherwise bottom at the base-table descriptor here
+	// (the derived body isn't in cteScope until translateRef(j.Left) runs — the
+	// P2a timing hole class-3 closes structurally), yielding wrong element-type
+	// metadata. Declining routes it to the loud 0AF00.
 	var base protoreflect.FieldDescriptors
-	if scanTable := findOuterScanTable(outerLeft, u.Segments[0]); scanTable != "" && !t.outerSourceIsCTE(scanTable) {
+	if scanTable := findOuterScanTable(outerLeft, u.Segments[0]); scanTable != "" &&
+		!t.outerSourceIsCTE(scanTable) && !outerSourceIsDerivedTable(outerLeft, u.Segments[0]) {
 		rt := t.resolveRecordType(scanTable)
 		if rt == nil || rt.Descriptor == nil {
 			return nil, false, false
@@ -186,9 +196,17 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 			"column %q does not exist on source %q",
 			strings.Join(u.Segments[1:], "."), u.Segments[0]))
 		return nil
-	default: // derivedUnnestUnsupported — CTE/derived/box-rooted chain
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"chained lateral unnest rooted at a CTE/derived-table source is not yet supported"))
+	default: // derivedUnnestUnsupported — two distinct causes, both loud 0AF00
+		if len(u.Segments) > 2 {
+			// A multi-HOP sub-path on the element (`x.a.b AS y`) — Java DOES
+			// support this (a further struct descent per link); it's a Go reach
+			// gap, not a CTE-root decline. Name the real cause.
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"multi-segment chained unnest sub-path (x.a.b) is not yet supported"))
+		} else {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"chained lateral unnest rooted at a CTE/derived-table source is not yet supported"))
+		}
 		return nil
 	}
 
