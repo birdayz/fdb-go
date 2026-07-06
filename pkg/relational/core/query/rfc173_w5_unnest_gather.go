@@ -347,8 +347,11 @@ func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebui
 	}
 
 	// Classification against the unnest's OWN scope (uLeft — the sources
-	// before it in FROM order).
-	if len(u.Segments) != 2 {
+	// before it in FROM order). Multi-segment paths pass through: the
+	// gathered builder bakes them as fused root+suffix collections
+	// (unnest-residual class 2), and the classifier below validates every
+	// intermediate segment.
+	if len(u.Segments) < 2 {
 		return nil, nil, nil, "", 0, false
 	}
 	outerTable := findOuterScanTable(uLeft, u.Segments[0])

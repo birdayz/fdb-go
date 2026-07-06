@@ -221,6 +221,20 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		metadata.NewColumnSpec("BCID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("BCW", api.NewLongType(true), 2),
 	}, []string{"BCID"})
+	// NST: the RFC-173 unnest-residual class-2 table — the unnest array is
+	// buried inside a STRUCT column (`NST.NREC.NARR`, a MULTI-SEGMENT field
+	// path), the shape the single-segment classifier hard-errored on
+	// ("column \"nrec.narr\" does not exist on source"). Column names (and the
+	// struct's field names) are FULLY DISJOINT from every other table so the
+	// multi-source variant passes the name-ambiguity gate and exercises the
+	// GATHERED fused root-ordinal+suffix collection.
+	b.AddTable("NST", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("NSID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("NREC", api.NewStructType("NRECT", []api.StructField{
+			api.NewStructField("NSUB", api.NewLongType(true), 0),
+			api.NewStructField("NARR", api.NewArrayType(api.NewIntegerType(false), true), 1),
+		}, true), 2),
+	}, []string{"NSID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -245,6 +259,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	bxaDesc := md.GetRecordType("BXA").Descriptor
 	bxbDesc := md.GetRecordType("BXB").Descriptor
 	bxcDesc := md.GetRecordType("BXC").Descriptor
+	nstDesc := md.GetRecordType("NST").Descriptor
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
@@ -372,6 +387,24 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		m.Set(bxcDesc.Fields().ByName("BCW"), protoreflect.ValueOfInt64(w))
 		return m
 	}
+	// nstRec builds an NST record (class 2). hasRec=false leaves the STRUCT
+	// column NREC unset (NULL struct); arr=nil inside a set struct leaves the
+	// nested array unset (empty == unset on the proto2 wire) — both must
+	// explode to ZERO rows, never a NULL-element row.
+	nstRec := func(id int64, hasRec bool, sub int64, arr []int32) proto.Message {
+		m := dynamicpb.NewMessage(nstDesc)
+		m.Set(nstDesc.Fields().ByName("NSID"), protoreflect.ValueOfInt64(id))
+		if hasRec {
+			recFD := nstDesc.Fields().ByName("NREC")
+			recMsg := dynamicpb.NewMessage(recFD.Message())
+			recMsg.Set(recFD.Message().Fields().ByName("NSUB"), protoreflect.ValueOfInt64(sub))
+			if arr != nil {
+				setIntArr(recMsg, recFD.Message(), "NARR", arr)
+			}
+			m.Set(recFD, protoreflect.ValueOfMessage(recMsg))
+		}
+		return m
+	}
 
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
@@ -483,6 +516,14 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			bxbRec(100, 1),
 			bxbRec(300, 3),
 			bxcRec(5, 50),
+			// NST (RFC-173 unnest-residual class 2): only NSID 1 carries
+			// elements ({70,71} inside the struct). NSID 2's struct is set but
+			// its nested array is unset; NSID 3's whole struct is unset — the
+			// two distinct "nothing to explode" depths (missing leaf vs missing
+			// intermediate), both zero rows.
+			nstRec(1, true, 7, []int32{70, 71}),
+			nstRec(2, true, 8, nil),
+			nstRec(3, false, 0, nil),
 		}
 		for _, r := range recs {
 			if _, e := store.SaveRecord(r); e != nil {
@@ -3954,6 +3995,59 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRowsOrdered(t,
 			`SELECT "BAID", "EL", "ORDX" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID", BXA."BARR" AS "EL" AT "ORDX" ORDER BY "BAID", "EL"`,
 			[]string{"BAID=1|EL=10|ORDX=1", "BAID=1|EL=11|ORDX=2", "BAID=2|EL=20|ORDX=1"})
+	})
+
+	t.Run("RFC-173 unnest-residual class 2: multi-segment struct paths", func(t *testing.T) {
+		// Class 2: the lateral array lives BEHIND a struct column — a
+		// MULTI-SEGMENT field path (`NST.NREC.NARR`), which the single-segment
+		// classifier hard-errored on (`column "nrec.narr" does not exist on
+		// source "nst"`). The classifier now descends per segment (singular
+		// message intermediates only); runtime struct descent is the
+		// FieldValue proto-message arm. Rows: only NSID 1 has elements
+		// ({70,71}); NSID 2's struct is set with an UNSET nested array and
+		// NSID 3's whole struct is UNSET — both depths of "nothing to explode"
+		// must yield ZERO rows (Java's Explode-over-NULL), never a
+		// NULL-element row.
+
+		// (a) Row pin, single-source residual path.
+		singleExplain := assertRowsOrdered(t,
+			`SELECT "NSID", "EL" FROM NST, NST."NREC"."NARR" AS "EL" ORDER BY "NSID", "EL"`,
+			[]string{"EL=70|NSID=1", "EL=71|NSID=1"})
+		unnestMustContain(t, singleExplain, "FlatMap")
+		unnestMustContain(t, singleExplain, "Explode")
+
+		// (b) AT-ordinality through the struct path: ordinals are the array
+		// positions inside the nested array, 1-based per owner row.
+		atExplain := assertRowsOrdered(t,
+			`SELECT "NSID", "EL", "ORDN" FROM NST, NST."NREC"."NARR" AS "EL" AT "ORDN" ORDER BY "NSID", "EL"`,
+			[]string{"EL=70|NSID=1|ORDN=1", "EL=71|NSID=1|ORDN=2"})
+		unnestMustContain(t, atExplain, "WITH ORDINALITY")
+
+		// (c) Multi-source GATHERED variant: NST × BXC (fully disjoint column
+		// names, so the name-ambiguity gate admits the flat gather) with the
+		// struct-path unnest as the trailing leg. BXC's single row (BCID 5,
+		// BCW 50) crosses each exploded element once. The gathered signature
+		// is the Explode's FlatMap pairing Scan(NST) — the OWNING source —
+		// directly as its outer (the fused root-ordinal+suffix collection),
+		// never a whole-cluster residual FlatMap.
+		gatheredExplain := assertRowsOrdered(t,
+			`SELECT "NSID", "EL", "BCW" FROM NST, BXC, NST."NREC"."NARR" AS "EL" WHERE "BCID" = 5 ORDER BY "NSID", "EL"`,
+			[]string{"BCW=50|EL=70|NSID=1", "BCW=50|EL=71|NSID=1"})
+		if !strings.Contains(gatheredExplain, "FlatMap(outer=Scan(NST)") {
+			t.Fatalf("multi-source struct-path unnest did not GATHER (want the Explode FlatMap over Scan(NST)):\n%s", gatheredExplain)
+		}
+
+		// (d) Error-parity guard: a multi-segment path whose intermediate is a
+		// NON-record field (`NST.NSID.NARR` — NSID is a scalar long) must
+		// ERROR at plan time, never silently plan to zero/wrong rows. The
+		// exact code/message is deliberately NOT pinned (pending live-Java
+		// classification); only THAT it errors is load-bearing.
+		if _, perr := embedded.PlanRecordQueryWithMetadata(
+			`SELECT "EL" FROM NST, NST."NSID"."NARR" AS "EL"`, md, nil); perr == nil {
+			t.Fatalf("multi-segment path through the scalar intermediate NSID must ERROR, got a plan")
+		} else {
+			t.Logf("scalar-intermediate path rejected with: %v", perr)
+		}
 	})
 }
 

@@ -604,3 +604,34 @@ func TestRFC173UR_C1_OuterBoxLeft_Gathers(t *testing.T) {
 		t.Fatalf("collection ordinal = %v, want box-level 1", coll.Resolved.Accessors)
 	}
 }
+
+// TestRFC173UR_C1_DupAliasOwner_FirstMatch pins the owner-lookup discipline
+// under DUPLICATE FROM aliases (design ruling 1(iii) — the item-1 binding
+// model): the FIRST duplicate keeps the alias as its binding, later
+// duplicates carry parser-minted ids the name lookup cannot reach, so
+// `s.ARR` resolves to the FIRST leg's window and the collection correlates
+// to THAT leg's binding — never the later duplicate's.
+func TestRFC173UR_C1_DupAliasOwner_FirstMatch(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	first := scan("SRC", "s")
+	second := scan("AUX", "s") // same SQL alias, distinct table
+	second.Binding = "Q$DUP1"  // the parser's mint for a later duplicate
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	j := logical.NewJoin(inner(first, second), u, logical.JoinInner, "")
+	innerCorr := values.NamedCorrelationIdentifier("EL")
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("a dup-alias cluster with distinct bindings must GATHER, got nil")
+	}
+	gathered := sel.(*expressions.SelectExpression)
+	quants := gathered.GetQuantifiers()
+	if len(quants) != 3 {
+		t.Fatalf("quantifiers = %d, want 3", len(quants))
+	}
+	coll := quants[2].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue().(*values.FieldValue)
+	qov := coll.Child.(*values.QuantifiedObjectValue)
+	if qov.Correlation.Name() != "S" {
+		t.Fatalf("collection correlates to %s, want the FIRST duplicate's binding S (first-match by alias, correlate by binding)", qov.Correlation)
+	}
+}

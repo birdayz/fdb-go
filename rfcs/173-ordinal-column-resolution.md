@@ -4065,3 +4065,12 @@ parity (the no-proto purity was a Go-side layering choice, not a
 contract). The alternative (wrapping struct values at row
 materialization) touches every row path for one consumer. To be ruled on
 at the c1 implementation review.
+
+**Class-2 error-parity booking:** a multi-segment path through a SCALAR
+intermediate (`NST.NSID.NARR`) errors 42809 WrongObjectType ("join
+correlation can occur only on a column of repeated (array) type") — the
+classifier's present-but-not-unnestable arm. Pinned THAT it errors, not
+the wording; classify against live Java 4.12.11.0 before the slice's
+exit (Java's lookupNestedField returns empty for a non-STRUCT
+intermediate and the resolution falls through — the error CLASS may
+differ).
