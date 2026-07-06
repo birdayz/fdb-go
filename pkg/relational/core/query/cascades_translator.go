@@ -3032,11 +3032,26 @@ func classifySortSource(input logical.LogicalOperator) sortSource {
 		// key resolves to a binding-qualified value — display-named
 		// legAliases ([A, A]) failed to attribute it and the key silently
 		// degraded to the bare last-leg-wins read. Identical to the alias
-		// for every non-duplicate leg.
-		return sortSource{
-			isJoin:     true,
-			legAliases: []string{sourceBinding(j.Left), sourceBinding(j.Right)},
+		// for every non-duplicate leg. Item 3: BURIED bindings under a box
+		// leg join the set (structural walk) — a sort key qualified by a
+		// buried source (`ORDER BY d.id` over `(dept LEFT emp) JOIN cat`)
+		// must attribute to ITS leg, never degrade to the bare
+		// first-match read (which silently sorted by the wrong column).
+		var legAliases []string
+		var collect func(op logical.LogicalOperator)
+		collect = func(op logical.LogicalOperator) {
+			if cj, isJ := op.(*logical.LogicalJoin); isJ {
+				collect(cj.Left)
+				collect(cj.Right)
+				return
+			}
+			if b := sourceBinding(op); b != "" {
+				legAliases = append(legAliases, b)
+			}
 		}
+		collect(j.Left)
+		collect(j.Right)
+		return sortSource{isJoin: true, legAliases: legAliases}
 	}
 	return sortSource{isJoin: false}
 }

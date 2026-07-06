@@ -70,11 +70,12 @@ func TestRFC173W4Left_SeedShape(t *testing.T) {
 		t.Fatalf("a LEFT box with a CLUSTERED preserved leg must GATE (item-3 S1), got %+v", d)
 	}
 
-	// Leg-position ineligibility: the gated-as-root LEFT box is NOT
-	// merge-opaque (RewriteOuterJoinRule dissolves it), so as a LEG it stays
-	// ineligible and an enclosing cluster stays name-model.
+	// Item-3 S3: the gated LEFT box is ELIGIBLE as a leg — the dissolved
+	// select's splice is arity-accounted (clusterArity = preserved + 1,
+	// amendment A) so the enclosing seed and post-flattening arrangement
+	// agree; the W3b drift assert and the mixed-nesting matrices tripwire.
 	leftBox := logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, "")
-	if tr.ordinalEligible(leftBox) {
-		t.Fatal("a LEFT box must stay INELIGIBLE as a leg (dissolves and merges across the boundary — the W3b drift class)")
+	if !tr.ordinalEligible(leftBox) {
+		t.Fatal("a LEFT box must be ELIGIBLE as a leg (item-3 S3)")
 	}
 }

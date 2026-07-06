@@ -226,17 +226,14 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		// forced FALSE — a join leg roots a fresh cluster (it sits at an
 		// outer-box or leg boundary) — and Decide is side-effect-free.
 		//
-		// W4-left refinement: a LEFT/RIGHT box gates AS A ROOT (its own
-		// seed) but stays INELIGIBLE as a LEG — unlike FULL it is not
-		// merge-opaque: RewriteOuterJoinRule dissolves it and the dissolved
-		// select MERGES across the leg boundary (the RFC-153
-		// joined-preserved machinery), so a parent that typed the box as
-		// ONE leg would drift against post-flattening arity (the W3b loud
-		// assert's exact class). Leg-position widening rides the
-		// QP-REF-BIND item 3 (TODO.md).
-		if o.Kind == logical.JoinLeft || o.Kind == logical.JoinRight {
-			return false
-		}
+		// Item-3 S3: a LEFT/RIGHT box is eligible AS A LEG exactly like any
+		// gated join (the W4-left leg-ineligibility retired). The former
+		// drift hazard — a parent typing the box as ONE leg against the
+		// dissolved select's post-flattening splice — is closed by
+		// amendment A: clusterArity counts the box as preserved + 1 (the
+		// rules' actual mergeability), so the parent's arity accounting and
+		// the seed layout agree; the W3b drift assert and the mixed-nesting
+		// matrices stay the tripwires.
 		prev := t.inInnerCluster
 		t.inInnerCluster = false
 		d := t.ordinalWedgeGateDecide(o)
@@ -351,14 +348,27 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 			return 1
 		}
 		if o.Kind != logical.JoinInner {
-			// LEFT/RIGHT OUTER: RewriteOuterJoinRule dissolves the box into
-			// an INNER + null-on-empty select during REWRITING, whose
-			// preserved side flattens into the enclosing cluster with a
-			// null-on-empty rider — post-flattening arity is not computable
-			// at translation. POISON: any cluster containing a LEFT box
-			// stays name-model (W3b premise correction; see
-			// ordinalWedgeGateDecide).
-			return arityPoison
+			// LEFT/RIGHT OUTER (item-3 amendment A): RewriteOuterJoinRule
+			// dissolves the box into an INNER + null-on-empty select, and
+			// the dissolved select MERGES into inner-equivalent parents —
+			// the PRESERVED side's legs splice in and the null-on-empty
+			// quantifier splices as EXACTLY ONE leg whose child never
+			// merges (verified in both engines: Java's SelectMergeRule
+			// matches via forEachQuantifierWithoutDefaultOnEmptyOverRef;
+			// Go's rule skips IsNullOnEmpty quantifiers identically). So
+			// post-flattening arity IS computable: preserved + 1. Poison
+			// propagates from the preserved side. (The former blanket
+			// poison — "not computable at translation" — was shorthand for
+			// "not seedable pre-items-1+2", retired with S3.)
+			preserved := o.Left
+			if o.Kind == logical.JoinRight {
+				preserved = o.Right
+			}
+			p := t.clusterArity(preserved)
+			if p == arityPoison {
+				return arityPoison
+			}
+			return p + 1
 		}
 		l := t.clusterArity(o.Left)
 		if l == arityPoison {

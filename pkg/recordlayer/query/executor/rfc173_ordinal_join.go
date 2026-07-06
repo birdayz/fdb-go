@@ -236,10 +236,16 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 	// bridge). Mirrors the values-side derivation (cross-agreement).
 	var mergedLegs []values.RecordTypeLeg
 	for _, s := range spans {
-		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: strings.ToUpper(s.Alias.Name()), Start: s.Offset, Width: s.Width})
-		for _, sub := range s.LegType.Legs {
-			mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width})
+		if len(s.LegType.Legs) > 0 {
+			// Box run: subs only (the run name is its rightmost leaf's —
+			// a run-level entry would shadow that leaf with the whole
+			// concat; see rcOutputType).
+			for _, sub := range s.LegType.Legs {
+				mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width})
+			}
+			continue
 		}
+		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: strings.ToUpper(s.Alias.Name()), Start: s.Offset, Width: s.Width})
 	}
 	return spans, &values.RecordType{Fields: mergedFields, Legs: mergedLegs}, true
 }
@@ -696,9 +702,18 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 		}
 		lastCorr = corr
 		if rt, isRT := qov.Typ.(*values.RecordType); isRT {
-			legs = append(legs, values.RecordTypeLeg{Name: corr, Start: i, Width: len(rt.Fields)})
-			for _, sub := range rt.Legs {
-				legs = append(legs, values.RecordTypeLeg{Name: sub.Name, Start: i + sub.Start, Width: sub.Width})
+			if len(rt.Legs) > 0 {
+				// A clustered box run: its name is the rightmost LEAF's (the
+				// sourceBinding convention), which the buried bounds already
+				// carry at the leaf's own offset — a run-level entry under
+				// that name would shadow it with the WHOLE concat (the
+				// RIGHT-box collision: "D.ID" first-matched the box run and
+				// read the null-supplying leg's slot). Subs only.
+				for _, sub := range rt.Legs {
+					legs = append(legs, values.RecordTypeLeg{Name: sub.Name, Start: i + sub.Start, Width: sub.Width})
+				}
+			} else {
+				legs = append(legs, values.RecordTypeLeg{Name: corr, Start: i, Width: len(rt.Fields)})
 			}
 		}
 	}

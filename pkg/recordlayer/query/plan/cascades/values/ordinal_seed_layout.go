@@ -143,11 +143,16 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 				}
 			}
 		}
-		// The merged type carries every window's boundary (runs + buried
-		// sub-windows) for the dotted-read bridge; sorted by Start for
-		// deterministic order (cross-agreement with the executor twin).
+		// The merged type carries every window's boundary for the dotted-read
+		// bridge — but a clustered box RUN emits its SUBS only: the run's name
+		// is its rightmost leaf's (sourceBinding), and a run-level entry would
+		// shadow that leaf with the whole concat (the RIGHT-box collision; see
+		// the executor twin). Sorted by Start for deterministic order.
 		mergedLegs := make([]RecordTypeLeg, 0, len(windows))
 		for alias, w := range windows {
+			if len(w.Typ.Legs) > 0 {
+				continue // box run: its subs are their own windows below
+			}
 			mergedLegs = append(mergedLegs, RecordTypeLeg{Name: alias, Start: w.Offset, Width: len(w.Typ.Fields)})
 		}
 		sort.Slice(mergedLegs, func(i, j int) bool {

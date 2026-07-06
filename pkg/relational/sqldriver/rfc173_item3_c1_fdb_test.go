@@ -113,6 +113,42 @@ func TestFDB_RFC173Item3_ClusteredBoxRows(t *testing.T) {
 		}
 	})
 
+	// Amendment G: FULL over a LEFT box goes live with S3 (the FULL arm
+	// gates before the LEFT arm, so eligibility makes `(A LEFT B) FULL C`
+	// seed with a LEFT-box leg). Drain births over the nested nullable
+	// window: the FULL drain's unmatched-C row pads the WHOLE box side.
+	t.Run("G_full_over_left_box", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT pa.id, b.bid, c2.cid FROM pa LEFT JOIN pb AS b ON pa.id = b.bid FULL JOIN pc AS c2 ON c2.cid = pa.v / 2")
+		if err != nil {
+			t.Fatalf("FULL over LEFT box errored: %v", err)
+		}
+		defer rows.Close()
+		n, boxPadded := 0, 0
+		for rows.Next() {
+			var id, bid, cid sql.NullInt64
+			if err := rows.Scan(&id, &bid, &cid); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			n++
+			if !id.Valid {
+				boxPadded++
+				if bid.Valid {
+					t.Errorf("FULL drain row: box side must pad WHOLE (id NULL but bid=%v)", bid)
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		t.Logf("ACTUAL: %d rows, %d box-padded", n, boxPadded)
+		// pa(1,10): v/2=5 → c2.cid=5 matches. pa(9,90): v/2=45 → no c2 → c2 NULL.
+		// c2(6) unmatched → the FULL drain births a box-padded row.
+		if n != 3 || boxPadded != 1 {
+			t.Errorf("FULL-over-LEFT = %d rows (%d box-padded), want 3 rows with exactly 1 box-padded drain row", n, boxPadded)
+		}
+	})
+
 	// Amendment F: WHERE-EXISTS over the clustered LEFT box — the gate
 	// auto-widened existsOuterGatesFresh; the below-FOD machinery must
 	// serve the correlated read.

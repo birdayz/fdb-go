@@ -63,12 +63,11 @@ func TestRFC173S2_ClusterArity_Shapes(t *testing.T) {
 		{"two_way", inner(scan("Order", "o"), scan("Customer", "c")), 2},
 		{"three_way_left_deep", inner(inner(scan("Order", "o"), scan("Customer", "c")), scan("TypedRecord", "t")), 3},
 		{"three_way_right_deep", inner(scan("Order", "o"), inner(scan("Customer", "c"), scan("TypedRecord", "t"))), 3},
-		// LEFT OUTER: POISON — RewriteOuterJoinRule dissolves the box into an
-		// INNER + null-on-empty select during REWRITING, so translation-time
-		// opacity is a false premise (the W3b flip's live catch). FULL OUTER
-		// is the genuinely opaque box (never rewritten, never merged).
-		{"left_outer_poison", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), arityPoison},
-		{"left_outer_box_poisons_cluster", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), scan("TypedRecord", "t")), arityPoison},
+		// LEFT OUTER (item-3 amendment A): the dissolved select merges as
+		// preserved + the null-on-empty quantifier — arity = preserved + 1.
+		// FULL OUTER stays the genuinely opaque box (never rewritten/merged).
+		{"left_outer_preserved_plus_one", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), 2},
+		{"left_outer_box_in_cluster", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), scan("TypedRecord", "t")), 3},
 		{"full_outer_opaque", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), 1},
 		{"full_outer_box_plus_scan", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), scan("TypedRecord", "t")), 2},
 		{"filter_transparent", inner(logical.NewFilter(scan("Order", "o"), "x > 1"), scan("Customer", "c")), 2},
@@ -256,14 +255,15 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		// wrong source (`d LEFT JOIN e ON … JOIN c ON …` returned d.id as
 		// e.id, the FDB runtime pins). The INNER arm has carried this
 		// enclosure guard since Slice 2; the outer arms shipped without it.
-		// A LEFT/RIGHT box leg poisons its parent (ordinal-ineligible leg),
-		// so the box translates ENCLOSED and must stay name-model. A FULL
-		// box leg is ordinal-ELIGIBLE — its parent GATES and the composition
-		// is ordinal-over-ordinal (the S3-fulcrum pin above), so FULL only
-		// meets the guard under a parent poisoned for other reasons.
+		// Item-3 S3: a LEFT/RIGHT box leg is ordinal-ELIGIBLE, so a plain
+		// inner parent GATES and the box translates FRESH — the enclosure
+		// guard survives VERBATIM (amendment H) but needs a GENUINELY
+		// name-model parent to fire: dup leg bindings poison the gate
+		// (unminted white-box duplicates), so the box under that parent
+		// stays enclosed and name-model.
 		for _, kind := range []logical.JoinKind{logical.JoinLeft, logical.JoinRight} {
 			box := logical.NewJoin(scan("Order", "d"), scan("Customer", "e"), kind, "")
-			root := inner(box, scan("TypedRecord", "c"))
+			root := inner(box, scan("TypedRecord", "e"))
 			tr := newGateTranslator(t)
 			tr.translateRef(root)
 			d, ok := tr.wedgeGate[box]
@@ -437,9 +437,9 @@ func TestRFC173S2_WalkArmParity(t *testing.T) {
 		{"project_plain", logical.NewProject(scan("Order", "o"), []string{"order_id"}, []string{""}), true, 1},
 		{"project_scalar_subq", &logical.LogicalProject{Input: scan("Order", "o"), Projections: []string{"order_id"}, ScalarSubqueries: []logical.ScalarSubquery{{Alias: values.NamedCorrelationIdentifier("s")}}}, true, 1}, // commit 5b rider lift
 		{"inner_join", inner(scan("Order", "o"), scan("Customer", "c")), true, 2},                                                                                                                                            // S3 fulcrum: eligible iff the leg itself gates
-		{"left_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), false, arityPoison},
-		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), true, 1},                                           // S3 fulcrum: FULL gates unconditionally -> eligible; cluster: opaque box of 1
-		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), true, 2}, // S3 fulcrum: derived body join gates
+		{"left_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), true, 2},                                                                                                             // item-3 S3+A: eligible as a leg; arity preserved+1
+		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), true, 1},                                                                                                             // S3 fulcrum: FULL gates unconditionally -> eligible; cluster: opaque box of 1
+		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), true, 2},                                                                   // S3 fulcrum: derived body join gates
 		{"cte_recursive", logical.NewCTE("r", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Order", "o2")}, false), logical.NewScan("r", ""), true), false, arityPoison},
 		{"aggregate", logical.NewAggregate(scan("Order", "o"), []string{"x"}, nil, nil, ""), true, 1},
 		{"distinct", logical.NewDistinct(scan("Order", "o")), true, 1},
