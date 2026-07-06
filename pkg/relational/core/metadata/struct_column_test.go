@@ -134,3 +134,25 @@ func TestBuilder_StructColumn_UnnamedRejected(t *testing.T) {
 		t.Fatal("an unnamed struct column type must error")
 	}
 }
+
+// TestBuilder_StructColumn_DuplicateNameDifferentNullability accepts two
+// columns reusing a struct name that differ ONLY in the COLUMN's own
+// nullability: nullability is per-column (the referencing field's
+// LABEL_OPTIONAL/REQUIRED), not a property of the shared nested descriptor, so
+// `nullable P1 P` + `not-null P2 P` legitimately share one `P` message. A
+// shape guard keyed on api.StructType.Equal (which compares the struct's own
+// nullability) would wrongly reject this.
+func TestBuilder_StructColumn_DuplicateNameDifferentNullability(t *testing.T) {
+	t.Parallel()
+	nullableP := api.NewStructType("P", []api.StructField{longField("A", 0)}, true)
+	requiredP := api.NewStructType("P", []api.StructField{longField("A", 0)}, false)
+	_, err := NewSchemaTemplateBuilder().SetName("st6").
+		AddTable("T", []ColumnSpec{
+			NewColumnSpec("ID", api.NewLongType(false), 1),
+			NewColumnSpec("P1", nullableP, 2),
+			NewColumnSpec("P2", requiredP, 3),
+		}, []string{"ID"}).Build()
+	if err != nil {
+		t.Fatalf("same-shape struct reused with different COLUMN nullability must build, got %v", err)
+	}
+}

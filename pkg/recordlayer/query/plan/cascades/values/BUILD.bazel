@@ -116,6 +116,7 @@ go_test(
         "simplifier_value_test.go",
         "swallow_axis_test.go",
         "type_test.go",
+        "uuid_descent_test.go",
         "value_anchored_join_record_test.go",
         "value_andor_test.go",
         "value_array_constructor_test.go",

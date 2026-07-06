@@ -544,14 +544,18 @@ type structEmitCtx struct {
 // order).
 func structDescriptor(st *api.StructType, ec *structEmitCtx) error {
 	if prev, seen := ec.types[st.Name()]; seen {
-		// One name, one shape: a re-registration of the same name must be the
-		// SAME type (full field-list equality — names, indexes, and recursive
-		// field types, via api.StructType.Equal), else the second column
-		// would silently inherit the first's descriptor. Identity short-circuits
-		// Equal, so a SELF-REFERENTIAL struct (whose field re-enters here mid-
-		// build, against a still-empty prev) is accepted rather than
-		// mis-flagged as a shape conflict.
-		if prev == st || prev.Equal(st) {
+		// One name, one shape: a re-registration of the same name must share
+		// the SAME nested descriptor shape (field names, indexes, and
+		// recursive field types), else the second column would silently
+		// inherit the first's descriptor. Compare with the struct's OWN
+		// nullability normalized away — a struct column's nullability is
+		// per-COLUMN (the referencing field's LABEL_OPTIONAL/REQUIRED, set
+		// from the column's dt), not a property of the shared nested message,
+		// so `nullable P1 P` + `not-null P2 P` legitimately share one `P`
+		// descriptor. Identity short-circuits first, so a SELF-REFERENTIAL
+		// struct (whose field re-enters here mid-build, against a still-empty
+		// prev) is accepted rather than mis-flagged.
+		if prev == st || prev.WithNullable(false).Equal(st.WithNullable(false)) {
 			return nil
 		}
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,

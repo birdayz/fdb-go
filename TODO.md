@@ -2477,7 +2477,7 @@ regression.
 
 **2026-07-06 (RFC-173 unnest-residual c1 — box-leg owners gather, multi-segment
 struct paths, SelectMerge/Explode arm, struct-column schema surface): branch
-156.73s total, PASS — faster than the master baseline (161.68s). No regression.
+156.73s total, PASS — faster than the master baseline (161.68s); the NAK-round fix HEAD (proto-converter unification on the executor hot path) 160.53s, still clean. No regression.
 
 
 **2026-07-06 (RFC-173 item-1 c4 — the review-round fixes: binding-keyed sort/group
