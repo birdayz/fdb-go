@@ -3750,3 +3750,60 @@ item 3, delete in S4 — or delete in-slice).
 F-B; the LEFT-box-dup 0AF00 → live-Java-probed parity rows; the mixed-nesting
 runtime FDB matrices (the `d.id-as-e.id` wrong-source class) stay green through
 every intermediate commit; dual-window + 1M stress per the standard exit gates.
+
+## QP-REF-BIND item 3 — design ruling (banked)
+
+**Substrate corrections (ruled):** (1) the zero-callers claim is STRICKEN —
+after S1+S3 the anchored fallback still serves genuinely-ungated outers
+(unnest-join, existential-ON, unminted-dup, seed-declined single-source);
+`NewScalarSubqueryAnchoredRecord` deletion rides S4. (2) A FOURTH site:
+`clusterArity`'s LEFT/RIGHT poison arm (`rfc173_cluster_gate.go:354-362`) —
+without flipping it to `clusterArity(preserved) + 1` (the null-supplying side
+contributes exactly the null-on-empty quantifier — the rules' actual
+mergeability, verified in both engines), S3 is dead code.
+
+**F-A — sequenced, three commits, cut along GATE-ARM CLASSES** (not the
+substrate's three sites). Never-live-separately binds WITHIN each commit
+(gate-arm flip ↔ every consumer probing the one authority: translateJoin
+seed, W4b csq dispatch, existsOuterGatesFresh, ordinalEligible); partial
+states BETWEEN commits fail closed to the name model through the authority.
+Atomic all-three flip REJECTED. **F-B — the buried-correlated shape flips
+in-slice, commit 1**; the rfc153 typed plan pins (equality-bound probe, zero
+materialized NLJ) stay VERBATIM green at every intermediate HEAD — the hard
+performance gate; the Q3 narrowing retires with S1, no carve-out survives.
+**F-C — neither offered option**: the constructor survives with its class
+narrowed to genuinely-ungated outers; the fallback gains a gated-outer
+LOUD-DECLINE guard (commit 1 — the hazard is live the moment S1 lands); Dir 2
+re-fixtured onto a still-ungated class; deletion in S4.
+
+**Amendments:** (A) the fourth site flips in commit 2. (B) nullability
+through the window — ordinalLegColumns wraps the null-supplying window's
+field types nullable (Java pullUpResultColumnsWithNullability(true)); the
+second half of ruling I3. (C) buried-leg bake windows — legTypes gains an
+entry per BURIED leg of a clustered box leg (binding → window at its offset
+in the box concat) so cross-leg ON conjuncts spanning buried sources bake
+positionally at translation (Java's collapseLeftSideOperators + rewireQov-by-
+ordinal analog); predicateLegAliases currently misclassifies them single-leg.
+(D) buildClusterPullUp's join-leg decline lifts in commit 1 (recurse through
+gated box legs, per-buried-leg spans, null-supplying spans nullable) — part
+of S1's atomic unit. (E) clustered NULL-SUPPLYING leg (`A LEFT JOIN (B⋈C)`)
+gates at commit 1 — record-level nullable concat QOV, executor null birth
+spans the whole window, red-first both directions + RIGHT. (F) EXISTS
+auto-widening — existsOuterGatesFresh widens at commit 1 automatically;
+red-first pins for EXISTS-over-clustered-box through the below-FOD rebase;
+fixing the rebase in-slice is mandatory, narrowing the probe forbidden.
+(G) FULL-over-LEFT goes live at commit 2 (red-first pin incl. drain births
+over the nested nullable window); FULL's own null-supplying marking stays
+booked. (H) pin RE-FIXTURING not deletion — the enclosure-guard pin needs a
+genuinely name-model parent fixture; the guard itself survives VERBATIM to
+S4 (the "S2 lift" is a scope narrowing that falls out of commits 1+2 —
+no code deletion). (I) dispatch-authority corpus + the RIGHT-variant panic
+class (rule_partition_select.go:475 must never see an ordinal-seeded box).
+(J) reason-string sweep rides each retiring commit; the :4024 minted-binding
+decline STAYS with narrowed class.
+
+**Commit plan:** c1 = box roots with clustered legs (S1 + amendments C/D/E/F,
+the F-C guard, the pin flips incl. LEFT-box-dup live-Java parity). c2 = boxes
+in leg position (S3 + fourth site + amendments A/B/G/H/I, S2 comment
+narrowing). c3 = residual disposition + exit gates (amendment J, records,
+dual-window, 1M stress, live-Java batch). Graefe holds ACK until after c3.
