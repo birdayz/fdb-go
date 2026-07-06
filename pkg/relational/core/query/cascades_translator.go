@@ -1131,52 +1131,77 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	//     regardless of whether the alias also names a real table. The in-scope
 	//     derived source is preferred over the catalog table, exactly as Java
 	//     resolves the in-scope quantifier alias. RFC-142.
+	var elementType values.Type
+	var fieldName string
 	if t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"unnest over a CTE/derived-table output is not yet supported"))
-		return nil
-	}
-	elementType, fieldName, isArray, fieldPresent := t.unnestArrayElementType(outerTable, u.Segments[1:])
-	if !isArray {
-		// Segment 0 matched a scan whose table is `outerTable`. Three sub-cases,
-		// matching Java's `generateAccess`/`resolveCorrelatedIdentifier`:
-		//
-		//   - PRESENT-but-scalar (fieldPresent): a real non-array correlated
-		//     source → Java's `generateCorrelatedFieldAccess` "repeated type"
-		//     assert → WRONG_OBJECT_TYPE (P2c).
-		//   - source is a REAL table but the field is MISSING: an unresolvable
-		//     correlated field on a known source — Java's `resolveCorrelatedIdentifier`
-		//     fails the field lookup → a clean UNDEFINED_COLUMN, NOT a silent table
-		//     fallback that produces a generic translation failure (P2c).
-		//   - source is NOT a real table (a derived-table alias `d` whose record
-		//     type doesn't resolve): the field can't be checked here → table path.
-		if fieldPresent {
+		// RFC-173 unnest-residual class 3: resolve the array field through the
+		// CTE/derived body's projection to a base-table array column (the
+		// flowed type is UnknownType — see rfc173_w5_derived_unnest.go). A
+		// bare passthrough classifies; every other body shape declines loudly.
+		et, outName, disp := t.classifyDerivedUnnestArray(j.Left, u)
+		switch disp {
+		case derivedUnnestArray:
+			elementType, fieldName = et, outName
+			// Fall through to the shared build path below (skip the base-table
+			// unnestArrayElementType classification — already done via the body).
+		case derivedUnnestWrongType:
 			t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
 				"join correlation can occur only on a column of repeated (array) type"))
 			return nil
-		}
-		// AT on a BARE source (`FROM T1, T1 AT ord`): segment 0 names a visible
-		// scan, but there are NO field segments to resolve — the source is the
-		// TABLE/alias itself, not an array field on it. AT is valid only on a
-		// correlated array, so this converges with the other AT-on-a-table
-		// rejection paths (unnestFallbackOrReject, demoteSchemaQualifiedUnnest) on
-		// Java's WRONG_OBJECT_TYPE — NOT an UNDEFINED_COLUMN for an empty field
-		// name. (Without the AT this single-segment shape isn't even classified as
-		// an unnest; the AT forces it here so it can be rejected faithfully.)
-		// RFC-142.
-		if u.AtAlias != "" && len(u.Segments) < 2 {
-			t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
-				"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
-			return nil
-		}
-		if t.resolveRecordType(outerTable) != nil {
-			// Known source, missing field: unresolvable correlated field.
+		case derivedUnnestUndefined:
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q does not exist on source %q",
 				strings.Join(u.Segments[1:], "."), u.Segments[0]))
 			return nil
+		default: // derivedUnnestUnsupported
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"unnest over a computed/non-passthrough CTE/derived-table output is not yet supported"))
+			return nil
 		}
-		return t.unnestFallbackOrReject(j, u)
+	} else {
+		var isArray, fieldPresent bool
+		elementType, fieldName, isArray, fieldPresent = t.unnestArrayElementType(outerTable, u.Segments[1:])
+		if !isArray {
+			// Segment 0 matched a scan whose table is `outerTable`. Three sub-cases,
+			// matching Java's `generateAccess`/`resolveCorrelatedIdentifier`:
+			//
+			//   - PRESENT-but-scalar (fieldPresent): a real non-array correlated
+			//     source → Java's `generateCorrelatedFieldAccess` "repeated type"
+			//     assert → WRONG_OBJECT_TYPE (P2c).
+			//   - source is a REAL table but the field is MISSING: an unresolvable
+			//     correlated field on a known source — Java's `resolveCorrelatedIdentifier`
+			//     fails the field lookup → a clean UNDEFINED_COLUMN, NOT a silent table
+			//     fallback that produces a generic translation failure (P2c).
+			//   - source is NOT a real table (a derived-table alias `d` whose record
+			//     type doesn't resolve): the field can't be checked here → table path.
+			if fieldPresent {
+				t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+					"join correlation can occur only on a column of repeated (array) type"))
+				return nil
+			}
+			// AT on a BARE source (`FROM T1, T1 AT ord`): segment 0 names a visible
+			// scan, but there are NO field segments to resolve — the source is the
+			// TABLE/alias itself, not an array field on it. AT is valid only on a
+			// correlated array, so this converges with the other AT-on-a-table
+			// rejection paths (unnestFallbackOrReject, demoteSchemaQualifiedUnnest) on
+			// Java's WRONG_OBJECT_TYPE — NOT an UNDEFINED_COLUMN for an empty field
+			// name. (Without the AT this single-segment shape isn't even classified as
+			// an unnest; the AT forces it here so it can be rejected faithfully.)
+			// RFC-142.
+			if u.AtAlias != "" && len(u.Segments) < 2 {
+				t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+					"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
+				return nil
+			}
+			if t.resolveRecordType(outerTable) != nil {
+				// Known source, missing field: unresolvable correlated field.
+				t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q does not exist on source %q",
+					strings.Join(u.Segments[1:], "."), u.Segments[0]))
+				return nil
+			}
+			return t.unnestFallbackOrReject(j, u)
+		}
 	}
 
 	// CHAINED unnest (`FROM t, t.arr1 AS v1, t.arr2 AS v2`) lowers to a nested

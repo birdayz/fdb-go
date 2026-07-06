@@ -4125,3 +4125,120 @@ where discriminable:
 - **Graefe #7 (silent slot-0 risk):** name-addressed struct suffix accessors
   carry a LOUD sentinel ordinal (-1) — Get(-1) fails out-of-range rather than
   silently reading slot 0 if a struct ever materialized positionally.
+
+## Unnest-residual c2 (class 3, CTE/derived owners) — mechanism amendment
+
+Design ruling 3(ii) required classifying the array field against "the
+TRANSLATED derived leg's flowed cascades type." Research (read-only trace,
+verified) shows that flowed type is `UnknownType` in Go's coexistence model —
+TWO independent erasures, either fatal to the literal mechanism:
+
+1. `fieldTypeForFD` (cascades_translator.go:225-228) collapses EVERY repeated
+   (and map) field to `UnknownType` at the scan leaf, so even a plain
+   base-table scan flows its array column as `UnknownType` — array-ness is
+   erased before any projection. (Java keeps `Type.Array` here; this is the
+   Go-specific gap.)
+2. `LogicalProjectionExpression.GetResultValue` (logical_projection.go:65-67)
+   returns the inner quantifier's flowed object — a bare `QuantifiedObjectValue`
+   stamped `UnknownType` — NOT a `RecordConstructorValue` of the projected
+   column types. So `GetResultValue().Type()` is `UnknownType` wholesale (not
+   even a name-resolvable RecordType).
+
+The real element type survives in exactly one place a passthrough can reach:
+the proto DESCRIPTOR, which is the mechanism the working single-table unnest
+(`unnestArrayElementType`) already uses — it ignores flowed types and reads
+`resolveRecordType(table).Descriptor` directly (its own comment notes the
+UnknownType collapse). The P2a hazard the ruling names is real but has a
+DIFFERENT root than assumed: `findOuterScanTable(j.Left, "d")` returns the
+derived ALIAS name, so `resolveRecordType("D")` hits a wrong same-named base
+table or misses — because the walk deliberately does not descend into
+`LogicalCTE.Body`.
+
+**Amended mechanism (honors 3(ii)'s INTENT — no P2a silent-wrong — through the
+descriptor via the body, since the flowed type is unavailable):** replace the
+blanket CTE/derived decline with body-projection resolution —
+1. Locate the `LogicalCTE` leg in `j.Left` whose `Name == u.Segments[0]`
+   (reuse the `outerSourceIsDerivedTable` walk to return the node).
+2. In `cte.Body`, map the unnest field `u.Segments[1]` to a projection slot:
+   output `Aliases[i]` else source `Projections[i]`, honoring `ColumnAliases`
+   for `WITH c(a,b)`.
+3. If that slot is a BARE non-computed passthrough of a plain column ref:
+   resolve the body's OWN base scan (`findOuterScanTable(cte.Body, source)`)
+   and classify via `unnestArrayElementType(bodyBaseTable, ...)` against the
+   body's descriptor — the real `*ArrayType` from the CORRECT base table.
+   P2a closed structurally: resolution goes through the body's actual scan,
+   never the outer alias.
+4. Otherwise (computed/aggregate/scalar-renamed/set-op output — the array
+   type is not a base-table passthrough): a clean typed decline, never a
+   base-table guess.
+
+**Supported (currently rejected 0A000, Java plans them — parity restored):**
+passthrough `(SELECT arr FROM t) AS d, d.arr`; aliased `SELECT arr AS a … c.a`;
+`WITH c(a) AS …` column-rename; passthrough with intervening WHERE/ORDER BY/
+LIMIT. **Declined (Go-specific loud decline, ruling-3-permitted honest
+"unsupported" over silent-wrong):** computed array output (`array_agg`, array
+literal), aggregate/set-op body where the column→base mapping is not a plain
+passthrough. Error parity: scalar-source (`SELECT id AS arr`) → WRONG_OBJECT_TYPE
+(matches Java's "repeated type" assert); field-absent → UNDEFINED_COLUMN;
+non-passthrough computed → UNSUPPORTED_QUERY (Go conservative — Java has real
+types and would plan; booked as the residual the RFC-173 end-state closes when
+Path-B `columnCascadesType` types flow through the projection result).
+
+**S4 rider (booked):** the end-state fix — flow `columnCascadesType`'s real
+`*ArrayType` through `LogicalProjectionExpression`'s result (a
+`RecordConstructorValue` of the projected values) so the derived leg's flowed
+type carries array-ness — retires the c2 body-resolution mechanism AND the
+computed-output declines. Part of the S4 type-model work.
+
+**c2 design review rulings (Graefe DESIGN ACK — binding conditions):**
+1. Body-resolution MUST re-apply the derived/CTE structural guard AT THE BODY
+   LEVEL — a passthrough whose source is itself a LogicalCTE (derived-over-
+   derived) declines, else `findOuterScanTable(cte.Body, source)` returns the
+   INNER alias and resolveRecordType hits a wrong same-named base one nesting
+   level down (residual P2a). Load-bearing, not advisory.
+2. The passthrough classifier is a POSITIVE WHITELIST: recognize ONLY a bare
+   (non-IsComputed) passthrough over a SINGLE unambiguous base scan; decline-
+   by-default on every other body shape (set-op, aggregate, multi-scan join
+   with an unqualified/ambiguous source, any computed slot). Never blacklist —
+   an unrecognized shape must never fall through to a base-table guess.
+3. Pin (a) each supported shape → plans + correct rows; (b) each declined
+   shape → the stated loud code; (c) TWO P2a regressions — outer-alias
+   same-named base table AND body-level nested same-named base table — each
+   asserting a loud decline / correct classification, never wrong rows (the
+   dimension that let the original P2a through, plus one level deeper).
+4. Non-blocking follow-up (booked): align BOTH the single-table and the
+   derived scalar-source paths to INVALID_COLUMN_REFERENCE (42F10) to match
+   Java's generateCorrelatedFieldAccess (currently WRONG_OBJECT_TYPE 42809 —
+   pre-existing, loud, same-42-class, no silent-wrong; don't split the two).
+   Also noted: full 3(ii)-literal parity needs lifting the array-collapse in
+   fieldTypeForFD too (a second erasure site independent of the projection
+   pass-through) — part of the S4 type-model work.
+
+## Unnest-residual c2 (class 3) — record
+
+Implemented per the amended mechanism + Graefe's 4 conditions. A CTE/derived
+unnest owner now resolves the array field through the body's projection to a
+base-table array column (`classifyDerivedUnnestArray`,
+rfc173_w5_derived_unnest.go): find the owner body (inline LogicalCTE or a
+cteScope WITH-CTE), map the output name to a projection slot, and — for a BARE
+passthrough over a SINGLE base scan — classify via the body's own descriptor
+(the correct table, never the outer alias). A positive whitelist:
+`bodyOutputProject`/`singleBaseScan` recurse only through row-shape-preserving
+unary wrappers and decline-by-default on any join/aggregate/union/CTE
+(condition 2); the `outerSourceIsCTE(scan.Table)` check declines nested
+derived-over-derived (condition 1).
+
+Dispositions (plan-level pinned, TestRFC173DerivedUnnest_Dispositions;
+row-pinned, TestFDB_ArrayUnnestOrdinality class-3 block): passthrough / alias-
+rename / CTE / intervening-WHERE PLAN (were 0A000 — Java parity restored);
+scalar-source → 42809 WRONG_OBJECT_TYPE (Java's "repeated type"; the
+pre-existing single-table path's code — condition 4's 42F10 alignment is the
+booked non-blocking follow-up); computed/aggregate/set-op/multi-scan/nested →
+0AF00 loud UNSUPPORTED_QUERY (honest over silent-wrong); absent → 42703. The
+TWO P2a regressions (condition 3) are pinned both plan-level and are the
+load-bearing cases — outer-alias same-named base table → 42809 via the body
+(never base d.arr), body-level nested same-named base → 0AF00 (never base
+inr) — no silent-wrong at either level. Class-3's more-precise scalar-source
+disposition (42809 vs the old blanket 0AF00) re-fixtured 5 stale single-table
+rejection pins to the codes the plan-level pins codify. Red-proven: the
+pre-c2 tree returns 0A000 "not yet supported" for every supported shape.

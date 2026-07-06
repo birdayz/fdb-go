@@ -255,6 +255,20 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		metadata.NewColumnSpec("CBID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("CBREF", api.NewLongType(true), 2),
 	}, []string{"CBID"})
+	// DRV: the RFC-173 unnest-residual class-3 owner — the lateral array's OWNER
+	// is a CTE/derived-table OUTPUT that bare-passes-through a base-table array
+	// column (`(SELECT DID, DARR FROM DRV) AS d, d.DARR AS EL`). Pre-slice this
+	// was a hard 0A000 (unnest over a derived/CTE output declined); class 3
+	// traces the passthrough back to the underlying base column and plans the
+	// FlatMap-over-Explode. Column names are FULLY DISJOINT from every other
+	// table (the scalar is DVAL, not the design sketch's DSC, which already names
+	// a table here). DID 3's NULL array is the Explode-over-NULL -> zero-rows
+	// axis; DVAL discriminates the intervening-WHERE case (5 < 6 = 6 <= 7).
+	b.AddTable("DRV", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("DID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("DARR", api.NewArrayType(api.NewIntegerType(false), true), 2),
+		metadata.NewColumnSpec("DVAL", api.NewLongType(true), 3),
+	}, []string{"DID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -282,6 +296,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	nstDesc := md.GetRecordType("NST").Descriptor
 	cxaDesc := md.GetRecordType("CXA").Descriptor
 	cxbDesc := md.GetRecordType("CXB").Descriptor
+	drvDesc := md.GetRecordType("DRV").Descriptor
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
@@ -451,6 +466,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		m.Set(cxbDesc.Fields().ByName("CBREF"), protoreflect.ValueOfInt64(ref))
 		return m
 	}
+	// drvRec builds a DRV record (class-3 derived/CTE-output owner). arr=nil
+	// leaves DARR unset (NULL) — the Explode-over-NULL -> zero-rows axis.
+	drvRec := func(id int64, arr []int32, dval int64) proto.Message {
+		m := dynamicpb.NewMessage(drvDesc)
+		m.Set(drvDesc.Fields().ByName("DID"), protoreflect.ValueOfInt64(id))
+		if arr != nil {
+			setIntArr(m, drvDesc, "DARR", arr)
+		}
+		m.Set(drvDesc.Fields().ByName("DVAL"), protoreflect.ValueOfInt64(dval))
+		return m
+	}
 
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
@@ -579,6 +605,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			cxaRec(2, true, 2, []int32{82}),
 			cxaRec(3, false, 0, nil),
 			cxbRec(10, 1),
+			// DRV (RFC-173 unnest-residual class 3): DID 1 explodes {10,11}; DID
+			// 2 explodes the single {20}; DID 3's DARR is UNSET (NULL) → zero
+			// rows. DVAL discriminates the intervening-WHERE case: DVAL >= 6 keeps
+			// DID 2 (6) and DID 3 (7) but not DID 1 (5), and DID 3's NULL array
+			// still explodes to nothing — so `WHERE DVAL >= 6` yields ONLY DID 2's
+			// element.
+			drvRec(1, []int32{10, 11}, 5),
+			drvRec(2, []int32{20}, 6),
+			drvRec(3, nil, 7),
 		}
 		for _, r := range recs {
 			if _, e := store.SaveRecord(r); e != nil {
@@ -1117,17 +1152,18 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// probe round 7 P1 (silent-wrong): `FROM (SELECT ID AS ARR FROM T1) AS D,
 		// D.ARR AS V` where a REAL table D ALSO exists with an ARRAY column ARR.
 		// The derived table D's OUTPUT column ARR is the SCALAR `ID` renamed, NOT
-		// an array. The derived table's LogicalCTE body is registered into the
-		// translator's cteScope only when its leg is translated — AFTER the
-		// metadata-validation guard — so the cteScope check missed it, and
-		// findOuterScanTable resolved segment 0 (D) to the REAL table D, validating
-		// ARR against ITS array metadata and exploding the derived row's SCALAR ARR
-		// (one wrong scalar row per outer row). The structural detection
-		// (outerSourceIsDerivedTable: a LogicalCTE leg in j.Left whose Name == D)
-		// now rejects the derived-output unnest in ALL cases — even when a real
-		// same-named table exists — never validating against the real table's
-		// metadata. RFC-142.
-		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR" FROM T1) AS "D", "D"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
+		// an array. The hazard is validating `ARR` against the REAL table D's array
+		// metadata (findOuterScanTable would resolve segment 0 D to the real D) and
+		// silently exploding the derived row's SCALAR — one wrong scalar row per
+		// outer row. The RFC-173 class-3 classifier now traces the derived output
+		// `ARR` back through the body's projection to its BASE column (T1.ID, a
+		// scalar) and reports the honest "repeated type" WRONG_OBJECT_TYPE — the
+		// precise disposition (superseding the earlier blanket UNSUPPORTED_QUERY),
+		// definitively NOT the real D.ARR array (which would have PLANNED, not
+		// errored). The base column is reached through the BODY's own scan, never
+		// the outer alias, so the same-named real table is structurally never
+		// consulted.
+		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR" FROM T1) AS "D", "D"."ARR" AS "V"`, api.ErrCodeWrongObjectType)
 	})
 
 	t.Run("P1 real table D unnest (no derived shadow) still works", func(t *testing.T) {
@@ -1260,10 +1296,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The same output-vs-base-table principle for a DERIVED table whose alias is
 		// the visible source: `FROM (SELECT ID AS ARR1 FROM T1) AS d, d.ARR1 AS V`.
 		// `d` is the visible derived source; its OUTPUT ARR1 is the scalar `ID`, not
-		// an array. The unnest correlates to the derived output (not a base table),
-		// whose element type is not recoverable here → clean UNSUPPORTED_QUERY,
-		// never a silent explode. RFC-142.
-		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR1" FROM T1) AS "d", "d"."ARR1" AS "V"`, api.ErrCodeUnsupportedQuery)
+		// an array. The RFC-173 class-3 classifier traces the derived output ARR1
+		// back through the body's projection to its base column (T1.ID, a scalar)
+		// and reports the honest "repeated type" WRONG_OBJECT_TYPE — never a silent
+		// explode. (Pre-class-3 the element type was unrecoverable, so this was a
+		// blanket UNSUPPORTED_QUERY; class-3 recovers the base type and gives the
+		// precise wrong-type code.)
+		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR1" FROM T1) AS "d", "d"."ARR1" AS "V"`, api.ErrCodeWrongObjectType)
 	})
 
 	t.Run("R5a normal CTE and derived queries are unaffected (no over-rejection)", func(t *testing.T) {
@@ -1302,14 +1341,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	t.Run("R10 CTE genuinely used as the unnest source is still rejected", func(t *testing.T) {
 		// Control (round-5 boundary preserved): `WITH X AS (SELECT ID AS ARR FROM T1)
 		// SELECT V FROM X, X.ARR AS V` — here X IS the CTE, used as the FROM source.
-		// Its OUTPUT column ARR is the SCALAR `ID` renamed, not an array, and the CTE
-		// output element type is not recoverable here (best-effort UnknownType), so
-		// the unnest over a CTE output must still cleanly reject — NOT silently explode
-		// a base table. findOuterScanTable resolves `X` → the CTE name `X` (the scan's
-		// Table holds the CTE name), and outerSourceIsCTE("X") is true → rejected. This
-		// is the SAME revert-proof boundary as the R5a CTE/derived-output cases; only
-		// a real table shadowing the CTE name (the test above) is now allowed.
-		assertRejected(t, md, `WITH "X" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "V" FROM "X", "X"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
+		// Its OUTPUT column ARR is the SCALAR `ID` renamed, not an array, so the
+		// unnest over a CTE output must still cleanly reject — NOT silently explode a
+		// base table. outerSourceIsCTE("X") is true, so the RFC-173 class-3 branch
+		// runs and traces the output ARR back through the body's projection to its
+		// base column (T1.ID, a scalar), reporting the honest "repeated type"
+		// WRONG_OBJECT_TYPE (superseding the earlier blanket UNSUPPORTED_QUERY). Only
+		// a real table SHADOWING the CTE name (the test above) plans; a genuine
+		// CTE-scalar-output unnest rejects.
+		assertRejected(t, md, `WITH "X" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "V" FROM "X", "X"."ARR" AS "V"`, api.ErrCodeWrongObjectType)
 	})
 
 	t.Run("P2b dotted ref to a table hidden behind a derived table is not unnest", func(t *testing.T) {
@@ -1646,19 +1686,23 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// on the SHADOWED base table; the translator's CTE-output rejection
 	// (UNSUPPORTED_QUERY) must surface --------------------------------------
 	//
-	// `WITH DSC AS (SELECT ID AS ARR FROM E) SELECT O FROM DSC, DSC.ARR AS V AT O`
+	// `WITH DSC AS (SELECT ID + 1 AS ARR FROM T1) SELECT O FROM DSC, DSC.ARR AS V AT O`
 	// where a REAL table DSC exists with a SCALAR ARR. The AT alias makes the early
 	// rejectAtOrdinalityOnTable pass run FIRST. Before the fix it resolved segment 0
 	// (DSC) to the SHADOWED real table DSC, saw the scalar ARR (not a list), and
 	// raised WRONG_OBJECT_TYPE (42809) — diverging from the translator, which
 	// detects the in-scope CTE source (outerSourceIsDerivedTable) and rejects with
-	// UNSUPPORTED_QUERY ("unnest over a CTE/derived-table output is not yet
-	// supported"). The fix makes atOnNonArraySource detect the CTE/derived binding
-	// for segment 0 BEFORE the md.GetRecordType lookup and skip the base-table AT
-	// check, leaving the rejection to the translator's CTE-output path. Revert-proof
-	// on the converged UNSUPPORTED_QUERY (42809 on revert). RFC-142.
+	// UNSUPPORTED_QUERY. The fix makes atOnNonArraySource detect the CTE/derived
+	// binding for segment 0 BEFORE the md.GetRecordType lookup and skip the
+	// base-table AT check, leaving the rejection to the translator's CTE-output
+	// path. Revert-proof on 0AF00 vs 42809: reverting the early-pass fix keys the
+	// shadowed real DSC's scalar ARR → 42809. The CTE body is COMPUTED (`ID + 1`)
+	// deliberately — the RFC-173 class-3 classifier declines a computed passthrough
+	// as UNSUPPORTED_QUERY, whereas a bare scalar passthrough would now trace to the
+	// base scalar and give 42809 (collapsing the 0AF00/42809 discriminator this
+	// revert-proof needs). RFC-142.
 	t.Run("AT over a CTE source shadowing a real scalar-ARR table is UNSUPPORTED_QUERY", func(t *testing.T) {
-		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "O" FROM "DSC", "DSC"."ARR" AS "V" AT "O"`, api.ErrCodeUnsupportedQuery)
+		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" + 1 AS "ARR" FROM T1) SELECT "O" FROM "DSC", "DSC"."ARR" AS "V" AT "O"`, api.ErrCodeUnsupportedQuery)
 	})
 
 	t.Run("control: AT on a real-table scalar field (no CTE) is still WRONG_OBJECT_TYPE", func(t *testing.T) {
@@ -1670,12 +1714,16 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("control: genuine CTE-output unnest (no AT) is still UNSUPPORTED_QUERY", func(t *testing.T) {
-		// The non-AT sibling of the bug query: `WITH DSC AS (…) SELECT V FROM DSC,
-		// DSC.ARR AS V` (no AT). This never reaches rejectAtOrdinalityOnTable (no AT
-		// alias), so it is the translator's outerSourceIsCTE rejection directly —
-		// pinning that the genuine CTE-output unnest stays UNSUPPORTED_QUERY both
-		// before and after the early-pass change.
-		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "V" FROM "DSC", "DSC"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
+		// The non-AT sibling of the bug query: `WITH DSC AS (SELECT ID + 1 AS ARR …)
+		// SELECT V FROM DSC, DSC.ARR AS V` (no AT). This never reaches
+		// rejectAtOrdinalityOnTable (no AT alias), so it is the translator's class-3
+		// path directly. The body is COMPUTED (`ID + 1`), which the class-3
+		// classifier declines as UNSUPPORTED_QUERY (no base-table column to resolve)
+		// — pinning that a computed CTE-output unnest stays UNSUPPORTED_QUERY both
+		// before and after the early-pass change. (A bare scalar passthrough, by
+		// contrast, now traces to the base scalar and gives WRONG_OBJECT_TYPE — see
+		// the R10/R5a scalar-passthrough pins above.)
+		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" + 1 AS "ARR" FROM T1) SELECT "V" FROM "DSC", "DSC"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
 	})
 
 	// --- probe round 8: ORDER BY over a shadowed unnest binding (P2a) +
@@ -4175,6 +4223,59 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if !strings.Contains(encExplain, "FlatMap(outer=Scan(NST)") {
 			t.Fatalf("enclosed multi-segment unnest did not GATHER over Scan(NST):\n%s", encExplain)
 		}
+	})
+
+	t.Run("RFC-173 unnest-residual class 3: CTE/derived-table owners", func(t *testing.T) {
+		// Class 3: the lateral array's OWNER is a CTE/derived-table OUTPUT that
+		// bare-passes-through a base-table array column. Pre-slice every such
+		// shape was a hard 0A000 (unnest over a derived/CTE output declined,
+		// because the output element type was best-effort UnknownType); class 3
+		// traces the bare passthrough back to the underlying base column (DRV.DARR)
+		// and plans the FlatMap-over-Explode. Each pin is a LATERAL unnest, so one
+		// output row per array element; DID 3's NULL array yields ZERO rows
+		// (Explode-over-NULL), never a NULL-element row. Rows are derived from the
+		// seed: DID 1 → {10,11}, DID 2 → {20}, DID 3 → NULL.
+
+		// (1) Derived-table passthrough: the derived body projects the base array
+		// column unchanged; the outer unnests `d.DARR`. DID 1 → two rows, DID 2 →
+		// one, DID 3 (NULL) → zero. The projected owner column is keyed by its
+		// qualified derived-alias label (D.DID) in the merged row.
+		p1 := assertRowsOrdered(t,
+			`SELECT "d"."DID", "EL" FROM (SELECT "DID", "DARR" FROM DRV) AS "d", "d"."DARR" AS "EL" ORDER BY "DID", "EL"`,
+			[]string{"D.DID=1|EL=10", "D.DID=1|EL=11", "D.DID=2|EL=20"})
+		unnestMustContain(t, p1, "FlatMap")
+		unnestMustContain(t, p1, "Explode")
+
+		// (2) Derived alias-rename: the passthrough is renamed (`DARR AS A`) in the
+		// derived body; the unnest correlates to the renamed output `d.A` and must
+		// still resolve back to DRV.DARR's elements.
+		assertRows(t,
+			`SELECT "EL" FROM (SELECT "DARR" AS "A" FROM DRV) AS "d", "d"."A" AS "EL"`,
+			[]string{"EL=10", "EL=11", "EL=20"})
+
+		// (3) CTE passthrough: the same bare passthrough via a WITH-CTE output
+		// (`c.DARR`) instead of an inline derived table — same rows as (1), keyed by
+		// the CTE-alias label (C.DID).
+		p3 := assertRowsOrdered(t,
+			`WITH "C" AS (SELECT "DID", "DARR" FROM DRV) SELECT "C"."DID", "EL" FROM "C", "C"."DARR" AS "EL" ORDER BY "DID", "EL"`,
+			[]string{"C.DID=1|EL=10", "C.DID=1|EL=11", "C.DID=2|EL=20"})
+		unnestMustContain(t, p3, "FlatMap")
+		unnestMustContain(t, p3, "Explode")
+
+		// (4) Derived body with an intervening WHERE: the filter runs INSIDE the
+		// derived body, so only DID 2 (DVAL=6) and DID 3 (DVAL=7) survive; DID 3's
+		// array is NULL and explodes to nothing, leaving ONLY DID 2's element. The
+		// filter must not silently drop the whole unnest, nor leak DID 1 (DVAL=5).
+		assertRowsOrdered(t,
+			`SELECT "d"."DID", "EL" FROM (SELECT "DID", "DARR" FROM DRV WHERE "DVAL" >= 6) AS "d", "d"."DARR" AS "EL" ORDER BY "DID", "EL"`,
+			[]string{"D.DID=2|EL=20"})
+
+		// (5) AT-ordinality over a derived passthrough: the 1-based ordinal restarts
+		// per owner row (1,2 for DID 1's {10,11}; 1 for DID 2's {20}).
+		p5 := assertRowsOrdered(t,
+			`SELECT "d"."DID", "EL", "O" FROM (SELECT "DID", "DARR" FROM DRV) AS "d", "d"."DARR" AS "EL" AT "O" ORDER BY "DID", "EL"`,
+			[]string{"D.DID=1|EL=10|O=1", "D.DID=1|EL=11|O=2", "D.DID=2|EL=20|O=1"})
+		unnestMustContain(t, p5, "WITH ORDINALITY")
 	})
 }
 
