@@ -4532,3 +4532,32 @@ plan-shape assert (`FlatMap(outer=FlatMap(` + exactly 2 Explode legs);
 (7) WITH ORDINALITY inner + BOTH levels (independent ordinals) + shadow-
 precedence (top-level `SUB` column shadowed by the element's `x.SUB`). Plus
 3-chain rows, empty/NULL owner → zero rows, SELECT * columns.
+
+## S4 CAP SCOPING — empirical (feat/rfc173-s4, experiment reverted)
+
+Ran the join-name-model gate change (skip the three join declines :143/:157/:190) over the FULL
+54-target suite. Result: **50 pass / 4 fail**, and EVERY FDB failure is a RECURSIVE CTE:
+- sqldriver: TestFDB_RecursiveCTERename, RecursiveCTECrossJoin, RecursiveCTERekeyGate,
+  CascadesRecursiveCTE(PostOrder), RecursiveCTEHierarchy, RecursiveCTEBasic,
+  RFC130_RecursiveCTE(NoDoubleCharge/CrossLevel).
+- dualwindow: recursive_cte_{tree_descendants,filtered_branch,linked_list,multi_column,
+  subtree_from_internal_node,bounded_chain,depth_bounded_walk,wide_tree_count} — name-vs-ordinal
+  divergence.
+- conformance: recursive_cte_count errored + a stale RFC-082 golden (behavior-shift, updatable).
+- query_test: the unit gate-decision pins (TestRFC173Item2C3_FlattenGateArm, WedgeGate) — EXPECTED
+  (they assert the OLD decision; update with the change).
+
+**Every NON-recursive-CTE join shape passes under the ordinalization.** So the join name-model
+retirement is CLEAN except recursive CTEs — the recursive-CTE join is a genuine name-model residual
+(NewReEnumerationAnchoredRecord anchors the frontier by name; the recursive DEFINITION node in leg
+position is the :143 poison). This reframes S4 from "sprawling multi-shift atomic mess" to a
+DESIGN FORK:
+  (A) PARTIAL cap: ordinalize non-recursive-CTE joins now (keep :143/:190 declining ONLY for
+      recursive-CTE legs), keep recursive-CTE + its NewAnchoredJoinRecord/NewReEnumerationAnchoredRecord
+      machinery as a residual deferred to a later slice (F2/F3). Ships the SELECT-* duplicate-column
+      fix + the goldens now; the machinery deletion waits.
+  (B) FULL cap: also ordinalize recursive-CTE (the re-enumeration machinery must go positional) so
+      the whole AnchoredJoin machine deletes in one commit — bigger, needs the recursive frontier
+      ordinalized.
+Needs a Graefe design ruling on (A) vs (B). Either way the gate refinement is "decline :143/:190
+ONLY for a recursive-CTE-definition leg, gate everything else" — a bounded, detectable condition.
