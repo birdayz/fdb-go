@@ -2347,31 +2347,10 @@ func findIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
 	}
 }
 
-// findLeafDescriptor locates the protoreflect.MessageDescriptor for
-// the record type at the leaf of the plan tree. Works for both
-// primary-key scans (RecordQueryScanPlan) and secondary-index scans
-// (RecordQueryIndexPlan).
-func findLeafDescriptor(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) protoreflect.MessageDescriptor {
-	var recordTypes []string
-	if scan := findScanPlan(p); scan != nil {
-		recordTypes = scan.GetRecordTypes()
-	} else if idx := findIndexPlan(p); idx != nil {
-		recordTypes = idx.GetRecordTypes()
-	}
-	if len(recordTypes) == 0 {
-		return nil
-	}
-	rt := md.GetRecordType(recordTypes[0])
-	if rt == nil {
-		return nil
-	}
-	return rt.Descriptor
-}
-
 // allLeafDescriptors collects the record-type descriptors of EVERY scan /
-// index leaf reachable from p — both sides of a join. findLeafDescriptor
-// only follows the single GetInner() chain and so misses the other join
-// leg, which left a projected column from that leg (e.g. `o.total` in
+// index leaf reachable from p — both sides of a join. A single-leaf lookup
+// (following only the GetInner() chain) misses the other join leg, which left
+// a projected column from that leg (e.g. `o.total` in
 // `SELECT u.name, o.total FROM Users u, Orders o ...`) with no descriptor
 // to resolve its type against → reported as UNKNOWN. Resolving each
 // projected column against all leaves recovers the correct column type.
