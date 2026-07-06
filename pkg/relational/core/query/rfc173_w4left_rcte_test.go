@@ -150,3 +150,86 @@ func TestRFC173Rcte_LegClassificationStructural(t *testing.T) {
 		t.Fatalf("aliased column name = %q, want the alias A.B verbatim", names[1])
 	}
 }
+
+// TestRFC173Rcte_R1PositionalArmDecoupling pins the S4-R1 positional arm of
+// recursiveRemapValues (the one the recursive-body ordinal flip introduced): it
+// reads slot i by ORDINAL but DECOUPLES the emit name from the name-window read
+// root. Field=BARE so ProjectionColumnName emits the temp-row key bare (RFC-130:
+// a dotted "C.ID" key would double the wide-payload row); Resolved.Root().Field=
+// the FULL qualified physName so the §5 name-window fallback (Datum[nameReadRootKey])
+// hits the body's qualified output key, matching the pre-lift dotted-split read.
+func TestRFC173Rcte_R1PositionalArmDecoupling(t *testing.T) {
+	t.Parallel()
+	vals := recursiveRemapValues([]string{"C.ID", "PAYLOAD"}, []bool{true, true}, true, true)
+
+	// Qualified column: bare emit, FULL read root, ordinal 0.
+	fv0, ok := vals[0].(*values.FieldValue)
+	if !ok || fv0.Resolved == nil {
+		t.Fatalf("positional arm col0 = %#v, want a resolved-ordinal FieldValue", vals[0])
+	}
+	if fv0.Field != "ID" {
+		t.Fatalf("positional emit name = %q, want BARE ID (RFC-130: no dotted temp-row key)", fv0.Field)
+	}
+	if fv0.Resolved.Root().Field != "C.ID" {
+		t.Fatalf("positional read root = %q, want the FULL qualified C.ID (§5 name-window fallback key)", fv0.Resolved.Root().Field)
+	}
+	if fv0.Resolved.Root().Ordinal != 0 {
+		t.Fatalf("positional ordinal = %d, want slot 0", fv0.Resolved.Root().Ordinal)
+	}
+
+	// Bare column: bare on both, ordinal 1 (no spurious qualifier manufactured).
+	fv1, ok := vals[1].(*values.FieldValue)
+	if !ok || fv1.Resolved == nil || fv1.Field != "PAYLOAD" || fv1.Resolved.Root().Field != "PAYLOAD" || fv1.Resolved.Root().Ordinal != 1 {
+		t.Fatalf("positional arm col1 = %#v, want bare PAYLOAD ordinal 1", vals[1])
+	}
+}
+
+// TestRFC173Rcte_R1RecursiveBodyGatesOrdinal is the S4-R1 structural sentinel
+// (certificate item 5). It runs the ACTUAL translateRecursiveCTE — exercising the
+// lifted name-model blanket — and asserts the recursive PLAIN-JOIN body join
+// GATES ordinal. This is the one durable regression net for R1: a silent revert
+// that re-broadens the blanket forces inInnerCluster=true → the body join declines
+// → this fails. The §5 dual-window differential CANNOT catch that revert (it
+// compares two EMISSION modes over the SHARED translator, so a name-model revert
+// makes both modes agree and the differential stays green — a green-but-latent gap).
+func TestRFC173Rcte_R1RecursiveBodyGatesOrdinal(t *testing.T) {
+	t.Parallel()
+	// Recursive branch: SELECT c.order_id FROM Order c, WALK w  (plain inner join
+	// over the CTE self-reference — the RFC-130 recursive-join-body shape).
+	bodyJoin := inner(scan("Order", "c"), scan("WALK", "w"))
+	rec := logical.NewProject(bodyJoin, []string{"ORDER_ID"}, nil)
+	rec.ProjectedValues = []values.Value{&values.FieldValue{Field: "C.ORDER_ID", Typ: values.UnknownType}}
+	// Seed: SELECT order_id FROM Order o.
+	seed := logical.NewProject(scan("Order", "o"), []string{"ORDER_ID"}, nil)
+	seed.ProjectedValues = []values.Value{&values.FieldValue{Field: "ORDER_ID", Typ: values.UnknownType}}
+	cte := logical.NewCTE("WALK", logical.NewUnion([]logical.LogicalOperator{seed, rec}, false), scan("WALK", ""), true)
+
+	tr := newGateTranslator(t)
+	if tr.translateRecursiveCTE(cte) == nil {
+		t.Fatalf("recursive CTE translation failed: %v", tr.translateErr)
+	}
+
+	// THE sentinel: the body join gated ordinal after the FULL run (blanket lifted).
+	d, ok := tr.wedgeGate[bodyJoin]
+	if !ok || !d.Gated {
+		t.Fatalf("recursive plain-join body join = %+v (recorded=%v), want GATED after the full translateRecursiveCTE run (R1 blanket lift)", d, ok)
+	}
+	if !tr.recursiveBodyIsPositional(rec) {
+		t.Fatal("recursiveBodyIsPositional must be TRUE for a plain-join recursive body")
+	}
+	// Gated ⟹ the seed took the ORDINAL branch (translateJoin :4252
+	// buildOrdinalJoinResultValue), never the name-model buildJoinResultValue —
+	// so the body RV is not AnchoredJoin. (The RV itself can't be rebuilt here:
+	// translateRecursiveCTE deletes cteExprScope[cteName] on the way out, so the
+	// self-reference leg no longer types. The Gated bit is the authoritative,
+	// scope-independent proof.)
+
+	// Negative control (surgical lift, value-level): a SCAN-only recursive body
+	// (no join) has no gated join → stays name-model → NOT positional, so it keeps
+	// the dotted-split arm. Proves the lift did not over-broaden to non-join bodies.
+	scanBody := logical.NewProject(scan("WALK", "w2"), []string{"ORDER_ID"}, nil)
+	scanBody.ProjectedValues = []values.Value{&values.FieldValue{Field: "ORDER_ID", Typ: values.UnknownType}}
+	if tr.recursiveBodyIsPositional(scanBody) {
+		t.Fatal("recursiveBodyIsPositional must be FALSE for a scan-only recursive body (name-model bodies keep the dotted-split arm)")
+	}
+}

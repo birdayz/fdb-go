@@ -3250,7 +3250,7 @@ func executeRecursiveDfsJoin(
 		return nil, fmt.Errorf("executor: recursive dfs join root: %w", err)
 	}
 
-	// RFC-130 (code-review #328, extended to the DFS path): the root/child
+	// RFC-130 (the charge-once fix, extended to the DFS path): the root/child
 	// cursors have a TempTableInsertPlan at the top that already charges each row
 	// in tt.Add — draining with the byte-charging CollectAllBounded would
 	// double-count and trip the budget at ~half its true value (the same defect

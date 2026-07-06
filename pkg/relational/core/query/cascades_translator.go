@@ -5042,7 +5042,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// alias list, or the seed uses AS matching the list), keeping the common
 	// recursive-CTE plan unchanged.
 	if len(seedSrc) > 0 && len(outCols) == len(seedSrc) && !equalFoldSlices(outCols, seedOut) {
-		seedExpr = normalizeLegToOutputColumns(seedExpr, seedSrc, outCols, t.recursiveBodyIsPositional(seedBranches[0]))
+		// len==1 guard: a MULTI-branch seed translates to a union leg (name-keyed,
+		// never positional); recursiveBodyIsPositional inspects only the first
+		// logical branch, so gate it on a single branch to avoid a false-positive
+		// signal (benign — a union row degrades to a name read — but wrong node).
+		seedExpr = normalizeLegToOutputColumns(seedExpr, seedSrc, outCols, len(seedBranches) == 1 && t.recursiveBodyIsPositional(seedBranches[0]))
 	}
 
 	// Wrap seed in TempTableInsert.
@@ -5089,7 +5093,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// (unqualified, re-qualified under the scan alias at the next level).
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(outCols) > 0 && len(recCols) > 0 && len(outCols) == len(recCols) {
-		recursiveExpr = normalizeLegToOutputColumns(recursiveExpr, recCols, outCols, t.recursiveBodyIsPositional(recursiveBranches[0]))
+		recursiveExpr = normalizeLegToOutputColumns(recursiveExpr, recCols, outCols, len(recursiveBranches) == 1 && t.recursiveBodyIsPositional(recursiveBranches[0]))
 	}
 
 	// Wrap recursive leg in TempTableInsert.

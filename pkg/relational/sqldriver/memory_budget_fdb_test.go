@@ -261,8 +261,12 @@ func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
 		"  UNION ALL" +
 		"  SELECT Item.id, Item.payload FROM Item, walk WHERE Item.id = walk.id + 1" +
 		") SELECT id FROM walk"
-	if plan := planExplainVia(t, ctx, db, rcte); !planHasRecursive(plan) {
-		t.Fatalf("query must plan as a recursive CTE, got: %s", plan)
+	// Pin the DFS physical plan: the double-charge this test guards lives in the
+	// RecursiveDfsJoin drains (executeRecursiveDfsJoin), which R1's cost-flip
+	// selects for this wide-payload recursive CTE. A flip back to level-union
+	// would move the charge-once fix's regression net — fail loudly if so.
+	if plan := planExplainVia(t, ctx, db, rcte); !planHasRecursiveDfsJoin(plan) {
+		t.Fatalf("double-charge test must plan as RecursiveDfsJoin (the DFS charge-once fix's net), got: %s", plan)
 	}
 
 	const budget = 15_000 // clear of both the true ~10KB and the doubled ~20KB
@@ -434,4 +438,15 @@ func planHasSort(plan string) bool {
 func planHasRecursive(plan string) bool {
 	up := strings.ToUpper(plan)
 	return strings.Contains(up, "RECURSIVE") || strings.Contains(up, "TEMP")
+}
+
+// planHasRecursiveDfsJoin reports whether the plan uses the RecursiveDfsJoin
+// physical operator (vs the RecursiveLevelUnion). The DFS drains got the RFC-130
+// charge-once fix (collectAllRowCapped) that the level-union already had; the
+// NoDoubleCharge test pins DFS so that fix keeps a regression net — if the cost
+// model ever flips the wide-payload recursive CTE back to level-union, this pin
+// fails LOUDLY (surfacing that the DFS charge fix is no longer exercised) rather
+// than silently losing coverage.
+func planHasRecursiveDfsJoin(plan string) bool {
+	return strings.Contains(strings.ToUpper(plan), "RECURSIVEDFSJOIN")
 }
