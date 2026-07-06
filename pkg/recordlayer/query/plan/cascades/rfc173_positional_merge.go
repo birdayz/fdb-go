@@ -32,13 +32,24 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	lowerBuilder *GraphExpansionBuilder,
 	upperPredicates []predicates.QueryPredicate,
 ) *expressions.SelectExpression {
-	// W4 tripwire (fulcrum ruling, the anchored-arm tripwire's dual): a
-	// null-on-empty quantifier is the dissolved-LEFT machinery — those
-	// selects must arrive ANCHORED and take the trio arm until W4 makes
-	// LEFT gate-eligible. Loud, never a silently mis-merged null extension.
+	// RFC-173 item 3 (S1 made LEFT gate-eligible; the W4-era anchored-only
+	// tripwire retired): a null-on-empty quantifier — the dissolved-LEFT
+	// machinery — SPLICES through a merged select as a quantifier but must
+	// never be COLLAPSED into a positional lower: the null-extension is
+	// per-outer-row (Java's SelectMergeRule matches via
+	// forEachQuantifierWithoutDefaultOnEmptyOverRef — the quantifier merges,
+	// its child never does). DECLINE the collapse and leave the select to
+	// the per-quantifier NLJ implementation (DefaultOnEmpty — Java's
+	// planPartitionToPhysical), never a silently mis-merged null extension.
+	liveSet := make(map[values.CorrelationIdentifier]struct{}, len(live))
+	for _, a := range live {
+		liveSet[a] = struct{}{}
+	}
 	for _, q := range sel.GetQuantifiers() {
 		if q.IsNullOnEmpty() {
-			panic("RFC-173 S3: a null-on-empty quantifier reached the positional merge arm — dissolved-LEFT selects arrive anchored (trio arm) until W4 (planner bug)")
+			if _, collapsed := liveSet[q.GetAlias()]; collapsed {
+				return nil
+			}
 		}
 	}
 

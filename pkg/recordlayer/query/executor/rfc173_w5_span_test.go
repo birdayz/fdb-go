@@ -339,10 +339,30 @@ func assertSpanWindowAgreement(t *testing.T, label string, rc *values.RecordCons
 	if !wantAccept {
 		return
 	}
-	if len(spans) != len(windows) {
-		t.Fatalf("%s: leg count disagreement: %d spans vs %d windows", label, len(spans), len(windows))
-	}
+	// The windows map keys every ADDRESSABLE name (a box run's SUBS included —
+	// the box's name means its rightmost LEAF); spans are RUN-level. Compare
+	// per addressable name: a plain run 1:1, a box run per sub-leg.
+	// Assumes the LEAF-NAMED box regime (a sub leg carries the run alias, so
+	// the values twin REPLACES the run window): a $BOX-minted fixture would
+	// retain the whole-run window under the minted key and mis-count here —
+	// extend the accounting before adding such a fixture.
+	wantWindows := 0
 	for _, s := range spans {
+		if len(s.LegType.Legs) > 0 {
+			wantWindows += len(s.LegType.Legs)
+			for _, sub := range s.LegType.Legs {
+				w, present := windows[sub.Name]
+				if !present {
+					t.Fatalf("%s: box-run sub %s in spans' Legs but not windows", label, sub.Name)
+				}
+				if w.Offset != s.Offset+sub.Start || len(w.Typ.Fields) != sub.Width {
+					t.Fatalf("%s: box-run sub %s LAYOUT DISAGREEMENT: window (offset %d, width %d) vs span sub (offset %d, width %d)",
+						label, sub.Name, w.Offset, len(w.Typ.Fields), s.Offset+sub.Start, sub.Width)
+				}
+			}
+			continue
+		}
+		wantWindows++
 		w, present := windows[strings.ToUpper(s.Alias.Name())]
 		if !present {
 			t.Fatalf("%s: leg %s in spans but not windows", label, s.Alias)
@@ -359,6 +379,9 @@ func assertSpanWindowAgreement(t *testing.T, label string, rc *values.RecordCons
 			}
 		}
 	}
+	if len(windows) != wantWindows {
+		t.Fatalf("%s: window count disagreement: %d windows vs %d addressable names from spans", label, len(windows), wantWindows)
+	}
 	if len(mergedFromSpans.Fields) != len(mergedFromWindows.Fields) {
 		t.Fatalf("%s: merged-type width disagreement: %d vs %d", label, len(mergedFromSpans.Fields), len(mergedFromWindows.Fields))
 	}
@@ -367,6 +390,18 @@ func assertSpanWindowAgreement(t *testing.T, label string, rc *values.RecordCons
 		if sf.Name != wf.Name || sf.FieldType.String() != wf.FieldType.String() {
 			t.Fatalf("%s: merged field %d DISAGREEMENT: span {%s %s} vs window {%s %s}",
 				label, i, sf.Name, sf.FieldType, wf.Name, wf.FieldType)
+		}
+	}
+	// The merged type's LEGS are the dotted-read bridges' contract — the two
+	// derivations must agree on the full boundary list (name, start, width,
+	// order). The dimension whose absence let the values twin drop a box
+	// run's rightmost-leaf boundary while the executor emitted it.
+	if len(mergedFromSpans.Legs) != len(mergedFromWindows.Legs) {
+		t.Fatalf("%s: merged-type LEGS count disagreement: spans %v vs windows %v", label, mergedFromSpans.Legs, mergedFromWindows.Legs)
+	}
+	for i := range mergedFromSpans.Legs {
+		if mergedFromSpans.Legs[i] != mergedFromWindows.Legs[i] {
+			t.Fatalf("%s: merged-type LEG %d DISAGREEMENT: span %+v vs window %+v", label, i, mergedFromSpans.Legs[i], mergedFromWindows.Legs[i])
 		}
 	}
 }
@@ -454,4 +489,56 @@ func TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement(t *testing.T) {
 	assertSpanWindowAgreement(t, "decline/lone-element", values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "X", Value: scalarElem},
 	), false)
+}
+
+// TestRFC173Item3_BoxLegSpanWindowAgreement pins the cross-agreement
+// invariant for a seed whose leg is a CLUSTERED BOX (RecordType.Legs carries
+// the buried-leaf boundaries): the executor's run-level spans emit EVERY sub
+// of the box run into the merged type's Legs, and the values twin must land
+// on the identical boundary list — including the RIGHTMOST leaf's entry
+// under the box's own name (the box is NAMED by that leaf, so the
+// alias-keyed window must be the LEAF's narrow slice, never the whole
+// concat: a run-wide window FieldIndexes across the concat and first-matches
+// an earlier buried leg's duplicate name). The exact drift the values twin
+// shipped: its `leg.Name == alias` skip dropped that boundary while the
+// executor emitted it.
+func TestRFC173Item3_BoxLegSpanWindowAgreement(t *testing.T) {
+	t.Parallel()
+	// Plain preserved leg A (2 cols) + a clustered box leg named E whose
+	// concat buries B (2 cols, one name DUPLICATING an A column) before its
+	// rightmost leaf E (1 col).
+	aLeg := mixedSeedOuter("A")
+	boxTyp := values.NewRecordType("", false, []values.Field{
+		{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "AID", FieldType: values.NotNullLong, Ordinal: 1}, // dup of A's column name
+		{Name: "EID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	boxTyp.Legs = []values.RecordTypeLeg{
+		{Name: "B", Start: 0, Width: 2},
+		{Name: "E", Start: 2, Width: 1},
+	}
+	eBox := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), boxTyp)
+	seed := values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, aLeg, 0), bakeOrdinal(t, aLeg, 1),
+		bakeOrdinal(t, eBox, 0), bakeOrdinal(t, eBox, 1), bakeOrdinal(t, eBox, 2),
+	)
+	assertSpanWindowAgreement(t, "box-leg", seed, true)
+
+	// The alias-keyed window is the rightmost LEAF's slice.
+	windows, merged := values.OrdinalSeedLegWindows(seed)
+	if w := windows["E"]; w.Offset != 4 || len(w.Typ.Fields) != 1 || w.Typ.Fields[0].Name != "EID" {
+		t.Fatalf("windows[E] = (offset %d, %v) — want the rightmost LEAF window (offset 4, [EID])", w.Offset, w.Typ.Fields)
+	}
+	if w := windows["B"]; w.Offset != 2 || len(w.Typ.Fields) != 2 {
+		t.Fatalf("windows[B] = (offset %d, width %d) — want the buried sub-window (offset 2, width 2)", w.Offset, len(w.Typ.Fields))
+	}
+	wantLegs := []values.RecordTypeLeg{{Name: "A", Start: 0, Width: 2}, {Name: "B", Start: 2, Width: 2}, {Name: "E", Start: 4, Width: 1}}
+	if len(merged.Legs) != len(wantLegs) {
+		t.Fatalf("merged Legs = %v, want %v", merged.Legs, wantLegs)
+	}
+	for i, want := range wantLegs {
+		if merged.Legs[i] != want {
+			t.Fatalf("merged Legs[%d] = %+v, want %+v", i, merged.Legs[i], want)
+		}
+	}
 }

@@ -87,20 +87,20 @@ func TestRFC173Item2C4_EnclosureLift(t *testing.T) {
 		}
 	})
 
-	t.Run("clustered-leg LEFT box under EXISTS stays name-model", func(t *testing.T) {
+	t.Run("clustered-leg LEFT box under EXISTS gates", func(t *testing.T) {
 		t.Parallel()
-		// A LEFT box whose preserved leg is itself a CLUSTER is the RFC-153
-		// joined-preserved class — name-model until QP-REF-BIND item 3, gated or
-		// not. The lift must NOT over-reach it: the gate declines on its own
-		// merits (clusterArity > 1 per leg), independent of enclosure.
+		// Item-3 S1 + amendment F: the joined-preserved LEFT box GATES at the
+		// root, and existsOuterGatesFresh (routing through the one gate
+		// authority) widens with it automatically — the box under an EXISTS
+		// flatten translates fresh and takes the ordinal seed.
 		cluster := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, "")
 		box := logical.NewJoin(cluster, scan("TypedRecord", "t"), logical.JoinLeft, "")
 		tr := newGateTranslator(t)
 		if ref := tr.translateRef(c4ExistsFilterOver(box, "q$e")); ref == nil {
 			t.Fatalf("translation failed: %v", tr.translateErr)
 		}
-		if d, ok := tr.wedgeGate[box]; !ok || d.Gated {
-			t.Fatalf("clustered LEFT box under EXISTS = %+v (recorded=%v), want recorded NOT gated (joined-preserved class, item 3)", d, ok)
+		if d, ok := tr.wedgeGate[box]; !ok || !d.Gated {
+			t.Fatalf("clustered LEFT box under EXISTS = %+v (recorded=%v), want recorded and GATED (item-3 S1 + amendment F)", d, ok)
 		}
 	})
 

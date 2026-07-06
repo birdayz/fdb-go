@@ -244,6 +244,8 @@ go_test(
         "rfc173_item2_c3_flatten_seed_fdb_test.go",
         "rfc173_item2_c4_enclosure_lift_fdb_test.go",
         "rfc173_item2_noop_residual_fdb_test.go",
+        "rfc173_item3_c1_fdb_test.go",
+        "rfc173_item3_c4_aggregate_fdb_test.go",
         "rfc173_rcte_computed_leg_fdb_test.go",
         "rfc173_slice1_frontier_pin_test.go",
         "rfc173_slice2_gate_pins_test.go",

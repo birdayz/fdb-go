@@ -229,7 +229,25 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 	if total != len(rc.Fields) {
 		panic(fmt.Sprintf("RFC-173 ordinal join spans inconsistent: sum(widths)=%d, RC has %d fields — spans must derive exactly from the RC", total, len(rc.Fields)))
 	}
-	return spans, &values.RecordType{Fields: mergedFields}, true
+	// RFC-173 item 3: the merged type carries leg boundaries — each span's
+	// run plus every BURIED leg a clustered box leg's type records
+	// (RecordType.Legs) — so a dotted name-model read ("B.BID") resolves
+	// per-leg on a positional-only row (PositionalRow.GetByName's dotted
+	// bridge). Mirrors the values-side derivation (cross-agreement).
+	var mergedLegs []values.RecordTypeLeg
+	for _, s := range spans {
+		if len(s.LegType.Legs) > 0 {
+			// Box run: subs only (the run name is its rightmost leaf's —
+			// a run-level entry would shadow that leaf with the whole
+			// concat; see rcOutputType).
+			for _, sub := range s.LegType.Legs {
+				mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width})
+			}
+			continue
+		}
+		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: strings.ToUpper(s.Alias.Name()), Start: s.Offset, Width: s.Width})
+	}
+	return spans, &values.RecordType{Fields: mergedFields, Legs: mergedLegs}, true
 }
 
 // resolveSpanLeaf resolves one RV field to its LEAF leg (alias, leg type,
@@ -660,7 +678,46 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 		}
 		fields[i] = values.Field{Name: f.Name, FieldType: ft, Ordinal: i}
 	}
-	return &values.RecordType{Fields: fields}
+	// RFC-173 item 3: the birthed row type carries leg boundaries — each
+	// baked leg run plus every BURIED leg a clustered box leg's type records
+	// (RecordType.Legs) — so a dotted name-model read ("B.BID") resolves
+	// per-leg through PositionalRow.GetByName's dotted bridge on rows that
+	// birth positional-only (the clustered null-supplying pad).
+	var legs []values.RecordTypeLeg
+	lastCorr := ""
+	for i, f := range rc.Fields {
+		fv, isFV := f.Value.(*values.FieldValue)
+		if !isFV {
+			lastCorr = ""
+			continue
+		}
+		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		if !isQOV {
+			lastCorr = ""
+			continue
+		}
+		corr := strings.ToUpper(qov.Correlation.Name())
+		if corr == lastCorr {
+			continue
+		}
+		lastCorr = corr
+		if rt, isRT := qov.Typ.(*values.RecordType); isRT {
+			if len(rt.Legs) > 0 {
+				// A clustered box run: its name is the rightmost LEAF's (the
+				// sourceBinding convention), which the buried bounds already
+				// carry at the leaf's own offset — a run-level entry under
+				// that name would shadow it with the WHOLE concat (the
+				// RIGHT-box collision: "D.ID" first-matched the box run and
+				// read the null-supplying leg's slot). Subs only.
+				for _, sub := range rt.Legs {
+					legs = append(legs, values.RecordTypeLeg{Name: sub.Name, Start: i + sub.Start, Width: sub.Width})
+				}
+			} else {
+				legs = append(legs, values.RecordTypeLeg{Name: corr, Start: i, Width: len(rt.Fields)})
+			}
+		}
+	}
+	return &values.RecordType{Fields: fields, Legs: legs}
 }
 
 // legTypesFromResultValue collects the LEG types a (possibly folded) ordinal
@@ -1273,6 +1330,33 @@ func datumFromPositional(row *PositionalRow) map[string]any {
 func datumFromSpans(row *PositionalRow, spans []legSpan) map[string]any {
 	m := datumFromPositional(row)
 	for _, s := range spans {
+		// A BOX span (its type carries buried-leg boundaries) emits its
+		// SUBS ONLY — the same rule as every other layout list
+		// (rcOutputType, ordinalJoinSpansOf, the values twin): qualified
+		// reads address the box's contents by the LEAF aliases; a run-level
+		// emission would qualify every concat slot under the run's name
+		// (wrong-alias keys for all but the rightmost leaf, and a
+		// last-wins collision on the leaf's own names). This was the
+		// fourth site — the first three aligned while the Datum kept
+		// run-level keys, silently NULLing every lazy qualified read of a
+		// buried column (an aggregate operand over the buried leg of a
+		// clustered null-supplying box read Datum["C2.RANK"], which was
+		// never written → COUNT of zeros).
+		if s.LegType != nil && len(s.LegType.Legs) > 0 {
+			for _, bl := range s.LegType.Legs {
+				end := bl.Start + bl.Width
+				if bl.Name == "" || bl.Start < 0 || end > len(s.LegType.Fields) {
+					continue
+				}
+				prefix := strings.ToUpper(bl.Name) + "."
+				for i := bl.Start; i < end; i++ {
+					if v, ok := row.Get(s.Offset + i); ok {
+						m[prefix+strings.ToUpper(s.LegType.Fields[i].Name)] = v
+					}
+				}
+			}
+			continue
+		}
 		prefix := strings.ToUpper(s.Alias.Name()) + "."
 		for i := 0; i < s.Width; i++ {
 			if v, ok := row.Get(s.Offset + i); ok {
@@ -1473,7 +1557,56 @@ func (r *spanAwareRow) GetByName(name string) (any, bool) {
 		// Alias namespace first (the name model's qualifyAlias precedence)…
 		for _, s := range r.spans {
 			if strings.EqualFold(s.Alias.Name(), alias) {
+				// A BOX span is NAMED by its rightmost LEAF (sourceBinding),
+				// so the alias-qualified read must window that LEAF's slice —
+				// the whole-concat window would FieldIndex across the box and
+				// first-match an earlier buried leg's duplicate column name.
+				// Same rule as the values twin's window replacement
+				// (OrdinalSeedLegWindows) and rcOutputType's subs-only Legs.
+				if s.LegType != nil {
+					for _, bl := range s.LegType.Legs {
+						if !strings.EqualFold(bl.Name, alias) {
+							continue
+						}
+						end := bl.Start + bl.Width
+						if bl.Start < 0 || end > len(s.LegType.Fields) {
+							// Malformed bounds: NOT FOUND, never the run-wide
+							// window — a whole-concat FieldIndex would silently
+							// first-match another leg's duplicate column. Same
+							// loud disposition as the values twin's bounds
+							// guard (OrdinalSeedLegWindows).
+							return nil, false
+						}
+						sub := &values.RecordType{Nullable: s.LegType.Nullable, Fields: s.LegType.Fields[bl.Start:end]}
+						w := &legWindowRow{parent: r.parent, legType: sub, offset: s.Offset + bl.Start, width: bl.Width}
+						return w.GetByName(col)
+					}
+				}
 				w := &legWindowRow{parent: r.parent, legType: s.LegType, offset: s.Offset, width: s.Width}
+				return w.GetByName(col)
+			}
+		}
+		// …then a BURIED leg inside a clustered box span (RFC-173 item 3):
+		// the box leg's type records its buried-leg boundaries
+		// (RecordType.Legs), and a reference qualified by a buried source's
+		// binding resolves at the buried window's offset within the span —
+		// exactly like a top-level leg (Java's model: a buried source is
+		// just another quantifier's window). Ordered AFTER the span aliases
+		// (a top-level alias always wins its own name).
+		for _, s := range r.spans {
+			if s.LegType == nil {
+				continue
+			}
+			for _, bl := range s.LegType.Legs {
+				if !strings.EqualFold(bl.Name, alias) {
+					continue
+				}
+				end := bl.Start + bl.Width
+				if bl.Start < 0 || end > len(s.LegType.Fields) {
+					break
+				}
+				sub := &values.RecordType{Nullable: s.LegType.Nullable, Fields: s.LegType.Fields[bl.Start:end]}
+				w := &legWindowRow{parent: r.parent, legType: sub, offset: s.Offset + bl.Start, width: bl.Width}
 				return w.GetByName(col)
 			}
 		}

@@ -63,12 +63,11 @@ func TestRFC173S2_ClusterArity_Shapes(t *testing.T) {
 		{"two_way", inner(scan("Order", "o"), scan("Customer", "c")), 2},
 		{"three_way_left_deep", inner(inner(scan("Order", "o"), scan("Customer", "c")), scan("TypedRecord", "t")), 3},
 		{"three_way_right_deep", inner(scan("Order", "o"), inner(scan("Customer", "c"), scan("TypedRecord", "t"))), 3},
-		// LEFT OUTER: POISON — RewriteOuterJoinRule dissolves the box into an
-		// INNER + null-on-empty select during REWRITING, so translation-time
-		// opacity is a false premise (the W3b flip's live catch). FULL OUTER
-		// is the genuinely opaque box (never rewritten, never merged).
-		{"left_outer_poison", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), arityPoison},
-		{"left_outer_box_poisons_cluster", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), scan("TypedRecord", "t")), arityPoison},
+		// LEFT OUTER (item-3 amendment A): the dissolved select merges as
+		// preserved + the null-on-empty quantifier — arity = preserved + 1.
+		// FULL OUTER stays the genuinely opaque box (never rewritten/merged).
+		{"left_outer_preserved_plus_one", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), 2},
+		{"left_outer_box_in_cluster", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), scan("TypedRecord", "t")), 3},
 		{"full_outer_opaque", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), 1},
 		{"full_outer_box_plus_scan", inner(logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), scan("TypedRecord", "t")), 2},
 		{"filter_transparent", inner(logical.NewFilter(scan("Order", "o"), "x > 1"), scan("Customer", "c")), 2},
@@ -189,23 +188,23 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 	})
 
-	t.Run("left_outer_not_gated_null_leg_fresh_preserved_enclosed", func(t *testing.T) {
+	t.Run("left_outer_gated_both_legs_fresh", func(t *testing.T) {
 		t.Parallel()
-		// The W3b premise correction: a LEFT box is dissolved by
-		// RewriteOuterJoinRule during REWRITING, so (a) the box itself must
-		// NOT gate; (b) its PRESERVED (left) leg flattens into the rewritten
-		// select → a join there is ENCLOSED (name-model); (c) its
-		// NULL-SUPPLYING (right) leg becomes the never-merged null-on-empty
-		// subselect → a join there roots a FRESH cluster and gates.
+		// Item-3 S1: (a) the LEFT box GATES at the root even with a clustered
+		// preserved leg (the Q3 narrowing retired); (b) legs of a GATED parent
+		// translate FRESH (the S3-fulcrum convention), so the 2-way inner in
+		// the PRESERVED leg gates independently as its own root; (c) the
+		// NULL-SUPPLYING leg's inner keeps gating fresh (the null-on-empty
+		// subselect is never merged).
 		preserved := inner(scan("Customer", "c"), scan("TypedRecord", "t"))
 		root := logical.NewJoin(preserved, scan("Order", "o"), logical.JoinLeft, "")
 		tr := newGateTranslator(t)
 		tr.translateRef(root)
-		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
-			t.Fatalf("LEFT-outer box: %+v (ok=%v), want recorded and NOT gated (dissolved by RewriteOuterJoinRule)", d, ok)
+		if d, ok := tr.wedgeGate[root]; !ok || !d.Gated {
+			t.Fatalf("LEFT-outer box: %+v (ok=%v), want recorded and GATED (item-3 S1)", d, ok)
 		}
-		if d, ok := tr.wedgeGate[preserved]; !ok || d.Gated {
-			t.Fatalf("2-way in the PRESERVED leg: %+v (ok=%v), want NOT gated (flattens into the rewritten select)", d, ok)
+		if d, ok := tr.wedgeGate[preserved]; !ok || !d.Gated {
+			t.Fatalf("2-way in the PRESERVED leg: %+v (ok=%v), want GATED (fresh leg of a gated parent, S3-fulcrum convention)", d, ok)
 		}
 
 		nullSide := inner(scan("Customer", "c2"), scan("TypedRecord", "t2"))
@@ -256,14 +255,16 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		// wrong source (`d LEFT JOIN e ON … JOIN c ON …` returned d.id as
 		// e.id, the FDB runtime pins). The INNER arm has carried this
 		// enclosure guard since Slice 2; the outer arms shipped without it.
-		// A LEFT/RIGHT box leg poisons its parent (ordinal-ineligible leg),
-		// so the box translates ENCLOSED and must stay name-model. A FULL
-		// box leg is ordinal-ELIGIBLE — its parent GATES and the composition
-		// is ordinal-over-ordinal (the S3-fulcrum pin above), so FULL only
-		// meets the guard under a parent poisoned for other reasons.
+		// Item-3 S3: a LEFT/RIGHT box leg is ordinal-ELIGIBLE, so a plain
+		// inner parent GATES and the box translates FRESH — the enclosure
+		// guard survives VERBATIM (amendment H) but needs a GENUINELY
+		// name-model parent to fire: a white-box scan alias spelling the
+		// box's MINTED binding (E$BOX) collides in the gate's dup arm —
+		// poison — so the box under that parent stays enclosed and
+		// name-model. (Unreachable from SQL: $ is mint-namespace only.)
 		for _, kind := range []logical.JoinKind{logical.JoinLeft, logical.JoinRight} {
 			box := logical.NewJoin(scan("Order", "d"), scan("Customer", "e"), kind, "")
-			root := inner(box, scan("TypedRecord", "c"))
+			root := inner(box, scan("TypedRecord", "E$BOX"))
 			tr := newGateTranslator(t)
 			tr.translateRef(root)
 			d, ok := tr.wedgeGate[box]
@@ -279,24 +280,22 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 	})
 
-	t.Run("rfc153_joined_preserved_stays_name_model", func(t *testing.T) {
+	t.Run("rfc153_joined_preserved_gates", func(t *testing.T) {
 		t.Parallel()
-		// review re-ruling condition 1: the EXACT shape whose live fallout
-		// broke the LEFT-outer opacity premise — `a JOIN b LEFT JOIN c` (the
-		// RFC-153 joined-preserved family) — pinned name-model END TO END at
-		// the gate: the LEFT box does not gate (dissolved by
-		// RewriteOuterJoinRule post-translation), and the inner(a,b) in its
-		// PRESERVED leg does not gate either (it flattens into the rewritten
-		// select — the machinery the drift assert caught it inside).
+		// RFC-173 item 3 commit 1 (S1): the joined-preserved family —
+		// `a JOIN b LEFT JOIN c` — GATES at the box root. The design ruling
+		// retired the single-source condition (the flattened preserved
+		// cluster's buried sources are nameable per-leg since items 1+2:
+		// binding-keyed windows + positional binders), so the box takes the
+		// ordinal seed and its inner(a,b) preserved leg translates as a
+		// gated cluster leg. Pre-item-3 both stayed name-model (the Q3
+		// buried-names narrowing).
 		ab := inner(scan("Order", "o"), scan("Customer", "c"))
 		root := logical.NewJoin(ab, scan("TypedRecord", "t"), logical.JoinLeft, "")
 		tr := newGateTranslator(t)
 		tr.translateRef(root)
-		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
-			t.Fatalf("joined-preserved LEFT box: %+v (ok=%v), want recorded and NOT gated", d, ok)
-		}
-		if d, ok := tr.wedgeGate[ab]; !ok || d.Gated {
-			t.Fatalf("joined-preserved inner(a,b): %+v (ok=%v), want recorded and NOT gated (preserved leg flattens post-rewrite)", d, ok)
+		if d, ok := tr.wedgeGate[root]; !ok || !d.Gated {
+			t.Fatalf("joined-preserved LEFT box: %+v (ok=%v), want recorded and GATED (item-3 S1)", d, ok)
 		}
 	})
 
@@ -439,9 +438,9 @@ func TestRFC173S2_WalkArmParity(t *testing.T) {
 		{"project_plain", logical.NewProject(scan("Order", "o"), []string{"order_id"}, []string{""}), true, 1},
 		{"project_scalar_subq", &logical.LogicalProject{Input: scan("Order", "o"), Projections: []string{"order_id"}, ScalarSubqueries: []logical.ScalarSubquery{{Alias: values.NamedCorrelationIdentifier("s")}}}, true, 1}, // commit 5b rider lift
 		{"inner_join", inner(scan("Order", "o"), scan("Customer", "c")), true, 2},                                                                                                                                            // S3 fulcrum: eligible iff the leg itself gates
-		{"left_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), false, arityPoison},
-		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), true, 1},                                           // S3 fulcrum: FULL gates unconditionally -> eligible; cluster: opaque box of 1
-		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), true, 2}, // S3 fulcrum: derived body join gates
+		{"left_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), true, 2},                                                                                                             // item-3 S3+A: eligible as a leg; arity preserved+1
+		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), true, 1},                                                                                                             // S3 fulcrum: FULL gates unconditionally -> eligible; cluster: opaque box of 1
+		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), true, 2},                                                                   // S3 fulcrum: derived body join gates
 		{"cte_recursive", logical.NewCTE("r", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Order", "o2")}, false), logical.NewScan("r", ""), true), false, arityPoison},
 		{"aggregate", logical.NewAggregate(scan("Order", "o"), []string{"x"}, nil, nil, ""), true, 1},
 		{"distinct", logical.NewDistinct(scan("Order", "o")), true, 1},
@@ -601,7 +600,7 @@ func TestRFC173S3_BoxLegBakeResolvesLeafLocal(t *testing.T) {
 			if !isFV || fv.Resolved == nil {
 				return v
 			}
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "C" {
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "C$BOX" { // item-3 c4: the box quantifier is MINTED (leaf+$BOX)
 				bakedC = fv
 			}
 			return v
@@ -619,5 +618,45 @@ func TestRFC173S3_BoxLegBakeResolvesLeafLocal(t *testing.T) {
 	}
 	if acc.Ordinal != wantOrd {
 		t.Fatalf("baked ordinal = %d, want %d (Customer's PRICE leaf-local at the box offset %d)", acc.Ordinal, wantOrd, len(orderType.Fields))
+	}
+}
+
+// TestRFC173Item3_GatedJoinLegTypes_BuriedConsistency pins the two
+// predicate-bake legTypes maps in lockstep (the boundary-consistency class):
+// the WHERE-pred map (gatedJoinLegTypes) must register the SAME buried bake
+// windows for a clustered box leg as the seed's own map
+// (ordinalJoinSeedFields via addBuriedBakeWindows). A WHERE cross-leg
+// conjunct naming a buried source (`WHERE a.x = c.y` over `(A⋈B) LEFT C`)
+// bakes through this map; without the buried entries predicateLegAliases
+// counts it single-leg and the reference stays a grandchild-correlated lazy
+// read — the exact divergence class the seed map closed at amendment C.
+func TestRFC173Item3_GatedJoinLegTypes_BuriedConsistency(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	// (SRC ⋈ AUX) LEFT AUX2 — the preserved leg is a cluster burying SRC.
+	j := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")),
+		scan("AUX2", "y"), logical.JoinLeft, "")
+	if d := tr.ordinalWedgeGateDecide(j); !d.Gated {
+		t.Fatalf("fixture must gate, got %+v", d)
+	}
+	legTypes := tr.gatedJoinLegTypes(j)
+	// The buried source S must have a window: box-corr = the cluster's
+	// binding (its rightmost leaf X), offset 0 within the cluster concat.
+	s, ok := legTypes["S"]
+	if !ok {
+		t.Fatalf("gatedJoinLegTypes lacks the BURIED leg S: %v — the WHERE-pred bake map diverged from the seed's (amendment C)", keysOf(legTypes))
+	}
+	if s.bakeCorr == "" || s.leafOffset != 0 || s.leafTyp == nil || len(s.typ.Fields) <= len(s.leafTyp.Fields) {
+		t.Fatalf("buried S window = {corr %q offset %d leaf %v concat %v} — want a box-corr window into the cluster concat", s.bakeCorr, s.leafOffset, s.leafTyp, s.typ)
+	}
+	// And it must AGREE with the seed map's entry bit-for-bit.
+	_, seedTypes := tr.ordinalJoinSeedFields(tr.legsOfGatedJoin(j))
+	seedS, ok := seedTypes["S"]
+	if !ok {
+		t.Fatal("seed legTypes lacks buried S — fixture invalid")
+	}
+	if s.bakeCorr != seedS.bakeCorr || s.leafOffset != seedS.leafOffset ||
+		len(s.typ.Fields) != len(seedS.typ.Fields) || len(s.leafTyp.Fields) != len(seedS.leafTyp.Fields) {
+		t.Fatalf("WHERE-pred buried window %+v disagrees with the seed's %+v", s, seedS)
 	}
 }

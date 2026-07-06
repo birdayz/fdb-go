@@ -102,24 +102,46 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 	}
 	pu := &clusterPullUp{concatType: concat, legByAlias: map[string]clusterLegSpan{}}
 	offset := 0
-	for _, leg := range t.legsOfGatedJoin(j) {
-		if _, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
-			return nil
+	// RFC-173 item 3 (amendment D): a GATED box leg contributes its BURIED
+	// legs' spans — the buried aliases are the real reference names (dotting
+	// with the box alias would mis-name them; the former blanket join-leg
+	// decline kept the whole class on the anchored fallback). Nested gated
+	// boxes recurse; a null-supplying subtree's span types wrap nullable
+	// (Java pullUpResultColumnsWithNullability(true) — the csq metadata
+	// typing reads them).
+	var addLegs func(legs []clusterLeg, nullSupplying bool) bool
+	addLegs = func(legs []clusterLeg, nullSupplying bool) bool {
+		for _, leg := range legs {
+			if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
+				if !addLegs(t.legsOfGatedJoin(bj), nullSupplying || leg.nullSupplying) {
+					return false
+				}
+				continue
+			}
+			if leg.alias == "" {
+				return false
+			}
+			typ := t.ordinalLegType(leg.op)
+			if typ == nil || len(typ.Fields) == 0 {
+				return false
+			}
+			if nullSupplying || leg.nullSupplying {
+				// WithNullability (duplicate bare names survive
+				// positionally — the same rule as the seed's nullable wrap).
+				typ = values.WithNullability(typ, true).(*values.RecordType)
+			}
+			span := clusterLegSpan{alias: strings.ToUpper(leg.alias), start: offset, typ: typ}
+			if _, dup := pu.legByAlias[span.alias]; dup {
+				return false // defensive: the gate already declines dup leg aliases
+			}
+			pu.legs = append(pu.legs, span)
+			pu.legByAlias[span.alias] = span
+			offset += len(typ.Fields)
 		}
-		if leg.alias == "" {
-			return nil
-		}
-		typ := t.ordinalLegType(leg.op)
-		if typ == nil || len(typ.Fields) == 0 {
-			return nil
-		}
-		span := clusterLegSpan{alias: strings.ToUpper(leg.alias), start: offset, typ: typ}
-		if _, dup := pu.legByAlias[span.alias]; dup {
-			return nil // defensive: the gate already declines dup leg aliases
-		}
-		pu.legs = append(pu.legs, span)
-		pu.legByAlias[span.alias] = span
-		offset += len(typ.Fields)
+		return true
+	}
+	if !addLegs(t.legsOfGatedJoin(j), false) {
+		return nil
 	}
 	if offset != len(concat.Fields) {
 		return nil // leg-span/concat drift — decline, never a mis-ordinal bake

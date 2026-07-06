@@ -979,3 +979,65 @@ func TestRFC173S2_FlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 		t.Fatalf("adapted outer slot 0 = (%v, %v), want (7, true) — zero-width binding means the widening failed", v, ok)
 	}
 }
+
+// TestRFC173Item3_SpanAwareRow_BoxAliasReadsLeaf pins the dotted-read bridge's
+// box-span precedence (RFC-173 item 3): a BOX span is NAMED by its rightmost
+// LEAF, so an alias-qualified read through the box name must window that
+// LEAF's slice — never the whole concat, whose FieldIndex would first-match
+// an earlier BURIED leg's duplicate column name (silently the wrong column).
+// The fixture's buried leg B deliberately carries an "ID" column ahead of the
+// leaf's own "ID": pre-fix "E.ID" read B's.
+func TestRFC173Item3_SpanAwareRow_BoxAliasReadsLeaf(t *testing.T) {
+	t.Parallel()
+	corrA := values.NamedCorrelationIdentifier("A")
+	corrE := values.NamedCorrelationIdentifier("E")
+	legA := &values.RecordType{Fields: []values.Field{{Name: "AID", FieldType: values.NotNullLong, Ordinal: 0}}}
+	boxTyp := &values.RecordType{
+		Fields: []values.Field{
+			{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1}, // buried B's ID — the first-match trap
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2}, // the leaf E's own ID
+		},
+		Legs: []values.RecordTypeLeg{{Name: "B", Start: 0, Width: 2}, {Name: "E", Start: 2, Width: 1}},
+	}
+	qovA := values.NewQuantifiedObjectValueOfType(corrA, legA)
+	qovE := values.NewQuantifiedObjectValueOfType(corrE, boxTyp)
+	var fields []values.RecordConstructorField
+	for i := 0; i < 1; i++ {
+		fv, err := values.NewFieldValueOfOrdinal(qovA, i)
+		if err != nil {
+			t.Fatalf("bake A#%d: %v", i, err)
+		}
+		fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+	}
+	for i := 0; i < 3; i++ {
+		fv, err := values.NewFieldValueOfOrdinal(qovE, i)
+		if err != nil {
+			t.Fatalf("bake E#%d: %v", i, err)
+		}
+		fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+	}
+	rc := values.NewRawRecordConstructorValue(fields...)
+	spans, mergedType, ok := ordinalJoinSpans(rc)
+	if !ok {
+		t.Fatal("fixture RC rejected by ordinalJoinSpans")
+	}
+	row := NewPositionalRow(mergedType)
+	row.Set(0, int64(10)) // a.aid
+	row.Set(1, int64(20)) // b.bid
+	row.Set(2, int64(21)) // b.id — the trap value
+	row.Set(3, int64(30)) // e.id — the correct read
+	sa := &spanAwareRow{parent: row, spans: spans}
+	if v, found := sa.GetByName("E.ID"); !found || v != int64(30) {
+		t.Fatalf("E.ID = (%v, %v), want the rightmost LEAF's column (30), not the buried dup (21)", v, found)
+	}
+	if v, found := sa.GetByName("B.ID"); !found || v != int64(21) {
+		t.Fatalf("B.ID = (%v, %v), want the buried leg's column (21)", v, found)
+	}
+	if v, found := sa.GetByName("B.BID"); !found || v != int64(20) {
+		t.Fatalf("B.BID = (%v, %v), want 20", v, found)
+	}
+	if v, found := sa.GetByName("A.AID"); !found || v != int64(10) {
+		t.Fatalf("A.AID = (%v, %v), want 10", v, found)
+	}
+}

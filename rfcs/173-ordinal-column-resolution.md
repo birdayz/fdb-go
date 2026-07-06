@@ -3682,3 +3682,240 @@ with per-shape exit gates (the pass-through gate widening; per-path ordinal
 seeds; the binding-aware scalar lowering; the UNION branch seed). The arity-2
 scope boundary of the c4 buried-reference rebase and the dup-alias unnest-owner
 first-match residual are booked in the same rider.
+
+## QP-REF-BIND item 3 — design substrate (mixed-nesting LEFT widening)
+
+**Mission.** Clustered legs under LEFT/RIGHT boxes go ordinal: retire (S1) the
+gate's clustered-leg poison (`rfc173_cluster_gate.go:180-183` — "joined-preserved
+class stays name-model until item 3"), (S2) the enclosure guard
+(`rfc173_cluster_gate.go:144-156` — an outer box enclosed in a name-model
+parent), and (S3) `ordinalEligible`'s LEFT/RIGHT leg-ineligibility
+(`rfc173_cluster_gate.go:238-240`). With items 1+2 this drives
+`NewScalarSubqueryAnchoredRecord` to ZERO callers (the one production caller is
+the W4b fallback at `cascades_translator.go:3704`, reached exactly when the
+outer is a clustered/ungated LEFT class) and flips the LEFT-box-dup 0AF00
+booked divergence to Java-parity answers (the minted-binding loud-decline at
+`:4024` retires for this class because the gated arm keys legs by binding).
+
+**Java (the spec) has NONE of the three guards.** `QueryVisitor.
+wrapOperandsForOuterJoin` builds the outer-join RV at translation as a flat RC
+(`leftQun.getFlowedValues()` + `rightQun.pullUpResultColumnsWithNullability
+(true)`, `rewireQov` BY ORDINAL); `RewriteOuterJoinRule` dissolves uniformly —
+`buildInnerSelect` folds ON-preds into an already-select null-supplying side
+with no clustered-leg branch; `ImplementNestedLoopJoinRule.
+planPartitionToPhysical` lowers per-quantifier, alias-keyed (null-on-empty →
+DefaultOnEmpty). The class is trivial there because quantifiers always mint
+unique ids and every read is positional — a buried source is just another
+quantifier. Go's guards exist solely because the name-model coexistence path
+keys rows by display alias.
+
+**Why the poisons can lift NOW.** The dissolution ruling's blocker (Graefe Q3:
+"ordinalizing a flattened preserved cluster to a bare concat ERASES buried
+names — the innerSelect ON-pred has no span into the ordinal preserved leg")
+is dissolved by items 1+2 jointly: item 1 gives every leg a structural
+identity independent of display names (bindings; per-leg seed windows keyed by
+binding), and item 2's executor binders bind merged outers POSITIONALLY in the
+correlated FlatMap (disabled-birth binder, ordinal existential rebase,
+rebasePlanOuterRefsOrdinal) — a buried source is now nameable exactly the way
+Java names it: by its quantifier's window in the merged positional row.
+
+**Mechanism sketch (for the design ruling).**
+- M1 (S3 lift): a LEFT/RIGHT box becomes ordinal-ELIGIBLE as a LEG. The parent
+  seed types the box by its POST-DISSOLUTION arity (the W3b drift-assert class
+  is the constraint: seed windows must agree with what SelectMergeRule
+  produces after RewriteOuterJoinRule dissolves the box) — the box contributes
+  its preserved legs' windows plus a NULLABLE-typed null-supplying window (the
+  ruling's nullability decision; Java `OuterJoinExpression`:117-125).
+- M2 (S1 lift): the LEFT box with a CLUSTERED leg gates; the flattened-cluster
+  ordinal seed names buried sources per-leg (binding-keyed windows — item-1
+  machinery), and the dissolved inner select's spanning ON-preds rebase onto
+  the merged positional row (item-2 machinery, the buried-reference rebase).
+- M3 (S2 lift): enclosure retirement — an outer box that is a leg of a GATED
+  parent translates fresh (the S3-fulcrum convention already exempts gated
+  parents); the guard survives ONLY for name-model parents until S4.
+- M4: the W4b ordinal seed fires for clustered outers → the anchored-record
+  fallback arm is unreachable → decline-only, then delete with S4 (fork F-C).
+
+**Forks for the ruling.** F-A: lift order (S3→S1→S2 smallest-blast-radius
+sequence vs one atomic flip — the never-live-separately constraint from item 1
+may bind here too: M1's windows and M2's spans are consumed by the same seed).
+F-B: does the buried-correlated shape (`(A⋈B) LEFT JOIN C ON c→A`,
+`rfc153_joined_preserved_plan_test.go` pins the name-model index-probe FlatMap)
+flip in-slice, or keep the Q3 buried-eligibility narrowing with the flip riding
+S4? F-C: `NewScalarSubqueryAnchoredRecord` deletion timing (decline-only in
+item 3, delete in S4 — or delete in-slice).
+
+**Red-first obligations.** The W4b clustered-dispatch pins flip (Dir 2 anchored
+→ ordinal; Dir 3 decline → rows); `rfc153_joined_preserved_plan_test` flips per
+F-B; the LEFT-box-dup 0AF00 → live-Java-probed parity rows; the mixed-nesting
+runtime FDB matrices (the `d.id-as-e.id` wrong-source class) stay green through
+every intermediate commit; dual-window + 1M stress per the standard exit gates.
+
+## QP-REF-BIND item 3 — design ruling (banked)
+
+**Substrate corrections (ruled):** (1) the zero-callers claim is STRICKEN —
+after S1+S3 the anchored fallback still serves genuinely-ungated outers
+(unnest-join, existential-ON, unminted-dup, seed-declined single-source);
+`NewScalarSubqueryAnchoredRecord` deletion rides S4. (2) A FOURTH site:
+`clusterArity`'s LEFT/RIGHT poison arm (`rfc173_cluster_gate.go:354-362`) —
+without flipping it to `clusterArity(preserved) + 1` (the null-supplying side
+contributes exactly the null-on-empty quantifier — the rules' actual
+mergeability, verified in both engines), S3 is dead code.
+
+**F-A — sequenced, three commits, cut along GATE-ARM CLASSES** (not the
+substrate's three sites). Never-live-separately binds WITHIN each commit
+(gate-arm flip ↔ every consumer probing the one authority: translateJoin
+seed, W4b csq dispatch, existsOuterGatesFresh, ordinalEligible); partial
+states BETWEEN commits fail closed to the name model through the authority.
+Atomic all-three flip REJECTED. **F-B — the buried-correlated shape flips
+in-slice, commit 1**; the rfc153 typed plan pins (equality-bound probe, zero
+materialized NLJ) stay VERBATIM green at every intermediate HEAD — the hard
+performance gate; the Q3 narrowing retires with S1, no carve-out survives.
+**F-C — neither offered option**: the constructor survives with its class
+narrowed to genuinely-ungated outers; the fallback gains a gated-outer
+LOUD-DECLINE guard (commit 1 — the hazard is live the moment S1 lands); Dir 2
+re-fixtured onto a still-ungated class; deletion in S4.
+
+**Amendments:** (A) the fourth site flips in commit 2. (B) nullability
+through the window — ordinalLegColumns wraps the null-supplying window's
+field types nullable (Java pullUpResultColumnsWithNullability(true)); the
+second half of ruling I3. (C) buried-leg bake windows — legTypes gains an
+entry per BURIED leg of a clustered box leg (binding → window at its offset
+in the box concat) so cross-leg ON conjuncts spanning buried sources bake
+positionally at translation (Java's collapseLeftSideOperators + rewireQov-by-
+ordinal analog); predicateLegAliases currently misclassifies them single-leg.
+(D) buildClusterPullUp's join-leg decline lifts in commit 1 (recurse through
+gated box legs, per-buried-leg spans, null-supplying spans nullable) — part
+of S1's atomic unit. (E) clustered NULL-SUPPLYING leg (`A LEFT JOIN (B⋈C)`)
+gates at commit 1 — record-level nullable concat QOV, executor null birth
+spans the whole window, red-first both directions + RIGHT. (F) EXISTS
+auto-widening — existsOuterGatesFresh widens at commit 1 automatically;
+red-first pins for EXISTS-over-clustered-box through the below-FOD rebase;
+fixing the rebase in-slice is mandatory, narrowing the probe forbidden.
+(G) FULL-over-LEFT goes live at commit 2 (red-first pin incl. drain births
+over the nested nullable window); FULL's own null-supplying marking stays
+booked. (H) pin RE-FIXTURING not deletion — the enclosure-guard pin needs a
+genuinely name-model parent fixture; the guard itself survives VERBATIM to
+S4 (the "S2 lift" is a scope narrowing that falls out of commits 1+2 —
+no code deletion). (I) dispatch-authority corpus + the RIGHT-variant panic
+class (rule_partition_select.go:475 must never see an ordinal-seeded box).
+(J) reason-string sweep rides each retiring commit; the :4024 minted-binding
+decline STAYS with narrowed class.
+
+**Commit plan:** c1 = box roots with clustered legs (S1 + amendments C/D/E/F,
+the F-C guard, the pin flips incl. LEFT-box-dup live-Java parity). c2 = boxes
+in leg position (S3 + fourth site + amendments A/B/G/H/I, S2 comment
+narrowing). c3 = residual disposition + exit gates (amendment J, records,
+dual-window, 1M stress, live-Java batch). Graefe holds ACK until after c3.
+
+## QP-REF-BIND item 3 — c1+c2 record
+
+**c1 (1ac0fe54f) — box roots with clustered legs (S1 class).** The gate's
+single-source condition retired; every consumer in the atomic unit: amendment C
+(per-buried-leg bake windows, bakeCorr — cross-leg ON conjuncts spanning buried
+sources bake positionally), amendment D (buildClusterPullUp recurses gated box
+legs; W4b Dir 3 buried correlation flips decline→ordinal), amendment E's serve
+side (RecordType.Legs boundaries recorded by ordinalLegType, carried through
+the nullable wraps — dropping them there was the last silent link — and the
+dotted name-model read resolves per-leg on positional-only rows via
+spanAwareRow's buried arm + PositionalRow.GetByName's dotted bridge + merged
+types carrying boundaries in BOTH derivation twins), amendment F
+(existsOuterGatesFresh auto-widened, pinned through the below-FOD rebase), the
+F-C gated-outer loud-decline guard at the anchored fallback, the positional
+merge arm's null-on-empty tripwire → scoped decline (splice-not-collapse), and
+the fold's no-pre-translate fix. The rfc153 typed plan pins stayed VERBATIM
+green (the hard performance gate).
+
+**c2 (e0fcd2496) — boxes in leg position (S3 + the fourth site).**
+ordinalEligible admits LEFT/RIGHT boxes as legs; clusterArity's LEFT/RIGHT arm
+= clusterArity(preserved) + 1 (amendment A — the rules' actual mergeability).
+The round's live catch: the RIGHT-box NAME COLLISION — a box quantifier is
+named by its rightmost leaf, which for a RIGHT box is the PRESERVED leg, so the
+layout-boundary lists carried a box-run entry shadowing the buried entry of the
+same name; the dotted bridge first-matched the run and read the null-supplying
+leg's slot (`ORDER BY d.id` over the RIGHT-normalized mixed shape silently
+sorted by e.id). Per the established bake-window rule ("the box's name means
+THAT LEAF"), a clustered box run emits its SUBS ONLY in every layout list —
+rcOutputType, ordinalJoinSpansOf, and the values twin. classifySortSource
+collects buried bindings structurally. Pins re-cut per amendment H (the
+enclosure-guard pin re-fixtured onto a dup-poisoned genuinely-name-model
+parent; the guard survives verbatim); amendment G pinned (FULL-over-LEFT
+serves with the whole-box drain pad).
+
+**c3 flips banked so far:** the LEFT-box-dup booked divergence SERVES
+(P5 pins: first leg [10 20] through the pad; second leg exactly one NULL pad)
+— the item-1 c5 loud-decline class narrows exactly as designed.
+
+**Correction to the c1 record (review round, Torvalds T1):** the c1 bullet
+claiming boundaries were carried "in BOTH derivation twins" was PREMATURE —
+the values twin (`OrdinalSeedLegWindows`) skipped the sub-window whose name
+equals the box run's alias, dropping the rightmost LEAF's boundary from its
+merged type while the executor twin emitted it. Fixed in c4 (the skip replaced
+by window REPLACEMENT per the naming rule: the box's name means its rightmost
+leaf), and the cross-agreement fixture now compares merged LEGS — the
+dimension whose absence let the drift ship green.
+
+## QP-REF-BIND item 3 — c4 record
+
+**c4 — the stranded-correlation keystone + review batch.** The three-reviewer
+NAK round's common root: after a dissolved LEFT box's child select merges up
+(SelectMergeRule), references to the merged-away box alias in RETAINED
+quantifiers' subtrees and in parent predicates re-bound BY NAME to the
+same-named pulled-up LEG (Go's rightmost-leaf box naming + the dissolution's
+alias reuse make the collision structural where Java's unique mints make it
+impossible). Two Java-parity fixes:
+
+1. `Reference.GetCorrelatedTo` now filters each member's own predicate/RV
+   correlations by its own quantifier aliases —
+   `AbstractRelationalExpressionWithChildren.computeCorrelatedTo` verbatim
+   (plus the canCorrelate disjunct on the child filter). Without it the
+   dissolved box's inner select looked FREE on the alias it binds and the
+   merge's translation captured the inner binding (the 42804 wrong-window
+   bake).
+2. SelectMergeRule translates retained subtrees SURGICALLY (Java's
+   `Quantifier.translateCorrelations` analog under Go's name collisions):
+   only BAKED references whose QOV carries the box's CONCAT type (arity ==
+   RC arity) collapse through the merged child's RC to the exact leg
+   reference; LAZY and LEG-level references stay intact and re-bind by name
+   to the pulled-up leg — substituting the RC under a lazy read would
+   FieldIndex first-match across the dup-bare-named concat. Positional-seed
+   children route via `OrdinalSeedLegWindows`; name-model children keep the
+   TranslationMap path unchanged.
+
+Batch: T1/codex#3 (values-twin leaf-window replacement + merged-LEGS
+cross-agreement, above), codex#2 (`gatedJoinLegTypes` registers buried bake
+windows), codex#4 (`spanAwareRow` box-alias reads window the LEAF — the
+first-match dup trap pinned white-box), T2 (`nullBorn` deleted — dead),
+T3/codex#1 (`WithNullability` carries `Legs`; both hand-rolled nullable
+copies collapsed onto it), G1 (the aggregate matrix over mixed-nesting
+clusters — both gate-arm classes × argument residence × orientations — the
+previously-panicking `SELECT c.id, COUNT(e.id) … LEFT … JOIN … GROUP BY`
+shape pins green), G3 (stale gate reasons → S4). The rfc153 typed plan pins
+stayed VERBATIM green; the item-2 residual + enclosure-lift FDB pins
+(previously red on this branch) are green both orientations.
+
+**c4 fix round (review verdicts on the two c4 commits).** Torvalds ACK
+(five red-first claims independently revert-proven; nits applied: the
+box-naming comment now scopes the alias-collision to the dissolved-LEFT
+regime, the executor's malformed-Legs bounds go NOT-FOUND instead of the
+silent run-wide window, the agreement helper documents its leaf-named-box
+accounting assumption). codex P2: multi-accessor baked paths over a merged
+box alias were left stranded by the Single() guard — both the merge
+callback and the rebuild's RC arm now collapse the ROOT accessor through
+the RC and fuse the suffix onto the slot's baked reference (associative
+path composition; white-box pin red-first). Graefe NAK, one finding: the
+G1 matrix omitted the clustered NULL-SUPPLYING × enclosed cell, and the c4
+keystone had converted that cell's base-state panic into silent zero
+aggregates. Root cause: datumFromSpans was a FOURTH layout site missing
+the subs-only rule — it emitted run-level ALIAS.COL keys for box spans, so
+a lazy qualified aggregate operand (Datum["C2.RANK"], qualified-only by
+design) read a key never written. Fixed with per-sub emission (the same
+rule as the other three sites); the run-level emission for leaf-named box
+spans was itself writing wrong-alias keys for every non-rightmost slot.
+Pinned: the inversion cell red-first (exact zeros reproduced), plus the
+leaf-arg, unenclosed, NULL-group-key, and row-level-enclosed cells as
+plan-shape tripwires. @claude items: the CanCorrelate retention branch
+pinned (union retains a branch's free correlation past a sibling-alias
+coincidence), WithNullability-Legs + computeResultType nullability pinned
+Docker-independent, and the first-member rebuild documented (the original
+multi-member group stays reachable through the pre-merge expression).

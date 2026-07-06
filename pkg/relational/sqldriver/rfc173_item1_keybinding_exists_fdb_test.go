@@ -288,4 +288,57 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a UNION ALL SELECT id FROM p",
 			"not resolvable in the runtime row")
 	})
+
+	// ---- P5: the LEFT-box dup FLIP (RFC-173 item 3) ----
+	// The booked loud-decline class — duplicate aliases across a LEFT box —
+	// serves once the box gates (S1): the binding-keyed seed distinguishes
+	// the legs and the per-attribute reference binds through the pad.
+	t.Run("P5_left_box_dup_first_leg", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT a.v FROM p AS a LEFT JOIN q AS a ON a.qid = a.id + 4")
+		if err != nil {
+			t.Fatalf("LEFT-box dup first-leg errored (the flipped class): %v", err)
+		}
+		defer rows.Close()
+		got := map[int64]bool{}
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !v.Valid {
+				t.Fatal("first-leg value NULL — the pad must never reach the preserved leg")
+			}
+			got[v.Int64] = true
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if len(got) != 2 || !got[10] || !got[20] {
+			t.Errorf("first-leg values = %v, want {10, 20}", got)
+		}
+	})
+	t.Run("P5_left_box_dup_second_leg_pad", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT a.qid FROM p AS a LEFT JOIN q AS a ON a.qid = a.id + 4")
+		if err != nil {
+			t.Fatalf("LEFT-box dup second-leg errored: %v", err)
+		}
+		defer rows.Close()
+		n, pads := 0, 0
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			n++
+			if !v.Valid {
+				pads++
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if n != 2 || pads != 1 {
+			t.Errorf("second-leg = %d rows (%d pads), want 2 rows with exactly 1 NULL pad (q(5) matches p.id=1 only)", n, pads)
+		}
+	})
 }

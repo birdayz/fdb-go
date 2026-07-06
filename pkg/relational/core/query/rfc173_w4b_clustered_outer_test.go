@@ -391,29 +391,45 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 	}
 	values.AssertOrdinalJoinSeed(rc)
 
-	// Direction 2: UNGATED outer, correlation to the RIGHTMOST leg — the
-	// anchored residual must stay reachable. W4-left made SINGLE-SOURCE
-	// LEFT boxes gate, so the ungated fixture is now the JOINED-PRESERVED
-	// class (a clustered preserved leg — poison until the mixed-nesting
-	// commit).
+	// Direction 2 (item-3 flip): the JOINED-PRESERVED outer now GATES — the
+	// pull-up names its buried legs (amendment D) and the seed is ORDINAL,
+	// anchored no more. Rightmost correlation.
 	tr2 := newGateTranslator(t)
 	left := logical.NewJoin(
 		inner(scan("Order", "o2"), scan("Order", "o")),
 		scan("Customer", "c"), logical.JoinLeft, "")
-	ungated := clusteredProject(left, clusteredCSQ("c", "CUSTOMER_ID"))
-	expr2 := tr2.translateProjectWithCorrelatedScalar(ungated)
+	flipped := clusteredProject(left, clusteredCSQ("c", "CUSTOMER_ID"))
+	expr2 := tr2.translateProjectWithCorrelatedScalar(flipped)
 	if expr2 == nil {
-		t.Fatal("ungated outer + rightmost-only correlation must keep the name-model fallback (it works today)")
+		t.Fatalf("gated joined-preserved outer + rightmost correlation must translate ordinal (item-3), err=%v", tr2.translateErr)
 	}
-	if rc2 := seedOf(t, expr2); !rc2.AnchoredJoin {
-		t.Fatal("ungated-outer residual must seed the anchored record (the surviving constructor caller until QP-REF-BIND item 3, TODO.md)")
+	if rc2 := seedOf(t, expr2); rc2.AnchoredJoin {
+		t.Fatal("gated joined-preserved outer seeded the ANCHORED record — the ordinal pull-up must be authoritative (item-3)")
 	}
 
-	// Direction 3: UNGATED outer + NON-rightmost correlation → decline.
+	// Direction 2b: a GENUINELY-UNGATED outer (dup leg bindings poison the
+	// gate) + rightmost-only correlation — the anchored residual stays
+	// reachable until S4 (ruling F-C: the constructor survives for ungated
+	// classes).
+	tr2b := newGateTranslator(t)
+	dupUngated := clusteredProject(inner(scan("Order", "x"), scan("Customer", "x")), clusteredCSQ("x", "CUSTOMER_ID"))
+	expr2b := tr2b.translateProjectWithCorrelatedScalar(dupUngated)
+	if expr2b == nil {
+		t.Fatalf("ungated (dup-poisoned) outer + rightmost-only correlation must keep the anchored fallback, err=%v", tr2b.translateErr)
+	}
+	if rc2b := seedOf(t, expr2b); !rc2b.AnchoredJoin {
+		t.Fatal("ungated-outer residual must seed the anchored record (the surviving constructor caller until S4, ruling F-C)")
+	}
+
+	// Direction 3 (item-3 flip): the gated joined-preserved outer +
+	// NON-rightmost (buried) correlation translates ordinal too — the
+	// buried-leg spans (amendment D) name it; pre-item-3 this declined.
 	tr3 := newGateTranslator(t)
-	declined := clusteredProject(left, clusteredCSQ("o2", "ORDER_ID"))
-	if expr3 := tr3.translateProjectWithCorrelatedScalar(declined); expr3 != nil {
-		t.Fatal("ungated outer + non-rightmost correlation must DECLINE (the name model silently NULLs it)")
+	buried := clusteredProject(left, clusteredCSQ("o2", "ORDER_ID"))
+	if expr3 := tr3.translateProjectWithCorrelatedScalar(buried); expr3 == nil {
+		t.Fatalf("gated outer + buried (non-rightmost) correlation must translate ordinal (amendment D), err=%v", tr3.translateErr)
+	} else if rc3 := seedOf(t, expr3); rc3.AnchoredJoin {
+		t.Fatal("buried correlation seeded the ANCHORED record — the buried-leg spans must carry it (item-3)")
 	}
 
 	// Direction 4 (W4-left): a SINGLE-SOURCE LEFT box outer now GATES — the
@@ -462,15 +478,11 @@ func TestRFC173W4b_InnerOwnAliasNotOuterRef(t *testing.T) {
 	p.Projections = []string{"c.customer_id", "(subq)"}
 
 	expr := tr.translateProjectWithCorrelatedScalar(p)
-	if expr == nil {
-		t.Fatal("rightmost-only correlation with an inner-own alias shadowing an outer leg must NOT decline — the name-model fallback handles it today (skip set = the inner's whole own-alias universe)")
+	if expr != nil {
+		t.Fatal("gated outer + inner-own-alias shadow: the ordinal dispatch declines and the F-C guard must fail LOUD (anchored alias-keyed reads over a positional row are the mixed-model class; item-3 ruling F-C)")
 	}
-	// The ordinal path correctly declines on the alias shadow; the residual
-	// anchored fallback must be what fired.
-	proj := expr.(*expressions.LogicalProjectionExpression)
-	sel := proj.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
-	if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); !isRC || !rc.AnchoredJoin {
-		t.Fatalf("expected the anchored fallback (ordinal path declines on the alias shadow), got %T", sel.GetResultValue())
+	if tr.translateErr == nil || !strings.Contains(tr.translateErr.Error(), "ordinal dispatch declined") {
+		t.Fatalf("want the typed gated-outer decline, got %v", tr.translateErr)
 	}
 }
 

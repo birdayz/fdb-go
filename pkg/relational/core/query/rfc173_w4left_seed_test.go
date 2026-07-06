@@ -61,19 +61,21 @@ func TestRFC173W4Left_SeedShape(t *testing.T) {
 	checkSeed(t, logical.JoinLeft, "x")  // LEFT: right operand null-supplies
 	checkSeed(t, logical.JoinRight, "s") // RIGHT: left operand null-supplies
 
-	// The clustered-leg decline (gate scope): a comma cluster as the
-	// preserved leg keeps the box name-model.
+	// Item-3 S1: a comma cluster as the preserved leg GATES at the box root
+	// (the Q3 buried-names narrowing retired — buried sources are nameable
+	// per-leg via binding-keyed windows + the item-2 positional binders).
 	clustered := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")),
 		scan("AUX2", "y"), logical.JoinLeft, "")
-	if d := tr.ordinalWedgeGateDecide(clustered); d.Gated {
-		t.Fatal("a LEFT box with a CLUSTERED leg must stay name-model (joined-preserved; QP-REF-BIND item 3, TODO.md)")
+	if d := tr.ordinalWedgeGateDecide(clustered); !d.Gated {
+		t.Fatalf("a LEFT box with a CLUSTERED preserved leg must GATE (item-3 S1), got %+v", d)
 	}
 
-	// Leg-position ineligibility: the gated-as-root LEFT box is NOT
-	// merge-opaque (RewriteOuterJoinRule dissolves it), so as a LEG it stays
-	// ineligible and an enclosing cluster stays name-model.
+	// Item-3 S3: the gated LEFT box is ELIGIBLE as a leg — the dissolved
+	// select's splice is arity-accounted (clusterArity = preserved + 1,
+	// amendment A) so the enclosing seed and post-flattening arrangement
+	// agree; the W3b drift assert and the mixed-nesting matrices tripwire.
 	leftBox := logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, "")
-	if tr.ordinalEligible(leftBox) {
-		t.Fatal("a LEFT box must stay INELIGIBLE as a leg (dissolves and merges across the boundary — the W3b drift class)")
+	if !tr.ordinalEligible(leftBox) {
+		t.Fatal("a LEFT box must be ELIGIBLE as a leg (item-3 S3)")
 	}
 }

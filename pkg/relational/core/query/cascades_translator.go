@@ -3032,11 +3032,26 @@ func classifySortSource(input logical.LogicalOperator) sortSource {
 		// key resolves to a binding-qualified value — display-named
 		// legAliases ([A, A]) failed to attribute it and the key silently
 		// degraded to the bare last-leg-wins read. Identical to the alias
-		// for every non-duplicate leg.
-		return sortSource{
-			isJoin:     true,
-			legAliases: []string{sourceBinding(j.Left), sourceBinding(j.Right)},
+		// for every non-duplicate leg. Item 3: BURIED bindings under a box
+		// leg join the set (structural walk) — a sort key qualified by a
+		// buried source (`ORDER BY d.id` over `(dept LEFT emp) JOIN cat`)
+		// must attribute to ITS leg, never degrade to the bare
+		// first-match read (which silently sorted by the wrong column).
+		var legAliases []string
+		var collect func(op logical.LogicalOperator)
+		collect = func(op logical.LogicalOperator) {
+			if cj, isJ := op.(*logical.LogicalJoin); isJ {
+				collect(cj.Left)
+				collect(cj.Right)
+				return
+			}
+			if b := sourceBinding(op); b != "" {
+				legAliases = append(legAliases, b)
+			}
 		}
+		collect(j.Left)
+		collect(j.Right)
+		return sortSource{isJoin: true, legAliases: legAliases}
 	}
 	return sortSource{isJoin: false}
 }
@@ -3701,6 +3716,25 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		}
 	}
 	if resultValue == nil {
+		// RFC-173 item 3 (ruling F-C): a GATED outer must never seed the
+		// name-model anchored record — the gated cluster's rows are
+		// POSITIONAL, and the anchored record's alias-keyed reads over them
+		// are the mixed-model silent-NULL class. The pull-up/ordinal paths
+		// above own every gated shape; a gated outer reaching this fallback
+		// is a dispatch gap — decline LOUDLY. Genuinely UNGATED outers
+		// (unnest joins, existential-ON, unminted-dup residuals,
+		// seed-declined single sources) keep the anchored record until S4.
+		if cj := peelToClusterJoin(p.Input); cj != nil {
+			prevEnclosure := t.inInnerCluster
+			t.inInnerCluster = false
+			gated := t.ordinalWedgeGateDecide(cj).Gated
+			t.inInnerCluster = prevEnclosure
+			if gated {
+				t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+					"correlated scalar subquery: the gated outer cluster's ordinal dispatch declined (positional rows cannot take the anchored fallback)"))
+				return nil
+			}
+		}
 		resultValue = values.NewScalarSubqueryAnchoredRecord(
 			values.AnchoredJoinLeg{Alias: values.NamedCorrelationIdentifier(outerAlias), Columns: outerCols},
 			values.NamedCorrelationIdentifier(csq.InnerAlias),
@@ -4019,8 +4053,8 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// namespaces there would nil every qualified read (the still-poisoned
 	// dup classes stay correct-or-loud via per-attribute 42702 + the gate).
 	if gateDecision.Gated {
-		leftAlias = sourceBinding(left)
-		rightAlias = sourceBinding(right)
+		leftAlias = legBinding(left)
+		rightAlias = legBinding(right)
 	} else if leg := mintedBindingLeg(left, right); leg != "" {
 		// A minted-binding leg reached the NAME-MODEL arm (the gate narrowed
 		// off — nesting, arity, poison): its display-keyed anchored RC and
@@ -4265,8 +4299,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// DISPLAY aliases (its anchored RC and merged-row keys are
 	// alias-qualified).
 	if gatedFlatten {
-		leftAlias = sourceBinding(left)
-		rightAlias = sourceBinding(right)
+		leftAlias = legBinding(left)
+		rightAlias = legBinding(right)
 	} else if leg := mintedBindingLeg(left, right); leg != "" {
 		// A minted-binding leg while the flatten narrowed off the gate
 		// (arity ≠ 2, existential-alias collision): the name-model flat

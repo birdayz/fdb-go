@@ -130,16 +130,17 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		seenBindings[key] = struct{}{}
 	}
 	if !t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right) {
-		// A leg CONTAINS a name-model join at its own boundary (a 3+-way
-		// inner cluster, or an outer box over one): its output rows are the
-		// name model's merged rows (dotted keys, no leg concat) — an ordinal
-		// seed over it would type the leg wrongly. Mixed nesting stays
-		// name-model until the W4/W5 rewrites retire those parents (RFC §4
-		// coexistence scoping; inner clusters flipped at the S3 fulcrum).
-		// Caught live by the W3b flip: `(A JOIN B JOIN C) LEFT JOIN D` — the
-		// box gated while its left leg stayed name-model, and
-		// ordinalLegColumns' mis-scope panic fired exactly as designed.
-		return wedgeGateDecision{Arity: arityPoison, Reason: "a leg contains a name-model join (mixed nesting stays name-model until S3)"}
+		// A leg CONTAINS a name-model join at its own boundary (an
+		// aggregate/CTE/derived body the gate keeps anchored): its output
+		// rows are the name model's merged rows (dotted keys, no leg concat)
+		// — an ordinal seed over it would type the leg wrongly. The
+		// remaining name-model residency retires at S4, the atomic
+		// demolition (RFC §4 coexistence scoping; inner clusters flipped at
+		// the S3 fulcrum, outer boxes at item 3). Caught live by the W3b
+		// flip: `(A JOIN B JOIN C) LEFT JOIN D` — the box gated while its
+		// left leg stayed name-model, and ordinalLegColumns' mis-scope panic
+		// fired exactly as designed.
+		return wedgeGateDecision{Arity: arityPoison, Reason: "a leg contains a name-model join (name-model residency retires at S4)"}
 	}
 	if j.Kind != logical.JoinInner && t.inInnerCluster {
 		// An OUTER box that is a LEG of an enclosing name-model join (or of
@@ -150,9 +151,10 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// the partition rule's anchored re-enumeration (the RIGHT variant
 		// panicked). The INNER arm has carried this exact enclosure guard
 		// since Slice 2; the outer arms shipped without it — plans looked
-		// clean while rows were wrong. Ordinalizing outer boxes inside
-		// name-model parents is the QP-REF-BIND LEFT-widening item (TODO.md).
-		return wedgeGateDecision{Arity: arityPoison, Reason: "outer box enclosed in a name-model parent (mixed nesting stays name-model, QP-REF-BIND)"}
+		// clean while rows were wrong. The residual name-model parents here
+		// (existential/unnest flattens, aggregate boxes) retire at S4, the
+		// atomic demolition — this guard dies with them.
+		return wedgeGateDecision{Arity: arityPoison, Reason: "outer box enclosed in a name-model parent (name-model residency retires at S4)"}
 	}
 	if j.Kind == logical.JoinFull {
 		// FULL OUTER is the only genuinely opaque outer box: it is NEVER
@@ -163,24 +165,23 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary FULL-outer box (genuinely opaque both ways)"}
 	}
 	if j.Kind != logical.JoinInner {
-		// LEFT OUTER (and RIGHT, normalized to LEFT at execution) GATES when
-		// BOTH legs are SINGLE SOURCES (RFC-173 W4-left; the re-ruling
-		// GRANTED on the corrected premise): RewriteOuterJoinRule dissolves
-		// the box into an INNER select + null-on-empty quantifier — the
-		// EXACT shape the ordinal machinery already implements — and Java
+		// LEFT OUTER (and RIGHT, normalized to LEFT at execution) GATES at
+		// the box root (RFC-173 W4-left granted single-source legs; item 3
+		// commit 1 widened to CLUSTERED legs): RewriteOuterJoinRule
+		// dissolves the box into an INNER select + null-on-empty quantifier
+		// — the EXACT shape the ordinal machinery implements — and Java
 		// builds the ordinal RV at translation (wrapOperandsForOuterJoin)
 		// with the rule REUSING it unchanged. The seed marks the
 		// null-supplying leg's QOV record-level nullable (legsOfGatedJoin,
-		// design ruling I3). The single-source condition (clusterArity==1
-		// per leg) keeps the RFC-153 joined-preserved class
-		// name-model: a flattened preserved/null-supplying CLUSTER erases
-		// buried names into a bare concat the name-model ON-pred cannot
-		// span. Widening to clustered legs is QP-REF-BIND item 3 (TODO.md —
-		// one authority).
-		if t.clusterArity(j.Left) == 1 && t.clusterArity(j.Right) == 1 {
-			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary LEFT/RIGHT-outer box, single-source legs (ordinal seed at translation, W4-left)"}
-		}
-		return wedgeGateDecision{Arity: arityPoison, Reason: "LEFT-outer box with a clustered leg (joined-preserved class stays name-model until QP-REF-BIND item 3, TODO.md)"}
+		// design ruling I3). The former single-source condition
+		// (clusterArity==1 per leg — the Q3 buried-names narrowing) retired
+		// with item 3: a flattened preserved/null-supplying cluster's buried
+		// sources are nameable per-leg since items 1+2 (binding-keyed
+		// windows + positional binders), so the seed types them exactly as
+		// Java does (a buried source is just another quantifier's window).
+		// The leg-eligibility check above (ordinalEligible) remains the
+		// admission for what a leg may CONTAIN.
+		return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary LEFT/RIGHT-outer box (ordinal seed at translation; clustered legs per item 3)"}
 	}
 	if t.inInnerCluster {
 		// This inner join is a leg subtree of an enclosing inner-join cluster
@@ -227,17 +228,14 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		// forced FALSE — a join leg roots a fresh cluster (it sits at an
 		// outer-box or leg boundary) — and Decide is side-effect-free.
 		//
-		// W4-left refinement: a LEFT/RIGHT box gates AS A ROOT (its own
-		// seed) but stays INELIGIBLE as a LEG — unlike FULL it is not
-		// merge-opaque: RewriteOuterJoinRule dissolves it and the dissolved
-		// select MERGES across the leg boundary (the RFC-153
-		// joined-preserved machinery), so a parent that typed the box as
-		// ONE leg would drift against post-flattening arity (the W3b loud
-		// assert's exact class). Leg-position widening rides the
-		// QP-REF-BIND item 3 (TODO.md).
-		if o.Kind == logical.JoinLeft || o.Kind == logical.JoinRight {
-			return false
-		}
+		// Item-3 S3: a LEFT/RIGHT box is eligible AS A LEG exactly like any
+		// gated join (the W4-left leg-ineligibility retired). The former
+		// drift hazard — a parent typing the box as ONE leg against the
+		// dissolved select's post-flattening splice — is closed by
+		// amendment A: clusterArity counts the box as preserved + 1 (the
+		// rules' actual mergeability), so the parent's arity accounting and
+		// the seed layout agree; the W3b drift assert and the mixed-nesting
+		// matrices stay the tripwires.
 		prev := t.inInnerCluster
 		t.inInnerCluster = false
 		d := t.ordinalWedgeGateDecide(o)
@@ -352,14 +350,27 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 			return 1
 		}
 		if o.Kind != logical.JoinInner {
-			// LEFT/RIGHT OUTER: RewriteOuterJoinRule dissolves the box into
-			// an INNER + null-on-empty select during REWRITING, whose
-			// preserved side flattens into the enclosing cluster with a
-			// null-on-empty rider — post-flattening arity is not computable
-			// at translation. POISON: any cluster containing a LEFT box
-			// stays name-model (W3b premise correction; see
-			// ordinalWedgeGateDecide).
-			return arityPoison
+			// LEFT/RIGHT OUTER (item-3 amendment A): RewriteOuterJoinRule
+			// dissolves the box into an INNER + null-on-empty select, and
+			// the dissolved select MERGES into inner-equivalent parents —
+			// the PRESERVED side's legs splice in and the null-on-empty
+			// quantifier splices as EXACTLY ONE leg whose child never
+			// merges (verified in both engines: Java's SelectMergeRule
+			// matches via forEachQuantifierWithoutDefaultOnEmptyOverRef;
+			// Go's rule skips IsNullOnEmpty quantifiers identically). So
+			// post-flattening arity IS computable: preserved + 1. Poison
+			// propagates from the preserved side. (The former blanket
+			// poison — "not computable at translation" — was shorthand for
+			// "not seedable pre-items-1+2", retired with S3.)
+			preserved := o.Left
+			if o.Kind == logical.JoinRight {
+				preserved = o.Right
+			}
+			p := t.clusterArity(preserved)
+			if p == arityPoison {
+				return arityPoison
+			}
+			return p + 1
 		}
 		l := t.clusterArity(o.Left)
 		if l == arityPoison {

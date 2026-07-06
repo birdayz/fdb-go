@@ -110,3 +110,80 @@ func TestRFC173S3_OrdinalSeedDispatchAuthority(t *testing.T) {
 		t.Logf("pin: %d-table ORDINAL chain took the anchored arm %d times (want 0)", n, ordinalHits)
 	}
 }
+
+// buildOrdinalBoxChainSelect is buildOrdinalChainSelect with the LAST leg a
+// dissolved-LEFT BOX: its QOV flows the box's CONCAT type (two buried tables'
+// columns with RecordType.Legs boundaries, the RIGHT-normalized shape whose
+// preserved leg names the box). The seed stays pristine (every column baked
+// ordinal over its leg QOV, runs 0..width-1), so the values/executor twins
+// accept it — the exact ordinal-seeded-box corpus amendment I certifies must
+// NEVER reach the anchored re-enumeration arm (the RIGHT-variant panic class:
+// NewReEnumerationAnchoredRecord over a positional box row).
+func buildOrdinalBoxChainSelect(n int) *expressions.SelectExpression {
+	var quants []expressions.Quantifier
+	var aliases []string
+	var preds []predicates.QueryPredicate
+	var fields []values.RecordConstructorField
+	for i := 1; i < n; i++ {
+		quants = append(quants, scanQuantifier(tName(i)))
+		aliases = append(aliases, tName(i))
+		legType := values.NewRecordType(tName(i), false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "NEXT_ID", FieldType: values.NotNullLong, Ordinal: 1},
+		})
+		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(tName(i)), legType)
+		for col := range legType.Fields {
+			fv, err := values.NewFieldValueOfOrdinal(qov, col)
+			if err != nil {
+				panic("buildOrdinalBoxChainSelect: " + err.Error())
+			}
+			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+		}
+	}
+	// The box leg: buried B (2 cols) + rightmost leaf Tn (2 cols), named Tn.
+	boxTyp := &values.RecordType{
+		Fields: []values.Field{
+			{Name: "BID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "BREF", FieldType: values.NotNullLong, Ordinal: 1},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+			{Name: "NEXT_ID", FieldType: values.NotNullLong, Ordinal: 3},
+		},
+		Legs: []values.RecordTypeLeg{
+			{Name: "B", Start: 0, Width: 2},
+			{Name: tName(n), Start: 2, Width: 2},
+		},
+	}
+	quants = append(quants, scanQuantifier(tName(n)))
+	aliases = append(aliases, tName(n))
+	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(tName(n)), boxTyp)
+	for col := range boxTyp.Fields {
+		fv, err := values.NewFieldValueOfOrdinal(boxQOV, col)
+		if err != nil {
+			panic("buildOrdinalBoxChainSelect: " + err.Error())
+		}
+		fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+	}
+	for i := 1; i < n; i++ {
+		preds = append(preds, chainEqPred(tName(i), "NEXT_ID", tName(i+1), "ID"))
+	}
+	seed := values.NewRawRecordConstructorValue(fields...)
+	values.AssertOrdinalJoinSeed(seed)
+	return expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
+}
+
+// TestRFC173Item3_OrdinalBoxSeedDispatchAuthority extends the Slice-3
+// dispatch-authority corpus with the ordinal-seeded BOX shape (amendment I):
+// a chain whose last leg carries a dissolved box's concat type (Legs
+// boundaries) must route wholly through the positional merge arm —
+// MergeArmHits == 0 — because the anchored re-enumeration arm cannot anchor a
+// positional box row (the RIGHT-variant panic at the re-enumeration RC).
+func TestRFC173Item3_OrdinalBoxSeedDispatchAuthority(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{2, 3} {
+		hits, _ := planMergeArmHits(t, buildOrdinalBoxChainSelect(n))
+		if hits != 0 {
+			t.Errorf("%d-leg ORDINAL BOX chain: MergeArmHits=%d, want 0 — an ordinal-seeded box "+
+				"leaked into the anchored (name-model) dispatch arm (amendment I)", n, hits)
+		}
+	}
+}

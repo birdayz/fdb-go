@@ -1013,12 +1013,31 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 		return nil, &OrdinalBakeError{Ordinal: ordinal, ChildType: rt, Reason: fmt.Sprintf("ordinal out of range for a %d-field record type", len(rt.Fields))}
 	}
 	fld := rt.Fields[ordinal]
+	typ := fld.FieldType
+	// Java FieldValue.computeResultType: the accessed field's type is
+	// overridden NULLABLE when the child's record type is nullable — the
+	// LEFT-outer null-supplying leg's record-level wrap (design ruling I3)
+	// makes every column read through it nullable, because the padded row
+	// serves NULL in every slot (how Java reports LEFT JOIN metadata
+	// nullable without a per-column seed wrap). Keyed on the STORED Typ for
+	// a QOV child: QOV.Type() blanket-wraps nullable (the pre-existing
+	// pass-through rule), so the record-level marker is only observable on
+	// q.Typ — the same authority every seed consumer reads.
+	childNullable := rt.Nullable
+	if qov, isQOV := child.(*QuantifiedObjectValue); isQOV {
+		if srt, isRT := qov.Typ.(*RecordType); isRT {
+			childNullable = srt.Nullable
+		}
+	}
+	if childNullable && typ != nil && !typ.IsNullable() {
+		typ = WithNullability(typ, true)
+	}
 	// FrontierPinned: this constructor is the gated-join seed's — the executor
 	// births positional rows for every context these nodes evaluate in, so a
 	// name-keyed read is loud (bakedNameReadGuard).
 	return &FieldValue{
 		Field:    fld.Name,
-		Typ:      fld.FieldType,
+		Typ:      typ,
 		Child:    child,
 		Resolved: NewFieldPathOfSingle(fld.Name, ordinal, true),
 	}, nil

@@ -2550,6 +2550,25 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	aliases := proj.GetAliases()
 	projections := proj.GetProjections()
 
+	// Leaf descriptors under a NULL-SUPPLYING (DefaultOnEmpty) subtree: a
+	// column defined by one of these serves NULL on the outer join's padded
+	// rows, so its metadata reports NULLABLE regardless of the proto's
+	// Required (amendment B / ruling I3's second half — Java gets this from
+	// the flowed result type; the name-model lazy projections here flow
+	// none). Keyed by descriptor FullName. Coarse by design in the safe
+	// direction: a self-joined table on both sides marks the preserved read
+	// nullable too — clients then handle a NULL that never comes, never the
+	// reverse.
+	nullBorn := map[protoreflect.FullName]struct{}{}
+	plans.Walk(proj.GetInner(), func(n plans.RecordQueryPlan) bool {
+		if doe, ok := n.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
+			for _, d := range allLeafDescriptors(doe, md) {
+				nullBorn[d.FullName()] = struct{}{}
+			}
+		}
+		return true
+	})
+
 	// A pull-up / pass-through projection (e.g. the RFC-141 projected-EXISTS fold's
 	// cleanup re-projection that drops a hidden ORDER BY column) references its
 	// columns by the INNER plan's OUTPUT key — which for an aliased column is the
@@ -2569,6 +2588,15 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 			alias = aliases[i]
 		}
 		cd := deriveProjectionColumnDef(v, alias, i, descs)
+		if cd.Nullable == api.ColumnNoNulls {
+			if fv, ok := v.(*values.FieldValue); ok && fv.Child == nil {
+				if d := descriptorForColumn(fv.Field, descs); d != nil {
+					if _, born := nullBorn[d.FullName()]; born {
+						cd.Nullable = api.ColumnNullable
+					}
+				}
+			}
+		}
 		if cd.TypeName == "" || cd.TypeName == "UNKNOWN" {
 			// Inherit from the inner column the projection reads (matched by the
 			// projected FieldValue's field = the inner output key).
@@ -2673,6 +2701,20 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 	if colDesc != nil {
 		if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
 			nullable = api.ColumnNoNulls
+		}
+	}
+	// The proto descriptor says what the STORED column is; the FLOWED value
+	// type says what this query serves — a NOT NULL column read through a
+	// LEFT-outer null-supplying window is nullable (the padded rows serve
+	// NULL), which Java reports via the plan's result type
+	// (FieldValue.computeResultType's nullable override; amendment B /
+	// ruling I3's second half). A KNOWN-typed nullable flowed value
+	// therefore upgrades NoNulls — never the reverse; an UNKNOWN type
+	// (name-model lazy dotted refs never flow one) says nothing.
+	if nullable == api.ColumnNoNulls {
+		if fv, isField := v.(*values.FieldValue); isField && fv.Typ != nil &&
+			fv.Typ.Code() != values.TypeCodeUnknown && fv.Typ.IsNullable() {
+			nullable = api.ColumnNullable
 		}
 	}
 	return executor.ColumnDef{
