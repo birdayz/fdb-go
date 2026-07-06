@@ -309,10 +309,18 @@ validation gate.
     folds into S4 (flips as the ordinal seed widens); unnest-residual c1/c2/c3 DONE on
     feat/rfc173-next. **The correlated-scalar prerequisite is DISCHARGED (W4b #465)** — JOIN-inner
     + COMPUTED-scalar ordinalize; the lone `NewScalarSubqueryAnchoredRecord` producer is now the
-    UNGATED-OUTER residual (cascades_translator.go:3860). **Reachability baseline established:** no
-    existing sqldriver/core-query/embedded test hits :3860 (probed with a loud marker). S4's exit
-    gate = complete the empirical zero-producers proof over the ungated-outer shapes (unnest-outer,
-    existential-ON-outer), then delete. See the corrected RFC Slice-4 PREREQUISITE block. Then:
+    UNGATED-OUTER residual (cascades_translator.go:3860). **Reachability: strong evidence :3860 is
+    near-dead.** Probed with a loud marker: (1) no existing sqldriver/core-query/embedded test hits
+    it; (2) direct ungated-shape probes — a correlated scalar over an UNNEST outer
+    (`SELECT c.name,(SELECT COUNT(*) FROM o WHERE o.cid=c.id) FROM c, c.arr AS x`) does NOT reach
+    :3860 (it declines at PLANNING, "could not plan query" 0AF00 — a pre-existing limitation, not
+    the anchored fallback); a dup-alias outer declines loudly in buildCorrelatedScalar; a
+    plain-single outer ordinalizes. So the research's assumption that unnest-outer "keeps the
+    anchored record" is WRONG — it declines elsewhere. **Remaining for the S4 exit gate:** probe the
+    last candidate (correlated scalar over an existential-ON outer) + any exotic shape, to complete
+    the empirical zero-producers proof; if all decline/ordinalize (never :3860), delete the call
+    site (replace with the loud decline already above it). See the corrected RFC Slice-4
+    PREREQUISITE block. Then:
     delete the flag + trio + the
     three seeds + `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag
     branches + 4 executor consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until
