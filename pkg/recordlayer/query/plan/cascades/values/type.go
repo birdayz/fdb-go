@@ -355,6 +355,24 @@ type RecordType struct {
 	// means a record with no fields (legal — `RECORD<>` is the unit
 	// type). Never nil.
 	Fields []Field
+	// Legs marks the buried-leg boundaries of a CLUSTERED box leg's flat
+	// ordinal concat (RFC-173 item 3): the translator's ordinalLegType walks
+	// the box's legs and records each buried source's binding + starting
+	// slot, so the ONE layout authority (OrdinalSeedLegWindows) can emit
+	// additive per-buried-leg sub-windows — a projection read qualified by a
+	// buried alias resolves positionally exactly like a top-level leg's
+	// (Java's rewire-by-ordinal: a buried source is just another
+	// quantifier's window). Empty for every non-clustered leg type; carries
+	// NO identity semantics (Equals/Hash ignore it — layout metadata only).
+	Legs []RecordTypeLeg
+}
+
+// RecordTypeLeg is one buried source's boundary within a clustered box leg's
+// flat ordinal concat (see RecordType.Legs).
+type RecordTypeLeg struct {
+	Name  string // UPPER binding of the source
+	Start int    // its first slot within the carrying type
+	Width int    // its column count
 }
 
 // NewRecordType constructs a RecordType. The Fields slice is

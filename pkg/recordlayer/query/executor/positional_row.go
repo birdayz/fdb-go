@@ -2,6 +2,7 @@ package executor
 
 import (
 	"reflect"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -78,6 +79,34 @@ func (r *PositionalRow) GetByName(name string) (any, bool) {
 	}
 	i, ok := r.Type.FieldIndex(name)
 	if !ok {
+		// RFC-173 item 3: a DOTTED name over a row whose type carries leg
+		// boundaries (RecordType.Legs — the clustered box concat / the
+		// merged seed layout) resolves per-leg: qualifier → the leg's
+		// window, column → FieldIndex WITHIN it. This is the plan-agnostic
+		// bridge for the name-model read form ("B.BID") the resolver keeps
+		// for non-dup qualified references: the correlated-FlatMap winner
+		// serves it from the Datum, and a positional-only row (the
+		// clustered null-supplying birth) serves it here — same slot either
+		// way. First-match on duplicate leg names mirrors FieldIndex's own
+		// first-match rule.
+		if di := strings.IndexByte(name, '.'); di > 0 && len(r.Type.Legs) > 0 {
+			qual, col := name[:di], name[di+1:]
+			for _, leg := range r.Type.Legs {
+				if !strings.EqualFold(leg.Name, qual) {
+					continue
+				}
+				end := leg.Start + leg.Width
+				if leg.Start < 0 || end > len(r.Type.Fields) {
+					break
+				}
+				for k := leg.Start; k < end; k++ {
+					if strings.EqualFold(r.Type.Fields[k].Name, col) {
+						return r.Get(k)
+					}
+				}
+				break
+			}
+		}
 		return nil, false
 	}
 	return r.Get(i)

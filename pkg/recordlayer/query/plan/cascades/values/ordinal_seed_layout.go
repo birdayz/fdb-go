@@ -1,6 +1,9 @@
 package values
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // OrdinalSeedLegWindow is one leg's window in a pristine ordinal join seed's
 // merged positional layout: the leg's starting slot and its flowed record
@@ -105,7 +108,55 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 		if len(windows) < 2 {
 			return nil, nil
 		}
-		return windows, &RecordType{Fields: mergedFields}
+		// RFC-173 item 3: ADDITIVE per-buried-leg sub-windows. A clustered
+		// box leg's type carries its buried-leg boundaries (RecordType.Legs,
+		// recorded by the translator's ordinalLegType — the one place that
+		// walks the box); a read qualified by a buried binding then resolves
+		// positionally exactly like a top-level leg's (Java's
+		// rewire-by-ordinal — a buried source is just another window).
+		// Registered AFTER the coverage check (sub-windows are slices of a
+		// run, not runs — they carry no counts) and never overwrite a
+		// top-level run's own window.
+		for alias, w := range windows {
+			for li, leg := range w.Typ.Legs {
+				if leg.Name == "" || leg.Name == alias {
+					continue
+				}
+				if _, taken := windows[leg.Name]; taken {
+					continue
+				}
+				end := len(w.Typ.Fields)
+				if li+1 < len(w.Typ.Legs) {
+					end = w.Typ.Legs[li+1].Start
+				}
+				if leg.Start < 0 || end > len(w.Typ.Fields) || leg.Start >= end {
+					continue // malformed bounds — leave the buried read loud
+				}
+				sub := make([]Field, end-leg.Start)
+				for k := range sub {
+					f := w.Typ.Fields[leg.Start+k]
+					sub[k] = Field{Name: f.Name, FieldType: f.FieldType, Ordinal: k}
+				}
+				windows[leg.Name] = OrdinalSeedLegWindow{
+					Offset: w.Offset + leg.Start,
+					Typ:    &RecordType{Nullable: w.Typ.Nullable, Fields: sub},
+				}
+			}
+		}
+		// The merged type carries every window's boundary (runs + buried
+		// sub-windows) for the dotted-read bridge; sorted by Start for
+		// deterministic order (cross-agreement with the executor twin).
+		mergedLegs := make([]RecordTypeLeg, 0, len(windows))
+		for alias, w := range windows {
+			mergedLegs = append(mergedLegs, RecordTypeLeg{Name: alias, Start: w.Offset, Width: len(w.Typ.Fields)})
+		}
+		sort.Slice(mergedLegs, func(i, j int) bool {
+			if mergedLegs[i].Start != mergedLegs[j].Start {
+				return mergedLegs[i].Start < mergedLegs[j].Start
+			}
+			return mergedLegs[i].Name < mergedLegs[j].Name
+		})
+		return windows, &RecordType{Fields: mergedFields, Legs: mergedLegs}
 	}
 	// MIXED seed: synthesize the trailing element's own 1-field window. ACCEPT-
 	// EQUIVALENCE with the executor's unnestMixedSeedSpans, which admits EXACTLY

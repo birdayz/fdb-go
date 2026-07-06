@@ -3701,6 +3701,25 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		}
 	}
 	if resultValue == nil {
+		// RFC-173 item 3 (ruling F-C): a GATED outer must never seed the
+		// name-model anchored record — the gated cluster's rows are
+		// POSITIONAL, and the anchored record's alias-keyed reads over them
+		// are the mixed-model silent-NULL class. The pull-up/ordinal paths
+		// above own every gated shape; a gated outer reaching this fallback
+		// is a dispatch gap — decline LOUDLY. Genuinely UNGATED outers
+		// (unnest joins, existential-ON, unminted-dup residuals,
+		// seed-declined single sources) keep the anchored record until S4.
+		if cj := peelToClusterJoin(p.Input); cj != nil {
+			prevEnclosure := t.inInnerCluster
+			t.inInnerCluster = false
+			gated := t.ordinalWedgeGateDecide(cj).Gated
+			t.inInnerCluster = prevEnclosure
+			if gated {
+				t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+					"correlated scalar subquery: the gated outer cluster's ordinal dispatch declined (positional rows cannot take the anchored fallback)"))
+				return nil
+			}
+		}
 		resultValue = values.NewScalarSubqueryAnchoredRecord(
 			values.AnchoredJoinLeg{Alias: values.NamedCorrelationIdentifier(outerAlias), Columns: outerCols},
 			values.NamedCorrelationIdentifier(csq.InnerAlias),

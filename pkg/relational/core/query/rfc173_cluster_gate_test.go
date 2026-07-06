@@ -189,23 +189,23 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 	})
 
-	t.Run("left_outer_not_gated_null_leg_fresh_preserved_enclosed", func(t *testing.T) {
+	t.Run("left_outer_gated_both_legs_fresh", func(t *testing.T) {
 		t.Parallel()
-		// The W3b premise correction: a LEFT box is dissolved by
-		// RewriteOuterJoinRule during REWRITING, so (a) the box itself must
-		// NOT gate; (b) its PRESERVED (left) leg flattens into the rewritten
-		// select → a join there is ENCLOSED (name-model); (c) its
-		// NULL-SUPPLYING (right) leg becomes the never-merged null-on-empty
-		// subselect → a join there roots a FRESH cluster and gates.
+		// Item-3 S1: (a) the LEFT box GATES at the root even with a clustered
+		// preserved leg (the Q3 narrowing retired); (b) legs of a GATED parent
+		// translate FRESH (the S3-fulcrum convention), so the 2-way inner in
+		// the PRESERVED leg gates independently as its own root; (c) the
+		// NULL-SUPPLYING leg's inner keeps gating fresh (the null-on-empty
+		// subselect is never merged).
 		preserved := inner(scan("Customer", "c"), scan("TypedRecord", "t"))
 		root := logical.NewJoin(preserved, scan("Order", "o"), logical.JoinLeft, "")
 		tr := newGateTranslator(t)
 		tr.translateRef(root)
-		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
-			t.Fatalf("LEFT-outer box: %+v (ok=%v), want recorded and NOT gated (dissolved by RewriteOuterJoinRule)", d, ok)
+		if d, ok := tr.wedgeGate[root]; !ok || !d.Gated {
+			t.Fatalf("LEFT-outer box: %+v (ok=%v), want recorded and GATED (item-3 S1)", d, ok)
 		}
-		if d, ok := tr.wedgeGate[preserved]; !ok || d.Gated {
-			t.Fatalf("2-way in the PRESERVED leg: %+v (ok=%v), want NOT gated (flattens into the rewritten select)", d, ok)
+		if d, ok := tr.wedgeGate[preserved]; !ok || !d.Gated {
+			t.Fatalf("2-way in the PRESERVED leg: %+v (ok=%v), want GATED (fresh leg of a gated parent, S3-fulcrum convention)", d, ok)
 		}
 
 		nullSide := inner(scan("Customer", "c2"), scan("TypedRecord", "t2"))
@@ -279,24 +279,22 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 	})
 
-	t.Run("rfc153_joined_preserved_stays_name_model", func(t *testing.T) {
+	t.Run("rfc153_joined_preserved_gates", func(t *testing.T) {
 		t.Parallel()
-		// review re-ruling condition 1: the EXACT shape whose live fallout
-		// broke the LEFT-outer opacity premise — `a JOIN b LEFT JOIN c` (the
-		// RFC-153 joined-preserved family) — pinned name-model END TO END at
-		// the gate: the LEFT box does not gate (dissolved by
-		// RewriteOuterJoinRule post-translation), and the inner(a,b) in its
-		// PRESERVED leg does not gate either (it flattens into the rewritten
-		// select — the machinery the drift assert caught it inside).
+		// RFC-173 item 3 commit 1 (S1): the joined-preserved family —
+		// `a JOIN b LEFT JOIN c` — GATES at the box root. The design ruling
+		// retired the single-source condition (the flattened preserved
+		// cluster's buried sources are nameable per-leg since items 1+2:
+		// binding-keyed windows + positional binders), so the box takes the
+		// ordinal seed and its inner(a,b) preserved leg translates as a
+		// gated cluster leg. Pre-item-3 both stayed name-model (the Q3
+		// buried-names narrowing).
 		ab := inner(scan("Order", "o"), scan("Customer", "c"))
 		root := logical.NewJoin(ab, scan("TypedRecord", "t"), logical.JoinLeft, "")
 		tr := newGateTranslator(t)
 		tr.translateRef(root)
-		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
-			t.Fatalf("joined-preserved LEFT box: %+v (ok=%v), want recorded and NOT gated", d, ok)
-		}
-		if d, ok := tr.wedgeGate[ab]; !ok || d.Gated {
-			t.Fatalf("joined-preserved inner(a,b): %+v (ok=%v), want recorded and NOT gated (preserved leg flattens post-rewrite)", d, ok)
+		if d, ok := tr.wedgeGate[root]; !ok || !d.Gated {
+			t.Fatalf("joined-preserved LEFT box: %+v (ok=%v), want recorded and GATED (item-3 S1)", d, ok)
 		}
 	})
 

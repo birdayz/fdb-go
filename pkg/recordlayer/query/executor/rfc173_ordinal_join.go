@@ -229,7 +229,19 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 	if total != len(rc.Fields) {
 		panic(fmt.Sprintf("RFC-173 ordinal join spans inconsistent: sum(widths)=%d, RC has %d fields — spans must derive exactly from the RC", total, len(rc.Fields)))
 	}
-	return spans, &values.RecordType{Fields: mergedFields}, true
+	// RFC-173 item 3: the merged type carries leg boundaries — each span's
+	// run plus every BURIED leg a clustered box leg's type records
+	// (RecordType.Legs) — so a dotted name-model read ("B.BID") resolves
+	// per-leg on a positional-only row (PositionalRow.GetByName's dotted
+	// bridge). Mirrors the values-side derivation (cross-agreement).
+	var mergedLegs []values.RecordTypeLeg
+	for _, s := range spans {
+		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: strings.ToUpper(s.Alias.Name()), Start: s.Offset, Width: s.Width})
+		for _, sub := range s.LegType.Legs {
+			mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width})
+		}
+	}
+	return spans, &values.RecordType{Fields: mergedFields, Legs: mergedLegs}, true
 }
 
 // resolveSpanLeaf resolves one RV field to its LEAF leg (alias, leg type,
@@ -660,7 +672,37 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 		}
 		fields[i] = values.Field{Name: f.Name, FieldType: ft, Ordinal: i}
 	}
-	return &values.RecordType{Fields: fields}
+	// RFC-173 item 3: the birthed row type carries leg boundaries — each
+	// baked leg run plus every BURIED leg a clustered box leg's type records
+	// (RecordType.Legs) — so a dotted name-model read ("B.BID") resolves
+	// per-leg through PositionalRow.GetByName's dotted bridge on rows that
+	// birth positional-only (the clustered null-supplying pad).
+	var legs []values.RecordTypeLeg
+	lastCorr := ""
+	for i, f := range rc.Fields {
+		fv, isFV := f.Value.(*values.FieldValue)
+		if !isFV {
+			lastCorr = ""
+			continue
+		}
+		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		if !isQOV {
+			lastCorr = ""
+			continue
+		}
+		corr := strings.ToUpper(qov.Correlation.Name())
+		if corr == lastCorr {
+			continue
+		}
+		lastCorr = corr
+		if rt, isRT := qov.Typ.(*values.RecordType); isRT {
+			legs = append(legs, values.RecordTypeLeg{Name: corr, Start: i, Width: len(rt.Fields)})
+			for _, sub := range rt.Legs {
+				legs = append(legs, values.RecordTypeLeg{Name: sub.Name, Start: i + sub.Start, Width: sub.Width})
+			}
+		}
+	}
+	return &values.RecordType{Fields: fields, Legs: legs}
 }
 
 // legTypesFromResultValue collects the LEG types a (possibly folded) ordinal
@@ -1474,6 +1516,30 @@ func (r *spanAwareRow) GetByName(name string) (any, bool) {
 		for _, s := range r.spans {
 			if strings.EqualFold(s.Alias.Name(), alias) {
 				w := &legWindowRow{parent: r.parent, legType: s.LegType, offset: s.Offset, width: s.Width}
+				return w.GetByName(col)
+			}
+		}
+		// …then a BURIED leg inside a clustered box span (RFC-173 item 3):
+		// the box leg's type records its buried-leg boundaries
+		// (RecordType.Legs), and a reference qualified by a buried source's
+		// binding resolves at the buried window's offset within the span —
+		// exactly like a top-level leg (Java's model: a buried source is
+		// just another quantifier's window). Ordered AFTER the span aliases
+		// (a top-level alias always wins its own name).
+		for _, s := range r.spans {
+			if s.LegType == nil {
+				continue
+			}
+			for _, bl := range s.LegType.Legs {
+				if !strings.EqualFold(bl.Name, alias) {
+					continue
+				}
+				end := bl.Start + bl.Width
+				if bl.Start < 0 || end > len(s.LegType.Fields) {
+					break
+				}
+				sub := &values.RecordType{Nullable: s.LegType.Nullable, Fields: s.LegType.Fields[bl.Start:end]}
+				w := &legWindowRow{parent: r.parent, legType: sub, offset: s.Offset + bl.Start, width: bl.Width}
 				return w.GetByName(col)
 			}
 		}

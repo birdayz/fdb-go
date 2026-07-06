@@ -61,12 +61,13 @@ func TestRFC173W4Left_SeedShape(t *testing.T) {
 	checkSeed(t, logical.JoinLeft, "x")  // LEFT: right operand null-supplies
 	checkSeed(t, logical.JoinRight, "s") // RIGHT: left operand null-supplies
 
-	// The clustered-leg decline (gate scope): a comma cluster as the
-	// preserved leg keeps the box name-model.
+	// Item-3 S1: a comma cluster as the preserved leg GATES at the box root
+	// (the Q3 buried-names narrowing retired — buried sources are nameable
+	// per-leg via binding-keyed windows + the item-2 positional binders).
 	clustered := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")),
 		scan("AUX2", "y"), logical.JoinLeft, "")
-	if d := tr.ordinalWedgeGateDecide(clustered); d.Gated {
-		t.Fatal("a LEFT box with a CLUSTERED leg must stay name-model (joined-preserved; QP-REF-BIND item 3, TODO.md)")
+	if d := tr.ordinalWedgeGateDecide(clustered); !d.Gated {
+		t.Fatalf("a LEFT box with a CLUSTERED preserved leg must GATE (item-3 S1), got %+v", d)
 	}
 
 	// Leg-position ineligibility: the gated-as-root LEFT box is NOT
