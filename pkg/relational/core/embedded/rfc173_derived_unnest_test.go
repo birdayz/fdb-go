@@ -94,3 +94,24 @@ func TestRFC173DerivedUnnest_Dispositions(t *testing.T) {
 		code(t, `WITH inr AS (SELECT id, arr FROM td) SELECT x FROM (SELECT arr FROM inr) AS d, d.arr AS x`, api.ErrCodeUnsupportedQuery)
 	})
 }
+
+// TestRFC173DerivedUnnest_QualifiedPassthrough pins that a
+// qualified-but-UNALIASED passthrough (`SELECT t.arr FROM t`) plans: the
+// output column name is derived bare (qualifier stripped) so a `d.arr`
+// reference maps to it. Java plans this; before the strip it over-rejected.
+func TestRFC173DerivedUnnest_QualifiedPassthrough(t *testing.T) {
+	t.Parallel()
+	tmpl, err := buildSchemaTemplateFromDDL(rfc173DerivedSchema)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	stats := properties.FixedStatistics{Cardinality: 1_000_000}
+	plan, err := PlanRecordQueryWithMetadata(
+		`SELECT x FROM (SELECT td.arr FROM td) AS d, d.arr AS x`, tmpl.Underlying(), stats)
+	if err != nil {
+		t.Fatalf("qualified passthrough must plan, got %v", err)
+	}
+	if !strings.Contains(plan.Explain(), "inner=Explode") {
+		t.Fatalf("plan lacks the Explode FlatMap: %s", plan.Explain())
+	}
+}

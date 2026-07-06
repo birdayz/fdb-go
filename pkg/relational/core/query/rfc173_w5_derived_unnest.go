@@ -165,29 +165,29 @@ func (t *cascadesTranslator) derivedOwnerBody(outerLeft logical.LogicalOperator,
 		}
 		return body, names, true
 	}
-	if proj := bodyOutputProject(body); proj != nil {
-		names := make([]string, len(proj.Projections))
-		for i := range proj.Projections {
-			out := proj.Projections[i]
-			if i < len(proj.Aliases) && proj.Aliases[i] != "" {
-				out = proj.Aliases[i]
-			}
-			names[i] = out
-		}
+	if names := projectionOutputNames(body); names != nil {
 		return body, names, true
 	}
 	return body, nil, false
 }
 
 // deriveOutputNames returns an inline derived-table CTE's output column names
-// in projection order: ColumnAliases when `WITH c(a,b)`-style, else each
-// projection's alias (or source name). nil when the body has no mappable
-// projection.
+// in projection order: ColumnAliases when `WITH c(a,b)`-style, else the body's
+// projection output names. nil when the body has no mappable projection.
 func deriveOutputNames(cte *logical.LogicalCTE) []string {
 	if len(cte.ColumnAliases) > 0 {
 		return cte.ColumnAliases
 	}
-	proj := bodyOutputProject(cte.Body)
+	return projectionOutputNames(cte.Body)
+}
+
+// projectionOutputNames returns a body's output column names in projection
+// order — each slot's alias when present, else its source column name with any
+// qualifier stripped (`t.arr` → `ARR`), so a qualified-but-unaliased
+// passthrough (`SELECT t.arr FROM t`) maps under the bare name a downstream
+// `d.arr` reference uses. nil when the body has no mappable projection.
+func projectionOutputNames(body logical.LogicalOperator) []string {
+	proj := bodyOutputProject(body)
 	if proj == nil {
 		return nil
 	}
@@ -196,6 +196,8 @@ func deriveOutputNames(cte *logical.LogicalCTE) []string {
 		out := proj.Projections[i]
 		if i < len(proj.Aliases) && proj.Aliases[i] != "" {
 			out = proj.Aliases[i]
+		} else if dot := strings.LastIndexByte(out, '.'); dot >= 0 {
+			out = out[dot+1:] // bare-column output name (qualifier stripped)
 		}
 		names[i] = out
 	}
