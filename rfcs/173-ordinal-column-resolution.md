@@ -4709,8 +4709,13 @@ by an e2e test):
   [Graefe blocking NAK / codex P1]
 - **element/AT alias SHADOWS an outer column**: the bare "WV.WV" shadow read GetByName-resolves the
   OUTER column, not the element → wrong group. [codex P1]
-- **AT-only unnest** (no AS): the grouped ordinal qualifies through the ARRAY COLUMN (`GROUP BY O`
-  resolves as `WARR.O`, not `O.O`), uncovered by the wrap. [codex P2]
+- **AT-only unnest** (no AS): NOTE — this is actually the SAME class as the shadow-collision above.
+  For `WSRC.WARR AT O`, `u.Alias` DEFAULTS to the array column "WARR" (diagnostic-confirmed), which
+  shadows WSRC.WARR, so it declines via the SHADOW check, not the `u.Alias == ""` check (which is
+  therefore effectively dead — no reachable grouped gather has an empty Alias; a truly anonymous
+  unnest declines earlier at unnestSeedInnerFields). The grouped ordinal qualifies as `WARR.O`. So
+  there is really ONE remaining decline class — shadow-collision — and its risky positional/seed-
+  shadow fix (below) covers AT-only too. [codex P2]
 - **decline-after-leg-translation** double-registers a leg's scalar subquery — fixed by moving the
   eligibility check before leg translation. [codex P2]
 Gate tally: Torvalds ACK; Graefe ACK (blocking cleared — the box-leg gate is EXACTLY coincident with
