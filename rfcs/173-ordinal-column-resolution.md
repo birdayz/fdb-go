@@ -4800,6 +4800,31 @@ the name model. That is the whole remaining RFC-173 endgame — a concrete per-s
 site's residual empirically, since some, like R3's :3850, are partially retired already), not a
 gate-theory question.
 
+### PER-LEG-WINDOW REBASE (channel 1 + channel 2) — LANDED + four-gate-reviewed; Step B coupling FOUND
+The multi-alias-under-EXISTS ordinalization substrate is built + reviewed:
+- **Channel 1** (translator): `ordinalSlotInLegWindow` resolves a qualified outer ref WITHIN its
+  `rt.Legs` window (was flat first-match, qualifier-dropped) — four-gate-clean (43ef8a70d + hardening).
+- **Channel 2 Step A** (values + executor): the mixed-seed branch of `OrdinalSeedLegWindows` +
+  `unnestMixedSeedSpans` now emit the per-buried-leaf box windows (shared `finalizeSeedWindows` /
+  `mergedLegsOfSpans`), so a box outer's dup-named columns disambiguate — four-gate-clean, behavior-
+  preserving + dormant behind the guard, all `mergedType.Legs` consumers traced inert.
+- **3-way cross-agreement fixture** (`TestRFC173S4_ThreeWayBoxCrossAgreement`): channel-1 ↔
+  channel-2-values ↔ channel-2-executor agree on every box-leaf absolute slot.
+
+**Step B (the guard lift) is COUPLED to an enclosure site — the deep finding.** The c5a target
+(`(a FULL OUTER b), a.arr AS x WHERE EXISTS(…c.col…)`) is UNNEST-under-EXISTS (top join Inner, FULL
+OUTER buried in the unnest's outer), so it is NOT blocked by the JOIN-under-EXISTS FULL+EXISTS reject
+(buildExistentialJoinSelect:2924, which checks the EXISTS join's own kind). It reaches
+`unnestExistsSeedSafe`. BUT `translateUnnestJoin` sets `inInnerCluster=true`, and the `:167` gate poison
+("an OUTER box that is a LEG of an enclosing … unnest flatten stays name-model") makes the FULL OUTER
+box OUTER a name-model Datum, not a positional producer. `unnestOrdinalSeed` bakes it POSITIONALLY, so
+lifting `unnestExistsSeedSafe` alone ships a positional seed over a name-model box row → the
+`adaptLegPositional` zero-match tripwire (Graefe's Q3). So Step B requires FIRST lifting the `:167`
+enclosure poison for the box-under-unnest case (make the box outer ordinal/positional) — one of the
+enclosure-site slices in the worklist above. Step B is NOT a standalone flip; it is entangled with the
+:167 enclosure ordinalization. The substrate (channels 1+2) is correct + necessary regardless — it is
+the layout the box-under-unnest needs once the box outer births positional.
+
 ## S4 R2 — gathered multi-source unnest GROUP BY ordinalization (LANDED: 43871b83b)
 
 The first producer-retiring increment against R2 (multi-source lateral unnest, the :1528 producer):
