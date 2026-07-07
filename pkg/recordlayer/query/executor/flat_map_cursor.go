@@ -60,6 +60,18 @@ type flatMapCursor struct {
 	// (amendment A): dead scaffolding once the name model dies.
 	outerBakedType *values.RecordType
 
+	// foldLegSpans / foldWindowsOK (RFC-173 S4 commit 2, C): when this FlatMap's
+	// OUTER is a gated ordinal join (a projected-EXISTS fold whose step-1 NLJ
+	// births the leg-concat seed), the folded projection reads leg columns as
+	// heterogeneous refs — dotted frontier reads ("T1.ID") and QOV refs. The
+	// projection is NEVER rebased; instead it evaluates over the step-1 merged
+	// positional row through legWindowRowContext(pos, ctx, foldLegSpans), the SAME
+	// coexistence context every plain gated-join downstream projection uses
+	// (spanAwareRow resolves the dotted reads, legWindowBinder the QOV refs).
+	// Derived once from the outer plan's ordinal seed (downstreamLegWindows).
+	foldLegSpans  []legSpan
+	foldWindowsOK bool
+
 	// Continuation state for cross-transaction resume.
 	priorOuterContinuation recordlayer.RecordCursorContinuation
 	lastOuterContinuation  recordlayer.RecordCursorContinuation
@@ -133,8 +145,17 @@ func newFlatMapCursor(
 	// over the outer alias; a hit means the outer must bind positionally
 	// (see outerBakedType).
 	var outerBakedType *values.RecordType
+	var foldLegSpans []legSpan
+	var foldWindowsOK bool
 	if !birth.enabled() {
 		outerBakedType = probeOuterBakedType(innerPlan, outerAlias)
+		// RFC-173 S4 commit 2 (C): a projected-EXISTS fold whose OUTER is a gated
+		// ordinal join — the step-1 NLJ's own ordinal seed yields the leg windows
+		// the folded projection resolves through (legWindowRowContext), exactly as
+		// a plain gated-join downstream projection derives them.
+		if outerPlan != nil {
+			foldLegSpans, foldWindowsOK = downstreamLegWindows(outerPlan)
+		}
 	}
 	return &flatMapCursor{
 		outerCursor:    outerCursor,
@@ -148,6 +169,8 @@ func newFlatMapCursor(
 		props:          props,
 		birth:          birth,
 		outerBakedType: outerBakedType,
+		foldLegSpans:   foldLegSpans,
+		foldWindowsOK:  foldWindowsOK,
 	}, nil
 }
 
@@ -300,6 +323,17 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 	return c.computeResultLegs(outerRow, &innerRow)
 }
 
+// resultIsIdentityOuter reports whether this FlatMap's result value is exactly
+// the outer quantifier's object (the WHERE-EXISTS pass-through): the output IS
+// the outer row, flowed through unchanged (the identity branch below). Such a
+// cursor must NOT reroute the outer through the leg windows — it reads the whole
+// outer object, not per-leg columns (RFC-173 S4 commit 2, C: the projected-fold
+// leg-window path is only for a projection over the merged row).
+func (c *flatMapCursor) resultIsIdentityOuter() bool {
+	qov, ok := c.resultValue.(*values.QuantifiedObjectValue)
+	return ok && qov.Correlation == c.outerAlias
+}
+
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
 // the LEFT-OUTER null-inner emission. For an ordinal-birth cursor (RFC-173
 // S2, oracle off) it births the positional row from the RC with per-leg
@@ -400,6 +434,20 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// against the outer row, while QOV references to the outer/inner aliases
 	// resolve through the correlation bindings (Correlations).
 	rowCtx := nestedCtx.RowContext(outerDatum)
+	// RFC-173 S4 commit 2 (C): a PROJECTED-EXISTS fold whose OUTER is a gated
+	// ordinal join's positional merged row. Evaluate the folded projection through
+	// legWindowRowContext — spanAwareRow resolves its dotted "T1.ID" frontier reads
+	// positionally against the leg windows, legWindowBinder its QOV leg refs, and
+	// the composed nestedCtx binds the existential inner (existCorr) for the
+	// projected ExistsValue. The projection is thus resolved (not rebased), the
+	// heterogeneity absorbed by the same coexistence context a plain gated-join
+	// downstream projection uses. EXCLUDES the WHERE-EXISTS identity pass-through
+	// (RV == QOV(outer)): that flows the outer row through unchanged (the :428
+	// identity branch + outerBakedType positional propagation), and rerouting it
+	// through the leg windows misreads the whole-outer object read.
+	if outerRow.Positional != nil && c.foldWindowsOK && !c.resultIsIdentityOuter() {
+		rowCtx = legWindowRowContext(outerRow.Positional, nestedCtx, c.foldLegSpans)
+	}
 	if c.birth.enabled() {
 		// §5 NAME-MODEL ORACLE over an ordinal-birth plan (birth enabled but
 		// DisablePositionalEmission on — the only way to reach here with a

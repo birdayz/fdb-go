@@ -298,6 +298,7 @@ go_test(
         "rfc153_failclosed_verifier_test.go",
         "rfc153_p2_correlation_test.go",
         "rfc165_nulls_ordering_test.go",
+        "rfc173_commit2_fold_seed_test.go",
         "rfc173_s3_legrowtypes_test.go",
         "rfc173_s3_shadow_delta_test.go",
         "rfc173_s3_star_budget_test.go",
@@ -812,6 +813,7 @@ go_test(
         "rfc173_w5_classifier_dead_test.go",
         "rfc173_w4left_existential.go",
         "planning_cost_model_hash_test.go",
+        "rfc173_commit2_fold_seed_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

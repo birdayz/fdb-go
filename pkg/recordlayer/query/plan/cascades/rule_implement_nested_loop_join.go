@@ -1073,6 +1073,101 @@ func planResultValue(p plans.RecordQueryPlan) values.Value {
 	return nil
 }
 
+// legIsOrdinalSafe reports whether a projected-EXISTS fold leg (RFC §"commit 2
+// B1"/C) can seed the step-1 ordinal merged row: a SINGLE-SOURCE leg whose rows
+// are one namespace (a scan, through transparent Filter/Fetch/FOD wrappers). A
+// JOIN/FlatMap leg emits a name-model MERGED row (dotted keys) that an ordinal
+// seed cannot position, so it stays name-model — the executor twin of the
+// translator gate's ordinalEligible (correct-or-conservative: an unrecognised
+// leg is NOT ordinalized). A buried gated-box leg (its own ordinal seed) is a
+// booked follow-on widening.
+func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
+	for p != nil {
+		switch pl := p.(type) {
+		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan:
+			return true
+		case *plans.RecordQueryPredicatesFilterPlan:
+			p = pl.GetInner()
+		case *plans.RecordQueryFilterPlan:
+			p = pl.GetInner()
+		case *plans.RecordQueryFirstOrDefaultPlan:
+			p = pl.GetInner()
+		case *plans.RecordQueryDefaultOnEmptyPlan:
+			p = pl.GetInner()
+		case *plans.RecordQueryFetchFromPartialRecordPlan:
+			p = pl.GetInner()
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// reconstructFoldStep1Seed rebuilds the full leg-concat ordinal seed for a
+// gated projected-EXISTS fold (RFC §"commit 2 B1"/C). The step-1 NLJ births a
+// positional merged row from this seed; the step-2 FlatMap then evaluates the
+// folded projection over that row through legWindowRowContext (spanAwareRow +
+// legWindowBinder), so the projection is NEVER rebased — its dotted and
+// QOV-based leg refs resolve positionally at the cursor. The seed is a run of
+// ofOrdinal references over each leg's typed QOV (leg type from GetResultType,
+// NOT planResultValue which is nil for these leg plans), in declaration order,
+// the QOV named by the leg's source alias — byte-identical to
+// buildOrdinalJoinResultValue for the same legs (the cross-agreement fixture
+// pins it). Returns nil when a leg is not ordinal-safe or its type is not a
+// record (untranslatable — the caller keeps the name model).
+func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias string) values.Value {
+	if !legIsOrdinalSafe(leftPlan) || !legIsOrdinalSafe(rightPlan) {
+		return nil
+	}
+	var fields []values.RecordConstructorField
+	for _, leg := range []struct {
+		plan  plans.RecordQueryPlan
+		alias string
+	}{{leftPlan, leftAlias}, {rightPlan, rightAlias}} {
+		rt, ok := leg.plan.GetResultType().(*values.RecordType)
+		if !ok || len(rt.Fields) == 0 {
+			return nil
+		}
+		qov := values.NewQuantifiedObjectValueOfType(
+			values.NamedCorrelationIdentifier(strings.ToUpper(leg.alias)), rt)
+		for i := range rt.Fields {
+			fv, err := values.NewFieldValueOfOrdinal(qov, i)
+			if err != nil {
+				return nil
+			}
+			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+		}
+	}
+	return values.NewRawRecordConstructorValue(fields...)
+}
+
+// foldStep1Seed is the step-1 result-value decision for the 3-quantifier
+// join+EXISTS arm (RFC-173 S4 commit 2, C). It returns the FULL leg-concat
+// ordinal seed (and gated=true) for an INDEPENDENT-legs PROJECTED-EXISTS fold
+// over ordinal-safe legs — the step-1 NLJ then births a positional merged row
+// the step-2 FlatMap resolves the projection over (legWindowRowContext) — and
+// otherwise returns the original RV unchanged (gated=false, the name model).
+// The gates, in order: (1) NOT a correlated step 1 (a correlated FlatMap binds
+// legs by NAME, where a baked seed hits the loud BakedNameContextError — the F2
+// seed reverted twice on that wall); (2) the RV is a projected fold (references
+// the existential quantifier — a WHERE-EXISTS pass-through does not); (3) the
+// legs are ordinal-safe single sources and reconstruct a seed BOTH layout twins
+// accept (full coverage). Extracted so the exact decision is white-box pinned:
+// a functional test is BLIND to a name-model revert (both windows agree).
+func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias string) (values.Value, bool) {
+	if correlatedStep1 || !resultValueReferencesAlias(rv, existAlias) {
+		return rv, false
+	}
+	seed := reconstructFoldStep1Seed(leftPlan, rightPlan, leftAlias, rightAlias)
+	if seed == nil {
+		return rv, false
+	}
+	if w, _ := ordinalSeedLegWindowsOf(seed); w == nil {
+		return rv, false
+	}
+	return seed, true
+}
+
 // rebaseOuterLegRefsToMerged rewrites references to the original join-outer leg
 // aliases (legAliases, e.g. ["E","D"]) so they resolve against the inner-join's
 // MERGED row bound under mergedCorr (RFC-141 Phase 2, P1a). A leg reference
@@ -1868,6 +1963,18 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		joinType = plans.JoinInner
 	}
 
+	// RFC-173 S4 commit 2 (C): a GATED projected-EXISTS fold over SCAN legs births
+	// the FULL leg-concat ordinal seed at step 1; the step-2 FlatMap then evaluates
+	// the folded projection over that positional merged row through
+	// legWindowRowContext (spanAwareRow resolves dotted "T1.ID" reads positionally,
+	// legWindowBinder resolves QOV refs), so the projection is NEVER rebased — no
+	// planner rebase, no dotted-name split. SCOPED to the independent-legs
+	// materialized NLJ: a correlated step-1 binds legs by NAME, where a baked seed
+	// hits the loud BakedNameContextError (the F2 seed reverted twice on that wall).
+	// Only reached when both legs are ordinal-safe single sources (scan-family).
+	step1RV, gatedSeedStep1 := foldStep1Seed(
+		sel.GetResultValue(), quants[2].GetAlias(), correlatedStep1,
+		leftPlan, rightPlan, leftAlias, rightAlias)
 	// Step 1: build the inner join (left × right). Its merged row is the
 	// outer of the existential FlatMap. Independent legs take the
 	// materialized NLJ; a null-on-empty or sibling-correlated leg takes the
@@ -1897,7 +2004,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			joinPreds,
 			joinType,
 			leftAlias, rightAlias,
-			sel.GetResultValue(),
+			step1RV,
 		)
 	}
 
@@ -1940,7 +2047,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// rewrite stays for anchored seeds and is DEAD for gated ones (its
 	// FrontierPinned panic polices exactly that). An un-mappable reference
 	// DECLINES the yield (CORRECT-or-LOUD, never a half-rebased tree).
-	ordinalWindows, mergedRowType := ordinalSeedLegWindowsOf(sel.GetResultValue())
+	ordinalWindows, mergedRowType := ordinalSeedLegWindowsOf(step1RV)
 	var mergedQOV *values.QuantifiedObjectValue
 	if ordinalWindows != nil {
 		mergedQOV = values.NewQuantifiedObjectValueOfType(mergedOuterCorr, mergedRowType)
@@ -2051,7 +2158,17 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		// projected-EXISTS result value, AnchoredJoin=false) the set degenerates to
 		// {leftAlias,rightAlias}, so this is a no-op for that path. RFC-142.
 		var projected values.Value
-		if ordinalWindows != nil {
+		if gatedSeedStep1 {
+			// RFC-173 S4 commit 2 (C): the folded projection's leg references —
+			// dotted frontier reads ("T1.ID") AND QOV refs, heterogeneous as the
+			// resolver emits them — are NOT rebased here. The step-2 FlatMap
+			// cursor evaluates the projection over the step-1 ordinal merged row
+			// through legWindowRowContext (spanAwareRow resolves the dotted reads
+			// positionally against the leg windows, legWindowBinder the QOV refs),
+			// so no planner rebase and no dotted-name split is needed. Only the
+			// existential quantifier alias is re-aliased below.
+			projected = sel.GetResultValue()
+		} else if ordinalWindows != nil {
 			// Gated ordinal seed: the projected-EXISTS fold's leg references
 			// rebase to baked merged ordinals (the name-model rewrite would
 			// panic on the baked refs — same policing as the predicate side).

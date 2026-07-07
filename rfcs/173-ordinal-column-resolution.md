@@ -2714,6 +2714,67 @@ load-bearing ordinal infrastructure; `select.go:274` survives for the CTE-rename
 S4 exit gate proves zero anchored producers EMPIRICALLY (caller-free constructors, exhausted
 decline reasons), never by inventory argument.
 
+## S4 producer-zeroing — commit 2 (projected-EXISTS-over-join) B1 design-ACK (Graefe)
+
+**The residual.** `SELECT a.x, EXISTS(...) AS f FROM a JOIN b` routes through `buildExistentialJoinSelect`
+(cascades_translator.go:2817), which sets `inInnerCluster=true` UNCONDITIONALLY (:2833) → the outer INNER
+join stays name-model (the `:698` `buildJoinResultValue`/`NewAnchoredJoinRecord` producer). This is distinct
+from the WHERE-EXISTS flatten (`translateJoinWithExists`), which ALREADY ordinalizes when the join gates
+(F2-clean: existentials contribute no columns) — that is why lifting the gate's `:112 OnExistsSubqueries`
+arm is a no-op (it fires only for EXISTS-in-ON, a different shape). The projected-EXISTS RV *references the
+existential quantifier* (the `EXISTS` flag is an output column), so it is a PROJECTION, not a full seed.
+
+**Two empirical corrections to the initial framing (verified in the executor).** (1) The gated-ordinal
+projected-EXISTS *rebase* machinery is ALREADY built and live (`rule_implement_nested_loop_join.go`
+:1943-2071 — `rebaseOuterLegRefsOrdinal`/`rebaseOuterLegValueOrdinal`/exist-QOV→existCorr), gated on
+`ordinalWindows != nil`; and the `:1793` projected-fold decline is `correlatedStep1`-only. (2) The real
+blocker is the WINDOWS SOURCE: the executor reads windows from `sel.GetResultValue()` (the projection),
+which BOTH layout twins reject — `OrdinalSeedLegWindows` (a non-baked `ExistsValue` field + the
+full-coverage invariant) and its executor twin `ordinalJoinSpansOf` (`rfc173_ordinal_join.go:216`
+`if s.Width != len(s.LegType.Fields) { return false // partial leg coverage — a folded projection }`). A
+projection is categorically not a full-coverage seed.
+
+**Ruling: B1 (windows from the complete merged row), both twins UNCHANGED. B2 (relax full-coverage) NAK'd**
+— it would force relaxing both fixture-pinned twins in lockstep, breaking merged-row completeness
+(wrong-offset wrong-rows). Structure: **step-1 NLJ RV = the full ordinal leg-concat seed**
+(`buildOrdinalJoinResultValue` over the two legs), the projection applied ONLY at **step-2** (leg refs as
+`ofOrdinal` over `mergedOuterCorr`, `ExistsValue` over `existCorr`, live binding). Windows derive from the
+complete seed (the rule reconstructs it, byte-identical to `translateJoin`'s seed; the cross-agreement
+fixture guards the reconstruction). Q2 execution gap: the disabled-birth binder (`probeOuterBakedType`,
+walks only the inner plan) must ALSO see baked outer refs in the FlatMap RV. I3 is a no-op (INNER-only
+flatten, both legs non-null); I2 belongs to the scalar slice, not here.
+
+**⚠️ Scoping wall (the F2 seed was REVERTED TWICE here — A2 above).** The 2+1 existential select also
+implements through CORRELATED-FlatMap step-1 paths whose bindings are NAME maps; a baked seed hits the loud
+`BakedNameContextError` live (the `corr_exists_join_outer` dualwindow entry). **Commit-2 B1 scope =
+INDEPENDENT-LEGS projected-EXISTS only** (`correlatedStep1==false` → the materialized-NLJ branch, the
+primary `t1 JOIN t2 ON t2.t1_id=t1.id` shape). The `:1793`/`:1784` correlated-step-1 declines STAY
+(fail-closed); correlated projected-EXISTS defers to the booked correlated-FlatMap positional binders.
+Getting this scope wrong is the third revert. **Impl-ACK deliverables:** (1) B1 structure landed, both twins
+unchanged; (2) exec-binding confirmation (`probeOuterBakedType` fires on RV baked refs, proven by a
+projected-EXISTS row flowing positionally e2e); (3) two cross-agreement fixture rows (both-accept
+reconstructed seed / both-decline folded projection); (4) item-5 white-box sentinel + EXPLAIN + the
+`projected_exists_*` matrix green under both windows (dualwindow — the net that caught both prior reverts).
+
+**LANDED via C (the design-revision, not B1's rebase).** Two B1 impl attempts failed on the
+twice-reverted data-form wall: the fold projection's leg refs are HETEROGENEOUS — dotted frontier
+reads (`FieldValue{Field:"T1.ID", Child:nil}`, the common `SELECT t1.id` case) AND QOV refs —
+which no rebase converts to positional. The revision (Graefe): **don't rebase the projection —
+resolve it.** The step-1 NLJ births the full leg-concat seed (`reconstructFoldStep1Seed` from the
+leg plans' `GetResultType`, gated by `foldStep1Seed` on independent, ordinal-safe SCAN legs — the
+`legWindowRowContext` inputs need no translator change), and the step-2 FlatMap cursor evaluates the
+folded projection over that positional row through `legWindowRowContext` — `spanAwareRow.GetByName`
+resolves the dotted reads by splitting at the executor against typed `Legs` (not SQL text),
+`legWindowBinder` the QOV refs, and the composed context binds the existential inner for the
+`ExistsValue`. Both layout twins UNCHANGED (consulted only for the full-coverage step-1 seed). The
+identity WHERE-EXISTS pass-through is excluded (`resultIsIdentityOuter`). Scope: independent scan-leg
+folds (the common case); correlated folds (the F2 NAME-binder wall) and buried gated-box legs are
+booked follow-ons. Pins: three white-box guards (`reconstructFoldStep1Seed` / `legIsOrdinalSafe` /
+`foldStep1Seed` — the wiring gate the dualwindow differential is blind to, since a name-model revert
+leaves both windows agreeing) + the `projected_exists_*` matrix + dualwindow, all green; no regression
+across the exists / join / unnest / CTE / aggregate FDB suites. Four-gate review pending
+(Graefe impl-ACK on the C landing + Torvalds + @claude + codex).
+
 ## ROADMAP STATE (authoritative; update this block as slices land)
 
 **Done:** Slice 1 (non-join frontier + §5 oracle) · Slice 2 (wedge gate, 2-way seeds) ·
