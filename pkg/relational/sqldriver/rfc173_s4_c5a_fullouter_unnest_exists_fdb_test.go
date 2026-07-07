@@ -114,6 +114,9 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 	foc := dynamicpb.NewMessage(focDesc)
 	foc.Set(focDesc.Fields().ByName("CID"), protoreflect.ValueOfInt64(1))
 	foc.Set(focDesc.Fields().ByName("CK"), protoreflect.ValueOfInt64(100))
+	foc2 := dynamicpb.NewMessage(focDesc) // c5b: matches the buried FOD.K=200
+	foc2.Set(focDesc.Fields().ByName("CID"), protoreflect.ValueOfInt64(2))
+	foc2.Set(focDesc.Fields().ByName("CK"), protoreflect.ValueOfInt64(200))
 
 	fodDesc := md.GetRecordType("FOD").Descriptor
 	fod := dynamicpb.NewMessage(fodDesc)
@@ -129,7 +132,7 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		if sErr != nil {
 			return nil, sErr
 		}
-		for _, r := range []proto.Message{foa, fob, foc, fod} {
+		for _, r := range []proto.Message{foa, fob, foc, foc2, fod} {
 			if _, e := store.SaveRecord(r); e != nil {
 				return nil, e
 			}
@@ -237,12 +240,97 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		`SELECT "X" `+from+` WHERE NOT EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
 		nil)
 
+	// c5b: clustered-INNER-leg FULL box ORDINALIZES a BURIED EXISTS ref. The FULL
+	// box's left leg is an INNER cluster (FOA JOIN FOD); FOD is a BURIED leaf. A
+	// correlation `FOC.CK = FOD.K` INSIDE EXISTS (no outer conjunct → the
+	// outer-conjunct narrowing does not fire) must resolve FOD.K by its
+	// [Start,Width) window in the box's positional row — the buried-leaf machinery
+	// (channels 1+2 + the executor below-FOD hoist). FOD.K=200; FOC has CK=200 →
+	// EXISTS true → {7,8}. Before the c5b relaxation (legExposesBuriedOuterBox
+	// admits the INNER cluster) this shape was name-model; now it ordinalizes and
+	// the buried ref resolves (red-first: `field FOD.K not resolvable` if the
+	// buried window is not consulted).
+	assertRows(t, "c5b/clustered-buried-exists-resolves",
+		`SELECT "X" FROM FOA INNER JOIN FOD ON FOA."AID" = FOD."DID" `+
+			`FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" `+
+			`WHERE EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOD."K")`,
+		[]string{"7", "8"})
+
+	// c5b CORRECT-LEG discriminator. The `FOD.K > 150` conjunct INSIDE the EXISTS
+	// reads the buried FOD.K by value: FOD.K=200 (>150, true) → the FOC.CK=200 row
+	// matches → {7,8}. A mis-bind of the buried FOD.K to FOA.K=100 (100>150 false)
+	// or FOB.K=NULL (NULL>150 false) → the AND is false → EXISTS false → 0 rows.
+	// So {7,8} PROVES the buried ref resolves to FOD's leaf, not a same-named
+	// sibling leg (the buried [Start,Width) window disambiguation).
+	assertRows(t, "c5b/clustered-buried-correct-leg",
+		`SELECT "X" FROM FOA INNER JOIN FOD ON FOA."AID" = FOD."DID" `+
+			`FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" `+
+			`WHERE EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOD."K" AND FOD."K" > 150)`,
+		[]string{"7", "8"})
+
+	// c5b FIRST buried leaf — the mirror on FOA.K (leaf 1, dup-named K with FOD
+	// leaf 2 and the top FOB leg). `FOA.K < 150`: FOA.K=100 (<150) → the FOC.CK=100
+	// row matches → {7,8}. A mis-bind to FOD.K=200 (200<150 false) or FOB.K=NULL →
+	// 0 rows. So BOTH buried leaves (FOA.K and FOD.K), all three named K, resolve
+	// to their OWN [Start,Width) window — the dup-named buried disambiguation holds
+	// end-to-end, not just for FOD.K.
+	assertRows(t, "c5b/clustered-buried-first-leaf",
+		`SELECT "X" FROM FOA INNER JOIN FOD ON FOA."AID" = FOD."DID" `+
+			`FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" `+
+			`WHERE EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K" AND FOA."K" < 150)`,
+		[]string{"7", "8"})
+
+	// NON-EXISTS outer conjunct on a box leg — the sibling of the EXISTS
+	// regression, in the plain filter-over-unnest path. `(a FULL b), a.arr WHERE
+	// a.col=V` (NO EXISTS) also ordinalizes the box (AXIS 1 fires regardless of
+	// EXISTS), and the regular conjunct merges into the name-keyed unnest SELECT →
+	// a positional box leaves it unresolvable. The narrowing (now set in BOTH the
+	// EXISTS and non-EXISTS filter paths, checked in unnestExistsSeedSafe before
+	// the !unnestUnderExistential early return) declines the box to name-model →
+	// correct. Both the scan-legged and clustered-INNER shapes are pinned; each
+	// was red-first as `field "…" not resolvable ... malformed plan`.
+	assertRows(t, "NONEXISTS-CONJUNCT/scan-box-stays-name-model",
+		`SELECT "X" FROM FOA FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" WHERE FOA."K" = 100`,
+		[]string{"7", "8"})
+	assertRows(t, "NONEXISTS-CONJUNCT/clustered-box-stays-name-model",
+		`SELECT "X" FROM FOA INNER JOIN FOD ON FOA."AID" = FOD."DID" `+
+			`FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" WHERE FOD."K" = 200`,
+		[]string{"7", "8"})
+
+	// NONEXISTS-CONJUNCT / no-shared-columns FULL box. FOA and FOC share NO
+	// column name, so the box concat has no duplicate → the gathered path's
+	// name-ambiguous decline does NOT fire. Without the unnestOuterConjunctOnBoxLeg
+	// decline in the gathered OUTER-box arm, the box gathers positionally as one
+	// opaque leg and the box-leg WHERE conjunct merges by name with no per-leg
+	// window → `field "FOA.K" not resolvable … ordinal -1` (malformed plan,
+	// red-first). The gathered arm now declines to the binary name-model path,
+	// where the qualified key resolves. Both a FOA leg conjunct and a FOC leg
+	// conjunct must resolve. FOA.AID=1=FOC.CID matches → FOA.ARR=[7,8].
+	assertRows(t, "NONEXISTS-CONJUNCT/noshare-fullbox-first-leg",
+		`SELECT "X" FROM FOA FULL OUTER JOIN FOC ON FOA."AID" = FOC."CID", FOA."ARR" AS "X" WHERE FOA."K" = 100`,
+		[]string{"7", "8"})
+	assertRows(t, "NONEXISTS-CONJUNCT/noshare-fullbox-second-leg",
+		`SELECT "X" FROM FOA FULL OUTER JOIN FOC ON FOA."AID" = FOC."CID", FOA."ARR" AS "X" WHERE FOC."CK" = 100`,
+		[]string{"7", "8"})
+
+	// INNER-cluster leg conjunct (NOT a box) — end-to-end CORRECTNESS pin: an
+	// INNER cluster gathers each leg with its OWN positional window, so a leg
+	// conjunct resolves through the gathered path and yields the right rows.
+	// This is NOT the over-decline guard — the rows {7,8} are OVER-DETERMINED
+	// (name-model yields them too, so an INNER over-decline would still pass
+	// here); the DECISION-level anti-over-decline sentinel is the white-box
+	// TestRFC173W5_Gathered_OuterConjunctCoupling (INNER arm, flag SET → gathers
+	// an ordinal seed). FOA INNER FOC on AID=CID matches → FOA.ARR=[7,8].
+	assertRows(t, "NONEXISTS-CONJUNCT/inner-cluster-leg-resolves",
+		`SELECT "X" FROM FOA JOIN FOC ON FOA."AID" = FOC."CID", FOA."ARR" AS "X" WHERE FOC."CK" = 100`,
+		[]string{"7", "8"})
+
 	// OUTER-CONJUNCT regression pin. A regular (NON-EXISTS) WHERE conjunct on a
 	// box leg (FOA.K=100, OUTSIDE the EXISTS) on a multi-alias FULL box cannot yet
 	// be baked positionally (it merges into the name-keyed unnest SELECT, out of
 	// the executor's below-FOD hoist reach), so the ordinal seed would leave it
 	// unresolvable → malformed plan. The narrowing declines such a shape to
-	// name-model (unnestExistsSeedSafe → unnestExistsOuterConjunctOnBoxLeg), which
+	// name-model (unnestExistsSeedSafe → unnestOuterConjunctOnBoxLeg), which
 	// resolves FOA.K via the qualified key → correct {7,8}. RED before the
 	// narrowing (`field "FOA.K" not resolvable ... malformed plan`); pre-c5a this
 	// shape was name-model and worked, so the ordinal lift MUST NOT regress it.

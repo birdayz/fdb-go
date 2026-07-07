@@ -692,3 +692,67 @@ func TestRFC173UR_C1_OpaqueBox_NestedClusterPredsStayInside(t *testing.T) {
 		t.Fatalf("opaque outer box leaked %d nested-cluster predicates into the flat select, want 0 (the box's ONs stay inside)", n)
 	}
 }
+
+// TestRFC173W5_Gathered_OuterConjunctCoupling pins the flag coupling between the
+// gathered path and the binary seed gate: translateGatheredUnnestCluster's
+// OUTER-box arm declines (nil) when unnestOuterConjunctOnBoxLeg is set, so a
+// DISTINCT-leg-column box can't bypass the outer-conjunct narrowing via the
+// gather (SRC/AUX share no column name → the name-ambiguity decline never fires
+// and can't mask the flag). The corresponding e2e rows are OVER-DETERMINED (the
+// name-model fallback yields the same rows), so the decline-vs-gather DECISION
+// must be pinned white-box, not by row output — the same discipline the
+// ClusteredBoxSeedsOrdinal pin follows.
+func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
+	t.Parallel()
+	innerCorr := values.NamedCorrelationIdentifier("EL")
+
+	// OUTER-box arm. flag CLEAR → must GATHER an ORDINAL seed (an
+	// unconditional/over-broad decline would break the flag-clear case — the
+	// very bug path); flag SET → must DECLINE to name-model (the box-leg
+	// conjunct would merge by name over a positional gather with no per-leg
+	// window → malformed). Both FULL and LEFT boxes: the round-4 repro was a
+	// FULL box, and LEFT shares the one-opaque-leg gather.
+	for _, kind := range []logical.JoinKind{logical.JoinFull, logical.JoinLeft} {
+		box := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), kind,
+			chainEqPredLocal("x", "XID", "s", "SID"))
+		u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+		j := logical.NewJoin(box, u, logical.JoinInner, "")
+
+		trClear := newDisjointUnnestTranslator(t)
+		trClear.unnestOuterConjunctOnBoxLeg = false
+		clear := trClear.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+		if clear == nil {
+			t.Fatalf("%v box, flag CLEAR: must GATHER (got nil) — the decline must fire ONLY when flagged", kind)
+		}
+		if rc, ok := clear.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok || rc.AnchoredJoin {
+			t.Fatalf("%v box, flag CLEAR: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
+				kind, clear.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
+		}
+
+		trSet := newDisjointUnnestTranslator(t)
+		trSet.unnestOuterConjunctOnBoxLeg = true
+		if got := trSet.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
+			t.Fatalf("%v box, flag SET: must DECLINE to name-model (got %T) — a box-leg conjunct merges by name over a positional gather with no per-leg window; gathering malforms", kind, got)
+		}
+	}
+
+	// INNER-cluster arm — NOT declined by the flag: each leg keeps its own
+	// positional window, so a leg conjunct resolves THROUGH the gather. The
+	// anti-over-decline sentinel: an over-broad decline of the INNER arm drops
+	// the gather optimization silently (the e2e {7,8} can't catch it —
+	// name-model also yields {7,8}), so pin the DECISION and that the seed is
+	// ORDINAL (AnchoredJoin==false), mirroring the ClusteredBoxSeedsOrdinal pin.
+	innerCluster := inner(scan("SRC", "s"), scan("AUX", "x"))
+	uInner := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	jInner := logical.NewJoin(innerCluster, uInner, logical.JoinInner, "")
+	trInner := newDisjointUnnestTranslator(t)
+	trInner.unnestOuterConjunctOnBoxLeg = true
+	got := trInner.translateGatheredUnnestCluster(jInner, uInner, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if got == nil {
+		t.Fatal("INNER cluster, flag SET: must STILL GATHER (got nil) — the flag couples only the OUTER-box arm; over-declining the INNER cluster drops the gather optimization")
+	}
+	if rc, ok := got.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok || rc.AnchoredJoin {
+		t.Fatalf("INNER cluster, flag SET: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
+			got.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
+	}
+}

@@ -154,20 +154,22 @@ type cascadesTranslator struct {
 	// corr's qualified key `QOV(X)."MA.c"`, which the rename does not touch. This
 	// is a SCOPE collision, not a routing prediction. Scoped like unnestUnderExistential.
 	unnestExistsScopeCollision bool
-	// unnestExistsOuterConjunctOnBoxLeg forces the under-EXISTS unnest to the
-	// ANCHORED (name-model) seed when the enclosing filter has a regular
-	// (NON-EXISTS) WHERE conjunct referencing a MULTI-ALIAS box leg
-	// (`(a FULL OUTER b), a.arr AS x WHERE a.col = V AND EXISTS(…)`). The regular
-	// conjunct is merged into the unnest SELECT, where the box's output is
-	// name-keyed — a positional bake there does NOT reach the executor's
-	// positional row (unlike an EXISTS-inner ref, which the below-FOD hoist
-	// rebases), so an ordinal box seed leaves the conjunct's box-leg ref
-	// unresolvable (malformed plan). Full ordinalization of such a conjunct is a
+	// unnestOuterConjunctOnBoxLeg forces the lateral unnest to the ANCHORED
+	// (name-model) seed when the enclosing filter has a regular (NON-EXISTS) WHERE
+	// conjunct referencing a MULTI-ALIAS box leg (`(a FULL OUTER b), a.arr AS x
+	// WHERE a.col = V [AND EXISTS(…)]`). The regular conjunct is merged into the
+	// unnest SELECT, where the box's output is name-keyed — a positional bake there
+	// does NOT reach the executor's positional row (unlike an EXISTS-inner ref,
+	// which the below-FOD hoist rebases), so an ordinal box seed leaves the
+	// conjunct's box-leg ref unresolvable (malformed plan). It is set in BOTH the
+	// EXISTS path (translateUnnestExistsFilter) AND the non-EXISTS filter-over-unnest
+	// merge, and checked in unnestExistsSeedSafe BEFORE the under-existential gate,
+	// so it declines in either. Full ordinalization of such a conjunct is a
 	// follow-on; until then the shape stays name-model (correct via qualified
 	// keys). Only the MULTI-alias box declines — a single-source outer's pristine
 	// prefix at offset 0 resolves a bare conjunct fine. Scoped like
 	// unnestUnderExistential.
-	unnestExistsOuterConjunctOnBoxLeg bool
+	unnestOuterConjunctOnBoxLeg bool
 	// enclosedGatherCache memoizes the flat select translateFilter's
 	// enclosed-gather PROBE built, keyed by the ORIGINAL join root, so the
 	// dispatch (translateEnclosedUnnestGather via translateJoin) consumes it
@@ -880,25 +882,31 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 // renamed correlation identity, not by name. A plain (non-EXISTS) unnest is
 // unaffected.
 func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator) bool {
+	// A MULTI-alias box declines to name-model when a regular (non-EXISTS) WHERE
+	// conjunct references a box leg (unnestOuterConjunctOnBoxLeg): the ordinal seed
+	// cannot yet bake such a conjunct positionally — it is merged into the
+	// name-keyed unnest SELECT, out of the executor's below-FOD hoist reach, so a
+	// positional box leaves the conjunct's box-leg ref unresolvable (malformed
+	// plan). This holds in BOTH paths — the flag is set by translateUnnestExistsFilter
+	// (EXISTS) AND the non-EXISTS filter-over-unnest merge — so the check is BEFORE
+	// the `!unnestUnderExistential` early return below. A single-source outer
+	// (==1) is unaffected — its pristine prefix resolves a bare conjunct.
+	if t.unnestOuterConjunctOnBoxLeg && len(outerBoundAliases(left)) > 1 {
+		return false
+	}
 	if !t.unnestUnderExistential {
 		return true
 	}
 	if t.unnestExistsScopeCollision {
 		return false
 	}
-	// A MULTI-alias box declines when a regular WHERE conjunct references a box
-	// leg (unnestExistsOuterConjunctOnBoxLeg): the ordinal seed cannot yet bake
-	// such a conjunct positionally (it is merged into the name-keyed unnest
-	// SELECT, out of the executor's below-FOD hoist reach). A single-source outer
-	// (==1) is unaffected — its pristine prefix resolves a bare conjunct.
-	return len(outerBoundAliases(left)) == 1 ||
-		(t.boxGatesFresh(left) && !t.unnestExistsOuterConjunctOnBoxLeg)
+	return len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)
 }
 
 // nonExistsConjunctRefsOuterLeg reports whether any NON-EXISTS conjunct of pred
 // references an outer-leg alias in boxAliases — the box-leg reference the
 // ordinal unnest seed cannot yet bake in a regular WHERE conjunct (see
-// unnestExistsOuterConjunctOnBoxLeg). Element/ordinal (unnest AS/AT) refs are
+// unnestOuterConjunctOnBoxLeg). Element/ordinal (unnest AS/AT) refs are
 // NOT in boxAliases, so a WHERE on the element does not trip it.
 func nonExistsConjunctRefsOuterLeg(pred predicates.QueryPredicate, boxAliases map[string]struct{}) bool {
 	if len(boxAliases) == 0 {
@@ -2299,7 +2307,19 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// conditions into ON conditions, preventing NULL-padded rows from
 	// being properly filtered.
 	if join, ok := f.Input.(*logical.LogicalJoin); ok && f.Predicate != nil && len(f.ExistsSubqueries) == 0 && join.Kind != logical.JoinLeft && join.Kind != logical.JoinRight && join.Kind != logical.JoinFull {
+		// A NON-EXISTS direct unnest whose outer is a multi-alias box: a regular
+		// WHERE conjunct on a box leg cannot be baked positionally (it merges into
+		// the name-keyed unnest SELECT below via the name-model rebase), so flag it
+		// BEFORE translating the unnest — unnestExistsSeedSafe then declines the box
+		// to name-model, where the conjunct resolves via qualified keys. Same
+		// narrowing as the EXISTS path (translateUnnestExistsFilter); the flag is
+		// checked in both. Restored after so no sibling translation observes it.
+		prevOuterConj := t.unnestOuterConjunctOnBoxLeg
+		if _, isUnnest := join.Right.(*logical.LogicalUnnest); isUnnest {
+			t.unnestOuterConjunctOnBoxLeg = nonExistsConjunctRefsOuterLeg(f.Predicate, outerBoundAliases(join.Left))
+		}
 		joinExpr := t.translateJoin(join)
+		t.unnestOuterConjunctOnBoxLeg = prevOuterConj
 		if joinExpr == nil {
 			return nil
 		}
@@ -2514,14 +2534,14 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	outerAliases := outerBoundAliases(join.Left)
 	prevCollision := t.unnestExistsScopeCollision
 	t.unnestExistsScopeCollision = existsInnerScopeCollidesOuter(f.ExistsSubqueries, outerAliases)
-	prevOuterConj := t.unnestExistsOuterConjunctOnBoxLeg
-	t.unnestExistsOuterConjunctOnBoxLeg = nonExistsConjunctRefsOuterLeg(f.Predicate, outerAliases)
+	prevOuterConj := t.unnestOuterConjunctOnBoxLeg
+	t.unnestOuterConjunctOnBoxLeg = nonExistsConjunctRefsOuterLeg(f.Predicate, outerAliases)
 	prevUnderExist := t.unnestUnderExistential
 	t.unnestUnderExistential = true
 	unnestExpr := t.translateUnnestJoin(join, u)
 	t.unnestUnderExistential = prevUnderExist
 	t.unnestExistsScopeCollision = prevCollision
-	t.unnestExistsOuterConjunctOnBoxLeg = prevOuterConj
+	t.unnestOuterConjunctOnBoxLeg = prevOuterConj
 	if unnestExpr == nil {
 		return nil
 	}

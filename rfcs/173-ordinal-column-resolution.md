@@ -4927,6 +4927,84 @@ boxGatesFresh/boxOuterBirthsPositional false) + the e2e `CLUSTERED/buried-leaf-F
 (correct rows via name-model, red-first as malformed). Review round: Torvalds ACK, @claude ACK
 (recommended the transparency-peel hardening), codex P2 (the wrapper slip) — all folded in.
 
+**c5b LANDED (clustered-INNER FULL box ordinalizes — the buried-leaf machinery ALREADY WORKED).** The
+"deferred item-3 slice" above turned out NOT to need new executor infra. A probe with
+`legExposesBuriedJoin` lifted proved that `(A JOIN B) FULL OUTER C, A.arr AS x WHERE EXISTS(…FOD.K…)`
+(buried FOD.K INSIDE EXISTS) resolves CORRECTLY — the box's positional birth concats the clustered
+leg's buried columns and the executor below-FOD hoist resolves the buried ref by its [Start,Width)
+window (channels 1+2). The earlier `[BID K]` "birth gap" was actually FOLLOW-UP FINDING #2 (the
+outer-conjunct issue — the probe used `WHERE FOD.K=200`, outside EXISTS). So `legExposesBuriedJoin` was
+an OVER-conservative defensive exclusion. c5b RELAXES it: renamed `legExposesBuriedOuterBox`, excludes
+only a buried OUTER-box leg (Kind != JoinInner — nested LEFT/RIGHT/FULL, unverified), ADMITS a buried
+INNER-cluster leg. The outer-conjunct clustered case is covered by the FINDING-#2 narrowing. Pins:
+`BoxGatePredicates` inverted (clustered-INNER admits; Filter/Project(LEFT-box) + nested-FULL still
+excluded) + e2e `c5b/clustered-buried-exists-resolves` and `c5b/clustered-buried-correct-leg` (the
+`FOD.K>150` conjunct discriminates: a mis-bind to FOA.K=100/FOB.K=NULL → 0 rows). This unblocks the
+buried-gated-box residency of :2908/:3033 (shared machinery).
+
+**c5b review round (Graefe/Torvalds/@claude/codex).** Graefe PROBED a nested OUTER box buried INSIDE the
+admitted INNER cluster (`((A LEFT B) JOIN C) FULL OUTER D`) with null-supply discriminators — it
+ordinalizes CORRECTLY (the machinery recurses; the executor null-supplies through the positional
+birth). So the shallow peel is CORRECT, NOT over-broad: `legExposesBuriedOuterBox` stays NON-recursive
+(pinned by BoxGatePredicates `nested-OUTER-in-INNER` admit). codex P2: a WRAPPED join (`Filter/Project`
+over a join) is admitted by the peel but `ordinalLegType` records buried bounds ONLY for a DIRECT
+LogicalJoin leg → no windows → malformed; FIXED by peel-remembering (a peeled join excludes regardless
+of kind; SQL-unreachable anyway). @claude (blocking): the {7,8} e2e is over-determined (name-model
+yields it too), so added `TestRFC173Item2C5b_ClusteredBoxSeedsOrdinal` — a white-box `AnchoredJoin==false`
++ windows pin so a seed-gate/AXIS-1 revert (not touching boxGatesFresh) turns red. Graefe recs folded:
+the FIRST buried leaf (FOA.K) discriminator e2e; the shallow-peel comment. Torvalds: doc wording (the
+peel STOPS at the first join, does not "bottom out") + ACK. The nested-LEFT-in-INNER null-supply e2e is
+a Graefe-recommended follow-on (the shape is unit-pinned as admitted).
+
+**codex P2 (round 2, fixed): the outer-conjunct regression had a NON-EXISTS sibling.** FINDING #2's
+narrowing was set ONLY in the EXISTS path (translateUnnestExistsFilter), but a FULL box under a PLAIN
+(non-EXISTS) unnest with a WHERE on a box leg — `(a FULL b), a.arr AS x WHERE a.col=V` — ALSO
+ordinalizes (AXIS 1 fires regardless of EXISTS) and merges the conjunct via the name-model rebase →
+malformed. This was a LATENT c5a regression (the scan-legged shape, verified red) that c5b's clustered
+admission surfaced. FIX: generalized the flag `unnestExistsOuterConjunctOnBoxLeg` → `unnestOuterConjunctOnBoxLeg`,
+set it in BOTH the EXISTS and the non-EXISTS filter-over-unnest merge (translateFilter), and moved its
+check in unnestExistsSeedSafe BEFORE the `!unnestUnderExistential` early return so it declines in either
+path. Pins: e2e `NONEXISTS-CONJUNCT/scan-box-stays-name-model` + `.../clustered-box-stays-name-model`
+(both red-first as malformed); the OuterConjunctNarrowing unit test now loops underExists={true,false}.
+
+**codex P2 (round 3, fixed): a WRAPPED join buried INSIDE an admitted INNER cluster.** legExposesBuriedOuterBox
+returned false at the top INNER join WITHOUT recursing, so `(Filter(A JOIN B) JOIN C) FULL OUTER D` —
+a Filter-wrapped sub-join nested in the admitted INNER cluster — slipped through, but buriedLegBounds
+records windows only for a DIRECT LogicalJoin leg → A/B get no windows → malformed. FIX: the INNER-admit
+arm now recurses via hasWrappedBuriedJoin, which excludes a wrapped join at ANY depth while ADMITTING a
+bare nested join (buriedLegBounds recurses through bare joins — Graefe verified `((A LEFT B) JOIN C)`
+ordinalizes correctly). Pin: BoxGatePredicates `wrapped-join-in-INNER` exclude case (the bare
+`nested-OUTER-in-INNER` admit pin stays green). SQL-unreachable, defensive — same family as round 1.
+
+**codex P2 (round 4, fixed): the outer-conjunct narrowing was BYPASSED by the gathered path.** The
+FINDING #2 narrowing (below) declines an ordinal box to name-model in `unnestExistsSeedSafe` — the BINARY
+seed gate. But `translateGatheredUnnestCluster` is tried FIRST in `translateUnnestJoin`, and it handles a
+FULL box as ONE OPAQUE leg. A box with NO shared leg-column name (`(A FULL B), a.arr WHERE a.col=V`,
+DISTINCT A/B columns) does NOT trip the gathered path's name-ambiguous decline, so it gathers
+positionally BEFORE the seed gate consults the flag → the box-leg conjunct merges by name with no per-leg
+window → `field "a.col" not resolvable … ordinal -1` (malformed). The earlier NONEXISTS-CONJUNCT pins used
+SHARED-column tables (FOA/FOB share K), which decline the gathered path on the dup name → binary → flag
+honored, masking the gap (a SHARED-vs-DISTINCT-column dimension the pins missed). FIX: the gathered
+OUTER-box arm declines to name-model when `unnestOuterConjunctOnBoxLeg` is set, coupling it to the binary
+seed gate so the two paths decline in lockstep. An INNER cluster is NOT declined (each leg keeps its own
+window → a leg conjunct resolves through the gather). Pins: e2e NONEXISTS-CONJUNCT/`noshare-fullbox-first-leg`
++ `/second-leg` (both red-first malformed) + `/inner-cluster-leg-resolves`.
+
+**Review round 5 (@claude NAK — test completeness; Graefe + Torvalds ACK; codex clean — all folded).** The
+round-4 fix was CORRECT (all four gates verified the logic + the airtight lockstep coupling), but pinned
+only e2e, and the over-decline dimension was VACUOUS: the `inner-cluster-leg-resolves` rows {7,8} are
+OVER-DETERMINED (the name-model fallback yields them too), so an INNER over-decline ships GREEN
+(@claude + Graefe both mutation-proved this independently). FIX: added the white-box
+`TestRFC173W5_Gathered_OuterConjunctCoupling` (on the `newDisjointUnnestTranslator` disjoint-column
+harness) that pins the DECISION, not the rows — flag SET → OUTER FULL/LEFT box DECLINES (nil); flag CLEAR
+→ gathers an ORDINAL seed (`AnchoredJoin==false`); flag SET → INNER cluster STILL gathers ordinal. Both
+directions red-first-verified by mutation (delete the fix → the OUTER assertion reddens; over-decline the
+INNER arm → the INNER assertion reddens — the exact mutation that previously left the suite green). The
+`inner-cluster-leg-resolves` e2e comment no longer over-claims the over-decline-guard role (the white-box
+pin owns it); Torvalds nit folded (the site comment says "non-EXISTS" — the gathered path is unreachable
+under EXISTS). Non-blocking follow-ons carried forward: the nested-LEFT-in-INNER null-supply e2e, and the
+positional-conjunct BAKE for BOTH entry points (binary + gathered) as FINDING #2's eventual deep fix.
+
 **FOLLOW-UP FINDING #2 (outer WHERE conjunct on a box leg — a SHIPPED c5a regression).** Dimensional
 probing (the c5a e2e only tested box-leg refs INSIDE EXISTS) found that a regular NON-EXISTS WHERE
 conjunct referencing a box leg on an ORDINAL FULL box under unnest under EXISTS

@@ -134,19 +134,17 @@ func (t *cascadesTranslator) gatesAsFreshCluster(j *logical.LogicalJoin) bool {
 // row hits the adaptLegPositional zero-match tripwire, and a name-model builder
 // over a positional box row mis-types the leg. Either half alone is broken.
 //
-// A box LEG that EXPOSES A BURIED JOIN is EXCLUDED (stays name-model): its
-// buried leaves' columns are not yet concatenated into the positional seed row
-// under a FULL box (`(A JOIN B) FULL OUTER C` births only C's columns — the
-// clustered leg contributes nothing, so a qualified `A.col`/`B.col` is
-// unresolvable → malformed plan). legExposesBuriedJoin peels the TRANSPARENT
-// wrappers the gate recurses through (a leg wrapped in Filter/Project over a
-// join exposes the buried namespaces just the same) and also catches a nested
-// FULL box leg (`A FULL B FULL C` — clusterArity(FULL)==1 makes an arity proxy
-// blind to it). Windowing the buried leaves of a box leg is the item-3
-// buried-leaf work under a FULL box; until it lands, such a box stays name-model
-// (correct via qualified keys). Only a box with SIMPLE (single flat-namespace)
-// legs — a scan, or an OPAQUE box (aggregate/union/derived-table CTE) whose
-// output is its own flat row — may birth positional here.
+// A box LEG that EXPOSES A BURIED OUTER-BOX join is EXCLUDED (stays name-model):
+// its nested outer box is an unverified shape whose buried-leaf resolution under
+// a FULL box is not yet exercised. A buried INNER-CLUSTER leg (`(A JOIN B) FULL
+// OUTER C`, the c5b target) is ADMITTED: the seed concats the clustered leg's
+// buried columns and the executor hoist resolves a buried EXISTS ref by its
+// [Start,Width) window — verified e2e (a buried `FOD.K` inside EXISTS resolves).
+// A regular WHERE conjunct on a buried leg is separately declined by the
+// unnestOuterConjunctOnBoxLeg narrowing. Only a box whose legs are SIMPLE
+// (scan / opaque box) or INNER-cluster joins may birth positional here; a nested
+// LEFT/RIGHT/FULL box leg (`A FULL B FULL C` — clusterArity(FULL)==1 makes an
+// arity proxy blind to it) stays name-model until its own slice verifies it.
 func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 	j, ok := input.(*logical.LogicalJoin)
 	if !ok {
@@ -155,39 +153,97 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 	if j.Kind == logical.JoinInner {
 		return false
 	}
-	if legExposesBuriedJoin(j.Left) || legExposesBuriedJoin(j.Right) {
+	if legExposesBuriedOuterBox(j.Left) || legExposesBuriedOuterBox(j.Right) {
 		return false
 	}
 	return t.gatesAsFreshCluster(j)
 }
 
-// legExposesBuriedJoin reports whether op — after peeling the row-shape-
-// preserving wrappers the gate treats as TRANSPARENT (LogicalFilter, and a
-// LogicalProject without correlated-scalar subqueries, mirroring
-// ordinalEligible/clusterArity) — bottoms out at a LogicalJoin. Such a leg's
-// OUTPUT row exposes the buried join's namespaces, which the positional FULL-box
-// seed does not concat (only the rightmost leaf lands in the row). OPAQUE
-// boundaries (aggregate/union/sort, a derived-table LogicalCTE) are NOT peeled —
-// their output is the box's own flat single-namespace row, safely windowed. A
-// CORRELATED-scalar LogicalProject stops the peel (returns false) — it is
-// ineligible upstream (gatesAsFreshCluster declines it), so its buried shape
-// never reaches the positional seed.
-func legExposesBuriedJoin(op logical.LogicalOperator) bool {
+// legExposesBuriedOuterBox reports whether op is a box leg the c5b positional
+// seed must NOT birth. It peels the row-shape-preserving wrappers the gate
+// treats as TRANSPARENT (LogicalFilter, and a LogicalProject without
+// correlated-scalar subqueries, mirroring ordinalEligible/clusterArity), then:
+//   - a DIRECT INNER-cluster join → FALSE (admitted): the positional seed concats
+//     its buried leaves (ordinalLegType records the [Start,Width) bounds for a
+//     direct LogicalJoin) and the executor resolves a buried ref by window
+//     (verified — both buried leaves disambiguate).
+//   - a DIRECT OUTER box (LEFT/RIGHT/FULL) → TRUE (excluded): its own slice.
+//   - a WRAPPED join (reached by peeling) → TRUE (excluded): ordinalLegType
+//     records buried bounds ONLY for a DIRECT LogicalJoin leg, so a wrapped inner
+//     cluster would birth positional WITHOUT its buried windows (a buried ref
+//     unrebased → malformed). Also SQL-unreachable (a JOIN-bodied derived table
+//     is a LogicalCTE / loud-rejected, not a transparent wrapper) — defensive.
+//   - a scan / OPAQUE box (aggregate/union/sort/CTE), wrapped or not → FALSE:
+//     its output is its own flat single-namespace row, safely windowed.
+//
+// The peel is INTENTIONALLY SHALLOW: a nested OUTER box buried INSIDE an admitted
+// INNER cluster (`((A LEFT B) JOIN C) FULL OUTER D`) ordinalizes CORRECTLY (the
+// machinery recurses — legsOfGatedJoin marks the null-supplying leg, the executor
+// null-supplies through the positional birth; verified), so this must NOT be
+// tightened into a recursive exclusion. Only a WRAPPED join is excluded, because
+// the wrapper (not the join's depth) is what strips the buried-leg metadata.
+func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
+	peeled := false
 	for {
 		switch o := op.(type) {
 		case *logical.LogicalJoin:
-			return true
+			if peeled {
+				return true // a WRAPPED join at the top — no buried windows recorded
+			}
+			if o.Kind != logical.JoinInner {
+				return true // a direct OUTER box — its own slice
+			}
+			// A direct INNER cluster is admitted, BUT a WRAPPED join buried
+			// ANYWHERE inside it is excluded: buriedLegBounds records windows only
+			// for a DIRECT LogicalJoin leg, so `(Filter(A JOIN B) JOIN C)` would
+			// birth positional without windows for A/B → a buried ref malforms. A
+			// BARE nested join (any kind, any depth) IS windowed (buriedLegBounds
+			// recurses through direct joins) and stays admitted — a nested OUTER
+			// box inside an INNER cluster ordinalizes correctly (verified).
+			return hasWrappedBuriedJoin(o.Left) || hasWrappedBuriedJoin(o.Right)
 		case *logical.LogicalFilter:
 			op = o.Input
+			peeled = true
 		case *logical.LogicalProject:
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false
 			}
 			op = o.Input
+			peeled = true
 		default:
 			return false
 		}
 	}
+}
+
+// hasWrappedBuriedJoin reports whether op contains a join reached by peeling a
+// transparent wrapper (Filter / non-scalar Project) — at op itself or buried
+// inside a bare nested join. buriedLegBounds records positional windows only for
+// a DIRECT LogicalJoin leg, so a WRAPPED join anywhere in a box leg's subtree
+// would birth positional without its buried leaves' windows (malformed). A bare
+// join is recursed THROUGH (its own leaves ARE windowed) looking for a wrapped
+// join deeper. A CORRELATED-scalar Project stops the walk (ineligible upstream).
+func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
+	var walk func(op logical.LogicalOperator, wrapped bool) bool
+	walk = func(op logical.LogicalOperator, wrapped bool) bool {
+		switch o := op.(type) {
+		case *logical.LogicalJoin:
+			if wrapped {
+				return true
+			}
+			return walk(o.Left, false) || walk(o.Right, false)
+		case *logical.LogicalFilter:
+			return walk(o.Input, true)
+		case *logical.LogicalProject:
+			if len(o.CorrelatedScalarSubqueries) > 0 {
+				return false
+			}
+			return walk(o.Input, true)
+		default:
+			return false
+		}
+	}
+	return walk(op, false)
 }
 
 // forceOrdinalSpike is the RFC-173 S4 B1 CERTIFICATE oracle (test-only). When set,

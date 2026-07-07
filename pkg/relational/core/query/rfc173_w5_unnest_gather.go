@@ -74,6 +74,24 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 
 	var legs []clusterLeg
 	if leftJoin.Kind != logical.JoinInner {
+		// A non-EXISTS WHERE conjunct on a box leg
+		// (unnestOuterConjunctOnBoxLeg) merges into the name-keyed unnest
+		// SELECT. (The flag can also be set by the EXISTS filter path, but the
+		// gathered path is unreachable under EXISTS — translateUnnestJoin gates
+		// it on !unnestUnderExistential — so at this site the flag always
+		// reflects a plain non-EXISTS WHERE.) A box gathered as ONE OPAQUE leg
+		// (below) exposes no per-leg
+		// window for that box leg, so a positional gather leaves the merged
+		// conjunct unresolvable (`field "A.col" not resolvable … ordinal -1` —
+		// malformed plan). Decline to the binary name-model path, where the
+		// qualified key resolves; the binary seed gate (unnestExistsSeedSafe)
+		// declines in the same step, so the two paths stay coupled. The
+		// name-ambiguous decline below only catches boxes with a duplicated
+		// column NAME; a box with distinct leg columns would otherwise gather
+		// here and bypass the narrowing.
+		if t.unnestOuterConjunctOnBoxLeg {
+			return nil
+		}
 		// A gated OUTER box as the unnest's left (unnest-residual class 1,
 		// design ruling 1(i)): the box is ONE OPAQUE leg — its legs are
 		// never gathered into the flat inner select (the flat seed has no

@@ -218,28 +218,44 @@ func TestRFC173Item2C5a_BoxGatePredicates(t *testing.T) {
 		}
 	}
 
-	// A FULL box with a CLUSTERED (join) LEG stays name-model — its buried leaves'
-	// columns are not concatenated into the positional seed row (`(A JOIN B) FULL
-	// OUTER C` births only C's columns → a qualified buried ref is unresolvable).
-	// clusterArity(FULL)==1 would otherwise admit it, so the simple-legs narrowing
-	// in boxGatesFresh is what declines it. Buried-leaf ordinalization under a FULL
-	// box is a follow-up item-3 slice.
+	// A FULL box with a CLUSTERED (INNER-join) LEG now ORDINALIZES (c5b): its
+	// buried columns ARE concatenated and a buried EXISTS ref resolves by window
+	// (verified e2e). So it ADMITS (gates + births positional). A regular WHERE
+	// conjunct on a buried leg is separately declined by the outer-conjunct
+	// narrowing.
 	clusteredFull := logical.NewJoin(
 		logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, ""),
 		scan("TypedRecord", "d"), logical.JoinFull, "")
-	if tr.boxGatesFresh(clusteredFull) {
-		t.Error("boxGatesFresh(clustered-leg FULL) = true, want false — a box with a join leg has buried leaves the positional seed cannot concat")
+	if !tr.boxGatesFresh(clusteredFull) {
+		t.Error("boxGatesFresh(clustered-INNER-leg FULL) = false, want true — an INNER-cluster buried leg's leaves are windowed (c5b)")
 	}
-	if tr.boxOuterBirthsPositional(clusteredFull) {
-		t.Error("boxOuterBirthsPositional(clustered-leg FULL) = true, want false — must stay name-model until buried-leaf windowing under FULL lands")
+	if !tr.boxOuterBirthsPositional(clusteredFull) {
+		t.Error("boxOuterBirthsPositional(clustered-INNER-leg FULL) = false, want true — c5b admits the buried INNER cluster")
 	}
 
-	// The same buried-leaf hazard hides behind TRANSPARENT wrappers (Filter,
-	// Project over a join) and a NESTED FULL box leg — legExposesBuriedJoin peels
-	// the wrappers and catches the nested FULL (clusterArity(FULL)==1 would be
-	// blind to it). All must stay name-model. A shallow `*LogicalJoin`-type check
-	// would miss the wrapped cases; a `clusterArity>=2` check would miss the
-	// nested FULL. These pin the peel.
+	// A nested OUTER box buried INSIDE an admitted INNER cluster
+	// (`((Order LEFT Customer) JOIN TypedRecord) FULL OUTER scan`) is ALSO admitted
+	// — the peel is intentionally shallow, and the machinery recurses to
+	// null-supply the nested LEFT box through the positional birth (verified). This
+	// pins that legExposesBuriedOuterBox is NOT recursive — a future "tightening"
+	// into a recursive exclusion would wrongly decline this working shape.
+	nestedOuterInInner := logical.NewJoin(
+		logical.NewJoin(
+			logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""),
+			scan("TypedRecord", "d"), logical.JoinInner, ""),
+		scan("Order", "o2"), logical.JoinFull, "")
+	if !tr.boxGatesFresh(nestedOuterInInner) {
+		t.Error("boxGatesFresh(nested-OUTER-in-INNER FULL) = false, want true — an outer box buried inside an INNER cluster ordinalizes correctly (shallow peel)")
+	}
+
+	// EXCLUDED buried-OUTER-box legs: a DIRECT outer box (nested-FULL), and any
+	// WRAPPED join (Filter/Project over a join) — ordinalLegType records buried
+	// bounds only for a DIRECT LogicalJoin leg, so a wrapped inner cluster would
+	// birth positional without its buried windows. The wrapper-peel remembers it
+	// peeled: a wrapped join is excluded regardless of kind.
+	leftBox := func() logical.LogicalOperator {
+		return logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
+	}
 	innerCluster := func() logical.LogicalOperator {
 		return logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, "")
 	}
@@ -247,17 +263,63 @@ func TestRFC173Item2C5a_BoxGatePredicates(t *testing.T) {
 		name string
 		leg  logical.LogicalOperator
 	}{
-		{"Filter(join)", logical.NewFilter(innerCluster(), "1 = 1")},
-		{"Project(join)", logical.NewProject(innerCluster(), []string{"order_id"}, []string{""})},
-		{"nested-FULL", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")},
+		{"nested-FULL (direct outer)", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")},
+		{"Filter(LEFT-box)", logical.NewFilter(leftBox(), "1 = 1")},
+		{"Project(LEFT-box)", logical.NewProject(leftBox(), []string{"order_id"}, []string{""})},
+		{"Filter(INNER-cluster)", logical.NewFilter(innerCluster(), "1 = 1")}, // wrapped join, no buried windows
+		{"Project(INNER-cluster)", logical.NewProject(innerCluster(), []string{"order_id"}, []string{""})},
+		// A WRAPPED join buried INSIDE an admitted INNER cluster —
+		// `(Filter(A JOIN B) JOIN C) FULL OUTER D`. The top leg is a direct INNER
+		// cluster (admitted by kind), but its Filter-wrapped sub-join gets no
+		// buried windows → excluded by the recursive hasWrappedBuriedJoin walk. A
+		// shallow (non-recursive) INNER admit would wrongly let this birth positional.
+		{"wrapped-join-in-INNER", logical.NewJoin(logical.NewFilter(innerCluster(), "1 = 1"), scan("TypedRecord", "e"), logical.JoinInner, "")},
 	} {
 		box := logical.NewJoin(tc.leg, scan("TypedRecord", "d"), logical.JoinFull, "")
 		if tr.boxGatesFresh(box) {
-			t.Errorf("boxGatesFresh(%s FULL OUTER scan) = true, want false — the leg exposes a buried join", tc.name)
+			t.Errorf("boxGatesFresh(%s FULL OUTER scan) = true, want false — a wrapped join / direct outer box is not windowed here", tc.name)
 		}
 		if tr.boxOuterBirthsPositional(box) {
 			t.Errorf("boxOuterBirthsPositional(%s FULL OUTER scan) = true, want false", tc.name)
 		}
+	}
+}
+
+// TestRFC173Item2C5b_ClusteredBoxSeedsOrdinal is the white-box pin that the
+// clustered-INNER FULL box's SEED actually fires ORDINAL. The FDB e2e's {7,8} is
+// OVER-DETERMINED (name-model yields it too via qualified keys — the prior
+// commit's name-model clustered pin proved that), and BoxGatePredicates proves
+// only that the GATE opens, not that unnestOrdinalSeed produced an ordinal RC. A
+// revert at the seed-gate / AXIS-1 call site (not touching boxGatesFresh) would
+// leave both green — this closes that silent gap, mirroring
+// MultiAliasOuterGatesOrdinal for the clustered shape.
+func TestRFC173Item2C5b_ClusteredBoxSeedsOrdinal(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	tr.unnestUnderExistential = true
+	// FROM ((Order o INNER JOIN Customer c) FULL OUTER JOIN TypedRecord d),
+	// o.TAGS AS X — the clustered-INNER FULL box, NO outer conjunct.
+	outer := logical.NewJoin(
+		logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, ""),
+		scan("TypedRecord", "d"), logical.JoinFull, "")
+	j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
+	expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
+	if expr == nil {
+		t.Fatalf("translation failed: %v", tr.translateErr)
+	}
+	sel, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("unnest expr = %T, want a SelectExpression", expr)
+	}
+	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
+	if !ok {
+		t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
+	}
+	if rc.AnchoredJoin {
+		t.Fatal("clustered-INNER FULL box under EXISTS seeded the ANCHORED RC — c5b must birth it ORDINAL (a seed-gate revert the over-determined {7,8} e2e cannot catch)")
+	}
+	if w, _ := values.OrdinalSeedLegWindows(rc); w == nil {
+		t.Fatal("clustered-INNER ordinal seed yielded NO executor windows — the buried leaves cannot resolve without them")
 	}
 }
 
@@ -423,7 +485,7 @@ func TestRFC173S4_ThreeWayBoxCrossAgreement(t *testing.T) {
 //     TRIPS; an element-only conjunct does NOT (else a multi-alias box with an
 //     element-only WHERE would SILENTLY fall to name-model, losing the ordinal
 //     optimization with the answer unchanged — the masked over-decline).
-//   - CONSUMPTION (the unnestExistsOuterConjunctOnBoxLeg flag in
+//   - CONSUMPTION (the unnestOuterConjunctOnBoxLeg flag in
 //     unnestExistsSeedSafe): flag SET → the FULL box seeds name-model
 //     (AnchoredJoin); flag CLEAR → ordinal (the anti-over-decline positive pin).
 func TestRFC173Item2C5a_OuterConjunctNarrowing(t *testing.T) {
@@ -448,17 +510,19 @@ func TestRFC173Item2C5a_OuterConjunctNarrowing(t *testing.T) {
 		}
 	}
 
-	// CONSUMPTION: the flag flips the FULL box from ordinal to name-model.
-	// FROM (Order o FULL OUTER Customer c), o.TAGS AS X under EXISTS.
-	seed := func(flag bool) *values.RecordConstructorValue {
+	// CONSUMPTION: the flag flips the FULL box from ordinal to name-model, in
+	// BOTH the EXISTS and non-EXISTS paths (the flag is checked in
+	// unnestExistsSeedSafe BEFORE the under-existential gate). FROM
+	// (Order o FULL OUTER Customer c), o.TAGS AS X.
+	seed := func(underExists, flag bool) *values.RecordConstructorValue {
 		tr := newGateTranslator(t)
-		tr.unnestUnderExistential = true
-		tr.unnestExistsOuterConjunctOnBoxLeg = flag
+		tr.unnestUnderExistential = underExists
+		tr.unnestOuterConjunctOnBoxLeg = flag
 		outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
 		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
 		expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
 		if expr == nil {
-			t.Fatalf("translation failed (flag=%v): %v", flag, tr.translateErr)
+			t.Fatalf("translation failed (underExists=%v flag=%v): %v", underExists, flag, tr.translateErr)
 		}
 		sel, ok := expr.(*expressions.SelectExpression)
 		if !ok {
@@ -470,13 +534,17 @@ func TestRFC173Item2C5a_OuterConjunctNarrowing(t *testing.T) {
 		}
 		return rc
 	}
-	// flag CLEAR (element-only conjunct, or none): the box ORDINALIZES — the
-	// anti-over-decline pin the {7,8} e2e structurally cannot provide.
-	if seed(false).AnchoredJoin {
-		t.Fatal("flag clear: FULL box seeded ANCHORED — the narrowing over-declined (element-only / no conjunct must still ordinalize)")
-	}
-	// flag SET (a box-leg conjunct): the box declines to NAME-MODEL.
-	if !seed(true).AnchoredJoin {
-		t.Fatal("flag set: FULL box seeded ORDINAL — the narrowing did not fire (a box-leg outer conjunct must decline to name-model)")
+	for _, underExists := range []bool{true, false} {
+		// flag CLEAR (element-only conjunct, or none): the box ORDINALIZES — the
+		// anti-over-decline pin the {7,8} e2e structurally cannot provide.
+		if seed(underExists, false).AnchoredJoin {
+			t.Errorf("underExists=%v flag clear: FULL box seeded ANCHORED — the narrowing over-declined (element-only / no conjunct must still ordinalize)", underExists)
+		}
+		// flag SET (a box-leg conjunct): the box declines to NAME-MODEL. This must
+		// hold for the NON-EXISTS path too (underExists=false) — the sibling
+		// regression (a plain WHERE on a box leg over an ordinal box).
+		if !seed(underExists, true).AnchoredJoin {
+			t.Errorf("underExists=%v flag set: FULL box seeded ORDINAL — the narrowing did not fire (a box-leg conjunct must decline to name-model)", underExists)
+		}
 	}
 }
