@@ -3590,6 +3590,22 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if strings.Count(exEncl, "Project(") < 2 {
 			t.Fatalf("enclosed shadow (element before the same-named leg) should ORDINALIZE, got: %s", exEncl)
 		}
+		// ORDINAL-alias shadow (the AT alias, not the element, shadows an outer column):
+		// `AS EL AT SID` names the ordinal SID, which shadows WSRC.SID. The element-first
+		// binding wins the bare "SID" for the ORDINAL (its own slot), so GROUP BY SID
+		// groups by the 1-based ordinal (1,2), NOT the outer WSRC.SID (all 1). Each of
+		// the 2 ordinals × 3 WAUX rows = COUNT 3. The mirror of the element-shadow case.
+		exOrdSh := assertRows(t, `SELECT "SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "SID", WAUX GROUP BY "SID"`, []string{
+			"COUNT(*)=3|N=3|SID=1", "COUNT(*)=3|N=3|SID=2",
+		})
+		if strings.Count(exOrdSh, "Project(") < 2 {
+			t.Fatalf("ordinal-alias shadow (AT alias shadows an outer column) should ORDINALIZE, got: %s", exOrdSh)
+		}
+		// The OUTER shadowed column stays reachable QUALIFIED: SUM(WSRC.SID) over each
+		// ordinal group reads the outer SID (=1), 3 crossed rows per group → 3.
+		assertRows(t, `SELECT "SID", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL" AT "SID", WAUX GROUP BY "SID"`, []string{
+			"S=3|SID=1|SUM(WSRC.SID)=3", "S=3|SID=2|SUM(WSRC.SID)=3",
+		})
 		// BOX leg (the unnest's left is an OUTER-join box) ORDINALIZES via leaf-source
 		// qualification: the wrap walks the box's buried leaves and keys each operand by
 		// its OWN leaf alias (`WAUX.WV`), not the box binding, so a grouped
