@@ -58,8 +58,23 @@ func rebaseOuterLegValueOrdinal(
 		if !isQOV {
 			return node
 		}
-		w, isLeg := windows[strings.ToUpper(qov.Correlation.Name())]
+		alias := strings.ToUpper(qov.Correlation.Name())
+		w, isLeg := windows[alias]
 		if !isLeg {
+			// After the buried-window fix (finalizeSeedWindows), EVERY outer/buried
+			// leg is a window, so !isLeg means a genuinely non-outer ref (the FlatMap
+			// inner) — pass it through. BUT if a known leg boundary (the merged type's
+			// Legs) is absent from windows, the two derivations DRIFTED — fail LOUD
+			// rather than silently read the inner row (the c5a silent-miss sentinel;
+			// unreachable while windows and merged Legs stay in lockstep).
+			if rt, ok := mergedQOV.Type().(*values.RecordType); ok {
+				for _, leg := range rt.Legs {
+					if leg.Name == alias {
+						failed = true
+						break
+					}
+				}
+			}
 			return node
 		}
 		var legOrdinal int
