@@ -60,16 +60,6 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if !isJoin {
 		return nil // single-source outer — the W4c binary path owns it
 	}
-	if t.underAggregate {
-		// A GROUP BY over this gather collapses the flat select into a positional
-		// merge (PartitionSelectRule.positionalMergeCase) that resolves NO leg
-		// column by name — the grouped NLJ's name-keyed mergeRows row cannot bind
-		// the partition rule's positional ofOrdinal(merge,i) leg refs, so the group
-		// key and every outer-column aggregate read NULL. DECLINE to the name-model
-		// path (which groups correctly) until the positional-merge legs are windowed
-		// as flat name keys. See cascadesTranslator.underAggregate.
-		return nil
-	}
 	// The left cluster must be a GATED-if-fresh cluster (the enclosure-free
 	// probe, side-effect-free Decide — the ordinalEligible pattern): an
 	// ungated cluster flows name-model rows the baked collection read cannot
@@ -124,6 +114,17 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 			}
 			seen[n] = struct{}{}
 		}
+	}
+
+	// GROUP-BY wrap eligibility — decided HERE, BEFORE any leg is TRANSLATED
+	// (translateRef below has side effects: an uncorrelated scalar subquery in a
+	// derived/project/filter leg registers on the translator). Declining late — after
+	// leg translation — would let the name-model fallback translate the same legs
+	// again and double-register/evaluate that subquery. So a grouped gather whose
+	// wrap can't faithfully cover the shape declines to name-model here, with the
+	// same pre-leg-translation discipline the earlier decline stopgap had.
+	if t.underAggregate && !gatheredGroupByWrapEligible(u, legs, legTypes) {
+		return nil
 	}
 
 	// The OWNING source (unnest-residual class 1, design ruling 1(iii)): the
@@ -287,13 +288,131 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	}
 	preds = bakeGatedJoinPredicates(preds, legTypes)
 
-	return expressions.NewSelectExpressionWithJoinType(
+	seedSel := expressions.NewSelectExpressionWithJoinType(
 		rc,
 		quantifiers,
 		preds,
 		sourceAliases,
 		expressions.JoinInner,
 	)
+	if !t.underAggregate {
+		return seedSel
+	}
+	// A GROUP BY consumes this gather (and the shape passed the early
+	// gatheredGroupByWrapEligible gate above). The positional seed exposes only bare
+	// column names, so a grouped `FieldValue{Field:"EL", Child:QOV}` qualifies to the
+	// shadow "EL.EL" key the seed lacks and reads NULL (the shipped wrong answer). Keep
+	// the positional seed INTERNAL and place a NAMED-PROJECTION layer above it (Java's
+	// "the collapse preserves the named projection the group-by consumes"). It MUST be
+	// a LogicalProjectionExpression — NOT a SelectExpression, which SelectMergeRule
+	// would fuse away, losing the shadow key. The projection NAME-reads the seed
+	// (unpinned FieldValue — no positional-seed birth) and re-exposes bare + "EL.EL"
+	// shadow keys the grouped element read resolves against. RFC-173 S4.
+	return t.wrapGatheredForGroupBy(seedSel, rc, u, elementType, legs, legTypes)
+}
+
+// gatheredGroupByWrapEligible reports whether a grouped gather's leg shapes can be
+// FAITHFULLY re-exposed by the named-projection wrap — checked BEFORE leg
+// translation so an ineligible shape declines to name-model without double side
+// effects. FALSE (decline) for:
+//   - a BOX leg (a clustered outer/nested join consumed as one opaque leg, its op a
+//     LogicalJoin): its qualified twins would key the BOX binding over the CONCAT
+//     type, NOT the leaf-source keys (`WAUX.WV`) a buried-leaf operand references —
+//     a grouped `SUM(WAUX.WV)` would miss and read NULL;
+//   - an element/ordinal AS/AT alias that SHADOWS an outer column of the same bare
+//     name: the shadow "WV.WV" would NAME-READ the seed and GetByName resolves the
+//     FIRST match (the outer column, not the element) → wrong group.
+//
+// Both classes keep the working name model until leaf-source qualification and
+// positional shadow binding land.
+func gatheredGroupByWrapEligible(u *logical.LogicalUnnest, legs []clusterLeg, legTypes map[string]bakeLegType) bool {
+	// AT-only (no AS): the grouped ordinal reference qualifies through the array
+	// column, not the AT alias (`GROUP BY O` resolves as `WARR.O`, not `O.O`), which
+	// the wrap does not re-expose — keep it on the name-model residual.
+	if u.Alias == "" {
+		return false
+	}
+	elemAlias := strings.ToUpper(u.Alias)
+	atAlias := strings.ToUpper(u.AtAlias)
+	for _, leg := range legs {
+		if _, isBox := leg.op.(*logical.LogicalJoin); isBox {
+			return false
+		}
+		lt, ok := legTypes[leg.binding]
+		if !ok || lt.typ == nil {
+			return false
+		}
+		for _, f := range lt.typ.Fields {
+			n := strings.ToUpper(f.Name)
+			if n == elemAlias || (atAlias != "" && n == atAlias) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// wrapGatheredForGroupBy places a NAMED-PROJECTION layer above the positional
+// gathered seed so a GROUP BY over the gather resolves. See the caller for why it
+// must be a LogicalProjectionExpression (survives SelectMergeRule) whose values
+// NAME-read the seed (unpinned, so no positional-seed birth). The caller has
+// already checked gatheredGroupByWrapEligible (before leg translation), so this
+// only runs for a faithfully-coverable plain-leg shape.
+func (t *cascadesTranslator) wrapGatheredForGroupBy(
+	seedSel expressions.RelationalExpression,
+	rc *values.RecordConstructorValue,
+	u *logical.LogicalUnnest,
+	elementType values.Type,
+	legs []clusterLeg,
+	legTypes map[string]bakeLegType,
+) expressions.RelationalExpression {
+	innerAlias := values.UniqueCorrelationIdentifier()
+	innerQOV := values.NewQuantifiedObjectValue(innerAlias)
+	seen := map[string]struct{}{}
+	var projected []values.Value
+	var aliases []string
+	add := func(name string, v values.Value) {
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		projected = append(projected, v)
+		aliases = append(aliases, name)
+	}
+	// Pass through every seed column by NAME (reads the inner seed's output).
+	for _, f := range rc.Fields {
+		add(f.Name, values.NewFieldValue(innerQOV, f.Name, f.Value.Type()))
+	}
+	// The ALIAS.COL qualified twins the aggregate OPERANDS need (`SUM(WSRC.SID)`):
+	// each leg's columns keyed by the source alias, value = the SAME inner name-read
+	// as the bare column. Same key set mergeRows/buildUnnestResultValue expose in the
+	// name model, re-derived over the inner seed.
+	for _, leg := range legs {
+		lt, ok := legTypes[leg.binding]
+		if !ok || lt.typ == nil {
+			continue
+		}
+		alias := strings.ToUpper(leg.binding)
+		for _, f := range lt.typ.Fields {
+			col := strings.ToUpper(f.Name)
+			add(alias+"."+col, values.NewFieldValue(innerQOV, col, f.FieldType))
+		}
+	}
+	// The SHADOW-qualified element/ordinal keys the grouped read needs — same inner
+	// name-read as the bare element, so it resolves the scalar element (not the whole
+	// row the falsified value-collapse hit, not the missing "EL.EL"). AT-only unnests
+	// (no AS) are declined upstream (gatheredGroupByWrapEligible), so u.Alias is set
+	// here and the leg qualifier is always the AS alias.
+	if u.Alias != "" {
+		el := strings.ToUpper(u.Alias)
+		add(el+"."+el, values.NewFieldValue(innerQOV, el, elementType))
+		if u.AtAlias != "" {
+			at := strings.ToUpper(u.AtAlias)
+			add(el+"."+at, values.NewFieldValue(innerQOV, at, values.NotNullInt))
+		}
+	}
+	innerQ := expressions.NamedForEachQuantifier(innerAlias, expressions.InitialOf(seedSel))
+	return expressions.NewLogicalProjectionExpressionWithAliases(projected, aliases, innerQ)
 }
 
 // gatherLegsWithBuriedUnnest walks j's direct inner-join spine collecting the

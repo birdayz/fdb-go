@@ -3517,32 +3517,86 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	t.Run("DISJOINT gathered multi-source unnest GROUP BY resolves via the under-aggregate decline", func(t *testing.T) {
-		// Regression for a shipped WRONG-ANSWER bug: a DISJOINT-column multi-source
-		// unnest GROUP-BY (`FROM WSRC, WSRC.WARR AS EL, WAUX GROUP BY EL`) has no
-		// shared name, so the broad name-ambiguity gate does NOT decline it — it
-		// GATHERED, and PartitionSelectRule.positionalMergeCase collapsed the flat
-		// select into a record-of-records positional merge that resolves NO leg column
-		// by name for grouping, so `GROUP BY EL` grouped EVERY row under NULL (got
-		// [EL=<nil>, N=6] instead of EL=7/EL=8). Masked because every OTHER
-		// gathered-group-by test (GD/GW) shares column names → declines → name-model.
-		// The under-aggregate decline routes this to the name-model path, which groups
-		// correctly. WSRC has 1 row (SID=1, WARR={7,8}); WAUX has 3 rows, so each
-		// element crosses 3×. Both the element key AND an outer-column aggregate
-		// (the SUM-over-outer-column dimension) resolve.
-		assertRows(t, `SELECT "EL", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
+	t.Run("DISJOINT gathered multi-source unnest GROUP BY ORDINALIZES via the named-projection layer", func(t *testing.T) {
+		// Regression for a shipped WRONG-ANSWER bug + the RFC-173 S4 fix that closes it.
+		// A DISJOINT-column multi-source unnest GROUP-BY (`FROM WSRC, WSRC.WARR AS EL,
+		// WAUX GROUP BY EL`) has no shared name, so the name-ambiguity gate does NOT
+		// decline it — it GATHERS (ordinal path). The grouped element reference resolves
+		// to the shadow-qualified "EL.EL" key, which the POSITIONAL seed (bare column
+		// names only) lacks → `GROUP BY EL` grouped EVERY row under NULL (got
+		// [EL=<nil>, N=6]). The fix keeps the positional seed INTERNAL and places a
+		// NAMED-PROJECTION layer above it (wrapGatheredForGroupBy) — a
+		// LogicalProjectionExpression (survives SelectMergeRule) whose values NAME-read
+		// the seed and re-expose the bare + ALIAS.COL + "EL.EL" shadow keys the grouped
+		// element key and outer-column aggregates resolve against. WSRC has 1 row (SID=1,
+		// WARR={7,8}); WAUX has 3 rows, so each element crosses 3×.
+		ex := assertRows(t, `SELECT "EL", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
 			"COUNT(*)=3|EL=7|N=3", "COUNT(*)=3|EL=8|N=3",
 		})
+		// PROVE the ORDINAL path fired, not a name-model fallback: the fix wraps the
+		// gathered positional seed (FlatMap(Scan(WSRC),Explode) ⋈ Scan(WAUX)) in a
+		// named-projection layer, so the plan carries a SECOND Project (the layer) over
+		// the gather NLJ, beneath the outer SELECT's Project. A name-model decline would
+		// plan the FlatMap-over-merged-outer shape with a single Project.
+		if strings.Count(ex, "Project(") < 2 || !strings.Contains(ex, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("expected the ordinal gather + named-projection layer, got plan: %s", ex)
+		}
+		// The OUTER-column aggregate (SUM over the gathered outer source) resolves too.
 		assertRows(t, `SELECT "EL", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
 			"EL=7|S=3|SUM(WSRC.SID)=3", "EL=8|S=3|SUM(WSRC.SID)=3",
 		})
-		// GLOBAL aggregate (no GROUP BY) must NOT be declined: it keeps the flat
-		// gathered seed (no positional-merge collapse fires without a partition), and
-		// COUNT(*) reads no leg column. The under-aggregate decline is scoped to
-		// len(GroupKeys) > 0 so this still gathers. 1 WSRC row × {7,8} × 3 WAUX = 6.
+		// Grouping by an OUTER-source QUALIFIED column (the group KEY is WSRC.SID, a
+		// qualified twin, not the scalar element) resolves through the same projection
+		// layer. All 6 crossed rows share SID=1.
+		assertRows(t, `SELECT WSRC."SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY WSRC."SID"`, []string{
+			"COUNT(*)=6|N=6|WSRC.SID=1",
+		})
+		// GLOBAL aggregate (no GROUP BY) keeps the flat gathered seed (no projection
+		// wrap, no positional-merge collapse) and COUNT(*) reads no leg column.
+		// 1 WSRC row × {7,8} × 3 WAUX = 6.
 		assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"COUNT(*)=6|N=6",
 		})
+		// GATE — element AS alias SHADOWS an outer column: WAUX has a WV column, and
+		// `WSRC.WARR AS WV` names the element WV too. The named-projection wrap would
+		// bare-read "WV" and GetByName resolve the OUTER WAUX.WV (wrong group), so the
+		// wrap DECLINES → name model, which binds the shadowed WV to the ELEMENT. The
+		// plan must NOT carry the projection layer over the gather (single Project).
+		exShadow := assertRows(t, `SELECT "WV", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
+			"COUNT(*)=3|N=3|WV=7", "COUNT(*)=3|N=3|WV=8",
+		})
+		if strings.Count(exShadow, "Project(") >= 2 {
+			t.Fatalf("element-shadows-outer-column must DECLINE the projection wrap (name-model), got: %s", exShadow)
+		}
+		// GATE — BOX leg (the unnest's left is an OUTER-join box): the qualified twin
+		// for a buried-source operand (WAUX.WV) would key the box binding, not the leaf
+		// source, so the wrap DECLINES → name model. WSRC(SID=1) LEFT JOIN WAUX on
+		// SID=XID matches WAUX(XID=1,WV=5); × element {7,8} = 2 rows, one per element.
+		exBox := assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
+			"EL=7|S=5|SUM(WAUX.WV)=5", "EL=8|S=5|SUM(WAUX.WV)=5",
+		})
+		if strings.Count(exBox, "Project(") >= 2 {
+			t.Fatalf("box-leg grouped unnest must DECLINE the projection wrap (name-model), got: %s", exBox)
+		}
+		// WITH ORDINALITY — grouping by the AT ordinal (`AS EL AT O ... GROUP BY O`)
+		// resolves through the "EL.O" shadow twin the wrap adds. WARR={7,8} → O=1,2;
+		// each × 3 WAUX rows.
+		exOrd := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "O", WAUX GROUP BY "O"`, []string{
+			"COUNT(*)=3|N=3|O=1", "COUNT(*)=3|N=3|O=2",
+		})
+		if strings.Count(exOrd, "Project(") < 2 {
+			t.Fatalf("ordinality GROUP BY O should ORDINALIZE via the EL.O shadow, got: %s", exOrd)
+		}
+		// GATE — AT-ONLY (no AS): the grouped ordinal reference qualifies through the
+		// ARRAY COLUMN (`GROUP BY O` resolves as "WARR.O", not "O.O"), which the wrap
+		// does not re-expose. So the wrap DECLINES → name model, which resolves it.
+		// Correct rows either way — the point is the wrap must not fire and NULL it.
+		exAtOnly := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AT "O", WAUX GROUP BY "O"`, []string{
+			"COUNT(*)=3|N=3|O=1", "COUNT(*)=3|N=3|O=2",
+		})
+		if strings.Count(exAtOnly, "Project(") >= 2 {
+			t.Fatalf("AT-only GROUP BY O must DECLINE the projection wrap (WARR.O uncovered), got: %s", exAtOnly)
+		}
 	})
 
 	t.Run("R19 GROUP BY buried shadowing unnest ORDINAL with NON-CONTIGUOUS positions counts per ordinal", func(t *testing.T) {

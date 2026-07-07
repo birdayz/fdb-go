@@ -117,18 +117,20 @@ type cascadesTranslator struct {
 	// the reverse.
 	inInnerCluster bool
 	// underAggregate is set while lowering the INPUT of a GROUP BY / aggregate
-	// (translateAggregate). A gathered multi-source unnest whose flat select is
-	// then collapsed by PartitionSelectRule.positionalMergeCase into a
-	// record-of-records positional merge cannot resolve ANY leg column by name
-	// for grouping — the partition rule rebases every leg column to a POSITIONAL
-	// ofOrdinal(merge,i) that does not resolve over the grouped NLJ's name-keyed
-	// mergeRows row, so the group key (and every outer-column aggregate) reads
-	// NULL (a disjoint `SELECT EL, COUNT(*) FROM a, a.arr AS EL, b GROUP BY EL`
-	// groups every row under NULL). Until the positional-merge legs are windowed
-	// as flat name keys (the RFC-173 ordinal compose-direction for the merge),
-	// DECLINE the gather under an aggregate so the shape keeps the name-model
-	// path, which groups correctly. Strictly safe: no gathered group-by resolves
-	// today, so this only routes a silently-wrong shape to the working residual.
+	// (translateAggregate). A gathered multi-source unnest exposes only bare column
+	// names on its POSITIONAL seed, but a grouped element reference qualifies to the
+	// shadow-qualified "EL.EL" key (a correlated `FieldValue{Field:"EL", Child:QOV}`),
+	// which the seed lacks — so `SELECT EL, COUNT(*) FROM a, a.arr AS EL, b GROUP BY EL`
+	// grouped every row under NULL. When this flag is set, translateGatheredUnnestCluster
+	// keeps the positional seed INTERNAL and places a NAMED-PROJECTION layer above it
+	// (wrapGatheredForGroupBy) that re-exposes the bare + ALIAS.COL + "EL.EL" shadow
+	// keys the grouped read resolves against — Java's "the collapse preserves the named
+	// projection the group-by consumes". The gather now ORDINALIZES the group-by
+	// (retiring the name-model residual for the disjoint gathered shape) rather than
+	// declining to it. Breadth: the flag spans the whole input subtree, so a gathered
+	// unnest in a SUBQUERY within the aggregate's input is wrapped too — benign (the
+	// projection is a row-preserving column superset; a non-grouped subquery reads its
+	// bare keys unchanged), the same breadth the prior decline had.
 	underAggregate bool
 	// unnestUnderExistential is set while lowering a lateral unnest that is the
 	// OUTER of an EXISTS composition (translateUnnestExistsFilter). RFC-173 commit
@@ -4042,16 +4044,16 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			Plan:  ssq.Plan,
 		})
 	}
-	// A gathered multi-source unnest collapses to a positional merge under this
-	// GROUP BY that resolves no leg column by name (see underAggregate) — decline
-	// the gather for the duration of the input translation so it keeps the working
-	// name-model path. ONLY for a GROUPED aggregate (len(GroupKeys) > 0): the
-	// positional-merge collapse (PartitionSelectRule) fires for the PARTITION, so a
-	// GLOBAL aggregate (no GROUP BY — `SELECT COUNT(*) FROM a, b, a.arr AS x`) keeps
-	// the flat gathered seed and resolves fine (COUNT(*) reads no leg column). Not
-	// gating global aggregates also preserves shapes the gather is the SOLE path for
-	// — e.g. a duplicate-FROM-alias multi-source unnest whose name-model fallback
-	// hits the ordinal-seed-required rejection.
+	// A gathered multi-source unnest under this GROUP BY exposes only bare column
+	// names, so a grouped element reference qualifies to the "EL.EL" shadow key the
+	// positional seed lacks (see underAggregate) — mark the input translation so the
+	// gather places a NAMED-PROJECTION layer above the seed that re-exposes the shadow
+	// + qualified keys the grouped read resolves against (ordinalizing the group-by).
+	// ONLY for a GROUPED aggregate (len(GroupKeys) > 0): a GLOBAL aggregate (no GROUP
+	// BY — `SELECT COUNT(*) FROM a, b, a.arr AS x`) reads no grouped element reference,
+	// keeps the flat gathered seed, and must not pay for the projection wrap. Global
+	// scoping also preserves shapes the raw gather is the SOLE path for (a
+	// duplicate-FROM-alias multi-source unnest).
 	prevUnderAgg := t.underAggregate
 	if len(a.GroupKeys) > 0 {
 		t.underAggregate = true
