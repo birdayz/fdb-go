@@ -152,8 +152,12 @@ func newFlatMapCursor(
 		// RFC-173 S4 commit 2 (C): a projected-EXISTS fold whose OUTER is a gated
 		// ordinal join — the step-1 NLJ's own ordinal seed yields the leg windows
 		// the folded projection resolves through (legWindowRowContext), exactly as
-		// a plain gated-join downstream projection derives them.
-		if outerPlan != nil {
+		// a plain gated-join downstream projection derives them. EXCLUDES the
+		// WHERE-EXISTS identity pass-through (RV == QOV(outer)): that flows the
+		// whole-outer object through unchanged (the identity branch in
+		// computeResultLegs + outerBakedType), and rerouting it through the leg
+		// windows misreads the object. Decided ONCE here, not per row.
+		if outerPlan != nil && !isIdentityOuterRV(resultValue, outerAlias) {
 			foldLegSpans, foldWindowsOK = downstreamLegWindows(outerPlan)
 		}
 	}
@@ -323,15 +327,18 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 	return c.computeResultLegs(outerRow, &innerRow)
 }
 
-// resultIsIdentityOuter reports whether this FlatMap's result value is exactly
-// the outer quantifier's object (the WHERE-EXISTS pass-through): the output IS
-// the outer row, flowed through unchanged (the identity branch below). Such a
-// cursor must NOT reroute the outer through the leg windows — it reads the whole
-// outer object, not per-leg columns (RFC-173 S4 commit 2, C: the projected-fold
-// leg-window path is only for a projection over the merged row).
-func (c *flatMapCursor) resultIsIdentityOuter() bool {
-	qov, ok := c.resultValue.(*values.QuantifiedObjectValue)
-	return ok && qov.Correlation == c.outerAlias
+// isIdentityOuterRV reports whether a FlatMap result value is exactly the outer
+// quantifier's object (the WHERE-EXISTS pass-through): the output IS the outer
+// row, flowed through unchanged (the identity branch in computeResultLegs). Such
+// a cursor must NOT reroute the outer through the leg windows — it reads the
+// whole outer object, not per-leg columns (RFC-173 S4 commit 2, C: the
+// projected-fold leg-window path is only for a projection over the merged row).
+// The ONE predicate both the construction-time foldWindowsOK exclusion and the
+// identity branch read, so the exclusion can never drift from the branch it
+// mirrors.
+func isIdentityOuterRV(rv values.Value, outerAlias values.CorrelationIdentifier) bool {
+	qov, ok := rv.(*values.QuantifiedObjectValue)
+	return ok && qov.Correlation == outerAlias
 }
 
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
@@ -441,11 +448,10 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// the composed nestedCtx binds the existential inner (existCorr) for the
 	// projected ExistsValue. The projection is thus resolved (not rebased), the
 	// heterogeneity absorbed by the same coexistence context a plain gated-join
-	// downstream projection uses. EXCLUDES the WHERE-EXISTS identity pass-through
-	// (RV == QOV(outer)): that flows the outer row through unchanged (the :428
-	// identity branch + outerBakedType positional propagation), and rerouting it
-	// through the leg windows misreads the whole-outer object read.
-	if outerRow.Positional != nil && c.foldWindowsOK && !c.resultIsIdentityOuter() {
+	// downstream projection uses. foldWindowsOK already excludes the WHERE-EXISTS
+	// identity pass-through (decided at construction), so this is just the
+	// positional-outer test.
+	if outerRow.Positional != nil && c.foldWindowsOK {
 		rowCtx = legWindowRowContext(outerRow.Positional, nestedCtx, c.foldLegSpans)
 	}
 	if c.birth.enabled() {
@@ -473,7 +479,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// as `ALIAS.COL` (a FieldValue over QOV(outer)); a bare-keyed map would not
 	// resolve them. Mirrors the prior semi-join cursor's qualifyOuterRow and
 	// Java's outer-record-under-outer-quantifier flow.
-	if qov, ok := c.resultValue.(*values.QuantifiedObjectValue); ok && qov.Correlation == c.outerAlias {
+	if isIdentityOuterRV(c.resultValue, c.outerAlias) {
 		if m, ok := computed.(map[string]any); ok {
 			out := qualifyOuterRow(QueryResult{Datum: m, Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}, c.outerAlias.Name())
 			// RFC-173 item-2 commit 2, the I1 pass-through: the identity

@@ -1111,10 +1111,12 @@ func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
 // QOV-based leg refs resolve positionally at the cursor. The seed is a run of
 // ofOrdinal references over each leg's typed QOV (leg type from GetResultType,
 // NOT planResultValue which is nil for these leg plans), in declaration order,
-// the QOV named by the leg's source alias — byte-identical to
-// buildOrdinalJoinResultValue for the same legs (the cross-agreement fixture
-// pins it). Returns nil when a leg is not ordinal-safe or its type is not a
-// record (untranslatable — the caller keeps the name model).
+// the QOV named by the leg's source alias — positionally equivalent to
+// buildOrdinalJoinResultValue for the ordinal-safe scan legs in scope (the
+// canonical builder types legs via ordinalLegType and asserts the seed shape;
+// for a single-source scan the flowed types coincide, which the cross-agreement
+// fixture covers). Returns nil when a leg is not ordinal-safe or its type is not
+// a record (untranslatable — the caller keeps the name model).
 func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias string) values.Value {
 	if !legIsOrdinalSafe(leftPlan) || !legIsOrdinalSafe(rightPlan) {
 		return nil

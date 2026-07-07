@@ -82,6 +82,30 @@ func TestRFC173Commit2_LegIsOrdinalSafe(t *testing.T) {
 	if !legIsOrdinalSafe(scan) {
 		t.Fatal("a scan leg must be ordinal-safe")
 	}
+	// An INDEX / covering-index leg is also a single source — ordinal-safe. The
+	// realistic shape: a covering index gets picked for a fold leg. If its flowed
+	// type IS a record it ordinalizes consistently (seed typed by flowedType, the
+	// NLJ births from the same seed); if it is NOT a record the reconstruction
+	// declines below and the leg stays name-model — never a silent-wrong path.
+	idxRec := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T2"}, commit2RecType("T2", "ID"), false)
+	if !legIsOrdinalSafe(idxRec) {
+		t.Fatal("an index-scan leg is a single source — ordinal-safe")
+	}
+	if reconstructFoldStep1Seed(scan, idxRec, "T", "T2") == nil {
+		t.Fatal("two single-source legs (scan + record-typed index) must reconstruct a seed")
+	}
+	// A covering index whose flowed type is NOT a record: ordinal-safe by shape,
+	// but the reconstruction DECLINES (leg type is not addressable positionally)
+	// — the leg keeps the name model, correct-or-conservative.
+	idxOpaque := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T2"}, values.UnknownType, false)
+	if reconstructFoldStep1Seed(scan, idxOpaque, "T", "T2") != nil {
+		t.Fatal("a non-record-typed index leg must decline the seed reconstruction (name model)")
+	}
+	// A filter over a scan (a leg with a pushed predicate) unwraps to the scan.
+	filtered := plans.NewRecordQueryPredicatesFilterPlan(scan, nil)
+	if !legIsOrdinalSafe(filtered) {
+		t.Fatal("a filter over a scan unwraps to a single source — ordinal-safe")
+	}
 	// A join leg emits a name-model merged row — NOT ordinal-safe.
 	nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan, scan, nil, plans.JoinInner, "A", "B", nil)
 	if legIsOrdinalSafe(nlj) {
