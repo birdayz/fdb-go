@@ -234,6 +234,7 @@ func TestRFC173S4_OrdinalSlotInLegWindow(t *testing.T) {
 		{"A", "X", 1, true},
 		{"B", "X", 3, true},
 		{"B", "ZZZ", 0, false}, // qualified ref to a column absent from B's window
+		{"C", "ID", 0, false},  // qualifier NOT among the legs: LOUD decline, NOT flat first-match 0
 	}
 	for _, c := range cases {
 		got, ok := ordinalSlotInLegWindow(rt, c.leg, c.field)
@@ -248,5 +249,13 @@ func TestRFC173S4_OrdinalSlotInLegWindow(t *testing.T) {
 	}}
 	if got, ok := ordinalSlotInLegWindow(single, "T", "V"); !ok || got != 1 {
 		t.Errorf("single-leg ordinalSlotInLegWindow(T.V) = (%d,%v), want (1,true)", got, ok)
+	}
+	// MALFORMED window (negative Start): decline, never index at a negative slot.
+	bad := &values.RecordType{
+		Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}},
+		Legs:   []values.RecordTypeLeg{{Name: "A", Start: -1, Width: 2}},
+	}
+	if _, ok := ordinalSlotInLegWindow(bad, "A", "ID"); ok {
+		t.Error("negative-Start leg window must decline, not panic or resolve")
 	}
 }

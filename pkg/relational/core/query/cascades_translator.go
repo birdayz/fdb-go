@@ -2662,25 +2662,38 @@ func rebaseUnnestOuterLegPredicate(
 // boundaries (rt.Legs — populated by buriedLegBounds for a MULTI-ALIAS box outer),
 // it searches ONLY within the named leg's [Start, Start+Width) window, so a
 // dup-named column (two aliases each with "ID") resolves to the CORRECT alias's
-// slot instead of the flat first-match. A single-alias outer has no rt.Legs and
-// falls back to a flat FieldIndex (the pristine-prefix-at-offset-0 case). Consumes
-// the same rt.Legs metadata OrdinalSeedLegWindows emits for the serve side — one
-// layout authority, so translator-rebase and executor windows agree.
+// slot. Anything not found within the qualifier's window — a column absent from it,
+// OR a qualifier absent from the leg list entirely — declines LOUDLY (0,false),
+// NEVER a flat first-match (which would silently read another alias's same-named
+// column). A single-alias outer has no rt.Legs and takes the flat FieldIndex (the
+// pristine-prefix-at-offset-0 case). Consumes the same rt.Legs metadata
+// OrdinalSeedLegWindows emits for the serve side — one layout authority, so
+// translator-rebase and executor windows agree. NOTE: the multi-alias branch is
+// wired but scope-gated OFF end-to-end (unnestExistsSeedSafe keeps multi-alias
+// outers name-model); it goes live only when that guard lifts (channel 2).
 func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string) (int, bool) {
-	if rt != nil && len(rt.Legs) > 0 {
+	if rt == nil {
+		return 0, false
+	}
+	if len(rt.Legs) > 0 {
 		for _, lw := range rt.Legs {
-			if strings.ToUpper(lw.Name) != leg {
+			// Legs.Name is contractually UPPER (buriedLegBounds); field names are
+			// UPPER on both sides (ordinalLegType stores + caller passes ToUpper),
+			// so an exact == mirrors the flat FieldIndex fallback exactly.
+			if lw.Name != leg {
 				continue
 			}
+			if lw.Start < 0 {
+				return 0, false // malformed window — never index at a negative slot
+			}
 			for i := lw.Start; i < lw.Start+lw.Width && i < len(rt.Fields); i++ {
-				if strings.EqualFold(rt.Fields[i].Name, field) {
+				if rt.Fields[i].Name == field {
 					return i, true
 				}
 			}
-			return 0, false // a qualified ref to a column NOT in that leg's window
+			return 0, false // column NOT in this leg's window — loud decline
 		}
-		// leg absent from the windows — fall through to the flat lookup (defensive;
-		// a well-formed multi-alias outer lists every bound leg).
+		return 0, false // qualifier NOT among the leg windows — loud decline (never flat)
 	}
 	return rt.FieldIndex(field)
 }
@@ -2692,9 +2705,12 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string) (int, bool
 // existential inner plan (the under-∃ placement of a subquery-internal
 // outer-only conjunct). For a single-alias outer the leg is the pristine merged
 // PREFIX at offset 0, so an outer column's ordinal in the outer leg type IS its
-// merged-row ordinal; for a MULTI-ALIAS outer (a box with rt.Legs) the ordinal is
-// resolved WITHIN the qualifier's leg window (ordinalSlotInLegWindow) so a
-// dup-named column bakes the right alias's slot. The baked ref is then exactly the
+// merged-row ordinal — the ONLY shape reachable today. The multi-alias branch (a
+// box with rt.Legs, ordinal resolved WITHIN the qualifier's leg window via
+// ordinalSlotInLegWindow so a dup-named column bakes the right alias's slot) is
+// WIRED but scope-gated OFF end-to-end (unnestExistsSeedSafe keeps multi-alias
+// outers name-model); it goes live only when that guard lifts (channel 2, coupled
+// with the RULE-level below-FOD executor hoist). The baked ref is then exactly the
 // shape the disabled-birth probe binds positionally below the FOD. The
 // translator is the SINGLE rebase authority for buried refs (RULE-level
 // predicates stay the executor hoist's), so no double-rebase exists. Returns
