@@ -4700,7 +4700,14 @@ ordinal-leg-under-anchored-parent composition (or narrow it class-by-class produ
 dup-binding first, its own executor pass-through already widened in S4 commit 4). The `:334`/`:1552`
 AnchoredJoinRecord sites are the unnest/derived residual builders that back the loud declines. Net:
 the atomic cap (task #16) is gated on retiring the :4402/:4650 anchored-residual arm, not on R1/R2/R3
-(done). Producer #4 (`NewReEnumerationAnchoredRecord`, rule_partition_select.go) is independent.
+(done). Producer #4 (`NewReEnumerationAnchoredRecord`, rule_partition_select.go:469) is NOT independent
+(census correction): it RE-STAMPS a parent source-anchored join RC over the upper's immediate
+quantifiers during PartitionSelectRule re-enumeration, firing ONLY when `isAnchoredJoinResult(parent)`
+is true (`:435`, `parentIsMerge`). So it is the re-enumeration counterpart of producer #3's anchored
+RC — once #3's join seed is ordinal, the parent is no longer an anchored merge and this re-stamp path
+does not fire; PartitionSelectRule would instead need an ORDINAL re-enumeration path. #3 and #4 are
+the two faces of the SAME AnchoredJoin machinery (seed + re-enumeration); they retire together, gated
+on the name-model leg classes.
 
 ### DESIGN REFINEMENT (Graefe design review of Rule A, ACK-WITH-REFINEMENT) — S4
 Gate (ii) ✓ (correct + pinned by `TestRFC173S4_DupBareNameMemoIdentity`); bit-over-blanket-skip ✓.
