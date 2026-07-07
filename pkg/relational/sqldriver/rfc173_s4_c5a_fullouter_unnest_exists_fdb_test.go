@@ -237,6 +237,26 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		`SELECT "X" `+from+` WHERE NOT EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
 		nil)
 
+	// OUTER-CONJUNCT regression pin. A regular (NON-EXISTS) WHERE conjunct on a
+	// box leg (FOA.K=100, OUTSIDE the EXISTS) on a multi-alias FULL box cannot yet
+	// be baked positionally (it merges into the name-keyed unnest SELECT, out of
+	// the executor's below-FOD hoist reach), so the ordinal seed would leave it
+	// unresolvable → malformed plan. The narrowing declines such a shape to
+	// name-model (unnestExistsSeedSafe → unnestExistsOuterConjunctOnBoxLeg), which
+	// resolves FOA.K via the qualified key → correct {7,8}. RED before the
+	// narrowing (`field "FOA.K" not resolvable ... malformed plan`); pre-c5a this
+	// shape was name-model and worked, so the ordinal lift MUST NOT regress it.
+	assertRows(t, "OUTER-CONJUNCT/box-leg-stays-name-model",
+		`SELECT "X" `+from+` WHERE FOA."K" = 100 AND EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
+		[]string{"7", "8"})
+
+	// SINGLE-SOURCE control: the same outer conjunct on a SINGLE-source unnest
+	// (no box) must still ordinalize and answer correctly — the narrowing only
+	// declines the MULTI-alias box, not the single-source pristine prefix.
+	assertRows(t, "OUTER-CONJUNCT/single-source-ok",
+		`SELECT "X" FROM FOA, FOA."ARR" AS "X" WHERE FOA."K" = 100 AND EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
+		[]string{"7", "8"})
+
 	// LEFT — the AXIS-1 over-breadth regression pin. Step B admits an OUTER box
 	// at AXIS 1 (the box-outer positional birth), but ONLY a FULL box may take
 	// the ordinal seed (clusterArity==1); a LEFT/RIGHT box has clusterArity>=2 so

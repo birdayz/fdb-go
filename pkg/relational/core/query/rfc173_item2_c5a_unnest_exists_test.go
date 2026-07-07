@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -410,5 +411,72 @@ func TestRFC173S4_ThreeWayBoxCrossAgreement(t *testing.T) {
 				t.Fatalf("3-way DRIFT: leaf %s col %s — channel-1 slot %d (ok=%v) vs channel-2 slot %d", leg.Name, f.Name, ch1, ok1, ch2)
 			}
 		}
+	}
+}
+
+// TestRFC173Item2C5a_OuterConjunctNarrowing pins the outer-conjunct regression
+// narrowing at the TRANSLATOR level — the FDB e2e's {7,8} is OVER-DETERMINED
+// (both the ordinal and the name-model path yield it), so only a white-box
+// AnchoredJoin / detection assertion discriminates whether the ordinal path
+// fired. Two independently-breakable halves:
+//   - DETECTION (nonExistsConjunctRefsOuterLeg): a box-leg or flow-leg conjunct
+//     TRIPS; an element-only conjunct does NOT (else a multi-alias box with an
+//     element-only WHERE would SILENTLY fall to name-model, losing the ordinal
+//     optimization with the answer unchanged — the masked over-decline).
+//   - CONSUMPTION (the unnestExistsOuterConjunctOnBoxLeg flag in
+//     unnestExistsSeedSafe): flag SET → the FULL box seeds name-model
+//     (AnchoredJoin); flag CLEAR → ordinal (the anti-over-decline positive pin).
+func TestRFC173Item2C5a_OuterConjunctNarrowing(t *testing.T) {
+	t.Parallel()
+
+	// DETECTION sentinel. FOA/FOB are the box legs; X is the unnest element.
+	boxAliases := map[string]struct{}{"FOA": {}, "FOB": {}}
+	for _, tc := range []struct {
+		name string
+		pred predicates.QueryPredicate
+		want bool
+	}{
+		{"box-leg", corrEq("FOA", "K", "FOC", "CK"), true},
+		{"flow-leg", corrEq("FOB", "K", "FOC", "CK"), true},
+		{"element-only", corrEq("X", "EL", "X", "EL2"), false},
+		{"and-elements", predicates.NewAnd(corrEq("X", "EL", "X", "EL2"), corrEq("X", "A", "X", "B")), false},
+		{"and-mixed", predicates.NewAnd(corrEq("X", "EL", "X", "EL2"), corrEq("FOA", "K", "FOC", "CK")), true},
+		{"nil", nil, false},
+	} {
+		if got := nonExistsConjunctRefsOuterLeg(tc.pred, boxAliases); got != tc.want {
+			t.Errorf("nonExistsConjunctRefsOuterLeg(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// CONSUMPTION: the flag flips the FULL box from ordinal to name-model.
+	// FROM (Order o FULL OUTER Customer c), o.TAGS AS X under EXISTS.
+	seed := func(flag bool) *values.RecordConstructorValue {
+		tr := newGateTranslator(t)
+		tr.unnestUnderExistential = true
+		tr.unnestExistsOuterConjunctOnBoxLeg = flag
+		outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
+		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
+		expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
+		if expr == nil {
+			t.Fatalf("translation failed (flag=%v): %v", flag, tr.translateErr)
+		}
+		sel, ok := expr.(*expressions.SelectExpression)
+		if !ok {
+			t.Fatalf("unnest expr = %T, want a SelectExpression", expr)
+		}
+		rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
+		if !ok {
+			t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
+		}
+		return rc
+	}
+	// flag CLEAR (element-only conjunct, or none): the box ORDINALIZES — the
+	// anti-over-decline pin the {7,8} e2e structurally cannot provide.
+	if seed(false).AnchoredJoin {
+		t.Fatal("flag clear: FULL box seeded ANCHORED — the narrowing over-declined (element-only / no conjunct must still ordinalize)")
+	}
+	// flag SET (a box-leg conjunct): the box declines to NAME-MODEL.
+	if !seed(true).AnchoredJoin {
+		t.Fatal("flag set: FULL box seeded ORDINAL — the narrowing did not fire (a box-leg outer conjunct must decline to name-model)")
 	}
 }

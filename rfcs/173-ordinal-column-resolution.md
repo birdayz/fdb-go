@@ -4927,6 +4927,24 @@ boxGatesFresh/boxOuterBirthsPositional false) + the e2e `CLUSTERED/buried-leaf-F
 (correct rows via name-model, red-first as malformed). Review round: Torvalds ACK, @claude ACK
 (recommended the transparency-peel hardening), codex P2 (the wrapper slip) — all folded in.
 
+**FOLLOW-UP FINDING #2 (outer WHERE conjunct on a box leg — a SHIPPED c5a regression).** Dimensional
+probing (the c5a e2e only tested box-leg refs INSIDE EXISTS) found that a regular NON-EXISTS WHERE
+conjunct referencing a box leg on an ORDINAL FULL box under unnest under EXISTS
+(`(a FULL OUTER b), a.arr AS x WHERE a.col = V AND EXISTS(…)`) → `field "a.col" not resolvable
+(ordinal -1, row columns [b's cols]) — malformed plan`. VERIFIED a regression: pre-c5a (parent
+0d5ea3dcd, via worktree) the shape was name-model and answered correctly. ROOT CAUSE: the non-EXISTS
+conjunct is merged into the unnest SELECT, where the box's output is NAME-KEYED (coexistence Datum) —
+a positional bake there does NOT reach the executor's positional row the way an EXISTS-inner ref does
+(the below-FOD hoist rebases those). An attempted ordinal rebase (rebaseUnnestOuterLegPredicateOrdinal
+on the merged conjunct) turned the loud malformed plan into SILENT 0 rows (strictly worse) — reverted.
+FIX (narrowing, same family as LEFT/RIGHT + clustered-leg): `unnestExistsSeedSafe` declines the
+MULTI-alias box to name-model when the enclosing filter has a non-EXISTS conjunct on a box leg
+(`unnestExistsOuterConjunctOnBoxLeg`, set in translateUnnestExistsFilter) — correct via qualified keys.
+Single-source outers are UNAFFECTED (pristine prefix resolves a bare conjunct). Pins:
+`OUTER-CONJUNCT/box-leg-stays-name-model` (red-first as malformed) + `OUTER-CONJUNCT/single-source-ok`.
+FULL positional ordinalization of such a conjunct (routing unnest-SELECT box-leg predicates through the
+executor positional mechanism) is the deferred follow-on.
+
 **FINDING (name-model oracle carve-out for dup-named box seeds).** The §5 dual-window differential is
 NOT a valid gate for this shape: the name-model oracle resolves dup-named box columns LAST-LEG-WINS
 (the name-keyed Datum cannot keep two same-named legs distinct — the exact conflation RFC-173

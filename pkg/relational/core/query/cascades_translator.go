@@ -154,6 +154,20 @@ type cascadesTranslator struct {
 	// corr's qualified key `QOV(X)."MA.c"`, which the rename does not touch. This
 	// is a SCOPE collision, not a routing prediction. Scoped like unnestUnderExistential.
 	unnestExistsScopeCollision bool
+	// unnestExistsOuterConjunctOnBoxLeg forces the under-EXISTS unnest to the
+	// ANCHORED (name-model) seed when the enclosing filter has a regular
+	// (NON-EXISTS) WHERE conjunct referencing a MULTI-ALIAS box leg
+	// (`(a FULL OUTER b), a.arr AS x WHERE a.col = V AND EXISTS(…)`). The regular
+	// conjunct is merged into the unnest SELECT, where the box's output is
+	// name-keyed — a positional bake there does NOT reach the executor's
+	// positional row (unlike an EXISTS-inner ref, which the below-FOD hoist
+	// rebases), so an ordinal box seed leaves the conjunct's box-leg ref
+	// unresolvable (malformed plan). Full ordinalization of such a conjunct is a
+	// follow-on; until then the shape stays name-model (correct via qualified
+	// keys). Only the MULTI-alias box declines — a single-source outer's pristine
+	// prefix at offset 0 resolves a bare conjunct fine. Scoped like
+	// unnestUnderExistential.
+	unnestExistsOuterConjunctOnBoxLeg bool
 	// enclosedGatherCache memoizes the flat select translateFilter's
 	// enclosed-gather PROBE built, keyed by the ORIGINAL join root, so the
 	// dispatch (translateEnclosedUnnestGather via translateJoin) consumes it
@@ -872,7 +886,32 @@ func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator) 
 	if t.unnestExistsScopeCollision {
 		return false
 	}
-	return len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)
+	// A MULTI-alias box declines when a regular WHERE conjunct references a box
+	// leg (unnestExistsOuterConjunctOnBoxLeg): the ordinal seed cannot yet bake
+	// such a conjunct positionally (it is merged into the name-keyed unnest
+	// SELECT, out of the executor's below-FOD hoist reach). A single-source outer
+	// (==1) is unaffected — its pristine prefix resolves a bare conjunct.
+	return len(outerBoundAliases(left)) == 1 ||
+		(t.boxGatesFresh(left) && !t.unnestExistsOuterConjunctOnBoxLeg)
+}
+
+// nonExistsConjunctRefsOuterLeg reports whether any NON-EXISTS conjunct of pred
+// references an outer-leg alias in boxAliases — the box-leg reference the
+// ordinal unnest seed cannot yet bake in a regular WHERE conjunct (see
+// unnestExistsOuterConjunctOnBoxLeg). Element/ordinal (unnest AS/AT) refs are
+// NOT in boxAliases, so a WHERE on the element does not trip it.
+func nonExistsConjunctRefsOuterLeg(pred predicates.QueryPredicate, boxAliases map[string]struct{}) bool {
+	if len(boxAliases) == 0 {
+		return false
+	}
+	for _, p := range splitNonExistsPredicates(pred) {
+		for c := range predicates.GetCorrelatedToOfPredicate(p) {
+			if _, ok := boxAliases[strings.ToUpper(c.Name())]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // boxOuterBirthsPositional reports whether the unnest's OUTER box will actually
@@ -2472,13 +2511,17 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	// SCOPE gate: RFC-173 commit 5a ORDINALIZES a single-source unnest under EXISTS
 	// (the W4c ordinal seed) and leaves the EXISTS correlation LEG-RELATIVE for the
 	// executor's positional rebase. A MULTI-ALIAS outer stays name-model.
+	outerAliases := outerBoundAliases(join.Left)
 	prevCollision := t.unnestExistsScopeCollision
-	t.unnestExistsScopeCollision = existsInnerScopeCollidesOuter(f.ExistsSubqueries, outerBoundAliases(join.Left))
+	t.unnestExistsScopeCollision = existsInnerScopeCollidesOuter(f.ExistsSubqueries, outerAliases)
+	prevOuterConj := t.unnestExistsOuterConjunctOnBoxLeg
+	t.unnestExistsOuterConjunctOnBoxLeg = nonExistsConjunctRefsOuterLeg(f.Predicate, outerAliases)
 	prevUnderExist := t.unnestUnderExistential
 	t.unnestUnderExistential = true
 	unnestExpr := t.translateUnnestJoin(join, u)
 	t.unnestUnderExistential = prevUnderExist
 	t.unnestExistsScopeCollision = prevCollision
+	t.unnestExistsOuterConjunctOnBoxLeg = prevOuterConj
 	if unnestExpr == nil {
 		return nil
 	}
