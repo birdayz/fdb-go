@@ -3605,6 +3605,16 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if strings.Count(exAtOnly, "Project(") >= 2 {
 			t.Fatalf("AT-only GROUP BY O must DECLINE the projection wrap (WARR.O uncovered), got: %s", exAtOnly)
 		}
+		// N-WAY (3 plain legs): WSRC, WAUX, GW all disjoint-named — the gather collapses
+		// 3 legs and the wrap re-exposes each leg's qualified twins, so a grouped
+		// SUM(GW.V) over the THIRD leg resolves. WSRC(1) × element {7,8} × WAUX(3) ×
+		// GW(1 row, V=999) = 6 rows; per element 3 crossings → SUM(GW.V)=2997.
+		exNway := assertRows(t, `SELECT "EL", SUM(GW."V") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX, GW GROUP BY "EL"`, []string{
+			"EL=7|S=2997|SUM(GW.V)=2997", "EL=8|S=2997|SUM(GW.V)=2997",
+		})
+		if strings.Count(exNway, "Project(") < 2 {
+			t.Fatalf("N-way (3 plain legs) grouped gather should ORDINALIZE, got: %s", exNway)
+		}
 	})
 
 	t.Run("R19 GROUP BY buried shadowing unnest ORDINAL with NON-CONTIGUOUS positions counts per ordinal", func(t *testing.T) {
