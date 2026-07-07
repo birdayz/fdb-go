@@ -114,6 +114,22 @@ func TestRFC173Item2C5a_SeedWindowAuthority(t *testing.T) {
 // stays NAME-MODEL under EXISTS (anchored seed). Without the guard the seed goes
 // ordinal (unnestOrdinalSeed bakes the whole merged prefix, blind to the alias
 // count) — this test is red.
+//
+// This decline is CORRECT and NOT a stale "W5-not-built" gate (design review of a
+// proposed S4 lift, NAK'd): the W5 gathered path DOES disambiguate same-named
+// columns via qualified slots, but the three EXISTS-rebase channels do NOT consult
+// it — rebaseUnnestOuterLegPredicateOrdinal resolves by BARE-name first-match
+// (qualifier DROPPED), and the RULE-level below-FOD executor hoist assumes the
+// single-alias pristine-prefix-at-offset-0 invariant. So the only well-formed
+// multi-alias correlation (a QUALIFIED ref like c.ID; a bare one is 42702) is
+// exactly the one the ordinal rebase mis-resolves. The name-model anchored path
+// (qualified LEG.COL keys, rebaseUnnestOuterLegPredicate) is the Java-faithful
+// correct handler. Lifting this guard REQUIRES first teaching both the rebase
+// channel AND the executor hoist to route a qualified ref through ordinalLegType's
+// rt.Legs [Start,Start+Width) windows (metadata already produced, consumed today
+// only by OrdinalSeedLegWindows) — its own slice/ACK — THEN lifting the guard
+// behind a yamsql e2e (qualified ref to a second-alias dup-named column + a FULL
+// OUTER null-supplied row). Until that lands, the guard stays.
 func TestRFC173Item2C5a_MultiAliasOuterDeclines(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
