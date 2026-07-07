@@ -112,6 +112,15 @@ var carveOuts = map[string]string{
 	// model is retired in Slice 4; until then a declared difference.
 	"dup_from_alias_exists_second_leg":   "RFC-173 §5: a later duplicate leg's binding-qualified read exists only in the positional model (name-keyed rows are display-alias last-wins)",
 	"dup_from_alias_order_by_second_leg": "RFC-173 §5: a later duplicate leg's binding-qualified read exists only in the positional model (name-keyed rows are display-alias last-wins)",
+	// RFC-173 S4 commit 4: the identity-FlatMap pass-through flows a gated
+	// minted-dup outer's positional row so a.qid (→ the later q leg's
+	// binding-qualified key) resolves — but ONLY in the positional model. The
+	// name-keyed merged row is display-alias last-wins, so the NAME oracle serves
+	// NULL for the later leg while the ORDINAL model answers Java's 6 rows
+	// (live-verified; the corpus PARITY entries). Same declared difference as the
+	// second-leg dup shapes above; the name model is retired in Slice 4.
+	"dup_from_alias_leg_independent_exists": "RFC-173 §5: the minted-dup upper (a.qid → the later q leg) resolves only in the positional model; the name-keyed row is display-alias last-wins → NULL. Commit-4 ordinal path answers Java's rows.",
+	"dup_from_alias_shadowing_exists":       "RFC-173 §5: the minted-dup upper resolves only in the positional model (name-keyed last-wins → NULL); the shadowing exists inner is leg-independent. Same class.",
 }
 
 // outcome is one mode's result for one corpus entry: the rows, or the error.

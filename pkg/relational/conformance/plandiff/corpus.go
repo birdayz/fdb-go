@@ -18007,6 +18007,34 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT a.id FROM T_DUP_C AS a, T_DUP_D AS a WHERE a.id = 2",
 		},
 		{
+			// RFC-173 S4 commit 4 — a gated dup-outer flatten with a
+			// LEG-INDEPENDENT EXISTS. Java accepts the duplicate FROM
+			// (per-attribute a.qid → the q leg, the only leg carrying qid) and
+			// the UNCORRELATED EXISTS (always true — p is non-empty), so it
+			// answers the full cross product's q values: 6 rows, qid ∈ {5,7,9}
+			// each twice. PARITY — Go now matches (the identity-FlatMap
+			// pass-through flows the gated outer's positional row so the
+			// minted-dup upper resolves positionally); pre-commit-4 Go declined
+			// this valid query (a mislabeled reach gap, not a Java divergence).
+			Name:           "dup_from_alias_leg_independent_exists",
+			SchemaTemplate: "CREATE TABLE T_DUP_EIP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_EIQ (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_EIP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_EIQ VALUES (5), (7), (9)"},
+			Query:          "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP)",
+		},
+		{
+			// The SHADOWING variant: the exists subquery's own `T_DUP_SHP AS a`
+			// SHADOWS the outer dup alias, so `a.id = 1` is inner-scoped (Java's
+			// resolveAcrossFragments — inner-match-wins; the inner scope carries
+			// id). The EXISTS is therefore leg-independent and always true (id=1
+			// exists), so the same 6-row cross product answers. PARITY — the
+			// outer a.qid still sees only the two outer legs; the subquery's `a`
+			// is a separate scope, not a third ambiguous binding.
+			Name:           "dup_from_alias_shadowing_exists",
+			SchemaTemplate: "CREATE TABLE T_DUP_SHP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_SHQ (qid BIGINT, PRIMARY KEY (qid))",
+			SetupSqls:      []string{"INSERT INTO T_DUP_SHP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_SHQ VALUES (5), (7), (9)"},
+			Query:          "SELECT a.qid FROM T_DUP_SHP AS a, T_DUP_SHQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_SHP AS a WHERE a.id = 1)",
+		},
+		{
 			// SELECT * over duplicate aliases: Java answers with DUPLICATE columns
 			// in FROM order (unique quantifier ids; no dedup). PARITY since RFC-173
 			// QP-REF-BIND item 1 c2/c3: Go now answers cols [ID V QID ID V], full
