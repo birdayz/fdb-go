@@ -204,3 +204,49 @@ func TestRFC173Item2C5a_ShadowAliasGatesOrdinal(t *testing.T) {
 		t.Fatalf("no synthesized 1-field element window at slot %d — the element would name-resolve over the shadowed name", len(rc.Fields)-1)
 	}
 }
+
+// TestRFC173S4_OrdinalSlotInLegWindow pins the per-leg-window rebase primitive —
+// the FIRST of the two coupled channels the multi-alias-under-EXISTS lift needs
+// (design review scoping; the second is the RULE-level below-FOD executor hoist).
+// A qualified outer-leg ref into a MULTI-ALIAS outer (rt.Legs populated) resolves
+// to the NAMED leg's slot, not the flat first-match, so two aliases' same-named
+// columns disambiguate. A single-alias outer (no rt.Legs) keeps the flat lookup.
+func TestRFC173S4_OrdinalSlotInLegWindow(t *testing.T) {
+	t.Parallel()
+	// Merged prefix of two legs A[0,2) and B[2,2), BOTH with dup-named ID + X —
+	// built directly (NewRecordType would reject the duplicate field names).
+	rt := &values.RecordType{
+		Fields: []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "X", FieldType: values.NotNullLong, Ordinal: 1},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+			{Name: "X", FieldType: values.NotNullLong, Ordinal: 3},
+		},
+		Legs: []values.RecordTypeLeg{{Name: "A", Start: 0, Width: 2}, {Name: "B", Start: 2, Width: 2}},
+	}
+	cases := []struct {
+		leg, field string
+		want       int
+		wantOK     bool
+	}{
+		{"A", "ID", 0, true},
+		{"B", "ID", 2, true}, // the fix: NOT the flat first-match 0
+		{"A", "X", 1, true},
+		{"B", "X", 3, true},
+		{"B", "ZZZ", 0, false}, // qualified ref to a column absent from B's window
+	}
+	for _, c := range cases {
+		got, ok := ordinalSlotInLegWindow(rt, c.leg, c.field)
+		if ok != c.wantOK || (ok && got != c.want) {
+			t.Errorf("ordinalSlotInLegWindow(%s.%s) = (%d,%v), want (%d,%v)", c.leg, c.field, got, ok, c.want, c.wantOK)
+		}
+	}
+	// SINGLE-alias outer (no rt.Legs): flat FieldIndex, backward-compatible.
+	single := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
+	}}
+	if got, ok := ordinalSlotInLegWindow(single, "T", "V"); !ok || got != 1 {
+		t.Errorf("single-leg ordinalSlotInLegWindow(T.V) = (%d,%v), want (1,true)", got, ok)
+	}
+}

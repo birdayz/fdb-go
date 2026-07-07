@@ -2657,14 +2657,44 @@ func rebaseUnnestOuterLegPredicate(
 	return mapPredicateValues(p, rewrite)
 }
 
+// ordinalSlotInLegWindow resolves a QUALIFIED outer-leg column (`leg`.`field`) to
+// its ABSOLUTE slot in the merged prefix. When the merged type carries per-leg
+// boundaries (rt.Legs — populated by buriedLegBounds for a MULTI-ALIAS box outer),
+// it searches ONLY within the named leg's [Start, Start+Width) window, so a
+// dup-named column (two aliases each with "ID") resolves to the CORRECT alias's
+// slot instead of the flat first-match. A single-alias outer has no rt.Legs and
+// falls back to a flat FieldIndex (the pristine-prefix-at-offset-0 case). Consumes
+// the same rt.Legs metadata OrdinalSeedLegWindows emits for the serve side — one
+// layout authority, so translator-rebase and executor windows agree.
+func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string) (int, bool) {
+	if rt != nil && len(rt.Legs) > 0 {
+		for _, lw := range rt.Legs {
+			if strings.ToUpper(lw.Name) != leg {
+				continue
+			}
+			for i := lw.Start; i < lw.Start+lw.Width && i < len(rt.Fields); i++ {
+				if strings.EqualFold(rt.Fields[i].Name, field) {
+					return i, true
+				}
+			}
+			return 0, false // a qualified ref to a column NOT in that leg's window
+		}
+		// leg absent from the windows — fall through to the flat lookup (defensive;
+		// a well-formed multi-alias outer lists every bound leg).
+	}
+	return rt.FieldIndex(field)
+}
+
 // rebaseUnnestOuterLegPredicateOrdinal bakes outer-table-leg references in a
 // BURIED subquery predicate to FrontierPinned ofOrdinals over the typed merged
 // QOV — the ordinal-seed twin of rebaseUnnestOuterLegPredicate, for the ONE
 // channel the executor's positional hoist cannot reach: a predicate INSIDE an
 // existential inner plan (the under-∃ placement of a subquery-internal
-// outer-only conjunct). The single-alias scope gate guarantees the outer leg is
-// the pristine merged PREFIX at offset 0, so an outer column's ordinal in the
-// outer leg type IS its merged-row ordinal; the baked ref is then exactly the
+// outer-only conjunct). For a single-alias outer the leg is the pristine merged
+// PREFIX at offset 0, so an outer column's ordinal in the outer leg type IS its
+// merged-row ordinal; for a MULTI-ALIAS outer (a box with rt.Legs) the ordinal is
+// resolved WITHIN the qualifier's leg window (ordinalSlotInLegWindow) so a
+// dup-named column bakes the right alias's slot. The baked ref is then exactly the
 // shape the disabled-birth probe binds positionally below the FOD. The
 // translator is the SINGLE rebase authority for buried refs (RULE-level
 // predicates stay the executor hoist's), so no double-rebase exists. Returns
@@ -2701,7 +2731,13 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			if _, isOuterLeg := outerLegs[leg]; !isOuterLeg {
 				return node
 			}
-			ord, found := outerLegType.FieldIndex(strings.ToUpper(fv.Field))
+			// Resolve the slot WITHIN the qualifier's per-leg window when the outer
+			// carries leg boundaries (rt.Legs — a MULTI-ALIAS outer like a FULL OUTER
+			// box): a qualified ref to a dup-named column must pick THAT leg's slot,
+			// not the flat first-match across the whole merged prefix (which silently
+			// reads the OTHER alias's same-named column — the RFC-173 S4 c5a hazard).
+			// A single-alias outer has no rt.Legs and falls back to a flat FieldIndex.
+			ord, found := ordinalSlotInLegWindow(outerLegType, leg, strings.ToUpper(fv.Field))
 			if !found {
 				ok = false
 				return node
