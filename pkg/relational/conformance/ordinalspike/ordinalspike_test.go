@@ -79,7 +79,18 @@ func TestMain(m *testing.M) {
 // spikeCarveOuts enumerates corpus entries where the whole-gate ordinal flip is
 // EXPECTED to differ from name-mode today (a shape whose ordinalization is a booked
 // later slice). Every entry MUST cite the reason. An empty map is the goal: it means
-// the whole-gate flip preserves every corpus row and the atomic cap is safe to fire.
+// the whole-gate flip preserves every corpus row.
+//
+// NECESSARY, NOT SUFFICIENT: a green run here does NOT license the cap. The SeedRunCorpus
+// is SQL-buildable-schema only — it has NO array columns, so NO lateral-unnest shapes. A
+// full-suite flip (forceOrdinalSpike default=true) over the real FDB suite PANICS on
+// multi-source unnest over a join (`FROM A, B, A.arr AS X`): the enclosure flip gates the
+// inner join while its unnest parent stays name-model, and the group-by re-enumeration
+// (rule_partition_select.go:469, NewReEnumerationAnchoredRecord) hits an ordinal child
+// under a name-model parent → "RFC-077 7.6: anchored re-enumeration must resolve an
+// anchored parent's legs". So the enclosure flip is COUPLED to W5 unnest ordinalization:
+// W5 (retire the :1528 unnest producer) must land FIRST. The FULL FDB suite under the
+// flip — not this corpus — is the cap's real exit gate. See scratchpad/demolition-readiness.md.
 var spikeCarveOuts = map[string]string{}
 
 type outcome struct {
