@@ -259,3 +259,50 @@ func TestRFC173S4_OrdinalSlotInLegWindow(t *testing.T) {
 		t.Error("negative-Start leg window must decline, not panic or resolve")
 	}
 }
+
+// TestRFC173S4_ThreeWayBoxCrossAgreement pins the 3-way cross-agreement the
+// Step-B guard lift requires: channel-1's ordinalSlotInLegWindow (over
+// ordinalLegType's box .Legs) and channel-2-values' OrdinalSeedLegWindows (over the
+// baked box mixed seed) must resolve EVERY box-leaf column to the SAME absolute
+// slot. The existing executor fixture pins channel-2-values <-> channel-2-executor;
+// this closes channel-1 <-> channel-2-values, so all three walks agree. A drift is
+// a silent wrong-alias slot on a dup-named column the instant the guard lifts. The
+// box outer is built directly (bypassing unnestExistsSeedSafe, which still declines
+// it end-to-end) — a white-box layout pin, not a dispatch change.
+func TestRFC173S4_ThreeWayBoxCrossAgreement(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
+	boxType := tr.ordinalLegType(box)
+	if boxType == nil || len(boxType.Legs) < 2 {
+		t.Fatalf("box ordinalLegType has no per-leg boundaries: %+v", boxType)
+	}
+	// The box mixed seed: the baked box concat over one box QOV + a bare-QOV element
+	// (o.TAGS AS X). The box QOV is keyed by its rightmost leaf (sourceBinding "c").
+	innerCorr := values.UniqueCorrelationIdentifier()
+	u := &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}
+	seedVal := tr.unnestOrdinalSeed(box, values.NamedCorrelationIdentifier("c"), innerCorr, u, values.NotNullString)
+	seed, ok := seedVal.(*values.RecordConstructorValue)
+	if !ok {
+		t.Fatalf("box mixed seed = %T, want an RC (translateErr=%v)", seedVal, tr.translateErr)
+	}
+	windows, _ := values.OrdinalSeedLegWindows(seed)
+	if windows == nil {
+		t.Fatal("channel-2 OrdinalSeedLegWindows declined the box mixed seed")
+	}
+	// For every box leaf + column: channel-1 slot == channel-2-values slot.
+	for _, leg := range boxType.Legs {
+		w, present := windows[leg.Name]
+		if !present {
+			t.Fatalf("box leaf %s absent from channel-2 windows %v", leg.Name, windows)
+		}
+		for _, f := range w.Typ.Fields {
+			ch1, ok1 := ordinalSlotInLegWindow(boxType, leg.Name, f.Name)
+			ci, okc := w.Typ.FieldIndex(f.Name)
+			ch2 := w.Offset + ci
+			if !ok1 || !okc || ch1 != ch2 {
+				t.Fatalf("3-way DRIFT: leaf %s col %s — channel-1 slot %d (ok=%v) vs channel-2 slot %d", leg.Name, f.Name, ch1, ok1, ch2)
+			}
+		}
+	}
+}
