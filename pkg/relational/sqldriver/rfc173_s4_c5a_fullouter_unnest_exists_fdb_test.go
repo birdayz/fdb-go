@@ -76,6 +76,13 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		metadata.NewColumnSpec("CID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("CK", api.NewLongType(true), 2),
 	}, []string{"CID"})
+	// FOD is the third K-named table, used ONLY by the clustered-leg-FULL-box
+	// case: `(FOA JOIN FOD) FULL OUTER FOB`. Its K disambiguates a BURIED leaf
+	// (FOD sits inside the clustered inner leg, not a top-level box leg).
+	b.AddTable("FOD", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("DID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("K", api.NewLongType(true), 2),
+	}, []string{"DID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatal(err)
@@ -108,13 +115,21 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 	foc.Set(focDesc.Fields().ByName("CID"), protoreflect.ValueOfInt64(1))
 	foc.Set(focDesc.Fields().ByName("CK"), protoreflect.ValueOfInt64(100))
 
+	fodDesc := md.GetRecordType("FOD").Descriptor
+	fod := dynamicpb.NewMessage(fodDesc)
+	// DID=1 joins FOA on AID=DID=1; K=200 is the buried-leaf discriminator,
+	// distinct from FOA.K=100 and FOB.K/NULL, read by the direct `FOD.K = 200`
+	// predicate (a wrong-leg resolve → 100/NULL ≠ 200 → 0 rows).
+	fod.Set(fodDesc.Fields().ByName("DID"), protoreflect.ValueOfInt64(1))
+	fod.Set(fodDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(200))
+
 	if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Create()
 		if sErr != nil {
 			return nil, sErr
 		}
-		for _, r := range []proto.Message{foa, fob, foc} {
+		for _, r := range []proto.Message{foa, fob, foc, fod} {
 			if _, e := store.SaveRecord(r); e != nil {
 				return nil, e
 			}
@@ -281,5 +296,24 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 	// rows. Correct rows here prove the R1 hazard is avoided.
 	assertRows(t, "R1/multi-source-INNER-stays-name-model",
 		`SELECT "X" FROM FOA, FOB, FOA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
+		[]string{"7", "8"})
+
+	// CLUSTERED-LEG FULL box — the BURIED-LEAF dimension stays NAME-MODEL (the
+	// c5a gate's simple-legs narrowing). clusterArity(FULL)==1 UNCONDITIONALLY, so
+	// a naive gate would admit `(FOA JOIN FOD) FULL OUTER FOB`, but its left leg
+	// is a CLUSTERED join whose buried leaves the positional seed does not yet
+	// concat (`(A JOIN B) FULL OUTER C` births only C's columns → a qualified
+	// `FOD.K` is unresolvable → malformed plan). boxGatesFresh EXCLUDES a box with
+	// a join leg, so this shape declines to the name-model builder, which resolves
+	// buried `FOD.K` via the qualified key — CORRECT rows. This pins that the c5a
+	// lift does NOT reach the clustered-leg box (buried-leaf ordinalization under
+	// FULL is a follow-up item-3 slice). The direct predicate `FOD.K = 200`
+	// (FOD.K=200 buried; FOA.K=100, FOB.K=NULL) discriminates: correct bind →
+	// {7,8}; a mis-bind → 0 rows. (FOA JOIN FOD on AID=DID=1) survives the FULL
+	// OUTER with FOB null-supplied (AID=1 ≠ BID=2); unnest FOA.ARR → [7,8].
+	assertRows(t, "CLUSTERED/buried-leaf-FULL-box-stays-name-model",
+		`SELECT "X" FROM FOA INNER JOIN FOD ON FOA."AID" = FOD."DID" `+
+			`FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" `+
+			`WHERE FOD."K" = 200 AND EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
 		[]string{"7", "8"})
 }

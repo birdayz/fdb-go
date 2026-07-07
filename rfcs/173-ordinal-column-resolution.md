@@ -4886,6 +4886,28 @@ YIELDS element rows {7,8}. Refinement (b) closed by PINNING ANSWER-INVARIANT (no
 the FULL null-supplied leg's value is nil via the NLJ regardless of the NOT-NULL type marker, so the
 `FOB.K`-correlated EXISTS evaluates correctly (documented at legsOfGatedJoin).
 
+**FOLLOW-UP FINDING (clustered-leg FULL box — gate over-breadth, one level deeper).** Post-ACK
+probing of the dimension @claude flagged (clustered-leg FULL box) DEMONSTRATED a loud regression:
+`clusterArity(FULL)==1` UNCONDITIONALLY, so `(A JOIN B) FULL OUTER C` under unnest-under-EXISTS also
+gated + birthed positional — but the positional seed concats only the RIGHTMOST leg's columns (`(FOA
+JOIN FOD) FULL OUTER FOB` births only FOB's `[BID,K]`); the clustered leg's BURIED leaves (`FOD.K`)
+are not windowed → `field "FOD.K" not resolvable ... malformed plan`. Pre-Step-B this shape stayed
+name-model (3 aliases → declined) and answered correctly, so Step B's gate was too broad — the SAME
+over-breadth class as the LEFT/RIGHT AXIS-1 finding, one level deeper. FIX (same shape as the LEFT/RIGHT
+fix — narrow the gate): `boxGatesFresh` now EXCLUDES a box whose leg EXPOSES A BURIED JOIN
+(`legExposesBuriedJoin`), so a clustered-leg FULL box stays name-model (correct via qualified keys).
+The predicate PEELS the transparent wrappers the gate recurses through (LogicalFilter, non-scalar
+LogicalProject) before checking for a join — a shallow `*LogicalJoin` type check MISSES `Filter(A JOIN
+B) FULL OUTER C` (codex P2), and a `clusterArity>=2` proxy MISSES a nested FULL box leg (`A FULL B FULL
+C` — clusterArity(FULL)==1) AND over-excludes an opaque derived-table CTE; the structural peel catches
+both join cases while admitting opaque single-namespace legs (scan, aggregate/union, derived CTE).
+Buried-leaf ordinalization under a FULL box is deferred to a follow-up item-3 slice. Fail-closed (loud
+malformed plan, not silent wrong rows) confirms the decoupling tripwire works. Pins:
+`TestRFC173Item2C5a_BoxGatePredicates` clustered-leg + Filter(join)/Project(join)/nested-FULL cases (all
+boxGatesFresh/boxOuterBirthsPositional false) + the e2e `CLUSTERED/buried-leaf-FULL-box-stays-name-model`
+(correct rows via name-model, red-first as malformed). Review round: Torvalds ACK, @claude ACK
+(recommended the transparency-peel hardening), codex P2 (the wrapper slip) — all folded in.
+
 **FINDING (name-model oracle carve-out for dup-named box seeds).** The §5 dual-window differential is
 NOT a valid gate for this shape: the name-model oracle resolves dup-named box columns LAST-LEG-WINS
 (the name-keyed Datum cannot keep two same-named legs distinct — the exact conflation RFC-173

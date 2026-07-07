@@ -216,6 +216,48 @@ func TestRFC173Item2C5a_BoxGatePredicates(t *testing.T) {
 			t.Errorf("boxOuterBirthsPositional(%s) = %v, want %v", tc.name, got, tc.birthsPosnl)
 		}
 	}
+
+	// A FULL box with a CLUSTERED (join) LEG stays name-model — its buried leaves'
+	// columns are not concatenated into the positional seed row (`(A JOIN B) FULL
+	// OUTER C` births only C's columns → a qualified buried ref is unresolvable).
+	// clusterArity(FULL)==1 would otherwise admit it, so the simple-legs narrowing
+	// in boxGatesFresh is what declines it. Buried-leaf ordinalization under a FULL
+	// box is a follow-up item-3 slice.
+	clusteredFull := logical.NewJoin(
+		logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, ""),
+		scan("TypedRecord", "d"), logical.JoinFull, "")
+	if tr.boxGatesFresh(clusteredFull) {
+		t.Error("boxGatesFresh(clustered-leg FULL) = true, want false — a box with a join leg has buried leaves the positional seed cannot concat")
+	}
+	if tr.boxOuterBirthsPositional(clusteredFull) {
+		t.Error("boxOuterBirthsPositional(clustered-leg FULL) = true, want false — must stay name-model until buried-leaf windowing under FULL lands")
+	}
+
+	// The same buried-leaf hazard hides behind TRANSPARENT wrappers (Filter,
+	// Project over a join) and a NESTED FULL box leg — legExposesBuriedJoin peels
+	// the wrappers and catches the nested FULL (clusterArity(FULL)==1 would be
+	// blind to it). All must stay name-model. A shallow `*LogicalJoin`-type check
+	// would miss the wrapped cases; a `clusterArity>=2` check would miss the
+	// nested FULL. These pin the peel.
+	innerCluster := func() logical.LogicalOperator {
+		return logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, "")
+	}
+	for _, tc := range []struct {
+		name string
+		leg  logical.LogicalOperator
+	}{
+		{"Filter(join)", logical.NewFilter(innerCluster(), "1 = 1")},
+		{"Project(join)", logical.NewProject(innerCluster(), []string{"order_id"}, []string{""})},
+		{"nested-FULL", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")},
+	} {
+		box := logical.NewJoin(tc.leg, scan("TypedRecord", "d"), logical.JoinFull, "")
+		if tr.boxGatesFresh(box) {
+			t.Errorf("boxGatesFresh(%s FULL OUTER scan) = true, want false — the leg exposes a buried join", tc.name)
+		}
+		if tr.boxOuterBirthsPositional(box) {
+			t.Errorf("boxOuterBirthsPositional(%s FULL OUTER scan) = true, want false", tc.name)
+		}
+	}
 }
 
 // TestRFC173Item2C5a_ShadowAliasGatesOrdinal pins the emergent shadow-column fix.

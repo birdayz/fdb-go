@@ -133,6 +133,20 @@ func (t *cascadesTranslator) gatesAsFreshCluster(j *logical.LogicalJoin) bool {
 // TOGETHER through this ONE predicate: a positional seed over a name-model box
 // row hits the adaptLegPositional zero-match tripwire, and a name-model builder
 // over a positional box row mis-types the leg. Either half alone is broken.
+//
+// A box LEG that EXPOSES A BURIED JOIN is EXCLUDED (stays name-model): its
+// buried leaves' columns are not yet concatenated into the positional seed row
+// under a FULL box (`(A JOIN B) FULL OUTER C` births only C's columns — the
+// clustered leg contributes nothing, so a qualified `A.col`/`B.col` is
+// unresolvable → malformed plan). legExposesBuriedJoin peels the TRANSPARENT
+// wrappers the gate recurses through (a leg wrapped in Filter/Project over a
+// join exposes the buried namespaces just the same) and also catches a nested
+// FULL box leg (`A FULL B FULL C` — clusterArity(FULL)==1 makes an arity proxy
+// blind to it). Windowing the buried leaves of a box leg is the item-3
+// buried-leaf work under a FULL box; until it lands, such a box stays name-model
+// (correct via qualified keys). Only a box with SIMPLE (single flat-namespace)
+// legs — a scan, or an OPAQUE box (aggregate/union/derived-table CTE) whose
+// output is its own flat row — may birth positional here.
 func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 	j, ok := input.(*logical.LogicalJoin)
 	if !ok {
@@ -141,7 +155,39 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 	if j.Kind == logical.JoinInner {
 		return false
 	}
+	if legExposesBuriedJoin(j.Left) || legExposesBuriedJoin(j.Right) {
+		return false
+	}
 	return t.gatesAsFreshCluster(j)
+}
+
+// legExposesBuriedJoin reports whether op — after peeling the row-shape-
+// preserving wrappers the gate treats as TRANSPARENT (LogicalFilter, and a
+// LogicalProject without correlated-scalar subqueries, mirroring
+// ordinalEligible/clusterArity) — bottoms out at a LogicalJoin. Such a leg's
+// OUTPUT row exposes the buried join's namespaces, which the positional FULL-box
+// seed does not concat (only the rightmost leaf lands in the row). OPAQUE
+// boundaries (aggregate/union/sort, a derived-table LogicalCTE) are NOT peeled —
+// their output is the box's own flat single-namespace row, safely windowed. A
+// CORRELATED-scalar LogicalProject stops the peel (returns false) — it is
+// ineligible upstream (gatesAsFreshCluster declines it), so its buried shape
+// never reaches the positional seed.
+func legExposesBuriedJoin(op logical.LogicalOperator) bool {
+	for {
+		switch o := op.(type) {
+		case *logical.LogicalJoin:
+			return true
+		case *logical.LogicalFilter:
+			op = o.Input
+		case *logical.LogicalProject:
+			if len(o.CorrelatedScalarSubqueries) > 0 {
+				return false
+			}
+			op = o.Input
+		default:
+			return false
+		}
+	}
 }
 
 // forceOrdinalSpike is the RFC-173 S4 B1 CERTIFICATE oracle (test-only). When set,
