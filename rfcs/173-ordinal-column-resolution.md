@@ -4787,8 +4787,27 @@ lift):
   - **:1074 unnest** — the non-gathered name-model unnest parent (R2 ordinalized the GATHERED
     multi-source + aggregate cases; this is the residual).
   - **:2908 / :3033 existential** — `buildExistentialSelect` (S4 commit 2 zeroed the projected-EXISTS-
-    over-join :698 producer; these are the remaining existential-flatten enclosure setters).
-  - **:4539 flatten** — the existential/outer flatten builder's enclosure (`!gatedFlatten`).
+    over-join :698 producer; these are the remaining existential-flatten enclosure setters). **SCOPED
+    (c5a-session): BLOCKED, not a clean lift.** :2908 is now `buildExistentialJoinSelect:3009`, :3033 is
+    `translateProjectOverExistsFilter:3134`. S4 commit 2 already retired their SCAN-LEG residency at the
+    EXECUTOR (`legIsOrdinalSafe`/`reconstructFoldStep1Seed`, "no translator change — scan legs are
+    positional-capable regardless of enclosure"). What the two enclosures still carry is EXACTLY the two
+    follow-ons commit 2 booked: (a) BURIED GATED-BOX legs (`legIsOrdinalSafe` rejects a join leg → the
+    name-model `:698` fallback runs, kept correct by the enclosure) — blocked on BURIED-LEAF WINDOWING
+    under the fold seed (the SAME wall as c5a's clustered-leg FULL box / c5b); (b) CORRELATED folds —
+    blocked on the F2 name-binder wall (`BakedNameContextError`, reverted twice). No cheap
+    conditional-lift like commit 4's `existsOuterGatesFresh` — `buildExistentialJoinSelect` FLATTENS the
+    join into a name-model `ForEach(left)+ForEach(right)` builder, so lifting requires the builder to
+    ADOPT an ordinal seed (a producer-#2 slice). Sequence AFTER buried-leaf windowing (c5b) lands.
+  - **:4539 flatten** — the existential/outer flatten builder's enclosure (`!gatedFlatten`). Per the
+    c5a-session scoping, `:1074` (non-gathered unnest) and this `:4539` are the more tractable NEXT
+    clean slices than :2908/:3033 (which consume buried-leaf windowing first).
+  - **BURIED-LEAF WINDOWING under a seed is the shared high-leverage prerequisite (c5b).** c5a's
+    clustered-leg FULL box AND :2908/:3033's buried-gated-box residency both wait on ONE piece: concat a
+    gated-box leg's BURIED-LEAF columns into the positional seed + resolve a qualified buried ref
+    (`a.col` where `a` is inside `(a JOIN b) t1`) by its leaf `[Start,Width)` window (reuse the
+    channels-1+2 per-leg-window rebase + the R2 gathered box-leg buried-leaf qualification — don't
+    re-derive). Landing c5b unblocks multiple enclosure sites at once.
   - :4291-join is the join site itself (Graefe refinement 1 — the anchored `else` branch), not a
     separate parent.
 Each site is ONE producer-#2-style slice: ordinalize that parent's seed (positional + named-projection
