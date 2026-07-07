@@ -3557,16 +3557,38 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"COUNT(*)=6|N=6",
 		})
-		// GATE — element AS alias SHADOWS an outer column: WAUX has a WV column, and
-		// `WSRC.WARR AS WV` names the element WV too. The named-projection wrap would
-		// bare-read "WV" and GetByName resolve the OUTER WAUX.WV (wrong group), so the
-		// wrap DECLINES → name model, which binds the shadowed WV to the ELEMENT. The
-		// plan must NOT carry the projection layer over the gather (single Project).
+		// SHADOW-COLLISION ORDINALIZES via POSITIONAL binding: WAUX has a WV column and
+		// `WSRC.WARR AS WV` names the element WV too, so the seed carries BOTH under the
+		// bare name "WV". The wrap binds the ELEMENT by its OWN seed slot FIRST (so the
+		// bare "WV" and shadow "WV.WV" WIN the element, slot #4) and keeps WAUX.WV at its
+		// own leaf slot (#3) — a name-read would GetByName the first match (the outer
+		// WAUX.WV) and group WRONG (measured WV=5/6/7). The rows prove the ELEMENT won:
+		// GROUP BY WV yields the array elements 7,8 (3 WAUX rows each), NOT WAUX's WV.
 		exShadow := assertRows(t, `SELECT "WV", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
 			"COUNT(*)=3|N=3|WV=7", "COUNT(*)=3|N=3|WV=8",
 		})
-		if strings.Count(exShadow, "Project(") >= 2 {
-			t.Fatalf("element-shadows-outer-column must DECLINE the projection wrap (name-model), got: %s", exShadow)
+		if strings.Count(exShadow, "Project(") < 2 {
+			t.Fatalf("element-shadows-outer-column should ORDINALIZE via positional element-first binding, got: %s", exShadow)
+		}
+		// And the OUTER shadowed column stays reachable QUALIFIED (WAUX.WV, its own leaf
+		// slot) for an aggregate operand — SUM(WAUX.WV) over the 6 crossed rows: each of
+		// WAUX's 3 rows (WV=5,6,7 → sum 18) is crossed with both elements {7,8}, so per
+		// element group the outer WV sum is 5+6+7=18.
+		assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WAUX, WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
+			"S=18|SUM(WAUX.WV)=18|WV=7", "S=18|SUM(WAUX.WV)=18|WV=8",
+		})
+		// ENCLOSED shadow (element PRECEDES the same-named leg): `WSRC, WSRC.WARR AS WV,
+		// WAUX` inserts the element block at the unnest's FROM position (before WAUX), so
+		// WAUX.WV sits at a LATER seed slot than the element WV. This is the order the
+		// positional leaf-slot offset exists for — a bare name-read would resolve "WV" to
+		// the FIRST match (now the ELEMENT) and read WAUX.WV wrong; positional binding
+		// keys WAUX.WV to its OWN slot (legStart past the inserted element block). Rows
+		// must match the disjoint order exactly (element still wins the bare "WV").
+		exEncl := assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "WV", WAUX GROUP BY "WV"`, []string{
+			"S=18|SUM(WAUX.WV)=18|WV=7", "S=18|SUM(WAUX.WV)=18|WV=8",
+		})
+		if strings.Count(exEncl, "Project(") < 2 {
+			t.Fatalf("enclosed shadow (element before the same-named leg) should ORDINALIZE, got: %s", exEncl)
 		}
 		// BOX leg (the unnest's left is an OUTER-join box) ORDINALIZES via leaf-source
 		// qualification: the wrap walks the box's buried leaves and keys each operand by
@@ -3595,15 +3617,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if strings.Count(exOrd, "Project(") < 2 {
 			t.Fatalf("ordinality GROUP BY O should ORDINALIZE via the EL.O shadow, got: %s", exOrd)
 		}
-		// GATE — AT-ONLY (no AS): the grouped ordinal reference qualifies through the
-		// ARRAY COLUMN (`GROUP BY O` resolves as "WARR.O", not "O.O"), which the wrap
-		// does not re-expose. So the wrap DECLINES → name model, which resolves it.
-		// Correct rows either way — the point is the wrap must not fire and NULL it.
+		// AT-ONLY (no AS) ORDINALIZES too — it is the SAME shadow class as above. With no
+		// AS the element alias defaults to the ARRAY COLUMN "WARR", so the grouped ordinal
+		// reference qualifies as "WARR.O" (not "O.O"). The wrap binds the ordinal by its
+		// own seed slot and re-exposes it under BOTH the bare "O" and the "WARR.O" shadow
+		// (the element defaulting to WARR is exactly the shadow the positional element-
+		// first binding already handles), so GROUP BY O resolves through "WARR.O".
 		exAtOnly := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AT "O", WAUX GROUP BY "O"`, []string{
 			"COUNT(*)=3|N=3|O=1", "COUNT(*)=3|N=3|O=2",
 		})
-		if strings.Count(exAtOnly, "Project(") >= 2 {
-			t.Fatalf("AT-only GROUP BY O must DECLINE the projection wrap (WARR.O uncovered), got: %s", exAtOnly)
+		if strings.Count(exAtOnly, "Project(") < 2 {
+			t.Fatalf("AT-only GROUP BY O should ORDINALIZE via the WARR.O shadow (positional binding), got: %s", exAtOnly)
 		}
 		// N-WAY (3 plain legs): WSRC, WAUX, GW all disjoint-named — the gather collapses
 		// 3 legs and the wrap re-exposes each leg's qualified twins, so a grouped

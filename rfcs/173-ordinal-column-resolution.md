@@ -4708,14 +4708,14 @@ by an e2e test):
   concat type, not the leaf-source keys (`WAUX.WV`) a buried-leaf operand references → silent NULL.
   [Graefe blocking NAK / codex P1]
 - **element/AT alias SHADOWS an outer column**: the bare "WV.WV" shadow read GetByName-resolves the
-  OUTER column, not the element → wrong group. [codex P1]
-- **AT-only unnest** (no AS): NOTE — this is actually the SAME class as the shadow-collision above.
-  For `WSRC.WARR AT O`, `u.Alias` DEFAULTS to the array column "WARR" (diagnostic-confirmed), which
-  shadows WSRC.WARR, so it declines via the SHADOW check, not the `u.Alias == ""` check (which is
-  therefore effectively dead — no reachable grouped gather has an empty Alias; a truly anonymous
-  unnest declines earlier at unnestSeedInnerFields). The grouped ordinal qualifies as `WARR.O`. So
-  there is really ONE remaining decline class — shadow-collision — and its risky positional/seed-
-  shadow fix (below) covers AT-only too. [codex P2]
+  OUTER column, not the element → wrong group. [codex P1] — INITIALLY declined; NOW ORDINALIZED by
+  the positional element-first binding (see the roadmap's "positional shadow binding — ✅ LANDED").
+- **AT-only unnest** (no AS): the SAME class — for `WSRC.WARR AT O`, `u.Alias` DEFAULTS to the array
+  column "WARR" (diagnostic-confirmed), so the grouped ordinal qualifies as `WARR.O`. [codex P2] —
+  INITIALLY declined; NOW ORDINALIZED by the same positional binding (the wrap re-exposes the ordinal
+  under both bare "O" and the "WARR.O" shadow). The `u.Alias == ""` check is dead code (no reachable
+  grouped gather has an empty Alias; a truly anonymous unnest declines earlier at
+  unnestSeedInnerFields) and now only guards the offset arithmetic.
 - **decline-after-leg-translation** double-registers a leg's scalar subquery — fixed by moving the
   eligibility check before leg translation. [codex P2]
 Gate tally: Torvalds ACK; Graefe ACK (blocking cleared — the box-leg gate is EXACTLY coincident with
@@ -4735,47 +4735,43 @@ convergent over the four rounds.
   (:1528) now retires for BOTH plain-leg and box-leg grouped gathers. FOLLOW-UP coverage (TODO):
   nested box (box-in-box) and 3+-buried-leaf shapes are covered by the invariant (twin ≡ bare
   name-read) but unexercised — pin them.
-- **positional shadow binding** (the shadow-collision decline arm): CONFIRMED necessary +
-  root-caused. When the element AS alias shadows an outer column of the same bare name (`WSRC,
-  WAUX, WSRC.WARR AS WV GROUP BY WV`, WAUX has a WV column), the ORDINAL SEED carries BOTH the
-  outer WAUX.WV AND the element under the bare name "WV" (ordinalJoinSeedFields does not shadow;
-  the name-ambiguity gate checks leg-vs-leg only, not element-vs-leg). The wrap NAME-reads "WV" →
-  GetByName resolves the FIRST match = the OUTER WAUX.WV, so disabling the decline ordinalizes to
-  WRONG rows (measured: WV=5/6/7 from WAUX instead of the element's WV=7/8). The decline correctly
-  routes to name-model (which reads the element via the R16 span-window routing). FIX (two
-  options): (a) make the ordinal seed SHADOW the outer bare column (element wins the bare
-  namespace, outer kept only as WAUX.WV — mirrors buildUnnestResultValue:1601-1622), then the
-  wrap's name-read is correct; OR (b) read the element POSITIONALLY in the wrap
-  (NewFieldValueOfOrdinal(typedInnerQOV, elementIdx)) so it binds the element's own slot, not the
-  ambiguous bare name. This is an OPTIMIZATION (the decline already gives correct rows), not a bug.
-  SCOUTED (viability + scope, NOT shipped — reverted to keep the four-gate-clean HEAD):
-  * **Option (b) PINNING is CONFIRMED SAFE.** Converted the wrap's whole pass-through to positional
-    reads (`NewQuantifiedObjectValueOfType(innerAlias, rc.Type())` + `NewFieldValueOfOrdinal(_, i)`)
-    and the DISJOINT grouped case still passes with correct rows and NO birth panic — a
-    LogicalProjectionExpression is not a join, so ContainsBakedOrdinal does NOT fire
-    newOrdinalJoinBirth. The "verify it doesn't perturb the projection cursor" worry is retired.
-  * **Option (a) is NOT viable as literally worded.** The "outer bare column" (WAUX.WV) is a REAL
-    leg column still needed qualified; you cannot drop its seed field — that shifts every span
-    window (`ordinalJoinSpansOf`/`datumFromSpans` read leg slots positionally) and makes WAUX.WV
-    unreadable. Shadowing must happen in the WRAP's exposed namespace, not the seed.
-  * **The complete option-(b) fix is bigger than "read the element positionally"** — it's a
-    fully-positional wrap. Making the ELEMENT win the bare name is easy (identify its field via
-    `fieldValueReferencesInner(f.Value, innerCorr)` — a QOV(inner) for a scalar element or
-    ofOrdinal-over-QOV(inner) for with-ordinality — and add it FIRST so it wins the `add` dedup).
-    But the LEAF-SOURCE keys (`WAUX.WV`) currently NAME-read the seed, which is correct ONLY when
-    the outer precedes the element (disjoint); in the ENCLOSED shape (element inserted at
-    `unnestPos` BEFORE a trailing same-named leg) the name-read would hit the element. So the leaf
-    keys must ALSO bind positionally — and `bakeLegType.leafOffset` is BOX-CONCAT-relative, not
-    seed-relative, and the element insertion shifts trailing legs, so the seed index needs per-leg
-    cumulative offset accounting (or value-correlation matching of each leaf column). Substantial,
-    and a full Graefe/Torvalds/@claude/codex re-review of a load-bearing wrap. A well-scoped follow-
-    up slice, NOT a quick increment — hence deferred rather than rushed into the clean branch.
+- **positional shadow binding — ✅ LANDED (the shadow-collision AND AT-only decline arms, together)**:
+  the wrap now binds EVERY re-exposed key POSITIONALLY (`ofOrdinal` over the seed's own type), so
+  the two former decline classes both ordinalize. Root cause: when the element AS alias shadows an
+  outer column of the same bare name (`WSRC, WAUX, WSRC.WARR AS WV GROUP BY WV`, WAUX has a WV
+  column) the ORDINAL SEED carries BOTH under the bare name "WV" (ordinalJoinSeedFields does not
+  shadow; the name-ambiguity gate checks leg-vs-leg only). A NAME-read of "WV" resolves the FIRST
+  match = the OUTER WAUX.WV → WRONG rows (measured WV=5/6/7). The fix, three parts:
+  * **ELEMENT-FIRST**: identify the element/ordinal seed fields via `fieldValueReferencesInner`
+    (their VALUE reads the Explode inner correlation — a QOV(inner) for a scalar element, ofOrdinal-
+    over-QOV(inner) for with-ordinality) and bind them by their OWN slots FIRST, so the bare name and
+    the "EL.EL"/"EL.O" shadow twins WIN the element over any same-named outer column.
+  * **POSITIONAL LEAF KEYS**: each leaf-source operand (`WAUX.WV`) binds at its own seed slot =
+    `legStart + leafOffset + colIdx`, where `legStart` is the running sum of preceding legs' run
+    widths PLUS `elemCount` once past the unnest's FROM position (`unnestPos`). This is
+    order-INDEPENDENT: it is correct whether the outer precedes the element (disjoint) OR the element
+    precedes the outer (ENCLOSED) — a name-read only worked in the disjoint order. `leafOffset` is
+    box-concat-relative and composes: a box leg recurses its buried leaves at the SAME box `legStart`.
+  * **POSITIONAL PASS-THROUGH**: remaining bare names bind by slot; a cross-leg duplicate keeps the
+    FROM-order first match (the name-model's first-match discipline).
+  * **Option (a) (shadow IN the seed) was falsified** — the outer bare column is a REAL leg column
+    still needed qualified; dropping its seed field shifts every span window. Shadowing lives in the
+    WRAP's namespace, not the seed. **Pinning is safe** — a LogicalProjectionExpression is not a join,
+    so a baked ordinal here does NOT fire newOrdinalJoinBirth (empirically confirmed).
+  * **AT-only falls out for free**: with no AS the element alias defaults to the ARRAY COLUMN
+    ("WARR"), so the grouped ordinal qualifies as "WARR.O" — which the wrap now re-exposes as the
+    ordinal's own slot under both the bare "O" and the "WARR.O" shadow. Same class, same fix.
+  Tests (all plan-asserted, correct rows): disjoint shadow (element wins bare "WV"=7/8, WAUX.WV
+  stays reachable as SUM=18), ENCLOSED shadow (element before the leg — the order the positional
+  leaf offset exists for), AT-only GROUP BY O. `gatheredGroupByWrapEligible` now declines ONLY on an
+  underivable leg type (needed for the offset arithmetic).
 - **N-way — ✅ PINNED (95aadac66, test-only)**: a 3-plain-leg disjoint gather (WSRC,
   WSRC.WARR AS EL, WAUX, GW) with a grouped aggregate over the THIRD leg (SUM(GW.V)) ordinalizes
-  (EL=7/8, S=2997), plan-asserted. The wrap already handled N legs (cross-leg bare-name collisions
-  decline upstream); this pins it.
-Then producer #2 (:1528) is retired for the gathered group-by class; the trio demolition remains the
-R1∧R2∧R3 convergence commit.
+  (EL=7/8, S=2997), plan-asserted. The wrap already handled N legs; this pins it.
+Producer #2 (:1528) is now retired for the gathered group-by class across ALL its shapes (plain-leg,
+box-leg, N-way, disjoint/enclosed shadow, AT-only); the only residual decline is an underivable leg
+type or a cross-leg unqualified-ambiguous reference (the name-ambiguity gate, a distinct SQL-error
+concern). The trio demolition remains the R1∧R2∧R3 convergence commit.
 
 ### NOT-OUR-BUG (found via codex on the named-projection review) — GENERAL derived-table + GROUP BY
 Codex flagged `SELECT E, COUNT(*) FROM (SELECT EL AS E FROM WSRC, WSRC.WARR AS EL, WAUX) AS D GROUP
