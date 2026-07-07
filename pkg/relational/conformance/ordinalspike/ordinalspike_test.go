@@ -1,13 +1,16 @@
 // Package ordinalspike_test is the RFC-173 S4 B1 CERTIFICATE — the corpus-level
 // off-vs-on differential that gates the ATOMIC demolition cap. The join name-model
-// retirement is irreducibly atomic: the three GROUP-A circular declines
-// (rfc173_cluster_gate.go :143 leg-contains-name-model-join, :157 outer-box-enclosed,
-// :190 inner-cluster-enclosed) are faithful symptoms of a name-model parent — a child
+// retirement is irreducibly atomic: the two PURELY-CIRCULAR enclosure declines
+// (rfc173_cluster_gate.go — the outer-box-enclosed and inner-cluster-enclosed
+// `t.inInnerCluster` guards) are faithful symptoms of a name-model parent — a child
 // gates iff its parent gates, so they can only lift TOGETHER, when the name model is
-// deleted. There is no safe incremental narrowing (forcing one panics its still-
-// name-model sibling), so the ONLY way to prove the cap is safe BEFORE performing it
-// is this whole-gate spike: flip all three declines to ordinalize at once and assert
-// the executable corpus returns identical rows.
+// deleted. This spike models the EXACT cap-gate state: it flips ONLY those two
+// enclosure declines and KEEPS the `ordinalEligible` (`:152`) decline, which is a
+// GENUINE name-model decline for unnest/aggregate legs (it self-corrects for join legs
+// via recursion once the enclosure declines lift, but a genuine leg must keep declining
+// until it ordinalizes in W5). Flipping `:152` too — B1's earlier over-aggressive
+// version — would gate genuine unnest legs and yield wrong rows for shapes the corpus
+// need not cover. So the certificate proves the state the cap actually ships.
 //
 // A green run PROVES that deleting the AnchoredJoin flag + the anchored producers
 // (buildJoinResultValue/buildUnnestResultValue/NewReEnumerationAnchoredRecord) + the

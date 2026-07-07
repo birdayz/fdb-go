@@ -99,19 +99,21 @@ func (t *cascadesTranslator) existsOuterGatesFresh(input logical.LogicalOperator
 }
 
 // forceOrdinalSpike is the RFC-173 S4 B1 CERTIFICATE oracle (test-only). When set,
-// ordinalWedgeGateDecide skips the three GROUP-A CIRCULAR declines — :143
-// (a leg contains a name-model join), :157 (an outer box enclosed in a name-model
-// parent), and :190 (an inner join enclosed in a name-model cluster). Each is a
-// FAITHFUL SYMPTOM of a name-model parent, not a separable class: a child gates iff
-// its parent gates, so forcing ONE off panics ordinalLegColumns on its still-
-// name-model sibling. Forcing ALL THREE off TOGETHER models the atomic flip the
-// demolition performs — every circular parent+child ordinalizes at once, leaving no
-// name-model parent to read a positional row by name. The B1 corpus-level
-// differential runs the executable corpus twice (spike OFF vs ON) and asserts
-// identical rows: a green run PROVES the atomic cap (deleting the AnchoredJoin flag,
-// the anchored producers, and the §5 oracle) preserves rows. This is NOT a
-// production narrowing — the flag is flipped only by the certificate harness at a
-// phase barrier, exactly like the executor's DisablePositionalEmission name oracle.
+// ordinalWedgeGateDecide skips the two PURELY-CIRCULAR enclosure declines — the outer
+// box enclosed in a name-model parent, and the inner join enclosed in a name-model
+// cluster (both `t.inInnerCluster` guards). Each is a FAITHFUL SYMPTOM of a name-model
+// parent (a child gates iff its parent gates), so they lift together, atomically, when
+// the name model is gone. The `ordinalEligible` (`:152`) decline is NOT spike-guarded:
+// it is NOT purely circular — for a JOIN leg it self-corrects via recursion (once the
+// enclosure declines lift, a nested join gates → its parent sees it as eligible), but
+// for a GENUINE name-model leg (an UNNEST / aggregate / mixed-derived body) it must
+// KEEP declining until that leg itself ordinalizes (W5). So the spike models the EXACT
+// cap-gate state — flip the enclosure declines, keep `:152` — not B1's earlier
+// over-aggressive all-three skip (which would gate genuine unnest legs → wrong rows for
+// shapes the corpus need not cover). The corpus-level differential runs twice (spike
+// OFF vs ON) and asserts identical rows: green PROVES the enclosure flip preserves rows.
+// NOT a production narrowing — flipped only by the certificate harness at a phase
+// barrier, exactly like the executor's DisablePositionalEmission name oracle.
 var forceOrdinalSpike bool
 
 // SetForceOrdinalSpike flips the B1 certificate oracle. Test-only; the caller must
@@ -149,7 +151,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		}
 		seenBindings[key] = struct{}{}
 	}
-	if (!t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right)) && !forceOrdinalSpike {
+	if !t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right) {
 		// A leg CONTAINS a name-model join at its own boundary (an
 		// aggregate/CTE/derived body the gate keeps anchored): its output
 		// rows are the name model's merged rows (dotted keys, no leg concat)
