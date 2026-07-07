@@ -4296,6 +4296,27 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("aliased WITH-CTE unnest rows %v != unaliased control %v — the range alias must be transparent", aliased, unaliased)
 		}
 	})
+
+	// RFC-173 c3 review fix (scope boundary): the alias resolver must NOT descend into a
+	// CTE/derived BODY (a hidden inner scope). A derived table `X` hides `T1 AS D` in its
+	// body while the VISIBLE owner is `C AS D` (the CTE carrying DARR). Binding `D.DARR`
+	// must resolve to C, never the hidden T1 (which has no DARR → a false reject or
+	// wrong-owner classification). aliasedScanTable walks Main-only (like
+	// findDerivedOwnerCTE), so the hidden body scan is out of scope.
+	t.Run("aliased CTE owner ignores a hidden same-aliased body scan (scope boundary)", func(t *testing.T) {
+		const q = `WITH "C" AS (SELECT "DID", "DARR" FROM DRV) ` +
+			`SELECT "EL" FROM (SELECT "ID" FROM T1 AS "D") AS "X", "C" AS "D", "D"."DARR" AS "EL"`
+		const control = `WITH "C" AS (SELECT "DID", "DARR" FROM DRV) ` +
+			`SELECT "EL" FROM (SELECT "ID" FROM T1 AS "Z") AS "X", "C" AS "D", "D"."DARR" AS "EL"`
+		_, hidden := query(t, q)      // hidden body scan aliased D (must be ignored)
+		_, plain := query(t, control) // same shape, body scan aliased Z (no shadow)
+		if len(hidden) == 0 {
+			t.Fatal("hidden-body scope leak: the resolver crossed into the derived body and mis-resolved the owner")
+		}
+		if !unnestEqualStrs(hidden, plain) {
+			t.Fatalf("hidden-body D=%v != no-shadow control=%v — a same-aliased body scan must be out of scope", hidden, plain)
+		}
+	})
 }
 
 // TestFDB_ArrayUnnestOrdinalityColumnType is the RFC-142

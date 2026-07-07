@@ -256,6 +256,13 @@ func aliasedScanTable(op logical.LogicalOperator, alias string) string {
 				return n.Table
 			}
 			return ""
+		case *logical.LogicalCTE:
+			// MAIN-ONLY visibility (mirrors findDerivedOwnerCTE): a CTE/derived
+			// table's BODY is a HIDDEN inner scope. A same-aliased scan inside it
+			// must NOT resolve the outer owner — `FROM (SELECT ... FROM T AS d) AS x,
+			// c AS d, d.arr AS el` must bind `d` to the VISIBLE `c AS d` scan, never
+			// the body's `T AS d`. Only the Main (outer FROM) chain is in scope.
+			return walk(n.Main)
 		case *logical.LogicalUnnest:
 			return ""
 		default:
