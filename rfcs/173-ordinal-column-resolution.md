@@ -2772,8 +2772,13 @@ folds (the common case); correlated folds (the F2 NAME-binder wall) and buried g
 booked follow-ons. Pins: three white-box guards (`reconstructFoldStep1Seed` / `legIsOrdinalSafe` /
 `foldStep1Seed` — the wiring gate the dualwindow differential is blind to, since a name-model revert
 leaves both windows agreeing) + the `projected_exists_*` matrix + dualwindow, all green; no regression
-across the exists / join / unnest / CTE / aggregate FDB suites. Four-gate review pending
-(Graefe impl-ACK on the C landing + Torvalds + @claude + codex).
+across the exists / join / unnest / CTE / aggregate FDB suites. In-session gates GRANTED on HEAD
+817191109 (impl 8e9ee26d9 + cursor pin 6a489a0c5 + code-quality polish 817191109): the query-engine
+architect impl-ACK (verified line-by-line — resolve-don't-rebase, both twins untouched, the cursor
+branch pinned discriminatingly) and the code-quality ACK (no CRITICAL/MAJOR; MINOR polish + index-leg
+coverage folded in). @claude + codex remain as merge-gates (pending a pushed PR / quota). Scope:
+independent scan-leg folds; correlated folds (the F2 name-binder wall) and buried gated-box legs are
+booked as their own future design+impl slices.
 
 ## ROADMAP STATE (authoritative; update this block as slices land)
 

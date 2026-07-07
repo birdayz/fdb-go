@@ -4464,51 +4464,26 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 
-	// Add EXISTS subqueries as existential quantifiers. The leg-correlation
-	// scan feeds ONLY the minted-binding decline below — skipped entirely for
-	// the non-duplicate common case.
+	// Add EXISTS subqueries as existential quantifiers. RFC-173 S4 commit 4: a
+	// minted-binding (duplicate-alias) gated flatten with a LEG-INDEPENDENT EXISTS
+	// no longer declines here — the executor's identity-FlatMap pass-through now
+	// propagates the gated outer's own positional row (keyed on the outer's
+	// ordinal seed via downstreamLegWindows, not the exists inner's probe), so
+	// the minted-dup upper (QOV(Q$DUPn)) resolves positionally instead of serving
+	// NULLs off a name Datum that never had the binding-keyed column.
 	sourceAliases := []string{leftAlias, rightAlias}
-	mintedLeg := mintedBindingLeg(left, right)
-	anyExistsRefsLegs := false
 	for _, esq := range f.ExistsSubqueries {
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
-		}
-		if mintedLeg != "" && !anyExistsRefsLegs {
-			for corr := range subRef.GetCorrelatedTo() {
-				name := corr.Name()
-				if strings.EqualFold(name, leftAlias) || strings.EqualFold(name, rightAlias) {
-					anyExistsRefsLegs = true
-					break
-				}
-			}
 		}
 		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
 		quantifiers = append(quantifiers, existQ)
 		innerCorrName, joinPred := existsInnerCorrelation(esq)
 		if joinPred != nil {
 			allPreds = append(allPreds, joinPred)
-			anyExistsRefsLegs = true
 		}
 		sourceAliases = append(sourceAliases, innerCorrName)
-	}
-	if gatedFlatten && !anyExistsRefsLegs {
-		if leg := mintedLeg; leg != "" {
-			// A LEG-INDEPENDENT existential over a minted-binding join: the
-			// executor's identity-FlatMap positional pass-through is
-			// probe-gated on baked outer references INSIDE the exists inner
-			// (probeOuterBakedType) — a leg-independent inner leaves the
-			// probe negative, the outer flows as the name Datum, and a lazy
-			// minted-binding upper (the projection's QOV(Q$DUPn) read) would
-			// serve silent NULLs. Decline LOUDLY until the pass-through gate
-			// widens to key on the outer's own ordinal seed (the executor's
-			// booked follow-on); correlated existentials keep answering (the
-			// probe finds their baked refs).
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"duplicate FROM alias: leg %s with a leg-independent EXISTS cannot yet flow the positional row (probe-gated pass-through)", leg))
-			return nil
-		}
 	}
 
 	// The RV uses DECLARATION order (design ruling I2: Java assembles the

@@ -57,6 +57,7 @@ go_test(
         "positional_type_cache_test.go",
         "resultset_test.go",
         "rfc173_commit2_cursor_pin_test.go",
+        "rfc173_commit4_passthrough_test.go",
         "rfc173_item2_e2_binder_test.go",
         "rfc173_ordinal_join_test.go",
         "rfc173_ordinal_join_wiring_test.go",
@@ -110,6 +111,7 @@ go_test(
         "positional_type_cache_test.go",
         "rfc173_item2_e2_binder_test.go",
         "rfc173_commit2_cursor_pin_test.go",
+        "rfc173_commit4_passthrough_test.go",
     ],
     deps = [
         "//gen",

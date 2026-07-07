@@ -248,11 +248,41 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 			t.Errorf("decline error = %v, want it to contain %q\n  sql: %s", err, wantSub, q)
 		}
 	}
-	// (a) Existential alias colliding with the dup display alias — the
-	// collision guard narrows OFF the gate toward the name model.
-	t.Run("P4a_exists_alias_collision_dup", func(t *testing.T) {
-		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM p AS a WHERE a.id = 1)",
-			"duplicate FROM alias")
+	// (a) A shadowing existential over a dup outer — RFC-173 S4 commit 4. The
+	// exists subquery's own `p AS a` SHADOWS the outer dup alias, so `a.id = 1`
+	// is INNER-scoped (the subquery's p) — the EXISTS is leg-independent and
+	// always true (p has id=1). Same class as P4e: the gated minted-dup outer
+	// flows its positional row through the identity-FlatMap pass-through and
+	// a.qid binds the q leg. 6 rows, qid ∈ {5,7,9} each twice. (Pre-commit-4 Go
+	// declined this valid query — a Java-parity reach gap, not a real collision;
+	// the outer `a.qid` sees only the two outer legs, the subquery's `a` is a
+	// separate scope.)
+	t.Run("P4a_shadowing_exists_dup", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT a.qid FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM p AS a WHERE a.id = 1)")
+		if err != nil {
+			t.Fatalf("shadowing leg-independent EXISTS over a dup outer errored: %v", err)
+		}
+		defer rows.Close()
+		counts := map[int64]int{}
+		total := 0
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !v.Valid {
+				t.Fatal("a.qid served NULL — the minted-dup upper must resolve positionally")
+			}
+			counts[v.Int64]++
+			total++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if total != 6 || counts[5] != 2 || counts[7] != 2 || counts[9] != 2 {
+			t.Fatalf("P4a = %d rows %v, want 6 rows {5:2,7:2,9:2} (a.qid binds q, inner-scoped EXISTS always true)", total, counts)
+		}
 	})
 	// (b) Arity-3 FROM with a dup pair + uncorrelated EXISTS — the arity
 	// narrowing routes OFF the gate.
@@ -270,14 +300,41 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 		loudDecline(t, "SELECT (SELECT MAX(qid) FROM q WHERE a.id = 1) FROM p AS a, q AS a",
 			"duplicate outer FROM alias")
 	})
-	// (e) The GATED flatten's leg-independent EXISTS — nothing narrows off
-	// the gate, but the executor's identity-FlatMap positional pass-through
-	// is probe-gated on baked outer refs inside the exists inner, which a
-	// leg-independent inner never has (pre-guard: 6 rows, all NULL). The
-	// correlated control is P2_second_leg_dup above.
+	// (e) The GATED flatten's leg-independent EXISTS — RFC-173 S4 commit 4.
+	// The minted-dup outer (p AS a, q AS a) gates ordinal and a.qid binds the q
+	// leg; the leg-independent EXISTS (SELECT 1 FROM p, always true) leaves the
+	// exists inner's baked-ref probe negative, so the executor's identity-FlatMap
+	// pass-through keys on the OUTER's own ordinal seed (downstreamLegWindows) to
+	// flow the gated positional row — the minted-dup upper QOV(Q$DUP) then
+	// resolves positionally instead of the pre-widening loud decline. Cross
+	// product p(2) × q(3) = 6 rows, qid ∈ {5,7,9} each twice. The correlated
+	// control is P2_second_leg_dup above.
 	t.Run("P4e_leg_independent_exists_dup", func(t *testing.T) {
-		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM p)",
-			"duplicate FROM alias")
+		rows, err := db.QueryContext(ctx,
+			"SELECT a.qid FROM p AS a, q AS a WHERE EXISTS (SELECT 1 FROM p)")
+		if err != nil {
+			t.Fatalf("leg-independent EXISTS over a dup outer errored (commit 4 must flow the positional row): %v", err)
+		}
+		defer rows.Close()
+		counts := map[int64]int{}
+		total := 0
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if !v.Valid {
+				t.Fatal("a.qid served NULL — the minted-dup upper must resolve positionally, never off the name Datum")
+			}
+			counts[v.Int64]++
+			total++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if total != 6 || counts[5] != 2 || counts[7] != 2 || counts[9] != 2 {
+			t.Fatalf("P4e = %d rows %v, want 6 rows {5:2,7:2,9:2} (a.qid binds the q leg, EXISTS always true)", total, counts)
+		}
 	})
 	// (f) The UNION face: a dup-alias branch under UNION ALL keeps its
 	// per-attribute reference display-keyed and dies LOUD at the executor's

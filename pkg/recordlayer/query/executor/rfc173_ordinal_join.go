@@ -434,23 +434,33 @@ func spliceLegSpansDepth(spans []legSpan, legRVs map[values.CorrelationIdentifie
 // the recursive box splice. Subsumes the bare ordinalJoinSpans probe (a
 // pristine S2 seed needs no legRVs and no splice — identical output).
 func joinPlanSpans(join plans.RecordQueryPlan) ([]legSpan, bool) {
+	spans, _, ok := joinPlanSpansTyped(join)
+	return spans, ok
+}
+
+// joinPlanSpansTyped is joinPlanSpans that ALSO returns the merged row's
+// RecordType (which ordinalJoinSpansOf already computes and joinPlanSpans
+// discards). RFC-173 S4 commit 4: the identity-FlatMap positional pass-through
+// adapts a propagated outer against this merged type (a no-op on a seed-layout
+// row, but LOUD on a mismatch — amendment B: never a silent wrong-slot read).
+func joinPlanSpansTyped(join plans.RecordQueryPlan) ([]legSpan, *values.RecordType, bool) {
 	rv := joinPlanRV(join)
 	if rv == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	legRVs := make(map[values.CorrelationIdentifier]values.Value)
 	collectJoinLegRVs(join, legRVs)
-	spans, _, ok := ordinalJoinSpansOf(rv, legRVs)
+	spans, mergedType, ok := ordinalJoinSpansOf(rv, legRVs)
 	if !ok {
 		// RFC-173 W4c: the MIXED single-source lateral-unnest seed windows via
 		// the dedicated derivation (bare-scalar element leg). It has no fused/box
 		// legs, so the spans stand without a splice.
-		if ms, _, mok := unnestMixedSeedSpans(rv); mok {
-			return ms, true
+		if ms, mt, mok := unnestMixedSeedSpans(rv); mok {
+			return ms, mt, true
 		}
-		return nil, false
+		return nil, nil, false
 	}
-	return spliceLegSpans(spans, legRVs), true
+	return spliceLegSpans(spans, legRVs), mergedType, true
 }
 
 // assertOrdinalJoinSeed delegates to values.AssertOrdinalJoinSeed — the LOUD
@@ -1435,11 +1445,21 @@ func mergeShapeDatum(rc *values.RecordConstructorValue, outerID, innerID values.
 // genuine passthrough UNDER-provides windows, which fails LOUD downstream
 // (OrdinalResolutionError/BakedNameContextError), never silently wrong.
 func downstreamLegWindows(input plans.RecordQueryPlan) ([]legSpan, bool) {
+	spans, _, ok := downstreamLegWindowsTyped(input)
+	return spans, ok
+}
+
+// downstreamLegWindowsTyped is downstreamLegWindows that ALSO returns the merged
+// row's RecordType (RFC-173 S4 commit 4 — the identity-FlatMap pass-through's
+// loud adaptation guard). Same acceptance as downstreamLegWindows: a genuine
+// gated ordinal join outer only (ordinalJoinSpansOf rejects a name-model
+// anchored RC — its fields are lazy, not FrontierPinned).
+func downstreamLegWindowsTyped(input plans.RecordQueryPlan) ([]legSpan, *values.RecordType, bool) {
 	join := unwrapToJoinPlan(input)
 	if join == nil {
-		return nil, false
+		return nil, nil, false
 	}
-	return joinPlanSpans(join)
+	return joinPlanSpansTyped(join)
 }
 
 // unwrapToJoinPlan walks the EXACT single-child passthrough set down to the
