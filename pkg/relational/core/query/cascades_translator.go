@@ -116,6 +116,20 @@ type cascadesTranslator struct {
 	// the flag true → the nested join under-gates to the name model — never
 	// the reverse.
 	inInnerCluster bool
+	// underAggregate is set while lowering the INPUT of a GROUP BY / aggregate
+	// (translateAggregate). A gathered multi-source unnest whose flat select is
+	// then collapsed by PartitionSelectRule.positionalMergeCase into a
+	// record-of-records positional merge cannot resolve ANY leg column by name
+	// for grouping — the partition rule rebases every leg column to a POSITIONAL
+	// ofOrdinal(merge,i) that does not resolve over the grouped NLJ's name-keyed
+	// mergeRows row, so the group key (and every outer-column aggregate) reads
+	// NULL (a disjoint `SELECT EL, COUNT(*) FROM a, a.arr AS EL, b GROUP BY EL`
+	// groups every row under NULL). Until the positional-merge legs are windowed
+	// as flat name keys (the RFC-173 ordinal compose-direction for the merge),
+	// DECLINE the gather under an aggregate so the shape keeps the name-model
+	// path, which groups correctly. Strictly safe: no gathered group-by resolves
+	// today, so this only routes a silently-wrong shape to the working residual.
+	underAggregate bool
 	// unnestUnderExistential is set while lowering a lateral unnest that is the
 	// OUTER of an EXISTS composition (translateUnnestExistsFilter). RFC-173 commit
 	// 5a ORDINALIZES this class: the W4c ordinal-seed gate is taken when the outer
@@ -4028,7 +4042,22 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			Plan:  ssq.Plan,
 		})
 	}
+	// A gathered multi-source unnest collapses to a positional merge under this
+	// GROUP BY that resolves no leg column by name (see underAggregate) — decline
+	// the gather for the duration of the input translation so it keeps the working
+	// name-model path. ONLY for a GROUPED aggregate (len(GroupKeys) > 0): the
+	// positional-merge collapse (PartitionSelectRule) fires for the PARTITION, so a
+	// GLOBAL aggregate (no GROUP BY — `SELECT COUNT(*) FROM a, b, a.arr AS x`) keeps
+	// the flat gathered seed and resolves fine (COUNT(*) reads no leg column). Not
+	// gating global aggregates also preserves shapes the gather is the SOLE path for
+	// — e.g. a duplicate-FROM-alias multi-source unnest whose name-model fallback
+	// hits the ordinal-seed-required rejection.
+	prevUnderAgg := t.underAggregate
+	if len(a.GroupKeys) > 0 {
+		t.underAggregate = true
+	}
 	innerRef := t.translateRef(a.Input)
+	t.underAggregate = prevUnderAgg
 	if innerRef == nil {
 		return nil
 	}

@@ -3517,6 +3517,34 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
+	t.Run("DISJOINT gathered multi-source unnest GROUP BY resolves via the under-aggregate decline", func(t *testing.T) {
+		// Regression for a shipped WRONG-ANSWER bug: a DISJOINT-column multi-source
+		// unnest GROUP-BY (`FROM WSRC, WSRC.WARR AS EL, WAUX GROUP BY EL`) has no
+		// shared name, so the broad name-ambiguity gate does NOT decline it — it
+		// GATHERED, and PartitionSelectRule.positionalMergeCase collapsed the flat
+		// select into a record-of-records positional merge that resolves NO leg column
+		// by name for grouping, so `GROUP BY EL` grouped EVERY row under NULL (got
+		// [EL=<nil>, N=6] instead of EL=7/EL=8). Masked because every OTHER
+		// gathered-group-by test (GD/GW) shares column names → declines → name-model.
+		// The under-aggregate decline routes this to the name-model path, which groups
+		// correctly. WSRC has 1 row (SID=1, WARR={7,8}); WAUX has 3 rows, so each
+		// element crosses 3×. Both the element key AND an outer-column aggregate
+		// (the SUM-over-outer-column dimension) resolve.
+		assertRows(t, `SELECT "EL", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
+			"COUNT(*)=3|EL=7|N=3", "COUNT(*)=3|EL=8|N=3",
+		})
+		assertRows(t, `SELECT "EL", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
+			"EL=7|S=3|SUM(WSRC.SID)=3", "EL=8|S=3|SUM(WSRC.SID)=3",
+		})
+		// GLOBAL aggregate (no GROUP BY) must NOT be declined: it keeps the flat
+		// gathered seed (no positional-merge collapse fires without a partition), and
+		// COUNT(*) reads no leg column. The under-aggregate decline is scoped to
+		// len(GroupKeys) > 0 so this still gathers. 1 WSRC row × {7,8} × 3 WAUX = 6.
+		assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"COUNT(*)=6|N=6",
+		})
+	})
+
 	t.Run("R19 GROUP BY buried shadowing unnest ORDINAL with NON-CONTIGUOUS positions counts per ordinal", func(t *testing.T) {
 		// The ordinality variant grouping by the ORDINAL (AT): `... AS V AT O, GW GROUP
 		// BY O`. The ordinal resets per outer row (1,2,1,2 over GD's two 2-element

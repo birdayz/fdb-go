@@ -60,6 +60,16 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if !isJoin {
 		return nil // single-source outer — the W4c binary path owns it
 	}
+	if t.underAggregate {
+		// A GROUP BY over this gather collapses the flat select into a positional
+		// merge (PartitionSelectRule.positionalMergeCase) that resolves NO leg
+		// column by name — the grouped NLJ's name-keyed mergeRows row cannot bind
+		// the partition rule's positional ofOrdinal(merge,i) leg refs, so the group
+		// key and every outer-column aggregate read NULL. DECLINE to the name-model
+		// path (which groups correctly) until the positional-merge legs are windowed
+		// as flat name keys. See cascadesTranslator.underAggregate.
+		return nil
+	}
 	// The left cluster must be a GATED-if-fresh cluster (the enclosure-free
 	// probe, side-effect-free Decide — the ordinalEligible pattern): an
 	// ungated cluster flows name-model rows the baked collection read cannot
