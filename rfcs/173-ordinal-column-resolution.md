@@ -4742,6 +4742,24 @@ a failing shape driving it, not a speculative global swap. Stale line refs to re
 `:1058/:2833/:2950/:3751/:2344/:4399/:4954/:4151` → `:1074/:2908/:3033/:3850/:4539/:5060/:4291`; R1
 (recursive) has already LANDED, so the "After (A)" list above is stale on that item.
 
+**MECHANISM confirming refinement 1 — why the composition is FUNDAMENTALLY unsafe (S4 deep-read).** The
+anchored branch fires when `ordinalWedgeGate` returns `!Gated`, and (per `ordinalEligible`,
+rfc173_cluster_gate.go:240-265) a join is non-gated precisely when a LEG cannot be ordinal-typed — a
+NAME-MODEL leg (name-model unnest, dissolved-LEFT cluster, mixed derived nesting), a per-row
+correlated-scalar project, or a recursive body. `NewAnchoredJoinRecord` reads its legs BY ALIAS
+(`FieldValue(QOV(leg), col)` keyed on the display alias). So if Rule A flipped a gateable sibling leg
+to ORDINAL under such an anchored parent, the parent's alias-keyed read would hit that leg's
+POSITIONAL row by NAME and silent-NULL — the exact positional-seed-name-read defect producer #2's
+named-projection wrap exists to cure. That is why the mix is unsafe and why the anchored branch is not
+a "lift": it is the IRREDUCIBLE name-model residual for joins at least one of whose legs is itself a
+name-model construct. Retiring it therefore does NOT reduce to a gate tweak — it requires ordinalizing
+the LEG CLASSES that make a join non-gateable (name-model unnest legs beyond the gathered case,
+dissolved-LEFT clusters), OR wrapping the anchored parent's ordinal legs in the same named-projection
+layer producer #2 uses so the alias read resolves. Net: producer #3 is co-extensive with "ordinalize
+every remaining name-model LEG class," gated on the same wrap/qualify discipline R2 proved — a
+multi-slice effort, not a single lift. The atomic cap fires only once no SQL shape reaches :4402/:4650
+with a name-model leg.
+
 ## S4 R2 — gathered multi-source unnest GROUP BY ordinalization (LANDED: 43871b83b)
 
 The first producer-retiring increment against R2 (multi-source lateral unnest, the :1528 producer):
