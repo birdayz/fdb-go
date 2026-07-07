@@ -2554,13 +2554,17 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			// fallback and silently read the INNER row. Make it bindable IN
 			// PLACE, keeping the under-∃ placement:
 			//   - WINDOWED ordinal seed: BAKE the leg ref to an ofOrdinal over
-			//     the typed merged QOV (the single-alias outer is the pristine
-			//     prefix at offset 0, so the leg-type ordinal IS the merged
-			//     ordinal). A baked FrontierPinned outer ref inside an
-			//     existential inner plan is exactly the shape the disabled-birth
-			//     probe binds positionally. The translator is the SINGLE rebase
-			//     authority for buried refs (the hoist never sees them), so this
-			//     cannot double-rebase.
+			//     the typed merged QOV. For the single-alias outer (the only
+			//     reachable shape today) the leg IS the pristine prefix at offset
+			//     0, so the leg-type ordinal IS the merged ordinal; for a
+			//     multi-alias outer (a box, when the guard lifts) the slot is
+			//     resolved WITHIN the qualifier's rt.Legs window
+			//     (rebaseUnnestOuterLegPredicateOrdinal → ordinalSlotInLegWindow),
+			//     so a dup-named column bakes the right alias's slot. A baked
+			//     FrontierPinned outer ref inside an existential inner plan is
+			//     exactly the shape the disabled-birth probe binds positionally.
+			//     The translator is the SINGLE rebase authority for buried refs
+			//     (the hoist never sees them), so this cannot double-rebase.
 			//   - ANCHORED seed: the qualified "LEG.COL" read off the merged
 			//     binding — the same rebase the JoinPredicate channel gets.
 			if lf, isLF := esq.Plan.(*logical.LogicalFilter); isLF &&
