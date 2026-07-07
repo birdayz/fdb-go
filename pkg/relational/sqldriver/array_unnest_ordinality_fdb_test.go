@@ -4277,6 +4277,25 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			[]string{"D.DID=1|EL=10|O=1", "D.DID=1|EL=11|O=2", "D.DID=2|EL=20|O=1"})
 		unnestMustContain(t, p5, "WITH ORDINALITY")
 	})
+
+	// RFC-173 c3 review fix (false rejection): a class-3 derived-unnest whose WITH-CTE owner
+	// is referenced by a RANGE ALIAS (`WITH "C" AS (...) ... FROM "C" AS "D", "D"."DARR"
+	// AS "EL"`) looked up cteScope by the alias `D`, not the CTE name `C`, and wrongly
+	// declined (0AF00). derivedOwnerBody now resolves the alias through the outer scan's
+	// Table. The aliased form must answer IDENTICALLY to the unaliased form (the control,
+	// which resolved because u.Segments[0] already equalled the CTE name) — the range
+	// alias is transparent to the unnest result.
+	t.Run("aliased WITH-CTE owner unnest resolves (range alias transparent)", func(t *testing.T) {
+		const cte = `WITH "C" AS (SELECT "DID", "DARR" FROM DRV) `
+		_, unaliased := query(t, cte+`SELECT "DID", "EL" FROM "C", "C"."DARR" AS "EL"`)
+		_, aliased := query(t, cte+`SELECT "DID", "EL" FROM "C" AS "D", "D"."DARR" AS "EL"`)
+		if len(aliased) == 0 {
+			t.Fatal("aliased WITH-CTE unnest returned zero rows — the range alias was falsely rejected (Finding 2 not fixed)")
+		}
+		if !unnestEqualStrs(aliased, unaliased) {
+			t.Fatalf("aliased WITH-CTE unnest rows %v != unaliased control %v — the range alias must be transparent", aliased, unaliased)
+		}
+	})
 }
 
 // TestFDB_ArrayUnnestOrdinalityColumnType is the RFC-142

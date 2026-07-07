@@ -326,7 +326,14 @@ validation gate.
     empirical zero-producers proof must cover ALL FOUR producers (probe #1's last existential-ON
     shape; then retire #2/#3/#4 by ordinalizing their shapes), then the atomic deletion. Gated on a
     Graefe RFC DESIGN-ACK of the demolition plan + all four impl gates (codex incl.). See the
-    corrected RFC Slice-4 PREREQUISITE block. Then:
+    corrected RFC Slice-4 PREREQUISITE block.
+    **B1 DISCHARGED (corpus-level ordinal-spike certificate GREEN):** the whole-gate
+    force-ordinalize flip (`query.SetForceOrdinalSpike` guarding the three circular declines
+    :143/:157/:190, in `pkg/relational/conformance/ordinalspike`) preserves EVERY corpus row —
+    **1641 entries, 0 carve-outs, 0 mismatches**. This PROVES the atomic cap (flag + producers +
+    §5 oracle deletion) is SAFE TO FIRE: any shape the cap would change now surfaces as a spike
+    mismatch, never silently. The certificate retires with the name model. Remaining before the cap:
+    B2 (item-3/unnest-residual/rider-2 to master) + the atomic deletion itself (codex-gated). Then:
     delete the flag + trio + the
     three seeds + `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag
     branches + 4 executor consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until

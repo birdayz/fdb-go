@@ -494,4 +494,22 @@ func TestFDB_RFC173ChainedUnnest(t *testing.T) {
 			t.Fatalf("nonarray-sub chained: got SQLSTATE %s, want 42F10 (INVALID_COLUMN_REFERENCE)", code)
 		}
 	})
+
+	// RFC-173 c3 review fix (wrong value): the chained path bypassed translateUnnestJoin's
+	// AS==AT overwrite guard. `... AS "Y" AT "Y"` appends the element and the ordinal
+	// under the SAME name; the map-keyed result silently overwrites the element with the
+	// ordinal, so `SELECT "Y"` returns the ordinal, not the unnested value. Java binds AS
+	// and AT to distinct quantifier columns (a duplicate is a binding error), so Go must
+	// reject cleanly. The guard now fires on the chained path too.
+	t.Run("chained AS==AT dup alias rejects (element/ordinal overwrite)", func(t *testing.T) {
+		const q = `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "Y"`
+		if code := planErr(t, q); code != api.ErrCodeDuplicateAlias {
+			t.Fatalf("chained AS==AT dup: got SQLSTATE %s, want 42710 (DUPLICATE_ALIAS) — the ordinal must not silently overwrite the element", code)
+		}
+		// The distinct-alias sibling still chains and answers (the guard is scoped to
+		// the collision, not the WITH-ORDINALITY chain itself).
+		if _, rows := queryRows(t, `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "O"`); len(rows) == 0 {
+			t.Fatal("distinct AS/AT chain returned zero rows — the dup guard must not block valid WITH ORDINALITY chains")
+		}
+	})
 }

@@ -152,7 +152,19 @@ func (t *cascadesTranslator) derivedOwnerBody(outerLeft logical.LogicalOperator,
 	key := strings.ToUpper(alias)
 	body, ok := t.cteScope[key]
 	if !ok {
-		return nil, nil, false
+		// The owner may be a RANGE ALIAS over a CTE (`WITH c AS (...) SELECT ...
+		// FROM c AS d, d.arr AS x`): u.Segments[0] is the alias `D`, but cteScope and
+		// cteColumnsScope are keyed by the CTE name `C`. Resolve the alias through the
+		// outer scan bound to it (a range-aliased CTE reference is a LogicalScan whose
+		// Table names the CTE) and retry — else a passthrough CTE unnest the class-3
+		// path supports is falsely rejected.
+		if tbl := aliasedScanTable(outerLeft, alias); tbl != "" {
+			key = strings.ToUpper(tbl)
+			body, ok = t.cteScope[key]
+		}
+		if !ok {
+			return nil, nil, false
+		}
 	}
 	// Output names: the registered cteColumnsScope (which reflects a
 	// `WITH c(a,b)` rename) when present; else the body's own projection
@@ -226,6 +238,33 @@ func findDerivedOwnerCTE(op logical.LogicalOperator, alias string) *logical.Logi
 				}
 			}
 			return nil
+		}
+	}
+	return walk(op)
+}
+
+// aliasedScanTable returns the Table of a LogicalScan bound to `alias` within op —
+// a range-aliased source (`FROM c AS d` lowers to LogicalScan{Table:"C",Alias:"D"}),
+// so a CTE referenced by a range alias resolves its CTE name via the scan's Table.
+// Empty when no such scan exists. Stops at an unnest (the array leg, never an owner).
+func aliasedScanTable(op logical.LogicalOperator, alias string) string {
+	var walk func(logical.LogicalOperator) string
+	walk = func(o logical.LogicalOperator) string {
+		switch n := o.(type) {
+		case *logical.LogicalScan:
+			if strings.EqualFold(n.Alias, alias) {
+				return n.Table
+			}
+			return ""
+		case *logical.LogicalUnnest:
+			return ""
+		default:
+			for _, c := range o.Children() {
+				if r := walk(c); r != "" {
+					return r
+				}
+			}
+			return ""
 		}
 	}
 	return walk(op)
