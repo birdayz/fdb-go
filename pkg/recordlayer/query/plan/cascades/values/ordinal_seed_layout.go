@@ -120,7 +120,11 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 	// replacement) letting a qualified read of a buried alias resolve to the right
 	// leaf's slot — the disambiguation the pristine branch already had. A plain
 	// single-source outer (a scan) carries no rt.Legs, so the buried loop is a no-op
-	// there and this stays byte-identical to the prior single-source behavior.
+	// there: the WINDOWS MAP is unchanged from the prior single-source behavior (the
+	// only consumer of the reachable path); the merged type now ADDITIONALLY carries
+	// its two top-level leg boundaries [OUTER, ELEMENT], matching the executor twin
+	// (mergedLegsOfSpans) — inert on every live consumer, pinned by the
+	// cross-agreement fixture.
 	if len(windows) != 1 {
 		return nil, nil
 	}

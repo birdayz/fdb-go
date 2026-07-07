@@ -240,6 +240,13 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 // values-side finalizeSeedWindows — the cross-agreement invariant (independent
 // walks drift, and layout drift is wrong-offset wrong-rows). Shared by the pristine
 // and mixed span derivations so a box outer's boundaries agree in both.
+//
+// NOTE (mixed seed): this includes the trailing ELEMENT leg, whereas rcOutputType
+// (the birth ROW type) omits the bare-QOV element. The two "merged type" notions
+// disagree on the element leg — harmless today (nothing compares them; every
+// consumer reads only .Fields, and PositionalRow.GetByName resolves over the
+// rcOutputType-birthed row, not this span-probe type). If a future consumer ever
+// treats this .Legs as authoritative for an rcOutputType-birthed row, reconcile.
 func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 	var mergedLegs []values.RecordTypeLeg
 	for _, s := range spans {
