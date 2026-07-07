@@ -4747,10 +4747,29 @@ convergent over the four rounds.
   namespace, outer kept only as WAUX.WV — mirrors buildUnnestResultValue:1601-1622), then the
   wrap's name-read is correct; OR (b) read the element POSITIONALLY in the wrap
   (NewFieldValueOfOrdinal(typedInnerQOV, elementIdx)) so it binds the element's own slot, not the
-  ambiguous bare name — but that PINS (ContainsBakedOrdinal), so verify it doesn't perturb the
-  projection cursor (a projection is not a join, so newOrdinalJoinBirth should not fire, but
-  confirm). Option (a) is cleaner and matches the name model. This is an OPTIMIZATION (the decline
-  already gives correct rows), not a bug.
+  ambiguous bare name. This is an OPTIMIZATION (the decline already gives correct rows), not a bug.
+  SCOUTED (viability + scope, NOT shipped — reverted to keep the four-gate-clean HEAD):
+  * **Option (b) PINNING is CONFIRMED SAFE.** Converted the wrap's whole pass-through to positional
+    reads (`NewQuantifiedObjectValueOfType(innerAlias, rc.Type())` + `NewFieldValueOfOrdinal(_, i)`)
+    and the DISJOINT grouped case still passes with correct rows and NO birth panic — a
+    LogicalProjectionExpression is not a join, so ContainsBakedOrdinal does NOT fire
+    newOrdinalJoinBirth. The "verify it doesn't perturb the projection cursor" worry is retired.
+  * **Option (a) is NOT viable as literally worded.** The "outer bare column" (WAUX.WV) is a REAL
+    leg column still needed qualified; you cannot drop its seed field — that shifts every span
+    window (`ordinalJoinSpansOf`/`datumFromSpans` read leg slots positionally) and makes WAUX.WV
+    unreadable. Shadowing must happen in the WRAP's exposed namespace, not the seed.
+  * **The complete option-(b) fix is bigger than "read the element positionally"** — it's a
+    fully-positional wrap. Making the ELEMENT win the bare name is easy (identify its field via
+    `fieldValueReferencesInner(f.Value, innerCorr)` — a QOV(inner) for a scalar element or
+    ofOrdinal-over-QOV(inner) for with-ordinality — and add it FIRST so it wins the `add` dedup).
+    But the LEAF-SOURCE keys (`WAUX.WV`) currently NAME-read the seed, which is correct ONLY when
+    the outer precedes the element (disjoint); in the ENCLOSED shape (element inserted at
+    `unnestPos` BEFORE a trailing same-named leg) the name-read would hit the element. So the leaf
+    keys must ALSO bind positionally — and `bakeLegType.leafOffset` is BOX-CONCAT-relative, not
+    seed-relative, and the element insertion shifts trailing legs, so the seed index needs per-leg
+    cumulative offset accounting (or value-correlation matching of each leaf column). Substantial,
+    and a full Graefe/Torvalds/@claude/codex re-review of a load-bearing wrap. A well-scoped follow-
+    up slice, NOT a quick increment — hence deferred rather than rushed into the clean branch.
 - **N-way — ✅ PINNED (95aadac66, test-only)**: a 3-plain-leg disjoint gather (WSRC,
   WSRC.WARR AS EL, WAUX, GW) with a grouped aggregate over the THIRD leg (SUM(GW.V)) ordinalizes
   (EL=7/8, S=2997), plan-asserted. The wrap already handled N legs (cross-leg bare-name collisions
