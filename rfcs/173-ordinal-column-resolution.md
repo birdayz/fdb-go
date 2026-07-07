@@ -4685,6 +4685,23 @@ model), R2 multi-source lateral unnest seed (:1528), R3 correlated-scalar-subque
 **Trio demolition = the convergence commit after R1∧R2∧R3** — that, not "B," is the real atomic cap;
 (A) is its load-bearing first stack.
 
+**STATE UPDATE (S4 census, current HEAD):** ALL THREE residual slices have LANDED — R1 recursive
+(:5060 comment "the recursive-CTE body is ORDINALIZED… lifting it surgically"), R2 gathered
+multi-source unnest (:1528, fully retired this session across plain/box/N-way/shadow/AT-only/global-
+operand, double four-gate-reviewed), R3 correlated-scalar (:3908-3977 "the name-model
+NewScalarSubqueryAnchoredRecord fallback is RETIRED… the ordinal seed is the sole surviving
+correlated-scalar seed; a decline loud-declines"). So the trio's THREE residual producers are dead.
+What REMAINS live is NOT a fourth residual — it is the GENERAL binary-join ANCHORED branch:
+`buildJoinResultValue` (:714) called at :4402 / :4650, the `!gated` arm that fires for the
+NON-enclosure residual join classes (dup-binding, leg-contains-name-model-join, arity<2). The common
+GATED join already takes the ordinal branch; this anchored arm is the last name-model join producer,
+and it is EXACTLY the site Graefe's refinement 1 flags — ordinalizing it must first prove the
+ordinal-leg-under-anchored-parent composition (or narrow it class-by-class producer-#2-style:
+dup-binding first, its own executor pass-through already widened in S4 commit 4). The `:334`/`:1552`
+AnchoredJoinRecord sites are the unnest/derived residual builders that back the loud declines. Net:
+the atomic cap (task #16) is gated on retiring the :4402/:4650 anchored-residual arm, not on R1/R2/R3
+(done). Producer #4 (`NewReEnumerationAnchoredRecord`, rule_partition_select.go) is independent.
+
 ### DESIGN REFINEMENT (Graefe design review of Rule A, ACK-WITH-REFINEMENT) — S4
 Gate (ii) ✓ (correct + pinned by `TestRFC173S4_DupBareNameMemoIdentity`); bit-over-blanket-skip ✓.
 But (A) as a global GATE-CONDITION SWAP is NOT a clean shippable slice — three blocking refinements
