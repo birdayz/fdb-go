@@ -3552,8 +3552,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			"COUNT(*)=6|N=6|WSRC.SID=1",
 		})
 		// GLOBAL aggregate COUNT(*) references no column, so it keeps the FLAT gathered
-		// seed (no projection wrap) — 1 WSRC row × {7,8} × 3 WAUX = 6. Pin the no-wrap
-		// shape (single Project) so the surgical trigger stays surgical.
+		// seed — 1 WSRC row × {7,8} × 3 WAUX = 6. Pin the NO-wrap shape (ZERO Project) so
+		// the surgical trigger stays surgical.
 		exGCount := assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"COUNT(*)=6|N=6",
 		})
@@ -3563,13 +3563,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) DOES need the
 		// wrap — the flat positional seed exposes only bare names, so without it SUM(EL)
 		// name-reads NULL (the pre-existing W5 global-operand gap). Each element {7,8}
-		// appears 3× (WAUX) → SUM=(7+8)*3=45. The wrap fires (2+ Project) even with no
-		// GROUP BY, via the aggregate-operand-references-column trigger.
+		// appears 3× (WAUX) → SUM=(7+8)*3=45. The wrap fires (exactly ONE Project — a
+		// global aggregate has no outer-SELECT Project, unlike a GROUP BY which has two)
+		// via the aggregate-operand-references-column trigger.
 		exGSum := assertRows(t, `SELECT SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"S=45|SUM(EL)=45",
 		})
-		// A GLOBAL aggregate has no outer-SELECT Project, so the wrap adds exactly ONE
-		// Project (a GROUP BY has two — the outer projection plus the wrap).
 		if strings.Count(exGSum, "Project(") < 1 {
 			t.Fatalf("global SUM(EL) must ORDINALIZE via the operand-triggered wrap, got: %s", exGSum)
 		}
@@ -3578,6 +3577,38 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"S=36|SUM(WAUX.WV)=36",
 		})
+		// TRANSPARENCY (the wrap must not REGRESS a previously-correct bare/outer-column
+		// global aggregate): SUM(WSRC.SID)=1×6 rows=6 keeps its value through the now-fired
+		// wrap, and a MIXED COUNT(*),SUM(EL) computes BOTH correctly (the trigger fires on
+		// the SUM leg; COUNT(*) still counts all 6). These pin the wrap's superset property
+		// — it re-exposes every seed column by position, so a previously-correct operand
+		// stays correct through it (only NULL-reading element/qualified operands change).
+		assertRows(t, `SELECT SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"S=6|SUM(WSRC.SID)=6",
+		})
+		assertRows(t, `SELECT COUNT(*) AS "N", SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"COUNT(*)=6|N=6|S=45|SUM(EL)=45",
+		})
+		// TWO-FIX INTERSECTION (global operand + shadow): a SHADOWED bare operand SUM(WV)
+		// binds the ELEMENT (element-first) while the qualified twin SUM(WAUX.WV) reads
+		// the OUTER leaf — BOTH correct in one global query. Element WV=7,8 → SE=45; outer
+		// WAUX.WV=5,6,7 → S=36. This is the grouped/global consistency the fix targets.
+		assertRows(t, `SELECT SUM(WAUX."WV") AS "S", SUM("WV") AS "SE" FROM WSRC, WAUX, WSRC."WARR" AS "WV"`, []string{
+			"S=36|SE=45|SUM(WAUX.WV)=36|SUM(WV)=45",
+		})
+		// AVG(EL) is the only aggregate returning a NON-integer type through the wrap:
+		// mean of {7,7,7,8,8,8} = 7.5 (proves the wrap preserves the operand's double type).
+		assertRows(t, `SELECT AVG("EL") AS "A" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"A=7.5|AVG(EL)=7.5",
+		})
+		// GUARD: the broadened trigger is INERT without a gathered multi-source unnest —
+		// a single-source global aggregate keeps its exact prior plan (no wrap). SID=1.
+		exNoGather := assertRows(t, `SELECT SUM(WSRC."SID") AS "S" FROM WSRC`, []string{
+			"S=1|SUM(SID)=1",
+		})
+		if strings.Count(exNoGather, "Project(") >= 1 {
+			t.Fatalf("non-gather global aggregate must not gain a wrap, got: %s", exNoGather)
+		}
 		// SHADOW-COLLISION ORDINALIZES via POSITIONAL binding: WAUX has a WV column and
 		// `WSRC.WARR AS WV` names the element WV too, so the seed carries BOTH under the
 		// bare name "WV". The wrap binds the ELEMENT by its OWN seed slot FIRST (so the
