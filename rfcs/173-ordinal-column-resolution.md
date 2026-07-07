@@ -4661,3 +4661,87 @@ ordinalization (lift the 4954 blanket, positional temp-table norm; Java already 
 model), R2 multi-source lateral unnest seed (:1528), R3 correlated-scalar-subquery seed (:3860).
 **Trio demolition = the convergence commit after R1∧R2∧R3** — that, not "B," is the real atomic cap;
 (A) is its load-bearing first stack.
+
+## S4 R2 — gathered multi-source unnest GROUP BY ordinalization (LANDED: 43871b83b)
+
+The first producer-retiring increment against R2 (multi-source lateral unnest, the :1528 producer):
+a gathered multi-source unnest GROUP BY now ORDINALIZES for the plain-leg AS class instead of
+declining to the name model.
+
+### The bug (a shipped wrong answer)
+`SELECT EL, COUNT(*) FROM WSRC, WSRC.WARR AS EL, WAUX GROUP BY EL` (disjoint columns → the
+name-ambiguity gate does NOT decline it) GATHERS, but the positional seed exposes only BARE column
+names. A grouped element reference is a correlated `FieldValue{Field:"EL", Child:QOV}` that qualifies
+to the shadow-qualified "EL.EL" key — which the seed lacks — so `GROUP BY EL` grouped every row under
+NULL. The seed CANNOT carry the shadow key: it is a strict positional contract (a duplicate field
+panics the span run invariant "run ordinals must be 0..width-1 ascending").
+
+### The fix (Graefe #1: "the collapse preserves the named projection the group-by consumes")
+Keep the positional seed INTERNAL; place a NAMED-PROJECTION layer above it
+(`wrapGatheredForGroupBy`, rfc173_w5_unnest_gather.go). Two load-bearing realizations, each reached
+by falsifying the alternatives:
+- it MUST be a `LogicalProjectionExpression`, NOT a `SelectExpression` — `SelectMergeRule` fuses a
+  Select-over-Select and drops the shadow key (a Select is a `RelationalExpressionWithPredicates`
+  merge target; a projection is not, and `ProjectionElim`/`ProjectionMerge` don't fire on a
+  non-identity projection-over-join);
+- its field VALUES NAME-read the inner seed (`FieldValue(QOV(inner), col)`, unpinned) so they do NOT
+  re-trigger the positional-seed ordinal-join birth (`ContainsBakedOrdinal` false) — the projection
+  RC can therefore carry the bare + `ALIAS.COL` + "EL.EL"/"EL.O" shadow keys the grouped read
+  resolves against.
+`underAggregate` (formerly the decline stopgap) now TRIGGERS the wrap; Graefe WITHDREW his "must
+remove the flag" condition since it ordinalizes rather than entrenching the name model.
+
+### Derivation — 4 falsified shortcuts (do NOT re-attempt)
+1. executor nested-descent (the original R1-design premise): the group key is an un-rebased NAME
+   ref, not `ofOrdinal(merge,i)` — nothing to descend.
+2. value-collapse (rewrite the group key to `QOV(EL)`): `QOV` over the post-join merged row returns
+   the WHOLE ROW, and it breaks every name-model group-by.
+3. shadow key placed IN the positional seed (`unnestSeedInnerFields`): panics the span run invariant.
+4. fused-Select projection layer: `SelectMergeRule` dissolves it; the shadow key is lost.
+
+### The eligibility gate (four-gate review — codex found 4 edges, each declined to name-model)
+`gatheredGroupByWrapEligible` — checked BEFORE leg translation (so an ineligible shape declines
+without double-registering a leg's uncorrelated scalar subquery) — narrows the wrap to the
+FAITHFULLY-COVERED plain-leg AS class. Declined to the name-model residual (correct rows, each pinned
+by an e2e test):
+- **BOX leg** (`leg.op` a `LogicalJoin`): the qualified twins would key the box binding over the
+  concat type, not the leaf-source keys (`WAUX.WV`) a buried-leaf operand references → silent NULL.
+  [Graefe blocking NAK / codex P1]
+- **element/AT alias SHADOWS an outer column**: the bare "WV.WV" shadow read GetByName-resolves the
+  OUTER column, not the element → wrong group. [codex P1]
+- **AT-only unnest** (no AS): the grouped ordinal qualifies through the ARRAY COLUMN (`GROUP BY O`
+  resolves as `WARR.O`, not `O.O`), uncovered by the wrap. [codex P2]
+- **decline-after-leg-translation** double-registers a leg's scalar subquery — fixed by moving the
+  eligibility check before leg translation. [codex P2]
+Gate tally: Torvalds ACK; Graefe ACK (blocking cleared — the box-leg gate is EXACTLY coincident with
+the failure class, both silent-NULL sources fire iff `leg.op` is a join); @claude ACK; codex
+convergent over the four rounds.
+
+### Follow-up roadmap (each removes a decline arm; all done → REMOVE `underAggregate`)
+- **box-leg leaf-source qualification**: `addBuriedBakeWindows` (rfc173_ordinal_seed.go:547) already
+  registers each buried leaf in `legTypes` keyed by its own alias (with `leafTyp`, `bakeCorr`), and
+  the seed exposes buried columns by NAME (the concat's field names, ordinalJoinSeedFields:503). So
+  the wrap's qualified-key loop should iterate those buried-leaf entries and emit `LEAFALIAS.col`
+  instead of the current `BOX.col`. SUBTLETY: two buried leaves with the same column name make the
+  concat's bare name ambiguous (the top-level name-ambiguity gate checks only top-level legs) —
+  extend the ambiguity check into buried leaves, or key the value positionally at leafOffset+colIdx.
+- **positional shadow binding**: read the element by its seed SLOT (not bare name) so the
+  shadow-collision class ordinalizes.
+- **N-way** (3+ plain legs already ordinalize — cross-leg collisions decline upstream; verify + pin).
+Then producer #2 (:1528) is retired for the gathered group-by class; the trio demolition remains the
+R1∧R2∧R3 convergence commit.
+
+### NOT-OUR-BUG (found via codex on the named-projection review) — GENERAL derived-table + GROUP BY
+Codex flagged `SELECT E, COUNT(*) FROM (SELECT EL AS E FROM WSRC, WSRC.WARR AS EL, WAUX) AS D GROUP
+BY D.E` → `42703: column "E" does not exist` as a regression of this increment. It is NOT this
+increment, and NOT W5/unnest/ordinal at all — DIAGNOSTIC-NARROWED to a GENERAL bug: **GROUP BY over
+ANY derived table fails 42703**. Proof (variations, all no-unnest):
+  - `SELECT SID, COUNT(*) FROM WSRC GROUP BY SID` → OK (base table, no derived);
+  - `SELECT SID, COUNT(*) FROM (SELECT SID FROM WSRC) AS D GROUP BY D.SID` → 42703 (simplest
+    possible derived table, no alias, no unnest);
+  - `SELECT E FROM (SELECT EL AS E FROM …unnest…) AS D` (no GROUP BY) → OK.
+So the failing dimension is the pair {derived-table-in-FROM, GROUP BY}, independent of unnest,
+alias, or qualification. The wrap never fires for these (`underAggregate=false` in the derived body,
+diagnostic-confirmed) and the same 42703 reproduces at `a34e9e21d` (before the wrap existed). This
+is a general pre-existing engine gap (grouping over a subquery-in-FROM), tracked separately from
+RFC-173 — NOT a residual of the named-projection increment and NOT a blocker for it.
