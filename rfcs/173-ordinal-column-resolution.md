@@ -4746,7 +4746,10 @@ convergent over the four rounds.
   projection cursor (a projection is not a join, so newOrdinalJoinBirth should not fire, but
   confirm). Option (a) is cleaner and matches the name model. This is an OPTIMIZATION (the decline
   already gives correct rows), not a bug.
-- **N-way** (3+ plain legs already ordinalize — cross-leg collisions decline upstream; verify + pin).
+- **N-way — ✅ PINNED (95aadac66, test-only)**: a 3-plain-leg disjoint gather (WSRC,
+  WSRC.WARR AS EL, WAUX, GW) with a grouped aggregate over the THIRD leg (SUM(GW.V)) ordinalizes
+  (EL=7/8, S=2997), plan-asserted. The wrap already handled N legs (cross-leg bare-name collisions
+  decline upstream); this pins it.
 Then producer #2 (:1528) is retired for the gathered group-by class; the trio demolition remains the
 R1∧R2∧R3 convergence commit.
 
