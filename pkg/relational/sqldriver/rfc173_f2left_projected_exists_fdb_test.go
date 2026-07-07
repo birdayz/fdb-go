@@ -24,6 +24,7 @@ import (
 	"context"
 	"database/sql"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -159,6 +160,44 @@ func TestFDB_RFC173F2Left_ProjectedExistsOverLeftJoin(t *testing.T) {
 		}
 		if n != 2 {
 			t.Fatalf("got %d rows, want 2", n)
+		}
+	})
+
+	// (4) + a non-EXISTS WHERE — DECLINES cleanly (0AF00). The WHERE would land in
+	// the JoinLeftOuter select's predicate list where the NLJ treats it as an ON
+	// condition, null-extending non-matching rows instead of FILTERING them:
+	// `WHERE p.v = 10` would keep p.v = 20 null-extended (wrong rows). Java places
+	// the WHERE ABOVE the outer join and answers [[10 false]]; the fold cannot
+	// express that in one select yet, so it declines. This pin guards the P1
+	// wrong-rows boundary: a re-enable without above-join placement flips it to rows.
+	t.Run("dim4_where_declines", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT p.v, EXISTS (SELECT 1 FROM r WHERE r.id = q.qid) "+
+				"FROM p LEFT JOIN q ON q.qid = p.id WHERE p.v = 10")
+		if err == nil {
+			rows.Close()
+			t.Fatal("WHERE over the LEFT fold must decline (0AF00) — folding it treats WHERE as ON and null-extends non-matching rows (P1 wrong rows)")
+		}
+		if !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("want clean 0AF00 decline for WHERE over LEFT fold, got: %v", err)
+		}
+	})
+
+	// (5) + an ORDER BY — DECLINES cleanly (0AF00). Java's Cascades cannot plan ANY
+	// ORDER BY over this fold ("could not plan query"), and classifySortSource
+	// classifies only INNER as a join source, so a LEFT source's qualified key
+	// degrades to a bare last-leg-wins read and mis-orders on a column-name
+	// collision (P2). Go declines, matching Java exactly — never a silent wrong order.
+	t.Run("dim5_orderby_declines", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT p.v, EXISTS (SELECT 1 FROM r WHERE r.id = q.qid) "+
+				"FROM p LEFT JOIN q ON q.qid = p.id ORDER BY p.v")
+		if err == nil {
+			rows.Close()
+			t.Fatal("ORDER BY over the LEFT fold must decline (0AF00) — Java can't plan it and the fold's sort mis-orders qualified keys (P2)")
+		}
+		if !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("want clean 0AF00 decline for ORDER BY over LEFT fold, got: %v", err)
 		}
 	})
 }

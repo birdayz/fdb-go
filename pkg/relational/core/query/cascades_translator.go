@@ -2865,6 +2865,18 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		// LEFT null-extension is exactly what the ordinal seed must carry.
 		return nil
 	}
+	if j.Kind == logical.JoinLeft && f != nil && len(splitNonExistsPredicates(f.Predicate)) > 0 {
+		// RFC-173 S4 F2-LEFT is the NO-WHERE shape. A non-EXISTS WHERE predicate over
+		// a LEFT fold would land in the JoinLeftOuter select's predicate list where the
+		// NLJ treats it as an ON condition — null-extending non-matching rows instead
+		// of FILTERING them: `... LEFT JOIN q ON q.qid = p.id WHERE p.v = 10` keeps
+		// p.v = 20 null-extended (wrong rows; Java correctly returns only p.v = 10).
+		// Java places the WHERE ABOVE the outer join; the fold cannot express that in a
+		// single select yet, so decline (→ §8 → clean 0AF00) rather than yield wrong
+		// rows. Booked follow-on: above-join WHERE placement for the LEFT fold. INNER
+		// is unaffected — ON ≡ WHERE for an inner join, so the predicate filters.
+		return nil
+	}
 	// RFC-173 Slice 2: same enclosure as translateJoinWithExists — the
 	// existential flatten is a name-model parent; its ForEach legs are
 	// enclosed.
@@ -3045,6 +3057,23 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	// be PRESERVED and resolve against the qualified merged-row key. This is the
 	// sort-key analog of rebaseOuterLegValue / the P1a alias-binding fix.
 	src := classifySortSource(f.Input)
+
+	// RFC-173 S4 F2-LEFT: Java's Cascades cannot plan ANY ORDER BY over the LEFT
+	// projected-EXISTS fold (verified 4.12.11.0 — "could not plan query", even a
+	// bare key), and classifySortSource classifies only INNER as a join source, so
+	// a LEFT source's qualified sort key degrades to the bare last-leg-wins read and
+	// mis-orders on a column-name collision (`ORDER BY q.k` when both legs have `k`).
+	// Decline the fold when a LEFT source carries any ORDER BY (→ §8 → clean 0AF00),
+	// matching Java exactly — never a silent wrong order. Booked follow-on if the
+	// LEFT+ORDER-BY reach is ever wanted (a Go extension beyond Java's planner, with
+	// LEFT classified as a join source). INNER is unaffected.
+	if lj, ok := f.Input.(*logical.LogicalJoin); ok && lj.Kind == logical.JoinLeft {
+		for _, op := range chain {
+			if _, isSort := op.(*logical.LogicalSort); isSort {
+				return nil
+			}
+		}
+	}
 
 	// A COMPUTED (non-column) ORDER BY key that is NOT one of the projected SELECT outputs
 	// cannot be carried through the fold: collectExtraSortColumns can only append NAMED
