@@ -153,7 +153,7 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 		*outer,
 		{Alias: elemQOV.Correlation, LegType: elemLegType, Offset: n - 1, Width: 1},
 	}
-	return spans, &values.RecordType{Fields: mergedFields}, true
+	return spans, &values.RecordType{Fields: mergedFields, Legs: mergedLegsOfSpans(spans)}, true
 }
 
 // ordinalJoinSpansOf is ordinalJoinSpans with FUSED-reference resolution (the
@@ -229,17 +229,21 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 	if total != len(rc.Fields) {
 		panic(fmt.Sprintf("RFC-173 ordinal join spans inconsistent: sum(widths)=%d, RC has %d fields — spans must derive exactly from the RC", total, len(rc.Fields)))
 	}
-	// RFC-173 item 3: the merged type carries leg boundaries — each span's
-	// run plus every BURIED leg a clustered box leg's type records
-	// (RecordType.Legs) — so a dotted name-model read ("B.BID") resolves
-	// per-leg on a positional-only row (PositionalRow.GetByName's dotted
-	// bridge). Mirrors the values-side derivation (cross-agreement).
+	return spans, &values.RecordType{Fields: mergedFields, Legs: mergedLegsOfSpans(spans)}, true
+}
+
+// mergedLegsOfSpans builds the merged type's leg boundaries from the derived spans
+// — each plain run 1:1, each clustered BOX run its BURIED subs only (the run name
+// is its rightmost leaf's; a run-level entry would shadow that leaf with the whole
+// concat; see rcOutputType). So a dotted name-model read ("B.BID") resolves per-leg
+// on a positional-only row (PositionalRow.GetByName's dotted bridge). Mirrors the
+// values-side finalizeSeedWindows — the cross-agreement invariant (independent
+// walks drift, and layout drift is wrong-offset wrong-rows). Shared by the pristine
+// and mixed span derivations so a box outer's boundaries agree in both.
+func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 	var mergedLegs []values.RecordTypeLeg
 	for _, s := range spans {
 		if len(s.LegType.Legs) > 0 {
-			// Box run: subs only (the run name is its rightmost leaf's —
-			// a run-level entry would shadow that leaf with the whole
-			// concat; see rcOutputType).
 			for _, sub := range s.LegType.Legs {
 				mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: sub.Name, Start: s.Offset + sub.Start, Width: sub.Width})
 			}
@@ -247,7 +251,7 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 		}
 		mergedLegs = append(mergedLegs, values.RecordTypeLeg{Name: strings.ToUpper(s.Alias.Name()), Start: s.Offset, Width: s.Width})
 	}
-	return spans, &values.RecordType{Fields: mergedFields, Legs: mergedLegs}, true
+	return mergedLegs
 }
 
 // resolveSpanLeaf resolves one RV field to its LEAF leg (alias, leg type,
