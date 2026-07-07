@@ -4672,6 +4672,12 @@ impl gate is "no lazy dup-bare-name node survives to the memo" — a checkable s
 an unsolved memo-theory problem. The proof test: build the join-ordinalized RC for `FROM a, b` where
 both have column X, assert the two X references carry distinct `Resolved` ordinal paths (hence
 distinct `SemanticHashCode`), and an EXPLAIN of `SELECT * FROM a, b` shows both X columns.
+**Additional constraint (found + pinned, `TestRFC173S4_DupBareNameMemoIdentity`):** `NewRecordType`
+PANICS on a duplicate field name, so the ordinal join SEED TYPE cannot carry two bare "X" fields —
+the seed must name dup slots DISTINCTLY (qualified, e.g. `A.X`/`B.X`) while the ordinal references
+bind by slot. This is a hard reason Rule A must qualify-then-ordinalize rather than flow two bare
+"X" names; the test pins baked-distinct / lazy-conflate identity as the regression sentinel for the
+gate.
 
 **After (A):** three independent residual slices (none gates another) — R1 recursive-CTE
 ordinalization (lift the 4954 blanket, positional temp-table norm; Java already consumes the ordinal

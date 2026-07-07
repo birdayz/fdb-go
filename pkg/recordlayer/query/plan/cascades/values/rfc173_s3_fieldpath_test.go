@@ -328,3 +328,60 @@ func TestRFC173S3_SeedAssert_RejectsFusedPath(t *testing.T) {
 	}()
 	AssertOrdinalJoinSeed(rc)
 }
+
+// TestRFC173S4_DupBareNameMemoIdentity pins RFC-173 S4 Rule A's acceptance gate
+// (ii): a positional join seed carrying DUPLICATE bare names (two legs each with a
+// column "X") keeps them as DISTINCT memo members iff the references are BAKED.
+// writeSemanticHash forks FieldValue identity on Resolved (semantic_hash.go:120-139):
+// baked → ordinal PATH, lazy → NAME bucket. So join ordinalization is memo-safe as
+// long as it emits BAKED dup refs (exactly as producer #2's positional wrap does);
+// a LAZY name-only ref is the ONLY way to conflate two logically-different columns
+// into one memo member → wrong plans. This pins that mechanism as a regression.
+func TestRFC173S4_DupBareNameMemoIdentity(t *testing.T) {
+	t.Parallel()
+	// DESIGN CONSTRAINT (found here): NewRecordType PANICS on a duplicate field name,
+	// so the ordinal join seed for two legs each with column "X" CANNOT carry two bare
+	// "X" fields in its type — it must name the seed slots DISTINCTLY (qualified) and
+	// address the columns POSITIONALLY. That is precisely why Rule A binds by baked
+	// ordinal, not bare name. The two legs' X columns sit at qualified slots A_X (0)
+	// and B_X (1).
+	seed := NewRecordType("", false, []Field{
+		{Name: "A_X", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "B_X", FieldType: NotNullLong, Ordinal: 1},
+	})
+	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), seed)
+
+	// BAKED refs to the two X columns — DISTINCT memo members (ordinal-path identity):
+	// this is what the join ordinalization must emit.
+	bx0, err := NewFieldValueOfOrdinal(qov, 0)
+	if err != nil {
+		t.Fatalf("bake X#0: %v", err)
+	}
+	bx1, err := NewFieldValueOfOrdinal(qov, 1)
+	if err != nil {
+		t.Fatalf("bake X#1: %v", err)
+	}
+	if SemanticHashCode(bx0) == SemanticHashCode(bx1) {
+		t.Fatal("baked dup-bare-name refs at different ordinals must be DISTINCT memo members (gate ii)")
+	}
+	if ValuesStructurallyEqual(bx0, bx1) {
+		t.Fatal("baked X#0 and X#1 must be UNEQUAL (ordinal-path identity, not name)")
+	}
+
+	// LAZY (name-only) refs to bare "X" CONFLATE (name-bucket identity) — the exact
+	// failure Rule A must avoid: two logically-different columns become one memo member.
+	lx0 := NewFieldValue(qov, "X", NotNullLong)
+	lx1 := NewFieldValue(qov, "X", NotNullLong)
+	if SemanticHashCode(lx0) != SemanticHashCode(lx1) {
+		t.Fatal("lazy same-name refs must share name-bucket identity — the conflation gate ii forbids in the seed")
+	}
+	if !ValuesStructurallyEqual(lx0, lx1) {
+		t.Fatal("lazy same-name refs must be structurally EQUAL (name identity) — documents the conflation")
+	}
+
+	// Baked and lazy are DISTINCT by contract (different identity prefixes), so a
+	// baked seed column never conflates with a stray lazy reference to the same name.
+	if SemanticHashCode(bx0) == SemanticHashCode(lx0) {
+		t.Fatal("baked and lazy refs to the same column must be distinct by contract")
+	}
+}
