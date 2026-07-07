@@ -4656,6 +4656,23 @@ a blanket skip that fails them = automatic NAK); (ii) the duplicate-bare-name ID
 so once dup bare names coexist positionally they can conflate into one memo member → wrong plans;
 prove distinct memo members before shipping the SELECT-* win.
 
+**Gate (ii) mechanism — CHARACTERIZED (S4 investigation, current line refs):** `writeSemanticHash`
+for a `*FieldValue` (semantic_hash.go:120-139) is a HARD FORK on `Resolved`:
+  - `Resolved != nil` (BAKED): identity is the ORDINAL PATH alone — `fieldpath:#<ord0>#<ord1>…`
+    (the display Field name is NOT folded in). Two references to duplicate bare "X" that resolve to
+    DIFFERENT slots hash+compare DISTINCT → separate memo members. SAFE.
+  - `Resolved == nil` (LAZY): identity is the NAME BUCKET — `field:<Field>`. Two lazy references to
+    bare "X" CONFLATE regardless of which leg they mean → one memo member → wrong plans. THE RISK.
+The equality arm (map_field_values.go:314-337) mirrors this: baked → `Resolved.Equals` (ordinal),
+lazy → name. So gate (ii) is NOT an open blocker — it reduces to a REQUIREMENT: the join
+ordinalization must emit dup-bare-name references BAKED (ordinal-resolved), exactly as producer #2's
+positional wrap does (`ofOrdinal(QOV, slot)` carries a Resolved ordinal path). A lazy name-only
+`FieldValue{Field:"X"}` for a shadowed join column is the ONLY way to trip the conflation, so the
+impl gate is "no lazy dup-bare-name node survives to the memo" — a checkable structural property, not
+an unsolved memo-theory problem. The proof test: build the join-ordinalized RC for `FROM a, b` where
+both have column X, assert the two X references carry distinct `Resolved` ordinal paths (hence
+distinct `SemanticHashCode`), and an EXPLAIN of `SELECT * FROM a, b` shows both X columns.
+
 **After (A):** three independent residual slices (none gates another) — R1 recursive-CTE
 ordinalization (lift the 4954 blanket, positional temp-table norm; Java already consumes the ordinal
 model), R2 multi-source lateral unnest seed (:1528), R3 correlated-scalar-subquery seed (:3860).
