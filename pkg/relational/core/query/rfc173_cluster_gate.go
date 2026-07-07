@@ -98,6 +98,26 @@ func (t *cascadesTranslator) existsOuterGatesFresh(input logical.LogicalOperator
 	return d.Gated
 }
 
+// forceOrdinalSpike is the RFC-173 S4 B1 CERTIFICATE oracle (test-only). When set,
+// ordinalWedgeGateDecide skips the three GROUP-A CIRCULAR declines — :143
+// (a leg contains a name-model join), :157 (an outer box enclosed in a name-model
+// parent), and :190 (an inner join enclosed in a name-model cluster). Each is a
+// FAITHFUL SYMPTOM of a name-model parent, not a separable class: a child gates iff
+// its parent gates, so forcing ONE off panics ordinalLegColumns on its still-
+// name-model sibling. Forcing ALL THREE off TOGETHER models the atomic flip the
+// demolition performs — every circular parent+child ordinalizes at once, leaving no
+// name-model parent to read a positional row by name. The B1 corpus-level
+// differential runs the executable corpus twice (spike OFF vs ON) and asserts
+// identical rows: a green run PROVES the atomic cap (deleting the AnchoredJoin flag,
+// the anchored producers, and the §5 oracle) preserves rows. This is NOT a
+// production narrowing — the flag is flipped only by the certificate harness at a
+// phase barrier, exactly like the executor's DisablePositionalEmission name oracle.
+var forceOrdinalSpike bool
+
+// SetForceOrdinalSpike flips the B1 certificate oracle. Test-only; the caller must
+// guarantee no translation is in flight (process-global, like SetNameModelOracle).
+func SetForceOrdinalSpike(v bool) { forceOrdinalSpike = v }
+
 func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedgeGateDecision {
 	if _, isUnnest := j.Right.(*logical.LogicalUnnest); isUnnest {
 		// Lateral unnest lowers to FlatMap-over-Explode with dotted-prefix
@@ -129,7 +149,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		}
 		seenBindings[key] = struct{}{}
 	}
-	if !t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right) {
+	if (!t.ordinalEligible(j.Left) || !t.ordinalEligible(j.Right)) && !forceOrdinalSpike {
 		// A leg CONTAINS a name-model join at its own boundary (an
 		// aggregate/CTE/derived body the gate keeps anchored): its output
 		// rows are the name model's merged rows (dotted keys, no leg concat)
@@ -142,7 +162,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// fired exactly as designed.
 		return wedgeGateDecision{Arity: arityPoison, Reason: "a leg contains a name-model join (name-model residency retires at S4)"}
 	}
-	if j.Kind != logical.JoinInner && t.inInnerCluster {
+	if j.Kind != logical.JoinInner && t.inInnerCluster && !forceOrdinalSpike {
 		// An OUTER box that is a LEG of an enclosing name-model join (or of
 		// an existential/unnest flatten) stays name-model: the parent's
 		// merge binds leg rows by NAME, so a gated box's POSITIONAL row
@@ -183,7 +203,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// admission for what a leg may CONTAIN.
 		return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary LEFT/RIGHT-outer box (ordinal seed at translation; clustered legs per item 3)"}
 	}
-	if t.inInnerCluster {
+	if t.inInnerCluster && !forceOrdinalSpike {
 		// This inner join is a leg subtree of an enclosing inner-join cluster
 		// (or of an existential/unnest flatten): post-flattening it merges
 		// into a select of arity ≥ 3. Name model.
