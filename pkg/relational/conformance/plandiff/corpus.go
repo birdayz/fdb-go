@@ -18174,6 +18174,33 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT b.qid FROM T_XCJ_C AS a, T_XCJ_D AS b WHERE EXISTS (SELECT 1 FROM T_XCJ_C WHERE b.qid = 7)",
 		},
 		{
+			// RFC-173 S4 F2-LEFT: a PROJECTED EXISTS over a LEFT JOIN (scan legs).
+			// Go rejected it (0AF00, INNER-only fold); Java folds and answers it —
+			// live-verified 4.12.11.0 on THIS exact shape (NO ORDER BY). A Java-parity
+			// REACH gap now closed the producer-consistent way: the translator builds
+			// a JoinLeftOuter select; the executor takes the commit-2 ORDINAL path
+			// (correlatedStep1 false on the undissolved LEFT, gatedSeedStep1 true) with
+			// a JoinLeftOuter NLJ that null-extends the null-supplying leg positionally
+			// — NO name-model :698 producer. q.qid=7 matches NEITHER p row, so q is
+			// NULL-extended for both; EXISTS(r.id = q.qid=NULL) → false. PARITY: both
+			// answer [[10 false] [20 false]], scan-order deterministic.
+			// NOTE: an ORDER BY on top makes Java's Cascades fail to plan
+			// ("could not plan query") while Go handles it — a SEPARATE Go-beyond-Java
+			// planner reach, deliberately NOT part of this parity entry (it would read
+			// as a regression here). Kept ORDER-BY-free so the entry is true parity.
+			Name: "projected_exists_over_left_join_scan_legs",
+			SchemaTemplate: "CREATE TABLE T_F2L_P (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+				" CREATE TABLE T_F2L_Q (qid BIGINT, PRIMARY KEY (qid))" +
+				" CREATE TABLE T_F2L_R (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_F2L_P VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_F2L_Q VALUES (7)",
+				"INSERT INTO T_F2L_R VALUES (5)",
+			},
+			Query: "SELECT p.v, EXISTS (SELECT 1 FROM T_F2L_R WHERE T_F2L_R.id = q.qid) " +
+				"FROM T_F2L_P p LEFT JOIN T_F2L_Q q ON q.qid = p.id",
+		},
+		{
 			// The DUPLICATE-alias variants: per-attribute resolution binds the
 			// unique leg, and the duplicate-preserving outer scope carries both
 			// legs into the subquery planner. PARITY: [[1] [1] [1]].

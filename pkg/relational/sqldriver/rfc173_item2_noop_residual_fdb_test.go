@@ -206,13 +206,56 @@ func TestFDB_RFC173Item2_LeftJoinExistsResidual(t *testing.T) {
 		"SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id WHERE e.id IS NULL",
 		[]string{"empty"})
 
-	// (J) Projected EXISTS over an outer join: the fold is INNER-only and
-	// the shape must REJECT cleanly (never wrong rows through a dead
-	// existential binding).
-	if _, err := db.QueryContext(ctx,
-		"SELECT d.dname, EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id) "+
-			"FROM dept d LEFT JOIN emp e ON e.dept_id = d.id"); err == nil {
-		t.Error("projected EXISTS over LEFT JOIN must reject cleanly (INNER-only fold), got rows")
+	// (J) Projected EXISTS over a LEFT JOIN, SCAN legs (RFC-173 S4 F2-LEFT): Go
+	// now ANSWERS this — it was a clean 0AF00 decline (the INNER-only fold), but
+	// Java always folded and answered it (live-verified 4.12.11.0), a Java-parity
+	// REACH gap. The translator builds a JoinLeftOuter select; the executor takes
+	// the commit-2 ORDINAL path (correlatedStep1 false on the undissolved LEFT,
+	// gatedSeedStep1 true) with a JoinLeftOuter NLJ that null-extends emp
+	// positionally — NO name-model :698 producer (empty declines to a buried box).
+	// dept LEFT JOIN emp: eng←alice(id 1, badge 10 → true); ops←bob(id 2, no badge
+	// → false); empty null-extended (e.id NULL → EXISTS(badge.emp_id = NULL) →
+	// false). The null-supplying leg's e.id must be NULL in the positional merged
+	// row and the EXISTS correlation must read THAT null.
+	{
+		// ORDER-BY-FREE (sorted in Go): an ORDER BY on top of this fold makes Java's
+		// Cascades fail to plan while Go handles it — a Go-beyond-Java planner reach,
+		// not the parity claim. The fold itself is Java-parity (live-verified).
+		q := "SELECT d.dname, EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id) " +
+			"FROM dept d LEFT JOIN emp e ON e.dept_id = d.id"
+		r, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("J/projected EXISTS over LEFT JOIN errored (F2-LEFT — Go must answer): %v\n  sql: %s", err, q)
+		}
+		defer r.Close()
+		type jrow struct {
+			dname string
+			ex    bool
+		}
+		var got []jrow
+		for r.Next() {
+			var dn string
+			var ex bool
+			if err := r.Scan(&dn, &ex); err != nil {
+				t.Fatalf("J scan: %v", err)
+			}
+			got = append(got, jrow{dn, ex})
+		}
+		if err := r.Err(); err != nil {
+			t.Fatalf("J rows: %v", err)
+		}
+		sort.Slice(got, func(i, j int) bool { return got[i].dname < got[j].dname })
+		wantJ := []jrow{{"empty", false}, {"eng", true}, {"ops", false}}
+		mismatch := len(got) != len(wantJ)
+		for i := 0; !mismatch && i < len(wantJ); i++ {
+			if got[i] != wantJ[i] {
+				mismatch = true
+			}
+		}
+		if mismatch {
+			t.Errorf("J/projected EXISTS over LEFT JOIN rows = %v, want %v"+
+				" (empty null-extended → false; eng→alice has badge → true; ops→bob no badge → false)", got, wantJ)
+		}
 	}
 
 	// (K) Scalar subquery INSIDE a correlated EXISTS body over a bare-scan

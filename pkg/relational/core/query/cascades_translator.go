@@ -2804,6 +2804,26 @@ func (t *cascadesTranslator) buildExistentialSelect(
 	)
 }
 
+// isScanFamilyLeg reports whether a logical leg is a single scan source
+// (optionally under filters) — the logical proxy for the executor's
+// legIsOrdinalSafe, which unwraps Filter/Fetch/FetchOnDemand to a Scan/Index
+// base. The RFC-173 S4 F2-LEFT projected-EXISTS fold ordinalizes ONLY when both
+// legs are scan-family; a join/unnest/union/aggregate leg (a buried box) is not
+// and must decline rather than fall to the name-model :698 path. Conservative:
+// anything not recognised as scan-under-filters returns false (decline).
+func isScanFamilyLeg(op logical.LogicalOperator) bool {
+	for {
+		switch n := op.(type) {
+		case *logical.LogicalScan:
+			return true
+		case *logical.LogicalFilter:
+			op = n.Input
+		default:
+			return false
+		}
+	}
+}
+
 // buildExistentialJoinSelect folds a projection (resultValue) over a
 // JOIN-in-FROM that carries projected-EXISTS subqueries into a single
 // SelectExpression: ForEach(left), ForEach(right), and one Existential
@@ -2811,19 +2831,38 @@ func (t *cascadesTranslator) buildExistentialSelect(
 // correlation predicate threaded. Mirrors translateJoinWithExists but emits the
 // folded projection as the result value instead of the join's anchored record,
 // so the projected ExistsValue is evaluated by the FlatMap with the inner
-// binding live (RFC-141 §8). Only INNER joins reach here for the projected fold;
-// a LEFT/RIGHT/FULL outer FROM join with a projected EXISTS is left unfolded and
-// the §8 guard rejects it cleanly.
+// binding live (RFC-141 §8). INNER and LEFT-with-scan-legs reach here for the
+// projected fold (the LEFT case emits a JoinLeftOuter select — RFC-173 S4
+// F2-LEFT); a LEFT with a non-scan (buried-box) leg, and RIGHT/FULL, are left
+// unfolded and the §8 guard rejects them cleanly.
+
 func (t *cascadesTranslator) buildExistentialJoinSelect(
 	j *logical.LogicalJoin,
 	f *logical.LogicalFilter,
 	resultValue values.Value,
 ) expressions.RelationalExpression {
-	if j.Kind != logical.JoinInner {
-		// Outer-join FROM with a projected EXISTS is not folded — the existential
-		// semi-join cannot carry the NULL-padded drain. Return nil so the caller
-		// falls back to the ordinary projection path; the §8 guard then rejects
-		// the unfolded projected EXISTS cleanly (never a wrong result).
+	if j.Kind == logical.JoinFull || j.Kind == logical.JoinRight {
+		// FULL: the existential semi-join cannot carry the FULL drain (never
+		// rewritten, never merged). RIGHT: the fold's JoinType has no
+		// JoinRightOuter — RIGHT needs the operand swap translateJoin does, a
+		// booked follow-on. Both return nil → the §8 guard rejects the unfolded
+		// projected EXISTS cleanly. LEFT DOES fold (RFC-173 S4 F2-LEFT): the box
+		// dissolves to INNER + null-on-empty and the executor births the positional
+		// seed with the null-supplying leg NULL-filled — Java folds and answers it
+		// (live-verified 4.12.11.0).
+		return nil
+	}
+	if j.Kind == logical.JoinLeft && (!isScanFamilyLeg(j.Left) || !isScanFamilyLeg(j.Right)) {
+		// RFC-173 S4 F2-LEFT is SCAN-leg scope only. A buried box
+		// `(a JOIN b) LEFT JOIN c` — any non-scan preserved/null-supplying leg —
+		// does not ordinalize (the executor's legIsOrdinalSafe rejects the join
+		// leg → gatedSeedStep1 false), so folding it would fall through to the
+		// name-model :698 path with a null-extended name-keyed row: correct today
+		// via the coexistence Datum but a producer the demolition removes. Decline
+		// (→ §8 → clean 0AF00) as a reach gap (Java answers it; Go rejects) rather
+		// than mint a name-model producer. INNER keeps its buried-box behavior
+		// (task-scope :698, no null-extension); the asymmetry is deliberate — the
+		// LEFT null-extension is exactly what the ordinal seed must carry.
 		return nil
 	}
 	// RFC-173 Slice 2: same enclosure as translateJoinWithExists — the
@@ -2888,12 +2927,20 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
+	// RFC-173 S4 F2-LEFT: a LEFT-outer FROM join folds as a JoinLeftOuter select
+	// — RewriteOuterJoinRule dissolves the p×q box into INNER + a null-on-empty
+	// q quantifier, and the executor births the positional seed with q NULL-filled
+	// on non-matching outer rows (the projected EXISTS then reads that NULL).
+	foldJoinType := expressions.JoinInner
+	if j.Kind == logical.JoinLeft {
+		foldJoinType = expressions.JoinLeftOuter
+	}
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		quantifiers,
 		allPreds,
 		sourceAliases,
-		expressions.JoinInner,
+		foldJoinType,
 	)
 }
 

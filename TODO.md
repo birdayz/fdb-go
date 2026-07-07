@@ -341,6 +341,21 @@ validation gate.
     inversion); the FDB cells tripwire it per-shape today, but the class closes
     structurally only when the harness compares Datum keys too. Moot if S4 retires
     the coexistence Datum outright — decide at demolition time.
+  - [x] **F2-LEFT DONE** (projected-EXISTS over LEFT JOIN, scan legs — Java-parity reach gap: Go
+    rejected 0AF00, Java answers; live-verified 4.12.11.0). The translator INNER-guard lift builds a
+    JoinLeftOuter select; the executor routes it through the commit-2 **ORDINAL** path
+    (correlatedStep1 false on the undissolved LEFT → gatedSeedStep1 true) + a JoinLeftOuter NLJ that
+    null-extends the null-supplying leg **positionally** — NO name-model `:698` producer (verified: the
+    scan-leg query never hits buildJoinResultValue). Buried box `(a JOIN b) LEFT JOIN c` DECLINES
+    cleanly (`isScanFamilyLeg` gate → §8 → 0AF00) rather than mint a producer; INNER keeps its
+    buried-box `:698` (task-scope, no null-extension) — asymmetry deliberate. noop-(J) flipped
+    decline→rows; live-Java-parity corpus entry added → **dualwindow green BOTH windows, 0 new
+    carve-outs** (S4-ready, not name-model-dependent). Pins: 3 scan-leg FDB (null-padded/star-null/
+    uncorrelated) + buried-box clean-decline + `isScanFamilyLeg` white-box. RIGHT-outer booked
+    follow-on (needs the operand swap; no JoinRightOuter in the fold's JoinType). **The
+    conformance differential caught an ORDER-BY trap** (first commit reverted): the FOLD is Java
+    parity, but `ORDER BY` on top makes Java's Cascades fail-to-plan while Go handles it (a
+    Go-beyond-Java reach) — so all tests use the VERIFIED ORDER-BY-free shape, sorting in Go. Four-gate pending.
   - [ ] SEPARATE later slices (F2/F3): CTE-rename `select.go:274` widening (gated on CTE-column-rename
     ordinalization); lazy name-identity arm deletion (gated on FULL FieldValue baking, NOT S4).
 - [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
