@@ -842,18 +842,29 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 }
 
 // unnestExistsSeedSafe reports whether a lateral unnest may take the ordinal
-// seed given its EXISTS context. Exactly ONE shape stays NAME-MODEL — a
-// MULTI-ALIAS outer (a merge-opaque FULL OUTER box has clusterArity 1 but binds
-// two aliases whose same-named columns the single-source ordinal windows cannot
-// disambiguate; positionally handling it needs the W5 leg-splice, out of scope).
-// This is a genuine single-source SCOPE gate, not a prediction of the executor's
-// predicate routing: the shadow / outer-only-conjunct / inner-alias-collision
-// shapes that earlier declines guarded are now handled POSITIONALLY by the
-// executor — the mixed seed carries per-leg windows (including a synthesized
-// element window, values.OrdinalSeedLegWindows), the below-FOD hoist rebases
-// every inner-residual outer ref to a baked ofOrdinal, and the rule routes by
-// the renamed correlation identity, not by name. The translator no longer
-// predicts any of that. A plain (non-EXISTS) unnest is unaffected.
+// seed given its EXISTS context. A SINGLE-NAMESPACE outer always qualifies. A
+// MULTI-ALIAS outer qualifies ONLY when it is an OUTER-join box that gates fresh
+// (boxGatesFresh) — the RFC-173 S4 Step-B lift: the box births its whole
+// leg-concat positionally and the per-leg-window rebase (channels 1+2)
+// disambiguates its dup-named legs by their [Start,Width) windows, so a
+// qualified correlation to a buried leg (`FOB.K` in `a FULL OUTER b`) resolves
+// to THAT leg, not the same-named column of the other leg. This is coupled to
+// AXIS 1 (the box-outer enclosure at the unnest's translateRef) through the
+// SAME boxGatesFresh predicate — see boxGatesFresh; either half alone is broken.
+//
+// A multi-alias outer that is NOT a fresh-gating outer box (an INNER cluster, a
+// name-model-enclosed box) stays NAME-MODEL: an INNER cluster's seed still
+// declines the flattened multi-source outer (R1), and an ordinal seed over it
+// would bake the merged prefix blind to the alias count.
+//
+// This is a genuine SCOPE gate, not a prediction of the executor's predicate
+// routing: the shadow / outer-only-conjunct / inner-alias-collision shapes that
+// earlier declines guarded are now handled POSITIONALLY by the executor — the
+// mixed seed carries per-leg windows (including a synthesized element window,
+// values.OrdinalSeedLegWindows), the below-FOD hoist rebases every
+// inner-residual outer ref to a baked ofOrdinal, and the rule routes by the
+// renamed correlation identity, not by name. A plain (non-EXISTS) unnest is
+// unaffected.
 func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator) bool {
 	if !t.unnestUnderExistential {
 		return true
@@ -861,7 +872,26 @@ func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator) 
 	if t.unnestExistsScopeCollision {
 		return false
 	}
-	return len(outerBoundAliases(left)) == 1
+	return len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)
+}
+
+// boxOuterBirthsPositional reports whether the unnest's OUTER box will actually
+// take the ordinal seed — the EXACT condition the box-outer POSITIONAL birth
+// (AXIS 1) must share with the seed gate (AXIS 2). Among outer boxes ONLY a FULL
+// box qualifies: clusterArity==1 holds for a merge-opaque FULL box but NEVER for
+// LEFT/RIGHT (whose clusterArity is preserved-side + 1 >= 2), so a LEFT/RIGHT
+// box's seed can never ordinalize (the :1496 clusterArity==1 gate blocks it).
+// Birthing a LEFT/RIGHT box POSITIONAL while its seed stays NAME-MODEL would
+// strand the name-model builder over a positional row — it reads the box by the
+// ABSENT qualified LEG.COL keys → NULL / bare last-leg-wins → wrong rows (or a
+// loud unresolvable-field on the ON predicate). boxGatesFresh restricts to
+// fresh-gating outer boxes (false for scans and INNER clusters);
+// unnestExistsSeedSafe folds in the EXISTS scope-collision guard so AXIS 1
+// declines EXACTLY when the seed does. For a single-source scan outer this is
+// false (boxGatesFresh false) and AXIS 1 is a no-op — a scan ref ignores the
+// enclosure bit — so nothing changes off the box path.
+func (t *cascadesTranslator) boxOuterBirthsPositional(left logical.LogicalOperator) bool {
+	return t.clusterArity(left) == 1 && t.boxGatesFresh(left) && t.unnestExistsSeedSafe(left)
 }
 
 // existsInnerScopeCollidesOuter reports whether any EXISTS inner subquery scans a
@@ -1353,7 +1383,22 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		}
 	}
 
+	// RFC-173 S4 Step-B, AXIS 1 (coupled to the seed gate / AXIS 2 via
+	// boxOuterBirthsPositional): a FULL outer box that will take the ordinal seed
+	// BIRTHS a positional row instead of the name-model Datum this unnest's
+	// :1074 `inInnerCluster=true` would otherwise force (the :167 enclosure
+	// poison). The predicate is boxOuterBirthsPositional, NOT boxGatesFresh
+	// alone: a LEFT/RIGHT box gates fresh but has clusterArity>=2 so its seed
+	// stays name-model — birthing it positional would strand the name-model
+	// builder over a positional row (wrong rows). We clear the enclosure ONLY
+	// for the box's own translateRef, then restore it — the rest of the unnest
+	// lowering keeps the enclosed bit. `prevEnclosure ||` keeps an
+	// already-enclosed unnest name-model (matching the seed's own !prevEnclosure
+	// gate below): the box only births positional when this unnest is un-enclosed.
+	savedEnclosure := t.inInnerCluster
+	t.inInnerCluster = prevEnclosure || !t.boxOuterBirthsPositional(j.Left)
 	outerRef := t.translateRef(j.Left)
+	t.inInnerCluster = savedEnclosure
 	if outerRef == nil {
 		return nil
 	}

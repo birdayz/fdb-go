@@ -243,8 +243,15 @@ func (t *cascadesTranslator) gatherInnerClusterLegs(j *logical.LogicalJoin) []cl
 // null-supplying ROLE keyed by kind (design ruling I2: Java assembles the RV
 // in source order regardless of join type; a RIGHT join's null side is its
 // LEFT operand). W4-left: LEFT/RIGHT mark exactly one null-supplying leg;
-// FULL marks neither yet (its nullability alignment is a booked follow-up —
-// the existing FULL seed shipped without record-level nullable legs).
+// FULL marks NEITHER leg record-level nullable — the column TYPES read NOT
+// NULL where Java would type all-FULL-columns nullable. This is ANSWER-INVARIANT
+// (pinned): the row VALUES are correct because the NLJ binds nil for the
+// unmatched leg regardless of the static type marker, so a correlation to a
+// null-supplied FULL leg (`FOB.K` in `a FULL OUTER b`) evaluates against nil and
+// yields the right rows — proven end-to-end by
+// TestFDB_RFC173S4_C5a_FullOuterUnnestExists (the null-supplied-leg EXISTS/
+// NOT-EXISTS discriminators). The type marker affects only schema-level
+// nullability reporting, not the runtime value.
 func (t *cascadesTranslator) legsOfGatedJoin(j *logical.LogicalJoin) []clusterLeg {
 	if j.Kind == logical.JoinInner {
 		return t.gatherInnerClusterLegs(j)

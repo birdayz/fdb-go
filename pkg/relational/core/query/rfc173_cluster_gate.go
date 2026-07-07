@@ -91,11 +91,57 @@ func (t *cascadesTranslator) existsOuterGatesFresh(input logical.LogicalOperator
 	if j.Kind != logical.JoinLeft && j.Kind != logical.JoinRight {
 		return false
 	}
+	return t.gatesAsFreshCluster(j)
+}
+
+// gatesAsFreshCluster runs the ordinal wedge gate on j with enclosure forced
+// FALSE — the fresh-cluster position a box or join leg roots (it sits at an
+// outer-box or leg boundary) — restoring the ambient bit. Side-effect-free,
+// mirroring ordinalEligible. This is the shared probe behind
+// existsOuterGatesFresh, boxGatesFresh, and ordinalEligible's LogicalJoin arm;
+// each caller keeps its OWN kind-guard and calls this for the gate decision.
+// ONE gate authority (ordinalWedgeGateDecide), ONE probe mechanism.
+func (t *cascadesTranslator) gatesAsFreshCluster(j *logical.LogicalJoin) bool {
 	prev := t.inInnerCluster
 	t.inInnerCluster = false
 	d := t.ordinalWedgeGateDecide(j)
 	t.inInnerCluster = prev
 	return d.Gated
+}
+
+// boxGatesFresh is the RFC-173 S4 Step-B enclosure-lift predicate — the SAME
+// one gate authority as existsOuterGatesFresh, WIDENED to include FULL. It
+// reports whether an OUTER-join box would gate ordinal AS A FRESH CLUSTER
+// (enclosure forced FALSE), i.e. whether the box may BIRTH a positional row
+// under a lateral unnest instead of a name-model Datum. Unlike
+// existsOuterGatesFresh (LEFT/RIGHT only — its below-FOD scalar rebase is the
+// 1+1 dissolve-to-INNER shape), this admits FULL: a box UNDER an unnest births
+// its whole leg-concat positionally (ordinalJoinBirth NULL-fills the FULL
+// drain; adaptLegPositional flows it through), and the per-leg-window rebase
+// (channels 1+2) resolves each leg's dup-named columns by its [Start,Width)
+// window rather than flat first-match — so a FULL box's two same-named legs
+// disambiguate end-to-end.
+//
+// JoinInner is EXCLUDED: a multi-source INNER cluster (`FROM A, B, A.arr AS x`)
+// gates as a flat N-way gather, and admitting it here would gate the cluster
+// ordinal while its seed still declines the multi-source outer — wrong rows
+// (R1). The probe runs Decide with enclosure forced FALSE (the fresh-cluster
+// position a box roots), side-effect-free, mirroring existsOuterGatesFresh.
+//
+// The TWO axes this predicate gates — the box-outer enclosure at the unnest's
+// translateRef and unnestExistsSeedSafe's multi-alias admission — MUST flip
+// TOGETHER through this ONE predicate: a positional seed over a name-model box
+// row hits the adaptLegPositional zero-match tripwire, and a name-model builder
+// over a positional box row mis-types the leg. Either half alone is broken.
+func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
+	j, ok := input.(*logical.LogicalJoin)
+	if !ok {
+		return false
+	}
+	if j.Kind == logical.JoinInner {
+		return false
+	}
+	return t.gatesAsFreshCluster(j)
 }
 
 // forceOrdinalSpike is the RFC-173 S4 B1 CERTIFICATE oracle (test-only). When set,
@@ -258,11 +304,7 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		// rules' actual mergeability), so the parent's arity accounting and
 		// the seed layout agree; the W3b drift assert and the mixed-nesting
 		// matrices stay the tripwires.
-		prev := t.inInnerCluster
-		t.inInnerCluster = false
-		d := t.ordinalWedgeGateDecide(o)
-		t.inInnerCluster = prev
-		return d.Gated
+		return t.gatesAsFreshCluster(o)
 	case *logical.LogicalFilter:
 		// RFC-173 commit 5b: rider subqueries are transparent to eligibility,
 		// mirroring clusterArity. A WHERE-EXISTS leg's output boundary is the

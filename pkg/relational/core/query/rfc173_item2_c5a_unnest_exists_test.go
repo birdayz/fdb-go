@@ -103,34 +103,21 @@ func TestRFC173Item2C5a_SeedWindowAuthority(t *testing.T) {
 	}
 }
 
-// TestRFC173Item2C5a_MultiAliasOuterDeclines pins the MULTI-ALIAS-outer fix.
-// A merge-opaque FULL OUTER box has clusterArity 1 but binds
-// TWO aliases, so clusterArity==1 is NOT a valid proxy for "single source" here.
-// The under-EXISTS ordinal rebase addresses the outer as one pristine prefix and
-// resolves a column by its name in the outer leg type; with two aliases a
-// correlation to a buried alias's column collides with the other alias's
-// same-named column and bakes the wrong slot. unnestExistsSeedSafe keys on
-// outerBoundAliases (the outer row's visible namespace count), so such an outer
-// stays NAME-MODEL under EXISTS (anchored seed). Without the guard the seed goes
-// ordinal (unnestOrdinalSeed bakes the whole merged prefix, blind to the alias
-// count) — this test is red.
-//
-// This decline is CORRECT and NOT a stale "W5-not-built" gate (design review of a
-// proposed S4 lift, NAK'd): the W5 gathered path DOES disambiguate same-named
-// columns via qualified slots, but the three EXISTS-rebase channels do NOT consult
-// it — rebaseUnnestOuterLegPredicateOrdinal resolves by BARE-name first-match
-// (qualifier DROPPED), and the RULE-level below-FOD executor hoist assumes the
-// single-alias pristine-prefix-at-offset-0 invariant. So the only well-formed
-// multi-alias correlation (a QUALIFIED ref like c.ID; a bare one is 42702) is
-// exactly the one the ordinal rebase mis-resolves. The name-model anchored path
-// (qualified LEG.COL keys, rebaseUnnestOuterLegPredicate) is the Java-faithful
-// correct handler. Lifting this guard REQUIRES first teaching both the rebase
-// channel AND the executor hoist to route a qualified ref through ordinalLegType's
-// rt.Legs [Start,Start+Width) windows (metadata already produced, consumed today
-// only by OrdinalSeedLegWindows) — its own slice/ACK — THEN lifting the guard
-// behind a yamsql e2e (qualified ref to a second-alias dup-named column + a FULL
-// OUTER null-supplied row). Until that lands, the guard stays.
-func TestRFC173Item2C5a_MultiAliasOuterDeclines(t *testing.T) {
+// TestRFC173Item2C5a_MultiAliasOuterGatesOrdinal pins the RFC-173 S4 Step-B
+// COUPLED TWO-AXIS FLIP. A merge-opaque FULL OUTER box has clusterArity 1 but
+// binds TWO aliases; before Step B such an outer stayed NAME-MODEL under EXISTS
+// because the ordinal rebase resolved a column by flat first-match and could not
+// disambiguate the two legs' same-named columns. Step B lifts that: a
+// fresh-gating OUTER box (boxGatesFresh) now BIRTHS a positional row (AXIS 1 —
+// the box-outer translateRef clears the :167 enclosure) AND the seed is admitted
+// (AXIS 2 — unnestExistsSeedSafe), so the ordinal seed FIRES and the per-leg
+// windows (channels 1+2) disambiguate the dup-named legs by their [Start,Width)
+// windows. The two axes flip TOGETHER through the one boxGatesFresh predicate;
+// the FDB e2e (TestFDB_RFC173S4_C5a_FullOuterUnnestExists) proves the rows are
+// correct-leg-bound (a qualified ref to the null-supplied leg resolves to THAT
+// leg) and that the multi-source INNER cluster (`FROM A, B, A.arr AS x`) still
+// stays name-model (the R1 hazard boxGatesFresh excludes via JoinInner).
+func TestRFC173Item2C5a_MultiAliasOuterGatesOrdinal(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
 	// FROM (Order o FULL OUTER JOIN Customer c), o.TAGS AS X — a 2-alias outer.
@@ -149,8 +136,85 @@ func TestRFC173Item2C5a_MultiAliasOuterDeclines(t *testing.T) {
 	if !ok {
 		t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
 	}
+	if rc.AnchoredJoin {
+		t.Fatal("fresh-gating FULL OUTER outer under EXISTS seeded the ANCHORED RC — Step B must birth it POSITIONAL (ordinal seed) so the per-leg windows disambiguate the dup-named legs")
+	}
+	// The ordinal seed must carry per-leg windows so the box's two legs
+	// disambiguate positionally (channels 1+2). A nil window set would mean the
+	// seed fell back to flat name-resolution — the very ambiguity Step B fixes.
+	if w, _ := values.OrdinalSeedLegWindows(rc); w == nil {
+		t.Fatal("Step-B ordinal seed yielded NO executor windows — the dup-named box legs cannot disambiguate without them")
+	}
+}
+
+// TestRFC173Item2C5a_MultiSourceInnerClusterStaysNameModel is the R1 NEGATIVE
+// pin for Step B: a MULTI-SOURCE INNER cluster (`FROM A, B, A.arr AS x`) is NOT
+// a fresh-gating outer box (boxGatesFresh excludes JoinInner), so it stays
+// NAME-MODEL under EXISTS. Admitting it would gate the cluster ordinal while its
+// seed still declines the flattened multi-source outer — wrong rows (R1's
+// :5117-5119 hazard). This must hold in the SAME commit as the FULL-box lift.
+func TestRFC173Item2C5a_MultiSourceInnerClusterStaysNameModel(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	// FROM (Order o INNER JOIN Customer c), o.TAGS AS X — a 2-alias INNER outer.
+	outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, "")
+	j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
+	tr.unnestUnderExistential = true
+	expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
+	if expr == nil {
+		t.Fatalf("translation failed: %v", tr.translateErr)
+	}
+	sel, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("unnest expr = %T, want a SelectExpression", expr)
+	}
+	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
+	if !ok {
+		t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
+	}
 	if !rc.AnchoredJoin {
-		t.Fatal("multi-alias FULL OUTER outer under EXISTS seeded the ORDINAL RC — the ordinal rebase cannot disambiguate the two aliases' same-named columns; it must stay name-model")
+		t.Fatal("multi-source INNER cluster under EXISTS seeded the ORDINAL RC — boxGatesFresh must exclude JoinInner (R1: the seed still declines the multi-source outer, so an ordinal cluster gate is wrong rows)")
+	}
+}
+
+// TestRFC173Item2C5a_BoxGatePredicates directly pins the two Step-B predicates,
+// converting the R1 and AXIS-1-coupling guards into REAL regression sentinels.
+// The AnchoredJoin/rows observables alone are MASKED: an INNER cluster's seed
+// declines via clusterArity>=2 regardless of boxGatesFresh, and a LEFT/RIGHT
+// box's seed likewise declines via clusterArity — so deleting the JoinInner
+// exclusion or widening AXIS 1 back to boxGatesFresh would leave those tests
+// green while re-introducing the "positional box under a name-model builder"
+// wrong-rows defect. These direct assertions turn such a change RED:
+//   - boxGatesFresh gates every OUTER box (LEFT/RIGHT/FULL) fresh, never INNER
+//     (the R1 exclusion).
+//   - boxOuterBirthsPositional (the AXIS-1 birth condition) is true ONLY for a
+//     FULL box (clusterArity==1). A LEFT/RIGHT box gates fresh yet must NOT birth
+//     positional (clusterArity>=2 → its seed stays name-model); an INNER cluster
+//     neither gates fresh nor births.
+func TestRFC173Item2C5a_BoxGatePredicates(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	tr.unnestUnderExistential = true
+	mk := func(kind logical.JoinKind) logical.LogicalOperator {
+		return logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), kind, "")
+	}
+	for _, tc := range []struct {
+		name        string
+		op          logical.LogicalOperator
+		gatesFresh  bool
+		birthsPosnl bool
+	}{
+		{"FULL", mk(logical.JoinFull), true, true},
+		{"LEFT", mk(logical.JoinLeft), true, false},
+		{"RIGHT", mk(logical.JoinRight), true, false},
+		{"INNER", mk(logical.JoinInner), false, false},
+	} {
+		if got := tr.boxGatesFresh(tc.op); got != tc.gatesFresh {
+			t.Errorf("boxGatesFresh(%s) = %v, want %v", tc.name, got, tc.gatesFresh)
+		}
+		if got := tr.boxOuterBirthsPositional(tc.op); got != tc.birthsPosnl {
+			t.Errorf("boxOuterBirthsPositional(%s) = %v, want %v", tc.name, got, tc.birthsPosnl)
+		}
 	}
 }
 

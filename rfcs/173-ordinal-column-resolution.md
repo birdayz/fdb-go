@@ -4857,6 +4857,48 @@ null-supplied dup-named leg; assert exact rows + correct-leg bind + ordinal seed
 that `FROM A,B,A.arr AS x` (multi-source INNER cluster) stays name-model (the R1 hazard). Re-request
 impl-ACK on the diff.
 
+**Step B IMPLEMENTED + e2e-VERIFIED + impl-review round applied.** The coupled flip landed:
+`boxGatesFresh` (rfc173_cluster_gate.go, the one gate authority widened to FULL, JoinInner excluded);
+AXIS 2 in `unnestExistsSeedSafe` (`|| t.boxGatesFresh(left)`); AXIS 1 at the box-outer `translateRef`.
+
+**Impl-review round (three gates): Graefe NAK→fixed, @claude NAK→fixed, Torvalds ACK.** Graefe caught a
+SILENT WRONG-ANSWER: AXIS 1 gated on `boxGatesFresh` alone admits LEFT/RIGHT boxes, but only a FULL box
+takes the ordinal seed (`clusterArity==1`; LEFT/RIGHT are preserved-side+1 ≥ 2). A LEFT/RIGHT box would
+birth POSITIONAL while its seed stayed name-model → the name-model builder reads the box by absent
+qualified LEG.COL keys → wrong rows (`(FOA LEFT FOB), FOA.arr WHERE EXISTS(…FOA.K…)` → 0 rows, should
+be {7,8}; reproduced RED — loud unresolvable-field). FIX: AXIS 1 now gates on `boxOuterBirthsPositional`
+= `clusterArity==1 && boxGatesFresh && unnestExistsSeedSafe` — the box births positional EXACTLY when
+the seed ordinalizes it (couples the two axes on the seed's ACTUAL condition, folding the EXISTS
+scope-collision guard). @claude caught that the R1 negative unit test was MASKED by `clusterArity` (an
+INNER cluster's seed declines via arity regardless of the JoinInner guard) — added
+`TestRFC173Item2C5a_BoxGatePredicates`, a direct white-box pin of `boxGatesFresh` (FULL/LEFT/RIGHT true,
+INNER false) and `boxOuterBirthsPositional` (FULL true, LEFT/RIGHT/INNER false), so deleting the guard
+or re-widening AXIS 1 turns red. Torvalds: extracted the thrice-copied fresh-cluster probe into
+`gatesAsFreshCluster`. Added e2e pins: the LEFT regression (correct rows) and an IS-NULL-on-FULL-leg
+probe (Graefe Q5 — the NOT-NULL type marker must not constant-fold `FOB.K IS NULL` to false; answer
+{7,8} confirms answer-invariance for a null-CONSUMING predicate, not just equality-NULL propagation).
+Pins: `TestRFC173Item2C5a_MultiAliasOuterGatesOrdinal` (the FULL box now seeds ORDINAL + carries
+windows — the old `…Declines` inverted per refinement c) and `…_MultiSourceInnerClusterStaysNameModel`
+(R1 negative). E2E `TestFDB_RFC173S4_C5a_FullOuterUnnestExists`: all rows correct across
+EXISTS/NOT-EXISTS on BOTH the null-supplied leg (Q1/Q2 — the correct-leg-bind discriminators) and the
+present leg (Q3/Q4), plus the multi-source INNER negative (R1). Refinement (a) closed — the unnest
+YIELDS element rows {7,8}. Refinement (b) closed by PINNING ANSWER-INVARIANT (not the type change):
+the FULL null-supplied leg's value is nil via the NLJ regardless of the NOT-NULL type marker, so the
+`FOB.K`-correlated EXISTS evaluates correctly (documented at legsOfGatedJoin).
+
+**FINDING (name-model oracle carve-out for dup-named box seeds).** The §5 dual-window differential is
+NOT a valid gate for this shape: the name-model oracle resolves dup-named box columns LAST-LEG-WINS
+(the name-keyed Datum cannot keep two same-named legs distinct — the exact conflation RFC-173
+eliminates). So the oracle reads a QUALIFIED first-leg ref (`FOA.K`) as the last leg's K and DIVERGES
+from the positional path — while the positional path resolves each leg by its [Start,Width) window.
+This is not a bug in the flip; it is the c4 §7 observable (correct rows alone don't distinguish
+ordinal from name — the name model is the broken reference here). The e2e turns it into a POSITIVE
+proof: toggling the oracle CHANGING the Q3 answer proves the positional seed fired (a name-model
+revert would make them agree → red), and the asymmetry (oracle agrees on the LAST-leg Q2, diverges on
+the FIRST-leg Q3) precisely characterizes the conflation. The name-model BUILDER (the pre-flip native
+path) is correct here via qualified keys — so there is NO latent master wrong-answer; only the
+test-only oracle mechanism conflates a positional dup-named seed, an enumerated carve-out.
+
 ## S4 R2 — gathered multi-source unnest GROUP BY ordinalization (LANDED: 43871b83b)
 
 The first producer-retiring increment against R2 (multi-source lateral unnest, the :1528 producer):
