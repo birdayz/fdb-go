@@ -4825,6 +4825,38 @@ enclosure-site slices in the worklist above. Step B is NOT a standalone flip; it
 :167 enclosure ordinalization. The substrate (channels 1+2) is correct + necessary regardless — it is
 the layout the box-under-unnest needs once the box outer births positional.
 
+**Step B DESIGN-ACK'd (ACK-WITH-REFINEMENT) — the COUPLED TWO-AXIS FLIP.** NOT a blanket `:1074`
+lift (that NAKs: R1's :5117-5119 warns a broad lift breaks the multi-source INNER cluster
+`FROM A,B,A.arr AS x` — it would gate that cluster ordinal while the seed still declines it, wrong
+rows; also breaks the fallback rebuild :1530 and the chained-unnest path :1136). The ACK'd form is a
+SURGICAL, COUPLED flip of TWO axes gated by ONE predicate:
+  - `boxGatesFresh(j.Left)` — a NEW predicate mirroring `existsOuterGatesFresh` (:86-99): the input is
+    an OUTER-join box that gates via `ordinalWedgeGateDecide` with enclosure forced FALSE (the ONE gate
+    authority — no parallel re-derivation, query-engine ruling condition 4). Excludes JoinInner (the R1
+    multi-source hazard).
+  - AXIS 1 — box-outer enclosure at the `:1356` `translateRef(j.Left)` ONLY: `t.inInnerCluster =
+    prevEnclosure || !boxGatesFresh(j.Left)` (keep `prevEnclosure ||` so an already-enclosed unnest
+    keeps the box name-model, matching the seed's own `!prevEnclosure` gate at :1473). This lets the
+    FULL box birth a POSITIONAL row (its ordinalJoinBirth NULL-fills the FULL drain; adaptLegPositional
+    flows it through — traced sound).
+  - AXIS 2 — `unnestExistsSeedSafe` (:864): admit the multi-alias box: `len(outerBoundAliases)==1 ||
+    boxGatesFresh(left)`.
+  - MUST flip TOGETHER in ONE commit via the SAME `boxGatesFresh` predicate — either half alone is
+    broken (seed-gate-only → positional seed over name-model box → adaptLegPositional zero-match;
+    :1356-only → name-model builder over a positional box). The B1-certificate coupled-flip discipline.
+Refinements to close in the slice: (a) the array collection is name-addressed dotted (`"O.TAGS"` at
+:1398-1426), resolving via the coexistence dotted bridge — the e2e MUST assert the unnest YIELDS
+element rows, not just plan shape. (b) `legsOfGatedJoin` marks NEITHER FULL leg null-supplying
+(:246-247, booked) — row values correct (NLJ + nil-leg binding), but columns typed NOT NULL vs Java's
+all-FULL-columns-nullable; CLOSE it (mark both FULL legs record-level nullable, :489-501) OR pin
+answer-invariant. (c) rewrite `TestRFC173Item2C5a_MultiAliasOuterDeclines` — its assertion INVERTS
+anchored→ordinal, its doc block ("the decline is correct") stops being true.
+E2E (FDB, real rows + plan): dup-named cols across A,B; a null-supplied SURVIVING row (A row no B
+match, A.arr non-empty); `WHERE EXISTS` AND `WHERE NOT EXISTS` correlating on a QUALIFIED ref to the
+null-supplied dup-named leg; assert exact rows + correct-leg bind + ordinal seed shape; a NEGATIVE pin
+that `FROM A,B,A.arr AS x` (multi-source INNER cluster) stays name-model (the R1 hazard). Re-request
+impl-ACK on the diff.
+
 ## S4 R2 — gathered multi-source unnest GROUP BY ordinalization (LANDED: 43871b83b)
 
 The first producer-retiring increment against R2 (multi-source lateral unnest, the :1528 producer):
