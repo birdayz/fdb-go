@@ -4032,6 +4032,25 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 	)
 }
 
+// aggregateOperandReferencesColumn reports whether any aggregate operand reads a
+// COLUMN — i.e. is not COUNT(*) (nil operand) and not a bare constant (COUNT(1)).
+// Such an operand over a gathered multi-source unnest must resolve through the
+// named-projection wrap even without a GROUP BY (the global SUM(EL) case); a pure
+// COUNT(*) references nothing and keeps the flat seed. The resolved operands are
+// populated on the logical node before cascades translation (upgradeAggregateOperands).
+func aggregateOperandReferencesColumn(a *logical.LogicalAggregate) bool {
+	for _, op := range a.AggregateOperands {
+		if op == nil {
+			continue
+		}
+		if _, isConst := op.(*values.ConstantValue); isConst {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // Go extension: Java's fdb-relational 4.11.1.0 does not support GROUP BY;
 // its AstNormalizer rejects it with UNSUPPORTED_QUERY before reaching the planner.
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
@@ -4044,18 +4063,19 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			Plan:  ssq.Plan,
 		})
 	}
-	// A gathered multi-source unnest under this GROUP BY exposes only bare column
-	// names, so a grouped element reference qualifies to the "EL.EL" shadow key the
-	// positional seed lacks (see underAggregate) — mark the input translation so the
-	// gather places a NAMED-PROJECTION layer above the seed that re-exposes the shadow
-	// + qualified keys the grouped read resolves against (ordinalizing the group-by).
-	// ONLY for a GROUPED aggregate (len(GroupKeys) > 0): a GLOBAL aggregate (no GROUP
-	// BY — `SELECT COUNT(*) FROM a, b, a.arr AS x`) reads no grouped element reference,
-	// keeps the flat gathered seed, and must not pay for the projection wrap. Global
-	// scoping also preserves shapes the raw gather is the SOLE path for (a
-	// duplicate-FROM-alias multi-source unnest).
+	// A gathered multi-source unnest under this aggregate exposes only bare column
+	// names on its flat positional seed, so any reference to an element/leg column —
+	// a grouped element reference that qualifies to the "EL.EL" shadow key, OR a
+	// global aggregate OPERAND like SUM(EL)/SUM(WAUX.WV) — cannot resolve against the
+	// bare seed and reads NULL. Mark the input translation so the gather places a
+	// NAMED-PROJECTION layer above the seed re-exposing the shadow + qualified keys.
+	// Triggered when there is a GROUP BY (the grouped element/qualified key) OR any
+	// aggregate operand references a column (the global SUM(EL) case). A global
+	// COUNT(*) references nothing, so it keeps the flat seed and pays no wrap — which
+	// also preserves the duplicate-FROM-alias raw-gather shape (still declined by the
+	// name-ambiguity gate) exactly as before.
 	prevUnderAgg := t.underAggregate
-	if len(a.GroupKeys) > 0 {
+	if len(a.GroupKeys) > 0 || aggregateOperandReferencesColumn(a) {
 		t.underAggregate = true
 	}
 	innerRef := t.translateRef(a.Input)

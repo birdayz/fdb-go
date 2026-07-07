@@ -1415,6 +1415,17 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] query-engine: computed QUALIFIED group key returns NULL (general, not unnest) — found via codex on RFC-173 positional-wrap review (2026-07-07)
+
+`GROUP BY <qualified-col> + <expr>` returns NULL for the key on ANY multi-table query:
+`SELECT WSRC.SID + 1, COUNT(*) FROM WSRC, WAUX GROUP BY WSRC.SID + 1` → `K=<nil>` ("unresolved
+reference WSRC.SID + 1"). Reproduces with NO unnest/gather/shadow, and identically on the pre-RFC-173
+name-read wrap. A BARE qualified group key (`GROUP BY WAUX.WV`) resolves fine — only the COMPUTED
+form breaks. Root cause: resolving a computed group key's qualified inner column reference against the
+aggregate input. General pre-existing planner gap, NOT an RFC-173 residual (see
+rfcs/173-ordinal-column-resolution.md §NOT-OUR-BUG #2). Sibling of the derived-table+GROUP-BY 42703
+gap (§NOT-OUR-BUG). Fix: trace the computed-group-key operand resolution over the qualified reference.
+
 ### [ ] fdbgo/client: deferred-error vs cancelled precedence differs from libfdb_c on a BOTH-poisoned-AND-cancelled txn
 
 C++ checks `deferredError` at every ThreadSafeTransaction op lambda (get :431, watch :654, commit

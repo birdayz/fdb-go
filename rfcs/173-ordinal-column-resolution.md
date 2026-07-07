@@ -4768,10 +4768,21 @@ convergent over the four rounds.
 - **N-way — ✅ PINNED (95aadac66, test-only)**: a 3-plain-leg disjoint gather (WSRC,
   WSRC.WARR AS EL, WAUX, GW) with a grouped aggregate over the THIRD leg (SUM(GW.V)) ordinalizes
   (EL=7/8, S=2997), plan-asserted. The wrap already handled N legs; this pins it.
-Producer #2 (:1528) is now retired for the gathered group-by class across ALL its shapes (plain-leg,
-box-leg, N-way, disjoint/enclosed shadow, AT-only); the only residual decline is an underivable leg
-type or a cross-leg unqualified-ambiguous reference (the name-ambiguity gate, a distinct SQL-error
-concern). The trio demolition remains the R1∧R2∧R3 convergence commit.
+- **global-aggregate element/leaf OPERAND — ✅ LANDED (Graefe/@claude review catch)**: a GLOBAL
+  aggregate (no GROUP BY) whose OPERAND references a column — `SUM(EL)`, `SUM(WAUX.WV)` over a
+  gathered multi-source unnest — previously skipped the wrap (the trigger was `len(GroupKeys) > 0`)
+  and name-read the bare positional seed → NULL (measured `SUM(EL)`=NULL, should be 45). This was
+  PRE-EXISTING (present at base, both reviewers verified) — the same positional-seed-name-read defect
+  the wrap cures, on the global path. Fix: `translateAggregate` now also triggers the wrap when
+  `aggregateOperandReferencesColumn(a)` (any operand that is not COUNT(*)/a constant). A global
+  COUNT(*) references nothing → keeps the flat seed (no wrap), which also preserves the
+  duplicate-FROM-alias raw-gather shape exactly. Tests: `SUM(EL)`=45 and `SUM(WAUX.WV)`=36 ordinalize
+  (1 Project — a global aggregate has no outer-SELECT Project), COUNT(*) stays flat (0 Project).
+Producer #2 (:1528) is now retired for the gathered aggregate class across ALL its shapes (plain-leg,
+box-leg, N-way, disjoint/enclosed shadow, AT-only, and GLOBAL element/leaf operands); the only
+residual decline is an underivable leg type or a cross-leg unqualified-ambiguous reference (the
+name-ambiguity gate, a distinct SQL-error concern). The trio demolition remains the R1∧R2∧R3
+convergence commit.
 
 ### NOT-OUR-BUG (found via codex on the named-projection review) — GENERAL derived-table + GROUP BY
 Codex flagged `SELECT E, COUNT(*) FROM (SELECT EL AS E FROM WSRC, WSRC.WARR AS EL, WAUX) AS D GROUP
@@ -4787,3 +4798,19 @@ alias, or qualification. The wrap never fires for these (`underAggregate=false` 
 diagnostic-confirmed) and the same 42703 reproduces at `a34e9e21d` (before the wrap existed). This
 is a general pre-existing engine gap (grouping over a subquery-in-FROM), tracked separately from
 RFC-173 — NOT a residual of the named-projection increment and NOT a blocker for it.
+
+### NOT-OUR-BUG #2 (found via codex on the positional-wrap review) — GENERAL computed QUALIFIED group key
+Codex flagged `GROUP BY WAUX.WV + 1` (a COMPUTED expression over a QUALIFIED column) as a wrong-answer
+of the shadow increment (`K=<nil>`, "unresolved reference WAUX.WV + 1"). Attribution (probes, all
+reverted): it is NOT shadow-specific and NOT gather-specific — **a computed qualified group key
+returns NULL for ANY multi-table query**:
+  - `SELECT WSRC.SID + 1, COUNT(*) FROM WSRC, WAUX GROUP BY WSRC.SID + 1` → `K=<nil>` (PLAIN join, NO
+    unnest/gather at all);
+  - the same `WSRC.SID + 1` fails identically on the parent commit's name-read wrap (472a86323);
+  - a BARE qualified group key (`GROUP BY WAUX.WV`, no arithmetic) resolves correctly — only the
+    COMPUTED form breaks.
+So the failing dimension is {computed expression, qualified column reference, GROUP BY}, independent
+of unnest/gather/shadow. A general pre-existing planner gap in resolving a computed group key's
+qualified inner reference against the aggregate input — tracked separately, NOT a residual of the
+positional-wrap increment and NOT a blocker. (Codex's "the patch introduces" framing was mis-attributed
+to the shadow context; the bug pre-dates and is broader than any unnest.)

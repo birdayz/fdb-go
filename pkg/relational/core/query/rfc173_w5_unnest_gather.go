@@ -298,17 +298,19 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if !t.underAggregate {
 		return seedSel
 	}
-	// A GROUP BY consumes this gather (and the shape passed the early
-	// gatheredGroupByWrapEligible gate above). The positional seed exposes only bare
-	// column names, so a grouped `FieldValue{Field:"EL", Child:QOV}` qualifies to the
-	// shadow "EL.EL" key the seed lacks and reads NULL (the shipped wrong answer). Keep
-	// the positional seed INTERNAL and place a NAMED-PROJECTION layer above it (Java's
-	// "the collapse preserves the named projection the group-by consumes"). It MUST be
-	// a LogicalProjectionExpression — NOT a SelectExpression, which SelectMergeRule
-	// would fuse away, losing the shadow key. The projection NAME-reads the seed
-	// (unpinned FieldValue — no positional-seed birth) and re-exposes bare + "EL.EL"
-	// shadow keys the grouped element read resolves against. RFC-173 S4.
-	return t.wrapGatheredForGroupBy(seedSel, rc, u, innerCorr, elementType, legs, legTypes, unnestPos, len(innerFields))
+	// An aggregate consumes this gather (a GROUP BY, or a global aggregate whose
+	// operand references a column — the shape passed the early gatheredGroupByWrapEligible
+	// gate above). The positional seed exposes only bare column names, so a grouped
+	// `FieldValue{Field:"EL", Child:QOV}` qualifies to the shadow "EL.EL" key the seed
+	// lacks (and a `SUM(EL)` operand name-reads the bare element) → NULL, the shipped
+	// wrong answer. Keep the positional seed INTERNAL and place a NAMED-PROJECTION layer
+	// above it (Java's "the collapse preserves the named projection the group-by
+	// consumes"). It MUST be a LogicalProjectionExpression — NOT a SelectExpression,
+	// which SelectMergeRule would fuse away, losing the shadow key. The projection binds
+	// every key POSITIONALLY (ofOrdinal over the seed's type — a projection is not a join,
+	// so the baked ordinal does not re-trigger the positional-seed birth) and re-exposes
+	// bare + "EL.EL"/qualified keys the grouped/operand read resolves against. RFC-173 S4.
+	return t.wrapGatheredForGroupBy(seedSel, rc, u, innerCorr, legs, legTypes, unnestPos, len(innerFields))
 }
 
 // fieldValueReferencesInner reports whether a seed field's VALUE reads the unnest's
@@ -366,10 +368,9 @@ func (t *cascadesTranslator) wrapGatheredForGroupBy(
 	rc *values.RecordConstructorValue,
 	u *logical.LogicalUnnest,
 	innerCorr values.CorrelationIdentifier,
-	elementType values.Type,
 	legs []clusterLeg,
 	legTypes map[string]bakeLegType,
-	unnestPos, elemCount int,
+	unnestPos, elemBlockWidth int,
 ) expressions.RelationalExpression {
 	innerAlias := values.UniqueCorrelationIdentifier()
 	typedInnerQOV := values.NewQuantifiedObjectValueOfType(innerAlias, rc.Type())
@@ -426,7 +427,7 @@ func (t *cascadesTranslator) wrapGatheredForGroupBy(
 	// The ALIAS.COL qualified twins the aggregate OPERANDS need (`SUM(WSRC.SID)`):
 	// each LEAF source's columns keyed by that leaf's OWN alias, bound POSITIONALLY
 	// at the leaf's seed slot. The seed slot is the leg's own start (preceding leg
-	// run widths, PLUS elemCount once past the unnest's FROM position) + the leaf's
+	// run widths, PLUS elemBlockWidth once past the unnest's FROM position) + the leaf's
 	// offset within the leg (leafOffset — 0 for a plain leg, the concat slot for a
 	// BOX leg's buried leaf) + the column index. Positional binding distinguishes a
 	// leaf column from a same-named element/outer column that a name-read would
@@ -453,7 +454,7 @@ func (t *cascadesTranslator) wrapGatheredForGroupBy(
 	for legI, leg := range legs {
 		legStart := rawOffset
 		if legI >= unnestPos {
-			legStart += elemCount // the element block is inserted at unnestPos
+			legStart += elemBlockWidth // the element block is inserted at unnestPos
 		}
 		emitLeafKeys(leg.op, leg.binding, legStart)
 		if lt, ok := legTypes[leg.binding]; ok && lt.typ != nil {

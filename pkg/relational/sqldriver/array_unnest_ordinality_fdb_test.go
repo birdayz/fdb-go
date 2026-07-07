@@ -3551,11 +3551,32 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT WSRC."SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY WSRC."SID"`, []string{
 			"COUNT(*)=6|N=6|WSRC.SID=1",
 		})
-		// GLOBAL aggregate (no GROUP BY) keeps the flat gathered seed (no projection
-		// wrap, no positional-merge collapse) and COUNT(*) reads no leg column.
-		// 1 WSRC row × {7,8} × 3 WAUX = 6.
-		assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+		// GLOBAL aggregate COUNT(*) references no column, so it keeps the FLAT gathered
+		// seed (no projection wrap) — 1 WSRC row × {7,8} × 3 WAUX = 6. Pin the no-wrap
+		// shape (single Project) so the surgical trigger stays surgical.
+		exGCount := assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"COUNT(*)=6|N=6",
+		})
+		if strings.Count(exGCount, "Project(") >= 1 {
+			t.Fatalf("global COUNT(*) must keep the flat seed (no wrap), got: %s", exGCount)
+		}
+		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) DOES need the
+		// wrap — the flat positional seed exposes only bare names, so without it SUM(EL)
+		// name-reads NULL (the pre-existing W5 global-operand gap). Each element {7,8}
+		// appears 3× (WAUX) → SUM=(7+8)*3=45. The wrap fires (2+ Project) even with no
+		// GROUP BY, via the aggregate-operand-references-column trigger.
+		exGSum := assertRows(t, `SELECT SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"S=45|SUM(EL)=45",
+		})
+		// A GLOBAL aggregate has no outer-SELECT Project, so the wrap adds exactly ONE
+		// Project (a GROUP BY has two — the outer projection plus the wrap).
+		if strings.Count(exGSum, "Project(") < 1 {
+			t.Fatalf("global SUM(EL) must ORDINALIZE via the operand-triggered wrap, got: %s", exGSum)
+		}
+		// A global aggregate over a BURIED leaf column (SUM(WAUX.WV)) needs the same
+		// wrap. WAUX has WV=5,6,7 → each crossed with both elements {7,8} → SUM=(5+6+7)*2=36.
+		assertRows(t, `SELECT SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"S=36|SUM(WAUX.WV)=36",
 		})
 		// SHADOW-COLLISION ORDINALIZES via POSITIONAL binding: WAUX has a WV column and
 		// `WSRC.WARR AS WV` names the element WV too, so the seed carries BOTH under the
@@ -3606,6 +3627,27 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRows(t, `SELECT "SID", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL" AT "SID", WAUX GROUP BY "SID"`, []string{
 			"S=3|SID=1|SUM(WSRC.SID)=3", "S=3|SID=2|SUM(WSRC.SID)=3",
 		})
+		// BOTH element AND ordinal shadow DIFFERENT outer columns at once (`AS WV AT XID`
+		// — WV shadows WAUX.WV, XID shadows WAUX.XID). Element-first binds BOTH slots, so
+		// GROUP BY WV = element {7,8} and GROUP BY XID = ordinal {1,2}, while the outer
+		// columns stay reachable qualified (SUM(WAUX.WV)=5+6+7=18 per element group). The
+		// two shadows do not interfere.
+		assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WAUX, WSRC."WARR" AS "WV" AT "XID" GROUP BY "WV"`, []string{
+			"S=18|SUM(WAUX.WV)=18|WV=7", "S=18|SUM(WAUX.WV)=18|WV=8",
+		})
+		assertRows(t, `SELECT "XID", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "WV" AT "XID" GROUP BY "XID"`, []string{
+			"COUNT(*)=3|N=3|XID=1", "COUNT(*)=3|N=3|XID=2",
+		})
+		// Element shadows a BURIED leaf of a LEFT-JOIN box (`AS WV` over `WSRC LEFT JOIN
+		// WAUX`, WAUX.WV buried): the positional leaf slot (legStart+leafOffset+colIdx)
+		// distinguishes the buried WAUX.WV from the element WV. GROUP BY WV = element
+		// {7,8}; SUM(WAUX.WV) = the buried col (WAUX matches XID=1,WV=5) per group.
+		exBoxShadow := assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
+			"S=5|SUM(WAUX.WV)=5|WV=7", "S=5|SUM(WAUX.WV)=5|WV=8",
+		})
+		if strings.Count(exBoxShadow, "Project(") < 2 {
+			t.Fatalf("element shadowing a box's buried leaf should ORDINALIZE, got: %s", exBoxShadow)
+		}
 		// BOX leg (the unnest's left is an OUTER-join box) ORDINALIZES via leaf-source
 		// qualification: the wrap walks the box's buried leaves and keys each operand by
 		// its OWN leaf alias (`WAUX.WV`), not the box binding, so a grouped
