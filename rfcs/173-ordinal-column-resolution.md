@@ -4730,8 +4730,22 @@ convergent over the four rounds.
   (:1528) now retires for BOTH plain-leg and box-leg grouped gathers. FOLLOW-UP coverage (TODO):
   nested box (box-in-box) and 3+-buried-leaf shapes are covered by the invariant (twin ≡ bare
   name-read) but unexercised — pin them.
-- **positional shadow binding**: read the element by its seed SLOT (not bare name) so the
-  shadow-collision class ordinalizes.
+- **positional shadow binding** (the shadow-collision decline arm): CONFIRMED necessary +
+  root-caused. When the element AS alias shadows an outer column of the same bare name (`WSRC,
+  WAUX, WSRC.WARR AS WV GROUP BY WV`, WAUX has a WV column), the ORDINAL SEED carries BOTH the
+  outer WAUX.WV AND the element under the bare name "WV" (ordinalJoinSeedFields does not shadow;
+  the name-ambiguity gate checks leg-vs-leg only, not element-vs-leg). The wrap NAME-reads "WV" →
+  GetByName resolves the FIRST match = the OUTER WAUX.WV, so disabling the decline ordinalizes to
+  WRONG rows (measured: WV=5/6/7 from WAUX instead of the element's WV=7/8). The decline correctly
+  routes to name-model (which reads the element via the R16 span-window routing). FIX (two
+  options): (a) make the ordinal seed SHADOW the outer bare column (element wins the bare
+  namespace, outer kept only as WAUX.WV — mirrors buildUnnestResultValue:1601-1622), then the
+  wrap's name-read is correct; OR (b) read the element POSITIONALLY in the wrap
+  (NewFieldValueOfOrdinal(typedInnerQOV, elementIdx)) so it binds the element's own slot, not the
+  ambiguous bare name — but that PINS (ContainsBakedOrdinal), so verify it doesn't perturb the
+  projection cursor (a projection is not a join, so newOrdinalJoinBirth should not fire, but
+  confirm). Option (a) is cleaner and matches the name model. This is an OPTIMIZATION (the decline
+  already gives correct rows), not a bug.
 - **N-way** (3+ plain legs already ordinalize — cross-leg collisions decline upstream; verify + pin).
 Then producer #2 (:1528) is retired for the gathered group-by class; the trio demolition remains the
 R1∧R2∧R3 convergence commit.
