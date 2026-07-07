@@ -4767,6 +4767,39 @@ every remaining name-model LEG class," gated on the same wrap/qualify discipline
 multi-slice effort, not a single lift. The atomic cap fires only once no SQL shape reaches :4402/:4650
 with a name-model leg.
 
+**THE PRECISE REMAINING-SLICE LIST (S4 deep-read, the actionable roadmap).** A name-model leg is
+name-model because a name-model PARENT set `inInnerCluster`, tripping one of the THREE enclosure
+poison gates in `ordinalWedgeGateDecide` (rfc173_cluster_gate.go): (154) `!ordinalEligible(leg)` —
+"a leg contains a name-model join"; (167) `kind!=Inner && inInnerCluster` — "outer box enclosed in a
+name-model parent"; (208) `inInnerCluster` (inner) — the inner enclosure guard. All three comments
+say verbatim the residency "retires at S4… this guard dies with" the name-model parents. An
+UN-enclosed LEFT/RIGHT/FULL box already GATES (:187/:206); an un-enclosed inner cluster gates. So the
+anchored branch dies when `inInnerCluster` is NEVER set — i.e. when the parents that set it are all
+ordinalized. Those parents are a FINITE, enumerable list — the `inInnerCluster = true` sites (verified at HEAD:
+:1074, :1991-defer, :2908, :3033, :3850, plus the CONDITIONAL :4291-join and :4539-flatten which set
+`!gated`; :5060 recursive already lifted). Per-site retire-condition VARIES (nuance, not a uniform
+lift):
+  - :5060 recursive body — ✅ the enclosure IS lifted (R1: the body ordinalizes, sub-joins classify).
+  - :3850 correlated-scalar — the SEED producer is retired (R3) BUT this site still sets the enclosure
+    for the OUTER's own translation (a correlated-scalar outer is legitimately name-model-enclosed);
+    whether that residual enclosure still forces a real box name-model needs its own analysis — it is
+    NOT simply "done."
+  - **:1074 unnest** — the non-gathered name-model unnest parent (R2 ordinalized the GATHERED
+    multi-source + aggregate cases; this is the residual).
+  - **:2908 / :3033 existential** — `buildExistentialSelect` (S4 commit 2 zeroed the projected-EXISTS-
+    over-join :698 producer; these are the remaining existential-flatten enclosure setters).
+  - **:4539 flatten** — the existential/outer flatten builder's enclosure (`!gatedFlatten`).
+  - :4291-join is the join site itself (Graefe refinement 1 — the anchored `else` branch), not a
+    separate parent.
+Each site is ONE producer-#2-style slice: ordinalize that parent's seed (positional + named-projection
+wrap where an anchored consumer reads it), pin rows + memo-identity + EXPLAIN + the existential pins,
+four-gate it. When every `inInnerCluster` setter's name-model residency is retired, the three
+enclosure guards never fire → every box/cluster gates → :4402/:4650 is unreachable → producers #3+#4
+are dead → the atomic cap (task #16) deletes NewAnchoredJoinRecord / NewReEnumerationAnchoredRecord /
+the name model. That is the whole remaining RFC-173 endgame — a concrete per-site worklist (verify each
+site's residual empirically, since some, like R3's :3850, are partially retired already), not a
+gate-theory question.
+
 ## S4 R2 — gathered multi-source unnest GROUP BY ordinalization (LANDED: 43871b83b)
 
 The first producer-retiring increment against R2 (multi-source lateral unnest, the :1528 producer):
