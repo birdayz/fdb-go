@@ -4685,6 +4685,46 @@ model), R2 multi-source lateral unnest seed (:1528), R3 correlated-scalar-subque
 **Trio demolition = the convergence commit after R1∧R2∧R3** — that, not "B," is the real atomic cap;
 (A) is its load-bearing first stack.
 
+### DESIGN REFINEMENT (Graefe design review of Rule A, ACK-WITH-REFINEMENT) — S4
+Gate (ii) ✓ (correct + pinned by `TestRFC173S4_DupBareNameMemoIdentity`); bit-over-blanket-skip ✓.
+But (A) as a global GATE-CONDITION SWAP is NOT a clean shippable slice — three blocking refinements
+before impl-ACK, and a re-scope to the proven per-site cadence:
+
+1. **The anchored `else` branch is a GENUINE name-model producer, not a "circular site."** At
+   `cascades_translator.go:4291` (join seed) and `:4650` (flatten builder) the `!gated` branch calls
+   `buildJoinResultValue → NewAnchoredJoinRecord`. A join reaches it for NON-enclosure reasons
+   (dup-binding, leg-contains-name-model-join, arity<2) and legitimately encloses its legs. So the
+   RFC's "leave the bit unchanged at the circular site → inherits ancestor name-model-ness"
+   UNDER-approximates: a plain-gateable join that is a leg of a `4291`-anchored residual would flip
+   to ordinal UNDER a name-model-anchored parent — the exact MIRROR of the `:154`/`ordinalEligible`
+   decline (proven wrong-answer hazard), and the reverse composition (anchored RC reading a
+   positional leg by name) is NOWHERE proven safe. Reachable bare-bushy shape:
+   `FROM a, a.arr AS u, (c JOIN d)` → `((a⋈u)⋈(c⋈d))`, the `(a⋈u)` leg ineligible so the top anchors,
+   `(c⋈d)` the plain right leg that would flip. FIX: set `inNameModelEnclosure` in the anchored
+   branch too — BUT then `inNameModelEnclosure ≡ inInnerCluster` for every reachable chain, so the
+   gate swap changes NO live query (a no-op refactor). Hence the re-scope below.
+2. **Extend the gate-(ii) proof to an EXTERNAL-reference path.** Seed-field baking controls the
+   seed's own fields, not WHERE/GROUP BY/ORDER BY/correlated-outer references INTO the ordinalized
+   join — the resolver can emit those lazy. Add a dup-column-join WHERE/GROUP BY pin (the surface
+   producer #2 needed the named-projection wrap for), not just `SELECT *`.
+3. **Migrate the flatten pin + add a real-lowering companion.** `TestRFC173Item2C3_FlattenGateArm/
+   "enclosed flatten declines"` manually pokes `inInnerCluster = true`; under the arm-repoint it must
+   read `inNameModelEnclosure` or it flips red. Migrate the poke AND add an EXISTS-over-inner-join
+   under a real outer name-model parent so the existential residual is pinned through the PRODUCTION
+   path, not a hand-set flag.
+
+**RE-SCOPE — smallest safe first increment is the next GENUINE-SITE LIFT, producer-#2-style, NOT the
+gate refactor.** R1 (recursive, :5060) ordinalized its body by surgically NOT setting `inInnerCluster`
+at that one site — no new bit — and R2 retired producer #2 one narrow class at a time, each
+four-gate-clean. Follow that: land **R3 correlated-scalar (`:3850`)** — one `t.inInnerCluster = true`,
+one residual class (already flagged "RETIRED in S4 (R3)") — lifted surgically, and pin (a) rows
+correct, (b) dup-bare-name memo identity on that shape, (c) EXPLAIN shows the ordinal join, (d) the
+two existential pins + the anchored-residual composition (refinement 1) stay green. Introduce the
+`inNameModelEnclosure` bit ONLY when a concrete site can't be lifted surgically the way R1 was — with
+a failing shape driving it, not a speculative global swap. Stale line refs to refresh against HEAD:
+`:1058/:2833/:2950/:3751/:2344/:4399/:4954/:4151` → `:1074/:2908/:3033/:3850/:4539/:5060/:4291`; R1
+(recursive) has already LANDED, so the "After (A)" list above is stale on that item.
+
 ## S4 R2 — gathered multi-source unnest GROUP BY ordinalization (LANDED: 43871b83b)
 
 The first producer-retiring increment against R2 (multi-source lateral unnest, the :1528 producer):
