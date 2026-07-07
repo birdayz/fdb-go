@@ -315,33 +315,30 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 // FAITHFULLY re-exposed by the named-projection wrap — checked BEFORE leg
 // translation so an ineligible shape declines to name-model without double side
 // effects. FALSE (decline) for:
-//   - a BOX leg (a clustered outer/nested join consumed as one opaque leg, its op a
-//     LogicalJoin): its qualified twins would key the BOX binding over the CONCAT
-//     type, NOT the leaf-source keys (`WAUX.WV`) a buried-leaf operand references —
-//     a grouped `SUM(WAUX.WV)` would miss and read NULL;
+//   - an AT-only unnest (no AS): the grouped ordinal reference qualifies through the
+//     array column (`GROUP BY O` resolves as `WARR.O`, not `O.O`), uncovered;
 //   - an element/ordinal AS/AT alias that SHADOWS an outer column of the same bare
 //     name: the shadow "WV.WV" would NAME-READ the seed and GetByName resolves the
 //     FIRST match (the outer column, not the element) → wrong group.
 //
-// Both classes keep the working name model until leaf-source qualification and
-// positional shadow binding land.
+// BOX legs ARE covered (the wrap walks their buried leaves and keys by leaf-source
+// alias); a buried-leaf bare-name duplicate is already declined by the caller's
+// name-ambiguity gate (which iterates the box's whole concat). Both remaining
+// classes keep the working name model until positional shadow binding lands.
 func gatheredGroupByWrapEligible(u *logical.LogicalUnnest, legs []clusterLeg, legTypes map[string]bakeLegType) bool {
-	// AT-only (no AS): the grouped ordinal reference qualifies through the array
-	// column, not the AT alias (`GROUP BY O` resolves as `WARR.O`, not `O.O`), which
-	// the wrap does not re-expose — keep it on the name-model residual.
 	if u.Alias == "" {
 		return false
 	}
 	elemAlias := strings.ToUpper(u.Alias)
 	atAlias := strings.ToUpper(u.AtAlias)
 	for _, leg := range legs {
-		if _, isBox := leg.op.(*logical.LogicalJoin); isBox {
-			return false
-		}
 		lt, ok := legTypes[leg.binding]
 		if !ok || lt.typ == nil {
 			return false
 		}
+		// lt.typ is the leg's own type for a plain leg, or the whole CONCAT for a
+		// box leg — either way it enumerates every bare column the element/ordinal
+		// alias could shadow.
 		for _, f := range lt.typ.Fields {
 			n := strings.ToUpper(f.Name)
 			if n == elemAlias || (atAlias != "" && n == atAlias) {
@@ -384,19 +381,33 @@ func (t *cascadesTranslator) wrapGatheredForGroupBy(
 		add(f.Name, values.NewFieldValue(innerQOV, f.Name, f.Value.Type()))
 	}
 	// The ALIAS.COL qualified twins the aggregate OPERANDS need (`SUM(WSRC.SID)`):
-	// each leg's columns keyed by the source alias, value = the SAME inner name-read
-	// as the bare column. Same key set mergeRows/buildUnnestResultValue expose in the
-	// name model, re-derived over the inner seed.
-	for _, leg := range legs {
-		lt, ok := legTypes[leg.binding]
-		if !ok || lt.typ == nil {
-			continue
+	// each LEAF source's columns keyed by that leaf's OWN alias, value = the SAME
+	// inner name-read as the bare column (the seed exposes every leaf column by name
+	// in FROM order). For a BOX leg (a clustered join consumed as one opaque leg) the
+	// operands reference the BURIED leaf aliases (`WAUX.WV`), NOT the box binding — so
+	// walk the box's leaves and key each by its own leaf alias/type (leafTyp), never
+	// the box concat. The name-ambiguity gate above already declined any cross-leaf
+	// (incl. buried) bare-name duplicate, so a name-read is unambiguous.
+	var emitLeafKeys func(op logical.LogicalOperator, binding string)
+	emitLeafKeys = func(op logical.LogicalOperator, binding string) {
+		if bj, isBox := op.(*logical.LogicalJoin); isBox {
+			for _, sub := range t.legsOfGatedJoin(bj) {
+				emitLeafKeys(sub.op, sub.binding)
+			}
+			return
 		}
-		alias := strings.ToUpper(leg.binding)
-		for _, f := range lt.typ.Fields {
+		lt, ok := legTypes[binding]
+		if !ok || lt.leafTyp == nil {
+			return
+		}
+		alias := strings.ToUpper(binding)
+		for _, f := range lt.leafTyp.Fields {
 			col := strings.ToUpper(f.Name)
 			add(alias+"."+col, values.NewFieldValue(innerQOV, col, f.FieldType))
 		}
+	}
+	for _, leg := range legs {
+		emitLeafKeys(leg.op, leg.binding)
 	}
 	// The SHADOW-qualified element/ordinal keys the grouped read needs — same inner
 	// name-read as the bare element, so it resolves the scalar element (not the whole

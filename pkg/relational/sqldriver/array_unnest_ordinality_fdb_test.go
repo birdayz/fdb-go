@@ -3568,16 +3568,24 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if strings.Count(exShadow, "Project(") >= 2 {
 			t.Fatalf("element-shadows-outer-column must DECLINE the projection wrap (name-model), got: %s", exShadow)
 		}
-		// GATE — BOX leg (the unnest's left is an OUTER-join box): the qualified twin
-		// for a buried-source operand (WAUX.WV) would key the box binding, not the leaf
-		// source, so the wrap DECLINES → name model. WSRC(SID=1) LEFT JOIN WAUX on
-		// SID=XID matches WAUX(XID=1,WV=5); × element {7,8} = 2 rows, one per element.
+		// BOX leg (the unnest's left is an OUTER-join box) ORDINALIZES via leaf-source
+		// qualification: the wrap walks the box's buried leaves and keys each operand by
+		// its OWN leaf alias (`WAUX.WV`), not the box binding, so a grouped
+		// `SUM(WAUX.WV)` over a table BURIED in the box resolves. WSRC(SID=1) LEFT JOIN
+		// WAUX on SID=XID matches WAUX(XID=1,WV=5); × element {7,8} = 2 rows.
 		exBox := assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
 			"EL=7|S=5|SUM(WAUX.WV)=5", "EL=8|S=5|SUM(WAUX.WV)=5",
 		})
-		if strings.Count(exBox, "Project(") >= 2 {
-			t.Fatalf("box-leg grouped unnest must DECLINE the projection wrap (name-model), got: %s", exBox)
+		if strings.Count(exBox, "Project(") < 2 {
+			t.Fatalf("box-leg grouped unnest should ORDINALIZE via leaf-source qualification, got: %s", exBox)
 		}
+		// BOX leg NO-MATCH: the LEFT box's ON never matches (WV=99999 exists in no
+		// WAUX row), so WAUX is NULL-EXTENDED. SUM over the null-extended buried column
+		// must be NULL (not 0, not a stale value) — the null-supplying leaf resolves
+		// through the leaf-source key correctly. 1 WSRC row (null WAUX) × {7,8} = 2 rows.
+		assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID" AND WAUX."WV" = 99999, WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
+			"EL=7|S=<nil>|SUM(WAUX.WV)=<nil>", "EL=8|S=<nil>|SUM(WAUX.WV)=<nil>",
+		})
 		// WITH ORDINALITY — grouping by the AT ordinal (`AS EL AT O ... GROUP BY O`)
 		// resolves through the "EL.O" shadow twin the wrap adds. WARR={7,8} → O=1,2;
 		// each × 3 WAUX rows.

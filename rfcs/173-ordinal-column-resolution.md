@@ -4718,13 +4718,18 @@ the failure class, both silent-NULL sources fire iff `leg.op` is a join); @claud
 convergent over the four rounds.
 
 ### Follow-up roadmap (each removes a decline arm; all done → REMOVE `underAggregate`)
-- **box-leg leaf-source qualification**: `addBuriedBakeWindows` (rfc173_ordinal_seed.go:547) already
-  registers each buried leaf in `legTypes` keyed by its own alias (with `leafTyp`, `bakeCorr`), and
-  the seed exposes buried columns by NAME (the concat's field names, ordinalJoinSeedFields:503). So
-  the wrap's qualified-key loop should iterate those buried-leaf entries and emit `LEAFALIAS.col`
-  instead of the current `BOX.col`. SUBTLETY: two buried leaves with the same column name make the
-  concat's bare name ambiguous (the top-level name-ambiguity gate checks only top-level legs) —
-  extend the ambiguity check into buried leaves, or key the value positionally at leafOffset+colIdx.
+- **box-leg leaf-source qualification — ✅ LANDED (5b5630c55, four-gate-clean)**: the wrap
+  RECURSIVELY walks a box leg's buried leaves (`emitLeafKeys` via `t.legsOfGatedJoin` — the SAME
+  traversal `addBuriedBakeWindows` uses to populate `legTypes`, the structural symmetry is the
+  correctness proof) and keys each operand by its OWN leaf alias over its `leafTyp` columns
+  (`WAUX.WV`), NAME-read over the seed. The box-leg decline is removed; a buried-leaf bare-name
+  duplicate is still declined by the name-ambiguity gate (which iterates the box's WHOLE concat, so
+  buried duplicates ARE seen — the earlier "checks only top-level legs" concern was wrong, the
+  concat covers them). Tested: box-leg grouped `SUM(WAUX.WV)` ordinalizes with correct rows AND a
+  LEFT-box NO-MATCH null-extension (S=NULL). Graefe/Torvalds/@claude ACK, codex clean. Producer #2
+  (:1528) now retires for BOTH plain-leg and box-leg grouped gathers. FOLLOW-UP coverage (TODO):
+  nested box (box-in-box) and 3+-buried-leaf shapes are covered by the invariant (twin ≡ bare
+  name-read) but unexercised — pin them.
 - **positional shadow binding**: read the element by its seed SLOT (not bare name) so the
   shadow-collision class ordinalizes.
 - **N-way** (3+ plain legs already ordinalize — cross-leg collisions decline upstream; verify + pin).
