@@ -149,6 +149,74 @@ func TestRFC173W4c_UnnestSeed_ATOnly(t *testing.T) {
 	}
 }
 
+// TestRFC173W4c_UnnestBakedRootCollection_MultiSegment pins the unnest-residual
+// class-2 fused baked collection (`FROM t, t.rec.arr AS x`, len(Segments)>2): the
+// collection ROOT is baked POSITIONALLY as ofOrdinal over the outer leg type, and
+// the remaining segments ride as a NAME-addressed suffix. This is what lets the
+// single-source multi-segment unnest ORDINALIZE — the name-keyed arrayValue does
+// NOT descend under the ordinal-seed birth (proven by the FDB class-2 subtest,
+// which fails the moment the guard is relaxed WITHOUT this bake: "field NARR not
+// resolvable in the runtime row, ordinal -1"). Without ordinalizing this class it
+// stays name-model, blocking the S4 cap. The bake itself is array-agnostic (the
+// classifier validates arrayness upstream), so Order.flower (a nested struct)
+// exercises the root-bake + suffix-descent shape directly.
+func TestRFC173W4c_UnnestBakedRootCollection_MultiSegment(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	outer := scan("Order", "o")
+	outerCorr := values.NamedCorrelationIdentifier("o")
+	// Order.flower is a nested struct (Flower{type, color}); descend to `type`.
+	u := &logical.LogicalUnnest{Segments: []string{"ORDER", "FLOWER", "TYPE"}, Alias: "X"}
+
+	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "TYPE", values.NotNullLong)
+	if coll == nil {
+		t.Fatal("multi-segment single-source unnest must bake a fused collection, got nil (declined)")
+	}
+	fv, ok := coll.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("baked collection = %T, want *FieldValue", coll)
+	}
+	if fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		t.Fatal("baked collection root must be a frontier-pinned ofOrdinal (positional), not a name read")
+	}
+	if len(fv.Resolved.Accessors) != 2 {
+		t.Fatalf("baked collection has %d accessors, want 2 (ofOrdinal root + name suffix)", len(fv.Resolved.Accessors))
+	}
+	// Root accessor: baked POSITIONAL (ordinal >= 0). Suffix: NAME-addressed (-1).
+	if fv.Resolved.Accessors[0].Ordinal < 0 {
+		t.Errorf("root accessor ordinal = %d, want >= 0 (baked positional)", fv.Resolved.Accessors[0].Ordinal)
+	}
+	if fv.Resolved.Accessors[1].Field != "TYPE" || fv.Resolved.Accessors[1].Ordinal != -1 {
+		t.Errorf("suffix accessor = {%q, %d}, want {TYPE, -1} (name-addressed struct descent)",
+			fv.Resolved.Accessors[1].Field, fv.Resolved.Accessors[1].Ordinal)
+	}
+	// The child is the outer QOV carrying the outer LEG TYPE, so the root ordinal
+	// resolves positionally against the ordinal-seed birth row.
+	qov, ok := fv.Child.(*values.QuantifiedObjectValue)
+	if !ok || qov.Correlation != outerCorr {
+		t.Fatalf("baked collection child = %T, want the outer *QuantifiedObjectValue %s", fv.Child, outerCorr)
+	}
+	if _, isRT := qov.Type().(*values.RecordType); !isRT {
+		t.Fatalf("outer QOV must carry the leg RecordType for positional resolution, got %T", qov.Type())
+	}
+}
+
+// TestRFC173W4c_UnnestBakedRootCollection_DeclineUntranslatable pins the bake's
+// DECLINE: a catalog-free outer has no derivable leg type, so the bake returns
+// nil and the caller keeps the name-model builder (which owns the name-keyed
+// collection).
+func TestRFC173W4c_UnnestBakedRootCollection_DeclineUntranslatable(t *testing.T) {
+	t.Parallel()
+	tr := &cascadesTranslator{} // no md → ordinalLegType nil
+	coll := tr.unnestBakedRootCollection(scan("Order", "o"),
+		values.NamedCorrelationIdentifier("o"),
+		&logical.LogicalUnnest{Segments: []string{"ORDER", "FLOWER", "TYPE"}, Alias: "X"},
+		"TYPE", values.NotNullLong)
+	if coll != nil {
+		t.Fatalf("untranslatable outer (no metadata) must DECLINE the bake to nil, got %T", coll)
+	}
+}
+
 // TestRFC173W4c_UnnestSeed_DeclineUntranslatable pins the DECLINE path: a
 // nil-metadata (catalog-free) outer has no derivable leg columns, so the seed
 // declines to nil and the caller falls back to the name model.

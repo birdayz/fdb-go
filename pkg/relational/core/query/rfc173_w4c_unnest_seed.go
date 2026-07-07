@@ -81,6 +81,65 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 	return rc
 }
 
+// unnestBakedRootCollection builds the BAKED fused collection for a SINGLE-SOURCE
+// MULTI-SEGMENT lateral unnest (`FROM t, t.rec.arr AS x`, RFC-173 unnest-residual
+// class 2) under the ORDINAL seed. The name-keyed arrayValue the name-model path
+// uses (`FieldValue{QOV(outer), Resolved:[{rec,-1},{arr,-1}]}`) does NOT descend
+// under the ordinal-seed birth: the outer row is ORDINAL-addressed, so the
+// ordinal-birth resolver applies all name accessors flat against the outer row
+// and fails ("field NARR not resolvable ... ordinal -1"). The ordinal form bakes
+// the ROOT struct column positionally — ofOrdinal(QOV(outer, outerType),
+// FieldIndex(rec)) — and rides the remaining segments as a NAME-addressed FUSED
+// suffix that descends the struct VALUE through FieldValue's proto-message arm
+// (independent of the positional birth). This is the single-leg case of the
+// gathered path's owner-window bake (rfc173_w5_unnest_gather.go): owner == the
+// outer scan itself, leafOffset 0, leafTyp == the scan's own type.
+//
+// Returns nil (DECLINE → the caller keeps the name-model builder) when the outer
+// leg is untranslatable or the root struct field is absent.
+func (t *cascadesTranslator) unnestBakedRootCollection(
+	outer logical.LogicalOperator,
+	outerCorr values.CorrelationIdentifier,
+	u *logical.LogicalUnnest,
+	fieldName string,
+	elementType values.Type,
+) values.Value {
+	outerType := t.ordinalLegType(outer)
+	if outerType == nil || len(outerType.Fields) == 0 {
+		return nil
+	}
+	// The ROOT column of the collection path is the FIRST field segment
+	// (Segments[0] is the source alias; Segments[1] is the struct column). The
+	// remaining segments ride as the fused suffix.
+	rootField := strings.ToUpper(u.Segments[1])
+	arrIdx, found := outerType.FieldIndex(rootField)
+	if !found {
+		return nil
+	}
+	outerQOV := values.NewQuantifiedObjectValueOfType(outerCorr, outerType)
+	collection, err := values.NewFieldValueOfOrdinal(outerQOV, arrIdx)
+	if err != nil {
+		return nil
+	}
+	suffix := make([]values.ResolvedAccessor, 0, len(u.Segments)-2)
+	for _, seg := range u.Segments[2:] {
+		// NAME-addressed struct descent (FieldValue's proto-message arm); ordinal
+		// is the LOUD sentinel -1 — a struct materializes as a proto message, not
+		// a positional row, so the ordinal is never consulted.
+		suffix = append(suffix, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
+	}
+	fused := collection.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
+	// The fused node advertises the ARRAY type for the Explode (the classifier's
+	// proto-derived element type is authoritative); set it directly in the rebuild
+	// rather than carry the root ofOrdinal's struct type and overwrite.
+	return &values.FieldValue{
+		Field:    strings.ToUpper(fieldName),
+		Typ:      values.NewArrayType(true, elementType),
+		Child:    collection.Child,
+		Resolved: fused,
+	}
+}
+
 // unnestSeedInnerFields builds the unnest INNER leg's seed fields — the W4c
 // three-way branch (Java LogicalOperator.java:318-353 in ordinal form), shared
 // by the single-source binary seed above and the W5 gathered N-way seed:

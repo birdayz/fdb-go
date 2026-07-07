@@ -1447,15 +1447,23 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	//     name-model (see unnestExistsSeedSafe / existsInnerScopeCollidesOuter).
 	// A decline (nil) falls back to the name-model builder.
 	var resultValue values.Value
-	// len(u.Segments) == 2: a SINGLE-SOURCE multi-segment path (`FROM t,
-	// t.rec.arr AS x`) stays on the name-model builder. The gather's fused
-	// baked collection (unnest-residual class 2) is the MULTI-source path
-	// (this builder is single-source, clusterArity==1); the single-source
-	// W4c ordinal seed would need its own fused-collection form, which it
-	// does not build — the name-model residual serves it correctly via the
-	// unpinned name-root collection (buildUnnestResultValue below).
-	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) && len(u.Segments) == 2 {
+	// SINGLE-SOURCE (clusterArity==1), non-enclosed, exists-safe unnest
+	// ordinalizes the seed. A MULTI-SEGMENT path (`FROM t, t.rec.arr AS x`,
+	// len(Segments)>2, unnest-residual class 2) also needs its COLLECTION baked
+	// as a fused ofOrdinal root (unnestBakedRootCollection below) — the shared
+	// name-keyed arrayValue does NOT descend under the ordinal-seed birth. When
+	// the bake declines (nil), the whole ordinal path declines and the name-model
+	// builder (which owns the name-keyed collection) takes over.
+	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) && len(u.Segments) >= 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
+		if resultValue != nil && len(u.Segments) > 2 {
+			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType); baked != nil {
+				bakedExplode := expressions.NewExplodeExpressionWithOrdinality(baked, withOrdinality)
+				innerQ = expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(bakedExplode))
+			} else {
+				resultValue = nil // decline the ordinal path → name-model residual
+			}
+		}
 	}
 	if resultValue == nil {
 		resultValue = t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType)
