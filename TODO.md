@@ -117,6 +117,15 @@ validation gate.
     pinned red→green), flattening-evasion + enclosure-matrix + HAVING-EXISTS pins. Two Graefe-confirmed
     errata vs the contract shorthand (subquery-carrying filter/project = poison; outer boxes gate
     unconditionally). Graefe ACK, Torvalds NAK→ACK (53ba2a9ac, 089979ea8).
+  - [ ] **BOOKED (Graefe, RFC-173 S4 :3234 clean-lift condition 3): retire the mutable `inInnerCluster`
+    field for a DOWNWARD enclosure-context PARAMETER (Volcano required-property style).** The
+    `!t.inInnerCluster` read in `translateFilter` (`:2211`, the enclosed-gather rotation guard) is
+    CALLER-CONTEXTUAL — "is this filter a merge leg or a fresh cluster root?" is caller state, NOT
+    subtree-derivable, so there is no clean local tree predicate to replace it (unlike the join gate's
+    `gatesAsFreshCluster`). The genuine decouple is threading enclosure context as an explicit downward
+    parameter instead of a global mutable field (~15 threading sites). Separate architectural refactor;
+    NOT a producer-retirement blocker — the `:3234` lift landed without it. Do AFTER the remaining
+    enclosure setters are retired (it touches all of them).
   - [x] **W3 the coupled 2-way flip — DONE, ALL ACKs.** W3a-1/W3a-2 (36297a253, fd07e2f49,
     140799069, d98bbac91, 139c6cb94); **W3b-1 LIVE FLIP** (1aca8addd + 47d3b48bb RFC log +
     00c7a206e Graefe notes + 5ead4e149 Torvalds nits): Graefe ACK (cross-leg baking BLESSED as the

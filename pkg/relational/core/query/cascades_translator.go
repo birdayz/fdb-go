@@ -2207,6 +2207,11 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// (enclosedGatherCache, consume-once) so the dispatch below returns it
 	// instead of translating the cluster twice. Fail-open: a declined gather
 	// keeps today's push semantics.
+	//
+	// The `!t.inInnerCluster` read is caller-contextual (merge-leg vs fresh-root, not
+	// subtree-derivable); its decouple to a downward enclosure parameter is booked in
+	// TODO.md. translateProjectOverExistsFilter documents why retiring that producer
+	// (`=false`) hands an enclosed derived body this gathered path correct-direction.
 	enclosedGathered := false
 	if f.Predicate != nil && len(f.ExistsSubqueries) == 0 && !t.inInnerCluster && !t.unnestUnderExistential {
 		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
@@ -3220,18 +3225,34 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 		})
 	}
 
-	// RFC-173 Slice 2: the projected-EXISTS fold attaches existential
-	// quantifiers to the select this leg merges into — same enclosure rule as
-	// translateFilter's WHERE-EXISTS path (a nested join stays name-model).
-	// A JOIN input is NOT translated here: buildExistentialJoinSelect
-	// re-translates the legs itself and ignores innerRef, and translating the
-	// enclosed join anyway both wastes work and trips the name-model
-	// minted-binding decline for a duplicate-alias FROM the fold serves fine
-	// (its binding-keyed select owns the whole construction).
+	// RFC-173 S4: this projected-EXISTS fold does NOT force enclosure on f.Input.
+	// The former `t.inInnerCluster = true` here was a name-model PRODUCER — one of
+	// the enclosure setters the endgame retires. It was never load-bearing: f.Input
+	// is scan / opaque-box (translateOp clears it) / LogicalCTE, and the only f.Input
+	// that can carry a name-model construct is a CTE body over a join/unnest — which
+	// projected-EXISTS-over-CTE declines (0AF00) unconditionally, so the enclosure's
+	// effect on the body was always discarded. Worse, where it WOULD become
+	// observable it flipped the WRONG way: for an enclosed multi-source unnest body
+	// (`FROM A, A.arr AS x, B WHERE <spanning>`), `=true` SUPPRESSES translateFilter's
+	// enclosed-gather rotation (the `!t.inInnerCluster` read there) → the spanning
+	// conjunct lands on an unbound element → silent-0; `=false` FIRES the rotation →
+	// the body gets the gathered path that the direct (non-wrapped) form already
+	// answers correctly. So the flag suppressed correct treatment rather than
+	// protecting it — clearing it is correct today (discarded) and correct-direction
+	// when the reach gap closes. The `!t.inInnerCluster` read in translateFilter is
+	// CALLER-CONTEXTUAL (a filter's "merge leg vs fresh root" is not subtree-derivable),
+	// so there is no clean local tree predicate to replace it — the genuine decouple
+	// is threading enclosure context as a downward parameter (Volcano required-property
+	// style), booked separately in TODO.md; it is not this lift's blocker.
+	//
+	// A JOIN input is NOT translated here: buildExistentialJoinSelect re-translates the
+	// legs itself and ignores innerRef, and translating the enclosed join anyway both
+	// wastes work and trips the name-model minted-binding decline for a duplicate-alias
+	// FROM the fold serves fine (its binding-keyed select owns the whole construction).
 	var innerRef *expressions.Reference
 	if _, isJoin := f.Input.(*logical.LogicalJoin); !isJoin {
 		prevEnclosure := t.inInnerCluster
-		t.inInnerCluster = true
+		t.inInnerCluster = false
 		innerRef = t.translateRef(f.Input)
 		t.inInnerCluster = prevEnclosure
 		if innerRef == nil {
