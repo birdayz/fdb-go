@@ -4920,6 +4920,11 @@ confirms the ROWS the fold must produce, not the mechanism; the correctness anch
 (ordinal == name-model/Java rows), which is why INNER-first (oracle available) is the proving ground.
 
 #### REVISED DESIGN (the actual mechanism — Graefe re-scope, re-ACK pending): N-WAY FLAT EXISTENTIAL GENERALIZATION
+> **LANDED at `bc54d6300`** (four-gate in progress). `implementNWayJoinWithExistential` plans the
+> `[ForEach×N, Existential]` fold via the recursive left-deep chain below; the sentinel flips 0AF00→rows,
+> the discriminating buried-leg pin (`[[7 true],[8 false]]`) guards last-leg-wins, red-first two-site
+> coupling verified, full suite green. Closes the projected-EXISTS fold AND the WHERE-EXISTS arity≠2
+> residual. OUTER buried box (FULL drain / LEFT null-extension) remains the deferred follow-on.
 The windowing direction above is RETRACTED for the fold (it belongs to the opaque-OUTER-box unnest/gathered
 path, where it is already landed + four-gate-reviewed). Verified against the code: `SelectMergeRule` merges
 INNER/CROSS but NEVER outer (`rule_select_merge.go:81` gates on `!sel.ChildrenAsSet()` — inner-equivalence
