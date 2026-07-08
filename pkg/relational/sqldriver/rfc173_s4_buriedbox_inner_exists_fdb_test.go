@@ -22,8 +22,12 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sort"
+	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_RFC173S4_BuriedInnerBoxProjectedExists(t *testing.T) {
@@ -293,9 +297,19 @@ func TestFDB_RFC173S4_NWayExistsInnerJoin(t *testing.T) {
 		"FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id"
 	rows, err := db.QueryContext(ctx, sqlText)
 	if err != nil {
-		// A clean decline (0AF00) is ACCEPTABLE here (correct-or-conservative) —
-		// only a WRONG ROW is the P1 failure. If it declines, that's fine.
-		t.Logf("declined (acceptable): %v", err)
+		// Only a CLEAN PLANNER DECLINE (0AF00) is acceptable (correct-or-
+		// conservative); a parser/binder/runtime error or any other SQLSTATE would
+		// mask the intended fail-closed behavior, so assert 0AF00 specifically.
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) {
+			if string(apiErr.Code) != "0AF00" {
+				t.Fatalf("N-way EXISTS-inner-join errored with SQLSTATE %q, want a clean 0AF00 planner decline (or correct rows): %v", apiErr.Code, err)
+			}
+			return
+		}
+		if !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("N-way EXISTS-inner-join errored non-0AF00 (want a clean planner decline or correct rows): %v", err)
+		}
 		return
 	}
 	defer rows.Close()
