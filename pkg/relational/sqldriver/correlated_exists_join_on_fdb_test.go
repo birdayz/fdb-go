@@ -171,6 +171,46 @@ func TestFDB_CorrelatedExistsJoinOnEnforced(t *testing.T) {
 			t.Errorf("WHERE EXISTS got %v, want [20] (v=10's inner join is empty)", got)
 		}
 	})
+
+	// WHERE NOT EXISTS + JOIN-ON (the polarity × join-in-inner combination @claude
+	// flagged as inferable-but-unpinned). NOT EXISTS is the mirror of q5's projected
+	// form as a filter: p.id=1's inner join is empty → NOT EXISTS true → kept;
+	// p.id=2 matches → NOT EXISTS false → excluded; p.id=3 no e → kept. A dropped ON
+	// makes p.id=1's inner non-empty → NOT EXISTS false → wrongly excludes v=10.
+	t.Run("where_not_exists_join_on", func(t *testing.T) {
+		rows, qerr := db.QueryContext(ctx, "SELECT p.v FROM p WHERE NOT EXISTS "+
+			"(SELECT 1 FROM e JOIN f ON f.fid = e.fid WHERE e.eid = p.id)")
+		if qerr != nil {
+			t.Fatalf("where-not-exists query: %v", qerr)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var v int64
+			if serr := rows.Scan(&v); serr != nil {
+				t.Fatalf("scan: %v", serr)
+			}
+			got = append(got, v)
+		}
+		sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+		if fmt.Sprint(got) != fmt.Sprint([]int64{10, 30}) {
+			t.Errorf("WHERE NOT EXISTS got %v, want [10 30] (v=20's inner join matches → excluded)", got)
+		}
+	})
+
+	// A bare RIGHT-JOIN-direct inner (the mirror of left_join_preserves_row; @claude
+	// flagged RIGHT's executor RIGHT→LEFT normalization warrants an end-to-end row).
+	// The ON f.fid=e.fid is inner-inner (stays on the RIGHT node); the correlation
+	// e.eid=p.id lifts. e RIGHT JOIN f = {(e2,f88)} (f88 matches e2; no unmatched f):
+	//   p.id=1 → e.eid=1 → no row → false; a DROPPED ON (bare e×f) → e1 matches → true.
+	//   p.id=2 → e.eid=2 → EXISTS true; p.id=3 → false.
+	t.Run("right_join_direct_inner", func(t *testing.T) {
+		got := queryVBool(t, "SELECT p.v, EXISTS (SELECT 1 FROM e RIGHT JOIN f ON f.fid = e.fid WHERE e.eid = p.id) FROM p")
+		want := []idBool{{10, false}, {20, true}, {30, false}}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("got %v, want %v (RIGHT-join inner ON dropped if v=10 reads true)", got, want)
+		}
+	})
 }
 
 // TestFDB_CorrelatedExistsInnerThenOuterJoinLevel pins that an INNER-join ON is

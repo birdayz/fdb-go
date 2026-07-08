@@ -832,63 +832,17 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	if resolver != nil && sq.whereExpr.Expression() != nil {
 		walked, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
 		if walkErr != nil {
-			var ambigErr *semantic.AmbiguousColumnError
-			if errors.As(walkErr, &ambigErr) {
-				// Java's exact text, from the reference as written (M5).
-				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-					"Ambiguous reference %s", ambigErr.Reference())
-			}
-			var inListNull *expr.InListNullError
-			if errors.As(walkErr, &inListNull) {
-				return nil, api.NewError(api.ErrCodeWrongObjectType,
-					"NULL values are not allowed in the IN list")
-			}
-			var colNotFound *semantic.ColumnNotFoundError
-			if errors.As(walkErr, &colNotFound) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q does not exist", colNotFound.Id.Name())
-			}
-			var shadowErr *semantic.CorrelatedShadowError
-			if errors.As(walkErr, &shadowErr) {
-				// A shadowed correlated reference is a RESOLUTION failure (undefined
-				// column in the bound scope) → 42703, recognized by type before the
-				// CorrelatedExistsError → 0A000 fallback.
-				return nil, api.NewError(api.ErrCodeUndefinedColumn, shadowErr.Error())
-			}
-			var srcNotFound *semantic.SourceNotFoundError
-			if errors.As(walkErr, &srcNotFound) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
-			}
-			var inColRef *expr.InColumnRefError
-			if errors.As(walkErr, &inColRef) {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					inColRef.Error())
-			}
-			var binErr *expr.InvalidBinaryLiteralError
-			if errors.As(walkErr, &binErr) {
-				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
-			}
-			var corrExistsErr *CorrelatedExistsError
-			if errors.As(walkErr, &corrExistsErr) {
-				// Genuine resolution errors (Ambiguous/ColumnNotFound/SourceNotFound/…)
-				// are mapped to 42703/42702 by the type checks ABOVE. A
-				// CorrelatedExistsError reaching here wraps no recognized resolution
-				// error → a deliberate unsupported-shape decline → 0A000. Same
-				// type-based classification as mapPredicateWalkError so every path
-				// agrees on the SQLSTATE.
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrExistsErr.Error())
-			}
-			// A structured *api.Error from the walk is a deliberate, already
-			// SQLSTATE-classified rejection raised by a nested subquery's build
-			// (e.g. an EXISTS subquery whose own WHERE buries a scalar EXISTS, which
-			// BuildExists' postBuild guard rejects with ErrCodeUnsupportedQuery —
-			// RFC-141 R4). Surface it VERBATIM rather than fall through to
-			// the text-fallback predicate builder below, which declines the EXISTS
-			// shape and reports a generic "could not plan", masking the real reason.
-			var apiErr *api.Error
-			if errors.As(walkErr, &apiErr) {
-				return nil, apiErr
+			// Classify the walk failure through the SHARED mapper (the same one the
+			// projected-EXISTS path and every mapPredicateWalkError caller use) so
+			// every path agrees on the SQLSTATE: a genuine resolution error
+			// (Ambiguous/ColumnNotFound/SourceNotFound/Shadow/…) → 42703/42702, a
+			// deliberate unsupported-shape decline → 0A000, and a structured
+			// *api.Error (a nested subquery build's own already-classified rejection,
+			// e.g. RFC-141 R4's ErrCodeUnsupportedQuery) verbatim rather than the
+			// generic "could not plan" of the text-fallback below. A single ladder
+			// so a new arm can never reach one EXISTS path but not the other.
+			if mapped := mapPredicateWalkError(walkErr); mapped != nil {
+				return nil, mapped
 			}
 		} else {
 			preWalkPred = walked
