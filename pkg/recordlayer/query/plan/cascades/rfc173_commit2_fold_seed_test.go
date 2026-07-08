@@ -164,3 +164,42 @@ func TestRFC173Commit2_FoldStep1SeedGate(t *testing.T) {
 		t.Fatal("a name-model join leg must NOT ordinalize")
 	}
 }
+
+// TestExistInnerIsScanSafe pins the N-way EXISTS existential-inner safety gate
+// (implementNWayJoinWithExistential, RFC-173 :2908/:3033), in particular the
+// FirstOrDefault/DefaultOnEmpty DECLINE — a discovered silent-wrong: the
+// existential semi-join reads its inner's EMPTINESS as the no-match signal
+// (FirstOrDefault(inner,NULL) IS NOT NULL), but a default-on-empty wrapper EMITS
+// a row over an empty scan, so a FOD/DefaultOnEmpty-topped inner reports
+// "non-empty" even with no match → EXISTS flips toward always-true. The gate must
+// DECLINE those (fail-closed), while still admitting the emptiness-preserving
+// scan/index through Filter/Fetch. Re-adding the FOD/DefaultOnEmpty peel arms
+// reddens the two `false` rows (red-first). Defensive: the common existential
+// inner is a scan/filter before the fold's own FOD wrap; a FOD-topped inner is
+// not known SQL-reachable today, so this is the structural sentinel.
+func TestExistInnerIsScanSafe(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"E"}, commit2RecType("E", "EID"), false)
+	null := values.NewNullValue(values.UnknownType)
+	cases := []struct {
+		name string
+		plan plans.RecordQueryPlan
+		want bool
+	}{
+		{"scan", scan, true},
+		{"index", plans.NewRecordQueryIndexPlan("idx", nil, []string{"E"}, commit2RecType("E", "EID"), false), true},
+		{"predicatesFilter(scan)", plans.NewRecordQueryPredicatesFilterPlan(scan, nil), true},
+		{"filter(scan)", plans.NewRecordQueryFilterPlan(nil, scan), true},
+		// The FIX — emit-on-empty wrappers destroy the emptiness signal → decline.
+		// Re-adding either peel arm to existInnerIsScanSafe flips these to true (RED).
+		{"firstOrDefault(scan)", plans.NewRecordQueryFirstOrDefaultPlan(scan, null), false},
+		{"defaultOnEmpty(scan)", plans.NewRecordQueryDefaultOnEmptyPlan(scan, null), false},
+		// A join inner (its own ON is not re-enforced by the merged-row fold) → decline.
+		{"nlj(scan,scan)", plans.NewRecordQueryNestedLoopJoinPlan(scan, scan, nil, plans.JoinInner, "E", "E2", nil), false},
+	}
+	for _, c := range cases {
+		if got := existInnerIsScanSafe(c.plan); got != c.want {
+			t.Errorf("existInnerIsScanSafe(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
