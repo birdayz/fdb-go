@@ -56,13 +56,36 @@ import (
 // CorrelatedExistsError is returned when buildCorrelatedExists fails.
 // Detected via errors.As at the caller to propagate as
 // ErrCodeUndefinedColumn for fallback to a richer outer scope.
+//
+// Unsupported distinguishes a DELIBERATE decline of an unsupported correlated-
+// EXISTS shape (an intentional CORRECT-or-CONSERVATIVE rejection — surfaced as
+// 0A000 unsupported-operation) from a resolution failure that should read as an
+// undefined column (42703). The WHERE-EXISTS and projected paths both key on
+// this so a decline reports the same 0A000 in either position.
 type CorrelatedExistsError struct {
-	Message string
-	Cause   error
+	Message     string
+	Cause       error
+	Unsupported bool
 }
 
 func (e *CorrelatedExistsError) Error() string { return e.Message }
 func (e *CorrelatedExistsError) Unwrap() error { return e.Cause }
+
+// wrapCorrelatedExistsWalkErr wraps a predicate-walk failure in a
+// CorrelatedExistsError, PROPAGATING the Unsupported flag when the wrapped error
+// is itself an Unsupported decline (e.g. a NESTED correlated EXISTS whose JOIN ON
+// hit the RIGHT/FULL / nested-subquery decline). Without this, the outer wrapper
+// defaults Unsupported=false, so mapPredicateWalkError matches it first and
+// reports 42703 (undefined-column) instead of the intended 0A000
+// (unsupported-operation) for the deliberate decline.
+func wrapCorrelatedExistsWalkErr(msg string, err error) *CorrelatedExistsError {
+	unsupported := false
+	var inner *CorrelatedExistsError
+	if errors.As(err, &inner) {
+		unsupported = inner.Unsupported
+	}
+	return &CorrelatedExistsError{Message: msg, Cause: err, Unsupported: unsupported}
+}
 
 // buildWherePredicateForTable converts a WHERE expression context
 // into a predicates.QueryPredicate using the expr walker, with a
@@ -409,6 +432,13 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	if errors.As(walkErr, &colNotFound) {
 		return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", colNotFound.Id.Name())
 	}
+	var shadowErr *semantic.CorrelatedShadowError
+	if errors.As(walkErr, &shadowErr) {
+		// A correlated reference shadowed by a same-named FROM source that lacks the
+		// column is a RESOLUTION failure (undefined column in the bound scope) →
+		// 42703, recognized by type BEFORE the CorrelatedExistsError fallback.
+		return api.NewError(api.ErrCodeUndefinedColumn, shadowErr.Error())
+	}
 	var inColRef *expr.InColumnRefError
 	if errors.As(walkErr, &inColRef) {
 		return api.NewError(api.ErrCodeUnsupportedOperation, inColRef.Error())
@@ -419,7 +449,15 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	}
 	var corrExistsErr *CorrelatedExistsError
 	if errors.As(walkErr, &corrExistsErr) {
-		return api.NewErrorf(api.ErrCodeUndefinedColumn, "nested correlated EXISTS: %v", walkErr)
+		// Every GENUINE semantic resolution error (Ambiguous / ColumnNotFound /
+		// SourceNotFound / …) is mapped to 42703/42702 ABOVE via the cause chain.
+		// A CorrelatedExistsError reaching HERE therefore wraps NO recognized
+		// resolution error — it is a deliberate unsupported-shape decline (a
+		// Message-only rejection, an Unsupported=true decline, or one wrapping a
+		// NON-semantic unsupported cause like COUNT(DISTINCT …)) → 0A000. Classifying
+		// by the recognized-cause TYPE (not the Unsupported flag or a Cause==nil
+		// heuristic) is what keeps every path's SQLSTATE consistent.
+		return api.NewError(api.ErrCodeUnsupportedOperation, corrExistsErr.Error())
 	}
 	var apiErr *api.Error
 	if errors.As(walkErr, &apiErr) {
@@ -1562,6 +1600,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				}
 				var corrErr *CorrelatedExistsError
 				if errors.As(walkErr, &corrErr) {
+					// Consistent SQLSTATE with the WHERE-EXISTS path (genuine
+					// resolution failure → 42703/42702; Unsupported decline → 0A000).
+					if mapped := mapPredicateWalkError(walkErr); mapped != nil {
+						return nil, mapped
+					}
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 				}
 			}
@@ -2518,6 +2561,13 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			}
 			var corrErr *CorrelatedExistsError
 			if errors.As(err, &corrErr) {
+				// Route through the SAME classifier the WHERE-EXISTS path uses so a
+				// GENUINE resolution failure in the ON (missing column/source) reports
+				// 42703/42702 and only a DELIBERATE Unsupported decline reports 0A000 —
+				// the projected and WHERE forms then agree on the SQLSTATE.
+				if mapped := mapPredicateWalkError(err); mapped != nil {
+					return mapped
+				}
 				return api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 			}
 			// RFC-141 R4 (P1b): a SELECT item with a NESTED EXISTS is not
@@ -5234,6 +5284,13 @@ func (p *existsSubqueryPlanner) addCorrelatedJoinScopeSource(innerScope *semanti
 	}
 	jTbl, jErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(j.tableName, "."), false))
 	if jErr != nil {
+		// CTE-aware fallback (mirrors the primary source): a CTE join leg resolves
+		// via the enclosing query's CTE registry, not the catalog.
+		if src, found := p.cteScopes[strings.ToUpper(j.tableName)]; found {
+			jTbl, jErr = src.Table, nil
+		}
+	}
+	if jErr != nil {
 		return jErr
 	}
 	jAliasID := semantic.NewUnquoted(jAlias)
@@ -5284,32 +5341,53 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	if innerAlias == "" {
 		innerAlias = sq.tableName
 	}
-	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
 
-	// Build join tree from inner FROM clause (handles multi-table EXISTS).
-	// A `t.arr AS x [AT ord]` comma source is a lateral array unnest, not a
-	// table — classify it via the SAME helper the main FROM path uses so the
-	// Cascades translator lowers it to FlatMap(Scan, Explode). RFC-142.
+	// Resolve the leg operators + join kinds first — this needs no resolver
+	// (correlatedSubqueryJoinRight classifies scan/unnest sources directly).
+	rights := make([]logical.LogicalOperator, len(sq.joins))
+	kinds := make([]logical.JoinKind, len(sq.joins))
 	for i, j := range sq.joins {
-		right := p.correlatedSubqueryJoinRight(j, sq.tableName, innerAlias, sq.joins[:i])
-		var kind logical.JoinKind
+		rights[i] = p.correlatedSubqueryJoinRight(j, sq.tableName, innerAlias, sq.joins[:i])
 		switch j.joinType {
 		case joinTypeLeft:
-			kind = logical.JoinLeft
+			kinds[i] = logical.JoinLeft
 		case joinTypeRight:
-			kind = logical.JoinRight
+			kinds[i] = logical.JoinRight
 		case joinTypeFull:
-			kind = logical.JoinFull
+			kinds[i] = logical.JoinFull
 		default:
-			kind = logical.JoinInner
+			kinds[i] = logical.JoinInner
 		}
-		op = logical.NewJoinWithPredicate(op, right, kind, nil)
 	}
 
-	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
+	// CTE-safe fast path: the scope+resolver below is needed ONLY to walk an ON or
+	// a WHERE. A correlated fallback entered solely because the (ignored) SELECT
+	// list references an outer column — no WHERE, no ON — must return the bare join
+	// tree WITHOUT resolving the inner source as a catalog table: a CTE / derived
+	// inner is not in the catalog, so reaching Analyzer.ResolveTable would reject a
+	// valid inner ("table not found"). This restores the original pre-scope
+	// position of the fast path.
+	anyOn := false
+	for _, j := range sq.joins {
+		if j.onExpr != nil {
+			anyOn = true
+			break
+		}
+	}
+	if (sq.whereExpr == nil || sq.whereExpr.Expression() == nil) && !anyOn {
+		op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
+		for i := range sq.joins {
+			op = logical.NewJoinWithPredicate(op, rights[i], kinds[i], nil)
+		}
 		return op, nil
 	}
 
+	// There is a WHERE or an ON — build the inner scope + resolver so each explicit
+	// `JOIN … ON` clause can be walked and placed correctly (the sibling
+	// buildCorrelatedScalar has the same ordering). An INNER-join ON is
+	// equivalent to a WHERE conjunct and is folded into the inner predicate
+	// stream below; an OUTER-join ON is NOT (unmatched preserved-side rows must
+	// survive), so it stays on the join node — see the join loop.
 	cat := rlcatalog.Wrap(p.md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 
@@ -5321,6 +5399,18 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	innerScope := semantic.NewScope(outerScope)
 	tbl, tblErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
 	if tblErr != nil {
+		// CTE-aware fallback: a CTE inner source (`WITH c AS (…) … EXISTS (SELECT …
+		// FROM c JOIN t ON …)`) is not a catalog table, so ResolveTable misses.
+		// Resolve it via the enclosing query's CTE registry — the SAME cteScopes the
+		// normal join-ON / WHERE resolvers consult (upgradeJoinOnPredicates,
+		// buildWherePredicateForJoinsWithCTEScopes) — so an ON/WHERE over the CTE's
+		// columns walks correctly instead of failing "table not found". (A derived
+		// `(SELECT …) AS d` inner is not WITH-registered and stays a clean error.)
+		if src, found := p.cteScopes[strings.ToUpper(sq.tableName)]; found {
+			tbl, tblErr = src.Table, nil
+		}
+	}
+	if tblErr != nil {
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve inner table %q: %v", sq.tableName, tblErr), Cause: tblErr}
 	}
 	aliasID := semantic.NewUnquoted(innerAlias)
@@ -5328,17 +5418,16 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
 	})
 
-	// Add join sources to scope so the resolver can resolve their columns. A
-	// lateral-unnest leg registers the same virtual Shadowing source the main
-	// path uses (exposing the element/ordinal binding) instead of resolving
-	// `t.arr` as a table — so the inner WHERE on the unnest column resolves and
-	// a correlated reference to the outer query binds. RFC-142.
-	for i, j := range sq.joins {
-		if jErr := p.addCorrelatedJoinScopeSource(innerScope, analyzer, j, sq.tableName, innerAlias, sq.joins[:i]); jErr != nil {
-			return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve join table %q: %v", j.tableName, jErr), Cause: jErr}
-		}
-	}
-
+	// Join sources are added to the inner scope INCREMENTALLY in the join loop
+	// below — each leg registered right BEFORE its own ON is walked — so an ON at
+	// join level i sees only {primary + legs[0..i]} (SQL left-to-current
+	// visibility), never a LATER leg. Without this, a later leg that REUSES an
+	// outer alias would capture an earlier ON's reference to that name (which must
+	// bind the OUTER source), misclassifying a correlation as inner and misplacing
+	// the predicate. The resolver holds innerScope by reference, so sources added
+	// after construction are visible to subsequent walks; the WHERE walk (after the
+	// loop) sees the FULL inner scope, which is correct — only ON visibility is
+	// left-to-current.
 	resolver := expr.New(analyzer, innerScope)
 
 	// Install a SubqueryPlanner on the resolver so that nested EXISTS
@@ -5368,9 +5457,183 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	}
 	resolver.SetSubqueryPlanner(nestedPlanner)
 
-	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
-	if walkErr != nil {
-		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: walk predicate: %v", walkErr), Cause: walkErr}
+	// Build the join tree from the inner FROM clause (handles multi-table
+	// EXISTS). A `t.arr AS x [AT ord]` comma source is a lateral array unnest,
+	// not a table — classify it via the SAME helper the main FROM path uses so
+	// the Cascades translator lowers it to FlatMap(Scan, Explode). RFC-142.
+	//
+	// Each explicit `JOIN … ON` is split against the inner-source universe:
+	//   - INNER-INNER conjuncts (reference only inner sources, e.g. `f.fid=e.fid`)
+	//     stay ON THAT JOIN'S NODE — applied at the correct join level in EVERY
+	//     ordering. Folding them into one predicate below the whole inner join
+	//     would misplace an INNER ON that precedes a later RIGHT/FULL join: a
+	//     preserved outer-join row has NULL inner columns, so the folded ON goes
+	//     NULL→false and drops a row that must keep EXISTS true.
+	//   - CORRELATION conjuncts (reference the outer query, e.g. `e.eid=p.id`):
+	//     an INNER join lifts them to the outer level (like a WHERE correlation);
+	//     an OUTER (LEFT/RIGHT/FULL) join cannot — lifting a predicate out of an
+	//     outer-join ON changes which rows are preserved — so decline cleanly.
+	//
+	// A conjunct is a liftable CORRELATION only if it references a REAL
+	// OUTER-SCOPE source (a source in the enclosing query's scope), not merely a
+	// name absent from the inner sources. This is the robustness boundary: a
+	// nested subquery inside an ON binds a GENERATED alias that is neither an
+	// inner source nor an outer-scope source — classifying it as "outer" would
+	// lift it, and the downstream nested-EXISTS hoist would then drop the whole
+	// join tree. Build the outer-scope name set here.
+	outerAliases := map[string]struct{}{}
+	for _, src := range p.outerScopes {
+		if src.CorrelationName != "" {
+			outerAliases[strings.ToUpper(src.CorrelationName)] = struct{}{}
+		}
+		if n := src.Alias.Name(); n != "" {
+			outerAliases[strings.ToUpper(n)] = struct{}{}
+		}
+	}
+
+	// The inner-source alias set is accumulated INCREMENTALLY (primary + legs seen
+	// so far) so each ON's split reflects SQL left-to-current visibility: a name
+	// that is only a LATER inner source is out of scope at an earlier ON — there it
+	// binds an outer source with that name (a correlation) or is unresolved. A
+	// conjunct is a liftable correlation only if it references an outer-scope name
+	// that is NOT ALSO an (in-scope) inner source: when the outer query and the
+	// inner FROM reuse the same alias, the inner source SHADOWS the outer, so a
+	// reference to that name binds inner (the shadowing guard in
+	// splitConjunctsByOuterRef).
+	levelInnerAliases := innerSourceAliases(logical.NewScan(sq.tableName, innerAlias))
+
+	// The FULL inner-source alias set (all legs) is used to detect an outer/inner
+	// alias COLLISION: an earlier ON that references an alias which is ALSO a LATER
+	// inner leg. Per-join scope correctly binds that reference to the OUTER source
+	// (the later leg isn't in scope yet), but the lifted correlation's QOV(name)
+	// then collides with the inner leg of the same name at runtime — ambiguous,
+	// silent-wrong. Such a correlation is declined below rather than mis-answered.
+	fullInnerAliases := innerSourceAliases(logical.NewScan(sq.tableName, innerAlias))
+	for i := range sq.joins {
+		for a := range innerSourceAliases(rights[i]) {
+			fullInnerAliases[a] = struct{}{}
+		}
+	}
+
+	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
+	var liftedOnCorr []predicates.QueryPredicate
+	for i, j := range sq.joins {
+		// Register leg i's source in the inner scope BEFORE walking its ON (so the
+		// ON sees {primary + legs[0..i]}), and accumulate its aliases into the
+		// per-level inner set used by the split. A lateral-unnest leg registers the
+		// same virtual Shadowing source the main path uses (exposing the
+		// element/ordinal binding) instead of resolving `t.arr` as a table. RFC-142.
+		if jErr := p.addCorrelatedJoinScopeSource(innerScope, analyzer, j, sq.tableName, innerAlias, sq.joins[:i]); jErr != nil {
+			return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve join table %q: %v", j.tableName, jErr), Cause: jErr}
+		}
+		for a := range innerSourceAliases(rights[i]) {
+			levelInnerAliases[a] = struct{}{}
+		}
+		var nodeOn predicates.QueryPredicate
+		if j.onExpr != nil {
+			subqBefore := len(nestedPlanner.subqueries) + len(nestedPlanner.scalarSubqueries) + len(nestedPlanner.correlatedScalarSubqueries)
+			walkedOn, onErr := resolver.WalkPredicate(j.onExpr)
+			if onErr != nil {
+				// A nested subquery/EXISTS inside the ON is an unsupported shape
+				// (declined below via onAddedSubquery). But the walk can FAIL first —
+				// e.g. `ON EXISTS (SELECT 1 FROM h WHERE h.hid = f.fid)` where the
+				// nested subquery references the CURRENT leg `f`, which the nested
+				// planner's scope does not expose. Surface that as the deliberate
+				// 0A000 decline (Unsupported) rather than a raw 42703 resolution
+				// failure in the WHERE-EXISTS path.
+				if expr.ContainsSubqueryAtom(j.onExpr) || expr.ContainsExistsAtom(j.onExpr) {
+					return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a nested subquery inside a JOIN ON clause is not supported", Unsupported: true}
+				}
+				return nil, wrapCorrelatedExistsWalkErr(fmt.Sprintf("correlated EXISTS: walk ON clause: %v", onErr), onErr)
+			}
+			// An ON that itself contains a nested EXISTS/scalar subquery cannot be
+			// handled by this fallback: lifting it to the outer level misclassifies
+			// the generated subquery alias as a correlation (and the downstream
+			// nested-EXISTS hoist would drop the join tree), while keeping it on the
+			// join node orphans the nested subquery's PLAN (the join node carries no
+			// ExistsSubqueries slot, so the nested EXISTS evaluates as a dead
+			// always-false predicate). Neither placement is correct, so decline
+			// cleanly (correct-or-conservative) rather than answer wrong rows.
+			onAddedSubquery := len(nestedPlanner.subqueries)+len(nestedPlanner.scalarSubqueries)+len(nestedPlanner.correlatedScalarSubqueries) > subqBefore
+			if onAddedSubquery {
+				return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a nested subquery inside a JOIN ON clause is not supported", Unsupported: true}
+			}
+			// A subquery-free ON is split into a liftable correlation (references a
+			// real outer-scope source that is not shadowed by an inner source) and
+			// the inner-inner part (stays on the node).
+			correlation, innerInner := splitConjunctsByOuterRef(walkedOn, outerAliases, levelInnerAliases)
+			nodeOn = innerInner
+			if correlation != nil {
+				if kinds[i] != logical.JoinInner {
+					return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlation inside an OUTER (LEFT/RIGHT/FULL) JOIN ON clause is not supported", Unsupported: true}
+				}
+				// Outer/inner alias collision: the correlation references an outer
+				// name that is ALSO a (later) inner leg — the same name bound in two
+				// scopes. Per-join scope bound it to the outer here, but lifting the
+				// correlation makes its QOV(name) collide with the inner leg at runtime
+				// (ambiguous). Decline (correct-or-conservative) rather than silent-wrong.
+				for name := range predicates.GetCorrelatedToOfPredicate(correlation) {
+					n := strings.ToUpper(name.Name())
+					_, isOuter := outerAliases[n]
+					_, isFullInner := fullInnerAliases[n]
+					if isOuter && isFullInner {
+						return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a JOIN ON references an alias reused as a later inner join source (outer/inner alias collision) is not supported", Unsupported: true}
+					}
+				}
+				// Lifting a correlated INNER-join ON to the outer level applies it
+				// AFTER the whole inner plan (like a WHERE correlation). That loses
+				// the ON's join-level placement: if a LATER join is RIGHT or FULL, it
+				// preserves g-side rows with NULL on this join's e/f columns, and the
+				// lifted `e.eid=p.id` then evaluates NULL→false and rejects those
+				// preserved rows — EXISTS wrongly false. (A later LEFT/INNER join does
+				// not preserve NULL-e rows, so the lift is safe.) Reproducing the
+				// correct join-level placement is not something this fallback can do,
+				// so decline cleanly rather than answer wrong rows.
+				laterOuterPreservesOtherSide := false
+				for k := i + 1; k < len(kinds); k++ {
+					if kinds[k] == logical.JoinRight || kinds[k] == logical.JoinFull {
+						laterOuterPreservesOtherSide = true
+						break
+					}
+				}
+				if laterOuterPreservesOtherSide {
+					return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlation inside a JOIN ON clause before a later RIGHT/FULL JOIN is not supported", Unsupported: true}
+				}
+				liftedOnCorr = append(liftedOnCorr, correlation)
+			}
+		}
+		op = logical.NewJoinWithPredicate(op, rights[i], kinds[i], nodeOn)
+	}
+
+	// With inner-inner ON conjuncts on their join nodes, only an INNER-join ON's
+	// correlation or the WHERE still needs a filter. A `SELECT 1 FROM e JOIN f ON
+	// f.fid=e.fid AND e.eid=p.id` inner with NO WHERE must NOT early-return the
+	// bare join: that would drop the lifted correlation and make EXISTS silently
+	// true over an empty inner join.
+	if (sq.whereExpr == nil || sq.whereExpr.Expression() == nil) && len(liftedOnCorr) == 0 {
+		return op, nil
+	}
+
+	var pred predicates.QueryPredicate
+	if sq.whereExpr != nil && sq.whereExpr.Expression() != nil {
+		var walkErr error
+		pred, walkErr = resolver.WalkPredicate(sq.whereExpr.Expression())
+		if walkErr != nil {
+			return nil, wrapCorrelatedExistsWalkErr(fmt.Sprintf("correlated EXISTS: walk predicate: %v", walkErr), walkErr)
+		}
+	}
+
+	// Lift each INNER-join ON's correlation conjuncts to the outer level, routed
+	// by the same qualify + splitOuterOnlyConjuncts machinery as the WHERE.
+	for _, onCorr := range liftedOnCorr {
+		if pred == nil {
+			pred = onCorr
+		} else {
+			pred = predicates.NewAnd(pred, onCorr)
+		}
+	}
+	if pred == nil {
+		return op, nil
 	}
 
 	// Propagate SCALAR subquery plans the nested planner collected while walking
@@ -5511,6 +5774,68 @@ func splitOuterOnlyConjuncts(pred predicates.QueryPredicate, innerAliases map[st
 		}
 	}
 	return andOf(outer), andOf(keep)
+}
+
+// splitConjunctsByOuterRef partitions a walked ON's top-level AND tree into
+// (refsOuter, innerOnly): a conjunct is refsOuter iff it references at least one
+// correlation that is a REAL OUTER-SCOPE source (name in outerAliases) AND is NOT
+// ALSO an inner source (name absent from innerAliases). Every other conjunct —
+// referencing only inner sources, a generated (non-outer-scope) alias, an
+// outer-scope name SHADOWED by a same-named inner source, or no correlation at
+// all — is innerOnly. Two robustness boundaries live in this test:
+//   - Membership in the outer-scope set (not mere ABSENCE from inner sources)
+//     keeps a generated nested-subquery alias — which is neither outer-scope nor
+//     inner — off the lift path.
+//   - The `!isInner` guard handles ALIAS SHADOWING: when the outer query and the
+//     inner FROM reuse the same alias (`c`), an inner reference `c.col` binds to
+//     the inner source (inner shadows outer in the inner scope), so it must not be
+//     misclassified as an outer correlation and over-decline a valid inner-only ON.
+//
+// This isolates a genuine correlation conjunct like `e.eid = p.id` (inner e +
+// unshadowed outer p) into refsOuter so an INNER join's ON correlation can be
+// lifted to the outer level while its inner-inner conjuncts stay on the join node.
+// Either return may be nil.
+func splitConjunctsByOuterRef(pred predicates.QueryPredicate, outerAliases, innerAliases map[string]struct{}) (refsOuter, innerOnly predicates.QueryPredicate) {
+	if pred == nil {
+		return nil, nil
+	}
+	var outer, inner []predicates.QueryPredicate
+	var walk func(p predicates.QueryPredicate)
+	walk = func(p predicates.QueryPredicate) {
+		if and, ok := p.(*predicates.AndPredicate); ok {
+			for _, sub := range and.SubPredicates {
+				walk(sub)
+			}
+			return
+		}
+		hasOuter := false
+		for c := range predicates.GetCorrelatedToOfPredicate(p) {
+			name := strings.ToUpper(c.Name())
+			_, isOuter := outerAliases[name]
+			_, isInner := innerAliases[name]
+			if isOuter && !isInner {
+				hasOuter = true
+				break
+			}
+		}
+		if hasOuter {
+			outer = append(outer, p)
+		} else {
+			inner = append(inner, p)
+		}
+	}
+	walk(pred)
+	andOf := func(ps []predicates.QueryPredicate) predicates.QueryPredicate {
+		switch len(ps) {
+		case 0:
+			return nil
+		case 1:
+			return ps[0]
+		default:
+			return predicates.NewAnd(ps...)
+		}
+	}
+	return andOf(outer), andOf(inner)
 }
 
 // qualifyBareFields walks a predicate tree and prepends qualifier+"."

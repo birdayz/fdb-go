@@ -74,6 +74,7 @@ go_test(
         "constant_predicate_probe_test.go",
         "constraint_validation_probe_test.go",
         "correlated_exists_crossjoin_test.go",
+        "correlated_exists_join_on_fdb_test.go",
         "correlated_exists_probe_test.go",
         "correlated_null_inequality_test.go",
         "correlated_null_key_probe_test.go",

@@ -1417,7 +1417,22 @@ each on its own stacked branch.
 
 ### [ ] query-engine follow-on (Torvalds ACK book): extract `buildExistentialFlatMapTail(...)` — the existential-wrap tail (belowFOD → FirstOrDefault(NULL) → optional IS[NOT]NULL residual → FlatMap) is now stamped out 4× (implementExistentialSelect ~:924, the 2-leg fold arm ~:2230, the N-way arm ~:2612, yieldExistsFlatMap ~:2836). A future residual-polarity/FOD-contract fix has FOUR landing sites (the EXISTS correlation-leak fix already had to be applied in >1). Extract the invariant tail once the N-way arm is battle-tested; the differing parts (rebasing, FlatMap outer, memo bookkeeping) stay at the call sites. Not a blocker — booked follow-up.
 
-### [ ] query-engine (SCHEDULED HIGH-PRIORITY — live silent-wrong, Graefe: "must not rot in Known gaps"): CORRELATED EXISTS with an explicit `JOIN..ON` inner DROPS the inner ON — found via codex on RFC-173 :2908/:3033 N-way review (2026-07-08)
+### [ ] query-engine (PRE-EXISTING silent-wrong, discovered 2026-07-08): a DERIVED-TABLE inner in a correlated EXISTS loses its body → wrong rows
+A correlated EXISTS whose inner FROM is a DERIVED TABLE (`(SELECT …) AS d`) entered via the `buildCorrelatedExists` fallback (no WHERE / no ON, entered only because the ignored inner SELECT references an outer column) returns silent-wrong rows: the fallback rebuilds the inner FROM as bare scans (`NewScan(sq.tableName)`) and LOSES the derived body (`d` isn't carried in the fallback's CTE scope). Confirmed at BASELINE `a34e9e21d` (`[[1 false]]`, wrong) — PRE-EXISTING, NOT introduced by the JOIN-ON fix (which restores baseline for the CTE case, correct). Orthogonal to the ON work. Proper fix: carry the derived-table body through the correlated-EXISTS fallback (or decline loud if the body can't be carried — loud beats silent). Discovered while fixing the JOIN-ON silent-wrong; filed per "discover → fix-or-file" (out of scope for that fix — a separate front-end piece).
+
+### [x] query-engine: CORRELATED EXISTS with an explicit `JOIN..ON` inner DROPS the inner ON — FIXED 2026-07-08 (codex-surfaced on the N-way review; root-caused + fixed in the front-end; 7 codex rounds folded: INNER-drop, OUTER-fold, mixed-orderings ×2, nested-subquery, shadowing+SQLSTATE, CTE fast-path)
+ROOT CAUSE (the filed framing was WRONG — it blamed the Cascades 2-leg fold arm; the real defect is UPSTREAM
+in the SQL→logical front-end): `buildCorrelatedExists` (pkg/relational/core/embedded/logical_predicate.go)
+rebuilt the inner FROM's join tree with `NewJoinWithPredicate(op, right, kind, nil)` — the ON hardcoded to
+nil — and its no-WHERE early return dropped it entirely. So `EXISTS(SELECT 1 FROM e JOIN f ON f.fid=e.fid
+WHERE e.eid=p.id)` produced a bare cross-product → EXISTS silently true over an empty inner join. This is why
+the three Cascades-layer guard attempts all mis-scoped — wrong layer; the ON was gone before Cascades ran.
+The scalar-subquery sibling `buildCorrelatedScalar` already walked the ON correctly; the EXISTS fallback was
+never given the same treatment. FIX: guard the no-WHERE early return on `!anyOn`, then walk each `j.onExpr`
+and AND it into the inner predicate stream so the existing qualify/splitOuterOnlyConjuncts routing enforces
+an inner-inner ON below the FOD and lifts an ON-embedded correlation — same as a comma-join WHERE conjunct.
+Broader than filed: also single-outer projected, correlation-in-ON-with-no-WHERE, and NOT-EXISTS variants.
+Regression: correlated_exists_join_on_fdb_test.go (5 bipolar-discriminating subtests, red-first).
 A correlated projected/WHERE EXISTS whose inner is an **explicit inner join** — `EXISTS (SELECT 1 FROM e
 JOIN f ON f.fid=e.fid WHERE e.eid=p.id)` — returns EXISTS=true even when the inner join `e JOIN f` is
 EMPTY: the inner join's own **ON** predicate is dropped through the correlation lift. Repro (Java 4.12.11.0

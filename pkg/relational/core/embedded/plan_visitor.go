@@ -693,6 +693,16 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 				var corrErr *CorrelatedExistsError
 				if errors.As(walkErr, &corrErr) {
+					// Route through the SAME classifier the WHERE-EXISTS path uses so
+					// both forms agree on the SQLSTATE: a GENUINE resolution failure in
+					// the ON (missing column/source) unwraps to 42703/42702, while only a
+					// DELIBERATE Unsupported decline (nested-subquery / OUTER-ON /
+					// collision / RIGHT-FULL) reports 0A000. Without this the projected
+					// path reported 0A000 for a genuine missing column, diverging from the
+					// WHERE-EXISTS path's 42703.
+					if mapped := mapPredicateWalkError(walkErr); mapped != nil {
+						return nil, mapped
+					}
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 				}
 				// RFC-141 R4 (P1b): a SELECT item with a NESTED EXISTS is
@@ -838,6 +848,13 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"column %q does not exist", colNotFound.Id.Name())
 			}
+			var shadowErr *semantic.CorrelatedShadowError
+			if errors.As(walkErr, &shadowErr) {
+				// A shadowed correlated reference is a RESOLUTION failure (undefined
+				// column in the bound scope) → 42703, recognized by type before the
+				// CorrelatedExistsError → 0A000 fallback.
+				return nil, api.NewError(api.ErrCodeUndefinedColumn, shadowErr.Error())
+			}
 			var srcNotFound *semantic.SourceNotFoundError
 			if errors.As(walkErr, &srcNotFound) {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -854,8 +871,13 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			}
 			var corrExistsErr *CorrelatedExistsError
 			if errors.As(walkErr, &corrExistsErr) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"nested correlated EXISTS: %v", walkErr)
+				// Genuine resolution errors (Ambiguous/ColumnNotFound/SourceNotFound/…)
+				// are mapped to 42703/42702 by the type checks ABOVE. A
+				// CorrelatedExistsError reaching here wraps no recognized resolution
+				// error → a deliberate unsupported-shape decline → 0A000. Same
+				// type-based classification as mapPredicateWalkError so every path
+				// agrees on the SQLSTATE.
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrExistsErr.Error())
 			}
 			// A structured *api.Error from the walk is a deliberate, already
 			// SQLSTATE-classified rejection raised by a nested subquery's build
