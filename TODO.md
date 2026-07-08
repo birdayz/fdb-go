@@ -1415,7 +1415,26 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] query-engine: computed QUALIFIED group key returns NULL (general, not unnest) — found via codex on RFC-173 positional-wrap review (2026-07-07)
+### [ ] query-engine: CORRELATED EXISTS with an explicit `JOIN..ON` inner DROPS the inner ON (silent wrong) — found via codex on RFC-173 :2908/:3033 N-way review (2026-07-08)
+A correlated projected/WHERE EXISTS whose inner is an **explicit inner join** — `EXISTS (SELECT 1 FROM e
+JOIN f ON f.fid=e.fid WHERE e.eid=p.id)` — returns EXISTS=true even when the inner join `e JOIN f` is
+EMPTY: the inner join's own **ON** predicate is dropped through the correlation lift. Repro (Java 4.12.11.0
+= `[[10 false]]`, Go returned `[[10 true]]`): `SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON f.fid=e.fid
+WHERE e.eid=p.id) FROM p, q WHERE q.qid=p.id` with `e(eid=1,fid=99), f(fid=88)` (no inner match).
+- **The N-way arm** (`implementNWayJoinWithExistential`, RFC :2908/:3033) is FIXED conservatively: it
+  fail-closes on ANY non-scan existential inner (`existInnerIsScanSafe`) — declines the buggy explicit-join
+  case AND (over-conservatively) the working multi-table comma-join case; the N-way arm is new so nothing
+  regresses. So the N-way arm has NO silent-wrong; its reach gap is "multi-table/join EXISTS inner declines".
+- **The 2-leg fold arm** (`implementJoinWithExistential`) has the PRE-EXISTING silent-wrong and is NOT yet
+  fixed — three guard attempts all mis-scoped: (a) `!existInnerIsScanSafe` alone over-declines the working
+  non-correlated `EXISTS(... JOIN ...)` (`TestFDB_RFC173W4Left_ExistsOverJoin`); (b) `legReferencesAny(existRef,
+  legs)` is INEFFECTIVE (the correlation is lifted BEFORE existRef); (c) `len(existPreds)>0 &&
+  !existInnerIsScanSafe` over-declines the working **multi-table comma-join** correlated case
+  (`TestFDB_ProjectedExistsRound10/p2a_*_multitable`). The precise discriminator is "explicit inner
+  `JOIN..ON` (ON on the join node) under correlation" vs "comma-join WHERE under correlation" — a distinction
+  LOST at the plan level (ON and WHERE are both predicates by then). The proper fix is to ENFORCE the inner
+  ON under correlation (deep RFC-141 `existsInnerCorrelation` work), not a decline. Regression test to add
+  once fixed: 2-leg `EXISTS(... e JOIN f ON ...)` over an empty inner join → `[[10 false]]`.
 
 `GROUP BY <qualified-col> + <expr>` returns NULL for the key on ANY multi-table query:
 `SELECT WSRC.SID + 1, COUNT(*) FROM WSRC, WAUX GROUP BY WSRC.SID + 1` → `K=<nil>` ("unresolved
