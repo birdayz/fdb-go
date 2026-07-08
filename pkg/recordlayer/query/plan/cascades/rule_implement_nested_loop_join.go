@@ -1074,13 +1074,15 @@ func planResultValue(p plans.RecordQueryPlan) values.Value {
 }
 
 // legIsOrdinalSafe reports whether a projected-EXISTS fold leg (RFC §"commit 2
-// B1"/C) can seed the step-1 ordinal merged row: a SINGLE-SOURCE leg whose rows
-// are one namespace (a scan, through transparent Filter/Fetch/FOD wrappers). A
-// JOIN/FlatMap leg emits a name-model MERGED row (dotted keys) that an ordinal
-// seed cannot position, so it stays name-model — the executor twin of the
-// translator gate's ordinalEligible (correct-or-conservative: an unrecognised
-// leg is NOT ordinalized). A buried gated-box leg (its own ordinal seed) is a
-// booked follow-on widening.
+// B1"/C, generalized for :2908/:3033) can seed the step-1 ordinal merged row: a
+// SINGLE-SOURCE leg whose rows are one namespace (a scan, through transparent
+// Filter/Fetch/FOD wrappers), OR an ORDINAL bare-INNER nested-loop join — the
+// ACCUMULATED INNER of the N-way left-deep chain (its own ordinal concat row read
+// positionally by the next level through its buried-leaf windows). A name-model
+// MERGED-row leg (an AnchoredJoin resultValue with dotted keys) an ordinal seed
+// cannot position stays name-model — the executor twin of the translator gate's
+// ordinalEligible (correct-or-conservative). A NON-INNER NLJ is declined (the
+// INNER-first scope carries no null-extension; the LEFT follow-on widens it).
 func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
 	for p != nil {
 		switch pl := p.(type) {
@@ -1096,11 +1098,72 @@ func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
 			p = pl.GetInner()
 		case *plans.RecordQueryFetchFromPartialRecordPlan:
 			p = pl.GetInner()
+		case *plans.RecordQueryNestedLoopJoinPlan:
+			if pl.GetJoinType() != plans.JoinInner {
+				return false
+			}
+			// Only an ORDINAL box (a positional concat row) can be read by
+			// ordinal; a name-model box (an AnchoredJoin resultValue) cannot.
+			rc, ok := pl.GetResultValue().(*values.RecordConstructorValue)
+			if !ok || rc.AnchoredJoin {
+				return false
+			}
+			return legIsOrdinalSafe(pl.GetOuter()) && legIsOrdinalSafe(pl.GetInner())
 		default:
 			return false
 		}
 	}
 	return false
+}
+
+// planBuriedLegConcat walks an ordinal-safe leg PLAN accumulating its buried
+// scan leaves' fields (the flat concat) and each buried source's [Start,Width)
+// window relative to `base` — the PLAN-LEVEL twin of the translator's
+// buriedLegBounds. A bare INNER nested-loop join recurses into its two legs
+// (keyed by the join's outer/inner aliases); a scan-family leaf (through
+// transparent wrappers) contributes one leaf window keyed by `alias`. This
+// windows the N-way chain's ACCUMULATED INNER so the next level reads its buried
+// leaves positionally. ok=false for any non-ordinal-safe node. A single scan leg
+// yields ONE leg (its own alias) — the caller uses .Legs only when len(legs) > 1.
+func planBuriedLegConcat(p plans.RecordQueryPlan, alias string, base int) ([]values.Field, []values.RecordTypeLeg, bool) {
+	inner := p
+	for {
+		switch pl := inner.(type) {
+		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan:
+			rt, isRT := inner.GetResultType().(*values.RecordType)
+			if !isRT || len(rt.Fields) == 0 {
+				return nil, nil, false
+			}
+			return rt.Fields, []values.RecordTypeLeg{
+				{Name: strings.ToUpper(alias), Start: base, Width: len(rt.Fields)},
+			}, true
+		case *plans.RecordQueryPredicatesFilterPlan:
+			inner = pl.GetInner()
+		case *plans.RecordQueryFilterPlan:
+			inner = pl.GetInner()
+		case *plans.RecordQueryFirstOrDefaultPlan:
+			inner = pl.GetInner()
+		case *plans.RecordQueryDefaultOnEmptyPlan:
+			inner = pl.GetInner()
+		case *plans.RecordQueryFetchFromPartialRecordPlan:
+			inner = pl.GetInner()
+		case *plans.RecordQueryNestedLoopJoinPlan:
+			if pl.GetJoinType() != plans.JoinInner {
+				return nil, nil, false
+			}
+			outerFields, outerLegs, ok := planBuriedLegConcat(pl.GetOuter(), pl.GetOuterAlias(), base)
+			if !ok {
+				return nil, nil, false
+			}
+			innerFields, innerLegs, ok := planBuriedLegConcat(pl.GetInner(), pl.GetInnerAlias(), base+len(outerFields))
+			if !ok {
+				return nil, nil, false
+			}
+			return append(outerFields, innerFields...), append(outerLegs, innerLegs...), true
+		default:
+			return nil, nil, false
+		}
+	}
 }
 
 // reconstructFoldStep1Seed rebuilds the full leg-concat ordinal seed for a
@@ -1126,13 +1189,30 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 		plan  plans.RecordQueryPlan
 		alias string
 	}{{leftPlan, leftAlias}, {rightPlan, rightAlias}} {
-		rt, ok := leg.plan.GetResultType().(*values.RecordType)
-		if !ok || len(rt.Fields) == 0 {
+		// Walk the leg to its buried scan leaves: the flat concat + each buried
+		// source's window. A scan leg yields one leaf (its own alias); the N-way
+		// chain's accumulated INNER (a bare INNER NLJ) yields its buried leaves.
+		// GetResultType() cannot be used for a NLJ leg — it is a stub
+		// (UnknownType); the walk reconstructs the concat from the scan leaves.
+		concatFields, buriedLegs, ok := planBuriedLegConcat(leg.plan, leg.alias, 0)
+		if !ok || len(concatFields) == 0 {
 			return nil
 		}
+		// A BURIED box (>1 leaf) carries its buried sources' [Start,Width) windows
+		// in .Legs so the layout authority (OrdinalSeedLegWindows →
+		// finalizeSeedWindows) emits a per-buried-leaf sub-window and a qualified
+		// buried read resolves positionally; a plain scan leg (one leaf) leaves
+		// .Legs nil — its window is the top QOV correlation's. Struct literal (not
+		// NewRecordType) so a cross-source duplicate column name cannot panic — the
+		// ordinal reads are by slot and buried disambiguation is by .Legs windows.
+		var legs []values.RecordTypeLeg
+		if len(buriedLegs) > 1 {
+			legs = buriedLegs
+		}
+		rt := &values.RecordType{Fields: concatFields, Legs: legs}
 		qov := values.NewQuantifiedObjectValueOfType(
 			values.NamedCorrelationIdentifier(strings.ToUpper(leg.alias)), rt)
-		for i := range rt.Fields {
+		for i := range concatFields {
 			fv, err := values.NewFieldValueOfOrdinal(qov, i)
 			if err != nil {
 				return nil

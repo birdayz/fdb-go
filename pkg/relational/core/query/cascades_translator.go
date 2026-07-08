@@ -3012,6 +3012,37 @@ func isScanFamilyLeg(op logical.LogicalOperator) bool {
 	}
 }
 
+// existsLegBirthsPositional reports whether a projected-EXISTS fold leg is a
+// bare all-INNER cluster of scan-family leaves. Such a leg is translated
+// UN-ENCLOSED (AXIS 1) so its INNER box is born as a mergeable ordinal select;
+// SelectMergeRule then FLATTENS it into the fold, making the fold an N-way
+// `[ForEach×N, Existential]` select the generalized implementJoinWithExistential
+// plans (RFC-173 S4 :2908/:3033, N-way flat existential). A scan leg is already
+// positional regardless of enclosure (returns false — no box to un-enclose); an
+// OUTER box or a wrapped join returns false (non-mergeable / out of INNER-first
+// scope).
+func existsLegBirthsPositional(op logical.LogicalOperator) bool {
+	j, isJoin := op.(*logical.LogicalJoin)
+	if !isJoin || j.Kind != logical.JoinInner {
+		return false
+	}
+	return existsLegAllInnerScanFamily(j.Left) && existsLegAllInnerScanFamily(j.Right)
+}
+
+// existsLegAllInnerScanFamily is the recursion arm of existsLegBirthsPositional:
+// a scan, or a bare INNER join recursively of such.
+func existsLegAllInnerScanFamily(op logical.LogicalOperator) bool {
+	switch o := op.(type) {
+	case *logical.LogicalScan:
+		return true
+	case *logical.LogicalJoin:
+		return o.Kind == logical.JoinInner &&
+			existsLegAllInnerScanFamily(o.Left) && existsLegAllInnerScanFamily(o.Right)
+	default:
+		return false
+	}
+}
+
 // buildExistentialJoinSelect folds a projection (resultValue) over a
 // JOIN-in-FROM that carries projected-EXISTS subqueries into a single
 // SelectExpression: ForEach(left), ForEach(right), and one Existential
@@ -3066,15 +3097,21 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		return nil
 	}
 	// RFC-173 Slice 2: same enclosure as translateJoinWithExists — the
-	// existential flatten is a name-model parent; its ForEach legs are
-	// enclosed.
+	// existential flatten is a name-model parent; its ForEach legs are enclosed.
+	// RFC-173 S4 :2908/:3033, AXIS 1: a bare INNER gated-box fold leg is translated
+	// UN-ENCLOSED so its box is born as a mergeable ordinal select; SelectMergeRule
+	// flattens it into the fold, making the fold an N-way [ForEach×N, Existential]
+	// select the generalized implementJoinWithExistential plans. Coupled to the
+	// executor N-leg dispatch/seed (two-site certificate). A non-bare-INNER-box leg
+	// (scan, OUTER box, wrapped) stays enclosed.
 	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = true
+	t.inInnerCluster = !existsLegBirthsPositional(j.Left)
 	leftRef := t.translateRef(j.Left)
 	if leftRef == nil {
 		t.inInnerCluster = prevEnclosure
 		return nil
 	}
+	t.inInnerCluster = !existsLegBirthsPositional(j.Right)
 	rightRef := t.translateRef(j.Right)
 	t.inInnerCluster = prevEnclosure
 	if rightRef == nil {
