@@ -152,13 +152,20 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatal("the gathered ON-carrying select must carry the ON conjunct")
 	}
 
-	// (b) NAME-AMBIGUOUS: a column name shared by two legs (same table twice)
-	// — bare resolution over the flat row would diverge from the name model's
-	// last-binding-wins.
+	// (b) NAME-AMBIGUOUS bare-twin (RFC-173 S4 Slice 2a): a column name shared by two
+	// legs (same table twice) now GATHERS via the POSITIONAL WRAP — each leg's columns
+	// re-exposed as ALIAS.COL window keys, so a qualified read routes to its own leg
+	// instead of last-leg-wins. (A BARE ambiguous reference errors 42702 at semantic
+	// analysis before the translator, so only qualified reads reach here.) The wrap is
+	// a LogicalProjectionExpression (survives SelectMergeRule).
 	uDup := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	jDup := logical.NewJoin(inner(scan("SRC", "s"), scan("SRC", "s2")), uDup, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jDup, uDup, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-		t.Fatal("cross-leg duplicate column names must DECLINE (bare-name ambiguity)")
+	gotDup := tr.translateGatheredUnnestCluster(jDup, uDup, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if gotDup == nil {
+		t.Fatal("cross-leg duplicate column names must GATHER via the positional wrap (Slice 2a), not decline")
+	}
+	if _, ok := gotDup.(*expressions.LogicalProjectionExpression); !ok {
+		t.Fatalf("dup-name gather must be a positional-wrap LogicalProjectionExpression, got %T", gotDup)
 	}
 
 	// (c) SHADOWING now GATHERS (the commit-2 lift): the element alias

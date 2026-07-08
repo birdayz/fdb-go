@@ -123,7 +123,7 @@ type cascadesTranslator struct {
 	// which the seed lacks — so `SELECT EL, COUNT(*) FROM a, a.arr AS EL, b GROUP BY EL`
 	// grouped every row under NULL. When this flag is set, translateGatheredUnnestCluster
 	// keeps the positional seed INTERNAL and places a NAMED-PROJECTION layer above it
-	// (wrapGatheredForGroupBy) that re-exposes the bare + ALIAS.COL + "EL.EL" shadow
+	// (wrapGatheredPositionalKeys) that re-exposes the bare + ALIAS.COL + "EL.EL" shadow
 	// keys the grouped read resolves against — Java's "the collapse preserves the named
 	// projection the group-by consumes". The gather now ORDINALIZES the group-by
 	// (retiring the name-model residual for the disjoint gathered shape) rather than

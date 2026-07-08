@@ -111,37 +111,60 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		return nil // a leg untranslatable — same decline rule as the seed
 	}
 
-	// NAME-AMBIGUOUS decline (fail-open residual): a column name shared by two
-	// LEGS (the name model's last-leg-wins bare twin) would resolve
-	// DIFFERENTLY over the flat row — the bare-twin class waits for the S4
-	// compose direction (ordinal projections). The element/ordinal alias
-	// SHADOWING an outer column (the R16 class) is LIFTED (commit 2): the
-	// visitor qualifies shadowed bare projections (`WV` → `WV.WV`) and the
-	// span windows route the qualified read to the ELEMENT leg — probed green
-	// through the gathered path with the correct last-binding-wins semantics.
-	// Per RUN, not per map entry: legTypes also carries the amendment-C
-	// BURIED windows (each with the whole box CONCAT as its typ) — iterating
-	// entries would count a box's columns once per buried leaf and
+	// NAME-AMBIGUOUS bare-twin (RFC-173 S4 Slice 2a): a column name shared by two
+	// LEGS (`FROM A, B, A.arr AS x` with A,B both carrying `k`) resolves DIFFERENTLY
+	// over the flat row. It is disambiguated by the POSITIONAL WRAP — each leg's
+	// columns re-exposed as ALIAS.COL window keys (leg [Start,Width)), so a QUALIFIED
+	// `A.k`/`B.k` read routes to its own leg, NOT last-leg-wins. A dup-name therefore
+	// FLIPS this cluster from the raw seed to the wrapped seed (`needsWrap`). A BARE
+	// ambiguous reference (`SELECT k`, `GROUP BY k`) errors 42702 at semantic analysis
+	// BEFORE the translator, so only qualified reads reach here — no last-leg-wins vs
+	// first-match user-facing divergence to reconcile. The element/ordinal alias
+	// SHADOWING an outer column (the R16 class) was already lifted (the visitor
+	// qualifies shadowed bare projections; span windows route the qualified read to
+	// the ELEMENT leg). Per RUN, not per map entry: legTypes also carries the
+	// amendment-C BURIED windows (each with the whole box CONCAT as its typ) —
+	// iterating entries would count a box's columns once per buried leaf and
 	// self-collide. One leg = one run = one column set.
-	seen := map[string]struct{}{}
+	// Distinguish a CROSS-LEG dup (the bare-twin: `k` in two SEPARATE legs A,B —
+	// disambiguated by the positional wrap's ALIAS.COL window keys) from a
+	// WITHIN-ONE-LEG dup (a merge-opaque box's BURIED concat carrying two same-named
+	// columns, e.g. Order.PRICE + Customer.PRICE in a FULL box). The wrap resolves the
+	// cross-leg case (Slice 2a); a buried box dup collides in the flat row and its
+	// positional disambiguation is a LATER increment — keep it name-model (decline).
+	needsWrap := false
+	declineBuriedDup := false
+	acrossLegs := map[string]struct{}{}
 	for _, leg := range legs {
+		withinLeg := map[string]struct{}{}
 		for _, f := range legTypes[leg.binding].typ.Fields {
 			n := strings.ToUpper(f.Name)
-			if _, dup := seen[n]; dup {
-				return nil
+			if _, w := withinLeg[n]; w {
+				declineBuriedDup = true // same name twice within ONE leg's concat
+				continue
 			}
-			seen[n] = struct{}{}
+			withinLeg[n] = struct{}{}
+			if _, a := acrossLegs[n]; a {
+				needsWrap = true // same name across TWO legs — the bare-twin
+			}
+			acrossLegs[n] = struct{}{}
 		}
 	}
+	if declineBuriedDup {
+		return nil
+	}
 
-	// GROUP-BY wrap eligibility — decided HERE, BEFORE any leg is TRANSLATED
-	// (translateRef below has side effects: an uncorrelated scalar subquery in a
-	// derived/project/filter leg registers on the translator). Declining late — after
-	// leg translation — would let the name-model fallback translate the same legs
-	// again and double-register/evaluate that subquery. So a grouped gather whose
-	// wrap can't faithfully cover the shape declines to name-model here, with the
-	// same pre-leg-translation discipline the earlier decline stopgap had.
-	if t.underAggregate && !gatheredGroupByWrapEligible(u, legs, legTypes) {
+	// The positional named-projection wrap is placed above the seed when a GROUP-BY /
+	// aggregate consumes it (the shadow-key / operand reason) OR a dup-name needs
+	// window disambiguation (the bare-twin). A NON-ambiguous, non-grouped gather keeps
+	// its RAW seed (byte-identical, no plan churn). Wrap-eligibility is decided HERE,
+	// BEFORE any leg is TRANSLATED (translateRef below has side effects: an
+	// uncorrelated scalar subquery in a derived/project/filter leg registers on the
+	// translator; declining late would let the name-model fallback re-translate the
+	// same legs and double-register/evaluate that subquery). A wrap-ineligible shape
+	// declines to name-model here, with that pre-leg-translation discipline.
+	wantWrap := t.underAggregate || needsWrap
+	if wantWrap && !gatheredPositionalWrapEligible(u, legs, legTypes) {
 		return nil
 	}
 
@@ -313,22 +336,25 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		sourceAliases,
 		expressions.JoinInner,
 	)
-	if !t.underAggregate {
+	if !wantWrap {
 		return seedSel
 	}
-	// An aggregate consumes this gather (a GROUP BY, or a global aggregate whose
-	// operand references a column — the shape passed the early gatheredGroupByWrapEligible
-	// gate above). The positional seed exposes only bare column names, so a grouped
-	// `FieldValue{Field:"EL", Child:QOV}` qualifies to the shadow "EL.EL" key the seed
-	// lacks (and a `SUM(EL)` operand name-reads the bare element) → NULL, the shipped
-	// wrong answer. Keep the positional seed INTERNAL and place a NAMED-PROJECTION layer
-	// above it (Java's "the collapse preserves the named projection the group-by
-	// consumes"). It MUST be a LogicalProjectionExpression — NOT a SelectExpression,
-	// which SelectMergeRule would fuse away, losing the shadow key. The projection binds
-	// every key POSITIONALLY (ofOrdinal over the seed's type — a projection is not a join,
-	// so the baked ordinal does not re-trigger the positional-seed birth) and re-exposes
-	// bare + "EL.EL"/qualified keys the grouped/operand read resolves against. RFC-173 S4.
-	return t.wrapGatheredForGroupBy(seedSel, rc, u, innerCorr, legs, legTypes, unnestPos, len(innerFields))
+	// The positional seed exposes only bare column names. Two consumers need more, so
+	// a NAMED-PROJECTION layer is placed above it (Java's "the collapse preserves the
+	// named projection the consumer reads"):
+	//   - GROUP-BY / aggregate: a grouped `FieldValue{Field:"EL", Child:QOV}` qualifies
+	//     to the shadow "EL.EL" key the seed lacks (and a `SUM(EL)` operand name-reads
+	//     the bare element) → NULL, the shipped wrong answer.
+	//   - BARE-TWIN (Slice 2a): two legs share a bare name, so a qualified `A.k`/`B.k`
+	//     read has no unambiguous flat slot; the wrap re-exposes each leg's `ALIAS.COL`
+	//     by its [Start,Width) window so the qualified read routes to its own leg.
+	// It MUST be a LogicalProjectionExpression — NOT a SelectExpression, which
+	// SelectMergeRule would fuse away, losing the qualified/shadow keys. The projection
+	// binds every key POSITIONALLY (ofOrdinal over the seed's type — a projection is not
+	// a join, so the baked ordinal does not re-trigger the positional-seed birth) and
+	// re-exposes bare + "EL.EL"/qualified keys; bare keys survive (emitLeafKeys ADDS
+	// ALIAS.COL, it does not remove the bare pass-through), so `SELECT X` still resolves.
+	return t.wrapGatheredPositionalKeys(seedSel, rc, u, innerCorr, legs, legTypes, unnestPos, len(innerFields))
 }
 
 // fieldValueReferencesInner reports whether a seed field's VALUE reads the unnest's
@@ -349,7 +375,7 @@ func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifie
 	return false
 }
 
-// gatheredGroupByWrapEligible reports whether a grouped gather's leg shapes can be
+// gatheredPositionalWrapEligible reports whether a grouped gather's leg shapes can be
 // FAITHFULLY re-exposed by the named-projection wrap — checked BEFORE leg
 // translation so an ineligible shape declines to name-model without double side
 // effects. The wrap binds every re-exposed key POSITIONALLY (by seed slot), so an
@@ -359,7 +385,7 @@ func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifie
 // derivable: the positional leaf-slot offset is the running sum of preceding legs'
 // run widths (len(typ.Fields)), so a nil typ leaves the offsets uncomputable and
 // the shape must stay on the name model.
-func gatheredGroupByWrapEligible(u *logical.LogicalUnnest, legs []clusterLeg, legTypes map[string]bakeLegType) bool {
+func gatheredPositionalWrapEligible(u *logical.LogicalUnnest, legs []clusterLeg, legTypes map[string]bakeLegType) bool {
 	if u.Alias == "" {
 		return false
 	}
@@ -372,7 +398,7 @@ func gatheredGroupByWrapEligible(u *logical.LogicalUnnest, legs []clusterLeg, le
 	return true
 }
 
-// wrapGatheredForGroupBy places a NAMED-PROJECTION layer above the positional
+// wrapGatheredPositionalKeys places a NAMED-PROJECTION layer above the positional
 // gathered seed so a GROUP BY over the gather resolves. See the caller for why it
 // must be a LogicalProjectionExpression (survives SelectMergeRule). The projection
 // binds every re-exposed key POSITIONALLY (ofOrdinal over the seed's own type) — a
@@ -381,7 +407,7 @@ func gatheredGroupByWrapEligible(u *logical.LogicalUnnest, legs []clusterLeg, le
 // what lets an ELEMENT alias that SHADOWS a same-named outer column resolve to the
 // element's OWN slot (a name-read would GetByName the first match = the outer
 // column) — the name-model shadow, recovered order-independently.
-func (t *cascadesTranslator) wrapGatheredForGroupBy(
+func (t *cascadesTranslator) wrapGatheredPositionalKeys(
 	seedSel expressions.RelationalExpression,
 	rc *values.RecordConstructorValue,
 	u *logical.LogicalUnnest,

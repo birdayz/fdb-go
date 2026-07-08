@@ -254,6 +254,7 @@ go_test(
         "rfc173_rider2_agg_metadata_fdb_test.go",
         "rfc173_s4_3234_cleanlift_fdb_test.go",
         "rfc173_s4_4051_cleanlift_fdb_test.go",
+        "rfc173_s4_baretwin_gather_fdb_test.go",
         "rfc173_s4_buriedbox_inner_exists_fdb_test.go",
         "rfc173_s4_c5a_fullouter_unnest_exists_fdb_test.go",
         "rfc173_s4_chained_unnest_ordinal_fdb_test.go",
