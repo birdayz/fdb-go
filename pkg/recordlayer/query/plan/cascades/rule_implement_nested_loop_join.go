@@ -41,12 +41,16 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 
 	quants := sel.GetQuantifiers()
 
-	// 3 quantifiers: 2 ForEach + 1 Existential = join with EXISTS filter.
-	// Build the inner join first, then wrap with the EXISTS semi-join.
-	if len(quants) == 3 &&
-		quants[0].Kind() == expressions.QuantifierForEach &&
-		quants[1].Kind() == expressions.QuantifierForEach &&
-		quants[2].Kind() == expressions.QuantifierExistential {
+	// N ForEach (N≥2) + 1 trailing Existential = join with a projected/WHERE
+	// EXISTS. Build the N-way inner join first, then wrap with the EXISTS
+	// semi-join. The 2-leg case (N==2, len==3) is the working projected-EXISTS
+	// fold; N>2 is the N-WAY FLAT EXISTENTIAL GENERALIZATION (RFC-173 S4
+	// :2908/:3033) — a buried INNER box under a projected EXISTS flattens (an
+	// INNER box is merge-transparent) to `[ForEach×N, Existential]`, which
+	// implementJoinWithExistential dispatches to its N-way arm.
+	if len(quants) >= 3 &&
+		quants[len(quants)-1].Kind() == expressions.QuantifierExistential &&
+		allForEach(quants[:len(quants)-1]) {
 		r.implementJoinWithExistential(call, sel, quants)
 		return
 	}
@@ -1830,6 +1834,17 @@ func collectInnerLegAliases(innerRef *expressions.Reference, innerCorr values.Co
 	return out
 }
 
+// allForEach reports whether every quantifier in qs is a ForEach — the leading
+// N ForEach legs of the `[ForEach×N, Existential]` fold shape.
+func allForEach(qs []expressions.Quantifier) bool {
+	for _, q := range qs {
+		if q.Kind() != expressions.QuantifierForEach {
+			return false
+		}
+	}
+	return true
+}
+
 // flattenAndPredicates extracts individual predicates from an AND
 // chain. If the list is a single AND predicate, returns its sub-
 // predicates. Otherwise returns the list as-is.
@@ -1852,6 +1867,17 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	sel *expressions.SelectExpression,
 	quants []expressions.Quantifier,
 ) {
+	// N>2 ForEach legs + a trailing Existential is the N-WAY FLAT EXISTENTIAL
+	// GENERALIZATION (RFC-173 S4 :2908/:3033): a projected/WHERE EXISTS over a
+	// flat ≥3-way inner join (a buried INNER box flattens into the fold). It
+	// builds a left-deep ORDINAL cross-product NLJ chain, applies the join
+	// predicates as one merged-row filter, and wraps the existential — a
+	// separate arm so the working 2-leg fold below stays byte-identical.
+	if len(quants)-1 > 2 {
+		r.implementNWayJoinWithExistential(call, sel, quants)
+		return
+	}
+
 	// FULL OUTER cannot be implemented through the join+EXISTS semi-join
 	// shape (it cannot carry the FULL drain). FULL+EXISTS is rejected
 	// upstream with a clear error, but guard here too so this rule never
@@ -2280,6 +2306,305 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// as buildExistsFlatMap above (the same leak class): a fresh outer alias fails to
 	// subtract the FOD inner's correlation to mergedOuterCorr, leaking it upward.
 	leftMemoRef := call.MemoizeExpression(step1Expr)
+	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
+		expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr)))
+	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(fodWrapper))
+	call.Yield(newPhysicalFlatMapWrapper(
+		flatMapPlan,
+		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
+		innerQ,
+	))
+}
+
+// implementNWayJoinWithExistential is the N-WAY FLAT EXISTENTIAL GENERALIZATION
+// (RFC-173 S4 :2908/:3033) of the 2-leg projected-EXISTS fold: it plans a flat
+// SelectExpression with N>2 ForEach legs + one trailing Existential — the shape
+// a buried INNER box under a projected EXISTS flattens into (an INNER box is
+// merge-transparent, so `(p JOIN q) JOIN r` dissolves to `[ForEach(p),
+// ForEach(q), ForEach(r), Existential]`).
+//
+// The step-1 join is a LEFT-DEEP INNER CROSS-PRODUCT NLJ chain: each level
+// NLJ(accumulatedInner, nextLeg) is seeded (reconstructFoldStep1Seed) so it
+// births a positional merged row, and the accumulated inner is itself an ordinal
+// NLJ whose buried scan leaves the next level reads positionally through their
+// [Start,Width) windows (planBuriedLegConcat / legIsOrdinalSafe). The chain
+// carries NO join predicates (a buried leg is bound under the accumulated alias,
+// not by name at a higher level); all join predicates are applied as ONE
+// merged-row filter above the top NLJ, rebased to baked merged ordinals over the
+// top windows — the SAME rebase the existential predicates use. The existential
+// FlatMap (step 2) then wraps the filtered merged row, exactly as the 2-leg arm.
+//
+// SCOPE (INNER-first, independent legs): declines a select-level OUTER join, an
+// EXPLODE/null-on-empty leg, and any lateral leg↔leg correlation — a correlated
+// step-1 needs a name-model FlatMap the baked ordinal seed cannot supply (the
+// 2-leg correlatedStep1 wall, generalized). Correct-or-conservative: an
+// out-of-scope shape stays declined, never mis-executed.
+func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
+	call *ExpressionRuleCall,
+	sel *expressions.SelectExpression,
+	quants []expressions.Quantifier,
+) {
+	// INNER-only: a select-level OUTER join never gains this flattened shape,
+	// and the ordinal cross-product chain carries no outer drain.
+	if sel.GetJoinType() != expressions.JoinInner {
+		return
+	}
+
+	nLegs := len(quants) - 1
+	existQuant := quants[nLegs]
+	existRef := existQuant.GetRangesOver()
+	if existRef == nil {
+		return
+	}
+
+	aliases := sel.GetSourceAliases()
+	legRefs := make([]*expressions.Reference, nLegs)
+	legExprs := make([]expressions.RelationalExpression, nLegs)
+	legPlans := make([]plans.RecordQueryPlan, nLegs)
+	legAliases := make([]string, nLegs)
+	for i := 0; i < nLegs; i++ {
+		ref := quants[i].GetRangesOver()
+		if ref == nil {
+			return
+		}
+		// A lateral EXPLODE leg (array UNNEST) is a correlated FlatMap arm
+		// (translateUnnestExistsFilter), not the flat cross-product chain.
+		if getExplodeExpression(ref) != nil {
+			return
+		}
+		// A null-on-empty (dissolved LEFT box) leg is out of INNER-first scope —
+		// the cross-product chain cannot null-extend it.
+		if quants[i].IsNullOnEmpty() {
+			return
+		}
+		expr := getWinnerForOrdering(ref, PreserveOrdering(), call.CostModel())
+		if expr == nil {
+			return
+		}
+		ph, ok := expr.(physicalPlanExpression)
+		if !ok {
+			return
+		}
+		plan := ph.GetRecordQueryPlan()
+		if plan == nil {
+			return
+		}
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
+		}
+		if alias == "" {
+			alias = quants[i].GetAlias().Name()
+		}
+		if alias == "" {
+			return
+		}
+		legRefs[i] = ref
+		legExprs[i] = expr
+		legPlans[i] = plan
+		legAliases[i] = strings.ToUpper(alias)
+	}
+
+	// INDEPENDENT-LEGS: a leg correlated to a sibling needs the correlated
+	// FlatMap step-1 the ordinal chain cannot build (a baked seed binds legs
+	// positionally; a correlated FlatMap binds by NAME → BakedNameContextError).
+	// Decline — the 2-leg correlatedStep1 gate generalized to N legs.
+	legProvided := make([]map[values.CorrelationIdentifier]struct{}, nLegs)
+	for i := 0; i < nLegs; i++ {
+		legProvided[i] = physicalProvidedAliases(legExprs[i], quants[i].GetAlias())
+	}
+	for i := 0; i < nLegs; i++ {
+		for j := 0; j < nLegs; j++ {
+			if i != j && legReferencesAny(legRefs[i], legProvided[j]) {
+				return
+			}
+		}
+	}
+
+	existExpr := getWinnerForOrdering(existRef, PreserveOrdering(), call.CostModel())
+	if existExpr == nil {
+		return
+	}
+	existPh, ok := existExpr.(physicalPlanExpression)
+	if !ok {
+		return
+	}
+	existPlan := existPh.GetRecordQueryPlan()
+	existAlias := ""
+	if nLegs < len(aliases) {
+		existAlias = aliases[nLegs]
+	}
+	if existAlias == "" {
+		existAlias = existQuant.GetAlias().Name()
+	}
+	existCorr := values.NamedCorrelationIdentifier(existAlias)
+
+	// --- Step 1: the left-deep INNER cross-product NLJ chain. ---------------
+	chainPlan := legPlans[0]
+	for k := 1; k < nLegs; k++ {
+		// The accumulated inner is bound under legAliases[0] for the FIRST NLJ
+		// (its outer is the bare leg[0] scan, whose leaf window must keep the
+		// real alias) and under a FRESH unique alias for deeper levels (a box
+		// whose buried leaves keep their real names via planBuriedLegConcat;
+		// the box's own alias is a merge-run, skipped from the merged windows).
+		accAlias := legAliases[0]
+		if k >= 2 {
+			accAlias = strings.ToUpper(values.UniqueCorrelationIdentifier().Name())
+		}
+		levelSeed := reconstructFoldStep1Seed(chainPlan, legPlans[k], accAlias, legAliases[k])
+		if levelSeed == nil {
+			return // a leg is not ordinal-safe — keep the shape declined.
+		}
+		chainPlan = plans.NewRecordQueryNestedLoopJoinPlan(
+			chainPlan, legPlans[k],
+			nil, plans.JoinInner,
+			accAlias, legAliases[k],
+			levelSeed,
+		)
+	}
+	topNLJ, isNLJ := chainPlan.(*plans.RecordQueryNestedLoopJoinPlan)
+	if !isNLJ {
+		return // unreachable (dispatch guarantees nLegs>2); fail closed.
+	}
+	topSeed := topNLJ.GetResultValue()
+
+	// The per-leg ordinal windows over the merged positional row (P, Q, R …),
+	// with buried-leaf sub-windows finalized. nil ⇒ not a pristine gated seed.
+	ordinalWindows, mergedRowType := ordinalSeedLegWindowsOf(topSeed)
+	if ordinalWindows == nil {
+		return
+	}
+	mergedOuterCorr := values.UniqueCorrelationIdentifier()
+	mergedQOV := values.NewQuantifiedObjectValueOfType(mergedOuterCorr, mergedRowType)
+
+	// --- Predicate classification (RFC-141 R4): EXISTS-inner-leg predicates go
+	// on the existential level (below the FOD); everything else is a join
+	// predicate on the merged row.
+	allPreds := flattenAndPredicates(sel.GetPredicates())
+	existLegs := collectInnerLegAliases(existRef, existCorr)
+	var joinPreds, existPreds []predicates.QueryPredicate
+	hasExistsFilter := false
+	negated := false
+	for _, p := range allPreds {
+		if _, ok := predicates.IsExistentialPredicate(p); ok {
+			hasExistsFilter = true
+			continue
+		}
+		if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+			hasExistsFilter = true
+			negated = true
+			continue
+		}
+		if predicateReferencesInnerLeg(p, existLegs) {
+			existPreds = append(existPreds, p)
+		} else {
+			joinPreds = append(joinPreds, p)
+		}
+	}
+
+	// Apply ALL join predicates as ONE filter above the top cross-product NLJ,
+	// rebased to baked merged ordinals over the top windows (lazy AND
+	// FrontierPinned leg refs both handled; an unmappable ref DECLINES —
+	// correct-or-loud). executePredicatesFilter over the merged row binds the
+	// leg windows (legWindowRowContext) and the ordinals read positionally.
+	step1Plan := plans.RecordQueryPlan(topNLJ)
+	if len(joinPreds) > 0 {
+		rebasedJoin := make([]predicates.QueryPredicate, len(joinPreds))
+		for i, p := range joinPreds {
+			np, ok := rebaseOuterLegRefsOrdinal(p, ordinalWindows, mergedQOV)
+			if !ok {
+				return
+			}
+			rebasedJoin[i] = np
+		}
+		step1Plan = plans.NewRecordQueryPredicatesFilterPlanWithAlias(topNLJ, rebasedJoin, mergedOuterCorr)
+	}
+
+	// --- Step 2: the existential FlatMap (mirrors the 2-leg arm). -----------
+	// The merged row anchors every leg's columns; outerLegAliases is the full
+	// N-leg set, used for the buried-ref verification (the name-model rebases
+	// are dead — ordinalWindows drives the ordinal rebase).
+	outerLegAliases := append([]string{}, legAliases...)
+
+	// Lifted EXISTS-correlation predicates rebase to baked merged ordinals.
+	if len(existPreds) > 0 {
+		rebased := make([]predicates.QueryPredicate, len(existPreds))
+		for i, p := range existPreds {
+			np, ok := rebaseOuterLegRefsOrdinal(p, ordinalWindows, mergedQOV)
+			if !ok {
+				return
+			}
+			rebased[i] = np
+		}
+		existPreds = rebased
+	}
+
+	// Outer-leg references BURIED inside the existential subplan get the same
+	// ordinal rebase; a surviving leg reference declines (correct-or-loud).
+	verifyAliases := append([]string{}, outerLegAliases...)
+	for alias := range ordinalWindows {
+		verifyAliases = append(verifyAliases, alias)
+	}
+	existLegCorrs := map[values.CorrelationIdentifier]struct{}{}
+	for i := 0; i < nLegs; i++ {
+		existLegCorrs[quants[i].GetAlias()] = struct{}{}
+	}
+	for _, a := range verifyAliases {
+		if a != "" {
+			existLegCorrs[values.NamedCorrelationIdentifier(a)] = struct{}{}
+		}
+	}
+	if legReferencesAny(existRef, existLegCorrs) {
+		np, ok := rebasePlanOuterRefsOrdinal(existPlan, ordinalWindows, mergedQOV)
+		if !ok {
+			return
+		}
+		existPlan = np
+		if planReferencesAnyBuriedAlias(existPlan, verifyAliases) {
+			return
+		}
+	}
+
+	var belowFOD plans.RecordQueryPlan = existPlan
+	if len(existPreds) > 0 {
+		belowFOD = plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+	}
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+
+	var flatMapInner plans.RecordQueryPlan = fodPlan
+	if hasExistsFilter {
+		cmp := predicates.Comparison{Type: predicates.ComparisonIsNotNull}
+		if negated {
+			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
+		}
+		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(existCorr), cmp)
+		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
+	}
+
+	// The FlatMap result value: for a PROJECTED-EXISTS fold (the RV references
+	// the existential) the folded projection is evaluated HERE over the merged
+	// positional row through legWindowRowContext (dotted + QOV leg reads resolve
+	// positionally), passed through unrebased — only the existential alias is
+	// re-aliased. For a WHERE-EXISTS pass-through the merged row flows out as-is.
+	flatMapResult := values.Value(values.NewQuantifiedObjectValue(mergedOuterCorr))
+	if resultValueReferencesAlias(sel.GetResultValue(), existQuant.GetAlias()) {
+		projected := sel.GetResultValue()
+		if existQuant.GetAlias() != existCorr {
+			projected = values.RebaseValue(projected, values.AliasMap{existQuant.GetAlias(): existCorr})
+		}
+		flatMapResult = projected
+	}
+
+	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+		step1Plan, flatMapInner,
+		mergedOuterCorr, existCorr,
+		flatMapResult, false,
+	)
+
+	// The wrapper's outer quantifier ranges over leg[0]'s memoized expression
+	// (the 2-leg arm's step1Expr convention — memo/cost bookkeeping; execution
+	// is driven by flatMapPlan's direct child pointers, not the quantifiers).
+	leftMemoRef := call.MemoizeExpression(legExprs[0])
 	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
 		expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr)))
 	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(fodWrapper))
