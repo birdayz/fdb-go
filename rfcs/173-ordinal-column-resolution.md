@@ -4819,6 +4819,71 @@ the name model. That is the whole remaining RFC-173 endgame — a concrete per-s
 site's residual empirically, since some, like R3's :3850, are partially retired already), not a
 gate-theory question.
 
+### NEXT SLICE — :2908/:3033 projected-EXISTS buried-gated-box ordinalization (design-ACK'd direction, re-scoped)
+c5b landed buried-leaf windowing, which was the sequenced prerequisite for this slice. Empirical residual
+map (verified against the code, not the stale line refs): :1074 unnest residual is largely BLOCKED (its
+tractable-looking multi-source INNER case is the NAME-AMBIGUOUS bare-twin — shared leg columns trip the
+gathered path's name-ambiguity decline — which waits for the S4 compose direction); :3850 correlated-
+scalar is largely RETIRED (`translateClusteredOuterScalar` ordinalizes every multi-table outer). So
+:2908/:3033 is the correctly-sequenced next slice.
+
+**Design correction (Graefe design-ACK): the load-bearing work is in the EXECUTOR, not the translator.**
+The projected-EXISTS fold `buildExistentialJoinSelect` (cascades_translator.go:3027) passes a name-model
+`resultValue` through; the ordinalization happens in the executor — `foldStep1Seed`
+(rule_implement_nested_loop_join.go:1159) REPLACES the name-model RC with `reconstructFoldStep1Seed`'s
+positional `step1RV`. So this is NOT a translator-resultValue flip (my initial framing was wrong); it is a
+THREE-PART coupled flip spanning the translator↔executor boundary:
+  1. **Translator AXIS 1** (buildExistentialJoinSelect): clear `inInnerCluster` at the leg `translateRef`
+     (:3073/:3078) ONLY for a bare gated-box leg, so that leg's PLAN births positional (ordinal-capable),
+     not a name-model plan the executor can't seed.
+  2. **Executor seed production — THE LOAD-BEARING NEW WORK** (not a c5b reuse): widen `legIsOrdinalSafe`
+     (:1084, today scan-family only, `default→false` on any JOIN/FlatMap leg) to ADMIT a bare gated-box
+     leg plan — mirror c5b's bare-vs-wrapped distinction (`legExposesBuriedOuterBox`/`hasWrappedBuriedJoin`)
+     as the PLAN-level analog (admit a bare nested join, exclude a wrapped/OUTER box); and extend
+     `reconstructFoldStep1Seed` (:1120, today a flat scan-per-leg `ofOrdinal` run with NO `rt.Legs`) to
+     emit the BURIED-LEAF-WINDOWED seed for a gated-box leg — port c5b's `buriedLegBounds` windowing to the
+     plan level so the leg's concat carries `rt.Legs` windows.
+  3. **Executor rebase — REUSED** (the only clean c5b reuse): `ordinalSeedLegWindowsOf(step1RV)` (:2052)
+     + the below-FOD exist-pred hoist (:2057+) already resolve a buried exist-pred ref positionally by its
+     `[Start,Width)` window ONCE the seed carries them.
+
+**Mirror `translateJoinWithExists` (the :4655 `gatedFlatten` sibling), NOT c5a's unnest arm.** :4539 =
+`translateJoinWithExists` is a DISTINCT, ALREADY-FLIPPED builder (WHERE-EXISTS-over-a-join) that already
+does the coupled flip (`gatedFlatten = ordinalWedgeGateDecide(j).Gated`, `inInnerCluster = !gatedFlatten`,
+ordinal seed via `buildOrdinalJoinResultValue`) over the SAME executor. It is the REFERENCE to mirror, not
+a residual to close; its own `!gatedFlatten` residual (arity≠2 N-way / existential-alias collisions) is
+separately blocked. c5a's unnest path is a DIFFERENT executor arm — `implementJoinWithExistential`
+explicitly declines explode legs (:1803) and defers to `translateUnnestExistsFilter`.
+
+**Two-site certificate.** The coupling predicate and B1 certificate SPAN the translator↔executor boundary
+(logical `LogicalOperator` AXIS-1 vs physical `RecordQueryPlan` seed production) — they cannot be one Go
+function. Pin an INVARIANT enforced at two sites with a red-first test that toggling EITHER gate alone
+reddens (mirroring the c5a/c5b `ClusteredBoxSeedsOrdinal` / `OuterConjunctCoupling` coupled-flip
+discipline). Skipping the executor half strands a translator-flipped positional box-leg plan under a
+`foldStep1Seed` that still declines (gated=false → name-model step-1 over a positional plan) — the exact
+positional-seed-under-name-model mismatch the whole c5a/c5b chain kept hitting.
+
+**F2 wall (correlated folds, sub-class b) stays declined — enforced in the executor.** `foldStep1Seed`
+gate (1) is `!correlatedStep1` (:1160; a correlated FlatMap binds legs by name → `BakedNameContextError`,
+reverted twice on that wall). The translator AXIS-1 gate MUST MIRROR the executor's
+`correlatedStep1`/ordinal-safe/independent-legs condition, or it births a positional box leg under a fold
+the executor declines → strand.
+
+**Sequencing (Graefe steer):** (1) executor seed-production widening LEADS — the shared wall both
+existential builders hit; the translator flip is inert without it. (2) INNER buried-box FIRST — correct
+today via the coexistence Datum, so pure demolition with a BUILT-IN ORACLE (the cross-agreement B1
+certificate `ordinal == name-model` validates the widening at low risk). (3) LEFT buried-box FOLLOW-ON —
+closes the :3043 `0AF00` reach gap (Java answers `(a JOIN b) LEFT JOIN c` under projected EXISTS), higher
+value + higher risk: needs NULL-EXTENSION in the reconstructed seed (the null-supplying leg NULL-filled;
+c5b's nested-LEFT-in-INNER proved the executor null-supplies through the positional birth) and has NO Go
+name-model oracle (it's `0AF00` today) → validate against Java 4.12.11.0 directly, not a dual-window
+differential. (4) FULL/RIGHT stay declined (buildExistentialJoinSelect:3032, implementJoinWithExistential
+:1780 — a FULL semi-join can't carry the drain). Java-alignment note: Java keeps both source aliases in a
+SINGLE FlatMap and resolves leg refs by NAME (Go's two-level NLJ→FlatMap is the divergence), so the
+ordinal seed is a Go-side positional adaptation of the two-level split, not a Java construct — Java
+confirms the ROWS the fold must produce, not the mechanism; the correctness anchor is the cross-agreement
+(ordinal == name-model/Java rows), which is why INNER-first (oracle available) is the proving ground.
+
 ### PER-LEG-WINDOW REBASE (channel 1 + channel 2) — LANDED + four-gate-reviewed; Step B coupling FOUND
 The multi-alias-under-EXISTS ordinalization substrate is built + reviewed:
 - **Channel 1** (translator): `ordinalSlotInLegWindow` resolves a qualified outer ref WITHIN its
