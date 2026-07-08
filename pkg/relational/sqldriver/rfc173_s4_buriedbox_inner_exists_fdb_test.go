@@ -7,20 +7,22 @@ package sqldriver_test
 //
 // CURRENT STATE (empirically characterized): this DECLINES cleanly (0AF00). The
 // buried box plans fine OUTSIDE a fold (`SELECT p.v FROM (p JOIN q) JOIN r` works)
-// and a scan-leg projected-EXISTS fold works (commit 2 ordinalized it), but the
-// fold over a NON-SCAN (buried-box) leg is not yet supported: the executor's
-// legIsOrdinalSafe rejects the JOIN leg → the fold has no ordinal seed and no
-// name-model fallback in the fold path → decline. So — contrary to the initial
-// premise that the INNER buried box has a working name-model row oracle — it is a
-// REACH GAP (Java folds `(p JOIN q) JOIN r` under projected EXISTS and answers
-// [[10 true]]; Go declines), same family as the LEFT buried box
-// (rfc173_f2left_buriedbox) but WITHOUT LEFT's null-extension.
+// and a scan-leg (2-leg) projected-EXISTS fold works (commit 2 ordinalized it).
+// The gap is the N-WAY EXISTENTIAL FOLD: under AXIS-1 the INNER box is mergeable,
+// so SelectMergeRule flattens it and the fold becomes a 4-quantifier
+// `[ForEach(p),ForEach(q),ForEach(r),Existential]` select; the executor dispatch
+// (rule_implement_nested_loop_join.go:46-54) matches only 2/3 quantifiers → no
+// plan → 0AF00. (The flat N-way INNER join itself plans fine — only the N-way
+// existential wrap is missing.) So it is a REACH GAP (Java folds
+// `(p JOIN q) JOIN r` under projected EXISTS and answers [[10 true]]; Go declines),
+// same family as the LEFT buried box (rfc173_f2left_buriedbox) but WITHOUT LEFT's
+// null-extension. RFC :2908/:3033 REVISED DESIGN (N-way flat existential).
 //
-// This pin documents the reach gap. When the :2908/:3033 executor widening lands
-// (legIsOrdinalSafe admits a bare gated-box leg + reconstructFoldStep1Seed emits
-// buried-leaf windows), this flips to asserting rows [[10 true]] with the
-// dual-window cross-agreement (ordinal read == name-model read of the SAME
-// positional seed) proving seed name-key-faithfulness.
+// This pin documents the reach gap. When the N-way existential generalization
+// lands (dispatch relaxed to N ForEach + Existential; implementJoinWithExistential
+// + reconstructFoldStep1Seed generalized 2→N), this flips to asserting the
+// DISCRIMINATING rows (a p-only projected + p-only EXISTS-correlated column so a
+// mis-bind to q/r flips the answer) with Java-derived expected values.
 
 import (
 	"context"

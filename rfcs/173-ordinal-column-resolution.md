@@ -4969,6 +4969,28 @@ hand-derived). **OUTER buried box stays DEFERRED** — FULL is structurally decl
 (`:3032`/`:1780`, can't carry the drain); LEFT needs null-extension + above-join-WHERE placement. Lower value,
 harder; not the next slice.
 
+**IMPL PROGRESS (empirical refinement, design-ACK'd path, impl NOT yet landed — clean handoff state):**
+Restored AXIS-1 (the enclosure lift in `buildExistentialJoinSelect` via `existsLegBirthsPositional`),
+confirmed it fires and flattens the box to `[ForEach×N, Existential]` — then reverted it (inert alone until
+the executor N-leg dispatch lands; don't ship a translator half that changes nothing observable). Two
+empirical facts that NARROW the remaining work and de-risk the path:
+  1. **A flat N-way INNER join PLANS today** — `SELECT p.v FROM p, q, r WHERE …` and
+     `SELECT p.v FROM (p JOIN q) JOIN r` both return rows. So there is NO N-way-inner-join machinery to
+     build (the earlier "the NLJ rule is 2-leg, so flat N-way is unplannable" worry was FALSE — some
+     rule already decomposes a flat ≥3-ForEach inner select to binary NLJs). The ONLY gap is the N-way
+     existential WRAP.
+  2. **The existential wrap is the entire gap** — `SELECT p.v, EXISTS(…) FROM p, q, r WHERE …` (flat comma
+     3-way) declines 0AF00 identically to the buried-box explicit-join form. So the shape to fix is
+     `[ForEach×N, Existential]`, independent of comma-vs-explicit-join surface.
+REMAINING IMPL (the actual next-context work): (a) RESTORE AXIS-1 (the `existsLegBirthsPositional` enclosure
+lift — it survives the pivot, only the windowing was retracted); (b) relax the dispatch
+(`rule_implement_nested_loop_join.go:46-54`) to route `≥N ForEach + trailing Existential`; (c) generalize
+`implementJoinWithExistential`'s step-1 (currently a single 2-ary NLJ at `:2004`) and `reconstructFoldStep1Seed`
+(`:1120`, iterates a 2-elem leg slice) to N legs — reusing the EXISTING flat-N-way-inner-join planning rather
+than re-deriving a chain; (d) the discriminating buried-leg fixture + Java-derived rows; (e) the two-site
+coupling certificate (AXIS-1 ↔ executor N-leg dispatch, red-first on toggling either back to 2); (f) four-gate.
+The sentinel `rfc173_s4_buriedbox_inner_exists_fdb_test.go` flips 0AF00→rows when it lands.
+
 ### PER-LEG-WINDOW REBASE (channel 1 + channel 2) — LANDED + four-gate-reviewed; Step B coupling FOUND
 The multi-alias-under-EXISTS ordinalization substrate is built + reviewed:
 - **Channel 1** (translator): `ordinalSlotInLegWindow` resolves a qualified outer ref WITHIN its
