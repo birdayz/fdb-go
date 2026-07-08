@@ -4820,6 +4820,12 @@ site's residual empirically, since some, like R3's :3850, are partially retired 
 gate-theory question.
 
 ### NEXT SLICE — :2908/:3033 projected-EXISTS buried-gated-box ordinalization (design-ACK'd direction, re-scoped)
+> **SUPERSEDED by the REVISED DESIGN at the end of this section.** The "port buried-leaf windowing to the
+> fold for a bare INNER gated-box leg / three-part flip" direction below was ACK'd, then INVALIDATED by
+> implementation (corrections #1 and #2): an INNER box is mergeable, so it FLATTENS into the fold (it has no
+> opaque leg to window); the windowing is an opaque-OUTER-box mechanism with no fold entry. The actual
+> mechanism is the N-WAY FLAT EXISTENTIAL GENERALIZATION — see the REVISED DESIGN. The windowing prose below
+> is kept for the audit trail (it explains WHY the pivot happened) but is NOT the mechanism to build.
 c5b landed buried-leaf windowing, which was the sequenced prerequisite for this slice. Empirical residual
 map (verified against the code, not the stale line refs): :1074 unnest residual is largely BLOCKED (its
 tractable-looking multi-source INNER case is the NAME-AMBIGUOUS bare-twin — shared leg columns trip the
@@ -4912,6 +4918,56 @@ SINGLE FlatMap and resolves leg refs by NAME (Go's two-level NLJ→FlatMap is th
 ordinal seed is a Go-side positional adaptation of the two-level split, not a Java construct — Java
 confirms the ROWS the fold must produce, not the mechanism; the correctness anchor is the cross-agreement
 (ordinal == name-model/Java rows), which is why INNER-first (oracle available) is the proving ground.
+
+#### REVISED DESIGN (the actual mechanism — Graefe re-scope, re-ACK pending): N-WAY FLAT EXISTENTIAL GENERALIZATION
+The windowing direction above is RETRACTED for the fold (it belongs to the opaque-OUTER-box unnest/gathered
+path, where it is already landed + four-gate-reviewed). Verified against the code: `SelectMergeRule` merges
+INNER/CROSS but NEVER outer (`rule_select_merge.go:81` gates on `!sel.ChildrenAsSet()` — inner-equivalence
+only; `:97` skips `IsNullOnEmpty`/outer quantifiers). So a bare INNER box under a projected-EXISTS fold is
+MERGEABLE → it dissolves into flat top-level ForEach legs; the fold SelectExpression becomes
+`[ForEach(p), ForEach(q), ForEach(r), Existential]` (N ForEach + 1 Existential). The dispatch
+(`rule_implement_nested_loop_join.go:46-54`) matches EXACTLY `len==3` (2 ForEach + 1 Existential) or `==2`,
+so the 4-quantifier flatten matches NO arm → `0AF00`. **The real target is generalizing the fold to N ForEach
+legs**, not windowing an opaque leg an INNER box does not have.
+
+**The two "blocked" narrowings do NOT wall the flat case (Graefe re-analysis):**
+- **"Arity drift"** (`translateJoinWithExists:4644-4648`) was about a NESTED-CLUSTER leg — a 2-leg opaque
+  CONCAT whose windows would disagree with post-flatten arity. The flat N-way fold has NO nested concat: p,
+  q, r are flat SINGLE-SOURCE ForEach legs, each its own quantifier. The drift concern is a DIFFERENT
+  sub-shape (the opaque-box windowing case, which belongs to OUTER boxes) and does not apply to flat arity>2.
+- **"Indistinguishable correlations"** (existential-alias-collision, `:4664`) is a real but SOLVABLE
+  constraint: the binding-keyed leg discipline (`Q$DUP`, `sourceBinding`/`legBinding`) already distinguishes
+  N legs; the fold keys each of the N legs by its binding exactly as the 2-leg gated flatten does (`:4727`).
+
+**Mechanism (compose existing pieces, don't re-derive):**
+- **Step-1 N-way inner join:** `implementJoinWithExistential` builds a single 2-ary NLJ
+  (`NewRecordQueryNestedLoopJoinPlan`, `:2004`) as the FlatMap outer. N legs need a LEFT-DEEP N-way NLJ
+  chain. The N-way inner-join implementation ALREADY EXISTS — the gathered inner cluster
+  (`translateGatheredInnerCluster`, `rfc173_ordinal_seed.go:389`) produces flat N-way selects that plan
+  today; compose that N-way inner join with the existential FlatMap rather than re-derive an N-way NLJ.
+- **Seed:** `reconstructFoldStep1Seed` (`:1120`) already iterates a leg SLICE — generalizing 2→N is
+  mechanical (a flat run of `ofOrdinal` per leg; NO `.Legs` windowing — flat single-source legs each get
+  their own top QOV window from the correlation, exactly the pristine ≥2-leg path in `OrdinalSeedLegWindows`).
+- **Anchoring/rebase:** `mergedOuterLegAliases` (`:2020-2026`) is ALREADY N-aware (anchors the top-level
+  aliases PLUS every buried alias); the below-FOD `rebaseOuterLegRefsOrdinal` threads through the N-way
+  merged positional row.
+- **Dispatch:** relax `:46-54` to admit `≥3 ForEach + 1 Existential` (or an N-ForEach + Existential arm).
+
+**Two-site coupling (revised):** the arity relaxation spans the translator
+(`buildExistentialJoinSelect`/`translateJoinWithExists` no longer restricted to arity-2) ↔ the executor
+(`implementJoinWithExistential` N-leg dispatch + N-way step-1 chain). Red-first certificate: toggling EITHER
+the dispatch arity OR the seed N-generalization back to 2 reddens.
+
+**Sequencing:** the **3-FLAT-LEG case FIRST** — that IS the sentinel (`(p JOIN q) JOIN r` flattens to p,q,r),
+the minimal extension of the working 2-leg fold; then arbitrary N. **One change closes TWO residuals:** the
+projected-EXISTS fold (`buildExistentialJoinSelect`, after the INNER box flattens) AND the WHERE-EXISTS
+flatten (`translateJoinWithExists` arity≠2). **Correctness gate (unchanged from the re-ACK, matters MORE for
+N-way — more legs = more leg-bind ambiguity, the `NewAnchoredJoinRecord` last-leg-wins hazard):** a
+DISCRIMINATING buried-leg fixture (a `p`-only projected column + a `p`-only EXISTS-correlated column, fixture
+rows where a mis-bind to q/r FLIPS the answer) + JAVA-DERIVED expected rows (run the conformance server, not
+hand-derived). **OUTER buried box stays DEFERRED** — FULL is structurally declined for the semi-join
+(`:3032`/`:1780`, can't carry the drain); LEFT needs null-extension + above-join-WHERE placement. Lower value,
+harder; not the next slice.
 
 ### PER-LEG-WINDOW REBASE (channel 1 + channel 2) — LANDED + four-gate-reviewed; Step B coupling FOUND
 The multi-alias-under-EXISTS ordinalization substrate is built + reviewed:
