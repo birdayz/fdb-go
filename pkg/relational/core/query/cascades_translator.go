@@ -145,6 +145,19 @@ type cascadesTranslator struct {
 	// the unnest lowering only; reset at every other seed by the translator's
 	// normal flow.
 	unnestUnderExistential bool
+	// chainedUnnestUnderFilter is set (downward, save/restore) while translateFilter
+	// lowers its input, so a CHAINED-unnest ordinal seed nested under an ancestor
+	// FILTER DECLINES to the name-model residual. The ordinal chained first link is
+	// kept NESTED by SelectMergeRule's barrier (to preserve the chained Explode
+	// collection), which hides the outer columns from the ancestor filter's rebase —
+	// an outer-column predicate (`… x.sub AS y WHERE t.id = 1`) then fails to resolve
+	// (`field "T.ID" not resolvable … row columns [x]`). Carrying that predicate
+	// across the barrier positionally IS the Slice 2 compose direction; until then the
+	// name-model path (qualified name keys) resolves it correctly. COARSE by design:
+	// ANY ancestor filter suppresses the chained ordinal seed (name-model handles
+	// every filtered chained shape); an UNFILTERED chained unnest still ordinalizes.
+	// Read in ONE place — translateChainedUnnestOrdinal's gate. RFC-173 S4 Slice 1.
+	chainedUnnestUnderFilter bool
 	// unnestExistsScopeCollision forces the under-EXISTS unnest to the ANCHORED
 	// (name-model) seed when an EXISTS inner subquery scans a table aliased the
 	// SAME as an outer FROM leg (`FROM MA, MA.arr AS X WHERE EXISTS(SELECT 1 FROM
@@ -1210,7 +1223,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		// translateRef returns nil). The chain shape is decided by
 		// isChainedUnnest alone, exactly as Java nests each link the same way.
 		if !t.unnestUnderExistential && isChainedUnnest(j.Left, u) {
-			if sel := t.translateChainedUnnestJoin(j, u); sel != nil {
+			if sel := t.translateChainedUnnestJoin(j, u, prevEnclosure); sel != nil {
 				return sel
 			}
 			// A chained unnest that classified to a loud error set the
@@ -1565,7 +1578,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) && len(u.Segments) >= 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 		if resultValue != nil && len(u.Segments) > 2 {
-			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType); baked != nil {
+			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType, 1, -1); baked != nil {
 				bakedExplode := expressions.NewExplodeExpressionWithOrdinality(baked, withOrdinality)
 				innerQ = expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(bakedExplode))
 			} else {
@@ -2168,6 +2181,14 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
+	// Downward suppress: a chained-unnest ordinal seed under this filter declines to
+	// name-model (see chainedUnnestUnderFilter). Set across the whole body so every
+	// f.Input translation path (the EXISTS dispatch, the gathered cache, the plain
+	// tail) is covered; restored on return. Save/restore nests correctly.
+	savedCUF := t.chainedUnnestUnderFilter
+	t.chainedUnnestUnderFilter = true
+	defer func() { t.chainedUnnestUnderFilter = savedCUF }()
+
 	if f.Predicate == nil && f.PredicateText != "" {
 		return nil
 	}

@@ -177,12 +177,27 @@ func chainedUnnestCollection(u *logical.LogicalUnnest, outerCorr values.Correlat
 // x, x.sub AS y`, second unnest owned by the first's element) into the residual
 // nested FlatMap composition. The nesting falls out of translateRef(j.Left)
 // recursing through the left-deep join tree (the first unnest is the outer's
-// own SelectExpression); the only chained-specific piece is the multi-accessor
-// collection rooted at the owner alias (chainedUnnestCollection). Name-model
-// residual only — a chained outer is a merged/enclosed row, never the ordinal
-// seed. nil with a set translate error on a loud classification failure; nil
-// with no error to decline to the caller's fallback.
-func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
+// own SelectExpression).
+//
+// RFC-173 S4 Slice 1: when the FIRST link ITSELF ordinalizes (a single-source
+// base whose W4c binary seed gate at :1565 passes), the chained link takes an
+// ORDINAL result-value seed (unnestOrdinalSeed) + a POSITIONAL collection
+// (unnestBakedRootCollection rooted at the owner-alias column) instead of the
+// name-model buildUnnestResultValue + chainedUnnestCollection. This retires the
+// :1151 enclosure's chained-unnest residency: the ordinal seed carries the
+// outer's own columns positionally (T4.ID etc.), so clearing that enclosure no
+// longer strands the chained row (`field "T4.ID" not resolvable … ordinal -1`).
+// The enclosure is CLEARED only for the first link's own translateRef (so it
+// ordinalizes) and restored immediately; the rest of the lowering keeps the bit.
+//
+// FAIL-OPEN: any decline — the chained gate not met (enclosed, deeper-chain
+// base, non-single-source base), or a nil seed/collection — falls through to the
+// EXISTING name-model path (buildUnnestResultValue + chainedUnnestCollection),
+// which stays the residual for the bare-twin / CTE-rooted / 3+-link cases.
+//
+// nil with a set translate error on a loud classification failure; nil with no
+// error to decline to the caller's fallback.
+func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest, prevEnclosure bool) expressions.RelationalExpression {
 	if u.Alias != "" && u.AtAlias != "" && strings.EqualFold(u.Alias, u.AtAlias) {
 		// Mirror translateUnnestJoin's AS==AT overwrite guard: buildUnnestResultValue
 		// appends the element and the ordinal under the SAME bare+qualified name, and
@@ -222,20 +237,34 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 		return nil
 	}
 
+	outerAlias := sourceAlias(j.Left)
+	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
+	innerCorr := unnestSourceCorrelation(u)
+
+	// RFC-173 S4 Slice 1: try the ORDINAL seed when the FIRST link ordinalizes.
+	// Mirror the single-source binary seed gate (:1565) applied to the FIRST
+	// LINK's own base: the chained link ordinalizes iff, with the enclosure bit
+	// cleared, translateRef(j.Left) would take the first link's :1565 path — a
+	// single-source base (clusterArity==1), exists-safe, and both links' segment
+	// paths present. The gate is decided (and the seed/collection built) BEFORE
+	// translating outerRef, so a decline never leaves an ORDINAL first link under
+	// the name-model builder (which reads it by name → wrong rows).
+	if sel := t.translateChainedUnnestOrdinal(j, u, outerAlias, outerCorr, innerCorr, elementType, prevEnclosure); sel != nil {
+		return sel
+	}
+
+	// FAIL-OPEN name-model residual (bare-twin / CTE-rooted / 3+-link chains).
 	// The chained outer (`j.Left`) is translated with the enclosure bit LEFT AS
 	// THIS unnest's translateUnnestJoin set it (name-model residual): a chained
-	// unnest is always name-model, and a base-table unnest nested in `j.Left`
-	// relies on that enclosure bit to stay name-model too. A PRIOR chained link
-	// in `j.Left` still dispatches chained because the dispatch is gated on
-	// isChainedUnnest, NOT on the enclosure bit (Java nests each link the same
-	// way regardless of enclosure).
+	// unnest is always name-model here, and a base-table unnest nested in
+	// `j.Left` relies on that enclosure bit to stay name-model too. A PRIOR
+	// chained link in `j.Left` still dispatches chained because the dispatch is
+	// gated on isChainedUnnest, NOT on the enclosure bit (Java nests each link the
+	// same way regardless of enclosure).
 	outerRef := t.translateRef(j.Left)
 	if outerRef == nil {
 		return nil
 	}
-	outerAlias := sourceAlias(j.Left)
-	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
-	innerCorr := unnestSourceCorrelation(u)
 
 	collection := chainedUnnestCollection(u, outerCorr, elementType)
 	explode := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
@@ -246,6 +275,105 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 	if resultValue == nil {
 		return nil
 	}
+	return expressions.NewSelectExpressionWithJoinType(
+		resultValue,
+		[]expressions.Quantifier{outerQ, innerQ},
+		nil,
+		[]string{outerAlias, innerCorr.Name()},
+		expressions.JoinInner,
+	)
+}
+
+// translateChainedUnnestOrdinal builds the ORDINAL SelectExpression for a chained
+// unnest whose FIRST link ordinalizes (RFC-173 S4 Slice 1), or returns nil to
+// DECLINE (the caller fails open to the name-model path). The seed is the SAME
+// unnestOrdinalSeed the single-source W4c path uses — its outer positional run
+// (ofOrdinal over ordinalLegType(j.Left)) carries the first link's merged row
+// [outer cols … element] positionally, and unnestSeedInnerFields carries the
+// chained element/ordinal — and the collection is unnestBakedRootCollection
+// rooted at the OWNER ALIAS column (rootSegmentIndex 0). Both DECLINE (nil) on an
+// underivable leg, keeping this fail-open.
+func (t *cascadesTranslator) translateChainedUnnestOrdinal(
+	j *logical.LogicalJoin,
+	u *logical.LogicalUnnest,
+	outerAlias string,
+	outerCorr, innerCorr values.CorrelationIdentifier,
+	elementType values.Type,
+	prevEnclosure bool,
+) expressions.RelationalExpression {
+	// The chained link ordinalizes only when it is NOT enclosed in a larger
+	// name-model composition (the :1565 !prevEnclosure gate). An enclosed chained
+	// link (a deeper chain's inner link, or a chain under a name-model parent)
+	// keeps the name-model residual so its outer flows a name-keyed row.
+	if prevEnclosure || len(u.Segments) < 2 {
+		return nil
+	}
+	// Under an ancestor FILTER the ordinal seed cannot carry an outer-column predicate
+	// across the nesting barrier (Slice 2 compose direction) — decline to the
+	// name-model residual, whose qualified name keys resolve the predicate. Coarse:
+	// ANY ancestor filter suppresses; an unfiltered chained unnest still ordinalizes.
+	if t.chainedUnnestUnderFilter {
+		return nil
+	}
+	// The FIRST link must be a single-source lateral unnest that will itself take
+	// the :1565 binary ordinal seed. `j.Left` is that first link: a LogicalJoin
+	// whose Right is the first LogicalUnnest and whose Left is the BASE. Mirror
+	// the first link's own :1565 gate on that base precisely — anything else
+	// (a deeper-chain base whose clusterArity is poison, a multi-source base,
+	// an exists-unsafe base, a single-segment first link) declines here so we
+	// never build an ordinal seed over a first link that stays name-model.
+	firstLink, ok := j.Left.(*logical.LogicalJoin)
+	if !ok {
+		return nil
+	}
+	firstUnnest, ok := firstLink.Right.(*logical.LogicalUnnest)
+	if !ok {
+		return nil
+	}
+	firstBase := firstLink.Left
+	if t.clusterArity(firstBase) != 1 || !t.unnestExistsSeedSafe(firstBase) || len(firstUnnest.Segments) < 2 {
+		return nil
+	}
+
+	// Build the ordinal collection + seed FIRST (types only, no outerRef yet): a
+	// nil from either declines WITHOUT having cleared the enclosure or translated
+	// an ordinal first link, so the caller's name-model fallback stays sound. The
+	// collection roots at the owner alias (Segments[0]) — the first link's ELEMENT
+	// column. That element is at slot len(ordinalLegColumns(firstBase)) in
+	// ordinalLegType(j.Left) (= ordinalLegColumns(firstBase) ++ legColumns(first
+	// unnest), the element being legColumns[0]). Pass that slot EXPLICITLY: a
+	// name lookup would pick an OUTER column that SHADOWS the alias (an outer scalar
+	// named the same as the first unnest alias precedes the element in the merged
+	// row → wrong root → the sub-path descends the wrong column).
+	firstBaseCols := t.ordinalLegColumns(firstBase)
+	if firstBaseCols == nil {
+		return nil
+	}
+	elementRootIdx := len(firstBaseCols)
+	fieldName := u.Segments[len(u.Segments)-1]
+	collection := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType, 0, elementRootIdx)
+	if collection == nil {
+		return nil
+	}
+	resultValue := t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
+	if resultValue == nil {
+		return nil
+	}
+
+	// The ordinal path: clear enclosure ONLY for the first link's translateRef so
+	// it takes its :1565 binary ordinal seed (flowing a POSITIONAL row the seed's
+	// ofOrdinal reads land on), then restore.
+	saved := t.inInnerCluster
+	t.inInnerCluster = false
+	outerRef := t.translateRef(j.Left)
+	t.inInnerCluster = saved
+	if outerRef == nil {
+		return nil
+	}
+
+	explode := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
+	innerQ := expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(explode))
+	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{outerQ, innerQ},

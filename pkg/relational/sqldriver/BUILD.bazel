@@ -256,6 +256,7 @@ go_test(
         "rfc173_s4_4051_cleanlift_fdb_test.go",
         "rfc173_s4_buriedbox_inner_exists_fdb_test.go",
         "rfc173_s4_c5a_fullouter_unnest_exists_fdb_test.go",
+        "rfc173_s4_chained_unnest_ordinal_fdb_test.go",
         "rfc173_slice1_frontier_pin_test.go",
         "rfc173_slice2_gate_pins_test.go",
         "rfc173_w4b_clustered_outer_fdb_test.go",

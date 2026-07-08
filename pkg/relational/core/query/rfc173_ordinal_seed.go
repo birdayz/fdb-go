@@ -121,6 +121,51 @@ func (t *cascadesTranslator) legScanTableName(op logical.LogicalOperator) string
 func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []values.Field {
 	switch o := op.(type) {
 	case *logical.LogicalJoin:
+		if un, isUnnest := o.Right.(*logical.LogicalUnnest); isUnnest {
+			// A lateral-unnest join consumed as an ORDINAL OUTER LEG — the
+			// CHAINED unnest's FIRST link (`(t ⋈ t.arr AS x)` as the outer of
+			// `x.sub AS y`, RFC-173 S4 unnest-residual class 4). The gate
+			// (ordinalWedgeGateDecide) POISONS every unnest-right join, so the
+			// panic arm below would fire; but a chained first link that
+			// ITSELF ordinalized (translateUnnestJoin's :1565 binary seed) flows
+			// a genuine POSITIONAL row whose type is exactly the outer's ordinal
+			// columns concatenated with the unnest's element/ordinal columns.
+			// Mirror that layout: ordinalLegColumns(o.Left) ++ legColumns(unnest)
+			// — the SAME order unnestOrdinalSeed(o.Left) emits (outer run then
+			// unnestSeedInnerFields), so the second link's ofOrdinal reads land on
+			// the slots the first link births. legColumns(unnest) gives the AS/AT
+			// column names (element type is best-effort UnknownType — a struct
+			// element the second link descends by name, never a positional read).
+			//
+			// Reachable ONLY through the chained ordinal seed: ordinalEligible and
+			// clusterArity both poison an unnest-right join, so no gated CLUSTER
+			// admits one as a leg — the panic tripwire for a genuine NAME-MODEL
+			// (non-unnest) join leg below is fully preserved. A nil from the outer
+			// (underivable) declines cleanly (the caller fails open to name-model).
+			//
+			// DEPTH-2 ONLY: the chained ordinal seed gate (translateChainedUnnestOrdinal)
+			// admits a first link whose OWN base has clusterArity==1 — a 3+-link chain's
+			// base is itself an unnest-right join (clusterArity poison), so it never
+			// reaches the seed and never reaches this arm. The recursion on o.Left is
+			// therefore one level deep in practice (o.Left's base is a plain single
+			// source), not an open-ended chain walk.
+			//
+			// LOAD-BEARING INVARIANT: legColumns(un) here must stay layout-identical
+			// (count / order / names) to unnestSeedInnerFields(un) — the actual inner
+			// fields unnestOrdinalSeed(o.Left) births — because the second link's
+			// ofOrdinal reads index into THIS leg type. If either drifts (a refactor of
+			// legColumns or unnestSeedInnerFields), the reads silently land on the wrong
+			// slot. Pinned by the certificate's actual-value + AT-both-links assertions
+			// (rfc173_s4_chained_unnest_ordinal_fdb_test.go).
+			outerCols := t.ordinalLegColumns(o.Left)
+			if outerCols == nil {
+				return nil
+			}
+			merged := make([]values.Field, 0, len(outerCols)+2)
+			merged = append(merged, outerCols...)
+			merged = append(merged, t.legColumns(un)...)
+			return merged
+		}
 		// S3 fulcrum: a GATED join leg (a FULL box's gated inner cluster, or
 		// a gated box under a FULL boundary) contributes the flat ordinal
 		// concatenation of ITS legs, in rv (FROM) order — the box's own

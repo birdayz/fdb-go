@@ -81,48 +81,81 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 	return rc
 }
 
-// unnestBakedRootCollection builds the BAKED fused collection for a SINGLE-SOURCE
-// MULTI-SEGMENT lateral unnest (`FROM t, t.rec.arr AS x`, RFC-173 unnest-residual
-// class 2) under the ORDINAL seed. The name-keyed arrayValue the name-model path
-// uses (`FieldValue{QOV(outer), Resolved:[{rec,-1},{arr,-1}]}`) does NOT descend
-// under the ordinal-seed birth: the outer row is ORDINAL-addressed, so the
-// ordinal-birth resolver applies all name accessors flat against the outer row
-// and fails ("field NARR not resolvable ... ordinal -1"). The ordinal form bakes
-// the ROOT struct column positionally — ofOrdinal(QOV(outer, outerType),
-// FieldIndex(rec)) — and rides the remaining segments as a NAME-addressed FUSED
-// suffix that descends the struct VALUE through FieldValue's proto-message arm
-// (independent of the positional birth). This is the single-leg case of the
-// gathered path's owner-window bake (rfc173_w5_unnest_gather.go): owner == the
-// outer scan itself, leafOffset 0, leafTyp == the scan's own type.
+// unnestBakedRootCollection builds the BAKED fused collection for a lateral
+// unnest under the ORDINAL seed, rooting the Explode's array Value at a
+// POSITIONAL column of the outer's ordinal leg type and riding the remaining
+// segments as a NAME-addressed FUSED suffix. Two callers, distinguished by
+// rootSegmentIndex — the segment that names the ROOT array column:
+//
+//   - SINGLE-SOURCE MULTI-SEGMENT (`FROM t, t.rec.arr AS x`, RFC-173 unnest-
+//     residual class 2): rootSegmentIndex 1 — Segments[0] is the source alias,
+//     Segments[1] the struct column; suffix Segments[2:] descend it. owner ==
+//     the outer scan itself.
+//   - CHAINED (`FROM t, t.arr AS x, x.sub AS y`, unnest-residual class 4):
+//     rootSegmentIndex 0 — Segments[0] is the OWNER ALIAS `x`, a COLUMN of the
+//     first link's ordinal leg type (the element of the prior Explode);
+//     suffix Segments[1:] (`sub…`) descend it.
+//
+// The name-keyed arrayValue the name-model path uses (`FieldValue{QOV(outer),
+// Resolved:[{rec,-1},{arr,-1}]}`) does NOT descend under the ordinal-seed birth:
+// the outer row is ORDINAL-addressed, so the ordinal-birth resolver applies all
+// name accessors flat against the outer row and fails ("field NARR not resolvable
+// ... ordinal -1"). The ordinal form bakes the ROOT column positionally —
+// ofOrdinal(QOV(outer, outerType), FieldIndex(root)) — and rides the remaining
+// segments as a NAME-addressed FUSED suffix that descends the struct VALUE
+// through FieldValue's proto-message arm (independent of the positional birth).
+// This is the single-leg case of the gathered path's owner-window bake
+// (rfc173_w5_unnest_gather.go): owner == the outer itself, leafOffset 0.
 //
 // Returns nil (DECLINE → the caller keeps the name-model builder) when the outer
-// leg is untranslatable or the root struct field is absent.
+// leg is untranslatable or the root column is absent.
 func (t *cascadesTranslator) unnestBakedRootCollection(
 	outer logical.LogicalOperator,
 	outerCorr values.CorrelationIdentifier,
 	u *logical.LogicalUnnest,
 	fieldName string,
 	elementType values.Type,
+	rootSegmentIndex int,
+	explicitRootIdx int,
 ) values.Value {
 	outerType := t.ordinalLegType(outer)
 	if outerType == nil || len(outerType.Fields) == 0 {
 		return nil
 	}
-	// The ROOT column of the collection path is the FIRST field segment
-	// (Segments[0] is the source alias; Segments[1] is the struct column). The
-	// remaining segments ride as the fused suffix.
-	rootField := strings.ToUpper(u.Segments[1])
-	arrIdx, found := outerType.FieldIndex(rootField)
-	if !found {
+	if rootSegmentIndex < 0 || rootSegmentIndex >= len(u.Segments) {
 		return nil
+	}
+	// The ROOT column of the collection path (the remaining segments ride as the
+	// fused suffix, Segments[rootSegmentIndex+1:]). Resolve the ROOT INDEX two ways:
+	//   - single-source root (a struct column of the outer SCAN): explicitRootIdx
+	//     < 0 → resolve by NAME (Segments[rootSegmentIndex]). Unshadowable — the
+	//     outer scan's own columns.
+	//   - CHAINED owner-alias root (the first link's ELEMENT): the caller passes
+	//     explicitRootIdx (the element's slot). A NAME lookup here would pick an
+	//     OUTER column that SHADOWS the alias — the outer columns precede the
+	//     element in the merged row, so FieldIndex returns the wrong (outer)
+	//     occurrence and the Explode roots at the wrong column. Use the slot.
+	var arrIdx int
+	if explicitRootIdx >= 0 {
+		if explicitRootIdx >= len(outerType.Fields) {
+			return nil
+		}
+		arrIdx = explicitRootIdx
+	} else {
+		rootField := strings.ToUpper(u.Segments[rootSegmentIndex])
+		idx, found := outerType.FieldIndex(rootField)
+		if !found {
+			return nil
+		}
+		arrIdx = idx
 	}
 	outerQOV := values.NewQuantifiedObjectValueOfType(outerCorr, outerType)
 	collection, err := values.NewFieldValueOfOrdinal(outerQOV, arrIdx)
 	if err != nil {
 		return nil
 	}
-	suffix := make([]values.ResolvedAccessor, 0, len(u.Segments)-2)
-	for _, seg := range u.Segments[2:] {
+	suffix := make([]values.ResolvedAccessor, 0, len(u.Segments)-rootSegmentIndex-1)
+	for _, seg := range u.Segments[rootSegmentIndex+1:] {
 		// NAME-addressed struct descent (FieldValue's proto-message arm); ordinal
 		// is the LOUD sentinel -1 — a struct materializes as a proto message, not
 		// a positional row, so the ordinal is never consulted.

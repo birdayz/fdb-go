@@ -117,20 +117,33 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			}
 			// RFC-173 unnest-residual class 4 (chained-unnest correlation
 			// barrier): decline to merge a ForEach target when a RETAINED
-			// sibling quantifier is FREE-correlated to it AND the target's
-			// child result value is NAME-MODEL. A chained `FROM t, t.arr AS x,
-			// x.sub AS y` reuses the alias `x` for both the first unnest's
-			// output (this target) and the second unnest's Explode collection
-			// (a retained sibling correlated to `x`); flattening the first
-			// unnest up would strand that collection on the merged-away alias
-			// (the retained-sibling rebase only runs for POSITIONAL-seed
-			// children — rcByAlias empty for a name-model child — so the
-			// Explode arm below would not fire). Java never flattens a lateral
-			// chain either (generateCorrelatedFieldAccess nests them). Keep the
-			// nested FlatMap-over-FlatMap; the positional-seed rebase path is
-			// unaffected. Conservative — worst case a missed flattening, never
-			// wrong rows.
-			if childRefResultIsNameModel(childRef) && siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
+			// sibling quantifier is FREE-correlated to it AND the target is a
+			// LATERAL-UNNEST first link. A chained `FROM t, t.arr AS x, x.sub AS
+			// y` reuses the alias `x` for both the first unnest's output (this
+			// target) and the second unnest's Explode collection (a retained
+			// sibling correlated to `x`); flattening the first unnest up would
+			// strand that collection on the merged-away alias. Java never
+			// flattens a lateral chain either (generateCorrelatedFieldAccess
+			// nests them). Keep the nested FlatMap-over-FlatMap.
+			//
+			// The barrier covers BOTH row models of the first link:
+			//   - NAME-MODEL first link (childRefResultIsNameModel): the
+			//     retained-sibling rebase runs only for positional-seed children
+			//     (rcByAlias empty for a name-model child), so the Explode arm
+			//     below would not fire — merging strands the collection.
+			//   - ORDINAL first link (childRefIsPositionalUnnestSelect, RFC-173
+			//     S4 Slice 1): the chained link now takes an ordinal seed, so its
+			//     first-link child is a POSITIONAL unnest select. The
+			//     positional-seed rebase DOES fire but cannot compose the chained
+			//     collection's fused ofOrdinal+name suffix (the deferred ordinal
+			//     compose direction), leaving the flattened root select
+			//     unimplementable. Keep it nested — Java's shape — where each
+			//     link implements as its own FlatMap. This is NARROWER than a
+			//     positional-child check: a GATED BOX child (no Explode
+			//     quantifier of its own) still merges via the rebase, unaffected.
+			// Conservative — worst case a missed flattening, never wrong rows.
+			if (childRefResultIsNameModel(childRef) || childRefIsPositionalUnnestSelect(childRef)) &&
+				siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
 				break
 			}
 			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
@@ -673,6 +686,48 @@ func childRefResultIsNameModel(childRef *expressions.Reference) bool {
 			}
 		}
 		return true
+	}
+	return false
+}
+
+// childRefIsPositionalUnnestSelect reports whether a merge candidate's child is
+// a POSITIONAL ordinal-seed SelectExpression that is ITSELF a lateral unnest —
+// it has an Explode among its OWN quantifiers (RFC-173 S4 Slice 1: the ORDINAL
+// chained first link). This is the positional twin of childRefResultIsNameModel
+// for the chained-unnest barrier: like the name-model chain, an ordinal chained
+// first link must stay NESTED (Java never flattens a lateral chain), because the
+// positional-seed rebase cannot yet compose the retained Explode sibling's fused
+// ofOrdinal+name-suffix collection through the merge.
+//
+// A GATED BOX child (a positional seed whose quantifiers are all ForEach over
+// scans/joins — NO Explode of its own) is EXCLUDED: its retained-Explode-sibling
+// merge IS handled by the positional-seed rebase (the gathered-unnest owner-window
+// bake), so it stays mergeable. Only a child that is itself an unnest FlatMap
+// trips the barrier.
+func childRefIsPositionalUnnestSelect(childRef *expressions.Reference) bool {
+	for _, m := range childRef.AllMembers() {
+		sel, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue)
+		if !isRC {
+			continue
+		}
+		if w, _ := values.OrdinalSeedLegWindows(rc); w == nil {
+			continue // not a positional ordinal seed
+		}
+		for _, q := range sel.GetQuantifiers() {
+			qr := q.GetRangesOver()
+			if qr == nil {
+				continue
+			}
+			for _, cm := range qr.AllMembers() {
+				if _, isExplode := cm.(*expressions.ExplodeExpression); isExplode {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }

@@ -168,7 +168,7 @@ func TestRFC173W4c_UnnestBakedRootCollection_MultiSegment(t *testing.T) {
 	// Order.flower is a nested struct (Flower{type, color}); descend to `type`.
 	u := &logical.LogicalUnnest{Segments: []string{"ORDER", "FLOWER", "TYPE"}, Alias: "X"}
 
-	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "TYPE", values.NotNullLong)
+	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "TYPE", values.NotNullLong, 1, -1)
 	if coll == nil {
 		t.Fatal("multi-segment single-source unnest must bake a fused collection, got nil (declined)")
 	}
@@ -211,7 +211,7 @@ func TestRFC173W4c_UnnestBakedRootCollection_DeclineUntranslatable(t *testing.T)
 	coll := tr.unnestBakedRootCollection(scan("Order", "o"),
 		values.NamedCorrelationIdentifier("o"),
 		&logical.LogicalUnnest{Segments: []string{"ORDER", "FLOWER", "TYPE"}, Alias: "X"},
-		"TYPE", values.NotNullLong)
+		"TYPE", values.NotNullLong, 1, -1)
 	if coll != nil {
 		t.Fatalf("untranslatable outer (no metadata) must DECLINE the bake to nil, got %T", coll)
 	}
