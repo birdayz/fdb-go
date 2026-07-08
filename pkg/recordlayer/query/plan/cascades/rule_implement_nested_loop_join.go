@@ -2316,6 +2316,35 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	))
 }
 
+// existInnerIsScanSafe reports whether an N-way EXISTS inner plan is a single
+// scan/index (through transparent Filter/Fetch/FOD wrappers) — the only inner
+// shape the existential FirstOrDefault wrap provably preserves. A JOIN/FlatMap
+// inner may carry its own ON/join predicate that the merged-row fold does not
+// re-enforce, so it is declined (fail-closed) rather than risk a silent wrong
+// EXISTS result. This is deliberately the pre-widening `legIsOrdinalSafe` shape
+// (it must REJECT a nested-join inner, so it does NOT share the NLJ arm).
+func existInnerIsScanSafe(p plans.RecordQueryPlan) bool {
+	for p != nil {
+		switch pl := p.(type) {
+		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan:
+			return true
+		case *plans.RecordQueryPredicatesFilterPlan:
+			p = pl.GetInner()
+		case *plans.RecordQueryFilterPlan:
+			p = pl.GetInner()
+		case *plans.RecordQueryFirstOrDefaultPlan:
+			p = pl.GetInner()
+		case *plans.RecordQueryDefaultOnEmptyPlan:
+			p = pl.GetInner()
+		case *plans.RecordQueryFetchFromPartialRecordPlan:
+			p = pl.GetInner()
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 // implementNWayJoinWithExistential is the N-WAY FLAT EXISTENTIAL GENERALIZATION
 // (RFC-173 S4 :2908/:3033) of the 2-leg projected-EXISTS fold: it plans a flat
 // SelectExpression with N>2 ForEach legs + one trailing Existential — the shape
@@ -2430,6 +2459,17 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		return
 	}
 	existPlan := existPh.GetRecordQueryPlan()
+	// FAIL-CLOSED: the existential inner must be a single scan (through
+	// transparent wrappers). A JOIN/FlatMap inner (`EXISTS (SELECT 1 FROM e JOIN f
+	// ON f.fid=e.fid WHERE …)`) is NOT safe through the FirstOrDefault wrap here —
+	// the inner join's own ON predicate is not provably enforced by the merged-row
+	// fold, so accepting it risks EXISTS=true when the inner join is empty (a
+	// silent wrong answer). Decline (correct-or-conservative — the shape declines
+	// cleanly, as it did before the N-way arm existed). Multi-source / join
+	// existential inners are a booked follow-on.
+	if !existInnerIsScanSafe(existPlan) {
+		return
+	}
 	existAlias := ""
 	if nLegs < len(aliases) {
 		existAlias = aliases[nLegs]

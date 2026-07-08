@@ -241,3 +241,79 @@ func TestFDB_RFC173S4_NWayWhereExists(t *testing.T) {
 		t.Fatalf("N-way WHERE-EXISTS rows = %v, want [10]", got)
 	}
 }
+
+// TestFDB_RFC173S4_NWayExistsInnerJoin pins the correctness of a projected EXISTS
+// whose INNER is itself an explicit JOIN..ON, under the N-way outer fold. The
+// inner join's ON predicate MUST be enforced: e.eid=p.id matches, but the inner
+// `e JOIN f ON f.fid=e.fid` has NO matching f → the inner join is EMPTY → EXISTS
+// is FALSE. A regression here (EXISTS=true) means the inner ON predicate was
+// dropped — a silent wrong answer (the shape declined cleanly before the N-way
+// arm existed). Java 4.12.11.0: [[10 false]].
+func TestFDB_RFC173S4_NWayExistsInnerJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	dbPath := "/rfc173s4nweij"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc173s4nweij_tmpl"+
+		" CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))"+
+		" CREATE TABLE r (rid BIGINT, PRIMARY KEY (rid))"+
+		" CREATE TABLE e (eid BIGINT, fid BIGINT, PRIMARY KEY (eid))"+
+		" CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid))"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rfc173s4nweij_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	for _, stmt := range []string{
+		"INSERT INTO p VALUES (1, 10)",
+		"INSERT INTO q VALUES (1)",
+		"INSERT INTO r VALUES (1)",
+		// e.eid=1 matches p.id=1, but e.fid=99 has NO matching f (f.fid=88).
+		"INSERT INTO e VALUES (1, 99)",
+		"INSERT INTO f VALUES (88)",
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed %q: %v", stmt, err)
+		}
+	}
+
+	sqlText := "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON f.fid = e.fid WHERE e.eid = p.id) " +
+		"FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id"
+	rows, err := db.QueryContext(ctx, sqlText)
+	if err != nil {
+		// A clean decline (0AF00) is ACCEPTABLE here (correct-or-conservative) —
+		// only a WRONG ROW is the P1 failure. If it declines, that's fine.
+		t.Logf("declined (acceptable): %v", err)
+		return
+	}
+	defer rows.Close()
+	var got [][2]any
+	for rows.Next() {
+		var v int64
+		var ex sql.NullBool
+		if scanErr := rows.Scan(&v, &ex); scanErr != nil {
+			t.Fatalf("scan: %v", scanErr)
+		}
+		got = append(got, [2]any{v, ex.Valid && ex.Bool})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	want := [][2]any{{int64(10), false}}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("N-way EXISTS-inner-join rows = %v, want %v (EXISTS=true means the inner"+
+			" `e JOIN f ON f.fid=e.fid` ON predicate was DROPPED — a silent wrong answer)", got, want)
+	}
+}
