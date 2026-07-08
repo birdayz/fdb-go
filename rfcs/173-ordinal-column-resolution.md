@@ -4870,9 +4870,22 @@ reverted twice on that wall). The translator AXIS-1 gate MUST MIRROR the executo
 the executor declines → strand.
 
 **Sequencing (Graefe steer):** (1) executor seed-production widening LEADS — the shared wall both
-existential builders hit; the translator flip is inert without it. (2) INNER buried-box FIRST — correct
-today via the coexistence Datum, so pure demolition with a BUILT-IN ORACLE (the cross-agreement B1
-certificate `ordinal == name-model` validates the widening at low risk). (3) LEFT buried-box FOLLOW-ON —
+existential builders hit; the translator flip is inert without it. (2) INNER buried-box FIRST.
+**EMPIRICAL CORRECTION to the initial premise** (characterized against the code, not assumed): the INNER
+buried-box projected EXISTS `SELECT p.v, EXISTS(…) FROM (p JOIN q) JOIN r` DECLINES cleanly (0AF00) TODAY
+— it does NOT produce name-model rows. The buried box plans fine OUTSIDE a fold and a scan-leg fold works
+(commit 2), but the fold over a NON-SCAN leg has no ordinal seed (legIsOrdinalSafe rejects the JOIN leg)
+AND no name-model fallback in the fold path → decline. So it is a REACH-GAP ENABLEMENT (Java folds and
+answers `[[10 true]]`; Go declines), same family as the LEFT buried box but WITHOUT null-extension — NOT a
+demolition of a working name-model producer. The oracle is therefore (a) the dual-window cross-agreement
+`ordinal == name-model` on the PRODUCED ordinal plan (it validates that reading the reconstructed
+positional seed by ordinal windows equals reading it by name-model qualified keys — a property of the
+ordinal plan, so it needs NO separate name-model plan and is available despite the e2e decline) for SEED
+NAME-KEY-FAITHFULNESS, plus (b) Java 4.12.11.0 rows for CORRECTNESS. INNER-first still holds (no
+null-extension → strictly simpler than LEFT), but the risk is HIGHER than "pure demolition with a built-in
+row oracle" — there is no Go name-model row baseline; correctness rests on Java + the dual-window layout
+certificate. Pinned as a reach-gap decline sentinel today (rfc173_s4_buriedbox_inner_exists_fdb_test.go),
+flips to `[[10 true]]` + dual-window when the widening lands. (3) LEFT buried-box FOLLOW-ON —
 closes the :3043 `0AF00` reach gap (Java answers `(a JOIN b) LEFT JOIN c` under projected EXISTS), higher
 value + higher risk: needs NULL-EXTENSION in the reconstructed seed (the null-supplying leg NULL-filled;
 c5b's nested-LEFT-in-INNER proved the executor null-supplies through the positional birth) and has NO Go
