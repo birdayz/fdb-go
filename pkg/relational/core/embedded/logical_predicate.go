@@ -5251,15 +5251,84 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 // (lateralUnnestCandidate over visibleFromAliases + newUnnestTableResolver): a
 // `t.arr AS x [AT ord]` comma source resolves to a LogicalUnnest so the Cascades
 // translator lowers it to FlatMap(Scan, Explode), instead of mis-scanning
-// `t.arr` as a table name. Anything that is not a lateral-unnest candidate stays
-// a plain table scan. RFC-142.
-func (p *existsSubqueryPlanner) correlatedSubqueryJoinRight(j joinClause, primaryTable, primaryAlias string, priorJoins []joinClause) logical.LogicalOperator {
+// `t.arr` as a table name. A DERIVED-TABLE leg (`… , (SELECT …) AS d`) builds its
+// body via the LogicalCTE(alias) carrier (buildDerivedInnerCarrier) — the leg twin
+// of the primary-source treatment — so it is never mis-scanned as a table `d`.
+// Anything else stays a plain table scan. RFC-142.
+func (p *existsSubqueryPlanner) correlatedSubqueryJoinRight(j joinClause, primaryTable, primaryAlias string, priorJoins []joinClause) (logical.LogicalOperator, error) {
 	resolvesToTable := newUnnestTableResolver(p.md, p.effectiveSchemaName())
 	visible := visibleFromAliases(primaryTable, primaryAlias, priorJoins, resolvesToTable)
 	if u := lateralUnnestCandidate(j, visible, resolvesToTable); u != nil {
-		return u
+		return u, nil
 	}
-	return logical.NewScan(j.tableName, j.alias)
+	// A DERIVED-TABLE comma/JOIN leg is NOT a catalog table: rebuilding it as
+	// NewScan(j.tableName) scans a non-existent table `d` (the executor treats it
+	// as EMPTY), so a cross-product leg silently collapses to ∅ and EXISTS answers
+	// wrong rows — the leg twin of the primary bug correlatedInnerPrimarySource
+	// fixes. Build the derived BODY and wrap it in the same CTE carrier.
+	if j.derivedQuery != nil {
+		return p.buildDerivedInnerCarrier(j.derivedQuery, j.tableName)
+	}
+	return logical.NewScan(j.tableName, j.alias), nil
+}
+
+// buildDerivedInnerCarrier builds a DERIVED-TABLE inner source
+// (`(SELECT …) AS alias`) for a correlated subquery whose inner FROM this fallback
+// rebuilds. A derived source is NOT a catalog table: rebuilding it as
+// `NewScan(alias)` scans a non-existent table `alias`, which the executor treats
+// as EMPTY — so the source silently reads the wrong (empty) relation and the query
+// answers wrong rows. Plan the derived BODY through the SAME catalog-aware path the
+// normal SELECT uses (buildLogicalPlanForQueryBodyWithCTECatalog) and wrap it in the
+// LogicalCTE(alias) carrier buildOuterPlanOnDerived installs, so the inner FROM
+// carries the derived subplan and sourceAlias resolves to the derived alias. A body
+// the inner builder cannot plan declines LOUDLY (correct-or-conservative) rather
+// than degrading to the empty bare scan. Mirrors the cteScopes resolution the
+// WHERE/ON path uses for a CTE inner (a derived source is resolved via its body, not
+// a WITH registry). Shared by the PRIMARY source (correlatedInnerPrimarySource) and
+// each comma/JOIN LEG (correlatedSubqueryJoinRight). Its result is USED by the EXISTS
+// fast path. On the EXISTS WHERE/ON path a derived leg's carrier is built here (all
+// rights[i] are built up front) but then DISCARDED — addCorrelatedJoinScopeSource
+// declines the derived leg loud before the join tree consumes rights[i]. On the SCALAR
+// path it is NEVER built: buildCorrelatedScalar resolves its inner SCOPE (ResolveTable /
+// addCorrelatedJoinScopeSource) and declines a derived source BEFORE its rights loop runs.
+func (p *existsSubqueryPlanner) buildDerivedInnerCarrier(derivedQuery antlrgen.IQueryContext, alias string) (logical.LogicalOperator, error) {
+	innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
+		derivedQuery.QueryExpressionBody(), p.md, p.effectiveSchemaName(), p.cteScopes)
+	if innerErr != nil {
+		// A STRUCTURED planner/resolution failure of the derived BODY (e.g. an
+		// undefined column → 42703) is a FAITHFUL diagnostic of the inner query, not
+		// an unsupported-shape decline. Surface it VERBATIM so the SQLSTATE is the
+		// SAME in every EXISTS position: mapPredicateWalkError matches
+		// CorrelatedExistsError (→ 0A000) before the raw api.Error, so wrapping this
+		// would rewrite the derived body's 42703 to 0A000 in a WHERE EXISTS while the
+		// projected position keeps 42703. Returning the api.Error unwrapped keeps both
+		// faithful, and leaves the ResolveTable "table not found" decline (which is
+		// NOT a derived-body failure) wrapped in CorrelatedExistsError → 0A000.
+		var apiErr *api.Error
+		if errors.As(innerErr, &apiErr) {
+			return nil, apiErr
+		}
+		return nil, &CorrelatedExistsError{
+			Message: fmt.Sprintf("correlated subquery: build derived inner %q: %v", alias, innerErr),
+			Cause:   innerErr,
+		}
+	}
+	if innerOp == nil {
+		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated subquery: derived inner %q is out of scope", alias)}
+	}
+	return logical.NewCTE(alias, innerOp, logical.NewScan(alias, ""), false), nil
+}
+
+// correlatedInnerPrimarySource builds the primary FROM-source operator for a
+// correlated EXISTS / scalar subquery whose inner FROM this fallback rebuilds. A
+// plain table source is a bare scan; a DERIVED-TABLE source (`(SELECT …) AS d`)
+// routes through buildDerivedInnerCarrier (which builds the body, never mis-scans
+// `d` as a table).
+func (p *existsSubqueryPlanner) correlatedInnerPrimarySource(sq *selectQuery, innerAlias string) (logical.LogicalOperator, error) {
+	if sq.derivedQuery == nil {
+		return logical.NewScan(sq.tableName, innerAlias), nil
+	}
+	return p.buildDerivedInnerCarrier(sq.derivedQuery, sq.tableName)
 }
 
 // addCorrelatedJoinScopeSource registers the inner-scope source for a comma/JOIN
@@ -5347,7 +5416,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	rights := make([]logical.LogicalOperator, len(sq.joins))
 	kinds := make([]logical.JoinKind, len(sq.joins))
 	for i, j := range sq.joins {
-		rights[i] = p.correlatedSubqueryJoinRight(j, sq.tableName, innerAlias, sq.joins[:i])
+		right, rErr := p.correlatedSubqueryJoinRight(j, sq.tableName, innerAlias, sq.joins[:i])
+		if rErr != nil {
+			return nil, rErr
+		}
+		rights[i] = right
 		switch j.joinType {
 		case joinTypeLeft:
 			kinds[i] = logical.JoinLeft
@@ -5375,7 +5448,10 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		}
 	}
 	if (sq.whereExpr == nil || sq.whereExpr.Expression() == nil) && !anyOn {
-		op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
+		op, primErr := p.correlatedInnerPrimarySource(sq, innerAlias)
+		if primErr != nil {
+			return nil, primErr
+		}
 		for i := range sq.joins {
 			op = logical.NewJoinWithPredicate(op, rights[i], kinds[i], nil)
 		}
@@ -6165,7 +6241,10 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	// real join's ON clause with the resolver so the join predicate is attached.
 	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
 	for i, j := range sq.joins {
-		right := p.correlatedSubqueryJoinRight(j, sq.tableName, innerAlias, sq.joins[:i])
+		right, rErr := p.correlatedSubqueryJoinRight(j, sq.tableName, innerAlias, sq.joins[:i])
+		if rErr != nil {
+			return values.CorrelationIdentifier{}, rErr
+		}
 		var kind logical.JoinKind
 		switch j.joinType {
 		case joinTypeLeft:
