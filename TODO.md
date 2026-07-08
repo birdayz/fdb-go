@@ -1415,7 +1415,9 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] query-engine: CORRELATED EXISTS with an explicit `JOIN..ON` inner DROPS the inner ON (silent wrong) — found via codex on RFC-173 :2908/:3033 N-way review (2026-07-08)
+### [ ] query-engine follow-on (Torvalds ACK book): extract `buildExistentialFlatMapTail(...)` — the existential-wrap tail (belowFOD → FirstOrDefault(NULL) → optional IS[NOT]NULL residual → FlatMap) is now stamped out 4× (implementExistentialSelect ~:924, the 2-leg fold arm ~:2230, the N-way arm ~:2612, yieldExistsFlatMap ~:2836). A future residual-polarity/FOD-contract fix has FOUR landing sites (the EXISTS correlation-leak fix already had to be applied in >1). Extract the invariant tail once the N-way arm is battle-tested; the differing parts (rebasing, FlatMap outer, memo bookkeeping) stay at the call sites. Not a blocker — booked follow-up.
+
+### [ ] query-engine (SCHEDULED HIGH-PRIORITY — live silent-wrong, Graefe: "must not rot in Known gaps"): CORRELATED EXISTS with an explicit `JOIN..ON` inner DROPS the inner ON — found via codex on RFC-173 :2908/:3033 N-way review (2026-07-08)
 A correlated projected/WHERE EXISTS whose inner is an **explicit inner join** — `EXISTS (SELECT 1 FROM e
 JOIN f ON f.fid=e.fid WHERE e.eid=p.id)` — returns EXISTS=true even when the inner join `e JOIN f` is
 EMPTY: the inner join's own **ON** predicate is dropped through the correlation lift. Repro (Java 4.12.11.0

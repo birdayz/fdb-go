@@ -4920,13 +4920,26 @@ confirms the ROWS the fold must produce, not the mechanism; the correctness anch
 (ordinal == name-model/Java rows), which is why INNER-first (oracle available) is the proving ground.
 
 #### REVISED DESIGN (the actual mechanism — Graefe re-scope, re-ACK pending): N-WAY FLAT EXISTENTIAL GENERALIZATION
-> **LANDED at `bc54d6300`** (four-gate in progress). `implementNWayJoinWithExistential` plans the
-> `[ForEach×N, Existential]` fold via the recursive left-deep chain below; the sentinel flips 0AF00→rows,
-> the discriminating buried-leg pin (`[[7 true],[8 false]]`) guards last-leg-wins, red-first two-site
-> coupling verified, full suite green. Closes the projected-EXISTS fold AND the WHERE-EXISTS arity≠2
-> residual. OUTER buried box (FULL drain / LEFT null-extension) remains the deferred follow-on.
-The windowing direction above is RETRACTED for the fold (it belongs to the opaque-OUTER-box unnest/gathered
-path, where it is already landed + four-gate-reviewed). Verified against the code: `SelectMergeRule` merges
+> **LANDED at `bc54d6300`, four-gate CLOSED** (Graefe impl-ACK + @claude + Torvalds + codex). Plus the
+> executor FOUNDATION `76985b2be`, which is **LIVE and LOAD-BEARING — NOT dormant** despite its commit
+> message: the N-way fold's left-deep chain reads each accumulated-inner box through EXACTLY the plan-level
+> buried-leaf windowing that commit added (`planBuriedLegConcat` / `legIsOrdinalSafe` NLJ arm /
+> `reconstructFoldStep1Seed` `.Legs`). **GRAEFE CORRECTION (must-not-lose): the pivot's claim below — "no
+> `.Legs` windowing for the fold / windowing retracted / stays on the opaque-OUTER-box path" — was WRONG.**
+> The user's INNER box flattens (no single opaque leg), but the left-deep 2-ary NLJ chain creates its OWN
+> accumulated-inner boxes that DO need `.Legs` sub-windows to split the buried legs into flat `P,Q,R` windows
+> over the top merged row. Graefe's ORIGINAL three-part-flip (executor windowing) was the accurate design; the
+> pivot over-corrected. A future reviewer must NOT delete `76985b2be` as "dead/dormant code" — it is the
+> foundation the chain wires. `implementNWayJoinWithExistential` plans the `[ForEach×N, Existential]` fold via
+> the recursive left-deep chain below; sentinel 0AF00→rows, discriminating pin `[[7 true],[8 false]]` (guards
+> last-leg-wins), NOT-EXISTS pin `[20]`, 4-leg discriminating pin (depth-3 windowing), red-first two-site
+> coupling verified, full suite green. Closes the projected-EXISTS fold AND the WHERE-EXISTS arity≠2 residual.
+> codex P1 (correlated JOIN-inner EXISTS silent-wrong) fail-closed; the PRE-EXISTING 2-leg twin is filed
+> (Known gaps) as a scheduled high-priority follow-on. OUTER buried box (FULL drain / LEFT null-extension)
+> remains deferred.
+The windowing direction above is CORRECT for the fold (Graefe correction — see the LANDED banner: the
+pivot's "retracted" was wrong; the chain's accumulated-inner boxes use it). Verified against the code:
+`SelectMergeRule` merges
 INNER/CROSS but NEVER outer (`rule_select_merge.go:81` gates on `!sel.ChildrenAsSet()` — inner-equivalence
 only; `:97` skips `IsNullOnEmpty`/outer quantifiers). So a bare INNER box under a projected-EXISTS fold is
 MERGEABLE → it dissolves into flat top-level ForEach legs; the fold SelectExpression becomes
@@ -4951,8 +4964,12 @@ legs**, not windowing an opaque leg an INNER box does not have.
   (`translateGatheredInnerCluster`, `rfc173_ordinal_seed.go:389`) produces flat N-way selects that plan
   today; compose that N-way inner join with the existential FlatMap rather than re-derive an N-way NLJ.
 - **Seed:** `reconstructFoldStep1Seed` (`:1120`) already iterates a leg SLICE — generalizing 2→N is
-  mechanical (a flat run of `ofOrdinal` per leg; NO `.Legs` windowing — flat single-source legs each get
-  their own top QOV window from the correlation, exactly the pristine ≥2-leg path in `OrdinalSeedLegWindows`).
+  mechanical. **[SUPERSEDED — Graefe correction: this "NO `.Legs` windowing" claim was WRONG.]** The
+  as-built recursive chain DOES emit `.Legs` sub-windows: each chain level's `accPlan` is an accumulated
+  ordinal BOX (a nested NLJ), and `reconstructFoldStep1Seed`→`planBuriedLegConcat` walks it to split its
+  buried leaves into flat `P,Q,R` windows over the top merged row (the `.Legs` on the box QOV type that
+  `finalizeSeedWindows` splices). A single top-level scan leg gets its own top-QOV window (no `.Legs`), but
+  the box legs the chain creates NEED `.Legs`. See the LANDED banner.
 - **Anchoring/rebase:** `mergedOuterLegAliases` (`:2020-2026`) is ALREADY N-aware (anchors the top-level
   aliases PLUS every buried alias); the below-FOD `rebaseOuterLegRefsOrdinal` threads through the N-way
   merged positional row.
@@ -4991,8 +5008,10 @@ REMAINING IMPL (the actual next-context work): (a) RESTORE AXIS-1 (the `existsLe
 lift — it survives the pivot, only the windowing was retracted); (b) relax the dispatch
 (`rule_implement_nested_loop_join.go:46-54`) to route `≥N ForEach + trailing Existential`; (c) generalize
 `implementJoinWithExistential`'s step-1 (currently a single 2-ary NLJ at `:2004`) and `reconstructFoldStep1Seed`
-(`:1120`, iterates a 2-elem leg slice) to N legs — reusing the EXISTING flat-N-way-inner-join planning rather
-than re-deriving a chain; (d) the discriminating buried-leg fixture + Java-derived rows; (e) the two-site
+(`:1120`, iterates a 2-elem leg slice) to N legs — **[as-built: a left-deep 2-ary NLJ CHAIN with `.Legs`
+windowing on each accumulated inner, NOT a reuse of external flat-N-way planning; the earlier "reuse rather
+than a chain" framing was superseded by the impl]**; (d) the discriminating buried-leg fixture + Java-derived
+rows; (e) the two-site
 coupling certificate (AXIS-1 ↔ executor N-leg dispatch, red-first on toggling either back to 2); (f) four-gate.
 The sentinel `rfc173_s4_buriedbox_inner_exists_fdb_test.go` flips 0AF00→rows when it lands.
 

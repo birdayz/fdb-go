@@ -2317,12 +2317,16 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 }
 
 // existInnerIsScanSafe reports whether an N-way EXISTS inner plan is a single
-// scan/index (through transparent Filter/Fetch/FOD wrappers) — the only inner
-// shape the existential FirstOrDefault wrap provably preserves. A JOIN/FlatMap
-// inner may carry its own ON/join predicate that the merged-row fold does not
-// re-enforce, so it is declined (fail-closed) rather than risk a silent wrong
-// EXISTS result. This is deliberately the pre-widening `legIsOrdinalSafe` shape
-// (it must REJECT a nested-join inner, so it does NOT share the NLJ arm).
+// scan/index (through EMPTINESS-PRESERVING Filter/Fetch wrappers only) — the
+// only inner shape whose EMPTINESS the existential FirstOrDefault wrap provably
+// reflects. Two silent-wrong classes are fail-closed here: a JOIN/FlatMap inner
+// (its own ON predicate is not re-enforced by the merged-row fold → EXISTS true
+// over an empty inner join); and — crucially — a
+// FirstOrDefault/DefaultOnEmpty-wrapped inner, which EMITS a row over an empty
+// scan and would flip EXISTS toward always-true (the same class, one wrapper
+// deeper). So this is NOT `legIsOrdinalSafe`: that peels FOD for a LEG's
+// positional row where emptiness is irrelevant; here emptiness is the whole
+// point, so FOD/DefaultOnEmpty and any join are DECLINED, not peeled.
 func existInnerIsScanSafe(p plans.RecordQueryPlan) bool {
 	for p != nil {
 		switch pl := p.(type) {
@@ -2332,13 +2336,13 @@ func existInnerIsScanSafe(p plans.RecordQueryPlan) bool {
 			p = pl.GetInner()
 		case *plans.RecordQueryFilterPlan:
 			p = pl.GetInner()
-		case *plans.RecordQueryFirstOrDefaultPlan:
-			p = pl.GetInner()
-		case *plans.RecordQueryDefaultOnEmptyPlan:
-			p = pl.GetInner()
 		case *plans.RecordQueryFetchFromPartialRecordPlan:
 			p = pl.GetInner()
 		default:
+			// NOT peeled: FirstOrDefault / DefaultOnEmpty emit a row over an
+			// EMPTY inner → would flip EXISTS toward always-true (the same
+			// silent-wrong class as a join inner, one wrapper deeper). Any
+			// join/other node also declines.
 			return false
 		}
 	}
@@ -2485,8 +2489,11 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 		// The accumulated inner is bound under legAliases[0] for the FIRST NLJ
 		// (its outer is the bare leg[0] scan, whose leaf window must keep the
 		// real alias) and under a FRESH unique alias for deeper levels (a box
-		// whose buried leaves keep their real names via planBuriedLegConcat;
-		// the box's own alias is a merge-run, skipped from the merged windows).
+		// whose buried leaves keep their real names via planBuriedLegConcat; the
+		// box's own alias is a merge-run, skipped from the merged windows). The
+		// deeper-level alias MUST be fresh (not a real leaf's) so its run label
+		// can't collide with a buried leaf when finalizeSeedWindows splices the
+		// box's sub-windows in by leaf name.
 		accAlias := legAliases[0]
 		if k >= 2 {
 			accAlias = strings.ToUpper(values.UniqueCorrelationIdentifier().Name())
