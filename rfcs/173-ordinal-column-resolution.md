@@ -4991,6 +4991,31 @@ than re-deriving a chain; (d) the discriminating buried-leg fixture + Java-deriv
 coupling certificate (AXIS-1 ↔ executor N-leg dispatch, red-first on toggling either back to 2); (f) four-gate.
 The sentinel `rfc173_s4_buriedbox_inner_exists_fdb_test.go` flips 0AF00→rows when it lands.
 
+**CONCRETE IMPL APPROACH — the RECURSIVE LEFT-DEEP CHAIN (reconciles the windowing; verified against the
+planner constraints):** two further empirical facts pin the mechanism precisely:
+  - The GROUPING escape does NOT work: `SELECT s.v, EXISTS(…) FROM (SELECT … FROM p,q,r …) AS s` DECLINES
+    0AF00 — the planner INLINES the derived table back to the flat `[ForEach×N, Existential]`. So the N-way
+    generalization is UNAVOIDABLE; the shape cannot be reduced to the working single-source fold by wrapping.
+  - The step-1 N-way inner join is NOT built by reusing a pre-planned flat select (implementJoinWithExistential
+    has only the N leg PLANS, not a memoized inner group). It is a LEFT-DEEP NLJ CHAIN, built RECURSIVELY:
+    `step1([l0..lk]) = NLJ(step1([l0..lk-1]), lkPlan, preds, INNER, accAlias, lkAlias, levelSeed)`. The KEY
+    insight: the accumulated inner `step1([l0..lk-1])` is itself an NLJ whose merged row is read by the next
+    level POSITIONALLY through its `[Start,Width)` buried-leaf windows — i.e. it is exactly a "gated box leg"
+    to the next level. So each level's `levelSeed` is `reconstructFoldStep1Seed([accPlan, lkPlan], …)` with
+    the SAME `.Legs`-windowing (`planBuriedLegConcat` walking `accPlan`'s NLJ tree, `legIsOrdinalSafe` admitting
+    the accumulated NLJ) that the reverted c5a/c5b-style windowing built. THE WINDOWING CODE IS NOT DEAD — it
+    was applied to the wrong SHAPE (a single box leg that flattens); its correct home is the chain's
+    accumulated inner. RESTORE `planBuriedLegConcat` + the `legIsOrdinalSafe` NLJ arm + `reconstructFoldStep1Seed`
+    `.Legs` generalization, and drive them from the recursive chain.
+  - Per-level predicate placement: put each join predicate at the SHALLOWEST level where all its referenced
+    legs are bound; a predicate referencing a leg buried in the accumulated inner rebases to that leg's
+    accumulated window (`rebaseOuterLegRefsOrdinal`, the SAME below-FOD rebase). Simplest-correct first: all
+    join preds on the TOP level rebased to the full merged windows (cross-product-then-filter — correct, the
+    cost model can push later); pin the discriminating fixture to prove correctness regardless of placement.
+  - Step-2 (the existential FlatMap) is unchanged in STRUCTURE — it wraps the top-level N-way merged row;
+    `mergedOuterLegAliases` is already N-aware and `rebaseOuterLegRefsOrdinal` already resolves buried
+    exist-pred refs through the top windows.
+
 ### PER-LEG-WINDOW REBASE (channel 1 + channel 2) — LANDED + four-gate-reviewed; Step B coupling FOUND
 The multi-alias-under-EXISTS ordinalization substrate is built + reviewed:
 - **Channel 1** (translator): `ordinalSlotInLegWindow` resolves a qualified outer ref WITHIN its
