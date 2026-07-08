@@ -4884,8 +4884,24 @@ ordinal plan, so it needs NO separate name-model plan and is available despite t
 NAME-KEY-FAITHFULNESS, plus (b) Java 4.12.11.0 rows for CORRECTNESS. INNER-first still holds (no
 null-extension → strictly simpler than LEFT), but the risk is HIGHER than "pure demolition with a built-in
 row oracle" — there is no Go name-model row baseline; correctness rests on Java + the dual-window layout
-certificate. Pinned as a reach-gap decline sentinel today (rfc173_s4_buriedbox_inner_exists_fdb_test.go),
-flips to `[[10 true]]` + dual-window when the widening lands. (3) LEFT buried-box FOLLOW-ON —
+certificate. Pinned as a reach-gap decline sentinel today (rfc173_s4_buriedbox_inner_exists_fdb_test.go).
+**EMPIRICAL CORRECTION #2 (the buried-leaf-windowing design does NOT apply to an INNER box — it FLATTENS).**
+An implementation attempt (executor `legIsOrdinalSafe`/`reconstructFoldStep1Seed` widening + translator
+AXIS-1 enclosure lift) revealed, via instrumentation, that once AXIS-1 un-encloses a bare INNER box leg so
+it births ordinal, `SelectMergeRule` FLATTENS it into the fold — the fold SelectExpression becomes a
+4-quantifier `[ForEach, ForEach, ForEach, Existential]` (p, q, r flat), NOT the opaque
+`[ForEach(box), ForEach(r), Existential]` the buried-leaf-windowing design assumed.
+`implementJoinWithExistential` handles EXACTLY 2 ForEach legs + 1 Existential, so the 4-quantifier flatten
+is unmatched → no plan → 0AF00 (the same decline, deeper cause). ROOT: an INNER box is NOT merge-opaque
+(unlike c5a/c5b's FULL/OUTER boxes, which stay one quantifier BECAUSE `SelectMergeRule` cannot merge an
+outer join); the buried-leaf windowing (`.Legs` sub-windows on an OPAQUE box QOV) is inherently an
+OPAQUE-box mechanism. So the slices are MIS-PARTITIONED: the ordinalized INNER buried box is the **N-WAY
+FLAT FOLD** (`≥3 ForEach + Existential` — the `:4539` `translateJoinWithExists` N-way residual Graefe noted
+as "separately blocked: arity≠2"), which needs `implementJoinWithExistential` GENERALIZED to N legs; the
+buried-leaf windowing applies to an OUTER (opaque) box leg (the `:2908/:3033` case proper). This FLIPS the
+tractability read: the OUTER/opaque box (windowing, stays 3-quantifier) is the more direct slice; the INNER
+box (flattens → N-way) requires the N-way fold generalization. The impl attempt was reverted; the finding
+stands. Re-scoping pending Graefe design steer. (3) LEFT buried-box FOLLOW-ON —
 closes the :3043 `0AF00` reach gap (Java answers `(a JOIN b) LEFT JOIN c` under projected EXISTS), higher
 value + higher risk: needs NULL-EXTENSION in the reconstructed seed (the null-supplying leg NULL-filled;
 c5b's nested-LEFT-in-INNER proved the executor null-supplies through the positional birth) and has NO Go
