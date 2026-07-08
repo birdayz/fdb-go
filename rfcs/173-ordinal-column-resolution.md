@@ -4767,6 +4767,8 @@ every remaining name-model LEG class," gated on the same wrap/qualify discipline
 multi-slice effort, not a single lift. The atomic cap fires only once no SQL shape reaches :4402/:4650
 with a name-model leg.
 
+**ENDGAME STATE (2026-07-08, after the `:3234` + `:4051` retirements).** The UNCONDITIONAL `inInnerCluster = true` producers are now down to ONE hard blocker: `:1151` (`translateUnnestJoin`, the `:1074` non-gathered unnest producer), plus `:2083` (`translateOp`'s opaque-box save/restore) which is a RESTORE that only fires when the flag is already set — it DIES-WITH `:1151` (once no producer sets the flag, the `if t.inInnerCluster` guard never enters). The other `inInnerCluster` writes are the RFC-173-correct CONDITIONAL tree-property forms (`:3113`/`:3119` = `!existsLegBirthsPositional`, `:4515` = `!gateDecision.Gated && …`, `:4763` = `!gatedFlatten`) — not producers to retire. So the atomic cap (task #16) is now singularly gated on `:1151`, which is BLOCKED on the compose direction (the name-ambiguous bare-twin: `FROM A, B, A.arr AS x` with shared leg column names). Retired this session: `:2908` (conditionalized earlier), `:3033`=`:3234` (clean lift), `:3850`=`:4051` (outer-inherit + inner-fresh). See the LANDED notes below.
+
 **THE PRECISE REMAINING-SLICE LIST (S4 deep-read, the actionable roadmap).** A name-model leg is
 name-model because a name-model PARENT set `inInnerCluster`, tripping one of the THREE enclosure
 poison gates in `ordinalWedgeGateDecide` (rfc173_cluster_gate.go): (154) `!ordinalEligible(leg)` —
