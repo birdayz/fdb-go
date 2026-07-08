@@ -4062,16 +4062,12 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		return sel
 	}
 
-	// The outer of the correlated scalar translates ENCLOSED (a join nested in
-	// it stays name-model). This originally fed the 2-leg name-model anchored
-	// seed, RETIRED in S4 (R3); it is kept for the outer's own translation. The
-	// gated-cluster ordinal path above (shape 1) handles every multi-table
-	// outer; only single-source outers (the ordinal seed's domain) and ungated
-	// outers (which decline below) reach here.
-	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = true
-	defer func() { t.inInnerCluster = prevEnclosure }()
-
+	// RFC-173 S4: the OUTER inherits the enclosing context (the former
+	// `t.inInnerCluster = true` name-model producer is retired). Only a single-source
+	// (clusterArity==1) or ungated outer reaches here — a buried-join/multi-source
+	// outer is arity≠1 and declines regardless of the flag — so inheriting
+	// prevEnclosure is the honest value (forcing false would be a latent wrong
+	// assertion when the whole project is itself a name-model leg).
 	outerRef := t.translateRef(p.Input)
 	if outerRef == nil {
 		return nil
@@ -4092,7 +4088,13 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		innerPlan = lim.Input
 	}
 
-	innerRef := t.translateRef(innerPlan)
+	// The INNER roots a FRESH cluster: a correlated-scalar subquery is NEVER merged
+	// into its parent select (like the EXISTS inner — SelectMergeRule only targets
+	// ForEach quantifiers), so it gates on its OWN arity, not the outer's enclosure.
+	// translateSubqueryRef is the same primitive the existential inner uses; routing
+	// the scalar inner through it makes the two never-merged-subquery classes
+	// consistent and removes the defer's outer/inner enclosure conflation.
+	innerRef := t.translateSubqueryRef(innerPlan)
 	if innerRef == nil {
 		return nil
 	}
