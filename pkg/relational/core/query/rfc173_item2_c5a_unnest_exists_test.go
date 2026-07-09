@@ -225,7 +225,8 @@ func TestRFC173Item2C5a_BoxGatePredicates(t *testing.T) {
 	// narrowing.
 	clusteredFull := logical.NewJoin(
 		logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, ""),
-		scan("TypedRecord", "d"), logical.JoinFull, "")
+		scan("TypedRecord", "d"), logical.JoinFull, "",
+	)
 	if !tr.boxGatesFresh(clusteredFull) {
 		t.Error("boxGatesFresh(clustered-INNER-leg FULL) = false, want true — an INNER-cluster buried leg's leaves are windowed (c5b)")
 	}
@@ -242,8 +243,10 @@ func TestRFC173Item2C5a_BoxGatePredicates(t *testing.T) {
 	nestedOuterInInner := logical.NewJoin(
 		logical.NewJoin(
 			logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""),
-			scan("TypedRecord", "d"), logical.JoinInner, ""),
-		scan("Order", "o2"), logical.JoinFull, "")
+			scan("TypedRecord", "d"), logical.JoinInner, "",
+		),
+		scan("Order", "o2"), logical.JoinFull, "",
+	)
 	if !tr.boxGatesFresh(nestedOuterInInner) {
 		t.Error("boxGatesFresh(nested-OUTER-in-INNER FULL) = false, want true — an outer box buried inside an INNER cluster ordinalizes correctly (shallow peel)")
 	}
@@ -301,7 +304,8 @@ func TestRFC173Item2C5b_ClusteredBoxSeedsOrdinal(t *testing.T) {
 	// o.TAGS AS X — the clustered-INNER FULL box, NO outer conjunct.
 	outer := logical.NewJoin(
 		logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, ""),
-		scan("TypedRecord", "d"), logical.JoinFull, "")
+		scan("TypedRecord", "d"), logical.JoinFull, "",
+	)
 	j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
 	expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
 	if expr == nil {
@@ -406,7 +410,7 @@ func TestRFC173S4_OrdinalSlotInLegWindow(t *testing.T) {
 		{"C", "ID", 0, false},  // qualifier NOT among the legs: LOUD decline, NOT flat first-match 0
 	}
 	for _, c := range cases {
-		got, ok := ordinalSlotInLegWindow(rt, c.leg, c.field)
+		got, ok := ordinalSlotInLegWindow(rt, c.leg, c.field, true)
 		if ok != c.wantOK || (ok && got != c.want) {
 			t.Errorf("ordinalSlotInLegWindow(%s.%s) = (%d,%v), want (%d,%v)", c.leg, c.field, got, ok, c.want, c.wantOK)
 		}
@@ -416,7 +420,7 @@ func TestRFC173S4_OrdinalSlotInLegWindow(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
 	}}
-	if got, ok := ordinalSlotInLegWindow(single, "T", "V"); !ok || got != 1 {
+	if got, ok := ordinalSlotInLegWindow(single, "T", "V", false); !ok || got != 1 {
 		t.Errorf("single-leg ordinalSlotInLegWindow(T.V) = (%d,%v), want (1,true)", got, ok)
 	}
 	// MALFORMED window (negative Start): decline, never index at a negative slot.
@@ -424,8 +428,26 @@ func TestRFC173S4_OrdinalSlotInLegWindow(t *testing.T) {
 		Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}},
 		Legs:   []values.RecordTypeLeg{{Name: "A", Start: -1, Width: 2}},
 	}
-	if _, ok := ordinalSlotInLegWindow(bad, "A", "ID"); ok {
+	if _, ok := ordinalSlotInLegWindow(bad, "A", "ID", true); ok {
 		t.Error("negative-Start leg window must decline, not panic or resolve")
+	}
+	// THE FAIL-CLOSED HARDENING, both sides. A MULTI-alias prefix that arrives
+	// WITHOUT leg windows must DECLINE — the flat fallback would first-match a
+	// dup-named column across aliases (a qualified B.ID resolving to A's slot 0:
+	// `WHERE B.ID = 20` admitted {A.ID:20, B.ID:null} rows before this law).
+	// The SAME window-less type resolves flat when the caller is single-alias —
+	// the legitimate pristine-prefix path must NOT break.
+	noLegs := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 3},
+	}}
+	if _, ok := ordinalSlotInLegWindow(noLegs, "B", "ID", true); ok {
+		t.Error("multi-alias prefix WITHOUT windows must decline loudly, never flat-match")
+	}
+	if got, ok := ordinalSlotInLegWindow(noLegs, "A", "ID", false); !ok || got != 0 {
+		t.Errorf("single-alias window-less flat path = (%d,%v), want (0,true) — the hardening must not break it", got, ok)
 	}
 }
 
@@ -466,7 +488,7 @@ func TestRFC173S4_ThreeWayBoxCrossAgreement(t *testing.T) {
 			t.Fatalf("box leaf %s absent from channel-2 windows %v", leg.Name, windows)
 		}
 		for _, f := range w.Typ.Fields {
-			ch1, ok1 := ordinalSlotInLegWindow(boxType, leg.Name, f.Name)
+			ch1, ok1 := ordinalSlotInLegWindow(boxType, leg.Name, f.Name, true)
 			ci, okc := w.Typ.FieldIndex(f.Name)
 			ch2 := w.Offset + ci
 			if !ok1 || !okc || ch1 != ch2 {

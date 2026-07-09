@@ -2922,13 +2922,22 @@ func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]s
 // slot. Anything not found within the qualifier's window — a column absent from it,
 // OR a qualifier absent from the leg list entirely — declines LOUDLY (0,false),
 // NEVER a flat first-match (which would silently read another alias's same-named
-// column). A single-alias outer has no rt.Legs and takes the flat FieldIndex (the
-// pristine-prefix-at-offset-0 case). Consumes the same rt.Legs metadata
-// OrdinalSeedLegWindows emits for the serve side — one layout authority, so
-// translator-rebase and executor windows agree. NOTE: the multi-alias branch is
-// wired but scope-gated OFF end-to-end (unnestExistsSeedSafe keeps multi-alias
-// outers name-model); it goes live only when that guard lifts (channel 2).
-func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string) (int, bool) {
+// column). Consumes the same rt.Legs metadata OrdinalSeedLegWindows emits for
+// the serve side — one layout authority, so translator-rebase and executor
+// windows agree. NOTE: the multi-alias branch is wired but scope-gated OFF
+// end-to-end (unnestExistsSeedSafe keeps multi-alias outers name-model); it
+// goes live only when that guard lifts (channel 2).
+//
+// multiAlias is the CALLER's structural fact (len(outerLegs) > 1). The flat
+// FieldIndex fallback is legitimate ONLY for a single-alias prefix (the
+// pristine-prefix-at-offset-0 case, where every column belongs to the one
+// alias). A MULTI-alias prefix that arrives WITHOUT leg windows must DECLINE:
+// the flat fallback would silently first-match a dup-named column across
+// aliases — a qualified B.ID resolving to A's slot 0, observed as
+// `WHERE B.ID = 20` admitting {A.ID:20, B.ID:null} rows. Correct-or-loud at
+// the resolution site: the decline keeps the whole class fail-closed even if
+// a window-propagation gap upstream ever leaves Legs empty.
+func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string, multiAlias bool) (int, bool) {
 	if rt == nil {
 		return 0, false
 	}
@@ -2951,6 +2960,9 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string) (int, bool
 			return 0, false // column NOT in this leg's window — loud decline
 		}
 		return 0, false // qualifier NOT among the leg windows — loud decline (never flat)
+	}
+	if multiAlias {
+		return 0, false // multi-alias prefix WITHOUT windows — loud decline (never flat)
 	}
 	return rt.FieldIndex(field)
 }
@@ -3010,7 +3022,7 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			// not the flat first-match across the whole merged prefix (which silently
 			// reads the OTHER alias's same-named column — the RFC-173 S4 c5a hazard).
 			// A single-alias outer has no rt.Legs and falls back to a flat FieldIndex.
-			ord, found := ordinalSlotInLegWindow(outerLegType, leg, strings.ToUpper(fv.Field))
+			ord, found := ordinalSlotInLegWindow(outerLegType, leg, strings.ToUpper(fv.Field), len(outerLegs) > 1)
 			if !found {
 				ok = false
 				return node
