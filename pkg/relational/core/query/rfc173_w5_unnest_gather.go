@@ -140,7 +140,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// carries the amendment-C BURIED windows (each with the whole box CONCAT as its
 	// typ) — iterating entries would count a box's columns once per buried leaf and
 	// self-collide. One leg = one run = one column set.
-	declineBuriedDup := false
+	declineBoxDup := false
 	nonBoxCrossLegDup := false
 	type nameOrigin struct {
 		legIdx int
@@ -154,7 +154,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		for _, f := range legTypes[leg.binding].typ.Fields {
 			n := strings.ToUpper(f.Name)
 			if _, w := withinLeg[n]; w {
-				declineBuriedDup = true // same name twice within ONE leg's concat (a box's buried dup)
+				declineBoxDup = true // same name twice within ONE leg's concat (a box's buried dup)
 				continue
 			}
 			withinLeg[n] = struct{}{}
@@ -166,13 +166,13 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 				if nonBox && prev.nonBox {
 					nonBoxCrossLegDup = true
 				} else {
-					declineBuriedDup = true
+					declineBoxDup = true
 				}
 			}
 			acrossLegs[n] = nameOrigin{legIdx: li, nonBox: nonBox}
 		}
 	}
-	if declineBuriedDup {
+	if declineBoxDup {
 		return nil
 	}
 	// A GROUPED bare-twin (non-box cross-leg dup under aggregate) DECLINES to
@@ -193,21 +193,17 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// behavior for the grouped case (name-model, which resolves qualified reads) — no
 	// regression; the NON-grouped bare-twin still gathers via the raw seed (the 2a
 	// win). This is checked BEFORE any leg translates (the same side-effect discipline
-	// as declineBuriedDup).
+	// as declineBoxDup).
 	if t.underAggregate && nonBoxCrossLegDup {
 		return nil
 	}
 
-	// The positional named-projection wrap is placed above the seed ONLY when a
-	// GROUP-BY / aggregate consumes it (the shadow-key / operand reason). Every other
-	// gather — including the non-grouped bare-twin — keeps its RAW seed (byte-identical,
-	// no plan churn; the bare-twin resolves qualified reads through its separate per-leg
-	// quantifiers). Wrap-eligibility is decided HERE, BEFORE any leg is TRANSLATED
-	// (translateRef below has side effects: an uncorrelated scalar subquery in a
-	// derived/project/filter leg registers on the translator; declining late would let
-	// the name-model fallback re-translate the same legs and double-register/evaluate
-	// that subquery). A wrap-ineligible shape declines to name-model here, with that
-	// pre-leg-translation discipline.
+	// The named-projection wrap is placed above the seed ONLY for the GROUP-BY /
+	// aggregate consumer (the shadow-key / operand reason above); every other gather
+	// keeps its RAW seed. Eligibility is decided here, before any leg translates (same
+	// side-effect discipline as the declines above — a late decline would double-
+	// register a leg's scalar subquery), so a wrap-ineligible shape declines to
+	// name-model now.
 	wantWrap := t.underAggregate
 	if wantWrap && !gatheredPositionalWrapEligible(u, legs, legTypes) {
 		return nil
@@ -384,16 +380,14 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if !wantWrap {
 		return seedSel
 	}
-	// The positional seed exposes only bare column names. Two consumers need more, so
-	// a NAMED-PROJECTION layer is placed above it (Java's "the collapse preserves the
-	// named projection the consumer reads"):
-	//   - GROUP-BY / aggregate: a grouped `FieldValue{Field:"EL", Child:QOV}` qualifies
-	//     to the shadow "EL.EL" key the seed lacks (and a `SUM(EL)` operand name-reads
-	//     the bare element) → NULL, the shipped wrong answer.
-	//   - BARE-TWIN (Slice 2a): two legs share a bare name, so a qualified `A.k`/`B.k`
-	//     read has no unambiguous flat slot; the wrap re-exposes each leg's `ALIAS.COL`
-	//     by its [Start,Width) window so the qualified read routes to its own leg.
-	// It MUST be a LogicalProjectionExpression — NOT a SelectExpression, which
+	// The positional seed exposes only bare column names. The GROUP-BY / aggregate
+	// consumer needs more, so a NAMED-PROJECTION layer is placed above it (Java's "the
+	// collapse preserves the named projection the consumer reads"): a grouped
+	// `FieldValue{Field:"EL", Child:QOV}` qualifies to the shadow "EL.EL" key the seed
+	// lacks (and a `SUM(EL)` operand name-reads the bare element) → NULL, the shipped
+	// wrong answer. (The name-ambiguous bare-twin never reaches here — the non-grouped
+	// one gathers via the raw seed above, the grouped one declined at the
+	// nonBoxCrossLegDup guard.) It MUST be a LogicalProjectionExpression — NOT a SelectExpression, which
 	// SelectMergeRule would fuse away, losing the qualified/shadow keys. The projection
 	// binds every key POSITIONALLY (ofOrdinal over the seed's type — a projection is not
 	// a join, so the baked ordinal does not re-trigger the positional-seed birth) and
