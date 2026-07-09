@@ -18,16 +18,19 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-// TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes pins the deeper-nesting slice: a FILTERED
-// 3-link chain now ORDINALIZES (the clusterArity gate lifted to accept a chained first-link
-// base via chainedBaseOrdinalizes), with the mixed-inner-ref clause landing at the INNERMOST
-// Explode (the 2c positional bake, now at depth-3) and a pure-outer conjunct SARGing the scan
-// — both ORDINAL-only discriminators (the name model carries the outer ref by name, out of the
-// scan's reach). It ALSO relocates the 2c review-round regression guard to the shape that
-// STAYS name-model: a BOX-BASE chain (first link's base is a 2-source box → declined, c5b
-// territory) keeps the NAME-KEY rebase and answers a straddle correctly with NO ordinal -1
-// strand. The 2c bug was a positional bake firing on a name-model fallback; this cert proves
-// the box-base name-model shape still routes to the name-key rebase.
+// TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes is the ROWS + PLAN-PLACEMENT cert for the
+// deeper-nesting slice: a FILTERED linear 3-link chain ordinalizes (chainedBaseOrdinalizes +
+// the spine-scoped box-leg-conjunct arm) and must answer the same rows as the name-model
+// parent, with the mixed-inner-ref clause landing at the innermost Explode and a lone
+// pure-outer conjunct SARGing the scan. NONE of these observables discriminate ordinal from
+// name-model — plans, rows, and the SARG are IDENTICAL between the two models (the lazy
+// ⊆-outerLegs path precedes the seed-form fork; a first cut of this cert claimed the SARG as
+// an ordinal-only signature and passed verbatim on the name-model parent). The seed-form
+// BOUNDARY is pinned white-box in rfc173_2d_chained_spine_seed_test.go (the RC AnchoredJoin
+// flag off translateChainedUnnestJoin, feature-off-control-verified); THIS cert pins that the
+// rows stay correct on both sides of that boundary: the ordinalizing linear shapes, the
+// box-base chain that declines (c5b), the FORK chain that declines (owner two links back —
+// the shape the unscoped gate lift malformed-planned at ordinal -1), and the buried 2-chain.
 func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -144,11 +147,12 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 			t.Fatalf("%s: rows = %v, want %v\n  sql: %s", name, got, exp, q)
 		}
 	}
-	// assertOrdinal3Link pins the ORDINAL 3-link signature: exactly THREE Explode legs
-	// (one per link) over a bare Scan(T4) base — NOT a NestedLoopJoin box (which the
-	// name-model box-base decline carries). Robust to interposed PredicatesFilters
-	// (a pushed-down conjunct wraps a middle FlatMap), so it asserts the ordinal
-	// nesting without over-pinning where each predicate happens to land.
+	// assertOrdinal3Link pins the 3-link NESTING signature: exactly THREE Explode
+	// legs (one per link) over a bare Scan(T4) base — NOT a NestedLoopJoin box.
+	// This does NOT discriminate ordinal from name-model (a name-model 3-link
+	// produces the same shape); it excludes the box-base shape and pins that no
+	// flattening/restructure regression collapses the per-link Explodes. Robust to
+	// interposed PredicatesFilters (a pushed-down conjunct wraps a middle FlatMap).
 	assertOrdinal3Link := func(name, explain string) {
 		t.Helper()
 		if n := strings.Count(explain, "Explode("); n != 3 {
@@ -164,15 +168,16 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 
 	base := `FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "Y"."DEEP" AS "Z"`
 
-	// LONE outer filter: ID=1 → {11,12,13}. The outer conjunct is baked POSITIONALLY
-	// (ofOrdinal over the outer QOV type), becomes scan-pushable, and SARGs the scan
-	// (Scan(T4, [=]) — an ORDINAL-only discriminator: the name model carries the outer
-	// ref by NAME in the AnchoredJoin record, out of the scan's reach).
+	// LONE outer filter: ID=1 → {11,12,13}. The scan-pushable conjunct stays lazy
+	// (⊆-outerLegs) and SARGs the scan — Scan(T4, [=]). The SARG is an OPTIMIZATION
+	// pin, NOT a model discriminator (the lazy path precedes the seed-form fork, so
+	// the name model SARGs identically); it pins that the filter merge never
+	// regresses the pushable conjunct to a residual filter.
 	q0 := `SELECT "Z" ` + base + ` WHERE T4."ID" = 1`
 	ex0, r0 := run("threelink_outer_filter_SARGs", q0)
 	assertOrdinal3Link("threelink_outer_filter_SARGs", ex0)
 	if !strings.Contains(ex0, "Scan(T4, [=") {
-		t.Fatalf("threelink_outer_filter_SARGs: lone outer conjunct must SARG the scan (ordinal); plan=%s", ex0)
+		t.Fatalf("threelink_outer_filter_SARGs: lone outer conjunct must SARG the scan; plan=%s", ex0)
 	}
 	wantRows("threelink_outer_filter_SARGs", r0, []string{"map[Z:11]", "map[Z:12]", "map[Z:13]"}, q0)
 
@@ -237,4 +242,24 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	q6 := `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", T4 AS "T4C" WHERE T4."ID" = "Y"`
 	_, r6 := run("buried_2chain_straddle", q6)
 	wantRows("buried_2chain_straddle", r6, []string{"map[Y:1]", "map[Y:1]", "map[Y:1]"}, q6)
+
+	// FORK chain: W's owner is X, TWO links back — not the immediately preceding Y.
+	// The unscoped gate lift admitted this and rooted W's collection at Y's element
+	// slot (elementRootIdx = the PRECEDING link), descending SUB on ELEM2 → loud
+	// "ordinal -1" malformed plan; with colliding field names it would have been
+	// SILENTLY WRONG rows. The owner-linearity check declines the fork to the
+	// name-model residual, which resolves each owner BY NAME: cross-product of Y's
+	// SUBSTRUCT (2 elems on T4(1)) × W's SUB. T4(1): {1,7}×2; T4(2): {9}; T4(11): {5}.
+	q7 := `SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "X"."SUB" AS "W"`
+	_, r7 := run("fork_projection_declines_namemodel", q7)
+	wantRows("fork_projection_declines_namemodel", r7,
+		[]string{"map[W:1]", "map[W:1]", "map[W:5]", "map[W:7]", "map[W:7]", "map[W:9]"}, q7)
+
+	// The FILTERED fork: on the unscoped cut this only survived through the very
+	// box-leg-conjunct over-decline the slice removes — with the arm scoped to
+	// boxes, the LINEARITY check alone must keep the fork name-model and correct.
+	q8 := `SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "X"."SUB" AS "W" WHERE T4."ID" = 1`
+	_, r8 := run("fork_filtered_declines_namemodel", q8)
+	wantRows("fork_filtered_declines_namemodel", r8,
+		[]string{"map[W:1]", "map[W:1]", "map[W:7]", "map[W:7]"}, q8)
 }

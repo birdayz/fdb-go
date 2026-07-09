@@ -37,9 +37,10 @@ import (
 // name-model fallback disabled in translateChainedUnnestJoin, every
 // ordinal-eligible chained shape here still returns these EXACT rows (verified
 // out-of-band during S4 Slice 1 bring-up). The deeper-nesting slice lifted the
-// clusterArity gate (chainedBaseOrdinalizes), so the 3-link subtests below now
-// ORDINALIZE too — pinned by the 3-Explode nesting + the outer-filter scan SARG,
-// discriminators the name model cannot produce.
+// clusterArity gate (chainedBaseOrdinalizes), so the 3-link subtests below
+// ordinalize too — their SEED FORM is pinned white-box in
+// rfc173_2d_chained_spine_seed_test.go (rows/EXPLAIN/SARG here are IDENTICAL
+// between the two models and pin correctness + placement, not the model).
 func TestFDB_RFC173S4_ChainedUnnestOrdinal(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -297,18 +298,21 @@ func TestFDB_RFC173S4_ChainedUnnestOrdinal(t *testing.T) {
 	// pinned in TestFDB_RFC173S4_FilteredChained. This cert keeps the UNFILTERED ordinal path
 	// and the genuine (non-filter) declines below.
 
-	t.Run("3-link chain ORDINALIZES (deeper-nesting slice: clusterArity gate lifted)", func(t *testing.T) {
+	t.Run("3-link chain rows + nesting (ordinalizes; seed form pinned white-box)", func(t *testing.T) {
 		// The 3-link chain `… X.SUBSTRUCT AS Y, Y.DEEP AS Z` has a first link
 		// (`(T4 ⋈ SARR) ⋈ SUBSTRUCT`) whose BASE is itself an unnest-right join.
-		// chainedBaseOrdinalizes now recurses that unnest-right spine, so the whole
-		// chain ORDINALIZES instead of failing open to the name-model residual — the
-		// seed machinery (ordinalLegColumns/unnestOrdinalSeed) was already
-		// recursion-ready; only the gate limited it to depth-2.
+		// chainedBaseOrdinalizes recurses that unnest-right spine, so the whole
+		// chain ordinalizes instead of failing open to the name-model residual —
+		// the seed machinery (ordinalLegColumns/unnestOrdinalSeed) was already
+		// recursion-ready; only the gate limited it to depth-2. The nesting and
+		// rows asserted here are IDENTICAL under the name-model residual — they
+		// pin correctness, not the model; the seed form is pinned white-box in
+		// rfc173_2d_chained_spine_seed_test.go.
 		const q = `SELECT "ID", "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "Y"."DEEP" AS "Z"`
 		explain, rows := queryRows(t, q)
-		// Ordinal shape: THREE nested Explode legs, no flattening.
+		// THREE nested Explode legs, no flattening (excludes a restructure/box shape).
 		if !strings.Contains(explain, "FlatMap(outer=FlatMap(outer=FlatMap(") {
-			t.Fatalf("3-link ordinal plan must be THREE nested FlatMaps; plan=%s", explain)
+			t.Fatalf("3-link plan must be THREE nested FlatMaps; plan=%s", explain)
 		}
 		if strings.Count(explain, "Explode(") != 3 {
 			t.Fatalf("3-link must have exactly 3 Explode legs; plan=%s", explain)
@@ -317,25 +321,26 @@ func TestFDB_RFC173S4_ChainedUnnestOrdinal(t *testing.T) {
 		// ID=10 elem0 SUBSTRUCT[DEEP 7,8],[DEEP 9]; ID=20 elem SUBSTRUCT[DEEP 100].
 		want := []string{"10|7", "10|8", "10|9", "20|100"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
-			t.Fatalf("3-link ordinal rows\n got=%v\nwant=%v", got, want)
+			t.Fatalf("3-link rows\n got=%v\nwant=%v", got, want)
 		}
 	})
 
-	t.Run("3-link outer filter SARGs the scan (positional bake ⇒ ordinal, not name-model)", func(t *testing.T) {
-		// An outer-scan-pushable conjunct is baked POSITIONALLY (ofOrdinal over the
-		// outer QOV type), becomes scan-pushable, and lands as a SARG on Scan(T4) —
-		// which the NAME model cannot produce (it carries the outer ref by name in the
-		// AnchoredJoin record, out of the scan's reach). So the SARG is a POSITIVE
-		// ordinal discriminator, not merely a nested-shape check.
+	t.Run("3-link outer filter rows + scan SARG (optimization pin, model-independent)", func(t *testing.T) {
+		// The scan-pushable outer conjunct stays LAZY (⊆-outerLegs, BEFORE the
+		// seed-form fork in rebaseChainedOuterLegPredicate) and SARGs the scan.
+		// The SARG is therefore IDENTICAL under both row models — it pins the
+		// pushdown optimization and the rows, NOT ordinalization. (A first cut
+		// claimed it as an ordinal-only signature; it passes verbatim on the
+		// name-model parent.)
 		const q = `SELECT "ID", "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "Y"."DEEP" AS "Z" WHERE "ID" = 10`
 		explain, rows := queryRows(t, q)
 		if !strings.Contains(explain, "Scan(T4, [=") {
-			t.Fatalf("3-link outer filter must SARG the scan (ordinal); plan=%s", explain)
+			t.Fatalf("3-link outer filter must SARG the scan; plan=%s", explain)
 		}
 		got := collect(rows, "ID", "Z")
 		want := []string{"10|7", "10|8", "10|9"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
-			t.Fatalf("3-link outer-filter ordinal rows\n got=%v\nwant=%v", got, want)
+			t.Fatalf("3-link outer-filter rows\n got=%v\nwant=%v", got, want)
 		}
 	})
 }

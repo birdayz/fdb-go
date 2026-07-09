@@ -169,27 +169,28 @@ validation gate.
     (below) owns lifting clusterArity + the placement fix + the FULL `:1161` retire. Scalar-subquery stays
     the separate `:2720`/0A000 residual (booked). Audit green: 2-chain OR ordinalizes, 3-link OR name-model,
     OR-with-scalar-subquery → 0A000, B1 (1641) green.
-  - [x] **Slice 2d (deeper-nesting): 3+-link chain ORDINALIZES — DONE (Graefe design-ACK).** A ~18-line
-    clusterArity-gate lift: `chainedBaseOrdinalizes(firstBase)` recurses the unnest-right spine (admit a
-    single source OR a chained base whose own base ordinalizes), replacing the flat `clusterArity==1` gate.
-    **The de-risk COLLAPSED the booked scope:** the TODO's `pushBuriedUnnestPredicateDown`/`rewriteUnnestPredicate`
-    placement rework was PRE-2c — a revertible gate-lift SPIKE proved the 2c positional bake ALREADY lands a
-    mixed-inner-ref clause at the INNERMOST Explode at depth-3 (no strand), and the seed machinery
-    (`ordinalLegColumns`/`unnestOrdinalSeed`/`unnestBakedRootCollection`) was ALREADY recursion-ready (the
-    "depth-2" note was a gate CONSEQUENCE, not a structural limit — confirmed at 4-link: clean+outer-filter
-    ordinalize). So NO placement rework. Graefe conditions met: (Q1) scope to single-source∨chained EXACTLY —
-    a MULTI-source BOX base stays DECLINED (c5b), pinned by `boxbase_straddle_declines_namemodel`; (Q2) recurse
-    clusterArity only, `unnestExistsSeedSafe(firstBase)` stays the single top-level guard (EXISTS-over-chained
-    is 0AF00 upstream, arm dead — probed); (Q3) NARROWS not zeros — box-base + `!ok` decline still reach
-    `NewAnchoredJoinRecord`, full chained-zero gated on c5b. `:1161` narrows (chained clean-lift no longer needs
-    the enclosure clear; box/cluster still do — cluster_gate.go:315,356, w4b:565). Certs: the ordinal cert's
-    "DECLINE: 3-link fails open to name-model" subtest FLIPPED to "3-link ORDINALIZES" (3-Explode nesting +
-    outer-filter scan SARG); the 2c `ThreeLinkFilteredNameModel` cert RENAMED → `ThreeLinkFilteredOrdinalizes`
-    (all shapes ordinalize; innermost-Explode PredicatesFilter for the mixed clause, scan SARG for the lone
-    outer, + the relocated box-base name-model regression guard). DISCRIMINATOR: the outer conjunct SARGs
-    `Scan(T4, [=])` in the ordinal path — the name model carries it by name out of the scan's reach.
-    NEW ORTHOGONAL gap booked below: a WHERE ref to a DEEP alias (4+-link AS, any AT) → 42703 semantic-resolver,
-    PRE-EXISTING (reproduces name-model, upstream of translation).
+  - [x] **Slice 2d (deeper-nesting): LINEAR 3+-link chains ORDINALIZE (filtered + unfiltered) — DONE after a
+    3-gate NAK round corrected the first cut.** The first cut (272b3e855) OVER-CLAIMED: only unfiltered chains
+    ordinalized (the box-leg-conjunct arm of `unnestExistsSeedSafe` kicked every FILTERED chained base to
+    name-model), its "SARG ⇒ ordinal" cert discriminator was FALSE (model-independent — the certs passed
+    verbatim on the parent, caught by a neutered-gate control + a reviewer's independent parent-worktree
+    control), and the unscoped gate admitted a FORK chain (`t.arr X, X.substruct Y, X.sub W` — owner two links
+    back) that malformed-planned at ordinal -1 (reviewer kill, differentially verified). Corrective commit:
+    (1) owner-LINEARITY at both walk levels (`u.Segments[0]==firstUnnest.Alias` + per-level check in
+    `chainedBaseOrdinalizes`, which walks `j.Left` NOT firstBase — firstBase alone would miss a fork one level
+    below the top); forks decline to name-model. (2) The box-leg-conjunct arm SCOPED via
+    `unnestExistsSeedSafe(left, spineBase)` — `flag && !spineBase && multiAlias`; only the chained gate passes
+    spineBase=admitted; every other decline arm stays live for spines. Filtered linear spines now GENUINELY
+    ordinalize (trace-verified; the depth-3 straddle resolves through the 2c positional bake for real).
+    (3) The boundary pinned WHITE-BOX in `rfc173_2d_chained_spine_seed_test.go` (seed RC `AnchoredJoin` flag
+    off `translateChainedUnnestJoin`: linear 2/3/4-link × filtered/unfiltered → ordinal; top/mid-spine fork,
+    box-base ±filter → name-model; twin-fork + 1-seg-mid-spine → loud upstream). ONE-TIME feature-off control:
+    gate neutered → all six linear pins FAIL (discriminating by construction). Fork rows-certs e2e + honest
+    cert rewrites (SQL certs are rows+placement pins and say so). STANDING DISCIPLINE (Graefe): a
+    model-discriminator cert without a neutered-feature control run doesn't count. Accounting: box-base +
+    `!ok` declines still reach `NewAnchoredJoinRecord` (chained producer NARROWS; zeros with c5b); `:1161`
+    narrows (box/cluster readers remain). NEW ORTHOGONAL gap booked below: deep-WHERE 42703 (4+-link AS, any
+    AT) — PRE-EXISTING semantic-resolver, reproduces name-model, upstream of translation.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a

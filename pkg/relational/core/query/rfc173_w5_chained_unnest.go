@@ -320,15 +320,6 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 	)
 }
 
-// translateChainedUnnestOrdinal builds the ORDINAL SelectExpression for a chained
-// unnest whose FIRST link ordinalizes (RFC-173 S4 Slice 1), or returns nil to
-// DECLINE (the caller fails open to the name-model path). The seed is the SAME
-// unnestOrdinalSeed the single-source W4c path uses — its outer positional run
-// (ofOrdinal over ordinalLegType(j.Left)) carries the first link's merged row
-// [outer cols … element] positionally, and unnestSeedInnerFields carries the
-// chained element/ordinal — and the collection is unnestBakedRootCollection
-// rooted at the OWNER ALIAS column (rootSegmentIndex 0). Both DECLINE (nil) on an
-// underivable leg, keeping this fail-open.
 // chainedBaseOrdinalizes reports whether a chained first-link BASE will itself
 // flow a POSITIONAL row from translateRef (with the enclosure cleared) — the
 // recursive generalization of the depth-2 clusterArity==1 gate. It admits
@@ -337,7 +328,10 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 //   - a SINGLE lateral source (clusterArity 1) — the base of a 2-link chain's
 //     first link (a plain scan/box-free source);
 //   - a CHAINED unnest whose OWN base ordinalizes — a deeper chain's first link,
-//     recursing left down the unnest-right spine.
+//     recursing left down the unnest-right spine. The mid-spine
+//     len(Segments)<2 check is load-bearing, not decorative: a 1-segment
+//     LogicalUnnest is constructible via the AT-source parser path, and such a
+//     malformed link must decline conservatively.
 //
 // The seed machinery (ordinalLegColumns/unnestOrdinalSeed/unnestBakedRootCollection)
 // already recurses on o.Left for arbitrary depth (rfc173_ordinal_seed.go: the
@@ -345,14 +339,11 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 // limit), so a deeper chained base seeds correctly once admitted.
 //
 // A MULTI-source BOX base (clusterArity ≥ 2 that is NOT an unnest-right join —
-// `FROM t, u, t.arr AS x, x.sub AS y`, whose SARR link's base is the box `t ⋈ u`)
+// `FROM t, u, t.arr AS x, x.sub AS y`, whose arr link's base is the box `t ⋈ u`)
 // is DECLINED here: its positional owner windows are the c5b buried-box concern,
 // not this slice, and the innermost-Explode predicate placement is unproven over
 // a box base. It fails open to the name-model residual (pinned: a box-base chain
-// answers correctly via the name-key rebase, no strand). Exists-safety is NOT
-// recursed — the existential arm is unreachable for a chained unnest (EXISTS over
-// a chained unnest is 0AF00 upstream), so the caller's single top-level
-// unnestExistsSeedSafe(firstBase) guard suffices.
+// answers correctly via the name-key rebase, no strand).
 func (t *cascadesTranslator) chainedBaseOrdinalizes(base logical.LogicalOperator) bool {
 	if t.clusterArity(base) == 1 {
 		return true
@@ -365,9 +356,34 @@ func (t *cascadesTranslator) chainedBaseOrdinalizes(base logical.LogicalOperator
 	if !ok || len(un.Segments) < 2 {
 		return false
 	}
+	// LINEAR spine only: each link must consume the IMMEDIATELY PRECEDING
+	// link's element. A FORK — an owner two or more links back, `…, x.sub AS y,
+	// x.other AS w` (w's owner x is not y) — must decline: the ordinal seed
+	// roots each link's collection at the PRECEDING link's element slot
+	// (elementRootIdx), so a fork would descend the WRONG element — a loud
+	// "ordinal -1" strand when the field names are disjoint, and SILENTLY WRONG
+	// ROWS when the mis-rooted element carries a same-named field. The
+	// name-model residual answers forks correctly (each link resolves its owner
+	// BY NAME at its own altitude), so declining is fail-open, not a reach loss.
+	if lj, isJ := bj.Left.(*logical.LogicalJoin); isJ {
+		if lu, isU := lj.Right.(*logical.LogicalUnnest); isU {
+			if !strings.EqualFold(un.Segments[0], lu.Alias) {
+				return false
+			}
+		}
+	}
 	return t.chainedBaseOrdinalizes(bj.Left)
 }
 
+// translateChainedUnnestOrdinal builds the ORDINAL SelectExpression for a chained
+// unnest whose FIRST link ordinalizes (RFC-173 S4 Slice 1), or returns nil to
+// DECLINE (the caller fails open to the name-model path). The seed is the SAME
+// unnestOrdinalSeed the single-source W4c path uses — its outer positional run
+// (ofOrdinal over ordinalLegType(j.Left)) carries the first link's merged row
+// [outer cols … element] positionally, and unnestSeedInnerFields carries the
+// chained element/ordinal — and the collection is unnestBakedRootCollection
+// rooted at the OWNER ALIAS column (rootSegmentIndex 0). Both DECLINE (nil) on an
+// underivable leg, keeping this fail-open.
 func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	j *logical.LogicalJoin,
 	u *logical.LogicalUnnest,
@@ -390,8 +406,15 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	// unnest whose own base ordinalizes (a deeper chain) — chainedBaseOrdinalizes.
 	// A multi-source BOX base (c5b territory) or an exists-unsafe base declines
 	// here so we never build an ordinal seed over a first link that stays
-	// name-model. Exists-safety is the single top-level guard (the existential arm
-	// is unreachable for a chain — EXISTS-over-chained is 0AF00 upstream).
+	// name-model. Spine admission is computed BEFORE the seed-safe call, and only
+	// an admitted base passes isSpine=true into unnestExistsSeedSafe — that scopes
+	// the box-leg-conjunct decline arm (whose "box legs" a chained spine does not
+	// have; the chained rebase authority bakes or lazies every reachable outer
+	// ref, with the (pred, !ok) fail-closed net behind it) while every OTHER
+	// decline arm (existential scope today, anything added later) stays live for
+	// spines too. The existential arm is unreachable for a chain in practice —
+	// EXISTS-over-chained is 0AF00 upstream — but it is scoped by semantics, not
+	// by that reachability accident.
 	firstLink, ok := j.Left.(*logical.LogicalJoin)
 	if !ok {
 		return nil
@@ -400,8 +423,25 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	if !ok {
 		return nil
 	}
+	// LINEAR spine only, at THIS link too: u's owner (Segments[0]) must be the
+	// IMMEDIATELY PRECEDING link's element. isChainedUnnest only proved SOME
+	// prior unnest owns u — a FORK (`…, x.sub AS y, x.other AS w`: w's owner is
+	// x, two links back) roots the collection at the WRONG element slot
+	// (elementRootIdx is the PRECEDING link's element), which strands loudly on
+	// disjoint field names and returns SILENTLY WRONG rows on colliding ones.
+	// Decline → the name-model residual answers forks correctly by name.
+	if !strings.EqualFold(u.Segments[0], firstUnnest.Alias) {
+		return nil
+	}
 	firstBase := firstLink.Left
-	if !t.chainedBaseOrdinalizes(firstBase) || !t.unnestExistsSeedSafe(firstBase) || len(firstUnnest.Segments) < 2 {
+	// The spine walk runs over j.Left (the WHOLE outer, firstUnnest included) —
+	// NOT merely firstBase: walking firstBase alone would skip firstUnnest's own
+	// segment/linearity checks, admitting a fork sitting exactly one level below
+	// the dispatching link (`…, x.substruct AS y, x.substruct AS y2, y2.deep AS
+	// z` — z↔y2 is linear, but y2's owner x is not y). The walk's recursion arm
+	// also re-checks len(firstUnnest.Segments) >= 2, so no separate check here.
+	spineAdmitted := t.chainedBaseOrdinalizes(j.Left)
+	if !spineAdmitted || !t.unnestExistsSeedSafe(firstBase, spineAdmitted) {
 		return nil
 	}
 

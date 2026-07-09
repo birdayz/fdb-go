@@ -876,7 +876,7 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 // inner-residual outer ref to a baked ofOrdinal, and the rule routes by the
 // renamed correlation identity, not by name. A plain (non-EXISTS) unnest is
 // unaffected.
-func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator) bool {
+func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, spineBase bool) bool {
 	// A MULTI-alias box declines to name-model when a regular (non-EXISTS) WHERE
 	// conjunct references a box leg (unnestOuterConjunctOnBoxLeg): the ordinal seed
 	// cannot yet bake such a conjunct positionally — it is merged into the
@@ -886,7 +886,16 @@ func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator) 
 	// (EXISTS) AND the non-EXISTS filter-over-unnest merge — so the check is BEFORE
 	// the `!unnestUnderExistential` early return below. A single-source outer
 	// (==1) is unaffected — its pristine prefix resolves a bare conjunct.
-	if t.unnestOuterConjunctOnBoxLeg && len(outerBoundAliases(left)) > 1 {
+	//
+	// This arm is scoped to genuine BOX bases: a chained-unnest SPINE base
+	// (spineBase, passed true ONLY by the chained ordinal gate after
+	// chainedBaseOrdinalizes admitted the base) is multi-alias by construction —
+	// its aliases are chain links, not box legs — and the chained rebase
+	// authority (rebaseChainedOuterLegPredicate) bakes or lazies every reachable
+	// outer ref on the chained select, with the (pred, !ok) fail-closed net
+	// behind it. Declining here would needlessly kick every FILTERED 3+-link
+	// chain to name-model. Every OTHER decline arm below stays live for spines.
+	if t.unnestOuterConjunctOnBoxLeg && !spineBase && len(outerBoundAliases(left)) > 1 {
 		return false
 	}
 	if !t.unnestUnderExistential {
@@ -933,7 +942,7 @@ func nonExistsConjunctRefsOuterLeg(pred predicates.QueryPredicate, boxAliases ma
 // false (boxGatesFresh false) and AXIS 1 is a no-op — a scan ref ignores the
 // enclosure bit — so nothing changes off the box path.
 func (t *cascadesTranslator) boxOuterBirthsPositional(left logical.LogicalOperator) bool {
-	return t.clusterArity(left) == 1 && t.boxGatesFresh(left) && t.unnestExistsSeedSafe(left)
+	return t.clusterArity(left) == 1 && t.boxGatesFresh(left) && t.unnestExistsSeedSafe(left, false)
 }
 
 // existsInnerScopeCollidesOuter reports whether any EXISTS inner subquery scans a
@@ -1557,7 +1566,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// name-keyed arrayValue does NOT descend under the ordinal-seed birth. When
 	// the bake declines (nil), the whole ordinal path declines and the name-model
 	// builder (which owns the name-keyed collection) takes over.
-	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) && len(u.Segments) >= 2 {
+	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left, false) && len(u.Segments) >= 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 		if resultValue != nil && len(u.Segments) > 2 {
 			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType, 1, -1); baked != nil {
