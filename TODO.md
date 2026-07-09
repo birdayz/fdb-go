@@ -126,7 +126,7 @@ validation gate.
     parameter instead of a global mutable field (~15 threading sites). Separate architectural refactor;
     NOT a producer-retirement blocker — the `:3234` lift landed without it. Do AFTER the remaining
     enclosure setters are retired (it touches all of them).
-  - [x] **Slice 2b: filtered-chained ordinalizes — DONE (Graefe design+impl ACK'd).** A chained lateral
+  - [x] **Slice 2b: filtered-chained ordinalizes — DONE, FULLY 4-GATED on 60cbb0c08 (Graefe design+impl ACK, @claude ACK, Torvalds ACK, codex clean).** A chained lateral
     unnest under an ancestor WHERE (`FROM t, t.SARR AS x, x.SUB AS y WHERE <pred>`) now ORDINALIZES
     instead of declining to the name-model residual (buildUnnestResultValue → NewAnchoredJoinRecord).
     The coarse `chainedUnnestUnderFilter` "any filter suppresses" decline is RETIRED (field + set/restore
