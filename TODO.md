@@ -200,6 +200,10 @@ validation gate.
     white-box file (the walk's Segments<2 check had NO walk-test case — a reviewer control neutering it
     stayed green); the 1-segment walk case added. Cert harvest: depth-3 shadow-slot straddle `T4.SUB=Z`
     (positive slot-3 pin) ± OR, AT-first/AT-mid ordinal rows.
+    FULLY 4-GATED on `c1f6e2059`: Graefe re-ACK, Torvalds ACK (controls all discriminating; live silent-wrong
+    repro of the revert), @claude ACK (coherence by construction; three-way differential conclusive),
+    codex clean. Non-blocking residue for the next within-area touch: rename the `spineBase` param to
+    `pureSpine`; P=2 first-link AT cert data; harvest the fullbox boxlegB/3link/inner-only probe trio.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
