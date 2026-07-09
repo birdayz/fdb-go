@@ -111,42 +111,23 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		return nil // a leg untranslatable — same decline rule as the seed
 	}
 
-	// A CROSS-LEG dup — a column name shared ACROSS legs — GATHERS via the RAW seed (NO
-	// decline, NO wrap), whether the legs are two plain scans (the bare-twin `FROM A, B,
-	// A.arr AS x`, A,B both carrying `k`) OR one peels to a merge-opaque BOX (a box's
-	// BURIED leaf dup-named with a sibling scan's column, `FROM (A FULL C), B, C.arr AS x`
-	// with buried A.k and scan B.k). Each leg keeps its OWN [Offset,Width) window — a plain
-	// leg by its scan run, a box's buried leaves via finalizeSeedWindows — so a QUALIFIED
-	// `A.k`/`B.k` read routes to its own SLOT, not first-match, uniformly through every
-	// outer operator (SELECT / WHERE / GROUP BY / ORDER BY / DISTINCT / cross-leg predicate
-	// — the qualifier-honoring authority; the box buried-dup ORDER BY and FULL-NULL grouped
-	// rows are pinned discriminating). A positional wrap is NOT needed and is actively
-	// WRONG: its bare pass-through key (`k`->first leg's slot) makes an outer filter resolve
-	// a qualified dup column to FIRST-MATCH, dropping every row of `WHERE B.k=200`. A BARE
-	// ambiguous reference (`SELECT k`, `GROUP BY k`) errors 42702 at semantic analysis
-	// BEFORE the translator, so only qualified reads reach here.
-	//
-	// ONE shape still DECLINES to the name-model residual: a WITHIN-BOX dup — a single
-	// merge-opaque box whose concat carries two same-named columns (Order.PRICE +
-	// Customer.PRICE in a `(A FULL B)` box). A qualified read is FieldValue(boxQuant,
-	// "PRICE") — ambiguous within the box's OWN output type — and its positional
-	// disambiguation is entangled with the box's DOUBLY-NULL-fill semantics (both dup
-	// columns go NULL on opposite unmatched rows), needing its own within-box layout pin: a
-	// later increment. Detected per RUN, not per map entry: legTypes also carries the
-	// amendment-C BURIED windows (each with the whole box CONCAT as its typ) — iterating
-	// entries would count a box's columns once per buried leaf and self-collide. One leg =
-	// one run = one column set. A plain scan's columns are unique by name, so this fires
-	// only for a box leg.
-	for _, leg := range legs {
-		withinLeg := map[string]struct{}{}
-		for _, f := range legTypes[leg.binding].typ.Fields {
-			n := strings.ToUpper(f.Name)
-			if _, dup := withinLeg[n]; dup {
-				return nil // same name twice within ONE box leg's concat (class 1) — still declines
-			}
-			withinLeg[n] = struct{}{}
-		}
-	}
+	// EVERY dup column name GATHERS via the RAW seed (NO decline, NO wrap) — shared ACROSS
+	// legs (the bare-twin `FROM A, B, A.arr AS x` with A,B both carrying `k`; the box-buried
+	// cross-leg `FROM (A FULL C), B, C.arr AS x` with buried A.k dup-named with scan B.k) OR
+	// twice WITHIN ONE box's concat (a `(A FULL B)` box carrying both A.k and B.k). Each
+	// buried leaf gets its OWN [Offset,Width) window (buriedLegBounds / finalizeSeedWindows,
+	// recursing through nested boxes), so a QUALIFIED read routes to its own SLOT, not
+	// first-match, uniformly through every outer operator — SELECT / WHERE / GROUP BY /
+	// ORDER BY / DISTINCT / cross-leg predicate / buried-element predicate (the qualifier-
+	// honoring authority). A within-box dup's DOUBLY-NULL-fill (both same-named leaves NULL
+	// on OPPOSITE unmatched rows) resolves through the FULL-NULL substrate, discriminated by
+	// disjoint value sets. A BARE ambiguous reference (`SELECT k`, `GROUP BY k`) errors 42702
+	// at semantic analysis BEFORE the translator, so only qualified reads reach here — NO dup
+	// shape declines. A positional wrap is NOT needed and is actively WRONG: its bare
+	// pass-through key first-matches a qualified dup column, dropping every row of
+	// `WHERE B.k=200`. (The former declineBoxDup gate — cross-leg-to-box, then within-box —
+	// is fully retired; both classes gather uniformly on the same buried-leaf-window +
+	// FULL-NULL substrate.)
 	// A GROUPED gather (underAggregate) UN-COLLAPSES to the raw per-leg seed (below)
 	// — no name-keyed wrap — and the ancestor GROUP-BY POSITIONALLY BAKES its keys /
 	// operands over it (translateAggregate: OrdinalSeedLegWindows for leg columns,

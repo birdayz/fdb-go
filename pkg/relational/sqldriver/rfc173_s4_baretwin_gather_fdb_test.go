@@ -262,23 +262,28 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 		}
 	})
 
-	// WITHIN-BOX buried dup (`(A FULL OUTER B), A.ARR AS X` — A,B share K in ONE box
-	// leg's concat) is OUT of Slice 2a scope: it DECLINES to name-model (a positional
-	// disambiguation of a buried box dup is a later increment) and still answers.
-	t.Run("within_box_buried_dup_declines_to_name_model", func(t *testing.T) {
-		wantRows(t, `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`,
-			[]string{"map[X:7]", "map[X:8]"})
+	// WITHIN-BOX buried dup (`(A FULL OUTER B), A.ARR AS X` — A,B share K in ONE box leg's
+	// concat) now GATHERS (RFC-173 S4 class-1 lift — the last dup decline retired):
+	// buriedLegBounds windows A and B at distinct slots, so qualified A.K (=100) and B.K
+	// (=200) resolve to their own windows, not first-match. A(1)⋈B(1) matched, A.arr={7,8}.
+	// The discriminating doubly-null within-box rows are TestFDB_RFC173S4_WithinBoxDup.
+	t.Run("within_box_buried_dup_gathers", func(t *testing.T) {
+		wantRows(t, `SELECT A."K", B."K", "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`,
+			[]string{"map[A.K:100 B.K:200 X:7]", "map[A.K:100 B.K:200 X:8]"})
 	})
 
-	// GROUPED over a NAME-MODEL FALLBACK: the within-box dup declines the gather to
-	// name-model, but the fallback is STILL a SelectExpression with an Explode
-	// quantifier — its RC is ANCHORED and emits NO positional row. The group-by MUST
-	// NOT positionally bake `GROUP BY X` over it (a baked ordinal on the Datum map
-	// would error); the `!rc.AnchoredJoin` gate keeps it name-model. A FULL B matches
-	// one row; A.arr={7,8} → GROUP BY X yields 7,8 each COUNT 1. Regression pin for the
-	// anchored-fallback bake gate.
+	// GROUPED over a NAME-MODEL FALLBACK: a WHERE conjunct on a box leg (`WHERE A.K=100`,
+	// A a leg of the FULL box that is the unnest's left) trips unnestOuterConjunctOnBoxLeg
+	// → the gather DECLINES to name-model (the box, gathered as one opaque leg, has no
+	// per-leg window for that conjunct). The fallback is STILL a SelectExpression with an
+	// Explode quantifier, but its RC is ANCHORED and emits NO positional row. The group-by
+	// MUST NOT positionally bake `GROUP BY X` over it (a baked ordinal on the Datum map
+	// would error); the `!rc.AnchoredJoin` gate keeps it name-model. A FULL B matches one
+	// row (A.K=100 passes the WHERE); A.arr={7,8} → GROUP BY X yields 7,8 each COUNT 1.
+	// Regression pin for the anchored-fallback bake gate (re-pointed from the within-box
+	// dup, which now gathers — this WHERE-on-box-leg shape is still an anchored decline).
 	t.Run("grouped_over_name_model_fallback_does_not_bake", func(t *testing.T) {
-		wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" GROUP BY "X"`,
+		wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 GROUP BY "X"`,
 			[]string{"map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]"})
 	})
 

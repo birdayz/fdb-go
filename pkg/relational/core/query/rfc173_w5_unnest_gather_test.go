@@ -192,18 +192,18 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatalf("a box-involved CROSS-LEG dup must GATHER the raw seed (class-2 lift), got %T", gotBox)
 	}
 
-	// (b2-within) WITHIN-BOX dup (class-1 sentinel — the STILL-declining increment): a
+	// (b2-within) WITHIN-BOX dup (RFC-173 S4 class-1 lift — the LAST dup decline retired): a
 	// single merge-opaque FULL box whose concat carries the SAME column name TWICE (SRC2.W +
-	// AUX2.W are both `W`). A qualified read is FieldValue(boxQuant,"W") — ambiguous within
-	// the box's OWN output type — and its positional disambiguation is entangled with the
-	// box's DOUBLY-null-fill (both W go NULL on opposite unmatched rows), so it DECLINES to
-	// name-model: its own later increment. This pins the class-1 boundary the class-2 lift
-	// deliberately did NOT cross, so a future within-box lift trips a sentinel here.
+	// AUX2.W are both `W`) now GATHERS. buriedLegBounds windows the two same-named buried
+	// leaves at distinct slots, so a qualified SRC2.W / AUX2.W resolves to its own window;
+	// the box's DOUBLY-null-fill (both W NULL on opposite unmatched rows) resolves through
+	// the FULL-NULL substrate. The declineBoxDup gate is fully retired — this was the last
+	// dup shape to decline (e2e discriminating rows: TestFDB_RFC173S4_WithinBoxDup).
 	uWithin := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	withinBox := logical.NewJoin(scan("SRC2", "s2"), scan("AUX2", "y"), logical.JoinFull, "")
 	jWithin := logical.NewJoin(inner(withinBox, scan("SRC", "s")), uWithin, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jWithin, uWithin, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-		t.Fatalf("a WITHIN-box dup (two same-named columns in ONE box) must still DECLINE (class-1, doubly-null-padded — its own increment), got %T", got)
+	if _, ok := tr.translateGatheredUnnestCluster(jWithin, uWithin, innerCorr, values.NotNullLong, "ARR", unnestTrailing).(*expressions.SelectExpression); !ok {
+		t.Fatalf("a WITHIN-box dup (two same-named columns in ONE box) must GATHER the raw seed (class-1 lift — the last dup decline retired)")
 	}
 
 	// (b3) GROUPED non-box cross-leg dup now GATHERS via the un-collapse (RFC-173 S4
