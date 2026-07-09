@@ -680,8 +680,8 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 			}
 			return predicates.NewAnd(newSubs...)
 		}
-		if predicateLegAliases(p, legTypes) < 2 {
-			return p // single-leg or leg-free: stays lazy (pushdown-safe)
+		if predicateLegAliases(p, legTypes) < 2 && !predicateRefsBuriedLeg(p, legTypes) {
+			return p // single-leg TOP-LEVEL or leg-free: stays lazy (pushdown-safe)
 		}
 		return predicates.ReplaceValues(p, bake)
 	}
@@ -713,4 +713,32 @@ func predicateLegAliases(p predicates.QueryPredicate, legTypes map[string]bakeLe
 		return v
 	})
 	return len(seen)
+}
+
+// predicateRefsBuriedLeg reports whether a predicate references a BURIED box leg
+// (a legType with bakeCorr != "" — the buried leaf has NO quantifier of its own;
+// the box's single quantifier, named by its rightmost leaf, holds its slot). Such a
+// reference MUST bake even as the ONLY leg named: a single-leg predicate is normally
+// left lazy for pushdown, but a lazy BURIED reference has no per-leg select or
+// quantifier to push into, so it evaluates QOV(buriedAlias) → unbound → NULL and
+// silently drops rows. This is the buried-vs-element WHERE class (`WHERE A.K = X`,
+// A buried in `(A FULL C)`, X the unnest element): the element is not a leg, so the
+// two-leg cross-leg test never fires; only the buried single-leg check catches it.
+func predicateRefsBuriedLeg(p predicates.QueryPredicate, legTypes map[string]bakeLegType) bool {
+	buried := false
+	predicates.ReplaceValues(p, func(v values.Value) values.Value {
+		fv, isFV := v.(*values.FieldValue)
+		if !isFV || fv.Resolved != nil || strings.Contains(fv.Field, ".") {
+			return v
+		}
+		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		if !isQOV {
+			return v
+		}
+		if lt, ok := legTypes[strings.ToUpper(qov.Correlation.Name())]; ok && lt.bakeCorr != "" {
+			buried = true
+		}
+		return v
+	})
+	return buried
 }
