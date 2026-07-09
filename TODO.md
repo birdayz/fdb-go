@@ -202,8 +202,18 @@ validation gate.
     (positive slot-3 pin) ± OR, AT-first/AT-mid ordinal rows.
     FULLY 4-GATED on `c1f6e2059`: Graefe re-ACK, Torvalds ACK (controls all discriminating; live silent-wrong
     repro of the revert), @claude ACK (coherence by construction; three-way differential conclusive),
-    codex clean. Non-blocking residue for the next within-area touch: rename the `spineBase` param to
-    `pureSpine`; P=2 first-link AT cert data; harvest the fullbox boxlegB/3link/inner-only probe trio.
+    codex clean. Residue landed in `6feebc150` (pureSpine rename + FullBoxChainedSpine cert), 4-gated.
+  - [x] **FORK SLICE: fork spines ORDINALIZE via owner-slot rooting (Graefe design-ACK'd fork-first).**
+    `chainedSpineWalk` peels the spine ONCE (links + admitted + pureSpine; ownership generalized to
+    "resolves to exactly ONE deeper link" — forks admitted, table-owned/orphan/dup-alias declined
+    defensively, dup 42712-loud upstream + pinned); `chainedOwnerElementSlot` roots the collection at the
+    OWNER's element slot (`len(ordinalLegColumns(owner.join.Left))` — the layout law, AT-invariant, pinned
+    per combination incl. the AT-only-upstream case). Purely translation-side. Controls at introduction:
+    full feature-off → all four fork seed-form pins FAIL; MIS-ROOT control (tip slot) → the colliding-schema
+    cert fails with exactly [W:100] (silent axis has teeth). Coupling cert (REQUIRED): fork-over-FULL-box +
+    box-leg WHERE declines whole-chain via the pureSpine arm (white-box + e2e). P1's chained residual now
+    {box-base, FULL-box-filtered, enclosed, defensive !ok} — NEXT: the box-substrate slice (box-base +
+    box-leg-conjunct TOGETHER, axis-coupled), circular arms last. 4-gate in flight.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a

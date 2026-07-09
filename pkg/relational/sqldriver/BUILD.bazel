@@ -244,6 +244,7 @@ go_test(
         "rfc153_matrix_fdb_test.go",
         "rfc173_f2left_buriedbox_fdb_test.go",
         "rfc173_f2left_projected_exists_fdb_test.go",
+        "rfc173_fork_colliding_fdb_test.go",
         "rfc173_item1_keybinding_exists_fdb_test.go",
         "rfc173_item2_c3_flatten_seed_fdb_test.go",
         "rfc173_item2_c4_enclosure_lift_fdb_test.go",

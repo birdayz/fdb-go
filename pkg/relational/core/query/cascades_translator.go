@@ -2455,13 +2455,15 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					// ofOrdinal resolves on the ordinal row at every level CNF + pushdown lands it
 					// (a name key would strand ordinal -1, so an ordinalized OR malformed-plans). An
 					// outer-col-ONLY conjunct stays lazy (SARG on Scan(t)). A seed with no positional
-					// authority → decline to name-model (correct-or-loud). See the helper for scope
-					// (2-chain; a 3+-link chain declines earlier via clusterArity poison).
-					// The rebase FORM depends on the seed `sel`: an ORDINAL seed (2-chain ordinalized)
-					// takes the POSITIONAL bake (ofOrdinal); a NAME-MODEL seed (3+-link declined via
-					// clusterArity poison → NewAnchoredJoinRecord fallback) takes the NAME-KEY rebase
-					// against its qualified merged row — baking positionally onto the name-keyed row
-					// would strand (ordinal -1).
+					// authority → decline to name-model (correct-or-loud). This path is
+					// linearity-agnostic: ordinalLegType accumulates every link's columns in spine
+					// order regardless of ownership topology, so fork spines rebase identically.
+					// The rebase FORM depends on the seed `sel`: an ORDINAL seed (an admitted spine —
+					// linear or fork, any depth) takes the POSITIONAL bake (ofOrdinal); a NAME-MODEL
+					// seed (a declined shape: box-base, FULL-box-bottom filtered, enclosed →
+					// NewAnchoredJoinRecord fallback) takes the NAME-KEY rebase against its qualified
+					// merged row — baking positionally onto the name-keyed row would strand
+					// (ordinal -1).
 					ordinalSeed := false
 					if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin {
 						ordinalSeed = true

@@ -212,4 +212,24 @@ func TestFDB_RFC173S4_FullBoxChainedSpine(t *testing.T) {
 			"map[P:1 Y:4]", "map[P:1 Y:5]", "map[P:1 Y:6]",
 			"map[P:1 Y:3]", "map[P:1 Y:9]",
 		})
+
+	// The FORK admission composing with the impure bottom (the coupling cert):
+	// a FORK spine over the FULL box + a box-leg WHERE must decline the WHOLE
+	// chain to name-model via the box-leg-conjunct arm — the fork admission
+	// must NOT bypass it. W = X.SUB of A(10)'s elements, × Y2's SUBSTRUCT
+	// elements per element: X1{SUB[1,2,10], SS×1} → {1,2,10}; X2{SUB[3], SS×1}
+	// → {3}.
+	want("fork_over_box_boxleg_filter",
+		`SELECT "W" `+fullBox+`, "A"."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "X"."SUB" AS "W" WHERE "A"."ID" = 10`,
+		[]string{"map[W:1]", "map[W:2]", "map[W:10]", "map[W:3]"})
+
+	// The unfiltered fork over the FULL box ordinalizes (admission parity) and
+	// must answer the same name-model ground truth.
+	want("fork_over_box_unfiltered",
+		`SELECT "W" `+fullBox+`, "A"."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "X"."SUB" AS "W"`,
+		[]string{
+			"map[W:1]", "map[W:2]", "map[W:10]", "map[W:3]",
+			"map[W:4]", "map[W:5]", "map[W:6]",
+			"map[W:3]", "map[W:9]",
+		})
 }

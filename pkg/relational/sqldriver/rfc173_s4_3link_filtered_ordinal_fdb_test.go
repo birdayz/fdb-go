@@ -28,9 +28,10 @@ import (
 // an ordinal-only signature and passed verbatim on the name-model parent). The seed-form
 // BOUNDARY is pinned white-box in rfc173_2d_chained_spine_seed_test.go (the RC AnchoredJoin
 // flag off translateChainedUnnestJoin, feature-off-control-verified); THIS cert pins that the
-// rows stay correct on both sides of that boundary: the ordinalizing linear shapes, the
-// box-base chain that declines (c5b), the FORK chain that declines (owner two links back —
-// the shape the unscoped gate lift malformed-planned at ordinal -1), and the buried 2-chain.
+// rows stay correct on both sides of that boundary: the ordinalizing linear shapes, the FORK
+// chains that ordinalize since the fork slice (owner-slot rooting; an early unscoped cut
+// mis-rooted them at the PRECEDING link's slot → ordinal -1), the box-base chain that
+// declines (c5b), and the buried 2-chain.
 func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -248,24 +249,32 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	wantRows("buried_2chain_straddle", r6, []string{"map[Y:1]", "map[Y:1]", "map[Y:1]"}, q6)
 
 	// FORK chain: W's owner is X, TWO links back — not the immediately preceding Y.
-	// The unscoped gate lift admitted this and rooted W's collection at Y's element
-	// slot (elementRootIdx = the PRECEDING link), descending SUB on ELEM2 → loud
-	// "ordinal -1" malformed plan; with colliding field names it would have been
-	// SILENTLY WRONG rows. The owner-linearity check declines the fork to the
-	// name-model residual, which resolves each owner BY NAME: cross-product of Y's
-	// SUBSTRUCT (2 elems on T4(1)) × W's SUB. T4(1): {1,7}×2; T4(2): {9}; T4(11): {5}.
+	// Since the fork slice, this ORDINALIZES: the collection roots at the OWNER
+	// link's element slot (chainedOwnerElementSlot), not the preceding link's, so
+	// the mis-root class (loud "ordinal -1" on disjoint field names, SILENT wrong
+	// rows on colliding ones — the mis-root reads Y's element where X's was named)
+	// is closed by correct rooting. Rows are the same either model (cross-product
+	// of Y's SUBSTRUCT (2 elems on T4(1)) × W's SUB: T4(1): {1,7}×2; T4(2): {9};
+	// T4(11): {5}); the seed-form boundary + the colliding-schema mis-root are
+	// pinned in the white-box file and TestFDB_RFC173Fork_CollidingSubfield.
 	q7 := `SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "X"."SUB" AS "W"`
-	_, r7 := run("fork_projection_declines_namemodel", q7)
-	wantRows("fork_projection_declines_namemodel", r7,
+	_, r7 := run("fork_projection_ordinalizes", q7)
+	wantRows("fork_projection_ordinalizes", r7,
 		[]string{"map[W:1]", "map[W:1]", "map[W:5]", "map[W:7]", "map[W:7]", "map[W:9]"}, q7)
 
-	// The FILTERED fork: on the unscoped cut this only survived through the very
-	// box-leg-conjunct over-decline the slice removes — with the arm scoped to
-	// boxes, the LINEARITY check alone must keep the fork name-model and correct.
+	// The FILTERED fork: the outer conjunct rides the ⊆-outerLegs lazy path over
+	// the ordinalized fork spine (pure bottom → the box-leg-conjunct arm exempt).
 	q8 := `SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "X"."SUB" AS "W" WHERE T4."ID" = 1`
-	_, r8 := run("fork_filtered_declines_namemodel", q8)
-	wantRows("fork_filtered_declines_namemodel", r8,
+	_, r8 := run("fork_filtered_ordinalizes", q8)
+	wantRows("fork_filtered_ordinalizes", r8,
 		[]string{"map[W:1]", "map[W:1]", "map[W:7]", "map[W:7]"}, q8)
+
+	// A FILTERED fork STRADDLE mixing the base column with the FORKED element —
+	// the positional bake over the fork spine's merged row: T4.ID = W matches
+	// T4(1)'s W=1 (× Y's 2 SUBSTRUCT elems) → {1,1}.
+	q8b := `SELECT "W" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "X"."SUB" AS "W" WHERE T4."ID" = "W"`
+	_, r8b := run("fork_straddle_ordinalizes", q8b)
+	wantRows("fork_straddle_ordinalizes", r8b, []string{"map[W:1]", "map[W:1]"}, q8b)
 
 	// DEPTH-3 SHADOW-SLOT straddle: T4.SUB (the outer shadow scalar, slot 3 of the
 	// ordinal row) = Z. Exactly T4(2) matches (sub=20, Z=20) → {20}. THE positive

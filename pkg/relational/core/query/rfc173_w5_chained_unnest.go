@@ -328,10 +328,10 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 //   - a SINGLE lateral source (clusterArity 1) — the base of a 2-link chain's
 //     first link (a plain scan/box-free source);
 //   - a CHAINED unnest whose OWN base ordinalizes — a deeper chain's first link,
-//     recursing left down the unnest-right spine. The mid-spine
-//     len(Segments)<2 check is load-bearing, not decorative: a 1-segment
-//     LogicalUnnest is constructible via the AT-source parser path, and such a
-//     malformed link must decline conservatively.
+//     peeling left down the unnest-right spine. The per-link len(Segments)<2
+//     check is load-bearing, not decorative: a 1-segment LogicalUnnest is
+//     constructible via the AT-source parser path, and such a malformed link
+//     must decline conservatively.
 //
 // The seed machinery (ordinalLegColumns/unnestOrdinalSeed/unnestBakedRootCollection)
 // already recurses on o.Left for arbitrary depth (rfc173_ordinal_seed.go: the
@@ -345,46 +345,105 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 // a box base. It fails open to the name-model residual (pinned: a box-base chain
 // answers correctly via the name-key rebase, no strand).
 //
-// The second return, pureSpine, reports whether the spine BOTTOMS at a source
-// binding exactly ONE alias. A FULL OUTER box is ALSO clusterArity==1
-// (merge-opaque) and therefore ADMITTED — exactly as the pre-slice depth-2 gate
-// admitted it — but it binds its LEG aliases, which are genuine BOX LEGS, not
-// chain links: the box-leg-conjunct arm of unnestExistsSeedSafe must stay
-// ACTIVE for it (pureSpine=false), or a box-leg WHERE ordinalizes the chained
-// link while the first link's own gate keeps a name-model seed over the box —
-// an ordinal read over a name-keyed row, SILENTLY WRONG rows. The discriminator
-// is the arm's own authority (outerBoundAliases == 1), not a structural box
-// probe, so any future single-arity multi-alias source stays conservatively
-// impure.
-func (t *cascadesTranslator) chainedBaseOrdinalizes(base logical.LogicalOperator) (admitted, pureSpine bool) {
-	if t.clusterArity(base) == 1 {
-		return true, len(outerBoundAliases(base)) == 1
+// OWNERSHIP: every link ABOVE the first must consume the element of exactly ONE
+// deeper link — resolved BY ALIAS within this same walk (one authority, no
+// second spine walk). This generalizes the former linear immediately-preceding
+// rule: a FORK (`…, x.substruct AS y, x.sub AS w` — w's owner x is two links
+// back) is ADMITTED, because the collection root is computed from the OWNER
+// link's element slot (chainedOwnerElementSlot), not the preceding link's. The
+// first link's owner is the bottom source itself, validated by the chained
+// classification machinery exactly as before. An owner alias matching ZERO
+// deeper links (a table-owned mid-spine unnest — upstream-rejected as multiple
+// lateral unnests) or MORE THAN ONE (duplicate FROM aliases — 42712-loud
+// upstream; this arm is defensive) declines to name-model.
+//
+// pureSpine reports whether the spine BOTTOMS at a source binding exactly ONE
+// alias. A FULL OUTER box is ALSO clusterArity==1 (merge-opaque) and therefore
+// ADMITTED — exactly as the pre-slice depth-2 gate admitted it — but it binds
+// its LEG aliases, which are genuine BOX LEGS, not chain links: the
+// box-leg-conjunct arm of unnestExistsSeedSafe must stay ACTIVE for it
+// (pureSpine=false), or a box-leg WHERE ordinalizes the chained link while the
+// first link's own gate keeps a name-model seed over the box — an ordinal read
+// over a name-keyed row, SILENTLY WRONG rows. The discriminator is the arm's
+// own authority (outerBoundAliases == 1), not a structural box probe, so any
+// future single-arity multi-alias source stays conservatively impure.
+func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links []chainedSpineLink, admitted, pureSpine bool) {
+	// Peel the unnest-right joins off the left-deep spine, outermost-first.
+	var rev []chainedSpineLink
+	cur := op
+	for {
+		bj, ok := cur.(*logical.LogicalJoin)
+		if !ok {
+			break
+		}
+		un, isU := bj.Right.(*logical.LogicalUnnest)
+		if !isU {
+			break // a non-unnest join: the spine BOTTOM (a box)
+		}
+		if len(un.Segments) < 2 {
+			return nil, false, false
+		}
+		rev = append(rev, chainedSpineLink{join: bj, un: un})
+		cur = bj.Left
 	}
-	bj, ok := base.(*logical.LogicalJoin)
-	if !ok {
-		return false, false
+	if t.clusterArity(cur) != 1 {
+		return nil, false, false
 	}
-	un, ok := bj.Right.(*logical.LogicalUnnest)
-	if !ok || len(un.Segments) < 2 {
-		return false, false
+	links = make([]chainedSpineLink, 0, len(rev))
+	for i := len(rev) - 1; i >= 0; i-- {
+		links = append(links, rev[i])
 	}
-	// LINEAR spine only: each link must consume the IMMEDIATELY PRECEDING
-	// link's element. A FORK — an owner two or more links back, `…, x.sub AS y,
-	// x.other AS w` (w's owner x is not y) — must decline: the ordinal seed
-	// roots each link's collection at the PRECEDING link's element slot
-	// (elementRootIdx), so a fork would descend the WRONG element — a loud
-	// "ordinal -1" strand when the field names are disjoint, and SILENTLY WRONG
-	// ROWS when the mis-rooted element carries a same-named field. The
-	// name-model residual answers forks correctly (each link resolves its owner
-	// BY NAME at its own altitude), so declining is fail-open, not a reach loss.
-	if lj, isJ := bj.Left.(*logical.LogicalJoin); isJ {
-		if lu, isU := lj.Right.(*logical.LogicalUnnest); isU {
-			if !strings.EqualFold(un.Segments[0], lu.Alias) {
-				return false, false
+	for i := 1; i < len(links); i++ {
+		matches := 0
+		for k := range i {
+			if links[k].un.Alias != "" && strings.EqualFold(links[i].un.Segments[0], links[k].un.Alias) {
+				matches++
 			}
 		}
+		if matches != 1 {
+			return nil, false, false
+		}
 	}
-	return t.chainedBaseOrdinalizes(bj.Left)
+	return links, true, len(outerBoundAliases(cur)) == 1
+}
+
+// chainedSpineLink is one lateral-unnest link of a chained spine as peeled by
+// chainedSpineWalk, bottom-most first: join's Right IS un, and join.Left is
+// everything below the link (the merged-row prefix its element appends to).
+type chainedSpineLink struct {
+	join *logical.LogicalJoin
+	un   *logical.LogicalUnnest
+}
+
+// chainedOwnerElementSlot resolves ownerAlias to exactly one walked link and
+// returns its ELEMENT's slot in the merged ordinal row. The layout law (pinned
+// per AT-combination in the slot tests): each link appends [element, AT?] to
+// the row, so the element is always the FIRST column its link contributes —
+// slot = len(ordinalLegColumns(owner.join.Left)) — invariant under the owner's
+// own AT ordinal (which FOLLOWS the element), under downstream links (which
+// append after), and under upstream AT columns (counted inside the prefix, an
+// AT-only upstream link contributing ONE column included). ok=false declines to
+// name-model: absent alias, a defensive duplicate (42712-loud upstream), or an
+// underivable prefix. NEVER resolve the root by name — an outer scalar with
+// the owner's name precedes the element in the merged row and would shadow it.
+func (t *cascadesTranslator) chainedOwnerElementSlot(links []chainedSpineLink, ownerAlias string) (int, bool) {
+	ownerIdx := -1
+	for i, l := range links {
+		if l.un.Alias != "" && strings.EqualFold(ownerAlias, l.un.Alias) {
+			if ownerIdx >= 0 {
+				return 0, false
+			}
+			ownerIdx = i
+		}
+	}
+	if ownerIdx < 0 {
+		return 0, false
+	}
+	prefix := t.ordinalLegColumns(links[ownerIdx].join.Left)
+	if prefix == nil {
+		return 0, false
+	}
+	return len(prefix), true
 }
 
 // translateChainedUnnestOrdinal builds the ORDINAL SelectExpression for a chained
@@ -411,71 +470,51 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	if prevEnclosure || len(u.Segments) < 2 {
 		return nil
 	}
-	// The FIRST link must be a lateral unnest whose BASE itself flows a positional
-	// row from translateRef. `j.Left` is that first link: a LogicalJoin whose Right
-	// is the first LogicalUnnest and whose Left is the BASE. The base ordinalizes
-	// when it is a single lateral source (the 2-link case) OR itself a chained
-	// unnest whose own base ordinalizes (a deeper chain) — chainedBaseOrdinalizes.
-	// A multi-source BOX base (c5b territory) or an exists-unsafe base declines
-	// here so we never build an ordinal seed over a first link that stays
-	// name-model. Spine admission is computed BEFORE the seed-safe call, and only
-	// an admitted base passes isSpine=true into unnestExistsSeedSafe — that scopes
-	// the box-leg-conjunct decline arm (whose "box legs" a chained spine does not
-	// have; the chained rebase authority bakes or lazies every reachable outer
-	// ref, with the (pred, !ok) fail-closed net behind it) while every OTHER
-	// decline arm (existential scope today, anything added later) stays live for
-	// spines too. The existential arm is unreachable for a chain in practice —
-	// EXISTS-over-chained is 0AF00 upstream — but it is scoped by semantics, not
-	// by that reachability accident.
-	firstLink, ok := j.Left.(*logical.LogicalJoin)
-	if !ok {
+	// The spine walk peels j.Left (the WHOLE outer) into its links, admitting a
+	// spine whose bottom is a single lateral source (clusterArity 1 — a plain
+	// source or a merge-opaque FULL box) with every above-first link's owner
+	// resolving to exactly one deeper link (forks included; the walk doc has
+	// the ownership law). A multi-source BOX base (c5b territory) or an
+	// exists-unsafe base declines here so we never build an ordinal seed over a
+	// first link that stays name-model. Spine admission is computed BEFORE the
+	// seed-safe call, and only pureSpine — NOT admitted — exempts the
+	// box-leg-conjunct decline arm (whose "box legs" a pure chained spine does
+	// not have; the chained rebase authority bakes or lazies every reachable
+	// outer ref, with the (pred, !ok) fail-closed net behind it), while every
+	// OTHER decline arm (existential scope today, anything added later) stays
+	// live for spines too. An admitted spine that bottoms in a FULL box keeps
+	// the arm ACTIVE (its bottom aliases are box legs), so a box-leg WHERE
+	// declines the WHOLE chain to name-model coherently with the first link's
+	// own gate. The seed-safe operand is the TIP link's base — the same operand
+	// the pre-fork gate passed. The existential arm is unreachable for a chain
+	// in practice — EXISTS-over-chained is 0AF00 upstream — but it is scoped by
+	// semantics, not by that reachability accident.
+	links, spineAdmitted, pureSpine := t.chainedSpineWalk(j.Left)
+	if !spineAdmitted || len(links) == 0 {
 		return nil
 	}
-	firstUnnest, ok := firstLink.Right.(*logical.LogicalUnnest)
-	if !ok {
-		return nil
-	}
-	// LINEAR spine only, at THIS link too: u's owner (Segments[0]) must be the
-	// IMMEDIATELY PRECEDING link's element. isChainedUnnest only proved SOME
-	// prior unnest owns u — a FORK (`…, x.sub AS y, x.other AS w`: w's owner is
-	// x, two links back) roots the collection at the WRONG element slot
-	// (elementRootIdx is the PRECEDING link's element), which strands loudly on
-	// disjoint field names and returns SILENTLY WRONG rows on colliding ones.
-	// Decline → the name-model residual answers forks correctly by name.
-	if !strings.EqualFold(u.Segments[0], firstUnnest.Alias) {
-		return nil
-	}
-	firstBase := firstLink.Left
-	// The spine walk runs over j.Left (the WHOLE outer, firstUnnest included) —
-	// NOT merely firstBase: walking firstBase alone would skip firstUnnest's own
-	// segment/linearity checks, admitting a fork sitting exactly one level below
-	// the dispatching link (`…, x.substruct AS y, x.substruct AS y2, y2.deep AS
-	// z` — z↔y2 is linear, but y2's owner x is not y). The walk's recursion arm
-	// also re-checks len(firstUnnest.Segments) >= 2, so no separate check here.
-	// The arm exemption takes pureSpine, NOT admitted: an admitted spine that
-	// bottoms in a FULL box keeps the box-leg-conjunct arm ACTIVE (its bottom
-	// aliases are box legs), so a box-leg WHERE declines the WHOLE chain to
-	// name-model coherently with the first link's own gate.
-	spineAdmitted, pureSpine := t.chainedBaseOrdinalizes(j.Left)
-	if !spineAdmitted || !t.unnestExistsSeedSafe(firstBase, pureSpine) {
+	tipBase := links[len(links)-1].join.Left
+	if !t.unnestExistsSeedSafe(tipBase, pureSpine) {
 		return nil
 	}
 
 	// Build the ordinal collection + seed FIRST (types only, no outerRef yet): a
 	// nil from either declines WITHOUT having cleared the enclosure or translated
 	// an ordinal first link, so the caller's name-model fallback stays sound. The
-	// collection roots at the owner alias (Segments[0]) — the first link's ELEMENT
-	// column. That element is at slot len(ordinalLegColumns(firstBase)) in
-	// ordinalLegType(j.Left) (= ordinalLegColumns(firstBase) ++ legColumns(first
-	// unnest), the element being legColumns[0]). Pass that slot EXPLICITLY: a
-	// name lookup would pick an OUTER column that SHADOWS the alias (an outer scalar
-	// named the same as the first unnest alias precedes the element in the merged
-	// row → wrong root → the sub-path descends the wrong column).
-	firstBaseCols := t.ordinalLegColumns(firstBase)
-	if firstBaseCols == nil {
+	// collection roots at u's OWNER ALIAS (Segments[0]) — the owner link's
+	// ELEMENT column, resolved to its slot in the merged ordinal row by
+	// chainedOwnerElementSlot over the SAME walk's links (for a linear chain the
+	// owner is the tip link and the slot equals the old
+	// len(ordinalLegColumns(tip.Left)); for a FORK it is the deeper owner's
+	// element — the generalization this admission relies on). Pass the slot
+	// EXPLICITLY: a name lookup would pick an OUTER column that SHADOWS the
+	// alias (an outer scalar named the same as the owner precedes the element in
+	// the merged row → wrong root → the sub-path descends the wrong column, the
+	// silent-wrong axis the colliding-schema cert pins).
+	elementRootIdx, ok := t.chainedOwnerElementSlot(links, u.Segments[0])
+	if !ok {
 		return nil
 	}
-	elementRootIdx := len(firstBaseCols)
 	fieldName := u.Segments[len(u.Segments)-1]
 	collection := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType, 0, elementRootIdx)
 	if collection == nil {
