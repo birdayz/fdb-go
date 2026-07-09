@@ -85,10 +85,11 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		// conjunct unresolvable (`field "A.col" not resolvable … ordinal -1` —
 		// malformed plan). Decline to the binary name-model path, where the
 		// qualified key resolves; the binary seed gate (unnestExistsSeedSafe)
-		// declines in the same step, so the two paths stay coupled. The
-		// name-ambiguous decline below only catches boxes with a duplicated
-		// column NAME; a box with distinct leg columns would otherwise gather
-		// here and bypass the narrowing.
+		// declines in the same step, so the two paths stay coupled. This decline is
+		// independent of the (retired) declineBoxDup dup-narrowing: a WHERE conjunct on
+		// an OPAQUE box leg has no per-leg window to bake into regardless of whether the
+		// box's columns collide by name — it is the box-as-one-opaque-leg shape, not a
+		// dup, that lacks the window.
 		if t.unnestOuterConjunctOnBoxLeg {
 			return nil
 		}

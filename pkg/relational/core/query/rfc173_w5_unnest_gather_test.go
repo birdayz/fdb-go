@@ -202,8 +202,9 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	uWithin := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	withinBox := logical.NewJoin(scan("SRC2", "s2"), scan("AUX2", "y"), logical.JoinFull, "")
 	jWithin := logical.NewJoin(inner(withinBox, scan("SRC", "s")), uWithin, logical.JoinInner, "")
-	if _, ok := tr.translateGatheredUnnestCluster(jWithin, uWithin, innerCorr, values.NotNullLong, "ARR", unnestTrailing).(*expressions.SelectExpression); !ok {
-		t.Fatalf("a WITHIN-box dup (two same-named columns in ONE box) must GATHER the raw seed (class-1 lift — the last dup decline retired)")
+	gotWithin := tr.translateGatheredUnnestCluster(jWithin, uWithin, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if _, ok := gotWithin.(*expressions.SelectExpression); !ok {
+		t.Fatalf("a WITHIN-box dup (two same-named columns in ONE box) must GATHER the raw seed (class-1 lift — the last dup decline retired), got %T", gotWithin)
 	}
 
 	// (b3) GROUPED non-box cross-leg dup now GATHERS via the un-collapse (RFC-173 S4
