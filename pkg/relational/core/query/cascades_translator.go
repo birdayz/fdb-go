@@ -2227,7 +2227,8 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
 			if rebuilt, ru, et, fn, rpos, rok := t.rotateEnclosedUnnest(join); rok {
 				if sel := t.translateGatheredUnnestCluster(
-					rebuilt, ru, unnestSourceCorrelation(ru), et, fn, rpos); sel != nil {
+					rebuilt, ru, unnestSourceCorrelation(ru), et, fn, rpos,
+				); sel != nil {
 					enclosedGathered = true
 					if t.enclosedGatherCache == nil {
 						t.enclosedGatherCache = make(map[*logical.LogicalJoin]expressions.RelationalExpression)
@@ -2442,7 +2443,16 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					// outer-col-ONLY conjunct stays lazy (SARG on Scan(t)). A seed with no positional
 					// authority → decline to name-model (correct-or-loud). See the helper for scope
 					// (2-chain; a 3+-link chain declines earlier via clusterArity poison).
-					baked, ok := rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr, t.ordinalLegType(join.Left))
+					// The rebase FORM depends on the seed `sel`: an ORDINAL seed (2-chain ordinalized)
+					// takes the POSITIONAL bake (ofOrdinal); a NAME-MODEL seed (3+-link declined via
+					// clusterArity poison → NewAnchoredJoinRecord fallback) takes the NAME-KEY rebase
+					// against its qualified merged row — baking positionally onto the name-keyed row
+					// would strand (ordinal -1).
+					ordinalSeed := false
+					if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin {
+						ordinalSeed = true
+					}
+					baked, ok := rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr, t.ordinalLegType(join.Left), ordinalSeed)
 					if !ok {
 						return nil
 					}
@@ -2821,15 +2831,21 @@ func rebaseUnnestOuterLegPredicate(
 // `t.id = 1` (outer-only) stays lazy. Returns ok=false (→ caller declines to name-model,
 // correct-or-loud) when a non-pushable conjunct cannot be positionally baked (no windowed type).
 //
-// SCOPE: this positional bake is validated for a 2-CHAIN (single inner element). A 3+-link
-// chain declines earlier (clusterArity poison in translateChainedUnnestOrdinal) and stays
-// name-model — its mixed-inner-ref placement is the deeper-nesting slice (the strand there lives
-// in pushBuriedUnnestPredicateDown/rewriteUnnestPredicate, a different layer than this bake).
+// SEED-FORM ENFORCED by the ordinalSeed arg (NOT the chain depth): the POSITIONAL bake fires
+// ONLY over an ORDINAL seed; a NAME-MODEL seed takes the NAME-KEY rebase (its merged row carries
+// qualified `leg.col` keys). The caller sets ordinalSeed from `sel`'s own RC (`!AnchoredJoin`) —
+// so ANY chained unnest that declined to name-model (a 3+-link chain via clusterArity poison, a
+// 2-chain buried behind a trailing table, or a `!ok` positional decline) correctly keeps the
+// name-key rebase, exactly as before this slice. The positional bake is validated only for the
+// ordinalizing 2-CHAIN; a 3+-link chain's ordinalization + its mixed-inner-ref placement (the
+// strand living in pushBuriedUnnestPredicateDown/rewriteUnnestPredicate) is the deeper-nesting
+// slice.
 func rebaseChainedOuterLegPredicate(
 	p predicates.QueryPredicate,
 	outerLegs map[string]struct{},
 	mergedCorr values.CorrelationIdentifier,
 	ordType *values.RecordType,
+	ordinalSeed bool,
 ) (predicates.QueryPredicate, bool) {
 	if p == nil || len(outerLegs) == 0 {
 		return p, true
@@ -2838,7 +2854,7 @@ func rebaseChainedOuterLegPredicate(
 		newSubs := make([]predicates.QueryPredicate, len(and.SubPredicates))
 		changed := false
 		for i, s := range and.SubPredicates {
-			sub, ok := rebaseChainedOuterLegPredicate(s, outerLegs, mergedCorr, ordType)
+			sub, ok := rebaseChainedOuterLegPredicate(s, outerLegs, mergedCorr, ordType, ordinalSeed)
 			if !ok {
 				return p, false
 			}
@@ -2855,10 +2871,16 @@ func rebaseChainedOuterLegPredicate(
 	if chainedPredScanPushable(p, outerLegs) {
 		return p, true // outer-base-leg refs only → pushed to Scan(t); leave lazy (SARG)
 	}
-	// A non-pushable conjunct (references an in-chain element): bake its outer-leg refs
-	// POSITIONALLY over ordType so an ofOrdinal resolves on the ordinal row at every level
-	// CNF + pushdown lands the clause — a name key would strand (ordinal -1) on the ordinal seed.
-	return rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, outerLegs, mergedCorr)
+	// A non-pushable conjunct (references an in-chain element): rebase its outer-leg refs onto
+	// the merged row. Over an ORDINAL seed, bake POSITIONALLY over ordType so an ofOrdinal
+	// resolves on the ordinal row at every level CNF + pushdown lands the clause (a name key
+	// would strand ordinal -1). Over a NAME-MODEL seed (a declined 3+-link fallback), the merged
+	// row carries qualified `leg.col` keys — use the NAME-KEY rebase (a positional bake against
+	// the name-keyed row would strand DEEP ordinal -1).
+	if ordinalSeed {
+		return rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, outerLegs, mergedCorr)
+	}
+	return rebaseUnnestOuterLegPredicate(p, outerLegs, mergedCorr), true
 }
 
 // chainedPredScanPushable reports whether every correlation the conjunct references is an
