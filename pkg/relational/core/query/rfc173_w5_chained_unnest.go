@@ -153,6 +153,22 @@ func isChainedUnnest(outerLeft logical.LogicalOperator, u *logical.LogicalUnnest
 	return len(u.Segments) >= 1 && logical.FindOwnerUnnest(outerLeft, u.Segments[0]) != nil
 }
 
+// filterInputIsChainedUnnest reports whether a filter's input is a left-deep
+// join whose rightmost source is a CHAINED lateral unnest (`FROM t, t.a AS x,
+// x.b AS y` — the second unnest owned by the first's element). The typed gate
+// for the scalar-subquery-over-chained narrowed decline in translateFilter.
+func filterInputIsChainedUnnest(input logical.LogicalOperator) bool {
+	j, ok := input.(*logical.LogicalJoin)
+	if !ok {
+		return false
+	}
+	u, ok := j.Right.(*logical.LogicalUnnest)
+	if !ok {
+		return false
+	}
+	return isChainedUnnest(j.Left, u)
+}
+
 // chainedUnnestCollection builds the Explode collection for a chained unnest:
 // a multi-accessor FieldValue rooted at the OWNER alias (segment 0 — reads the
 // element proto message off the merged row's Datum key) with the sub-path
@@ -306,13 +322,6 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	// link (a deeper chain's inner link, or a chain under a name-model parent)
 	// keeps the name-model residual so its outer flows a name-keyed row.
 	if prevEnclosure || len(u.Segments) < 2 {
-		return nil
-	}
-	// Under an ancestor FILTER the ordinal seed cannot carry an outer-column predicate
-	// across the nesting barrier (Slice 2 compose direction) — decline to the
-	// name-model residual, whose qualified name keys resolve the predicate. Coarse:
-	// ANY ancestor filter suppresses; an unfiltered chained unnest still ordinalizes.
-	if t.chainedUnnestUnderFilter {
 		return nil
 	}
 	// The FIRST link must be a single-source lateral unnest that will itself take

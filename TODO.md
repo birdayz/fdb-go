@@ -126,6 +126,38 @@ validation gate.
     parameter instead of a global mutable field (~15 threading sites). Separate architectural refactor;
     NOT a producer-retirement blocker — the `:3234` lift landed without it. Do AFTER the remaining
     enclosure setters are retired (it touches all of them).
+  - [x] **Slice 2b: filtered-chained ordinalizes — DONE (Graefe design+impl ACK'd).** A chained lateral
+    unnest under an ancestor WHERE (`FROM t, t.SARR AS x, x.SUB AS y WHERE <pred>`) now ORDINALIZES
+    instead of declining to the name-model residual (buildUnnestResultValue → NewAnchoredJoinRecord).
+    The coarse `chainedUnnestUnderFilter` "any filter suppresses" decline is RETIRED (field + set/restore
+    + gate all deleted). Predicate placement is per-conjunct via the ⊆-outerLegs pushable-to-scan rebase
+    gate (`rebaseChainedOuterLegPredicate`/`chainedPredScanPushable`): outer-col-only (correlated-to ⊆
+    {t}) → SARG on Scan(t); anything referencing an in-chain correlation (x/y) → keep the rebase at the
+    inner Explode. Axis-audited every filter shape (eq/AND/OR/IN-list/BETWEEN/arithmetic/IS-NULL/NOT/
+    multi-conjunct/straddling — all row-verified correct; end-to-end plan asserts pin the SARG/inner-filter
+    placement). Cert: `TestFDB_RFC173S4_FilteredChained`. Retires 10+ name-model-caller invocations.
+    B1 corpus (1641) green. Two residuals booked below.
+  - [ ] **BOOKED SLICE (Graefe, RFC-173 S4 Slice 2b residual — PROPER FIX, reach gap to Java): scalar
+    subquery in a filter over a chained unnest.** `FROM t, t.a AS x, x.b AS y WHERE t.id = (SELECT MAX(id)
+    FROM …)` — HEAD shipped SILENT-WRONG `[]` (name-model swallowed it); Java answers {rows}. Now rejected
+    LOUDLY (typed `0A000` in translateFilter, gated `filterInputIsChainedUnnest(f.Input) &&
+    len(f.ScalarSubqueries) > 0`), pinned by `TestFDB_RFC173S4_FilteredChained/scalar_subquery_loud_0A000`
+    (the sentinel — flips green when this closes). Root cause: the scalar-subquery predicate rides the
+    wedgeGate POSITIONAL bake (`rebaseUnnestOuterLegPredicateOrdinal`), a different path than the
+    per-conjunct name-keyed rebase, and bakes the outer ref to ordinal -1. Proper fix = make the
+    positional-bake path carry the scalar-subquery predicate so it returns Java's rows. Reach gap → 100%
+    alignment means it must eventually close; the 0A000 is the interim correct-or-loud, NOT permanent.
+    Sibling upstream gap (book if the endgame wants it): IN-subquery / EXISTS in a filter over a chained
+    unnest fail 0AF00 UPSTREAM of the chained dispatch on both paths (Java answers) — orthogonal reach gaps.
+  - [ ] **BOOKED SLICE (Graefe, RFC-173 S4 Slice 2b follow-up — orthogonal resolver gap): scalar sibling
+    of an unnested array element does not resolve (42703).** `SELECT X.K FROM T4, T4.SARR AS X` where the
+    SARR element has a scalar sibling `K` → `42703 column "X.K" does not exist`, IN THE BASE CASE (no
+    chaining, no filter). A semantic identifier-resolution gap (the resolver can't reach an unnest
+    element's own sibling scalar by the element alias), orthogonal to filtered-chained predicate placement.
+    Java resolves it (standard lateral ref) → real Go divergence, must eventually close (likely a small
+    resolver fix once scoped). Discovered during the Slice-2b de-risk (the would-be x-column conjunct
+    `WHERE X.K = v` is unreachable via this gap; the ⊆-outerLegs gate needs no special handling for it —
+    an x-ref flows through the keep-rebase branch once the resolver closes).
   - [x] **W3 the coupled 2-way flip — DONE, ALL ACKs.** W3a-1/W3a-2 (36297a253, fd07e2f49,
     140799069, d98bbac91, 139c6cb94); **W3b-1 LIVE FLIP** (1aca8addd + 47d3b48bb RFC log +
     00c7a206e Graefe notes + 5ead4e149 Torvalds nits): Graefe ACK (cross-leg baking BLESSED as the
