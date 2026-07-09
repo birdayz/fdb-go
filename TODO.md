@@ -213,7 +213,12 @@ validation gate.
     cert fails with exactly [W:100] (silent axis has teeth). Coupling cert (REQUIRED): fork-over-FULL-box +
     box-leg WHERE declines whole-chain via the pureSpine arm (white-box + e2e). P1's chained residual now
     {box-base, FULL-box-filtered, enclosed, defensive !ok} — NEXT: the box-substrate slice (box-base +
-    box-leg-conjunct TOGETHER, axis-coupled), circular arms last. 4-gate in flight.
+    box-leg-conjunct TOGETHER, axis-coupled), circular arms last.
+    FULLY 4-GATED (impl 94f5b1ccc + comments-only ghost-fix e2bf12484): Graefe impl-ACK ("controls the
+    strongest this arc has produced"), @claude ACK (prefix-stability coherence proof; adversarial variants
+    all correct; independent teeth-check), Torvalds comments-NAK→ACK (seven chainedBaseOrdinalizes ghosts
+    rewritten; controls F/F2/G all reproduced under his hand), codex clean ×2. Probe extras booked for a
+    future touch: threebranch_fork, fork_owner_first_link_4deep, at_dense_fork pins, fork_over_fullbox_inner_only.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
