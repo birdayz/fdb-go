@@ -38,6 +38,12 @@ func newDisjointUnnestTranslator(t *testing.T) *cascadesTranslator {
 		metadata.NewColumnSpec("YID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("W", api.NewLongType(true), 2),
 	}, []string{"YID"})
+	// SRC2 deliberately SHARES the column name SID with SRC — the box-involved
+	// cross-leg dup fixture (a FULL box of SRC2 collides with a sibling SRC scan).
+	b.AddTable("SRC2", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("SID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("W", api.NewLongType(true), 2),
+	}, []string{"SID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -153,20 +159,56 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 	}
 
 	// (b) NAME-AMBIGUOUS bare-twin (RFC-173 S4 Slice 2a): a column name shared by two
-	// legs (same table twice) now GATHERS via the POSITIONAL WRAP — each leg's columns
-	// re-exposed as ALIAS.COL window keys, so a qualified read routes to its own leg
-	// instead of last-leg-wins. (A BARE ambiguous reference errors 42702 at semantic
-	// analysis before the translator, so only qualified reads reach here.) The wrap is
-	// a LogicalProjectionExpression (survives SelectMergeRule).
+	// NON-BOX legs (same table twice) now GATHERS via the RAW seed — NOT a positional
+	// wrap. Each plain leg is its own quantifier, so a qualified `s.SID`/`s2.SID` read
+	// routes to its own scan (in the SELECT, an outer WHERE, and a cross-leg predicate
+	// alike — the FDB cert pins those rows). A wrap here would be wrong: its bare
+	// pass-through key would make an outer filter resolve a qualified dup column to
+	// first-match. (A BARE ambiguous reference errors 42702 at semantic analysis
+	// before the translator, so only qualified reads reach here.) The raw seed is a
+	// SelectExpression, no nested projection.
 	uDup := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	jDup := logical.NewJoin(inner(scan("SRC", "s"), scan("SRC", "s2")), uDup, logical.JoinInner, "")
 	gotDup := tr.translateGatheredUnnestCluster(jDup, uDup, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 	if gotDup == nil {
-		t.Fatal("cross-leg duplicate column names must GATHER via the positional wrap (Slice 2a), not decline")
+		t.Fatal("cross-leg duplicate column names between two non-box legs must GATHER via the raw seed (Slice 2a), not decline")
 	}
-	if _, ok := gotDup.(*expressions.LogicalProjectionExpression); !ok {
-		t.Fatalf("dup-name gather must be a positional-wrap LogicalProjectionExpression, got %T", gotDup)
+	if _, ok := gotDup.(*expressions.SelectExpression); !ok {
+		t.Fatalf("non-box dup-name gather must be the RAW seed SelectExpression (no wrap), got %T", gotDup)
 	}
+
+	// (b2) BOX-INVOLVED cross-leg dup (RFC-173 S4 Slice 2a scope boundary): a
+	// merge-opaque FULL box leg carrying SID collides with a sibling SRC scan's SID.
+	// A box is ONE opaque quantifier — its buried SID can't be qualified apart from
+	// the scan's SID, so unlike the two-scan bare-twin this DECLINES to name-model.
+	// (The name-model fallback's own handling of this shape is the deferred box-
+	// disambiguation increment; here we pin only that the gather correctly declines,
+	// so a future wrap re-introduction can't silently gather it into wrong rows.)
+	uBox := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	boxLeg := logical.NewJoin(scan("SRC2", "s2"), scan("AUX", "x"), logical.JoinFull, "")
+	jBox := logical.NewJoin(inner(boxLeg, scan("SRC", "s")), uBox, logical.JoinInner, "")
+	if got := tr.translateGatheredUnnestCluster(jBox, uBox, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
+		t.Fatalf("a box-involved cross-leg dup must DECLINE (box side can't disambiguate its buried column), got %T", got)
+	}
+
+	// (b3) GROUPED non-box cross-leg dup DECLINES (RFC-173 S4 Slice 2a scope boundary,
+	// forward sentinel): the SAME two-scan bare-twin case (b) gathers via the raw seed
+	// when NOT grouped, but UNDER AGGREGATE it declines. The grouped ordinal resolution
+	// is name-BLIND to qualifiers (looks up bare `SID`, not `s.SID`/`s2.SID`), so the
+	// wrap collapses the dup to first-match and the raw seed groups every row under NULL
+	// — the grouped bare-twin needs qualifier-honoring ordinal resolution it doesn't yet
+	// have. It fail-opens to name-model (= master's pre-2a behavior). Because the E2E
+	// rows stay correct whether it declines OR (someday) gathers, THIS plan-shape pin is
+	// the sentinel that forces re-certification when the qualifier-honoring compose
+	// increment lands. Same cluster as (b) — the ONLY difference is underAggregate.
+	tr.underAggregate = true
+	uGrouped := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	jGrouped := logical.NewJoin(inner(scan("SRC", "s"), scan("SRC", "s2")), uGrouped, logical.JoinInner, "")
+	if got := tr.translateGatheredUnnestCluster(jGrouped, uGrouped, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
+		tr.underAggregate = false
+		t.Fatalf("a GROUPED non-box cross-leg dup must DECLINE (grouped ordinal resolution is name-blind to qualifiers), got %T", got)
+	}
+	tr.underAggregate = false
 
 	// (c) SHADOWING now GATHERS (the commit-2 lift): the element alias
 	// equaling an outer column name resolves correctly — the visitor

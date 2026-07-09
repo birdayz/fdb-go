@@ -23,9 +23,16 @@ import (
 // TestFDB_RFC173S4_BareTwinGather is the certificate for RFC-173 S4 Slice 2a: a
 // multi-source lateral unnest whose two legs SHARE a bare column name (the
 // name-ambiguous bare-twin, `FROM A, B, A.ARR AS X` with A,B both carrying K) now
-// GATHERS via the positional wrap (each leg's columns re-exposed as ALIAS.COL by
-// its [Start,Width) window) instead of declining to name-model — narrowing :1151's
+// GATHERS via the RAW seed instead of declining to name-model — narrowing :1151's
 // bare-twin residency for the CROSS-LEG case.
+//
+// It gathers via the RAW seed, NOT a positional wrap: each plain leg is its own
+// quantifier (Scan(A), Scan(B)) in the flat select, so a QUALIFIED `A.K`/`B.K` read
+// routes to its own scan — in the SELECT list, an outer WHERE, and a cross-leg
+// predicate alike. An earlier wrap attempt was BOTH unnecessary (the raw seed
+// already disambiguates qualified reads) and wrong (its bare pass-through key made
+// `WHERE B.K=200` resolve to first-match A.K=100 and drop every row) — the
+// where_on_* subtest pins those cases as regressions.
 //
 // A=(1,100,[7,8]); B=(1,200); C=(1,55). A,B share K; C has a distinct M.
 func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
@@ -138,35 +145,72 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 		return explain
 	}
 
-	// The QUALIFIED bare-twin `SELECT A.K, B.K, X` — dup name K resolves by leg window
-	// (A.K→its slot, B.K→its slot), not last-leg-wins. A×B×unnest = 2 rows.
-	t.Run("qualified_bare_twin_resolves_by_window", func(t *testing.T) {
+	// The QUALIFIED bare-twin `SELECT A.K, B.K, X` — dup name K resolves by QUANTIFIER
+	// (A.K→Scan(A), B.K→Scan(B)), not last-leg-wins. A×B×unnest = 2 rows. It gathers
+	// via the RAW seed — a SINGLE user projection, NO positional wrap.
+	t.Run("qualified_bare_twin_resolves_by_quantifier", func(t *testing.T) {
 		explain := wantRows(t, `SELECT A."K", B."K", "X" FROM A, B, A."ARR" AS "X"`,
 			[]string{"map[A.K:100 B.K:200 X:7]", "map[A.K:100 B.K:200 X:8]"})
-		// The positional WRAP fired (an inner projection binding the dup columns by slot).
-		if strings.Count(explain, "Project(") < 2 {
-			t.Fatalf("bare-twin must gather via the positional wrap (nested Project); plan=%s", explain)
+		// RAW seed: one user projection, no nested positional wrap.
+		if strings.Count(explain, "Project(") != 1 {
+			t.Fatalf("bare-twin must gather via the raw seed (single Project, no wrap); plan=%s", explain)
 		}
 	})
 
-	// The BARE element X still resolves through the wrap (emitLeafKeys ADDS ALIAS.COL,
-	// keeps the bare pass-through) even though the leg columns are dup-named.
-	t.Run("bare_element_survives_the_wrap", func(t *testing.T) {
+	// The BARE element X resolves through the raw seed even though the leg columns are
+	// dup-named (the element quantifier is distinct from A and B).
+	t.Run("bare_element_resolves", func(t *testing.T) {
 		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X"`, []string{"map[X:7]", "map[X:8]"})
 	})
 
-	// A WHERE on a QUALIFIED bare-twin column resolves against the wrap (the gathered
-	// path is NOT chainedUnnestUnderFilter-suppressed — that flag reads only in the
-	// chained path). A.K=100 matches; A.K=999 drops all.
+	// A WHERE on a QUALIFIED bare-twin column resolves against its own quantifier — on
+	// the FIRST leg (A.K) AND on a LATER leg (B.K), and in a cross-leg predicate. This
+	// pins the regression a positional wrap introduced: the wrap's bare pass-through
+	// key made `WHERE B.K=200` resolve to first-match (A.K=100) and drop every row.
 	t.Run("where_on_qualified_bare_twin_resolves", func(t *testing.T) {
 		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = 100`, []string{"map[X:7]", "map[X:8]"})
 		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = 999`, nil)
+		// The wrap-regression cases: a filter on the SECOND leg's dup column, and a
+		// cross-leg dup predicate. Both must route B.K to Scan(B) (=200), not A.K.
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE B."K" = 200`, []string{"map[X:7]", "map[X:8]"})
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE B."K" = 999`, nil)
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" <> B."K"`, []string{"map[X:7]", "map[X:8]"})
 	})
 
-	// GROUPED bare-twin: GROUP BY A.K reads A's K slot; COUNT over the 2 unnest rows.
+	// GROUPED bare-twin: DECLINES to name-model (the deferred grouped-bare-twin
+	// increment). The grouped path is stuck between the wrap (name-blind to qualifiers
+	// — collapses the dup to first-match) and the raw seed (a GROUP BY over it groups
+	// under NULL — the shadow-key defect), so a non-box cross-leg dup under aggregate
+	// declines; name-model resolves the qualified group key. COUNT over the 2 unnest rows.
 	t.Run("grouped_bare_twin", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" GROUP BY A."K"`,
 			[]string{"map[A.K:100 COUNT(*):2]"})
+	})
+
+	// GROUPED bare-twin with a cross-leg WHERE — the outer-filter-under-aggregate axis.
+	// Before Slice 2a a cross-leg dup declined BEFORE the aggregate split, so the group-by
+	// wrap never saw a bare-twin; the wrap approach (and the raw-seed pivot's first cut)
+	// let a grouped
+	// bare-twin reach the wrap, whose bare pass-through key mis-bound an outer filter (the
+	// outer-filter first-match wrong-rows class) — `WHERE B.K=200` collapsed to A.K=100 → []).
+	// The fix DECLINES the grouped bare-twin to name-model, which resolves qualified reads
+	// on BOTH legs: B.K=200 matches → A.K=100 groups the 2 unnest rows; B.K=999 drops all.
+	// This pins that the grouped path does NOT ship the NAK'd wrong rows.
+	t.Run("grouped_bare_twin_cross_leg_where", func(t *testing.T) {
+		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 200 GROUP BY A."K"`,
+			[]string{"map[A.K:100 COUNT(*):2]"})
+		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 999 GROUP BY A."K"`, nil)
+	})
+
+	// ORDER BY on a bare-twin dup column — the sibling axis of the WHERE pins. Outer-
+	// operator resolution (WHERE/GROUP BY/ORDER BY) is where every bug in this arc hid;
+	// WHERE is proven on the raw seed, ORDER BY is its unprobed sibling. ORDER BY on the
+	// FIRST leg's and a LATER leg's dup column both route to their own quantifier (2 rows).
+	t.Run("order_by_bare_twin_resolves", func(t *testing.T) {
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" ORDER BY A."K", "X"`,
+			[]string{"map[X:7]", "map[X:8]"})
+		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" ORDER BY B."K", "X"`,
+			[]string{"map[X:7]", "map[X:8]"})
 	})
 
 	// A BARE ambiguous reference errors 42702 at semantic analysis — BEFORE the
@@ -195,5 +239,25 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 	t.Run("within_box_buried_dup_declines_to_name_model", func(t *testing.T) {
 		wantRows(t, `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`,
 			[]string{"map[X:7]", "map[X:8]"})
+	})
+
+	// BOX-INVOLVED CROSS-LEG dup: a merge-opaque box `(A LEFT C)` exposes A.K, and a
+	// SEPARATE scan leg B also has K → the dup crosses legs but ONE contributing leg is
+	// a box. A box is ONE opaque quantifier — its buried K can't be qualified apart from
+	// the scan's K, so unlike the two-scan bare-twin (separate quantifiers) the gather
+	// correctly DECLINES to the name-model residual (proven white-box:
+	// TestRFC173W5_Gathered_DeclineBoundary case b2). The name-model's OWN handling of a
+	// box-involved dup + comma-lateral unnest is a PRE-EXISTING gap (it cannot physicalize
+	// the shape — a malformed LogicalProjectionExpression) that predates Slice 2a and is
+	// the deferred box-disambiguation increment. The safety property Slice 2a guarantees
+	// here is that the shape FAILS TO PLAN rather than silently returning WRONG rows — a
+	// wrap re-introduction would gather it into a positional plan with first-match
+	// resolution (the outer-filter first-match wrong-rows class). When the deferred
+	// increment lands, this flips green and asserts the rows.
+	t.Run("box_involved_cross_leg_dup_declines_and_does_not_wrong_row", func(t *testing.T) {
+		q := `SELECT "X" FROM A LEFT OUTER JOIN C ON A."AID" = C."CID", B, A."ARR" AS "X"`
+		if _, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil); perr == nil {
+			t.Fatalf("box-involved dup unexpectedly planned; the deferred box increment must have landed — replace this with a rows assertion: %s", q)
+		}
 	})
 }

@@ -112,58 +112,103 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	}
 
 	// NAME-AMBIGUOUS bare-twin (RFC-173 S4 Slice 2a): a column name shared by two
-	// LEGS (`FROM A, B, A.arr AS x` with A,B both carrying `k`) resolves DIFFERENTLY
-	// over the flat row. It is disambiguated by the POSITIONAL WRAP — each leg's
-	// columns re-exposed as ALIAS.COL window keys (leg [Start,Width)), so a QUALIFIED
-	// `A.k`/`B.k` read routes to its own leg, NOT last-leg-wins. A dup-name therefore
-	// FLIPS this cluster from the raw seed to the wrapped seed (`needsWrap`). A BARE
-	// ambiguous reference (`SELECT k`, `GROUP BY k`) errors 42702 at semantic analysis
-	// BEFORE the translator, so only qualified reads reach here — no last-leg-wins vs
-	// first-match user-facing divergence to reconcile. The element/ordinal alias
-	// SHADOWING an outer column (the R16 class) was already lifted (the visitor
-	// qualifies shadowed bare projections; span windows route the qualified read to
-	// the ELEMENT leg). Per RUN, not per map entry: legTypes also carries the
-	// amendment-C BURIED windows (each with the whole box CONCAT as its typ) —
-	// iterating entries would count a box's columns once per buried leaf and
+	// non-box LEGS (`FROM A, B, A.arr AS x` with A,B both carrying `k`) gathers via
+	// the RAW seed — NO decline, NO wrap. Each plain leg is its OWN quantifier
+	// (Scan(A), Scan(B)) in the flat select, so a QUALIFIED `A.k`/`B.k` read routes
+	// to its own scan — in the SELECT list, in an outer WHERE, and in a cross-leg
+	// predicate alike (verified: `WHERE B.k=200`, `WHERE B.k=999`, `WHERE A.k<>B.k`,
+	// `SELECT A.k,B.k` all resolve to the correct leg). A positional wrap is NOT
+	// needed here and is actively WRONG: its bare pass-through key (`k`->first leg's
+	// slot) makes an OUTER filter resolve a qualified dup column to FIRST-MATCH
+	// (A's k), dropping every row of `WHERE B.k=200`. A BARE ambiguous reference
+	// (`SELECT k`, `GROUP BY k`) errors 42702 at semantic analysis BEFORE the
+	// translator, so only qualified reads reach here — no last-leg-wins vs
+	// first-match user-facing divergence to reconcile.
+	//
+	// A BOX leg's concat is ONE opaque quantifier: two same-named columns collide in
+	// its output type (a qualified read is FieldValue(boxQuant,"k") — ambiguous),
+	// so a box-involved dup DECLINES to the name-model residual. Two shapes decline:
+	//   - WITHIN-ONE-LEG dup: a MERGE-OPAQUE BOX's concat carrying two same-named
+	//     columns (Order.PRICE + Customer.PRICE in a `(A FULL B)` box). Its
+	//     positional disambiguation is entangled with the box's NULL-fill semantics
+	//     — a later increment.
+	//   - CROSS-LEG dup where EITHER leg peels to a box (box exposing K and a scan
+	//     also carrying K): the box side can't disambiguate its buried K, so the
+	//     same later increment owns it.
+	// Only a dup between two non-box legs is the metadata-store-verified scan
+	// bare-twin the raw seed resolves. Per RUN, not per map entry: legTypes also
+	// carries the amendment-C BURIED windows (each with the whole box CONCAT as its
+	// typ) — iterating entries would count a box's columns once per buried leaf and
 	// self-collide. One leg = one run = one column set.
-	// Distinguish a CROSS-LEG dup (the bare-twin: `k` in two SEPARATE legs A,B —
-	// disambiguated by the positional wrap's ALIAS.COL window keys) from a
-	// WITHIN-ONE-LEG dup (a merge-opaque box's BURIED concat carrying two same-named
-	// columns, e.g. Order.PRICE + Customer.PRICE in a FULL box). The wrap resolves the
-	// cross-leg case (Slice 2a); a buried box dup collides in the flat row and its
-	// positional disambiguation is a LATER increment — keep it name-model (decline).
-	needsWrap := false
 	declineBuriedDup := false
-	acrossLegs := map[string]struct{}{}
-	for _, leg := range legs {
+	nonBoxCrossLegDup := false
+	type nameOrigin struct {
+		legIdx int
+		nonBox bool
+	}
+	acrossLegs := map[string]nameOrigin{}
+	for li, leg := range legs {
+		_, legIsJoin := leg.op.(*logical.LogicalJoin) // a merge-opaque box (inner joins are flattened into separate legs)
+		nonBox := !legIsJoin
 		withinLeg := map[string]struct{}{}
 		for _, f := range legTypes[leg.binding].typ.Fields {
 			n := strings.ToUpper(f.Name)
 			if _, w := withinLeg[n]; w {
-				declineBuriedDup = true // same name twice within ONE leg's concat
+				declineBuriedDup = true // same name twice within ONE leg's concat (a box's buried dup)
 				continue
 			}
 			withinLeg[n] = struct{}{}
-			if _, a := acrossLegs[n]; a {
-				needsWrap = true // same name across TWO legs — the bare-twin
+			if prev, a := acrossLegs[n]; a && prev.legIdx != li {
+				// A non-box cross-leg dup (both legs single-namespace) is the scan
+				// bare-twin — it flows through the RAW seed (separate quantifiers
+				// resolve qualified reads). A box-involved dup declines: its buried
+				// column can't be qualified apart.
+				if nonBox && prev.nonBox {
+					nonBoxCrossLegDup = true
+				} else {
+					declineBuriedDup = true
+				}
 			}
-			acrossLegs[n] = struct{}{}
+			acrossLegs[n] = nameOrigin{legIdx: li, nonBox: nonBox}
 		}
 	}
 	if declineBuriedDup {
 		return nil
 	}
+	// A GROUPED bare-twin (non-box cross-leg dup under aggregate) DECLINES to
+	// name-model — the deferred grouped-bare-twin increment. The grouped path is
+	// stuck between the wrap and the raw seed, and neither disambiguates the dup:
+	//   - the WRAP flattens all legs into ONE quantifier and the grouped ordinal
+	//     resolution is name-BLIND to qualifiers (it looks up bare `K`, not `A.K`/
+	//     `B.K`), so a dup column collapses to first-match and an outer aggregate/
+	//     filter on the later leg (`WHERE B.K=200 GROUP BY A.K`) drops every row
+	//     (the outer-filter first-match wrong-rows class, now in the grouped path);
+	//   - the RAW seed resolves qualified reads through its per-leg quantifiers, but
+	//     a GROUP BY over it reads a shadow-qualified key the positional seed lacks
+	//     and groups every row under NULL (`GROUP BY A.K` -> A.K=<nil>) — the exact
+	//     shadow-key defect the wrap was built to fix.
+	// Disambiguating a grouped dup needs the wrap's ordinal resolution to HONOR the
+	// qualifier (route `B.K` to the ALIAS.COL window key), a compose-direction change
+	// deferred with the box increment. Declining here restores master's pre-2a
+	// behavior for the grouped case (name-model, which resolves qualified reads) — no
+	// regression; the NON-grouped bare-twin still gathers via the raw seed (the 2a
+	// win). This is checked BEFORE any leg translates (the same side-effect discipline
+	// as declineBuriedDup).
+	if t.underAggregate && nonBoxCrossLegDup {
+		return nil
+	}
 
-	// The positional named-projection wrap is placed above the seed when a GROUP-BY /
-	// aggregate consumes it (the shadow-key / operand reason) OR a dup-name needs
-	// window disambiguation (the bare-twin). A NON-ambiguous, non-grouped gather keeps
-	// its RAW seed (byte-identical, no plan churn). Wrap-eligibility is decided HERE,
-	// BEFORE any leg is TRANSLATED (translateRef below has side effects: an
-	// uncorrelated scalar subquery in a derived/project/filter leg registers on the
-	// translator; declining late would let the name-model fallback re-translate the
-	// same legs and double-register/evaluate that subquery). A wrap-ineligible shape
-	// declines to name-model here, with that pre-leg-translation discipline.
-	wantWrap := t.underAggregate || needsWrap
+	// The positional named-projection wrap is placed above the seed ONLY when a
+	// GROUP-BY / aggregate consumes it (the shadow-key / operand reason). Every other
+	// gather — including the non-grouped bare-twin — keeps its RAW seed (byte-identical,
+	// no plan churn; the bare-twin resolves qualified reads through its separate per-leg
+	// quantifiers). Wrap-eligibility is decided HERE, BEFORE any leg is TRANSLATED
+	// (translateRef below has side effects: an uncorrelated scalar subquery in a
+	// derived/project/filter leg registers on the translator; declining late would let
+	// the name-model fallback re-translate the same legs and double-register/evaluate
+	// that subquery). A wrap-ineligible shape declines to name-model here, with that
+	// pre-leg-translation discipline.
+	wantWrap := t.underAggregate
 	if wantWrap && !gatheredPositionalWrapEligible(u, legs, legTypes) {
 		return nil
 	}
@@ -507,7 +552,11 @@ func (t *cascadesTranslator) wrapGatheredPositionalKeys(
 	}
 	// Pass through every remaining seed column by POSITION under its bare name (the
 	// element/ordinal bare names already won above; a cross-leg bare-name duplicate
-	// keeps the FROM-order first match, the name-model's first-match discipline).
+	// keeps the FROM-order first match, the name-model's first-match discipline). A
+	// cross-leg dup (the bare-twin) never reaches the wrap: the non-grouped bare-twin
+	// gathers via the raw seed, and the GROUPED bare-twin declines the wrap too (the
+	// grouped ordinal resolution is name-blind to qualifiers, so it cannot disambiguate
+	// a dup column here — see the caller's wantWrap guard).
 	for i, f := range rc.Fields {
 		add(f.Name, slot(i))
 	}

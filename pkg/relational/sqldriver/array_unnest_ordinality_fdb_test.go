@@ -3525,7 +3525,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// to the shadow-qualified "EL.EL" key, which the POSITIONAL seed (bare column
 		// names only) lacks → `GROUP BY EL` grouped EVERY row under NULL (got
 		// [EL=<nil>, N=6]). The fix keeps the positional seed INTERNAL and places a
-		// NAMED-PROJECTION layer above it (wrapGatheredForGroupBy) — a
+		// NAMED-PROJECTION layer above it (wrapGatheredPositionalKeys) — a
 		// LogicalProjectionExpression (survives SelectMergeRule) whose values NAME-read
 		// the seed and re-expose the bare + ALIAS.COL + "EL.EL" shadow keys the grouped
 		// element key and outer-column aggregates resolve against. WSRC has 1 row (SID=1,
