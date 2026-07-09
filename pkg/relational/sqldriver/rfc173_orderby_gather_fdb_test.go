@@ -3,6 +3,7 @@ package sqldriver_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -187,7 +188,7 @@ func TestFDB_RFC173S4_OrderByGather(t *testing.T) {
 	wantOrdered := func(t *testing.T, q string, want []string, bakedKey string) {
 		t.Helper()
 		explain, got := runOrdered(t, q)
-		if fmt.Sprint(got) != fmt.Sprint(want) {
+		if !slices.Equal(got, want) {
 			t.Fatalf("ordered rows = %v, want %v\n  sql: %s\n  plan: %s", got, want, q, explain)
 		}
 		if bakedKey != "" && !strings.Contains(explain, bakedKey) {

@@ -4027,15 +4027,12 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	if innerRef == nil {
 		return nil
 	}
-	// A gathered multi-source unnest under this ORDER BY flows its RAW per-leg
-	// positional seed; a sort key that names a LEG COLUMN must be POSITIONALLY BAKED
-	// to its flat slot over that seed — the SAME bake translateAggregate applies to
-	// GROUP BY keys, through the SHARED authority (gatheredSeedBakeContext →
-	// bakeGatheredGroupValue). Without it the leg-column key stays an unresolved name
-	// that evaluates to a dead constant over the merged row, so InMemorySort sorts on
-	// nothing (silent DESC==ASC wrong order — the sort machinery works, only the key
-	// is dead). An already-resolved key (the element sort, which worked) passes through
-	// untouched; a name-model fallback seed is ANCHORED and excluded (seedQOV nil).
+	// Bake each sort key that names a leg column or the element to its flat seed slot via
+	// the shared gatheredSeedBakeContext (whose doc owns the rationale) — the same
+	// authority GROUP BY keys bake through. Without it a gathered-seed leg-column key
+	// stays an unresolved name reading a dead constant, so InMemorySort sorts on nothing
+	// (the silent DESC==ASC bug). A key already carrying a resolved ordinal is left as-is
+	// by the bake; a non-seed input has seedQOV nil, so keys and quantifier are untouched.
 	bake := t.gatheredSeedBakeContext(innerRef, sourceAlias(s.Input))
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
@@ -4391,16 +4388,11 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	if innerRef == nil {
 		return nil
 	}
-	// RFC-173 S4 qualifier-honoring resolution: a GATHERED unnest input UN-COLLAPSED to
-	// the raw per-leg seed (no name-keyed wrap). Derive its per-leg windows from the
-	// TYPED seed itself through the ONE layout authority (gatheredSeedBakeContext →
-	// OrdinalSeedLegWindows, the SAME authority translateSort's ORDER BY keys bake
-	// through — no per-operator copy) and positionally BAKE the group keys / operands
-	// over the seed's flat output via a NAMED group-by quantifier: ofOrdinal(QOV(
-	// seedCorr,mergedType), slot), the qualifier-honoring read that replaces the wrap's
-	// name key. A name-model FALLBACK RC is ANCHORED and excluded (seedQOV nil), so a
-	// gather that DECLINED to name-model keeps its grouped reads name-model. The outer
-	// WHERE already baked itself (bakeGatedJoinPredicates fires on the SelectExpression).
+	// RFC-173 S4 qualifier-honoring resolution: a GATHERED unnest input un-collapses to
+	// the raw per-leg seed, so positionally BAKE the group keys / operands to their flat
+	// slots via the shared gatheredSeedBakeContext (see its doc) — the qualifier-honoring
+	// read that replaces the retired name-keyed wrap. The outer WHERE already baked itself
+	// (bakeGatedJoinPredicates fires on the SelectExpression).
 	bake := t.gatheredSeedBakeContext(innerRef, sourceAlias(a.Input))
 	groupByQuant := bake.quant
 	groupKeys := make([]values.Value, len(a.GroupKeys))
