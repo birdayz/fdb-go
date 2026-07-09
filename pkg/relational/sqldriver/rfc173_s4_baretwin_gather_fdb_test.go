@@ -282,23 +282,19 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 			[]string{"map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]"})
 	})
 
-	// BOX-INVOLVED CROSS-LEG dup: a merge-opaque box `(A LEFT C)` exposes A.K, and a
-	// SEPARATE scan leg B also has K → the dup crosses legs but ONE contributing leg is
-	// a box. A box is ONE opaque quantifier — its buried K can't be qualified apart from
-	// the scan's K, so unlike the two-scan bare-twin (separate quantifiers) the gather
-	// correctly DECLINES to the name-model residual (proven white-box:
-	// TestRFC173W5_Gathered_DeclineBoundary case b2). The name-model's OWN handling of a
-	// box-involved dup + comma-lateral unnest is a PRE-EXISTING gap (it cannot physicalize
-	// the shape — a malformed LogicalProjectionExpression) that predates Slice 2a and is
-	// the deferred box-disambiguation increment. The safety property Slice 2a guarantees
-	// here is that the shape FAILS TO PLAN rather than silently returning WRONG rows — a
-	// wrap re-introduction would gather it into a positional plan with first-match
-	// resolution (the outer-filter first-match wrong-rows class). When the deferred
-	// increment lands, this flips green and asserts the rows.
-	t.Run("box_involved_cross_leg_dup_declines_and_does_not_wrong_row", func(t *testing.T) {
-		q := `SELECT "X" FROM A LEFT OUTER JOIN C ON A."AID" = C."CID", B, A."ARR" AS "X"`
-		if _, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil); perr == nil {
-			t.Fatalf("box-involved dup unexpectedly planned; the deferred box increment must have landed — replace this with a rows assertion: %s", q)
-		}
+	// BOX-INVOLVED CROSS-LEG dup (RFC-173 S4 class-2 lift): a merge-opaque box `(A LEFT C)`
+	// BURIES A.K, and a SEPARATE scan leg B also carries K → the dup crosses legs with one
+	// leg a box. Unlike a within-box dup, the two K's live in DIFFERENT legs, so each keeps
+	// its own [Offset,Width) window — A.K via the box's buried-leaf sub-window
+	// (finalizeSeedWindows), B.K via its scan run — and a qualified read routes by SLOT, not
+	// first-match. It GATHERS the raw seed and returns correct rows (no first-match wrong
+	// rows). A LEFT C matches (AID=1=CID=1), A.arr={7,8} × B(1) → X∈{7,8}. The richer
+	// discriminating pins (FULL-NULL grouped, cross-leg-buried-predicate, box-dup ORDER BY)
+	// live in TestFDB_RFC173S4_BoxDupClass2. A WITHIN-box dup (two same-named columns in ONE
+	// box) remains its own declining increment — sentineled by
+	// TestRFC173W5_Gathered_DeclineBoundary case (b2-within).
+	t.Run("box_involved_cross_leg_dup_gathers_correct_rows", func(t *testing.T) {
+		wantRows(t, `SELECT "X" FROM A LEFT OUTER JOIN C ON A."AID" = C."CID", B, A."ARR" AS "X"`,
+			[]string{"map[X:7]", "map[X:8]"})
 	})
 }

@@ -177,18 +177,33 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatalf("non-box dup-name gather must be the RAW seed SelectExpression (no wrap), got %T", gotDup)
 	}
 
-	// (b2) BOX-INVOLVED cross-leg dup (RFC-173 S4 Slice 2a scope boundary): a
-	// merge-opaque FULL box leg carrying SID collides with a sibling SRC scan's SID.
-	// A box is ONE opaque quantifier — its buried SID can't be qualified apart from
-	// the scan's SID, so unlike the two-scan bare-twin this DECLINES to name-model.
-	// (The name-model fallback's own handling of this shape is the deferred box-
-	// disambiguation increment; here we pin only that the gather correctly declines,
-	// so a future wrap re-introduction can't silently gather it into wrong rows.)
+	// (b2) BOX-INVOLVED CROSS-LEG dup (RFC-173 S4 class-2 lift): a merge-opaque FULL box
+	// leg BURYING SID collides with a sibling SRC scan's SID — the dup crosses legs with one
+	// leg a box. The two SIDs live in DIFFERENT legs, so each keeps its own [Offset,Width)
+	// window (the box's buried SID sub-window via finalizeSeedWindows, the scan's SID run),
+	// and a qualified read routes by SLOT — it GATHERS the raw seed (was: declined). The
+	// discriminating FULL-NULL / cross-leg-predicate / ORDER BY rows are pinned e2e in
+	// TestFDB_RFC173S4_BoxDupClass2.
 	uBox := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	boxLeg := logical.NewJoin(scan("SRC2", "s2"), scan("AUX", "x"), logical.JoinFull, "")
 	jBox := logical.NewJoin(inner(boxLeg, scan("SRC", "s")), uBox, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jBox, uBox, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-		t.Fatalf("a box-involved cross-leg dup must DECLINE (box side can't disambiguate its buried column), got %T", got)
+	gotBox := tr.translateGatheredUnnestCluster(jBox, uBox, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if _, ok := gotBox.(*expressions.SelectExpression); !ok {
+		t.Fatalf("a box-involved CROSS-LEG dup must GATHER the raw seed (class-2 lift), got %T", gotBox)
+	}
+
+	// (b2-within) WITHIN-BOX dup (class-1 sentinel — the STILL-declining increment): a
+	// single merge-opaque FULL box whose concat carries the SAME column name TWICE (SRC2.W +
+	// AUX2.W are both `W`). A qualified read is FieldValue(boxQuant,"W") — ambiguous within
+	// the box's OWN output type — and its positional disambiguation is entangled with the
+	// box's DOUBLY-null-fill (both W go NULL on opposite unmatched rows), so it DECLINES to
+	// name-model: its own later increment. This pins the class-1 boundary the class-2 lift
+	// deliberately did NOT cross, so a future within-box lift trips a sentinel here.
+	uWithin := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	withinBox := logical.NewJoin(scan("SRC2", "s2"), scan("AUX2", "y"), logical.JoinFull, "")
+	jWithin := logical.NewJoin(inner(withinBox, scan("SRC", "s")), uWithin, logical.JoinInner, "")
+	if got := tr.translateGatheredUnnestCluster(jWithin, uWithin, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
+		t.Fatalf("a WITHIN-box dup (two same-named columns in ONE box) must still DECLINE (class-1, doubly-null-padded — its own increment), got %T", got)
 	}
 
 	// (b3) GROUPED non-box cross-leg dup now GATHERS via the un-collapse (RFC-173 S4

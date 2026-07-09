@@ -111,61 +111,45 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		return nil // a leg untranslatable — same decline rule as the seed
 	}
 
-	// NAME-AMBIGUOUS bare-twin (RFC-173 S4 Slice 2a): a column name shared by two
-	// non-box LEGS (`FROM A, B, A.arr AS x` with A,B both carrying `k`) gathers via
-	// the RAW seed — NO decline, NO wrap. Each plain leg is its OWN quantifier
-	// (Scan(A), Scan(B)) in the flat select, so a QUALIFIED `A.k`/`B.k` read routes
-	// to its own scan — in the SELECT list, in an outer WHERE, and in a cross-leg
-	// predicate alike (verified: `WHERE B.k=200`, `WHERE B.k=999`, `WHERE A.k<>B.k`,
-	// `SELECT A.k,B.k` all resolve to the correct leg). A positional wrap is NOT
-	// needed here and is actively WRONG: its bare pass-through key (`k`->first leg's
-	// slot) makes an OUTER filter resolve a qualified dup column to FIRST-MATCH
-	// (A's k), dropping every row of `WHERE B.k=200`. A BARE ambiguous reference
-	// (`SELECT k`, `GROUP BY k`) errors 42702 at semantic analysis BEFORE the
-	// translator, so only qualified reads reach here — no last-leg-wins vs
-	// first-match user-facing divergence to reconcile.
+	// A CROSS-LEG dup — a column name shared ACROSS legs — GATHERS via the RAW seed (NO
+	// decline, NO wrap), whether the legs are two plain scans (the bare-twin `FROM A, B,
+	// A.arr AS x`, A,B both carrying `k`) OR one peels to a merge-opaque BOX (a box's
+	// BURIED leaf dup-named with a sibling scan's column, `FROM (A FULL C), B, C.arr AS x`
+	// with buried A.k and scan B.k). Each leg keeps its OWN [Offset,Width) window — a plain
+	// leg by its scan run, a box's buried leaves via finalizeSeedWindows — so a QUALIFIED
+	// `A.k`/`B.k` read routes to its own SLOT, not first-match, uniformly through every
+	// outer operator (SELECT / WHERE / GROUP BY / ORDER BY / DISTINCT / cross-leg predicate
+	// — the qualifier-honoring authority; the box buried-dup ORDER BY and FULL-NULL grouped
+	// rows are pinned discriminating). A positional wrap is NOT needed and is actively
+	// WRONG: its bare pass-through key (`k`->first leg's slot) makes an outer filter resolve
+	// a qualified dup column to FIRST-MATCH, dropping every row of `WHERE B.k=200`. A BARE
+	// ambiguous reference (`SELECT k`, `GROUP BY k`) errors 42702 at semantic analysis
+	// BEFORE the translator, so only qualified reads reach here.
 	//
-	// A BOX leg's concat is ONE opaque quantifier: two same-named columns collide in
-	// its output type (a qualified read is FieldValue(boxQuant,"k") — ambiguous),
-	// so a box-involved dup DECLINES to the name-model residual. Two shapes decline:
-	//   - WITHIN-ONE-LEG dup: a MERGE-OPAQUE BOX's concat carrying two same-named
-	//     columns (Order.PRICE + Customer.PRICE in a `(A FULL B)` box). Its
-	//     positional disambiguation is entangled with the box's NULL-fill semantics
-	//     — a later increment.
-	//   - CROSS-LEG dup where EITHER leg peels to a box (box exposing K and a scan
-	//     also carrying K): the box side can't disambiguate its buried K, so the
-	//     same later increment owns it.
-	// Only a dup between two non-box legs is the metadata-store-verified scan
-	// bare-twin the raw seed resolves. Per RUN, not per map entry: legTypes also
-	// carries the amendment-C BURIED windows (each with the whole box CONCAT as its
-	// typ) — iterating entries would count a box's columns once per buried leaf and
-	// self-collide. One leg = one run = one column set.
+	// ONE shape still DECLINES to the name-model residual: a WITHIN-BOX dup — a single
+	// merge-opaque box whose concat carries two same-named columns (Order.PRICE +
+	// Customer.PRICE in a `(A FULL B)` box). A qualified read is FieldValue(boxQuant,
+	// "PRICE") — ambiguous within the box's OWN output type — and its positional
+	// disambiguation is entangled with the box's DOUBLY-NULL-fill semantics (both dup
+	// columns go NULL on opposite unmatched rows), needing its own within-box layout pin: a
+	// later increment. Detected per RUN, not per map entry: legTypes also carries the
+	// amendment-C BURIED windows (each with the whole box CONCAT as its typ) — iterating
+	// entries would count a box's columns once per buried leaf and self-collide. One leg =
+	// one run = one column set. A plain scan's columns are unique by name, so this fires
+	// only for a box leg.
 	declineBoxDup := false
-	type nameOrigin struct {
-		legIdx int
-		nonBox bool
-	}
-	acrossLegs := map[string]nameOrigin{}
-	for li, leg := range legs {
-		_, legIsJoin := leg.op.(*logical.LogicalJoin) // a merge-opaque box (inner joins are flattened into separate legs)
-		nonBox := !legIsJoin
+	for _, leg := range legs {
 		withinLeg := map[string]struct{}{}
 		for _, f := range legTypes[leg.binding].typ.Fields {
 			n := strings.ToUpper(f.Name)
 			if _, w := withinLeg[n]; w {
-				declineBoxDup = true // same name twice within ONE leg's concat (a box's buried dup)
-				continue
+				declineBoxDup = true // same name twice within ONE box leg's concat (class 1)
+				break
 			}
 			withinLeg[n] = struct{}{}
-			// A non-box cross-leg dup (both legs single-namespace) is the scan
-			// bare-twin — it flows through the RAW seed (separate quantifiers resolve
-			// qualified reads, non-grouped AND grouped: the group-by positionally bakes
-			// the dup keys by leg window). Only a box-involved dup declines: its buried
-			// column can't be qualified apart.
-			if prev, a := acrossLegs[n]; a && prev.legIdx != li && !(nonBox && prev.nonBox) {
-				declineBoxDup = true
-			}
-			acrossLegs[n] = nameOrigin{legIdx: li, nonBox: nonBox}
+		}
+		if declineBoxDup {
+			break
 		}
 	}
 	if declineBoxDup {
