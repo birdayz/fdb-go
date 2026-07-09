@@ -289,36 +289,10 @@ func TestFDB_RFC173S4_ChainedUnnestOrdinal(t *testing.T) {
 		}
 	})
 
-	//nolint:dupl // distinct decline probe
-	// The OUTER-COLUMN-PREDICATE dimension: a chained unnest with
-	// an outer-column WHERE cannot ordinalize: the nested ordinal first link (kept
-	// nested by SelectMergeRule's barrier to preserve the chained Explode) hides the
-	// outer columns from the ancestor filter's rebase, so `WHERE T4.ID=10` was
-	// `field "T4.ID" not resolvable … row columns [X] — malformed plan`. The chained
-	// ordinal path now DECLINES under any ancestor filter (chainedUnnestUnderFilter)
-	// → name-model residual, whose qualified name keys resolve T4.ID correctly.
-	// Carrying the predicate across the barrier positionally is the Slice 2 compose.
-	t.Run("outer-column WHERE declines to name-model and answers correctly", func(t *testing.T) {
-		const q = `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10`
-		_, rows := queryRows(t, q)
-		got := collect(rows, "ID", "Y")
-		want := []string{"10|1", "10|2", "10|3"} // only ID=10's SUB {1,2,3}
-		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
-			t.Fatalf("outer-column WHERE chained rows (name-model)\n got=%v\nwant=%v", got, want)
-		}
-	})
-	// An ELEMENT-column WHERE also declines (coarse: ANY ancestor filter → name-model)
-	// and answers correctly — the coarse suppression trades the ordinal optimization
-	// for soundness on every filtered chained shape.
-	t.Run("element WHERE declines to name-model and answers correctly", func(t *testing.T) {
-		const q = `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE "Y" > 2`
-		_, rows := queryRows(t, q)
-		got := collect(rows, "ID", "Y")
-		want := []string{"10|3", "20|4", "20|5", "20|6"} // Y > 2
-		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
-			t.Fatalf("element WHERE chained rows (name-model)\n got=%v\nwant=%v", got, want)
-		}
-	})
+	// A chained unnest under an outer-column or element WHERE now ORDINALIZES (the coarse
+	// chainedUnnestUnderFilter decline is retired) — its rows + end-to-end plan placement are
+	// pinned in TestFDB_RFC173S4_FilteredChained. This cert keeps the UNFILTERED ordinal path
+	// and the genuine (non-filter) declines below.
 
 	t.Run("DECLINE: 3-link chain fails open to name-model and still answers", func(t *testing.T) {
 		// The 3-link chain `… X.SUBSTRUCT AS Y, Y.DEEP AS Z` has a first link

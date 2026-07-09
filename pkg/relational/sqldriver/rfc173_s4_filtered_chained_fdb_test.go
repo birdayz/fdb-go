@@ -200,12 +200,6 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 	// correct rows (the coarse decline was needlessly routing ALL of these to name-model).
 	t.Run("non_subquery_filter_shapes", func(t *testing.T) {
 		t.Parallel()
-		// OR mixing outer + inner (one un-split conjunct correlated to both → kept, inner Explode).
-		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 OR "Y" = 5`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:5]"}, "")
-		// OR of two outer conjuncts.
-		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 OR T4."ID" = 20`,
-			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
 		// IN-list (not subquery).
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" IN (10, 3)`,
 			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:3]", "map[Y:9]"}, "")
@@ -226,17 +220,63 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 			[]string{"map[Y:2]"}, "")
 	})
 
+	// An OR in a filter over a chained unnest DECLINES to the name-model residual and returns
+	// CORRECT rows (chainedUnderOrFilter). Why decline, not ordinalize: NormalizePredicatesRule
+	// distributes the OR to CNF and PredicatePushDownRule pushes the extracted PURE-OUTER clause
+	// (e.g. `ID=10 OR ID=3` from `(ID=10 AND y>2) OR (ID=3 AND y<5)`) to the first-link ordinal
+	// FlatMap, where the name-keyed rebase resolves ordinal -1 → a malformed plan (a correctness
+	// regression the first cut, which ordinalized ORs, shipped). The name-model qualified name
+	// keys resolve the pushed clause; ordinalizing the OR needs the positional-bake path (booked).
+	// Covers the nested-outer-conjunct shapes that survive CNF as a pushable outer clause AND flat ORs.
+	t.Run("or_over_chained_declines_correct_rows", func(t *testing.T) {
+		t.Parallel()
+		// Flat OR mixing outer + inner: T4(10)→{1,2,3} (ID=10) ∪ y=5 from T4(20) → {1,2,3,5}.
+		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 OR "Y" = 5`,
+			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:5]"}, "")
+		// Flat OR of two outer conjuncts → {1,2,3,4,5,6}.
+		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 OR T4."ID" = 20`,
+			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+		// NESTED-outer OR (the regressing shape): (ID=10 AND y>2)→T4(10) y=3; (ID=3 AND y<5)→T4(3)
+		// y=3 (y=9 fails <5). → {3,3}.
+		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = 10 AND "Y" > 2) OR (T4."ID" = 3 AND "Y" < 5)`,
+			[]string{"map[Y:3]", "map[Y:3]"}, "")
+		// (ID=10 AND y>2)→{3}; (ID=20)→all T4(20) {4,5,6}. → {3,4,5,6}.
+		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = 10 AND "Y" > 2) OR (T4."ID" = 20)`,
+			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+		// (ID=10 AND y=1)→{1}; (ID=3 AND y=9)→{9}. → {1,9}.
+		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = 10 AND "Y" = 1) OR (T4."ID" = 3 AND "Y" = 9)`,
+			[]string{"map[Y:1]", "map[Y:9]"}, "")
+		// Straddling INSIDE a disjunct (`t.id = y` OR outer): T4(3) id=3=y=3 → {3}; (ID=20)→{4,5,6}.
+		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = "Y") OR (T4."ID" = 20)`,
+			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+	})
+
 	// SCALAR-SUBQUERY residual → clean 0A000 (the silent-wrong-`[]` sentinel). Java answers
 	// {4,5,6}; making it work is booked as its own slice. This must be LOUD, never `[]`.
 	t.Run("scalar_subquery_loud_0A000", func(t *testing.T) {
 		t.Parallel()
 		q := `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = (SELECT MAX("ID") FROM T4 AS "T4B")`
-		_, _, eerr := run(t, q)
-		if eerr == nil {
-			t.Fatalf("scalar-subquery-over-chained must reject LOUDLY (0A000), not silently return rows\n  sql: %s", q)
-		}
-		if !strings.Contains(eerr.Error(), "0A000") {
-			t.Fatalf("want 0A000 (feature-not-supported), got %v\n  sql: %s", eerr, q)
-		}
+		assert0A000(t, q, run)
 	})
+
+	// BURIED variant — the chained unnest is NOT the filter-input's direct rightmost source
+	// (a trailing self-join T4C follows it). The gate's spine WALK must still catch it: HEAD +
+	// the direct-only gate both shipped silent-`[]` here; the widened detector makes it LOUD.
+	t.Run("scalar_subquery_buried_loud_0A000", func(t *testing.T) {
+		t.Parallel()
+		q := `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", T4 AS "T4C" WHERE T4."ID" = (SELECT MAX("ID") FROM T4 AS "T4B")`
+		assert0A000(t, q, run)
+	})
+}
+
+// assert0A000 asserts the query rejects LOUDLY with 0A000, never a silent row set.
+func assert0A000(t *testing.T, q string, run func(*testing.T, string) (string, []string, error)) {
+	t.Helper()
+	_, _, eerr := run(t, q)
+	if eerr == nil {
+		t.Fatalf("must reject LOUDLY (0A000), not silently return rows\n  sql: %s", q)
+	}
+	if !strings.Contains(eerr.Error(), "0A000") {
+		t.Fatalf("want 0A000 (feature-not-supported), got %v\n  sql: %s", eerr, q)
+	}
 }

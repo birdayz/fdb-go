@@ -140,6 +140,17 @@ type cascadesTranslator struct {
 	// the unnest lowering only; reset at every other seed by the translator's
 	// normal flow.
 	unnestUnderExistential bool
+	// chainedUnderOrFilter is set (downward, save/restore) while translateFilter lowers a body
+	// whose WHERE predicate contains an OR, so a CHAINED-unnest ordinal seed under such a filter
+	// DECLINES to the name-model residual. NARROW successor to the retired coarse
+	// "any filter suppresses" bit: an OR is the one shape the per-conjunct rebase can't place —
+	// NormalizePredicatesRule distributes it to CNF and PredicatePushDownRule pushes the
+	// extracted PURE-OUTER clause to the first-link ORDINAL FlatMap, where the name-keyed rebase
+	// strands (ordinal -1, malformed plan). The name-model residual's qualified name keys resolve
+	// the pushed clause correctly. Every NON-OR filter still ordinalizes (the Slice 2b win);
+	// ordinalizing the OR needs the positional-bake path (booked). Read once — the chained
+	// ordinal gate.
+	chainedUnderOrFilter bool
 	// unnestExistsScopeCollision forces the under-EXISTS unnest to the ANCHORED
 	// (name-model) seed when an EXISTS inner subquery scans a table aliased the
 	// SAME as an outer FROM leg (`FROM MA, MA.arr AS X WHERE EXISTS(SELECT 1 FROM
@@ -2173,10 +2184,18 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// carry the scalar-subquery predicate). TYPED detection (f.ScalarSubqueries), never a
 	// text match. Every NON-subquery filter over a chained unnest ordinalizes correctly and
 	// falls through here — the coarse "any filter suppresses" decline is retired.
-	if len(f.ScalarSubqueries) > 0 && filterInputIsChainedUnnest(f.Input) {
+	if len(f.ScalarSubqueries) > 0 && filterInputHasChainedUnnest(f.Input) {
 		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation,
 			"scalar subquery in a filter over a chained lateral unnest is not yet supported"))
 		return nil
+	}
+	// Downward: an OR in this WHERE makes a chained-unnest ordinal seed under it decline to
+	// name-model (the narrow successor to the retired coarse suppress — see chainedUnderOrFilter).
+	// Set across the whole body so every f.Input path is covered; restored on return.
+	if f.Predicate != nil && predicateContainsOr(f.Predicate) {
+		savedCOF := t.chainedUnderOrFilter
+		t.chainedUnderOrFilter = true
+		defer func() { t.chainedUnderOrFilter = savedCOF }()
 	}
 
 	if f.Predicate == nil && f.PredicateText != "" {
@@ -2442,8 +2461,9 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					// outer-col-ONLY conjunct IS pushed below the chained FlatMap to Scan(t) by
 					// PushFilterBelowJoinRule, where t is directly correlated — leave it its lazy
 					// FieldValue(QOV(t)) so it resolves as a SARG. Splitting the top-level AND (a
-					// straddling `t.id = y` keeps the rebase; `t.id = 1` stays QOV(t)). See the
-					// helper for the ⊆-outerLegs discriminator and its coupling to the pushdown.
+					// straddling `t.id = y` keeps the rebase; `t.id = 1` stays QOV(t)). An
+					// OR-over-outer-leg filter already declined up front (chainedUnderOrFilter) —
+					// CNF-pushdown would strand its extracted pure-outer clause on the ordinal row.
 					pred = rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr)
 				} else {
 					pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)
@@ -2772,79 +2792,6 @@ func rebaseUnnestOuterLegPredicate(
 	if p == nil || len(outerLegs) == 0 {
 		return p
 	}
-	return rebaseUnnestOuterLegPredicateImpl(p, outerLegs, mergedCorr)
-}
-
-// rebaseChainedOuterLegPredicate rebases outer-leg references PER CONJUNCT for a CHAINED
-// unnest (`FROM t, t.a AS x, x.b AS y`). The discriminator is PUSHABLE-TO-SCAN, expressed
-// structurally as "correlated-to ⊆ outerLegs": a conjunct whose every referenced correlation
-// is an outer base leg (outerLegs, e.g. {t}) is pushed by PushFilterBelowJoinRule down toward
-// Scan(t) where t is directly correlated — leave its refs lazy (QOV(t)) so they resolve as a
-// SARG. A conjunct referencing ANY correlation bound INSIDE the chained structure (the
-// first-link element x, the second-link element y, or any deeper level) is NOT scan-pushable:
-// it stays at the FlatMap/Explode level whose row is QOV(mergedCorr)'s merged row
-// `[t-cols ++ x]`, so REBASE its outer-leg refs to read the qualified "leg.col" key off that
-// merged row. Splits the top-level AND (bakeConjuncts discipline) so a straddling `t.id = y`
-// (references y → not scan-pushable) keeps the rebase while a sibling `t.id = 1` (outer-only)
-// stays QOV(t) — each conjunct resolves at the level its quantifiers are in scope.
-//
-// Expressing the discriminator as ⊆-outerLegs rather than enumerating x/y keeps a SINGLE live
-// path: reachable y-referencing conjuncts exercise the keep-rebase branch, and an
-// x-referencing conjunct (`WHERE x.field = v` — currently unreachable, blocked by the
-// orthogonal scalar-sibling-of-unnest-element resolution gap that fails `SELECT x.k FROM t,
-// t.arr AS x` at plan time with 42703) would flow through the SAME branch the moment that gap
-// closes, never a separate x-only disjunct.
-func rebaseChainedOuterLegPredicate(
-	p predicates.QueryPredicate,
-	outerLegs map[string]struct{},
-	mergedCorr values.CorrelationIdentifier,
-) predicates.QueryPredicate {
-	if p == nil || len(outerLegs) == 0 {
-		return p
-	}
-	if and, isAnd := p.(*predicates.AndPredicate); isAnd {
-		newSubs := make([]predicates.QueryPredicate, len(and.SubPredicates))
-		changed := false
-		for i, s := range and.SubPredicates {
-			newSubs[i] = rebaseChainedOuterLegPredicate(s, outerLegs, mergedCorr)
-			if newSubs[i] != s {
-				changed = true
-			}
-		}
-		if !changed {
-			return p
-		}
-		return predicates.NewAnd(newSubs...)
-	}
-	if chainedPredScanPushable(p, outerLegs) {
-		return p // outer-base-leg refs only → pushed to Scan(t); leave lazy (SARG)
-	}
-	return rebaseUnnestOuterLegPredicateImpl(p, outerLegs, mergedCorr)
-}
-
-// chainedPredScanPushable reports whether every correlation the conjunct references is an
-// outer base leg (outerLegs) — i.e. PushFilterBelowJoinRule can push it all the way to
-// Scan(t). A conjunct that also references a correlation bound inside the chained structure
-// (the first-link element x, the second-link element y) is NOT scan-pushable. A constant
-// predicate (empty correlated-to) is vacuously pushable — it has no outer-leg refs to rebase,
-// so gate/keep are both no-ops.
-func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]struct{}) bool {
-	for corr := range predicates.GetCorrelatedToOfPredicate(p) {
-		if _, ok := outerLegs[strings.ToUpper(corr.Name())]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func rebaseUnnestOuterLegPredicateImpl(
-	p predicates.QueryPredicate,
-	outerLegs map[string]struct{},
-	mergedCorr values.CorrelationIdentifier,
-) predicates.QueryPredicate {
-	if p == nil || len(outerLegs) == 0 {
-		return p
-	}
 	mergedQOV := values.NewQuantifiedObjectValue(mergedCorr)
 	rewrite := func(v values.Value) values.Value {
 		if v == nil {
@@ -2870,6 +2817,93 @@ func rebaseUnnestOuterLegPredicateImpl(
 		})
 	}
 	return mapPredicateValues(p, rewrite)
+}
+
+// rebaseChainedOuterLegPredicate rebases outer-leg references PER CONJUNCT for a CHAINED
+// unnest (`FROM t, t.a AS x, x.b AS y`). The discriminator is PUSHABLE-TO-SCAN, expressed
+// structurally as "correlated-to ⊆ outerLegs": a conjunct whose every referenced correlation
+// is an outer base leg (outerLegs, e.g. {t}) is pushed by PushFilterBelowJoinRule down toward
+// Scan(t) where t is directly correlated — leave its refs lazy (QOV(t)) so they resolve as a
+// SARG. A conjunct referencing ANY correlation bound INSIDE the chained structure (the
+// first-link element x, the second-link element y, or any deeper level) is NOT scan-pushable:
+// it stays at the FlatMap/Explode level whose row is QOV(mergedCorr)'s merged row
+// `[t-cols ++ x]`, so REBASE its outer-leg refs to read the qualified "leg.col" key off that
+// merged row. Splits the top-level AND (bakeConjuncts discipline) so a straddling `t.id = y`
+// (references y → not scan-pushable) keeps the rebase while a sibling `t.id = 1` (outer-only)
+// stays QOV(t) — each conjunct resolves at the level its quantifiers are in scope. Expressing
+// the discriminator structurally (⊆-outerLegs) rather than enumerating x/y keeps a SINGLE
+// branch: EVERY in-chain correlation flows the keep-rebase branch uniformly, no per-element
+// special-casing to drift as new element levels appear.
+//
+// SAFE ONLY for a predicate WITHOUT an outer-leg OR: a top-level `(t.id=10 AND y>2) OR
+// (t.id=3 AND y<5)` is one non-pushable conjunct (references y), so the WHOLE OR gets the name
+// key — but NormalizePredicatesRule then distributes it to CNF and PredicatePushDownRule pushes
+// the extracted PURE-OUTER clause (`t.id=10 OR t.id=3`) to the first-link ORDINAL FlatMap where
+// a name key strands (ordinal -1). translateChainedUnnestOrdinal DECLINES an OR-over-outer-leg
+// filter to the name-model residual up front (chainedUnderOrFilter), so no such predicate
+// reaches here; ordinalizing it needs the positional-bake path (booked).
+func rebaseChainedOuterLegPredicate(
+	p predicates.QueryPredicate,
+	outerLegs map[string]struct{},
+	mergedCorr values.CorrelationIdentifier,
+) predicates.QueryPredicate {
+	if p == nil || len(outerLegs) == 0 {
+		return p
+	}
+	if and, isAnd := p.(*predicates.AndPredicate); isAnd {
+		newSubs := make([]predicates.QueryPredicate, len(and.SubPredicates))
+		changed := false
+		for i, s := range and.SubPredicates {
+			newSubs[i] = rebaseChainedOuterLegPredicate(s, outerLegs, mergedCorr)
+			if newSubs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return predicates.NewAnd(newSubs...)
+	}
+	if chainedPredScanPushable(p, outerLegs) {
+		return p // outer-base-leg refs only → pushed to Scan(t); leave lazy (SARG)
+	}
+	// A non-pushable conjunct (references x/y): rebase its outer-leg refs to the merged row.
+	return rebaseUnnestOuterLegPredicate(p, outerLegs, mergedCorr)
+}
+
+// chainedPredScanPushable reports whether every correlation the conjunct references is an
+// outer base leg (outerLegs) — i.e. PushFilterBelowJoinRule can push it all the way to
+// Scan(t). A conjunct that also references a correlation bound inside the chained structure
+// (the first-link element x, the second-link element y) is NOT scan-pushable. A constant
+// predicate (empty correlated-to) is vacuously pushable — it has no outer-leg refs to rebase,
+// so gate/keep are both no-ops.
+func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]struct{}) bool {
+	for corr := range predicates.GetCorrelatedToOfPredicate(p) {
+		if _, ok := outerLegs[strings.ToUpper(corr.Name())]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// predicateContainsOr reports whether the predicate tree contains an OrPredicate — the shape
+// NormalizePredicatesRule distributes to CNF, which a chained-unnest ordinal seed cannot place
+// (the extracted pure-outer clause strands on the ordinal first-link row). Walks And/Not into
+// their children; every other node (leaf comparisons, value predicates) is a non-OR leaf.
+func predicateContainsOr(p predicates.QueryPredicate) bool {
+	switch n := p.(type) {
+	case *predicates.OrPredicate:
+		return true
+	case *predicates.AndPredicate:
+		for _, s := range n.SubPredicates {
+			if predicateContainsOr(s) {
+				return true
+			}
+		}
+	case *predicates.NotPredicate:
+		return predicateContainsOr(n.Child)
+	}
+	return false
 }
 
 // ordinalSlotInLegWindow resolves a QUALIFIED outer-leg column (`leg`.`field`) to

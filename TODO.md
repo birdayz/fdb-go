@@ -133,22 +133,43 @@ validation gate.
     + gate all deleted). Predicate placement is per-conjunct via the ⊆-outerLegs pushable-to-scan rebase
     gate (`rebaseChainedOuterLegPredicate`/`chainedPredScanPushable`): outer-col-only (correlated-to ⊆
     {t}) → SARG on Scan(t); anything referencing an in-chain correlation (x/y) → keep the rebase at the
-    inner Explode. Axis-audited every filter shape (eq/AND/OR/IN-list/BETWEEN/arithmetic/IS-NULL/NOT/
+    inner Explode. Axis-audited every filter shape (eq/AND/IN-list/BETWEEN/arithmetic/IS-NULL/NOT/
     multi-conjunct/straddling — all row-verified correct; end-to-end plan asserts pin the SARG/inner-filter
     placement). Cert: `TestFDB_RFC173S4_FilteredChained`. Retires 10+ name-model-caller invocations.
-    B1 corpus (1641) green. Two residuals booked below.
-  - [ ] **BOOKED SLICE (Graefe, RFC-173 S4 Slice 2b residual — PROPER FIX, reach gap to Java): scalar
-    subquery in a filter over a chained unnest.** `FROM t, t.a AS x, x.b AS y WHERE t.id = (SELECT MAX(id)
-    FROM …)` — HEAD shipped SILENT-WRONG `[]` (name-model swallowed it); Java answers {rows}. Now rejected
-    LOUDLY (typed `0A000` in translateFilter, gated `filterInputIsChainedUnnest(f.Input) &&
-    len(f.ScalarSubqueries) > 0`), pinned by `TestFDB_RFC173S4_FilteredChained/scalar_subquery_loud_0A000`
-    (the sentinel — flips green when this closes). Root cause: the scalar-subquery predicate rides the
-    wedgeGate POSITIONAL bake (`rebaseUnnestOuterLegPredicateOrdinal`), a different path than the
-    per-conjunct name-keyed rebase, and bakes the outer ref to ordinal -1. Proper fix = make the
-    positional-bake path carry the scalar-subquery predicate so it returns Java's rows. Reach gap → 100%
-    alignment means it must eventually close; the 0A000 is the interim correct-or-loud, NOT permanent.
-    Sibling upstream gap (book if the endgame wants it): IN-subquery / EXISTS in a filter over a chained
-    unnest fail 0AF00 UPSTREAM of the chained dispatch on both paths (Java answers) — orthogonal reach gaps.
+    B1 corpus (1641) green. TWO narrow residuals decline to name-model (correct-or-loud), booked below:
+    (i) an OR in the filter (the name-key rebase strands the CNF-extracted pure-outer clause on the ordinal
+    first-link row — @claude's NAK caught it; NARROW `chainedUnderOrFilter` bit declines OR filters to
+    name-model, correct rows); (ii) a scalar subquery in the filter → LOUD `0A000` (typed, gated
+    `len(f.ScalarSubqueries) > 0 && filterInputHasChainedUnnest(f.Input)` — the detector WALKS the join
+    spine so a chained unnest buried behind a trailing table / join leg is caught too, not just the direct
+    rightmost; stops at relation boundaries so an encapsulated derived-table chained unnest is NOT falsely
+    gated). Pinned by `.../or_over_chained_declines_correct_rows` + `.../scalar_subquery_loud_0A000` +
+    `.../scalar_subquery_buried_loud_0A000`.
+  - [ ] **BOOKED SLICE (RFC-173 S4 Slice 2b residual — @claude NAK fix, PROPER FIX = positional bake):
+    an OR in a filter over a chained unnest declines to name-model.** `WHERE (t.id=10 AND y>2) OR
+    (t.id=3 AND y<5)` — a name-key rebase of the whole OR is stranded by NormalizePredicatesRule (CNF) +
+    PredicatePushDownRule (the pure-outer clause `t.id=10 OR t.id=3` pushes to the first-link ORDINAL
+    FlatMap where the name key resolves ordinal -1 → malformed plan). The NARROW `chainedUnderOrFilter`
+    bit declines any OR-carrying filter over a chained unnest to name-model (correct rows). Proper fix =
+    POSITIONAL bake (an `ofOrdinal` resolves on the ordinal row at both the first-link FlatMap and the
+    inner Explode, unlike a name key). The first attempt at positional bake tripped the
+    "leg X DIVERGENT baked types (5 vs 6 fields)" drift panic — the chained seed's merged type does not
+    match what `OrdinalSeedLegWindows` derives; aligning the chained seed's positional type with the
+    bake authority is the real work. Then the OR (and the scalar subquery via the same path) ordinalize.
+  - [ ] **BOOKED (RFC-173 S4 Slice 2b discovery — PRE-EXISTING, ORTHOGONAL, engine-wide silent-wrong):
+    scalar subquery in a WHERE comparison returns `[]`.** `SELECT id FROM t WHERE id = (SELECT MAX(id) FROM
+    t2)` returns SILENT `[]` for a PLAIN table (verified MAX/MIN/`>` all `[]`; want the matching rows) — so
+    the "scalar subquery in a filter" gap is NOT chained-specific; it's a general scalar-subquery-in-WHERE
+    hole (projection-position scalar subqueries DO work — see the W4b entries). The chained case additionally
+    would CRASH (ordinal -1 malformed plan) once it ordinalizes, because the scalar-subquery predicate rides
+    the wedgeGate POSITIONAL bake (`rebaseUnnestOuterLegPredicateOrdinal`), so Slice 2b rejects the chained
+    shape LOUDLY (0A000) to prevent that regression from silent-`[]` → crash. Proper fix: implement
+    scalar-subquery-in-WHERE comparison (a general feature; makes the plain case answer rows AND unblocks
+    the chained 0A000 → rows). Java answers both → reach gap, must eventually close; the 0A000 sentinel
+    flips green when it lands. Sibling upstream gap: IN-subquery / EXISTS in a filter over a chained unnest
+    fail 0AF00 UPSTREAM of the chained dispatch (Java answers) — orthogonal reach gaps, book if the endgame
+    wants them. NOTE: this is a silent-wrong bug but out of scope for filtered-chained (RFC-173 freeze +
+    separate general feature); surfaced here so the axis isn't lost.
   - [ ] **BOOKED SLICE (Graefe, RFC-173 S4 Slice 2b follow-up — orthogonal resolver gap): scalar sibling
     of an unnested array element does not resolve (42703).** `SELECT X.K FROM T4, T4.SARR AS X` where the
     SARR element has a scalar sibling `K` → `42703 column "X.K" does not exist`, IN THE BASE CASE (no

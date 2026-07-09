@@ -153,20 +153,40 @@ func isChainedUnnest(outerLeft logical.LogicalOperator, u *logical.LogicalUnnest
 	return len(u.Segments) >= 1 && logical.FindOwnerUnnest(outerLeft, u.Segments[0]) != nil
 }
 
-// filterInputIsChainedUnnest reports whether a filter's input is a left-deep
-// join whose rightmost source is a CHAINED lateral unnest (`FROM t, t.a AS x,
-// x.b AS y` — the second unnest owned by the first's element). The typed gate
-// for the scalar-subquery-over-chained narrowed decline in translateFilter.
-func filterInputIsChainedUnnest(input logical.LogicalOperator) bool {
-	j, ok := input.(*logical.LogicalJoin)
-	if !ok {
-		return false
+// filterInputHasChainedUnnest reports whether a filter's input contains a CHAINED
+// lateral unnest (`… t.a AS x, x.b AS y …` — a LogicalUnnest whose owner segment-0
+// is a prior unnest's element) IN THE JOIN SPINE the filter directly filters. The
+// typed gate for the scalar-subquery-over-chained narrowed decline in
+// translateFilter. It walks the whole JOIN SPINE — not just the direct rightmost
+// source — so a chained unnest buried behind a trailing table (`FROM t, t.a AS x,
+// x.b AS y, z`) or in a join leg (`FROM (t, t.a AS x, x.b AS y), B`) is still caught
+// and its scalar-subquery predicate rejected LOUDLY rather than shipping the
+// name-model silent-wrong `[]`. It STOPS at a relation boundary (Project / CTE /
+// Aggregate / Union / Distinct / …): a chained unnest ENCAPSULATED in a derived
+// table produces a materialized relation this predicate is NOT correlated to, so
+// its scalar subquery never rides the chained positional bake — descending there
+// would falsely reject a working shape.
+func filterInputHasChainedUnnest(input logical.LogicalOperator) bool {
+	found := false
+	var walk func(logical.LogicalOperator)
+	walk = func(o logical.LogicalOperator) {
+		if found || o == nil {
+			return
+		}
+		switch n := o.(type) {
+		case *logical.LogicalUnnest:
+			if len(n.Segments) >= 1 && logical.FindOwnerUnnest(input, n.Segments[0]) != nil {
+				found = true
+			}
+		case *logical.LogicalJoin:
+			// Descend ONLY the join spine — the direct FROM the filter filters.
+			for _, c := range n.Children() {
+				walk(c)
+			}
+		}
 	}
-	u, ok := j.Right.(*logical.LogicalUnnest)
-	if !ok {
-		return false
-	}
-	return isChainedUnnest(j.Left, u)
+	walk(input)
+	return found
 }
 
 // chainedUnnestCollection builds the Explode collection for a chained unnest:
@@ -322,6 +342,14 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	// link (a deeper chain's inner link, or a chain under a name-model parent)
 	// keeps the name-model residual so its outer flows a name-keyed row.
 	if prevEnclosure || len(u.Segments) < 2 {
+		return nil
+	}
+	// DECLINE to name-model when an ancestor WHERE carries an OR: the per-conjunct rebase
+	// name-keys a non-pushable conjunct, but NormalizePredicatesRule distributes the OR to CNF
+	// and PredicatePushDownRule strands the extracted pure-outer clause on this ordinal seed's
+	// first-link FlatMap (ordinal -1). The name-model residual resolves it by qualified name.
+	// NARROW — every non-OR filter still ordinalizes; the OR path needs positional bake (booked).
+	if t.chainedUnderOrFilter {
 		return nil
 	}
 	// The FIRST link must be a single-source lateral unnest that will itself take
