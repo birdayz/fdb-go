@@ -191,6 +191,15 @@ validation gate.
     `!ok` declines still reach `NewAnchoredJoinRecord` (chained producer NARROWS; zeros with c5b); `:1161`
     narrows (box/cluster readers remain). NEW ORTHOGONAL gap booked below: deep-WHERE 42703 (4+-link AS, any
     AT) — PRE-EXISTING semantic-resolver, reproduces name-model, upstream of translation.
+    SECOND corrective round (two more gate kills on 59eb67aaa): a P1 silent-wrong — `clusterArity(FULL
+    OUTER)==1` let a FULL-box-BOTTOMED spine pass spineBase=true, suppressing the box-leg-conjunct arm for
+    genuine box legs (chained link ordinal OVER the first link's name-model seed → wrong A-side values);
+    fixed by the walk returning (admitted, pureSpine) with pureSpine = `len(outerBoundAliases(bottom))==1`
+    (admission unchanged — FULL-box bottoms still ordinalize unfiltered, pre-slice parity), pinned white-box
+    + e2e (`fullbox_bottom_boxleg_filter`, the exact repro). And a false "pinned below" coverage claim in the
+    white-box file (the walk's Segments<2 check had NO walk-test case — a reviewer control neutering it
+    stayed green); the 1-segment walk case added. Cert harvest: depth-3 shadow-slot straddle `T4.SUB=Z`
+    (positive slot-3 pin) ± OR, AT-first/AT-mid ordinal rows.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a

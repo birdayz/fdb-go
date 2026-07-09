@@ -193,6 +193,26 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
 		return link(l2, "Y", "DEEP", "Z")
 	}
+	fullBoxBottom := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
+		// The spine bottoms in a FULL OUTER box — clusterArity==1, so ADMITTED
+		// (pre-slice parity), but IMPURE: under a box-leg WHERE the arm must
+		// stay active and decline the WHOLE chain to name-model, coherently
+		// with the first link's own gate (which sees spineBase=false). An
+		// incoherent split — ordinal chained link over a name-model first
+		// link — reads a name-keyed row positionally: silent wrong rows.
+		fullBox := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinFull, "")
+		l1, _ := link(fullBox, "A", "SARR", "X")
+		return link(l1, "X", "SUB", "Y")
+	}
+	linear3AtMid := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
+		// AT-ordinality on the MID link (AS+AT): the linearity walk keys on the
+		// AS alias; the AT column rides the leg columns without disturbing
+		// elementRootIdx.
+		l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
+		u2 := &logical.LogicalUnnest{Segments: []string{"X", "SUBSTRUCT"}, Alias: "Y", AtAlias: "P"}
+		l2 := inner(l1, u2)
+		return link(l2, "Y", "DEEP", "Z")
+	}
 
 	cases := []struct {
 		name     string
@@ -220,6 +240,17 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		// scoping must NOT leak the bypass to a genuine box.
 		{"box_base_unfiltered", boxBase3, false, "name-model", ""},
 		{"box_base_filtered", boxBase3, true, "name-model", ""},
+		// The FULL-box-bottom spine: ADMITTED (clusterArity==1, pre-slice
+		// parity) so it ordinalizes UNFILTERED; under a box-leg WHERE the arm
+		// stays active (pureSpine=false) and the whole chain coherently
+		// declines to name-model.
+		{"full_box_bottom_unfiltered", fullBoxBottom, false, "ordinal", ""},
+		{"full_box_bottom_filtered", fullBoxBottom, true, "name-model", ""},
+		// AT-ordinality on the mid link: linear, ordinalizes; the walk keys on
+		// the AS alias and the AT column rides the leg without moving the
+		// element slot.
+		{"linear3_at_mid_unfiltered", linear3AtMid, false, "ordinal", ""},
+		{"linear3_at_mid_filtered", linear3AtMid, true, "ordinal", ""},
 		// TWO iterations of the SAME table-rooted array are rejected LOUDLY by
 		// the pre-existing multiple-lateral-unnests guard UPSTREAM of the
 		// chained gate — so the twin-fork silent-wrong hazard (mis-rooting the
@@ -230,7 +261,8 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		// A malformed 1-segment link mid-spine dies LOUDLY in chained
 		// classification (chainedOwnerElementMessage requires 2 segments) before
 		// the gate ever runs — the walk's own Segments<2 check is defense in
-		// depth behind that, pinned directly in the walk test below.
+		// depth behind that, pinned directly in the walk test below
+		// (one_segment_mid_spine expects admitted=false).
 		{"one_segment_mid_spine", oneSegMid, false, "nil", "not yet supported"},
 	}
 	for _, tc := range cases {
@@ -255,8 +287,8 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 }
 
 // TestRFC173S4_2d_ChainedBaseOrdinalizes_Walk pins the gate walk itself —
-// the recursion's accept/decline per structural shape, independent of seed
-// building.
+// the recursion's (admitted, pureSpine) verdict per structural shape,
+// independent of seed building.
 func TestRFC173S4_2d_ChainedBaseOrdinalizes_Walk(t *testing.T) {
 	t.Parallel()
 	tr := newChainedSpineTranslator(t)
@@ -268,24 +300,45 @@ func TestRFC173S4_2d_ChainedBaseOrdinalizes_Walk(t *testing.T) {
 	forkAtY, _ := link(forkL2, "X", "SUB", "Y") // Y's owner X is not the preceding X2
 	box := inner(scan("T4", "T4"), scan("T4", "T4C"))
 	boxL1, _ := link(box, "T4", "SARR", "X")
+	// A FULL box is clusterArity==1 (merge-opaque): ADMITTED — exactly as the
+	// pre-slice depth-2 gate admitted it — but IMPURE: its bottom binds the two
+	// leg aliases, which are genuine box legs, so the box-leg-conjunct arm must
+	// stay active (a pure verdict here ordinalizes a chained link over the
+	// first link's name-model seed under a box-leg WHERE → silent wrong rows).
+	fullBox := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinFull, "")
+	fullBoxL1, _ := link(fullBox, "A", "SARR", "X")
+	fullBoxL2, _ := link(fullBoxL1, "X", "SUB", "Y")
+	// A malformed 1-SEGMENT link mid-spine (constructible via the AT-source
+	// parser path): the recursion's own Segments<2 check must decline it —
+	// WITHOUT this check the linearity comparison passes vacuously (no
+	// preceding-unnest arm fires) and the walk would admit the spine.
+	oneSegL1 := inner(scan("T4", "T4"), &logical.LogicalUnnest{Segments: []string{"SARR"}, Alias: "X"})
+	oneSegL2, _ := link(oneSegL1, "X", "SUBSTRUCT", "Y")
 
 	cases := []struct {
-		name string
-		op   logical.LogicalOperator
-		want bool
+		name          string
+		op            logical.LogicalOperator
+		wantAdmitted  bool
+		wantPureSpine bool
 	}{
-		{"single_scan", scan("T4", "T4"), true},
-		{"one_link_spine", l1, true},
-		{"two_link_spine", l2, true},
-		{"three_link_spine", l3, true},
-		{"fork_in_spine", forkAtY, false},
-		{"box_base", box, false},
-		{"box_under_first_link", boxL1, false},
-		{"non_join_non_scan", &logical.LogicalUnnest{Segments: []string{"T4", "SARR"}}, false},
+		{"single_scan", scan("T4", "T4"), true, true},
+		{"one_link_spine", l1, true, true},
+		{"two_link_spine", l2, true, true},
+		{"three_link_spine", l3, true, true},
+		{"fork_in_spine", forkAtY, false, false},
+		{"box_base", box, false, false},
+		{"box_under_first_link", boxL1, false, false},
+		{"full_box_bottom", fullBox, true, false},
+		{"full_box_one_link", fullBoxL1, true, false},
+		{"full_box_two_link", fullBoxL2, true, false},
+		{"one_segment_mid_spine", oneSegL2, false, false},
+		{"non_join_non_scan", &logical.LogicalUnnest{Segments: []string{"T4", "SARR"}}, false, false},
 	}
 	for _, tc := range cases {
-		if got := tr.chainedBaseOrdinalizes(tc.op); got != tc.want {
-			t.Errorf("%s: chainedBaseOrdinalizes = %v, want %v", tc.name, got, tc.want)
+		admitted, pure := tr.chainedBaseOrdinalizes(tc.op)
+		if admitted != tc.wantAdmitted || pure != tc.wantPureSpine {
+			t.Errorf("%s: chainedBaseOrdinalizes = (%v, %v), want (%v, %v)",
+				tc.name, admitted, pure, tc.wantAdmitted, tc.wantPureSpine)
 		}
 	}
 }

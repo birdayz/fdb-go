@@ -344,17 +344,29 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 // not this slice, and the innermost-Explode predicate placement is unproven over
 // a box base. It fails open to the name-model residual (pinned: a box-base chain
 // answers correctly via the name-key rebase, no strand).
-func (t *cascadesTranslator) chainedBaseOrdinalizes(base logical.LogicalOperator) bool {
+//
+// The second return, pureSpine, reports whether the spine BOTTOMS at a source
+// binding exactly ONE alias. A FULL OUTER box is ALSO clusterArity==1
+// (merge-opaque) and therefore ADMITTED — exactly as the pre-slice depth-2 gate
+// admitted it — but it binds its LEG aliases, which are genuine BOX LEGS, not
+// chain links: the box-leg-conjunct arm of unnestExistsSeedSafe must stay
+// ACTIVE for it (pureSpine=false), or a box-leg WHERE ordinalizes the chained
+// link while the first link's own gate keeps a name-model seed over the box —
+// an ordinal read over a name-keyed row, SILENTLY WRONG rows. The discriminator
+// is the arm's own authority (outerBoundAliases == 1), not a structural box
+// probe, so any future single-arity multi-alias source stays conservatively
+// impure.
+func (t *cascadesTranslator) chainedBaseOrdinalizes(base logical.LogicalOperator) (admitted, pureSpine bool) {
 	if t.clusterArity(base) == 1 {
-		return true
+		return true, len(outerBoundAliases(base)) == 1
 	}
 	bj, ok := base.(*logical.LogicalJoin)
 	if !ok {
-		return false
+		return false, false
 	}
 	un, ok := bj.Right.(*logical.LogicalUnnest)
 	if !ok || len(un.Segments) < 2 {
-		return false
+		return false, false
 	}
 	// LINEAR spine only: each link must consume the IMMEDIATELY PRECEDING
 	// link's element. A FORK — an owner two or more links back, `…, x.sub AS y,
@@ -368,7 +380,7 @@ func (t *cascadesTranslator) chainedBaseOrdinalizes(base logical.LogicalOperator
 	if lj, isJ := bj.Left.(*logical.LogicalJoin); isJ {
 		if lu, isU := lj.Right.(*logical.LogicalUnnest); isU {
 			if !strings.EqualFold(un.Segments[0], lu.Alias) {
-				return false
+				return false, false
 			}
 		}
 	}
@@ -440,8 +452,12 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	// the dispatching link (`…, x.substruct AS y, x.substruct AS y2, y2.deep AS
 	// z` — z↔y2 is linear, but y2's owner x is not y). The walk's recursion arm
 	// also re-checks len(firstUnnest.Segments) >= 2, so no separate check here.
-	spineAdmitted := t.chainedBaseOrdinalizes(j.Left)
-	if !spineAdmitted || !t.unnestExistsSeedSafe(firstBase, spineAdmitted) {
+	// The arm exemption takes pureSpine, NOT admitted: an admitted spine that
+	// bottoms in a FULL box keeps the box-leg-conjunct arm ACTIVE (its bottom
+	// aliases are box legs), so a box-leg WHERE declines the WHOLE chain to
+	// name-model coherently with the first link's own gate.
+	spineAdmitted, pureSpine := t.chainedBaseOrdinalizes(j.Left)
+	if !spineAdmitted || !t.unnestExistsSeedSafe(firstBase, pureSpine) {
 		return nil
 	}
 

@@ -77,10 +77,14 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 		m.Set(substructFD, protoreflect.ValueOfList(ssl))
 		return protoreflect.ValueOfMessage(m)
 	}
-	mkT4 := func(id int64, sarr ...protoreflect.Value) proto.Message {
+	// sub is the top-level SHADOW scalar (same bare name as the element's SUB
+	// array): 999 nowhere matches a Z value; T4(2) carries sub=20 so the
+	// depth-3 shadow straddle T4.SUB=Z has EXACTLY ONE positive match — a
+	// slot-misread to ID would instead match T4(11) (ID=11, Z=11).
+	mkT4 := func(id, sub int64, sarr ...protoreflect.Value) proto.Message {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
-		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(999))
+		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
 		sl := m.NewField(sarrFD).List()
 		for _, e := range sarr {
 			sl.Append(e)
@@ -95,9 +99,9 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 			return nil, sErr
 		}
 		for _, r := range []proto.Message{
-			mkT4(1, mkElem([]int32{1, 7}, mkElem2(11, 12), mkElem2(13))),
-			mkT4(2, mkElem([]int32{9}, mkElem2(20))),
-			mkT4(11, mkElem([]int32{5}, mkElem2(11))), // ID=11 matches Z=11 (straddle detector)
+			mkT4(1, 999, mkElem([]int32{1, 7}, mkElem2(11, 12), mkElem2(13))),
+			mkT4(2, 20, mkElem([]int32{9}, mkElem2(20))),
+			mkT4(11, 999, mkElem([]int32{5}, mkElem2(11))), // ID=11 matches Z=11 (straddle detector)
 		} {
 			if _, e := store.SaveRecord(r); e != nil {
 				return nil, e
@@ -262,4 +266,44 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	_, r8 := run("fork_filtered_declines_namemodel", q8)
 	wantRows("fork_filtered_declines_namemodel", r8,
 		[]string{"map[W:1]", "map[W:1]", "map[W:7]", "map[W:7]"}, q8)
+
+	// DEPTH-3 SHADOW-SLOT straddle: T4.SUB (the outer shadow scalar, slot 3 of the
+	// ordinal row) = Z. Exactly T4(2) matches (sub=20, Z=20) → {20}. THE positive
+	// slot-correctness pin for the depth-3 positional bake: a slot-0/ID misread
+	// returns {11} (T4(11): ID=11, Z=11), a bare-name mis-resolution to the
+	// element's SUB array errors — each failure mode is distinguishable.
+	q9 := `SELECT "Z" ` + base + ` WHERE T4."SUB" = "Z"`
+	_, r9 := run("threelink_shadow_slot_straddle", q9)
+	wantRows("threelink_shadow_slot_straddle", r9, []string{"map[Z:20]"}, q9)
+
+	// The shadow straddle under OR (rides the CNF/pushdown path): (T4.SUB=Z) OR
+	// (T4.ID=1) → {20} ∪ {11,12,13}.
+	q10 := `SELECT "Z" ` + base + ` WHERE T4."SUB" = "Z" OR T4."ID" = 1`
+	_, r10 := run("threelink_shadow_in_or", q10)
+	wantRows("threelink_shadow_in_or", r10,
+		[]string{"map[Z:11]", "map[Z:12]", "map[Z:13]", "map[Z:20]"}, q10)
+
+	// AT-ordinality rows at depth 3: AT on the FIRST link (every T4 has one SARR
+	// element → P=1 throughout) and AT on the MID link (T4(1) has two SUBSTRUCT
+	// elements → P=2 for Z=13 — the discriminating ordinal).
+	q11 := `SELECT "P", "Z" FROM T4, T4."SARR" AS "X" AT "P", "X"."SUBSTRUCT" AS "Y", "Y"."DEEP" AS "Z"`
+	_, r11 := run("threelink_at_first_link", q11)
+	wantRows("threelink_at_first_link", r11,
+		[]string{"map[P:1 Z:11]", "map[P:1 Z:11]", "map[P:1 Z:12]", "map[P:1 Z:13]", "map[P:1 Z:20]"}, q11)
+	q12 := `SELECT "P", "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y" AT "P", "Y"."DEEP" AS "Z"`
+	_, r12 := run("threelink_at_mid_link", q12)
+	wantRows("threelink_at_mid_link", r12,
+		[]string{"map[P:1 Z:11]", "map[P:1 Z:11]", "map[P:1 Z:12]", "map[P:1 Z:20]", "map[P:2 Z:13]"}, q12)
+
+	// The FULL-BOX-BOTTOM chained spine with a box-leg WHERE — the silent-wrong
+	// composition the pureSpine bit closes: the spine bottoms in a FULL box
+	// (clusterArity 1 → ADMITTED), but its bottom aliases are BOX LEGS, so the
+	// box-leg-conjunct arm must stay active and decline the WHOLE chain to
+	// name-model coherently with the first link's own gate. An incoherent split
+	// ordinalizes the chained link over the first link's name-model seed and
+	// returns WRONG A-side values. ON matches (A=1,B=11); A(1).SARR SUB={1,7}.
+	q13 := `SELECT "A"."ID", "B"."ID", "Y" FROM T4 AS "A" FULL OUTER JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID", "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "A"."ID" = 1`
+	_, r13 := run("fullbox_bottom_boxleg_filter", q13)
+	wantRows("fullbox_bottom_boxleg_filter", r13,
+		[]string{"map[A.ID:1 B.ID:11 Y:1]", "map[A.ID:1 B.ID:11 Y:7]"}, q13)
 }

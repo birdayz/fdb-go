@@ -887,14 +887,19 @@ func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, 
 	// the `!unnestUnderExistential` early return below. A single-source outer
 	// (==1) is unaffected — its pristine prefix resolves a bare conjunct.
 	//
-	// This arm is scoped to genuine BOX bases: a chained-unnest SPINE base
-	// (spineBase, passed true ONLY by the chained ordinal gate after
-	// chainedBaseOrdinalizes admitted the base) is multi-alias by construction —
-	// its aliases are chain links, not box legs — and the chained rebase
-	// authority (rebaseChainedOuterLegPredicate) bakes or lazies every reachable
-	// outer ref on the chained select, with the (pred, !ok) fail-closed net
-	// behind it. Declining here would needlessly kick every FILTERED 3+-link
-	// chain to name-model. Every OTHER decline arm below stays live for spines.
+	// This arm is scoped to genuine BOX bases: a PURE chained-unnest spine
+	// (spineBase, passed true ONLY by the chained ordinal gate when the
+	// admitted spine BOTTOMS at a source binding exactly one alias) is
+	// multi-alias by construction — its aliases are chain links, not box legs —
+	// and the chained rebase authority (rebaseChainedOuterLegPredicate) bakes
+	// or lazies every reachable outer ref on the chained select, with the
+	// (pred, !ok) fail-closed net behind it. Declining here would needlessly
+	// kick every FILTERED 3+-link chain to name-model. A spine that bottoms in
+	// a FULL box (also clusterArity==1, so equally ADMITTED) passes
+	// spineBase=false — its bottom aliases ARE box legs, and suppressing this
+	// arm for them would ordinalize the chained link over the first link's
+	// name-model seed (silently wrong rows). Every OTHER decline arm below
+	// stays live for spines.
 	if t.unnestOuterConjunctOnBoxLeg && !spineBase && len(outerBoundAliases(left)) > 1 {
 		return false
 	}
