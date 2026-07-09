@@ -178,11 +178,16 @@ func TestFDB_RFC173S4_BoxDupBuriedElementPredicate(t *testing.T) {
 	t.Run("buried_element_compound", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" + 0 = "X"`, one)
 	})
-	// BURIED ref in an OR (bakeConjuncts only splits top-level AND, so the whole OR is
-	// ONE leaf): predicateRefsBuriedLeg walks the entire OR and flags the buried A.K, so
-	// the bake rewrites A.K in BOTH disjuncts. A.K=7=X=7 matches; `A.K = 999` matches no A.
+	// BURIED ref in an OR (bakeConjuncts only splits top-level AND, so the whole OR is ONE
+	// leaf): predicateRefsBuriedLeg walks the entire OR and flags the buried A.K, so the
+	// bake rewrites A.K in BOTH disjuncts. Each disjunct's row comes ONLY from its own
+	// baked A.K — the LEFT `A.K = X` yields {A.K:7, X:7} (A.K=7 matches element 7); the
+	// RIGHT `A.K = 300` yields {A.K:300, X:9} (A(2,300) ⋈ C(2,[9])). If a regression baked
+	// only the left disjunct and left the right's buried A.K lazy, the {300,9} row would
+	// drop (unbound → NULL = 300 → false), so both rows discriminate BOTH disjuncts bake.
 	t.Run("buried_element_in_or", func(t *testing.T) {
-		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" = "X" OR A."K" = 999`, one)
+		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" = "X" OR A."K" = 300`,
+			[]string{"map[A.K:300 X:9]", "map[A.K:7 X:7]"})
 	})
 	// TWO buried refs + the element in ONE conjunct (`A.K + A.AID = X`): both buried leaves
 	// (A.K and A.AID, distinct slots in the box's A window) bake plus the element. A.K=7,
