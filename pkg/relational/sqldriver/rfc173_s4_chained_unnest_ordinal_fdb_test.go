@@ -37,7 +37,7 @@ import (
 // name-model fallback disabled in translateChainedUnnestJoin, every
 // ordinal-eligible chained shape here still returns these EXACT rows (verified
 // out-of-band during S4 Slice 1 bring-up). The deeper-nesting slice lifted the
-// clusterArity gate (chainedBaseOrdinalizes), so the 3-link subtests below
+// clusterArity gate (now the chainedSpineWalk peel), so the 3-link subtests below
 // ordinalize too — their SEED FORM is pinned white-box in
 // rfc173_2d_chained_spine_seed_test.go (rows/EXPLAIN/SARG here are IDENTICAL
 // between the two models and pin correctness + placement, not the model).
@@ -301,7 +301,7 @@ func TestFDB_RFC173S4_ChainedUnnestOrdinal(t *testing.T) {
 	t.Run("3-link chain rows + nesting (ordinalizes; seed form pinned white-box)", func(t *testing.T) {
 		// The 3-link chain `… X.SUBSTRUCT AS Y, Y.DEEP AS Z` has a first link
 		// (`(T4 ⋈ SARR) ⋈ SUBSTRUCT`) whose BASE is itself an unnest-right join.
-		// chainedBaseOrdinalizes recurses that unnest-right spine, so the whole
+		// chainedSpineWalk peels that unnest-right spine and admits it, so the whole
 		// chain ordinalizes instead of failing open to the name-model residual —
 		// the seed machinery (ordinalLegColumns/unnestOrdinalSeed) was already
 		// recursion-ready; only the gate limited it to depth-2. The nesting and

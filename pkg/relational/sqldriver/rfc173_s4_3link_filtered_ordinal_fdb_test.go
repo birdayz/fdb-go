@@ -19,8 +19,8 @@ import (
 )
 
 // TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes is the ROWS + PLAN-PLACEMENT cert for the
-// deeper-nesting slice: a FILTERED linear 3-link chain ordinalizes (chainedBaseOrdinalizes +
-// the spine-scoped box-leg-conjunct arm) and must answer the same rows as the name-model
+// deeper-nesting slice: a FILTERED linear 3-link chain ordinalizes (the chainedSpineWalk
+// admission + the spine-scoped box-leg-conjunct arm) and must answer the same rows as the name-model
 // parent, with the mixed-inner-ref clause landing at the innermost Explode and a lone
 // pure-outer conjunct SARGing the scan. NONE of these observables discriminate ordinal from
 // name-model — plans, rows, and the SARG are IDENTICAL between the two models (the lazy
@@ -226,7 +226,7 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	wantRows("threelink_pure_outer_OR", r4, []string{"map[Z:11]", "map[Z:12]", "map[Z:13]", "map[Z:20]"}, q4)
 
 	// BOX-BASE chain — the relocated name-model regression guard. The first
-	// link's base is a 2-source box (T4, T4C), which chainedBaseOrdinalizes DECLINES
+	// link's base is a 2-source box (T4, T4C), which chainedSpineWalk DECLINES
 	// (c5b territory). It stays NAME-MODEL (NestedLoopJoin base, the outer conjunct a
 	// PredicatesFilter — NO scan SARG) and a straddle mixing outer + the deepest element
 	// keeps the NAME-KEY rebase, answering correctly with NO ordinal -1 strand. This is

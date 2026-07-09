@@ -320,53 +320,50 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 	)
 }
 
-// chainedBaseOrdinalizes reports whether a chained first-link BASE will itself
-// flow a POSITIONAL row from translateRef (with the enclosure cleared) — the
-// recursive generalization of the depth-2 clusterArity==1 gate. It admits
-// EXACTLY two shapes:
+// chainedSpineWalk PEELS a chained-unnest outer into its lateral links
+// (bottom-most first) and reports whether the spine is ADMITTED to the ordinal
+// seed — the single walk authority the chained gate and chainedOwnerElementSlot
+// both consume. One iterative pass: strip unnest-right joins off the left-deep
+// tree, then check the two admission laws over the peeled links.
 //
-//   - a SINGLE lateral source (clusterArity 1) — the base of a 2-link chain's
-//     first link (a plain scan/box-free source);
-//   - a CHAINED unnest whose OWN base ordinalizes — a deeper chain's first link,
-//     peeling left down the unnest-right spine. The per-link len(Segments)<2
-//     check is load-bearing, not decorative: a 1-segment LogicalUnnest is
-//     constructible via the AT-source parser path, and such a malformed link
-//     must decline conservatively.
+// ADMISSION LAW 1 — the bottom: whatever remains under the deepest link must be
+// a SINGLE lateral source (clusterArity 1 — a plain scan through transparent
+// wrappers, or a merge-opaque FULL box). A MULTI-source BOX bottom
+// (clusterArity ≥ 2 — `FROM t, u, t.arr AS x, x.sub AS y`, whose arr link sits
+// on the box `t ⋈ u`) is DECLINED: its positional owner windows are the c5b
+// buried-box concern, and the innermost-Explode predicate placement is unproven
+// over a box base. It fails open to the name-model residual (pinned: a box-base
+// chain answers correctly via the name-key rebase, no strand).
+//
+// ADMISSION LAW 2 — ownership: every link ABOVE the first must consume the
+// element of exactly ONE deeper link, resolved BY ALIAS within this same walk
+// (no second spine walk). Forks are therefore admitted — `…, x.substruct AS y,
+// x.sub AS w` (w's owner x is two links back) is as valid as a linear chain,
+// because the collection root is computed from the OWNER link's element slot
+// (chainedOwnerElementSlot), never positionally from the preceding link. The
+// first link's owner is the bottom source itself, validated by the chained
+// classification machinery. An owner alias matching ZERO deeper links (a
+// table-owned mid-spine unnest — upstream-rejected as multiple lateral unnests)
+// or MORE THAN ONE (duplicate FROM aliases — 42712-loud upstream; this arm is
+// defensive) declines to name-model. The per-link len(Segments)<2 check is
+// load-bearing, not decorative: a 1-segment LogicalUnnest is constructible via
+// the AT-source parser path, and such a malformed link must decline
+// conservatively.
 //
 // The seed machinery (ordinalLegColumns/unnestOrdinalSeed/unnestBakedRootCollection)
-// already recurses on o.Left for arbitrary depth (rfc173_ordinal_seed.go: the
-// "depth-2 in practice" note was a CONSEQUENCE of this gate, not a structural
-// limit), so a deeper chained base seeds correctly once admitted.
-//
-// A MULTI-source BOX base (clusterArity ≥ 2 that is NOT an unnest-right join —
-// `FROM t, u, t.arr AS x, x.sub AS y`, whose arr link's base is the box `t ⋈ u`)
-// is DECLINED here: its positional owner windows are the c5b buried-box concern,
-// not this slice, and the innermost-Explode predicate placement is unproven over
-// a box base. It fails open to the name-model residual (pinned: a box-base chain
-// answers correctly via the name-key rebase, no strand).
-//
-// OWNERSHIP: every link ABOVE the first must consume the element of exactly ONE
-// deeper link — resolved BY ALIAS within this same walk (one authority, no
-// second spine walk). This generalizes the former linear immediately-preceding
-// rule: a FORK (`…, x.substruct AS y, x.sub AS w` — w's owner x is two links
-// back) is ADMITTED, because the collection root is computed from the OWNER
-// link's element slot (chainedOwnerElementSlot), not the preceding link's. The
-// first link's owner is the bottom source itself, validated by the chained
-// classification machinery exactly as before. An owner alias matching ZERO
-// deeper links (a table-owned mid-spine unnest — upstream-rejected as multiple
-// lateral unnests) or MORE THAN ONE (duplicate FROM aliases — 42712-loud
-// upstream; this arm is defensive) declines to name-model.
+// accumulates the merged row per link for arbitrary depth (rfc173_ordinal_seed.go),
+// so any admitted spine seeds correctly regardless of length or fork topology.
 //
 // pureSpine reports whether the spine BOTTOMS at a source binding exactly ONE
 // alias. A FULL OUTER box is ALSO clusterArity==1 (merge-opaque) and therefore
-// ADMITTED — exactly as the pre-slice depth-2 gate admitted it — but it binds
-// its LEG aliases, which are genuine BOX LEGS, not chain links: the
-// box-leg-conjunct arm of unnestExistsSeedSafe must stay ACTIVE for it
-// (pureSpine=false), or a box-leg WHERE ordinalizes the chained link while the
-// first link's own gate keeps a name-model seed over the box — an ordinal read
-// over a name-keyed row, SILENTLY WRONG rows. The discriminator is the arm's
-// own authority (outerBoundAliases == 1), not a structural box probe, so any
-// future single-arity multi-alias source stays conservatively impure.
+// ADMITTED — but it binds its LEG aliases, which are genuine BOX LEGS, not
+// chain links: the box-leg-conjunct arm of unnestExistsSeedSafe must stay
+// ACTIVE for it (pureSpine=false), or a box-leg WHERE ordinalizes the chained
+// link while the first link's own gate keeps a name-model seed over the box —
+// an ordinal read over a name-keyed row, SILENTLY WRONG rows. The discriminator
+// is the arm's own authority (outerBoundAliases == 1), not a structural box
+// probe, so any future single-arity multi-alias source stays conservatively
+// impure.
 func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links []chainedSpineLink, admitted, pureSpine bool) {
 	// Peel the unnest-right joins off the left-deep spine, outermost-first.
 	var rev []chainedSpineLink

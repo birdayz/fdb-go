@@ -143,14 +143,19 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			// (non-unnest) join leg below is fully preserved. A nil from the outer
 			// (underivable) declines cleanly (the caller fails open to name-model).
 			//
-			// ARBITRARY DEPTH: the chained ordinal seed gate
-			// (translateChainedUnnestOrdinal → chainedBaseOrdinalizes) admits a first
-			// link whose OWN base is a single source (clusterArity==1) OR itself a
-			// chained unnest whose base ordinalizes — so a 3+-link chain's base (itself
-			// an unnest-right join) recurses through this arm, one level per link, until
-			// it bottoms out at the single-source scan. A MULTI-source BOX base still
-			// declines at the gate (c5b), so this recursion only ever walks the
-			// unnest-right spine, never a box.
+			// ARBITRARY DEPTH AND TOPOLOGY: the chained ordinal seed gate
+			// (translateChainedUnnestOrdinal → chainedSpineWalk) admits any
+			// unnest-right spine whose BOTTOM is a single lateral source
+			// (clusterArity==1) and whose links each own exactly one deeper
+			// link's element — linear chains and forks alike. This arm's
+			// recursion on o.Left therefore descends one level per admitted
+			// link until it bottoms out at that single source; the merged type
+			// it accumulates is the same for a fork as for a linear chain
+			// (columns append in spine order — ownership only changes WHERE
+			// the collection roots, via chainedOwnerElementSlot, never the row
+			// layout). A MULTI-source BOX bottom still declines at the gate
+			// (c5b), so this recursion only ever walks the unnest-right spine,
+			// never a box.
 			//
 			// LOAD-BEARING INVARIANT: legColumns(un) here must stay layout-identical
 			// (count / order / names) to unnestSeedInnerFields(un) — the actual inner

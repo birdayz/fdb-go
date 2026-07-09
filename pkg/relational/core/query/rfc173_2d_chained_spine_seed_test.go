@@ -10,9 +10,10 @@ package query
 // — these pins assert the SEED FORM directly off translateChainedUnnestJoin's
 // result: an admitted spine's select carries a raw (non-AnchoredJoin) ordinal RC;
 // a declined shape falls open to the name-model AnchoredJoin record. Feature-off
-// control: with the chainedBaseOrdinalizes recursion arm removed (depth-2 gate),
-// the 3/4-link ordinal pins here FAIL — verified once at introduction; these are
-// discriminating by construction, unlike a rows/EXPLAIN cert.
+// control: with chainedSpineWalk's admission narrowed back to depth-2 (or its
+// ownership law to linear-only), the linear 3/4-link and fork ordinal pins here
+// FAIL respectively — verified at each introduction; these are discriminating
+// by construction, unlike a rows/EXPLAIN cert.
 //
 // The FDB certs (rfc173_s4_3link_filtered_ordinal_fdb_test.go and the chained
 // ordinal cert) stay the rows+correctness pins; THESE pin the boundary.
