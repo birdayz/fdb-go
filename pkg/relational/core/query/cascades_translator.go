@@ -149,7 +149,11 @@ type cascadesTranslator struct {
 	// strands (ordinal -1, malformed plan). The name-model residual's qualified name keys resolve
 	// the pushed clause correctly. Every NON-OR filter still ordinalizes (the Slice 2b win);
 	// ordinalizing the OR needs the positional-bake path (booked). Read once — the chained
-	// ordinal gate.
+	// ordinal gate. OVER-DECLINES two ways (both correct-or-loud — name-model gives correct rows,
+	// only a missed ordinalization): a pure-inner OR (`y=1 OR y=2`, no stranding pure-outer
+	// clause), and — no fresh-scope clear at a subquery boundary — a chained unnest inside an
+	// inline-EXISTS subquery under an OR-carrying OUTER filter (the leak the retired coarse bit
+	// also had; a translateSubqueryRef-style clear is booked with the positional-bake slice).
 	chainedUnderOrFilter bool
 	// unnestExistsScopeCollision forces the under-EXISTS unnest to the ANCHORED
 	// (name-model) seed when an EXISTS inner subquery scans a table aliased the
@@ -2462,8 +2466,9 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					// PushFilterBelowJoinRule, where t is directly correlated — leave it its lazy
 					// FieldValue(QOV(t)) so it resolves as a SARG. Splitting the top-level AND (a
 					// straddling `t.id = y` keeps the rebase; `t.id = 1` stays QOV(t)). An
-					// OR-over-outer-leg filter already declined up front (chainedUnderOrFilter) —
-					// CNF-pushdown would strand its extracted pure-outer clause on the ordinal row.
+					// OR-carrying filter declined the ORDINAL seed up front (chainedUnderOrFilter),
+					// so `sel` here is the name-model seed and the OR's name key resolves against
+					// its qualified merged row — see the helper for why the ordinal seed strands.
 					pred = rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr)
 				} else {
 					pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)
@@ -2835,13 +2840,17 @@ func rebaseUnnestOuterLegPredicate(
 // branch: EVERY in-chain correlation flows the keep-rebase branch uniformly, no per-element
 // special-casing to drift as new element levels appear.
 //
-// SAFE ONLY for a predicate WITHOUT an outer-leg OR: a top-level `(t.id=10 AND y>2) OR
-// (t.id=3 AND y<5)` is one non-pushable conjunct (references y), so the WHOLE OR gets the name
-// key — but NormalizePredicatesRule then distributes it to CNF and PredicatePushDownRule pushes
-// the extracted PURE-OUTER clause (`t.id=10 OR t.id=3`) to the first-link ORDINAL FlatMap where
-// a name key strands (ordinal -1). translateChainedUnnestOrdinal DECLINES an OR-over-outer-leg
-// filter to the name-model residual up front (chainedUnderOrFilter), so no such predicate
-// reaches here; ordinalizing it needs the positional-bake path (booked).
+// The name key is SAFE HERE because the seed under it is name-model whenever the predicate
+// carries an outer-leg OR: an OR reaches this function only on the chainedUnderOrFilter-declined
+// path (translateChainedUnnestOrdinal returned nil → translateChainedUnnestJoin's name-model
+// fallback built the seed), so the merged row is NewAnchoredJoinRecord's row, which carries the
+// qualified `leg.col` keys this rebase reads. The stranding it avoids is specific to the ORDINAL
+// seed: had the OR ordinalized, NormalizePredicatesRule would distribute `(t.id=10 AND y>2) OR
+// (t.id=3 AND y<5)` to CNF and PredicatePushDownRule would push the extracted PURE-OUTER clause
+// (`t.id=10 OR t.id=3`) to the first-link ORDINAL FlatMap, where a name key resolves ordinal -1
+// (a malformed plan) — which is exactly why the chained gate declines an OR-carrying filter to
+// name-model up front. Ordinalizing the OR (dropping the decline) needs the positional-bake path
+// (booked).
 func rebaseChainedOuterLegPredicate(
 	p predicates.QueryPredicate,
 	outerLegs map[string]struct{},

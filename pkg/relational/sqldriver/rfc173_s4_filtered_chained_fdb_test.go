@@ -215,6 +215,14 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 		// NOT of an outer comparison.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10)`,
 			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "")
+		// NOT(AND) has NO OrPredicate node → ORDINALIZES (predicateContainsOr = false). Safe
+		// because NormalizePredicatesRule does NOT De Morgan it: DeMorganRule is absent from the
+		// default rules and normalizeCNF treats a NotPredicate as an OPAQUE leaf, so the mixed
+		// NOT(ID=10 AND y>2) conjunct is name-key-rebased WHOLE and resolves at the inner Explode
+		// — no pure-outer clause is ever extracted to strand. T4(10) y≤2 → {1,2}; T4(20),T4(3)
+		// (ID≠10) → all → {4,5,6}∪{3,9}. → {1,2,3,4,5,6,9}.
+		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10 AND "Y" > 2)`,
+			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "")
 		// Three-conjunct AND: T4.ID=10 AND y>1 AND y<3 → {2}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 AND "Y" > 1 AND "Y" < 3`,
 			[]string{"map[Y:2]"}, "")
@@ -249,6 +257,13 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 		// Straddling INSIDE a disjunct (`t.id = y` OR outer): T4(3) id=3=y=3 → {3}; (ID=20)→{4,5,6}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = "Y") OR (T4."ID" = 20)`,
 			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
+		// NOT(OR) CONTAINS an OrPredicate node → predicateContainsOr catches it → DECLINES. This
+		// is CONSERVATIVE over-decline (a NotPredicate is opaque to normalizeCNF, so this OR would
+		// not actually distribute a stranding pure-outer clause), but the discriminator is
+		// coarse-within-OR by design — correct-or-loud, and name-model answers correctly.
+		// NOT(ID=10 OR ID=3) = ID∉{10,3} → T4(20) → {4,5,6}.
+		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10 OR T4."ID" = 3)`,
+			[]string{"map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
 	})
 
 	// SCALAR-SUBQUERY residual → clean 0A000 (the silent-wrong-`[]` sentinel). Java answers
