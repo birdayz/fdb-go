@@ -1868,13 +1868,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	//
 	// The bug is a PLAN-CONSTRUCTION divergence in the catalog builder, so the
 	// revert-proof axis is the inner plan SHAPE rendered in EXPLAIN (the inner SELECT
-	// plan of an EXISTS subquery is rendered inline). With the fix the inner is
-	// `Project([V.V], InMemorySort([V.V DESC], …))` (qualified element); on revert it
-	// is `Project([V], InMemorySort([V DESC], …))` (the bare, GW.V-clobbered key) —
-	// the EXACT string difference asserted below, on BOTH the projection and the sort.
-	// (A scalar-subquery-over-unnest's value is not yet pre-evaluated in execution —
-	// a separate gap — so the plan-shape assertion is the faithful proof here, exactly
-	// as the column-type tests assert on the planned Value.)
+	// plan of an EXISTS subquery is rendered inline). The inner PROJECTION reads the
+	// qualified `V.V` (the unnest element); the inner SORT KEY now reads the element
+	// POSITIONALLY — `.V#3`, a baked ordinal at the element's seed slot (GD's run
+	// ID/ARR/SARR is slots 0-2, so the mid-list element V is slot 3) — because ORDER BY
+	// over a gathered ordinal seed bakes leg-column AND element keys through the SAME
+	// authority the GROUP BY path uses (translateSort → gatheredSeedBakeContext →
+	// bakeGatheredGroupValue; element-first, so bare `V` shadows GW.V). On revert the
+	// sort is the bare, GW.V-clobbered `InMemorySort([V DESC]`; a mis-bind to GW.V would
+	// bake `.V#5` (GW.V's slot), never `.V#3`. (A scalar-subquery-over-unnest's value is
+	// not yet pre-evaluated in execution — a separate gap — so the plan-shape assertion
+	// is the faithful proof here, exactly as the column-type tests assert on the Value.)
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest projection AND sort key", func(t *testing.T) {
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
 			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW ORDER BY "V" DESC)`, md, nil)
@@ -1882,27 +1886,28 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		// The inner projection AND the inner sort must read the QUALIFIED V.V (the
-		// unnest element), not the bare V that mergeRows clobbers with GW.V.
+		// The inner projection reads the qualified element V.V; the inner sort reads it
+		// POSITIONALLY at the element slot (.V#3), never the bare V that mergeRows
+		// clobbers with GW.V and never GW.V's own slot (.V#5).
 		unnestMustContain(t, explain, "Project([V.V]")
-		unnestMustContain(t, explain, "InMemorySort([V.V DESC]")
-		// Pre-fix the catalog builder emitted the bare key for both — assert it is gone
-		// so the test fails on revert (a bare `Project([V],` / `InMemorySort([V DESC]`).
+		unnestMustContain(t, explain, ".V#3 DESC]")
 		unnestMustNotContain(t, explain, "Project([V],")
 		unnestMustNotContain(t, explain, "InMemorySort([V DESC]")
+		unnestMustNotContain(t, explain, ".V#5 DESC]")
 	})
 
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest sort key ASC", func(t *testing.T) {
-		// The ASC mirror pins the sort-key half independent of DESC: the catalog
-		// builder's sort key is the qualified V.V for either direction.
+		// The ASC mirror pins the sort-key half independent of DESC: the sort key bakes
+		// to the element slot (.V#3) for either direction, never GW.V's (.V#5) or bare V.
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
 			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW ORDER BY "V" ASC)`, md, nil)
 		if perr != nil {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		unnestMustContain(t, explain, "InMemorySort([V.V ASC]")
+		unnestMustContain(t, explain, ".V#3 ASC]")
 		unnestMustNotContain(t, explain, "InMemorySort([V ASC]")
+		unnestMustNotContain(t, explain, ".V#5 ASC]")
 	})
 
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest bare projection no ORDER BY", func(t *testing.T) {

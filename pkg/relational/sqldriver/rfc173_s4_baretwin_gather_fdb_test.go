@@ -227,10 +227,14 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 999 GROUP BY A."K"`, nil)
 	})
 
-	// ORDER BY on a bare-twin dup column — the sibling axis of the WHERE pins. Outer-
-	// operator resolution (WHERE/GROUP BY/ORDER BY) is where every bug in this arc hid;
-	// WHERE is proven on the raw seed, ORDER BY is its unprobed sibling. ORDER BY on the
-	// FIRST leg's and a LATER leg's dup column both route to their own quantifier (2 rows).
+	// ORDER BY on a bare-twin dup column resolves each qualifier to its own quantifier.
+	// This asserts RESOLUTION only (the row set), NOT the sort ORDER — A has a single K
+	// value here (100), so it cannot discriminate direction. That was the fake-green trap:
+	// a set-only assertion on single-value K read as "ORDER BY covered" while the sort key
+	// silently evaluated to a dead constant (DESC == ASC). The DISCRIMINATING ORDER
+	// dimension — distinct sort values so DESC ≠ ASC, across dup/non-dup/3-leg/element/box-
+	// FULL-NULL/compound/multi-key, with NULL ordering matched to single-source — lives in
+	// TestFDB_RFC173S4_OrderByGather. Keep this as the bare-twin A/B/C-schema resolution pin.
 	t.Run("order_by_bare_twin_resolves", func(t *testing.T) {
 		wantRows(t, `SELECT "X" FROM A, B, A."ARR" AS "X" ORDER BY A."K", "X"`,
 			[]string{"map[X:7]", "map[X:8]"})

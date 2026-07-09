@@ -3962,11 +3962,81 @@ func (t *cascadesTranslator) translateUnion(u *logical.LogicalUnion) expressions
 	return expressions.NewLogicalUnionExpression(quantifiers)
 }
 
+// gatheredSeedBake carries the positional-bake context for a gathered ordinal-seed
+// input: the shared-authority per-leg windows + element slots that map a leg-column /
+// element reference to its flat seed slot, a fresh seed QOV to read that slot via
+// ofOrdinal, and the quantifier bound to it. It is the ONE authority every OUTER
+// operator that resolves a leg column over the flat OUTPUT row shares — GROUP BY keys /
+// aggregate operands (translateAggregate) and ORDER BY keys (translateSort) bake
+// IDENTICALLY through it, never a per-operator copy that could drift. seedQOV is nil
+// when the input is NOT a genuine ordinal seed (a name-model FALLBACK RC is ANCHORED
+// and excluded); the caller then keeps the plain named quantifier and skips baking.
+type gatheredSeedBake struct {
+	windows      map[string]values.OrdinalSeedLegWindow
+	elementSlots map[string]int
+	seedQOV      values.Value
+	quant        expressions.Quantifier
+}
+
+// gatheredSeedBakeContext detects a gathered ordinal seed at innerRef and builds its
+// bake context. When innerRef is a genuine ordinal seed — a flat SelectExpression whose
+// result RC is a NON-ANCHORED positional seed carrying an Explode element — it returns
+// the per-leg windows, the element slots (the seed's OWN element fields located by
+// fieldValueReferencesInner, keyed by rc index), a fresh seed QOV over the seed's row
+// type, and a quantifier REBOUND to that QOV's correlation so a baked ofOrdinal read
+// binds. Otherwise seedQOV is nil and quant is the plain named quantifier over
+// fallbackAlias (the name-model path). namedQuantifier is a pure constructor, so
+// computing the default eagerly and rebinding on a hit is free.
+func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Reference, fallbackAlias string) gatheredSeedBake {
+	b := gatheredSeedBake{quant: t.namedQuantifier(fallbackAlias, innerRef)}
+	sel, ok := innerRef.Get().(*expressions.SelectExpression)
+	if !ok {
+		return b
+	}
+	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || rc.AnchoredJoin {
+		return b
+	}
+	var innerCorr values.CorrelationIdentifier
+	foundExplode := false
+	for _, q := range sel.GetQuantifiers() {
+		if _, isExplode := q.GetRangesOver().Get().(*expressions.ExplodeExpression); isExplode {
+			innerCorr = q.GetAlias()
+			foundExplode = true
+			break
+		}
+	}
+	if !foundExplode {
+		return b
+	}
+	b.windows, _ = values.OrdinalSeedLegWindows(rc)
+	b.elementSlots = map[string]int{}
+	for i, f := range rc.Fields {
+		if fieldValueReferencesInner(f.Value, innerCorr) {
+			b.elementSlots[strings.ToUpper(f.Name)] = i // element slot = rc index
+		}
+	}
+	seedCorr := values.UniqueCorrelationIdentifier()
+	b.seedQOV = values.NewQuantifiedObjectValueOfType(seedCorr, rc.Type())
+	b.quant = expressions.NamedForEachQuantifier(seedCorr, innerRef)
+	return b
+}
+
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
 	innerRef := t.translateRef(s.Input)
 	if innerRef == nil {
 		return nil
 	}
+	// A gathered multi-source unnest under this ORDER BY flows its RAW per-leg
+	// positional seed; a sort key that names a LEG COLUMN must be POSITIONALLY BAKED
+	// to its flat slot over that seed — the SAME bake translateAggregate applies to
+	// GROUP BY keys, through the SHARED authority (gatheredSeedBakeContext →
+	// bakeGatheredGroupValue). Without it the leg-column key stays an unresolved name
+	// that evaluates to a dead constant over the merged row, so InMemorySort sorts on
+	// nothing (silent DESC==ASC wrong order — the sort machinery works, only the key
+	// is dead). An already-resolved key (the element sort, which worked) passes through
+	// untouched; a name-model fallback seed is ANCHORED and excluded (seedQOV nil).
+	bake := t.gatheredSeedBakeContext(innerRef, sourceAlias(s.Input))
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
 		nf := k.NullsFirst
@@ -3974,16 +4044,16 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		if v == nil {
 			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
 		}
+		if bake.seedQOV != nil {
+			v = bakeGatheredGroupValue(v, bake.windows, bake.elementSlots, bake.seedQOV)
+		}
 		sortKeys[i] = expressions.SortKey{
 			Value:      v,
 			Reverse:    k.Dir == logical.SortDesc,
 			NullsFirst: &nf,
 		}
 	}
-	return expressions.NewLogicalSortExpression(
-		sortKeys,
-		t.namedQuantifier(sourceAlias(s.Input), innerRef),
-	)
+	return expressions.NewLogicalSortExpression(sortKeys, bake.quant)
 }
 
 func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
@@ -4321,57 +4391,18 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	if innerRef == nil {
 		return nil
 	}
-	// RFC-173 S4 qualifier-honoring resolution: a GATHERED unnest
-	// input UN-COLLAPSED to the raw per-leg seed (no name-keyed wrap). Derive its
-	// per-leg windows from the TYPED seed itself — innerRef's result RC through the
-	// ONE layout authority OrdinalSeedLegWindows (no translation-time side-channel) —
-	// and positionally BAKE the group keys / operands over the seed's flat output via
-	// a NAMED group-by quantifier: ofOrdinal(QOV(seedCorr,mergedType), slot), the
-	// qualifier-honoring read that replaces the wrap's name key. The outer WHERE
-	// already baked itself (bakeGatedJoinPredicates fires on the SelectExpression).
-	var windows map[string]values.OrdinalSeedLegWindow
-	var elementSlots map[string]int
-	var seedType values.Type
-	if sel, ok := innerRef.Get().(*expressions.SelectExpression); ok {
-		// Only a GENUINE ORDINAL seed emits the positional row a baked ordinal reads.
-		// A name-model FALLBACK RC is ANCHORED (rc.AnchoredJoin) and emits NO positional
-		// row — it is EXCLUDED here (`!rc.AnchoredJoin`), so a gather that DECLINED to the
-		// name-model path (a box-leg WHERE, a within-box dup) keeps its grouped element/leg
-		// reads name-model; baking over a name-model row would evaluate the ordinal against
-		// the Datum map and ERROR. The genuine seed (gathered multi-source OR single-source
-		// unnest) is identified by its Explode quantifier — the seed's OWN element notion
-		// (innerCorr), which fieldValueReferencesInner locates the element field(s) by (one
-		// definition). Leg columns resolve via OrdinalSeedLegWindows (nil for a single-source
-		// seed with no cross-leg window — the element still bakes by rc index).
-		if rc, ok := sel.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin {
-			var innerCorr values.CorrelationIdentifier
-			foundExplode := false
-			for _, q := range sel.GetQuantifiers() {
-				if _, isExplode := q.GetRangesOver().Get().(*expressions.ExplodeExpression); isExplode {
-					innerCorr = q.GetAlias()
-					foundExplode = true
-					break
-				}
-			}
-			if foundExplode {
-				windows, _ = values.OrdinalSeedLegWindows(rc)
-				elementSlots = map[string]int{}
-				for i, f := range rc.Fields {
-					if fieldValueReferencesInner(f.Value, innerCorr) {
-						elementSlots[strings.ToUpper(f.Name)] = i // element slot = rc index
-					}
-				}
-				seedType = rc.Type()
-			}
-		}
-	}
-	groupByQuant := t.namedQuantifier(sourceAlias(a.Input), innerRef)
-	var seedQOV values.Value
-	if seedType != nil {
-		seedCorr := values.UniqueCorrelationIdentifier()
-		seedQOV = values.NewQuantifiedObjectValueOfType(seedCorr, seedType)
-		groupByQuant = expressions.NamedForEachQuantifier(seedCorr, innerRef)
-	}
+	// RFC-173 S4 qualifier-honoring resolution: a GATHERED unnest input UN-COLLAPSED to
+	// the raw per-leg seed (no name-keyed wrap). Derive its per-leg windows from the
+	// TYPED seed itself through the ONE layout authority (gatheredSeedBakeContext →
+	// OrdinalSeedLegWindows, the SAME authority translateSort's ORDER BY keys bake
+	// through — no per-operator copy) and positionally BAKE the group keys / operands
+	// over the seed's flat output via a NAMED group-by quantifier: ofOrdinal(QOV(
+	// seedCorr,mergedType), slot), the qualifier-honoring read that replaces the wrap's
+	// name key. A name-model FALLBACK RC is ANCHORED and excluded (seedQOV nil), so a
+	// gather that DECLINED to name-model keeps its grouped reads name-model. The outer
+	// WHERE already baked itself (bakeGatedJoinPredicates fires on the SelectExpression).
+	bake := t.gatheredSeedBakeContext(innerRef, sourceAlias(a.Input))
+	groupByQuant := bake.quant
 	groupKeys := make([]values.Value, len(a.GroupKeys))
 	for i, key := range a.GroupKeys {
 		if i < len(a.GroupKeyValues) && a.GroupKeyValues[i] != nil {
@@ -4379,8 +4410,8 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		} else {
 			groupKeys[i] = &values.FieldValue{Field: key, Typ: values.UnknownType}
 		}
-		if seedType != nil {
-			groupKeys[i] = bakeGatheredGroupValue(groupKeys[i], windows, elementSlots, seedQOV)
+		if bake.seedQOV != nil {
+			groupKeys[i] = bakeGatheredGroupValue(groupKeys[i], bake.windows, bake.elementSlots, bake.seedQOV)
 		}
 	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
@@ -4402,8 +4433,8 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
 			spec.Operand = a.AggregateOperands[i]
 		}
-		if seedType != nil && spec.Operand != nil {
-			spec.Operand = bakeGatheredGroupValue(spec.Operand, windows, elementSlots, seedQOV)
+		if bake.seedQOV != nil && spec.Operand != nil {
+			spec.Operand = bakeGatheredGroupValue(spec.Operand, bake.windows, bake.elementSlots, bake.seedQOV)
 		}
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			spec.Alias = strings.ToUpper(a.Aliases[i])
