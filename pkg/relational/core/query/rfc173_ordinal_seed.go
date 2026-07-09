@@ -617,18 +617,15 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 		return preds
 	}
 	bake := func(v values.Value) values.Value {
-		fv, isFV := v.(*values.FieldValue)
-		if !isFV || fv.Resolved != nil || strings.Contains(fv.Field, ".") {
+		key, isRef := legRef(v)
+		if !isRef {
 			return v
 		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-		if !isQOV {
-			return v
-		}
-		legType, isLeg := legTypes[strings.ToUpper(qov.Correlation.Name())]
+		legType, isLeg := legTypes[key]
 		if !isLeg || legType.typ == nil || legType.leafTyp == nil {
 			return v
 		}
+		fv := v.(*values.FieldValue) // legRef confirmed the cast + guards
 		// Resolve the bare name within the leg's BAKE WINDOW (the rightmost
 		// leaf for a box leg — the alias names that leaf), then offset into
 		// the leg's flowed concat. A whole-concat FieldIndex would first-match
@@ -638,14 +635,14 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 			return v
 		}
 		// The baked node's correlation takes the LEG-ALIAS CASE the gather
-		// minted (UPPER via sourceAlias — the one case authority): the lookup
-		// above matches case-insensitively, but emitting the reference's
-		// ORIGINAL case would let a baked node's correlation diverge from the
-		// quantifier it must bind to — downstream classification compares
-		// correlations exactly, and a case-mismatched ON conjunct silently
-		// classified as deeply-correlated during commit-2 bring-up (unreachable
-		// via production SQL, which uppercases upstream; pinned white-box).
-		bakeCorr := strings.ToUpper(qov.Correlation.Name())
+		// minted (UPPER via sourceAlias — the one case authority): legRef
+		// already uppercased it, but emitting the reference's ORIGINAL case
+		// would let a baked node's correlation diverge from the quantifier it
+		// must bind to — downstream classification compares correlations
+		// exactly, and a case-mismatched ON conjunct silently classified as
+		// deeply-correlated during commit-2 bring-up (unreachable via
+		// production SQL, which uppercases upstream; pinned white-box).
+		bakeCorr := key
 		if legType.bakeCorr != "" {
 			// A BURIED leg (amendment C): the reference binds the box's
 			// quantifier — named by its rightmost leaf — not the buried
@@ -692,23 +689,36 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 	return out
 }
 
-// predicateLegAliases counts how many DISTINCT gated-join leg aliases a
-// predicate's value trees reference directly (bare-named lazy FieldValues
-// over a leg QOV — the same references the bake rewrites).
+// legRef extracts the UPPER leg-correlation name of a BARE, UNBAKED FieldValue over a
+// QuantifiedObjectValue — the reference shape all three gated-predicate walks key on
+// (the bake closure, predicateLegAliases, predicateRefsBuriedLeg). Returns "",false for
+// a non-FieldValue, an already-baked ref (Resolved != nil — a re-walk must not re-count
+// or re-bake it), a flat-dotted read (fv.Field carries a '.', the RFC-142 mergedQOV.
+// "leg.col" channel, resolved elsewhere), or a non-QOV child. Each caller then consults
+// legTypes[key] for its own decision — is-a-leg (count), is-buried (bakeCorr != ""), or
+// build the baked node — so one prologue serves three keys.
+func legRef(v values.Value) (string, bool) {
+	fv, isFV := v.(*values.FieldValue)
+	if !isFV || fv.Resolved != nil || strings.Contains(fv.Field, ".") {
+		return "", false
+	}
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
+		return "", false
+	}
+	return strings.ToUpper(qov.Correlation.Name()), true
+}
+
+// predicateLegAliases counts how many DISTINCT gated-join leg aliases a predicate's
+// value trees reference directly (bare unbaked FieldValues over a leg QOV — the same
+// references the bake rewrites; see legRef).
 func predicateLegAliases(p predicates.QueryPredicate, legTypes map[string]bakeLegType) int {
 	seen := make(map[string]struct{}, 2)
 	predicates.ReplaceValues(p, func(v values.Value) values.Value {
-		fv, isFV := v.(*values.FieldValue)
-		if !isFV || strings.Contains(fv.Field, ".") {
-			return v
-		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-		if !isQOV {
-			return v
-		}
-		key := strings.ToUpper(qov.Correlation.Name())
-		if _, isLeg := legTypes[key]; isLeg {
-			seen[key] = struct{}{}
+		if key, ok := legRef(v); ok {
+			if _, isLeg := legTypes[key]; isLeg {
+				seen[key] = struct{}{}
+			}
 		}
 		return v
 	})
@@ -727,16 +737,10 @@ func predicateLegAliases(p predicates.QueryPredicate, legTypes map[string]bakeLe
 func predicateRefsBuriedLeg(p predicates.QueryPredicate, legTypes map[string]bakeLegType) bool {
 	buried := false
 	predicates.ReplaceValues(p, func(v values.Value) values.Value {
-		fv, isFV := v.(*values.FieldValue)
-		if !isFV || fv.Resolved != nil || strings.Contains(fv.Field, ".") {
-			return v
-		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-		if !isQOV {
-			return v
-		}
-		if lt, ok := legTypes[strings.ToUpper(qov.Correlation.Name())]; ok && lt.bakeCorr != "" {
-			buried = true
+		if key, ok := legRef(v); ok {
+			if lt, ok := legTypes[key]; ok && lt.bakeCorr != "" {
+				buried = true
+			}
 		}
 		return v
 	})
