@@ -178,6 +178,19 @@ func TestFDB_RFC173S4_BoxDupBuriedElementPredicate(t *testing.T) {
 	t.Run("buried_element_compound", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" + 0 = "X"`, one)
 	})
+	// BURIED ref in an OR (bakeConjuncts only splits top-level AND, so the whole OR is
+	// ONE leaf): predicateRefsBuriedLeg walks the entire OR and flags the buried A.K, so
+	// the bake rewrites A.K in BOTH disjuncts. A.K=7=X=7 matches; `A.K = 999` matches no A.
+	t.Run("buried_element_in_or", func(t *testing.T) {
+		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" = "X" OR A."K" = 999`, one)
+	})
+	// TWO buried refs + the element in ONE conjunct (`A.K + A.AID = X`): both buried leaves
+	// (A.K and A.AID, distinct slots in the box's A window) bake plus the element. A.K=7,
+	// A.AID=1 → 8 = X → the element 8 of ARR[7,8]. A non-recursing / single-ref bake → [].
+	t.Run("buried_element_two_buried_refs", func(t *testing.T) {
+		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" + A."AID" = "X"`,
+			[]string{"map[A.K:7 X:8]"})
+	})
 
 	// PLACEMENT AXIS (a) — buried-vs-LITERAL pushes INTO the box (not the Explode filter);
 	// must stay correct (not regressed). A.K=7 keeps both its elements.
@@ -192,13 +205,11 @@ func TestFDB_RFC173S4_BoxDupBuriedElementPredicate(t *testing.T) {
 			[]string{"map[A.K:300 X:9]", "map[A.K:7 X:7]", "map[A.K:7 X:8]"})
 	})
 
-	// FULL-NULL both ways: `A.K = X` DROPS the padded A.K=NULL row (NULL=55 → NULL,
-	// three-valued); `A.K IS NULL` KEEPS it — proving the padded buried A.K resolves
-	// through the gather (a spurious match or unresolved read would diverge).
-	t.Run("full_null_element_drops", func(t *testing.T) {
-		// The padded A.K=NULL/X=55 row is NOT in the `A.K=X` result (only {7,7}).
-		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" = "X"`, one)
-	})
+	// FULL-NULL: the buried_element_box_dup case above already proves `A.K = X` DROPS the
+	// padded A.K=NULL row (its `one` result excludes map[A.K:<nil> X:55], NULL=55 → NULL
+	// three-valued). Its contrast partner — `A.K IS NULL` KEEPS the padded row — proves the
+	// padded buried A.K resolves through the gather (a spurious match or unresolved read
+	// would diverge), a distinct axis.
 	t.Run("full_null_is_null_keeps", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" IS NULL`,
 			[]string{"map[A.K:<nil> X:55]"})
