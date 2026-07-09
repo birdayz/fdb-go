@@ -141,7 +141,6 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// typ) — iterating entries would count a box's columns once per buried leaf and
 	// self-collide. One leg = one run = one column set.
 	declineBoxDup := false
-	nonBoxCrossLegDup := false
 	type nameOrigin struct {
 		legIdx int
 		nonBox bool
@@ -158,16 +157,13 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 				continue
 			}
 			withinLeg[n] = struct{}{}
-			if prev, a := acrossLegs[n]; a && prev.legIdx != li {
-				// A non-box cross-leg dup (both legs single-namespace) is the scan
-				// bare-twin — it flows through the RAW seed (separate quantifiers
-				// resolve qualified reads). A box-involved dup declines: its buried
-				// column can't be qualified apart.
-				if nonBox && prev.nonBox {
-					nonBoxCrossLegDup = true
-				} else {
-					declineBoxDup = true
-				}
+			// A non-box cross-leg dup (both legs single-namespace) is the scan
+			// bare-twin — it flows through the RAW seed (separate quantifiers resolve
+			// qualified reads, non-grouped AND grouped: the group-by positionally bakes
+			// the dup keys by leg window). Only a box-involved dup declines: its buried
+			// column can't be qualified apart.
+			if prev, a := acrossLegs[n]; a && prev.legIdx != li && !(nonBox && prev.nonBox) {
+				declineBoxDup = true
 			}
 			acrossLegs[n] = nameOrigin{legIdx: li, nonBox: nonBox}
 		}
@@ -178,12 +174,11 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// A GROUPED gather (underAggregate) UN-COLLAPSES to the raw per-leg seed (below)
 	// — no name-keyed wrap — and the ancestor GROUP-BY POSITIONALLY BAKES its keys /
 	// operands over it (translateAggregate: OrdinalSeedLegWindows for leg columns,
-	// fieldValueReferencesInner for the element). The grouped bare-twin's qualified
-	// dup keys route by slot (not first-match), and the outer WHERE bakes for free
-	// (bakeGatedJoinPredicates fires on the SelectExpression). This retires the
-	// collapse AND the ALIAS.COL name keys (the name-model residue). The one fail-open
-	// decline (a mid-list-element cross-leg dup the leg authority can't window) is at
-	// the seed return below, where rc is built.
+	// element-anywhere including the MID-LIST split-run; fieldValueReferencesInner for
+	// the element). The grouped bare-twin's qualified dup keys route by slot (not
+	// first-match), and the outer WHERE bakes for free (bakeGatedJoinPredicates fires
+	// on the SelectExpression). This retires the collapse AND the ALIAS.COL name keys
+	// (the name-model residue).
 
 	// The OWNING source (unnest-residual class 1, design ruling 1(iii)): the
 	// legTypes map IS the owner index — a PLAIN leg's own window keyed by
@@ -353,27 +348,16 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		sourceAliases,
 		expressions.JoinInner,
 	)
-	// A cross-leg dup (bare-twin) grouped over a seed whose leg windows the SHARED
-	// authority CANNOT derive — a MID-LIST element (`FROM A, A.arr AS x, B`) splits
-	// the leg run, so OrdinalSeedLegWindows declines it — would leave a qualified dup
-	// leg key unresolvable positionally at the group-by bake. Fail-open to name-model
-	// there (works-or-loudly-declines). The common trailing-element
-	// bare-twin (`FROM A, B, A.arr AS x`) windows cleanly and gathers; an element-only
-	// grouped gather (no cross-leg dup) needs no leg window and always gathers.
-	if t.underAggregate && nonBoxCrossLegDup {
-		if w, _ := values.OrdinalSeedLegWindows(rc); w == nil {
-			return nil
-		}
-	}
 	return seedSel
 }
 
 // fieldValueReferencesInner reports whether a seed field's VALUE reads the unnest's
 // Explode inner correlation (a bare QOV(inner) for a scalar element, or ofOrdinal
-// over QOV(inner) for a with-ordinality element/ordinal). The wrap uses it to
-// locate the ELEMENT/ordinal field(s) in the seed so it can bind them POSITIONALLY
-// (by slot) and let them WIN the bare namespace over a same-named outer column —
-// the name-model shadow the positional seed otherwise loses.
+// over QOV(inner) for a with-ordinality element/ordinal). It is the seed's OWN
+// definition of "which field is the element"; translateAggregate uses it to locate
+// the ELEMENT/ordinal field(s) and bake a grouped element read POSITIONALLY at that
+// slot (element-first — winning the bare namespace over a same-named outer column,
+// the name-model shadow), and slotInGatheredSeed consults the resulting element slots.
 func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifier) bool {
 	switch tv := v.(type) {
 	case *values.QuantifiedObjectValue:

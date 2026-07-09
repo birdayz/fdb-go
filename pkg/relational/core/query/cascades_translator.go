@@ -117,20 +117,15 @@ type cascadesTranslator struct {
 	// the reverse.
 	inInnerCluster bool
 	// underAggregate is set while lowering the INPUT of a GROUP BY / aggregate
-	// (translateAggregate). A gathered multi-source unnest exposes only bare column
-	// names on its POSITIONAL seed, but a grouped element reference qualifies to the
-	// shadow-qualified "EL.EL" key (a correlated `FieldValue{Field:"EL", Child:QOV}`),
-	// which the seed lacks — so `SELECT EL, COUNT(*) FROM a, a.arr AS EL, b GROUP BY EL`
-	// grouped every row under NULL. When this flag is set, translateGatheredUnnestCluster
-	// keeps the positional seed INTERNAL and places a NAMED-PROJECTION layer above it
-	// (wrapGatheredPositionalKeys) that re-exposes the bare + ALIAS.COL + "EL.EL" shadow
-	// keys the grouped read resolves against — Java's "the collapse preserves the named
-	// projection the group-by consumes". The gather now ORDINALIZES the group-by
-	// (retiring the name-model residual for the disjoint gathered shape) rather than
-	// declining to it. Breadth: the flag spans the whole input subtree, so a gathered
-	// unnest in a SUBQUERY within the aggregate's input is wrapped too — benign (the
-	// projection is a row-preserving column superset; a non-grouped subquery reads its
-	// bare keys unchanged), the same breadth the prior decline had.
+	// (translateAggregate). A gathered multi-source unnest's grouped element / leg
+	// reference used to group every row under NULL (`SELECT EL, COUNT(*) FROM a, a.arr
+	// AS EL, b GROUP BY EL`) because the flat positional seed had no name key for it.
+	// The gather now UN-COLLAPSES: translateGatheredUnnestCluster returns the RAW
+	// per-leg seed and translateAggregate POSITIONALLY BAKES the group keys / operands
+	// over it — leg columns via OrdinalSeedLegWindows, the element by its rc slot
+	// (fieldValueReferencesInner) — so the grouped read resolves by ordinal, no
+	// name-keyed wrap. This flag is only what marks the input as an aggregate INPUT
+	// (so the bake site knows to look); the wrap it once gated is deleted.
 	underAggregate bool
 	// unnestUnderExistential is set while lowering a lateral unnest that is the
 	// OUTER of an EXISTS composition (translateUnnestExistsFilter). RFC-173 commit
@@ -4279,10 +4274,11 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 
 // aggregateOperandReferencesColumn reports whether any aggregate operand reads a
 // COLUMN — i.e. is not COUNT(*) (nil operand) and not a bare constant (COUNT(1)).
-// Such an operand over a gathered multi-source unnest must resolve through the
-// named-projection wrap even without a GROUP BY (the global SUM(EL) case); a pure
-// COUNT(*) references nothing and keeps the flat seed. The resolved operands are
-// populated on the logical node before cascades translation (upgradeAggregateOperands).
+// Such an operand over a gathered multi-source unnest must be POSITIONALLY BAKED over
+// the un-collapsed seed even without a GROUP BY (the global SUM(EL) case) — so this
+// marks the input underAggregate to trigger the bake; a pure COUNT(*) references
+// nothing and keeps the raw seed unbaked. The resolved operands are populated on the
+// logical node before cascades translation (upgradeAggregateOperands).
 func aggregateOperandReferencesColumn(a *logical.LogicalAggregate) bool {
 	for _, op := range a.AggregateOperands {
 		if op == nil {
@@ -4308,17 +4304,14 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			Plan:  ssq.Plan,
 		})
 	}
-	// A gathered multi-source unnest under this aggregate exposes only bare column
-	// names on its flat positional seed, so any reference to an element/leg column —
-	// a grouped element reference that qualifies to the "EL.EL" shadow key, OR a
-	// global aggregate OPERAND like SUM(EL)/SUM(WAUX.WV) — cannot resolve against the
-	// bare seed and reads NULL. Mark the input translation so the gather places a
-	// NAMED-PROJECTION layer above the seed re-exposing the shadow + qualified keys.
-	// Triggered when there is a GROUP BY (the grouped element/qualified key) OR any
-	// aggregate operand references a column (the global SUM(EL) case). A global
-	// COUNT(*) references nothing, so it keeps the flat seed and pays no wrap — which
-	// also preserves the duplicate-FROM-alias raw-gather shape (still declined by the
-	// name-ambiguity gate) exactly as before.
+	// A gathered multi-source unnest under this aggregate flows its RAW per-leg
+	// positional seed, and any reference to an element/leg column — a grouped element
+	// key, OR a global aggregate OPERAND like SUM(EL)/SUM(WAUX.WV) — is POSITIONALLY
+	// BAKED over it below (leg columns via OrdinalSeedLegWindows, the element by its rc
+	// slot). Mark the input translation as underAggregate so the bake site fires.
+	// Triggered when there is a GROUP BY (the grouped key) OR any aggregate operand
+	// references a column (the global SUM(EL) case). A global COUNT(*) references
+	// nothing, so it keeps the raw seed unbaked.
 	prevUnderAgg := t.underAggregate
 	if len(a.GroupKeys) > 0 || aggregateOperandReferencesColumn(a) {
 		t.underAggregate = true
@@ -4340,11 +4333,17 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	var elementSlots map[string]int
 	var seedType values.Type
 	if sel, ok := innerRef.Get().(*expressions.SelectExpression); ok {
-		if rc, ok := sel.GetResultValue().(*values.RecordConstructorValue); ok {
-			// A GATHERED lateral-unnest seed is identified by its Explode quantifier;
-			// its correlation is the seed's OWN element notion (innerCorr), which
-			// fieldValueReferencesInner uses to locate the element field(s) — one
-			// definition, no ad-hoc scan.
+		// Only a GENUINE ORDINAL seed emits the positional row a baked ordinal reads.
+		// A name-model FALLBACK RC is ANCHORED (rc.AnchoredJoin) and emits NO positional
+		// row — it is EXCLUDED here (`!rc.AnchoredJoin`), so a gather that DECLINED to the
+		// name-model path (a box-leg WHERE, a within-box dup) keeps its grouped element/leg
+		// reads name-model; baking over a name-model row would evaluate the ordinal against
+		// the Datum map and ERROR. The genuine seed (gathered multi-source OR single-source
+		// unnest) is identified by its Explode quantifier — the seed's OWN element notion
+		// (innerCorr), which fieldValueReferencesInner locates the element field(s) by (one
+		// definition). Leg columns resolve via OrdinalSeedLegWindows (nil for a single-source
+		// seed with no cross-leg window — the element still bakes by rc index).
+		if rc, ok := sel.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin {
 			var innerCorr values.CorrelationIdentifier
 			foundExplode := false
 			for _, q := range sel.GetQuantifiers() {
@@ -4355,7 +4354,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 				}
 			}
 			if foundExplode {
-				windows, _ = values.OrdinalSeedLegWindows(rc) // leg windows (nil for a mid-list element — element-only shapes need no leg window)
+				windows, _ = values.OrdinalSeedLegWindows(rc)
 				elementSlots = map[string]int{}
 				for i, f := range rc.Fields {
 					if fieldValueReferencesInner(f.Value, innerCorr) {

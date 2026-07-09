@@ -266,6 +266,18 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 			[]string{"map[X:7]", "map[X:8]"})
 	})
 
+	// GROUPED over a NAME-MODEL FALLBACK: the within-box dup declines the gather to
+	// name-model, but the fallback is STILL a SelectExpression with an Explode
+	// quantifier — its RC is ANCHORED and emits NO positional row. The group-by MUST
+	// NOT positionally bake `GROUP BY X` over it (a baked ordinal on the Datum map
+	// would error); the `!rc.AnchoredJoin` gate keeps it name-model. A FULL B matches
+	// one row; A.arr={7,8} → GROUP BY X yields 7,8 each COUNT 1. Regression pin for the
+	// anchored-fallback bake gate.
+	t.Run("grouped_over_name_model_fallback_does_not_bake", func(t *testing.T) {
+		wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" GROUP BY "X"`,
+			[]string{"map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]"})
+	})
+
 	// BOX-INVOLVED CROSS-LEG dup: a merge-opaque box `(A LEFT C)` exposes A.K, and a
 	// SEPARATE scan leg B also has K → the dup crosses legs but ONE contributing leg is
 	// a box. A box is ONE opaque quantifier — its buried K can't be qualified apart from

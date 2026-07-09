@@ -194,10 +194,11 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 	return windows, &RecordType{Fields: mergedFields, Legs: mergedLegs}
 }
 
-// isMixedSeedElement reports whether an RC field is the MIXED-seed trailing
-// element: a bare QuantifiedObjectValue over a NON-record type (the whole-object
-// scalar element the seed cannot ofOrdinal-bake). A bare QOV over a RECORD type
-// (the S3 positional-merge RC) is NOT this — it declines. LOAD-BEARING guard.
+// isMixedSeedElement reports whether an RC field is the MIXED-seed scalar element
+// (at ANY position — the walk is element-anywhere): a bare QuantifiedObjectValue
+// over a NON-record type (the whole-object scalar element the seed cannot
+// ofOrdinal-bake). A bare QOV over a RECORD type (the S3 positional-merge RC) is NOT
+// this — it declines. LOAD-BEARING guard.
 func isMixedSeedElement(f RecordConstructorField) bool {
 	qov, isQOV := f.Value.(*QuantifiedObjectValue)
 	if !isQOV {
