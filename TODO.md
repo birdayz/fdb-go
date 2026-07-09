@@ -157,6 +157,12 @@ validation gate.
     authority + executor span + cross-agreement fixture are UNTOUCHED. `chainedUnderOrFilter` +
     `predicateContainsOr` DELETED (a decline retired). `:1161` narrows for free via line 404 (a declining
     shape keeps its subtree name-model). Cert: `TestFDB_RFC173S4_FilteredChained/or_over_chained_ordinalizes_correct_rows`.
+    First cut (7950a6ed0) shipped a regression codex + @claude BOTH caught: the positional bake was gated
+    on `isChainedUnnest`, so it fired on the name-model FALLBACK too — a mixed-inner-ref clause over a
+    3+-link chain (or a buried 2-chain) baked `ofOrdinal(QOV)` against the name-keyed row → ordinal -1
+    malformed plan. Fixed by an `ordinalSeed` seed-form discriminator (positional bake ONLY over an ordinal
+    seed `!rc.AnchoredJoin`; a name-model seed keeps the name-key rebase) + the `TestFDB_RFC173S4_ThreeLinkFilteredNameModel`
+    regression cert pinning that axis. FULLY 4-GATED on `4cde13db2`: Graefe re-ACK, Torvalds ACK, @claude ACK, codex clean.
     SCOPE (Graefe (A)): 2-CHAIN only. A 3+-link chain declines earlier (clusterArity poison, untouched)
     and stays name-model — its mixed-inner-ref STRAND lives in a DIFFERENT layer (pushBuriedUnnestPredicateDown
     + rewriteUnnestPredicate bake the deepest element against the 2-chain row). That deeper-nesting slice
