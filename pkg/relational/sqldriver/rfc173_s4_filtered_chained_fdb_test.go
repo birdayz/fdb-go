@@ -215,12 +215,12 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 		// NOT of an outer comparison.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10)`,
 			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "")
-		// NOT(AND) has NO OrPredicate node → ORDINALIZES (predicateContainsOr = false). Safe
-		// because NormalizePredicatesRule does NOT De Morgan it: DeMorganRule is absent from the
-		// default rules and normalizeCNF treats a NotPredicate as an OPAQUE leaf, so the mixed
-		// NOT(ID=10 AND y>2) conjunct is name-key-rebased WHOLE and resolves at the inner Explode
-		// — no pure-outer clause is ever extracted to strand. T4(10) y≤2 → {1,2}; T4(20),T4(3)
-		// (ID≠10) → all → {4,5,6}∪{3,9}. → {1,2,3,4,5,6,9}.
+		// NOT(AND) mixing outer + inner → not scan-pushable → the positional bake places its
+		// outer-col ref (ofOrdinal over the outer QOV's type) and it resolves at the inner Explode.
+		// Safe at any level because NormalizePredicatesRule does NOT De Morgan it (DeMorganRule is
+		// absent from the default rules; normalizeCNF treats a NotPredicate as an OPAQUE leaf), so no
+		// pure-outer clause is extracted to push. T4(10) y≤2 → {1,2}; T4(20),T4(3) (ID≠10) → all →
+		// {4,5,6}∪{3,9}. → {1,2,3,4,5,6,9}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10 AND "Y" > 2)`,
 			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]", "map[Y:9]"}, "")
 		// Three-conjunct AND: T4.ID=10 AND y>1 AND y<3 → {2}.
@@ -228,15 +228,15 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 			[]string{"map[Y:2]"}, "")
 	})
 
-	// An OR in a filter over a chained unnest DECLINES to the name-model residual and returns
-	// CORRECT rows (chainedUnderOrFilter). Why decline, not ordinalize: NormalizePredicatesRule
-	// distributes the OR to CNF and PredicatePushDownRule pushes the extracted PURE-OUTER clause
-	// (e.g. `ID=10 OR ID=3` from `(ID=10 AND y>2) OR (ID=3 AND y<5)`) to the first-link ordinal
-	// FlatMap, where the name-keyed rebase resolves ordinal -1 → a malformed plan (a correctness
-	// regression the first cut, which ordinalized ORs, shipped). The name-model qualified name
-	// keys resolve the pushed clause; ordinalizing the OR needs the positional-bake path (booked).
-	// Covers the nested-outer-conjunct shapes that survive CNF as a pushable outer clause AND flat ORs.
-	t.Run("or_over_chained_declines_correct_rows", func(t *testing.T) {
+	// An OR in a filter over a 2-CHAIN unnest ORDINALIZES via the positional bake (ordinalLegType)
+	// and returns CORRECT rows. Why positional, not name-key: NormalizePredicatesRule distributes
+	// the OR to CNF and PredicatePushDownRule pushes the extracted PURE-OUTER clause (e.g.
+	// `ID=10 OR ID=3` from `(ID=10 AND y>2) OR (ID=3 AND y<5)`) to the first-link ordinal FlatMap,
+	// where a NAME key resolves ordinal -1 (a malformed plan the first cut shipped) but an ofOrdinal
+	// over the outer QOV's own type resolves. This retired the chainedUnderOrFilter decline. Covers
+	// the nested-outer-conjunct shapes that survive CNF as a pushable outer clause AND flat ORs.
+	// (A 3+-link chain's OR still declines to name-model via clusterArity poison — deeper slice.)
+	t.Run("or_over_chained_ordinalizes_correct_rows", func(t *testing.T) {
 		t.Parallel()
 		// Flat OR mixing outer + inner: T4(10)→{1,2,3} (ID=10) ∪ y=5 from T4(20) → {1,2,3,5}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10 OR "Y" = 5`,
@@ -257,11 +257,9 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 		// Straddling INSIDE a disjunct (`t.id = y` OR outer): T4(3) id=3=y=3 → {3}; (ID=20)→{4,5,6}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE (T4."ID" = "Y") OR (T4."ID" = 20)`,
 			[]string{"map[Y:3]", "map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
-		// NOT(OR) CONTAINS an OrPredicate node → predicateContainsOr catches it → DECLINES. This
-		// is CONSERVATIVE over-decline (a NotPredicate is opaque to normalizeCNF, so this OR would
-		// not actually distribute a stranding pure-outer clause), but the discriminator is
-		// coarse-within-OR by design — correct-or-loud, and name-model answers correctly.
-		// NOT(ID=10 OR ID=3) = ID∉{10,3} → T4(20) → {4,5,6}.
+		// NOT(OR) over a 2-chain: pure-outer (references only T4), so it stays scan-pushable
+		// (⊆-outerLegs) → lazy SARG on Scan(T4), ordinalizes. NOT(ID=10 OR ID=3) = ID∉{10,3} →
+		// T4(20) → {4,5,6}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10 OR T4."ID" = 3)`,
 			[]string{"map[Y:4]", "map[Y:5]", "map[Y:6]"}, "")
 	})

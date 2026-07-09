@@ -140,21 +140,6 @@ type cascadesTranslator struct {
 	// the unnest lowering only; reset at every other seed by the translator's
 	// normal flow.
 	unnestUnderExistential bool
-	// chainedUnderOrFilter is set (downward, save/restore) while translateFilter lowers a body
-	// whose WHERE predicate contains an OR, so a CHAINED-unnest ordinal seed under such a filter
-	// DECLINES to the name-model residual. NARROW successor to the retired coarse
-	// "any filter suppresses" bit: an OR is the one shape the per-conjunct rebase can't place —
-	// NormalizePredicatesRule distributes it to CNF and PredicatePushDownRule pushes the
-	// extracted PURE-OUTER clause to the first-link ORDINAL FlatMap, where the name-keyed rebase
-	// strands (ordinal -1, malformed plan). The name-model residual's qualified name keys resolve
-	// the pushed clause correctly. Every NON-OR filter still ordinalizes (the Slice 2b win);
-	// ordinalizing the OR needs the positional-bake path (booked). Read once — the chained
-	// ordinal gate. OVER-DECLINES two ways (both correct-or-loud — name-model gives correct rows,
-	// only a missed ordinalization): a pure-inner OR (`y=1 OR y=2`, no stranding pure-outer
-	// clause), and — no fresh-scope clear at a subquery boundary — a chained unnest inside an
-	// inline-EXISTS subquery under an OR-carrying OUTER filter (the leak the retired coarse bit
-	// also had; a translateSubqueryRef-style clear is booked with the positional-bake slice).
-	chainedUnderOrFilter bool
 	// unnestExistsScopeCollision forces the under-EXISTS unnest to the ANCHORED
 	// (name-model) seed when an EXISTS inner subquery scans a table aliased the
 	// SAME as an outer FROM leg (`FROM MA, MA.arr AS X WHERE EXISTS(SELECT 1 FROM
@@ -2193,15 +2178,6 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			"scalar subquery in a filter over a chained lateral unnest is not yet supported"))
 		return nil
 	}
-	// Downward: an OR in this WHERE makes a chained-unnest ordinal seed under it decline to
-	// name-model (the narrow successor to the retired coarse suppress — see chainedUnderOrFilter).
-	// Set across the whole body so every f.Input path is covered; restored on return.
-	if f.Predicate != nil && predicateContainsOr(f.Predicate) {
-		savedCOF := t.chainedUnderOrFilter
-		t.chainedUnderOrFilter = true
-		defer func() { t.chainedUnderOrFilter = savedCOF }()
-	}
-
 	if f.Predicate == nil && f.PredicateText != "" {
 		return nil
 	}
@@ -2459,17 +2435,18 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 				if isChainedUnnest(join.Left, u) {
 					// CHAINED unnest (`FROM t, t.a AS x, x.b AS y`): rebase outer-col refs PER
 					// conjunct, gated on PUSHABLE-TO-SCAN (correlated-to ⊆ outer base legs). A
-					// conjunct referencing a correlation bound inside the chained structure (x/y)
-					// is NOT scan-pushable — it lands at the FlatMap/Explode level whose row is
-					// QOV(X)'s merged row, so its outer-col refs rebase to QOV(X)."t.col". An
-					// outer-col-ONLY conjunct IS pushed below the chained FlatMap to Scan(t) by
-					// PushFilterBelowJoinRule, where t is directly correlated — leave it its lazy
-					// FieldValue(QOV(t)) so it resolves as a SARG. Splitting the top-level AND (a
-					// straddling `t.id = y` keeps the rebase; `t.id = 1` stays QOV(t)). An
-					// OR-carrying filter declined the ORDINAL seed up front (chainedUnderOrFilter),
-					// so `sel` here is the name-model seed and the OR's name key resolves against
-					// its qualified merged row — see the helper for why the ordinal seed strands.
-					pred = rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr)
+					// conjunct referencing an in-chain element (x/y) is NOT scan-pushable — it bakes
+					// POSITIONALLY over ordinalLegType(join.Left) (the outer QOV's own type) so an
+					// ofOrdinal resolves on the ordinal row at every level CNF + pushdown lands it
+					// (a name key would strand ordinal -1, so an ordinalized OR malformed-plans). An
+					// outer-col-ONLY conjunct stays lazy (SARG on Scan(t)). A seed with no positional
+					// authority → decline to name-model (correct-or-loud). See the helper for scope
+					// (2-chain; a 3+-link chain declines earlier via clusterArity poison).
+					baked, ok := rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr, t.ordinalLegType(join.Left))
+					if !ok {
+						return nil
+					}
+					pred = baked
 				} else {
 					pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)
 				}
@@ -2830,54 +2807,58 @@ func rebaseUnnestOuterLegPredicate(
 // is an outer base leg (outerLegs, e.g. {t}) is pushed by PushFilterBelowJoinRule down toward
 // Scan(t) where t is directly correlated — leave its refs lazy (QOV(t)) so they resolve as a
 // SARG. A conjunct referencing ANY correlation bound INSIDE the chained structure (the
-// first-link element x, the second-link element y, or any deeper level) is NOT scan-pushable:
-// it stays at the FlatMap/Explode level whose row is QOV(mergedCorr)'s merged row
-// `[t-cols ++ x]`, so REBASE its outer-leg refs to read the qualified "leg.col" key off that
-// merged row. Splits the top-level AND (bakeConjuncts discipline) so a straddling `t.id = y`
-// (references y → not scan-pushable) keeps the rebase while a sibling `t.id = 1` (outer-only)
-// stays QOV(t) — each conjunct resolves at the level its quantifiers are in scope. Expressing
-// the discriminator structurally (⊆-outerLegs) rather than enumerating x/y keeps a SINGLE
-// branch: EVERY in-chain correlation flows the keep-rebase branch uniformly, no per-element
-// special-casing to drift as new element levels appear.
+// first-link element x, the second-link element y) is NOT scan-pushable: it stays at the
+// FlatMap/Explode level whose row is the ordinal merged row, so bake its outer-leg refs
+// POSITIONALLY over ordType — ordinalLegType(j.Left), the SAME type the seed's outer leg run
+// uses. Positional, NOT a name key: after this predicate is merged into the ordinal select,
+// NormalizePredicatesRule distributes an OR to CNF and PredicatePushDownRule pushes each clause
+// to whichever level its quantifiers allow. A name accessor resolves on the merged row ONLY at
+// the inner Explode but STRANDS (ordinal -1) on the first-link ordinal FlatMap where a pushed
+// PURE-OUTER CNF clause (`t.id=10 OR t.id=3` from `(t.id=10 AND y>2) OR (t.id=3 AND y<5)`)
+// lands; an ofOrdinal over ordType (= the outer QOV's own type, so the baked QOV MATCHES the
+// seed's — no drift tripwire) resolves on the ordinal row at BOTH levels. Splits the top-level
+// AND (bakeConjuncts discipline) so a straddling `t.id = y` bakes positionally while a sibling
+// `t.id = 1` (outer-only) stays lazy. Returns ok=false (→ caller declines to name-model,
+// correct-or-loud) when a non-pushable conjunct cannot be positionally baked (no windowed type).
 //
-// The name key is SAFE HERE because the seed under it is name-model whenever the predicate
-// carries an outer-leg OR: an OR reaches this function only on the chainedUnderOrFilter-declined
-// path (translateChainedUnnestOrdinal returned nil → translateChainedUnnestJoin's name-model
-// fallback built the seed), so the merged row is NewAnchoredJoinRecord's row, which carries the
-// qualified `leg.col` keys this rebase reads. The stranding it avoids is specific to the ORDINAL
-// seed: had the OR ordinalized, NormalizePredicatesRule would distribute `(t.id=10 AND y>2) OR
-// (t.id=3 AND y<5)` to CNF and PredicatePushDownRule would push the extracted PURE-OUTER clause
-// (`t.id=10 OR t.id=3`) to the first-link ORDINAL FlatMap, where a name key resolves ordinal -1
-// (a malformed plan) — which is exactly why the chained gate declines an OR-carrying filter to
-// name-model up front. Ordinalizing the OR (dropping the decline) needs the positional-bake path
-// (booked).
+// SCOPE: this positional bake is validated for a 2-CHAIN (single inner element). A 3+-link
+// chain declines earlier (clusterArity poison in translateChainedUnnestOrdinal) and stays
+// name-model — its mixed-inner-ref placement is the deeper-nesting slice (the strand there lives
+// in pushBuriedUnnestPredicateDown/rewriteUnnestPredicate, a different layer than this bake).
 func rebaseChainedOuterLegPredicate(
 	p predicates.QueryPredicate,
 	outerLegs map[string]struct{},
 	mergedCorr values.CorrelationIdentifier,
-) predicates.QueryPredicate {
+	ordType *values.RecordType,
+) (predicates.QueryPredicate, bool) {
 	if p == nil || len(outerLegs) == 0 {
-		return p
+		return p, true
 	}
 	if and, isAnd := p.(*predicates.AndPredicate); isAnd {
 		newSubs := make([]predicates.QueryPredicate, len(and.SubPredicates))
 		changed := false
 		for i, s := range and.SubPredicates {
-			newSubs[i] = rebaseChainedOuterLegPredicate(s, outerLegs, mergedCorr)
+			sub, ok := rebaseChainedOuterLegPredicate(s, outerLegs, mergedCorr, ordType)
+			if !ok {
+				return p, false
+			}
+			newSubs[i] = sub
 			if newSubs[i] != s {
 				changed = true
 			}
 		}
 		if !changed {
-			return p
+			return p, true
 		}
-		return predicates.NewAnd(newSubs...)
+		return predicates.NewAnd(newSubs...), true
 	}
 	if chainedPredScanPushable(p, outerLegs) {
-		return p // outer-base-leg refs only → pushed to Scan(t); leave lazy (SARG)
+		return p, true // outer-base-leg refs only → pushed to Scan(t); leave lazy (SARG)
 	}
-	// A non-pushable conjunct (references x/y): rebase its outer-leg refs to the merged row.
-	return rebaseUnnestOuterLegPredicate(p, outerLegs, mergedCorr)
+	// A non-pushable conjunct (references an in-chain element): bake its outer-leg refs
+	// POSITIONALLY over ordType so an ofOrdinal resolves on the ordinal row at every level
+	// CNF + pushdown lands the clause — a name key would strand (ordinal -1) on the ordinal seed.
+	return rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, outerLegs, mergedCorr)
 }
 
 // chainedPredScanPushable reports whether every correlation the conjunct references is an
@@ -2893,26 +2874,6 @@ func chainedPredScanPushable(p predicates.QueryPredicate, outerLegs map[string]s
 		}
 	}
 	return true
-}
-
-// predicateContainsOr reports whether the predicate tree contains an OrPredicate — the shape
-// NormalizePredicatesRule distributes to CNF, which a chained-unnest ordinal seed cannot place
-// (the extracted pure-outer clause strands on the ordinal first-link row). Walks And/Not into
-// their children; every other node (leaf comparisons, value predicates) is a non-OR leaf.
-func predicateContainsOr(p predicates.QueryPredicate) bool {
-	switch n := p.(type) {
-	case *predicates.OrPredicate:
-		return true
-	case *predicates.AndPredicate:
-		for _, s := range n.SubPredicates {
-			if predicateContainsOr(s) {
-				return true
-			}
-		}
-	case *predicates.NotPredicate:
-		return predicateContainsOr(n.Child)
-	}
-	return false
 }
 
 // ordinalSlotInLegWindow resolves a QUALIFIED outer-leg column (`leg`.`field`) to

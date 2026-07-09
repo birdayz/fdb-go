@@ -344,14 +344,6 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	if prevEnclosure || len(u.Segments) < 2 {
 		return nil
 	}
-	// DECLINE to name-model when an ancestor WHERE carries an OR: the per-conjunct rebase
-	// name-keys a non-pushable conjunct, but NormalizePredicatesRule distributes the OR to CNF
-	// and PredicatePushDownRule strands the extracted pure-outer clause on this ordinal seed's
-	// first-link FlatMap (ordinal -1). The name-model residual resolves it by qualified name.
-	// NARROW — every non-OR filter still ordinalizes; the OR path needs positional bake (booked).
-	if t.chainedUnderOrFilter {
-		return nil
-	}
 	// The FIRST link must be a single-source lateral unnest that will itself take
 	// the :1565 binary ordinal seed. `j.Left` is that first link: a LogicalJoin
 	// whose Right is the first LogicalUnnest and whose Left is the BASE. Mirror

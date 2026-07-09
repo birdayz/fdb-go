@@ -145,17 +145,34 @@ validation gate.
     rightmost; stops at relation boundaries so an encapsulated derived-table chained unnest is NOT falsely
     gated). Pinned by `.../or_over_chained_declines_correct_rows` + `.../scalar_subquery_loud_0A000` +
     `.../scalar_subquery_buried_loud_0A000`.
-  - [ ] **BOOKED SLICE (RFC-173 S4 Slice 2b residual — @claude NAK fix, PROPER FIX = positional bake):
-    an OR in a filter over a chained unnest declines to name-model.** `WHERE (t.id=10 AND y>2) OR
-    (t.id=3 AND y<5)` — a name-key rebase of the whole OR is stranded by NormalizePredicatesRule (CNF) +
-    PredicatePushDownRule (the pure-outer clause `t.id=10 OR t.id=3` pushes to the first-link ORDINAL
-    FlatMap where the name key resolves ordinal -1 → malformed plan). The NARROW `chainedUnderOrFilter`
-    bit declines any OR-carrying filter over a chained unnest to name-model (correct rows). Proper fix =
-    POSITIONAL bake (an `ofOrdinal` resolves on the ordinal row at both the first-link FlatMap and the
-    inner Explode, unlike a name key). The first attempt at positional bake tripped the
-    "leg X DIVERGENT baked types (5 vs 6 fields)" drift panic — the chained seed's merged type does not
-    match what `OrdinalSeedLegWindows` derives; aligning the chained seed's positional type with the
-    bake authority is the real work. Then the OR (and the scalar subquery via the same path) ordinalize.
+  - [x] **Slice 2c: 2-chain OR ordinalizes via the POSITIONAL bake — DONE (Graefe design-ACK'd).** A
+    filter OR over a 2-chain (`WHERE (t.id=10 AND y>2) OR (t.id=3 AND y<5)`) previously declined to
+    name-model (the interim `chainedUnderOrFilter` bit): a name-key rebase of the whole OR is stranded by
+    NormalizePredicatesRule (CNF) + PredicatePushDownRule (the pure-outer clause pushes to the first-link
+    ORDINAL FlatMap where the name key resolves ordinal -1). Fix: the chained keep-branch bakes
+    POSITIONALLY — `rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, …)` with
+    `ordType = ordinalLegType(join.Left)` (the outer QOV's OWN type). Root cause of the earlier "5 vs 6
+    DIVERGENT baked types" panic: it was a WRONG-TYPE-in-the-bake bug (passed the 6-field merged type;
+    the outer QOV is the 5-field ordinalLegType), NOT an `OrdinalSeedLegWindows` disagreement — the
+    authority + executor span + cross-agreement fixture are UNTOUCHED. `chainedUnderOrFilter` +
+    `predicateContainsOr` DELETED (a decline retired). `:1161` narrows for free via line 404 (a declining
+    shape keeps its subtree name-model). Cert: `TestFDB_RFC173S4_FilteredChained/or_over_chained_ordinalizes_correct_rows`.
+    SCOPE (Graefe (A)): 2-CHAIN only. A 3+-link chain declines earlier (clusterArity poison, untouched)
+    and stays name-model — its mixed-inner-ref STRAND lives in a DIFFERENT layer (pushBuriedUnnestPredicateDown
+    + rewriteUnnestPredicate bake the deepest element against the 2-chain row). That deeper-nesting slice
+    (below) owns lifting clusterArity + the placement fix + the FULL `:1161` retire. Scalar-subquery stays
+    the separate `:2720`/0A000 residual (booked). Audit green: 2-chain OR ordinalizes, 3-link OR name-model,
+    OR-with-scalar-subquery → 0A000, B1 (1641) green.
+  - [ ] **BOOKED SLICE (deeper-nesting — inherits the validated positional-bake substrate): ordinalize
+    the 3+-link chain + fully retire `:1161`.** Lift the clusterArity-poison decline for a deeper chain,
+    and fix the buried-pushdown/inner-element placement so a mixed-inner-ref clause (`t.id = z`,
+    `t.id=1 OR z=20`) lands at the INNERMOST Explode (not the 2-chain row — the current strand:
+    `DEEP not resolvable, ordinal -1, row [ID SARR SCARR SUB X Y]`). The fix is in
+    `pushBuriedUnnestPredicateDown` + `rewriteUnnestPredicate` (bake the deep element at its own level),
+    a DIFFERENT layer than the 2c type-bake. Ordinalizing the 3-link clean shapes AND the mixed-inner-ref
+    together (they couple via the one clusterArity lift) then makes `:1161` fully vestigial for its own
+    clean-lift. De-risk: the 3-link probe (projection/outer-only ordinalize today under a clusterArity
+    spike; mixed-inner-ref must stop stranding).
   - [ ] **BOOKED (RFC-173 S4 Slice 2b discovery — PRE-EXISTING, ORTHOGONAL, engine-wide silent-wrong):
     scalar subquery in a WHERE comparison returns `[]`.** `SELECT id FROM t WHERE id = (SELECT MAX(id) FROM
     t2)` returns SILENT `[]` for a PLAIN table (verified MAX/MIN/`>` all `[]`; want the matching rows) — so
