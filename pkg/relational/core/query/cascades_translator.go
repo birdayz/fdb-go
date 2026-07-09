@@ -876,7 +876,7 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 // inner-residual outer ref to a baked ofOrdinal, and the rule routes by the
 // renamed correlation identity, not by name. A plain (non-EXISTS) unnest is
 // unaffected.
-func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, spineBase bool) bool {
+func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, pureSpine bool) bool {
 	// A MULTI-alias box declines to name-model when a regular (non-EXISTS) WHERE
 	// conjunct references a box leg (unnestOuterConjunctOnBoxLeg): the ordinal seed
 	// cannot yet bake such a conjunct positionally — it is merged into the
@@ -888,7 +888,7 @@ func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, 
 	// (==1) is unaffected — its pristine prefix resolves a bare conjunct.
 	//
 	// This arm is scoped to genuine BOX bases: a PURE chained-unnest spine
-	// (spineBase, passed true ONLY by the chained ordinal gate when the
+	// (pureSpine, passed true ONLY by the chained ordinal gate when the
 	// admitted spine BOTTOMS at a source binding exactly one alias) is
 	// multi-alias by construction — its aliases are chain links, not box legs —
 	// and the chained rebase authority (rebaseChainedOuterLegPredicate) bakes
@@ -896,11 +896,11 @@ func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, 
 	// (pred, !ok) fail-closed net behind it. Declining here would needlessly
 	// kick every FILTERED 3+-link chain to name-model. A spine that bottoms in
 	// a FULL box (also clusterArity==1, so equally ADMITTED) passes
-	// spineBase=false — its bottom aliases ARE box legs, and suppressing this
+	// pureSpine=false — its bottom aliases ARE box legs, and suppressing this
 	// arm for them would ordinalize the chained link over the first link's
 	// name-model seed (silently wrong rows). Every OTHER decline arm below
 	// stays live for spines.
-	if t.unnestOuterConjunctOnBoxLeg && !spineBase && len(outerBoundAliases(left)) > 1 {
+	if t.unnestOuterConjunctOnBoxLeg && !pureSpine && len(outerBoundAliases(left)) > 1 {
 		return false
 	}
 	if !t.unnestUnderExistential {
