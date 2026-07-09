@@ -169,16 +169,35 @@ validation gate.
     (below) owns lifting clusterArity + the placement fix + the FULL `:1161` retire. Scalar-subquery stays
     the separate `:2720`/0A000 residual (booked). Audit green: 2-chain OR ordinalizes, 3-link OR name-model,
     OR-with-scalar-subquery → 0A000, B1 (1641) green.
-  - [ ] **BOOKED SLICE (deeper-nesting — inherits the validated positional-bake substrate): ordinalize
-    the 3+-link chain + fully retire `:1161`.** Lift the clusterArity-poison decline for a deeper chain,
-    and fix the buried-pushdown/inner-element placement so a mixed-inner-ref clause (`t.id = z`,
-    `t.id=1 OR z=20`) lands at the INNERMOST Explode (not the 2-chain row — the current strand:
-    `DEEP not resolvable, ordinal -1, row [ID SARR SCARR SUB X Y]`). The fix is in
-    `pushBuriedUnnestPredicateDown` + `rewriteUnnestPredicate` (bake the deep element at its own level),
-    a DIFFERENT layer than the 2c type-bake. Ordinalizing the 3-link clean shapes AND the mixed-inner-ref
-    together (they couple via the one clusterArity lift) then makes `:1161` fully vestigial for its own
-    clean-lift. De-risk: the 3-link probe (projection/outer-only ordinalize today under a clusterArity
-    spike; mixed-inner-ref must stop stranding).
+  - [x] **Slice 2d (deeper-nesting): 3+-link chain ORDINALIZES — DONE (Graefe design-ACK).** A ~18-line
+    clusterArity-gate lift: `chainedBaseOrdinalizes(firstBase)` recurses the unnest-right spine (admit a
+    single source OR a chained base whose own base ordinalizes), replacing the flat `clusterArity==1` gate.
+    **The de-risk COLLAPSED the booked scope:** the TODO's `pushBuriedUnnestPredicateDown`/`rewriteUnnestPredicate`
+    placement rework was PRE-2c — a revertible gate-lift SPIKE proved the 2c positional bake ALREADY lands a
+    mixed-inner-ref clause at the INNERMOST Explode at depth-3 (no strand), and the seed machinery
+    (`ordinalLegColumns`/`unnestOrdinalSeed`/`unnestBakedRootCollection`) was ALREADY recursion-ready (the
+    "depth-2" note was a gate CONSEQUENCE, not a structural limit — confirmed at 4-link: clean+outer-filter
+    ordinalize). So NO placement rework. Graefe conditions met: (Q1) scope to single-source∨chained EXACTLY —
+    a MULTI-source BOX base stays DECLINED (c5b), pinned by `boxbase_straddle_declines_namemodel`; (Q2) recurse
+    clusterArity only, `unnestExistsSeedSafe(firstBase)` stays the single top-level guard (EXISTS-over-chained
+    is 0AF00 upstream, arm dead — probed); (Q3) NARROWS not zeros — box-base + `!ok` decline still reach
+    `NewAnchoredJoinRecord`, full chained-zero gated on c5b. `:1161` narrows (chained clean-lift no longer needs
+    the enclosure clear; box/cluster still do — cluster_gate.go:315,356, w4b:565). Certs: the ordinal cert's
+    "DECLINE: 3-link fails open to name-model" subtest FLIPPED to "3-link ORDINALIZES" (3-Explode nesting +
+    outer-filter scan SARG); the 2c `ThreeLinkFilteredNameModel` cert RENAMED → `ThreeLinkFilteredOrdinalizes`
+    (all shapes ordinalize; innermost-Explode PredicatesFilter for the mixed clause, scan SARG for the lone
+    outer, + the relocated box-base name-model regression guard). DISCRIMINATOR: the outer conjunct SARGs
+    `Scan(T4, [=])` in the ordinal path — the name model carries it by name out of the scan's reach.
+    NEW ORTHOGONAL gap booked below: a WHERE ref to a DEEP alias (4+-link AS, any AT) → 42703 semantic-resolver,
+    PRE-EXISTING (reproduces name-model, upstream of translation).
+  - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
+    DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
+    WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
+    mid-link AT-alias (`yo`) all 42703. Thrown at semantic resolution UPSTREAM of cascades translation, so it
+    reproduces identically in name-model (NOT caused by ordinalization; the clean projections at every depth,
+    incl. AT, do resolve). Affects filtered-deeper-than-3-link + any AT-in-WHERE shape in BOTH engines. A
+    SemanticAnalyzer scope-depth fix, separate slice — filtered 3-link (the expressible filtered depth) already
+    ordinalizes.
   - [ ] **BOOKED (RFC-173 S4 Slice 2b discovery — PRE-EXISTING, ORTHOGONAL, engine-wide silent-wrong):
     scalar subquery in a WHERE comparison returns `[]`.** `SELECT id FROM t WHERE id = (SELECT MAX(id) FROM
     t2)` returns SILENT `[]` for a PLAIN table (verified MAX/MIN/`>` all `[]`; want the matching rows) — so

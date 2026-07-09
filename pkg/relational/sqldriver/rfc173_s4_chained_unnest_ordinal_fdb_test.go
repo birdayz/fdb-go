@@ -36,8 +36,10 @@ import (
 // Proof the ORDINAL path fires (not the name-model fail-open): with the
 // name-model fallback disabled in translateChainedUnnestJoin, every
 // ordinal-eligible chained shape here still returns these EXACT rows (verified
-// out-of-band during S4 Slice 1 bring-up). The decline probe below exercises the
-// fail-open residual for a shape the ordinal gate rejects (the 3-link chain).
+// out-of-band during S4 Slice 1 bring-up). The deeper-nesting slice lifted the
+// clusterArity gate (chainedBaseOrdinalizes), so the 3-link subtests below now
+// ORDINALIZE too — pinned by the 3-Explode nesting + the outer-filter scan SARG,
+// discriminators the name model cannot produce.
 func TestFDB_RFC173S4_ChainedUnnestOrdinal(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -105,7 +107,8 @@ func TestFDB_RFC173S4_ChainedUnnestOrdinal(t *testing.T) {
 		recs := []proto.Message{
 			// ID=10: two elements. elem0 SUB[1,2] + SUBSTRUCT DEEP[7,8],[9];
 			// elem1 SUB[3] + no SUBSTRUCT.
-			mkT4(10,
+			mkT4(
+				10,
 				mkElem([]int32{1, 2}, mkElem2(7, 8), mkElem2(9)),
 				mkElem([]int32{3}),
 			),
@@ -294,18 +297,45 @@ func TestFDB_RFC173S4_ChainedUnnestOrdinal(t *testing.T) {
 	// pinned in TestFDB_RFC173S4_FilteredChained. This cert keeps the UNFILTERED ordinal path
 	// and the genuine (non-filter) declines below.
 
-	t.Run("DECLINE: 3-link chain fails open to name-model and still answers", func(t *testing.T) {
+	t.Run("3-link chain ORDINALIZES (deeper-nesting slice: clusterArity gate lifted)", func(t *testing.T) {
 		// The 3-link chain `… X.SUBSTRUCT AS Y, Y.DEEP AS Z` has a first link
-		// (`(T4 ⋈ SARR) ⋈ SUBSTRUCT`) whose BASE is itself an unnest-right join —
-		// clusterArity poison — so the ordinal gate REJECTS it and it fails open
-		// to the name-model residual. It must STILL answer correctly.
+		// (`(T4 ⋈ SARR) ⋈ SUBSTRUCT`) whose BASE is itself an unnest-right join.
+		// chainedBaseOrdinalizes now recurses that unnest-right spine, so the whole
+		// chain ORDINALIZES instead of failing open to the name-model residual — the
+		// seed machinery (ordinalLegColumns/unnestOrdinalSeed) was already
+		// recursion-ready; only the gate limited it to depth-2.
 		const q = `SELECT "ID", "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "Y"."DEEP" AS "Z"`
-		_, rows := queryRows(t, q)
+		explain, rows := queryRows(t, q)
+		// Ordinal shape: THREE nested Explode legs, no flattening.
+		if !strings.Contains(explain, "FlatMap(outer=FlatMap(outer=FlatMap(") {
+			t.Fatalf("3-link ordinal plan must be THREE nested FlatMaps; plan=%s", explain)
+		}
+		if strings.Count(explain, "Explode(") != 3 {
+			t.Fatalf("3-link must have exactly 3 Explode legs; plan=%s", explain)
+		}
 		got := collect(rows, "ID", "Z")
 		// ID=10 elem0 SUBSTRUCT[DEEP 7,8],[DEEP 9]; ID=20 elem SUBSTRUCT[DEEP 100].
 		want := []string{"10|7", "10|8", "10|9", "20|100"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
-			t.Fatalf("3-chain name-model fallback rows\n got=%v\nwant=%v", got, want)
+			t.Fatalf("3-link ordinal rows\n got=%v\nwant=%v", got, want)
+		}
+	})
+
+	t.Run("3-link outer filter SARGs the scan (positional bake ⇒ ordinal, not name-model)", func(t *testing.T) {
+		// An outer-scan-pushable conjunct is baked POSITIONALLY (ofOrdinal over the
+		// outer QOV type), becomes scan-pushable, and lands as a SARG on Scan(T4) —
+		// which the NAME model cannot produce (it carries the outer ref by name in the
+		// AnchoredJoin record, out of the scan's reach). So the SARG is a POSITIVE
+		// ordinal discriminator, not merely a nested-shape check.
+		const q = `SELECT "ID", "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "Y"."DEEP" AS "Z" WHERE "ID" = 10`
+		explain, rows := queryRows(t, q)
+		if !strings.Contains(explain, "Scan(T4, [=") {
+			t.Fatalf("3-link outer filter must SARG the scan (ordinal); plan=%s", explain)
+		}
+		got := collect(rows, "ID", "Z")
+		want := []string{"10|7", "10|8", "10|9"}
+		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+			t.Fatalf("3-link outer-filter ordinal rows\n got=%v\nwant=%v", got, want)
 		}
 	})
 }

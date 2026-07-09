@@ -329,6 +329,45 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 // chained element/ordinal — and the collection is unnestBakedRootCollection
 // rooted at the OWNER ALIAS column (rootSegmentIndex 0). Both DECLINE (nil) on an
 // underivable leg, keeping this fail-open.
+// chainedBaseOrdinalizes reports whether a chained first-link BASE will itself
+// flow a POSITIONAL row from translateRef (with the enclosure cleared) — the
+// recursive generalization of the depth-2 clusterArity==1 gate. It admits
+// EXACTLY two shapes:
+//
+//   - a SINGLE lateral source (clusterArity 1) — the base of a 2-link chain's
+//     first link (a plain scan/box-free source);
+//   - a CHAINED unnest whose OWN base ordinalizes — a deeper chain's first link,
+//     recursing left down the unnest-right spine.
+//
+// The seed machinery (ordinalLegColumns/unnestOrdinalSeed/unnestBakedRootCollection)
+// already recurses on o.Left for arbitrary depth (rfc173_ordinal_seed.go: the
+// "depth-2 in practice" note was a CONSEQUENCE of this gate, not a structural
+// limit), so a deeper chained base seeds correctly once admitted.
+//
+// A MULTI-source BOX base (clusterArity ≥ 2 that is NOT an unnest-right join —
+// `FROM t, u, t.arr AS x, x.sub AS y`, whose SARR link's base is the box `t ⋈ u`)
+// is DECLINED here: its positional owner windows are the c5b buried-box concern,
+// not this slice, and the innermost-Explode predicate placement is unproven over
+// a box base. It fails open to the name-model residual (pinned: a box-base chain
+// answers correctly via the name-key rebase, no strand). Exists-safety is NOT
+// recursed — the existential arm is unreachable for a chained unnest (EXISTS over
+// a chained unnest is 0AF00 upstream), so the caller's single top-level
+// unnestExistsSeedSafe(firstBase) guard suffices.
+func (t *cascadesTranslator) chainedBaseOrdinalizes(base logical.LogicalOperator) bool {
+	if t.clusterArity(base) == 1 {
+		return true
+	}
+	bj, ok := base.(*logical.LogicalJoin)
+	if !ok {
+		return false
+	}
+	un, ok := bj.Right.(*logical.LogicalUnnest)
+	if !ok || len(un.Segments) < 2 {
+		return false
+	}
+	return t.chainedBaseOrdinalizes(bj.Left)
+}
+
 func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	j *logical.LogicalJoin,
 	u *logical.LogicalUnnest,
@@ -344,13 +383,15 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	if prevEnclosure || len(u.Segments) < 2 {
 		return nil
 	}
-	// The FIRST link must be a single-source lateral unnest that will itself take
-	// the :1565 binary ordinal seed. `j.Left` is that first link: a LogicalJoin
-	// whose Right is the first LogicalUnnest and whose Left is the BASE. Mirror
-	// the first link's own :1565 gate on that base precisely — anything else
-	// (a deeper-chain base whose clusterArity is poison, a multi-source base,
-	// an exists-unsafe base, a single-segment first link) declines here so we
-	// never build an ordinal seed over a first link that stays name-model.
+	// The FIRST link must be a lateral unnest whose BASE itself flows a positional
+	// row from translateRef. `j.Left` is that first link: a LogicalJoin whose Right
+	// is the first LogicalUnnest and whose Left is the BASE. The base ordinalizes
+	// when it is a single lateral source (the 2-link case) OR itself a chained
+	// unnest whose own base ordinalizes (a deeper chain) — chainedBaseOrdinalizes.
+	// A multi-source BOX base (c5b territory) or an exists-unsafe base declines
+	// here so we never build an ordinal seed over a first link that stays
+	// name-model. Exists-safety is the single top-level guard (the existential arm
+	// is unreachable for a chain — EXISTS-over-chained is 0AF00 upstream).
 	firstLink, ok := j.Left.(*logical.LogicalJoin)
 	if !ok {
 		return nil
@@ -360,7 +401,7 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 		return nil
 	}
 	firstBase := firstLink.Left
-	if t.clusterArity(firstBase) != 1 || !t.unnestExistsSeedSafe(firstBase) || len(firstUnnest.Segments) < 2 {
+	if !t.chainedBaseOrdinalizes(firstBase) || !t.unnestExistsSeedSafe(firstBase) || len(firstUnnest.Segments) < 2 {
 		return nil
 	}
 

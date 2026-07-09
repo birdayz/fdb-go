@@ -143,12 +143,14 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			// (non-unnest) join leg below is fully preserved. A nil from the outer
 			// (underivable) declines cleanly (the caller fails open to name-model).
 			//
-			// DEPTH-2 ONLY: the chained ordinal seed gate (translateChainedUnnestOrdinal)
-			// admits a first link whose OWN base has clusterArity==1 — a 3+-link chain's
-			// base is itself an unnest-right join (clusterArity poison), so it never
-			// reaches the seed and never reaches this arm. The recursion on o.Left is
-			// therefore one level deep in practice (o.Left's base is a plain single
-			// source), not an open-ended chain walk.
+			// ARBITRARY DEPTH: the chained ordinal seed gate
+			// (translateChainedUnnestOrdinal → chainedBaseOrdinalizes) admits a first
+			// link whose OWN base is a single source (clusterArity==1) OR itself a
+			// chained unnest whose base ordinalizes — so a 3+-link chain's base (itself
+			// an unnest-right join) recurses through this arm, one level per link, until
+			// it bottoms out at the single-source scan. A MULTI-source BOX base still
+			// declines at the gate (c5b), so this recursion only ever walks the
+			// unnest-right spine, never a box.
 			//
 			// LOAD-BEARING INVARIANT: legColumns(un) here must stay layout-identical
 			// (count / order / names) to unnestSeedInnerFields(un) — the actual inner
@@ -650,7 +652,8 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 			bakeCorr = strings.ToUpper(legType.bakeCorr)
 		}
 		typedQOV := values.NewQuantifiedObjectValueOfType(
-			values.NamedCorrelationIdentifier(bakeCorr), legType.typ)
+			values.NamedCorrelationIdentifier(bakeCorr), legType.typ,
+		)
 		baked, err := values.NewFieldValueOfOrdinal(typedQOV, legType.leafOffset+idx)
 		if err != nil {
 			panic("RFC-173 predicate bake: " + err.Error()) // the window is within the concat by construction
