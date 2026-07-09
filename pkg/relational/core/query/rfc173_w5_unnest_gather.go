@@ -175,39 +175,15 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if declineBoxDup {
 		return nil
 	}
-	// A GROUPED bare-twin (non-box cross-leg dup under aggregate) DECLINES to
-	// name-model — the deferred grouped-bare-twin increment. The grouped path is
-	// stuck between the wrap and the raw seed, and neither disambiguates the dup:
-	//   - the WRAP flattens all legs into ONE quantifier and the grouped ordinal
-	//     resolution is name-BLIND to qualifiers (it looks up bare `K`, not `A.K`/
-	//     `B.K`), so a dup column collapses to first-match and an outer aggregate/
-	//     filter on the later leg (`WHERE B.K=200 GROUP BY A.K`) drops every row
-	//     (the outer-filter first-match wrong-rows class, now in the grouped path);
-	//   - the RAW seed resolves qualified reads through its per-leg quantifiers, but
-	//     a GROUP BY over it reads a shadow-qualified key the positional seed lacks
-	//     and groups every row under NULL (`GROUP BY A.K` -> A.K=<nil>) — the exact
-	//     shadow-key defect the wrap was built to fix.
-	// Disambiguating a grouped dup needs the wrap's ordinal resolution to HONOR the
-	// qualifier (route `B.K` to the ALIAS.COL window key), a compose-direction change
-	// deferred with the box increment. Declining here restores master's pre-2a
-	// behavior for the grouped case (name-model, which resolves qualified reads) — no
-	// regression; the NON-grouped bare-twin still gathers via the raw seed (the 2a
-	// win). This is checked BEFORE any leg translates (the same side-effect discipline
-	// as declineBoxDup).
-	if t.underAggregate && nonBoxCrossLegDup {
-		return nil
-	}
-
-	// The named-projection wrap is placed above the seed ONLY for the GROUP-BY /
-	// aggregate consumer (the shadow-key / operand reason above); every other gather
-	// keeps its RAW seed. Eligibility is decided here, before any leg translates (same
-	// side-effect discipline as the declines above — a late decline would double-
-	// register a leg's scalar subquery), so a wrap-ineligible shape declines to
-	// name-model now.
-	wantWrap := t.underAggregate
-	if wantWrap && !gatheredPositionalWrapEligible(u, legs, legTypes) {
-		return nil
-	}
+	// A GROUPED gather (underAggregate) UN-COLLAPSES to the raw per-leg seed (below)
+	// — no name-keyed wrap — and the ancestor GROUP-BY POSITIONALLY BAKES its keys /
+	// operands over it (translateAggregate: OrdinalSeedLegWindows for leg columns,
+	// fieldValueReferencesInner for the element). The grouped bare-twin's qualified
+	// dup keys route by slot (not first-match), and the outer WHERE bakes for free
+	// (bakeGatedJoinPredicates fires on the SelectExpression). This retires the
+	// collapse AND the ALIAS.COL name keys (the name-model residue). The one fail-open
+	// decline (a mid-list-element cross-leg dup the leg authority can't window) is at
+	// the seed return below, where rc is built.
 
 	// The OWNING source (unnest-residual class 1, design ruling 1(iii)): the
 	// legTypes map IS the owner index — a PLAIN leg's own window keyed by
@@ -377,23 +353,19 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		sourceAliases,
 		expressions.JoinInner,
 	)
-	if !wantWrap {
-		return seedSel
+	// A cross-leg dup (bare-twin) grouped over a seed whose leg windows the SHARED
+	// authority CANNOT derive — a MID-LIST element (`FROM A, A.arr AS x, B`) splits
+	// the leg run, so OrdinalSeedLegWindows declines it — would leave a qualified dup
+	// leg key unresolvable positionally at the group-by bake. Fail-open to name-model
+	// there (works-or-loudly-declines). The common trailing-element
+	// bare-twin (`FROM A, B, A.arr AS x`) windows cleanly and gathers; an element-only
+	// grouped gather (no cross-leg dup) needs no leg window and always gathers.
+	if t.underAggregate && nonBoxCrossLegDup {
+		if w, _ := values.OrdinalSeedLegWindows(rc); w == nil {
+			return nil
+		}
 	}
-	// The positional seed exposes only bare column names. The GROUP-BY / aggregate
-	// consumer needs more, so a NAMED-PROJECTION layer is placed above it (Java's "the
-	// collapse preserves the named projection the consumer reads"): a grouped
-	// `FieldValue{Field:"EL", Child:QOV}` qualifies to the shadow "EL.EL" key the seed
-	// lacks (and a `SUM(EL)` operand name-reads the bare element) → NULL, the shipped
-	// wrong answer. (The name-ambiguous bare-twin never reaches here — the non-grouped
-	// one gathers via the raw seed above, the grouped one declined at the
-	// nonBoxCrossLegDup guard.) It MUST be a LogicalProjectionExpression — NOT a SelectExpression, which
-	// SelectMergeRule would fuse away, losing the qualified/shadow keys. The projection
-	// binds every key POSITIONALLY (ofOrdinal over the seed's type — a projection is not
-	// a join, so the baked ordinal does not re-trigger the positional-seed birth) and
-	// re-exposes bare + "EL.EL"/qualified keys; bare keys survive (emitLeafKeys ADDS
-	// ALIAS.COL, it does not remove the bare pass-through), so `SELECT X` still resolves.
-	return t.wrapGatheredPositionalKeys(seedSel, rc, u, innerCorr, legs, legTypes, unnestPos, len(innerFields))
+	return seedSel
 }
 
 // fieldValueReferencesInner reports whether a seed field's VALUE reads the unnest's
@@ -414,148 +386,69 @@ func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifie
 	return false
 }
 
-// gatheredPositionalWrapEligible reports whether a grouped gather's leg shapes can be
-// FAITHFULLY re-exposed by the named-projection wrap — checked BEFORE leg
-// translation so an ineligible shape declines to name-model without double side
-// effects. The wrap binds every re-exposed key POSITIONALLY (by seed slot), so an
-// element/ordinal alias that SHADOWS a same-named outer column resolves to its OWN
-// slot (element-first) and a leaf-source operand to its OWN leaf slot — both the
-// former decline classes. The one requirement is that EVERY leg's flowed type is
-// derivable: the positional leaf-slot offset is the running sum of preceding legs'
-// run widths (len(typ.Fields)), so a nil typ leaves the offsets uncomputable and
-// the shape must stay on the name model.
-func gatheredPositionalWrapEligible(u *logical.LogicalUnnest, legs []clusterLeg, legTypes map[string]bakeLegType) bool {
-	if u.Alias == "" {
-		return false
-	}
-	for _, leg := range legs {
-		lt, ok := legTypes[leg.binding]
-		if !ok || lt.typ == nil {
-			return false
+// bakeGatheredGroupValue rewrites a GROUP-BY key / aggregate operand Value into a
+// POSITIONAL read over the un-collapsed gathered seed. It
+// RECURSES the value tree (values.Replace) so a compound operand — `SUM(A.K+B.K)`,
+// `SUM(A.K*2)` — bakes each nested FieldValue LEAF that names a seed slot (a
+// top-level-only bake would leave a dup column in the operand reading first-match
+// = silent wrong rows). Each leaf: a qualified (`FieldValue{Field:"K",Child:QOV("B")}`),
+// flat-dotted (`FieldValue{Field:"A.K"}`), or bare/element (`FieldValue{Field:"EL"}`)
+// column that names a slot becomes a resolved-ordinal read there; a literal, `*`, or a
+// reference the seed doesn't carry passes through unchanged (name-model, resolved
+// elsewhere). This is the group-by twin of bakeGatedJoinPredicates — the
+// qualifier-honoring positional read that replaces the wrap's name key.
+func bakeGatheredGroupValue(v values.Value, windows map[string]values.OrdinalSeedLegWindow, elementSlots map[string]int, seedQOV values.Value) values.Value {
+	return values.Replace(v, func(node values.Value) values.Value {
+		fv, isFV := node.(*values.FieldValue)
+		if !isFV || fv.Resolved != nil {
+			return node
 		}
-	}
-	return true
+		alias, col := "", strings.ToUpper(fv.Field)
+		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+			alias = strings.ToUpper(qov.Correlation.Name())
+		} else if dot := strings.IndexByte(col, '.'); dot >= 0 {
+			alias, col = col[:dot], col[dot+1:]
+		}
+		if slot, ok := slotInGatheredSeed(windows, elementSlots, alias, col); ok {
+			if baked, err := values.NewFieldValueOfOrdinal(seedQOV, slot); err == nil {
+				// The positional read (Resolved ordinal) is authoritative; Field is
+				// display-only. Preserve the ORIGINAL reference's display name so the
+				// group-by OUTPUT column matches what the SELECT projects (`EL`, `A.K`).
+				baked.Field = fv.Field
+				return baked
+			}
+		}
+		return node
+	})
 }
 
-// wrapGatheredPositionalKeys places a NAMED-PROJECTION layer above the positional
-// gathered seed so a GROUP BY over the gather resolves. See the caller for why it
-// must be a LogicalProjectionExpression (survives SelectMergeRule). The projection
-// binds every re-exposed key POSITIONALLY (ofOrdinal over the seed's own type) — a
-// projection is not a join, so a baked ordinal here does NOT re-trigger the
-// positional-seed ordinal-join birth (empirically confirmed). Positional binding is
-// what lets an ELEMENT alias that SHADOWS a same-named outer column resolve to the
-// element's OWN slot (a name-read would GetByName the first match = the outer
-// column) — the name-model shadow, recovered order-independently.
-func (t *cascadesTranslator) wrapGatheredPositionalKeys(
-	seedSel expressions.RelationalExpression,
-	rc *values.RecordConstructorValue,
-	u *logical.LogicalUnnest,
-	innerCorr values.CorrelationIdentifier,
-	legs []clusterLeg,
-	legTypes map[string]bakeLegType,
-	unnestPos, elemBlockWidth int,
-) expressions.RelationalExpression {
-	innerAlias := values.UniqueCorrelationIdentifier()
-	typedInnerQOV := values.NewQuantifiedObjectValueOfType(innerAlias, rc.Type())
-	seen := map[string]struct{}{}
-	var projected []values.Value
-	var aliases []string
-	add := func(name string, v values.Value) {
-		if _, dup := seen[name]; dup || v == nil {
-			return
-		}
-		seen[name] = struct{}{}
-		projected = append(projected, v)
-		aliases = append(aliases, name)
-	}
-	// slot binds seed ordinal i POSITIONALLY (nil on an out-of-range index — a
-	// caller that computed a bad offset skips that key rather than panicking).
-	slot := func(i int) values.Value {
-		if i < 0 || i >= len(rc.Fields) {
-			return nil
-		}
-		fv, err := values.NewFieldValueOfOrdinal(typedInnerQOV, i)
-		if err != nil {
-			return nil
-		}
-		return fv
-	}
-	// ELEMENT-FIRST: bind the element (and with-ordinality ordinal) by their OWN
-	// seed slots BEFORE the pass-through, so they WIN the bare namespace over any
-	// same-named outer column (the name-model shadow). The element/ordinal fields
-	// are the ones whose VALUE reads the Explode inner correlation.
-	elemIdx, atIdx := -1, -1
-	el := strings.ToUpper(u.Alias)
-	at := strings.ToUpper(u.AtAlias)
-	for i, f := range rc.Fields {
-		if !fieldValueReferencesInner(f.Value, innerCorr) {
-			continue
-		}
-		n := strings.ToUpper(f.Name)
-		if el != "" && n == el && elemIdx < 0 {
-			elemIdx = i
-		}
-		if at != "" && n == at && atIdx < 0 {
-			atIdx = i
-		}
-	}
-	if el != "" && elemIdx >= 0 {
-		add(el, slot(elemIdx))        // bare element WINS the shadow
-		add(el+"."+el, slot(elemIdx)) // shadow "EL.EL"
-		if at != "" && atIdx >= 0 {
-			add(at, slot(atIdx))        // bare ordinal WINS
-			add(el+"."+at, slot(atIdx)) // shadow "EL.O"
-		}
-	}
-	// The ALIAS.COL qualified twins the aggregate OPERANDS need (`SUM(WSRC.SID)`):
-	// each LEAF source's columns keyed by that leaf's OWN alias, bound POSITIONALLY
-	// at the leaf's seed slot. The seed slot is the leg's own start (preceding leg
-	// run widths, PLUS elemBlockWidth once past the unnest's FROM position) + the leaf's
-	// offset within the leg (leafOffset — 0 for a plain leg, the concat slot for a
-	// BOX leg's buried leaf) + the column index. Positional binding distinguishes a
-	// leaf column from a same-named element/outer column that a name-read would
-	// collide with.
-	var emitLeafKeys func(op logical.LogicalOperator, binding string, legStart int)
-	emitLeafKeys = func(op logical.LogicalOperator, binding string, legStart int) {
-		if bj, isBox := op.(*logical.LogicalJoin); isBox {
-			for _, sub := range t.legsOfGatedJoin(bj) {
-				emitLeafKeys(sub.op, sub.binding, legStart)
+// slotInGatheredSeed resolves a group-by key / operand reference to its flat slot in
+// the gathered seed. The ELEMENT wins FIRST (element-first, so an element AS alias
+// shadowing a leg column reads the element): its slot is its rc index, located via
+// the seed's OWN element predicate (fieldValueReferencesInner) — a single
+// distinguished field, NOT a layout window (rc-index↔slot is the
+// substrate, no drift). A qualified LEG column routes through its leg's
+// [Offset,Width) window from the SHARED authority OrdinalSeedLegWindows (agreeing
+// bit-for-bit with the executor spans by the cross-agreement fixture).
+func slotInGatheredSeed(windows map[string]values.OrdinalSeedLegWindow, elementSlots map[string]int, alias, col string) (int, bool) {
+	// A QUALIFIED read whose alias names a LEG window resolves to THAT leg's column —
+	// the qualifier wins (`U.V` is U's V, never the element, even when the element AS
+	// alias is also `V`). This precedes element-first so an explicit leg qualifier is
+	// never shadowed by a same-named element.
+	if alias != "" {
+		if w, ok := windows[alias]; ok {
+			if idx, found := w.Typ.FieldIndex(col); found {
+				return w.Offset + idx, true
 			}
-			return
-		}
-		lt, ok := legTypes[binding]
-		if !ok || lt.leafTyp == nil {
-			return
-		}
-		alias := strings.ToUpper(binding)
-		for colIdx, f := range lt.leafTyp.Fields {
-			col := strings.ToUpper(f.Name)
-			add(alias+"."+col, slot(legStart+lt.leafOffset+colIdx))
 		}
 	}
-	rawOffset := 0
-	for legI, leg := range legs {
-		legStart := rawOffset
-		if legI >= unnestPos {
-			legStart += elemBlockWidth // the element block is inserted at unnestPos
-		}
-		emitLeafKeys(leg.op, leg.binding, legStart)
-		if lt, ok := legTypes[leg.binding]; ok && lt.typ != nil {
-			rawOffset += len(lt.typ.Fields)
-		}
+	// A BARE / element-alias read: the ELEMENT wins the bare namespace (element-first —
+	// an element AS alias shadowing a later leg column reads the element, matching the
+	// name-model shadow the un-collapse preserves).
+	if slot, ok := elementSlots[col]; ok {
+		return slot, true
 	}
-	// Pass through every remaining seed column by POSITION under its bare name (the
-	// element/ordinal bare names already won above; a cross-leg bare-name duplicate
-	// keeps the FROM-order first match, the name-model's first-match discipline). A
-	// cross-leg dup (the bare-twin) never reaches the wrap: the non-grouped bare-twin
-	// gathers via the raw seed, and the GROUPED bare-twin declines the wrap too (the
-	// grouped ordinal resolution is name-blind to qualifiers, so it cannot disambiguate
-	// a dup column here — see the caller's wantWrap guard).
-	for i, f := range rc.Fields {
-		add(f.Name, slot(i))
-	}
-	innerQ := expressions.NamedForEachQuantifier(innerAlias, expressions.InitialOf(seedSel))
-	return expressions.NewLogicalProjectionExpressionWithAliases(projected, aliases, innerQ)
+	return 0, false
 }
 
 // gatherLegsWithBuriedUnnest walks j's direct inner-join spine collecting the

@@ -44,21 +44,37 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 		return nil, nil
 	}
 	n := len(rc.Fields)
-	// A trailing bare-QOV-over-non-record element marks the MIXED seed; its window
-	// is synthesized after the baked prefix. Every other trailing shape (a baked
-	// field, or a bare QOV over a RECORD leg — the S3 positional-merge RC) leaves
-	// prefixEnd == n and takes the all-pristine path.
-	prefixEnd := n
-	if isMixedSeedElement(rc.Fields[n-1]) {
-		prefixEnd = n - 1
-	}
 	windows := map[string]OrdinalSeedLegWindow{}
 	mergedFields := make([]Field, n)
 	counts := map[string]int{}
 	var curAlias string
 	var curStart int
-	for i := 0; i < prefixEnd; i++ {
+	for i := 0; i < n; i++ {
 		f := rc.Fields[i]
+		// The MIXED scalar element (a bare QOV over a NON-record type — the
+		// whole-object element the seed cannot ofOrdinal-bake) can appear at ANY
+		// FROM position: `FROM A, B, A.arr AS x` (trailing), `FROM A, A.arr AS x, B`
+		// (mid-list — splits the leg run), `FROM A.arr AS x, B` (leading). Synthesize
+		// its OWN 1-field window at its slot — an internal step-over that offsets the
+		// trailing legs — and RESET the run so a leg AFTER the element windows fresh.
+		// The element's window lets its `<AS>.<AS>` shadow read resolve, and (H)'s
+		// field-id in the group-by consumes the element by rc index either way.
+		if isMixedSeedElement(f) {
+			elemQOV := f.Value.(*QuantifiedObjectValue)
+			elemName := strings.ToUpper(f.Name)
+			elemAlias := strings.ToUpper(elemQOV.Correlation.Name())
+			if _, dup := windows[elemAlias]; dup {
+				return nil, nil // two element fields over one correlation — not a seed
+			}
+			windows[elemAlias] = OrdinalSeedLegWindow{
+				Offset: i,
+				Typ:    &RecordType{Fields: []Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}},
+			}
+			counts[elemAlias] = 1
+			mergedFields[i] = Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
+			curAlias = ""
+			continue
+		}
 		fv, isFV := f.Value.(*FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			return nil, nil
@@ -92,51 +108,21 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 		counts[alias]++
 		mergedFields[i] = Field{Name: f.Name, FieldType: fv.Typ, Ordinal: i}
 	}
-	// Full coverage per baked leg (run width == the leg type's field count).
+	// Full coverage per window (a baked leg's run width == its leg type's field count;
+	// the element's synthesized 1-field window has count 1).
 	for alias, w := range windows {
 		if counts[alias] != len(w.Typ.Fields) {
 			return nil, nil
 		}
 	}
-	if prefixEnd == n {
-		// ACCEPT-EQUIVALENCE with the executor's ordinalJoinSpansOf (`len(spans)
-		// < 2` declines): a single baked leg is a folded projection, not the
-		// pristine ≥2-leg concat seed. Without this bound the two walks drift on
-		// the accept boundary (values accepts a lone leg the executor declines) —
-		// unreachable today, but the invariant is that they agree, not that the
-		// divergent shape happens not to be produced.
-		if len(windows) < 2 {
-			return nil, nil
-		}
-		return finalizeSeedWindows(windows, mergedFields)
-	}
-	// MIXED seed: synthesize the trailing element's own 1-field window, then run the
-	// SAME per-buried-leg sub-window derivation the pristine branch does. ACCEPT-
-	// EQUIVALENCE with the executor's unnestMixedSeedSpans, which admits EXACTLY ONE
-	// baked outer leg (one outer QOV — `len(windows)==1`). That one outer QOV may be
-	// a CLUSTERED BOX (a FULL/LEFT-OUTER outer under EXISTS): its single QOV's type
-	// carries buried-leg boundaries (rt.Legs from ordinalLegType), so
-	// finalizeSeedWindows emits a per-buried-leaf sub-window (box-alias→rightmost-leaf
-	// replacement) letting a qualified read of a buried alias resolve to the right
-	// leaf's slot — the disambiguation the pristine branch already had. A plain
-	// single-source outer (a scan) carries no rt.Legs, so the buried loop is a no-op
-	// there: the WINDOWS MAP is unchanged from the prior single-source behavior (the
-	// only consumer of the reachable path); the merged type now ADDITIONALLY carries
-	// its two top-level leg boundaries [OUTER, ELEMENT], matching the executor twin
-	// (mergedLegsOfSpans) — inert on every live consumer, pinned by the
-	// cross-agreement fixture.
-	if len(windows) != 1 {
+	// ACCEPT-EQUIVALENCE with the executor twin (ordinalJoinSpansOf/unnestMixedSeedSpans,
+	// pinned bit-for-bit by the cross-agreement fixture): a pristine ≥2-leg concat OR a
+	// mixed seed (≥1 outer leg + the element window) — BOTH need ≥2 windows. A lone baked
+	// leg is a folded projection; a lone element is not a gather. finalizeSeedWindows then
+	// emits per-buried-leg sub-windows for any clustered BOX leg (box-alias→rightmost-leaf).
+	if len(windows) < 2 {
 		return nil, nil
 	}
-	elemQOV := rc.Fields[n-1].Value.(*QuantifiedObjectValue)
-	elemName := strings.ToUpper(rc.Fields[n-1].Name)
-	elemType := elemQOV.Type()
-	elemAlias := strings.ToUpper(elemQOV.Correlation.Name())
-	windows[elemAlias] = OrdinalSeedLegWindow{
-		Offset: n - 1,
-		Typ:    &RecordType{Fields: []Field{{Name: elemName, FieldType: elemType, Ordinal: 0}}},
-	}
-	mergedFields[n-1] = Field{Name: elemName, FieldType: elemType, Ordinal: n - 1}
 	return finalizeSeedWindows(windows, mergedFields)
 }
 

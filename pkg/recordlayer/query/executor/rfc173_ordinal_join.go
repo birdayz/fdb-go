@@ -96,28 +96,49 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 		return nil, nil, false
 	}
 	n := len(rc.Fields)
-	// The trailing element leg: a bare QOV over a NON-record type (the RawLeg
-	// whole-object element, Java's primitive branch). Every baked/constant field
-	// declines the isQOV check. The non-record guard is LOAD-BEARING against the
-	// S3 positional-merge RC, whose trailing field is a bare QOV over a RECORD leg
-	// type — it must decline. (It ALSO declines a record-typed element leg, but
-	// that is currently unreachable: a STRUCT array element maps to UnknownType,
-	// NOT a *RecordType — unnestArrayElementType — so struct and scalar elements
-	// both flow through THIS windowing + the RawLeg raw-Datum bind, the whole-
-	// object binding. The guard is the S3-merge exclusion, not a struct branch.)
-	elemQOV, isQOV := rc.Fields[n-1].Value.(*values.QuantifiedObjectValue)
-	if !isQOV {
-		return nil, nil, false
-	}
-	if _, isRecord := elemQOV.Type().(*values.RecordType); isRecord {
-		return nil, nil, false
-	}
-	// The OUTER leg: a single FULL baked run from ordinal 0 over one alias — the
-	// same run/coverage discipline ordinalJoinSpansOf enforces per leg.
+	// ELEMENT-ANYWHERE: the mixed scalar element (a bare QOV over a NON-record type —
+	// the RawLeg whole-object element, Java's primitive branch) can appear at ANY FROM
+	// position (`FROM A, B, A.arr AS x` trailing, `FROM A, A.arr AS x, B` mid-list
+	// splitting the leg run, `FROM A.arr AS x, B` leading). One OR MORE full baked leg
+	// runs surround it: each run consecutive same-alias, ordinal 0..width-1, fully
+	// covered; a new alias starts a new run; a DUPLICATE alias (a run split across the
+	// element) declines. The non-record guard on the element is LOAD-BEARING against
+	// the S3 positional-merge RC (a bare QOV over a RECORD leg type — it must NOT be
+	// treated as the element). Cross-agreement twin of OrdinalSeedLegWindows'
+	// element-anywhere walk — bit-for-bit, pinned by
+	// TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement.
 	mergedFields := make([]values.Field, n)
-	var outer *legSpan
-	for i := 0; i < n-1; i++ {
+	var spansList []legSpan
+	seen := map[string]struct{}{}
+	curIdx := -1
+	hasElement := false
+	coverageOK := func() bool {
+		if curIdx < 0 {
+			return true
+		}
+		s := &spansList[curIdx]
+		return s.LegType != nil && s.Width == len(s.LegType.Fields)
+	}
+	for i := 0; i < n; i++ {
 		f := rc.Fields[i]
+		if elemQOV, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
+			if _, isRecord := elemQOV.Type().(*values.RecordType); !isRecord {
+				if !coverageOK() {
+					return nil, nil, false // an unfinished leg run before the element
+				}
+				if _, dup := seen[elemQOV.Correlation.String()]; dup {
+					return nil, nil, false
+				}
+				seen[elemQOV.Correlation.String()] = struct{}{}
+				elemName := strings.ToUpper(f.Name)
+				elemLegType := &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}}
+				mergedFields[i] = values.Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
+				spansList = append(spansList, legSpan{Alias: elemQOV.Correlation, LegType: elemLegType, Offset: i, Width: 1})
+				curIdx = -1
+				hasElement = true
+				continue
+			}
+		}
 		fv, isFV := f.Value.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			return nil, nil, false
@@ -126,34 +147,28 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 		if !resolved {
 			return nil, nil, false
 		}
-		if outer == nil {
-			if ord != 0 {
+		if curIdx < 0 || alias != spansList[curIdx].Alias {
+			if ord != 0 || !coverageOK() {
 				return nil, nil, false
 			}
-			outer = &legSpan{Alias: alias, LegType: legType, Offset: 0, Width: 1}
-		} else {
-			if alias != outer.Alias || ord != outer.Width {
-				return nil, nil, false // a second baked leg or a gap — not this seed
+			if _, dup := seen[alias.String()]; dup {
+				return nil, nil, false // a split run — not pristine
 			}
-			outer.Width++
+			seen[alias.String()] = struct{}{}
+			spansList = append(spansList, legSpan{Alias: alias, LegType: legType, Offset: i, Width: 1})
+			curIdx = len(spansList) - 1
+		} else {
+			if ord != spansList[curIdx].Width {
+				return nil, nil, false // a gap within the run
+			}
+			spansList[curIdx].Width++
 		}
 		mergedFields[i] = values.Field{Name: f.Name, FieldType: fv.Type(), Ordinal: i}
 	}
-	if outer == nil || outer.LegType == nil || outer.Width != len(outer.LegType.Fields) {
-		return nil, nil, false // partial outer coverage — a folded projection, not the seed
+	if !coverageOK() || !hasElement || len(spansList) < 2 {
+		return nil, nil, false // partial last leg, no element (a pristine seed), or a lone span
 	}
-	// Synthesize the element's 1-field leg window so `<AS>.<AS>` resolves
-	// alias → element window → the sole column, exactly as datumFromSpans/the
-	// name model qualify the element leg.
-	elemName := strings.ToUpper(rc.Fields[n-1].Name)
-	elemType := elemQOV.Type()
-	elemLegType := &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: elemType, Ordinal: 0}}}
-	mergedFields[n-1] = values.Field{Name: elemName, FieldType: elemType, Ordinal: n - 1}
-	spans = []legSpan{
-		*outer,
-		{Alias: elemQOV.Correlation, LegType: elemLegType, Offset: n - 1, Width: 1},
-	}
-	return spans, &values.RecordType{Fields: mergedFields, Legs: mergedLegsOfSpans(spans)}, true
+	return spansList, &values.RecordType{Fields: mergedFields, Legs: mergedLegsOfSpans(spansList)}, true
 }
 
 // ordinalJoinSpansOf is ordinalJoinSpans with FUSED-reference resolution (the

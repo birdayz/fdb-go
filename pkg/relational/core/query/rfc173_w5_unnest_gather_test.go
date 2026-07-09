@@ -191,24 +191,23 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatalf("a box-involved cross-leg dup must DECLINE (box side can't disambiguate its buried column), got %T", got)
 	}
 
-	// (b3) GROUPED non-box cross-leg dup DECLINES (RFC-173 S4 Slice 2a scope boundary,
-	// forward sentinel): the SAME two-scan bare-twin case (b) gathers via the raw seed
-	// when NOT grouped, but UNDER AGGREGATE it declines. The grouped ordinal resolution
-	// is name-BLIND to qualifiers (looks up bare `SID`, not `s.SID`/`s2.SID`), so the
-	// wrap collapses the dup to first-match and the raw seed groups every row under NULL
-	// — the grouped bare-twin needs qualifier-honoring ordinal resolution it doesn't yet
-	// have. It fail-opens to name-model (= master's pre-2a behavior). Because the E2E
-	// rows stay correct whether it declines OR (someday) gathers, THIS plan-shape pin is
-	// the sentinel that forces re-certification when the qualifier-honoring compose
-	// increment lands. Same cluster as (b) — the ONLY difference is underAggregate.
+	// (b3) GROUPED non-box cross-leg dup now GATHERS via the un-collapse (RFC-173 S4
+	// qualifier-honoring resolution LANDED — this sentinel flipped, exactly as it was
+	// designed to): the SAME two-scan bare-twin as case (b), UNDER AGGREGATE, returns
+	// the RAW per-leg seed (a *SelectExpression, NOT the retired name-keyed wrap). The
+	// ancestor GROUP-BY positionally bakes its keys over it (translateAggregate:
+	// OrdinalSeedLegWindows for leg columns — a TRAILING-element bare-twin windows
+	// cleanly). The collapse and its ALIAS.COL name keys are gone; the qualified dup
+	// keys route by slot, not first-match. Same cluster as (b) — the ONLY difference is
+	// underAggregate, and both now gather the raw seed.
 	tr.underAggregate = true
 	uGrouped := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	jGrouped := logical.NewJoin(inner(scan("SRC", "s"), scan("SRC", "s2")), uGrouped, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jGrouped, uGrouped, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-		tr.underAggregate = false
-		t.Fatalf("a GROUPED non-box cross-leg dup must DECLINE (grouped ordinal resolution is name-blind to qualifiers), got %T", got)
-	}
+	gotGrouped := tr.translateGatheredUnnestCluster(jGrouped, uGrouped, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 	tr.underAggregate = false
+	if _, ok := gotGrouped.(*expressions.SelectExpression); !ok {
+		t.Fatalf("a GROUPED non-box cross-leg dup must GATHER via the un-collapse (raw SelectExpression), got %T", gotGrouped)
+	}
 
 	// (c) SHADOWING now GATHERS (the commit-2 lift): the element alias
 	// equaling an outer column name resolves correctly — the visitor

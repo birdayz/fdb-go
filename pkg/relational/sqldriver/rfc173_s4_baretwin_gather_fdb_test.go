@@ -202,6 +202,31 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 999 GROUP BY A."K"`, nil)
 	})
 
+	// COMPOUND aggregate operand on a DUP column: SUM(A.K + B.K) over the grouped
+	// bare-twin must bake BOTH nested leaves — A.K→A's slot, B.K→B's slot. The operand
+	// bake RECURSES the value tree (a top-level-only bake would leave B.K reading
+	// first-match A.K → silent wrong rows). A.K=100, B.K=200: each of the 2 unnest rows
+	// is 100+200=300 → SUM=600 (a top-level-only bug would give 100+100=200 → 400).
+	t.Run("grouped_compound_operand_on_dup_column", func(t *testing.T) {
+		wantRows(t, `SELECT A."K", SUM(A."K" + B."K") AS "TOT" FROM A, B, A."ARR" AS "X" GROUP BY A."K"`,
+			[]string{`map[A.K:100 SUM(A."K" + B."K"):600 TOT:600]`})
+	})
+
+	// MID-LIST element grouped bare-twin (`FROM A, A.arr AS X, B` — the unnest is NOT
+	// trailing; B follows it). The element splits the leg run, so the leg windows come
+	// from the element-ANYWHERE layout authority (OrdinalSeedLegWindows walks leading
+	// legs, steps over the element's slot, windows trailing legs). A.K and B.K (the dup)
+	// each route to their own window: `GROUP BY A.K` reads A's K (=100); `WHERE B.K=200`
+	// reads B's K. A(1 row) × {7,8} × B(1 row) = 2 rows → COUNT=2. Pins that a mid-list
+	// cross-leg dup WORKS (not the fail-open decline — the authority windows it).
+	t.Run("mid_list_element_grouped_bare_twin", func(t *testing.T) {
+		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B GROUP BY A."K"`,
+			[]string{"map[A.K:100 COUNT(*):2]"})
+		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 200 GROUP BY A."K"`,
+			[]string{"map[A.K:100 COUNT(*):2]"})
+		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 999 GROUP BY A."K"`, nil)
+	})
+
 	// ORDER BY on a bare-twin dup column — the sibling axis of the WHERE pins. Outer-
 	// operator resolution (WHERE/GROUP BY/ORDER BY) is where every bug in this arc hid;
 	// WHERE is proven on the raw seed, ORDER BY is its unprobed sibling. ORDER BY on the

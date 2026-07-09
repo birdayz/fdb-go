@@ -211,6 +211,38 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 	return recordlayer.NewResultWithValue(completed, nonEndContinuation), nil
 }
 
+// aggregateEvalArg is the eval argument for a GROUP-BY key / aggregate operand.
+// A POSITIONALLY-BAKED value (a FieldValue with a resolved ordinal — the RFC-173
+// un-collapse's qualifier-honoring group key/operand) reads the positional merged
+// row the gathered seed emits, so it is flowed a RowEvalContext carrying it. A
+// name-model value (a qualified/bare name over a join, whose positional row uses
+// bare column names it can't find) keeps the Datum map exactly as before — the
+// per-value gate, so the broad group-by population is untouched.
+func aggregateEvalArg(v values.Value, row QueryResult) any {
+	if row.Positional != nil && valueReadsBakedOrdinal(v) {
+		m, _ := row.Datum.(map[string]any)
+		return &values.RowEvalContext{Datum: m, Positional: row.Positional}
+	}
+	return row.Datum
+}
+
+// valueReadsBakedOrdinal reports whether v (a group key / aggregate operand) reads
+// through a plan-time-resolved ordinal ANYWHERE in its value tree — the un-collapse's
+// positionally-baked FieldValue, possibly nested inside a compound operand
+// (`SUM(A.K+B.K)`). Any baked leaf means the whole value must evaluate against the
+// positional row; a fully name-model value reads the Datum map unchanged.
+func valueReadsBakedOrdinal(v values.Value) bool {
+	if fv, ok := v.(*values.FieldValue); ok && fv.Resolved != nil {
+		return true
+	}
+	for _, c := range v.Children() {
+		if valueReadsBakedOrdinal(c) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error) {
 	if c.scalarMode {
 		return "", nil, nil
@@ -218,7 +250,7 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 	keyParts := make([]any, len(c.groupingKeys))
 	t := make(tuple.Tuple, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
-		v, err := k.Evaluate(row.Datum)
+		v, err := k.Evaluate(aggregateEvalArg(k, row))
 		if err != nil {
 			return "", nil, err
 		}
@@ -269,7 +301,7 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 	gs.count++
 
 	for i, agg := range c.aggregates {
-		val, err := agg.Operand.Evaluate(row.Datum)
+		val, err := agg.Operand.Evaluate(aggregateEvalArg(agg.Operand, row))
 		if err != nil {
 			return err
 		}

@@ -4328,12 +4328,60 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	if innerRef == nil {
 		return nil
 	}
+	// RFC-173 S4 qualifier-honoring resolution: a GATHERED unnest
+	// input UN-COLLAPSED to the raw per-leg seed (no name-keyed wrap). Derive its
+	// per-leg windows from the TYPED seed itself — innerRef's result RC through the
+	// ONE layout authority OrdinalSeedLegWindows (no translation-time side-channel) —
+	// and positionally BAKE the group keys / operands over the seed's flat output via
+	// a NAMED group-by quantifier: ofOrdinal(QOV(seedCorr,mergedType), slot), the
+	// qualifier-honoring read that replaces the wrap's name key. The outer WHERE
+	// already baked itself (bakeGatedJoinPredicates fires on the SelectExpression).
+	var windows map[string]values.OrdinalSeedLegWindow
+	var elementSlots map[string]int
+	var seedType values.Type
+	if sel, ok := innerRef.Get().(*expressions.SelectExpression); ok {
+		if rc, ok := sel.GetResultValue().(*values.RecordConstructorValue); ok {
+			// A GATHERED lateral-unnest seed is identified by its Explode quantifier;
+			// its correlation is the seed's OWN element notion (innerCorr), which
+			// fieldValueReferencesInner uses to locate the element field(s) — one
+			// definition, no ad-hoc scan.
+			var innerCorr values.CorrelationIdentifier
+			foundExplode := false
+			for _, q := range sel.GetQuantifiers() {
+				if _, isExplode := q.GetRangesOver().Get().(*expressions.ExplodeExpression); isExplode {
+					innerCorr = q.GetAlias()
+					foundExplode = true
+					break
+				}
+			}
+			if foundExplode {
+				windows, _ = values.OrdinalSeedLegWindows(rc) // leg windows (nil for a mid-list element — element-only shapes need no leg window)
+				elementSlots = map[string]int{}
+				for i, f := range rc.Fields {
+					if fieldValueReferencesInner(f.Value, innerCorr) {
+						elementSlots[strings.ToUpper(f.Name)] = i // element slot = rc index
+					}
+				}
+				seedType = rc.Type()
+			}
+		}
+	}
+	groupByQuant := t.namedQuantifier(sourceAlias(a.Input), innerRef)
+	var seedQOV values.Value
+	if seedType != nil {
+		seedCorr := values.UniqueCorrelationIdentifier()
+		seedQOV = values.NewQuantifiedObjectValueOfType(seedCorr, seedType)
+		groupByQuant = expressions.NamedForEachQuantifier(seedCorr, innerRef)
+	}
 	groupKeys := make([]values.Value, len(a.GroupKeys))
 	for i, key := range a.GroupKeys {
 		if i < len(a.GroupKeyValues) && a.GroupKeyValues[i] != nil {
 			groupKeys[i] = a.GroupKeyValues[i]
 		} else {
 			groupKeys[i] = &values.FieldValue{Field: key, Typ: values.UnknownType}
+		}
+		if seedType != nil {
+			groupKeys[i] = bakeGatheredGroupValue(groupKeys[i], windows, elementSlots, seedQOV)
 		}
 	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
@@ -4355,6 +4403,9 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
 			spec.Operand = a.AggregateOperands[i]
 		}
+		if seedType != nil && spec.Operand != nil {
+			spec.Operand = bakeGatheredGroupValue(spec.Operand, windows, elementSlots, seedQOV)
+		}
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			spec.Alias = strings.ToUpper(a.Aliases[i])
 		}
@@ -4363,7 +4414,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	groupBy := expressions.NewGroupByExpression(
 		groupKeys,
 		aggSpecs,
-		t.namedQuantifier(sourceAlias(a.Input), innerRef),
+		groupByQuant,
 	)
 	if a.HavingPredicate == nil {
 		return groupBy

@@ -416,10 +416,11 @@ func assertSpanWindowAgreement(t *testing.T, label string, rc *values.RecordCons
 // cost eight review rounds.
 //
 // It locks the ACCEPT BOUNDARY, not just one happy shape (the exit-gate
-// ruling): the two walks must BOTH DECLINE a multi-leg outer prefix and a
+// ruling): the two walks must AGREE on a multi-leg outer prefix (now ACCEPTED
+// together — the RFC-173 S4 multi-source gathered seed) and BOTH DECLINE a
 // single-leg pristine seed — the shapes where they were measured to drift (values
-// accepted, executor declined) before the accept-equivalence bounds
-// (`len(windows) != 1` mixed, `len(windows) < 2` pristine) closed it.
+// accepted, executor declined) before the accept-equivalence was extended/bounded
+// in lockstep.
 func TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement(t *testing.T) {
 	t.Parallel()
 	tLeg := mixedSeedOuter("T")
@@ -440,20 +441,22 @@ func TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement(t *testing.T) {
 		values.RecordConstructorField{Name: "W", Value: structElem},
 	), true)
 
-	// DECLINE BOUNDARY (the drift shapes). A multi-LEG outer prefix (T then B, BOTH
-	// FULLY covered) + element: unnestMixedSeedSpans bails on the second leg (alias
-	// != outer.Alias); values now bails on len(windows) != 1. BOTH decline. The
-	// second leg is FULLY baked (both ordinals) ON PURPOSE — a partial second leg
-	// would decline on the full-coverage check FIRST, leaving the len(windows) != 1
-	// bound unexercised (a green pin that does not test the bound it exists for).
-	// This is the exact fully-covered 2-outer-leg shape the round-9 layout accepted
-	// while the executor declined it.
+	// ACCEPT: a multi-LEG outer prefix (T then B, BOTH FULLY covered) + a scalar
+	// element — the MULTI-SOURCE gathered lateral unnest `FROM T, B, T.arr AS X`, the
+	// RFC-173 S4 qualifier-honoring resolution slice's grouped-gather input. Both
+	// walks now derive [T-window, B-window, element-window] and MUST agree bit-for-bit
+	// (accept, per-leg offsets, field types) — `assertSpanWindowAgreement(true)` proves
+	// it. Extending the ONE authority (OrdinalSeedLegWindows) and its executor twin
+	// (unnestMixedSeedSpans) TOGETHER, re-pinned here, is how the invariant stays
+	// worth guarding: the un-collapse groups over exactly this seed and
+	// positionally bakes its group keys via these windows. A DUPLICATE alias in the
+	// prefix (a split run) still declines — the pristine-run discipline is unchanged.
 	bLeg := mixedSeedOuter("B")
-	assertSpanWindowAgreement(t, "decline/multi-leg-prefix", values.NewRawRecordConstructorValue(
+	assertSpanWindowAgreement(t, "accept/multi-leg-prefix", values.NewRawRecordConstructorValue(
 		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
 		bakeOrdinal(t, bLeg, 0), bakeOrdinal(t, bLeg, 1),
 		values.RecordConstructorField{Name: "X", Value: scalarElem},
-	), false)
+	), true)
 
 	// A single baked leg, no element: ordinalJoinSpansOf bails on len(spans) < 2,
 	// unnestMixedSeedSpans on the non-QOV trailing field; values now bails on

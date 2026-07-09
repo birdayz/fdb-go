@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -3517,29 +3518,31 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	t.Run("DISJOINT gathered multi-source unnest GROUP BY ORDINALIZES via the named-projection layer", func(t *testing.T) {
+	t.Run("DISJOINT gathered multi-source unnest GROUP BY ORDINALIZES via the un-collapse positional bake", func(t *testing.T) {
 		// Regression for a shipped WRONG-ANSWER bug + the RFC-173 S4 fix that closes it.
 		// A DISJOINT-column multi-source unnest GROUP-BY (`FROM WSRC, WSRC.WARR AS EL,
 		// WAUX GROUP BY EL`) has no shared name, so the name-ambiguity gate does NOT
-		// decline it — it GATHERS (ordinal path). The grouped element reference resolves
-		// to the shadow-qualified "EL.EL" key, which the POSITIONAL seed (bare column
-		// names only) lacks → `GROUP BY EL` grouped EVERY row under NULL (got
-		// [EL=<nil>, N=6]). The fix keeps the positional seed INTERNAL and places a
-		// NAMED-PROJECTION layer above it (wrapGatheredPositionalKeys) — a
-		// LogicalProjectionExpression (survives SelectMergeRule) whose values NAME-read
-		// the seed and re-expose the bare + ALIAS.COL + "EL.EL" shadow keys the grouped
-		// element key and outer-column aggregates resolve against. WSRC has 1 row (SID=1,
-		// WARR={7,8}); WAUX has 3 rows, so each element crosses 3×.
+		// decline it — it GATHERS (ordinal path). The grouped element reference used to
+		// resolve to a shadow-qualified "EL.EL" name key which the POSITIONAL seed lacks
+		// → `GROUP BY EL` grouped EVERY row under NULL (got [EL=<nil>, N=6]). The
+		// qualifier-honoring-resolution fix UN-COLLAPSES: the raw per-leg seed is the
+		// group-by INPUT (no wrap), and the group-by POSITIONALLY BAKES its key — the
+		// element to its rc slot (fieldValueReferencesInner), a leg column to its window
+		// (OrdinalSeedLegWindows) — so `GROUP BY EL` reads the element slot by ordinal.
+		// This retires the named-projection wrap AND its ALIAS.COL name keys. WSRC has 1
+		// row (SID=1, WARR={7,8}); WAUX has 3 rows, so each element crosses 3×.
 		ex := assertRows(t, `SELECT "EL", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
 			"COUNT(*)=3|EL=7|N=3", "COUNT(*)=3|EL=8|N=3",
 		})
-		// PROVE the ORDINAL path fired, not a name-model fallback: the fix wraps the
-		// gathered positional seed (FlatMap(Scan(WSRC),Explode) ⋈ Scan(WAUX)) in a
-		// named-projection layer, so the plan carries a SECOND Project (the layer) over
-		// the gather NLJ, beneath the outer SELECT's Project. A name-model decline would
-		// plan the FlatMap-over-merged-outer shape with a single Project.
-		if strings.Count(ex, "Project(") < 2 || !strings.Contains(ex, "FlatMap(outer=Scan(WSRC)") {
-			t.Fatalf("expected the ordinal gather + named-projection layer, got plan: %s", ex)
+		// PROVE the un-collapse fired, not the retired wrap NOR a name-model fallback:
+		// the StreamingAgg groups by a BAKED ORDINAL key (`#<n>`) directly over the raw
+		// gather NLJ (FlatMap(Scan(WSRC),Explode) ⋈ Scan(WAUX)) — NO named-projection
+		// layer (a single outer SELECT Project, not two). A name-model decline would
+		// plan the FlatMap-over-merged-outer shape; the wrap would nest a second Project.
+		if strings.Count(ex, "Project(") != 1 ||
+			!strings.Contains(ex, "FlatMap(outer=Scan(WSRC)") ||
+			!regexp.MustCompile(`StreamingAgg\(keys=\[[^]]*#\d`).MatchString(ex) {
+			t.Fatalf("expected the un-collapse gather (baked-ordinal group key, no wrap), got plan: %s", ex)
 		}
 		// The OUTER-column aggregate (SUM over the gathered outer source) resolves too.
 		assertRows(t, `SELECT "EL", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
@@ -3560,17 +3563,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if strings.Count(exGCount, "Project(") >= 1 {
 			t.Fatalf("global COUNT(*) must keep the flat seed (no wrap), got: %s", exGCount)
 		}
-		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) DOES need the
-		// wrap — the flat positional seed exposes only bare names, so without it SUM(EL)
-		// name-reads NULL (the pre-existing W5 global-operand gap). Each element {7,8}
-		// appears 3× (WAUX) → SUM=(7+8)*3=45. The wrap fires (exactly ONE Project — a
-		// global aggregate has no outer-SELECT Project, unlike a GROUP BY which has two)
-		// via the aggregate-operand-references-column trigger.
+		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) ORDINALIZES via
+		// the UN-COLLAPSE: the operand is positionally BAKED to the element's rc slot
+		// (fieldValueReferencesInner) over the raw gather — NO wrap. Each
+		// element {7,8} appears 3× (WAUX) → SUM=(7+8)*3=45. The plan is StreamingAgg over
+		// the raw NLJ gather with NO Project (a global aggregate has no outer-SELECT
+		// Project, and the wrap is retired).
 		exGSum := assertRows(t, `SELECT SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"S=45|SUM(EL)=45",
 		})
-		if strings.Count(exGSum, "Project(") < 1 {
-			t.Fatalf("global SUM(EL) must ORDINALIZE via the operand-triggered wrap, got: %s", exGSum)
+		if strings.Count(exGSum, "Project(") != 0 || !strings.Contains(exGSum, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("global SUM(EL) must ORDINALIZE via the un-collapse (baked operand over the raw gather, no wrap), got: %s", exGSum)
 		}
 		// A global aggregate over a BURIED leaf column (SUM(WAUX.WV)) needs the same
 		// wrap. WAUX has WV=5,6,7 → each crossed with both elements {7,8} → SUM=(5+6+7)*2=36.
@@ -3611,16 +3614,19 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 		// SHADOW-COLLISION ORDINALIZES via POSITIONAL binding: WAUX has a WV column and
 		// `WSRC.WARR AS WV` names the element WV too, so the seed carries BOTH under the
-		// bare name "WV". The wrap binds the ELEMENT by its OWN seed slot FIRST (so the
-		// bare "WV" and shadow "WV.WV" WIN the element, slot #4) and keeps WAUX.WV at its
-		// own leaf slot (#3) — a name-read would GetByName the first match (the outer
-		// WAUX.WV) and group WRONG (measured WV=5/6/7). The rows prove the ELEMENT won:
-		// GROUP BY WV yields the array elements 7,8 (3 WAUX rows each), NOT WAUX's WV.
+		// bare name "WV". The un-collapse bakes the BARE group key `WV` to the ELEMENT's
+		// own rc slot FIRST (fieldValueReferencesInner element-first), winning
+		// over the outer WAUX.WV at its own leg-window slot — a name-read would GetByName
+		// the first match (WAUX.WV) and group WRONG (measured WV=5/6/7). The rows prove the
+		// ELEMENT won: GROUP BY WV yields the array elements 7,8 (3 WAUX rows each), NOT
+		// WAUX's WV. The plan is StreamingAgg over the raw gather with a baked-ordinal key
+		// (the element slot) and NO wrap (a single outer SELECT Project).
 		exShadow := assertRows(t, `SELECT "WV", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
 			"COUNT(*)=3|N=3|WV=7", "COUNT(*)=3|N=3|WV=8",
 		})
-		if strings.Count(exShadow, "Project(") < 2 {
-			t.Fatalf("element-shadows-outer-column should ORDINALIZE via positional element-first binding, got: %s", exShadow)
+		if strings.Count(exShadow, "Project(") != 1 ||
+			!regexp.MustCompile(`StreamingAgg\(keys=\[[^]]*#\d`).MatchString(exShadow) {
+			t.Fatalf("element-shadows-outer-column should ORDINALIZE via the un-collapse element-first bake (baked-ordinal key, no wrap), got: %s", exShadow)
 		}
 		// And the OUTER shadowed column stays reachable QUALIFIED (WAUX.WV, its own leaf
 		// slot) for an aggregate operand — SUM(WAUX.WV) over the 6 crossed rows: each of
@@ -3639,7 +3645,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exEncl := assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "WV", WAUX GROUP BY "WV"`, []string{
 			"S=18|SUM(WAUX.WV)=18|WV=7", "S=18|SUM(WAUX.WV)=18|WV=8",
 		})
-		if strings.Count(exEncl, "Project(") < 2 {
+		if strings.Count(exEncl, "Project(") != 1 {
 			t.Fatalf("enclosed shadow (element before the same-named leg) should ORDINALIZE, got: %s", exEncl)
 		}
 		// ORDINAL-alias shadow (the AT alias, not the element, shadows an outer column):
@@ -3650,7 +3656,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exOrdSh := assertRows(t, `SELECT "SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "SID", WAUX GROUP BY "SID"`, []string{
 			"COUNT(*)=3|N=3|SID=1", "COUNT(*)=3|N=3|SID=2",
 		})
-		if strings.Count(exOrdSh, "Project(") < 2 {
+		if strings.Count(exOrdSh, "Project(") != 1 {
 			t.Fatalf("ordinal-alias shadow (AT alias shadows an outer column) should ORDINALIZE, got: %s", exOrdSh)
 		}
 		// The OUTER shadowed column stays reachable QUALIFIED: SUM(WSRC.SID) over each
@@ -3676,7 +3682,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exBoxShadow := assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
 			"S=5|SUM(WAUX.WV)=5|WV=7", "S=5|SUM(WAUX.WV)=5|WV=8",
 		})
-		if strings.Count(exBoxShadow, "Project(") < 2 {
+		if strings.Count(exBoxShadow, "Project(") != 1 {
 			t.Fatalf("element shadowing a box's buried leaf should ORDINALIZE, got: %s", exBoxShadow)
 		}
 		// BOX leg (the unnest's left is an OUTER-join box) ORDINALIZES via leaf-source
@@ -3687,7 +3693,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exBox := assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
 			"EL=7|S=5|SUM(WAUX.WV)=5", "EL=8|S=5|SUM(WAUX.WV)=5",
 		})
-		if strings.Count(exBox, "Project(") < 2 {
+		if strings.Count(exBox, "Project(") != 1 {
 			t.Fatalf("box-leg grouped unnest should ORDINALIZE via leaf-source qualification, got: %s", exBox)
 		}
 		// BOX leg NO-MATCH: the LEFT box's ON never matches (WV=99999 exists in no
@@ -3703,7 +3709,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exOrd := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "O", WAUX GROUP BY "O"`, []string{
 			"COUNT(*)=3|N=3|O=1", "COUNT(*)=3|N=3|O=2",
 		})
-		if strings.Count(exOrd, "Project(") < 2 {
+		if strings.Count(exOrd, "Project(") != 1 {
 			t.Fatalf("ordinality GROUP BY O should ORDINALIZE via the EL.O shadow, got: %s", exOrd)
 		}
 		// AT-ONLY (no AS) ORDINALIZES too — it is the SAME shadow class as above. With no
@@ -3715,7 +3721,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exAtOnly := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AT "O", WAUX GROUP BY "O"`, []string{
 			"COUNT(*)=3|N=3|O=1", "COUNT(*)=3|N=3|O=2",
 		})
-		if strings.Count(exAtOnly, "Project(") < 2 {
+		if strings.Count(exAtOnly, "Project(") != 1 {
 			t.Fatalf("AT-only GROUP BY O should ORDINALIZE via the WARR.O shadow (positional binding), got: %s", exAtOnly)
 		}
 		// N-WAY (3 plain legs): WSRC, WAUX, GW all disjoint-named — the gather collapses
@@ -3725,7 +3731,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		exNway := assertRows(t, `SELECT "EL", SUM(GW."V") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX, GW GROUP BY "EL"`, []string{
 			"EL=7|S=2997|SUM(GW.V)=2997", "EL=8|S=2997|SUM(GW.V)=2997",
 		})
-		if strings.Count(exNway, "Project(") < 2 {
+		if strings.Count(exNway, "Project(") != 1 {
 			t.Fatalf("N-way (3 plain legs) grouped gather should ORDINALIZE, got: %s", exNway)
 		}
 	})
