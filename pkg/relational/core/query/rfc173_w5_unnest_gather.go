@@ -137,23 +137,15 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// entries would count a box's columns once per buried leaf and self-collide. One leg =
 	// one run = one column set. A plain scan's columns are unique by name, so this fires
 	// only for a box leg.
-	declineBoxDup := false
 	for _, leg := range legs {
 		withinLeg := map[string]struct{}{}
 		for _, f := range legTypes[leg.binding].typ.Fields {
 			n := strings.ToUpper(f.Name)
-			if _, w := withinLeg[n]; w {
-				declineBoxDup = true // same name twice within ONE box leg's concat (class 1)
-				break
+			if _, dup := withinLeg[n]; dup {
+				return nil // same name twice within ONE box leg's concat (class 1) — still declines
 			}
 			withinLeg[n] = struct{}{}
 		}
-		if declineBoxDup {
-			break
-		}
-	}
-	if declineBoxDup {
-		return nil
 	}
 	// A GROUPED gather (underAggregate) UN-COLLAPSES to the raw per-leg seed (below)
 	// — no name-keyed wrap — and the ancestor GROUP-BY POSITIONALLY BAKES its keys /
