@@ -232,7 +232,11 @@ func aggregateEvalArg(v values.Value, row QueryResult) any {
 // (`SUM(A.K+B.K)`). Any baked leaf means the whole value must evaluate against the
 // positional row; a fully name-model value reads the Datum map unchanged.
 func valueReadsBakedOrdinal(v values.Value) bool {
-	if fv, ok := v.(*values.FieldValue); ok && fv.Resolved != nil {
+	// FrontierPinned specifically — the ordinal-frontier bake the group-by makes
+	// (NewFieldValueOfOrdinal). An UNPINNED baked node (a recursive-CTE leg projection
+	// column) is never an aggregate key/operand, and reads the Datum map like any
+	// name-model value — matching intent, not over-broad on `Resolved != nil`.
+	if fv, ok := v.(*values.FieldValue); ok && fv.Resolved != nil && fv.Resolved.FrontierPinned {
 		return true
 	}
 	for _, c := range v.Children() {
