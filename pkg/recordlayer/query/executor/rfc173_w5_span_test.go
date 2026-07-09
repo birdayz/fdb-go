@@ -458,6 +458,26 @@ func TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement(t *testing.T) {
 		values.RecordConstructorField{Name: "X", Value: scalarElem},
 	), true)
 
+	// ACCEPT: the ELEMENT-ANYWHERE accepts the generalization opened — the element
+	// SPLITS the leg run, distinct legs on BOTH sides. This is the exact layout the
+	// un-collapse's `FROM T, T.arr AS X, B GROUP BY X` (+ SUM(T.col)) rests on: the
+	// walk windows the leading legs, steps over the element's 1-field slot, then
+	// windows the trailing legs. Both walks MUST derive identical [T-window, element,
+	// B-window] — this pins the accept boundary at the bit-for-bit unit level where the
+	// invariant lives (an E2E test would only incidentally catch a drift here).
+	assertSpanWindowAgreement(t, "accept/mid-list-element", values.NewRawRecordConstructorValue(
+		bakeOrdinal(t, tLeg, 0), bakeOrdinal(t, tLeg, 1),
+		values.RecordConstructorField{Name: "X", Value: scalarElem},
+		bakeOrdinal(t, bLeg, 0), bakeOrdinal(t, bLeg, 1),
+	), true)
+	// ACCEPT: a LEADING element (element at position 0, a leg after) — the other new
+	// element-anywhere boundary (`FROM T.arr AS X, B`). Both walks derive [element,
+	// B-window].
+	assertSpanWindowAgreement(t, "accept/leading-element", values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "X", Value: scalarElem},
+		bakeOrdinal(t, bLeg, 0), bakeOrdinal(t, bLeg, 1),
+	), true)
+
 	// A single baked leg, no element: ordinalJoinSpansOf bails on len(spans) < 2,
 	// unnestMixedSeedSpans on the non-QOV trailing field; values now bails on
 	// len(windows) < 2. BOTH decline (a folded projection, not the pristine concat).
