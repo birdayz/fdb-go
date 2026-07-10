@@ -1715,25 +1715,28 @@ and AND it into the inner predicate stream so the existing qualify/splitOuterOnl
 an inner-inner ON below the FOD and lifts an ON-embedded correlation — same as a comma-join WHERE conjunct.
 Broader than filed: also single-outer projected, correlation-in-ON-with-no-WHERE, and NOT-EXISTS variants.
 Regression: correlated_exists_join_on_fdb_test.go (5 bipolar-discriminating subtests, red-first).
-A correlated projected/WHERE EXISTS whose inner is an **explicit inner join** — `EXISTS (SELECT 1 FROM e
-JOIN f ON f.fid=e.fid WHERE e.eid=p.id)` — returns EXISTS=true even when the inner join `e JOIN f` is
-EMPTY: the inner join's own **ON** predicate is dropped through the correlation lift. Repro (Java 4.12.11.0
-= `[[10 false]]`, Go returned `[[10 true]]`): `SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON f.fid=e.fid
-WHERE e.eid=p.id) FROM p, q WHERE q.qid=p.id` with `e(eid=1,fid=99), f(fid=88)` (no inner match).
+(RESOLVED — the arm-state note below is kept for the audit trail; the observable bug is fixed and pinned,
+see the [x] entry above and the 2-leg-fold-arm bullet.) A correlated projected/WHERE EXISTS whose inner is
+an **explicit inner join** — `EXISTS (SELECT 1 FROM e JOIN f ON f.fid=e.fid WHERE e.eid=p.id)` — USED TO
+return EXISTS=true even when the inner join `e JOIN f` was EMPTY: the inner join's own **ON** predicate was
+dropped through the correlation lift. Repro (Java 4.12.11.0 = `[[10 false]]`, Go returned `[[10 true]]`):
+`SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON f.fid=e.fid WHERE e.eid=p.id) FROM p, q WHERE q.qid=p.id`
+with `e(eid=1,fid=99), f(fid=88)` (no inner match). Now `[[10 false]]` on s4.
 - **The N-way arm** (`implementNWayJoinWithExistential`, RFC :2908/:3033) is FIXED conservatively: it
   fail-closes on ANY non-scan existential inner (`existInnerIsScanSafe`) — declines the buggy explicit-join
   case AND (over-conservatively) the working multi-table comma-join case; the N-way arm is new so nothing
   regresses. So the N-way arm has NO silent-wrong; its reach gap is "multi-table/join EXISTS inner declines".
-- **The 2-leg fold arm** (`implementJoinWithExistential`) has the PRE-EXISTING silent-wrong and is NOT yet
-  fixed — three guard attempts all mis-scoped: (a) `!existInnerIsScanSafe` alone over-declines the working
-  non-correlated `EXISTS(... JOIN ...)` (`TestFDB_RFC173W4Left_ExistsOverJoin`); (b) `legReferencesAny(existRef,
-  legs)` is INEFFECTIVE (the correlation is lifted BEFORE existRef); (c) `len(existPreds)>0 &&
-  !existInnerIsScanSafe` over-declines the working **multi-table comma-join** correlated case
-  (`TestFDB_ProjectedExistsRound10/p2a_*_multitable`). The precise discriminator is "explicit inner
-  `JOIN..ON` (ON on the join node) under correlation" vs "comma-join WHERE under correlation" — a distinction
-  LOST at the plan level (ON and WHERE are both predicates by then). The proper fix is to ENFORCE the inner
-  ON under correlation (deep RFC-141 `existsInnerCorrelation` work), not a decline. Regression test to add
-  once fixed: 2-leg `EXISTS(... e JOIN f ON ...)` over an empty inner join → `[[10 false]]`.
+- **The 2-leg fold arm** (`implementJoinWithExistential`): the "PRE-EXISTING silent-wrong, NOT yet fixed,
+  three guard attempts mis-scoped, needs deep RFC-141 work" framing was RESOLVED and is now STALE. The
+  proper fix — ENFORCE the inner ON under correlation — landed FRONT-END at `de5354139` (in
+  `buildCorrelatedExists`, "broader than filed", follow-up `3bf658c89`), NOT at the executor fold arm. The
+  three fold-arm guard attempts mis-scoped because they were guarding the WRONG layer: a CORRELATED
+  inner-JOIN EXISTS routes name-model (`buildCorrelatedExists`) by the permanent-wall ruling (correlatedStep1
+  binds by name → it NEVER folds to `implementJoinWithExistential`), so the fold arm never sees a
+  dropped-ON correlated case — the latent concern is UNREACHABLE, not unfixed. Empirically re-verified on
+  s4 across 8 shapes (2-outer/single-outer × projected/WHERE, correlation-in-ON, NOT-EXISTS, 3-way inner):
+  all correct. Comprehensively pinned incl. the LEFT-JOIN-ON dual in
+  `TestFDB_CorrelatedExistsJoinOnEnforced` (correlated_exists_join_on_fdb_test.go). No live silent-wrong.
 
 `GROUP BY <qualified-col> + <expr>` returns NULL for the key on ANY multi-table query:
 `SELECT WSRC.SID + 1, COUNT(*) FROM WSRC, WAUX GROUP BY WSRC.SID + 1` → `K=<nil>` ("unresolved

@@ -5190,8 +5190,12 @@ confirms the ROWS the fold must produce, not the mechanism; the correctness anch
 > last-leg-wins), NOT-EXISTS pin `[20]`, 4-leg discriminating pin (depth-3 windowing), red-first two-site
 > coupling verified, full suite green. Closes the projected-EXISTS fold AND the WHERE-EXISTS arity≠2 residual.
 > codex P1 (correlated JOIN-inner EXISTS silent-wrong) fail-closed; the PRE-EXISTING 2-leg twin is filed
-> (Known gaps) as a scheduled high-priority follow-on. OUTER buried box (FULL drain / LEFT null-extension)
-> remains deferred.
+> (Known gaps) as a scheduled high-priority follow-on. **[RESOLVED afterward at `de5354139` — the proper
+> fix (enforce the inner ON under correlation) landed FRONT-END in `buildCorrelatedExists`, not the fold
+> arm; a correlated inner-JOIN EXISTS routes name-model by the permanent wall and never reaches
+> `implementJoinWithExistential`, so the fold-arm twin was UNREACHABLE, not unfixed. Re-verified on s4
+> across 8 shapes; pinned in `TestFDB_CorrelatedExistsJoinOnEnforced`.]** OUTER buried box (FULL drain /
+> LEFT null-extension) remains deferred.
 The windowing direction above is CORRECT for the fold (Graefe correction — see the LANDED banner: the
 pivot's "retracted" was wrong; the chain's accumulated-inner boxes use it). Verified against the code:
 `SelectMergeRule` merges
