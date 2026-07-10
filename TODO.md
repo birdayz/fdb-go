@@ -1641,6 +1641,17 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] query-engine (RFC-173, latent — surfaced by the 2-way EXISTS-in-ON review): F2-LEFT's isScanFamilyLeg is cteScope-BLIND
+`isScanFamilyLeg` (cascades_translator.go:3185) is a syntactic Scan-through-Filter walk with NO cteScope
+resolution: a CTE-name scan whose body is a JOIN or an OPAQUE BOX (aggregate/union/sort) reads as
+scan-family. The 2-way EXISTS-in-ON gate hit this (fixed with a cteScope-aware `scanFamilyLegCteAware`), but
+`isScanFamilyLeg` is ALSO used by the F2-LEFT projected-EXISTS-over-LEFT-JOIN fold
+(buildExistentialJoinSelect / existsLegBirthsPositional) to gate scan-leg-only LEFT boxes. A LEFT box whose
+preserved/null-supplying leg is a CTE-backed join/box would pass isScanFamilyLeg there too → the fold might
+ordinalize a shape it's unverified over. Likely a reach gap (loud decline) rather than silent-wrong, but
+UNVERIFIED. Fix: route F2-LEFT's leg check through the same cteScope-aware predicate (make
+scanFamilyLegCteAware the shared authority), with a red-first CTE-leg LEFT-box pin. Booked, not urgent.
+
 ### [ ] query-engine (RFC-173 S4 — HARD PREREQUISITE for the atomic cap; Graefe-ruled): ordinal existential fold over an INDEX-MATCHED box
 The N-way WHERE-EXISTS producer (`buildJoinResultValue` in the name-model 2+1) cannot be retired without a
 cost regression: `implementExistentialSelect` (pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:640-967)

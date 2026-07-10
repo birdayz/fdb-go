@@ -135,16 +135,33 @@ func TestRFC173S4_ExistsInOnGate(t *testing.T) {
 	t.Run("cte_backed_join_leg_stays_poison", func(t *testing.T) {
 		t.Parallel()
 		tr := newGateTranslator(t)
-		// A CTE-name scan is a bare LogicalScan (isScanFamilyLeg TRUE), but it
-		// resolves through cteScope to a JOIN body — an N-way leg that hits the
-		// cross-product/index-matching wall. clusterArity is
-		// cteScope-aware and returns the body's arity (2), so clusterArity==1 is
-		// FALSE → poison. Without the clusterArity check this gates → wrong wall.
+		// A CTE-name scan is a bare LogicalScan (a syntactic scan-family walk
+		// would return TRUE), but it resolves through cteScope to a JOIN body —
+		// an N-way leg that hits the cross-product/index-matching wall.
+		// scanFamilyLegCteAware resolves the CTE body → join → NOT scan-family →
+		// poison.
 		tr.cteScope["W"] = inner(scan("Order", "o"), scan("Customer", "c"))
 		j := onExists(inner(scan("W", "w"), scan("TypedRecord", "tr")))
 		d := tr.ordinalWedgeGateDecide(j)
 		if d.Gated {
 			t.Fatalf("CTE-backed-join-leg EXISTS-in-ON gate = %+v, want poison (CTE body is a join → N-way wall)", d)
+		}
+	})
+
+	t.Run("cte_backed_aggregate_leg_stays_poison", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		// The CTE-OPAQUE-BOX hole a clusterArity==1 side-check MISSED: a CTE
+		// whose body is an aggregate is clusterArity==1 (opaque box) AND a bare
+		// scan syntactically, so it slipped BOTH the syntactic scan-family test
+		// and the arity check — but it flows a merged single-namespace row the
+		// scan-scan seed is unverified over. scanFamilyLegCteAware resolves the
+		// CTE body → aggregate → NOT scan-family → poison.
+		tr.cteScope["W"] = &logical.LogicalAggregate{Input: scan("Order", "o")}
+		j := onExists(inner(scan("W", "w"), scan("Customer", "c")))
+		d := tr.ordinalWedgeGateDecide(j)
+		if d.Gated {
+			t.Fatalf("CTE-backed-aggregate-leg EXISTS-in-ON gate = %+v, want poison (CTE body is an opaque box)", d)
 		}
 	})
 

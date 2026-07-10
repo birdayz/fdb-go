@@ -268,6 +268,39 @@ var forceOrdinalSpike bool
 // guarantee no translation is in flight (process-global, like SetNameModelOracle).
 func SetForceOrdinalSpike(v bool) { forceOrdinalSpike = v }
 
+// scanFamilyLegCteAware reports whether op is a single base-table SCAN
+// (through filters), resolving a CTE-name scan THROUGH cteScope to its body.
+// This is the cteScope-AWARE root-cause counterpart of the plain (syntactic,
+// cteScope-blind) isScanFamilyLeg: a CTE whose body is a JOIN or an OPAQUE BOX
+// (aggregate/union/sort/distinct/limit) is NOT scan-family — it flows a merged
+// or multi-source row the 2-way EXISTS-in-ON ordinal seed is unverified over.
+// A cteExprScope name (recursive-CTE self-reference / temp-table scan) is a
+// pre-translated opaque reference → not scan-family (conservative). The
+// scope entry is removed while walking the body, exactly like clusterArity,
+// so a same-named scan inside the body resolves to the real table.
+func (t *cascadesTranslator) scanFamilyLegCteAware(op logical.LogicalOperator) bool {
+	for {
+		switch n := op.(type) {
+		case *logical.LogicalScan:
+			key := strings.ToUpper(n.Table)
+			if _, ok := t.cteExprScope[key]; ok {
+				return false
+			}
+			if body, ok := t.cteScope[key]; ok {
+				delete(t.cteScope, key)
+				r := t.scanFamilyLegCteAware(body)
+				t.cteScope[key] = body
+				return r
+			}
+			return true
+		case *logical.LogicalFilter:
+			op = n.Input
+		default:
+			return false
+		}
+	}
+}
+
 func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedgeGateDecision {
 	if _, isUnnest := j.Right.(*logical.LogicalUnnest); isUnnest {
 		// Lateral unnest lowers to FlatMap-over-Explode with dotted-prefix
@@ -295,17 +328,16 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// hit the buried-inner-box index-matching wall — the booked
 		// ordinal-fold-over-index-matched-box prerequisite) and for any
 		// non-scan leg.
-		// TWO conditions, neither sufficient alone:
-		//   - isScanFamilyLeg excludes a FULL/aggregate/union/opaque BOX leg (a
-		//     buried join / null-drain / opaque merged row the scan-scan seed is
-		//     unverified over) — a static Scan-through-Filter walk;
-		//   - clusterArity(leg)==1 excludes a CTE-BACKED leg whose body is a
-		//     JOIN: isScanFamilyLeg sees the bare LogicalScan of the CTE name and
-		//     returns true, but clusterArity is cteScope-AWARE — it resolves the
-		//     CTE body and returns its arity (≥2 for a joined body), so the leg
-		//     is N-way and hits the cross-product/index-matching wall. Neither
-		//     check alone covers both (a FULL box is clusterArity==1; a CTE-join
-		//     scan is isScanFamilyLeg-true), so BOTH are load-bearing.
+		// scanFamilyLegCteAware is the SINGLE root-cause predicate: a single
+		// base-table SCAN through filters, resolving a CTE-name scan THROUGH
+		// cteScope so a CTE whose body is a JOIN or an OPAQUE BOX
+		// (aggregate/union/sort) is excluded. It covers every non-single-scan
+		// leg at once — a FULL/aggregate box (not a scan), an N-way join leg
+		// (not a scan), a CTE-backed join AND a CTE-backed opaque box (the scan
+		// resolves to a non-scan body). The earlier syntactic isScanFamilyLeg +
+		// clusterArity==1 side-check left the CTE-opaque-box cell open (the box
+		// is clusterArity==1 and isScanFamilyLeg is cteScope-BLIND) — this
+		// resolves scan-family through cteScope at the root instead.
 		// DUPLICATE ALIAS: two legs sharing a SQL alias get a parser-minted
 		// Q$DUPn binding on the later leg (mintedBindingLeg finds it). The gated
 		// arm here RETURNS EARLY, before the pairwise dup-binding poison (:294),
@@ -314,8 +346,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// the name model loud-declines it). Keep dup-alias poisoned here so it
 		// falls to that loud decline (base behaviour).
 		if j.Kind == logical.JoinInner && !t.inInnerCluster &&
-			isScanFamilyLeg(j.Left) && isScanFamilyLeg(j.Right) &&
-			t.clusterArity(j.Left) == 1 && t.clusterArity(j.Right) == 1 &&
+			t.scanFamilyLegCteAware(j.Left) && t.scanFamilyLegCteAware(j.Right) &&
 			mintedBindingLeg(j.Left, j.Right) == "" {
 			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "bare 2-way non-enclosed EXISTS-in-ON (scan legs; 2-leg ordinal fold)"}
 		}

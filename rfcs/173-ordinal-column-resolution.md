@@ -4919,7 +4919,17 @@ predicate needs BOTH `isScanFamilyLeg` (excludes FULL/aggregate boxes, which are
 `clusterArity==1` (excludes CTE-backed joins, which are isScanFamilyLeg-true) — neither alone is sufficient;
 clusterArity==1 is LOAD-BEARING, not dead (the "dead code" call was wrong because the CTE case was
 untested). Pin added: cte_backed_join_leg_stays_poison. Final gate predicate:
-`JoinInner && !enclosed && isScanFamilyLeg(both) && clusterArity(both)==1 && mintedBindingLeg==""`.** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
+`JoinInner && !enclosed && isScanFamilyLeg(both) && clusterArity(both)==1 && mintedBindingLeg==""`.**
+**Graefe ROUND 2 (NAK — a FOURTH cell): the isScanFamilyLeg + clusterArity==1 pair still leaked a
+CTE-name leg whose body is an OPAQUE BOX (aggregate/union/sort) — the box is clusterArity==1 AND
+isScanFamilyLeg is cteScope-BLIND (sees the bare scan), so it slipped both. The arity side-check only
+patched the CTE-JOIN (arity≥2) sub-case. ROOT-CAUSE FIX (Graefe + Torvalds both pointed here, principle 10 —
+fix the cause not a downstream observable): a SINGLE cteScope-AWARE predicate `scanFamilyLegCteAware` that
+resolves a CTE-name scan THROUGH cteScope and checks the BODY is a bare scan — covering FULL/aggregate
+boxes, N-way join legs, CTE-backed joins AND CTE-backed opaque boxes in one place. clusterArity==1 DROPPED
+(subsumed). Final predicate: `JoinInner && !enclosed && scanFamilyLegCteAware(both) && mintedBindingLeg==""`.
+Pin added: cte_backed_aggregate_leg_stays_poison. FOUR real regressions found across this one gate change's
+review (FULL-box leak, dup-alias silent-wrong, CTE-join, CTE-opaque-box) — a strong four-gate validation.** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
 derivation helper, retires with the nested residuals of P2/P3, not standalone. P2 (buildJoinResultValue:727)
 = (i) 2-way EXISTS-in-ON RETIRABLE-NOW, (ii) enclosure declines lift atomically at S4 (circular, the
 forceOrdinalSpike certificate models it). P3 (buildUnnestResultValue:1673) = BLOCKED on W5
