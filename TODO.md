@@ -1678,7 +1678,24 @@ do NOT need name binding (independent-legs materialized joins).** Pinned: TestFD
 (EXPLAIN asserts the SARG'd `[=]` index scan, not the cross-product; + correct rows) — trips if a future
 producer-retirement re-ordinalizes this shape and drops the index (the reverted commit-A wall).
 
-### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE — CHARACTERIZED with controls (2026-07-10)
+### [x] query-engine (PRE-EXISTING): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE — FIXED 2026-07-10 (after the scope-leak keystone unblocked it)
+**FIXED.** A CORRELATED EXISTS whose inner is a non-grouped aggregate is unconditionally TRUE (the subquery
+always yields one row). Root cause: buildCorrelatedExists rebuilds the correlated inner from FROM+WHERE and
+DROPS the SELECT list (correct for `SELECT 1`), killing the aggregate that forces one-row cardinality — so
+the plan was byte-identical to `EXISTS(SELECT 1 …)` and tested raw row-existence. Fix (BuildExists,
+logical_predicate.go): when the dropped SELECT is a non-grouped aggregate with no GROUP BY / HAVING / LIMIT 0
+/ positive OFFSET (`queryInnerIsUnconditionalOneRow`), wrap the rebuilt inner in a trivial COUNT(*), applying
+the correlation BELOW the aggregate (else the semi-join applies it above → always-false) and DECLINING when
+the predicate is mixed/outer-only. This is the SAME fix reverted at 5d4ff3711 (codex 3 P1s), now sound
+because: P1#1 LIMIT/OFFSET guarded; P1#2 (nested-scope misclassification) fixed AT THE SOURCE by the
+aggregate-detection scope-leak KEYSTONE above (harvestAggregates no longer leaks a nested aggregate into the
+detector's sq.aggCols); P1#3 mixed-predicate declines. Pinned: `exists_over_aggregate_fdb_test.go` — count/
+max/sum + NOT-EXISTS + PROJECTED all-true, grouped/uncorrelated/plain controls, and all three codex shapes
+(codex_nested_scope_correct=[1], codex_limit_zero_declines, codex_mixed_predicate_declines). Full suite 55/55.
+Query-engine/front-end → four-gate (in flight).
+
+<details><summary>original characterization (kept for the audit trail)</summary>
+
 An EXISTS whose inner SELECT is a **NON-GROUPED** AGGREGATE is ALWAYS TRUE: a non-grouped
 `COUNT(*)`/`MAX(...)`/`SUM(...)` yields EXACTLY ONE row even over an empty (post-WHERE) input (`COUNT`→0,
 `MAX`→NULL), so the existential is satisfied for every outer row. Java 4.12.11.0 keeps all outer rows; Go
@@ -1725,6 +1742,10 @@ the aggregate) fixed the base WHERE/NOT-EXISTS cases + all controls, but **codex
 **CORRECT SEQUENCING (the proper gated slice):** (a) fix the aggregate-detection SCOPE LEAK FIRST (the booked
 projected-42803 below — the SAME bug) so the detector can trust the query-scope aggregate set; (b) then the
 cardinality fix, guarding LIMIT/OFFSET (#1) + splitting mixed predicates (#3) + constant-folding (P2). Four-gate.
+[This sequencing was followed: the keystone landed first, then the cardinality fix — both fixed above.
+P1#3 handled by DECLINING the mixed/outer-only case rather than splitting; P2 (COUNT(*) vs constant-fold) is
+an acceptable follow-on — the COUNT(*) plan is correct, just not minimal.]
+</details>
 
 ### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` → `3e51a55e6` → interface-arm fix), scalar + EXISTS + IN all closed
 **FIXED.** `harvestAggregates` (select_parser.go) walked a projected expression's tree promoting aggregates

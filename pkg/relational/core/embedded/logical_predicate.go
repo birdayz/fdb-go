@@ -5259,6 +5259,43 @@ func (p *existsSubqueryPlanner) mintSubqueryAlias() values.CorrelationIdentifier
 	return mintDistinctIdentifier(p.visibleScopeNames(), values.UniqueCorrelationIdentifier)
 }
 
+// queryInnerIsUnconditionalOneRow reports whether an EXISTS subquery body is a
+// NON-GROUPED aggregate that ALWAYS produces EXACTLY ONE row — so EXISTS over it
+// is unconditionally TRUE. A non-grouped `COUNT(*)`/`MAX`/`SUM` yields one row
+// even over an empty (post-WHERE) input (COUNT->0, MAX/SUM->NULL). Excluded:
+//   - GROUP BY: a grouped aggregate emits ZERO rows over an empty group.
+//   - HAVING: can empty the single group.
+//   - LIMIT 0 / positive OFFSET: eliminates the single row.
+//
+// This matters only on the correlated fallback (buildCorrelatedExists), which
+// rebuilds the inner from FROM+WHERE and DROPS the SELECT list — correct for
+// `SELECT 1`, but it drops the cardinality-forcing aggregate, so the semi-join
+// wrongly tests row EXISTENCE in the FROM (Go returned EXISTS=false where the
+// correlated subset was empty; Java keeps every outer row). sq.countStar /
+// sq.aggCols reflect only THIS query's SELECT-list aggregates now that
+// harvestAggregates stops at nested query scopes — a projected/nested
+// EXISTS-of-aggregate no longer leaks into them.
+func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
+	if q == nil {
+		return false
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return false
+	}
+	sq, err := extractFromQueryTerm(body)
+	if err != nil || sq == nil {
+		return false
+	}
+	if len(sq.groupBy) > 0 || sq.havingExpr != nil {
+		return false
+	}
+	if sq.limit == 0 || sq.offset > 0 { // LIMIT 0 / OFFSET n eliminates the single row
+		return false
+	}
+	return sq.countStar || len(sq.aggCols) > 0
+}
+
 func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: nil query context")
@@ -5280,6 +5317,32 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 		innerOp, err = p.buildCorrelatedExists(q)
 		if err != nil {
 			return values.CorrelationIdentifier{}, err
+		}
+		// The dropped SELECT was a non-grouped aggregate → the inner ALWAYS
+		// produces exactly one row → EXISTS is unconditionally TRUE. Restore the
+		// one-row cardinality by wrapping the rebuilt FROM+WHERE inner in a
+		// trivial COUNT(*) aggregate: FirstOrDefault(Agg([])) always yields, so
+		// the semi-join always matches (and NOT EXISTS always fails), mirroring
+		// the non-correlated path whose full inner plan keeps the aggregate. Any
+		// non-grouped aggregate has cardinality 1, so a bare COUNT(*) over the
+		// correlated subset carries the correct semantics regardless of the real
+		// aggregate. The correlation (`e.eref=p.id`) lives in lastJoinPredicate,
+		// which the semi-join lowering applies ABOVE the inner; it MUST go BELOW
+		// the aggregate (whose output has no `e.eref`) — apply it as an inner
+		// filter and clear the join predicate. Only sound when the predicate is
+		// cleanly inner-referencing; a mixed/outer-only predicate
+		// (OuterOnlyJoinConjuncts) carries conjuncts that must stay at the
+		// semi-join level, so DECLINE the wrap there and fall back to the
+		// ordinary path rather than strand an inner ref above the aggregate.
+		if queryInnerIsUnconditionalOneRow(q) &&
+			(p.lastJoinPredicate == nil || !p.lastJoinPredicateOuterOnly) {
+			inner := innerOp
+			if p.lastJoinPredicate != nil {
+				inner = logical.NewFilterWithPredicate(innerOp, p.lastJoinPredicate, "")
+				p.lastJoinPredicate = nil
+				p.lastJoinPredicateOuterOnly = false
+			}
+			innerOp = logical.NewAggregate(inner, nil, []string{"COUNT(*)"}, []string{"__EXISTS_CARD__"}, "")
 		}
 	}
 	if innerOp == nil {
