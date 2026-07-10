@@ -52,6 +52,18 @@ func TestMintDistinctUpper(t *testing.T) {
 		}
 	})
 
+	t.Run("identifier_form_preserves_case_and_skips", func(t *testing.T) {
+		t.Parallel()
+		// The subquery-alias mint (esq/scalar Alias) keeps the identifier's
+		// own case while skipping candidates whose UPPER-cased name a
+		// user-visible SQL name spells: a quoted "Q$3" unnest alias must
+		// never be assigned as an esq.Alias.
+		got := mintDistinctIdentifier(map[string]struct{}{"Q$3": {}}, fake("q$3", "q$4"))
+		if got.Name() != "q$4" {
+			t.Fatalf("mint = %q, want q$4 (case-preserved first non-colliding)", got.Name())
+		}
+	})
+
 	t.Run("production_counter_postcondition", func(t *testing.T) {
 		t.Parallel()
 		// With the real counter, whatever comes out must not be in visible —

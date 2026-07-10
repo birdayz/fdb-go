@@ -24,7 +24,7 @@ import (
 // TestFDB_RFC173_ExistsInnerShadow certs the EXISTS inner-scope SHADOWING
 // semantics (RFC-173 S4 collision-mint sub-slice): when the EXISTS inner FROM
 // re-declares a name that is also an outer FROM leg, the inner qualified ref
-// binds the INNER re-declared source — Java SemanticAnalyzer.
+// binds the INNER re-declared source â Java SemanticAnalyzer.
 // resolveAcrossFragments resolves innermost-fragment-first (standard SQL
 // shadowing). Every expected row set below is the LIVE answer of the
 // 4.12.11.0 Java conformance server on this exact fixture (RunWithSetup
@@ -35,15 +35,15 @@ import (
 // so its join predicate can never carry the ambiguous SQL name. Pre-mint,
 // the ambiguous name made existsInnerScopeCollidesOuter force the ANCHORED
 // seed, whose rebase reinterpreted the inner-bound ref as an OUTER-leg read
-// and outer-routed it per row — wrong rows on the shared surface (three-way
+// and outer-routed it per row â wrong rows on the shared surface (three-way
 // discriminating dataset: inner-shadow, per-outer-row, and FOD-first-row
 // answers are pairwise distinct on every colliding query here).
 //
 // ST: R1(ID=1,C=100,ARR{10,200}), R2(ID=2,C=5,ARR{20,300}),
 //
-//	R3(ID=3,C=1000,ARR{4})            → min(ST.C) = 5.
+//	R3(ID=3,C=1000,ARR{4})            â min(ST.C) = 5.
 //
-// MA: M1(ID=11,C=11,ARR{10,11,12}), M2(ID=12,C=5,ARR{20,21}) — the R5o
+// MA: M1(ID=11,C=11,ARR{10,11,12}), M2(ID=12,C=5,ARR{20,21}) â the R5o
 // C/ARR values on pks 11/12.
 // OT: (ID=1000,K=50). All pks DISJOINT across record types (they share the
 // store extent keyed by primary key; a colliding pk silently overwrites).
@@ -127,7 +127,7 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 			mkRow(stDesc, 1, 100, 10, 200),
 			mkRow(stDesc, 2, 5, 20, 300),
 			mkRow(stDesc, 3, 1000, 4),
-			mkRow(maDesc, 11, 11, 10, 11, 12), // MA pks 11/12 — disjoint from ST 1..3
+			mkRow(maDesc, 11, 11, 10, 11, 12), // MA pks 11/12 â disjoint from ST 1..3
 			mkRow(maDesc, 12, 5, 20, 21),
 		} {
 			if _, e := store.SaveRecord(m); e != nil {
@@ -184,28 +184,28 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		}
 	}
 
-	// Colliding inner under a lateral unnest — the R5o class on the
-	// discriminating dataset. Java: X > min(ST.C)=5 → {10,200,20,300}; the
-	// element 4 (R3) is EXCLUDED — pins min-C, not exists-nonempty.
+	// Colliding inner under a lateral unnest â the R5o class on the
+	// discriminating dataset. Java: X > min(ST.C)=5 â {10,200,20,300}; the
+	// element 4 (R3) is EXCLUDED â pins min-C, not exists-nonempty.
 	// Pre-mint per-outer-row gave {200,20,300}; FOD-first-row {200,300}.
 	// The placement assertion pins the fix's mechanism: the correlation
-	// conjunct evaluates UNDER the ∃ (a filter on the inner scan below the
+	// conjunct evaluates UNDER the â (a filter on the inner scan below the
 	// FirstOrDefault), not as an outer pre-filter.
 	want("colliding_unnest",
 		`SELECT "X" FROM ST, ST."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < "X")`,
 		[]string{"map[X:10]", "map[X:200]", "map[X:20]", "map[X:300]"},
 		"FirstOrDefault(PredicatesFilter(Scan(ST)")
 
-	// NOT EXISTS polarity twin: X <= min(C)=5 → only R3's element 4. Was
-	// already correct pre-mint (negation forbids the outer-routing hoist) —
+	// NOT EXISTS polarity twin: X <= min(C)=5 â only R3's element 4. Was
+	// already correct pre-mint (negation forbids the outer-routing hoist) â
 	// pinned so the mint can't regress the polarity that worked.
 	want("colliding_unnest_notexists",
 		`SELECT "X" FROM ST, ST."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM ST WHERE ST."C" < "X")`,
 		[]string{"map[X:4]"},
 		"")
 
-	// Plain-table colliding twin (no unnest): every ST×OT pair keeps
-	// (∃ inner C=5 < K=50) → 3 rows. The rename path answered this correctly
+	// Plain-table colliding twin (no unnest): every STÃOT pair keeps
+	// (â inner C=5 < K=50) â 3 rows. The rename path answered this correctly
 	// pre-mint; pinned as rows-invariance for the mint.
 	want("colliding_plain",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < OT."K")`,
@@ -213,7 +213,7 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		"")
 
 	// Non-correlated colliding inner (clean-build path, JoinPredicate nil):
-	// EXISTS(∃C<50 → C=5) → constant true; X>15 keeps {200,20,300}. Rows
+	// EXISTS(âC<50 â C=5) â constant true; X>15 keeps {200,20,300}. Rows
 	// were correct pre-mint (the filter lives INSIDE the self-contained
 	// inner plan); pinned as the mint's no-op boundary.
 	want("colliding_noncorrelated",
@@ -222,66 +222,66 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		"")
 
 	// Non-colliding control (inner ST vs outer {OT, S2}): the mint must not
-	// disturb the already-correct rename path. 1 OT × 3 S2 rows, EXISTS
-	// constant-true per pair → 3 rows.
+	// disturb the already-correct rename path. 1 OT Ã 3 S2 rows, EXISTS
+	// constant-true per pair â 3 rows.
 	want("noncolliding_control",
 		`SELECT OT."K" FROM OT, ST AS "S2" WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < OT."K")`,
 		[]string{"map[OT.K:50]", "map[OT.K:50]", "map[OT.K:50]"},
 		"")
 
-	// NESTED EXISTS with a COLLIDING middle — the nestedOuterScopes
+	// NESTED EXISTS with a COLLIDING middle â the nestedOuterScopes
 	// threading cert: the middle re-declares MA (an outer
 	// leg's name) and the inner-inner correlates on the MIDDLE scan's C
 	// (`ST.C < MA.C`). The nested scope must carry the MINTED correlation so
 	// the inner-inner reference binds the runtime-real middle binding, not
-	// the outer leg. Java: ∃ MA row (C < X ∧ ∃ST: ST.C < C): C=11 qualifies
-	// (ST.C=5<11), C=5 does not (no ST.C<5) → 11 < X → {12,20,21}.
+	// the outer leg. Java: â MA row (C < X â§ âST: ST.C < C): C=11 qualifies
+	// (ST.C=5<11), C=5 does not (no ST.C<5) â 11 < X â {12,20,21}.
 	want("nested_colliding_middle",
 		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM ST WHERE ST."C" < MA."C"))`,
 		[]string{"map[X:12]", "map[X:20]", "map[X:21]"},
 		"")
 
 	// Nested EXISTS, non-colliding middle: middle ST correlates to outer
-	// OT.K, inner-inner to middle ST.C. Java: ∃ST (C<50 ∧ ∃MA: MA.C<C):
-	// only C=5 passes C<50, and no MA.C<5 → EXISTS false → 0 rows.
+	// OT.K, inner-inner to middle ST.C. Java: âST (C<50 â§ âMA: MA.C<C):
+	// only C=5 passes C<50, and no MA.C<5 â EXISTS false â 0 rows.
 	want("nested_noncolliding_middle",
 		`SELECT OT."K" FROM OT WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < OT."K" AND EXISTS (SELECT 1 FROM MA WHERE MA."C" < ST."C"))`,
 		nil,
 		"")
 
-	// NOT EXISTS AROUND the nested colliding pair — a review-battery harvest:
+	// NOT EXISTS AROUND the nested colliding pair â a review-battery harvest:
 	// this composition was ALSO wrong pre-mint (returned [] where the
 	// complement of the positive answer is due). Java live: all 5 elements
 	// minus {12,20,21} = {10,11}. The simple NOT-EXISTS twin above was
-	// correct pre-mint; this nested composition was not — polarity
+	// correct pre-mint; this nested composition was not â polarity
 	// correctness was twin-only until the mint.
 	want("notexists_around_nested_colliding",
 		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM ST WHERE ST."C" < MA."C"))`,
 		[]string{"map[X:10]", "map[X:11]"},
 		"")
 
-	// Nested colliding middle where the inner-inner correlates on ID — a
+	// Nested colliding middle where the inner-inner correlates on ID â a
 	// column the OUTER leg also has (the shared-column axis from the review
 	// battery). Java live: the inner-inner is constant-true on this data
-	// (∃ST.ID<MA.ID+10 always), so the condition reduces to ∃MA.C<X → X>5 →
+	// (âST.ID<MA.ID+10 always), so the condition reduces to âMA.C<X â X>5 â
 	// all 5. Pre-mint this answered {12,20,21} (per-outer-row).
 	want("nested_colliding_shared_id_col",
 		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM ST WHERE ST."ID" < MA."ID" + 10))`,
 		[]string{"map[X:10]", "map[X:11]", "map[X:12]", "map[X:20]", "map[X:21]"},
 		"")
 
-	// An outer leg legally QUOTED as "Q$44" — the alias spelling the mint's
+	// An outer leg legally QUOTED as "Q$44" â the alias spelling the mint's
 	// own namespace (the mint-collision surface; mintDistinctUpper skips a
 	// colliding candidate, pinned at unit level in mint_distinct_test.go).
-	// Java live: ∃OT.K=50 > C holds only for the C=5 row → [5].
+	// Java live: âOT.K=50 > C holds only for the C=5 row â [5].
 	want("qdollar_quoted_outer_alias",
 		`SELECT "Q$44"."C" FROM ST AS "Q$44" WHERE EXISTS (SELECT 1 FROM OT WHERE OT."K" > "Q$44"."C")`,
 		[]string{"map[C:5]"},
 		"")
 
 	// TRIPLE-nested colliding chain (review-battery shape, Java live: 0
-	// rows). The innermost ∃ST.C<M3.C holds only for M3.C=11; level-2 then
-	// needs 11 < MA.C, which no MA row satisfies → outer EXISTS false for
+	// rows). The innermost âST.C<M3.C holds only for M3.C=11; level-2 then
+	// needs 11 < MA.C, which no MA row satisfies â outer EXISTS false for
 	// every element. Pins the mint's composition through THREE scope levels
 	// (each level's nested scope carries the minted middle identity).
 	want("triple_nested_colliding",
@@ -291,12 +291,25 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 
 	// Clean-path colliding inner with NO WHERE at all (the fast-path class
 	// the guard narrowing covers: JoinPredicate nil, plan a bare scan the
-	// rename re-identifies). EXISTS(SELECT 1 FROM ST) is constant-true →
-	// all 5 elements (Java live). Rows are model-invariant here — the
+	// rename re-identifies). EXISTS(SELECT 1 FROM ST) is constant-true â
+	// all 5 elements (Java live). Rows are model-invariant here â the
 	// narrowing flips the SEED, pinned white-box by
 	// TestRFC173_ExistsGuardNarrowing.
 	want("cleanpath_nowhere_colliding",
 		`SELECT "X" FROM ST, ST."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM ST)`,
 		[]string{"map[X:10]", "map[X:200]", "map[X:20]", "map[X:300]", "map[X:4]"},
+		"")
+
+	// The counter-shift sentinel: quoted user aliases spelling the mint
+	// namespace ("Q$1" CTE + "Q$3" unnest alias) around an EXISTS. Every
+	// subquery-level identifier (the inner mint AND esq.Alias via
+	// mintSubqueryAlias) skips user-visible names, so this must PLAN and
+	// answer regardless of the process-global counter's state. Java live:
+	// elements X with ∃OT.K=50 > X → {10,20,4}. Pre-fix, a counter
+	// alignment assigned "Q$3"-colliding identities and a VALID query
+	// failed to plan (best-expression error) — history-dependent.
+	want("qdollar_cte_counter_shift",
+		`WITH "Q$1" AS (SELECT MA."ID" FROM MA) SELECT "Q$3" FROM ST, ST."ARR" AS "Q$3" WHERE EXISTS (SELECT 1 FROM OT WHERE OT."K" > "Q$3")`,
+		[]string{"map[Q$3:10]", "map[Q$3:20]", "map[Q$3:4]"},
 		"")
 }

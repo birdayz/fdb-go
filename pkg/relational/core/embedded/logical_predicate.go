@@ -5209,6 +5209,40 @@ type existsSubqueryPlanner struct {
 	lastJoinPredicate          predicates.QueryPredicate
 }
 
+// visibleScopeNames is the upper-cased set of every user-visible SQL name a
+// subquery-level mint must avoid: each outer scope's Alias AND
+// CorrelationName (the latter carries enclosing mints and dup-alias binding
+// ids) plus the CTE registry's names. An ALIASED outer CTE leg is dropped
+// from p.outerScopes by addSrc's silent resolve-failure arm and so escapes
+// this set — booked with the outer-CTE-leg scope-registration gap (loud
+// today: correlated refs to such legs die 42703).
+func (p *existsSubqueryPlanner) visibleScopeNames() map[string]struct{} {
+	visible := map[string]struct{}{}
+	for _, src := range p.outerScopes {
+		if n := src.Alias.Name(); n != "" {
+			visible[strings.ToUpper(n)] = struct{}{}
+		}
+		if src.CorrelationName != "" {
+			visible[strings.ToUpper(src.CorrelationName)] = struct{}{}
+		}
+	}
+	for name := range p.cteScopes {
+		visible[strings.ToUpper(name)] = struct{}{}
+	}
+	return visible
+}
+
+// mintSubqueryAlias mints the subquery binding identity (the esq / scalar /
+// correlated-scalar Alias), skipping candidates a user-visible SQL name
+// already spells. Without the skip, a quoted alias like `"Q$3"` regresses a
+// VALID query to a loud planner failure whenever the process-global counter
+// lands on it — and any counter-consuming change (e.g. the inner-correlation
+// mint's own skip) SHIFTS which queries hit the alignment, so the failure
+// set depends on planning history.
+func (p *existsSubqueryPlanner) mintSubqueryAlias() values.CorrelationIdentifier {
+	return mintDistinctIdentifier(p.visibleScopeNames(), values.UniqueCorrelationIdentifier)
+}
+
 func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: nil query context")
@@ -5234,7 +5268,7 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	if innerOp == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: inner query could not be planned")
 	}
-	alias := values.UniqueCorrelationIdentifier()
+	alias := p.mintSubqueryAlias()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
 		Alias:         alias,
 		Plan:          innerOp,
@@ -5533,20 +5567,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		// booked with the outer-CTE-leg scope-registration fix (the same
 		// family as the derived-table registration above). esq.Alias
 		// values (existsInnerCorrelation's rename targets) are a distinct
-		// generated namespace off the SAME strictly-increasing counter, so
-		// a mint can never equal one — no entry needed for them.
-		visible := map[string]struct{}{strings.ToUpper(innerAlias): {}}
-		for _, src := range p.outerScopes {
-			if n := src.Alias.Name(); n != "" {
-				visible[strings.ToUpper(n)] = struct{}{}
-			}
-			if src.CorrelationName != "" {
-				visible[strings.ToUpper(src.CorrelationName)] = struct{}{}
-			}
-		}
-		for name := range p.cteScopes {
-			visible[strings.ToUpper(name)] = struct{}{}
-		}
+		// generated namespace off the SAME strictly-increasing counter —
+		// and mintSubqueryAlias skips user-visible names for them too — so
+		// a mint can never equal one; no entry needed for them.
+		visible := p.visibleScopeNames()
+		visible[strings.ToUpper(innerAlias)] = struct{}{}
 		mintedInnerCorr = mintDistinctUpper(visible, values.UniqueCorrelationIdentifier)
 	}
 	innerCorrName := aliasID.Name()
@@ -5991,25 +6016,33 @@ func splitConjunctsByOuterRef(pred predicates.QueryPredicate, outerAliases, inne
 	return andOf(outer), andOf(inner)
 }
 
-// mintDistinctUpper mints a fresh upper-cased correlation name that is
-// DISTINCT from every name in visible. A quoted SQL alias can legally
-// spell `"Q$N"`, so a raw `UniqueCorrelationIdentifier` could equal a
-// user alias whenever the process-global counter happens to align —
-// silently rebinding that alias's references to the minted source, with
-// results depending on prior planning history. The retry loop makes the
-// outcome history-INDEPENDENT: a colliding candidate is skipped (the
-// counter advances), and any non-colliding candidate yields identical
-// semantics regardless of its numeric suffix. Terminates because visible
-// is finite and the counter is strictly increasing. next is injected for
-// deterministic unit testing; production passes
-// values.UniqueCorrelationIdentifier.
-func mintDistinctUpper(visible map[string]struct{}, next func() values.CorrelationIdentifier) string {
+// mintDistinctIdentifier mints a fresh CorrelationIdentifier whose
+// UPPER-CASED name is DISTINCT from every name in visible. A quoted SQL
+// alias can legally spell `"Q$N"`, so a raw `UniqueCorrelationIdentifier`
+// could equal a user-visible name whenever the process-global counter
+// happens to align — capturing that name's references (the inner-
+// correlation mint) or colliding a subquery binding with a user alias at
+// the translator (esq/scalar Alias — observed as a loud planner failure
+// on a valid query). The retry loop makes the outcome history-
+// INDEPENDENT: a colliding candidate is skipped (the counter advances),
+// and any non-colliding candidate yields identical semantics regardless
+// of its numeric suffix. Terminates because visible is finite and the
+// counter is strictly increasing. next is injected for deterministic
+// unit testing; production passes values.UniqueCorrelationIdentifier.
+func mintDistinctIdentifier(visible map[string]struct{}, next func() values.CorrelationIdentifier) values.CorrelationIdentifier {
 	for {
-		candidate := strings.ToUpper(next().Name())
-		if _, taken := visible[candidate]; !taken {
+		candidate := next()
+		if _, taken := visible[strings.ToUpper(candidate.Name())]; !taken {
 			return candidate
 		}
 	}
+}
+
+// mintDistinctUpper is mintDistinctIdentifier's upper-cased-name form —
+// the inner-correlation mint consumes the NAME (scope CorrelationName,
+// scan alias, qualifyBareFields), which every consumer upper-cases.
+func mintDistinctUpper(visible map[string]struct{}, next func() values.CorrelationIdentifier) string {
+	return strings.ToUpper(mintDistinctIdentifier(visible, next).Name())
 }
 
 // qualifyBareFields walks a predicate tree and prepends qualifier+"."
@@ -6089,7 +6122,7 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	// on a CTE name (e.g. SELECT MIN(v) FROM high) would be translated
 	// as a table scan on a nonexistent table.
 	innerOp = p.wrapWithOuterCTEs(innerOp)
-	alias := values.UniqueCorrelationIdentifier()
+	alias := p.mintSubqueryAlias()
 	p.scalarSubqueries = append(p.scalarSubqueries, logical.ScalarSubquery{
 		Alias: alias,
 		Plan:  innerOp,
@@ -6869,7 +6902,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 	}
 
-	alias := values.UniqueCorrelationIdentifier()
+	alias := p.mintSubqueryAlias()
 	p.correlatedScalarSubqueries = append(p.correlatedScalarSubqueries, logical.CorrelatedScalarSubquery{
 		Alias:        alias,
 		InnerPlan:    innerOp,
