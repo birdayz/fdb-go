@@ -2338,6 +2338,20 @@ func existInnerIsScanSafe(p plans.RecordQueryPlan) bool {
 			p = pl.GetInner()
 		case *plans.RecordQueryFetchFromPartialRecordPlan:
 			p = pl.GetInner()
+		case *plans.RecordQueryProjectionPlan:
+			// Row-count-preserving (a per-row map, MapPipelinedCursor
+			// mechanics): it can neither emit a row over an empty inner nor
+			// drop one, so it is outside this guard's hazard set. An
+			// UNCORRELATED `EXISTS (SELECT 1 FROM t)` plans exactly as
+			// Projection(literal 1, Scan) — without this peel the P2
+			// born-flat N-way seed declined a shape the pre-P2 name-model
+			// 2+1 route planned (P4b/diag regression).
+			p = pl.GetInner()
+		case *plans.RecordQueryTypeFilterPlan:
+			// The table-scan companion (restricts the shared extent to the
+			// table's record type) — TypeFilter(Scan) IS the table scan.
+			// Filters only; cannot emit a row over an empty inner.
+			p = pl.GetInner()
 		default:
 			// NOT peeled: FirstOrDefault / DefaultOnEmpty emit a row over an
 			// EMPTY inner → would flip EXISTS toward always-true (the same

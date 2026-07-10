@@ -529,6 +529,21 @@ validation gate.
     red-first both directions; live-Java-classified corpus entry, message drift) + the two
     review-condition comment fixes. All four gates ACK'd the final HEAD.
 
+  - [~] **P2 existential-flatten translation seed** (RFC "P2 EXISTENTIAL-FLATTEN TRANSLATION SEED",
+    Graefe design-ACK + 4 conditions). **Commit A LANDED (N-way WHERE-EXISTS gated seed):**
+    `translateJoinWithExists` retired its arity-exactly-2 narrowing and delegates gated flattens to the
+    ONE gated seed construction (`translateGatheredInnerCluster`, extended with the trailing-existential
+    attach loop, esq-preds attach-before-bake, `extraPreds`); a comma/N-way `FROM …, … WHERE EXISTS` is
+    born `[ForEach×N, Existential]` ordinal instead of the anchored 2+1 the rewriter had to flatten. C3
+    white-box pin flipped (nested-cluster gates N-way). A verify-first-caught corrective (the peel
+    regression): `existInnerIsScanSafe` widened to peel Projection/TypeFilter (an uncorrelated
+    `EXISTS(SELECT 1 FROM t)` plans as `Projection(1, TypeFilter(Scan))`) — the full suite's P4b pin
+    caught it, not the slice's own (correlated-inner) pins; live-Java-grounded flip + safety-pole pin.
+    Pins: `rfc173_p2_nway_flatten_fdb_test.go` (comma 3/4-way EXISTS/NOT/projected/dup-col + H4
+    multi-EXISTS fail-closed + the uncorrelated-peel {nonempty→18, empty→0}), P4b flipped to 18 rows.
+    **Commit B PENDING (EXISTS-in-ON via the shared builder):** route `translateJoin`'s
+    `OnExistsSubqueries` through the same core (gate-internal ON-rider entry point per C1; the multi-EXISTS
+    reach gap needs the M≥2 fold arm per H4 — build or book). Four-gate on commit A's HEAD first.
   - [ ] **S4 atomic demolition** (LAST — gated on QP-REF-BIND items 1+2+3, the riders, and the
     unnest-residual slice; sequencing ruling banked in the RFC). **Gates now satisfied:** items
     1+2+3 merged (item 3 = #483); rider 2 (aggregate metadata) DONE on feat/rfc173-next; rider 1

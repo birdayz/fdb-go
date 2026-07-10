@@ -438,7 +438,23 @@ func gatherInnerClusterPreds(j *logical.LogicalJoin) []predicates.QueryPredicate
 // the flat N-leg ordinal seed RC, and the union of every nested join's ON
 // predicates with cross-leg conjuncts baked. Legs translate ENCLOSED (their
 // own nested content — derived bodies etc. — is inside this cluster).
-func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoin, legs []clusterLeg) expressions.RelationalExpression {
+//
+// This is the ONE gated seed construction for existential flattens too
+// (RFC-173 P2 design, condition C2): esqs ride the select as existential
+// quantifiers AFTER the ForEach legs (Java's model — the ON/WHERE origin is
+// erased by the fragment merge, QueryVisitor.visitSimpleTable), contributing
+// NO result columns; each esq's correlation predicate is attached BEFORE the
+// bake (H5 — bakeGatedJoinPredicates bakes only legTypes keys, so the esq's
+// inner-alias side stays lazy automatically). extraPreds carries the
+// wrapper's own conjuncts (the WHERE-EXISTS filter's split predicate);
+// input-shape guards (polarity declines, alias-collision narrowing) are the
+// WRAPPERS' job — this core only builds.
+func (t *cascadesTranslator) translateGatheredInnerCluster(
+	j *logical.LogicalJoin,
+	legs []clusterLeg,
+	esqs []logical.ExistsSubquery,
+	extraPreds []predicates.QueryPredicate,
+) expressions.RelationalExpression {
 	// Legs of a GATED parent translate FRESH (S3 fulcrum): a leg's own inner
 	// joins gate independently and SelectMergeRule composes the leg's ordinal
 	// RV into this parent via translateValueCorrelations + the fuse arm —
@@ -471,6 +487,30 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 		}
 	}
 	preds = append(preds, gatherInnerClusterPreds(j)...)
+	preds = append(preds, extraPreds...)
+
+	// Existential quantifiers append AFTER the ForEach legs (the executor
+	// dispatch requires trailing existentials); their correlation predicates
+	// join the pred list BEFORE the bake below (H5). The baked correlation
+	// predicates flow into the existential FlatMap's inner plan as
+	// FrontierPinned references over the merged outer, where the item-2
+	// commit-2 disabled-birth binder binds the outer positionally and the
+	// ordinal existential rebase (W4-left machinery) handles the merged
+	// references — the seed was twice REVERTED before those binders existed
+	// (the 2+1 select's correlated-FlatMap path bound name maps and the
+	// baked refs died loudly).
+	for _, esq := range esqs {
+		subRef := t.translateSubqueryRef(esq.Plan)
+		if subRef == nil {
+			return nil
+		}
+		quantifiers = append(quantifiers, expressions.NamedExistentialQuantifier(esq.Alias, subRef))
+		innerCorrName, joinPred := existsInnerCorrelation(esq)
+		if joinPred != nil {
+			preds = append(preds, joinPred)
+		}
+		sourceAliases = append(sourceAliases, innerCorrName)
+	}
 
 	resultValue, legTypes := t.buildOrdinalJoinResultValue(legs)
 	if resultValue == nil {

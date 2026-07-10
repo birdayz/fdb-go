@@ -4755,7 +4755,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// gated FULL box keep the binary flow below unchanged.
 	if gateDecision.Gated && kind == logical.JoinInner {
 		if legs := t.gatherInnerClusterLegs(j); len(legs) > 2 {
-			return t.translateGatheredInnerCluster(j, legs)
+			return t.translateGatheredInnerCluster(j, legs, nil, nil)
 		}
 	}
 
@@ -4968,41 +4968,38 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		})
 	}
 
-	// RFC-173 QP-REF-BIND item 2, commit 3: the flatten consults the wedge
-	// gate (ONE authority — ordinalWedgeGate; design-ruling condition 4) and,
-	// when the join gates, seeds the baked ordinal RC below instead of the
-	// anchored one. Decided BEFORE leg translation mutates the enclosure flag
-	// (the translateJoin convention). Two flatten-specific narrowings on top
-	// of the shared decision:
-	//   - Arity EXACTLY 2: this arm builds exactly two ForEach legs, and
-	//     buildOrdinalJoinResultValue types them as single-source legs — a
-	//     nested-cluster leg would seed a 2-leg concat whose windows
-	//     disagree with the arity SelectMergeRule's flattening produces.
-	//     The DECLINE is the safety mechanism itself (the historical S2
-	//     drift assert died with the exactly-2 wedge at the S3 fulcrum).
-	//     The N-way flatten rides the gathered-cluster machinery when a
-	//     later slice routes it here.
+	// RFC-173 QP-REF-BIND item 2, commit 3 + the P2 N-way slice: the flatten
+	// consults the wedge gate (ONE authority — ordinalWedgeGateDecide;
+	// design-ruling condition 4) and, when the join gates, delegates to the
+	// ONE gated seed construction (translateGatheredInnerCluster, P2
+	// condition C2) with the existential quantifiers riding the flat select
+	// — [ForEach×N, Existential…], the shape the executor's
+	// implementNWayJoinWithExistential (N≥3) and 2-leg fold (N=2) consume.
+	// Decided BEFORE leg translation mutates the enclosure flag (the
+	// translateJoin convention). The former arity-EXACTLY-2 narrowing
+	// retired with the P2 slice (the N-way seed types every gathered leg by
+	// its own window, so the historical seed-vs-post-flattening drift the
+	// narrowing guarded is structural now). One flatten-specific narrowing
+	// remains on top of the shared decision:
 	//   - No existential-alias collisions: an EXISTS alias colliding with a
-	//     leg alias (or another EXISTS alias) makes the flat select's
+	//     leg BINDING (or another EXISTS alias) makes the flat select's
 	//     correlations indistinguishable — fail toward the name model, the
-	//     gate's unclassifiable direction.
+	//     gate's unclassifiable direction. Keyed on the BINDING correlations
+	//     of ALL gathered legs (P2 H7): the names the gated quantifiers
+	//     actually carry (a later duplicate leg is Q$DUPn, a clustered box
+	//     leg $BOX; display aliases are not quantifier names). A
+	//     minted-binding (duplicate-alias) gated flatten with a
+	//     leg-independent EXISTS is served positionally (the executor's
+	//     identity-FlatMap pass-through propagates the gated outer's own
+	//     positional row), so no dup-leg decline lives here.
 	gateDecision := t.ordinalWedgeGateDecide(j)
 	gatedFlatten := gateDecision.Gated
-	if gatedFlatten && gateDecision.Arity != 2 {
-		gatedFlatten = false
-		gateDecision = wedgeGateDecision{
-			Arity:  gateDecision.Arity,
-			Reason: "existential flatten builds exactly two ForEach legs (nested-cluster leg would drift the seed against post-flattening arity)",
-		}
-	}
+	var legs []clusterLeg
 	if gatedFlatten {
-		// Key the collision namespace on the BINDING correlations — the names
-		// the gated quantifiers actually carry (a later duplicate leg is
-		// Q$DUPn, its display alias shared): an existential alias must not
-		// collide with either.
-		seen := map[string]struct{}{
-			strings.ToUpper(sourceBinding(left)):  {},
-			strings.ToUpper(sourceBinding(right)): {},
+		legs = t.legsOfGatedJoin(j)
+		seen := make(map[string]struct{}, len(legs))
+		for _, leg := range legs {
+			seen[strings.ToUpper(leg.binding)] = struct{}{}
 		}
 		for _, esq := range f.ExistsSubqueries {
 			key := strings.ToUpper(esq.Alias.Name())
@@ -5017,24 +5014,40 @@ func (t *cascadesTranslator) translateJoinWithExists(
 			seen[key] = struct{}{}
 		}
 	}
-	// Record the NARROWED decision — the map is the one truth downstream
-	// consumers (the WHERE-conjunct baking arm today, commit 4's enclosure
-	// lift) read, and a Gated record over an ANCHORED seed would misroute
-	// them. The record always matches the seed actually built below.
+	// Record the NARROWED decision (P2 H6: only the arity-2 narrowing is
+	// gone; a residual narrowing still rewrites the record) — the map is the
+	// one truth downstream consumers (the WHERE-conjunct baking arm, the
+	// enclosure lift) read, and a Gated record over an ANCHORED seed would
+	// misroute them. The record always matches the seed actually built below.
 	if t.wedgeGate == nil {
 		t.wedgeGate = make(map[*logical.LogicalJoin]wedgeGateDecision)
 	}
 	t.wedgeGate[j] = gateDecision
 
+	if gatedFlatten {
+		// WHERE conjuncts are this wrapper's input shaping; the shared core
+		// owns the construction (root ON + nested ONs + these + the esq
+		// correlation predicates, attached before the bake — P2 H5).
+		var wherePreds []predicates.QueryPredicate
+		if f.Predicate != nil {
+			if and, ok := f.Predicate.(*predicates.AndPredicate); ok {
+				wherePreds = append(wherePreds, and.SubPredicates...)
+			} else {
+				wherePreds = append(wherePreds, f.Predicate)
+			}
+		}
+		return t.translateGatheredInnerCluster(j, legs, f.ExistsSubqueries, wherePreds)
+	}
+
+	// ===== the NAME-MODEL flatten (the narrowed / ungated residual) =====
 	// Flatten join + EXISTS into a single SelectExpression
 	// with ForEach(left), ForEach(right), and Existential quantifiers.
 	// RFC-173 Slice 2 (pre-commit-3 residual): a NON-gated flat select is a
 	// name-model merge-absorbing parent, so its ForEach legs are ENCLOSED — a
-	// nested join there must not gate ordinal. Legs of a GATED flatten
-	// translate FRESH (the translateJoin gated-parent convention: their own
-	// inner joins gate independently).
+	// nested join there must not gate ordinal. (Legs of a GATED flatten
+	// translate FRESH inside translateGatheredInnerCluster above.)
 	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = !gatedFlatten
+	t.inInnerCluster = true
 	leftRef := t.translateRef(left)
 	if leftRef == nil {
 		t.inInnerCluster = prevEnclosure
@@ -5048,25 +5061,18 @@ func (t *cascadesTranslator) translateJoinWithExists(
 
 	leftAlias := sourceAlias(left)
 	rightAlias := sourceAlias(right)
-	// RFC-173 QP-REF-BIND item 1: a GATED flatten's quantifiers and source
-	// aliases carry the BINDING correlation (== the alias for every
-	// non-duplicate leg; the parser-minted id for a later duplicate) —
-	// matching the ordinal seed RC's QOVs and the executor's span windows,
-	// exactly as translateJoin's gated binary arm. Without this the dup
-	// flatten seeded [A, Q$DUP1] while naming BOTH quantifiers [A, A]; the
-	// step-1 NLJ then adapted the second leg's row against the first leg's
-	// type and died loudly in the leg adapter. The NAME-MODEL arm keeps the
-	// DISPLAY aliases (its anchored RC and merged-row keys are
-	// alias-qualified).
-	if gatedFlatten {
-		leftAlias = legBinding(left)
-		rightAlias = legBinding(right)
-	} else if leg := mintedBindingLeg(left, right); leg != "" {
+	// The NAME-MODEL arm keeps the DISPLAY aliases (its anchored RC and
+	// merged-row keys are alias-qualified); the gated arm's binding-keyed
+	// quantifier naming lives in translateGatheredInnerCluster (RFC-173
+	// QP-REF-BIND item 1). mintedBindingLeg recurses the WHOLE leg subtrees
+	// (Children()), so a dup minted anywhere in a would-be N-way cluster is
+	// caught here too (P2 H7).
+	if leg := mintedBindingLeg(left, right); leg != "" {
 		// A minted-binding leg while the flatten narrowed off the gate
-		// (arity ≠ 2, existential-alias collision): the name-model flat
-		// select keys legs by display alias and would serve silent NULLs
-		// for the binding's columns. Decline LOUDLY (correct-or-loud) —
-		// "fail toward the name model" is not a safe direction for a
+		// (existential-alias collision, ungated cluster): the name-model
+		// flat select keys legs by display alias and would serve silent
+		// NULLs for the binding's columns. Decline LOUDLY (correct-or-loud)
+		// — "fail toward the name model" is not a safe direction for a
 		// duplicate-alias query.
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"duplicate FROM alias: leg %s requires the gated existential flatten; narrowed to the name model (%s)",
@@ -5097,13 +5103,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 
-	// Add EXISTS subqueries as existential quantifiers. RFC-173 S4 commit 4: a
-	// minted-binding (duplicate-alias) gated flatten with a LEG-INDEPENDENT EXISTS
-	// no longer declines here — the executor's identity-FlatMap pass-through now
-	// propagates the gated outer's own positional row (keyed on the outer's
-	// ordinal seed via downstreamLegWindows, not the exists inner's probe), so
-	// the minted-dup upper (QOV(Q$DUPn)) resolves positionally instead of serving
-	// NULLs off a name Datum that never had the binding-keyed column.
+	// Add EXISTS subqueries as existential quantifiers.
 	sourceAliases := []string{leftAlias, rightAlias}
 	for _, esq := range f.ExistsSubqueries {
 		subRef := t.translateSubqueryRef(esq.Plan)
@@ -5120,33 +5120,12 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	}
 
 	// The RV uses DECLARATION order (design ruling I2: Java assembles the
-	// result value in source order regardless of join type).
-	//
-	// RFC-173 QP-REF-BIND item 2, commit 3: a GATED flatten seeds the baked
-	// ordinal RC over its two ForEach legs — existential quantifiers
-	// contribute NO columns (Java's model: existentials carry no output) —
-	// and bakes the COMBINED predicate list (join ON + WHERE conjuncts + the
-	// EXISTS correlation predicates). The baked correlation predicates are
-	// what flow into the existential FlatMap's inner plan as FrontierPinned
-	// references over the merged outer, where the item-2 commit-2
-	// disabled-birth binder binds the outer positionally and the ordinal
-	// existential rebase (W4-left machinery) handles the merged references.
-	// This retires the W4-left F2 scope note: the ordinal seed here was
-	// twice REVERTED because those executor binders did not exist — the 2+1
-	// select's correlated-FlatMap path bound name maps and the seed's baked
-	// refs died loudly (E1). Commit 2 landed the binders; E2 validated this
-	// exact seed end-to-end.
-	var resultValue values.Value
-	if gatedFlatten {
-		var legTypes map[string]bakeLegType
-		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{
-			clusterLegOf(j.Left, false),
-			clusterLegOf(j.Right, false),
-		})
-		allPreds = bakeGatedJoinPredicates(allPreds, legTypes)
-	} else {
-		resultValue = t.buildJoinResultValue(j.Left, j.Right, sourceAlias(j.Left), sourceAlias(j.Right))
-	}
+	// result value in source order regardless of join type). The gated
+	// twin's baked ordinal RC + predicate bake live in
+	// translateGatheredInnerCluster (the item-2 commit-3 seed, generalized
+	// N-way by the P2 slice — its executor-binder history is documented
+	// there and in the RFC).
+	resultValue := t.buildJoinResultValue(j.Left, j.Right, sourceAlias(j.Left), sourceAlias(j.Right))
 	if resultValue == nil {
 		// A leg's columns are not derivable (only the catalog-free nil-md path;
 		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
