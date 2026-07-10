@@ -416,11 +416,11 @@ end-to-end. `SELECT *` over duplicates answers with Java's positional duplicate-
 `dup_from_alias_select_star`, `dup_from_alias_cte_star` all flipped (annotations deleted).
 Remaining marked corners are message-drift only (undefined table under a dup alias stays 42F01;
 the generated-aggregate quoted reference; the `…, a AS b` 42712-vs-42F01 lazy quirk) and the
-cross-scope-shadowed correlated fallthrough (`SELECT p.v FROM p WHERE EXISTS(… q AS p WHERE
-p.v=…)`) — resolution falls through (Java-aligned M1), but EMITTING a QOV bound to the inner
-leg's quantifier awaits cross-scope binding ids; it declines LOUDLY (never wrong rows) via one
-of two mechanisms depending on the inner scope's arity: a MULTI-source inner scope trips the
-plan-time `CorrelatedShadowError` (42703) in `expr.ResolveIdentifier`, while a SINGLE-source
-inner scope short-circuits the resolver's `isLocal` guard and declines one step later at the
-executor's ordinal-resolution guard (field unresolvable in the inner row). Both are pinned by
+MULTI-source-inner half of the cross-scope-shadowed correlated fallthrough: a multi-source inner
+scope still trips the plan-time `CorrelatedShadowError` (42703) in `expr.ResolveIdentifier`
+(cross-scope binding ids for multi-source inners remain the booked follow-on). The SINGLE-source
+half (`SELECT p.v FROM p WHERE EXISTS(… q AS p WHERE p.v=…)`) CLOSED with the RFC-173 S4
+collision mint: the inner source is born under a unique CorrelationName, so the resolver's
+`isLocal` guard no longer swallows the parent hit — the fallthrough emits QOV(outer) and the
+query ANSWERS with Java's live-verified semantics. Both variants are pinned by
 `TestFDB_RFC173W4Left_DuplicateFromAliases`.

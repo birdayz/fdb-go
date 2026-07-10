@@ -288,6 +288,19 @@ validation gate.
     resolver fix once scoped). Discovered during the Slice-2b de-risk (the would-be x-column conjunct
     `WHERE X.K = v` is unreachable via this gap; the ⊆-outerLegs gate needs no special handling for it —
     an x-ref flows through the keep-rebase branch once the resolver closes).
+  - [ ] **BOOKED (EXISTS-composition commit-1 follow-ups, RFC-173 S4 collision mint — see the RFC entry):**
+    (a) **mint-per-leg for MULTI-SOURCE colliding EXISTS inners** — `EXISTS (SELECT 1 FROM OT OI, ST WHERE
+    ST.c < OT.k)` with outer leg ST still answers per-outer-row (live Java: 3 rows, inner-shadow); commit 3
+    of the slice lands the interim LOUD 0A000 decline, mint-per-leg closes the conformance gap for real.
+    (b) **buildCorrelatedScalar sibling mint** — the correlated-scalar fallback shares buildCorrelatedExists'
+    walk/qualify structure and therefore the same capture class; needs its own three-way-discriminating probe
+    first, then the same mint. (c) **Java's array-constructor literal** (`INSERT … VALUES (1, 100, [10, 200])`,
+    RelationalParser `arrayConstructor`) → Go 0A000 "unsupported expression atom ArrayConstructorExpressionAtom"
+    — reach gap found by the live-Java probe; Java populates array columns via SQL, Go cannot. (d) **Case-2
+    nested-EXISTS hoist dangles a middle-ref** — `EXISTS(SELECT 1 FROM M WHERE EXISTS(SELECT 1 FROM N WHERE
+    N.b = M.a))` (middle has ONLY the nested EXISTS) hoists the inner plan and drops M entirely, leaving
+    `M.a` unbound — pre-existing, unchanged by the mint (minted it resolves loud-deterministic instead of
+    accidentally binding a same-named outer); needs its own probe + decline-or-fix.
   - [x] **W3 the coupled 2-way flip — DONE, ALL ACKs.** W3a-1/W3a-2 (36297a253, fd07e2f49,
     140799069, d98bbac91, 139c6cb94); **W3b-1 LIVE FLIP** (1aca8addd + 47d3b48bb RFC log +
     00c7a206e Graefe notes + 5ead4e149 Torvalds nits): Graefe ACK (cross-leg baking BLESSED as the

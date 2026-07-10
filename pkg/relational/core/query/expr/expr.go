@@ -239,10 +239,12 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		// needsQualification is already true, so a shadowing local leg that
 		// LACKS the column is caught here at PLAN time (CorrelatedShadowError →
 		// 42703). The SINGLE-source-inner shadow (`… EXISTS (SELECT 1 FROM q AS
-		// p …)`) short-circuits above via isLocal (one source == its own
-		// correlation), so it declines one step later at the executor's
-		// ordinal-resolution guard — a same-loud, never-wrong-rows catch. Both
-		// variants are pinned by TestFDB_RFC173W4Left_DuplicateFromAliases.
+		// p …)`) no longer reaches either arm: the RFC-173 collision mint gives
+		// a single-table correlated-EXISTS inner a unique CorrelationName, so
+		// the parent hit is NOT isLocal, no local corrName matches src's, and
+		// the fallthrough EMITS QOV(parent) normally — the query ANSWERS with
+		// Java's semantics (amendment (a), live-verified). Both variants are
+		// pinned by TestFDB_RFC173W4Left_DuplicateFromAliases.
 		for _, localSrc := range r.scope.Sources() {
 			if localSrc.CorrelationName != src.CorrelationName {
 				continue

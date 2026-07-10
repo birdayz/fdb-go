@@ -2126,16 +2126,23 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	t.Run("R5o EXISTS inner scans a table aliased the same as an outer leg (scope collision)", func(t *testing.T) {
-		// The existsInnerScopeCollidesOuter gate: the EXISTS inner scans MA — the
-		// SAME table (and raw alias) as the outer leg MA. A leg-relative outer ref
-		// `QOV(MA).C` would be captured by existsInnerCorrelation's inner-alias
-		// rename (MA → unique), so the gate forces the ANCHORED seed (the
-		// name-model rebase moves the ref to the merged corr's qualified key,
-		// which the rename does not touch). The inner MA is non-empty; the outer
-		// `MA.C < X` keeps MA1's 12 and MA2's {20,21}. → {12,20,21}.
+	t.Run("R5o EXISTS inner re-declares an outer leg's name (inner-shadow semantics)", func(t *testing.T) {
+		// The inner FROM re-declares MA, SHADOWING the outer leg — `MA."C"`
+		// binds the INNER re-declared MA (Java SemanticAnalyzer.
+		// resolveAcrossFragments: innermost fragment first; LIVE-verified on
+		// the 4.12.11.0 conformance server, which answers ALL FIVE elements).
+		// EXISTS is true iff ANY inner MA row has C < X, i.e. X > min(C) =
+		// min(11,5) = 5 — every element qualifies. The collision mint
+		// (buildCorrelatedExists) makes this structural: the inner scan is
+		// BORN under a unique correlation, so the join predicate cannot carry
+		// the ambiguous name MA. This pin previously recorded the pre-mint
+		// divergence ({12,20,21} — the name-model rebase read the OUTER leg's
+		// C per row, and positive-polarity outer-routing pre-filtered), which
+		// disagreed with Java AND with Go's own NOT-EXISTS handling of the
+		// same name (negation forbids the hoist, so the conjunct stayed under
+		// the ∃ and bound inner).
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X")`, []string{
-			"X=12", "X=20", "X=21",
+			"X=10", "X=11", "X=12", "X=20", "X=21",
 		})
 	})
 

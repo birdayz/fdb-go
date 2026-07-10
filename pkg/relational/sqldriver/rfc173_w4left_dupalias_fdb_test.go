@@ -245,22 +245,25 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	reject(t, "SELECT * FROM nosuch AS a, p AS a", "42F01")
 
 	// The correlated-shadow qualified fallthrough (design-ruling amendment
-	// (a), live-verified: Java ANSWERS): RESOLUTION falls through (M1), but the
-	// SHADOWED variant — inner alias == outer alias — cannot yet be EMITTED
-	// (QOV(P) would bind the inner leg's quantifier; cross-scope binding ids
-	// are the booked follow-on). It declines LOUDLY: NEVER wrong rows. Two
-	// decline mechanisms depending on inner arity, both pinned here:
+	// (a), live-verified: Java ANSWERS): RESOLUTION falls through (M1) to the
+	// outer p when the inner `q AS p` lacks the column. Two mechanisms
+	// depending on inner arity, both pinned here:
 	//
-	//  (1) SINGLE inner source (`q AS p`): the resolver's isLocal short-circuit
-	//      leaves needsQualification false, so it declines one step later at the
-	//      executor's ordinal-resolution guard — the field is unresolvable in
-	//      the inner row. Loud, never wrong rows.
+	//  (1) SINGLE inner source (`q AS p`): ANSWERS — Java parity. The RFC-173
+	//      collision mint gives a single-table correlated-EXISTS inner a
+	//      unique CorrelationName, so the resolver's isLocal short-circuit no
+	//      longer swallows the parent hit: the fallthrough emits QOV(P)
+	//      against the OUTER leg's binding and the query answers p.v=10,
+	//      matching Java's live-verified behaviour. (Pre-mint this declined
+	//      LOUDLY at the executor's ordinal-resolution guard — cross-scope
+	//      emission was the booked follow-on; the mint landed it for the
+	//      correlated-EXISTS scope.)
 	var fv int64
 	if err := db.QueryRowContext(ctx,
-		"SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM q AS p WHERE p.v = 10)").Scan(&fv); err == nil {
-		t.Errorf("single-source shadowed fallthrough unexpectedly ANSWERED %d — if cross-scope binding landed, flip this pin to (10) and unmark the divergence", fv)
-	} else if !strings.Contains(err.Error(), "not resolvable in the runtime row") {
-		t.Errorf("single-source shadow must decline at the ordinal guard, got: %v", err)
+		"SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM q AS p WHERE p.v = 10)").Scan(&fv); err != nil {
+		t.Errorf("single-source shadowed fallthrough must ANSWER (Java parity, amendment (a)): %v", err)
+	} else if fv != 10 {
+		t.Errorf("single-source shadowed fallthrough = %d, want 10 (outer p.v)", fv)
 	}
 	//  (2) MULTI inner source (`q AS p, r AS x`): needsQualification is true, so
 	//      the resolver catches the shadow at PLAN time — CorrelatedShadowError

@@ -5473,6 +5473,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	}
 
 	innerScope := semantic.NewScope(outerScope)
+	viaCTE := false
 	tbl, tblErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
 	if tblErr != nil {
 		// CTE-aware fallback: a CTE inner source (`WITH c AS (…) … EXISTS (SELECT …
@@ -5483,15 +5484,45 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		// columns walks correctly instead of failing "table not found". (A derived
 		// `(SELECT …) AS d` inner is not WITH-registered and stays a clean error.)
 		if src, found := p.cteScopes[strings.ToUpper(sq.tableName)]; found {
-			tbl, tblErr = src.Table, nil
+			tbl, tblErr, viaCTE = src.Table, nil, true
 		}
 	}
 	if tblErr != nil {
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve inner table %q: %v", sq.tableName, tblErr), Cause: tblErr}
 	}
 	aliasID := semantic.NewUnquoted(innerAlias)
+	// RFC-173 collision mint: a SINGLE-TABLE catalog inner is BORN under a
+	// unique correlation identity, never its SQL source name. The SQL name
+	// (aliasID) stays the scope-resolution qualifier — `MA.c` inside the
+	// subquery still resolves against the inner source, SHADOWING a
+	// same-named outer leg (Java SemanticAnalyzer.resolveAcrossFragments:
+	// innermost fragment first) — but every reference the walk emits is
+	// qualified under the MINTED identity, so the join predicate can never
+	// carry the ambiguous SQL name. Without the mint, an inner-bound ref
+	// qualified under the source name collided with a same-named outer leg
+	// at the join level: the name-model rebase reinterpreted it as an
+	// OUTER-leg read and the positive-polarity outer-routing pre-filtered
+	// per outer row — wrong rows vs Java's inner-shadow semantics (live-
+	// verified: `FROM MA, MA.arr AS X WHERE EXISTS (SELECT 1 FROM MA WHERE
+	// MA.c < X)` answers ALL elements with X > min(MA.c) in Java). NOT
+	// EXISTS was already correct — negation forbids the hoist, the conjunct
+	// stayed under the ∃ and bound inner — the polarity split that proved
+	// the ambiguity, not the runtime, was the defect. Uppercase because
+	// every consumer (sourceAlias, outerBoundAliases, splitOuterOnly-
+	// conjuncts) upper-cases SQL aliases; existsInnerCorrelation's rename
+	// then rebases the minted name onto esq.Alias exactly as it did the
+	// source name. Multi-source and CTE inners keep the SQL name (the
+	// rename path declines them; mint-per-leg is booked follow-on work).
+	mintedInnerCorr := ""
+	if len(sq.joins) == 0 && !viaCTE {
+		mintedInnerCorr = strings.ToUpper(values.UniqueCorrelationIdentifier().Name())
+	}
+	innerCorrName := aliasID.Name()
+	if mintedInnerCorr != "" {
+		innerCorrName = mintedInnerCorr
+	}
 	_ = innerScope.AddSource(semantic.ScopeSource{
-		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
+		Table: tbl, Alias: aliasID, CorrelationName: innerCorrName,
 	})
 
 	// Join sources are added to the inner scope INCREMENTALLY in the join loop
@@ -5522,8 +5553,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 			nestedOuterScopes = append(nestedOuterScopes, v)
 		}
 	}
+	// The nested scope carries the MINTED correlation (innerCorrName) so a
+	// nested EXISTS's reference to THIS level's source emits the identity
+	// the runtime actually binds — the minted scan alias — not the SQL name
+	// (which may be an outer leg's).
 	nestedOuterScopes = append(nestedOuterScopes, semantic.ScopeSource{
-		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
+		Table: tbl, Alias: aliasID, CorrelationName: innerCorrName,
 	})
 	nestedPlanner := &existsSubqueryPlanner{
 		md:          p.md,
@@ -5591,7 +5626,16 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		}
 	}
 
-	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
+	// The scan itself is built under the minted identity (falling back to the
+	// SQL alias for the unminted shapes) — the plan-side half of the mint:
+	// sourceAlias(esq.Plan) and outerBoundAliases(esq.Plan) then report the
+	// unique name, so a same-named outer leg can never alias-collide with
+	// the inner at the join level.
+	scanAlias := innerAlias
+	if mintedInnerCorr != "" {
+		scanAlias = mintedInnerCorr
+	}
+	op := logical.LogicalOperator(logical.NewScan(sq.tableName, scanAlias))
 	var liftedOnCorr []predicates.QueryPredicate
 	for i, j := range sq.joins {
 		// Register leg i's source in the inner scope BEFORE walking its ON (so the
@@ -5736,7 +5780,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// If the nested planner collected EXISTS subqueries, check whether
 	// the middle level has its own correlation predicate (non-EXISTS).
 	if len(nestedPlanner.subqueries) > 0 {
-		innerCorr := strings.ToUpper(aliasID.Name())
+		innerCorr := strings.ToUpper(innerCorrName)
 		nonExistsPred := splitNonExistsPredicatesFromWalked(pred)
 
 		if nonExistsPred != nil {
@@ -5766,10 +5810,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// inner and outer columns coexist keyed by UPPER-CASE qualified names
 	// (e.g. SUB.V, A.V). The resolver produced bare field names for inner
 	// columns (e.g. "V") because the inner scope has only one source.
-	// Qualify them with the inner correlation name so that merged-row
-	// lookup finds the inner column, not the outer's value leaking
-	// through when the inner row has a NULL (absent-from-map) field.
-	innerCorr := strings.ToUpper(aliasID.Name())
+	// Qualify them with the inner correlation name — the MINTED identity
+	// when the mint applies — so that merged-row lookup finds the inner
+	// column, not the outer's value leaking through when the inner row has
+	// a NULL (absent-from-map) field.
+	innerCorr := strings.ToUpper(innerCorrName)
 	qualifyBareFields(pred, innerCorr)
 	pred = predicates.SimplifyPredicateValues(pred)
 
