@@ -1726,7 +1726,33 @@ the aggregate) fixed the base WHERE/NOT-EXISTS cases + all controls, but **codex
 projected-42803 below — the SAME bug) so the detector can trust the query-scope aggregate set; (b) then the
 cardinality fix, guarding LIMIT/OFFSET (#1) + splitting mixed predicates (#3) + constant-folding (P2). Four-gate.
 
-### [ ] query-engine (PRE-EXISTING; KEYSTONE — surfaced twice 2026-07-10: fixing EXISTS-over-aggregate AND codex P1 on the reverted `5d4ff3711`): aggregate-detection SCOPE LEAK — a nested subquery's aggregate is harvested into the enclosing query's aggregate set
+### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` + hardening), EXISTS/scalar closed; IN sibling is a SEPARATE path (booked below)
+**FIXED for the harvestAggregates path** (`befc32a8e`, hardened to the unifying guard): `harvestAggregates`
+(select_parser.go) walked a projected expression's tree promoting aggregates into the enclosing query's set
+but only stopped at SCALAR subquery atoms, not EXISTS — so `SELECT p.id, EXISTS (SELECT COUNT(*) …) FROM p`
+leaked the inner COUNT(*) → spurious 42803 (AND broke the cardinality fix's detector, codex P1#2). Fix:
+stop at the unifying NESTED-QUERY node (`QueryContext`/`QueryExpressionBodyContext`) instead of enumerating
+atom types — covers scalar + EXISTS + quantified in one guard, robust to new atoms (Graefe design-#10 ideal;
+Graefe + Torvalds + codex all ACK). A real outer aggregate that merely CONTAINS a subquery (`HAVING COUNT(*)
+IN (…)`) is still harvested (it's outside the subquery's query node). Pinned:
+`exists_aggregate_scope_leak_fdb_test.go`. **RESIDUAL (IN-subquery sibling) is a DIFFERENT mechanism**:
+`SELECT p.id, (p.id IN (SELECT COUNT(*) FROM e)) FROM p` STILL 42803s even with the unifying harvestAggregates
+guard — so the IN-subquery aggregate reaches the outer classification NOT via harvestAggregates but via a
+separate path (most likely a Value-tree `containsAggregate` over the built scalar-subquery plan in GROUP-BY
+validation). Booked as its own follow-on below; pinned as a flip-sentinel in the same test.
+
+### [ ] query-engine (PRE-EXISTING sibling of the keystone, SEPARATE path): IN-subquery aggregate leaks into the outer aggregate set via a non-harvestAggregates mechanism
+`SELECT p.id, (p.id IN (SELECT COUNT(*) FROM e)) FROM p` → 42803 ("P.ID must appear in GROUP BY"), and it
+does NOT route through `harvestAggregates` (the unifying `QueryExpressionBodyContext` guard that fixed the
+scalar/EXISTS keystone does not stop it — empirically verified: the EXISTS/scalar controls pass, the IN case
+still errors). So the IN-subquery's COUNT(*) reaches the outer query's aggregate classification through a
+DIFFERENT walk — pin down which (candidate: a Value-tree `containsAggregate` in validateGroupByProjection /
+the scalar-subquery build promoting the inner aggregate). Same scoping principle (an IN subquery is its own
+query block); fix that walk to stop at the nested query scope too. Flip-sentinel:
+`exists_aggregate_scope_leak_fdb_test.go` `in_subquery_sibling_still_42803_separate_path`. Four-gate.
+
+<details><summary>original keystone characterization (kept for the audit trail)</summary>
+
 The parser's aggregate detection (select_parser, `sq.aggCols`/`countStar`) does NOT stop at subquery
 boundaries: an aggregate inside a projected/nested subquery leaks into the ENCLOSING SELECT's aggregate set.
 Two observable failures, ONE root cause:
@@ -1755,6 +1781,7 @@ sound by guarding its own detector — it is HARD-BLOCKED on this scope-leak fix
 (pin down which harvest in `extractFromQueryTerm`/the SELECT-element loop descends into a projected
 EXISTS/scalar element), which also fixes the projected-42803, THEN the cardinality fix. The re-do was
 discarded (not committed) since it fails `codex_nested_scope`.
+</details>
 
 ### [ ] front-end follow-on (Torvalds correlated-EXISTS review, recommended, non-blocking): extract `classifyJoinOn(...)` from `buildCorrelatedExists`
 `buildCorrelatedExists` (pkg/relational/core/embedded/logical_predicate.go) is ~412 lines — mostly essential

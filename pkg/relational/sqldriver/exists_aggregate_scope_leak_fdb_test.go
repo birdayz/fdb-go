@@ -14,6 +14,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -125,17 +126,28 @@ func TestFDB_ExistsAggregateScopeLeak(t *testing.T) {
 		if e2 == nil {
 			t.Fatalf("SELECT p.id, COUNT(*) FROM p should still 42803 (grouping error)")
 		}
-		if !contains42803GL(e2.Error()) {
+		if !strings.Contains(e2.Error(), "42803") {
 			t.Fatalf("want 42803 for a real ungrouped aggregate, got %v", e2)
 		}
 	})
-}
 
-func contains42803GL(s string) bool {
-	for i := 0; i+5 <= len(s); i++ {
-		if s[i:i+5] == "42803" {
-			return true
+	// SIBLING (booked, SEPARATE path): an IN subquery over an aggregate ALSO
+	// leaks into the outer aggregate set, but NOT through harvestAggregates —
+	// the unifying nested-query-scope guard (which fixes scalar + EXISTS) does
+	// NOT stop it, so `SELECT p.id, (p.id IN (SELECT COUNT(*) FROM e)) FROM p`
+	// still 42803s. The leak reaches the outer classification via a different
+	// mechanism (a Value-tree aggregate walk over the built scalar-subquery
+	// plan), tracked as its own follow-on. Flip-sentinel: when that path is
+	// fixed this stops erroring and the row assertion below (want
+	// [[1 true][2 false][3 false]], e has one row so COUNT(*)=1 matches only
+	// p.id=1) must be restored.
+	t.Run("in_subquery_sibling_still_42803_separate_path", func(t *testing.T) {
+		_, qErr := db.QueryContext(ctx, "SELECT p.id, (p.id IN (SELECT COUNT(*) FROM e)) FROM p ORDER BY p.id")
+		if qErr == nil {
+			t.Fatalf("IN-subquery-of-aggregate now PLANS — the separate-path leak is fixed; restore the row assertion [[1 true][2 false][3 false]]")
 		}
-	}
-	return false
+		if !strings.Contains(qErr.Error(), "42803") {
+			t.Fatalf("IN-subquery: want the pre-existing 42803 (separate-path sibling), got %v", qErr)
+		}
+	})
 }

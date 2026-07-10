@@ -1478,18 +1478,25 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 		if n == nil {
 			return
 		}
-		// Stop at subquery boundaries: aggregates inside a subquery belong to
-		// the subquery, not the outer expression. Covers BOTH a scalar subquery
-		// (`SELECT (SELECT MAX(v) FROM t) FROM t2`) and an EXISTS subquery
-		// (`SELECT p.id, EXISTS (SELECT COUNT(*) FROM e ...) FROM p`). Without
-		// the scalar guard the outer slot mis-promotes to an aggregate column,
-		// dropping it from projCols; without the EXISTS guard the nested
-		// aggregate leaks into the OUTER query's aggregate set, wrongly
-		// classifying the outer query as an aggregate (spurious 42803 on the
-		// non-grouped columns) and corrupting any downstream consumer of that
-		// set. An EXISTS/scalar subquery is its own query scope.
+		// Stop at every NESTED QUERY SCOPE: an aggregate syntactically inside a
+		// subquery belongs to THAT subquery's query block, not the enclosing
+		// SELECT (same scoping Java's SemanticAnalyzer applies — an aggregate
+		// binds to its innermost query scope). A subquery in an expression is
+		// carried by a `Query`/`QueryExpressionBody` node regardless of the
+		// surrounding atom kind: a scalar subquery (`(SELECT MAX(v) FROM t)`),
+		// an EXISTS subquery, an IN subquery (`x IN (SELECT COUNT(*) FROM e)` —
+		// InPredicate → InList → QueryExpressionBody), and quantified
+		// comparisons all descend through one of these. Guarding the nested
+		// query node (not the per-atom types) is the complete boundary and
+		// cannot be out-enumerated by a new subquery atom. Without it the nested
+		// aggregate leaks into the OUTER query's aggregate set — mis-promoting
+		// the outer slot (dropping it from projCols) or wrongly classifying the
+		// outer query as an aggregate (spurious 42803 on its non-grouped
+		// columns). A real outer aggregate that merely CONTAINS a subquery
+		// (`HAVING COUNT(*) IN (SELECT …)`) is harvested normally — it lives
+		// OUTSIDE the subquery's query node, so the walk reaches it first.
 		switch n.(type) {
-		case *antlrgen.SubqueryExpressionAtomContext, *antlrgen.ExistsExpressionAtomContext:
+		case *antlrgen.QueryContext, *antlrgen.QueryExpressionBodyContext:
 			return
 		}
 		if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok {
