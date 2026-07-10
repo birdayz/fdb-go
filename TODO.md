@@ -1656,6 +1656,25 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] query-engine (RFC-173 P2 commit A cost regression; EXPLAIN-diff-confirmed; likely an atomic-cap PREREQUISITE): the N-way existential fold CROSS-PRODUCTS where the name model INDEXED
+`implementNWayJoinWithExistential` (pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go
+~:2375) builds a rigid left-deep cross-product NLJ chain and applies ALL join predicates as ONE
+PredicatesFilter above the top NLJ — no predicate pushdown, no correlated index scans. EXPLAIN diff for
+`SELECT a.av FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id AND EXISTS(SELECT 1 FROM e WHERE e.eref=a.id)`:
+base (name-model) = `FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A,[=])))` (correlated INDEXED join),
+HEAD (born-flat fold) = `NLJ(NLJ(Scan(A),Scan(B)),Scan(C))` + top filter (full A×B×C cross product). The
+NON-existential gated N-way DOES get the indexed plan (partition rules + index matching implement its
+all-ForEach select); the existential `[ForEach×N, Existential]` is declined by PartitionSelectRule, so ONLY
+the fold handles it. On base the shape went name-model (indexed); commit A retires that producer → the fold
+→ cross-product. **This is likely a HARD prerequisite for the atomic cap, not an optional cost refinement:
+the cap deletes the name model, forcing EVERY N-way WHERE-EXISTS through this fold — so every selective
+N-way WHERE-EXISTS would cross-product unless the fold learns predicate pushdown + correlated index scans
+first.** Fix shape: push each join predicate to the shallowest chain level where its referenced legs are
+bound (the RFC's own "cost model can push later" deferral from bc54d6300), and allow a leg's inner scan to
+be a parameterized/correlated index scan. Gated on the Graefe P1#2 ruling (accept-interim vs block). NOTE:
+the cross-product itself is a pre-ACK'd simplification of the N-way fold (bc54d6300); commit A only WIDENS
+its reach onto a previously-indexed shape.
+
 ### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE
 An EXISTS whose inner SELECT is an AGGREGATE (or a scalar over an aggregate) is ALWAYS TRUE: a
 `COUNT(*)`/`MAX(...)` over any group yields exactly one row, so the existential is satisfied for every outer

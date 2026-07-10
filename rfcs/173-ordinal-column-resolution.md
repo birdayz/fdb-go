@@ -4952,12 +4952,55 @@ join already filters, so no divergence manifests). Booked in TODO.md Known gaps.
 
 **codex NAK (gpt-5.6-sol ultra) — THREE P1s, base-vs-HEAD differential verified (worktree, 7 shapes):**
 P1#1 = the SAME derived/opaque-box-leg regression @claude found, generalized to FULL-join and aggregate
-legs — FIXED by the scan-family narrowing above (differential: derived_leg 2=2, agg_leg 1=1). P1#2
-(index-pushdown / cross-product blowup for a selective indexed N-way join) = CORRECTNESS PHANTOM
-(differential: p1_2_selective 1=1 both branches; the base existential N-way path ALSO routes through
-implementNWayJoinWithExistential's cross-product reconstruction — PartitionSelectRule declines any
-existential, so there was never an index-FlatMap alternative to lose; a genuine cost-model refinement,
-not a commit-A regression). **P1#3 = HALF-REAL, FIXED:** `EXISTS(SELECT … LIMIT 1)` and
+legs — FIXED by the scan-family narrowing above (differential: derived_leg 2=2, agg_leg 1=1). **P1#2
+(index-pushdown / cross-product blowup) = REAL PLAN-QUALITY REGRESSION — my first-pass "phantom" call
+was WRONG and is corrected here.** I dismissed it on ROW-parity (differential 1=1), but a plan-shape claim
+needs a PLAN-shape probe: an EXPLAIN diff (base vs HEAD, `a,b,c WHERE b.aid=a.id AND c.aid=a.id AND
+EXISTS(…)`) shows base `FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A,[=])))` — a CORRELATED INDEXED
+join (the `b.aid=a.id` SARG pushed into an equality scan of A) — while HEAD `NLJ(NLJ(Scan(A),Scan(B)),
+Scan(C))` + one top `PredicatesFilter([2 preds])` — a FULL A×B×C CROSS PRODUCT. The NON-existential gated
+N-way (`no_exists` EXPLAIN) DOES get the indexed plan (the partition rules + index matching implement its
+all-ForEach select), so this is NOT a general ordinal-seed property — it is specific to the EXISTENTIAL
+fold: `[ForEach×N, Existential]` is declined by PartitionSelectRule and ONLY
+implementNWayJoinWithExistential handles it, which builds a rigid left-deep cross-product chain and applies
+every join predicate as ONE top filter (no pushdown, no index matching — a DELIBERATE simplification from
+the N-way generalization bc54d6300, "the cost model can push later"). Base routed the comma N-way
+WHERE-EXISTS to the name model, whose box got the indexed plan; commit A routes it to the fold →
+cross-product. So it IS a commit-A cost regression for selective/large N-way WHERE-EXISTS. **LESSON
+(recorded): row-parity is not plan-parity — a reviewer's plan-shape claim demands an EXPLAIN diff, never a
+rows-only differential; I nearly shipped a false "phantom" into the RFC record.** DISPOSITION: escalated to
+Graefe as a design ruling — **VERDICT: BLOCK** (recorded next).
+
+**GRAEFE RULING (P1#2 cross-product) — BLOCK: index recovery is a PREREQUISITE, not a refinement.**
+"The cost model can push later" is FALSE here: `implementNWayJoinWithExistential` folds each leg from
+`getWinnerForOrdering(legRefs[i])` planned IN ISOLATION, NLJs them with `nil` join predicate, and lands all
+join predicates as ONE PredicatesFilter over the top — and this is the SOLE memo member for the existential
+select (PartitionSelectRule returns the instant it sees a non-ForEach quantifier, so no partitioned/indexed
+alternative is EVER generated). The cost model chooses among GENERATED alternatives; exploration produces
+exactly one (the cross product) — "a missing-exploration bug wearing a cost-refinement costume." (a)
+Residual pushdown (fill the `nil`) is mechanically trivial but still materializes A×B before filtering — it
+does NOT produce `Scan(A,[=b.aid])`; the base plan's correlated index probe needs A's Reference SARG'd by
+the sibling correlation AT PLANNING, which the fold cannot inject (it plans legs bare and explicitly
+DECLINES leg↔leg correlation — the INDEPENDENT-LEGS gate). The fold is STRUCTURALLY INCAPABLE of the base
+plan. (b) The atomic cap deletes the name model → this fold becomes the ONLY path for N-way WHERE-EXISTS →
+retiring the producer without an index-quality replacement ships N³-vs-N asymptotic regression on a shape
+that planned well the day before — a red line, NOT a deferrable cost detail. (c) **THE FIX (Cascades-correct,
+both plans coexist): a new EXPLORATION RULE that hoists the Existential out of the flat
+`[ForEach×N≥2, Existential]` select into a 2-level select** — inner memo group `[ForEach×N]` →
+PartitionSelectRule + index matching → the correlated indexed join (IDENTICAL to the non-existential N-way
+that already works on HEAD); outer `[ForEach(innerJoin), Existential]` → the existing 2-leg EXISTS fold.
+This retires the name-model producer (the S4 goal), reproduces the base plan STRUCTURALLY, and puts BOTH the
+hoisted-partition plan and the fold's cross-product in the memo so COST decides — strictly more
+Cascades-correct than bolting pushdown into the implement rule. Block clears when the existential N-way's
+indexed plan is back in the memo and cost-selected; re-request the ACK on that rule. **The pre-existing
+2-leg fold's cross-product (bc54d6300) inherits the same gap — but the 2-leg EXISTS over a scan pair has no
+buried inner join to index-hoist, so it is out of THIS rule's scope; the rule targets N≥3 where the inner
+join can be partitioned.**
+
+**COMMIT-A STATUS: NOT gate-clean.** 7045a3908 is pushed but BLOCKED on P1#2. The hoist exploration rule is
+the gating work; commit A's producer retirement is correct-but-incomplete until the rule restores the
+indexed plan. Next: recon the rule infrastructure + 2-leg fold, design the hoist rule, Graefe design-ACK,
+implement, four-gate. **P1#3 = HALF-REAL, FIXED:** `EXISTS(SELECT … LIMIT 1)` and
 `EXISTS(SELECT DISTINCT …)` regressed decline-vs-plan (differential: base 2 rows → HEAD 0AF00), while
 ORDER BY did NOT (the sort elides → scan-safe). Root cause: an all-scan N-way outer gates born-flat, but
 the existential inner (Limit/Distinct) is not emptiness-preserving (LIMIT 0 / OFFSET can empty a non-empty
