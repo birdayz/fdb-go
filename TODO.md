@@ -331,6 +331,10 @@ validation gate.
     over-fire was exactly answering the binding question with the resolution set). Consolidate the
     DERIVATION under one scope-walk authority with role-named projections (displayNames / boundNames /
     allVisibleNames), each documented with the QUESTION it answers, consumed by name at each site.
+    (j) **one outer-routing authority** (when the multi-EXISTS composition wall (f) falls): Case-1 has
+    shipped outside the placement invariant twice; per-case discipline is proven insufficient. Consolidate
+    ALL outer-routing decisions through one polarity-taking authority (OuterOnlyJoinConjuncts is the hook)
+    so the invariant is enforced structurally; retires the exemption hazard class.
   - [x] **W3 the coupled 2-way flip — DONE, ALL ACKs.** W3a-1/W3a-2 (36297a253, fd07e2f49,
     140799069, d98bbac91, 139c6cb94); **W3b-1 LIVE FLIP** (1aca8addd + 47d3b48bb RFC log +
     00c7a206e Graefe notes + 5ead4e149 Torvalds nits): Graefe ACK (cross-leg baking BLESSED as the

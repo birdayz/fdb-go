@@ -5900,21 +5900,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 			existsPred := stripNonExistsPredicates(pred)
 			qualifyBareFields(nonExistsPred, innerCorr)
 			simplified := predicates.SimplifyPredicateValues(nonExistsPred)
-			// An OUTER-ONLY conjunct here CANNOT take the tail path's inside
-			// placement — a nested-EXISTS-carrying filter with an extra
-			// plain conjunct (or an inner filter layer) does not plan for
-			// this composition (the booked multi-EXISTS best-expression
-			// family; both placements were tried and die at physical
-			// planning). It rides lastJoinPredicate, which the semi-join
-			// outer-routes — VALID for positive polarity (P ∧ ∃(Q) ≡
-			// ∃(P∧Q)) and WRONG under NOT EXISTS (computes P ∧ ¬∃(Q),
-			// silently dropping every ¬P outer row — the pre-existing leak
-			// this branch shipped with). The esq is FLAGGED so the
-			// anti-join consumer declines LOUDLY; positive polarity keeps
-			// its valid outer-routing unchanged.
-			outerOnly, _ := splitOuterOnlyConjuncts(simplified, innerSourceAliases(op))
+			// A NON-INNER conjunct here — an outer-only correlation OR a
+			// reference-free constant/parameter, i.e. anything the
+			// existential rule routes to the OUTER input — CANNOT take the
+			// tail path's inside placement: a nested-EXISTS-carrying filter
+			// with an extra plain conjunct (or an inner filter layer) does
+			// not plan for this composition (the booked multi-EXISTS
+			// best-expression family; both placements were tried and die at
+			// physical planning). It rides lastJoinPredicate, which the
+			// semi-join outer-routes — VALID for positive polarity
+			// (P ∧ ∃(Q) ≡ ∃(P∧Q)) and WRONG under NOT EXISTS (computes
+			// P ∧ ¬∃(Q), silently dropping every ¬P outer row — the
+			// pre-existing leak this branch shipped with). The esq is
+			// FLAGGED so the anti-join consumer declines LOUDLY; positive
+			// polarity keeps its valid outer-routing unchanged. The flag
+			// test is deliberately BROADER than splitOuterOnlyConjuncts:
+			// that split keeps reference-free conjuncts (`1 = 0`, a
+			// parameter) in rest, yet they outer-route all the same and
+			// carry the identical polarity hazard.
 			p.lastJoinPredicate = simplified
-			p.lastJoinPredicateOuterOnly = outerOnly != nil
+			p.lastJoinPredicateOuterOnly = hasNonInnerConjunct(simplified, innerSourceAliases(op))
 			filter := &logical.LogicalFilter{
 				Input:            op,
 				Predicate:        existsPred,
@@ -6116,6 +6121,32 @@ func mintDistinctIdentifier(visible map[string]struct{}, next func() values.Corr
 // scan alias, qualifyBareFields), which every consumer upper-cases.
 func mintDistinctUpper(visible map[string]struct{}, next func() values.CorrelationIdentifier) string {
 	return strings.ToUpper(mintDistinctIdentifier(visible, next).Name())
+}
+
+// hasNonInnerConjunct reports whether any top-level conjunct of pred fails
+// to reference an inner FROM source — the class the existential rule routes
+// to the OUTER input: correlated outer-only conjuncts AND reference-free
+// ones (constants, parameters). Used for the Case-1 polarity flag;
+// splitOuterOnlyConjuncts alone under-covers it because that split
+// deliberately keeps reference-free conjuncts in rest.
+func hasNonInnerConjunct(pred predicates.QueryPredicate, innerAliases map[string]struct{}) bool {
+	if pred == nil {
+		return false
+	}
+	if and, ok := pred.(*predicates.AndPredicate); ok {
+		for _, sub := range and.SubPredicates {
+			if hasNonInnerConjunct(sub, innerAliases) {
+				return true
+			}
+		}
+		return false
+	}
+	for c := range predicates.GetCorrelatedToOfPredicate(pred) {
+		if _, isInner := innerAliases[strings.ToUpper(c.Name())]; isInner {
+			return false
+		}
+	}
+	return true
 }
 
 // scopeAmbiguousName returns the first correlation name in pred that is BOTH

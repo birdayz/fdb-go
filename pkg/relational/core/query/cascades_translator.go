@@ -3131,6 +3131,9 @@ func (t *cascadesTranslator) buildExistentialSelect(
 	outerQ := t.namedQuantifier(outerAlias, innerRef)
 	quantifiers := []expressions.Quantifier{outerQ}
 
+	if t.declineNegatedOuterOnlyEsqValue(resultOverride, f.ExistsSubqueries) {
+		return nil
+	}
 	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
 		return nil
 	}
@@ -3241,6 +3244,9 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	resultValue values.Value,
 ) expressions.RelationalExpression {
 	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
+		return nil
+	}
+	if t.declineNegatedOuterOnlyEsqValue(resultValue, f.ExistsSubqueries) {
 		return nil
 	}
 	if j.Kind == logical.JoinFull || j.Kind == logical.JoinRight {
@@ -4610,7 +4616,10 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// evaluates in post-GROUP-BY scope (group keys + aggregates).
 	// Java doesn't support this either (no test coverage). Return nil
 	// so the planner produces "could not plan query" instead of
-	// silently returning wrong results.
+	// silently returning wrong results. NOTE: this blanket rejection is
+	// also what keeps HAVING out of the esq polarity-guard surface — if
+	// it is ever narrowed, HAVING becomes a fifth consumer and needs
+	// declineNegatedOuterOnlyEsq wiring like the WHERE/ON sites.
 	if len(a.HavingExistsSubqueries) > 0 {
 		return nil
 	}
@@ -5180,12 +5189,54 @@ func (t *cascadesTranslator) declineNegatedOuterOnlyEsq(pred predicates.QueryPre
 	}
 	for _, esq := range esqs {
 		if _, isNeg := negated[esq.Alias]; isNeg && esq.OuterOnlyJoinConjuncts {
-			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation,
 				"NOT EXISTS over a nested-EXISTS subquery with an outer-only conjunct is not supported"))
 			return true
 		}
 	}
 	return false
+}
+
+// declineNegatedOuterOnlyEsqValue is declineNegatedOuterOnlyEsq's PROJECTED
+// twin, and STRICTER: a projected EXISTS consumes the boolean in the RESULT
+// VALUE (the synthesized filter's Predicate is nil), where outer-routing the
+// flagged conjunct FILTERS THE ROW STREAM — but a projected boolean must
+// never filter rows (Java emits the boolean per outer row; the row-drop was
+// observed live: 0 rows where Java answers (id,false) pairs). The
+// P ∧ ∃(Q) ≡ ∃(P∧Q) equivalence only licenses outer-routing for WHERE
+// consumption under positive polarity, so a flagged esq whose ExistsValue is
+// referenced by the result value declines in BOTH polarities.
+func (t *cascadesTranslator) declineNegatedOuterOnlyEsqValue(v values.Value, esqs []logical.ExistsSubquery) bool {
+	if v == nil || len(esqs) == 0 {
+		return false
+	}
+	flagged := map[values.CorrelationIdentifier]struct{}{}
+	for _, esq := range esqs {
+		if esq.OuterOnlyJoinConjuncts {
+			flagged[esq.Alias] = struct{}{}
+		}
+	}
+	if len(flagged) == 0 {
+		return false
+	}
+	hit := false
+	values.WalkValue(v, func(node values.Value) bool {
+		ev, isExists := node.(*values.ExistsValue)
+		if !isExists {
+			return true
+		}
+		if qov, isQOV := ev.Value.(*values.QuantifiedObjectValue); isQOV {
+			if _, isFlagged := flagged[qov.Correlation]; isFlagged {
+				hit = true
+			}
+		}
+		return !hit
+	})
+	if hit {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation,
+			"a projected EXISTS over a nested-EXISTS subquery with an outer-only conjunct is not supported"))
+	}
+	return hit
 }
 
 // splitNonExistsPredicates extracts the non-EXISTS parts of a predicate
