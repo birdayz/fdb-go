@@ -115,6 +115,7 @@ go_test(
         "exists_computed_column_fdb_test.go",
         "exists_in_on_fdb_test.go",
         "exists_in_on_probe_test.go",
+        "exists_over_aggregate_fdb_test.go",
         "exists_semantics_probe_test.go",
         "flatmap_continuation_drop_fdb_test.go",
         "float_integer_types_probe_test.go",
