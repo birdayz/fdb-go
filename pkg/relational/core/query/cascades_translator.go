@@ -725,7 +725,9 @@ func (t *cascadesTranslator) buildJoinResultValue(left, right logical.LogicalOpe
 	if leftAlias == "" || rightAlias == "" || leftCols == nil || rightCols == nil {
 		return nil
 	}
-	recordProducerCensus(ProducerCensusRecord{Producer: "P4", Enclosed: t.inInnerCluster, Shape: fmt.Sprintf("%T|%T", left, right)})
+	if producerCensusObserver != nil {
+		producerCensusObserver(ProducerCensusRecord{Producer: "P4", Enclosed: t.inInnerCluster, Shape: fmt.Sprintf("%T|%T", left, right)})
+	}
 	return values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
 		{Alias: values.NamedCorrelationIdentifier(leftAlias), Columns: leftCols},
 		{Alias: values.NamedCorrelationIdentifier(rightAlias), Columns: rightCols},
@@ -1605,7 +1607,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		}
 	}
 	if resultValue == nil {
-		resultValue = t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType)
+		resultValue = t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType, prevEnclosure)
 	}
 	if resultValue == nil {
 		return nil
@@ -1659,6 +1661,10 @@ func (t *cascadesTranslator) unnestFallbackOrReject(j *logical.LogicalJoin, u *l
 // quantifier value (QOV(inner)) for the bare variant, or FieldValue.ofOrdinal
 // (element=0, ordinal=1) for the WITH ORDINALITY variant. Mirrors Java's
 // attribute list in generateCorrelatedFieldAccess. RFC-142.
+// The enclosed arg is the CALLER'S ENTRY enclosure (prevEnclosure), for the
+// producer census — NOT t.inInnerCluster, which both callers unconditionally set
+// to true on entry (so reading the field here would report every P5 firing as
+// enclosed by construction, blinding the census to an un-enclosed P5 residual).
 func (t *cascadesTranslator) buildUnnestResultValue(
 	outer logical.LogicalOperator,
 	outerCorr values.CorrelationIdentifier,
@@ -1666,12 +1672,15 @@ func (t *cascadesTranslator) buildUnnestResultValue(
 	innerCorr values.CorrelationIdentifier,
 	u *logical.LogicalUnnest,
 	elementType values.Type,
+	enclosed bool,
 ) values.Value {
 	outerCols := t.legColumns(outer)
 	if outerCols == nil {
 		return nil
 	}
-	recordProducerCensus(ProducerCensusRecord{Producer: "P5", Enclosed: t.inInnerCluster, Shape: fmt.Sprintf("unnest|%T", outer)})
+	if producerCensusObserver != nil {
+		producerCensusObserver(ProducerCensusRecord{Producer: "P5", Enclosed: enclosed, Shape: fmt.Sprintf("unnest|%T", outer)})
+	}
 	// Outer leg: bare + qualified ALIAS.COL fields, exactly as a normal join leg.
 	base := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
 		{Alias: outerCorr, Columns: outerCols},

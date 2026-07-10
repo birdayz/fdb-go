@@ -307,7 +307,7 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 	innerQ := expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(explode))
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
 
-	resultValue := t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType)
+	resultValue := t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType, prevEnclosure)
 	if resultValue == nil {
 		return nil
 	}

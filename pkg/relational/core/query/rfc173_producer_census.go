@@ -7,46 +7,51 @@ package query
 // The name-model ("AnchoredJoin") result-value producers are buildJoinResultValue
 // (P4) and buildUnnestResultValue (P5); the re-enumeration/legColumns producers
 // (P1/P2/P3) are DERIVED — they only fire under an already-name-model parent, so
-// they retire for free once P4/P5 reach zero. The design consult established
-// (empirically, by gate census + runtime instrumentation) that every RESIDUAL P4/P5
-// firing happens ONLY under enclosure (t.inInnerCluster == true): a FRESH
-// (un-enclosed) box/join/unnest shape already ordinalizes. So the residual
-// name-model set is exactly the inInnerCluster shapes, and the way to zero it is to
-// starve inInnerCluster by ordinalizing the enclosure ROOTS (the name-model unnest
-// lowering, correlated-scalar-in-projection, recursive-CTE) — NOT by flipping the
-// enclosure declines directly.
+// they retire for free once P4/P5 reach zero. A single non-nil-returning call to
+// P4/P5 IS a real name-model record in a plan (the ordinal paths use separate seed
+// builders), so observing them is a complete census of the name-model surface.
 //
-// This census makes that invariant a testable gate: a permanent corpus run asserts
-// every P4/P5 firing is Enclosed, and dumps the shape histogram as the sequencing
-// inventory. An un-enclosed firing is a fresh-shape producer — a real bug or a
-// falsification of the reframe — and is loud, never carved out.
+// The residual name-model surface has TWO kinds of firing, and the census records
+// the enclosure bit (was the producer under an enclosing cluster) to tell them
+// apart:
+//   - ENCLOSED firings (t.inInnerCluster true on entry): a producer that is a leg
+//     of a larger cluster. These are zeroed by ordinalizing the enclosure ROOTS
+//     (the name-model unnest lowering, correlated-scalar-in-projection,
+//     recursive-CTE, and the unnest-over-box birth).
+//   - UN-ENCLOSED firings (entry enclosure false): a FRESH shape that still
+//     name-models on its own. The census CORRECTED the Outcome-B design consult
+//     here: it claimed no un-enclosed residual exists, but a multi-way (>=3) inner
+//     join under a WHERE EXISTS declines its whole join subtree to name-model and
+//     the TOP join fires UN-ENCLOSED — an EXISTS-composition-arc gap (the flat-
+//     EXISTS translation path lacks the N-way ordinal gather that plain joins have),
+//     NOT a box-substrate shape. So the residual set is NOT "exactly the
+//     inInnerCluster shapes"; un-enclosed residual classes exist and need their own
+//     explicit flip.
 //
-// The observer is a nil-in-production process global (like forceOrdinalSpike /
-// SetNameModelOracle): zero production cost, no behavior change. Set only by the
-// census harness at a phase barrier with no translation in flight.
+// The census gate (TestFDB_RFC173_ProducerCensus, dualwindow package) pins both:
+// SeedRunCorpus fires zero producers (fully ordinal), and the discovered
+// residual signatures (incl. the un-enclosed existential-over-multi-join) as
+// flip-sentinels.
+//
+// The observer is a nil-in-production process global (like SetForceOrdinalSpike /
+// SetNameModelOracle): each producer guards its record construction — including the
+// %T shape formatting — behind the nil check, so production pays only a single
+// pointer compare and no allocation. Set only by the census harness at a phase
+// barrier with no translation in flight.
 
 // ProducerCensusRecord is one name-model result-value producer firing.
 type ProducerCensusRecord struct {
 	Producer string // "P4" (buildJoinResultValue) or "P5" (buildUnnestResultValue)
-	Enclosed bool   // t.inInnerCluster at the firing — the reframe invariant asserts this is always true
+	Enclosed bool   // was the producer under an enclosing cluster (its caller's ENTRY enclosure)
 	Shape    string // coarse operator-shape descriptor (diagnostics / inventory only)
 }
 
 // producerCensusObserver, when non-nil, receives every P4/P5 name-model producer
-// firing. Nil in production.
+// firing. Nil in production. Read directly (not through a wrapper) at each firing
+// site so the record — and its %T formatting — is constructed only when observing.
 var producerCensusObserver func(ProducerCensusRecord)
 
 // SetProducerCensusObserver installs (or, with nil, clears) the census hook.
 // Test-only; the caller must guarantee no translation is in flight — the observer
 // is a process global, exactly like SetForceOrdinalSpike / SetNameModelOracle.
 func SetProducerCensusObserver(f func(ProducerCensusRecord)) { producerCensusObserver = f }
-
-// recordProducerCensus reports a producer firing to the observer if one is
-// installed. A single non-nil-returning call to buildJoinResultValue /
-// buildUnnestResultValue IS a name-model firing (the ordinal paths use separate
-// seed builders), so this is called at the successful-production point of each.
-func recordProducerCensus(rec ProducerCensusRecord) {
-	if producerCensusObserver != nil {
-		producerCensusObserver(rec)
-	}
-}

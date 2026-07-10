@@ -320,6 +320,27 @@ validation gate.
     existential-over-multi-join is its own residual class (pinned as a flip-sentinel in the census probe;
     ordinalizing it is a separate slice — likely part of the EXISTS-composition arc, not the box substrate).
     Re-consult Graefe on B1 sequencing WITH this correction before building B1.
+  - [ ] **B1 RE-SEQUENCED (Graefe design-ACK, WITH the census correction) = U-1: the existential-over-multi-way-
+    join N-way gather.** MECHANISM (Graefe, code-confirmed): a plain `p JOIN q JOIN r` routes through
+    `translateJoin` → `ordinalWedgeGateDecide` returns Gated/Arity=3 → `translateGatheredInnerCluster` (full
+    N-way ordinal seed, 0 firings). Under `WHERE EXISTS(…)` it routes through `translateJoinWithExists`, whose
+    `:5003` narrows `if gatedFlatten && Arity != 2 { gatedFlatten = false }` (Reason: "existential flatten builds
+    exactly two ForEach legs") — the flat-EXISTS path has NO N-way gather (the missing twin of translateJoin:4769).
+    So the arity≥3 subtree name-models: inner p JOIN q enclosed=true Scan|Scan, outer (pq) JOIN r UN-ENCLOSED
+    Join|Scan. FIX: give the flat-EXISTS path the N-way ordinal gather it lacks — compose the two ALREADY-PROVEN
+    mechanisms (translateGatheredInnerCluster + the arity-2 gatedFlatten ordinal-seed-plus-existential attach at
+    :5152-5176). No new row synthesis. WHY B1 (not the box): (a) corrects the class that broke the reframe model;
+    (b) LOWER risk than unnest-over-box birth (no null-extended/reordered box-row positional birth, no
+    adaptLegPositional same-named-leg hazard); (c) retires the enclosed inner leg (E-5) for FREE (the gather
+    translates legs fresh). CONTROL (the genuinely new question — does the existential ordinal rebase, today over a
+    2-leg seed, generalize to an N-leg seed?): EXISTS correlated to the 3rd+ leg — `… p JOIN q JOIN r … WHERE
+    EXISTS (SELECT 1 FROM e WHERE e.x = r.col)` — PLUS a dup-named-leg variant; the falsification is a baked
+    correlation predicate rebasing onto the WRONG ordinal window of the N-way concat. Corrected residual inventory:
+    **UN-ENCLOSED** (not reachable by starving enclosure): U-1 existential-over-multi-way-join (B1). **ENCLOSED**
+    (starve by ordinalizing the roots): E-1 name-model unnest lowering, E-2 unnest-over-single-clustered LEFT/RIGHT
+    box birth (the former B1 → now **B2**), E-3 correlated-scalar-in-projection (W4b clusterPullUp), E-4
+    recursive-CTE reference legs, E-5 flat-EXISTS inner leg (retired FREE by B1). Sequence: B1=U-1 → B2=E-2 →
+    E-1/E-3/E-4 → nested-outer-box tower LAST. 2a/2b retire WITH the enclosed classes, NOT as separate flips.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
