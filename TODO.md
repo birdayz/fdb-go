@@ -305,7 +305,10 @@ validation gate.
     (aliased or not) never enters the correlated subquery scope: correlated refs to it die 42703 (same family
     as the fixed derived-table registration), and an ALIASED CTE leg quoted `"Q$N"` escapes the mint's
     visible set (the unaliased half is folded via cteScopes names). Register CTE legs from the registry's
-    ScopeSource like derived tables. (f) **multi-EXISTS-over-unnest reach gap** (commit-2 review battery,
+    ScopeSource like derived tables. SAME FAMILY: a correlated-fallback MIDDLE's JOIN-LEG names are absent
+    from nestedOuterScopes (only the primary is appended), so an inner-inner ref to a middle leg that
+    shadows a different-table outer alias silently binds the OUTER table — walk-time mis-binding, needs the
+    same scope-registration fix. (f) **multi-EXISTS-over-unnest reach gap** (commit-2 review battery,
     live-Java-grounded): TWO sibling EXISTS subqueries over a lateral unnest fail to plan in Go ("best
     expression is not a physical plan"), colliding or not, correlated or not — pre-existing on the slice
     parent, LOUD, orthogonal to the mint. Java ANSWERS both shapes (constant-true pair → all elements;
@@ -321,6 +324,13 @@ validation gate.
     internal mint label in the column name (`(SCALAR_SUBQUERY Q$N)`), while the CORRELATED twin answers
     correctly — contradicts the scalar-subquery-in-WHERE booking's claim that projection-position scalars
     work; Java-probe first (silent-wrong candidate on the shared surface), then reconcile the bookings.
+    (i) **name-set roles refactor** (logic-inert, own commit): buildCorrelatedExists now carries THREE
+    purpose-built name sets — outerAliases (walk-time ref matching for the ON split), visibleScopeNames
+    (mint-collision closure), and scopeAmbiguousName's bound set (runtime binding collision). Each is
+    semantically forced and locally documented, but the mispick hazard is proven (the display-alias
+    over-fire was exactly answering the binding question with the resolution set). Consolidate the
+    DERIVATION under one scope-walk authority with role-named projections (displayNames / boundNames /
+    allVisibleNames), each documented with the QUESTION it answers, consumed by name at each site.
   - [x] **W3 the coupled 2-way flip — DONE, ALL ACKs.** W3a-1/W3a-2 (36297a253, fd07e2f49,
     140799069, d98bbac91, 139c6cb94); **W3b-1 LIVE FLIP** (1aca8addd + 47d3b48bb RFC log +
     00c7a206e Graefe notes + 5ead4e149 Torvalds nits): Graefe ACK (cross-leg baking BLESSED as the

@@ -5836,33 +5836,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// part as the join predicate and would otherwise carry the ambiguous
 	// ref out unchecked (a nested constant-true EXISTS must not disable
 	// the guard); Case 2's hoist is covered by the nested planner running
-	// this same check recursively for its own scope. The outer set is the
-	// ACTUALLY-BOUND names (CorrelationName when present, else Alias): a
-	// minted middle's DISPLAY alias never binds at runtime, so an innermost
-	// leg re-declaring it cannot collide — testing display names would
-	// 0A000 valid queries. Parent-fallthrough refs cannot false-positive:
-	// in a multi-source scope a shadowed parent hit already dies at plan
-	// time (CorrelatedShadowError, 42703), so a surviving ref carrying an
-	// intersection name is inner-bound by construction. Minted single-table
-	// inners never enter (their inner refs are Q$N).
+	// this same check recursively for its own scope. Checking the full
+	// walked predicate here is a SAFE SUPERSET of the old tail check
+	// (rest ⊂ pred): an outer-only conjunct cannot carry an intersection
+	// name (an intersection name IS an inner alias, so the split keeps it
+	// in rest), and EXISTS/scalar markers carry only generated aliases —
+	// which cannot equal user names BECAUSE of the mint law (the 3a skip
+	// makes every generated identity distinct from user-visible names;
+	// that law is load-bearing for this argument). The check runs on a
+	// SIMPLIFIED COPY: constant folding can eliminate a ref entirely
+	// (`COALESCE(1, a.id) = 1` never reads a), and the join predicate
+	// that actually rides out is the simplified form — declining on a
+	// foldable ref would 0A000 valid queries the tail-era check accepted.
+	// Parent-fallthrough refs cannot false-positive: in a multi-source
+	// scope a shadowed parent hit already dies at plan time
+	// (CorrelatedShadowError, 42703), so a surviving ref carrying an
+	// intersection name is inner-bound by construction. Minted single-
+	// table inners never enter (their inner refs are Q$N).
 	if len(sq.joins) > 0 {
-		outerBound := map[string]struct{}{}
-		for _, src := range p.outerScopes {
-			n := src.CorrelationName
-			if n == "" {
-				n = src.Alias.Name()
-			}
-			if n != "" {
-				outerBound[strings.ToUpper(n)] = struct{}{}
-			}
-		}
-		for c := range predicates.GetCorrelatedToOfPredicate(pred) {
-			n := strings.ToUpper(c.Name())
-			_, isInner := fullInnerAliases[n]
-			_, isBoundOuter := outerBound[n]
-			if isInner && isBoundOuter {
-				return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: inner FROM source %q reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)", n), Unsupported: true}
-			}
+		if n := scopeAmbiguousName(predicates.SimplifyPredicateValues(pred), fullInnerAliases, p.outerScopes); n != "" {
+			return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: inner FROM source %q reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)", n), Unsupported: true}
 		}
 	}
 
@@ -6099,6 +6092,42 @@ func mintDistinctIdentifier(visible map[string]struct{}, next func() values.Corr
 // scan alias, qualifyBareFields), which every consumer upper-cases.
 func mintDistinctUpper(visible map[string]struct{}, next func() values.CorrelationIdentifier) string {
 	return strings.ToUpper(mintDistinctIdentifier(visible, next).Name())
+}
+
+// scopeAmbiguousName returns the first correlation name in pred that is BOTH
+// an inner leg name AND an ACTUALLY-BOUND outer name, or "" when none — the
+// multi-source scope-ambiguity test (see the decline site in
+// buildCorrelatedExists). The outer set is the RUNTIME-BOUND name per source
+// — CorrelationName when present, else Alias — deliberately NOT the display
+// set the ON-split's outerAliases uses: a minted middle carries
+// {Alias: MID, CorrelationName: Q$N} and only Q$N binds at runtime, so an
+// innermost leg re-declaring MID cannot collide with it; testing display
+// names 0A000'd valid queries. Do not "unify" this with outerAliases — the
+// two sets answer different questions (walk-time reference matching vs
+// runtime binding collision).
+func scopeAmbiguousName(pred predicates.QueryPredicate, innerLegNames map[string]struct{}, outerScopes []semantic.ScopeSource) string {
+	if pred == nil || len(innerLegNames) == 0 {
+		return ""
+	}
+	outerBound := map[string]struct{}{}
+	for _, src := range outerScopes {
+		n := src.CorrelationName
+		if n == "" {
+			n = src.Alias.Name()
+		}
+		if n != "" {
+			outerBound[strings.ToUpper(n)] = struct{}{}
+		}
+	}
+	for c := range predicates.GetCorrelatedToOfPredicate(pred) {
+		n := strings.ToUpper(c.Name())
+		_, isInner := innerLegNames[n]
+		_, isBoundOuter := outerBound[n]
+		if isInner && isBoundOuter {
+			return n
+		}
+	}
+	return ""
 }
 
 // qualifyBareFields walks a predicate tree and prepends qualifier+"."

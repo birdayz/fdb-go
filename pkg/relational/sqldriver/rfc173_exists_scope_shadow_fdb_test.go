@@ -358,17 +358,33 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM ST, OT AS "OI" WHERE ST."C" < OT."K")`,
 		"scope-ambiguous")
 
-	// The MINTED-MIDDLE no-over-fire control: the middle single-table inner
-	// (MA AS "MID") is minted, so ONLY its Q$N identity binds at runtime —
-	// the innermost multi-source inner re-declaring MID locally cannot
-	// collide with a display alias that never binds. Testing display names
-	// here 0A000'd this valid query; the decline tests ACTUALLY-BOUND outer
-	// names (CorrelationName when present). Java live: middle ∃MA with
-	// C < 50 ∧ innermost ∃(MID,ST) with local MID.C < 100 → true → [50].
+	// Minted-middle rows control — HONEST SCOPE: this shape's innermost is
+	// NON-correlated (`"MID"."C" < 100` references only local names), so it
+	// clean-builds and never reaches the scope-ambiguity arm on EITHER the
+	// display-name or the bound-name form of the decline; it answered [50]
+	// throughout and pins only that the composition keeps answering. The
+	// display-alias over-fire has NO reachable answers-vs-decline shape
+	// today: the genuinely CORRELATED variant (next pin) dies loud upstream
+	// in the pre-existing multi-EXISTS composition gap before any rows
+	// could flow. The bound-name set semantics are pinned deterministically
+	// at unit level instead (TestScopeAmbiguousName — a display-alias
+	// comparison flips its minted-middle case red).
 	want("minted_middle_local_shadow_answers",
 		`SELECT OT."K" FROM OT WHERE EXISTS (SELECT 1 FROM MA AS "MID" WHERE "MID"."C" < OT."K" AND EXISTS (SELECT 1 FROM MA AS "MID", ST WHERE "MID"."C" < 100))`,
 		[]string{"map[K:50]"},
 		"")
+
+	// The CORRELATED minted-middle variant — the ERROR-CLASS discriminator
+	// for the bound-name fix: with the display-alias comparison this
+	// declined 0A000 "scope-ambiguous" (a FALSE decline — the innermost's
+	// local MID cannot collide with the middle's never-bound display
+	// alias); with the bound-name set it correctly passes the ambiguity
+	// arm and lands in the PRE-EXISTING multi-EXISTS composition gap
+	// (loud best-expression, the booked reach family). Flips to rows when
+	// that composition gap closes.
+	wantDecline("minted_middle_correlated_reachgap",
+		`SELECT OT."K" FROM OT WHERE EXISTS (SELECT 1 FROM MA AS "MID" WHERE "MID"."C" < OT."K" AND EXISTS (SELECT 1 FROM MA AS "MID", ST WHERE "MID"."C" < OT."K"))`,
+		"best expression")
 
 	// The no-over-fire control: a NON-colliding multi-source inner (leg
 	// names {ST, MI} disjoint from the outer {MA, OT}), CORRELATED on an
