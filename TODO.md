@@ -529,21 +529,6 @@ validation gate.
     red-first both directions; live-Java-classified corpus entry, message drift) + the two
     review-condition comment fixes. All four gates ACK'd the final HEAD.
 
-  - [~] **P2 existential-flatten translation seed** (RFC "P2 EXISTENTIAL-FLATTEN TRANSLATION SEED",
-    Graefe design-ACK + 4 conditions). **Commit A LANDED (N-way WHERE-EXISTS gated seed):**
-    `translateJoinWithExists` retired its arity-exactly-2 narrowing and delegates gated flattens to the
-    ONE gated seed construction (`translateGatheredInnerCluster`, extended with the trailing-existential
-    attach loop, esq-preds attach-before-bake, `extraPreds`); a comma/N-way `FROM …, … WHERE EXISTS` is
-    born `[ForEach×N, Existential]` ordinal instead of the anchored 2+1 the rewriter had to flatten. C3
-    white-box pin flipped (nested-cluster gates N-way). A verify-first-caught corrective (the peel
-    regression): `existInnerIsScanSafe` widened to peel Projection/TypeFilter (an uncorrelated
-    `EXISTS(SELECT 1 FROM t)` plans as `Projection(1, TypeFilter(Scan))`) — the full suite's P4b pin
-    caught it, not the slice's own (correlated-inner) pins; live-Java-grounded flip + safety-pole pin.
-    Pins: `rfc173_p2_nway_flatten_fdb_test.go` (comma 3/4-way EXISTS/NOT/projected/dup-col + H4
-    multi-EXISTS fail-closed + the uncorrelated-peel {nonempty→18, empty→0}), P4b flipped to 18 rows.
-    **Commit B PENDING (EXISTS-in-ON via the shared builder):** route `translateJoin`'s
-    `OnExistsSubqueries` through the same core (gate-internal ON-rider entry point per C1; the multi-EXISTS
-    reach gap needs the M≥2 fold arm per H4 — build or book). Four-gate on commit A's HEAD first.
   - [ ] **S4 atomic demolition** (LAST — gated on QP-REF-BIND items 1+2+3, the riders, and the
     unnest-residual slice; sequencing ruling banked in the RFC). **Gates now satisfied:** items
     1+2+3 merged (item 3 = #483); rider 2 (aggregate metadata) DONE on feat/rfc173-next; rider 1
@@ -1656,38 +1641,35 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] query-engine (RFC-173 P2 commit A cost regression; EXPLAIN-diff-confirmed; likely an atomic-cap PREREQUISITE): the N-way existential fold CROSS-PRODUCTS where the name model INDEXED
-`implementNWayJoinWithExistential` (pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go
-~:2375) builds a rigid left-deep cross-product NLJ chain and applies ALL join predicates as ONE
-PredicatesFilter above the top NLJ — no predicate pushdown, no correlated index scans. EXPLAIN diff for
-`SELECT a.av FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id AND EXISTS(SELECT 1 FROM e WHERE e.eref=a.id)`:
-base (name-model) = `FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A,[=])))` (correlated INDEXED join),
-HEAD (born-flat fold) = `NLJ(NLJ(Scan(A),Scan(B)),Scan(C))` + top filter (full A×B×C cross product). The
-NON-existential gated N-way DOES get the indexed plan (partition rules + index matching implement its
-all-ForEach select); the existential `[ForEach×N, Existential]` is declined by PartitionSelectRule, so ONLY
-the fold handles it. On base the shape went name-model (indexed); commit A retires that producer → the fold
-→ cross-product. **This is likely a HARD prerequisite for the atomic cap, not an optional cost refinement:
-the cap deletes the name model, forcing EVERY N-way WHERE-EXISTS through this fold — so every selective
-N-way WHERE-EXISTS would cross-product unless the fold learns predicate pushdown + correlated index scans
-first.** Fix shape: push each join predicate to the shallowest chain level where its referenced legs are
-bound (the RFC's own "cost model can push later" deferral from bc54d6300), and allow a leg's inner scan to
-be a parameterized/correlated index scan. Gated on the Graefe P1#2 ruling (accept-interim vs block). NOTE:
-the cross-product itself is a pre-ACK'd simplification of the N-way fold (bc54d6300); commit A only WIDENS
-its reach onto a previously-indexed shape.
+### [ ] query-engine (RFC-173 S4 — HARD PREREQUISITE for the atomic cap; Graefe-ruled): ordinal existential fold over an INDEX-MATCHED box
+The N-way WHERE-EXISTS producer (`buildJoinResultValue` in the name-model 2+1) cannot be retired without a
+cost regression: `implementExistentialSelect` (pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:640-967)
+rebases the existential's buried-leg correlation via `ordinalSeedLegWindowsOf(planResultValue(outerPlan))`,
+which recognizes ONLY the pristine ordinal-seed RC (the cross-product's row). An INDEX-matched box
+(`FlatMap(Scan(C),FlatMap(Scan(B),indexScan(A)))`) flows a different row shape → the ordinal rebase fails
+closed → only the cross-product box survives the fold. The name model indexes precisely because it resolves
+buried refs BY NAME over the index-matched box; retiring it (S4/the cap) forces the ordinal fold, which
+cross-products (N³-vs-N). FIX: teach `ordinalSeedLegWindows` (values/ordinal_seed_layout.go, via
+`ordinalSeedLegWindowsOf`) a plan-tree entry that recovers the merged positional layout from an
+index-matched FlatMap box (walk the pushed-down FlatMap, not just the RC), then point the fold's buried-ref
+rebase at that recovered layout (the ordinal twin of `rebaseOuterLegRefsToMerged`), lockstep-verified
+against `finalizeSeedWindows` (the c5a drift sentinel, rfc173_w4left_existential.go:64). ~few-hundred LOC +
+pins, sized like the W4-left existential work. Red-first control: N-way `FROM` + correlated `EXISTS(…=a.id)`
+where leg `a` is buried+index-eligible, a second leg shares column name `id`, one leg is null-supplying —
+assert PLAN SHAPE (index scan in box + semi-join outside, not cross-product) AND exact rows. **The atomic
+cap (task #16) is BLOCKED on this slice** (deleting the name model routes every N-way WHERE-EXISTS through
+the fold). Discovered when RFC-173 S4 P2 commit A (born-flat N-way WHERE-EXISTS) was attempted, hit the
+cross-product wall (codex P1#2, EXPLAIN-confirmed), and was REVERTED per Graefe.
 
 ### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE
 An EXISTS whose inner SELECT is an AGGREGATE (or a scalar over an aggregate) is ALWAYS TRUE: a
 `COUNT(*)`/`MAX(...)` over any group yields exactly one row, so the existential is satisfied for every outer
-row regardless of the correlation. Java 4.12.11.0 keeps all outer rows; Go treats it as correlated-filtering
-and drops the non-matching ones. Repro (live-verified): `SELECT p.v FROM p, q WHERE q.qid = 5 AND EXISTS
-(SELECT COUNT(*) FROM e WHERE e.eref = p.id)` with p={(1,10),(2,20)}, e={eref=1} → Java `[[10],[20]]`, Go
-`[[10]]`; same with `MAX(eid)`. This is the 2-leg existential-fold path (tryExistsFlatMap /
-implementExistentialSelect), NOT the RFC-173 N-way seed — in a 3-way outer the extra join already filters,
-so no divergence manifests there. Root cause: the fold treats the inner's correlation predicate as the
-EXISTS gate, but an aggregate inner's cardinality is 1 independent of the predicate (the predicate filters
-the aggregate's INPUT, not whether it emits a row). Fix: an aggregate/grouped existential inner must NOT
-route the correlation as a semi-join filter — it always emits. Regression test to add once fixed: the two
-shapes above, both polarities, vs a scalar-non-aggregate control.
+row. Java 4.12.11.0 keeps all outer rows; Go treats it as correlated-filtering and drops the non-matching
+ones. Repro (live-verified): `SELECT p.v FROM p, q WHERE q.qid = 5 AND EXISTS (SELECT COUNT(*) FROM e WHERE
+e.eref = p.id)` with p={(1,10),(2,20)}, e={eref=1} → Java `[[10],[20]]`, Go `[[10]]`; same with `MAX(eid)`.
+The 2-leg existential-fold path (tryExistsFlatMap / implementExistentialSelect), NOT the N-way seed. Fix: an
+aggregate/grouped existential inner must NOT route the correlation as a semi-join filter — it always emits.
+Regression test to add once fixed: the two shapes above, both polarities, vs a scalar-non-aggregate control.
 
 ### [ ] front-end follow-on (Torvalds correlated-EXISTS review, recommended, non-blocking): extract `classifyJoinOn(...)` from `buildCorrelatedExists`
 `buildCorrelatedExists` (pkg/relational/core/embedded/logical_predicate.go) is ~412 lines — mostly essential

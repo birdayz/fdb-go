@@ -284,43 +284,11 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 			t.Fatalf("P4a = %d rows %v, want 6 rows {5:2,7:2,9:2} (a.qid binds q, inner-scoped EXISTS always true)", total, counts)
 		}
 	})
-	// (b) Arity-3 FROM with a dup pair + uncorrelated EXISTS. Pinned as a
-	// loud decline while the existential flatten narrowed to arity exactly
-	// 2; the P2 N-way slice retired that narrowing and the shape ANSWERS —
-	// the minted-dup legs bind positionally through the gathered seed and
-	// the uncorrelated inner passes the widened existInnerIsScanSafe peel
-	// (Projection/TypeFilter over the scan). Live-Java-grounded on THIS
-	// EXACT dup-alias shape (`p AS a, q AS a, q AS b`, 4.12.11.0): Java
-	// returns 18 rows, {5:6,7:6,9:6}; Go matches the SET (a.qid binds the q
-	// leg per-attribute; p(2) × q(3) × q(3) cross under an always-true
-	// EXISTS). Neither has ORDER BY, so Java groups and Go interleaves — the
-	// count-map compare is order-robust, which is the correct discipline.
+	// (b) Arity-3 FROM with a dup pair + uncorrelated EXISTS — the arity
+	// narrowing routes OFF the gate.
 	t.Run("P4b_arity3_dup_exists", func(t *testing.T) {
-		rows, err := db.QueryContext(ctx,
-			"SELECT a.qid FROM p AS a, q AS a, q AS b WHERE EXISTS (SELECT 1 FROM p)")
-		if err != nil {
-			t.Fatalf("arity-3 dup + uncorrelated EXISTS errored (the P2 N-way flatten must serve it): %v", err)
-		}
-		defer rows.Close()
-		counts := map[int64]int{}
-		total := 0
-		for rows.Next() {
-			var v sql.NullInt64
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			if !v.Valid {
-				t.Fatal("a.qid served NULL — the minted-dup leg must resolve positionally")
-			}
-			counts[v.Int64]++
-			total++
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("rows: %v", err)
-		}
-		if total != 18 || counts[5] != 6 || counts[7] != 6 || counts[9] != 6 {
-			t.Fatalf("P4b = %d rows %v, want 18 rows {5:6,7:6,9:6} (Java-grounded)", total, counts)
-		}
+		loudDecline(t, "SELECT a.qid FROM p AS a, q AS a, q AS b WHERE EXISTS (SELECT 1 FROM p)",
+			"duplicate FROM alias")
 	})
 	// (c) Correlated SCALAR subquery over a dup outer — the scalar lowering
 	// keys legs by display alias (not yet binding-aware).

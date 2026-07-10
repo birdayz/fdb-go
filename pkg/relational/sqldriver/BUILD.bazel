@@ -254,7 +254,6 @@ go_test(
         "rfc173_item3_c4_aggregate_fdb_test.go",
         "rfc173_nullsupply_barrier_fdb_test.go",
         "rfc173_orderby_gather_fdb_test.go",
-        "rfc173_p2_nway_flatten_fdb_test.go",
         "rfc173_rcte_computed_leg_fdb_test.go",
         "rfc173_rider2_agg_metadata_fdb_test.go",
         "rfc173_s4_3234_cleanlift_fdb_test.go",

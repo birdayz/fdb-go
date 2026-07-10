@@ -4812,231 +4812,47 @@ Statically-TRUE conjuncts are outside the hazard set in every cell (routing TRUE
 
 #### EXISTS-COMPOSITION SLICE — CLOSED, FULLY 4-GATED on bcfff218c (2026-07-10). Final round: Graefe ACK (the hazard-set fixpoint adopted — movement ∩ semantic-effect; fail direction verified: the skip only narrows over-declining, never widens under-flagging; "done being surprising"); Torvalds ACK (Control Y flips exactly the contradiction row — the boundary is control-exact; one safe conservatism recorded: all-constant OR tautologies stay flagged, over-decline direction); @claude ACK (four-edge static boundary incl. the `1+1=2` fold composition and his constructed non-static `OT.K = OT.K` value-tautology — NULL-sensitive, correctly stays declined; 68-probe battery byte-identical outside the tautology class); codex clean ("the tautology exemption is limited to row-context-independent comparisons that evaluate to TRUE, preserving the guard for filtering predicates"). **SLICE TALLY — 12 commits (179412762 → bcfff218c), 8 gate rounds, every round a real find: FOUR shared-surface silent-wrong classes fixed (the R5o inner-shadow divergence; the Case-1 WHERE-negative leak; the Case-2 hoist leak; the projected row-stream filtering) + one loud-regression class fixed (the tautology over-decline) + two identity-namespace hazards closed (the mint collision, the esq.Alias counter-shift) + one encoding-corruption incident caught and reversed. Every decline is a forward sentinel with live Java rows recorded; every guard is control-verified in both directions; the durable artifacts are the guard-integrity law (PATH × FORM × NAMESPACE × validity-domain[polarity × consumption-mode]), the guard-derivation rule (hazard set, not classifier convenience), and the collision-proof identity model. Booked residuals: mint-per-leg (the conformance reach gap, sentinels flip when it lands), the (e) scope-registration family, (f) multi-EXISTS composition planning, (g) w4b translator-side mints, (h) scalar-projection silent-NULL, (i) name-set roles refactor, (j) one-outer-routing authority, @claude's non-static boundary e2e pin (outer_ref_taut_still_declines — unit-covered today via the classification table's conservative arm).** Next: the remaining P2 producers (EXISTS-in-ON, N-way WHERE-EXISTS) per the S4 roadmap.
 
-#### P2 EXISTENTIAL-FLATTEN TRANSLATION SEED — DESIGN (2026-07-10, **Graefe DESIGN ACK** with 4 binding conditions): N-way WHERE-EXISTS gated seed + EXISTS-in-ON unification
+#### P2 N-WAY WHERE-EXISTS — ATTEMPTED (commit A) then REVERTED (Graefe ruling): a HARD WALL found; a new PREREQUISITE slice booked (2026-07-10).
+Commit A (d6164dc62 + fixups 7045a3908 + docs 0dd9e9777, all on feat/rfc173-s4) retired the arity-2
+narrowing so a comma / N-way `FROM a,b,c WHERE EXISTS(…)` was born FLAT `[ForEach×N, Existential]` ordinal
+instead of the name-model 2+1. It was CORRECT on every row axis (all pins green, live-Java-grounded) and
+fully four-gate-reviewed — Graefe impl-ACK, Torvalds/@claude/codex NAKs all addressed (derived/opaque-box
+leg + LIMIT/DISTINCT exist-inner regressions fixed via scan-family + existInnerFoldSimple N-way narrowings;
+P4b regrounded). **But codex P1#2 (confirmed by EXPLAIN diff, NOT the row-parity phantom I first mis-called
+it) exposed a plan-quality regression: the born-flat existential fold CROSS-PRODUCTS
+(`NLJ(NLJ(A,B),C)`+top-filter) where the name model got a correlated INDEXED join
+(`FlatMap(Scan(C),FlatMap(Scan(B),indexScan(A)))`).** Graefe BLOCK: not a cost detail — the fold plans
+legs in isolation with nil join predicates and is structurally incapable of the correlated index probe;
+PartitionSelectRule permanently declines the existential select, so the cross-product is the sole memo
+member; the atomic cap forces every N-way WHERE-EXISTS through this fold.
 
-> **THE ACK RECORD.** Two-commit split STANDS (A independently e2e-visible; fused, a B regression would
-> mask A's certs). **C1 (F2 ruled):** the ON-rider transparency is a GATE-INTERNAL sibling entry point
-> ("decide as seed-root; riders attached by the builder", the `gatesAsFreshCluster` pattern) — for
-> WHERE-EXISTS the gate never SEES the riders (they live on `f`), so the flatten only ever NARROWS; an
-> ON-side caller would have to WIDEN past a poison = parallel re-derivation, forbidden. `:278`/`:511`
-> stay verbatim for every other entry. Callers narrow, never widen. **C2 (F3 ruled):** ONE seed
-> construction — the shared core is `translateGatheredInnerCluster` EXTENDED with the esq attach loop;
-> a nil-filter personality split or a third builder are both rejected. **C3:** the ON-path NOT-polarity
-> guard stays per-wrapper in commit B (input-shape guards live in the wrappers). **C4:** live-Java probe
-> before every new row pin. HAZARDS EXTENDED: **H4 — the fold dispatch admits exactly ONE trailing
-> existential** (rule_implement_nested_loop_join.go:51-54 `allForEach`; PartitionSelectRule declines any
-> existential), so `[FE×N, Ex×M≥2]` has NO arm — pin fail-closed parity BEFORE any flip, and the
-> multi-EXISTS-in-ON reach gap does NOT ride commit B on the frontend-guard lift alone (it would move
-> the 0AF00 from frontend to planner, zero rows gained; the M≥2 fold arm is its own scoped piece —
-> decide at commit B whether to build it or book it). **H5 — esq correlation preds are BAKED via the
-> attach-before-bake order** (the 2-leg precedent; bakeGatedJoinPredicates bakes only legTypes keys so
-> the inner-alias side stays lazy automatically; no lazy-esq special case). **H6 — "un-narrowed record"
-> means the arity-2 narrowing removed ONLY; residual narrowings (alias collision) still rewrite the
-> record** (the :5022 contract: recorded decision == seed actually built). **H7 — dup-alias N-way:
-> collision namespace + quantifier naming key on leg.binding for ALL gathered legs, and the
-> mintedBindingLeg loud-decline generalizes to the N-leg list** (it currently inspects only left/right).
-> Existential ordering safe by construction (attach appends after ForEach legs) — assert anyway.
+**THE WALL (confirmed by Graefe + an Option-B prototype).** The prescribed fix — a 2-level hoist so the
+inner `[ForEach×N]` reaches PartitionSelectRule+index-matching — was prototyped (translation-time 2-level;
+SelectMergeRule supplies the flat form; verified inverses). It gave CORRECT ROWS but STILL cross-products:
+`implementExistentialSelect`'s ordinal branch rebases the existential's buried-leg correlation
+(`e.eref=a.id`) via `ordinalSeedLegWindowsOf(planResultValue(outerPlan))`, which recognizes ONLY the
+pristine ordinal-seed RC — the CROSS-PRODUCT's row. An INDEX-matched box (nested FlatMaps) flows a different
+row shape → the ordinal rebase fails closed, leaving only the cross-product box for the fold; the name-model
+branch needs a NAME-keyed merged row = the very producer being retired. **Producer-retirement and
+existential-index-matching are MUTUALLY EXCLUSIVE under the current fold: the name model indexes precisely
+because it resolves buried refs BY NAME over an index-matched box; the ordinal fold can only rebase against
+the ordinal-seed (cross-product) row.**
 
-**Scope.** Two translator-side producer retirements on the existential axis, sequenced A → B. The executor
-N-way existential fold ALREADY LANDED (`bc54d6300`, four-gate closed): it plans `[ForEach×N, Existential…]`
-by reconstructing ordinal seeds from the LEG PLANS after SelectMergeRule flattens the anchored buried box.
-The name model survives at TRANSLATION only: (A) `translateJoinWithExists` de-gates arity≥3 (the
-"existential flatten builds exactly two ForEach legs" narrowing) → the anchored 2+1 flatten — the buried
-inner box translates ENCLOSED and `buildJoinResultValue` fires for BOTH the buried box and the flatten's
-own RV (producer A1, twice); (B) `translateJoin`'s `OnExistsSubqueries` consumption is unconditionally
-name-model (gate `:278` poison → anchored RV + a DUPLICATED existential attach loop). Zeroing both is the
-`:4539`-flatten entry on the remaining-slice list plus the EXISTS-in-ON half of the `:4291`-join entry.
-
-**Java ground truth (agent recon, 4.12.11.0).** The ON expression is visited by the SAME ExpressionVisitor
-as WHERE: `visitExistsExpressionAtom` adds the existential quantifier to the JOIN's own fragment
-(ExpressionVisitor.java:558-575) and `visitSimpleTable` merges the accumulated ON conjuncts into the same
-`where` Optional a real WHERE uses (QueryVisitor.java:264-269). **ON-EXISTS and WHERE-EXISTS converge to
-the IDENTICAL flat select** — one SelectExpression, N ForEach + M Existential quantifiers, RV over the
-ForEach legs only (LogicalOperator.generateSimpleSelect). No arity limit anywhere (PartitionSelectRule ≥3;
-ImplementNestedLoopJoinRule strictly binary with the existential flag). EXISTS-in-ON is UNTESTED upstream
-(zero yamsql pins) → every NEW Go row pin needs a live-Java conformance probe first (standing discipline).
-
-**Commit A — the N-way gated flatten.** `translateJoinWithExists` adopts the gathered-cluster seed for
-gated arity ≥ 2 (was: exactly 2), composing the pieces `translateGatheredInnerCluster` already uses — all
-N-generic today: leg list via `legsOfGatedJoin(j)` (FROM-order cluster flattening), N binding-named ForEach
-quantifiers translated FRESH (`inInnerCluster=false`), preds = root ON + `gatherInnerClusterPreds(j)`
-(nested-join ONs) + WHERE conjuncts + per-esq correlation preds → `bakeGatedJoinPredicates`, the
-existential-alias collision namespace seeded from ALL leg bindings, the UN-narrowed wedgeGate decision
-recorded. The `mintedBindingLeg` loud-decline arm SURVIVES for the residual narrowings (existential-alias
-collision; non-gated clusters). Effect: both A1 firings on this path zero; the flatten's enclosure setter
-(`t.inInnerCluster = !gatedFlatten`) stops firing for gated N-way. HAZARDS (verify-first):
-(H1) baked-seed × N-way fold — the fold's pred block claims "lazy AND FrontierPinned leg refs both
-handled" (rule_implement_nested_loop_join.go ~:2554); the arity-2 flatten proves the 2-LEG fold consumes
-baked seeds; trace-verify the N-way fold does too BEFORE the flip. (H2) a born-flat select gives
-SelectMergeRule nothing to merge — confirm plan-shape parity (EXPLAIN) with today's reconstruction route.
-(H3) the C3 white-box pin "nested-cluster leg declines (arity>2) stays anchored" FLIPS to gated — a
-chartered flip, recorded here as intent. CERTS: comma-syntax outer e2e (`FROM a,b,c WHERE EXISTS` — a live
-coverage GAP; only the explicit-JOIN form is pinned), the existing buriedbox JOIN..ON pins keep rows with
-the seed now ordinal AT TRANSLATION (white-box baked-RV assert), a discriminating dup-named buried-leg
-fixture (mis-bind flips the answer), the NOT-EXISTS twin, live-Java rows for new pins.
-
-**Commit B — EXISTS-in-ON routed through the SAME builder (the Java convergence).** `translateJoin`'s
-`OnExistsSubqueries` block delegates to the shared existential-flatten builder; the duplicated attach loop
-retires — ONE existential attach loop, ONE gate consultation, ONE seed construction. The gate treats the
-ROOT join's OWN `OnExistsSubqueries` as RIDERS on the seed select (precedent: the c5b WHERE-EXISTS-rider
-transparency) — ONLY for the flatten's direct-seed decision: the `:278` poison arm STAYS for every
-leg/probe position (an OnExists join as a LEG of an enclosing cluster remains unclassifiable;
-`gatherInnerClusterLegs` keeps stopping at OnExists joins), and `:511` stays verbatim (the unnest/scalar
-`clusterArity==1` probes are unaffected either way — a join outer leg is arity≥2 regardless). SQLSTATE
-surface unchanged: OUTER ON-EXISTS 0AF00, multi-EXISTS-in-ON 0AF00, the OR-buried NLJ backstop, the
-polarity 0A000 at the ON-lift — all wiring preserved. FORKS FOR THE RULING: (F2) where the ON-rider
-transparency lives — a gate-internal entry point ("existentials ride the caller's seed") vs the flatten
-narrowing the shared decision as it already does for WHERE; ONE-authority points at the second, Decide-as-
-single-truth points at the first. (F3) builder unification shape — generalize `translateJoinWithExists(j, f)`
-to a nil filter vs extract a shared core both call. CERTS: every existing EXISTS-in-ON e2e row preserved
-(inner/right-leg/NOT/sole/uncorrelated/3-way), NEW white-box ordinal-seed asserts, live-Java probes for
-any new row pin.
-
-**Sequencing A → B:** B's 3-way ON-chain shape consumes A's N-way builder; A is the chartered `:4539`
-slice. Both gated on this design's Graefe ACK; each commit four-gates independently.
-
-**COMMIT A — LANDED, with a corrective (the peel regression, verify-first-caught).** The translator delta
-was exactly as designed: `translateGatheredInnerCluster` extended into the ONE gated seed construction
-(esqs ride after the ForEach legs, esq preds attach-before-bake, `extraPreds` = the WHERE conjuncts);
-`translateJoinWithExists` retired the arity-2 narrowing and delegates gated flattens to it; the collision
-namespace keys on all `legsOfGatedJoin` bindings (H7); the name-model residual path collapsed (its gated
-branches now live in the core). C3 white-box pin FLIPPED (H3): "nested-cluster leg declines" →
-"gates N-way (arity 3)" with ordinal-seed + trailing-existential + gate-record asserts. **The full suite
-surfaced a REGRESSION the four N-way pins missed** (`TestFDB_RFC173Item1…/P4b_arity3_dup_exists`): an
-arity-3 dup-alias FROM with an UNCORRELATED `EXISTS(SELECT 1 FROM p)` went `0AF00` after the flip while it
-PLANNED on the pre-flip tree (baseline-worktree-verified: it ran the name-model 2+1 route, which
-`SelectMergeRule` flattened and the executor N-way arm reconstructed). Root cause (translate-level plan
-trace): the born-flat ordinal seed routes STRAIGHT to `implementNWayJoinWithExistential`, whose
-`existInnerIsScanSafe` guard peeled only PredicatesFilter/Filter/FetchFromPartial — but an uncorrelated
-`EXISTS(SELECT 1 FROM p)` plans as `Projection([1], TypeFilter([P], Scan(P)))`, so the guard fail-closed
-on the projection/type-filter wrappers and declined. Neither is in the guard's HAZARD set (both are
-row-count-preserving — a FirstOrDefault/DefaultOnEmpty that could manufacture a row over an empty inner
-stays UNPEELED); the pre-flip route never hit the guard because it reconstructed the seed post-merge.
-FIX: widen the peel to `RecordQueryProjectionPlan` + `RecordQueryTypeFilterPlan`. Live-Java-grounded
-(4.12.11.0 peel probe): the shape answers 18 rows (`p×q×q` under an always-true EXISTS), and the SAFETY
-POLE holds — an empty-inner `EXISTS(… WHERE eid=999)` stays 0 rows (the peel never flips EXISTS-false to
-true). Pins: P4b flipped decline→18-rows (Java-grounded); `TestFDB_RFC173P2_UncorrExistsPeel`
-{nonempty→18, empty-inner→0} pinning both the widening AND the safety pole. STANDING NOTE — the four
-happy-path N-way pins all used CORRELATED existentials (scan-plan inners); the uncorrelated-inner axis was
-the unprobed dimension. The full suite (not the slice's own pins) caught it — the "green with the bug
-latent is the real danger" discipline, dimensional-gap edition.
-
-**COMMIT A — the gate-round fixups (Graefe IMPL-ACK / Torvalds NAK / @claude NAK, all addressed on the
-follow-up HEAD).** Graefe ACK'd with two non-blockers: (6) the peel arms had no white-box unit case →
-added TestExistInnerIsScanSafe's projection/typeFilter admits + the COMPOSITIONAL safety pole
-(projection(firstOrDefault(scan))→false, typeFilter(nlj)→false — a hazard node behind a peel still
-declines); (7) a one-line note that M≥2 existentials are intentionally executor-rejected. **@claude NAK — a
-CONFIRMED regression on the derived-table-leg axis:** `FROM pa, (SELECT …) AS dq, rc WHERE … EXISTS(…)`
-declined 0AF00 post-commit but planned `[[10]]` pre-commit AND on Java (worktree-verified both sides). Root
-cause: retiring the arity-2 narrowing routed a comma cluster containing an OPAQUE-BOX (derived-table
-/ LogicalCTE) leg into the gated N-way seed, whose executor fold (legIsOrdinalSafe) cannot plan a box leg →
-decline; pre-commit the same shape fell to the name-model route. FIX (the conservative option): the
-existential flatten now gates ONLY when every gathered leg is SCAN-FAMILY (isScanFamilyLeg — the logical
-proxy for legIsOrdinalSafe); a box leg narrows OFF the gate to the name-model route, exactly restoring the
-pre-P2 fallback. gatherInnerClusterLegs already flattens buried INNER clusters to scan legs, so the
-buried-inner-box pins keep gating; only genuine opaque boxes narrow. Pin: derived_table_leg_stays_name_model
-→ [[10]] (Java-grounded). **Torvalds NAK — two:** (1) P4b "Java-grounded" was asserted-not-shown → ran the
-EXACT dup-alias shape live: Java 18 rows {5:6,7:6,9:6}, Go matches the SET (order differs, count-map compare
-is correct since neither has ORDER BY); comment now cites the direct grounding. (2) the empty_inner pin's
-"safety pole" comment overclaimed (that inner has no FOD node) → reframed as empty-inner-correctness, and
-the emit-on-empty pole is now pinned by the unit compositional cases AND a real e2e
-(nway_nonscansafe_inner_declines — a LEFT-join exist-inner in the N-way arm declines 0AF00, Java answers =
-reach-gap parity). Plus the buildOrdinalJoinResultValue "2-way" doc-rot → N-way.
-
-**PRE-EXISTING BUG surfaced (booked, NOT commit A — baseline-confirmed identical on bebf23b0e):**
-`EXISTS(SELECT COUNT(*)/MAX(…) …)` is always-TRUE (an aggregate over any group yields exactly one row), so
-Java keeps every outer row; Go treats it as correlated-filtering and drops the non-matching rows
-(`… EXISTS(SELECT COUNT(*) FROM e WHERE e.eref=p.id)` → Java `[[10],[20]]`, Go `[[10]]`). A 2-leg-fold-path
-divergence in EXISTS-over-aggregate-inner semantics, unrelated to the N-way seed (in the 3-way the outer
-join already filters, so no divergence manifests). Booked in TODO.md Known gaps.
-
-**codex NAK (gpt-5.6-sol ultra) — THREE P1s, base-vs-HEAD differential verified (worktree, 7 shapes):**
-P1#1 = the SAME derived/opaque-box-leg regression @claude found, generalized to FULL-join and aggregate
-legs — FIXED by the scan-family narrowing above (differential: derived_leg 2=2, agg_leg 1=1). **P1#2
-(index-pushdown / cross-product blowup) = REAL PLAN-QUALITY REGRESSION — my first-pass "phantom" call
-was WRONG and is corrected here.** I dismissed it on ROW-parity (differential 1=1), but a plan-shape claim
-needs a PLAN-shape probe: an EXPLAIN diff (base vs HEAD, `a,b,c WHERE b.aid=a.id AND c.aid=a.id AND
-EXISTS(…)`) shows base `FlatMap(outer=Scan(B), inner=TypeFilter([A], Scan(A,[=])))` — a CORRELATED INDEXED
-join (the `b.aid=a.id` SARG pushed into an equality scan of A) — while HEAD `NLJ(NLJ(Scan(A),Scan(B)),
-Scan(C))` + one top `PredicatesFilter([2 preds])` — a FULL A×B×C CROSS PRODUCT. The NON-existential gated
-N-way (`no_exists` EXPLAIN) DOES get the indexed plan (the partition rules + index matching implement its
-all-ForEach select), so this is NOT a general ordinal-seed property — it is specific to the EXISTENTIAL
-fold: `[ForEach×N, Existential]` is declined by PartitionSelectRule and ONLY
-implementNWayJoinWithExistential handles it, which builds a rigid left-deep cross-product chain and applies
-every join predicate as ONE top filter (no pushdown, no index matching — a DELIBERATE simplification from
-the N-way generalization bc54d6300, "the cost model can push later"). Base routed the comma N-way
-WHERE-EXISTS to the name model, whose box got the indexed plan; commit A routes it to the fold →
-cross-product. So it IS a commit-A cost regression for selective/large N-way WHERE-EXISTS. **LESSON
-(recorded): row-parity is not plan-parity — a reviewer's plan-shape claim demands an EXPLAIN diff, never a
-rows-only differential; I nearly shipped a false "phantom" into the RFC record.** DISPOSITION: escalated to
-Graefe as a design ruling — **VERDICT: BLOCK** (recorded next).
-
-**GRAEFE RULING (P1#2 cross-product) — BLOCK: index recovery is a PREREQUISITE, not a refinement.**
-"The cost model can push later" is FALSE here: `implementNWayJoinWithExistential` folds each leg from
-`getWinnerForOrdering(legRefs[i])` planned IN ISOLATION, NLJs them with `nil` join predicate, and lands all
-join predicates as ONE PredicatesFilter over the top — and this is the SOLE memo member for the existential
-select (PartitionSelectRule returns the instant it sees a non-ForEach quantifier, so no partitioned/indexed
-alternative is EVER generated). The cost model chooses among GENERATED alternatives; exploration produces
-exactly one (the cross product) — "a missing-exploration bug wearing a cost-refinement costume." (a)
-Residual pushdown (fill the `nil`) is mechanically trivial but still materializes A×B before filtering — it
-does NOT produce `Scan(A,[=b.aid])`; the base plan's correlated index probe needs A's Reference SARG'd by
-the sibling correlation AT PLANNING, which the fold cannot inject (it plans legs bare and explicitly
-DECLINES leg↔leg correlation — the INDEPENDENT-LEGS gate). The fold is STRUCTURALLY INCAPABLE of the base
-plan. (b) The atomic cap deletes the name model → this fold becomes the ONLY path for N-way WHERE-EXISTS →
-retiring the producer without an index-quality replacement ships N³-vs-N asymptotic regression on a shape
-that planned well the day before — a red line, NOT a deferrable cost detail. (c) **THE FIX (Cascades-correct,
-both plans coexist): a new EXPLORATION RULE that hoists the Existential out of the flat
-`[ForEach×N≥2, Existential]` select into a 2-level select** — inner memo group `[ForEach×N]` →
-PartitionSelectRule + index matching → the correlated indexed join (IDENTICAL to the non-existential N-way
-that already works on HEAD); outer `[ForEach(innerJoin), Existential]` → the existing 2-leg EXISTS fold.
-This retires the name-model producer (the S4 goal), reproduces the base plan STRUCTURALLY, and puts BOTH the
-hoisted-partition plan and the fold's cross-product in the memo so COST decides — strictly more
-Cascades-correct than bolting pushdown into the implement rule. Block clears when the existential N-way's
-indexed plan is back in the memo and cost-selected; re-request the ACK on that rule. **The pre-existing
-2-leg fold's cross-product (bc54d6300) inherits the same gap — but the 2-leg EXISTS over a scan pair has no
-buried inner join to index-hoist, so it is out of THIS rule's scope; the rule targets N≥3 where the inner
-join can be partitioned.**
-
-**COMMIT-A STATUS: NOT gate-clean.** 7045a3908 is pushed but BLOCKED on P1#2. The hoist exploration rule is
-the gating work; commit A's producer retirement is correct-but-incomplete until the rule restores the
-indexed plan. Next: recon the rule infrastructure + 2-leg fold, design the hoist rule, Graefe design-ACK,
-implement, four-gate. **P1#3 = HALF-REAL, FIXED:** `EXISTS(SELECT … LIMIT 1)` and
-`EXISTS(SELECT DISTINCT …)` regressed decline-vs-plan (differential: base 2 rows → HEAD 0AF00), while
-ORDER BY did NOT (the sort elides → scan-safe). Root cause: an all-scan N-way outer gates born-flat, but
-the existential inner (Limit/Distinct) is not emptiness-preserving (LIMIT 0 / OFFSET can empty a non-empty
-inner), so the executor's existInnerIsScanSafe declines it — with no name-model fallback on the exclusive
-born-flat route. FIX: a second flatten narrowing — existInnerFoldSimple gates born-flat ONLY when every
-existential inner is a plain scan-family subquery (scan under filters/projections); a Limit/Distinct/Sort/
-aggregate/join/union inner keeps the whole shape on the name model (conservative pre-gate; the executor
-guard stays the authority). NOT a widening of existInnerIsScanSafe — peeling Limit is unsound (LIMIT 0).
-Differential after the fix: ALL 7 shapes match base. The safety pole becomes UNREACHABLE from the N-way
-arm via SQL (a non-simple inner can't gate), so it is pinned structurally (the unit compositional cases)
-plus the narrowing e2e (nway_nonsimple_inner_stays_name_model, limit_distinct_inner_stays_name_model).
-BOTH narrowings are N-WAY-ONLY (len(legs) > 2): the 2-leg fold (implementJoinWithExistential's N==2 path)
-tolerates a box leg and a non-scan/JOIN existential inner unchanged from pre-P2 — only the N-way arm applies
-the strict legIsOrdinalSafe/existInnerIsScanSafe guards — so scoping to N-way fixes exactly the shapes the
-arity-2 retirement newly routed into the strict fold while preserving the 2-leg white-box pins (the
-wedge-gate exists_outer_leg_enclosed_subquery_fresh case gates a 2-leg join-inner flatten; a full-suite run
-caught the over-narrowing when the first cut narrowed all arities).
-codex's verdict line didn't parse (UNKNOWN) — read from prose. Two reviewers independently converging on
-P1#1 was the signal it was real; the differential separated P1#3's real half from ORDER BY and exposed
-P1#2 as a phantom (the discipline: verify the plan-shape claim, don't trust or dismiss it).
-
-**LIVE-JAVA GROUNDING (probe basket, 4.12.11.0, 2026-07-10 — 15 shapes, T_PA/T_QB/T_RC/T_ED/T_SD +
-dup-k T_KA/T_KB/T_KC fixture, pk-disjoint).** Go↔Java rows BYTE-IDENTICAL on every currently-supported
-shape: comma 3-way WHERE-EXISTS `[[10]]`, NOT-EXISTS `[[20]]`, 4-way `[[10]]`, projected
-`[[10 true],[20 false]]`, dup-col discriminator `[[1]]`; ON-EXISTS 2-way `[[10]]`, NOT `[[20]]`, sole
-`[[10],[10]]`, right-leg `[[10]]`, 3-way chain `[[10]]`, uncorrelated `[[10],[20]]`; WHERE control
-`[[10]]`. So BOTH families are pure producer-zeroing on the supported surface — no behavior change to
-pin, plan-shape asserts carry the slice. The three Go declines classified: (i) LEFT ON-EXISTS =
-DECLINE-PARITY (Java's planner also fails: "The result value must reference the null-supplying side
-with a nullable type" — no rows to chase; Go's frontend 0AF00 stays); (ii) **multiple EXISTS in one
-ON = REACH GAP** — Java answers `[[10],[10]]`; the frontend `len(subqueries)>1` guard
-(logical_predicate.go:706) is NOT the only blocker — per Graefe H4 the fold dispatch admits exactly
-ONE trailing existential, so the lift needs the M≥2 fold arm too; scoped at commit B (build or book),
-grounded rows recorded here either way; (iii) **EXISTS under OR in ON = REACH GAP** — Java answers
-`[[10],[10],[20]]` (the ExistentialValuePredicate rides inside the OR); Go's lift machinery is
-top-level-AND-only — BOOKED separately (predicate-embedded existentials, not this slice's mechanism).
+**RULING: REVERT commit A (done — restores the name-model indexed plan exactly, no cost regression, the
+producer stays; the 2-leg/consolidation parts were byte-compatible no-ops). BOOKED — a dedicated slice
+"ordinal-fold-over-index-matched-box":** teach `ordinalSeedLegWindows` to recover the merged positional
+layout from an INDEX-MATCHED box plan (walk the pushed-down FlatMap, not just the RC), so the buried-ref
+rebase bakes ordinals over the box's actual planned output — the ordinal twin of the name-model
+`rebaseOuterLegRefsToMerged`, lockstep-verified against `finalizeSeedWindows` (the c5a drift sentinel). A
+few-hundred-LOC executor enhancement + pins, on the order of the W4-left existential work. **This slice is a
+HARD PREREQUISITE for the atomic cap** (the cap deletes the name model, routing every N-way WHERE-EXISTS
+through this fold; without it the cap ships the cross-product universally). **DURABLE LESSONS: (1) row-parity
+is NOT plan-parity — a reviewer's plan-shape claim demands an EXPLAIN diff, not a rows-only differential (I
+nearly banked a false "phantom"). (2) producer-retirement is not free where the producer's NAME resolution
+is load-bearing for a downstream optimization (here index matching); retiring it needs the ordinal twin of
+that resolution BUILT FIRST — a general S4 hazard for the remaining producers, not a one-off.** EXISTS-in-ON
+(commit B) is UNAFFECTED (it composes over the same fold but was never started); it waits behind this
+prerequisite only insofar as it would hit the same wall for its N≥3 chained-ON shape.
 
 **THE PRECISE REMAINING-SLICE LIST (S4 deep-read, the actionable roadmap).** A name-model leg is
 name-model because a name-model PARENT set `inInnerCluster`, tripping one of the THREE enclosure

@@ -9,16 +9,15 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// RFC-173 QP-REF-BIND item 2, commit 3 (+ the P2 N-way generalization) —
-// the flatten gate arm. These pins prove the ordinal seed FIRES at
-// translation for the gated N+M flatten (the e2e EXPLAIN summary renders
-// the gated and anchored shapes identically, so the seed's presence is
-// asserted here, at the layer that builds it): a maximal INNER cluster
-// under a WHERE-EXISTS filter seeds the BAKED ordinal RC (FrontierPinned
-// refs, never the anchored RC) — 2-way AND gathered N-way alike (the
-// former arity-exactly-2 narrowing retired with the P2 slice) — the
-// combined predicates bake, and the remaining narrowings decline back to
-// the anchored name model (duplicate existential alias, enclosure).
+// RFC-173 QP-REF-BIND item 2, commit 3 — the flatten gate arm. These pins
+// prove the ordinal seed FIRES at translation for the gated 2+1 flatten
+// (the e2e EXPLAIN summary renders the gated and anchored shapes
+// identically, so the seed's presence is asserted here, at the layer that
+// builds it): a maximal 2-way INNER join under a WHERE-EXISTS filter seeds
+// the BAKED ordinal RC (FrontierPinned refs, never the anchored RC), the
+// combined predicates bake, and every narrowing declines back to the
+// anchored name model (nested-cluster leg, duplicate existential alias,
+// enclosure).
 
 // c3ExistsFilter wraps j in a WHERE-EXISTS filter carrying one existential
 // subquery over table pg (aliased by alias).
@@ -102,35 +101,18 @@ func TestRFC173Item2C3_FlattenGateArm(t *testing.T) {
 		}
 	})
 
-	t.Run("nested-cluster flatten gates N-way (arity 3)", func(t *testing.T) {
+	t.Run("nested-cluster leg declines (arity > 2)", func(t *testing.T) {
 		t.Parallel()
-		// The P2 chartered flip: this shape DECLINED to the anchored name
-		// model while the flatten narrowed to arity exactly 2; it now rides
-		// the gathered-cluster seed — one flat select over the three
-		// FROM-order legs plus the trailing existential, the shape the
-		// executor's implementNWayJoinWithExistential consumes.
 		tr := newGateTranslator(t)
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
 		j := inner(nested, scan("TypedRecord", "tr"))
 		sel := c3TranslateFlatten(t, tr, c3ExistsFilter(j, "q$e"))
-		c3AssertOrdinalSeed(t, sel)
-		if got := len(sel.GetQuantifiers()); got != 4 {
-			t.Fatalf("N-way flatten select has %d quantifiers, want 4 (3 ForEach + existential)", got)
-		}
-		// Trailing-existential invariant (the executor dispatch requires it).
-		quants := sel.GetQuantifiers()
-		for i, q := range quants[:3] {
-			if q.Kind() != expressions.QuantifierForEach {
-				t.Fatalf("quantifier %d kind = %v, want ForEach before the trailing existential", i, q.Kind())
-			}
-		}
-		if quants[3].Kind() != expressions.QuantifierExistential {
-			t.Fatalf("last quantifier kind = %v, want Existential", quants[3].Kind())
-		}
-		// The RECORD matches the seed built (P2 H6): gated, post-flattening
-		// arity 3.
-		if d, ok := tr.wedgeGate[j]; !ok || !d.Gated || d.Arity != 3 {
-			t.Fatalf("N-way flatten's record = %+v (ok=%v), want gated arity 3", d, ok)
+		c3AssertAnchoredSeed(t, sel)
+		// The RECORD matches the seed built — a Gated record over an
+		// anchored seed would misroute downstream consumers (the
+		// WHERE-conjunct baking arm, commit 4's enclosure lift).
+		if d, ok := tr.wedgeGate[j]; !ok || d.Gated {
+			t.Fatalf("narrowed flatten's record = %+v (ok=%v), want recorded NOT gated", d, ok)
 		}
 	})
 
