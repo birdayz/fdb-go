@@ -295,16 +295,27 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// hit the buried-inner-box index-matching wall — the booked
 		// ordinal-fold-over-index-matched-box prerequisite) and for any
 		// non-scan leg.
+		// TWO conditions, neither sufficient alone:
+		//   - isScanFamilyLeg excludes a FULL/aggregate/union/opaque BOX leg (a
+		//     buried join / null-drain / opaque merged row the scan-scan seed is
+		//     unverified over) — a static Scan-through-Filter walk;
+		//   - clusterArity(leg)==1 excludes a CTE-BACKED leg whose body is a
+		//     JOIN: isScanFamilyLeg sees the bare LogicalScan of the CTE name and
+		//     returns true, but clusterArity is cteScope-AWARE — it resolves the
+		//     CTE body and returns its arity (≥2 for a joined body), so the leg
+		//     is N-way and hits the cross-product/index-matching wall. Neither
+		//     check alone covers both (a FULL box is clusterArity==1; a CTE-join
+		//     scan is isScanFamilyLeg-true), so BOTH are load-bearing.
 		// DUPLICATE ALIAS: two legs sharing a SQL alias get a parser-minted
-		// Q$DUPn binding on the later leg (mintedBindingLeg finds it). The
-		// gated arm here RETURNS EARLY, before the pairwise dup-binding poison
-		// (:294), so without this guard a dup-alias EXISTS-in-ON would gate and
-		// the 2-leg fold would LOSE the minted binding → serve NULLs for that
-		// leg's columns (silent wrong rows; the name model loud-declines it via
-		// the mintedBindingLeg arm at translateJoin). Keep dup-alias shapes
-		// poisoned here so they fall to that loud decline (base behaviour).
+		// Q$DUPn binding on the later leg (mintedBindingLeg finds it). The gated
+		// arm here RETURNS EARLY, before the pairwise dup-binding poison (:294),
+		// so without this guard a dup-alias EXISTS-in-ON would gate and the
+		// 2-leg fold would LOSE the minted binding → serve NULLs (silent wrong;
+		// the name model loud-declines it). Keep dup-alias poisoned here so it
+		// falls to that loud decline (base behaviour).
 		if j.Kind == logical.JoinInner && !t.inInnerCluster &&
 			isScanFamilyLeg(j.Left) && isScanFamilyLeg(j.Right) &&
+			t.clusterArity(j.Left) == 1 && t.clusterArity(j.Right) == 1 &&
 			mintedBindingLeg(j.Left, j.Right) == "" {
 			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "bare 2-way non-enclosed EXISTS-in-ON (scan legs; 2-leg ordinal fold)"}
 		}

@@ -4910,7 +4910,16 @@ silent NULLs; the gated arm returns before the pairwise dup-binding poison → a
 `mintedBindingLeg(j.Left,j.Right)==""` so a dup-alias falls to the name-model loud decline (0AF00, base
 behaviour — verified). Graefe IMPL-ACK (his FULL-box exclusion reasoning was the error Torvalds caught);
 @claude ACK (all 6 row/plan axes RAN live-Java clean, incl. the dup-column-window disambiguation and the
-EXPLAIN no-index-lost diff). Poison pins added: full_box/aggregate/dup_alias stay poison, both directions.** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
+EXPLAIN no-index-lost diff). Poison pins added: full_box/aggregate/dup_alias stay poison, both directions.**
+**codex ROUND 2 (delta P1, another silent regression): a CTE-BACKED leg whose body is a JOIN passes
+isScanFamilyLeg (a bare LogicalScan of the CTE name) but resolves through cteScope to an N-way join → the
+cross-product/index-matching wall. The `clusterArity==1` check I had REMOVED (Torvalds called it "dead")
+catches exactly this — clusterArity is cteScope-AWARE and returns the body's arity (≥2). So the final
+predicate needs BOTH `isScanFamilyLeg` (excludes FULL/aggregate boxes, which are clusterArity==1) AND
+`clusterArity==1` (excludes CTE-backed joins, which are isScanFamilyLeg-true) — neither alone is sufficient;
+clusterArity==1 is LOAD-BEARING, not dead (the "dead code" call was wrong because the CTE case was
+untested). Pin added: cte_backed_join_leg_stays_poison. Final gate predicate:
+`JoinInner && !enclosed && isScanFamilyLeg(both) && clusterArity(both)==1 && mintedBindingLeg==""`.** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
 derivation helper, retires with the nested residuals of P2/P3, not standalone. P2 (buildJoinResultValue:727)
 = (i) 2-way EXISTS-in-ON RETIRABLE-NOW, (ii) enclosure declines lift atomically at S4 (circular, the
 forceOrdinalSpike certificate models it). P3 (buildUnnestResultValue:1673) = BLOCKED on W5

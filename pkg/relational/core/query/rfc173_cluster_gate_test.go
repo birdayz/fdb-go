@@ -132,6 +132,22 @@ func TestRFC173S4_ExistsInOnGate(t *testing.T) {
 		}
 	})
 
+	t.Run("cte_backed_join_leg_stays_poison", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		// A CTE-name scan is a bare LogicalScan (isScanFamilyLeg TRUE), but it
+		// resolves through cteScope to a JOIN body — an N-way leg that hits the
+		// cross-product/index-matching wall. clusterArity is
+		// cteScope-aware and returns the body's arity (2), so clusterArity==1 is
+		// FALSE → poison. Without the clusterArity check this gates → wrong wall.
+		tr.cteScope["W"] = inner(scan("Order", "o"), scan("Customer", "c"))
+		j := onExists(inner(scan("W", "w"), scan("TypedRecord", "tr")))
+		d := tr.ordinalWedgeGateDecide(j)
+		if d.Gated {
+			t.Fatalf("CTE-backed-join-leg EXISTS-in-ON gate = %+v, want poison (CTE body is a join → N-way wall)", d)
+		}
+	})
+
 	t.Run("dup_alias_stays_poison", func(t *testing.T) {
 		t.Parallel()
 		tr := newGateTranslator(t)
