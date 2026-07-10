@@ -2197,6 +2197,15 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
+	// RFC-173: fold a POSITIVE WHERE-EXISTS over an unconditional-one-row
+	// aggregate (esq.AlwaysTrue) to TRUE — drop its existential quantifier before
+	// any routing. EXISTS(unconditional-one-row) is always satisfied, so it
+	// contributes NO filter (its EXISTS marker is already stripped from the
+	// predicate by splitNonExistsPredicates). Running here — ahead of the
+	// join-flatten — means the correlated-aggregate semi-join is never built, so
+	// the joined-outer / windowed-DML hazards of the semi-join approach cannot
+	// arise. NOT EXISTS (negated) and projected consumers do NOT fold.
+	f = t.foldAlwaysTrueExists(f)
 	// Narrowed correct-or-loud decline: a SCALAR SUBQUERY in a filter over a chained
 	// unnest (`FROM t, t.a AS x, x.b AS y WHERE t.id = (SELECT …)`) rides the wedgeGate
 	// POSITIONAL bake (rebaseUnnestOuterLegPredicateOrdinal), NOT the per-conjunct
@@ -5162,6 +5171,95 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		sourceAliases,
 		expressions.JoinInner,
 	)
+}
+
+// foldAlwaysTrueExists removes POSITIVE WHERE-EXISTS subqueries flagged
+// AlwaysTrue (an unconditional-one-row aggregate inner) from a filter, folding
+// `EXISTS(inner)` to TRUE: with no existential quantifier built and the EXISTS
+// marker already stripped from the predicate by splitNonExistsPredicates, the
+// conjunct simply disappears (`P AND TRUE == P`). ONLY positive consumers fold:
+// a negated one (`NOT EXISTS`) would be FALSE, not TRUE, so it is kept
+// (pre-existing behavior). f.ExistsSubqueries are AND-conjunct EXISTS by the
+// same invariant the existential-quantifier lowering relies on. Returns f
+// unchanged when nothing folds (no allocation on the common path).
+func (t *cascadesTranslator) foldAlwaysTrueExists(f *logical.LogicalFilter) *logical.LogicalFilter {
+	if f == nil || len(f.ExistsSubqueries) == 0 {
+		return f
+	}
+	anyAlwaysTrue := false
+	for _, esq := range f.ExistsSubqueries {
+		if esq.AlwaysTrue {
+			anyAlwaysTrue = true
+			break
+		}
+	}
+	if !anyAlwaysTrue {
+		return f
+	}
+	negated := map[values.CorrelationIdentifier]struct{}{}
+	if f.Predicate != nil {
+		predicates.WalkPredicate(f.Predicate, func(p predicates.QueryPredicate) bool {
+			if a, ok := predicates.IsNotExistentialPredicate(p); ok {
+				negated[a] = struct{}{}
+			}
+			return true
+		})
+	}
+	kept := make([]logical.ExistsSubquery, 0, len(f.ExistsSubqueries))
+	foldedAliases := map[values.CorrelationIdentifier]struct{}{}
+	for _, esq := range f.ExistsSubqueries {
+		if _, isNeg := negated[esq.Alias]; esq.AlwaysTrue && !isNeg {
+			foldedAliases[esq.Alias] = struct{}{}
+			continue
+		}
+		kept = append(kept, esq)
+	}
+	if len(foldedAliases) == 0 {
+		return f
+	}
+	f2 := *f
+	f2.ExistsSubqueries = kept
+	// Replace each folded esq's positive EXISTS marker with TRUE in the
+	// predicate (and collapse `P AND TRUE` -> P). The generic filter path would
+	// otherwise choke on a marker whose quantifier was dropped.
+	f2.Predicate = stripFoldedExistsMarkers(f.Predicate, foldedAliases)
+	return &f2
+}
+
+// stripFoldedExistsMarkers rewrites a predicate, replacing each POSITIVE
+// ExistentialValuePredicate whose alias was folded (EXISTS -> unconditionally
+// TRUE) with a TRUE constant, and dropping `AND TRUE` conjuncts. Only descends
+// through AND (folded esqs are AND-conjunct EXISTS).
+func stripFoldedExistsMarkers(pred predicates.QueryPredicate, folded map[values.CorrelationIdentifier]struct{}) predicates.QueryPredicate {
+	if pred == nil {
+		return nil
+	}
+	if a, ok := predicates.IsExistentialPredicate(pred); ok {
+		if _, isFolded := folded[a]; isFolded {
+			return predicates.NewConstantPredicate(predicates.TriTrue)
+		}
+		return pred
+	}
+	and, ok := pred.(*predicates.AndPredicate)
+	if !ok {
+		return pred
+	}
+	newSubs := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
+	for _, sub := range and.SubPredicates {
+		ns := stripFoldedExistsMarkers(sub, folded)
+		if c, isConst := ns.(*predicates.ConstantPredicate); isConst && c.Value == predicates.TriTrue {
+			continue // P AND TRUE == P
+		}
+		newSubs = append(newSubs, ns)
+	}
+	switch len(newSubs) {
+	case 0:
+		return predicates.NewConstantPredicate(predicates.TriTrue)
+	case 1:
+		return newSubs[0]
+	default:
+		return &predicates.AndPredicate{SubPredicates: newSubs}
+	}
 }
 
 // declineNegatedOuterOnlyEsq records a LOUD decline (and reports true) when

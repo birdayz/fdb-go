@@ -5285,12 +5285,19 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	if innerOp == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: inner query could not be planned")
 	}
+	// A CORRELATED non-grouped aggregate inner is unconditionally one row (the
+	// correlated fallback drops the aggregate, which is why this shape was
+	// silently filtering); flag it so a positive WHERE-EXISTS consumer folds it
+	// to TRUE. Only the correlated (isUndefinedCol) case — the non-correlated
+	// path keeps the aggregate in the inner plan and already answers correctly.
+	alwaysTrue := isUndefinedCol && queryInnerIsUnconditionalOneRow(q)
 	alias := p.mintSubqueryAlias()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
 		Alias:                  alias,
 		Plan:                   innerOp,
 		JoinPredicate:          p.lastJoinPredicate,
 		OuterOnlyJoinConjuncts: p.lastJoinPredicateOuterOnly,
+		AlwaysTrue:             alwaysTrue,
 	})
 	p.lastJoinPredicate = nil
 	p.lastJoinPredicateOuterOnly = false

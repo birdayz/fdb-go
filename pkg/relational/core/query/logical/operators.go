@@ -15,6 +15,16 @@ type ExistsSubquery struct {
 	Alias         values.CorrelationIdentifier
 	Plan          LogicalOperator
 	JoinPredicate predicates.QueryPredicate
+	// AlwaysTrue marks an EXISTS whose inner subquery ALWAYS produces at least
+	// one row, so `EXISTS(inner)` is unconditionally TRUE — set by the front-end
+	// for a NON-GROUPED aggregate inner (COUNT(*)/MAX/SUM with no GROUP BY /
+	// HAVING / QUALIFY / LIMIT 0 / positive OFFSET / windowed OVER). A POSITIVE
+	// WHERE-EXISTS consumer folds it to TRUE by simply not emitting the
+	// existential quantifier (the predicate's EXISTS marker is already stripped
+	// by splitNonExistsPredicates) — which sidesteps the correlated-aggregate
+	// semi-join entirely (no joined-outer / windowed-DML hazard). NOT EXISTS
+	// (→ FALSE) and projected consumers do NOT fold on this flag (booked).
+	AlwaysTrue bool
 	// OuterOnlyJoinConjuncts marks a JoinPredicate carrying conjuncts with
 	// NO inner-source reference that can FILTER (a nested-EXISTS middle
 	// routes them here; the inside placement does not plan for that

@@ -1678,7 +1678,25 @@ do NOT need name binding (independent-legs materialized joins).** Pinned: TestFD
 (EXPLAIN asserts the SARG'd `[=]` index scan, not the cross-product; + correct rows) — trips if a future
 producer-retirement re-ordinalizes this shape and drops the index (the reverted commit-A wall).
 
-### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE — CHARACTERIZED with controls (2026-07-10)
+### [x] query-engine (PRE-EXISTING): correlated `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE — FIXED 2026-07-10 via CONSTANT-FOLD (after the wrap approach was reverted twice)
+**FIXED (positive WHERE-EXISTS) via the constant-fold, which succeeded where the wrap approach was reverted
+twice.** A correlated positive WHERE-EXISTS over a NON-GROUPED aggregate (COUNT(*)/MAX/SUM, no GROUP BY /
+HAVING / QUALIFY / LIMIT 0 / positive OFFSET / windowed OVER) is unconditionally TRUE. Fix: front-end
+BuildExists sets `ExistsSubquery.AlwaysTrue` (via `queryInnerIsUnconditionalOneRow` +
+`queryOuterHasWindowedAggregate` guard) for the correlated case; the translator's `foldAlwaysTrueExists`
+(run at the TOP of translateFilter, before any routing) drops the AlwaysTrue esq and replaces its EXISTS
+marker with TRUE in the predicate (`stripFoldedExistsMarkers`, `P AND TRUE == P`). Because the existential
+quantifier is never built, the correlated-aggregate semi-join is never built — so the JOINED-OUTER
+regression (P1#5) and the windowed-DML silent-wrong (P1#4) that killed the wrap CANNOT arise. Pinned:
+`exists_over_aggregate_fdb_test.go` — count/max/sum, JOINED-OUTER (cross + with-conjunct), controls
+(grouped/plain/uncorrelated), P AND TRUE survives, windowed-guard rejects (0AF00), NOT-EXISTS residual
+sentinel. Full suite 55/55. **RESIDUALS (booked): NOT EXISTS(always-true)=FALSE and PROJECTED EXISTS(agg)
+are NOT folded (only positive WHERE) — they keep pre-existing behavior; pinned as sentinels.** Query-engine
+change → four-gate (in flight).
+
+<details><summary>original characterization + the two reverted wrap attempts (audit trail)</summary>
+
+Baseline-confirmed on bebf23b0e.
 An EXISTS whose inner SELECT is a **NON-GROUPED** AGGREGATE is ALWAYS TRUE: a non-grouped
 `COUNT(*)`/`MAX(...)`/`SUM(...)` yields EXACTLY ONE row even over an empty (post-WHERE) input (`COUNT`→0,
 `MAX`→NULL), so the existential is satisfied for every outer row. Java 4.12.11.0 keeps all outer rows; Go
@@ -1777,6 +1795,7 @@ the esq, which `splitNonExistsPredicates` tracks); projected ExistsValue(AlwaysT
 literal in the result value (values.WalkValue exists; needs a bool-literal constructor + a value rewrite).
 Positive-WHERE is the cleanest sub-case to land first; NOT-EXISTS + projected follow (or decline initially).
 Four-gate each.
+</details>
 
 ### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` → `3e51a55e6` → interface-arm fix), scalar + EXISTS + IN all closed
 **FIXED.** `harvestAggregates` (select_parser.go) walked a projected expression's tree promoting aggregates

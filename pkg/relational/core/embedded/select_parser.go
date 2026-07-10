@@ -1526,6 +1526,61 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 	return out
 }
 
+// queryInnerIsUnconditionalOneRow reports whether an EXISTS subquery body is a
+// NON-GROUPED aggregate that ALWAYS produces EXACTLY ONE row — so EXISTS over it
+// is unconditionally TRUE. A non-grouped COUNT(*)/MAX/SUM yields one row even
+// over an empty (post-WHERE) input (COUNT->0, MAX/SUM->NULL). Excluded because
+// they can change that cardinality: GROUP BY (zero rows over an empty group),
+// HAVING (empties the group), QUALIFY (a window filter over the single row),
+// LIMIT 0 / positive OFFSET (eliminates the row), and a WINDOWED aggregate
+// (COUNT(*) OVER (...) is row-preserving, one per input row — not one-row).
+func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
+	if q == nil {
+		return false
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return false
+	}
+	sq, err := extractFromQueryTerm(body)
+	if err != nil || sq == nil {
+		return false
+	}
+	if len(sq.groupBy) > 0 || sq.havingExpr != nil || sq.qualifyExpr != nil {
+		return false
+	}
+	if sq.limit == 0 || sq.offset > 0 { // LIMIT 0 / OFFSET n eliminates the single row
+		return false
+	}
+	if !(sq.countStar || len(sq.aggCols) > 0) {
+		return false
+	}
+	return !queryOuterHasWindowedAggregate(body)
+}
+
+// queryOuterHasWindowedAggregate reports whether THIS query's own SELECT (not a
+// nested subquery's) contains a windowed aggregate (`… OVER (…)`). Stops at
+// nested query scopes — their window functions belong to them.
+func queryOuterHasWindowedAggregate(n antlr.Tree) bool {
+	if n == nil {
+		return false
+	}
+	if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.OverClause() != nil {
+		return true
+	}
+	for i := 0; i < n.GetChildCount(); i++ {
+		c := n.GetChild(i)
+		switch c.(type) {
+		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
+			continue // a nested subquery scope
+		}
+		if queryOuterHasWindowedAggregate(c) {
+			return true
+		}
+	}
+	return false
+}
+
 // aggColFromAwf reconstructs an aggSelectCol from an AggregateWindowedFunction
 // context via the shared extractAwfFields helper. Output name matches the
 // HAVING resolver's lookup name and the SELECT-list default alias
