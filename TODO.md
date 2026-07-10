@@ -1765,6 +1765,19 @@ fold at the predicate/value construction sites — WHERE-EXISTS (constant TRUE c
 multi-site interception but each site is a local substitution, with NONE of the wrap's correlation-placement
 or translator-integration risk.
 
+**REFINED FOLD MECHANISM (architecture verified):** EXISTS is NOT a predicate node — `splitNonExistsPredicates`
+(cascades_translator.go:5242) lowers it to an EXISTENTIAL QUANTIFIER (the semi-join), so the fold is NOT an
+`ExistsValue→TRUE` predicate substitution. Instead: (1) front-end BuildExists sets an `AlwaysTrue` flag on the
+ExistsSubquery when `queryInnerIsUnconditionalOneRow` (+ windowed `OverClause()` guard) — a small local
+change, NO wrap/clear. (2) Translator: at the sites where `f.ExistsSubqueries` become Existential quantifiers
+(:2314/:2541/:2558), for a POSITIVE WHERE-EXISTS simply SKIP emitting the quantifier for an AlwaysTrue esq
+(EXISTS=TRUE ⇒ no filter, the other WHERE conjuncts stay) — a clean local skip, NO translateJoinWithExists.
+NOT-EXISTS(AlwaysTrue) ⇒ FALSE ⇒ empty result (emit a contradiction filter — needs the negation-polarity of
+the esq, which `splitNonExistsPredicates` tracks); projected ExistsValue(AlwaysTrue) ⇒ substitute a TRUE
+literal in the result value (values.WalkValue exists; needs a bool-literal constructor + a value rewrite).
+Positive-WHERE is the cleanest sub-case to land first; NOT-EXISTS + projected follow (or decline initially).
+Four-gate each.
+
 ### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` → `3e51a55e6` → interface-arm fix), scalar + EXISTS + IN all closed
 **FIXED.** `harvestAggregates` (select_parser.go) walked a projected expression's tree promoting aggregates
 into the enclosing query's set but only stopped at SCALAR subquery atoms, not EXISTS — so `SELECT p.id,
