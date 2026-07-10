@@ -320,8 +320,28 @@ validation gate.
     existential-over-multi-join is its own residual class (pinned as a flip-sentinel in the census probe;
     ordinalizing it is a separate slice — likely part of the EXISTS-composition arc, not the box substrate).
     Re-consult Graefe on B1 sequencing WITH this correction before building B1.
-  - [ ] **B1 RE-SEQUENCED (Graefe design-ACK, WITH the census correction) = U-1: the existential-over-multi-way-
-    join N-way gather.** MECHANISM (Graefe, code-confirmed): a plain `p JOIN q JOIN r` routes through
+  - [ ] **B1 = U-1 ATTEMPTED then REVERTED — row-correct but a PLAN-QUALITY (SARG) regression + a dup-alias bypass;
+    needs a predicate-handling redesign (Graefe consult) before it can land.** The prototype
+    (`translateGatheredInnerClusterWithExists`: N ForEach legs + all nested ON preds + WHERE conjuncts + EXISTS
+    existential quantifiers + correlation preds, all baked over the N-leg ordinal seed; intercepted in
+    translateJoinWithExists before the arity!=2 decline) PASSED the falsification control on ROWS
+    (EXISTS→3rd-leg → [2], →4th-leg 4-way → [3], distinct from 1st-leg [1] — the per-alias legTypes bake maps to
+    the correct window regardless of leg count, confirming Java's alias-keyed semantics) + mixed conjunct + NOT
+    EXISTS. BUT it broke TWO existing tests, so it was reverted (uncommitted): (1)
+    **TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed** — `FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id AND
+    EXISTS(...)` LOST its SARG'd index scan and collapsed to a full A×B×C cross product. ROOT CAUSE: B1 MERGES the
+    WHERE join-conjuncts into the baked gated select, so they are no longer a SEPARATE pushable filter — the plain
+    N-way gather keeps a comma-join's WHERE predicates as a separate filter that PredicatePushDown can SARG.
+    (My B1 e2e test only checked rows, not plan shape — the SARG loss is likely BROADER than this one test; a
+    row-only cert is insufficient for a join-composition slice.) The correlated-index EXISTS name path is
+    PERMANENT/Java-correct (task #16) — B1 must either preserve the SARG through the ordinal composition or exclude
+    the shape. (2) **TestFDB_RFC173Item1_KeyBindingAndBuriedExists/P4b_arity3_dup_exists** — `FROM p AS a, q AS a,
+    q AS b …` (duplicate FROM alias) must LOUDLY decline "duplicate FROM alias"; B1 bypassed the minted-binding
+    decline. EASY FIX: guard the interception with `mintedBindingLeg(legOps...) == ""` (fall through to the loud
+    decline). NEXT ATTEMPT: (a) keep the WHERE join-conjuncts as a pushable filter over the gathered select (mirror
+    the plain no-EXISTS path) rather than baking them in — get a Graefe consult on SARG preservation through the
+    ordinal composition; (b) mintedBindingLeg guard; (c) e2e cert must assert PLAN SHAPE (SARG `[=]`), not just
+    rows. Original design record (Graefe design-ACK, WITH the census correction): MECHANISM (Graefe, code-confirmed): a plain `p JOIN q JOIN r` routes through
     `translateJoin` → `ordinalWedgeGateDecide` returns Gated/Arity=3 → `translateGatheredInnerCluster` (full
     N-way ordinal seed, 0 firings). Under `WHERE EXISTS(…)` it routes through `translateJoinWithExists`, whose
     `:5003` narrows `if gatedFlatten && Arity != 2 { gatedFlatten = false }` (Reason: "existential flatten builds
@@ -335,7 +355,19 @@ validation gate.
     translates legs fresh). CONTROL (the genuinely new question — does the existential ordinal rebase, today over a
     2-leg seed, generalize to an N-leg seed?): EXISTS correlated to the 3rd+ leg — `… p JOIN q JOIN r … WHERE
     EXISTS (SELECT 1 FROM e WHERE e.x = r.col)` — PLUS a dup-named-leg variant; the falsification is a baked
-    correlation predicate rebasing onto the WRONG ordinal window of the N-way concat. Corrected residual inventory:
+    correlation predicate rebasing onto the WRONG ordinal window of the N-way concat. JAVA REFERENCE (read-first,
+    sourced): Java resolves the EXISTS correlation PURELY by quantifier-alias — `visitExistsExpressionAtom`
+    (ExpressionVisitor.java:560) makes the subquery an EXISTENTIAL quantifier in the SAME flat operator list as the
+    join legs; the correlation `e.x=r.col` resolves via SemanticAnalyzer.resolveAcrossFragments (:382) to
+    `FieldValue(QuantifiedObjectValue(r-alias), col)` — keyed on the leg ALIAS, never a position/ordinal into a
+    merged concat. Inner joins are FLAT (QueryVisitor.visitInnerJoin:439 accumulates legs; generateSimpleSelect →
+    GraphExpansion.buildSelect:396 = ONE SelectExpression with all N ForEach + the existential). There is NO N=2
+    special case anywhere; the only literal is PartitionSelectRule:78 `size()<3 → return` (a don't-split-small
+    guard, the OPPOSITE direction — N≥3 is the case it works). So Java proves the SEMANTICS are leg-count-agnostic:
+    the Go arity==2/arity≥3-decline split is a Go artifact with no Java analog, and the falsification control
+    (EXISTS→3rd+ leg) tests only the Go ordinal-window MAPPING (an impl risk), not the semantics. Semi-join impl to
+    mirror: ImplementNestedLoopJoinRule (existential inner → FlatMap short-circuit, `instanceof Existential`, never
+    an index). Corrected residual inventory:
     (reconciled with the B0-fix Finding A — TWO un-enclosed classes, not one).
     **UN-ENCLOSED** (not reachable by starving enclosure — each needs an explicit flip): U-1 P4
     existential-over-multi-way-join (B1); **U-2** P5 top-level box-base (and other declining) chained-unnest
