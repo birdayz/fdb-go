@@ -1641,16 +1641,20 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] query-engine (RFC-173, latent — surfaced by the 2-way EXISTS-in-ON review): F2-LEFT's isScanFamilyLeg is cteScope-BLIND
+### [ ] query-engine (RFC-173, latent — surfaced by the 2-way EXISTS-in-ON review): F2-LEFT's isScanFamilyLeg is cteScope-BLIND — VERIFIED REACH, not silent-wrong (low priority)
 `isScanFamilyLeg` (cascades_translator.go:3185) is a syntactic Scan-through-Filter walk with NO cteScope
 resolution: a CTE-name scan whose body is a JOIN or an OPAQUE BOX (aggregate/union/sort) reads as
 scan-family. The 2-way EXISTS-in-ON gate hit this (fixed with a cteScope-aware `scanFamilyLegCteAware`), but
 `isScanFamilyLeg` is ALSO used by the F2-LEFT projected-EXISTS-over-LEFT-JOIN fold
-(buildExistentialJoinSelect / existsLegBirthsPositional) to gate scan-leg-only LEFT boxes. A LEFT box whose
-preserved/null-supplying leg is a CTE-backed join/box would pass isScanFamilyLeg there too → the fold might
-ordinalize a shape it's unverified over. Likely a reach gap (loud decline) rather than silent-wrong, but
-UNVERIFIED. Fix: route F2-LEFT's leg check through the same cteScope-aware predicate (make
-scanFamilyLegCteAware the shared authority), with a red-first CTE-leg LEFT-box pin. Booked, not urgent.
+(buildExistentialJoinSelect / existsLegBirthsPositional) to gate scan-leg-only LEFT boxes.
+**VERIFIED empirically (Torvalds action item, resolved): a projected-EXISTS LEFT join whose preserved leg is
+a CTE-backed JOIN gives `0AF00` (unplannable), and a CTE-backed AGGREGATE leg gives `42703` — both VISIBLE
+errors, NEVER wrong rows.** The distinction from the 2-way gate: that gate built the ordinal seed DIRECTLY
+(so a CTE box slipped through to wrong rows), whereas F2-LEFT folds through the EXECUTOR's `legIsOrdinalSafe`
+gate, which rejects a CTE-backed non-scan leg → 0AF00/name-model, structurally never silent-wrong. So this is
+a REACH gap (Go rejects visibly where Java may answer), NOT a latent correctness bug — priority downgraded.
+Still worth the cteScope-aware unification for cleanliness (make scanFamilyLegCteAware the shared authority)
+and to convert the 0AF00 into a fold where Java answers, but it is NOT a silent-wrong hazard. Not urgent.
 
 ### [x] query-engine (RFC-173 S4 — RESOLVED by Graefe FEASIBILITY ruling: the correlated-index EXISTS name path is PERMANENT / Java-correct — NOT a shortfall, NOT a cap blocker)
 UN-BOOKED. The "ordinal-fold-over-index-matched-box" enhancement is **NOT ACHIEVABLE and NOT NEEDED**
