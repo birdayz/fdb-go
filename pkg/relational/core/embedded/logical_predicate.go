@@ -5824,6 +5824,48 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		return op, nil
 	}
 
+	// MULTI-SOURCE scope-ambiguity decline (correct-or-loud): an UNMINTED
+	// multi-source inner keeps its SQL leg names, so a predicate ref to a
+	// leg that REUSES an outer bound name is ambiguous at the join level —
+	// the walk bound it INNER (SQL shadowing), but the name-model runtime
+	// routes such refs by name against the merged outer row (per-outer-row
+	// reads; Java's inner-shadow semantics answer differently — live-
+	// verified). Decline LOUDLY rather than answer wrong rows; mint-per-leg
+	// (booked) closes the reach gap for real. Placement: BEFORE the
+	// nested-EXISTS branches — Case 1 assigns this predicate's non-EXISTS
+	// part as the join predicate and would otherwise carry the ambiguous
+	// ref out unchecked (a nested constant-true EXISTS must not disable
+	// the guard); Case 2's hoist is covered by the nested planner running
+	// this same check recursively for its own scope. The outer set is the
+	// ACTUALLY-BOUND names (CorrelationName when present, else Alias): a
+	// minted middle's DISPLAY alias never binds at runtime, so an innermost
+	// leg re-declaring it cannot collide — testing display names would
+	// 0A000 valid queries. Parent-fallthrough refs cannot false-positive:
+	// in a multi-source scope a shadowed parent hit already dies at plan
+	// time (CorrelatedShadowError, 42703), so a surviving ref carrying an
+	// intersection name is inner-bound by construction. Minted single-table
+	// inners never enter (their inner refs are Q$N).
+	if len(sq.joins) > 0 {
+		outerBound := map[string]struct{}{}
+		for _, src := range p.outerScopes {
+			n := src.CorrelationName
+			if n == "" {
+				n = src.Alias.Name()
+			}
+			if n != "" {
+				outerBound[strings.ToUpper(n)] = struct{}{}
+			}
+		}
+		for c := range predicates.GetCorrelatedToOfPredicate(pred) {
+			n := strings.ToUpper(c.Name())
+			_, isInner := fullInnerAliases[n]
+			_, isBoundOuter := outerBound[n]
+			if isInner && isBoundOuter {
+				return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: inner FROM source %q reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)", n), Unsupported: true}
+			}
+		}
+	}
+
 	// Propagate SCALAR subquery plans the nested planner collected while walking
 	// the inner WHERE (`… EXISTS (SELECT 1 FROM c WHERE p.id > (SELECT MIN(id)
 	// FROM c2))`). The walked predicate references the scalar's ALIAS; without
@@ -5910,30 +5952,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	if outerOnly != nil {
 		op = &logical.LogicalFilter{Input: op, Predicate: outerOnly}
 	}
-	// MULTI-SOURCE scope-ambiguity decline (correct-or-loud): an UNMINTED
-	// multi-source inner keeps its SQL leg names, so a join-predicate ref to
-	// a leg that REUSES an outer FROM name is ambiguous at the join level —
-	// the walk bound it INNER (SQL shadowing), but the name-model runtime
-	// routes such refs by name against the merged outer row (per-outer-row
-	// reads; Java's inner-shadow semantics answer differently — live-
-	// verified). Decline LOUDLY rather than answer wrong rows; mint-per-leg
-	// (booked) closes the reach gap for real. Structural detection only:
-	// the predicate's correlation set intersected with (inner leg names ∩
-	// outer scope names). Parent-fallthrough refs cannot false-positive
-	// here: in a multi-source scope a shadowed parent hit already dies at
-	// plan time (CorrelatedShadowError, 42703), so a surviving ref carrying
-	// a name in the intersection is inner-bound by construction. Minted
-	// single-table inners never enter (their inner refs are Q$N).
-	if len(sq.joins) > 0 && rest != nil {
-		for c := range predicates.GetCorrelatedToOfPredicate(rest) {
-			n := strings.ToUpper(c.Name())
-			_, isInner := fullInnerAliases[n]
-			_, isOuter := outerAliases[n]
-			if isInner && isOuter {
-				return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: inner FROM source %q reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)", n), Unsupported: true}
-			}
-		}
-	}
+	// The multi-source scope-ambiguity decline already ran on the FULL
+	// walked predicate above (before the nested-EXISTS branches) — rest is
+	// a subset of it, so no second check is needed here.
 	p.lastJoinPredicate = rest
 	return op, nil
 }

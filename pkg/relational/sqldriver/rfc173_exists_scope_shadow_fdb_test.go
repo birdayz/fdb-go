@@ -335,6 +335,41 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE ST."C" < OT."K")`,
 		"scope-ambiguous")
 
+	// The NESTED-BYPASS sentinel: a nested constant-true EXISTS must not
+	// disable the decline (the Case-1 branch used to return before the
+	// check, carrying the ambiguous ref out as the join predicate — one
+	// outer-dependent row where Java answers 3, live-verified). The check
+	// now runs on the full walked predicate BEFORE the nested branches.
+	wantDecline("multisource_colliding_nested_bypass",
+		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE ST."C" < OT."K" AND EXISTS (SELECT 1 FROM MA WHERE MA."C" > 0))`,
+		"scope-ambiguous")
+
+	// Polarity harvest: the q5 NOT-EXISTS twin was ALSO silent-wrong
+	// pre-decline ([50,50] where Java's complement of the positive 3 rows
+	// is 0 rows, live-verified). Declines at plan time, before polarity
+	// can matter.
+	wantDecline("multisource_colliding_notexists",
+		`SELECT OT."K" FROM ST, OT WHERE NOT EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE ST."C" < OT."K")`,
+		"scope-ambiguous")
+
+	// Leg-position harvest: the FIRST-leg-collides variant was silent-wrong
+	// pre-decline too ([50] where Java answers 3, live-verified).
+	wantDecline("multisource_colliding_first_leg",
+		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM ST, OT AS "OI" WHERE ST."C" < OT."K")`,
+		"scope-ambiguous")
+
+	// The MINTED-MIDDLE no-over-fire control: the middle single-table inner
+	// (MA AS "MID") is minted, so ONLY its Q$N identity binds at runtime —
+	// the innermost multi-source inner re-declaring MID locally cannot
+	// collide with a display alias that never binds. Testing display names
+	// here 0A000'd this valid query; the decline tests ACTUALLY-BOUND outer
+	// names (CorrelationName when present). Java live: middle ∃MA with
+	// C < 50 ∧ innermost ∃(MID,ST) with local MID.C < 100 → true → [50].
+	want("minted_middle_local_shadow_answers",
+		`SELECT OT."K" FROM OT WHERE EXISTS (SELECT 1 FROM MA AS "MID" WHERE "MID"."C" < OT."K" AND EXISTS (SELECT 1 FROM MA AS "MID", ST WHERE "MID"."C" < 100))`,
+		[]string{"map[K:50]"},
+		"")
+
 	// The no-over-fire control: a NON-colliding multi-source inner (leg
 	// names {ST, MI} disjoint from the outer {MA, OT}), CORRELATED on an
 	// outer TABLE column so it genuinely reaches the fallback's multi-source
