@@ -30,14 +30,19 @@ func TestRFC173_ProducerCensusP5EnclosureBit(t *testing.T) {
 		return link(l2, "Y", "DEEP", "Z")
 	}
 
-	unenclosedP5 := func(prevEnclosure bool) int {
+	// Drive the production entry point translateUnnestJoin with inInnerCluster
+	// preset to the caller's entry enclosure (rather than calling
+	// translateChainedUnnestJoin directly), so EVERY link — inner and outer —
+	// reports its production enclosure, not a direct-call zero-value artifact.
+	unenclosedP5 := func(entryEnclosure bool) int {
 		var got []ProducerCensusRecord
 		SetProducerCensusObserver(func(rec ProducerCensusRecord) { got = append(got, rec) })
 		defer SetProducerCensusObserver(nil)
 		tr := newChainedSpineTranslator(t)
+		tr.inInnerCluster = entryEnclosure
 		j, u := boxBase3()
-		if sel := tr.translateChainedUnnestJoin(j, u, prevEnclosure); sel == nil {
-			t.Fatalf("prevEnclosure=%v: translateChainedUnnestJoin returned nil (translateErr: %v)", prevEnclosure, tr.translateErr)
+		if sel := tr.translateUnnestJoin(j, u); sel == nil {
+			t.Fatalf("entryEnclosure=%v: translateUnnestJoin returned nil (translateErr: %v)", entryEnclosure, tr.translateErr)
 		}
 		n := 0
 		for _, r := range got {

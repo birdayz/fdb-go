@@ -14,19 +14,24 @@ package query
 // The residual name-model surface has TWO kinds of firing, and the census records
 // the enclosure bit (was the producer under an enclosing cluster) to tell them
 // apart:
-//   - ENCLOSED firings (t.inInnerCluster true on entry): a producer that is a leg
-//     of a larger cluster. These are zeroed by ordinalizing the enclosure ROOTS
-//     (the name-model unnest lowering, correlated-scalar-in-projection,
-//     recursive-CTE, and the unnest-over-box birth).
-//   - UN-ENCLOSED firings (entry enclosure false): a FRESH shape that still
+//   - ENCLOSED firings (caller's entry enclosure true): a producer that is a leg of
+//     a larger cluster. Many are zeroed by ordinalizing the enclosure ROOTS (the
+//     name-model unnest lowering, correlated-scalar-in-projection, recursive-CTE).
+//   - UN-ENCLOSED firings (caller's entry enclosure false): a FRESH shape that still
 //     name-models on its own. The census CORRECTED the Outcome-B design consult
-//     here: it claimed no un-enclosed residual exists, but a multi-way (>=3) inner
-//     join under a WHERE EXISTS declines its whole join subtree to name-model and
-//     the TOP join fires UN-ENCLOSED — an EXISTS-composition-arc gap (the flat-
-//     EXISTS translation path lacks the N-way ordinal gather that plain joins have),
-//     NOT a box-substrate shape. So the residual set is NOT "exactly the
-//     inInnerCluster shapes"; un-enclosed residual classes exist and need their own
-//     explicit flip.
+//     here — it claimed NO un-enclosed residual exists, but at least two classes do,
+//     so the residual set is NOT "exactly the inInnerCluster shapes" and enclosure
+//     starvation alone cannot zero it; each un-enclosed class needs an explicit flip:
+//       (a) P4 existential-over-multi-way-join: a multi-way (>=3) inner join under a
+//           WHERE EXISTS declines its whole join subtree to name-model and the TOP
+//           join fires un-enclosed — an EXISTS-composition-arc gap (the flat-EXISTS
+//           path lacks the N-way ordinal gather plain joins have).
+//       (b) P5 top-level box-base (and other declining) chained-unnest lowering: a
+//           fresh chained unnest over a box base declines to name-model and its
+//           OUTERMOST link fires un-enclosed — a box-substrate shape observed at the
+//           top level (the SAME class is enclosed when nested). So the box-substrate
+//           residuals are NOT enclosed-only; they need explicit ordinalization
+//           (the box slices), not enclosure starvation.
 //
 // The census gate (TestFDB_RFC173_ProducerCensus, dualwindow package) pins both:
 // SeedRunCorpus fires zero producers (fully ordinal), and the discovered

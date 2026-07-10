@@ -336,11 +336,18 @@ validation gate.
     2-leg seed, generalize to an N-leg seed?): EXISTS correlated to the 3rd+ leg — `… p JOIN q JOIN r … WHERE
     EXISTS (SELECT 1 FROM e WHERE e.x = r.col)` — PLUS a dup-named-leg variant; the falsification is a baked
     correlation predicate rebasing onto the WRONG ordinal window of the N-way concat. Corrected residual inventory:
-    **UN-ENCLOSED** (not reachable by starving enclosure): U-1 existential-over-multi-way-join (B1). **ENCLOSED**
-    (starve by ordinalizing the roots): E-1 name-model unnest lowering, E-2 unnest-over-single-clustered LEFT/RIGHT
-    box birth (the former B1 → now **B2**), E-3 correlated-scalar-in-projection (W4b clusterPullUp), E-4
-    recursive-CTE reference legs, E-5 flat-EXISTS inner leg (retired FREE by B1). Sequence: B1=U-1 → B2=E-2 →
-    E-1/E-3/E-4 → nested-outer-box tower LAST. 2a/2b retire WITH the enclosed classes, NOT as separate flips.
+    (reconciled with the B0-fix Finding A — TWO un-enclosed classes, not one).
+    **UN-ENCLOSED** (not reachable by starving enclosure — each needs an explicit flip): U-1 P4
+    existential-over-multi-way-join (B1); **U-2** P5 top-level box-base (and other declining) chained-unnest
+    lowering — a fresh chained unnest over a box base declines to name-model and its OUTERMOST link fires
+    un-enclosed (the SAME box-substrate class is ENCLOSED when nested, so box-substrate residuals are NOT
+    enclosed-only; retired by the box-substrate ordinalization = B2/box slices, just observed un-enclosed at the
+    top level). The SQL e2e census can't fire P5 (arrays aren't SQL-INSERTable); U-2's un-enclosed firing is
+    pinned by the white-box TestRFC173_ProducerCensusP5EnclosureBit. **ENCLOSED** (starve by ordinalizing the
+    roots): E-1 name-model unnest lowering, E-2 unnest-over-single-clustered LEFT/RIGHT box birth (the former
+    B1 → now **B2**; also covers U-2's box-base chained shape), E-3 correlated-scalar-in-projection (W4b
+    clusterPullUp), E-4 recursive-CTE reference legs, E-5 flat-EXISTS inner leg (retired FREE by B1). Sequence:
+    B1=U-1 → B2=E-2 (+U-2) → E-1/E-3/E-4 → nested-outer-box tower LAST. 2a/2b retire WITH the enclosed classes.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
