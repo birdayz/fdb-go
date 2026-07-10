@@ -1553,17 +1553,13 @@ func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
 	if len(sq.groupBy) > 0 || sq.havingExpr != nil || sq.qualifyExpr != nil {
 		return false
 	}
-	// A LIMIT/OFFSET clause can eliminate the single aggregate row. A LIMIT
-	// clause is present but sq.limit < 1 covers both `LIMIT 0` (eliminates) AND
-	// syntactically-accepted-but-unparsed forms (`LIMIT 0.0` / `LIMIT 0L`) that
-	// parseLimitClause leaves at the -1 no-limit sentinel — indistinguishable
-	// from absent via sq.limit alone, so gate on clause presence. A positive
-	// literal `LIMIT n>=1` (sq.limit >= 1) with no offset still yields the one
-	// row, so it MUST fold. A positive OFFSET skips the row.
-	if simpleTable.LimitClause() != nil && sq.limit < 1 {
-		return false
-	}
-	if sq.offset > 0 {
+	// A LIMIT/OFFSET clause can eliminate the single aggregate row. Only fold
+	// when the clause PROVABLY preserves it: limit >= 1, offset == 0, and every
+	// atom parses cleanly. Reading sq.limit/sq.offset alone is unsafe — an
+	// unparseable atom (`LIMIT 0.0`, `LIMIT 1 OFFSET 1.0`) silently defaults to
+	// the -1/0 sentinels, hiding a row-eliminating clause. See
+	// limitClauseKeepsSingleRow.
+	if !limitClauseKeepsSingleRow(simpleTable) {
 		return false
 	}
 	if !(sq.countStar || len(sq.aggCols) > 0) {

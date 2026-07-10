@@ -187,4 +187,33 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 			}
 		}
 	})
+
+	// A cleanly-parsed positive OFFSET (`OFFSET 2`) skips the single aggregate
+	// row, AND a syntactically-accepted-but-unparseable OFFSET (`OFFSET 1.0` /
+	// `OFFSET 1L`, both valid decimalLiterals that ParseInt rejects) leaves
+	// sq.offset silently 0 — so reading sq.offset alone would wrongly FOLD these
+	// to always-true [1 2 3] (the bug: a positive LIMIT paired with an
+	// unverifiable OFFSET). limitClauseKeepsSingleRow declines on either — a
+	// present-but-unparseable atom OR a nonzero offset. All fall to the
+	// pre-existing residual [1] (flip-sentinel: flips when parseLimitClause-reject
+	// lands, then OFFSET>0 on a one-row aggregate is []).
+	t.Run("offset_declines_not_always_true", func(t *testing.T) {
+		for _, off := range []string{"LIMIT 1 OFFSET 2", "LIMIT 1 OFFSET 1.0", "LIMIT 1 OFFSET 1L"} {
+			v := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+off+") ORDER BY p.id")
+			if len(v) == 3 {
+				t.Fatalf("%s: wrongly FOLDED to always-true [1 2 3] (a row-skipping/unverifiable OFFSET must decline)", off)
+			}
+			if len(v) != 1 || v[0] != 1 {
+				t.Fatalf("%s: pre-existing residual changed from [1] to %v — parseLimitClause-reject may have landed; assert corrected rows", off, v)
+			}
+		}
+	})
+
+	// POSITIVE CONTROL: OFFSET 0 is a clean no-op — the single row survives, so a
+	// LIMIT 1 OFFSET 0 aggregate is still unconditionally TRUE and MUST fold. Pins
+	// that the offset guard rejects only unverifiable/row-skipping offsets, not a
+	// legitimate zero.
+	t.Run("offset_0_folds", func(t *testing.T) {
+		eq(t, "offset_0_folds", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 0) ORDER BY p.id"), []int64{1, 2, 3})
+	})
 }

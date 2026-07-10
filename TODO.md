@@ -1804,10 +1804,13 @@ SILENTLY DROPPED: `SELECT p.id FROM p LIMIT 0.0` returns ALL rows (correct is 0 
 `limitClauseAtom : decimalLiteral | preparedStatementParameter` — so a DecimalLiteral atom whose text fails
 ParseInt is an INVALID literal and should be REJECTED (loud syntax error), while a preparedStatementParameter
 (`LIMIT ?`) stays a parameter. Fix: parseLimitClause returns an error when a DecimalLiteral atom fails
-ParseInt; thread it through the 3 callers (plan_visitor.go:475/:1441, select_parser.go:1392). This makes
-`LIMIT 0.0` correct-or-loud everywhere. Flip-sentinel:
-`exists_over_aggregate_fdb_test.go` `limit_unparsed_residual_not_always_true` (the EXISTS fold correctly
-DECLINES to fold `LIMIT 0.0` always-true; its declined fallback [1] flips when this reject lands).
+ParseInt; thread it through the 3 callers (plan_visitor.go:475/:1441, select_parser.go:1392). Applies to
+BOTH the limit and the offset atom — `LIMIT 1 OFFSET 1.0` / `OFFSET 1L` are the same silent-drop on the
+offset side (offset stays 0, so `... OFFSET 1.0` skips nothing when it should skip a row). This makes
+`LIMIT 0.0` / `OFFSET 1.0` correct-or-loud everywhere. Flip-sentinels (both in
+`exists_over_aggregate_fdb_test.go`): `limit_unparsed_residual_not_always_true` and
+`offset_declines_not_always_true` — the EXISTS fold already DECLINES both via limitClauseKeepsSingleRow
+(every atom must ParseInt cleanly), so its declined fallback [1] flips when this reject lands.
 
 ### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` → `3e51a55e6` → interface-arm fix), scalar + EXISTS + IN all closed
 **FIXED.** `harvestAggregates` (select_parser.go) walked a projected expression's tree promoting aggregates
