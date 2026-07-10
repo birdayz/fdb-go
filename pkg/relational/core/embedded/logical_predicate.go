@@ -5207,6 +5207,11 @@ type existsSubqueryPlanner struct {
 	scalarSubqueries           []logical.ScalarSubquery
 	correlatedScalarSubqueries []logical.CorrelatedScalarSubquery
 	lastJoinPredicate          predicates.QueryPredicate
+	// lastJoinPredicateOuterOnly mirrors lastJoinPredicate: the Case-1
+	// nested-EXISTS middle routes OUTER-ONLY conjuncts through the join
+	// predicate (the inside placement does not plan); the flag travels
+	// onto the ExistsSubquery so the anti-join consumer can decline.
+	lastJoinPredicateOuterOnly bool
 }
 
 // visibleScopeNames is the upper-cased set of every user-visible SQL name a
@@ -5271,6 +5276,7 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	}
 	if isUndefinedCol {
 		p.lastJoinPredicate = nil
+		p.lastJoinPredicateOuterOnly = false
 		innerOp, err = p.buildCorrelatedExists(q)
 		if err != nil {
 			return values.CorrelationIdentifier{}, err
@@ -5281,11 +5287,13 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	}
 	alias := p.mintSubqueryAlias()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
-		Alias:         alias,
-		Plan:          innerOp,
-		JoinPredicate: p.lastJoinPredicate,
+		Alias:                  alias,
+		Plan:                   innerOp,
+		JoinPredicate:          p.lastJoinPredicate,
+		OuterOnlyJoinConjuncts: p.lastJoinPredicateOuterOnly,
 	})
 	p.lastJoinPredicate = nil
+	p.lastJoinPredicateOuterOnly = false
 	return alias, nil
 }
 
@@ -5891,7 +5899,22 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 			// Build a proper LogicalFilter preserving the middle level.
 			existsPred := stripNonExistsPredicates(pred)
 			qualifyBareFields(nonExistsPred, innerCorr)
-			p.lastJoinPredicate = predicates.SimplifyPredicateValues(nonExistsPred)
+			simplified := predicates.SimplifyPredicateValues(nonExistsPred)
+			// An OUTER-ONLY conjunct here CANNOT take the tail path's inside
+			// placement — a nested-EXISTS-carrying filter with an extra
+			// plain conjunct (or an inner filter layer) does not plan for
+			// this composition (the booked multi-EXISTS best-expression
+			// family; both placements were tried and die at physical
+			// planning). It rides lastJoinPredicate, which the semi-join
+			// outer-routes — VALID for positive polarity (P ∧ ∃(Q) ≡
+			// ∃(P∧Q)) and WRONG under NOT EXISTS (computes P ∧ ¬∃(Q),
+			// silently dropping every ¬P outer row — the pre-existing leak
+			// this branch shipped with). The esq is FLAGGED so the
+			// anti-join consumer declines LOUDLY; positive polarity keeps
+			// its valid outer-routing unchanged.
+			outerOnly, _ := splitOuterOnlyConjuncts(simplified, innerSourceAliases(op))
+			p.lastJoinPredicate = simplified
+			p.lastJoinPredicateOuterOnly = outerOnly != nil
 			filter := &logical.LogicalFilter{
 				Input:            op,
 				Predicate:        existsPred,
@@ -5906,6 +5929,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		// correlation binds against the outer row directly.
 		innerESQ := nestedPlanner.subqueries[0]
 		p.lastJoinPredicate = innerESQ.JoinPredicate
+		p.lastJoinPredicateOuterOnly = innerESQ.OuterOnlyJoinConjuncts
 		return innerESQ.Plan, nil
 	}
 

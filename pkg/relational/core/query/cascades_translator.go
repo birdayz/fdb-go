@@ -3131,6 +3131,9 @@ func (t *cascadesTranslator) buildExistentialSelect(
 	outerQ := t.namedQuantifier(outerAlias, innerRef)
 	quantifiers := []expressions.Quantifier{outerQ}
 
+	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
+		return nil
+	}
 	allPreds := splitNonExistsPredicates(f.Predicate)
 	allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 	var innerCorrNames []string
@@ -3237,6 +3240,9 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	f *logical.LogicalFilter,
 	resultValue values.Value,
 ) expressions.RelationalExpression {
+	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
+		return nil
+	}
 	if j.Kind == logical.JoinFull || j.Kind == logical.JoinRight {
 		// FULL: the existential semi-join cannot carry the FULL drain (never
 		// rewritten, never merged). RIGHT: the fold's JoinType has no
@@ -4891,6 +4897,12 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// INNER joins (upgradeJoinOnPredicates rejects OUTER EXISTS-in-ON), so the
 	// joinType passed below is JoinInner and the existential semantics match
 	// EXISTS-in-WHERE-over-a-join (translateJoinWithExists).
+	// Defensive polarity guard for the ON-lift path: a flagged esq under a
+	// negated ON marker would outer-route an outer-only conjunct into
+	// anti-join semantics (same law as the WHERE sites).
+	if onPred, ok := j.OnPredicate.(predicates.QueryPredicate); ok && t.declineNegatedOuterOnlyEsq(onPred, j.OnExistsSubqueries) {
+		return nil
+	}
 	for _, esq := range j.OnExistsSubqueries {
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
@@ -4925,6 +4937,9 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	j *logical.LogicalJoin,
 	f *logical.LogicalFilter,
 ) expressions.RelationalExpression {
+	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
+		return nil
+	}
 	// The flatten is INNER-only BY CONTRACT: the dispatch in translateFilter
 	// routes every OUTER kind to the generic arm (merging a preserved-side
 	// WHERE conjunct into the flat select would turn it into ON semantics —
@@ -5138,6 +5153,39 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		sourceAliases,
 		expressions.JoinInner,
 	)
+}
+
+// declineNegatedOuterOnlyEsq records a LOUD decline (and reports true) when
+// an esq flagged OuterOnlyJoinConjuncts is consumed under a NEGATED
+// existential marker in pred. Such an esq's join predicate carries a
+// conjunct with no inner-source reference (the Case-1 nested-EXISTS middle
+// routes them there — the inside placement does not plan for that
+// composition); the semi-join outer-routes it, which is VALID for positive
+// polarity (P ∧ ∃(Q) ≡ ∃(P∧Q)) but under NOT EXISTS computes P ∧ ¬∃(Q)
+// where ¬∃(P∧Q) is due — silently dropping every ¬P outer row. Positive
+// consumers are untouched (their routing is a genuine equivalence).
+func (t *cascadesTranslator) declineNegatedOuterOnlyEsq(pred predicates.QueryPredicate, esqs []logical.ExistsSubquery) bool {
+	if pred == nil || len(esqs) == 0 {
+		return false
+	}
+	negated := map[values.CorrelationIdentifier]struct{}{}
+	predicates.WalkPredicate(pred, func(p predicates.QueryPredicate) bool {
+		if a, ok := predicates.IsNotExistentialPredicate(p); ok {
+			negated[a] = struct{}{}
+		}
+		return true
+	})
+	if len(negated) == 0 {
+		return false
+	}
+	for _, esq := range esqs {
+		if _, isNeg := negated[esq.Alias]; isNeg && esq.OuterOnlyJoinConjuncts {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"NOT EXISTS over a nested-EXISTS subquery with an outer-only conjunct is not supported"))
+			return true
+		}
+	}
+	return false
 }
 
 // splitNonExistsPredicates extracts the non-EXISTS parts of a predicate

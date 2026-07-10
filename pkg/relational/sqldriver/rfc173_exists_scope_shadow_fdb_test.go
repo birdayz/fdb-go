@@ -386,6 +386,52 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		`SELECT OT."K" FROM OT WHERE EXISTS (SELECT 1 FROM MA AS "MID" WHERE "MID"."C" < OT."K" AND EXISTS (SELECT 1 FROM MA AS "MID", ST WHERE "MID"."C" < OT."K"))`,
 		"best expression")
 
+	// Case-1 POLARITY pins: a multi-source middle with an outer-only
+	// conjunct AND a nested EXISTS, under NOT EXISTS. Case 1 used to route
+	// the outer-only conjunct through lastJoinPredicate, whose semi-join
+	// outer-side pre-filter computes P ∧ ¬∃(Q) where ¬∃(P∧Q) is due —
+	// silently dropping every ¬P outer row (a PRE-EXISTING placement bug,
+	// reachable through any non-colliding multi-source middle). The
+	// outer-only split now keeps it under the ∃. Java live: OT.K<0 is
+	// false → the middle ∃ is empty → NOT EXISTS keeps both MA rows →
+	// {11,12}. Buggy placement returns 0 rows.
+	wantDecline("case1_notexists_noncolliding",
+		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
+		"outer-only conjunct")
+
+	// The colliding + foldable variant — the door the guard's fold
+	// admission opened: COALESCE(1, MA.C) folds constant (never reads the
+	// colliding MA), the shape passes the ambiguity arm, and Case 1 must
+	// then place the outer-only conjunct correctly. Java live: {11,12}.
+	wantDecline("case1_notexists_colliding_foldable",
+		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA WHERE COALESCE(1, MA."C") = 1 AND OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
+		"outer-only conjunct")
+
+	// The fold seam, e2e (the unit twin lives in TestScopeAmbiguousName):
+	// a FOLDABLE colliding ref never survives into the join predicate —
+	// the shape answers (Java live: constant-true ∃ → 3 rows)…
+	want("foldable_colliding_answers",
+		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1)`,
+		[]string{"map[OT.K:50]", "map[OT.K:50]", "map[OT.K:50]"},
+		"")
+
+	// …while a GENUINELY-READ colliding ref still declines (Java live
+	// answers 3 rows via inner-shadow — recorded for the mint-per-leg
+	// flip; the decline is the interim correct-or-loud).
+	wantDecline("nonfoldable_colliding_declines",
+		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(ST."C", 1) < OT."K")`,
+		"scope-ambiguous")
+
+	// The POSITIVE-polarity Case-1 twin — the no-regression control for the
+	// anti-join guard: outer-routing the middle's outer-only conjunct is a
+	// GENUINE equivalence under positive polarity (P ∧ ∃(Q) ≡ ∃(P∧Q)), so
+	// this shape must keep answering. Java live: OT.K>0 true → the middle
+	// ∃ non-empty → both MA rows → {11,12}.
+	want("case1_exists_positive_answers",
+		`SELECT MA."ID" FROM MA, OT WHERE EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" > 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
+		[]string{"map[MA.ID:11]", "map[MA.ID:12]"},
+		"")
+
 	// The no-over-fire control: a NON-colliding multi-source inner (leg
 	// names {ST, MI} disjoint from the outer {MA, OT}), CORRELATED on an
 	// outer TABLE column so it genuinely reaches the fallback's multi-source

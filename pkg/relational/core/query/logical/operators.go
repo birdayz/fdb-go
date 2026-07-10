@@ -15,6 +15,15 @@ type ExistsSubquery struct {
 	Alias         values.CorrelationIdentifier
 	Plan          LogicalOperator
 	JoinPredicate predicates.QueryPredicate
+	// OuterOnlyJoinConjuncts marks a JoinPredicate carrying conjuncts with
+	// NO inner-source reference (a nested-EXISTS middle routes them here;
+	// the inside placement does not plan for that composition). Outer-
+	// routing such a conjunct is valid ONLY under positive polarity
+	// (P AND EXISTS(Q) is equivalent to EXISTS(P AND Q)); an anti-join
+	// (NOT EXISTS) consumer computes P AND NOT-EXISTS(Q) where
+	// NOT-EXISTS(P AND Q) is due and MUST decline loudly instead of
+	// answering wrong rows.
+	OuterOnlyJoinConjuncts bool
 }
 
 // ScalarSubquery pairs a correlation alias with the logical plan for
