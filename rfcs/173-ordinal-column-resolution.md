@@ -4929,7 +4929,18 @@ resolves a CTE-name scan THROUGH cteScope and checks the BODY is a bare scan —
 boxes, N-way join legs, CTE-backed joins AND CTE-backed opaque boxes in one place. clusterArity==1 DROPPED
 (subsumed). Final predicate: `JoinInner && !enclosed && scanFamilyLegCteAware(both) && mintedBindingLeg==""`.
 Pin added: cte_backed_aggregate_leg_stays_poison. FOUR real regressions found across this one gate change's
-review (FULL-box leak, dup-alias silent-wrong, CTE-join, CTE-opaque-box) — a strong four-gate validation.** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
+review (FULL-box leak, dup-alias silent-wrong, CTE-join, CTE-opaque-box) — a strong four-gate validation.**
+**codex ROUND 3 (a FIFTH edge): the cteScope-aware predicate's delete-during-walk (copied from
+clusterArity) mishandled SAME-NAME CTE SHADOWING — `WITH c AS (SELECT * FROM c)` shadowing an outer join:
+deleting the scope entry resolved the inner `c` to the BASE TABLE (→ scan-family → over-gate), whereas
+translateScan resolves it to the OUTER shadowed binding via cteShadowStack. FIX: walk the body under
+`inCTEDefiningScope` (the SAME cteShadowStack mechanism translateScan/legColumns use), so classification is
+in lockstep with translation for the shadow case too. Pin: cte_same_name_shadow_stays_poison (gates under
+delete, poison under inCTEDefiningScope). Graefe IMPL-ACK (verified nested/CTE-chain resolution + the
+cteExprScope safety tightening); Torvalds ACK (root-cause not downstream; 2 nits fixed: the gate comment
+doc-rot narrating the retired isScanFamilyLeg, and the F2-LEFT booking). **FIVE real regressions on one gate
+narrowing — the four-gate discipline at its most load-bearing; none caught by a green 55/55 suite or my own
+reasoning.** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
 derivation helper, retires with the nested residuals of P2/P3, not standalone. P2 (buildJoinResultValue:727)
 = (i) 2-way EXISTS-in-ON RETIRABLE-NOW, (ii) enclosure declines lift atomically at S4 (circular, the
 forceOrdinalSpike certificate models it). P3 (buildUnnestResultValue:1673) = BLOCKED on W5

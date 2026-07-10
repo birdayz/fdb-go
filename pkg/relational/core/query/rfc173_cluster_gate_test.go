@@ -41,6 +41,7 @@ func newGateTranslator(t *testing.T) *cascadesTranslator {
 		cteScope:        make(map[string]logical.LogicalOperator),
 		cteExprScope:    make(map[string]expressions.RelationalExpression),
 		cteColumnsScope: make(map[string][]values.Field),
+		cteShadowStack:  make(map[string][]logical.LogicalOperator),
 	}
 }
 
@@ -162,6 +163,26 @@ func TestRFC173S4_ExistsInOnGate(t *testing.T) {
 		d := tr.ordinalWedgeGateDecide(j)
 		if d.Gated {
 			t.Fatalf("CTE-backed-aggregate-leg EXISTS-in-ON gate = %+v, want poison (CTE body is an opaque box)", d)
+		}
+	})
+
+	t.Run("cte_same_name_shadow_stays_poison", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		// The SHADOW case: an inner CTE `c` whose body references an OUTER `c`
+		// that is a JOIN (`WITH c AS (SELECT * FROM c)` shadowing). A plain
+		// delete-during-walk would resolve the inner body's `c` to the BASE
+		// TABLE → scan-family true → over-gate. scanFamilyLegCteAware uses
+		// inCTEDefiningScope (the cteShadowStack mechanism translateScan uses),
+		// so the inner `c` resolves to the OUTER join → NOT scan-family →
+		// poison, in lockstep with translation.
+		outerJoin := inner(scan("Order", "o"), scan("Customer", "c2"))
+		tr.cteScope["C"] = scan("C", "cref") // inner body references C
+		tr.cteShadowStack["C"] = []logical.LogicalOperator{outerJoin}
+		j := onExists(inner(scan("C", "cleg"), scan("Customer", "c3")))
+		d := tr.ordinalWedgeGateDecide(j)
+		if d.Gated {
+			t.Fatalf("same-name-CTE-shadow leg gate = %+v, want poison (inner c resolves to the outer join, not a base scan)", d)
 		}
 	})
 

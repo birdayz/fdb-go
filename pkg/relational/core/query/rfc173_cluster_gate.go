@@ -275,9 +275,13 @@ func SetForceOrdinalSpike(v bool) { forceOrdinalSpike = v }
 // (aggregate/union/sort/distinct/limit) is NOT scan-family — it flows a merged
 // or multi-source row the 2-way EXISTS-in-ON ordinal seed is unverified over.
 // A cteExprScope name (recursive-CTE self-reference / temp-table scan) is a
-// pre-translated opaque reference → not scan-family (conservative). The
-// scope entry is removed while walking the body, exactly like clusterArity,
-// so a same-named scan inside the body resolves to the real table.
+// pre-translated opaque reference → not scan-family (conservative). The body
+// is walked under inCTEDefiningScope — the SAME cteShadowStack mechanism
+// translateScan/legColumns use — so a SAME-NAMED scan inside the body resolves
+// to the OUTER shadowed binding (not the base table), keeping classification
+// in lockstep with translation (a plain delete-during-walk would diverge:
+// `WITH c AS (SELECT * FROM c)` shadowing an outer join/box would misresolve
+// the inner c to the base table and over-gate).
 func (t *cascadesTranslator) scanFamilyLegCteAware(op logical.LogicalOperator) bool {
 	for {
 		switch n := op.(type) {
@@ -287,9 +291,10 @@ func (t *cascadesTranslator) scanFamilyLegCteAware(op logical.LogicalOperator) b
 				return false
 			}
 			if body, ok := t.cteScope[key]; ok {
-				delete(t.cteScope, key)
-				r := t.scanFamilyLegCteAware(body)
-				t.cteScope[key] = body
+				var r bool
+				t.inCTEDefiningScope(key, body, func() {
+					r = t.scanFamilyLegCteAware(body)
+				})
 				return r
 			}
 			return true
@@ -310,34 +315,23 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 	}
 	if len(j.OnExistsSubqueries) > 0 {
 		// RFC-173 S4: a BARE 2-way NON-ENCLOSED INNER EXISTS-in-ON gates
-		// ordinal. Both legs must be a single SCAN SOURCE (through filters) —
-		// isScanFamilyLeg, the SAME tight check the F2-LEFT ordinal fold uses.
-		// A scan-scan 2-way has no buried inner join (→ no index-matching wall),
-		// no null-drain, and no opaque merged row: the seed is
+		// ordinal. Both legs must be a single SCAN SOURCE (through filters),
+		// tested by scanFamilyLegCteAware — the SINGLE root-cause predicate that
+		// resolves a CTE-name scan THROUGH cteScope and checks the BODY, so it
+		// excludes at once: a FULL/aggregate/union/sort box (not a scan → a
+		// buried join = the index-matching wall, a null-drain, or an opaque
+		// merged row the 2-leg seed is unverified over), an N-way join leg (not
+		// a scan), a CTE-backed join AND a CTE-backed opaque box (the scan
+		// resolves to a non-scan body). A scan-scan 2-way seeds
 		// [ForEach, ForEach, Existential], which implementJoinWithExistential's
 		// 2-leg arm plans ordinal AND index-neutral (the existential already
 		// drops even a 2-way join to a plain NLJ on the name model, so no index
-		// is lost — EXPLAIN-verified). The translateJoin binary arm builds the
-		// ordinal seed and attaches the existentials unchanged. clusterArity==1
-		// is NOT enough here: a FULL-outer box and an aggregate/union/sort box
-		// are also clusterArity==1 (and ordinalEligible), but a FULL box HAS a
-		// buried join (the wall) and an opaque box flows a merged row this
-		// 2-leg seed is unverified over — isScanFamilyLeg excludes all of them.
-		// The poison STAYS for an ENCLOSED or N-WAY EXISTS-in-ON (the
-		// existential would ride into the ≥3-quantifier partition machinery, or
-		// hit the buried-inner-box index-matching wall — the booked
-		// ordinal-fold-over-index-matched-box prerequisite) and for any
-		// non-scan leg.
-		// scanFamilyLegCteAware is the SINGLE root-cause predicate: a single
-		// base-table SCAN through filters, resolving a CTE-name scan THROUGH
-		// cteScope so a CTE whose body is a JOIN or an OPAQUE BOX
-		// (aggregate/union/sort) is excluded. It covers every non-single-scan
-		// leg at once — a FULL/aggregate box (not a scan), an N-way join leg
-		// (not a scan), a CTE-backed join AND a CTE-backed opaque box (the scan
-		// resolves to a non-scan body). The earlier syntactic isScanFamilyLeg +
-		// clusterArity==1 side-check left the CTE-opaque-box cell open (the box
-		// is clusterArity==1 and isScanFamilyLeg is cteScope-BLIND) — this
-		// resolves scan-family through cteScope at the root instead.
+		// is lost — EXPLAIN-verified); the translateJoin binary arm builds the
+		// ordinal seed and attaches the existentials unchanged. The poison STAYS
+		// for an ENCLOSED or N-WAY EXISTS-in-ON (the existential would ride into
+		// the ≥3-quantifier partition machinery, or hit the buried-inner-box
+		// index-matching wall — the booked ordinal-fold-over-index-matched-box
+		// prerequisite) and for any non-scan leg.
 		// DUPLICATE ALIAS: two legs sharing a SQL alias get a parser-minted
 		// Q$DUPn binding on the later leg (mintedBindingLeg finds it). The gated
 		// arm here RETURNS EARLY, before the pairwise dup-binding poison (:294),
