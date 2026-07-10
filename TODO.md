@@ -1743,6 +1743,19 @@ Fix: the aggregate-detection walk must scope to the CURRENT query (an EXISTS/sca
 query scope; its aggregates belong to IT). This is the sequencing PREREQUISITE for the EXISTS-over-aggregate
 cardinality fix above. Query-engine/front-end → four-gate.
 
+**CONFIRMED by reproduction 2026-07-10 (correcting an intermediate mis-call).** A salvage re-do of the
+cardinality fix (with the codex P1#1 LIMIT/OFFSET guard + the P1#3 outer-only-predicate decline) was built
+and tested against codex's exact shapes. Result: base cases + LIMIT-0 + mixed-predicate all PASS, but
+`codex_nested_scope` (`EXISTS(SELECT EXISTS(SELECT COUNT(*) FROM f) FROM e WHERE e.eref=p.id)`) returned
+`[1,2,3]` instead of `[1]` — the row-preserving middle IS misclassified as unconditionally-one-row. So
+codex P1#2 is REAL (an intermediate hypothesis that it was a false positive — "checkCountStar/extractAggFunc
+are structural so sq.aggCols can't leak" — was WRONG; something DOES populate the middle's aggregate set from
+the nested COUNT(*), same mechanism as the projected-42803). The cardinality fix therefore CANNOT be made
+sound by guarding its own detector — it is HARD-BLOCKED on this scope-leak fix. Do the scope leak FIRST
+(pin down which harvest in `extractFromQueryTerm`/the SELECT-element loop descends into a projected
+EXISTS/scalar element), which also fixes the projected-42803, THEN the cardinality fix. The re-do was
+discarded (not committed) since it fails `codex_nested_scope`.
+
 ### [ ] front-end follow-on (Torvalds correlated-EXISTS review, recommended, non-blocking): extract `classifyJoinOn(...)` from `buildCorrelatedExists`
 `buildCorrelatedExists` (pkg/relational/core/embedded/logical_predicate.go) is ~412 lines — mostly essential
 complexity (INNER/LEFT/RIGHT/FULL × correlation × ordering × CTE × nested-subquery), not cruft (Torvalds
