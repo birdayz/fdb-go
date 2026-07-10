@@ -1678,15 +1678,30 @@ do NOT need name binding (independent-legs materialized joins).** Pinned: TestFD
 (EXPLAIN asserts the SARG'd `[=]` index scan, not the cross-product; + correct rows) — trips if a future
 producer-retirement re-ordinalizes this shape and drops the index (the reverted commit-A wall).
 
-### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE
-An EXISTS whose inner SELECT is an AGGREGATE (or a scalar over an aggregate) is ALWAYS TRUE: a
-`COUNT(*)`/`MAX(...)` over any group yields exactly one row, so the existential is satisfied for every outer
-row. Java 4.12.11.0 keeps all outer rows; Go treats it as correlated-filtering and drops the non-matching
-ones. Repro (live-verified): `SELECT p.v FROM p, q WHERE q.qid = 5 AND EXISTS (SELECT COUNT(*) FROM e WHERE
-e.eref = p.id)` with p={(1,10),(2,20)}, e={eref=1} → Java `[[10],[20]]`, Go `[[10]]`; same with `MAX(eid)`.
-The 2-leg existential-fold path (tryExistsFlatMap / implementExistentialSelect), NOT the N-way seed. Fix: an
-aggregate/grouped existential inner must NOT route the correlation as a semi-join filter — it always emits.
-Regression test to add once fixed: the two shapes above, both polarities, vs a scalar-non-aggregate control.
+### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE — CHARACTERIZED with controls (2026-07-10)
+An EXISTS whose inner SELECT is a **NON-GROUPED** AGGREGATE is ALWAYS TRUE: a non-grouped
+`COUNT(*)`/`MAX(...)`/`SUM(...)` yields EXACTLY ONE row even over an empty (post-WHERE) input (`COUNT`→0,
+`MAX`→NULL), so the existential is satisfied for every outer row. Java 4.12.11.0 keeps all outer rows; Go
+treats it as correlated-filtering and drops the non-matching ones. Repro (live-verified): `SELECT p.v FROM
+p, q WHERE q.qid = 5 AND EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id)` with p={(1,10),(2,20)},
+e={eref=1} → Java `[[10],[20]]`, Go `[[10]]`; same with `MAX(eid)`.
+**CONTROLLED CHARACTERIZATION (2026-07-10 probe, p={1,2,3} e={eref=1}) — corrects the proposed fix below:**
+  - `corr-count` `EXISTS(SELECT COUNT(*) FROM e WHERE e.eref=p.id)` → Go `[1]`, want `[1,2,3]` — **BUG (live)**
+  - `corr-max`   `EXISTS(SELECT MAX(e.eid) FROM e WHERE e.eref=p.id)` → Go `[1]`, want `[1,2,3]` — **BUG (live)**
+  - `uncorr-count` `EXISTS(SELECT COUNT(*) FROM e)` → Go `[1,2,3]` — **CORRECT** (no correlation to filter on)
+  - `corr-grouped` `EXISTS(SELECT COUNT(*) FROM e WHERE e.eref=p.id GROUP BY e.eref)` → Go `[1]` — **CORRECT**
+    (a GROUPED aggregate emits ZERO rows over an empty group → EXISTS = has-match, must still filter).
+The 2-leg existential-fold path (tryExistsFlatMap / implementExistentialSelect), NOT the N-way seed.
+**CORRECTED FIX (the prior "aggregate/GROUPED existential inner must not route as semi-join" was WRONG — it
+would make the grouped case always-true, a NEW bug; the grouped control proves grouped MUST filter):** the
+rewrite applies to a **NON-GROUPED aggregate inner with NO HAVING only** (guaranteed exactly one row →
+EXISTS always TRUE — a constant-fold of the existential). A GROUPED inner, or a HAVING that can empty the
+single group, is NOT always-true and stays a semi-join. Mirror the correlated-scalar path's no-GROUP-BY
+handling (RFC-047: "Empty input → 0 groups → NULL; vs no-GROUP-BY COUNT → 0"), which already distinguishes
+these correctly — the EXISTS path just doesn't reuse that logic. GATED: query-engine change (EXISTS
+routing) → Graefe design-ACK; multi-path (WHERE/projected × correlated/non-correlated) so NOT a one-line
+inline fix. Regression test to add once fixed: the four controlled shapes above (bug + grouped/uncorrelated
+controls) both polarities, a HAVING-empties-group control, vs a scalar-non-aggregate control.
 
 ### [ ] front-end follow-on (Torvalds correlated-EXISTS review, recommended, non-blocking): extract `classifyJoinOn(...)` from `buildCorrelatedExists`
 `buildCorrelatedExists` (pkg/relational/core/embedded/logical_predicate.go) is ~412 lines — mostly essential
