@@ -1691,8 +1691,18 @@ because: P1#1 LIMIT/OFFSET guarded; P1#2 (nested-scope misclassification) fixed 
 aggregate-detection scope-leak KEYSTONE above (harvestAggregates no longer leaks a nested aggregate into the
 detector's sq.aggCols); P1#3 mixed-predicate declines. Pinned: `exists_over_aggregate_fdb_test.go` — count/
 max/sum + NOT-EXISTS + PROJECTED all-true, grouped/uncorrelated/plain controls, and all three codex shapes
-(codex_nested_scope_correct=[1], codex_limit_zero_declines, codex_mixed_predicate_declines). Full suite 55/55.
-Query-engine/front-end → four-gate (in flight).
+(nested_scope_correct=[1], mixed_predicate_wraps=[1 2 3], limit_zero/qualify guard-held). Full suite 55/55.
+Query-engine/front-end → four-gate (Graefe ACK; Torvalds NAK on test-quality, addressed; codex re-run pending).
+**KNOWN RESIDUALS (booked, review-surfaced, NOT regressions — each keeps pre-existing behavior):**
+(a) LIMIT 0 / QUALIFY over the correlated aggregate: the detector correctly DECLINES the always-true wrap
+(sq.limit/qualifyExpr guards), but the declined fallback drops the SELECT (losing the LIMIT/QUALIFY) →
+answers `[1]` (row existence) where the strictly-correct answer is `[]` (the row is eliminated → EXISTS
+false). A separate drop-SELECT-loses-LIMIT/QUALIFY bug; pinned as guard-held sentinels. (b) Graefe residual:
+a correlated EXISTS whose inner aggregate's WHERE itself carries a nested-EXISTS-middle with outer-only
+conjuncts sets OuterOnlyJoinConjuncts → the wrap DECLINES → that inner keeps the pre-existing (silently
+under-counting) drop-the-aggregate behavior. (c) P2 (Graefe): the COUNT(*) wrap scans the correlated inner
+per outer row; a constant-fold to a single-row source is a cheaper follow-on (the wrap is correct, not
+minimal). All three are pre-existing / non-regressing; fix under the broader correlated-EXISTS-clause work.
 
 <details><summary>original characterization (kept for the audit trail)</summary>
 

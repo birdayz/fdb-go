@@ -113,34 +113,53 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 		eq(t, "plain_exists_still_filters", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT 1 FROM e WHERE e.eref = p.id) ORDER BY p.id"), []int64{1})
 	})
 
-	// LIMIT 0 eliminates the single aggregate row → NOT always-true; the
-	// detector declines (guard held → not the newly-broken all-p [1 2 3]).
-	t.Run("limit_zero_declines", func(t *testing.T) {
-		got := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 0) ORDER BY p.id")
-		if len(got) == 3 {
-			t.Fatalf("limit_zero: LIMIT 0 was wrongly wrapped always-true (rows=%v)", got)
-		}
-	})
-
 	// A row-preserving MIDDLE SELECT projecting an EXISTS-of-aggregate must NOT
-	// be misclassified as an aggregate. This was the misfire that hard-blocked
-	// the fix; the aggregate-detection scope-leak fix closes it at the source
-	// (harvestAggregates no longer promotes the nested COUNT(*) into the middle's
-	// aggregate set). Middle yields one row per matching e → EXISTS = has-e-match
-	// → only p.id=1.
+	// be misclassified as an aggregate. Middle yields one row per matching e →
+	// EXISTS = has-e-match → only p.id=1.
 	t.Run("nested_scope_correct", func(t *testing.T) {
 		eq(t, "nested_scope",
 			ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT EXISTS (SELECT COUNT(*) FROM f) FROM e WHERE e.eref = p.id) ORDER BY p.id"),
 			[]int64{1})
 	})
 
-	// A predicate with an outer-only conjunct (`p.id > 0`) sets
-	// OuterOnlyJoinConjuncts → the wrap DECLINES (never strands an inner ref
-	// above the aggregate → always-false []). Guard held (not empty).
-	t.Run("mixed_predicate_declines", func(t *testing.T) {
-		got := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id AND p.id > 0) ORDER BY p.id")
-		if len(got) == 0 {
-			t.Fatalf("mixed_predicate: wrapped with the inner ref stranded above the aggregate → always-false []")
+	// A single-level mixed predicate (`e.eref=p.id AND p.id>0`) does NOT decline:
+	// the outer-only conjunct `p.id>0` is split out and pushed INSIDE the inner
+	// (below the future aggregate) upstream, leaving the join predicate
+	// inner-only, so the wrap fires and the aggregate always emits → all p that
+	// satisfy p.id>0 = [1 2 3]. (The `!OuterOnlyJoinConjuncts` guard is for a
+	// DIFFERENT shape — a nested-EXISTS-middle — not this one.)
+	t.Run("mixed_predicate_wraps", func(t *testing.T) {
+		eq(t, "mixed_predicate", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id AND p.id > 0) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+
+	// LIMIT 0 / QUALIFY can eliminate the single aggregate row, so the detector
+	// DECLINES the always-true wrap (guards on sq.limit / sq.qualifyExpr). The
+	// declined fallback (drop-the-SELECT semi-join) then answers [1] (row
+	// existence), which is itself a SEPARATE pre-existing residual — the
+	// strictly-correct answer is [] (LIMIT 0 / QUALIFY-false → zero rows → EXISTS
+	// false). What THIS test pins is that the guard held: the result is [1], NOT
+	// the always-true [1 2 3] the unguarded wrap would produce. The [1]→[]
+	// residual is booked separately (drop-SELECT loses LIMIT/QUALIFY).
+	t.Run("limit_zero_declines_guard_held", func(t *testing.T) {
+		eq(t, "limit_zero", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 0) ORDER BY p.id"), []int64{1})
+	})
+	t.Run("qualify_declines_guard_held", func(t *testing.T) {
+		got, qErr := db.QueryContext(ctx, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id QUALIFY ROW_NUMBER() OVER (ORDER BY e.eid) < 1) ORDER BY p.id")
+		if qErr != nil {
+			t.Fatalf("qualify: %v", qErr)
+		}
+		var v []int64
+		for got.Next() {
+			var x int64
+			if sErr := got.Scan(&x); sErr != nil {
+				t.Fatalf("scan: %v", sErr)
+			}
+			v = append(v, x)
+		}
+		got.Close()
+		// Guard held: [1] (declined fallback), NOT the always-true [1 2 3].
+		if len(v) != 1 || v[0] != 1 {
+			t.Fatalf("qualify: rows=%v want [1] (guard declined the always-true wrap; [1 2 3] = QUALIFY not guarded)", v)
 		}
 	})
 

@@ -5265,6 +5265,7 @@ func (p *existsSubqueryPlanner) mintSubqueryAlias() values.CorrelationIdentifier
 // even over an empty (post-WHERE) input (COUNT->0, MAX/SUM->NULL). Excluded:
 //   - GROUP BY: a grouped aggregate emits ZERO rows over an empty group.
 //   - HAVING: can empty the single group.
+//   - QUALIFY: a window-function filter over the single row can drop it.
 //   - LIMIT 0 / positive OFFSET: eliminates the single row.
 //
 // This matters only on the correlated fallback (buildCorrelatedExists), which
@@ -5287,7 +5288,7 @@ func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
 	if err != nil || sq == nil {
 		return false
 	}
-	if len(sq.groupBy) > 0 || sq.havingExpr != nil {
+	if len(sq.groupBy) > 0 || sq.havingExpr != nil || sq.qualifyExpr != nil {
 		return false
 	}
 	if sq.limit == 0 || sq.offset > 0 { // LIMIT 0 / OFFSET n eliminates the single row
@@ -5329,11 +5330,16 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 		// aggregate. The correlation (`e.eref=p.id`) lives in lastJoinPredicate,
 		// which the semi-join lowering applies ABOVE the inner; it MUST go BELOW
 		// the aggregate (whose output has no `e.eref`) — apply it as an inner
-		// filter and clear the join predicate. Only sound when the predicate is
-		// cleanly inner-referencing; a mixed/outer-only predicate
-		// (OuterOnlyJoinConjuncts) carries conjuncts that must stay at the
-		// semi-join level, so DECLINE the wrap there and fall back to the
-		// ordinary path rather than strand an inner ref above the aggregate.
+		// filter and clear the join predicate. A single-level mixed predicate
+		// (`e.eref=p.id AND p.id>0`) is already split upstream by
+		// splitOuterOnlyConjuncts (outer-only conjunct pushed INSIDE the inner,
+		// correlation left in lastJoinPredicate with OuterOnly=false), so it
+		// wraps normally. OuterOnlyJoinConjuncts is set only on a nested-EXISTS
+		// MIDDLE (its join predicate is an opaque bundle of outer-only conjuncts
+		// that cannot be pushed below the aggregate); DECLINE the wrap there and
+		// fall back to the ordinary path rather than strand a predicate above the
+		// aggregate. (Residual: such a nested inner keeps the pre-existing
+		// drop-the-aggregate behavior — booked.)
 		if queryInnerIsUnconditionalOneRow(q) &&
 			(p.lastJoinPredicate == nil || !p.lastJoinPredicateOuterOnly) {
 			inner := innerOp
