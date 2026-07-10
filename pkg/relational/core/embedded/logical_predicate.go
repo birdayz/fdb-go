@@ -5212,10 +5212,21 @@ type existsSubqueryPlanner struct {
 // visibleScopeNames is the upper-cased set of every user-visible SQL name a
 // subquery-level mint must avoid: each outer scope's Alias AND
 // CorrelationName (the latter carries enclosing mints and dup-alias binding
-// ids) plus the CTE registry's names. An ALIASED outer CTE leg is dropped
-// from p.outerScopes by addSrc's silent resolve-failure arm and so escapes
-// this set — booked with the outer-CTE-leg scope-registration gap (loud
-// today: correlated refs to such legs die 42703).
+// ids) plus the CTE registry's names. The collision invariant ("no
+// generated identity equals a user-visible name") is enforced by TWO
+// mechanisms with disjoint jobs: this SET covers names that can co-occur in
+// the binding's resolution/registration context — the scope CHAIN (parent
+// scopes carry an enclosing mint via nestedOuterScopes' CorrelationName)
+// plus the CTE registry — while counter MONOTONICITY covers generated-vs-
+// generated (two mints from one strictly-increasing counter can never
+// collide, skip loop included, since skipping only advances). A sibling
+// subquery at another level is deliberately EXCLUDED from the set: its
+// binding registers at its own parent select, which is not in this
+// subquery's chain — no co-occurrence, no hazard; do not "fix" the set by
+// stuffing sibling names in. An ALIASED outer CTE leg is dropped from
+// p.outerScopes by addSrc's silent resolve-failure arm and so escapes this
+// set — booked with the outer-CTE-leg scope-registration gap (loud today:
+// correlated refs to such legs die 42703).
 func (p *existsSubqueryPlanner) visibleScopeNames() map[string]struct{} {
 	visible := map[string]struct{}{}
 	for _, src := range p.outerScopes {
