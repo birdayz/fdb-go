@@ -2198,10 +2198,10 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
 	// RFC-173: fold a POSITIVE WHERE-EXISTS over an unconditional-one-row
-	// aggregate (esq.AlwaysTrue) to TRUE — drop its existential quantifier before
-	// any routing. EXISTS(unconditional-one-row) is always satisfied, so it
-	// contributes NO filter (its EXISTS marker is already stripped from the
-	// predicate by splitNonExistsPredicates). Running here — ahead of the
+	// aggregate (esq.AlwaysTrue) to TRUE — drop its existential quantifier AND
+	// rewrite its EXISTS marker in the predicate to TRUE (foldAlwaysTrueExists),
+	// before any routing. EXISTS(unconditional-one-row) is always satisfied, so
+	// `P AND EXISTS(...)` collapses to `P`. Running here — ahead of the
 	// join-flatten — means the correlated-aggregate semi-join is never built, so
 	// the joined-outer / windowed-DML hazards of the semi-join approach cannot
 	// arise. NOT EXISTS (negated) and projected consumers do NOT fold.
@@ -5204,6 +5204,18 @@ func (t *cascadesTranslator) foldAlwaysTrueExists(f *logical.LogicalFilter) *log
 			}
 			return true
 		})
+	}
+	// If ANY AlwaysTrue esq is consumed under NOT EXISTS, DECLINE the whole
+	// fold. `NOT EXISTS(one-row)` is FALSE, which this positive-only fold does
+	// not implement; folding just the sibling positive alias and leaving the
+	// (unfixed) negated one would silently change a formerly-rejected /
+	// pre-existing shape (e.g. `EXISTS(agg) AND NOT EXISTS(agg)` must be empty,
+	// not the broken negated residual). Preserve the base behavior for the whole
+	// filter — negated always-true folding is a booked follow-on.
+	for _, esq := range f.ExistsSubqueries {
+		if _, isNeg := negated[esq.Alias]; esq.AlwaysTrue && isNeg {
+			return f
+		}
 	}
 	kept := make([]logical.ExistsSubquery, 0, len(f.ExistsSubqueries))
 	foldedAliases := map[values.CorrelationIdentifier]struct{}{}

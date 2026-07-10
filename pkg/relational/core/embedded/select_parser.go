@@ -1542,6 +1542,10 @@ func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
 	if !ok {
 		return false
 	}
+	simpleTable, stOk := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !stOk {
+		return false
+	}
 	sq, err := extractFromQueryTerm(body)
 	if err != nil || sq == nil {
 		return false
@@ -1549,19 +1553,27 @@ func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
 	if len(sq.groupBy) > 0 || sq.havingExpr != nil || sq.qualifyExpr != nil {
 		return false
 	}
-	if sq.limit == 0 || sq.offset > 0 { // LIMIT 0 / OFFSET n eliminates the single row
+	// A present LIMIT/OFFSET clause can eliminate the single aggregate row.
+	// Decline whenever the clause is present regardless of its value — this
+	// covers LIMIT 0, positive OFFSET, AND syntactically-accepted-but-unparsed
+	// forms (LIMIT 0.0 / LIMIT 0L) that parseLimitClause leaves at the -1
+	// no-limit sentinel (indistinguishable from absent via sq.limit alone).
+	if simpleTable.LimitClause() != nil {
+		return false
+	}
+	if sq.limit == 0 || sq.offset > 0 { // belt-and-braces for any non-LimitClause path
 		return false
 	}
 	if !(sq.countStar || len(sq.aggCols) > 0) {
 		return false
 	}
-	return !queryOuterHasWindowedAggregate(body)
+	return !queryScopeHasWindowedAggregate(body)
 }
 
-// queryOuterHasWindowedAggregate reports whether THIS query's own SELECT (not a
+// queryScopeHasWindowedAggregate reports whether THIS query's own SELECT (not a
 // nested subquery's) contains a windowed aggregate (`… OVER (…)`). Stops at
 // nested query scopes — their window functions belong to them.
-func queryOuterHasWindowedAggregate(n antlr.Tree) bool {
+func queryScopeHasWindowedAggregate(n antlr.Tree) bool {
 	if n == nil {
 		return false
 	}
@@ -1574,7 +1586,7 @@ func queryOuterHasWindowedAggregate(n antlr.Tree) bool {
 		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
 			continue // a nested subquery scope
 		}
-		if queryOuterHasWindowedAggregate(c) {
+		if queryScopeHasWindowedAggregate(c) {
 			return true
 		}
 	}

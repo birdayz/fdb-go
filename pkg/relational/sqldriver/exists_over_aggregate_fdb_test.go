@@ -132,4 +132,50 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	t.Run("not_exists_residual", func(t *testing.T) {
 		eq(t, "not_exists_residual", ids(t, "SELECT p.id FROM p WHERE NOT EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) ORDER BY p.id"), []int64{2, 3})
 	})
+
+	// P1 (mixed polarity): a positive AlwaysTrue esq beside a NEGATED one must
+	// NOT partial-fold (that left the broken negated residual [2 3] where the
+	// truth is empty). The fold DECLINES the whole filter, preserving the base
+	// behavior (this two-quantifier shape is rejected upstream) — never the
+	// silent-wrong [2 3].
+	t.Run("mixed_polarity_declines", func(t *testing.T) {
+		got, qErr := db.QueryContext(ctx, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) AND NOT EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) ORDER BY p.id")
+		if qErr != nil {
+			return // rejected (base behavior) — acceptable, NOT silent-wrong
+		}
+		var v []int64
+		for got.Next() {
+			var x int64
+			if sErr := got.Scan(&x); sErr != nil {
+				t.Fatalf("scan: %v", sErr)
+			}
+			v = append(v, x)
+		}
+		got.Close()
+		if len(v) == 2 && v[0] == 2 && v[1] == 3 {
+			t.Fatalf("mixed_polarity: partial-folded to the broken negated residual [2 3] (must decline)")
+		}
+	})
+
+	// P1 (unparsed LIMIT): LIMIT 0.0 / 0L are syntactically accepted but parse to
+	// the -1 no-limit sentinel; the detector declines whenever a LIMIT clause is
+	// PRESENT, so these are NOT folded to always-true [1 2 3].
+	t.Run("limit_unparsed_not_folded", func(t *testing.T) {
+		for _, lim := range []string{"LIMIT 0.0", "LIMIT 0L"} {
+			got, qErr := db.QueryContext(ctx, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+lim+") ORDER BY p.id")
+			if qErr != nil {
+				continue // rejected — acceptable, NOT the always-true silent-wrong
+			}
+			var v []int64
+			for got.Next() {
+				var x int64
+				got.Scan(&x)
+				v = append(v, x)
+			}
+			got.Close()
+			if len(v) == 3 {
+				t.Fatalf("%s: wrongly folded to always-true %v (unparsed LIMIT not guarded)", lim, v)
+			}
+		}
+	})
 }

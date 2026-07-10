@@ -19,11 +19,12 @@ type ExistsSubquery struct {
 	// one row, so `EXISTS(inner)` is unconditionally TRUE — set by the front-end
 	// for a NON-GROUPED aggregate inner (COUNT(*)/MAX/SUM with no GROUP BY /
 	// HAVING / QUALIFY / LIMIT 0 / positive OFFSET / windowed OVER). A POSITIVE
-	// WHERE-EXISTS consumer folds it to TRUE by simply not emitting the
-	// existential quantifier (the predicate's EXISTS marker is already stripped
-	// by splitNonExistsPredicates) — which sidesteps the correlated-aggregate
-	// semi-join entirely (no joined-outer / windowed-DML hazard). NOT EXISTS
-	// (→ FALSE) and projected consumers do NOT fold on this flag (booked).
+	// WHERE-EXISTS consumer folds it to TRUE by NOT emitting the existential
+	// quantifier AND rewriting its EXISTS marker in the predicate to TRUE
+	// (foldAlwaysTrueExists / stripFoldedExistsMarkers) — which sidesteps the
+	// correlated-aggregate semi-join entirely (no joined-outer / windowed-DML
+	// hazard). NOT EXISTS (→ FALSE) and projected consumers do NOT fold on this
+	// flag (booked).
 	AlwaysTrue bool
 	// OuterOnlyJoinConjuncts marks a JoinPredicate carrying conjuncts with
 	// NO inner-source reference that can FILTER (a nested-EXISTS middle
