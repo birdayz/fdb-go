@@ -245,6 +245,11 @@ validation gate.
     positional with dual emission backstopping) but a CONSERVATIVE guard over an UNVALIDATED tower
     (zero e2e coverage, outside the box slices' verified surface) that becomes load-bearing when the
     name model is deleted at the cap; pinned nested_box_bottom_* + feature-off control.
+    FULLY 4-GATED (b8441025a + 90e9fbe82 + amendment 2095b0ce8): Graefe ACK→re-confirm (with ownership;
+    NEW STANDING RULE: latent-bug-on-HEAD claims require a rows-probe+trace on the PRE-change tree),
+    Torvalds NAK→ACK (theory #4 falsified by his instrumented probes; zero refuted-claim residue; the six
+    tripwires "the real prize"), @claude ACK×2 (22-probe differential byte-identical; harvest faithful),
+    codex clean×3. Arc: FOUR falsified theories, THREE revertible spikes, ZERO unsound code shipped.
     BOOKED (Outcome B, the real box-substrate ordinalization — sequenced WITH the circular arms, LAST):
     the 5-site checklist — (1) chained gate ↔ birth coupling (landed as A), (2) the enclosure declines
     cluster_gate.go:315/:356 (the circular arms), (3) legIsOrdinalSafe non-INNER widening, (4) the FULL
