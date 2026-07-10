@@ -141,13 +141,15 @@ type cascadesTranslator struct {
 	// normal flow.
 	unnestUnderExistential bool
 	// unnestExistsScopeCollision forces the under-EXISTS unnest to the ANCHORED
-	// (name-model) seed when an EXISTS inner subquery scans a table aliased the
-	// SAME as an outer FROM leg (`FROM MA, MA.arr AS X WHERE EXISTS(SELECT 1 FROM
-	// MA WHERE MA.c < X)`). A leg-relative outer ref `QOV(MA).c` would then be
-	// captured by existsInnerCorrelation's inner-alias rename (MA → unique) and
-	// mis-bound to the inner row; the name-model rebase moves it to the merged
-	// corr's qualified key `QOV(X)."MA.c"`, which the rename does not touch. This
-	// is a SCOPE collision, not a routing prediction. Scoped like unnestUnderExistential.
+	// (name-model) seed when an EXISTS inner subquery's plan carries a source
+	// alias equal to an outer FROM leg's. Since the collision mint
+	// (buildCorrelatedExists), a SINGLE-TABLE catalog inner is born under a
+	// unique correlation, so it can never trip this — the flag now fires only
+	// for the UNMINTED inner shapes (multi-source and CTE inners, which keep
+	// their SQL names). Those route by source-alias name keys the rename never
+	// touches, so a colliding name would be served from the wrong scope at the
+	// merged row; declining to name-model is the conservative floor until
+	// mint-per-leg lands (booked). Scoped like unnestUnderExistential.
 	unnestExistsScopeCollision bool
 	// unnestOuterConjunctOnBoxLeg forces the lateral unnest to the ANCHORED
 	// (name-model) seed when the enclosing filter has a regular (NON-EXISTS) WHERE
@@ -950,10 +952,15 @@ func (t *cascadesTranslator) boxOuterBirthsPositional(left logical.LogicalOperat
 	return t.clusterArity(left) == 1 && t.boxGatesFresh(left) && t.unnestExistsSeedSafe(left, false)
 }
 
-// existsInnerScopeCollidesOuter reports whether any EXISTS inner subquery scans a
-// table aliased the SAME as an outer FROM leg — a scope collision that would let
-// existsInnerCorrelation's inner-alias rename capture a leg-relative outer ref
-// (see unnestExistsScopeCollision). Such a shape stays name-model.
+// existsInnerScopeCollidesOuter reports whether any EXISTS inner subquery's
+// plan carries a source alias equal to an outer FROM leg's. VESTIGIAL for
+// single-table catalog inners since the collision mint (buildCorrelatedExists
+// births those under a unique correlation — outerBoundAliases(esq.Plan) can
+// never intersect the outer legs). It still fires for the UNMINTED shapes —
+// multi-source and CTE inners keeping their SQL names — whose merged rows
+// route by source-alias name keys, so a colliding name would be served from
+// the wrong scope; those stay name-model as the conservative floor until
+// mint-per-leg lands (booked; see unnestExistsScopeCollision).
 func existsInnerScopeCollidesOuter(esqs []logical.ExistsSubquery, outerLegs map[string]struct{}) bool {
 	if len(outerLegs) == 0 {
 		return false
@@ -5192,18 +5199,25 @@ func (t *cascadesTranslator) namedQuantifier(alias string, ref *expressions.Refe
 //
 // Java gives every existential quantifier its own unique correlation identity;
 // the inner correlation predicate references THAT identity, never the source
-// table's name. Go's buildCorrelatedExists qualified inner refs under the source
-// table name, which COLLIDES with the outer source alias when the subquery scans
-// the same table (`... FROM t WHERE id > 1 AND EXISTS (SELECT 1 FROM t ...)`):
-// the FlatMap would bind both the outer row and the FirstOrDefault inner under
-// the SAME correlation (the inner clobbers the outer → NULL pass-through row),
-// and an outer-only predicate (`id > 1`, correlated to the shared name) would be
-// misclassified as an INNER join predicate and pushed below the FOD. Routing the
-// existential inner through the unique alias makes outer and inner correlations
-// distinct by construction, so neither the binding nor the predicate
-// classification can collide. The source table's columns still flow up under
-// their bare names inside the subquery plan; only the JOIN-LEVEL correlation
-// identity changes, so field lookups (bm["COL"]) are unaffected.
+// table's name. Since the collision mint, buildCorrelatedExists already births
+// a single-table catalog inner under its own unique correlation (the scan
+// alias and the join predicate's inner refs carry the minted name), so for the
+// minted class this rename is pure identity PLUMBING — it rebases the build-
+// time mint onto esq.Alias so the NLJ binding and the predicate agree on ONE
+// name. The rename remains load-bearing for the residual single-table shapes
+// that reach here under their SQL source name (e.g. the clean-build
+// non-correlated path): there the name can equal an outer source alias
+// (`... FROM t WHERE id > 1 AND EXISTS (SELECT 1 FROM t ...)`), and without
+// the rename the FlatMap would bind both the outer row and the FirstOrDefault
+// inner under the SAME correlation (the inner clobbers the outer → NULL
+// pass-through row), and an outer-only predicate (`id > 1`, correlated to the
+// shared name) would be misclassified as an INNER join predicate and pushed
+// below the FOD. Routing the existential inner through the unique alias makes
+// outer and inner correlations distinct by construction, so neither the
+// binding nor the predicate classification can collide. The source table's
+// columns still flow up under their bare names inside the subquery plan; only
+// the JOIN-LEVEL correlation identity changes, so field lookups (bm["COL"])
+// are unaffected.
 func existsInnerCorrelation(esq logical.ExistsSubquery) (string, predicates.QueryPredicate) {
 	// The rename is ONLY safe when the inner is a plain single-table scan whose
 	// ENTIRE correlation to the parent is captured in esq.JoinPredicate. Two

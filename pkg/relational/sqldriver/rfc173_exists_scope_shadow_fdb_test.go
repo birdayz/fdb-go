@@ -43,9 +43,10 @@ import (
 //
 //	R3(ID=3,C=1000,ARR{4})            → min(ST.C) = 5.
 //
-// MA: M1(ID=1,C=11,ARR{10,11,12}), M2(ID=2,C=5,ARR{20,21}) — the R5o fixture.
-// OT: (ID=1000,K=50) — pk DISJOINT from ST/MA (record types share the store
-// extent keyed by primary key; a colliding pk silently overwrites).
+// MA: M1(ID=11,C=11,ARR{10,11,12}), M2(ID=12,C=5,ARR{20,21}) — the R5o
+// C/ARR values on pks 11/12.
+// OT: (ID=1000,K=50). All pks DISJOINT across record types (they share the
+// store extent keyed by primary key; a colliding pk silently overwrites).
 func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -246,5 +247,35 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 	want("nested_noncolliding_middle",
 		`SELECT OT."K" FROM OT WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < OT."K" AND EXISTS (SELECT 1 FROM MA WHERE MA."C" < ST."C"))`,
 		nil,
+		"")
+
+	// NOT EXISTS AROUND the nested colliding pair — a review-battery harvest:
+	// this composition was ALSO wrong pre-mint (returned [] where the
+	// complement of the positive answer is due). Java live: all 5 elements
+	// minus {12,20,21} = {10,11}. The simple NOT-EXISTS twin above was
+	// correct pre-mint; this nested composition was not — polarity
+	// correctness was twin-only until the mint.
+	want("notexists_around_nested_colliding",
+		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM ST WHERE ST."C" < MA."C"))`,
+		[]string{"map[X:10]", "map[X:11]"},
+		"")
+
+	// Nested colliding middle where the inner-inner correlates on ID — a
+	// column the OUTER leg also has (the shared-column axis from the review
+	// battery). Java live: the inner-inner is constant-true on this data
+	// (∃ST.ID<MA.ID+10 always), so the condition reduces to ∃MA.C<X → X>5 →
+	// all 5. Pre-mint this answered {12,20,21} (per-outer-row).
+	want("nested_colliding_shared_id_col",
+		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM ST WHERE ST."ID" < MA."ID" + 10))`,
+		[]string{"map[X:10]", "map[X:11]", "map[X:12]", "map[X:20]", "map[X:21]"},
+		"")
+
+	// An outer leg legally QUOTED as "Q$44" — the alias spelling the mint's
+	// own namespace (the mint-collision surface; mintDistinctUpper skips a
+	// colliding candidate, pinned at unit level in mint_distinct_test.go).
+	// Java live: ∃OT.K=50 > C holds only for the C=5 row → [5].
+	want("qdollar_quoted_outer_alias",
+		`SELECT "Q$44"."C" FROM ST AS "Q$44" WHERE EXISTS (SELECT 1 FROM OT WHERE OT."K" > "Q$44"."C")`,
+		[]string{"map[C:5]"},
 		"")
 }

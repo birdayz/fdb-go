@@ -5504,10 +5504,13 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// OUTER-leg read and the positive-polarity outer-routing pre-filtered
 	// per outer row — wrong rows vs Java's inner-shadow semantics (live-
 	// verified: `FROM MA, MA.arr AS X WHERE EXISTS (SELECT 1 FROM MA WHERE
-	// MA.c < X)` answers ALL elements with X > min(MA.c) in Java). NOT
-	// EXISTS was already correct — negation forbids the hoist, the conjunct
-	// stayed under the ∃ and bound inner — the polarity split that proved
-	// the ambiguity, not the runtime, was the defect. Uppercase because
+	// MA.c < X)` answers ALL elements with X > min(MA.c) in Java). The
+	// SIMPLE NOT-EXISTS twin was already correct — negation forbids the
+	// hoist, the conjunct stayed under the ∃ and bound inner — the polarity
+	// split that proved the ambiguity, not the runtime, was the defect; a
+	// NESTED NOT-EXISTS composition was still wrong pre-mint and is fixed
+	// by the same identity (pinned: notexists_around_nested_colliding).
+	// Uppercase because
 	// every consumer (sourceAlias, outerBoundAliases, splitOuterOnly-
 	// conjuncts) upper-cases SQL aliases; existsInnerCorrelation's rename
 	// then rebases the minted name onto esq.Alias exactly as it did the
@@ -5515,7 +5518,21 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// rename path declines them; mint-per-leg is booked follow-on work).
 	mintedInnerCorr := ""
 	if len(sq.joins) == 0 && !viaCTE {
-		mintedInnerCorr = strings.ToUpper(values.UniqueCorrelationIdentifier().Name())
+		// A QUOTED SQL alias can legally spell `"Q$N"`, so a raw mint could
+		// equal a visible outer name when the global counter happens to
+		// align — the outer's refs would then be captured by the inner
+		// binding, with results depending on planning history. Mint until
+		// distinct from every visible name (see mintDistinctUpper).
+		visible := map[string]struct{}{strings.ToUpper(innerAlias): {}}
+		for _, src := range p.outerScopes {
+			if n := src.Alias.Name(); n != "" {
+				visible[strings.ToUpper(n)] = struct{}{}
+			}
+			if src.CorrelationName != "" {
+				visible[strings.ToUpper(src.CorrelationName)] = struct{}{}
+			}
+		}
+		mintedInnerCorr = mintDistinctUpper(visible, values.UniqueCorrelationIdentifier)
 	}
 	innerCorrName := aliasID.Name()
 	if mintedInnerCorr != "" {
@@ -5957,6 +5974,27 @@ func splitConjunctsByOuterRef(pred predicates.QueryPredicate, outerAliases, inne
 		}
 	}
 	return andOf(outer), andOf(inner)
+}
+
+// mintDistinctUpper mints a fresh upper-cased correlation name that is
+// DISTINCT from every name in visible. A quoted SQL alias can legally
+// spell `"Q$N"`, so a raw `UniqueCorrelationIdentifier` could equal a
+// user alias whenever the process-global counter happens to align —
+// silently rebinding that alias's references to the minted source, with
+// results depending on prior planning history. The retry loop makes the
+// outcome history-INDEPENDENT: a colliding candidate is skipped (the
+// counter advances), and any non-colliding candidate yields identical
+// semantics regardless of its numeric suffix. Terminates because visible
+// is finite and the counter is strictly increasing. next is injected for
+// deterministic unit testing; production passes
+// values.UniqueCorrelationIdentifier.
+func mintDistinctUpper(visible map[string]struct{}, next func() values.CorrelationIdentifier) string {
+	for {
+		candidate := strings.ToUpper(next().Name())
+		if _, taken := visible[candidate]; !taken {
+			return candidate
+		}
+	}
 }
 
 // qualifyBareFields walks a predicate tree and prepends qualifier+"."

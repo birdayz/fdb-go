@@ -265,6 +265,18 @@ func TestFDB_RFC173W4Left_DuplicateFromAliases(t *testing.T) {
 	} else if fv != 10 {
 		t.Errorf("single-source shadowed fallthrough = %d, want 10 (outer p.v)", fv)
 	}
+	// The NOT-EXISTS polarity twin of the fallthrough: the outer-only
+	// conjunct evaluates UNDER the ∃ in both polarities (the placement
+	// invariant), so NOT EXISTS ⇔ ¬(q non-empty ∧ p.v=10) ⇔ p.v≠10 → the
+	// v=20 row. Polarity is this bug class's proven hiding axis — pinned so
+	// the two polarities can never drift apart again.
+	var nfv int64
+	if err := db.QueryRowContext(ctx,
+		"SELECT p.v FROM p WHERE NOT EXISTS (SELECT 1 FROM q AS p WHERE p.v = 10)").Scan(&nfv); err != nil {
+		t.Errorf("single-source shadowed fallthrough NOT-EXISTS twin must ANSWER: %v", err)
+	} else if nfv != 20 {
+		t.Errorf("single-source shadowed fallthrough NOT-EXISTS twin = %d, want 20 (the complement row)", nfv)
+	}
 	//  (2) MULTI inner source (`q AS p, r AS x`): needsQualification is true, so
 	//      the resolver catches the shadow at PLAN time — CorrelatedShadowError
 	//      → 42703. This is the load-bearing expr.ResolveIdentifier decline.
