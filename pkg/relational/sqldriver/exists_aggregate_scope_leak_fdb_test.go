@@ -154,4 +154,20 @@ func TestFDB_ExistsAggregateScopeLeak(t *testing.T) {
 			t.Fatalf("IN-subquery: expected the honest 0AF00 reach gap (leak closed), got %v", qErr)
 		}
 	})
+
+	// Control backing the reclassification: a projected IN-subquery with NO
+	// aggregate ALSO 0AF00s — proof that IN-subquery is a general unsupported
+	// feature (orthogonal to the scope leak), not an aggregate-specific bug. If
+	// a future partial IN fix makes this plan while the aggregate case above
+	// still errors, the "orthogonal reach gap" classification is invalidated and
+	// this trips.
+	t.Run("in_subquery_no_aggregate_also_0af00", func(t *testing.T) {
+		_, qErr := db.QueryContext(ctx, "SELECT p.id, (p.id IN (SELECT eid FROM e)) FROM p ORDER BY p.id")
+		if qErr == nil {
+			t.Fatalf("no-aggregate projected IN-subquery now PLANS — IN-subquery is no longer uniformly unsupported; re-examine the aggregate-IN classification")
+		}
+		if !strings.Contains(qErr.Error(), "0AF00") {
+			t.Fatalf("no-aggregate IN-subquery: expected 0AF00 (unsupported feature), got %v", qErr)
+		}
+	})
 }
