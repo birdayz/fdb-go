@@ -1797,6 +1797,18 @@ Positive-WHERE is the cleanest sub-case to land first; NOT-EXISTS + projected fo
 Four-gate each.
 </details>
 
+### [ ] query-engine (PRE-EXISTING, surfaced fixing the EXISTS-aggregate fold): `parseLimitClause` silently ignores an unparseable LIMIT/OFFSET literal → the clause is dropped
+`parseLimitClause` (plan_visitor.go:1404) does `strconv.ParseInt(atom.GetText())` and leaves the -1 no-limit
+sentinel on failure, so a syntactically-accepted but non-integer LIMIT literal (`LIMIT 0.0`, `LIMIT 0L`) is
+SILENTLY DROPPED: `SELECT p.id FROM p LIMIT 0.0` returns ALL rows (correct is 0 rows). Grammar:
+`limitClauseAtom : decimalLiteral | preparedStatementParameter` — so a DecimalLiteral atom whose text fails
+ParseInt is an INVALID literal and should be REJECTED (loud syntax error), while a preparedStatementParameter
+(`LIMIT ?`) stays a parameter. Fix: parseLimitClause returns an error when a DecimalLiteral atom fails
+ParseInt; thread it through the 3 callers (plan_visitor.go:475/:1441, select_parser.go:1392). This makes
+`LIMIT 0.0` correct-or-loud everywhere. Flip-sentinel:
+`exists_over_aggregate_fdb_test.go` `limit_unparsed_residual_not_always_true` (the EXISTS fold correctly
+DECLINES to fold `LIMIT 0.0` always-true; its declined fallback [1] flips when this reject lands).
+
 ### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` → `3e51a55e6` → interface-arm fix), scalar + EXISTS + IN all closed
 **FIXED.** `harvestAggregates` (select_parser.go) walked a projected expression's tree promoting aggregates
 into the enclosing query's set but only stopped at SCALAR subquery atoms, not EXISTS — so `SELECT p.id,

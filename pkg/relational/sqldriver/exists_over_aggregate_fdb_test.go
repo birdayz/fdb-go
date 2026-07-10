@@ -113,7 +113,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	})
 
 	// GUARD: a WINDOWED aggregate (COUNT(*) OVER ()) is
-	// row-preserving, NOT unconditionally-one-row, so queryOuterHasWindowedAggregate
+	// row-preserving, NOT unconditionally-one-row, so queryScopeHasWindowedAggregate
 	// keeps it from being flagged AlwaysTrue — it is NOT folded. Folding it would
 	// wrongly yield all-p; instead the engine cleanly REJECTS the unsupported
 	// windowed aggregate (0AF00), never a silent-wrong.
@@ -157,24 +157,33 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 		}
 	})
 
-	// P1 (unparsed LIMIT): LIMIT 0.0 / 0L are syntactically accepted but parse to
-	// the -1 no-limit sentinel; the detector declines whenever a LIMIT clause is
-	// PRESENT, so these are NOT folded to always-true [1 2 3].
-	t.Run("limit_unparsed_not_folded", func(t *testing.T) {
+	// A positive literal LIMIT n>=1 keeps the single aggregate row, so it MUST
+	// still fold to always-true (the finer guard folds sq.limit>=1). A blanket
+	// LIMIT-clause decline would wrongly drop it to [1].
+	t.Run("limit_1_folds", func(t *testing.T) {
+		eq(t, "limit_1_folds", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+	t.Run("limit_5_folds", func(t *testing.T) {
+		eq(t, "limit_5_folds", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 5) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+
+	// Unparsed LIMIT (LIMIT 0.0 / 0L): parseLimitClause can't ParseInt these and
+	// silently leaves the -1 no-limit sentinel — a SEPARATE PRE-EXISTING bug
+	// (standalone `... LIMIT 0.0` returns ALL rows; correct is []). The fold's
+	// finer guard (LIMIT clause present && sq.limit < 1) correctly DECLINES to
+	// fold it always-true; the declined fallback answers [1] (the pre-existing
+	// correlated-drop behavior), which is itself the residual (correct []). This
+	// pins the exact residual as a flip-sentinel: it flips when the booked
+	// parseLimitClause-reject lands (then LIMIT 0.0 rejects or enforces 0). Not
+	// laundered — the [1] is documented as pre-existing, NOT accepted as correct.
+	t.Run("limit_unparsed_residual_not_always_true", func(t *testing.T) {
 		for _, lim := range []string{"LIMIT 0.0", "LIMIT 0L"} {
-			got, qErr := db.QueryContext(ctx, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+lim+") ORDER BY p.id")
-			if qErr != nil {
-				continue // rejected — acceptable, NOT the always-true silent-wrong
-			}
-			var v []int64
-			for got.Next() {
-				var x int64
-				got.Scan(&x)
-				v = append(v, x)
-			}
-			got.Close()
+			v := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+lim+") ORDER BY p.id")
 			if len(v) == 3 {
-				t.Fatalf("%s: wrongly folded to always-true %v (unparsed LIMIT not guarded)", lim, v)
+				t.Fatalf("%s: wrongly FOLDED to always-true [1 2 3] (unparsed LIMIT must decline)", lim)
+			}
+			if len(v) != 1 || v[0] != 1 {
+				t.Fatalf("%s: pre-existing residual changed from [1] to %v — parseLimitClause-reject may have landed; assert the corrected rows", lim, v)
 			}
 		}
 	})
