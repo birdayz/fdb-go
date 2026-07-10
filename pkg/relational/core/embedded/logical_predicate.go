@@ -5259,37 +5259,6 @@ func (p *existsSubqueryPlanner) mintSubqueryAlias() values.CorrelationIdentifier
 	return mintDistinctIdentifier(p.visibleScopeNames(), values.UniqueCorrelationIdentifier)
 }
 
-// queryInnerIsUnconditionalOneRow reports whether an EXISTS subquery body is a
-// NON-GROUPED aggregate with NO GROUP BY and NO HAVING. Such a subquery ALWAYS
-// produces EXACTLY ONE row even over an empty (post-WHERE) input (COUNT→0,
-// MAX/SUM→NULL), so EXISTS over it is unconditionally TRUE. This matters ONLY on
-// the correlated fallback: buildCorrelatedExists rebuilds the inner from
-// FROM+WHERE and DELIBERATELY DROPS the SELECT list — correct for `SELECT 1`,
-// but for an aggregate it drops the cardinality-forcing aggregate, so the
-// semi-join wrongly tests row EXISTENCE in the FROM (Go returned EXISTS=false
-// where the correlated subset was empty; Java keeps every outer row). A GROUPED
-// aggregate emits ZERO rows over an empty group and a HAVING can empty the
-// single group, so BOTH stay a real semi-join and are excluded here. The
-// non-correlated path already answers correctly — its full inner plan keeps the
-// aggregate, so FirstOrDefault always yields.
-func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
-	if q == nil {
-		return false
-	}
-	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
-	if !ok {
-		return false
-	}
-	sq, err := extractFromQueryTerm(body)
-	if err != nil || sq == nil {
-		return false
-	}
-	if len(sq.groupBy) > 0 || sq.havingExpr != nil {
-		return false
-	}
-	return sq.countStar || len(sq.aggCols) > 0
-}
-
 func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: nil query context")
@@ -5311,32 +5280,6 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 		innerOp, err = p.buildCorrelatedExists(q)
 		if err != nil {
 			return values.CorrelationIdentifier{}, err
-		}
-		if queryInnerIsUnconditionalOneRow(q) {
-			// The dropped SELECT was a non-grouped aggregate → the inner ALWAYS
-			// produces exactly one row → EXISTS is unconditionally TRUE. Restore
-			// the one-row cardinality by wrapping the rebuilt FROM+WHERE inner in
-			// a trivial COUNT(*) aggregate: FirstOrDefault(Agg([])) always yields,
-			// so the semi-join always matches (and NOT EXISTS always fails),
-			// mirroring the non-correlated path whose full inner plan keeps the
-			// aggregate. The real aggregate's value is irrelevant to EXISTS — any
-			// non-grouped aggregate has cardinality 1 — so a bare COUNT(*) over the
-			// correlated subset suffices.
-			//
-			// The correlation (`e.eref = p.id`) lives in lastJoinPredicate, which
-			// the semi-join lowering applies at the join level — i.e. ABOVE the
-			// inner. It MUST go BELOW the aggregate (the aggregate output has no
-			// `e.eref` to filter on): apply it as an inner filter here and CLEAR
-			// the join predicate so the aggregate runs over the correlated subset,
-			// not all of E. An outer-only conjunct (no inner ref) is NOT a subset
-			// filter — leave those on the semi-join as before.
-			inner := innerOp
-			if p.lastJoinPredicate != nil && !p.lastJoinPredicateOuterOnly {
-				inner = logical.NewFilterWithPredicate(innerOp, p.lastJoinPredicate, "")
-				p.lastJoinPredicate = nil
-				p.lastJoinPredicateOuterOnly = false
-			}
-			innerOp = logical.NewAggregate(inner, nil, []string{"COUNT(*)"}, []string{"__EXISTS_CARD__"}, "")
 		}
 	}
 	if innerOp == nil {

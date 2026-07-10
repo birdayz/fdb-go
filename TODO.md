@@ -1678,26 +1678,7 @@ do NOT need name binding (independent-legs materialized joins).** Pinned: TestFD
 (EXPLAIN asserts the SARG'd `[=]` index scan, not the cross-product; + correct rows) — trips if a future
 producer-retirement re-ordinalizes this shape and drops the index (the reverted commit-A wall).
 
-### [x] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE — FIXED 2026-07-10 (correlated WHERE/NOT-EXISTS)
-**FIXED** for the correlated WHERE-EXISTS / NOT-EXISTS position (the silent-wrong): the root cause was
-`buildCorrelatedExists` DELIBERATELY DROPPING the SELECT list when it rebuilds a correlated inner from
-FROM+WHERE — correct for `SELECT 1`, but it drops the cardinality-forcing aggregate, so the EXISTS plan was
-byte-identical to `EXISTS(SELECT 1 …)` (EXPLAIN-verified) and tested raw row-existence in the FROM. FIX
-(`BuildExists`, logical_predicate.go): when the dropped SELECT is a non-grouped aggregate with no GROUP BY /
-no HAVING (`queryInnerIsUnconditionalOneRow`), wrap the rebuilt inner in a trivial `COUNT(*)` aggregate,
-applying the correlation predicate (lastJoinPredicate) BELOW the aggregate as an inner filter and clearing
-the join predicate (else the semi-join applies it above the aggregate, which has no `e.eref` → always-false).
-FirstOrDefault(Agg([])) always yields → EXISTS always TRUE / NOT-EXISTS always FALSE. Pinned:
-`exists_over_aggregate_fdb_test.go` (count/max/sum + NOT-EXISTS = all-p; grouped/uncorrelated/plain controls
-still filter). **RESIDUAL (SEPARATE pre-existing bug, booked below): the PROJECTED position
-(`SELECT p.id, EXISTS(SELECT COUNT(*)…) FROM p`) 42803s** — the outer aggregate detection descends into the
-projected EXISTS subquery and flags the OUTER query; INDEPENDENT of this fix (the uncorrelated projected
-form, which never reaches buildCorrelatedExists, 42803s identically) and a CLEAN error, not a silent-wrong.
-Sentinel `projected_separate_preexisting_42803` flips when that bug is fixed. This is a query-engine/
-front-end change → 4-gate (Graefe/Torvalds/@claude/codex) before merge.
-
-<details><summary>original characterization (kept for the audit trail)</summary>
-
+### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE — CHARACTERIZED with controls (2026-07-10)
 An EXISTS whose inner SELECT is a **NON-GROUPED** AGGREGATE is ALWAYS TRUE: a non-grouped
 `COUNT(*)`/`MAX(...)`/`SUM(...)` yields EXACTLY ONE row even over an empty (post-WHERE) input (`COUNT`→0,
 `MAX`→NULL), so the existential is satisfied for every outer row. Java 4.12.11.0 keeps all outer rows; Go
@@ -1721,19 +1702,46 @@ these correctly — the EXISTS path just doesn't reuse that logic. GATED: query-
 routing) → Graefe design-ACK; multi-path (WHERE/projected × correlated/non-correlated) so NOT a one-line
 inline fix. Regression test to add once fixed: the four controlled shapes above (bug + grouped/uncorrelated
 controls) both polarities, a HAVING-empties-group control, vs a scalar-non-aggregate control.
-</details>
 
-### [ ] query-engine (PRE-EXISTING, surfaced fixing the EXISTS-over-aggregate silent-wrong 2026-07-10): a PROJECTED EXISTS/scalar subquery containing an aggregate leaks into the OUTER query's aggregate detection → 42803
-`SELECT p.id, EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id) FROM p` → `42803: column "P.ID" must
-appear in the GROUP BY clause`. The outer query's aggregate detection (select_parser) descends into the
-projected EXISTS subquery, sees the `COUNT(*)`, and wrongly classifies the OUTER `SELECT p.id … FROM p` as an
-aggregate query (so a non-aggregated `p.id` must be grouped). Confirmed INDEPENDENT of the correlated-
-aggregate cardinality fix: the UNCORRELATED form `SELECT p.id, EXISTS (SELECT COUNT(*) FROM e) FROM p`
-42803s identically (it never reaches buildCorrelatedExists). A plain projected `EXISTS(SELECT 1 …)` plans
-fine — so the trigger is specifically an aggregate inside a projected subquery. Java answers it (all-TRUE for
-the non-grouped-aggregate inner). Fix: the aggregate-detection walk must STOP at subquery boundaries (an
-EXISTS/scalar subquery is its own query scope; its aggregates belong to IT, not the enclosing SELECT).
-Pinned as a flip-sentinel in `exists_over_aggregate_fdb_test.go` (`projected_separate_preexisting_42803`).
+**ATTEMPTED + REVERTED (2026-07-10, `5d4ff3711` reverted): root cause pinned, but the fix has subtle holes
+codex caught — REQUIRES the scope-leak fix FIRST.** Root cause (EXPLAIN-verified, DEFINITIVE): the correlated
+fallback `buildCorrelatedExists` (BuildExists, logical_predicate.go) rebuilds a correlated inner from
+FROM+WHERE and DELIBERATELY DROPS the SELECT list — correct for `SELECT 1`, but it drops the
+cardinality-forcing aggregate, so the plan is byte-identical to `EXISTS(SELECT 1 …)` and tests raw
+row-existence. The attempted fix (wrap the rebuilt inner in a trivial `COUNT(*)`, correlation applied below
+the aggregate) fixed the base WHERE/NOT-EXISTS cases + all controls, but **codex ultra found 3 P1 holes**:
+  1. **LIMIT/OFFSET ignored** — `EXISTS(SELECT COUNT(*) … LIMIT 0)` emits ZERO rows, not one. The detector
+     must also require no row-eliminating LIMIT (LIMIT 0) and no positive OFFSET (`sq.limit`/`sq.offset`).
+  2. **SCOPE LEAK (the keystone — same root cause as the projected-42803 booked below)** — when the SELECT
+     projects an EXISTS whose OWN subquery has an aggregate (`EXISTS(SELECT EXISTS(SELECT COUNT(*) FROM f)
+     FROM e WHERE e.eref=p.id)`), the aggregate-detection scope leak harvests the NESTED COUNT(*) into the
+     enclosing `sq.aggCols`, so the row-preserving middle SELECT is misclassified as an aggregate → wrongly
+     always-true. The detector CANNOT trust `sq.aggCols`/`countStar` until the scope leak is fixed.
+  3. **mixed predicate** — `lastJoinPredicateOuterOnly` means "CONTAINS an outer-only conjunct," not "ALL
+     conjuncts outer-only"; a mixed nested-EXISTS predicate (`e.eref=p.id AND p.id=1`) leaves the inner ref
+     ABOVE the aggregate → rejects matching rows. Split the predicate; apply inner-referencing conjuncts below.
+  P2: don't COUNT(*) an unconditional existential (full inner scan per outer row) — CONSTANT-FOLD to a
+  single-row source after validation.
+**CORRECT SEQUENCING (the proper gated slice):** (a) fix the aggregate-detection SCOPE LEAK FIRST (the booked
+projected-42803 below — the SAME bug) so the detector can trust the query-scope aggregate set; (b) then the
+cardinality fix, guarding LIMIT/OFFSET (#1) + splitting mixed predicates (#3) + constant-folding (P2). Four-gate.
+
+### [ ] query-engine (PRE-EXISTING; KEYSTONE — surfaced twice 2026-07-10: fixing EXISTS-over-aggregate AND codex P1 on the reverted `5d4ff3711`): aggregate-detection SCOPE LEAK — a nested subquery's aggregate is harvested into the enclosing query's aggregate set
+The parser's aggregate detection (select_parser, `sq.aggCols`/`countStar`) does NOT stop at subquery
+boundaries: an aggregate inside a projected/nested subquery leaks into the ENCLOSING SELECT's aggregate set.
+Two observable failures, ONE root cause:
+  - **42803 on a projected EXISTS-of-aggregate**: `SELECT p.id, EXISTS (SELECT COUNT(*) FROM e WHERE
+    e.eref = p.id) FROM p` → `42803: column "P.ID" must appear in the GROUP BY` — the outer `SELECT p.id …
+    FROM p` is wrongly classified as an aggregate query. Confirmed independent (the UNCORRELATED form
+    `SELECT p.id, EXISTS (SELECT COUNT(*) FROM e) FROM p` 42803s identically); a plain `EXISTS(SELECT 1 …)`
+    projects fine. Java answers it (all-TRUE for the non-grouped-aggregate inner).
+  - **misclassification that broke the EXISTS-over-aggregate fix** (codex P1 on `5d4ff3711`): `EXISTS(SELECT
+    EXISTS(SELECT COUNT(*) FROM f) FROM e WHERE e.eref=p.id)` — the row-preserving middle SELECT gets a
+    non-empty `sq.aggCols` from the nested COUNT(*), so any consumer trusting `sq.aggCols` (the cardinality
+    fix's detector) misfires.
+Fix: the aggregate-detection walk must scope to the CURRENT query (an EXISTS/scalar subquery is its own
+query scope; its aggregates belong to IT). This is the sequencing PREREQUISITE for the EXISTS-over-aggregate
+cardinality fix above. Query-engine/front-end → four-gate.
 
 ### [ ] front-end follow-on (Torvalds correlated-EXISTS review, recommended, non-blocking): extract `classifyJoinOn(...)` from `buildCorrelatedExists`
 `buildCorrelatedExists` (pkg/relational/core/embedded/logical_predicate.go) is ~412 lines — mostly essential
