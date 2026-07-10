@@ -4854,6 +4854,47 @@ that resolution BUILT FIRST — a general S4 hazard for the remaining producers,
 (commit B) is UNAFFECTED (it composes over the same fold but was never started); it waits behind this
 prerequisite only insofar as it would hit the same wall for its N≥3 chained-ON shape.
 
+#### P2 POST-REVERT RECON (2026-07-10, two read-only agents) — the prerequisite is DEEPER than the scope ruling framed; the tractable slice is 2-way EXISTS-in-ON.
+**(A) The index-hoist prerequisite is a research problem, not a few-hundred-LOC enhancement.** The windowing
+recon: the FlatMap box node (GetOuter/GetInner/GetOuterAlias/GetInnerAlias/leaf GetResultType) carries
+enough structure to RECONSTRUCT an alias→offset,width window map (add a FlatMap arm to
+`planBuriedLegConcat`, mirroring its NLJ arm) — BUT the recovered windows describe a positional layout the
+box DOES NOT PRODUCE. The index-matched box's runtime row is a NAME-MODEL row (qualified `"A.ID"` keys),
+because the correlated index scan `Scan(A,[=b.aid])` REQUIRES name binding to correlate `b.aid` into A's
+index (`buildCorrelatedFlatMapPlan` passes the name-model RV straight through; `foldStep1Seed` returns
+gated=false for any correlatedStep1 precisely because "a correlated FlatMap binds legs by NAME, where a
+baked seed hits BakedNameContextError"). So baking `ofOrdinal(mergedQOV, offset+idx)` refs would not resolve
+against the box's name-keyed runtime row. To make it work you must re-birth the box as an ordinal seed AND
+get the executor to bind it positionally — which is EXACTLY the wall `correlatedStep1` gates OFF. **The
+"ordinal twin of name resolution over an index-matched box" is essentially name resolution itself** — the
+indexed box is name-bound by necessity, and the ordinal fold fundamentally needs positional. These are
+irreconcilable at the row level. CONSTRAINT ON THE CAP: the atomic cap cannot ordinalize the
+existential-over-buried-index-correlation shape without losing the index; either the cap KEEPS a
+name-resolution path for that specific shape, or it accepts the cross-product there. Escalated to Graefe.
+**(B) The tractable producer slice: 2-way EXISTS-in-ON** (`a JOIN b ON EXISTS(…)`, producer 2's EXISTS
+residual). Two top-level scan legs + one existential — NO buried inner join, so the wall (buried-leg
+correlation + N-way cross-product) structurally cannot arise. Ordinalizing routes to
+`implementJoinWithExistential`'s 2-leg arm, which is ordinal-capable AND index-preserving (a leg-to-leg
+correlated index join takes `correlatedStep1`; `outerValRefsBuriedLeg` never fires — no buried alias). The
+only work is narrowing the gate's `:278` OnExistsSubqueries poison to fire only for ENCLOSED or N-way
+EXISTS-in-ON (the ≥3-quantifier-partition hazard the poison actually guards); a non-enclosed 2-way gates
+ordinal. **DE-RISKED (the commit-A lesson applied — EXPLAIN diff, 2026-07-10):** the base (name-model) 2-way
+EXISTS-in-ON is `FlatMap(NLJ(INNER,[1 preds],Scan(B),Scan(A)), exists)` — NOT indexed; the existential's
+presence ALREADY drops even a 2-way join from the indexed `FlatMap(Scan(B),TypeFilter(Scan(A,[=])))` (the
+plain-join plan) to a plain NLJ, on the name model itself. So there is NO index to lose (unlike N-way, where
+the BURIED inner box indexed). The 2-way WHERE-EXISTS (already ordinal on HEAD) has the byte-identical NLJ
+plan — confirming ordinalization preserves it. CLEAN. (Prototype the ordinalized plan and EXPLAIN-diff it
+against this base NLJ before landing, to confirm no drop to a cross-product.) **PRODUCER MATRIX:** P1 (legColumns:347) = name-
+derivation helper, retires with the nested residuals of P2/P3, not standalone. P2 (buildJoinResultValue:727)
+= (i) 2-way EXISTS-in-ON RETIRABLE-NOW, (ii) enclosure declines lift atomically at S4 (circular, the
+forceOrdinalSpike certificate models it). P3 (buildUnnestResultValue:1673) = BLOCKED on W5
+(multi-source-cluster ordinalization) — its Explode is never index-matched but its residuals feed the
+multi-source reorder + partition-rule GROUP BY. P4 (NewReEnumerationAnchoredRecord, partition_select
+:469/:567) = BLOCKED on W4b clusterPullUp (correlated scalar) + W5 (multi-source unnest); NOT the
+existential wall — its ordinal twin `positionalMergeCase` ALREADY EXISTS, it's just starved of ordinal
+seeds. So the remaining producers split: 2-way EXISTS-in-ON (now), P3/P4 (W5/W4b gate-ordinalization
+prerequisites), and the N-way existential-over-indexed-box (the deep wall in (A)).
+
 **THE PRECISE REMAINING-SLICE LIST (S4 deep-read, the actionable roadmap).** A name-model leg is
 name-model because a name-model PARENT set `inInnerCluster`, tripping one of the THREE enclosure
 poison gates in `ordinalWedgeGateDecide` (rfc173_cluster_gate.go): (154) `!ordinalEligible(leg)` —
