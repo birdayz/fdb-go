@@ -448,6 +448,16 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE "M2"."C" > 0 AND OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
 		"outer-only conjunct")
 
+	// The TAUTOLOGY no-over-decline control: a statically-TRUE conjunct
+	// (`1 = 1`) outer-routes as a no-op, so the flag must not fire —
+	// flagging it regressed valid queries to 0A000. Java live: the middle
+	// ∃ is non-empty (M2.C < 50 holds) → NOT EXISTS → 0 rows, and Go must
+	// keep ANSWERING that, not decline.
+	want("case1_notexists_tautology_answers",
+		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE "M2"."C" < OT."K" AND 1 = 1 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
+		nil,
+		"")
+
 	// The CASE-2 HOIST carries the flag through: the middle has ONLY a
 	// nested EXISTS, whose multi-source inner holds the outer-only
 	// conjunct — the hoist replaces the middle wholesale and the flag must
@@ -466,10 +476,16 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		`SELECT MA."ID", NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0)) FROM MA, OT`,
 		"outer-only conjunct")
 
-	// The projected POSITIVE control: without the NotValue the value-side
-	// guard must not fire, and the positive outer-routing equivalence
-	// emits the correct boolean. Java live: (11,false),(12,false) — the
-	// false outer-only conjunct empties the ∃ per pair.
+	// The projected POSITIVE sentinel. This control was first written
+	// expecting rows — and it CAUGHT the third pre-existing silent-wrong
+	// instead: outer-routing the flagged conjunct FILTERS THE ROW STREAM,
+	// returning 0 rows where Java emits (11,false),(12,false) — a
+	// projected boolean must never filter rows. The value-side guard
+	// therefore declines flagged esqs in BOTH polarities (the P∧∃
+	// equivalence licenses outer-routing only for WHERE consumption under
+	// positive polarity — consumption mode is part of the validity
+	// domain). Java rows recorded for the flip when the composition
+	// planning gap closes.
 	wantDecline("projected_exists_flagged",
 		`SELECT MA."ID", EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0)) AS "E" FROM MA, OT`,
 		"outer-only conjunct")

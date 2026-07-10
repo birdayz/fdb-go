@@ -16,13 +16,20 @@ type ExistsSubquery struct {
 	Plan          LogicalOperator
 	JoinPredicate predicates.QueryPredicate
 	// OuterOnlyJoinConjuncts marks a JoinPredicate carrying conjuncts with
-	// NO inner-source reference (a nested-EXISTS middle routes them here;
-	// the inside placement does not plan for that composition). Outer-
-	// routing such a conjunct is valid ONLY under positive polarity
-	// (P AND EXISTS(Q) is equivalent to EXISTS(P AND Q)); an anti-join
-	// (NOT EXISTS) consumer computes P AND NOT-EXISTS(Q) where
-	// NOT-EXISTS(P AND Q) is due and MUST decline loudly instead of
-	// answering wrong rows.
+	// NO inner-source reference that can FILTER (a nested-EXISTS middle
+	// routes them here; the inside placement does not plan for that
+	// composition; statically-TRUE tautologies are excluded - routing TRUE
+	// is a no-op). The outer-routing validity matrix, enforced by
+	// declineNegatedOuterOnlyEsq (predicate side) and
+	// declineNegatedOuterOnlyEsqValue (value side) in the translator:
+	//
+	//	WHERE/ON + positive  -> VALID   (P AND EXISTS(Q) == EXISTS(P AND Q))
+	//	WHERE/ON + negative  -> DECLINE (would compute P AND NOT-EXISTS(Q))
+	//	projected + either   -> DECLINE (outer-routing filters the row
+	//	                        stream; a projected boolean must not)
+	//
+	// HAVING is kept out of the surface by translateAggregate's blanket
+	// rejection of HavingExistsSubqueries.
 	OuterOnlyJoinConjuncts bool
 }
 

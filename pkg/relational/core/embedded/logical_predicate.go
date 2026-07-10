@@ -6146,6 +6146,21 @@ func hasNonInnerConjunct(pred predicates.QueryPredicate, innerAliases map[string
 			return false
 		}
 	}
+	// A non-inner leaf is hazardous only if it can actually FILTER: a
+	// statically-TRUE conjunct (`1 = 1`) outer-routes as a no-op, so
+	// flagging it would over-decline semantics-neutral tautologies that
+	// planned correctly before the guard. A statically-FALSE or
+	// non-static leaf stays flagged — a routed FALSE drops every outer
+	// row, the exact hazard. Static means BOTH comparison sides are
+	// row-context-independent (IsConstantValue), so Eval with a nil
+	// context is safe and deterministic.
+	if cp, ok := pred.(*predicates.ComparisonPredicate); ok &&
+		cp.Operand != nil && values.IsConstantValue(cp.Operand) &&
+		(cp.Comparison.Operand == nil || values.IsConstantValue(cp.Comparison.Operand)) {
+		if tv, err := cp.Eval(nil); err == nil && tv == predicates.TriTrue {
+			return false
+		}
+	}
 	return true
 }
 
