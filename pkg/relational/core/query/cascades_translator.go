@@ -966,6 +966,19 @@ func existsInnerScopeCollidesOuter(esqs []logical.ExistsSubquery, outerLegs map[
 		return false
 	}
 	for _, esq := range esqs {
+		// CLEAN-PATH SKIP: an esq with NO join predicate whose plan the
+		// rename can re-identify contributes no collision. There is no
+		// cross-scope predicate to mis-serve, the plan's internal refs are
+		// self-contained (built by the full planner without outer scopes),
+		// and existsInnerCorrelation rebinds the FOD under esq.Alias — a
+		// generated name no SQL leg shares — so the runtime interface is
+		// collision-free even though the plan's SOURCE alias may equal an
+		// outer leg's. A JoinPredicate-nil inner the rename DECLINES (a
+		// join/CTE plan) still counts: its merged rows route by source-alias
+		// name keys under the ∃ and stay conservatively name-model.
+		if esq.JoinPredicate == nil && existsInnerSafeToRename(esq.Plan) {
+			continue
+		}
 		for a := range outerBoundAliases(esq.Plan) {
 			if _, ok := outerLegs[a]; ok {
 				return true

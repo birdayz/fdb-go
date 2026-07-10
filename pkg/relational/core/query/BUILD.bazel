@@ -36,6 +36,7 @@ go_test(
         "plan_test.go",
         "rfc173_2d_chained_spine_seed_test.go",
         "rfc173_cluster_gate_test.go",
+        "rfc173_exists_guard_narrowing_test.go",
         "rfc173_f2left_scanfamily_test.go",
         "rfc173_item1_binding_test.go",
         "rfc173_item2_c3_flatten_gate_test.go",

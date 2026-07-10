@@ -300,7 +300,12 @@ validation gate.
     nested-EXISTS hoist dangles a middle-ref** — `EXISTS(SELECT 1 FROM M WHERE EXISTS(SELECT 1 FROM N WHERE
     N.b = M.a))` (middle has ONLY the nested EXISTS) hoists the inner plan and drops M entirely, leaving
     `M.a` unbound — pre-existing, unchanged by the mint (minted it resolves loud-deterministic instead of
-    accidentally binding a same-named outer); needs its own probe + decline-or-fix.
+    accidentally binding a same-named outer); needs its own probe + decline-or-fix. (e) **outer-CTE-leg scope
+    registration** — buildOuterScopeSources.addSrc silently drops a resolve-failed leg, so an OUTER CTE leg
+    (aliased or not) never enters the correlated subquery scope: correlated refs to it die 42703 (same family
+    as the fixed derived-table registration), and an ALIASED CTE leg quoted `"Q$N"` escapes the mint's
+    visible set (the unaliased half is folded via cteScopes names). Register CTE legs from the registry's
+    ScopeSource like derived tables.
   - [x] **W3 the coupled 2-way flip — DONE, ALL ACKs.** W3a-1/W3a-2 (36297a253, fd07e2f49,
     140799069, d98bbac91, 139c6cb94); **W3b-1 LIVE FLIP** (1aca8addd + 47d3b48bb RFC log +
     00c7a206e Graefe notes + 5ead4e149 Torvalds nits): Graefe ACK (cross-leg baking BLESSED as the

@@ -5522,7 +5522,19 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		// equal a visible outer name when the global counter happens to
 		// align — the outer's refs would then be captured by the inner
 		// binding, with results depending on planning history. Mint until
-		// distinct from every visible name (see mintDistinctUpper).
+		// distinct from every visible name (see mintDistinctUpper): the
+		// inner SQL alias, every outer scope's Alias AND CorrelationName
+		// (the latter covers enclosing mints and dup-alias binding ids),
+		// and the CTE registry's names — an unaliased CTE leg (`FROM c`)
+		// is absent from p.outerScopes (addSrc drops catalog-resolution
+		// failures), so its name would otherwise escape the set. An
+		// ALIASED CTE leg (`FROM c AS "Q$44"`) is dropped alias-and-all —
+		// that alias is unreachable here and is the one residual gap,
+		// booked with the outer-CTE-leg scope-registration fix (the same
+		// family as the derived-table registration above). esq.Alias
+		// values (existsInnerCorrelation's rename targets) are a distinct
+		// generated namespace off the SAME strictly-increasing counter, so
+		// a mint can never equal one — no entry needed for them.
 		visible := map[string]struct{}{strings.ToUpper(innerAlias): {}}
 		for _, src := range p.outerScopes {
 			if n := src.Alias.Name(); n != "" {
@@ -5531,6 +5543,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 			if src.CorrelationName != "" {
 				visible[strings.ToUpper(src.CorrelationName)] = struct{}{}
 			}
+		}
+		for name := range p.cteScopes {
+			visible[strings.ToUpper(name)] = struct{}{}
 		}
 		mintedInnerCorr = mintDistinctUpper(visible, values.UniqueCorrelationIdentifier)
 	}

@@ -278,4 +278,25 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		`SELECT "Q$44"."C" FROM ST AS "Q$44" WHERE EXISTS (SELECT 1 FROM OT WHERE OT."K" > "Q$44"."C")`,
 		[]string{"map[C:5]"},
 		"")
+
+	// TRIPLE-nested colliding chain (review-battery shape, Java live: 0
+	// rows). The innermost ∃ST.C<M3.C holds only for M3.C=11; level-2 then
+	// needs 11 < MA.C, which no MA row satisfies → outer EXISTS false for
+	// every element. Pins the mint's composition through THREE scope levels
+	// (each level's nested scope carries the minted middle identity).
+	want("triple_nested_colliding",
+		`SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X" AND EXISTS (SELECT 1 FROM MA AS "M3" WHERE "M3"."C" < MA."C" AND EXISTS (SELECT 1 FROM ST WHERE ST."C" < "M3"."C")))`,
+		nil,
+		"")
+
+	// Clean-path colliding inner with NO WHERE at all (the fast-path class
+	// the guard narrowing covers: JoinPredicate nil, plan a bare scan the
+	// rename re-identifies). EXISTS(SELECT 1 FROM ST) is constant-true →
+	// all 5 elements (Java live). Rows are model-invariant here — the
+	// narrowing flips the SEED, pinned white-box by
+	// TestRFC173_ExistsGuardNarrowing.
+	want("cleanpath_nowhere_colliding",
+		`SELECT "X" FROM ST, ST."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM ST)`,
+		[]string{"map[X:10]", "map[X:200]", "map[X:20]", "map[X:300]", "map[X:4]"},
+		"")
 }
