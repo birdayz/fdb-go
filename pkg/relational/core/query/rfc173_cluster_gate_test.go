@@ -50,6 +50,60 @@ func inner(l, r logical.LogicalOperator) *logical.LogicalJoin {
 	return logical.NewJoin(l, r, logical.JoinInner, "")
 }
 
+// onExists attaches one EXISTS-in-ON subquery to j (over TypedRecord).
+func onExists(j *logical.LogicalJoin) *logical.LogicalJoin {
+	j.OnExistsSubqueries = []logical.ExistsSubquery{{
+		Alias: values.NamedCorrelationIdentifier("q$e"),
+		Plan:  scan("TypedRecord", "g"),
+	}}
+	return j
+}
+
+// TestRFC173S4_ExistsInOnGate pins the RFC-173 S4 2-way EXISTS-in-ON gate
+// narrowing BOTH directions: a bare 2-way non-enclosed INNER EXISTS-in-ON
+// GATES ordinal (retiring the name-model producer, since the 2-leg fold is
+// index-neutral for the existential shape — EXPLAIN-verified), while an
+// ENCLOSED or N-WAY EXISTS-in-ON stays POISON (the existential would ride
+// into the ≥3-quantifier partition machinery or hit the buried-inner-box
+// index-matching wall).
+func TestRFC173S4_ExistsInOnGate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bare_2way_gates", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		j := onExists(inner(scan("Order", "o"), scan("Customer", "c")))
+		d := tr.ordinalWedgeGateDecide(j)
+		if !d.Gated || d.Arity != 2 {
+			t.Fatalf("bare 2-way EXISTS-in-ON gate = %+v, want gated arity 2", d)
+		}
+	})
+
+	t.Run("enclosed_2way_stays_poison", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		tr.inInnerCluster = true
+		j := onExists(inner(scan("Order", "o"), scan("Customer", "c")))
+		d := tr.ordinalWedgeGateDecide(j)
+		if d.Gated {
+			t.Fatalf("enclosed 2-way EXISTS-in-ON gate = %+v, want poison (rides into ≥3-quantifier partition)", d)
+		}
+	})
+
+	t.Run("nway_stays_poison", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		// A 3-way EXISTS-in-ON: the root carries the OnExists, its left leg is
+		// itself a join → clusterArity(left) > 1 → the buried-inner-box wall.
+		nested := inner(scan("Order", "o"), scan("Customer", "c"))
+		j := onExists(inner(nested, scan("TypedRecord", "tr")))
+		d := tr.ordinalWedgeGateDecide(j)
+		if d.Gated {
+			t.Fatalf("N-way EXISTS-in-ON gate = %+v, want poison (buried-inner-box index-matching wall)", d)
+		}
+	})
+}
+
 func TestRFC173S2_ClusterArity_Shapes(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)

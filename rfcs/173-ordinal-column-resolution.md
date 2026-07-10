@@ -4884,7 +4884,21 @@ presence ALREADY drops even a 2-way join from the indexed `FlatMap(Scan(B),TypeF
 plain-join plan) to a plain NLJ, on the name model itself. So there is NO index to lose (unlike N-way, where
 the BURIED inner box indexed). The 2-way WHERE-EXISTS (already ordinal on HEAD) has the byte-identical NLJ
 plan — confirming ordinalization preserves it. CLEAN. (Prototype the ordinalized plan and EXPLAIN-diff it
-against this base NLJ before landing, to confirm no drop to a cross-product.) **PRODUCER MATRIX:** P1 (legColumns:347) = name-
+against this base NLJ before landing, to confirm no drop to a cross-product.)
+
+**LANDED (2-way EXISTS-in-ON producer retirement).** A single targeted gate narrowing in
+ordinalWedgeGateDecide (rfc173_cluster_gate.go:278): a BARE 2-way NON-ENCLOSED INNER EXISTS-in-ON
+(both legs single ordinal-eligible sources — `ordinalEligible && clusterArity==1` each — not enclosed)
+GATES ordinal. translateJoin's binary arm ALREADY builds the ordinal seed when gated (:4885) and ALREADY
+attaches the OnExists existentials (:4915), so NO new builder is needed — the narrowing alone routes the
+shape to the ordinal seed, retiring buildJoinResultValue (producer #2) for this shape. The poison STAYS for
+enclosed (rides into ≥3-quantifier partition) and N-way (the buried-inner-box index-matching wall)
+EXISTS-in-ON. EXPLAIN-verified NO regression: base and ordinalized plans are byte-identical
+`FlatMap(NLJ(INNER,[1 preds],Scan(B),Scan(A)), exists)` (the existential already drops even a 2-way join to
+a plain NLJ on the name model, so no index is lost). Pins: the existing exists_in_on FDB row pins (unchanged
+— dualwindow-blind to a name-model revert, so retirement is pinned STRUCTURALLY) + TestRFC173S4_ExistsInOnGate
+(bare-2-way gates / enclosed-stays-poison / N-way-stays-poison, both directions). Producer #2's residuals
+after this: the enclosure declines (lift atomically at S4) + N-way EXISTS-in-ON (the deep wall). **PRODUCER MATRIX:** P1 (legColumns:347) = name-
 derivation helper, retires with the nested residuals of P2/P3, not standalone. P2 (buildJoinResultValue:727)
 = (i) 2-way EXISTS-in-ON RETIRABLE-NOW, (ii) enclosure declines lift atomically at S4 (circular, the
 forceOrdinalSpike certificate models it). P3 (buildUnnestResultValue:1673) = BLOCKED on W5

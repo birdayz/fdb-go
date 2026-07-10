@@ -276,6 +276,24 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		return wedgeGateDecision{Arity: arityPoison, Reason: "lateral unnest join (RFC-142 machinery, S3)"}
 	}
 	if len(j.OnExistsSubqueries) > 0 {
+		// RFC-173 S4: a BARE 2-way NON-ENCLOSED INNER EXISTS-in-ON gates
+		// ordinal. Both legs are single ordinal-eligible sources (no buried
+		// inner join → no index-matching wall), it does not merge upward (not
+		// enclosed), and it is arity 2 — so the seed is
+		// [ForEach, ForEach, Existential], which implementJoinWithExistential's
+		// 2-leg arm plans ordinal AND index-preserving (the existential already
+		// drops even a 2-way join to a plain NLJ on the name model, so no index
+		// is lost — EXPLAIN-verified). The translateJoin binary arm builds the
+		// ordinal seed and attaches the existentials unchanged. The poison STAYS
+		// for an ENCLOSED or N-WAY EXISTS-in-ON: there the existential would ride
+		// into the ≥3-quantifier partition machinery (which declines any
+		// existential) or hit the buried-inner-box index-matching wall (the
+		// booked ordinal-fold-over-index-matched-box prerequisite).
+		if j.Kind == logical.JoinInner && !t.inInnerCluster &&
+			t.ordinalEligible(j.Left) && t.ordinalEligible(j.Right) &&
+			t.clusterArity(j.Left) == 1 && t.clusterArity(j.Right) == 1 {
+			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "bare 2-way non-enclosed EXISTS-in-ON (2-leg ordinal fold)"}
+		}
 		// The seed select carries existential quantifiers; if it merges, they
 		// ride along and land the merged select in the ≥3-quantifier
 		// partition machinery. Name model (S3+ owns the existential seeds).
