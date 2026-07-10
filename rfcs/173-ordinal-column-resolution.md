@@ -4983,6 +4983,36 @@ existential wall — its ordinal twin `positionalMergeCase` ALREADY EXISTS, it's
 seeds. So the remaining producers split: 2-way EXISTS-in-ON (now), P3/P4 (W5/W4b gate-ordinalization
 prerequisites), and the N-way existential-over-indexed-box (the deep wall in (A)).
 
+#### NEXT PRODUCER SLICE — W5 unnest-residual decline-lifts (recon 2026-07-10). The W5 gathered-unnest
+machinery (translateGatheredUnnestCluster, rfc173_w5_unnest_gather.go:51; executor rfc173_ordinal_join.go)
+is MERGED and live — `FROM A,B,A.arr AS x` / `FROM A,A.arr,B` already ordinalize. buildUnnestResultValue
+(producer P3, cascades_translator.go:1660) fires ONLY on the FAIL-OPEN declines inside the gather:
+box-leg WHERE conjunct (:93-95 unnestOuterConjunctOnBoxLeg), owner-window-missing (:110-113/:153-155),
+degenerate no-AS/no-AT (:247-249), and the exists-unsafe MULTI-alias outer (unnestExistsSeedSafe,
+cascades_translator.go:905-914). **CORRECTION (verified against the decline sites, NOT just the recon summary): these are NOT trivial
+decline-lifts — each residual is declined for a REAL correctness reason, not a fail-open-that-would-just-work.**
+The box-leg WHERE conjunct (:93-95) is guarded because an opaque box leg exposes NO per-leg window → a
+positional gather leaves the merged `A.col` conjunct unresolvable (`ordinal -1`, malformed plan); lifting it
+needs the box-leaf WINDOWING (the c5a/c5b class), not a one-line gate change. owner-window-missing
+(:110-113) is a genuinely untranslatable leg. So the tractable-W5 framing is qualified: retiring P3 for the
+box-leg/multi-segment shapes needs the buried-leaf windowing slice (the completion work booked on
+feat/rfc173-item3 — confirm/port to feat/rfc173-s4), and the exists-unsafe multi-alias residual stays
+name-model by the permanent-wall ruling. The recon's "one decline-lift" applies only to any residual that
+declines PURELY for arity/enclosure (a circular symptom that lifts at S4), not to these
+windowing/untranslatable ones. **CLEAN on the index axis (no wall):**
+a lateral unnest has NO correlated index scan (its collection is ofOrdinal(QOV(owner), FieldIndex(ARR)) —
+a read into the owner's own row, exploded by RecordQueryExplodePlan over an in-memory array; the outer comma
+legs are cross-products). So there is no index to lose (EXPLAIN-provable, array_unnest_ordinality pins).
+**CARVE-OUT: the exists-unsafe multi-alias residual (`FROM t, t.arr AS v WHERE EXISTS(…)`) is the ONE
+sub-class that CAN correlate into a buried leg → it touches the PERMANENT wall and stays name-model by the
+correlatedStep1 ruling above.** LEVERAGE: W5 progress retires P3 AND simultaneously peels the
+multi-source-unnest feeder off P4's anchored arm (NewReEnumerationAnchoredRecord) — its ordinal seeds
+already route to the ready positionalMergeCase (rfc173_positional_merge.go). W4b-clusterPullUp (the
+correlated-scalar NESTED-leg poison, rfc173_cluster_gate.go:487/:635) is DEFERRED — a booked structural
+rework (per-row apply the flat concat + positionalMergeCase's flat merge row cannot host), not a
+decline-lift. Each W5 decline-lift is a full four-gate slice: EXPLAIN-verify no plan change (the commit-A
+lesson), rows + white-box gate pins, red-first.
+
 **THE PRECISE REMAINING-SLICE LIST (S4 deep-read, the actionable roadmap).** A name-model leg is
 name-model because a name-model PARENT set `inInnerCluster`, tripping one of the THREE enclosure
 poison gates in `ordinalWedgeGateDecide` (rfc173_cluster_gate.go): (154) `!ordinalEligible(leg)` —
