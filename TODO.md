@@ -1656,6 +1656,20 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE
+An EXISTS whose inner SELECT is an AGGREGATE (or a scalar over an aggregate) is ALWAYS TRUE: a
+`COUNT(*)`/`MAX(...)` over any group yields exactly one row, so the existential is satisfied for every outer
+row regardless of the correlation. Java 4.12.11.0 keeps all outer rows; Go treats it as correlated-filtering
+and drops the non-matching ones. Repro (live-verified): `SELECT p.v FROM p, q WHERE q.qid = 5 AND EXISTS
+(SELECT COUNT(*) FROM e WHERE e.eref = p.id)` with p={(1,10),(2,20)}, e={eref=1} → Java `[[10],[20]]`, Go
+`[[10]]`; same with `MAX(eid)`. This is the 2-leg existential-fold path (tryExistsFlatMap /
+implementExistentialSelect), NOT the RFC-173 N-way seed — in a 3-way outer the extra join already filters,
+so no divergence manifests there. Root cause: the fold treats the inner's correlation predicate as the
+EXISTS gate, but an aggregate inner's cardinality is 1 independent of the predicate (the predicate filters
+the aggregate's INPUT, not whether it emits a row). Fix: an aggregate/grouped existential inner must NOT
+route the correlation as a semi-join filter — it always emits. Regression test to add once fixed: the two
+shapes above, both polarities, vs a scalar-non-aggregate control.
+
 ### [ ] front-end follow-on (Torvalds correlated-EXISTS review, recommended, non-blocking): extract `classifyJoinOn(...)` from `buildCorrelatedExists`
 `buildCorrelatedExists` (pkg/relational/core/embedded/logical_predicate.go) is ~412 lines — mostly essential
 complexity (INNER/LEFT/RIGHT/FULL × correlation × ordering × CTE × nested-subquery), not cruft (Torvalds

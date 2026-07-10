@@ -190,12 +190,24 @@ func TestExistInnerIsScanSafe(t *testing.T) {
 		{"index", plans.NewRecordQueryIndexPlan("idx", nil, []string{"E"}, commit2RecType("E", "EID"), false), true},
 		{"predicatesFilter(scan)", plans.NewRecordQueryPredicatesFilterPlan(scan, nil), true},
 		{"filter(scan)", plans.NewRecordQueryFilterPlan(nil, scan), true},
+		// The P2 peel widening: an UNCORRELATED `EXISTS (SELECT 1 FROM t)` plans
+		// as Projection(1, TypeFilter(Scan)) — both row-count-preserving, outside
+		// the guard's hazard set. Deleting either peel arm reddens these (RED) and
+		// regresses the shape to a 0AF00 decline (the caught P4b regression).
+		{"projection(scan)", plans.NewRecordQueryProjectionPlan([]values.Value{values.LiteralValue(int64(1))}, scan), true},
+		{"typeFilter(scan)", plans.NewRecordQueryTypeFilterPlan([]string{"E"}, scan), true},
 		// The FIX — emit-on-empty wrappers destroy the emptiness signal → decline.
 		// Re-adding either peel arm to existInnerIsScanSafe flips these to true (RED).
 		{"firstOrDefault(scan)", plans.NewRecordQueryFirstOrDefaultPlan(scan, null), false},
 		{"defaultOnEmpty(scan)", plans.NewRecordQueryDefaultOnEmptyPlan(scan, null), false},
 		// A join inner (its own ON is not re-enforced by the merged-row fold) → decline.
 		{"nlj(scan,scan)", plans.NewRecordQueryNestedLoopJoinPlan(scan, scan, nil, plans.JoinInner, "E", "E2", nil), false},
+		// COMPOSITIONAL safety pole: an emit-on-empty / join inner still declines
+		// even BEHIND a peeled Projection/TypeFilter — the loop peels the outer
+		// row-preserving wrapper, then hits the hazard node and defaults false. The
+		// peel widening must not open a back door for existence manufacture.
+		{"projection(firstOrDefault(scan))", plans.NewRecordQueryProjectionPlan([]values.Value{values.LiteralValue(int64(1))}, plans.NewRecordQueryFirstOrDefaultPlan(scan, null)), false},
+		{"typeFilter(nlj(scan,scan))", plans.NewRecordQueryTypeFilterPlan([]string{"E"}, plans.NewRecordQueryNestedLoopJoinPlan(scan, scan, nil, plans.JoinInner, "E", "E2", nil)), false},
 	}
 	for _, c := range cases {
 		if got := existInnerIsScanSafe(c.plan); got != c.want {

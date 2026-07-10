@@ -491,7 +491,12 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(
 
 	// Existential quantifiers append AFTER the ForEach legs (the executor
 	// dispatch requires trailing existentials); their correlation predicates
-	// join the pred list BEFORE the bake below (H5). The baked correlation
+	// join the pred list BEFORE the bake below (H5). Two or more existentials
+	// build a `[ForEach×N, Existential×M≥2]` select the executor has NO arm
+	// for (the fold dispatch requires exactly one trailing existential; the
+	// partition rule declines any existential) — it is INTENTIONALLY rejected
+	// at planning (fail-closed, never wrong rows); the M≥2 fold arm is a
+	// separate scoped piece. The baked correlation
 	// predicates flow into the existential FlatMap's inner plan as
 	// FrontierPinned references over the merged outer, where the item-2
 	// commit-2 disabled-birth binder binds the outer positionally and the
@@ -529,12 +534,12 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(
 	)
 }
 
-// buildOrdinalJoinResultValue builds the gated 2-way join's result value: the
-// raw RC of ofOrdinalNumber references over the two legs' typed QOVs, in
-// DECLARATION order (the caller passes rvLeft/rvRight — `SELECT *` column
-// order follows the SQL FROM order, not the RIGHT-join execution swap; the
-// executor binds legs by ALIAS, so RC leg order is independent of cursor
-// outer/inner roles). Returns nil when a leg is untranslatable (same rule as
+// buildOrdinalJoinResultValue builds a gated N-way join's result value (N>=2):
+// the raw RC of ofOrdinalNumber references over the legs' typed QOVs, in
+// DECLARATION order (`SELECT *` column order follows the SQL FROM order, not the
+// RIGHT-join execution swap; the executor binds legs by ALIAS, so RC leg order
+// is independent of cursor outer/inner roles). Returns nil when a leg is
+// untranslatable (same rule as
 // the anchored seed). The seed shape is asserted loud
 // (values.AssertOrdinalJoinSeed — the standing review condition on W3b).
 // The returned legTypes map (UPPER alias → bakeLegType) feeds

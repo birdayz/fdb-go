@@ -4921,6 +4921,64 @@ happy-path N-way pins all used CORRELATED existentials (scan-plan inners); the u
 the unprobed dimension. The full suite (not the slice's own pins) caught it — the "green with the bug
 latent is the real danger" discipline, dimensional-gap edition.
 
+**COMMIT A — the gate-round fixups (Graefe IMPL-ACK / Torvalds NAK / @claude NAK, all addressed on the
+follow-up HEAD).** Graefe ACK'd with two non-blockers: (6) the peel arms had no white-box unit case →
+added TestExistInnerIsScanSafe's projection/typeFilter admits + the COMPOSITIONAL safety pole
+(projection(firstOrDefault(scan))→false, typeFilter(nlj)→false — a hazard node behind a peel still
+declines); (7) a one-line note that M≥2 existentials are intentionally executor-rejected. **@claude NAK — a
+CONFIRMED regression on the derived-table-leg axis:** `FROM pa, (SELECT …) AS dq, rc WHERE … EXISTS(…)`
+declined 0AF00 post-commit but planned `[[10]]` pre-commit AND on Java (worktree-verified both sides). Root
+cause: retiring the arity-2 narrowing routed a comma cluster containing an OPAQUE-BOX (derived-table
+/ LogicalCTE) leg into the gated N-way seed, whose executor fold (legIsOrdinalSafe) cannot plan a box leg →
+decline; pre-commit the same shape fell to the name-model route. FIX (the conservative option): the
+existential flatten now gates ONLY when every gathered leg is SCAN-FAMILY (isScanFamilyLeg — the logical
+proxy for legIsOrdinalSafe); a box leg narrows OFF the gate to the name-model route, exactly restoring the
+pre-P2 fallback. gatherInnerClusterLegs already flattens buried INNER clusters to scan legs, so the
+buried-inner-box pins keep gating; only genuine opaque boxes narrow. Pin: derived_table_leg_stays_name_model
+→ [[10]] (Java-grounded). **Torvalds NAK — two:** (1) P4b "Java-grounded" was asserted-not-shown → ran the
+EXACT dup-alias shape live: Java 18 rows {5:6,7:6,9:6}, Go matches the SET (order differs, count-map compare
+is correct since neither has ORDER BY); comment now cites the direct grounding. (2) the empty_inner pin's
+"safety pole" comment overclaimed (that inner has no FOD node) → reframed as empty-inner-correctness, and
+the emit-on-empty pole is now pinned by the unit compositional cases AND a real e2e
+(nway_nonscansafe_inner_declines — a LEFT-join exist-inner in the N-way arm declines 0AF00, Java answers =
+reach-gap parity). Plus the buildOrdinalJoinResultValue "2-way" doc-rot → N-way.
+
+**PRE-EXISTING BUG surfaced (booked, NOT commit A — baseline-confirmed identical on bebf23b0e):**
+`EXISTS(SELECT COUNT(*)/MAX(…) …)` is always-TRUE (an aggregate over any group yields exactly one row), so
+Java keeps every outer row; Go treats it as correlated-filtering and drops the non-matching rows
+(`… EXISTS(SELECT COUNT(*) FROM e WHERE e.eref=p.id)` → Java `[[10],[20]]`, Go `[[10]]`). A 2-leg-fold-path
+divergence in EXISTS-over-aggregate-inner semantics, unrelated to the N-way seed (in the 3-way the outer
+join already filters, so no divergence manifests). Booked in TODO.md Known gaps.
+
+**codex NAK (gpt-5.6-sol ultra) — THREE P1s, base-vs-HEAD differential verified (worktree, 7 shapes):**
+P1#1 = the SAME derived/opaque-box-leg regression @claude found, generalized to FULL-join and aggregate
+legs — FIXED by the scan-family narrowing above (differential: derived_leg 2=2, agg_leg 1=1). P1#2
+(index-pushdown / cross-product blowup for a selective indexed N-way join) = CORRECTNESS PHANTOM
+(differential: p1_2_selective 1=1 both branches; the base existential N-way path ALSO routes through
+implementNWayJoinWithExistential's cross-product reconstruction — PartitionSelectRule declines any
+existential, so there was never an index-FlatMap alternative to lose; a genuine cost-model refinement,
+not a commit-A regression). **P1#3 = HALF-REAL, FIXED:** `EXISTS(SELECT … LIMIT 1)` and
+`EXISTS(SELECT DISTINCT …)` regressed decline-vs-plan (differential: base 2 rows → HEAD 0AF00), while
+ORDER BY did NOT (the sort elides → scan-safe). Root cause: an all-scan N-way outer gates born-flat, but
+the existential inner (Limit/Distinct) is not emptiness-preserving (LIMIT 0 / OFFSET can empty a non-empty
+inner), so the executor's existInnerIsScanSafe declines it — with no name-model fallback on the exclusive
+born-flat route. FIX: a second flatten narrowing — existInnerFoldSimple gates born-flat ONLY when every
+existential inner is a plain scan-family subquery (scan under filters/projections); a Limit/Distinct/Sort/
+aggregate/join/union inner keeps the whole shape on the name model (conservative pre-gate; the executor
+guard stays the authority). NOT a widening of existInnerIsScanSafe — peeling Limit is unsound (LIMIT 0).
+Differential after the fix: ALL 7 shapes match base. The safety pole becomes UNREACHABLE from the N-way
+arm via SQL (a non-simple inner can't gate), so it is pinned structurally (the unit compositional cases)
+plus the narrowing e2e (nway_nonsimple_inner_stays_name_model, limit_distinct_inner_stays_name_model).
+BOTH narrowings are N-WAY-ONLY (len(legs) > 2): the 2-leg fold (implementJoinWithExistential's N==2 path)
+tolerates a box leg and a non-scan/JOIN existential inner unchanged from pre-P2 — only the N-way arm applies
+the strict legIsOrdinalSafe/existInnerIsScanSafe guards — so scoping to N-way fixes exactly the shapes the
+arity-2 retirement newly routed into the strict fold while preserving the 2-leg white-box pins (the
+wedge-gate exists_outer_leg_enclosed_subquery_fresh case gates a 2-leg join-inner flatten; a full-suite run
+caught the over-narrowing when the first cut narrowed all arities).
+codex's verdict line didn't parse (UNKNOWN) — read from prose. Two reviewers independently converging on
+P1#1 was the signal it was real; the differential separated P1#3's real half from ORDER BY and exposed
+P1#2 as a phantom (the discipline: verify the plan-shape claim, don't trust or dismiss it).
+
 **LIVE-JAVA GROUNDING (probe basket, 4.12.11.0, 2026-07-10 — 15 shapes, T_PA/T_QB/T_RC/T_ED/T_SD +
 dup-k T_KA/T_KB/T_KC fixture, pk-disjoint).** Go↔Java rows BYTE-IDENTICAL on every currently-supported
 shape: comma 3-way WHERE-EXISTS `[[10]]`, NOT-EXISTS `[[20]]`, 4-way `[[10]]`, projected

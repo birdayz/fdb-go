@@ -289,10 +289,12 @@ func TestFDB_RFC173Item1_KeyBindingAndBuriedExists(t *testing.T) {
 	// 2; the P2 N-way slice retired that narrowing and the shape ANSWERS —
 	// the minted-dup legs bind positionally through the gathered seed and
 	// the uncorrelated inner passes the widened existInnerIsScanSafe peel
-	// (Projection/TypeFilter over the scan). Live-Java-grounded (4.12.11.0,
-	// the P2 peel probe): 18 rows, qid ∈ {5,7,9} each ×6 (a.qid binds the q
+	// (Projection/TypeFilter over the scan). Live-Java-grounded on THIS
+	// EXACT dup-alias shape (`p AS a, q AS a, q AS b`, 4.12.11.0): Java
+	// returns 18 rows, {5:6,7:6,9:6}; Go matches the SET (a.qid binds the q
 	// leg per-attribute; p(2) × q(3) × q(3) cross under an always-true
-	// EXISTS). Order unspecified (no ORDER BY) — count-map compare.
+	// EXISTS). Neither has ORDER BY, so Java groups and Go interleaves — the
+	// count-map compare is order-robust, which is the correct discipline.
 	t.Run("P4b_arity3_dup_exists", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx,
 			"SELECT a.qid FROM p AS a, q AS a, q AS b WHERE EXISTS (SELECT 1 FROM p)")

@@ -171,6 +171,52 @@ func TestFDB_RFC173P2_NWayWhereExistsFlatten(t *testing.T) {
 		}
 	})
 
+	t.Run("limit_distinct_inner_stays_name_model", func(t *testing.T) {
+		t.Parallel()
+		// An existential inner with LIMIT or DISTINCT is not a
+		// simple scan-family subquery (LIMIT 0 / OFFSET can empty a non-empty
+		// inner; both are declined by the executor's existInnerIsScanSafe), so
+		// the existential-inner narrowing keeps the shape on the name-model
+		// route. Retiring the arity-2 narrowing without the guard regressed
+		// both to 0AF00 (base planned them). The inners are always-true (t_ed
+		// non-empty) and UNCORRELATED, so every joined outer row passes: both
+		// pa.id=1 (qb.pref=1, rc.rref=1) and pa.id=2 (qb.pref=2, rc.rref=2)
+		// join → {10, 20}. Java parity: an uncorrelated always-true EXISTS
+		// keeps all rows regardless of the inner's cardinality shaping.
+		for _, sub := range []struct{ name, inner string }{
+			{"limit", "SELECT 1 FROM t_ed LIMIT 1"},
+			{"distinct", "SELECT DISTINCT eref FROM t_ed"},
+		} {
+			got := queryInts(t, "SELECT pa.v FROM t_pa AS pa, t_qb AS qb, t_rc AS rc"+
+				" WHERE qb.pref = pa.id AND rc.rref = pa.id AND EXISTS ("+sub.inner+")")
+			counts := map[int64]int{}
+			for _, v := range got {
+				counts[v]++
+			}
+			if len(counts) != 2 || counts[10] != 1 || counts[20] != 1 {
+				t.Fatalf("%s-inner N-way EXISTS rows = %v, want {10,20} (name-model route; 0AF00 is the codex P1#3 regression)", sub.name, got)
+			}
+		}
+	})
+
+	t.Run("derived_table_leg_stays_name_model", func(t *testing.T) {
+		t.Parallel()
+		// A DERIVED-TABLE leg (an opaque LogicalCTE box) in the comma cluster
+		// is NOT fold-plannable, so the existential flatten narrows OFF the gate
+		// and the query plans via the name-model route — the passthrough-derived
+		// twin of comma_3way_where_exists, which returns [[10]]. Retiring the
+		// arity-2 narrowing without the scan-family guard REGRESSED this shape to
+		// 0AF00 (the fold declined the box leg); the guard restores the
+		// pre-P2 name-model fallback. Java-grounded [[10]] (the derived-leg
+		// N-way EXISTS structure verified Go==Java live).
+		got := queryInts(t, "SELECT pa.v FROM t_pa AS pa, (SELECT qid, pref FROM t_qb) AS dq, t_rc AS rc"+
+			" WHERE dq.pref = pa.id AND rc.rref = pa.id"+
+			" AND EXISTS (SELECT 1 FROM t_ed AS ed WHERE ed.eref = pa.id)")
+		if len(got) != 1 || got[0] != 10 {
+			t.Fatalf("derived-table-leg N-way EXISTS rows = %v, want [10] (name-model route; a 0AF00 is the pre-guard regression)", got)
+		}
+	})
+
 	// The executor fold admits exactly ONE trailing existential
 	// — `[ForEach×N, Existential×M≥2]` has no arm, and PartitionSelectRule
 	// declines any existential quantifier. This shape declined at planning
@@ -204,9 +250,20 @@ func TestFDB_RFC173P2_NWayWhereExistsFlatten(t *testing.T) {
 // N-way seed must serve it (pre-P2 the shape planned through the name-model
 // 2+1 route; without the peel the flip REGRESSED it to 0AF00, caught by the
 // P4b suite red). Fixture and rows are the live-Java peel probe VERBATIM
-// (4.12.11.0): nonempty inner → the full 18-row cross; empty inner → 0 rows
-// (the safety pole: the peel must never flip EXISTS-false toward true —
-// FirstOrDefault/DefaultOnEmpty stay unpeeled). Order unspecified — count-map.
+// (4.12.11.0): nonempty inner → the full 18-row cross; a correlated
+// empty-match inner → 0 rows (the peel must not manufacture existence for a
+// no-match correlation). Order unspecified — count-map.
+//
+// The emit-on-empty SAFETY POLE (FirstOrDefault/DefaultOnEmpty stay
+// UNPEELED) is pinned two ways, NOT by the empty-inner row count above (that
+// inner plans without a FOD node, so it would not redden if a FOD arm were
+// added): STRUCTURALLY by TestExistInnerIsScanSafe's compositional cases
+// (projection(firstOrDefault(scan))→false, typeFilter(nlj)→false — a FOD/nlj
+// behind a peel still declines), and — because a non-simple existential
+// inner is narrowed off the born-flat gate at TRANSLATION and never reaches
+// the fold — by nway_nonsimple_inner_stays_name_model below (a LEFT-join
+// exist-inner plans via the name-model route, proving the narrowing keeps a
+// non-emptiness-preserving inner away from the fold's FOD signal).
 func TestFDB_RFC173P2_UncorrExistsPeel(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -271,8 +328,11 @@ func TestFDB_RFC173P2_UncorrExistsPeel(t *testing.T) {
 
 	t.Run("pure_cross_uncorr_exists_empty_inner", func(t *testing.T) {
 		t.Parallel()
-		// Java: 0 rows — EXISTS over an empty (filtered-out) inner must stay
-		// FALSE through the peeled wrappers.
+		// Java: 0 rows — a correlated no-match inner (eid=999 selects nothing)
+		// must stay EXISTS-false through the peeled Projection/TypeFilter/Filter
+		// wrappers. NOTE: this inner plans WITHOUT a FirstOrDefault node, so it
+		// does NOT exercise the emit-on-empty pole — that is the unit + the
+		// N-way non-scan-safe decline below (see the doc-comment).
 		rows, qErr := db.QueryContext(ctx,
 			"SELECT a.qid FROM p AS x, q AS a, q AS b WHERE EXISTS (SELECT 1 FROM t_ed WHERE t_ed.eid = 999)")
 		if qErr != nil {
@@ -288,6 +348,44 @@ func TestFDB_RFC173P2_UncorrExistsPeel(t *testing.T) {
 		}
 		if n != 0 {
 			t.Fatalf("empty-inner EXISTS returned %d rows, want 0 (the peel must never manufacture existence)", n)
+		}
+	})
+
+	t.Run("nway_nonsimple_inner_stays_name_model", func(t *testing.T) {
+		t.Parallel()
+		// A NON-SIMPLE existential inner (here a LEFT JOIN — also LIMIT,
+		// DISTINCT, aggregate) is narrowed OFF the born-flat gate at
+		// translation and plans via the name-model route, exactly as the
+		// pre-P2 arity-2 narrowing did: the born-flat fold's FirstOrDefault
+		// emptiness signal is only faithful for an emptiness-preserving scan
+		// inner, so a non-simple inner must NOT reach it. This is why the
+		// emit-on-empty safety pole is unreachable from the N-way arm via SQL
+		// (the pole is pinned structurally by TestExistInnerIsScanSafe's
+		// compositional cases). The LEFT-join inner is always-true (t_ed
+		// non-empty), so the query returns the full p × q1 × e2 cross: 2 rows
+		// {10, 20}. Retiring the arity-2 narrowing without this guard
+		// REGRESSED the LIMIT/DISTINCT twins to 0AF00 (the fold declined the
+		// non-scan inner with no name-model fallback).
+		rows, qErr := db.QueryContext(ctx,
+			"SELECT p.v FROM p, q AS q1, t_ed AS e2 WHERE q1.qid = 5 AND e2.eid = 301"+
+				" AND EXISTS (SELECT 1 FROM t_ed LEFT JOIN q AS qn ON qn.qid = t_ed.eid)")
+		if qErr != nil {
+			t.Fatalf("N-way LEFT-join existential inner errored (the narrowing must route it to name-model): %v", qErr)
+		}
+		defer rows.Close()
+		counts := map[int64]int{}
+		for rows.Next() {
+			var v int64
+			if sErr := rows.Scan(&v); sErr != nil {
+				t.Fatalf("scan: %v", sErr)
+			}
+			counts[v]++
+		}
+		if rErr := rows.Err(); rErr != nil {
+			t.Fatalf("rows: %v", rErr)
+		}
+		if len(counts) != 2 || counts[10] != 1 || counts[20] != 1 {
+			t.Fatalf("rows = %v, want {10:1,20:1} (name-model route, always-true LEFT-join inner)", counts)
 		}
 	})
 }

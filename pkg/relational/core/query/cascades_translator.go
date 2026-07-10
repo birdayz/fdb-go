@@ -3195,6 +3195,34 @@ func isScanFamilyLeg(op logical.LogicalOperator) bool {
 	}
 }
 
+// existInnerFoldSimple reports whether an existential subquery's inner is a
+// plain scan-family subquery — a base scan under filters/projections — the
+// shape the born-flat N-way fold's FirstOrDefault emptiness signal handles
+// faithfully. A LogicalLimit/Distinct/Sort/Aggregate/Join/Union/CTE/Unnest
+// anywhere on the spine returns false: the fold's executor guard
+// (existInnerIsScanSafe) would decline the planned inner, and the born-flat
+// route is exclusive, so such a shape must stay on the name model instead
+// (which the pre-P2 arity-2 narrowing did for every arity>2 cluster). This is
+// a CONSERVATIVE pre-gate — over-narrowing to the name model is always safe
+// (correct rows via the name-model route); the executor guard remains the
+// authority for any shape that slips through. A correlated scalar projection
+// is not simple (per-row evaluation the flat fold cannot express).
+func existInnerFoldSimple(op logical.LogicalOperator) bool {
+	switch o := op.(type) {
+	case *logical.LogicalScan:
+		return true
+	case *logical.LogicalFilter:
+		return existInnerFoldSimple(o.Input)
+	case *logical.LogicalProject:
+		if len(o.CorrelatedScalarSubqueries) > 0 {
+			return false
+		}
+		return existInnerFoldSimple(o.Input)
+	default:
+		return false
+	}
+}
+
 // existsLegBirthsPositional reports whether a projected-EXISTS fold leg is a
 // bare all-INNER cluster of scan-family leaves. Such a leg is translated
 // UN-ENCLOSED (AXIS 1) so its INNER box is born as a mergeable ordinal select;
@@ -4997,6 +5025,62 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	var legs []clusterLeg
 	if gatedFlatten {
 		legs = t.legsOfGatedJoin(j)
+	}
+	// The two narrowings below are N-WAY-ONLY (len(legs) > 2). The 2-leg fold
+	// (implementJoinWithExistential's N==2 path) tolerates an opaque-box leg
+	// and a non-scan existential inner unchanged from pre-P2; ONLY the N-way
+	// arm (implementNWayJoinWithExistential, len>2) applies the strict
+	// legIsOrdinalSafe / existInnerIsScanSafe guards, so ONLY the N-way flatten
+	// — the shape the retired arity-2 narrowing forced to the name model —
+	// needs these pre-gates. Restricting to N-way preserves the 2-leg
+	// behaviour (the c3/wedge-gate white-box pins) and fixes only the shapes
+	// the arity-2 retirement newly routed into the strict N-way fold.
+	if gatedFlatten && len(legs) > 2 {
+		// The N-way fold can only plan SCAN-FAMILY legs — its legIsOrdinalSafe /
+		// reconstructFoldStep1Seed machinery unwraps each leg to a scan/index
+		// base. An OPAQUE-BOX leg (a derived table / LogicalCTE, aggregate,
+		// union, sort, or an outer box) is NOT foldable: gating it would route
+		// [ForEach(box), …, Existential] into the fold, which DECLINES (0AF00)
+		// a shape the name-model route plans. gatherInnerClusterLegs already
+		// flattens buried INNER clusters into scan legs (so `(p JOIN q) JOIN r`
+		// gates), leaving only genuine opaque boxes here — narrow those to the
+		// name model (an N-way WHERE-EXISTS with a derived-table leg regressed
+		// decline-vs-name-model before this guard).
+		for _, leg := range legs {
+			if !isScanFamilyLeg(leg.op) {
+				gatedFlatten = false
+				gateDecision = wedgeGateDecision{
+					Arity:  gateDecision.Arity,
+					Reason: "N-way existential flatten leg is not scan-family (the fold cannot plan an opaque box leg)",
+				}
+				break
+			}
+		}
+	}
+	if gatedFlatten && len(legs) > 2 {
+		// The born-flat N-way fold wraps each existential inner in FirstOrDefault
+		// as the semi-join emptiness signal, faithful only when the inner
+		// PRESERVES emptiness (empty ⟺ no match). A LIMIT (LIMIT 0 / OFFSET can
+		// empty a non-empty inner), DISTINCT, SORT, AGGREGATE (COUNT over empty
+		// emits a row → always-true), JOIN, or UNION inner breaks or complicates
+		// that equivalence — the N-way arm's existInnerIsScanSafe declines them,
+		// which would leave the EXCLUSIVE born-flat route with no plan for a
+		// shape the name-model path handles. Keep a non-simple existential inner
+		// on the name model (conservative pre-gate; the executor guard stays the
+		// final authority). This restores the pre-P2 name-model fallback for
+		// `EXISTS(SELECT … LIMIT/DISTINCT/…)` over an all-scan N-way outer.
+		for _, esq := range f.ExistsSubqueries {
+			if !existInnerFoldSimple(esq.Plan) {
+				gatedFlatten = false
+				gateDecision = wedgeGateDecision{
+					Arity:  gateDecision.Arity,
+					Reason: "N-way existential inner is not a simple scan-family subquery (the fold's emptiness signal requires it)",
+				}
+				break
+			}
+		}
+	}
+	if gatedFlatten {
 		seen := make(map[string]struct{}, len(legs))
 		for _, leg := range legs {
 			seen[strings.ToUpper(leg.binding)] = struct{}{}
