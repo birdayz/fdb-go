@@ -110,6 +110,7 @@ go_test(
         "embedded_fdb_errors_test.go",
         "embedded_fdb_test.go",
         "empty_aggregate_probe_test.go",
+        "exists_aggregate_scope_leak_fdb_test.go",
         "exists_alias_binding_fdb_test.go",
         "exists_alias_shadow_fdb_test.go",
         "exists_computed_column_fdb_test.go",

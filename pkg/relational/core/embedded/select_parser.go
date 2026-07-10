@@ -1478,12 +1478,18 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 		if n == nil {
 			return
 		}
-		// Stop at scalar subquery boundaries: aggregates inside a
-		// subquery belong to the subquery, not the outer expression.
-		// Without this guard `SELECT (SELECT MAX(v) FROM t) FROM t2`
-		// would mis-promote the outer slot to an aggregate column,
-		// dropping it from projCols entirely.
-		if _, ok := n.(*antlrgen.SubqueryExpressionAtomContext); ok {
+		// Stop at subquery boundaries: aggregates inside a subquery belong to
+		// the subquery, not the outer expression. Covers BOTH a scalar subquery
+		// (`SELECT (SELECT MAX(v) FROM t) FROM t2`) and an EXISTS subquery
+		// (`SELECT p.id, EXISTS (SELECT COUNT(*) FROM e ...) FROM p`). Without
+		// the scalar guard the outer slot mis-promotes to an aggregate column,
+		// dropping it from projCols; without the EXISTS guard the nested
+		// aggregate leaks into the OUTER query's aggregate set, wrongly
+		// classifying the outer query as an aggregate (spurious 42803 on the
+		// non-grouped columns) and corrupting any downstream consumer of that
+		// set. An EXISTS/scalar subquery is its own query scope.
+		switch n.(type) {
+		case *antlrgen.SubqueryExpressionAtomContext, *antlrgen.ExistsExpressionAtomContext:
 			return
 		}
 		if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok {
