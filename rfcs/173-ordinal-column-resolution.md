@@ -4940,7 +4940,14 @@ delete, poison under inCTEDefiningScope). Graefe IMPL-ACK (verified nested/CTE-c
 cteExprScope safety tightening); Torvalds ACK (root-cause not downstream; 2 nits fixed: the gate comment
 doc-rot narrating the retired isScanFamilyLeg, and the F2-LEFT booking). **FIVE real regressions on one gate
 narrowing — the four-gate discipline at its most load-bearing; none caught by a green 55/55 suite or my own
-reasoning.** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
+reasoning.** **SLICE CLOSED — FULLY 4-GATED on a542ffee7 (2026-07-10): Graefe IMPL-ACK (scanFamilyLegCteAware
+in lockstep with translation for all CTE cases incl. shadow), Torvalds ACK (root-cause not downstream;
+doc-rot + duplicated-block fixed), @claude ACK (all 6 row/plan axes RAN live-Java clean, carries through the
+tightenings), codex clean ("aligns scan-family CTE resolution with the translator's lexical shadow-stack
+behavior"). 5 commits (48402600f → a542ffee7). Producer #2 (buildJoinResultValue) retired for the 2-way
+EXISTS-in-ON shape; its residuals are the enclosure declines (lift atomically at S4) + N-way EXISTS-in-ON
+(the deep index-matching wall). Booked: F2-LEFT's isScanFamilyLeg is cteScope-blind (same class — verify
+silent-vs-reach).** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
 derivation helper, retires with the nested residuals of P2/P3, not standalone. P2 (buildJoinResultValue:727)
 = (i) 2-way EXISTS-in-ON RETIRABLE-NOW, (ii) enclosure declines lift atomically at S4 (circular, the
 forceOrdinalSpike certificate models it). P3 (buildUnnestResultValue:1673) = BLOCKED on W5
