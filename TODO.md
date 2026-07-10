@@ -219,6 +219,36 @@ validation gate.
     all correct; independent teeth-check), Torvalds comments-NAK→ACK (seven chainedBaseOrdinalizes ghosts
     rewritten; controls F/F2/G all reproduced under his hand), codex clean ×2. Probe extras booked for a
     future touch: threebranch_fork, fork_owner_first_link_4deep, at_dense_fork pins, fork_over_fullbox_inner_only.
+  - [ ] **BOX-SUBSTRATE slice (in de-risk; Graefe design consult round 3 in flight).** Commit 1 landed
+    (b8441025a: the ordinalSlotInLegWindow fail-closed hardening + the NullSupplyBarrier cert). RECORD
+    CORRECTION owed: commit 1's message attributes the spike's silent-wrong to "empty rt.Legs → flat
+    fallback" — REFUTED by a layout probe (windows already propagate through chained merged types incl.
+    box bottoms: [{A 0 3},{B 3 3},{X 6 1},{Y 7 1}]; a prototyped bottom-only propagation BROKE the 2c
+    certs — per-link windows are load-bearing for runtime qualified-name resolution — reverted
+    uncommitted). TRUE mechanism (trace-confirmed): the box-leg conjunct takes rebaseChainedOuterLegPredicate's
+    LAZY fork ({B} ⊆ outerLegs "scan-pushable"), leaving a FOREIGN-correlation name read at the merged
+    select; the runtime bare-name fallback over an ordinal row first-matches across legs → A's slot 0.
+    The pureBottom lazy-fork gate is the correct semantic fix but NOT sufficient: with it, the bake is
+    altitude+slot-correct yet evaluates NULL — the chained-over-box FlatMap's runtime binding does not
+    flip positional in sync with the seed (the seed/birth mismatch class at the CHAINED FlatMap birth).
+    ROUND-3/4 RESOLUTION (executor-birth mapping + gather:93 spike): gather:93 is NOT vestigial — its
+    decline and the seed arm are a COUPLED PAIR (lifting either alone builds an ordinal seed over a box
+    whose NLJ is not birthActive: ContainsBakedOrdinal on the box's OWN result value decides the birth,
+    and adaptLegPositional's synthesis from a merged multi-namespace box Datum is unfaithful → silent
+    NULL/empty). Even the full three-piece lift (gather:93 + arm + WHERE-merge bake) fails: TWO more
+    uncoupled sites gate the simple case — legIsOrdinalSafe categorically rejects non-INNER legs
+    (rule_implement_nested_loop_join.go:1106) and the FULL NLJ is built with sel.GetResultValue()
+    VERBATIM (:166). LANDED (Outcome A): the AXIS-1↔AXIS-2 coupling on the chained gate —
+    `!pureSpine && !boxOuterBirthsPositional(bottom) → decline` — closing a LATENT UNFILTERED mismatch
+    (a nested outer box `(A LEFT B) FULL C` is walk-admitted arity-1 but boxGatesFresh-false → the seed
+    ordinalized over a name-model box → silent NULL; pinned nested_box_bottom_* + feature-off control).
+    BOOKED (Outcome B, the real box-substrate ordinalization — sequenced WITH the circular arms, LAST):
+    the 5-site checklist — (1) chained gate ↔ birth coupling (landed as A), (2) the enclosure declines
+    cluster_gate.go:315/:356 (the circular arms), (3) legIsOrdinalSafe non-INNER widening, (4) the FULL
+    NLJ ordinal-seed build, (5) unnestExistsSeedSafe box-leg-conjunct/pureSpine re-scoping + the
+    pureBottom lazy-fork gate + the WHERE-merge ordinal bake (all documented, none landed standalone).
+    Also booked: the below-FOD hoist ordinal-4/leg-row rebase gap (the nested-box strand) + the grouped
+    consumer row-loss — both surfaced only under the lift, both stay declined today.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a

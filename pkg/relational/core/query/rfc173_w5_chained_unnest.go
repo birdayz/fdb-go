@@ -494,6 +494,23 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	if !t.unnestExistsSeedSafe(tipBase, pureSpine) {
 		return nil
 	}
+	// AXIS-1↔AXIS-2 coupling for an IMPURE bottom — the chained twin of the
+	// single-unnest law at the box-outer enclosure site ("either half alone is
+	// broken"): the seed may advertise the bottom box POSITIONALLY only if that
+	// box will actually BIRTH positional under the first link's recursive
+	// translate (boxOuterBirthsPositional — the same predicate that decides the
+	// enclosure there). Without this check, an arity-1 box that does NOT gate
+	// fresh (a nested outer box, `(A LEFT B) FULL C`, excluded by
+	// legExposesBuriedOuterBox) is walk-admitted, the chained seed bakes
+	// ofOrdinals over its columns, but the box's own translate keeps the
+	// name-model record → the seed's positional reads meet a name-keyed row:
+	// the adaptLegPositional synthesis is unfaithful for a merged multi-
+	// namespace box Datum, and the reads come up NULL — silent wrong/empty
+	// rows, no strand. Decline the WHOLE chain to name-model instead
+	// (fail-open, rows correct by name).
+	if !pureSpine && !t.boxOuterBirthsPositional(links[0].join.Left) {
+		return nil
+	}
 
 	// Build the ordinal collection + seed FIRST (types only, no outerRef yet): a
 	// nil from either declines WITHOUT having cleared the enclosure or translated

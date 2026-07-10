@@ -205,6 +205,20 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		l1, _ := link(fullBox, "A", "SARR", "X")
 		return link(l1, "X", "SUB", "Y")
 	}
+	nestedBoxBottom := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
+		// The spine bottoms in a NESTED outer box — `(A LEFT B) FULL C` — which
+		// is clusterArity==1 (FULL is merge-opaque) and walk-ADMITTED, but does
+		// NOT gate fresh (legExposesBuriedOuterBox excludes a nested outer-box
+		// leg), so boxOuterBirthsPositional is FALSE: the first link's recursive
+		// translate keeps the box name-model. Pre-coupling, the chained seed
+		// still ordinalized over it — positional reads over a name-keyed box row,
+		// silent NULL (the latent AXIS-1↔AXIS-2 mismatch this pin closes). The
+		// coupling check declines the WHOLE chain to name-model.
+		innerLeft := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinLeft, "")
+		nested := logical.NewJoin(innerLeft, scan("T4", "C"), logical.JoinFull, "")
+		l1, _ := link(nested, "A", "SARR", "X")
+		return link(l1, "X", "SUB", "Y")
+	}
 	forkOverFullBox := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// The FORK admission composing with the impure bottom — the coupling
 		// obligation: fork admission must NOT bypass the box-leg-conjunct arm.
@@ -264,6 +278,11 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		// The COUPLING pin: fork admission × impure bottom — the arm must win.
 		{"fork_over_full_box_unfiltered", forkOverFullBox, false, "ordinal", ""},
 		{"fork_over_full_box_filtered", forkOverFullBox, true, "name-model", ""},
+		// The AXIS-coupling pin: a walk-admitted bottom that will NOT birth
+		// positional (nested outer box — boxOuterBirthsPositional false) declines
+		// even UNFILTERED; pre-coupling it ordinalized into the silent mismatch.
+		{"nested_box_bottom_unfiltered", nestedBoxBottom, false, "name-model", ""},
+		{"nested_box_bottom_filtered", nestedBoxBottom, true, "name-model", ""},
 		// AT-ordinality on the mid link: linear, ordinalizes; the walk keys on
 		// the AS alias and the AT column rides the leg without moving the
 		// element slot.

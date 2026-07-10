@@ -433,8 +433,14 @@ func TestRFC173S4_OrdinalSlotInLegWindow(t *testing.T) {
 	}
 	// THE FAIL-CLOSED HARDENING, both sides. A MULTI-alias prefix that arrives
 	// WITHOUT leg windows must DECLINE — the flat fallback would first-match a
-	// dup-named column across aliases (a qualified B.ID resolving to A's slot 0:
-	// `WHERE B.ID = 20` admitted {A.ID:20, B.ID:null} rows before this law).
+	// dup-named column across aliases (a qualified B.ID resolving to A's slot 0).
+	// HONEST REACHABILITY NOTE: on the chained/box paths Legs DO propagate
+	// (probe-verified — buriedLegBounds handles unnest-right joins and boxes), so
+	// no CURRENTLY REACHABLE shape hits this decline; it is a DEFENSIVE
+	// fail-closed law guarding other paths and future propagation gaps, not a
+	// live-path fix. (The observed WHERE B.ID=20 → {A.ID:20, B.ID:null} rows had
+	// a different mechanism: the lazy scan-pushable fork leaving a foreign-
+	// correlation name read — see the box-substrate slice record.)
 	// The SAME window-less type resolves flat when the caller is single-alias —
 	// the legitimate pristine-prefix path must NOT break.
 	noLegs := &values.RecordType{Fields: []values.Field{
