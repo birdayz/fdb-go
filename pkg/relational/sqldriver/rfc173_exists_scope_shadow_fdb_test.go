@@ -312,4 +312,38 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 		`WITH "Q$1" AS (SELECT MA."ID" FROM MA) SELECT "Q$3" FROM ST, ST."ARR" AS "Q$3" WHERE EXISTS (SELECT 1 FROM OT WHERE OT."K" > "Q$3")`,
 		[]string{"map[Q$3:10]", "map[Q$3:20]", "map[Q$3:4]"},
 		"")
+
+	// MULTI-SOURCE colliding inner — the FORWARD SENTINEL for mint-per-leg.
+	// The inner {OI, ST} re-declares the outer leg ST and the predicate
+	// references it; an unminted multi-source inner keeps its SQL leg names,
+	// so the join-level reinterpretation would answer per-outer-row (1 row)
+	// where Java's inner-shadow semantics answer 3 (live-verified) — the
+	// scope-ambiguity decline converts that silent-wrong to a loud 0A000.
+	// When mint-per-leg lands, this pin flips to the Java rows and the
+	// conformance gap closes.
+	wantDecline := func(name, q, wantSub string) {
+		t.Helper()
+		_, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		if perr == nil {
+			t.Fatalf("%s: must decline loud (scope-ambiguous), planned OK instead\n  sql: %s", name, q)
+		}
+		if !strings.Contains(perr.Error(), wantSub) {
+			t.Fatalf("%s: decline = %v, want substring %q\n  sql: %s", name, perr, wantSub, q)
+		}
+	}
+	wantDecline("multisource_colliding_declines",
+		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE ST."C" < OT."K")`,
+		"scope-ambiguous")
+
+	// The no-over-fire control: a NON-colliding multi-source inner (leg
+	// names {ST, MI} disjoint from the outer {MA, OT}), CORRELATED on an
+	// outer TABLE column so it genuinely reaches the fallback's multi-source
+	// arm. (The element-correlated variant dies upstream in the pre-existing
+	// multi-table-FROM-referencing-element 0AF00 and never reaches the
+	// decline.) Java live: ∃(ST,MI) with ST.C < OT.K=50 → constant-true →
+	// 2 MA × 1 OT rows → [50, 50].
+	want("multisource_noncolliding_answers",
+		`SELECT OT."K" FROM MA, OT WHERE EXISTS (SELECT 1 FROM ST, MA AS "MI" WHERE ST."C" < OT."K")`,
+		[]string{"map[OT.K:50]", "map[OT.K:50]"},
+		"")
 }
