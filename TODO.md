@@ -238,10 +238,13 @@ validation gate.
     NULL/empty). Even the full three-piece lift (gather:93 + arm + WHERE-merge bake) fails: TWO more
     uncoupled sites gate the simple case — legIsOrdinalSafe categorically rejects non-INNER legs
     (rule_implement_nested_loop_join.go:1106) and the FULL NLJ is built with sel.GetResultValue()
-    VERBATIM (:166). LANDED (Outcome A): the AXIS-1↔AXIS-2 coupling on the chained gate —
-    `!pureSpine && !boxOuterBirthsPositional(bottom) → decline` — closing a LATENT UNFILTERED mismatch
-    (a nested outer box `(A LEFT B) FULL C` is walk-admitted arity-1 but boxGatesFresh-false → the seed
-    ordinalized over a name-model box → silent NULL; pinned nested_box_bottom_* + feature-off control).
+    VERBATIM (:166). LANDED (Outcome A): the coherence guard on the chained gate —
+    `!pureSpine && !boxOuterBirthsPositional(bottom) → decline` — AMENDED per two independent review
+    falsifications: NOT a demonstrated-bug fix (pre-guard rows were CORRECT on every probed observable —
+    the cleared-enclosure first-link translate ordinalizes the nested box too, so the tower is coherently
+    positional with dual emission backstopping) but a CONSERVATIVE guard over an UNVALIDATED tower
+    (zero e2e coverage, outside the box slices' verified surface) that becomes load-bearing when the
+    name model is deleted at the cap; pinned nested_box_bottom_* + feature-off control.
     BOOKED (Outcome B, the real box-substrate ordinalization — sequenced WITH the circular arms, LAST):
     the 5-site checklist — (1) chained gate ↔ birth coupling (landed as A), (2) the enclosure declines
     cluster_gate.go:315/:356 (the circular arms), (3) legIsOrdinalSafe non-INNER widening, (4) the FULL

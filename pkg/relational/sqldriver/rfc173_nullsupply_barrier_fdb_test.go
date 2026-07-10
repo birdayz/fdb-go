@@ -21,8 +21,9 @@ import (
 // TestFDB_RFC173_NullSupplyBarrier pins the null-supplying pushdown BARRIER:
 // a WHERE on a null-supplying leg's column keeps post-join (null-excluding)
 // semantics — `FROM A LEFT JOIN B ON … WHERE B.col = x` excludes the padded
-// rows (NULL = x is never true), and the plans keep the conjunct as a
-// PredicatesFilter ABOVE the LEFT FlatMap+DefaultOnEmpty / the FULL NLJ. A
+// rows (NULL = x is never true). (OBSERVED at introduction, not asserted here:
+// the plans keep the conjunct as a PredicatesFilter ABOVE the LEFT
+// FlatMap+DefaultOnEmpty / the FULL NLJ — this cert pins ROWS only.) A
 // pushdown that moved the conjunct INTO the null-supplying leg pre-join would
 // re-null-extend the filtered leg and the padded rows would REAPPEAR. This is
 // the semantic floor under the box-substrate ordinal work: verified holding on
@@ -57,10 +58,11 @@ func TestFDB_RFC173_NullSupplyBarrier(t *testing.T) {
 		if sErr != nil {
 			return nil, sErr
 		}
-		// A-side: IDs 1,2,3. ON A.ID+10=B.ID → only A=1 matches (B=11).
-		// A=2,3 are B-NULL rows. WHERE B.SUB = 50: B(11).SUB=50 → post-join
-		// answer = ONLY the matched pair. Buggy pre-join push over LEFT:
-		// filtering B first still leaves A=2,3 null-padded → 3 rows.
+		// Store holds IDs 1,2,3,11 — ALL are A-side rows for the self-join
+		// (11 doubles as the B-side match). ON A.ID+10=B.ID → only A=1 matches
+		// (B=11); A=2,3,11 are B-NULL rows. WHERE B.SUB = 50: B(11).SUB=50 →
+		// post-join answer = ONLY the matched pair. A buggy pre-join push over
+		// LEFT would filter B first and still null-pad A=2,3,11 → 4 rows.
 		for _, r := range []proto.Message{mkT4(1, 5), mkT4(2, 5), mkT4(3, 5), mkT4(11, 50)} {
 			if _, e := store.SaveRecord(r); e != nil {
 				return nil, e

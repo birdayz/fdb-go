@@ -232,4 +232,51 @@ func TestFDB_RFC173S4_FullBoxChainedSpine(t *testing.T) {
 			"map[W:4]", "map[W:5]", "map[W:6]",
 			"map[W:3]", "map[W:9]",
 		})
+	// NESTED-outer-box bottom — `(A LEFT B) FULL C` — the coherence guard's
+	// decline surface (boxOuterBirthsPositional false: the nested box is outside
+	// the validated positional surface). These are the WRONG-ROWS TRIPWIRE for
+	// the box-substrate ordinalization / name-model deletion: today the chain
+	// declines to name-model (rows correct by name, dual emission backstopping);
+	// any future lift must keep every one of these row sets. ON A.ID+10=B.ID
+	// matches (10,20); ON A.ID=C.ID+100 never matches (C is null everywhere;
+	// unmatched C rows are A-null → NULL SARR → no unnest rows).
+	nested := `FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID" FULL OUTER JOIN T4 AS "C" ON "A"."ID" = "C"."ID" + 100, "A"."SARR" AS "X", "X"."SUB" AS "Y"`
+	want("nestedbox_unfiltered",
+		`SELECT "Y" `+nested,
+		[]string{
+			"map[Y:1]", "map[Y:2]", "map[Y:10]", "map[Y:3]",
+			"map[Y:4]", "map[Y:5]", "map[Y:6]",
+			"map[Y:3]", "map[Y:9]",
+		})
+	want("nestedbox_boxleg_filter",
+		`SELECT "Y" `+nested+` WHERE "A"."ID" = 10`,
+		[]string{"map[Y:1]", "map[Y:2]", "map[Y:10]", "map[Y:3]"})
+	want("nestedbox_inner_only",
+		`SELECT "Y" `+nested+` WHERE "Y" > 8`,
+		[]string{"map[Y:10]", "map[Y:9]"})
+	// Box-leg COLUMN PROJECTIONS through the chain — the read class where an
+	// unvalidated ordinal tower over the nested box would surface NULL/wrong
+	// values (per-leg: B.ID only on the matched A=10 rows; C.ID null always).
+	want("nestedbox_leg_projection",
+		`SELECT "A"."ID", "B"."ID", "Y" `+nested,
+		[]string{
+			"map[A.ID:10 B.ID:20 Y:1]", "map[A.ID:10 B.ID:20 Y:2]",
+			"map[A.ID:10 B.ID:20 Y:10]", "map[A.ID:10 B.ID:20 Y:3]",
+			"map[A.ID:20 B.ID:<nil> Y:4]", "map[A.ID:20 B.ID:<nil> Y:5]",
+			"map[A.ID:20 B.ID:<nil> Y:6]",
+			"map[A.ID:3 B.ID:<nil> Y:3]", "map[A.ID:3 B.ID:<nil> Y:9]",
+		})
+	want("nestedbox_cleg_projection",
+		`SELECT "C"."ID", "Y" `+nested,
+		[]string{
+			"map[C.ID:<nil> Y:1]", "map[C.ID:<nil> Y:2]", "map[C.ID:<nil> Y:10]",
+			"map[C.ID:<nil> Y:3]", "map[C.ID:<nil> Y:4]", "map[C.ID:<nil> Y:5]",
+			"map[C.ID:<nil> Y:6]", "map[C.ID:<nil> Y:3]", "map[C.ID:<nil> Y:9]",
+		})
+	// (The name-model Datum carries BOTH the aliased and source-qualified keys
+	// for aliased projections — pinned as-is; the projection surface, not the
+	// Datum key set, is the contract.)
+	want("nestedbox_multileg_star",
+		`SELECT "A"."ID" AS "AID", "B"."ID" AS "BID", "C"."ID" AS "CID", "Y" `+nested+` WHERE "Y" = 1`,
+		[]string{"map[A.ID:10 AID:10 B.ID:20 BID:20 C.ID:<nil> CID:<nil> Y:1]"})
 }

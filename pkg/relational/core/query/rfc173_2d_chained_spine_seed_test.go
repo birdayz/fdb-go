@@ -209,11 +209,14 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		// The spine bottoms in a NESTED outer box — `(A LEFT B) FULL C` — which
 		// is clusterArity==1 (FULL is merge-opaque) and walk-ADMITTED, but does
 		// NOT gate fresh (legExposesBuriedOuterBox excludes a nested outer-box
-		// leg), so boxOuterBirthsPositional is FALSE: the first link's recursive
-		// translate keeps the box name-model. Pre-coupling, the chained seed
-		// still ordinalized over it — positional reads over a name-keyed box row,
-		// silent NULL (the latent AXIS-1↔AXIS-2 mismatch this pin closes). The
-		// coupling check declines the WHOLE chain to name-model.
+		// leg), so boxOuterBirthsPositional is FALSE. Pre-guard, the chained
+		// seed ordinalized over it — and adversarial rows-probes showed the
+		// tower COHERENTLY positional (the cleared-enclosure first-link translate
+		// ordinalizes too) with CORRECT rows, dual emission backstopping. The
+		// guard still declines the WHOLE chain to name-model: the tower is
+		// UNVALIDATED (zero e2e coverage; excluded from the box slices' verified
+		// surface) and its correctness must be a pinned law before the name
+		// model — the current backstop — is deleted at the cap.
 		innerLeft := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinLeft, "")
 		nested := logical.NewJoin(innerLeft, scan("T4", "C"), logical.JoinFull, "")
 		l1, _ := link(nested, "A", "SARR", "X")
@@ -278,9 +281,10 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		// The COUPLING pin: fork admission × impure bottom — the arm must win.
 		{"fork_over_full_box_unfiltered", forkOverFullBox, false, "ordinal", ""},
 		{"fork_over_full_box_filtered", forkOverFullBox, true, "name-model", ""},
-		// The AXIS-coupling pin: a walk-admitted bottom that will NOT birth
-		// positional (nested outer box — boxOuterBirthsPositional false) declines
-		// even UNFILTERED; pre-coupling it ordinalized into the silent mismatch.
+		// The coherence-guard pin: a walk-admitted bottom outside the validated
+		// positional surface (nested outer box — boxOuterBirthsPositional false)
+		// declines even UNFILTERED — a conservative guard over an unvalidated
+		// tower, not a demonstrated-bug fix (pre-guard rows were correct).
 		{"nested_box_bottom_unfiltered", nestedBoxBottom, false, "name-model", ""},
 		{"nested_box_bottom_filtered", nestedBoxBottom, true, "name-model", ""},
 		// AT-ordinality on the mid link: linear, ordinalizes; the walk keys on

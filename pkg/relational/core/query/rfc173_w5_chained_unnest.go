@@ -494,20 +494,25 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	if !t.unnestExistsSeedSafe(tipBase, pureSpine) {
 		return nil
 	}
-	// AXIS-1↔AXIS-2 coupling for an IMPURE bottom — the chained twin of the
-	// single-unnest law at the box-outer enclosure site ("either half alone is
-	// broken"): the seed may advertise the bottom box POSITIONALLY only if that
-	// box will actually BIRTH positional under the first link's recursive
-	// translate (boxOuterBirthsPositional — the same predicate that decides the
-	// enclosure there). Without this check, an arity-1 box that does NOT gate
-	// fresh (a nested outer box, `(A LEFT B) FULL C`, excluded by
-	// legExposesBuriedOuterBox) is walk-admitted, the chained seed bakes
-	// ofOrdinals over its columns, but the box's own translate keeps the
-	// name-model record → the seed's positional reads meet a name-keyed row:
-	// the adaptLegPositional synthesis is unfaithful for a merged multi-
-	// namespace box Datum, and the reads come up NULL — silent wrong/empty
-	// rows, no strand. Decline the WHOLE chain to name-model instead
-	// (fail-open, rows correct by name).
+	// A CONSERVATIVE COHERENCE GUARD for an IMPURE bottom — the chained twin of
+	// the single-unnest law at the box-outer enclosure site ("either half alone
+	// is broken"), applied through the SAME predicate
+	// (boxOuterBirthsPositional): the seed advertises the bottom box
+	// positionally only when that predicate says the box births positional.
+	// HONEST SCOPE: no demonstrated wrong-rows shape motivates this guard on
+	// the reachable path — adversarial rows-probes on the pre-guard tree (a
+	// nested outer box `(A LEFT B) FULL C` under a chain, element/box-column/
+	// null-supplied-leg projections) all answered CORRECTLY, because the
+	// cleared-enclosure recursive translate ordinalizes the first link too (the
+	// :1565 gate does not consult boxGatesFresh), leaving the tower coherently
+	// positional. What the guard buys: ordinal-over-a-non-fresh-gating box is
+	// an UNVALIDATED tower (zero e2e coverage; boxGatesFresh excludes these
+	// shapes from the box slices' verified surface, and the coexistence dual
+	// emission currently backstops any read the positional path misses) — so
+	// until the box substrate validates it (Outcome B), the whole chain
+	// declines to name-model: fail-open, rows correct by name, and the
+	// boundary is a pinned LAW rather than an accident of dual emission that
+	// would flip to wrong rows when the name model is deleted at the cap.
 	if !pureSpine && !t.boxOuterBirthsPositional(links[0].join.Left) {
 		return nil
 	}
