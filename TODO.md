@@ -1749,6 +1749,22 @@ P1s (both reproduced), one a REGRESSION**:
      tension codex named. THIS is the real remaining work for the cardinality fix; do it before re-landing.
 Reverted; the keystone (a) stays landed + 4-gated. codex P1s #4/#5 are the precise remaining constraints.
 
+**NEXT-SLICE MECHANISM — use CONSTANT-FOLD, NOT the wrap (the key redirection).** The wrap-and-clear approach
+is fundamentally blocked on P1#5: `translateJoinWithExists` (cascades_translator.go:4945 — the delicate
+ordinal-wedge/arity-2 flatten) expects the correlation in `ExistsSubquery.JoinPredicate`, but the aggregate
+consumes the correlated column, so it MUST be below the aggregate; integrating an aggregate-wrapped
+self-correlated inner into that flatten is deep translator work. **Sidestep it entirely: fold
+`EXISTS(unconditional-one-row) → TRUE` and `NOT EXISTS(…) → FALSE`, dropping the ExistsSubquery.** No
+ExistsSubquery ⇒ no JoinPredicate ⇒ no `translateJoinWithExists` involvement ⇒ P1#5 (joined-outer regression)
+CANNOT arise; and the DML windowed path (P1#4) is guarded by the same detector. Graefe endorsed the fold as
+valid (identical rows; a Go read-side optimization; wire-compat untouched — the plan-shape divergence from
+Java's semi-join is allowed on the read side). BUILD: reuse `queryInnerIsUnconditionalOneRow` (non-grouped
+aggregate; exclude GROUP BY / HAVING / QUALIFY / LIMIT 0 / OFFSET>0 / **windowed via `OverClause()!=nil`**);
+fold at the predicate/value construction sites — WHERE-EXISTS (constant TRUE conjunct), projected ExistsValue
+(constant TRUE), with NOT-EXISTS polarity (→ FALSE); HAVING position too. Then full four-gate. The fold is a
+multi-site interception but each site is a local substitution, with NONE of the wrap's correlation-placement
+or translator-integration risk.
+
 ### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` → `3e51a55e6` → interface-arm fix), scalar + EXISTS + IN all closed
 **FIXED.** `harvestAggregates` (select_parser.go) walked a projected expression's tree promoting aggregates
 into the enclosing query's set but only stopped at SCALAR subquery atoms, not EXISTS — so `SELECT p.id,
