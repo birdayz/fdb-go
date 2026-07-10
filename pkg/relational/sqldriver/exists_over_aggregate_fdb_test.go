@@ -9,11 +9,14 @@ package sqldriver_test
 // rebuilds the inner from FROM+WHERE and drops the SELECT list, killing the
 // aggregate that forces one-row cardinality.
 //
-// The last three subtests cover the edge shapes that made an earlier attempt
-// (reverted) unsound: LIMIT 0 declines, mixed predicate declines, and the
-// nested-scope case (now correct because the aggregate-detection scope leak is
-// closed — its detector no longer misclassifies a row-preserving middle SELECT
-// as an aggregate).
+// The edge subtests cover the shapes that made an earlier attempt (reverted)
+// unsound plus adversarial correlation-wiring shapes: the nested-scope case
+// (now correct because the aggregate-detection scope leak is closed); a
+// single-level mixed predicate (WRAPS — no decline, the outer-only conjunct is
+// pushed below upstream); LIMIT 0 / QUALIFY (the detector DECLINES the
+// always-true wrap — the [1] fallback is a booked separate residual); and
+// multi-table-inner / LIMIT-1 / wrapped-aggregate shapes that must all stay
+// always-true.
 
 import (
 	"context"
@@ -161,6 +164,22 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 		if len(v) != 1 || v[0] != 1 {
 			t.Fatalf("qualify: rows=%v want [1] (guard declined the always-true wrap; [1 2 3] = QUALIFY not guarded)", v)
 		}
+	})
+
+	// Adversarial correlation-wiring shapes (verified against a review probe):
+	// each is a non-grouped aggregate → always one row → always TRUE → all p.
+	// multi-table inner exercises the correlation-below-aggregate wiring over a
+	// join; LIMIT 1 exercises the limit>=1 boundary (wraps, unlike LIMIT 0);
+	// wrapped COALESCE(SUM(...)) exercises aggregate detection through a wrapping
+	// function.
+	t.Run("multi_table_inner", func(t *testing.T) {
+		eq(t, "multi_table_inner", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e, f WHERE e.eref = p.id) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+	t.Run("limit_1_wraps", func(t *testing.T) {
+		eq(t, "limit_1_wraps", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 0) ORDER BY p.id"), []int64{1, 2, 3})
+	})
+	t.Run("wrapped_aggregate", func(t *testing.T) {
+		eq(t, "wrapped_aggregate", ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COALESCE(SUM(e.eid), 0) FROM e WHERE e.eref = p.id) ORDER BY p.id"), []int64{1, 2, 3})
 	})
 
 	// PROJECTED position: EXISTS(agg) in the SELECT list is TRUE for every row
