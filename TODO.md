@@ -329,19 +329,46 @@ validation gate.
     the correct window regardless of leg count, confirming Java's alias-keyed semantics) + mixed conjunct + NOT
     EXISTS. BUT it broke TWO existing tests, so it was reverted (uncommitted): (1)
     **TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed** — `FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id AND
-    EXISTS(...)` LOST its SARG'd index scan and collapsed to a full A×B×C cross product. ROOT CAUSE: B1 MERGES the
-    WHERE join-conjuncts into the baked gated select, so they are no longer a SEPARATE pushable filter — the plain
-    N-way gather keeps a comma-join's WHERE predicates as a separate filter that PredicatePushDown can SARG.
-    (My B1 e2e test only checked rows, not plan shape — the SARG loss is likely BROADER than this one test; a
-    row-only cert is insufficient for a join-composition slice.) The correlated-index EXISTS name path is
-    PERMANENT/Java-correct (task #16) — B1 must either preserve the SARG through the ordinal composition or exclude
-    the shape. (2) **TestFDB_RFC173Item1_KeyBindingAndBuriedExists/P4b_arity3_dup_exists** — `FROM p AS a, q AS a,
-    q AS b …` (duplicate FROM alias) must LOUDLY decline "duplicate FROM alias"; B1 bypassed the minted-binding
-    decline. EASY FIX: guard the interception with `mintedBindingLeg(legOps...) == ""` (fall through to the loud
-    decline). NEXT ATTEMPT: (a) keep the WHERE join-conjuncts as a pushable filter over the gathered select (mirror
-    the plain no-EXISTS path) rather than baking them in — get a Graefe consult on SARG preservation through the
-    ordinal composition; (b) mintedBindingLeg guard; (c) e2e cert must assert PLAN SHAPE (SARG `[=]`), not just
-    rows. Original design record (Graefe design-ACK, WITH the census correction): MECHANISM (Graefe, code-confirmed): a plain `p JOIN q JOIN r` routes through
+    EXISTS(...)` LOST its SARG'd index scan and collapsed to a full A×B×C cross product. (2)
+    **TestFDB_RFC173Item1_KeyBindingAndBuriedExists/P4b_arity3_dup_exists** — a duplicate FROM alias must LOUDLY
+    decline; B1 bypassed the minted-binding decline.
+    **CORRECTED ROOT CAUSE (Graefe SARG consult — my first framing "baking the WHERE loses the SARG" was
+    EMPIRICALLY REFUTED):** a 7-shape EXPLAIN probe showed baked cross-leg ON equijoins STILL SARG (`a JOIN b ON
+    b.aid=a.id JOIN c ON…` == the plain comma gather, both keep `Scan(A,[=])`) — baking is a red herring. The SARG
+    dies because the existential flatten routes the inner join through `implementJoinWithExistential`'s MATERIALIZED
+    step-1 (`correlatedStep1` rule_implement_nested_loop_join.go:1963-1973/:2110), which keys on one leg laterally
+    depending on the other — NEVER on the join predicate. Two independent Scan legs → correlatedStep1=false → a
+    materialized `NewRecordQueryNestedLoopJoinPlan(Scan(B),Scan(A),joinPreds)` that takes already-formed leg plans
+    and can't re-enumerate for index access → no `[=]`. SARG survives ONLY when the join is optimized as its OWN
+    expression with EXISTS layered on top (the P2/P7 shape: `FlatMap(outer=<join>, inner=EXISTS)`).
+    **SOUND B1 DESIGN (Graefe conditional design-ACK — STRUCTURAL, not predicate-placement):** translate the
+    multi-way inner join as its OWN gathered ordinal cluster (translateGatheredInnerCluster — the SARG-preserving
+    P1/P5 machinery) and layer the EXISTS as an OUTER existential semi-join FlatMap over it (the proven P2/P7
+    shape). Do NOT merge the join legs + existential into one bespoke baked select; do NOT hand the join to the
+    materialized step-1. Each half is independently proven, so B1 is their composition. Correlation rebase over the
+    ordinal gathered outer uses the existing W4-left machinery (ordinalSeedLegWindowsOf/rebaseOuterLegRefsOrdinal,
+    NLJ rule ~2152). Guards: WHERE conjunct referencing the existential stays below the FOD (predicateReferencesInnerLeg
+    split, NLJ 2039-2061); buried-leg straddle bakes on the box QOV (predicateRefsBuriedLeg) — both already handled
+    by translateGatheredInnerCluster, another reason to DELEGATE the join to it. MINIMAL EXPERIMENT first (Graefe):
+    the current arity≥3 branch already builds a NAME-MODEL flat 3+1 select that lowers to P7 (SARG-preserving); flip
+    ONLY the join legs' seed to the ordinal RC while keeping WHERE lazy + the join sub-tree independently optimized
+    (not collapsed into step-1), EXPLAIN-check it stays P7-shaped — if so that's the smallest B1, else do the
+    explicit wrap. Guard: `mintedBindingLeg(legOps...) == ""` (dup-alias → loud decline, keeps P4b green). CERT (6
+    assertions, MANDATORY — the row-only cert is why the regression passed review): (1) SARG `[=]` present; (2) NOT
+    the materialized cross product `NLJ(INNER, NLJ(INNER,Scan(A),Scan(B)),Scan(C))`; (3) EXISTS-as-semi-join
+    `FlatMap(outer=<join>, inner=…FirstOrDefault(…Scan(E)))` shape; (4) ORDINALIZATION FIRED (census 0 firings on
+    the shape — SARG+ordinal-fired MUST be asserted together, else the cert passes on the name-model P2 plan and
+    proves nothing); (5) row falsification (EXISTS→3rd/4th leg distinct windows + dup-named legs); (6)
+    red-under-sabotage (mis-key a leg window / force step-1 → both SARG and ordinal-fired go red).
+    **SAME-DAY SURFACE (Graefe) — SHIPPED LATENT PLAN-QUALITY BUG, arity-2 comma-join+EXISTS SARG loss:**
+    `SELECT a.av FROM a, b WHERE b.aid = a.id AND EXISTS (SELECT 1 FROM e WHERE e.eref = a.id)` collapses to a
+    MATERIALIZED `NLJ(Scan(B), Scan(A))` cross product (O(|A|×|B|)) on HEAD where an O(|B|) PK-probe plan exists —
+    the SAME mechanism as B1 (the existential flatten's materialized step-1 can't do index access), one arity down,
+    untested (no plan-shape assertion on a 2-way comma+EXISTS; invisible to a row-only cert). The structural B1 fix
+    (join as its own optimized expression + EXISTS as outer semi-join) closes BOTH arities — fold arity-2 into the
+    B1 slice (Graefe: "ideally fold arity-2 into the B1 slice so one structural change closes both"). At minimum add
+    a plan-shape regression pinning the arity-2 shape. NOT a Go-only divergence — it's a Cascades plan-quality gap.
+    Original design record (Graefe design-ACK, WITH the census correction): MECHANISM (Graefe, code-confirmed): a plain `p JOIN q JOIN r` routes through
     `translateJoin` → `ordinalWedgeGateDecide` returns Gated/Arity=3 → `translateGatheredInnerCluster` (full
     N-way ordinal seed, 0 firings). Under `WHERE EXISTS(…)` it routes through `translateJoinWithExists`, whose
     `:5003` narrows `if gatedFlatten && Arity != 2 { gatedFlatten = false }` (Reason: "existential flatten builds
