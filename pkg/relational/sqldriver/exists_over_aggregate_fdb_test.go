@@ -195,8 +195,14 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	// to always-true [1 2 3] (the bug: a positive LIMIT paired with an
 	// unverifiable OFFSET). limitClauseKeepsSingleRow declines on either — a
 	// present-but-unparseable atom OR a nonzero offset. All fall to the
-	// pre-existing residual [1] (flip-sentinel: flips when parseLimitClause-reject
-	// lands, then OFFSET>0 on a one-row aggregate is []).
+	// pre-existing residual [1], which is itself wrong (strictly []: an aggregate
+	// collapses to one row, any positive OFFSET skips it, so EXISTS is FALSE). The
+	// [1] is the un-folded correlated row-existence path — pinned, not blessed. It
+	// has TWO DISTINCT flip causes, one per case: `OFFSET 1.0`/`1L` flip when the
+	// booked parseLimitClause-reject lands (then the unparseable atom errors);
+	// `OFFSET 2` parses fine, so it flips only when the SEPARATE general
+	// aggregate-EXISTS execution residual (the declined path actually applying
+	// LIMIT/OFFSET to the collapsed one-row aggregate) is fixed.
 	t.Run("offset_declines_not_always_true", func(t *testing.T) {
 		for _, off := range []string{"LIMIT 1 OFFSET 2", "LIMIT 1 OFFSET 1.0", "LIMIT 1 OFFSET 1L"} {
 			v := ids(t, "SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id "+off+") ORDER BY p.id")

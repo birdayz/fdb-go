@@ -1809,8 +1809,20 @@ BOTH the limit and the offset atom — `LIMIT 1 OFFSET 1.0` / `OFFSET 1L` are th
 offset side (offset stays 0, so `... OFFSET 1.0` skips nothing when it should skip a row). This makes
 `LIMIT 0.0` / `OFFSET 1.0` correct-or-loud everywhere. Flip-sentinels (both in
 `exists_over_aggregate_fdb_test.go`): `limit_unparsed_residual_not_always_true` and
-`offset_declines_not_always_true` — the EXISTS fold already DECLINES both via limitClauseKeepsSingleRow
-(every atom must ParseInt cleanly), so its declined fallback [1] flips when this reject lands.
+`offset_declines_not_always_true` (the `OFFSET 1.0`/`1L` cases) — the EXISTS fold already DECLINES both via
+limitClauseKeepsSingleRow (every atom must ParseInt cleanly), so its declined fallback [1] flips when this
+reject lands. NOTE (Graefe): the `OFFSET 2` case in `offset_declines_not_always_true` parses fine, so the
+parse-reject does NOT touch it — its [1]→[] flip belongs to the SEPARATE residual below, not this item.
+
+### [ ] query-engine (PRE-EXISTING residual, booked; strictly wrong but honestly pinned): the DECLINED correlated `EXISTS`-over-non-grouped-aggregate path ignores LIMIT/OFFSET and uses plain row-existence
+When the always-true fold correctly DECLINES (a row-eliminating/unverifiable LIMIT/OFFSET, e.g. `LIMIT 1
+OFFSET 2`), the fallback is the un-folded correlated `EXISTS` path, which answers by plain row-existence over
+the correlated inner — ignoring that a non-grouped aggregate COLLAPSES to exactly one row and ignoring the
+OFFSET. So `... WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref=p.id LIMIT 1 OFFSET 2)` returns [1] (the
+correlated match) when the strictly-correct answer is [] (COUNT(*)→1 row, OFFSET 2 skips it, EXISTS FALSE).
+This is the general aggregate-`EXISTS` EXECUTION-path fix (the declined path materializing the one-row
+aggregate and applying its LIMIT/OFFSET), a sizable change distinct from the front-end fold and from the
+parseLimitClause-reject above. Flip-sentinel: `offset_declines_not_always_true`'s `OFFSET 2` case [1]→[].
 
 ### [x] query-engine (PRE-EXISTING; KEYSTONE): aggregate-detection SCOPE LEAK via harvestAggregates — FIXED 2026-07-10 (`befc32a8e` → `3e51a55e6` → interface-arm fix), scalar + EXISTS + IN all closed
 **FIXED.** `harvestAggregates` (select_parser.go) walked a projected expression's tree promoting aggregates
