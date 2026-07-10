@@ -18,6 +18,14 @@ validation gate.
 
 ### RFC-173 progress (slice tracker)
 
+- [x] **S4 EXISTS-composition (collision-mint) sub-slice — CLOSED, fully 4-gated on `bcfff218c`
+  (2026-07-10).** 12 commits, 8 gate rounds, every round a real find. Landed: the collision MINT
+  (single-table correlated EXISTS inners born under unique identities — the R5o inner-shadow
+  conformance fix + those shapes ordinalize), the clean-path guard narrowing, the multi-source
+  scope-ambiguity decline with the full polarity/consumption-mode guard (four silent-wrong classes
+  fixed, all sentinels live-Java-grounded with flip rows recorded), the subquery-alias distinct
+  minting (both directions of the identity-collision namespace), and the mint-collision hardening.
+  See the RFC's EXISTS-COMPOSITION entries for the arc record and the (e)-(j) booked residuals.
 - [x] **RFC** — `rfcs/173-ordinal-column-resolution.md`, all-four-acked, merged (#422).
 - [x] **P1 — ordinal `FieldPath` substrate** (dark): `FieldValue.resolveOrdinal` + `RecordType.FieldIndex`
   (list-position = Java ordinal) + `NewRecordType` normalises `Fields[i].Ordinal == i`. All-four-acked,
