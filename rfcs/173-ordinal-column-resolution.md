@@ -4839,13 +4839,38 @@ because it resolves buried refs BY NAME over an index-matched box; the ordinal f
 the ordinal-seed (cross-product) row.**
 
 **RULING: REVERT commit A (done — restores the name-model indexed plan exactly, no cost regression, the
-producer stays; the 2-leg/consolidation parts were byte-compatible no-ops). BOOKED — a dedicated slice
-"ordinal-fold-over-index-matched-box":** teach `ordinalSeedLegWindows` to recover the merged positional
+producer stays; the 2-leg/consolidation parts were byte-compatible no-ops).**
+
+**>>> SUPERSEDED — GRAEFE FEASIBILITY RULING (2026-07-10): the booked "ordinal-fold-over-index-matched-box"
+enhancement is NOT ACHIEVABLE and NOT NEEDED; the correlated-index EXISTS name path is PERMANENT and
+JAVA-CORRECT. <<<** The deeper post-revert windowing recon (confirmed at 4 code sites) showed the index-matched
+box is name-keyed BY NECESSITY: the correlated index scan `Scan(A,[=b.aid])` requires NAME binding to flow
+the sibling comparand into A's index (`correlatedStep1` at rule_implement_nested_loop_join.go:1973 IS the
+SARG signal; `buildCorrelatedFlatMapPlan` :449 passes the name-model RC through with NAMED correlations;
+`foldStep1Seed` :1244 returns gated=false the instant correlatedStep1 is set). Baked positional `ofOrdinal`
+refs cannot resolve against a name-keyed row; re-birthing the box ordinal BREAKS the SARG. **The "ordinal
+twin of name resolution over an index-matched box" IS name resolution** — the two are irreconcilable at the
+row level, not fixable by better window recovery. Graefe's RULING — Option (a), ~0 net code: the
+correlatedStep1 name path is PERMANENT and Java-correct (Java binds EVERY correlation by name — no
+positional-correlation concept; the ordinal seed is a Go-only optimization for the INDEPENDENT-legs
+materialized-NLJ case). Rejected (b) positional index-matching (no Java analog); rejected (c) accept the
+cross-product (discards the index where it matters MOST). **CONSEQUENCE — THE ATOMIC CAP (task #16) IS
+RE-SCOPED: it CANNOT delete NewAnchoredJoinRecord entirely. The correlated-index existential shape (a common
+textbook semijoin) KEEPS the name model, correctly. The cap deletes the name model ONLY for shapes that do
+NOT need name binding (independent-legs materialized joins); the correlatedStep1 name path survives as
+Java-correct, not a shortfall.** Pinned: TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed (EXPLAIN asserts
+the SARG'd `[=]` index scan + correct rows) — the permanence sentinel; trips if a future producer-retirement
+re-ordinalizes this shape and drops the index. The "HARD PREREQUISITE for the cap" framing below is
+WITHDRAWN — there is no prerequisite; there is a permanent Java-correct name path.
+
+The historical booking (now withdrawn):
+BOOKED — a dedicated slice
+"ordinal-fold-over-index-matched-box": teach `ordinalSeedLegWindows` to recover the merged positional
 layout from an INDEX-MATCHED box plan (walk the pushed-down FlatMap, not just the RC), so the buried-ref
 rebase bakes ordinals over the box's actual planned output — the ordinal twin of the name-model
 `rebaseOuterLegRefsToMerged`, lockstep-verified against `finalizeSeedWindows` (the c5a drift sentinel). A
-few-hundred-LOC executor enhancement + pins, on the order of the W4-left existential work. **This slice is a
-HARD PREREQUISITE for the atomic cap** (the cap deletes the name model, routing every N-way WHERE-EXISTS
+few-hundred-LOC executor enhancement + pins, on the order of the W4-left existential work. This slice is a
+HARD PREREQUISITE for the atomic cap (the cap deletes the name model, routing every N-way WHERE-EXISTS
 through this fold; without it the cap ships the cross-product universally). **DURABLE LESSONS: (1) row-parity
 is NOT plan-parity — a reviewer's plan-shape claim demands an EXPLAIN diff, not a rows-only differential (I
 nearly banked a false "phantom"). (2) producer-retirement is not free where the producer's NAME resolution

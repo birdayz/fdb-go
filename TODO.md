@@ -1652,25 +1652,27 @@ ordinalize a shape it's unverified over. Likely a reach gap (loud decline) rathe
 UNVERIFIED. Fix: route F2-LEFT's leg check through the same cteScope-aware predicate (make
 scanFamilyLegCteAware the shared authority), with a red-first CTE-leg LEFT-box pin. Booked, not urgent.
 
-### [ ] query-engine (RFC-173 S4 — HARD PREREQUISITE for the atomic cap; Graefe-ruled): ordinal existential fold over an INDEX-MATCHED box
-The N-way WHERE-EXISTS producer (`buildJoinResultValue` in the name-model 2+1) cannot be retired without a
-cost regression: `implementExistentialSelect` (pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go:640-967)
-rebases the existential's buried-leg correlation via `ordinalSeedLegWindowsOf(planResultValue(outerPlan))`,
-which recognizes ONLY the pristine ordinal-seed RC (the cross-product's row). An INDEX-matched box
-(`FlatMap(Scan(C),FlatMap(Scan(B),indexScan(A)))`) flows a different row shape → the ordinal rebase fails
-closed → only the cross-product box survives the fold. The name model indexes precisely because it resolves
-buried refs BY NAME over the index-matched box; retiring it (S4/the cap) forces the ordinal fold, which
-cross-products (N³-vs-N). FIX: teach `ordinalSeedLegWindows` (values/ordinal_seed_layout.go, via
-`ordinalSeedLegWindowsOf`) a plan-tree entry that recovers the merged positional layout from an
-index-matched FlatMap box (walk the pushed-down FlatMap, not just the RC), then point the fold's buried-ref
-rebase at that recovered layout (the ordinal twin of `rebaseOuterLegRefsToMerged`), lockstep-verified
-against `finalizeSeedWindows` (the c5a drift sentinel, rfc173_w4left_existential.go:64). ~few-hundred LOC +
-pins, sized like the W4-left existential work. Red-first control: N-way `FROM` + correlated `EXISTS(…=a.id)`
-where leg `a` is buried+index-eligible, a second leg shares column name `id`, one leg is null-supplying —
-assert PLAN SHAPE (index scan in box + semi-join outside, not cross-product) AND exact rows. **The atomic
-cap (task #16) is BLOCKED on this slice** (deleting the name model routes every N-way WHERE-EXISTS through
-the fold). Discovered when RFC-173 S4 P2 commit A (born-flat N-way WHERE-EXISTS) was attempted, hit the
-cross-product wall (codex P1#2, EXPLAIN-confirmed), and was REVERTED per Graefe.
+### [x] query-engine (RFC-173 S4 — RESOLVED by Graefe FEASIBILITY ruling: the correlated-index EXISTS name path is PERMANENT / Java-correct — NOT a shortfall, NOT a cap blocker)
+UN-BOOKED. The "ordinal-fold-over-index-matched-box" enhancement is **NOT ACHIEVABLE and NOT NEEDED**
+(Graefe feasibility ruling, confirmed at 4 code sites). A WHERE-EXISTS correlating into a leg BURIED in an
+inner join is the canonical semijoin; its good plan is a CORRELATED INDEX SCAN (`Scan(A,[=b.aid])` SARG'd
+under the FlatMap) which REQUIRES NAME BINDING to flow the sibling comparand into A's index. `correlatedStep1`
+(rule_implement_nested_loop_join.go:1973) IS the index-SARG signal; `buildCorrelatedFlatMapPlan` (:449)
+passes the name-model RC straight through with NAMED correlations; `foldStep1Seed` (:1244) returns
+gated=false the instant correlatedStep1 is set — no ordinal seed is ever born, deliberately. Baked
+positional `ofOrdinal` refs cannot resolve against the box's name-keyed runtime row; re-birthing the box
+ordinal BREAKS the SARG (BakedNameContextError). **The "ordinal twin of name resolution over an index-matched
+box" IS name resolution.** RULING (Option a, ~0 net code): the correlatedStep1 name path is PERMANENT and
+Java-correct — Java binds EVERY correlation by name (no positional-correlation concept); the ordinal seed is
+a Go-only optimization for the INDEPENDENT-legs materialized-NLJ case, where no name binding is needed.
+Rejected: (b) positional index-matching (no Java analog, architecturally divergent); (c) accept the
+cross-product (throws away the index where it matters MOST — a regression, not a cap). **CONSEQUENCE FOR THE
+ATOMIC CAP (task #16): it CANNOT delete NewAnchoredJoinRecord entirely — the correlated-index existential
+shape KEEPS it, correctly (Java-aligned). The cap's premise "delete the name model in ONE commit" is
+re-scoped: the correlatedStep1 name path survives; the cap deletes the name model only for the shapes that
+do NOT need name binding (independent-legs materialized joins).** Pinned: TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed
+(EXPLAIN asserts the SARG'd `[=]` index scan, not the cross-product; + correct rows) — trips if a future
+producer-retirement re-ordinalizes this shape and drops the index (the reverted commit-A wall).
 
 ### [ ] query-engine (PRE-EXISTING, surfaced by the RFC-173 P2 review; baseline-confirmed on bebf23b0e): `EXISTS(SELECT COUNT(*)/MAX(...) ...)` silently filters instead of always-TRUE
 An EXISTS whose inner SELECT is an AGGREGATE (or a scalar over an aggregate) is ALWAYS TRUE: a
