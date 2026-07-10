@@ -1482,21 +1482,27 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 		// subquery belongs to THAT subquery's query block, not the enclosing
 		// SELECT (same scoping Java's SemanticAnalyzer applies — an aggregate
 		// binds to its innermost query scope). A subquery in an expression is
-		// carried by a `Query`/`QueryExpressionBody` node regardless of the
-		// surrounding atom kind: a scalar subquery (`(SELECT MAX(v) FROM t)`),
-		// an EXISTS subquery, an IN subquery (`x IN (SELECT COUNT(*) FROM e)` —
-		// InPredicate → InList → QueryExpressionBody), and quantified
-		// comparisons all descend through one of these. Guarding the nested
-		// query node (not the per-atom types) is the complete boundary and
-		// cannot be out-enumerated by a new subquery atom. Without it the nested
-		// aggregate leaks into the OUTER query's aggregate set — mis-promoting
-		// the outer slot (dropping it from projCols) or wrongly classifying the
-		// outer query as an aggregate (spurious 42803 on its non-grouped
-		// columns). A real outer aggregate that merely CONTAINS a subquery
-		// (`HAVING COUNT(*) IN (SELECT …)`) is harvested normally — it lives
-		// OUTSIDE the subquery's query node, so the walk reaches it first.
+		// carried by a `query` node (scalar `(SELECT …)` and EXISTS both wrap
+		// one) or, when there is no `query` wrapper, by a bare
+		// `queryExpressionBody` (an IN subquery: `x IN (SELECT COUNT(*) FROM e)`
+		// → InPredicate → InList → queryExpressionBody). `queryExpressionBody`
+		// is an ALTERNATIVE-LABELLED rule, so the concrete node is
+		// *QueryTermDefaultContext / *SetQueryContext (which EMBED
+		// QueryExpressionBodyContext and implement IQueryExpressionBodyContext) —
+		// never a bare *QueryExpressionBodyContext — so match the INTERFACE, not
+		// that concrete type. Guarding the nested query node (not per-atom types)
+		// is the complete boundary and cannot be out-enumerated by a new subquery
+		// atom. Without it the nested aggregate leaks into the OUTER query's
+		// aggregate set — mis-promoting the outer slot (dropping it from
+		// projCols) or wrongly classifying the outer query as an aggregate
+		// (spurious 42803 on its non-grouped columns). Guarding *QueryContext
+		// (not only the body) also truncates a subquery's own `ctes?` — a WITH
+		// aggregate belongs to the CTE, not the enclosing SELECT. A real outer
+		// aggregate that merely CONTAINS a subquery (`HAVING COUNT(*) IN (…)`) is
+		// harvested normally — it lives OUTSIDE the subquery's query node, which
+		// the pre-order walk reaches first.
 		switch n.(type) {
-		case *antlrgen.QueryContext, *antlrgen.QueryExpressionBodyContext:
+		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
 			return
 		}
 		if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok {

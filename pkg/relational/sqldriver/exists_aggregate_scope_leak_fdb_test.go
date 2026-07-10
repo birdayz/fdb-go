@@ -131,23 +131,27 @@ func TestFDB_ExistsAggregateScopeLeak(t *testing.T) {
 		}
 	})
 
-	// SIBLING (booked, SEPARATE path): an IN subquery over an aggregate ALSO
-	// leaks into the outer aggregate set, but NOT through harvestAggregates —
-	// the unifying nested-query-scope guard (which fixes scalar + EXISTS) does
-	// NOT stop it, so `SELECT p.id, (p.id IN (SELECT COUNT(*) FROM e)) FROM p`
-	// still 42803s. The leak reaches the outer classification via a different
-	// mechanism (a Value-tree aggregate walk over the built scalar-subquery
-	// plan), tracked as its own follow-on. Flip-sentinel: when that path is
-	// fixed this stops erroring and the row assertion below (want
-	// [[1 true][2 false][3 false]], e has one row so COUNT(*)=1 matches only
-	// p.id=1) must be restored.
-	t.Run("in_subquery_sibling_still_42803_separate_path", func(t *testing.T) {
+	// IN subquery over an aggregate: SAME harvestAggregates path (InList ->
+	// queryExpressionBody, a *QueryTermDefaultContext caught by the INTERFACE
+	// arm — a concrete `*QueryExpressionBodyContext` arm never matches that
+	// embedded node, so the guard must match the interface). The scope leak
+	// is closed: `SELECT p.id, (p.id IN (SELECT COUNT(*) FROM e)) FROM p` no
+	// longer 42803s ("P.ID must appear in GROUP BY" — the misleading aggregate
+	// misclassification). It now surfaces the HONEST, SEPARATE reach gap:
+	// IN-subquery is unsupported in this engine (0AF00 even without an
+	// aggregate, and in WHERE position too), tracked independently. Sentinel:
+	// the assertion flips if IN-subquery support lands (then assert the rows
+	// [[1 true][2 false][3 false]]) or if the leak regresses to 42803.
+	t.Run("in_subquery_scope_leak_closed", func(t *testing.T) {
 		_, qErr := db.QueryContext(ctx, "SELECT p.id, (p.id IN (SELECT COUNT(*) FROM e)) FROM p ORDER BY p.id")
 		if qErr == nil {
-			t.Fatalf("IN-subquery-of-aggregate now PLANS — the separate-path leak is fixed; restore the row assertion [[1 true][2 false][3 false]]")
+			t.Fatalf("IN-subquery-of-aggregate now PLANS — IN-subquery support landed; assert the rows [[1 true][2 false][3 false]]")
 		}
-		if !strings.Contains(qErr.Error(), "42803") {
-			t.Fatalf("IN-subquery: want the pre-existing 42803 (separate-path sibling), got %v", qErr)
+		if strings.Contains(qErr.Error(), "42803") {
+			t.Fatalf("scope leak REGRESSED: IN-subquery-of-aggregate 42803s again (aggregate misclassification): %v", qErr)
+		}
+		if !strings.Contains(qErr.Error(), "0AF00") {
+			t.Fatalf("IN-subquery: expected the honest 0AF00 reach gap (leak closed), got %v", qErr)
 		}
 	})
 }
