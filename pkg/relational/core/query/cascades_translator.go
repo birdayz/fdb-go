@@ -1,6 +1,7 @@
 package query
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -724,6 +725,7 @@ func (t *cascadesTranslator) buildJoinResultValue(left, right logical.LogicalOpe
 	if leftAlias == "" || rightAlias == "" || leftCols == nil || rightCols == nil {
 		return nil
 	}
+	recordProducerCensus(ProducerCensusRecord{Producer: "P4", Enclosed: t.inInnerCluster, Shape: fmt.Sprintf("%T|%T", left, right)})
 	return values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
 		{Alias: values.NamedCorrelationIdentifier(leftAlias), Columns: leftCols},
 		{Alias: values.NamedCorrelationIdentifier(rightAlias), Columns: rightCols},
@@ -1669,6 +1671,7 @@ func (t *cascadesTranslator) buildUnnestResultValue(
 	if outerCols == nil {
 		return nil
 	}
+	recordProducerCensus(ProducerCensusRecord{Producer: "P5", Enclosed: t.inInnerCluster, Shape: fmt.Sprintf("unnest|%T", outer)})
 	// Outer leg: bare + qualified ALIAS.COL fields, exactly as a normal join leg.
 	base := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
 		{Alias: outerCorr, Columns: outerCols},

@@ -10,10 +10,14 @@ go_test(
     # under contended-runner slowdown (a ~10x stretch pushed it past 300s while
     # the assertions all passed). No sharding — the corpus shares one container.
     size = "large",
-    srcs = ["dualwindow_test.go"],
+    srcs = [
+        "dualwindow_test.go",
+        "rfc173_producer_census_test.go",
+    ],
     deps = [
         "//pkg/recordlayer/query/executor",
         "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/core/query",
         "//pkg/testcontainers/foundationdb",
     ],
 )

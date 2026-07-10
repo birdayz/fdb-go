@@ -265,6 +265,61 @@ validation gate.
     pureBottom lazy-fork gate + the WHERE-merge ordinal bake (all documented, none landed standalone).
     Also booked: the below-FOD hoist ordinal-4/leg-row rebase gap (the nested-box strand) + the grouped
     consumer row-loss — both surfaced only under the lift, both stay declined today.
+  - [ ] **REFRAME (Graefe Outcome-B design consult, EMPIRICALLY FALSIFIED the "flip the boxes" premise —
+    design-NAK on "minimal box sub-slice that flips a production shape without touching Site 2").** Two
+    reproducible probes: (a) a gate census on constructed logical trees — EVERY fresh (un-enclosed) box shape
+    ALREADY gates ordinal (standalone FULL/LEFT/INNER, box-over-inner-cluster, box-over-outer-box); the ONLY
+    declines are the two `inInnerCluster` arms (2a arityPoison, 2b name-model). (b) Runtime producer
+    instrumentation across the whole box e2e suite + a wide RFC173|Join|Outer|Unnest|Lateral net: 30+ P4/P5
+    firings, **100% `enclosed=true`, zero `enclosed=false`**, all green. So the residual name-model producer
+    set is EXACTLY the `inInnerCluster==true` shapes — the "box substrate" is mislabeled: it is an ENCLOSURE
+    problem and the enclosure ROOTS ARE NOT BOXES. `inInnerCluster` set-sites: translateUnnest:1180 (name-model
+    unnest LOWERING fallback — dominant, every P5 rode it), translateJoin:4789 (propagation from an already-non-
+    gated parent), the `ordinalEligible==false` roots = correlated-scalar-in-projection (the booked W4b
+    clusterPullUp) + recursive-CTE, and translateUnnestJoin:1475 (unnest-over-box where boxOuterBirthsPositional
+    is false). **Producer graph collapses to {P4 buildJoinResultValue:718, P5 buildUnnestResultValue:1660} +
+    the birth predicate; P1/P2 re-enumeration:469/:567 fire only when parentIsMerge, P3 legColumns:347 only
+    under a name-model parent — all THREE are DERIVED, retire for free when P4/P5 hit zero.** CORRECT sequencing
+    INVERTS the framing: **starve `inInnerCluster` by ordinalizing the enclosure ROOTS — do NOT flip 2a/2b
+    (they are dead-code-at-the-cap, not incremental flips).** (Corrected line refs: 2a rfc173_cluster_gate.go:383,
+    2b :424 — the old :315/:356 are stale. Site 3 legIsOrdinalSafe rule_implement_nested_loop_join.go:1106,
+    Site 4 verbatim RV :166/:240, Site 5 unnestExistsSeedSafe:881 / rebaseChainedOuterLegPredicate:2888.)
+    Graefe atomic edges: E1 2a-flip ⟺ enclosing parent's producer (fixpoint, parent must ordinalize FIRST);
+    E2 AXIS1 ⟺ AXIS2 is literally ONE predicate (:1475 box-birth bit == unnestExistsSeedSafe:914 read); E3
+    seed ⟺ birth (newOrdinalJoinBirth decides purely from the box RV's own ContainsBakedOrdinal — no separate
+    executor gate, so a WHERE-merge ordinal bake that leaves the FlatMap birth name-model is unsound); E4 Site3
+    ⟺ Site4 only on the correlated-FlatMap FOLD path (reconstructFoldStep1Seed:1188), NOT the box's own birth
+    (Site 4 :166 passes the ordinal RC through once the translator gates the box — Site-4 coupling was OVERSTATED
+    for the plain box). SEQUENCE: **B0 (design-ACK, FIRST) = producer census GATE** — a permanent test running
+    the dualwindow corpus asserting per-P4/P5-firing the shape class + `enclosed==true` (pure observation, zero
+    prod cost via a nil-in-prod observer like forceOrdinalSpike; the "can we reach zero" instrument; building it
+    ALSO independently re-verifies the reframe). **B1 (design-ACK conditional, first REAL flip) = unnest-over-
+    single-clustered-LEFT/RIGHT-box birth** — relax boxOuterBirthsPositional:952 `clusterArity==1` (FULL-only)
+    to admit a LEFT/RIGHT box that already gates standalone; CONDITIONS: seed-gate relaxation moves ATOMICALLY
+    with birth admission (E2, one predicate) + §3 control red-under-sabotage before green. **NOT first:** the
+    nested-outer-box leg (deepest, "unverified tower", max multi-namespace risk) — LAST. Falsification protocol:
+    `executor.SetNameModelOracle(true)` neutered control; PRE-change rows-probe on HEAD both modes (agree+match-
+    Java ⇒ NO latent bug, it's coverage — say so, the Outcome-A amendment lesson); discrimination REQUIRES
+    dup-named legs + buried-leg-column + null-extended leg, then SABOTAGE-test the control (mis-key a leg window,
+    confirm the differential goes red). HIGHEST falsification risk: multi-namespace box Datum — adaptLegPositional
+    :628 partial-matches same-named legs → silently WRONG slot; the qr.Positional passthrough:620 guards ONLY
+    when positionalMatchesLegType (ordered name agreement); a reordered/covering box row drops to the colliding
+    Datum synthesis. Every box control MUST include dup-named legs + exercise the passthrough-fails path.
+  - [x] **B0 LANDED — producer census gate + a CENSUS CORRECTION to the reframe.** Built the census
+    (nil-in-prod observer on P4 buildJoinResultValue / P5 buildUnnestResultValue + a dualwindow-package gate:
+    `TestFDB_RFC173_ProducerCensus`). Two findings: (1) the SeedRunCorpus (1641 executable §5 entries) produces
+    **ZERO** name-model firings — the whole differential corpus is already fully ordinal (pinned as a regression
+    sentinel). (2) **The reframe's "every residual P4/P5 firing is ENCLOSED" claim is EMPIRICALLY FALSE.** A
+    multi-way (≥3) inner join UNDER a WHERE EXISTS declines its whole join subtree to name-model, and the TOP
+    join is **UN-ENCLOSED** (`P4 enclosed=false Join|Scan`). Discriminated: plain 2-way inner, plain 3-way inner
+    (NO exists), and correlated-scalar-in-projection ALL ordinalize (0 firings) — the WHERE EXISTS is the sole
+    trigger. So the residual name-model set is NOT "exactly the inInnerCluster shapes": it also includes the
+    **existential-over-multi-way-join OUTER join** (un-enclosed). The consult's box-suite instrumentation net
+    missed this (it never ran a plain 3-way inner join under WHERE-EXISTS). **CONSEQUENCE FOR B1: do NOT assume
+    all residual producers are enclosed; do NOT treat 2a/2b as the only residual.** The un-enclosed
+    existential-over-multi-join is its own residual class (pinned as a flip-sentinel in the census probe;
+    ordinalizing it is a separate slice — likely part of the EXISTS-composition arc, not the box substrate).
+    Re-consult Graefe on B1 sequencing WITH this correction before building B1.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
