@@ -277,22 +277,36 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 	}
 	if len(j.OnExistsSubqueries) > 0 {
 		// RFC-173 S4: a BARE 2-way NON-ENCLOSED INNER EXISTS-in-ON gates
-		// ordinal. Both legs are single ordinal-eligible sources (no buried
-		// inner join → no index-matching wall), it does not merge upward (not
-		// enclosed), and it is arity 2 — so the seed is
+		// ordinal. Both legs must be a single SCAN SOURCE (through filters) —
+		// isScanFamilyLeg, the SAME tight check the F2-LEFT ordinal fold uses.
+		// A scan-scan 2-way has no buried inner join (→ no index-matching wall),
+		// no null-drain, and no opaque merged row: the seed is
 		// [ForEach, ForEach, Existential], which implementJoinWithExistential's
-		// 2-leg arm plans ordinal AND index-preserving (the existential already
+		// 2-leg arm plans ordinal AND index-neutral (the existential already
 		// drops even a 2-way join to a plain NLJ on the name model, so no index
 		// is lost — EXPLAIN-verified). The translateJoin binary arm builds the
-		// ordinal seed and attaches the existentials unchanged. The poison STAYS
-		// for an ENCLOSED or N-WAY EXISTS-in-ON: there the existential would ride
-		// into the ≥3-quantifier partition machinery (which declines any
-		// existential) or hit the buried-inner-box index-matching wall (the
-		// booked ordinal-fold-over-index-matched-box prerequisite).
+		// ordinal seed and attaches the existentials unchanged. clusterArity==1
+		// is NOT enough here: a FULL-outer box and an aggregate/union/sort box
+		// are also clusterArity==1 (and ordinalEligible), but a FULL box HAS a
+		// buried join (the wall) and an opaque box flows a merged row this
+		// 2-leg seed is unverified over — isScanFamilyLeg excludes all of them.
+		// The poison STAYS for an ENCLOSED or N-WAY EXISTS-in-ON (the
+		// existential would ride into the ≥3-quantifier partition machinery, or
+		// hit the buried-inner-box index-matching wall — the booked
+		// ordinal-fold-over-index-matched-box prerequisite) and for any
+		// non-scan leg.
+		// DUPLICATE ALIAS: two legs sharing a SQL alias get a parser-minted
+		// Q$DUPn binding on the later leg (mintedBindingLeg finds it). The
+		// gated arm here RETURNS EARLY, before the pairwise dup-binding poison
+		// (:294), so without this guard a dup-alias EXISTS-in-ON would gate and
+		// the 2-leg fold would LOSE the minted binding → serve NULLs for that
+		// leg's columns (silent wrong rows; the name model loud-declines it via
+		// the mintedBindingLeg arm at translateJoin). Keep dup-alias shapes
+		// poisoned here so they fall to that loud decline (base behaviour).
 		if j.Kind == logical.JoinInner && !t.inInnerCluster &&
-			t.ordinalEligible(j.Left) && t.ordinalEligible(j.Right) &&
-			t.clusterArity(j.Left) == 1 && t.clusterArity(j.Right) == 1 {
-			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "bare 2-way non-enclosed EXISTS-in-ON (2-leg ordinal fold)"}
+			isScanFamilyLeg(j.Left) && isScanFamilyLeg(j.Right) &&
+			mintedBindingLeg(j.Left, j.Right) == "" {
+			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "bare 2-way non-enclosed EXISTS-in-ON (scan legs; 2-leg ordinal fold)"}
 		}
 		// The seed select carries existential quantifiers; if it merges, they
 		// ride along and land the merged select in the ≥3-quantifier

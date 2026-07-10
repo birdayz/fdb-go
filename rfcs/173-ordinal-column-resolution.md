@@ -4888,8 +4888,11 @@ against this base NLJ before landing, to confirm no drop to a cross-product.)
 
 **LANDED (2-way EXISTS-in-ON producer retirement).** A single targeted gate narrowing in
 ordinalWedgeGateDecide (rfc173_cluster_gate.go:278): a BARE 2-way NON-ENCLOSED INNER EXISTS-in-ON
-(both legs single ordinal-eligible sources — `ordinalEligible && clusterArity==1` each — not enclosed)
-GATES ordinal. translateJoin's binary arm ALREADY builds the ordinal seed when gated (:4885) and ALREADY
+(both legs a single SCAN SOURCE through filters — `isScanFamilyLeg`, the F2-LEFT tight check — not
+enclosed) GATES ordinal. **`clusterArity==1` is NOT sufficient (Torvalds catch, empirically probed): a
+FULL-outer box AND an aggregate/union/sort box are also clusterArity==1 + ordinalEligible, but a FULL box
+HAS a buried join (the wall) + a null-drain and an opaque box flows a merged row the scan-scan 2-leg seed
+is unverified over — isScanFamilyLeg excludes all of them.** translateJoin's binary arm ALREADY builds the ordinal seed when gated (:4885) and ALREADY
 attaches the OnExists existentials (:4915), so NO new builder is needed — the narrowing alone routes the
 shape to the ordinal seed, retiring buildJoinResultValue (producer #2) for this shape. The poison STAYS for
 enclosed (rides into ≥3-quantifier partition) and N-way (the buried-inner-box index-matching wall)
@@ -4898,7 +4901,16 @@ EXISTS-in-ON. EXPLAIN-verified NO regression: base and ordinalized plans are byt
 a plain NLJ on the name model, so no index is lost). Pins: the existing exists_in_on FDB row pins (unchanged
 — dualwindow-blind to a name-model revert, so retirement is pinned STRUCTURALLY) + TestRFC173S4_ExistsInOnGate
 (bare-2-way gates / enclosed-stays-poison / N-way-stays-poison, both directions). Producer #2's residuals
-after this: the enclosure declines (lift atomically at S4) + N-way EXISTS-in-ON (the deep wall). **PRODUCER MATRIX:** P1 (legColumns:347) = name-
+after this: the enclosure declines (lift atomically at S4) + N-way EXISTS-in-ON (the deep wall).
+**GATE-ROUND fixes (four-gate on 48402600f): Torvalds NAK — clusterArity==1 admitted FULL/aggregate box
+legs (a FULL box has a buried join + null-drain; empirically probed to gate) → tightened to isScanFamilyLeg
+(scan-through-filter only). codex P1 (silent-wrong) — a DUPLICATE-ALIAS scan pair (`p a JOIN q a ON … EXISTS`)
+passes isScanFamilyLeg (both scans) but the 2-leg fold LOSES the later leg's parser-minted Q$DUPn binding →
+silent NULLs; the gated arm returns before the pairwise dup-binding poison → added
+`mintedBindingLeg(j.Left,j.Right)==""` so a dup-alias falls to the name-model loud decline (0AF00, base
+behaviour — verified). Graefe IMPL-ACK (his FULL-box exclusion reasoning was the error Torvalds caught);
+@claude ACK (all 6 row/plan axes RAN live-Java clean, incl. the dup-column-window disambiguation and the
+EXPLAIN no-index-lost diff). Poison pins added: full_box/aggregate/dup_alias stay poison, both directions.** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
 derivation helper, retires with the nested residuals of P2/P3, not standalone. P2 (buildJoinResultValue:727)
 = (i) 2-way EXISTS-in-ON RETIRABLE-NOW, (ii) enclosure declines lift atomically at S4 (circular, the
 forceOrdinalSpike certificate models it). P3 (buildUnnestResultValue:1673) = BLOCKED on W5

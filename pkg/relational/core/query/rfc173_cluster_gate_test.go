@@ -94,12 +94,58 @@ func TestRFC173S4_ExistsInOnGate(t *testing.T) {
 		t.Parallel()
 		tr := newGateTranslator(t)
 		// A 3-way EXISTS-in-ON: the root carries the OnExists, its left leg is
-		// itself a join → clusterArity(left) > 1 → the buried-inner-box wall.
+		// itself an INNER join → NOT scan-family → the buried-inner-box wall.
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
 		j := onExists(inner(nested, scan("TypedRecord", "tr")))
 		d := tr.ordinalWedgeGateDecide(j)
 		if d.Gated {
 			t.Fatalf("N-way EXISTS-in-ON gate = %+v, want poison (buried-inner-box index-matching wall)", d)
+		}
+	})
+
+	t.Run("full_box_leg_stays_poison", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		// The leaking dimension a clusterArity==1 gate MISSES: a FULL-outer box
+		// leg is clusterArity==1 AND ordinalEligible, but it has a BURIED join
+		// (the index-matching wall) and a null-drain the 2-leg seed is
+		// unverified over. isScanFamilyLeg(FULL box) == false → poison.
+		fullBox := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
+		j := onExists(inner(fullBox, scan("TypedRecord", "tr")))
+		d := tr.ordinalWedgeGateDecide(j)
+		if d.Gated {
+			t.Fatalf("FULL-box-leg EXISTS-in-ON gate = %+v, want poison (buried join + null-drain, unverified)", d)
+		}
+	})
+
+	t.Run("aggregate_leg_stays_poison", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		// An opaque box leg (aggregate) is also clusterArity==1 + ordinalEligible
+		// but flows a merged single-namespace row the scan-scan 2-leg seed is
+		// unverified over. isScanFamilyLeg(aggregate) == false → poison.
+		agg := &logical.LogicalAggregate{Input: scan("Order", "o")}
+		j := onExists(inner(agg, scan("Customer", "c")))
+		d := tr.ordinalWedgeGateDecide(j)
+		if d.Gated {
+			t.Fatalf("aggregate-leg EXISTS-in-ON gate = %+v, want poison (opaque merged row, unverified)", d)
+		}
+	})
+
+	t.Run("dup_alias_stays_poison", func(t *testing.T) {
+		t.Parallel()
+		tr := newGateTranslator(t)
+		// Two legs sharing a SQL alias: the later leg carries a parser-minted
+		// Q$DUPn Binding. Both are scans (isScanFamilyLeg true), but the 2-leg
+		// fold LOSES the minted binding → silent NULLs. mintedBindingLeg finds
+		// the Q$DUP1 → poison, so it falls to the name-model loud decline (base
+		// behaviour). Without the mintedBindingLeg guard this GATES → wrong rows.
+		dup := scan("Customer", "o")
+		dup.Binding = "Q$DUP1"
+		j := onExists(inner(scan("Order", "o"), dup))
+		d := tr.ordinalWedgeGateDecide(j)
+		if d.Gated {
+			t.Fatalf("dup-alias EXISTS-in-ON gate = %+v, want poison (minted binding lost by the fold → silent NULLs)", d)
 		}
 	})
 }
