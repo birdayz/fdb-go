@@ -789,10 +789,10 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 		trClear.unnestBoxLegConjunct = boxConjNone
 		clear := trClear.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 		if clear == nil {
-			t.Fatalf("%v box, flag CLEAR: must GATHER (got nil) — the decline must fire ONLY when flagged", kind)
+			t.Fatalf("%v box, verdict None: must GATHER (got nil) — the decline must fire ONLY on Unbakeable", kind)
 		}
 		if rc, ok := clear.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok || rc.AnchoredJoin {
-			t.Fatalf("%v box, flag CLEAR: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
+			t.Fatalf("%v box, verdict None: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
 				kind, clear.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
 		}
 

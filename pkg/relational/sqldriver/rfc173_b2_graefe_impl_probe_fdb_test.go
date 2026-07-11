@@ -30,7 +30,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -127,20 +126,9 @@ func TestFDB_RFC173B2_GraefeImplProbe(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			// Pre-evaluate scalar subqueries and bind results (as the sql
-			// driver's fetchPage does) — execution without the bindings fails
-			// loudly with values.UnboundScalarSubqueryError.
-			evalCtx := executor.EmptyEvaluationContext()
-			if len(subs) > 0 {
-				scalarResults := make(map[values.CorrelationIdentifier]any, len(subs))
-				for _, ssq := range subs {
-					result, ssqErr := executor.EvaluateScalarSubquery(ctx, ssq.Plan, store, evalCtx, recordlayer.DefaultExecuteProperties())
-					if ssqErr != nil {
-						return nil, ssqErr
-					}
-					scalarResults[ssq.Alias] = result
-				}
-				evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
+			evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+			if bindErr != nil {
+				return nil, bindErr
 			}
 			cursor, cErr := executor.ExecutePlan(ctx, plan, store, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 			if cErr != nil {
@@ -328,20 +316,9 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			// Pre-evaluate scalar subqueries and bind results (as the sql
-			// driver's fetchPage does) — execution without the bindings fails
-			// loudly with values.UnboundScalarSubqueryError.
-			evalCtx := executor.EmptyEvaluationContext()
-			if len(subs) > 0 {
-				scalarResults := make(map[values.CorrelationIdentifier]any, len(subs))
-				for _, ssq := range subs {
-					result, ssqErr := executor.EvaluateScalarSubquery(ctx, ssq.Plan, store, evalCtx, recordlayer.DefaultExecuteProperties())
-					if ssqErr != nil {
-						return nil, ssqErr
-					}
-					scalarResults[ssq.Alias] = result
-				}
-				evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
+			evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+			if bindErr != nil {
+				return nil, bindErr
 			}
 			cursor, cErr := executor.ExecutePlan(ctx, plan, store, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 			if cErr != nil {

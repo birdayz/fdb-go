@@ -25,13 +25,21 @@ func EmptyEvaluationContext() *EvaluationContext {
 }
 
 // WithParams returns a copy with prepared-statement parameter bindings.
-// Params is 0-indexed; ParameterValue ordinals are 1-based.
+// Params is 0-indexed; ParameterValue ordinals are 1-based. The copy CARRIES
+// scalarSubqueries like every other With* copy — dropping them would make
+// binding ORDER load-bearing (WithScalarSubqueries().WithParams() would
+// silently unbind the subqueries, and unbound is a loud
+// *values.UnboundScalarSubqueryError at row time).
 func (ec *EvaluationContext) WithParams(params []any) *EvaluationContext {
 	newBindings := make(map[values.CorrelationIdentifier]any, len(ec.bindings))
 	for k, v := range ec.bindings {
 		newBindings[k] = v
 	}
-	return &EvaluationContext{bindings: newBindings, params: params}
+	return &EvaluationContext{
+		bindings:         newBindings,
+		params:           params,
+		scalarSubqueries: ec.scalarSubqueries,
+	}
 }
 
 // BindParameter implements values.ParameterBinder. Ordinal is 1-based;

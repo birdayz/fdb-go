@@ -161,4 +161,26 @@ func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
 			t.Errorf("rows with a=99 = %d, want 2", updated)
 		}
 	})
+
+	// NESTED scalar subquery — a subquery inside a subquery's own WHERE. The
+	// INNER one is dropped at collection (planScalarSubqueryPlans documents
+	// nested subqueries are not collected), so its value is UNBOUND when the
+	// outer subquery plan runs. PIN: this must be LOUD, never a silent NULL
+	// that quietly empties the outer subquery's result (the pre-fix behavior
+	// class). Flip-sentinel: goes red when nested collection lands, at which
+	// point the correct rows must be asserted instead.
+	t.Run("delete_where_nested_scalar_subquery_loud", func(t *testing.T) {
+		reset()
+		_, err := db.ExecContext(ctx,
+			"DELETE FROM t WHERE a > (SELECT MAX(id) FROM ref WHERE id > (SELECT MIN(id) FROM ref))")
+		if err == nil {
+			t.Fatalf("nested scalar subquery must fail LOUDLY (inner subquery is not collected), got nil error")
+		}
+		if !strings.Contains(err.Error(), "scalar subquery result not bound") {
+			t.Fatalf("want the unbound-scalar-subquery error, got: %v", err)
+		}
+		if got := remainingIDs(); !eq(got, []int64{1, 2, 3}) {
+			t.Errorf("loud failure must delete NOTHING; remaining = %v, want [1 2 3]", got)
+		}
+	})
 }

@@ -572,13 +572,28 @@ validation gate.
     file (rfc173_b2_graefe_impl_probe_fdb_test.go); the P1/Q CTE pins are flip-sentinels documenting the
     PRE-EXISTING enclosed-CTE silent-NULL residual (booked below). Torvalds — post-B2 truth rewrite: baretwin's
     anchored-fallback GROUP-BY pin re-pointed at a subquery conjunct (the surviving Unbakeable decline; found
-    the scalar-subquery silent-NULL hole, fixed + booked above), c5a's four `*-stays-name-model` subtests
-    renamed `*-bakes-ordinal` (they gather since B2-A; EXISTS pin comment states WHY it stays name-model),
+    the scalar-subquery silent-NULL hole, fixed + booked above), c5a's two lying `*-stays-name-model`
+    subtests renamed `*-bakes-ordinal` + the noshare pair's comments rewritten (all four gather since B2-A;
+    the EXISTS pin comment states WHY it stays name-model),
     unnestExistsSeedSafe's leading paragraph reconciled with its inline block (binary seed declines for ANY
     verdict; the gathered path is where Bakeable bakes), gather-coupling test pins the full 3-state routing
     (None gathers / Bakeable gathers + RECORDS / Unbakeable declines), per-arm classifier pins
     (scalar-subquery/ExistsValue/foreign-correlation/dotted-frontier + bakeable baseline), typed
     `boxConjVerdict`.
+    **ROUND 2 VERDICTS + NIT ROUND:** Graefe ACK (consume-once sound incl. the leaked-record hunt; the
+    scalar-subquery loud boundary correct — the nil-ctx probe can't false-fold, constant classification
+    whitelists before evaluating); Torvalds ACK-with-nits (all fix-list items verified in-tree; he probed the
+    pre-fix parent in a worktree); codex P1 = flip-sentinels bless the enclosed-CTE NULL rows → answered by
+    taking the booked enclosed-CTE fix as the immediate next slice. Nit batch landed: WithParams carries
+    scalarSubqueries (copy symmetry + pin), dup-alias gate-first classifier pin (discriminating: without the
+    gate the seed derives and answers Bakeable), NESTED-box class VERIFIED CORRECT and pinned three ways
+    (classify=Bakeable + census 0-producers + e2e correct rows `(LA FULL LB) FULL CC` — the wedge gate admits
+    nested boxes by design; boxGatesFresh's exclusion is the BINARY/birth gate, a different authority),
+    clustered-leg census arm (buried non-owner conjunct → 0 producers), nested-scalar-subquery loud
+    flip-sentinel (inner subquery uncollected → UnboundScalarSubqueryError, deletes nothing; flips when
+    nested collection lands), shared prebindScalarSubqueries harness helper (4 copies → 1), c5a CLUSTERED
+    comment truth-rewrite (mechanism moved twice: c5b admits the cluster, the EXISTS composition is what
+    keeps it name-model), cluster-gate + gather-test wording.
   - [ ] **BOOKED (B2-A gate round 2, Graefe's live demo — PRE-EXISTING silent-wrong, NOT a B2 class):
     an ENCLOSED CTE-referenced box unnest returns silent all-NULL rows.** `WITH W AS (SELECT … FROM (LA
     LEFT JOIN LB …), LA.ARR AS X …) SELECT * FROM W` (single reference; WITH or without a WHERE inside the

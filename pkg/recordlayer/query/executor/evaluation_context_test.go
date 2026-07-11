@@ -53,6 +53,28 @@ func TestWithParams_DoesNotMutateOriginal(t *testing.T) {
 	}
 }
 
+// TestWithParams_CarriesScalarSubqueries pins the With* copy symmetry:
+// WithScalarSubqueries().WithParams() must keep the subquery bindings —
+// dropping them made binding ORDER load-bearing, and an unbound subquery at
+// row time is a loud *values.UnboundScalarSubqueryError (rows would have
+// silently vanished before that error existed).
+func TestWithParams_CarriesScalarSubqueries(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("SQ")
+	ec := EmptyEvaluationContext().
+		WithScalarSubqueries(map[values.CorrelationIdentifier]any{alias: int64(7)}).
+		WithParams([]any{"x"})
+
+	rc := ec.RowContext(map[string]any{})
+	got, bound := rc.ScalarSubqueries[alias]
+	if !bound || got != int64(7) {
+		t.Fatalf("WithParams dropped the scalar-subquery bindings: got (%v, %v), want (7, true)", got, bound)
+	}
+	if v, ok := ec.BindParameter(1, ""); !ok || v != "x" {
+		t.Fatalf("params lost: got (%v, %v)", v, ok)
+	}
+}
+
 func TestBindParameter_OneBased(t *testing.T) {
 	t.Parallel()
 	ec := EmptyEvaluationContext().WithParams([]any{"first", "second"})

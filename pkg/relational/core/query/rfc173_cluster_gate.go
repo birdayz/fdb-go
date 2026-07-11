@@ -140,8 +140,10 @@ func (t *cascadesTranslator) gatesAsFreshCluster(j *logical.LogicalJoin) bool {
 // OUTER C`, the c5b target) is ADMITTED: the seed concats the clustered leg's
 // buried columns and the executor hoist resolves a buried EXISTS ref by its
 // [Start,Width) window — verified e2e (a buried `FOD.K` inside EXISTS resolves).
-// A regular WHERE conjunct on a buried leg is separately declined by the
-// unnestBoxLegConjunct narrowing. Only a box whose legs are SIMPLE
+// A regular WHERE conjunct on a buried leg routes through the
+// unnestBoxLegConjunct verdict: Bakeable rides the gathered path (baked over
+// the seed's recorded legTypes), Unbakeable declines to name-model; the
+// BINARY seed declines for any non-None verdict. Only a box whose legs are SIMPLE
 // (scan / opaque box) or INNER-cluster joins may birth positional here; a nested
 // LEFT/RIGHT/FULL box leg (`A FULL B FULL C` — clusterArity(FULL)==1 makes an
 // arity proxy blind to it) stays name-model until its own slice verifies it.

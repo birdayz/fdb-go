@@ -412,19 +412,21 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		`SELECT "X" FROM FOA, FOB, FOA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
 		[]string{"7", "8"})
 
-	// CLUSTERED-LEG FULL box — the BURIED-LEAF dimension stays NAME-MODEL (the
-	// c5a gate's simple-legs narrowing). clusterArity(FULL)==1 UNCONDITIONALLY, so
-	// a naive gate would admit `(FOA JOIN FOD) FULL OUTER FOB`, but its left leg
-	// is a CLUSTERED join whose buried leaves the positional seed does not yet
-	// concat (`(A JOIN B) FULL OUTER C` births only C's columns → a qualified
-	// `FOD.K` is unresolvable → malformed plan). boxGatesFresh EXCLUDES a box with
-	// a join leg, so this shape declines to the name-model builder, which resolves
-	// buried `FOD.K` via the qualified key — CORRECT rows. This pins that the c5a
-	// lift does NOT reach the clustered-leg box (buried-leaf ordinalization under
-	// FULL is a follow-up item-3 slice). The direct predicate `FOD.K = 200`
-	// (FOD.K=200 buried; FOA.K=100, FOB.K=NULL) discriminates: correct bind →
-	// {7,8}; a mis-bind → 0 rows. (FOA JOIN FOD on AID=DID=1) survives the FULL
-	// OUTER with FOB null-supplied (AID=1 ≠ BID=2); unnest FOA.ARR → [7,8].
+	// CLUSTERED-LEG FULL box + EXISTS — stays NAME-MODEL, but the WHY has moved
+	// twice; the current mechanism: boxGatesFresh ADMITS a buried INNER-cluster
+	// leg since c5b (the seed concats the clustered leg's buried columns —
+	// TestRFC173Item2_C5aUnnestExists pins boxGatesFresh(clustered FULL)=true),
+	// and a plain buried-leg conjunct on this very FROM classifies BAKEABLE and
+	// gathers (see NONEXISTS-CONJUNCT/clustered-box-bakes-ordinal above). What
+	// keeps THIS shape name-model is the EXISTS composition:
+	// translateUnnestExistsFilter sets unnestBoxLegConjunct to Unbakeable
+	// unconditionally (B2 sub-slice B is deferred), so the gather declines and
+	// unnestExistsSeedSafe declines the binary seed → name-model builder, which
+	// resolves buried `FOD.K` via the qualified key — CORRECT rows. The direct
+	// predicate `FOD.K = 200` (FOD.K=200 buried; FOA.K=100, FOB.K=NULL)
+	// discriminates: correct bind → {7,8}; a mis-bind → 0 rows. (FOA JOIN FOD on
+	// AID=DID=1) survives the FULL OUTER with FOB null-supplied (AID=1 ≠ BID=2);
+	// unnest FOA.ARR → [7,8].
 	assertRows(t, "CLUSTERED/buried-leaf-FULL-box-stays-name-model",
 		`SELECT "X" FROM FOA INNER JOIN FOD ON FOA."AID" = FOD."DID" `+
 			`FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" `+

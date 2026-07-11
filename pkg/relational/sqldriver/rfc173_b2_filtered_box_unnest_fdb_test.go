@@ -31,7 +31,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -128,20 +127,9 @@ func TestFDB_RFC173B2_FilteredBoxUnnest(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			// Pre-evaluate the plan's scalar subqueries and bind their results,
-			// as the sql driver's fetchPage does — executing without the bindings
-			// fails loudly (values.UnboundScalarSubqueryError).
-			evalCtx := executor.EmptyEvaluationContext()
-			if len(subs) > 0 {
-				scalarResults := make(map[values.CorrelationIdentifier]any, len(subs))
-				for _, ssq := range subs {
-					result, ssqErr := executor.EvaluateScalarSubquery(ctx, ssq.Plan, store, evalCtx, recordlayer.DefaultExecuteProperties())
-					if ssqErr != nil {
-						return nil, ssqErr
-					}
-					scalarResults[ssq.Alias] = result
-				}
-				evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
+			evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+			if bindErr != nil {
+				return nil, bindErr
 			}
 			cursor, cErr := executor.ExecutePlan(ctx, plan, store, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 			if cErr != nil {
@@ -244,5 +232,15 @@ func TestFDB_RFC173B2_FilteredBoxUnnest(t *testing.T) {
 	// GROUP BY over the filtered gather.
 	t.Run("group_by_over_filtered", func(t *testing.T) {
 		want(t, `SELECT LA."K", COUNT(*) `+leftBox+` WHERE LA."K" = 100 GROUP BY LA."K"`, "2|100")
+	})
+	// NESTED box (`(LA FULL LB) FULL CC`) + box-leg conjunct: the wedge gate
+	// (the classify/gather one-authority) ADMITS the nested box, so the
+	// conjunct classifies Bakeable and bakes over the nested buried windows —
+	// this pin proves the admitted shape answers CORRECT rows (only the
+	// fully-matched LA row passes LA.K=100; the LB- and CC-unmatched
+	// null-padded rows drop). White-box routing: the census nested arm.
+	t.Run("nested_box_conjunct", func(t *testing.T) {
+		want(t, `SELECT LA."K", LB."K", CC."CV", "X" FROM LA FULL OUTER JOIN LB ON LA."AID" = LB."BID" FULL OUTER JOIN CC ON LA."AID" = CC."CID", LA."ARR" AS "X" WHERE LA."K" = 100`,
+			"900|100|5|7", "900|100|5|8")
 	})
 }

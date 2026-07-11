@@ -124,4 +124,87 @@ func TestRFC173B2_FilteredBoxUnnestCensus(t *testing.T) {
 			}
 		})
 	})
+
+	// SHAPE-driven classifier gates (vs the predicate-driven arms above). The
+	// gate-first check delegates to gatesAsFreshCluster — the SAME wedge-gate
+	// authority the gather itself runs — so classify and gather can never
+	// diverge on shape admission; these pins nail the authority down on both
+	// sides of the gate.
+	t.Run("classifier_shape_gates", func(t *testing.T) {
+		classify := func(t *testing.T, box *logical.LogicalJoin, legAlias string) boxConjVerdict {
+			t.Helper()
+			u := &logical.LogicalUnnest{Segments: []string{"T4", "SARR"}, Alias: "X"}
+			pred := predicates.NewComparisonPredicate(
+				values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(legAlias)), "ID", values.UnknownType),
+				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(10)}},
+			)
+			return newChainedSpineTranslator(t).classifyBoxLegConjunct(box, u, pred)
+		}
+		// DUP-ALIAS box (`T4 AS D LEFT T AS D` — two legs binding the SAME
+		// correlation): the wedge gate poisons it (indistinguishable leg
+		// correlations → name model), so classify must return Unbakeable from
+		// the GATE-FIRST check. DISCRIMINATING for that check: without it, the
+		// seed map derives, `D` finds a window, `ID` resolves → Bakeable → this
+		// pin goes red. This is the pin for the classify-must-never-outrun-the-
+		// gate hazard (a genuine name-model box reaching ordinalJoinSeedFields
+		// is the panic class).
+		t.Run("dup_alias_box_gate_first_declines", func(t *testing.T) {
+			dup := logical.NewJoin(scan("T4", "D"), scan("T", "D"), logical.JoinLeft, "")
+			if got := classify(t, dup, "D"); got != boxConjUnbakeable {
+				t.Fatalf("dup-alias box classify = %d, want Unbakeable(%d) via the gate-first check", got, boxConjUnbakeable)
+			}
+		})
+		// NESTED outer-box leg (`(T4 FULL T) FULL TB`): the wedge gate ADMITS
+		// it (nested buried windows derive through the box-as-one-leg concat),
+		// so the conjunct classifies BAKEABLE — pinned together with the zero-
+		// producer census below and the e2e correct-rows pin
+		// (TestFDB_RFC173B2_FilteredBoxUnnest/nested_box_conjunct). Note this
+		// is the GATHER authority: boxGatesFresh (the BINARY-seed/birth gate)
+		// still excludes nested box legs — the two gates differ by design.
+		t.Run("nested_box_leg_classifies_bakeable", func(t *testing.T) {
+			nested := logical.NewJoin(
+				logical.NewJoin(scan("T4", "T4"), scan("T", "T"), logical.JoinFull, ""),
+				scan("T", "TB"), logical.JoinFull, "")
+			if got := classify(t, nested, "T4"); got != boxConjBakeable {
+				t.Fatalf("nested-box-leg classify = %d, want Bakeable(%d) (the wedge gate admits nested boxes)", got, boxConjBakeable)
+			}
+			u := &logical.LogicalUnnest{Segments: []string{"T4", "SARR"}, Alias: "X"}
+			j := logical.NewJoin(nested, u, logical.JoinInner, "")
+			pred := predicates.NewComparisonPredicate(
+				values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T4")), "ID", values.UnknownType),
+				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(10)}},
+			)
+			n, ok := countProducers(t, &logical.LogicalFilter{Input: j, Predicate: pred})
+			if !ok {
+				t.Fatalf("nested filtered box unnest failed to translate")
+			}
+			if n != 0 {
+				t.Fatalf("bakeable nested-box conjunct fired %d name-model producer(s), want 0", n)
+			}
+		})
+	})
+
+	// CLUSTERED-LEG box census arm: the box's LEFT leg is an INNER cluster
+	// (T4 ⋈ T) under FULL, and the conjunct references the buried NON-OWNER
+	// leaf (T.ID). Must classify Bakeable and ride the gathered ordinal path
+	// (0 producers) — the e2e sibling (c5a's clustered-box-bakes-ordinal) has
+	// path-independent rows, so THIS census arm is the routing discriminator
+	// for the clustered dimension.
+	t.Run("bakeable_clustered_conjunct_ordinalizes", func(t *testing.T) {
+		innerCluster := inner(scan("T4", "T4"), scan("T", "T"))
+		box := logical.NewJoin(innerCluster, scan("T", "TB"), logical.JoinFull, "")
+		u := &logical.LogicalUnnest{Segments: []string{"T4", "SARR"}, Alias: "X"}
+		j := logical.NewJoin(box, u, logical.JoinInner, "")
+		pred := predicates.NewComparisonPredicate(
+			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T")), "ID", values.UnknownType),
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(10)}},
+		)
+		n, ok := countProducers(t, &logical.LogicalFilter{Input: j, Predicate: pred})
+		if !ok {
+			t.Fatalf("clustered filtered box unnest failed to translate")
+		}
+		if n != 0 {
+			t.Fatalf("bakeable clustered buried-leg conjunct fired %d name-model producer(s), want 0 (the gather must admit it)", n)
+		}
+	})
 }
