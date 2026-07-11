@@ -67,6 +67,69 @@ func TestWalkExpression_QualifiedColumn(t *testing.T) {
 	}
 }
 
+// TestWalkExpression_SingleVsMultiSourceFieldQualification pins the
+// resolver invariant the CTE ON-only derivation's positional-frontier
+// admission rests on (derivedEmittedBareNames): a SINGLE-source scope
+// resolves a QUALIFIED ref to a CHILD-LESS FieldValue whose Field is the
+// BARE output name (needsQualification = len(sources) > 1 in
+// ResolveIdentifier) — so the runtime key is bare in both the positional
+// row and the name-keyed Datum, and survives a sort-continuation resume.
+// With a SECOND source the qualification moves to the QOV CHILD — Field
+// stays bare, never dotted. If either half changes, the derivation's claim
+// rules must be re-derived before this test is touched.
+func TestWalkExpression_SingleVsMultiSourceFieldQualification(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users u WHERE u.name")
+
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("single-source walk: %v", err)
+	}
+	fv := v.(*values.FieldValue)
+	if fv.Field != "NAME" || fv.Child != nil {
+		t.Fatalf("single-source qualified ref: got Field=%q Child=%v, want bare NAME with no child", fv.Field, fv.Child)
+	}
+
+	// Multi-source scope: fresh scope with CorrelationName set on both legs
+	// (real buildSelectScope sources always carry one via bindingOrAlias).
+	users := &semantic.StaticTable{
+		TableName: semantic.ParseQualifiedName("USERS", false),
+		TableColumns: []semantic.Column{
+			{Id: semantic.NewUnquoted("id"), Type: "INT"},
+			{Id: semantic.NewUnquoted("name"), Type: "STRING", Nullable: true},
+		},
+	}
+	orders := &semantic.StaticTable{
+		TableName: semantic.ParseQualifiedName("ORDERS", false),
+		TableColumns: []semantic.Column{
+			{Id: semantic.NewUnquoted("oid"), Type: "INT"},
+		},
+	}
+	s2 := semantic.NewScope(nil)
+	for _, src := range []semantic.ScopeSource{
+		{Table: users, Alias: semantic.NewUnquoted("u"), CorrelationName: "U"},
+		{Table: orders, Alias: semantic.NewUnquoted("o"), CorrelationName: "O"},
+	} {
+		if err := s2.AddSource(src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r2 := expr.New(a, s2)
+	v2, err := r2.ResolveIdentifier(semantic.NewUnquoted("u"), semantic.NewUnquoted("name"))
+	if err != nil {
+		t.Fatalf("multi-source resolve: %v", err)
+	}
+	fv2 := v2.(*values.FieldValue)
+	if fv2.Field != "NAME" {
+		t.Fatalf("multi-source qualified ref Field: got %q, want bare NAME (qualification rides the child)", fv2.Field)
+	}
+	if fv2.Child == nil {
+		t.Fatal("multi-source qualified ref: want a QOV child carrying the correlation, got none")
+	}
+}
+
 func TestWalkExpression_IntegerLiteral(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

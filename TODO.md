@@ -655,7 +655,13 @@ validation gate.
     only (`WITH U AS (SELECT L2."K" AS "B" FROM (SELECT "AID" FROM LA) "D", LA "L2") … ON U."B"` answered
     correctly pre-narrowing, 0AF00 now) — admitting it needs per-read leg attribution + per-leg emitted-set
     validation. All seven are one output-naming authority problem: the scope's advertised names must be
-    the names execution emits.
+    the names execution emits. TWO SYSTEMIC RIDERS for the same slice (review-noted, pre-existing):
+    (i) encodeSortContinuation drops Positional across a continuation RESUME — every positional consumer
+    downstream of a resumed sort sees name-keyed rows only (benign today because the admitted classes key
+    bare in the Datum too — the expr.go single-source Field rewrite — but any future positional-only
+    consumer breaks at page boundaries); (ii) the GROUP-BY validator's harvestColumnRefs walk cannot
+    distinguish a subquery-LOCAL ref (no group check due) from a CORRELATED-into-outer ref (group check
+    due) — a potential over-loud corner on outExpr entries containing subqueries.
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible

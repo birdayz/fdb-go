@@ -732,6 +732,58 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		loud0AF00(t, `WITH "U" AS (SELECT "D"."K" AS "KK" FROM (SELECT LA.*, "AID" FROM LA) "D") SELECT "U"."KK", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."KK" = "C2"."CID"`,
 			"star-expanded column read over a mixed-star derived source")
 	})
+	// Q36: CTE SHADOWING a catalog table (review-caught, round 8). The leg
+	// classifier must mirror EXECUTION's resolution order — a declared CTE
+	// shadows a same-named table, so a metadata-first lookup classified the
+	// leg by the TABLE's schema while runtime rows came from the CTE (every
+	// reachable variant probed LOUD at runtime — malformed-plan, row columns
+	// [Z] — but the classification was wrong and the error class regressed
+	// from plan-time 0AF00). CTE names now classify FIRST: an ON-only "LA"
+	// is opaque → all three variants decline at plan time.
+	t.Run("Q36_cte_shadows_table_loud", func(t *testing.T) {
+		const shadowLA = `"LA" AS (SELECT LB."K" AS "Z" FROM LB LEFT JOIN CC ON LB."BID" = CC."CID")`
+		loud0AF00(t, `WITH `+shadowLA+`, "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
+			"derived source over a table-shadowing ON-only CTE")
+		loud0AF00(t, `WITH `+shadowLA+`, "U" AS (SELECT MAX("D"."AID") AS "M" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."M", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."M" = "C2"."CID"`,
+			"aggregate arm over a table-shadowing ON-only CTE")
+		loud0AF00(t, `WITH `+shadowLA+`, "U" AS (SELECT "AID" FROM "LA", CC "C9") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"shadowed CTE as a multi-leg body leg")
+	})
+	// Q37: SCHEMA-QUALIFIED legs (review-caught, round 8). Three stacked
+	// fixes pin here: (1) the ON-only derivation ran BEFORE
+	// normalizeSchemaQualifiedSelectSources, so "s"."LA" classified opaque —
+	// spurious 0AF00 (cteLegKind now mirrors the normalizer's strip);
+	// writing this pin then EXPOSED two pre-existing bugs independent of
+	// CTEs: (2) upgradeJoinOnPredicates' scope build silently declined the
+	// dotted source — the "unresolvable table errors precisely downstream"
+	// assumption is false for the active-schema form (the demoted scan
+	// succeeds), so EVERY explicit join with a schema-qualified leg silently
+	// CROSS-PRODUCTED; (3) with (2) fixed, the visitor path's scan kept its
+	// defaulted DOTTED alias while the upgraded predicate said QOV(bare) —
+	// INNER failed leg attribution loud, LEFT silently padded every row
+	// (resolveQualifiedTableNames now strips a defaulted alias in lockstep).
+	// BK=5 on the matched row discriminates all three failure modes: a
+	// cross-product doubles rows, an ON-drop or alias-desync pads BK.
+	t.Run("Q37_schema_qualified_legs_resolve", func(t *testing.T) {
+		check(t, `WITH "V" AS (SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID") SELECT "V"."AK", "V"."BK", "C2"."CV" FROM "V" LEFT JOIN CC AS "C2" ON "V"."AK" = "C2"."CID"`,
+			"<nil>|100|5", "<nil>|110|<nil>")
+	})
+	// Q38: the standalone (no CTE) schema-qualified explicit-join pins — the
+	// pre-existing silent cross-product class in its own right, all four
+	// shapes: LEFT with matched+pad rows, INNER keeps ONLY the match,
+	// explicit aliases, one-leg-qualified.
+	t.Run("Q38_schema_qualified_join_on_live", func(t *testing.T) {
+		// (top-level datums key each output twice — rendered + positional —
+		// hence the doubled columns, same as Q10)
+		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID"`,
+			"100|5|100|5", "110|<nil>|110|<nil>")
+		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" JOIN "s"."LB" ON LA."AID" = LB."BID"`,
+			"100|5|100|5")
+		check(t, `SELECT "X"."K" AS "AK", "Y"."K" AS "BK" FROM "s"."LA" AS "X" LEFT JOIN "s"."LB" AS "Y" ON "X"."AID" = "Y"."BID"`,
+			"100|5|100|5", "110|<nil>|110|<nil>")
+		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN LB ON LA."AID" = LB."BID"`,
+			"100|5|100|5", "110|<nil>|110|<nil>")
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")

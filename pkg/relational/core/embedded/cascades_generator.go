@@ -4342,6 +4342,18 @@ func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) e
 		if err != nil {
 			return err
 		}
+		// Keep a DEFAULTED alias in lockstep with the strip — the same
+		// alias-desync root fix the catalog sub-build path applies by
+		// normalizing sq before building (logical_predicate.go, the
+		// normalize-first comment): a no-alias `s.LB` parses with
+		// alias == tableName == "S.LB", and leaving the dotted alias on the
+		// scan while the ON-upgrade scope registers the bare "LB" makes the
+		// upgraded predicate's QOV(LB) miss the leg at translation — the
+		// INNER form failed leg attribution loud and the LEFT form silently
+		// padded every row (review-caught by the Q37 pin family).
+		if scan.Alias == scan.Table {
+			scan.Alias = resolved
+		}
 		scan.Table = resolved
 	}
 	if ins, ok := op.(*logical.LogicalInsert); ok {

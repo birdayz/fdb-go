@@ -290,6 +290,26 @@ func TestFDB_RFC173ChainedUnnest(t *testing.T) {
 		return ""
 	}
 
+	// ALIASLESS chained-unnest CTE under an enclosing ON (review-caught,
+	// enclosed-CTE round 8): the ON-only derivation's leg walk recorded the
+	// FLATTENED name ("T4.SARR") as the first unnest's binding, while the
+	// scope exposes the EFFECTIVE alias (unnestAliases: last segment, SARR)
+	// — so the next chain link ("SARR"."SUB") classified opaque and the CTE
+	// spuriously 0AF00'd under ON. The walk now records the effective alias.
+	// Real ON matches (T2.ID echoes VID) discriminate against an ON drop.
+	t.Run("aliasless-chain CTE under ON derives and answers", func(t *testing.T) {
+		const q = `WITH "V" AS (SELECT "ID" AS "VID", "Y" FROM T4, T4."SARR", "SARR"."SUB" AS "Y") SELECT "V"."Y", "T2"."ID" FROM "V" LEFT JOIN T4 AS "T2" ON "V"."VID" = "T2"."ID"`
+		_, rows := queryRows(t, q)
+		got := make([]string, 0, len(rows))
+		for _, m := range rows {
+			got = append(got, fmt.Sprintf("%v|%v", m["T2.ID"], m["V.Y"]))
+		}
+		sort.Strings(got)
+		want := []string{"1|100", "1|200", "1|300", "2|400"}
+		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+			t.Fatalf("rows = %v, want %v", got, want)
+		}
+	})
 	t.Run("2-chain unnests the struct element's own int-array", func(t *testing.T) {
 		const q = `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`
 		assertColumns(t, q, []string{"ID", "Y"})
