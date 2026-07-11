@@ -521,6 +521,31 @@ validation gate.
     shape outside the §5 SQL corpus (arrays aren't SQL-INSERTable), NOT a production silent-wrong (production =
     ordinal = correct; the oracle scaffolding dies at the cap). Note for the dual-window carve-out list if the
     corpus ever grows an array shape.
+    **B2 STEP-0 COMPLETE (13-shape probe battery, both models + census; Graefe design-ACK sub-slice A).**
+    Q00–Q11 — preserved-leg / null-supplied-leg (value + IS NULL) / FULL-both-legs / RIGHT / OR-spanning / NOT /
+    mixed element+leg / AT-ordinal / scalar-subquery / GROUP-BY conjuncts: rows CORRECT in BOTH models, 2
+    producers each — sub-slice A is a PURE COVERAGE change (no latent bug). Q12 the ENCLOSED SIBLING
+    (`FROM (LA LEFT LB), LA.ARR AS X, CC WHERE LA.K=100`): 0 producers + CORRECT production rows — the conjunct
+    ALREADY bakes through the $BOX buried windows on the enclosed path, so the A execution substrate is PROVEN
+    e2e (the consult's decisive fork, branch 1). Q12's name-ORACLE returns [] — the SECOND instance of the
+    oracle-bridge gap class ($BOX-window bakes have no name fallback under DisablePositionalEmission; production
+    ordinal correct; the oracle dies at the cap). MECHANISM (consult-corrected): the plain shape ordinalizes via
+    translateGatheredUnnestCluster (the GATHER), NOT the binary path (clusterArity(LEFT)==2 blocks
+    boxOuterBirthsPositional unconditionally); the filtered decline is gather:93 (the blanket
+    unnestOuterConjunctOnBoxLeg decline); the conjunct's ordinal placement is the gathered select's predicate
+    list baked via bakeGatedJoinPredicates over the $BOX buried windows (WHERE-above-LEFT semantics for BOTH
+    legs; pushdown is the optimizer's job, never hand-placed SARGs). NEXT: implement A1 (3-state boxConj verdict
+    — None/Bakeable/Unbakeable — computed PRE-translation, metadata-only: no subquery values + every legRef
+    FieldIndex-resolves in its buried window's leafTyp; gather:93 declines only Unbakeable; EXISTS site always
+    Unbakeable this slice) + A2 (the gather RECORDS its legTypes keyed by join node —
+    t.unnestGatherBoxLegTypes[j] — and the WHERE-merge arm consumes the record, fires iff present,
+    bakeGatedJoinPredicates over the RECORDED map, never re-derived: the seed⟺merge one-authority law; +
+    defensive no-unbaked-legRef assert) as ONE atomic commit; A3 = ZERO changes to :920/:966/:1490/chained.
+    Controls: dup-K sabotage (whole-concat FieldIndex → red), mis-keyed legTypes (gatedJoinLegTypes(box) → loud),
+    feature-off (gather:93 blanket restore → all pins fail), census promotion (filtered LEFT/RIGHT/FULL → 0
+    producers; EXISTS variant still 2 — sub-slice B, design-NAK deferred to its own consult: the
+    existential-rebase-over-$BOX-windows question is unverified). Comment debt in the same commit: the flag's
+    field doc, gather:77-95, unnestExistsSeedSafe:897-919, the :2392-2398 flag-site comment.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
