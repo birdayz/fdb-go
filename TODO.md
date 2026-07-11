@@ -359,7 +359,13 @@ validation gate.
     to map leg.col → slot). Build that rebase, then: translate `LogicalFilter{Predicate:f.Predicate, Input:join}`
     (no EXISTS) FRESH → ordinal P1 innerRef; wrap via buildExistentialSelect with the correlation rebased onto the
     innerRef merged QOV. This is the one focused mechanism the whole slice needs; NOT landable as a routing tweak
-    (proven by attempts A/B/C). Reverted-prototype record:
+    (proven by attempts A/B/C). ATTEMPT (D/E): fall-through to the generic arm + WIDEN existsOuterGatesFresh
+    (rfc173_cluster_gate.go:86) to admit INNER arity>=3 (so the join gates fresh/ordinal and the LEFT/RIGHT
+    below-FOD rebase would fire) → ALSO MATERIALIZES (correlated-index SARG lost). Confirms the below-FOD ordinal
+    rebase is genuinely LEFT/RIGHT-specific (the 1+1 dissolve-to-INNER shape); the N-way INNER cluster is a
+    different shape it cannot handle. So NO existing rebase machinery works — the new bakeGatedJoinPredicates-analog
+    for the wrapped merged QOV (above) must be built. FIVE attempts total, all reverted clean, nothing shipped.
+    Reverted-prototype record:
   - [ ] (superseded) **B1 first attempt (bespoke helper) — row-correct but a PLAN-QUALITY (SARG) regression + a dup-alias bypass;
     superseded by the corrected target above.** The prototype
     (`translateGatheredInnerClusterWithExists`: N ForEach legs + all nested ON preds + WHERE conjuncts + EXISTS
