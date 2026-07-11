@@ -341,7 +341,25 @@ validation gate.
     mandatory): SARG `[=]` + ordinal-fired (census 0) asserted TOGETHER + row falsification (EXISTS→3rd/4th leg) +
     NOT-cross-product plan shape + red-under-sabotage. Guard dup-alias with mintedBindingLeg. STILL OPEN: arity-2
     comma+EXISTS SARG loss (P4, booked below) — the same correct target (fresh ordinal join + existential wrap)
-    closes both arities. Reverted-prototype record:
+    closes both arities.
+    **COMPLETE MECHANISM DIAGNOSIS (the exact missing piece, after 4 empirical attempts).** The generic WHERE-EXISTS
+    wrap ALREADY exists (cascades_translator.go:2560-2584: translateRef(f.Input) with enclosure decided by
+    existsOuterGatesFresh, then buildExistentialSelect:3130 wraps it + threads f.Predicate as allPreds + the EXISTS
+    correlation via existsInnerCorrelation). The FUNDAMENTAL blocker: buildExistentialSelect's allPreds (the WHERE
+    join-conjuncts `b.aid=a.id`) AND the EXISTS correlation (`e.eref=r.rc`) reference join LEGS (QOV(a), QOV(b),
+    QOV(r)). When f.Input (the join) is translated NAME-MODEL, its merged output carries QUALIFIED leg keys
+    (A.ID, R.RC), so these leg-refs resolve by name — that is why existsOuterGatesFresh keeps a join-with-
+    leg-predicates NAME-MODEL, and why every attempt to ordinalize it collapses/doesn't-fire. When the join is
+    ORDINAL, its output is POSITIONAL (named-ordinal fields per the merged leg windows) and the top-level leg QOVs
+    (a, b, r) are GONE (nested inside the wrapped join's single QOV) — so `FieldValue(QOV(r),RC)` no longer
+    resolves. THE MISSING MECHANISM: rebase BOTH the WHERE conjuncts and the EXISTS correlation from leg-QOV
+    name-refs to `FieldValue.ofOrdinal(QOV(wrappedJoin), slot)` over the wrapped join's MERGED output — a
+    bakeGatedJoinPredicates-analog for the NESTED/wrapped case (bakeGatedJoinPredicates today targets the FLAT leg
+    QOVs; this variant targets the single wrapped-merged QOV, using the merged leg-window layout OrdinalSeedLegWindows
+    to map leg.col → slot). Build that rebase, then: translate `LogicalFilter{Predicate:f.Predicate, Input:join}`
+    (no EXISTS) FRESH → ordinal P1 innerRef; wrap via buildExistentialSelect with the correlation rebased onto the
+    innerRef merged QOV. This is the one focused mechanism the whole slice needs; NOT landable as a routing tweak
+    (proven by attempts A/B/C). Reverted-prototype record:
   - [ ] (superseded) **B1 first attempt (bespoke helper) — row-correct but a PLAN-QUALITY (SARG) regression + a dup-alias bypass;
     superseded by the corrected target above.** The prototype
     (`translateGatheredInnerClusterWithExists`: N ForEach legs + all nested ON preds + WHERE conjuncts + EXISTS
