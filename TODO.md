@@ -689,7 +689,17 @@ validation gate.
     output-alias-precedence shapes (Q42/Q46 — bare unique alias over FROM-scope ambiguity) are standard
     SQL/PG behavior but unverified vs Java's SemanticAnalyzer (the M5 42702 text was live-verified for
     FROM-scope shapes only); probe alongside the R5b read probe — if Java 42702s them, the pins flip to
-    documented divergences or revert.
+    documented divergences or revert. (iii) FIFTH STRIP SITE (round-11 review): buildCTEColumnSource —
+    the registration-time global deriver — does not apply the schema strip, so a CTE with a
+    schema-qualified body lands ON-only and an aggregate read over it misroutes into the correlated
+    fallback (0A000, pre-existing rounds 9-11); the normalization slice must catch it. (iv) CONSUMER
+    CENSUS for the one-shared-resolution-function ending (round-11 review — the fifth copy was missed by
+    the round dedicated to aligning copies, which is the argument for the collapse): LIVE-fixed CTE-first:
+    translateScan, cteLegKind, buildSelectScope.addSource, upgradeJoinOnPredicates.resolveTable. LATENT
+    catalog-first (masked by the text fallback / upstream gates today; goes live when the text fallback
+    retires): buildWherePredicateForJoinsWithCTEScopes.addSource (~:1508, its own comment says
+    "metadata first, then CTE scopes") plus ~7 more ResolveTable sites in the same masked category
+    (~:320, :912, :3754, :5790, :6083, :6206 — derived-carrier and exists-planner scope builders).
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible

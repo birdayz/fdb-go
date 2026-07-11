@@ -228,7 +228,7 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				// TABLE, never the CTE being defined — CTE-first scope
 				// resolution would otherwise resolve the body against its
 				// own OUTPUT schema (the R5a shadow pin 42703'd on ID).
-				bodyOp, bodyErr := buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, isRecBody, func() (logical.LogicalOperator, error) {
+				bodyOp, bodyErr := buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, isRecBody, func() (logical.LogicalOperator, error) {
 					return v.VisitQueryBody(inner.QueryExpressionBody())
 				})
 				if isRecBody {
@@ -295,7 +295,7 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				// Self-invisible rebuild (buildCTEBodySelfHidden) — this
 				// arm re-raises a swallowed eager-build error with the same
 				// scoping the eager build used.
-				body, err = buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, recursive, func() (logical.LogicalOperator, error) {
+				body, err = buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, recursive, func() (logical.LogicalOperator, error) {
 					return v.VisitQueryBody(inner.QueryExpressionBody())
 				})
 				if recursive {

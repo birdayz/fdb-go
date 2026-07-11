@@ -1027,32 +1027,71 @@ func buildCTEColumnSource(
 // MARKER instead: the declared name still routes to the loud drop-risk 0AF00,
 // never a silent ON drop. Widening the derivable set (qualified/renamed
 // output schemas) is booked with the derived-table-twin item.
-// buildCTEBodySelfHidden runs a CTE body build with the CTE's OWN name
-// hidden from both scope maps: non-recursive SQL scoping makes
-// `FROM <own-name>` inside the body the TABLE, never the CTE being defined.
-// With CTE-FIRST scope resolution a visible self entry resolves the body
-// against its own OUTPUT schema — on the chain paths that surfaced as a
-// bogus correlated-fallback misroute AND a silent base-table value
-// substitution through BuildScalar's 42703 arm; on the visitor path the
-// R5a shadow pin caught it (review-caught on all three, one shared helper
-// so the pipelines cannot diverge again). Recursive bodies keep self
-// visible — their union machinery consumes the self-reference. Restores
-// are deferred (error-path safe).
+// cteScopePreState snapshots a name's scope-map state as it was BEFORE the
+// CTE's own registration — what SQL scoping says the body sees: outer
+// scopes and earlier siblings, never itself. had=false is the common case
+// (the name was absent); the preserved VALUE is the nested-shadowing case —
+// a subquery WITH reusing an OUTER CTE's name overwrites the level map's
+// outer entry at registration, and a plain self-DELETE then lost BOTH
+// bindings, sending the inner body's reads to the base table (42703 on the
+// outer CTE's own column, review-caught).
+type cteScopePreState struct {
+	scopeVal semantic.ScopeSource
+	scopeHad bool
+	onVal    semantic.ScopeSource
+	onHad    bool
+}
+
+// buildCTEBodySelfHidden runs a CTE body build with the CTE's name mapped
+// to its PRE-REGISTRATION state in both scope maps: non-recursive SQL
+// scoping makes `FROM <own-name>` inside the body the outer binding (an
+// enclosing CTE) or the TABLE — never the CTE being defined. With CTE-FIRST
+// scope resolution a visible self entry resolves the body against its own
+// OUTPUT schema — on the chain paths that surfaced as a bogus
+// correlated-fallback misroute AND a silent base-table value substitution
+// through BuildScalar's 42703 arm; on the visitor path the R5a shadow pin
+// caught it (review-caught on all three, one shared helper so the pipelines
+// cannot diverge again). pre carries the pre-registration snapshots (nil ⇒
+// absent for every name — the top-level visitor case). Recursive bodies
+// keep self visible — their union machinery consumes the self-reference.
+// Restores are deferred (error-path safe).
 func buildCTEBodySelfHidden(
 	cteScopes, cteOnScopes map[string]semantic.ScopeSource,
 	upper string,
+	pre map[string]cteScopePreState,
 	recursive bool,
 	build func() (logical.LogicalOperator, error),
 ) (logical.LogicalOperator, error) {
 	if !recursive {
-		if src, ok := cteScopes[upper]; ok {
-			delete(cteScopes, upper)
-			defer func() { cteScopes[upper] = src }()
+		st := pre[upper] // zero value: absent in both maps pre-registration
+		if cur, ok := cteScopes[upper]; ok || st.scopeHad {
+			if st.scopeHad {
+				cteScopes[upper] = st.scopeVal
+			} else {
+				delete(cteScopes, upper)
+			}
+			defer func() {
+				if ok {
+					cteScopes[upper] = cur
+				} else {
+					delete(cteScopes, upper)
+				}
+			}()
 		}
 		if cteOnScopes != nil {
-			if src, ok := cteOnScopes[upper]; ok {
-				delete(cteOnScopes, upper)
-				defer func() { cteOnScopes[upper] = src }()
+			if cur, ok := cteOnScopes[upper]; ok || st.onHad {
+				if st.onHad {
+					cteOnScopes[upper] = st.onVal
+				} else {
+					delete(cteOnScopes, upper)
+				}
+				defer func() {
+					if ok {
+						cteOnScopes[upper] = cur
+					} else {
+						delete(cteOnScopes, upper)
+					}
+				}()
 			}
 		}
 	}
@@ -4460,6 +4499,7 @@ func buildLogicalPlanForQueryWithCTECatalog(
 	}
 
 	ctesCtx := q.Ctes()
+	preState := map[string]cteScopePreState{}
 
 	// Start with outer CTE scopes, then overlay any inner CTE defs
 	// (inner shadows outer on name collision). cteOnScopes mirrors the
@@ -4483,6 +4523,14 @@ func buildLogicalPlanForQueryWithCTECatalog(
 					"found '%s' more than once", name)
 			}
 			innerCTEs[upper] = true
+			// Snapshot the PRE-REGISTRATION state (outer binding or absent)
+			// before any write — the body build swaps back to it
+			// (buildCTEBodySelfHidden: self-invisible, outer visible).
+			if _, seen := preState[upper]; !seen {
+				sv, sh := cteScopes[upper]
+				ov, oh := cteOnScopes[upper]
+				preState[upper] = cteScopePreState{scopeVal: sv, scopeHad: sh, onVal: ov, onHad: oh}
+			}
 			// Inner CTE shadowing an outer CTE is fine (SQL scoping).
 			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
 				if colAliases := nq.GetColumnAliases(); colAliases != nil {
@@ -4546,7 +4594,7 @@ func buildLogicalPlanForQueryWithCTECatalog(
 			// registration loop completed BEFORE this build, so the maps
 			// carry the CTE's own entry — CTE-first resolution would
 			// resolve the body against its own output schema.
-			body, err = buildCTEBodySelfHidden(cteScopes, cteOnScopes, strings.ToUpper(name), recursive, func() (logical.LogicalOperator, error) {
+			body, err = buildCTEBodySelfHidden(cteScopes, cteOnScopes, strings.ToUpper(name), preState, recursive, func() (logical.LogicalOperator, error) {
 				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
 			})
 			if err != nil {
@@ -4589,6 +4637,7 @@ func buildLogicalPlanForQueryWithCatalog(
 	}
 
 	ctesCtx := q.Ctes()
+	preState := map[string]cteScopePreState{}
 
 	// Pre-scan CTE definitions to extract column schemas. Process in
 	// declaration order so CTE B can reference CTE A's derived schema.
@@ -4618,6 +4667,14 @@ func buildLogicalPlanForQueryWithCatalog(
 			if _, exists := cteOnScopes[upper]; exists {
 				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
 					"found '%s' more than once", name)
+			}
+			// Pre-registration snapshot (always ABSENT on this route — the
+			// maps are fresh — kept uniform with the WithCTECatalog loop so
+			// the shared wrap-loop block reads identically).
+			if _, seen := preState[upper]; !seen {
+				sv, sh := cteScopes[upper]
+				ov, oh := cteOnScopes[upper]
+				preState[upper] = cteScopePreState{scopeVal: sv, scopeHad: sh, onVal: ov, onHad: oh}
 			}
 			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
 				// Apply CTE column aliases: WITH c1(x, y) AS (...)
@@ -4683,7 +4740,7 @@ func buildLogicalPlanForQueryWithCatalog(
 			// registration loop completed BEFORE this build, so the maps
 			// carry the CTE's own entry — CTE-first resolution would
 			// resolve the body against its own output schema.
-			body, err = buildCTEBodySelfHidden(cteScopes, cteOnScopes, strings.ToUpper(name), recursive, func() (logical.LogicalOperator, error) {
+			body, err = buildCTEBodySelfHidden(cteScopes, cteOnScopes, strings.ToUpper(name), preState, recursive, func() (logical.LogicalOperator, error) {
 				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
 			})
 			if err != nil {

@@ -902,6 +902,17 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 			t.Fatalf("aggregate canonical-text key must keep 42702, got %v", err)
 		}
 	})
+	// Q49: a NESTED same-named CTE's body sees the OUTER binding
+	// (review-caught, round 12): the inner registration overwrites the
+	// level map's outer entry, so a plain self-DELETE lost BOTH bindings
+	// and the inner body's reads fell to the base TABLE (42703 on the outer
+	// CTE's renamed column). buildCTEBodySelfHidden now swaps to the
+	// PRE-REGISTRATION snapshot — self invisible, outer visible. MAX(X)=3
+	// is over the OUTER CTE's X∈{1,3}, per outer row.
+	t.Run("Q49_nested_shadow_body_sees_outer", func(t *testing.T) {
+		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "LA" AS (SELECT LA."X" AS "X" FROM "LA") SELECT MAX("X") FROM "LA"), "O"."X" FROM "LA" AS "O"`,
+			"3|1|3", "3|3|3")
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")
