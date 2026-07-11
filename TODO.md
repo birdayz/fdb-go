@@ -565,6 +565,30 @@ validation gate.
     name-model parity, so the census pin is the model discriminator, the B1 "asserted together" split). Full
     suite 55/55. Producers retired: the filtered-box-unnest P4-enclosed + P5-un-enclosed pair (U-2's
     conjunct-triggered class); the EXISTS variant still fires 2 (sub-slice B, booked).
+    **ROUND 2 (all three gate NAKs addressed):** codex P1×3 — classifyBoxLegConjunct gates
+    `gatesAsFreshCluster` FIRST (ordinalLegColumns panics by design on name-model legs), absent-legTypes-key
+    box-leg refs → Unbakeable (transparent-filter-wrapped operands), stale record across CTE retranslations →
+    Graefe's CONSUME-ONCE delete-on-read at the merge site. Graefe — his shape battery is a PERMANENT probe
+    file (rfc173_b2_graefe_impl_probe_fdb_test.go); the P1/Q CTE pins are flip-sentinels documenting the
+    PRE-EXISTING enclosed-CTE silent-NULL residual (booked below). Torvalds — post-B2 truth rewrite: baretwin's
+    anchored-fallback GROUP-BY pin re-pointed at a subquery conjunct (the surviving Unbakeable decline; found
+    the scalar-subquery silent-NULL hole, fixed + booked above), c5a's four `*-stays-name-model` subtests
+    renamed `*-bakes-ordinal` (they gather since B2-A; EXISTS pin comment states WHY it stays name-model),
+    unnestExistsSeedSafe's leading paragraph reconciled with its inline block (binary seed declines for ANY
+    verdict; the gathered path is where Bakeable bakes), gather-coupling test pins the full 3-state routing
+    (None gathers / Bakeable gathers + RECORDS / Unbakeable declines), per-arm classifier pins
+    (scalar-subquery/ExistsValue/foreign-correlation/dotted-frontier + bakeable baseline), typed
+    `boxConjVerdict`.
+  - [ ] **BOOKED (B2-A gate round 2, Graefe's live demo — PRE-EXISTING silent-wrong, NOT a B2 class):
+    an ENCLOSED CTE-referenced box unnest returns silent all-NULL rows.** `WITH W AS (SELECT … FROM (LA
+    LEFT JOIN LB …), LA.ARR AS X …) SELECT * FROM W` (single reference; WITH or without a WHERE inside the
+    body) returns rows whose every column is NULL — parent-identical (reproduces on the pre-B2 parent, so
+    B2-A neither caused nor widened it; the un-enclosed body answers correctly). Pinned TODAY as
+    flip-sentinels in rfc173_b2_graefe_impl_probe_fdb_test.go (P1a/P1b double-ref legs, Q1 single-ref, Q2
+    WHERE-free, Q4 mixed): each pins the current wrong `<nil>` rows so the fix FLIPS them. Root-cause
+    direction: the enclosed gather path's CTE translation loses the unnest leg's result-value wiring (the
+    enclosure declines the gather; the name-model fallback's RC does not thread the CTE-projected columns).
+    Own slice — the fix is in the enclosed-CTE translation, not the B2 conjunct machinery.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
@@ -573,20 +597,35 @@ validation gate.
     incl. AT, do resolve). Affects filtered-deeper-than-3-link + any AT-in-WHERE shape in BOTH engines. A
     SemanticAnalyzer scope-depth fix, separate slice — filtered 3-link (the expressible filtered depth) already
     ordinalizes.
-  - [ ] **BOOKED (RFC-173 S4 Slice 2b discovery — PRE-EXISTING, ORTHOGONAL, engine-wide silent-wrong):
-    scalar subquery in a WHERE comparison returns `[]`.** `SELECT id FROM t WHERE id = (SELECT MAX(id) FROM
-    t2)` returns SILENT `[]` for a PLAIN table (verified MAX/MIN/`>` all `[]`; want the matching rows) — so
-    the "scalar subquery in a filter" gap is NOT chained-specific; it's a general scalar-subquery-in-WHERE
-    hole (projection-position scalar subqueries DO work — see the W4b entries). The chained case additionally
-    would CRASH (ordinal -1 malformed plan) once it ordinalizes, because the scalar-subquery predicate rides
-    the wedgeGate POSITIONAL bake (`rebaseUnnestOuterLegPredicateOrdinal`), so Slice 2b rejects the chained
-    shape LOUDLY (0A000) to prevent that regression from silent-`[]` → crash. Proper fix: implement
-    scalar-subquery-in-WHERE comparison (a general feature; makes the plain case answer rows AND unblocks
-    the chained 0A000 → rows). Java answers both → reach gap, must eventually close; the 0A000 sentinel
-    flips green when it lands. Sibling upstream gap: IN-subquery / EXISTS in a filter over a chained unnest
-    fail 0AF00 UPSTREAM of the chained dispatch (Java answers) — orthogonal reach gaps, book if the endgame
-    wants them. NOTE: this is a silent-wrong bug but out of scope for filtered-chained (RFC-173 freeze +
-    separate general feature); surfaced here so the axis isn't lost.
+  - [x] **RESOLVED (was: "engine-wide scalar subquery in WHERE returns `[]`" — the Slice 2b booking was
+    MIS-SCOPED; root-caused and fixed in the B2-A round-2 batch).** The `[]` was never an engine gap: the
+    sql-driver path answers scalar-subquery WHERE comparisons correctly (fetchPage pre-evaluates each
+    subquery via `executor.EvaluateScalarSubquery` and binds via `WithScalarSubqueries` —
+    `TestFDB_HavingSubqueryProbe/where_gt_scalar_then_group` pins non-empty rows). The silent `[]` came from
+    a TWO-LAYER hole on the DIRECT-EXECUTOR path only: (1) `embedded.PlanRecordQueryWithMetadata*` DISCARDED
+    the translator's `[]ScalarSubqueryPlan` (`ref, _, translateErr :=`), so harness callers had nothing to
+    bind; (2) `ScalarSubqueryValue.Evaluate` answered SILENT NULL for an absent binding (and for raw-map row
+    contexts — the executor's no-bindings filter paths pass the bare Datum map), so every comparison
+    degraded to UNKNOWN and rows vanished. FIXED correct-or-loud: absent binding / bindingless row context →
+    loud `*values.UnboundScalarSubqueryError` (present-nil stays legit zero-rows NULL; the nil ctx stays the
+    plan-time probe per Comparison.Eval's constant-RHS contract); subquery planning factored into ONE shared
+    path (`planScalarSubqueryPlans`, used by the generator AND the new `PlanRecordQueryWithSubqueries`
+    harness API); the direct-harness tests (baretwin/B2/Graefe-probe) pre-bind exactly like fetchPage.
+    PINNED: `TestScalarSubqueryValue_Evaluate` (absent→error incl. raw-map/scalar ctx, present-nil→NULL,
+    nil-ctx→nil), B2's `scalar_subquery_unbakeable_true_arm` (subquery actually EVALUATES: 100<900 → rows —
+    before the fix both arms returned `[]` indistinguishably), baretwin's re-pointed
+    `grouped_over_name_model_fallback_does_not_bake` (real rows through a bound subquery over the anchored
+    fallback). THE LOUD ERROR IMMEDIATELY CAUGHT A THIRD SITE — production DML: planDML ALSO discarded the
+    translator's scalar subqueries (`ref, _ :=`), so a driver `DELETE … WHERE v > (SELECT …)` silently
+    compared v > NULL and deleted NOTHING — dualwindow stayed green because BOTH windows were identically
+    wrong (the both-models-agree blind spot). planDML now plans + carries them (same shared helper; fetchPage
+    pre-binds for DML exactly as for SELECT). PINNED:
+    `TestFDB_DmlSubqueryWhereProbe/{delete,update}_where_scalar_subquery_threshold` (driver-level RowsAffected
+    + survivors; the corpus's scalar_subq_after_delete_with_subq_threshold entry now answers its documented
+    rows for real). STILL OPEN (narrowed, chained-only): the chained-unnest scalar-subquery WHERE stays a LOUD
+    0A000 (the Slice 2b sentinel) because the chained predicate would ride the wedgeGate POSITIONAL bake and
+    crash (ordinal -1) — flipping 0A000 → rows is the remaining (now much smaller) slice; sibling
+    IN-subquery/EXISTS-in-filter-over-chained 0AF00 reach gaps unchanged.
   - [ ] **BOOKED SLICE (Graefe, RFC-173 S4 Slice 2b follow-up — orthogonal resolver gap): scalar sibling
     of an unnested array element does not resolve (42703).** `SELECT X.K FROM T4, T4.SARR AS X` where the
     SARR element has a scalar sibling `K` → `42703 column "X.K" does not exist`, IN THE BASE CASE (no

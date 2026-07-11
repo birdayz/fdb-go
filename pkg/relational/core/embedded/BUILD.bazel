@@ -21,6 +21,7 @@ go_library(
         "plan_visitor.go",
         "query_hash.go",
         "scalar_functions.go",
+        "scalar_subquery_planning.go",
         "select_helpers.go",
         "select_parser.go",
         "stmt.go",

@@ -177,9 +177,9 @@ type cascadesTranslator struct {
 	// non-EXISTS filter-over-unnest merge and the EXISTS path
 	// (translateUnnestExistsFilter — always Unbakeable this slice); read by the
 	// gather's box arm (Unbakeable-only decline) and unnestExistsSeedSafe
-	// (any non-None state = the pre-verdict `true`). Scoped like
-	// unnestUnderExistential.
-	unnestBoxLegConjunct int
+	// (any non-None state declines the BINARY seed — it has no merge window
+	// for the conjunct in either verdict). Scoped like unnestUnderExistential.
+	unnestBoxLegConjunct boxConjVerdict
 	// unnestGatherBoxLegTypes records, per unnest-join node, the legTypes map
 	// the gathered BOX-outer seed was built with (translateGatheredUnnestCluster's
 	// non-INNER arm). The WHERE-merge arm consumes it: the seed⟺merge
@@ -905,15 +905,20 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 // renamed correlation identity, not by name. A plain (non-EXISTS) unnest is
 // unaffected.
 func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, pureSpine bool) bool {
-	// A MULTI-alias box declines to name-model when a regular (non-EXISTS) WHERE
-	// conjunct references a box leg (unnestBoxLegConjunct): the ordinal seed
-	// cannot yet bake such a conjunct positionally — it is merged into the
-	// name-keyed unnest SELECT, out of the executor's below-FOD hoist reach, so a
-	// positional box leaves the conjunct's box-leg ref unresolvable (malformed
-	// plan). This holds in BOTH paths — the flag is set by translateUnnestExistsFilter
-	// (EXISTS) AND the non-EXISTS filter-over-unnest merge — so the check is BEFORE
-	// the `!unnestUnderExistential` early return below. A single-source outer
-	// (==1) is unaffected — its pristine prefix resolves a bare conjunct.
+	// A MULTI-alias box declines the BINARY ordinal seed whenever a regular
+	// (non-EXISTS) WHERE conjunct references a box leg (unnestBoxLegConjunct !=
+	// None) — for EITHER verdict, because the binary W4c seed has no per-leg
+	// merge window for the conjunct: it would merge into the name-keyed unnest
+	// SELECT, out of the executor's below-FOD hoist reach, and a positional box
+	// leaves the ref unresolvable (malformed plan). Where the conjunct CAN bake
+	// is the GATHERED path: a Bakeable verdict is admitted there and baked over
+	// the gather's recorded legTypes (so a Bakeable shape never reaches this
+	// binary gate); an Unbakeable one declines the gather AND this binary seed,
+	// landing on name-model. The flag is set by translateUnnestExistsFilter
+	// (EXISTS — always Unbakeable this slice) AND the non-EXISTS
+	// filter-over-unnest merge (classified), so the check is BEFORE the
+	// `!unnestUnderExistential` early return below. A single-source outer (==1)
+	// is unaffected — its pristine prefix resolves a bare conjunct.
 	//
 	// This arm is scoped to genuine BOX bases: a PURE chained-unnest spine
 	// (pureSpine, passed true ONLY by the chained ordinal gate when the
@@ -945,10 +950,12 @@ func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, 
 }
 
 // nonExistsConjunctRefsOuterLeg reports whether any NON-EXISTS conjunct of pred
-// references an outer-leg alias in boxAliases — the box-leg reference the
-// ordinal unnest seed cannot yet bake in a regular WHERE conjunct (see
-// unnestBoxLegConjunct). Element/ordinal (unnest AS/AT) refs are
-// NOT in boxAliases, so a WHERE on the element does not trip it.
+// references an outer-leg alias in boxAliases — the box-leg reference that
+// routes the conjunct verdict (see unnestBoxLegConjunct): Bakeable rides the
+// gathered ordinal path and bakes over the recorded legTypes; Unbakeable — and
+// the binary W4c seed in ALL flagged cases — stays name-model. Element/ordinal
+// (unnest AS/AT) refs are NOT in boxAliases, so a WHERE on the element does not
+// trip it.
 func nonExistsConjunctRefsOuterLeg(pred predicates.QueryPredicate, boxAliases map[string]struct{}) bool {
 	if len(boxAliases) == 0 {
 		return false
@@ -2505,6 +2512,12 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 				// for both legs. The record's presence IS the discriminator (a
 				// reachability fact, not a re-derivation argument).
 				if recorded, hasRecord := t.unnestGatherBoxLegTypes[join]; hasRecord {
+					// CONSUME-ONCE (the enclosedGatherCache discipline): a shared
+					// subtree (a CTE body referenced twice) retranslates this SAME
+					// node, and a later translation whose gather DECLINED (e.g.
+					// enclosed) must not consume a record from an earlier one —
+					// the positional bake would land on a name-model select.
+					delete(t.unnestGatherBoxLegTypes, join)
 					toMerge := bakeGatedJoinPredicates([]predicates.QueryPredicate{pred}, recorded)
 					// Defensive net: the pre-translation verdict guaranteed
 					// bakeability, so no unbaked buried-leg reference may survive.

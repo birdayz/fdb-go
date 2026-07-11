@@ -31,11 +31,13 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// The unnestBoxLegConjunct verdict states.
+// boxConjVerdict is the three-state unnestBoxLegConjunct verdict.
+type boxConjVerdict int
+
 const (
-	boxConjNone       = 0 // no box-leg conjunct
-	boxConjBakeable   = 1 // every box-leg ref resolves in the seed's buried windows — the gather ADMITS
-	boxConjUnbakeable = 2 // EXISTS-path / subquery-carrying / unresolvable — the gather DECLINES (name model)
+	boxConjNone       boxConjVerdict = 0 // no box-leg conjunct
+	boxConjBakeable   boxConjVerdict = 1 // every box-leg ref resolves in the seed's buried windows — the gather ADMITS
+	boxConjUnbakeable boxConjVerdict = 2 // EXISTS-path / subquery-carrying / unresolvable — the gather DECLINES (name model)
 )
 
 // classifyBoxLegConjunct decides Bakeable vs Unbakeable for a NON-EXISTS WHERE
@@ -49,13 +51,24 @@ const (
 //   - every box-leg reference (legRef shape) must FieldIndex-resolve in its
 //     buried window's leafTyp — an unresolvable ref would strand as a lazy name
 //     read over the positional row (the wrong-slot class).
-func (t *cascadesTranslator) classifyBoxLegConjunct(box *logical.LogicalJoin, u *logical.LogicalUnnest, pred predicates.QueryPredicate) int {
+func (t *cascadesTranslator) classifyBoxLegConjunct(box *logical.LogicalJoin, u *logical.LogicalUnnest, pred predicates.QueryPredicate) boxConjVerdict {
+	// GATE FIRST: ordinalJoinSeedFields → ordinalLegColumns PANICS by design on
+	// a genuine name-model join leg, and a box that cannot gate ordinal as a
+	// fresh cluster is exactly where such legs live. The gather would decline
+	// that box anyway; classify must reach the same verdict without deriving
+	// the seed map (Unbakeable → the name-model fallback, never a crash on a
+	// shape that worked).
+	if !t.gatesAsFreshCluster(box) {
+		return boxConjUnbakeable
+	}
 	_, legTypes := t.ordinalJoinSeedFields([]clusterLeg{clusterLegOf(box, false)})
 	if legTypes == nil {
 		return boxConjUnbakeable
 	}
+	boxLegs := map[string]struct{}{}
 	allowed := map[string]struct{}{}
 	for a := range outerBoundAliases(box) {
+		boxLegs[strings.ToUpper(a)] = struct{}{}
 		allowed[strings.ToUpper(a)] = struct{}{}
 	}
 	if u.Alias != "" {
@@ -82,6 +95,13 @@ func (t *cascadesTranslator) classifyBoxLegConjunct(box *logical.LogicalJoin, u 
 						} else if _, found := w.leafTyp.FieldIndex(nv.Field); !found {
 							verdict = boxConjUnbakeable
 						}
+					} else if _, isBoxLeg := boxLegs[key]; isBoxLeg {
+						// A BOX-LEG alias with NO seed-map window (a
+						// transparent-filter-wrapped operand can appear in
+						// outerBoundAliases without a buried entry). Baking is
+						// impossible and the gathered select never binds the
+						// alias — Unbakeable, never a silent unbound QOV.
+						verdict = boxConjUnbakeable
 					}
 				} else if nv.Child == nil && strings.Contains(nv.Field, ".") {
 					// A dotted frontier read — cannot be positively attributed to

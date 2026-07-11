@@ -423,45 +423,12 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed query plan: "+err.Error())
 	}
-	// Plan scalar subqueries independently through the Cascades pipeline.
-	var scalarSubs []scalarSubqueryBinding
-	for _, ssq := range scalarSubqueryPlans {
-		// Pass md so the scalar subquery's own join legs can anchor (RFC-077 7.6);
-		// nested scalar subqueries are not collected here, so any they contain are
-		// dropped — matching the previous behavior (TranslateToCascades discards
-		// them too).
-		subRef, _ := query.TranslateToCascadesWithSubqueries(ssq.Plan, md)
-		if subRef == nil {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Cascades planner could not plan scalar subquery")
-		}
-		subPlanner := cascades.NewPlanner(rules, planCtx).
-			WithImplementationRules(cascades.DefaultImplementationRules()).
-			WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-			WithStatistics(stats).
-			WithMaxTasks(100_000)
-		subBest, _, subErr := subPlanner.Plan(subRef)
-		if subErr != nil || subBest == nil {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Cascades planner could not plan scalar subquery")
-		}
-		subPh, ok := subBest.(planExtractor)
-		if !ok {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"scalar subquery plan extraction failed")
-		}
-		subPlan := subPh.GetRecordQueryPlan()
-		if subPlan == nil {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"scalar subquery physical plan nil")
-		}
-		if err := cascades.ValidatePlanInvariants(subPlan); err != nil {
-			return nil, api.NewError(api.ErrCodeInternalError, "malformed scalar-subquery plan: "+err.Error())
-		}
-		scalarSubs = append(scalarSubs, scalarSubqueryBinding{
-			alias: ssq.Alias,
-			plan:  subPlan,
-		})
+	// Plan scalar subqueries independently through the Cascades pipeline
+	// (planScalarSubqueryPlans — the one planning path, shared with the
+	// plan harness).
+	scalarSubs, subErr := planScalarSubqueryPlans(scalarSubqueryPlans, md, stats)
+	if subErr != nil {
+		return nil, subErr
 	}
 
 	ls.setPlan(physPlan)
@@ -924,7 +891,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	// Pass md so DML join legs (e.g. UPDATE … FROM a JOIN b) anchor (RFC-077 7.6).
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	ref, dmlScalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}
@@ -972,14 +939,27 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed DML plan: "+err.Error())
 	}
 
+	// Plan the DML statement's scalar subqueries (`DELETE … WHERE v > (SELECT
+	// …)`) through the same shared pipeline as SELECT and carry them on the
+	// plan so fetchPage pre-binds their results. This path historically
+	// DISCARDED them (`ref, _ :=`), and the unbound value silently evaluated
+	// NULL — the DELETE compared v > NULL (UNKNOWN) and removed NOTHING, with
+	// both dual-window models identically wrong; the loud
+	// values.UnboundScalarSubqueryError is what surfaced it.
+	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(dmlScalarSubqueryPlans, md, dmlStats)
+	if dmlSubErr != nil {
+		return nil, dmlSubErr
+	}
+
 	ls.setPlan(physPlan)
 	ls.setCache(PlanCacheSkip)
 	return &cascadesPlan{
-		conn:         g.c,
-		md:           md,
-		physicalPlan: physPlan,
-		explain:      logicalOp.Explain(""),
-		dryRun:       dryRun,
+		conn:             g.c,
+		md:               md,
+		physicalPlan:     physPlan,
+		explain:          logicalOp.Explain(""),
+		scalarSubqueries: dmlScalarSubs,
+		dryRun:           dryRun,
 	}, nil
 }
 
@@ -1035,15 +1015,6 @@ func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext
 	}, nil
 }
 
-// scalarSubqueryBinding pairs a correlation alias with a planned
-// inner RecordQueryPlan for a scalar subquery. The executor pre-runs
-// each and binds the scalar result under the alias before running
-// the outer plan.
-type scalarSubqueryBinding struct {
-	alias values.CorrelationIdentifier
-	plan  plans.RecordQueryPlan
-}
-
 // cascadesPlan wraps a Cascades-planned SELECT query with a pre-computed
 // physical plan. Planning happens at Plan-time; Execute only runs the plan.
 type cascadesPlan struct {
@@ -1051,7 +1022,7 @@ type cascadesPlan struct {
 	md               *recordlayer.RecordMetaData
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
-	scalarSubqueries []scalarSubqueryBinding
+	scalarSubqueries []PlannedScalarSubquery
 
 	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
 	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
@@ -1210,7 +1181,7 @@ type paginatingRows struct {
 	ss               subspace.Subspace
 	plan             plans.RecordQueryPlan
 	md               *recordlayer.RecordMetaData
-	scalarSubqueries []scalarSubqueryBinding
+	scalarSubqueries []PlannedScalarSubquery
 	cols             []executor.ColumnDef
 
 	// emitted counts rows actually returned to the caller across all pages.
@@ -1668,14 +1639,14 @@ func (r *paginatingRows) fetchPage() error {
 		if len(r.scalarSubqueries) > 0 {
 			scalarResults := make(map[values.CorrelationIdentifier]any, len(r.scalarSubqueries))
 			for _, ssq := range r.scalarSubqueries {
-				result, ssqErr := executor.EvaluateScalarSubquery(r.ctx, ssq.plan, store, evalCtx, props)
+				result, ssqErr := executor.EvaluateScalarSubquery(r.ctx, ssq.Plan, store, evalCtx, props)
 				if ssqErr != nil {
 					// Route the subquery error through the same translation as the
 					// outer plan so a subquery scan-limit/deadline hit surfaces as
 					// 54F01, not a raw *ScanLimitReachedError (RFC-106a).
 					return nil, translateExecErrorCtx(r.ctx, ssqErr)
 				}
-				scalarResults[ssq.alias] = result
+				scalarResults[ssq.Alias] = result
 			}
 			evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
 		}

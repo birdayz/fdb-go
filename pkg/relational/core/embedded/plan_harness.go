@@ -199,8 +199,27 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 // physical RecordQueryPlan (so callers can execute it against a real store),
 // not just its Explain string. The session schema defaults to the embedded
 // planner's "s".
+//
+// The query's scalar subqueries are planned but NOT returned — fine for
+// plan-only callers (Explain/shape assertions); a caller that EXECUTES a
+// subquery-bearing plan without pre-binding results fails loudly with
+// values.UnboundScalarSubqueryError. Executing callers use
+// PlanRecordQueryWithSubqueries.
 func PlanRecordQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
 	return PlanRecordQueryWithMetadataSchema(sql, md, defaultEmbeddedSchema, stats)
+}
+
+// PlanRecordQueryWithSubqueries is PlanRecordQueryWithMetadata plus the
+// query's planned scalar subqueries — planned through planScalarSubqueryPlans,
+// the same pipeline the production generator uses. Callers that execute the
+// returned plan must pre-evaluate each subquery
+// (executor.EvaluateScalarSubquery) and bind the results via
+// EvaluationContext.WithScalarSubqueries, exactly as the sql driver's
+// fetchPage does; running the outer plan without the bindings fails loudly
+// with values.UnboundScalarSubqueryError (never a silent NULL that vanishes
+// rows — the bug this API closed).
+func PlanRecordQueryWithSubqueries(sql string, md *recordlayer.RecordMetaData, stats properties.StatisticsProvider) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
+	return planRecordQueryAndSubqueries(sql, md, defaultEmbeddedSchema, stats)
 }
 
 // PlanRecordQueryWithMetadataSchema is PlanRecordQueryWithMetadata bound to a
@@ -212,69 +231,77 @@ func PlanRecordQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, sta
 // B)` with session schema `main`) — is resolved against the ACTIVE schema, not
 // the hardcoded default. RFC-142 (P2b).
 func PlanRecordQueryWithMetadataSchema(sql string, md *recordlayer.RecordMetaData, schemaName string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
+	plan, _, err := planRecordQueryAndSubqueries(sql, md, schemaName, stats)
+	return plan, err
+}
+
+// planRecordQueryAndSubqueries is the shared body of the record-plan harness
+// entry points: parse → logical build → translate → Cascades-plan the main
+// query AND its collected scalar subqueries.
+func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, schemaName string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
 	if schemaName == "" {
 		schemaName = defaultEmbeddedSchema
 	}
 	root, err := parser.Parse(sql)
 	if err != nil {
-		return nil, fmt.Errorf("parse SQL: %w", err)
+		return nil, nil, fmt.Errorf("parse SQL: %w", err)
 	}
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
-		return nil, fmt.Errorf("no statements in SQL")
+		return nil, nil, fmt.Errorf("no statements in SQL")
 	}
 	sel := stmts.AllStatement()[0].SelectStatement()
 	if sel == nil {
-		return nil, fmt.Errorf("not a SELECT statement")
+		return nil, nil, fmt.Errorf("not a SELECT statement")
 	}
 	q := sel.Query()
 	if q == nil {
-		return nil, fmt.Errorf("malformed SELECT")
+		return nil, nil, fmt.Errorf("malformed SELECT")
 	}
 
 	visitor := NewPlanVisitorWithSchema(md, schemaName)
 	logicalOp, buildErr := visitor.VisitQuery(q)
 	if buildErr != nil {
-		return nil, buildErr
+		return nil, nil, buildErr
 	}
 	if logicalOp == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
 	}
 	// Java table-first order: a schema-qualified table mis-classified as a
 	// lateral unnest (`FROM PA AS s, s.PB`, alias `s` == schema name) is demoted
 	// back to a table scan before validation/translation (or AT-on-a-table is
 	// rejected with WRONG_OBJECT_TYPE). RFC-142 (P2b).
 	if err := demoteSchemaQualifiedUnnest(logicalOp, schemaName, md); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Backstop for AT-on-a-table sources inside a subquery (the per-FROM-scope early
 	// pass in VisitQuery runs before subquery plans are attached). Surfaces the
 	// faithful WRONG_OBJECT_TYPE before validateTablesAndColumns can mask it with a
 	// column-validation error. RFC-142.
 	if err := rejectAtOrdinalityOnTable(logicalOp, md); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
 	// alias (earlier OR later) in the same scope — the later-source collision the
 	// translator's bottom-up lowering cannot see. RFC-142.
 	if err := rejectDuplicateUnnestAlias(logicalOp, md); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := resolveQualifiedTableNames(logicalOp, schemaName); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := validateTablesAndColumns(logicalOp, md); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
+	ref, scalarSubqueryPlans, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
 		// Surface a specific translation error code (RFC-142: AT ordinality on a
 		// non-array source → WRONG_OBJECT_TYPE) over the generic fallback.
-		return nil, translateErr
+		return nil, nil, translateErr
 	}
 	if ref == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
 	rules := cascades.DefaultExpressionRules()
@@ -288,27 +315,35 @@ func PlanRecordQueryWithMetadataSchema(sql string, md *recordlayer.RecordMetaDat
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil {
-		return nil, fmt.Errorf("planning failed: %w", planErr)
+		return nil, nil, fmt.Errorf("planning failed: %w", planErr)
 	}
 	if bestExpr == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no plan found")
+		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "no plan found")
 	}
 	type planExtractor interface {
 		GetRecordQueryPlan() plans.RecordQueryPlan
 	}
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
-		return nil, fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
+		return nil, nil, fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
-		return nil, fmt.Errorf("physical plan is nil")
+		return nil, nil, fmt.Errorf("physical plan is nil")
 	}
 	// RFC-164 WS-2: structural plan invariants (see ValidatePlanInvariants).
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
-		return nil, fmt.Errorf("plan invariant violated: %w", err)
+		return nil, nil, fmt.Errorf("plan invariant violated: %w", err)
 	}
-	return physPlan, nil
+	// Plan the translator-collected scalar subqueries through the SAME pipeline
+	// the production generator uses; PlanRecordQueryWithSubqueries surfaces
+	// them, the plan-only entry points drop them (execution without the
+	// bindings is loud — values.UnboundScalarSubqueryError).
+	subs, subErr := planScalarSubqueryPlans(scalarSubqueryPlans, md, stats)
+	if subErr != nil {
+		return nil, nil, subErr
+	}
+	return physPlan, subs, nil
 }
 
 // ResultColumnLabelsForPlan returns the user-visible result-set column labels a

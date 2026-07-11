@@ -757,12 +757,14 @@ func TestRFC173UR_C1_OpaqueBox_NestedClusterPredsStayInside(t *testing.T) {
 	}
 }
 
-// TestRFC173W5_Gathered_OuterConjunctCoupling pins the flag coupling between the
-// gathered path and the binary seed gate: translateGatheredUnnestCluster's
-// OUTER-box arm declines (nil) when unnestBoxLegConjunct is set, so a
-// DISTINCT-leg-column box can't bypass the outer-conjunct narrowing via the
-// gather (SRC/AUX share no column name → the name-ambiguity decline never fires
-// and can't mask the flag). The corresponding e2e rows are OVER-DETERMINED (the
+// TestRFC173W5_Gathered_OuterConjunctCoupling pins the 3-state verdict routing
+// at translateGatheredUnnestCluster's OUTER-box arm: UNBAKEABLE declines (nil,
+// name-model), while None AND BAKEABLE gather an ordinal seed — B2 sub-slice A
+// admits bakeable conjuncts, so a regression of gather's `== boxConjUnbakeable`
+// comparison back to the blanket `!= boxConjNone` decline breaks the Bakeable
+// arm here. A DISTINCT-leg-column box can't bypass the narrowing via the gather
+// (SRC/AUX share no column name → the name-ambiguity decline never fires and
+// can't mask the verdict). The corresponding e2e rows are OVER-DETERMINED (the
 // name-model fallback yields the same rows), so the decline-vs-gather DECISION
 // must be pinned white-box, not by row output — the same discipline the
 // ClusteredBoxSeedsOrdinal pin follows.
@@ -770,12 +772,13 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 	t.Parallel()
 	innerCorr := values.NamedCorrelationIdentifier("EL")
 
-	// OUTER-box arm. flag CLEAR → must GATHER an ORDINAL seed (an
-	// unconditional/over-broad decline would break the flag-clear case — the
-	// very bug path); flag SET → must DECLINE to name-model (the box-leg
-	// conjunct would merge by name over a positional gather with no per-leg
-	// window → malformed). Both FULL and LEFT boxes: the round-4 repro was a
-	// FULL box, and LEFT shares the one-opaque-leg gather.
+	// OUTER-box arm. None → must GATHER an ORDINAL seed (an unconditional/
+	// over-broad decline would break the verdict-clear case — the very bug
+	// path); BAKEABLE → must ALSO GATHER (the B2 admit; the merge later bakes
+	// the conjunct over the gather's recorded legTypes); UNBAKEABLE → must
+	// DECLINE to name-model (the conjunct would merge by name over a positional
+	// gather with no per-leg window → malformed). Both FULL and LEFT boxes: the
+	// round-4 repro was a FULL box, and LEFT shares the one-opaque-leg gather.
 	for _, kind := range []logical.JoinKind{logical.JoinFull, logical.JoinLeft} {
 		box := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), kind,
 			chainEqPredLocal("x", "XID", "s", "SID"))
@@ -793,19 +796,34 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 				kind, clear.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
 		}
 
+		trBake := newDisjointUnnestTranslator(t)
+		trBake.unnestBoxLegConjunct = boxConjBakeable
+		baked := trBake.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+		if baked == nil {
+			t.Fatalf("%v box, BAKEABLE: must GATHER (got nil) — B2 admits bakeable conjuncts; a `!= boxConjNone` blanket decline regressed", kind)
+		}
+		if rc, ok := baked.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok || rc.AnchoredJoin {
+			t.Fatalf("%v box, BAKEABLE: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
+				kind, baked.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
+		}
+		if _, hasRecord := trBake.unnestGatherBoxLegTypes[j]; !hasRecord {
+			t.Fatalf("%v box, BAKEABLE: gather must RECORD its legTypes for the merge-site bake (one-authority law), found no record", kind)
+		}
+
 		trSet := newDisjointUnnestTranslator(t)
 		trSet.unnestBoxLegConjunct = boxConjUnbakeable
 		if got := trSet.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-			t.Fatalf("%v box, flag SET: must DECLINE to name-model (got %T) — a box-leg conjunct merges by name over a positional gather with no per-leg window; gathering malforms", kind, got)
+			t.Fatalf("%v box, UNBAKEABLE: must DECLINE to name-model (got %T) — the conjunct merges by name over a positional gather with no per-leg window; gathering malforms", kind, got)
 		}
 	}
 
-	// INNER-cluster arm — NOT declined by the flag: each leg keeps its own
-	// positional window, so a leg conjunct resolves THROUGH the gather. The
-	// anti-over-decline sentinel: an over-broad decline of the INNER arm drops
-	// the gather optimization silently (the e2e {7,8} can't catch it —
-	// name-model also yields {7,8}), so pin the DECISION and that the seed is
-	// ORDINAL (AnchoredJoin==false), mirroring the ClusteredBoxSeedsOrdinal pin.
+	// INNER-cluster arm — NOT declined by the verdict (even Unbakeable): each
+	// leg keeps its own positional window, so a leg conjunct resolves THROUGH
+	// the gather. The anti-over-decline sentinel: an over-broad decline of the
+	// INNER arm drops the gather optimization silently (the e2e {7,8} can't
+	// catch it — name-model also yields {7,8}), so pin the DECISION and that
+	// the seed is ORDINAL (AnchoredJoin==false), mirroring the
+	// ClusteredBoxSeedsOrdinal pin.
 	innerCluster := inner(scan("SRC", "s"), scan("AUX", "x"))
 	uInner := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
 	jInner := logical.NewJoin(innerCluster, uInner, logical.JoinInner, "")
@@ -813,10 +831,10 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 	trInner.unnestBoxLegConjunct = boxConjUnbakeable
 	got := trInner.translateGatheredUnnestCluster(jInner, uInner, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 	if got == nil {
-		t.Fatal("INNER cluster, flag SET: must STILL GATHER (got nil) — the flag couples only the OUTER-box arm; over-declining the INNER cluster drops the gather optimization")
+		t.Fatal("INNER cluster, UNBAKEABLE: must STILL GATHER (got nil) — the verdict couples only the OUTER-box arm; over-declining the INNER cluster drops the gather optimization")
 	}
 	if rc, ok := got.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok || rc.AnchoredJoin {
-		t.Fatalf("INNER cluster, flag SET: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
+		t.Fatalf("INNER cluster, UNBAKEABLE: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
 			got.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
 	}
 }

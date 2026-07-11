@@ -159,6 +159,7 @@ go_test(
         "value_recordtype_test.go",
         "value_row_number_high_order_test.go",
         "value_row_number_test.go",
+        "value_scalar_subquery_test.go",
         "value_subscript_test.go",
         "value_throws_test.go",
         "value_udf_test.go",

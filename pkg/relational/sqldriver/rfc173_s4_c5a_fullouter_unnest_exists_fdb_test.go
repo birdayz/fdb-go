@@ -281,31 +281,35 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		[]string{"7", "8"})
 
 	// NON-EXISTS outer conjunct on a box leg — the sibling of the EXISTS
-	// regression, in the plain filter-over-unnest path. `(a FULL b), a.arr WHERE
-	// a.col=V` (NO EXISTS) also ordinalizes the box (AXIS 1 fires regardless of
-	// EXISTS), and the regular conjunct merges into the name-keyed unnest SELECT →
-	// a positional box leaves it unresolvable. The narrowing (now set in BOTH the
-	// EXISTS and non-EXISTS filter paths, checked in unnestExistsSeedSafe before
-	// the !unnestUnderExistential early return) declines the box to name-model →
-	// correct. Both the scan-legged and clustered-INNER shapes are pinned; each
-	// was red-first as `field "…" not resolvable ... malformed plan`.
-	assertRows(t, "NONEXISTS-CONJUNCT/scan-box-stays-name-model",
+	// regression, in the plain filter-over-unnest path. HISTORY: `(a FULL b),
+	// a.arr WHERE a.col=V` (NO EXISTS) first shipped as a name-model DECLINE
+	// (each pin red-first as `field "…" not resolvable ... malformed plan`
+	// against the un-narrowed gather). B2 sub-slice A lifted the decline: these
+	// conjuncts now classify BAKEABLE (classifyBoxLegConjunct — every box-leg
+	// ref resolves in the seed's buried windows), ride the gathered ordinal
+	// path, and bake over the gather's recorded legTypes. The rows are
+	// path-independent (name-model yields {7,8} too) — the pins guard
+	// CORRECTNESS across verdict changes, and the verdict ROUTING itself is
+	// pinned white-box by TestRFC173B2_FilteredBoxUnnestCensus (query pkg).
+	// Both the scan-legged and clustered-INNER (buried-leaf) shapes are pinned.
+	assertRows(t, "NONEXISTS-CONJUNCT/scan-box-bakes-ordinal",
 		`SELECT "X" FROM FOA FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" WHERE FOA."K" = 100`,
 		[]string{"7", "8"})
-	assertRows(t, "NONEXISTS-CONJUNCT/clustered-box-stays-name-model",
+	assertRows(t, "NONEXISTS-CONJUNCT/clustered-box-bakes-ordinal",
 		`SELECT "X" FROM FOA INNER JOIN FOD ON FOA."AID" = FOD."DID" `+
 			`FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" WHERE FOD."K" = 200`,
 		[]string{"7", "8"})
 
 	// NONEXISTS-CONJUNCT / no-shared-columns FULL box. FOA and FOC share NO
 	// column name, so the box concat has no duplicate → the gathered path's
-	// name-ambiguous decline does NOT fire. Without the unnestBoxLegConjunct
-	// decline in the gathered OUTER-box arm, the box gathers positionally as one
-	// opaque leg and the box-leg WHERE conjunct merges by name with no per-leg
+	// name-ambiguous decline does NOT fire and can't mask the conjunct
+	// handling. HISTORY: without any box-leg-conjunct narrowing the box
+	// gathered positionally with the WHERE merged by name and no per-leg
 	// window → `field "FOA.K" not resolvable … ordinal -1` (malformed plan,
-	// red-first). The gathered arm now declines to the binary name-model path,
-	// where the qualified key resolves. Both a FOA leg conjunct and a FOC leg
-	// conjunct must resolve. FOA.AID=1=FOC.CID matches → FOA.ARR=[7,8].
+	// red-first); the first fix declined to name-model. Post-B2 these classify
+	// BAKEABLE and bake positionally over the buried windows — either leg's
+	// conjunct must resolve to ITS OWN window. FOA.AID=1=FOC.CID matches →
+	// FOA.ARR=[7,8].
 	assertRows(t, "NONEXISTS-CONJUNCT/noshare-fullbox-first-leg",
 		`SELECT "X" FROM FOA FULL OUTER JOIN FOC ON FOA."AID" = FOC."CID", FOA."ARR" AS "X" WHERE FOA."K" = 100`,
 		[]string{"7", "8"})
@@ -325,15 +329,17 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		`SELECT "X" FROM FOA JOIN FOC ON FOA."AID" = FOC."CID", FOA."ARR" AS "X" WHERE FOC."CK" = 100`,
 		[]string{"7", "8"})
 
-	// OUTER-CONJUNCT regression pin. A regular (NON-EXISTS) WHERE conjunct on a
-	// box leg (FOA.K=100, OUTSIDE the EXISTS) on a multi-alias FULL box cannot yet
-	// be baked positionally (it merges into the name-keyed unnest SELECT, out of
-	// the executor's below-FOD hoist reach), so the ordinal seed would leave it
-	// unresolvable → malformed plan. The narrowing declines such a shape to
-	// name-model (unnestExistsSeedSafe → unnestBoxLegConjunct), which
-	// resolves FOA.K via the qualified key → correct {7,8}. RED before the
-	// narrowing (`field "FOA.K" not resolvable ... malformed plan`); pre-c5a this
-	// shape was name-model and worked, so the ordinal lift MUST NOT regress it.
+	// OUTER-CONJUNCT regression pin — the EXISTS-path box-leg conjunct, which
+	// (unlike its non-EXISTS sibling above, Bakeable since B2 sub-slice A)
+	// STAYS name-model: translateUnnestExistsFilter sets unnestBoxLegConjunct
+	// to Unbakeable unconditionally — the EXISTS composition rebases outer refs
+	// through the existential quantifier, and baking a $BOX-window conjunct
+	// under that rebase is B2 sub-slice B (deferred, needs its own design
+	// consult). unnestExistsSeedSafe declines the ordinal seed, so FOA.K
+	// resolves via the qualified name-model key → correct {7,8}. RED before the
+	// narrowing (`field "FOA.K" not resolvable ... malformed plan`); pre-c5a
+	// this shape was name-model and worked, so the ordinal lift MUST NOT
+	// regress it.
 	assertRows(t, "OUTER-CONJUNCT/box-leg-stays-name-model",
 		`SELECT "X" `+from+` WHERE FOA."K" = 100 AND EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
 		[]string{"7", "8"})

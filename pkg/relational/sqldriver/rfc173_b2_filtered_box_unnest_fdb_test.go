@@ -31,6 +31,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -117,7 +118,7 @@ func TestFDB_RFC173B2_FilteredBoxUnnest(t *testing.T) {
 
 	run := func(t *testing.T, sql string) []string {
 		t.Helper()
-		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+		plan, subs, perr := embedded.PlanRecordQueryWithSubqueries(sql, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
@@ -127,7 +128,22 @@ func TestFDB_RFC173B2_FilteredBoxUnnest(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			cursor, cErr := executor.ExecutePlan(ctx, plan, store, executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+			// Pre-evaluate the plan's scalar subqueries and bind their results,
+			// as the sql driver's fetchPage does — executing without the bindings
+			// fails loudly (values.UnboundScalarSubqueryError).
+			evalCtx := executor.EmptyEvaluationContext()
+			if len(subs) > 0 {
+				scalarResults := make(map[values.CorrelationIdentifier]any, len(subs))
+				for _, ssq := range subs {
+					result, ssqErr := executor.EvaluateScalarSubquery(ctx, ssq.Plan, store, evalCtx, recordlayer.DefaultExecuteProperties())
+					if ssqErr != nil {
+						return nil, ssqErr
+					}
+					scalarResults[ssq.Alias] = result
+				}
+				evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
+			}
+			cursor, cErr := executor.ExecutePlan(ctx, plan, store, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 			if cErr != nil {
 				return nil, cErr
 			}
@@ -210,10 +226,20 @@ func TestFDB_RFC173B2_FilteredBoxUnnest(t *testing.T) {
 	t.Run("at_ordinal_conjunct", func(t *testing.T) {
 		want(t, `SELECT LA."K", "X", "O" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID", LA."ARR" AS "X" AT "O" WHERE LA."K" = 100`, "100|1|7", "100|2|8")
 	})
-	// Scalar-subquery conjunct: UNBAKEABLE — stays name-model, answers today's
-	// rows ([]: MAX(CV)=900 ≠ any K). Flip-sentinel for sub-slice widening.
-	t.Run("scalar_subquery_stays_name_model_correct", func(t *testing.T) {
+	// Scalar-subquery conjunct: UNBAKEABLE → name-model (the verdict ROUTING is
+	// pinned white-box by TestRFC173B2_FilteredBoxUnnestCensus's
+	// scalar_subquery_operand classifier arm; rows here pin CORRECTNESS). Two
+	// discriminating arms: comparison-FALSE ([] — MAX(CV)=900 ≠ any K) and
+	// comparison-TRUE (both LA rows: 100<900, 110<900 → all three elements) —
+	// the TRUE arm proves the subquery actually EVALUATES; before the harness
+	// pre-bound subquery results, an absent binding silently compared K to NULL
+	// and BOTH arms returned [] (indistinguishable from the FALSE arm — the
+	// silent-NULL hole values.UnboundScalarSubqueryError now closes).
+	t.Run("scalar_subquery_unbakeable_false_arm", func(t *testing.T) {
 		want(t, `SELECT "X" `+leftBox+` WHERE LA."K" = (SELECT MAX(CV) FROM CC)`)
+	})
+	t.Run("scalar_subquery_unbakeable_true_arm", func(t *testing.T) {
+		want(t, `SELECT "X" `+leftBox+` WHERE LA."K" < (SELECT MAX(CV) FROM CC)`, "7", "8", "9")
 	})
 	// GROUP BY over the filtered gather.
 	t.Run("group_by_over_filtered", func(t *testing.T) {

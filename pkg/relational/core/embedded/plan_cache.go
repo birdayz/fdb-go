@@ -36,7 +36,7 @@ type PlanCache struct {
 
 type planCacheEntry struct {
 	plan       plans.RecordQueryPlan
-	scalarSubs []scalarSubqueryBinding
+	scalarSubs []PlannedScalarSubquery
 }
 
 // lruItem is the value stored in each list element. It carries its own key
@@ -64,7 +64,7 @@ func NewPlanCache(maxSize int) *PlanCache {
 // internally (case-folded, whitespace-collapsed, comments stripped)
 // before lookup. Returns the plan, scalar subquery bindings, and true
 // on a cache hit; nil, nil, false on miss.
-func (c *PlanCache) Get(sql string) (plans.RecordQueryPlan, []scalarSubqueryBinding, bool) {
+func (c *PlanCache) Get(sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, bool) {
 	key := normalizeSQL(sql)
 
 	c.mu.Lock()
@@ -84,7 +84,7 @@ func (c *PlanCache) Get(sql string) (plans.RecordQueryPlan, []scalarSubqueryBind
 
 // Put stores a plan in the cache keyed by normalized SQL text. If the
 // cache is at capacity, the least recently used entry is evicted.
-func (c *PlanCache) Put(sql string, plan plans.RecordQueryPlan, subs []scalarSubqueryBinding) {
+func (c *PlanCache) Put(sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery) {
 	key := normalizeSQL(sql)
 
 	c.mu.Lock()

@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -105,7 +106,7 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 
 	run := func(t *testing.T, q string) (string, []string) {
 		t.Helper()
-		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		plan, subs, perr := embedded.PlanRecordQueryWithSubqueries(q, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", q, perr)
 		}
@@ -116,7 +117,22 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			cur, cErr := executor.ExecutePlan(ctx, plan, store, executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+			// Pre-evaluate the plan's scalar subqueries and bind their results,
+			// exactly as the sql driver's fetchPage does — executing without the
+			// bindings fails loudly (values.UnboundScalarSubqueryError).
+			evalCtx := executor.EmptyEvaluationContext()
+			if len(subs) > 0 {
+				scalarResults := make(map[values.CorrelationIdentifier]any, len(subs))
+				for _, ssq := range subs {
+					result, ssqErr := executor.EvaluateScalarSubquery(ctx, ssq.Plan, store, evalCtx, recordlayer.DefaultExecuteProperties())
+					if ssqErr != nil {
+						return nil, ssqErr
+					}
+					scalarResults[ssq.Alias] = result
+				}
+				evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
+			}
+			cur, cErr := executor.ExecutePlan(ctx, plan, store, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 			if cErr != nil {
 				return nil, cErr
 			}
@@ -272,18 +288,21 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 			[]string{"map[A.K:100 B.K:200 X:7]", "map[A.K:100 B.K:200 X:8]"})
 	})
 
-	// GROUPED over a NAME-MODEL FALLBACK: a WHERE conjunct on a box leg (`WHERE A.K=100`,
-	// A a leg of the FULL box that is the unnest's left) trips unnestBoxLegConjunct
-	// → the gather DECLINES to name-model (the box, gathered as one opaque leg, has no
-	// per-leg window for that conjunct). The fallback is STILL a SelectExpression with an
-	// Explode quantifier, but its RC is ANCHORED and emits NO positional row. The group-by
-	// MUST NOT positionally bake `GROUP BY X` over it (a baked ordinal on the Datum map
-	// would error); the `!rc.AnchoredJoin` gate keeps it name-model. A FULL B matches one
-	// row (A.K=100 passes the WHERE); A.arr={7,8} → GROUP BY X yields 7,8 each COUNT 1.
-	// Regression pin for the anchored-fallback bake gate (re-pointed from the within-box
-	// dup, which now gathers — this WHERE-on-box-leg shape is still an anchored decline).
+	// GROUPED over a NAME-MODEL FALLBACK: an UNBAKEABLE box-leg conjunct — the WHERE
+	// carries a scalar subquery, which classifyBoxLegConjunct declines pre-translation
+	// (unnestBoxLegConjunct = Unbakeable) — keeps the gather declined to name-model.
+	// The fallback is STILL a SelectExpression with an Explode quantifier, but its RC
+	// is ANCHORED and emits NO positional row. The group-by MUST NOT positionally bake
+	// `GROUP BY X` over it (a baked ordinal on the Datum map would error); the
+	// `!rc.AnchoredJoin` gate keeps it name-model. A FULL B matches one row; the
+	// conjunct passes it (A.K=100 > MAX(C.M)=55); A.arr={7,8} → GROUP BY X yields 7,8
+	// each COUNT 1. Regression pin for the anchored-fallback bake gate — re-pointed
+	// TWICE as ordinal coverage grew: from the within-box dup (gathers since class-1),
+	// then from the plain `WHERE A.K=100` conjunct (Bakeable since B2 sub-slice A, so
+	// it now gathers too); a subquery-carrying conjunct is the surviving anchored
+	// decline that still exercises this gate.
 	t.Run("grouped_over_name_model_fallback_does_not_bake", func(t *testing.T) {
-		wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 GROUP BY "X"`,
+		wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" > (SELECT MAX("M") FROM C) GROUP BY "X"`,
 			[]string{"map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]"})
 	})
 
