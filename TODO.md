@@ -687,16 +687,19 @@ validation gate.
     buildSelectScope consults cteScopes only, so an ON-only name's UN-ENCLOSED reads either fall to a
     same-named TABLE's schema (loud 42703) or, with no such table, to the NIL-resolver leniency (which is
     LOAD-BEARING for the enclosed comma-FROM reads Q1-Q5 — it lets the executor merge fabrication resolve
-    them). On the leniency path a VALID enclosed read answers (Q52 coinciding shadow → correct inner
-    value via fabrication) while an INVALID/unresolvable scalar read is silently NULL (Q51 flip-sentinels:
-    no-shadow MAX("NOPE"), shadow different-schema MAX(X)-over-inner-Y). NOTE (round 15): an earlier round
-    INSTALLED the inner shadow CTE's ON-only DERIVED schema into cteScopes to make the coinciding scalar
-    read answer via a general-read schema — REVERTED as both unnecessary (the leniency path already
-    answers Q52) and unsound (buildCTEOnOnlySource's schema is ON-resolution-only + LOSSY: NewUnquoted
-    case-folds, duplicate output names permitted — promoting it silently mis-resolved quoted-alias/dup-name
-    WHERE reads, codex-caught; those now fail closed 0AF00, Q53). Fix for the silent leniency residual =
-    cteOnScopes-aware read resolution, CAREFULLY: the flatten-evasion gate pin (cte_form_fails_cleanly)
-    must keep its clean decline AND the enclosed comma-FROM reads (Q1-Q5) must keep resolving. (i-b) FORWARD-VISIBILITY divergence (round-12
+    them). On the leniency path a VALID non-shadow enclosed read answers while an INVALID/unresolvable
+    non-shadow scalar read is silently NULL (Q51 flip-sentinel: MAX("NOPE") over a non-shadow ON-only CTE
+    — the one remaining silent residual). SHADOW-CASE resolution: the inner shadow CTE's ON-only DERIVED
+    schema is INSTALLED into cteScopes (the shadow REPLACE arm), now made READ-SOUND — buildCTEOnOnlySource
+    PRESERVES quoted-alias CASE (case-preserving Ids; cteBodyAliasQuoted is a typed parse-tree read) and
+    DECLINES duplicate output names to the marker. A qualified shadow read then resolves against the
+    correct generation (Q52 bare + qualified MAX("V"."X")) and a case-mismatched or duplicate-name read
+    fails LOUD (Q53) — the review-caught lossy-install holes closed at the SCHEMA, not by keeping the
+    schema out (an earlier round's plain evict left qualified reads unresolved → silent NULL; a plain
+    lossy install silently mis-resolved them — both wrong, the read-sound install is the terminal state).
+    Fix for the remaining non-shadow silent leniency residual = cteOnScopes-aware read resolution,
+    CAREFULLY: the flatten-evasion gate pin (cte_form_fails_cleanly) must keep its clean decline AND the
+    enclosed comma-FROM reads (Q1-Q5) must keep resolving. (i-b) FORWARD-VISIBILITY divergence (round-12
     review, both reviewers independently; pre-existing, A/B'd to before the arc): `WITH A AS (SELECT …
     FROM B), B AS (…)` ANSWERS on both pipelines where SQL/PG reject the forward reference — the chain
     builds bodies after ALL registrations, and the visitor's REBUILD arm (running after the eager build
