@@ -682,13 +682,21 @@ validation gate.
     real one-rule ending is a SINGLE shared source-name resolution function all four scope consumers call
     (translateScan / cteLegKind / buildSelectScope.addSource / upgradeJoinOnPredicates.resolveTable — all
     four now individually CTE-first, but as four hand-mirrored copies). Two more riders, same family:
-    (i) the ON-ONLY READ class (pre-existing; TWO variants, one SILENT — the "loud both sides" first
-    characterization was wrong): buildSelectScope consults cteScopes only, so an ON-only name's
-    UN-ENCLOSED reads either fall to a same-named TABLE's schema (loud 42703 on the CTE's own alias) or,
-    with no such table, to the NIL-resolver leniency — an INVALID read is silently NULL
-    (`WITH "W" AS (join-bodied …) SELECT MAX("NOPE") FROM "W"` → NULL; Q51 flip-sentinel pins both
-    shapes). Fix = cteOnScopes-aware read resolution, CAREFULLY: the flatten-evasion gate pin
-    (cte_form_fails_cleanly) must keep its clean decline. (i-b) FORWARD-VISIBILITY divergence (round-12
+    (i) the ON-ONLY READ class (pre-existing; the SILENT residual is narrow — WHERE-based main-query
+    reads are already LOUD 0AF00, only the leniency-path MAX/scalar-subquery reads stay silent):
+    buildSelectScope consults cteScopes only, so an ON-only name's UN-ENCLOSED reads either fall to a
+    same-named TABLE's schema (loud 42703) or, with no such table, to the NIL-resolver leniency (which is
+    LOAD-BEARING for the enclosed comma-FROM reads Q1-Q5 — it lets the executor merge fabrication resolve
+    them). On the leniency path a VALID enclosed read answers (Q52 coinciding shadow → correct inner
+    value via fabrication) while an INVALID/unresolvable scalar read is silently NULL (Q51 flip-sentinels:
+    no-shadow MAX("NOPE"), shadow different-schema MAX(X)-over-inner-Y). NOTE (round 15): an earlier round
+    INSTALLED the inner shadow CTE's ON-only DERIVED schema into cteScopes to make the coinciding scalar
+    read answer via a general-read schema — REVERTED as both unnecessary (the leniency path already
+    answers Q52) and unsound (buildCTEOnOnlySource's schema is ON-resolution-only + LOSSY: NewUnquoted
+    case-folds, duplicate output names permitted — promoting it silently mis-resolved quoted-alias/dup-name
+    WHERE reads, codex-caught; those now fail closed 0AF00, Q53). Fix for the silent leniency residual =
+    cteOnScopes-aware read resolution, CAREFULLY: the flatten-evasion gate pin (cte_form_fails_cleanly)
+    must keep its clean decline AND the enclosed comma-FROM reads (Q1-Q5) must keep resolving. (i-b) FORWARD-VISIBILITY divergence (round-12
     review, both reviewers independently; pre-existing, A/B'd to before the arc): `WITH A AS (SELECT …
     FROM B), B AS (…)` ANSWERS on both pipelines where SQL/PG reject the forward reference — the chain
     builds bodies after ALL registrations, and the visitor's REBUILD arm (running after the eager build

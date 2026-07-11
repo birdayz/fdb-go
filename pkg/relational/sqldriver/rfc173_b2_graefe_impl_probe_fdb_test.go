@@ -931,32 +931,58 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("Y") FROM "V") FROM LB LIMIT 1`,
 			"900|900")
 	})
-	// Q51: the booked ON-only READ class, both variants. NO-SHADOW: an
-	// invalid read over a plain ON-only CTE is SILENT NULL — nil-resolver
-	// leniency; FLIP-SENTINEL for the booked cteOnScopes-aware read
-	// resolution (carefully — the flatten-evasion gate pin must hold);
-	// flips to 42703 with a truth pass here. SHADOW: LOUD already — the
-	// replace-not-evict installs the inner's ON-only schema, so a
-	// different-schema read fails at the subquery build (the surface 0A000
-	// is the known BuildScalar 42703→correlated-fallback misroute wart —
-	// loud, wrong message; sharpens when that family is fixed).
+	// Q51: the booked ON-only READ class — the MAX-scalar-subquery variants
+	// that resolve through buildSelectScope's nil-resolver LENIENCY + the
+	// executor merge fabrication (the path that is load-bearing for the
+	// enclosed comma-FROM reads Q1-Q5), INDEPENDENT of any install. NO-SHADOW
+	// invalid read → SILENT NULL. SHADOW different-schema read (inner exposes
+	// Y, read X) → SILENT NULL (the evict removed the stale outer; the read
+	// finds no X on the inner row). Both are FLIP-SENTINELS for the booked
+	// cteOnScopes-aware read resolution (carefully — the flatten-evasion gate
+	// pin must hold); each flips to a loud 42703-family error with a truth
+	// pass here. Contrast Q53: the WHERE-based reads at the main-query level
+	// are already LOUD (0AF00), so only these leniency-path scalar reads
+	// remain silent.
 	t.Run("Q51_ononly_invalid_read_class", func(t *testing.T) {
 		check(t, `WITH "W" AS (SELECT CC."CV" AS "Y" FROM LB LEFT JOIN CC ON LB."BID" = CC."CID") SELECT MAX("NOPE") FROM "W"`,
 			"<nil>")
-		_, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`)
-		if err == nil {
-			t.Fatal("different-schema read over a shadowing ON-only CTE must fail LOUD, got rows")
-		}
+		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`,
+			"<nil>|<nil>")
 	})
-	// Q52: the COINCIDING-schema shadow shape (review-caught: a plain evict
-	// sent this from correct-by-coincidence to silent NULL) — with the
-	// inner's ON-only schema installed, the read resolves against the
-	// CORRECT generation and answers with the INNER's values: inner
-	// X' = CC.CID over (outer X∈{1,3} LEFT JOIN CC ON X=CID) → {1, NULL} →
-	// MAX = 1.
+	// Q52: the COINCIDING-schema shadow read ANSWERS CORRECTLY through the
+	// leniency + merge-fabrication path (NOT via any install — an earlier
+	// round's install was unnecessary here AND is reverted): the evict
+	// removes the stale outer, and the read of X resolves against the inner
+	// row, which genuinely carries X' = CC.CID over (outer X∈{1,3} LEFT JOIN
+	// CC ON X=CID) → {1, NULL} → MAX = 1. This is the discriminator that the
+	// evict fixed the stale generation (base returned the OUTER X; a stale
+	// read here would give MAX(outer X) = 3, not 1).
 	t.Run("Q52_ononly_shadow_coinciding_schema_answers", func(t *testing.T) {
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "X" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`,
 			"1|1")
+	})
+	// Q53: the LOSSY-INSTALL regression pins (review-caught, round 15). An
+	// earlier round installed the inner shadow CTE's ON-only DERIVED schema
+	// into the global cteScopes to make an exotic coinciding read answer —
+	// but buildCTEOnOnlySource's schema is ON-resolution-only and LOSSY
+	// (NewUnquoted; permits duplicate output names), so promoting it to
+	// general reads SILENTLY MIS-RESOLVED quoted-alias and duplicate-name
+	// bodies. The install is reverted (plain evict, matching the derivable
+	// arm's shadow delete); these WHERE-based reads now FAIL CLOSED (0AF00),
+	// the correct-or-loud state — an install would silently accept them.
+	t.Run("Q53_lossy_shadow_reads_fail_closed", func(t *testing.T) {
+		// quoted lowercase "x" inner alias; WHERE "X"=1 uppercase must not
+		// resolve through a case-folded install.
+		loud0AF00(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "x" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`,
+			"quoted-alias shadow read")
+		// duplicate output name X; WHERE X=1 must not pick one column.
+		loud0AF00(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT LB."BID" AS "X", LB."K" AS "X" FROM "V" LEFT JOIN LB ON "V"."X" = LB."BID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`,
+			"duplicate-name shadow read")
+		// the comma-multi-leg shadow (my banked flatten-evasion probe): a
+		// join-bodied inner installed into cteScopes would reopen the
+		// flatten-evasion silent class; the evict keeps it loud.
+		loud0AF00(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT LA."K" AS "X", LB."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "V"."X", "V"."Y" FROM "V", CC WHERE "V"."X" = CC."CID") FROM LB LIMIT 1`,
+			"comma-multi-leg shadow read")
 	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
