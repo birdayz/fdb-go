@@ -1337,27 +1337,6 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 	return true
 }
 
-// cteBodyAliasQuoted returns, per SELECT element of a plain (non-star,
-// non-aggregate) CTE body, whether its AS-alias was written QUOTED — aligned
-// 1:1 with projCols for the bodies buildCTEOnOnlySource accepts (star and
-// aggregate bodies decline before the schema is used, so every element here
-// is a plain SelectExpressionElement). Typed parse-tree read (the leading
-// quote char on the raw Uid text), never a GetText string-match on the SQL.
-func cteBodyAliasQuoted(body *antlrgen.QueryTermDefaultContext) []bool {
-	st, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
-	if !ok || st.SelectElements() == nil {
-		return nil
-	}
-	elems := st.SelectElements().AllSelectElement()
-	out := make([]bool, len(elems))
-	for i, elem := range elems {
-		if e, isExpr := elem.(*antlrgen.SelectExpressionElementContext); isExpr && e.Uid() != nil {
-			out[i] = strings.HasPrefix(e.Uid().GetText(), `"`)
-		}
-	}
-	return out
-}
-
 func buildCTEOnOnlySource(
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
@@ -1445,19 +1424,7 @@ func buildCTEOnOnlySource(
 	if innerSQ.projCols == nil {
 		return semantic.ScopeSource{}, false // SELECT * over a multi-leg/derived body: no name authority
 	}
-	// Per-element alias QUOTEDNESS (aligned with projCols for the non-star,
-	// non-aggregate bodies this function accepts — those decline above, so
-	// every element here is a plain SelectExpressionElement, 1:1 with
-	// projCols). A quoted alias is CASE-SENSITIVE — the derived column Id
-	// must preserve it, or promoting this schema to general reads (the
-	// shadow-install path) case-folds and silently mis-resolves: `AS "x"`
-	// then wrongly accepts a `"X"` read, and `AS "X"` fails to answer a
-	// `"X"` read (review-caught). NewUnquoted for unquoted aliases (folds,
-	// the common case); a re-quoted New for quoted aliases (case-preserved,
-	// wasQuoted true).
-	aliasQuoted := cteBodyAliasQuoted(body)
 	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
-	seen := make(map[string]bool, len(innerSQ.projCols))
 	for i, col := range innerSQ.projCols {
 		// The output name must be one execution PROVABLY emits: the explicit
 		// alias (executeProjection always writes the alias key), or a BARE
@@ -1471,10 +1438,8 @@ func buildCTEOnOnlySource(
 		// computed item by its explain rendering — both decline (no bare key
 		// on the runtime row).
 		outName := ""
-		quoted := false
 		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 			outName = innerSQ.projAliases[i]
-			quoted = i < len(aliasQuoted) && aliasQuoted[i]
 		} else {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
 			if ref := parseColRef(col); !isComputed && !ref.isQualified() {
@@ -1484,21 +1449,8 @@ func buildCTEOnOnlySource(
 		if outName == "" {
 			return semantic.ScopeSource{}, false
 		}
-		id := semantic.NewUnquoted(outName)
-		if quoted {
-			id = semantic.New(`"`+outName+`"`, false) // case-preserved, wasQuoted
-		}
-		// DUPLICATE output name (`BID AS X, K AS X`): the schema is
-		// AMBIGUOUS — a read must 42702, never silently pick one column. This
-		// function's schema is used for ON resolution AND (via the shadow
-		// install) general reads; a duplicate makes both unsound. Decline to
-		// the loud marker (review-caught).
-		if seen[id.Name()] {
-			return semantic.ScopeSource{}, false
-		}
-		seen[id.Name()] = true
 		columns = append(columns, semantic.Column{
-			Id:       id,
+			Id:       semantic.NewUnquoted(outName),
 			Type:     "UNKNOWN",
 			Nullable: true,
 		})
@@ -4616,31 +4568,33 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				// what the body's reference means, pre-state scoping).
 				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
 				// The mirror of the derivable arm's shadow delete: an inner
-				// ON-ONLY registration must not leave a same-named OUTER
-				// derivable entry installed, or this level's MAIN query
-				// resolves the inner CTE's reads against the STALE OUTER
-				// schema (review-caught: reads returned the wrong
+				// ON-ONLY registration must EVICT a same-named OUTER
+				// derivable entry, or this level's MAIN query resolves the
+				// inner CTE's reads against the STALE OUTER schema
+				// (review-caught: MAX over a stale column returned the wrong
 				// generation; the pre-registration snapshot keeps the outer
-				// visible for the BODY build only). SHADOW case: REPLACE the
-				// outer entry with the inner's ON-only DERIVED schema when
-				// buildCTEOnOnlySource produced a real one — that schema is
-				// now READ-SOUND (case-preserving Ids for quoted aliases;
-				// duplicate output names decline to the marker), so
-				// promoting it to general resolution answers a qualified
-				// read against the CORRECT generation (Q52) and fails a
-				// case-mismatched or ambiguous read LOUD (Q53) — the
-				// review-caught lossy-install holes are closed at the
-				// SCHEMA, not by keeping it out. A MARKER (nil Table) just
-				// evicts: nothing sound to install, the read joins the
-				// booked ON-only class. NO-shadow adds nothing to cteScopes,
-				// so the flatten-evasion gate pin's clean decline holds.
-				if _, hadOuter := cteScopes[upper]; hadOuter {
-					if reg, ok := cteOnScopes[upper]; ok && reg.Table != nil {
-						cteScopes[upper] = reg
-					} else {
-						delete(cteScopes, upper)
-					}
-				}
+				// visible for the BODY build only). Post-evict the inner is
+				// ON-only (in cteOnScopes, not cteScopes) — its main-query
+				// reads join the SAME booked ON-only READ class as a
+				// NON-shadow ON-only CTE: buildSelectScope's nil-resolver
+				// leniency (load-bearing for the enclosed comma-FROM reads,
+				// Q1-Q5) resolves a valid enclosed read via the executor
+				// merge fabrication and lands an unresolvable/solo read in
+				// the booked silent class (Q51/Q52 flip-sentinels). An
+				// earlier attempt INSTALLED the inner's ON-only derived
+				// schema into cteScopes to make the exotic coinciding
+				// scalar-subquery read answer — but that schema is
+				// ON-resolution-only and LOSSY (buildCTEOnOnlySource uses
+				// NewUnquoted and permits duplicate output names), so
+				// promoting it to general reads silently mis-resolved
+				// quoted-alias and duplicate-name bodies (review-caught).
+				// The sound answer for the coinciding read is
+				// cteOnScopes-aware read resolution (booked); until then the
+				// whole class is uniformly the booked silent state, never a
+				// lossy-schema-specific wrong value. NO-shadow adds nothing
+				// to cteScopes — the flatten-evasion gate pin's clean
+				// decline holds.
+				delete(cteScopes, upper)
 			}
 		}
 	}
@@ -4792,31 +4746,33 @@ func buildLogicalPlanForQueryWithCatalog(
 				// what the body's reference means, pre-state scoping).
 				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
 				// The mirror of the derivable arm's shadow delete: an inner
-				// ON-ONLY registration must not leave a same-named OUTER
-				// derivable entry installed, or this level's MAIN query
-				// resolves the inner CTE's reads against the STALE OUTER
-				// schema (review-caught: reads returned the wrong
+				// ON-ONLY registration must EVICT a same-named OUTER
+				// derivable entry, or this level's MAIN query resolves the
+				// inner CTE's reads against the STALE OUTER schema
+				// (review-caught: MAX over a stale column returned the wrong
 				// generation; the pre-registration snapshot keeps the outer
-				// visible for the BODY build only). SHADOW case: REPLACE the
-				// outer entry with the inner's ON-only DERIVED schema when
-				// buildCTEOnOnlySource produced a real one — that schema is
-				// now READ-SOUND (case-preserving Ids for quoted aliases;
-				// duplicate output names decline to the marker), so
-				// promoting it to general resolution answers a qualified
-				// read against the CORRECT generation (Q52) and fails a
-				// case-mismatched or ambiguous read LOUD (Q53) — the
-				// review-caught lossy-install holes are closed at the
-				// SCHEMA, not by keeping it out. A MARKER (nil Table) just
-				// evicts: nothing sound to install, the read joins the
-				// booked ON-only class. NO-shadow adds nothing to cteScopes,
-				// so the flatten-evasion gate pin's clean decline holds.
-				if _, hadOuter := cteScopes[upper]; hadOuter {
-					if reg, ok := cteOnScopes[upper]; ok && reg.Table != nil {
-						cteScopes[upper] = reg
-					} else {
-						delete(cteScopes, upper)
-					}
-				}
+				// visible for the BODY build only). Post-evict the inner is
+				// ON-only (in cteOnScopes, not cteScopes) — its main-query
+				// reads join the SAME booked ON-only READ class as a
+				// NON-shadow ON-only CTE: buildSelectScope's nil-resolver
+				// leniency (load-bearing for the enclosed comma-FROM reads,
+				// Q1-Q5) resolves a valid enclosed read via the executor
+				// merge fabrication and lands an unresolvable/solo read in
+				// the booked silent class (Q51/Q52 flip-sentinels). An
+				// earlier attempt INSTALLED the inner's ON-only derived
+				// schema into cteScopes to make the exotic coinciding
+				// scalar-subquery read answer — but that schema is
+				// ON-resolution-only and LOSSY (buildCTEOnOnlySource uses
+				// NewUnquoted and permits duplicate output names), so
+				// promoting it to general reads silently mis-resolved
+				// quoted-alias and duplicate-name bodies (review-caught).
+				// The sound answer for the coinciding read is
+				// cteOnScopes-aware read resolution (booked); until then the
+				// whole class is uniformly the booked silent state, never a
+				// lossy-schema-specific wrong value. NO-shadow adds nothing
+				// to cteScopes — the flatten-evasion gate pin's clean
+				// decline holds.
+				delete(cteScopes, upper)
 			}
 		}
 	}

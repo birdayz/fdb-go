@@ -688,16 +688,22 @@ validation gate.
     same-named TABLE's schema (loud 42703) or, with no such table, to the NIL-resolver leniency (which is
     LOAD-BEARING for the enclosed comma-FROM reads Q1-Q5 — it lets the executor merge fabrication resolve
     them). On the leniency path a VALID non-shadow enclosed read answers while an INVALID/unresolvable
-    non-shadow scalar read is silently NULL (Q51 flip-sentinel: MAX("NOPE") over a non-shadow ON-only CTE
-    — the one remaining silent residual). SHADOW-CASE resolution: the inner shadow CTE's ON-only DERIVED
-    schema is INSTALLED into cteScopes (the shadow REPLACE arm), now made READ-SOUND — buildCTEOnOnlySource
-    PRESERVES quoted-alias CASE (case-preserving Ids; cteBodyAliasQuoted is a typed parse-tree read) and
-    DECLINES duplicate output names to the marker. A qualified shadow read then resolves against the
-    correct generation (Q52 bare + qualified MAX("V"."X")) and a case-mismatched or duplicate-name read
-    fails LOUD (Q53) — the review-caught lossy-install holes closed at the SCHEMA, not by keeping the
-    schema out (an earlier round's plain evict left qualified reads unresolved → silent NULL; a plain
-    lossy install silently mis-resolved them — both wrong, the read-sound install is the terminal state).
-    Fix for the remaining non-shadow silent leniency residual = cteOnScopes-aware read resolution,
+    non-shadow scalar read is silently NULL (Q51 flip-sentinel: MAX("NOPE") over a non-shadow ON-only CTE).
+    SHADOW-CASE resolution: the inner shadow ON-only CTE is EVICTED from cteScopes (mirroring the derivable
+    arm's shadow delete) and joins the SAME booked ON-only READ class as any non-shadow ON-only CTE.
+    Boundary (Q52/Q54): a BARE read over the coinciding shadow answers via leniency+fabrication; a QUALIFIED
+    read (V."X") is SILENT NULL (fabrication provides bare keys on the merged row, not the "V.X" qualified
+    key) — the one remaining silent-wrong, booked here as a FLIP-SENTINEL. HISTORY (do NOT re-attempt
+    lightly): installing the inner shadow schema into cteScopes to make the qualified read answer was tried
+    TWICE and both are UNSOUND — a plain lossy install silently mis-resolved quoted/dup bodies; a
+    read-sound install (case-preserving Ids + dup-decline) reopened flatten-evasion with an EXECUTION PANIC
+    on a comma-multi-leg shadow ("divergent baked types") AND its case-preserved Ids mismatched execution's
+    UPPERCASE row keys (executeProjection ToUpper) → plan-then-runtime-fail. The SOUND fix is
+    cteOnScopes-aware read resolution AND fixing execution's quoted-alias uppercasing (so quoted-lowercase
+    identifiers survive as lowercase) — BOTH large, both here. Until then the qualified shadow read stays
+    the booked silent flip-sentinel; the exotic shape (nested WITH, join-bodied inner CTE shadowing its
+    same-named outer, qualified solo read) does not justify a fragile install.
+    Fix for the remaining silent leniency residuals = cteOnScopes-aware read resolution,
     CAREFULLY: the flatten-evasion gate pin (cte_form_fails_cleanly) must keep its clean decline AND the
     enclosed comma-FROM reads (Q1-Q5) must keep resolving. (i-b) FORWARD-VISIBILITY divergence (round-12
     review, both reviewers independently; pre-existing, A/B'd to before the arc): `WITH A AS (SELECT …
