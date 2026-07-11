@@ -506,6 +506,21 @@ validation gate.
     B1 → now **B2**; also covers U-2's box-base chained shape), E-3 correlated-scalar-in-projection (W4b
     clusterPullUp), E-4 recursive-CTE reference legs, E-5 flat-EXISTS inner leg (retired FREE by B1). Sequence:
     B1=U-1 → B2=E-2 (+U-2) → E-1/E-3/E-4 → nested-outer-box tower LAST. 2a/2b retire WITH the enclosed classes.
+    **B2 RE-SCOPED (post-B1 pre-change probe, census-grounded).** The plain LEFT-box unnest
+    (`FROM LA LEFT JOIN LB ON …, LA.ARR AS X`) ALREADY ordinalizes on HEAD — 0 producers, rows correct on all
+    three probe variants incl. the dup-K leg discriminators (LA.K=100 / LB.K=NULL) — so "relax the FULL-only
+    boxOuterBirthsPositional gate" is NOT the slice (the gate doesn't bite the plain shape). The LIVE E-2/U-2
+    class is the **CONJUNCT/EXISTS-FILTERED LEFT-box unnest**: `… , LA.ARR AS X WHERE LA.K = 100` (or WHERE
+    EXISTS) fires P4 enclosed (the box seed name-models) + P5 UN-ENCLOSED (the unnest) — the
+    unnestOuterConjunctOnBoxLeg + boxOuterBirthsPositional coupling (5-site map Site 5 + Site 1), i.e. exactly
+    the "box-base + box-leg-conjunct TOGETHER, axis-coupled" booking. RIGHT-box unnest: 0 producers, correct [].
+    B2 therefore = ordinalize the FILTERED LEFT-box unnest (box birth + seed + conjunct placement move together);
+    needs a Graefe design consult before code (the coupled-axis territory the original Outcome-B booking flagged).
+    ALSO RECORDED (probe finding, non-production): `SELECT LA."K", X` over the plain LEFT-box unnest DIVERGES
+    under the test-only name ORACLE (ordinal 100|7 correct; oracle NULL|7) — an oracle-bridge gap on an array
+    shape outside the §5 SQL corpus (arrays aren't SQL-INSERTable), NOT a production silent-wrong (production =
+    ordinal = correct; the oracle scaffolding dies at the cap). Note for the dual-window carve-out list if the
+    corpus ever grows an array shape.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
