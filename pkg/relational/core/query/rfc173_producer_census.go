@@ -19,24 +19,29 @@ package query
 //     name-model unnest lowering, correlated-scalar-in-projection, recursive-CTE).
 //   - UN-ENCLOSED firings (caller's entry enclosure false): a FRESH shape that still
 //     name-models on its own. The census CORRECTED the Outcome-B design consult
-//     here — it claimed NO un-enclosed residual exists, but at least two classes do,
+//     here — it claimed NO un-enclosed residual exists, but two classes were found,
 //     so the residual set is NOT "exactly the inInnerCluster shapes" and enclosure
 //     starvation alone cannot zero it; each un-enclosed class needs an explicit flip:
-//       (a) P4 existential-over-multi-way-join: a multi-way (>=3) inner join under a
-//           WHERE EXISTS declines its whole join subtree to name-model and the TOP
-//           join fires un-enclosed — an EXISTS-composition-arc gap (the flat-EXISTS
-//           path lacks the N-way ordinal gather plain joins have).
-//       (b) P5 top-level box-base (and other declining) chained-unnest lowering: a
-//           fresh chained unnest over a box base declines to name-model and its
-//           OUTERMOST link fires un-enclosed — a box-substrate shape observed at the
-//           top level (the SAME class is enclosed when nested). So the box-substrate
-//           residuals are NOT enclosed-only; they need explicit ordinalization
-//           (the box slices), not enclosure starvation.
+//       (a) P4 existential-over-multi-way-join — RETIRED by B1: a multi-way (>=3)
+//           inner join under a WHERE EXISTS used to decline its whole join subtree
+//           to name-model (the TOP join firing un-enclosed) because the flat-EXISTS
+//           path lacked the N-way ordinal gather plain joins have. B1
+//           (translateExistsOverGatheredCluster) translates the join as its own
+//           gathered ordinal cluster and wraps the existential over it, so the
+//           shape now fires ZERO producers — the census gate pins that zero as the
+//           regression flip-sentinel.
+//       (b) P5 top-level box-base (and other declining) chained-unnest lowering —
+//           the LIVE un-enclosed class: a fresh chained unnest over a box base
+//           declines to name-model and its OUTERMOST link fires un-enclosed — a
+//           box-substrate shape observed at the top level (the SAME class is
+//           enclosed when nested). So the box-substrate residuals are NOT
+//           enclosed-only; they need explicit ordinalization (the box slices),
+//           not enclosure starvation.
 //
-// The census gate (TestFDB_RFC173_ProducerCensus, dualwindow package) pins both:
-// SeedRunCorpus fires zero producers (fully ordinal), and the discovered
-// residual signatures (incl. the un-enclosed existential-over-multi-join) as
-// flip-sentinels.
+// The census gate (TestFDB_RFC173_ProducerCensus, dualwindow package) pins:
+// SeedRunCorpus fires zero producers (fully ordinal), the probe shapes that
+// ordinalize (incl. the B1-retired existential-over-multi-join) fire zero, and a
+// flip on any is a regression to the name model.
 //
 // The observer is a nil-in-production process global (like SetForceOrdinalSpike /
 // SetNameModelOracle): each producer guards its record construction — including the

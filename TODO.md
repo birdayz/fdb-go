@@ -360,8 +360,15 @@ validation gate.
     (i) predicate-wrapper whitelist widening (codex P2: comparisons/IN/LIKE/CASE-WHEN conditions are wrapped in
     query/expr's predicateValue, which default-denies → those projections keep name-model, correct rows; widening
     needs the SAME Children()-completeness + Evaluate-purity verification Graefe applied to the 12 kinds — do NOT
-    widen without it, two silent-NULL rounds prove why); (ii) a white-box assert that a declined arm leaves
-    t.scalarSubqueries exactly at its entry length (the e2e pin covers rows, not the duplication itself).
+    widen without it, two silent-NULL rounds prove why); (ii) a white-box assert that a DECLINED WIDENED FOLD
+    leaves t.scalarSubqueries at its FOLD-entry length — measure at the FOLD level, not just the arm (the @claude
+    coherence gate found translateProjectOverExistsFilter registers f.ScalarSubqueries at :3453 BEFORE the arm,
+    so a widened-fold bail re-registers them via translateFilter:2321 → double pre-evaluation for
+    `WHERE <scalar-conjunct> AND EXISTS(...)` shapes that decline; the arm-level rollback alone would pass while
+    that leak persists — add a fold-level mark/truncate with the assert); (iii) **arity-2 comma+EXISTS SARG loss
+    (PROMOTED from the superseded item so it isn't skipped)** — Graefe's directive stands: at minimum a plan-shape
+    regression pinning the arity-2 shape (`FROM a,b WHERE b.aid=a.id AND EXISTS(...)` materializes on HEAD), ideally
+    fold arity-2 into the B1 wrap (the same structural fix closes both arities).
     Superseded-attempts record:
   - [ ] (superseded) **B1 — THREE approaches tried, each instructive, the CORRECT target then pinned.** The goal:
     ordinalize (ZERO the producer for) an arity>=3 inner join under a WHERE EXISTS while preserving the index SARG.
