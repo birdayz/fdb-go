@@ -913,6 +913,32 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "LA" AS (SELECT LA."X" AS "X" FROM "LA") SELECT MAX("X") FROM "LA"), "O"."X" FROM "LA" AS "O"`,
 			"3|1|3", "3|3|3")
 	})
+	// Q50: an inner ON-ONLY CTE shadowing an outer derivable EVICTS the
+	// stale outer entry (review-caught, round 13): registration wrote only
+	// cteOnScopes, leaving the outer schema installed for this level's MAIN
+	// query — the inner CTE's reads resolved against the OUTER generation
+	// (a read of the inner's real column Y misrouted 0A000; a read of the
+	// outer-only column X silently accepted). Post-evict, Y answers through
+	// the real inner CTE (MAX(CV)=900). The X read now lands in the booked
+	// ON-only READ class's lenient silence (see the flip-sentinel below) —
+	// the STALE-SCHEMA mechanism itself is gone.
+	t.Run("Q50_ononly_shadow_evicts_stale_outer", func(t *testing.T) {
+		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("Y") FROM "V") FROM LB LIMIT 1`,
+			"900|900")
+	})
+	// Q51 FLIP-SENTINEL for the booked ON-only READ class: an INVALID read
+	// over an ON-only CTE (shadowed or plain) is currently SILENT NULL —
+	// the nil-resolver leniency (the booking's "loud both sides"
+	// characterization was wrong; only the falls-to-a-TABLE shadow variant
+	// is loud). When cteOnScopes-aware read resolution lands (the booked
+	// READ sibling — carefully, the flatten-evasion gate pin must hold),
+	// BOTH subtests flip to 42703 and this comment gets the truth pass.
+	t.Run("Q51_ononly_invalid_read_silent_flip_sentinel", func(t *testing.T) {
+		check(t, `WITH "W" AS (SELECT CC."CV" AS "Y" FROM LB LEFT JOIN CC ON LB."BID" = CC."CID") SELECT MAX("NOPE") FROM "W"`,
+			"<nil>")
+		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`,
+			"<nil>|<nil>")
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")

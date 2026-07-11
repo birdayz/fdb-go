@@ -682,10 +682,19 @@ validation gate.
     real one-rule ending is a SINGLE shared source-name resolution function all four scope consumers call
     (translateScan / cteLegKind / buildSelectScope.addSource / upgradeJoinOnPredicates.resolveTable — all
     four now individually CTE-first, but as four hand-mirrored copies). Two more riders, same family:
-    (i) the ON-ONLY-shadow READ sibling of Q41 (pre-existing, loud both sides): buildSelectScope consults
-    cteScopes only, so an ON-only shadowing name's UN-ENCLOSED reads fall through to the TABLE's schema —
-    `WITH "LB" AS (join-bodied …) SELECT "A" FROM "LB"` 42703s on the CTE's own alias; fixable by the
-    same brush when cteOnScopes-aware read resolution lands. (ii) JAVA-CONFORMANCE PROBE: the ORDER BY
+    (i) the ON-ONLY READ class (pre-existing; TWO variants, one SILENT — the "loud both sides" first
+    characterization was wrong): buildSelectScope consults cteScopes only, so an ON-only name's
+    UN-ENCLOSED reads either fall to a same-named TABLE's schema (loud 42703 on the CTE's own alias) or,
+    with no such table, to the NIL-resolver leniency — an INVALID read is silently NULL
+    (`WITH "W" AS (join-bodied …) SELECT MAX("NOPE") FROM "W"` → NULL; Q51 flip-sentinel pins both
+    shapes). Fix = cteOnScopes-aware read resolution, CAREFULLY: the flatten-evasion gate pin
+    (cte_form_fails_cleanly) must keep its clean decline. (i-b) FORWARD-VISIBILITY divergence (round-12
+    review, both reviewers independently; pre-existing, A/B'd to before the arc): `WITH A AS (SELECT …
+    FROM B), B AS (…)` ANSWERS on both pipelines where SQL/PG reject the forward reference — the chain
+    builds bodies after ALL registrations, and the visitor's REBUILD arm (running after the eager build
+    correctly failed and was swallowed) does too; the rebuild-arm comment now states this truthfully.
+    Java-conformance probe decides the fix; if Java rejects, the preState infrastructure is the vehicle
+    (each registration point's snapshot is precisely the earlier-siblings-only view). (ii) JAVA-CONFORMANCE PROBE: the ORDER BY
     output-alias-precedence shapes (Q42/Q46 — bare unique alias over FROM-scope ambiguity) are standard
     SQL/PG behavior but unverified vs Java's SemanticAnalyzer (the M5 42702 text was live-verified for
     FROM-scope shapes only); probe alongside the R5b read probe — if Java 42702s them, the pins flip to
@@ -695,7 +704,11 @@ validation gate.
     fallback (0A000, pre-existing rounds 9-11); the normalization slice must catch it. (iv) CONSUMER
     CENSUS for the one-shared-resolution-function ending (round-11 review — the fifth copy was missed by
     the round dedicated to aligning copies, which is the argument for the collapse): LIVE-fixed CTE-first:
-    translateScan, cteLegKind, buildSelectScope.addSource, upgradeJoinOnPredicates.resolveTable. LATENT
+    translateScan, cteLegKind, buildSelectScope.addSource, upgradeJoinOnPredicates.resolveTable,
+    buildCTEColumnSource's inner-table resolution (round 13 — its metadata-first was LIVE-wrong: a
+    shadowing body's schema derived from the TABLE, declined on the CTE-only column, and dumped the CTE
+    into the ON-only marker path; the nested-shadow pin had been green only via the stale-outer accident
+    the round-12/13 evict removed). LATENT
     catalog-first (masked by the text fallback / upstream gates today; goes live when the text fallback
     retires): buildWherePredicateForJoinsWithCTEScopes.addSource (~:1508, its own comment says
     "metadata first, then CTE scopes") plus ~7 more ResolveTable sites in the same masked category

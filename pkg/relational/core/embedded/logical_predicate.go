@@ -906,15 +906,24 @@ func buildCTEColumnSource(
 	}
 
 	// Resolve the inner table: try metadata first, then prior CTE schemas.
+	// CTE-FIRST (execution's shadowing order, like every other resolution
+	// consumer in this family): a prior CTE shadowing a same-named table
+	// must supply the body's schema — metadata-first derived a shadowing
+	// body's columns from the TABLE, declined on the CTE-only column, and
+	// dumped the CTE into the ON-only marker path (review-caught: the
+	// nested-shadow pin was green only while a stale outer entry happened
+	// to carry the same column name).
 	var innerTbl semantic.Table
-	cat := rlcatalog.Wrap(md)
-	analyzer := semantic.NewAnalyzer(cat, false)
-	tbl, resolveErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(innerSQ.tableName, "."), false))
-	if resolveErr == nil {
-		innerTbl = tbl
-	} else if priorCTEs != nil {
+	if priorCTEs != nil {
 		if src, found := priorCTEs[strings.ToUpper(innerSQ.tableName)]; found {
 			innerTbl = src.Table
+		}
+	}
+	if innerTbl == nil {
+		cat := rlcatalog.Wrap(md)
+		analyzer := semantic.NewAnalyzer(cat, false)
+		if tbl, resolveErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(innerSQ.tableName, "."), false)); resolveErr == nil {
+			innerTbl = tbl
 		}
 	}
 	if innerTbl == nil {
@@ -4553,7 +4562,20 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
 				// resolvable — or LOUDLY dropped (marker) — never silent.
+				// The registration-time derivation runs BEFORE the shadow
+				// delete below: a body leg naming the outer same-name
+				// correctly classifies against the OUTER binding (which is
+				// what the body's reference means, pre-state scoping).
 				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
+				// The mirror of the derivable arm's shadow delete: an inner
+				// ON-ONLY registration must also EVICT a same-named outer
+				// derivable entry, or this level's MAIN query resolves the
+				// inner CTE's reads against the STALE OUTER schema —
+				// silently accepting columns the inner never exposes
+				// (review-caught: MAX over a stale column returned NULL
+				// where loudness was due; the pre-registration snapshot
+				// keeps the outer visible for the BODY build only).
+				delete(cteScopes, upper)
 			}
 		}
 	}
@@ -4699,7 +4721,20 @@ func buildLogicalPlanForQueryWithCatalog(
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
 				// resolvable — or LOUDLY dropped (marker) — never silent.
+				// The registration-time derivation runs BEFORE the shadow
+				// delete below: a body leg naming the outer same-name
+				// correctly classifies against the OUTER binding (which is
+				// what the body's reference means, pre-state scoping).
 				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
+				// The mirror of the derivable arm's shadow delete: an inner
+				// ON-ONLY registration must also EVICT a same-named outer
+				// derivable entry, or this level's MAIN query resolves the
+				// inner CTE's reads against the STALE OUTER schema —
+				// silently accepting columns the inner never exposes
+				// (review-caught: MAX over a stale column returned NULL
+				// where loudness was due; the pre-registration snapshot
+				// keeps the outer visible for the BODY build only).
+				delete(cteScopes, upper)
 			}
 		}
 	}

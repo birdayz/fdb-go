@@ -292,9 +292,14 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					}
 					v.inRecursiveCTEBody = true
 				}
-				// Self-invisible rebuild (buildCTEBodySelfHidden) — this
-				// arm re-raises a swallowed eager-build error with the same
-				// scoping the eager build used.
+				// Self-invisible rebuild (buildCTEBodySelfHidden). NOT the
+				// same scoping as the eager build: this arm runs after ALL
+				// registrations, so a body referencing a LATER-declared
+				// sibling resolves here where the eager build correctly
+				// failed — the rebuild converts SQL's forward-reference
+				// rejection into a non-SQL acceptance (review-caught,
+				// pre-existing; booked as the forward-visibility
+				// Java-conformance probe on the output-naming slice).
 				body, err = buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, recursive, func() (logical.LogicalOperator, error) {
 					return v.VisitQueryBody(inner.QueryExpressionBody())
 				})
