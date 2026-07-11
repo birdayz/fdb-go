@@ -2,6 +2,9 @@ package executor
 
 import (
 	"testing"
+
+	"fdb.dev/gen"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestQualifyAlias_CompletenessRouting pins the name-model merge's
@@ -34,15 +37,30 @@ func TestQualifyAlias_CompletenessRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("complete_dotted_src_fabricates_if_absent", func(t *testing.T) {
+	t.Run("complete_bare_key_overwrites_stale", func(t *testing.T) {
 		t.Parallel()
-		dst := map[string]any{"C.AK": int64(999)} // pre-existing key must NOT be clobbered
-		qualifyAlias(dst, dottedSrc, "C", true)
-		if got := dst["C.AK"]; got != int64(999) {
-			t.Fatalf("fabricate-if-absent clobbered an existing key: C.AK = %v, want 999", got)
+		// The review-proven stale-key scenario: the outer row already carries
+		// "D.ID" from a DIFFERENT nesting level; the current leg aliased D is
+		// authoritative for D.* — its bare schema key must WIN. A
+		// fill-if-absent here preserved the stale value (wrong-source reads).
+		dst := map[string]any{"D.ID": int64(1)}
+		qualifyAlias(dst, map[string]any{"ID": int64(2), "LA.K": int64(2)}, "D", true)
+		if got := dst["D.ID"]; got != int64(2) {
+			t.Fatalf("current leg's bare key must overwrite the stale alias key: D.ID = %v, want 2", got)
 		}
-		if got := dst["C.LA.K"]; got != int64(100) {
-			t.Fatalf("complete src must fabricate for every key (dotted included): C.LA.K = %v, want 100", got)
+	})
+
+	t.Run("complete_dotted_key_fills_if_absent", func(t *testing.T) {
+		t.Parallel()
+		// Dotted convenience keys ("LA.K" → "C.LA.K") must never clobber an
+		// authoritative key an earlier merge level wrote.
+		dst := map[string]any{"C.LA.K": int64(999)}
+		qualifyAlias(dst, dottedSrc, "C", true)
+		if got := dst["C.LA.K"]; got != int64(999) {
+			t.Fatalf("dotted convenience key clobbered an existing key: C.LA.K = %v, want 999", got)
+		}
+		if got := dst["C.AK"]; got != int64(100) {
+			t.Fatalf("complete src must fabricate its bare keys: C.AK = %v, want 100", got)
 		}
 	})
 
@@ -73,6 +91,52 @@ func TestMergeRows_OutputStaysIncomplete(t *testing.T) {
 	if m["C.AK"] != int64(100) || m["CC2.CV"] != int64(900) {
 		t.Fatalf("complete legs must still alias-qualify: %v", m)
 	}
+}
+
+// TestSortContinuation_PreservesComplete pins the continuation round-trip of
+// QueryResult.Complete: the flag gates the merge's alias fabrication
+// (qualifyAlias), so dropping it across a sort-buffer continuation made
+// resumed buffered rows refuse fabrication while post-resume rows fabricated —
+// qualified columns differing across a page boundary. Also pins the LEGACY
+// payload path: a pre-v2 continuation (bare JSON object) still decodes, with
+// Complete=false (its pre-v2 behavior).
+func TestSortContinuation_PreservesComplete(t *testing.T) {
+	t.Parallel()
+
+	buf := []QueryResult{
+		{Datum: map[string]any{"AK": int64(100)}, Complete: true},
+		{Datum: map[string]any{"AK": int64(110)}, Complete: false},
+	}
+	enc, err := encodeSortContinuation(nil, buf)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	_, decoded, err := decodeSortContinuation(enc)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded) != 2 || !decoded[0].Complete || decoded[1].Complete {
+		t.Fatalf("Complete lost in round-trip: %+v", decoded)
+	}
+	if decoded[0].Datum.(map[string]any)["AK"] != int64(100) {
+		t.Fatalf("datum lost in round-trip: %+v", decoded[0].Datum)
+	}
+
+	t.Run("legacy_object_payload_decodes", func(t *testing.T) {
+		t.Parallel()
+		sr, _ := proto.Marshal(&gen.SortedRecord{Message: []byte(`{"AK":100}`)})
+		legacy, _ := proto.Marshal(&gen.MemorySortContinuation{Records: [][]byte{sr}})
+		_, decoded, err := decodeSortContinuation(legacy)
+		if err != nil {
+			t.Fatalf("legacy decode: %v", err)
+		}
+		if len(decoded) != 1 || decoded[0].Complete {
+			t.Fatalf("legacy payload must decode with Complete=false: %+v", decoded)
+		}
+		if decoded[0].Datum.(map[string]any)["AK"] != int64(100) {
+			t.Fatalf("legacy datum lost: %+v", decoded[0].Datum)
+		}
+	})
 }
 
 // TestQualifyOuterRow_CompletenessRouting pins the pad-row path's twin gate:

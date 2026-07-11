@@ -2189,10 +2189,22 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 // A COMPLETE src (a projection output / an unnest FlatMap's RC row — key set
 // == the row's full declared schema) is the one dotted-key class whose alias
 // DOES name the whole row: its dotted keys are executeProjection's
-// source-name convenience keys, not merge leftovers. Fabricate-if-absent
-// "ALIAS.key" for EVERY key (a dotted "C.LA.K" is harmless) — refusing here
-// left an enclosed CTE/derived body's columns with no "C.col" keys and every
+// source-name convenience keys, not merge leftovers. Refusing here left an
+// enclosed CTE/derived body's columns with no "C.col" keys and every
 // qualified read silently NULL (all-NULL rows with correct multiplicity).
+// The Complete arm splits by key shape:
+//   - a BARE key is the leg's OWN schema column — OVERWRITE, the same
+//     explicit-alias authority the legacy bare arm applies: the outer row may
+//     already carry a stale "ALIAS.col" from a different nesting level, and
+//     the leg the user aliased HERE owns that namespace (a fill-if-absent
+//     preserved the stale value over the current leg's — wrong-source reads);
+//   - a DOTTED key fabricates a derived convenience key ("LA.K" → "C.LA.K") —
+//     fill-if-absent only, never clobbering an authoritative key an earlier
+//     merge level wrote.
+//
+// Routing note: aggregate outputs have been Complete since RFC-048, so their
+// bare keys moved from the legacy arm to the Complete-bare arm here — both
+// overwrite, so behavior is unchanged; only the arm differs.
 func qualifyAlias(dst, src map[string]any, alias string, complete bool) {
 	if alias == "" {
 		return
@@ -2200,9 +2212,12 @@ func qualifyAlias(dst, src map[string]any, alias string, complete bool) {
 	if complete {
 		for k, v := range src {
 			key := alias + "." + strings.ToUpper(k)
-			if _, exists := dst[key]; !exists {
-				dst[key] = v
+			if strings.Contains(k, ".") {
+				if _, exists := dst[key]; exists {
+					continue
+				}
 			}
+			dst[key] = v
 		}
 		return
 	}
@@ -2292,20 +2307,22 @@ func qualifyOuterRow(outer QueryResult, outerAlias string) QueryResult {
 				qualified[outerType+"."+strings.ToUpper(k)] = v
 			}
 		}
-	} else if outer.Complete {
+	} else if outer.Complete && outerQual != "" {
 		// A COMPLETE dotted-key row (projection output / unnest FlatMap RC —
-		// see qualifyAlias) is the one class whose alias names the whole row:
-		// fabricate-if-absent under the alias so a pad row for a CTE/derived
-		// leg keeps its "C.col" keys. INCOMPLETE merged rows keep the refusal
-		// above (the null-padded box row hazard).
+		// see qualifyAlias) is the one class whose alias names the whole row,
+		// so a pad row for a CTE/derived leg keeps its "C.col" keys. Same
+		// key-shape split as qualifyAlias: bare keys OVERWRITE (the leg's own
+		// schema columns under its authoritative alias), dotted convenience
+		// keys fill-if-absent. INCOMPLETE merged rows keep the refusal above
+		// (the null-padded box row hazard).
 		for k, v := range outerMap {
-			if outerQual == "" {
-				break
-			}
 			key := outerQual + "." + strings.ToUpper(k)
-			if _, exists := qualified[key]; !exists {
-				qualified[key] = v
+			if strings.Contains(k, ".") {
+				if _, exists := qualified[key]; exists {
+					continue
+				}
 			}
+			qualified[key] = v
 		}
 	}
 	return QueryResult{Datum: qualified, Record: outer.Record, PrimaryKey: outer.PrimaryKey}

@@ -615,17 +615,33 @@ validation gate.
     too — no unnest needed). Root cause: buildCTEColumnSource declined multi-leg bodies, the CTE never
     entered cteScopes, and the ON resolver's scope build classified the name as "unresolvable table, no drop
     risk" — but a CTE name RESOLVES downstream, so nothing errored. FIXED twice over, SURGICALLY:
-    cteVirtualTableFromLogicalBody derives the schema ON-DEMAND from the CTE's logical body INSIDE the ON
-    resolver only (multi-leg bodies resolve and pad correctly — Q9a-Q9d pin LEFT/INNER/reversed/plain-join),
-    and a DECLARED CTE whose derivation still declines is now a drop risk → the loud 0AF00 (the
-    derived-table twin's behavior, Q9e). NOT registered in the global cteScopes — a first, global version
-    widened WHERE resolution across comma-joined multi-leg CTEs into a silent-wrong execution path, caught
-    by TestFDB_RFC173_GatePinB_FlatteningEvasion/cte_form_fails_cleanly (the gate pin did exactly its job;
-    the comma-form flatten-evasion class keeps its clean rejection).
-    STILL BOOKED SEPARATELY: (i) the derived-table twin's schema widening (its 0AF00 on join-bodied derived
-    tables predates this and Java answers it — reach gap, Q9e is the flip-sentinel); (ii) qualified WHERE
-    over a CTE leg fails 0AF00 (already-loud class, consult finding); (iii) the derived-table
-    qualified-ref→bare-read rewrite is collision-unsafe in principle (latent, consult finding).
+    buildCTEOnOnlySource derives an ON-RESOLUTION-ONLY schema at WITH registration (explicitly-ALIASED
+    projection items only — the one class whose runtime keys provably exist; unaliased refs key by their
+    QUALIFIED source name and WITH-c(x) renames never reach the runtime row, so both DECLINE to the loud
+    marker) into a dedicated cteOnScopes map threaded through BOTH build pipelines (the plan visitor and
+    the WithCTECatalog chain incl. the subquery planner and the TWO empty-scope short-circuits that
+    silently dropped it on the scalar-subquery path — the review-proven T6 hole, pinned Q10 with a
+    COUNT 0-vs-3 discriminator). The map's ONLY reader is upgradeJoinOnPredicates: ONs resolve and pad
+    correctly (Q9a-Q9d LEFT/INNER/reversed/plain-join, Q13 FULL both-pads), a declared-but-underivable CTE
+    routes to the loud drop-risk 0AF00 (Q9e derived twin, Q11 unaliased-qualified, Q12 column-aliased), and
+    WHERE/projection resolution over comma-joined multi-leg CTEs keeps its clean decline — a first GLOBAL
+    version broke TestFDB_RFC173_GatePinB_FlatteningEvasion/cte_form_fails_cleanly exactly as that gate pin
+    was designed to catch.
+    (i) STILL BOOKED with the derived-table twin (below): the loud classes that Java answers.
+  - [ ] **BOOKED (enclosed-CTE slice follow-ups — the LOUD reach classes Java answers).** One widening
+    slice covering the 0AF00/42703 family the ON-drop fix deliberately kept loud: (a) join-bodied DERIVED
+    tables in an explicit JOIN with ON (buildDerivedTableSource declines them — Q9e flip-sentinel);
+    (b) UNALIASED-QUALIFIED projections in multi-leg CTE bodies (execution keys the slot "D.ID" with no
+    bare key — needs a real post-CTE output-schema authority, Q11 flip-sentinel); (c) WITH c(x, y) COLUMN
+    ALIASES over multi-leg bodies (scope-level renames never reach the runtime row — needs the rename
+    pushed into the body projection or the CTE wrapper, Q12 flip-sentinel); (d) qualified WHERE over a
+    CTE leg (already-loud 0AF00, consult finding). All four are one output-naming authority problem: the
+    scope's advertised names must be the names execution emits.
+  - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
+    qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
+    by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible
+    source carries an `x`. No wrong-rows repro today; audit + pin when the output-naming slice (above)
+    lands.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a

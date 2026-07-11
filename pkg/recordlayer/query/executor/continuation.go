@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -305,7 +306,18 @@ func encodeSortContinuation(
 		// Errors are PROPAGATED, never swallowed into a skipped record: a
 		// dropped buffer row would silently vanish from the sorted output on
 		// resume (wrong results, no error).
-		jsonBytes, jErr := json.Marshal(jsonSafeDatum(qr.Datum))
+		//
+		// PAYLOAD FORMAT (Go-owned): the SortedRecord proto mirrors Java's
+		// byte-for-byte and cannot grow fields, but Go already stores a JSON
+		// datum in `message` where Java stores record-proto bytes — the
+		// payload inside the opaque field is ours to version. v2 is a JSON
+		// ARRAY [datum, complete] (a legacy payload is always a JSON OBJECT,
+		// so the first byte discriminates). Complete MUST survive the
+		// round-trip: it gates the merge's alias fabrication (qualifyAlias),
+		// and dropping it made resumed buffered rows refuse fabrication while
+		// post-resume rows fabricated — qualified columns differing across a
+		// page boundary.
+		jsonBytes, jErr := json.Marshal([]any{jsonSafeDatum(qr.Datum), qr.Complete})
 		if jErr != nil {
 			return nil, fmt.Errorf("failed to marshal sorted record for continuation: %w", jErr)
 		}
@@ -342,8 +354,24 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 		if pErr := proto.Unmarshal(srBytes, sr); pErr != nil {
 			return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d in continuation: %w", i, pErr)
 		}
+		// Payload version discrimination (see encodeSortContinuation): v2 is a
+		// JSON ARRAY [datum, complete]; a legacy payload is a bare JSON OBJECT
+		// (decodes with Complete=false — the pre-v2 behavior it had anyway).
 		var datum map[string]any
-		if jErr := json.Unmarshal(sr.Message, &datum); jErr != nil {
+		var complete bool
+		trimmed := bytes.TrimLeft(sr.Message, " \t\r\n")
+		if len(trimmed) > 0 && trimmed[0] == '[' {
+			var wrapper []json.RawMessage
+			if jErr := json.Unmarshal(sr.Message, &wrapper); jErr != nil || len(wrapper) != 2 {
+				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d v2 payload in continuation: %w", i, jErr)
+			}
+			if jErr := json.Unmarshal(wrapper[0], &datum); jErr != nil {
+				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
+			}
+			if jErr := json.Unmarshal(wrapper[1], &complete); jErr != nil {
+				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d completeness in continuation: %w", i, jErr)
+			}
+		} else if jErr := json.Unmarshal(sr.Message, &datum); jErr != nil {
 			return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
 		}
 		// Restore tagged UUIDs to [16]byte, then convert JSON float64 numbers
@@ -363,7 +391,7 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 				return nil, nil, fmt.Errorf("failed to unpack sorted record %d primary key in continuation: %w", i, pkErr)
 			}
 		}
-		buf = append(buf, QueryResult{Datum: datum, PrimaryKey: pk})
+		buf = append(buf, QueryResult{Datum: datum, PrimaryKey: pk, Complete: complete})
 	}
 
 	return msg.Continuation, buf, nil

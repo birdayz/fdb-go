@@ -40,12 +40,24 @@ type QueryResult struct {
 	PrimaryKey tuple.Tuple
 	// Complete marks a computed/synthetic row whose Datum key set is
 	// authoritative — every legal column is present (nil-valued for SQL NULL),
-	// with no proto-style optional-field omissions. Set by aggregate output
-	// (finalizeGroup/emptyScalarResult). Consumers use it to enable the RFC-048
-	// W1 strict unresolved-reference check: against such a row, a referenced
-	// name that is absent is a bug, not a NULL. Raw stored-record rows
-	// (FromStoredRecord) leave it false, because they legitimately omit unset
-	// optional fields.
+	// with no proto-style optional-field omissions.
+	//
+	// SETTERS: aggregate output (finalizeGroup/emptyScalarResult, RFC-048),
+	// projection output (executeProjection — every projected column written),
+	// the unnest FlatMap's RC-evaluated rows and their §5 oracle mirror rows
+	// (flat_map_cursor — the RecordConstructor evaluates every declared
+	// column). Raw stored-record rows (FromStoredRecord) leave it false (they
+	// legitimately omit unset optional fields), and JOIN-MERGE outputs
+	// (mergeRows) DELIBERATELY leave it false — their bare keys are
+	// last-leg-wins leftovers, not a schema.
+	//
+	// CONSUMERS: (1) the RFC-048 W1 strict unresolved-reference check —
+	// against a Complete row, a referenced name that is absent is a bug, not
+	// a NULL; (2) the name-model merge's alias-fabrication authority
+	// (qualifyAlias/qualifyOuterRow) — only a Complete leg's alias provably
+	// names the whole row, so only Complete legs fabricate "ALIAS.col" keys.
+	// Because (2) affects row CONTENT, Complete must survive continuation
+	// round-trips (encodeSortContinuation's v2 payload carries it).
 	Complete bool
 }
 

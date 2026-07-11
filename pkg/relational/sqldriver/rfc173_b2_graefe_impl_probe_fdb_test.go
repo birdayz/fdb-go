@@ -445,10 +445,13 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// "unresolvable table" non-drop-risk arm, and the ON was silently DROPPED
 	// — the join returned CROSS-PRODUCT rows (every C row matched every CC
 	// row; pre-existing, no unnest needed — a plain-join CTE body did it too).
-	// Fixed twice over: (a) buildCTEColumnSourceFromProjection derives the
-	// schema from the explicit projection list for multi-leg bodies, so these
-	// ONs RESOLVE and pad correctly; (b) a declared CTE whose derivation still
-	// declines is now a DROP RISK (loud 0AF00, the derived-table twin's
+	// Fixed twice over: (a) buildCTEOnOnlySource derives an ON-RESOLUTION-ONLY
+	// schema from the explicitly-ALIASED projection list at WITH registration
+	// (the cteOnScopes map, consumed only by upgradeJoinOnPredicates — never
+	// the global cteScopes, so WHERE/projection resolution over comma-joined
+	// multi-leg CTEs keeps its clean decline, the flatten-evasion class);
+	// (b) a declared CTE whose derivation still declines registers a MARKER
+	// that routes to the loud DROP RISK 0AF00 (the derived-table twin's
 	// behavior), never a silent drop.
 	t.Run("Q9a_on_over_unnest_cte_left_pads", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "CC2"."CV" FROM "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
@@ -474,8 +477,51 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 			t.Fatalf("derived-table twin must stay LOUD 0AF00 (schema derivation booked separately), got %v", err)
 		}
 	})
+	// Q10: the SCALAR-SUBQUERY build path — the review-proven threading hole.
+	// The subquery's inner plan builds through the CTECatalog chain, which
+	// initially never received the ON-only scopes: the ON of `C JOIN CC2`
+	// inside the subquery was silently dropped and COUNT counted the CROSS
+	// product (3) instead of the joined answer (0 — no C.AK ∈ {100,110}
+	// equals CID=1). The discriminator never collides with NULL, so a broken
+	// subquery cannot masquerade as either answer.
+	t.Run("Q10_scalar_subquery_path_on_resolves", func(t *testing.T) {
+		// The datum keys the subquery value twice (its rendered name + the
+		// positional _N key), so the joined COUNT appears in two slots.
+		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT LA."K", (SELECT COUNT(*) FROM "C" JOIN CC AS "C2" ON "C"."AK" = "C2"."CID") FROM LA WHERE LA."K" = 110`,
+			"0|110|0")
+	})
+	// Q11: an UNALIASED QUALIFIED projection in a multi-leg CTE body — the
+	// runtime row keys that slot by its qualified source name ("LA.K", no bare
+	// key), so no ON-only schema is derivable that matches execution; the
+	// declared-CTE drop-risk arm keeps the enclosing ON LOUD (0AF00) instead
+	// of resolving a name the merged row never carries (a silent runtime miss).
+	// Widening (a real post-CTE output schema) is booked with the derived twin.
+	t.Run("Q11_unaliased_qualified_body_stays_loud", func(t *testing.T) {
+		_, err := run(t, `WITH "UQ" AS (SELECT LA."K" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "UQ"."K" FROM "UQ" JOIN CC AS "C2" ON "UQ"."K" = "C2"."CID"`)
+		if err == nil || !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("unaliased-qualified multi-leg CTE ON must stay LOUD 0AF00, got %v", err)
+		}
+	})
+	// Q12: WITH c(x) COLUMN ALIASES over a multi-leg body — the renames exist
+	// in the scope view only, never on the runtime row, so deriving them here
+	// would turn today's loud failure into a silent runtime miss. Loud.
+	t.Run("Q12_column_aliased_multileg_body_stays_loud", func(t *testing.T) {
+		_, err := run(t, `WITH "CA" ("X") AS (SELECT LA."K" AS "AK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "CA"."X" FROM "CA" JOIN CC AS "C2" ON "CA"."X" = "C2"."CID"`)
+		if err == nil {
+			t.Fatal("column-aliased multi-leg CTE ON must fail LOUD, got rows")
+		}
+	})
 	t.Run("Q8_pad_row_preserved_cte_leg", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "C"."XV", "CC2"."CV" FROM "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
 			"100|7|<nil>", "100|8|<nil>", "110|9|<nil>")
+	})
+	// Q13: FULL JOIN over the CTE leg — the unmatched-INNER pad path
+	// (streaming_cursors' qualifyOuterRow(innerRows) arm) that Q8/Q9c's
+	// LEFT-preserved shapes never reach. The CTE rows never match CID=1, so
+	// BOTH sides pad: three C-preserved pads (CV nil) + one CC-preserved pad
+	// (C.* nil).
+	t.Run("Q13_full_join_cte_leg_both_pads", func(t *testing.T) {
+		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "C"."XV", "CC2"."CV" FROM "C" FULL OUTER JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
+			"100|7|<nil>", "100|8|<nil>", "110|9|<nil>", "<nil>|<nil>|900")
 	})
 }

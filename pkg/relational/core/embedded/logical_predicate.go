@@ -485,20 +485,21 @@ func bindingOrAlias(bindingID string, aliasID semantic.Identifier) string {
 // The join nodes are created in order matching sq.joins, so we match
 // them sequentially by walking the left-child spine (the builder chains
 // joins left-to-right with op = NewJoin(op, right, ...)).
-func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, declaredCTEs map[string]logical.LogicalOperator) error {
+func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource) error {
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 
-	// isDeclaredCTE: the name IS a WITH-declared CTE (body registered), even
-	// when its column-schema derivation declined and cteScopes has no entry.
-	// The distinction is load-bearing for the drop-risk taxonomy below: an
-	// unresolvable REAL table errors precisely downstream, but a declared CTE
-	// resolves fine at translation — nothing downstream errors, so a silent
-	// scope decline here silently DROPS the join's ON and the query returns
-	// cross-product rows.
+	// isDeclaredCTE: the name IS a WITH-declared CTE, even when its
+	// column-schema derivation declined and cteScopes has no entry (every
+	// declared CTE not in cteScopes gets a cteOnScopes entry at WITH
+	// registration — a derived source or a nil-Table marker). The distinction
+	// is load-bearing for the drop-risk taxonomy below: an unresolvable REAL
+	// table errors precisely downstream, but a declared CTE resolves fine at
+	// translation — nothing downstream errors, so a silent scope decline here
+	// silently DROPS the join's ON and the query returns cross-product rows.
 	isDeclaredCTE := func(tableName string) bool {
 		key := strings.ToUpper(tableName)
-		if _, ok := declaredCTEs[key]; ok {
+		if _, ok := cteOnScopes[key]; ok {
 			return true
 		}
 		_, ok := cteScopes[key]
@@ -511,15 +512,15 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			return tbl
 		}
 		// A declared CTE whose schema is NOT in cteScopes (join/unnest body —
-		// deliberately kept out of the global scope, see buildCTEColumnSource)
-		// derives ON-DEMAND from the logical body, so the enclosing join's ON
-		// can resolve instead of being silently dropped (cross-product rows).
-		if body, ok := declaredCTEs[strings.ToUpper(tableName)]; ok {
-			if _, inScopes := cteScopes[strings.ToUpper(tableName)]; !inScopes {
-				if vt, derived := cteVirtualTableFromLogicalBody(tableName, body); derived {
-					return vt
-				}
-			}
+		// deliberately kept out of the GLOBAL scope so WHERE/projection
+		// resolution over comma-joined multi-leg CTEs keeps its clean decline,
+		// the flatten-evasion class) resolves here through the ON-ONLY scope
+		// derived at WITH registration (buildCTEOnOnlySource), so the
+		// enclosing join's ON resolves instead of being silently dropped
+		// (cross-product rows). A marker entry (nil Table) falls through to
+		// the loud drop-risk arm in addTableSource.
+		if src, found := cteOnScopes[strings.ToUpper(tableName)]; found && src.Table != nil {
+			return src.Table
 		}
 		if cteScopes != nil {
 			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
@@ -722,6 +723,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 					schemaName:  schemaName,
 					outerScopes: buildOuterScopeSources(sq, md, schemaName),
 					cteScopes:   cteScopes,
+					cteOnScopes: cteOnScopes,
 				}
 				resolver.SetSubqueryPlanner(onPlanner)
 				pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr)
@@ -954,57 +956,113 @@ func buildCTEColumnSource(
 	}, true
 }
 
-// cteVirtualTableFromLogicalBody derives a virtual semantic.Table from a
-// declared CTE's LOGICAL body — the on-demand schema for a join/unnest-bodied
-// CTE that buildCTEColumnSource keeps out of the global cteScopes (see the
-// decline comment there). Used ONLY by upgradeJoinOnPredicates to scope an
-// enclosing explicit join's ON clause; without it the scope build declined
-// and the ON was silently DROPPED (cross-product rows). Output name: the
-// projection alias when present, else the column reference's terminal (bare)
-// name; every column types UNKNOWN/nullable (the buildDerivedTableSourceFromAgg
-// precedent — the scope needs NAMES to resolve the ON, not exact types).
-// Declines bodies without a Project top (SELECT * over a multi-leg body — no
-// name authority) and unnameable computed items; the caller's drop-risk arm
-// keeps those LOUD.
-func cteVirtualTableFromLogicalBody(cteName string, body logical.LogicalOperator) (semantic.Table, bool) {
-	for body != nil {
-		switch b := body.(type) {
-		case *logical.LogicalProject:
-			columns := make([]semantic.Column, 0, len(b.Projections))
-			for i, col := range b.Projections {
-				outName := ""
-				if i < len(b.Aliases) && b.Aliases[i] != "" {
-					outName = b.Aliases[i]
-				} else if i >= len(b.IsComputed) || !b.IsComputed[i] {
-					outName = parseColRef(col).bare()
-				}
-				if outName == "" {
-					return nil, false // unnamed computed item — no name authority
-				}
-				columns = append(columns, semantic.Column{
-					Id:       semantic.NewUnquoted(outName),
-					Type:     "UNKNOWN",
-					Nullable: true,
-				})
-			}
-			if len(columns) == 0 {
-				return nil, false
-			}
-			return &semantic.StaticTable{
-				TableName:    semantic.FromSegments([]string{cteName}, false),
-				TableColumns: columns,
-			}, true
-		case *logical.LogicalSort:
-			body = b.Input
-		case *logical.LogicalLimit:
-			body = b.Input
-		case *logical.LogicalDistinct:
-			body = b.Input
-		default:
-			return nil, false
-		}
+// buildCTEOnOnlySource derives the ON-RESOLUTION-ONLY ScopeSource for a
+// declared CTE that buildCTEColumnSource keeps OUT of the global cteScopes (a
+// join/lateral-unnest-legged body — see the decline comment there). It is
+// registered in the separate cteOnScopes map at WITH registration, whose ONLY
+// reader is upgradeJoinOnPredicates: an enclosing explicit join's ON resolves
+// against it instead of being silently DROPPED (cross-product rows), while
+// WHERE/projection resolution over comma-joined multi-leg CTEs keeps its clean
+// decline (the flatten-evasion class).
+//
+// Output-name authority (must match what execution actually EMITS, or the
+// fabricated "CTE.col" merge keys miss): ONLY an explicit projection alias —
+// executeProjection always writes the alias key, so a derived name provably
+// exists on the runtime row. Everything else DECLINES to the loud marker:
+//   - an unaliased reference (bare OR qualified) resolves to a FieldValue
+//     whose Field is the QUALIFIED source name ("D.ID" — see
+//     values.ProjectionColumnName), so the row carries no bare key and an
+//     advertised bare name would read a column the merged row never has;
+//   - `WITH c(x, y)` column aliases rename the SCOPE view only — the runtime
+//     row still keys by the body's own output names, so resolving `c.x` here
+//     would turn today's loud 42703 into a silent runtime miss (worse);
+//   - computed items without an alias key by their explain rendering.
+//
+// Aggregate bodies derive via buildDerivedTableSourceFromAgg (agg outputs key
+// by their canonical names at runtime — the existing derived-table pathway).
+// Columns type UNKNOWN/nullable (the same precedent — the scope needs NAMES,
+// not exact types). A false return means the caller registers a nil-Table
+// MARKER instead: the declared name still routes to the loud drop-risk 0AF00,
+// never a silent ON drop. Widening the derivable set (qualified/renamed
+// output schemas) is booked with the derived-table-twin item.
+func buildCTEOnOnlySource(
+	cteName string,
+	cteQuery antlrgen.IQueryContext,
+	colAliases antlrgen.IFullIdListContext,
+) (semantic.ScopeSource, bool) {
+	if cteName == "" || cteQuery == nil {
+		return semantic.ScopeSource{}, false
 	}
-	return nil, false
+	if colAliases != nil {
+		// WITH c(x, y) renames are scope-level only; the runtime row keeps the
+		// body's keys — decline to the loud marker rather than resolve names
+		// the merged row will never carry.
+		return semantic.ScopeSource{}, false
+	}
+	var body *antlrgen.QueryTermDefaultContext
+	switch b := cteQuery.QueryExpressionBody().(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		body = b
+	case *antlrgen.SetQueryContext:
+		seed, ok := b.GetLeft().(*antlrgen.QueryTermDefaultContext)
+		if !ok {
+			return semantic.ScopeSource{}, false
+		}
+		body = seed
+	default:
+		return semantic.ScopeSource{}, false
+	}
+	innerSQ, err := extractFromQueryTerm(body)
+	if err != nil || innerSQ == nil {
+		return semantic.ScopeSource{}, false
+	}
+	if len(innerSQ.joins) == 0 {
+		// Single-source bodies are buildCTEColumnSource territory; if THAT
+		// declined, this name-only derivation has nothing better to offer.
+		return semantic.ScopeSource{}, false
+	}
+	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
+		return buildDerivedTableSourceFromAgg(cteName, innerSQ)
+	}
+	if innerSQ.projCols == nil {
+		return semantic.ScopeSource{}, false // SELECT * over a multi-leg body: no name authority
+	}
+	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
+	for i := range innerSQ.projCols {
+		if i >= len(innerSQ.projAliases) || innerSQ.projAliases[i] == "" {
+			return semantic.ScopeSource{}, false // unaliased item — no provable runtime key
+		}
+		columns = append(columns, semantic.Column{
+			Id:       semantic.NewUnquoted(innerSQ.projAliases[i]),
+			Type:     "UNKNOWN",
+			Nullable: true,
+		})
+	}
+	if len(columns) == 0 {
+		return semantic.ScopeSource{}, false
+	}
+	aliasID := semantic.NewUnquoted(cteName)
+	return semantic.ScopeSource{
+		Table: &semantic.StaticTable{
+			TableName:    semantic.FromSegments([]string{cteName}, false),
+			TableColumns: columns,
+		},
+		Alias:           aliasID,
+		CorrelationName: aliasID.Name(),
+	}, true
+}
+
+// registerCTEOnOnlyScope stores the ON-only source (or the nil-Table marker)
+// for a declared CTE that did NOT make it into the global cteScopes — the ONE
+// registration authority both build pipelines (the plan visitor and the
+// CTECatalog chain) share, so a declared CTE can never reach
+// upgradeJoinOnPredicates untracked (the silent ON-drop class).
+func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext) {
+	if src, ok := buildCTEOnOnlySource(upperName, cteQuery, colAliases); ok {
+		dst[upperName] = src
+		return
+	}
+	dst[upperName] = semantic.ScopeSource{} // marker: declared, underivable → loud drop risk
 }
 
 // applyCTEColumnAliases renames the columns of a CTE ScopeSource
@@ -1288,16 +1346,16 @@ func unnestScopeSourceAdder(scope *semantic.Scope) func(j joinClause) bool {
 // naive_generator's ExplainFn so Explain output shows simplified
 // predicate trees when metadata is available.
 func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) (logical.LogicalOperator, error) {
-	return buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, nil)
+	return buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, nil, nil)
 }
 
-func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
+func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
 	// For derived tables, build the inner plan through the catalog-aware
 	// path so WHERE predicates get upgraded. Java's visitSubqueryTableItem
 	// recursively visits through the same typed visitor.
 	if sq.derivedQuery != nil && md != nil && len(sq.joins) == 0 {
 		innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
-			sq.derivedQuery.QueryExpressionBody(), md, schemaName, cteScopes,
+			sq.derivedQuery.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes,
 		)
 		if innerErr != nil {
 			return nil, innerErr
@@ -1307,7 +1365,7 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 			if op == nil {
 				return nil, nil
 			}
-			return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes)
+			return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes, cteOnScopes)
 		}
 	}
 
@@ -1319,7 +1377,7 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 			continue
 		}
 		innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
-			j.derivedQuery.QueryExpressionBody(), md, schemaName, cteScopes,
+			j.derivedQuery.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes,
 		)
 		if innerErr != nil {
 			return nil, innerErr
@@ -1393,7 +1451,7 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	if err := rejectAtOrdinalityOnTableWithCTEs(op, md, cteNames); err != nil {
 		return nil, err
 	}
-	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes)
+	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes, cteOnScopes)
 }
 
 // normalizeSchemaQualifiedSelectSources strips the session-schema qualifier off
@@ -1465,7 +1523,7 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 	}
 }
 
-func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteBodies ...map[string]logical.LogicalOperator) (logical.LogicalOperator, error) {
+func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteBodies ...map[string]logical.LogicalOperator) (logical.LogicalOperator, error) {
 	// Build the semantic scope once. All identifier resolution below
 	// goes through this scope — same architecture as Java's
 	// QueryVisitor holding a SemanticAnalyzer.
@@ -1717,11 +1775,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// is nothing to rewrite back to a source column.
 
 	if len(sq.joins) > 0 {
-		var declared map[string]logical.LogicalOperator
-		if len(cteBodies) > 0 {
-			declared = cteBodies[0]
-		}
-		if err := upgradeJoinOnPredicates(op, sq, md, schemaName, cteScopes, declared); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, md, schemaName, cteScopes, cteOnScopes); err != nil {
 			return nil, err
 		}
 	}
@@ -1743,6 +1797,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			schemaName:  schemaName,
 			outerScopes: buildOuterScopeSources(sq, md, schemaName),
 			cteScopes:   cteScopes,
+			cteOnScopes: cteOnScopes,
 			cteBodies:   bodies,
 		}
 	}
@@ -3920,6 +3975,7 @@ func buildLogicalPlanForQueryWithCTECatalog(
 	md *recordlayer.RecordMetaData,
 	schemaName string,
 	outerCTEScopes map[string]semantic.ScopeSource,
+	outerCTEOnScopes map[string]semantic.ScopeSource,
 ) (logical.LogicalOperator, error) {
 	if schemaName == "" {
 		schemaName = defaultEmbeddedSchema
@@ -3931,8 +3987,12 @@ func buildLogicalPlanForQueryWithCTECatalog(
 	// buildLogicalPlanForSelectWithCTECatalog's demotion/normalization (a
 	// `main.PB`-in-a-subquery source resolves against the active schema, not `s`).
 	// The own-CTE pre-scan below runs identically with an empty outer-scope map.
-	// RFC-142 (P2b).
-	if len(outerCTEScopes) == 0 && schemaName == defaultEmbeddedSchema {
+	// BOTH outer maps must be empty to short-circuit: a join/unnest-bodied
+	// outer CTE lives ONLY in outerCTEOnScopes (never cteScopes), and dropping
+	// it here sent a subquery's `... FROM c JOIN t ON ...` into the scope-less
+	// variant where the ON silently dropped (cross-product rows — the
+	// review-proven scalar-subquery path hole). RFC-142 (P2b).
+	if len(outerCTEScopes) == 0 && len(outerCTEOnScopes) == 0 && schemaName == defaultEmbeddedSchema {
 		return buildLogicalPlanForQueryWithCatalog(q, md)
 	}
 	if q == nil {
@@ -3945,10 +4005,15 @@ func buildLogicalPlanForQueryWithCTECatalog(
 	ctesCtx := q.Ctes()
 
 	// Start with outer CTE scopes, then overlay any inner CTE defs
-	// (inner shadows outer on name collision).
+	// (inner shadows outer on name collision). cteOnScopes mirrors the
+	// overlay for the ON-resolution-only sources (see buildCTEOnOnlySource).
 	cteScopes := make(map[string]semantic.ScopeSource, len(outerCTEScopes))
 	for k, v := range outerCTEScopes {
 		cteScopes[k] = v
+	}
+	cteOnScopes := make(map[string]semantic.ScopeSource, len(outerCTEOnScopes))
+	for k, v := range outerCTEOnScopes {
+		cteOnScopes[k] = v
 	}
 	if ctesCtx != nil {
 		// Track inner CTE names to detect sibling duplicates.
@@ -3978,11 +4043,17 @@ func buildLogicalPlanForQueryWithCTECatalog(
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				cteScopes[upper] = src
+				delete(cteOnScopes, upper) // inner derivable shadows an outer ON-only entry
+			} else {
+				// Declared but not globally derivable (join/unnest body): the
+				// ON-only registration keeps an enclosing explicit join's ON
+				// resolvable — or LOUDLY dropped (marker) — never silent.
+				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases())
 			}
 		}
 	}
 
-	main, err := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, schemaName, cteScopes)
+	main, err := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
 	if err != nil {
 		return nil, err
 	}
@@ -4014,7 +4085,7 @@ func buildLogicalPlanForQueryWithCTECatalog(
 						"recursive CTE requires UNION ALL body")
 				}
 			}
-			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes)
+			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
 			if err != nil {
 				return nil, err
 			}
@@ -4064,8 +4135,10 @@ func buildLogicalPlanForQueryWithCatalog(
 	// non-default session schema flows through the WithCTECatalog path instead.
 	schemaName := defaultEmbeddedSchema
 	var cteScopes map[string]semantic.ScopeSource
+	var cteOnScopes map[string]semantic.ScopeSource
 	if ctesCtx != nil {
 		cteScopes = make(map[string]semantic.ScopeSource)
+		cteOnScopes = make(map[string]semantic.ScopeSource)
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
 			upper := strings.ToUpper(name)
@@ -4092,11 +4165,16 @@ func buildLogicalPlanForQueryWithCatalog(
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				cteScopes[upper] = src
+			} else {
+				// Declared but not globally derivable (join/unnest body): the
+				// ON-only registration keeps an enclosing explicit join's ON
+				// resolvable — or LOUDLY dropped (marker) — never silent.
+				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases())
 			}
 		}
 	}
 
-	main, err := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, schemaName, cteScopes)
+	main, err := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
 	if err != nil {
 		return nil, err
 	}
@@ -4128,7 +4206,7 @@ func buildLogicalPlanForQueryWithCatalog(
 						"recursive CTE requires UNION ALL body")
 				}
 			}
-			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes)
+			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
 			if err != nil {
 				return nil, err
 			}
@@ -4207,6 +4285,7 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 	md *recordlayer.RecordMetaData,
 	schemaName string,
 	cteScopes map[string]semantic.ScopeSource,
+	cteOnScopes map[string]semantic.ScopeSource,
 ) (logical.LogicalOperator, error) {
 	if body == nil {
 		return nil, nil
@@ -4217,7 +4296,10 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 	// As in buildLogicalPlanForQueryWithCTECatalog: only short-circuit to the
 	// schema-less variant when the active schema IS the default; a non-default
 	// session schema must keep threading so the demotion uses the active schema.
-	if len(cteScopes) == 0 && schemaName == defaultEmbeddedSchema {
+	// BOTH maps must be empty — a join/unnest-bodied outer CTE lives ONLY in
+	// cteOnScopes, and dropping it here silently dropped the enclosing join's
+	// ON on the subquery build path (cross-product rows).
+	if len(cteScopes) == 0 && len(cteOnScopes) == 0 && schemaName == defaultEmbeddedSchema {
 		return buildLogicalPlanForQueryBodyWithCatalog(body, md)
 	}
 	switch b := body.(type) {
@@ -4227,7 +4309,7 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 		// non-CTE variant above.
 		if paren, ok := b.QueryTerm().(*antlrgen.ParenthesisQueryContext); ok {
 			if inner := paren.Query(); inner != nil {
-				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes)
+				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
 			}
 			return nil, nil
 		}
@@ -4246,9 +4328,9 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 		if err := validateQualifiedStarSources(sq, md); err != nil {
 			return nil, err
 		}
-		return buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, cteScopes)
+		return buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, cteScopes, cteOnScopes)
 	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCTECatalog(b, md, schemaName, cteScopes, false)
+		return buildLogicalPlanForUnionWithCTECatalog(b, md, schemaName, cteScopes, cteOnScopes, false)
 	}
 	return nil, nil
 }
@@ -4258,6 +4340,7 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	md *recordlayer.RecordMetaData,
 	schemaName string,
 	cteScopes map[string]semantic.ScopeSource,
+	cteOnScopes map[string]semantic.ScopeSource,
 	allowDistinct bool,
 ) (logical.LogicalOperator, error) {
 	if setQ == nil {
@@ -4273,7 +4356,7 @@ func buildLogicalPlanForUnionWithCTECatalog(
 		}
 		distinct = true
 	}
-	left, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, schemaName, cteScopes)
+	left, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, schemaName, cteScopes, cteOnScopes)
 	if err != nil {
 		return nil, err
 	}
@@ -4286,7 +4369,7 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	// against the right table) and lift them to wrap the whole UNION.
 	var lifted unionLiftedClauses
 	var right logical.LogicalOperator
-	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, schemaName, cteScopes)
+	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, schemaName, cteScopes, cteOnScopes)
 	if err != nil {
 		return nil, err
 	}
@@ -4355,18 +4438,19 @@ func buildUnionRightBranchStrippingOrderBy(
 	md *recordlayer.RecordMetaData,
 	schemaName string,
 	cteScopes map[string]semantic.ScopeSource,
+	cteOnScopes map[string]semantic.ScopeSource,
 ) (logical.LogicalOperator, unionLiftedClauses, error) {
 	if schemaName == "" {
 		schemaName = defaultEmbeddedSchema
 	}
 	qtd, ok := body.(*antlrgen.QueryTermDefaultContext)
 	if !ok {
-		op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, schemaName, cteScopes)
+		op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, schemaName, cteScopes, cteOnScopes)
 		return op, unionLiftedClauses{limit: -1}, err
 	}
 	simpleTable, ok := qtd.QueryTerm().(*antlrgen.SimpleTableContext)
 	if !ok {
-		op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, schemaName, cteScopes)
+		op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, schemaName, cteScopes, cteOnScopes)
 		return op, unionLiftedClauses{limit: -1}, err
 	}
 	sq, err := extractFromSimpleTable(simpleTable)
@@ -4419,7 +4503,7 @@ func buildUnionRightBranchStrippingOrderBy(
 	if err := validateQualifiedStarSources(sq, md); err != nil {
 		return nil, lifted, err
 	}
-	op, err := buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, cteScopes)
+	op, err := buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, cteScopes, cteOnScopes)
 	if err != nil {
 		return nil, lifted, err
 	}
@@ -5156,7 +5240,7 @@ func buildLogicalPlanForUnionWithCatalog(
 	// Same ORDER BY / LIMIT stripping as the CTE-catalog variant.
 	var lifted unionLiftedClauses
 	var right logical.LogicalOperator
-	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, defaultEmbeddedSchema, nil)
+	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, defaultEmbeddedSchema, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -5307,6 +5391,7 @@ type existsSubqueryPlanner struct {
 	// QP-REF-BIND item 1) — see buildOuterScopeSources.
 	outerScopes                []semantic.ScopeSource
 	cteScopes                  map[string]semantic.ScopeSource
+	cteOnScopes                map[string]semantic.ScopeSource    // ON-resolution-only CTE sources (join/unnest bodies; see buildCTEOnOnlySource)
 	cteBodies                  map[string]logical.LogicalOperator // CTE name → body plan, for wrapping scalar subquery plans
 	subqueries                 []logical.ExistsSubquery
 	scalarSubqueries           []logical.ScalarSubquery
@@ -5368,7 +5453,7 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: nil query context")
 	}
-	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.schemaName, p.cteScopes)
+	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.schemaName, p.cteScopes, p.cteOnScopes)
 	isUndefinedCol := false
 	if err != nil {
 		var apiErr *api.Error
@@ -5458,7 +5543,7 @@ func (p *existsSubqueryPlanner) correlatedSubqueryJoinRight(j joinClause, primar
 // addCorrelatedJoinScopeSource) and declines a derived source BEFORE its rights loop runs.
 func (p *existsSubqueryPlanner) buildDerivedInnerCarrier(derivedQuery antlrgen.IQueryContext, alias string) (logical.LogicalOperator, error) {
 	innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
-		derivedQuery.QueryExpressionBody(), p.md, p.effectiveSchemaName(), p.cteScopes)
+		derivedQuery.QueryExpressionBody(), p.md, p.effectiveSchemaName(), p.cteScopes, p.cteOnScopes)
 	if innerErr != nil {
 		// A STRUCTURED planner/resolution failure of the derived BODY (e.g. an
 		// undefined column → 42703) is a FAITHFUL diagnostic of the inner query, not
@@ -5753,6 +5838,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		schemaName:  p.schemaName,
 		outerScopes: nestedOuterScopes,
 		cteScopes:   p.cteScopes,
+		cteOnScopes: p.cteOnScopes,
 	}
 	resolver.SetSubqueryPlanner(nestedPlanner)
 
@@ -6364,7 +6450,7 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: nil query context")
 	}
-	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.schemaName, p.cteScopes)
+	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.schemaName, p.cteScopes, p.cteOnScopes)
 
 	isUndefinedCol := false
 	if err != nil {

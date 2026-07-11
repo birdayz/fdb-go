@@ -53,6 +53,12 @@ type PlanVisitor struct {
 	md        *recordlayer.RecordMetaData
 	cteScopes map[string]semantic.ScopeSource
 	cteBodies map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
+	// cteOnScopes carries the ON-resolution-only sources for declared CTEs
+	// whose schema derivation declined the global cteScopes (join/unnest
+	// bodies) — consumed ONLY by upgradeJoinOnPredicates so an enclosing
+	// explicit join's ON resolves (or fails LOUD via the nil-Table marker)
+	// instead of being silently dropped. See buildCTEOnOnlySource.
+	cteOnScopes map[string]semantic.ScopeSource
 
 	// schemaName is the session schema (e.g. "s"). It is used ONLY to run Java's
 	// table-first resolution order in the lateral-unnest classifier: a dotted
@@ -167,6 +173,9 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		if v.cteBodies == nil {
 			v.cteBodies = make(map[string]logical.LogicalOperator)
 		}
+		if v.cteOnScopes == nil {
+			v.cteOnScopes = make(map[string]semantic.ScopeSource)
+		}
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
 			upper := strings.ToUpper(name)
@@ -191,6 +200,11 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				v.cteScopes[upper] = src
+			} else {
+				// Declared but not globally derivable (join/unnest body): the
+				// ON-only registration keeps an enclosing explicit join's ON
+				// resolvable — or LOUDLY dropped (marker) — never silent.
+				registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases())
 			}
 			// Eagerly build the CTE body plan so scalar subqueries
 			// that reference this CTE can wrap themselves with it.
@@ -720,7 +734,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (9) Upgrade JOIN ON predicates.
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, v.cteScopes, v.cteBodies); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, v.cteScopes, v.cteOnScopes); err != nil {
 			return nil, err
 		}
 	}
@@ -736,6 +750,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		schemaName:  v.schemaName,
 		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName),
 		cteScopes:   v.cteScopes,
+		cteOnScopes: v.cteOnScopes,
 		cteBodies:   v.cteBodies,
 	}
 
@@ -1568,5 +1583,5 @@ func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.Logica
 	if len(v.cteScopes) == 0 && (v.schemaName == "" || v.schemaName == defaultEmbeddedSchema) {
 		return buildLogicalPlanForUnionWithCatalog(setQ, v.md)
 	}
-	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.schemaName, v.cteScopes, v.inRecursiveCTEBody)
+	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.schemaName, v.cteScopes, v.cteOnScopes, v.inRecursiveCTEBody)
 }
