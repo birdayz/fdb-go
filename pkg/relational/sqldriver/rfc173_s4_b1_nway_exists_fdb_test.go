@@ -161,17 +161,47 @@ func TestFDB_RFC173S4_B1_NwayExists(t *testing.T) {
 			[]int64{2})
 	})
 
-	// SLOT-ADJACENT projection: project the 3rd leg's PK (r.rid, an interior
+	// MIXED projection (the impl review's wrong-rows catch): a bare column AND a
+	// computed expression in one SELECT. Pre-fix, the computed field's baked
+	// ordinals flipped the wrap cursor to birth-ordinal evaluation while the bare
+	// column stayed a lazy frontier read → (NULL, 101). The TOTAL rebase bakes
+	// both, and wrapRVFullyBaked declines any RV that is not uniformly baked.
+	// p.id=1 (the e-match row): p.id + r.rc = 1 + 100 = 101.
+	t.Run("mixed_bare_and_computed_projection", func(t *testing.T) {
+		rows, qErr := db.QueryContext(ctx,
+			"SELECT p.id, p.id + r.rc FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE e.eref = p.id)")
+		if qErr != nil {
+			t.Fatalf("query: %v", qErr)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatalf("no rows, want (1, 101)")
+		}
+		var id, sum int64
+		if sErr := rows.Scan(&id, &sum); sErr != nil {
+			t.Fatalf("scan (a NULL here is the mixed-channel drift): %v", sErr)
+		}
+		if id != 1 || sum != 101 {
+			t.Fatalf("mixed projection = (%d, %d), want (1, 101)", id, sum)
+		}
+		if rows.Next() {
+			t.Fatalf("extra rows, want exactly one")
+		}
+	})
+
+	// PURE COMPUTED projection — the RV-rebase channel that IS runtime-observable
+	// (a slot skew flips the arithmetic's operands): p.id + r.rc = 101.
+	t.Run("computed_projection", func(t *testing.T) {
+		eq(t, "computed_projection", idSet(t,
+			"SELECT p.id + r.rc FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE e.eref = p.id)"),
+			[]int64{101})
+	})
+
+	// SLOT-ADJACENT bare projection: project the 3rd leg's PK (r.rid, an interior
 	// slot whose neighbor r.rc holds distinct 100/200/300 — p.id == q.qid ==
-	// r.rid by the join, so those columns cannot discriminate slots). HONEST
-	// LIMIT: a deliberate +1-slot sabotage of the translation-time projection
-	// rebase did NOT flip this subtest — the physical layer resolves the output
-	// over the box's positional row by name/window, so the rebased RV slots are
-	// not the runtime-observable channel for the projection. The load-bearing
-	// discriminations for B1 are the census (arm off → the probe fires 2
-	// name-model producers → gate red; empirically shown by the pre-B1 baseline)
-	// and the SARG plan-shape assertion below. This subtest pins ROWS on the
-	// interior-slot projection axis.
+	// r.rid by the join, so those columns cannot discriminate slots). Under the
+	// TOTAL rebase the bare column is baked too, so a slot skew flips this
+	// subtest (r.rc=100 instead of r.rid=1) — genuinely discriminating now.
 	t.Run("slot_discriminator_projects_rid", func(t *testing.T) {
 		eq(t, "slot_discriminator_projects_rid", idSet(t,
 			"SELECT r.rid FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE e.eref = p.id)"),

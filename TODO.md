@@ -337,11 +337,20 @@ validation gate.
     SCOPE (fail-open, each a booked follow-on): ORDER BY/LIMIT chains decline (the fold's chain re-application
     emits unrebased leg-qualified reads above the wrap — existsFoldHasChain); projected-EXISTS keeps
     buildExistentialJoinSelect (its FOD semantics not re-verified over the wrap); dup-alias declines loud.
-    HONESTY FLAG for the gate: a +1-slot sabotage of the RV rebase did NOT flip rows (the physical layer resolves
-    output by name/window over the box's positional row, so the rebased RV slots are not the runtime-observable
-    channel; documented in the cert) — the load-bearing discriminations are the census (arm off → 2 producers,
-    shown pre-B1) and the SARG plan assertion; Graefe's impl review should judge whether the RV/correlation rebase
-    is partially dead scaffolding and whether the post-walk decline (which IS load-bearing for scoping) suffices.
+    NAK ROUND (Graefe live-probe adjudication of the honesty flag + Torvalds reachability): the rebase was THREE
+    channels — (a) EXISTS-correlation rebase LIVE/load-bearing (a -1 skew flips correlate_third_leg); (b) BARE
+    projected columns DEAD (dotted frontier reads, no QOV — the +1 sabotage never executed; they resolved via the
+    pre-existing S4-commit-2 name/window channel); (c) COMPUTED projections LIVE (+1 flips {2}→{101}). The killer:
+    a MIXED projection (`SELECT p.id, p.id + r.rc … WHERE EXISTS`) → `(NULL, 101)` silent-wrong — the computed
+    field's baked ordinals flipped the whole wrap cursor to birth-ordinal evaluation and the lazy bare read NULLed
+    (the post-walk couldn't catch it: no QOV in a dotted read). FIXED via Graefe's preferred TOTAL rebase:
+    rebaseLegRefsToBox now bakes QOV-shaped + DOTTED-frontier + unique-BARE-frontier reads, and wrapRVFullyBaked
+    DECLINES any RV not uniformly baked (correct-or-decline restored; the file header is now true). Pinned:
+    mixed_bare_and_computed_projection (1,101) + computed_projection {101}; the slot skew now flips a cert subtest
+    (the bare channel is live). Torvalds: existsFoldHasChain is UNREACHABLE (the gate's len(chain)==0 is the live
+    ORDER-BY scope-out; a chained fold implies projected-EXISTS which declines first) — kept, relabeled
+    DEFENSE-IN-DEPTH tripwire per both reviewers. Multi-EXISTS now declines explicitly (was 0AF00-parity). Nits:
+    concrete *SelectExpression assert; guard continue-safety comment. Full suite 55/55.
     Superseded-attempts record:
   - [ ] (superseded) **B1 — THREE approaches tried, each instructive, the CORRECT target then pinned.** The goal:
     ordinalize (ZERO the producer for) an arity>=3 inner join under a WHERE EXISTS while preserving the index SARG.

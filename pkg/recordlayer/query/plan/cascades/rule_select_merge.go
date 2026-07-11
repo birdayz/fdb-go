@@ -177,7 +177,10 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			// single-ForEach existential parent stays nested. 2-window seeds (the
 			// arity-2 gatedFlatten world, the LEFT-residual internals) keep
 			// merging exactly as before — their flat form is implementable
-			// without the N-way materialization.
+			// without the N-way materialization. `continue` (skip this member,
+			// not the target) is safe because the guard keys on the RESULT
+			// VALUE, which every semantically-equal member of the reference
+			// shares — no other member of this child can be admissible.
 			if existentialWrap {
 				if childSel, isSel := member.(*expressions.SelectExpression); isSel {
 					if rc, isRC := childSel.GetResultValue().(*values.RecordConstructorValue); isRC {

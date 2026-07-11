@@ -74,39 +74,88 @@ func (t *cascadesTranslator) existsFoldableGatheredCluster(f *logical.LogicalFil
 	return t.gatesAsFreshCluster(j)
 }
 
-// rebaseLegRefsToBox rewrites every lazy leg reference (a bare FieldValue over a
-// leg QOV with a window in the box layout) to the positional read
-// ofOrdinal(QOV(box), window.Offset+idx). Returns ok=false when any
-// leg-correlated reference SURVIVES the rewrite (a whole-row QOV read, a dotted
-// flat read, or a column the leg's window cannot resolve) — the caller declines
-// to the name model rather than ship an unbound reference (silent NULL).
-func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLegWindow, boxQOV values.Value) (values.Value, bool) {
+// rebaseLegRefsToBox rewrites every lazy leg reference to the positional read
+// ofOrdinal(QOV(box), slot). THREE reference shapes are rewritten (the TOTAL
+// rebase — the impl review found the original QOV-only rewrite left dotted/bare
+// frontier reads lazy, and a MIXED result value then silently NULLed them: the
+// baked fields flip the wrap cursor to birth-ordinal evaluation, whose context
+// has no name channel for the lazy remainder):
+//   - QOV-shaped: FieldValue{COL, Child: QOV(leg)} → the leg window + COL index
+//   - DOTTED frontier: FieldValue{"LEG.COL", no Child} → split at the first dot
+//   - BARE frontier: FieldValue{"COL", no Child} → a UNIQUE match across the
+//     merged concat's field names (ambiguous/absent stays lazy for the caller's
+//     verification to decline)
+//
+// Returns ok=false when any leg-correlated QOV survives the rewrite (whole-row
+// reads, unresolvable columns) — the caller declines to the name model rather
+// than ship an unbound reference (silent NULL). Result-value callers must apply
+// the STRICTER wrapRVFullyBaked check on top (no lazy read of ANY shape may
+// survive in the RV; predicates legitimately keep existential-QOV refs).
+func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (values.Value, bool) {
 	if v == nil {
 		return nil, true
 	}
 	out := values.Replace(v, func(n values.Value) values.Value {
-		key, isRef := legRef(n)
-		if !isRef {
+		fv, isFV := n.(*values.FieldValue)
+		if !isFV || fv.Resolved != nil {
 			return n
 		}
-		w, isLeg := windows[key]
-		if !isLeg || w.Typ == nil {
+		// QOV-shaped leg reference.
+		if key, isRef := legRef(n); isRef {
+			w, isLeg := windows[key]
+			if !isLeg || w.Typ == nil {
+				return n
+			}
+			idx, found := w.Typ.FieldIndex(fv.Field)
+			if !found {
+				return n // survives → the caller's verification declines
+			}
+			baked, err := values.NewFieldValueOfOrdinal(boxQOV, w.Offset+idx)
+			if err != nil {
+				return n // out-of-range cannot happen by construction; fail-open
+			}
+			return baked
+		}
+		if fv.Child != nil {
+			return n // a non-QOV composed read — leave; verification decides
+		}
+		// DOTTED frontier read ("LEG.COL").
+		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
+			w, isLeg := windows[strings.ToUpper(fv.Field[:dot])]
+			if !isLeg || w.Typ == nil {
+				return n
+			}
+			idx, found := w.Typ.FieldIndex(fv.Field[dot+1:])
+			if !found {
+				return n
+			}
+			baked, err := values.NewFieldValueOfOrdinal(boxQOV, w.Offset+idx)
+			if err != nil {
+				return n
+			}
+			return baked
+		}
+		// BARE frontier read ("COL") — bake only on a UNIQUE merged-name match.
+		if mergedType == nil {
 			return n
 		}
-		fv := n.(*values.FieldValue) // legRef confirmed the cast
-		idx, found := w.Typ.FieldIndex(fv.Field)
-		if !found {
-			return n // survives → the post-walk fails the rebase loudly
+		slot, matches := -1, 0
+		want := strings.ToUpper(fv.Field)
+		for i, mf := range mergedType.Fields {
+			if strings.ToUpper(mf.Name) == want {
+				slot, matches = i, matches+1
+			}
 		}
-		baked, err := values.NewFieldValueOfOrdinal(boxQOV, w.Offset+idx)
+		if matches != 1 {
+			return n // absent or ambiguous — verification declines
+		}
+		baked, err := values.NewFieldValueOfOrdinal(boxQOV, slot)
 		if err != nil {
-			return n // out-of-range cannot happen by construction; fail-open
+			return n
 		}
 		return baked
 	})
-	// Post-walk: no leg-correlated QOV may survive. Anything left (whole-row
-	// reads, dotted reads legRef skips, unresolved columns) means the value
-	// would evaluate against an unbound quantifier above the wrap.
+	// Post-walk: no leg-correlated QOV may survive.
 	ok := true
 	values.WalkValue(out, func(n values.Value) bool {
 		if qov, isQOV := n.(*values.QuantifiedObjectValue); isQOV {
@@ -120,11 +169,38 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 	return out, ok
 }
 
+// wrapRVFullyBaked reports whether the wrap's rebased RESULT VALUE is uniformly
+// birth-evaluable: every FieldValue is a baked (Resolved) read and every QOV is
+// the box's own. The wrap cursor births positionally when ANY field is baked and
+// then evaluates EVERY field over the birth context — a surviving lazy read of
+// any shape (bare, dotted, foreign QOV, scalar-subquery ref) would silently NULL
+// there, so the caller must DECLINE unless this holds (correct-or-decline; the
+// impl review's mixed-projection wrong-rows finding is exactly this hazard).
+func wrapRVFullyBaked(v values.Value, boxBinding string) bool {
+	ok := true
+	values.WalkValue(v, func(n values.Value) bool {
+		switch nv := n.(type) {
+		case *values.FieldValue:
+			if nv.Resolved == nil {
+				ok = false
+				return false
+			}
+		case *values.QuantifiedObjectValue:
+			if !strings.EqualFold(nv.Correlation.Name(), boxBinding) {
+				ok = false
+				return false
+			}
+		}
+		return true
+	})
+	return ok
+}
+
 // rebaseLegRefsToBoxPred is rebaseLegRefsToBox over a predicate's value trees.
-func rebaseLegRefsToBoxPred(p predicates.QueryPredicate, windows map[string]values.OrdinalSeedLegWindow, boxQOV values.Value) (predicates.QueryPredicate, bool) {
+func rebaseLegRefsToBoxPred(p predicates.QueryPredicate, windows map[string]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (predicates.QueryPredicate, bool) {
 	ok := true
 	out := predicates.ReplaceValues(p, func(v values.Value) values.Value {
-		rebased, vOK := rebaseLegRefsToBox(v, windows, boxQOV)
+		rebased, vOK := rebaseLegRefsToBox(v, windows, mergedType, boxQOV)
 		if !vOK {
 			ok = false
 		}
@@ -157,12 +233,21 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		return nil
 	}
 	if t.existsFoldHasChain {
-		// An intervening Sort/Limit chain re-applies ABOVE the fold with
-		// unrebased leg-qualified emissions (sortKeySourceValue + the hidden-field
-		// cleanup projection) — resolvable over a name-model output, unbound
-		// (silent NULL) over the wrap's positional output. Decline; the chained
-		// shape keeps the name-model plan (ordering-over-wrap is a booked
-		// extension).
+		// DEFENSE-IN-DEPTH, currently unreachable: the translateProject gate only
+		// widens the fold for UN-chained shapes (its `len(chain) == 0` condition
+		// is the live ORDER BY/LIMIT scope-out), and a CHAINED fold implies a
+		// projected EXISTS, which the decline above catches first. This tripwire
+		// exists for a future gate widening: a chained fold reaching the wrap
+		// would re-apply the sort/cleanup ABOVE it with unrebased leg-qualified
+		// emissions — resolvable over a name-model output, unbound (silent NULL)
+		// over the wrap's positional output.
+		return nil
+	}
+	if len(f.ExistsSubqueries) > 1 {
+		// [ForEach(box), Existential, Existential] has no physical implementer
+		// (implementExistentialSelect is 2-quantifier) — the wrap would 0AF00.
+		// The name-model flat form 0AF00s identically today (verified, parity),
+		// but decline here so the fail-open direction stays the name model.
 		return nil
 	}
 	legs := t.gatherInnerClusterLegs(join)
@@ -197,7 +282,7 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 	if box == nil {
 		return nil
 	}
-	boxSel, isSel := box.(interface{ GetResultValue() values.Value })
+	boxSel, isSel := box.(*expressions.SelectExpression)
 	if !isSel {
 		return nil
 	}
@@ -218,11 +303,14 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 	outerQ := expressions.NamedForEachQuantifier(boxCorr, expressions.InitialOf(box))
 	boxQOV := values.NewQuantifiedObjectValueOfType(boxCorr, mergedType)
 
-	// The wrap's result value: the folded projection with every leg reference
-	// rebased onto the box output (the projected ExistsValue, referencing the
-	// existential QOV, passes through untouched).
-	rv, rvOK := rebaseLegRefsToBox(resultOverride, windows, boxQOV)
-	if !rvOK {
+	// The wrap's result value: the folded projection with EVERY leg reference —
+	// QOV-shaped, dotted-frontier, and unique-bare — rebased onto the box output
+	// (the TOTAL rebase), then verified uniformly baked: the wrap cursor births
+	// positionally when any field is baked and evaluates every field over the
+	// birth context, so a single surviving lazy read would silently NULL (the
+	// impl review's mixed-projection finding). Correct-or-decline.
+	rv, rvOK := rebaseLegRefsToBox(resultOverride, windows, mergedType, boxQOV)
+	if !rvOK || !wrapRVFullyBaked(rv, boxBinding) {
 		return nil
 	}
 
@@ -232,7 +320,7 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 	// The EXISTS polarity markers (ExistentialValuePredicate / its negation)
 	// reference the existential QOVs only; rebase defensively anyway.
 	for _, mp := range extractExistsPredicates(f.Predicate) {
-		rebased, mpOK := rebaseLegRefsToBoxPred(mp, windows, boxQOV)
+		rebased, mpOK := rebaseLegRefsToBoxPred(mp, windows, mergedType, boxQOV)
 		if !mpOK {
 			return nil
 		}
@@ -246,7 +334,7 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		quantifiers = append(quantifiers, expressions.NamedExistentialQuantifier(esq.Alias, subRef))
 		innerCorrName, joinPred := existsInnerCorrelation(esq)
 		if joinPred != nil {
-			rebased, jpOK := rebaseLegRefsToBoxPred(joinPred, windows, boxQOV)
+			rebased, jpOK := rebaseLegRefsToBoxPred(joinPred, windows, mergedType, boxQOV)
 			if !jpOK {
 				return nil
 			}
