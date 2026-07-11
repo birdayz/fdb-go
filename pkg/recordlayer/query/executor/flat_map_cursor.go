@@ -481,11 +481,25 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		if err != nil {
 			return QueryResult{}, err
 		}
-		return QueryResult{Datum: datum}, nil
+		// The oracle mirror row is output-shaped (bare+qualified keys for the
+		// full seed schema) — schema-complete like the RC row below, so the
+		// §5 name-model oracle side gets the same merge-fabrication authority
+		// (the enclosed-CTE hole existed on the oracle side too).
+		return QueryResult{Datum: datum, Complete: true}, nil
 	}
 	computed, err := c.resultValue.Evaluate(rowCtx)
 	if err != nil {
 		return QueryResult{}, err
+	}
+	computedComplete := false
+	if _, isRC := c.resultValue.(*values.RecordConstructorValue); isRC {
+		// An RC-evaluated FlatMap row is schema-complete: the constructor
+		// evaluates EVERY declared column (nil for NULL), so the key set is
+		// the row's full schema — the QueryResult.Complete contract. This is
+		// what lets a star-body CTE leg (`WITH C AS (SELECT * FROM t, t.arr
+		// AS x)` — no Project wrapper) fabricate its "C.col" keys at the
+		// enclosing merge (qualifyAlias) instead of silently answering NULL.
+		computedComplete = true
 	}
 	// Identity-over-outer FlatMap (the result value is exactly the outer
 	// quantifier's object — the WHERE-EXISTS pass-through, RFC-141): the output
@@ -550,7 +564,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			return out, nil
 		}
 	}
-	return QueryResult{Datum: computed}, nil
+	return QueryResult{Datum: computed, Complete: computedComplete}, nil
 }
 
 // buildContinuation creates a FlatMapContinuation proto. The decision is purely

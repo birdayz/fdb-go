@@ -594,16 +594,38 @@ validation gate.
     nested collection lands), shared prebindScalarSubqueries harness helper (4 copies → 1), c5a CLUSTERED
     comment truth-rewrite (mechanism moved twice: c5b admits the cluster, the EXISTS composition is what
     keeps it name-model), cluster-gate + gather-test wording.
-  - [ ] **BOOKED (B2-A gate round 2, Graefe's live demo — PRE-EXISTING silent-wrong, NOT a B2 class):
-    an ENCLOSED CTE-referenced box unnest returns silent all-NULL rows.** `WITH W AS (SELECT … FROM (LA
-    LEFT JOIN LB …), LA.ARR AS X …) SELECT * FROM W` (single reference; WITH or without a WHERE inside the
-    body) returns rows whose every column is NULL — parent-identical (reproduces on the pre-B2 parent, so
-    B2-A neither caused nor widened it; the un-enclosed body answers correctly). Pinned TODAY as
-    flip-sentinels in rfc173_b2_graefe_impl_probe_fdb_test.go (P1a/P1b double-ref legs, Q1 single-ref, Q2
-    WHERE-free, Q4 mixed): each pins the current wrong `<nil>` rows so the fix FLIPS them. Root-cause
-    direction: the enclosed gather path's CTE translation loses the unnest leg's result-value wiring (the
-    enclosure declines the gather; the name-model fallback's RC does not thread the CTE-projected columns).
-    Own slice — the fix is in the enclosed-CTE translation, not the B2 conjunct machinery.
+  - [x] **RESOLVED (was: enclosed-CTE box-unnest silent all-NULL rows — fixed per the Graefe design
+    consult, Option A: schema-complete merge fabrication).** The original root-cause direction ("the
+    enclosed-CTE translation loses the result-value wiring") was WRONG — the consult dumped the trees and
+    executed every subplan node: translation loses NOTHING; the values flow to the last hop and are dropped
+    by the EXECUTOR's name-model merge. `qualifyAlias`/`qualifyOuterRow` refused to fabricate `C.*` keys for
+    any leg carrying dotted keys — a guard against the real join-merge-leg hazard (bare keys are
+    last-leg-wins leftovers) that wrongly caught SCHEMA-COMPLETE projection outputs, whose dotted keys are
+    executeProjection's source-name convenience keys and whose alias genuinely names the whole row. A
+    plain-join CTE body has the same Datum hole MASKED by the positional frontier; the enclosed name-model
+    unnest FlatMap is the one shape that forces pos=false end-to-end and unmasks it. FIX: executeProjection
+    outputs, unnest-FlatMap RC rows, and the §5 oracle mirror rows set QueryResult.Complete; the merge/pad
+    sites fabricate-if-absent `ALIAS.key` for COMPLETE legs only (merge OUTPUTS stay incomplete — the
+    mixed-nesting refusal survives at the next level, white-box-pinned both ways in
+    merge_fabrication_test.go). All five flip-sentinels flipped to the strictly-correct rows + new pins:
+    star-body (RC-complete class), bare-read guard, ORDER BY with the ORDER asserted, pad-row
+    (qualifyOuterRow dimension).
+    **SECOND pre-existing bug UNMASKED by the fix (Q8): the ON of an explicit JOIN over a join/unnest-bodied
+    CTE was silently DROPPED → cross-product rows** (every C row matched every CC row; plain-join CTE bodies
+    too — no unnest needed). Root cause: buildCTEColumnSource declined multi-leg bodies, the CTE never
+    entered cteScopes, and the ON resolver's scope build classified the name as "unresolvable table, no drop
+    risk" — but a CTE name RESOLVES downstream, so nothing errored. FIXED twice over, SURGICALLY:
+    cteVirtualTableFromLogicalBody derives the schema ON-DEMAND from the CTE's logical body INSIDE the ON
+    resolver only (multi-leg bodies resolve and pad correctly — Q9a-Q9d pin LEFT/INNER/reversed/plain-join),
+    and a DECLARED CTE whose derivation still declines is now a drop risk → the loud 0AF00 (the
+    derived-table twin's behavior, Q9e). NOT registered in the global cteScopes — a first, global version
+    widened WHERE resolution across comma-joined multi-leg CTEs into a silent-wrong execution path, caught
+    by TestFDB_RFC173_GatePinB_FlatteningEvasion/cte_form_fails_cleanly (the gate pin did exactly its job;
+    the comma-form flatten-evasion class keeps its clean rejection).
+    STILL BOOKED SEPARATELY: (i) the derived-table twin's schema widening (its 0AF00 on join-bodied derived
+    tables predates this and Java answers it — reach gap, Q9e is the flip-sentinel); (ii) qualified WHERE
+    over a CTE leg fails 0AF00 (already-loud class, consult finding); (iii) the derived-table
+    qualified-ref→bare-read rewrite is collision-unsafe in principle (latent, consult finding).
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a

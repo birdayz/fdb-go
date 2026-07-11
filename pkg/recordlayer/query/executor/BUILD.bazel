@@ -51,6 +51,7 @@ go_test(
         "limit_envelope_test.go",
         "limit_extension_test.go",
         "memory_budget_test.go",
+        "merge_fabrication_test.go",
         "package_invariant_test.go",
         "plan_column_names_test.go",
         "positional_row_test.go",
@@ -112,6 +113,7 @@ go_test(
         "rfc173_item2_e2_binder_test.go",
         "rfc173_commit2_cursor_pin_test.go",
         "rfc173_commit4_passthrough_test.go",
+        "merge_fabrication_test.go",
     ],
     deps = [
         "//gen",

@@ -1497,6 +1497,16 @@ func executeProjection(
 			Positional: positional,
 			Record:     qr.Record,
 			PrimaryKey: qr.PrimaryKey,
+			// A projection output's key set IS the row's full declared schema
+			// (every projected column present, nil for NULL) — the
+			// QueryResult.Complete contract. Downstream this authorizes the
+			// name-model merge to fabricate "ALIAS.col" keys for the leg
+			// (qualifyAlias/qualifyOuterRow): a schema-complete leg's alias
+			// genuinely names the whole row, unlike a raw join-merge leg whose
+			// bare keys are last-leg-wins leftovers. Without it, an enclosed
+			// CTE/derived body's projected columns had no "C.col" keys on the
+			// merged row and every qualified read silently answered NULL.
+			Complete: true,
 		}
 	})
 	errCursor := &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}
@@ -2143,8 +2153,12 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 	// the inner's alias-qualified `T.ID` wins over the outer's type fallback.
 	// Without this ordering the outer's `outerType + ".ID"` fallback claimed
 	// the `T.` namespace first and shadowed the inner alias (wrong results).
-	qualifyAlias(merged, outerMap, outerAlias)
-	qualifyAlias(merged, innerMap, innerAlias)
+	// Leg completeness routes the fabrication decision (see qualifyAlias);
+	// the MERGED output itself stays Complete=false — its bare keys are
+	// last-leg-wins leftovers, so a later merge level must keep refusing to
+	// fabricate from them.
+	qualifyAlias(merged, outerMap, outerAlias, outer.Complete)
+	qualifyAlias(merged, innerMap, innerAlias, inner.Complete)
 
 	// Pass C — record-type fallback for unaliased references (`FROM t` →
 	// `t.col` where `t` is the type name). Only fills keys not already
@@ -2162,17 +2176,37 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 // Pre-qualified keys (containing a dot) carry their own namespace from a
 // prior join level and are left untouched.
 //
-// No-op for a src that is itself a JOIN-MERGE output (it carries dotted
-// keys): there is no single source behind that leg's alias, and its BARE
-// keys are last-leg-wins leftovers on cross-leg name collisions. Fabricating
+// No-op for an INCOMPLETE src that carries dotted keys — a JOIN-MERGE output:
+// there is no single source behind that leg's alias, and its BARE keys are
+// last-leg-wins leftovers on cross-leg name collisions. Fabricating
 // "ALIAS.COL" from them invents rows — an unmatched `d LEFT JOIN e` row
 // under an enclosing INNER join has no E.* keys (the null extension emits
 // only the preserved leg), and fabricating E.ID from the row's bare ID
 // (dept's) read the WRONG SOURCE with no error (the mixed-nesting runtime
 // pins). The merged row's own dotted keys pass through verbatim above and
 // are the only authoritative resolution.
-func qualifyAlias(dst, src map[string]any, alias string) {
-	if alias == "" || hasQualifiedKeys(src) {
+//
+// A COMPLETE src (a projection output / an unnest FlatMap's RC row — key set
+// == the row's full declared schema) is the one dotted-key class whose alias
+// DOES name the whole row: its dotted keys are executeProjection's
+// source-name convenience keys, not merge leftovers. Fabricate-if-absent
+// "ALIAS.key" for EVERY key (a dotted "C.LA.K" is harmless) — refusing here
+// left an enclosed CTE/derived body's columns with no "C.col" keys and every
+// qualified read silently NULL (all-NULL rows with correct multiplicity).
+func qualifyAlias(dst, src map[string]any, alias string, complete bool) {
+	if alias == "" {
+		return
+	}
+	if complete {
+		for k, v := range src {
+			key := alias + "." + strings.ToUpper(k)
+			if _, exists := dst[key]; !exists {
+				dst[key] = v
+			}
+		}
+		return
+	}
+	if hasQualifiedKeys(src) {
 		return
 	}
 	for k, v := range src {
@@ -2256,6 +2290,21 @@ func qualifyOuterRow(outer QueryResult, outerAlias string) QueryResult {
 			}
 			if outerAlias != "" && outerType != "" && outerAlias != outerType {
 				qualified[outerType+"."+strings.ToUpper(k)] = v
+			}
+		}
+	} else if outer.Complete {
+		// A COMPLETE dotted-key row (projection output / unnest FlatMap RC —
+		// see qualifyAlias) is the one class whose alias names the whole row:
+		// fabricate-if-absent under the alias so a pad row for a CTE/derived
+		// leg keeps its "C.col" keys. INCOMPLETE merged rows keep the refusal
+		// above (the null-padded box row hazard).
+		for k, v := range outerMap {
+			if outerQual == "" {
+				break
+			}
+			key := outerQual + "." + strings.ToUpper(k)
+			if _, exists := qualified[key]; !exists {
+				qualified[key] = v
 			}
 		}
 	}

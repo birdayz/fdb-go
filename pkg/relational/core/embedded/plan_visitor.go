@@ -720,7 +720,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (9) Upgrade JOIN ON predicates.
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, v.cteScopes); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, v.cteScopes, v.cteBodies); err != nil {
 			return nil, err
 		}
 	}

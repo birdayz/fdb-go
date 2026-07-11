@@ -485,14 +485,41 @@ func bindingOrAlias(bindingID string, aliasID semantic.Identifier) string {
 // The join nodes are created in order matching sq.joins, so we match
 // them sequentially by walking the left-child spine (the builder chains
 // joins left-to-right with op = NewJoin(op, right, ...)).
-func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
+func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, declaredCTEs map[string]logical.LogicalOperator) error {
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
+
+	// isDeclaredCTE: the name IS a WITH-declared CTE (body registered), even
+	// when its column-schema derivation declined and cteScopes has no entry.
+	// The distinction is load-bearing for the drop-risk taxonomy below: an
+	// unresolvable REAL table errors precisely downstream, but a declared CTE
+	// resolves fine at translation — nothing downstream errors, so a silent
+	// scope decline here silently DROPS the join's ON and the query returns
+	// cross-product rows.
+	isDeclaredCTE := func(tableName string) bool {
+		key := strings.ToUpper(tableName)
+		if _, ok := declaredCTEs[key]; ok {
+			return true
+		}
+		_, ok := cteScopes[key]
+		return ok
+	}
 
 	resolveTable := func(tableName string) semantic.Table {
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err == nil {
 			return tbl
+		}
+		// A declared CTE whose schema is NOT in cteScopes (join/unnest body —
+		// deliberately kept out of the global scope, see buildCTEColumnSource)
+		// derives ON-DEMAND from the logical body, so the enclosing join's ON
+		// can resolve instead of being silently dropped (cross-product rows).
+		if body, ok := declaredCTEs[strings.ToUpper(tableName)]; ok {
+			if _, inScopes := cteScopes[strings.ToUpper(tableName)]; !inScopes {
+				if vt, derived := cteVirtualTableFromLogicalBody(tableName, body); derived {
+					return vt
+				}
+			}
 		}
 		if cteScopes != nil {
 			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
@@ -542,6 +569,17 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	addTableSource := func(tableName, alias, bindingID string) bool {
 		tbl := resolveTable(tableName)
 		if tbl == nil {
+			// A DECLARED CTE whose schema derivation declined (join/unnest
+			// body the deriver cannot type) is resolvable-but-unscopable —
+			// the same drop-risk class as a JOIN-bodied derived table: the
+			// query still PLANS (translation resolves the CTE body), no
+			// downstream error fires, and the dropped ON turns the join into
+			// a silent cross product. An unresolvable REAL table stays a
+			// silent decline (the downstream scan raises the precise
+			// UndefinedTable error this generic one must not preempt).
+			if isDeclaredCTE(tableName) {
+				scopeDropRisk = true
+			}
 			return false
 		}
 		aliasID := semantic.NewUnquoted(alias)
@@ -817,6 +855,16 @@ func buildCTEColumnSource(
 	if innerSQ.derivedQuery != nil ||
 		len(innerSQ.joins) > 0 ||
 		innerSQ.tableName == "" {
+		// A JOIN/lateral-unnest-legged body stays OUT of the global cteScopes:
+		// registering a projection-derived schema here widened WHERE/projection
+		// resolution across comma-joined multi-leg CTEs into execution paths
+		// that answer silent-wrong rows (the flatten-evasion gate pin's class).
+		// The ONE consumer that must resolve such a CTE — an enclosing explicit
+		// join's ON clause — derives the schema ON-DEMAND from the logical body
+		// (upgradeJoinOnPredicates → cteVirtualTableFromLogicalBody), where the
+		// downstream either answers correctly (CTE×scan joins) or declines
+		// cleanly. Underivable declared CTEs there go LOUD (drop risk), never a
+		// silent ON drop.
 		return semantic.ScopeSource{}, false
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
@@ -904,6 +952,59 @@ func buildCTEColumnSource(
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
 	}, true
+}
+
+// cteVirtualTableFromLogicalBody derives a virtual semantic.Table from a
+// declared CTE's LOGICAL body — the on-demand schema for a join/unnest-bodied
+// CTE that buildCTEColumnSource keeps out of the global cteScopes (see the
+// decline comment there). Used ONLY by upgradeJoinOnPredicates to scope an
+// enclosing explicit join's ON clause; without it the scope build declined
+// and the ON was silently DROPPED (cross-product rows). Output name: the
+// projection alias when present, else the column reference's terminal (bare)
+// name; every column types UNKNOWN/nullable (the buildDerivedTableSourceFromAgg
+// precedent — the scope needs NAMES to resolve the ON, not exact types).
+// Declines bodies without a Project top (SELECT * over a multi-leg body — no
+// name authority) and unnameable computed items; the caller's drop-risk arm
+// keeps those LOUD.
+func cteVirtualTableFromLogicalBody(cteName string, body logical.LogicalOperator) (semantic.Table, bool) {
+	for body != nil {
+		switch b := body.(type) {
+		case *logical.LogicalProject:
+			columns := make([]semantic.Column, 0, len(b.Projections))
+			for i, col := range b.Projections {
+				outName := ""
+				if i < len(b.Aliases) && b.Aliases[i] != "" {
+					outName = b.Aliases[i]
+				} else if i >= len(b.IsComputed) || !b.IsComputed[i] {
+					outName = parseColRef(col).bare()
+				}
+				if outName == "" {
+					return nil, false // unnamed computed item — no name authority
+				}
+				columns = append(columns, semantic.Column{
+					Id:       semantic.NewUnquoted(outName),
+					Type:     "UNKNOWN",
+					Nullable: true,
+				})
+			}
+			if len(columns) == 0 {
+				return nil, false
+			}
+			return &semantic.StaticTable{
+				TableName:    semantic.FromSegments([]string{cteName}, false),
+				TableColumns: columns,
+			}, true
+		case *logical.LogicalSort:
+			body = b.Input
+		case *logical.LogicalLimit:
+			body = b.Input
+		case *logical.LogicalDistinct:
+			body = b.Input
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 // applyCTEColumnAliases renames the columns of a CTE ScopeSource
@@ -1616,7 +1717,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// is nothing to rewrite back to a source column.
 
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, md, schemaName, cteScopes); err != nil {
+		var declared map[string]logical.LogicalOperator
+		if len(cteBodies) > 0 {
+			declared = cteBodies[0]
+		}
+		if err := upgradeJoinOnPredicates(op, sq, md, schemaName, cteScopes, declared); err != nil {
 			return nil, err
 		}
 	}

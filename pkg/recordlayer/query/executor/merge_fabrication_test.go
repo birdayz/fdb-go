@@ -1,0 +1,106 @@
+package executor
+
+import (
+	"testing"
+)
+
+// TestQualifyAlias_CompletenessRouting pins the name-model merge's
+// fabrication authority on BOTH sides of the completeness gate — the
+// dimension that was unprobed when the dotted-key refusal over-reached and
+// silently NULLed every qualified read of an enclosed CTE/derived leg:
+//
+//   - an INCOMPLETE dotted-key src (a JOIN-MERGE output) must REFUSE
+//     fabrication: its bare keys are last-leg-wins leftovers, and fabricating
+//     "ALIAS.COL" from them reads the wrong source (the mixed-nesting pins'
+//     hazard class);
+//   - a COMPLETE dotted-key src (a projection output / unnest FlatMap RC row)
+//     must FABRICATE-IF-ABSENT "ALIAS.key" for every key — its alias
+//     genuinely names the whole row, and refusing left the enclosing merge
+//     with no "C.col" keys (all-NULL rows with correct multiplicity).
+func TestQualifyAlias_CompletenessRouting(t *testing.T) {
+	t.Parallel()
+
+	dottedSrc := map[string]any{
+		"AK":   int64(100),
+		"LA.K": int64(100),
+	}
+
+	t.Run("incomplete_dotted_src_refuses", func(t *testing.T) {
+		t.Parallel()
+		dst := map[string]any{}
+		qualifyAlias(dst, dottedSrc, "C", false)
+		if len(dst) != 0 {
+			t.Fatalf("incomplete dotted-key src must not fabricate, got %v", dst)
+		}
+	})
+
+	t.Run("complete_dotted_src_fabricates_if_absent", func(t *testing.T) {
+		t.Parallel()
+		dst := map[string]any{"C.AK": int64(999)} // pre-existing key must NOT be clobbered
+		qualifyAlias(dst, dottedSrc, "C", true)
+		if got := dst["C.AK"]; got != int64(999) {
+			t.Fatalf("fabricate-if-absent clobbered an existing key: C.AK = %v, want 999", got)
+		}
+		if got := dst["C.LA.K"]; got != int64(100) {
+			t.Fatalf("complete src must fabricate for every key (dotted included): C.LA.K = %v, want 100", got)
+		}
+	})
+
+	t.Run("incomplete_bare_src_keeps_legacy_behavior", func(t *testing.T) {
+		t.Parallel()
+		dst := map[string]any{}
+		qualifyAlias(dst, map[string]any{"ID": int64(1)}, "T", false)
+		if got := dst["T.ID"]; got != int64(1) {
+			t.Fatalf("single-source bare src must qualify: T.ID = %v, want 1", got)
+		}
+	})
+}
+
+// TestMergeRows_OutputStaysIncomplete pins the design requirement that keeps
+// the mixed-nesting refusal alive at the NEXT merge level: a merged row's
+// bare keys are last-leg-wins leftovers even when both LEGS were Complete,
+// so the OUTPUT must never carry Complete=true (a later qualifyAlias over it
+// would fabricate wrong-source keys).
+func TestMergeRows_OutputStaysIncomplete(t *testing.T) {
+	t.Parallel()
+	outer := QueryResult{Datum: map[string]any{"AK": int64(100)}, Complete: true}
+	inner := QueryResult{Datum: map[string]any{"CV": int64(900)}, Complete: true}
+	merged := mergeRows(outer, inner, "C", "CC2")
+	if merged.Complete {
+		t.Fatal("mergeRows output must stay Complete=false even over Complete legs")
+	}
+	m := merged.Datum.(map[string]any)
+	if m["C.AK"] != int64(100) || m["CC2.CV"] != int64(900) {
+		t.Fatalf("complete legs must still alias-qualify: %v", m)
+	}
+}
+
+// TestQualifyOuterRow_CompletenessRouting pins the pad-row path's twin gate:
+// an INCOMPLETE merged pad row keeps the fabrication refusal (the null-padded
+// box row hazard — the authoritative key is ABSENT, fabricating reads the
+// wrong source); a COMPLETE dotted-key pad row (a CTE/derived leg as the
+// preserved side) fabricates-if-absent under its alias.
+func TestQualifyOuterRow_CompletenessRouting(t *testing.T) {
+	t.Parallel()
+
+	t.Run("incomplete_merged_pad_refuses", func(t *testing.T) {
+		t.Parallel()
+		qr := qualifyOuterRow(QueryResult{Datum: map[string]any{"ID": int64(1), "D.ID": int64(1)}}, "E")
+		m := qr.Datum.(map[string]any)
+		if _, fabricated := m["E.ID"]; fabricated {
+			t.Fatalf("incomplete merged pad row must not fabricate E.*: %v", m)
+		}
+	})
+
+	t.Run("complete_pad_fabricates", func(t *testing.T) {
+		t.Parallel()
+		qr := qualifyOuterRow(QueryResult{
+			Datum:    map[string]any{"AK": int64(100), "LA.K": int64(100)},
+			Complete: true,
+		}, "C")
+		m := qr.Datum.(map[string]any)
+		if m["C.AK"] != int64(100) {
+			t.Fatalf("complete pad row must fabricate C.AK: %v", m)
+		}
+	})
+}

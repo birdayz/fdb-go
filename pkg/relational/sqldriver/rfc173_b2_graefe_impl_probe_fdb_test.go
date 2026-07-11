@@ -9,9 +9,11 @@ package sqldriver_test
 //      enclosedGatherCache discipline) precisely so a later translation whose
 //      gather declined (enclosure) can never bake over a stale record — the
 //      pre-fix failure was a loud "baked FieldValue evaluated against a
-//      non-positional row context". The enclosed leg's rows carry the
-//      PRE-EXISTING enclosed-CTE-box-unnest silent-NULL residual (booked,
-//      parent-identical) — flip-sentinels, see P1a/Q1.
+//      non-positional row context". Both legs answer correct rows: the
+//      enclosed leg's qualified reads resolve via the schema-complete merge
+//      fabrication (executor qualifyAlias/qualifyOuterRow on Complete legs) —
+//      these pins were the all-NULL flip-sentinels for that bug until the
+//      executor fix landed.
 //  P2  FULL box + IS NULL on each leg (the doubly-null class).
 //  P3  OR mixing the ELEMENT and a box leg.
 //  P4  NOT over the null-supplied leg (3VL: NULL drops).
@@ -182,19 +184,19 @@ func TestFDB_RFC173B2_GraefeImplProbe(t *testing.T) {
 	// P1a: un-enclosed reference FIRST (the gather records; consume-once eats
 	// the record), enclosed second (the gather is skipped; NO stale record
 	// fires — the pre-fix behavior was a loud "non-positional row context"
-	// error here). FLIP-SENTINEL: the enclosed leg's NULL rows are the
-	// PRE-EXISTING enclosed-CTE-box-unnest silent-NULL bug (booked; fails
-	// identically on the pre-B2 parent — strictly correct is
-	// (100,5,7),(100,5,8) for BOTH legs); flips when that bug is fixed.
+	// error here). BOTH legs answer the correct rows: the enclosed leg's
+	// qualified reads resolve through the schema-complete merge fabrication
+	// (qualifyAlias on a Complete projection-output leg) — the sentinel that
+	// used to pin all-NULL rows here flipped when that executor fix landed.
 	t.Run("P1a_cte_double_ref_unenclosed_then_enclosed", func(t *testing.T) {
 		want(t, `WITH "C" AS (`+cteBody+`) SELECT "AK", "BK", "XV" FROM "C" UNION ALL SELECT "C"."AK", "C"."BK", "C"."XV" FROM "C", CC`,
-			"100|5|7", "100|5|8", "<nil>|<nil>|<nil>", "<nil>|<nil>|<nil>")
+			"100|5|7", "100|5|8", "100|5|7", "100|5|8")
 	})
-	// P1b: the reverse order — same consume-once guarantee, same pre-existing
-	// enclosed-leg residual (flip-sentinel as P1a).
+	// P1b: the reverse order — same consume-once guarantee, same correct rows
+	// on both legs.
 	t.Run("P1b_cte_double_ref_enclosed_then_unenclosed", func(t *testing.T) {
 		want(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C"."BK", "C"."XV" FROM "C", CC UNION ALL SELECT "AK", "BK", "XV" FROM "C"`,
-			"100|5|7", "100|5|8", "<nil>|<nil>|<nil>", "<nil>|<nil>|<nil>")
+			"100|5|7", "100|5|8", "100|5|7", "100|5|8")
 	})
 	// P2: FULL box + IS NULL, each leg. LB-only rows have LA NULL → NULL ARR
 	// explodes to zero rows, so only the LA-unmatched row survives LB.K IS NULL,
@@ -350,7 +352,6 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		if eerr != nil {
 			return nil, eerr
 		}
-		sort.Strings(out)
 		return out, nil
 	}
 	check := func(t *testing.T, sql string, expect ...string) {
@@ -359,9 +360,23 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%q: %v", sql, err)
 		}
+		sort.Strings(got)
 		sort.Strings(expect)
 		if strings.Join(got, ",") != strings.Join(expect, ",") {
 			t.Fatalf("rows = %v, want %v\n  %s", got, expect, sql)
+		}
+	}
+	// checkOrdered compares the cursor's EMISSION ORDER (no sorting) — the
+	// ORDER BY pin's whole point: a missing merged key made ORDER BY a silent
+	// no-op sort, so the order itself is the discriminating assertion.
+	checkOrdered := func(t *testing.T, sql string, expect ...string) {
+		t.Helper()
+		got, err := run(t, sql)
+		if err != nil {
+			t.Fatalf("%q: %v", sql, err)
+		}
+		if strings.Join(got, ",") != strings.Join(expect, ",") {
+			t.Fatalf("ordered rows = %v, want %v\n  %s", got, expect, sql)
 		}
 	}
 
@@ -369,30 +384,98 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	const cteBodyNoWhere = `SELECT LA."K" AS "AK", LB."K" AS "BK", "X" AS "XV" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID", LA."ARR" AS "X"`
 
 	// Q1: single ENCLOSED reference of the FILTERED body (no double ref — no
-	// record can exist). FLIP-SENTINEL: the all-NULL rows are the PRE-EXISTING
-	// enclosed-CTE-box-unnest silent-NULL bug (booked; parent-identical, occurs
-	// with or without the WHERE — see Q2 — so NOT a B2 class). Strictly correct:
-	// (100,5,7),(100,5,8). Flips when the enclosed-CTE bug is fixed.
+	// record can exist). The enclosed leg's qualified reads (C.AK etc.)
+	// resolve via the schema-complete merge fabrication — this pin used to be
+	// the all-NULL flip-sentinel for the enclosed-CTE silent-NULL bug (the
+	// executor's qualifyAlias refused to fabricate C.* keys for the
+	// projection-output leg); it flipped when that fix landed.
 	t.Run("Q1_single_enclosed_ref_filtered", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C"."BK", "C"."XV" FROM "C", CC`,
-			"<nil>|<nil>|<nil>", "<nil>|<nil>|<nil>")
+			"100|5|7", "100|5|8")
 	})
-	// Q2: single ENCLOSED reference of the UNFILTERED body — proves the trigger
-	// is the ENCLOSED CTE box unnest itself, not the filter. Same flip-sentinel
-	// (strictly correct: the three real rows).
+	// Q2: single ENCLOSED reference of the UNFILTERED body — proves the
+	// resolution is independent of the body's WHERE (the trigger was the
+	// enclosed CTE box unnest itself, never the filter). Includes the
+	// null-supplied LB row.
 	t.Run("Q2_single_enclosed_ref_unfiltered", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "C"."BK", "C"."XV" FROM "C", CC`,
-			"<nil>|<nil>|<nil>", "<nil>|<nil>|<nil>", "<nil>|<nil>|<nil>")
+			"100|5|7", "100|5|8", "110|<nil>|9")
 	})
 	// Q3: single UN-ENCLOSED reference (control — the gathered path, CORRECT).
 	t.Run("Q3_single_unenclosed_ref_filtered", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "AK", "BK", "XV" FROM "C"`,
 			"100|5|7", "100|5|8")
 	})
-	// Q4: UNFILTERED body double-ref — the un-enclosed leg is correct; the
-	// enclosed leg carries the same pre-existing residual (flip-sentinel as Q1).
+	// Q4: UNFILTERED body double-ref — both legs correct (the un-enclosed leg
+	// via the gathered path; the enclosed leg via the merge fabrication).
 	t.Run("Q4_unfiltered_double_ref", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "AK", "BK", "XV" FROM "C" UNION ALL SELECT "C"."AK", "C"."BK", "C"."XV" FROM "C", CC`,
-			"100|5|7", "100|5|8", "110|<nil>|9", "<nil>|<nil>|<nil>", "<nil>|<nil>|<nil>", "<nil>|<nil>|<nil>")
+			"100|5|7", "100|5|8", "110|<nil>|9", "100|5|7", "100|5|8", "110|<nil>|9")
+	})
+	// Q5: STAR body — no Project wrapper at all (the CTE leg IS the unnest
+	// FlatMap's RC row). Its schema-complete authority is the RC arm
+	// (flat_map_cursor computedComplete), not executeProjection — this pin
+	// covers the class a projection-only fix would have missed (it was
+	// all-NULL too, a distinct unpinned instance found in the design consult).
+	t.Run("Q5_star_body_enclosed_qualified_reads", func(t *testing.T) {
+		check(t, `WITH "S" AS (SELECT * FROM LA, LA."ARR" AS "X") SELECT "S"."K", "S"."X" FROM "S", CC`,
+			"100|7", "100|8", "110|9")
+	})
+	// Q6: BARE reads over the enclosed reference — the pre-fix WORKING path
+	// (bare keys pass through mergeRows Pass A); regression guard that the
+	// fabrication arm did not disturb it.
+	t.Run("Q6_bare_reads_enclosed_regression_guard", func(t *testing.T) {
+		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "AK", "BK", "XV" FROM "C", CC`,
+			"100|5|7", "100|5|8", "110|<nil>|9")
+	})
+	// Q7: ORDER BY a qualified CTE column, ORDER asserted (not just the row
+	// set): pre-fix the missing merged key made ORDER BY C.XV a silent no-op
+	// sort — the row SET can't catch that, only the emission order can.
+	t.Run("Q7_order_by_qualified_cte_column", func(t *testing.T) {
+		checkOrdered(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."XV" FROM "C", CC ORDER BY "C"."XV" DESC`,
+			"9", "8", "7")
+	})
+	// Q8: the qualifyOuterRow dimension — the Complete CTE leg is the
+	// PRESERVED side of a LEFT JOIN whose inner never matches, so every row is
+	// a pad row built by qualifyOuterRow (not mergeRows). C.* must resolve on
+	// pad rows too; the null-supplied CC2 column stays NULL.
+	// Q9: the ON-over-CTE-leg battery. Discovered while pinning Q8: the ON
+	// resolver's scope build could not derive a schema for a join/unnest-
+	// bodied CTE (buildCTEColumnSource declined it), the name fell into the
+	// "unresolvable table" non-drop-risk arm, and the ON was silently DROPPED
+	// — the join returned CROSS-PRODUCT rows (every C row matched every CC
+	// row; pre-existing, no unnest needed — a plain-join CTE body did it too).
+	// Fixed twice over: (a) buildCTEColumnSourceFromProjection derives the
+	// schema from the explicit projection list for multi-leg bodies, so these
+	// ONs RESOLVE and pad correctly; (b) a declared CTE whose derivation still
+	// declines is now a DROP RISK (loud 0AF00, the derived-table twin's
+	// behavior), never a silent drop.
+	t.Run("Q9a_on_over_unnest_cte_left_pads", func(t *testing.T) {
+		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "CC2"."CV" FROM "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
+			"100|<nil>", "100|<nil>", "110|<nil>")
+	})
+	t.Run("Q9b_on_over_unnest_cte_inner_no_match", func(t *testing.T) {
+		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "CC2"."CV" FROM "C" INNER JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`)
+	})
+	t.Run("Q9c_on_over_unnest_cte_reversed_preserved", func(t *testing.T) {
+		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "CC2"."CV" FROM CC AS "CC2" LEFT JOIN "C" ON "C"."AK" = "CC2"."CID"`,
+			"<nil>|900")
+	})
+	t.Run("Q9d_on_over_plain_join_cte_pads", func(t *testing.T) {
+		check(t, `WITH "J" AS (SELECT LA."K" AS "AK", LB."K" AS "BK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "J"."AK", "CC2"."CV" FROM "J" LEFT JOIN CC AS "CC2" ON "J"."AK" = "CC2"."CID"`,
+			"<nil>|100", "<nil>|110")
+	})
+	// The derived-table twin keeps its pre-existing LOUD 0AF00 (its schema
+	// derivation is a separate booked widening); the message names the exact
+	// hazard the CTE class silently hit before the fix.
+	t.Run("Q9e_derived_twin_stays_loud", func(t *testing.T) {
+		_, err := run(t, `SELECT "C"."AK", "CC2"."CV" FROM (`+cteBodyNoWhere+`) AS "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`)
+		if err == nil || !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("derived-table twin must stay LOUD 0AF00 (schema derivation booked separately), got %v", err)
+		}
+	})
+	t.Run("Q8_pad_row_preserved_cte_leg", func(t *testing.T) {
+		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "C"."XV", "CC2"."CV" FROM "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
+			"100|7|<nil>", "100|8|<nil>", "110|9|<nil>")
 	})
 }
