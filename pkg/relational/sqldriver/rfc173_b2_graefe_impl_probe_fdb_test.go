@@ -524,4 +524,16 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "C"."XV", "CC2"."CV" FROM "C" FULL OUTER JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
 			"100|7|<nil>", "100|8|<nil>", "110|9|<nil>", "<nil>|<nil>|900")
 	})
+	// Q14: the UNION-BRANCH path — the THIRD empty-scope short-circuit
+	// (visitUnion checked only cteScopes, so a WITH declaring ONLY
+	// join/unnest-bodied CTEs dropped the whole ON-only context and a union
+	// branch's join ON silently cross-producted; the plain non-union spelling
+	// of the same join answered correctly). First branch: C.BK=5 never
+	// matches CID=1 → 0 rows joined (2 rows cross — the discriminator);
+	// second branch contributes one real row so total breakage can't
+	// masquerade as success.
+	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
+		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
+			"110|0")
+	})
 }

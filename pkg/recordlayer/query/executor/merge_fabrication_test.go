@@ -16,10 +16,12 @@ import (
 //     fabrication: its bare keys are last-leg-wins leftovers, and fabricating
 //     "ALIAS.COL" from them reads the wrong source (the mixed-nesting pins'
 //     hazard class);
-//   - a COMPLETE dotted-key src (a projection output / unnest FlatMap RC row)
-//     must FABRICATE-IF-ABSENT "ALIAS.key" for every key — its alias
-//     genuinely names the whole row, and refusing left the enclosing merge
-//     with no "C.col" keys (all-NULL rows with correct multiplicity).
+//   - a COMPLETE src (a projection output / unnest FlatMap RC row) fabricates
+//     by KEY SHAPE — its alias genuinely names the whole row (refusing left
+//     the enclosing merge with no "C.col" keys, all-NULL rows): BARE keys
+//     OVERWRITE (the current leg's explicit-alias authority over stale keys
+//     from other nesting levels), DOTTED convenience keys fill-if-absent
+//     (never clobber an authoritative earlier-level key).
 func TestQualifyAlias_CompletenessRouting(t *testing.T) {
 	t.Parallel()
 
@@ -143,7 +145,8 @@ func TestSortContinuation_PreservesComplete(t *testing.T) {
 // an INCOMPLETE merged pad row keeps the fabrication refusal (the null-padded
 // box row hazard — the authoritative key is ABSENT, fabricating reads the
 // wrong source); a COMPLETE dotted-key pad row (a CTE/derived leg as the
-// preserved side) fabricates-if-absent under its alias.
+// preserved side) fabricates with the same key-shape split as qualifyAlias
+// (bare overwrite / dotted fill-if-absent).
 func TestQualifyOuterRow_CompletenessRouting(t *testing.T) {
 	t.Parallel()
 
@@ -165,6 +168,22 @@ func TestQualifyOuterRow_CompletenessRouting(t *testing.T) {
 		m := qr.Datum.(map[string]any)
 		if m["C.AK"] != int64(100) {
 			t.Fatalf("complete pad row must fabricate C.AK: %v", m)
+		}
+	})
+
+	t.Run("complete_pad_bare_key_overwrites_stale", func(t *testing.T) {
+		t.Parallel()
+		// The discriminating input for the bare-OVERWRITE arm (a src carrying
+		// a stale same-alias key alongside its own bare key): overwrite gives
+		// the leg's own value; a fill-if-absent regression preserves the
+		// stale one.
+		qr := qualifyOuterRow(QueryResult{
+			Datum:    map[string]any{"AK": int64(2), "C.AK": int64(1)},
+			Complete: true,
+		}, "C")
+		m := qr.Datum.(map[string]any)
+		if m["C.AK"] != int64(2) {
+			t.Fatalf("complete pad row's bare key must overwrite the stale alias key: C.AK = %v, want 2", m["C.AK"])
 		}
 	})
 }

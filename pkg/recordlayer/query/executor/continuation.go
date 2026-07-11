@@ -362,8 +362,11 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 		trimmed := bytes.TrimLeft(sr.Message, " \t\r\n")
 		if len(trimmed) > 0 && trimmed[0] == '[' {
 			var wrapper []json.RawMessage
-			if jErr := json.Unmarshal(sr.Message, &wrapper); jErr != nil || len(wrapper) != 2 {
+			if jErr := json.Unmarshal(sr.Message, &wrapper); jErr != nil {
 				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d v2 payload in continuation: %w", i, jErr)
+			}
+			if len(wrapper) != 2 {
+				return nil, nil, fmt.Errorf("sorted record %d v2 payload has %d elements, want 2 (corrupt continuation)", i, len(wrapper))
 			}
 			if jErr := json.Unmarshal(wrapper[0], &datum); jErr != nil {
 				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)

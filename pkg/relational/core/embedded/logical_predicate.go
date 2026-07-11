@@ -862,11 +862,11 @@ func buildCTEColumnSource(
 		// resolution across comma-joined multi-leg CTEs into execution paths
 		// that answer silent-wrong rows (the flatten-evasion gate pin's class).
 		// The ONE consumer that must resolve such a CTE — an enclosing explicit
-		// join's ON clause — derives the schema ON-DEMAND from the logical body
-		// (upgradeJoinOnPredicates → cteVirtualTableFromLogicalBody), where the
-		// downstream either answers correctly (CTE×scan joins) or declines
-		// cleanly. Underivable declared CTEs there go LOUD (drop risk), never a
-		// silent ON drop.
+		// join's ON clause — reads the separate cteOnScopes map instead,
+		// populated at WITH registration (registerCTEOnOnlyScope →
+		// buildCTEOnOnlySource) and consumed only by upgradeJoinOnPredicates.
+		// Underivable declared CTEs register a marker there and go LOUD (drop
+		// risk), never a silent ON drop.
 		return semantic.ScopeSource{}, false
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {

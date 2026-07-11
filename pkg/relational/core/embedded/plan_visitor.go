@@ -183,6 +183,14 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
 					"found '%s' more than once", name)
 			}
+			// An ON-only registration is a DECLARED name too — without this
+			// arm a join-bodied CTE (never in cteScopes) evaded the duplicate
+			// check on the visitor path (the CTECatalog chain's innerCTEs
+			// tracker got this right).
+			if _, exists := v.cteOnScopes[upper]; exists {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"found '%s' more than once", name)
+			}
 			if src, ok := buildCTEColumnSource(v.md, name, nq.Query(), v.cteScopes); ok {
 				// Apply CTE column aliases: WITH c1(x, y) AS (...)
 				if colAliases := nq.GetColumnAliases(); colAliases != nil {
@@ -200,6 +208,10 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				v.cteScopes[upper] = src
+				// Mirror of the CTECatalog chain's shadowing delete: a
+				// derivable registration supersedes any earlier ON-only entry
+				// for the same name.
+				delete(v.cteOnScopes, upper)
 			} else {
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
@@ -1580,7 +1592,11 @@ func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.Logica
 	if setQ == nil {
 		return nil, nil
 	}
-	if len(v.cteScopes) == 0 && (v.schemaName == "" || v.schemaName == defaultEmbeddedSchema) {
+	// BOTH maps must be empty to short-circuit to the scope-less variant — the
+	// THIRD instance of the empty-scope hole (the review-proven union-branch
+	// cross-product): a join/unnest-bodied CTE lives ONLY in cteOnScopes, and
+	// dropping it here silently dropped a union branch's join ON.
+	if len(v.cteScopes) == 0 && len(v.cteOnScopes) == 0 && (v.schemaName == "" || v.schemaName == defaultEmbeddedSchema) {
 		return buildLogicalPlanForUnionWithCatalog(setQ, v.md)
 	}
 	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.schemaName, v.cteScopes, v.cteOnScopes, v.inRecursiveCTEBody)

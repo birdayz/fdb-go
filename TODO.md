@@ -641,7 +641,10 @@ validation gate.
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible
     source carries an `x`. No wrong-rows repro today; audit + pin when the output-naming slice (above)
-    lands.
+    lands. SIBLING (review round-4 note, pre-existing): nested same-named CTEs where a join-bodied INNER
+    shadows a derivable OUTER — the outer's schema stays visible in cteScopes while the inner registers
+    only an ON-only MARKER, so resolveTable falls through to the wrong-generation schema. Ultra-rare
+    shadowing semantics; same audit.
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a
