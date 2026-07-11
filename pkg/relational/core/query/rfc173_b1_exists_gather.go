@@ -170,28 +170,49 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 }
 
 // wrapRVFullyBaked reports whether the wrap's rebased RESULT VALUE is uniformly
-// birth-evaluable: every FieldValue is a baked (Resolved) read and every QOV is
-// the box's own. The wrap cursor births positionally when ANY field is baked and
-// then evaluates EVERY field over the birth context — a surviving lazy read of
-// any shape (bare, dotted, foreign QOV, scalar-subquery ref) would silently NULL
-// there, so the caller must DECLINE unless this holds (correct-or-decline; the
-// impl review's mixed-projection wrong-rows finding is exactly this hazard).
+// birth-evaluable. The wrap cursor births positionally when ANY field is baked
+// and then evaluates EVERY field over the bare birth context (Correlations only —
+// no name channel, no ScalarSubqueries map, no parameter Binder), so every node
+// must be something that context can evaluate. This is a WHITELIST with default
+// DENY — the impl review's two wrong-rows findings (a lazy bare read, then a
+// ScalarSubqueryValue silently NULLing) were both blacklist misses, so an
+// unknown node kind now declines the wrap (fail-open to the name model) instead
+// of being presumed safe. Allowed: baked (Resolved) FieldValues, the box's own
+// QOV, literal/constant kinds, and the pure computation kinds over those that
+// the certs exercise under birth (arithmetic, boolean ops, CASE, casts, scalar
+// functions, IN-list/LIKE). Everything else — scalar subqueries, parameters,
+// aggregates, windowed values, foreign QOVs, lazy reads — declines.
 func wrapRVFullyBaked(v values.Value, boxBinding string) bool {
 	ok := true
 	values.WalkValue(v, func(n values.Value) bool {
 		switch nv := n.(type) {
+		case *values.RecordConstructorValue:
+			return true
 		case *values.FieldValue:
 			if nv.Resolved == nil {
 				ok = false
 				return false
 			}
+			return true
 		case *values.QuantifiedObjectValue:
 			if !strings.EqualFold(nv.Correlation.Name(), boxBinding) {
 				ok = false
 				return false
 			}
+			return true
+		case *values.ConstantValue, *values.ConstantObjectValue, *values.NullValue,
+			*values.BooleanValue:
+			return true
+		case *values.ArithmeticValue, *values.AndOrValue, *values.NotValue,
+			*values.CastValue, *values.PromoteValue, *values.EvaluatesToValue,
+			*values.ConditionSelectorValue, *values.PickValue,
+			*values.ScalarFunctionValue, *values.InOpValue,
+			*values.LikeOperatorValue, *values.PatternForLikeValue:
+			return true
+		default:
+			ok = false
+			return false
 		}
-		return true
 	})
 	return ok
 }
@@ -330,6 +351,18 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
+		}
+		// The builder RETAINS an outer-only conjunct (`EXISTS(... WHERE p.id=2)`)
+		// INSIDE esq.Plan rather than extracting it to the JoinPredicate — the
+		// translated inner then free-correlates to a LEG, which the wrap renames
+		// away (only QOV(box) survives above it). DECLINE: an un-rebased retained
+		// leg reference would fail ordinal resolution loudly on a shape the
+		// name-model path answers. (The extracted JoinPredicate correlation is
+		// the supported channel; it is rebased below.)
+		for corr := range subRef.GetCorrelatedTo() {
+			if _, isLeg := windows[strings.ToUpper(corr.Name())]; isLeg {
+				return nil
+			}
 		}
 		quantifiers = append(quantifiers, expressions.NamedExistentialQuantifier(esq.Alias, subRef))
 		innerCorrName, joinPred := existsInnerCorrelation(esq)

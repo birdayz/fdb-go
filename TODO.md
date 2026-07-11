@@ -335,7 +335,9 @@ validation gate.
     (TestFDB_RFC173S4_B1_NwayExists) — EXISTS→1st/3rd/4th-leg falsification, comma-join, NOT EXISTS, conjunct,
     ORDER-BY fail-open, SARG+not-cross-product plan shape; FULL suite 55/55 incl. the dualwindow differential.
     SCOPE (fail-open, each a booked follow-on): ORDER BY/LIMIT chains decline (the fold's chain re-application
-    emits unrebased leg-qualified reads above the wrap — existsFoldHasChain); projected-EXISTS keeps
+    emits unrebased leg-qualified reads above the wrap — the LIVE scope-out is the translateProject gate's
+    `len(chain) == 0` widening condition; existsFoldHasChain is only the defense-in-depth tripwire behind it);
+    projected-EXISTS keeps
     buildExistentialJoinSelect (its FOD semantics not re-verified over the wrap); dup-alias declines loud.
     NAK ROUND (Graefe live-probe adjudication of the honesty flag + Torvalds reachability): the rebase was THREE
     channels — (a) EXISTS-correlation rebase LIVE/load-bearing (a -1 skew flips correlate_third_leg); (b) BARE

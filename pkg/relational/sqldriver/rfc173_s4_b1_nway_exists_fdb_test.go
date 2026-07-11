@@ -208,6 +208,61 @@ func TestFDB_RFC173S4_B1_NwayExists(t *testing.T) {
 			[]int64{1})
 	})
 
+	// SCALAR SUBQUERY in the projection (the re-review's regression catch): the
+	// birth context has no ScalarSubqueries map, so the whitelist DECLINES the
+	// wrap (ScalarSubqueryValue is not birth-evaluable) and the name-model path
+	// answers. Pre-whitelist this returned (1, NULL) silent-wrong.
+	t.Run("scalar_subquery_mixed", func(t *testing.T) {
+		rows, qErr := db.QueryContext(ctx,
+			"SELECT p.id, (SELECT MAX(rc) FROM r) FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE e.eref = p.id)")
+		if qErr != nil {
+			t.Fatalf("query: %v", qErr)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatalf("no rows, want (1, 300)")
+		}
+		var id, mx int64
+		if sErr := rows.Scan(&id, &mx); sErr != nil {
+			t.Fatalf("scan (a NULL here is the scalar-subquery birth drift): %v", sErr)
+		}
+		if id != 1 || mx != 300 {
+			t.Fatalf("scalar-subquery mixed = (%d, %d), want (1, 300)", id, mx)
+		}
+	})
+
+	// PARAMETER in the projection: ParameterObjectValue is not on the birth
+	// whitelist either — declines to the name model, correct rows.
+	t.Run("parameter_mixed", func(t *testing.T) {
+		rows, qErr := db.QueryContext(ctx,
+			"SELECT p.id, ? FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE e.eref = p.id)", int64(42))
+		if qErr != nil {
+			t.Fatalf("query: %v", qErr)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatalf("no rows, want (1, 42)")
+		}
+		var id, p int64
+		if sErr := rows.Scan(&id, &p); sErr != nil {
+			t.Fatalf("scan (a NULL here is the parameter birth drift): %v", sErr)
+		}
+		if id != 1 || p != 42 {
+			t.Fatalf("parameter mixed = (%d, %d), want (1, 42)", id, p)
+		}
+	})
+
+	// OUTER-ONLY conjunct RETAINED inside the EXISTS plan (`WHERE p.id = 2` —
+	// no inner column): the builder keeps it in esq.Plan, so the translated
+	// inner free-correlates to a LEG; the arm declines (the wrap renames legs
+	// away) and the name-model path answers {2} (EXISTS true iff p.id=2, e
+	// non-empty). Pre-decline this errored on a previously-working shape.
+	t.Run("exists_outer_only_conjunct", func(t *testing.T) {
+		eq(t, "exists_outer_only_conjunct", idSet(t,
+			"SELECT p.id FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE p.id = 2)"),
+			[]int64{2})
+	})
+
 	// PLAN SHAPE: the join keeps its SARG'd PK probes ([=]) and is NOT a
 	// materialized cross-product. Proves the wrap kept the join separately
 	// enumerated (FlatMap(join, FirstOrDefault(e)) — the P2/P7 shape) instead of

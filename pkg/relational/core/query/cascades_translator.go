@@ -118,14 +118,15 @@ type cascadesTranslator struct {
 	// the reverse.
 	inInnerCluster bool
 	// existsFoldHasChain is set while translateProjectOverExistsFilter folds a
-	// projection whose chain carries intervening Sort/Limit operators. The B1
-	// existential wrap (translateExistsOverGatheredCluster) DECLINES in that
-	// case: the fold's chain re-application (sort keys via sortKeySourceValue +
-	// the hidden-field cleanup projection) re-emits UNREBASED leg-qualified
-	// values above the wrap — resolvable over a name-model output row (qualified
-	// merged keys), unbound (silent NULL) over the wrap's positional output.
-	// Ordering over the wrap needs those emissions rebased to output names — a
-	// booked extension; until then chained shapes keep the name-model plan.
+	// projection whose chain carries intervening Sort/Limit operators. It is a
+	// DEFENSE-IN-DEPTH TRIPWIRE, currently UNREACHABLE at its sole consult site
+	// (the B1 arm): the translateProject gate only widens the fold for UN-chained
+	// shapes (its `len(chain) == 0` condition is the LIVE ORDER BY/LIMIT
+	// scope-out), and a chained fold implies a projected EXISTS, which the arm
+	// declines before consulting this flag. It guards a FUTURE gate widening:
+	// a chained fold reaching the wrap would re-apply the sort/cleanup above it
+	// with unrebased leg-qualified emissions — resolvable over a name-model
+	// output row, unbound (silent NULL) over the wrap's positional output.
 	existsFoldHasChain bool
 	// underAggregate is set while lowering the INPUT of a GROUP BY / aggregate
 	// (translateAggregate). A gathered multi-source unnest's grouped element / leg
