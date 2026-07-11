@@ -353,6 +353,15 @@ validation gate.
     ORDER-BY scope-out; a chained fold implies projected-EXISTS which declines first) — kept, relabeled
     DEFENSE-IN-DEPTH tripwire per both reviewers. Multi-EXISTS now declines explicitly (was 0AF00-parity). Nits:
     concrete *SelectExpression assert; guard continue-safety comment. Full suite 55/55.
+    ROUND 3 (Torvalds ACK + Graefe ACK + codex 2×P2): COV dropped from the whitelist (Graefe: not birth-evaluable,
+    zero mints today — a pre-armed landmine); scalarSubqueries ROLLBACK on arm decline (codex: a post-translation
+    decline left the nested uncorrelated scalar registered → the fallback re-registers → double pre-evaluation;
+    fixed with a defer-truncate, pinned rows-level by outer_conjunct_with_nested_scalar → {2}). BOOKED follow-ons:
+    (i) predicate-wrapper whitelist widening (codex P2: comparisons/IN/LIKE/CASE-WHEN conditions are wrapped in
+    query/expr's predicateValue, which default-denies → those projections keep name-model, correct rows; widening
+    needs the SAME Children()-completeness + Evaluate-purity verification Graefe applied to the 12 kinds — do NOT
+    widen without it, two silent-NULL rounds prove why); (ii) a white-box assert that a declined arm leaves
+    t.scalarSubqueries exactly at its entry length (the e2e pin covers rows, not the duplication itself).
     Superseded-attempts record:
   - [ ] (superseded) **B1 — THREE approaches tried, each instructive, the CORRECT target then pinned.** The goal:
     ordinalize (ZERO the producer for) an arity>=3 inner join under a WHERE EXISTS while preserving the index SARG.

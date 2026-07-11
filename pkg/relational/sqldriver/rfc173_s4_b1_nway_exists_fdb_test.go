@@ -231,7 +231,7 @@ func TestFDB_RFC173S4_B1_NwayExists(t *testing.T) {
 		}
 	})
 
-	// PARAMETER in the projection: ParameterObjectValue is not on the birth
+	// PARAMETER in the projection: ParameterValue is not on the birth
 	// whitelist either — declines to the name model, correct rows.
 	t.Run("parameter_mixed", func(t *testing.T) {
 		rows, qErr := db.QueryContext(ctx,
@@ -260,6 +260,17 @@ func TestFDB_RFC173S4_B1_NwayExists(t *testing.T) {
 	t.Run("exists_outer_only_conjunct", func(t *testing.T) {
 		eq(t, "exists_outer_only_conjunct", idSet(t,
 			"SELECT p.id FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE p.id = 2)"),
+			[]int64{2})
+	})
+
+	// Retained outer conjunct + a NESTED uncorrelated scalar inside the EXISTS:
+	// the arm declines AFTER translateSubqueryRef registered the scalar, and the
+	// rollback must truncate it (else the executor pre-evaluates it twice — the
+	// delta review's side-effect leak). Rows pin the combined shape; e.eid=501 >
+	// MIN(rid)=1, so EXISTS is true iff p.id=2 → {2}.
+	t.Run("outer_conjunct_with_nested_scalar", func(t *testing.T) {
+		eq(t, "outer_conjunct_with_nested_scalar", idSet(t,
+			"SELECT p.id FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE p.id = 2 AND e.eid > (SELECT MIN(rid) FROM r))"),
 			[]int64{2})
 	})
 

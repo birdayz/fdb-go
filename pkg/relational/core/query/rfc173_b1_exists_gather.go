@@ -200,8 +200,7 @@ func wrapRVFullyBaked(v values.Value, boxBinding string) bool {
 				return false
 			}
 			return true
-		case *values.ConstantValue, *values.ConstantObjectValue, *values.NullValue,
-			*values.BooleanValue:
+		case *values.ConstantValue, *values.NullValue, *values.BooleanValue:
 			return true
 		case *values.ArithmeticValue, *values.AndOrValue, *values.NotValue,
 			*values.CastValue, *values.PromoteValue, *values.EvaluatesToValue,
@@ -291,6 +290,20 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
 		return nil
 	}
+
+	// From here on, translation has a SIDE EFFECT the fallback path would repeat:
+	// translateSubqueryRef registers any uncorrelated scalar subquery nested in
+	// an EXISTS plan on t.scalarSubqueries, and the executor pre-evaluates EVERY
+	// entry — a decline after that registration would run the scalar TWICE (the
+	// abandoned entry plus the fallback's own). Roll the slice back on every
+	// decline; only a successful wrap keeps its registrations.
+	scalarMark := len(t.scalarSubqueries)
+	committed := false
+	defer func() {
+		if !committed {
+			t.scalarSubqueries = t.scalarSubqueries[:scalarMark]
+		}
+	}()
 
 	// The box: join legs + ON preds + the WHERE's non-EXISTS conjuncts, as a
 	// FRESH ordinal cluster (the P1 shape). The conjuncts ride INSIDE the box so
@@ -387,5 +400,6 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		Reason: "existential wrap over a gathered ordinal cluster (B1)",
 	}
 
+	committed = true
 	return expressions.NewSelectExpressionWithAliases(rv, quantifiers, preds, sourceAliases)
 }
