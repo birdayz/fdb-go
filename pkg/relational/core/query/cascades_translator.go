@@ -152,6 +152,18 @@ type cascadesTranslator struct {
 	// the unnest lowering only; reset at every other seed by the translator's
 	// normal flow.
 	unnestUnderExistential bool
+	// unnestExistentialGatherOK admits the under-EXISTS unnest to the GATHERED
+	// ordinal cluster (the multi-alias box path) instead of the name-model
+	// binary seed — RFC-173 S4 B2-B. Computed PRE-translation, metadata-only in
+	// translateUnnestExistsFilter (a decline is never poisoned by translation
+	// side state), and read ONLY by the :1493 gate. D4-(ii) admission: a
+	// non-INNER box left with Kind ∈ {LEFT,RIGHT} at verdict ∈ {None,Bakeable}
+	// or Kind==FULL at Bakeable only (FULL+None rides the certified binary
+	// seed); single esq; no inner/outer scope collision; the esq a simple
+	// leg-correlation (buried-outer-only and whole-row-read esq shapes decline
+	// to name-model — they keep today's rows, never a loud plan failure). Reset
+	// after the unnest lowering like unnestUnderExistential.
+	unnestExistentialGatherOK bool
 	// unnestExistsScopeCollision forces the under-EXISTS unnest to the ANCHORED
 	// (name-model) seed when an EXISTS inner subquery's plan carries a source
 	// alias equal to an outer FROM leg's. Since the collision mint
@@ -1490,7 +1502,12 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// and under-existential unnests keep today's paths (the enclosed class is
 	// the next W5 commit; the existential class is re-chartered to the
 	// W4-left+EXISTS slice). A nil is a DECLINE — the binary fallback below.
-	if !prevEnclosure && !t.unnestUnderExistential {
+	// RFC-173 S4 B2-B: an under-EXISTS unnest ADMITTED by
+	// unnestExistentialGatherOK (computed pre-translation in
+	// translateUnnestExistsFilter) takes the gathered ordinal cluster — the
+	// same path the non-EXISTS box unnest takes since B2-A. A non-admitted
+	// existential unnest keeps the name-model binary seed below.
+	if !prevEnclosure && (!t.unnestUnderExistential || t.unnestExistentialGatherOK) {
 		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName, unnestTrailing); sel != nil {
 			return sel
 		}
@@ -2697,6 +2714,41 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 //	    re-applying the element filter at the wrong (outer) level.
 //
 // RFC-142 (P2b).
+// admitExistentialGather is the RFC-173 S4 B2-B admission predicate for the
+// under-EXISTS box unnest — metadata-only, computed PRE-translation (a decline
+// is never poisoned by translation side state). See the
+// unnestExistentialGatherOK field doc for the D4-(ii) charter. This increment
+// admits the verdict-None LEFT/RIGHT box (the shape step-0 measured
+// row-identical to the name-model with R1 clear); a box-leg CONJUNCT
+// (verdict Bakeable) and the FULL box need the EXISTS-site three-way merge
+// routing and ride the certified binary/name-model path until that lands.
+func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f *logical.LogicalFilter, verdict boxConjVerdict) bool {
+	// Single esq — B1's conservatism verbatim; a multi-esq shape keeps the
+	// name-model path.
+	if len(f.ExistsSubqueries) != 1 {
+		return false
+	}
+	// No inner/outer scope collision — a colliding unminted inner alias would
+	// get refs meaning the INNER row baked onto the outer window (silent wrong
+	// rows); the binary seed already declines on this, the gather must too.
+	if t.unnestExistsScopeCollision {
+		return false
+	}
+	// Shape arm: a non-INNER box left.
+	bj, isBoxJoin := join.Left.(*logical.LogicalJoin)
+	if !isBoxJoin || bj.Kind == logical.JoinInner {
+		return false
+	}
+	switch bj.Kind {
+	case logical.JoinLeft, logical.JoinRight:
+		// verdict-None only this increment (no non-EXISTS box-leg conjunct);
+		// the merge site is a no-op for these (nonExists is empty).
+		return verdict == boxConjNone
+	default: // FULL: rides the certified binary seed (D4-(ii)) until FULL+Bakeable
+		return false
+	}
+}
+
 func (t *cascadesTranslator) translateUnnestExistsFilter(
 	f *logical.LogicalFilter,
 	join *logical.LogicalJoin,
@@ -2712,22 +2764,38 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	prevCollision := t.unnestExistsScopeCollision
 	t.unnestExistsScopeCollision = existsInnerScopeCollidesOuter(f.ExistsSubqueries, outerAliases)
 	prevOuterConj := t.unnestBoxLegConjunct
-	// The EXISTS path always sets UNBAKEABLE this slice: ordinalizing a box-leg
-	// conjunct under an existential needs the existential-rebase-over-$BOX-windows
-	// verification (sub-slice B, its own consult) — until then the shape stays
-	// name-model (correct via qualified keys).
-	t.unnestBoxLegConjunct = boxConjNone
+	prevGatherOK := t.unnestExistentialGatherOK
+	// RFC-173 S4 B2-B: classify the box-leg conjunct (metadata-only, mirroring
+	// the WHERE path's :2424 block) and compute the gather admission. A
+	// verdict-None LEFT/RIGHT box (single esq, no collision) takes the gathered
+	// ordinal cluster; everything else keeps the name-model binary seed, where
+	// a box-leg conjunct resolves via qualified keys.
+	verdict := boxConjNone
 	if nonExistsConjunctRefsOuterLeg(f.Predicate, outerAliases) {
-		t.unnestBoxLegConjunct = boxConjUnbakeable
+		verdict = boxConjUnbakeable
+		if bj, isBoxJoin := join.Left.(*logical.LogicalJoin); isBoxJoin && bj.Kind != logical.JoinInner {
+			verdict = t.classifyBoxLegConjunct(bj, u, f.Predicate)
+		}
 	}
+	t.unnestBoxLegConjunct = verdict
+	t.unnestExistentialGatherOK = t.admitExistentialGather(join, f, verdict)
 	prevUnderExist := t.unnestUnderExistential
 	t.unnestUnderExistential = true
 	unnestExpr := t.translateUnnestJoin(join, u)
 	t.unnestUnderExistential = prevUnderExist
 	t.unnestExistsScopeCollision = prevCollision
 	t.unnestBoxLegConjunct = prevOuterConj
+	gatheredHere := t.unnestExistentialGatherOK
+	t.unnestExistentialGatherOK = prevGatherOK
 	if unnestExpr == nil {
 		return nil
+	}
+	// Record hygiene (B2-B): an admitted verdict-None gather writes a box-leg
+	// record no merge below will read (nonExists is empty for verdict-None).
+	// Discard it so a later translation of the same shared node (a CTE
+	// double-reference) can never bake over a stale record.
+	if gatheredHere && t.unnestGatherBoxLegTypes != nil {
+		delete(t.unnestGatherBoxLegTypes, join)
 	}
 
 	// Fold the NON-EXISTS WHERE predicates into the unnest SelectExpression,
