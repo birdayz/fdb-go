@@ -223,25 +223,14 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				if isRecBody {
 					v.inRecursiveCTEBody = true
 				}
-				// A NON-recursive body must not see its own name: SQL
-				// scoping makes `FROM T1` inside T1's body the TABLE, never
-				// the CTE being defined. The scope builder resolves CTEs
-				// FIRST (execution's shadowing order), so leaving the
-				// just-registered self entry visible would resolve the
-				// body's reads against its own OUTPUT schema — the R5a
-				// shadow pin (`WITH "T1" AS (SELECT "ID" AS "ARR1" FROM
-				// T1)`) 42703'd on ID. Hide self for the body build only.
-				var selfSrc semantic.ScopeSource
-				hadSelf := false
-				if !isRecBody {
-					if selfSrc, hadSelf = v.cteScopes[upper]; hadSelf {
-						delete(v.cteScopes, upper)
-					}
-				}
-				bodyOp, bodyErr := v.VisitQueryBody(inner.QueryExpressionBody())
-				if hadSelf {
-					v.cteScopes[upper] = selfSrc
-				}
+				// Self-invisible body build (buildCTEBodySelfHidden, both
+				// maps): SQL scoping makes `FROM T1` inside T1's body the
+				// TABLE, never the CTE being defined — CTE-first scope
+				// resolution would otherwise resolve the body against its
+				// own OUTPUT schema (the R5a shadow pin 42703'd on ID).
+				bodyOp, bodyErr := buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, isRecBody, func() (logical.LogicalOperator, error) {
+					return v.VisitQueryBody(inner.QueryExpressionBody())
+				})
 				if isRecBody {
 					v.inRecursiveCTEBody = false
 				}
@@ -303,7 +292,12 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					}
 					v.inRecursiveCTEBody = true
 				}
-				body, err = v.VisitQueryBody(inner.QueryExpressionBody())
+				// Self-invisible rebuild (buildCTEBodySelfHidden) — this
+				// arm re-raises a swallowed eager-build error with the same
+				// scoping the eager build used.
+				body, err = buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, recursive, func() (logical.LogicalOperator, error) {
+					return v.VisitQueryBody(inner.QueryExpressionBody())
+				})
 				if recursive {
 					v.inRecursiveCTEBody = false
 				}
@@ -657,16 +651,17 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
-						// A bare key naming a projection OUTPUT ALIAS takes
-						// precedence over FROM-scope ambiguity — the sort
-						// executes over the projected row, where the alias
-						// key is unambiguous (the same output-first rule the
-						// ColumnNotFound arm below applies; review-caught:
-						// `ORDER BY K` over a unique alias K spuriously
-						// 42702'd when both legs also carry a column K).
-						// An expression key (colName empty) still surfaces
-						// the scope's ambiguity.
-						if ob.colName != "" && projAliasSet[strings.ToUpper(ob.colName)] {
+						// A BARE key naming exactly ONE projection output
+						// alias takes precedence over FROM-scope ambiguity —
+						// the sort executes over the projected row, where
+						// that alias key is unambiguous (the output-first
+						// rule the ColumnNotFound arm below applies).
+						// orderByOutputAliasBinding enforces both
+						// review-caught restrictions: the raw key must BE a
+						// bare identifier, and the name must bind exactly
+						// one output column; everything else surfaces the
+						// scope's 42702.
+						if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
 							continue
 						}
 						// Java's exact SemanticAnalyzer text — the reference as

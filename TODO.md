@@ -678,7 +678,18 @@ validation gate.
     does (the round-9 buildSelectScope strip closed the WHERE gap (Q40) and the ambiguity backstop (Q39);
     a full sq normalization would collapse the three strip sites into one — but the R5b collision
     carve-out must MIGRATE INTO the normalizer when it lands, and the dotted-name divergences above
-    interact with the same pass: one slice for all of it).
+    interact with the same pass: one slice for all of it). The ordering half (round-11 review): the arc's
+    real one-rule ending is a SINGLE shared source-name resolution function all four scope consumers call
+    (translateScan / cteLegKind / buildSelectScope.addSource / upgradeJoinOnPredicates.resolveTable — all
+    four now individually CTE-first, but as four hand-mirrored copies). Two more riders, same family:
+    (i) the ON-ONLY-shadow READ sibling of Q41 (pre-existing, loud both sides): buildSelectScope consults
+    cteScopes only, so an ON-only shadowing name's UN-ENCLOSED reads fall through to the TABLE's schema —
+    `WITH "LB" AS (join-bodied …) SELECT "A" FROM "LB"` 42703s on the CTE's own alias; fixable by the
+    same brush when cteOnScopes-aware read resolution lands. (ii) JAVA-CONFORMANCE PROBE: the ORDER BY
+    output-alias-precedence shapes (Q42/Q46 — bare unique alias over FROM-scope ambiguity) are standard
+    SQL/PG behavior but unverified vs Java's SemanticAnalyzer (the M5 42702 text was live-verified for
+    FROM-scope shapes only); probe alongside the R5b read probe — if Java 42702s them, the pins flip to
+    documented divergences or revert.
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible

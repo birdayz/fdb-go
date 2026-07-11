@@ -842,6 +842,66 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 			t.Fatalf("aliased-away table-name reference must 42703, got %v", err)
 		}
 	})
+	// Q44: a NON-recursive CTE body is SELF-INVISIBLE on every
+	// register-before-build path (review-caught on all three gates, round
+	// 11): the chain pipelines complete registration before building
+	// bodies, so CTE-first scope resolution made `FROM LB` inside the CTE
+	// "LB" resolve to ITSELF — a bogus correlated-fallback misroute (0A000)
+	// and, through BuildScalar's 42703 arm, a silent base-table value
+	// substitution. buildCTEBodySelfHidden now guards the visitor eager
+	// build, the visitor rebuild, and BOTH chain loops. COUNT(*)=2 is the
+	// TABLE's row count read through the self-named CTE.
+	t.Run("Q44_self_named_cte_body_reads_table", func(t *testing.T) {
+		check(t, `SELECT LA."K", (WITH "LB" AS (SELECT "BID" AS "X" FROM LB) SELECT COUNT(*) FROM "LB") FROM LA WHERE LA."K" = 100`,
+			"2|100|2")
+		// differently-named control (never broken — isolates causation)
+		check(t, `SELECT LA."K", (WITH "W9" AS (SELECT "BID" AS "X" FROM LB) SELECT COUNT(*) FROM "W9") FROM LA WHERE LA."K" = 100`,
+			"2|100|2")
+		// the WithCTECatalog-route twin (outer WITH forces the other chain)
+		check(t, `WITH "W0" AS (SELECT "AID" FROM LA) SELECT (WITH "LB" AS (SELECT "BID" AS "X" FROM LB) SELECT COUNT(*) FROM "LB") FROM "W0"`,
+			"2|2", "2|2")
+	})
+	// Q45: an enclosing ON through a SHADOWING derivable CTE resolves
+	// against the CTE's OUTPUT schema (review-caught, round 11): the
+	// ON-upgrade's resolveTable was analyzer-first — the fourth and last
+	// catalog-first consumer — over-declining valid ONs (42703 on the CTE's
+	// renamed column) and pushing the table-only-column shape to a RUNTIME
+	// malformed plan. CTE-first now: the valid ON answers (X∈{1,3}, CID=1
+	// matches X=1), and the table-only column fails plan-time 42703.
+	t.Run("Q45_on_through_shadowing_cte", func(t *testing.T) {
+		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X", CC."CV" FROM "LA" JOIN CC ON "LA"."X" = CC."CID"`,
+			"900|1")
+		_, err := run(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA" JOIN CC ON "LA"."K" = CC."CID"`)
+		if err == nil || !strings.Contains(err.Error(), "42703") {
+			t.Fatalf("table-only column through a shadowing CTE's ON must fail plan-time 42703, got %v", err)
+		}
+	})
+	// Q46: ORDER BY output-alias precedence works through the SUBQUERY
+	// build path too (review-caught: the postBuild validation has its own
+	// ambiguity arm that was missed in round 10 — the same query answered
+	// top-level but 42702'd inside a scalar subquery).
+	t.Run("Q46_orderby_alias_in_subquery_path", func(t *testing.T) {
+		check(t, `SELECT (SELECT LA."AID" AS "KK" FROM "s"."LA", LB ORDER BY "KK" DESC LIMIT 1), LA."K" FROM LA WHERE LA."K" = 100`,
+			"2|100|2")
+	})
+	// Q47+Q48: the two review-caught over-suppressions the round-10 alias
+	// bypass would have allowed — DUPLICATE output aliases must NOT bypass
+	// the scope's 42702 (presence-only matching would silently sort by the
+	// last one), and an aggregate key whose CANONICAL text matches a quoted
+	// alias must NOT suppress genuine ambiguity inside its argument (only a
+	// bare identifier key takes the alias route).
+	t.Run("Q47_orderby_duplicate_alias_stays_ambiguous", func(t *testing.T) {
+		_, err := run(t, `SELECT LA."AID" AS "K", LB."BID" AS "K" FROM "s"."LA", LB ORDER BY "K"`)
+		if err == nil || !strings.Contains(err.Error(), "42702") {
+			t.Fatalf("duplicate output aliases must keep 42702, got %v", err)
+		}
+	})
+	t.Run("Q48_orderby_agg_canonical_text_stays_ambiguous", func(t *testing.T) {
+		_, err := run(t, `SELECT SUM(LA."K") AS "SUM(K)" FROM "s"."LA", LB ORDER BY SUM("K")`)
+		if err == nil || !strings.Contains(err.Error(), "42702") {
+			t.Fatalf("aggregate canonical-text key must keep 42702, got %v", err)
+		}
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")

@@ -40,6 +40,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
+
 	recordlayer "fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -507,25 +509,28 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	}
 
 	resolveTable := func(tableName string) semantic.Table {
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
-		if err == nil {
-			return tbl
-		}
-		// A declared CTE whose schema is NOT in cteScopes (join/unnest body —
-		// deliberately kept out of the GLOBAL scope so WHERE/projection
-		// resolution over comma-joined multi-leg CTEs keeps its clean decline,
-		// the flatten-evasion class) resolves here through the ON-ONLY scope
-		// derived at WITH registration (buildCTEOnOnlySource), so the
-		// enclosing join's ON resolves instead of being silently dropped
-		// (cross-product rows). A marker entry (nil Table) falls through to
-		// the loud drop-risk arm in addTableSource.
-		if src, found := cteOnScopes[strings.ToUpper(tableName)]; found && src.Table != nil {
+		// CTE-FIRST (execution's shadowing order — the same ordering
+		// cteLegKind and buildSelectScope apply): a declared CTE shadows a
+		// same-named catalog table; the prior analyzer-first order resolved
+		// an ON through a shadowing CTE against the TABLE's schema —
+		// over-declining valid ONs (42703 on the CTE's own columns) and, for
+		// an ON naming a table-only column, ADMITTING the upgrade and moving
+		// the failure to a runtime malformed plan (review-caught). The
+		// ON-ONLY scope (join/unnest bodies kept out of the GLOBAL cteScopes
+		// — the flatten-evasion class) resolves here so the enclosing join's
+		// ON is never silently dropped; a marker entry (nil Table) falls
+		// through to the loud drop-risk arm in addTableSource.
+		if src, found := cteOnScopes[strings.ToUpper(tableName)]; found {
 			return src.Table
 		}
 		if cteScopes != nil {
 			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
 				return src.Table
 			}
+		}
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err == nil {
+			return tbl
 		}
 		return nil
 	}
@@ -1022,6 +1027,38 @@ func buildCTEColumnSource(
 // MARKER instead: the declared name still routes to the loud drop-risk 0AF00,
 // never a silent ON drop. Widening the derivable set (qualified/renamed
 // output schemas) is booked with the derived-table-twin item.
+// buildCTEBodySelfHidden runs a CTE body build with the CTE's OWN name
+// hidden from both scope maps: non-recursive SQL scoping makes
+// `FROM <own-name>` inside the body the TABLE, never the CTE being defined.
+// With CTE-FIRST scope resolution a visible self entry resolves the body
+// against its own OUTPUT schema — on the chain paths that surfaced as a
+// bogus correlated-fallback misroute AND a silent base-table value
+// substitution through BuildScalar's 42703 arm; on the visitor path the
+// R5a shadow pin caught it (review-caught on all three, one shared helper
+// so the pipelines cannot diverge again). Recursive bodies keep self
+// visible — their union machinery consumes the self-reference. Restores
+// are deferred (error-path safe).
+func buildCTEBodySelfHidden(
+	cteScopes, cteOnScopes map[string]semantic.ScopeSource,
+	upper string,
+	recursive bool,
+	build func() (logical.LogicalOperator, error),
+) (logical.LogicalOperator, error) {
+	if !recursive {
+		if src, ok := cteScopes[upper]; ok {
+			delete(cteScopes, upper)
+			defer func() { cteScopes[upper] = src }()
+		}
+		if cteOnScopes != nil {
+			if src, ok := cteOnScopes[upper]; ok {
+				delete(cteOnScopes, upper)
+				defer func() { cteOnScopes[upper] = src }()
+			}
+		}
+	}
+	return build()
+}
+
 // cteLegKind classifies a NAMED FROM leg of a CTE ON-only body by what
 // EXECUTION will resolve it to. Declared CTE names come FIRST — a CTE
 // shadows a same-named catalog table (review-caught: a metadata-first lookup
@@ -2018,6 +2055,14 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
+						// Output-alias precedence, mirrored from the visitor
+						// path's arm (review-caught: this twin was missed, so
+						// the SAME query 42702'd inside a subquery while the
+						// top level answered): a BARE key binding exactly ONE
+						// output alias wins over FROM-scope ambiguity.
+						if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
+							continue
+						}
 						// Java's exact text, from the reference as written (M5).
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 							"Ambiguous reference %s", ambigErr.Reference())
@@ -2461,6 +2506,50 @@ func buildSelectScope(
 		}
 	}
 	return expr.New(analyzer, scope)
+}
+
+// orderByOutputAliasBinding classifies an ORDER BY key for the
+// output-alias-precedence rule: bareIdent is true only when the RAW key is
+// exactly a single-segment column reference (typed walk — columnNameFromExpr
+// canonicalizes aggregate calls too, so `ORDER BY SUM(K)` must NOT match a
+// quoted "SUM(K)" alias and thereby suppress a genuine ambiguity inside the
+// aggregate's argument, review-caught); matches counts how many projection
+// output columns bind the name (a presence-only check let duplicate aliases
+// K, K bypass 42702 and silently sort by whichever the alias map kept last,
+// review-caught). The precedence applies only when bareIdent && matches==1.
+func orderByOutputAliasBinding(rawExpr antlrgen.IExpressionContext, colName string, sq *selectQuery) (bareIdent bool, matches int) {
+	if colName == "" || !isBareIdentifierExpr(rawExpr) {
+		return false, 0
+	}
+	upper := strings.ToUpper(colName)
+	for _, a := range sq.projAliases {
+		if a != "" && strings.ToUpper(a) == upper {
+			matches++
+		}
+	}
+	for _, ac := range sq.aggCols {
+		if ac.outName != "" && strings.ToUpper(ac.outName) == upper {
+			matches++
+		}
+	}
+	return true, matches
+}
+
+// isBareIdentifierExpr reports whether the expression is exactly a
+// single-segment column reference — descending only single-child wrapper
+// nodes to the atom (typed nodes, never text).
+func isBareIdentifierExpr(e antlrgen.IExpressionContext) bool {
+	var n antlr.Tree = e
+	for n != nil {
+		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+			return len(c.FullColumnName().FullId().AllUid()) == 1
+		}
+		if n.GetChildCount() != 1 {
+			return false
+		}
+		n = n.GetChild(0)
+	}
+	return false
 }
 
 // resolveColumnName resolves a bare column name through the semantic
@@ -4453,7 +4542,13 @@ func buildLogicalPlanForQueryWithCTECatalog(
 						"recursive CTE requires UNION ALL body")
 				}
 			}
-			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
+			// Self-invisible body build (buildCTEBodySelfHidden): the
+			// registration loop completed BEFORE this build, so the maps
+			// carry the CTE's own entry — CTE-first resolution would
+			// resolve the body against its own output schema.
+			body, err = buildCTEBodySelfHidden(cteScopes, cteOnScopes, strings.ToUpper(name), recursive, func() (logical.LogicalOperator, error) {
+				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -4584,7 +4679,13 @@ func buildLogicalPlanForQueryWithCatalog(
 						"recursive CTE requires UNION ALL body")
 				}
 			}
-			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
+			// Self-invisible body build (buildCTEBodySelfHidden): the
+			// registration loop completed BEFORE this build, so the maps
+			// carry the CTE's own entry — CTE-first resolution would
+			// resolve the body against its own output schema.
+			body, err = buildCTEBodySelfHidden(cteScopes, cteOnScopes, strings.ToUpper(name), recursive, func() (logical.LogicalOperator, error) {
+				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
+			})
 			if err != nil {
 				return nil, err
 			}
