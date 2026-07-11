@@ -725,7 +725,13 @@ validation gate.
     flip-sentinel — answers when it goes CTE-first), the SELECT * variant advertises the TABLE's columns
     and fails at RUNTIME where plan-time 42703 was due, and the name-coincidence variant answers by
     accident. buildDerivedTableSourceFromAgg is clean (derives from aggregate output shapes, no table
-    resolution). LATENT
+    resolution). EIGHTH copy (review, A/B-confirmed pre-existing at the round-9 baseline, live LOUD reach):
+    buildCTEColumnSource (the deriver) consults cteScopes but NOT cteOnScopes, so a join-bodied CTE
+    shadowing a same-named base TABLE is invisible to it — it derives the dependent CTE's schema from the
+    TABLE, accepts a column the CTE never exposes, and fails at RUNTIME (malformed-plan, "field K not
+    resolvable, row columns [M N]") where plan-time 42703 is due. Fix: the deriver must recognize a name
+    that is a join-bodied CTE (cteOnScopes membership) and decline to plan-time rather than resolving
+    through the table. LATENT
     catalog-first (masked by the text fallback / upstream gates today; goes live when the text fallback
     retires): buildWherePredicateForJoinsWithCTEScopes.addSource (~:1508, its own comment says
     "metadata first, then CTE scopes") plus ~7 more ResolveTable sites in the same masked category
