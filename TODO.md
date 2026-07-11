@@ -708,7 +708,13 @@ validation gate.
     buildCTEColumnSource's inner-table resolution (round 13 — its metadata-first was LIVE-wrong: a
     shadowing body's schema derived from the TABLE, declined on the CTE-only column, and dumped the CTE
     into the ON-only marker path; the nested-shadow pin had been green only via the stale-outer accident
-    the round-12/13 evict removed). LATENT
+    the round-12/13 evict removed). SEVENTH copy (round-13 review, live LOUD reach, booking-grade):
+    buildDerivedTableSource (~:318) resolves its inner table via the analyzer with NO CTE fallback at all
+    — a derived table over a shadowing CTE OVER-DECLINES the valid read (0AF00; the ready-made
+    flip-sentinel — answers when it goes CTE-first), the SELECT * variant advertises the TABLE's columns
+    and fails at RUNTIME where plan-time 42703 was due, and the name-coincidence variant answers by
+    accident. buildDerivedTableSourceFromAgg is clean (derives from aggregate output shapes, no table
+    resolution). LATENT
     catalog-first (masked by the text fallback / upstream gates today; goes live when the text fallback
     retires): buildWherePredicateForJoinsWithCTEScopes.addSource (~:1508, its own comment says
     "metadata first, then CTE scopes") plus ~7 more ResolveTable sites in the same masked category

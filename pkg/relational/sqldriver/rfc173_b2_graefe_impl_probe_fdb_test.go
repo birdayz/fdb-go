@@ -852,14 +852,19 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// build, the visitor rebuild, and BOTH chain loops. COUNT(*)=2 is the
 	// TABLE's row count read through the self-named CTE.
 	t.Run("Q44_self_named_cte_body_reads_table", func(t *testing.T) {
-		check(t, `SELECT LA."K", (WITH "LB" AS (SELECT "BID" AS "X" FROM LB) SELECT COUNT(*) FROM "LB") FROM LA WHERE LA."K" = 100`,
-			"2|100|2")
+		// The body filter (BID = 1) makes the count VALUE-DISCRIMINATING:
+		// the table-read gives 1, any row-preserving misroute over the
+		// unfiltered generation gives 2 (review-caught: the unfiltered
+		// COUNT(*)=2 was value-degenerate with the table cardinality — the
+		// exact green-masking pattern the Q49 forensic demonstrated).
+		check(t, `SELECT LA."K", (WITH "LB" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "LB") FROM LA WHERE LA."K" = 100`,
+			"1|100|1")
 		// differently-named control (never broken — isolates causation)
-		check(t, `SELECT LA."K", (WITH "W9" AS (SELECT "BID" AS "X" FROM LB) SELECT COUNT(*) FROM "W9") FROM LA WHERE LA."K" = 100`,
-			"2|100|2")
+		check(t, `SELECT LA."K", (WITH "W9" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "W9") FROM LA WHERE LA."K" = 100`,
+			"1|100|1")
 		// the WithCTECatalog-route twin (outer WITH forces the other chain)
-		check(t, `WITH "W0" AS (SELECT "AID" FROM LA) SELECT (WITH "LB" AS (SELECT "BID" AS "X" FROM LB) SELECT COUNT(*) FROM "LB") FROM "W0"`,
-			"2|2", "2|2")
+		check(t, `WITH "W0" AS (SELECT "AID" FROM LA) SELECT (WITH "LB" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "LB") FROM "W0"`,
+			"1|1", "1|1")
 	})
 	// Q45: an enclosing ON through a SHADOWING derivable CTE resolves
 	// against the CTE's OUTPUT schema (review-caught, round 11): the
@@ -926,18 +931,32 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("Y") FROM "V") FROM LB LIMIT 1`,
 			"900|900")
 	})
-	// Q51 FLIP-SENTINEL for the booked ON-only READ class: an INVALID read
-	// over an ON-only CTE (shadowed or plain) is currently SILENT NULL —
-	// the nil-resolver leniency (the booking's "loud both sides"
-	// characterization was wrong; only the falls-to-a-TABLE shadow variant
-	// is loud). When cteOnScopes-aware read resolution lands (the booked
-	// READ sibling — carefully, the flatten-evasion gate pin must hold),
-	// BOTH subtests flip to 42703 and this comment gets the truth pass.
-	t.Run("Q51_ononly_invalid_read_silent_flip_sentinel", func(t *testing.T) {
+	// Q51: the booked ON-only READ class, both variants. NO-SHADOW: an
+	// invalid read over a plain ON-only CTE is SILENT NULL — nil-resolver
+	// leniency; FLIP-SENTINEL for the booked cteOnScopes-aware read
+	// resolution (carefully — the flatten-evasion gate pin must hold);
+	// flips to 42703 with a truth pass here. SHADOW: LOUD already — the
+	// replace-not-evict installs the inner's ON-only schema, so a
+	// different-schema read fails at the subquery build (the surface 0A000
+	// is the known BuildScalar 42703→correlated-fallback misroute wart —
+	// loud, wrong message; sharpens when that family is fixed).
+	t.Run("Q51_ononly_invalid_read_class", func(t *testing.T) {
 		check(t, `WITH "W" AS (SELECT CC."CV" AS "Y" FROM LB LEFT JOIN CC ON LB."BID" = CC."CID") SELECT MAX("NOPE") FROM "W"`,
 			"<nil>")
-		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`,
-			"<nil>|<nil>")
+		_, err := run(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`)
+		if err == nil {
+			t.Fatal("different-schema read over a shadowing ON-only CTE must fail LOUD, got rows")
+		}
+	})
+	// Q52: the COINCIDING-schema shadow shape (review-caught: a plain evict
+	// sent this from correct-by-coincidence to silent NULL) — with the
+	// inner's ON-only schema installed, the read resolves against the
+	// CORRECT generation and answers with the INNER's values: inner
+	// X' = CC.CID over (outer X∈{1,3} LEFT JOIN CC ON X=CID) → {1, NULL} →
+	// MAX = 1.
+	t.Run("Q52_ononly_shadow_coinciding_schema_answers", func(t *testing.T) {
+		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "X" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`,
+			"1|1")
 	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,

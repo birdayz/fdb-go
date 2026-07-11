@@ -4568,14 +4568,27 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				// what the body's reference means, pre-state scoping).
 				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
 				// The mirror of the derivable arm's shadow delete: an inner
-				// ON-ONLY registration must also EVICT a same-named outer
-				// derivable entry, or this level's MAIN query resolves the
-				// inner CTE's reads against the STALE OUTER schema —
-				// silently accepting columns the inner never exposes
-				// (review-caught: MAX over a stale column returned NULL
-				// where loudness was due; the pre-registration snapshot
-				// keeps the outer visible for the BODY build only).
-				delete(cteScopes, upper)
+				// ON-ONLY registration must not leave a same-named OUTER
+				// derivable entry installed, or this level's MAIN query
+				// resolves the inner CTE's reads against the STALE OUTER
+				// schema (review-caught: MAX over a stale column returned
+				// NULL; the pre-registration snapshot keeps the outer
+				// visible for the BODY build only). SHADOW case: REPLACE
+				// the outer entry with the inner's ON-only derived schema —
+				// a plain evict sent coinciding-schema reads from correct
+				// to silent NULL (review-caught, the follow-up): with the
+				// real inner schema installed, coinciding reads answer
+				// through the CORRECT generation and different-schema reads
+				// go loud 42703. A MARKER (nil Table) just evicts — nothing
+				// readable to install. NO-shadow: nothing enters cteScopes,
+				// so the flatten-evasion gate pin's clean decline holds.
+				if _, hadOuter := cteScopes[upper]; hadOuter {
+					if reg, ok := cteOnScopes[upper]; ok && reg.Table != nil {
+						cteScopes[upper] = reg
+					} else {
+						delete(cteScopes, upper)
+					}
+				}
 			}
 		}
 	}
@@ -4727,14 +4740,27 @@ func buildLogicalPlanForQueryWithCatalog(
 				// what the body's reference means, pre-state scoping).
 				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
 				// The mirror of the derivable arm's shadow delete: an inner
-				// ON-ONLY registration must also EVICT a same-named outer
-				// derivable entry, or this level's MAIN query resolves the
-				// inner CTE's reads against the STALE OUTER schema —
-				// silently accepting columns the inner never exposes
-				// (review-caught: MAX over a stale column returned NULL
-				// where loudness was due; the pre-registration snapshot
-				// keeps the outer visible for the BODY build only).
-				delete(cteScopes, upper)
+				// ON-ONLY registration must not leave a same-named OUTER
+				// derivable entry installed, or this level's MAIN query
+				// resolves the inner CTE's reads against the STALE OUTER
+				// schema (review-caught: MAX over a stale column returned
+				// NULL; the pre-registration snapshot keeps the outer
+				// visible for the BODY build only). SHADOW case: REPLACE
+				// the outer entry with the inner's ON-only derived schema —
+				// a plain evict sent coinciding-schema reads from correct
+				// to silent NULL (review-caught, the follow-up): with the
+				// real inner schema installed, coinciding reads answer
+				// through the CORRECT generation and different-schema reads
+				// go loud 42703. A MARKER (nil Table) just evicts — nothing
+				// readable to install. NO-shadow: nothing enters cteScopes,
+				// so the flatten-evasion gate pin's clean decline holds.
+				if _, hadOuter := cteScopes[upper]; hadOuter {
+					if reg, ok := cteOnScopes[upper]; ok && reg.Table != nil {
+						cteScopes[upper] = reg
+					} else {
+						delete(cteScopes, upper)
+					}
+				}
 			}
 		}
 	}
