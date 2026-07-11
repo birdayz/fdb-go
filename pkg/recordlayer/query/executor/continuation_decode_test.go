@@ -97,6 +97,29 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 			},
 			wantErr: "failed to unpack sorted record 0 primary key",
 		},
+		{
+			// A well-formed v2 array with the wrong arity is a CORRUPT
+			// continuation, not a decodable one — the fail-corrupt contract
+			// (a silently mis-split payload would resume with wrong rows).
+			name: "v2 payload with wrong arity",
+			data: func(t *testing.T) []byte {
+				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}]`)})
+				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
+			},
+			wantErr: "want 2",
+		},
+		{
+			// JSON null unmarshals into a bool as a NO-OP — accepting it would
+			// silently downgrade a resumed Complete row (the page-boundary
+			// fabrication mismatch the v2 format exists to prevent). The
+			// encoder only writes true/false; null is corrupt.
+			name: "v2 payload with null completeness",
+			data: func(t *testing.T) []byte {
+				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}, null]`)})
+				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
+			},
+			wantErr: "completeness in continuation is not a boolean",
+		},
 	}
 
 	for _, tt := range tests {

@@ -208,10 +208,6 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				v.cteScopes[upper] = src
-				// Mirror of the CTECatalog chain's shadowing delete: a
-				// derivable registration supersedes any earlier ON-only entry
-				// for the same name.
-				delete(v.cteOnScopes, upper)
 			} else {
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON

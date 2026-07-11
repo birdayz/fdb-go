@@ -966,13 +966,16 @@ func buildCTEColumnSource(
 // decline (the flatten-evasion class).
 //
 // Output-name authority (must match what execution actually EMITS, or the
-// fabricated "CTE.col" merge keys miss): ONLY an explicit projection alias —
-// executeProjection always writes the alias key, so a derived name provably
-// exists on the runtime row. Everything else DECLINES to the loud marker:
-//   - an unaliased reference (bare OR qualified) resolves to a FieldValue
-//     whose Field is the QUALIFIED source name ("D.ID" — see
-//     values.ProjectionColumnName), so the row carries no bare key and an
-//     advertised bare name would read a column the merged row never has;
+// fabricated "CTE.col" merge keys miss): an explicit projection alias
+// (executeProjection always writes the alias key) or a BARE unqualified
+// non-computed reference (the runtime key mirrors the SQL spelling — a bare
+// ref plans as Project([AID],…) and keys bare; an ambiguous bare ref never
+// reaches derivation, the body build 42702s first). Everything else DECLINES
+// to the loud marker:
+//   - an unaliased QUALIFIED reference resolves to a FieldValue whose Field
+//     is the dotted source name ("D.ID" — see values.ProjectionColumnName),
+//     so the row carries no bare key and an advertised bare name would read
+//     a column the merged row never has;
 //   - `WITH c(x, y)` column aliases rename the SCOPE view only — the runtime
 //     row still keys by the body's own output names, so resolving `c.x` here
 //     would turn today's loud 42703 into a silent runtime miss (worse);
@@ -1016,24 +1019,44 @@ func buildCTEOnOnlySource(
 	if err != nil || innerSQ == nil {
 		return semantic.ScopeSource{}, false
 	}
-	if len(innerSQ.joins) == 0 {
-		// Single-source bodies are buildCTEColumnSource territory; if THAT
-		// declined, this name-only derivation has nothing better to offer.
+	if len(innerSQ.joins) == 0 && innerSQ.derivedQuery == nil {
+		// Plain single-table bodies are buildCTEColumnSource territory; if
+		// THAT declined, this name-only derivation has nothing better to
+		// offer. Derived-source bodies (`FROM (SELECT …) d` — zero joins but
+		// declined globally for the derivedQuery reason) DO derive here: their
+		// projection names key the runtime row the same way.
 		return semantic.ScopeSource{}, false
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
 		return buildDerivedTableSourceFromAgg(cteName, innerSQ)
 	}
 	if innerSQ.projCols == nil {
-		return semantic.ScopeSource{}, false // SELECT * over a multi-leg body: no name authority
+		return semantic.ScopeSource{}, false // SELECT * over a multi-leg/derived body: no name authority
 	}
 	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
-	for i := range innerSQ.projCols {
-		if i >= len(innerSQ.projAliases) || innerSQ.projAliases[i] == "" {
-			return semantic.ScopeSource{}, false // unaliased item — no provable runtime key
+	for i, col := range innerSQ.projCols {
+		// The output name must be one execution PROVABLY emits: the explicit
+		// alias (executeProjection always writes the alias key), or a BARE
+		// unqualified non-computed reference (the runtime key mirrors the SQL
+		// spelling — a bare ref keys bare, verified by plan shape
+		// Project([AID],…); an ambiguous bare ref never gets here, the body
+		// build 42702s first). A QUALIFIED unaliased ref keys by its dotted
+		// source name and a computed item by its explain rendering — both
+		// decline (no bare key on the runtime row).
+		outName := ""
+		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
+			outName = innerSQ.projAliases[i]
+		} else {
+			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
+			if ref := parseColRef(col); !isComputed && !ref.isQualified() {
+				outName = ref.bare()
+			}
+		}
+		if outName == "" {
+			return semantic.ScopeSource{}, false
 		}
 		columns = append(columns, semantic.Column{
-			Id:       semantic.NewUnquoted(innerSQ.projAliases[i]),
+			Id:       semantic.NewUnquoted(outName),
 			Type:     "UNKNOWN",
 			Nullable: true,
 		})
@@ -4143,6 +4166,16 @@ func buildLogicalPlanForQueryWithCatalog(
 			name := functions.FullIdToName(nq.GetName())
 			upper := strings.ToUpper(name)
 			if _, exists := cteScopes[upper]; exists {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"found '%s' more than once", name)
+			}
+			// An ON-only registration is a DECLARED name too — without this
+			// arm a join-bodied duplicate (never in cteScopes) silently
+			// last-wins here while the visitor and the WithCTECatalog loop
+			// both error (the review-caught third-loop copy of the same hole;
+			// reachable live via a subquery-nested WITH through the
+			// empty-scope short-circuit).
+			if _, exists := cteOnScopes[upper]; exists {
 				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
 					"found '%s' more than once", name)
 			}

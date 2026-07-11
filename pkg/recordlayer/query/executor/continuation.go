@@ -366,14 +366,21 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d v2 payload in continuation: %w", i, jErr)
 			}
 			if len(wrapper) != 2 {
-				return nil, nil, fmt.Errorf("sorted record %d v2 payload has %d elements, want 2 (corrupt continuation)", i, len(wrapper))
+				return nil, nil, fmt.Errorf("sorted record %d v2 payload has %d element(s), want 2 (corrupt continuation)", i, len(wrapper))
 			}
 			if jErr := json.Unmarshal(wrapper[0], &datum); jErr != nil {
 				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
 			}
-			if jErr := json.Unmarshal(wrapper[1], &complete); jErr != nil {
-				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d completeness in continuation: %w", i, jErr)
+			// FAIL-CORRUPT: a JSON null unmarshals into a bool as a NO-OP
+			// (complete stays false, no error) — silently downgrading a
+			// resumed Complete row would reintroduce the page-boundary
+			// fabrication mismatch this format exists to prevent. The encoder
+			// only ever writes true/false; anything else is corrupt.
+			completeBool := false
+			if jErr := json.Unmarshal(wrapper[1], &completeBool); jErr != nil || string(bytes.TrimSpace(wrapper[1])) == "null" {
+				return nil, nil, fmt.Errorf("sorted record %d completeness in continuation is not a boolean (corrupt continuation)", i)
 			}
+			complete = completeBool
 		} else if jErr := json.Unmarshal(sr.Message, &datum); jErr != nil {
 			return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
 		}

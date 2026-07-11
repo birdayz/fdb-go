@@ -532,6 +532,36 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// matches CID=1 → 0 rows joined (2 rows cross — the discriminator);
 	// second branch contributes one real row so total breakage can't
 	// masquerade as success.
+	// Q15: a BARE unqualified projection in a multi-leg CTE body IS derivable
+	// — the runtime key mirrors the SQL spelling (the body plans as
+	// Project([AID],…) and the comma-form control answers real values), so
+	// the ON resolves and pads correctly. A first over-narrowing declined
+	// this to 0AF00, regressing the class vs its pre-narrowing behavior
+	// (review-caught).
+	t.Run("Q15_bare_ref_body_on_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"900|1", "<nil>|2")
+	})
+	// Q16: a DERIVED-SOURCE CTE body (`FROM (SELECT …) d` — zero joins, but
+	// declined by the global deriver for the derivedQuery reason) derives its
+	// ON-only schema from the projection list like any multi-leg body —
+	// review-caught sibling of Q15 (the joins==0 early-decline wrongly
+	// assumed the global deriver owned every zero-join shape).
+	t.Run("Q16_derived_source_body_on_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT "AID" FROM LA) AS "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
+			"900|1", "<nil>|2")
+	})
+	// Q17: a DUPLICATE join-bodied CTE name inside a SUBQUERY-nested WITH —
+	// the third registration loop (the empty-scope short-circuit routes a
+	// subquery's own WITH into buildLogicalPlanForQueryWithCatalog when the
+	// outer query has no CTEs) used to let it silently last-win while the
+	// other two loops errored. Loud DuplicateAlias now, uniformly.
+	t.Run("Q17_subquery_nested_duplicate_with_loud", func(t *testing.T) {
+		_, err := run(t, `SELECT LA."K", (WITH "X" AS (SELECT LA."K" AS "AK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID"), "X" AS (SELECT "AID" FROM LA) SELECT COUNT(*) FROM "X") FROM LA`)
+		if err == nil {
+			t.Fatal("duplicate CTE name in a subquery-nested WITH must fail LOUD, got rows")
+		}
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")
