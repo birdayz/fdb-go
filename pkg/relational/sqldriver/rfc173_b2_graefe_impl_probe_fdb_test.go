@@ -808,6 +808,40 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		check(t, `SELECT LA."K" AS "AK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID" WHERE LA."K" = 100`,
 			"100|100")
 	})
+	// Q41: the scope builder resolves a CTE-shadowed name through the CTE's
+	// OUTPUT schema, not the same-named table's (review-caught, round 10):
+	// addSource was catalog-first, so `LA."X"` — X being the CTE's renamed
+	// column — 42703'd against the base table. The plain-name variant was
+	// broken this way ALL ALONG; the schema-qualified variant regressed in
+	// round 9 when the resolver went live. CTE-first now, mirroring
+	// execution's shadowing (and cteLegKind's ordering). X = BID values
+	// {1,3} × 2 B-rows.
+	t.Run("Q41_cte_shadow_scope_reads_cte_schema", func(t *testing.T) {
+		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA", "s"."LB" AS "B"`,
+			"1", "1", "3", "3")
+		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA", LB AS "B"`,
+			"1", "1", "3", "3")
+	})
+	// Q42: a bare ORDER BY key naming a UNIQUE OUTPUT ALIAS takes precedence
+	// over FROM-scope ambiguity (review-caught, round 10): both legs carry a
+	// column K, but the sort executes over the projected row where alias K
+	// is unambiguous — the validation's ambiguity arm now defers to the
+	// alias exactly like its ColumnNotFound arm always did. checkOrdered:
+	// K DESC = 2,2,1,1 (the ordering itself is the assertion).
+	t.Run("Q42_orderby_alias_precedes_scope_ambiguity", func(t *testing.T) {
+		checkOrdered(t, `SELECT LA."AID" AS "K", LB."BID" FROM "s"."LA", LB ORDER BY "K" DESC`,
+			"2|2|1", "2|2|3", "1|1|1", "1|1|3")
+	})
+	// Q43: the live resolver's strictness dividend, pinned against a
+	// leniency regression (review-requested): a reference through the
+	// ALIASED-AWAY table name is 42703 — pre-round-9 the nil resolver let
+	// it through leniently.
+	t.Run("Q43_aliased_away_name_is_42703", func(t *testing.T) {
+		_, err := run(t, `SELECT LA."K" FROM "s"."LA" AS "X" LEFT JOIN "s"."LB" AS "Y" ON "X"."AID" = "Y"."BID"`)
+		if err == nil || !strings.Contains(err.Error(), "42703") {
+			t.Fatalf("aliased-away table-name reference must 42703, got %v", err)
+		}
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")

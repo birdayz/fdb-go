@@ -666,10 +666,19 @@ validation gate.
     spellings): a quoted-dotted CTE name equal to schema.table (`WITH "S.LA" AS (…) … FROM "S.LA"`) is
     silently bypassed for the TABLE's rows; inversely `FROM "s"."LA"` with a bare CTE "LA" declared reads
     the CTE where Java's generateAccess reads the table. Rider: the explicit-dotted-alias corner
-    (`AS "S.LA"`) is loud malformed both sides — same booking. CLOSING ITEM for the schema-qualified
-    family: normalize sq on the visitor path as the catalog path does (the round-9 buildSelectScope strip
-    closed the WHERE gap (Q40) and the ambiguity backstop (Q39); a full sq normalization would collapse
-    the three strip sites into one).
+    (`AS "S.LA"`) is loud malformed both sides — same booking. Round-9-review riders, same family:
+    the QUOTED-dotted spelling also evades the round-9 collision decline (typed-segments vs lossy-split
+    mismatch — `WITH V AS (SELECT K FROM LA AS "s", "S.LB")` admits with a dead backstop, 4 silent rows,
+    identical at base and HEAD; needs the same three stacked absurdities); JAVA-CONFORMANCE PROBE DUE for
+    the R5b aliased-away-name read (`SELECT PA.ID FROM PA AS s, s.PB AS B` — the R5b pins' Java citations
+    cover the LEG classification only, NOT the read; standard SQL says the alias replaces the name, so if
+    Java rejects it the round-9 leniency carve-out preserves a Go-only accident and can narrow to leg
+    classification, which also collapses the ON-vs-WHERE loud-vs-lenient divergence on collision bodies).
+    CLOSING ITEM for the schema-qualified family: normalize sq on the visitor path as the catalog path
+    does (the round-9 buildSelectScope strip closed the WHERE gap (Q40) and the ambiguity backstop (Q39);
+    a full sq normalization would collapse the three strip sites into one — but the R5b collision
+    carve-out must MIGRATE INTO the normalizer when it lands, and the dotted-name divergences above
+    interact with the same pass: one slice for all of it).
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible

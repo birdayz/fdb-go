@@ -223,7 +223,25 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				if isRecBody {
 					v.inRecursiveCTEBody = true
 				}
+				// A NON-recursive body must not see its own name: SQL
+				// scoping makes `FROM T1` inside T1's body the TABLE, never
+				// the CTE being defined. The scope builder resolves CTEs
+				// FIRST (execution's shadowing order), so leaving the
+				// just-registered self entry visible would resolve the
+				// body's reads against its own OUTPUT schema — the R5a
+				// shadow pin (`WITH "T1" AS (SELECT "ID" AS "ARR1" FROM
+				// T1)`) 42703'd on ID. Hide self for the body build only.
+				var selfSrc semantic.ScopeSource
+				hadSelf := false
+				if !isRecBody {
+					if selfSrc, hadSelf = v.cteScopes[upper]; hadSelf {
+						delete(v.cteScopes, upper)
+					}
+				}
 				bodyOp, bodyErr := v.VisitQueryBody(inner.QueryExpressionBody())
+				if hadSelf {
+					v.cteScopes[upper] = selfSrc
+				}
 				if isRecBody {
 					v.inRecursiveCTEBody = false
 				}
@@ -639,6 +657,18 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
+						// A bare key naming a projection OUTPUT ALIAS takes
+						// precedence over FROM-scope ambiguity — the sort
+						// executes over the projected row, where the alias
+						// key is unambiguous (the same output-first rule the
+						// ColumnNotFound arm below applies; review-caught:
+						// `ORDER BY K` over a unique alias K spuriously
+						// 42702'd when both legs also carry a column K).
+						// An expression key (colName empty) still surfaces
+						// the scope's ambiguity.
+						if ob.colName != "" && projAliasSet[strings.ToUpper(ob.colName)] {
+							continue
+						}
 						// Java's exact SemanticAnalyzer text — the reference as
 						// written, byte-equal in the conformance harness
 						// (RFC-173 QP-REF-BIND item 1, M5; live-verified for

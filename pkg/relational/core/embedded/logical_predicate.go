@@ -2372,8 +2372,14 @@ func buildSelectScope(
 			}
 			tableName = segs[1]
 		}
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
-		if err != nil && cteScopes != nil {
+		// CTE-FIRST: a declared CTE shadows a same-named catalog table
+		// (execution's translateScan contract; the same ordering cteLegKind
+		// applies). The prior catalog-first order analyzed the TABLE's
+		// schema for reads that execute against the CTE — 42703 on the
+		// CTE's own columns (review-caught; the plain-body variant of the
+		// shape was broken this way all along, masked only for
+		// schema-qualified bodies by the pre-round-9 nil resolver).
+		if cteScopes != nil {
 			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
 				aliasID := semantic.NewUnquoted(alias)
 				if alias == "" {
@@ -2385,8 +2391,8 @@ func buildSelectScope(
 					CorrelationName: bindingOrAlias(bindingID, aliasID),
 				}) == nil
 			}
-			return false
 		}
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil {
 			return false
 		}
