@@ -320,7 +320,10 @@ validation gate.
     existential-over-multi-join is its own residual class (pinned as a flip-sentinel in the census probe;
     ordinalizing it is a separate slice — likely part of the EXISTS-composition arc, not the box substrate).
     Re-consult Graefe on B1 sequencing WITH this correction before building B1.
-  - [x] **B1 = U-1 LANDED (existential wrap over a gathered ordinal cluster) — awaiting 4-gate.** The mechanism
+  - [x] **B1 = U-1 LANDED — FULLY 4-GATED on 7c4d3ea8f (2026-07-11): Torvalds ACK (r3) · Graefe ACK (r3) ·
+    codex clean (r4) · @claude coherence ACK (final).** Six commits, four gate rounds, every round a real find
+    (2 silent-NULL classes, 1 loud break, 1 side-effect leak, 3 doc-honesty violations — all fixed + pinned
+    pre-merge; 16-subtest cert + census zero-firings pin + SARG plan-shape asserts). The mechanism
     (rfc173_b1_exists_gather.go, per the Graefe rebase-mechanism design-ACK): a plain WHERE-EXISTS over a gated
     arity≥3 non-dup INNER cluster routes through a WIDENED projection fold → `translateExistsOverGatheredCluster`
     builds the join + the WHERE's non-EXISTS conjuncts as its OWN gathered ordinal cluster
