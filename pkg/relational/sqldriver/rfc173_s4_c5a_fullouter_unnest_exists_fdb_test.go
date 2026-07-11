@@ -299,7 +299,7 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 
 	// NONEXISTS-CONJUNCT / no-shared-columns FULL box. FOA and FOC share NO
 	// column name, so the box concat has no duplicate → the gathered path's
-	// name-ambiguous decline does NOT fire. Without the unnestOuterConjunctOnBoxLeg
+	// name-ambiguous decline does NOT fire. Without the unnestBoxLegConjunct
 	// decline in the gathered OUTER-box arm, the box gathers positionally as one
 	// opaque leg and the box-leg WHERE conjunct merges by name with no per-leg
 	// window → `field "FOA.K" not resolvable … ordinal -1` (malformed plan,
@@ -330,7 +330,7 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 	// be baked positionally (it merges into the name-keyed unnest SELECT, out of
 	// the executor's below-FOD hoist reach), so the ordinal seed would leave it
 	// unresolvable → malformed plan. The narrowing declines such a shape to
-	// name-model (unnestExistsSeedSafe → unnestOuterConjunctOnBoxLeg), which
+	// name-model (unnestExistsSeedSafe → unnestBoxLegConjunct), which
 	// resolves FOA.K via the qualified key → correct {7,8}. RED before the
 	// narrowing (`field "FOA.K" not resolvable ... malformed plan`); pre-c5a this
 	// shape was name-model and worked, so the ordinal lift MUST NOT regress it.

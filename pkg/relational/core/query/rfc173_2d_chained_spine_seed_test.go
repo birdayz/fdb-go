@@ -310,7 +310,11 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tr := newChainedSpineTranslator(t)
-			tr.unnestOuterConjunctOnBoxLeg = tc.filtered
+			if tc.filtered {
+				tr.unnestBoxLegConjunct = boxConjUnbakeable
+			} else {
+				tr.unnestBoxLegConjunct = boxConjNone
+			}
 			j, u := tc.build()
 			if got := seedForm(t, tr, j, u); got != tc.want {
 				t.Fatalf("seed form = %s, want %s (translateErr: %v)", got, tc.want, tr.translateErr)

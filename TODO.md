@@ -546,6 +546,25 @@ validation gate.
     producers; EXISTS variant still 2 — sub-slice B, design-NAK deferred to its own consult: the
     existential-rebase-over-$BOX-windows question is unverified). Comment debt in the same commit: the flag's
     field doc, gather:77-95, unnestExistsSeedSafe:897-919, the :2392-2398 flag-site comment.
+    **B2 SUB-SLICE A LANDED — awaiting 4-gate.** A1: `unnestOuterConjunctOnBoxLeg` bool → the 3-state
+    `unnestBoxLegConjunct` verdict (None/Bakeable/Unbakeable); `classifyBoxLegConjunct`
+    (rfc173_b2_box_conjunct.go) computes bakeability PRE-translation, metadata-only (box-as-one-leg
+    ordinalJoinSeedFields map derives + no ScalarSubqueryValue/ExistsValue + no foreign correlation + every legRef
+    FieldIndex-resolves in its buried window's leafTyp + dotted-frontier reads decline); the EXISTS site always
+    sets Unbakeable (sub-slice B). gather:93 declines ONLY Unbakeable. A2: the gather RECORDS its legTypes
+    (t.unnestGatherBoxLegTypes[j], box-arm only, success-only) and the WHERE-merge arm consumes the record FIRST
+    (fires iff present — the box select's 2 quantifiers are count-indistinguishable from the binary name-model
+    select), bakes via bakeGatedJoinPredicates over the RECORDED map (the one-authority law) + a
+    predicateRefsBuriedLeg defensive assert (loud internal error on verdict/bake drift). A3 honored: ZERO changes
+    to unnestExistsSeedSafe's semantics (:920 reads non-None == the pre-verdict true), boxOuterBirthsPositional,
+    :1490, chained. CERTS: e2e TestFDB_RFC173B2_FilteredBoxUnnest (12 exact-row pins over the dup-K fixture:
+    preserved/null-supplied value + IS NULL/FULL both legs/RIGHT/OR-spanning/NOT/mixed element+leg/AT-ordinal/
+    scalar-subquery-stays-name-model/GROUP-BY) + white-box TestRFC173B2_FilteredBoxUnnestCensus (bakeable → 0
+    producers; unresolvable-ref control → producers fire). CONTROLS RUN: feature-off (blanket decline restored) →
+    the census pin goes RED (discriminating; the e2e rows are model-independent BY DESIGN — step-0 proved
+    name-model parity, so the census pin is the model discriminator, the B1 "asserted together" split). Full
+    suite 55/55. Producers retired: the filtered-box-unnest P4-enclosed + P5-un-enclosed pair (U-2's
+    conjunct-triggered class); the EXISTS variant still fires 2 (sub-slice B, booked).
   - [ ] **BOOKED (Slice 2d discovery — PRE-EXISTING semantic-resolver gap, orthogonal): a WHERE ref to a
     DEEP chained alias → 42703 "column does not exist".** Boundary: a 3-link AS-alias (`Z` in `…Y.DEEP AS Z
     WHERE Z…`) resolves; a 4+-link AS-alias (`v` in the 4-link chain), a 3-link AT-alias (`o`), and a

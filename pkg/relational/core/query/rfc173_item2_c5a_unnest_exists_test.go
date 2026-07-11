@@ -513,7 +513,7 @@ func TestRFC173S4_ThreeWayBoxCrossAgreement(t *testing.T) {
 //     TRIPS; an element-only conjunct does NOT (else a multi-alias box with an
 //     element-only WHERE would SILENTLY fall to name-model, losing the ordinal
 //     optimization with the answer unchanged — the masked over-decline).
-//   - CONSUMPTION (the unnestOuterConjunctOnBoxLeg flag in
+//   - CONSUMPTION (the unnestBoxLegConjunct flag in
 //     unnestExistsSeedSafe): flag SET → the FULL box seeds name-model
 //     (AnchoredJoin); flag CLEAR → ordinal (the anti-over-decline positive pin).
 func TestRFC173Item2C5a_OuterConjunctNarrowing(t *testing.T) {
@@ -545,7 +545,11 @@ func TestRFC173Item2C5a_OuterConjunctNarrowing(t *testing.T) {
 	seed := func(underExists, flag bool) *values.RecordConstructorValue {
 		tr := newGateTranslator(t)
 		tr.unnestUnderExistential = underExists
-		tr.unnestOuterConjunctOnBoxLeg = flag
+		if flag {
+			tr.unnestBoxLegConjunct = boxConjUnbakeable
+		} else {
+			tr.unnestBoxLegConjunct = boxConjNone
+		}
 		outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
 		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
 		expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture

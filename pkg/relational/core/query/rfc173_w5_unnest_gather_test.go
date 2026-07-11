@@ -759,7 +759,7 @@ func TestRFC173UR_C1_OpaqueBox_NestedClusterPredsStayInside(t *testing.T) {
 
 // TestRFC173W5_Gathered_OuterConjunctCoupling pins the flag coupling between the
 // gathered path and the binary seed gate: translateGatheredUnnestCluster's
-// OUTER-box arm declines (nil) when unnestOuterConjunctOnBoxLeg is set, so a
+// OUTER-box arm declines (nil) when unnestBoxLegConjunct is set, so a
 // DISTINCT-leg-column box can't bypass the outer-conjunct narrowing via the
 // gather (SRC/AUX share no column name → the name-ambiguity decline never fires
 // and can't mask the flag). The corresponding e2e rows are OVER-DETERMINED (the
@@ -783,7 +783,7 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 		j := logical.NewJoin(box, u, logical.JoinInner, "")
 
 		trClear := newDisjointUnnestTranslator(t)
-		trClear.unnestOuterConjunctOnBoxLeg = false
+		trClear.unnestBoxLegConjunct = boxConjNone
 		clear := trClear.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 		if clear == nil {
 			t.Fatalf("%v box, flag CLEAR: must GATHER (got nil) — the decline must fire ONLY when flagged", kind)
@@ -794,7 +794,7 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 		}
 
 		trSet := newDisjointUnnestTranslator(t)
-		trSet.unnestOuterConjunctOnBoxLeg = true
+		trSet.unnestBoxLegConjunct = boxConjUnbakeable
 		if got := trSet.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
 			t.Fatalf("%v box, flag SET: must DECLINE to name-model (got %T) — a box-leg conjunct merges by name over a positional gather with no per-leg window; gathering malforms", kind, got)
 		}
@@ -810,7 +810,7 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 	uInner := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
 	jInner := logical.NewJoin(innerCluster, uInner, logical.JoinInner, "")
 	trInner := newDisjointUnnestTranslator(t)
-	trInner.unnestOuterConjunctOnBoxLeg = true
+	trInner.unnestBoxLegConjunct = boxConjUnbakeable
 	got := trInner.translateGatheredUnnestCluster(jInner, uInner, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 	if got == nil {
 		t.Fatal("INNER cluster, flag SET: must STILL GATHER (got nil) — the flag couples only the OUTER-box arm; over-declining the INNER cluster drops the gather optimization")

@@ -74,23 +74,20 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 
 	var legs []clusterLeg
 	if leftJoin.Kind != logical.JoinInner {
-		// A non-EXISTS WHERE conjunct on a box leg
-		// (unnestOuterConjunctOnBoxLeg) merges into the name-keyed unnest
-		// SELECT. (The flag can also be set by the EXISTS filter path, but the
-		// gathered path is unreachable under EXISTS — translateUnnestJoin gates
-		// it on !unnestUnderExistential — so at this site the flag always
-		// reflects a plain non-EXISTS WHERE.) A box gathered as ONE OPAQUE leg
-		// (below) exposes no per-leg
-		// window for that box leg, so a positional gather leaves the merged
-		// conjunct unresolvable (`field "A.col" not resolvable … ordinal -1` —
-		// malformed plan). Decline to the binary name-model path, where the
-		// qualified key resolves; the binary seed gate (unnestExistsSeedSafe)
-		// declines in the same step, so the two paths stay coupled. This decline is
-		// independent of the (retired) declineBoxDup dup-narrowing: a WHERE conjunct on
-		// an OPAQUE box leg has no per-leg window to bake into regardless of whether the
-		// box's columns collide by name — it is the box-as-one-opaque-leg shape, not a
-		// dup, that lacks the window.
-		if t.unnestOuterConjunctOnBoxLeg {
+		// A non-EXISTS WHERE conjunct on a box leg (unnestBoxLegConjunct): the
+		// box gathered as ONE OPAQUE leg still carries a BURIED window for every
+		// leaf (addBuriedBakeWindows: bakeCorr = the $BOX quantifier), so a
+		// BAKEABLE conjunct (pre-verified metadata-only: every box-leg ref
+		// resolves in its buried window's leafTyp, no subquery values) is
+		// ADMITTED — the WHERE-merge arm bakes it over this seed's RECORDED
+		// legTypes (the seed⟺merge one-authority law; the record is written at
+		// the tail below). Only an UNBAKEABLE verdict (EXISTS path,
+		// subquery-carrying, unresolvable ref) declines to the binary name-model
+		// path, where the qualified key resolves. (The gathered path is
+		// unreachable under EXISTS — translateUnnestJoin gates it on
+		// !unnestUnderExistential — so a non-None verdict here always reflects a
+		// plain non-EXISTS WHERE.)
+		if t.unnestBoxLegConjunct == boxConjUnbakeable {
 			return nil
 		}
 		// A gated OUTER box as the unnest's left (unnest-residual class 1,
@@ -298,6 +295,20 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		preds = append(preds, gatherInnerClusterPreds(leftJoin)...)
 	}
 	preds = bakeGatedJoinPredicates(preds, legTypes)
+
+	// RFC-173 B2: RECORD the seed's legTypes for the BOX-outer arm, keyed by
+	// the unnest-join node — the WHERE-merge arm bakes the filter's box-leg
+	// conjunct over THIS map (the seed⟺merge one-authority law: the box select
+	// has only 2 quantifiers, indistinguishable by count from the binary
+	// name-model select, and a re-derived map would key the box's legs by
+	// aliases this select does not bind). Written only on SUCCESS (every
+	// decline above returns before this point).
+	if leftJoin.Kind != logical.JoinInner {
+		if t.unnestGatherBoxLegTypes == nil {
+			t.unnestGatherBoxLegTypes = make(map[*logical.LogicalJoin]map[string]bakeLegType)
+		}
+		t.unnestGatherBoxLegTypes[j] = legTypes
+	}
 
 	seedSel := expressions.NewSelectExpressionWithJoinType(
 		rc,

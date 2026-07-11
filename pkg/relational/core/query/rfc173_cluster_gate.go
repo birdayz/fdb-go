@@ -141,7 +141,7 @@ func (t *cascadesTranslator) gatesAsFreshCluster(j *logical.LogicalJoin) bool {
 // buried columns and the executor hoist resolves a buried EXISTS ref by its
 // [Start,Width) window — verified e2e (a buried `FOD.K` inside EXISTS resolves).
 // A regular WHERE conjunct on a buried leg is separately declined by the
-// unnestOuterConjunctOnBoxLeg narrowing. Only a box whose legs are SIMPLE
+// unnestBoxLegConjunct narrowing. Only a box whose legs are SIMPLE
 // (scan / opaque box) or INNER-cluster joins may birth positional here; a nested
 // LEFT/RIGHT/FULL box leg (`A FULL B FULL C` — clusterArity(FULL)==1 makes an
 // arity proxy blind to it) stays name-model until its own slice verifies it.

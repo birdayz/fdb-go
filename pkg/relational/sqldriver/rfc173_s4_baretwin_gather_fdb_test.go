@@ -273,7 +273,7 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 	})
 
 	// GROUPED over a NAME-MODEL FALLBACK: a WHERE conjunct on a box leg (`WHERE A.K=100`,
-	// A a leg of the FULL box that is the unnest's left) trips unnestOuterConjunctOnBoxLeg
+	// A a leg of the FULL box that is the unnest's left) trips unnestBoxLegConjunct
 	// → the gather DECLINES to name-model (the box, gathered as one opaque leg, has no
 	// per-leg window for that conjunct). The fallback is STILL a SelectExpression with an
 	// Explode quantifier, but its RC is ANCHORED and emits NO positional row. The group-by
