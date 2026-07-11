@@ -660,6 +660,78 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "X" FROM LA, LA."ARR" AS "X") SELECT "U"."X", "C3"."XV" FROM "U" LEFT JOIN CD AS "C3" ON "U"."X" = "C3"."XK"`,
 			"700|7", "<nil>|8", "<nil>|9")
 	})
+	// Q27-Q29: the ON-ONLY-CTE-LEG hole (review-caught, round 7). An ON-only
+	// CTE used as a FROM leg is neither a base table nor a derivedQuery — and
+	// buildSelectScope returns a NIL resolver for it, killing BOTH the 42702
+	// ambiguity gate and the 42703 unknown-column gate for the whole body.
+	// The enumerability walk (cteBodyLegsEnumerable) declines such bodies.
+	// V is join-bodied (ON-only); its alias AID collides with LA's column.
+	const onOnlyV = `"V" AS (SELECT LA."K" AS "AID", LB."K" AS "Q" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID")`
+	t.Run("Q27_on_only_cte_leg_ambiguous_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM "V", LA "L2") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"ambiguous bare ref over an ON-only CTE leg")
+		// both leg orders — the walk must not depend on leg position
+		loud0AF00(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM LA "L2", "V") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"ambiguous bare ref, ON-only CTE as second leg")
+	})
+	t.Run("Q28_on_only_cte_leg_nonexistent_col_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH `+onOnlyV+`, "U" AS (SELECT "NOPE" FROM "V", LA "L2") SELECT "U"."NOPE", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."NOPE" = "C2"."CID"`,
+			"nonexistent column over an ON-only CTE leg (nil resolver kills 42703)")
+	})
+	t.Run("Q29_on_only_cte_leg_in_derived_source_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH `+onOnlyV+`, "U" AS (SELECT "AID" FROM (SELECT "AID" FROM "V", LA "L2") "D") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"ON-only CTE leg one level down (recursion inherits the enumerability walk)")
+	})
+	// Q30: ANTI-OVER-DECLINE — a DERIVABLE CTE leg is enumerable (addSource
+	// resolves it via cteScopes; the backstop lives) and the bare ref
+	// admits + answers. AID lives only in W (LB carries BID/K); W×LB cross
+	// doubles each AID row.
+	t.Run("Q30_derivable_cte_leg_resolves", func(t *testing.T) {
+		check(t, `WITH "W" AS (SELECT "AID" FROM LA), "U" AS (SELECT "AID" FROM "W", LB "L3") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"900|1", "900|1", "<nil>|2", "<nil>|2")
+	})
+	// Q31: the backstop LIVES over enumerable legs — a genuinely ambiguous
+	// bare ref over a derivable-CTE leg + base leg still 42702s (proves the
+	// enumerability narrowing didn't just widen the 0AF00 blanket).
+	t.Run("Q31_derivable_cte_leg_ambiguity_still_fires", func(t *testing.T) {
+		_, err := run(t, `WITH "W2" AS (SELECT "K" FROM LA), "U" AS (SELECT "K" FROM "W2", LB "L3") SELECT "U"."K", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."K" = "C2"."CID"`)
+		if err == nil || !strings.Contains(err.Error(), "42702") {
+			t.Fatalf("ambiguous bare ref over enumerable legs must 42702, got %v", err)
+		}
+	})
+	// Q33: the POSITIONAL-FRONTIER class (review-caught over-decline): a
+	// single-BASE-TABLE derived source keeps its projection row positional,
+	// so a QUALIFIED-spelled inner item is readable by ordinal under its
+	// last segment — this shape must ADMIT and ANSWER (contrast Q19, whose
+	// JOIN-shaped inner row is name-keyed and stays declined).
+	t.Run("Q33_single_table_qualified_inner_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA) "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
+			"900|1", "<nil>|2")
+	})
+	// Q34: a scalar subquery inside a computed item reads ITS OWN scope, not
+	// the derived source — harvestColumnRefsOutsideSubqueries stops at the
+	// nested-query boundary (review-caught over-decline: LB.K was checked
+	// against D's emitted set {AID} and spuriously declined).
+	t.Run("Q34_scalar_subquery_item_over_derived_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT (SELECT "K" FROM LB ORDER BY "K" DESC LIMIT 1) AS "Z", "AID" FROM (SELECT "AID" FROM LA) "D") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"900|1", "<nil>|2")
+	})
+	// Q35: the hazard arm the boundary-stop must NOT unguard — a subquery
+	// CORRELATED into a JOIN-shaped (name-keyed) derived source. Admission
+	// no longer inspects the subquery's refs, but the correlated build fails
+	// loud at translation (pinned so a future silent path can't creep in).
+	t.Run("Q35_correlated_subquery_into_join_keyed_derived_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH "U" AS (SELECT (SELECT MAX("K") FROM LB WHERE LB."BID" = "D"."AID") AS "Z" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."Z", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."Z" = "C2"."CID"`,
+			"correlated subquery into a name-keyed derived source")
+	})
+	// Q32: mixed-star derived source — the star-EXPANDED columns are not in
+	// the emitted set (no catalog access at derivation), so an outer read of
+	// one declines fail-closed (also exercises the empty-sentinel guard: the
+	// star slot must not deposit a "" claim).
+	t.Run("Q32_mixed_star_inner_fail_closed", func(t *testing.T) {
+		loud0AF00(t, `WITH "U" AS (SELECT "D"."K" AS "KK" FROM (SELECT LA.*, "AID" FROM LA) "D") SELECT "U"."KK", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."KK" = "C2"."CID"`,
+			"star-expanded column read over a mixed-star derived source")
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")

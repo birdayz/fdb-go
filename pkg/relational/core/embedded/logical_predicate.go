@@ -970,18 +970,25 @@ func buildCTEColumnSource(
 // (executeProjection always writes the alias key) or a BARE unqualified
 // non-computed reference (the runtime key mirrors the SQL spelling — a bare
 // ref plans as Project([AID],…) and keys bare). The bare-ref arm additionally
-// requires every FROM leg to be ENUMERABLE (a base table): the ambiguity
+// requires every FROM leg to be ENUMERABLE — a base table, a DERIVABLE CTE
+// (the resolver sees those via addSource's cteScopes fallback), or a lateral
+// unnest leg (binds one alias via the unnest source adder): the ambiguity
 // backstop (the body build 42702s an ambiguous bare ref before it can
-// execute) only holds when the resolver can see every leg's columns — a
+// execute) only holds when the resolver can see every leg's columns. A
 // derived-table leg among several hides its columns from that check, so a
 // textually-bare-but-ambiguous ref would silently resolve against the wrong
-// leg (review-caught, pinned by Q18). Bodies whose single source IS a derived
+// leg (review-caught, pinned by Q18) — and an ON-ONLY CTE leg is worse:
+// buildSelectScope hands the body a NIL resolver, which kills the 42703
+// unknown-column gate along with the ambiguity gate (review-caught,
+// Q27/Q28). Bodies whose single source IS a derived
 // table stay derivable, but every projection/aggregate INPUT read must
-// resolve in the derived source's provably-emitted bare-key set
-// (derivedEmittedBareNames): the derived row keys by the INNER spelling, so
-// an inner qualified-spelled item makes an outer `D.col` read a runtime
-// malformed-plan failure (and an aggregate over it a silent NULL) — decline
-// to the plan-time marker instead (Q19/Q20). Everything else DECLINES
+// resolve in the derived source's provably-readable name set
+// (derivedEmittedBareNames): a join-shaped derived row keys by the INNER
+// spelling, so an inner qualified-spelled item makes an outer `D.col` read a
+// runtime malformed-plan failure (and an aggregate over it a silent NULL) —
+// decline to the plan-time marker instead (Q19/Q20). A single-BASE-TABLE
+// inner stays on the POSITIONAL frontier, where qualified items are readable
+// by last segment (review-caught over-decline, Q33). Everything else DECLINES
 // to the loud marker:
 //   - an unaliased QUALIFIED reference resolves to a FieldValue whose Field
 //     is the dotted source name ("D.ID" — see values.ProjectionColumnName),
@@ -999,22 +1006,93 @@ func buildCTEColumnSource(
 // MARKER instead: the declared name still routes to the loud drop-risk 0AF00,
 // never a silent ON drop. Widening the derivable set (qualified/renamed
 // output schemas) is booked with the derived-table-twin item.
-// derivedEmittedBareNames computes the set of BARE keys a derived source's
-// runtime row provably carries — the read-authority for a CTE ON-only body
-// whose single FROM source is that derived table. ok=false means the set is
-// not statically closed and the caller must decline to the loud marker:
-// SELECT * (names unknown here — no catalog access), aggregate/set-query
-// bodies (their materialized-row keying is unverified on this path), or a
-// derived leg among multiple legs (the same ambiguity-backstop hole as the
-// caller's own P1 arm, one level down). The per-item rules mirror the
-// caller's admission loop: an explicit alias is always emitted
-// (executeProjection writes the alias key), a bare unqualified non-computed
-// ref keys by its spelling, and qualified/computed unaliased items key
-// dotted/rendered — they contribute nothing bare. Input reads recurse: when
-// this level's single source is itself derived, every item's read target
-// must resolve in the deeper set, else the body can never execute
-// (a decline beats the runtime malformed-plan error it would otherwise be).
-func derivedEmittedBareNames(q antlrgen.IQueryContext) (map[string]bool, bool) {
+// cteLegKind classifies a NAMED FROM leg of a CTE ON-only body by what the
+// body build's resolver will see. cteLegBase: a base table — the analyzer
+// resolves it (the same ResolveTable call buildSelectScope's addSource
+// makes). cteLegDerivableCTE: a DERIVABLE CTE — addSource falls back to
+// cteScopes, so the resolver still sees its columns. cteLegOpaque:
+// everything else — critically the ON-ONLY CTE name, for which addSource
+// returns false and buildSelectScope hands the body a NIL resolver, which
+// skips BOTH the 42702 ambiguity gate and the 42703 unknown-column gate for
+// the WHOLE body (the backstop every bare-ref admission rests on).
+type cteLegKindT int
+
+const (
+	cteLegOpaque cteLegKindT = iota
+	cteLegBase
+	cteLegDerivableCTE
+)
+
+func cteLegKind(md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource, name string) cteLegKindT {
+	if name == "" || md == nil {
+		return cteLegOpaque
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	if _, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(name, "."), false)); err == nil {
+		return cteLegBase
+	}
+	if _, ok := cteScopes[strings.ToUpper(name)]; ok {
+		return cteLegDerivableCTE
+	}
+	return cteLegOpaque
+}
+
+// cteBodyLegsEnumerable reports whether every named FROM leg of a multi-leg
+// body is visible to the resolver (base table or derivable CTE) — the
+// precondition for the 42702/42703 backstop the bare-ref admission relies
+// on. Comma legs classified as lateral unnests (segments[0] names a prior
+// source alias — RFC-142 R5: typed segments, never a tableName re-split) are
+// enumerable by construction: the element alias binds one name and
+// buildSelectScope adds it via the unnest source adder. Derived legs are the
+// caller's decline, not this check's.
+func cteBodyLegsEnumerable(md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource, sq *selectQuery) bool {
+	if sq.derivedQuery == nil && cteLegKind(md, cteScopes, sq.tableName) == cteLegOpaque {
+		return false
+	}
+	prior := map[string]bool{strings.ToUpper(sq.tableAlias): true}
+	for _, jc := range sq.joins {
+		if jc.derivedQuery == nil {
+			isUnnest := jc.fromComma && len(jc.segments) > 1 && prior[strings.ToUpper(jc.segments[0])]
+			if !isUnnest && cteLegKind(md, cteScopes, jc.tableName) == cteLegOpaque {
+				return false
+			}
+		}
+		a := jc.alias
+		if a == "" {
+			a = jc.tableName
+		}
+		prior[strings.ToUpper(a)] = true
+	}
+	return true
+}
+
+// derivedEmittedBareNames computes the set of names a derived source's
+// runtime row provably answers reads for — the read-authority for a CTE
+// ON-only body whose single FROM source is that derived table. ok=false
+// means the set is not statically closed and the caller must decline to the
+// loud marker: SELECT * (names unknown here — no catalog access),
+// aggregate/set-query bodies (their materialized-row keying is unverified on
+// this path), a derived leg among multiple legs (the same ambiguity-backstop
+// hole as the caller's own arm, one level down), any OPAQUE leg (an ON-only
+// CTE gives the body build a NIL resolver — no 42702/42703 backstop), or an
+// opaque/ON-only SINGLE source. The per-item rules mirror the caller's
+// admission loop: an explicit alias is always emitted (executeProjection
+// writes the alias key); a bare unqualified non-computed ref keys by its
+// spelling; a QUALIFIED-spelled item over a single-BASE-TABLE body is
+// readable by its LAST SEGMENT — that body's projection row stays on the
+// POSITIONAL frontier, so the read binds by ordinal (review-caught: only
+// join/merge-shaped inner rows are name-keyed; declining qualified items
+// there over-declined the positional class). Computed unaliased items key by
+// their explain rendering — nothing readable. Input reads recurse: when this
+// level's single source is itself derived, every item's read target must
+// resolve in the deeper set, else the body can never execute (a decline
+// beats the runtime malformed-plan error it would otherwise be); a
+// scalar-subquery's LOCAL refs are excluded from that check
+// (harvestColumnRefsOutsideSubqueries) — its own build resolves them in its
+// own scope, and a correlated read into the derived source surfaces loud at
+// translation.
+func derivedEmittedBareNames(md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource, q antlrgen.IQueryContext) (map[string]bool, bool) {
 	if q == nil {
 		return nil, false
 	}
@@ -1035,12 +1113,24 @@ func derivedEmittedBareNames(q antlrgen.IQueryContext) (map[string]bool, bool) {
 			legDerived = true
 		}
 	}
-	if len(sq.joins) > 0 && legDerived {
+	if len(sq.joins) > 0 && (legDerived || !cteBodyLegsEnumerable(md, cteScopes, sq)) {
 		return nil, false
+	}
+	positionalFrontier := false
+	if sq.derivedQuery == nil && len(sq.joins) == 0 {
+		switch cteLegKind(md, cteScopes, sq.tableName) {
+		case cteLegBase:
+			positionalFrontier = true
+		case cteLegDerivableCTE:
+			// derivable CTE rows answer alias/bare-spelling reads (the same
+			// contract this function claims); NOT known-positional.
+		default:
+			return nil, false // ON-only CTE or unknown single source: opaque
+		}
 	}
 	var deeper map[string]bool
 	if sq.derivedQuery != nil {
-		if deeper, ok = derivedEmittedBareNames(sq.derivedQuery); !ok {
+		if deeper, ok = derivedEmittedBareNames(md, cteScopes, sq.derivedQuery); !ok {
 			return nil, false
 		}
 	}
@@ -1049,7 +1139,7 @@ func derivedEmittedBareNames(q antlrgen.IQueryContext) (map[string]bool, bool) {
 		isComputed := i < len(sq.projExprs) && sq.projExprs[i] != nil
 		if deeper != nil {
 			if isComputed {
-				for _, r := range harvestColumnRefs(sq.projExprs[i]) {
+				for _, r := range harvestColumnRefsOutsideSubqueries(sq.projExprs[i]) {
 					if !deeper[parseColRef(r).bare()] {
 						return nil, false
 					}
@@ -1061,7 +1151,13 @@ func derivedEmittedBareNames(q antlrgen.IQueryContext) (map[string]bool, bool) {
 		switch ref := parseColRef(col); {
 		case i < len(sq.projAliases) && sq.projAliases[i] != "":
 			set[sq.projAliases[i]] = true
-		case !isComputed && !ref.isQualified():
+		case isComputed:
+			// unaliased computed: keys by its rendering — nothing readable
+		case !ref.isQualified() && ref.bare() != "":
+			// the "" guard: a mixed-star sentinel slot (projCols[i]=="") must
+			// not deposit a junk claim in a soundness-critical set
+			set[ref.bare()] = true
+		case ref.isQualified() && positionalFrontier:
 			set[ref.bare()] = true
 		}
 	}
@@ -1082,7 +1178,7 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 		if ac.aggArg != "" && !emitted[parseColRef(ac.aggArg).bare()] {
 			return false
 		}
-		for _, r := range harvestColumnRefs(ac.aggExpr) {
+		for _, r := range harvestColumnRefsOutsideSubqueries(ac.aggExpr) {
 			if !emitted[parseColRef(r).bare()] {
 				return false
 			}
@@ -1090,7 +1186,7 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 	}
 	for i, col := range sq.projCols {
 		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-			for _, r := range harvestColumnRefs(sq.projExprs[i]) {
+			for _, r := range harvestColumnRefsOutsideSubqueries(sq.projExprs[i]) {
 				if !emitted[parseColRef(r).bare()] {
 					return false
 				}
@@ -1108,6 +1204,8 @@ func buildCTEOnOnlySource(
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
 	colAliases antlrgen.IFullIdListContext,
+	md *recordlayer.RecordMetaData,
+	cteScopes map[string]semantic.ScopeSource,
 ) (semantic.ScopeSource, bool) {
 	if cteName == "" || cteQuery == nil {
 		return semantic.ScopeSource{}, false
@@ -1157,6 +1255,16 @@ func buildCTEOnOnlySource(
 		// body to the loud marker.
 		return semantic.ScopeSource{}, false
 	}
+	if len(innerSQ.joins) > 0 && !cteBodyLegsEnumerable(md, cteScopes, innerSQ) {
+		// An OPAQUE leg — an ON-ONLY CTE name — is worse than a derived leg:
+		// buildSelectScope's addSource knows base tables and cteScopes only,
+		// so the body gets a NIL resolver and BOTH the 42702 ambiguity gate
+		// and the 42703 unknown-column gate are skipped for the whole body
+		// (review-caught: an ambiguous bare ref AND a nonexistent column both
+		// planned fine). Decline — covers the aggregate arm below too (Q27,
+		// Q28).
+		return semantic.ScopeSource{}, false
+	}
 	var innerEmitted map[string]bool
 	if innerSQ.derivedQuery != nil {
 		// Single derived source: the runtime row keys by the INNER spelling.
@@ -1164,7 +1272,7 @@ func buildCTEOnOnlySource(
 		// a miss is a runtime malformed plan (projection read, Q19) or a
 		// silent NULL (aggregate arg, Q20) if admitted.
 		var ok bool
-		if innerEmitted, ok = derivedEmittedBareNames(innerSQ.derivedQuery); !ok {
+		if innerEmitted, ok = derivedEmittedBareNames(md, cteScopes, innerSQ.derivedQuery); !ok {
 			return semantic.ScopeSource{}, false
 		}
 	}
@@ -1227,8 +1335,8 @@ func buildCTEOnOnlySource(
 // registration authority both build pipelines (the plan visitor and the
 // CTECatalog chain) share, so a declared CTE can never reach
 // upgradeJoinOnPredicates untracked (the silent ON-drop class).
-func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext) {
-	if src, ok := buildCTEOnOnlySource(upperName, cteQuery, colAliases); ok {
+func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	if src, ok := buildCTEOnOnlySource(upperName, cteQuery, colAliases, md, cteScopes); ok {
 		dst[upperName] = src
 		return
 	}
@@ -4218,7 +4326,7 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
 				// resolvable — or LOUDLY dropped (marker) — never silent.
-				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases())
+				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, cteScopes)
 			}
 		}
 	}
@@ -4349,7 +4457,7 @@ func buildLogicalPlanForQueryWithCatalog(
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
 				// resolvable — or LOUDLY dropped (marker) — never silent.
-				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases())
+				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, cteScopes)
 			}
 		}
 	}

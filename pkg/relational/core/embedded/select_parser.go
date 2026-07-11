@@ -1428,6 +1428,23 @@ func exprReferencesColumn(expr antlrgen.IExpressionContext) bool {
 // distinction). Refs inside aggregate calls are correctly computed by the
 // aggregate itself — walking into them would flag false positives.
 func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
+	return harvestColumnRefsImpl(expr, false)
+}
+
+// harvestColumnRefsOutsideSubqueries is harvestColumnRefs with the
+// harvestAggregates nested-query-scope boundary: refs syntactically inside a
+// subquery bind to THAT query block, not the enclosing SELECT. The CTE
+// ON-only derivation validates its body's INPUT reads with this variant — a
+// scalar-subquery item's local columns are not reads of the derived source
+// (the subquery's own build resolves them in its own scope; a CORRELATED
+// read into the derived source surfaces through that build, loud at
+// translation). The GROUP-BY validator keeps the non-stopping walk: a
+// correlated ref into the outer query DOES need the group-check there.
+func harvestColumnRefsOutsideSubqueries(expr antlrgen.IExpressionContext) []string {
+	return harvestColumnRefsImpl(expr, true)
+}
+
+func harvestColumnRefsImpl(expr antlrgen.IExpressionContext, stopAtNestedQuery bool) []string {
 	if expr == nil {
 		return nil
 	}
@@ -1437,6 +1454,17 @@ func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
 	visit = func(n antlr.Tree) {
 		if n == nil {
 			return
+		}
+		if stopAtNestedQuery {
+			// Same boundary as harvestAggregates: a `query` node (scalar
+			// `(SELECT …)`, EXISTS) or a bare `queryExpressionBody` (IN
+			// subquery) opens a nested scope; match the INTERFACE for the
+			// body — the concrete node of the alternative-labelled rule is
+			// never a bare *QueryExpressionBodyContext.
+			switch n.(type) {
+			case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
+				return
+			}
 		}
 		// Don't recurse into aggregate function calls — the aggregate
 		// resolves its own argument from the group's accumulator.

@@ -645,8 +645,17 @@ validation gate.
     leg sits among multiple FROM legs — `SELECT "AID" FROM (SELECT LA."AID" FROM …) "D", LA "L2"` silently
     resolves the ambiguous bare ref against the enumerable leg (returns rows; should 42702) because the
     derived leg's columns are invisible to the resolver (CTE ON derivation declines fail-closed, Q18/Q21
-    pins; the standalone resolver gap remains). All six are one output-naming authority problem: the
-    scope's advertised names must be the names execution emits.
+    pins; the standalone resolver gap remains); (g) NEW (round-7, review-caught): an ON-ONLY CTE name used
+    as a FROM leg gives buildSelectScope a NIL resolver — BOTH the 42702 ambiguity gate and the 42703
+    unknown-column gate are skipped for the whole body standalone (`SELECT "NOPE" FROM "V", LA` plans fine
+    when V is join-bodied); the CTE ON derivation declines such bodies fail-closed (Q27/Q28/Q29 pins) but
+    the standalone nil-resolver gap remains — the real fix is a resolvable post-CTE output schema, i.e.
+    this slice. EXPLICIT WIDENING CANDIDATE (review-recommended): the multi-leg-with-derived/ON-only
+    decline over-declines the sound sub-class where every read is an ALIASED item over the ENUMERABLE legs
+    only (`WITH U AS (SELECT L2."K" AS "B" FROM (SELECT "AID" FROM LA) "D", LA "L2") … ON U."B"` answered
+    correctly pre-narrowing, 0AF00 now) — admitting it needs per-read leg attribution + per-leg emitted-set
+    validation. All seven are one output-naming authority problem: the scope's advertised names must be
+    the names execution emits.
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible
