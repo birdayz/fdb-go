@@ -320,8 +320,30 @@ validation gate.
     existential-over-multi-join is its own residual class (pinned as a flip-sentinel in the census probe;
     ordinalizing it is a separate slice — likely part of the EXISTS-composition arc, not the box substrate).
     Re-consult Graefe on B1 sequencing WITH this correction before building B1.
-  - [ ] **B1 = U-1 ATTEMPTED then REVERTED — row-correct but a PLAN-QUALITY (SARG) regression + a dup-alias bypass;
-    needs a predicate-handling redesign (Graefe consult) before it can land.** The prototype
+  - [ ] **B1 = U-1 — THREE approaches tried, each instructive, the CORRECT target now pinned. Not landed.** The goal:
+    ordinalize (ZERO the producer for) an arity>=3 inner join under a WHERE EXISTS while preserving the index SARG.
+    Attempts: (A) bespoke helper (`translateGatheredInnerClusterWithExists`, merge join legs + existential + baked
+    WHERE into ONE select) → row-correct but MATERIALIZED (SARG lost via implementJoinWithExistential's step-1).
+    (B) minimal seed-flip (arity>=3 seed → ordinal RC, WHERE lazy) → also MATERIALIZED (EXPLAIN-confirmed). (C)
+    fall-through to the GENERIC existential-wrap arm (route arity>=3 to the OUTER-join path,
+    cascades_translator.go:2368) → PRESERVES the SARG (P7) and is row-correct, BUT does NOT ordinalize: the generic
+    arm translates the join as an ENCLOSED leg of the wrap select (inInnerCluster=true → the gate poisons it →
+    name-model), so the census still fires 2 ENCLOSED P4 producers. And the enclosed-under-a-permanent-existential-
+    wrap leg is NOT retirable by enclosure-starvation (the wrap never lifts), so (C) is a no-op for the atomic cap —
+    same P7 name-model plan as baseline, just re-accounted. CORRECT TARGET (the one none of A/B/C did): translate
+    `join + f.Predicate` (the WHERE conjuncts, WITHOUT the EXISTS — already split by splitNonExistsPredicates) as a
+    FRESH ordinal expression — `FROM a,b,c WHERE b.aid=a.id AND c.aid=a.id` ordinalizes to P1 (0 producers, SARG
+    preserved; the census plain-3-way probe PROVES a fresh comma-join+WHERE ordinalizes) — THEN wrap THAT ordinal
+    relation with the existential as an outer semi-join. The crux the wrap must solve: the join must be translated
+    FRESH (un-enclosed, so it gates ordinal), NOT as an enclosed leg (which the generic arm does). Find how the
+    generic-arm wrap builds its inner (after cascades_translator.go:2371) and make the inner join translate fresh —
+    OR build the two-level structure explicitly (fresh ordinal join expr + existential-wrap machinery). CERT (still
+    mandatory): SARG `[=]` + ordinal-fired (census 0) asserted TOGETHER + row falsification (EXISTS→3rd/4th leg) +
+    NOT-cross-product plan shape + red-under-sabotage. Guard dup-alias with mintedBindingLeg. STILL OPEN: arity-2
+    comma+EXISTS SARG loss (P4, booked below) — the same correct target (fresh ordinal join + existential wrap)
+    closes both arities. Reverted-prototype record:
+  - [ ] (superseded) **B1 first attempt (bespoke helper) — row-correct but a PLAN-QUALITY (SARG) regression + a dup-alias bypass;
+    superseded by the corrected target above.** The prototype
     (`translateGatheredInnerClusterWithExists`: N ForEach legs + all nested ON preds + WHERE conjuncts + EXISTS
     existential quantifiers + correlation preds, all baked over the N-leg ordinal seed; intercepted in
     translateJoinWithExists before the arity!=2 decline) PASSED the falsification control on ROWS
