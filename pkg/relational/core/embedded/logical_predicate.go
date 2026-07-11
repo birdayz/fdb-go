@@ -1083,6 +1083,7 @@ func cteBodyLegsEnumerable(md *recordlayer.RecordMetaData, schemaName string, ct
 	if sq.derivedQuery == nil && cteLegKind(md, schemaName, cteScopes, cteOnScopes, sq.tableName) == cteLegOpaque {
 		return false
 	}
+	tableFirst := newUnnestTableResolver(md, schemaName)
 	prior := map[string]bool{strings.ToUpper(sq.tableAlias): true}
 	for _, jc := range sq.joins {
 		bind := jc.alias
@@ -1090,12 +1091,20 @@ func cteBodyLegsEnumerable(md *recordlayer.RecordMetaData, schemaName string, ct
 			bind = jc.tableName
 		}
 		if jc.derivedQuery == nil {
-			isUnnest := jc.fromComma && len(jc.segments) > 1 && prior[strings.ToUpper(jc.segments[0])]
-			if isUnnest {
+			priorHit := len(jc.segments) > 1 && prior[strings.ToUpper(jc.segments[0])]
+			switch {
+			case priorHit && len(jc.segments) == 2 && tableFirst(jc.segments):
+				// ALIAS-EQUALS-SCHEMA collision: buildSelectScope keeps its
+				// nil-resolver leniency for this class (the R5b Java-parity
+				// pins), so the 42702/42703 backstop is DEAD for the body —
+				// the enumerability premise fails; decline to the marker.
+				return false
+			case jc.fromComma && priorHit:
+				// genuine lateral unnest: binds its effective alias
 				if as, _ := unnestAliases(jc); as != "" {
 					bind = as
 				}
-			} else if cteLegKind(md, schemaName, cteScopes, cteOnScopes, jc.tableName) == cteLegOpaque {
+			case cteLegKind(md, schemaName, cteScopes, cteOnScopes, jc.tableName) == cteLegOpaque:
 				return false
 			}
 		}
@@ -2345,8 +2354,24 @@ func buildSelectScope(
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
+	schemaStrip := newUnnestTableResolver(md, schemaName)
 
 	addSource := func(tableName, alias, bindingID string) bool {
+		// ACTIVE-SCHEMA-QUALIFIED source (`"s"."LA"`): on the visitor path
+		// sq keeps the dotted spelling (normalizeSchemaQualifiedSelectSources
+		// runs only on the catalog sub-build path), and a raw ResolveTable
+		// miss here NIL'd the whole resolver — killing the 42702/42703 gates
+		// (an ambiguous bare ref over `"s"."LA", LB` executed silently,
+		// review-caught) and every WHERE/ORDER BY resolution over
+		// schema-qualified explicit joins. Strip the schema segment with a
+		// defaulted alias in lockstep, mirroring the ON-upgrade scope build
+		// and the normalizer.
+		if segs := strings.Split(tableName, "."); len(segs) == 2 && schemaStrip(segs) {
+			if alias == tableName {
+				alias = segs[1]
+			}
+			tableName = segs[1]
+		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil && cteScopes != nil {
 			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
@@ -2410,6 +2435,20 @@ func buildSelectScope(
 				return nil
 			}
 			continue
+		}
+		if segs := strings.Split(j.tableName, "."); len(segs) == 2 && resolvesToTable(segs) {
+			if _, collides := visible[strings.ToUpper(segs[0])]; collides {
+				// ALIAS-EQUALS-SCHEMA collision (`FROM PA AS "s", "s"."PB"`):
+				// Java's table-first rule classifies the LEG as the real
+				// table (isLateralUnnestJoin above already declined the
+				// unnest reading), but a STRICT scope over this FROM would
+				// 42703 references the R5b Java-parity pins answer (the
+				// query reads PA.* while PA is aliased "s"). Keep the
+				// pre-existing nil-resolver leniency for exactly this
+				// collision class; the plain schema-qualified form (no
+				// collision) resolves strictly via the addSource strip.
+				return nil
+			}
 		}
 		if !addSource(j.tableName, j.alias, j.bindingID) {
 			return nil

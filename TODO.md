@@ -661,7 +661,15 @@ validation gate.
     bare in the Datum too — the expr.go single-source Field rewrite — but any future positional-only
     consumer breaks at page boundaries); (ii) the GROUP-BY validator's harvestColumnRefs walk cannot
     distinguish a subquery-LOCAL ref (no group check due) from a CORRELATED-into-outer ref (group check
-    due) — a potential over-loud corner on outExpr entries containing subqueries.
+    due) — a potential over-loud corner on outExpr entries containing subqueries. (h) NEW (round-8 review,
+    pre-existing at base and HEAD, absurd-rare but SILENT conformance divergences vs Java on DOTTED
+    spellings): a quoted-dotted CTE name equal to schema.table (`WITH "S.LA" AS (…) … FROM "S.LA"`) is
+    silently bypassed for the TABLE's rows; inversely `FROM "s"."LA"` with a bare CTE "LA" declared reads
+    the CTE where Java's generateAccess reads the table. Rider: the explicit-dotted-alias corner
+    (`AS "S.LA"`) is loud malformed both sides — same booking. CLOSING ITEM for the schema-qualified
+    family: normalize sq on the visitor path as the catalog path does (the round-9 buildSelectScope strip
+    closed the WHERE gap (Q40) and the ambiguity backstop (Q39); a full sq normalization would collapse
+    the three strip sites into one).
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible

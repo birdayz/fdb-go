@@ -784,6 +784,30 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN LB ON LA."AID" = LB."BID"`,
 			"100|5|100|5", "110|<nil>|110|<nil>")
 	})
+	// Q39: the 42702 backstop LIVES over schema-qualified legs (review-caught,
+	// round 9). The round-8 classifier strip said "s"."LA" was enumerable,
+	// but buildSelectScope — the mechanism the bare-ref admission's
+	// ambiguity backstop actually runs through — did NOT strip, so its
+	// resolver went nil and an ambiguous bare K over ("s"."LA", LB) executed
+	// silently. buildSelectScope's addSource now applies the same
+	// normalizer-mirror strip, making the classifier's enumerability claim
+	// TRUE rather than narrowing it (the alternative — declining the leg —
+	// would have regressed Q37).
+	t.Run("Q39_ambiguity_fires_over_schema_qualified_leg", func(t *testing.T) {
+		_, err := run(t, `WITH "V" AS (SELECT "K" FROM "s"."LA", LB) SELECT "V"."K", "C2"."CV" FROM "V" LEFT JOIN CC AS "C2" ON "V"."K" = "C2"."CID"`)
+		if err == nil || !strings.Contains(err.Error(), "42702") {
+			t.Fatalf("ambiguous bare ref over a schema-qualified leg must 42702, got %v", err)
+		}
+	})
+	// Q40: WHERE over a schema-qualified explicit join ANSWERS — the same
+	// nil-resolver disease as Q39, one consumer over (found as a loud 0AF00
+	// reach gap by the round-8 review's third-consumer hunt; the backstop
+	// fix flipped it to answering, exactly as that review predicted the
+	// unification would).
+	t.Run("Q40_where_over_schema_qualified_join_answers", func(t *testing.T) {
+		check(t, `SELECT LA."K" AS "AK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID" WHERE LA."K" = 100`,
+			"100|100")
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")
