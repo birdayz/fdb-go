@@ -8,29 +8,27 @@ package dualwindow_test
 // and pins the residual name-model surface so the remaining slices can be
 // sequenced against a live inventory and a regression to name-model is loud.
 //
-// It ALSO CORRECTS the Outcome-B design consult empirically. The consult claimed
-// every residual P4/P5 firing is ENCLOSED (t.inInnerCluster == true) — i.e. the
-// residual set is exactly the inInnerCluster shapes and there are NO un-enclosed
-// producers. Building this census FALSIFIED that: a multi-way (>=3) inner join
-// under a WHERE EXISTS declines its whole join subtree to name-model, and the TOP
-// join of that subtree is UN-ENCLOSED. The plain 3-way join (no EXISTS)
-// ordinalizes; the existential is the trigger. So an un-enclosed residual class
-// exists — the "existential-over-multi-way-join" outer join — which the consult's
-// box-suite instrumentation net did not cover. B1 must NOT assume "all residual
-// producers are enclosed."
+// It ALSO CORRECTED the Outcome-B design consult empirically. The consult claimed
+// every residual P4/P5 firing is ENCLOSED (t.inInnerCluster == true) — no
+// un-enclosed producers. Building this census FALSIFIED that: a multi-way (>=3)
+// inner join under a WHERE EXISTS declined its whole join subtree to name-model,
+// with the TOP join UN-ENCLOSED (the plain 3-way without EXISTS ordinalized; the
+// existential was the trigger). That class — "existential-over-multi-way-join"
+// (U-1) — has since been ORDINALIZED by B1 (translateExistsOverGatheredCluster:
+// the join translates as its own gathered ordinal cluster, the existential wraps
+// it, and every leg reference rebases onto the box's positional output), so the
+// probe below pins ZERO firings for it and is a regression flip-sentinel.
 //
 // Two assertions, both honest:
 //   - SeedRunCorpus (the executable §5 differential corpus, 1641 entries) produces
 //     ZERO name-model firings — it is already fully ordinal. A flip to >0 is a
 //     regression (a corpus shape fell to name-model) OR a deliberate corpus growth
 //     into a residual shape; either way, investigate.
-//   - A small discriminating probe set pins the KNOWN residual signature: 2-way
-//     inner, plain 3-way inner, and correlated-scalar-in-projection all ordinalize
-//     (0 firings); the 3-way-under-WHERE-EXISTS fires exactly one enclosed
-//     Scan|Scan (the inner p JOIN q) and one UN-ENCLOSED Join|Scan (the outer
-//     (pq) JOIN r). This is a flip-sentinel: when the existential-over-multi-join
-//     ordinalizes (a future slice) or regresses, the signature changes and this
-//     fails, forcing the baseline to be re-pinned.
+//   - A small discriminating probe set: 2-way inner, plain 3-way inner,
+//     correlated-scalar-in-projection, AND the 3-way-under-WHERE-EXISTS (post-B1)
+//     all ordinalize (0 firings). A flip to >0 on any is a regression to the name
+//     model. B1 correctness (the SARG surviving + the falsification control) is
+//     pinned by the e2e TestFDB_RFC173S4_B1_NwayExists.
 //
 // Arrays cannot be INSERTed via SQL in this dialect (they go through the
 // programmatic store builder), so the SQL-only probe corpus covers P4 (join)
@@ -154,24 +152,17 @@ func TestFDB_RFC173_ProducerCensus(t *testing.T) {
 		}
 	}
 
-	// The KNOWN un-enclosed residual: a 3-way inner join UNDER a WHERE EXISTS
-	// declines its whole join subtree to name-model. Inner p JOIN q fires enclosed;
-	// the outer (pq) JOIN r fires UN-ENCLOSED. This pins the reframe correction —
-	// un-enclosed residuals exist. Flips when the existential-over-multi-join
-	// ordinalizes (re-pin) or regresses.
+	// B1 (U-1) ORDINALIZED the existential-over-multi-join: an arity>=3 inner join
+	// under a WHERE EXISTS translates as its own gathered ordinal cluster wrapped
+	// by the existential (translateExistsOverGatheredCluster), so it fires ZERO
+	// name-model producers. (Before B1 it fired 1 enclosed Scan|Scan + 1
+	// un-enclosed Join|Scan — the reframe-correcting un-enclosed residual U-1,
+	// found and then retired by this census.) Flip-sentinel: if B1 regresses, this
+	// fires again. Correctness — the index SARG surviving AND the falsification
+	// control (EXISTS correlated to the 3rd/4th leg) — is pinned by the e2e
+	// TestFDB_RFC173S4_B1_NwayExists + TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed.
 	existMultiJoin := probe("SELECT p.v FROM p JOIN q ON q.qid = p.id JOIN r ON r.rid = p.id WHERE EXISTS (SELECT 1 FROM e WHERE e.eid = p.id)")
-	wantSig := "1x P=P4 enclosed=false *logical.LogicalJoin|*logical.LogicalScan\n" +
-		"1x P=P4 enclosed=true *logical.LogicalScan|*logical.LogicalScan\n"
-	if got := censusSignature(existMultiJoin); got != wantSig {
-		t.Errorf("existential-over-3-way-join residual signature changed:\n got:\n%s want:\n%s (the existential-over-multi-join ordinalized or regressed — re-pin the baseline and update the reframe note)", got, wantSig)
-	}
-	unenclosed := 0
-	for _, r := range existMultiJoin {
-		if !r.Enclosed {
-			unenclosed++
-		}
-	}
-	if unenclosed == 0 {
-		t.Errorf("expected the existential-over-3-way-join to fire an UN-ENCLOSED producer (the documented reframe correction); got none — if this shape now fully ordinalizes, update the reframe note that un-enclosed residuals are gone")
+	if len(existMultiJoin) != 0 {
+		t.Errorf("existential-over-3-way-join now ordinalizes (B1/U-1) — expected 0 name-model firings, got %d:\n%s (B1 regressed, or a new residual appeared on this shape)", len(existMultiJoin), censusSignature(existMultiJoin))
 	}
 }

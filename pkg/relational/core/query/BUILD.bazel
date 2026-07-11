@@ -6,6 +6,7 @@ go_library(
         "cascades_translator.go",
         "exists_guard.go",
         "plan.go",
+        "rfc173_b1_exists_gather.go",
         "rfc173_cluster_gate.go",
         "rfc173_ordinal_seed.go",
         "rfc173_producer_census.go",

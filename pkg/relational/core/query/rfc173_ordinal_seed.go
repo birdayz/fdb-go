@@ -438,7 +438,11 @@ func gatherInnerClusterPreds(j *logical.LogicalJoin) []predicates.QueryPredicate
 // the flat N-leg ordinal seed RC, and the union of every nested join's ON
 // predicates with cross-leg conjuncts baked. Legs translate ENCLOSED (their
 // own nested content — derived bodies etc. — is inside this cluster).
-func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoin, legs []clusterLeg) expressions.RelationalExpression {
+// extraPreds carries WHERE conjuncts a caller folds INTO the cluster (the B1
+// existential wrap passes the filter's non-EXISTS conjuncts so a comma-join's
+// `b.aid=a.id` is baked/pushed exactly as an ON predicate — the SARG-preserving
+// position). nil for the plain translateJoin dispatch.
+func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoin, legs []clusterLeg, extraPreds []predicates.QueryPredicate) expressions.RelationalExpression {
 	// Legs of a GATED parent translate FRESH (S3 fulcrum): a leg's own inner
 	// joins gate independently and SelectMergeRule composes the leg's ordinal
 	// RV into this parent via translateValueCorrelations + the fuse arm —
@@ -471,6 +475,7 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 		}
 	}
 	preds = append(preds, gatherInnerClusterPreds(j)...)
+	preds = append(preds, extraPreds...)
 
 	resultValue, legTypes := t.buildOrdinalJoinResultValue(legs)
 	if resultValue == nil {

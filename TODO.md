@@ -320,7 +320,30 @@ validation gate.
     existential-over-multi-join is its own residual class (pinned as a flip-sentinel in the census probe;
     ordinalizing it is a separate slice — likely part of the EXISTS-composition arc, not the box substrate).
     Re-consult Graefe on B1 sequencing WITH this correction before building B1.
-  - [ ] **B1 = U-1 — THREE approaches tried, each instructive, the CORRECT target now pinned. Not landed.** The goal:
+  - [x] **B1 = U-1 LANDED (existential wrap over a gathered ordinal cluster) — awaiting 4-gate.** The mechanism
+    (rfc173_b1_exists_gather.go, per the Graefe rebase-mechanism design-ACK): a plain WHERE-EXISTS over a gated
+    arity≥3 non-dup INNER cluster routes through a WIDENED projection fold → `translateExistsOverGatheredCluster`
+    builds the join + the WHERE's non-EXISTS conjuncts as its OWN gathered ordinal cluster
+    (translateGatheredInnerCluster + extraPreds — SARG-preserving, separately enumerated), wraps it
+    `[ForEach(box), Existential...]`, and REBASES every leg reference (the folded projection + each EXISTS
+    correlation, rebaseLegRefsToBox) to ofOrdinal(QOV(box), window.Offset+idx) via values.OrdinalSeedLegWindows,
+    with a post-walk declining any surviving leg-QOV ref (correct-or-decline). Plus the SelectMergeRule
+    existential-wrap guard (>2-window positional-seed box under a single-ForEach existential parent stays nested —
+    the flat form is only implementable MATERIALIZED since PartitionSelectRule is ForEach-only; 2-window seeds and
+    ≥2-ForEach parents keep merging, so the LEFT-residual + :2908/:3033 flatten stay byte-identical). VERIFIED:
+    census 0 producers on the shape (was 2 — U-1 retired); correlated-index SARG green; B1 cert
+    (TestFDB_RFC173S4_B1_NwayExists) — EXISTS→1st/3rd/4th-leg falsification, comma-join, NOT EXISTS, conjunct,
+    ORDER-BY fail-open, SARG+not-cross-product plan shape; FULL suite 55/55 incl. the dualwindow differential.
+    SCOPE (fail-open, each a booked follow-on): ORDER BY/LIMIT chains decline (the fold's chain re-application
+    emits unrebased leg-qualified reads above the wrap — existsFoldHasChain); projected-EXISTS keeps
+    buildExistentialJoinSelect (its FOD semantics not re-verified over the wrap); dup-alias declines loud.
+    HONESTY FLAG for the gate: a +1-slot sabotage of the RV rebase did NOT flip rows (the physical layer resolves
+    output by name/window over the box's positional row, so the rebased RV slots are not the runtime-observable
+    channel; documented in the cert) — the load-bearing discriminations are the census (arm off → 2 producers,
+    shown pre-B1) and the SARG plan assertion; Graefe's impl review should judge whether the RV/correlation rebase
+    is partially dead scaffolding and whether the post-walk decline (which IS load-bearing for scoping) suffices.
+    Superseded-attempts record:
+  - [ ] (superseded) **B1 — THREE approaches tried, each instructive, the CORRECT target then pinned.** The goal:
     ordinalize (ZERO the producer for) an arity>=3 inner join under a WHERE EXISTS while preserving the index SARG.
     Attempts: (A) bespoke helper (`translateGatheredInnerClusterWithExists`, merge join legs + existential + baked
     WHERE into ONE select) → row-correct but MATERIALIZED (SARG lost via implementJoinWithExistential's step-1).

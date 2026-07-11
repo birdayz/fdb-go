@@ -84,6 +84,32 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 
 	quantifiers := sel.GetQuantifiers()
 
+	// RFC-173 Outcome-B B1: an EXISTENTIAL WRAP select — exactly ONE ForEach
+	// (the box) plus existential quantifier(s) — must NOT have a POSITIONAL
+	// ordinal-seed box dissolved into it. The wrap is the semi-join shape
+	// implementExistentialSelect plans as FlatMap(box, FirstOrDefault(inner))
+	// with the box SEPARATELY enumerated (index SARGs live). Merging the box up
+	// yields a flat [ForEach×N, Existential] select that Go can only implement
+	// MATERIALIZED: PartitionSelectRule is ForEach-only (it never partitions a
+	// select carrying an existential), so the N-way existential arm builds a
+	// predicate-free left-deep cross-product with the join predicates as one
+	// post-filter — a strictly worse alternative that small-cardinality costing
+	// can still pick. A parent with >= 2 ForEach quantifiers (the projected-
+	// EXISTS-over-buried-box fold, :2908/:3033) is UNAFFECTED — its flatten is
+	// load-bearing (the N-way arm is its only implementer). NAME-MODEL children
+	// are UNAFFECTED (their flat alternative is unimplementable anyway — the
+	// N-way arm declines an anchored seed — so they keep merging as always).
+	forEachCount, hasExistential := 0, false
+	for _, q := range quantifiers {
+		switch q.Kind() {
+		case expressions.QuantifierForEach:
+			forEachCount++
+		case expressions.QuantifierExistential:
+			hasExistential = true
+		}
+	}
+	existentialWrap := hasExistential && forEachCount == 1
+
 	// Identify which ForEach quantifiers have a mergeable child.
 	// A child is mergeable if the Reference contains a
 	// RelationalExpressionWithPredicates member (LogicalFilter or Select).
@@ -145,6 +171,21 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			if (childRefResultIsNameModel(childRef) || childRefIsPositionalUnnestSelect(childRef)) &&
 				siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
 				break
+			}
+			// The B1 existential-wrap guard (see the header above the target
+			// loop): a MULTI-WAY (>2-window) positional ordinal-seed box under a
+			// single-ForEach existential parent stays nested. 2-window seeds (the
+			// arity-2 gatedFlatten world, the LEFT-residual internals) keep
+			// merging exactly as before — their flat form is implementable
+			// without the N-way materialization.
+			if existentialWrap {
+				if childSel, isSel := member.(*expressions.SelectExpression); isSel {
+					if rc, isRC := childSel.GetResultValue().(*values.RecordConstructorValue); isRC {
+						if w, _ := values.OrdinalSeedLegWindows(rc); len(w) > 2 {
+							continue
+						}
+					}
+				}
 			}
 			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
 				// RFC-173 Slice 2 drift assert (contract ruling #1): the

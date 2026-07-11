@@ -117,6 +117,16 @@ type cascadesTranslator struct {
 	// the flag true → the nested join under-gates to the name model — never
 	// the reverse.
 	inInnerCluster bool
+	// existsFoldHasChain is set while translateProjectOverExistsFilter folds a
+	// projection whose chain carries intervening Sort/Limit operators. The B1
+	// existential wrap (translateExistsOverGatheredCluster) DECLINES in that
+	// case: the fold's chain re-application (sort keys via sortKeySourceValue +
+	// the hidden-field cleanup projection) re-emits UNREBASED leg-qualified
+	// values above the wrap — resolvable over a name-model output row (qualified
+	// merged keys), unbound (silent NULL) over the wrap's positional output.
+	// Ordering over the wrap needs those emissions rebased to output names — a
+	// booked extension; until then chained shapes keep the name-model plan.
+	existsFoldHasChain bool
 	// underAggregate is set while lowering the INPUT of a GROUP BY / aggregate
 	// (translateAggregate). A gathered multi-source unnest's grouped element / leg
 	// reference used to group every row under NULL (`SELECT EL, COUNT(*) FROM a, a.arr
@@ -3145,6 +3155,22 @@ func (t *cascadesTranslator) buildExistentialSelect(
 	// inner binding live (Java's single SelectExpression: all FROM quantifiers +
 	// the existential + the projection).
 	if join, ok := f.Input.(*logical.LogicalJoin); ok && resultOverride != nil {
+		// RFC-173 Outcome-B B1 (U-1): a gated arity>=3 non-dup INNER cluster
+		// ordinalizes via the existential wrap over its own gathered cluster —
+		// the join stays a separately-enumerated (SARG-preserving) expression
+		// and the projection + EXISTS correlations rebase onto its positional
+		// output. Fail-open: nil falls through below.
+		if sel := t.translateExistsOverGatheredCluster(join, f, resultOverride); sel != nil {
+			return sel
+		}
+		if !projectionReferencesExistsSubquery([]values.Value{resultOverride}) {
+			// The WIDENED fold (a plain WHERE-EXISTS with no projected EXISTS)
+			// exists ONLY for the B1 arm; when it declines, bail the fold so the
+			// ordinary (un-folded) path keeps today's name-model plan shape —
+			// folding it through the name-model flatten would CHANGE plan shapes
+			// for shapes B1 doesn't serve.
+			return nil
+		}
 		return t.buildExistentialJoinSelect(join, f, resultOverride)
 	}
 
@@ -3575,7 +3601,10 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	}
 
 	resultValue := values.NewRecordConstructorValue(fields...)
+	prevChain := t.existsFoldHasChain
+	t.existsFoldHasChain = len(chain) > 0
 	folded := t.buildExistentialSelect(f, innerRef, resultValue)
+	t.existsFoldHasChain = prevChain
 	if folded == nil {
 		return nil
 	}
@@ -4273,8 +4302,15 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	// (LogicalOperator.generateSelect): the projection is built first with the
 	// existential binding live, then the sort wraps it, its keys rebased onto
 	// the projected output record.
+	// RFC-173 Outcome-B B1 widening: the fold ALSO fires for a plain WHERE-EXISTS
+	// (no projected EXISTS) over a gated arity>=3 non-dup INNER cluster — the B1
+	// wrap needs the projection folded in (its leg references only resolve over
+	// the wrapped box when rebased at translation; an ordinary Map above the wrap
+	// cannot see the legs). When the B1 arm declines, buildExistentialSelect bails
+	// the widened fold (nil) and the ordinary path keeps today's plan shape.
 	if filter, chain := findExistsFilterUnderUnaryChain(p.Input); filter != nil &&
-		projectionReferencesExistsSubquery(p.ProjectedValues) {
+		(projectionReferencesExistsSubquery(p.ProjectedValues) ||
+			(len(chain) == 0 && t.existsFoldableGatheredCluster(filter))) {
 		// A projected EXISTS combined with a CORRELATED scalar subquery in the same
 		// SELECT list cannot be folded (the fold's existential SelectExpression and
 		// the correlated-scalar LEFT-OUTER join select are incompatible structures —
@@ -4776,7 +4812,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// gated FULL box keep the binary flow below unchanged.
 	if gateDecision.Gated && kind == logical.JoinInner {
 		if legs := t.gatherInnerClusterLegs(j); len(legs) > 2 {
-			return t.translateGatheredInnerCluster(j, legs)
+			return t.translateGatheredInnerCluster(j, legs, nil)
 		}
 	}
 
