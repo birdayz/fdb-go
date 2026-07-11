@@ -377,8 +377,10 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 			// fabrication mismatch this format exists to prevent. The encoder
 			// only ever writes true/false; anything else is corrupt.
 			completeBool := false
-			if jErr := json.Unmarshal(wrapper[1], &completeBool); jErr != nil || string(bytes.TrimSpace(wrapper[1])) == "null" {
-				return nil, nil, fmt.Errorf("sorted record %d completeness in continuation is not a boolean (corrupt continuation)", i)
+			if jErr := json.Unmarshal(wrapper[1], &completeBool); jErr != nil {
+				return nil, nil, fmt.Errorf("sorted record %d completeness in continuation is not a boolean (corrupt continuation): %w", i, jErr)
+			} else if string(bytes.TrimSpace(wrapper[1])) == "null" {
+				return nil, nil, fmt.Errorf("sorted record %d completeness in continuation is not a boolean (corrupt continuation): JSON null", i)
 			}
 			complete = completeBool
 		} else if jErr := json.Unmarshal(sr.Message, &datum); jErr != nil {

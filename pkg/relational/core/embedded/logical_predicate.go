@@ -969,8 +969,19 @@ func buildCTEColumnSource(
 // fabricated "CTE.col" merge keys miss): an explicit projection alias
 // (executeProjection always writes the alias key) or a BARE unqualified
 // non-computed reference (the runtime key mirrors the SQL spelling — a bare
-// ref plans as Project([AID],…) and keys bare; an ambiguous bare ref never
-// reaches derivation, the body build 42702s first). Everything else DECLINES
+// ref plans as Project([AID],…) and keys bare). The bare-ref arm additionally
+// requires every FROM leg to be ENUMERABLE (a base table): the ambiguity
+// backstop (the body build 42702s an ambiguous bare ref before it can
+// execute) only holds when the resolver can see every leg's columns — a
+// derived-table leg among several hides its columns from that check, so a
+// textually-bare-but-ambiguous ref would silently resolve against the wrong
+// leg (review-caught, pinned by Q18). Bodies whose single source IS a derived
+// table stay derivable, but every projection/aggregate INPUT read must
+// resolve in the derived source's provably-emitted bare-key set
+// (derivedEmittedBareNames): the derived row keys by the INNER spelling, so
+// an inner qualified-spelled item makes an outer `D.col` read a runtime
+// malformed-plan failure (and an aggregate over it a silent NULL) — decline
+// to the plan-time marker instead (Q19/Q20). Everything else DECLINES
 // to the loud marker:
 //   - an unaliased QUALIFIED reference resolves to a FieldValue whose Field
 //     is the dotted source name ("D.ID" — see values.ProjectionColumnName),
@@ -988,6 +999,111 @@ func buildCTEColumnSource(
 // MARKER instead: the declared name still routes to the loud drop-risk 0AF00,
 // never a silent ON drop. Widening the derivable set (qualified/renamed
 // output schemas) is booked with the derived-table-twin item.
+// derivedEmittedBareNames computes the set of BARE keys a derived source's
+// runtime row provably carries — the read-authority for a CTE ON-only body
+// whose single FROM source is that derived table. ok=false means the set is
+// not statically closed and the caller must decline to the loud marker:
+// SELECT * (names unknown here — no catalog access), aggregate/set-query
+// bodies (their materialized-row keying is unverified on this path), or a
+// derived leg among multiple legs (the same ambiguity-backstop hole as the
+// caller's own P1 arm, one level down). The per-item rules mirror the
+// caller's admission loop: an explicit alias is always emitted
+// (executeProjection writes the alias key), a bare unqualified non-computed
+// ref keys by its spelling, and qualified/computed unaliased items key
+// dotted/rendered — they contribute nothing bare. Input reads recurse: when
+// this level's single source is itself derived, every item's read target
+// must resolve in the deeper set, else the body can never execute
+// (a decline beats the runtime malformed-plan error it would otherwise be).
+func derivedEmittedBareNames(q antlrgen.IQueryContext) (map[string]bool, bool) {
+	if q == nil {
+		return nil, false
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return nil, false
+	}
+	sq, err := extractFromQueryTerm(body)
+	if err != nil || sq == nil {
+		return nil, false
+	}
+	if len(sq.aggCols) > 0 || sq.countStar || sq.projCols == nil {
+		return nil, false
+	}
+	legDerived := sq.derivedQuery != nil
+	for _, jc := range sq.joins {
+		if jc.derivedQuery != nil {
+			legDerived = true
+		}
+	}
+	if len(sq.joins) > 0 && legDerived {
+		return nil, false
+	}
+	var deeper map[string]bool
+	if sq.derivedQuery != nil {
+		if deeper, ok = derivedEmittedBareNames(sq.derivedQuery); !ok {
+			return nil, false
+		}
+	}
+	set := make(map[string]bool, len(sq.projCols))
+	for i, col := range sq.projCols {
+		isComputed := i < len(sq.projExprs) && sq.projExprs[i] != nil
+		if deeper != nil {
+			if isComputed {
+				for _, r := range harvestColumnRefs(sq.projExprs[i]) {
+					if !deeper[parseColRef(r).bare()] {
+						return nil, false
+					}
+				}
+			} else if !deeper[parseColRef(col).bare()] {
+				return nil, false
+			}
+		}
+		switch ref := parseColRef(col); {
+		case i < len(sq.projAliases) && sq.projAliases[i] != "":
+			set[sq.projAliases[i]] = true
+		case !isComputed && !ref.isQualified():
+			set[ref.bare()] = true
+		}
+	}
+	return set, true
+}
+
+// cteBodyReadsResolvable reports whether every projection and aggregate INPUT
+// read of a single-derived-source CTE body resolves in the derived source's
+// emitted bare-key set. Aggregate outExpr entries are skipped: their refs
+// read the POST-aggregation rowMap (agg outputs and group columns), not the
+// input row — the group/arg inputs they depend on arrive via sibling aggCols
+// entries, which ARE checked.
+func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
+	for _, ac := range sq.aggCols {
+		if ac.groupCol != "" && !emitted[parseColRef(ac.groupCol).bare()] {
+			return false
+		}
+		if ac.aggArg != "" && !emitted[parseColRef(ac.aggArg).bare()] {
+			return false
+		}
+		for _, r := range harvestColumnRefs(ac.aggExpr) {
+			if !emitted[parseColRef(r).bare()] {
+				return false
+			}
+		}
+	}
+	for i, col := range sq.projCols {
+		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+			for _, r := range harvestColumnRefs(sq.projExprs[i]) {
+				if !emitted[parseColRef(r).bare()] {
+					return false
+				}
+			}
+			continue
+		}
+		if !emitted[parseColRef(col).bare()] {
+			return false
+		}
+	}
+	return true
+}
+
 func buildCTEOnOnlySource(
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
@@ -1027,6 +1143,34 @@ func buildCTEOnOnlySource(
 		// projection names key the runtime row the same way.
 		return semantic.ScopeSource{}, false
 	}
+	legDerived := innerSQ.derivedQuery != nil
+	for _, jc := range innerSQ.joins {
+		if jc.derivedQuery != nil {
+			legDerived = true
+		}
+	}
+	if len(innerSQ.joins) > 0 && legDerived {
+		// A derived-table leg among MULTIPLE legs: the resolver cannot
+		// enumerate its columns, so the 42702 ambiguity backstop the bare-ref
+		// arm rests on does not run — a textually-bare-but-ambiguous ref
+		// silently resolves against the wrong leg (Q18). Decline the whole
+		// body to the loud marker.
+		return semantic.ScopeSource{}, false
+	}
+	var innerEmitted map[string]bool
+	if innerSQ.derivedQuery != nil {
+		// Single derived source: the runtime row keys by the INNER spelling.
+		// Every input read below must resolve in its provably-emitted set —
+		// a miss is a runtime malformed plan (projection read, Q19) or a
+		// silent NULL (aggregate arg, Q20) if admitted.
+		var ok bool
+		if innerEmitted, ok = derivedEmittedBareNames(innerSQ.derivedQuery); !ok {
+			return semantic.ScopeSource{}, false
+		}
+	}
+	if innerEmitted != nil && !cteBodyReadsResolvable(innerSQ, innerEmitted) {
+		return semantic.ScopeSource{}, false
+	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
 		return buildDerivedTableSourceFromAgg(cteName, innerSQ)
 	}
@@ -1039,10 +1183,13 @@ func buildCTEOnOnlySource(
 		// alias (executeProjection always writes the alias key), or a BARE
 		// unqualified non-computed reference (the runtime key mirrors the SQL
 		// spelling — a bare ref keys bare, verified by plan shape
-		// Project([AID],…); an ambiguous bare ref never gets here, the body
-		// build 42702s first). A QUALIFIED unaliased ref keys by its dotted
-		// source name and a computed item by its explain rendering — both
-		// decline (no bare key on the runtime row).
+		// Project([AID],…)). The bare arm is sound here because every leg is
+		// enumerable at this point — multi-leg bodies with a derived leg
+		// declined above, so an ambiguous bare ref never EXECUTES: the body
+		// build 42702s it and the wrap rebuild re-raises the swallowed error.
+		// A QUALIFIED unaliased ref keys by its dotted source name and a
+		// computed item by its explain rendering — both decline (no bare key
+		// on the runtime row).
 		outName := ""
 		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 			outName = innerSQ.projAliases[i]

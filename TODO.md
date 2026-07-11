@@ -635,7 +635,17 @@ validation gate.
     bare key — needs a real post-CTE output-schema authority, Q11 flip-sentinel); (c) WITH c(x, y) COLUMN
     ALIASES over multi-leg bodies (scope-level renames never reach the runtime row — needs the rename
     pushed into the body projection or the CTE wrapper, Q12 flip-sentinel); (d) qualified WHERE over a
-    CTE leg (already-loud 0AF00, consult finding). All four are one output-naming authority problem: the
+    CTE leg (already-loud 0AF00, consult finding); (e) NEW (round-6 repro of the delta-review P2, standalone
+    control): a derived table whose INNER projection is qualified-spelled fails at RUNTIME with a
+    malformed-plan error even with no CTE at all — `SELECT D."AID" AS "A" FROM (SELECT LA."AID" FROM LA
+    LEFT JOIN LB ON …) "D"` → `field "AID" not resolvable (row columns [LA.AID])`; the derived row keys by
+    the inner SPELLING instead of a canonical output name (the CTE ON derivation now declines these
+    fail-closed, Q19/Q20/Q25 pins, but the standalone reach gap remains); (f) NEW (round-6 repro of the
+    delta-review P1, standalone control): the 42702 ambiguity backstop does NOT run when a derived-table
+    leg sits among multiple FROM legs — `SELECT "AID" FROM (SELECT LA."AID" FROM …) "D", LA "L2"` silently
+    resolves the ambiguous bare ref against the enumerable leg (returns rows; should 42702) because the
+    derived leg's columns are invisible to the resolver (CTE ON derivation declines fail-closed, Q18/Q21
+    pins; the standalone resolver gap remains). All six are one output-naming authority problem: the
     scope's advertised names must be the names execution emits.
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x

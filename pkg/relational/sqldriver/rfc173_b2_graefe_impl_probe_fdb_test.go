@@ -260,6 +260,13 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		metadata.NewColumnSpec("CID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("CV", api.NewLongType(true), 2),
 	}, []string{"CID"})
+	// CD keys on an ARRAY-ELEMENT value (7 ∈ LA.ARR) — the Q26 discriminator.
+	// A separate table so its row can't disturb the CC cross-join cardinality
+	// the Q1-Q5 pins depend on.
+	b.AddTable("CD", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("XK", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("XV", api.NewLongType(true), 2),
+	}, []string{"XK"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatal(err)
@@ -296,6 +303,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 			mkLA(1, 100, 7, 8), mkLA(2, 110, 9),
 			mk2("LB", "BID", "K", 1, 5), mk2("LB", "BID", "K", 3, 6),
 			mk2("CC", "CID", "CV", 1, 900),
+			mk2("CD", "XK", "XV", 7, 700),
 		} {
 			if _, e := store.SaveRecord(r); e != nil {
 				return nil, e
@@ -558,9 +566,99 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// other two loops errored. Loud DuplicateAlias now, uniformly.
 	t.Run("Q17_subquery_nested_duplicate_with_loud", func(t *testing.T) {
 		_, err := run(t, `SELECT LA."K", (WITH "X" AS (SELECT LA."K" AS "AK" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID"), "X" AS (SELECT "AID" FROM LA) SELECT COUNT(*) FROM "X") FROM LA`)
-		if err == nil {
-			t.Fatal("duplicate CTE name in a subquery-nested WITH must fail LOUD, got rows")
+		if err == nil || !strings.Contains(err.Error(), "more than once") {
+			// The DuplicateAlias message, not just any error — a vacuous
+			// err != nil would stay green if the shape started failing for
+			// an unrelated reason (review-caught assertion-strength gap).
+			t.Fatalf("duplicate CTE name in a subquery-nested WITH must fail with DuplicateAlias, got %v", err)
 		}
+	})
+	// loud0AF00 pins the fail-closed decline arm: the shape must error with
+	// the ON drop-risk SQLSTATE, never return rows, never fail at runtime.
+	loud0AF00 := func(t *testing.T, sql, why string) {
+		t.Helper()
+		_, err := run(t, sql)
+		if err == nil || !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("%s: must fail LOUD 0AF00, got %v\n  %s", why, err, sql)
+		}
+	}
+	// Q18: an AMBIGUOUS bare ref in a multi-leg body with a DERIVED leg. The
+	// bare-ref admission rests on the body build's 42702 ambiguity backstop,
+	// which only sees ENUMERABLE (base-table) legs — a derived leg hides its
+	// columns, the check never fires, and the bare ref silently resolved
+	// against the OTHER leg (review-caught: rows came back where an error was
+	// due). The derivation now declines any multi-leg body with a derived
+	// leg. (The standalone body's missing 42702 is a separate pre-existing
+	// resolver gap, booked with the derived-table scope item.)
+	t.Run("Q18_derived_leg_ambiguous_bare_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH "U" AS (SELECT "AID" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D", LA "L2") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"ambiguous bare ref over a derived leg")
+	})
+	// Q19: derived-source body whose INNER projection is QUALIFIED-spelled —
+	// the derived row keys "LA.AID", so the outer D.AID read can never
+	// resolve at runtime (review-caught: admission turned the base's clean
+	// plan-time 0AF00 into a runtime malformed-plan error). The read-authority
+	// recursion (derivedEmittedBareNames) declines it back to plan time.
+	t.Run("Q19_derived_inner_qualified_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH "U" AS (SELECT "D"."AID" AS "A" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."A", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."A" = "C2"."CID"`,
+			"aliased read over a qualified-keyed derived row")
+	})
+	// Q20: the AGGREGATE-arm instance of Q19 — MAX(D.AID) over a
+	// qualified-keyed derived row read NOTHING and returned a SILENT NULL
+	// (found by widening the review's probe to the agg arm; the worst variant
+	// of the class — no error at all). cteBodyReadsResolvable validates agg
+	// args/group cols against the emitted set.
+	t.Run("Q20_agg_over_derived_qualified_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH "U" AS (SELECT MAX("D"."AID") AS "M" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."M", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."M" = "C2"."CID"`,
+			"aggregate arg over a qualified-keyed derived row")
+	})
+	// Q21: a derived JOIN LEG (joinClause.derivedQuery — the non-first-source
+	// twin of Q18). Was a runtime leg-adapter breach; now a plan-time decline.
+	t.Run("Q21_derived_join_leg_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH "U" AS (SELECT "AID" FROM LA "L2" JOIN (SELECT LB."BID" FROM LB) "D" ON "L2"."AID" = "D"."BID") SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"derived join leg")
+	})
+	// Q22: ANTI-OVER-DECLINE — aggregate over a derived-inner-BARE body stays
+	// derivable and answers correctly (M = MAX(1,2) = 2, no CC match → pad).
+	// The read validation must pass when the inner emits bare keys.
+	t.Run("Q22_agg_over_derived_bare_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT MAX("D"."AID") AS "M" FROM (SELECT "AID" FROM LA) "D") SELECT "U"."M", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."M" = "C2"."CID"`,
+			"<nil>|2")
+	})
+	// Q23: ANTI-OVER-DECLINE — a COMPUTED aliased item whose reads resolve in
+	// the inner's bare set stays derivable (harvestColumnRefs validates the
+	// expression's refs, it does not blanket-decline computed items).
+	t.Run("Q23_computed_over_derived_bare_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "D"."AID" + 0 AS "Z" FROM (SELECT "AID" FROM LA) "D") SELECT "U"."Z", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."Z" = "C2"."CID"`,
+			"900|1", "<nil>|2")
+	})
+	// Q24: union-bodied CTE under ON — the union pathway NORMALIZES branch
+	// keys (branch-2 spelled qualified still resolves U.AID), for both a
+	// plain and a JOIN-SEEDED union. Pins the seed-arm advertising as sound;
+	// probed while hunting Q18-siblings — the union arm needs no decline.
+	t.Run("Q24_union_branch_keys_normalize", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "AID" FROM LA UNION ALL SELECT LB."BID" FROM LB) SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"900|1", "<nil>|2", "900|1", "<nil>|3")
+		check(t, `WITH "U" AS (SELECT "AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID" UNION ALL SELECT LB."BID" FROM LB) SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
+			"900|1", "<nil>|2", "900|1", "<nil>|3")
+	})
+	// Q25: computed item over a qualified-keyed derived row — the reads fail
+	// validation, decline (was already loud at translation; the decline moves
+	// it to the uniform 0AF00).
+	t.Run("Q25_computed_over_derived_qualified_loud", func(t *testing.T) {
+		loud0AF00(t, `WITH "U" AS (SELECT "D"."AID" + 0 AS "Z" FROM (SELECT LA."AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") "D") SELECT "U"."Z", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."Z" = "C2"."CID"`,
+			"computed reads over a qualified-keyed derived row")
+	})
+	// Q26: the bare UNNEST-ELEMENT ref — the one admitted derivation shape
+	// whose write path goes through the RFC-142 QOV value (shadowing rewrite)
+	// rather than a plain name-model read; the rewrite qualifies via the QOV
+	// CHILD while Field stays the verbatim bare name, so the runtime key is
+	// bare "X" (review-caught as the unpinned admitted class). CD keys on the
+	// element VALUE (XK=7 → XV=700), so a silent-miss would pad ALL rows —
+	// the 700 row discriminates.
+	t.Run("Q26_bare_unnest_element_on_resolves", func(t *testing.T) {
+		check(t, `WITH "U" AS (SELECT "X" FROM LA, LA."ARR" AS "X") SELECT "U"."X", "C3"."XV" FROM "U" LEFT JOIN CD AS "C3" ON "U"."X" = "C3"."XK"`,
+			"700|7", "<nil>|8", "<nil>|9")
 	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
