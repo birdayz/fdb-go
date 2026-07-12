@@ -1110,6 +1110,14 @@ validation gate.
     shape; then retire #2/#3/#4 by ordinalizing their shapes), then the atomic deletion. Gated on a
     Graefe RFC DESIGN-ACK of the demolition plan + all four impl gates (codex incl.). See the
     corrected RFC Slice-4 PREREQUISITE block.
+    **E-1a DONE (ce2777bc3, 4-gate ACK):** the INNER flat cluster under EXISTS ordinalizes (translator
+    alias-aware leg+element bake over the seed windows; the NLJ physicalization drops the windowed layout
+    so the executor hoist can't recover it — bake in the translator). Zeros its P5 firing. BOOKED
+    plan-quality follow-up (Graefe): AGGREGATE-under-INNER-EXISTS ordinalization — E-1a DECLINES the INNER
+    admission under t.underAggregate (COUNT(X)/GROUP BY X would collapse to one NULL group;
+    gatheredSeedBakeContext needs the raw seed, hidden behind the existential wrapper's NLJ). Name-model
+    handles it correct-or-loud today (pinned agg_count_over_gather → COUNT(X)=2); ordinalizing it needs
+    exposing the seed through the wrapper to the aggregate bake — same class as the box's deferred cases.
     **B1 DISCHARGED (corpus-level ordinal-spike certificate GREEN):** the whole-gate
     force-ordinalize flip (`query.SetForceOrdinalSpike` guarding the three circular declines
     :143/:157/:190, in `pkg/relational/conformance/ordinalspike`) preserves EVERY corpus row —

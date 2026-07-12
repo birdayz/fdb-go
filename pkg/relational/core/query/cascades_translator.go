@@ -2934,7 +2934,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	isInnerCluster := seedWindowed && isInnerLJ && lj.Kind == logical.JoinInner
 	var innerElementSlots map[string]int
 	if isInnerCluster {
-		innerElementSlots = t.unnestSeedElementSlots(unnestExpr)
+		innerElementSlots = unnestSeedElementSlots(unnestExpr)
 	}
 	existsSubqueries := f.ExistsSubqueries
 	if len(outerLegs) > 0 && mergedCorr.Name() != "" {
@@ -3380,27 +3380,42 @@ func unnestExistsRefSurvivesUnbaked(
 ) bool {
 	mergedName := strings.ToUpper(mergedCorr.Name())
 	survives := false
-	scan := func(v values.Value) values.Value {
-		if v == nil {
-			return v
+	scanVal := func(v values.Value) {
+		if v == nil || survives {
+			return
 		}
-		return values.Replace(v, func(node values.Value) values.Value {
+		values.WalkValue(v, func(node values.Value) bool {
 			fv, isFV := node.(*values.FieldValue)
 			if !isFV || fv.Resolved != nil {
-				return node
+				return true // baked ofOrdinal (or non-FieldValue) — descend/skip
 			}
 			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
 				leg := strings.ToUpper(qov.Correlation.Name())
 				if leg == mergedName {
 					survives = true
-				} else if _, isLeg := outerLegs[leg]; isLeg {
+					return false
+				}
+				if _, isLeg := outerLegs[leg]; isLeg {
 					survives = true
+					return false
 				}
 			}
-			return node
+			return true
 		})
 	}
-	mapPredicateValues(p, scan)
+	// Read-only walk (no throwaway tree): WalkPredicate descends And/Or/Not; the
+	// value-carrying leaves are ComparisonPredicate + ValuePredicate (mirroring
+	// mapPredicateValues' value sites).
+	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
+		switch pred := qp.(type) {
+		case *predicates.ComparisonPredicate:
+			scanVal(pred.Operand)
+			scanVal(pred.Comparison.Operand)
+		case *predicates.ValuePredicate:
+			scanVal(pred.Value)
+		}
+		return !survives
+	})
 	return survives
 }
 
@@ -4563,10 +4578,13 @@ type gatheredSeedBake struct {
 // gatheredSeedBakeContext (the GROUP-BY / sort bake), so the explode-find +
 // fieldValueReferencesInner derivation can't drift between them. ok=false for a
 // non-windowable seed (star / AnchoredJoin result value / no Explode quantifier).
-func seedElementSlots(sel *expressions.SelectExpression) (map[string]int, bool) {
+// It also returns the RC it derives from (the seed result value), so callers that
+// need the seed layout (leg windows, row type) reuse the ONE cast rather than an
+// unchecked re-assert.
+func seedElementSlots(sel *expressions.SelectExpression) (*values.RecordConstructorValue, map[string]int, bool) {
 	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
 	if !ok || rc.AnchoredJoin {
-		return nil, false
+		return nil, nil, false
 	}
 	var innerCorr values.CorrelationIdentifier
 	foundExplode := false
@@ -4578,7 +4596,7 @@ func seedElementSlots(sel *expressions.SelectExpression) (map[string]int, bool) 
 		}
 	}
 	if !foundExplode {
-		return nil, false
+		return nil, nil, false
 	}
 	slots := map[string]int{}
 	for i, f := range rc.Fields {
@@ -4586,15 +4604,15 @@ func seedElementSlots(sel *expressions.SelectExpression) (map[string]int, bool) 
 			slots[strings.ToUpper(f.Name)] = i // element slot = rc index
 		}
 	}
-	return slots, true
+	return rc, slots, true
 }
 
-func (t *cascadesTranslator) unnestSeedElementSlots(unnestExpr expressions.RelationalExpression) map[string]int {
+func unnestSeedElementSlots(unnestExpr expressions.RelationalExpression) map[string]int {
 	sel, ok := unnestExpr.(*expressions.SelectExpression)
 	if !ok {
 		return nil
 	}
-	slots, _ := seedElementSlots(sel)
+	_, slots, _ := seedElementSlots(sel)
 	return slots
 }
 
@@ -4604,11 +4622,10 @@ func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Refer
 	if !ok {
 		return b
 	}
-	elementSlots, ok := seedElementSlots(sel)
+	rc, elementSlots, ok := seedElementSlots(sel)
 	if !ok {
 		return b
 	}
-	rc := sel.GetResultValue().(*values.RecordConstructorValue) // seedElementSlots ok ⇒ plain RC
 	b.windows, _ = values.OrdinalSeedLegWindows(rc)
 	b.elementSlots = elementSlots
 	seedCorr := values.UniqueCorrelationIdentifier()
