@@ -1166,8 +1166,17 @@ validation gate.
     - LOUD reach gaps (Graefe: schedule, convert runtime strand → plan-time decline for cap-cleanliness):
       FullBoxChained, scalar-subquery-conjunct (the Unbakeable-verdict split — partial-bake the leg refs,
       leave the scalar as a bound comparand, a separate slice). Both already correct-or-loud.
-    - agg_count_over_gather: aggregate-under-EXISTS, promoted from plan-quality to a CAP-BLOCKER (the cap
-      deletes its name-model fallback) — land before the cap.
+    - 🚩 agg_count_over_gather CAP-BLOCKER (root-caused, same class as the straddle — ordinal-child-under-
+      name-model-parent): the A,B cluster ordinalizes under the flip but E-1a's underAggregate decline
+      (cascades_translator.go:2766) keeps the aggregate-over-EXISTS handling name-model → the EXISTS
+      correlation reads A.K/A.AID over the windowless NLJ → strand (LOUD malformed, not silent). FIX at cap:
+      remove the underAggregate decline + expose the gathered seed's windows through the existential-wrapper
+      NLJ to translateAggregate's gatheredSeedBakeContext. JAVA-PARITY (lateral chained unnest IS Java —
+      generateCorrelatedFieldAccess; the corpus's no-array-columns is a CORPUS gap) ⇒ ORDINALIZE (COUNT(X)=2),
+      NOT loud-decline (which would be a conformance regression). Same for the straddle. COMPLETE atomic-cap
+      execution plan (both blockers' fixes, reach-gap dispositions, cap mechanics, exit gates) in
+      scratchpad/flip-measurement-505fc32c9.md. EXIT-GATE PROVEN CLEAN: full flip = exactly 1 silent-wrong
+      (the booked straddle), all else loud/retire — the cap is safe to plan on the correctness axis.
     **FLIP-DASHBOARD RED CLASSIFICATION (Graefe guardrail — the cap fires only when every red is one of):**
     (1) booked CAP-BLOCKERS fixed IN the cap (straddle 0-row, agg, FullBox/scalar-conj plan-time declines);
     (2) RETIRE-TESTS deleted at the cap (name-model-assertion tests: Item2C4/C3, WedgeGate, BareTwin
