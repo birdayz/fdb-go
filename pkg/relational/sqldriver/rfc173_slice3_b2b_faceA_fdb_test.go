@@ -197,6 +197,12 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	// (both keep the box-leg conjunct correct); the census pin below is the
 	// model discriminator.
 	pin("bakeable_conjunct_nullsupplied", `SELECT "X" `+from+` WHERE B."K" = 110 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`)
+	// FULL box + Bakeable conjunct (D4-(ii): FULL admits ONLY at Bakeable): the
+	// FULL OUTER box's A.K=100 conjunct bakes over the gather record. A survives
+	// the FULL OUTER (AID=1≠BID=2, B null-supplied), A.K=100 → {7,8}.
+	const ffrom = `FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
+	pin("full_bakeable_conjunct", `SELECT "X" `+ffrom+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
+		"map[X:7]", "map[X:8]")
 
 	// CENSUS (the B2-B checkbox): the admitted LEFT-box+EXISTS shape must fire
 	// ZERO name-model producers (it took the gathered ordinal cluster), while a
@@ -221,6 +227,11 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	t.Run("census_bakeable_conjunct_zero_producers", func(t *testing.T) {
 		if n := countProducers(t, `SELECT "X" `+from+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n != 0 {
 			t.Fatalf("admitted LEFT-box+Bakeable-conjunct fired %d name-model producer(s), want 0 (the merge bakes over the record)", n)
+		}
+	})
+	t.Run("census_full_bakeable_zero_producers", func(t *testing.T) {
+		if n := countProducers(t, `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n != 0 {
+			t.Fatalf("admitted FULL-box+Bakeable-conjunct fired %d name-model producer(s), want 0", n)
 		}
 	})
 	// INNER-CLUSTER control: B2-B's shape arm requires a NON-INNER box left, so

@@ -329,18 +329,16 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		`SELECT "X" FROM FOA JOIN FOC ON FOA."AID" = FOC."CID", FOA."ARR" AS "X" WHERE FOC."CK" = 100`,
 		[]string{"7", "8"})
 
-	// OUTER-CONJUNCT regression pin — the EXISTS-path box-leg conjunct, which
-	// (unlike its non-EXISTS sibling above, Bakeable since B2 sub-slice A)
-	// STAYS name-model: translateUnnestExistsFilter sets unnestBoxLegConjunct
-	// to Unbakeable unconditionally — the EXISTS composition rebases outer refs
-	// through the existential quantifier, and baking a $BOX-window conjunct
-	// under that rebase is B2 sub-slice B (deferred, needs its own design
-	// consult). unnestExistsSeedSafe declines the ordinal seed, so FOA.K
-	// resolves via the qualified name-model key → correct {7,8}. RED before the
-	// narrowing (`field "FOA.K" not resolvable ... malformed plan`); pre-c5a
-	// this shape was name-model and worked, so the ordinal lift MUST NOT
-	// regress it.
-	assertRows(t, "OUTER-CONJUNCT/box-leg-stays-name-model",
+	// OUTER-CONJUNCT — the EXISTS-path box-leg conjunct. Since B2-B this
+	// BAKES ORDINAL (was name-model): translateUnnestExistsFilter admits the
+	// FULL+Bakeable box (admitExistentialGather), the gather records the box
+	// legTypes, and the EXISTS merge site bakes FOA.K=100 over that record on
+	// its buried window. Rows are model-independent ({7,8} either way — the
+	// row assertion alone is not the model pin; the census discriminator lives
+	// in rfc173_slice3_b2b_faceA_fdb_test.go's census_full_bakeable_zero_producers).
+	// RED before the B2-A narrowing (`field "FOA.K" not resolvable ...
+	// malformed plan`).
+	assertRows(t, "OUTER-CONJUNCT/box-leg-bakes-ordinal",
 		`SELECT "X" `+from+` WHERE FOA."K" = 100 AND EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,
 		[]string{"7", "8"})
 
@@ -417,17 +415,17 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 	// leg since c5b (the seed concats the clustered leg's buried columns —
 	// TestRFC173Item2_C5aUnnestExists pins boxGatesFresh(clustered FULL)=true),
 	// and a plain buried-leg conjunct on this very FROM classifies BAKEABLE and
-	// gathers (see NONEXISTS-CONJUNCT/clustered-box-bakes-ordinal above). What
-	// keeps THIS shape name-model is the EXISTS composition:
-	// translateUnnestExistsFilter sets unnestBoxLegConjunct to Unbakeable
-	// unconditionally (B2 sub-slice B is deferred), so the gather declines and
-	// unnestExistsSeedSafe declines the binary seed → name-model builder, which
-	// resolves buried `FOD.K` via the qualified key — CORRECT rows. The direct
-	// predicate `FOD.K = 200` (FOD.K=200 buried; FOA.K=100, FOB.K=NULL)
-	// discriminates: correct bind → {7,8}; a mis-bind → 0 rows. (FOA JOIN FOD on
-	// AID=DID=1) survives the FULL OUTER with FOB null-supplied (AID=1 ≠ BID=2);
-	// unnest FOA.ARR → [7,8].
-	assertRows(t, "CLUSTERED/buried-leaf-FULL-box-stays-name-model",
+	// gathers (see NONEXISTS-CONJUNCT/clustered-box-bakes-ordinal above). Since
+	// B2-B this EXISTS-composition shape ALSO bakes ordinal: the FOD.K=200
+	// buried-leaf conjunct classifies Bakeable, admitExistentialGather admits
+	// the FULL+Bakeable box, and the EXISTS merge site bakes FOD.K over the
+	// gather record on its buried-leaf window. The direct predicate `FOD.K =
+	// 200` (FOD.K=200 buried; FOA.K=100, FOB.K=NULL) discriminates the BIND:
+	// correct → {7,8}; a mis-bind → 0 rows (so the rows do pin the buried-leaf
+	// bake landed on the right window). (FOA JOIN FOD on AID=DID=1) survives
+	// the FULL OUTER with FOB null-supplied (AID=1 ≠ BID=2); unnest FOA.ARR →
+	// [7,8].
+	assertRows(t, "CLUSTERED/buried-leaf-FULL-box-bakes-ordinal",
 		`SELECT "X" FROM FOA INNER JOIN FOD ON FOA."AID" = FOD."DID" `+
 			`FULL OUTER JOIN FOB ON FOA."AID" = FOB."BID", FOA."ARR" AS "X" `+
 			`WHERE FOD."K" = 200 AND EXISTS (SELECT 1 FROM FOC WHERE FOC."CK" = FOA."K")`,

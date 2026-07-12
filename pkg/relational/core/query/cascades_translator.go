@@ -2742,8 +2742,9 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	switch bj.Kind {
 	case logical.JoinLeft, logical.JoinRight:
 		return verdict == boxConjNone || verdict == boxConjBakeable
-	default: // FULL: rides the certified binary seed (D4-(ii)) until FULL+Bakeable
-		return false
+	default: // FULL — D4-(ii): only a Bakeable box-leg conjunct gathers; FULL+None
+		// stays on the certified binary seed (already producer-free via c5a).
+		return verdict == boxConjBakeable
 	}
 }
 
