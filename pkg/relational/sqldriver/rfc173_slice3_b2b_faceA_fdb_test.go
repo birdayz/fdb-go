@@ -30,7 +30,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-func TestFDB_RFC173Slice3Step0FaceA(t *testing.T) {
+func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -183,6 +183,21 @@ func TestFDB_RFC173Slice3Step0FaceA(t *testing.T) {
 	pin("ctl_single_source", `SELECT "X" FROM A, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
 		"map[X:7]", "map[X:8]")
 
+	// BAKEABLE box-leg CONJUNCT under EXISTS: `A.K = 100` is a box-leg conjunct
+	// (resolves in A's buried window → verdict Bakeable), AND EXISTS on A.K. The
+	// gather RECORDS the box legTypes and the merge BAKES the conjunct over that
+	// record (ofOrdinal on the buried window), instead of the name-model
+	// qualified-key rebase. A.K=100 → conjunct true, EXISTS matches → {7,8}.
+	pin("bakeable_conjunct_present", `SELECT "X" `+from+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
+		"map[X:7]", "map[X:8]")
+	// the conjunct on the NULL-SUPPLIED leg (B.K IS NULL): `B.K = 110` is false
+	// (B.K=NULL) → no rows; a wrong-window bake reading A.K=100 → still no match
+	// on 110, so use a discriminating value. B.K=NULL so any equality is false →
+	// {} — a stale name-model rebase over the positional row would also give {}
+	// (both keep the box-leg conjunct correct); the census pin below is the
+	// model discriminator.
+	pin("bakeable_conjunct_nullsupplied", `SELECT "X" `+from+` WHERE B."K" = 110 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`)
+
 	// CENSUS (the B2-B checkbox): the admitted LEFT-box+EXISTS shape must fire
 	// ZERO name-model producers (it took the gathered ordinal cluster), while a
 	// FULL-box+EXISTS+verdict-None shape is NOT admitted (D4-(ii): FULL+None
@@ -201,6 +216,11 @@ func TestFDB_RFC173Slice3Step0FaceA(t *testing.T) {
 	t.Run("census_left_box_admits_zero_producers", func(t *testing.T) {
 		if n := countProducers(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n != 0 {
 			t.Fatalf("admitted LEFT-box+EXISTS fired %d name-model producer(s), want 0 (the gather must own it)", n)
+		}
+	})
+	t.Run("census_bakeable_conjunct_zero_producers", func(t *testing.T) {
+		if n := countProducers(t, `SELECT "X" `+from+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n != 0 {
+			t.Fatalf("admitted LEFT-box+Bakeable-conjunct fired %d name-model producer(s), want 0 (the merge bakes over the record)", n)
 		}
 	})
 	// INNER-CLUSTER control: B2-B's shape arm requires a NON-INNER box left, so

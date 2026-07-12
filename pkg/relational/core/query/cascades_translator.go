@@ -2717,11 +2717,11 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 // admitExistentialGather is the RFC-173 S4 B2-B admission predicate for the
 // under-EXISTS box unnest — metadata-only, computed PRE-translation (a decline
 // is never poisoned by translation side state). See the
-// unnestExistentialGatherOK field doc for the D4-(ii) charter. This increment
-// admits the verdict-None LEFT/RIGHT box (the shape step-0 measured
-// row-identical to the name-model with R1 clear); a box-leg CONJUNCT
-// (verdict Bakeable) and the FULL box need the EXISTS-site three-way merge
-// routing and ride the certified binary/name-model path until that lands.
+// unnestExistentialGatherOK field doc for the D4-(ii) charter: a non-INNER
+// LEFT/RIGHT box at verdict ∈ {None, Bakeable} is admitted (a None shape's
+// merge is a no-op; a Bakeable box-leg conjunct bakes over the gather's
+// recorded legTypes at the EXISTS merge site). FULL rides the certified binary
+// seed (already producer-free via c5a) until FULL+Bakeable is chartered.
 func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f *logical.LogicalFilter, verdict boxConjVerdict) bool {
 	// Single esq — B1's conservatism verbatim; a multi-esq shape keeps the
 	// name-model path.
@@ -2741,9 +2741,7 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	}
 	switch bj.Kind {
 	case logical.JoinLeft, logical.JoinRight:
-		// verdict-None only this increment (no non-EXISTS box-leg conjunct);
-		// the merge site is a no-op for these (nonExists is empty).
-		return verdict == boxConjNone
+		return verdict == boxConjNone || verdict == boxConjBakeable
 	default: // FULL: rides the certified binary seed (D4-(ii)) until FULL+Bakeable
 		return false
 	}
@@ -2790,13 +2788,6 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	if unnestExpr == nil {
 		return nil
 	}
-	// Record hygiene (B2-B): an admitted verdict-None gather writes a box-leg
-	// record no merge below will read (nonExists is empty for verdict-None).
-	// Discard it so a later translation of the same shared node (a CTE
-	// double-reference) can never bake over a stale record.
-	if gatheredHere && t.unnestGatherBoxLegTypes != nil {
-		delete(t.unnestGatherBoxLegTypes, join)
-	}
 
 	// Fold the NON-EXISTS WHERE predicates into the unnest SelectExpression,
 	// rewriting unnest-column references to what the inner Explode flows — the
@@ -2812,17 +2803,46 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			return nil
 		}
 		merged := append([]predicates.QueryPredicate{}, sel.GetPredicates()...)
-		// Same multi-source outer-leg rebase translateFilter applies: a
-		// non-EXISTS WHERE on an outer-leg column of a ≥2-prior-source unnest
-		// (`FROM A, B, A.arr AS X WHERE X = A.c [AND EXISTS …]`) references
-		// QOV(A), which the inner Explode does not bind — rebase it to the
-		// qualified `A.c` key off the merged outer QOV (sourceAlias(join.Left)).
-		// RFC-142.
-		mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
-		outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
-		for _, p := range nonExists {
-			rebased := rebaseUnnestOuterLegPredicate(rewriteUnnestPredicate(p, u), outerLegs, mergedCorr)
-			merged = append(merged, rebased)
+		// RFC-173 S4 B2-B: an ADMITTED Bakeable box conjunct bakes over the
+		// gather's RECORDED legTypes — the byte-for-byte twin of the WHERE
+		// path's record arm (:2530). The gather recorded its box-leg types;
+		// each conjunct bakes onto its buried window
+		// (ofOrdinal(QOV($BOX), leafOffset+idx)), consume-once (delete on read
+		// so a shared-node retranslation whose gather declined can never bake
+		// over a stale record), with the predicateRefsBuriedLeg loud assert
+		// behind it (the verdict guaranteed bakeability; a survivor would
+		// strand as a silent-NULL name read — loud internal error instead).
+		if recorded, hasRecord := t.unnestGatherBoxLegTypes[join]; hasRecord && gatheredHere {
+			delete(t.unnestGatherBoxLegTypes, join)
+			toMerge := bakeGatedJoinPredicates(func() []predicates.QueryPredicate {
+				out := make([]predicates.QueryPredicate, 0, len(nonExists))
+				for _, p := range nonExists {
+					out = append(out, rewriteUnnestPredicate(p, u))
+				}
+				return out
+			}(), recorded)
+			for _, mp := range toMerge {
+				if predicateRefsBuriedLeg(mp, recorded) {
+					t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
+						"RFC-173 B2-B: a box-leg conjunct reference survived the merge bake unbaked (verdict/bake drift)"))
+					return nil
+				}
+			}
+			merged = append(merged, toMerge...)
+		} else {
+			// Anchored name-model seed (not admitted / no record): the
+			// multi-source outer-leg rebase translateFilter applies — a
+			// non-EXISTS WHERE on an outer-leg column of a ≥2-prior-source
+			// unnest references QOV(A), which the inner Explode does not bind;
+			// rebase it to the qualified `A.c` key off the merged outer QOV.
+			// RFC-142. This is the correct and now ONLY domain of the
+			// name-keyed rebase.
+			mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
+			outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
+			for _, p := range nonExists {
+				rebased := rebaseUnnestOuterLegPredicate(rewriteUnnestPredicate(p, u), outerLegs, mergedCorr)
+				merged = append(merged, rebased)
+			}
 		}
 		unnestExpr = expressions.NewSelectExpressionWithJoinType(
 			sel.GetResultValue(),
@@ -2831,6 +2851,13 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			sel.GetSourceAliases(),
 			sel.GetJoinType(),
 		)
+	}
+	// Record hygiene (B2-B): a verdict-None gather writes a box-leg record no
+	// merge above read (nonExists was empty) — discard it so a shared-node
+	// double-reference can never bake over a stale record. A Bakeable merge
+	// already consumed (deleted) it above, so this is then a no-op.
+	if gatheredHere && t.unnestGatherBoxLegTypes != nil {
+		delete(t.unnestGatherBoxLegTypes, join)
 	}
 
 	innerRef := expressions.InitialOf(unnestExpr)
