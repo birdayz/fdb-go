@@ -1124,6 +1124,32 @@ validation gate.
     leg-conjunct INNER cluster under EXISTS (`… A.K=100 AND EXISTS(…)`) ordinalizes via the one-authority
     classifyLegConjunct + in-select gatedJoinLegTypes bake; the review round added the enclosed-CTE-leg
     seedWindowed guard (P1) + the real flat-leg drift safety net (bakeGatedJoinPredicatesChecked).
+    **FULL-SUITE FLIP MEASUREMENT (ed19761c1) — the cap is ONE blocker away.** Graefe NAK'd firing on the
+    1641/0/0 corpus cert (it's structurally blind — no array cols — so it never exercises the producer
+    deletion). The REAL exit gate is the full-suite flip: forceOrdinalSpike=true over //pkg/relational +
+    //pkg/recordlayer, panic at rule_partition_select:475 temporarily neutered so it runs to completion.
+    RESULT: 2/33 targets red, 0 panics, **0 SILENT wrong-rows** — every real red is a LOUD "field LA.K not
+    resolvable in the runtime row — malformed plan" (the RFC-077 group-by panic class is GONE). Reds =
+    (A) name-model-assertion tests that RETIRE with the cap [Item2C4/C3, WedgeGate, BareTwin does_not_bake,
+    FilteredBox scalar_subquery_unbakeable — delete/rewrite IN the cap commit] + (B) ONE real blocker: the
+    ENCLOSED BOX-LEG. ROOT CAUSE: a plan-time PROJECTION bake miss — the box-leg's per-leaf windows exist
+    (gatedJoinLegTypes/addBuriedBakeWindows, used by the PREDICATE channel) but the PROJECTION channel
+    (SELECT LA.K in a CTE body / output cols / aggregate) leaves box-leg column refs as name-model
+    FieldValue("LA.K"), which the ordinal runtime row can't resolve (values.go:586, Ordinal:-1). THE SLICE:
+    bake enclosed box-leg column PROJECTION refs to their windows — the projection twin of
+    bakeGatedJoinPredicates. Locus: translateProject (cascades_translator.go:4724) + output-col derivation
+    (cascades_generator.go ~2733-2876, the "output order from result-value Type ordinals" hard part).
+    **GRAEFE DESIGN-ACK (the endgame ruling):** (1) it's ONE windowing slice — verify scalar-conj-over-box
+    (FilteredBox) is windowing not a verdict split; (2) the flip (default=true, panic-neutered) is the
+    STANDING exit-gate dashboard, BUT the cap must make :475 not-panic because the box genuinely windows
+    (never ship the neuter), greenness is suite-scoped ("suite-green + complement is loud", state in the cap
+    commit), and enumerate the retire-(A) tests explicitly; (3) agg_count_over_gather FLIPS from booked
+    plan-quality → CAP BLOCKER (the cap deletes its name-model fallback) — same windowing root, structurally
+    aggregate-over-EXISTS-wrapper (INNER not box), one slice or paired follow-up; (4) before firing, run the
+    flip on the B2-INCLUSIVE tree + verify a DISCRIMINATING dup-column shape. Fire the cap (2 circular
+    declines + producers + ReEnumeration + §5 oracle, ONE commit) when the flip is 0-red-except-retires.
+    This slice is the handoff's flagged "fresh focus / 0-row-planner-bug class" — the next focused push;
+    red-first is the flip dashboard. See scratchpad/flip-measurement-505fc32c9.md.
     **E-1a DONE (ce2777bc3, 4-gate ACK):** the INNER flat cluster under EXISTS ordinalizes (translator
     alias-aware leg+element bake over the seed windows; the NLJ physicalization drops the windowed layout
     so the executor hoist can't recover it — bake in the translator). Zeros its P5 firing. BOOKED
