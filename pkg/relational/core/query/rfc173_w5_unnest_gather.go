@@ -401,6 +401,23 @@ func slotInGatheredSeed(windows map[string]values.OrdinalSeedLegWindow, elementS
 	if slot, ok := elementSlots[col]; ok {
 		return slot, true
 	}
+	// A BARE LEG column that is neither the element nor an alias-qualified read — e.g.
+	// GROUP BY over a SELECT-* CTE/derived source, where the CTE output column `AID`
+	// carries no `A.` qualifier. Resolve it against the leg windows when exactly ONE leg
+	// carries it (unambiguous). An ambiguous bare column (a dup-named `K` present in two
+	// legs) declines here → name-model, exactly as an unqualified dup would be ambiguous
+	// in SQL. Map order is irrelevant: a unique hit is order-independent; >1 declines.
+	if alias == "" {
+		slot, hits := 0, 0
+		for _, w := range windows {
+			if idx, found := w.Typ.FieldIndex(col); found {
+				slot, hits = w.Offset+idx, hits+1
+			}
+		}
+		if hits == 1 {
+			return slot, true
+		}
+	}
 	return 0, false
 }
 

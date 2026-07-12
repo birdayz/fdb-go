@@ -1182,11 +1182,25 @@ validation gate.
       masked a nil-seedQOV bug: seedElementSlots looked for the Explode as a direct quantifier; under EXISTS
       it's one level down). COUNT(X)=2/SUM(A.K)=200/GROUP BY X all bake correctly, 0 producers. Review (codex)
       caught that removing the decline WHOLESALE was too broad — CTE/DISTINCT-WRAPPED aggregates qualify the
-      group key with the wrapper alias (unbakeable over the seed windows) → silent NULL/collapse. Fixed by
-      NARROWING admission to the direct shape (a.Input IS the EXISTS filter; wrappers resolve to LogicalScan →
-      decline → name-model). Multi-EXISTS-under-aggregate stays name-model + LOUD (pre-existing planner gap,
-      confirmed at parent). Pins: agg_cte_groupby_leg, agg_cte_distinct_groupby_element, agg_multiexists_loud.
-      Only the STRADDLE remains as a booked cap-blocker.
+      group key with the wrapper alias (unbakeable over the seed windows) → silent NULL/collapse. First fix
+      NARROWED admission to the direct shape (declined wrapped → name-model); superseded — see below, the
+      wrapped case now ORDINALIZES. Multi-EXISTS-under-aggregate stays name-model + LOUD (pre-existing
+      planner gap, confirmed at parent — agg_multiexists_loud sentinel).
+      🔬 **JAVA CONFORMANCE (6-reader workflow, HIGH confidence):** Java 4.12.11.0 FULLY supports GROUP
+      BY (grouped+global COUNT/SUM/AVG/MIN/MAX via streaming aggregator, no index required — AstNormalizer
+      rejects only OFFSET/LIMIT). The old translateAggregate comment claiming Java lacks GROUP BY was
+      STALE/FALSE — corrected. Java ALSO plans GROUP BY over a multi-source-FROM derived table
+      (GroupByQueryTests.java:699 `SELECT max(y) FROM (SELECT y,b AS L FROM t1,t2) AS q GROUP BY l`), and
+      a CTE ≡ derived table structurally → the WRAPPED shape (CTE+lateral-unnest+GROUP BY) is Java-parity.
+      ✅ **WRAPPED CASE NOW ORDINALIZED (no post-cap deferral — a query answering on master must not
+      regress at the cap):** replaced the direct-gate decline with a recursive identity-wrapper seed walk
+      — gatheredSeedBakeContext's findWindowedSeed walks the outer-quantifier chain through IDENTITY
+      wrappers only (SELECT-*, DISTINCT; never a row-reshaping GROUP BY) to reach the seed, and
+      slotInGatheredSeed resolves a BARE leg column (D.AID → seed A-leg window) when exactly one leg
+      carries it. Ordinalizes correctly in BOTH flip states (works under the demolition). Pins:
+      agg_cte_groupby_leg, agg_cte_distinct_groupby_element, agg_cte_projecting_groupby_leg. Correct-or-
+      loud holds on the projecting-CTE axis (a layout mismatch is an out-of-bounds LOUD, never a wrong
+      value). Only the STRADDLE remains as a booked cap-blocker.
       📌 BOOKED (Graefe, separate follow-up, no correctness urgency — Verdict-None is conservative =
       correct-or-loud already): investigate whether the NON-aggregate E-1a admission (the executor-hoist
       path) can route through a translator-side bake (like gatheredSeedBakeContext) instead of the hoist,

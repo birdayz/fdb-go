@@ -167,20 +167,26 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 	// merged-corr/bare refs bake; EE.CK resolves in ∃. A.K=100 matches → {7,8}.
 	pin("element_alias_shadows_inner", `SELECT "CK" FROM A, B, A."ARR" AS "CK" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[CK:7]", "map[CK:8]")
 
-	// WRAPPED aggregate-over-EXISTS (review-caught silent-collapse axis): the aggregate
-	// gather is admitted ONLY for the DIRECT shape (aggregate immediately over the EXISTS
-	// filter). When a CTE/derived alias or a DISTINCT sits between the aggregate and the
-	// EXISTS, the group keys are qualified with the WRAPPER's alias (D.AID / D.X) — which
-	// the seed's per-leg windows cannot bake — so admitting the gather partial-bakes into a
-	// silent NULL/collapse. These MUST decline to name-model (correct rows). Regression
-	// pins for the two wrapped shapes:
-	//   P1a — CTE passthrough, GROUP BY a LEG column via the CTE alias. Without the direct
-	//   gate the group collapsed to AID=NULL; name-model → the single A.K=100 group, 2 rows.
+	// WRAPPED aggregate-over-EXISTS (review-caught silent-collapse axis, now ORDINALIZED):
+	// a CTE/derived alias or a DISTINCT sits between the aggregate and the EXISTS gather.
+	// The seed sits under those IDENTITY wrappers (SELECT-*, DISTINCT) that preserve its
+	// positional row, so gatheredSeedBakeContext walks the outer-quantifier chain (identity
+	// wrappers only — never a row-reshaping GROUP BY) to reach it, and the group key bakes
+	// to the seed's leg/element window. Ordinalizes correctly in BOTH flip states — works
+	// under the demolition with NO name-model dependency (a query that answers on master must
+	// not regress at the cap). A one-level peel / wrapper-blind bake collapsed these to
+	// AID=NULL or one NULL group (the review catch); the recursive identity-wrapper walk +
+	// bare-leg-column resolution fix them. Java-parity: Java plans GROUP BY over a
+	// multi-source-FROM derived table (GroupByQueryTests.java:699); CTE ≡ derived table.
+	//   P1a — CTE passthrough, GROUP BY a BARE leg column (D.AID → seed A-leg window).
 	pin("agg_cte_groupby_leg", `WITH D AS (SELECT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
-	//   P1b — DISTINCT between the aggregate and the EXISTS, GROUP BY the element via the
-	//   CTE alias. Without the direct gate X=7 and X=8 collapsed into one NULL group of 2;
-	//   name-model → two count-1 groups.
+	//   P1b — DISTINCT between the aggregate and the EXISTS, GROUP BY the element.
 	pin("agg_cte_distinct_groupby_element", `WITH D AS (SELECT DISTINCT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X", COUNT(*) FROM D GROUP BY D."X"`, "map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]")
+	//   projecting CTE (SELECT one column, not *) — the seed sits under a NON-identity
+	//   projecting Select, the risky axis for the recursive walk. Correct-or-loud sentinel:
+	//   the bare-leg walk resolves D.AID → seed A-leg window (single A.K=100 group, 2 rows);
+	//   a wrong-slot bake would be caught by the exact-rows assertion.
+	pin("agg_cte_projecting_groupby_leg", `WITH D AS (SELECT "AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
 
 	// MULTI-EXISTS-under-aggregate: TWO EXISTS conjuncts are not admitted to the gather
 	// (admitExistentialGather requires a single esq) → name-model. This shape is a

@@ -139,14 +139,6 @@ type cascadesTranslator struct {
 	// name-keyed wrap. This flag is only what marks the input as an aggregate INPUT
 	// (so the bake site knows to look); the wrap it once gated is deleted.
 	underAggregate bool
-	// underAggregateDirectGather narrows the aggregate-under-EXISTS gather admission to
-	// the DIRECT shape: set only when the aggregate's input IS the EXISTS filter, cleared
-	// when an opaque wrapper (CTE/derived alias → LogicalScan, DISTINCT, LIMIT) sits
-	// between. admitExistentialGather reads it to decline the gather for wrapped shapes —
-	// there the group keys are qualified with the wrapper's alias, which the seed's per-leg
-	// windows cannot bake, so ordinalizing would partial-bake into a silent NULL/collapse.
-	// Wrapped shapes keep the name-model path (correct rows).
-	underAggregateDirectGather bool
 	// unnestUnderExistential is set while lowering a lateral unnest that is the
 	// OUTER of an EXISTS composition (translateUnnestExistsFilter). RFC-173 commit
 	// 5a ORDINALIZES this class: the W4c ordinal-seed gate is taken when the outer
@@ -2746,16 +2738,6 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	if len(f.ExistsSubqueries) != 1 {
 		return false
 	}
-	// Under an aggregate, ordinalize ONLY the DIRECT shape (this filter is the
-	// aggregate's immediate input). A CTE/derived (LogicalScan) / DISTINCT / LIMIT
-	// wrapper between the aggregate and the filter qualifies the group keys with the
-	// wrapper's alias, which the seed's per-leg windows cannot bake — admitting the
-	// gather there partial-bakes into a silent NULL/collapse. Wrapped shapes keep the
-	// name-model path (correct rows); the direct shape ordinalizes and its element/leg
-	// refs bake over the peeled seed.
-	if t.underAggregate && !t.underAggregateDirectGather {
-		return false
-	}
 	// No inner/outer scope collision — a colliding unminted inner alias would
 	// get refs meaning the INNER row baked onto the outer window (silent wrong
 	// rows); the binary seed already declines on this, the gather must too.
@@ -2850,15 +2832,9 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	}
 	t.unnestBoxLegConjunct = verdict
 	t.unnestExistentialGatherOK = t.admitExistentialGather(join, f, verdict)
-	// The direct-consumer status is consumed by THIS filter's admission; clear it for
-	// the subtree so a nested inner EXISTS filter does not inherit it (it is no longer
-	// the aggregate's immediate input). translateAggregate restores the saved value.
-	prevDirectGather := t.underAggregateDirectGather
-	t.underAggregateDirectGather = false
 	prevUnderExist := t.unnestUnderExistential
 	t.unnestUnderExistential = true
 	unnestExpr := t.translateUnnestJoin(join, u)
-	t.underAggregateDirectGather = prevDirectGather
 	t.unnestUnderExistential = prevUnderExist
 	t.unnestExistsScopeCollision = prevCollision
 	t.unnestBoxLegConjunct = prevOuterConj
@@ -4708,36 +4684,19 @@ func unnestSeedElementSlots(unnestExpr expressions.RelationalExpression) map[str
 
 func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Reference, fallbackAlias string) gatheredSeedBake {
 	b := gatheredSeedBake{quant: t.namedQuantifier(fallbackAlias, innerRef)}
-	sel, ok := innerRef.Get().(*expressions.SelectExpression)
+	// Find the windowed ordinal seed under the aggregate/sort input. E-1a's former
+	// under-aggregate decline masked a nil-seedQOV bug, not an NLJ limit: seedElementSlots
+	// looks for the Explode as a DIRECT quantifier, but the seed sits under one or more
+	// IDENTITY wrappers that preserve its positional row — the EXISTS semi-join FlatMap (a
+	// pure filter whose result is the outer quantifier's identity row), a CTE/derived
+	// SELECT-* projection, a DISTINCT. Walk the outer-quantifier chain (bounded) to reach
+	// it. Its per-leg windows + element slots are read against innerRef's output row, which
+	// those identity wrappers pass through unchanged — so group keys / operands (element by
+	// slot, leg columns via OrdinalSeedLegWindows) bake positionally. Without this the bake
+	// gets a nil seedQOV and reads by name over the ordinal row → collapse.
+	rc, elementSlots, ok := findWindowedSeed(innerRef.Get(), maxSeedPeelDepth)
 	if !ok {
 		return b
-	}
-	rc, elementSlots, ok := seedElementSlots(sel)
-	if !ok {
-		// RFC-173 S4 (aggregate-under-EXISTS): E-1a's under-aggregate decline masked a
-		// nil-seedQOV bug, not an architectural NLJ limit. When the aggregate input is an
-		// EXISTS-wrapped gather — a semi-join FlatMap whose OUTER quantifier is the raw
-		// gathered-seed select (carrying the Explode + the windowed RC) — seedElementSlots
-		// looks for the Explode as a DIRECT quantifier and misses it one level down. The
-		// semi-join is a pure filter (its result value is the outer quantifier's identity
-		// row), so the seed's row layout is preserved; peel ONE level to that select for
-		// the element slots + windows. Without the peel the operand bake gets a nil seedQOV
-		// and reads X by name over the ordinal row → collapses to 0. The gather admission
-		// (admitExistentialGather) permits only a SINGLE existential wrap, so exactly one
-		// level always reaches the seed.
-		for _, q := range sel.GetQuantifiers() {
-			inner, isSel := q.GetRangesOver().Get().(*expressions.SelectExpression)
-			if !isSel {
-				continue
-			}
-			if prc, pslots, pok := seedElementSlots(inner); pok {
-				rc, elementSlots, ok = prc, pslots, true
-				break
-			}
-		}
-		if !ok {
-			return b
-		}
 	}
 	b.windows, _ = values.OrdinalSeedLegWindows(rc)
 	b.elementSlots = elementSlots
@@ -4745,6 +4704,49 @@ func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Refer
 	b.seedQOV = values.NewQuantifiedObjectValueOfType(seedCorr, rc.Type())
 	b.quant = expressions.NamedForEachQuantifier(seedCorr, innerRef)
 	return b
+}
+
+// maxSeedPeelDepth bounds findWindowedSeed's outer-quantifier walk. The seed sits at
+// most a few identity wrappers deep (EXISTS semi-join + CTE SELECT-* + DISTINCT); the
+// bound is a cheap non-termination backstop, well above any real nesting.
+const maxSeedPeelDepth = 6
+
+// findWindowedSeed walks the outer-quantifier chain of expr (bounded by depth) to find a
+// WINDOWED ordinal seed SelectExpression — a non-anchored RecordConstructorValue carrying
+// per-leg windows (OrdinalSeedLegWindows). The seed can sit under IDENTITY wrappers that
+// preserve its positional row: the EXISTS semi-join FlatMap (a pure filter), a SELECT-*
+// CTE/derived projection, a DISTINCT. It recurses ONLY through SelectExpression and
+// LogicalDistinctExpression — never a GroupByExpression or any row-reshaping node, which
+// changes the layout so the seed's slots no longer address the caller's input row (an
+// ORDER-BY-over-GROUP-BY must NOT bake its key against the pre-group seed). Returns the
+// seed rc + its element slots; ok=false when no windowed seed is reachable through those
+// identity wrappers (a name-model / reshaped input → the caller skips the bake).
+func findWindowedSeed(expr expressions.RelationalExpression, depth int) (*values.RecordConstructorValue, map[string]int, bool) {
+	if expr == nil || depth < 0 {
+		return nil, nil, false
+	}
+	var quants []expressions.Quantifier
+	switch e := expr.(type) {
+	case *expressions.SelectExpression:
+		if rc, slots, found := seedElementSlots(e); found {
+			if w, _ := values.OrdinalSeedLegWindows(rc); w != nil {
+				return rc, slots, true
+			}
+		}
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalDistinctExpression:
+		quants = e.GetQuantifiers()
+	default:
+		// A GroupBy / physical plan / any row-reshaping node is NOT an identity wrapper:
+		// stop, so the seed under it is never baked against the reshaped output row.
+		return nil, nil, false
+	}
+	for _, q := range quants {
+		if rc, slots, found := findWindowedSeed(q.GetRangesOver().Get(), depth-1); found {
+			return rc, slots, found
+		}
+	}
+	return nil, nil, false
 }
 
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
@@ -5091,8 +5093,16 @@ func aggregateOperandReferencesColumn(a *logical.LogicalAggregate) bool {
 	return false
 }
 
-// Go extension: Java's fdb-relational 4.11.1.0 does not support GROUP BY;
-// its AstNormalizer rejects it with UNSUPPORTED_QUERY before reaching the planner.
+// Java fdb-relational 4.12.11.0 supports GROUP BY end-to-end — grouped and global
+// COUNT/SUM/AVG/MIN/MAX via the streaming aggregator (an aggregate index is only an
+// optional fast path, never required). AstNormalizer rejects only OFFSET/LIMIT, never
+// GROUP BY; QueryVisitor routes to LogicalOperator.generateGroupBy → GroupByExpression →
+// ImplementStreamingAggregationRule → RecordQueryStreamingAggregationPlan. So this is
+// Java-parity translation, not a Go-only extension. GROUP BY also composes over a
+// derived/CTE source (GroupByQueryTests.java exercises GROUP BY over a multi-source-FROM
+// derived table); an aggregate over a CTE/DISTINCT-wrapped lateral-unnest gather ordinalizes
+// too — gatheredSeedBakeContext walks the identity wrappers to the seed so the group keys /
+// operands bake positionally, correct in both name-model and demolition (flip) states.
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
 	if a.Having != "" && a.HavingPredicate == nil {
 		return nil
@@ -5112,28 +5122,11 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// references a column (the global SUM(EL) case). A global COUNT(*) references
 	// nothing, so it keeps the raw seed unbaked.
 	prevUnderAgg := t.underAggregate
-	prevDirectGather := t.underAggregateDirectGather
 	if len(a.GroupKeys) > 0 || aggregateOperandReferencesColumn(a) {
 		t.underAggregate = true
-		// RFC-173 S4: ordinalize the aggregate's EXISTS gather ONLY when this aggregate is
-		// the DIRECT consumer of the EXISTS filter — a.Input IS that filter (a LogicalFilter
-		// carrying the existential). When an opaque wrapper intervenes — a CTE/derived alias
-		// (a.Input is a LogicalScan of the derived relation), a DISTINCT/LIMIT — the group
-		// keys/operands are qualified with the WRAPPER's alias, which the seed's per-leg
-		// windows cannot bake; admitting the gather there partially-bakes into a silent
-		// NULL/collapse. Those shapes decline to name-model (correct rows). See
-		// admitExistentialGather's under-aggregate gate. Reset to false first: a wrapped
-		// aggregate (a.Input a LogicalScan/Distinct/… — never the EXISTS filter) is
-		// definitionally not the direct consumer, so the flag must never inherit a stale
-		// true from an enclosing direct aggregate regardless of the enclosing filter type.
-		t.underAggregateDirectGather = false
-		if fin, isF := a.Input.(*logical.LogicalFilter); isF {
-			t.underAggregateDirectGather = len(fin.ExistsSubqueries) > 0
-		}
 	}
 	innerRef := t.translateRef(a.Input)
 	t.underAggregate = prevUnderAgg
-	t.underAggregateDirectGather = prevDirectGather
 	if innerRef == nil {
 		return nil
 	}
