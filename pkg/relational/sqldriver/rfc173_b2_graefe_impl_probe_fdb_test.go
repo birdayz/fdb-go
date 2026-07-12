@@ -1095,6 +1095,13 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		if _, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "M" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."M" = "C2"."CID"`); err != nil {
 			t.Fatalf("clean aggregate alias must still resolve, got: %v", err)
 		}
+		// HIDDEN aggregate must NOT be counted as a duplicate output: the visible
+		// COUNT(*) (no alias, renders "COUNT(*)") and the hidden HAVING COUNT(*)
+		// (harvested visible=false, same render) must not false-collide. The gate
+		// and the schema both consume the VISIBLE-only aggOutputCols authority.
+		if _, err := run(t, `WITH "C" AS (SELECT COUNT(*) FROM LA LEFT JOIN LB ON LA."AID" = LB."BID" HAVING COUNT(*) > 0) SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C2"."CID" = 100`); err != nil {
+			t.Fatalf("hidden HAVING aggregate must not false-decline the lone output, got: %v", err)
+		}
 	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,

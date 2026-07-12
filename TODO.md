@@ -769,7 +769,17 @@ validation gate.
     genuine dup-name class for the (a) poison-marker. Build (a) against the POST-uppercasing identifier model
     or it encodes a workaround for a bug (b) removes. The gate covers BOTH the projection path (Q55) AND the
     AGGREGATE path (Q56 — buildDerivedTableSourceFromAgg, folded via NewUnquoted with its output names
-    already StripIdentifierQuotes'd, so the quoted flag is re-read off the Uid via cteBodyAllAliasesCaseSafe).
+    already StripIdentifierQuotes'd, so the quoted flag is re-read off the Uid via cteBodyAllAliasesCaseSafe;
+    both the schema build and the dup gate consume the visible-only aggOutputCols authority so a hidden
+    HAVING/ORDER-BY aggregate is neither advertised nor false-counted). (c) NEW (Graefe, pre-existing,
+    general-read surface — NOT ON-only, NOT the rebind class): a WITHIN-SOURCE duplicate aggregate/projection
+    output name in a DERIVED-TABLE or GLOBAL-CTE source silently LAST-WINS-resolves instead of 42702 —
+    `WITH C AS (SELECT MIN(LA."AID") AS M, MAX(LA."K") AS M FROM LA) SELECT C.M FROM C` returns 110 (last-wins),
+    Java's SemanticAnalyzer 42702s the ambiguous C.M; identical on the derived-table path
+    `(SELECT … AS M, … AS M) AS d … d.M`. Single source, within-source ambiguity — belongs to the
+    output-naming-authority / poison-marker family (resolver-level per-attribute 42702), booked here not
+    fixed. (Distinct from the wrong-case-accept on those same paths, which is value-correct — the (b)
+    uppercasing divergence — not a silent-wrong.)
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible

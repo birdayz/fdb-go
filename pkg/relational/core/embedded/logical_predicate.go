@@ -364,18 +364,35 @@ func buildDerivedTableSource(
 	}, true
 }
 
-func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.ScopeSource, bool) {
-	var columns []semantic.Column
+// aggOutputCol is one VISIBLE output column of an aggregate SELECT body.
+type aggOutputCol struct {
+	name     string
+	typ      string
+	nullable bool
+}
+
+// aggOutputCols returns the aggregate body's VISIBLE output columns in install
+// order (the SELECT-list COUNT(*) first, then the aggregate/group columns) — the
+// SINGLE authority both buildDerivedTableSourceFromAgg (to build the schema) and
+// the ON-only complete-or-decline gate (to dedup) consume, so the derivation is
+// never twice-written. HIDDEN aggregates (a HAVING/ORDER-BY COUNT(*) harvested
+// into aggCols with visible=false) are NOT output columns — they must not be
+// advertised in the schema nor counted by the dup gate (else e.g.
+// `SELECT COUNT(*) … HAVING COUNT(*) > 0` false-collides its lone output).
+// countStar is set only for a SELECT-list COUNT(*), so it is always visible.
+func aggOutputCols(sq *selectQuery) []aggOutputCol {
+	var out []aggOutputCol
 	if sq.countStar {
 		name := "COUNT(*)"
 		if sq.countStarAlias != "" {
 			name = sq.countStarAlias
 		}
-		columns = append(columns, semantic.Column{
-			Id: semantic.NewUnquoted(name), Type: "BIGINT", Nullable: false,
-		})
+		out = append(out, aggOutputCol{name: name, typ: "BIGINT", nullable: false})
 	}
 	for _, ac := range sq.aggCols {
+		if !ac.visible {
+			continue
+		}
 		name := ac.outName
 		if name == "" {
 			if ac.groupCol != "" {
@@ -384,12 +401,19 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.Sco
 				continue
 			}
 		}
-		columns = append(columns, semantic.Column{
-			Id: semantic.NewUnquoted(name), Type: "UNKNOWN", Nullable: true,
-		})
+		out = append(out, aggOutputCol{name: name, typ: "UNKNOWN", nullable: true})
 	}
-	if len(columns) == 0 {
+	return out
+}
+
+func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.ScopeSource, bool) {
+	cols := aggOutputCols(sq)
+	if len(cols) == 0 {
 		return semantic.ScopeSource{}, false
+	}
+	columns := make([]semantic.Column, len(cols))
+	for i, c := range cols {
+		columns[i] = semantic.Column{Id: semantic.NewUnquoted(c.name), Type: c.typ, Nullable: c.nullable}
 	}
 	aliasID := semantic.NewUnquoted(alias)
 	virtualTable := &semantic.StaticTable{
@@ -1477,32 +1501,19 @@ func buildCTEOnOnlySource(
 		// mis-resolve an enclosing ON ref (wrong-case resolves; dup first-matches)
 		// — review-caught. Decline the whole source on either obstruction, keyed
 		// by the RUNTIME-emitted (uppercased) name, exactly like the projection
-		// path below. The dup check mirrors buildDerivedTableSourceFromAgg's own
-		// name derivation (countStarAlias|"COUNT(*)"; aggCols outName|groupCol,
-		// skipping the unnamed).
+		// path below. The dup check consumes aggOutputCols — the SAME visible-only
+		// authority buildDerivedTableSourceFromAgg builds from — so it counts
+		// exactly the names installed (a hidden HAVING aggregate is neither
+		// advertised nor counted).
 		if !cteBodyAllAliasesCaseSafe(body) {
 			return semantic.ScopeSource{}, false
 		}
-		aggSeen := make(map[string]int, len(innerSQ.aggCols)+1)
-		for _, ac := range innerSQ.aggCols {
-			n := ac.outName
-			if n == "" {
-				n = ac.groupCol
-			}
-			if n == "" {
-				continue
-			}
-			aggSeen[strings.ToUpper(n)]++
+		aggSeen := make(map[string]int)
+		for _, c := range aggOutputCols(innerSQ) {
+			aggSeen[strings.ToUpper(c.name)]++
 		}
-		if innerSQ.countStar {
-			n := innerSQ.countStarAlias
-			if n == "" {
-				n = "COUNT(*)"
-			}
-			aggSeen[strings.ToUpper(n)]++
-		}
-		for _, c := range aggSeen {
-			if c > 1 {
+		for _, n := range aggSeen {
+			if n > 1 {
 				return semantic.ScopeSource{}, false
 			}
 		}
