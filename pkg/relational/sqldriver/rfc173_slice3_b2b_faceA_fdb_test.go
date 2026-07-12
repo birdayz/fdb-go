@@ -175,6 +175,31 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	const ffrom = `FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
 	pin("full_bakeable_conjunct", `SELECT "X" `+ffrom+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
 		"map[X:7]", "map[X:8]")
+
+	// CHECKS-4/5 AXIS (review-required): the admission omits the buried-outer-only
+	// and whole-row pre-checks the design named — these shapes ARE admitted and
+	// gathered. Verified correct-or-loud across ~19 esq shapes; pin the sharp
+	// representatives so a future admission/rebase change can't regress the axis
+	// to silent-wrong with no red test (the dimensional gap the enclosed-CTE arc
+	// kept punishing).
+	// UNCORRELATED EXISTS (buried-outer-only / whole-row-independent): EE has a
+	// row → EXISTS always true → all unnested rows kept → {7,8}.
+	pin("uncorrelated_exists", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE)`,
+		"map[X:7]", "map[X:8]")
+	// COMPOUND buried correlation (arithmetic on the buried leg): A.K + 0 = 100
+	// matches EE.CK=100 → {7,8}; a mis-baked buried ref would misresolve → RED.
+	pin("arith_on_buried_leg", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K" + 0)`,
+		"map[X:7]", "map[X:8]")
+	// TWO-TABLE esq spanning BOTH a leg (A.K) and the ELEMENT (X) — a
+	// pre-existing LOUD 0AF00 guard (multi-table EXISTS referencing the element
+	// is unsupported). FLIP-SENTINEL: if a future admission/rebase makes this
+	// gather, this pin catches the regression to silent-wrong.
+	t.Run("twotable_leg_and_element_loud", func(t *testing.T) {
+		_, _, err := runQ(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE, EEV WHERE EE."CK" = A."K" AND EEV."VK" = "X")`)
+		if err == nil {
+			t.Fatal("two-table esq spanning a leg and the element must be LOUD (unsupported), got rows")
+		}
+	})
 }
 
 // slice3B2bMetadata builds the A/B/EE/EEV schema shared by the B2-B row cert

@@ -2805,8 +2805,11 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 		}
 		merged := append([]predicates.QueryPredicate{}, sel.GetPredicates()...)
 		// RFC-173 S4 B2-B: an ADMITTED Bakeable box conjunct bakes over the
-		// gather's RECORDED legTypes — the byte-for-byte twin of the WHERE
-		// path's record arm (:2530). The gather recorded its box-leg types;
+		// gather's RECORDED legTypes — the FUNCTIONAL twin of the WHERE path's
+		// record arm (:2530), with EXISTS-context adaptations (the gatheredHere
+		// guard — EXISTS admission can hold while the gather was
+		// enclosure-skipped, which the WHERE path has no gate for — and the
+		// multi-`nonExists`-pred iteration appending to `merged`). The gather recorded its box-leg types;
 		// each conjunct bakes onto its buried window
 		// (ofOrdinal(QOV($BOX), leafOffset+idx)), consume-once (delete on read
 		// so a shared-node retranslation whose gather declined can never bake
