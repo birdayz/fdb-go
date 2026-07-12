@@ -140,11 +140,22 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 	// a WHERE conjunct alongside the EXISTS, both on the present leg → {7,8}.
 	pin("faceB_conj_and_exists", `SELECT "X" `+from+` WHERE A."AID" = 1 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[X:7]", "map[X:8]")
 
-	// AGGREGATE over the INNER-under-EXISTS gather: E-1a DECLINES the admission
-	// under an aggregate (the existential wrapper hides the raw seed from
-	// translateAggregate's gatheredSeedBakeContext), so the name-model handles it
-	// correctly. COUNT(X) over elements {7,8} of the surviving A.K=100 row = 2.
+	// AGGREGATE over the INNER-under-EXISTS gather now ORDINALIZES (was E-1a's booked
+	// under-aggregate decline): removing the underAggregate gather-decline + peeling the
+	// EXISTS wrapper in gatheredSeedBakeContext (the semi-join FlatMap's outer quantifier
+	// is the raw gathered seed) bakes COUNT(X)'s element operand to its seed slot. The
+	// NLJ's leg-window drop is immaterial — COUNT(X) reads the ELEMENT, not a leg column.
+	// COUNT(X) over elements {7,8} of the surviving A.K=100 row = 2 (census pins 0 producers).
 	pin("agg_count_over_gather", `SELECT COUNT("X") `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[COUNT(X):2]")
+	// LEG-COLUMN aggregate under the same gather (the correct-or-loud discriminator the
+	// element-only COUNT can't be): SUM(A.K) reads a LEG column, which the existential-
+	// wrapper NLJ drops from its windowed layout — so this proves the aggregate bake
+	// resolves leg columns too, not just the element. A.K=100 over the 2 surviving
+	// element rows {7,8} → SUM = 200. A collapse (leg-window drop unhandled) → NULL/0 RED.
+	pin("agg_sum_legcol_over_gather", `SELECT SUM(A."K") `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[SUM(A.K):200]")
+	// GROUP BY the ELEMENT under the gather (E-1a's other explicit collapse concern): the
+	// grouped key bakes to the element slot the same way. X∈{7,8}, each its own group of 1.
+	pin("agg_groupby_element_over_gather", `SELECT "X", COUNT(*) `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") GROUP BY "X"`, "map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]")
 	// RETAINED outer-only ELEMENT predicate: `EXISTS(… WHERE X = 7)` has no
 	// inner-table ref, so buildCorrelatedExists keeps it in esq.Plan (the buried
 	// channel), which must ALSO bake the element (review-caught: JoinPredicate-only
@@ -236,6 +247,9 @@ func TestRFC173Slice3E1aCensus(t *testing.T) { //nolint:paralleltest // process-
 		{"inner_AK", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
 		{"inner_BK", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`},
 		{"inner_element", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
+		// AGGREGATE-under-EXISTS now ordinalizes too (the peeled-wrapper element bake) —
+		// was E-1a's booked under-aggregate decline (fired the name-model producer).
+		{"agg_count", `SELECT COUNT("X") ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
 	} {
 		if n := countProducers(tc.sql); n != 0 {
 			t.Fatalf("%s: fired %d name-model producer(s), want 0 (the gather must own it)", tc.name, n)

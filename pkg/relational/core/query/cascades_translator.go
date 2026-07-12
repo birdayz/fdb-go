@@ -2759,13 +2759,8 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 		// executor hoist — the INNER cluster physicalizes to a NestedLoopJoin whose
 		// result value drops the windowed layout, so the hoist recovers 0 windows
 		// (the box physicalizes to a FlatMap that keeps it). Verdict-None only.
-		// DECLINE under an aggregate: translateAggregate's gatheredSeedBakeContext
-		// needs the RAW seed, but the existential wrapper hides it behind the NLJ —
-		// `COUNT(X)`/`GROUP BY X` would collapse to one NULL group (review-caught).
-		// The name-model binary path handles the aggregate correctly.
-		if t.underAggregate {
-			return false
-		}
+		// EXPERIMENT: removed underAggregate decline; gatheredSeedBakeContext now peels the
+		// existential wrapper to find the element slot — REVERT if collapse persists.
 		// RFC-173 S4 E-1b: a Bakeable leg conjunct (`… A.K = 100 AND EXISTS(…)`) is
 		// admitted too — it bakes IN-SELECT over the re-derivable gatedJoinLegTypes
 		// (the WHERE-path channel), not the box's recorded machinery. Unbakeable
@@ -4690,7 +4685,26 @@ func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Refer
 	}
 	rc, elementSlots, ok := seedElementSlots(sel)
 	if !ok {
-		return b
+		// RFC-173 S4 (aggregate-under-EXISTS): the input is an EXISTS-wrapped gather —
+		// a semi-join FlatMap whose OUTER quantifier is the raw gathered-seed select
+		// (carrying the Explode + the windowed RC) and whose inner is the existential.
+		// The semi-join preserves the seed's row layout, so peel ONE level to the outer
+		// quantifier's seed select for the element slots + windows. Without this the
+		// COUNT(X)/GROUP BY X operand bake gets a nil seedQOV and reads X by name over the
+		// ordinal row → collapses to 0 (E-1a declined under-aggregate for exactly this).
+		for _, q := range sel.GetQuantifiers() {
+			inner, isSel := q.GetRangesOver().Get().(*expressions.SelectExpression)
+			if !isSel {
+				continue
+			}
+			if prc, pslots, pok := seedElementSlots(inner); pok {
+				rc, elementSlots, ok = prc, pslots, true
+				break
+			}
+		}
+		if !ok {
+			return b
+		}
 	}
 	b.windows, _ = values.OrdinalSeedLegWindows(rc)
 	b.elementSlots = elementSlots
