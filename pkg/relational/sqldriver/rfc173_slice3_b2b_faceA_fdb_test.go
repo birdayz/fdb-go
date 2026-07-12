@@ -196,8 +196,16 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	// gather, this pin catches the regression to silent-wrong.
 	t.Run("twotable_leg_and_element_loud", func(t *testing.T) {
 		_, _, err := runQ(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE, EEV WHERE EE."CK" = A."K" AND EEV."VK" = "X")`)
+		// The decline is a stable, deliberate 0AF00 — pin the code, not just
+		// err != nil. A code pin is strictly stronger: it also catches the shape
+		// breaking for an UNRELATED reason (which would silently retire the
+		// silent-wrong→loud sentinel this exists to be), and it matches the
+		// loud0AF00 pattern the enclosed-CTE battery in this package uses.
 		if err == nil {
 			t.Fatal("two-table esq spanning a leg and the element must be LOUD (unsupported), got rows")
+		}
+		if !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("expected a 0AF00 decline, got: %v", err)
 		}
 	})
 }

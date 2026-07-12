@@ -1337,6 +1337,26 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 	return true
 }
 
+// cteBodyAliasQuoted returns, per SELECT element of a plain (non-star,
+// non-aggregate) CTE body, whether its AS-alias was written QUOTED — aligned
+// 1:1 with projCols for the bodies buildCTEOnOnlySource accepts (star and
+// aggregate bodies decline before the schema is used). Typed parse-tree read
+// of the leading quote char on the raw Uid text, never a GetText string-match.
+func cteBodyAliasQuoted(body *antlrgen.QueryTermDefaultContext) []bool {
+	st, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok || st.SelectElements() == nil {
+		return nil
+	}
+	elems := st.SelectElements().AllSelectElement()
+	out := make([]bool, len(elems))
+	for i, elem := range elems {
+		if e, isExpr := elem.(*antlrgen.SelectExpressionElementContext); isExpr && e.Uid() != nil {
+			out[i] = strings.HasPrefix(e.Uid().GetText(), `"`)
+		}
+	}
+	return out
+}
+
 func buildCTEOnOnlySource(
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
@@ -1424,7 +1444,22 @@ func buildCTEOnOnlySource(
 	if innerSQ.projCols == nil {
 		return semantic.ScopeSource{}, false // SELECT * over a multi-leg/derived body: no name authority
 	}
-	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
+	// Per-element alias QUOTEDNESS. A quoted alias is CASE-SENSITIVE, but
+	// executeProjection emits every output key UPPERCASED (strings.ToUpper), so
+	// a quoted-lowercase/mixed alias `AS "x"` can be neither advertised as "x"
+	// (a correct-case `C."x"` ON ref then plans but RUNTIME-fails against the
+	// uppercased row) nor folded to "X" (a case-mismatched `C."X"` ref then
+	// SILENTLY resolves and joins) — both review-caught. OMIT such a column so
+	// every reference to it fails LOUD at plan time (42703). A quoted-uppercase
+	// alias (`AS "X"`) already equals its fold and matches the emitted key, so
+	// it is kept. (The full fix — quoted identifiers surviving case-sensitively
+	// through execution — needs executeProjection to stop uppercasing; booked.)
+	aliasQuoted := cteBodyAliasQuoted(body)
+	type pendCol struct {
+		runtimeName   string // the key execution emits (always uppercased)
+		caseSensitive bool   // quoted alias whose case the fold would destroy
+	}
+	pending := make([]pendCol, 0, len(innerSQ.projCols))
 	for i, col := range innerSQ.projCols {
 		// The output name must be one execution PROVABLY emits: the explicit
 		// alias (executeProjection always writes the alias key), or a BARE
@@ -1438,8 +1473,10 @@ func buildCTEOnOnlySource(
 		// computed item by its explain rendering — both decline (no bare key
 		// on the runtime row).
 		outName := ""
+		quoted := false
 		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 			outName = innerSQ.projAliases[i]
+			quoted = i < len(aliasQuoted) && aliasQuoted[i]
 		} else {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
 			if ref := parseColRef(col); !isComputed && !ref.isQualified() {
@@ -1449,8 +1486,34 @@ func buildCTEOnOnlySource(
 		if outName == "" {
 			return semantic.ScopeSource{}, false
 		}
+		runtimeName := strings.ToUpper(outName)
+		pending = append(pending, pendCol{
+			runtimeName:   runtimeName,
+			caseSensitive: quoted && outName != runtimeName,
+		})
+	}
+	// The schema keys by the RUNTIME-emitted name (executeProjection uppercases
+	// every output key). Two independent losses must fail LOUD, never resolve:
+	//   (1) DUPLICATE runtime names (`… AS X, … AS X`, or even `AS "x", AS "X"`
+	//       which both emit "X") — the schema is AMBIGUOUS on that name; picking
+	//       the first column silently joins on an arbitrary one.
+	//   (2) a quoted CASE-SENSITIVE alias (`AS "x"`) — a `C."x"` ref plans then
+	//       runtime-fails against the uppercased row, a `C."X"` ref silently
+	//       resolves the wrong case.
+	// OMIT both classes (a reference then does not resolve → 42703 at plan time)
+	// while keeping every UNIQUE, case-safe column usable (review-caught: a
+	// blanket decline of the whole source over-rejected the unique columns).
+	nameCount := make(map[string]int, len(pending))
+	for _, p := range pending {
+		nameCount[p.runtimeName]++
+	}
+	columns := make([]semantic.Column, 0, len(pending))
+	for _, p := range pending {
+		if p.caseSensitive || nameCount[p.runtimeName] > 1 {
+			continue
+		}
 		columns = append(columns, semantic.Column{
-			Id:       semantic.NewUnquoted(outName),
+			Id:       semantic.NewUnquoted(p.runtimeName),
 			Type:     "UNKNOWN",
 			Nullable: true,
 		})

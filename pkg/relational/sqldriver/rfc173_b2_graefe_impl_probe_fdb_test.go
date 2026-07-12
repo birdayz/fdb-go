@@ -1012,6 +1012,39 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		check(t, `WITH "C" AS (SELECT LA."K" AS "X", LB."K" AS "X", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`,
 			"1|900") // duplicate X but unique Y resolves and answers
 	})
+	// Q55 — the ON-only CTE schema must not LOSE identifier quotedness or
+	// duplicate-name ambiguity when an enclosing ON resolves through it. Before
+	// the fix the schema folded every output name (NewUnquoted) and admitted the
+	// first of a duplicate: a `C."X"` ON ref over an `AS "x"` body silently
+	// joined and returned rows; a `C.X` ref over a duplicated `AS "X", AS "X"`
+	// body silently joined on an arbitrary one. Both are now correct-or-LOUD:
+	// a quoted case-sensitive alias is omitted (execution uppercases the runtime
+	// key, so it cannot be referenced correctly), and duplicate runtime names
+	// are omitted — while UNIQUE, case-safe columns stay usable.
+	t.Run("Q55_on_only_schema_quotedness_and_dup_loud", func(t *testing.T) {
+		// A silent-wrong flip-sentinel: the regression these guard is a future
+		// schema change that RESOLVES the ambiguous/case-lost reference and
+		// returns joined rows. err != nil distinguishes rows-from-a-loud-decline.
+		mustLoud := func(t *testing.T, sql string) {
+			t.Helper()
+			if rows, err := run(t, sql); err == nil {
+				t.Fatalf("expected a LOUD decline (silent-wrong sentinel), got rows=%v", rows)
+			}
+		}
+		// (a) quoted-lowercase alias `AS "x"` — every reference to it (wrong-case
+		//     "X" or correct-case "x") must be LOUD, never a silent join.
+		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
+		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`)
+		// (b) DUPLICATE output name X — a `C."X"` ref must fail LOUD (42703),
+		//     never silently pick the first of the two X columns.
+		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
+		// (c) a UNIQUE, case-safe alias (Y) in that SAME duplicated body must
+		//     STILL resolve — the fix omits only the ambiguous columns, not the
+		//     whole source (regression guard against a blanket decline).
+		if _, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`); err != nil {
+			t.Fatalf("unique case-safe alias Y must still resolve, got: %v", err)
+		}
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")
