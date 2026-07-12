@@ -2,7 +2,9 @@ package expressions
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -92,6 +94,78 @@ func NewGroupByExpression(
 		aggregates:   aggregates,
 		inner:        inner,
 	}
+}
+
+// AggregateKeyColumnName is the canonical output-column name for one grouping
+// key. THE single naming authority for a group key — the plan's OutputColumnNames,
+// the executor's aggregateCursor, and the translator's ordinal baking all read
+// the name from here so a baked ordinal and the emitted positional slot can never
+// disagree.
+func AggregateKeyColumnName(k values.Value) string {
+	if fv, ok := k.(*values.FieldValue); ok {
+		return strings.ToUpper(fv.Field)
+	}
+	return strings.ToUpper(values.ExplainValue(k))
+}
+
+// AggregateResultColumnName is the canonical output-column name for one aggregate
+// (function + operand), IGNORING any alias: the SELECT list references this
+// canonical text and the projection above applies the alias. THE single naming
+// authority for an aggregate column (same rationale as AggregateKeyColumnName).
+func AggregateResultColumnName(agg AggregateSpec) string {
+	opName := "?"
+	if agg.OperandName != "" {
+		opName = strings.ReplaceAll(agg.OperandName, " ", "")
+	} else if agg.Operand != nil {
+		switch v := agg.Operand.(type) {
+		case *values.ConstantValue:
+			if v.Value == nil {
+				opName = "*"
+			} else {
+				opName = v.Name()
+			}
+		case *values.FieldValue:
+			opName = v.Field
+		default:
+			opName = values.ExplainValue(agg.Operand)
+		}
+	}
+	switch agg.Function {
+	case AggCount:
+		return strings.ToUpper(fmt.Sprintf("COUNT(%s)", opName))
+	case AggSum:
+		return strings.ToUpper(fmt.Sprintf("SUM(%s)", opName))
+	case AggMin:
+		return strings.ToUpper(fmt.Sprintf("MIN(%s)", opName))
+	case AggMax:
+		return strings.ToUpper(fmt.Sprintf("MAX(%s)", opName))
+	case AggAvg:
+		return strings.ToUpper(fmt.Sprintf("AVG(%s)", opName))
+	default:
+		return strings.ToUpper(fmt.Sprintf("AGG(%s)", opName))
+	}
+}
+
+// GroupByOutputColumnNames is THE single naming authority for a streaming
+// aggregate's output ROW: grouping keys (in GROUP BY order) then aggregates (in
+// aggregate order), each aggregate ALIAS-preferring (upper alias, else the
+// canonical AggregateResultColumnName). The order — [groupKeys..., aggregates...]
+// — is the ordinal order the executor's aggregateCursor emits and the translator
+// bakes downstream references against. Returns an empty slice when there are no
+// output columns.
+func GroupByOutputColumnNames(groupingKeys []values.Value, aggregates []AggregateSpec) []string {
+	names := make([]string, 0, len(groupingKeys)+len(aggregates))
+	for _, k := range groupingKeys {
+		names = append(names, AggregateKeyColumnName(k))
+	}
+	for _, a := range aggregates {
+		if a.Alias != "" {
+			names = append(names, strings.ToUpper(a.Alias))
+		} else {
+			names = append(names, AggregateResultColumnName(a))
+		}
+	}
+	return names
 }
 
 func (e *GroupByExpression) GetGroupingKeys() []values.Value { return e.groupingKeys }

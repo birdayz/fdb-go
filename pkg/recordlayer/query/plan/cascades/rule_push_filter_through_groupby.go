@@ -52,7 +52,13 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 	var pushable, residual []predicates.QueryPredicate
 	for _, p := range f.GetPredicates() {
 		if predicateReferencesOnlyKeys(p, groupKeySet) {
-			pushable = append(pushable, p)
+			// RFC-173: a HAVING group-key reference is baked to the group-by OUTPUT
+			// ordinal. Below the GroupBy the row is the scan/inner layout, where that
+			// ordinal is invalid — so un-bake the pushed copy back to a name-relative
+			// reference (its display name is the group key's own column name, which
+			// resolves against the inner row). The residual copy that stays ABOVE the
+			// GroupBy keeps its baked ordinal.
+			pushable = append(pushable, predicates.ReplaceValues(p, unbakeGroupKeyRef))
 		} else {
 			residual = append(residual, p)
 		}
@@ -71,6 +77,20 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 		gbQ := expressions.ForEachQuantifier(call.MemoizeExpression(newGB))
 		call.Yield(expressions.NewLogicalFilterExpression(residual, gbQ))
 	}
+}
+
+// unbakeGroupKeyRef drops a FieldValue's RFC-173 baked-ordinal marker, restoring a
+// name-relative reference. Used when pushing a HAVING predicate BELOW the GroupBy:
+// the ordinal was resolved against the group-by OUTPUT row, which does not exist
+// below the aggregate, so the reference must resolve by its (group-key column) name
+// against the inner row instead. The display name is the group key's own column
+// name, which the inner scan/join row carries.
+func unbakeGroupKeyRef(v values.Value) values.Value {
+	fv, ok := v.(*values.FieldValue)
+	if !ok || fv.Resolved == nil {
+		return v
+	}
+	return &values.FieldValue{Field: fv.Field, Typ: fv.Typ, Child: fv.Child}
 }
 
 func buildGroupKeySet(keys []values.Value) map[string]struct{} {

@@ -36,7 +36,12 @@ func (w *physicalStreamingAggWrapper) GetPlan() *plans.RecordQueryStreamingAggre
 func (w *physicalStreamingAggWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 func (w *physicalStreamingAggWrapper) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	// RFC-173: flow a TYPED QOV whose RecordType is the aggregate's output schema
+	// ([groupKeys, aggregates], the plan's single naming authority), so the resolver
+	// BAKES downstream references to ordinals at plan time (Java's getFieldNameToOrdinalMap).
+	// A downstream ref then reads the aggregateCursor's PositionalRow by Get(ordinal) — order,
+	// not spelling — instead of the untyped-QOV lazy GetByName that missed redundant name forms.
+	return values.NewQuantifiedObjectValueOfType(values.UniqueCorrelationIdentifier(), w.plan.OutputRecordType())
 }
 
 func (w *physicalStreamingAggWrapper) GetQuantifiers() []expressions.Quantifier {

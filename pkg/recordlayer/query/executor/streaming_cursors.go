@@ -356,9 +356,19 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 func (c *aggregateCursor) finalizeGroup() QueryResult {
 	gs := c.current
 	result := make(map[string]any)
+	// RFC-173: build the OUTPUT ORDINAL ROW alongside the name-keyed map. Order + naming MUST
+	// match streamingAggOutputNames (the plan's authoritative output schema the planner baked
+	// downstream ordinals against): grouping keys in order (aggKeyName), then aggregates in order
+	// (ALIAS-preferring, else aggResultName). A downstream ref baked to this schema reads by
+	// Get(ord); an unbaked one resolves by GetByName against these exact names. This is a real
+	// producer Positional from the known output columns, not a name-map wrapper.
+	posNames := make([]string, 0, len(c.groupingKeys)+len(c.aggregates))
+	posSlots := make([]any, 0, len(c.groupingKeys)+len(c.aggregates))
 	for i, k := range c.groupingKeys {
 		name := aggKeyName(k)
 		result[name] = gs.keyVals[i]
+		posNames = append(posNames, name)
+		posSlots = append(posSlots, gs.keyVals[i])
 		if len(name) >= 2 && name[0] == '(' && name[len(name)-1] == ')' {
 			stripped := name[1 : len(name)-1]
 			if _, exists := result[stripped]; !exists {
@@ -396,6 +406,14 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 			}
 		}
 		result[name] = val
+		// Alias-preferring output name (matches streamingAggOutputNames), so a downstream ref
+		// over an ALIASED aggregate (SUM(a*b) AS foo, a derived-table projection) resolves.
+		posName := name
+		if agg.Alias != "" {
+			posName = strings.ToUpper(agg.Alias)
+		}
+		posNames = append(posNames, posName)
+		posSlots = append(posSlots, val)
 		if agg.Alias != "" && agg.Alias != name {
 			result[agg.Alias] = val
 		}
@@ -406,7 +424,11 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 			}
 		}
 	}
-	return QueryResult{Datum: result, Complete: true}
+	qr := QueryResult{Datum: result, Complete: true}
+	if !DisablePositionalEmission { // §4 birth-site obligation: gate every new Positional emission
+		qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	}
+	return qr
 }
 
 func (c *aggregateCursor) emptyScalarResult() QueryResult {

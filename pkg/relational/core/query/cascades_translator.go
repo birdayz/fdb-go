@@ -737,6 +737,209 @@ func aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
 	return fields
 }
 
+// normalizeAggOutputName folds a reference / output name to the whitespace- and
+// case-insensitive key the SELECT-list-over-GROUP-BY ordinal match compares on: a
+// projection references an aggregate by its canonical text (`SUM(UNITS * PRICE)`,
+// spaces intact from the parse tree) while the naming authority renders the
+// operand space-stripped (`SUM(UNITS*PRICE)`) — the two must match on the same
+// normalized key or the ordinal bake silently misses.
+func normalizeAggOutputName(s string) string {
+	return strings.ReplaceAll(strings.ToUpper(s), " ", "")
+}
+
+// groupByOutputOrdinals maps each normalized output-column name of a
+// GroupByExpression to its output ordinal in [groupKeys..., aggregates...] order —
+// exactly the slot order the executor's aggregateCursor emits, so a reference baked
+// to one of these ordinals reads the right slot by Get(ordinal). It returns the KEY
+// ordinals and the AGGREGATE ordinals SEPARATELY: an aggregate reference must always
+// bake (its canonical/alias spelling mismatches the positional column name), but a
+// GROUP-KEY reference is baked only at the top level of a projection — a nested one
+// (e.g. `V + 1`) resolves by name and baking would leak the ordinal marker (`V#0`)
+// into the computed column's name-model Datum key.
+func groupByOutputOrdinals(gb *expressions.GroupByExpression) (keys, aggs map[string]int) {
+	keys = map[string]int{}
+	aggs = map[string]int{}
+	ord := 0
+	// Qualifier-/paren-stripped group-key forms are collected separately (a
+	// `HAVING id > k` over `GROUP BY a.id`, or a computed key rendered `(EXPR)`
+	// referenced bare) and folded in afterward only where UNAMBIGUOUS and not
+	// shadowing a primary name, so `a.id`/`b.id` stay qualified-only.
+	keyStripped := map[string]int{}
+	keyStrippedAmbig := map[string]struct{}{}
+	addKeyAlias := func(s string, ord int) {
+		if s == "" {
+			return
+		}
+		if _, amb := keyStrippedAmbig[s]; amb {
+			return
+		}
+		if e, ok := keyStripped[s]; ok && e != ord {
+			delete(keyStripped, s)
+			keyStrippedAmbig[s] = struct{}{}
+			return
+		}
+		keyStripped[s] = ord
+	}
+	for _, k := range gb.GetGroupingKeys() {
+		full := normalizeAggOutputName(expressions.AggregateKeyColumnName(k))
+		keys[full] = ord
+		if len(full) >= 2 && full[0] == '(' && full[len(full)-1] == ')' {
+			addKeyAlias(full[1:len(full)-1], ord)
+		}
+		if s := stripColumnQualifier(full); s != "" && s != full {
+			addKeyAlias(s, ord)
+		}
+		ord++
+	}
+	// A canonical/alias collision means a DUPLICATE AGGREGATE (the SELECT copy and
+	// the HAVING copy of SUM(x)), which computes the identical value, so last-wins
+	// is safe.
+	for _, a := range gb.GetAggregates() {
+		aggs[normalizeAggOutputName(expressions.AggregateResultColumnName(a))] = ord
+		if a.Alias != "" {
+			aggs[normalizeAggOutputName(a.Alias)] = ord
+		}
+		ord++
+	}
+	for s, o := range keyStripped {
+		if _, taken := keys[s]; !taken {
+			keys[s] = o
+		}
+	}
+	return keys, aggs
+}
+
+// stripColumnQualifier drops a leading table/alias qualifier ("A.ID" -> "ID").
+// Applied only to GROUP BY key names, where the qualifier is a table alias — an
+// aggregate render like "COUNT(C.ID)" is never passed here.
+func stripColumnQualifier(s string) string {
+	if i := strings.LastIndexByte(s, '.'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
+}
+
+// groupByOutputBaker returns the Value replacement that rewrites a FieldValue
+// naming a GROUP BY output column into an UNPINNED baked-ordinal FieldValue over
+// the aggregate's output row. This is Java's resolution of a SELECT-list /
+// ORDER-BY / HAVING reference over a GroupByExpression: the reference resolves to
+// the group-by RESULT COLUMN by ordinal (FieldValue.ofOrdinalNumber), never a
+// runtime name lookup. UNPINNED deliberately — on the aggregate's PositionalRow the
+// read is Get(ordinal) (order, not spelling, so a canonical-vs-alias name mismatch
+// no longer misses), and on the name-model Datum it reads by the reference's own
+// name exactly as before; the §5 dual-window differential requires both to agree.
+// The SAME baker feeds the SELECT projection (values.Replace), the HAVING predicate
+// (predicates.ReplaceValues), and the ORDER-BY keys, so every consumer of the
+// aggregate output ordinalizes through one rule.
+// groupByOutputBaker returns the FieldValue→baked-ordinal rewrite. atTop selects the
+// top-level policy (bake keys AND aggregates) vs the nested policy (bake aggregates
+// always; bake a group key ONLY when its bare runtime name is not itself an output
+// column, i.e. a plain GetByName would miss — otherwise skip it, so a name-resolvable
+// nested key like `V + 1` keeps its clean explain and the ordinal marker never leaks
+// into the computed column's Datum key). fullNames is the set of positional column
+// names (normalized) GetByName resolves against.
+func groupByOutputBaker(keyOrds, aggOrds map[string]int, fullNames map[string]struct{}, atTop bool) func(values.Value) values.Value {
+	return func(node values.Value) values.Value {
+		fv, ok := node.(*values.FieldValue)
+		// An already-Resolved node is baked; a multi-accessor path is not a bare
+		// output-column ref. Leave both untouched.
+		if !ok || fv.Resolved != nil {
+			return node
+		}
+		// Match by the reference's OUTPUT-column name: the bare field for a flat
+		// reference, or the "ALIAS.COL" qualified form for a QOV(alias).col
+		// reference (a group key output under its qualified name, e.g. `A.ID`). A
+		// FieldValue with a non-QOV child is a nested/computed access, never a bare
+		// output-column ref — leave it.
+		name := fv.Field
+		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+			name = qov.Correlation.Name() + "." + fv.Field
+		} else if fv.Child != nil {
+			return node
+		}
+		key := normalizeAggOutputName(name)
+		if slot, hit := aggOrds[key]; hit {
+			return values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(name), slot, fv.Typ)
+		}
+		if slot, hit := keyOrds[key]; hit {
+			if !atTop {
+				// Nested (inside a computed expression): skip a key whose bare runtime
+				// name already resolves by GetByName against the positional row —
+				// baking it would only leak `#ordinal` into the computed column's key.
+				if _, resolvable := fullNames[normalizeAggOutputName(fv.Field)]; resolvable {
+					return node
+				}
+			}
+			return values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(name), slot, fv.Typ)
+		}
+		return node
+	}
+}
+
+// bakeGroupByOutputRefs rewrites, in place, each projected Value so a reference to a
+// GROUP BY output column becomes a baked-ordinal read (see groupByOutputBaker). A
+// projected value that is ITSELF a bare output reference (`SELECT region,
+// SUM(x) AS revenue`) bakes at the top level; a COMPUTED projection (`V + 1`,
+// `CAST(e.did …)`, `CASE WHEN SUM(x) …`) recurses under the nested policy.
+func bakeGroupByOutputRefs(vals []values.Value, gb *expressions.GroupByExpression) {
+	keyOrds, aggOrds := groupByOutputOrdinals(gb)
+	fullNames := normalizedOutputNameSet(gb)
+	topLevel := groupByOutputBaker(keyOrds, aggOrds, fullNames, true)
+	nested := groupByOutputBaker(keyOrds, aggOrds, fullNames, false)
+	for i, v := range vals {
+		if v == nil {
+			continue
+		}
+		if baked := topLevel(v); baked != v {
+			vals[i] = baked
+			continue
+		}
+		vals[i] = values.Replace(v, nested)
+	}
+}
+
+// normalizedOutputNameSet is the set of a GroupByExpression's positional column
+// names (the single naming authority's output), normalized — what a name-model
+// GetByName resolves a reference against.
+func normalizedOutputNameSet(gb *expressions.GroupByExpression) map[string]struct{} {
+	names := expressions.GroupByOutputColumnNames(gb.GetGroupingKeys(), gb.GetAggregates())
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		set[normalizeAggOutputName(n)] = struct{}{}
+	}
+	return set
+}
+
+// underlyingGroupBy returns the GroupByExpression an expression's output row is
+// produced by — the expression itself, or the one reached by peeling operators
+// that PASS THE AGGREGATE OUTPUT ROW THROUGH UNCHANGED: a HAVING
+// LogicalFilterExpression (filters rows, slots intact) and an ORDER-BY
+// LogicalSortExpression (reorders rows but preserves each row's positional slots).
+// So the SELECT projection above resolves its references against the aggregate
+// output schema by ordinal even with HAVING/ORDER-BY between. nil when the
+// expression is not (over) an aggregate. Peeling STOPS at any operator that
+// reshapes the row (a projection), so an unrelated inner aggregate is never
+// mistaken for this row's producer.
+func underlyingGroupBy(expr expressions.RelationalExpression) *expressions.GroupByExpression {
+	switch e := expr.(type) {
+	case *expressions.GroupByExpression:
+		return e
+	case *expressions.LogicalFilterExpression:
+		if qs := e.GetQuantifiers(); len(qs) == 1 {
+			if inner := qs[0].GetRangesOver(); inner != nil {
+				return underlyingGroupBy(inner.Get())
+			}
+		}
+	case *expressions.LogicalSortExpression:
+		if qs := e.GetQuantifiers(); len(qs) == 1 {
+			if inner := qs[0].GetRangesOver(); inner != nil {
+				return underlyingGroupBy(inner.Get())
+			}
+		}
+	}
+	return nil
+}
+
 // buildJoinResultValue builds the result value for a binary join seed (RFC-077
 // 7.6 Option B): the source-anchored RecordConstructorValue —
 // FieldValue(QOV(leg), col) per column, named by NewAnchoredJoinRecord — so field
@@ -4995,6 +5198,15 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
+	// RFC-173: a SELECT list over a GROUP BY resolves each aggregate/group-key
+	// reference to the aggregate OUTPUT COLUMN by ordinal (Java's
+	// FieldValue.ofOrdinalNumber over the GroupByExpression result) — so the
+	// alias-named aggregate slot resolves even though the projection references the
+	// canonical text. Without this the reference stays a free canonical name that
+	// misses the aggregate's ordinal PositionalRow (whose slot is alias-named).
+	if gb := underlyingGroupBy(innerRef.Get()); gb != nil {
+		bakeGroupByOutputRefs(projected, gb)
+	}
 	return expressions.NewLogicalProjectionExpressionWithAliases(
 		projected,
 		p.Aliases,
@@ -5359,8 +5571,23 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		return nil
 	}
 
+	// RFC-173: the HAVING predicate filters the aggregate OUTPUT, so its
+	// aggregate/group-key references bake to the group-by output ordinals exactly
+	// like the SELECT projection — otherwise a `HAVING SUM(x) > k` reference stays a
+	// free canonical name that misses the aggregate's ordinal PositionalRow (whose
+	// slot is canonical- or alias-named, and may render the operand spacing
+	// differently). Recurse and bake BOTH keys and aggregates: a HAVING reference
+	// nests inside the comparison and its explain is not a user-visible output name,
+	// so the ordinal-marker leak that gates projection group-key baking does not apply
+	// (and a HAVING group-key ref like `a.id` may itself mismatch the qualified output
+	// name and need baking). A predicate pushed BELOW the GroupBy is un-baked by
+	// PushFilterThroughGroupByRule, since the ordinal is aggregate-output-relative.
+	hkeys, haggs := groupByOutputOrdinals(groupBy)
+	havingPred := predicates.ReplaceValues(a.HavingPredicate,
+		groupByOutputBaker(hkeys, haggs, normalizedOutputNameSet(groupBy), true))
+
 	return expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{a.HavingPredicate},
+		[]predicates.QueryPredicate{havingPred},
 		expressions.ForEachQuantifier(groupByRef),
 	)
 }

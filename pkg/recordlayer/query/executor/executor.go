@@ -2446,35 +2446,20 @@ func toFloat64(v any) float64 {
 	}
 }
 
-func aggKeyName(k values.Value) string {
-	if fv, ok := k.(*values.FieldValue); ok {
-		return strings.ToUpper(fv.Field)
-	}
-	return strings.ToUpper(values.ExplainValue(k))
-}
+// aggKeyName delegates to the single naming authority
+// (expressions.AggregateKeyColumnName): the executor's emitted slot name and the
+// translator's baked ordinal must derive from ONE rule or they drift.
+func aggKeyName(k values.Value) string { return expressions.AggregateKeyColumnName(k) }
 
 // streamingAggOutputNames returns the OUTPUT column names a streaming-aggregate
-// plan's rows are keyed by — the grouping keys (aggKeyName) followed by each
-// aggregate's SQL-visible name: its Alias when present (upper-cased at
-// construction), else the canonical aggResultName. Exactly one name per output
+// plan's rows are keyed by — the single naming authority's
+// [groupingKeys..., aggregates...], alias-preferring. Exactly one name per output
 // column, matching the keys aggregateCursor.finalizeGroup writes and the schema
-// the translator derives (aggregateOutputColumns). Used by planColumnNamesWithMD
-// so the UNION position-remap (remapUnionColumnsByPosition) can normalize a
+// the translator bakes ordinals against. Used by planColumnNamesWithMD so the
+// UNION position-remap (remapUnionColumnsByPosition) can normalize a
 // mismatched-alias aggregate branch to the first branch's names (RFC-078).
 func streamingAggOutputNames(p *plans.RecordQueryStreamingAggregationPlan) []string {
-	keys := p.GetGroupingKeys()
-	aggs := p.GetAggregates()
-	names := make([]string, 0, len(keys)+len(aggs))
-	for _, k := range keys {
-		names = append(names, aggKeyName(k))
-	}
-	for _, agg := range aggs {
-		if agg.Alias != "" {
-			names = append(names, strings.ToUpper(agg.Alias))
-		} else {
-			names = append(names, aggResultName(agg))
-		}
-	}
+	names := expressions.GroupByOutputColumnNames(p.GetGroupingKeys(), p.GetAggregates())
 	if len(names) == 0 {
 		return nil
 	}
@@ -2489,50 +2474,17 @@ func isNumeric(v any) bool {
 	return false
 }
 
-// aggResultName derives the group-result slot key for an aggregate. It ToUppers
-// the rendered name (below), which FOLDS two aggregates that differ only in a
-// case-sensitive token (e.g. a string literal: `COUNT(CASE WHEN s='x' …)` vs
-// `…'X'…`) into ONE slot — finalizeGroup then writes both under the same key.
-// This is currently a LATENT silent-wrong, not a live one: the only shape whose
-// two case-differing aggregates compute DIFFERENT values (a string literal in a
-// GROUPED CASE aggregate) does not evaluate in this engine today (grouped
-// COUNT(CASE)=0, SUM(CASE)=nil), so the collision never yields observable wrong
-// rows. If grouped CASE aggregation is ever made to compute, this becomes a LIVE
-// silent-wrong across ALL callers — case-preserve the render here (or resolve
-// HAVING/ORDER-BY refs by the case-preserved agg.Alias key finalizeGroup also
-// writes). Part of the read-surface uppercasing family booked in TODO.md.
+// aggResultName derives the canonical group-result slot key for an aggregate,
+// delegating to the single naming authority (expressions.AggregateResultColumnName)
+// so the executor's emitted slot name and the translator's baked ordinal derive
+// from ONE rule. It ToUppers the rendered name, which FOLDS two aggregates that
+// differ only in a case-sensitive token (e.g. a string literal: `COUNT(CASE WHEN
+// s='x' …)` vs `…'X'…`) into ONE slot — finalizeGroup then writes both under the
+// same key. Currently a LATENT silent-wrong (grouped CASE aggregation does not
+// compute in this engine), not a live one; part of the read-surface uppercasing
+// family booked in TODO.md.
 func aggResultName(agg expressions.AggregateSpec) string {
-	opName := "?"
-	if agg.OperandName != "" {
-		opName = strings.ReplaceAll(agg.OperandName, " ", "")
-	} else if agg.Operand != nil {
-		switch v := agg.Operand.(type) {
-		case *values.ConstantValue:
-			if v.Value == nil {
-				opName = "*"
-			} else {
-				opName = v.Name()
-			}
-		case *values.FieldValue:
-			opName = v.Field
-		default:
-			opName = values.ExplainValue(agg.Operand)
-		}
-	}
-	switch agg.Function {
-	case expressions.AggCount:
-		return strings.ToUpper(fmt.Sprintf("COUNT(%s)", opName))
-	case expressions.AggSum:
-		return strings.ToUpper(fmt.Sprintf("SUM(%s)", opName))
-	case expressions.AggMin:
-		return strings.ToUpper(fmt.Sprintf("MIN(%s)", opName))
-	case expressions.AggMax:
-		return strings.ToUpper(fmt.Sprintf("MAX(%s)", opName))
-	case expressions.AggAvg:
-		return strings.ToUpper(fmt.Sprintf("AVG(%s)", opName))
-	default:
-		return strings.ToUpper(fmt.Sprintf("AGG(%s)", opName))
-	}
+	return expressions.AggregateResultColumnName(agg)
 }
 
 func executeDelete(
