@@ -67,6 +67,18 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		t.Error("exists_inner_unbakeable_conj now fires 0 — a subquery-carrying conjunct should stay name-model (Unbakeable decline)")
 	}
 
+	// ENCLOSED E-1b (review-caught P1 flip-sentinel): the E-1b cluster used as a
+	// name-model CTE JOIN LEG has its gather prevEnclosure-skipped (anchored binary
+	// seed), so it MUST stay name-model (fire producers) — the seedWindowed guard on
+	// the E-1b merge arm declines the in-select bake over an anchored seed. If a future
+	// change drops that guard and ordinalizes the enclosed seed, this goes red (and the
+	// e2e e1b_enclosed_cte_leg_conj pin would return 0 rows — the original P1).
+	if n, err := count(`WITH D AS (SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" > "X" AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X" FROM D, EEV`); err != nil {
+		t.Errorf("enclosed_e1b_cte_leg: unexpected plan error: %v", err)
+	} else if n == 0 {
+		t.Error("enclosed_e1b_cte_leg now fires 0 — an enclosure-skipped (anchored) seed must stay name-model, not ordinalize (the seedWindowed-guard regression = the enclosed-CTE P1)")
+	}
+
 	// exists_multi_esq: fires during translation but STRANDS at physicalization (a
 	// pre-existing multi-esq-under-EXISTS limitation, orthogonal to the census).
 	if _, err := count(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`); err == nil || !strings.Contains(err.Error(), "not a physical plan") {

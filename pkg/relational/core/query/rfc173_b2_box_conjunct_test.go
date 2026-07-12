@@ -208,3 +208,71 @@ func TestRFC173B2_FilteredBoxUnnestCensus(t *testing.T) {
 		}
 	})
 }
+
+// TestRFC173E1b_BakeGatedChecked_DriftDetection pins the DRIFT signal that backs the
+// E-1b flat-arm safety net (review-caught: predicateRefsBuriedLeg alone was inert for a
+// flat-leg survivor). The classifier pre-verifies FieldIndex before admitting, so drift
+// is unreachable via production SQL — this is the white-box pin of the dimension no
+// e2e shape can reach. A should-bake ref (≥2-leg or buried conjunct) whose leaf window
+// has no such field → drift=true; a SINGLE-LEG non-buried ref is left lazy (never
+// baked), so it is NOT drift even when its field is absent.
+func TestRFC173E1b_BakeGatedChecked_DriftDetection(t *testing.T) {
+	t.Parallel()
+	aType := &values.RecordType{Fields: []values.Field{{Name: "K", FieldType: values.NotNullLong, Ordinal: 0}}}
+	bType := &values.RecordType{Fields: []values.Field{{Name: "K", FieldType: values.NotNullLong, Ordinal: 0}}}
+	abType := &values.RecordType{Fields: []values.Field{
+		{Name: "K", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "K", FieldType: values.NotNullLong, Ordinal: 1},
+	}}
+	// two TOP-LEVEL flat legs (leafTyp == typ per leg is the flat contract; here the
+	// leaf windows are the per-leg types, offset into the merged concat).
+	flatLegs := map[string]bakeLegType{
+		"A": {typ: abType, leafOffset: 0, leafTyp: aType},
+		"B": {typ: abType, leafOffset: 1, leafTyp: bType},
+	}
+	// one BURIED leg (bakeCorr set — a box leaf with no quantifier of its own).
+	buriedLegs := map[string]bakeLegType{
+		"A": {typ: abType, leafOffset: 0, leafTyp: aType, bakeCorr: "BOX"},
+	}
+	legFV := func(corr, field string) values.Value {
+		return values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corr)), field, values.NotNullLong)
+	}
+	crossLeg := func(af, bg string) predicates.QueryPredicate {
+		return predicates.NewComparisonPredicate(legFV("A", af),
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: legFV("B", bg)})
+	}
+	singleLeg := func(af string) predicates.QueryPredicate {
+		return predicates.NewComparisonPredicate(legFV("A", af),
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5)}})
+	}
+	cases := []struct {
+		name  string
+		preds []predicates.QueryPredicate
+		legs  map[string]bakeLegType
+		want  bool
+	}{
+		// ≥2-leg conjunct, both refs resolve → baked clean, no drift.
+		{"cross_leg_both_resolve", []predicates.QueryPredicate{crossLeg("K", "K")}, flatLegs, false},
+		// ≥2-leg conjunct, B.MISSING is not in B's FLAT leaf window → should-bake
+		// survivor → DRIFT (the exact gap predicateRefsBuriedLeg missed: bakeCorr=="").
+		{"cross_leg_flat_survivor", []predicates.QueryPredicate{crossLeg("K", "MISSING")}, flatLegs, true},
+		// single-leg non-buried A.K = const → LAZY, never baked → no drift.
+		{"single_leg_lazy_resolvable", []predicates.QueryPredicate{singleLeg("K")}, flatLegs, false},
+		// single-leg non-buried A.MISSING = const → still LAZY (the lazy exemption
+		// holds regardless of the field) → no drift. Proves we don't over-flag lazy.
+		{"single_leg_lazy_missing_field", []predicates.QueryPredicate{singleLeg("MISSING")}, flatLegs, false},
+		// buried single-leg A.K → FORCED to bake (predicateRefsBuriedLeg), resolves → no drift.
+		{"buried_resolves", []predicates.QueryPredicate{singleLeg("K")}, buriedLegs, false},
+		// buried single-leg A.MISSING → forced to bake, FieldIndex fails → DRIFT.
+		{"buried_survivor", []predicates.QueryPredicate{singleLeg("MISSING")}, buriedLegs, true},
+		// an AND of a clean cross-leg and a drifting cross-leg → DRIFT (any conjunct).
+		{"and_one_drifts", []predicates.QueryPredicate{predicates.NewAnd(crossLeg("K", "K"), crossLeg("K", "MISSING"))}, flatLegs, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, drift := bakeGatedJoinPredicatesChecked(c.preds, c.legs); drift != c.want {
+				t.Errorf("drift = %v, want %v", drift, c.want)
+			}
+		})
+	}
+}

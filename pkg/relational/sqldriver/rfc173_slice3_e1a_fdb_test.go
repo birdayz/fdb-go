@@ -198,6 +198,18 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 			t.Fatalf("unbakeable subquery conjunct must plan (graceful name-model decline), got: %v", err)
 		}
 	})
+
+	// ENCLOSURE REGRESSION (review-caught P1): when the E-1b filter is translated
+	// BENEATH an enclosing name-model parent (this cluster used as a CTE join leg),
+	// translateUnnestJoin SKIPS the gather (prevEnclosure) and returns an ANCHORED
+	// binary seed — but the E-1b merge branch keyed only on `gatheredHere` (admission)
+	// baked the conjunct IN-SELECT over that anchored seed anyway, leaving A.K unbound
+	// in the Explode filter → 0 rows. The branch must ALSO verify the seed is the
+	// WINDOWED ordinal one (the gather actually ran), like E-1a's seedWindowed / the
+	// box arm's hasRecord. A.K=100 > X∈{7,8} → both true; EXISTS EE.CK=100 → true; the
+	// CTE = {7,8}, crossed with EEV → {D.X:7, D.X:8}. Projection `SELECT D."X"` keys
+	// the Datum as the qualified D.X.
+	pin("e1b_enclosed_cte_leg_conj", `WITH D AS (SELECT "X" `+from+` WHERE A."K" > "X" AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X" FROM D, EEV`, "map[D.X:7]", "map[D.X:8]")
 }
 
 // TestRFC173Slice3E1aCensus pins that the E-1a INNER cluster under EXISTS fires

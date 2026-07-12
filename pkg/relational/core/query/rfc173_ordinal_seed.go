@@ -625,16 +625,36 @@ func (t *cascadesTranslator) addBuriedBakeWindows(j *logical.LogicalJoin, boxCor
 }
 
 func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[string]bakeLegType) []predicates.QueryPredicate {
+	out, _ := bakeGatedJoinPredicatesChecked(preds, legTypes)
+	return out
+}
+
+// bakeGatedJoinPredicatesChecked is bakeGatedJoinPredicates plus a DRIFT signal: the
+// bool is true iff a leg ref the bake ATTEMPTED (a ≥2-leg or buried conjunct, past
+// the per-conjunct lazy gate) could not be positionally resolved — its leg carries no
+// bakeable window, or the leaf window has no such field. The classifier pre-verifies
+// FieldIndex before admitting, so drift is unreachable via production SQL today; it is
+// the safety net the gathered-merge arms decline (INNER) / loud-error (box) on,
+// guarding against a future classifier/bake divergence that would otherwise strand a
+// leg ref as a silent-NULL name read (0 rows). A SINGLE-LEG non-buried ref is left
+// lazy (it never reaches bake), so it is NOT drift — predicateRefsBuriedLeg alone
+// caught only BURIED survivors, inert for a flat-leg drift (review-caught).
+func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes map[string]bakeLegType) ([]predicates.QueryPredicate, bool) {
 	if len(preds) == 0 || len(legTypes) == 0 {
-		return preds
+		return preds, false
 	}
+	drift := false
 	bake := func(v values.Value) values.Value {
 		key, isRef := legRef(v)
 		if !isRef {
 			return v
 		}
 		legType, isLeg := legTypes[key]
-		if !isLeg || legType.typ == nil || legType.leafTyp == nil {
+		if !isLeg {
+			return v // a foreign correlation — the classifier's domain, not a bake miss
+		}
+		if legType.typ == nil || legType.leafTyp == nil {
+			drift = true // a should-bake leg has no positional window
 			return v
 		}
 		fv := v.(*values.FieldValue) // legRef confirmed the cast + guards
@@ -644,6 +664,7 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 		// an earlier leg's duplicate name — silently the wrong column.
 		idx, found := legType.leafTyp.FieldIndex(fv.Field)
 		if !found {
+			drift = true // the leaf window has no such field — verdict/bake drift
 			return v
 		}
 		// The baked node's correlation takes the LEG-ALIAS CASE the gather
@@ -699,7 +720,7 @@ func bakeGatedJoinPredicates(preds []predicates.QueryPredicate, legTypes map[str
 	for i, p := range preds {
 		out[i] = bakeConjuncts(p)
 	}
-	return out
+	return out, drift
 }
 
 // legRef extracts the UPPER leg-correlation name of a BARE, UNBAKED FieldValue over a

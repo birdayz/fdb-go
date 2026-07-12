@@ -2767,6 +2767,24 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	}
 }
 
+// windowedOrdinalSeed reports whether a translated unnest SelectExpression carries the
+// WINDOWED ORDINAL seed — the gather actually ran and produced a positional
+// RecordConstructorValue with per-leg windows — versus an ANCHORED name-model binary
+// seed (the gather was prevEnclosure-skipped, e.g. this cluster used as a name-model
+// CTE leg, or never admitted). The E-1b in-select conjunct bake and the E-1a
+// alias-aware correlation bake are BOTH valid ONLY over the windowed seed; over an
+// anchored seed they leave leg refs unbound (0 rows). It also returns the seed's merged
+// RecordType for the E-1a bake. This is the direct-seed proof the box arm gets for free
+// from its recorded map (written only when the gather ran).
+func windowedOrdinalSeed(sel *expressions.SelectExpression) (bool, *values.RecordType) {
+	rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue)
+	if !isRC || rc.AnchoredJoin {
+		return false, nil
+	}
+	w, mt := values.OrdinalSeedLegWindows(rc)
+	return w != nil, mt
+}
+
 func (t *cascadesTranslator) translateUnnestExistsFilter(
 	f *logical.LogicalFilter,
 	join *logical.LogicalJoin,
@@ -2844,49 +2862,51 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 		// strand as a silent-NULL name read — loud internal error instead).
 		bj, isInnerCluster := join.Left.(*logical.LogicalJoin)
 		isInnerCluster = isInnerCluster && bj.Kind == logical.JoinInner
+		// Element-rewritten non-EXISTS conjuncts — the shared input BOTH gathered-bake
+		// arms fold; only the legTypes differ (box RECORDED vs INNER RE-DERIVED).
+		rewritten := make([]predicates.QueryPredicate, 0, len(nonExists))
+		for _, p := range nonExists {
+			rewritten = append(rewritten, rewriteUnnestPredicate(p, u))
+		}
+		// seedWindowed: the gather ACTUALLY ran and produced the positional ordinal seed
+		// (vs an ANCHORED name-model binary seed — the gather was prevEnclosure-skipped
+		// while EXISTS admission still held). The box arm gets this proof for free from
+		// its recorded map (written only when the gather ran); the INNER arm re-derives
+		// its windows, so it MUST check the seed directly — else it bakes the conjunct
+		// over an anchored seed and the leg ref strands unbound → 0 rows (review-caught:
+		// the enclosed-CTE-leg regression, this cluster used as a name-model CTE leg).
+		seedWindowed, _ := windowedOrdinalSeed(sel)
 		if recorded, hasRecord := t.unnestGatherBoxLegTypes[join]; hasRecord && gatheredHere {
 			delete(t.unnestGatherBoxLegTypes, join)
-			toMerge := bakeGatedJoinPredicates(func() []predicates.QueryPredicate {
-				out := make([]predicates.QueryPredicate, 0, len(nonExists))
-				for _, p := range nonExists {
-					out = append(out, rewriteUnnestPredicate(p, u))
-				}
-				return out
-			}(), recorded)
-			for _, mp := range toMerge {
-				if predicateRefsBuriedLeg(mp, recorded) {
-					t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
-						"RFC-173 B2-B: a box-leg conjunct reference survived the merge bake unbaked (verdict/bake drift)"))
-					return nil
-				}
+			toMerge, drift := bakeGatedJoinPredicatesChecked(rewritten, recorded)
+			if drift {
+				t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
+					"RFC-173 B2-B: a box-leg conjunct reference survived the merge bake unbaked (verdict/bake drift)"))
+				return nil
 			}
 			merged = append(merged, toMerge...)
-		} else if isInnerCluster && gatheredHere {
+		} else if isInnerCluster && gatheredHere && seedWindowed {
 			// RFC-173 S4 E-1b: an ADMITTED INNER flat cluster (verdict None or a
-			// Bakeable leg conjunct) bakes the conjunct IN-SELECT over the cluster's
-			// leg windows — RE-DERIVED on the spot via gatedJoinLegTypes (the WHERE
-			// path's channel), NOT the box's recorded/consume-once machinery: the
-			// flat cluster's top-level legs are re-derivable, so no record is needed.
-			// A conjunct on the ELEMENT rides rewriteUnnestPredicate (no leg ref, so
-			// bakeGatedJoinPredicates leaves it, its element already rewritten).
+			// Bakeable leg conjunct) whose gather PRODUCED THE WINDOWED SEED bakes the
+			// conjunct IN-SELECT over the cluster's leg windows — RE-DERIVED on the spot
+			// via gatedJoinLegTypes (the WHERE path's channel), NOT the box's
+			// recorded/consume-once machinery: the flat cluster's top-level legs are
+			// re-derivable, so no record is needed. A conjunct on the ELEMENT rides
+			// rewriteUnnestPredicate (no leg ref, so the bake leaves it, its element
+			// already rewritten). The seedWindowed guard is load-bearing: without it an
+			// enclosure-skipped anchored seed bakes the conjunct over unbound legs.
 			legTypes := t.gatedJoinLegTypes(bj)
-			toMerge := bakeGatedJoinPredicates(func() []predicates.QueryPredicate {
-				out := make([]predicates.QueryPredicate, 0, len(nonExists))
-				for _, p := range nonExists {
-					out = append(out, rewriteUnnestPredicate(p, u))
-				}
-				return out
-			}(), legTypes)
-			// Safety net (CORRECT-or-LOUD): the classifier guaranteed Bakeable, but
-			// bakeGatedJoinPredicates silently passes an unmapped leg ref. A survivor
-			// is verdict/bake drift — decline to the name-model binary path (which is
-			// correct today), the E-1b twin of E-1a's unnestExistsRefSurvivesUnbaked
-			// (the box uses a loud assert; E-1b always has a name-model fallback, so
-			// decline-to-correct is the better disposition).
-			for _, mp := range toMerge {
-				if predicateRefsBuriedLeg(mp, legTypes) {
-					return nil
-				}
+			toMerge, drift := bakeGatedJoinPredicatesChecked(rewritten, legTypes)
+			// Safety net (CORRECT-or-name-model): the classifier guaranteed Bakeable, but
+			// bakeGatedJoinPredicatesChecked reports a should-bake leg ref that failed to
+			// positionally resolve (verdict/bake drift — FLAT or buried, the E-1b twin of
+			// E-1a's unnestExistsRefSurvivesUnbaked). Decline to the name-model binary
+			// path (correct today); the box loud-errors because it already consumed its
+			// record, but E-1b always has a name-model fallback, so decline-to-correct is
+			// the better disposition. (predicateRefsBuriedLeg alone was inert for a
+			// flat-leg survivor — review-caught.)
+			if drift {
+				return nil
 			}
 			merged = append(merged, toMerge...)
 		} else {
@@ -2959,13 +2979,8 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	//     ever becomes reachable, rather than silently mis-routing it leg-relative.
 	seedWindowed := false
 	var ordMergedType *values.RecordType
-	if sel, ok := unnestExpr.(*expressions.SelectExpression); ok {
-		if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin {
-			if w, mt := values.OrdinalSeedLegWindows(rc); w != nil {
-				seedWindowed = true
-				ordMergedType = mt
-			}
-		}
+	if s, ok := unnestExpr.(*expressions.SelectExpression); ok {
+		seedWindowed, ordMergedType = windowedOrdinalSeed(s)
 	}
 	// RFC-173 S4 E-1a: a windowed INNER flat cluster (admitted by
 	// admitExistentialGather) bakes BOTH the JoinPredicate channel AND the buried
