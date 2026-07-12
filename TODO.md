@@ -1197,10 +1197,23 @@ validation gate.
       — gatheredSeedBakeContext's findWindowedSeed walks the outer-quantifier chain through IDENTITY
       wrappers only (SELECT-*, DISTINCT; never a row-reshaping GROUP BY) to reach the seed, and
       slotInGatheredSeed resolves a BARE leg column (D.AID → seed A-leg window) when exactly one leg
-      carries it. Ordinalizes correctly in BOTH flip states (works under the demolition). Pins:
-      agg_cte_groupby_leg, agg_cte_distinct_groupby_element, agg_cte_projecting_groupby_leg. Correct-or-
-      loud holds on the projecting-CTE axis (a layout mismatch is an out-of-bounds LOUD, never a wrong
-      value). Only the STRADDLE remains as a booked cap-blocker.
+      carries it. Ordinalizes correctly in BOTH flip states (works under the demolition) for IDENTITY
+      wrappers at ANY depth — findWindowedSeed's walk is UNBOUNDED (visited-set over the finite plan
+      tree), so a deep (≥6) DISTINCT chain reaches the seed rather than exhausting a bound and skipping
+      the bake → NULL (Torvalds-caught depth cliff). Pins: agg_cte_groupby_leg,
+      agg_cte_distinct_groupby_element, agg_cte_deep6_distinct_groupby_leg.
+      🔒 **PROJECTING-CTE-aggregate class → correct-or-loud LOUD (review-caught silent-NULL, Graefe +
+      @claude):** a subset/reorder/qualified derived source (`SELECT A."AID"`/`SELECT B.BID, A.AID, …`)
+      reshapes the row — findWindowedSeed stops at the LogicalProjection (can't bake against the reshaped
+      layout) AND the name-model path mis-names the projected column (output "A.AID" ≠ D-stripped key
+      "AID" → NULL, PRE-EXISTING per @claude's parent differential). Both give a silent NULL group, so
+      translateAggregate refuses the whole class LOUD (UnbakeableProjectedGatherError) via the
+      positionalGatherUnbaked detector. Pins: agg_cte_projecting_single_loud, agg_cte_qualreorder_loud.
+      🚩 **CAP-BLOCKER (booked):** ordinalize the projecting derived source CORRECTLY — resolve the group
+      key against the PROJECTED output's own layout, not the pre-projection seed (same as the enclosed-
+      box-leg PROJECTION bake). Java answers it (GroupByQueryTests:699 projects `SELECT y, b AS L`), so at
+      the cap this must ordinalize, not decline-to-loud. Only the STRADDLE + this projecting-derived
+      ordinalization remain as booked cap-blockers.
       📌 BOOKED (Graefe, separate follow-up, no correctness urgency — Verdict-None is conservative =
       correct-or-loud already): investigate whether the NON-aggregate E-1a admission (the executor-hoist
       path) can route through a translator-side bake (like gatheredSeedBakeContext) instead of the hoist,

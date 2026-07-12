@@ -4694,7 +4694,7 @@ func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Refer
 	// those identity wrappers pass through unchanged — so group keys / operands (element by
 	// slot, leg columns via OrdinalSeedLegWindows) bake positionally. Without this the bake
 	// gets a nil seedQOV and reads by name over the ordinal row → collapse.
-	rc, elementSlots, ok := findWindowedSeed(innerRef.Get(), maxSeedPeelDepth)
+	rc, elementSlots, ok := findWindowedSeed(innerRef.Get(), map[*expressions.Reference]bool{})
 	if !ok {
 		return b
 	}
@@ -4706,23 +4706,22 @@ func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Refer
 	return b
 }
 
-// maxSeedPeelDepth bounds findWindowedSeed's outer-quantifier walk. The seed sits at
-// most a few identity wrappers deep (EXISTS semi-join + CTE SELECT-* + DISTINCT); the
-// bound is a cheap non-termination backstop, well above any real nesting.
-const maxSeedPeelDepth = 6
-
-// findWindowedSeed walks the outer-quantifier chain of expr (bounded by depth) to find a
-// WINDOWED ordinal seed SelectExpression — a non-anchored RecordConstructorValue carrying
-// per-leg windows (OrdinalSeedLegWindows). The seed can sit under IDENTITY wrappers that
-// preserve its positional row: the EXISTS semi-join FlatMap (a pure filter), a SELECT-*
-// CTE/derived projection, a DISTINCT. It recurses ONLY through SelectExpression and
+// findWindowedSeed walks the outer-quantifier chain of expr to find a WINDOWED ordinal
+// seed SelectExpression — a non-anchored RecordConstructorValue carrying per-leg windows
+// (OrdinalSeedLegWindows). The seed can sit under IDENTITY wrappers that preserve its
+// positional row: the EXISTS semi-join FlatMap (a pure filter), a SELECT-* CTE/derived
+// projection, a DISTINCT. It recurses ONLY through SelectExpression and
 // LogicalDistinctExpression — never a GroupByExpression or any row-reshaping node, which
 // changes the layout so the seed's slots no longer address the caller's input row (an
-// ORDER-BY-over-GROUP-BY must NOT bake its key against the pre-group seed). Returns the
-// seed rc + its element slots; ok=false when no windowed seed is reachable through those
+// ORDER-BY-over-GROUP-BY must NOT bake its key against the pre-group seed). The `seen`
+// set of visited references makes the walk UNBOUNDED but terminating over the finite plan
+// DAG — no depth cap, so a deep (e.g. N-chained DISTINCT) identity wrapper stack still
+// reaches the seed rather than silently exhausting a bound and skipping the bake (which
+// would read the group key by name over the ordinal row → silent NULL). Returns the seed
+// rc + its element slots; ok=false when no windowed seed is reachable through those
 // identity wrappers (a name-model / reshaped input → the caller skips the bake).
-func findWindowedSeed(expr expressions.RelationalExpression, depth int) (*values.RecordConstructorValue, map[string]int, bool) {
-	if expr == nil || depth < 0 {
+func findWindowedSeed(expr expressions.RelationalExpression, seen map[*expressions.Reference]bool) (*values.RecordConstructorValue, map[string]int, bool) {
+	if expr == nil {
 		return nil, nil, false
 	}
 	var quants []expressions.Quantifier
@@ -4742,11 +4741,62 @@ func findWindowedSeed(expr expressions.RelationalExpression, depth int) (*values
 		return nil, nil, false
 	}
 	for _, q := range quants {
-		if rc, slots, found := findWindowedSeed(q.GetRangesOver().Get(), depth-1); found {
+		ref := q.GetRangesOver()
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		if rc, slots, found := findWindowedSeed(ref.Get(), seen); found {
 			return rc, slots, found
 		}
 	}
 	return nil, nil, false
+}
+
+// positionalGatherUnbaked reports whether a WINDOWED gather seed is reachable from expr
+// through POSITIONAL wrappers — the identity ones findWindowedSeed walks (Select, Distinct)
+// PLUS the reshaping-but-still-positional ones it stops at (a projecting/subset
+// LogicalProjection, a LogicalLimit) — while STOPPING at a GroupByExpression, which
+// RE-NAMES its output so a name read there resolves correctly. It is the correct-or-loud
+// detector: when findWindowedSeed (identity wrappers only) fails to reach the seed but this
+// broader positional walk finds it, the input row is a positional gather whose slot the
+// bake cannot address — a skipped bake would then silently mis-read by name. The caller
+// refuses LOUD rather than emit that silent NULL.
+func positionalGatherUnbaked(expr expressions.RelationalExpression, seen map[*expressions.Reference]bool) bool {
+	if expr == nil {
+		return false
+	}
+	var quants []expressions.Quantifier
+	switch e := expr.(type) {
+	case *expressions.SelectExpression:
+		if rc, _, found := seedElementSlots(e); found {
+			if w, _ := values.OrdinalSeedLegWindows(rc); w != nil {
+				return true
+			}
+		}
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalDistinctExpression:
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalProjectionExpression:
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalLimitExpression:
+		quants = e.GetQuantifiers()
+	default:
+		// GroupBy RE-NAMES (a name read over its output resolves — no silent NULL), and a
+		// physical / non-positional node is not this hazard: stop.
+		return false
+	}
+	for _, q := range quants {
+		ref := q.GetRangesOver()
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		if positionalGatherUnbaked(ref.Get(), seen) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
@@ -5147,6 +5197,22 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if bake.seedQOV != nil {
 			groupKeys[i] = bakeGatheredGroupValue(groupKeys[i], bake.windows, bake.elementSlots, bake.seedQOV)
 		}
+	}
+	// Correct-or-loud floor for the PROJECTING-CTE-aggregate class: the bake was SKIPPED
+	// (findWindowedSeed couldn't reach an identity-wrapped seed) but the input is a
+	// POSITIONAL ordinal gather under a RESHAPING projection (a subset/reorder/qualified
+	// derived source). That whole class is broken both ways — the name-model path
+	// mis-names the projected column (GROUP BY D.AID over `SELECT A."AID"` reads NULL: the
+	// output column is "A.AID", not the D-stripped key "AID"), and the ordinal path cannot
+	// bake against the reshaped row — so a skipped bake reads the group key by NAME over the
+	// positional row → silent NULL group. Refuse the whole class LOUD rather than ship a
+	// silent-wrong. Ordinalizing a projecting derived source CORRECTLY — resolve the key
+	// against the projected output's own layout — is a booked cap-blocker; Java answers it
+	// (GroupByQueryTests:699). Only when findWindowedSeed reaches an identity-wrapped seed
+	// (SELECT-*, DISTINCT, chained at any depth) does the bake fire and this floor stay
+	// silent (bake.seedQOV != nil).
+	if bake.seedQOV == nil && positionalGatherUnbaked(innerRef.Get(), map[*expressions.Reference]bool{}) {
+		t.setTranslateErr(&UnbakeableProjectedGatherError{})
 	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
 	for i, aggText := range a.Aggregates {

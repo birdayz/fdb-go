@@ -182,11 +182,31 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 	pin("agg_cte_groupby_leg", `WITH D AS (SELECT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
 	//   P1b — DISTINCT between the aggregate and the EXISTS, GROUP BY the element.
 	pin("agg_cte_distinct_groupby_element", `WITH D AS (SELECT DISTINCT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X", COUNT(*) FROM D GROUP BY D."X"`, "map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]")
-	//   projecting CTE (SELECT one column, not *) — the seed sits under a NON-identity
-	//   projecting Select, the risky axis for the recursive walk. Correct-or-loud sentinel:
-	//   the bare-leg walk resolves D.AID → seed A-leg window (single A.K=100 group, 2 rows);
-	//   a wrong-slot bake would be caught by the exact-rows assertion.
-	pin("agg_cte_projecting_groupby_leg", `WITH D AS (SELECT "AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
+	//   DEEP DISTINCT chain (≥6): DISTINCT is non-merging, so N chained CTEs stay N wrappers
+	//   deep. The identity walk is UNBOUNDED (visited-set over the finite plan tree), so the
+	//   seed is reached at any depth — a fixed depth bound would silently exhaust and skip the
+	//   bake → NULL (review-caught: the 6-deep cliff). Correct: single A.K=100 group, 2 rows.
+	pin("agg_cte_deep6_distinct_groupby_leg",
+		`WITH D0 AS (SELECT DISTINCT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")), `+
+			`D1 AS (SELECT DISTINCT * FROM D0), D2 AS (SELECT DISTINCT * FROM D1), D3 AS (SELECT DISTINCT * FROM D2), `+
+			`D4 AS (SELECT DISTINCT * FROM D3), D5 AS (SELECT DISTINCT * FROM D4) `+
+			`SELECT D5."AID", COUNT(*) FROM D5 GROUP BY D5."AID"`, "map[AID:1 COUNT(*):2]")
+	// PROJECTING-CTE-aggregate class (review-caught silent-NULL axis) → LOUD. A subset/reorder/
+	// qualified derived source reshapes the row: findWindowedSeed stops at the LogicalProjection
+	// (can't bake against the reshaped layout) AND the name-model path mis-names the projected
+	// column (`SELECT A."AID"` → output "A.AID" ≠ the D-stripped key "AID"). Both give a silent
+	// NULL group, so the whole class is refused LOUD (correct-or-loud). Correctly ordinalizing a
+	// projecting derived source is a booked cap-blocker (Java answers it, GroupByQueryTests:699).
+	for _, tc := range []struct{ name, sql string }{
+		{"agg_cte_projecting_single_loud", `WITH D AS (SELECT "AID" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`},
+		{"agg_cte_qualreorder_loud", `WITH D AS (SELECT B."BID", A."AID", A."K" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := runQ(t, tc.sql); err == nil {
+				t.Fatalf("projecting-CTE aggregate must be LOUD (silent-NULL floor), got no error: %s", tc.sql)
+			}
+		})
+	}
 
 	// MULTI-EXISTS-under-aggregate: TWO EXISTS conjuncts are not admitted to the gather
 	// (admitExistentialGather requires a single esq) → name-model. This shape is a
