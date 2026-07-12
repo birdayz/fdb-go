@@ -19,6 +19,8 @@ Build a distributed property-graph database whose defensible position is **trans
 ### 1.2 The design contract we keep returning to
 **"Always-correct, eventually-optimal."** The base graph is always ACID-correct and authoritative. Every accelerator — derived indexes, in-memory caches, the learning optimizer — is *non-authoritative* and can only *propose*; correctness never depends on it. This contract is what makes non-determinism (including an LLM in the loop) provably unable to harm correctness. It recurs in §5, §6, §7, §8 and should be treated as a hard invariant, not a slogan.
 
+**The one-sentence thesis of this whole RFC: it is all doable because FDB gives us ACID.** Transactionally-maintained derived structures (§5), the lease-fenced compute tier (§7), and a fitness-gated self-optimizing — even LLM-driven — physical layout (§8) are each *safe* for exactly one reason: every mutation commits in a serializable transaction against a base graph that is always correct, so accelerators can only ever move the system between correct states. Remove ACID and every one of these collapses into the eventual-consistency failure mode that has sunk prior distributed graph stores. ACID is the enabling condition, not a convenience (elaborated in §8.6).
+
 ---
 
 ## 2. Cross-cutting design principles (candidate invariants)
@@ -159,7 +161,68 @@ A closed-loop (MAPE-K) optimizer that packs super-clusters onto nodes and tunes 
 - **Fitness gate (the safety keystone):** every proposal scored by the real cost function, applied only if it beats the incumbent by a margin. Non-determinism → harmless (garbage proposals rejected; incumbent kept). This is §1.2 applied to placement.
 - **Execute:** the §6 maintainer applies lease moves / repartitions transactionally.
 - **Disciplines:** decisions auditable (log input+decision+rationale+outcome); hysteresis/cooldown vs thrash; A/B everything.
-- **OPEN:** learning algorithm; summary schema; embedding model & how content maps to affinity; margin thresholds.
+### 8.1 DECISION — the Optimizer extension point (mechanism/policy split, à la Bigtable)
+
+**This is the RFC's first committed position.** Structure the optimizer as a **pure policy function** behind a stable interface; keep the layout **mechanisms** (split/merge/move-lease/replicate/rebucket/materialize) in the trusted data plane. Same separation Bigtable draws between its master's balancing *policy* and the tablet servers' fixed *mechanisms* (split/merge/assign) — the classic separate-policy-from-mechanism principle.
+
+```go
+// Pure. No access to FDB, the graph, the executor, or the maintainer.
+// Sees a bounded read-only Observation; returns proposed Actions from a
+// fixed vocabulary. All effects flow through the framework.
+type Optimizer interface {
+    Propose(ctx context.Context, obs Observation) ([]Action, error)
+}
+```
+
+Purity IS the safety mechanism: a buggy/adversarial/hallucinating optimizer (LLM included) cannot violate correctness or regress performance, because (a) it can only return values — no capability to mutate; (b) the Action vocabulary is correctness-preserving by construction; (c) the fitness gate and execution live on the **framework** side of the boundary. Plugin proposes; framework disposes.
+
+### 8.2 Observation surface (the defined inputs — "what it may use")
+Optimizer sees the *summary*, never the graph:
+- `Layout` — partition → owner node, replication factor, bucket map
+- `Partitions[]` — size, internal-vs-cut edges, degree histogram, hotness (QPS), memory footprint, cache-hit rate
+- `CoAccess` — partition-pair traversal correlation (sampled)
+- `Crossings` — remote-hop counts per partition edge (the work-per-crossing signal, §7)
+- `CostModel` — RTT / per-hop cost, so the optimizer can *estimate* benefit itself
+- `Budget` — churn allowed this round
+- `Semantic` *(opt-in)* — content-embedding affinities (the LLM signal)
+
+Deliberately absent: raw graph, per-vertex payloads. The surface is a capability grant, and a **versioned** schema.
+
+### 8.3 Action vocabulary (the defined actuators — "what functions it has to make a change")
+Fixed, declarative, correctness-preserving. Each carries the optimizer's *claimed* benefit (checked against measured reality by the gate):
+- `SplitPartition{P, Assignment, Claim}` — graph-cut split (which vertices go where — *not* a 1-D key like Bigtable)
+- `MergePartitions{A, B, Claim}`
+- `MoveLease{P, To, Claim}` — the Bigtable tablet-move analog
+- `SetReplication{P, Factor, Claim}` — hot read-hub → replicas
+- `RebucketSupernode{V, Buckets, Claim}` — vertex-cut for supernodes
+- `MaterializeLabels{Scope, Claim}` / `DropLabels{Scope}` — derived-structure actions (no Bigtable analog)
+
+### 8.4 Framework/plugin boundary (framework-owned — NOT the plugin's)
+1. **Reconcile** proposals: dedup, resolve conflicts (e.g. split-P vs merge-P-into-Q), order by expected benefit, drop losers. *(Design point: contradictory actions must be serialized before gating.)*
+2. **Gate**: shadow / canary / cost-model — apply only if it *measurably* beats the incumbent by a margin.
+3. **Execute**: the §6 maintainer applies the winner transactionally (lease-claimed, idempotent).
+4. **Record**: input + decision + rationale + outcome — feedback + audit.
+
+The gate and vocabulary are framework-level and **shared across all optimizers** — no optimizer grades its own homework; the LLM's self-reported `Claim` never decides anything.
+
+### 8.5 Reference implementations (multiple, behind the one interface)
+- `DeterministicOptimizer` — Fennel/HDRF + threshold rules. Boring, fast, always-on. **Ships as the default; the product works with only this.**
+- `LearnedOptimizer` — bandit/BO/RL over the same Observation.
+- `SemanticOptimizer` — LLM: content-embedding affinity + meta-policy. The research bet.
+- `NullOptimizer` (control) and `EnsembleOptimizer` (fan-out + merge) fall out of the interface for free.
+
+Capabilities the shared pure interface unlocks at no extra cost:
+- **Tournament / A-B on live traffic** — N optimizers, same Observation, same gate as referee.
+- **Shadow mode** — run an optimizer proposing-but-not-applying; measure whether it *would* have won, at zero risk, before trusting it. The de-risker for the ML/LLM path.
+- **Replay testing** — purity ⇒ record real Observations, replay against any optimizer offline (golden-file regression, head-to-head benchmarks, deterministic repro of a bad decision).
+- **Escalation tiers** — deterministic every sweep (cheap); LLM only on the hard cases it flags (matches the LLM's cost/latency profile).
+
+**Roadmap this de-risks:** ship `DeterministicOptimizer` (product works, safe) → add `LearnedOptimizer` in shadow → promote when the gate shows it wins → add `SemanticOptimizer` as the research bet, also shadowed. **The product is never bet on the fancy optimizer** — the interface forces it to earn the commit path against a working baseline.
+
+### 8.6 Why any of this is doable at all: FDB ACID
+The throughline of the entire RFC. Every safety property above reduces to one substrate guarantee: **the layout mutation and the derived-structure update commit in the same serializable transaction as (or transactionally ordered against) the base graph.** A split, a lease move, a label materialization, a dirty-bit flip — each is atomic and isolated, so a reader never observes a half-applied layout and the optimizer can only ever move the system between *correct* states. Strip ACID out and the whole "propose → gate → apply, always-correct-eventually-optimal" contract collapses into the eventual-consistency mess that has sunk every prior distributed graph store. **FDB ACID is not a convenience here — it is the enabling condition for the entire architecture** (cf. §1.2). It is *the* reason a fitness-gated, self-optimizing, even LLM-driven physical layout can be safe.
+
+- **OPEN:** learning algorithm (bandit vs BO vs RL); exact `Observation` schema + version; embedding model & content→affinity mapping; gate margin thresholds; conflict-reconciliation policy; optimizer invocation cadence / cost accounting.
 
 ---
 
