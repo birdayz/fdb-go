@@ -445,12 +445,19 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_LeftOuterNullLeg(t *testing.T) {
 	ojAssertSlots(t, results[0].Positional, int64(1), int64(10), int64(1), int64(100))
 	// The null-padded row: inner slots NULL.
 	ojAssertSlots(t, results[1].Positional, int64(2), int64(20), nil, nil)
+	// task #38: the null-padded Datum is SCHEMA-COMPLETE — fabricateNullLeg writes the NULL
+	// leg (B) columns present-nil (qualified B.ID/B.W always, bare W if-absent so it doesn't
+	// clobber A's ID), so a name-keyed read of B.* resolves to SQL NULL instead of tripping
+	// the NameMissLoud guard. Bare ID/V stay A's (add-if-absent). Agrees with the Positional
+	// null-pad column-for-column.
 	wantDatum := map[string]any{
 		"ID": int64(2), "V": int64(20),
 		"A.ID": int64(2), "A.V": int64(20),
+		"B.ID": nil, "B.W": nil,
+		"W": nil,
 	}
 	if !reflect.DeepEqual(results[1].Datum, wantDatum) {
-		t.Fatalf("null-padded Datum = %v, want the untouched qualifyOuterRow map %v", results[1].Datum, wantDatum)
+		t.Fatalf("null-padded Datum = %v, want the schema-complete map %v", results[1].Datum, wantDatum)
 	}
 }
 

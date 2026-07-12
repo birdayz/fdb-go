@@ -115,6 +115,16 @@ func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowE
 	return rc
 }
 
+// RowContextSparse is RowContext carrying the source row's Sparse flag (task #38). A base
+// stored record (QueryResult.Sparse) legitimately omits unset optional proto fields, so a
+// name-keyed miss over it is a silent NULL; a non-sparse (join-merge) row keeps the
+// default loud NameMissLoud guard. Only base records pass sparse=true.
+func (ec *EvaluationContext) RowContextSparse(datum map[string]any, sparse bool) *values.RowEvalContext {
+	rc := ec.RowContext(datum)
+	rc.Sparse = sparse
+	return rc
+}
+
 // DisablePositionalEmission, when true, stops the row-birth sites — the
 // oracle REGISTRY: FromStoredRecord, the covering-index cursor, and the
 // RFC-173 Slice 2 ordinal-join births (nljCursor pairBinder/evaluateBound emission sites,

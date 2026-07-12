@@ -1041,6 +1041,40 @@ func lookupJoinKey(m map[string]any, col, alias string) any {
 	return nil
 }
 
+// fabricateNullLeg writes the NULL-supplied leg's declared columns into a null-padded merge
+// Datum as present-nil, so a name-keyed read of that leg (e.g. O.ID over an unmatched LEFT
+// JOIN row) resolves to SQL NULL instead of tripping the NameMissLoud guard (task #38). Per
+// the design ruling, the three exactness safeguards: (1) fabricate nil from the null leg's
+// OWN schema (legType) — NEVER read the present leg's row (that is the RFC-077 wrong-source
+// clobber); (2) ADD-IF-ABSENT — it can only write into keys the present leg did not claim, so
+// it can never overwrite a real value (a shared bare column, a dup alias); (3) the qualified
+// "ALIAS.col" cannot collide (the present leg qualifies under its OWN alias), the bare "col"
+// is defensive for a uniquely-named null-leg column read bare. It reads nothing from the
+// present row. The Datum then agrees column-for-column with the Positional null-pad, which is
+// built from the same legType.
+func fabricateNullLeg(datum map[string]any, nullType *values.RecordType, nullAlias string) {
+	if datum == nil || nullType == nil {
+		return
+	}
+	up := strings.ToUpper(nullAlias)
+	for _, f := range nullType.Fields {
+		col := strings.ToUpper(f.Name)
+		if up != "" {
+			if qk := up + "." + col; !mapHasKeyLocal(datum, qk) {
+				datum[qk] = nil
+			}
+		}
+		if !mapHasKeyLocal(datum, col) {
+			datum[col] = nil
+		}
+	}
+}
+
+func mapHasKeyLocal(m map[string]any, k string) bool {
+	_, ok := m[k]
+	return ok
+}
+
 func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
 		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
@@ -1094,6 +1128,14 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// OUTER leg is the NULL leg (nil row), symmetric to
 						// the unmatched-outer emission below. The inner was
 						// adapted once at construction.
+						// task #38: fabricate the NULL leg (OUTER) columns present-nil so a
+						// name-keyed read of them resolves to SQL NULL, not a loud unresolved
+						// reference. Uses the outer leg's own schema; reads nothing from the inner row.
+						if c.birth != nil {
+							if dm, ok := qr.Datum.(map[string]any); ok {
+								fabricateNullLeg(dm, c.birth.legType(c.outerCorr), c.outerAlias)
+							}
+						}
 						if c.birthActive {
 							pos, berr := c.birth.evaluateBound(c.pairBinder(nil, c.innerAdapted[i]))
 							if berr != nil {
@@ -1284,6 +1326,14 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				// QOV(inner)→nil and the inner slots fall out NULL (contract
 				// ruling #3's appendNullLeg equivalence). The outer was
 				// adapted once at its advance.
+				// task #38: fabricate the NULL leg (INNER) columns present-nil so a name-keyed
+				// read resolves to SQL NULL. Uses the inner leg's own schema; reads nothing
+				// from the outer row.
+				if c.birth != nil {
+					if dm, ok := qr.Datum.(map[string]any); ok {
+						fabricateNullLeg(dm, c.birth.legType(c.innerCorr), c.innerAlias)
+					}
+				}
 				if c.birthActive {
 					pos, berr := c.birth.evaluateBound(c.pairBinder(c.outerAdapted, nil))
 					if berr != nil {

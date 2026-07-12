@@ -967,7 +967,7 @@ func executeFilter(
 					// a complete row (aggregate output) is a bug, not a NULL.
 					rowCtx = evalCtx.RowContextStrict(m)
 				case needsRowCtx:
-					rowCtx = evalCtx.RowContext(m)
+					rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
 				}
 			}
 			for _, pred := range preds {
@@ -1450,7 +1450,7 @@ func executeProjection(
 				// row (aggregate output) is a bug, not a NULL.
 				rowCtx = evalCtx.RowContextStrict(m)
 			case needsRowCtx:
-				rowCtx = evalCtx.RowContext(m)
+				rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
 			}
 		}
 		for i, proj := range projections {
@@ -2372,7 +2372,7 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 		rowCtx = rc
 	} else if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0 {
 		if m, ok := combined.Datum.(map[string]any); ok {
-			rowCtx = evalCtx.RowContext(m)
+			rowCtx = evalCtx.RowContextSparse(m, combined.Sparse)
 		}
 	}
 	for _, pred := range preds {
@@ -2839,7 +2839,7 @@ func executeUpdate(
 			var rowCtx any = qr.Datum
 			if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 {
 				if m, ok := qr.Datum.(map[string]any); ok {
-					rowCtx = evalCtx.RowContext(m)
+					rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
 				}
 			}
 			newVal, err := t.NewValue.Evaluate(rowCtx)
