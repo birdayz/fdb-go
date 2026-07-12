@@ -1110,6 +1110,20 @@ validation gate.
     shape; then retire #2/#3/#4 by ordinalizing their shapes), then the atomic deletion. Gated on a
     Graefe RFC DESIGN-ACK of the demolition plan + all four impl gates (codex incl.). See the
     corrected RFC Slice-4 PREREQUISITE block.
+    **STALE-NOTE CORRECTION (the ":1102 core heavily live" para above predates the S4 slices):** every
+    join/unnest/group-by shape now ORDINALIZES — the census sweep (TestRFC173CensusSweep, 18 families
+    incl. join2/leftjoin/fulljoin/join3/unnest*/groupby*/exists*/box) fires 0 P4/P5 producers, and E-1b
+    zeroed the LAST EXISTS family. The ordinalspike CERTIFICATE is GREEN at 505fc32c9 (1641 corpus
+    entries, 0 carve-outs, 0 mismatches) — the force-ordinalize path is result-identical to the name
+    model across the whole corpus, PROVING the atomic cap is safe to fire. ReEnumeration (#4) is
+    downstream of P4/P5 (fires only for anchored parents → dies mechanically); legColumns:382 is a
+    name-DERIVATION helper (fires on the ordinal path too), not a seed producer. **Demolition is
+    UNBLOCKED** — remaining: Graefe design-confirm the fire + the atomic deletion commit + 4 impl gates
+    + exit gates (dualwindow/1M-stress/rfc153).
+    **E-1b DONE (505fc32c9, 4-gate ACK — Graefe design+impl, Torvalds, codex, @claude):** the Bakeable
+    leg-conjunct INNER cluster under EXISTS (`… A.K=100 AND EXISTS(…)`) ordinalizes via the one-authority
+    classifyLegConjunct + in-select gatedJoinLegTypes bake; the review round added the enclosed-CTE-leg
+    seedWindowed guard (P1) + the real flat-leg drift safety net (bakeGatedJoinPredicatesChecked).
     **E-1a DONE (ce2777bc3, 4-gate ACK):** the INNER flat cluster under EXISTS ordinalizes (translator
     alias-aware leg+element bake over the seed windows; the NLJ physicalization drops the windowed layout
     so the executor hoist can't recover it — bake in the translator). Zeros its P5 firing. BOOKED
