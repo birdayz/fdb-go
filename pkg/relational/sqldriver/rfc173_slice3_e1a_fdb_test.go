@@ -139,6 +139,38 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 	pin("faceB_element", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`, "map[X:7]")
 	// a WHERE conjunct alongside the EXISTS, both on the present leg → {7,8}.
 	pin("faceB_conj_and_exists", `SELECT "X" `+from+` WHERE A."AID" = 1 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[X:7]", "map[X:8]")
+
+	// AGGREGATE over the INNER-under-EXISTS gather: E-1a DECLINES the admission
+	// under an aggregate (the existential wrapper hides the raw seed from
+	// translateAggregate's gatheredSeedBakeContext), so the name-model handles it
+	// correctly. COUNT(X) over elements {7,8} of the surviving A.K=100 row = 2.
+	pin("agg_count_over_gather", `SELECT COUNT("X") `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[COUNT(X):2]")
+	// RETAINED outer-only ELEMENT predicate: `EXISTS(… WHERE X = 7)` has no
+	// inner-table ref, so buildCorrelatedExists keeps it in esq.Plan (the buried
+	// channel), which must ALSO bake the element (review-caught: JoinPredicate-only
+	// baking left X unbound → 0 rows). X=7 true, EE non-empty → {7}.
+	pin("retained_element_pred", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE "X" = 7)`, "map[X:7]")
+	// ELEMENT aliased the SAME as an inner column (`A.ARR AS CK`, inner `EE.CK`):
+	// the element bake must NOT rewrite the inner-table `EE.CK` to the element slot
+	// (review-caught: a nil-windows bake mis-baked it → malformed plan). Only
+	// merged-corr/bare refs bake; EE.CK resolves in ∃. A.K=100 matches → {7,8}.
+	pin("element_alias_shadows_inner", `SELECT "CK" FROM A, B, A."ARR" AS "CK" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[CK:7]", "map[CK:8]")
+
+	// checks-4/5 axis (review-required, ported from the B2-B cert): the
+	// dimensional coverage the core disambiguation pins don't exercise.
+	// (4) UNCORRELATED verdict-None EXISTS (whole-row-independent) → must ANSWER.
+	pin("uncorrelated_exists", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE)`, "map[X:7]", "map[X:8]")
+	// (5) ARITHMETIC on a buried leg (compound leg ref through the ordinal bake).
+	pin("arith_on_buried_leg", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K" + 0)`, "map[X:7]", "map[X:8]")
+	// the multi-table-element EXISTS stays LOUD 0AF00 (the :2926 guard fires on
+	// the INNER path too — a flip-sentinel: if a future change makes it gather,
+	// this catches the silent-wrong regression).
+	t.Run("twotable_leg_and_element_loud", func(t *testing.T) {
+		_, _, err := runQ(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE, EEV WHERE EE."CK" = A."K" AND EEV."VK" = "X")`)
+		if err == nil || !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("two-table leg+element EXISTS must be LOUD 0AF00, got: %v", err)
+		}
+	})
 }
 
 // TestRFC173Slice3E1aCensus pins that the E-1a INNER cluster under EXISTS fires
