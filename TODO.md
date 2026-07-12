@@ -1150,6 +1150,29 @@ validation gate.
     declines + producers + ReEnumeration + §5 oracle, ONE commit) when the flip is 0-red-except-retires.
     This slice is the handoff's flagged "fresh focus / 0-row-planner-bug class" — the next focused push;
     red-first is the flip dashboard. See scratchpad/flip-measurement-505fc32c9.md.
+    **ENCLOSED-BOX SLICE PROGRESS (flip-dashboard-driven, all Graefe-design-locked):**
+    - PART 1 LANDED (55c9d43f5): route the ENCLOSED box-unnest through translateGatheredUnnestCluster
+      under the flip (cascades_translator.go:1510 `|| forceOrdinalSpike`), so a box outer's ON stays the
+      null-on-empty condition INSIDE the dissolve (Graefe (2)(b): keep the ON inside, NEVER window it →
+      LEFT→INNER). BYTE-IDENTICAL in production; verified LEFT-preserving (2 rows not 0). Cleared the
+      GraefeImplProbe2 enclosed-CTE-over-box class (~10 shapes).
+    - 🚩 STRADDLE CAP-BLOCKER (deferred to the cap, Graefe ruling; NOT production-reachable — flip-only):
+      boxbase_straddle (`… T4, T4C, T4.SARR AS X … WHERE T4.ID=Z`) 0-rows under the flip (name-key read
+      of a box-base column over an ordinal multi-leg box base). The box-base-local locus is architecturally
+      incapable (3 attempts reverted — both shapes identical at the box base; only the ABOVE straddle read
+      differs, invisible to translateChainedUnnestJoin). FIX AT THE FILTER-REBASE SITE, IN THE CAP COMMIT
+      (atomic with the enclosure-decline deletion). Cap-fix: TRY leg-window resolution of the straddle read
+      (T4's OrdinalSeedLegWindows) → correct 3 rows; 0AF00 decline only if the qualifier is ambiguous.
+    - LOUD reach gaps (Graefe: schedule, convert runtime strand → plan-time decline for cap-cleanliness):
+      FullBoxChained, scalar-subquery-conjunct (the Unbakeable-verdict split — partial-bake the leg refs,
+      leave the scalar as a bound comparand, a separate slice). Both already correct-or-loud.
+    - agg_count_over_gather: aggregate-under-EXISTS, promoted from plan-quality to a CAP-BLOCKER (the cap
+      deletes its name-model fallback) — land before the cap.
+    **FLIP-DASHBOARD RED CLASSIFICATION (Graefe guardrail — the cap fires only when every red is one of):**
+    (1) booked CAP-BLOCKERS fixed IN the cap (straddle 0-row, agg, FullBox/scalar-conj plan-time declines);
+    (2) RETIRE-TESTS deleted at the cap (name-model-assertion tests: Item2C4/C3, WedgeGate, BareTwin
+    does_not_bake, FilteredBox scalar_subquery_unbakeable); (3) NEW/UNEXPECTED → STOP + root-cause. A 0-ROW
+    IS NEVER A RETIRE-TEST.
     **E-1a DONE (ce2777bc3, 4-gate ACK):** the INNER flat cluster under EXISTS ordinalizes (translator
     alias-aware leg+element bake over the seed windows; the NLJ physicalization drops the windowed layout
     so the executor hoist can't recover it — bake in the translator). Zeros its P5 firing. BOOKED
