@@ -1507,7 +1507,17 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// translateUnnestExistsFilter) takes the gathered ordinal cluster — the
 	// same path the non-EXISTS box unnest takes since B2-A. A non-admitted
 	// existential unnest keeps the name-model binary seed below.
-	if !prevEnclosure && (!t.unnestUnderExistential || t.unnestExistentialGatherOK) {
+	// RFC-173 S4 cap (enclosed box-leg): an ENCLOSED unnest normally keeps the
+	// name-model binary seed (prevEnclosure) — its ordinal seed would be a child
+	// under a name-model parent (the RFC-077 7.6 re-enumeration mismatch). Under
+	// the whole-gate flip (forceOrdinalSpike — the demolition's target state, where
+	// the parent ordinalizes too), the enclosed unnest MUST gather through the SAME
+	// path the non-enclosed unnest takes, so a box outer's ON stays the null-on-empty
+	// condition INSIDE the dissolve (translateGatheredUnnestCluster's :275 LEFT/FULL
+	// guard) rather than stranding on the binary path's flat row (design ruling:
+	// keep the ON inside, never window it into a post-filter → LEFT→INNER). At the
+	// cap this guard is deleted with the other enclosure declines.
+	if (!prevEnclosure || forceOrdinalSpike) && (!t.unnestUnderExistential || t.unnestExistentialGatherOK) {
 		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName, unnestTrailing); sel != nil {
 			return sel
 		}
