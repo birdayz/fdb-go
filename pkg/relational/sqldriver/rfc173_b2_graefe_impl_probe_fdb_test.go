@@ -1069,6 +1069,33 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 			t.Fatalf("clean all-unique case-safe body must still resolve, got: %v", err)
 		}
 	})
+	// Q56 — the AGGREGATE ON-only body (buildDerivedTableSourceFromAgg) is under
+	// the SAME complete-or-decline gate as the projection path. It folds every
+	// output via NewUnquoted with no validation, so before the gate a quoted
+	// case-sensitive alias (`MIN(x) AS "x"`) resolved a wrong-case `C."X"` ON ref
+	// and returned rows, and a duplicate aggregate alias silent-first-matched —
+	// both now decline the whole source (0AF00), while a clean aggregate alias
+	// still resolves.
+	t.Run("Q56_agg_on_only_schema_complete_or_decline", func(t *testing.T) {
+		mustLoud := func(t *testing.T, sql string) {
+			t.Helper()
+			rows, err := run(t, sql)
+			if err == nil {
+				t.Fatalf("expected a LOUD 0AF00 decline, got rows=%v", rows)
+			}
+			if !strings.Contains(err.Error(), "0AF00") {
+				t.Fatalf("expected 0AF00, got: %v", err)
+			}
+		}
+		// wrong-case ref over a quoted-lowercase aggregate alias → decline.
+		mustLoud(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
+		// duplicate aggregate output name → decline.
+		mustLoud(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "X", MAX(LB."BID") AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
+		// POSITIVE control: a clean aggregate alias still installs and resolves.
+		if _, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "M" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."M" = "C2"."CID"`); err != nil {
+			t.Fatalf("clean aggregate alias must still resolve, got: %v", err)
+		}
+	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBody+`) SELECT "C"."AK", "C2"."CID" FROM "C" JOIN CC AS "C2" ON "C"."BK" = "C2"."CID" UNION ALL SELECT LA."K", 0 FROM LA WHERE LA."K" = 110`,
 			"110|0")

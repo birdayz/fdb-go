@@ -763,7 +763,13 @@ validation gate.
     gate = a cross-engine DIFFERENTIAL proving Go's getColumnLabel/resolution case matches Java's for quoted,
     unquoted, mixed aliases (a conformance-parity claim → needs the harness). When (b) lands, Q55(a)'s two
     mustLoud pins flip decline→answer (matching Java). Both sequence AFTER the S4 demolition unless a shift
-    picks up conformance.
+    picks up conformance. SEQUENCING (Graefe): (a) and (b) INTERACT — if (b) the execution-uppercasing slice
+    lands FIRST (quoted identifiers case-preserving end-to-end), the case-sensitive obstruction class
+    DISSOLVES entirely (an `AS "x"` body then emits key `x`, advertisable truthfully), leaving only the
+    genuine dup-name class for the (a) poison-marker. Build (a) against the POST-uppercasing identifier model
+    or it encodes a workaround for a bug (b) removes. The gate covers BOTH the projection path (Q55) AND the
+    AGGREGATE path (Q56 — buildDerivedTableSourceFromAgg, folded via NewUnquoted with its output names
+    already StripIdentifierQuotes'd, so the quoted flag is re-read off the Uid via cteBodyAllAliasesCaseSafe).
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible
