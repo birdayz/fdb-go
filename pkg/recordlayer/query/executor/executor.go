@@ -2487,6 +2487,18 @@ func isNumeric(v any) bool {
 	return false
 }
 
+// aggResultName derives the group-result slot key for an aggregate. It ToUppers
+// the rendered name (below), which FOLDS two aggregates that differ only in a
+// case-sensitive token (e.g. a string literal: `COUNT(CASE WHEN s='x' …)` vs
+// `…'X'…`) into ONE slot — finalizeGroup then writes both under the same key.
+// This is currently a LATENT silent-wrong, not a live one: the only shape whose
+// two case-differing aggregates compute DIFFERENT values (a string literal in a
+// GROUPED CASE aggregate) does not evaluate in this engine today (grouped
+// COUNT(CASE)=0, SUM(CASE)=nil), so the collision never yields observable wrong
+// rows. If grouped CASE aggregation is ever made to compute, this becomes a LIVE
+// silent-wrong across ALL callers — case-preserve the render here (or resolve
+// HAVING/ORDER-BY refs by the case-preserved agg.Alias key finalizeGroup also
+// writes). Part of the read-surface uppercasing family booked in TODO.md.
 func aggResultName(agg expressions.AggregateSpec) string {
 	opName := "?"
 	if agg.OperandName != "" {

@@ -779,7 +779,26 @@ validation gate.
     `(SELECT … AS M, … AS M) AS d … d.M`. Single source, within-source ambiguity — belongs to the
     output-naming-authority / poison-marker family (resolver-level per-attribute 42702), booked here not
     fixed. (Distinct from the wrong-case-accept on those same paths, which is value-correct — the (b)
-    uppercasing divergence — not a silent-wrong.)
+    uppercasing divergence — not a silent-wrong.) (d) NEW (Graefe ruling, LATENT executor silent-wrong, part
+    of the (b) read-surface uppercasing family): aggResultName (pkg/recordlayer/query/executor/executor.go
+    ~:2490) ToUppers the aggregate group-result slot key (`strings.ToUpper("SUM(%s)")` etc.), and
+    finalizeGroup (streaming_cursors.go ~:349) writes each value under that folded key — so two aggregates
+    differing only in a CASE-SENSITIVE token (a string literal: `COUNT(CASE WHEN s='x' …)` vs `…'X'…`)
+    COLLIDE into one slot (Graefe confirmed at the datum level: `'x'` came back as slot key `'X'`; two
+    case-differing aggregates → a single folded slot). Currently LATENT, not live: the only shape whose two
+    case-differing aggregates compute DIFFERENT values (a string literal in a GROUPED CASE aggregate) does
+    NOT evaluate in this engine today (grouped COUNT(CASE)=0, SUM(CASE)=nil), so the collision never yields
+    observable wrong rows. If grouped CASE aggregation is ever made to compute, this becomes a LIVE
+    silent-wrong across ALL callers (top-level HAVING too, not just ON-only CTEs) → fix aggResultName to
+    case-preserve the render, or resolve HAVING/ORDER-BY refs by the case-preserved agg.Alias key
+    finalizeGroup already writes (the HAVING/ORDER-BY resolution key is untraced — confirm which key it
+    binds by). FRAMING CORRECTION (Graefe): the pre-004e215f2 ToUpper dup-gate that declined this shape was
+    ACCIDENTALLY PROTECTIVE (consistent with the executor's ToUpper), NOT over-declining — the shape does
+    NOT execute correctly at the slot level, it is merely masked by grouped-CASE-not-computing. This is why
+    the fix must NOT go in the ON-only gate (principle-10 mis-location AND it would re-break the
+    `COUNT(*) … HAVING COUNT(*)` false-decline: that harmless same-value collision is indistinguishable
+    from the harmful case-differing one at the gate) — it belongs at aggResultName. A sentinel comment lives
+    at the aggResultName site; the red→green pin lands WITH the fix (needs a string-column fixture).
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible
