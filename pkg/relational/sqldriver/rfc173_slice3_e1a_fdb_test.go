@@ -191,19 +191,36 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 			`D1 AS (SELECT DISTINCT * FROM D0), D2 AS (SELECT DISTINCT * FROM D1), D3 AS (SELECT DISTINCT * FROM D2), `+
 			`D4 AS (SELECT DISTINCT * FROM D3), D5 AS (SELECT DISTINCT * FROM D4) `+
 			`SELECT D5."AID", COUNT(*) FROM D5 GROUP BY D5."AID"`, "map[AID:1 COUNT(*):2]")
-	// PROJECTING-CTE-aggregate class (review-caught silent-NULL axis) → LOUD. A subset/reorder/
-	// qualified derived source reshapes the row: findWindowedSeed stops at the LogicalProjection
-	// (can't bake against the reshaped layout) AND the name-model path mis-names the projected
-	// column (`SELECT A."AID"` → output "A.AID" ≠ the D-stripped key "AID"). Both give a silent
-	// NULL group, so the whole class is refused LOUD (correct-or-loud). Correctly ordinalizing a
-	// projecting derived source is a booked cap-blocker (Java answers it, GroupByQueryTests:699).
+	// PROJECTING-CTE-aggregate class (review-caught silent-NULL axis). The name-model fallback
+	// reads each group key by NAME over the projection's output columns, so the disposition
+	// splits on whether the key RESOLVES there:
+	//   BARE projection — output column name == the D-stripped key ("AID"→"AID") → resolves →
+	//   correct rows (kept; refusing it would regress a Java-supported, master-correct query).
+	pin("agg_cte_projecting_single_bare", `WITH D AS (SELECT "AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
+	pin("agg_cte_projecting_bare_reorder", `WITH D AS (SELECT "BID", "AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
+	//   QUALIFIED projection — output column "A.AID" ≠ the key "AID" → name-model reads NULL
+	//   (silent-wrong). Refuse LOUD. Correctly ordinalizing it (resolve against the projected
+	//   output's own layout) is a REQUIRED cap-blocker — Java answers it (GroupByQueryTests:699).
+	t.Run("agg_cte_qualreorder_loud", func(t *testing.T) {
+		sql := `WITH D AS (SELECT B."BID", A."AID", A."K" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`
+		if _, _, err := runQ(t, sql); err == nil {
+			t.Fatalf("qualified-projection aggregate must be LOUD (name-model mis-names → silent NULL), got no error: %s", sql)
+		}
+	})
+	// A LAYOUT-PRESERVING wrapper (ORDER BY, LIMIT) between the aggregate and the gather does
+	// NOT reshape columns — findWindowedSeed walks it, so an IDENTITY SELECT-* under a sort/limit
+	// still ORDINALIZES correctly (review-caught: a bare `SELECT * … ORDER BY` aggregated silently
+	// NULLed when the walk stopped at the sort).
+	pin("agg_cte_star_orderby_limit", `WITH D AS (SELECT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") ORDER BY A."AID" LIMIT 100) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
+	// The FLOOR sees through those same wrappers (+ UNION ALL): a QUALIFIED projection under a
+	// sort or a union still mis-names → LOUD, never a silent NULL that the wrapper hides.
 	for _, tc := range []struct{ name, sql string }{
-		{"agg_cte_projecting_single_loud", `WITH D AS (SELECT "AID" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`},
-		{"agg_cte_qualreorder_loud", `WITH D AS (SELECT B."BID", A."AID", A."K" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`},
+		{"agg_cte_qual_orderby_loud", `WITH D AS (SELECT A."AID" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") ORDER BY A."AID" LIMIT 100) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`},
+		{"agg_cte_qual_union_loud", `WITH D AS (SELECT A."AID" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") UNION ALL SELECT A."AID" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, _, err := runQ(t, tc.sql); err == nil {
-				t.Fatalf("projecting-CTE aggregate must be LOUD (silent-NULL floor), got no error: %s", tc.sql)
+				t.Fatalf("qualified projection under a sort/union must be LOUD (the wrapper must not hide the silent NULL): %s", tc.sql)
 			}
 		})
 	}

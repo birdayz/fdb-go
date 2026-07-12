@@ -181,20 +181,6 @@ func (e *BuriedExistentialPredicateError) Error() string {
 	return "EXISTS in this query shape is not yet supported"
 }
 
-// UnbakeableProjectedGatherError is the correct-or-loud floor for an aggregate/sort whose
-// input is a POSITIONAL ordinal gather reached through a RESHAPING wrapper — a
-// projecting/subset derived source (LogicalProjection) — that the seed-slot bake cannot
-// address: the seed's per-leg slot no longer maps to the reshaped output row. Skipping the
-// bake would read the group key by NAME over the ordinal row → a silent NULL. Refusing LOUD
-// upholds correct-or-loud. Ordinalizing such a shape CORRECTLY — resolving the key against
-// the projected output's own layout rather than the pre-projection seed — is a tracked
-// cap-blocker (Java plans GROUP BY over a projecting derived source, GroupByQueryTests:699).
-type UnbakeableProjectedGatherError struct{}
-
-func (e *UnbakeableProjectedGatherError) Error() string {
-	return "aggregate/sort over a projected ordinal gather is not yet supported (would mis-resolve the key)"
-}
-
 // CheckBuriedExistentialPredicate is the RFC-141 R4 convergence
 // backstop for WHERE EXISTS (P1a). Given the root Reference of a freshly
 // translated (pre-planning) plan tree, it returns a

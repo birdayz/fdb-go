@@ -4735,9 +4735,18 @@ func findWindowedSeed(expr expressions.RelationalExpression, seen map[*expressio
 		quants = e.GetQuantifiers()
 	case *expressions.LogicalDistinctExpression:
 		quants = e.GetQuantifiers()
+	case *expressions.LogicalSortExpression:
+		// ORDER BY reorders ROWS, not COLUMNS — column-layout-preserving, so the seed's
+		// slots still address the sort's output row. Walk it, so `SELECT * … ORDER BY`
+		// aggregated ordinalizes correctly rather than skipping the bake.
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalLimitExpression:
+		// LIMIT truncates ROWS, not COLUMNS — layout-preserving, same as the sort.
+		quants = e.GetQuantifiers()
 	default:
-		// A GroupBy / physical plan / any row-reshaping node is NOT an identity wrapper:
-		// stop, so the seed under it is never baked against the reshaped output row.
+		// A GroupBy / UNION / physical plan / any row-reshaping node is NOT a
+		// column-identity wrapper: stop, so the seed under it is never baked against the
+		// reshaped output row.
 		return nil, nil, false
 	}
 	for _, q := range quants {
@@ -4781,6 +4790,13 @@ func positionalGatherUnbaked(expr expressions.RelationalExpression, seen map[*ex
 		quants = e.GetQuantifiers()
 	case *expressions.LogicalLimitExpression:
 		quants = e.GetQuantifiers()
+	case *expressions.LogicalSortExpression:
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalUnionExpression:
+		// UNION ALL is positional but multi-branch: findWindowedSeed can't bake one branch's
+		// seed over the interleaved output, so a projecting/qualified branch under it is a
+		// silent-NULL hazard the floor must catch.
+		quants = e.GetQuantifiers()
 	default:
 		// GroupBy RE-NAMES (a name read over its output resolves — no silent NULL), and a
 		// physical / non-positional node is not this hazard: stop.
@@ -4793,6 +4809,75 @@ func positionalGatherUnbaked(expr expressions.RelationalExpression, seen map[*ex
 		}
 		seen[ref] = true
 		if positionalGatherUnbaked(ref.Get(), seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// governingProjection returns the outermost LogicalProjectionExpression that determines the
+// aggregate input row's column names, reachable through passthrough wrappers (a passthrough
+// Select, DISTINCT, LIMIT), or nil when none governs (a pure positional gather — whose
+// unresolved name read the executor already refuses LOUD, so the aggregate floor need not).
+func governingProjection(expr expressions.RelationalExpression, seen map[*expressions.Reference]bool) *expressions.LogicalProjectionExpression {
+	if expr == nil {
+		return nil
+	}
+	if p, ok := expr.(*expressions.LogicalProjectionExpression); ok {
+		return p
+	}
+	var quants []expressions.Quantifier
+	switch e := expr.(type) {
+	case *expressions.SelectExpression:
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalDistinctExpression:
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalLimitExpression:
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalSortExpression:
+		quants = e.GetQuantifiers()
+	case *expressions.LogicalUnionExpression:
+		quants = e.GetQuantifiers()
+	default:
+		return nil
+	}
+	for _, q := range quants {
+		ref := q.GetRangesOver()
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		if p := governingProjection(ref.Get(), seen); p != nil {
+			return p
+		}
+	}
+	return nil
+}
+
+// projectionOutputColumnNames returns the UPPER-cased output-column names a projection emits
+// — the alias when present, else the derived name of the projected Value (values.
+// OutputColumnName, the same authority the physical projection uses). These are the names a
+// name-model group key resolves against.
+func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) []string {
+	vals := proj.GetProjectedValues()
+	aliases := proj.GetAliases()
+	names := make([]string, len(vals))
+	for i, v := range vals {
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
+		}
+		names[i] = strings.ToUpper(values.OutputColumnName(v, alias))
+	}
+	return names
+}
+
+// nameResolvesInColumns reports whether the group-key name resolves (exact, case-insensitive)
+// against the input row's output columns.
+func nameResolvesInColumns(key string, cols []string) bool {
+	k := strings.ToUpper(key)
+	for _, c := range cols {
+		if c == k {
 			return true
 		}
 	}
@@ -5200,19 +5285,29 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	}
 	// Correct-or-loud floor for the PROJECTING-CTE-aggregate class: the bake was SKIPPED
 	// (findWindowedSeed couldn't reach an identity-wrapped seed) but the input is a
-	// POSITIONAL ordinal gather under a RESHAPING projection (a subset/reorder/qualified
-	// derived source). That whole class is broken both ways — the name-model path
-	// mis-names the projected column (GROUP BY D.AID over `SELECT A."AID"` reads NULL: the
-	// output column is "A.AID", not the D-stripped key "AID"), and the ordinal path cannot
-	// bake against the reshaped row — so a skipped bake reads the group key by NAME over the
-	// positional row → silent NULL group. Refuse the whole class LOUD rather than ship a
-	// silent-wrong. Ordinalizing a projecting derived source CORRECTLY — resolve the key
-	// against the projected output's own layout — is a booked cap-blocker; Java answers it
-	// (GroupByQueryTests:699). Only when findWindowedSeed reaches an identity-wrapped seed
-	// (SELECT-*, DISTINCT, chained at any depth) does the bake fire and this floor stay
-	// silent (bake.seedQOV != nil).
+	// POSITIONAL ordinal gather under a RESHAPING projection. The name-model fallback reads
+	// each group key by NAME over the projection's output columns — which is CORRECT for a
+	// BARE projection (`SELECT "AID"` names the output "AID", matching the D-stripped key
+	// "AID") but silently NULL for a QUALIFIED/mis-naming one (`SELECT A."AID"` names the
+	// output "A.AID", which the key "AID" cannot match). So refuse LOUD only when a group
+	// key does NOT resolve against the governing projection's output-column names; a
+	// name-resolvable (bare) projection is kept (pre-cap correct, review-caught). Both
+	// sub-cases still need the projected-output-layout ordinalization at the cap (a required
+	// cap-blocker: Java answers GROUP BY over a projecting derived source, GroupByQueryTests:699).
 	if bake.seedQOV == nil && positionalGatherUnbaked(innerRef.Get(), map[*expressions.Reference]bool{}) {
-		t.setTranslateErr(&UnbakeableProjectedGatherError{})
+		if proj := governingProjection(innerRef.Get(), map[*expressions.Reference]bool{}); proj != nil {
+			names := projectionOutputColumnNames(proj)
+			for i, key := range a.GroupKeys {
+				if i < len(a.GroupKeyValues) && a.GroupKeyValues[i] != nil {
+					continue // a resolved GroupByValue, not a bare name read
+				}
+				if !nameResolvesInColumns(key, names) {
+					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+						"aggregate GROUP BY over a projected ordinal gather is not yet supported (the projected output column does not match the key name; would mis-resolve to NULL)"))
+					break
+				}
+			}
+		}
 	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
 	for i, aggText := range a.Aggregates {
