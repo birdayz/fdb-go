@@ -1177,6 +1177,21 @@ validation gate.
       execution plan (both blockers' fixes, reach-gap dispositions, cap mechanics, exit gates) in
       scratchpad/flip-measurement-505fc32c9.md. EXIT-GATE PROVEN CLEAN: full flip = exactly 1 silent-wrong
       (the booked straddle), all else loud/retire — the cap is safe to plan on the correctness axis.
+      ✅ **agg cap-blocker DONE (f67a2c8c7 + 914aa226d, 4-gate in flight):** the DIRECT aggregate-over-EXISTS
+      ordinalizes — gatheredSeedBakeContext peels the single semi-join wrapper (E-1a's under-aggregate decline
+      masked a nil-seedQOV bug: seedElementSlots looked for the Explode as a direct quantifier; under EXISTS
+      it's one level down). COUNT(X)=2/SUM(A.K)=200/GROUP BY X all bake correctly, 0 producers. Review (codex)
+      caught that removing the decline WHOLESALE was too broad — CTE/DISTINCT-WRAPPED aggregates qualify the
+      group key with the wrapper alias (unbakeable over the seed windows) → silent NULL/collapse. Fixed by
+      NARROWING admission to the direct shape (a.Input IS the EXISTS filter; wrappers resolve to LogicalScan →
+      decline → name-model). Multi-EXISTS-under-aggregate stays name-model + LOUD (pre-existing planner gap,
+      confirmed at parent). Pins: agg_cte_groupby_leg, agg_cte_distinct_groupby_element, agg_multiexists_loud.
+      Only the STRADDLE remains as a booked cap-blocker.
+      📌 BOOKED (Graefe, separate follow-up, no correctness urgency — Verdict-None is conservative =
+      correct-or-loud already): investigate whether the NON-aggregate E-1a admission (the executor-hoist
+      path) can route through a translator-side bake (like gatheredSeedBakeContext) instead of the hoist,
+      and whether its surviving `Verdict-None only` restriction is consequently over-conservative (same
+      NLJ-hoist misattribution the aggregate fix disproved). Reach question, not a cap-blocker.
     **FLIP-DASHBOARD RED CLASSIFICATION (Graefe guardrail — the cap fires only when every red is one of):**
     (1) booked CAP-BLOCKERS fixed IN the cap (straddle 0-row, agg, FullBox/scalar-conj plan-time declines);
     (2) RETIRE-TESTS deleted at the cap (name-model-assertion tests: Item2C4/C3, WedgeGate, BareTwin

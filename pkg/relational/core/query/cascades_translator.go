@@ -5122,7 +5122,11 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		// keys/operands are qualified with the WRAPPER's alias, which the seed's per-leg
 		// windows cannot bake; admitting the gather there partially-bakes into a silent
 		// NULL/collapse. Those shapes decline to name-model (correct rows). See
-		// admitExistentialGather's under-aggregate gate.
+		// admitExistentialGather's under-aggregate gate. Reset to false first: a wrapped
+		// aggregate (a.Input a LogicalScan/Distinct/… — never the EXISTS filter) is
+		// definitionally not the direct consumer, so the flag must never inherit a stale
+		// true from an enclosing direct aggregate regardless of the enclosing filter type.
+		t.underAggregateDirectGather = false
 		if fin, isF := a.Input.(*logical.LogicalFilter); isF {
 			t.underAggregateDirectGather = len(fin.ExistsSubqueries) > 0
 		}
