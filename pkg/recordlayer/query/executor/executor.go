@@ -961,12 +961,17 @@ func executeFilter(
 				// miss, no name-map fallback).
 				rowCtx = frontierRowContext(qr.Positional, evalCtx, needsRowCtx)
 			} else if m, ok := qr.Datum.(map[string]any); ok {
-				switch {
-				case StrictReferenceCheck && qr.Complete:
+				if StrictReferenceCheck && qr.Complete {
 					// RFC-048 W1: a HAVING/filter reference to a name absent from
 					// a complete row (aggregate output) is a bug, not a NULL.
 					rowCtx = evalCtx.RowContextStrict(m)
-				case needsRowCtx:
+				} else {
+					// Always wrap so qr.Sparse threads through — the base-record
+					// name-keyed path (name window, no params) omits unset optionals,
+					// so a miss is SQL NULL, not a NameMissLoud violation. With no
+					// params the RowEvalContext resolves identically to the bare map,
+					// plus the Sparse flag; the old needsRowCtx fast path could not
+					// carry Sparse.
 					rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
 				}
 			}
@@ -1395,13 +1400,6 @@ func executeProjection(
 	// RFC-173 Slice 1: on the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
 	posNeedsCtx := hasBindingContext(evalCtx)
-	// A projection over a NAME-MODEL (Datum) row needs the binder too whenever
-	// correlation bindings exist: a correlated projected value (a materialized
-	// outer-scope scalar inside a correlated subquery's JOIN-inner — the inner
-	// join flows Datum rows) evaluates against the row context, and a bare map
-	// silently NULLs the outer reference (review coverage-gap catch: the
-	// outer-scope × join-inner combination returned NULL).
-	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || posNeedsCtx
 	// RFC-173 P2/Slice 1: the projection's output schema is row-invariant — compute
 	// it ONCE. projNames keys the name-keyed Datum (source column name for a bare
 	// field ref, from projectionColumnName); posNames names the EMITTED positional
@@ -1444,12 +1442,16 @@ func executeProjection(
 			// fallback), taking precedence over the name-keyed Datum.
 			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
 		} else if m, ok := qr.Datum.(map[string]any); ok {
-			switch {
-			case StrictReferenceCheck && qr.Complete:
+			if StrictReferenceCheck && qr.Complete {
 				// RFC-048 W1: a projection reading a name absent from a complete
 				// row (aggregate output) is a bug, not a NULL.
 				rowCtx = evalCtx.RowContextStrict(m)
-			case needsRowCtx:
+			} else {
+				// Always wrap so qr.Sparse threads through — the base-record
+				// name-keyed projection (name window, no params) omits unset
+				// optionals, so a miss is SQL NULL, not a NameMissLoud violation.
+				// With no params the RowEvalContext resolves identically to the
+				// bare map; the old needsRowCtx fast path could not carry Sparse.
 				rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
 			}
 		}
@@ -2836,11 +2838,14 @@ func executeUpdate(
 			if fd == nil {
 				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
 			}
+			// A base stored record's Datum omits unset optional fields, so a SET-expr
+			// name-keyed read of an unset column (COALESCE(VAL,…), CASE WHEN A2 IS NULL)
+			// must resolve to SQL NULL, not trip the NameMissLoud guard. Always wrap so
+			// qr.Sparse threads through — the bare map cannot carry it, and the wrap also
+			// binds any params / scalar subqueries the SET expr references.
 			var rowCtx any = qr.Datum
-			if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 {
-				if m, ok := qr.Datum.(map[string]any); ok {
-					rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
-				}
+			if m, ok := qr.Datum.(map[string]any); ok {
+				rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
 			}
 			newVal, err := t.NewValue.Evaluate(rowCtx)
 			if err != nil {

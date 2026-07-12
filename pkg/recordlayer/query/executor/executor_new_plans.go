@@ -364,7 +364,6 @@ func executePredicatesFilter(
 	// e.g. on a null-filled LEFT JOIN row (b absent), qov(b).id would wrongly
 	// pick up the outer row's bare ID instead of NULL.
 	bindAlias := innerAlias.Name() != "" && !producesMergedRows(p.GetInner())
-	needsRowCtx := bindAlias || (evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0))
 	// RFC-173 Slice 1: on the positional frontier a QOV(innerAlias).col resolves
 	// via the bare-positional fallback in evaluateCorrelated (Correlations miss →
 	// Positional), so bindAlias is NOT a reason to wrap — only a genuine
@@ -396,7 +395,11 @@ func executePredicatesFilter(
 				// bare-positional fallback in evaluateCorrelated, so no alias
 				// binding is needed here.
 				rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
-			case isStringMap(qr.Datum) && (strict || needsRowCtx):
+			case isStringMap(qr.Datum):
+				// Always take the name-keyed arm for a string-map row (dropped the old
+				// strict||needsRowCtx gate): the base-record path must wrap so qr.Sparse
+				// threads through even with no params, else a param-less WHERE over an
+				// unset optional trips the NameMissLoud guard.
 				m := qr.Datum.(map[string]any) //nolint:errcheck // guarded by isStringMap
 				ec := evalCtx
 				if ec == nil {
@@ -408,7 +411,10 @@ func executePredicatesFilter(
 				if strict {
 					rowCtx = ec.RowContextStrict(m)
 				} else {
-					rowCtx = ec.RowContext(m)
+					// Thread qr.Sparse: a base-record row read name-keyed in the name
+					// window (Positional disabled) legitimately omits unset optional
+					// fields, so a miss is SQL NULL, not a NameMissLoud violation.
+					rowCtx = ec.RowContextSparse(m, qr.Sparse)
 				}
 			case !isStringMap(qr.Datum) && bindAlias:
 				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
@@ -501,6 +507,15 @@ func executeMap(
 			// results. Bare strict context = identical resolution + miss reporting.
 			if m, ok := qr.Datum.(map[string]any); ok {
 				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
+			}
+		default:
+			// Name window (no Positional): a base-record projection resolves
+			// name-keyed. Thread qr.Sparse so an unset optional column reads as SQL
+			// NULL instead of tripping the NameMissLoud guard. Bare context (Datum
+			// only, no binder/scalar-subquery) to match production's bare-Datum
+			// resolution — same reason as the strict arm above.
+			if m, ok := qr.Datum.(map[string]any); ok {
+				rowCtx = &values.RowEvalContext{Datum: m, Sparse: qr.Sparse}
 			}
 		}
 		m, err := resultValue.Evaluate(rowCtx)
