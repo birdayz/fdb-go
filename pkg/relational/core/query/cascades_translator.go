@@ -2734,7 +2734,14 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	if t.unnestExistsScopeCollision {
 		return false
 	}
-	// Shape arm: a non-INNER box left.
+	// Shape arm: a non-INNER box left. E-1a (INNER flat cluster under EXISTS)
+	// stays DENIED here — its ordinal correlation would strand: the gather builds
+	// a windowed seed (seedWindowed=true) but the cluster physicalizes to a
+	// RecordQueryNestedLoopJoinPlan whose result value DROPS the windowed layout,
+	// so the executor's below-FOD hoist recovers 0 windows and never bakes the
+	// leg ref (vs the box, which physicalizes to a FlatMap that keeps the windowed
+	// RC). INNER-under-EXISTS stays correct on the name-model path until the
+	// windowed layout is preserved onto the INNER cluster's physical plan (booked).
 	bj, isBoxJoin := join.Left.(*logical.LogicalJoin)
 	if !isBoxJoin || bj.Kind == logical.JoinInner {
 		return false
