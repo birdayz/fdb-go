@@ -171,6 +171,33 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 			t.Fatalf("two-table leg+element EXISTS must be LOUD 0AF00, got: %v", err)
 		}
 	})
+
+	// === E-1b: a BAKEABLE leg conjunct alongside the EXISTS (`… A.K=100 AND
+	// EXISTS(…)`) now ORDINALIZES (was name-model). The conjunct bakes IN-SELECT
+	// over the re-derivable gatedJoinLegTypes; the correlation bakes onto the
+	// output QOV — both over the SAME seed layout.
+	// LOAD-BEARING: the conjunct's A.K slot and the correlation's A.K slot must be
+	// the SAME. A.K=100 → conjunct true, EE.CK=100 matches A.K → EXISTS true → {7,8}.
+	pin("e1b_conj_and_corr_same_leg", `SELECT "X" `+from+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[X:7]", "map[X:8]")
+	// the conjunct genuinely filters (reads A.K, not a wrong slot): A.K=100 ≠ 999 → {}.
+	pin("e1b_conj_false", `SELECT "X" `+from+` WHERE A."K" = 999 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`)
+	// dup-named discriminator: the conjunct is on B.K (NULL), the correlation on
+	// A.K (100) — DIFFERENT slots. B.K IS NULL → conjunct true; A.K=100 → EXISTS
+	// true → {7,8}. A wrong-slot bake reading A.K for the B.K conjunct → A.K IS
+	// NULL false → {} RED.
+	pin("e1b_dup_conj_BK_corr_AK", `SELECT "X" `+from+` WHERE B."K" IS NULL AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[X:7]", "map[X:8]")
+	// a conjunct on the ELEMENT (not a leg): X = 7 → only element 7 → {7}.
+	pin("e1b_element_conjunct", `SELECT "X" `+from+` WHERE "X" = 7 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[X:7]")
+	// checks-4/5: an UNBAKEABLE conjunct (subquery-carrying) declines GRACEFULLY to
+	// name-model (verdict-Unbakeable) — the plan SUCCEEDS (not a strand/loud
+	// error). Plan-only: executing it needs scalar-subquery pre-binding
+	// (WithScalarSubqueries), orthogonal to E-1b; the census-sweep cert separately
+	// pins that this shape stays name-model (fires producers).
+	t.Run("e1b_unbakeable_conj_subquery", func(t *testing.T) {
+		if _, err := embedded.PlanRecordQueryWithMetadata(`SELECT "X" `+from+` WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, md, nil); err != nil {
+			t.Fatalf("unbakeable subquery conjunct must plan (graceful name-model decline), got: %v", err)
+		}
+	})
 }
 
 // TestRFC173Slice3E1aCensus pins that the E-1a INNER cluster under EXISTS fires

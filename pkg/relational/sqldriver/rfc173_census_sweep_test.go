@@ -42,7 +42,9 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		{"orderby_join", `SELECT A."K" FROM A, B ORDER BY A."K"`},
 		{"distinct_join", `SELECT DISTINCT A."K" FROM A, B`},
 		{"exists_box", `SELECT "X" FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
-		{"exists_inner", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`}, // E-1a
+		{"exists_inner", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},                       // E-1a
+		{"exists_inner_conj", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},  // E-1b (was the flip-sentinel)
+		{"exists_inner_elem_conj", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE "X" = 7 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`}, // E-1b element conjunct
 	}
 	for _, tc := range zeroed {
 		n, err := count(tc.sql)
@@ -55,14 +57,14 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		}
 	}
 
-	// KNOWN-still-firing (the E-1b target): a Bakeable-leg-conjunct INNER cluster
-	// under EXISTS stays name-model (E-1a admits verdict-None only). This is a
-	// FLIP-SENTINEL: when E-1b (classifyFlatLegConjunct) lands and zeros it, this
-	// assertion goes red and must move up into `zeroed`.
-	if n, err := count(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); err != nil {
-		t.Errorf("exists_inner_conj: unexpected plan error: %v", err)
+	// UNBAKEABLE conjunct (subquery-carrying) STAYS name-model (correct-or-loud):
+	// classifyFlatLegConjunct returns Unbakeable → admitExistentialGather declines
+	// → the name model owns it → producers fire. Flip-sentinel: if a future slice
+	// ordinalizes the subquery-conjunct shape, this goes red.
+	if n, err := count(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); err != nil {
+		t.Errorf("exists_inner_unbakeable_conj: unexpected plan error: %v", err)
 	} else if n == 0 {
-		t.Error("exists_inner_conj now fires 0 producers — E-1b landed? move it into the `zeroed` set (flip-sentinel)")
+		t.Error("exists_inner_unbakeable_conj now fires 0 — a subquery-carrying conjunct should stay name-model (Unbakeable decline)")
 	}
 
 	// exists_multi_esq: fires during translation but STRANDS at physicalization (a

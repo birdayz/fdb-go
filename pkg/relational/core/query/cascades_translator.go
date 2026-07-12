@@ -2756,7 +2756,11 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 		if t.underAggregate {
 			return false
 		}
-		return verdict == boxConjNone
+		// RFC-173 S4 E-1b: a Bakeable leg conjunct (`… A.K = 100 AND EXISTS(…)`) is
+		// admitted too — it bakes IN-SELECT over the re-derivable gatedJoinLegTypes
+		// (the WHERE-path channel), not the box's recorded machinery. Unbakeable
+		// stays name-model (correct-or-loud).
+		return verdict == boxConjNone || verdict == boxConjBakeable
 	default: // FULL — D4-(ii): only a Bakeable box-leg conjunct gathers; FULL+None
 		// stays on the certified binary seed (already producer-free via c5a).
 		return verdict == boxConjBakeable
@@ -2787,8 +2791,15 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	verdict := boxConjNone
 	if nonExistsConjunctRefsOuterLeg(f.Predicate, outerAliases) {
 		verdict = boxConjUnbakeable
-		if bj, isBoxJoin := join.Left.(*logical.LogicalJoin); isBoxJoin && bj.Kind != logical.JoinInner {
-			verdict = t.classifyBoxLegConjunct(bj, u, f.Predicate)
+		if bj, isBoxJoin := join.Left.(*logical.LogicalJoin); isBoxJoin {
+			// RFC-173 S4 E-1b: an INNER flat cluster's leg conjunct classifies via
+			// the flat arm (top-level leg windows); a box's via the box arm (buried
+			// leaves). Both feed admitExistentialGather's Bakeable admission.
+			if bj.Kind == logical.JoinInner {
+				verdict = t.classifyFlatLegConjunct(bj, u, f.Predicate)
+			} else {
+				verdict = t.classifyBoxLegConjunct(bj, u, f.Predicate)
+			}
 		}
 	}
 	t.unnestBoxLegConjunct = verdict
@@ -2831,6 +2842,8 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 		// over a stale record), with the predicateRefsBuriedLeg loud assert
 		// behind it (the verdict guaranteed bakeability; a survivor would
 		// strand as a silent-NULL name read — loud internal error instead).
+		bj, isInnerCluster := join.Left.(*logical.LogicalJoin)
+		isInnerCluster = isInnerCluster && bj.Kind == logical.JoinInner
 		if recorded, hasRecord := t.unnestGatherBoxLegTypes[join]; hasRecord && gatheredHere {
 			delete(t.unnestGatherBoxLegTypes, join)
 			toMerge := bakeGatedJoinPredicates(func() []predicates.QueryPredicate {
@@ -2844,6 +2857,34 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 				if predicateRefsBuriedLeg(mp, recorded) {
 					t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
 						"RFC-173 B2-B: a box-leg conjunct reference survived the merge bake unbaked (verdict/bake drift)"))
+					return nil
+				}
+			}
+			merged = append(merged, toMerge...)
+		} else if isInnerCluster && gatheredHere {
+			// RFC-173 S4 E-1b: an ADMITTED INNER flat cluster (verdict None or a
+			// Bakeable leg conjunct) bakes the conjunct IN-SELECT over the cluster's
+			// leg windows — RE-DERIVED on the spot via gatedJoinLegTypes (the WHERE
+			// path's channel), NOT the box's recorded/consume-once machinery: the
+			// flat cluster's top-level legs are re-derivable, so no record is needed.
+			// A conjunct on the ELEMENT rides rewriteUnnestPredicate (no leg ref, so
+			// bakeGatedJoinPredicates leaves it, its element already rewritten).
+			legTypes := t.gatedJoinLegTypes(bj)
+			toMerge := bakeGatedJoinPredicates(func() []predicates.QueryPredicate {
+				out := make([]predicates.QueryPredicate, 0, len(nonExists))
+				for _, p := range nonExists {
+					out = append(out, rewriteUnnestPredicate(p, u))
+				}
+				return out
+			}(), legTypes)
+			// Safety net (CORRECT-or-LOUD): the classifier guaranteed Bakeable, but
+			// bakeGatedJoinPredicates silently passes an unmapped leg ref. A survivor
+			// is verdict/bake drift — decline to the name-model binary path (which is
+			// correct today), the E-1b twin of E-1a's unnestExistsRefSurvivesUnbaked
+			// (the box uses a loud assert; E-1b always has a name-model fallback, so
+			// decline-to-correct is the better disposition).
+			for _, mp := range toMerge {
+				if predicateRefsBuriedLeg(mp, legTypes) {
 					return nil
 				}
 			}

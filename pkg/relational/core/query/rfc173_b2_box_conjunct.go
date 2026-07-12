@@ -51,23 +51,44 @@ const (
 //   - every box-leg reference (legRef shape) must FieldIndex-resolve in its
 //     buried window's leafTyp — an unresolvable ref would strand as a lazy name
 //     read over the positional row (the wrong-slot class).
+//
+// classifyBoxLegConjunct is the BOX arm: one opaque leg (clusterLegOf), whose
+// per-leaf windows are BURIED in the box concat.
 func (t *cascadesTranslator) classifyBoxLegConjunct(box *logical.LogicalJoin, u *logical.LogicalUnnest, pred predicates.QueryPredicate) boxConjVerdict {
+	return t.classifyLegConjunct([]clusterLeg{clusterLegOf(box, false)}, box, u, pred)
+}
+
+// classifyFlatLegConjunct is the INNER FLAT-CLUSTER arm (RFC-173 S4 E-1b): N
+// TOP-LEVEL legs (legsOfGatedJoin), each its own window (leafTyp == typ). Same
+// classifier as the box (one authority), only the legs source differs — the box
+// nests its leaves in one concat; the flat cluster's legs are top-level and
+// re-derivable, so no buried-leaf machinery.
+func (t *cascadesTranslator) classifyFlatLegConjunct(cluster *logical.LogicalJoin, u *logical.LogicalUnnest, pred predicates.QueryPredicate) boxConjVerdict {
+	return t.classifyLegConjunct(t.legsOfGatedJoin(cluster), cluster, u, pred)
+}
+
+// classifyLegConjunct decides Bakeable vs Unbakeable for a NON-EXISTS WHERE over
+// a gathered cluster (box or INNER-flat) — the ONE authority both arms share
+// (design ruling). legs is the cluster's leg set (one opaque box leg, or the
+// N flat legs); gateJoin is the cluster join both the fresh-cluster gate and the
+// allowed-alias set derive from. See classifyBoxLegConjunct / classifyFlatLegConjunct.
+func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *logical.LogicalJoin, u *logical.LogicalUnnest, pred predicates.QueryPredicate) boxConjVerdict {
 	// GATE FIRST: ordinalJoinSeedFields → ordinalLegColumns PANICS by design on
-	// a genuine name-model join leg, and a box that cannot gate ordinal as a
+	// a genuine name-model join leg, and a cluster that cannot gate ordinal as a
 	// fresh cluster is exactly where such legs live. The gather would decline
-	// that box anyway; classify must reach the same verdict without deriving
+	// that cluster anyway; classify must reach the same verdict without deriving
 	// the seed map (Unbakeable → the name-model fallback, never a crash on a
 	// shape that worked).
-	if !t.gatesAsFreshCluster(box) {
+	if !t.gatesAsFreshCluster(gateJoin) {
 		return boxConjUnbakeable
 	}
-	_, legTypes := t.ordinalJoinSeedFields([]clusterLeg{clusterLegOf(box, false)})
+	_, legTypes := t.ordinalJoinSeedFields(legs)
 	if legTypes == nil {
 		return boxConjUnbakeable
 	}
 	boxLegs := map[string]struct{}{}
 	allowed := map[string]struct{}{}
-	for a := range outerBoundAliases(box) {
+	for a := range outerBoundAliases(gateJoin) {
 		boxLegs[strings.ToUpper(a)] = struct{}{}
 		allowed[strings.ToUpper(a)] = struct{}{}
 	}
