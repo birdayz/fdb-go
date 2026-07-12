@@ -43,35 +43,7 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-
-	// A(AID=1, K=100, ARR=[7,8]); B(BID=2, K=110) — A.K/B.K dup-named, the
-	// leg the qualified EXISTS correlation must disambiguate. LEFT JOIN A,B on
-	// AID=BID: 1≠2 → A row survives with B null-supplied (B.K=NULL).
-	b := metadata.NewSchemaTemplateBuilder().SetName("s3s0")
-	b.AddTable("A", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("AID", api.NewLongType(false), 1),
-		metadata.NewColumnSpec("K", api.NewLongType(true), 2),
-		metadata.NewColumnSpec("ARR", api.NewArrayType(api.NewIntegerType(false), true), 3),
-	}, []string{"AID"})
-	b.AddTable("B", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("BID", api.NewLongType(false), 1),
-		metadata.NewColumnSpec("K", api.NewLongType(true), 2),
-	}, []string{"BID"})
-	// EE(CK): matches A.K=100 (CK=100) or B.K (never, B.K=NULL). The
-	// leg-correlation discriminator.
-	b.AddTable("EE", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("CK", api.NewLongType(false), 1),
-	}, []string{"CK"})
-	// EEV(VK): matches an ELEMENT value (VK=7 ∈ ARR). The R2 element-correlation
-	// discriminator, kept separate from EE so leg vs element stay independent.
-	b.AddTable("EEV", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("VK", api.NewLongType(false), 1),
-	}, []string{"VK"})
-	tmpl, err := b.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	md := tmpl.Underlying()
+	md := slice3B2bMetadata(t)
 
 	mkA := func(aid, k int64, vals ...int32) proto.Message {
 		d := md.GetRecordType("A").Descriptor
@@ -203,14 +175,48 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	const ffrom = `FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
 	pin("full_bakeable_conjunct", `SELECT "X" `+ffrom+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
 		"map[X:7]", "map[X:8]")
+}
 
-	// CENSUS (the B2-B checkbox): the admitted LEFT-box+EXISTS shape must fire
-	// ZERO name-model producers (it took the gathered ordinal cluster), while a
-	// FULL-box+EXISTS+verdict-None shape is NOT admitted (D4-(ii): FULL+None
-	// rides the certified binary seed) and its producers still fire. Both
-	// answer correct rows either way; the census is the model discriminator.
-	countProducers := func(t *testing.T, sql string) int {
-		t.Helper()
+// slice3B2bMetadata builds the A/B/EE/EEV schema shared by the B2-B row cert
+// (FDB execution) and census cert (planning only). A(AID=1,K=100,ARR=[7,8]);
+// B(BID=2,K=110) — A.K/B.K dup-named, the leg a qualified EXISTS correlation
+// must disambiguate; EE(CK) is the leg-correlation table, EEV(VK) the element
+// one.
+func slice3B2bMetadata(tb testing.TB) *recordlayer.RecordMetaData {
+	tb.Helper()
+	b := metadata.NewSchemaTemplateBuilder().SetName("s3s0")
+	b.AddTable("A", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("AID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("K", api.NewLongType(true), 2),
+		metadata.NewColumnSpec("ARR", api.NewArrayType(api.NewIntegerType(false), true), 3),
+	}, []string{"AID"})
+	b.AddTable("B", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("BID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("K", api.NewLongType(true), 2),
+	}, []string{"BID"})
+	b.AddTable("EE", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("CK", api.NewLongType(false), 1),
+	}, []string{"CK"})
+	b.AddTable("EEV", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("VK", api.NewLongType(false), 1),
+	}, []string{"VK"})
+	tmpl, err := b.Build()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return tmpl.Underlying()
+}
+
+// TestRFC173Slice3B2bFaceACensus is the B2-B model discriminator (the checkbox
+// the gather actually FIRED). It is DELIBERATELY NOT t.Parallel(): the producer
+// census observer is a PROCESS GLOBAL (SetProducerCensusObserver, whose own doc
+// requires no translation in flight), so the assertions must run in Go's
+// serial phase — a parallel sibling's concurrent translation would pollute the
+// count (a real data race). Planning-only, so it needs no FDB / Docker.
+func TestRFC173Slice3B2bFaceACensus(t *testing.T) { //nolint:paralleltest // process-global observer, must be serial
+	md := slice3B2bMetadata(t)
+	const from = `FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
+	countProducers := func(sql string) int {
 		n := 0
 		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
 		defer rquery.SetProducerCensusObserver(nil)
@@ -219,30 +225,23 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 		}
 		return n
 	}
-	t.Run("census_left_box_admits_zero_producers", func(t *testing.T) {
-		if n := countProducers(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n != 0 {
-			t.Fatalf("admitted LEFT-box+EXISTS fired %d name-model producer(s), want 0 (the gather must own it)", n)
+	// The admitted box+EXISTS shapes fire ZERO name-model producers (the gather
+	// owns them). Measured: the LEFT box fires 2 producers with the admission
+	// off, 0 with it on — the model discriminator the row pins can't be.
+	for _, tc := range []struct{ name, sql string }{
+		{"left_box_none", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
+		{"left_box_bakeable", `SELECT "X" ` + from + ` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
+		{"full_box_bakeable", `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
+	} {
+		if n := countProducers(tc.sql); n != 0 {
+			t.Fatalf("%s: fired %d name-model producer(s), want 0 (the gather must own it)", tc.name, n)
 		}
-	})
-	t.Run("census_bakeable_conjunct_zero_producers", func(t *testing.T) {
-		if n := countProducers(t, `SELECT "X" `+from+` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n != 0 {
-			t.Fatalf("admitted LEFT-box+Bakeable-conjunct fired %d name-model producer(s), want 0 (the merge bakes over the record)", n)
-		}
-	})
-	t.Run("census_full_bakeable_zero_producers", func(t *testing.T) {
-		if n := countProducers(t, `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n != 0 {
-			t.Fatalf("admitted FULL-box+Bakeable-conjunct fired %d name-model producer(s), want 0", n)
-		}
-	})
-	// INNER-CLUSTER control: B2-B's shape arm requires a NON-INNER box left, so
-	// a multi-source INNER cluster under EXISTS (`FROM A, B, A.arr AS X`) is NOT
-	// admitted (its owner is JoinInner) and stays name-model → producers fire.
-	// This is the E-1a class (the next slice); B2-B must not touch it. (Measured:
-	// the admitted LEFT box fires 2 producers with the admission off, 0 with it
-	// on — this control keeps its producers either way.)
-	t.Run("census_inner_cluster_stays_name_model", func(t *testing.T) {
-		if n := countProducers(t, `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n == 0 {
-			t.Fatal("multi-source INNER cluster under EXISTS fired 0 producers — B2-B must leave it name-model (E-1a owns it)")
-		}
-	})
+	}
+	// INNER-CLUSTER positive control: B2-B's shape arm requires a NON-INNER box
+	// left, so a multi-source INNER cluster under EXISTS stays name-model →
+	// producers fire. This is the E-1a class (next slice); it also proves the
+	// observer fires when it should (so the 0-assertions above aren't vacuous).
+	if n := countProducers(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n == 0 {
+		t.Fatal("multi-source INNER cluster under EXISTS fired 0 producers — B2-B must leave it name-model (E-1a owns it)")
+	}
 }
