@@ -167,6 +167,34 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 	// merged-corr/bare refs bake; EE.CK resolves in ∃. A.K=100 matches → {7,8}.
 	pin("element_alias_shadows_inner", `SELECT "CK" FROM A, B, A."ARR" AS "CK" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`, "map[CK:7]", "map[CK:8]")
 
+	// WRAPPED aggregate-over-EXISTS (review-caught silent-collapse axis): the aggregate
+	// gather is admitted ONLY for the DIRECT shape (aggregate immediately over the EXISTS
+	// filter). When a CTE/derived alias or a DISTINCT sits between the aggregate and the
+	// EXISTS, the group keys are qualified with the WRAPPER's alias (D.AID / D.X) — which
+	// the seed's per-leg windows cannot bake — so admitting the gather partial-bakes into a
+	// silent NULL/collapse. These MUST decline to name-model (correct rows). Regression
+	// pins for the two wrapped shapes:
+	//   P1a — CTE passthrough, GROUP BY a LEG column via the CTE alias. Without the direct
+	//   gate the group collapsed to AID=NULL; name-model → the single A.K=100 group, 2 rows.
+	pin("agg_cte_groupby_leg", `WITH D AS (SELECT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
+	//   P1b — DISTINCT between the aggregate and the EXISTS, GROUP BY the element via the
+	//   CTE alias. Without the direct gate X=7 and X=8 collapsed into one NULL group of 2;
+	//   name-model → two count-1 groups.
+	pin("agg_cte_distinct_groupby_element", `WITH D AS (SELECT DISTINCT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X", COUNT(*) FROM D GROUP BY D."X"`, "map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]")
+
+	// MULTI-EXISTS-under-aggregate: TWO EXISTS conjuncts are not admitted to the gather
+	// (admitExistentialGather requires a single esq) → name-model. This shape is a
+	// PRE-EXISTING planner gap (a name-model aggregate over a multi-EXISTS box unnest does
+	// not physicalize — confirmed identical at the pre-fix parent). It fails LOUD, never
+	// silent-wrong, so correct-or-loud holds. Pinned as a loud sentinel: if the multi-
+	// EXISTS-aggregate gap is ever closed, this flips and gets a row assertion.
+	t.Run("agg_multiexists_loud", func(t *testing.T) {
+		_, _, err := runQ(t, `SELECT COUNT("X") `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`)
+		if err == nil {
+			t.Fatalf("multi-EXISTS-under-aggregate must fail LOUD (pre-existing gap), got no error")
+		}
+	})
+
 	// checks-4/5 axis (review-required, ported from the B2-B cert): the
 	// dimensional coverage the core disambiguation pins don't exercise.
 	// (4) UNCORRELATED verdict-None EXISTS (whole-row-independent) → must ANSWER.

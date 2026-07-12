@@ -139,6 +139,14 @@ type cascadesTranslator struct {
 	// name-keyed wrap. This flag is only what marks the input as an aggregate INPUT
 	// (so the bake site knows to look); the wrap it once gated is deleted.
 	underAggregate bool
+	// underAggregateDirectGather narrows the aggregate-under-EXISTS gather admission to
+	// the DIRECT shape: set only when the aggregate's input IS the EXISTS filter, cleared
+	// when an opaque wrapper (CTE/derived alias → LogicalScan, DISTINCT, LIMIT) sits
+	// between. admitExistentialGather reads it to decline the gather for wrapped shapes —
+	// there the group keys are qualified with the wrapper's alias, which the seed's per-leg
+	// windows cannot bake, so ordinalizing would partial-bake into a silent NULL/collapse.
+	// Wrapped shapes keep the name-model path (correct rows).
+	underAggregateDirectGather bool
 	// unnestUnderExistential is set while lowering a lateral unnest that is the
 	// OUTER of an EXISTS composition (translateUnnestExistsFilter). RFC-173 commit
 	// 5a ORDINALIZES this class: the W4c ordinal-seed gate is taken when the outer
@@ -2738,6 +2746,16 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	if len(f.ExistsSubqueries) != 1 {
 		return false
 	}
+	// Under an aggregate, ordinalize ONLY the DIRECT shape (this filter is the
+	// aggregate's immediate input). A CTE/derived (LogicalScan) / DISTINCT / LIMIT
+	// wrapper between the aggregate and the filter qualifies the group keys with the
+	// wrapper's alias, which the seed's per-leg windows cannot bake — admitting the
+	// gather there partial-bakes into a silent NULL/collapse. Wrapped shapes keep the
+	// name-model path (correct rows); the direct shape ordinalizes and its element/leg
+	// refs bake over the peeled seed.
+	if t.underAggregate && !t.underAggregateDirectGather {
+		return false
+	}
 	// No inner/outer scope collision — a colliding unminted inner alias would
 	// get refs meaning the INNER row baked onto the outer window (silent wrong
 	// rows); the binary seed already declines on this, the gather must too.
@@ -2759,8 +2777,13 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 		// executor hoist — the INNER cluster physicalizes to a NestedLoopJoin whose
 		// result value drops the windowed layout, so the hoist recovers 0 windows
 		// (the box physicalizes to a FlatMap that keeps it). Verdict-None only.
-		// EXPERIMENT: removed underAggregate decline; gatheredSeedBakeContext now peels the
-		// existential wrapper to find the element slot — REVERT if collapse persists.
+		// An aggregate over this gather ORDINALIZES, but ONLY the DIRECT shape (see the
+		// under-aggregate gate above): E-1a's former blanket decline masked a nil-seedQOV
+		// bug, not an NLJ limit. gatheredSeedBakeContext peels the single existential wrapper
+		// to reach the seed's element slot + leg windows, so COUNT(X)/SUM(A.K)/GROUP BY bake
+		// correctly. A CTE/DISTINCT-WRAPPED aggregate qualifies its group keys with the
+		// wrapper alias (unbakeable over the seed windows), so the direct-gate declines it to
+		// name-model (correct rows) rather than partial-baking a silent collapse.
 		// RFC-173 S4 E-1b: a Bakeable leg conjunct (`… A.K = 100 AND EXISTS(…)`) is
 		// admitted too — it bakes IN-SELECT over the re-derivable gatedJoinLegTypes
 		// (the WHERE-path channel), not the box's recorded machinery. Unbakeable
@@ -2827,9 +2850,15 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	}
 	t.unnestBoxLegConjunct = verdict
 	t.unnestExistentialGatherOK = t.admitExistentialGather(join, f, verdict)
+	// The direct-consumer status is consumed by THIS filter's admission; clear it for
+	// the subtree so a nested inner EXISTS filter does not inherit it (it is no longer
+	// the aggregate's immediate input). translateAggregate restores the saved value.
+	prevDirectGather := t.underAggregateDirectGather
+	t.underAggregateDirectGather = false
 	prevUnderExist := t.unnestUnderExistential
 	t.unnestUnderExistential = true
 	unnestExpr := t.translateUnnestJoin(join, u)
+	t.underAggregateDirectGather = prevDirectGather
 	t.unnestUnderExistential = prevUnderExist
 	t.unnestExistsScopeCollision = prevCollision
 	t.unnestBoxLegConjunct = prevOuterConj
@@ -4685,13 +4714,17 @@ func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Refer
 	}
 	rc, elementSlots, ok := seedElementSlots(sel)
 	if !ok {
-		// RFC-173 S4 (aggregate-under-EXISTS): the input is an EXISTS-wrapped gather —
-		// a semi-join FlatMap whose OUTER quantifier is the raw gathered-seed select
-		// (carrying the Explode + the windowed RC) and whose inner is the existential.
-		// The semi-join preserves the seed's row layout, so peel ONE level to the outer
-		// quantifier's seed select for the element slots + windows. Without this the
-		// COUNT(X)/GROUP BY X operand bake gets a nil seedQOV and reads X by name over the
-		// ordinal row → collapses to 0 (E-1a declined under-aggregate for exactly this).
+		// RFC-173 S4 (aggregate-under-EXISTS): E-1a's under-aggregate decline masked a
+		// nil-seedQOV bug, not an architectural NLJ limit. When the aggregate input is an
+		// EXISTS-wrapped gather — a semi-join FlatMap whose OUTER quantifier is the raw
+		// gathered-seed select (carrying the Explode + the windowed RC) — seedElementSlots
+		// looks for the Explode as a DIRECT quantifier and misses it one level down. The
+		// semi-join is a pure filter (its result value is the outer quantifier's identity
+		// row), so the seed's row layout is preserved; peel ONE level to that select for
+		// the element slots + windows. Without the peel the operand bake gets a nil seedQOV
+		// and reads X by name over the ordinal row → collapses to 0. The gather admission
+		// (admitExistentialGather) permits only a SINGLE existential wrap, so exactly one
+		// level always reaches the seed.
 		for _, q := range sel.GetQuantifiers() {
 			inner, isSel := q.GetRangesOver().Get().(*expressions.SelectExpression)
 			if !isSel {
@@ -5079,11 +5112,24 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// references a column (the global SUM(EL) case). A global COUNT(*) references
 	// nothing, so it keeps the raw seed unbaked.
 	prevUnderAgg := t.underAggregate
+	prevDirectGather := t.underAggregateDirectGather
 	if len(a.GroupKeys) > 0 || aggregateOperandReferencesColumn(a) {
 		t.underAggregate = true
+		// RFC-173 S4: ordinalize the aggregate's EXISTS gather ONLY when this aggregate is
+		// the DIRECT consumer of the EXISTS filter — a.Input IS that filter (a LogicalFilter
+		// carrying the existential). When an opaque wrapper intervenes — a CTE/derived alias
+		// (a.Input is a LogicalScan of the derived relation), a DISTINCT/LIMIT — the group
+		// keys/operands are qualified with the WRAPPER's alias, which the seed's per-leg
+		// windows cannot bake; admitting the gather there partially-bakes into a silent
+		// NULL/collapse. Those shapes decline to name-model (correct rows). See
+		// admitExistentialGather's under-aggregate gate.
+		if fin, isF := a.Input.(*logical.LogicalFilter); isF {
+			t.underAggregateDirectGather = len(fin.ExistsSubqueries) > 0
+		}
 	}
 	innerRef := t.translateRef(a.Input)
 	t.underAggregate = prevUnderAgg
+	t.underAggregateDirectGather = prevDirectGather
 	if innerRef == nil {
 		return nil
 	}
