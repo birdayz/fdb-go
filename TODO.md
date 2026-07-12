@@ -742,6 +742,28 @@ validation gate.
     retires): buildWherePredicateForJoinsWithCTEScopes.addSource (~:1508, its own comment says
     "metadata first, then CTE scopes") plus ~7 more ResolveTable sites in the same masked category
     (~:320, :912, :3754, :5790, :6083, :6206 — derived-carrier and exists-planner scope builders).
+    NINTH-family (review, all three gates ACK on 60268dc9e + the follow-up): the ON-only CTE schema
+    (buildCTEOnOnlySource) is now COMPLETE-SCHEMA-OR-DECLINE — it installs ONLY when every runtime column
+    (keyed by executeProjection's uppercased emit-name) is unique AND case-safe; ANY obstruction (a quoted
+    case-sensitive alias `AS "x"`, or a duplicate runtime name incl. `AS "x", AS "X"` both emitting "X")
+    declines the WHOLE source (caller's loud 0AF00), never a partial table. WHY complete-or-decline and not
+    partial-omit: the schema is ONE source of the enclosing join and the resolver decides bare-ref ambiguity
+    by which SOURCES carry a name (scope.ResolveColumn), so a DROPPED-but-runtime-present column lets a bare
+    ref silently REBIND to another enclosing source (`WITH C AS (… AS AID, … AS AID, … AS Y) … FROM C JOIN
+    LA L ON AID = L.AID` returned rows instead of 42702 — review-caught silent-wrong; Q55(c) pins it loud).
+    TWO reach-restorations for a future conformance slice (both read-surface, NOT wire-visible): (a) the
+    POISON-MARKER — keep the UNIQUE columns of an obstructed body usable while making the obstructed name
+    resolve AMBIGUOUS via a per-source ambiguous-names set checked in scope.ResolveColumn/ResolveQualifiedColumn
+    (Java's per-attribute 42702 model) — restores the unique-Y-in-dup-body reach complete-or-decline now
+    declines (Q55(d)/Q54); (b) execution's quoted-alias UPPERCASING itself (`deriveProjectionColumnDef`
+    `label = ToUpper(alias)`, `OutputColumnName`, executeProjection Datum keys, the RFC-173 positional-frontier
+    slot names, every downstream re-reader) — Java's `getColumnLabel` returns `x`/`MixedCase` case-preserved;
+    Go loses it. Graefe scoping: (i) scope the fix as the INVARIANT not the label — the positional-frontier
+    slot names are the LOAD-BEARING site (a label-only fix re-creates the half-fix runtime failure); (ii)
+    gate = a cross-engine DIFFERENTIAL proving Go's getColumnLabel/resolution case matches Java's for quoted,
+    unquoted, mixed aliases (a conformance-parity claim → needs the harness). When (b) lands, Q55(a)'s two
+    mustLoud pins flip decline→answer (matching Java). Both sequence AFTER the S4 demolition unless a shift
+    picks up conformance.
   - [ ] **BOOKED (enclosed-CTE consult finding — LATENT collision hazard): the derived-table
     qualified-ref→bare-read rewrite.** `FROM (SELECT a.k AS x FROM …) AS d … WHERE d.x = 1` resolves d.x
     by rewriting to a BARE `x` read at build time — collision-unsafe in principle when another visible

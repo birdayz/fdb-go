@@ -1009,40 +1009,64 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		if ePanic == nil {
 			t.Fatal("comma-multi-leg shadow read must be LOUD (an install panicked here), got rows")
 		}
-		check(t, `WITH "C" AS (SELECT LA."K" AS "X", LB."K" AS "X", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`,
-			"1|900") // duplicate X but unique Y resolves and answers
+		// duplicate X in the body: complete-or-decline declines the WHOLE source
+		// (0AF00), even for the unique Y — the partial "keep Y, drop X" install
+		// this once pinned as answering `1|900` is unsound (review-caught: a
+		// dropped dup name rebinds to another enclosing source).
+		// The unique-Y reach is the booked cost; the poison-marker slice restores it.
+		_, eDupY := run(t, `WITH "C" AS (SELECT LA."K" AS "X", LB."K" AS "X", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`)
+		if eDupY == nil || !strings.Contains(eDupY.Error(), "0AF00") {
+			t.Fatalf("duplicate-X body must decline the whole source (0AF00), got: %v", eDupY)
+		}
 	})
-	// Q55 — the ON-only CTE schema must not LOSE identifier quotedness or
-	// duplicate-name ambiguity when an enclosing ON resolves through it. Before
-	// the fix the schema folded every output name (NewUnquoted) and admitted the
-	// first of a duplicate: a `C."X"` ON ref over an `AS "x"` body silently
-	// joined and returned rows; a `C.X` ref over a duplicated `AS "X", AS "X"`
-	// body silently joined on an arbitrary one. Both are now correct-or-LOUD:
-	// a quoted case-sensitive alias is omitted (execution uppercases the runtime
-	// key, so it cannot be referenced correctly), and duplicate runtime names
-	// are omitted — while UNIQUE, case-safe columns stay usable.
-	t.Run("Q55_on_only_schema_quotedness_and_dup_loud", func(t *testing.T) {
-		// A silent-wrong flip-sentinel: the regression these guard is a future
-		// schema change that RESOLVES the ambiguous/case-lost reference and
-		// returns joined rows. err != nil distinguishes rows-from-a-loud-decline.
+	// Q55 — the ON-only CTE schema is COMPLETE-SCHEMA-OR-DECLINE. It installs as
+	// ONE source of the enclosing join; the resolver decides bare-ref ambiguity
+	// by which SOURCES carry a name, so a PARTIAL install (advertise some runtime
+	// columns, drop others) is unsound — a dropped column whose runtime key
+	// another enclosing source also carries lets a bare ref SILENTLY bind there.
+	// Any obstruction therefore declines the WHOLE source (loud 0AF00), never a
+	// partial table. Obstructions, each keyed by the RUNTIME-emitted name
+	// (executeProjection uppercases every output key): a quoted CASE-SENSITIVE
+	// alias (`AS "x"` → runtime "X", no correct-case ref can name it), and a
+	// DUPLICATE runtime name (`AS X, AS X`, or `AS "x", AS "X"` — both emit "X").
+	t.Run("Q55_on_only_schema_complete_or_decline", func(t *testing.T) {
+		// A silent-wrong flip-sentinel: the regression each guards is a future
+		// schema change that RESOLVES the obstructed reference and returns joined
+		// rows. All obstructions decline the whole source → a uniform 0AF00 (the
+		// caller's ON-drop guard), so pin the CODE, not just err != nil.
 		mustLoud := func(t *testing.T, sql string) {
 			t.Helper()
-			if rows, err := run(t, sql); err == nil {
-				t.Fatalf("expected a LOUD decline (silent-wrong sentinel), got rows=%v", rows)
+			rows, err := run(t, sql)
+			if err == nil {
+				t.Fatalf("expected a LOUD 0AF00 decline (silent-wrong sentinel), got rows=%v", rows)
+			}
+			if !strings.Contains(err.Error(), "0AF00") {
+				t.Fatalf("expected 0AF00, got: %v", err)
 			}
 		}
-		// (a) quoted-lowercase alias `AS "x"` — every reference to it (wrong-case
-		//     "X" or correct-case "x") must be LOUD, never a silent join.
+		// (a) quoted-lowercase alias `AS "x"` — every reference (wrong-case "X"
+		//     or correct-case "x") declines the source, never a silent join.
 		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
 		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`)
-		// (b) DUPLICATE output name X — a `C."X"` ref must fail LOUD (42703),
-		//     never silently pick the first of the two X columns.
+		// (b) DUPLICATE output name X — a `C."X"` ref declines, never a silent
+		//     pick of the first of the two X columns.
 		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
-		// (c) a UNIQUE, case-safe alias (Y) in that SAME duplicated body must
-		//     STILL resolve — the fix omits only the ambiguous columns, not the
-		//     whole source (regression guard against a blanket decline).
-		if _, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`); err != nil {
-			t.Fatalf("unique case-safe alias Y must still resolve, got: %v", err)
+		// (c) the UNSOUND partial-install hole (review-caught): a dup name is
+		//     DROPPED from a partial schema and REBINDS to another enclosing
+		//     source. C has dup AID; the enclosing scope also has L.AID; a BARE
+		//     `AID` in the ON is AMBIGUOUS (C's dup vs L's) and MUST NOT silently
+		//     bind to L.AID and return cross-product rows. Complete-or-decline
+		//     closes it: the dup-bodied C declines wholesale → 0AF00.
+		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "AID", LB."BID" AS "AID", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "L"."AID" FROM "C" JOIN LA AS "L" ON "AID" = "L"."AID"`)
+		// (d) even a UNIQUE reference (Y) into a body that has a dup ELSEWHERE
+		//     declines — the whole source is untrustworthy once any column is
+		//     obstructed (the reach cost of complete-or-decline; the full-reach
+		//     poison-marker fix that keeps unique columns is a booked slice).
+		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`)
+		// (e) POSITIVE control — a CLEAN body (all-unique, case-safe) still
+		//     INSTALLS and resolves (this is not a blanket always-decline).
+		if _, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "P", LB."BID" AS "Q" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."P" = "C2"."CID"`); err != nil {
+			t.Fatalf("clean all-unique case-safe body must still resolve, got: %v", err)
 		}
 	})
 	t.Run("Q14_union_branch_on_resolves", func(t *testing.T) {

@@ -1444,22 +1444,32 @@ func buildCTEOnOnlySource(
 	if innerSQ.projCols == nil {
 		return semantic.ScopeSource{}, false // SELECT * over a multi-leg/derived body: no name authority
 	}
-	// Per-element alias QUOTEDNESS. A quoted alias is CASE-SENSITIVE, but
-	// executeProjection emits every output key UPPERCASED (strings.ToUpper), so
-	// a quoted-lowercase/mixed alias `AS "x"` can be neither advertised as "x"
-	// (a correct-case `C."x"` ON ref then plans but RUNTIME-fails against the
-	// uppercased row) nor folded to "X" (a case-mismatched `C."X"` ref then
-	// SILENTLY resolves and joins) — both review-caught. OMIT such a column so
-	// every reference to it fails LOUD at plan time (42703). A quoted-uppercase
-	// alias (`AS "X"`) already equals its fold and matches the emitted key, so
-	// it is kept. (The full fix — quoted identifiers surviving case-sensitively
-	// through execution — needs executeProjection to stop uppercasing; booked.)
+	// COMPLETE-SCHEMA-OR-DECLINE. This schema is installed as ONE source of the
+	// enclosing join; the resolver decides bare-ref ambiguity by which SOURCES
+	// carry a name (scope.ResolveColumn). A PARTIAL install — advertising some
+	// runtime columns and dropping others — is therefore UNSOUND: a dropped
+	// column whose runtime key another enclosing source ALSO carries would let a
+	// bare ref bind silently to that other source (the ref should be ambiguous),
+	// and this function cannot see the enclosing scope to know. So we install
+	// ONLY when every runtime column is advertised correctly and unambiguously;
+	// any obstruction declines the WHOLE source (caller's loud 0AF00), never a
+	// partial table. Two obstructions, each keyed by the RUNTIME-emitted name
+	// (executeProjection uppercases every output key):
+	//   (1) a quoted CASE-SENSITIVE alias (`AS "x"`, outName != its fold): the
+	//       runtime key is "X" but no correct-case ref can name it (a `C."x"`
+	//       plans then runtime-fails against the uppercased row; a `C."X"`
+	//       silently resolves the wrong case). Can't advertise it truthfully.
+	//   (2) a DUPLICATE runtime name (`… AS X, … AS X`, or `AS "x", AS "X"` —
+	//       both emit "X"): the schema is AMBIGUOUS on that name; advertising one
+	//       column silently joins on an arbitrary one and, when dropped, rebinds.
+	// (A partial "keep the unique columns, drop the bad one" was tried and is
+	// unsound for the rebind reason above — review-caught. The full-reach fix —
+	// keep unique columns AND make the bad name resolve ambiguous via a
+	// per-source poison marker in the resolver — is a booked conformance slice;
+	// until then a body with ANY obstruction declines wholesale, correct-or-loud.)
 	aliasQuoted := cteBodyAliasQuoted(body)
-	type pendCol struct {
-		runtimeName   string // the key execution emits (always uppercased)
-		caseSensitive bool   // quoted alias whose case the fold would destroy
-	}
-	pending := make([]pendCol, 0, len(innerSQ.projCols))
+	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
+	seen := make(map[string]int, len(innerSQ.projCols))
 	for i, col := range innerSQ.projCols {
 		// The output name must be one execution PROVABLY emits: the explicit
 		// alias (executeProjection always writes the alias key), or a BARE
@@ -1487,36 +1497,20 @@ func buildCTEOnOnlySource(
 			return semantic.ScopeSource{}, false
 		}
 		runtimeName := strings.ToUpper(outName)
-		pending = append(pending, pendCol{
-			runtimeName:   runtimeName,
-			caseSensitive: quoted && outName != runtimeName,
-		})
-	}
-	// The schema keys by the RUNTIME-emitted name (executeProjection uppercases
-	// every output key). Two independent losses must fail LOUD, never resolve:
-	//   (1) DUPLICATE runtime names (`… AS X, … AS X`, or even `AS "x", AS "X"`
-	//       which both emit "X") — the schema is AMBIGUOUS on that name; picking
-	//       the first column silently joins on an arbitrary one.
-	//   (2) a quoted CASE-SENSITIVE alias (`AS "x"`) — a `C."x"` ref plans then
-	//       runtime-fails against the uppercased row, a `C."X"` ref silently
-	//       resolves the wrong case.
-	// OMIT both classes (a reference then does not resolve → 42703 at plan time)
-	// while keeping every UNIQUE, case-safe column usable (review-caught: a
-	// blanket decline of the whole source over-rejected the unique columns).
-	nameCount := make(map[string]int, len(pending))
-	for _, p := range pending {
-		nameCount[p.runtimeName]++
-	}
-	columns := make([]semantic.Column, 0, len(pending))
-	for _, p := range pending {
-		if p.caseSensitive || nameCount[p.runtimeName] > 1 {
-			continue
+		if quoted && outName != runtimeName { // obstruction (1): case-sensitive
+			return semantic.ScopeSource{}, false
 		}
+		seen[runtimeName]++
 		columns = append(columns, semantic.Column{
-			Id:       semantic.NewUnquoted(p.runtimeName),
+			Id:       semantic.NewUnquoted(runtimeName),
 			Type:     "UNKNOWN",
 			Nullable: true,
 		})
+	}
+	for _, n := range seen {
+		if n > 1 { // obstruction (2): duplicate runtime name
+			return semantic.ScopeSource{}, false
+		}
 	}
 	if len(columns) == 0 {
 		return semantic.ScopeSource{}, false
