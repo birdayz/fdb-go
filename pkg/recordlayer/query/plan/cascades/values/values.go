@@ -391,6 +391,33 @@ func (e *BakedNameContextError) Error() string {
 	return fmt.Sprintf("RFC-173: baked FieldValue %s#%d evaluated against a non-positional row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
 }
 
+// UnresolvedNameReadError reports a NAME-keyed field read whose key is ABSENT from a
+// NON-SPARSE row — the RFC-173 coexistence silent-NULL, made loud. Java binds every column
+// reference to an ordinal at plan time and throws UNDEFINED_COLUMN rather than reading a
+// name at runtime, so it has no silent-NULL class; Go's name-keyed reader silently returned
+// NULL on a missing key, and that seam produced the same silent-wrong at every wrapper
+// (projection, sort, union, aggregate operand…). This is the single-site correct-or-loud
+// guard that subsumes those per-wrapper floors: an absent name over a row whose key set is
+// authoritative (a computed/aggregate/projection/join-merge row) is a resolution bug, not a
+// SQL NULL. It is suppressed only for a genuinely SPARSE row (RowEvalContext.Sparse — a base
+// stored record that legitimately omits unset optional proto fields). A real SQL NULL is
+// key-PRESENT-value-nil and never trips this (the read arm checks presence separately).
+type UnresolvedNameReadError struct {
+	Field     string
+	Available []string
+}
+
+func (e *UnresolvedNameReadError) Error() string {
+	return fmt.Sprintf("RFC-173: name-keyed read of absent field %q over a non-sparse row (columns %v) — an unresolved reference, not a SQL NULL (the ordinal frontier must supply this column)", e.Field, e.Available)
+}
+
+// NameMissLoud arms the single-site guard (task #38): a name-keyed field read whose key is
+// ABSENT from a non-Sparse RowEvalContext returns a loud *UnresolvedNameReadError instead of
+// a silent NULL. Default off so it can be flipped ON to MEASURE the full fallout before the
+// staged landing (Complete-rows-loud first, join-merge second per design ruling). The permanent
+// end-state is on-by-default; the name reader itself is deleted at the atomic cap (#16).
+var NameMissLoud = false
+
 // bakedNameReadGuard is called at every NAME-keyed read arm in Evaluate/
 // evaluateCorrelated: lazy nodes pass (the name model is their source of
 // truth), and so do UNPINNED baked nodes (the recursive-CTE wrap shape — no
@@ -612,7 +639,30 @@ func (f *FieldValue) nameReadRootKey() string {
 // nameRead is the plain name-keyed map read: root key, then the baked path's
 // nested descent (a no-op for lazy nodes and single-accessor paths).
 func (f *FieldValue) nameRead(row map[string]any) (any, error) {
-	return f.descendResolvedPath(row[f.nameReadRootKey()])
+	key := f.nameReadRootKey()
+	v, present := row[key]
+	if !present {
+		// A bare map context carries no Sparse flag; treat it as non-sparse (loud). Bare
+		// maps are computed/name-model rows, not base stored records (those flow the
+		// ordinal frontier). See nameMissGuard.
+		if err := f.nameMissGuard(false, row); err != nil {
+			return nil, err
+		}
+	}
+	return f.descendResolvedPath(v)
+}
+
+// nameMissGuard is the single-site NameMissLoud check (task #38): a name-keyed read whose
+// key is ABSENT from a NON-sparse row returns a loud *UnresolvedNameReadError. Suppressed
+// when the guard is off (measurement/rollback) or the row is Sparse (a base stored record
+// legitimately omitting an unset optional field). A real SQL NULL never reaches here — it is
+// key-PRESENT-value-nil, checked before this. This is the emergent root the per-wrapper
+// floors approximated (design principle 10): the reader's absent-key polarity.
+func (f *FieldValue) nameMissGuard(sparse bool, available map[string]any) error {
+	if !NameMissLoud || sparse {
+		return nil
+	}
+	return &UnresolvedNameReadError{Field: f.Field, Available: mapKeys(available)}
 }
 
 func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
@@ -828,8 +878,13 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 				return nil, err
 			}
 			v, present := rc.Datum[f.nameReadRootKey()]
-			if !present && rc.Strict && ReportUnresolvedReference != nil {
-				ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
+			if !present {
+				if err := f.nameMissGuard(rc.Sparse, rc.Datum); err != nil {
+					return nil, err
+				}
+				if rc.Strict && ReportUnresolvedReference != nil {
+					ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
+				}
 			}
 			return f.descendResolvedPath(v)
 		}
@@ -1727,6 +1782,14 @@ type RowEvalContext struct {
 	// rather than a legitimate SQL NULL. Base-record rows (which legitimately
 	// omit unset optional fields) leave this false. See RFC-048 W1.
 	Strict bool
+	// Sparse marks a row that legitimately uses key-ABSENT to mean SQL NULL — a base
+	// stored record (FromStoredRecord) that omits unset optional proto fields. It is the
+	// SOLE suppression for the NameMissLoud guard (task #38): a name-keyed read of an absent
+	// key over a NON-sparse row is loud (an unresolved reference), over a sparse row is a
+	// silent NULL (the legitimate unset-optional). Default false is fail-safe: a row source
+	// that forgets to declare itself sparse defaults to LOUD → surfaces as a triage red,
+	// never a silent-wrong (design ruling).
+	Sparse bool
 }
 
 // ReportUnresolvedReference, when non-nil, is invoked by FieldValue.Evaluate

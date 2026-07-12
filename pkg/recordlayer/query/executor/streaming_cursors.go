@@ -223,6 +223,13 @@ func aggregateEvalArg(v values.Value, row QueryResult) any {
 		m, _ := row.Datum.(map[string]any)
 		return &values.RowEvalContext{Datum: m, Positional: row.Positional}
 	}
+	// A name-model operand over a base stored record reads its Datum by name; carry the
+	// row's Sparse flag so an unset optional field (key-absent) stays a silent NULL rather
+	// than tripping the NameMissLoud guard (task #38). A non-sparse (computed/merge) row's
+	// absent key remains loud.
+	if m, ok := row.Datum.(map[string]any); ok {
+		return &values.RowEvalContext{Datum: m, Sparse: row.Sparse}
+	}
 	return row.Datum
 }
 

@@ -59,6 +59,13 @@ type QueryResult struct {
 	// Because (2) affects row CONTENT, Complete must survive continuation
 	// round-trips (encodeSortContinuation's v2 payload carries it).
 	Complete bool
+	// Sparse marks a BASE STORED RECORD whose Datum legitimately omits unset optional proto
+	// fields (key-ABSENT means SQL NULL). It is the SOLE suppression for the NameMissLoud
+	// guard (task #38): a name-keyed read of an absent key over a non-sparse row is loud (an
+	// unresolved reference), over a sparse row is a silent NULL (the legitimate unset
+	// optional). Set ONLY by FromStoredRecord. Fail-safe: every other row source defaults to
+	// non-sparse (loud), so a forgotten producer surfaces as a triage red, never silent-wrong.
+	Sparse bool
 }
 
 // FromStoredRecord builds a QueryResult from a stored record. The
@@ -76,6 +83,7 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 		Positional: pos,
 		Record:     rec,
 		PrimaryKey: rec.PrimaryKey,
+		Sparse:     true, // base record: Datum omits unset optional fields (key-absent = NULL)
 	}
 }
 
