@@ -270,11 +270,23 @@ func TestRFC173Slice3B2bFaceACensus(t *testing.T) { //nolint:paralleltest // pro
 			t.Fatalf("%s: fired %d name-model producer(s), want 0 (the gather must own it)", tc.name, n)
 		}
 	}
-	// INNER-CLUSTER positive control: B2-B's shape arm requires a NON-INNER box
-	// left, so a multi-source INNER cluster under EXISTS stays name-model →
-	// producers fire. This is the E-1a class (next slice); it also proves the
-	// observer fires when it should (so the 0-assertions above aren't vacuous).
-	if n := countProducers(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); n == 0 {
-		t.Fatal("multi-source INNER cluster under EXISTS fired 0 producers — B2-B must leave it name-model (E-1a owns it)")
+	// Positive control: the observer must FIRE when it should (so the
+	// 0-assertions above aren't vacuous). The single-esq INNER cluster is now
+	// ordinalized by E-1a (0 producers — pinned in the E-1a cert), so this uses a
+	// MULTI-esq INNER cluster, which the single-esq admission excludes → it stays
+	// name-model → the P5 unnest-result-value producer fires during TRANSLATION.
+	// (This shape then strands at physicalization — a pre-existing multi-esq-
+	// under-EXISTS limitation, orthogonal to the census — so it counts producers
+	// tolerant of the plan error: the firing happens in the translator, before
+	// the physical planner declines.)
+	countTolerant := func(sql string) int {
+		n := 0
+		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
+		defer rquery.SetProducerCensusObserver(nil)
+		_, _ = embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+		return n
+	}
+	if n := countTolerant(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`); n == 0 {
+		t.Fatal("multi-esq INNER cluster fired 0 producers during translation — the observer must fire on a name-model shape (observer-fires control)")
 	}
 }

@@ -2734,21 +2734,22 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	if t.unnestExistsScopeCollision {
 		return false
 	}
-	// Shape arm: a non-INNER box left. E-1a (INNER flat cluster under EXISTS)
-	// stays DENIED here — its ordinal correlation would strand: the gather builds
-	// a windowed seed (seedWindowed=true) but the cluster physicalizes to a
-	// RecordQueryNestedLoopJoinPlan whose result value DROPS the windowed layout,
-	// so the executor's below-FOD hoist recovers 0 windows and never bakes the
-	// leg ref (vs the box, which physicalizes to a FlatMap that keeps the windowed
-	// RC). INNER-under-EXISTS stays correct on the name-model path until the
-	// windowed layout is preserved onto the INNER cluster's physical plan (booked).
+	// Shape arm: box or INNER flat cluster left.
 	bj, isBoxJoin := join.Left.(*logical.LogicalJoin)
-	if !isBoxJoin || bj.Kind == logical.JoinInner {
+	if !isBoxJoin {
 		return false
 	}
 	switch bj.Kind {
 	case logical.JoinLeft, logical.JoinRight:
 		return verdict == boxConjNone || verdict == boxConjBakeable
+	case logical.JoinInner:
+		// RFC-173 S4 E-1a: the INNER flat N-way cluster under EXISTS. Its existential
+		// correlation leg refs are BAKED alias-aware in the translator (over the
+		// gathered seed's OrdinalSeedLegWindows), NOT left leg-relative for the
+		// executor hoist — the INNER cluster physicalizes to a NestedLoopJoin whose
+		// result value drops the windowed layout, so the hoist recovers 0 windows
+		// (the box physicalizes to a FlatMap that keeps it). Verdict-None only.
+		return verdict == boxConjNone
 	default: // FULL — D4-(ii): only a Bakeable box-leg conjunct gathers; FULL+None
 		// stays on the certified binary seed (already producer-free via c5a).
 		return verdict == boxConjBakeable
@@ -2984,10 +2985,38 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 				esq.Plan = &logical.LogicalFilter{Input: lf.Input, Predicate: rebased, PredicateText: lf.PredicateText}
 			}
 			// The JoinPredicate channel: name-model rebase for an anchored seed;
-			// leg-relative for a windowed ordinal seed (the executor's below-FOD
+			// leg-relative for a windowed BOX ordinal seed (the executor's below-FOD
 			// hoist rebases it positionally — RULE-level, unlike the buried refs).
+			// For a windowed INNER flat CLUSTER (E-1a) the hoist CANNOT recover the
+			// windows — the cluster physicalizes to a NestedLoopJoin whose result
+			// value drops the windowed layout (the box keeps it via a FlatMap) — so
+			// the translator BAKES the leg ref alias-aware over the seed's windows
+			// here, exactly as the buried refs above (ordinalSlotInLegWindow resolves
+			// each dup-named leg's own slot).
 			if !seedWindowed {
 				esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr)
+			} else if lj, isLJ := join.Left.(*logical.LogicalJoin); isLJ && lj.Kind == logical.JoinInner {
+				baked, ok := rebaseUnnestOuterLegPredicateOrdinal(esq.JoinPredicate, t.ordinalLegType(join.Left), ordMergedType, outerLegs, mergedCorr)
+				if !ok {
+					// CORRECT-or-LOUD: a leg ref the seed's windows cannot map is
+					// never a valid correlation — decline the whole composition
+					// (falls to the name-model binary path).
+					return nil
+				}
+				// The ELEMENT ref (`EEV.VK = X`, X the unnest AS alias) is the merged
+				// corr's OWN slot — not an outer leg, so the leg bake above leaves it
+				// untouched. Over the INNER cluster's NLJ layout an unbaked element
+				// ref mis-resolves (silent 0 rows), so bake it positionally too: the
+				// element-slot map (rc index of each element field) drives an
+				// element-only bakeGatheredGroupValue (nil leg-windows) onto the SAME
+				// merged QOV the leg refs read.
+				if elementSlots := t.unnestSeedElementSlots(unnestExpr); len(elementSlots) > 0 {
+					mergedQOV := values.NewQuantifiedObjectValueOfType(mergedCorr, ordMergedType)
+					baked = mapPredicateValues(baked, func(v values.Value) values.Value {
+						return bakeGatheredGroupValue(v, nil, elementSlots, mergedQOV)
+					})
+				}
+				esq.JoinPredicate = baked
 			}
 			existsSubqueries[i] = esq
 		}
@@ -4386,6 +4415,42 @@ type gatheredSeedBake struct {
 // binds. Otherwise seedQOV is nil and quant is the plain named quantifier over
 // fallbackAlias (the name-model path). namedQuantifier is a pure constructor, so
 // computing the default eagerly and rebinding on a hit is free.
+// unnestSeedElementSlots returns each gathered-seed ELEMENT field's flat slot
+// (its rc index, keyed by UPPER field name) for a windowed unnest cluster SELECT
+// — the element-half of the seed's positional layout, the twin of
+// gatheredSeedBakeContext's own elementSlots derivation. Used by the E-1a INNER
+// cluster to bake an existential ELEMENT correlation (`… = X`) to its slot,
+// alongside the leg bake. Empty for a non-windowed / non-explode seed.
+func (t *cascadesTranslator) unnestSeedElementSlots(unnestExpr expressions.RelationalExpression) map[string]int {
+	sel, ok := unnestExpr.(*expressions.SelectExpression)
+	if !ok {
+		return nil
+	}
+	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || rc.AnchoredJoin {
+		return nil
+	}
+	var innerCorr values.CorrelationIdentifier
+	foundExplode := false
+	for _, q := range sel.GetQuantifiers() {
+		if _, isExplode := q.GetRangesOver().Get().(*expressions.ExplodeExpression); isExplode {
+			innerCorr = q.GetAlias()
+			foundExplode = true
+			break
+		}
+	}
+	if !foundExplode {
+		return nil
+	}
+	slots := map[string]int{}
+	for i, f := range rc.Fields {
+		if fieldValueReferencesInner(f.Value, innerCorr) {
+			slots[strings.ToUpper(f.Name)] = i
+		}
+	}
+	return slots
+}
+
 func (t *cascadesTranslator) gatheredSeedBakeContext(innerRef *expressions.Reference, fallbackAlias string) gatheredSeedBake {
 	b := gatheredSeedBake{quant: t.namedQuantifier(fallbackAlias, innerRef)}
 	sel, ok := innerRef.Get().(*expressions.SelectExpression)
