@@ -241,7 +241,7 @@ func TestFDB_VectorSearch_ResidualFilterCombos(t *testing.T) {
 				}
 				ids := make([]int64, 0, len(results))
 				for _, r := range results {
-					ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+					ids = append(ids, executor.RowValue(r).(map[string]any)["ID"].(int64))
 				}
 				if !reflect.DeepEqual(ids, sh.want) {
 					t.Errorf("residual %q: K-NN ids = %v, want %v (true 2 nearest passing rows in "+
@@ -442,7 +442,7 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 					reason = res.GetNoNextReason()
 					break
 				}
-				ids = append(ids, res.GetValue().Datum.(map[string]any)["ID"].(int64))
+				ids = append(ids, executor.RowValue(res.GetValue()).(map[string]any)["ID"].(int64))
 			}
 			return nil, nil
 		})

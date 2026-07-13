@@ -12,7 +12,7 @@ package sqldriver_test
 // name PROJECTED OUTPUT columns, so they resolve against that projection row by
 // ordinal-in-row — exactly as executeProjection resolves the projection itself —
 // NOT the name-keyed Datum map and NOT the buried join's leg windows. Before this
-// slice the aggregate fell through to the name-keyed row.Datum arm for a projection
+// slice the aggregate fell through to the name-keyed executor.RowValue(row) arm for a projection
 // OVER A JOIN (aggregateInputIsFlatFrontier bails at the join, downstreamLegWindows
 // can't peel the reshaping projection), so `l` read by name.
 //

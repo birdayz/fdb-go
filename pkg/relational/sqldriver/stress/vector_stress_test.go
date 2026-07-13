@@ -453,7 +453,7 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 					reason = res.GetNoNextReason()
 					break
 				}
-				ids = append(ids, res.GetValue().Datum.(map[string]any)["ID"].(int64))
+				ids = append(ids, executor.RowValue(res.GetValue()).(map[string]any)["ID"].(int64))
 			}
 			return nil, nil
 		})

@@ -155,7 +155,7 @@ func TestFDB_RFC173_EnclosedUnnestExistsOrdinal(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				if m, isMap := r.Datum.(map[string]any); isMap {
+				if m, isMap := executor.RowValue(r).(map[string]any); isMap {
 					keys := make([]string, 0, len(m))
 					for k := range m {
 						keys = append(keys, k)
@@ -167,7 +167,7 @@ func TestFDB_RFC173_EnclosedUnnestExistsOrdinal(t *testing.T) {
 					}
 					out = append(out, strings.Join(parts, "|"))
 				} else {
-					out = append(out, unnestSprint(r.Datum))
+					out = append(out, unnestSprint(executor.RowValue(r)))
 				}
 			}
 			return nil, nil

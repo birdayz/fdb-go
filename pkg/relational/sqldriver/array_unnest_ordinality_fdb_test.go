@@ -656,7 +656,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				keys := make([]string, 0, len(m))
 				for k := range m {
 					keys = append(keys, k)
@@ -1758,7 +1758,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				keys := make([]string, 0, len(m))
 				for k := range m {
 					keys = append(keys, k)
@@ -2239,7 +2239,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				got = append(got, unnestSprint(m["X"]))
 			}
 			return nil, nil
@@ -2897,7 +2897,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				keys := make([]string, 0, len(m))
 				for k := range m {
 					keys = append(keys, k)

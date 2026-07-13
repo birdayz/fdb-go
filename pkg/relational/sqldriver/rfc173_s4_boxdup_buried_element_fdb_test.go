@@ -144,7 +144,7 @@ func TestFDB_RFC173S4_BoxDupBuriedElementPredicate(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				got = append(got, fmt.Sprintf("%v", r.Datum))
+				got = append(got, fmt.Sprintf("%v", executor.RowValue(r)))
 			}
 			return nil, nil
 		})

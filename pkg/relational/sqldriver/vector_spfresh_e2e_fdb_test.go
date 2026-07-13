@@ -109,7 +109,7 @@ func TestFDB_VectorSearch_SPFreshE2E(t *testing.T) {
 		}
 		ids := make([]int64, 0, len(results))
 		for _, r := range results {
-			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+			ids = append(ids, executor.RowValue(r).(map[string]any)["ID"].(int64))
 		}
 		// UNSORTED on purpose: BY_DISTANCE output order is part of the
 		// contract — d²(1)=0.02 < d²(2)=1.62 at this query, so the rows must
@@ -245,7 +245,7 @@ func TestFDB_VectorSearch_ResidualBugPin(t *testing.T) {
 		}
 		ids := make([]int64, 0, len(results))
 		for _, r := range results {
-			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+			ids = append(ids, executor.RowValue(r).(map[string]any)["ID"].(int64))
 		}
 		// The true 2 nearest MATCHING rows in distance order — decoys 1 & 2
 		// (nearer, CATEGORY='other') excluded; id 12 (farther) excluded by K=2.
@@ -381,7 +381,7 @@ func TestFDB_VectorSearch_RarePredicateWidening(t *testing.T) {
 		}
 		ids := make([]int64, 0, len(results))
 		for _, r := range results {
-			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+			ids = append(ids, executor.RowValue(r).(map[string]any)["ID"].(int64))
 		}
 		// The 3 nearest CATEGORY='target' rows in distance order. All 250 decoys
 		// are nearer, so a fixed-200 horizon (Phase B) culls every survivor → ∅;

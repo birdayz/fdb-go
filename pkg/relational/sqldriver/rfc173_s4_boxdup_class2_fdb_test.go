@@ -141,7 +141,7 @@ func TestFDB_RFC173S4_BoxDupClass2(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", r.Datum))
+				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
 			}
 			return nil, nil
 		})

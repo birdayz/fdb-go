@@ -438,7 +438,7 @@ func planExplainAndRun(t *testing.T, ctx context.Context, db *recordlayer.FDBDat
 			return nil, rErr
 		}
 		for _, r := range results {
-			row := r.Datum.(map[string]any)
+			row := executor.RowValue(r).(map[string]any)
 			out = append(out, idRegion{row["ID"].(int64), row["REGION"].(string)})
 		}
 		return nil, nil

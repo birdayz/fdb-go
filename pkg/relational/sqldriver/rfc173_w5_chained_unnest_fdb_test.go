@@ -254,7 +254,7 @@ func TestFDB_RFC173ChainedUnnest(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				out = append(out, m)
 			}
 			return nil, nil

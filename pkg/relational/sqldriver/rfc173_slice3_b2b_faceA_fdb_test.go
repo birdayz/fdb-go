@@ -110,7 +110,7 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, unnestSprint(r.Datum))
+				out = append(out, unnestSprint(executor.RowValue(r)))
 			}
 			return nil, nil
 		})

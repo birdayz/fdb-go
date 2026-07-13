@@ -238,7 +238,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				out = append(out, m)
 			}
 			return nil, nil

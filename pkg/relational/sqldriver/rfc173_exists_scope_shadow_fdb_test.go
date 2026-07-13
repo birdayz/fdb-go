@@ -170,7 +170,7 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, fmt.Sprintf("%v", r.Datum))
+				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
 			}
 			return nil, nil
 		})

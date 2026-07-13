@@ -136,6 +136,21 @@ func (r *PositionalRow) GetByName(name string) (any, bool) {
 	return r.Get(i)
 }
 
+// RowValue returns a QueryResult's row as the value the retired name-keyed Datum
+// field carried: a bare scalar for a 1-slot `_0` row (a non-record UNNEST
+// element), else a name->value map (duplicate output names collapse last-wins).
+// EXPORTED for external test/differential consumers migrating off QueryResult.Datum;
+// production code reads the PositionalRow by ordinal/name instead. Nil-safe.
+func RowValue(qr QueryResult) any {
+	if qr.Positional == nil {
+		return nil
+	}
+	if isBareScalarRow(qr.Positional) {
+		return qr.Positional.Slots[0]
+	}
+	return positionalToMap(qr.Positional)
+}
+
 // positionalToMap projects a PositionalRow to a name->value map, for the LOCAL
 // boundaries that build a name-keyed artifact from a row (a proto record in the DML
 // insert/update path, keyed by column name). This is NOT the retired name model —
