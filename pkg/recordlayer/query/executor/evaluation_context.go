@@ -144,6 +144,37 @@ func (ec *EvaluationContext) RowContextSparse(datum map[string]any, sparse bool)
 // the whole test binary phase (no concurrent queries in the other mode).
 var DisablePositionalEmission bool
 
+// RequirePositional is the RFC-173 cap forcing function for the row-PLUMBING that
+// NameReadForbidden (FieldValue-expression only) cannot see: when armed, every
+// LIVE-side (non-oracle) name-model consumption arm — a Positional-less row
+// reaching a direct-Datum fallback (filter/map/aggregate/flatmap/merge) — returns
+// a loud requirePositionalError naming the site, instead of resolving against the
+// name-keyed Datum. It measures which SHAPES still emit birth-disabled
+// (Positional-less) rows so the AnchoredJoin producers can be ordinalized to zero.
+// Test-only; retires with QueryResult.Datum. Gated on !DisablePositionalEmission so
+// the §5 oracle side (which deliberately runs the name model) is unaffected.
+var RequirePositional bool
+
+// requirePositionalError reports a live-side name-model consumption taken under the
+// armed RequirePositional probe — it names the plumbing site so the birth-disabled
+// shape is identifiable from the test log alone.
+type requirePositionalError struct{ Site string }
+
+func (e *requirePositionalError) Error() string {
+	return "RFC-173 cap probe: birth-disabled (Positional-less) row reached the name-model " + e.Site +
+		" arm (RequirePositional armed) — this shape still rides QueryResult.Datum and has not been ordinalized"
+}
+
+// requirePositional returns a loud requirePositionalError when the cap probe is
+// armed on the live side; nil (inert) otherwise. Call it at every direct-Datum
+// consumption fallback, immediately before the name-keyed read executes.
+func requirePositional(site string) error {
+	if RequirePositional && !DisablePositionalEmission {
+		return &requirePositionalError{Site: site}
+	}
+	return nil
+}
+
 // SetNameModelOracle flips BOTH §5 name-model oracle globals together:
 // DisablePositionalEmission (suppresses the positional row at every birth
 // site) and values.OracleBakedNameFallback (lets BAKED FieldValues — RFC-173

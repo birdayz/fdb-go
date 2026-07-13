@@ -961,6 +961,9 @@ func executeFilter(
 				// miss, no name-map fallback).
 				rowCtx = frontierRowContext(qr.Positional, evalCtx, needsRowCtx)
 			} else if m, ok := qr.Datum.(map[string]any); ok {
+				if perr := requirePositional("filter"); perr != nil {
+					return false, perr
+				}
 				if StrictReferenceCheck && qr.Complete {
 					// RFC-048 W1: a HAVING/filter reference to a name absent from
 					// a complete row (aggregate output) is a bug, not a NULL.
@@ -1442,6 +1445,10 @@ func executeProjection(
 			// fallback), taking precedence over the name-keyed Datum.
 			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
 		} else if m, ok := qr.Datum.(map[string]any); ok {
+			if perr := requirePositional("projection"); perr != nil {
+				evalErr = perr
+				return qr
+			}
 			if StrictReferenceCheck && qr.Complete {
 				// RFC-048 W1: a projection reading a name absent from a complete
 				// row (aggregate output) is a bug, not a NULL.

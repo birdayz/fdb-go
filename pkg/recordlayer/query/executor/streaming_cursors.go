@@ -51,6 +51,11 @@ type aggregateCursor struct {
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 
+	// probeErr carries a RequirePositional cap-probe hit from aggregateEvalArg
+	// (which returns an `any` eval context and cannot itself return an error) up
+	// to the finalizeGroup caller. Test-only; retires with the probe.
+	probeErr error
+
 	// RFC-173 input-edge ordinalization. evalCtx carries params/subqueries/outer
 	// bindings so a group-key / operand reference resolves against the inner
 	// PositionalRow the SAME way executeFilter / executeProjection do
@@ -176,7 +181,16 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 			*plans.RecordQueryIndexPlan,
 			*plans.RecordQueryTextIndexPlan,
 			*plans.RecordQueryVectorIndexPlan,
-			*plans.RecordQueryStreamingAggregationPlan:
+			*plans.RecordQueryStreamingAggregationPlan,
+			// RFC-173: a UNION (ALL / recursive-CTE level) emits a FLAT positional
+			// row per leg, re-typed to the union's output column names
+			// (remapUnionColumnsByPosition), so an aggregate over it resolves its
+			// group key / operand by name-in-row against that row — the flat
+			// frontier, not a name-keyed Datum. A birth-disabled leg (no Positional)
+			// still declines to the name path safely (the arm requires Positional).
+			*plans.RecordQueryUnionPlan,
+			*plans.RecordQueryUnorderedUnionPlan,
+			*plans.RecordQueryRecursiveLevelUnionPlan:
 			return true
 		case *plans.RecordQueryFetchFromPartialRecordPlan:
 			input = p.GetInner()
@@ -474,6 +488,9 @@ func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any 
 		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
 	}
 	if m, ok := row.Datum.(map[string]any); ok {
+		if perr := requirePositional("aggregate"); perr != nil {
+			c.probeErr = perr
+		}
 		return &values.RowEvalContext{Datum: m, Sparse: row.Sparse}
 	}
 	return row.Datum
@@ -510,6 +527,9 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		v, err := k.Evaluate(c.aggregateEvalArg(k, row))
 		if err != nil {
 			return "", nil, err
+		}
+		if c.probeErr != nil {
+			return "", nil, c.probeErr
 		}
 		keyParts[i] = v
 		// tuple.Pack handles nil, int64, float64, string, []byte natively.
@@ -561,6 +581,9 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 		val, err := agg.Operand.Evaluate(c.aggregateEvalArg(agg.Operand, row))
 		if err != nil {
 			return err
+		}
+		if c.probeErr != nil {
+			return c.probeErr
 		}
 		if val == nil {
 			continue

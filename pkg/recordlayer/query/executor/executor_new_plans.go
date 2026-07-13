@@ -501,6 +501,9 @@ func executePredicatesFilter(
 				// binding is needed here.
 				rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
 			case isStringMap(qr.Datum):
+				if perr := requirePositional("predicatesFilter"); perr != nil {
+					return false, perr
+				}
 				// Always take the name-keyed arm for a string-map row (dropped the old
 				// strict||needsRowCtx gate): the base-record path must wrap so qr.Sparse
 				// threads through even with no params, else a param-less WHERE over an
@@ -611,6 +614,10 @@ func executeMap(
 			// while it returns NULL in production, i.e. strict mode would change
 			// results. Bare strict context = identical resolution + miss reporting.
 			if m, ok := qr.Datum.(map[string]any); ok {
+				if perr := requirePositional("map(strict)"); perr != nil {
+					evalErr = perr
+					return qr
+				}
 				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
 			}
 		default:
@@ -620,6 +627,10 @@ func executeMap(
 			// only, no binder/scalar-subquery) to match production's bare-Datum
 			// resolution — same reason as the strict arm above.
 			if m, ok := qr.Datum.(map[string]any); ok {
+				if perr := requirePositional("map"); perr != nil {
+					evalErr = perr
+					return qr
+				}
 				rowCtx = &values.RowEvalContext{Datum: m, Sparse: qr.Sparse}
 			}
 		}
