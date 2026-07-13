@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"reflect"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
@@ -93,16 +92,6 @@ func TestRFC173S3_MergeBirth_NLJCursor_Nested(t *testing.T) {
 	results := collectCursor(t, c)
 	if len(results) != 1 {
 		t.Fatalf("got %d rows, want 1 (A.ID=1 ⋈ B.ID=1)", len(results))
-	}
-
-	// The merge-shape Datum: per-leg Datum maps under the `_i` keys — what
-	// the rebased upper references (and the §5 oracle) read.
-	wantDatum := map[string]any{
-		"_0": map[string]any{"ID": int64(1), "V": int64(10)},
-		"_1": map[string]any{"ID": int64(1), "W": int64(100)},
-	}
-	if !reflect.DeepEqual(results[0].Datum, wantDatum) {
-		t.Fatalf("Datum = %#v, want the merge-shape per-leg maps %#v", results[0].Datum, wantDatum)
 	}
 
 	// The nested positional row: slot i is leg i's WHOLE positional row.
@@ -252,15 +241,6 @@ func TestRFC173S3_MergeBirth_FlatMapBirths(t *testing.T) {
 		if v, ok := legRow.Get(1); !ok || v != int64(10) {
 			t.Fatalf("nested leg A slot 1 = (%v, %v), want (10, true)", v, ok)
 		}
-		// The coexistence Datum: per-leg DATUM MAPS under _0/_1 — the oracle's
-		// shape (bare QOV evaluated over name bindings), never OrdinalRows.
-		wantDatum := map[string]any{
-			"_0": map[string]any{"ID": int64(1), "V": int64(10)},
-			"_1": map[string]any{"ID": int64(2), "W": int64(20)},
-		}
-		if !reflect.DeepEqual(got.Datum, wantDatum) {
-			t.Fatalf("Datum = %#v, want per-leg Datum maps %#v", got.Datum, wantDatum)
-		}
 	})
 
 	t.Run("nil inner is the null leg", func(t *testing.T) {
@@ -271,15 +251,6 @@ func TestRFC173S3_MergeBirth_FlatMapBirths(t *testing.T) {
 		}
 		if got.Positional == nil || len(got.Positional.Slots) != 2 || got.Positional.Slots[1] != nil {
 			t.Fatalf("Positional = %v, want [legA-row, nil]", got.Positional)
-		}
-		// The name model reconstructs the empty-Datum inner row; the merge
-		// Datum mirrors that as the empty map — exactly the oracle's output.
-		wantDatum := map[string]any{
-			"_0": map[string]any{"ID": int64(1), "V": int64(10)},
-			"_1": map[string]any{},
-		}
-		if !reflect.DeepEqual(got.Datum, wantDatum) {
-			t.Fatalf("null-inner Datum = %#v, want %#v", got.Datum, wantDatum)
 		}
 	})
 }
@@ -499,10 +470,6 @@ func TestRFC173S3_HashJoinDeclinesFusedPred(t *testing.T) {
 		pos.Set(0, legBRow)
 		pos.Set(1, legCRow)
 		innerRows[i] = QueryResult{
-			Datum: map[string]any{
-				"_0": map[string]any{"ID": int64(i), "W": int64(i * 10)},
-				"_1": map[string]any{"X": int64(i)},
-			},
 			Positional: pos,
 		}
 	}
@@ -532,85 +499,4 @@ func TestRFC173S3_HashJoinDeclinesFusedPred(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("got %d rows, want 2 (a.id 3 and 7 each match one merge row) — a hash index keyed on the fused ref's display name drops them all", len(results))
 	}
-}
-
-// TestRFC173S3_FlatMapSeedBoxLegDatumSplice pins the cursor-side SPLICE for a
-// PRISTINE seed whose leg is a gated-join BOX (review catch on the fulcrum):
-// the seed's span names the box after its rightmost leaf and covers the whole
-// concat, so without the splice datumFromSpans qualifies every concat column
-// under that ONE alias — "B.ID" carrying leg A's ID — and dotted reads above
-// ("A.ID") silently miss. With the box leg's own RV available through the
-// outer plan, the coexistence Datum must qualify by LEAF alias. The leg
-// ADAPTER meanwhile keeps the box-level window (Spans, unspliced): the outer
-// binding flows the whole concat row.
-func TestRFC173S3_FlatMapSeedBoxLegDatumSplice(t *testing.T) {
-	t.Parallel()
-	legA, legB, qovA, qovB, boxSeedRV := ojWiringLegs(t)
-	legC := values.NewRecordType("", false, []values.Field{
-		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
-	})
-	qovC := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), legC)
-
-	// The box leg: alias "B" (sourceAlias names it after its rightmost leaf),
-	// type = the flat {A,B} concat (RAW: duplicate names legal).
-	boxType := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
-		{Name: "W", FieldType: values.NotNullLong, Ordinal: 3},
-	}}
-	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), boxType)
-	topRV := buildOrdinalJoinRC(t, boxQOV, qovC)
-
-	// The outer plan carries the box's OWN seed RV — where the leaf aliases
-	// survive for the splice.
-	outerPlan := plans.NewRecordQueryFlatMapPlan(nil, nil,
-		qovA.Correlation, qovB.Correlation, boxSeedRV, false)
-
-	c, err := newFlatMapCursor(
-		nil, outerPlan, nil, nil, EmptyEvaluationContext(),
-		boxQOV.Correlation, qovC.Correlation,
-		topRV, false, recordlayer.ExecuteProperties{},
-	)
-	if err != nil {
-		t.Fatalf("newFlatMapCursor: %v", err)
-	}
-	if !c.birth.enabled() || !c.birth.WindowsOK {
-		t.Fatalf("seed over [box, C] must birth with windows (enabled=%v windows=%v)", c.birth.enabled(), c.birth.WindowsOK)
-	}
-	// The adapter keeps the BOX window; the Datum spans open to the leaves.
-	if got := c.birth.legType(boxQOV.Correlation); got == nil || len(got.Fields) != 4 {
-		t.Fatalf("adapter leg type for the box alias = %v, want the whole 4-col concat", got)
-	}
-	if len(c.birth.DatumSpans) != 3 {
-		t.Fatalf("DatumSpans = %+v, want 3 spliced spans (A, B leaf, C)", c.birth.DatumSpans)
-	}
-
-	// Drive a row through: the box flows its flat concat positional.
-	boxRow := QueryResult{Datum: map[string]any{}, Positional: func() *PositionalRow {
-		p := NewPositionalRow(boxType)
-		for i, v := range []any{int64(1), int64(10), int64(2), int64(20)} {
-			p.Set(i, v)
-		}
-		return p
-	}()}
-	cRow := ojLegQR(t, legC, int64(7))
-	got, err := c.computeResult(boxRow, cRow)
-	if err != nil {
-		t.Fatalf("computeResult: %v", err)
-	}
-	datum, isMap := rowMap(got)
-	if !isMap {
-		t.Fatalf("Datum = %T, want map", got.Positional)
-	}
-	// Leaf-alias qualified keys — the whole point of the splice.
-	for k, want := range map[string]any{
-		"A.ID": int64(1), "A.V": int64(10), "B.ID": int64(2), "B.W": int64(20), "C.X": int64(7),
-	} {
-		if datum[k] != want {
-			t.Fatalf("Datum[%q] = %v, want %v (full Datum: %#v)", k, datum[k], want, datum)
-		}
-	}
-	_ = legA
-	_ = legB
 }

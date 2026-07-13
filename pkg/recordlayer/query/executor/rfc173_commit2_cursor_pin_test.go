@@ -91,7 +91,7 @@ func TestRFC173Commit2_CursorResolvesFoldPositionally(t *testing.T) {
 	if err != nil {
 		t.Fatalf("computeResultLegs: %v", err)
 	}
-	got, isMap := rowMap(out)
+	got, isMap := rowMapOK(out)
 	if !isMap {
 		t.Fatalf("fold output Datum is %T, want a map", out.Positional)
 	}

@@ -612,10 +612,10 @@ func TestRFC173S2_EvaluateOrdinalJoinRow(t *testing.T) {
 // --- adaptLegPositional --------------------------------------------------------
 
 // TestRFC173S2_AdaptLegPositional pins the row-FORMAT adapter at the join-input
-// boundary: positional passthrough, name-model Datum synthesis by leg-type
-// names (missing key → nil slot), nil / non-map Datum → all-nil row, and the
-// LOUD zero-match tripwire (a dotted-key merge-shaped leg must never silently
-// all-NULL — review W3a-1 catch).
+// boundary: positional passthrough, per-name reordering into leg-type order
+// (missing column → nil slot), nil row → all-nil row, and the LOUD zero-match
+// tripwire (a dotted-key merge-shaped leg must never silently all-NULL — review
+// W3a-1 catch).
 func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 	t.Parallel()
 	legA := ojLegTypeAV()
@@ -624,7 +624,7 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 		t.Parallel()
 		pos := NewPositionalRow(legA)
 		pos.Set(0, int64(7))
-		got, err := adaptLegPositional(QueryResult{Positional: pos, Datum: map[string]any{"ID": int64(999)}}, legA)
+		got, err := adaptLegPositional(QueryResult{Positional: pos}, legA)
 		if err != nil {
 			t.Fatalf("passthrough errored: %v", err)
 		}
@@ -635,7 +635,7 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 
 	t.Run("datum synthesis by leg-type names", func(t *testing.T) {
 		t.Parallel()
-		got, err := adaptLegPositional(QueryResult{Datum: map[string]any{"ID": int64(7)}}, legA) // V missing
+		got, err := adaptLegPositional(dmap(map[string]any{"ID": int64(7)}), legA) // V missing
 		if err != nil {
 			t.Fatalf("synthesis errored: %v", err)
 		}
@@ -655,7 +655,7 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 		t.Parallel()
 		// A genuine all-NULL row (keys present, nil values) is NOT the dotted
 		// zero-match shape — it matches every column and synthesizes quietly.
-		got, err := adaptLegPositional(QueryResult{Datum: map[string]any{"ID": nil, "V": nil}}, legA)
+		got, err := adaptLegPositional(dmap(map[string]any{"ID": nil, "V": nil}), legA)
 		if err != nil {
 			t.Fatalf("genuine all-NULL row must synthesize silently, got %v", err)
 		}
@@ -671,7 +671,7 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 		// indistinguishable from a legitimate all-NULL row. The W2 gate makes
 		// this unreachable for gated joins; the error is the tripwire on that
 		// argument.
-		_, err := adaptLegPositional(QueryResult{Datum: map[string]any{"A.ID": int64(1), "A.V": int64(10)}}, legA)
+		_, err := adaptLegPositional(dmap(map[string]any{"A.ID": int64(1), "A.V": int64(10)}), legA)
 		if err == nil || !strings.Contains(err.Error(), "RFC-173") {
 			t.Fatalf("dotted-key zero-match synthesis must be a loud RFC-173 error, got %v", err)
 		}
@@ -686,19 +686,6 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 		for i := range legA.Fields {
 			if v, found := got.Get(i); !found || v != nil {
 				t.Fatalf("nil-datum slot %d = (%v, %v), want (nil, true)", i, v, found)
-			}
-		}
-	})
-
-	t.Run("non-map datum", func(t *testing.T) {
-		t.Parallel()
-		got, err := adaptLegPositional(QueryResult{Datum: "not a row"}, legA)
-		if err != nil {
-			t.Fatalf("non-map datum errored: %v", err)
-		}
-		for i := range legA.Fields {
-			if v, found := got.Get(i); !found || v != nil {
-				t.Fatalf("non-map-datum slot %d = (%v, %v), want (nil, true)", i, v, found)
 			}
 		}
 	})
@@ -805,16 +792,17 @@ func TestRFC173S2_AdaptLegPositional_IndexShapedFallsBack(t *testing.T) {
 		{Name: "V", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
 	}}
-	// Covering row: V=20 at slot 0, ID=1 at slot 1; Datum has the truth.
+	// Covering row: V=20 at slot 0, ID=1 at slot 1 (index-shaped).
 	cov := &PositionalRow{Type: indexShaped, Slots: []any{int64(20), int64(1)}}
-	qr := QueryResult{Datum: map[string]any{"ID": int64(1), "V": int64(20)}, Positional: cov}
+	qr := QueryResult{Positional: cov}
 
 	row, err := adaptLegPositional(qr, legType)
 	if err != nil {
 		t.Fatalf("adaptLegPositional: %v", err)
 	}
-	// The adapted row must be LEG-shaped: slot 0 = ID = 1 (a passthrough of
-	// the index-shaped row would put V=20 there — the silent misread).
+	// The adapted row must be LEG-shaped: slot 0 = ID = 1, resolved by NAME
+	// against the index-shaped row (a passthrough would put V=20 there — the
+	// silent misread).
 	if v, ok := row.Get(0); !ok || v != int64(1) {
 		t.Fatalf("adapted slot 0 = (%v, %v), want (1, true) — index-shaped passthrough would give 20", v, ok)
 	}
@@ -824,7 +812,7 @@ func TestRFC173S2_AdaptLegPositional_IndexShapedFallsBack(t *testing.T) {
 
 	// ALIGNED positional: passthrough (same object).
 	aligned := &PositionalRow{Type: legType, Slots: []any{int64(1), int64(20)}}
-	row, err = adaptLegPositional(QueryResult{Positional: aligned, Datum: map[string]any{"ID": int64(999)}}, legType)
+	row, err = adaptLegPositional(QueryResult{Positional: aligned}, legType)
 	if err != nil {
 		t.Fatalf("aligned adapt: %v", err)
 	}
@@ -832,17 +820,21 @@ func TestRFC173S2_AdaptLegPositional_IndexShapedFallsBack(t *testing.T) {
 		t.Fatal("an aligned positional row must pass through untouched")
 	}
 
-	// Width mismatch (covering row narrower than the leg type): also falls
-	// back to Datum synthesis, never an error — a legitimate plan shape.
+	// Width mismatch (covering row narrower than the leg type): the missing
+	// column resolves to nil (SQL NULL) — the row simply doesn't carry it.
+	// Never an error — a legitimate plan shape.
 	narrow := &PositionalRow{
 		Type:  &values.RecordType{Fields: []values.Field{{Name: "V", FieldType: values.NotNullLong, Ordinal: 0}}},
 		Slots: []any{int64(20)},
 	}
-	row, err = adaptLegPositional(QueryResult{Positional: narrow, Datum: map[string]any{"ID": int64(1), "V": int64(20)}}, legType)
+	row, err = adaptLegPositional(QueryResult{Positional: narrow}, legType)
 	if err != nil {
 		t.Fatalf("narrow adapt: %v", err)
 	}
-	if v, _ := row.Get(0); v != int64(1) {
-		t.Fatalf("narrow-fallback slot 0 = %v, want 1 (Datum synthesis)", v)
+	if v, _ := row.Get(0); v != nil {
+		t.Fatalf("narrow slot 0 (ID absent from the narrow row) = %v, want nil (SQL NULL)", v)
+	}
+	if v, _ := row.Get(1); v != int64(20) {
+		t.Fatalf("narrow slot 1 = %v, want 20 (V resolved by name)", v)
 	}
 }

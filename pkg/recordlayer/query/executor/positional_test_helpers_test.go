@@ -47,10 +47,17 @@ func dmapPK(pk tuple.Tuple, m map[string]any) QueryResult {
 }
 
 // rowMap reads a QueryResult's PositionalRow back into a name->value map, for
-// tests that previously asserted against the name-keyed Datum via a
-// `m, ok := qr.Datum.(map[string]any)` type assertion. The bool mirrors that
-// assertion's ok — true iff the row carries a PositionalRow. Nil-safe.
-func rowMap(qr QueryResult) (map[string]any, bool) {
+// tests that previously asserted against the name-keyed Datum. Nil (no
+// PositionalRow) reads as a nil map — indexing it yields the zero value, exactly
+// as a name-keyed miss did. Nil-safe.
+func rowMap(qr QueryResult) map[string]any {
+	return positionalToMap(qr.Positional)
+}
+
+// rowMapOK is rowMap with an ok flag mirroring the old
+// `m, ok := qr.Datum.(map[string]any)` type assertion — true iff the row carries
+// a PositionalRow.
+func rowMapOK(qr QueryResult) (map[string]any, bool) {
 	if qr.Positional == nil {
 		return nil, false
 	}

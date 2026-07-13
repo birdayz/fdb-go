@@ -105,7 +105,7 @@ func TestIntegration_VectorIndexScan_KNN(t *testing.T) {
 
 		gotIDs := make([]int64, len(results))
 		for i, r := range results {
-			row, ok := rowMap(r)
+			row, ok := rowMapOK(r)
 			if !ok {
 				t.Fatalf("result %d datum is %T, want map[string]any", i, r.Positional)
 			}

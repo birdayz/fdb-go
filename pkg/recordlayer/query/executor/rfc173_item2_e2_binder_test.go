@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -150,7 +149,7 @@ func TestIntegration_RFC173Item2_DisabledBirthBinder_BakedInner(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d rows, want 1 (only Alice's price matches an order)", len(results))
 	}
-	datum, isMap := rowMap(results[0])
+	datum, isMap := rowMapOK(results[0])
 	if !isMap || datum["CUSTOMER_ID"] != int64(1) {
 		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Positional)
 	}
@@ -188,7 +187,7 @@ func TestIntegration_RFC173Item2_ProbeNegative_LazyInner(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d rows, want 1 (only Alice's price matches an order)", len(results))
 	}
-	datum, isMap := rowMap(results[0])
+	datum, isMap := rowMapOK(results[0])
 	if !isMap || datum["CUSTOMER_ID"] != int64(1) || datum["CUST.NAME"] != "Alice" {
 		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Positional)
 	}
@@ -197,38 +196,6 @@ func TestIntegration_RFC173Item2_ProbeNegative_LazyInner(t *testing.T) {
 	item2AssertCustomerPositional(t, results[0], int64(1), "Alice")
 	if v, ok := results[0].Positional.GetByName("CUST.NAME"); !ok || v != "Alice" {
 		t.Fatalf("GetByName(CUST.NAME) = (%v, %v), want (Alice, true) — the outer-alias leg window", v, ok)
-	}
-}
-
-// TestIntegration_RFC173Item2_Oracle pins the §5 name-model oracle over the
-// baked shape: with the oracle on, the probe binding must NOT fire (the outer
-// stays the Datum map; the baked reference bridges by display name via
-// values.OracleBakedNameFallback), no row carries a positional, and the row
-// set is identical to the oracle-off run. Deliberately NOT parallel: owns the
-// oracle globals.
-func TestIntegration_RFC173Item2_Oracle(t *testing.T) { //nolint:paralleltest // owns the §5 oracle globals
-	store := setupStore(t)
-	insertCustomers(t, store,
-		&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice"), Price: proto.Int32(10)},
-		&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob"), Price: proto.Int32(20)},
-	)
-	insertOrders(t, store, &gen.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)})
-
-	fm, _ := item2ExistsShape(t, true)
-	ordinal := runItem2ExistsShape(t, store, fm)
-
-	SetNameModelOracle(true)
-	defer SetNameModelOracle(false)
-	oracle := runItem2ExistsShape(t, store, fm)
-
-	if len(oracle) != len(ordinal) || len(oracle) != 1 {
-		t.Fatalf("oracle-on got %d rows, oracle-off %d, want 1/1 — the oracle must not change results", len(oracle), len(ordinal))
-	}
-	if oracle[0].Positional != nil {
-		t.Fatal("oracle-on row carries a positional row — the §5 oracle must suppress the pass-through source")
-	}
-	if !reflect.DeepEqual(oracle[0].Datum, ordinal[0].Datum) {
-		t.Fatalf("oracle-on Datum = %v, oracle-off = %v — the name model must be untouched", oracle[0].Datum, ordinal[0].Positional)
 	}
 }
 
@@ -396,13 +363,6 @@ func TestRFC173Item2_ComputeResult_PassThrough(t *testing.T) {
 		if got.Positional != outerQR.Positional {
 			t.Fatalf("output Positional = %p, want the outer's own row %p (verbatim pass-through)", got.Positional, outerQR.Positional)
 		}
-		wantDatum := map[string]any{
-			"ID": int64(1), "V": int64(10),
-			"A.ID": int64(1), "A.V": int64(10),
-		}
-		if !reflect.DeepEqual(got.Datum, wantDatum) {
-			t.Fatalf("Datum = %v, want qualifyOuterRow's map %v", got.Datum, wantDatum)
-		}
 	})
 	t.Run("nil inner passes through", func(t *testing.T) {
 		t.Parallel()
@@ -413,17 +373,6 @@ func TestRFC173Item2_ComputeResult_PassThrough(t *testing.T) {
 		}
 		if got.Positional != outerQR.Positional {
 			t.Fatal("nil-inner identity emission must pass the outer positional through")
-		}
-	})
-	t.Run("datum-only outer emits none", func(t *testing.T) {
-		t.Parallel()
-		c := newIdentityCursor(t, bakedInner)
-		got, err := c.computeResult(ojNameQR(legA, int64(1), int64(10)), innerQR)
-		if err != nil {
-			t.Fatalf("computeResult: %v", err)
-		}
-		if got.Positional != nil {
-			t.Fatalf("Datum-only outer produced Positional %v — the pass-through is propagation, never a birth", got.Positional)
 		}
 	})
 	t.Run("mismatched outer layout re-adapts to the baked type", func(t *testing.T) {
@@ -441,10 +390,7 @@ func TestRFC173Item2_ComputeResult_PassThrough(t *testing.T) {
 		covering := NewPositionalRow(coveringType)
 		covering.Set(0, int64(10)) // V
 		covering.Set(1, int64(1))  // ID
-		outer := QueryResult{
-			Datum:      map[string]any{"ID": int64(1), "V": int64(10)},
-			Positional: covering,
-		}
+		outer := QueryResult{Positional: covering}
 		c := newIdentityCursor(t, bakedInner)
 		got, err := c.computeResult(outer, innerQR)
 		if err != nil {

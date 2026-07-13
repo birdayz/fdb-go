@@ -281,7 +281,7 @@ func makeTestResults(data []map[string]any) []QueryResult {
 }
 
 func getDatum(qr QueryResult) map[string]any {
-	if m, ok := rowMap(qr); ok {
+	if m, ok := rowMapOK(qr); ok {
 		return m
 	}
 	return nil

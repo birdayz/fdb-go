@@ -55,6 +55,7 @@ go_test(
         "package_invariant_test.go",
         "plan_column_names_test.go",
         "positional_row_test.go",
+        "positional_test_helpers_test.go",
         "positional_type_cache_test.go",
         "resultset_test.go",
         "rfc173_commit2_cursor_pin_test.go",
@@ -114,6 +115,7 @@ go_test(
         "rfc173_commit2_cursor_pin_test.go",
         "rfc173_commit4_passthrough_test.go",
         "merge_fabrication_test.go",
+        "positional_test_helpers_test.go",
     ],
     deps = [
         "//gen",

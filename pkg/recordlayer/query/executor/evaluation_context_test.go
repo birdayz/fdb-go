@@ -256,7 +256,7 @@ func TestGetOrCreateTempTable_Functional(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("GetList len = %d, want 1", len(list))
 	}
-	d, ok := rowMap(list[0])
+	d, ok := rowMapOK(list[0])
 	if !ok {
 		t.Fatalf("Datum type = %T, want map[string]any", list[0].Positional)
 	}
@@ -291,7 +291,7 @@ func TestTempTable_AddSingle(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("GetList len = %d, want 1", len(list))
 	}
-	d, _ := rowMap(list[0])
+	d, _ := rowMapOK(list[0])
 	if d["id"] != int64(1) {
 		t.Fatalf("Datum[id] = %v, want 1", d["id"])
 	}
@@ -309,7 +309,7 @@ func TestTempTable_AddMultiple_PreservesOrder(t *testing.T) {
 		t.Fatalf("GetList len = %d, want 5", len(list))
 	}
 	for i := int64(0); i < 5; i++ {
-		d, _ := rowMap(list[i])
+		d, _ := rowMapOK(list[i])
 		if d["id"] != i {
 			t.Fatalf("list[%d].Datum[id] = %v, want %d", i, d["id"], i)
 		}
@@ -331,7 +331,7 @@ func TestTempTable_GetList_ReturnsCopy(t *testing.T) {
 	if len(list2) != 2 {
 		t.Fatalf("after mutating copy, GetList len = %d, want 2", len(list2))
 	}
-	d, _ := rowMap(list2[0])
+	d, _ := rowMapOK(list2[0])
 	if d["id"] != int64(1) {
 		t.Fatalf("internal data corrupted: Datum[id] = %v, want 1", d["id"])
 	}
@@ -361,7 +361,7 @@ func TestTempTable_ClearThenAdd(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("after Clear+Add, GetList len = %d, want 1", len(list))
 	}
-	d, _ := rowMap(list[0])
+	d, _ := rowMapOK(list[0])
 	if d["id"] != int64(99) {
 		t.Fatalf("Datum[id] = %v, want 99", d["id"])
 	}
@@ -396,7 +396,7 @@ func TestTempTable_ConcurrentAdd(t *testing.T) {
 	// Verify all items are unique (no lost writes).
 	seen := make(map[int64]bool, want)
 	for _, qr := range list {
-		d, _ := rowMap(qr)
+		d, _ := rowMapOK(qr)
 		id := d["id"].(int64)
 		if seen[id] {
 			t.Fatalf("duplicate id %d", id)

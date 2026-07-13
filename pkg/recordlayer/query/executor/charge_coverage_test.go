@@ -17,7 +17,7 @@ func wideRows(n, wbytes int, key string) []QueryResult {
 	pad := string(make([]byte, wbytes))
 	rows := make([]QueryResult, n)
 	for i := range rows {
-		rows[i] = QueryResult{Datum: map[string]any{"ID": int64(i), key: pad}}
+		rows[i] = dmap(map[string]any{"ID": int64(i), key: pad})
 	}
 	return rows
 }
@@ -116,9 +116,9 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 	advanced(t, "nljCursor hash-index", func(t *testing.T) {
 		innerRows := make([]QueryResult, 150)
 		for i := range innerRows {
-			innerRows[i] = QueryResult{Datum: map[string]any{"K": int64(i)}}
+			innerRows[i] = dmap(map[string]any{"K": int64(i)})
 		}
-		outer := recordlayer.FromList([]QueryResult{{Datum: map[string]any{"K": int64(1)}}})
+		outer := recordlayer.FromList([]QueryResult{dmap(map[string]any{"K": int64(1)})})
 		preds := []predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
 				Operand: &values.FieldValue{

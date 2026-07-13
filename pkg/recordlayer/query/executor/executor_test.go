@@ -55,7 +55,7 @@ func TestExecuteValues_SingleRow(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row, ok := rowMap(results[0])
+	row, ok := rowMapOK(results[0])
 	if !ok {
 		t.Fatalf("datum = %T, want map[string]any", results[0].Positional)
 	}
@@ -218,7 +218,7 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row, _ := rowMap(results[0])
+	row, _ := rowMapOK(results[0])
 	if row["'PROJECTED'"] != "projected" {
 		t.Errorf("projection result = %v, want 'projected'", row["'PROJECTED'"])
 	}
@@ -543,7 +543,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row, _ := rowMap(results[0])
+	row, _ := rowMapOK(results[0])
 	if row["'RESULT'"] != "result" {
 		t.Errorf("composite pipeline result = %v, want 'result'", row["'RESULT'"])
 	}
@@ -581,7 +581,7 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	datum, _ := rowMap(results[0])
+	datum, _ := rowMapOK(results[0])
 	if datum["A"] != int64(1) {
 		t.Errorf("A = %v, want 1", datum["A"])
 	}
@@ -855,7 +855,7 @@ func TestParameterBinding_Values(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	datum, _ := rowMap(results[0])
+	datum, _ := rowMapOK(results[0])
 	if datum["param"] != int64(99) {
 		t.Errorf("param = %v, want 99", datum["param"])
 	}
@@ -886,7 +886,7 @@ func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 (1×1 cross)", len(results))
 	}
-	row, _ := rowMap(results[0])
+	row, _ := rowMapOK(results[0])
 	if row["constant"] != "hello" {
 		t.Errorf("constant = %v, want 'hello' (inner overwrites)", row["constant"])
 	}
@@ -1020,7 +1020,7 @@ func TestExecuteStreamingAggregation_CountGroupBy(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 group", len(results))
 	}
-	row, _ := rowMap(results[0])
+	row, _ := rowMapOK(results[0])
 	if row["COUNT(CONSTANT)"] != int64(1) {
 		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
 	}
@@ -1053,7 +1053,7 @@ func TestExecuteStreamingAggregation_NoGroups_Count(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	row, _ := rowMap(results[0])
+	row, _ := rowMapOK(results[0])
 	if row["COUNT(CONSTANT)"] != int64(1) {
 		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
 	}
@@ -1092,7 +1092,7 @@ func TestExecuteAggregation_EmptyInput_NoGroupKeys(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 (COUNT over empty = 0)", len(results))
 	}
-	row, _ := rowMap(results[0])
+	row, _ := rowMapOK(results[0])
 	if row["COUNT(CONSTANT)"] != int64(0) {
 		t.Errorf("COUNT(empty) = %v, want 0", row["COUNT(CONSTANT)"])
 	}
@@ -1179,7 +1179,7 @@ func TestExecuteTempTable_InsertAndScan(t *testing.T) {
 	if len(scanned) != 1 {
 		t.Fatalf("scan returned %d rows, want 1", len(scanned))
 	}
-	row, _ := rowMap(scanned[0])
+	row, _ := rowMapOK(scanned[0])
 	if row["constant"] != int64(42) {
 		t.Errorf("scanned value = %v, want 42", row["constant"])
 	}
@@ -2173,7 +2173,7 @@ func TestMergeRows_BothMaps(t *testing.T) {
 	outer := dmapPK(tuple.Tuple{int64(1)}, map[string]any{"A": 1, "B": 2})
 	inner := dmapPK(tuple.Tuple{int64(2)}, map[string]any{"C": 3, "D": 4})
 	merged := mergeRows(outer, inner, "", "")
-	m, _ := rowMap(merged)
+	m, _ := rowMapOK(merged)
 	if m["A"] != 1 || m["B"] != 2 || m["C"] != 3 || m["D"] != 4 {
 		t.Fatalf("unexpected merged datum: %v", m)
 	}
@@ -2187,7 +2187,7 @@ func TestMergeRows_InnerOverridesOuter(t *testing.T) {
 	outer := dmap(map[string]any{"K": "outer"})
 	inner := dmap(map[string]any{"K": "inner"})
 	merged := mergeRows(outer, inner, "", "")
-	m, _ := rowMap(merged)
+	m, _ := rowMapOK(merged)
 	if m["K"] != "inner" {
 		t.Fatalf("inner should override outer on key conflict, got %v", m["K"])
 	}
@@ -2555,39 +2555,6 @@ func TestProjectionColumnName_NonFieldValue(t *testing.T) {
 	}
 }
 
-// --- fieldFromDatum unit tests ---
-
-func TestFieldFromDatum_MapFound(t *testing.T) {
-	t.Parallel()
-	datum := map[string]any{"NAME": "alice", "AGE": int64(30)}
-	if v := fieldFromDatum(datum, "name"); v != "alice" {
-		t.Fatalf("expected alice, got %v", v)
-	}
-}
-
-func TestFieldFromDatum_MapNotFound(t *testing.T) {
-	t.Parallel()
-	datum := map[string]any{"NAME": "alice"}
-	if v := fieldFromDatum(datum, "MISSING"); v != nil {
-		t.Fatalf("expected nil, got %v", v)
-	}
-}
-
-func TestFieldFromDatum_NonMap(t *testing.T) {
-	t.Parallel()
-	if v := fieldFromDatum("not-a-map", "NAME"); v != nil {
-		t.Fatalf("expected nil for non-map, got %v", v)
-	}
-}
-
-func TestFieldFromDatum_CaseInsensitive(t *testing.T) {
-	t.Parallel()
-	datum := map[string]any{"PRICE": int64(100)}
-	if v := fieldFromDatum(datum, "price"); v != int64(100) {
-		t.Fatalf("expected 100, got %v (case-insensitive lookup via ToUpper)", v)
-	}
-}
-
 // ----- EvaluationContext (additional coverage) ------------------------------
 
 func TestEmptyEvaluationContext_NoBindings(t *testing.T) {
@@ -2805,9 +2772,9 @@ func TestSortByKeys_MultipleKeys(t *testing.T) {
 	}
 	sortByKeys(items, []string{"A", "B"}, []bool{false, false})
 
-	d0, _ := rowMap(items[0])
-	d1, _ := rowMap(items[1])
-	d2, _ := rowMap(items[2])
+	d0, _ := rowMapOK(items[0])
+	d1, _ := rowMapOK(items[1])
+	d2, _ := rowMapOK(items[2])
 	if d0["A"] != int64(1) || d0["B"] != int64(1) {
 		t.Errorf("row 0: got A=%v B=%v, want 1,1", d0["A"], d0["B"])
 	}
@@ -3330,7 +3297,7 @@ func TestFromStoredRecord(t *testing.T) {
 	}
 	qr := FromStoredRecord(rec)
 
-	m, ok := rowMap(qr)
+	m, ok := rowMapOK(qr)
 	if !ok {
 		t.Fatalf("Datum type %T, want map[string]any", qr.Positional)
 	}
@@ -3418,7 +3385,7 @@ func collectMergeSortCursor(t *testing.T, c *mergeSortCursor) []QueryResult {
 // fieldVal returns the int64 at key k from a QueryResult datum.
 func fieldVal(t *testing.T, r QueryResult, k string) int64 {
 	t.Helper()
-	m, ok := rowMap(r)
+	m, ok := rowMapOK(r)
 	if !ok {
 		t.Fatalf("datum type %T, want map[string]any", r.Positional)
 	}
@@ -3684,14 +3651,14 @@ func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
 
 	// Verify nil values come first and non-nil values are ordered.
 	// Expected order: nil, 1, nil, 3
-	m0, _ := rowMap(results[0])
+	m0, _ := rowMapOK(results[0])
 	if m0["id"] != nil {
 		t.Errorf("results[0].id = %v, want nil", m0["id"])
 	}
 	if fieldVal(t, results[1], "id") != 1 {
 		t.Errorf("results[1].id = %v, want 1", results[1].Positional)
 	}
-	m2, _ := rowMap(results[2])
+	m2, _ := rowMapOK(results[2])
 	if m2["id"] != nil {
 		t.Errorf("results[2].id = %v, want nil", m2["id"])
 	}
@@ -3924,7 +3891,7 @@ func TestMergeSortCursor_StringComparisonKeys(t *testing.T) {
 	}
 	expectedNames := []string{"alice", "bob", "charlie", "dave"}
 	for i, want := range expectedNames {
-		m, _ := rowMap(results[i])
+		m, _ := rowMapOK(results[i])
 		got := m["name"].(string)
 		if got != want {
 			t.Errorf("results[%d].name = %q, want %q", i, got, want)
@@ -4191,14 +4158,14 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 
 	// Check datum values.
 	for i, want := range []string{"alice", "bob", "carol"} {
-		m, _ := rowMap(gotBuf[i])
+		m, _ := rowMapOK(gotBuf[i])
 		if m["name"] != want {
 			t.Errorf("buf[%d].name = %v, want %q", i, m["name"], want)
 		}
 	}
 	// Ages: JSON round-trips through float64 → int64 conversion.
 	for i, want := range []int64{30, 25, 35} {
-		m, _ := rowMap(gotBuf[i])
+		m, _ := rowMapOK(gotBuf[i])
 		if m["age"] != want {
 			t.Errorf("buf[%d].age = %v (%T), want %d", i, m["age"], m["age"], want)
 		}
@@ -4644,7 +4611,7 @@ func TestAggregateCursor_SingleGroup_CountStar(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	m, _ := rowMap(results[0])
+	m, _ := rowMapOK(results[0])
 	if m["COUNT(*)"] != int64(3) {
 		t.Errorf("COUNT(*) = %v, want 3", m["COUNT(*)"])
 	}
@@ -4664,7 +4631,7 @@ func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("scalar aggregate on empty input: got %d results, want 1", len(results))
 	}
-	m, _ := rowMap(results[0])
+	m, _ := rowMapOK(results[0])
 	if m["COUNT(*)"] != int64(0) {
 		t.Errorf("COUNT(*) on empty = %v, want 0", m["COUNT(*)"])
 	}
@@ -4693,7 +4660,7 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		t.Fatalf("got %d groups, want 2", len(results))
 	}
 
-	m0, _ := rowMap(results[0])
+	m0, _ := rowMapOK(results[0])
 	if m0["DEPT"] != "A" {
 		t.Errorf("group 0 key = %v, want A", m0["DEPT"])
 	}
@@ -4701,7 +4668,7 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		t.Errorf("group 0 SUM = %v, want 30", m0["SUM(AMOUNT)"])
 	}
 
-	m1, _ := rowMap(results[1])
+	m1, _ := rowMapOK(results[1])
 	if m1["DEPT"] != "B" {
 		t.Errorf("group 1 key = %v, want B", m1["DEPT"])
 	}

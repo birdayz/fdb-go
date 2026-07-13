@@ -43,22 +43,23 @@ func ojLegQR(t *testing.T, rt *values.RecordType, vals ...any) QueryResult {
 		t.Fatalf("ojLegQR: %d values for a %d-field type", len(vals), len(rt.Fields))
 	}
 	pos := NewPositionalRow(rt)
-	m := make(map[string]any, len(vals))
 	for i, v := range vals {
 		pos.Set(i, v)
-		m[rt.Fields[i].Name] = v
 	}
-	return QueryResult{Datum: m, Positional: pos}
+	return QueryResult{Positional: pos}
 }
 
-// ojNameQR builds a NAME-model leg row: Datum only, no positional (an
-// aggregate/union box output shape).
+// ojNameQR builds a box-output leg row over the given type. (RFC-173: every row
+// is a PositionalRow now — the pre-cap "name-model, Datum-only" box shape is
+// gone; this is an alias of ojLegQR kept for the callers that named it.)
 func ojNameQR(rt *values.RecordType, vals ...any) QueryResult {
-	m := make(map[string]any, len(vals))
+	pos := NewPositionalRow(rt)
 	for i, v := range vals {
-		m[rt.Fields[i].Name] = v
+		if i < len(pos.Slots) {
+			pos.Set(i, v)
+		}
 	}
-	return QueryResult{Datum: m}
+	return QueryResult{Positional: pos}
 }
 
 // ojEqPred builds lhs = rhs.
@@ -338,15 +339,6 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_InnerJoin(t *testing.T) {
 		if len(results) != 1 {
 			t.Fatalf("got %d rows, want 1 (only A.ID=1 matches B.ID=1)", len(results))
 		}
-		// The name-model Datum: mergeRows keys, untouched (dark dual emission).
-		wantDatum := map[string]any{
-			"ID": int64(1), "V": int64(10), "W": int64(100),
-			"A.ID": int64(1), "A.V": int64(10),
-			"B.ID": int64(1), "B.W": int64(100),
-		}
-		if !reflect.DeepEqual(results[0].Datum, wantDatum) {
-			t.Fatalf("Datum = %v, want the untouched mergeRows map %v", results[0].Datum, wantDatum)
-		}
 		// The ordinal birth: the merged positional row.
 		ojAssertSlots(t, results[0].Positional, int64(1), int64(10), int64(1), int64(100))
 	})
@@ -411,7 +403,7 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_HashPath(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (outer ID=5 matches inner ID=5)", len(results))
 	}
 	ojAssertSlots(t, results[0].Positional, int64(5), int64(50), int64(5), int64(50))
-	m, isMap := rowMap(results[0])
+	m, isMap := rowMapOK(results[0])
 	if !isMap || m["A.ID"] != int64(5) || m["B.W"] != int64(50) {
 		t.Fatalf("hash-path Datum = %v, want the untouched mergeRows keys", results[0].Positional)
 	}
@@ -445,20 +437,6 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_LeftOuterNullLeg(t *testing.T) {
 	ojAssertSlots(t, results[0].Positional, int64(1), int64(10), int64(1), int64(100))
 	// The null-padded row: inner slots NULL.
 	ojAssertSlots(t, results[1].Positional, int64(2), int64(20), nil, nil)
-	// task #38: the null-padded Datum is SCHEMA-COMPLETE — fabricateNullLeg writes the NULL
-	// leg (B) columns present-nil (qualified B.ID/B.W always, bare W if-absent so it doesn't
-	// clobber A's ID), so a name-keyed read of B.* resolves to SQL NULL instead of tripping
-	// the NameMissLoud guard. Bare ID/V stay A's (add-if-absent). Agrees with the Positional
-	// null-pad column-for-column.
-	wantDatum := map[string]any{
-		"ID": int64(2), "V": int64(20),
-		"A.ID": int64(2), "A.V": int64(20),
-		"B.ID": nil, "B.W": nil,
-		"W": nil,
-	}
-	if !reflect.DeepEqual(results[1].Datum, wantDatum) {
-		t.Fatalf("null-padded Datum = %v, want the schema-complete map %v", results[1].Datum, wantDatum)
-	}
 }
 
 // TestRFC173S2_NLJCursor_OrdinalBirth_FullDrain pins the FULL OUTER drain
@@ -489,63 +467,10 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_FullDrain(t *testing.T) {
 	ojAssertSlots(t, results[1].Positional, nil, nil, int64(3), int64(300))
 }
 
-// TestRFC173S2_NLJCursor_Oracle pins the §5 oracle switch on the ordinal-birth
-// NLJ: with SetNameModelOracle(true) the same construction emits NO positional
-// rows and the name-model Datum is EXACTLY the oracle-off Datum (the birth is
-// pure addition). Deliberately NOT parallel: it owns the oracle globals for
-// its duration (sequential test phase; every parallel test is paused).
-func TestRFC173S2_NLJCursor_Oracle(t *testing.T) { //nolint:paralleltest // owns the §5 oracle globals
-	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
-	outerRows := []QueryResult{
-		ojLegQR(t, legA, int64(1), int64(10)),
-		ojLegQR(t, legA, int64(2), int64(20)),
-	}
-	innerRows := []QueryResult{
-		ojLegQR(t, legB, int64(1), int64(100)),
-		ojLegQR(t, legB, int64(2), int64(200)),
-	}
-	pred := ojEqPred(
-		values.NewFieldValue(qovA, "ID", values.NotNullLong),
-		values.NewFieldValue(qovB, "ID", values.NotNullLong),
-	)
-	run := func(t *testing.T) []QueryResult {
-		t.Helper()
-		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
-			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
-		defer c.Close()
-		return collectCursor(t, c)
-	}
-
-	oracleOff := run(t)
-	if len(oracleOff) != 2 {
-		t.Fatalf("oracle-off got %d rows, want 2", len(oracleOff))
-	}
-	for i, r := range oracleOff {
-		if r.Positional == nil {
-			t.Fatalf("oracle-off row %d carries no positional — the birth must fire", i)
-		}
-	}
-
-	SetNameModelOracle(true)
-	defer SetNameModelOracle(false)
-	oracleOn := run(t)
-	if len(oracleOn) != len(oracleOff) {
-		t.Fatalf("oracle-on got %d rows, oracle-off %d — the oracle must not change results", len(oracleOn), len(oracleOff))
-	}
-	for i, r := range oracleOn {
-		if r.Positional != nil {
-			t.Fatalf("oracle-on row %d carries a positional row — the §5 oracle must suppress every birth", i)
-		}
-		if !reflect.DeepEqual(r.Datum, oracleOff[i].Datum) {
-			t.Fatalf("oracle-on Datum %d = %v, oracle-off = %v — the name model must be untouched by the birth", i, r.Datum, oracleOff[i].Positional)
-		}
-	}
-}
-
-// TestRFC173S2_NLJCursor_DualEmissionInvariance is the cursor-level
-// row-agreement pin: an ordinal-birth NLJ and an identical NAME-model NLJ
-// (lazy anchored RV — today's join seed shape) over the same inputs emit
-// deep-equal Datum maps row-for-row; only the ordinal one adds Positional.
+// TestRFC173S2_NLJCursor_DualEmissionInvariance pins that BOTH join-seed
+// shapes — the ordinal-birth RC and the legacy AnchoredJoin RC — now emit a
+// leg-windowed Positional row (RFC-173 cap: mergeRows is Positional-native, so
+// even the AnchoredJoin merge births a positional via concatLegPositionals).
 func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
@@ -584,19 +509,13 @@ func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 		t.Fatalf("got %d ordinal / %d name rows, want 2/2", len(ordinal), len(name))
 	}
 	for i := range ordinal {
-		if !reflect.DeepEqual(ordinal[i].Datum, name[i].Datum) {
-			t.Fatalf("row %d Datum diverged: ordinal %v, name %v — the dark-stage dual emission must keep the name model byte-identical", i, ordinal[i].Datum, name[i].Positional)
-		}
 		if ordinal[i].Positional == nil {
 			t.Fatalf("ordinal row %d missing positional", i)
 		}
-		// RFC-173 cap: mergeRows is now Positional-NATIVE — a name-model
+		// RFC-173 cap: mergeRows is now Positional-NATIVE — a legacy
 		// (AnchoredJoin) merge also emits a leg-windowed Positional
 		// (concatLegPositionals, built by parallel construction from the leg rows'
-		// own Positionals), so the name model can be deleted. The Datum stays
-		// byte-identical (asserted above); the Positional is the ordinal sibling.
-		// (The former invariant "name-model row carries no positional" was the §5
-		// dark-stage gate that retires with the name map.)
+		// own Positionals), so the name model can be deleted.
 		if name[i].Positional == nil {
 			t.Fatalf("name-model row %d must now carry a leg-concat positional (RFC-173 cap: merge is Positional-native)", i)
 		}
@@ -606,12 +525,8 @@ func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 // --- flatMapCursor computeResult -------------------------------------------------
 
 // TestRFC173S2_FlatMap_ComputeResult pins the ordinal-birth flatMap: the
-// positional row births from the RC with leg bindings; the coexistence Datum
-// derives FROM the positional row via datumFromSpans (W3b fallout fix: a
-// SEED-shaped RV mirrors the anchored RC's key set — bare keys last-wins on
-// dup names, matching RecordConstructorValue.Evaluate's name map, PLUS the
-// per-leg ALIAS.COL qualified keys downstream name-model consumers resolve
-// dotted references against); the nil inner is the NULL leg.
+// positional row births from the RC with leg bindings (both legs present, and
+// the nil inner as the NULL leg).
 func TestRFC173S2_FlatMap_ComputeResult(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
@@ -635,20 +550,6 @@ func TestRFC173S2_FlatMap_ComputeResult(t *testing.T) {
 			t.Fatalf("computeResult: %v", err)
 		}
 		ojAssertSlots(t, got.Positional, int64(1), int64(10), int64(2), int64(20))
-		// Datum derives FROM the positional row; bare keys are LAST-WINS on
-		// the duplicate ID (B's ID — exactly what evaluating the RC into a
-		// name map produces), and the seed shape adds the per-leg qualified
-		// keys (datumFromSpans — the anchored RC's key set).
-		wantDatum := map[string]any{
-			"ID": int64(2), "V": int64(10), "W": int64(20),
-			"A.ID": int64(1), "A.V": int64(10), "B.ID": int64(2), "B.W": int64(20),
-		}
-		if !reflect.DeepEqual(got.Datum, wantDatum) {
-			t.Fatalf("Datum = %v, want datumFromSpans' bare+qualified map %v", got.Datum, wantDatum)
-		}
-		if !reflect.DeepEqual(got.Datum, map[string]any(datumFromSpans(got.Positional, c.birth.Spans))) {
-			t.Fatal("Datum must be exactly datumFromSpans(Positional, spans)")
-		}
 	})
 
 	t.Run("nil inner is the null leg", func(t *testing.T) {
@@ -659,52 +560,7 @@ func TestRFC173S2_FlatMap_ComputeResult(t *testing.T) {
 			t.Fatalf("computeResultLegs: %v", err)
 		}
 		ojAssertSlots(t, got.Positional, int64(1), int64(10), nil, nil)
-		// Last-wins on the dup ID: B's NULL ID wins the name key — the same
-		// conflation the name model always had (positional keeps both). The
-		// null leg's qualified keys are present with NULL values, exactly as
-		// evaluating the anchored RC with an empty inner Datum produced.
-		wantDatum := map[string]any{
-			"ID": nil, "V": int64(10), "W": nil,
-			"A.ID": int64(1), "A.V": int64(10), "B.ID": nil, "B.W": nil,
-		}
-		if !reflect.DeepEqual(got.Datum, wantDatum) {
-			t.Fatalf("null-inner Datum = %v, want %v", got.Datum, wantDatum)
-		}
 	})
-}
-
-// TestRFC173S2_FlatMap_Oracle pins the flatMap oracle fallback: with
-// SetNameModelOracle(true) computeResult takes TODAY'S Evaluate path — the
-// baked RC resolves by display name via values.OracleBakedNameFallback over
-// the name-keyed leg bindings — emitting the same (last-wins) Datum and NO
-// positional row. Deliberately NOT parallel: owns the oracle globals.
-func TestRFC173S2_FlatMap_Oracle(t *testing.T) { //nolint:paralleltest // owns the §5 oracle globals
-	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
-	c, err := newFlatMapCursor(nil, nil, nil, nil, EmptyEvaluationContext(),
-		qovA.Correlation, qovB.Correlation, seed, false, recordlayer.ExecuteProperties{})
-	if err != nil {
-		t.Fatalf("newFlatMapCursor: %v", err)
-	}
-	outerQR := ojLegQR(t, legA, int64(1), int64(10))
-	innerQR := ojLegQR(t, legB, int64(2), int64(20))
-
-	ordinalRow, err := c.computeResult(outerQR, innerQR)
-	if err != nil {
-		t.Fatalf("oracle-off computeResult: %v", err)
-	}
-
-	SetNameModelOracle(true)
-	defer SetNameModelOracle(false)
-	oracleRow, err := c.computeResult(outerQR, innerQR)
-	if err != nil {
-		t.Fatalf("oracle-on computeResult: %v", err)
-	}
-	if oracleRow.Positional != nil {
-		t.Fatal("oracle-on flatMap must not birth a positional row")
-	}
-	if !reflect.DeepEqual(oracleRow.Datum, ordinalRow.Datum) {
-		t.Fatalf("oracle-on Datum = %v, ordinal Datum = %v — the two paths must produce the same name map", oracleRow.Datum, ordinalRow.Positional)
-	}
 }
 
 // --- downstream dispatch -----------------------------------------------------------

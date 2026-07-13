@@ -200,7 +200,7 @@ func TestResultSet_ColumnOutOfRange(t *testing.T) {
 	ctx := context.Background()
 
 	cursor := recordlayer.FromList([]QueryResult{
-		{Datum: map[string]any{"X": int64(1)}},
+		dmap(map[string]any{"X": int64(1)}),
 	})
 	cols := []ColumnDef{{Name: "X", TypeName: "BIGINT"}}
 
@@ -231,7 +231,7 @@ func TestResultSet_BeforeAdvance(t *testing.T) {
 	ctx := context.Background()
 
 	cursor := recordlayer.FromList([]QueryResult{
-		{Datum: map[string]any{"X": int64(1)}},
+		dmap(map[string]any{"X": int64(1)}),
 	})
 	cols := []ColumnDef{{Name: "X", TypeName: "BIGINT"}}
 
@@ -551,7 +551,7 @@ func TestResultSet_PositionalDupNameRead(t *testing.T) {
 	}}
 	pos := &PositionalRow{Type: mergedType, Slots: []any{int64(1), "alpha", int64(1), "x"}}
 	cursor := recordlayer.FromList([]QueryResult{
-		{Datum: datumFromPositional(pos), Positional: pos},
+		{Positional: pos},
 	})
 	cols := []ColumnDef{
 		{Name: "ID", TypeName: "BIGINT"},

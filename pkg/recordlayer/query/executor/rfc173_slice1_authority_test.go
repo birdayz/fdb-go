@@ -74,7 +74,7 @@ func TestFrontierOrdinalAuthority_RFC173Slice1(t *testing.T) {
 		if len(rows) != 1 {
 			t.Fatalf("got %d rows, want 1", len(rows))
 		}
-		m, _ := rowMap(rows[0])
+		m, _ := rowMapOK(rows[0])
 		if m["V"] != int64(42) {
 			t.Fatalf("executeProjection read %v — wants 42 (positional), not 999 (Datum): the production dispatch is not ordinal-authoritative", m["V"])
 		}
@@ -120,7 +120,7 @@ func TestFrontierOrdinalAuthority_RFC173Slice1(t *testing.T) {
 		if len(rows) != 1 {
 			t.Fatalf("got %d rows, want 1", len(rows))
 		}
-		m, _ := rowMap(rows[0])
+		m, _ := rowMapOK(rows[0])
 		if m["OUT"] != int64(42) {
 			t.Fatalf("executeMap read %v — wants OUT=42 (positional), not 999 (Datum)", m["OUT"])
 		}

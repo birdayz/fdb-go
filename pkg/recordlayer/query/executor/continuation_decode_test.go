@@ -157,8 +157,8 @@ func TestDecodeSortContinuationRoundTrip(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d records, want 2", len(got))
 	}
-	d0, ok0 := rowMap(got[0])
-	d1, ok1 := rowMap(got[1])
+	d0, ok0 := rowMapOK(got[0])
+	d1, ok1 := rowMapOK(got[1])
 	if !ok0 || !ok1 {
 		t.Fatalf("positional rows = %v, %v, want non-nil", got[0].Positional, got[1].Positional)
 	}

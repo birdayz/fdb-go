@@ -79,7 +79,7 @@ func TestRFC173W4c_PositionalAuthority_ScalarElement(t *testing.T) {
 		t.Errorf("outer ID slot = %#v, want int64(7)", got.Positional.Slots[0])
 	}
 	// The element resolves by its output name X against the birthed row.
-	if m, ok := rowMap(got); !ok || m["X"] != int64(101) {
+	if m, ok := rowMapOK(got); !ok || m["X"] != int64(101) {
 		t.Errorf("element X by name = %#v, want int64(101)", got.Positional)
 	}
 }

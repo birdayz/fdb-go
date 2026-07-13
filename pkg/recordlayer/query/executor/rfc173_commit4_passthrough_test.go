@@ -36,7 +36,7 @@ func TestRFC173Commit4_IdentityPassThroughDiscriminates(t *testing.T) {
 	identityRV := values.NewQuantifiedObjectValue(mergedCorr)
 	legIndependentInner := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
 
-	innerRow := QueryResult{Datum: map[string]any{}}
+	innerRow := dmap(map[string]any{})
 
 	// GATED ORDINAL OUTER: the step-1 NLJ carries the ordinal seed → outerMergedType
 	// set (from downstreamLegWindowsTyped), outerBakedType nil (leg-independent inner).
@@ -61,7 +61,7 @@ func TestRFC173Commit4_IdentityPassThroughDiscriminates(t *testing.T) {
 	pos.Set(1, int64(10))
 	pos.Set(2, int64(2))
 	pos.Set(3, int64(20))
-	outerRow := QueryResult{Datum: map[string]any{}, Positional: pos}
+	outerRow := QueryResult{Positional: pos}
 	outGated, err := cGated.computeResultLegs(outerRow, &innerRow)
 	if err != nil {
 		t.Fatalf("computeResultLegs (gated): %v", err)

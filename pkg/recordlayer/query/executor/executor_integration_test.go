@@ -162,7 +162,7 @@ func TestIntegration_ScanPlan_AllRecords(t *testing.T) {
 			if r.PrimaryKey == nil {
 				t.Fatal("result has nil PrimaryKey")
 			}
-			datum, ok := rowMap(r)
+			datum, ok := rowMapOK(r)
 			if !ok {
 				t.Fatalf("datum type = %T, want map[string]any", r.Positional)
 			}
@@ -566,7 +566,7 @@ func TestIntegration_ScanDatum_Shape(t *testing.T) {
 			t.Fatalf("scan returned %d results, want 1", len(results))
 		}
 
-		datum, _ := rowMap(results[0])
+		datum, _ := rowMapOK(results[0])
 		if datum["ORDER_ID"] != int64(701) {
 			t.Errorf("ORDER_ID = %v, want 701", datum["ORDER_ID"])
 		}
@@ -1145,7 +1145,7 @@ func TestIntegration_ProjectionPlan(t *testing.T) {
 		}
 
 		for _, r := range results {
-			datum, _ := rowMap(r)
+			datum, _ := rowMapOK(r)
 			if _, exists := datum["PRICE"]; !exists {
 				t.Error("projected datum should contain PRICE")
 			}
@@ -1201,7 +1201,7 @@ func TestIntegration_ProjectionPlan_MultiColumn(t *testing.T) {
 			t.Fatalf("got %d results, want 1", len(results))
 		}
 
-		datum, _ := rowMap(results[0])
+		datum, _ := rowMapOK(results[0])
 		if datum["ORDER_ID"] != int64(6101) {
 			t.Errorf("ORDER_ID = %v, want 6101", datum["ORDER_ID"])
 		}
@@ -1447,7 +1447,7 @@ func TestIntegration_NestedLoopJoin_CrossJoin(t *testing.T) {
 		}
 
 		for _, r := range results {
-			datum, _ := rowMap(r)
+			datum, _ := rowMapOK(r)
 			if datum["ORDER_ID"] == nil {
 				t.Error("ORDER_ID missing from joined row")
 			}
@@ -1519,7 +1519,7 @@ func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
 			t.Fatalf("predicate join returned %d results, want 2 (quantity=5 order × 2 customers)", len(results))
 		}
 		for _, r := range results {
-			datum, _ := rowMap(r)
+			datum, _ := rowMapOK(r)
 			if datum["ORDER_ID"] != int64(9101) {
 				t.Errorf("ORDER_ID = %v, want 9101 (quantity=5)", datum["ORDER_ID"])
 			}
@@ -1593,7 +1593,7 @@ func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
 		matchedFound := false
 		unmatchedFound := false
 		for _, r := range results {
-			datum, _ := rowMap(r)
+			datum, _ := rowMapOK(r)
 			orderID := datum["ORDER_ID"].(int64)
 			if orderID == 9201 {
 				if datum["CUSTOMER_ID"] == nil {
@@ -1825,7 +1825,7 @@ func TestIntegration_StreamingAggregation_CountAndSum(t *testing.T) {
 		}
 
 		for _, r := range results {
-			datum, _ := rowMap(r)
+			datum, _ := rowMapOK(r)
 			price := datum["PRICE"].(int64)
 			count := datum["COUNT(ORDER_ID)"].(int64)
 			sumQty := datum["SUM(QUANTITY)"].(int64)
@@ -1902,7 +1902,7 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 			t.Fatalf("no-group agg returned %d results, want 1", len(results))
 		}
 
-		datum, _ := rowMap(results[0])
+		datum, _ := rowMapOK(results[0])
 		if datum["COUNT(ORDER_ID)"] != int64(4) {
 			t.Errorf("COUNT = %v, want 4", datum["COUNT(ORDER_ID)"])
 		}
@@ -2021,8 +2021,8 @@ func TestIntegration_LimitWithOffset(t *testing.T) {
 			t.Fatalf("limit+offset returned %d results, want 2", len(results))
 		}
 
-		d0, _ := rowMap(results[0])
-		d1, _ := rowMap(results[1])
+		d0, _ := rowMapOK(results[0])
+		d1, _ := rowMapOK(results[1])
 		if d0["PRICE"] != int64(30) {
 			t.Errorf("first result price = %v, want 30", d0["PRICE"])
 		}
@@ -2082,7 +2082,7 @@ func TestIntegration_Aggregation_MinMaxAvg(t *testing.T) {
 			t.Fatalf("aggregation returned %d groups, want 1", len(results))
 		}
 
-		d, _ := rowMap(results[0])
+		d, _ := rowMapOK(results[0])
 		if d["MIN(PRICE)"] != int64(100) {
 			t.Errorf("MIN(PRICE) = %v, want 100", d["MIN(PRICE)"])
 		}
@@ -2294,7 +2294,7 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 
 		byPrice := make(map[int64]map[string]any)
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			p := d["PRICE"].(int64)
 			byPrice[p] = d
 		}
@@ -2399,8 +2399,8 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 			t.Fatalf("pipeline returned %d results, want 2", len(results))
 		}
 
-		d0, _ := rowMap(results[0])
-		d1, _ := rowMap(results[1])
+		d0, _ := rowMapOK(results[0])
+		d1, _ := rowMapOK(results[1])
 		if d0["PRICE"] != int64(300) || d0["QUANTITY"] != int64(3) {
 			t.Errorf("first row = %v, want PRICE=300/QUANTITY=3", d0)
 		}
@@ -2579,7 +2579,7 @@ func TestIntegration_Aggregation_EmptyInput(t *testing.T) {
 		if len(results) != 1 {
 			t.Fatalf("aggregation over empty input returned %d rows, want 1", len(results))
 		}
-		d, _ := rowMap(results[0])
+		d, _ := rowMapOK(results[0])
 		if d["COUNT(ORDER_ID)"] != int64(0) {
 			t.Errorf("COUNT(ORDER_ID) = %v, want 0", d["COUNT(ORDER_ID)"])
 		}
@@ -2725,7 +2725,7 @@ func TestIntegration_IndexScan_EqualityRange(t *testing.T) {
 			t.Fatalf("equality index scan returned %d results, want 2", len(results))
 		}
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			if d["PRICE"] != int64(100) {
 				t.Errorf("PRICE = %v, want 100", d["PRICE"])
 			}
@@ -2782,10 +2782,10 @@ func TestIntegration_SortPlan_MultiKey(t *testing.T) {
 			t.Fatalf("sort returned %d results, want 4", len(results))
 		}
 
-		d0, _ := rowMap(results[0])
-		d1, _ := rowMap(results[1])
-		d2, _ := rowMap(results[2])
-		d3, _ := rowMap(results[3])
+		d0, _ := rowMapOK(results[0])
+		d1, _ := rowMapOK(results[1])
+		d2, _ := rowMapOK(results[2])
+		d3, _ := rowMapOK(results[3])
 		if d0["PRICE"] != int64(100) || d0["QUANTITY"] != int64(7) {
 			t.Errorf("row 0: PRICE=%v QUANTITY=%v, want 100/7", d0["PRICE"], d0["QUANTITY"])
 		}
@@ -2872,7 +2872,7 @@ func TestIntegration_UnionPlan_DisjointLegs(t *testing.T) {
 
 		prices := map[int64]bool{}
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			prices[d["PRICE"].(int64)] = true
 		}
 		if !prices[50] {
@@ -3050,7 +3050,7 @@ func TestIntegration_TypeFilter_MixedRecordTypes(t *testing.T) {
 			t.Fatalf("TypeFilter(Order) returned %d results, want 2", len(results))
 		}
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			if _, ok := d["ORDER_ID"]; !ok {
 				t.Errorf("expected ORDER_ID in type-filtered result, got %v", d)
 			}
@@ -3098,7 +3098,7 @@ func TestIntegration_ScanPlan_UnsetFieldsOmitted(t *testing.T) {
 			t.Fatalf("scan returned %d results, want 1", len(results))
 		}
 
-		d, _ := rowMap(results[0])
+		d, _ := rowMapOK(results[0])
 		if d["ORDER_ID"] != int64(18101) {
 			t.Errorf("ORDER_ID = %v, want 18101", d["ORDER_ID"])
 		}
@@ -3163,7 +3163,7 @@ func TestIntegration_FilterPlan_IsNull(t *testing.T) {
 		if len(results) != 1 {
 			t.Fatalf("IS NULL filter returned %d results, want 1", len(results))
 		}
-		d, _ := rowMap(results[0])
+		d, _ := rowMapOK(results[0])
 		if d["ORDER_ID"] != int64(18202) {
 			t.Errorf("ORDER_ID = %v, want 18202", d["ORDER_ID"])
 		}
@@ -3217,7 +3217,7 @@ func TestIntegration_Aggregation_AVG(t *testing.T) {
 		if len(results) != 1 {
 			t.Fatalf("aggregation returned %d rows, want 1", len(results))
 		}
-		d, _ := rowMap(results[0])
+		d, _ := rowMapOK(results[0])
 		avg, ok := d["AVG(PRICE)"].(float64)
 		if !ok {
 			t.Fatalf("AVG(PRICE) type = %T, want float64", d["AVG(PRICE)"])
@@ -3282,7 +3282,7 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 		qtyCounts := map[int64]int64{}
 		qtySums := map[int64]int64{}
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			qty, ok := d["QUANTITY"].(int64)
 			if !ok {
 				t.Fatalf("QUANTITY type = %T (value = %v), datum keys = %v", d["QUANTITY"], d["QUANTITY"], d)
@@ -3348,7 +3348,7 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 			t.Fatalf("projection over cross join: %d rows, want 4 (2×2)", len(results))
 		}
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			if _, ok := d["ORDER_ID"]; !ok {
 				t.Fatalf("missing ORDER_ID in projected datum: %v", d)
 			}
@@ -3405,7 +3405,7 @@ func TestIntegration_SortPlan_Reverse(t *testing.T) {
 		}
 		prices := make([]int64, len(results))
 		for i, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			prices[i] = d["PRICE"].(int64)
 		}
 		if prices[0] != int64(30) || prices[1] != int64(20) || prices[2] != int64(10) {
@@ -3463,7 +3463,7 @@ func TestIntegration_FilterPlan_CompoundPredicate(t *testing.T) {
 		if len(results) != 1 {
 			t.Fatalf("compound filter returned %d rows, want 1 (PRICE>100 AND QUANTITY=1)", len(results))
 		}
-		d, _ := rowMap(results[0])
+		d, _ := rowMapOK(results[0])
 		if d["ORDER_ID"] != int64(19302) {
 			t.Errorf("ORDER_ID = %v, want 19302", d["ORDER_ID"])
 		}
@@ -3516,7 +3516,7 @@ func TestIntegration_LimitOverSort(t *testing.T) {
 		}
 		prices := []int64{}
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			prices = append(prices, d["PRICE"].(int64))
 		}
 		if prices[0] != 500 || prices[1] != 400 || prices[2] != 300 {
@@ -3629,7 +3629,7 @@ func TestIntegration_FilterPlan_OrPredicate(t *testing.T) {
 		}
 		ids := map[int64]bool{}
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			ids[d["ORDER_ID"].(int64)] = true
 		}
 		if !ids[19601] || !ids[19603] {
@@ -3684,7 +3684,7 @@ func TestIntegration_IndexScan_FullRange(t *testing.T) {
 		}
 		prices := []int64{}
 		for _, r := range results {
-			d, _ := rowMap(r)
+			d, _ := rowMapOK(r)
 			prices = append(prices, d["PRICE"].(int64))
 		}
 		if prices[0] != 10 || prices[1] != 20 || prices[2] != 30 {
