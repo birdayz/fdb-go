@@ -2557,8 +2557,27 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 	}
 
+	// RFC-173 S4: the ENCLOSED-MIDDLE unnest under EXISTS (`FROM A, A.arr AS x,
+	// B WHERE [x > c AND] EXISTS (…)`). The rotation dispatch below routes this
+	// to translateUnnestExistsFilter, which FOLDS the non-EXISTS conjuncts into
+	// the gathered unnest select itself (splitNonExistsPredicates) — so, exactly
+	// like the non-EXISTS enclosedGathered probe above, pushBuriedUnnestPredicate
+	// Down must STAND DOWN: its restructured tree wraps the unnest join in a
+	// Filter, which hides the buried unnest from rotateEnclosedUnnest's walker and
+	// strands the cluster on the name-model path. Detection is metadata-only
+	// (rotateEnclosedUnnest is pure); the same guard as enclosedGathered keeps a
+	// nested/enclosed EXISTS-unnest on the name-model path (correct-or-loud).
+	existsEnclosedRotatable := false
+	if f.Predicate != nil && len(f.ExistsSubqueries) > 0 && !t.inInnerCluster && !t.unnestUnderExistential {
+		if join, isJ := f.Input.(*logical.LogicalJoin); isJ && join.Kind == logical.JoinInner {
+			if _, _, _, _, _, rok := t.rotateEnclosedUnnest(join); rok {
+				existsEnclosedRotatable = true
+			}
+		}
+	}
+
 	pushedAllBuried := false
-	if f.Predicate != nil && !enclosedGathered {
+	if f.Predicate != nil && !enclosedGathered && !existsEnclosedRotatable {
 		pushed := pushBuriedUnnestPredicateDown(f)
 		if pushed != f && pushed.Predicate == nil && len(pushed.ExistsSubqueries) == 0 {
 			// Every conjunct was pushed below the join (the buried-unnest
@@ -2614,6 +2633,28 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		if join, ok := f.Input.(*logical.LogicalJoin); ok {
 			if u, isUnnest := join.Right.(*logical.LogicalUnnest); isUnnest {
 				return t.translateUnnestExistsFilter(f, join, u)
+			}
+			// RFC-173 S4: the ENCLOSED-MIDDLE unnest under EXISTS
+			// (`FROM A, A.arr AS x, B WHERE [x > c AND] EXISTS (…)`). Here the
+			// unnest is a BURIED leg (`join.Right` is the trailing plain leg B, not
+			// the unnest), so the root-form dispatch above misses it and the join
+			// would fall to translateJoinWithExists, which translates the buried
+			// unnest ENCLOSED → the name-model binary seed (the outer row read by
+			// NAME). Rotate the cluster to the root form (Join(Join(plain legs),
+			// Unnest)) the non-EXISTS path already gathers through
+			// (translateEnclosedUnnestGather), then route it to the SAME
+			// existential composition the unnest-LAST shape uses — where the (A,B)
+			// INNER outer gathers via E-1a, the seed ordinalizes, and any non-EXISTS
+			// element conjunct folds into the gathered select. The rotation runs on
+			// the ORIGINAL filter (existsEnclosedRotatable stood the buried-predicate
+			// push down above, so f still carries the whole WHERE for the fold). It
+			// is inner-join-equivalent (comma legs) and fires ONLY for a genuine
+			// buried unnest, so a plain `FROM A, B WHERE EXISTS` still falls through
+			// to translateJoinWithExists unchanged.
+			if existsEnclosedRotatable {
+				if rebuilt, ru, _, _, _, rok := t.rotateEnclosedUnnest(join); rok {
+					return t.translateUnnestExistsFilter(f, rebuilt, ru)
+				}
 			}
 			// The join+EXISTS FLATTEN is INNER-only: it merges the WHERE's
 			// non-EXISTS conjuncts into the select's predicate list, which
