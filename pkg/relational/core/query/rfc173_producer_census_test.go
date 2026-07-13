@@ -8,13 +8,15 @@ package query
 // un-enclosed P5 residual. The fix threads the caller's ENTRY enclosure
 // (prevEnclosure) into buildUnnestResultValue.
 //
-// Discriminator: a 3-link chain over a 2-scan box base declines to the name-model
-// record and fires P5 at multiple links; the OUTERMOST link's enclosure is the
-// prevEnclosure passed to translateChainedUnnestJoin. Translating the SAME shape
-// fresh (prevEnclosure=false) vs enclosed (=true) must therefore change the
-// un-enclosed P5 count — the outer link flips. If the producer read the always-true
-// internal field instead (the bug), every firing would report enclosed and BOTH
-// counts would be zero.
+// Discriminator: a chain over a NESTED-outer-box bottom (`(A LEFT B) FULL C`)
+// declines to the name-model record and fires P5 at its links (the multi-source
+// INNER box bottom now ordinalizes, so it is no longer a P5 discriminator — a
+// nested outer box does not gate fresh and stays name-model). The OUTERMOST
+// link's enclosure is the prevEnclosure passed to translateChainedUnnestJoin.
+// Translating the SAME shape fresh (prevEnclosure=false) vs enclosed (=true)
+// must therefore change the un-enclosed P5 count — the outer link flips. If the
+// producer read the always-true internal field instead (the bug), every firing
+// would report enclosed and BOTH counts would be zero.
 
 import (
 	"testing"
@@ -24,8 +26,15 @@ import (
 
 func TestRFC173_ProducerCensusP5EnclosureBit(t *testing.T) {
 	boxBase3 := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
-		box := inner(scan("T4", "T4"), scan("T4", "T4C"))
-		l1, _ := link(box, "T4", "SARR", "X")
+		// A NESTED outer box bottom (`(A LEFT B) LEFT C`): the ordinal seed
+		// declines (a LEFT/RIGHT box is not walk-admitted — bottomInnerBox is
+		// INNER-only), so the chain declines to the name-model buildUnnestResultValue
+		// at every link. NOT a FULL box, so the RFC-173 S4 cap FULL-box straddle
+		// reject does not fire — this exercises the surviving P5 name-model residual
+		// whose enclosure bit this test pins (a FULL outer bottom would loud-reject).
+		innerLeft := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinLeft, "")
+		nested := logical.NewJoin(innerLeft, scan("T4", "C"), logical.JoinLeft, "")
+		l1, _ := link(nested, "A", "SARR", "X")
 		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
 		return link(l2, "Y", "DEEP", "Z")
 	}

@@ -1856,7 +1856,20 @@ func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) Q
 	for i, srcKey := range srcKeys {
 		remapped[targetKeys[i]] = m[srcKey]
 	}
-	return QueryResult{Datum: remapped, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
+	// RFC-173: carry the leg's positional row forward, RE-TYPED to the union's
+	// output column names. A UNION aligns legs BY ORDINAL (SQL positional union),
+	// and each leg's projection emits its slots in declaration order — the same
+	// ordinal order as targetKeys — so the slots stay in place and only the slot
+	// NAMES change (leg 2's [REGION] → the output's [STATUS]). Without this the
+	// remapped leg dropped its Positional and every read of a non-first-leg row
+	// fell back to the name-keyed Datum (the last DATUM-DEP materialization shape).
+	// The first leg is never remapped (its names already ARE the output names), so
+	// its positional flows through unchanged.
+	var remappedPos *PositionalRow
+	if qr.Positional != nil && len(qr.Positional.Slots) == len(targetKeys) {
+		remappedPos = &PositionalRow{Type: positionalTypeFromNames(targetKeys), Slots: qr.Positional.Slots}
+	}
+	return QueryResult{Datum: remapped, Positional: remappedPos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 }
 
 func executeIntersection(

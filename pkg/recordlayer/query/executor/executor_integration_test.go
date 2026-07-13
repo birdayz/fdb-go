@@ -808,8 +808,14 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 			return nil, err
 		}
 
+		// Project ORDER_ID, PRICE so the executor emits an ordinal output row aligned
+		// to the result-set columns — the name-keyed Datum no longer backs the read.
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{&values.FieldValue{Field: "ORDER_ID"}, &values.FieldValue{Field: "PRICE"}},
+			scan,
+		)
+		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
 		}
@@ -883,7 +889,11 @@ func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{&values.FieldValue{Field: "PRICE"}},
+			scan,
+		)
+		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
 		}
@@ -959,8 +969,13 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false}},
 			filter,
 		)
+		// Project PRICE, ORDER_ID so the output row is ordinal-aligned to the columns.
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{&values.FieldValue{Field: "PRICE"}, &values.FieldValue{Field: "ORDER_ID"}},
+			sorted,
+		)
 
-		cursor, err := ExecutePlan(ctx, sorted, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
 		}
@@ -1019,7 +1034,11 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{&values.FieldValue{Field: "ORDER_ID"}, &values.FieldValue{Field: "PRICE"}},
+			scan,
+		)
+		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)
 		}

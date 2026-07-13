@@ -30,8 +30,9 @@ import (
 // flag off translateChainedUnnestJoin, feature-off-control-verified); THIS cert pins that the
 // rows stay correct on both sides of that boundary: the ordinalizing linear shapes, the FORK
 // chains that ordinalize since the fork slice (owner-slot rooting; an early unscoped cut
-// mis-rooted them at the PRECEDING link's slot → ordinal -1), the box-base chain that
-// declines (c5b), and the buried 2-chain.
+// mis-rooted them at the PRECEDING link's slot → ordinal -1), the box-base chain that now
+// ORDINALIZES (the multi-source INNER box bottom composes per-leg windows into the chained
+// merged row — the straddle crux), and the buried 2-chain.
 func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -225,20 +226,36 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	assertOrdinal3Link("threelink_pure_outer_OR", ex4)
 	wantRows("threelink_pure_outer_OR", r4, []string{"map[Z:11]", "map[Z:12]", "map[Z:13]", "map[Z:20]"}, q4)
 
-	// BOX-BASE chain — the relocated name-model regression guard. The first
-	// link's base is a 2-source box (T4, T4C), which chainedSpineWalk DECLINES
-	// (c5b territory). It stays NAME-MODEL (NestedLoopJoin base, the outer conjunct a
-	// PredicatesFilter — NO scan SARG) and a straddle mixing outer + the deepest element
-	// keeps the NAME-KEY rebase, answering correctly with NO ordinal -1 strand. This is
-	// the 2c review-round regression dimension, now living on the still-name-model shape.
+	// BOX-BASE chain — the STRADDLE crux. The first link's base is a 2-source
+	// INNER box (T4, T4C), which chainedSpineWalk now ADMITS (bottomInnerBox):
+	// its per-leg windows compose into the chained merged row (buriedLegBounds)
+	// and the first link over it ordinalizes via the GATHERED path. The whole
+	// chain ordinalizes (a NestedLoopJoin box base with per-link Explodes, NO
+	// name-model residual), and a straddle mixing the outer + the deepest element
+	// bakes POSITIONALLY over the box's leg window (rebaseChainedOuterLegPredicate
+	// → ordinalSlotInLegWindow), landing as a PredicatesFilter at the INNERMOST
+	// Explode — no ordinal -1 strand, no name-key rebase.
 	boxBase := `FROM T4, T4 AS "T4C", T4."SARR" AS "X", "X"."SUBSTRUCT" AS "Y", "Y"."DEEP" AS "Z"`
+	// UNFILTERED: 5 DEEP values (11,11,12,13,20) × 3 T4C rows = 15.
+	exU, rU := run("boxbase_unfiltered_ordinalizes", `SELECT "Z" `+boxBase)
+	if strings.Count(exU, "Explode(") != 3 {
+		t.Fatalf("boxbase_unfiltered: must ordinalize with 3 per-link Explodes; plan=%s", exU)
+	}
+	wantRows("boxbase_unfiltered_ordinalizes", rU, []string{
+		"map[Z:11]", "map[Z:11]", "map[Z:11]", "map[Z:11]", "map[Z:11]", "map[Z:11]",
+		"map[Z:12]", "map[Z:12]", "map[Z:12]", "map[Z:13]", "map[Z:13]", "map[Z:13]",
+		"map[Z:20]", "map[Z:20]", "map[Z:20]",
+	}, `SELECT "Z" `+boxBase)
 	q5 := `SELECT T4."ID", "Z" ` + boxBase + ` WHERE T4."ID" = "Z"`
-	ex5, r5 := run("boxbase_straddle_declines_namemodel", q5)
+	ex5, r5 := run("boxbase_straddle_ordinalizes", q5)
 	if !strings.Contains(ex5, "NestedLoopJoin") {
-		t.Fatalf("boxbase_straddle: box-base chain must keep its NestedLoopJoin base (name-model decline); plan=%s", ex5)
+		t.Fatalf("boxbase_straddle: the box base plans as a NestedLoopJoin; plan=%s", ex5)
+	}
+	if !strings.Contains(ex5, "inner=PredicatesFilter(Explode") {
+		t.Fatalf("boxbase_straddle: the straddle must bake positionally at the innermost Explode; plan=%s", ex5)
 	}
 	// T4(11) Z=11 matches ID=11, × 3 T4C rows.
-	wantRows("boxbase_straddle_declines_namemodel", r5,
+	wantRows("boxbase_straddle_ordinalizes", r5,
 		[]string{"map[T4.ID:11 Z:11]", "map[T4.ID:11 Z:11]", "map[T4.ID:11 Z:11]"}, q5)
 
 	// A 2-CHAIN buried behind a trailing table (join.Right is a SCAN, not an unnest →
@@ -304,15 +321,15 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	wantRows("threelink_at_mid_link", r12,
 		[]string{"map[P:1 Z:11]", "map[P:1 Z:11]", "map[P:1 Z:12]", "map[P:1 Z:20]", "map[P:2 Z:13]"}, q12)
 
-	// The FULL-BOX-BOTTOM chained spine with a box-leg WHERE — the silent-wrong
-	// composition the pureSpine bit closes: the spine bottoms in a FULL box
-	// (clusterArity 1 → ADMITTED), but its bottom aliases are BOX LEGS, so the
-	// box-leg-conjunct arm must stay active and decline the WHOLE chain to
-	// name-model coherently with the first link's own gate. An incoherent split
-	// ordinalizes the chained link over the first link's name-model seed and
-	// returns WRONG A-side values. ON matches (A=1,B=11); A(1).SARR SUB={1,7}.
+	// The FULL-BOX-BOTTOM chained spine with a box-leg WHERE — the un-ordinalizable
+	// straddle: the spine bottoms in a FULL box, and the box-leg predicate cannot yet
+	// fold into the chained ordinal seed. RFC-173 S4 cap: LOUD-REJECT (Java rejects
+	// FULL OUTER JOIN at the grammar level, so this Go-only extension caps its reach
+	// here rather than ride the retiring name model; TODO.md: ordinalize post-RFC-173).
 	q13 := `SELECT "A"."ID", "B"."ID", "Y" FROM T4 AS "A" FULL OUTER JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID", "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "A"."ID" = 1`
-	_, r13 := run("fullbox_bottom_boxleg_filter", q13)
-	wantRows("fullbox_bottom_boxleg_filter", r13,
-		[]string{"map[A.ID:1 B.ID:11 Y:1]", "map[A.ID:1 B.ID:11 Y:7]"}, q13)
+	if _, perr := embedded.PlanRecordQueryWithMetadata(q13, md, nil); perr == nil {
+		t.Fatalf("fullbox_bottom_boxleg_filter: expected a FULL-OUTER-JOIN loud-reject, got a plan\n  sql: %s", q13)
+	} else if !strings.Contains(perr.Error(), "FULL OUTER JOIN") {
+		t.Fatalf("fullbox_bottom_boxleg_filter: expected FULL-OUTER-JOIN reject, got: %v\n  sql: %s", perr, q13)
+	}
 }

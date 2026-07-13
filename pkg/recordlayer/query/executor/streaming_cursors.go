@@ -679,6 +679,13 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 
 func (c *aggregateCursor) emptyScalarResult() QueryResult {
 	result := make(map[string]any)
+	// RFC-173: emit the authoritative ordinal row alongside the name-keyed map,
+	// SAME order + naming as finalizeGroup's aggregate arm (there are no grouping
+	// keys on the empty-scalar path — an empty GROUP BY yields zero rows, not this
+	// single all-groups row). Without it the empty-table scalar aggregate row had
+	// no Positional and every read fell back to the name-keyed Datum.
+	posNames := make([]string, 0, len(c.aggregates))
+	posSlots := make([]any, 0, len(c.aggregates))
 	for _, agg := range c.aggregates {
 		name := aggResultName(agg)
 		var val any
@@ -686,11 +693,21 @@ func (c *aggregateCursor) emptyScalarResult() QueryResult {
 			val = int64(0)
 		}
 		result[name] = val
+		posName := name
+		if agg.Alias != "" {
+			posName = strings.ToUpper(agg.Alias)
+		}
+		posNames = append(posNames, posName)
+		posSlots = append(posSlots, val)
 		if agg.Alias != "" && agg.Alias != name {
 			result[agg.Alias] = val
 		}
 	}
-	return QueryResult{Datum: result, Complete: true}
+	qr := QueryResult{Datum: result, Complete: true}
+	if !DisablePositionalEmission {
+		qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	}
+	return qr
 }
 
 func (c *aggregateCursor) Close() error {

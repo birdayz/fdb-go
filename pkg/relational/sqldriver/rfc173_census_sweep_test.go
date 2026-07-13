@@ -45,6 +45,15 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		{"exists_inner", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},                       // E-1a
 		{"exists_inner_conj", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},  // E-1b (was the flip-sentinel)
 		{"exists_inner_elem_conj", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE "X" = 7 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`}, // E-1b element conjunct
+		// ENCLOSED E-1b as a name-model CTE JOIN LEG. The BARE-PROJECTED unnest-
+		// cluster derived boundary (SELECT "X" …) is an OPAQUE ordinal leg
+		// (derivedBodyOpaqueOrdinalLeg): the outer D⋈EEV GATES, so D's body
+		// translates FRESH and its unnest cluster gathers+ordinalizes, and the
+		// parent reads D's projected row opaquely — no anchored re-enumeration, no
+		// name-model producer. (Formerly the flip-sentinel that had to STAY
+		// name-model; the enclosed-CTE P1 0-row failure came from forcing the INNER
+		// cluster to gate under a still-name-model parent — the opposite fix.)
+		{"enclosed_e1b_cte_leg", `WITH D AS (SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" > "X" AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X" FROM D, EEV`},
 	}
 	for _, tc := range zeroed {
 		n, err := count(tc.sql)
@@ -65,18 +74,6 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		t.Errorf("exists_inner_unbakeable_conj: unexpected plan error: %v", err)
 	} else if n == 0 {
 		t.Error("exists_inner_unbakeable_conj now fires 0 — a subquery-carrying conjunct should stay name-model (Unbakeable decline)")
-	}
-
-	// ENCLOSED E-1b (review-caught P1 flip-sentinel): the E-1b cluster used as a
-	// name-model CTE JOIN LEG has its gather prevEnclosure-skipped (anchored binary
-	// seed), so it MUST stay name-model (fire producers) — the seedWindowed guard on
-	// the E-1b merge arm declines the in-select bake over an anchored seed. If a future
-	// change drops that guard and ordinalizes the enclosed seed, this goes red (and the
-	// e2e e1b_enclosed_cte_leg_conj pin would return 0 rows — the original P1).
-	if n, err := count(`WITH D AS (SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" > "X" AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X" FROM D, EEV`); err != nil {
-		t.Errorf("enclosed_e1b_cte_leg: unexpected plan error: %v", err)
-	} else if n == 0 {
-		t.Error("enclosed_e1b_cte_leg now fires 0 — an enclosure-skipped (anchored) seed must stay name-model, not ordinalize (the seedWindowed-guard regression = the enclosed-CTE P1)")
 	}
 
 	// exists_multi_esq: fires during translation but STRANDS at physicalization (a

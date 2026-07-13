@@ -171,18 +171,24 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 
 // wrapRVFullyBaked reports whether the wrap's rebased RESULT VALUE is uniformly
 // birth-evaluable. The wrap cursor births positionally when ANY field is baked
-// and then evaluates EVERY field over the bare birth context (Correlations only —
-// no name channel, no ScalarSubqueries map, no parameter Binder), so every node
-// must be something that context can evaluate. This is a WHITELIST with default
-// DENY — the impl review's two wrong-rows findings (a lazy bare read, then a
-// ScalarSubqueryValue silently NULLing) were both blacklist misses, so an
-// unknown node kind now declines the wrap (fail-open to the name model) instead
-// of being presumed safe. Allowed: baked (Resolved) FieldValues, the box's own
-// QOV, literal/constant kinds, and the pure computation kinds over those that
-// the certs exercise under birth (arithmetic, boolean ops, CASE, casts, scalar
-// functions, IN-list/LIKE). Everything else — scalar subqueries, parameters,
-// aggregates, windowed values, foreign QOVs, lazy reads — declines.
-func wrapRVFullyBaked(v values.Value, boxBinding string) bool {
+// and then evaluates EVERY field over the birth context. That context carries the
+// per-leg Correlations plus the query's pre-evaluated ScalarSubqueries map
+// (evaluateOrdinalJoinRow threads it from the base EvaluationContext) — but NO
+// name channel and NO parameter Binder — so every node must be something that
+// context can evaluate. This is a WHITELIST with default DENY — the impl review's
+// two wrong-rows findings (a lazy bare read, then a ScalarSubqueryValue silently
+// NULLing) were both blacklist misses, so an unknown node kind now declines the
+// wrap (fail-open to the name model) instead of being presumed safe. Allowed:
+// baked (Resolved) FieldValues, the box's own QOV, literal/constant kinds, the
+// pure computation kinds over those that the certs exercise under birth
+// (arithmetic, boolean ops, CASE, casts, scalar functions, IN-list/LIKE), and a
+// ScalarSubqueryValue whose result is REGISTERED for pre-evaluation
+// (scalarAliases) — an uncorrelated scalar is a per-query constant the executor
+// binds by alias, so it births evaluable exactly like a ConstantValue. A scalar
+// NOT in the registered set (a mis-orchestration) declines rather than risk an
+// UnboundScalarSubqueryError at birth. Everything else — parameters, aggregates,
+// windowed values, foreign QOVs, lazy reads — declines.
+func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[values.CorrelationIdentifier]struct{}) bool {
 	ok := true
 	values.WalkValue(v, func(n values.Value) bool {
 		switch nv := n.(type) {
@@ -196,6 +202,12 @@ func wrapRVFullyBaked(v values.Value, boxBinding string) bool {
 			return true
 		case *values.QuantifiedObjectValue:
 			if !strings.EqualFold(nv.Correlation.Name(), boxBinding) {
+				ok = false
+				return false
+			}
+			return true
+		case *values.ScalarSubqueryValue:
+			if _, registered := scalarAliases[nv.Alias]; !registered {
 				ok = false
 				return false
 			}
@@ -214,6 +226,46 @@ func wrapRVFullyBaked(v values.Value, boxBinding string) bool {
 		}
 	})
 	return ok
+}
+
+// registeredScalarAliases is the set of scalar-subquery aliases already registered
+// for executor pre-evaluation (t.scalarSubqueries) — the aliases wrapRVFullyBaked
+// admits into a birth-evaluable wrap result value. Every projection/filter scalar
+// subquery on the path to the wrap is appended before the wrap is built
+// (translateProject, translateProjectOverExistsFilter), so a ScalarSubqueryValue
+// surviving into the folded RV is registered iff its alias is in this set.
+func (t *cascadesTranslator) registeredScalarAliases() map[values.CorrelationIdentifier]struct{} {
+	aliases := make(map[values.CorrelationIdentifier]struct{}, len(t.scalarSubqueries))
+	for _, ss := range t.scalarSubqueries {
+		aliases[ss.Alias] = struct{}{}
+	}
+	return aliases
+}
+
+// rebaseBuriedExistsPlanLegRefs bakes leg references buried in an EXISTS
+// subquery's retained plan onto the box's positional output. The builder keeps an
+// outer-only conjunct (`EXISTS(... WHERE p.id = 2)`) INSIDE esq.Plan rather than
+// extracting it to the JoinPredicate; over the wrap only QOV(box) survives, so the
+// buried leg reference must be baked to an ofOrdinal over the box QOV (the same
+// leg-window authority the projection and JoinPredicate channels use) so the
+// translated inner correlates to the box, not to a renamed-away leg. Only the
+// top-level LogicalFilter's predicate is rebased (the reachable retained shape) —
+// a leg reference deeper than that survives and the caller's post-translation
+// surviving-leg-ref check declines it (correct-or-decline). Non-leg references
+// (the inner sources, a nested scalar subquery) pass through untouched. Returns
+// (plan, false) only when a leg-correlated QOV survives the top-level rebase.
+func rebaseBuriedExistsPlanLegRefs(plan logical.LogicalOperator, windows map[string]values.OrdinalSeedLegWindow, mergedType *values.RecordType, boxQOV values.Value) (logical.LogicalOperator, bool) {
+	lf, isLF := plan.(*logical.LogicalFilter)
+	if !isLF || lf.Predicate == nil {
+		return plan, true
+	}
+	rebased, ok := rebaseLegRefsToBoxPred(lf.Predicate, windows, mergedType, boxQOV)
+	if !ok {
+		return plan, false
+	}
+	lfCopy := *lf
+	lfCopy.Predicate = rebased
+	return &lfCopy, true
 }
 
 // rebaseLegRefsToBoxPred is rebaseLegRefsToBox over a predicate's value trees.
@@ -252,17 +304,16 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		// WHERE-EXISTS only; the projected extension is a booked follow-on.
 		return nil
 	}
-	if t.existsFoldHasChain {
-		// DEFENSE-IN-DEPTH, currently unreachable: the translateProject gate only
-		// widens the fold for UN-chained shapes (its `len(chain) == 0` condition
-		// is the live ORDER BY/LIMIT scope-out), and a CHAINED fold implies a
-		// projected EXISTS, which the decline above catches first. This tripwire
-		// exists for a future gate widening: a chained fold reaching the wrap
-		// would re-apply the sort/cleanup ABOVE it with unrebased leg-qualified
-		// emissions — resolvable over a name-model output, unbound (silent NULL)
-		// over the wrap's positional output.
-		return nil
-	}
+	// A CHAINED fold (ORDER BY / LIMIT between the project and the filter) IS
+	// supported: translateProjectOverExistsFilter re-applies the chain ABOVE the
+	// wrap, and every emission it carries is baked onto the wrap's positional
+	// output before it reaches here — the result value (including any hidden
+	// remainingOrderBy columns collectExtraSortColumns appended) is uniformly
+	// rebased + wrapRVFullyBaked-verified below, and each re-applied sort key
+	// pull-up (pullUpSortKeyValue) resolves to an OUTPUT column name that reads the
+	// wrap's positional output, never a renamed-away leg. A key that cannot pull up
+	// to a bakeable output column declines through the RV verification
+	// (correct-or-decline), so t.existsFoldHasChain no longer gates the wrap.
 	if len(f.ExistsSubqueries) > 1 {
 		// [ForEach(box), Existential, Existential] has no physical implementer
 		// (implementExistentialSelect is 2-quantifier) — the wrap would 0AF00.
@@ -344,7 +395,7 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 	// birth context, so a single surviving lazy read would silently NULL (the
 	// impl review's mixed-projection finding). Correct-or-decline.
 	rv, rvOK := rebaseLegRefsToBox(resultOverride, windows, mergedType, boxQOV)
-	if !rvOK || !wrapRVFullyBaked(rv, boxBinding) {
+	if !rvOK || !wrapRVFullyBaked(rv, boxBinding, t.registeredScalarAliases()) {
 		return nil
 	}
 
@@ -361,17 +412,30 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		preds = append(preds, rebased)
 	}
 	for _, esq := range f.ExistsSubqueries {
+		// The builder RETAINS an outer-only conjunct (`EXISTS(... WHERE p.id=2)`)
+		// INSIDE esq.Plan rather than extracting it to the JoinPredicate. Left
+		// alone, the translated inner free-correlates to a LEG, which the wrap
+		// renames away (only QOV(box) survives above it). BAKE it onto the box's
+		// positional output first — the same leg-window rebase the folded
+		// projection and the JoinPredicate channel use — so the retained conjunct
+		// reads QOV(box) by ordinal (the supported correlation channel), exactly
+		// as the unnest path bakes a buried outer-only conjunct
+		// (rebaseUnnestOuterLegPredicateOrdinal). A leg reference the rebase cannot
+		// resolve (a shape deeper than the top-level filter) still survives and the
+		// post-translation check below declines it — correct-or-decline.
+		if baked, ok := rebaseBuriedExistsPlanLegRefs(esq.Plan, windows, mergedType, boxQOV); ok {
+			esq.Plan = baked
+		} else {
+			return nil
+		}
 		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
 		}
-		// The builder RETAINS an outer-only conjunct (`EXISTS(... WHERE p.id=2)`)
-		// INSIDE esq.Plan rather than extracting it to the JoinPredicate — the
-		// translated inner then free-correlates to a LEG, which the wrap renames
-		// away (only QOV(box) survives above it). DECLINE: an un-rebased retained
-		// leg reference would fail ordinal resolution loudly on a shape the
-		// name-model path answers. (The extracted JoinPredicate correlation is
-		// the supported channel; it is rebased below.)
+		// Correct-or-decline safety net: any leg-correlated QOV that survived the
+		// rebase (a retained reference the top-level bake did not reach) would fail
+		// ordinal resolution over the wrap's positional output, so decline to the
+		// name model rather than ship an unbound reference.
 		for corr := range subRef.GetCorrelatedTo() {
 			if _, isLeg := windows[strings.ToUpper(corr.Name())]; isLeg {
 				return nil

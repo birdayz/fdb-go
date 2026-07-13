@@ -1301,6 +1301,23 @@ unblocker and the substrate. When 173 lands, un-freeze and resume **in this orde
 cost-monotonicity/IN-determinism landed (#411–#419); WS-2 correlation-completeness + field-level,
 WS-3 visitor, WS-4 map-lint/tie, WS-1 all remain → the list above.
 
+### [ ] POST-RFC-173 reach extension — ordinalize the FULL-OUTER-box chained lateral-unnest straddle
+RFC-173 S4 cap **loud-rejects** a chained lateral unnest whose spine bottoms in a FULL OUTER box
+(`SELECT … FROM A FULL OUTER JOIN B ON …, A.arr AS X, X.sub AS Y WHERE A.id = …`, and the nested
+`(A LEFT B) FULL C` variant) — see `chainedSpineBottomsInFullBox` + the reject in
+`translateChainedUnnestJoin` (`rfc173_w5_chained_unnest.go`), error "lateral unnest over a FULL OUTER
+JOIN with a join-leg predicate is not supported". This is **Java-aligned** (Java rejects FULL OUTER JOIN
+at the grammar level — `RelationalParser.g4` `joinPart` has no FULL alternative), so it is NOT a parity
+gap — it caps a **Go-only extension** rather than sink a per-leg-window composition into a shape Java
+cannot express. The plain FULL-box unnest (single link) and the UNFILTERED chained FULL-box spine already
+ordinalize and keep working; only the box-leg-predicate straddle + nested-outer-box bottom reject.
+**To make it work** (reach beyond Java, optional): give INNER/FULL clusters per-leg window composition into
+the chained ordinal seed (`boxOuterBirthsPositional`/`boxGatesFresh` are OUTER-birth only today), resolve
+the box-leg conjunct through the per-leg merge window in `unnestExistsSeedSafe`, then drop the reject.
+Tests pinning the reject: `TestFDB_RFC173S4_FullBoxChainedSpine` (box-leg-filter + `nestedbox_*` cases),
+`TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes/fullbox_bottom_boxleg_filter` — flip those `wantReject`
+cases back to row assertions when ordinalized.
+
 ---
 
 # NEXT

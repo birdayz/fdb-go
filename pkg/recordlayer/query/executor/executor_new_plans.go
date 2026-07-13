@@ -262,7 +262,30 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 	}
-	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Complete: true}, result.GetContinuation()), nil
+	qr := QueryResult{Datum: datum, Complete: true}
+	// RFC-173: emit the authoritative ordinal OUTPUT row. The resultValue is a
+	// RecordConstructorValue whose Fields ARE the output columns in output order
+	// (the same rc.Fields deriveColumnsFromMultiIntersection names the ColumnDefs
+	// from), so evaluating each field against the concatenated child positional row
+	// produces a per-slot output row whose names/order match the result-set columns.
+	// Gated on DisablePositionalEmission (§5 oracle) so the name model runs the same
+	// plan by name.
+	if !DisablePositionalEmission {
+		if rc, ok := c.resultValue.(*values.RecordConstructorValue); ok {
+			posNames := make([]string, len(rc.Fields))
+			posSlots := make([]any, len(rc.Fields))
+			for i, f := range rc.Fields {
+				posNames[i] = f.Name
+				fv, ferr := f.Value.Evaluate(evalArg)
+				if ferr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, ferr
+				}
+				posSlots[i] = fv
+			}
+			qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+		}
+	}
+	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
 // mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is

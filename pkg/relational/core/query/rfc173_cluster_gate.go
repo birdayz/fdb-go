@@ -248,28 +248,6 @@ func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
 	return walk(op, false)
 }
 
-// forceOrdinalSpike is the RFC-173 S4 B1 CERTIFICATE oracle (test-only). When set,
-// ordinalWedgeGateDecide skips the two PURELY-CIRCULAR enclosure declines — the outer
-// box enclosed in a name-model parent, and the inner join enclosed in a name-model
-// cluster (both `t.inInnerCluster` guards). Each is a FAITHFUL SYMPTOM of a name-model
-// parent (a child gates iff its parent gates), so they lift together, atomically, when
-// the name model is gone. The `ordinalEligible` (`:152`) decline is NOT spike-guarded:
-// it is NOT purely circular — for a JOIN leg it self-corrects via recursion (once the
-// enclosure declines lift, a nested join gates → its parent sees it as eligible), but
-// for a GENUINE name-model leg (an UNNEST / aggregate / mixed-derived body) it must
-// KEEP declining until that leg itself ordinalizes (W5). So the spike models the EXACT
-// cap-gate state — flip the enclosure declines, keep `:152` — not B1's earlier
-// over-aggressive all-three skip (which would gate genuine unnest legs → wrong rows for
-// shapes the corpus need not cover). The corpus-level differential runs twice (spike
-// OFF vs ON) and asserts identical rows: green PROVES the enclosure flip preserves rows.
-// NOT a production narrowing — flipped only by the certificate harness at a phase
-// barrier, exactly like the executor's DisablePositionalEmission name oracle.
-var forceOrdinalSpike bool
-
-// SetForceOrdinalSpike flips the B1 certificate oracle. Test-only; the caller must
-// guarantee no translation is in flight (process-global, like SetNameModelOracle).
-func SetForceOrdinalSpike(v bool) { forceOrdinalSpike = v }
-
 // scanFamilyLegCteAware reports whether op is a single base-table SCAN
 // (through filters), resolving a CTE-name scan THROUGH cteScope to its body.
 // This is the cteScope-AWARE root-cause counterpart of the plain (syntactic,
@@ -382,19 +360,20 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// fired exactly as designed.
 		return wedgeGateDecision{Arity: arityPoison, Reason: "a leg contains a name-model join (name-model residency retires at S4)"}
 	}
-	if j.Kind != logical.JoinInner && t.inInnerCluster && !forceOrdinalSpike {
-		// An OUTER box that is a LEG of an enclosing name-model join (or of
-		// an existential/unnest flatten) stays name-model: the parent's
-		// merge binds leg rows by NAME, so a gated box's POSITIONAL row
-		// under it reads the wrong source (`d LEFT JOIN e ON … JOIN c ON …`
-		// returned d.id as e.id — the mixed-nesting runtime pins) or breaks
-		// the partition rule's anchored re-enumeration (the RIGHT variant
-		// panicked). The INNER arm has carried this exact enclosure guard
-		// since Slice 2; the outer arms shipped without it — plans looked
-		// clean while rows were wrong. The residual name-model parents here
-		// (existential/unnest flattens, aggregate boxes) retire at S4, the
-		// atomic demolition — this guard dies with them.
-		return wedgeGateDecision{Arity: arityPoison, Reason: "outer box enclosed in a name-model parent (name-model residency retires at S4)"}
+	if j.Kind != logical.JoinInner && t.inInnerCluster {
+		// An OUTER box (FULL/LEFT/RIGHT) that is a LEG of an enclosing name-model
+		// parent (a name-model unnest residual / existential flatten / aggregate
+		// box) stays name-model: the parent's merge and its chained/box-leg
+		// conjunct rebase bind the box's columns BY NAME, so ordinalizing the box
+		// here strands the name-model residual over a positional/ordinal row (it
+		// reads the box's qualified LEG.COL keys at ordinal -1 → malformed plan).
+		// The INNER-cluster enclosure decline retired at the S4 cap (the flat
+		// N-leg seed the enclosed inner cluster now composes ordinalizes-or-loud);
+		// the OUTER-box residency retires with item 3 (buildUnnestResultValue
+		// deletion — the FULL/nested-box residual callers must first ordinalize or
+		// go loud, verified case-by-case). Keeping this decline holds those shapes
+		// on the correct name-model rows until then, rather than the strand.
+		return wedgeGateDecision{Arity: arityPoison, Reason: "outer box enclosed in a name-model parent (outer-box name-model residency retires at item 3)"}
 	}
 	if j.Kind == logical.JoinFull {
 		// FULL OUTER is the only genuinely opaque outer box: it is NEVER
@@ -423,10 +402,17 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// admission for what a leg may CONTAIN.
 		return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary LEFT/RIGHT-outer box (ordinal seed at translation; clustered legs per item 3)"}
 	}
-	if t.inInnerCluster && !forceOrdinalSpike {
-		// This inner join is a leg subtree of an enclosing inner-join cluster
-		// (or of an existential/unnest flatten): post-flattening it merges
-		// into a select of arity ≥ 3. Name model.
+	if t.inInnerCluster {
+		// This inner join is a leg subtree of an enclosing name-model composition
+		// (a name-model unnest residual over a multi-source outer, or an existential
+		// flatten): post-flattening it merges into a select of arity ≥ 3. It stays
+		// name-model until the ENCLOSED inner-cluster-under-unnest residual is
+		// ordinalized (item 3 / buildUnnestResultValue deletion). Collapsing this
+		// decline today ordinalizes the enclosed seed → the anchored re-enumeration
+		// mismatch (PartitionSelectRule) for the un-enclosed unbakeable case, and,
+		// worse, 0 rows for the enclosed E-1b CTE-leg (the seedWindowed anchored-seed
+		// arm — the original enclosed-CTE P1). Keep it name-model until that arm
+		// ordinalizes with correct rows.
 		return wedgeGateDecision{Reason: "enclosed in an inner-join cluster (leg of a name-model merge)"}
 	}
 	a := t.clusterArity(j)
@@ -496,6 +482,12 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 			return true // pre-translated opaque reference (temp-table scan)
 		}
 		if body, ok := t.cteScope[key]; ok {
+			// A bare-projected unnest-cluster derived boundary is an OPAQUE ordinal
+			// leg (its projected row is a clean single namespace) even though its
+			// internal unnest would poison the plain recursion below.
+			if t.derivedBodyOpaqueOrdinalLeg(body) {
+				return true
+			}
 			delete(t.cteScope, key)
 			eligible := t.ordinalEligible(body)
 			t.cteScope[key] = body
@@ -530,6 +522,58 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		// row, never a buried join's merged row. (LogicalCTE has its OWN arm
 		// above — derived-table sources sit directly in leg position.)
 		return true
+	}
+}
+
+// derivedBodyOpaqueOrdinalLeg reports whether a CTE/derived-table body presents a
+// CLEAN single-namespace ordinal row at its derived boundary — so a parent may
+// gate over the derived source as an OPAQUE arity-1 leg even though the body's
+// internal cluster is an unnest (which poisons clusterArity/ordinalEligible as a
+// direct leg). It admits ONLY the BARE-PROJECTED unnest-cluster body:
+//
+//	WITH D AS (SELECT x [, y …] FROM <sources>, <lateral unnest> [WHERE …]) …
+//
+// The projection to BARE (unqualified) names is load-bearing: the parent's
+// `D.col` read resolves POSITIONALLY to the renamed bare column, whereas a
+// `SELECT *` body keeps qualified multi-source names (`LA.K`) that the parent's
+// `D.K` read cannot map (ordinal -1 strand). A correlated-scalar projection stays
+// name-model (per-row scalar needs the clusterPullUp rework). This makes the
+// enclosed-CTE E-1b leg (`WITH D AS (SELECT X FROM A,B,A.arr AS X WHERE …) SELECT
+// D.X FROM D, EEV`) ordinalize coherently: the PARENT gates → the body translates
+// FRESH (prevEnclosure false) → its unnest cluster gathers, and the parent reads
+// D's projected row opaquely. No anchored re-enumeration (the name-model residual)
+// is involved — the opposite of forcing the enclosed inner cluster to gate under a
+// still-name-model parent, which strands the seed at 0 rows.
+func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOperator) bool {
+	proj, ok := body.(*logical.LogicalProject)
+	if !ok || len(proj.Projections) == 0 || len(proj.CorrelatedScalarSubqueries) > 0 {
+		return false
+	}
+	for i := range proj.Projections {
+		name := proj.Projections[i]
+		if i < len(proj.Aliases) && proj.Aliases[i] != "" {
+			name = proj.Aliases[i]
+		}
+		if name == "*" || strings.Contains(name, ".") {
+			return false
+		}
+	}
+	// The projection body must reduce (through row-preserving filters) to a
+	// lateral-unnest cluster — the shape that poisons clusterArity as a direct leg
+	// but ordinalizes fresh via the gather path. A non-unnest body is either
+	// already computable (a plain flattening join — not poison) or a shape whose
+	// opaque-leg ordinalization is unverified; keep it name-model.
+	op := proj.Input
+	for {
+		switch o := op.(type) {
+		case *logical.LogicalFilter:
+			op = o.Input
+		case *logical.LogicalJoin:
+			_, isUnnest := o.Right.(*logical.LogicalUnnest)
+			return isUnnest
+		default:
+			return false
+		}
 	}
 }
 
@@ -649,6 +693,13 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 			return 1
 		}
 		if body, ok := t.cteScope[key]; ok {
+			if t.derivedBodyOpaqueOrdinalLeg(body) {
+				// A bare-projected unnest-cluster derived boundary is OPAQUE: its
+				// internal unnest poison does not propagate past the boundary — the
+				// parent sees ONE projected leg (arity 1). Its unnest cluster
+				// ordinalizes fresh inside the boundary.
+				return 1
+			}
 			delete(t.cteScope, key)
 			a := t.clusterArity(body)
 			t.cteScope[key] = body

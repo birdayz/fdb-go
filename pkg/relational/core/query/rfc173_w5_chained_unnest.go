@@ -289,6 +289,25 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 		return sel
 	}
 
+	// RFC-173 S4 cap (gap 1): the chained ordinal seed DECLINED. A chained lateral
+	// unnest whose spine BOTTOMS in a FULL OUTER box that could not ordinalize (a
+	// box-leg predicate the box-leg window composition cannot yet fold into the
+	// chained seed, or a nested outer box) has no ordinal representation, and the
+	// name-model residual retires at the cap — LOUD-REJECT rather than fall to it.
+	// This is Java-aligned: Java rejects FULL OUTER JOIN at the grammar level
+	// (RelationalParser.g4 `joinPart` has no FULL alternative; QueryVisitor asserts
+	// ErrCodeUnsupportedQuery "FULL OUTER JOIN is not currently supported"), so a
+	// lateral unnest over a FULL box is a shape Java cannot express at all — it is a
+	// Go-only extension whose reach we cap here rather than sink into a per-leg window
+	// composition for a shape Java lacks entirely. Plain FULL-box unnest (single link,
+	// translateUnnestJoin) and the UNFILTERED chained FULL-box spine that DO ordinalize
+	// return non-nil above and never reach here — only the un-ordinalizable straddle does.
+	if chainedSpineBottomsInFullBox(j.Left) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"lateral unnest over a FULL OUTER JOIN with a join-leg predicate is not supported"))
+		return nil
+	}
+
 	// FAIL-OPEN name-model residual (bare-twin / CTE-rooted / 3+-link chains).
 	// The chained outer (`j.Left`) is translated with the enclosure bit LEFT AS
 	// THIS unnest's translateUnnestJoin set it (name-model residual): a chained
@@ -318,6 +337,28 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 		[]string{outerAlias, innerCorr.Name()},
 		expressions.JoinInner,
 	)
+}
+
+// chainedSpineBottomsInFullBox reports whether a chained-unnest outer subtree
+// bottoms in a FULL OUTER box — the RFC-173 S4 cap loud-reject discriminant for
+// gap 1. Peels the left-deep lateral-unnest joins (Right is a LogicalUnnest) off
+// the top exactly as chainedSpineWalk does, then reports whether the remaining
+// bottom operator is a FULL join. A nested outer box `(A LEFT B) FULL C` bottoms
+// in the outermost FULL join and is detected too. Only consulted AFTER the ordinal
+// seed declined, so an ordinalizing FULL-box spine never reaches it.
+func chainedSpineBottomsInFullBox(op logical.LogicalOperator) bool {
+	cur := op
+	for {
+		bj, ok := cur.(*logical.LogicalJoin)
+		if !ok {
+			return false
+		}
+		if _, isUnnest := bj.Right.(*logical.LogicalUnnest); isUnnest {
+			cur = bj.Left
+			continue
+		}
+		return bj.Kind == logical.JoinFull
+	}
 }
 
 // chainedSpineWalk PEELS a chained-unnest outer into its lateral links
@@ -383,8 +424,23 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 		rev = append(rev, chainedSpineLink{join: bj, un: un})
 		cur = bj.Left
 	}
+	// The spine BOTTOM must compose an ordinal row. Two admitted shapes:
+	//   - clusterArity 1: a single lateral source (a plain scan through
+	//     transparent wrappers) or a merge-opaque FULL box.
+	//   - a MULTI-source gated INNER cluster (`FROM t, u, t.arr AS x, x.sub AS
+	//     y` — the arr link's base is the box `t ⋈ u`): its per-leg windows
+	//     compose into the chained merged row (ordinalLegColumns recurses into
+	//     the box arm; buriedLegBounds records each leaf's [Start,Width) window)
+	//     and the FIRST link over it ordinalizes via the GATHERED path
+	//     (translateGatheredUnnestCluster). LEFT/RIGHT multi-leg boxes are their
+	//     own slices (their null-supplying birth under a chain is unproven).
+	bottomInnerBox := false
 	if t.clusterArity(cur) != 1 {
-		return nil, false, false
+		bj, isJoin := cur.(*logical.LogicalJoin)
+		if !isJoin || bj.Kind != logical.JoinInner || len(bj.OnExistsSubqueries) > 0 || !t.gatesAsFreshCluster(bj) {
+			return nil, false, false
+		}
+		bottomInnerBox = true
 	}
 	links = make([]chainedSpineLink, 0, len(rev))
 	for i := len(rev) - 1; i >= 0; i-- {
@@ -401,7 +457,18 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 			return nil, false, false
 		}
 	}
-	return links, true, len(outerBoundAliases(cur)) == 1
+	// pureSpine reports whether the chained rebase authority handles EVERY
+	// reachable outer ref POSITIONALLY — true for a single-source bottom AND for
+	// a gated INNER box bottom (both compose per-leg ordinal windows: a
+	// single-namespace prefix, or the box's buried-leaf windows via
+	// buriedLegBounds/ordinalSlotInLegWindow). Both exempt the box-leg-conjunct
+	// decline arm (unnestExistsSeedSafe): a straddle conjunct on a box leg
+	// (`WHERE t.id = z`) bakes positionally through rebaseChainedOuterLegPredicate
+	// over the ordinal merged type's leg windows, not through the gather-record
+	// path the DIRECT box unnest uses. A FULL/LEFT/RIGHT OUTER box bottom
+	// (clusterArity 1 for FULL) keeps pureSpine=false — its bottom aliases are
+	// genuine BOX LEGS whose null-supplied semantics keep the arm active.
+	return links, true, bottomInnerBox || len(outerBoundAliases(cur)) == 1
 }
 
 // chainedSpineLink is one lateral-unnest link of a chained spine as peeled by

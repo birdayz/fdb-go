@@ -10,18 +10,33 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
+// posResult builds a QueryResult carrying the ordinal output row the executor
+// produces at runtime: one slot per column, in column order, named by the column's
+// datum name, valued from m (nil when absent — a SQL NULL). The name-keyed Datum is
+// GONE from the read path (RFC-173), so the reader materializes solely from this
+// positional row; these reader-unit tests feed it directly instead of a name map.
+func posResult(cols []ColumnDef, m map[string]any) QueryResult {
+	fields := make([]values.Field, len(cols))
+	slots := make([]any, len(cols))
+	for i, c := range cols {
+		fields[i] = values.Field{Name: c.Name, FieldType: values.UnknownType, Ordinal: i}
+		slots[i] = m[c.Name]
+	}
+	return QueryResult{Positional: &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}}
+}
+
 func TestResultSet_IterateRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.FromList([]QueryResult{
-		{Datum: map[string]any{"ID": int64(1), "NAME": "alice"}},
-		{Datum: map[string]any{"ID": int64(2), "NAME": "bob"}},
-	})
 	cols := []ColumnDef{
 		{Name: "ID", TypeName: "BIGINT"},
 		{Name: "NAME", TypeName: "STRING"},
 	}
+	cursor := recordlayer.FromList([]QueryResult{
+		posResult(cols, map[string]any{"ID": int64(1), "NAME": "alice"}),
+		posResult(cols, map[string]any{"ID": int64(2), "NAME": "bob"}),
+	})
 
 	rs := NewRecordLayerResultSet(ctx, cursor, cols)
 	defer rs.Close()
@@ -56,13 +71,13 @@ func TestResultSet_ByName(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.FromList([]QueryResult{
-		{Datum: map[string]any{"PRICE": int64(42), "ACTIVE": true}},
-	})
 	cols := []ColumnDef{
 		{Name: "PRICE", TypeName: "BIGINT"},
 		{Name: "ACTIVE", TypeName: "BOOLEAN"},
 	}
+	cursor := recordlayer.FromList([]QueryResult{
+		posResult(cols, map[string]any{"PRICE": int64(42), "ACTIVE": true}),
+	})
 
 	rs := NewRecordLayerResultSet(ctx, cursor, cols)
 	defer rs.Close()
@@ -92,13 +107,13 @@ func TestResultSet_WasNull(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.FromList([]QueryResult{
-		{Datum: map[string]any{"ID": int64(1)}},
-	})
 	cols := []ColumnDef{
 		{Name: "ID", TypeName: "BIGINT"},
 		{Name: "NAME", TypeName: "STRING"},
 	}
+	cursor := recordlayer.FromList([]QueryResult{
+		posResult(cols, map[string]any{"ID": int64(1)}),
+	})
 
 	rs := NewRecordLayerResultSet(ctx, cursor, cols)
 	defer rs.Close()
@@ -122,9 +137,6 @@ func TestResultSet_NullAlternation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.FromList([]QueryResult{
-		{Datum: map[string]any{"PK": int64(100)}},
-	})
 	cols := []ColumnDef{
 		{Name: "PK", TypeName: "BIGINT"},
 		{Name: "T1", TypeName: "BIGINT"},
@@ -132,6 +144,9 @@ func TestResultSet_NullAlternation(t *testing.T) {
 		{Name: "T3", TypeName: "DOUBLE"},
 		{Name: "T4", TypeName: "BYTES"},
 	}
+	cursor := recordlayer.FromList([]QueryResult{
+		posResult(cols, map[string]any{"PK": int64(100)}),
+	})
 
 	rs := NewRecordLayerResultSet(ctx, cursor, cols)
 	defer rs.Close()
@@ -288,20 +303,20 @@ func TestResultSet_TypeCoercion(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	cursor := recordlayer.FromList([]QueryResult{
-		{Datum: map[string]any{
-			"INT_VAL":    int64(42),
-			"FLOAT_VAL":  float64(3.14),
-			"BOOL_VAL":   true,
-			"STRING_VAL": "hello",
-		}},
-	})
 	cols := []ColumnDef{
 		{Name: "INT_VAL", TypeName: "BIGINT"},
 		{Name: "FLOAT_VAL", TypeName: "DOUBLE"},
 		{Name: "BOOL_VAL", TypeName: "BOOLEAN"},
 		{Name: "STRING_VAL", TypeName: "STRING"},
 	}
+	cursor := recordlayer.FromList([]QueryResult{
+		posResult(cols, map[string]any{
+			"INT_VAL":    int64(42),
+			"FLOAT_VAL":  float64(3.14),
+			"BOOL_VAL":   true,
+			"STRING_VAL": "hello",
+		}),
+	})
 
 	rs := NewRecordLayerResultSet(ctx, cursor, cols)
 	defer rs.Close()
@@ -376,10 +391,10 @@ func TestResultSet_CoercionMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
-			cursor := recordlayer.FromList([]QueryResult{
-				{Datum: map[string]any{"V": tc.value}},
-			})
 			cols := []ColumnDef{{Name: "V", TypeName: "STRING"}}
+			cursor := recordlayer.FromList([]QueryResult{
+				posResult(cols, map[string]any{"V": tc.value}),
+			})
 			rs := NewRecordLayerResultSet(ctx, cursor, cols)
 			defer rs.Close()
 			if !rs.Next() {
@@ -563,11 +578,13 @@ func TestResultSet_PositionalDupNameRead(t *testing.T) {
 	}
 }
 
-// TestResultSet_PositionalMisalignedFallsBack pins the alignment guard: a
-// positional row whose shape does NOT match the result-set columns (count or
-// per-slot name mismatch) must be ignored — every read falls back to the
-// name-keyed Datum, today's behavior unchanged.
-func TestResultSet_PositionalMisalignedFallsBack(t *testing.T) {
+// TestResultSet_PositionalMisalignedIsLoud pins the correct-or-loud contract: the
+// name-keyed Datum is GONE from the read path, so a positional row whose shape does
+// NOT match the result-set columns (count or per-slot plain-name mismatch) can no
+// longer be answered — the reader returns a loud XX000 rather than silently reading
+// a stale/absent name key. (A misaligned positional row is a producer bug: the top
+// operator failed to emit the output row in the result-set's shape.)
+func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -576,14 +593,23 @@ func TestResultSet_PositionalMisalignedFallsBack(t *testing.T) {
 		{Name: "NAME", FieldType: values.UnknownType, Ordinal: 1},
 	}}
 
+	assertLoud := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("expected XX000 correct-or-loud error on misaligned positional row")
+		}
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || string(apiErr.Code) != string(api.ErrCodeInternalError) {
+			t.Errorf("error code = %v, want ErrCodeInternalError (XX000)", err)
+		}
+	}
+
 	t.Run("name_mismatch", func(t *testing.T) {
 		t.Parallel()
-		// Source row (ID, NAME) under a projection whose output column is the
-		// alias THE_ID: slot names don't match → Datum lookup wins.
+		// Source row (ID, NAME) under a projection whose output column is the alias
+		// THE_ID: plain-identifier slot names don't match the columns → not aligned.
 		pos := &PositionalRow{Type: srcType, Slots: []any{int64(7), "src"}}
-		cursor := recordlayer.FromList([]QueryResult{
-			{Datum: map[string]any{"THE_ID": int64(42), "LABEL": "datum"}, Positional: pos},
-		})
+		cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
 		cols := []ColumnDef{
 			{Name: "THE_ID", Label: "THE_ID", TypeName: "BIGINT"},
 			{Name: "LABEL", TypeName: "STRING"},
@@ -593,43 +619,32 @@ func TestResultSet_PositionalMisalignedFallsBack(t *testing.T) {
 		if !rs.Next() {
 			t.Fatal("expected a row")
 		}
-		if v, _ := rs.Object(1); v != int64(42) {
-			t.Errorf("column 1 = %v, want 42 (Datum fallback on slot-name mismatch)", v)
-		}
+		_, err := rs.Object(1)
+		assertLoud(t, err)
 	})
 
 	t.Run("count_mismatch", func(t *testing.T) {
 		t.Parallel()
-		// Positional carries the full source record; columns are a subset →
-		// count mismatch → Datum lookup wins. Slot 0 (99) deliberately DIFFERS
-		// from the Datum value (7) so the assertion discriminates which read
-		// path answered (review: equal values made this pin vacuous).
+		// Positional carries the full source record; columns are a subset → count
+		// mismatch → not aligned → loud.
 		pos := &PositionalRow{Type: srcType, Slots: []any{int64(99), "src"}}
-		cursor := recordlayer.FromList([]QueryResult{
-			{Datum: map[string]any{"ID": int64(7)}, Positional: pos},
-		})
+		cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
 		cols := []ColumnDef{{Name: "ID", TypeName: "BIGINT"}}
 		rs := NewRecordLayerResultSet(ctx, cursor, cols)
 		defer rs.Close()
 		if !rs.Next() {
 			t.Fatal("expected a row")
 		}
-		if v, _ := rs.Object(1); v != int64(7) {
-			t.Errorf("column 1 = %v, want 7 (Datum fallback on slot-count mismatch)", v)
-		}
+		_, err := rs.Object(1)
+		assertLoud(t, err)
 	})
 
 	t.Run("qualified_name_leaf_matches", func(t *testing.T) {
 		t.Parallel()
-		// Label-less columns with name-model qualified Names ("A.ID") align by
-		// their bare leaf against the positional slot names. Positional values
-		// deliberately DIFFER from the Datum's (99/"pos" vs 7/"datum") so the
-		// assertions discriminate which read path answered (review
-		// full-branch catch: equal values made this pin vacuous).
+		// Label-less columns with name-model qualified Names ("A.ID") align by their
+		// bare leaf against the positional slot names — the read is by ordinal.
 		pos := &PositionalRow{Type: srcType, Slots: []any{int64(99), "pos"}}
-		cursor := recordlayer.FromList([]QueryResult{
-			{Datum: map[string]any{"A.ID": int64(7), "A.NAME": "datum"}, Positional: pos},
-		})
+		cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
 		cols := []ColumnDef{
 			{Name: "A.ID", TypeName: "BIGINT"},
 			{Name: "A.NAME", TypeName: "STRING"},
@@ -640,10 +655,10 @@ func TestResultSet_PositionalMisalignedFallsBack(t *testing.T) {
 			t.Fatal("expected a row")
 		}
 		if v, _ := rs.Object(1); v != int64(99) {
-			t.Errorf("column 1 = %v, want 99 (the POSITIONAL read — a 7 means the Datum answered)", v)
+			t.Errorf("column 1 = %v, want 99 (positional read by leaf-name alignment)", v)
 		}
 		if v, _ := rs.Object(2); v != "pos" {
-			t.Errorf("column 2 = %v, want pos (the POSITIONAL read — 'datum' means the Datum answered)", v)
+			t.Errorf("column 2 = %v, want pos (positional read by leaf-name alignment)", v)
 		}
 	})
 }

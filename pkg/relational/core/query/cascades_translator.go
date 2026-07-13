@@ -1710,17 +1710,18 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// translateUnnestExistsFilter) takes the gathered ordinal cluster — the
 	// same path the non-EXISTS box unnest takes since B2-A. A non-admitted
 	// existential unnest keeps the name-model binary seed below.
-	// RFC-173 S4 cap (enclosed box-leg): an ENCLOSED unnest normally keeps the
-	// name-model binary seed (prevEnclosure) — its ordinal seed would be a child
-	// under a name-model parent (the RFC-077 7.6 re-enumeration mismatch). Under
-	// the whole-gate flip (forceOrdinalSpike — the demolition's target state, where
-	// the parent ordinalizes too), the enclosed unnest MUST gather through the SAME
-	// path the non-enclosed unnest takes, so a box outer's ON stays the null-on-empty
-	// condition INSIDE the dissolve (translateGatheredUnnestCluster's :275 LEFT/FULL
-	// guard) rather than stranding on the binary path's flat row (design ruling:
-	// keep the ON inside, never window it into a post-filter → LEFT→INNER). At the
-	// cap this guard is deleted with the other enclosure declines.
-	if (!prevEnclosure || forceOrdinalSpike) && (!t.unnestUnderExistential || t.unnestExistentialGatherOK) {
+	// RFC-173 S4: a NON-ENCLOSED unnest gathers the flat ordinal cluster. An
+	// ENCLOSED unnest (prevEnclosure — an inner link of a chain, or a leg of a
+	// larger name-model composition over an OUTER/nested box) keeps the name-model
+	// binary residual: its ordinal seed would be a child under a still-name-model
+	// outer-box parent (the outer-box residency retires with item 3 /
+	// buildUnnestResultValue), so gathering it here strands the residual's box-leg
+	// rebase at ordinal -1. A box outer's ON stays the null-on-empty condition
+	// INSIDE the dissolve (translateGatheredUnnestCluster's :275 LEFT/FULL guard).
+	// An under-EXISTS unnest still declines the gather when its flat-leg conjunct is
+	// UNBAKEABLE (unnestExistentialGatherOK false) — that shape keeps the name-model
+	// residual (the scalar-subquery reach class) until item 3.
+	if !prevEnclosure && (!t.unnestUnderExistential || t.unnestExistentialGatherOK) {
 		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName, unnestTrailing); sel != nil {
 			return sel
 		}
@@ -5174,6 +5175,41 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		})
 	}
 
+	// RFC-173 S4 (EXISTS-in-ON): an INNER join carrying an ON-clause EXISTS is
+	// SEMANTICALLY IDENTICAL to WHERE-EXISTS — Java folds every inner-join ON
+	// predicate into the WHERE of one SelectExpression (QueryVisitor.visitSimpleTable
+	// conjoins inner-join expressions into the WHERE), so `JOIN e ON e.c_id = c.id
+	// AND EXISTS(sub)` plans as the same correlated semi-join over the flattened
+	// a⋈c⋈e cluster. Go's ON-EXISTS lift already builds the ExistentialValuePredicate
+	// marker into join.OnPredicate and the subquery into join.OnExistsSubqueries;
+	// synthesize the equivalent WHERE-EXISTS filter here so the projection routes
+	// through the ORDINAL gather (translateExistsOverGatheredCluster) instead of the
+	// name-model ON-exists semi-join (translateJoin's OnExistsSubqueries arm). The
+	// non-EXISTS ON conjuncts stay on the join (SARG'd by the cluster machinery, as
+	// they are for an equivalent WHERE-EXISTS query); only the existential marker is
+	// lifted into the filter. Fail-open: a non-foldable shape (arity<=2, dup-alias,
+	// ungated, or the gather declining) falls through to today's name-model path.
+	if join, ok := p.Input.(*logical.LogicalJoin); ok && join.Kind == logical.JoinInner &&
+		len(join.OnExistsSubqueries) > 0 && len(p.CorrelatedScalarSubqueries) == 0 {
+		if onPred, isPred := join.OnPredicate.(predicates.QueryPredicate); isPred {
+			if markers := extractExistsPredicates(onPred); len(markers) > 0 {
+				joinCopy := *join
+				joinCopy.OnPredicate = andOf(splitNonExistsPredicates(onPred))
+				joinCopy.OnExistsSubqueries = nil
+				synthFilter := &logical.LogicalFilter{
+					Input:            &joinCopy,
+					Predicate:        andOf(markers),
+					ExistsSubqueries: join.OnExistsSubqueries,
+				}
+				if t.existsFoldableGatheredCluster(synthFilter) {
+					if sel := t.translateProjectOverExistsFilter(p, synthFilter, nil); sel != nil {
+						return sel
+					}
+				}
+			}
+		}
+	}
+
 	// RFC-141 Phase 2: a projection over a filter that carries existential
 	// subqueries, where the projection itself references a projected EXISTS,
 	// folds INTO the existential SelectExpression's result value — so the
@@ -5194,11 +5230,15 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	// (no projected EXISTS) over a gated arity>=3 non-dup INNER cluster — the B1
 	// wrap needs the projection folded in (its leg references only resolve over
 	// the wrapped box when rebased at translation; an ordinary Map above the wrap
-	// cannot see the legs). When the B1 arm declines, buildExistentialSelect bails
-	// the widened fold (nil) and the ordinary path keeps today's plan shape.
+	// cannot see the legs). An intervening ORDER BY / LIMIT (a non-empty chain) is
+	// supported too: translateProjectOverExistsFilter re-applies the chain ABOVE the
+	// wrap with each sort key pulled up onto the wrap's positional output (the B1
+	// gather no longer declines on t.existsFoldHasChain). When the B1 arm declines,
+	// buildExistentialSelect bails the widened fold (nil) and the ordinary path
+	// keeps today's plan shape.
 	if filter, chain := findExistsFilterUnderUnaryChain(p.Input); filter != nil &&
 		(projectionReferencesExistsSubquery(p.ProjectedValues) ||
-			(len(chain) == 0 && t.existsFoldableGatheredCluster(filter))) {
+			t.existsFoldableGatheredCluster(filter)) {
 		// A projected EXISTS combined with a CORRELATED scalar subquery in the same
 		// SELECT list cannot be folded (the fold's existential SelectExpression and
 		// the correlated-scalar LEFT-OUTER join select are incompatible structures —

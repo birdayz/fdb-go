@@ -268,25 +268,32 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		{"top_fork_unfiltered", topFork, false, "ordinal", ""},
 		{"top_fork_filtered", topFork, true, "ordinal", ""},
 		{"mid_spine_fork", midFork, false, "ordinal", ""},
-		// Box base declines (c5b territory) — filtered AND unfiltered: the arm
-		// scoping must NOT leak the bypass to a genuine box.
-		{"box_base_unfiltered", boxBase3, false, "name-model", ""},
-		{"box_base_filtered", boxBase3, true, "name-model", ""},
+		// Box base ORDINALIZES (the straddle crux): a multi-source INNER box
+		// bottom is admitted (bottomInnerBox — its per-leg windows compose into
+		// the chained merged row, the first link over it ordinalizes via the
+		// gathered path). Its bottom is treated like a pure spine for the
+		// box-leg-conjunct arm: a FILTERED straddle bakes POSITIONALLY over the
+		// box's leg window (rebaseChainedOuterLegPredicate), so both unfiltered
+		// and filtered ordinalize.
+		{"box_base_unfiltered", boxBase3, false, "ordinal", ""},
+		{"box_base_filtered", boxBase3, true, "ordinal", ""},
 		// The FULL-box-bottom spine: ADMITTED (clusterArity==1, pre-slice
-		// parity) so it ordinalizes UNFILTERED; under a box-leg WHERE the arm
-		// stays active (pureSpine=false) and the whole chain coherently
-		// declines to name-model.
+		// parity) so it ordinalizes UNFILTERED; under a box-leg WHERE the
+		// ordinal seed declines and the RFC-173 S4 cap LOUD-REJECTS the whole
+		// chain (Java rejects FULL OUTER JOIN at the grammar level — the
+		// name-model residual retires, so a FULL-box straddle is unsupported).
 		{"full_box_bottom_unfiltered", fullBoxBottom, false, "ordinal", ""},
-		{"full_box_bottom_filtered", fullBoxBottom, true, "name-model", ""},
-		// The COUPLING pin: fork admission × impure bottom — the arm must win.
+		{"full_box_bottom_filtered", fullBoxBottom, true, "nil", "FULL OUTER JOIN"},
+		// The COUPLING pin: fork admission × impure bottom — unfiltered ordinalizes,
+		// filtered rejects (same FULL-box straddle cap).
 		{"fork_over_full_box_unfiltered", forkOverFullBox, false, "ordinal", ""},
-		{"fork_over_full_box_filtered", forkOverFullBox, true, "name-model", ""},
-		// The coherence-guard pin: a walk-admitted bottom outside the validated
-		// positional surface (nested outer box — boxOuterBirthsPositional false)
-		// declines even UNFILTERED — a conservative guard over an unvalidated
-		// tower, not a demonstrated-bug fix (pre-guard rows were correct).
-		{"nested_box_bottom_unfiltered", nestedBoxBottom, false, "name-model", ""},
-		{"nested_box_bottom_filtered", nestedBoxBottom, true, "name-model", ""},
+		{"fork_over_full_box_filtered", forkOverFullBox, true, "nil", "FULL OUTER JOIN"},
+		// Nested outer box `(A LEFT B) FULL C`: the ordinal seed declines
+		// (boxOuterBirthsPositional false) even UNFILTERED, and the spine bottoms in
+		// a FULL box → the cap LOUD-REJECTS both (the outer-box chained straddle is
+		// unsupported; TODO.md tracks ordinalizing it post-RFC-173).
+		{"nested_box_bottom_unfiltered", nestedBoxBottom, false, "nil", "FULL OUTER JOIN"},
+		{"nested_box_bottom_filtered", nestedBoxBottom, true, "nil", "FULL OUTER JOIN"},
 		// AT-ordinality on the mid link: linear, ordinalizes; the walk keys on
 		// the AS alias and the AT column rides the leg without moving the
 		// element slot.
@@ -392,8 +399,11 @@ func TestRFC173S4_2d_ChainedSpineWalk(t *testing.T) {
 		{"three_link_spine", l3, 3, true, true},
 		{"table_owned_mid_spine", forkAtY, 0, false, false},
 		{"genuine_fork_spine", gf4, 4, true, true},
-		{"box_base", box, 0, false, false},
-		{"box_under_first_link", boxL1, 0, false, false},
+		// A multi-source INNER box bottom is ADMITTED (bottomInnerBox) and treated
+		// as pure (its per-leg windows compose into the chained merged row). A bare
+		// box with 0 links is admitted structurally but the caller rejects 0 links.
+		{"box_base", box, 0, true, true},
+		{"box_under_first_link", boxL1, 1, true, true},
 		{"full_box_bottom", fullBox, 0, true, false},
 		{"full_box_one_link", fullBoxL1, 1, true, false},
 		{"full_box_two_link", fullBoxL2, 2, true, false},

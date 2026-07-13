@@ -43,7 +43,7 @@ package query
 // ordinalize (incl. the B1-retired existential-over-multi-join) fire zero, and a
 // flip on any is a regression to the name model.
 //
-// The observer is a nil-in-production process global (like SetForceOrdinalSpike /
+// The observer is a nil-in-production process global (like
 // SetNameModelOracle): each producer guards its record construction — including the
 // %T shape formatting — behind the nil check, so production pays only a single
 // pointer compare and no allocation. Set only by the census harness at a phase
@@ -63,5 +63,5 @@ var producerCensusObserver func(ProducerCensusRecord)
 
 // SetProducerCensusObserver installs (or, with nil, clears) the census hook.
 // Test-only; the caller must guarantee no translation is in flight — the observer
-// is a process global, exactly like SetForceOrdinalSpike / SetNameModelOracle.
+// is a process global, exactly like SetNameModelOracle.
 func SetProducerCensusObserver(f func(ProducerCensusRecord)) { producerCensusObserver = f }

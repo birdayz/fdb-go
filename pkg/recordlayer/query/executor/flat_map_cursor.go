@@ -561,7 +561,8 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		return QueryResult{}, err
 	}
 	computedComplete := false
-	if _, isRC := c.resultValue.(*values.RecordConstructorValue); isRC {
+	var foldPos *PositionalRow
+	if rc, isRC := c.resultValue.(*values.RecordConstructorValue); isRC {
 		// An RC-evaluated FlatMap row is schema-complete: the constructor
 		// evaluates EVERY declared column (nil for NULL), so the key set is
 		// the row's full schema — the QueryResult.Complete contract. This is
@@ -569,6 +570,40 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		// AS x)` — no Project wrapper) fabricate its "C.col" keys at the
 		// enclosing merge (qualifyAlias) instead of silently answering NULL.
 		computedComplete = true
+		// RFC-173: emit the authoritative ordinal OUTPUT row. The folded SELECT
+		// list's RC.Fields ARE the output columns in output order (the same fields
+		// deriveColumnsFromFlatMap/foldedColumnDef names the ColumnDefs from), so a
+		// slot per field, valued from the just-evaluated map by f.Name, is the row's
+		// ordinal output — what a projected-EXISTS SELECT list (`SELECT id,
+		// EXISTS(...) AS has_t2 FROM t`) materializes from. Without it the fold row
+		// had no positional and every read fell back to the now-deleted name Datum.
+		//
+		// NARROWLY gated to the PLAIN-OUTER fold: no leg windows (foldWindowsOK), no
+		// ordinal-birth seed (c.birth), and no gated-join outer (outerBakedType /
+		// outerMergedType). Those richer shapes compose this fold INTO a larger
+		// ordinal layout (chained spines, N-way existential folds, leg-window
+		// consumers) where a bare output-named positional here would flip a
+		// downstream consumer onto the wrong ordinal frontier — they carry their own
+		// ordinal row via the birth/combined path above and stay on the name model
+		// for their final output for now (correct-or-loud reach class).
+		// RFC-173: emit for the PLAIN-OUTER fold AND the LEG-WINDOW / gated-join
+		// fold (foldWindowsOK / outerMergedType). In every one of these the folded
+		// RC IS the query's output projection (a projected-EXISTS SELECT list over a
+		// scan or a gated join) — its fields ARE the output columns, valued from the
+		// just-evaluated map by name, so a slot-per-field row is the authoritative
+		// ordinal output the result set reads. The birth path emits its own
+		// positional above; a birth fold is excluded here.
+		if !DisablePositionalEmission && !c.birth.enabled() {
+			if m, ok := computed.(map[string]any); ok {
+				posNames := make([]string, len(rc.Fields))
+				posSlots := make([]any, len(rc.Fields))
+				for i, f := range rc.Fields {
+					posNames[i] = f.Name
+					posSlots[i] = m[f.Name]
+				}
+				foldPos = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+			}
+		}
 	}
 	// Identity-over-outer FlatMap (the result value is exactly the outer
 	// quantifier's object — the WHERE-EXISTS pass-through, RFC-141): the output
@@ -654,7 +689,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			return out, nil
 		}
 	}
-	return QueryResult{Datum: computed, Complete: computedComplete}, nil
+	return QueryResult{Datum: computed, Complete: computedComplete, Positional: foldPos}, nil
 }
 
 // buildContinuation creates a FlatMapContinuation proto. The decision is purely

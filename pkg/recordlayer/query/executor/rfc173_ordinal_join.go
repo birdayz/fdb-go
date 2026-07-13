@@ -683,7 +683,13 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 		panic(fmt.Sprintf("RFC-173 ordinal join row: RC has %d fields but merged type has %d — the merged type must derive from this RC (ordinalJoinSpans)", len(rc.Fields), len(mergedType.Fields)))
 	}
 	row := NewPositionalRow(mergedType)
-	evalCtx := &values.RowEvalContext{Correlations: bindings}
+	// A FOLDED result value (the B1 existential wrap) can carry an uncorrelated
+	// ScalarSubqueryValue — a per-query constant the executor pre-evaluates and
+	// binds by alias. Thread that map onto the birth eval context so the scalar
+	// resolves here (else ScalarSubqueryValue.Evaluate is loud: UnboundScalarSubquery).
+	// The pristine ordinal-join SEED (baked leg refs only) carries none, so this is
+	// nil for the NLJ path — harmless.
+	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings)}
 	for i, f := range rc.Fields {
 		v, err := f.Value.Evaluate(evalCtx)
 		if err != nil {
@@ -1329,6 +1335,27 @@ func correlationBase(ec *EvaluationContext) values.CorrelationBinder {
 		return nil
 	}
 	return ec
+}
+
+// scalarSubqueriesFromBinder unwraps a birth-time correlation binder to the
+// pre-evaluated scalar-subquery map carried by the base *EvaluationContext, so a
+// FOLDED birth result value's ScalarSubqueryValue resolves at birth (the B1
+// existential wrap folds an uncorrelated scalar into the wrap RV). The birth
+// binders (birthLegBinder / twoLegBinder) chain their base down to the
+// EvaluationContext; a bare EvaluationContext base returns its own map. Any other
+// binder (a plan-time probe, no base) returns nil — the scalar then declines loudly
+// at birth, which is exactly the UnboundScalarSubquery contract for an
+// unresolvable context.
+func scalarSubqueriesFromBinder(b values.CorrelationBinder) map[values.CorrelationIdentifier]any {
+	switch bb := b.(type) {
+	case *EvaluationContext:
+		return bb.scalarSubqueries
+	case *birthLegBinder:
+		return scalarSubqueriesFromBinder(bb.base)
+	case *twoLegBinder:
+		return scalarSubqueriesFromBinder(bb.base)
+	}
+	return nil
 }
 
 // datumFromPositional derives the coexistence name-keyed Datum FROM the

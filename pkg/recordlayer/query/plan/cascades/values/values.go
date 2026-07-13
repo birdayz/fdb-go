@@ -427,7 +427,7 @@ var NameMissLoud = false
 // purpose is to MEASURE which boundaries still depend on the name-keyed row (cluster the
 // failing tests by shape) so the next ordinalization target is chosen by fallout, not
 // guess. NEVER set in production: it is a diagnostic bolt, not a semantic one.
-var NameReadForbidden = false
+var NameReadForbidden = true // RFC-173 cap: name reads forbidden (deletion in progress)
 
 // NameReadForbiddenError reports a name-keyed field read taken while the NameReadForbidden
 // measurement gate is armed. It names the field so the failing boundary is identifiable
@@ -3648,6 +3648,16 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 			if val, ok := ctx.Correlations.GetCorrelationBinding(q.Correlation); ok {
 				return val, nil
 			}
+		}
+		// RFC-173: a bare QOV whole-row read resolves to the ordinal Positional row
+		// on the frontier (downstream FieldValue reads it by ordinal). The name-keyed
+		// Datum whole-row read is the LAST coexistence path; gate it so the armed
+		// sweep can prove no reachable query relies on it before the field is deleted.
+		if ctx.Positional != nil {
+			return ctx.Positional, nil
+		}
+		if NameReadForbidden {
+			return nil, &NameReadForbiddenError{Field: "<qov-whole-row:" + q.Correlation.Name() + ">"}
 		}
 		return ctx.Datum, nil
 	case map[string]any:

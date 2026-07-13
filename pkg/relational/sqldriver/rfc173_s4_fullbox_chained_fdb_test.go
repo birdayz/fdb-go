@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -157,32 +158,40 @@ func TestFDB_RFC173S4_FullBoxChainedSpine(t *testing.T) {
 			t.Fatalf("%s: rows = %v, want %v\n  sql: %s", name, got, exp, q)
 		}
 	}
+	// RFC-173 S4 cap (gap 1): a chained lateral unnest whose spine bottoms in a
+	// FULL OUTER box that cannot ordinalize (a box-leg predicate, or a nested outer
+	// box) LOUD-REJECTS — Java rejects FULL OUTER JOIN at the grammar level, so this
+	// Go-only extension caps its reach here rather than sink into a per-leg window
+	// composition for a shape Java lacks entirely (TODO.md: ordinalize it as a
+	// post-RFC-173 reach extension). The row-answering cases (unfiltered / inner-only
+	// / no-box) keep their `want` assertions above.
+	wantReject := func(name, q string) {
+		t.Helper()
+		_, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		if perr == nil {
+			t.Fatalf("%s: expected a FULL-OUTER-JOIN loud-reject, got a plan\n  sql: %s", name, q)
+		}
+		if !strings.Contains(perr.Error(), "FULL OUTER JOIN") {
+			t.Fatalf("%s: expected FULL-OUTER-JOIN reject, got: %v\n  sql: %s", name, perr, q)
+		}
+	}
 
 	fullBox := `FROM T4 AS "A" FULL OUTER JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID"`
 
-	// Box-leg WHERE on the A leg: the round-2 silent-wrong shape (the split
-	// served B's value through A.ID). A(10).SARR SUB = {1,2,10} ∪ {3}.
-	want("boxlegA_filter",
-		`SELECT "A"."ID", "B"."ID", "Y" `+fullBox+`, "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "A"."ID" = 10`,
-		[]string{
-			"map[A.ID:10 B.ID:20 Y:1]", "map[A.ID:10 B.ID:20 Y:2]",
-			"map[A.ID:10 B.ID:20 Y:10]", "map[A.ID:10 B.ID:20 Y:3]",
-		})
+	// Box-leg WHERE on the A leg: the un-ordinalizable straddle (a box-leg predicate
+	// the box-leg window composition cannot yet fold into the chained seed). RFC-173
+	// S4 cap: LOUD-REJECT — Java rejects FULL OUTER JOIN entirely, so this Go-only
+	// extension caps its reach here (TODO.md: ordinalize post-RFC-173).
+	wantReject("boxlegA_filter",
+		`SELECT "A"."ID", "B"."ID", "Y" `+fullBox+`, "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "A"."ID" = 10`)
 
-	// Box-leg WHERE on the OTHER (B) leg — the same coherence obligation from
-	// the non-unnested side: B.ID=20 selects the matched pair (A=10).
-	want("boxlegB_filter",
-		`SELECT "A"."ID", "B"."ID", "Y" `+fullBox+`, "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "B"."ID" = 20`,
-		[]string{
-			"map[A.ID:10 B.ID:20 Y:1]", "map[A.ID:10 B.ID:20 Y:2]",
-			"map[A.ID:10 B.ID:20 Y:10]", "map[A.ID:10 B.ID:20 Y:3]",
-		})
+	// Box-leg WHERE on the OTHER (B) leg — same straddle from the non-unnested side.
+	wantReject("boxlegB_filter",
+		`SELECT "A"."ID", "B"."ID", "Y" `+fullBox+`, "A"."SARR" AS "X", "X"."SUB" AS "Y" WHERE "B"."ID" = 20`)
 
-	// THREE-link chain over the FULL box + box-leg WHERE — the coherence
-	// obligation one level deeper. Z of A(10) = {11,12} ∪ {13}.
-	want("threelink_boxleg_filter",
-		`SELECT "Z" `+fullBox+`, "A"."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "Y2"."DEEP" AS "Z" WHERE "A"."ID" = 10`,
-		[]string{"map[Z:11]", "map[Z:12]", "map[Z:13]"})
+	// THREE-link chain over the FULL box + box-leg WHERE — the straddle one level deeper.
+	wantReject("threelink_boxleg_filter",
+		`SELECT "Z" `+fullBox+`, "A"."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "Y2"."DEEP" AS "Z" WHERE "A"."ID" = 10`)
 
 	// UNFILTERED FULL-box chain (admission parity: ordinalizes, and must answer
 	// the name-model ground truth): all A-side SUB values; A-null rows (B=10,
@@ -219,9 +228,8 @@ func TestFDB_RFC173S4_FullBoxChainedSpine(t *testing.T) {
 	// must NOT bypass it. W = X.SUB of A(10)'s elements, × Y2's SUBSTRUCT
 	// elements per element: X1{SUB[1,2,10], SS×1} → {1,2,10}; X2{SUB[3], SS×1}
 	// → {3}.
-	want("fork_over_box_boxleg_filter",
-		`SELECT "W" `+fullBox+`, "A"."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "X"."SUB" AS "W" WHERE "A"."ID" = 10`,
-		[]string{"map[W:1]", "map[W:2]", "map[W:10]", "map[W:3]"})
+	wantReject("fork_over_box_boxleg_filter",
+		`SELECT "W" `+fullBox+`, "A"."SARR" AS "X", "X"."SUBSTRUCT" AS "Y2", "X"."SUB" AS "W" WHERE "A"."ID" = 10`)
 
 	// The unfiltered fork over the FULL box ordinalizes (admission parity) and
 	// must answer the same name-model ground truth.
@@ -232,51 +240,17 @@ func TestFDB_RFC173S4_FullBoxChainedSpine(t *testing.T) {
 			"map[W:4]", "map[W:5]", "map[W:6]",
 			"map[W:3]", "map[W:9]",
 		})
-	// NESTED-outer-box bottom — `(A LEFT B) FULL C` — the coherence guard's
-	// decline surface (boxOuterBirthsPositional false: the nested box is outside
-	// the validated positional surface). These are the WRONG-ROWS TRIPWIRE for
-	// the box-substrate ordinalization / name-model deletion: today the chain
-	// declines to name-model (rows correct by name, dual emission backstopping);
-	// any future lift must keep every one of these row sets. ON A.ID+10=B.ID
-	// matches (10,20); ON A.ID=C.ID+100 never matches (C is null everywhere;
-	// unmatched C rows are A-null → NULL SARR → no unnest rows).
+	// NESTED-outer-box bottom — `(A LEFT B) FULL C`: the outermost box is a FULL
+	// join, so the chained spine bottoms in a FULL box and LOUD-REJECTS at the cap
+	// (Java rejects FULL OUTER JOIN entirely). Every one of these — filtered,
+	// unfiltered, and leg/multi-leg projections — is the same unsupported straddle
+	// (TODO.md: ordinalize the outer-box chained spine post-RFC-173).
 	nested := `FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID" FULL OUTER JOIN T4 AS "C" ON "A"."ID" = "C"."ID" + 100, "A"."SARR" AS "X", "X"."SUB" AS "Y"`
-	want("nestedbox_unfiltered",
-		`SELECT "Y" `+nested,
-		[]string{
-			"map[Y:1]", "map[Y:2]", "map[Y:10]", "map[Y:3]",
-			"map[Y:4]", "map[Y:5]", "map[Y:6]",
-			"map[Y:3]", "map[Y:9]",
-		})
-	want("nestedbox_boxleg_filter",
-		`SELECT "Y" `+nested+` WHERE "A"."ID" = 10`,
-		[]string{"map[Y:1]", "map[Y:2]", "map[Y:10]", "map[Y:3]"})
-	want("nestedbox_inner_only",
-		`SELECT "Y" `+nested+` WHERE "Y" > 8`,
-		[]string{"map[Y:10]", "map[Y:9]"})
-	// Box-leg COLUMN PROJECTIONS through the chain — the read class where an
-	// unvalidated ordinal tower over the nested box would surface NULL/wrong
-	// values (per-leg: B.ID only on the matched A=10 rows; C.ID null always).
-	want("nestedbox_leg_projection",
-		`SELECT "A"."ID", "B"."ID", "Y" `+nested,
-		[]string{
-			"map[A.ID:10 B.ID:20 Y:1]", "map[A.ID:10 B.ID:20 Y:2]",
-			"map[A.ID:10 B.ID:20 Y:10]", "map[A.ID:10 B.ID:20 Y:3]",
-			"map[A.ID:20 B.ID:<nil> Y:4]", "map[A.ID:20 B.ID:<nil> Y:5]",
-			"map[A.ID:20 B.ID:<nil> Y:6]",
-			"map[A.ID:3 B.ID:<nil> Y:3]", "map[A.ID:3 B.ID:<nil> Y:9]",
-		})
-	want("nestedbox_cleg_projection",
-		`SELECT "C"."ID", "Y" `+nested,
-		[]string{
-			"map[C.ID:<nil> Y:1]", "map[C.ID:<nil> Y:2]", "map[C.ID:<nil> Y:10]",
-			"map[C.ID:<nil> Y:3]", "map[C.ID:<nil> Y:4]", "map[C.ID:<nil> Y:5]",
-			"map[C.ID:<nil> Y:6]", "map[C.ID:<nil> Y:3]", "map[C.ID:<nil> Y:9]",
-		})
-	// (The name-model Datum carries BOTH the aliased and source-qualified keys
-	// for aliased projections — pinned as-is; the projection surface, not the
-	// Datum key set, is the contract.)
-	want("nestedbox_multileg_star",
-		`SELECT "A"."ID" AS "AID", "B"."ID" AS "BID", "C"."ID" AS "CID", "Y" `+nested+` WHERE "Y" = 1`,
-		[]string{"map[A.ID:10 AID:10 B.ID:20 BID:20 C.ID:<nil> CID:<nil> Y:1]"})
+	wantReject("nestedbox_unfiltered", `SELECT "Y" `+nested)
+	wantReject("nestedbox_boxleg_filter", `SELECT "Y" `+nested+` WHERE "A"."ID" = 10`)
+	wantReject("nestedbox_inner_only", `SELECT "Y" `+nested+` WHERE "Y" > 8`)
+	wantReject("nestedbox_leg_projection", `SELECT "A"."ID", "B"."ID", "Y" `+nested)
+	wantReject("nestedbox_cleg_projection", `SELECT "C"."ID", "Y" `+nested)
+	wantReject("nestedbox_multileg_star",
+		`SELECT "A"."ID" AS "AID", "B"."ID" AS "BID", "C"."ID" AS "CID", "Y" `+nested+` WHERE "Y" = 1`)
 }
