@@ -418,6 +418,39 @@ func (e *UnresolvedNameReadError) Error() string {
 // end-state is on-by-default; the name reader itself is deleted at the atomic cap (#16).
 var NameMissLoud = false
 
+// NameReadForbidden is the RFC-173 MEASUREMENT gate (default off, inert — no behavior
+// change, full suite green): when true, EVERY name-keyed read arm in FieldValue.Evaluate
+// and evaluateCorrelated returns a loud *NameReadForbiddenError naming the field being
+// read, INSTEAD of resolving it against the name-keyed Datum / bare map[string]any. Unlike
+// NameMissLoud (absent key only), this fails on ANY name-keyed read — present or absent —
+// so flipping it ON turns each surviving name-keyed boundary into a hard failure. Its sole
+// purpose is to MEASURE which boundaries still depend on the name-keyed row (cluster the
+// failing tests by shape) so the next ordinalization target is chosen by fallout, not
+// guess. NEVER set in production: it is a diagnostic bolt, not a semantic one.
+var NameReadForbidden = false
+
+// NameReadForbiddenError reports a name-keyed field read taken while the NameReadForbidden
+// measurement gate is armed. It names the field so the failing boundary is identifiable
+// from the test log alone. Not a production error class — it only ever surfaces under the
+// measurement flag.
+type NameReadForbiddenError struct {
+	Field string
+}
+
+func (e *NameReadForbiddenError) Error() string {
+	return fmt.Sprintf("RFC-173 measurement: name-keyed read of field %q is forbidden (NameReadForbidden gate armed) — this boundary still relies on the name-keyed row and has not been ordinalized", e.Field)
+}
+
+// nameReadForbidden is called at every NAME-keyed read arm in Evaluate/evaluateCorrelated,
+// immediately before the name-keyed Datum / bare-map read executes. Returns a loud
+// *NameReadForbiddenError when the measurement gate is armed; nil (inert) otherwise.
+func (f *FieldValue) nameReadForbidden() error {
+	if NameReadForbidden {
+		return &NameReadForbiddenError{Field: f.Field}
+	}
+	return nil
+}
+
 // bakedNameReadGuard is called at every NAME-keyed read arm in Evaluate/
 // evaluateCorrelated: lazy nodes pass (the name model is their source of
 // truth), and so do UNPINNED baked nodes (the recursive-CTE wrap shape — no
@@ -639,6 +672,9 @@ func (f *FieldValue) nameReadRootKey() string {
 // nameRead is the plain name-keyed map read: root key, then the baked path's
 // nested descent (a no-op for lazy nodes and single-accessor paths).
 func (f *FieldValue) nameRead(row map[string]any) (any, error) {
+	if err := f.nameReadForbidden(); err != nil {
+		return nil, err
+	}
 	key := f.nameReadRootKey()
 	v, present := row[key]
 	if !present {
@@ -874,6 +910,9 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 			return f.evaluateOrdinal(rc.Positional)
 		}
 		if rc.Datum != nil {
+			if err := f.nameReadForbidden(); err != nil {
+				return nil, err
+			}
 			if err := f.bakedNameReadGuard(); err != nil {
 				return nil, err
 			}
@@ -941,6 +980,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 					return f.evaluateOrdinal(row)
 				}
 				if bm, ok := bound.(map[string]any); ok {
+					if err := f.nameReadForbidden(); err != nil {
+						return nil, err
+					}
 					if err := f.bakedNameReadGuard(); err != nil {
 						return nil, err
 					}
@@ -968,6 +1010,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			return f.evaluateOrdinal(ctx.Positional)
 		}
 		if ctx.Datum != nil {
+			if err := f.nameReadForbidden(); err != nil {
+				return nil, err
+			}
 			if err := f.bakedNameReadGuard(); err != nil {
 				return nil, err
 			}
@@ -1016,6 +1061,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				return f.evaluateOrdinal(row)
 			}
 			if bm, ok := bound.(map[string]any); ok {
+				if err := f.nameReadForbidden(); err != nil {
+					return nil, err
+				}
 				if err := f.bakedNameReadGuard(); err != nil {
 					return nil, err
 				}
@@ -1034,6 +1082,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		return nil, nil
 	case map[CorrelationIdentifier]map[string]any:
 		if sub, ok := ctx[qov.Correlation]; ok {
+			if err := f.nameReadForbidden(); err != nil {
+				return nil, err
+			}
 			if err := f.bakedNameReadGuard(); err != nil {
 				return nil, err
 			}
@@ -1041,6 +1092,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		}
 		return nil, nil
 	case map[string]any:
+		if err := f.nameReadForbidden(); err != nil {
+			return nil, err
+		}
 		if err := f.bakedNameReadGuard(); err != nil {
 			return nil, err
 		}

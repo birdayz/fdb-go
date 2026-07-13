@@ -4691,7 +4691,7 @@ func TestAggregateCursor_SingleGroup_CountStar(t *testing.T) {
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
 	}
-	c := newAggregateCursor(inner, nil, aggs) // nil groupingKeys → scalar mode
+	c := newAggregateCursor(inner, nil, aggs, nil, nil) // nil groupingKeys → scalar mode
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4711,7 +4711,7 @@ func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}},
 	}
-	c := newAggregateCursor(inner, nil, aggs)
+	c := newAggregateCursor(inner, nil, aggs, nil, nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4739,7 +4739,7 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggSum, Operand: values.NewFlatFieldValue("amount", values.TypeInt)},
 	}
-	c := newAggregateCursor(inner, groupKeys, aggs)
+	c := newAggregateCursor(inner, groupKeys, aggs, nil, nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4768,7 +4768,7 @@ func TestAggregateCursor_OnNextAfterClose(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
-	c := newAggregateCursor(inner, nil, nil)
+	c := newAggregateCursor(inner, nil, nil, nil, nil)
 	c.Close()
 
 	result, err := c.OnNext(context.Background())

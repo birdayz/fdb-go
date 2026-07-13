@@ -2422,7 +2422,7 @@ func executeAggregation(
 		return nil, err
 	}
 
-	cursor := newAggregateCursor(innerCursor, groupingKeys, aggregates)
+	cursor := newAggregateCursor(innerCursor, groupingKeys, aggregates, inner, evalCtx)
 	if priorState != nil {
 		cursor.withPartialState(priorGroupKey, priorState.keyVals, priorState)
 	}

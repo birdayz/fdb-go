@@ -51,6 +51,20 @@ type aggregateCursor struct {
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 
+	// RFC-173 input-edge ordinalization (plain single-source frontier). evalCtx
+	// carries params/subqueries/outer bindings so a group-key / operand reference
+	// resolves against the inner PositionalRow the SAME way executeFilter /
+	// executeProjection do (frontierRowContext → evaluateOrdinal → GetByName), robust
+	// to a covering-index layout and NOT a name-keyed Datum read. plainScanInput is
+	// true only when the input is a base-table scan/index frontier (see
+	// aggregateInputIsPlainScan): a projection / derived table / CTE / join / union
+	// keeps the name-keyed Datum path (its own read-leniency governs), so the
+	// positional dispatch fires only for the plain scan/index/filter frontier. Both
+	// probed once at construction from the inner plan.
+	evalCtx        *EvaluationContext
+	plainScanInput bool
+	needsRowCtx    bool
+
 	// Current in-progress group state (streaming — only ONE group at a time).
 	currentGroupKey string
 	currentKeyVals  []any
@@ -84,13 +98,60 @@ func newAggregateCursor(
 	inner recordlayer.RecordCursor[QueryResult],
 	groupingKeys []values.Value,
 	aggregates []expressions.AggregateSpec,
+	innerPlan plans.RecordQueryPlan,
+	evalCtx *EvaluationContext,
 ) *aggregateCursor {
 	return &aggregateCursor{
-		inner:        inner,
-		groupingKeys: groupingKeys,
-		aggregates:   aggregates,
-		scalarMode:   len(groupingKeys) == 0,
+		inner:          inner,
+		groupingKeys:   groupingKeys,
+		aggregates:     aggregates,
+		scalarMode:     len(groupingKeys) == 0,
+		evalCtx:        evalCtx,
+		plainScanInput: aggregateInputIsPlainScan(innerPlan),
+		needsRowCtx:    hasBindingContext(evalCtx),
 	}
+}
+
+// aggregateInputIsPlainScan reports whether the streaming aggregate's input is a
+// PLAIN single-table base-record frontier: a base-table SCAN or an INDEX scan,
+// optionally under layout-preserving single-child wrappers (the group-by SORT the
+// planner inserts, a WHERE filter, a type filter, a LIMIT, the covering-index
+// fetch). Only such an input flows a PositionalRow whose columns ARE the base
+// table's — so a group-key / operand name resolves against it by GetByName exactly
+// as executeFilter / executeProjection resolve theirs (robust to a covering-index
+// column order). It is deliberately NARROW: a projection / derived table / CTE
+// (RecordQueryMapPlan, RecordQueryProjectionPlan, RecordQueryTempTableScanPlan), a
+// FlatMap/lateral unnest, a join, a union, a DISTINCT — every RESHAPING or
+// multi-source input — returns false and keeps the aggregate input on the
+// name-keyed Datum path (those boundaries carry their own read-leniency /
+// ordinalization and must NOT be forced loud through the positional frontier).
+func aggregateInputIsPlainScan(input plans.RecordQueryPlan) bool {
+	for input != nil {
+		switch p := input.(type) {
+		case *plans.RecordQueryScanPlan,
+			*plans.RecordQueryIndexPlan,
+			*plans.RecordQueryTextIndexPlan,
+			*plans.RecordQueryVectorIndexPlan:
+			return true
+		case *plans.RecordQueryFetchFromPartialRecordPlan:
+			input = p.GetInner()
+		case *plans.RecordQuerySortPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryInMemorySortPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryLimitPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryTypeFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryPredicatesFilterPlan:
+			input = p.GetInner()
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // withPartialState restores accumulator state from a previous transaction's
@@ -212,21 +273,36 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 }
 
 // aggregateEvalArg is the eval argument for a GROUP-BY key / aggregate operand.
-// A POSITIONALLY-BAKED value (a FieldValue with a resolved ordinal — the RFC-173
-// un-collapse's qualifier-honoring group key/operand) reads the positional merged
-// row the gathered seed emits, so it is flowed a RowEvalContext carrying it. A
-// name-model value (a qualified/bare name over a join, whose positional row uses
-// bare column names it can't find) keeps the Datum map exactly as before — the
-// per-value gate, so the broad group-by population is untouched.
-func aggregateEvalArg(v values.Value, row QueryResult) any {
+//
+// RFC-173 input-edge ordinalization: the streaming aggregate reads its keys /
+// operands off the inner row exactly the way executeFilter / executeProjection
+// read their predicate / projected values — the ONE frontier dispatch, so the
+// aggregate input resolves positionally on the same shapes those do.
+//
+//   - A POSITIONALLY-BAKED value (a FieldValue with a resolved ordinal — the
+//     gathered-seed un-collapse's qualifier-honoring group key/operand) reads the
+//     flat seed row it was baked against: the simple {Datum,Positional} context, no
+//     leg re-windowing (the gathered seed emits a flat row and its bakes are flat
+//     slots).
+//   - Otherwise, on a PLAIN single-source frontier (scan / index / filter — NOT a
+//     2-way ordinal JOIN merge, which keeps the name path until its own slice), a
+//     name group-key / operand resolves against the inner PositionalRow by
+//     name-in-row (frontierRowContext → evaluateOrdinal → GetByName). This is robust
+//     to a covering-index column layout (GetByName, never a plan-time table ordinal)
+//     and is NOT a name-keyed Datum read, so it no longer depends on the name model.
+//   - A reshaping / multi-source input (projection, derived table, CTE, join,
+//     union — anything that is not a plain base-table scan/index frontier) and a
+//     name-only row (no Positional) keep the name-keyed Datum path — carrying the
+//     row's Sparse flag so an unset optional field stays a silent NULL rather than
+//     tripping NameMissLoud (task #38).
+func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any {
 	if row.Positional != nil && valueReadsBakedOrdinal(v) {
 		m, _ := row.Datum.(map[string]any)
 		return &values.RowEvalContext{Datum: m, Positional: row.Positional}
 	}
-	// A name-model operand over a base stored record reads its Datum by name; carry the
-	// row's Sparse flag so an unset optional field (key-absent) stays a silent NULL rather
-	// than tripping the NameMissLoud guard (task #38). A non-sparse (computed/merge) row's
-	// absent key remains loud.
+	if row.Positional != nil && c.plainScanInput {
+		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
+	}
 	if m, ok := row.Datum.(map[string]any); ok {
 		return &values.RowEvalContext{Datum: m, Sparse: row.Sparse}
 	}
@@ -261,7 +337,7 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 	keyParts := make([]any, len(c.groupingKeys))
 	t := make(tuple.Tuple, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
-		v, err := k.Evaluate(aggregateEvalArg(k, row))
+		v, err := k.Evaluate(c.aggregateEvalArg(k, row))
 		if err != nil {
 			return "", nil, err
 		}
@@ -312,7 +388,7 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 	gs.count++
 
 	for i, agg := range c.aggregates {
-		val, err := agg.Operand.Evaluate(aggregateEvalArg(agg.Operand, row))
+		val, err := agg.Operand.Evaluate(c.aggregateEvalArg(agg.Operand, row))
 		if err != nil {
 			return err
 		}
