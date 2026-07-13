@@ -1530,15 +1530,6 @@ func executeSort(
 		keyNames[i] = k.Value.Name()
 		if fv, ok := k.Value.(*values.FieldValue); ok {
 			keyNames[i] = fv.Field
-			// RFC-173: a QUALIFIED sort key (`p.name`) over a merged join row with
-			// DUPLICATE bare column names (c.name, p.name) must resolve to ITS leg,
-			// not the first bare match — build the ALIAS.COL name so
-			// sortKeyFromResult's GetByName routes through the leg window. On a
-			// single-source row (no dup, no legs) GetByName's unique-leaf strip
-			// resolves it back to the bare column.
-			if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok && qov.Correlation.Name() != "" {
-				keyNames[i] = strings.ToUpper(qov.Correlation.Name()) + "." + fv.Field
-			}
 		}
 		directions[i] = k.Reverse
 	}
@@ -3837,6 +3828,27 @@ func executeInMemorySort(
 	}
 
 	keys := p.GetSortKeys()
+	// RFC-173: when the sort input flows a merged ordinal-join row, evaluate the
+	// sort keys through the SAME leg-window context the downstream projection/
+	// filter use (legWindowRowContext -> spanAwareRow), so a QUALIFIED key
+	// (`p.name`) over a multi-way join resolves to its BURIED leg — the box span's
+	// buried-leg windows — instead of the naked merged row's first bare match.
+	legSpans, joinWindowsOK := downstreamLegWindows(p.GetInner())
+	sortKeyValue := func(qr QueryResult, k plans.SortKey) (any, error) {
+		kv := k.ValueExpr
+		if joinWindowsOK && qr.Positional != nil {
+			if kv == nil {
+				kv = &values.FieldValue{Field: k.Field, Typ: values.UnknownType}
+			}
+			return kv.Evaluate(legWindowRowContext(qr.Positional, evalCtx, legSpans))
+		}
+		if kv != nil {
+			// The authoritative ordinal row on the non-join frontier (loud on a
+			// miss via FieldValue.evaluateOrdinal).
+			return kv.Evaluate(sortEvalRow(qr))
+		}
+		return compareByField(qr, k.Field), nil
+	}
 	sortFn := func(results []QueryResult) error {
 		pkDesc := false
 		if len(keys) > 0 {
@@ -3849,22 +3861,14 @@ func executeInMemorySort(
 			}
 			for _, k := range keys {
 				var ci, cj any
-				if k.ValueExpr != nil {
-					var err error
-					// RFC-173 Slice 1: evaluate the sort expression against the
-					// authoritative ordinal row on the non-join frontier (loud on a
-					// miss via FieldValue.evaluateOrdinal), else the name-keyed Datum.
-					if ci, err = k.ValueExpr.Evaluate(sortEvalRow(results[i])); err != nil {
-						sortErr = err
-						return false
-					}
-					if cj, err = k.ValueExpr.Evaluate(sortEvalRow(results[j])); err != nil {
-						sortErr = err
-						return false
-					}
-				} else {
-					ci = compareByField(results[i], k.Field)
-					cj = compareByField(results[j], k.Field)
+				var err error
+				if ci, err = sortKeyValue(results[i], k); err != nil {
+					sortErr = err
+					return false
+				}
+				if cj, err = sortKeyValue(results[j], k); err != nil {
+					sortErr = err
+					return false
 				}
 				iNil := ci == nil
 				jNil := cj == nil
