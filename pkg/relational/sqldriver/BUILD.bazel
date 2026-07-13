@@ -246,6 +246,7 @@ go_test(
         "rfc153_matrix_fdb_test.go",
         "rfc173_agg_input_ordinal_fdb_test.go",
         "rfc173_agg_join_ordinal_fdb_test.go",
+        "rfc173_agg_projderived_ordinal_fdb_test.go",
         "rfc173_agg_reshaping_input_ordinal_fdb_test.go",
         "rfc173_b2_filtered_box_unnest_fdb_test.go",
         "rfc173_b2_graefe_impl_probe_fdb_test.go",

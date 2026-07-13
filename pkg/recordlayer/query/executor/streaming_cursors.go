@@ -84,6 +84,17 @@ type aggregateCursor struct {
 	joinLegSpans  []legSpan
 	joinWindowsOK bool
 
+	// RFC-173 aggregate-over-PROJECTING-DERIVED-SOURCE input edge. When the input
+	// flows a PROJECTION's re-laid-out flat positional row (a derived table / CTE
+	// body over a multi-source base), a group-key / operand reference that names a
+	// PROJECTED OUTPUT column resolves against that row by GetByName — leg-independent,
+	// exactly as executeProjection resolves the projection itself — instead of the
+	// name-keyed Datum map. projOutputNames is the projection's output-column-name set
+	// (nil when no projection governs the input); an in-set reference takes the
+	// positional arm, an out-of-set one (Q51/Q54 shadow read) stays on the name path.
+	// Probed once at construction from the inner plan.
+	projOutputNames map[string]struct{}
+
 	// Current in-progress group state (streaming — only ONE group at a time).
 	currentGroupKey string
 	currentKeyVals  []any
@@ -131,6 +142,7 @@ func newAggregateCursor(
 		needsRowCtx:       hasBindingContext(evalCtx),
 		joinLegSpans:      legSpans,
 		joinWindowsOK:     windowsOK,
+		projOutputNames:   aggregateInputProjectionOutputNames(innerPlan),
 	}
 }
 
@@ -197,6 +209,97 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 		}
 	}
 	return false
+}
+
+// aggregateInputProjectionOutputNames returns the OUTPUT-column-name set of the
+// PROJECTION (derived table / CTE body) that GOVERNS the streaming aggregate's
+// input row layout, or nil when no projection governs it (a plain scan, a raw
+// join merge, or an aggregate directly over a join — those are handled by the
+// flat-frontier / join-leg-window arms).
+//
+// It walks the layout-preserving wrappers (the group-by SORT, filters, LIMIT,
+// the covering-index fetch, DISTINCT) down to the FIRST reshaping PROJECTION and
+// returns its emitted positional-row column names via the SAME values.OutputColumnName
+// authority executeProjection uses to name posNames — so membership here is
+// exactly the set the projection's PositionalRow.GetByName resolves. The names
+// are the alias-preferring output names (b AS L → "L"), NOT the source columns.
+//
+// Purpose: an aggregate over a PROJECTING derived source over a MULTI-SOURCE base
+// (SELECT max(y) FROM (SELECT y, b AS L FROM t1,t2) AS q GROUP BY l — Java-parity,
+// GroupByQueryTests:699) flows the projection's re-laid-out flat positional row
+// [Y, L], not the pre-projection join merge. A group key / operand that names a
+// projected OUTPUT column resolves LEG-INDEPENDENTLY against that row by GetByName,
+// exactly as executeProjection resolves the projection itself — so the aggregate
+// need not (and cannot) see the buried join's leg windows. A read NOT in the
+// output set (a Q51/Q54 out-of-schema shadow read) is left to the name-keyed
+// Datum path (its booked silent NULL), never forced loud through the frontier.
+func aggregateInputProjectionOutputNames(input plans.RecordQueryPlan) map[string]struct{} {
+	for input != nil {
+		switch p := input.(type) {
+		case *plans.RecordQueryProjectionPlan:
+			projections := p.GetProjections()
+			aliases := p.GetAliases()
+			names := make(map[string]struct{}, len(projections))
+			for i, proj := range projections {
+				alias := ""
+				if i < len(aliases) {
+					alias = aliases[i]
+				}
+				names[strings.ToUpper(values.OutputColumnName(proj, alias))] = struct{}{}
+			}
+			return names
+		case *plans.RecordQueryFetchFromPartialRecordPlan:
+			input = p.GetInner()
+		case *plans.RecordQuerySortPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryInMemorySortPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryLimitPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryTypeFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryPredicatesFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryDistinctPlan:
+			input = p.GetInner()
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// valueFieldsAllInSet reports whether EVERY FieldValue in v's value tree is a BARE
+// (childless) reference to a column in set. A value with no FieldValue (a constant /
+// computed key over none) trivially qualifies; a COMPOUND operand (SUM(v*price))
+// qualifies iff each of its bare field leaves is in set. A CHILD-BEARING FieldValue
+// (a qualified QOV(alias).col or a nested record access) is NOT a bare
+// projected-output-column read, so it DISQUALIFIES v — such a reference stays on the
+// existing name / leg-window path rather than being forced onto the projection row.
+//
+// Used to gate the projection-output arm: only a group key / operand whose columns
+// are ALL bare projected outputs resolves positionally against the projection row;
+// anything else (a mixed value, an out-of-schema Q51/Q54 shadow read, a qualified
+// access) falls through — correct-or-name, never a loud frontier miss.
+func valueFieldsAllInSet(v values.Value, set map[string]struct{}) bool {
+	all := true
+	values.WalkValue(v, func(n values.Value) bool {
+		fv, ok := n.(*values.FieldValue)
+		if !ok {
+			return true // not a field; descend into composites (arithmetic, cast, …)
+		}
+		if fv.Child != nil {
+			all = false // a qualified / nested access, not a bare output-column ref
+			return false
+		}
+		if _, in := set[strings.ToUpper(fv.Field)]; !in {
+			all = false
+		}
+		return true
+	})
+	return all
 }
 
 // withPartialState restores accumulator state from a previous transaction's
@@ -359,6 +462,16 @@ func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any 
 	}
 	if row.Positional != nil && c.joinWindowsOK {
 		return legWindowRowContext(row.Positional, c.evalCtx, c.joinLegSpans)
+	}
+	if row.Positional != nil && c.projOutputNames != nil && valueFieldsAllInSet(v, c.projOutputNames) {
+		// RFC-173: a PROJECTING derived source (SELECT y, b AS L FROM t1,t2) AS q
+		// re-lays-out its multi-source base into a flat positional row [Y, L]; a
+		// group-key / operand naming a PROJECTED OUTPUT column resolves against
+		// that row by ordinal-in-row, exactly as executeProjection resolves the
+		// projection itself — the buried join's leg windows are irrelevant to the
+		// projection's own output schema. An out-of-schema reference (a Q51/Q54
+		// shadow read) is excluded by valueFieldsAllInSet and keeps the name path.
+		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
 	}
 	if m, ok := row.Datum.(map[string]any); ok {
 		return &values.RowEvalContext{Datum: m, Sparse: row.Sparse}
