@@ -944,10 +944,25 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// are already LOUD (0AF00), so only these leniency-path scalar reads
 	// remain silent.
 	t.Run("Q51_ononly_invalid_read_class", func(t *testing.T) {
-		check(t, `WITH "W" AS (SELECT CC."CV" AS "Y" FROM LB LEFT JOIN CC ON LB."BID" = CC."CID") SELECT MAX("NOPE") FROM "W"`,
-			"<nil>")
-		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`,
-			"<nil>|<nil>")
+		// RFC-173 cap: the BOOKED FLIP has landed. Reading a column ABSENT from the
+		// derived source (`NOPE`/`X` are not columns of W=[Y] / inner V=[Y]) is now a
+		// LOUD ordinal-resolution error, not the name model's silent NULL — exactly
+		// the "flips to a loud 42703-family error" the header booked. (The error is a
+		// runtime ordinal-resolution miss today; a clean plan-time 42703
+		// column-not-found is a booked message-quality refinement — the direction,
+		// loud-not-silent, is the cap contract.)
+		mustLoudRead := func(t *testing.T, sql string) {
+			t.Helper()
+			rows, err := run(t, sql)
+			if err == nil {
+				t.Fatalf("expected a LOUD absent-column read error (booked flip-sentinel), got rows=%v\n  %s", rows, sql)
+			}
+			if !strings.Contains(err.Error(), "not resolvable") {
+				t.Fatalf("expected an ordinal-resolution (absent column) error, got: %v\n  %s", err, sql)
+			}
+		}
+		mustLoudRead(t, `WITH "W" AS (SELECT CC."CV" AS "Y" FROM LB LEFT JOIN CC ON LB."BID" = CC."CID") SELECT MAX("NOPE") FROM "W"`)
+		mustLoudRead(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`)
 	})
 	// Q52: the COINCIDING-schema shadow read ANSWERS CORRECTLY through the
 	// leniency + merge-fabrication path (NOT via any install — an earlier
@@ -1003,8 +1018,14 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	//   - a DUPLICATE-name body with a UNIQUE column read still PLANS (the
 	//     unique column resolves; a blanket dup-decline wrongly rejected it).
 	t.Run("Q54_shadow_read_reach_boundary", func(t *testing.T) {
+		// RFC-173 cap: the BOOKED FLIP has landed. The QUALIFIED read `V.X` over the
+		// inner V=[X] now RESOLVES (a single-namespace derived source, unique leaf
+		// `X` — GetByName strips the self-qualifier), so `MAX(V.X)` returns the real
+		// value `1|1` — IDENTICAL to the non-qualified sibling Q52 over the same data
+		// (X'=CC.CID over the LEFT JOIN → {1, NULL} → MAX = 1). The name model's
+		// `<nil>` here was the "silent flip-sentinel" the header booked as wrong.
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "X" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("V"."X") FROM "V") FROM LB LIMIT 1`,
-			"<nil>|<nil>") // qualified read: booked silent flip-sentinel
+			"1|1")
 		_, ePanic := run(t, `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC WHERE "V"."B" = 100) FROM LB LIMIT 1`)
 		if ePanic == nil {
 			t.Fatal("comma-multi-leg shadow read must be LOUD (an install panicked here), got rows")

@@ -89,22 +89,46 @@ func (r *PositionalRow) GetByName(name string) (any, bool) {
 		// clustered null-supplying birth) serves it here — same slot either
 		// way. First-match on duplicate leg names mirrors FieldIndex's own
 		// first-match rule.
-		if di := strings.IndexByte(name, '.'); di > 0 && len(r.Type.Legs) > 0 {
+		if di := strings.IndexByte(name, '.'); di > 0 {
 			qual, col := name[:di], name[di+1:]
-			for _, leg := range r.Type.Legs {
-				if !strings.EqualFold(leg.Name, qual) {
-					continue
-				}
-				end := leg.Start + leg.Width
-				if leg.Start < 0 || end > len(r.Type.Fields) {
+			if len(r.Type.Legs) > 0 {
+				for _, leg := range r.Type.Legs {
+					if !strings.EqualFold(leg.Name, qual) {
+						continue
+					}
+					end := leg.Start + leg.Width
+					if leg.Start < 0 || end > len(r.Type.Fields) {
+						break
+					}
+					for k := leg.Start; k < end; k++ {
+						if strings.EqualFold(r.Type.Fields[k].Name, col) {
+							return r.Get(k)
+						}
+					}
 					break
 				}
-				for k := leg.Start; k < end; k++ {
-					if strings.EqualFold(r.Type.Fields[k].Name, col) {
-						return r.Get(k)
+			}
+			// RFC-173: a QUALIFIED read ("V.X") over a frontier row whose leaf column
+			// is UNIQUE can only mean that column, so strip the qualifier and resolve
+			// the leaf. This mirrors the name model's nameReadRootKey fallback (Datum
+			// tried the qualified key then the root key). It is gated on UNIQUENESS:
+			// a join projection [NAME, NAME, QTY] (`SELECT c.name, p.name`) has an
+			// AMBIGUOUS leaf "NAME", and stripping "P.NAME" → the FIRST NAME (c.name)
+			// would mis-resolve a qualified ORDER BY / read — so an ambiguous leaf is
+			// left unresolved (nil,false) and the caller falls through to the
+			// name-keyed Datum (which disambiguates by the qualified key). The Legs
+			// path above already handles a leg-windowed join row with matching leg
+			// qualifiers; this fallback only fires when the qualifier matched no leg.
+			if ci, ok := r.Type.FieldIndex(col); ok {
+				leafCount := 0
+				for _, f := range r.Type.Fields {
+					if strings.EqualFold(f.Name, col) {
+						leafCount++
 					}
 				}
-				break
+				if leafCount == 1 {
+					return r.Get(ci)
+				}
 			}
 		}
 		return nil, false

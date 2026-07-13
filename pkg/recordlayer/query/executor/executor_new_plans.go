@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -577,10 +578,22 @@ func executeMap(
 	// when the result isn't a record; then no positional row is emitted).
 	var mapPosNames []string
 	var mapPosType *values.RecordType
+	mapOutputAllBare := false
 	if rt, ok := resultValue.Type().(*values.RecordType); ok {
 		mapPosNames = make([]string, len(rt.Fields))
+		mapOutputAllBare = true
+		seenMapName := make(map[string]struct{}, len(rt.Fields))
 		for i, fld := range rt.Fields {
 			mapPosNames[i] = fld.Name
+			// Bare AND unique — a duplicate/qualified output cannot disambiguate a
+			// qualified downstream read on a flat row (see executeProjection).
+			if strings.Contains(fld.Name, ".") {
+				mapOutputAllBare = false
+			}
+			if _, dup := seenMapName[strings.ToUpper(fld.Name)]; dup {
+				mapOutputAllBare = false
+			}
+			seenMapName[strings.ToUpper(fld.Name)] = struct{}{}
 		}
 		mapPosType = positionalTypeFromNames(mapPosNames)
 	}
@@ -647,7 +660,7 @@ func executeMap(
 		// the consumer onto the ordinal path. Positional propagates along the
 		// frontier and stops at the join/aggregate boundary.
 		var pos *PositionalRow
-		if qr.Positional != nil {
+		if qr.Positional != nil || mapOutputAllBare {
 			if mm, ok := m.(map[string]any); ok && mapPosNames != nil {
 				slots := make([]any, len(mapPosNames))
 				for i, name := range mapPosNames {

@@ -487,6 +487,15 @@ func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any 
 		// shadow read) is excluded by valueFieldsAllInSet and keeps the name path.
 		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
 	}
+	// RFC-173: a row that carries a FLAT Positional (not leg-windowed — joinWindowsOK
+	// false) but matched none of the specific arms above (e.g. a COUNT(*) constant
+	// operand, or a group key over a recursive-CTE / bare-projected-join row) still
+	// resolves against that ordinal row by name-in-row (GetByName) — authoritative,
+	// no name-keyed Datum. This is the general birth-of-Positional consumer: once a
+	// producer emits an output-named Positional, the aggregate reads it ordinally.
+	if row.Positional != nil {
+		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
+	}
 	if m, ok := row.Datum.(map[string]any); ok {
 		if perr := requirePositional("aggregate"); perr != nil {
 			c.probeErr = perr

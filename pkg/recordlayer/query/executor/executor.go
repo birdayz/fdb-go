@@ -1422,6 +1422,28 @@ func executeProjection(
 		posNames[i] = values.OutputColumnName(proj, alias)
 	}
 	projType := positionalTypeFromNames(posNames)
+	// RFC-173: a projection whose OUTPUT columns are all bare (no qualified
+	// ALIAS.COL) AND uniquely named presents a clean flat frontier row, so it may
+	// emit a Positional even over a birth-disabled join input (see the emission
+	// site below). DUPLICATE bare names are excluded: a join projection
+	// `SELECT c.name, p.name` outputs [NAME, NAME], and a qualified downstream read
+	// / ORDER BY (`p.name`) cannot disambiguate the two NAME slots on a flat row
+	// (it would resolve to the first) — that shape must stay name-model, which keys
+	// the two by their qualified "C.NAME"/"P.NAME" keys. A single dotted output name
+	// marks a qualified re-projection that also stays name-model.
+	projOutputAllBare := true
+	seenProjName := make(map[string]struct{}, len(posNames))
+	for _, n := range posNames {
+		if strings.Contains(n, ".") {
+			projOutputAllBare = false
+			break
+		}
+		if _, dup := seenProjName[strings.ToUpper(n)]; dup {
+			projOutputAllBare = false
+			break
+		}
+		seenProjName[strings.ToUpper(n)] = struct{}{}
+	}
 	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
 	// positional row, projections evaluate under the LEG WINDOWS — computed
 	// once, from the input plan's result value.
@@ -1498,7 +1520,7 @@ func executeProjection(
 		// the frontier and stops at the join/aggregate boundary — the self-excluding
 		// gate the RFC specifies, enforced at emission.
 		var positional *PositionalRow
-		if qr.Positional != nil {
+		if qr.Positional != nil || projOutputAllBare {
 			positional = &PositionalRow{Type: projType, Slots: slots}
 		}
 		return QueryResult{
