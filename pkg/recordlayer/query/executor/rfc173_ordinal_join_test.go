@@ -569,17 +569,10 @@ func TestRFC173S2_EvaluateOrdinalJoinRow(t *testing.T) {
 		}
 	})
 
-	t.Run("name-keyed leg binding is loud", func(t *testing.T) {
-		t.Parallel()
-		// A leg bound to a NAME-keyed map is the conflation RFC-173 kills: the
-		// baked node's map arm raises *BakedNameContextError, and the primitive
-		// propagates it — error propagation proven end-to-end.
-		_, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: map[string]any{"ID": int64(2), "W": int64(20)}})
-		var bnce *values.BakedNameContextError
-		if !errors.As(err, &bnce) {
-			t.Fatalf("name-keyed leg binding must be a loud *BakedNameContextError, got %v", err)
-		}
-	})
+	// (The former "name-keyed leg binding is loud" pin is retired: the name model
+	// is deleted, so a map-bound leg is now just another non-OrdinalRow binding —
+	// it hits the same `return bound, nil` arm the garbage-leg pin below freezes.
+	// The bakedNameReadGuard it exercised has no callers left.)
 
 	t.Run("garbage leg binding pins current behavior", func(t *testing.T) {
 		t.Parallel()

@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -361,14 +360,18 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_InnerJoin(t *testing.T) {
 		ojAssertSlots(t, results[0].Positional, int64(1), int64(10), int64(1), int64(100))
 		ojAssertSlots(t, results[1].Positional, int64(2), int64(20), int64(1), int64(100))
 
-		// The red half: the same baked predicate WITHOUT the leg bindings
-		// (today's name-model dispatch, a bare combined Datum) is a loud
-		// BakedNameContextError — the leg bindings are what make it work.
+		// RFC-173 cap: even WITHOUT an explicit leg binder, the merged row carries
+		// its own leg windows (concatLegPositionals → Type.Legs), so
+		// passesJoinPredicatesLegs derives them (spansFromMergedLegs) and the baked
+		// leg predicate resolves correctly — an improvement over the former
+		// name-model dispatch, which was loud here. B#1=100 over B(1,100) is TRUE.
 		combined := mergeRows(outerRows[0], innerRows[0], "A", "B")
-		_, perr := passesJoinPredicatesLegs(combined, []predicates.QueryPredicate{bakedPred}, EmptyEvaluationContext(), nil)
-		var bnce *values.BakedNameContextError
-		if !errors.As(perr, &bnce) {
-			t.Fatalf("baked predicate without leg bindings must be a loud *BakedNameContextError, got %v", perr)
+		passes, perr := passesJoinPredicatesLegs(combined, []predicates.QueryPredicate{bakedPred}, EmptyEvaluationContext(), nil)
+		if perr != nil {
+			t.Fatalf("baked predicate over the merged row's own leg windows must resolve, got error %v", perr)
+		}
+		if !passes {
+			t.Fatal("baked B#1=100 over B(1,100) must be TRUE via the merged row's leg windows")
 		}
 	})
 }
@@ -403,9 +406,12 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_HashPath(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (outer ID=5 matches inner ID=5)", len(results))
 	}
 	ojAssertSlots(t, results[0].Positional, int64(5), int64(50), int64(5), int64(50))
-	m, isMap := rowMapOK(results[0])
-	if !isMap || m["A.ID"] != int64(5) || m["B.W"] != int64(50) {
-		t.Fatalf("hash-path Datum = %v, want the untouched mergeRows keys", results[0].Positional)
+	// Qualified leg reads resolve through the merged row's leg windows.
+	if v := rowVal(results[0], "A.ID"); v != int64(5) {
+		t.Fatalf("A.ID = %v, want 5 (leg window)", v)
+	}
+	if v := rowVal(results[0], "B.W"); v != int64(50) {
+		t.Fatalf("B.W = %v, want 50 (leg window)", v)
 	}
 }
 
@@ -659,7 +665,13 @@ func TestRFC173S2_LegWindowRowContext(t *testing.T) {
 	merged := ojMergedRow(t, mergedType) // [A.ID=1, A.V=10, B.ID=2, B.W=20]
 
 	outerID := values.NamedCorrelationIdentifier("OUT")
-	ec := EmptyEvaluationContext().WithBinding(outerID, map[string]any{"X": int64(42)})
+	// RFC-173: an outer correlation binds a PositionalRow (production binds
+	// qualifyOuterPositional), so FieldValue(QOV(OUT), "X") resolves "X" by name
+	// against the ordinal row.
+	ec := EmptyEvaluationContext().WithBinding(outerID, &PositionalRow{
+		Type:  positionalTypeFromNames([]string{"X"}),
+		Slots: []any{int64(42)},
+	})
 	rowCtx := legWindowRowContext(merged, ec, spans)
 
 	// The hazard pin, through the REAL builder: lazy B.W's leg-relative

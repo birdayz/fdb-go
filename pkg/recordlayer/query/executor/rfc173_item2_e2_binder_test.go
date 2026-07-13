@@ -151,10 +151,11 @@ func TestIntegration_RFC173Item2_DisabledBirthBinder_BakedInner(t *testing.T) {
 	}
 	datum, isMap := rowMapOK(results[0])
 	if !isMap || datum["CUSTOMER_ID"] != int64(1) {
-		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Positional)
+		t.Fatalf("row = %v, want the outer row for customer 1", results[0].Positional)
 	}
-	if datum["CUST.NAME"] != "Alice" {
-		t.Fatalf("Datum[CUST.NAME] = %v, want Alice (qualifyOuterRow's alias-qualified keys)", datum["CUST.NAME"])
+	// The alias-qualified read resolves through the outer-alias leg window.
+	if v := rowVal(results[0], "CUST.NAME"); v != "Alice" {
+		t.Fatalf("CUST.NAME = %v, want Alice (outer-alias leg window)", v)
 	}
 	// The I1 pass-through: the outer's positional row survives the boundary.
 	item2AssertCustomerPositional(t, results[0], int64(1), "Alice")
@@ -188,8 +189,8 @@ func TestIntegration_RFC173Item2_ProbeNegative_LazyInner(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (only Alice's price matches an order)", len(results))
 	}
 	datum, isMap := rowMapOK(results[0])
-	if !isMap || datum["CUSTOMER_ID"] != int64(1) || datum["CUST.NAME"] != "Alice" {
-		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Positional)
+	if !isMap || datum["CUSTOMER_ID"] != int64(1) {
+		t.Fatalf("row = %v, want the outer row for customer 1", results[0].Positional)
 	}
 	// The ordinalized output edge: the outer's positional row survives, and its
 	// outer-alias leg window resolves the alias-qualified read the same as the bare.

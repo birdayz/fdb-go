@@ -573,8 +573,10 @@ func TestIntegration_ScanDatum_Shape(t *testing.T) {
 		if datum["PRICE"] != int64(42) {
 			t.Errorf("PRICE = %v, want 42", datum["PRICE"])
 		}
-		if _, exists := datum["FLOWER"]; exists {
-			t.Errorf("FLOWER should not be in datum for unset field")
+		// RFC-173: the ordinal row carries every descriptor field as a slot; an
+		// unset field reads as nil (SQL NULL) — present-nil, not key-absent.
+		if datum["FLOWER"] != nil {
+			t.Errorf("FLOWER (unset) = %v, want nil (SQL NULL)", datum["FLOWER"])
 		}
 		return nil, nil
 	})
@@ -3105,11 +3107,12 @@ func TestIntegration_ScanPlan_UnsetFieldsOmitted(t *testing.T) {
 		if d["PRICE"] != int64(50) {
 			t.Errorf("PRICE = %v, want 50", d["PRICE"])
 		}
-		if _, ok := d["QUANTITY"]; ok {
-			t.Error("QUANTITY was not set but appears in datum")
+		// RFC-173: an unset field is a present-nil slot (SQL NULL), not key-absent.
+		if d["QUANTITY"] != nil {
+			t.Errorf("QUANTITY (unset) = %v, want nil (SQL NULL)", d["QUANTITY"])
 		}
-		if _, ok := d["CUSTOMER_ID"]; ok {
-			t.Error("CUSTOMER_ID was not set but appears in datum")
+		if d["CUSTOMER_ID"] != nil {
+			t.Errorf("CUSTOMER_ID (unset) = %v, want nil (SQL NULL)", d["CUSTOMER_ID"])
 		}
 		return nil, nil
 	})

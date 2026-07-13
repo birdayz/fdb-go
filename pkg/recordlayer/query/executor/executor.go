@@ -1343,7 +1343,7 @@ func executeDistinct(
 // fixed output position), typed like the legacy name-keyed form so two rows dedup
 // iff every column value+type matches. A nil-Positional row yields the empty key.
 func distinctKey(qr QueryResult) string {
-	if qr.Positional == nil {
+	if qr.Positional == nil || qr.Positional.Type == nil {
 		return ""
 	}
 	var sb strings.Builder
@@ -1351,7 +1351,12 @@ func distinctKey(qr QueryResult) string {
 		if i > 0 {
 			sb.WriteByte('|')
 		}
-		fmt.Fprintf(&sb, "%d=", i)
+		if i < len(qr.Positional.Type.Fields) {
+			sb.WriteString(qr.Positional.Type.Fields[i].Name)
+		} else {
+			fmt.Fprintf(&sb, "%d", i)
+		}
+		sb.WriteByte('=')
 		if v == nil {
 			sb.WriteString("\x00NULL\x00")
 		} else {
@@ -2177,29 +2182,68 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 // the cursor's `var pair *twoLegBinder` typed-nil passes as a genuine nil —
 // an interface-typed param would make a typed-nil non-nil and route the name
 // model through a nil binder.
+// spansFromMergedLegs derives the per-leg windows from a merged row's own leg
+// metadata (RecordType.Legs), for the non-birth join-predicate path: each leg's
+// alias maps to its window [Start, Start+Width) with the sub-slice of fields as
+// its leg type, so a QOV(leg).col reference resolves leg-locally over the flat
+// merged row.
+func spansFromMergedLegs(pos *PositionalRow) []legSpan {
+	if pos == nil || pos.Type == nil {
+		return nil
+	}
+	spans := make([]legSpan, 0, len(pos.Type.Legs))
+	for _, leg := range pos.Type.Legs {
+		end := leg.Start + leg.Width
+		if leg.Start < 0 || end > len(pos.Type.Fields) {
+			continue
+		}
+		legFields := make([]values.Field, leg.Width)
+		for i := 0; i < leg.Width; i++ {
+			f := pos.Type.Fields[leg.Start+i]
+			f.Ordinal = i
+			legFields[i] = f
+		}
+		spans = append(spans, legSpan{
+			Alias:   values.NamedCorrelationIdentifier(leg.Name),
+			LegType: &values.RecordType{Fields: legFields},
+			Offset:  leg.Start,
+			Width:   leg.Width,
+		})
+	}
+	return spans
+}
+
 func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext, legs *twoLegBinder) (bool, error) {
 	if len(preds) == 0 {
 		return true, nil
 	}
 	// RFC-173 cap: resolve join/EXISTS predicates against the merged row's ordinal
-	// Positional (the name-keyed Datum is deleted). A FLAT leg reference (`A.ID`)
-	// resolves through the merged Positional's leg windows (GetByName); a
-	// QOV(leg).col reference through the per-leg binder (legs, when birth-active)
-	// or evalCtx; an outer correlation / param / scalar subquery through evalCtx.
-	rc := &values.RowEvalContext{
-		Positional: combined.Positional,
-		Sparse:     combined.Sparse,
+	// Positional (the name-keyed Datum is deleted). A birth-active cursor supplies a
+	// per-leg binder (legs); a non-birth merge derives leg windows from the merged
+	// row's own leg metadata (Type.Legs) so a QOV(leg).col — e.g. QOV(B).ID —
+	// resolves to leg B's window instead of first-matching leg A's bare "ID" on the
+	// flat merged row. An outer correlation / param / scalar subquery resolves
+	// through evalCtx.
+	var rowCtx any
+	switch {
+	case legs != nil:
+		rc := &values.RowEvalContext{Positional: combined.Positional, Sparse: combined.Sparse, Correlations: legs}
+		if evalCtx != nil {
+			rc.Binder = evalCtx
+			rc.ScalarSubqueries = evalCtx.scalarSubqueries
+		}
+		rowCtx = rc
+	case combined.Positional != nil && combined.Positional.Type != nil && len(combined.Positional.Type.Legs) > 0:
+		rowCtx = legWindowRowContext(combined.Positional, evalCtx, spansFromMergedLegs(combined.Positional))
+	default:
+		rc := &values.RowEvalContext{Positional: combined.Positional, Sparse: combined.Sparse}
+		if evalCtx != nil {
+			rc.Correlations = evalCtx
+			rc.Binder = evalCtx
+			rc.ScalarSubqueries = evalCtx.scalarSubqueries
+		}
+		rowCtx = rc
 	}
-	if legs != nil {
-		rc.Correlations = legs
-	} else if evalCtx != nil {
-		rc.Correlations = evalCtx
-	}
-	if evalCtx != nil {
-		rc.Binder = evalCtx
-		rc.ScalarSubqueries = evalCtx.scalarSubqueries
-	}
-	rowCtx := any(rc)
 	for _, pred := range preds {
 		res, err := pred.Eval(rowCtx)
 		if err != nil {
@@ -2868,13 +2912,13 @@ func executeTableFunction(
 	list, ok := result.([]any)
 	if !ok {
 		return applySkipLimit(
-			recordlayer.FromList([]QueryResult{{Positional: scalarPositionalRow(result)}}),
+			recordlayer.FromList([]QueryResult{{Positional: explodeElementRow(result)}}),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
 	items := make([]QueryResult, len(list))
 	for i, elem := range list {
-		items[i] = QueryResult{Positional: scalarPositionalRow(elem)}
+		items[i] = QueryResult{Positional: explodeElementRow(elem)}
 	}
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
@@ -2915,7 +2959,7 @@ func executeExplode(
 			), nil
 		}
 		return applySkipLimit(
-			recordlayer.FromList([]QueryResult{{Positional: scalarPositionalRow(result)}}),
+			recordlayer.FromList([]QueryResult{{Positional: explodeElementRow(result)}}),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
@@ -2931,7 +2975,7 @@ func executeExplode(
 			items[i] = explodeOrdinalityResult(ordType, elem, i+1)
 			continue
 		}
-		items[i] = QueryResult{Positional: scalarPositionalRow(elem)}
+		items[i] = QueryResult{Positional: explodeElementRow(elem)}
 	}
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
@@ -2962,6 +3006,27 @@ func explodeOrdinalityResult(ordType *values.RecordType, element any, ordinal in
 // into the merged row; a downstream read of the element resolves against slot 0.
 func scalarPositionalRow(v any) *PositionalRow {
 	return &PositionalRow{Type: positionalTypeFromNames([]string{"_0"}), Slots: []any{v}}
+}
+
+// explodeElementRow wraps one Explode/Stream element as a PositionalRow: a
+// ROW-shaped element (a map[string]any — e.g. a constant array of records, a
+// VALUES list) becomes a multi-column row keyed by its field names (sorted for a
+// deterministic ordinal order; reads are by name); any other (scalar) element
+// wraps in the 1-slot `_0` bare-scalar shape.
+func explodeElementRow(elem any) *PositionalRow {
+	if m, ok := elem.(map[string]any); ok {
+		names := make([]string, 0, len(m))
+		for k := range m {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		slots := make([]any, len(names))
+		for i, n := range names {
+			slots[i] = m[n]
+		}
+		return &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}
+	}
+	return scalarPositionalRow(elem)
 }
 
 // resultFromValue wraps a single Value's evaluation (against a nil row — a

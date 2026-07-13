@@ -1190,7 +1190,9 @@ func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.
 	// is the deliberately-NULL leg: raw nil (→ NULL).
 	if _, isRaw := b.RawLegs[id]; isRaw {
 		switch {
-		case qr == nil:
+		case qr == nil || qr.Positional == nil:
+			// A nil / positional-less inner is the deliberately-NULL leg (→ NULL);
+			// bind an UNTYPED nil, never a typed-nil *PositionalRow.
 			raw[id] = nil
 		case isBareScalarRow(qr.Positional):
 			raw[id] = qr.Positional.Slots[0]

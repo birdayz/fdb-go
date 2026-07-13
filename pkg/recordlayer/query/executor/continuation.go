@@ -422,6 +422,15 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 				}
 				positional = &PositionalRow{Type: positionalTypeFromNames(pp.N), Slots: slots}
 			}
+		} else {
+			// Legacy bare-object payload (the deleted name-keyed datum): its data
+			// is unrepresentable in the ordinal model, but a CORRUPT payload must
+			// still fail the resume (fail-corrupt contract) rather than silently
+			// decode to an empty row — so validate it parses as JSON.
+			var throwaway map[string]any
+			if jErr := json.Unmarshal(sr.Message, &throwaway); jErr != nil {
+				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
+			}
 		}
 		var pk tuple.Tuple
 		if sr.PrimaryKey != nil {
