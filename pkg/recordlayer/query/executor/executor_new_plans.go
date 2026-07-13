@@ -53,14 +53,29 @@ func executeAggregateIndexScan(
 
 	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
 
+	canonicalName := p.CanonicalAggColumnName()
+	groupCols := p.GetGroupCols()
+	// RFC-173 producer birth: the aggregate-index row's authoritative ordinal
+	// schema is the GROUP columns in scan order followed by the aggregate column
+	// — the exact order the row's slots are filled below (entry.Key then
+	// entry.Value). Row-invariant, so it is built once here and shared across
+	// rows. Named by the same canonical names the Datum map uses (uppercase group
+	// cols, canonical agg name), so a name-in-row lookup (GetByName) resolves
+	// identically to the legacy name-keyed read.
+	posNames := make([]string, 0, len(groupCols)+1)
+	posNames = append(posNames, groupCols...)
+	posNames = append(posNames, canonicalName)
+	posType := positionalTypeFromNames(posNames)
+
 	return &aggregateIndexCursor{
 		inner:     indexCursor,
-		groupCols: p.GetGroupCols(),
+		groupCols: groupCols,
 		// Single source for the aggregate column key: the plan's
 		// CanonicalAggColumnName is also what planColumnNamesWithMD reports via
 		// OutputColumnNames, so the cursor's row key and the reported name can't
 		// drift (RFC-081).
-		canonicalName: p.CanonicalAggColumnName(),
+		canonicalName: canonicalName,
+		posType:       posType,
 	}, nil
 }
 
@@ -68,6 +83,7 @@ type aggregateIndexCursor struct {
 	inner         recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	groupCols     []string
 	canonicalName string
+	posType       *values.RecordType
 	closed        bool
 }
 
@@ -83,21 +99,42 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 	entry := result.GetValue()
 	datum := make(map[string]any, len(c.groupCols)+1)
 
+	// RFC-173 producer birth: emit the authoritative ordinal row alongside the
+	// name-keyed Datum (real slots read from the index entry — never a
+	// Datum-derived wrapper). Slot order matches c.posType: group cols then the
+	// aggregate column. Gated on DisablePositionalEmission (§5 dual-window
+	// oracle) so the name model can run the same plan by name.
+	var slots []any
+	if !DisablePositionalEmission {
+		slots = make([]any, len(c.posType.Fields))
+	}
+
 	for i, col := range c.groupCols {
 		if i < len(entry.Key) {
 			// Normalize a UUID group key (tuple.UUID off the aggregate index)
 			// to the neutral [16]byte the value layer uses, matching the
 			// covering cursor — otherwise a residual HAVING/filter compare in
 			// cmpAny (which only knows [16]byte) would miss it.
-			datum[col] = tupleElementToUUID(entry.Key[i])
+			v := tupleElementToUUID(entry.Key[i])
+			datum[col] = v
+			if slots != nil {
+				slots[i] = v
+			}
 		}
 	}
 
 	if len(entry.Value) > 0 {
 		datum[c.canonicalName] = entry.Value[0]
+		if aggOrd := len(c.groupCols); slots != nil && aggOrd < len(slots) {
+			slots[aggOrd] = entry.Value[0]
+		}
 	}
 
-	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
+	qr := QueryResult{Datum: datum}
+	if slots != nil {
+		qr.Positional = &PositionalRow{Type: c.posType, Slots: slots}
+	}
+	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
 func (c *aggregateIndexCursor) Close() error {
@@ -155,7 +192,9 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 				// typed-error family is unreachable and ComparisonKeyFunc
 				// has no error channel, so a stray error is a planner
 				// invariant violation (panic, matching prior no-recover).
-				v, err := kv.Evaluate(qr.Datum)
+				// RFC-173: resolve against the ordinal row when present
+				// (compKeyEvalArg), else the bare Datum.
+				v, err := kv.Evaluate(compKeyEvalArg(qr))
 				if err != nil {
 					panic(err)
 				}
@@ -207,14 +246,57 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 		}
 	}
 
+	// RFC-173: resolve the resultValue against the CONCATENATED ordinal rows of
+	// the matched children when every child carries a Positional (the aggregate-
+	// index producer births one) — the grouping columns are identical across
+	// children and the aggregate columns are distinct, so the flat concatenation's
+	// first-match GetByName resolves each resultValue column to the same slot the
+	// merged name map would (byte-identical output row). A name-only child (the §5
+	// oracle) keeps the merged-map path.
+	evalArg := mergeChildEvalArg(childResults, merged)
+
 	var datum any = merged
 	if c.resultValue != nil {
-		datum, err = c.resultValue.Evaluate(merged)
+		datum, err = c.resultValue.Evaluate(evalArg)
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
 	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Complete: true}, result.GetContinuation()), nil
+}
+
+// mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is
+// evaluated against: the CONCATENATED PositionalRow of the matched child rows when
+// every child carries a Positional (RFC-173 ordinal frontier — a bare OrdinalRow,
+// resolved by GetByName against the row's own concatenated type, no name-keyed
+// Datum read), else the merged name map (the pre-RFC-173 path / §5 oracle). Fields
+// are concatenated in child order; grouping columns repeat across children with the
+// same value, so first-match GetByName is order-safe.
+func mergeChildEvalArg(childResults []QueryResult, merged map[string]any) any {
+	var fields []values.Field
+	var slots []any
+	ord := 0
+	for _, cr := range childResults {
+		p := cr.Positional
+		if p == nil || p.Type == nil {
+			return merged
+		}
+		for i, f := range p.Type.Fields {
+			nf := f
+			nf.Ordinal = ord
+			fields = append(fields, nf)
+			var v any
+			if i < len(p.Slots) {
+				v = p.Slots[i]
+			}
+			slots = append(slots, v)
+			ord++
+		}
+	}
+	if len(fields) == 0 {
+		return merged
+	}
+	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}
 }
 
 func (c *multiIntersectionMergeCursor) Close() error {
@@ -852,12 +934,13 @@ func (m *mergeSortCursor) isBetter(a, b QueryResult) bool {
 		// Merge-order keys are field extractions; the runtime typed-error
 		// family is unreachable and the comparator has no error channel, so
 		// a stray error is a planner invariant violation (panic, matching
-		// the prior no-recover behaviour).
-		va, err := key.Evaluate(a.Datum)
+		// the prior no-recover behaviour). RFC-173: resolve against each
+		// row's ordinal row when present (compKeyEvalArg), else bare Datum.
+		va, err := key.Evaluate(compKeyEvalArg(a))
 		if err != nil {
 			panic(err)
 		}
-		vb, err := key.Evaluate(b.Datum)
+		vb, err := key.Evaluate(compKeyEvalArg(b))
 		if err != nil {
 			panic(err)
 		}
@@ -882,8 +965,9 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 		// Merge-dedup keys are field extractions; the runtime typed-error
 		// family is unreachable and extractKey has no error channel, so a
 		// stray error is a planner invariant violation (panic, matching the
-		// prior no-recover behaviour).
-		v, err := key.Evaluate(qr.Datum)
+		// prior no-recover behaviour). RFC-173: resolve against the ordinal
+		// row when present (compKeyEvalArg), else the bare Datum.
+		v, err := key.Evaluate(compKeyEvalArg(qr))
 		if err != nil {
 			panic(err)
 		}

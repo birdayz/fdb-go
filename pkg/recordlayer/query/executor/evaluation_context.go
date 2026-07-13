@@ -126,7 +126,8 @@ func (ec *EvaluationContext) RowContextSparse(datum map[string]any, sparse bool)
 }
 
 // DisablePositionalEmission, when true, stops the row-birth sites — the
-// oracle REGISTRY: FromStoredRecord, the covering-index cursor, and the
+// oracle REGISTRY: FromStoredRecord, the covering-index cursor, the
+// aggregate-index cursor (aggregateIndexCursor.OnNext), and the
 // RFC-173 Slice 2 ordinal-join births (nljCursor pairBinder/evaluateBound emission sites,
 // flatMapCursor.computeResultLegs) — from emitting the RFC-173 PositionalRow,
 // recreating the pre-Slice-1 NAME model end-to-end: no positional row is

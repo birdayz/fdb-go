@@ -1952,17 +1952,40 @@ func widenInt32(v any) any {
 	return v
 }
 
+// compKeyEvalArg is the eval argument for an intersection/merge-sort COMPARISON
+// KEY extraction (RFC-173 read-boundary ordinalization). When the row carries an
+// authoritative ordinal row (qr.Positional != nil — every merge/intersection
+// branch is a plan whose output is positional), the comparison-key value resolves
+// against that bare PositionalRow (FieldValue.Evaluate → evaluateOrdinal: by
+// ordinal, or GetByName against the row's OWN type — never a name-keyed Datum
+// read, so it no longer trips the RFC-173 gate). A comparison key is a field
+// extraction with no param / subquery / correlation binding, so the bare
+// positional row is the whole context — frontierRowContext(pos, nil, false)
+// collapses to exactly this. Both merge branches resolve the SAME field by
+// ordinal/name-in-row, so merge/intersection order is preserved byte-for-byte.
+// A name-only row (no Positional — the §5 DisablePositionalEmission oracle, or a
+// producer that never births a positional row) keeps the exact prior bare-Datum
+// path.
+func compKeyEvalArg(qr QueryResult) any {
+	if qr.Positional != nil {
+		return qr.Positional
+	}
+	return qr.Datum
+}
+
 func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
 	return func(qr QueryResult) tuple.Tuple {
 		if len(keyVals) > 0 {
 			t := make(tuple.Tuple, len(keyVals))
 			for i, kv := range keyVals {
 				// Comparison/merge keys are field extractions over the
-				// datum; the runtime typed-error family is unreachable
+				// row; the runtime typed-error family is unreachable
 				// here. ComparisonKeyFunc has no error channel, so a
 				// stray error is a planner invariant violation (panic,
-				// matching the prior no-recover behaviour).
-				v, err := kv.Evaluate(qr.Datum)
+				// matching the prior no-recover behaviour). RFC-173:
+				// resolve against the ordinal row when present
+				// (compKeyEvalArg), else the bare Datum.
+				v, err := kv.Evaluate(compKeyEvalArg(qr))
 				if err != nil {
 					panic(err)
 				}

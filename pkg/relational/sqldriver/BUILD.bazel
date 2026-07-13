@@ -250,6 +250,7 @@ go_test(
         "rfc173_b2_filtered_box_unnest_fdb_test.go",
         "rfc173_b2_graefe_impl_probe_fdb_test.go",
         "rfc173_census_sweep_test.go",
+        "rfc173_compkey_ordinal_fdb_test.go",
         "rfc173_correlated_index_exists_permanent_fdb_test.go",
         "rfc173_enclosed_unnest_exists_ordinal_fdb_test.go",
         "rfc173_exists_outer_ordinal_fdb_test.go",
