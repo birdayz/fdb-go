@@ -2430,8 +2430,7 @@ func executeInsert(
 		// produce a datum keyed by the target column names. A datum-less
 		// stored record (rare) is saved as-is.
 		var msg proto.Message
-		switch datum := qr.Datum.(type) {
-		case map[string]any:
+		if datum := positionalToMap(qr.Positional); datum != nil {
 			if targetDesc == nil {
 				rt := store.GetMetaData().GetRecordType(p.GetTargetRecordType())
 				if rt == nil {
@@ -2443,7 +2442,7 @@ func executeInsert(
 			if err != nil {
 				return nil, err
 			}
-		default:
+		} else {
 			if qr.Record == nil || qr.Record.Record == nil {
 				continue
 			}
@@ -2613,14 +2612,12 @@ func executeUpdate(
 			if fd == nil {
 				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
 			}
-			// A base stored record's Datum omits unset optional fields, so a SET-expr
-			// name-keyed read of an unset column (COALESCE(VAL,…), CASE WHEN A2 IS NULL)
-			// must resolve to SQL NULL, not trip the NameMissLoud guard. Always wrap so
-			// qr.Sparse threads through — the bare map cannot carry it, and the wrap also
-			// binds any params / scalar subqueries the SET expr references.
-			var rowCtx any = qr.Datum
-			if m, ok := qr.Datum.(map[string]any); ok {
-				rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
+			// RFC-173: the SET expr resolves each referenced column by ordinal against
+			// the base record's PositionalRow (an unset optional reads as a nil slot →
+			// SQL NULL); RowContextPositional also binds any params / scalar subqueries.
+			var rowCtx any
+			if qr.Positional != nil {
+				rowCtx = evalCtx.RowContextPositional(qr.Positional)
 			}
 			newVal, err := t.NewValue.Evaluate(rowCtx)
 			if err != nil {
@@ -2967,6 +2964,43 @@ func scalarPositionalRow(v any) *PositionalRow {
 	return &PositionalRow{Type: positionalTypeFromNames([]string{"_0"}), Slots: []any{v}}
 }
 
+// resultFromValue wraps a single Value's evaluation (against a nil row — a
+// constant default) into a Positional QueryResult: a RecordConstructor evaluates
+// field-by-field into dense ordinal slots (a duplicate output name keeps both
+// slots), any other (scalar) value wraps in a 1-slot `_0` row. Used by the
+// default-on-empty producers (FirstOrDefault / DefaultOnEmpty).
+func resultFromValue(v values.Value) (QueryResult, error) {
+	if rc, ok := v.(*values.RecordConstructorValue); ok {
+		names := make([]string, len(rc.Fields))
+		slots := make([]any, len(rc.Fields))
+		for i, f := range rc.Fields {
+			names[i] = f.Name
+			fv, err := f.Value.Evaluate(nil)
+			if err != nil {
+				return QueryResult{}, err
+			}
+			slots[i] = fv
+		}
+		return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}, Complete: true}, nil
+	}
+	val, err := v.Evaluate(nil)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	return QueryResult{Positional: scalarPositionalRow(val)}, nil
+}
+
+// isBareScalarRow reports whether pos is the 1-slot `_0` wrapper scalarPositionalRow
+// produces — a bare-scalar UNNEST element (`t.arr AS x` flowing a raw int64). The
+// filter/map dispatch uses it to bind the UNWRAPPED scalar under the quantifier
+// alias, since a bare QOV(alias) reference over such a row must resolve to the
+// scalar, not the 1-slot row itself. A WITH-ORDINALITY explode's `{_0,_1}` row is
+// NOT bare (2 slots) and reads its fields by ordinal FieldValue instead.
+func isBareScalarRow(pos *PositionalRow) bool {
+	return pos != nil && pos.Type != nil && len(pos.Type.Fields) == 1 &&
+		pos.Type.Fields[0].Name == values.OrdinalFieldName(0)
+}
+
 // explodeOrdinalityRow builds the 2-field anonymous record a WITH
 // ORDINALITY Explode emits: the element under the ordinal-0 key and the
 // 1-based ordinal under the ordinal-1 key (Java's q1._0 / q1._1). Keyed by
@@ -2981,15 +3015,18 @@ func explodeOrdinalityRow(element any, ordinal int) map[string]any {
 
 func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (recordlayer.RecordCursor[QueryResult], error) {
 	cols := p.GetColumns()
-	row := make(map[string]any, len(cols))
-	for _, col := range cols {
+	names := make([]string, len(cols))
+	slots := make([]any, len(cols))
+	for i, col := range cols {
 		v, err := col.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
 		}
-		row[col.Name()] = v
+		names[i] = col.Name()
+		slots[i] = v
 	}
-	return recordlayer.FromList([]QueryResult{{Datum: row}}), nil
+	pos := &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}
+	return recordlayer.FromList([]QueryResult{{Positional: pos, Complete: true}}), nil
 }
 
 // executeRecursiveLevelUnion implements level-order (BFS) recursive
@@ -3050,14 +3087,10 @@ func executeRecursiveLevelUnion(
 		// schema restricts the dedup to the real output columns. Fall back to
 		// scraping the datum when the seed has no projection (e.g. SELECT *).
 		canonicalCols = recursiveUnionOutputColumns(p.GetInitialState())
-		if len(canonicalCols) == 0 && len(items) > 0 {
-			if m, ok := items[0].Datum.(map[string]any); ok {
-				canonicalCols = make([]string, 0, len(m))
-				for k := range m {
-					canonicalCols = append(canonicalCols, k)
-				}
-				sort.Strings(canonicalCols)
-			}
+		if len(canonicalCols) == 0 && len(items) > 0 && items[0].Positional != nil {
+			// Positional column order is already deterministic (ordinal order),
+			// so no sort is needed — unlike the retired name-map key scrape.
+			canonicalCols = items[0].Positional.TypeNames()
 		}
 		var deduped []QueryResult
 		for _, it := range items {
@@ -3174,14 +3207,9 @@ func executeRecursiveDfsJoin(
 	if p.IsDistinct() {
 		seen = newBoundedSet[string](props.State)
 		canonicalCols = recursiveUnionOutputColumns(p.GetRoot())
-		if len(canonicalCols) == 0 && len(rootRows) > 0 {
-			if m, ok := rootRows[0].Datum.(map[string]any); ok {
-				canonicalCols = make([]string, 0, len(m))
-				for k := range m {
-					canonicalCols = append(canonicalCols, k)
-				}
-				sort.Strings(canonicalCols)
-			}
+		if len(canonicalCols) == 0 && len(rootRows) > 0 && rootRows[0].Positional != nil {
+			// Ordinal order is already deterministic; no sort needed.
+			canonicalCols = rootRows[0].Positional.TypeNames()
 		}
 	}
 
@@ -3575,37 +3603,24 @@ func projectionColumnName(v values.Value) string {
 	return values.ProjectionColumnName(v)
 }
 
-func fieldFromDatum(datum any, key string) any {
-	if m, ok := datum.(map[string]any); ok {
-		return m[strings.ToUpper(key)]
-	}
-	return nil
-}
-
 // sortEvalRow returns the row a sort-key Value expression should be evaluated
-// against: the RFC-173 Slice 1 authoritative ordinal positional row on the
-// non-join frontier (Value.Evaluate then resolves by ordinal, loud on a miss),
-// otherwise the name-keyed Datum. Mirrors the projection/filter dispatch.
+// against: the RFC-173 authoritative ordinal positional row (Value.Evaluate then
+// resolves by ordinal, loud on a miss).
 func sortEvalRow(qr QueryResult) any {
-	if qr.Positional != nil {
-		return qr.Positional
-	}
-	return qr.Datum
+	return qr.Positional
 }
 
-// sortKeyFromResult resolves a named sort key against a row, preferring the
-// RFC-173 Slice 1 ordinal positional row on the authoritative non-join frontier
-// (name->ordinal against the row's own type) over the name-keyed Datum map. This
-// is a comparator helper, not the FieldValue eval path, so a positional miss
-// falls back to the Datum lookup rather than loud-erroring — a missing key is a
-// NULL sort value exactly as the name-map lookup already yields.
+// sortKeyFromResult resolves a named sort key against the RFC-173 ordinal
+// positional row (name->ordinal against the row's own type). This is a
+// comparator helper, not the FieldValue eval path, so a positional miss yields a
+// NULL sort value rather than loud-erroring.
 func sortKeyFromResult(qr QueryResult, key string) any {
 	if qr.Positional != nil {
 		if v, ok := qr.Positional.GetByName(strings.ToUpper(key)); ok {
 			return v
 		}
 	}
-	return fieldFromDatum(qr.Datum, key)
+	return nil
 }
 
 func compareAny(a, b any) int {
@@ -3807,26 +3822,11 @@ func executeInMemorySort(
 }
 
 func compareByField(qr QueryResult, field string) any {
-	// RFC-173 Slice 1: prefer the authoritative ordinal positional row on the
-	// non-join frontier; fall back to the name-keyed Datum otherwise (comparator
-	// helper — a positional miss is not the loud FieldValue eval path).
+	// RFC-173: resolve against the authoritative ordinal positional row by name
+	// (comparator helper — a positional miss is a NULL sort value, not the loud
+	// FieldValue eval path).
 	if qr.Positional != nil {
 		if v, ok := qr.Positional.GetByName(strings.ToUpper(field)); ok {
-			return v
-		}
-	}
-	m, ok := qr.Datum.(map[string]any)
-	if !ok {
-		return nil
-	}
-	if v, found := m[field]; found {
-		return v
-	}
-	if v, found := m[strings.ToUpper(field)]; found {
-		return v
-	}
-	for k, v := range m {
-		if strings.EqualFold(k, field) {
 			return v
 		}
 	}
@@ -3878,16 +3878,15 @@ func queryResultKeyForCols(qr QueryResult, cols []string) string {
 	if len(cols) == 0 {
 		return queryResultKey(qr)
 	}
-	m, ok := qr.Datum.(map[string]any)
-	if !ok {
-		return fmt.Sprintf("%v", qr.Datum)
+	if qr.Positional == nil {
+		return fmt.Sprintf("%v", qr.Positional)
 	}
 	var sb strings.Builder
 	for i, col := range cols {
 		if i > 0 {
 			sb.WriteByte('|')
 		}
-		v := m[col]
+		v, _ := qr.Positional.GetByName(strings.ToUpper(col))
 		if v == nil {
 			sb.WriteString("\x00NULL\x00")
 		} else {
@@ -3897,31 +3896,38 @@ func queryResultKeyForCols(qr QueryResult, cols []string) string {
 	return sb.String()
 }
 
-// queryResultKey produces a stable string key from a QueryResult's datum
-// for UNION DISTINCT deduplication in recursive CTEs. The key is built
+// queryResultKey produces a stable string key from a QueryResult's positional
+// row for UNION DISTINCT deduplication in recursive CTEs. The key is built
 // from VALUES ONLY (sorted by column name for determinism) so rows with
 // different column names but identical values (e.g. seed {SRC:1} and
 // recursive {DST:1}) are correctly identified as duplicates.
 func queryResultKey(qr QueryResult) string {
-	m, ok := qr.Datum.(map[string]any)
-	if !ok {
-		return fmt.Sprintf("%v", qr.Datum)
+	pos := qr.Positional
+	if pos == nil || pos.Type == nil {
+		return fmt.Sprintf("%v", qr.Positional)
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+	type nv struct {
+		name string
+		val  any
 	}
-	sort.Strings(keys)
+	pairs := make([]nv, 0, len(pos.Type.Fields))
+	for i, f := range pos.Type.Fields {
+		var v any
+		if i < len(pos.Slots) {
+			v = pos.Slots[i]
+		}
+		pairs = append(pairs, nv{name: f.Name, val: v})
+	}
+	sort.Slice(pairs, func(a, b int) bool { return pairs[a].name < pairs[b].name })
 	var sb strings.Builder
-	for i, k := range keys {
+	for i, p := range pairs {
 		if i > 0 {
 			sb.WriteByte('|')
 		}
-		v := m[k]
-		if v == nil {
+		if p.val == nil {
 			sb.WriteString("\x00NULL\x00")
 		} else {
-			sb.WriteString(fmt.Sprintf("%v", v))
+			sb.WriteString(fmt.Sprintf("%v", p.val))
 		}
 	}
 	return sb.String()

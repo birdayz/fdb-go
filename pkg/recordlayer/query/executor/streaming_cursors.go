@@ -467,42 +467,26 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 //     optional / out-of-schema field stays a silent NULL rather than tripping
 //     NameMissLoud (task #38, Q51/Q54 flip-sentinels).
 func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any {
-	if row.Positional != nil && valueReadsBakedOrdinal(v) {
-		m, _ := row.Datum.(map[string]any)
-		return &values.RowEvalContext{Datum: m, Positional: row.Positional}
+	if row.Positional == nil {
+		return nil
 	}
-	if row.Positional != nil && c.flatFrontierInput {
+	if valueReadsBakedOrdinal(v) {
+		// A baked ordinal operand reads plan-time-resolved slots directly off the
+		// positional row (evaluateOrdinal), so pass it as the bare ordinal row.
+		return &values.RowEvalContext{Positional: row.Positional}
+	}
+	if c.flatFrontierInput {
 		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
 	}
-	if row.Positional != nil && c.joinWindowsOK {
+	if c.joinWindowsOK {
+		// A RAW 2-way ordinal JOIN merge: a qualified group-key / operand
+		// QOV(leg).col resolves LEG-LOCALLY through its window.
 		return legWindowRowContext(row.Positional, c.evalCtx, c.joinLegSpans)
 	}
-	if row.Positional != nil && c.projOutputNames != nil && valueFieldsAllInSet(v, c.projOutputNames) {
-		// RFC-173: a PROJECTING derived source (SELECT y, b AS L FROM t1,t2) AS q
-		// re-lays-out its multi-source base into a flat positional row [Y, L]; a
-		// group-key / operand naming a PROJECTED OUTPUT column resolves against
-		// that row by ordinal-in-row, exactly as executeProjection resolves the
-		// projection itself — the buried join's leg windows are irrelevant to the
-		// projection's own output schema. An out-of-schema reference (a Q51/Q54
-		// shadow read) is excluded by valueFieldsAllInSet and keeps the name path.
-		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
-	}
-	// RFC-173: a row that carries a FLAT Positional (not leg-windowed — joinWindowsOK
-	// false) but matched none of the specific arms above (e.g. a COUNT(*) constant
-	// operand, or a group key over a recursive-CTE / bare-projected-join row) still
-	// resolves against that ordinal row by name-in-row (GetByName) — authoritative,
-	// no name-keyed Datum. This is the general birth-of-Positional consumer: once a
-	// producer emits an output-named Positional, the aggregate reads it ordinally.
-	if row.Positional != nil {
-		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
-	}
-	if m, ok := row.Datum.(map[string]any); ok {
-		if perr := requirePositional("aggregate"); perr != nil {
-			c.probeErr = perr
-		}
-		return &values.RowEvalContext{Datum: m, Sparse: row.Sparse}
-	}
-	return row.Datum
+	// The general birth-of-Positional consumer: a flat output-named positional
+	// (projecting derived source, recursive-CTE / bare-projected-join row, or a
+	// constant operand) resolves by name-in-row (GetByName) — authoritative.
+	return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
 }
 
 // valueReadsBakedOrdinal reports whether v (a group key / aggregate operand) reads
@@ -633,26 +617,17 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 
 func (c *aggregateCursor) finalizeGroup() QueryResult {
 	gs := c.current
-	result := make(map[string]any)
-	// RFC-173: build the OUTPUT ORDINAL ROW alongside the name-keyed map. Order + naming MUST
-	// match streamingAggOutputNames (the plan's authoritative output schema the planner baked
-	// downstream ordinals against): grouping keys in order (aggKeyName), then aggregates in order
-	// (ALIAS-preferring, else aggResultName). A downstream ref baked to this schema reads by
-	// Get(ord); an unbaked one resolves by GetByName against these exact names. This is a real
-	// producer Positional from the known output columns, not a name-map wrapper.
+	// RFC-173: build the OUTPUT ORDINAL ROW. Order + naming MUST match
+	// streamingAggOutputNames (the plan's authoritative output schema the planner
+	// baked downstream ordinals against): grouping keys in order (aggKeyName), then
+	// aggregates in order (ALIAS-preferring, else aggResultName). A downstream ref
+	// baked to this schema reads by Get(ord); an unbaked one resolves by GetByName
+	// against these exact names.
 	posNames := make([]string, 0, len(c.groupingKeys)+len(c.aggregates))
 	posSlots := make([]any, 0, len(c.groupingKeys)+len(c.aggregates))
 	for i, k := range c.groupingKeys {
-		name := aggKeyName(k)
-		result[name] = gs.keyVals[i]
-		posNames = append(posNames, name)
+		posNames = append(posNames, aggKeyName(k))
 		posSlots = append(posSlots, gs.keyVals[i])
-		if len(name) >= 2 && name[0] == '(' && name[len(name)-1] == ')' {
-			stripped := name[1 : len(name)-1]
-			if _, exists := result[stripped]; !exists {
-				result[stripped] = gs.keyVals[i]
-			}
-		}
 	}
 	for i, agg := range c.aggregates {
 		name := aggResultName(agg)
@@ -683,7 +658,6 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 				val = nil
 			}
 		}
-		result[name] = val
 		// Alias-preferring output name (matches streamingAggOutputNames), so a downstream ref
 		// over an ALIASED aggregate (SUM(a*b) AS foo, a derived-table projection) resolves.
 		posName := name
@@ -692,30 +666,17 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 		}
 		posNames = append(posNames, posName)
 		posSlots = append(posSlots, val)
-		if agg.Alias != "" && agg.Alias != name {
-			result[agg.Alias] = val
-		}
-		if agg.OperandName != "" {
-			spaced := strings.ToUpper(agg.Function.String() + "(" + agg.OperandName + ")")
-			if spaced != name {
-				result[spaced] = val
-			}
-		}
 	}
-	qr := QueryResult{Datum: result, Complete: true}
-	if !DisablePositionalEmission { // §4 birth-site obligation: gate every new Positional emission
-		qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	return QueryResult{
+		Positional: &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots},
+		Complete:   true,
 	}
-	return qr
 }
 
 func (c *aggregateCursor) emptyScalarResult() QueryResult {
-	result := make(map[string]any)
-	// RFC-173: emit the authoritative ordinal row alongside the name-keyed map,
-	// SAME order + naming as finalizeGroup's aggregate arm (there are no grouping
-	// keys on the empty-scalar path — an empty GROUP BY yields zero rows, not this
-	// single all-groups row). Without it the empty-table scalar aggregate row had
-	// no Positional and every read fell back to the name-keyed Datum.
+	// RFC-173: emit the authoritative ordinal row, SAME order + naming as
+	// finalizeGroup's aggregate arm (there are no grouping keys on the empty-scalar
+	// path — an empty GROUP BY yields zero rows, not this single all-groups row).
 	posNames := make([]string, 0, len(c.aggregates))
 	posSlots := make([]any, 0, len(c.aggregates))
 	for _, agg := range c.aggregates {
@@ -724,22 +685,17 @@ func (c *aggregateCursor) emptyScalarResult() QueryResult {
 		if agg.Function == expressions.AggCount {
 			val = int64(0)
 		}
-		result[name] = val
 		posName := name
 		if agg.Alias != "" {
 			posName = strings.ToUpper(agg.Alias)
 		}
 		posNames = append(posNames, posName)
 		posSlots = append(posSlots, val)
-		if agg.Alias != "" && agg.Alias != name {
-			result[agg.Alias] = val
-		}
 	}
-	qr := QueryResult{Datum: result, Complete: true}
-	if !DisablePositionalEmission {
-		qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	return QueryResult{
+		Positional: &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots},
+		Complete:   true,
 	}
-	return qr
 }
 
 func (c *aggregateCursor) Close() error {
@@ -1157,22 +1113,6 @@ func (c *nljCursor) oracleFusedDatum(outerDatum, innerDatum any) (map[string]any
 	return c.birth.oracleNameDatum(rowCtx)
 }
 
-// oracleSwapFusedDatum applies the emission-time Datum swap for a fused top
-// on the oracle side (mirroring the mergeRC swap): predicates already ran
-// over the mergeRows keys; only the EMITTED row carries the reconstructed
-// output-shaped Datum consumers read.
-func (c *nljCursor) oracleSwapFusedDatum(combined *QueryResult, outerDatum, innerDatum any) error {
-	if c.birthActive || !c.birth.enabled() || c.mergeRC != nil {
-		return nil
-	}
-	m, err := c.oracleFusedDatum(outerDatum, innerDatum)
-	if err != nil {
-		return err
-	}
-	combined.Datum = m
-	return nil
-}
-
 // pairBinder builds the per-candidate-pair leg binder from PRE-adapted leg
 // rows. A nil OrdinalRow is the deliberately-NULL leg (LEFT/FULL padding —
 // the binder returns (nil, true), contract ruling #3). Only called when
@@ -1214,11 +1154,10 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 	}
 	idx := make(map[any][]int, len(c.innerRows))
 	for i, row := range c.innerRows {
-		m, ok := row.Datum.(map[string]any)
-		if !ok {
+		if row.Positional == nil {
 			return
 		}
-		val := lookupJoinKey(m, innerCol, innerAlias)
+		val := lookupJoinKeyPositional(row.Positional, innerCol, innerAlias)
 		// RFC-130: the hash index is additional resident memory beyond the
 		// already-charged innerRows — one int per inner row plus, for a new
 		// key, the key's own bytes. Charge it; a budget breach is captured in
@@ -1341,19 +1280,22 @@ func matchesAlias(table, alias string) bool {
 	return strings.EqualFold(table, alias)
 }
 
-func lookupJoinKey(m map[string]any, col, alias string) any {
-	if v, ok := m[col]; ok {
-		return v
+// lookupJoinKeyPositional resolves an equijoin key column against a positional
+// row: the alias-qualified name first (leg-windowed via GetByName's Legs path),
+// then the bare column. The ordinal-model replacement for the name-keyed
+// lookupJoinKey.
+func lookupJoinKeyPositional(pos *PositionalRow, col, alias string) any {
+	if pos == nil {
+		return nil
 	}
-	qualified := alias + "." + col
-	if v, ok := m[qualified]; ok {
-		return v
-	}
-	for k, v := range m {
-		_, c := splitQualified(k)
-		if strings.EqualFold(c, col) {
+	up := strings.ToUpper(col)
+	if alias != "" {
+		if v, ok := pos.GetByName(strings.ToUpper(alias) + "." + up); ok {
 			return v
 		}
+	}
+	if v, ok := pos.GetByName(up); ok {
+		return v
 	}
 	return nil
 }
@@ -1425,34 +1367,15 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						if c.matchedInner[i] {
 							continue
 						}
-						// qualifyOuterRow is repurposed here for an INNER
-						// row: it qualifies the inner row's columns under
-						// innerAlias and leaves the outer columns absent, so
-						// downstream qualified refs to the outer side resolve
-						// to NULL.
-						qr := qualifyOuterRow(c.innerRows[i], c.innerAlias)
-						// The merge-shape swap on the FULL drain too (the OUTER leg is
-						// the empty-map NULL leg) — unreachable until LEFT/FULL gate in
-						// W4 (the merge arm's IsNullOnEmpty tripwire), handled so all
-						// three emission paths agree.
-						if c.mergeRC != nil {
-							qr.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, nil, c.innerRows[i].Datum)
-						}
-						if serr := c.oracleSwapFusedDatum(&qr, nil, c.innerRows[i].Datum); serr != nil {
-							return recordlayer.RecordCursorResult[QueryResult]{}, serr
-						}
-						// RFC-173 S2: ordinal birth of the drain row — the
-						// OUTER leg is the NULL leg (nil row), symmetric to
-						// the unmatched-outer emission below. The inner was
-						// adapted once at construction.
-						// task #38: fabricate the NULL leg (OUTER) columns present-nil so a
-						// name-keyed read of them resolves to SQL NULL, not a loud unresolved
-						// reference. Uses the outer leg's own schema; reads nothing from the inner row.
-						if c.birth != nil {
-							if dm, ok := qr.Datum.(map[string]any); ok {
-								fabricateNullLeg(dm, c.birth.legType(c.outerCorr), c.outerAlias)
-							}
-						}
+						// FULL drain: an unmatched INNER row, the OUTER leg is the
+						// NULL leg. The ordinal null-pad row comes from the birth RC
+						// (evaluateBound with a nil outer leg — QOV(outer)→nil, the
+						// outer slots fall out NULL) when active; otherwise the
+						// inner's own positional qualified under its alias so a
+						// downstream qualified ref to the inner side resolves, and
+						// the absent outer side reads NULL.
+						qr := QueryResult{Record: c.innerRows[i].Record, PrimaryKey: c.innerRows[i].PrimaryKey}
+						qr.Positional = qualifyOuterPositional(c.innerRows[i].Positional, c.innerAlias)
 						if c.birthActive {
 							pos, berr := c.birth.evaluateBound(c.pairBinder(nil, c.innerAdapted[i]))
 							if berr != nil {
@@ -1495,12 +1418,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			}
 
 			// Hash probe: resolve inner row candidates for this outer row.
-			if c.hashIndex != nil {
-				outerMap, _ := outerRow.Datum.(map[string]any)
-				if outerMap != nil {
-					key := lookupJoinKey(outerMap, c.outerJoinCol, c.outerAlias)
-					c.innerMatches = c.hashIndex[key]
-				}
+			if c.hashIndex != nil && outerRow.Positional != nil {
+				key := lookupJoinKeyPositional(outerRow.Positional, c.outerJoinCol, c.outerAlias)
+				c.innerMatches = c.hashIndex[key]
 			}
 		}
 
@@ -1535,16 +1455,10 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.outerMatched = true
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					if c.mergeRC != nil {
-						// EMISSION-time swap, after the predicates ran: the
-						// cursor's own (leg-baked) predicates still read the
-						// mergeRows keys on the oracle side; only the EMITTED
-						// merge row carries the merge-shape Datum consumers read.
-						combined.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, c.currentOuter.Datum, innerRow.Datum)
-					}
-					if serr := c.oracleSwapFusedDatum(&combined, c.currentOuter.Datum, innerRow.Datum); serr != nil {
-						return recordlayer.RecordCursorResult[QueryResult]{}, serr
-					}
+					// A fused-top merge (mergeRC) reshapes the merged legs into the
+					// RC's OUTPUT columns; the birth RC produces that ordinal output
+					// directly (evaluateBound). A plain merge keeps mergeRows'
+					// leg-concat positional row.
 					if pair != nil {
 						pos, berr := c.birth.evaluateBound(pair)
 						if berr != nil {
@@ -1589,16 +1503,8 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					if c.mergeRC != nil {
-						// EMISSION-time swap, after the predicates ran: the
-						// cursor's own (leg-baked) predicates still read the
-						// mergeRows keys on the oracle side; only the EMITTED
-						// merge row carries the merge-shape Datum consumers read.
-						combined.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, c.currentOuter.Datum, innerRow.Datum)
-					}
-					if serr := c.oracleSwapFusedDatum(&combined, c.currentOuter.Datum, innerRow.Datum); serr != nil {
-						return recordlayer.RecordCursorResult[QueryResult]{}, serr
-					}
+					// See the hash path: a fused-top birth reshapes to the RC's
+					// output; a plain merge keeps mergeRows' leg-concat row.
 					if pair != nil {
 						pos, berr := c.birth.evaluateBound(pair)
 						if berr != nil {
@@ -1625,32 +1531,13 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 		if !matched {
 			switch c.joinType {
 			case plans.JoinLeftOuter, plans.JoinFullOuter:
-				qr := qualifyOuterRow(outerRow, c.outerAlias)
-				// A merge-RC cursor's null extension carries the merge SHAPE
-				// too — the NULL leg is the empty map, exactly the name
-				// model's reconstructed empty inner row (unreachable today:
-				// the merge arm's IsNullOnEmpty tripwire keeps LEFT/FULL
-				// selects anchored until W4; handled rather than half-covered
-				// so the shape is ready when LEFT gates).
-				if c.mergeRC != nil {
-					qr.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, outerRow.Datum, nil)
-				}
-				if serr := c.oracleSwapFusedDatum(&qr, outerRow.Datum, nil); serr != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, serr
-				}
-				// RFC-173 S2: ordinal birth of the null-padded row — the
-				// INNER leg is the NULL leg (nil row): the RC evaluates with
-				// QOV(inner)→nil and the inner slots fall out NULL (contract
-				// ruling #3's appendNullLeg equivalence). The outer was
-				// adapted once at its advance.
-				// task #38: fabricate the NULL leg (INNER) columns present-nil so a name-keyed
-				// read resolves to SQL NULL. Uses the inner leg's own schema; reads nothing
-				// from the outer row.
-				if c.birth != nil {
-					if dm, ok := qr.Datum.(map[string]any); ok {
-						fabricateNullLeg(dm, c.birth.legType(c.innerCorr), c.innerAlias)
-					}
-				}
+				// Unmatched outer (LEFT/FULL): the INNER leg is the NULL leg. The
+				// ordinal null-pad row comes from the birth RC (evaluateBound with
+				// a nil inner leg — QOV(inner)→nil, the inner slots fall out NULL,
+				// contract ruling #3) when active; otherwise the outer's own
+				// positional qualified under its alias, the absent inner side NULL.
+				qr := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
+				qr.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
 				if c.birthActive {
 					pos, berr := c.birth.evaluateBound(c.pairBinder(c.outerAdapted, nil))
 					if berr != nil {

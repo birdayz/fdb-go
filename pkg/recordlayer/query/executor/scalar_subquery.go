@@ -62,33 +62,18 @@ func EvaluateScalarSubquery(
 	// Extract the single column value from the row. RFC-173: the ordinal
 	// Positional row is authoritative — a scalar subquery projects exactly one
 	// column, so its single slot IS the scalar value, read by ordinal (no name
-	// lookup). The name-keyed Datum is the coexistence fallback, retiring with
-	// QueryResult.Datum.
+	// lookup).
 	row := rows[0]
-	if row.Positional != nil {
-		slots := row.Positional.Slots
-		if len(slots) == 0 {
-			return nil, nil
-		}
-		if len(slots) != 1 {
-			return nil, api.NewErrorf(api.ErrCodeSyntaxError,
-				"scalar subquery must return exactly one column, got %d", len(slots))
-		}
-		return slots[0], nil
-	}
-	datum, ok := row.Datum.(map[string]any)
-	if !ok {
-		return row.Datum, nil
-	}
-	if len(datum) == 0 {
+	if row.Positional == nil {
 		return nil, nil
 	}
-	if len(datum) != 1 {
+	slots := row.Positional.Slots
+	if len(slots) == 0 {
+		return nil, nil
+	}
+	if len(slots) != 1 {
 		return nil, api.NewErrorf(api.ErrCodeSyntaxError,
-			"scalar subquery must return exactly one column, got %d", len(datum))
+			"scalar subquery must return exactly one column, got %d", len(slots))
 	}
-	for _, v := range datum {
-		return v, nil
-	}
-	return nil, nil
+	return slots[0], nil
 }

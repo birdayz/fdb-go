@@ -143,10 +143,31 @@ func estimateQueryResultBytes(qr QueryResult) int64 {
 		}
 		return n
 	}
-	if qr.Datum == nil {
+	if qr.Positional == nil {
 		return emptyRowBytes
 	}
-	return estimateDatumBytes(qr.Datum)
+	return estimatePositionalBytes(qr.Positional)
+}
+
+// estimatePositionalBytes approximates the resident bytes of a computed
+// PositionalRow: the sum of each slot's estimated size plus its column name
+// length. Never panics.
+func estimatePositionalBytes(pos *PositionalRow) int64 {
+	if pos == nil {
+		return emptyRowBytes
+	}
+	var n int64
+	names := pos.TypeNames()
+	for i, v := range pos.Slots {
+		if i < len(names) {
+			n += int64(len(names[i]))
+		}
+		n += estimateDatumBytes(v)
+	}
+	if n == 0 {
+		return emptyRowBytes
+	}
+	return n
 }
 
 // emptyRowBytes is the small constant charged for a row that carries no

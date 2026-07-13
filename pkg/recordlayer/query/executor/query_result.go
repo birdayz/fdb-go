@@ -72,17 +72,11 @@ type QueryResult struct {
 // fields, keyed by UPPER-case field name (matching the identifier
 // folding convention).
 func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
-	datum := protoToMap(rec.Record)
-	var pos *PositionalRow
-	if !DisablePositionalEmission { // §5 dual-window differential oracle gate
-		pos = protoToPositional(rec.Record)
-	}
 	return QueryResult{
-		Datum:      datum,
-		Positional: pos,
+		Positional: protoToPositional(rec.Record),
 		Record:     rec,
 		PrimaryKey: rec.PrimaryKey,
-		Sparse:     true, // base record: Datum omits unset optional fields (key-absent = NULL)
+		Sparse:     true, // base record: positional slots omit unset optional fields (nil = NULL)
 	}
 }
 

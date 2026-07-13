@@ -319,15 +319,15 @@ func encodeSortContinuation(
 		// post-resume rows fabricated — qualified columns differing across a page
 		// boundary.
 		//
-		// RFC-173 B1: the Positional row is the SOLE runtime output row (the
-		// name-keyed Datum is being deleted), so a resumed sort buffer MUST carry
-		// it or the reader is loud on every buffered row after a page boundary. v3
-		// serializes {n:[field names], s:[slots]}; decode reconstructs the
-		// PositionalRow via positionalTypeFromNames. Backward-compatible: an old
-		// binary's 2-element / object payload still decodes (no positional — the
-		// pre-migration behavior), and a v3 payload written here decodes on any
-		// binary that knows the 3-element form.
-		payload := []any{jsonSafeDatum(qr.Datum), qr.Complete}
+		// RFC-173 cap: the Positional row is the SOLE runtime output row (the
+		// name-keyed Datum is deleted), so a resumed sort buffer MUST carry it or
+		// the reader is loud on every buffered row after a page boundary. The
+		// Go-owned payload keeps its 3-slot array shape for backward compatibility:
+		// slot 0 (formerly the JSON datum) is now null, slot 1 is Complete, slot 2
+		// is the positional {n:[field names], s:[slots]} (decode reconstructs the
+		// PositionalRow via positionalTypeFromNames). An old binary's object /
+		// 2-element payload still decodes (no positional — pre-migration behavior).
+		payload := []any{nil, qr.Complete}
 		if qr.Positional != nil && qr.Positional.Type != nil {
 			names := make([]string, len(qr.Positional.Type.Fields))
 			for fi, f := range qr.Positional.Type.Fields {
@@ -375,25 +375,20 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 		if pErr := proto.Unmarshal(srBytes, sr); pErr != nil {
 			return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d in continuation: %w", i, pErr)
 		}
-		// Payload version discrimination (see encodeSortContinuation): a JSON
-		// ARRAY is versioned by element count — [datum, complete] (v2) or
-		// [datum, complete, positional] (v3, RFC-173 B1); a legacy payload is a
-		// bare JSON OBJECT (decodes with Complete=false — the pre-v2 behavior it
-		// had anyway, no positional).
-		var datum map[string]any
+		// Payload discrimination (see encodeSortContinuation): a JSON ARRAY is
+		// [_, complete] or [_, complete, positional] — slot 0 is the deleted datum
+		// (null on new writes, an object on old ones), IGNORED either way. A legacy
+		// bare JSON OBJECT payload carries no complete/positional (pre-migration).
 		var complete bool
 		var positional *PositionalRow
 		trimmed := bytes.TrimLeft(sr.Message, " \t\r\n")
 		if len(trimmed) > 0 && trimmed[0] == '[' {
 			var wrapper []json.RawMessage
 			if jErr := json.Unmarshal(sr.Message, &wrapper); jErr != nil {
-				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d v2 payload in continuation: %w", i, jErr)
+				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d array payload in continuation: %w", i, jErr)
 			}
 			if len(wrapper) != 2 && len(wrapper) != 3 {
 				return nil, nil, fmt.Errorf("sorted record %d versioned payload has %d element(s), want 2 or 3 (corrupt continuation)", i, len(wrapper))
-			}
-			if jErr := json.Unmarshal(wrapper[0], &datum); jErr != nil {
-				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
 			}
 			// FAIL-CORRUPT: a JSON null unmarshals into a bool as a NO-OP
 			// (complete stays false, no error) — silently downgrading a
@@ -408,7 +403,7 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 			}
 			complete = completeBool
 			if len(wrapper) == 3 {
-				// v3 positional payload {n:[names], s:[slots]}. Reconstruct the
+				// Positional payload {n:[names], s:[slots]}. Reconstruct the
 				// PositionalRow — the sole runtime output row the reader consumes.
 				var pp struct {
 					N []string `json:"n"`
@@ -427,17 +422,6 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 				}
 				positional = &PositionalRow{Type: positionalTypeFromNames(pp.N), Slots: slots}
 			}
-		} else if jErr := json.Unmarshal(sr.Message, &datum); jErr != nil {
-			return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
-		}
-		// Restore tagged UUIDs to [16]byte, then convert JSON float64 numbers
-		// back to int64 for integer columns (matching the Go SQL type system).
-		for k, v := range datum {
-			v = restoreContinuationValue(v)
-			if f, ok := v.(float64); ok && f == float64(int64(f)) {
-				v = int64(f)
-			}
-			datum[k] = v
 		}
 		var pk tuple.Tuple
 		if sr.PrimaryKey != nil {
@@ -447,7 +431,7 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 				return nil, nil, fmt.Errorf("failed to unpack sorted record %d primary key in continuation: %w", i, pkErr)
 			}
 		}
-		buf = append(buf, QueryResult{Datum: datum, PrimaryKey: pk, Complete: complete, Positional: positional})
+		buf = append(buf, QueryResult{PrimaryKey: pk, Complete: complete, Positional: positional})
 	}
 
 	return msg.Continuation, buf, nil

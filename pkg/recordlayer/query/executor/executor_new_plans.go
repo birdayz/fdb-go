@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"strings"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -98,43 +97,29 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 	}
 
 	entry := result.GetValue()
-	datum := make(map[string]any, len(c.groupCols)+1)
 
-	// RFC-173 producer birth: emit the authoritative ordinal row alongside the
-	// name-keyed Datum (real slots read from the index entry — never a
-	// Datum-derived wrapper). Slot order matches c.posType: group cols then the
-	// aggregate column. Gated on DisablePositionalEmission (§5 dual-window
-	// oracle) so the name model can run the same plan by name.
-	var slots []any
-	if !DisablePositionalEmission {
-		slots = make([]any, len(c.posType.Fields))
-	}
+	// RFC-173 producer birth: emit the authoritative ordinal row (real slots read
+	// from the index entry). Slot order matches c.posType: group cols then the
+	// aggregate column.
+	slots := make([]any, len(c.posType.Fields))
 
-	for i, col := range c.groupCols {
+	for i := range c.groupCols {
 		if i < len(entry.Key) {
 			// Normalize a UUID group key (tuple.UUID off the aggregate index)
 			// to the neutral [16]byte the value layer uses, matching the
 			// covering cursor — otherwise a residual HAVING/filter compare in
 			// cmpAny (which only knows [16]byte) would miss it.
-			v := tupleElementToUUID(entry.Key[i])
-			datum[col] = v
-			if slots != nil {
-				slots[i] = v
-			}
+			slots[i] = tupleElementToUUID(entry.Key[i])
 		}
 	}
 
 	if len(entry.Value) > 0 {
-		datum[c.canonicalName] = entry.Value[0]
-		if aggOrd := len(c.groupCols); slots != nil && aggOrd < len(slots) {
+		if aggOrd := len(c.groupCols); aggOrd < len(slots) {
 			slots[aggOrd] = entry.Value[0]
 		}
 	}
 
-	qr := QueryResult{Datum: datum}
-	if slots != nil {
-		qr.Positional = &PositionalRow{Type: c.posType, Slots: slots}
-	}
+	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
@@ -211,7 +196,7 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 		if qr.PrimaryKey != nil {
 			return qr.PrimaryKey
 		}
-		return tuple.Tuple{fmt.Sprintf("%v", qr.Datum)}
+		return tuple.Tuple{fmt.Sprintf("%v", qr.Positional)}
 	}
 }
 
@@ -238,72 +223,61 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	}
 
 	childResults := result.GetValue()
-	merged := make(map[string]any)
-	for _, cr := range childResults {
-		if m, ok := cr.Datum.(map[string]any); ok {
-			for k, v := range m {
-				merged[k] = v
-			}
-		}
-	}
 
 	// RFC-173: resolve the resultValue against the CONCATENATED ordinal rows of
-	// the matched children when every child carries a Positional (the aggregate-
-	// index producer births one) — the grouping columns are identical across
-	// children and the aggregate columns are distinct, so the flat concatenation's
-	// first-match GetByName resolves each resultValue column to the same slot the
-	// merged name map would (byte-identical output row). A name-only child (the §5
-	// oracle) keeps the merged-map path.
-	evalArg := mergeChildEvalArg(childResults, merged)
+	// the matched children — the aggregate-index producer births a Positional per
+	// child; the grouping columns are identical across children and the aggregate
+	// columns are distinct, so the flat concatenation's first-match GetByName
+	// resolves each resultValue column to the correct slot.
+	evalArg := mergeChildEvalArg(childResults)
 
-	var datum any = merged
-	if c.resultValue != nil {
-		datum, err = c.resultValue.Evaluate(evalArg)
-		if err != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, err
-		}
-	}
-	qr := QueryResult{Datum: datum, Complete: true}
+	qr := QueryResult{Complete: true}
 	// RFC-173: emit the authoritative ordinal OUTPUT row. The resultValue is a
 	// RecordConstructorValue whose Fields ARE the output columns in output order
 	// (the same rc.Fields deriveColumnsFromMultiIntersection names the ColumnDefs
 	// from), so evaluating each field against the concatenated child positional row
 	// produces a per-slot output row whose names/order match the result-set columns.
-	// Gated on DisablePositionalEmission (§5 oracle) so the name model runs the same
-	// plan by name.
-	if !DisablePositionalEmission {
-		if rc, ok := c.resultValue.(*values.RecordConstructorValue); ok {
-			posNames := make([]string, len(rc.Fields))
-			posSlots := make([]any, len(rc.Fields))
-			for i, f := range rc.Fields {
-				posNames[i] = f.Name
-				fv, ferr := f.Value.Evaluate(evalArg)
-				if ferr != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, ferr
-				}
-				posSlots[i] = fv
+	if rc, ok := c.resultValue.(*values.RecordConstructorValue); ok {
+		posNames := make([]string, len(rc.Fields))
+		posSlots := make([]any, len(rc.Fields))
+		for i, f := range rc.Fields {
+			posNames[i] = f.Name
+			fv, ferr := f.Value.Evaluate(evalArg)
+			if ferr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, ferr
 			}
-			qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+			posSlots[i] = fv
 		}
+		qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	} else if c.resultValue != nil {
+		// Non-RC resultValue: a scalar output row.
+		datum, derr := c.resultValue.Evaluate(evalArg)
+		if derr != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, derr
+		}
+		qr.Positional = scalarPositionalRow(datum)
+	} else if p, ok := evalArg.(*PositionalRow); ok {
+		// No resultValue: the concatenated child row IS the output.
+		qr.Positional = p
 	}
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
 // mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is
-// evaluated against: the CONCATENATED PositionalRow of the matched child rows when
-// every child carries a Positional (RFC-173 ordinal frontier — a bare OrdinalRow,
-// resolved by GetByName against the row's own concatenated type, no name-keyed
-// Datum read), else the merged name map (the pre-RFC-173 path / §5 oracle). Fields
-// are concatenated in child order; grouping columns repeat across children with the
-// same value, so first-match GetByName is order-safe.
-func mergeChildEvalArg(childResults []QueryResult, merged map[string]any) any {
+// evaluated against: the CONCATENATED PositionalRow of the matched child rows
+// (RFC-173 ordinal frontier — a bare OrdinalRow, resolved by GetByName against the
+// row's own concatenated type). Fields are concatenated in child order; grouping
+// columns repeat across children with the same value, so first-match GetByName is
+// order-safe. Returns nil if any child lacks a Positional (should not happen — the
+// aggregate-index producer births one per child).
+func mergeChildEvalArg(childResults []QueryResult) any {
 	var fields []values.Field
 	var slots []any
 	ord := 0
 	for _, cr := range childResults {
 		p := cr.Positional
 		if p == nil || p.Type == nil {
-			return merged
+			return nil
 		}
 		for i, f := range p.Type.Fields {
 			nf := f
@@ -318,7 +292,7 @@ func mergeChildEvalArg(childResults []QueryResult, merged map[string]any) any {
 		}
 	}
 	if len(fields) == 0 {
-		return merged
+		return nil
 	}
 	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}
 }
@@ -482,10 +456,7 @@ func executePredicatesFilter(
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) (bool, error) {
-			var rowCtx any = qr.Datum
-			// RFC-048 W1: a HAVING/filter reference to a name absent from a
-			// complete row (aggregate output) is a bug, not a NULL.
-			strict := StrictReferenceCheck && qr.Complete
+			var rowCtx any
 			switch {
 			case qr.Positional != nil && windowsOK:
 				// RFC-173 Slice 2: the merged positional row of a gated 2-way
@@ -494,6 +465,21 @@ func executePredicatesFilter(
 				// the leg bindings are required; the bare merged row misreads
 				// leg-relative ordinals — the W3 wrong-slot hazard).
 				rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
+			case qr.Positional != nil && bindAlias && isBareScalarRow(qr.Positional):
+				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
+				// Explode flows a raw int64, wrapped by scalarPositionalRow into a
+				// 1-slot `_0` row — RFC-142). A WHERE on the element references the
+				// whole QuantifiedObjectValue(innerAlias) (Java binds the primitive
+				// flowed value directly, not a FieldValue — see
+				// generateCorrelatedFieldAccess), so bind the UNWRAPPED scalar under
+				// innerAlias so QOV(innerAlias) resolves to it. Without this the QOV
+				// whole-row fallback returns the 1-slot row, not the scalar.
+				ec := evalCtx
+				if ec == nil {
+					ec = EmptyEvaluationContext()
+				}
+				ec = ec.WithBinding(innerAlias, qr.Positional.Slots[0])
+				rowCtx = ec.RowContext(nil)
 			case qr.Positional != nil:
 				// RFC-173 Slice 1: the non-join frontier flows an authoritative
 				// ordinal row — resolve predicates by ordinal (loud on a miss, no
@@ -501,46 +487,6 @@ func executePredicatesFilter(
 				// bare-positional fallback in evaluateCorrelated, so no alias
 				// binding is needed here.
 				rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
-			case isStringMap(qr.Datum):
-				if perr := requirePositional("predicatesFilter"); perr != nil {
-					return false, perr
-				}
-				// Always take the name-keyed arm for a string-map row (dropped the old
-				// strict||needsRowCtx gate): the base-record path must wrap so qr.Sparse
-				// threads through even with no params, else a param-less WHERE over an
-				// unset optional trips the NameMissLoud guard.
-				m := qr.Datum.(map[string]any) //nolint:errcheck // guarded by isStringMap
-				ec := evalCtx
-				if ec == nil {
-					ec = EmptyEvaluationContext()
-				}
-				if bindAlias {
-					ec = ec.WithBinding(innerAlias, m)
-				}
-				if strict {
-					rowCtx = ec.RowContextStrict(m)
-				} else {
-					// Thread qr.Sparse: a base-record row read name-keyed in the name
-					// window (Positional disabled) legitimately omits unset optional
-					// fields, so a miss is SQL NULL, not a NameMissLoud violation.
-					rowCtx = ec.RowContextSparse(m, qr.Sparse)
-				}
-			case !isStringMap(qr.Datum) && bindAlias:
-				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
-				// Explode flows int64(101), not a map — RFC-142). A WHERE on the
-				// element references the whole QuantifiedObjectValue(innerAlias)
-				// (Java binds the primitive flowed value directly, not a
-				// FieldValue — see generateCorrelatedFieldAccess), so bind the
-				// scalar under innerAlias and evaluate through a RowEvalContext
-				// whose Correlations resolves QOV(innerAlias) to it. Without this
-				// binding QOV(innerAlias).eval returns NULL and the predicate
-				// filters every element out.
-				ec := evalCtx
-				if ec == nil {
-					ec = EmptyEvaluationContext()
-				}
-				ec = ec.WithBinding(innerAlias, qr.Datum)
-				rowCtx = ec.RowContext(nil)
 			}
 			for _, pred := range preds {
 				res, err := pred.Eval(rowCtx)
@@ -573,27 +519,17 @@ func executeMap(
 	// RFC-173 Slice 1: on the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
 	posNeedsCtx := hasBindingContext(evalCtx)
-	// RFC-173 Slice 1: the Map output schema is row-invariant — derive the emitted
-	// positional row's OUTPUT names once from the result value's record type (nil
-	// when the result isn't a record; then no positional row is emitted).
-	var mapPosNames []string
+	// RFC-173 cap: the Map output schema is row-invariant — derive the emitted
+	// positional row's OUTPUT names once from the result value's record type. When
+	// the result is a RecordConstructorValue, evaluate its Fields INDIVIDUALLY into
+	// dense slots (never through the collapsing name map — a duplicate output name
+	// keeps both slots by ordinal), mirroring executeProjection.
 	var mapPosType *values.RecordType
-	mapOutputAllBare := false
+	mapRC, _ := resultValue.(*values.RecordConstructorValue)
 	if rt, ok := resultValue.Type().(*values.RecordType); ok {
-		mapPosNames = make([]string, len(rt.Fields))
-		mapOutputAllBare = true
-		seenMapName := make(map[string]struct{}, len(rt.Fields))
+		mapPosNames := make([]string, len(rt.Fields))
 		for i, fld := range rt.Fields {
 			mapPosNames[i] = fld.Name
-			// Bare AND unique — a duplicate/qualified output cannot disambiguate a
-			// qualified downstream read on a flat row (see executeProjection).
-			if strings.Contains(fld.Name, ".") {
-				mapOutputAllBare = false
-			}
-			if _, dup := seenMapName[strings.ToUpper(fld.Name)]; dup {
-				mapOutputAllBare = false
-			}
-			seenMapName[strings.ToUpper(fld.Name)] = struct{}{}
 		}
 		mapPosType = positionalTypeFromNames(mapPosNames)
 	}
@@ -606,70 +542,41 @@ func executeMap(
 		if evalErr != nil {
 			return qr
 		}
-		var rowCtx any = qr.Datum
-		switch {
-		case qr.Positional != nil && windowsOK:
+		var rowCtx any
+		if qr.Positional != nil && windowsOK {
 			// RFC-173 Slice 2: the merged positional row of a gated 2-way
 			// ordinal join — a window-era leg reference QOV(leg).col needs its
 			// leg window (unconditional; see executePredicatesFilter).
 			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
-		case qr.Positional != nil:
+		} else if qr.Positional != nil {
 			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
-			// row — resolve the result value by ordinal (loud on a miss, no
-			// name-map fallback), taking precedence over the name-keyed Datum.
+			// row — resolve the result value by ordinal (loud on a miss).
 			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
-		case StrictReferenceCheck && qr.Complete:
-			// RFC-048 W1: a projection reading a name absent from a complete row
-			// (aggregate output) is a bug, not a NULL. Production passes the raw
-			// Datum map here (no parameter binder / scalar-subquery resolver), so
-			// the strict context must carry ONLY Datum + Strict — adding a Binder or
-			// ScalarSubqueries would let a param/subquery resolve in the test binary
-			// while it returns NULL in production, i.e. strict mode would change
-			// results. Bare strict context = identical resolution + miss reporting.
-			if m, ok := qr.Datum.(map[string]any); ok {
-				if perr := requirePositional("map(strict)"); perr != nil {
-					evalErr = perr
-					return qr
-				}
-				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
-			}
-		default:
-			// Name window (no Positional): a base-record projection resolves
-			// name-keyed. Thread qr.Sparse so an unset optional column reads as SQL
-			// NULL instead of tripping the NameMissLoud guard. Bare context (Datum
-			// only, no binder/scalar-subquery) to match production's bare-Datum
-			// resolution — same reason as the strict arm above.
-			if m, ok := qr.Datum.(map[string]any); ok {
-				if perr := requirePositional("map"); perr != nil {
-					evalErr = perr
-					return qr
-				}
-				rowCtx = &values.RowEvalContext{Datum: m, Sparse: qr.Sparse}
-			}
 		}
-		m, err := resultValue.Evaluate(rowCtx)
-		if err != nil {
-			evalErr = err
-			return qr
-		}
-		// RFC-173 Slice 1: dual-emit the ordinal positional row (OUTPUT-named),
-		// built from the evaluated result so it mirrors the name-keyed Datum
-		// field-for-field — but ONLY when the input is itself on the non-join
-		// frontier (carried a Positional). A Map OVER A JOIN re-emits join-qualified
-		// columns resolved by name; emitting a Positional there would wrongly flip
-		// the consumer onto the ordinal path. Positional propagates along the
-		// frontier and stops at the join/aggregate boundary.
+		// RFC-173 cap: a Map's output IS a PositionalRow. When the result value is a
+		// RecordConstructor, evaluate each field individually into dense slots; a
+		// scalar result wraps in a 1-slot row.
 		var pos *PositionalRow
-		if qr.Positional != nil || mapOutputAllBare {
-			if mm, ok := m.(map[string]any); ok && mapPosNames != nil {
-				slots := make([]any, len(mapPosNames))
-				for i, name := range mapPosNames {
-					slots[i] = mm[name]
+		if mapRC != nil && mapPosType != nil {
+			slots := make([]any, len(mapRC.Fields))
+			for i, f := range mapRC.Fields {
+				fv, ferr := f.Value.Evaluate(rowCtx)
+				if ferr != nil {
+					evalErr = ferr
+					return qr
 				}
-				pos = &PositionalRow{Type: mapPosType, Slots: slots}
+				slots[i] = fv
 			}
+			pos = &PositionalRow{Type: mapPosType, Slots: slots}
+		} else {
+			m, err := resultValue.Evaluate(rowCtx)
+			if err != nil {
+				evalErr = err
+				return qr
+			}
+			pos = scalarPositionalRow(m)
 		}
-		return QueryResult{Datum: m, Positional: pos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
+		return QueryResult{Positional: pos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
 	return &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}, nil
 }
@@ -729,14 +636,14 @@ func executeFirstOrDefault(
 		return nil, lerr
 	}
 	defaultVal := p.GetDefaultValue()
-	var datum any
-	if defaultVal != nil {
-		datum, err = defaultVal.Evaluate(nil)
-		if err != nil {
-			return nil, err
-		}
+	if defaultVal == nil {
+		return newSingleResultCursor(QueryResult{Positional: scalarPositionalRow(nil)}), nil
 	}
-	return newSingleResultCursor(QueryResult{Datum: datum}), nil
+	qr, err := resultFromValue(defaultVal)
+	if err != nil {
+		return nil, err
+	}
+	return newSingleResultCursor(qr), nil
 }
 
 func executeDefaultOnEmpty(
@@ -766,14 +673,14 @@ func executeDefaultOnEmpty(
 		return nil, lerr
 	}
 	defaultVal := p.GetDefaultValue()
-	var datum any
-	if defaultVal != nil {
-		datum, err = defaultVal.Evaluate(nil)
-		if err != nil {
-			return nil, err
-		}
+	if defaultVal == nil {
+		return newSingleResultCursor(QueryResult{Positional: scalarPositionalRow(nil)}), nil
 	}
-	return newSingleResultCursor(QueryResult{Datum: datum}), nil
+	qr, err := resultFromValue(defaultVal)
+	if err != nil {
+		return nil, err
+	}
+	return newSingleResultCursor(qr), nil
 }
 
 func executeInJoin(

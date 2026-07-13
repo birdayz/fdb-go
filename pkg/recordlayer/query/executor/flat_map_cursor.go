@@ -310,55 +310,28 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		// Bind the outer row as a correlation and execute the inner plan.
 		// Use initialInnerCont for the first outer row on resume.
 		//
-		// RFC-173 Slice 2 W3b: for an ORDINAL-birth flatMap (a gated join on
-		// the correlated implementation path) the outer binds as its
-		// POSITIONAL leg row — the inner plan's baked SARG operands
+		// RFC-173: the outer binds as its POSITIONAL row. For a gated ORDINAL-birth
+		// join, or an inner plan carrying baked SARG operands over the outer alias
 		// (ofOrdinal over QOV(outer), pushed down as scan-range/index-probe
-		// comparisons) resolve by ordinal through the binder's OrdinalRow
-		// arm, and lazy outer references resolve leg-relative against the
-		// same row. Binding the Datum map here fed baked operands a
-		// name-keyed context — the loud BakedNameContextError the W3b flip
-		// caught on every correlated-probe join. Name-model cursors (and the
-		// §5 oracle) keep the Datum binding bit-identically.
-		outerDatum, _ := outerRow.Datum.(map[string]any)
-		var outerBinding any = outerDatum
-		if c.birth.enabled() && !DisablePositionalEmission {
+		// comparisons), the outer must present its LEG type so those operands resolve
+		// by ordinal (adaptLegPositional; failure is LOUD). Otherwise the outer's own
+		// scan row is bound raw, stamped with the outer alias as a leg window so an
+		// alias-qualified inner ref ("D.DID") resolves the same as a bare one.
+		var outerBinding any
+		switch {
+		case c.birth.enabled():
 			row, aerr := adaptLegPositional(outerRow, c.birth.legType(c.outerAlias))
 			if aerr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
 			outerBinding = row
-		} else if c.outerBakedType != nil && !DisablePositionalEmission {
-			// RFC-173 item-2 commit 2 (the E2 binder): a DISABLED-birth FlatMap
-			// whose inner plan carries baked references over the outer alias —
-			// bind the outer positionally so those references resolve by
-			// ordinal. Adaptation failure is LOUD (design-ruling amendment B):
-			// the Datum fallback would feed the baked operands a name-keyed
-			// context — a BakedNameContextError on every inner row at best,
-			// silent misbinding at worst. Under the §5 oracle the Datum binding
-			// stays and the baked reads bridge by display name
-			// (values.OracleBakedNameFallback), like every other birth site.
+		case c.outerBakedType != nil:
 			row, aerr := adaptLegPositional(outerRow, c.outerBakedType)
 			if aerr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
 			outerBinding = row
-		} else if c.outerIdentityPassthrough && outerRow.Positional != nil && !DisablePositionalEmission {
-			// RFC-173 S4 — the PLAIN-SCAN correlated-EXISTS outer binding: an
-			// identity pass-through (WHERE-EXISTS) whose outer is a plain scan and
-			// whose inner correlated ref is LAZY (no baked outer refs — outerBakedType
-			// nil; not a gated join — outerMergedType nil). Bind the outer's OWN scan
-			// positional row RAW: the LAZY ref resolves through evaluateOrdinal's
-			// flat-reference tail (resolveOrdinal declines — QOV(outer)'s inferred type
-			// is not a RecordType here — so it reads GetByName against the row's OWN
-			// type), which is layout-robust by construction (a covering-index outer's
-			// row carries its own [V, ID] type and GetByName resolves the name against
-			// it, never a mis-slotted child ordinal). Under the §5 oracle the outer
-			// never carries a positional (guard above), so the Datum binding stays —
-			// no new birth site. The row is stamped with the outer alias as a leg
-			// window (qualifyOuterPositional) so an alias-qualified inner ref
-			// ("D.DID") resolves the same as a bare one — the ordinal-model analog of
-			// the correlated binding reading qualifyOuterRow's "ALIAS.COL" keys.
+		default:
 			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
 		}
 		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
@@ -447,128 +420,75 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		// bare-QOV leg map) is deleted with the name model.
 		return QueryResult{Positional: pos}, nil
 	}
-	innerRow := QueryResult{Datum: map[string]any{}}
+	innerRow := QueryResult{}
 	if inner != nil {
 		innerRow = *inner
 	}
-	// Build evaluation context with both correlations bound.
-	outerDatum, _ := outerRow.Datum.(map[string]any)
-	// The inner binding is the RAW inner Datum, not a forced map cast. A
-	// correlated array UNNEST (RFC-142) flows a BARE SCALAR element (e.g.
-	// int64(101)) as the inner row; binding QOV(inner) to it lets the AS
-	// alias read the whole element. A row-shaped inner (a scan/EXISTS
-	// subquery) binds its map[string]any unchanged — FieldValue.evaluateCorrelated
-	// reads the map by key, QOV(inner) reads the whole map.
-	innerBinding := innerRow.Datum
-	if c.birth.enabled() {
-		// §5 NAME-MODEL ORACLE only (production positional returned above): a
-		// WITH-ORDINALITY Explode inner is keyed by the internal `_0`/`_1`
-		// positions, but the ordinal seed's baked element/ordinal fields are named
-		// by the AS/AT aliases and the oracle reads them BY NAME (oracleNameDatum
-		// → OracleBakedNameFallback). Rebind the ordinality inner under those alias
-		// names — positionally (`_i` → the leg type's field-i name) — so the name
-		// reads resolve to the element/ordinal, matching the pre-W4c name model
-		// (whose element/ordinal fields were named `_0`/`_1` and read directly).
-		if _, isOrd := c.birth.OrdinalityLegs[c.innerAlias]; isOrd {
-			if m, ok := innerRow.Datum.(map[string]any); ok {
-				if lt := c.birth.legType(c.innerAlias); lt != nil {
-					renamed := make(map[string]any, len(lt.Fields))
-					for i, fld := range lt.Fields {
-						renamed[fld.Name] = m[values.OrdinalFieldName(i)]
-					}
-					innerBinding = renamed
-				}
-			}
+	// Build evaluation context with both correlations bound. The inner binding is
+	// the inner's POSITIONAL row; a correlated array UNNEST (RFC-142) flows a BARE
+	// SCALAR element (wrapped by scalarPositionalRow into a 1-slot `_0` row), so
+	// bind the UNWRAPPED scalar under QOV(inner) — the AS alias reads the whole
+	// element. A row-shaped inner binds its positional row unchanged.
+	var innerBinding any
+	if innerRow.Positional != nil {
+		if isBareScalarRow(innerRow.Positional) {
+			innerBinding = innerRow.Positional.Slots[0]
+		} else {
+			innerBinding = innerRow.Positional
 		}
 	}
+	outerBinding := qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
 	nestedCtx := c.evalCtx.
-		WithBinding(c.outerAlias, outerDatum).
+		WithBinding(c.outerAlias, outerBinding).
 		WithBinding(c.innerAlias, innerBinding)
 
-	// Evaluate against a RowEvalContext whose Datum is the outer row, so a BARE
-	// outer FieldValue (e.g. a projected `ID` with no QOV qualifier — RFC-141
-	// projected EXISTS folds the SELECT list into the result value) resolves
-	// against the outer row, while QOV references to the outer/inner aliases
+	// Evaluate against a RowEvalContext whose row is the outer positional, so a
+	// BARE outer FieldValue (e.g. a projected `ID` with no QOV qualifier — RFC-141
+	// projected EXISTS folds the SELECT list into the result value) resolves by
+	// ordinal against the outer row, while QOV references to the outer/inner aliases
 	// resolve through the correlation bindings (Correlations).
-	rowCtx := nestedCtx.RowContext(outerDatum)
+	var rowCtx any = nestedCtx.RowContextPositional(outerRow.Positional)
 	// RFC-173 S4 commit 2 (C): a PROJECTED-EXISTS fold whose OUTER is a gated
 	// ordinal join's positional merged row. Evaluate the folded projection through
 	// legWindowRowContext — spanAwareRow resolves its dotted "T1.ID" frontier reads
 	// positionally against the leg windows, legWindowBinder its QOV leg refs, and
 	// the composed nestedCtx binds the existential inner (existCorr) for the
-	// projected ExistsValue. The projection is thus resolved (not rebased), the
-	// heterogeneity absorbed by the same coexistence context a plain gated-join
-	// downstream projection uses. foldWindowsOK already excludes the WHERE-EXISTS
-	// identity pass-through (decided at construction), so this is just the
-	// positional-outer test.
+	// projected ExistsValue.
 	if outerRow.Positional != nil && c.foldWindowsOK {
 		rowCtx = legWindowRowContext(outerRow.Positional, nestedCtx, c.foldLegSpans)
-	}
-	if c.birth.enabled() {
-		// §5 NAME-MODEL ORACLE over an ordinal-birth plan (birth enabled but
-		// DisablePositionalEmission on — the only way to reach here with a
-		// birth): the ordinal RC's bare-named fields would evaluate to a
-		// bare-keys-only map, dropping the ALIAS.COL keys the pre-flip
-		// anchored seed RC carried — every dotted downstream read (projection
-		// over sort, sort comparators) silently NULLed. Reconstruct the
-		// anchored key set with genuine name-model per-field resolution.
-		datum, err := c.birth.oracleNameDatum(rowCtx)
-		if err != nil {
-			return QueryResult{}, err
-		}
-		// The oracle mirror row is output-shaped (bare+qualified keys for the
-		// full seed schema) — schema-complete like the RC row below, so the
-		// §5 name-model oracle side gets the same merge-fabrication authority
-		// (the enclosed-CTE hole existed on the oracle side too).
-		return QueryResult{Datum: datum, Complete: true}, nil
-	}
-	computed, err := c.resultValue.Evaluate(rowCtx)
-	if err != nil {
-		return QueryResult{}, err
 	}
 	computedComplete := false
 	var foldPos *PositionalRow
 	if rc, isRC := c.resultValue.(*values.RecordConstructorValue); isRC {
 		// An RC-evaluated FlatMap row is schema-complete: the constructor
-		// evaluates EVERY declared column (nil for NULL), so the key set is
-		// the row's full schema — the QueryResult.Complete contract. This is
-		// what lets a star-body CTE leg (`WITH C AS (SELECT * FROM t, t.arr
-		// AS x)` — no Project wrapper) fabricate its "C.col" keys at the
-		// enclosing merge (qualifyAlias) instead of silently answering NULL.
+		// evaluates EVERY declared column (nil for NULL), so the key set is the
+		// row's full schema — the QueryResult.Complete contract.
 		computedComplete = true
 		// RFC-173: emit the authoritative ordinal OUTPUT row. The folded SELECT
-		// list's RC.Fields ARE the output columns in output order (the same fields
-		// deriveColumnsFromFlatMap/foldedColumnDef names the ColumnDefs from), so a
-		// slot per field, valued from the just-evaluated map by f.Name, is the row's
-		// ordinal output — what a projected-EXISTS SELECT list (`SELECT id,
-		// EXISTS(...) AS has_t2 FROM t`) materializes from. Without it the fold row
-		// had no positional and every read fell back to the now-deleted name Datum.
-		//
-		// NARROWLY gated to the PLAIN-OUTER fold: no leg windows (foldWindowsOK), no
-		// ordinal-birth seed (c.birth), and no gated-join outer (outerBakedType /
-		// outerMergedType). Those richer shapes compose this fold INTO a larger
-		// ordinal layout (chained spines, N-way existential folds, leg-window
-		// consumers) where a bare output-named positional here would flip a
-		// downstream consumer onto the wrong ordinal frontier — they carry their own
-		// ordinal row via the birth/combined path above and stay on the name model
-		// for their final output for now (correct-or-loud reach class).
-		// RFC-173: emit for the PLAIN-OUTER fold AND the LEG-WINDOW / gated-join
-		// fold (foldWindowsOK / outerMergedType). In every one of these the folded
-		// RC IS the query's output projection (a projected-EXISTS SELECT list over a
-		// scan or a gated join) — its fields ARE the output columns, valued from the
-		// just-evaluated map by name, so a slot-per-field row is the authoritative
-		// ordinal output the result set reads. The birth path emits its own
-		// positional above; a birth fold is excluded here.
-		if !DisablePositionalEmission && !c.birth.enabled() {
-			if m, ok := computed.(map[string]any); ok {
-				posNames := make([]string, len(rc.Fields))
-				posSlots := make([]any, len(rc.Fields))
-				for i, f := range rc.Fields {
-					posNames[i] = f.Name
-					posSlots[i] = m[f.Name]
-				}
-				foldPos = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+		// list's RC.Fields ARE the output columns in output order, so a slot per
+		// field — evaluated INDIVIDUALLY against rowCtx (never through a collapsing
+		// name map, so a duplicate output name keeps both slots) — is the row's
+		// ordinal output, what a projected-EXISTS SELECT list (`SELECT id,
+		// EXISTS(...) AS has_t2 FROM t`) materializes from.
+		posNames := make([]string, len(rc.Fields))
+		posSlots := make([]any, len(rc.Fields))
+		for i, f := range rc.Fields {
+			posNames[i] = f.Name
+			fv, ferr := f.Value.Evaluate(rowCtx)
+			if ferr != nil {
+				return QueryResult{}, ferr
 			}
+			posSlots[i] = fv
+		}
+		foldPos = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	} else {
+		// A non-RC, non-identity result value: evaluate it to a scalar output row.
+		computed, err := c.resultValue.Evaluate(rowCtx)
+		if err != nil {
+			return QueryResult{}, err
+		}
+		if !isIdentityOuterRV(c.resultValue, c.outerAlias) {
+			foldPos = scalarPositionalRow(computed)
 		}
 	}
 	// Identity-over-outer FlatMap (the result value is exactly the outer

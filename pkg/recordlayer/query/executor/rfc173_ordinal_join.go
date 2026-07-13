@@ -615,8 +615,9 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 		// table order ([ID, V]) — same width, different layout, and a baked
 		// leg ordinal would silently read the wrong slot. A non-aligned
 		// positional row is a LEGITIMATE plan shape (not a gate breach): fall
-		// through to Datum synthesis (covering Datums carry the correct bare
-		// UPPER keys), with the zero-match tripwire below as the final guard.
+		// through to per-name reordering below (GetByName resolves each leg
+		// column against the row's own type), with the zero-match tripwire as
+		// the final guard.
 		if legType == nil || positionalMatchesLegType(qr.Positional, legType) {
 			return qr.Positional, nil
 		}
@@ -625,16 +626,20 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 	if legType == nil {
 		return row, nil
 	}
-	if m, isMap := qr.Datum.(map[string]any); isMap {
+	// RFC-173 cap: reorder the outer positional's slots into legType order by NAME
+	// (the ordinal-model replacement for the retired Datum-map synthesis). A
+	// covering-index [V, ID] row mapped to a leg type [ID, V] resolves each leg
+	// column via GetByName against the row's own index-shaped type.
+	if qr.Positional != nil {
 		matched := 0
 		for i, f := range legType.Fields {
-			if v, present := m[f.Name]; present {
+			if v, present := qr.Positional.GetByName(f.Name); present {
 				row.Slots[i] = v
 				matched++
 			}
 		}
-		if matched == 0 && len(m) > 0 && len(legType.Fields) > 0 {
-			return nil, fmt.Errorf("RFC-173 leg adapter: name-model leg row carries NONE of the leg type's %d columns %v (row keys: %d, dotted/merge-shaped?) — a gated join must not consume a name-model merge leg (W2 gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(m))
+		if matched == 0 && len(qr.Positional.Slots) > 0 && len(legType.Fields) > 0 {
+			return nil, fmt.Errorf("RFC-173 leg adapter: positional leg row carries NONE of the leg type's %d columns %v (row width: %d, dotted/merge-shaped?) — a gated join must not consume a mismatched leg (W2 gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(qr.Positional.Slots))
 		}
 	}
 	return row, nil
@@ -1179,21 +1184,26 @@ func (b *ordinalJoinBirth) legRows(outerAlias, innerAlias string, outer, inner *
 func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, alias string, qr *QueryResult) error {
 	id := values.NamedCorrelationIdentifier(alias)
 	// A RAW leg (a bare-QOV non-record W4c unnest element) binds its whole flowed
-	// Datum — never adapted to a (non-record → empty) OrdinalRow. A nil pointer is
-	// the deliberately-NULL leg: raw nil, which QOV(inner).Evaluate flows as NULL.
+	// scalar — never adapted to a (non-record → empty) OrdinalRow. The element
+	// flows as a 1-slot `_0` PositionalRow (scalarPositionalRow), so bind the
+	// UNWRAPPED scalar, which QOV(inner).Evaluate flows as the value. A nil pointer
+	// is the deliberately-NULL leg: raw nil (→ NULL).
 	if _, isRaw := b.RawLegs[id]; isRaw {
-		if qr == nil {
+		switch {
+		case qr == nil:
 			raw[id] = nil
-		} else {
-			raw[id] = qr.Datum
+		case isBareScalarRow(qr.Positional):
+			raw[id] = qr.Positional.Slots[0]
+		default:
+			raw[id] = qr.Positional
 		}
 		return nil
 	}
-	// A WITH-ORDINALITY Explode leg binds STRICTLY POSITIONALLY: its Datum is
-	// keyed by the internal OrdinalFieldName positions (`_0`=element,
-	// `_1`=ordinal), so slot i = Datum[_i] — the leg type's AS/AT alias NAMES
-	// never participate in the key lookup (a user may spell an alias `_0`/`_1`).
-	// See OrdinalityLegs (producer context, set by newFlatMapCursor).
+	// A WITH-ORDINALITY Explode leg binds STRICTLY POSITIONALLY: its row is keyed
+	// by the internal OrdinalFieldName positions (`_0`=element, `_1`=ordinal), so
+	// slot i = the row's `_i` field — the leg type's AS/AT alias NAMES never
+	// participate in the lookup (a user may spell an alias `_0`/`_1`). See
+	// OrdinalityLegs (producer context, set by newFlatMapCursor).
 	if _, isOrd := b.OrdinalityLegs[id]; isOrd {
 		if qr == nil {
 			legs[id] = nil
@@ -1201,10 +1211,10 @@ func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.
 		}
 		lt := b.legType(id)
 		row := NewPositionalRow(lt)
-		if lt != nil {
-			if m, isMap := qr.Datum.(map[string]any); isMap {
-				for i := range lt.Fields {
-					row.Slots[i] = m[values.OrdinalFieldName(i)]
+		if lt != nil && qr.Positional != nil {
+			for i := range lt.Fields {
+				if v, ok := qr.Positional.GetByName(values.OrdinalFieldName(i)); ok {
+					row.Slots[i] = v
 				}
 			}
 		}

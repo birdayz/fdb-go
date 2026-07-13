@@ -136,6 +136,25 @@ func (r *PositionalRow) GetByName(name string) (any, bool) {
 	return r.Get(i)
 }
 
+// positionalToMap projects a PositionalRow to a name->value map, for the LOCAL
+// boundaries that build a name-keyed artifact from a row (a proto record in the DML
+// insert/update path, keyed by column name). This is NOT the retired name model —
+// it is a one-shot projection at a boundary that is inherently name-keyed (a proto
+// message sets fields by name). Duplicate output names collapse last-wins (a proto
+// record cannot carry two same-named fields anyway).
+func positionalToMap(pos *PositionalRow) map[string]any {
+	if pos == nil || pos.Type == nil {
+		return nil
+	}
+	m := make(map[string]any, len(pos.Type.Fields))
+	for i, f := range pos.Type.Fields {
+		if i < len(pos.Slots) {
+			m[f.Name] = pos.Slots[i]
+		}
+	}
+	return m
+}
+
 // positionalTypeFromNames builds the RecordType for a producer's output — one
 // field per column in output order (ordinal = position), named by the column name.
 // It uses a RAW RecordType (not NewRecordType) on purpose: a producer may emit
