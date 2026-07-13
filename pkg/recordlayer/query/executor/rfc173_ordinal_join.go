@@ -638,14 +638,26 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 				matched++
 			}
 		}
-		// LOUD only for a genuinely MERGE-SHAPED row (carries leg windows or
-		// dotted-qualified field names) that matched nothing — the W3a-1 hazard: a
-		// name-model merge leg wrongly consumed by a gated join. A SIMPLE row that
-		// matches nothing (e.g. a bare-scalar `_0` UNNEST element bound as a
-		// redundant gather leg) degrades to an all-nil row silently, matching the
-		// pre-cap Datum-synthesis path (a non-map datum → all-nil, no error).
-		if matched == 0 && len(qr.Positional.Slots) > 0 && len(legType.Fields) > 0 && rowIsMergeShaped(qr.Positional) {
-			return nil, fmt.Errorf("RFC-173 leg adapter: merge-shaped leg row carries NONE of the leg type's %d columns %v (row width: %d) — a gated join must not consume a merge-shaped leg (W2 gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(qr.Positional.Slots))
+		if matched == 0 && len(qr.Positional.Slots) > 0 && len(legType.Fields) > 0 {
+			switch {
+			case rowIsMergeShaped(qr.Positional):
+				// LOUD for a genuinely MERGE-SHAPED row (leg windows or dotted-
+				// qualified field names) that matched nothing — the W3a-1 hazard:
+				// a name-model merge leg wrongly consumed by a gated join.
+				return nil, fmt.Errorf("RFC-173 leg adapter: merge-shaped leg row carries NONE of the leg type's %d columns %v (row width: %d) — a gated join must not consume a merge-shaped leg (W2 gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(qr.Positional.Slots))
+			case len(qr.Positional.Slots) == len(legType.Fields):
+				// A SIMPLE row whose column names are DISJOINT from the leg type
+				// but SAME WIDTH — e.g. a materialized computed-scalar leg named by
+				// its expression `(AMOUNT + 0)` consumed as the anonymous `_0`
+				// positional leg. ofOrdinal reads by SLOT, so position is the
+				// authority: map slot-for-slot.
+				copy(row.Slots, qr.Positional.Slots)
+			default:
+				// A simple row of a different width that matches nothing (e.g. a
+				// bare-scalar `_0` UNNEST element bound as a redundant gather leg)
+				// degrades to an all-nil leg silently, matching the pre-cap
+				// Datum-synthesis path (a non-map datum → all-nil, no error).
+			}
 		}
 	}
 	return row, nil

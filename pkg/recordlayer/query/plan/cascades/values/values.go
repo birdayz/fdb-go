@@ -3481,6 +3481,13 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 		return ctx.Datum, nil
 	case map[string]any:
 		return ctx, nil
+	case OrdinalRow:
+		// RFC-173: a bare frontier PositionalRow (the posNeedsCtx-false fast path in
+		// frontierRowContext flows the ordinal row directly, not wrapped in a
+		// RowEvalContext) IS this quantifier's object — the same resolution the
+		// *RowEvalContext Positional fallback gives, so a QOV-child FieldValue
+		// (`c2.name`) reads its column by ordinal against it.
+		return ctx, nil
 	case CorrelationBinder:
 		val, ok := ctx.GetCorrelationBinding(q.Correlation)
 		if !ok {
