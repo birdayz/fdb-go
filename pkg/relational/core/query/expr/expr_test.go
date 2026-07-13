@@ -465,12 +465,12 @@ func TestResolver_ResolveIsNull(t *testing.T) {
 	tmpEv0,
 
 		// Evaluate.
-		errEv0 := cp.Eval(map[string]any{"NAME": nil})
+		errEv0 := cp.Eval(predRow(map[string]any{"NAME": nil}))
 	require.NoError(t, errEv0)
 	if tmpEv0 != predicates.TriTrue {
 		t.Fatal("NULL IS NULL should be TRUE")
 	}
-	tmpEv1, errEv1 := cp.Eval(map[string]any{"NAME": "foo"})
+	tmpEv1, errEv1 := cp.Eval(predRow(map[string]any{"NAME": "foo"}))
 	require.NoError(t, errEv1)
 	if tmpEv1 != predicates.TriFalse {
 		t.Fatal("'foo' IS NULL should be FALSE")
@@ -572,13 +572,13 @@ func TestResolver_ResolveIn(t *testing.T) {
 
 	// Eval against a row.
 	row := map[string]any{"ID": int64(2)}
-	tmpEv0, errEv0 := cp.Eval(row)
+	tmpEv0, errEv0 := cp.Eval(predRow(row))
 	require.NoError(t, errEv0)
 	if tmpEv0 != predicates.TriTrue {
 		t.Fatal("2 IN (1,2,3) should be TRUE")
 	}
 	row["ID"] = int64(9)
-	tmpEv1, errEv1 := cp.Eval(row)
+	tmpEv1, errEv1 := cp.Eval(predRow(row))
 	require.NoError(t, errEv1)
 	if tmpEv1 != predicates.TriFalse {
 		t.Fatal("9 IN (1,2,3) should be FALSE")
@@ -723,14 +723,14 @@ func TestResolver_Integration_AgeGreaterEighteen(t *testing.T) {
 	}
 
 	row := map[string]any{"ID": int64(7)} // id+1 = 8 > 5 → TRUE
-	got, errEv0 := pred.Eval(row)
+	got, errEv0 := pred.Eval(predRow(row))
 	require.NoError(t, errEv0)
 	if got != predicates.TriTrue {
 		t.Fatalf("8 > 5: expected TRUE, got %v", got)
 	}
 	row["ID"] = int64(2)
 	tmpEv0, // 2+1 = 3 > 5 → FALSE
-		errEv1 := pred.Eval(row)
+		errEv1 := pred.Eval(predRow(row))
 	require.NoError(t, errEv1)
 	got = tmpEv0
 	if got != predicates.TriFalse {

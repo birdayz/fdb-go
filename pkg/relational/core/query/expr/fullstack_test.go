@@ -98,7 +98,7 @@ func TestFullStack_Pipeline(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, errEv0 := simplified.Eval(tc.row)
+			got, errEv0 := simplified.Eval(predRow(tc.row))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v (simplified predicate: %s)",
@@ -248,7 +248,7 @@ func TestFullStack_RichPredicates(t *testing.T) {
 				t.Fatalf("WalkPredicate: %v", err)
 			}
 			simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
-			got, errEv0 := simplified.Eval(tc.row)
+			got, errEv0 := simplified.Eval(predRow(tc.row))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Errorf("got %v, want %v (pred: %s)", got, tc.want, simplified.Explain())

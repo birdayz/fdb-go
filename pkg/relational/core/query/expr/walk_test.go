@@ -264,7 +264,7 @@ func TestWalkPredicate_Comparison(t *testing.T) {
 		t.Fatalf("Operand: got %v, want 1", cp.Comparison.Operand)
 	}
 	// Evaluate.
-	got, errEv0 := pred.Eval(map[string]any{"ID": int64(1)})
+	got, errEv0 := pred.Eval(predRow(map[string]any{"ID": int64(1)}))
 	require.NoError(t, errEv0)
 	if got != predicates.TriTrue {
 		t.Fatalf("1 = 1: got %v", got)
@@ -344,7 +344,7 @@ func TestWalkPredicate_BareBooleanColumn(t *testing.T) {
 	}
 
 	// Truthiness eval: active=true keeps the row.
-	got, evErr := bare.Eval(map[string]any{"ACTIVE": true})
+	got, evErr := bare.Eval(predRow(map[string]any{"ACTIVE": true}))
 	if evErr != nil {
 		t.Fatalf("eval: %v", evErr)
 	}
@@ -370,7 +370,7 @@ func TestWalkPredicate_BareNull(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ConstantPredicate, got %T", pred)
 	}
-	got, evErr := cp.Eval(map[string]any{})
+	got, evErr := cp.Eval(predRow(map[string]any{}))
 	if evErr != nil {
 		t.Fatalf("eval: %v", evErr)
 	}
@@ -470,7 +470,7 @@ func TestWalkPredicate_LogicalXor(t *testing.T) {
 		{nil, nil, predicates.TriUnknown},
 	}
 	for _, tc := range cases {
-		got, errEv0 := pred.Eval(row{"ACTIVE": tc.active, "ADMIN": tc.admin})
+		got, errEv0 := pred.Eval(predRow(row{"ACTIVE": tc.active, "ADMIN": tc.admin}))
 		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("XOR(%v, %v): got %v, want %v", tc.active, tc.admin, got, tc.want)
@@ -638,7 +638,7 @@ func TestWalkPredicate_NotParenAnd(t *testing.T) {
 		{map[string]any{"ID": int64(2), "NAME": "bob"}, predicates.TriTrue},
 	}
 	for _, tc := range cases {
-		got, errEv0 := pred.Eval(tc.row)
+		got, errEv0 := pred.Eval(predRow(tc.row))
 		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("row %v: got %v, want %v", tc.row, got, tc.want)
@@ -675,7 +675,7 @@ func TestWalkPredicate_Between(t *testing.T) {
 		{11, predicates.TriFalse, "above"},
 		{0, predicates.TriFalse, "below"},
 	} {
-		got, errEv0 := pred.Eval(map[string]any{"ID": tc.id})
+		got, errEv0 := pred.Eval(predRow(map[string]any{"ID": tc.id}))
 		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Fatalf("id=%d (%s): got %v, want %v", tc.id, tc.comment, got, tc.want)
@@ -698,12 +698,12 @@ func TestWalkPredicate_NotBetween(t *testing.T) {
 		t.Fatalf("expected NotPredicate wrapping, got %T", pred)
 	}
 	// Eval: id=5 is in [1,10] so NOT BETWEEN is FALSE.
-	got, errEv0 := pred.Eval(map[string]any{"ID": int64(5)})
+	got, errEv0 := pred.Eval(predRow(map[string]any{"ID": int64(5)}))
 	require.NoError(t, errEv0)
 	if got != predicates.TriFalse {
 		t.Fatalf("5 NOT BETWEEN 1 AND 10: got %v, want FALSE", got)
 	}
-	got, errEv1 := pred.Eval(map[string]any{"ID": int64(15)})
+	got, errEv1 := pred.Eval(predRow(map[string]any{"ID": int64(15)}))
 	require.NoError(t, errEv1)
 	if got != predicates.TriTrue {
 		t.Fatalf("15 NOT BETWEEN 1 AND 10: got %v, want TRUE", got)
@@ -739,7 +739,7 @@ func TestWalkPredicate_In(t *testing.T) {
 		3: predicates.TriTrue,
 		4: predicates.TriFalse,
 	} {
-		got, errEv0 := pred.Eval(map[string]any{"ID": id})
+		got, errEv0 := pred.Eval(predRow(map[string]any{"ID": id}))
 		require.NoError(t, errEv0)
 		if got != want {
 			t.Fatalf("id=%d: got %v, want %v", id, got, want)
@@ -834,7 +834,7 @@ func TestWalkPredicate_LikeEscape(t *testing.T) {
 		{"a%bb", predicates.TriFalse},
 	}
 	for _, tc := range cases {
-		got, errEv0 := pred.Eval(map[string]any{"NAME": tc.s})
+		got, errEv0 := pred.Eval(predRow(map[string]any{"NAME": tc.s}))
 		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("Eval(%q): got %v, want %v", tc.s, got, tc.want)
@@ -880,7 +880,7 @@ func TestWalkPredicate_NotLikeEscape(t *testing.T) {
 		{"a%bb", predicates.TriTrue},
 	}
 	for _, tc := range cases {
-		got, errEv0 := pred.Eval(map[string]any{"NAME": tc.s})
+		got, errEv0 := pred.Eval(predRow(map[string]any{"NAME": tc.s}))
 		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("NOT LIKE Eval(%q): got %v, want %v", tc.s, got, tc.want)
@@ -942,7 +942,7 @@ func TestWalkPredicate_IsTrue(t *testing.T) {
 		{nil, predicates.TriFalse}, // 2VL: NULL IS TRUE → FALSE
 	}
 	for _, tc := range cases {
-		got, errEv0 := pred.Eval(map[string]any{"ADMIN": tc.in})
+		got, errEv0 := pred.Eval(predRow(map[string]any{"ADMIN": tc.in}))
 		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("(%v) IS TRUE: got %v, want %v", tc.in, got, tc.want)
@@ -969,7 +969,7 @@ func TestWalkPredicate_IsFalse(t *testing.T) {
 		{nil, predicates.TriFalse}, // 2VL: NULL IS FALSE → FALSE
 	}
 	for _, tc := range cases {
-		got, errEv0 := pred.Eval(map[string]any{"ADMIN": tc.in})
+		got, errEv0 := pred.Eval(predRow(map[string]any{"ADMIN": tc.in}))
 		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("(%v) IS FALSE: got %v, want %v", tc.in, got, tc.want)
@@ -990,17 +990,17 @@ func TestWalkPredicate_IsTrue_NegatedNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	got, errEv0 := pred.Eval(map[string]any{"ADMIN": nil})
+	got, errEv0 := pred.Eval(predRow(map[string]any{"ADMIN": nil}))
 	require.NoError(t, errEv0)
 	if got != predicates.TriTrue {
 		t.Errorf("NOT (NULL IS TRUE): got %v, want TRUE", got)
 	}
-	got, errEv1 := pred.Eval(map[string]any{"ADMIN": true})
+	got, errEv1 := pred.Eval(predRow(map[string]any{"ADMIN": true}))
 	require.NoError(t, errEv1)
 	if got != predicates.TriFalse {
 		t.Errorf("NOT (TRUE IS TRUE): got %v, want FALSE", got)
 	}
-	got, errEv2 := pred.Eval(map[string]any{"ADMIN": false})
+	got, errEv2 := pred.Eval(predRow(map[string]any{"ADMIN": false}))
 	require.NoError(t, errEv2)
 	if got != predicates.TriTrue {
 		t.Errorf("NOT (FALSE IS TRUE): got %v, want TRUE", got)
@@ -1038,17 +1038,17 @@ func TestWalkPredicate_XOR_SelfIsFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	got, errEv0 := pred.Eval(map[string]any{"ACTIVE": true})
+	got, errEv0 := pred.Eval(predRow(map[string]any{"ACTIVE": true}))
 	require.NoError(t, errEv0)
 	if got != predicates.TriFalse {
 		t.Errorf("true XOR true: got %v, want FALSE", got)
 	}
-	got, errEv1 := pred.Eval(map[string]any{"ACTIVE": false})
+	got, errEv1 := pred.Eval(predRow(map[string]any{"ACTIVE": false}))
 	require.NoError(t, errEv1)
 	if got != predicates.TriFalse {
 		t.Errorf("false XOR false: got %v, want FALSE", got)
 	}
-	got, errEv2 := pred.Eval(map[string]any{"ACTIVE": nil})
+	got, errEv2 := pred.Eval(predRow(map[string]any{"ACTIVE": nil}))
 	require.NoError(t, errEv2)
 	if got != predicates.TriUnknown {
 		t.Errorf("NULL XOR NULL: got %v, want UNKNOWN", got)
@@ -1210,20 +1210,20 @@ func TestWalker_E2E_Integration(t *testing.T) {
 
 	// Evaluate against some rows.
 	row := map[string]any{"ID": int64(5), "NAME": "bob"}
-	got, errEv0 := pred.Eval(row)
+	got, errEv0 := pred.Eval(predRow(row))
 	require.NoError(t, errEv0)
 	if got != predicates.TriTrue {
 		t.Fatalf("id=5, name=bob: got %v, want TRUE", got)
 	}
 	row["NAME"] = nil
-	got, errEv1 := pred.Eval(row)
+	got, errEv1 := pred.Eval(predRow(row))
 	require.NoError(t, errEv1)
 	if got != predicates.TriFalse {
 		t.Fatalf("id=5, name=NULL: got %v, want FALSE", got)
 	}
 	row["NAME"] = "bob"
 	row["ID"] = int64(11)
-	got, errEv2 := pred.Eval(row)
+	got, errEv2 := pred.Eval(predRow(row))
 	require.NoError(t, errEv2)
 	if got != predicates.TriFalse {
 		t.Fatalf("id=11, name=bob: got %v, want FALSE", got)
@@ -1304,13 +1304,13 @@ func TestWalkExpression_IntegerDivOperator(t *testing.T) {
 				t.Fatalf("Op: got %v, want OpDiv", av.Op)
 			}
 			// 23 / 7 → 3 (truncated toward zero).
-			got, errEv0 := av.Evaluate(map[string]any{"ID": int64(23)})
+			got, errEv0 := av.Evaluate(predRow(map[string]any{"ID": int64(23)}))
 			require.NoError(t, errEv0)
 			if got != int64(3) {
 				t.Errorf("23/7: got %v, want 3", got)
 			}
 			// -23 / 7 → -3 (Go truncates toward zero).
-			got, errEv1 := av.Evaluate(map[string]any{"ID": int64(-23)})
+			got, errEv1 := av.Evaluate(predRow(map[string]any{"ID": int64(-23)}))
 			require.NoError(t, errEv1)
 			if got != int64(-3) {
 				t.Errorf("-23/7: got %v, want -3", got)
@@ -1358,7 +1358,7 @@ func TestWalkExpression_ModuloOperator(t *testing.T) {
 			if av.Op != values.OpMod {
 				t.Fatalf("Op: got %v, want OpMod", av.Op)
 			}
-			got, errEv0 := av.Evaluate(map[string]any{"ID": int64(23)})
+			got, errEv0 := av.Evaluate(predRow(map[string]any{"ID": int64(23)}))
 			require.NoError(t, errEv0)
 			if got != int64(2) {
 				t.Errorf("23 %% 7: got %v, want 2", got)

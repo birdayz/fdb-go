@@ -28,6 +28,7 @@ go_test(
         "expr_test.go",
         "fullstack_test.go",
         "predicatevalue_equals_test.go",
+        "predrow_test.go",
         "walk_test.go",
         "where_exists_position_test.go",
         "window_walk_test.go",
