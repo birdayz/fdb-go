@@ -638,11 +638,38 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 				matched++
 			}
 		}
-		if matched == 0 && len(qr.Positional.Slots) > 0 && len(legType.Fields) > 0 {
-			return nil, fmt.Errorf("RFC-173 leg adapter: positional leg row carries NONE of the leg type's %d columns %v (row width: %d, dotted/merge-shaped?) — a gated join must not consume a mismatched leg (W2 gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(qr.Positional.Slots))
+		// LOUD only for a genuinely MERGE-SHAPED row (carries leg windows or
+		// dotted-qualified field names) that matched nothing — the W3a-1 hazard: a
+		// name-model merge leg wrongly consumed by a gated join. A SIMPLE row that
+		// matches nothing (e.g. a bare-scalar `_0` UNNEST element bound as a
+		// redundant gather leg) degrades to an all-nil row silently, matching the
+		// pre-cap Datum-synthesis path (a non-map datum → all-nil, no error).
+		if matched == 0 && len(qr.Positional.Slots) > 0 && len(legType.Fields) > 0 && rowIsMergeShaped(qr.Positional) {
+			return nil, fmt.Errorf("RFC-173 leg adapter: merge-shaped leg row carries NONE of the leg type's %d columns %v (row width: %d) — a gated join must not consume a merge-shaped leg (W2 gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(qr.Positional.Slots))
 		}
 	}
 	return row, nil
+}
+
+// rowIsMergeShaped reports whether a positional row is a JOIN-MERGE output — it
+// carries leg windows (Type.Legs) or dotted-qualified field names. Such a row's
+// bare columns are last-leg-wins leftovers, so a gated join adapting it to a
+// bare leg type that matches nothing is the W3a-1 wrong-source hazard (loud). A
+// simple row (a scan/element leg) that matches nothing is a benign redundant
+// binding that degrades to an all-nil leg.
+func rowIsMergeShaped(pos *PositionalRow) bool {
+	if pos == nil || pos.Type == nil {
+		return false
+	}
+	if len(pos.Type.Legs) > 0 {
+		return true
+	}
+	for _, f := range pos.Type.Fields {
+		if strings.IndexByte(f.Name, '.') >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // positionalMatchesLegType reports whether a leg's pre-existing positional
