@@ -841,11 +841,8 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	}
 
 	entry := result.GetValue()
-	datum, pos := buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
-	if DisablePositionalEmission { // §5 dual-window differential oracle gate
-		pos = nil
-	}
-	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Positional: pos}, result.GetContinuation()), nil
+	_, pos := buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
+	return recordlayer.NewResultWithValue(QueryResult{Positional: pos}, result.GetContinuation()), nil
 }
 
 // buildCoveringRow constructs a covering-index result row: the name-keyed datum AND
@@ -947,7 +944,7 @@ func executeFilter(
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (bool, error) {
-			var rowCtx any = qr.Datum
+			var rowCtx any
 			if qr.Positional != nil && windowsOK {
 				// RFC-173 Slice 2: the merged positional row of a gated 2-way
 				// ordinal join — a window-era leg reference QOV(leg).col needs
@@ -960,23 +957,6 @@ func executeFilter(
 				// ordinal row — resolve filter predicates by ordinal (loud on a
 				// miss, no name-map fallback).
 				rowCtx = frontierRowContext(qr.Positional, evalCtx, needsRowCtx)
-			} else if m, ok := qr.Datum.(map[string]any); ok {
-				if perr := requirePositional("filter"); perr != nil {
-					return false, perr
-				}
-				if StrictReferenceCheck && qr.Complete {
-					// RFC-048 W1: a HAVING/filter reference to a name absent from
-					// a complete row (aggregate output) is a bug, not a NULL.
-					rowCtx = evalCtx.RowContextStrict(m)
-				} else {
-					// Always wrap so qr.Sparse threads through — the base-record
-					// name-keyed path (name window, no params) omits unset optionals,
-					// so a miss is SQL NULL, not a NameMissLoud violation. With no
-					// params the RowEvalContext resolves identically to the bare map,
-					// plus the Sparse flag; the old needsRowCtx fast path could not
-					// carry Sparse.
-					rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
-				}
 			}
 			for _, pred := range preds {
 				res, err := pred.Eval(rowCtx)
@@ -1358,24 +1338,20 @@ func executeDistinct(
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
 }
 
+// distinctKey builds a DISTINCT dedup key from the row's ordinal PositionalRow
+// (RFC-173: the name-keyed Datum is deleted). Slots are keyed by ORDINAL (their
+// fixed output position), typed like the legacy name-keyed form so two rows dedup
+// iff every column value+type matches. A nil-Positional row yields the empty key.
 func distinctKey(qr QueryResult) string {
-	m, ok := qr.Datum.(map[string]any)
-	if !ok {
-		return fmt.Sprintf("%T:%v", qr.Datum, qr.Datum)
+	if qr.Positional == nil {
+		return ""
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	var sb strings.Builder
-	for i, k := range keys {
+	for i, v := range qr.Positional.Slots {
 		if i > 0 {
 			sb.WriteByte('|')
 		}
-		sb.WriteString(k)
-		sb.WriteByte('=')
-		v := m[k]
+		fmt.Fprintf(&sb, "%d=", i)
 		if v == nil {
 			sb.WriteString("\x00NULL\x00")
 		} else {
@@ -1453,9 +1429,8 @@ func executeProjection(
 		if evalErr != nil {
 			return qr
 		}
-		projected := make(map[string]any, len(projections))
 		slots := make([]any, len(projections))
-		var rowCtx any = qr.Datum
+		var rowCtx any
 		if qr.Positional != nil && windowsOK {
 			// RFC-173 Slice 2: the merged positional row of a gated 2-way
 			// ordinal join — a window-era leg reference QOV(leg).col needs its
@@ -1463,83 +1438,28 @@ func executeProjection(
 			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
 		} else if qr.Positional != nil {
 			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
-			// row — resolve projections by ordinal (loud on a miss, no name-map
-			// fallback), taking precedence over the name-keyed Datum.
+			// row — resolve projections by ordinal (loud on a miss).
 			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
-		} else if m, ok := qr.Datum.(map[string]any); ok {
-			if perr := requirePositional("projection"); perr != nil {
-				evalErr = perr
-				return qr
-			}
-			if StrictReferenceCheck && qr.Complete {
-				// RFC-048 W1: a projection reading a name absent from a complete
-				// row (aggregate output) is a bug, not a NULL.
-				rowCtx = evalCtx.RowContextStrict(m)
-			} else {
-				// Always wrap so qr.Sparse threads through — the base-record
-				// name-keyed projection (name window, no params) omits unset
-				// optionals, so a miss is SQL NULL, not a NameMissLoud violation.
-				// With no params the RowEvalContext resolves identically to the
-				// bare map; the old needsRowCtx fast path could not carry Sparse.
-				rowCtx = evalCtx.RowContextSparse(m, qr.Sparse)
-			}
 		}
 		for i, proj := range projections {
-			key := projNames[i]
 			val, err := proj.Evaluate(rowCtx)
 			if err != nil {
 				evalErr = err
 				return qr
 			}
-			projected[key] = val
-			slots[i] = val // RFC-173 P2: dense positional slot (kept even on dup names)
-			// Also store under the alias so that outer projections
-			// (e.g. CTE consumers) can resolve the aliased name.
-			if i < len(aliases) && aliases[i] != "" {
-				aliasKey := strings.ToUpper(aliases[i])
-				if aliasKey != key {
-					projected[aliasKey] = val
-				}
-			}
-			// For computed expressions, also store under the
-			// positional key (_0, _1, ...) so Java-compatible
-			// column name lookups work.
-			if _, isField := proj.(*values.FieldValue); !isField {
-				posKey := fmt.Sprintf("_%d", i)
-				if posKey != key {
-					projected[posKey] = val
-				}
-			}
+			slots[i] = val // RFC-173: dense positional slot (kept even on dup names)
 		}
-		// RFC-173 Slice 1: emit the ordinal row ONLY when the input is itself on
-		// the non-join frontier (carried a Positional). A projection OVER A JOIN
-		// re-emits join-qualified columns (ALIAS.COL) whose downstream references
-		// are correlated QOV(alias).col — a name-model, not-ordinal shape; emitting
-		// a Positional there would wrongly flip the consumer onto the ordinal path
-		// and miss (qualified name != bare field). Positional thus propagates along
-		// the frontier and stops at the join/aggregate boundary — the self-excluding
-		// gate the RFC specifies, enforced at emission.
-		var positional *PositionalRow
-		if qr.Positional != nil || projOutputAllBare {
-			positional = &PositionalRow{Type: projType, Slots: slots}
-		}
+		// RFC-173 cap: a projection's output IS a PositionalRow (the name-keyed Datum
+		// is deleted), so ALWAYS emit it — built by parallel construction from the
+		// projected values, named by the output schema (projType).
 		return QueryResult{
-			Datum:      projected,
-			Positional: positional,
+			Positional: &PositionalRow{Type: projType, Slots: slots},
 			Record:     qr.Record,
 			PrimaryKey: qr.PrimaryKey,
-			// A projection output's key set IS the row's full declared schema
-			// (every projected column present, nil for NULL) — the
-			// QueryResult.Complete contract. Downstream this authorizes the
-			// name-model merge to fabricate "ALIAS.col" keys for the leg
-			// (qualifyAlias/qualifyOuterRow): a schema-complete leg's alias
-			// genuinely names the whole row, unlike a raw join-merge leg whose
-			// bare keys are last-leg-wins leftovers. Without it, an enclosed
-			// CTE/derived body's projected columns had no "C.col" keys on the
-			// merged row and every qualified read silently answered NULL.
-			Complete: true,
+			Complete:   true,
 		}
 	})
+	_ = projOutputAllBare
 	errCursor := &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}
 	return errCursor, nil
 }
@@ -1710,19 +1630,15 @@ func executeUnionBuffered(
 		branchKeys := planColumnNames(inner)
 		if branchIdx == 0 {
 			firstBranchKeys = branchKeys
-			if len(firstBranchKeys) == 0 && len(items) > 0 {
-				if m, ok := items[0].Datum.(map[string]any); ok {
-					firstBranchKeys = mapKeysOrdered(m)
-				}
+			if len(firstBranchKeys) == 0 && len(items) > 0 && items[0].Positional != nil {
+				firstBranchKeys = items[0].Positional.TypeNames()
 			}
 		}
 		if branchIdx > 0 && len(firstBranchKeys) > 0 {
 			targetKeys := firstBranchKeys
 			srcKeys := branchKeys
-			if len(srcKeys) == 0 && len(items) > 0 {
-				if m, ok := items[0].Datum.(map[string]any); ok {
-					srcKeys = mapKeysOrdered(m)
-				}
+			if len(srcKeys) == 0 && len(items) > 0 && items[0].Positional != nil {
+				srcKeys = items[0].Positional.TypeNames()
 			}
 			for i := range items {
 				items[i] = remapUnionColumnsByPosition(items[i], srcKeys, targetKeys)
@@ -1736,15 +1652,6 @@ func executeUnionBuffered(
 		all = append(all, items...)
 	}
 	return applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit), nil
-}
-
-func mapKeysOrdered(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func planColumnNames(p plans.RecordQueryPlan) []string {
@@ -1864,11 +1771,12 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 }
 
 func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) QueryResult {
-	m, ok := qr.Datum.(map[string]any)
-	if !ok {
-		return qr
-	}
-	if len(srcKeys) != len(targetKeys) {
+	// RFC-173: a UNION aligns legs BY ORDINAL (SQL positional union) — re-type the
+	// leg's Positional to the union's output column names (leg 2's [REGION] → the
+	// output's [STATUS]); the slots stay in ordinal place, only the names change.
+	// The name-keyed Datum remap is deleted. The first leg's names already ARE the
+	// output names, so it flows through unchanged.
+	if qr.Positional == nil || len(srcKeys) != len(targetKeys) || len(qr.Positional.Slots) != len(targetKeys) {
 		return qr
 	}
 	needsRemap := false
@@ -1881,24 +1789,11 @@ func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) Q
 	if !needsRemap {
 		return qr
 	}
-	remapped := make(map[string]any, len(m))
-	for i, srcKey := range srcKeys {
-		remapped[targetKeys[i]] = m[srcKey]
+	return QueryResult{
+		Positional: &PositionalRow{Type: positionalTypeFromNames(targetKeys), Slots: qr.Positional.Slots},
+		Record:     qr.Record,
+		PrimaryKey: qr.PrimaryKey,
 	}
-	// RFC-173: carry the leg's positional row forward, RE-TYPED to the union's
-	// output column names. A UNION aligns legs BY ORDINAL (SQL positional union),
-	// and each leg's projection emits its slots in declaration order — the same
-	// ordinal order as targetKeys — so the slots stay in place and only the slot
-	// NAMES change (leg 2's [REGION] → the output's [STATUS]). Without this the
-	// remapped leg dropped its Positional and every read of a non-first-leg row
-	// fell back to the name-keyed Datum (the last DATUM-DEP materialization shape).
-	// The first leg is never remapped (its names already ARE the output names), so
-	// its positional flows through unchanged.
-	var remappedPos *PositionalRow
-	if qr.Positional != nil && len(qr.Positional.Slots) == len(targetKeys) {
-		remappedPos = &PositionalRow{Type: positionalTypeFromNames(targetKeys), Slots: qr.Positional.Slots}
-	}
-	return QueryResult{Datum: remapped, Positional: remappedPos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 }
 
 func executeIntersection(
@@ -2009,10 +1904,7 @@ func widenInt32(v any) any {
 // producer that never births a positional row) keeps the exact prior bare-Datum
 // path.
 func compKeyEvalArg(qr QueryResult) any {
-	if qr.Positional != nil {
-		return qr.Positional
-	}
-	return qr.Datum
+	return qr.Positional
 }
 
 func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
@@ -2043,7 +1935,7 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 		if qr.PrimaryKey != nil {
 			return qr.PrimaryKey
 		}
-		return tuple.Tuple{fmt.Sprintf("%v", qr.Datum)}
+		return tuple.Tuple{fmt.Sprintf("%v", qr.Positional)}
 	}
 }
 
@@ -2218,68 +2110,16 @@ func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias st
 }
 
 func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryResult {
-	var mergedPos *PositionalRow
-	if !DisablePositionalEmission { // §5 oracle suppresses every birth
-		mergedPos = concatLegPositionals(outer.Positional, inner.Positional, outerAlias, innerAlias)
+	// RFC-173 cap: a join merge's output IS a leg-windowed PositionalRow — the two
+	// leg rows' own Positionals concatenated (concatLegPositionals), with leg windows
+	// so a qualified read (`A.ID`) resolves to its leg and a bare read by name-in-row.
+	// The name-keyed Datum merge (Pass A/B/C, qualifyAlias/qualifyTypeFallback) is
+	// deleted with the name model.
+	return QueryResult{
+		Positional: concatLegPositionals(outer.Positional, inner.Positional, outerAlias, innerAlias),
+		Record:     outer.Record,
+		PrimaryKey: outer.PrimaryKey,
 	}
-	outerMap, ok1 := outer.Datum.(map[string]any)
-	innerMap, ok2 := inner.Datum.(map[string]any)
-	if !ok1 || !ok2 {
-		return QueryResult{Datum: outer.Datum, Positional: mergedPos, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
-	}
-
-	merged := make(map[string]any, len(outerMap)+len(innerMap))
-	outerType := recordTypeName(outer)
-	innerType := recordTypeName(inner)
-
-	outerQual := outerAlias
-	if outerQual == "" {
-		outerQual = outerType
-	}
-	innerQual := innerAlias
-	if innerQual == "" {
-		innerQual = innerType
-	}
-
-	// Pass A — bare keys. The outer writes every bare key; the inner only
-	// overwrites bare keys when its namespace differs from the outer's (so a
-	// self-join under one alias doesn't clobber the outer's columns).
-	for k, v := range outerMap {
-		merged[k] = v
-	}
-	for k, v := range innerMap {
-		if strings.Contains(k, ".") {
-			merged[k] = v
-			continue
-		}
-		if innerQual == "" || innerQual != outerQual {
-			merged[k] = v
-		}
-	}
-
-	// Pass B — explicit-alias-qualified keys for BOTH legs. An explicit
-	// table alias is authoritative: `t.id` must resolve to the leg the user
-	// named `t`, regardless of join orientation. These are written before
-	// the record-type fallback (Pass C) so that when one leg's alias equals
-	// the OTHER leg's record type (e.g. self-join `FROM t, (SELECT ... FROM t) x`,
-	// where the inner leg's alias `T` collides with the outer leg's type `T`),
-	// the inner's alias-qualified `T.ID` wins over the outer's type fallback.
-	// Without this ordering the outer's `outerType + ".ID"` fallback claimed
-	// the `T.` namespace first and shadowed the inner alias (wrong results).
-	// Leg completeness routes the fabrication decision (see qualifyAlias);
-	// the MERGED output itself stays Complete=false — its bare keys are
-	// last-leg-wins leftovers, so a later merge level must keep refusing to
-	// fabricate from them.
-	qualifyAlias(merged, outerMap, outerAlias, outer.Complete)
-	qualifyAlias(merged, innerMap, innerAlias, inner.Complete)
-
-	// Pass C — record-type fallback for unaliased references (`FROM t` →
-	// `t.col` where `t` is the type name). Only fills keys not already
-	// claimed by an explicit alias above.
-	qualifyTypeFallback(merged, outerMap, outerAlias, outerType)
-	qualifyTypeFallback(merged, innerMap, innerAlias, innerType)
-
-	return QueryResult{Datum: merged, Positional: mergedPos, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
 }
 
 // qualifyAlias writes explicit-alias-qualified keys ("ALIAS.COL") for each
@@ -2318,136 +2158,6 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 // Routing note: aggregate outputs have been Complete since RFC-048, so their
 // bare keys moved from the legacy arm to the Complete-bare arm here — both
 // overwrite, so behavior is unchanged; only the arm differs.
-func qualifyAlias(dst, src map[string]any, alias string, complete bool) {
-	if alias == "" {
-		return
-	}
-	if complete {
-		for k, v := range src {
-			key := alias + "." + strings.ToUpper(k)
-			if strings.Contains(k, ".") {
-				if _, exists := dst[key]; exists {
-					continue
-				}
-			}
-			dst[key] = v
-		}
-		return
-	}
-	if hasQualifiedKeys(src) {
-		return
-	}
-	for k, v := range src {
-		dst[alias+"."+strings.ToUpper(k)] = v
-	}
-}
-
-// hasQualifiedKeys reports whether a row datum carries any dot-qualified key
-// — the signature of a join-merge output (mergeRows / qualifyOuterRow).
-func hasQualifiedKeys(m map[string]any) bool {
-	for k := range m {
-		if strings.Contains(k, ".") {
-			return true
-		}
-	}
-	return false
-}
-
-// qualifyTypeFallback writes record-type-qualified keys ("TYPE.COL") for
-// unaliased table references. It only fills keys not already claimed by an
-// explicit alias (qualifyAlias runs first), so a leg whose record type
-// happens to equal another leg's explicit alias cannot shadow that alias.
-// Like qualifyAlias, a join-merge src (dotted keys) never fabricates.
-func qualifyTypeFallback(dst, src map[string]any, alias, recType string) {
-	if recType == "" {
-		return
-	}
-	// When the alias equals the type, the alias pass already wrote TYPE.COL.
-	// When alias is non-empty and differs, TYPE is only a fallback for
-	// unaliased references; fill where absent. When alias is empty, TYPE is
-	// the primary namespace.
-	if alias == recType {
-		return
-	}
-	if hasQualifiedKeys(src) {
-		return
-	}
-	for k, v := range src {
-		qualKey := recType + "." + strings.ToUpper(k)
-		if _, exists := dst[qualKey]; exists {
-			continue
-		}
-		dst[qualKey] = v
-	}
-}
-
-// qualifyOuterRow builds a result row from an unmatched LEFT JOIN outer
-// row, adding alias-qualified keys (e.g. "CUSTOMER.NAME") so that
-// downstream projections using qualified column references resolve
-// correctly. This mirrors the outer-half of mergeRows without an inner.
-func qualifyOuterRow(outer QueryResult, outerAlias string) QueryResult {
-	outerMap, ok := outer.Datum.(map[string]any)
-	if !ok {
-		return outer
-	}
-	qualified := make(map[string]any, len(outerMap)*2)
-	outerType := recordTypeName(outer)
-	outerQual := outerAlias
-	if outerQual == "" {
-		outerQual = outerType
-	}
-	// Pass 1 — copy ALL keys verbatim (bare columns AND already-qualified
-	// "LEG.COL" keys). A MERGED row (NLJ / EXISTS-over-join output) already
-	// carries the authoritative per-leg "A.ID"/"B.ID" keys here.
-	for k, v := range outerMap {
-		qualified[k] = v
-	}
-	// Pass 2 — add alias/type-qualified keys for each BARE column, for a
-	// SINGLE-SOURCE row only. A MERGED row (any dotted key present) already
-	// carries its authoritative per-leg namespaces from Pass 1, and its bare
-	// keys are last-leg-wins leftovers — fabricating "ALIAS.COL" from them
-	// reads the wrong source (the same disease qualifyAlias documents; the
-	// historical fill-if-absent variant here still fabricated on the
-	// null-padded box row, where the authoritative key is ABSENT — the
-	// EXISTS-over-join misroute of RFC-077 was the clobber flavour, the
-	// mixed-nesting wrong-source rows the fabrication flavour).
-	if !hasQualifiedKeys(outerMap) {
-		for k, v := range outerMap {
-			if outerQual != "" {
-				qualified[outerQual+"."+strings.ToUpper(k)] = v
-			}
-			if outerAlias != "" && outerType != "" && outerAlias != outerType {
-				qualified[outerType+"."+strings.ToUpper(k)] = v
-			}
-		}
-	} else if outer.Complete && outerQual != "" {
-		// A COMPLETE dotted-key row (projection output / unnest FlatMap RC —
-		// see qualifyAlias) is the one class whose alias names the whole row,
-		// so a pad row for a CTE/derived leg keeps its "C.col" keys. Same
-		// key-shape split as qualifyAlias: bare keys OVERWRITE (the leg's own
-		// schema columns under its authoritative alias), dotted convenience
-		// keys fill-if-absent. INCOMPLETE merged rows keep the refusal above
-		// (the null-padded box row hazard).
-		for k, v := range outerMap {
-			key := outerQual + "." + strings.ToUpper(k)
-			if strings.Contains(k, ".") {
-				if _, exists := qualified[key]; exists {
-					continue
-				}
-			}
-			qualified[key] = v
-		}
-	}
-	return QueryResult{Datum: qualified, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
-}
-
-func recordTypeName(qr QueryResult) string {
-	if qr.Record != nil && qr.Record.Record != nil {
-		return strings.ToUpper(string(qr.Record.Record.ProtoReflect().Descriptor().Name()))
-	}
-	return ""
-}
-
 func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) (bool, error) {
 	return passesJoinPredicatesLegs(combined, preds, evalCtx, nil)
 }
@@ -2471,46 +2181,25 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 	if len(preds) == 0 {
 		return true, nil
 	}
-	var rowCtx any = combined.Datum
-	if legs != nil {
-		// Birth-active cursor: baked predicates resolve against the seed layout via
-		// the per-leg binder; the merge-time concat Positional here would carry a
-		// DIFFERENT layout (birth overwrites combined.Positional only after this
-		// check), so keep the binder + name-keyed Datum path.
-		m, _ := combined.Datum.(map[string]any)
-		rc := &values.RowEvalContext{
-			Datum:        m,
-			Correlations: legs,
-		}
-		if evalCtx != nil {
-			rc.Binder = evalCtx
-			rc.ScalarSubqueries = evalCtx.scalarSubqueries
-		}
-		rowCtx = rc
-	} else if combined.Positional != nil {
-		// RFC-173 name-model cursor: the merged row carries the leg-windowed concat
-		// Positional (concatLegPositionals), whose leg names match the flat join/
-		// EXISTS predicate qualifiers (`A.ID` → leg A window via GetByName). Resolve
-		// against it — authoritative, no name-keyed fallback — so this join predicate
-		// path stops riding QueryResult.Datum. An outer correlation / param / scalar
-		// subquery still resolves via evalCtx. Datum rides along for coexistence.
-		m, _ := combined.Datum.(map[string]any)
-		rc := &values.RowEvalContext{
-			Datum:      m,
-			Positional: combined.Positional,
-			Sparse:     combined.Sparse,
-		}
-		if evalCtx != nil {
-			rc.Binder = evalCtx
-			rc.Correlations = evalCtx
-			rc.ScalarSubqueries = evalCtx.scalarSubqueries
-		}
-		rowCtx = rc
-	} else if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0 {
-		if m, ok := combined.Datum.(map[string]any); ok {
-			rowCtx = evalCtx.RowContextSparse(m, combined.Sparse)
-		}
+	// RFC-173 cap: resolve join/EXISTS predicates against the merged row's ordinal
+	// Positional (the name-keyed Datum is deleted). A FLAT leg reference (`A.ID`)
+	// resolves through the merged Positional's leg windows (GetByName); a
+	// QOV(leg).col reference through the per-leg binder (legs, when birth-active)
+	// or evalCtx; an outer correlation / param / scalar subquery through evalCtx.
+	rc := &values.RowEvalContext{
+		Positional: combined.Positional,
+		Sparse:     combined.Sparse,
 	}
+	if legs != nil {
+		rc.Correlations = legs
+	} else if evalCtx != nil {
+		rc.Correlations = evalCtx
+	}
+	if evalCtx != nil {
+		rc.Binder = evalCtx
+		rc.ScalarSubqueries = evalCtx.scalarSubqueries
+	}
+	rowCtx := any(rc)
 	for _, pred := range preds {
 		res, err := pred.Eval(rowCtx)
 		if err != nil {

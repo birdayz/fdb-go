@@ -25,8 +25,7 @@ const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 // (when the row originated from a scan), and an optional primary key.
 // Mirrors Java's QueryResult.
 type QueryResult struct {
-	Datum any
-	// Positional is the RFC-173 ordinal-model sibling of Datum: the same row as
+	// Positional is the RFC-173 ordinal-model row: the same row as
 	// a typed PositionalRow (field values indexed by ordinal). Non-nil marks the
 	// row as being on the NON-JOIN FRONTIER (scans, covering scans, projection/
 	// map over the frontier emit it; join producers mergeRows/qualifyOuterRow do

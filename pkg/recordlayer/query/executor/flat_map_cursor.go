@@ -613,8 +613,8 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// resolve them. Mirrors the prior semi-join cursor's qualifyOuterRow and
 	// Java's outer-record-under-outer-quantifier flow.
 	if isIdentityOuterRV(c.resultValue, c.outerAlias) {
-		if m, ok := computed.(map[string]any); ok {
-			out := qualifyOuterRow(QueryResult{Datum: m, Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}, c.outerAlias.Name())
+		{
+			out := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
 			// RFC-173 item-2 commit 2, the I1 pass-through: the identity
 			// FlatMap's output IS the outer row, so the outer's positional row
 			// flows through instead of dying at the FlatMap boundary —
@@ -685,11 +685,15 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 				// keys, and the reason a bare-named plain-scan row alone would loud-miss
 				// the qualified read (the TestFDB_CorrelatedExistsCrossJoin catch).
 				out.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
+			} else {
+				// RFC-173 cap: the identity output IS the outer row — flow its own
+				// Positional through (the name-keyed qualifyOuterRow Datum is deleted).
+				out.Positional = outerRow.Positional
 			}
 			return out, nil
 		}
 	}
-	return QueryResult{Datum: computed, Complete: computedComplete, Positional: foldPos}, nil
+	return QueryResult{Complete: computedComplete, Positional: foldPos}, nil
 }
 
 // buildContinuation creates a FlatMapContinuation proto. The decision is purely
