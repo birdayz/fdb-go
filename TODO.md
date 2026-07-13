@@ -37,30 +37,38 @@ this session (all committed: `73753d722` 3 gaps, `b54ec7522` scalar, `e7a662b41`
 - **scalar-subquery extraction** and **aggregate-over-UNION/UnorderedUnion/RecursiveLevelUnion** are
   ordinalized (the latter cleared ~13 tests via `aggregateInputIsFlatFrontier`).
 
-**REMAINING name-model surface** (the whole sqldriver suite hits the plumbing in ONLY these, per the
-armed-probe sweep) — the birth-disabled reach shapes:
-1. **Aggregate/consumer over a bare-projected JOIN or recursive-CTE branch.** Root: `executeProjection`
-   (executor.go:~1500) and `executeMap` (executor_new_plans.go:~650) emit a Positional ONLY when the
-   INPUT carried one — a projection/Map OVER A JOIN stays Positional-less. Widening them to also emit
-   for a BARE-output schema is correct-by-construction (slots built by parallel construction) and green
-   on all real suites, BUT it did not clear recursive-CTE (its branch output columns are QUALIFIED
-   `B.ID`, so `projOutputAllBare` is false) — the recursive-CTE leg needs its output projected to the
-   CTE's BARE declared columns first. Tests: `TestFDB_CascadesRecursiveCTE`, `RecursiveCTEComputedColumn`,
-   `RecursiveCTEDuplicateAliases` (all `SELECT COUNT(*) FROM <recursive cte>`).
-2. **Box/unnest reaches:** `GraefeImplProbe2/Q5_star_body_enclosed` (`SELECT * FROM la, la.arr AS x` CTE
-   body — `SELECT *` keeps qualified multi-source names; `derivedBodyOpaqueOrdinalLeg` only admits
-   bare-projected bodies), `Q51`/`Q54` (shadow-read reach BOUNDARY — candidate loud-reject/retire),
-   `BareTwinGather/grouped_over_name_model_fallback` (FULL-box + unnest + subquery-conjunct — FULL join,
-   Java-unsupported → loud-reject candidate like gap 1), `ThreeLinkFilteredOrdinalizes` box-base.
+**CLEARED since the checkpoint (commit `44d51c877`, all 6 real suites green):**
+- Aggregate/consumer over a bare-projected JOIN or **recursive-CTE** branch — `executeProjection`/
+  `executeMap` now emit the ordinal Positional for a BARE + UNIQUELY-named output (dup bare names stay
+  name-model — a flat row can't disambiguate `SELECT c.name, p.name`→[NAME,NAME]); `aggregateEvalArg`
+  resolves against any flat Positional the row carries; `aggregateInputIsFlatFrontier` peels the union
+  plans. `PositionalRow.GetByName` strips a self-qualifier (`V.X`→`X`) when the leaf is UNIQUE.
+- Booked flip-sentinels landed (GraefeImplProbe2): Q51 absent-column read → LOUD (not silent NULL);
+  Q54 qualified read → resolves `1|1` (matches sibling Q52); Q5 passes.
 
-**To finish (Datum=0):** ordinalize (1) [recursive-CTE bare-output + the projection/Map widening] and the
-Java-supported box reaches; loud-reject the Java-unsupported ones (FULL-box grouped, likely Q51/Q54).
-Then delete `QueryResult.Datum` + the internal-plumbing name arms + the dead §5 oracle machinery
-(`DisablePositionalEmission`/`SetNameModelOracle`/`OracleBakedNameFallback`/dualwindow pkg) +
-`buildUnnestResultValue`/`AnchoredJoin`. **This is delicate Cascades work touching guarded Positional-
-emission invariants → needs a Graefe ACK and, ideally, a restored differential net** (fix the name side
-of resultset, or make the probe the standing gate). The `RequirePositional` probe is the forcing
-function for the remaining shapes; the real FDB suites are the correctness authority.
+**REMAINING name-model surface — 3 birth-disabled reach shapes (armed-probe sweep):**
+1. **`ThreeLinkFilteredOrdinalizes/buried_2chain_straddle`** — `SELECT Y FROM T4, T4.SARR AS X, X.SUB AS Y,
+   T4 AS T4C WHERE T4.ID = Y`: a chained unnest ENCLOSED as a leg of a larger cluster (+T4C), with a
+   straddle predicate. The enclosed-chain MERGE stays name-model (the cluster-gate's enclosure decline,
+   `buildUnnestResultValue` → `NewAnchoredJoinRecord`). **Java-SUPPORTED → must ordinalize** (the
+   enclosed-inner-cluster ordinalization the gate defers to "item 3"). DEEP.
+2. **`GraefeImplProbe2/Q5_star_body_enclosed`** — `WITH S AS (SELECT * FROM la, la.arr AS x) SELECT S.K,
+   S.X ...`: `SELECT *` over a lateral unnest keeps QUALIFIED multi-source names, so the derived body
+   stays name-model (`derivedBodyOpaqueOrdinalLeg` admits only bare-projected bodies). **Java-SUPPORTED →
+   must ordinalize** (SELECT*-multi-source). DEEP. (Passes today via the name path; the probe flags it.)
+3. **`BareTwinGather/grouped_over_name_model_fallback`** — `SELECT X, COUNT(*) FROM A FULL OUTER JOIN B …,
+   A.ARR AS X WHERE A.K > (subquery) GROUP BY X`: FULL-box + unnest + Unbakeable-subquery-conjunct. FULL
+   OUTER JOIN is **Java-UNSUPPORTED → loud-reject candidate** (like gap 1's chained FULL-box straddle;
+   the single-unnest analog needs a targeted reject in `translateUnnestJoin` that does NOT catch the c5a
+   FULL-box shapes that DO ordinalize).
+
+**To finish (Datum=0):** ordinalize (1) [enclosed-chain merge] and (2) [SELECT*-multi-source]; loud-reject
+(3) [FULL-box+subquery]. Then delete `QueryResult.Datum` + the internal-plumbing name arms (guarded by
+`requirePositional`) + the dead §5 oracle machinery (`DisablePositionalEmission`/`SetNameModelOracle`/
+`OracleBakedNameFallback`/dualwindow pkg) + `buildUnnestResultValue`/`AnchoredJoin`. The two DEEP
+ordinalizations touch guarded planner/enclosure invariants → **need a Graefe ACK** before merge. The
+`RequirePositional` probe (arm `var RequirePositional = true`) is the forcing function; the 6 real FDB
+suites are the correctness authority (the §5 dual-window is already retired — resultset is Positional-only).
 
 ### RFC-173 progress (slice tracker)
 
