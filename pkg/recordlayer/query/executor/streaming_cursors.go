@@ -65,6 +65,18 @@ type aggregateCursor struct {
 	plainScanInput bool
 	needsRowCtx    bool
 
+	// RFC-173 aggregate-over-JOIN input edge. When the input flows a 2-way ordinal
+	// join's MERGED positional row (downstreamLegWindows unwraps the layout-preserving
+	// passthroughs down to the join and derives its leg windows), a QUALIFIED group-key
+	// / operand reference (D.DNAME, E.SALARY) resolves LEG-LOCALLY off the merged row
+	// through legWindowRowContext — the SAME spanAwareRow resolver executeProjection /
+	// executeFilter use over the same merge — instead of the name-keyed Datum map.
+	// joinWindowsOK is true only for a genuine gated ordinal join input; a reshaping /
+	// non-join input keeps windowsOK false and falls to the name path. Probed once at
+	// construction from the inner plan.
+	joinLegSpans  []legSpan
+	joinWindowsOK bool
+
 	// Current in-progress group state (streaming — only ONE group at a time).
 	currentGroupKey string
 	currentKeyVals  []any
@@ -101,6 +113,7 @@ func newAggregateCursor(
 	innerPlan plans.RecordQueryPlan,
 	evalCtx *EvaluationContext,
 ) *aggregateCursor {
+	legSpans, windowsOK := downstreamLegWindows(innerPlan)
 	return &aggregateCursor{
 		inner:          inner,
 		groupingKeys:   groupingKeys,
@@ -109,6 +122,8 @@ func newAggregateCursor(
 		evalCtx:        evalCtx,
 		plainScanInput: aggregateInputIsPlainScan(innerPlan),
 		needsRowCtx:    hasBindingContext(evalCtx),
+		joinLegSpans:   legSpans,
+		joinWindowsOK:  windowsOK,
 	}
 }
 
@@ -302,6 +317,17 @@ func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any 
 	}
 	if row.Positional != nil && c.plainScanInput {
 		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
+	}
+	if row.Positional != nil && c.joinWindowsOK {
+		// RFC-173: the merged positional row of a gated 2-way ordinal join —
+		// a qualified group-key / operand reference QOV(leg).col (or the flat
+		// DOTTED "D.DNAME" the name-model pipeline spells it as) resolves
+		// LEG-LOCALLY through its window, exactly as executeProjection /
+		// executeFilter resolve theirs over the same merge. Unconditional on a
+		// windowed input: even with no param/subquery/outer binding, the leg
+		// windows are required (the bare merged row misreads leg-relative
+		// ordinals — the W3 wrong-slot hazard).
+		return legWindowRowContext(row.Positional, c.evalCtx, c.joinLegSpans)
 	}
 	if m, ok := row.Datum.(map[string]any); ok {
 		return &values.RowEvalContext{Datum: m, Sparse: row.Sparse}
