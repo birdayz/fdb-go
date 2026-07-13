@@ -427,7 +427,7 @@ var NameMissLoud = false
 // purpose is to MEASURE which boundaries still depend on the name-keyed row (cluster the
 // failing tests by shape) so the next ordinalization target is chosen by fallout, not
 // guess. NEVER set in production: it is a diagnostic bolt, not a semantic one.
-var NameReadForbidden = true // RFC-173 cap: name reads forbidden (deletion in progress)
+var NameReadForbidden = false
 
 // NameReadForbiddenError reports a name-keyed field read taken while the NameReadForbidden
 // measurement gate is armed. It names the field so the failing boundary is identifiable
