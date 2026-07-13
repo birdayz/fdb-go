@@ -55,9 +55,9 @@ func TestExecuteValues_SingleRow(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row, ok := results[0].Datum.(map[string]any)
+	row, ok := rowMap(results[0])
 	if !ok {
-		t.Fatalf("datum = %T, want map[string]any", results[0].Datum)
+		t.Fatalf("datum = %T, want map[string]any", results[0].Positional)
 	}
 	if row["constant"] != int64(42) {
 		t.Errorf("row['constant'] = %v, want 42", row["constant"])
@@ -218,7 +218,7 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMap(results[0])
 	if row["'PROJECTED'"] != "projected" {
 		t.Errorf("projection result = %v, want 'projected'", row["'PROJECTED'"])
 	}
@@ -489,16 +489,16 @@ func TestSortByKeys(t *testing.T) {
 	t.Parallel()
 
 	items := []QueryResult{
-		{Datum: map[string]any{"NAME": "charlie", "AGE": int64(30)}},
-		{Datum: map[string]any{"NAME": "alice", "AGE": int64(25)}},
-		{Datum: map[string]any{"NAME": "bob", "AGE": int64(35)}},
+		dmap(map[string]any{"NAME": "charlie", "AGE": int64(30)}),
+		dmap(map[string]any{"NAME": "alice", "AGE": int64(25)}),
+		dmap(map[string]any{"NAME": "bob", "AGE": int64(35)}),
 	}
 
 	sortByKeys(items, []string{"name"}, nil)
 
 	names := make([]string, len(items))
 	for i, item := range items {
-		names[i] = item.Datum.(map[string]any)["NAME"].(string)
+		names[i] = rowMap(item)["NAME"].(string)
 	}
 	if names[0] != "alice" || names[1] != "bob" || names[2] != "charlie" {
 		t.Fatalf("sort by name = %v, want [alice bob charlie]", names)
@@ -543,7 +543,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMap(results[0])
 	if row["'RESULT'"] != "result" {
 		t.Errorf("composite pipeline result = %v, want 'result'", row["'RESULT'"])
 	}
@@ -581,7 +581,7 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	datum := results[0].Datum.(map[string]any)
+	datum, _ := rowMap(results[0])
 	if datum["A"] != int64(1) {
 		t.Errorf("A = %v, want 1", datum["A"])
 	}
@@ -827,8 +827,8 @@ func TestParameterBinding_Filter(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2 (20 and 30 > 15)", len(results))
 	}
-	v0 := results[0].Datum.(map[string]any)["X"].(int64)
-	v1 := results[1].Datum.(map[string]any)["X"].(int64)
+	v0, _ := rowMap(results[0])["X"].(int64)
+	v1, _ := rowMap(results[1])["X"].(int64)
 	if v0 != 20 || v1 != 30 {
 		t.Errorf("values = [%d, %d], want [20, 30]", v0, v1)
 	}
@@ -855,7 +855,7 @@ func TestParameterBinding_Values(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	datum := results[0].Datum.(map[string]any)
+	datum, _ := rowMap(results[0])
 	if datum["param"] != int64(99) {
 		t.Errorf("param = %v, want 99", datum["param"])
 	}
@@ -886,7 +886,7 @@ func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 (1×1 cross)", len(results))
 	}
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMap(results[0])
 	if row["constant"] != "hello" {
 		t.Errorf("constant = %v, want 'hello' (inner overwrites)", row["constant"])
 	}
@@ -1020,7 +1020,7 @@ func TestExecuteStreamingAggregation_CountGroupBy(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 group", len(results))
 	}
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMap(results[0])
 	if row["COUNT(CONSTANT)"] != int64(1) {
 		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
 	}
@@ -1053,7 +1053,7 @@ func TestExecuteStreamingAggregation_NoGroups_Count(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMap(results[0])
 	if row["COUNT(CONSTANT)"] != int64(1) {
 		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
 	}
@@ -1092,7 +1092,7 @@ func TestExecuteAggregation_EmptyInput_NoGroupKeys(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 (COUNT over empty = 0)", len(results))
 	}
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMap(results[0])
 	if row["COUNT(CONSTANT)"] != int64(0) {
 		t.Errorf("COUNT(empty) = %v, want 0", row["COUNT(CONSTANT)"])
 	}
@@ -1119,8 +1119,8 @@ func TestExecuteExplode_List(t *testing.T) {
 		t.Fatalf("got %d results, want 3", len(results))
 	}
 	for i, want := range []int64{1, 2, 3} {
-		if results[i].Datum != want {
-			t.Errorf("results[%d].Datum = %v, want %d", i, results[i].Datum, want)
+		if rowScalar(results[i]) != want {
+			t.Errorf("results[%d] = %v, want %d", i, rowScalar(results[i]), want)
 		}
 	}
 }
@@ -1179,7 +1179,7 @@ func TestExecuteTempTable_InsertAndScan(t *testing.T) {
 	if len(scanned) != 1 {
 		t.Fatalf("scan returned %d rows, want 1", len(scanned))
 	}
-	row := scanned[0].Datum.(map[string]any)
+	row, _ := rowMap(scanned[0])
 	if row["constant"] != int64(42) {
 		t.Errorf("scanned value = %v, want 42", row["constant"])
 	}
@@ -1260,8 +1260,8 @@ func TestExecuteTableFunction_StreamValue(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
 	}
-	if results[0].Datum != int64(10) || results[1].Datum != int64(20) {
-		t.Errorf("results = %v, %v, want 10, 20", results[0].Datum, results[1].Datum)
+	if rowScalar(results[0]) != int64(10) || rowScalar(results[1]) != int64(20) {
+		t.Errorf("results = %v, %v, want 10, 20", rowScalar(results[0]), rowScalar(results[1]))
 	}
 }
 
@@ -1287,8 +1287,8 @@ func TestTempTable_ClearAndReuse(t *testing.T) {
 	t.Parallel()
 
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: int64(1)})
-	tt.Add(QueryResult{Datum: int64(2)})
+	tt.Add(dscalar(int64(1)))
+	tt.Add(dscalar(int64(2)))
 
 	if len(tt.GetList()) != 2 {
 		t.Fatalf("got %d items, want 2", len(tt.GetList()))
@@ -1299,7 +1299,7 @@ func TestTempTable_ClearAndReuse(t *testing.T) {
 		t.Fatalf("after clear, got %d items, want 0", len(tt.GetList()))
 	}
 
-	tt.Add(QueryResult{Datum: int64(3)})
+	tt.Add(dscalar(int64(3)))
 	if len(tt.GetList()) != 1 {
 		t.Fatalf("after re-add, got %d items, want 1", len(tt.GetList()))
 	}
@@ -1309,16 +1309,16 @@ func TestSortByKeys_Descending(t *testing.T) {
 	t.Parallel()
 
 	items := []QueryResult{
-		{Datum: map[string]any{"AGE": int64(25)}},
-		{Datum: map[string]any{"AGE": int64(35)}},
-		{Datum: map[string]any{"AGE": int64(30)}},
+		dmap(map[string]any{"AGE": int64(25)}),
+		dmap(map[string]any{"AGE": int64(35)}),
+		dmap(map[string]any{"AGE": int64(30)}),
 	}
 
 	sortByKeys(items, []string{"age"}, []bool{true})
 
 	ages := make([]int64, len(items))
 	for i, item := range items {
-		ages[i] = item.Datum.(map[string]any)["AGE"].(int64)
+		ages[i] = rowMap(item)["AGE"].(int64)
 	}
 	if ages[0] != 35 || ages[1] != 30 || ages[2] != 25 {
 		t.Fatalf("sort by age DESC = %v, want [35 30 25]", ages)
@@ -2170,16 +2170,10 @@ func TestScanComparisons_MultiEqualityThenInequality(t *testing.T) {
 
 func TestMergeRows_BothMaps(t *testing.T) {
 	t.Parallel()
-	outer := QueryResult{
-		Datum:      map[string]any{"A": 1, "B": 2},
-		PrimaryKey: tuple.Tuple{int64(1)},
-	}
-	inner := QueryResult{
-		Datum:      map[string]any{"C": 3, "D": 4},
-		PrimaryKey: tuple.Tuple{int64(2)},
-	}
+	outer := dmapPK(tuple.Tuple{int64(1)}, map[string]any{"A": 1, "B": 2})
+	inner := dmapPK(tuple.Tuple{int64(2)}, map[string]any{"C": 3, "D": 4})
 	merged := mergeRows(outer, inner, "", "")
-	m := merged.Datum.(map[string]any)
+	m, _ := rowMap(merged)
 	if m["A"] != 1 || m["B"] != 2 || m["C"] != 3 || m["D"] != 4 {
 		t.Fatalf("unexpected merged datum: %v", m)
 	}
@@ -2190,22 +2184,28 @@ func TestMergeRows_BothMaps(t *testing.T) {
 
 func TestMergeRows_InnerOverridesOuter(t *testing.T) {
 	t.Parallel()
-	outer := QueryResult{Datum: map[string]any{"K": "outer"}}
-	inner := QueryResult{Datum: map[string]any{"K": "inner"}}
+	outer := dmap(map[string]any{"K": "outer"})
+	inner := dmap(map[string]any{"K": "inner"})
 	merged := mergeRows(outer, inner, "", "")
-	m := merged.Datum.(map[string]any)
+	m, _ := rowMap(merged)
 	if m["K"] != "inner" {
 		t.Fatalf("inner should override outer on key conflict, got %v", m["K"])
 	}
 }
 
-func TestMergeRows_NonMapDatum(t *testing.T) {
+// TestMergeRows_ScalarOuter: RFC-173 cap — a bare-scalar outer leg (the
+// scalarPositionalRow `_0` wrapper) concatenates with the inner leg like any
+// other row; the retired name model's "non-map Datum passthrough" is gone.
+func TestMergeRows_ScalarOuter(t *testing.T) {
 	t.Parallel()
-	outer := QueryResult{Datum: "string-datum", PrimaryKey: tuple.Tuple{int64(1)}}
-	inner := QueryResult{Datum: map[string]any{"C": 3}}
+	outer := QueryResult{Positional: scalarPositionalRow("string-datum"), PrimaryKey: tuple.Tuple{int64(1)}}
+	inner := dmap(map[string]any{"C": 3})
 	merged := mergeRows(outer, inner, "", "")
-	if merged.Datum != "string-datum" {
-		t.Fatalf("expected outer datum passthrough, got %v", merged.Datum)
+	if got := rowVal(merged, "_0"); got != "string-datum" {
+		t.Fatalf("expected scalar outer leg preserved, got %v", got)
+	}
+	if got := rowVal(merged, "C"); got != 3 {
+		t.Fatalf("expected inner leg C=3, got %v", got)
 	}
 }
 
@@ -2356,12 +2356,12 @@ func TestAggResultName_UnknownFunction(t *testing.T) {
 func TestDistinctKey_WithDatum(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(42)}
-	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"A": 1}}
+	qr := dmapPK(pk, map[string]any{"A": 1})
 	key := distinctKey(qr)
 	if key == "" {
 		t.Fatal("expected non-empty key from datum map")
 	}
-	qr2 := QueryResult{PrimaryKey: tuple.Tuple{int64(99)}, Datum: map[string]any{"A": 1}}
+	qr2 := dmapPK(tuple.Tuple{int64(99)}, map[string]any{"A": 1})
 	if distinctKey(qr) != distinctKey(qr2) {
 		t.Fatal("same datum values should produce same distinct key regardless of PK")
 	}
@@ -2369,7 +2369,7 @@ func TestDistinctKey_WithDatum(t *testing.T) {
 
 func TestDistinctKey_NilPrimaryKey(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"A": 1}}
+	qr := dmap(map[string]any{"A": 1})
 	key := distinctKey(qr)
 	expected := "A=int:1"
 	if key != expected {
@@ -2381,7 +2381,7 @@ func TestDistinctKey_Deterministic(t *testing.T) {
 	t.Parallel()
 	// With multiple keys, the output must be sorted and stable regardless
 	// of map iteration order.
-	qr := QueryResult{Datum: map[string]any{"B": 2, "A": 1, "C": 3}}
+	qr := dmap(map[string]any{"B": 2, "A": 1, "C": 3})
 	key1 := distinctKey(qr)
 	key2 := distinctKey(qr)
 	if key1 != key2 {
@@ -2398,7 +2398,7 @@ func TestDistinctKey_Deterministic(t *testing.T) {
 func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(7)}
-	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"X": 1}}
+	qr := dmapPK(pk, map[string]any{"X": 1})
 	fn := intersectionCompKeyFunc(nil)
 	got := fn(qr)
 	if len(got) != 1 || got[0] != int64(7) {
@@ -2408,7 +2408,7 @@ func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 
 func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"X": 1}}
+	qr := dmap(map[string]any{"X": 1})
 	fn := intersectionCompKeyFunc(nil)
 	got := fn(qr)
 	if len(got) != 1 {
@@ -2421,7 +2421,7 @@ func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 
 func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"NAME": "alice", "AGE": int64(30)}}
+	qr := dmap(map[string]any{"NAME": "alice", "AGE": int64(30)})
 	keyVals := []values.Value{
 		&values.FieldValue{Field: "NAME", Typ: values.TypeString},
 		&values.FieldValue{Field: "AGE", Typ: values.TypeInt},
@@ -2494,7 +2494,7 @@ func TestCompareValues_Strings(t *testing.T) {
 
 func TestPassesJoinPredicates_Empty(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"A": 1}}
+	qr := dmap(map[string]any{"A": 1})
 	ok, err := passesJoinPredicates(qr, nil, EmptyEvaluationContext())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2506,7 +2506,7 @@ func TestPassesJoinPredicates_Empty(t *testing.T) {
 
 func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"PRICE": int64(100)}}
+	qr := dmap(map[string]any{"PRICE": int64(100)})
 	pred := predicates.NewComparisonPredicate(
 		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
@@ -2522,7 +2522,7 @@ func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 
 func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"PRICE": int64(100)}}
+	qr := dmap(map[string]any{"PRICE": int64(100)})
 	pred := predicates.NewComparisonPredicate(
 		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(999)),
@@ -2715,24 +2715,24 @@ func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
 func TestTempTable_AddAndGetList(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: int64(1)})
-	tt.Add(QueryResult{Datum: int64(2)})
+	tt.Add(dscalar(int64(1)))
+	tt.Add(dscalar(int64(2)))
 
 	list := tt.GetList()
 	if len(list) != 2 {
 		t.Fatalf("expected 2, got %d", len(list))
 	}
-	if list[0].Datum != int64(1) || list[1].Datum != int64(2) {
-		t.Errorf("unexpected contents: %v %v", list[0].Datum, list[1].Datum)
+	if rowScalar(list[0]) != int64(1) || rowScalar(list[1]) != int64(2) {
+		t.Errorf("unexpected contents: %v %v", rowScalar(list[0]), rowScalar(list[1]))
 	}
 }
 
 func TestTempTable_GetListReturnsSnapshot(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: int64(1)})
+	tt.Add(dscalar(int64(1)))
 	snap := tt.GetList()
-	tt.Add(QueryResult{Datum: int64(2)})
+	tt.Add(dscalar(int64(2)))
 
 	if len(snap) != 1 {
 		t.Fatal("snapshot should not grow when new items added")
@@ -2756,7 +2756,7 @@ func TestEvaluationContext_GetOrCreateTempTable(t *testing.T) {
 	ec := EmptyEvaluationContext()
 	id := values.NamedCorrelationIdentifier("tt1")
 	tt1 := ec.GetOrCreateTempTable(id, nil)
-	tt1.Add(QueryResult{Datum: int64(1)})
+	tt1.Add(dscalar(int64(1)))
 
 	tt2 := ec.GetOrCreateTempTable(id, nil)
 	if len(tt2.GetList()) != 1 {
@@ -2771,7 +2771,7 @@ func TestEvaluationContext_GetOrCreateTempTable_DistinctIDs(t *testing.T) {
 	id2 := values.NamedCorrelationIdentifier("tt2")
 
 	tt1 := ec.GetOrCreateTempTable(id1, nil)
-	tt1.Add(QueryResult{Datum: int64(1)})
+	tt1.Add(dscalar(int64(1)))
 
 	tt2 := ec.GetOrCreateTempTable(id2, nil)
 	if len(tt2.GetList()) != 0 {
@@ -2799,15 +2799,15 @@ func TestGoToProtoValue_EnumField(t *testing.T) {
 func TestSortByKeys_MultipleKeys(t *testing.T) {
 	t.Parallel()
 	items := []QueryResult{
-		{Datum: map[string]any{"A": int64(2), "B": int64(1)}},
-		{Datum: map[string]any{"A": int64(1), "B": int64(2)}},
-		{Datum: map[string]any{"A": int64(1), "B": int64(1)}},
+		dmap(map[string]any{"A": int64(2), "B": int64(1)}),
+		dmap(map[string]any{"A": int64(1), "B": int64(2)}),
+		dmap(map[string]any{"A": int64(1), "B": int64(1)}),
 	}
 	sortByKeys(items, []string{"A", "B"}, []bool{false, false})
 
-	d0 := items[0].Datum.(map[string]any)
-	d1 := items[1].Datum.(map[string]any)
-	d2 := items[2].Datum.(map[string]any)
+	d0, _ := rowMap(items[0])
+	d1, _ := rowMap(items[1])
+	d2, _ := rowMap(items[2])
 	if d0["A"] != int64(1) || d0["B"] != int64(1) {
 		t.Errorf("row 0: got A=%v B=%v, want 1,1", d0["A"], d0["B"])
 	}
@@ -2824,9 +2824,9 @@ func TestSortByKeys_MultipleKeys(t *testing.T) {
 func TestCollectAll_MultipleItems(t *testing.T) {
 	t.Parallel()
 	items := []QueryResult{
-		{Datum: int64(1)},
-		{Datum: int64(2)},
-		{Datum: int64(3)},
+		dscalar(int64(1)),
+		dscalar(int64(2)),
+		dscalar(int64(3)),
 	}
 	cursor := recordlayer.FromList(items)
 	results, err := CollectAll(context.Background(), cursor)
@@ -2837,8 +2837,8 @@ func TestCollectAll_MultipleItems(t *testing.T) {
 		t.Fatalf("expected 3, got %d", len(results))
 	}
 	for i, r := range results {
-		if r.Datum != int64(i+1) {
-			t.Errorf("item %d: got %v, want %d", i, r.Datum, i+1)
+		if rowScalar(r) != int64(i+1) {
+			t.Errorf("item %d: got %v, want %d", i, rowScalar(r), i+1)
 		}
 	}
 }
@@ -3330,9 +3330,9 @@ func TestFromStoredRecord(t *testing.T) {
 	}
 	qr := FromStoredRecord(rec)
 
-	m, ok := qr.Datum.(map[string]any)
+	m, ok := rowMap(qr)
 	if !ok {
-		t.Fatalf("Datum type %T, want map[string]any", qr.Datum)
+		t.Fatalf("Datum type %T, want map[string]any", qr.Positional)
 	}
 	if m["ORDER_ID"] != int64(42) {
 		t.Errorf("ORDER_ID = %v, want 42", m["ORDER_ID"])
@@ -3352,89 +3352,35 @@ func TestFromStoredRecord(t *testing.T) {
 // already-qualified keys when the outer row is itself a merged NLJ
 // result. Regression test for the join_chained conformance failure
 // where the third row of a 3-way join returned dept.name instead of
-// emp.name in the first projection column.
-func TestMergeRows_ChainedJoin(t *testing.T) {
-	t.Parallel()
-
-	// Simulate the output of the first NLJ: emp(3, Carol, 10) JOIN dept(10, Engineering).
-	// The inner (dept) overwrites bare keys ("ID", "NAME") because it runs second.
-	firstNLJ := QueryResult{
-		Datum: map[string]any{
-			"ID":          int64(10),     // dept's ID (overwrote emp's)
-			"NAME":        "Engineering", // dept's NAME (overwrote emp's)
-			"DEPT_ID":     int64(10),
-			"EMP.ID":      int64(3), // emp's qualified key
-			"EMP.NAME":    "Carol",  // emp's qualified key
-			"EMP.DEPT_ID": int64(10),
-			"DEPT.ID":     int64(10),
-			"DEPT.NAME":   "Engineering",
-		},
-	}
-	project := QueryResult{
-		Datum: map[string]any{
-			"ID":     int64(102),
-			"EMP_ID": int64(3),
-		},
-	}
-
-	// The second NLJ merges firstNLJ (outer, alias="DEPT") with project (inner, alias="PROJECT").
-	merged := mergeRows(firstNLJ, project, "DEPT", "PROJECT")
-	m, ok := merged.Datum.(map[string]any)
-	if !ok {
-		t.Fatalf("merged.Datum type = %T, want map[string]any", merged.Datum)
-	}
-
-	// The critical check: EMP.NAME must still be "Carol", not "Engineering".
-	// Before the fix, re-qualifying the bare key "NAME" (= "Engineering") under
-	// outerType "EMP" overwrote the correct "EMP.NAME" = "Carol".
-	if v := m["EMP.NAME"]; v != "Carol" {
-		t.Errorf("EMP.NAME = %v, want Carol", v)
-	}
-	if v := m["DEPT.NAME"]; v != "Engineering" {
-		t.Errorf("DEPT.NAME = %v, want Engineering", v)
-	}
-	if v := m["EMP.ID"]; v != int64(3) {
-		t.Errorf("EMP.ID = %v, want 3", v)
-	}
-	if v := m["PROJECT.ID"]; v != int64(102) {
-		t.Errorf("PROJECT.ID = %v, want 102", v)
-	}
-	if v := m["PROJECT.EMP_ID"]; v != int64(3) {
-		t.Errorf("PROJECT.EMP_ID = %v, want 3", v)
-	}
-}
-
-// TestMergeRows_DerivedTableAlias verifies that mergeRows correctly
-// qualifies keys under the derived table alias (e.g. "SQ1") rather
-// than the underlying table name.
+// TestMergeRows_DerivedTableAlias verifies that mergeRows qualifies each leg's
+// columns under its alias via leg windows (RFC-173): a qualified read "SQ1.X"
+// resolves through the leg's window, not a flat qualified key. The name model's
+// bare-key re-qualification clobber (the old ChainedJoin unit test) can no longer
+// occur — legs are ordinal windows, never re-written bare keys; that behavior is
+// covered end-to-end by the three-way-join yamsql scenarios.
 func TestMergeRows_DerivedTableAlias(t *testing.T) {
 	t.Parallel()
 
-	// Derived table output: (SELECT ida AS x FROM a) AS sq1
-	// executeProjection produces {IDA: 1, X: 1}
-	outer := QueryResult{
-		Datum: map[string]any{
-			"IDA": int64(1),
-			"X":   int64(1),
-		},
-	}
-	inner := QueryResult{
-		Datum: map[string]any{
-			"IDB": int64(4),
-		},
-	}
+	// Derived table output: (SELECT ida AS x FROM a) AS sq1 -> row {IDA, X}.
+	outer := dmap(map[string]any{
+		"IDA": int64(1),
+		"X":   int64(1),
+	})
+	inner := dmap(map[string]any{
+		"IDB": int64(4),
+	})
 
 	merged := mergeRows(outer, inner, "SQ1", "B")
-	m, ok := merged.Datum.(map[string]any)
-	if !ok {
-		t.Fatalf("merged.Datum type = %T, want map[string]any", merged.Datum)
-	}
-
-	if v := m["SQ1.X"]; v != int64(1) {
+	// Qualified reads resolve leg-locally through the alias windows.
+	if v := rowVal(merged, "SQ1.X"); v != int64(1) {
 		t.Errorf("SQ1.X = %v, want 1", v)
 	}
-	if v := m["B.IDB"]; v != int64(4) {
+	if v := rowVal(merged, "B.IDB"); v != int64(4) {
 		t.Errorf("B.IDB = %v, want 4", v)
+	}
+	// The legs are recorded on the merged row's type.
+	if merged.Positional == nil || merged.Positional.Type == nil || len(merged.Positional.Type.Legs) != 2 {
+		t.Fatalf("merged row should carry 2 leg windows, got %+v", merged.Positional)
 	}
 }
 
@@ -3442,13 +3388,13 @@ func TestMergeRows_DerivedTableAlias(t *testing.T) {
 // mergeSortCursor tests
 // ---------------------------------------------------------------------------
 
-// qr is a shorthand to build a QueryResult with a map datum.
+// qr is a shorthand to build a QueryResult with a positional row.
 func qr(kvs ...any) QueryResult {
 	m := make(map[string]any, len(kvs)/2)
 	for i := 0; i < len(kvs)-1; i += 2 {
 		m[kvs[i].(string)] = kvs[i+1]
 	}
-	return QueryResult{Datum: m}
+	return dmap(m)
 }
 
 // collectMergeSortCursor drains a mergeSortCursor and returns all results.
@@ -3472,9 +3418,9 @@ func collectMergeSortCursor(t *testing.T, c *mergeSortCursor) []QueryResult {
 // fieldVal returns the int64 at key k from a QueryResult datum.
 func fieldVal(t *testing.T, r QueryResult, k string) int64 {
 	t.Helper()
-	m, ok := r.Datum.(map[string]any)
+	m, ok := rowMap(r)
 	if !ok {
-		t.Fatalf("datum type %T, want map[string]any", r.Datum)
+		t.Fatalf("datum type %T, want map[string]any", r.Positional)
 	}
 	v, ok := m[k]
 	if !ok {
@@ -3738,19 +3684,19 @@ func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
 
 	// Verify nil values come first and non-nil values are ordered.
 	// Expected order: nil, 1, nil, 3
-	m0 := results[0].Datum.(map[string]any)
+	m0, _ := rowMap(results[0])
 	if m0["id"] != nil {
 		t.Errorf("results[0].id = %v, want nil", m0["id"])
 	}
 	if fieldVal(t, results[1], "id") != 1 {
-		t.Errorf("results[1].id = %v, want 1", results[1].Datum)
+		t.Errorf("results[1].id = %v, want 1", results[1].Positional)
 	}
-	m2 := results[2].Datum.(map[string]any)
+	m2, _ := rowMap(results[2])
 	if m2["id"] != nil {
 		t.Errorf("results[2].id = %v, want nil", m2["id"])
 	}
 	if fieldVal(t, results[3], "id") != 3 {
-		t.Errorf("results[3].id = %v, want 3", results[3].Datum)
+		t.Errorf("results[3].id = %v, want 3", results[3].Positional)
 	}
 }
 
@@ -3978,7 +3924,7 @@ func TestMergeSortCursor_StringComparisonKeys(t *testing.T) {
 	}
 	expectedNames := []string{"alice", "bob", "charlie", "dave"}
 	for i, want := range expectedNames {
-		m := results[i].Datum.(map[string]any)
+		m, _ := rowMap(results[i])
 		got := m["name"].(string)
 		if got != want {
 			t.Errorf("results[%d].name = %q, want %q", i, got, want)
@@ -4245,14 +4191,14 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 
 	// Check datum values.
 	for i, want := range []string{"alice", "bob", "carol"} {
-		m := gotBuf[i].Datum.(map[string]any)
+		m, _ := rowMap(gotBuf[i])
 		if m["name"] != want {
 			t.Errorf("buf[%d].name = %v, want %q", i, m["name"], want)
 		}
 	}
 	// Ages: JSON round-trips through float64 → int64 conversion.
 	for i, want := range []int64{30, 25, 35} {
-		m := gotBuf[i].Datum.(map[string]any)
+		m, _ := rowMap(gotBuf[i])
 		if m["age"] != want {
 			t.Errorf("buf[%d].age = %v (%T), want %d", i, m["age"], m["age"], want)
 		}
@@ -4698,7 +4644,7 @@ func TestAggregateCursor_SingleGroup_CountStar(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	m := results[0].Datum.(map[string]any)
+	m, _ := rowMap(results[0])
 	if m["COUNT(*)"] != int64(3) {
 		t.Errorf("COUNT(*) = %v, want 3", m["COUNT(*)"])
 	}
@@ -4718,7 +4664,7 @@ func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("scalar aggregate on empty input: got %d results, want 1", len(results))
 	}
-	m := results[0].Datum.(map[string]any)
+	m, _ := rowMap(results[0])
 	if m["COUNT(*)"] != int64(0) {
 		t.Errorf("COUNT(*) on empty = %v, want 0", m["COUNT(*)"])
 	}
@@ -4747,7 +4693,7 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		t.Fatalf("got %d groups, want 2", len(results))
 	}
 
-	m0 := results[0].Datum.(map[string]any)
+	m0, _ := rowMap(results[0])
 	if m0["DEPT"] != "A" {
 		t.Errorf("group 0 key = %v, want A", m0["DEPT"])
 	}
@@ -4755,7 +4701,7 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		t.Errorf("group 0 SUM = %v, want 30", m0["SUM(AMOUNT)"])
 	}
 
-	m1 := results[1].Datum.(map[string]any)
+	m1, _ := rowMap(results[1])
 	if m1["DEPT"] != "B" {
 		t.Errorf("group 1 key = %v, want B", m1["DEPT"])
 	}

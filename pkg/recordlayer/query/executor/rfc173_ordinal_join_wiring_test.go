@@ -411,9 +411,9 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_HashPath(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (outer ID=5 matches inner ID=5)", len(results))
 	}
 	ojAssertSlots(t, results[0].Positional, int64(5), int64(50), int64(5), int64(50))
-	m, isMap := results[0].Datum.(map[string]any)
+	m, isMap := rowMap(results[0])
 	if !isMap || m["A.ID"] != int64(5) || m["B.W"] != int64(50) {
-		t.Fatalf("hash-path Datum = %v, want the untouched mergeRows keys", results[0].Datum)
+		t.Fatalf("hash-path Datum = %v, want the untouched mergeRows keys", results[0].Positional)
 	}
 }
 
@@ -537,7 +537,7 @@ func TestRFC173S2_NLJCursor_Oracle(t *testing.T) { //nolint:paralleltest // owns
 			t.Fatalf("oracle-on row %d carries a positional row — the §5 oracle must suppress every birth", i)
 		}
 		if !reflect.DeepEqual(r.Datum, oracleOff[i].Datum) {
-			t.Fatalf("oracle-on Datum %d = %v, oracle-off = %v — the name model must be untouched by the birth", i, r.Datum, oracleOff[i].Datum)
+			t.Fatalf("oracle-on Datum %d = %v, oracle-off = %v — the name model must be untouched by the birth", i, r.Datum, oracleOff[i].Positional)
 		}
 	}
 }
@@ -585,7 +585,7 @@ func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 	}
 	for i := range ordinal {
 		if !reflect.DeepEqual(ordinal[i].Datum, name[i].Datum) {
-			t.Fatalf("row %d Datum diverged: ordinal %v, name %v — the dark-stage dual emission must keep the name model byte-identical", i, ordinal[i].Datum, name[i].Datum)
+			t.Fatalf("row %d Datum diverged: ordinal %v, name %v — the dark-stage dual emission must keep the name model byte-identical", i, ordinal[i].Datum, name[i].Positional)
 		}
 		if ordinal[i].Positional == nil {
 			t.Fatalf("ordinal row %d missing positional", i)
@@ -703,7 +703,7 @@ func TestRFC173S2_FlatMap_Oracle(t *testing.T) { //nolint:paralleltest // owns t
 		t.Fatal("oracle-on flatMap must not birth a positional row")
 	}
 	if !reflect.DeepEqual(oracleRow.Datum, ordinalRow.Datum) {
-		t.Fatalf("oracle-on Datum = %v, ordinal Datum = %v — the two paths must produce the same name map", oracleRow.Datum, ordinalRow.Datum)
+		t.Fatalf("oracle-on Datum = %v, ordinal Datum = %v — the two paths must produce the same name map", oracleRow.Datum, ordinalRow.Positional)
 	}
 }
 

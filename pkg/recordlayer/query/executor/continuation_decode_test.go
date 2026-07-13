@@ -140,8 +140,8 @@ func TestDecodeSortContinuationRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	buf := []QueryResult{
-		{Datum: map[string]any{"a": int64(1), "b": "x"}},
-		{Datum: map[string]any{"a": int64(2), "b": "y"}},
+		dmap(map[string]any{"a": int64(1), "b": "x"}),
+		dmap(map[string]any{"a": int64(2), "b": "y"}),
 	}
 	data, err := encodeSortContinuation(recordlayer.NewBytesContinuation([]byte("INNER")), buf)
 	if err != nil {
@@ -157,10 +157,10 @@ func TestDecodeSortContinuationRoundTrip(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d records, want 2", len(got))
 	}
-	d0, ok0 := got[0].Datum.(map[string]any)
-	d1, ok1 := got[1].Datum.(map[string]any)
+	d0, ok0 := rowMap(got[0])
+	d1, ok1 := rowMap(got[1])
 	if !ok0 || !ok1 {
-		t.Fatalf("datum types = %T, %T, want map[string]any", got[0].Datum, got[1].Datum)
+		t.Fatalf("positional rows = %v, %v, want non-nil", got[0].Positional, got[1].Positional)
 	}
 	if d0["a"] != int64(1) || d1["b"] != "y" {
 		t.Errorf("round-trip mismatch: %v", got)
@@ -176,7 +176,7 @@ func FuzzSortContinuation(f *testing.F) {
 	f.Add([]byte{0xff, 0xff, 0xff})
 	if valid, err := encodeSortContinuation(
 		recordlayer.NewBytesContinuation([]byte("INNER")),
-		[]QueryResult{{Datum: map[string]any{"a": int64(1)}}},
+		[]QueryResult{dmap(map[string]any{"a": int64(1)})},
 	); err == nil {
 		f.Add(valid)
 	}

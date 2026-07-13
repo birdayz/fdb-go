@@ -249,16 +249,16 @@ func TestGetOrCreateTempTable_Functional(t *testing.T) {
 	id := values.NamedCorrelationIdentifier("tt3")
 
 	tt := ec.GetOrCreateTempTable(id, nil)
-	qr := QueryResult{Datum: map[string]any{"id": int64(1)}}
+	qr := dmap(map[string]any{"id": int64(1)})
 	tt.Add(qr)
 
 	list := tt.GetList()
 	if len(list) != 1 {
 		t.Fatalf("GetList len = %d, want 1", len(list))
 	}
-	d, ok := list[0].Datum.(map[string]any)
+	d, ok := rowMap(list[0])
 	if !ok {
-		t.Fatalf("Datum type = %T, want map[string]any", list[0].Datum)
+		t.Fatalf("Datum type = %T, want map[string]any", list[0].Positional)
 	}
 	if d["id"] != int64(1) {
 		t.Fatalf("Datum[id] = %v, want 1", d["id"])
@@ -284,14 +284,14 @@ func TestNewTempTable_Empty(t *testing.T) {
 func TestTempTable_AddSingle(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
-	qr := QueryResult{Datum: map[string]any{"id": int64(1)}}
+	qr := dmap(map[string]any{"id": int64(1)})
 	tt.Add(qr)
 
 	list := tt.GetList()
 	if len(list) != 1 {
 		t.Fatalf("GetList len = %d, want 1", len(list))
 	}
-	d := list[0].Datum.(map[string]any)
+	d, _ := rowMap(list[0])
 	if d["id"] != int64(1) {
 		t.Fatalf("Datum[id] = %v, want 1", d["id"])
 	}
@@ -301,7 +301,7 @@ func TestTempTable_AddMultiple_PreservesOrder(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
 	for i := int64(0); i < 5; i++ {
-		tt.Add(QueryResult{Datum: map[string]any{"id": i}})
+		tt.Add(dmap(map[string]any{"id": i}))
 	}
 
 	list := tt.GetList()
@@ -309,7 +309,7 @@ func TestTempTable_AddMultiple_PreservesOrder(t *testing.T) {
 		t.Fatalf("GetList len = %d, want 5", len(list))
 	}
 	for i := int64(0); i < 5; i++ {
-		d := list[i].Datum.(map[string]any)
+		d, _ := rowMap(list[i])
 		if d["id"] != i {
 			t.Fatalf("list[%d].Datum[id] = %v, want %d", i, d["id"], i)
 		}
@@ -319,19 +319,19 @@ func TestTempTable_AddMultiple_PreservesOrder(t *testing.T) {
 func TestTempTable_GetList_ReturnsCopy(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: map[string]any{"id": int64(1)}})
-	tt.Add(QueryResult{Datum: map[string]any{"id": int64(2)}})
+	tt.Add(dmap(map[string]any{"id": int64(1)}))
+	tt.Add(dmap(map[string]any{"id": int64(2)}))
 
 	list := tt.GetList()
 	// Mutate the returned slice — should not affect internal state.
-	list[0] = QueryResult{Datum: map[string]any{"id": int64(999)}}
+	list[0] = dmap(map[string]any{"id": int64(999)})
 	_ = list[:1]
 
 	list2 := tt.GetList()
 	if len(list2) != 2 {
 		t.Fatalf("after mutating copy, GetList len = %d, want 2", len(list2))
 	}
-	d := list2[0].Datum.(map[string]any)
+	d, _ := rowMap(list2[0])
 	if d["id"] != int64(1) {
 		t.Fatalf("internal data corrupted: Datum[id] = %v, want 1", d["id"])
 	}
@@ -340,8 +340,8 @@ func TestTempTable_GetList_ReturnsCopy(t *testing.T) {
 func TestTempTable_Clear(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: map[string]any{"id": int64(1)}})
-	tt.Add(QueryResult{Datum: map[string]any{"id": int64(2)}})
+	tt.Add(dmap(map[string]any{"id": int64(1)}))
+	tt.Add(dmap(map[string]any{"id": int64(2)}))
 	tt.Clear()
 
 	list := tt.GetList()
@@ -353,15 +353,15 @@ func TestTempTable_Clear(t *testing.T) {
 func TestTempTable_ClearThenAdd(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: map[string]any{"id": int64(1)}})
+	tt.Add(dmap(map[string]any{"id": int64(1)}))
 	tt.Clear()
-	tt.Add(QueryResult{Datum: map[string]any{"id": int64(99)}})
+	tt.Add(dmap(map[string]any{"id": int64(99)}))
 
 	list := tt.GetList()
 	if len(list) != 1 {
 		t.Fatalf("after Clear+Add, GetList len = %d, want 1", len(list))
 	}
-	d := list[0].Datum.(map[string]any)
+	d, _ := rowMap(list[0])
 	if d["id"] != int64(99) {
 		t.Fatalf("Datum[id] = %v, want 99", d["id"])
 	}
@@ -381,7 +381,7 @@ func TestTempTable_ConcurrentAdd(t *testing.T) {
 		go func(base int) {
 			defer wg.Done()
 			for i := 0; i < itemsPerGoroutine; i++ {
-				tt.Add(QueryResult{Datum: map[string]any{"id": int64(base*itemsPerGoroutine + i)}})
+				tt.Add(dmap(map[string]any{"id": int64(base*itemsPerGoroutine + i)}))
 			}
 		}(g)
 	}
@@ -396,7 +396,7 @@ func TestTempTable_ConcurrentAdd(t *testing.T) {
 	// Verify all items are unique (no lost writes).
 	seen := make(map[int64]bool, want)
 	for _, qr := range list {
-		d := qr.Datum.(map[string]any)
+		d, _ := rowMap(qr)
 		id := d["id"].(int64)
 		if seen[id] {
 			t.Fatalf("duplicate id %d", id)
@@ -414,7 +414,7 @@ func TestTempTable_ConcurrentAdd(t *testing.T) {
 
 func BenchmarkTempTable_Add(b *testing.B) {
 	tt := NewTempTable()
-	qr := QueryResult{Datum: map[string]any{"id": int64(1)}}
+	qr := dmap(map[string]any{"id": int64(1)})
 	for b.Loop() {
 		tt.Add(qr)
 	}
@@ -423,7 +423,7 @@ func BenchmarkTempTable_Add(b *testing.B) {
 func BenchmarkTempTable_GetList(b *testing.B) {
 	tt := NewTempTable()
 	for i := 0; i < 1000; i++ {
-		tt.Add(QueryResult{Datum: map[string]any{"id": int64(i)}})
+		tt.Add(dmap(map[string]any{"id": int64(i)}))
 	}
 	b.ResetTimer()
 	for b.Loop() {

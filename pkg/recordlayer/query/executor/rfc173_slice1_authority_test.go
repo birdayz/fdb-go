@@ -11,13 +11,12 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// authorityRow builds the discriminating frontier row: the name-keyed Datum is
-// DELIBERATELY WRONG (V -> 999, plus a stale ID key the positional type doesn't
-// carry) while the positional row is correct (V -> 42 at ordinal 0). Any
-// resolution that reads the Datum yields 999; only ordinal resolution yields 42.
+// authorityRow builds the frontier row whose sole value source is the positional
+// row (V -> 42 at ordinal 0). RFC-173: the name-keyed Datum is deleted, so every
+// dispatch site can ONLY resolve V through the ordinal row — this pins that each
+// REAL dispatch site reads the positional authority.
 func authorityRow() QueryResult {
 	return QueryResult{
-		Datum: map[string]any{"V": int64(999), "ID": int64(999)},
 		Positional: &PositionalRow{
 			Type:  positionalTypeFromNames([]string{"V"}),
 			Slots: []any{int64(42)},
@@ -75,7 +74,7 @@ func TestFrontierOrdinalAuthority_RFC173Slice1(t *testing.T) {
 		if len(rows) != 1 {
 			t.Fatalf("got %d rows, want 1", len(rows))
 		}
-		m := rows[0].Datum.(map[string]any)
+		m, _ := rowMap(rows[0])
 		if m["V"] != int64(42) {
 			t.Fatalf("executeProjection read %v — wants 42 (positional), not 999 (Datum): the production dispatch is not ordinal-authoritative", m["V"])
 		}
@@ -121,7 +120,7 @@ func TestFrontierOrdinalAuthority_RFC173Slice1(t *testing.T) {
 		if len(rows) != 1 {
 			t.Fatalf("got %d rows, want 1", len(rows))
 		}
-		m := rows[0].Datum.(map[string]any)
+		m, _ := rowMap(rows[0])
 		if m["OUT"] != int64(42) {
 			t.Fatalf("executeMap read %v — wants OUT=42 (positional), not 999 (Datum)", m["OUT"])
 		}

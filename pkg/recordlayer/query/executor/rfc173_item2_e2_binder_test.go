@@ -150,9 +150,9 @@ func TestIntegration_RFC173Item2_DisabledBirthBinder_BakedInner(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d rows, want 1 (only Alice's price matches an order)", len(results))
 	}
-	datum, isMap := results[0].Datum.(map[string]any)
+	datum, isMap := rowMap(results[0])
 	if !isMap || datum["CUSTOMER_ID"] != int64(1) {
-		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Datum)
+		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Positional)
 	}
 	if datum["CUST.NAME"] != "Alice" {
 		t.Fatalf("Datum[CUST.NAME] = %v, want Alice (qualifyOuterRow's alias-qualified keys)", datum["CUST.NAME"])
@@ -188,9 +188,9 @@ func TestIntegration_RFC173Item2_ProbeNegative_LazyInner(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d rows, want 1 (only Alice's price matches an order)", len(results))
 	}
-	datum, isMap := results[0].Datum.(map[string]any)
+	datum, isMap := rowMap(results[0])
 	if !isMap || datum["CUSTOMER_ID"] != int64(1) || datum["CUST.NAME"] != "Alice" {
-		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Datum)
+		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Positional)
 	}
 	// The ordinalized output edge: the outer's positional row survives, and its
 	// outer-alias leg window resolves the alias-qualified read the same as the bare.
@@ -228,7 +228,7 @@ func TestIntegration_RFC173Item2_Oracle(t *testing.T) { //nolint:paralleltest //
 		t.Fatal("oracle-on row carries a positional row — the §5 oracle must suppress the pass-through source")
 	}
 	if !reflect.DeepEqual(oracle[0].Datum, ordinal[0].Datum) {
-		t.Fatalf("oracle-on Datum = %v, oracle-off = %v — the name model must be untouched", oracle[0].Datum, ordinal[0].Datum)
+		t.Fatalf("oracle-on Datum = %v, oracle-off = %v — the name model must be untouched", oracle[0].Datum, ordinal[0].Positional)
 	}
 }
 
@@ -253,7 +253,7 @@ func TestRFC173Item2_LoudAdaptationFailure(t *testing.T) {
 	// The outer row is merge-shaped: dotted keys only, no positional row —
 	// none of leg A's bare column names match.
 	outer := recordlayer.FromList([]QueryResult{
-		{Datum: map[string]any{"A.ID": int64(1), "A.V": int64(10)}},
+		dmap(map[string]any{"A.ID": int64(1), "A.V": int64(10)}),
 	})
 	c, err := newFlatMapCursor(outer, nil, innerPlan, nil, EmptyEvaluationContext(),
 		qovA.Correlation, values.NamedCorrelationIdentifier("B"),

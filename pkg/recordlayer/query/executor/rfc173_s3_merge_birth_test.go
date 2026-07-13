@@ -599,9 +599,9 @@ func TestRFC173S3_FlatMapSeedBoxLegDatumSplice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("computeResult: %v", err)
 	}
-	datum, isMap := got.Datum.(map[string]any)
+	datum, isMap := rowMap(got)
 	if !isMap {
-		t.Fatalf("Datum = %T, want map", got.Datum)
+		t.Fatalf("Datum = %T, want map", got.Positional)
 	}
 	// Leaf-alias qualified keys — the whole point of the splice.
 	for k, want := range map[string]any{

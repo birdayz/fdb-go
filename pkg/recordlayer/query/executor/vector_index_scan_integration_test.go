@@ -105,9 +105,9 @@ func TestIntegration_VectorIndexScan_KNN(t *testing.T) {
 
 		gotIDs := make([]int64, len(results))
 		for i, r := range results {
-			row, ok := r.Datum.(map[string]any)
+			row, ok := rowMap(r)
 			if !ok {
-				t.Fatalf("result %d datum is %T, want map[string]any", i, r.Datum)
+				t.Fatalf("result %d datum is %T, want map[string]any", i, r.Positional)
 			}
 			gotIDs[i] = row["ORDER_ID"].(int64)
 		}
@@ -163,8 +163,8 @@ func TestIntegration_VectorIndexScan_RankLessThan(t *testing.T) {
 			t.Fatalf("ROW_NUMBER() < 3 returned %d rows, want 2 (k-1 per Java getAdjustedLimit)", len(results))
 		}
 		ids := []int64{
-			results[0].Datum.(map[string]any)["ORDER_ID"].(int64),
-			results[1].Datum.(map[string]any)["ORDER_ID"].(int64),
+			rowMap(results[0])["ORDER_ID"].(int64),
+			rowMap(results[1])["ORDER_ID"].(int64),
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 		if ids[0] != 1 || ids[1] != 2 {

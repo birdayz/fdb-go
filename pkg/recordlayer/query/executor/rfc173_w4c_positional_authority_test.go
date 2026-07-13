@@ -13,10 +13,9 @@ import (
 // QuantifiedObjectValue (Java's isPrimitive() branch). The ordinal-birth binder
 // must RAW-bind that leg (ordinalJoinBirth.RawLegs) — never route it through
 // adaptLegPositional, which would synthesize an EMPTY positional row for a
-// non-record Datum and birth the element NULL. The coexistence Datum MASKS that
-// (it carries the raw scalar), so this pin asserts the element's POSITIONAL SLOT
-// VALUE directly — the S4-surviving authority. Without the raw-bind it is an
-// empty *PositionalRow, not the scalar; the pin then fails.
+// non-record row and birth the element NULL. This pin asserts the element's
+// POSITIONAL SLOT VALUE directly. Without the raw-bind it is an empty
+// *PositionalRow, not the scalar; the pin then fails.
 func TestRFC173W4c_PositionalAuthority_ScalarElement(t *testing.T) {
 	// The mixed seed: a baked outer leg run (ofOrdinal over a record QOV) + the
 	// element as a DIRECT bare QOV over a SCALAR type.
@@ -54,14 +53,14 @@ func TestRFC173W4c_PositionalAuthority_ScalarElement(t *testing.T) {
 		t.Fatal("the mixed seed (baked outer) must enable ordinal birth")
 	}
 	if _, raw := c.birth.RawLegs[innerCorr]; !raw {
-		t.Fatalf("the bare-scalar element leg %s must be a RawLeg (bind its whole Datum raw)", innerCorr)
+		t.Fatalf("the bare-scalar element leg %s must be a RawLeg (bind its whole row raw)", innerCorr)
 	}
 
 	outerPos := NewPositionalRow(outerType)
 	outerPos.Set(0, int64(7))
 	outerPos.Set(1, int64(0))
-	outerRow := QueryResult{Datum: map[string]any{"ID": int64(7), "ARR": int64(0)}, Positional: outerPos}
-	innerRow := QueryResult{Datum: int64(101)} // the bare-scalar unnest element
+	outerRow := QueryResult{Positional: outerPos}
+	innerRow := dscalar(int64(101)) // the bare-scalar unnest element
 
 	got, err := c.computeResult(outerRow, innerRow)
 	if err != nil {
@@ -79,9 +78,9 @@ func TestRFC173W4c_PositionalAuthority_ScalarElement(t *testing.T) {
 	if got.Positional.Slots[0] != int64(7) {
 		t.Errorf("outer ID slot = %#v, want int64(7)", got.Positional.Slots[0])
 	}
-	// The coexistence Datum carries the same element (dual-emission invariant).
-	if m, ok := got.Datum.(map[string]any); !ok || m["X"] != int64(101) {
-		t.Errorf("coexistence Datum X = %#v, want int64(101)", got.Datum)
+	// The element resolves by its output name X against the birthed row.
+	if m, ok := rowMap(got); !ok || m["X"] != int64(101) {
+		t.Errorf("element X by name = %#v, want int64(101)", got.Positional)
 	}
 }
 
@@ -95,14 +94,15 @@ func TestRFC173W4c_PositionalAuthority_ScalarElement(t *testing.T) {
 // by Datum shape; only the producer signal disambiguates them.
 func TestRFC173W4c_OrdinalAliasCollision(t *testing.T) {
 	innerCorr := values.NamedCorrelationIdentifier("X")
-	// The internal-keyed ordinality Datum: _0 = element, _1 = 1-based ordinal.
+	// The internal-keyed ordinality row: _0 = element, _1 = 1-based ordinal.
 	datum := map[string]any{
 		values.OrdinalFieldName(0): int64(101),
 		values.OrdinalFieldName(1): int64(1),
 	}
+	ordRow := dmap(datum)
 
 	// bindOrdinality binds a WITH-ORDINALITY leg (marked OrdinalityLegs) whose
-	// type is named by the given AS/AT aliases, over the internal-keyed Datum.
+	// type is named by the given AS/AT aliases, over the internal-keyed row.
 	bindOrdinality := func(t *testing.T, asName, atName string) values.OrdinalRow {
 		t.Helper()
 		legType := values.NewRecordType("", true, []values.Field{
@@ -115,7 +115,8 @@ func TestRFC173W4c_OrdinalAliasCollision(t *testing.T) {
 		}
 		legs := map[values.CorrelationIdentifier]values.OrdinalRow{}
 		raw := map[values.CorrelationIdentifier]any{}
-		if err := b.bindLeg(legs, raw, innerCorr.Name(), &QueryResult{Datum: datum}); err != nil {
+		row := ordRow
+		if err := b.bindLeg(legs, raw, innerCorr.Name(), &row); err != nil {
 			t.Fatalf("bindLeg: %v", err)
 		}
 		return legs[innerCorr]
@@ -152,7 +153,7 @@ func TestRFC173W4c_OrdinalAliasCollision(t *testing.T) {
 		{Name: "_1", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "_0", FieldType: values.NotNullLong, Ordinal: 1},
 	})
-	nameRow, err := adaptLegPositional(QueryResult{Datum: datum}, nameLegType)
+	nameRow, err := adaptLegPositional(dmap(datum), nameLegType)
 	if err != nil {
 		t.Fatalf("adaptLegPositional (name-model _1/_0 columns): %v", err)
 	}
@@ -193,89 +194,12 @@ func TestRFC173W4c_PositionalAuthority_NullElement(t *testing.T) {
 
 	outerPos := NewPositionalRow(outerType)
 	outerPos.Set(0, int64(1))
-	outerRow := QueryResult{Datum: map[string]any{"ID": int64(1)}, Positional: outerPos}
-	got, err := c.computeResult(outerRow, QueryResult{Datum: nil})
+	outerRow := QueryResult{Positional: outerPos}
+	got, err := c.computeResult(outerRow, QueryResult{})
 	if err != nil {
 		t.Fatalf("computeResult: %v", err)
 	}
 	if got.Positional.Slots[1] != nil {
 		t.Fatalf("null element slot = %#v, want nil (NULL)", got.Positional.Slots[1])
-	}
-}
-
-// TestRFC173W4c_OracleOrdinality pins the §5 NAME-MODEL ORACLE (dualwindow dual)
-// for a WITH-ORDINALITY unnest: the ordinal seed's baked element/ordinal fields
-// are named by the AS/AT aliases (V/O), but the oracle reads them BY NAME against
-// the Explode's internal `_0`/`_1` Datum. The oracle path must rebind the
-// ordinality inner under the AS/AT names (producer context) so the reads resolve
-// — matching the pre-W4c name model. Without the rebind, V/O read missing and the
-// oracle returned wrong rows (a latent dualwindow gap). NOT parallel: it flips the
-// global oracle (Go runs non-parallel tests before parallel ones — isolated).
-func TestRFC173W4c_OracleOrdinality(t *testing.T) {
-	outerType := values.NewRecordType("", false, []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-	})
-	outerCorr := values.NamedCorrelationIdentifier("T")
-	innerCorr := values.NamedCorrelationIdentifier("X")
-	outerQOV := values.NewQuantifiedObjectValueOfType(outerCorr, outerType)
-	o0, err := values.NewFieldValueOfOrdinal(outerQOV, 0)
-	if err != nil {
-		t.Fatalf("bake ID: %v", err)
-	}
-	// The WITH-ORDINALITY inner leg type is named by the AS/AT aliases.
-	innerType := values.NewRecordType("", true, []values.Field{
-		{Name: "V", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "O", FieldType: values.NotNullInt, Ordinal: 1},
-	})
-	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
-	elemFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0) // Field = "V"
-	if err != nil {
-		t.Fatalf("bake V: %v", err)
-	}
-	ordFV, err := values.NewFieldValueOfOrdinal(innerQOV, 1) // Field = "O"
-	if err != nil {
-		t.Fatalf("bake O: %v", err)
-	}
-	seed := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "ID", Value: o0},
-		values.RecordConstructorField{Name: "V", Value: elemFV},
-		values.RecordConstructorField{Name: "O", Value: ordFV},
-	)
-	c, err := newFlatMapCursor(
-		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
-		outerCorr, innerCorr, seed, false, recordlayer.ExecuteProperties{},
-	)
-	if err != nil {
-		t.Fatalf("newFlatMapCursor: %v", err)
-	}
-	defer c.Close()
-	// Production newFlatMapCursor marks this from the inner Explode plan; here the
-	// inner plan is nil, so mark the ordinality leg directly.
-	if c.birth.OrdinalityLegs == nil {
-		c.birth.OrdinalityLegs = map[values.CorrelationIdentifier]struct{}{}
-	}
-	c.birth.OrdinalityLegs[innerCorr] = struct{}{}
-
-	SetNameModelOracle(true)
-	defer SetNameModelOracle(false)
-
-	outerRow := QueryResult{Datum: map[string]any{"ID": int64(7)}}
-	innerRow := QueryResult{Datum: map[string]any{
-		values.OrdinalFieldName(0): int64(101), // element
-		values.OrdinalFieldName(1): int64(1),   // 1-based ordinal
-	}}
-	got, err := c.computeResult(outerRow, innerRow)
-	if err != nil {
-		t.Fatalf("computeResult (oracle): %v", err)
-	}
-	m, ok := got.Datum.(map[string]any)
-	if !ok {
-		t.Fatalf("oracle Datum = %T, want map", got.Datum)
-	}
-	if m["V"] != int64(101) {
-		t.Fatalf("oracle element V = %#v, want 101 — the oracle must rebind the ordinality inner under the AS/AT names (else V reads missing against the _0/_1 Explode Datum)", m["V"])
-	}
-	if m["O"] != int64(1) {
-		t.Fatalf("oracle ordinal O = %#v, want 1", m["O"])
 	}
 }

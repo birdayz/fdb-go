@@ -275,13 +275,13 @@ func TestPartialSortTopK_WithStrings(t *testing.T) {
 func makeTestResults(data []map[string]any) []QueryResult {
 	results := make([]QueryResult, len(data))
 	for i, d := range data {
-		results[i] = QueryResult{Datum: any(d)}
+		results[i] = dmap(d)
 	}
 	return results
 }
 
 func getDatum(qr QueryResult) map[string]any {
-	if m, ok := qr.Datum.(map[string]any); ok {
+	if m, ok := rowMap(qr); ok {
 		return m
 	}
 	return nil

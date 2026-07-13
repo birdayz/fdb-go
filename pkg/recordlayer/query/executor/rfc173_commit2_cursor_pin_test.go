@@ -84,16 +84,16 @@ func TestRFC173Commit2_CursorResolvesFoldPositionally(t *testing.T) {
 	pos.Set(1, int64(10))
 	pos.Set(2, int64(2))
 	pos.Set(3, int64(20))
-	outerRow := QueryResult{Datum: map[string]any{}, Positional: pos}
-	innerRow := QueryResult{Datum: map[string]any{}}
+	outerRow := QueryResult{Positional: pos}
+	innerRow := dmap(map[string]any{})
 
 	out, err := c.computeResultLegs(outerRow, &innerRow)
 	if err != nil {
 		t.Fatalf("computeResultLegs: %v", err)
 	}
-	got, isMap := out.Datum.(map[string]any)
+	got, isMap := rowMap(out)
 	if !isMap {
-		t.Fatalf("fold output Datum is %T, want a map", out.Datum)
+		t.Fatalf("fold output Datum is %T, want a map", out.Positional)
 	}
 	// Every column resolved from the POSITIONAL row through legWindowRowContext.
 	// A revert of the computeResultLegs branch reads the empty Datum → NULLs here.
