@@ -2175,11 +2175,57 @@ func executeNestedLoopJoin(
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
+// concatLegPositionals builds a leg-windowed merged PositionalRow by CONCATENATING
+// two leg rows' own Positionals (parallel construction — never read back from a
+// name Datum). The merged Type carries top-level Legs [outerAlias@[0,Wo),
+// innerAlias@[Wo,Wo+Wi)] so a qualified read ("LA.K") resolves to its leg's window
+// (GetByName's Legs path); a bare read resolves by name-in-row. Nested Legs (a leg
+// that is itself a merge) are preserved, the inner leg's shifted by Wo. Returns nil
+// when either leg lacks a Positional — then the caller keeps only the name Datum.
+// This is the RFC-173 birth FALLBACK for NAME-MODEL joins (the nljCursor's birth
+// path OVERWRITES .Positional when a gated join has an ordinal seed, so this only
+// takes effect for the un-gated AnchoredJoin merges the cap is retiring).
+func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias string) *PositionalRow {
+	if outer == nil || inner == nil || outer.Type == nil || inner.Type == nil {
+		return nil
+	}
+	nOuter := len(outer.Type.Fields)
+	nInner := len(inner.Type.Fields)
+	fields := make([]values.Field, 0, nOuter+nInner)
+	for i, f := range outer.Type.Fields {
+		fields = append(fields, values.Field{Name: f.Name, FieldType: f.FieldType, Ordinal: i})
+	}
+	for i, f := range inner.Type.Fields {
+		fields = append(fields, values.Field{Name: f.Name, FieldType: f.FieldType, Ordinal: nOuter + i})
+	}
+	slots := make([]any, 0, len(outer.Slots)+len(inner.Slots))
+	slots = append(slots, outer.Slots...)
+	slots = append(slots, inner.Slots...)
+	legs := make([]values.RecordTypeLeg, 0, len(outer.Type.Legs)+len(inner.Type.Legs)+2)
+	if outerAlias != "" {
+		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(outerAlias), Start: 0, Width: nOuter})
+	}
+	if innerAlias != "" {
+		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(innerAlias), Start: nOuter, Width: nInner})
+	}
+	for _, lg := range outer.Type.Legs {
+		legs = append(legs, lg)
+	}
+	for _, lg := range inner.Type.Legs {
+		legs = append(legs, values.RecordTypeLeg{Name: lg.Name, Start: lg.Start + nOuter, Width: lg.Width})
+	}
+	return &PositionalRow{Type: &values.RecordType{Fields: fields, Legs: legs}, Slots: slots}
+}
+
 func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryResult {
+	var mergedPos *PositionalRow
+	if !DisablePositionalEmission { // §5 oracle suppresses every birth
+		mergedPos = concatLegPositionals(outer.Positional, inner.Positional, outerAlias, innerAlias)
+	}
 	outerMap, ok1 := outer.Datum.(map[string]any)
 	innerMap, ok2 := inner.Datum.(map[string]any)
 	if !ok1 || !ok2 {
-		return QueryResult{Datum: outer.Datum, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+		return QueryResult{Datum: outer.Datum, Positional: mergedPos, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
 	}
 
 	merged := make(map[string]any, len(outerMap)+len(innerMap))
@@ -2233,7 +2279,7 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 	qualifyTypeFallback(merged, outerMap, outerAlias, outerType)
 	qualifyTypeFallback(merged, innerMap, innerAlias, innerType)
 
-	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+	return QueryResult{Datum: merged, Positional: mergedPos, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
 }
 
 // qualifyAlias writes explicit-alias-qualified keys ("ALIAS.COL") for each

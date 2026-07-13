@@ -590,8 +590,15 @@ func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 		if ordinal[i].Positional == nil {
 			t.Fatalf("ordinal row %d missing positional", i)
 		}
-		if name[i].Positional != nil {
-			t.Fatalf("name-model row %d must not carry a positional row", i)
+		// RFC-173 cap: mergeRows is now Positional-NATIVE — a name-model
+		// (AnchoredJoin) merge also emits a leg-windowed Positional
+		// (concatLegPositionals, built by parallel construction from the leg rows'
+		// own Positionals), so the name model can be deleted. The Datum stays
+		// byte-identical (asserted above); the Positional is the ordinal sibling.
+		// (The former invariant "name-model row carries no positional" was the §5
+		// dark-stage gate that retires with the name map.)
+		if name[i].Positional == nil {
+			t.Fatalf("name-model row %d must now carry a leg-concat positional (RFC-173 cap: merge is Positional-native)", i)
 		}
 	}
 }
