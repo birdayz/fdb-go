@@ -51,19 +51,26 @@ type aggregateCursor struct {
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 
-	// RFC-173 input-edge ordinalization (plain single-source frontier). evalCtx
-	// carries params/subqueries/outer bindings so a group-key / operand reference
-	// resolves against the inner PositionalRow the SAME way executeFilter /
-	// executeProjection do (frontierRowContext → evaluateOrdinal → GetByName), robust
-	// to a covering-index layout and NOT a name-keyed Datum read. plainScanInput is
-	// true only when the input is a base-table scan/index frontier (see
-	// aggregateInputIsPlainScan): a projection / derived table / CTE / join / union
-	// keeps the name-keyed Datum path (its own read-leniency governs), so the
-	// positional dispatch fires only for the plain scan/index/filter frontier. Both
-	// probed once at construction from the inner plan.
-	evalCtx        *EvaluationContext
-	plainScanInput bool
-	needsRowCtx    bool
+	// RFC-173 input-edge ordinalization. evalCtx carries params/subqueries/outer
+	// bindings so a group-key / operand reference resolves against the inner
+	// PositionalRow the SAME way executeFilter / executeProjection do
+	// (frontierRowContext → evaluateOrdinal → GetByName), robust to a covering-index
+	// layout and NOT a name-keyed Datum read. flatFrontierInput is true when the input
+	// bottoms out at a SINGLE-SOURCE flat producer (base-table scan/index, a nested
+	// StreamingAgg) beneath any number of layout-preserving / reshaping single-child
+	// nodes — the group-by SORT, a filter, a LIMIT/fetch, a projection / derived table
+	// / CTE (RecordQueryProjectionPlan/MapPlan), a DISTINCT, a WHERE-EXISTS semi-join
+	// (identity-over-outer FlatMap). Every such producer emits a flat single-source
+	// output row whose GetByName is unambiguous, so keys/operands resolve positionally.
+	// It is FALSE the moment the chain crosses a JOIN / multi-source (a non-identity
+	// FlatMap, an NLJ, a union): a raw 2-way ordinal JOIN merge keeps its LEG WINDOWS
+	// (joinWindowsOK), and a projection / aggregate OVER a LEFT JOIN — the ON-only
+	// lenient CTE shadow path (Q51/Q54) whose out-of-schema read is a booked silent
+	// NULL — keeps the name-keyed Datum path so it is NOT forced loud through the
+	// positional frontier. Probed once at construction from the inner plan.
+	evalCtx           *EvaluationContext
+	flatFrontierInput bool
+	needsRowCtx       bool
 
 	// RFC-173 aggregate-over-JOIN input edge. When the input flows a 2-way ordinal
 	// join's MERGED positional row (downstreamLegWindows unwraps the layout-preserving
@@ -115,38 +122,49 @@ func newAggregateCursor(
 ) *aggregateCursor {
 	legSpans, windowsOK := downstreamLegWindows(innerPlan)
 	return &aggregateCursor{
-		inner:          inner,
-		groupingKeys:   groupingKeys,
-		aggregates:     aggregates,
-		scalarMode:     len(groupingKeys) == 0,
-		evalCtx:        evalCtx,
-		plainScanInput: aggregateInputIsPlainScan(innerPlan),
-		needsRowCtx:    hasBindingContext(evalCtx),
-		joinLegSpans:   legSpans,
-		joinWindowsOK:  windowsOK,
+		inner:             inner,
+		groupingKeys:      groupingKeys,
+		aggregates:        aggregates,
+		scalarMode:        len(groupingKeys) == 0,
+		evalCtx:           evalCtx,
+		flatFrontierInput: aggregateInputIsFlatFrontier(innerPlan),
+		needsRowCtx:       hasBindingContext(evalCtx),
+		joinLegSpans:      legSpans,
+		joinWindowsOK:     windowsOK,
 	}
 }
 
-// aggregateInputIsPlainScan reports whether the streaming aggregate's input is a
-// PLAIN single-table base-record frontier: a base-table SCAN or an INDEX scan,
-// optionally under layout-preserving single-child wrappers (the group-by SORT the
-// planner inserts, a WHERE filter, a type filter, a LIMIT, the covering-index
-// fetch). Only such an input flows a PositionalRow whose columns ARE the base
-// table's — so a group-key / operand name resolves against it by GetByName exactly
-// as executeFilter / executeProjection resolve theirs (robust to a covering-index
-// column order). It is deliberately NARROW: a projection / derived table / CTE
-// (RecordQueryMapPlan, RecordQueryProjectionPlan, RecordQueryTempTableScanPlan), a
-// FlatMap/lateral unnest, a join, a union, a DISTINCT — every RESHAPING or
-// multi-source input — returns false and keeps the aggregate input on the
-// name-keyed Datum path (those boundaries carry their own read-leniency /
-// ordinalization and must NOT be forced loud through the positional frontier).
-func aggregateInputIsPlainScan(input plans.RecordQueryPlan) bool {
+// aggregateInputIsFlatFrontier reports whether the streaming aggregate's input
+// bottoms out at a SINGLE-SOURCE flat producer whose emitted PositionalRow's
+// columns are unambiguous — so a group-key / operand name resolves against it by
+// GetByName exactly as executeFilter / executeProjection resolve theirs (robust to
+// a covering-index column order), and is NOT a name-keyed Datum read.
+//
+// It walks single-child nodes down to the leaf:
+//   - RETURNS TRUE at a base-table SCAN / INDEX scan, or a nested StreamingAgg
+//     (single-source flat producers).
+//   - PEELS THROUGH the layout-preserving wrappers (the group-by SORT, a filter, a
+//     type filter, a LIMIT, the covering-index fetch) AND the reshaping single-source
+//     producers (projection / derived table / CTE, DISTINCT, Map) — each re-emits a
+//     flat single-source positional row, and what matters for GetByName safety is the
+//     absence of a JOIN below, not the exact reshaping node.
+//   - For a FlatMap: a WHERE-EXISTS identity-over-outer semi-join is a row-preserving
+//     passthrough toward its OUTER (the outer scan row flows through unchanged), so it
+//     peels to the outer; any OTHER FlatMap (a lateral join / merge producer) is
+//     multi-source and RETURNS FALSE.
+//   - RETURNS FALSE at every JOIN / multi-source node (a non-identity FlatMap, an NLJ,
+//     a union). A raw 2-way ordinal JOIN merge keeps its leg windows (joinWindowsOK);
+//     a projection / aggregate OVER a LEFT JOIN — the ON-only lenient CTE shadow path
+//     (Q51/Q54) whose out-of-schema read is a booked silent NULL — keeps the name path
+//     so it is not forced loud through the positional frontier.
+func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 	for input != nil {
 		switch p := input.(type) {
 		case *plans.RecordQueryScanPlan,
 			*plans.RecordQueryIndexPlan,
 			*plans.RecordQueryTextIndexPlan,
-			*plans.RecordQueryVectorIndexPlan:
+			*plans.RecordQueryVectorIndexPlan,
+			*plans.RecordQueryStreamingAggregationPlan:
 			return true
 		case *plans.RecordQueryFetchFromPartialRecordPlan:
 			input = p.GetInner()
@@ -162,6 +180,18 @@ func aggregateInputIsPlainScan(input plans.RecordQueryPlan) bool {
 			input = p.GetInner()
 		case *plans.RecordQueryPredicatesFilterPlan:
 			input = p.GetInner()
+		case *plans.RecordQueryDistinctPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryProjectionPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryMapPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryFlatMapPlan:
+			if qov, ok := p.GetResultValue().(*values.QuantifiedObjectValue); ok && qov.Correlation == p.GetOuterAlias() {
+				input = p.GetOuter()
+				continue
+			}
+			return false
 		default:
 			return false
 		}
@@ -299,34 +329,35 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 //     flat seed row it was baked against: the simple {Datum,Positional} context, no
 //     leg re-windowing (the gathered seed emits a flat row and its bakes are flat
 //     slots).
-//   - Otherwise, on a PLAIN single-source frontier (scan / index / filter — NOT a
-//     2-way ordinal JOIN merge, which keeps the name path until its own slice), a
-//     name group-key / operand resolves against the inner PositionalRow by
-//     name-in-row (frontierRowContext → evaluateOrdinal → GetByName). This is robust
-//     to a covering-index column layout (GetByName, never a plan-time table ordinal)
-//     and is NOT a name-keyed Datum read, so it no longer depends on the name model.
-//   - A reshaping / multi-source input (projection, derived table, CTE, join,
-//     union — anything that is not a plain base-table scan/index frontier) and a
-//     name-only row (no Positional) keep the name-keyed Datum path — carrying the
-//     row's Sparse flag so an unset optional field stays a silent NULL rather than
-//     tripping NameMissLoud (task #38).
+//   - On a FLAT single-source frontier (flatFrontierInput — a scan / index / filter /
+//     projection / derived table / CTE / DISTINCT / semi-join / nested StreamingAgg
+//     whose chain bottoms out at a single source, NOT a 2-way ordinal JOIN merge), a
+//     name group-key / operand resolves against the inner PositionalRow by name-in-row
+//     (frontierRowContext → evaluateOrdinal → GetByName). This is robust to a
+//     covering-index column layout (GetByName, never a plan-time table ordinal) and is
+//     NOT a name-keyed Datum read, so it no longer depends on the name model.
+//   - A RAW 2-way ordinal JOIN merge (joinWindowsOK — the input flows the join's
+//     MERGED positional row through passthroughs only): a qualified group-key /
+//     operand reference QOV(leg).col (or the flat DOTTED "D.DNAME" the name-model
+//     pipeline spells it as) resolves LEG-LOCALLY through its window, exactly as
+//     executeProjection / executeFilter resolve theirs over the same merge.
+//     Unconditional on a windowed input: even with no param/subquery/outer binding,
+//     the leg windows are required (the bare merged row misreads leg-relative
+//     ordinals — the W3 wrong-slot hazard).
+//   - A projection / aggregate OVER A JOIN (the ON-only lenient CTE shadow path —
+//     neither flatFrontierInput nor joinWindowsOK) and a name-only row (no Positional)
+//     keep the name-keyed Datum path — carrying the row's Sparse flag so an unset
+//     optional / out-of-schema field stays a silent NULL rather than tripping
+//     NameMissLoud (task #38, Q51/Q54 flip-sentinels).
 func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any {
 	if row.Positional != nil && valueReadsBakedOrdinal(v) {
 		m, _ := row.Datum.(map[string]any)
 		return &values.RowEvalContext{Datum: m, Positional: row.Positional}
 	}
-	if row.Positional != nil && c.plainScanInput {
+	if row.Positional != nil && c.flatFrontierInput {
 		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
 	}
 	if row.Positional != nil && c.joinWindowsOK {
-		// RFC-173: the merged positional row of a gated 2-way ordinal join —
-		// a qualified group-key / operand reference QOV(leg).col (or the flat
-		// DOTTED "D.DNAME" the name-model pipeline spells it as) resolves
-		// LEG-LOCALLY through its window, exactly as executeProjection /
-		// executeFilter resolve theirs over the same merge. Unconditional on a
-		// windowed input: even with no param/subquery/outer binding, the leg
-		// windows are required (the bare merged row misreads leg-relative
-		// ordinals — the W3 wrong-slot hazard).
 		return legWindowRowContext(row.Positional, c.evalCtx, c.joinLegSpans)
 	}
 	if m, ok := row.Datum.(map[string]any); ok {
