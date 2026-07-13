@@ -389,6 +389,16 @@ func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 	if row == nil || row.Type == nil || alias == "" {
 		return row
 	}
+	// A MERGED outer row (a clustered join outer — e.g. a FULL OUTER JOIN A,B)
+	// ALREADY carries its own per-leg windows (A, B): an alias-qualified read
+	// resolves through THOSE (A.K → leg A). Stamping a single whole-row alias leg
+	// here would CLOBBER them — GetByName("A.K") would then find no leg A and the
+	// dup "K" is ambiguous → unresolvable. So preserve the sub-legs; only a PLAIN
+	// scan row (no legs of its own) gets the whole-row alias window that lets a
+	// downstream `E.FNAME` resolve.
+	if len(row.Type.Legs) > 0 {
+		return row
+	}
 	qualified := &values.RecordType{
 		RecordName: row.Type.RecordName,
 		Nullable:   row.Type.Nullable,
