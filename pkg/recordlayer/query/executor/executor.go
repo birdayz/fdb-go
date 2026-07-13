@@ -2871,13 +2871,13 @@ func executeTableFunction(
 	list, ok := result.([]any)
 	if !ok {
 		return applySkipLimit(
-			recordlayer.FromList([]QueryResult{{Datum: result}}),
+			recordlayer.FromList([]QueryResult{{Positional: scalarPositionalRow(result)}}),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
 	items := make([]QueryResult, len(list))
 	for i, elem := range list {
-		items[i] = QueryResult{Datum: elem}
+		items[i] = QueryResult{Positional: scalarPositionalRow(elem)}
 	}
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
@@ -2918,7 +2918,7 @@ func executeExplode(
 			), nil
 		}
 		return applySkipLimit(
-			recordlayer.FromList([]QueryResult{{Datum: result}}),
+			recordlayer.FromList([]QueryResult{{Positional: scalarPositionalRow(result)}}),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
@@ -2934,7 +2934,7 @@ func executeExplode(
 			items[i] = explodeOrdinalityResult(ordType, elem, i+1)
 			continue
 		}
-		items[i] = QueryResult{Datum: elem}
+		items[i] = QueryResult{Positional: scalarPositionalRow(elem)}
 	}
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
@@ -2950,14 +2950,21 @@ func executeExplode(
 // of a name-keyed Datum read. The positional side is suppressed under the §5
 // oracle (DisablePositionalEmission), which reads the box by name.
 func explodeOrdinalityResult(ordType *values.RecordType, element any, ordinal int) QueryResult {
-	qr := QueryResult{Datum: explodeOrdinalityRow(element, ordinal)}
-	if !DisablePositionalEmission && ordType != nil {
-		pos := NewPositionalRow(ordType)
-		pos.Set(0, element)
-		pos.Set(1, int64(ordinal))
-		qr.Positional = pos
+	if ordType == nil {
+		ordType = positionalTypeFromNames([]string{"_0", "_1"})
 	}
-	return qr
+	pos := NewPositionalRow(ordType)
+	pos.Set(0, element)
+	pos.Set(1, int64(ordinal))
+	return QueryResult{Positional: pos}
+}
+
+// scalarPositionalRow wraps a BARE scalar UNNEST element (RFC-142: `t.arr AS x`
+// flows a raw int64, not a row) as a 1-slot PositionalRow named `_0` so it flows in
+// the ordinal model. The FlatMap binds QOV(alias) to it and concatenates the leg
+// into the merged row; a downstream read of the element resolves against slot 0.
+func scalarPositionalRow(v any) *PositionalRow {
+	return &PositionalRow{Type: positionalTypeFromNames([]string{"_0"}), Slots: []any{v}}
 }
 
 // explodeOrdinalityRow builds the 2-field anonymous record a WITH

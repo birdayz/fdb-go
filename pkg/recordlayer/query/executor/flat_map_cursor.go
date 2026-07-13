@@ -437,49 +437,15 @@ func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 // today's Evaluate path bit-identically, reconstructing the empty-Datum inner
 // row for the null-inner emission.
 func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResult) (QueryResult, error) {
-	if c.birth.enabled() && !DisablePositionalEmission {
+	if c.birth.enabled() {
 		pos, err := c.birth.evaluate(c.outerAlias.Name(), c.innerAlias.Name(), &outerRow, inner, correlationBase(c.evalCtx))
 		if err != nil {
 			return QueryResult{}, err
 		}
-		// The coexistence Datum: a SEED-shaped RV mirrors the anchored RC's
-		// bare+qualified key set (downstream name-model consumers — sort
-		// Datum fallback, aggregate group keys — resolve dotted references
-		// against it; the W3b flip's bare-only Datum silently NULLed them).
-		// A folded projection RV keeps bare-only (its name-model counterpart,
-		// the projection map, never carried qualified keys).
-		datum := datumFromPositional(pos)
-		if c.birth.WindowsOK {
-			datum = datumFromSpans(pos, c.birth.DatumSpans)
-		} else {
-			// Bare-QOV fields (the S3 positional-merge RC's `_i` slots, and the
-			// untranslated leg of a MIXED upper RV): the positional slot holds
-			// the leg's OrdinalRow, but the coexistence Datum must carry the
-			// leg's own DATUM — the §5 oracle evaluates the same bare QOV over
-			// name bindings and puts the leg's Datum there, so a raw OrdinalRow
-			// under the `_i` key breaks dualwindow row-for-row invariance. The
-			// outer mirrors the name-model branch's map cast; the inner rides
-			// raw (bare-scalar unnest elements) with the nil-inner NULL leg as
-			// the empty map the name model reconstructs.
-			for _, f := range c.birth.RC.Fields {
-				qov, isQOV := f.Value.(*values.QuantifiedObjectValue)
-				if !isQOV {
-					continue
-				}
-				switch qov.Correlation {
-				case c.outerAlias:
-					od, _ := outerRow.Datum.(map[string]any)
-					datum[f.Name] = od
-				case c.innerAlias:
-					if inner != nil {
-						datum[f.Name] = inner.Datum
-					} else {
-						datum[f.Name] = map[string]any{}
-					}
-				}
-			}
-		}
-		return QueryResult{Datum: datum, Positional: pos}, nil
+		// RFC-173 cap: the ordinal-birth FlatMap row IS its PositionalRow; the
+		// coexistence name-keyed Datum (datumFromPositional/datumFromSpans + the
+		// bare-QOV leg map) is deleted with the name model.
+		return QueryResult{Positional: pos}, nil
 	}
 	innerRow := QueryResult{Datum: map[string]any{}}
 	if inner != nil {
