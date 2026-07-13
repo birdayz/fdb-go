@@ -3469,9 +3469,7 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 			}
 		}
 		// RFC-173: a bare QOV whole-row read resolves to the ordinal Positional row
-		// on the frontier (downstream FieldValue reads it by ordinal). The name-keyed
-		// Datum whole-row read is the LAST coexistence path; gate it so the armed
-		// sweep can prove no reachable query relies on it before the field is deleted.
+		// on the frontier (downstream FieldValue reads it by ordinal).
 		if ctx.Positional != nil {
 			return ctx.Positional, nil
 		}
