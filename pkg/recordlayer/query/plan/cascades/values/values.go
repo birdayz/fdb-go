@@ -701,6 +701,15 @@ func (f *FieldValue) nameMissGuard(sparse bool, available map[string]any) error 
 	return &UnresolvedNameReadError{Field: f.Field, Available: mapKeys(available)}
 }
 
+// mapKeys returns the keys of a datum map, for unresolved-reference diagnostics.
+func mapKeys(m map[string]any) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}
+
 func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 	// <= 1 (not == 1): a hand-built zero-accessor path violates the type
 	// invariant, but a slice-bounds panic in the eval hot path is the wrong
@@ -890,62 +899,20 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}
-	// RFC-173 Slice 1: an ordinal-model row is authoritative on the non-join
-	// frontier — resolve by ordinal, no name-map fallback.
+	// RFC-173 S4: the ordinal-model row is the ONLY runtime row — resolve by
+	// ordinal, loud on a miss. The name-keyed map/Datum model is retired.
 	if row, ok := evalCtx.(OrdinalRow); ok {
 		return f.evaluateOrdinal(row)
 	}
-	if row, ok := evalCtx.(map[string]any); ok {
-		if err := f.bakedNameReadGuard(); err != nil {
-			return nil, err
-		}
-		return f.nameRead(row)
-	}
 	if rc, ok := evalCtx.(*RowEvalContext); ok {
-		// RFC-173 Slice 1: an ordinal-model row on the RowEvalContext is
-		// authoritative on the non-join frontier — resolve by ordinal, no
-		// name-map fallback, loud on a miss. It takes precedence over
-		// the name-keyed Datum.
 		if rc.Positional != nil {
 			return f.evaluateOrdinal(rc.Positional)
 		}
-		if rc.Datum != nil {
-			if err := f.nameReadForbidden(); err != nil {
-				return nil, err
-			}
-			if err := f.bakedNameReadGuard(); err != nil {
-				return nil, err
-			}
-			v, present := rc.Datum[f.nameReadRootKey()]
-			if !present {
-				if err := f.nameMissGuard(rc.Sparse, rc.Datum); err != nil {
-					return nil, err
-				}
-				if rc.Strict && ReportUnresolvedReference != nil {
-					ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
-				}
-			}
-			return f.descendResolvedPath(v)
-		}
 	}
-	// Unrecognized NON-NIL context: a lazy node keeps the historical silent
-	// NULL; a BAKED node fails loudly — silently NULLing an eager ordinal
-	// reference would hide a frontier bug (review W1 catch). The nil-context
-	// NULL above is the sanctioned appendNullLeg path and stays.
-	if err := f.bakedNameReadGuard(); err != nil {
-		return nil, err
-	}
+	// Unrecognized NON-NIL context (no Positional row supplied): the sanctioned
+	// nil-binding NULL (contract ruling #3, e.g. appendNullLeg) — mirrors the
+	// nil-context arm above.
 	return nil, nil
-}
-
-// mapKeys returns the keys of a datum map, for unresolved-reference
-// diagnostics. Only called on the W1 violation path (never in prod).
-func mapKeys(m map[string]any) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	return ks
 }
 
 func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) (any, error) {
@@ -957,102 +924,30 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		return nil, nil
 	}
 	// Every name-keyed read in this function starts at the ROOT step's key and
-	// descends the remaining accessors (nameReadRootKey/descendResolvedPath) —
-	// a fused multi-accessor node's display Field is the LAST step's name, and
-	// reading it at the top level is the display-name-root-read trap (S3-W1
-	// review catch: this function is the fused node's PRIMARY eval path — the
-	// compose rule's only constructible output is fused-over-QOV). Identical
-	// byte-for-byte to the S2 reads for lazy nodes and single-accessor paths.
-	rootKey := f.nameReadRootKey()
-	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(rootKey)
+	// RFC-173 S4: the ordinal-model row is the ONLY runtime row — resolve by
+	// ordinal, loud on a miss. The name-keyed map/Datum model is retired.
 	switch ctx := evalCtx.(type) {
 	case OrdinalRow:
-		// RFC-173 Slice 1: a bare ordinal-model row IS the single non-join
-		// frontier quantifier's row — a correlated reference to that quantifier
-		// resolves by ordinal against it (no name-map fallback, loud on a miss).
+		// A bare ordinal-model row IS the single non-join frontier
+		// quantifier's row — a correlated reference to that quantifier
+		// resolves by ordinal against it, loud on a miss.
 		return f.evaluateOrdinal(ctx)
 	case *RowEvalContext:
 		if ctx.Correlations != nil {
 			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
-				// RFC-173 Slice 1: a quantifier bound to an ordinal-model row
-				// resolves by ordinal, no name fallback.
+				// A quantifier bound to an ordinal-model row resolves by
+				// ordinal.
 				if row, ok := bound.(OrdinalRow); ok {
 					return f.evaluateOrdinal(row)
 				}
-				if bm, ok := bound.(map[string]any); ok {
-					if err := f.nameReadForbidden(); err != nil {
-						return nil, err
-					}
-					if err := f.bakedNameReadGuard(); err != nil {
-						return nil, err
-					}
-					if v, ok := bm[rootKey]; ok {
-						return f.descendResolvedPath(v)
-					}
-					if v, ok := bm[strings.ToLower(rootKey)]; ok {
-						return f.descendResolvedPath(v)
-					}
-					return nil, nil
-				}
-				// NOTE (recorded W3 borderline, @claude PR-447 finding 4): a
-				// BAKED field access over a non-OrdinalRow non-map binding gets
-				// the raw bound object without bakedNameReadGuard. Unreachable
-				// under the S2 wedge (gated legs bind OrdinalRows); re-examine
-				// when S3 widens the gate.
 				return bound, nil
 			}
 		}
-		// RFC-173 Slice 1: no explicit correlation binding matched, so the
-		// reference is to the frontier quantifier itself — resolve by ordinal
-		// against the authoritative positional row (no name fallback,
-		// loud on a miss). Precedes the name-keyed Datum path.
+		// No explicit correlation binding matched, so the reference is to
+		// the frontier quantifier itself — resolve by ordinal against the
+		// authoritative positional row, loud on a miss.
 		if ctx.Positional != nil {
 			return f.evaluateOrdinal(ctx.Positional)
-		}
-		if ctx.Datum != nil {
-			if err := f.nameReadForbidden(); err != nil {
-				return nil, err
-			}
-			if err := f.bakedNameReadGuard(); err != nil {
-				return nil, err
-			}
-			if v, ok := ctx.Datum[qualKey]; ok {
-				return f.descendResolvedPath(v)
-			}
-			// PINNED baked path, oracle window: an unbound quantifier here IS
-			// the row's own frontier quantifier (the ordinal side reads
-			// ctx.Positional for exactly this case), and a pinned path's root
-			// key is that row's OWN output column — for the S3 positional-merge
-			// row a fused reference's `_i` slot, which the coexistence Datum
-			// carries BARE (no qualified form ever exists for a merge
-			// quantifier). Pinned-only, deliberately twice-guarded: LAZY
-			// references keep the qualified-only read (a bare fallback would
-			// resurrect the cross-leg last-wins misread the qualified keys
-			// exist to prevent), and UNPINNED baked paths (the recursive-CTE
-			// wrap) keep their historical live-side NULL — the guard above
-			// already stops pinned+live, so this arm is reachable pinned only
-			// under the §5 oracle.
-			if f.Resolved != nil && f.Resolved.FrontierPinned {
-				if v, ok := ctx.Datum[rootKey]; ok {
-					return f.descendResolvedPath(v)
-				}
-			}
-			// Already-qualified field (e.g. "T3.ID") accessed through a merge
-			// quantifier: a re-enumerated N-way join collapses a buried table
-			// into a merge quantifier whose row flows that table's columns under
-			// their own qualified ALIAS.COL keys (the executor's mergeRows
-			// preserves dotted keys verbatim — they are NOT re-prefixed with the
-			// merge alias). Prepending the merge alias above would invent a key
-			// (e.g. "$M.T3.ID") that was never written. Mirror the binding path
-			// (bm[rootKey]) by resolving the qualified field directly. (RFC-043.)
-			if strings.Contains(rootKey, ".") {
-				if v, ok := ctx.Datum[strings.ToUpper(rootKey)]; ok {
-					return f.descendResolvedPath(v)
-				}
-				if v, ok := ctx.Datum[rootKey]; ok {
-					return f.descendResolvedPath(v)
-				}
-			}
 		}
 		return nil, nil
 	case CorrelationBinder:
@@ -1060,88 +955,12 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			if row, ok := bound.(OrdinalRow); ok {
 				return f.evaluateOrdinal(row)
 			}
-			if bm, ok := bound.(map[string]any); ok {
-				if err := f.nameReadForbidden(); err != nil {
-					return nil, err
-				}
-				if err := f.bakedNameReadGuard(); err != nil {
-					return nil, err
-				}
-				if v, ok := bm[rootKey]; ok {
-					return f.descendResolvedPath(v)
-				}
-				if v, ok := bm[strings.ToLower(rootKey)]; ok {
-					return f.descendResolvedPath(v)
-				}
-				return nil, nil
-			}
-			// Same recorded W3 borderline as the RowEvalContext arm above
-			// (@claude PR-447 finding 4): re-examine when S3 widens the gate.
 			return bound, nil
 		}
 		return nil, nil
-	case map[CorrelationIdentifier]map[string]any:
-		if sub, ok := ctx[qov.Correlation]; ok {
-			if err := f.nameReadForbidden(); err != nil {
-				return nil, err
-			}
-			if err := f.bakedNameReadGuard(); err != nil {
-				return nil, err
-			}
-			return f.descendResolvedPath(sub[rootKey])
-		}
-		return nil, nil
-	case map[string]any:
-		if err := f.nameReadForbidden(); err != nil {
-			return nil, err
-		}
-		if err := f.bakedNameReadGuard(); err != nil {
-			return nil, err
-		}
-		if v, ok := ctx[qualKey]; ok {
-			return f.descendResolvedPath(v)
-		}
-		// PINNED baked path, oracle window — the raw-map twin of the
-		// *RowEvalContext arm above, NARROWED to MERGE-SLOT roots: a fused
-		// reference through a MERGE quantifier roots at the row's own `_i`
-		// slot, which mergeRows carries BARE (its qualified form uses the
-		// merge alias's ORIGINAL case, `$m"1._0`, which the upper-cased
-		// qualKey never matches; a QUOTED user identifier `"_0"` is legal SQL,
-		// but the S3 positional-merge and Explode-ordinality producers are
-		// the only `_i` WRITERS in a merged row, and this arm is pinned- and
-		// oracle-only, dying in S4). A pinned ref over a DIRECT leg
-		// (rootKey = a user column) must NOT take this arm: the bare key is
-		// mergeRows' last-wins spill, and reading it turns `a.k = b.k` into
-		// `k = k` — the cross-leg conflation that produced a full cross
-		// product on the NULL-key corpus entry when this arm was first cut
-		// too wide. Pinned-only; the guard above already stops pinned+live,
-		// so this arm is reachable only under the §5 oracle. Without it a
-		// gathered join's spanning WHERE — evaluated by the NLJ over the raw
-		// merged map — silently dropped every row oracle-side.
-		if f.Resolved != nil && f.Resolved.FrontierPinned && IsOrdinalFieldName(rootKey) {
-			if v, ok := ctx[rootKey]; ok {
-				return f.descendResolvedPath(v)
-			}
-		}
-		// Already-qualified field accessed through a merge quantifier — see the
-		// *RowEvalContext branch above for the rationale. (RFC-043.)
-		if strings.Contains(rootKey, ".") {
-			if v, ok := ctx[strings.ToUpper(rootKey)]; ok {
-				return f.descendResolvedPath(v)
-			}
-			if v, ok := ctx[rootKey]; ok {
-				return f.descendResolvedPath(v)
-			}
-		}
-		return nil, nil
 	}
-	// Unrecognized NON-NIL context: same guard as Evaluate's tail — a BAKED
-	// correlated reference (the COMMON baked shape: every real field access
-	// over a quantifier lands here) silently NULLing would hide a frontier
-	// bug; loud instead. Lazy keeps the historical silent NULL.
-	if err := f.bakedNameReadGuard(); err != nil {
-		return nil, err
-	}
+	// Unrecognized NON-NIL context (no ordinal row supplied): the sanctioned
+	// nil-binding NULL, mirroring Evaluate's own tail.
 	return nil, nil
 }
 

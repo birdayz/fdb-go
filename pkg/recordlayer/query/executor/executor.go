@@ -2473,6 +2473,10 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 	}
 	var rowCtx any = combined.Datum
 	if legs != nil {
+		// Birth-active cursor: baked predicates resolve against the seed layout via
+		// the per-leg binder; the merge-time concat Positional here would carry a
+		// DIFFERENT layout (birth overwrites combined.Positional only after this
+		// check), so keep the binder + name-keyed Datum path.
 		m, _ := combined.Datum.(map[string]any)
 		rc := &values.RowEvalContext{
 			Datum:        m,
@@ -2480,6 +2484,25 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 		}
 		if evalCtx != nil {
 			rc.Binder = evalCtx
+			rc.ScalarSubqueries = evalCtx.scalarSubqueries
+		}
+		rowCtx = rc
+	} else if combined.Positional != nil {
+		// RFC-173 name-model cursor: the merged row carries the leg-windowed concat
+		// Positional (concatLegPositionals), whose leg names match the flat join/
+		// EXISTS predicate qualifiers (`A.ID` → leg A window via GetByName). Resolve
+		// against it — authoritative, no name-keyed fallback — so this join predicate
+		// path stops riding QueryResult.Datum. An outer correlation / param / scalar
+		// subquery still resolves via evalCtx. Datum rides along for coexistence.
+		m, _ := combined.Datum.(map[string]any)
+		rc := &values.RowEvalContext{
+			Datum:      m,
+			Positional: combined.Positional,
+			Sparse:     combined.Sparse,
+		}
+		if evalCtx != nil {
+			rc.Binder = evalCtx
+			rc.Correlations = evalCtx
 			rc.ScalarSubqueries = evalCtx.scalarSubqueries
 		}
 		rowCtx = rc
