@@ -1530,6 +1530,15 @@ func executeSort(
 		keyNames[i] = k.Value.Name()
 		if fv, ok := k.Value.(*values.FieldValue); ok {
 			keyNames[i] = fv.Field
+			// RFC-173: a QUALIFIED sort key (`p.name`) over a merged join row with
+			// DUPLICATE bare column names (c.name, p.name) must resolve to ITS leg,
+			// not the first bare match — build the ALIAS.COL name so
+			// sortKeyFromResult's GetByName routes through the leg window. On a
+			// single-source row (no dup, no legs) GetByName's unique-leaf strip
+			// resolves it back to the bare column.
+			if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok && qov.Correlation.Name() != "" {
+				keyNames[i] = strings.ToUpper(qov.Correlation.Name()) + "." + fv.Field
+			}
 		}
 		directions[i] = k.Reverse
 	}
