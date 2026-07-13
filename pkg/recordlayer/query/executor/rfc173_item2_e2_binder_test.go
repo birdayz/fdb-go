@@ -162,14 +162,17 @@ func TestIntegration_RFC173Item2_DisabledBirthBinder_BakedInner(t *testing.T) {
 }
 
 // TestIntegration_RFC173Item2_ProbeNegative_LazyInner pins the probe-negative
-// side: a LAZY (non-FrontierPinned) outer reference in the inner plan leaves
-// the probe cold, the outer binds as the name-keyed Datum map exactly as
-// before, and the identity output carries NO positional row — the pass-through
-// is PROBE-GATED, because a name-model existential's uppers read the
-// qualified Datum keys as flat dotted fields and an unconditional positional
-// emission flipped them onto the ordinal path where the dotted name
-// loud-misses (the live TestFDB_CorrelatedExistsCrossJoin catch). The binder
-// changes NOTHING for name-model shapes, bit-identically.
+// side: a LAZY (non-FrontierPinned) outer reference in the inner plan leaves the
+// baked probe cold (outerBakedType nil), so the outer is bound POSITIONALLY as
+// the plain-scan correlated-EXISTS shape (outerIdentityPassthrough) rather than
+// by the baked-probe path. The identity output PROPAGATES the outer's positional
+// row, stamped with the outer alias as a leg window (qualifyOuterPositional) — the
+// RFC-173 S4 ordinalization of this edge. That row resolves both a bare column
+// (FieldIndex) and an alias-qualified reference (the Legs path), so a downstream
+// projection reading "CUST.NAME" no longer loud-misses a bare-named row (the
+// former TestFDB_CorrelatedExistsCrossJoin catch that once forced this edge
+// Datum-only). The coexistence Datum still carries qualifyOuterRow's "ALIAS.COL"
+// keys for the name model.
 func TestIntegration_RFC173Item2_ProbeNegative_LazyInner(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
@@ -189,8 +192,11 @@ func TestIntegration_RFC173Item2_ProbeNegative_LazyInner(t *testing.T) {
 	if !isMap || datum["CUSTOMER_ID"] != int64(1) || datum["CUST.NAME"] != "Alice" {
 		t.Fatalf("Datum = %v, want the qualified outer row for customer 1", results[0].Datum)
 	}
-	if results[0].Positional != nil {
-		t.Fatalf("probe-negative identity output carries Positional %v — the pass-through must stay probe-gated (name-model uppers read dotted Datum keys)", results[0].Positional)
+	// The ordinalized output edge: the outer's positional row survives, and its
+	// outer-alias leg window resolves the alias-qualified read the same as the bare.
+	item2AssertCustomerPositional(t, results[0], int64(1), "Alice")
+	if v, ok := results[0].Positional.GetByName("CUST.NAME"); !ok || v != "Alice" {
+		t.Fatalf("GetByName(CUST.NAME) = (%v, %v), want (Alice, true) — the outer-alias leg window", v, ok)
 	}
 }
 
@@ -453,18 +459,45 @@ func TestRFC173Item2_ComputeResult_PassThrough(t *testing.T) {
 		// The adapted row is in the BAKED layout: slot 0 = ID, slot 1 = V.
 		ojAssertSlots(t, got.Positional, int64(1), int64(10))
 	})
-	t.Run("probe-negative cursor emits none", func(t *testing.T) {
+	t.Run("probe-negative identity emits an alias-qualified positional", func(t *testing.T) {
 		t.Parallel()
+		// RFC-173 S4 — the PLAIN-SCAN correlated-EXISTS output edge: a
+		// probe-negative identity pass-through (outerBakedType nil,
+		// outerMergedType nil → outerIdentityPassthrough) over an outer that
+		// CARRIES a positional row now PROPAGATES it, stamped with the outer
+		// alias as a leg window (qualifyOuterPositional). This lets the
+		// downstream projection read by ordinal instead of by name — the whole
+		// point of the ordinalization — while STILL resolving an alias-qualified
+		// reference ("A.ID"), the read form that once forced this edge to stay
+		// Datum-only (the TestFDB_CorrelatedExistsCrossJoin catch). The leg is
+		// the ordinal-model analog of qualifyOuterRow's "ALIAS.COL" Datum keys.
 		c := newIdentityCursor(t, nil)
 		if c.outerBakedType != nil {
 			t.Fatal("nil inner plan must probe negative")
+		}
+		if !c.outerIdentityPassthrough {
+			t.Fatal("a probe-negative identity RV over a plain outer must be an identity pass-through")
 		}
 		got, err := c.computeResult(outerQR, innerQR)
 		if err != nil {
 			t.Fatalf("computeResult: %v", err)
 		}
-		if got.Positional != nil {
-			t.Fatalf("probe-negative identity output carries Positional %v — name-model uppers read dotted Datum keys and must not flip onto the ordinal path", got.Positional)
+		if got.Positional == nil {
+			t.Fatal("probe-negative identity output must propagate the outer's positional row (ordinalized output edge)")
+		}
+		// The row resolves BOTH a bare column (FieldIndex) and an alias-qualified
+		// reference (the Legs path) off the same slots.
+		if v, ok := got.Positional.GetByName("ID"); !ok || v != int64(1) {
+			t.Fatalf("GetByName(ID) = (%v, %v), want (1, true)", v, ok)
+		}
+		if v, ok := got.Positional.GetByName("V"); !ok || v != int64(10) {
+			t.Fatalf("GetByName(V) = (%v, %v), want (10, true)", v, ok)
+		}
+		if v, ok := got.Positional.GetByName("A.ID"); !ok || v != int64(1) {
+			t.Fatalf("GetByName(A.ID) = (%v, %v), want (1, true) — the outer-alias leg window", v, ok)
+		}
+		if v, ok := got.Positional.GetByName("A.V"); !ok || v != int64(10) {
+			t.Fatalf("GetByName(A.V) = (%v, %v), want (10, true) — the outer-alias leg window", v, ok)
 		}
 	})
 }

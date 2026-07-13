@@ -250,6 +250,7 @@ go_test(
         "rfc173_b2_graefe_impl_probe_fdb_test.go",
         "rfc173_census_sweep_test.go",
         "rfc173_correlated_index_exists_permanent_fdb_test.go",
+        "rfc173_exists_outer_ordinal_fdb_test.go",
         "rfc173_exists_scope_shadow_fdb_test.go",
         "rfc173_f2left_buriedbox_fdb_test.go",
         "rfc173_f2left_projected_exists_fdb_test.go",

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -79,6 +80,20 @@ type flatMapCursor struct {
 	// a layout mismatch) so a minted-dup upper resolves positionally instead of
 	// the executor's probe-gate declining loud at translation.
 	outerMergedType *values.RecordType
+
+	// outerIdentityPassthrough (RFC-173 S4): the PLAIN-SCAN correlated-EXISTS
+	// shape — a WHERE-EXISTS identity pass-through (RV == QOV(outer)) whose outer
+	// is neither an inner-baked existential (outerBakedType nil) nor a gated join
+	// (outerMergedType nil). The outer binds onto its OWN scan positional row
+	// (bound RAW: the inner subquery's correlated ref is LAZY — no baked ordinal —
+	// so it resolves by GetByName against the row's own type, layout-robust by
+	// construction, NOT by a QOV-child ordinal that could mis-slot a covering
+	// index), and the identity output edge propagates that same positional row so
+	// the downstream projection reads by ordinal instead of by name. false = the
+	// name-keyed Datum binding (a non-identity RV, or a baked/gated outer with its
+	// own more-specific layout authority). S4 KILL LIST: dead once the name model
+	// dies.
+	outerIdentityPassthrough bool
 
 	// Continuation state for cross-transaction resume.
 	priorOuterContinuation recordlayer.RecordCursorContinuation
@@ -156,6 +171,7 @@ func newFlatMapCursor(
 	var foldLegSpans []legSpan
 	var foldWindowsOK bool
 	var outerMergedType *values.RecordType
+	var outerIdentityPassthrough bool
 	if !birth.enabled() {
 		outerBakedType = probeOuterBakedType(innerPlan, outerAlias)
 		// RFC-173: recognise a gated ordinal join OUTER (downstreamLegWindows
@@ -174,22 +190,33 @@ func newFlatMapCursor(
 			foldLegSpans, outerMergedType, outerIsGatedJoin = downstreamLegWindowsTyped(outerPlan)
 		}
 		foldWindowsOK = outerIsGatedJoin && !isIdentityOuterRV(resultValue, outerAlias)
+		// The PLAIN-SCAN correlated-EXISTS shape: an identity pass-through
+		// (RV == QOV(outer)) whose outer is NOT a gated join (outerMergedType nil)
+		// and whose inner carries no baked outer refs (outerBakedType nil — the
+		// inner correlated ref is LAZY). The outer then binds onto its OWN scan
+		// positional row and the identity output propagates it (see
+		// outerIdentityPassthrough). A gated outer keeps its outerMergedType
+		// authority (it is the more specific layout); this catches only the
+		// all-nil plain scan.
+		outerIdentityPassthrough = outerBakedType == nil && outerMergedType == nil &&
+			isIdentityOuterRV(resultValue, outerAlias)
 	}
 	return &flatMapCursor{
-		outerCursor:     outerCursor,
-		innerPlan:       innerPlan,
-		store:           store,
-		evalCtx:         evalCtx,
-		outerAlias:      outerAlias,
-		innerAlias:      innerAlias,
-		resultValue:     resultValue,
-		leftOuter:       leftOuter,
-		props:           props,
-		birth:           birth,
-		outerBakedType:  outerBakedType,
-		foldLegSpans:    foldLegSpans,
-		foldWindowsOK:   foldWindowsOK,
-		outerMergedType: outerMergedType,
+		outerCursor:              outerCursor,
+		innerPlan:                innerPlan,
+		store:                    store,
+		evalCtx:                  evalCtx,
+		outerAlias:               outerAlias,
+		innerAlias:               innerAlias,
+		resultValue:              resultValue,
+		leftOuter:                leftOuter,
+		props:                    props,
+		birth:                    birth,
+		outerBakedType:           outerBakedType,
+		foldLegSpans:             foldLegSpans,
+		foldWindowsOK:            foldWindowsOK,
+		outerMergedType:          outerMergedType,
+		outerIdentityPassthrough: outerIdentityPassthrough,
 	}, nil
 }
 
@@ -316,6 +343,23 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
 			outerBinding = row
+		} else if c.outerIdentityPassthrough && outerRow.Positional != nil && !DisablePositionalEmission {
+			// RFC-173 S4 — the PLAIN-SCAN correlated-EXISTS outer binding: an
+			// identity pass-through (WHERE-EXISTS) whose outer is a plain scan and
+			// whose inner correlated ref is LAZY (no baked outer refs — outerBakedType
+			// nil; not a gated join — outerMergedType nil). Bind the outer's OWN scan
+			// positional row RAW: the LAZY ref resolves through evaluateOrdinal's
+			// flat-reference tail (resolveOrdinal declines — QOV(outer)'s inferred type
+			// is not a RecordType here — so it reads GetByName against the row's OWN
+			// type), which is layout-robust by construction (a covering-index outer's
+			// row carries its own [V, ID] type and GetByName resolves the name against
+			// it, never a mis-slotted child ordinal). Under the §5 oracle the outer
+			// never carries a positional (guard above), so the Datum binding stays —
+			// no new birth site. The row is stamped with the outer alias as a leg
+			// window (qualifyOuterPositional) so an alias-qualified inner ref
+			// ("D.DID") resolves the same as a bare one — the ordinal-model analog of
+			// the correlated binding reading qualifyOuterRow's "ALIAS.COL" keys.
+			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
 		}
 		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
 		var innerContBytes []byte
@@ -354,6 +398,31 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 func isIdentityOuterRV(rv values.Value, outerAlias values.CorrelationIdentifier) bool {
 	qov, ok := rv.(*values.QuantifiedObjectValue)
 	return ok && qov.Correlation == outerAlias
+}
+
+// qualifyOuterPositional is the ORDINAL-model analog of qualifyOuterRow: the
+// WHERE-EXISTS identity pass-through flows the outer scan row UNDER the outer
+// quantifier, so a downstream reference qualified by the outer alias ("E.FNAME")
+// must resolve against it. In the name model qualifyOuterRow writes "ALIAS.COL"
+// Datum keys; here the equivalent is a single item-3 leg window named after the
+// alias covering the whole row — PositionalRow.GetByName then resolves both a
+// BARE column ("DNAME", via FieldIndex) and a DOTTED "ALIAS.COL" ("E.FNAME", via
+// the Legs path) off the same slots. A plain scan row carries no Legs of its own
+// (a clustered outer would be an outerMergedType shape, not this arm), so a fresh
+// single-leg RecordType is stamped over the SAME slots (the Slots are shared —
+// values are read, never mutated; only the type gains the alias window). Returns
+// the row unchanged when the alias is empty or the type is absent.
+func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
+	if row == nil || row.Type == nil || alias == "" {
+		return row
+	}
+	qualified := &values.RecordType{
+		RecordName: row.Type.RecordName,
+		Nullable:   row.Type.Nullable,
+		Fields:     row.Type.Fields,
+		Legs:       []values.RecordTypeLeg{{Name: strings.ToUpper(alias), Start: 0, Width: len(row.Type.Fields)}},
+	}
+	return &PositionalRow{Type: qualified, Slots: row.Slots}
 }
 
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
@@ -560,6 +629,27 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 				if pos, isPos := adapted.(*PositionalRow); isPos {
 					out.Positional = pos
 				}
+			} else if c.outerIdentityPassthrough && outerRow.Positional != nil {
+				// RFC-173 S4 — the PLAIN-SCAN correlated-EXISTS output edge: the
+				// identity output IS the outer scan row, so its OWN positional row
+				// flows through UNCHANGED (no adapter — no baked/gated layout
+				// authority applies; the outer binds RAW at the input edge for the
+				// same reason). The downstream projection (SELECT dname) then reads
+				// by ordinal against this row instead of by name off the qualified
+				// Datum. Narrowly gated on outerIdentityPassthrough (both probes nil
+				// AND identity RV) so a name-model existential whose downstream
+				// uppers read DOTTED "ALIAS.COL" fields (the outerBakedType-negative
+				// join shape — TestFDB_CorrelatedExistsCrossJoin) is NOT flipped onto
+				// the ordinal path where the dotted name would loud-miss the
+				// bare-named row. Under the §5 oracle the outer never carries a
+				// positional, so this is pure propagation, not a birth. The row is
+				// stamped with the outer alias as a leg window (qualifyOuterPositional):
+				// the downstream projection reads its columns qualified by the outer
+				// alias ("E.FNAME"), so GetByName resolves the dotted reference via the
+				// Legs path — the ordinal analog of qualifyOuterRow's "ALIAS.COL" Datum
+				// keys, and the reason a bare-named plain-scan row alone would loud-miss
+				// the qualified read (the TestFDB_CorrelatedExistsCrossJoin catch).
+				out.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
 			}
 			return out, nil
 		}
