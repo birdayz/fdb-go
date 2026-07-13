@@ -46,6 +46,7 @@ go_test(
         "placeholder_test.go",
         "predicates_equivalence_test.go",
         "predicates_test.go",
+        "predrow_test.go",
         "rebase_test.go",
         "rfc173_s3_translate_leaf_test.go",
         "semantic_equals_test.go",

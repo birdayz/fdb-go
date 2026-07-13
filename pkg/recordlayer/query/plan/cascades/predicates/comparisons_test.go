@@ -531,10 +531,10 @@ func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got, _ := isNull.Eval(tc.row); got != tc.wantNull {
+			if got, _ := isNull.Eval(predRow(tc.row)); got != tc.wantNull {
 				t.Errorf("IS NULL: got %v, want %v", got, tc.wantNull)
 			}
-			if got, _ := isNotNull.Eval(tc.row); got != tc.wantNotNull {
+			if got, _ := isNotNull.Eval(predRow(tc.row)); got != tc.wantNotNull {
 				t.Errorf("IS NOT NULL: got %v, want %v", got, tc.wantNotNull)
 			}
 		})
@@ -699,15 +699,15 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	pred := NewComparisonPredicate(operand, cmp)
 
 	row := map[string]any{"age": int64(21)}
-	if got, _ := pred.Eval(row); got != TriTrue {
+	if got, _ := pred.Eval(predRow(row)); got != TriTrue {
 		t.Fatalf("age=21 >= 18: got %v", got)
 	}
 	row["age"] = int64(15)
-	if got, _ := pred.Eval(row); got != TriFalse {
+	if got, _ := pred.Eval(predRow(row)); got != TriFalse {
 		t.Fatalf("age=15 >= 18: got %v", got)
 	}
 	row["age"] = nil
-	if got, _ := pred.Eval(row); got != TriUnknown {
+	if got, _ := pred.Eval(predRow(row)); got != TriUnknown {
 		t.Fatalf("age=NULL >= 18: got %v", got)
 	}
 
@@ -738,11 +738,11 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 		NewComparisonPredicate(&values.FieldValue{Field: "rank", Typ: values.TypeInt},
 			Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
 	)
-	if got, _ := tree.Eval(row); got != TriTrue {
+	if got, _ := tree.Eval(predRow(row)); got != TriTrue {
 		t.Fatalf("AND: got %v", got)
 	}
 	row["rank"] = int64(7)
-	if got, _ := tree.Eval(row); got != TriFalse {
+	if got, _ := tree.Eval(predRow(row)); got != TriFalse {
 		t.Fatalf("AND with rank=7: got %v", got)
 	}
 }
@@ -760,14 +760,14 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 	pred := NewComparisonPredicate(sum,
 		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))})
 
-	if got, _ := pred.Eval(map[string]any{"a": int64(5), "b": int64(7)}); got != TriTrue {
+	if got, _ := pred.Eval(predRow(map[string]any{"a": int64(5), "b": int64(7)})); got != TriTrue {
 		t.Fatalf("5+7=12 > 10: got %v", got)
 	}
-	if got, _ := pred.Eval(map[string]any{"a": int64(3), "b": int64(4)}); got != TriFalse {
+	if got, _ := pred.Eval(predRow(map[string]any{"a": int64(3), "b": int64(4)})); got != TriFalse {
 		t.Fatalf("3+4=7 > 10: got %v", got)
 	}
 	// NULL propagation: a=NULL -> a+b=NULL -> UNKNOWN.
-	if got, _ := pred.Eval(map[string]any{"a": nil, "b": int64(1)}); got != TriUnknown {
+	if got, _ := pred.Eval(predRow(map[string]any{"a": nil, "b": int64(1)})); got != TriUnknown {
 		t.Fatalf("a=NULL: got %v", got)
 	}
 }
@@ -799,7 +799,7 @@ func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got, _ := pred.Eval(tc.row); got != tc.want {
+			if got, _ := pred.Eval(predRow(tc.row)); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
@@ -837,10 +837,10 @@ func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got, _ := dist.Eval(tc.row); got != tc.wantDist {
+			if got, _ := dist.Eval(predRow(tc.row)); got != tc.wantDist {
 				t.Errorf("IS DISTINCT FROM: got %v, want %v", got, tc.wantDist)
 			}
-			if got, _ := notDist.Eval(tc.row); got != tc.wantNotDist {
+			if got, _ := notDist.Eval(predRow(tc.row)); got != tc.wantNotDist {
 				t.Errorf("IS NOT DISTINCT FROM: got %v, want %v", got, tc.wantNotDist)
 			}
 		})
@@ -862,10 +862,10 @@ func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
 			},
 		},
 	)
-	if got, _ := pred.Eval(map[string]any{"a": int64(5), "b": int64(4)}); got != TriTrue {
+	if got, _ := pred.Eval(predRow(map[string]any{"a": int64(5), "b": int64(4)})); got != TriTrue {
 		t.Fatalf("5 = 4+1: got %v", got)
 	}
-	if got, _ := pred.Eval(map[string]any{"a": int64(5), "b": int64(5)}); got != TriFalse {
+	if got, _ := pred.Eval(predRow(map[string]any{"a": int64(5), "b": int64(5)})); got != TriFalse {
 		t.Fatalf("5 = 5+1: got %v", got)
 	}
 }
@@ -1145,7 +1145,7 @@ func TestComparisonPredicate_FloatComparisons(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got, _ := pred.Eval(tc.row); got != tc.want {
+			if got, _ := pred.Eval(predRow(tc.row)); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
@@ -1181,7 +1181,7 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 		{map[string]any{"name": "hello", "pattern": int64(5)}, TriUnknown},
 	}
 	for _, tc := range cases {
-		if got, _ := pred.Eval(tc.row); got != tc.want {
+		if got, _ := pred.Eval(predRow(tc.row)); got != tc.want {
 			t.Errorf("row=%v: got %v, want %v", tc.row, got, tc.want)
 		}
 	}
