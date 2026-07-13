@@ -196,13 +196,6 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 
 	// positional runs the query through the DEFAULT (ordinal / positional) path.
 	positional := func(t *testing.T, sql string) []string { return run(t, sql) }
-	// named runs the SAME plan under the process-global name-model oracle
-	// (positional births suppressed, baked refs resolve by display name).
-	named := func(t *testing.T, sql string) []string {
-		executor.SetNameModelOracle(true)
-		defer executor.SetNameModelOracle(false)
-		return run(t, sql)
-	}
 	// assertRows is the PRIMARY gate: the ordinal (positional) path must produce
 	// EXACTLY these rows. Correct-leg bind, EXISTS semantics, and null-supplied
 	// handling are all pinned here — no name-model dependency.
@@ -375,31 +368,10 @@ func TestFDB_RFC173S4_C5a_FullOuterUnnestExists(t *testing.T) {
 		`SELECT "X" `+from+` WHERE FOB."K" IS NULL`,
 		[]string{"7", "8"})
 
-	// §7 dup-name observable — PROOF the ORDINAL seed fired AND strictly fixes a
-	// name-model conflation. The name-model oracle resolves dup-named box columns
-	// LAST-LEG-WINS (a documented RFC-173 carve-out — the name-keyed Datum cannot
-	// keep two same-named legs distinct). So the oracle reads the QUALIFIED FOA.K
-	// (first leg) as the LAST leg's K (FOB.K = NULL) and gets a DIFFERENT answer
-	// than the positional path, which resolves FOA.K by its own [Start,Width)
-	// window. Toggling the oracle CHANGING the answer proves a positional row was
-	// born (the flip fired); a name-model REVERT would make these AGREE and turn
-	// this red. This is why the dual-window differential is NOT a valid gate for
-	// dup-named box seeds — the name model is the broken reference here. The Q2
-	// check just below (LAST-leg correlation, where last-leg-wins is accidentally
-	// correct → oracle agrees) completes the asymmetry that characterizes it.
-	if pos, nm := positional(t, q3), named(t, q3); strings.Join(pos, ";") == strings.Join(nm, ";") {
-		t.Errorf("Q3 §7: positional and name-model agree (%v) — the positional seed did not fire, "+
-			"or the name model no longer conflates dup-named legs; the ordinal path must resolve "+
-			"FOA.K by its window while the name oracle conflates last-leg-wins", pos)
-	}
-	// Q2 correlates on the LAST leg (FOB.K), where last-leg-wins is accidentally
-	// correct — so the oracle AGREES with positional ({7,8} both). The asymmetry
-	// (agree on last leg, differ on first leg) precisely characterizes the
-	// name-model conflation the per-leg windows eliminate.
-	if pos, nm := positional(t, q2), named(t, q2); strings.Join(pos, ";") != strings.Join(nm, ";") {
-		t.Errorf("Q2 §7: name-model disagrees with positional on the LAST-leg correlation "+
-			"(name=%v, positional=%v) — last-leg-wins should be accidentally correct here", nm, pos)
-	}
+	// (The §7 dup-name dual-window differential — positional vs name-model oracle —
+	// is retired with the name map; the ordinal path's correct resolution of the
+	// dup-named box columns FOA.K / FOB.K by their own leg windows is already
+	// pinned by the Q3/Q2 assertRows gates above.)
 
 	// NEGATIVE (R1) — a multi-source INNER cluster stays NAME-MODEL (boxGatesFresh
 	// excludes JoinInner) and must answer correctly. FOA × FOB = 1 combined row

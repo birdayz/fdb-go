@@ -1038,7 +1038,7 @@ func newNLJCursor(
 	if rc, isRC := resultValue.(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
 		c.mergeRC = rc
 	}
-	if birth.enabled() && !DisablePositionalEmission {
+	if birth.enabled() {
 		c.birthActive = true
 		// Adapt the FIXED inner side once (review W3a-2: never per pair).
 		innerType := birth.legType(c.innerCorr)
