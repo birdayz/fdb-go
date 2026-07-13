@@ -3075,13 +3075,22 @@ func executeExplode(
 	if result == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
+	// RFC-173: the WITH-ORDINALITY box's ordinal-frontier output type
+	// (`[_0,_1]`), recovered once from the plan's result type so every emitted
+	// row carries a PositionalRow of that schema. Nil unless with-ordinality.
+	var ordType *values.RecordType
+	if p.IsWithOrdinality() {
+		if rt, ok := p.GetResultType().(*values.RecordType); ok {
+			ordType = rt
+		}
+	}
 	list, ok := result.([]any)
 	if !ok {
 		// A non-list scalar yields a single row. With ordinality it gets
 		// ordinal 1 (the SQL standard's 1-based position of the sole element).
 		if p.IsWithOrdinality() {
 			return applySkipLimit(
-				recordlayer.FromList([]QueryResult{{Datum: explodeOrdinalityRow(result, 1)}}),
+				recordlayer.FromList([]QueryResult{explodeOrdinalityResult(ordType, result, 1)}),
 				props.Skip, props.ReturnedRowLimit,
 			), nil
 		}
@@ -3099,12 +3108,33 @@ func executeExplode(
 			// counter naturally resets per outer binding — Java's
 			// IntStream.rangeClosed(1, list.size())). Mirrors
 			// RecordQueryExplodePlan.executePlan's DynamicMessage(field0,field1).
-			items[i] = QueryResult{Datum: explodeOrdinalityRow(elem, i+1)}
+			items[i] = explodeOrdinalityResult(ordType, elem, i+1)
 			continue
 		}
 		items[i] = QueryResult{Datum: elem}
 	}
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
+}
+
+// explodeOrdinalityResult builds a WITH-ORDINALITY box output row. It carries
+// BOTH representations: the name-keyed `{_0:element, _1:ordinal}` Datum (read by
+// the §5 name-model oracle and by the FlatMap birth binder, which extracts each
+// slot from the map) AND — the RFC-173 ordinal frontier — a PositionalRow of the
+// box's `[_0,_1]` schema, so a downstream reference over the box (a pushed-down
+// WHERE predicate on the AS element / AT ordinal, evaluated by the
+// PredicatesFilter over the Explode) resolves by ORDINAL (frontierRowContext ->
+// evaluateOrdinal -> row.GetByName("_0"/"_1") against the box's own type) instead
+// of a name-keyed Datum read. The positional side is suppressed under the §5
+// oracle (DisablePositionalEmission), which reads the box by name.
+func explodeOrdinalityResult(ordType *values.RecordType, element any, ordinal int) QueryResult {
+	qr := QueryResult{Datum: explodeOrdinalityRow(element, ordinal)}
+	if !DisablePositionalEmission && ordType != nil {
+		pos := NewPositionalRow(ordType)
+		pos.Set(0, element)
+		pos.Set(1, int64(ordinal))
+		qr.Positional = pos
+	}
+	return qr
 }
 
 // explodeOrdinalityRow builds the 2-field anonymous record a WITH
