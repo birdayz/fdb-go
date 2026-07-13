@@ -16,6 +16,52 @@ merge independently; atomic Slice 3 as its own PR), RFC-ack → per-slice re-ack
 **~25–30 shifts**. See RFC-173 §4 for the slice order and §5 for the (execution-pin, not dark-diff)
 validation gate.
 
+### RFC-173 S4 CAP — current state (checkpoint 2026-07-13, branch feat/rfc173-s4)
+
+**The name model is DEAD for query OUTPUT and nearly dead for the plumbing.** Definitive findings
+this session (all committed: `73753d722` 3 gaps, `b54ec7522` scalar, `e7a662b41` union-agg + probe):
+
+- **`resultset.go` is already 100% Positional** (0 `.Datum` reads) — the final client-facing
+  materialization is ordinal-only. Consequence: the §5 **dual-window differential is effectively
+  already retired** — its NAME side (DisablePositionalEmission=true) can no longer materialize output
+  (`resultset` errors "result row carries no positional output row"). It is NOT a usable net anymore;
+  do not treat its red as a live regression. The **`RequirePositional` probe** (added this session,
+  `executor.evaluation_context.go`, inert by default) is its replacement: armed, it makes every
+  live-side name-model consumption arm (filter/predicatesFilter/map/projection/aggregate) loud, naming
+  the site — green-under-armed-probe == that shape is ordinalized. Use it as the forcing function.
+
+- **3 ordinalization gaps CLOSED:** (1) EXISTS-in-INNER-JOIN-ON now folds into the WHERE-EXISTS gather
+  (Java parity — `translateProject`); (2) B1 N-way WHERE-EXISTS confirmed already ordinal (the earlier
+  "failures" were parallel-pollution from the failing gap-3 test); (3) FULL-box chained-unnest straddle
+  loud-rejects (`chainedSpineBottomsInFullBox`, Java rejects FULL OUTER JOIN at the grammar level).
+- **scalar-subquery extraction** and **aggregate-over-UNION/UnorderedUnion/RecursiveLevelUnion** are
+  ordinalized (the latter cleared ~13 tests via `aggregateInputIsFlatFrontier`).
+
+**REMAINING name-model surface** (the whole sqldriver suite hits the plumbing in ONLY these, per the
+armed-probe sweep) — the birth-disabled reach shapes:
+1. **Aggregate/consumer over a bare-projected JOIN or recursive-CTE branch.** Root: `executeProjection`
+   (executor.go:~1500) and `executeMap` (executor_new_plans.go:~650) emit a Positional ONLY when the
+   INPUT carried one — a projection/Map OVER A JOIN stays Positional-less. Widening them to also emit
+   for a BARE-output schema is correct-by-construction (slots built by parallel construction) and green
+   on all real suites, BUT it did not clear recursive-CTE (its branch output columns are QUALIFIED
+   `B.ID`, so `projOutputAllBare` is false) — the recursive-CTE leg needs its output projected to the
+   CTE's BARE declared columns first. Tests: `TestFDB_CascadesRecursiveCTE`, `RecursiveCTEComputedColumn`,
+   `RecursiveCTEDuplicateAliases` (all `SELECT COUNT(*) FROM <recursive cte>`).
+2. **Box/unnest reaches:** `GraefeImplProbe2/Q5_star_body_enclosed` (`SELECT * FROM la, la.arr AS x` CTE
+   body — `SELECT *` keeps qualified multi-source names; `derivedBodyOpaqueOrdinalLeg` only admits
+   bare-projected bodies), `Q51`/`Q54` (shadow-read reach BOUNDARY — candidate loud-reject/retire),
+   `BareTwinGather/grouped_over_name_model_fallback` (FULL-box + unnest + subquery-conjunct — FULL join,
+   Java-unsupported → loud-reject candidate like gap 1), `ThreeLinkFilteredOrdinalizes` box-base.
+
+**To finish (Datum=0):** ordinalize (1) [recursive-CTE bare-output + the projection/Map widening] and the
+Java-supported box reaches; loud-reject the Java-unsupported ones (FULL-box grouped, likely Q51/Q54).
+Then delete `QueryResult.Datum` + the internal-plumbing name arms + the dead §5 oracle machinery
+(`DisablePositionalEmission`/`SetNameModelOracle`/`OracleBakedNameFallback`/dualwindow pkg) +
+`buildUnnestResultValue`/`AnchoredJoin`. **This is delicate Cascades work touching guarded Positional-
+emission invariants → needs a Graefe ACK and, ideally, a restored differential net** (fix the name side
+of resultset, or make the probe the standing gate). The `RequirePositional` probe is the forcing
+function for the remaining shapes; the real FDB suites are the correctness authority.
+
 ### RFC-173 progress (slice tracker)
 
 - [x] **S4 EXISTS-composition (collision-mint) sub-slice — CLOSED, fully 4-gated on `bcfff218c`
