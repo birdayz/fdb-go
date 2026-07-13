@@ -2082,6 +2082,18 @@ func executeNestedLoopJoin(
 // This is the RFC-173 birth FALLBACK for NAME-MODEL joins (the nljCursor's birth
 // path OVERWRITES .Positional when a gated join has an ordinal seed, so this only
 // takes effect for the un-gated AnchoredJoin merges the cap is retiring).
+// legFieldName names a leg's merged column: a bare-scalar UNNEST element (a
+// 1-field `_0` row — `t.arr AS X`) is renamed to its AS alias so a downstream
+// BARE read of the alias ("X") resolves to the element directly (the ordinal
+// successor to the name model binding the element under QOV(X)). Any other field
+// keeps its own name.
+func legFieldName(fieldName, alias string, legWidth int) string {
+	if alias != "" && legWidth == 1 && fieldName == values.OrdinalFieldName(0) {
+		return strings.ToUpper(alias)
+	}
+	return fieldName
+}
+
 func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias string) *PositionalRow {
 	if outer == nil || inner == nil || outer.Type == nil || inner.Type == nil {
 		return nil
@@ -2090,10 +2102,10 @@ func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias st
 	nInner := len(inner.Type.Fields)
 	fields := make([]values.Field, 0, nOuter+nInner)
 	for i, f := range outer.Type.Fields {
-		fields = append(fields, values.Field{Name: f.Name, FieldType: f.FieldType, Ordinal: i})
+		fields = append(fields, values.Field{Name: legFieldName(f.Name, outerAlias, nOuter), FieldType: f.FieldType, Ordinal: i})
 	}
 	for i, f := range inner.Type.Fields {
-		fields = append(fields, values.Field{Name: f.Name, FieldType: f.FieldType, Ordinal: nOuter + i})
+		fields = append(fields, values.Field{Name: legFieldName(f.Name, innerAlias, nInner), FieldType: f.FieldType, Ordinal: nOuter + i})
 	}
 	slots := make([]any, 0, len(outer.Slots)+len(inner.Slots))
 	slots = append(slots, outer.Slots...)
