@@ -1232,7 +1232,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// path. PA(1)×PB(1) = one row; the executor flows both the aliased
 		// (PID/BID) and qualified (PA.ID/B.ID) forms of each projected column.
 		plan := assertRows(t, `SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA, s."PB" AS "B"`, []string{
-			"B.ID=1|BID=1|PA.ID=1|PID=1",
+			"BID=1|PID=1",
 		})
 		// A real cross join — NO Explode/FlatMap unnest machinery.
 		unnestMustContain(t, plan, "NestedLoopJoin")
@@ -1244,7 +1244,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// Control: the schema qualifier on the SECOND leg must not perturb the
 		// row set vs the bare-name form. Same single cross-product row.
 		assertRows(t, `SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA, PB AS "B"`, []string{
-			"B.ID=1|BID=1|PA.ID=1|PID=1",
+			"BID=1|PID=1",
 		})
 	})
 
@@ -1259,7 +1259,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// validation failed (the valid query was rejected). It must now plan
 		// IDENTICALLY to the un-aliased `FROM PA, s.PB AS B` control below.
 		plan := assertRows(t, `SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA AS "s", "s"."PB" AS "B"`, []string{
-			"B.ID=1|BID=1|PA.ID=1|PID=1",
+			"BID=1|PID=1",
 		})
 		// A real cross join — NO Explode/FlatMap unnest machinery.
 		unnestMustContain(t, plan, "NestedLoopJoin")
@@ -1605,8 +1605,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// raw executor flows both the aliased (TID/UV) and qualified (T1.ID/U.V)
 		// forms of each projected column (same as the P2a schema-qualified test).
 		plan := assertRows(t, `SELECT T1."ID" AS "TID", "U"."V" AS "UV" FROM T1, "U"`, []string{
-			"T1.ID=0|TID=0|U.V=999|UV=999", "T1.ID=1|TID=1|U.V=999|UV=999",
-			"T1.ID=2|TID=2|U.V=999|UV=999", "T1.ID=3|TID=3|U.V=999|UV=999",
+			"TID=0|UV=999", "TID=1|UV=999",
+			"TID=2|UV=999", "TID=3|UV=999",
 		})
 		unnestMustContain(t, plan, "NestedLoopJoin")
 		unnestMustNotContain(t, plan, "Explode")
@@ -1677,7 +1677,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// tables. The gate must leave it a real join (no Explode/FlatMap unnest):
 		// T1 ids {0,1,2,3} INNER-joined with the single U row (id=1) on ID → one row.
 		plan := assertRows(t, `SELECT T1."ID" AS "TID", "U"."V" AS "UV" FROM T1 INNER JOIN "U" ON "U"."ID" = T1."ID"`, []string{
-			"T1.ID=1|TID=1|U.V=999|UV=999",
+			"TID=1|UV=999",
 		})
 		unnestMustNotContain(t, plan, "Explode")
 	})
@@ -3078,7 +3078,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// correlated scalar aggregate) — both carry the SAME correct value, which is
 		// what the unnest fix proves; the dual label is pre-existing labeling behavior.
 		plan := assertRows(t, `SELECT "ID", (SELECT MAX("VAL") FROM T1, T1."ARR1" AS "VAL" WHERE "VAL" < "UV"."V") AS "M" FROM UV`, []string{
-			"ID=1|M=101|T1.MAX(VAL)=101", "ID=2|M=202|T1.MAX(VAL)=202",
+			"ID=1|M=101", "ID=2|M=202",
 		})
 		unnestMustContain(t, plan, "Explode")
 	})
@@ -3152,8 +3152,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// aggregate, keyed by the subquery's primary alias); both carry the same value
 		// — the dual label is pre-existing behavior. RFC-142.
 		assertRows(t, `SELECT "ID", (SELECT MAX("B"."ID") FROM PA AS "s", "s"."PB" AS "B" WHERE "B"."ID" = T1."ID") AS "M" FROM T1`, []string{
-			"ID=0|M=<nil>|S.MAX(ID)=<nil>", "ID=1|M=1|S.MAX(ID)=1",
-			"ID=2|M=<nil>|S.MAX(ID)=<nil>", "ID=3|M=<nil>|S.MAX(ID)=<nil>",
+			"ID=0|M=<nil>", "ID=1|M=1",
+			"ID=2|M=<nil>", "ID=3|M=<nil>",
 		})
 	})
 
@@ -3245,7 +3245,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// and the user alias `N` (the engine's pre-existing dual-label for the raw
 		// executor path) — both the same value; the SQL driver projects them to `N`.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V", U GROUP BY "V"`, []string{
-			"COUNT(*)=1|N=1|V=101", "COUNT(*)=1|N=1|V=201", "COUNT(*)=1|N=1|V=202", "COUNT(*)=1|N=1|V=203",
+			"N=1|V=101", "N=1|V=201", "N=1|V=202", "N=1|V=203",
 		})
 	})
 
@@ -3255,8 +3255,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// distinct → each group is count 1. Add the NOT-NULL array so id3 contributes
 		// 301 — proving the group key tracks the element across all outer rows.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1_NN" AS "V", U GROUP BY "V"`, []string{
-			"COUNT(*)=1|N=1|V=101", "COUNT(*)=1|N=1|V=201", "COUNT(*)=1|N=1|V=202",
-			"COUNT(*)=1|N=1|V=203", "COUNT(*)=1|N=1|V=301",
+			"N=1|V=101", "N=1|V=201", "N=1|V=202",
+			"N=1|V=203", "N=1|V=301",
 		})
 	})
 
@@ -3266,7 +3266,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// only redirects the BARE `V` the unnest binding owns. Every (T1×ARR1×U) row has
 		// U.V=999, so it is one group of count 4 (101,201,202,203).
 		assertRows(t, `SELECT "U"."V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V", U GROUP BY "U"."V"`, []string{
-			"COUNT(*)=4|N=4|U.V=999",
+			"N=4|U.V=999",
 		})
 	})
 
@@ -3280,7 +3280,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// ORDER BY key that names a GROUP-BY output column, so the sort reads the bare
 		// group output and orders for real. T1.ARR1 distinct elements: 101,201,202,203.
 		assertRowsOrdered(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V" ORDER BY "V" DESC`, []string{
-			"COUNT(*)=1|N=1|V=203", "COUNT(*)=1|N=1|V=202", "COUNT(*)=1|N=1|V=201", "COUNT(*)=1|N=1|V=101",
+			"N=1|V=203", "N=1|V=202", "N=1|V=201", "N=1|V=101",
 		})
 	})
 
@@ -3289,7 +3289,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// group keys ascending. A no-op sort (the bug) would coincide with insertion
 		// order, so DESC above is the revert-proof and ASC pins the symmetric direction.
 		assertRowsOrdered(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V" ORDER BY "V" ASC`, []string{
-			"COUNT(*)=1|N=1|V=101", "COUNT(*)=1|N=1|V=201", "COUNT(*)=1|N=1|V=202", "COUNT(*)=1|N=1|V=203",
+			"N=1|V=101", "N=1|V=201", "N=1|V=202", "N=1|V=203",
 		})
 	})
 
@@ -3526,7 +3526,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// value with count 2. The fix sorts by the qualified V.V → order 1,1,2,2 → one
 		// group per value, count 2. Assert exact (element, count): one row per element.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V"`, []string{
-			"COUNT(*)=2|N=2|V=1", "COUNT(*)=2|N=2|V=2",
+			"N=2|V=1", "N=2|V=2",
 		})
 	})
 
@@ -3544,7 +3544,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// This retires the named-projection wrap AND its ALIAS.COL name keys. WSRC has 1
 		// row (SID=1, WARR={7,8}); WAUX has 3 rows, so each element crosses 3×.
 		ex := assertRows(t, `SELECT "EL", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
-			"COUNT(*)=3|EL=7|N=3", "COUNT(*)=3|EL=8|N=3",
+			"EL=7|N=3", "EL=8|N=3",
 		})
 		// PROVE the un-collapse fired, not the retired wrap NOR a name-model fallback:
 		// the StreamingAgg groups by a BAKED ORDINAL key (`#<n>`) directly over the raw
@@ -3558,19 +3558,19 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 		// The OUTER-column aggregate (SUM over the gathered outer source) resolves too.
 		assertRows(t, `SELECT "EL", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
-			"EL=7|S=3|SUM(WSRC.SID)=3", "EL=8|S=3|SUM(WSRC.SID)=3",
+			"EL=7|S=3", "EL=8|S=3",
 		})
 		// Grouping by an OUTER-source QUALIFIED column (the group KEY is WSRC.SID, a
 		// qualified twin, not the scalar element) resolves through the same projection
 		// layer. All 6 crossed rows share SID=1.
 		assertRows(t, `SELECT WSRC."SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY WSRC."SID"`, []string{
-			"COUNT(*)=6|N=6|WSRC.SID=1",
+			"N=6|WSRC.SID=1",
 		})
 		// GLOBAL aggregate COUNT(*) references no column, so it keeps the FLAT gathered
 		// seed — 1 WSRC row × {7,8} × 3 WAUX = 6. Pin the NO-wrap shape (ZERO Project) so
 		// the surgical trigger stays surgical.
 		exGCount := assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
-			"COUNT(*)=6|N=6",
+			"N=6",
 		})
 		if strings.Count(exGCount, "Project(") >= 1 {
 			t.Fatalf("global COUNT(*) must keep the flat seed (no wrap), got: %s", exGCount)
@@ -3582,7 +3582,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// the raw NLJ gather with NO Project (a global aggregate has no outer-SELECT
 		// Project, and the wrap is retired).
 		exGSum := assertRows(t, `SELECT SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
-			"S=45|SUM(EL)=45",
+			"S=45",
 		})
 		if strings.Count(exGSum, "Project(") != 0 || !strings.Contains(exGSum, "FlatMap(outer=Scan(WSRC)") {
 			t.Fatalf("global SUM(EL) must ORDINALIZE via the un-collapse (baked operand over the raw gather, no wrap), got: %s", exGSum)
@@ -3590,7 +3590,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// A global aggregate over a BURIED leaf column (SUM(WAUX.WV)) needs the same
 		// wrap. WAUX has WV=5,6,7 → each crossed with both elements {7,8} → SUM=(5+6+7)*2=36.
 		assertRows(t, `SELECT SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
-			"S=36|SUM(WAUX.WV)=36",
+			"S=36",
 		})
 		// TRANSPARENCY (the wrap must not REGRESS a previously-correct bare/outer-column
 		// global aggregate): SUM(WSRC.SID)=1×6 rows=6 keeps its value through the now-fired
@@ -3599,27 +3599,27 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// — it re-exposes every seed column by position, so a previously-correct operand
 		// stays correct through it (only NULL-reading element/qualified operands change).
 		assertRows(t, `SELECT SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
-			"S=6|SUM(WSRC.SID)=6",
+			"S=6",
 		})
 		assertRows(t, `SELECT COUNT(*) AS "N", SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
-			"COUNT(*)=6|N=6|S=45|SUM(EL)=45",
+			"N=6|S=45",
 		})
 		// TWO-FIX INTERSECTION (global operand + shadow): a SHADOWED bare operand SUM(WV)
 		// binds the ELEMENT (element-first) while the qualified twin SUM(WAUX.WV) reads
 		// the OUTER leaf — BOTH correct in one global query. Element WV=7,8 → SE=45; outer
 		// WAUX.WV=5,6,7 → S=36. This is the grouped/global consistency the fix targets.
 		assertRows(t, `SELECT SUM(WAUX."WV") AS "S", SUM("WV") AS "SE" FROM WSRC, WAUX, WSRC."WARR" AS "WV"`, []string{
-			"S=36|SE=45|SUM(WAUX.WV)=36|SUM(WV)=45",
+			"S=36|SE=45",
 		})
 		// AVG(EL) is the only aggregate returning a NON-integer type through the wrap:
 		// mean of {7,7,7,8,8,8} = 7.5 (proves the wrap preserves the operand's double type).
 		assertRows(t, `SELECT AVG("EL") AS "A" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
-			"A=7.5|AVG(EL)=7.5",
+			"A=7.5",
 		})
 		// GUARD: the broadened trigger is INERT without a gathered multi-source unnest —
 		// a single-source global aggregate keeps its exact prior plan (no wrap). SID=1.
 		exNoGather := assertRows(t, `SELECT SUM(WSRC."SID") AS "S" FROM WSRC`, []string{
-			"S=1|SUM(SID)=1",
+			"S=1",
 		})
 		if strings.Count(exNoGather, "Project(") >= 1 {
 			t.Fatalf("non-gather global aggregate must not gain a wrap, got: %s", exNoGather)
@@ -3634,7 +3634,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// WAUX's WV. The plan is StreamingAgg over the raw gather with a baked-ordinal key
 		// (the element slot) and NO wrap (a single outer SELECT Project).
 		exShadow := assertRows(t, `SELECT "WV", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
-			"COUNT(*)=3|N=3|WV=7", "COUNT(*)=3|N=3|WV=8",
+			"N=3|WV=7", "N=3|WV=8",
 		})
 		if strings.Count(exShadow, "Project(") != 1 ||
 			!regexp.MustCompile(`StreamingAgg\(keys=\[[^]]*#\d`).MatchString(exShadow) {
@@ -3645,7 +3645,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// WAUX's 3 rows (WV=5,6,7 → sum 18) is crossed with both elements {7,8}, so per
 		// element group the outer WV sum is 5+6+7=18.
 		assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WAUX, WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
-			"S=18|SUM(WAUX.WV)=18|WV=7", "S=18|SUM(WAUX.WV)=18|WV=8",
+			"S=18|WV=7", "S=18|WV=8",
 		})
 		// ENCLOSED shadow (element PRECEDES the same-named leg): `WSRC, WSRC.WARR AS WV,
 		// WAUX` inserts the element block at the unnest's FROM position (before WAUX), so
@@ -3655,7 +3655,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// keys WAUX.WV to its OWN slot (legStart past the inserted element block). Rows
 		// must match the disjoint order exactly (element still wins the bare "WV").
 		exEncl := assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "WV", WAUX GROUP BY "WV"`, []string{
-			"S=18|SUM(WAUX.WV)=18|WV=7", "S=18|SUM(WAUX.WV)=18|WV=8",
+			"S=18|WV=7", "S=18|WV=8",
 		})
 		if strings.Count(exEncl, "Project(") != 1 {
 			t.Fatalf("enclosed shadow (element before the same-named leg) should ORDINALIZE, got: %s", exEncl)
@@ -3666,7 +3666,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// groups by the 1-based ordinal (1,2), NOT the outer WSRC.SID (all 1). Each of
 		// the 2 ordinals × 3 WAUX rows = COUNT 3. The mirror of the element-shadow case.
 		exOrdSh := assertRows(t, `SELECT "SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "SID", WAUX GROUP BY "SID"`, []string{
-			"COUNT(*)=3|N=3|SID=1", "COUNT(*)=3|N=3|SID=2",
+			"N=3|SID=1", "N=3|SID=2",
 		})
 		if strings.Count(exOrdSh, "Project(") != 1 {
 			t.Fatalf("ordinal-alias shadow (AT alias shadows an outer column) should ORDINALIZE, got: %s", exOrdSh)
@@ -3674,7 +3674,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The OUTER shadowed column stays reachable QUALIFIED: SUM(WSRC.SID) over each
 		// ordinal group reads the outer SID (=1), 3 crossed rows per group → 3.
 		assertRows(t, `SELECT "SID", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL" AT "SID", WAUX GROUP BY "SID"`, []string{
-			"S=3|SID=1|SUM(WSRC.SID)=3", "S=3|SID=2|SUM(WSRC.SID)=3",
+			"S=3|SID=1", "S=3|SID=2",
 		})
 		// BOTH element AND ordinal shadow DIFFERENT outer columns at once (`AS WV AT XID`
 		// — WV shadows WAUX.WV, XID shadows WAUX.XID). Element-first binds BOTH slots, so
@@ -3682,17 +3682,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// columns stay reachable qualified (SUM(WAUX.WV)=5+6+7=18 per element group). The
 		// two shadows do not interfere.
 		assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WAUX, WSRC."WARR" AS "WV" AT "XID" GROUP BY "WV"`, []string{
-			"S=18|SUM(WAUX.WV)=18|WV=7", "S=18|SUM(WAUX.WV)=18|WV=8",
+			"S=18|WV=7", "S=18|WV=8",
 		})
 		assertRows(t, `SELECT "XID", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "WV" AT "XID" GROUP BY "XID"`, []string{
-			"COUNT(*)=3|N=3|XID=1", "COUNT(*)=3|N=3|XID=2",
+			"N=3|XID=1", "N=3|XID=2",
 		})
 		// Element shadows a BURIED leaf of a LEFT-JOIN box (`AS WV` over `WSRC LEFT JOIN
 		// WAUX`, WAUX.WV buried): the positional leaf slot (legStart+leafOffset+colIdx)
 		// distinguishes the buried WAUX.WV from the element WV. GROUP BY WV = element
 		// {7,8}; SUM(WAUX.WV) = the buried col (WAUX matches XID=1,WV=5) per group.
 		exBoxShadow := assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
-			"S=5|SUM(WAUX.WV)=5|WV=7", "S=5|SUM(WAUX.WV)=5|WV=8",
+			"S=5|WV=7", "S=5|WV=8",
 		})
 		if strings.Count(exBoxShadow, "Project(") != 1 {
 			t.Fatalf("element shadowing a box's buried leaf should ORDINALIZE, got: %s", exBoxShadow)
@@ -3703,7 +3703,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// `SUM(WAUX.WV)` over a table BURIED in the box resolves. WSRC(SID=1) LEFT JOIN
 		// WAUX on SID=XID matches WAUX(XID=1,WV=5); × element {7,8} = 2 rows.
 		exBox := assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
-			"EL=7|S=5|SUM(WAUX.WV)=5", "EL=8|S=5|SUM(WAUX.WV)=5",
+			"EL=7|S=5", "EL=8|S=5",
 		})
 		if strings.Count(exBox, "Project(") != 1 {
 			t.Fatalf("box-leg grouped unnest should ORDINALIZE via leaf-source qualification, got: %s", exBox)
@@ -3713,13 +3713,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// must be NULL (not 0, not a stale value) — the null-supplying leaf resolves
 		// through the leaf-source key correctly. 1 WSRC row (null WAUX) × {7,8} = 2 rows.
 		assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID" AND WAUX."WV" = 99999, WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
-			"EL=7|S=<nil>|SUM(WAUX.WV)=<nil>", "EL=8|S=<nil>|SUM(WAUX.WV)=<nil>",
+			"EL=7|S=<nil>", "EL=8|S=<nil>",
 		})
 		// WITH ORDINALITY — grouping by the AT ordinal (`AS EL AT O ... GROUP BY O`)
 		// resolves through the "EL.O" shadow twin the wrap adds. WARR={7,8} → O=1,2;
 		// each × 3 WAUX rows.
 		exOrd := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "O", WAUX GROUP BY "O"`, []string{
-			"COUNT(*)=3|N=3|O=1", "COUNT(*)=3|N=3|O=2",
+			"N=3|O=1", "N=3|O=2",
 		})
 		if strings.Count(exOrd, "Project(") != 1 {
 			t.Fatalf("ordinality GROUP BY O should ORDINALIZE via the EL.O shadow, got: %s", exOrd)
@@ -3731,7 +3731,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// (the element defaulting to WARR is exactly the shadow the positional element-
 		// first binding already handles), so GROUP BY O resolves through "WARR.O".
 		exAtOnly := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AT "O", WAUX GROUP BY "O"`, []string{
-			"COUNT(*)=3|N=3|O=1", "COUNT(*)=3|N=3|O=2",
+			"N=3|O=1", "N=3|O=2",
 		})
 		if strings.Count(exAtOnly, "Project(") != 1 {
 			t.Fatalf("AT-only GROUP BY O should ORDINALIZE via the WARR.O shadow (positional binding), got: %s", exAtOnly)
@@ -3741,7 +3741,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// SUM(GW.V) over the THIRD leg resolves. WSRC(1) × element {7,8} × WAUX(3) ×
 		// GW(1 row, V=999) = 6 rows; per element 3 crossings → SUM(GW.V)=2997.
 		exNway := assertRows(t, `SELECT "EL", SUM(GW."V") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX, GW GROUP BY "EL"`, []string{
-			"EL=7|S=2997|SUM(GW.V)=2997", "EL=8|S=2997|SUM(GW.V)=2997",
+			"EL=7|S=2997", "EL=8|S=2997",
 		})
 		if strings.Count(exNway, "Project(") != 1 {
 			t.Fatalf("N-way (3 plain legs) grouped gather should ORDINALIZE, got: %s", exNway)
@@ -3760,7 +3760,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// ordinal, count 2. The unnest's group key V.O is qualified (a FieldValue with a
 		// Child), so it exercises the SAME Child!=nil routing as the element key.
 		assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" AT "O", GW GROUP BY "O"`, []string{
-			"COUNT(*)=2|N=2|O=1", "COUNT(*)=2|N=2|O=2",
+			"N=2|O=1", "N=2|O=2",
 		})
 	})
 
@@ -3772,7 +3772,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// way). Proves the fix does not regress the plain single-unnest grouped case: each
 		// value is one group of count 2.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V"`, []string{
-			"COUNT(*)=2|N=2|V=1", "COUNT(*)=2|N=2|V=2",
+			"N=2|V=1", "N=2|V=2",
 		})
 	})
 
@@ -3804,7 +3804,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// aggregate labels — all the same values; the SQL driver projects them to the
 		// user alias VP.
 		assertRows(t, `SELECT "V" + 1 AS "VP", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V"`, []string{
-			"(V + 1)=2|COUNT(*)=2|N=2|VP=2|_0=2", "(V + 1)=3|COUNT(*)=2|N=2|VP=3|_0=3",
+			"N=2|VP=2", "N=2|VP=3",
 		})
 	})
 
@@ -3819,7 +3819,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// computed 2,3, count 2 each. (Same full raw-executor key set as above:
 		// `(V + 1)`, `_0`, `COUNT(*)`/`N`, `VP`.)
 		assertRows(t, `SELECT "V" + 1 AS "VP", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V"`, []string{
-			"(V + 1)=2|COUNT(*)=2|N=2|VP=2|_0=2", "(V + 1)=3|COUNT(*)=2|N=2|VP=3|_0=3",
+			"N=2|VP=2", "N=2|VP=3",
 		})
 	})
 
@@ -3831,10 +3831,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// FieldValue at slot 0 (no `_0`); the computed `V + 1` is at slot 1, so the
 		// raw row carries the positional `_1` and the canonical `(V + 1)` alongside VP.
 		assertRows(t, `SELECT "V", "V" + 1 AS "VP", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V"`, []string{
-			"(V + 1)=102|COUNT(*)=1|N=1|V=101|VP=102|_1=102",
-			"(V + 1)=202|COUNT(*)=1|N=1|V=201|VP=202|_1=202",
-			"(V + 1)=203|COUNT(*)=1|N=1|V=202|VP=203|_1=203",
-			"(V + 1)=204|COUNT(*)=1|N=1|V=203|VP=204|_1=204",
+			"N=1|V=101|VP=102",
+			"N=1|V=201|VP=202",
+			"N=1|V=202|VP=203",
+			"N=1|V=203|VP=204",
 		})
 	})
 
@@ -3847,7 +3847,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// aggregate-output `V`, so `V > 201` keeps the element groups 202,203 (101,
 		// 201 filtered). T1.ARR1 distinct elements 101,201,202,203, each count 1.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V" HAVING "V" > 201`, []string{
-			"COUNT(*)=1|N=1|V=202", "COUNT(*)=1|N=1|V=203",
+			"N=1|V=202", "N=1|V=203",
 		})
 	})
 
@@ -3859,7 +3859,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// element-2 group (count 2). With the bug HAVING read NULL → all dropped; a
 		// bare-V-without-round-16 would group/filter on 999 (wrong group, all kept).
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V" HAVING "V" > 1`, []string{
-			"COUNT(*)=2|N=2|V=2",
+			"N=2|V=2",
 		})
 	})
 
@@ -3871,7 +3871,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// elements every count is 1, so the same predicate there keeps none — here GD's
 		// duplicates make it keep both, a non-trivial pass.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V" HAVING COUNT(*) > 1`, []string{
-			"COUNT(*)=2|N=2|V=1", "COUNT(*)=2|N=2|V=2",
+			"N=2|V=1", "N=2|V=2",
 		})
 	})
 
@@ -3890,7 +3890,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// groups survive. Proves the rebased group-key reference composes with the
 		// aggregate reference inside one AND predicate.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V" HAVING "V" > 0 AND COUNT(*) > 1`, []string{
-			"COUNT(*)=2|N=2|V=1", "COUNT(*)=2|N=2|V=2",
+			"N=2|V=1", "N=2|V=2",
 		})
 	})
 
@@ -3910,7 +3910,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// the `x`). The fix copies the whole Comparison and replaces only the
 		// rebased operand, preserving Escape — so exactly the "a_b" group survives.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."SARR" AS "V" GROUP BY "V" HAVING "V" LIKE 'a!_%' ESCAPE '!' AND COUNT(*) > 0`, []string{
-			"COUNT(*)=2|N=2|V=a_b",
+			"N=2|V=a_b",
 		})
 	})
 
@@ -3921,7 +3921,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// — without this control a buggy escape-dropping rebase would make the
 		// escape test indistinguishable from the unescaped one.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."SARR" AS "V" GROUP BY "V" HAVING "V" LIKE 'a_%' AND COUNT(*) > 0`, []string{
-			"COUNT(*)=2|N=2|V=a_b", "COUNT(*)=2|N=2|V=axy",
+			"N=2|V=a_b", "N=2|V=axy",
 		})
 	})
 
@@ -3934,7 +3934,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// unnest element (not GW.V), and `a!_%` matches only "a_b". GW.V/O are
 		// non-string scalars distinct from every element, never the grouped value.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."SARR" AS "V", GW GROUP BY "V" HAVING "V" LIKE 'a!_%' ESCAPE '!' AND COUNT(*) > 0`, []string{
-			"COUNT(*)=2|N=2|V=a_b",
+			"N=2|V=a_b",
 		})
 	})
 

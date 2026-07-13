@@ -213,7 +213,7 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 	// is 100+200=300 → SUM=600 (a top-level-only bug would give 100+100=200 → 400).
 	t.Run("grouped_compound_operand_on_dup_column", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", SUM(A."K" + B."K") AS "TOT" FROM A, B, A."ARR" AS "X" GROUP BY A."K"`,
-			[]string{`map[A.K:100 SUM(A."K" + B."K"):600 TOT:600]`})
+			[]string{`map[A.K:100 TOT:600]`})
 	})
 
 	// MID-LIST element grouped bare-twin (`FROM A, A.arr AS X, B` — the unnest is NOT

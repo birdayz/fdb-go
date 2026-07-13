@@ -496,7 +496,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		// The datum keys the subquery value twice (its rendered name + the
 		// positional _N key), so the joined COUNT appears in two slots.
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT LA."K", (SELECT COUNT(*) FROM "C" JOIN CC AS "C2" ON "C"."AK" = "C2"."CID") FROM LA WHERE LA."K" = 110`,
-			"0|110|0")
+			"0|110")
 	})
 	// Q11: an UNALIASED QUALIFIED projection in a multi-leg CTE body — the
 	// runtime row keys that slot by its qualified source name ("LA.K", no bare
@@ -776,13 +776,13 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		// (top-level datums key each output twice — rendered + positional —
 		// hence the doubled columns, same as Q10)
 		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID"`,
-			"100|5|100|5", "110|<nil>|110|<nil>")
+			"100|5", "110|<nil>")
 		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" JOIN "s"."LB" ON LA."AID" = LB."BID"`,
-			"100|5|100|5")
+			"100|5")
 		check(t, `SELECT "X"."K" AS "AK", "Y"."K" AS "BK" FROM "s"."LA" AS "X" LEFT JOIN "s"."LB" AS "Y" ON "X"."AID" = "Y"."BID"`,
-			"100|5|100|5", "110|<nil>|110|<nil>")
+			"100|5", "110|<nil>")
 		check(t, `SELECT LA."K" AS "AK", LB."K" AS "BK" FROM "s"."LA" LEFT JOIN LB ON LA."AID" = LB."BID"`,
-			"100|5|100|5", "110|<nil>|110|<nil>")
+			"100|5", "110|<nil>")
 	})
 	// Q39: the 42702 backstop LIVES over schema-qualified legs (review-caught,
 	// round 9). The round-8 classifier strip said "s"."LA" was enumerable,
@@ -806,7 +806,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// unification would).
 	t.Run("Q40_where_over_schema_qualified_join_answers", func(t *testing.T) {
 		check(t, `SELECT LA."K" AS "AK" FROM "s"."LA" LEFT JOIN "s"."LB" ON LA."AID" = LB."BID" WHERE LA."K" = 100`,
-			"100|100")
+			"100")
 	})
 	// Q41: the scope builder resolves a CTE-shadowed name through the CTE's
 	// OUTPUT schema, not the same-named table's (review-caught, round 10):
@@ -830,7 +830,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// K DESC = 2,2,1,1 (the ordering itself is the assertion).
 	t.Run("Q42_orderby_alias_precedes_scope_ambiguity", func(t *testing.T) {
 		checkOrdered(t, `SELECT LA."AID" AS "K", LB."BID" FROM "s"."LA", LB ORDER BY "K" DESC`,
-			"2|2|1", "2|2|3", "1|1|1", "1|1|3")
+			"2|1", "2|3", "1|1", "1|3")
 	})
 	// Q43: the live resolver's strictness dividend, pinned against a
 	// leniency regression (review-requested): a reference through the
@@ -858,13 +858,13 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		// COUNT(*)=2 was value-degenerate with the table cardinality — the
 		// exact green-masking pattern the Q49 forensic demonstrated).
 		check(t, `SELECT LA."K", (WITH "LB" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "LB") FROM LA WHERE LA."K" = 100`,
-			"1|100|1")
+			"1|100")
 		// differently-named control (never broken — isolates causation)
 		check(t, `SELECT LA."K", (WITH "W9" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "W9") FROM LA WHERE LA."K" = 100`,
-			"1|100|1")
+			"1|100")
 		// the WithCTECatalog-route twin (outer WITH forces the other chain)
 		check(t, `WITH "W0" AS (SELECT "AID" FROM LA) SELECT (WITH "LB" AS (SELECT "BID" AS "X" FROM LB WHERE "BID" = 1) SELECT COUNT(*) FROM "LB") FROM "W0"`,
-			"1|1", "1|1")
+			"1", "1")
 	})
 	// Q45: an enclosing ON through a SHADOWING derivable CTE resolves
 	// against the CTE's OUTPUT schema (review-caught, round 11): the
@@ -887,7 +887,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// top-level but 42702'd inside a scalar subquery).
 	t.Run("Q46_orderby_alias_in_subquery_path", func(t *testing.T) {
 		check(t, `SELECT (SELECT LA."AID" AS "KK" FROM "s"."LA", LB ORDER BY "KK" DESC LIMIT 1), LA."K" FROM LA WHERE LA."K" = 100`,
-			"2|100|2")
+			"2|100")
 	})
 	// Q47+Q48: the two review-caught over-suppressions the round-10 alias
 	// bypass would have allowed — DUPLICATE output aliases must NOT bypass
@@ -916,7 +916,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// is over the OUTER CTE's X∈{1,3}, per outer row.
 	t.Run("Q49_nested_shadow_body_sees_outer", func(t *testing.T) {
 		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "LA" AS (SELECT LA."X" AS "X" FROM "LA") SELECT MAX("X") FROM "LA"), "O"."X" FROM "LA" AS "O"`,
-			"3|1|3", "3|3|3")
+			"3|1", "3|3")
 	})
 	// Q50: an inner ON-ONLY CTE shadowing an outer derivable EVICTS the
 	// stale outer entry (review-caught, round 13): registration wrote only
@@ -929,7 +929,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// the STALE-SCHEMA mechanism itself is gone.
 	t.Run("Q50_ononly_shadow_evicts_stale_outer", func(t *testing.T) {
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CV" AS "Y" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("Y") FROM "V") FROM LB LIMIT 1`,
-			"900|900")
+			"900")
 	})
 	// Q51: the booked ON-only READ class — the MAX-scalar-subquery variants
 	// that resolve through buildSelectScope's nil-resolver LENIENCY + the
@@ -974,7 +974,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// read here would give MAX(outer X) = 3, not 1).
 	t.Run("Q52_ononly_shadow_coinciding_schema_answers", func(t *testing.T) {
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "X" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("X") FROM "V") FROM LB LIMIT 1`,
-			"1|1")
+			"1")
 	})
 	// Q53: the LOSSY-INSTALL regression pins (review-caught, round 15). An
 	// earlier round installed the inner shadow CTE's ON-only DERIVED schema
@@ -1025,7 +1025,7 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 		// (X'=CC.CID over the LEFT JOIN → {1, NULL} → MAX = 1). The name model's
 		// `<nil>` here was the "silent flip-sentinel" the header booked as wrong.
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "X" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("V"."X") FROM "V") FROM LB LIMIT 1`,
-			"1|1")
+			"1")
 		_, ePanic := run(t, `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC WHERE "V"."B" = 100) FROM LB LIMIT 1`)
 		if ePanic == nil {
 			t.Fatal("comma-multi-leg shadow read must be LOUD (an install panicked here), got rows")
