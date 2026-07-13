@@ -527,13 +527,14 @@ func (t *cascadesTranslator) translateChainedUnnestOrdinal(
 	elementType values.Type,
 	prevEnclosure bool,
 ) expressions.RelationalExpression {
-	// The chained link ordinalizes only when it is NOT enclosed in a larger
-	// name-model composition (the :1565 !prevEnclosure gate). An enclosed chained
-	// link (a deeper chain's inner link, or a chain under a name-model parent)
-	// keeps the name-model residual so its outer flows a name-keyed row.
-	if prevEnclosure || len(u.Segments) < 2 {
+	// RFC-173 cap: the enclosure bit no longer forces the name-model residual —
+	// with the name-keyed row deleted, an ENCLOSED chained link's outer flows an
+	// ORDINAL row too (a chain buried behind a trailing table `..., T4C`), so it
+	// must ordinalize rather than strand its baked references at the -1 sentinel.
+	if len(u.Segments) < 2 {
 		return nil
 	}
+	_ = prevEnclosure
 	// The spine walk peels j.Left (the WHOLE outer) into its links, admitting a
 	// spine whose bottom is a single lateral source (clusterArity 1 — a plain
 	// source or a merge-opaque FULL box) with every above-first link's owner

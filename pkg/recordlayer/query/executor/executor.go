@@ -2065,10 +2065,6 @@ func executeNestedLoopJoin(
 		outerCursor.Close()
 		return nil, err
 	}
-	// §5 oracle only: recover the fused top's DATUM spans from the leg
-	// subplans so the oracle's emitted row carries the output-shaped
-	// bare+qualified keys (oracleSwapFusedDatum). No-op on the live side.
-	cursor.recoverOracleDatumSpans(p.GetOuter(), p.GetInner())
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
