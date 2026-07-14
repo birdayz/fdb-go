@@ -5835,6 +5835,18 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > synthetic unbakeable-conjunct decline arms (foreign_correlation / dotted_frontier — Torvalds: prove
   > each unreachable-or-loud). C's last 7 anchored-reachable sites + D are gated on the producer death.
   >
+  > PRECISE ROOT CAUSE of the box-wrap strand (characterized, for the next slice): the winning expression
+  > is a `LogicalProjectionExpression` with no physical member — but the projection rule (rule_implement_
+  > projection.go) only implements once its CHILD physicalizes, so the projection is a SYMPTOM; the
+  > unphysicalized node is the peeled existential structure over the BOX SEED. The INNER cluster seed
+  > physicalizes to a NestedLoopJoin and its `[ForEach(NLJ-seed), ∃, ∃]` peel nests cleanly; the box seed
+  > physicalizes to a FlatMap-over-Explode that KEEPS its windowed layout (admitExistentialGather's own
+  > note), and the `[ForEach(FlatMap-seed), ∃, ∃]` peel over that windowed FlatMap does not physicalize.
+  > The next slice: find which node in `projection → FlatMap(∃B) → FlatMap(∃A) → box-FlatMap-seed` has no
+  > physical member (likely the existential FlatMap whose OUTER is itself a windowed-layout FlatMap, vs the
+  > NLJ the INNER path gives implementExistentialSelect), and add/relax the physical rule for it — then
+  > admit the box multi-esq. This is a physical-rule slice, not a translation change.
+  >
   > FOLLOW-UP TODOs (Graefe review — separable, non-blocking, none touch wire/rows):
   > - [ ] Move the existential-needs-a-ForEach ROOT fix into `ImplementNestedLoopJoinRule` (decline when
   >   slot-0 isn't a ForEach) — the partition-rule guardrail is prophylactic; the NLJ silently emitting
