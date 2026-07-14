@@ -103,6 +103,14 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 		predicates.ReplaceValues(conj, func(v values.Value) values.Value {
 			switch nv := v.(type) {
 			case *values.ScalarSubqueryValue, *values.ExistsValue:
+				// RFC-173 B: a scalar-subquery conjunct stays name-model. Relaxing
+				// this (empirically probed) makes the shape ordinalize but the seed's
+				// filter fails LOUD with UnboundScalarSubqueryError — the ORDINAL seed
+				// path does not pre-evaluate/bind the plan's scalar subqueries
+				// (WithScalarSubqueries), which only the name-model path does today.
+				// Ordinalizing it needs that pre-eval wired into the gathered-cluster
+				// plan; until then, Unbakeable is correct. (See the
+				// subquery_conjunct_* pins in slice3_b2b_faceA — currently name-model.)
 				verdict = boxConjUnbakeable
 			case *values.QuantifiedObjectValue:
 				if _, ok := allowed[strings.ToUpper(nv.Correlation.Name())]; !ok {

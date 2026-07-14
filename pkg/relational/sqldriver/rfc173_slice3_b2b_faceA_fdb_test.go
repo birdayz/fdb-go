@@ -169,6 +169,12 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	// (both keep the box-leg conjunct correct); the census pin below is the
 	// model discriminator.
 	pin("bakeable_conjunct_nullsupplied", `SELECT "X" `+from+` WHERE B."K" = 110 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`)
+	// NOTE (RFC-173 B, the last P5 residual): a SUBQUERY-carrying box-leg conjunct
+	// (`A.K = (SELECT MIN(EE.CK) FROM EE)`) is classified Unbakeable and stays
+	// name-model. It is NOT pinned here — runQ uses raw ExecutePlan and does not
+	// pre-evaluate scalar subqueries (WithScalarSubqueries), so a scalar-subquery
+	// shape cannot execute in this harness at all; verifying its ordinalization
+	// needs a FULL sqldriver db.QueryContext test (see RFC ## LEFT FOR COMPLETION §B).
 	// FULL box + Bakeable conjunct (D4-(ii): FULL admits ONLY at Bakeable): the
 	// FULL OUTER box's A.K=100 conjunct bakes over the gather record. A survives
 	// the FULL OUTER (AID=1≠BID=2, B null-supplied), A.K=100 → {7,8}.

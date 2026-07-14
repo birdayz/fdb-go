@@ -5751,6 +5751,22 @@ per-shape ordinalization gate. Items below, most-actionable first.
 >      bind the scalar-subquery's result (a correlation the executor pre-evaluates) into the ordinal
 >      seed's context so the conjunct resolves alongside the baked leg refs — NOT a decline-arm
 >      deletion. This is the real B remainder and a deep FUTURE SLICE.
+>
+>      PROBED EMPIRICALLY (RFC-173 B): relaxing the `boxConjUnbakeable` arm for `*ScalarSubqueryValue`
+>      makes the shape PLAN-ordinalize (census `exists_inner_unbakeable_conj` flips to 0 producers, no
+>      plan strand) — but that is NOT proof of correctness. The exact mechanism gap: the ordinal seed's
+>      filter fails LOUD `UnboundScalarSubqueryError` ("scalar subquery result not bound … the executor
+>      must pre-evaluate the plan's scalar subqueries and bind them via WithScalarSubqueries") — the
+>      ORDINAL seed/gather plan does not surface the scalar-subquery sub-plans for the executor's
+>      pre-eval pass, which only the name-model plan does today. So the slice must: (1) relax the
+>      classify arm, (2) wire the gathered-cluster ordinal plan to expose its scalar-subquery sub-plans
+>      so ExecutePlan's WithScalarSubqueries pre-evaluates + binds them, (3) VERIFY via a FULL
+>      `db.QueryContext` sqldriver test — NOT the census (plan-only) and NOT slice3_b2b_faceA's `runQ`
+>      (raw ExecutePlan, no scalar-subquery pre-eval, so it cannot run a scalar-subquery shape at all),
+>      (4) flip the census sentinel `exists_inner_unbakeable_conj` from name-model to zeroed + add the
+>      row-correctness pin (data A{K:100,ARR:[7,8]}, EE{CK:100}: `A.K=(SELECT MIN(EE.CK))` → 100=100 →
+>      {7,8}; a `=(SELECT COUNT(*))` discriminator → 100=1 → {}). Reverted the probe; safe state stays
+>      name-model.
 >   2. **multi-esq under EXISTS** (`… WHERE EXISTS(…) AND EXISTS(… X)`): STRANDS at PHYSICALIZATION
 >      ("not a physical plan"), orthogonal to the name model — a separate pre-existing limitation.
 > So B is much nearer done than the census-comment framing implied; the last P5 shapes are deep/
