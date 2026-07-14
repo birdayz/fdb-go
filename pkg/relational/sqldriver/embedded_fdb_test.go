@@ -7765,6 +7765,59 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	rows.Close()
 }
 
+// TestFDB_DerivedAliasColumnTypeShadow pins RFC-173 item C's descriptor-metadata
+// guard: a DERIVED/CTE output alias whose name COLLIDES with a stored field name
+// must report the DERIVED column's type, not the coincidentally-named stored
+// field's. `SELECT q.id FROM (SELECT x AS id FROM B) q` — q.id is x's DOUBLE, but
+// the derived leg carries B's descriptor, so descriptorForColumn finds B.ID's
+// BIGINT. The descriptor may only refine the flowed eval-width within a family;
+// across families (BIGINT vs DOUBLE) the flowed type wins. Rows were always
+// correct — this pins the reported column-type metadata (RED-on-revert of the
+// descriptorRefinesFlowed family guard).
+func TestFDB_DerivedAliasColumnTypeShadow(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_alias_shadow")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_alias_shadow")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE alias_shadow_tmpl "+
+			"CREATE TABLE B (id BIGINT NOT NULL, x DOUBLE, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_alias_shadow/main WITH TEMPLATE alias_shadow_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_alias_shadow?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO B (id, x) VALUES (7, 3.5)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// The derived `id` is x AS id (DOUBLE), NOT the stored B.id (BIGINT).
+	rows, err := db.QueryContext(ctx, `SELECT "q"."id" FROM (SELECT "x" AS "id" FROM B) AS "q"`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	colTypes, err := rows.ColumnTypes()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(colTypes).To(gomega.HaveLen(1))
+	g.Expect(colTypes[0].DatabaseTypeName()).To(gomega.Equal("DOUBLE"),
+		"derived alias q.id (= x DOUBLE) must report DOUBLE, not the shadowed stored B.ID BIGINT")
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var v float64
+	g.Expect(rows.Scan(&v)).NotTo(gomega.HaveOccurred())
+	g.Expect(v).To(gomega.Equal(3.5))
+	rows.Close()
+}
+
 func TestFDB_CTEChainedColumnAliases(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

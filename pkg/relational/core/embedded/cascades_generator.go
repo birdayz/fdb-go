@@ -2623,7 +2623,14 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 	// outputs) and every non-FieldValue expression.
 	typeName := ""
 	if _, isField := v.(*values.FieldValue); isField && colDesc != nil {
-		if t := protoFieldTypeName(colDesc, name); t != "UNKNOWN" {
+		// The stored descriptor is the metadata authority for a BASE column read —
+		// but ONLY to recover the eval-width the flowed seed conflates (INTEGER↔
+		// BIGINT, FLOAT↔DOUBLE). A DERIVED/CTE OUTPUT alias whose name coincidentally
+		// matches a stored field flows a genuinely DIFFERENT type (`SELECT q.id FROM
+		// (SELECT x AS id FROM B) q`: q.id is x's DOUBLE, but the derived leg carries
+		// B's descriptor so descriptorForColumn finds B.ID's BIGINT). Let the
+		// descriptor override only when it REFINES the flowed type within its family.
+		if t := protoFieldTypeName(colDesc, name); t != "UNKNOWN" && descriptorRefinesFlowed(t, valueTypeName(v, typeDesc)) {
 			typeName = t
 		}
 	}
@@ -3579,6 +3586,35 @@ func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string
 		return protoKindToTypeName(fd.Kind())
 	}
 	return "UNKNOWN"
+}
+
+// descriptorRefinesFlowed reports whether the stored-descriptor type `descType`
+// legitimately REFINES the flowed value type `flowed`. The descriptor override in
+// column-metadata derivation exists only to recover the eval-width the flowed seed
+// conflates within a numeric family (INTEGER↔BIGINT, FLOAT↔DOUBLE). A derived/CTE
+// output alias colliding with a stored field name flows a genuinely different type,
+// so the descriptor must NOT override across families — only within one, or on an
+// exact match.
+func descriptorRefinesFlowed(descType, flowed string) bool {
+	if flowed == "" {
+		return true // no flowed type to trust — the descriptor is the sole authority
+	}
+	if df := numericFamily(descType); df != "" && df == numericFamily(flowed) {
+		return true // same numeric family: the descriptor recovers the conflated width
+	}
+	return strings.EqualFold(descType, flowed)
+}
+
+// numericFamily buckets a JDBC type name into its width-conflation family, or ""
+// for a non-numeric type (which must match exactly).
+func numericFamily(t string) string {
+	switch strings.ToUpper(t) {
+	case "INTEGER", "BIGINT":
+		return "int"
+	case "FLOAT", "DOUBLE":
+		return "float"
+	}
+	return ""
 }
 
 func protoKindToTypeName(k protoreflect.Kind) string {
