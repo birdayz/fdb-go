@@ -318,11 +318,27 @@ func executeIndexScan(
 		// cannot be mapped (a nested/expression index column has no
 		// top-level logical slot; those shapes keep name resolution).
 		logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
+		if logicalOrds == nil {
+			// RFC-173 item C — CORRECT-or-LOUD: this covering scan cannot present a
+			// row in the record's LOGICAL slot order (a nested/expression index
+			// column has no top-level logical slot; a multi-type scan has no single
+			// logical shape). With flat column references now BAKED to their logical
+			// ordinal, emitting an INDEX-layout row would read a baked ordinal at the
+			// wrong slot whenever index-order != logical-order — silent wrong rows for
+			// a top-level sibling projection over the same scan (descriptor [ID,A,ADDR]
+			// + index row [A,ADDR.CITY,ID]: `A#1` would read ADDR.CITY). Refuse LOUD
+			// rather than serve a row a baked ordinal misreads. Empirically unreachable
+			// across the suite (no covering scan hits this fallback); the loud cap
+			// surfaces the shape instead of regressing to silent-wrong. Follow-on to
+			// lift the cap: build the LOGICAL row for nested columns too (Java's
+			// IndexKeyValueToPartialRecord over a descriptor-shaped partial record).
+			return nil, fmt.Errorf("executor: covering scan over index %q cannot bind a logical-ordinal row "+
+				"(a nested/expression column or multi-type scan has no single logical slot order); a non-covering scan is required", p.GetIndexName())
+		}
 		return &coveringIndexCursor{
 			inner:       indexCursor,
 			columns:     cov,
 			pkColumns:   pkCols,
-			posType:     positionalTypeFromNames(posNames),
 			logicalType: logicalType,
 			logicalOrds: logicalOrds,
 		}, nil
@@ -846,14 +862,12 @@ type coveringIndexCursor struct {
 	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	columns   []string
 	pkColumns []string
-	// posType is the RFC-173 P2 positional-row schema (value columns then PK
-	// columns), computed once at construction since columns/pkColumns are fixed.
-	posType *values.RecordType
-	// logicalType/logicalOrds switch the cursor to LOGICAL-shaped rows (RFC-173
+	// logicalType/logicalOrds shape the cursor's LOGICAL-ordinal rows (RFC-173
 	// item C): logicalType is the record's descriptor-shaped RecordType and
 	// logicalOrds[i] the logical slot of the i-th [columns..., pkColumns...]
-	// value. Both nil when any column has no logical slot (nested/expression
-	// index) — then the index-layout posType row is emitted as before.
+	// value. A covering scan whose columns cannot ALL map to a logical slot
+	// (nested/expression index, or a multi-type scan) is refused LOUD at
+	// construction, so logicalOrds is always non-nil here.
 	logicalType *values.RecordType
 	logicalOrds []int
 	closed      bool
@@ -869,12 +883,9 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	}
 
 	entry := result.GetValue()
-	var pos *PositionalRow
-	if c.logicalOrds != nil {
-		pos = buildCoveringLogicalRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.logicalType, c.logicalOrds)
-	} else {
-		_, pos = buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
-	}
+	// logicalOrds is guaranteed non-nil (executeIndexScan refuses a non-conforming
+	// covering scan LOUD at construction), so the row is always LOGICAL-shaped.
+	pos := buildCoveringLogicalRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.logicalType, c.logicalOrds)
 	return recordlayer.NewResultWithValue(QueryResult{Positional: pos}, result.GetContinuation()), nil
 }
 

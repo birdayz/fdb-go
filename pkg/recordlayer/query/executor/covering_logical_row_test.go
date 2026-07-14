@@ -70,17 +70,28 @@ func TestBuildCoveringLogicalRow(t *testing.T) {
 	}
 }
 
-// TestCoveringLogicalOrdinals_Fallback pins the all-or-nothing mapping rule:
-// any covering column without a top-level logical slot (a nested/expression
-// index column) keeps the whole row on the index layout — never a partial
-// mapping that would mix the two shapes in one row.
+// TestCoveringLogicalOrdinals_Fallback pins the all-or-nothing mapping rule and
+// its CORRECT-or-LOUD consequence: a nil result (any covering column without a
+// top-level logical slot — a nested/expression index column — or a multi-type
+// scan with no single logical shape) means the scan cannot present a LOGICAL row.
+// With flat refs baked to their logical ordinal, an index-layout row would misread
+// a top-level sibling projection (descriptor [ID,A,ADDR] + index row [A,ADDR.CITY,
+// ID]: A#1 reads ADDR.CITY — silent wrong rows). executeIndexScan therefore refuses
+// such a covering scan LOUD at construction rather than serve the misread-able row;
+// coveringIndexCursor.OnNext is logical-only. This test pins the DETECTION (nil)
+// that the loud guard keys on; the guard itself is `if logicalOrds == nil { return
+// error }` at the construction site.
 func TestCoveringLogicalOrdinals_Fallback(t *testing.T) {
 	t.Parallel()
 	logical := positionalTypeFromNames([]string{"ID", "A"})
 	if got := coveringLogicalOrdinals([]string{"A", "ADDR.CITY", "ID"}, logical); got != nil {
-		t.Fatalf("unmappable column must disable the logical shape, got %v", got)
+		t.Fatalf("unmappable (nested) column must yield nil (→ loud refusal), got %v", got)
 	}
 	if got := coveringLogicalOrdinals([]string{"A"}, nil); got != nil {
-		t.Fatalf("nil logical type must disable the logical shape, got %v", got)
+		t.Fatalf("nil logical type (multi-type scan) must yield nil (→ loud refusal), got %v", got)
+	}
+	// The mappable case still yields a full mapping (the scan is served logical).
+	if got := coveringLogicalOrdinals([]string{"A", "ID"}, logical); got == nil {
+		t.Fatal("a fully-mappable covering scan must yield logical ordinals, got nil")
 	}
 }
