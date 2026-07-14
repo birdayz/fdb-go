@@ -5789,17 +5789,33 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > slice; the name-model RETIREMENT for everything that can physicalize is done.
 
 ### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
-> IMPL NOTE (investigated): baking canNOT happen in `ResolveIdentifier` (expr/expr.go:205) —
-> that is SEMANTIC time, before the physical access path is chosen, and the runtime slot order
-> depends on it (a covering-index scan's row has a DIFFERENT slot order than the base table, a
-> join merge yet another). The ordinal is only fixable once the PHYSICAL row shape is known, i.e.
-> at translation/physicalization — exactly where the ordinalization gate (item B) runs.
-> GRAEFE RULING: C is UNBLOCKED by B, NOT subsumed. B makes the ROW positional everywhere; C makes
-> REFERENCES positional (the ~23 lazy `NewFieldValue` sites bake to `Resolved` ordinal paths). Gated
-> rows today still carry coexistence name-keys, so lazy refs WORK at runtime — that is the hybrid rot
-> C removes. C is a DISTINCT plan-time reference-baking pass, correct only once B guarantees a stable
-> physical row; do NOT fold it into the gate. Order strictly B → C → D (D's name heuristics are dead
-> only after C bakes the references).
+> IMPL NOTE — CORRECTED by the Graefe design consult (the ORIGINAL note below was the trap):
+> ~~baking canNOT happen in ResolveIdentifier because a covering-index row has a DIFFERENT physical
+> slot order than the base table, so bake late against the PHYSICAL shape~~ — WRONG, and walking into
+> it bakes a covering-index physical ordinal that winner selection then invalidates by picking the base
+> scan. **Java binds the ordinal against the referent's LOGICAL result type** (`FieldValue.ofFieldName` /
+> `resolveFieldPath`, FieldValue.java:273-299 — the ordinal is fixed against `childValue.getResultType()`
+> at construction, LOGICAL). Every physical access path — base scan, covering index
+> (`IndexKeyValueToPartialRecord` reconstructs a descriptor-shaped partial Message) — is REQUIRED to
+> conform to that logical slot order; that conformance IS item B's contract and is precisely why a
+> pre-baked LOGICAL ordinal survives winner selection promoting a different access path. So: the bake
+> LOCATION (ResolveIdentifier vs translation) is a plumbing choice, NOT a correctness one — the value
+> baked MUST be the LOGICAL ordinal (identical across all access paths), NEVER the physical slot order.
+> (If Go's covering-index / merge row does NOT conform to the logical order, that is a B positional-row
+> bug the logical-ordinal bake will SURFACE — a feature, not a reason to bake physical-late.)
+>
+> GRAEFE DESIGN-ACK (the C direction; conditions binding on impl):
+> - **Bake the LOGICAL ordinal** against the referent's result type, not the physical row shape (above).
+> - **Flattening survival:** a baked ordinal survives SelectMergeRule ONLY because merge TRANSLATES the
+>   reference (rewrites its path over the new child via `translateValueCorrelations` / `RebaseValue` /
+>   `translateQuantifierCorrelations` in rule_select_merge.go), never re-derives by name — Java's
+>   `withNewChild` fusing the fieldPath. Go already has this invariant; C must not break it.
+> - **Provenance gate is sound; runtime-accident partition is NOT.** The `!rc.AnchoredJoin` gate
+>   partitions by PROVENANCE (a stable structural property), monotonically shrinking as B's producer
+>   dies — a coherent intermediate. But `groupByOutputBaker` leaving keys lazy "when GetByName HAPPENS
+>   to resolve" is a RUNTIME-ACCIDENT partition (rot) — kill that one UNIFORMLY now. C is not done until
+>   the anchored producer is gone AND all ~23 sites bake.
+> - C is UNBLOCKED by B, NOT subsumed. Order strictly B → C → D.
 - [ ] Bake `ResolveIdentifier` at plan time — `expr/expr.go:260` still emits a **lazy** `NewFieldValue`
   for the common column path; ordinal is re-derived at RUNTIME via `rt.FieldIndex(f.Field)`
   (values.go ~908) + `row.GetByName` (values.go ~555). Java binds every ref to an ordinal at plan
