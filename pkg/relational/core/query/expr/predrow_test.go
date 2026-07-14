@@ -6,19 +6,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// predRow wraps a name->value map as a values.OrdinalRow for tests. RFC-173 made
-// the ordinal row the SOLE value-eval context (a Value/PredicateValue no longer
-// resolves against a bare map[string]any). GetByName resolves the flat field by
-// name; a missing key is SQL NULL (sparse — the pre-cap map-context behavior).
-type predRow map[string]any
-
-func (r predRow) Get(int) (any, bool) { return nil, false }
-
-func (r predRow) GetByName(name string) (any, bool) {
-	if v, ok := r[name]; ok {
+// lookupFold resolves name against m: exact key hit, else case-insensitive
+// scan, else (nil, true) — a missing key is SQL NULL (sparse map context).
+func lookupFold(m map[string]any, name string) (any, bool) {
+	if v, ok := m[name]; ok {
 		return v, true
 	}
-	for k, v := range r {
+	for k, v := range m {
 		if strings.EqualFold(k, name) {
 			return v, true
 		}
@@ -26,4 +20,43 @@ func (r predRow) GetByName(name string) (any, bool) {
 	return nil, true
 }
 
+// predRow wraps a name->value map as a values.OrdinalRow for tests. RFC-173 made
+// the ordinal row the SOLE value-eval context (a Value/PredicateValue no longer
+// resolves against a bare map[string]any). GetByName resolves the flat field by
+// name; a missing key is SQL NULL (sparse — the pre-cap map-context behavior).
+// Ordinal reads always miss, so predRow only serves lazy (name-resolving)
+// FieldValues — resolver-built values carry a baked ordinal and need
+// ordinalPredRow.
+type predRow map[string]any
+
+func (r predRow) Get(int) (any, bool) { return nil, false }
+
+func (r predRow) GetByName(name string) (any, bool) { return lookupFold(r, name) }
+
 var _ values.OrdinalRow = predRow(nil)
+
+// ordinalPredRow serves BOTH read forms of values.OrdinalRow: Get(ordinal)
+// resolves through cols — the scope's declared column order, the same order
+// the RFC-173 construction-time bake bound ordinals against — and GetByName
+// falls back to the name map (sparse: missing = SQL NULL).
+type ordinalPredRow struct {
+	cols []string
+	m    map[string]any
+}
+
+func (r ordinalPredRow) Get(i int) (any, bool) {
+	if i < 0 || i >= len(r.cols) {
+		return nil, false
+	}
+	return lookupFold(r.m, r.cols[i])
+}
+
+func (r ordinalPredRow) GetByName(name string) (any, bool) { return lookupFold(r.m, name) }
+
+var _ values.OrdinalRow = ordinalPredRow{}
+
+// usersRow wraps a row map in buildScope's USERS declared column order —
+// the order resolver-baked ordinals in the buildScope tests point into.
+func usersRow(m map[string]any) ordinalPredRow {
+	return ordinalPredRow{cols: []string{"ID", "NAME", "ACTIVE", "ADMIN"}, m: m}
+}

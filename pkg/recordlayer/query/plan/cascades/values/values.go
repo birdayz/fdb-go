@@ -1204,7 +1204,21 @@ func OutputColumnName(v Value, alias string) string {
 //	BooleanValue      → TRUE / FALSE / NULL
 //	CastValue         → CAST(child AS TypeX)
 //	NullValue         → NULL
-func ExplainValue(v Value) string {
+func ExplainValue(v Value) string { return explainValueOrdinals(v, true) }
+
+// ColumnNameValue renders v exactly like ExplainValue but WITHOUT the baked
+// `#<ordinal>` accessor discriminators — the NAME-derivation rendering. Every
+// place that derives an OUTPUT COLUMN NAME from a Value (aggregate result
+// columns, group-key output columns, sort-key field refs, projection column
+// defs) must use this form, never ExplainValue: a reference's column NAME
+// must not change when the reference is bound to its ordinal at plan time
+// (RFC-173 item C), or the naming lockstep between the layers that render the
+// name from DIFFERENT instances of the same reference (one baked, one lazy)
+// silently breaks. ExplainValue keeps the ordinal discriminators for
+// EXPLAIN/debug output, where collapsing two different reads is itself a bug.
+func ColumnNameValue(v Value) string { return explainValueOrdinals(v, false) }
+
+func explainValueOrdinals(v Value, withOrdinals bool) string {
 	if v == nil {
 		return ""
 	}
@@ -1244,16 +1258,19 @@ func ExplainValue(v Value) string {
 		if cv.Resolved != nil && len(cv.Resolved.Accessors) > 1 {
 			steps := make([]string, len(cv.Resolved.Accessors))
 			for i, acc := range cv.Resolved.Accessors {
-				steps[i] = strings.ReplaceAll(acc.Field, "#", "##") + "#" + strconv.Itoa(acc.Ordinal)
+				steps[i] = strings.ReplaceAll(acc.Field, "#", "##")
+				if withOrdinals {
+					steps[i] += "#" + strconv.Itoa(acc.Ordinal)
+				}
 			}
 			path := strings.Join(steps, ".")
 			if cv.Child != nil {
-				return ExplainValue(cv.Child) + "." + path
+				return explainValueOrdinals(cv.Child, withOrdinals) + "." + path
 			}
 			return path
 		}
 		if cv.Child != nil {
-			name = ExplainValue(cv.Child) + "." + name
+			name = explainValueOrdinals(cv.Child, withOrdinals) + "." + name
 		}
 		// A baked ordinal accessor renders its ordinal (Java's FieldPath
 		// `#ordinal` syntax) alongside the name: two reads of DUPLICATE-named
@@ -1261,16 +1278,18 @@ func ExplainValue(v Value) string {
 		// the bare name would make different plans read identically (PR #446
 		// round 2). FrontierPinned deliberately does NOT render: it is an
 		// evaluation-contract marker, not part of the value's identity.
-		if cv.Resolved != nil {
+		// ColumnNameValue drops the discriminator: a column's NAME is the
+		// same whether the reference is lazy or baked.
+		if cv.Resolved != nil && withOrdinals {
 			return name + "#" + strconv.Itoa(cv.Resolved.Root().Ordinal)
 		}
 		return name
 	case *ArithmeticValue:
-		return "(" + ExplainValue(cv.Left) + " " + cv.Op.symbol() + " " + ExplainValue(cv.Right) + ")"
+		return "(" + explainValueOrdinals(cv.Left, withOrdinals) + " " + cv.Op.symbol() + " " + explainValueOrdinals(cv.Right, withOrdinals) + ")"
 	case *StrictRankLimitValue:
 		// Renders as the strict adjustment it computes (max(0, K-1)); matches the
 		// prior ArithmeticValue "(K - 1)" form so plan output is unchanged.
-		return "(" + ExplainValue(cv.K) + " - 1)"
+		return "(" + explainValueOrdinals(cv.K, withOrdinals) + " - 1)"
 	case *BooleanValue:
 		if cv.Value == nil {
 			return "NULL"
@@ -1280,13 +1299,13 @@ func ExplainValue(v Value) string {
 		}
 		return "FALSE"
 	case *CastValue:
-		return "CAST(" + ExplainValue(cv.Child) + " AS " + explainTypeName(cv.Target) + ")"
+		return "CAST(" + explainValueOrdinals(cv.Child, withOrdinals) + " AS " + explainTypeName(cv.Target) + ")"
 	case *PromoteValue:
-		return "PROMOTE(" + ExplainValue(cv.Child) + " TO " + explainTypeName(cv.Target) + ")"
+		return "PROMOTE(" + explainValueOrdinals(cv.Child, withOrdinals) + " TO " + explainTypeName(cv.Target) + ")"
 	case *RecordConstructorValue:
 		parts := make([]string, 0, len(cv.Fields))
 		for _, f := range cv.Fields {
-			parts = append(parts, f.Name+": "+ExplainValue(f.Value))
+			parts = append(parts, f.Name+": "+explainValueOrdinals(f.Value, withOrdinals))
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
 	case *NullValue:
@@ -1295,13 +1314,13 @@ func ExplainValue(v Value) string {
 		if cv.Op == AggCountStar {
 			return "COUNT(*)"
 		}
-		return cv.Op.Symbol() + "(" + ExplainValue(cv.Operand) + ")"
+		return cv.Op.Symbol() + "(" + explainValueOrdinals(cv.Operand, withOrdinals) + ")"
 	case *QuantifiedObjectValue:
 		return cv.Correlation.Name()
 	case *ScalarFunctionValue:
 		parts := make([]string, len(cv.Args))
 		for i, a := range cv.Args {
-			parts[i] = ExplainValue(a)
+			parts[i] = explainValueOrdinals(a, withOrdinals)
 		}
 		return cv.FuncName + "(" + strings.Join(parts, ", ") + ")"
 	case *ParameterValue:
@@ -1322,20 +1341,20 @@ func ExplainValue(v Value) string {
 	case *PickValue:
 		parts := make([]string, len(cv.Alternatives))
 		for i, a := range cv.Alternatives {
-			parts[i] = ExplainValue(a)
+			parts[i] = explainValueOrdinals(a, withOrdinals)
 		}
-		sel := ExplainValue(cv.Selector)
+		sel := explainValueOrdinals(cv.Selector, withOrdinals)
 		return "CASE(" + sel + ", [" + strings.Join(parts, ", ") + "])"
 	case *ConditionSelectorValue:
 		conds := make([]string, len(cv.Implications))
 		for i, c := range cv.Implications {
-			conds[i] = ExplainValue(c)
+			conds[i] = explainValueOrdinals(c, withOrdinals)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
 	case *CardinalityValue:
 		// Java: ExplainTokens.addFunctionCall(FunctionNames.CARDINALITY, ...).
 		// Renders `cardinality(<child>)`, e.g. `cardinality(_.int_arr)`.
-		return "cardinality(" + ExplainValue(cv.Child) + ")"
+		return "cardinality(" + explainValueOrdinals(cv.Child, withOrdinals) + ")"
 	case *ScalarSubqueryValue:
 		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
 	case *UnmatchedAggregateValue:

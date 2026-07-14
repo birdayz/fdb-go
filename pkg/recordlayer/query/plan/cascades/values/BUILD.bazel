@@ -86,6 +86,7 @@ go_test(
     srcs = [
         "cast_round_bughunt_test.go",
         "coercion_test.go",
+        "column_name_value_test.go",
         "correlation_test.go",
         "equals_without_children_test.go",
         "eval_must_test.go",

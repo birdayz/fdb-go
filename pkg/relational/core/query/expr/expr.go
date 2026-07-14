@@ -66,6 +66,7 @@ package expr
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -263,10 +264,37 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 			columnCascadesType(col),
 		), nil
 	}
+	// RFC-173 item C: bind the LOGICAL ordinal at plan time (Java's
+	// FieldValue.ofFieldName resolving against the referent's result type,
+	// FieldValue.java:273-299). The referent is the resolved source's output
+	// row; its logical column order is src.Table.Columns() (declared order).
+	// First-match by case-folded name — identical to the runtime
+	// RecordType.FieldIndex the lazy node would have used, so the bound slot
+	// is the same one GetByName resolved. Unresolvable (computed alias, no
+	// source table) stays lazy.
+	if ord, ok := sourceColumnOrdinal(src, field); ok {
+		return values.NewFieldValueWithResolvedOrdinal(field, ord, columnCascadesType(col)), nil
+	}
 	return &values.FieldValue{
 		Field: field,
 		Typ:   columnCascadesType(col),
 	}, nil
+}
+
+// sourceColumnOrdinal returns the 0-based position of field within the
+// resolved source's declared column order — the LOGICAL ordinal of the
+// column in the row the source flows. Matching is case-insensitive
+// first-match, mirroring values.RecordType.FieldIndex.
+func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, bool) {
+	if src.Table == nil {
+		return 0, false
+	}
+	for i, c := range src.Table.Columns() {
+		if strings.EqualFold(c.Id.Name(), field) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // ResolveQualifiedProjection resolves a QUALIFIED projection reference on the

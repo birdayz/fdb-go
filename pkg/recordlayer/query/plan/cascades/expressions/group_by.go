@@ -105,7 +105,7 @@ func AggregateKeyColumnName(k values.Value) string {
 	if fv, ok := k.(*values.FieldValue); ok {
 		return strings.ToUpper(fv.Field)
 	}
-	return strings.ToUpper(values.ExplainValue(k))
+	return strings.ToUpper(values.ColumnNameValue(k))
 }
 
 // AggregateResultColumnName is the canonical output-column name for one aggregate
@@ -127,7 +127,7 @@ func AggregateResultColumnName(agg AggregateSpec) string {
 		case *values.FieldValue:
 			opName = v.Field
 		default:
-			opName = values.ExplainValue(agg.Operand)
+			opName = values.ColumnNameValue(agg.Operand)
 		}
 	}
 	switch agg.Function {

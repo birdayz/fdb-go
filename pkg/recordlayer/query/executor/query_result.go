@@ -93,37 +93,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 	desc := refl.Descriptor()
 	fields := desc.Fields()
 	n := fields.Len()
-	var rt *values.RecordType
-	if v, ok := positionalTypeCache.Load(desc); ok {
-		rt = v.(*values.RecordType)
-	} else {
-		positionalTypeCacheMu.Lock()
-		// Re-check under the lock: a racing miss on the same descriptor may
-		// have stored while we waited.
-		if v, ok := positionalTypeCache.Load(desc); ok {
-			rt = v.(*values.RecordType)
-		} else {
-			rtFields := make([]values.Field, n)
-			for i := 0; i < n; i++ {
-				rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
-			}
-			rt = values.NewRecordType("", false, rtFields)
-			if positionalTypeCacheSize.Add(1) > positionalTypeCacheCap {
-				// Descriptor churn (dynamicpb across many schema loads) must
-				// not grow the cache without bound: wipe and re-warm. Under
-				// the miss lock the bound is EXACT — no racing store can
-				// land after the reset (review finding: the lock-free wipe
-				// let concurrent misses transiently overshoot the cap).
-				positionalTypeCache.Range(func(k, _ any) bool {
-					positionalTypeCache.Delete(k)
-					return true
-				})
-				positionalTypeCacheSize.Store(1)
-			}
-			positionalTypeCache.Store(desc, rt)
-		}
-		positionalTypeCacheMu.Unlock()
-	}
+	rt := positionalTypeForDescriptor(desc)
 	slots := make([]any, n)
 	for i := 0; i < n; i++ {
 		fd := fields.Get(i)
@@ -132,6 +102,50 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 		}
 	}
 	return &PositionalRow{Type: rt, Slots: slots}
+}
+
+// positionalTypeForDescriptor returns the LOGICAL RecordType for a message
+// descriptor — one field per descriptor field in declaration order (the
+// field's ordinal), UPPER-cased name, dark UnknownType. THE single authority
+// for a stored record's logical row shape: every physical access path that
+// serves a stored record's columns (base scan rows via protoToPositional,
+// covering-index rows via coveringIndexCursor) MUST shape its rows by this
+// type, so a plan-time LOGICAL ordinal reads the same slot on every path
+// (RFC-173 item C; Java's IndexKeyValueToPartialRecord reconstructs a
+// descriptor-shaped partial record for exactly this reason). Cached per
+// descriptor (see positionalTypeCache).
+func positionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.RecordType {
+	if v, ok := positionalTypeCache.Load(desc); ok {
+		return v.(*values.RecordType)
+	}
+	positionalTypeCacheMu.Lock()
+	defer positionalTypeCacheMu.Unlock()
+	// Re-check under the lock: a racing miss on the same descriptor may
+	// have stored while we waited.
+	if v, ok := positionalTypeCache.Load(desc); ok {
+		return v.(*values.RecordType)
+	}
+	fields := desc.Fields()
+	n := fields.Len()
+	rtFields := make([]values.Field, n)
+	for i := 0; i < n; i++ {
+		rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
+	}
+	rt := values.NewRecordType("", false, rtFields)
+	if positionalTypeCacheSize.Add(1) > positionalTypeCacheCap {
+		// Descriptor churn (dynamicpb across many schema loads) must
+		// not grow the cache without bound: wipe and re-warm. Under
+		// the miss lock the bound is EXACT — no racing store can
+		// land after the reset (review finding: the lock-free wipe
+		// let concurrent misses transiently overshoot the cap).
+		positionalTypeCache.Range(func(k, _ any) bool {
+			positionalTypeCache.Delete(k)
+			return true
+		})
+		positionalTypeCacheSize.Store(1)
+	}
+	positionalTypeCache.Store(desc, rt)
+	return rt
 }
 
 // protoToMap converts a proto.Message to map[string]any with

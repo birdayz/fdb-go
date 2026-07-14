@@ -41,6 +41,7 @@ go_test(
         "bench_proto_test.go",
         "charge_coverage_test.go",
         "continuation_decode_test.go",
+        "covering_logical_row_test.go",
         "equijoin_columns_test.go",
         "eval_must_test.go",
         "evaluation_context_test.go",
@@ -116,6 +117,7 @@ go_test(
         "rfc173_commit4_passthrough_test.go",
         "merge_fabrication_test.go",
         "positional_test_helpers_test.go",
+        "covering_logical_row_test.go",
     ],
     deps = [
         "//gen",

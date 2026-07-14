@@ -3277,7 +3277,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 				if gkv == nil {
 					continue
 				}
-				explain := strings.ToUpper(values.ExplainValue(gkv))
+				explain := strings.ToUpper(values.ColumnNameValue(gkv))
 				ref := &values.FieldValue{Field: explain, Typ: values.UnknownType}
 				groupKeyExplains[explain] = ref
 				if i < len(agg.GroupKeys) {
@@ -3714,7 +3714,7 @@ func canonicalAggName(funcSymbol string, operand values.Value) string {
 	}
 	inner := "*"
 	if operand != nil {
-		inner = strings.ToUpper(values.ExplainValue(operand))
+		inner = strings.ToUpper(values.ColumnNameValue(operand))
 		inner = strings.ReplaceAll(inner, " ", "")
 		if len(inner) > 2 && inner[0] == '(' && inner[len(inner)-1] == ')' {
 			inner = inner[1 : len(inner)-1]
@@ -5380,7 +5380,7 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 	if fv, ok := gkv.(*values.FieldValue); ok {
 		return strings.ToUpper(fv.Field)
 	}
-	return strings.ToUpper(values.ExplainValue(gkv))
+	return strings.ToUpper(values.ColumnNameValue(gkv))
 }
 
 // rebasePostAggregateGroupKeyValue rewrites, inside a POST-aggregate value tree,

@@ -286,9 +286,18 @@ func executeIndexScan(
 
 	if p.IsCovering() {
 		var pkCols []string
+		var logicalType *values.RecordType
 		if rts := p.GetRecordTypes(); len(rts) > 0 {
-			if rt := store.GetMetaData().GetRecordType(rts[0]); rt != nil && rt.PrimaryKey != nil {
-				pkCols = rt.PrimaryKey.FieldNames()
+			if rt := store.GetMetaData().GetRecordType(rts[0]); rt != nil {
+				if rt.PrimaryKey != nil {
+					pkCols = rt.PrimaryKey.FieldNames()
+				}
+				// The record's LOGICAL row shape — only authoritative when the
+				// scan serves a single record type (a multi-type covering scan
+				// has no single logical shape and keeps the index layout).
+				if len(rts) == 1 && rt.Descriptor != nil {
+					logicalType = positionalTypeForDescriptor(rt.Descriptor)
+				}
 			}
 		}
 		cov := p.GetCoveringColumns()
@@ -299,11 +308,23 @@ func executeIndexScan(
 		for _, col := range pkCols {
 			posNames = append(posNames, strings.ToUpper(col))
 		}
+		// RFC-173 item C: a covering-index row conforms to the record's
+		// LOGICAL slot order — Java's IndexKeyValueToPartialRecord builds a
+		// descriptor-shaped partial record, so a FieldValue ordinal baked
+		// against the record type reads the same slot on the base-scan and
+		// covering paths. Non-covered fields stay nil (Java: unset partial
+		// fields — the planner's covering gate guarantees they are never
+		// referenced). Falls back to the index-layout row when any column
+		// cannot be mapped (a nested/expression index column has no
+		// top-level logical slot; those shapes keep name resolution).
+		logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
 		return &coveringIndexCursor{
-			inner:     indexCursor,
-			columns:   cov,
-			pkColumns: pkCols,
-			posType:   positionalTypeFromNames(posNames),
+			inner:       indexCursor,
+			columns:     cov,
+			pkColumns:   pkCols,
+			posType:     positionalTypeFromNames(posNames),
+			logicalType: logicalType,
+			logicalOrds: logicalOrds,
 		}, nil
 	}
 
@@ -828,7 +849,14 @@ type coveringIndexCursor struct {
 	// posType is the RFC-173 P2 positional-row schema (value columns then PK
 	// columns), computed once at construction since columns/pkColumns are fixed.
 	posType *values.RecordType
-	closed  bool
+	// logicalType/logicalOrds switch the cursor to LOGICAL-shaped rows (RFC-173
+	// item C): logicalType is the record's descriptor-shaped RecordType and
+	// logicalOrds[i] the logical slot of the i-th [columns..., pkColumns...]
+	// value. Both nil when any column has no logical slot (nested/expression
+	// index) — then the index-layout posType row is emitted as before.
+	logicalType *values.RecordType
+	logicalOrds []int
+	closed      bool
 }
 
 func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -841,8 +869,60 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	}
 
 	entry := result.GetValue()
-	_, pos := buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
+	var pos *PositionalRow
+	if c.logicalOrds != nil {
+		pos = buildCoveringLogicalRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.logicalType, c.logicalOrds)
+	} else {
+		_, pos = buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
+	}
 	return recordlayer.NewResultWithValue(QueryResult{Positional: pos}, result.GetContinuation()), nil
+}
+
+// coveringLogicalOrdinals maps each covering-row column name to its slot in
+// the record's LOGICAL row type. Returns nil (keep the index layout) when the
+// logical type is unknown or ANY column has no logical slot — never a partial
+// mapping, so a row is either fully logical-shaped or fully index-shaped.
+func coveringLogicalOrdinals(posNames []string, logicalType *values.RecordType) []int {
+	if logicalType == nil {
+		return nil
+	}
+	ords := make([]int, len(posNames))
+	for i, name := range posNames {
+		ord, ok := logicalType.FieldIndex(name)
+		if !ok {
+			return nil
+		}
+		ords[i] = ord
+	}
+	return ords
+}
+
+// buildCoveringLogicalRow constructs a covering-index row in the record's
+// LOGICAL shape: one slot per record field in descriptor order, covered
+// columns placed at their logical ordinals, non-covered fields nil (Java's
+// unset partial-record fields; the planner's covering gate guarantees they
+// are never referenced). A value-column/PK-column name collision lands on the
+// SAME logical slot with the same value — the logical row has one column.
+func buildCoveringLogicalRow(columns, pkColumns []string, vals, pk tuple.Tuple, logicalType *values.RecordType, logicalOrds []int) *PositionalRow {
+	slots := make([]any, len(logicalType.Fields))
+	for i := range columns {
+		if i < len(vals) {
+			slots[logicalOrds[i]] = tupleElementToUUID(vals[i])
+		}
+	}
+	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id));
+	// the user-level PK columns are at the tail. Skip the prefix.
+	pkOffset := 0
+	if len(pk) > len(pkColumns) {
+		pkOffset = len(pk) - len(pkColumns)
+	}
+	for i := range pkColumns {
+		idx := i + pkOffset
+		if idx < len(pk) {
+			slots[logicalOrds[len(columns)+i]] = tupleElementToUUID(pk[idx])
+		}
+	}
+	return &PositionalRow{Type: logicalType, Slots: slots}
 }
 
 // buildCoveringRow constructs a covering-index result row: the name-keyed datum AND

@@ -2593,12 +2593,12 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 	var name string
 	if fv, ok := v.(*values.FieldValue); ok {
 		if fv.Child != nil {
-			name = values.ExplainValue(v)
+			name = values.ColumnNameValue(v)
 		} else {
 			name = fv.Field
 		}
 	} else {
-		name = values.ExplainValue(v)
+		name = values.ColumnNameValue(v)
 	}
 	var label string
 	if alias != "" {
@@ -2713,7 +2713,7 @@ func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.Messa
 	typeRef := name
 	if fv, ok := f.Value.(*values.FieldValue); ok {
 		if fv.Child != nil {
-			typeRef = strings.ToUpper(values.ExplainValue(f.Value))
+			typeRef = strings.ToUpper(values.ColumnNameValue(f.Value))
 		} else {
 			typeRef = strings.ToUpper(fv.Field)
 		}
@@ -3315,7 +3315,7 @@ func buildAggColumns(
 		// has three mirrors that must agree: executor aggKeyName,
 		// aggregateGroupKeyOutputName (logical_predicate.go), and this
 		// derivation. So the qualified Name is load-bearing and stays.
-		name := values.ExplainValue(k)
+		name := values.ColumnNameValue(k)
 		if fv, ok := k.(*values.FieldValue); ok {
 			name = fv.Field
 		}
@@ -3390,7 +3390,7 @@ func aggOperandName(a expressions.AggregateSpec) string {
 	if a.OperandName != "" {
 		return strings.ReplaceAll(a.OperandName, " ", "")
 	}
-	return values.ExplainValue(a.Operand)
+	return values.ColumnNameValue(a.Operand)
 }
 
 // aggregateResultType derives the SQL type name of an aggregate's result
@@ -3452,7 +3452,7 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 		switch av.Op {
 		case values.AggSum, values.AggMin, values.AggMax:
 			if av.Operand != nil && desc != nil {
-				operandName := values.ExplainValue(av.Operand)
+				operandName := values.ColumnNameValue(av.Operand)
 				if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
 					return t
 				}

@@ -861,9 +861,19 @@ func stripColumnQualifier(s string) string {
 func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) values.Value {
 	return func(node values.Value) values.Value {
 		fv, ok := node.(*values.FieldValue)
-		// An already-Resolved node is baked; a multi-accessor path is not a bare
-		// output-column ref. Leave both untouched.
-		if !ok || fv.Resolved != nil {
+		if !ok {
+			return node
+		}
+		// A multi-accessor baked path is a nested access, never a bare
+		// output-column ref — leave it. A SINGLE-accessor node (lazy or baked)
+		// that names a group-by output column IS a bare output-column ref and
+		// MUST (re)bind to the OUTPUT ordinal: a ref baked upstream against its
+		// source's row (RFC-173 item C construction-time bind) carries the
+		// INPUT ordinal, which is dead on the aggregate's output row — exactly
+		// the rebind Java's pull-up translation performs structurally. For a
+		// node already bound to the output row the by-name rebind reproduces
+		// the same ordinal (idempotent).
+		if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
 			return node
 		}
 		// Match by the reference's OUTPUT-column name: the bare field for a flat
@@ -4401,7 +4411,7 @@ func sortKeyFieldRef(k logical.SortKey) string {
 			return strings.ToUpper(fv.Field)
 		}
 		// A composite leg reference (FieldValue{col, QOV(leg)}) — render LEG.COL.
-		return strings.ToUpper(values.ExplainValue(fv))
+		return strings.ToUpper(values.ColumnNameValue(fv))
 	}
 	if k.Value != nil {
 		// Non-field Value (computed expression) — not a nameable column.

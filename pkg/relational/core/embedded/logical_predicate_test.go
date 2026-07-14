@@ -69,8 +69,8 @@ func TestBuildLogicalPlanWithCatalog_WhereWalked(t *testing.T) {
 	// (rlcatalog is case-insensitive); ExplainValue renders literals
 	// unquoted via valueLiteralString.
 	got := op.Explain("")
-	if !strings.Contains(got, "PRICE > 5") {
-		t.Fatalf("expected PRICE > 5 in Explain, got %q", got)
+	if want := "Filter(PRICE#2 > 5)\n  Scan(ORDER)"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 }
 
@@ -90,8 +90,8 @@ func TestBuildLogicalPlanWithCatalog_WhereAnd(t *testing.T) {
 		t.Fatal("expected Predicate on AND shape")
 	}
 	got := filter.Predicate.Explain()
-	if !strings.Contains(got, "PRICE > 5") || !strings.Contains(got, "ORDER_ID = 1") {
-		t.Fatalf("expected both leaves in predicate, got %q", got)
+	if want := "(PRICE#2 > 5 AND ORDER_ID#0 = 1)"; got != want {
+		t.Fatalf("Predicate.Explain: got %q, want %q", got, want)
 	}
 }
 
@@ -173,8 +173,8 @@ func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate non-nil")
 	}
-	if got := filter.Predicate.Explain(); got != "PRICE = 3" {
-		t.Fatalf("Predicate.Explain: got %q, want PRICE = 3", got)
+	if got := filter.Predicate.Explain(); got != "PRICE#2 = 3" {
+		t.Fatalf("Predicate.Explain: got %q, want PRICE#2 = 3", got)
 	}
 }
 
@@ -251,8 +251,8 @@ func TestBuildLogicalPlanWithCatalog_DeleteWhere(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate on DELETE WHERE")
 	}
-	if got := filter.Predicate.Explain(); got != "PRICE > 5" {
-		t.Fatalf("Predicate.Explain: got %q, want PRICE > 5", got)
+	if got := filter.Predicate.Explain(); got != "PRICE#2 > 5" {
+		t.Fatalf("Predicate.Explain: got %q, want PRICE#2 > 5", got)
 	}
 }
 
@@ -287,8 +287,8 @@ func TestBuildLogicalPlanWithCatalog_UpdateWhere(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate on UPDATE WHERE")
 	}
-	if got := filter.Predicate.Explain(); got != "ORDER_ID = 1" {
-		t.Fatalf("Predicate.Explain: got %q, want ORDER_ID = 1", got)
+	if got := filter.Predicate.Explain(); got != "ORDER_ID#0 = 1" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER_ID#0 = 1", got)
 	}
 }
 
