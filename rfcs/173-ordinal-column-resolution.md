@@ -5699,23 +5699,58 @@ per-shape ordinalization gate. Items below, most-actionable first.
   `TestSortContinuation_PreservesComplete` legacy-object + v2-array rejection cases.
 
 ### B. Slice 4 — retire the name-model AnchoredJoin producer (BIG, the unpaid simplification)
+> GRAEFE DESIGN RULING (sequenced plan for B→C→D):
+> - **Census is the roadmap.** The name-model surface is exactly P4 (buildJoinResultValue) + P5
+>   (buildUnnestResultValue); P1/P2/P3 derive and retire for free. Drive `TestFDB_RFC173_ProducerCensus`
+>   counts to zero.
+> - **SEQUENCE: P5 box-substrate NEXT, P4 general arm LAST.** The enclosed firings are NOT a separate
+>   worklist — for the box class the un-enclosed firing IS the enclosure root, so ordinalizing the root
+>   zeroes the whole subtree. The only live root left is P5 box-substrate. P4's `!gated` arm
+>   ({dup-binding, leg-contains-name-model-join, arity<2}) is gated on every OTHER producer dying
+>   ("leg-contains-name-model-join" is non-empty precisely while any producer name-models), so P4
+>   collapses near-free once P5 is ordinal. Doing P4 first fights the dependency (largest blast radius).
+> - **Generalize the gate by SHRINKING, never growing.** Each increment DELETES a decline arm from
+>   `ordinalWedgeGateDecide` (one uniform ordinal seed builder — Java's (quantifier, ordinal) —
+>   never a bespoke per-shape ordinalizer branch). Measure by decline-arms-removed + census→0. Endgame:
+>   arm unreachable → delete it → AnchoredJoin has no caller → delete it → gate always-gated → delete gate.
+> - **NEXT COMMIT (Graefe-directed):** ordinalize a SINGLE-LINK unnest over a FULL-outer box base
+>   (`FROM (a FULL OUTER b) x, x.arr AS y`) — `rfc173_w4c_unnest_seed.go::unnestOrdinalSeed` + the
+>   declining arm at `cascades_translator.go:~1862` (the `clusterArity(j.Left)==1` guard rejects the
+>   multi-alias box outer). boxGatesFresh already admits it; the executor already births FULL legs
+>   positionally; build the unnest ordinal seed over that positional birth instead of declining to P5.
+>   Sentinel: `TestFDB_RFC173_ProducerCensus` pins P5=0 for the shape (red→green). Chained / LEFT-RIGHT-box
+>   / nested-box variants are separate follow-on slices.
+>
+> IMPL REFINEMENT (investigated, sharpens the ruling — do NOT skip step 0):
+> `clusterArity` returns 1 for a FULL OUTER join (rfc173_cluster_gate.go:628 "genuinely opaque"), so
+> the `clusterArity(j.Left)==1` guard at cascades_translator.go:~1862 ALREADY ADMITS a full-outer box
+> base — the SINGLE-LINK full-box unnest likely already ordinalizes (or `unnestOrdinalSeed` declines
+> inside via `ordinalLegType`). Graefe's "the guard rejects the box outer" was imprecise. So:
+> **STEP 0 (empirical, before any gate edit):** run `TestFDB_RFC173_ProducerCensus` over candidate box
+> shapes (single-link vs CHAINED over full box; LEFT/RIGHT box; nested box) to identify EXACTLY which
+> still fires P5 — the census records `{Producer:P5, Enclosed, Shape}` per firing. The census names the
+> live class "box-base CHAINED-unnest", so the P5-firing shape is likely `FROM (a FULL OUTER b) x,
+> x.arr AS y, y.sub AS z` (chained over a box), NOT the single link. Pick the smallest firing shape,
+> trace WHERE it declines (the gate `clusterArity==1`, `unnestExistsSeedSafe`, or `unnestOrdinalSeed`/
+> `ordinalLegType` returning nil), and delete THAT specific decline — never a blind gate weakening
+> (a wrong guess ordinalizes a chained link over a name-model first-link seed = silently-wrong rows,
+> per the unnestExistsSeedSafe/`pureSpine=false` warning). Then census P5=0 + FDB green + Graefe ACK.
 - [ ] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
   and `values/value_anchored_join_record.go` (~322 LOC). PR #485 is R3 ("first producer deleted") —
-  finish the demolition.
-- [ ] Collapse the `ordinalWedgeGate` / per-shape ordinalization subsystem (`rfc173_cluster_gate.go`,
-  `_b1_exists_gather.go`, `_w5_chained_unnest.go`, …). Both reviewers flag it as the "operator
-  allowlist trap §1.4 condemns, reincarnated as 'shapes we know how to ordinalize'." Until
-  gated==everything, two plan pipelines coexist. `legWindowBinder` self-documents "must not ossify
-  into the permanent runtime shape" (rfc173_ordinal_join.go) — the cap ossified it; un-ossify.
+  finish the demolition (via the shrink-the-gate discipline above).
 
 ### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
 > IMPL NOTE (investigated): baking canNOT happen in `ResolveIdentifier` (expr/expr.go:205) —
 > that is SEMANTIC time, before the physical access path is chosen, and the runtime slot order
 > depends on it (a covering-index scan's row has a DIFFERENT slot order than the base table, a
 > join merge yet another). The ordinal is only fixable once the PHYSICAL row shape is known, i.e.
-> at translation/physicalization — exactly where the ordinalization gate (item B) runs. So C is
-> COUPLED to B: making the gated per-shape ordinalization UNIFORM (physical-plan-aware) is the
-> single move that closes both. Needs a Graefe design ruling on the uniform approach before code.
+> at translation/physicalization — exactly where the ordinalization gate (item B) runs.
+> GRAEFE RULING: C is UNBLOCKED by B, NOT subsumed. B makes the ROW positional everywhere; C makes
+> REFERENCES positional (the ~23 lazy `NewFieldValue` sites bake to `Resolved` ordinal paths). Gated
+> rows today still carry coexistence name-keys, so lazy refs WORK at runtime — that is the hybrid rot
+> C removes. C is a DISTINCT plan-time reference-baking pass, correct only once B guarantees a stable
+> physical row; do NOT fold it into the gate. Order strictly B → C → D (D's name heuristics are dead
+> only after C bakes the references).
 - [ ] Bake `ResolveIdentifier` at plan time — `expr/expr.go:260` still emits a **lazy** `NewFieldValue`
   for the common column path; ordinal is re-derived at RUNTIME via `rt.FieldIndex(f.Field)`
   (values.go ~908) + `row.GetByName` (values.go ~555). Java binds every ref to an ordinal at plan
