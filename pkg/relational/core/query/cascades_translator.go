@@ -360,6 +360,13 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		if body, ok := t.cteScope[key]; ok {
 			var cols []values.Field
 			t.inCTEDefiningScope(key, body, func() {
+				// A star-admitted unnest body normalizes to the bare projection
+				// of its boundary labels at translateScan; the boundary schema
+				// here is those SAME labels (one predicate, all consumers).
+				if bj, star := t.derivedBodyStarOrdinalLeg(body); star {
+					cols = t.ordinalLegColumns(bj)
+					return
+				}
 				cols = t.derivedOutputColumns(body)
 			})
 			return cols
@@ -458,6 +465,13 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 				fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
 			}
 			return fields
+		}
+		// A star-admitted unnest body (the derived-table twin `FROM (SELECT *
+		// FROM t, t.arr AS x) AS s`) normalizes to the bare projection of its
+		// boundary labels when the registered body translates (translateScan);
+		// its leg schema is those labels.
+		if bj, star := t.derivedBodyStarOrdinalLeg(o.Body); star {
+			return t.ordinalLegColumns(bj)
 		}
 		return t.derivedOutputColumns(o.Body)
 	default:
@@ -2430,7 +2444,30 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 		// to the CTE itself (infinite recursion).
 		var result expressions.RelationalExpression
 		t.inCTEDefiningScope(key, body, func() {
-			result = t.translateOp(body)
+			// RFC-173 S4 (star opaque ordinal leg): an ADMITTED projection-less
+			// unnest body (`WITH S AS (SELECT * FROM t, t.arr AS x)`) NORMALIZES
+			// to the explicit bare projection of its boundary labels — exactly
+			// what the user would write by hand — so it translates as the
+			// verified BARE-PROJECTED derived-boundary class. The wrapper's
+			// LogicalProjectionExpression is a SelectMergeRule boundary; without
+			// it the body's SelectExpression MERGES into a gated parent select
+			// and the dissolved qualified reads fall into the name-model $m
+			// partition machinery, which mis-serves them over the positional
+			// row (loud ordinal -1 on duplicate labels; the unique-label cases
+			// only resolved through the qualifier-strip fallback). The SAME
+			// predicate gates the parent's opaque-leg admission
+			// (ordinalEligible/clusterArity) and the boundary schema
+			// (legColumns), so every consumer sees the projected row.
+			toTranslate := body
+			if bj, star := t.derivedBodyStarOrdinalLeg(body); star {
+				cols := t.ordinalLegColumns(bj)
+				names := make([]string, len(cols))
+				for i, c := range cols {
+					names[i] = c.Name
+				}
+				toTranslate = logical.NewProject(body, names, nil)
+			}
+			result = t.translateOp(toTranslate)
 		})
 		return result
 	}

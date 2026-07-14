@@ -484,8 +484,13 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		if body, ok := t.cteScope[key]; ok {
 			// A bare-projected unnest-cluster derived boundary is an OPAQUE ordinal
 			// leg (its projected row is a clean single namespace) even though its
-			// internal unnest would poison the plain recursion below.
+			// internal unnest would poison the plain recursion below. So is the
+			// single-link STAR body (its boundary is the unnest seed's own
+			// positional row — derivedBodyStarOrdinalLeg).
 			if t.derivedBodyOpaqueOrdinalLeg(body) {
+				return true
+			}
+			if _, star := t.derivedBodyStarOrdinalLeg(body); star {
 				return true
 			}
 			delete(t.cteScope, key)
@@ -575,6 +580,93 @@ func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOpe
 			return false
 		}
 	}
+}
+
+// derivedBodyStarOrdinalLeg is derivedBodyOpaqueOrdinalLeg's STAR sibling: it
+// reports whether a PROJECTION-LESS CTE/derived-table body (`WITH S AS (SELECT
+// * FROM t, t.arr AS x [AT o] [WHERE …]) …`) is a SINGLE-LINK, SINGLE-SOURCE
+// lateral unnest whose FRESH translation takes the ordinal seed — so the
+// derived boundary flows the seed's POSITIONAL row under the seed's own labels
+// (the outer scan's bare columns then the AS/AT aliases), and a parent may gate
+// over the reference as an OPAQUE arity-1 leg. Returns the unnest join so the
+// leg-schema authority (ordinalLegColumns) derives the boundary labels from the
+// SAME node the seed builds over (its unnest-join arm — the layout-identity
+// invariant).
+//
+// The admission mirrors the fresh body translation's own ordinal-seed gate
+// EXACTLY (translateUnnestJoin: single-source arity, exists-safety via the
+// single-alias bypass, segment classification) — an over-admission would type
+// the leg positionally while the body falls back to the name-model anchored RC,
+// whose interleaved bare+qualified field layout silently misaligns every
+// positional read. Conditions:
+//   - plain filters only above the join (a subquery-carrying WHERE routes the
+//     body through the EXISTS/scalar dispatches — different seeds);
+//   - a bare INNER comma unnest join (no ON, no ON-EXISTS) with an AS or AT
+//     binding and a segment path (`t.arr`, `t.rec.arr`);
+//   - a SINGLE-SOURCE, single-alias outer (clusterArity 1 — excludes the
+//     merge-opaque FULL box, which is also arity 1 but multi-alias) bound to a
+//     REAL table whose segment path names an ARRAY (the classification
+//     gauntlet's own resolvers: a non-resolving segment 0 is a schema-qualified
+//     cross join, not an unnest; a CTE/derived-bound source classifies through
+//     its body — residual class 3);
+//   - NOT under an existential (the under-EXISTS seed gate adds scope-collision
+//     arms this admission does not replicate);
+//   - UNIQUE boundary labels: the parent's positional name reads (FieldIndex,
+//     first match) must agree with the name model's collision semantics (the
+//     element's bare key SHADOWS a same-named outer column — last-write-wins),
+//     which they only do collision-free. A colliding star body (`t.arr AS ID`)
+//     stays name-model.
+//
+// A CHAINED star body (`SELECT * FROM t, t.arr AS x, x.sub AS y`) is NOT
+// admitted yet: its fresh translation ordinalizes, but the admission would have
+// to replicate the chained gate (spine walk + owner slots + collection bake)
+// exactly — booked with the item-B residuals.
+func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOperator) (*logical.LogicalJoin, bool) {
+	if t.md == nil || t.unnestUnderExistential {
+		return nil, false
+	}
+	op := body
+	for {
+		f, isF := op.(*logical.LogicalFilter)
+		if !isF {
+			break
+		}
+		if len(f.ExistsSubqueries) > 0 || len(f.ScalarSubqueries) > 0 {
+			return nil, false
+		}
+		op = f.Input
+	}
+	j, isJ := op.(*logical.LogicalJoin)
+	if !isJ || j.Kind != logical.JoinInner || len(j.OnExistsSubqueries) > 0 || j.OnPredicate != nil {
+		return nil, false
+	}
+	u, isU := j.Right.(*logical.LogicalUnnest)
+	if !isU || len(u.Segments) < 2 || (u.Alias == "" && u.AtAlias == "") {
+		return nil, false
+	}
+	if t.clusterArity(j.Left) != 1 || len(outerBoundAliases(j.Left)) != 1 {
+		return nil, false
+	}
+	outerTable := findOuterScanTable(j.Left, u.Segments[0])
+	if outerTable == "" || t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
+		return nil, false
+	}
+	if _, _, isArray, _ := t.unnestArrayElementType(outerTable, u.Segments[1:]); !isArray {
+		return nil, false
+	}
+	cols := t.ordinalLegColumns(j)
+	if cols == nil {
+		return nil, false
+	}
+	seen := make(map[string]struct{}, len(cols))
+	for _, c := range cols {
+		key := strings.ToUpper(c.Name)
+		if _, dup := seen[key]; dup {
+			return nil, false
+		}
+		seen[key] = struct{}{}
+	}
+	return j, true
 }
 
 // clusterArity computes the post-flattening ForEach arity of the transitive
@@ -698,6 +790,11 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 				// internal unnest poison does not propagate past the boundary — the
 				// parent sees ONE projected leg (arity 1). Its unnest cluster
 				// ordinalizes fresh inside the boundary.
+				return 1
+			}
+			if _, star := t.derivedBodyStarOrdinalLeg(body); star {
+				// The single-link STAR body is equally opaque: its boundary is
+				// the unnest seed's positional row (one leg, arity 1).
 				return 1
 			}
 			delete(t.cteScope, key)
