@@ -88,9 +88,6 @@ func (v *ExistsValue) Evaluate(ctx any) (any, error) {
 			// typed-nil row (e.g. a nil map[string]any boxed into the interface) is non-nil to
 			// `!=` and would wrongly report TRUE for an empty subquery.
 			return ok && !isNilBinding(bound), nil
-		case map[CorrelationIdentifier]map[string]any:
-			bound, ok := c[qov.Correlation]
-			return ok && bound != nil, nil
 		default:
 			// No existential binding is reachable in this context shape ⇒ FALSE (never the
 			// outer-row fallback).

@@ -3253,12 +3253,10 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 // parent expression (`t.col`) then projects a FieldValue with
 // operand = QuantifiedObjectValue{Correlation: t}.
 //
-// Mirrors Java's `QuantifiedObjectValue`. Evaluate reads
-// the row directly out of the eval context when it's a
-// `map[CorrelationIdentifier]map[string]any` (the multi-source
-// shape); for the single-source `map[string]any` shape it returns
-// the map verbatim so downstream FieldValue lookups can index into
-// it.
+// Mirrors Java's `QuantifiedObjectValue`. Evaluate resolves this quantifier's
+// row from the eval context: a correlation binding for Correlation (an outer
+// quantifier), else the frontier Positional row (the sole runtime row), else
+// nil. Downstream FieldValue lookups then read a column off that row by ordinal.
 type QuantifiedObjectValue struct {
 	Correlation CorrelationIdentifier
 	// Typ is the row type (struct shape) this quantifier produces —

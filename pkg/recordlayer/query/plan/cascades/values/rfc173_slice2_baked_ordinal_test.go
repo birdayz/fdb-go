@@ -477,6 +477,30 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	}
 }
 
+// TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent pins the negative counterpart
+// to the FrontierPinned loud guard (closing the last silent axis): an UNPINNED
+// correlated FieldValue whose correlation resolves to a non-nil, non-OrdinalRow
+// binding is NOT loud — it returns that bound value raw (the sanctioned
+// off-frontier path; an unpinned node carries no frontier contract). Only a
+// FrontierPinned node goes loud there (see the garbage-leg pin in
+// rfc173_ordinal_join_test.go). This freezes the pinned/unpinned asymmetry so a
+// future change to the `return bound, nil` arm is a deliberate red->green edit,
+// not a silent drift.
+func TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent(t *testing.T) {
+	t.Parallel()
+	corr := NamedCorrelationIdentifier("q")
+	lazy := NewFieldValue(NewQuantifiedObjectValue(corr), "COL", UnknownType) // UNPINNED (no Resolved bake)
+	type garbage struct{ x int }
+	g := garbage{x: 9}
+	got, err := lazy.Evaluate(&ordEvalBinder{id: corr, bound: g})
+	if err != nil {
+		t.Fatalf("unpinned node over a non-ordinal binding must be silent, got loud: %v", err)
+	}
+	if got != any(g) {
+		t.Fatalf("unpinned node returns the bound value raw: got %v, want %v", got, g)
+	}
+}
+
 // TestContainsBakedOrdinal_RFC173S2 pins the drift-assert probe itself: a
 // baked node found at depth, a pure-lazy tree reporting false, and nil
 // safety — the SelectMergeRule assert keys on this walk, so a walk bug would
