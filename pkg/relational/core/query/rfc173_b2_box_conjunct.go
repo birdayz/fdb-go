@@ -108,12 +108,17 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 				// sibling leg refs ordinalize — and it was REGISTERED in
 				// t.scalarSubqueries during predicate translation (before classify), so
 				// the statement's pre-eval pass (planScalarSubqueryPlans →
-				// WithScalarSubqueries) binds its result under nv.Alias for the seed
+				// WithScalarSubqueries) binds its result under its Alias for the seed
 				// filter to read back, exactly as the name-model path does. The gather
 				// ADMIT keeps the registration (rollback fires only on decline); no new
-				// mechanism, no filter-level attach. (Correctness pinned by
+				// mechanism, no filter-level attach. Safe because a ScalarSubqueryValue
+				// is UNCORRELATED BY CONSTRUCTION (value_scalar_subquery.go doc: correlated
+				// scalar subqueries need per-row re-execution, are out of scope
+				// engine-wide, and are never minted as this node) — so its result is a
+				// once-per-statement constant the pre-eval binds; a hypothetical
+				// correlated one could NOT bake to such a constant, but none reaches here.
+				// (No `verdict = …`: falls through Bakeable. Correctness pinned by
 				// TestFDB_RFC173B2_FilteredBoxUnnest scalar-subquery arms.)
-				_ = nv
 			case *values.ExistsValue:
 				// EXISTS in a conjunct stays name-model: an EXISTS over the gathered
 				// cluster strands at PHYSICALIZATION ("not a physical plan"), an

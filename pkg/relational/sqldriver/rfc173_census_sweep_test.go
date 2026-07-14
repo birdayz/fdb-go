@@ -80,4 +80,23 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 	if _, err := count(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`); err == nil || !strings.Contains(err.Error(), "not a physical plan") {
 		t.Errorf("exists_multi_esq: expected the pre-existing physicalization strand, got: %v", err)
 	}
+
+	// GROUP BY over the multi-esq DECLINING box — the regression pin for the
+	// `!rc.AnchoredJoin` groupBy gate (seedElementSlots / cascades_translator.go:4895
+	// returns ok=false for a name-model AnchoredJoin RC, keeping GROUP BY OFF the
+	// positional bake). Now that RFC-173 B ordinalized the subquery conjunct, NO
+	// runnable grouped box shape reaches the name-model anchored fallback via rows —
+	// so this gate lost its row-level pin (baretwin grouped_subquery_conjunct_gathers
+	// now gathers). This pins the gate at TRANSLATION instead: adding GROUP BY makes
+	// the still-declining multi-esq shape REACH the gate (the bare multi-esq above
+	// never does — no GROUP BY). It must stay name-model (a P4/P5 producer FIRES,
+	// n>0 — proof it took the anchored path through the gate) and STRAND at
+	// physicalization. If the gate is flipped to bake GROUP BY over the anchored RC,
+	// a windowedOrdinalSeed over that RC would panic / error differently and this
+	// exact outcome (fires + "not a physical plan") goes red.
+	if n, err := count(`SELECT "X", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X") GROUP BY "X"`); err == nil || !strings.Contains(err.Error(), "not a physical plan") {
+		t.Errorf("grouped_multi_esq_gate: expected the anchored-RC groupBy gate to keep it name-model + strand (not a physical plan), got err: %v", err)
+	} else if n == 0 {
+		t.Error("grouped_multi_esq_gate: fired 0 producers — the shape must stay name-model (reach the !rc.AnchoredJoin groupBy gate), else the gate pin is vacuous")
+	}
 }
