@@ -258,6 +258,17 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 			return nil, &semantic.CorrelatedShadowError{Qualifier: qualifier.Name(), Field: field}
 		}
 		corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
+		// RFC-173 item C: the CORRELATED arm deliberately stays LAZY — unlike
+		// the flat arm below, a correlated reference's runtime binding is not
+		// always the source's own row (a lateral unnest binds the merged row
+		// or the raw element; join legs bind leg windows, merged concats, or
+		// nil null-legs), and the join/exists gate machinery makes admission
+		// and placement decisions on the LAZY reference shape. Construction-
+		// binding here flips those gates and mis-slots reads (probed: the
+		// gated LEFT-box + NOT EXISTS composition drops its WHERE conjunct).
+		// The gated-seed machinery bakes these refs box-relative itself; the
+		// construction-time bind for the correlated arm is its own follow-up
+		// slice with a per-gate audit.
 		return values.NewFieldValue(
 			values.NewQuantifiedObjectValue(corrID),
 			field,

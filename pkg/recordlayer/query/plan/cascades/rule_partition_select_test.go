@@ -234,3 +234,38 @@ func TestTransitiveCorrelationOrder_RangesOverEdges(t *testing.T) {
 		t.Fatalf("PB must not depend on X: %v", order[src.GetAlias()])
 	}
 }
+
+// TestBoundAliasesOfReference pins the buried-alias collector the partition
+// classifier keys on (RFC-173 item C follow-on): every quantifier alias bound
+// anywhere inside the reference's subgraph is reported — including aliases
+// nested one level down — so a predicate referencing a subquery-INTERNAL
+// alias (an existential's hoisted join predicate, `B2.A_ID = A.ID`) is
+// classified as correlated to the existential quantifier that owns it, never
+// sunk into the outer's partition half where the alias can never bind.
+func TestBoundAliasesOfReference(t *testing.T) {
+	t.Parallel()
+
+	inner := expressions.NewSelectExpressionWithAliases(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B2")),
+		[]expressions.Quantifier{
+			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("B2"),
+				expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
+			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("C"),
+				expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
+		},
+		nil, nil)
+	outer := expressions.NewSelectExpressionWithAliases(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q")),
+		[]expressions.Quantifier{
+			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("Q"),
+				expressions.InitialOf(inner)),
+		},
+		nil, nil)
+
+	got := boundAliasesOfReference(expressions.InitialOf(outer))
+	for _, want := range []string{"Q", "B2", "C"} {
+		if _, ok := got[values.NamedCorrelationIdentifier(want)]; !ok {
+			t.Fatalf("bound aliases missing %s (got %v)", want, got)
+		}
+	}
+}

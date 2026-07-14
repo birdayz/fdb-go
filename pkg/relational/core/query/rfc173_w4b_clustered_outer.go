@@ -158,7 +158,9 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 // the leg's type flips missed (the caller declines).
 func (pu *clusterPullUp) bake(v values.Value) values.Value {
 	fv, isFV := v.(*values.FieldValue)
-	if !isFV || fv.Resolved != nil {
+	// A source-relative baked ref (resolver construction bind) still addresses
+	// its leg's own row — re-bake it onto the concat like its lazy twin.
+	if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 		return v
 	}
 	var alias, col string
@@ -369,7 +371,9 @@ func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[
 	refs := map[string]struct{}{}
 	record := func(v values.Value) values.Value {
 		fv, isFV := v.(*values.FieldValue)
-		if !isFV || fv.Resolved != nil {
+		// Source-relative baked refs are outer-leg references like their lazy
+		// twins — they must be COUNTED or the decline guard misses them.
+		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return v
 		}
 		var alias string
@@ -505,7 +509,9 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 					}
 					return false
 				case *values.FieldValue:
-					if n.Resolved != nil || n.Child != nil || !clusterFieldResolvable(n.Field, pu, innerKey) {
+					// A source-relative baked ref resolves like its lazy twin
+					// (the pull-up re-bakes it); machinery-owned baked nodes decline.
+					if (n.Resolved != nil && !n.SourceRelativeBaked()) || n.Child != nil || !clusterFieldResolvable(n.Field, pu, innerKey) {
 						ok = false
 					}
 					return false

@@ -723,17 +723,21 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 	return out, drift
 }
 
-// legRef extracts the UPPER leg-correlation name of a BARE, UNBAKED FieldValue over a
+// legRef extracts the UPPER leg-correlation name of a BARE FieldValue over a
 // QuantifiedObjectValue — the reference shape all three gated-predicate walks key on
 // (the bake closure, predicateLegAliases, predicateRefsBuriedLeg). Returns "",false for
-// a non-FieldValue, an already-baked ref (Resolved != nil — a re-walk must not re-count
-// or re-bake it), a flat-dotted read (fv.Field carries a '.', the RFC-142 mergedQOV.
-// "leg.col" channel, resolved elsewhere), or a non-QOV child. Each caller then consults
-// legTypes[key] for its own decision — is-a-leg (count), is-buried (bakeCorr != ""), or
-// build the baked node — so one prologue serves three keys.
+// a non-FieldValue, a machinery-owned baked ref (FrontierPinned or multi-accessor —
+// a re-walk must not re-count or re-bake the walk's OWN output), a flat-dotted read
+// (fv.Field carries a '.', the RFC-142 mergedQOV "leg.col" channel, resolved
+// elsewhere), or a non-QOV child. A SOURCE-RELATIVE baked ref (the resolver's
+// RFC-173 item C construction-time bind, values.SourceRelativeBaked) is a leg
+// reference like its lazy twin: its ordinal addresses the LEG's own row, not the
+// composed seed, so it must be counted and re-baked here. Each caller then consults
+// legTypes[key] for its own decision — is-a-leg (count), is-buried (bakeCorr != ""),
+// or build the baked node — so one prologue serves three keys.
 func legRef(v values.Value) (string, bool) {
 	fv, isFV := v.(*values.FieldValue)
-	if !isFV || fv.Resolved != nil || strings.Contains(fv.Field, ".") {
+	if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) || strings.Contains(fv.Field, ".") {
 		return "", false
 	}
 	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)

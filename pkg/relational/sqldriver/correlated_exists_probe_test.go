@@ -96,17 +96,14 @@ func TestFDB_CorrelatedExistsProbe(t *testing.T) {
 	// true → {3}.
 	check("sibling_notexists_and_exists", "SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM c)",
 		[]int64{3})
-	// LOUD sentinel — a sibling multi-EXISTS where ONE inner is a MULTI-TABLE JOIN
-	// (`FROM b b2, c`) is a remaining edge: the join-inner's merged-row correlation
-	// through the peel does not resolve (`A_ID not resolvable`), so it fails LOUD
-	// (correct-or-loud — never silent-wrong). If a future slice closes it, flip to a
-	// row assertion ({1}: only a1 has a b that c references).
-	t.Run("sibling_multitable_inner_loud", func(t *testing.T) {
-		_, err := db.QueryContext(ctx, "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM b b2, c WHERE b2.a_id = a.id AND c.b_id = b2.id)")
-		if err == nil {
-			t.Fatal("multi-table-inner sibling EXISTS unexpectedly planned — flip this to a row assertion")
-		}
-	})
+	// Sibling multi-EXISTS where ONE inner is a MULTI-TABLE JOIN (`FROM b b2, c`) —
+	// formerly a LOUD sentinel: the join-inner's merged-row correlation through the
+	// peel did not resolve (`A_ID not resolvable`). RFC-173 item C's construction-time
+	// ordinal bind closed it (the correlated outer reference reads its slot
+	// positionally through the peel), so this is now the promised row assertion:
+	// {1} — only a1 has a b that c references.
+	check("sibling_multitable_inner", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM b b2, c WHERE b2.a_id = a.id AND c.b_id = b2.id)",
+		[]int64{1})
 	// correlated NOT EXISTS: a has no b → a3.
 	check("correlated_not_exists", "SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id)",
 		[]int64{3})

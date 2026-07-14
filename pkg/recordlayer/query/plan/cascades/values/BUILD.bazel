@@ -115,6 +115,7 @@ go_test(
         "scalar_functions_extra2_test.go",
         "scalar_functions_extra_test.go",
         "simplifier_value_test.go",
+        "source_relative_baked_test.go",
         "swallow_axis_test.go",
         "type_test.go",
         "unbound_eval_context_test.go",

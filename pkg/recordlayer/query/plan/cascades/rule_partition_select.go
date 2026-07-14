@@ -151,6 +151,30 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		aliasToQ[q.GetAlias()] = q
 	}
 
+	// Map each alias BURIED inside an existential quantifier's subgraph to that
+	// quantifier's own alias. An existential's hoisted join predicate
+	// (existsInnerCorrelation keeps a JOIN/nested inner's predicate verbatim)
+	// references the subquery-INTERNAL alias (`B2.A_ID = A.ID` for
+	// `EXISTS (SELECT 1 FROM b b2, c WHERE …)`), which is NOT a select alias —
+	// classifying such a predicate by select-alias intersection alone reads it
+	// as correlated ONLY to the outer and sinks it into the outer's half, where
+	// the buried alias can never bind (historically a loud name-resolution
+	// miss; under plan-time ordinals a silent wrong-slot read). The classifier
+	// below folds the owning existential's alias into the predicate's
+	// correlation set so the predicate STAYS with its existential.
+	buriedToExistential := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier)
+	for _, q := range quantifiers {
+		if q.Kind() != expressions.QuantifierExistential {
+			continue
+		}
+		for buried := range boundAliasesOfReference(q.GetRangesOver()) {
+			if _, isSelectAlias := aliasToQ[buried]; isSelectAlias {
+				continue
+			}
+			buriedToExistential[buried] = q.GetAlias()
+		}
+	}
+
 	// Compute the full transitive correlation closure among quantifiers.
 	// For each quantifier alias A, fullCorrelationOrder[A] is the set of
 	// other quantifier aliases that A transitively depends on.
@@ -346,6 +370,15 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 		for _, pred := range allPredicates {
 			correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
+			// A reference to an alias BURIED inside an existential quantifier's
+			// subgraph correlates the predicate to THAT quantifier (see
+			// buriedToExistential above) — it must land in the half holding the
+			// existential, never float free of it.
+			for c := range correlatedTo {
+				if esqAlias, buried := buriedToExistential[c]; buried {
+					correlatedTo[esqAlias] = struct{}{}
+				}
+			}
 			correlatedToLower := intersectAliases(lowerAliases, correlatedTo)
 			correlatedToUpper := intersectAliases(upperAliases, correlatedTo)
 
@@ -571,6 +604,35 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 		call.Yield(applyExistentialSourceAliases(upperSelectExpression))
 	}
+}
+
+// boundAliasesOfReference collects every quantifier alias bound anywhere
+// inside ref's expression subgraph (recursively, nested subqueries included).
+// Alias binding is semantic — identical across a group's memo members — so
+// inspecting the reference's canonical member suffices. A visited set guards
+// against reference cycles (recursive CTE self-references).
+func boundAliasesOfReference(ref *expressions.Reference) map[values.CorrelationIdentifier]struct{} {
+	out := make(map[values.CorrelationIdentifier]struct{})
+	var walk func(r *expressions.Reference, visited map[*expressions.Reference]struct{})
+	walk = func(r *expressions.Reference, visited map[*expressions.Reference]struct{}) {
+		if r == nil {
+			return
+		}
+		if _, seen := visited[r]; seen {
+			return
+		}
+		visited[r] = struct{}{}
+		expr := r.Get()
+		if expr == nil {
+			return
+		}
+		for _, q := range expr.GetQuantifiers() {
+			out[q.GetAlias()] = struct{}{}
+			walk(q.GetRangesOver(), visited)
+		}
+	}
+	walk(ref, make(map[*expressions.Reference]struct{}))
+	return out
 }
 
 // isCrossProduct checks whether the given lower/upper partition

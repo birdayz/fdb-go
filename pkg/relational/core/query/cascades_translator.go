@@ -3634,7 +3634,9 @@ func bakeUnnestElementRefOrdinal(
 		}
 		return values.Replace(v, func(node values.Value) values.Value {
 			fv, isFV := node.(*values.FieldValue)
-			if !isFV || fv.Resolved != nil {
+			// A source-relative baked element ref re-bakes to its seed slot
+			// like its lazy twin; machinery-owned baked nodes are final.
+			if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 				return node
 			}
 			if fv.Child != nil {
@@ -3677,7 +3679,10 @@ func unnestExistsRefSurvivesUnbaked(
 		}
 		values.WalkValue(v, func(node values.Value) bool {
 			fv, isFV := node.(*values.FieldValue)
-			if !isFV || fv.Resolved != nil {
+			// A source-relative baked ref mis-resolves over the NLJ layout
+			// exactly like a lazy one — it SURVIVES; only machinery-owned
+			// baked nodes (pinned/multi-accessor ofOrdinals) are safe.
+			if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 				return true // baked ofOrdinal (or non-FieldValue) — descend/skip
 			}
 			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {

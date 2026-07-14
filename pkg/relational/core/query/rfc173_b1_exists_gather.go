@@ -97,7 +97,11 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 	}
 	out := values.Replace(v, func(n values.Value) values.Value {
 		fv, isFV := n.(*values.FieldValue)
-		if !isFV || fv.Resolved != nil {
+		// A source-relative baked ref (the resolver's construction-time bind)
+		// still addresses its LEG's row — rebase it exactly like its lazy
+		// twin; only machinery-owned baked nodes (pinned / multi-accessor)
+		// are final.
+		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return n
 		}
 		// QOV-shaped leg reference.
@@ -195,7 +199,12 @@ func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[value
 		case *values.RecordConstructorValue:
 			return true
 		case *values.FieldValue:
-			if nv.Resolved == nil {
+			// A source-relative baked ref (resolver construction bind) is NOT
+			// birth-evaluable: its ordinal addresses the reference's own
+			// source row, not the box row the birth context serves — only the
+			// rebase's machinery-owned box ofOrdinals qualify. Decline like a
+			// lazy read (fail-open to the name model).
+			if nv.Resolved == nil || nv.SourceRelativeBaked() {
 				ok = false
 				return false
 			}

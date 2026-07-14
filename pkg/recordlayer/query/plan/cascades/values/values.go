@@ -924,6 +924,19 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	return rt.FieldIndex(f.Field)
 }
 
+// SourceRelativeBaked reports whether f carries a SINGLE-accessor UNPINNED
+// baked path — the RFC-173 item C construction-time bind against the
+// reference's OWN source row (the resolver's declared-column-order ordinal).
+// Such a node is ordinal-bound but NOT yet rebased onto any composed frontier
+// (gated-join box seed, gathered seed, merged concat, group-by output): the
+// translator's rebase/collection/safety-net walks over composed rows MUST
+// treat it exactly like its lazy twin — rebind it through the walk's own
+// authority, count it as a leg reference, flag it as surviving — whereas a
+// FrontierPinned or multi-accessor path is machinery-owned and final.
+func (f *FieldValue) SourceRelativeBaked() bool {
+	return f.Resolved != nil && !f.Resolved.FrontierPinned && len(f.Resolved.Accessors) == 1
+}
+
 // NewFieldValue constructs a FieldValue with a child (base) value.
 // Mirrors Java's FieldValue(childValue, FieldPath).
 func NewFieldValue(child Value, field string, typ Type) *FieldValue {

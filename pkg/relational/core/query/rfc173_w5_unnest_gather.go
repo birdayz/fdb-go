@@ -353,7 +353,9 @@ func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifie
 func bakeGatheredGroupValue(v values.Value, windows map[string]values.OrdinalSeedLegWindow, elementSlots map[string]int, seedQOV values.Value) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
 		fv, isFV := node.(*values.FieldValue)
-		if !isFV || fv.Resolved != nil {
+		// A source-relative baked ref names a seed slot like its lazy twin —
+		// re-bake it here; only machinery-owned baked nodes are final.
+		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
 			return node
 		}
 		alias, col := "", strings.ToUpper(fv.Field)
