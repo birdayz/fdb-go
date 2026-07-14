@@ -5803,9 +5803,38 @@ per-shape ordinalization gate. Items below, most-actionable first.
   >   this — so the exact Java rule that peels a 2nd existential still needs to be located.
   > - So option (a) is really a PEEL rule (extract one existential into a nested 2-quantifier select so the
   >   existing NLJ rule fires twice), navigating the 2598-2603 nesting-divergence caveat — a delicate
-  >   Cascades transformation. THE OPEN DESIGN QUESTION for the gauntlet: peel-into-nested-select vs a
-  >   partition-rule extension that admits existentials; and whether Java answers the cluster multi-esq at
-  >   all (if not, option (b) loud-early is parity, not divergence — must verify against Java/conformance).
+  >   Cascades transformation.
+  >
+  > GRAEFE DESIGN-ACK (the fix DIRECTION, consult): Java's `PartitionSelectRule` matches
+  > `combinations(all(anyQuantifier()))` gated ONLY on `size >= 3` — existentials are FIRST-CLASS, carried
+  > into lower/upper preserving kind. For `[a, EXISTS(A), EXISTS(B)]` it peels lower `{a, EXISTS(A)}` +
+  > upper `{newq(a), EXISTS(B)}`, each a 2-quantifier existential select the NLJ rule implements. **The fix
+  > is 1:1: DROP Go's ForEach-only guard** (rule_partition_select.go:53-61) — the Go-only divergence. The
+  > 2598-2603 "nesting diverges" caveat does NOT apply (it warns against wrapping a join select inside an
+  > EXISTS filter at BUILD time; partition-time peeling keeps EXISTS(B) a sibling — no EXISTS boundary is
+  > nested). Java answers sibling multi-EXISTS trivially, so loud-early (option b) would be a DIVERGENCE.
+  >
+  > IMPL ATTEMPT (findings — reverted to green, NOT shipped; a focused slice must finish it):
+  > VERIFIED BUG: `SELECT id FROM a WHERE EXISTS(SELECT 1 FROM b WHERE b.a_id=a.id) AND EXISTS(SELECT 1 FROM c)`
+  > 0AF00s on master. Dropping the guard is NOT sufficient — TWO more parts surfaced:
+  >   1. **DONE (works): source-alias propagation.** The NLJ existential path reads `GetSourceAliases()[1]`
+  >      for the inner correlation, but `GraphExpansionBuilder.BuildSelect` leaves source aliases empty →
+  >      `NewQuantifiedObjectValue: correlation is zero-value` panic (rule_implement_nested_loop_join.go:935).
+  >      Fix (validated — panic gone): a partition-built select carrying an existential must be rebuilt with
+  >      source aliases parallel to its quantifiers — an ORIGINAL quantifier keeps its carried source alias
+  >      (from `sel.GetSourceAliases()`, NOT its quantifier alias — existsInnerCorrelation renames a
+  >      join/nested inner's source ≠ esq.Alias), a fresh lower/merge ForEach's source is its own alias.
+  >      Gate on existential-presence so pure-ForEach partitions are unchanged.
+  >   2. **OPEN (the hard part): wrong rows.** With (1), the shape PLANS but returns `[]` (empty) instead of
+  >      `{1,2,4}` — a wrong bipartition or mis-placed predicate. NOT the correlation-order guardrail: the
+  >      ranged-over correlation IS already exposed for all quantifiers (rule_partition_select.go:791-797).
+  >      The `a↔EXISTS(A)` correlation is a SELECT PREDICATE (existsInnerCorrelation rebases the join pred
+  >      onto the select, added to allPreds), so the peeled bipartition's PREDICATE CLASSIFICATION +
+  >      RESULT-VALUE FLOW for the existential is where the empty-rows bug lives — needs careful debugging
+  >      with a correctness pin at each bipartition (correlated / uncorrelated / join-inner / nested), given
+  >      the silent-wrong-rows risk the merge-arm comments (line ~495) repeatedly flag. Also relax
+  >      `PartitionBinarySelectRule`'s guard for full parity. This is the remaining deep slice; the design
+  >      is ACK'd and part 1 is solved, so it is well-teed-up but must be finished carefully, not rushed.
 
 ### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
 > IMPL NOTE — CORRECTED by the Graefe design consult (the ORIGINAL note below was the trap):
