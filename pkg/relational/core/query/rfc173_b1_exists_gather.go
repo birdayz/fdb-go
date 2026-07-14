@@ -314,13 +314,10 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 	// wrap's positional output, never a renamed-away leg. A key that cannot pull up
 	// to a bakeable output column declines through the RV verification
 	// (correct-or-decline), so t.existsFoldHasChain no longer gates the wrap.
-	if len(f.ExistsSubqueries) > 1 {
-		// [ForEach(box), Existential, Existential] has no physical implementer
-		// (implementExistentialSelect is 2-quantifier) — the wrap would 0AF00.
-		// The name-model flat form 0AF00s identically today (verified, parity),
-		// but decline here so the fail-open direction stays the name model.
-		return nil
-	}
+	// Multi-esq (>1 EXISTS) is ADMITTED: the wrap `[ForEach(box), Existential, …]`
+	// now physicalizes via PartitionSelectRule's existential peel (RFC-173). The loop
+	// below builds one existential quantifier + one correlation predicate per esq, so
+	// the gathered cluster ORDINALIZES for any number of EXISTS.
 	legs := t.gatherInnerClusterLegs(join)
 	if len(legs) <= 2 {
 		return nil

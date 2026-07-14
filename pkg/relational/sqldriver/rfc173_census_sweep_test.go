@@ -62,6 +62,13 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		// statement pre-eval. So it BAKES → the gather owns it → 0 producers. Row
 		// correctness pinned in TestFDB_RFC173Slice3B2bFaceA (subquery_conjunct_* arms).
 		{"subquery_inner_conj", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
+		// MULTI-ESQ now ORDINALIZES (RFC-173): admitExistentialGather admits >1 EXISTS
+		// and the gathered wrap `[box, Existential, Existential]` physicalizes via
+		// PartitionSelectRule's existential peel — the box unnest gathers instead of
+		// name-modeling. Row correctness: TestFDB_RFC173Slice3E1a (agg_multiexists_counts)
+		// + TestFDB_CorrelatedExistsProbe (sibling_*). (Was the last name-model box shape.)
+		{"exists_multi_esq", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
+		{"grouped_multi_esq", `SELECT "X", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X") GROUP BY "X"`},
 	}
 	for _, tc := range zeroed {
 		n, err := count(tc.sql)
@@ -72,25 +79,5 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		if n != 0 {
 			t.Errorf("%s: fired %d P4/P5 producer(s), want 0 (regressed to the name model)", tc.name, n)
 		}
-	}
-
-	// exists_multi_esq: sibling multi-EXISTS now PLANS (RFC-173: PartitionSelectRule
-	// peels [outer, EXISTS, EXISTS] into nested 2-quantifier existential selects the
-	// NLJ rule implements — previously an unplannable strand). Row correctness is
-	// pinned in TestFDB_CorrelatedExistsProbe (sibling_multi_exists_*) and
-	// TestFDB_RFC173Slice3E1a (agg_multiexists_counts). The gather still declines a
-	// >1-esq CLUSTER at translation (rfc173_b1_exists_gather.go), so the box unnest
-	// stays name-model here (a P4/P5 producer fires); ORDINALIZING multi-esq (gather
-	// admission) is a separate slice — the producer count is not asserted 0 yet.
-	if n, err := count(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`); err != nil {
-		t.Errorf("exists_multi_esq: now PLANS (sibling multi-EXISTS peel), got error: %v", err)
-	} else if n == 0 {
-		t.Error("exists_multi_esq: fired 0 producers — the unnest cluster is expected name-model until gather admits multi-esq")
-	}
-
-	// grouped multi-esq: the same shape with GROUP BY also plans now (the peel + the
-	// grouped-over-name-model path). Correctness is the COUNT pin in slice3E1a.
-	if _, err := count(`SELECT "X", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X") GROUP BY "X"`); err != nil {
-		t.Errorf("grouped_multi_esq: now PLANS (sibling multi-EXISTS peel), got error: %v", err)
 	}
 }

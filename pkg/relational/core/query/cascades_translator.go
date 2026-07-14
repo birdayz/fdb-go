@@ -2957,9 +2957,12 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 // recorded legTypes at the EXISTS merge site). FULL rides the certified binary
 // seed (already producer-free via c5a) until FULL+Bakeable is chartered.
 func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f *logical.LogicalFilter, verdict boxConjVerdict) bool {
-	// Single esq — B1's conservatism verbatim; a multi-esq shape keeps the
-	// name-model path.
-	if len(f.ExistsSubqueries) != 1 {
+	// At least one esq. Multi-esq (>1) is ADMITTED now that it physicalizes —
+	// PartitionSelectRule peels the gathered wrap's N existentials into nested
+	// 2-quantifier existential selects (RFC-173), so the box unnest ORDINALIZES
+	// instead of declining to the name model. The gathered wrap builder already
+	// loops over every esq (rfc173_b1_exists_gather.go).
+	if len(f.ExistsSubqueries) < 1 {
 		return false
 	}
 	// No inner/outer scope collision — a colliding unminted inner alias would
