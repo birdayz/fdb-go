@@ -118,6 +118,37 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 		return out, explain, eerr
 	}
 
+	// MULTI-ESQ over a >=3-way INNER JOIN (no unnest) — regression pins for two panic
+	// shapes: the peel of a multi-esq over a >=2-ForEach-leg join drove the ≥2-leg
+	// anchored merge arm, whose re-enumeration can't resolve a column-less existential
+	// → panic. Fix: the B1 fold gathers the join into ONE ordinal seed (so the peel is
+	// Case 2, one live lower — never the merge arm), and PartitionSelectRule declines a
+	// multi-esq with ≥2 ForEach legs as a backstop. A,B,EEV cross-join, B.K NULL:
+	// EXISTS(EE.CK=A.K=100)=true AND EXISTS(EE.CK=B.K=NULL)=false → {}.
+	t.Run("multiesq_3way_join_gathers", func(t *testing.T) {
+		rows, plan, err := runQ(t, `SELECT A."K" FROM A, B, EEV WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`)
+		if err != nil {
+			t.Fatalf("3-way multi-esq must plan (was a panic): %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("3-way multi-esq rows = %v, want [] (B.K NULL → 2nd EXISTS false)\n  %s", rows, plan)
+		}
+	})
+	// LEFT box + a Bakeable box-leg conjunct + multi-esq (`A.K=100 AND EXISTS AND
+	// EXISTS`): was a merge-arm panic (decline → name-model → merge arm). Now plans
+	// (name-model select peels cleanly): A.K=100 true, EXISTS(EE.CK=A.K)=true,
+	// EXISTS(EEV.VK=X): X=7 keeps, X=8 drops → {7}.
+	t.Run("multiesq_leftbox_conjunct", func(t *testing.T) {
+		rows, plan, err := runQ(t, `SELECT "X" FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`)
+		if err != nil {
+			t.Fatalf("leftbox+conjunct multi-esq must plan (was a panic): %v", err)
+		}
+		want := []string{"map[X:7]"}
+		if strings.Join(rows, ",") != strings.Join(want, ",") {
+			t.Fatalf("leftbox+conjunct multi-esq rows = %v, want %v\n  %s", rows, want, plan)
+		}
+	})
+
 	const from = `FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
 	// pin asserts the B2-B gathered path answers the admitted LEFT-box+EXISTS
 	// shape correctly. The plan must NOT flatten to an N-way existential wrap

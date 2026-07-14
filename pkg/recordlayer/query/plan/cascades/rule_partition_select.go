@@ -70,6 +70,26 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	if existentialCount >= 2 {
+		// A multi-esq over a MULTI-WAY ForEach JOIN (≥2 ForEach quantifiers alongside
+		// the existentials) does NOT partition here: peeling the existentials while
+		// MERGING the ≥2 ForEach legs drives the peel through the ≥2-leg anchored merge
+		// arm, whose recursive re-enumeration cannot resolve a column-less existential
+		// leg and PANICS ("anchored re-enumeration must resolve an anchored parent's
+		// legs"). Decline → the shape stays an unplannable 0AF00 (its behavior before
+		// existentials were partitionable), correct-or-loud, never a panic. The
+		// row-reachable multi-esq shapes have a SINGLE ForEach outer (a simple/2-way
+		// outer collapsed to one seed, or the gathered INNER cluster's one ordinal
+		// seed) + N existentials → they peel via Case 2 and never merge, so they are
+		// unaffected. (Physicalizing multi-way-join multi-esq is a separate slice.)
+		forEachCount := 0
+		for _, q := range quantifiers {
+			if q.Kind() == expressions.QuantifierForEach {
+				forEachCount++
+			}
+		}
+		if forEachCount >= 2 {
+			return
+		}
 		// PROJECTED multi-EXISTS (`SELECT id, EXISTS(…) AS a, EXISTS(…) AS b`) is a
 		// SEPARATE, harder case: the result value references the existential
 		// quantifiers (booleans in the SELECT list), and peeling them into sibling
