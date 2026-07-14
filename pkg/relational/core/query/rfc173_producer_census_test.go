@@ -15,17 +15,17 @@ package query
 //
 //  2. CENSUS OBSERVER NON-VACUITY: the observer STILL fires for a name-model P5
 //     shape, so fact (1)'s 0-count is meaningful (not a silently-broken observer).
-//     The observable P5 firing left after the retirement is an ENCLOSED single
-//     unnest over a LEFT box (an unnest that is itself a leg of a larger name-model
-//     cluster); it fires P5 and reports the ENTRY enclosure. NOTE — the ENCLOSURE
-//     BIT is NOT discriminably pinned here: with every UN-enclosed unnest now
-//     ordinalizing/gathering, no shape produces an un-enclosed P5 firing, so the
-//     producer reading the threaded prevEnclosure vs the always-true inInnerCluster
-//     is observationally IDENTICAL for the reachable P5 shapes (both report
-//     Enclosed=true, since every surviving P5 firing IS enclosed). The prevEnclosure
-//     threading stays for correctness but is inert at the current reach; a future
-//     un-enclosed P5 shape would re-arm the discrimination. This assertion is a
-//     non-vacuity/sanity check, NOT a threading-bit regression pin.
+//     The shape here is an ENCLOSED single unnest over a LEFT box (an unnest that is
+//     itself a leg of a larger name-model cluster); it fires P5 and reports the
+//     ENTRY enclosure. This assertion is a non-vacuity/sanity check, NOT a
+//     threading-bit regression pin — passing entryEnclosure=true, the producer
+//     reports Enclosed=true whether it reads the threaded prevEnclosure or the
+//     always-true inInnerCluster, so it does not by itself discriminate the
+//     threading fix. (UN-enclosed P5 firings DO still exist for OTHER name-model
+//     residuals — filtered chained unnests, scalar-subquery-multirow projections,
+//     grouped bare-key-over-join — which are the REMAINING producer callers toward
+//     full P5/P4 retirement (RFC-173 item B, TODO.md); those could re-arm a
+//     discriminating enclosure-bit pin, but they are not this test's subject.)
 
 import (
 	"testing"
