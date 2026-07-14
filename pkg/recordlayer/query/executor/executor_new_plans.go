@@ -231,7 +231,7 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	// resolves each resultValue column to the correct slot.
 	evalArg := mergeChildEvalArg(childResults)
 
-	qr := QueryResult{Complete: true}
+	qr := QueryResult{}
 	// RFC-173: emit the authoritative ordinal OUTPUT row. The resultValue is a
 	// RecordConstructorValue whose Fields ARE the output columns in output order
 	// (the same rc.Fields deriveColumnsFromMultiIntersection names the ColumnDefs

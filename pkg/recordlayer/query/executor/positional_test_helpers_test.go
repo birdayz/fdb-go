@@ -24,13 +24,13 @@ func dmap(m map[string]any) QueryResult {
 	for i, n := range names {
 		slots[i] = m[n]
 	}
-	return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}, Complete: true}
+	return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}}
 }
 
 // dorder builds a QueryResult PositionalRow with an EXPLICIT column order, for
 // tests that depend on ordinal position (duplicate names, or ordinal reads).
 func dorder(names []string, slots []any) QueryResult {
-	return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}, Complete: true}
+	return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}}
 }
 
 // dscalar builds a QueryResult carrying a 1-slot scalar PositionalRow (the

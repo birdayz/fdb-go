@@ -1461,7 +1461,6 @@ func executeProjection(
 			Positional: &PositionalRow{Type: projType, Slots: slots},
 			Record:     qr.Record,
 			PrimaryKey: qr.PrimaryKey,
-			Complete:   true,
 		}
 	})
 	_ = projOutputAllBare
@@ -3020,7 +3019,7 @@ func resultFromValue(v values.Value) (QueryResult, error) {
 			}
 			slots[i] = fv
 		}
-		return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}, Complete: true}, nil
+		return QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}}, nil
 	}
 	val, err := v.Evaluate(nil)
 	if err != nil {
@@ -3065,7 +3064,7 @@ func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (
 		slots[i] = v
 	}
 	pos := &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}
-	return recordlayer.FromList([]QueryResult{{Positional: pos, Complete: true}}), nil
+	return recordlayer.FromList([]QueryResult{{Positional: pos}}), nil
 }
 
 // executeRecursiveLevelUnion implements level-order (BFS) recursive

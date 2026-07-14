@@ -12,16 +12,12 @@ import (
 // builds a leg-windowed positional row (concatLegPositionals), so a qualified
 // read "C.AK" / "CC2.CV" resolves LEG-LOCALLY through the alias window — the
 // ordinal-model successor to the retired name-model "ALIAS.COL" key
-// fabrication. The merged output stays Complete=false (its bare slots are
-// last-leg-wins leftovers, not a schema).
+// fabrication.
 func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 	t.Parallel()
 	outer := dmap(map[string]any{"AK": int64(100)})
 	inner := dmap(map[string]any{"CV": int64(900)})
 	merged := mergeRows(outer, inner, "C", "CC2")
-	if merged.Complete {
-		t.Fatal("mergeRows output must stay Complete=false even over Complete legs")
-	}
 	if v := rowVal(merged, "C.AK"); v != int64(100) {
 		t.Fatalf("C.AK = %v, want 100 (leg window)", v)
 	}
@@ -31,21 +27,19 @@ func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 }
 
 // TestSortContinuation_PreservesComplete pins the continuation round-trip of the
-// positional payload (the SOLE runtime row a resumed sort buffer must carry) and
-// of Complete (vestigial post-cap, but still carried in the payload for
-// backward-compat). It also pins the CODEX-P2 regression fix: a pre-positional
-// continuation (a legacy name-keyed JSON object, or a v2 [_, complete] array —
-// both written by an older binary) carries no positional and is therefore
-// UNRECONSTRUCTABLE in the ordinal model; decode must REJECT it loudly rather than
-// silently decode to a nil-positional row (which resumes as all-NULL sort keys and
-// wrong/misordered rows now that the name-keyed Datum fallback is deleted).
-func TestSortContinuation_PreservesComplete(t *testing.T) {
+// positional payload (the SOLE runtime row a resumed sort buffer must carry). It
+// also pins the CODEX-P2 regression fix: a pre-positional continuation (a legacy
+// name-keyed JSON object, or a v2 [_, complete] array — both written by an older
+// binary) carries no positional and is therefore UNRECONSTRUCTABLE in the ordinal
+// model; decode must REJECT it loudly rather than silently decode to a
+// nil-positional row (which resumes as all-NULL sort keys and wrong/misordered rows
+// now that the name-keyed Datum fallback is deleted). (The retired QueryResult
+// .Complete field is no longer round-tripped — slot 1 is an ignored dead placeholder.)
+func TestSortContinuation_PositionalRoundTripAndReject(t *testing.T) {
 	t.Parallel()
 
 	r0 := dmap(map[string]any{"AK": int64(100)})
-	r0.Complete = true
 	r1 := dmap(map[string]any{"AK": int64(110)})
-	r1.Complete = false
 	buf := []QueryResult{r0, r1}
 	enc, err := encodeSortContinuation(nil, buf)
 	if err != nil {
@@ -55,11 +49,11 @@ func TestSortContinuation_PreservesComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(decoded) != 2 || !decoded[0].Complete || decoded[1].Complete {
-		t.Fatalf("Complete lost in round-trip: %+v", decoded)
+	if len(decoded) != 2 {
+		t.Fatalf("row count lost in round-trip: %+v", decoded)
 	}
-	if rowVal(decoded[0], "AK") != int64(100) {
-		t.Fatalf("positional lost in round-trip: %+v", decoded[0].Positional)
+	if rowVal(decoded[0], "AK") != int64(100) || rowVal(decoded[1], "AK") != int64(110) {
+		t.Fatalf("positional lost in round-trip: %+v", decoded)
 	}
 
 	// A resumed row with NO positional payload must be rejected loudly, never

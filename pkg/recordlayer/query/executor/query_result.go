@@ -34,20 +34,6 @@ type QueryResult struct {
 	Positional *PositionalRow
 	Record     *recordlayer.FDBStoredRecord[proto.Message]
 	PrimaryKey tuple.Tuple
-	// Complete marks a computed/synthetic row whose column set is authoritative —
-	// every legal column is present (nil-valued for SQL NULL), with no proto-style
-	// optional-field omissions. Set by aggregate output (finalizeGroup/
-	// emptyScalarResult), projection output (executeProjection), and the unnest
-	// FlatMap's RC-evaluated rows; left false by raw stored records
-	// (FromStoredRecord, which legitimately omit unset optionals) and join merges.
-	//
-	// VESTIGIAL post-cap: its two former consumers — the RFC-048 W1 strict
-	// unresolved-reference check and the name-model merge's alias fabrication
-	// (qualifyAlias) — are both retired, so nothing reads Complete today. It is
-	// still round-tripped through the sort continuation (encodeSortContinuation's
-	// versioned payload). Pending removal with the Slice-4 name-model demolition;
-	// dropping it is a continuation-payload format change, so it is not done here.
-	Complete bool
 }
 
 // FromStoredRecord builds a QueryResult from a stored record. The row is the

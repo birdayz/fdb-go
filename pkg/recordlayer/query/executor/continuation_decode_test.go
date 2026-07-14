@@ -98,27 +98,27 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 			wantErr: "failed to unpack sorted record 0 primary key",
 		},
 		{
-			// A well-formed v2 array with the wrong arity is a CORRUPT
-			// continuation, not a decodable one — the fail-corrupt contract
-			// (a silently mis-split payload would resume with wrong rows).
-			name: "v2 payload with wrong arity",
+			// A 1-element array carries no positional (slot 2 absent) — pre-positional
+			// / corrupt. Only a 3-element array [_, _, positional] is resumable; any
+			// other arity is rejected by the positional==nil guard, not silently
+			// mis-split (which would resume with wrong rows).
+			name: "1-element array (no positional)",
 			data: func(t *testing.T) []byte {
 				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}]`)})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
 			},
-			wantErr: "want 2",
+			wantErr: "no positional payload",
 		},
 		{
-			// JSON null unmarshals into a bool as a NO-OP — accepting it would
-			// silently downgrade a resumed Complete row (the page-boundary
-			// fabrication mismatch the v2 format exists to prevent). The
-			// encoder only writes true/false; null is corrupt.
-			name: "v2 payload with null completeness",
+			// A 2-element v2 [_, complete] array is pre-positional (the retired
+			// Complete slot, no positional). Slot 1 is ignored now; the row has no
+			// reconstructable positional → rejected.
+			name: "v2 2-element array (no positional)",
 			data: func(t *testing.T) []byte {
 				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}, null]`)})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
 			},
-			wantErr: "completeness in continuation is not a boolean",
+			wantErr: "no positional payload",
 		},
 	}
 

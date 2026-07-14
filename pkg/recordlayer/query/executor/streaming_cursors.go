@@ -656,7 +656,6 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 	}
 	return QueryResult{
 		Positional: &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots},
-		Complete:   true,
 	}
 }
 
@@ -681,7 +680,6 @@ func (c *aggregateCursor) emptyScalarResult() QueryResult {
 	}
 	return QueryResult{
 		Positional: &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots},
-		Complete:   true,
 	}
 }
 

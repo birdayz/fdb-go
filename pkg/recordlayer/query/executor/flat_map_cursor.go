@@ -451,13 +451,8 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	if outerRow.Positional != nil && c.foldWindowsOK {
 		rowCtx = legWindowRowContext(outerRow.Positional, nestedCtx, c.foldLegSpans)
 	}
-	computedComplete := false
 	var foldPos *PositionalRow
 	if rc, isRC := c.resultValue.(*values.RecordConstructorValue); isRC {
-		// An RC-evaluated FlatMap row is schema-complete: the constructor
-		// evaluates EVERY declared column (nil for NULL), so the key set is the
-		// row's full schema — the QueryResult.Complete contract.
-		computedComplete = true
 		// RFC-173: emit the authoritative ordinal OUTPUT row. The folded SELECT
 		// list's RC.Fields ARE the output columns in output order, so a slot per
 		// field — evaluated INDIVIDUALLY against rowCtx (never through a collapsing
@@ -573,7 +568,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			return out, nil
 		}
 	}
-	return QueryResult{Complete: computedComplete, Positional: foldPos}, nil
+	return QueryResult{Positional: foldPos}, nil
 }
 
 // buildContinuation creates a FlatMapContinuation proto. The decision is purely

@@ -301,21 +301,19 @@ func encodeSortContinuation(
 		// payload inside the opaque field is ours to version. The first byte
 		// discriminates: a JSON OBJECT is the legacy datum-only payload; a JSON
 		// ARRAY is versioned by its element count — 2 = [_, complete] (v2),
-		// 3 = [_, complete, positional] (v3). Slot 1 (Complete) is retained for
-		// payload-shape backward compatibility with existing continuations;
-		// post-cap it is VESTIGIAL — its former consumer, the name-model merge's
-		// alias fabrication (qualifyAlias), is deleted and nothing reads Complete
-		// now (pending removal with the Slice-4 demolition, a payload-format change).
+		// 3 = [_, _, positional] (the current form). Slot 1 was the QueryResult
+		// .Complete flag, now RETIRED — the field is deleted, decode IGNORES slot 1,
+		// and it is written as a constant `false` dead placeholder purely to keep the
+		// 3-slot array shape wire-identical (no format-version bump).
 		//
 		// RFC-173 cap: the Positional row is the SOLE runtime output row (the
-		// name-keyed Datum is deleted), so a resumed sort buffer MUST carry it or
-		// the reader is loud on every buffered row after a page boundary. The
-		// Go-owned payload keeps its 3-slot array shape for backward compatibility:
-		// slot 0 (formerly the JSON datum) is now null, slot 1 is Complete, slot 2
+		// name-keyed Datum is deleted), so a resumed sort buffer MUST carry it or the
+		// reader rejects every buffered row after a page boundary. Slot 0 (formerly
+		// the JSON datum) is null, slot 1 is the retired-Complete placeholder, slot 2
 		// is the positional {n:[field names], s:[slots]} (decode reconstructs the
-		// PositionalRow via positionalTypeFromNames). An old binary's object /
-		// 2-element payload still decodes (no positional — pre-migration behavior).
-		payload := []any{nil, qr.Complete}
+		// PositionalRow via positionalTypeFromNames). A pre-positional binary's object
+		// / 2-element payload carries no positional and is rejected on decode.
+		payload := []any{nil, false}
 		if qr.Positional != nil && qr.Positional.Type != nil {
 			names := make([]string, len(qr.Positional.Type.Fields))
 			for fi, f := range qr.Positional.Type.Fields {
@@ -364,10 +362,9 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 			return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d in continuation: %w", i, pErr)
 		}
 		// Payload discrimination (see encodeSortContinuation): a JSON ARRAY is
-		// [_, complete] or [_, complete, positional] — slot 0 is the deleted datum
-		// (null on new writes, an object on old ones), IGNORED either way. A legacy
-		// bare JSON OBJECT payload carries no complete/positional (pre-migration).
-		var complete bool
+		// [_, _] or [_, _, positional] — slot 0 is the deleted datum and slot 1 the
+		// retired-Complete placeholder, both IGNORED. A legacy bare JSON OBJECT
+		// payload carries no positional (pre-migration).
 		var positional *PositionalRow
 		trimmed := bytes.TrimLeft(sr.Message, " \t\r\n")
 		if len(trimmed) > 0 && trimmed[0] == '[' {
@@ -375,21 +372,9 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 			if jErr := json.Unmarshal(sr.Message, &wrapper); jErr != nil {
 				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d array payload in continuation: %w", i, jErr)
 			}
-			if len(wrapper) != 2 && len(wrapper) != 3 {
-				return nil, nil, fmt.Errorf("sorted record %d versioned payload has %d element(s), want 2 or 3 (corrupt continuation)", i, len(wrapper))
-			}
-			// FAIL-CORRUPT: a JSON null unmarshals into a bool as a NO-OP
-			// (complete stays false, no error) — silently downgrading a
-			// resumed Complete row would reintroduce the page-boundary
-			// fabrication mismatch this format exists to prevent. The encoder
-			// only ever writes true/false; anything else is corrupt.
-			completeBool := false
-			if jErr := json.Unmarshal(wrapper[1], &completeBool); jErr != nil {
-				return nil, nil, fmt.Errorf("sorted record %d completeness in continuation is not a boolean (corrupt continuation): %w", i, jErr)
-			} else if string(bytes.TrimSpace(wrapper[1])) == "null" {
-				return nil, nil, fmt.Errorf("sorted record %d completeness in continuation is not a boolean (corrupt continuation): JSON null", i)
-			}
-			complete = completeBool
+			// Slot 1 (the retired-Complete placeholder) is IGNORED. Only a
+			// 3-element array carries a positional (slot 2); any other arity leaves
+			// positional nil and is rejected by the positional==nil guard below.
 			if len(wrapper) == 3 {
 				// Positional payload {n:[names], s:[slots]}. Reconstruct the
 				// PositionalRow — the sole runtime output row the reader consumes.
@@ -438,7 +423,7 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 		if positional == nil {
 			return nil, nil, fmt.Errorf("sorted record %d has no positional payload (legacy pre-RFC-173 sort continuation); it cannot be resumed under the ordinal row model — restart the query", i)
 		}
-		buf = append(buf, QueryResult{PrimaryKey: pk, Complete: complete, Positional: positional})
+		buf = append(buf, QueryResult{PrimaryKey: pk, Positional: positional})
 	}
 
 	return msg.Continuation, buf, nil

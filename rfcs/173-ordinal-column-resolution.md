@@ -5783,12 +5783,16 @@ per-shape ordinalization gate. Items below, most-actionable first.
   Java descends nested Message fields by ordinal (compose rule / fieldOrdinals). Make it ordinal
   end-to-end.
 
-### E. Retire vestigial `Complete` (Torvalds P1)
-- [ ] `QueryResult.Complete` has NO production consumer post-cap (its readers — RFC-048 W1 + the
-  name-model `qualifyAlias` fabrication — are deleted). It is still serialized into the sort
-  continuation payload (slot 1) with fail-corrupt validation. Delete the field and drop the payload
-  slot — a continuation-payload format change, so version the payload deliberately (not done in the
-  cap). Doc at query_result.go / continuation.go already flags it VESTIGIAL.
+### E. Retire vestigial `Complete` (Torvalds P1) — DONE
+- [x] Deleted the `QueryResult.Complete` field and its ~8 `Complete: true` writers (aggregate/
+  projection/unnest-RC/map outputs). The sort-continuation payload slot 1 is now written as a constant
+  `false` DEAD PLACEHOLDER and IGNORED on decode (no boolean validation) — so the wire format stays
+  byte-identical (the 3-slot array shape), avoiding a format-version bump, while the field and the
+  "fail-corrupt-on-dead-data" validation are gone (Torvalds' actual concern). A fully-clean slot
+  removal is a coordinated payload-version bump, deferred to the Slice-4 demolition. Tests updated
+  (continuation round-trip drops the Complete assertions; the pre-positional 1-/2-element cases now
+  hit the uniform positional==nil rejection). Green: executor/values/cascades/query/embedded units +
+  sqldriver.
 
 ### F. Make the residual silent-NULL tails loud — DONE (Graefe ruling, commit 454b3472a)
 - [x] Graefe RULED a nuanced split (not a blanket flip): the tails divide into two populations.
