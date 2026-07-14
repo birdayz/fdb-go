@@ -612,11 +612,21 @@ func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOpe
 //     its body — residual class 3);
 //   - NOT under an existential (the under-EXISTS seed gate adds scope-collision
 //     arms this admission does not replicate);
-//   - UNIQUE boundary labels: the parent's positional name reads (FieldIndex,
-//     first match) must agree with the name model's collision semantics (the
-//     element's bare key SHADOWS a same-named outer column — last-write-wins),
-//     which they only do collision-free. A colliding star body (`t.arr AS ID`)
-//     stays name-model.
+//   - SHADOW-DEDUPED, then UNIQUE, boundary labels: a link's AS/AT alias
+//     SHADOWS a same-named column of the spine's BOTTOM source (`t.scarr AS
+//     SUB` over a table with a scalar SUB) — the RFC-142 collision rule the
+//     name model applied everywhere (buildUnnestResultValue drops the outer's
+//     bare field; the star expansion of the direct query exposes ONE such
+//     column, the element). The boundary labels drop the shadowed bottom
+//     occurrence, so the normalization's bare projection resolves the
+//     surviving label through the SAME shadow rule — element/ordinal wins,
+//     identical to the WITH form's pinned rows. (Java resolves this collision
+//     differently — a duplicate-label CTE column reference is AMBIGUOUS_COLUMN,
+//     SemanticAnalyzer.resolveIdentifier — but Go's deployed RFC-142 shadow
+//     semantics governs the whole unnest surface; aligning the collision model
+//     with Java's is a conformance question for that surface as a whole, not a
+//     per-boundary special case.) Any dup the shadow rule does NOT explain
+//     (two links sharing an alias, bottom-internal dups) still declines.
 //
 // A CHAINED star body (`SELECT * FROM t, t.arr AS x, x.sub AS y`) is admitted
 // through the SAME gate its fresh translation runs — chainedUnnestOrdinalGate,
@@ -625,7 +635,12 @@ func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOpe
 // admission ⇔ the top link ordinalizes; no admission/translation drift is
 // possible for the top link, and the gate's whole-spine derivations
 // (ordinalLegType over every prefix) cover the deeper links' schemas.
-func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOperator) (*logical.LogicalJoin, bool) {
+//
+// Returns the boundary LABELS (shadow-deduped, unique) — the single authority
+// every consumer shares: the translateScan normalization projects exactly
+// these names, and the leg-schema arms (legColumns cteScope/LogicalCTE) type
+// the boundary by them.
+func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOperator) ([]values.Field, bool) {
 	if t.md == nil || t.unnestUnderExistential {
 		return nil, false
 	}
@@ -685,15 +700,70 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 	if cols == nil {
 		return nil, false
 	}
-	seen := make(map[string]struct{}, len(cols))
-	for _, c := range cols {
+	// Collect the spine links' AS/AT aliases (the SHADOWING names) and their
+	// column count. The seed layout appends the link columns AFTER the bottom
+	// source's run, so the alias columns are exactly the trailing aliasCount
+	// entries of cols — an earlier same-named entry in the BOTTOM region is the
+	// shadowed outer occurrence (dropped); a dup wholly inside the alias region
+	// (two links sharing a name) is not a shadow and declines below.
+	shadowing, aliasCount := starSpineAliasBindings(j)
+	bottomLen := len(cols) - aliasCount
+	lastIdx := make(map[string]int, len(cols))
+	for i, c := range cols {
+		lastIdx[strings.ToUpper(c.Name)] = i
+	}
+	labels := make([]values.Field, 0, len(cols))
+	for i, c := range cols {
+		key := strings.ToUpper(c.Name)
+		if _, shadowed := shadowing[key]; shadowed && i < bottomLen && lastIdx[key] != i {
+			continue // a bottom-source column a link's AS/AT alias shadows
+		}
+		labels = append(labels, c)
+	}
+	seen := make(map[string]struct{}, len(labels))
+	for _, c := range labels {
 		key := strings.ToUpper(c.Name)
 		if _, dup := seen[key]; dup {
 			return nil, false
 		}
 		seen[key] = struct{}{}
 	}
-	return j, true
+	return labels, true
+}
+
+// starSpineAliasBindings walks a star body's unnest-right spine (the top join
+// down through every lateral link) and returns each link's AS/AT LABEL mapped
+// to the link's VISIBLE correlation name (unnestSourceCorrelation — the
+// quantifier both bindings ride, the exact correlation the SQL resolver's
+// ResolveColumnShadowingQualified emits for a reference to the binding), plus
+// the total alias-column COUNT (kept separately: two links sharing a label
+// collapse to one map key but still contribute two seed columns — the count
+// anchors the bottom-region boundary in the shadow dedup, and the shared-label
+// shape itself declines at the unique guard).
+func starSpineAliasBindings(j *logical.LogicalJoin) (map[string]string, int) {
+	bindings := make(map[string]string, 2)
+	count := 0
+	for cur := logical.LogicalOperator(j); ; {
+		bj, isJoin := cur.(*logical.LogicalJoin)
+		if !isJoin {
+			break
+		}
+		un, isUn := bj.Right.(*logical.LogicalUnnest)
+		if !isUn {
+			break
+		}
+		corr := unnestSourceCorrelation(un).Name()
+		if un.Alias != "" {
+			bindings[strings.ToUpper(un.Alias)] = corr
+			count++
+		}
+		if un.AtAlias != "" {
+			bindings[strings.ToUpper(un.AtAlias)] = corr
+			count++
+		}
+		cur = bj.Left
+	}
+	return bindings, count
 }
 
 // clusterArity computes the post-flattening ForEach arity of the transitive

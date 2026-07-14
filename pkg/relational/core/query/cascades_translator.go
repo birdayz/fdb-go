@@ -363,8 +363,8 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 				// A star-admitted unnest body normalizes to the bare projection
 				// of its boundary labels at translateScan; the boundary schema
 				// here is those SAME labels (one predicate, all consumers).
-				if bj, star := t.derivedBodyStarOrdinalLeg(body); star {
-					cols = t.ordinalLegColumns(bj)
+				if starCols, star := t.derivedBodyStarOrdinalLeg(body); star {
+					cols = starCols
 					return
 				}
 				cols = t.derivedOutputColumns(body)
@@ -470,8 +470,8 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// FROM t, t.arr AS x) AS s`) normalizes to the bare projection of its
 		// boundary labels when the registered body translates (translateScan);
 		// its leg schema is those labels.
-		if bj, star := t.derivedBodyStarOrdinalLeg(o.Body); star {
-			return t.ordinalLegColumns(bj)
+		if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body); star {
+			return starCols
 		}
 		return t.derivedOutputColumns(o.Body)
 	default:
@@ -2459,13 +2459,42 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			// (ordinalEligible/clusterArity) and the boundary schema
 			// (legColumns), so every consumer sees the projected row.
 			toTranslate := body
-			if bj, star := t.derivedBodyStarOrdinalLeg(body); star {
-				cols := t.ordinalLegColumns(bj)
-				names := make([]string, len(cols))
-				for i, c := range cols {
+			if starCols, star := t.derivedBodyStarOrdinalLeg(body); star {
+				names := make([]string, len(starCols))
+				for i, c := range starCols {
 					names[i] = c.Name
 				}
-				toTranslate = logical.NewProject(body, names, nil)
+				proj := logical.NewProject(body, names, nil)
+				// A label bound by a link's AS/AT alias projects the QUALIFIED
+				// read the SQL resolver itself emits for that binding
+				// (ResolveColumnShadowingQualified: FieldValue over the link's
+				// visible correlation) — a LAZY bare name would first-match a
+				// same-named BOTTOM column and serve the shadowed OUTER scalar
+				// instead of the element/ordinal (the colliding-label body's
+				// silent inversion). Non-alias labels stay lazy, exactly as the
+				// hand-written bare projection resolves them.
+				op := body
+				for {
+					f, isF := op.(*logical.LogicalFilter)
+					if !isF {
+						break
+					}
+					op = f.Input
+				}
+				if bj, isJ := op.(*logical.LogicalJoin); isJ {
+					bindings, _ := starSpineAliasBindings(bj)
+					proj.ProjectedValues = make([]values.Value, len(starCols))
+					for i, c := range starCols {
+						if corr, isAlias := bindings[strings.ToUpper(c.Name)]; isAlias {
+							proj.ProjectedValues[i] = values.NewFieldValue(
+								values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corr)),
+								strings.ToUpper(c.Name),
+								c.FieldType,
+							)
+						}
+					}
+				}
+				toTranslate = proj
 			}
 			result = t.translateOp(toTranslate)
 		})
