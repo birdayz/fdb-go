@@ -90,6 +90,24 @@ func setupStore(t *testing.T) *recordlayer.FDBRecordStore {
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
+	// The subspace is keyed by t.Name() alone, which REPEATS across
+	// `-count=N` reruns inside one binary (same container): a test that
+	// inserts fixed primary keys would collide with its previous
+	// iteration's rows ("record already exists"). Wipe the test's records
+	// at the end of each iteration so every run starts from an empty store.
+	t.Cleanup(func() {
+		_, cerr := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			s, oerr := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if oerr != nil {
+				return nil, oerr
+			}
+			return nil, s.DeleteAllRecords()
+		})
+		if cerr != nil {
+			t.Errorf("cleanup: wiping test subspace: %v", cerr)
+		}
+	})
 	return store
 }
 
