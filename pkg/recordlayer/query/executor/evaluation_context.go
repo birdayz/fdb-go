@@ -105,35 +105,6 @@ func hasBindingContext(ec *EvaluationContext) bool {
 	return ec != nil && (len(ec.params) > 0 || len(ec.scalarSubqueries) > 0 || len(ec.bindings) > 0)
 }
 
-// RowContextStrict is RowContext with the RFC-048 W1 unresolved-reference
-// check armed. Use it only for rows whose key set is complete (QueryResult
-// .Complete) — see RowEvalContext.Strict. Callers gate on StrictReferenceCheck
-// so production keeps the cheaper bare-map fast path.
-func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowEvalContext {
-	rc := ec.RowContext(datum)
-	rc.Strict = true
-	return rc
-}
-
-// RowContextSparse is RowContext carrying the source row's Sparse flag (task #38). A base
-// stored record (QueryResult.Sparse) legitimately omits unset optional proto fields, so a
-// name-keyed miss over it is a silent NULL; a non-sparse (join-merge) row keeps the
-// default loud NameMissLoud guard. Only base records pass sparse=true.
-func (ec *EvaluationContext) RowContextSparse(datum map[string]any, sparse bool) *values.RowEvalContext {
-	rc := ec.RowContext(datum)
-	rc.Sparse = sparse
-	return rc
-}
-
-// StrictReferenceCheck, when true, makes filter/projection cursors evaluate
-// QueryResult.Complete rows through a Strict RowEvalContext, so a reference to
-// a name absent from the (complete) row is reported via
-// values.ReportUnresolvedReference instead of silently yielding NULL. It is
-// the RFC-048 W1 invariant's master switch: default false (production is
-// untouched and pays nothing), turned on by tests to prove no code path emits
-// an unresolved reference. Set it once at test start, before any query runs.
-var StrictReferenceCheck bool
-
 // WithScalarSubqueries returns a copy with pre-evaluated scalar
 // subquery results bound by correlation alias.
 func (ec *EvaluationContext) WithScalarSubqueries(results map[values.CorrelationIdentifier]any) *EvaluationContext {

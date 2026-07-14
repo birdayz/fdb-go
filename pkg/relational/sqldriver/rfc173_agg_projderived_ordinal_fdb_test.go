@@ -16,13 +16,12 @@ package sqldriver_test
 // OVER A JOIN (aggregateInputIsFlatFrontier bails at the join, downstreamLegWindows
 // can't peel the reshaping projection), so `l` read by name.
 //
-// The proof is the values.NameReadForbidden measurement gate: with it ARMED, EVERY
-// name-keyed Datum read (present or absent) is a hard error. A query that still read
-// its aggregate group key / operand by name would fail; the ordinalized one succeeds
-// and returns the correct rows. This is the dimension the dual-window differential
-// cannot see (both models agree when BOTH silently read by name). This test does NOT
-// call t.Parallel(): the gate is a process-global runtime flag, so Go runs it in the
-// serial phase and it resets the flag in defer — no other test observes it armed.
+// The name-keyed executor.RowValue(row) arm this shape used to fall through to has
+// been DELETED, so ordinalization is now structural: the derived projection's flat
+// positional row [Y, L] is the only source, and the group key `l` / operand `y`
+// resolve against it by ordinal. This test proves the ordinal path end-to-end by
+// asserting the exact rows. The schema is unique to this test, so no cached plan is
+// shared.
 
 import (
 	"context"
@@ -31,8 +30,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestFDB_RFC173_AggregateProjectingDerivedOrdinal(t *testing.T) {
@@ -61,15 +58,10 @@ func TestFDB_RFC173_AggregateProjectingDerivedOrdinal(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO t1 (id, y) VALUES (1, 10), (2, 20)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t2 (id, b) VALUES (1, 100), (2, 200)")
 
-	// Arm the measurement gate ONLY for the duration of this serial test: any
-	// name-keyed read on the aggregate group-key / operand path now hard-errors.
-	values.NameReadForbidden = true
-	defer func() { values.NameReadForbidden = false }()
-
 	pairs := func(t *testing.T, q string) string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
-			t.Fatalf("query %q under NameReadForbidden: %v", q, err)
+			t.Fatalf("query %q: %v", q, err)
 		}
 		defer rows.Close()
 		var out []string
@@ -89,7 +81,7 @@ func TestFDB_RFC173_AggregateProjectingDerivedOrdinal(t *testing.T) {
 	scalars := func(t *testing.T, q string) string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
-			t.Fatalf("query %q under NameReadForbidden: %v", q, err)
+			t.Fatalf("query %q: %v", q, err)
 		}
 		defer rows.Close()
 		var out []string
@@ -135,7 +127,7 @@ func TestFDB_RFC173_AggregateProjectingDerivedOrdinal(t *testing.T) {
 	t.Run("multi_aggregate_over_projected", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx, `SELECT l, min(y), count(*), sum(y) FROM (SELECT y, b AS L FROM t1, t2) AS q GROUP BY l`)
 		if err != nil {
-			t.Fatalf("multi-agg under NameReadForbidden: %v", err)
+			t.Fatalf("multi-agg: %v", err)
 		}
 		defer rows.Close()
 		var out []string

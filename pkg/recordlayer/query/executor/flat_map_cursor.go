@@ -41,13 +41,10 @@ type flatMapCursor struct {
 	closed         bool
 
 	// birth is the RFC-173 Slice 2 ordinal-BIRTH state, probed ONCE at
-	// construction from resultValue (nil = name-model flatMap, today's path
-	// bit-identically). When enabled, computeResult births the positional
-	// row from the RC with per-leg bindings and derives the coexistence
-	// Datum FROM it (datumFromPositional) — the RC's baked references can no
-	// longer evaluate over name contexts. Gated per emission on the §5
-	// DisablePositionalEmission oracle (which falls back to today's Evaluate
-	// path, bridged by values.OracleBakedNameFallback).
+	// construction from resultValue (nil = the lazy/name-model flatMap path).
+	// When enabled, computeResult births the positional row from the RC with
+	// per-leg bindings; the RC's baked references resolve by ordinal against
+	// that row and can no longer evaluate over name contexts.
 	birth *ordinalJoinBirth
 
 	// outerBakedType is the RFC-173 item-2 commit-2 DISABLED-BIRTH probe
@@ -120,13 +117,9 @@ func newFlatMapCursor(
 	}
 	// A TRANSLATED top RV (fused merge references) yields no spans from the RV
 	// alone — recover them through the leg subplans' result values (the merge
-	// RC is where the merged-away leg aliases survive), so the coexistence
-	// Datum keeps the per-leg qualified ALIAS.COL keys the name model always
-	// carried (datumFromSpans) and downstream dotted reads stay resolvable.
-	// The SPLICE applies to pristine-seed spans too (review catch): a seed
-	// whose leg is a gated-join BOX has a span named after the box alias
-	// covering the whole concat — datumFromSpans would qualify every column
-	// under that one alias instead of the leaf aliases dotted reads name.
+	// RC is where the merged-away leg aliases survive), so the birth's leg
+	// windows (Spans) get populated for the leg adapter even when the top RV
+	// was folded past a plain probe.
 	if birth.enabled() {
 		legRVs := make(map[values.CorrelationIdentifier]values.Value)
 		addJoinLegRV(legRVs, outerAlias, outerPlan)
@@ -135,13 +128,7 @@ func newFlatMapCursor(
 			if spans, _, ok := ordinalJoinSpansOf(resultValue, legRVs); ok {
 				birth.Spans = spans
 				birth.WindowsOK = true
-				birth.DatumSpans = spans
 			}
-		}
-		// Only DatumSpans splice: the leg ADAPTER (legType via Spans) keeps
-		// the box-level windows its outer/inner bindings actually flow.
-		if birth.WindowsOK && len(legRVs) > 0 {
-			birth.DatumSpans = spliceLegSpans(birth.DatumSpans, legRVs)
 		}
 	}
 	// The FlatMap half of the PR-447 review P1 (@claude final-pass catch): the
@@ -410,15 +397,12 @@ func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
 // the LEFT-OUTER null-inner emission. For an ordinal-birth cursor (RFC-173
-// S2, oracle off) it births the positional row from the RC with per-leg
-// bindings — the nil inner pointer becomes the NULL leg (QOV(inner)→nil,
-// contract ruling #3) — and derives the coexistence Datum FROM the positional
-// row (datumFromPositional, last-wins on duplicate names): evaluating an
-// ordinal RC over the name-model row context would hit baked references over
-// name reads, a loud BakedNameContextError. Name-model cursors (and the §5
-// oracle, where values.OracleBakedNameFallback bridges the baked reads) keep
-// today's Evaluate path bit-identically, reconstructing the empty-Datum inner
-// row for the null-inner emission.
+// S2) it births the positional row from the RC with per-leg bindings — the nil
+// inner pointer becomes the NULL leg (QOV(inner)→nil, contract ruling #3). The
+// row IS its PositionalRow; the ordinal RC resolves its baked references by
+// ordinal against it, never over a name-keyed context. The lazy/name-model
+// cursor keeps today's Evaluate path, reconstructing the empty inner row for
+// the null-inner emission.
 func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResult) (QueryResult, error) {
 	if c.birth.enabled() {
 		pos, err := c.birth.evaluate(c.outerAlias.Name(), c.innerAlias.Name(), &outerRow, inner, correlationBase(c.evalCtx))
@@ -426,8 +410,8 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			return QueryResult{}, err
 		}
 		// RFC-173 cap: the ordinal-birth FlatMap row IS its PositionalRow; the
-		// coexistence name-keyed Datum (datumFromPositional/datumFromSpans + the
-		// bare-QOV leg map) is deleted with the name model.
+		// coexistence name-keyed Datum it used to carry alongside is deleted with
+		// the name model.
 		return QueryResult{Positional: pos}, nil
 	}
 	innerRow := QueryResult{}

@@ -41,7 +41,7 @@ func TestExistsValue_EvaluateChildNonNull(t *testing.T) {
 	alias := NamedCorrelationIdentifier("subq")
 	v := NewExistsValue(alias)
 
-	bound := staticBinder{alias: {"col": 1}}
+	bound := staticBinder{alias: fom(map[string]any{"col": 1})}
 	got, err := v.Evaluate(bound)
 	if err != nil {
 		t.Fatalf("Evaluate error: %v", err)

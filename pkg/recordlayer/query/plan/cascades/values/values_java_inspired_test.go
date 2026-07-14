@@ -67,7 +67,7 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got, errEv0 := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			got, errEv0 := av.Evaluate(fom(map[string]any{"a": tc.l, "b": tc.r}))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
@@ -102,7 +102,7 @@ func TestArithmeticValue_OverflowPanics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			v, err := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			v, err := av.Evaluate(fom(map[string]any{"a": tc.l, "b": tc.r}))
 			if v != nil || err == nil {
 				t.Fatalf("op %v %d %d: got (%v, %v), want (nil, ArithmeticOverflowError)", tc.op, tc.l, tc.r, v, err)
 			}
@@ -139,7 +139,7 @@ func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got, errEv0 := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			got, errEv0 := av.Evaluate(fom(map[string]any{"a": tc.l, "b": tc.r}))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
@@ -179,7 +179,7 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, errEv0 := tree.Evaluate(tc.row)
+			got, errEv0 := tree.Evaluate(fom(tc.row))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
@@ -200,7 +200,7 @@ func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 		t.Run(op.Symbol(), func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: op, Left: a, Right: b}
-			v, err := av.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
+			v, err := av.Evaluate(fom(map[string]any{"a": int64(5), "b": int64(0)}))
 			if v != nil || err == nil {
 				t.Fatalf("%v by zero: got (%v, %v), want (nil, ArithmeticDivisionByZeroError)", op, v, err)
 			}
@@ -234,7 +234,7 @@ func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-			v, err := av.Evaluate(tc.row)
+			v, err := av.Evaluate(fom(tc.row))
 			if v != nil || err == nil {
 				t.Fatalf("type mismatch %v: got (%v, %v), want (nil, ScalarTypeMismatchError)", tc.row, v, err)
 			}

@@ -54,11 +54,11 @@ func TestFieldValue_ResolvedOrdinal_RFC173(t *testing.T) {
 		t.Fatal("out-of-range resolved ordinal must be a loud OrdinalResolutionError, got nil")
 	}
 
-	// (3) Name-keyed row: the ordinal is inert; the field name reads.
-	named := map[string]any{"X": int64(7)}
-	vn, err := read1.Evaluate(named)
-	if err != nil || vn != int64(7) {
-		t.Fatalf("name-model read: got (%v, %v), want (7, nil)", vn, err)
+	// (3) Non-ordinal context: a resolved-ordinal read has no name model to fall
+	// back to (retired at the cap). An UNPINNED baked node is a quiet NULL — the
+	// sanctioned off-frontier path, never a name read.
+	if vn, err := read1.Evaluate(map[string]any{"X": int64(7)}); err != nil || vn != nil {
+		t.Fatalf("resolved-ordinal over a non-ordinal context = (%v, %v), want (nil, nil)", vn, err)
 	}
 
 	// (4) Semantic identity: distinct ordinals are distinct FieldPaths.

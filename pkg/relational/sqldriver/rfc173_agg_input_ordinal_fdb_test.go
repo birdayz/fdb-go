@@ -7,17 +7,13 @@ package sqldriver_test
 // (NewFieldValueOfOrdinal), so the aggregate cursor reads the inner PositionalRow by
 // Get(ordinal).
 //
-// The proof is the values.NameReadForbidden measurement gate: with it ARMED, EVERY
-// name-keyed Datum read (present or absent) is a hard error. A query that still read
-// its aggregate input by name would fail; a fully ordinalized one succeeds. This test
-// arms the gate around the representative single-table aggregate shapes and asserts
-// they still return the correct rows — the dimension the dual-window differential
-// cannot see (both models agree when BOTH silently read by name).
-//
-// The gate is a process-global runtime (not plan-time) flag; this test does NOT call
-// t.Parallel(), so Go runs it in the serial phase (before any parallel test resumes),
-// and it resets the flag in defer — no other test ever observes it armed. The schema
-// is unique to this test, so no cached plan is shared.
+// The name-keyed Datum row reader that a non-ordinalized aggregate input used to
+// fall back to has been DELETED, so resolution is now structural: the group key /
+// operand resolves against the inner PositionalRow (by Get(ordinal), or by
+// name-in-row for a layout-divergent covering row — never a name-keyed Datum map).
+// This test exercises the representative single-table aggregate shapes and asserts
+// they return the correct rows. The schema is unique to this test, so no cached
+// plan is shared.
 
 import (
 	"context"
@@ -26,8 +22,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestFDB_RFC173_AggregateInputOrdinal(t *testing.T) {
@@ -59,15 +53,10 @@ func TestFDB_RFC173_AggregateInputOrdinal(t *testing.T) {
 		"INSERT INTO t (id, g, v, price, active) VALUES "+
 			"(1, 1, 10, 2, true), (2, 1, 20, 3, false), (3, 2, 30, 4, true)")
 
-	// Arm the measurement gate ONLY for the duration of this serial test: any
-	// name-keyed read on the aggregate input path now hard-errors.
-	values.NameReadForbidden = true
-	defer func() { values.NameReadForbidden = false }()
-
 	pairs := func(t *testing.T, q string) string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
-			t.Fatalf("query %q under NameReadForbidden: %v", q, err)
+			t.Fatalf("query %q: %v", q, err)
 		}
 		defer rows.Close()
 		var out []string
@@ -87,7 +76,7 @@ func TestFDB_RFC173_AggregateInputOrdinal(t *testing.T) {
 	scalar := func(t *testing.T, q string) int64 {
 		var v sql.NullInt64
 		if err := db.QueryRowContext(ctx, q).Scan(&v); err != nil {
-			t.Fatalf("query %q under NameReadForbidden: %v", q, err)
+			t.Fatalf("query %q: %v", q, err)
 		}
 		return v.Int64
 	}
@@ -129,7 +118,7 @@ func TestFDB_RFC173_AggregateInputOrdinal(t *testing.T) {
 	t.Run("group_key_boolean", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx, "SELECT active, COUNT(*) FROM t GROUP BY active")
 		if err != nil {
-			t.Fatalf("bool group under NameReadForbidden: %v", err)
+			t.Fatalf("bool group: %v", err)
 		}
 		defer rows.Close()
 		var out []string

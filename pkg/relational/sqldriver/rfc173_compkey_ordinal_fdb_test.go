@@ -9,16 +9,13 @@ package sqldriver_test
 // child's authoritative ordinal PositionalRow (compKeyEvalArg → FieldValue.Evaluate
 // → evaluateOrdinal), so the merge key is no longer a name-keyed read.
 //
-// The proof is the values.NameReadForbidden measurement gate: ARMED, every name-keyed
-// Datum read (present or absent) is a hard error. Before this slice the group-key
-// extraction on the MultiIntersection merge tripped the gate (SURVIVOR on field "G");
-// with the extractor routed onto the ordinal row it succeeds and returns correct rows.
-// This is the dimension the dual-window differential cannot see (both models agree when
-// BOTH silently read by name).
-//
-// The gate is a process-global runtime flag; this test does NOT call t.Parallel(), so
-// Go runs it in the serial phase and resets the flag in defer — no other test observes
-// it armed. The schema is unique to this test, so no cached plan is shared.
+// The name-keyed Datum row reader the comparison-key extractor used to evaluate
+// against has been DELETED, so the extractor now evaluates against the child's
+// authoritative ordinal PositionalRow (compKeyEvalArg → FieldValue.Evaluate →
+// evaluateOrdinal) as the only path — the group-key extraction on the
+// MultiIntersection merge was a SURVIVOR before this slice. This test asserts the
+// extractor produces correct rows. The schema is unique to this test, so no cached
+// plan is shared.
 //
 // Reachability note (the other three routed sites): the two mergeSortCursor sites
 // (isBetter/extractKey) and executor.go's intersectionCompKeyFunc are NOT reachable by
@@ -34,8 +31,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestFDB_RFC173_CompKeyOrdinal(t *testing.T) {
@@ -62,15 +57,10 @@ func TestFDB_RFC173_CompKeyOrdinal(t *testing.T) {
 		t.Fatalf("two-aggregate grouped query must plan as MultiIntersection (exercises the comp-key extractor), got: %s", plan)
 	}
 
-	// Arm the measurement gate ONLY for the duration of this serial test: any name-keyed
-	// read on the merge comparison-key path now hard-errors.
-	values.NameReadForbidden = true
-	defer func() { values.NameReadForbidden = false }()
-
 	rowsGMM := func(t *testing.T, q string, n int) string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
-			t.Fatalf("query %q under NameReadForbidden: %v", q, err)
+			t.Fatalf("query %q: %v", q, err)
 		}
 		defer rows.Close()
 		var out []string

@@ -702,12 +702,10 @@ func TestRFC173S2_LegWindowRowContext(t *testing.T) {
 
 // TestRFC173S2_SpanAware_BareDupName_DivergencePin (review W3b-1 ACK note):
 // a flat BARE name over a dup-named merged row resolves FIRST-MATCH through
-// spanAwareRow (merged-type FieldIndex) but LAST-WINS through the coexistence
-// Datum (map writes) — a real model divergence that is UNREACHABLE in
-// production only because the resolver rejects ambiguous bare references
-// (42702) before planning. This pin freezes both behaviors so the divergence
-// stays unconstructible: if either side changes, or a resolver change ever
-// lets an ambiguous bare reference through, this is the axis to re-examine.
+// spanAwareRow (merged-type FieldIndex). This is UNREACHABLE in production
+// only because the resolver rejects ambiguous bare references (42702) before
+// planning. The pin freezes the resolution so a resolver change that ever
+// lets an ambiguous bare reference through has an axis to re-examine.
 func TestRFC173S2_SpanAware_BareDupName_DivergencePin(t *testing.T) {
 	t.Parallel()
 	corrA := values.NamedCorrelationIdentifier("a")
@@ -739,9 +737,6 @@ func TestRFC173S2_SpanAware_BareDupName_DivergencePin(t *testing.T) {
 	sa := &spanAwareRow{parent: row, spans: spans}
 	if v, found := sa.GetByName("ID"); !found || v != int64(1) {
 		t.Fatalf("spanAwareRow bare ID = (%v, %v), want FIRST-match (1)", v, found)
-	}
-	if m := datumFromSpans(row, spans); m["ID"] != int64(2) {
-		t.Fatalf("datumFromSpans bare ID = %v, want LAST-wins (2)", m["ID"])
 	}
 }
 

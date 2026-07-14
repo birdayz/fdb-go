@@ -394,10 +394,13 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal_RFC173S2(t *testing.T) {
 }
 
 // TestFieldValueBaked_LoudOnNameContext_RFC173S2 pins the guard the
-// review demanded: a BAKED node evaluated against a NAME-keyed row context is
-// a loud *BakedNameContextError at every name-read arm — never a silent
-// display-name read (which would return the FIRST of duplicate same-named
-// columns). Lazy nodes on the same contexts keep the name model unchanged.
+// review demanded: a FrontierPinned BAKED node evaluated against a non-positional
+// (name-keyed / unrecognized) context is a loud *BakedNameContextError at every
+// tail — never a silent display-name read (which would return the FIRST of
+// duplicate same-named columns) and never a silent NULL that would hide a
+// frontier bug. Lazy nodes carry no frontier contract: they resolve
+// POSITIONALLY over an ordinal row and are a quiet NULL over a non-positional
+// context (the retired name-keyed read is gone at the cap).
 func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	t.Parallel()
 	rt := NewRecordType("", false, []Field{
@@ -465,10 +468,12 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 		t.Fatalf("baked correlated over NIL context = (%v, %v), want (nil, nil) — the ruling #3 NULL", v, err)
 	}
 
-	// Lazy node over the same contexts: unchanged name model.
+	// Lazy node over an ORDINAL row: resolves its column positionally — post-cap
+	// the retired name-keyed Datum read is gone, so the ordinal row is the sole
+	// context (a lazy reference falls to the row's own type via GetByName).
 	lazy := NewFieldValue(qov, "ID", NotNullLong)
-	if v, err := lazy.Evaluate(&RowEvalContext{Datum: nameRow}); err != nil || v != int64(7) {
-		t.Fatalf("lazy over name context = (%v, %v), want (7, nil) — name model unchanged", v, err)
+	if v, err := lazy.Evaluate(&fakeOrdinalRow{names: []string{"ID"}, slots: []any{int64(7)}}); err != nil || v != int64(7) {
+		t.Fatalf("lazy over ordinal row = (%v, %v), want (7, nil)", v, err)
 	}
 }
 
@@ -521,31 +526,6 @@ func (b *mapBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) 
 		return b.m, true
 	}
 	return nil, false
-}
-
-// TestFieldValueBaked_OracleNameBridge_RFC173S2 pins the §5 differential's
-// sanctioned exception: with OracleBakedNameFallback set (test-only, travels
-// with executor.DisablePositionalEmission), a baked node reads its display
-// name against name-keyed contexts — recreating the pre-RFC-173 name model the
-// oracle needs. NOT t.Parallel(): flips a process-global; the flag is restored
-// before returning (same discipline as the dualwindow phase barrier).
-func TestFieldValueBaked_OracleNameBridge_RFC173S2(t *testing.T) { //nolint:paralleltest
-	rt := NewRecordType("", false, []Field{
-		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
-	})
-	corr := NamedCorrelationIdentifier("q")
-	qov := NewQuantifiedObjectValueOfType(corr, rt)
-	baked, err := NewFieldValueOfOrdinal(qov, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-
-	OracleBakedNameFallback = true
-	defer func() { OracleBakedNameFallback = false }()
-
-	if v, err := baked.Evaluate(&RowEvalContext{Datum: map[string]any{"Q.ID": int64(9)}}); err != nil || v != int64(9) {
-		t.Fatalf("oracle-bridged baked eval = (%v, %v), want (9, nil) — the name-model read", v, err)
-	}
 }
 
 // TestFieldValueBaked_PullUpThroughRC_Bakes_RFC173S2 pins the THIRD RC
@@ -614,141 +594,6 @@ func TestFieldValueBaked_PullUpThroughRC_Bakes_RFC173S2(t *testing.T) {
 	}
 	if fv.Resolved != nil {
 		t.Fatalf("lazy input over clean RC must stay LAZY (prod behavior unchanged), got baked %+v", fv.Resolved)
-	}
-}
-
-// TestFieldValueBaked_OracleUnboundMergeRead_RFC173S3 pins the fulcrum's
-// oracle read for a BAKED/FUSED reference whose quantifier is UNBOUND in the
-// row context — the S3 positional-merge shape: a filter above the merge join
-// evaluates fused `$m._i.col` references against the merge row itself, whose
-// oracle Datum carries the `_i` slots BARE (no qualified form ever exists for
-// a merge quantifier). The baked path must fall from the qualified-key miss to
-// the bare root key (the ordinal side's "frontier quantifier itself" read);
-// a LAZY reference keeps the qualified-only read — a bare fallback there would
-// resurrect the cross-leg last-wins misread. NOT t.Parallel(): flips the
-// process-global oracle flag.
-func TestFieldValueBaked_OracleUnboundMergeRead_RFC173S3(t *testing.T) { //nolint:paralleltest
-	legB := NewRecordType("", false, []Field{
-		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
-	})
-	mergedType := NewRecordType("", false, []Field{
-		{Name: OrdinalFieldName(0), FieldType: legB, Ordinal: 0},
-	})
-	mergeQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("m"), mergedType)
-	step0, err := NewFieldValueOfOrdinal(mergeQOV, 0)
-	if err != nil {
-		t.Fatalf("bake _0: %v", err)
-	}
-	inner, err := NewFieldValueOfOrdinal(step0, 0)
-	if err != nil {
-		t.Fatalf("bake ID over _0: %v", err)
-	}
-	fused := SimplifyValue(inner) // the compose rule's fused two-step node
-
-	OracleBakedNameFallback = true
-	defer func() { OracleBakedNameFallback = false }()
-
-	// The merge row's oracle Datum: bare `_0` key holding leg B's Datum map.
-	rowCtx := &RowEvalContext{Datum: map[string]any{"_0": map[string]any{"ID": int64(7)}}}
-	if v, err := fused.Evaluate(rowCtx); err != nil || v != int64(7) {
-		t.Fatalf("oracle fused read over unbound merge = (%v, %v), want (7, nil) — bare root-key fall-through", v, err)
-	}
-
-	// A LAZY reference to an unbound quantifier stays qualified-only: the bare
-	// key must NOT resolve (NULL), preserving the name model's protection
-	// against cross-leg bare-name conflation.
-	lazy := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("x")), "ID", NotNullLong)
-	lazyCtx := &RowEvalContext{Datum: map[string]any{"ID": int64(9)}}
-	if v, err := lazy.Evaluate(lazyCtx); err != nil || v != nil {
-		t.Fatalf("lazy unbound read = (%v, %v), want (nil, nil) — qualified-only", v, err)
-	}
-
-	// An UNPINNED baked reference (the recursive-CTE wrap) keeps its
-	// historical NULL too — the bare fallback is PINNED-only, so tightening
-	// or widening the pin condition surfaces here, not as a silent behavior
-	// change on the live side (where unpinned baked nodes pass the guard).
-	unpinned := &FieldValue{
-		Field:    "ID",
-		Typ:      NotNullLong,
-		Child:    NewQuantifiedObjectValue(NamedCorrelationIdentifier("x")),
-		Resolved: NewFieldPathOfSingle("ID", 0, false),
-	}
-	if v, err := unpinned.Evaluate(lazyCtx); err != nil || v != nil {
-		t.Fatalf("unpinned baked unbound read = (%v, %v), want (nil, nil) — bare fallback is pinned-only", v, err)
-	}
-}
-
-// TestRFC173W5_OracleRawMapPinnedBareRead pins the §5-oracle raw-map arm for
-// a PINNED fused reference through a MERGE quantifier (the W5 commit-4 NLJ
-// catch): the NLJ evaluates its predicates over the RAW merged map, whose
-// merge-slot key exists only BARE (`_0` — the qualified form carries the
-// merge alias's ORIGINAL case, which the upper-cased qualKey never matches).
-// Three directions:
-//   - pinned + oracle: the bare root key resolves (pre-fix: nil — a gathered
-//     spanning WHERE dropped every row oracle-side);
-//   - LAZY + oracle: the bare fallback must NOT fire (qualified-only read —
-//     a bare read would resurrect the cross-leg last-wins misread);
-//   - pinned + LIVE: stays the loud BakedNameContextError (the guard, not
-//     this arm, owns the live side).
-func TestRFC173W5_OracleRawMapPinnedBareRead(t *testing.T) {
-	legS := NewRecordType("", false, []Field{
-		{Name: "SID", FieldType: NotNullLong, Ordinal: 0},
-	})
-	mergedType := NewRecordType("", false, []Field{
-		{Name: OrdinalFieldName(0), FieldType: NotNullLong, Ordinal: 0},
-		{Name: OrdinalFieldName(1), FieldType: legS, Ordinal: 1},
-	})
-	mergeQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier(`$m"1`), mergedType)
-	pinned, err := NewFieldValueOfOrdinal(mergeQOV, 0)
-	if err != nil {
-		t.Fatalf("bake merge slot: %v", err)
-	}
-	raw := map[string]any{
-		`$m"1._0`: int64(7), // mergeRows' original-case qualified key
-		"_0":      int64(7), // the bare merge-slot key
-	}
-
-	OracleBakedNameFallback = true
-	defer func() { OracleBakedNameFallback = false }()
-	got, err := pinned.Evaluate(raw)
-	if err != nil {
-		t.Fatalf("pinned oracle read: %v", err)
-	}
-	if got != int64(7) {
-		t.Fatalf("pinned fused ref over the raw merged map = %#v, want 7 via the bare merge-slot key (the oracle spanning-WHERE fix)", got)
-	}
-
-	lazy := NewFieldValue(mergeQOV, "_0", UnknownType)
-	lv, err := lazy.Evaluate(raw)
-	if err != nil {
-		t.Fatalf("lazy oracle read: %v", err)
-	}
-	if lv != nil {
-		t.Fatalf("a LAZY ref must keep the qualified-only read over a raw map (got %#v) — the bare fallback is pinned-only", lv)
-	}
-
-	// A pinned ref over a DIRECT leg (rootKey = a USER column) must NOT take
-	// the bare arm: mergeRows' bare key is the last-wins spill, and reading
-	// it turns `a.k = b.k` into `k = k` — the cross-leg conflation the
-	// dualwindow NULL-key corpus entry caught when this arm was first cut
-	// too wide (full cross product oracle-side). Merge-slot `_i` roots only.
-	legA := NewRecordType("", false, []Field{{Name: "K", FieldType: NotNullLong, Ordinal: 0}})
-	aQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("a"), legA)
-	directPinned, derr := NewFieldValueOfOrdinal(aQOV, 0)
-	if derr != nil {
-		t.Fatalf("bake direct leg ref: %v", derr)
-	}
-	dv, err := directPinned.Evaluate(map[string]any{"K": int64(9)}) // bare last-wins spill only
-	if err != nil {
-		t.Fatalf("direct pinned oracle read: %v", err)
-	}
-	if dv != nil {
-		t.Fatalf("a pinned DIRECT-leg ref must keep the qualified-only read (got %#v) — the bare arm is merge-slot-only", dv)
-	}
-
-	OracleBakedNameFallback = false
-	if _, err := pinned.Evaluate(raw); err == nil {
-		t.Fatal("pinned + LIVE over a name-keyed map must stay the loud BakedNameContextError")
 	}
 }
 

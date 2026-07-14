@@ -240,10 +240,9 @@ type ResolvedAccessor struct {
 	// Field is the PER-STEP display name (Java ResolvedAccessor.getField();
 	// "" = pure ordinal access, Java's null name). NOT part of the path's
 	// identity — the S3-W3 flip landed Java's ordinal-only element equality
-	// (FieldValue.java:675-689); the name survives for the coexistence
-	// window's name-model reads (descendResolvedPath map descent,
-	// nameReadRootKey, the §5 oracle) and Explain rendering, and dies with
-	// them in S4.
+	// (FieldValue.java:675-689); the name survives only for nested-record
+	// descent by per-step name (descendResolvedPath, into a proto.Message or a
+	// nested name-keyed record) and Explain rendering.
 	Field   string
 	Ordinal int
 }
@@ -266,8 +265,8 @@ type FieldPath struct {
 
 	// FrontierPinned carries the S2 gated-join FRONTIER CONTRACT: the node was
 	// baked at a gated-join seed whose executor births positional rows, so a
-	// name-keyed read is a planner/executor bug (loud *BakedNameContextError,
-	// bakedNameReadGuard). Unpinned baked nodes (the recursive-CTE wrap) have
+	// name-keyed read is a planner/executor bug (historically the loud
+	// *BakedNameContextError). Unpinned baked nodes (the recursive-CTE wrap) have
 	// no such guarantee and keep the quiet name-model read off the positional
 	// frontier. The contract is a property of the VALUE, invariant under
 	// transformation — pullup/pushdown passthrough copies strip Child but
@@ -361,20 +360,6 @@ func (p *FieldPath) Equals(o *FieldPath) bool {
 	return true
 }
 
-// OracleBakedNameFallback is the §5 dual-window differential's TEST-ONLY
-// bridge: when true, a BAKED FieldValue evaluated against a NAME-keyed row
-// context reads its display name instead of erroring — recreating the
-// pre-RFC-173 name model end-to-end (including its duplicate-name conflation,
-// which is exactly why dup-name corpus shapes are carved out of the
-// differential by RFC citation). It travels WITH executor.
-// DisablePositionalEmission — the dualwindow harness sets both at the phase
-// barrier. NEVER set in production: with the flag false (always, outside the
-// oracle), a baked node hitting a name-keyed context is a loud
-// *BakedNameContextError, because the gated ordinal frontier guarantees
-// positional rows — a name-keyed context there is a planner/executor bug.
-// Retires with the name map in Slice 4.
-var OracleBakedNameFallback bool
-
 // BakedNameContextError reports a BAKED FieldValue (ordinal authoritative)
 // evaluated against a NAME-keyed or unrecognized row context outside the §5
 // oracle. Never a silent name read or silent NULL: the display name is
@@ -389,79 +374,6 @@ type BakedNameContextError struct {
 
 func (e *BakedNameContextError) Error() string {
 	return fmt.Sprintf("RFC-173: baked FieldValue %s#%d evaluated against a non-positional row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
-}
-
-// UnresolvedNameReadError reports a NAME-keyed field read whose key is ABSENT from a
-// NON-SPARSE row — the RFC-173 coexistence silent-NULL, made loud. Java binds every column
-// reference to an ordinal at plan time and throws UNDEFINED_COLUMN rather than reading a
-// name at runtime, so it has no silent-NULL class; Go's name-keyed reader silently returned
-// NULL on a missing key, and that seam produced the same silent-wrong at every wrapper
-// (projection, sort, union, aggregate operand…). This is the single-site correct-or-loud
-// guard that subsumes those per-wrapper floors: an absent name over a row whose key set is
-// authoritative (a computed/aggregate/projection/join-merge row) is a resolution bug, not a
-// SQL NULL. It is suppressed only for a genuinely SPARSE row (RowEvalContext.Sparse — a base
-// stored record that legitimately omits unset optional proto fields). A real SQL NULL is
-// key-PRESENT-value-nil and never trips this (the read arm checks presence separately).
-type UnresolvedNameReadError struct {
-	Field     string
-	Available []string
-}
-
-func (e *UnresolvedNameReadError) Error() string {
-	return fmt.Sprintf("RFC-173: name-keyed read of absent field %q over a non-sparse row (columns %v) — an unresolved reference, not a SQL NULL (the ordinal frontier must supply this column)", e.Field, e.Available)
-}
-
-// NameMissLoud arms the single-site guard (task #38): a name-keyed field read whose key is
-// ABSENT from a non-Sparse RowEvalContext returns a loud *UnresolvedNameReadError instead of
-// a silent NULL. Default off so it can be flipped ON to MEASURE the full fallout before the
-// staged landing (Complete-rows-loud first, join-merge second per design ruling). The permanent
-// end-state is on-by-default; the name reader itself is deleted at the atomic cap (#16).
-var NameMissLoud = false
-
-// NameReadForbidden is the RFC-173 MEASUREMENT gate (default off, inert — no behavior
-// change, full suite green): when true, EVERY name-keyed read arm in FieldValue.Evaluate
-// and evaluateCorrelated returns a loud *NameReadForbiddenError naming the field being
-// read, INSTEAD of resolving it against the name-keyed Datum / bare map[string]any. Unlike
-// NameMissLoud (absent key only), this fails on ANY name-keyed read — present or absent —
-// so flipping it ON turns each surviving name-keyed boundary into a hard failure. Its sole
-// purpose is to MEASURE which boundaries still depend on the name-keyed row (cluster the
-// failing tests by shape) so the next ordinalization target is chosen by fallout, not
-// guess. NEVER set in production: it is a diagnostic bolt, not a semantic one.
-var NameReadForbidden = false
-
-// NameReadForbiddenError reports a name-keyed field read taken while the NameReadForbidden
-// measurement gate is armed. It names the field so the failing boundary is identifiable
-// from the test log alone. Not a production error class — it only ever surfaces under the
-// measurement flag.
-type NameReadForbiddenError struct {
-	Field string
-}
-
-func (e *NameReadForbiddenError) Error() string {
-	return fmt.Sprintf("RFC-173 measurement: name-keyed read of field %q is forbidden (NameReadForbidden gate armed) — this boundary still relies on the name-keyed row and has not been ordinalized", e.Field)
-}
-
-// nameReadForbidden is called at every NAME-keyed read arm in Evaluate/evaluateCorrelated,
-// immediately before the name-keyed Datum / bare-map read executes. Returns a loud
-// *NameReadForbiddenError when the measurement gate is armed; nil (inert) otherwise.
-func (f *FieldValue) nameReadForbidden() error {
-	if NameReadForbidden {
-		return &NameReadForbiddenError{Field: f.Field}
-	}
-	return nil
-}
-
-// bakedNameReadGuard is called at every NAME-keyed read arm in Evaluate/
-// evaluateCorrelated: lazy nodes pass (the name model is their source of
-// truth), and so do UNPINNED baked nodes (the recursive-CTE wrap shape — no
-// frontier guarantee, the name-keyed Datum read is their sanctioned
-// off-frontier path); FRONTIER-PINNED nodes fail loudly unless the §5 oracle
-// bridge is active.
-func (f *FieldValue) bakedNameReadGuard() error {
-	if f.Resolved == nil || !f.Resolved.FrontierPinned || OracleBakedNameFallback {
-		return nil
-	}
-	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Root().Ordinal}
 }
 
 // ContainsBakedOrdinal reports whether any FieldValue in v's subtree carries
@@ -646,6 +558,24 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 	return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: -1, Available: ordinalRowNames(row)}
 }
 
+// frontierContractGuard enforces the RFC-173 FRONTIER CONTRACT for a
+// FrontierPinned baked node: the executor guarantees a positional row, so a
+// non-nil context that is NOT a positional/ordinal row is a planner/executor
+// bug — reported as a loud *BakedNameContextError rather than a silent NULL that
+// would hide it. An unpinned node (and a nil context — the sanctioned
+// appendNullLeg / nil-binding NULL, contract ruling #3) returns nil (no
+// violation). This is the ordinal-model re-expression of the retired
+// name-reader's bakedNameReadGuard: the name-keyed read arm is gone, but the
+// pinned-node "never silently NULL off the positional frontier" invariant it
+// protected survives here, at the non-positional tail of Evaluate /
+// evaluateCorrelated.
+func (f *FieldValue) frontierContractGuard() error {
+	if f.Resolved == nil || !f.Resolved.FrontierPinned {
+		return nil
+	}
+	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Root().Ordinal}
+}
+
 // descendResolvedPath applies a baked path's accessors BEYOND the root to the
 // root read's result — Java resolves the whole FieldPath against nested
 // Message fields by ordinal (FieldValue.java fieldOrdinals doc); Go's
@@ -657,59 +587,6 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 // chained-lazy nil-context arm); an unreadable non-nil nested value is loud
 // for a pinned path (a quiet NULL would hide a frontier bug) and NULL for an
 // unpinned one (the lazy tail's historical behavior).
-// nameReadRootKey is the Datum key a NAME-keyed read starts at: the ROOT
-// accessor's per-step name for a baked path (a fused multi-accessor node must
-// read the root record first and descend — reading the display name, which is
-// the LAST step's name, would look up the leaf at the top level), f.Field for
-// everything else (identical for single-accessor paths by construction).
-func (f *FieldValue) nameReadRootKey() string {
-	if f.Resolved != nil {
-		return f.Resolved.Root().Field
-	}
-	return f.Field
-}
-
-// nameRead is the plain name-keyed map read: root key, then the baked path's
-// nested descent (a no-op for lazy nodes and single-accessor paths).
-func (f *FieldValue) nameRead(row map[string]any) (any, error) {
-	if err := f.nameReadForbidden(); err != nil {
-		return nil, err
-	}
-	key := f.nameReadRootKey()
-	v, present := row[key]
-	if !present {
-		// A bare map context carries no Sparse flag; treat it as non-sparse (loud). Bare
-		// maps are computed/name-model rows, not base stored records (those flow the
-		// ordinal frontier). See nameMissGuard.
-		if err := f.nameMissGuard(false, row); err != nil {
-			return nil, err
-		}
-	}
-	return f.descendResolvedPath(v)
-}
-
-// nameMissGuard is the single-site NameMissLoud check (task #38): a name-keyed read whose
-// key is ABSENT from a NON-sparse row returns a loud *UnresolvedNameReadError. Suppressed
-// when the guard is off (measurement/rollback) or the row is Sparse (a base stored record
-// legitimately omitting an unset optional field). A real SQL NULL never reaches here — it is
-// key-PRESENT-value-nil, checked before this. This is the emergent root the per-wrapper
-// floors approximated (design principle 10): the reader's absent-key polarity.
-func (f *FieldValue) nameMissGuard(sparse bool, available map[string]any) error {
-	if !NameMissLoud || sparse {
-		return nil
-	}
-	return &UnresolvedNameReadError{Field: f.Field, Available: mapKeys(available)}
-}
-
-// mapKeys returns the keys of a datum map, for unresolved-reference diagnostics.
-func mapKeys(m map[string]any) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	return ks
-}
-
 func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 	// <= 1 (not == 1): a hand-built zero-accessor path violates the type
 	// invariant, but a slice-bounds panic in the eval hot path is the wrong
@@ -909,9 +786,13 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 			return f.evaluateOrdinal(rc.Positional)
 		}
 	}
-	// Unrecognized NON-NIL context (no Positional row supplied): the sanctioned
-	// nil-binding NULL (contract ruling #3, e.g. appendNullLeg) — mirrors the
-	// nil-context arm above.
+	// Unrecognized NON-NIL context (no Positional row supplied). A FrontierPinned
+	// baked node is LOUD here (frontier-contract violation — it must receive a
+	// positional row); an unpinned node keeps the sanctioned nil-binding NULL
+	// (contract ruling #3, e.g. appendNullLeg), mirroring the nil-context arm above.
+	if err := f.frontierContractGuard(); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -936,9 +817,17 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		if ctx.Correlations != nil {
 			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
 				// A quantifier bound to an ordinal-model row resolves by
-				// ordinal.
+				// ordinal. A nil binding is the sanctioned null leg (outer-join
+				// no-match) — NULL, not loud. A FrontierPinned node bound to any
+				// other non-ordinal value (a name-keyed map, a stray struct) is a
+				// frontier-contract violation — loud.
 				if row, ok := bound.(OrdinalRow); ok {
 					return f.evaluateOrdinal(row)
+				}
+				if bound != nil {
+					if err := f.frontierContractGuard(); err != nil {
+						return nil, err
+					}
 				}
 				return bound, nil
 			}
@@ -949,18 +838,35 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		if ctx.Positional != nil {
 			return f.evaluateOrdinal(ctx.Positional)
 		}
+		if err := f.frontierContractGuard(); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	case CorrelationBinder:
 		if bound, ok := ctx.GetCorrelationBinding(qov.Correlation); ok {
 			if row, ok := bound.(OrdinalRow); ok {
 				return f.evaluateOrdinal(row)
 			}
+			// nil binding = sanctioned null leg (NULL); any other non-ordinal
+			// binding is a frontier-contract violation for a pinned node.
+			if bound != nil {
+				if err := f.frontierContractGuard(); err != nil {
+					return nil, err
+				}
+			}
 			return bound, nil
+		}
+		if err := f.frontierContractGuard(); err != nil {
+			return nil, err
 		}
 		return nil, nil
 	}
-	// Unrecognized NON-NIL context (no ordinal row supplied): the sanctioned
-	// nil-binding NULL, mirroring Evaluate's own tail.
+	// Unrecognized NON-NIL context (no ordinal row supplied). A FrontierPinned
+	// node is LOUD (frontier-contract violation); an unpinned node keeps the
+	// sanctioned nil-binding NULL, mirroring Evaluate's own tail.
+	if err := f.frontierContractGuard(); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -1108,8 +1014,8 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 		typ = WithNullability(typ, true)
 	}
 	// FrontierPinned: this constructor is the gated-join seed's — the executor
-	// births positional rows for every context these nodes evaluate in, so a
-	// name-keyed read is loud (bakedNameReadGuard).
+	// births positional rows for every context these nodes evaluate in, so
+	// these nodes only ever resolve by ordinal.
 	return &FieldValue{
 		Field:    fld.Name,
 		Typ:      typ,
@@ -1646,34 +1552,7 @@ type RowEvalContext struct {
 	Binder           ParameterBinder
 	Correlations     CorrelationBinder
 	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
-	// Strict turns a local field-reference miss (a top-level FieldValue whose
-	// name is absent from Datum) from a silent nil into a reported violation
-	// via ReportUnresolvedReference. It is set ONLY when evaluating against a
-	// row whose key set is complete — i.e. a computed/synthetic row (aggregate
-	// output, projection, join-merge) that has no proto-style optional-field
-	// omissions, where an absent name is unambiguously an unresolved reference
-	// rather than a legitimate SQL NULL. Base-record rows (which legitimately
-	// omit unset optional fields) leave this false. See RFC-048 W1.
-	Strict bool
-	// Sparse marks a row that legitimately uses key-ABSENT to mean SQL NULL — a base
-	// stored record (FromStoredRecord) that omits unset optional proto fields. It is the
-	// SOLE suppression for the NameMissLoud guard (task #38): a name-keyed read of an absent
-	// key over a NON-sparse row is loud (an unresolved reference), over a sparse row is a
-	// silent NULL (the legitimate unset-optional). Default false is fail-safe: a row source
-	// that forgets to declare itself sparse defaults to LOUD → surfaces as a triage red,
-	// never a silent-wrong (design ruling).
-	Sparse bool
 }
-
-// ReportUnresolvedReference, when non-nil, is invoked by FieldValue.Evaluate
-// whenever a Strict RowEvalContext is asked for a local field name that is not
-// present in its (complete) row. It is the RFC-048 W1 "no unresolved
-// reference" invariant: a silent name->NULL — the cardinal silent-wrong — is
-// turned into a loud, attributable signal. It is nil by default (zero
-// production overhead and behaviour beyond the map lookup that already
-// happens); test/debug builds install a hook that fails the test. `field` is
-// the missing name; `available` is the row's actual key set (for diagnostics).
-var ReportUnresolvedReference func(field string, available []string)
 
 func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
 	if r.Binder == nil {
@@ -3472,9 +3351,6 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 		// on the frontier (downstream FieldValue reads it by ordinal).
 		if ctx.Positional != nil {
 			return ctx.Positional, nil
-		}
-		if NameReadForbidden {
-			return nil, &NameReadForbiddenError{Field: "<qov-whole-row:" + q.Correlation.Name() + ">"}
 		}
 		return ctx.Datum, nil
 	case map[string]any:

@@ -51,11 +51,6 @@ type aggregateCursor struct {
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 
-	// probeErr carries a RequirePositional cap-probe hit from aggregateEvalArg
-	// (which returns an `any` eval context and cannot itself return an error) up
-	// to the finalizeGroup caller. Test-only; retires with the probe.
-	probeErr error
-
 	// RFC-173 input-edge ordinalization. evalCtx carries params/subqueries/outer
 	// bindings so a group-key / operand reference resolves against the inner
 	// PositionalRow the SAME way executeFilter / executeProjection do
@@ -461,11 +456,9 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 //     Unconditional on a windowed input: even with no param/subquery/outer binding,
 //     the leg windows are required (the bare merged row misreads leg-relative
 //     ordinals — the W3 wrong-slot hazard).
-//   - A projection / aggregate OVER A JOIN (the ON-only lenient CTE shadow path —
-//     neither flatFrontierInput nor joinWindowsOK) and a name-only row (no Positional)
-//     keep the name-keyed Datum path — carrying the row's Sparse flag so an unset
-//     optional / out-of-schema field stays a silent NULL rather than tripping
-//     NameMissLoud (task #38, Q51/Q54 flip-sentinels).
+//   - A row with NO Positional yields NULL: post-cap every live input flows an
+//     ordinal PositionalRow, and the name-keyed Datum row model is retired, so
+//     there is no name-map left to read.
 func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any {
 	if row.Positional == nil {
 		return nil
@@ -521,9 +514,6 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 		if err != nil {
 			return "", nil, err
 		}
-		if c.probeErr != nil {
-			return "", nil, c.probeErr
-		}
 		keyParts[i] = v
 		// tuple.Pack handles nil, int64, float64, string, []byte natively.
 		// For types the tuple layer doesn't support, fall back to the
@@ -574,9 +564,6 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 		val, err := agg.Operand.Evaluate(c.aggregateEvalArg(agg.Operand, row))
 		if err != nil {
 			return err
-		}
-		if c.probeErr != nil {
-			return c.probeErr
 		}
 		if val == nil {
 			continue
@@ -998,14 +985,6 @@ type nljCursor struct {
 	outerAdapted values.OrdinalRow
 	// outerCorr/innerCorr are the leg correlation identifiers, resolved once.
 	outerCorr, innerCorr values.CorrelationIdentifier
-	// mergeRC is set iff the result value is the S3 positional-merge RC: the
-	// emitted Datum is then the MERGE SHAPE (slot `_i` = leg i's own Datum,
-	// mergeShapeDatum) on BOTH the live and §5-oracle sides — the partition
-	// rule rebases every upper reference through the merge quantifier, so
-	// mergeRows' flat keys would silently NULL them all (0-row joins on the
-	// oracle side, where no positional row backs the reads). NOT gated on
-	// birthActive: the oracle side is exactly where the flat Datum bites.
-	mergeRC *values.RecordConstructorValue
 }
 
 func newNLJCursor(
@@ -1035,9 +1014,6 @@ func newNLJCursor(
 	}
 	c.outerCorr = values.NamedCorrelationIdentifier(outerAlias)
 	c.innerCorr = values.NamedCorrelationIdentifier(innerAlias)
-	if rc, isRC := resultValue.(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
-		c.mergeRC = rc
-	}
 	if birth.enabled() {
 		c.birthActive = true
 		// Adapt the FIXED inner side once (review W3a-2: never per pair).
@@ -1056,61 +1032,6 @@ func newNLJCursor(
 	}
 	c.tryBuildHashIndex(innerAlias)
 	return c, nil
-}
-
-// recoverOracleDatumSpans recovers the DATUM spans for a TRANSLATED
-// (fused-reference) NLJ top from the leg subplans' result values — the NLJ
-// twin of newFlatMapCursor's legRV recovery, feeding ONLY the §5 oracle's
-// qualified keys (oracleFusedDatum → oracleNameDatum). The adapter-side
-// Spans/WindowsOK stay untouched: the live NLJ never consults DatumSpans
-// (its Datum is mergeRows/mergeShapeDatum), and flipping WindowsOK would
-// re-route the leg adapter's legType lookups (the Q6-pinned dimension).
-// Spliced per the DatumSpans contract (a box leg's window opens to the leaf
-// aliases dotted reads actually name).
-func (c *nljCursor) recoverOracleDatumSpans(outerPlan, innerPlan plans.RecordQueryPlan) {
-	if !c.birth.enabled() || c.birthActive {
-		return
-	}
-	legRVs := make(map[values.CorrelationIdentifier]values.Value)
-	addJoinLegRV(legRVs, c.outerCorr, outerPlan)
-	addJoinLegRV(legRVs, c.innerCorr, innerPlan)
-	if len(c.birth.DatumSpans) == 0 {
-		if spans, _, ok := ordinalJoinSpansOf(c.birth.RC, legRVs); ok {
-			c.birth.DatumSpans = spans
-		}
-	}
-	// Splice even when the birth arrived with PRISTINE seed spans — the exact
-	// FlatMap ordering (flat_map_cursor.go runs the splice as a separate step
-	// after recovery): a seed whose leg is a gated-join BOX carries a span
-	// named after the box alias covering the whole concat, and oracleNameDatum
-	// would qualify every column under that one alias instead of the leaf
-	// aliases dotted reads actually name (review finding: the early
-	// return skipped the splice for already-windowed births).
-	if len(c.birth.DatumSpans) > 0 && len(legRVs) > 0 {
-		c.birth.DatumSpans = spliceLegSpans(c.birth.DatumSpans, legRVs)
-	}
-}
-
-// oracleFusedDatum is the §5 NAME-MODEL ORACLE's emitted row for a
-// TRANSLATED ordinal-RC NLJ top (fused post-merge references — the gathered
-// N-way join/unnest star): mergeRows' flat keys never carry the RC's OUTPUT
-// names (a merge leg's columns live inside its nested `_i` map, under the
-// merge alias's original case), so every bare or dotted downstream read —
-// the projection's lazy `EL.EL`, a sort key — silently NULLed oracle-side
-// (the dualwindow differential's first W5/3-way catch). Reconstruct the
-// output row exactly like the FlatMap's oracle arm: evaluate the RC per
-// field over the leg bindings (values.OracleBakedNameFallback bridges the
-// baked reads), bare names plus ALIAS.COL keys from the recovered
-// DatumSpans. A nil leg Datum is the LEFT/FULL null leg — its references
-// evaluate NULL (contract ruling #3). TEST-ONLY (oracle emissions); dies
-// with the oracle in Slice 4.
-func (c *nljCursor) oracleFusedDatum(outerDatum, innerDatum any) (map[string]any, error) {
-	od, _ := outerDatum.(map[string]any)
-	rowCtx := c.evalCtx.
-		WithBinding(c.outerCorr, outerDatum).
-		WithBinding(c.innerCorr, innerDatum).
-		RowContext(od)
-	return c.birth.oracleNameDatum(rowCtx)
 }
 
 // pairBinder builds the per-candidate-pair leg binder from PRE-adapted leg
@@ -1300,40 +1221,6 @@ func lookupJoinKeyPositional(pos *PositionalRow, col, alias string) any {
 	return nil
 }
 
-// fabricateNullLeg writes the NULL-supplied leg's declared columns into a null-padded merge
-// Datum as present-nil, so a name-keyed read of that leg (e.g. O.ID over an unmatched LEFT
-// JOIN row) resolves to SQL NULL instead of tripping the NameMissLoud guard (task #38). Per
-// the design ruling, the three exactness safeguards: (1) fabricate nil from the null leg's
-// OWN schema (legType) — NEVER read the present leg's row (that is the RFC-077 wrong-source
-// clobber); (2) ADD-IF-ABSENT — it can only write into keys the present leg did not claim, so
-// it can never overwrite a real value (a shared bare column, a dup alias); (3) the qualified
-// "ALIAS.col" cannot collide (the present leg qualifies under its OWN alias), the bare "col"
-// is defensive for a uniquely-named null-leg column read bare. It reads nothing from the
-// present row. The Datum then agrees column-for-column with the Positional null-pad, which is
-// built from the same legType.
-func fabricateNullLeg(datum map[string]any, nullType *values.RecordType, nullAlias string) {
-	if datum == nil || nullType == nil {
-		return
-	}
-	up := strings.ToUpper(nullAlias)
-	for _, f := range nullType.Fields {
-		col := strings.ToUpper(f.Name)
-		if up != "" {
-			if qk := up + "." + col; !mapHasKeyLocal(datum, qk) {
-				datum[qk] = nil
-			}
-		}
-		if !mapHasKeyLocal(datum, col) {
-			datum[col] = nil
-		}
-	}
-}
-
-func mapHasKeyLocal(m map[string]any, k string) bool {
-	_, ok := m[k]
-	return ok
-}
-
 func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
 		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
@@ -1455,7 +1342,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.outerMatched = true
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					// A fused-top merge (mergeRC) reshapes the merged legs into the
+					// A fused-top merge (the S3 positional-merge RC) reshapes the merged legs into the
 					// RC's OUTPUT columns; the birth RC produces that ordinal output
 					// directly (evaluateBound). A plain merge keeps mergeRows'
 					// leg-concat positional row.

@@ -29,6 +29,22 @@ func (r *fakeOrdinalRow) GetByName(name string) (any, bool) {
 	return nil, false
 }
 
+// fom ("fake ordinal from map") wraps a name->value map as an OrdinalRow for the
+// value-eval unit tests that historically passed a bare name-keyed map to
+// Evaluate. RFC-173 retired the name-keyed row, so the ordinal PositionalRow
+// (here fakeOrdinalRow) is the sole eval context: a lazy FieldValue resolves by
+// GetByName (exact match on .Field). A key PRESENT with a nil value reads as SQL
+// NULL; an ABSENT key is a loud *OrdinalResolutionError (the frontier's
+// no-silent-miss contract), so a test that wants NULL must include the key.
+func fom(m map[string]any) *fakeOrdinalRow {
+	r := &fakeOrdinalRow{}
+	for k, v := range m {
+		r.names = append(r.names, k)
+		r.slots = append(r.slots, v)
+	}
+	return r
+}
+
 type ordEvalBinder struct {
 	id    CorrelationIdentifier
 	bound any

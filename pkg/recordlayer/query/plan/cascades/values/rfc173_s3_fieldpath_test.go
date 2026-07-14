@@ -148,21 +148,25 @@ func TestRFC173S3_FusedPath_Evaluate(t *testing.T) {
 	if err != nil || got != int64(2) {
 		t.Fatalf("fused eval over positional root = (%v, %v), want (2, nil)", got, err)
 	}
-	// The LAZY chain (what nested access is corpus-wide today) computes the
-	// same value — the fused node preserves the access's semantics. The BAKED
-	// chain itself cannot evaluate at all: its pinned outer sees the nested
-	// record as a bare name-keyed map and the frontier guard is LOUD — fusion
-	// is what makes a baked nested access executable, which is why Java has
-	// no chained form.
+	// The LAZY chain computes the same value on the ordinal substrate: over a
+	// nested ORDINAL row, the inner step reads the nested row and the outer step
+	// resolves its column against it. (A nested name-keyed record — a proto.Message
+	// or map — is descended by the FUSED node's descendResolvedPath, the production
+	// path proven by the executor suite; a lazy chain re-enters Evaluate, so its
+	// intermediate must itself be an ordinal row.) The BAKED chain below cannot
+	// evaluate at all: its pinned outer sees the nested record as a bare context and
+	// the frontier guard is LOUD — fusion is what makes a baked nested access
+	// executable, which is why Java has no chained form.
 	qovBase := fused.Child.(*QuantifiedObjectValue)
 	lazyChain := NewFieldValue(NewFieldValue(qovBase, "NESTED", nil), "Y", NotNullLong)
-	lazyGot, err := lazyChain.Evaluate(row)
-	if err != nil || lazyGot != got {
-		t.Fatalf("lazy chain eval = (%v, %v) — the fused node must compute what the access always computed", lazyGot, err)
+	nestedOrd := &fakeOrdinalRow{names: []string{"X", "Y"}, slots: []any{int64(1), int64(2)}}
+	lazyGot, err := lazyChain.Evaluate(&fakeOrdinalRow{names: []string{"NESTED", "W"}, slots: []any{nestedOrd, int64(9)}})
+	if err != nil || lazyGot != int64(2) {
+		t.Fatalf("lazy chain eval = (%v, %v), want (2, nil)", lazyGot, err)
 	}
 	var chainBNCE *BakedNameContextError
 	if _, err = outer.Evaluate(row); !errors.As(err, &chainBNCE) {
-		t.Fatalf("UNfused baked chain eval = %v, want loud *BakedNameContextError (the intermediate record is a name-keyed map to the pinned outer)", err)
+		t.Fatalf("UNfused baked chain eval = %v, want loud *BakedNameContextError (the intermediate record is a bare name-keyed map to the pinned outer)", err)
 	}
 
 	// Nested positional row: descend by ordinal.
@@ -195,29 +199,31 @@ func TestRFC173S3_FusedPath_Evaluate(t *testing.T) {
 		t.Fatalf("pinned fused on name-keyed row = %v, want *BakedNameContextError", err)
 	}
 
-	// An UNPINNED fused path (hand-built — no production constructor yet)
-	// name-reads its ROOT step's key and descends: reading the display name
-	// (the LAST step, "Y") at the top level would be wrong.
+	// An UNPINNED fused path descends from its ROOT step's ORDINAL and then into
+	// the nested record — reading the display name (the LAST step, "Y") at the top
+	// level would be the trap. Here the root reads ordinal 0 (NESTED), never the
+	// top-level "Y" planted at ordinal 1.
 	unpinned := &FieldValue{
 		Field: "Y", Typ: NotNullLong,
 		Resolved: NewFieldPathOfSingle("NESTED", 0, false).WithSuffix(NewFieldPathOfSingle("Y", 1, false)),
 	}
-	got, err = unpinned.Evaluate(map[string]any{
-		"NESTED": map[string]any{"Y": int64(5)},
-		"Y":      int64(99), // the trap: a display-name root read returns this
+	got, err = unpinned.Evaluate(&fakeOrdinalRow{
+		names: []string{"NESTED", "Y"},
+		slots: []any{map[string]any{"Y": int64(5)}, int64(99)}, // ordinal 1 "Y"=99 is the trap
 	})
 	if err != nil || got != int64(5) {
-		t.Fatalf("unpinned fused name read = (%v, %v), want (5, nil) — root step's key, then descend", got, err)
+		t.Fatalf("unpinned fused ordinal descent = (%v, %v), want (5, nil) — root ordinal 0, then descend Y", got, err)
 	}
 }
 
-// TestRFC173S3_FusedPath_CorrelatedContexts is the S3-W1 review's demanded
-// trap pin: evaluateCorrelated is the fused node's PRIMARY eval path (the
-// compose rule's only constructible output is fused-over-QOV), and every one
-// of its name-keyed arms must start at the ROOT step's key and descend — a
-// display-name (last-step) read at the top level returns the planted trap
-// value. The node is UNPINNED so the guard does not mask a misread (pinned
-// fused nodes were loud-by-accident on these arms pre-fix).
+// TestRFC173S3_FusedPath_CorrelatedContexts is the S3-W1 review's demanded trap
+// pin, on the ordinal substrate: evaluateCorrelated is the fused node's PRIMARY
+// eval path (the compose rule's only constructible output is fused-over-QOV), and
+// it must descend from the ROOT step's ORDINAL — reading the display name (the
+// last step, "Y") at the top level would return the planted trap value. The node
+// is UNPINNED so the guard does not mask a misread. The correlation binds to the
+// authoritative ordinal row (the sole runtime row post-cap); both the bare
+// CorrelationBinder and the RowEvalContext-wrapped forms resolve identically.
 func TestRFC173S3_FusedPath_CorrelatedContexts(t *testing.T) {
 	t.Parallel()
 	qov := s3NestedQOV(t)
@@ -226,31 +232,21 @@ func TestRFC173S3_FusedPath_CorrelatedContexts(t *testing.T) {
 		Field: "Y", Typ: NotNullLong, Child: qov,
 		Resolved: NewFieldPathOfSingle("NESTED", 0, false).WithSuffix(NewFieldPathOfSingle("Y", 1, false)),
 	}
-	// The trap: "Y" present at top level everywhere; the correct answer lives
-	// only under NESTED.Y.
-	nested := map[string]any{"X": int64(1), "Y": int64(2)}
-	row := map[string]any{"NESTED": nested, "Y": int64(99)}
-	qualRow := map[string]any{
-		"Q.NESTED": nested, "Q.Y": int64(99),
-		"NESTED": nested, "Y": int64(99),
-	}
+	// The trap: top-level "Y"=99 at ordinal 1; the correct answer lives only
+	// under NESTED (ordinal 0) .Y (ordinal 1) = 2.
+	nestedOrd := &fakeOrdinalRow{names: []string{"X", "Y"}, slots: []any{int64(1), int64(2)}}
+	boundRow := &fakeOrdinalRow{names: []string{"NESTED", "Y"}, slots: []any{nestedOrd, int64(99)}}
 
 	assertReads2 := func(ctxName string, got any, err error) {
 		t.Helper()
 		if err != nil || got != int64(2) {
-			t.Fatalf("%s: fused correlated read = (%v, %v), want (2, nil) — root step key + descent, never the display name", ctxName, got, err)
+			t.Fatalf("%s: fused correlated read = (%v, %v), want (2, nil) — root ordinal + descent, never the display name", ctxName, got, err)
 		}
 	}
-	got, err := fused.Evaluate(&RowEvalContext{Correlations: &mapBinder{id: corr, m: row}})
-	assertReads2("RowEvalContext correlation map binding", got, err)
-	got, err = fused.Evaluate(&mapBinder{id: corr, m: row})
-	assertReads2("bare CorrelationBinder map binding", got, err)
-	got, err = fused.Evaluate(map[CorrelationIdentifier]map[string]any{corr: row})
-	assertReads2("per-correlation map", got, err)
-	got, err = fused.Evaluate(qualRow)
-	assertReads2("qualified-key map (qualKey = root step)", got, err)
-	got, err = fused.Evaluate(&RowEvalContext{Datum: qualRow})
-	assertReads2("RowEvalContext qualified Datum", got, err)
+	got, err := fused.Evaluate(&RowEvalContext{Correlations: &ordEvalBinder{id: corr, bound: boundRow}})
+	assertReads2("RowEvalContext correlation binding", got, err)
+	got, err = fused.Evaluate(&ordEvalBinder{id: corr, bound: boundRow})
+	assertReads2("bare CorrelationBinder binding", got, err)
 }
 
 // TestRFC173S3_FusedPath_IdentityHashExplain pins the fused node's identity

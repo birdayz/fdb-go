@@ -59,8 +59,11 @@ func TestNewAnchoredJoinRecord_ComposeResolvesEveryColumn(t *testing.T) {
 	}
 }
 
-// TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow pins that the anchored RC's Evaluate yields
-// a column-named row (the SELECT */flow-through case where the RC survives to runtime).
+// TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow pins that the anchored RC's
+// Evaluate yields a column-named record value (the SELECT */flow-through case
+// where the RC survives to runtime). Post-cap each leg quantifier binds to an
+// ORDINAL row (the sole runtime row); the RC's leg FieldValues resolve their
+// columns against it and the constructor assembles the name-keyed record.
 func TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow(t *testing.T) {
 	t.Parallel()
 	a := NamedCorrelationIdentifier("A")
@@ -68,11 +71,11 @@ func TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow(t *testing.T) {
 		{Alias: a, Columns: []Field{{Name: "NAME", FieldType: UnknownType}}},
 	}
 	rc := NewAnchoredJoinRecord(legs)
-	row, errEv0 := rc.Evaluate(staticBinder{a: map[string]any{"NAME": "alice"}})
+	row, errEv0 := rc.Evaluate(staticBinder{a: fom(map[string]any{"NAME": "alice"})})
 	require.NoError(t, errEv0)
 	m, ok := row.(map[string]any)
 	if !ok {
-		t.Fatalf("anchored RC Evaluate must yield a name-keyed map, got %T", row)
+		t.Fatalf("anchored RC Evaluate must yield a name-keyed record, got %T", row)
 	}
 	if m["NAME"] != "alice" {
 		t.Fatalf("expected NAME=alice in the anchored row, got %v", m)
@@ -196,12 +199,16 @@ func fieldNames(rc *RecordConstructorValue) []string {
 	return out
 }
 
-// staticBinder is a minimal CorrelationBinder for the Evaluate test.
-type staticBinder map[CorrelationIdentifier]map[string]any
+// staticBinder is a minimal CorrelationBinder for the Evaluate test. Post-cap it
+// binds each correlation to an ordinal row (the sole runtime row).
+type staticBinder map[CorrelationIdentifier]OrdinalRow
 
 func (s staticBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
 	v, ok := s[id]
-	return v, ok
+	if !ok {
+		return nil, false
+	}
+	return v, true
 }
 
 // TestAnchoredJoinRecord_NotEqualToPlainRC pins the memo-interning

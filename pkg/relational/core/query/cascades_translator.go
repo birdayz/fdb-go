@@ -7189,17 +7189,15 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 			// row; read EVERY column by ordinal (slot i) — the dotted-split name
 			// arm below mis-reads a positional row (QOV(<qualifier>) has no
 			// namespace on it → OrdinalResolutionError). This node is an UNPINNED
-			// baked node (values.go:411) — dual-window by design: the ORDINAL
-			// window reads slot i (authoritative), the §5 name-model window
-			// (OracleBakedNameFallback) falls back to Datum[nameReadRootKey], i.e.
-			// Datum[Resolved.Root().Field]. So the two names DECOUPLE:
+			// baked node that reads slot i by ordinal (authoritative). Its display
+			// Field and its Resolved root name decouple by design:
 			//   - Field = BARE column → ProjectionColumnName emits the temp-row
 			//     key BARE (no dotted key: a "C.ID" key would DOUBLE the row and
 			//     bust the RFC-130 budget);
-			//   - Resolved.Root() = the FULL physName cu ("C.ID") → the name-window
-			//     fallback reads the body's QUALIFIED output Datum key, matching
-			//     the pre-lift dotted-split's read (the body's projection keys its
-			//     Datum by the qualified ProjectionColumnName).
+			//   - Resolved.Root() = the FULL physName cu ("C.ID") at ordinal i —
+			//     the ordinal is what the read uses; the qualified name is
+			//     diagnostics only (it matched the body's qualified output key in
+			//     the retired name model).
 			bare := cu
 			if dot := strings.IndexByte(cu, '.'); dot >= 0 {
 				bare = cu[dot+1:]

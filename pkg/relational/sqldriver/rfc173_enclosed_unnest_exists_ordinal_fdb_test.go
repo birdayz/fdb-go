@@ -17,21 +17,18 @@ package sqldriver_test
 // gathers through) and routes it to translateUnnestExistsFilter, so the (LA,LB)
 // INNER outer gathers via E-1a and the seed ordinalizes.
 //
-// The proof is the values.NameReadForbidden measurement gate: ARMED, every
-// name-keyed Datum read is a hard error. This test arms the gate around the whole
-// family (outer-correlated EXISTS + NOT EXISTS, element-correlated EXISTS,
-// multi-column projection incl. the outer array column, element-WHERE + EXISTS,
-// AT-ordinality) and asserts the exact rows — the dimension the dual-window
-// differential cannot see (both models agree when BOTH silently read by name).
-// The fixture discriminates: TWO LB rows (the trailing join multiplies every
+// The name-keyed binary seed this enclosed-middle unnest used to lower to has been
+// DELETED, so the rotation + translateUnnestExistsFilter routing is now the only
+// path: the (LA,LB) INNER outer gathers ordinally via E-1a and the seed
+// ordinalizes structurally. This test exercises the whole family (outer-correlated
+// EXISTS + NOT EXISTS, element-correlated EXISTS, multi-column projection incl. the
+// outer array column, element-WHERE + EXISTS, AT-ordinality) and asserts the exact
+// rows. The fixture discriminates: TWO LB rows (the trailing join multiplies every
 // surviving pair), THREE LA rows two of which match the EXISTS correlation, so a
 // wrong-slot / first-match / dropped-leg regression shows as crossed or missing
-// counts, never green-by-luck. Row results were verified identical to the
-// pre-fix name-model answers (representation change only).
-//
-// The gate is a process-global runtime flag; this test does NOT call t.Parallel()
-// (Go runs it in the serial phase) and resets the flag in defer. The schema name
-// is unique to this test so no cached plan is shared.
+// counts, never green-by-luck. Row results are identical to the pre-fix name-model
+// answers (representation change only). The schema name is unique to this test so
+// no cached plan is shared.
 
 import (
 	"context"
@@ -44,7 +41,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -186,10 +182,6 @@ func TestFDB_RFC173_EnclosedUnnestExistsOrdinal(t *testing.T) {
 			t.Fatalf("rows = %v, want %v\n  %s", got, expect, sql)
 		}
 	}
-
-	// Arm the measurement gate: any name-keyed Datum read on this path hard-errors.
-	values.NameReadForbidden = true
-	defer func() { values.NameReadForbidden = false }()
 
 	// Outer-correlated EXISTS: EE.CK = LA.K matches K=100 (aid1 arr[7,8], aid3 arr[5]);
 	// aid2 (K=110) drops. Two LB rows double every surviving element.

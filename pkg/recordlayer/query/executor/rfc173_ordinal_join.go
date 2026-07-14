@@ -856,18 +856,6 @@ type ordinalJoinBirth struct {
 	// RV: the output is a plain projection row, downstream gets no windows.
 	Spans     []legSpan
 	WindowsOK bool
-	// DatumSpans are the spans the coexistence Datum derives from
-	// (datumFromSpans / oracleNameDatum's qualified keys): the SPLICED view —
-	// a box leg's window opened to its leaf tables, whose aliases dotted
-	// reads actually name. Kept SEPARATE from Spans, which the cursor's own
-	// leg ADAPTER resolves against (adaptLegPositional needs the box-level
-	// type for the box-alias binding; the spliced leaf window would misfit
-	// the leg's whole concat row). Equal to Spans when no splice applies.
-	// ONLY the FlatMap cursor splices these (its Datum derives from the
-	// birth); the NLJ cursor's Datum is mergeRows/mergeShapeDatum and never
-	// consults them — a future NLJ caller of oracleNameDatum/datumFromSpans
-	// must splice first or it inherits box-alias qualification silently.
-	DatumSpans []legSpan
 	// LegTypes are the leg types recovered from the RV's baked references —
 	// the adapter's leg types when the RV is folded and Spans are unavailable.
 	LegTypes map[values.CorrelationIdentifier]*values.RecordType
@@ -976,7 +964,6 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 		OutputType: rcOutputType(rc),
 		Spans:      spans,
 		WindowsOK:  windowsOK,
-		DatumSpans: spans,
 		LegTypes:   legTypes,
 		RawLegs:    rawLegs,
 	}, nil
@@ -1131,60 +1118,6 @@ func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.Correlati
 		return v
 	})
 	return found
-}
-
-// oracleNameDatum is the §5 NAME-MODEL ORACLE's row for an ordinal-birth
-// flatMap: DisablePositionalEmission promises "the pre-RFC-173 name model
-// end-to-end", but the PLAN still carries the ordinal RC (planning is not
-// oracle-gated), whose bare-named fields evaluate to a bare-keys-only map —
-// while the pre-flip ANCHORED seed RC (NewAnchoredJoinRecord) carried an
-// ALIAS.COL field per leg column PLUS the bare field at the last leg carrying
-// that name. Downstream name-model consumers (a projection over a sort reading
-// "U.NAME", the sort comparator's dotted keys) resolve against those qualified
-// keys, so evaluating the ordinal RC directly silently NULLed every dotted
-// read in the oracle phase (the dualwindow differential's first live catch on
-// W3b).
-//
-// Reconstruct the anchored key set with genuine NAME-model resolution: each RC
-// field evaluates over the name-keyed row context (the baked references read
-// their display name through values.OracleBakedNameFallback — the same lookup
-// the anchored RC's lazy FieldValue(QOV(leg), col) performed), written under
-// the bare name (in-order map writes = the anchored last-leg-wins) and, for a
-// PRISTINE seed (WindowsOK), under the leg-qualified ALIAS.COL key. A FOLDED
-// projection RV gets bare keys only — its pre-flip name-model counterpart is
-// the projection map, which never carried qualified keys. No TYPE.COL keys:
-// the pre-flip flatMap Datum never had them either (qualifyTypeFallback is
-// mergeRows machinery — the NLJ path, whose oracle Datum is mergeRows
-// unchanged). TEST-ONLY (oracle callers); dies with the oracle in Slice 4.
-func (b *ordinalJoinBirth) oracleNameDatum(rowCtx any) (map[string]any, error) {
-	m := make(map[string]any, 2*len(b.RC.Fields))
-	for i, f := range b.RC.Fields {
-		v, err := f.Value.Evaluate(rowCtx)
-		if err != nil {
-			return nil, err
-		}
-		m[f.Name] = v
-		// Qualified keys ride the DATUM spans (not WindowsOK): an NLJ fused
-		// top recovers DatumSpans from the leg subplans while its adapter-side
-		// WindowsOK stays false (the birth has no legRVs — the Q6 dimension);
-		// for every FlatMap birth the two are set together, so this gate is
-		// behavior-identical there.
-		if len(b.DatumSpans) == 0 {
-			continue
-		}
-		// Qualified key from the SPAN covering this slot — not the field's
-		// child QOV: for a translated top's FUSED field the child is the MERGE
-		// quantifier (q$N, never a user-visible alias), while the span carries
-		// the resolved LEAF leg alias. For the pristine seed span alias ==
-		// child QOV correlation, so the output is unchanged.
-		for _, s := range b.DatumSpans {
-			if i >= s.Offset && i < s.Offset+s.Width {
-				m[strings.ToUpper(s.Alias.Name())+"."+strings.ToUpper(s.LegType.Fields[i-s.Offset].Name)] = v
-				break
-			}
-		}
-	}
-	return m, nil
 }
 
 // legType resolves the adapter's leg type for a leg alias: from the spans when
@@ -1407,129 +1340,6 @@ func scalarSubqueriesFromBinder(b values.CorrelationBinder) map[values.Correlati
 		return scalarSubqueriesFromBinder(bb.base)
 	}
 	return nil
-}
-
-// datumFromPositional derives the coexistence name-keyed Datum FROM the
-// birthed positional row: map keyed by OutputType field names, LAST-WINS on
-// duplicate names — matching RecordConstructorValue.Evaluate's in-order map
-// writes, so the name model sees the same (conflated-on-dups) row it always
-// did while the positional row keeps the duplicates distinct by ordinal. Used
-// by ordinal-birth flatMap cursors, whose result value can no longer be
-// evaluated over name contexts (baked reads there are loud errors).
-func datumFromPositional(row *PositionalRow) map[string]any {
-	if row == nil || row.Type == nil {
-		return map[string]any{}
-	}
-	m := make(map[string]any, len(row.Type.Fields))
-	for i, f := range row.Type.Fields {
-		if i < len(row.Slots) {
-			m[f.Name] = row.Slots[i]
-		}
-	}
-	return m
-}
-
-// datumFromSpans derives the coexistence-window Datum for a SEED-shaped
-// ordinal join row: bare column keys (last-wins across legs, exactly
-// datumFromPositional/mergeRows semantics) PLUS the qualified "ALIAS.COL"
-// keys per leg — the key set the name-model anchored RC / mergeRows always
-// produced, which downstream name-model consumers (sort comparators'
-// Datum fallback, streaming-aggregate group keys and operands, HAVING
-// filters) resolve dotted references against. The W3b flip's live catch:
-// bare-only Datums silently NULLed every dotted read over a gated FlatMap
-// join (wrong sort order, empty HAVING output). Folded projection RVs keep
-// bare-only datumFromPositional — their name-model counterpart is the
-// projection map, which never carried qualified keys. Retires with the
-// name map in Slice 4.
-func datumFromSpans(row *PositionalRow, spans []legSpan) map[string]any {
-	m := datumFromPositional(row)
-	for _, s := range spans {
-		// A BOX span (its type carries buried-leg boundaries) emits its
-		// SUBS ONLY — the same rule as every other layout list
-		// (rcOutputType, ordinalJoinSpansOf, the values twin): qualified
-		// reads address the box's contents by the LEAF aliases; a run-level
-		// emission would qualify every concat slot under the run's name
-		// (wrong-alias keys for all but the rightmost leaf, and a
-		// last-wins collision on the leaf's own names). This was the
-		// fourth site — the first three aligned while the Datum kept
-		// run-level keys, silently NULLing every lazy qualified read of a
-		// buried column (an aggregate operand over the buried leg of a
-		// clustered null-supplying box read Datum["C2.RANK"], which was
-		// never written → COUNT of zeros).
-		if s.LegType != nil && len(s.LegType.Legs) > 0 {
-			for _, bl := range s.LegType.Legs {
-				end := bl.Start + bl.Width
-				if bl.Name == "" || bl.Start < 0 || end > len(s.LegType.Fields) {
-					continue
-				}
-				prefix := strings.ToUpper(bl.Name) + "."
-				for i := bl.Start; i < end; i++ {
-					if v, ok := row.Get(s.Offset + i); ok {
-						m[prefix+strings.ToUpper(s.LegType.Fields[i].Name)] = v
-					}
-				}
-			}
-			continue
-		}
-		prefix := strings.ToUpper(s.Alias.Name()) + "."
-		for i := 0; i < s.Width; i++ {
-			if v, ok := row.Get(s.Offset + i); ok {
-				m[prefix+strings.ToUpper(s.LegType.Fields[i].Name)] = v
-			}
-		}
-	}
-	// Table-TYPE-qualified fallback keys (qualifyTypeFallback semantics:
-	// fill-if-absent, only when the type name differs from the alias, only
-	// for base-table legs — RecordName is set exactly there).
-	for _, s := range spans {
-		if s.LegType == nil || s.LegType.RecordName == "" || strings.EqualFold(s.LegType.RecordName, s.Alias.Name()) {
-			continue
-		}
-		prefix := strings.ToUpper(s.LegType.RecordName) + "."
-		for i := 0; i < s.Width; i++ {
-			key := prefix + strings.ToUpper(s.LegType.Fields[i].Name)
-			if _, exists := m[key]; exists {
-				continue
-			}
-			if v, ok := row.Get(s.Offset + i); ok {
-				m[key] = v
-			}
-		}
-	}
-	return m
-}
-
-// mergeShapeDatum derives the S3 positional-merge row's coexistence Datum:
-// slot i carries leg i's own DATUM — the shape evaluating the bare-QOV merge
-// RC over name bindings produces (the §5 oracle side), and the shape the
-// partition rule's rebased upper references read through (`_i` root keys).
-// Never mergeRows' flat bare/qualified keys: no consumer addresses a merge
-// quantifier's row by flat names — the rule rebases every upper reference
-// through the merge quantifier, so a flat Datum silently NULLs them all on
-// the oracle side (0-row joins). A nil leg Datum (the NULL leg) mirrors the
-// name model's reconstructed empty inner row.
-func mergeShapeDatum(rc *values.RecordConstructorValue, outerID, innerID values.CorrelationIdentifier, outerDatum, innerDatum any) map[string]any {
-	m := make(map[string]any, len(rc.Fields))
-	for _, f := range rc.Fields {
-		qov, isQOV := f.Value.(*values.QuantifiedObjectValue)
-		if !isQOV {
-			continue
-		}
-		var d any
-		switch qov.Correlation {
-		case outerID:
-			d = outerDatum
-		case innerID:
-			d = innerDatum
-		default:
-			continue
-		}
-		if d == nil {
-			d = map[string]any{}
-		}
-		m[f.Name] = d
-	}
-	return m
 }
 
 // downstreamLegWindows computes, ONCE at operator construction, whether a

@@ -94,10 +94,12 @@ func TestRFC173Unified_PinnedStaysLoudThroughPassthrough(t *testing.T) {
 	}
 }
 
-// TestRFC173Unified_GuardDistinction pins the fold's evaluation-contract
-// split on the SAME name-keyed row: the seed constructor pins (loud), the
-// wrap constructor does not (quiet name read — its legs legitimately flow
-// name-keyed rows until S3/S4 flips joins positional).
+// TestRFC173Unified_GuardDistinction pins the fold's evaluation-contract split
+// on the SAME non-positional context: the seed constructor PINS (loud
+// *BakedNameContextError — the executor frontier contract), the wrap constructor
+// does NOT (a quiet off-frontier NULL). Post-cap the retired name-keyed read is
+// gone — a bare map is not an OrdinalRow — so the distinction is loud vs
+// quiet-NULL, not loud vs name-read.
 func TestRFC173Unified_GuardDistinction(t *testing.T) {
 	t.Parallel()
 	qov, _ := unifiedTestQOV(t)
@@ -110,16 +112,20 @@ func TestRFC173Unified_GuardDistinction(t *testing.T) {
 	_, evalErr := seed.Evaluate(nameRow)
 	var bnce *BakedNameContextError
 	if !errors.As(evalErr, &bnce) {
-		t.Fatalf("pinned seed node on a name-keyed row = %v, want *BakedNameContextError", evalErr)
+		t.Fatalf("pinned seed node on a non-positional context = %v, want *BakedNameContextError", evalErr)
 	}
 
+	// The UNPINNED wrap node carries no frontier contract: over a non-positional
+	// context it is a QUIET NULL, never loud — the negative half of the
+	// distinction. (Its positive half — resolving positionally over an ordinal
+	// row — is covered by TestFieldValue_OrdinalEval_RFC173Slice1.)
 	wrap := NewFieldValueWithResolvedOrdinal("X", 1, UnknownType)
 	got, evalErr := wrap.Evaluate(nameRow)
 	if evalErr != nil {
-		t.Fatalf("unpinned wrap node on a name-keyed row errored: %v — the quiet name read is its sanctioned off-frontier path", evalErr)
+		t.Fatalf("unpinned wrap node on a non-positional context must be quiet, not loud: %v", evalErr)
 	}
-	if got != int64(9) {
-		t.Fatalf("unpinned wrap node name read = %v, want 9 (the display-name key)", got)
+	if got != nil {
+		t.Fatalf("unpinned wrap node over a non-positional context = %v, want nil (quiet off-frontier NULL)", got)
 	}
 }
 

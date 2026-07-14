@@ -66,18 +66,6 @@ func jsonSafeSlice(in []any) []any {
 	return out
 }
 
-func jsonSafeDatum(d any) any {
-	in, ok := d.(map[string]any)
-	if !ok {
-		return d
-	}
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = jsonSafeContinuationValue(v)
-	}
-	return out
-}
-
 // encodeAggregateContinuation serializes the streaming aggregate
 // cursor's partial state using Java's AggregateCursorContinuation proto.
 // Carries the inner cursor position + the single in-progress group's

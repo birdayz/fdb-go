@@ -12,17 +12,14 @@ package sqldriver_test
 // resolves the reference by ORDINAL (frontierRowContext -> evaluateOrdinal ->
 // GetByName("_0"/"_1") against the box's own type) — never a name-keyed Datum read.
 //
-// The proof is the values.NameReadForbidden measurement gate: with it ARMED, EVERY
-// name-keyed Datum read (present or absent) is a hard error. A pushed WHERE on the
-// box element/ordinal that still read by name would fail; a fully ordinalized one
-// returns the correct rows. This is the dimension the dual-window differential
-// cannot see (both models agree when BOTH silently read `_0`/`_1` by name).
-//
-// The gate is a process-global runtime flag; this test does NOT call t.Parallel(),
-// so it runs in the serial phase and resets the flag in defer — no parallel test
-// ever observes it armed. Records are seeded via the record-store API because SQL
-// INSERT has no array literal, and each query is planned + executed through the full
-// Cascades path (embedded.PlanRecordQueryWithMetadata -> executor.ExecutePlan).
+// The name-keyed row reader this shape used to fall through to has been DELETED, so
+// a pushed WHERE on the box element/ordinal now resolves by ORDINAL
+// (frontierRowContext -> evaluateOrdinal -> GetByName("_0"/"_1") against the box's
+// own type) structurally — there is no name-keyed path left to fall back to. This
+// test asserts each pushed / projected box reference returns the correct rows.
+// Records are seeded via the record-store API because SQL INSERT has no array
+// literal, and each query is planned + executed through the full Cascades path
+// (embedded.PlanRecordQueryWithMetadata -> executor.ExecutePlan).
 
 import (
 	"context"
@@ -39,7 +36,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -142,17 +138,11 @@ func TestFDB_RFC173_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 			return nil, nil
 		})
 		if eerr != nil {
-			t.Fatalf("exec %q under NameReadForbidden: %v", sql, eerr)
+			t.Fatalf("exec %q: %v", sql, eerr)
 		}
 		sort.Strings(out)
 		return out
 	}
-
-	// Arm the measurement gate ONLY for this serial test: any name-keyed read on the
-	// box element/ordinal path now hard-errors. A silent revert of the Explode
-	// PositionalRow emission would make every subtest below fail here.
-	values.NameReadForbidden = true
-	defer func() { values.NameReadForbidden = false }()
 
 	// Pushed WHERE on the AT ordinal slot (`_1`), ordinal-spelled aliases so the
 	// user AS/AT names cannot accidentally masquerade as the box's internal keys.

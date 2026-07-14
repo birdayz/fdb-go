@@ -1,6 +1,7 @@
 package values
 
 import (
+	"errors"
 	"reflect"
 	"sort"
 	"testing"
@@ -8,134 +9,109 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// RFC-048 W1: the executor "no unresolved reference" invariant. A top-level
-// FieldValue whose name is absent from a *complete* row (Strict context) must
-// be reported, not silently resolved to NULL — the cardinal silent-wrong.
+// RFC-048 W1 under the RFC-173 ordinal model: the executor "no unresolved
+// reference" invariant. A top-level FieldValue whose name is absent from the
+// authoritative ordinal row must be a LOUD *OrdinalResolutionError — never a
+// silent NULL (the cardinal silent-wrong).
 //
-// These tests pin the mechanism in isolation (FieldValue.Evaluate); the
-// end-to-end proof that no real query trips it lives in the sqldriver FDB
-// suite (which arms the invariant binary-wide in TestMain).
+// This REPLACES the retired name-model Strict/ReportUnresolvedReference hook.
+// The cap made the ordinal PositionalRow the sole runtime row, and
+// evaluateOrdinal goes loud on a miss — so a masked reference fails the query
+// outright, a strictly STRONGER guarantee than the old report-and-continue hook.
+// The end-to-end proof that no real query trips it is the sqldriver FDB suite:
+// any query that hit a miss would fail loudly, so a GREEN suite IS the
+// binary-wide W1 invariant (no separate binary-wide hook needed).
 //
-// NOTE: these tests deliberately do NOT call t.Parallel() — each installs a
-// process-global ReportUnresolvedReference hook, so running them concurrently
-// would race on that global. They are fast, pure (no FDB), and serial by
-// design; do not "fix" them by adding t.Parallel().
+// These tests pin the mechanism in isolation (FieldValue.Evaluate over an
+// OrdinalRow). They are pure (no FDB) and safe under t.Parallel() — unlike the
+// retired hook-based tests, they touch no process-global state.
 
-// withReportHook installs a recording ReportUnresolvedReference hook for the
-// duration of the test and returns the slice that captures missing names.
-func withReportHook(t *testing.T) *[]string {
-	t.Helper()
-	var got []string
-	prev := ReportUnresolvedReference
-	ReportUnresolvedReference = func(field string, available []string) {
-		got = append(got, field)
-	}
-	t.Cleanup(func() { ReportUnresolvedReference = prev })
-	return &got
+// w1Row is a local OrdinalRow that also exposes TypeNames, so an
+// *OrdinalResolutionError raised against it carries the row's available names
+// for the attribution assertion. (fakeOrdinalRow lacks TypeNames on purpose;
+// duplicating the three trivial methods here keeps this test self-contained and
+// avoids perturbing that shared helper's diagnostics.)
+type w1Row struct {
+	names []string
+	slots []any
 }
 
-func TestFieldValue_Strict_ReportsMissingLocalReference(t *testing.T) {
-	got := withReportHook(t)
-
-	// The original Exhibit-A shape: the aggregate slot was materialised under
-	// "COUNT(*)" but the HAVING rewrite referenced "COUNT(1)". Against a
-	// complete (Strict) row that only has "COUNT(*)", the "COUNT(1)" lookup is
-	// an unresolved reference, not a NULL.
-	row := &RowEvalContext{
-		Datum:  map[string]any{"COUNT(*)": int64(3), "STATUS": "shipped"},
-		Strict: true,
+func (r *w1Row) Get(ord int) (any, bool) {
+	if ord < 0 || ord >= len(r.slots) {
+		return nil, false
 	}
-	missing := &FieldValue{Field: "COUNT(1)"}
-	v, errEv0 := missing.Evaluate(row)
-	require.NoError(t, errEv0)
+	return r.slots[ord], true
+}
+
+func (r *w1Row) GetByName(name string) (any, bool) {
+	for i, n := range r.names {
+		if n == name {
+			return r.slots[i], true
+		}
+	}
+	return nil, false
+}
+
+func (r *w1Row) TypeNames() []string { return r.names }
+
+func TestFieldValue_OrdinalMiss_IsLoud(t *testing.T) {
+	t.Parallel()
+
+	// Exhibit-A shape: the aggregate slot was materialised under "COUNT(*)" but
+	// the HAVING rewrite referenced "COUNT(1)". Against the ordinal row that only
+	// carries "COUNT(*)", the "COUNT(1)" read is an unresolved reference — a loud
+	// *OrdinalResolutionError, not a silent NULL.
+	row := &w1Row{names: []string{"COUNT(*)", "STATUS"}, slots: []any{int64(3), "shipped"}}
+	v, err := (&FieldValue{Field: "COUNT(1)"}).Evaluate(row)
 	if v != nil {
-		t.Fatalf("missing local ref should still evaluate to nil, got %v", v)
+		t.Fatalf("missing local ref must not yield a value, got %v", v)
 	}
-	if want := []string{"COUNT(1)"}; !reflect.DeepEqual(*got, want) {
-		t.Fatalf("ReportUnresolvedReference: want %v, got %v", want, *got)
+	var ordErr *OrdinalResolutionError
+	if !errors.As(err, &ordErr) {
+		t.Fatalf("missing local ref must be a loud *OrdinalResolutionError, got %v", err)
+	}
+	if ordErr.Field != "COUNT(1)" {
+		t.Fatalf("error Field: want COUNT(1), got %q", ordErr.Field)
 	}
 }
 
-func TestFieldValue_Strict_PresentReferenceNotReported(t *testing.T) {
-	got := withReportHook(t)
+func TestFieldValue_OrdinalPresentNil_IsNull(t *testing.T) {
+	t.Parallel()
 
-	row := &RowEvalContext{
-		Datum:  map[string]any{"COUNT(*)": int64(3)},
-		Strict: true,
-	}
-	// A present key whose value is a legitimate SQL NULL must NOT report:
-	// the distinction is "name absent" (bug) vs "value nil" (NULL).
-	row.Datum["SUM(AMOUNT)"] = nil
-	v, errEv0 := (&FieldValue{Field: "SUM(AMOUNT)"}).Evaluate(row)
-	require.NoError(t, errEv0)
+	// A present key whose value is a legitimate SQL NULL must NOT be loud: the
+	// distinction is "name absent" (bug) vs "value nil" (NULL). This also covers
+	// the base-record optional-field case — a base stored record's ordinal row
+	// carries every field of its type, unset optionals present-as-nil, so an
+	// unset optional reads NULL here (never an absent key), never a violation.
+	row := &w1Row{names: []string{"COUNT(*)", "SUM(AMOUNT)"}, slots: []any{int64(3), nil}}
+
+	v, err := (&FieldValue{Field: "SUM(AMOUNT)"}).Evaluate(row)
+	require.NoError(t, err)
 	if v != nil {
 		t.Fatalf("present nil-valued key: want nil value, got %v", v)
 	}
-	v, errEv1 := (&FieldValue{Field: "COUNT(*)"}).Evaluate(row)
-	require.NoError(t, errEv1)
+
+	v, err = (&FieldValue{Field: "COUNT(*)"}).Evaluate(row)
+	require.NoError(t, err)
 	if v != int64(3) {
 		t.Fatalf("present key: want 3, got %v", v)
 	}
-	if len(*got) != 0 {
-		t.Fatalf("present references must not report, got %v", *got)
-	}
 }
 
-func TestFieldValue_NonStrict_DoesNotReport(t *testing.T) {
-	got := withReportHook(t)
+func TestFieldValue_OrdinalMiss_CarriesAvailableKeys(t *testing.T) {
+	t.Parallel()
 
-	// Base-record rows (Strict=false) legitimately omit unset optional fields;
-	// a miss is a NULL, never a violation. This is the soundness guarantee
-	// that keeps W1 from drowning in false positives.
-	row := &RowEvalContext{
-		Datum:  map[string]any{"ID": int64(1)},
-		Strict: false,
-	}
-	v, errEv0 := (&FieldValue{Field: "OPTIONAL_UNSET"}).Evaluate(row)
-	require.NoError(t, errEv0)
-	if v != nil {
-		t.Fatalf("absent optional field: want nil, got %v", v)
-	}
-	if len(*got) != 0 {
-		t.Fatalf("non-strict context must never report, got %v", *got)
-	}
-}
-
-func TestFieldValue_Strict_NilHookIsNoOp(t *testing.T) {
-	// With no hook installed (production default), a Strict miss is a plain nil
-	// — zero behaviour change beyond the lookup that already happened.
-	prev := ReportUnresolvedReference
-	ReportUnresolvedReference = nil
-	t.Cleanup(func() { ReportUnresolvedReference = prev })
-
-	row := &RowEvalContext{Datum: map[string]any{"A": 1}, Strict: true}
-	v, errEv0 := (&FieldValue{Field: "B"}).Evaluate(row)
-	require.NoError(t, errEv0)
-	if v != nil {
-		t.Fatalf("nil hook: want nil, got %v", v)
-	}
-}
-
-func TestFieldValue_Strict_ReportsAvailableKeys(t *testing.T) {
-	// The diagnostic carries the row's actual key set so a violation is
+	// The diagnostic carries the row's actual name set so a violation is
 	// attributable (what was materialised vs what was asked for).
-	var availForB []string
-	prev := ReportUnresolvedReference
-	ReportUnresolvedReference = func(field string, available []string) {
-		if field == "B" {
-			availForB = append([]string(nil), available...)
-		}
+	row := &w1Row{names: []string{"A", "COUNT(*)"}, slots: []any{1, 2}}
+	_, err := (&FieldValue{Field: "B"}).Evaluate(row)
+	var ordErr *OrdinalResolutionError
+	if !errors.As(err, &ordErr) {
+		t.Fatalf("want *OrdinalResolutionError, got %v", err)
 	}
-	t.Cleanup(func() { ReportUnresolvedReference = prev })
-
-	row := &RowEvalContext{
-		Datum:  map[string]any{"A": 1, "COUNT(*)": 2},
-		Strict: true,
-	}
-	_, errEv0 := (&FieldValue{Field: "B"}).Evaluate(row)
-	require.NoError(t, errEv0)
-	sort.Strings(availForB)
-	if want := []string{"A", "COUNT(*)"}; !reflect.DeepEqual(availForB, want) {
-		t.Fatalf("available keys: want %v, got %v", want, availForB)
+	avail := append([]string(nil), ordErr.Available...)
+	sort.Strings(avail)
+	if want := []string{"A", "COUNT(*)"}; !reflect.DeepEqual(avail, want) {
+		t.Fatalf("available keys: want %v, got %v", want, avail)
 	}
 }

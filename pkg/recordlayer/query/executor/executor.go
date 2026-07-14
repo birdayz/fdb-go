@@ -2235,7 +2235,7 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 	var rowCtx any
 	switch {
 	case legs != nil:
-		rc := &values.RowEvalContext{Positional: combined.Positional, Sparse: combined.Sparse, Correlations: legs}
+		rc := &values.RowEvalContext{Positional: combined.Positional, Correlations: legs}
 		if evalCtx != nil {
 			rc.Binder = evalCtx
 			rc.ScalarSubqueries = evalCtx.scalarSubqueries
@@ -2244,7 +2244,7 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 	case combined.Positional != nil && combined.Positional.Type != nil && len(combined.Positional.Type.Legs) > 0:
 		rowCtx = legWindowRowContext(combined.Positional, evalCtx, spansFromMergedLegs(combined.Positional))
 	default:
-		rc := &values.RowEvalContext{Positional: combined.Positional, Sparse: combined.Sparse}
+		rc := &values.RowEvalContext{Positional: combined.Positional}
 		if evalCtx != nil {
 			rc.Correlations = evalCtx
 			rc.Binder = evalCtx

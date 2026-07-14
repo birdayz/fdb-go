@@ -10,17 +10,13 @@ package sqldriver_test
 // legWindowRowContext — the SAME spanAwareRow leg-window resolver that projection /
 // filter over the same join merge already use (executeProjection / executeFilter).
 //
-// The proof is the values.NameReadForbidden measurement gate: with it ARMED, EVERY
-// name-keyed Datum read (present or absent) is a hard error. A query that still read
-// its aggregate input by name would fail; a fully ordinalized one succeeds. This test
-// arms the gate around the representative aggregate-over-join shapes and asserts they
-// still return the correct rows — the dimension the dual-window differential cannot
-// see (both models agree when BOTH silently read by name).
-//
-// The gate is a process-global runtime (not plan-time) flag; this test does NOT call
-// t.Parallel(), so Go runs it in the serial phase (before any parallel test resumes),
-// and it resets the flag in defer — no other test ever observes it armed. The schema
-// is unique to this test, so no cached plan is shared.
+// The name-keyed Datum row reader this aggregate-over-join input used to resolve
+// against has been DELETED, so ordinalization is now structural: the aggregate
+// reads its keys / operands off the merged PositionalRow through legWindowRowContext
+// — the SAME leg-window resolver projection / filter over the join already use.
+// This test exercises the representative aggregate-over-join shapes and asserts they
+// return the correct rows. The schema is unique to this test, so no cached plan is
+// shared.
 
 import (
 	"context"
@@ -29,8 +25,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestFDB_RFC173_AggregateJoinOrdinal(t *testing.T) {
@@ -58,16 +52,11 @@ func TestFDB_RFC173_AggregateJoinOrdinal(t *testing.T) {
 	mwjoMustExec(t, db, ctx,
 		"INSERT INTO emp (eid, did, salary) VALUES (10, 1, 100), (20, 1, 90), (30, 2, 80)")
 
-	// Arm the measurement gate ONLY for the duration of this serial test: any
-	// name-keyed read on the aggregate input path now hard-errors.
-	values.NameReadForbidden = true
-	defer func() { values.NameReadForbidden = false }()
-
 	// strPairs collects (string,int64) rows sorted for order-independent comparison.
 	strPairs := func(t *testing.T, q string) string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
-			t.Fatalf("query %q under NameReadForbidden: %v", q, err)
+			t.Fatalf("query %q: %v", q, err)
 		}
 		defer rows.Close()
 		var out []string

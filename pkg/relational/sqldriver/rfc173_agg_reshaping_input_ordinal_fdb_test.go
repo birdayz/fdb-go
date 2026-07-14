@@ -21,13 +21,13 @@ package sqldriver_test
 // key / operand now resolves against the inner PositionalRow (frontierRowContext →
 // evaluateOrdinal → GetByName), not the name-keyed Datum.
 //
-// The proof is the values.NameReadForbidden measurement gate: with it ARMED, EVERY
-// name-keyed Datum read (present or absent) is a hard error. Each shape below was a
-// SURVIVOR (hard-errored) before the fix and returns the correct rows after — the
-// dimension the dual-window differential cannot see (both models agree when BOTH read
-// by name). Not t.Parallel(): the gate is a process-global runtime flag; Go runs this
-// in the serial phase and it resets the flag in defer, so no other test observes it
-// armed. The schema is unique to this test, so no cached plan is shared.
+// The name-keyed Datum row reader these shapes used to fall through to has been
+// DELETED, so ordinalization is now structural: every reshaping producer above
+// emits a flat single-source PositionalRow and the aggregate group key / operand
+// resolves against it by ordinal — there is no name-keyed path left to fall back
+// to. Each shape below was a SURVIVOR before the fix; this test proves the ordinal
+// path end-to-end by asserting the exact rows. The schema is unique to this test,
+// so no cached plan is shared.
 
 import (
 	"context"
@@ -35,8 +35,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestFDB_RFC173_AggregateReshapingInputOrdinal(t *testing.T) {
@@ -55,18 +53,12 @@ func TestFDB_RFC173_AggregateReshapingInputOrdinal(t *testing.T) {
 		"INSERT INTO orders (oid, cust, status, amt) VALUES "+
 			"(10,1,'shipped',100),(11,1,'pending',50),(12,2,'shipped',200),(13,3,'shipped',30),(14,2,'pending',70)")
 
-	// Arm the measurement gate ONLY for this serial test: any name-keyed read on
-	// the aggregate input path now hard-errors.
-	values.NameReadForbidden = true
-	defer func() { values.NameReadForbidden = false }()
-
 	// rowsOf runs q and returns its rows sorted, joined "|" per column, for
-	// order-independent comparison. Fatals on any error (a survivor would
-	// surface here as the NameReadForbidden hard error).
+	// order-independent comparison. Fatals on any error.
 	rowsOf := func(t *testing.T, q string) string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
-			t.Fatalf("query %q under NameReadForbidden: %v", q, err)
+			t.Fatalf("query %q: %v", q, err)
 		}
 		defer rows.Close()
 		cols, _ := rows.Columns()

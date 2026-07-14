@@ -569,28 +569,26 @@ func TestRFC173S2_EvaluateOrdinalJoinRow(t *testing.T) {
 		}
 	})
 
-	// (The former "name-keyed leg binding is loud" pin is retired: the name model
-	// is deleted, so a map-bound leg is now just another non-OrdinalRow binding —
-	// it hits the same `return bound, nil` arm the garbage-leg pin below freezes.
-	// The bakedNameReadGuard it exercised has no callers left.)
+	// (A map-bound leg is a non-nil, non-OrdinalRow binding: for a FrontierPinned
+	// baked node it is a frontier-contract violation — the same loud
+	// *BakedNameContextError the garbage-leg pin below asserts (frontierContractGuard,
+	// the ordinal-model re-expression of the retired name-reader's bakedNameReadGuard).
+	// A nil-bound leg stays the sanctioned null leg → NULL.)
 
-	t.Run("garbage leg binding pins current behavior", func(t *testing.T) {
+	t.Run("garbage leg binding is a loud frontier-contract violation", func(t *testing.T) {
 		t.Parallel()
-		// OPEN DECISION (review W3 borderline, do not change in W3a): a leg
-		// bound to a non-nil, non-OrdinalRow, non-map value hits
-		// evaluateCorrelated's `return bound, nil` arm, which returns the RAW
-		// bound object into the slot — no error, no NULL. This pin freezes the
-		// CURRENT behavior so the W3b decision (loud error vs. keep) is a
-		// deliberate red→green edit here, not a silent drift. values.go is
-		// deliberately untouched this stage.
+		// W3b decision, resolved at the atomic cap: a leg bound to a non-nil,
+		// non-OrdinalRow value is a frontier-contract violation — the executor
+		// must supply an ordinal row (or nil for a null leg). A baked FrontierPinned
+		// node hitting such a binding is now a LOUD *values.BakedNameContextError
+		// (frontierContractGuard), never a silent raw-object slot that would
+		// corrupt the merged row.
 		type garbage struct{ x int }
 		g := garbage{x: 9}
-		merged, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: g})
-		if err != nil {
-			t.Fatalf("garbage leg binding errored (behavior changed — update the open-decision pin): %v", err)
-		}
-		if got, _ := merged.Get(2); got != g {
-			t.Fatalf("garbage-bound leg slot = %v, want the raw bound object (current `return bound, nil` behavior)", got)
+		_, err := evaluateOrdinalJoinRow(rc, mergedType, stubBinder{corrA: rowA, corrB: g})
+		var bnce *values.BakedNameContextError
+		if !errors.As(err, &bnce) {
+			t.Fatalf("garbage leg binding = %v, want a loud *values.BakedNameContextError (frontier-contract violation)", err)
 		}
 	})
 

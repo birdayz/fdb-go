@@ -406,8 +406,8 @@ type aliasAwareInterner interface{ InternsAliasAware() bool }
 // It is read in Insert/InsertFinal's hot path but only ever WRITTEN by a
 // NON-PARALLEL test: Go runs non-parallel tests sequentially, before the parallel
 // phase, with a happens-before barrier between the phases, so a plain bool is
-// race-free (the write is never concurrent with a read). Mirrors the §5 dual-
-// window differential's values.OracleBakedNameFallback.
+// race-free (the write is never concurrent with a read). Mirrors the same
+// non-parallel test-only global-flag discipline used elsewhere in RFC-173.
 //
 // The non-parallel constraint is enforced by -race, NOT just convention: adding
 // t.Parallel() to the setter's caller makes the write concurrent with a hot-path

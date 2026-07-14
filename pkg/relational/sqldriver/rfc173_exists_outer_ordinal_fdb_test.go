@@ -13,15 +13,13 @@ package sqldriver_test
 // adaptLegPositional), so the inner correlated ref resolves by ordinal, and the identity
 // pass-through propagates that PositionalRow so the downstream projection reads by ordinal.
 //
-// The proof is the values.NameReadForbidden measurement gate: ARMED, every name-keyed
-// Datum read (present or absent) is a hard error. This test arms the gate around both the
-// EXISTS and NOT-EXISTS shapes and asserts the exact rows — the dimension the dual-window
-// differential cannot see (both models agree when BOTH silently read by name). Correlated
-// EXISTS / NOT EXISTS has subtle NULL semantics; the asserted rows pin them.
-//
-// The gate is a process-global runtime flag; this test does NOT call t.Parallel(), so Go
-// runs it in the serial phase and resets the flag in defer — no other test observes it
-// armed. The schema is unique to this test, so no cached plan is shared.
+// The name-keyed outer-binding path this shape used to take has been DELETED, so the
+// outer binds POSITIONALLY (its own scan PositionalRow) as the only path: the inner
+// correlated ref resolves by ordinal and the identity pass-through propagates that
+// PositionalRow so the downstream projection reads by ordinal. This test asserts the
+// exact rows for both the EXISTS and NOT-EXISTS shapes. Correlated EXISTS / NOT EXISTS
+// has subtle NULL semantics; the asserted rows pin them. The schema is unique to this
+// test, so no cached plan is shared.
 
 import (
 	"context"
@@ -30,8 +28,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestFDB_RFC173_ExistsOuterOrdinal(t *testing.T) {
@@ -59,15 +55,10 @@ func TestFDB_RFC173_ExistsOuterOrdinal(t *testing.T) {
 	mwjoMustExec(t, db, ctx,
 		"INSERT INTO emp (eid, did) VALUES (10, 1), (11, 1), (12, 2)")
 
-	// Arm the measurement gate ONLY for this serial test: any name-keyed read on the
-	// EXISTS outer-binding / identity-pass-through path now hard-errors.
-	values.NameReadForbidden = true
-	defer func() { values.NameReadForbidden = false }()
-
 	names := func(t *testing.T, q string) string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
-			t.Fatalf("query %q under NameReadForbidden: %v", q, err)
+			t.Fatalf("query %q: %v", q, err)
 		}
 		defer rows.Close()
 		var out []string
