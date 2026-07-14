@@ -123,6 +123,17 @@ func rebaseOuterLegValueOrdinal(
 			failed = true // dotted lazy ref — not a direct leg column
 			return node
 		}
+		// Bound the ordinal to THIS leg's window before adding w.Offset. The name arm
+		// (FieldIndex) is in-range by construction, but a baked acc.Ordinal is relative
+		// to its child QOV's FULL type — if `windows[alias]` was narrowed to a
+		// buried-leg SUBwindow, a full-concat ordinal could spill past w.Typ into the
+		// NEXT leg's slots (w.Offset+legOrdinal is still a valid MERGED ordinal, so
+		// NewFieldValueOfOrdinal below would NOT catch it → a silent wrong-column read).
+		// Decline instead (correct-or-loud → name-model).
+		if legOrdinal < 0 || legOrdinal >= len(w.Typ.Fields) {
+			failed = true
+			return node
+		}
 		rebased, err := values.NewFieldValueOfOrdinal(mergedQOV, w.Offset+legOrdinal)
 		if err != nil {
 			failed = true

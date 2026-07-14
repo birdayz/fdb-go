@@ -76,6 +76,37 @@ func TestRebaseOuterLegValueOrdinal_LegLocalFrontierPinned_UsesBakedOrdinal(t *t
 	}
 }
 
+// TestRebaseOuterLegValueOrdinal_LegLocalOrdinalPastWindow_Declines pins the
+// bound-check: a leg-local baked ordinal relative to a FULL concat type that spills
+// PAST a narrowed leg subwindow must DECLINE (correct-or-loud → name-model), not
+// silently rebase onto a neighbouring leg's merged slot (a wrong-column read that
+// NewFieldValueOfOrdinal's merged-range check would NOT catch).
+func TestRebaseOuterLegValueOrdinal_LegLocalOrdinalPastWindow_Declines(t *testing.T) {
+	// A NARROWED leg window: only 2 columns in view, but the baked ref's ordinal (5)
+	// is relative to the child's wider full-concat type.
+	narrowLeg := &values.RecordType{Fields: []values.Field{
+		{Name: "P", FieldType: values.NullableInt, Ordinal: 0},
+		{Name: "Q", FieldType: values.NullableInt, Ordinal: 1},
+	}}
+	mergedFields := make([]values.Field, 16)
+	for i := range mergedFields {
+		mergedFields[i] = values.Field{Name: fmt.Sprintf("M%d", i), FieldType: values.NullableInt, Ordinal: i}
+	}
+	mergedType := &values.RecordType{Fields: mergedFields}
+	mergedQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
+	windows := map[string]ordinalLegWindow{"L": {Offset: 10, Typ: narrowLeg}}
+
+	ref := &values.FieldValue{
+		Field:    "Q",
+		Typ:      values.NullableInt,
+		Child:    values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("L")),
+		Resolved: values.NewFieldPathOfSingle("Q", 5, true), // ordinal 5 spills past the 2-field window
+	}
+	if _, ok := rebaseOuterLegValueOrdinal(ref, windows, mergedQOV); ok {
+		t.Fatal("a baked ordinal past the leg window must DECLINE (correct-or-loud), not rebase onto a neighbouring slot")
+	}
+}
+
 // TestRebaseOuterLegValueOrdinal_MergedRefPassesThrough pins the idempotence guard:
 // a ref ALREADY baked over the merged QOV (a multi-esq peel box's plan-time bake)
 // is final and must pass through untouched — re-baking would double-count the leg
