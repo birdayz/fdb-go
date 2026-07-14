@@ -195,11 +195,7 @@ func withChildren(v Value, newChildren []Value) Value {
 		for i, f := range vt.Fields {
 			fields[i] = RecordConstructorField{Name: f.Name, Value: newChildren[i]}
 		}
-		// Preserve the AnchoredJoin marker (RFC-077 F2) — it must survive the
-		// flatten-time substitution SelectMergeRule does via values.Replace, or
-		// the exploration-time correlation hiding silently lapses after the first
-		// rebase and the ≥4-way STAR blows past the task budget.
-		return &RecordConstructorValue{Fields: fields, AnchoredJoin: vt.AnchoredJoin}
+		return &RecordConstructorValue{Fields: fields}
 	case *AggregateValue:
 		if vt.Op == AggCountStar {
 			return v // COUNT(*) has no operand children

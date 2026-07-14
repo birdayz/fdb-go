@@ -41,9 +41,6 @@ func TestRFC173Commit2_ReconstructFoldStep1Seed(t *testing.T) {
 	if !ok {
 		t.Fatalf("seed must be a RecordConstructorValue, got %T", seed)
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("the reconstructed seed must be NON-anchored (the whole point: no name-model producer)")
-	}
 	if len(rc.Fields) != 4 {
 		t.Fatalf("seed must concat all leg columns (T1.ID,T1.V,T2.ID,T2.T1_ID), got %d fields", len(rc.Fields))
 	}

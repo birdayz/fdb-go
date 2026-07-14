@@ -1,7 +1,6 @@
 package query
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -316,12 +315,12 @@ func fieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
 	return values.UnknownType
 }
 
-// legColumns derives the OUTPUT columns of a logical sub-plan as the field set a
-// source-anchored join result value would carry for that leg (RFC-077 7.6 Option
-// B). The names it returns are EXACTLY the field names NewAnchoredJoinRecord
-// emits, so a parent join's anchored RC composes its legs consistently — a leg
-// that is itself a join exposes already-qualified (dotted) names that the parent
-// propagates verbatim (the nested-join case NewAnchoredJoinRecord handles).
+// legColumns derives the OUTPUT columns of a logical sub-plan as the field set
+// its row carries when consumed as a join leg (RFC-077 7.6 Option B): a leg
+// that is itself a join exposes already-qualified (dotted) names that a parent
+// propagates verbatim (the nested-join rule, inlined at the LogicalJoin arm —
+// the retired name-model producer's exact dotted naming, kept as a direct
+// derivation).
 //
 // Per-shape derivation (mirrors Option B's legOutputColumns):
 //   - LogicalScan      → the table's bare columns from metadata (tableColumns).
@@ -386,16 +385,18 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		if leftCols == nil || rightCols == nil {
 			return nil
 		}
-		leftAlias := values.NamedCorrelationIdentifier(sourceAlias(left))
-		rightAlias := values.NamedCorrelationIdentifier(sourceAlias(right))
-		rc := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-			{Alias: leftAlias, Columns: leftCols},
-			{Alias: rightAlias, Columns: rightCols},
-		})
+		leftAlias := sourceAlias(left)
+		rightAlias := sourceAlias(right)
+		if leftAlias == "" || rightAlias == "" {
+			return nil
+		}
 		// A join leg exposes ONLY its already-qualified (DOTTED) columns to a parent
-		// — the SOURCE-ACCURATE per-table forms (O.ID, C.PRICE, …). The anchored RC
-		// ALSO carries bare names (its OWN resolution convenience at this level), but
-		// those must NOT propagate: a parent re-qualifies a propagated bare under
+		// — the SOURCE-ACCURATE per-table forms (O.ID, C.PRICE, …): a bare column
+		// qualifies as UPPER(ALIAS).UPPER(COL); an already-dotted column (a nested
+		// join leg's exposed name) propagates VERBATIM with no re-qualification —
+		// the retired anchored-RC producer's exact dotted naming rule
+		// (NewAnchoredJoinRecord), kept as a direct derivation. Bare names must NOT
+		// propagate: a parent re-qualifies a propagated bare under
 		// sourceAlias(join)=right-leg, and a name from the right leg then collides
 		// with its verbatim dotted key (NewRecordConstructorValue would suffix it
 		// "_2" — a spurious key the opaque merge never produces). A buried column is
@@ -403,9 +404,17 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// bare. (RFC-077 7.6 — the unique-bare
 		// concern is pinned by TestFDB_NestedJoinUnqualifiedProjection.)
 		var fields []values.Field
-		for _, f := range rc.Fields {
-			if strings.Contains(f.Name, ".") {
-				fields = append(fields, values.Field{Name: f.Name, FieldType: values.UnknownType, Ordinal: len(fields)})
+		for _, leg := range []struct {
+			alias string
+			cols  []values.Field
+		}{{leftAlias, leftCols}, {rightAlias, rightCols}} {
+			prefix := strings.ToUpper(leg.alias) + "."
+			for _, c := range leg.cols {
+				name := strings.ToUpper(c.Name)
+				if !strings.Contains(c.Name, ".") {
+					name = prefix + name
+				}
+				fields = append(fields, values.Field{Name: name, FieldType: values.UnknownType, Ordinal: len(fields)})
 			}
 		}
 		return fields
@@ -933,37 +942,6 @@ func underlyingGroupBy(expr expressions.RelationalExpression) *expressions.Group
 		}
 	}
 	return nil
-}
-
-// buildJoinResultValue builds the result value for a binary join seed (RFC-077
-// 7.6 Option B): the source-anchored RecordConstructorValue —
-// FieldValue(QOV(leg), col) per column, named by NewAnchoredJoinRecord — so field
-// pull-up resolves through composeFieldOverConstructor by name, anchored to the
-// source quantifier. left/right are the POST-swap operands (RIGHT-join
-// normalization happens at the call site), so the leg order matches the [outer,
-// inner] ordering the column derivation + reversal signal read.
-//
-// Returns nil when a leg's output columns are not derivable (legColumns nil) or a
-// leg alias is empty — the retired opaque merge seed fallback was removed in
-// RFC-077 7.6 (proven unreachable for every md-bearing production query; only the
-// catalog-free nil-md TranslateToCascades path, used by unit tests, can't derive a
-// leg's columns). The caller treats nil as an untranslatable join.
-func (t *cascadesTranslator) buildJoinResultValue(left, right logical.LogicalOperator, leftAlias, rightAlias string) values.Value {
-	leftCols := t.legColumns(left)
-	rightCols := t.legColumns(right)
-	// Both legs must have a non-empty alias (the anchored RC keys columns by
-	// QOV(alias); a zero alias would panic NewQuantifiedObjectValue) AND derivable
-	// columns.
-	if leftAlias == "" || rightAlias == "" || leftCols == nil || rightCols == nil {
-		return nil
-	}
-	if producerCensusObserver != nil {
-		producerCensusObserver(ProducerCensusRecord{Producer: "P4", Enclosed: t.inInnerCluster, Shape: fmt.Sprintf("%T|%T", left, right)})
-	}
-	return values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-		{Alias: values.NamedCorrelationIdentifier(leftAlias), Columns: leftCols},
-		{Alias: values.NamedCorrelationIdentifier(rightAlias), Columns: rightCols},
-	})
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
@@ -1866,9 +1844,15 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		}
 	}
 	if resultValue == nil {
-		resultValue = t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType, prevEnclosure)
-	}
-	if resultValue == nil {
+		// The ordinal seed declined (multi-source enclosed outer, exists-unsafe
+		// scope, an underivable leg). The name-model FlatMap return value is
+		// DELETED (RFC-173 S4 item B — the full-suite producer census fired
+		// zero, so no production shape lands here); the shape is untranslatable
+		// — LOUD, never silent wrong rows.
+		if t.translateErr == nil {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"lateral unnest did not ordinalize (multi-source or enclosed outer, or an exists-unsafe scope)"))
+		}
 		return nil
 	}
 
@@ -1912,152 +1896,6 @@ func (t *cascadesTranslator) unnestFallbackOrReject(j *logical.LogicalJoin, u *l
 		OnPredicate: j.OnPredicate,
 	}
 	return t.translateJoin(rebuilt)
-}
-
-// buildUnnestResultValue builds the FlatMap RETURN value for a lateral unnest:
-// the outer leg's columns (anchored to QOV(outer)) plus the unnested element
-// (and, with ordinality, the 1-based ordinal). The element is the WHOLE inner
-// quantifier value (QOV(inner)) for the bare variant, or FieldValue.ofOrdinal
-// (element=0, ordinal=1) for the WITH ORDINALITY variant. Mirrors Java's
-// attribute list in generateCorrelatedFieldAccess. RFC-142.
-// The enclosed arg is the CALLER'S ENTRY enclosure (prevEnclosure), for the
-// producer census — NOT t.inInnerCluster, which both callers unconditionally set
-// to true on entry (so reading the field here would report every P5 firing as
-// enclosed by construction, blinding the census to an un-enclosed P5 residual).
-func (t *cascadesTranslator) buildUnnestResultValue(
-	outer logical.LogicalOperator,
-	outerCorr values.CorrelationIdentifier,
-	outerAlias string,
-	innerCorr values.CorrelationIdentifier,
-	u *logical.LogicalUnnest,
-	elementType values.Type,
-	enclosed bool,
-) values.Value {
-	outerCols := t.legColumns(outer)
-	if outerCols == nil {
-		return nil
-	}
-	if producerCensusObserver != nil {
-		producerCensusObserver(ProducerCensusRecord{Producer: "P5", Enclosed: enclosed, Shape: fmt.Sprintf("unnest|%T", outer)})
-	}
-	// Outer leg: bare + qualified ALIAS.COL fields, exactly as a normal join leg.
-	base := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-		{Alias: outerCorr, Columns: outerCols},
-	})
-	// MULTI-SOURCE outer (`FROM A, B, A.arr AS X`): legColumns(LogicalJoin)
-	// returns ONLY the already-qualified DOTTED columns (A.C, A.ARR, B.D, …);
-	// NewAnchoredJoinRecord propagates a dotted leg column VERBATIM with NO bare
-	// form (the nested-join rule). So the anchored outer record above carries only
-	// dotted keys — `SELECT C` (a bare outer column) and `ORDER BY C` would read a
-	// MISSING bare `C` key → NULL column / no-op sort. But the runtime merged outer
-	// row bound under QOV(outerCorr) ALSO carries bare keys (mergeRows writes both
-	// bare last-leg-wins AND ALIAS.COL — executor.go), exactly as a real join's
-	// result row does. Emit the matching bare fields here so the FlatMap RETURN
-	// value carries the outer merged row's BARE keys as well as the qualified ones,
-	// faithful to mergeRows/NewAnchoredJoinRecord. The bare key is read off
-	// QOV(outerCorr) by its bare name; last-occurrence (= right-leg) wins on a
-	// cross-leg collision, matching NewAnchoredJoinRecord's leg-order last-leg-wins.
-	// A single outer SCAN (`FROM t, t.arr`) already exposes bare columns via
-	// legColumns(LogicalScan), so base already carries them and this adds nothing
-	// new (the bareSeen guard dedups). The unnest AS/AT shadowing still applies
-	// below (the element/ordinal bare key wins over a same-named outer bare key).
-	// RFC-142.
-	bareSeen := map[string]struct{}{}
-	for _, f := range base.Fields {
-		if !strings.Contains(f.Name, ".") {
-			bareSeen[strings.ToUpper(f.Name)] = struct{}{}
-		}
-	}
-	outerBareLast := map[string]values.Value{}
-	var outerBareOrder []string
-	for _, c := range outerCols {
-		dot := strings.LastIndexByte(c.Name, '.')
-		if dot < 0 {
-			continue // a bare leg column — base already emitted it
-		}
-		bare := strings.ToUpper(c.Name[dot+1:])
-		if _, ok := bareSeen[bare]; ok {
-			continue // base already carries this bare key (single-scan leg)
-		}
-		// FieldValue(QOV(outerCorr), bare) reads the merged row's bare key.
-		v := values.NewFieldValue(values.NewQuantifiedObjectValue(outerCorr), bare, c.FieldType)
-		if _, dup := outerBareLast[bare]; !dup {
-			outerBareOrder = append(outerBareOrder, bare)
-		}
-		outerBareLast[bare] = v // last-occurrence (right leg) wins
-	}
-	// The unnest's AS/AT aliases SHADOW any same-named outer column: `... AS x`
-	// binds x to the element, even when the outer source already has a column
-	// named x (the name-collision case). Drop the outer's BARE field for a
-	// colliding name so the unnest's bare field is authoritative; the outer's
-	// explicitly-qualified `OUTER.x` form is preserved for an outer-qualified
-	// reference. RFC-142.
-	shadowed := map[string]struct{}{}
-	if u.Alias != "" {
-		shadowed[strings.ToUpper(u.Alias)] = struct{}{}
-	}
-	if u.AtAlias != "" {
-		shadowed[strings.ToUpper(u.AtAlias)] = struct{}{}
-	}
-	var fields []values.RecordConstructorField
-	for _, f := range base.Fields {
-		if _, clash := shadowed[strings.ToUpper(f.Name)]; clash && !strings.Contains(f.Name, ".") {
-			continue
-		}
-		fields = append(fields, f)
-	}
-	// Append the derived bare keys for a multi-source (dotted) outer leg, in
-	// stable order, skipping any name the unnest AS/AT shadows.
-	for _, bare := range outerBareOrder {
-		if _, clash := shadowed[bare]; clash {
-			continue
-		}
-		fields = append(fields, values.RecordConstructorField{Name: bare, Value: outerBareLast[bare]})
-	}
-
-	innerQOV := values.NewQuantifiedObjectValue(innerCorr)
-	withOrdinality := u.AtAlias != ""
-
-	// The AS-bound element. With ordinality, the inner flows a 2-field record;
-	// the element is ordinal field 0 (its type carried by the FieldValue). Without,
-	// the inner flows the BARE element — the alias IS the whole flowed object
-	// (Java's generateCorrelatedFieldAccess primitive branch binds to the QOV, NOT
-	// a FieldValue). A plain QOV defaults to UnknownType, which result-set column
-	// metadata would report as BIGINT; bind the element's flowed type to the array's
-	// elementType (STRING for a STRING array, etc.) so the element column advertises
-	// its real type, matching the ordinality path. RFC-142.
-	var elementValue values.Value
-	if withOrdinality {
-		elementValue = values.NewOrdinalFieldValue(innerQOV, 0, elementType)
-	} else {
-		elementValue = values.NewQuantifiedObjectValueOfType(innerCorr, elementType)
-	}
-	// The unnest leg's source alias — how the SELECT scope qualifies a
-	// reference to the AS/AT column (the unnest virtual source's correlation
-	// name). Key both the bare and the `<leg>.<col>` qualified forms so a
-	// qualified reference (`<leg>.AT`) also resolves against the FlatMap output.
-	// RFC-142.
-	legAlias := strings.ToUpper(u.Alias)
-	if legAlias == "" {
-		legAlias = strings.ToUpper(u.AtAlias)
-	}
-	addField := func(bareKey string, v values.Value) {
-		fields = append(fields, values.RecordConstructorField{Name: bareKey, Value: v})
-		if q := legAlias + "." + bareKey; q != bareKey {
-			fields = append(fields, values.RecordConstructorField{Name: q, Value: v})
-		}
-	}
-	if u.Alias != "" {
-		addField(strings.ToUpper(u.Alias), elementValue)
-	}
-	// The AT-bound 1-based ordinal (INT NOT NULL), ordinal field 1.
-	if withOrdinality {
-		addField(strings.ToUpper(u.AtAlias), values.NewOrdinalFieldValue(innerQOV, 1, values.NotNullInt))
-	}
-
-	rc := values.NewRecordConstructorValue(fields...)
-	rc.AnchoredJoin = true
-	return rc
 }
 
 // rewriteUnnestPredicate rewrites a WHERE predicate's references to a lateral
@@ -2948,16 +2786,10 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					// authority → decline to name-model (correct-or-loud). This path is
 					// linearity-agnostic: ordinalLegType accumulates every link's columns in spine
 					// order regardless of ownership topology, so fork spines rebase identically.
-					// The rebase FORM depends on the seed `sel`: an ORDINAL seed (an admitted spine —
-					// linear or fork, any depth) takes the POSITIONAL bake (ofOrdinal); a NAME-MODEL
-					// seed (a declined shape: box-base, FULL-box-bottom filtered, enclosed →
-					// NewAnchoredJoinRecord fallback) takes the NAME-KEY rebase against its qualified
-					// merged row — baking positionally onto the name-keyed row would strand
-					// (ordinal -1).
-					ordinalSeed := false
-					if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin {
-						ordinalSeed = true
-					}
+					// The rebase FORM: every RC seed is ORDINAL now (the name-model
+					// NewAnchoredJoinRecord fallback was deleted with its producer,
+					// RFC-173 S4 item B) and takes the POSITIONAL bake (ofOrdinal).
+					_, ordinalSeed := sel.GetResultValue().(*values.RecordConstructorValue)
 					// (The box-leg-WHERE-over-a-chained-OUTER-box straddle never reaches
 					// this rebase: the RFC-173 S4 cap loud-rejects it BEFORE the join
 					// translates — see the hoisted check at the top of this merge arm —
@@ -3158,7 +2990,7 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 // from its recorded map (written only when the gather ran).
 func windowedOrdinalSeed(sel *expressions.SelectExpression) (bool, *values.RecordType) {
 	rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue)
-	if !isRC || rc.AnchoredJoin {
+	if !isRC {
 		return false, nil
 	}
 	w, mt := values.OrdinalSeedLegWindows(rc)
@@ -5032,7 +4864,7 @@ type gatheredSeedBake struct {
 // unchecked re-assert.
 func seedElementSlots(sel *expressions.SelectExpression) (*values.RecordConstructorValue, map[string]int, bool) {
 	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
-	if !ok || rc.AnchoredJoin {
+	if !ok {
 		return nil, nil, false
 	}
 	var innerCorr values.CorrelationIdentifier
@@ -6063,13 +5895,11 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// column-order divergence. The quantifiers stay in execution (swapped) order;
 	// the RC keys columns by alias, so leg ORDER only affects `SELECT *` layout.
 	rvLeft, rvRight := j.Left, j.Right
-	rvLeftAlias, rvRightAlias := sourceAlias(rvLeft), sourceAlias(rvRight)
 	var resultValue values.Value
 	if gateDecision.Gated {
 		// RFC-173 Slice 2 W3b — the ordinal wedge seed: baked ofOrdinalNumber
 		// concatenation of the two legs + eager (leg, ordinal) predicate
-		// baking (contract ruling #2). Same untranslatable-on-nil rule as the
-		// anchored seed below.
+		// baking (contract ruling #2).
 		// W4-left: rvLeft/rvRight are DECLARATION order (I2 — only the
 		// null-supplying ROLE keys on the original kind; a RIGHT join's null
 		// side is its LEFT operand).
@@ -6079,12 +5909,21 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 			clusterLegOf(rvRight, j.Kind == logical.JoinLeft),
 		})
 		preds = bakeGatedJoinPredicates(preds, legTypes)
-	} else {
-		resultValue = t.buildJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
 	}
 	if resultValue == nil {
-		// A leg's columns are not derivable (only the catalog-free nil-md path;
-		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
+		// UNGATED, or a gated leg's columns are not derivable (the catalog-free
+		// nil-md path). The name-model anchored seed is DELETED (RFC-173 S4 item
+		// B — the full-suite producer census fired zero, so no production shape
+		// reaches here); an ungated join is untranslatable — LOUD, with the
+		// gate's own Reason naming the cause, never silent wrong rows.
+		if t.translateErr == nil {
+			reason := gateDecision.Reason
+			if reason == "" {
+				reason = "a leg's columns are not derivable"
+			}
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"join did not ordinalize (%s)", reason))
+		}
 		return nil
 	}
 
@@ -6336,15 +6175,22 @@ func (t *cascadesTranslator) translateJoinWithExists(
 			clusterLegOf(j.Right, false),
 		})
 		allPreds = bakeGatedJoinPredicates(allPreds, legTypes)
-	} else {
-		resultValue = t.buildJoinResultValue(j.Left, j.Right, sourceAlias(j.Left), sourceAlias(j.Right))
 	}
 	if resultValue == nil {
-		// A leg's columns are not derivable (only the catalog-free nil-md path;
-		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
-		// Mirrors translateJoin: the opaque-seed fallback was retired, so a nil
-		// result value must not flow into the SelectExpression (it would nil-deref
-		// downstream, e.g. GetCorrelatedToOfValue).
+		// UNGATED, or a gated leg's columns are not derivable (the catalog-free
+		// nil-md path). The name-model anchored seed is DELETED (RFC-173 S4 item
+		// B); mirrors translateJoin — a nil result value must not flow into the
+		// SelectExpression (it would nil-deref downstream, e.g.
+		// GetCorrelatedToOfValue), so the shape is untranslatable — LOUD, with
+		// the gate's own Reason naming the cause.
+		if t.translateErr == nil {
+			reason := gateDecision.Reason
+			if reason == "" {
+				reason = "a leg's columns are not derivable"
+			}
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"existential join flatten did not ordinalize (%s)", reason))
+		}
 		return nil
 	}
 	return expressions.NewSelectExpressionWithJoinType(

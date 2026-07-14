@@ -2935,7 +2935,6 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	// reordered keep the byte-identical merge path (their display sequence
 	// equals the RV's), exactly as before.
 	rc, isOrdinalRC := nlj.GetResultValue().(*values.RecordConstructorValue)
-	isOrdinalRC = isOrdinalRC && !rc.AnchoredJoin
 	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
 	elemAlias, collField, elemValue := gatheredExplodeElement(nlj)
 	if isOrdinalRC && len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) &&
@@ -3094,7 +3093,7 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 	// signature — excludes the W4b correlated-scalar-subquery ordinal seed, whose
 	// inner is not an Explode) AND ContainsBakedOrdinal (excludes name-model /
 	// projected-EXISTS folds). RFC-142/173.
-	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin &&
+	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok &&
 		len(rc.Fields) > 0 && findExplodePlan(fm.GetInner()) != nil && values.ContainsBakedOrdinal(rc) {
 		descs := allLeafDescriptors(fm.GetOuter(), md)
 		innerCorr := fm.GetInnerAlias()
@@ -3124,7 +3123,7 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 	// into its result value — an ordinary (non-anchored-join) RecordConstructor.
 	// Its field names ARE the output columns (e.g. ID, HAS_T2), so derive from
 	// them directly rather than merging the outer+inner table columns.
-	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin && len(rc.Fields) > 0 {
+	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && len(rc.Fields) > 0 {
 		// RFC-141 ROOT FIX: derive each folded column's metadata DIRECTLY
 		// from the RecordConstructorField's Name — the SAME name the fold set as the
 		// output column key and that RecordConstructorValue.Evaluate keys the
@@ -3201,32 +3200,6 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 		return deriveColumnsFromPlan(fm.GetOuter(), md)
 	}
 
-	// RFC-142: a lateral array unnest (`FROM t, t.arr AS x [AT o]`) lowers to a
-	// FlatMap(outer, Explode) whose result value is a source-anchored join record
-	// (buildUnnestResultValue → NewAnchoredJoinRecord) carrying the outer leg's
-	// columns PLUS the unnested element x (and, under ordinality, the ordinal o).
-	// The inner Explode plan has NO derivable record columns, so the outer+inner
-	// merge below would report ONLY the outer columns — dropping the element (and
-	// ordinal) from the result-set metadata, so `SELECT *` omitted them. Derive the
-	// columns directly from the result value's BARE (user-visible, non-dotted)
-	// fields instead: those ARE the SELECT-* column set (outer columns + element +
-	// ordinal), in declaration order — the same per-field derivation the RFC-141
-	// projected-EXISTS fold uses (foldedColumnDef), restricted to the bare keys (the
-	// qualified ALIAS.COL forms are resolution-convenience duplicates, exactly as a
-	// normal join's `SELECT *` reports bare labels via qualifyAndMergeColumns).
-	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && rc.AnchoredJoin &&
-		findExplodePlan(fm.GetInner()) != nil {
-		descs := allLeafDescriptors(fm.GetOuter(), md)
-		var cols []executor.ColumnDef
-		for _, f := range rc.Fields {
-			if strings.Contains(f.Name, ".") {
-				continue // qualified ALIAS.COL duplicate key — not a user column
-			}
-			cols = append(cols, foldedColumnDef(f, descs))
-		}
-		return cols
-	}
-
 	outerCols := deriveColumnsFromPlan(fm.GetOuter(), md)
 	innerCols := deriveColumnsFromPlan(fm.GetInner(), md)
 	if outerCols == nil && innerCols == nil {
@@ -3272,60 +3245,21 @@ func isCorrelatedScalarInnerLeg(f values.RecordConstructorField, innerAlias stri
 // outer/inner assignment. The translator builds the binary join seed in SQL
 // order [outer, inner]; comparing the SQL-first leg against the physical
 // outerAlias tells us whether columns need to be emitted in reversed order.
-//
-// The SQL-first leg is carried by the source-anchored RecordConstructorValue
-// (AnchoredJoin) — its FIELDS are declared in SQL column order (outer leg's
-// columns first), so the SQL-first leg is the correlation of the FIRST field's
-// anchored leg QOV. (The retired opaque merge seed it replaced was removed in
-// RFC-077 7.6.)
 func joinResultValueIsReversed(rv values.Value, physOuterAlias, physInnerAlias string) bool {
-	if first, ok := anchoredJoinFirstLeg(rv); ok {
-		return first != "" && first == physInnerAlias
-	}
+	_ = physOuterAlias
 	// RFC-173 W4-left: the gated LEFT/RIGHT ordinal seed keeps DECLARATION
 	// order (design ruling I2) while the physical legs run in EXECUTION
 	// (swapped) order — the SQL-first leg is the FIRST field's root baked
 	// QOV. Without this arm a RIGHT join's SELECT * metadata derived in
 	// execution order while the positional row followed the seed: the driver
 	// scanned dept values against emp columns (caught by the parity matrix).
-	if rc, isRC := rv.(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin &&
+	if rc, isRC := rv.(*values.RecordConstructorValue); isRC &&
 		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) {
 		if corr, ok := valueRootCorrelation(rc.Fields[0].Value); ok {
 			return strings.EqualFold(corr.Name(), physInnerAlias)
 		}
 	}
 	return false
-}
-
-// anchoredJoinFirstLeg returns the upper-cased correlation name of the SQL-first
-// (outer) leg of a source-anchored join result value (RFC-077 7.6): the leg QOV
-// the first field is anchored to. Reports false for any other value shape. The
-// first field is FieldValue(QOV(outerLeg), col); a nested-join leg's field value
-// may be a FieldValue whose child is another anchored RC, so descend the leftmost
-// FieldValue chain until a QuantifiedObjectValue is found.
-func anchoredJoinFirstLeg(rv values.Value) (string, bool) {
-	rc, ok := rv.(*values.RecordConstructorValue)
-	if !ok || !rc.AnchoredJoin || len(rc.Fields) == 0 {
-		return "", false
-	}
-	cur := rc.Fields[0].Value
-	for {
-		switch v := cur.(type) {
-		case *values.QuantifiedObjectValue:
-			return strings.ToUpper(v.Correlation.Name()), true
-		case *values.FieldValue:
-			if v.Child == nil {
-				return "", true
-			}
-			cur = v.Child
-		default:
-			// e.g. a nested anchored RC reached directly — recurse into its first leg.
-			if inner, ok := anchoredJoinFirstLeg(cur); ok {
-				return inner, true
-			}
-			return "", true
-		}
-	}
 }
 
 func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAlias, secondAlias string) []executor.ColumnDef {

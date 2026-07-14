@@ -110,8 +110,9 @@ func link(left logical.LogicalOperator, owner, field, alias string) (*logical.Lo
 }
 
 // seedForm drives the REAL chained dispatch and classifies the resulting
-// select's seed: "ordinal" (raw non-AnchoredJoin RC), "name-model" (AnchoredJoin
-// record), or "nil" (no select — loud error or non-chained shape).
+// select.'s seed: "ordinal" (an RC seed — the sole surviving form since the
+// name-model producer.'s deletion, RFC-173 S4 item B) or "nil" (no select —
+// loud error, the correct-or-loud floor for every declined shape).
 func seedForm(t *testing.T, tr *cascadesTranslator, j *logical.LogicalJoin, u *logical.LogicalUnnest) string {
 	t.Helper()
 	sel := tr.translateChainedUnnestJoin(j, u, false)
@@ -122,12 +123,8 @@ func seedForm(t *testing.T, tr *cascadesTranslator, j *logical.LogicalJoin, u *l
 	if !ok {
 		t.Fatalf("select %T has no GetResultValue", sel)
 	}
-	rc, ok := rv.GetResultValue().(*values.RecordConstructorValue)
-	if !ok {
+	if _, ok := rv.GetResultValue().(*values.RecordConstructorValue); !ok {
 		t.Fatalf("result value is %T, want *RecordConstructorValue", rv.GetResultValue())
-	}
-	if rc.AnchoredJoin {
-		return "name-model"
 	}
 	return "ordinal"
 }
@@ -305,7 +302,7 @@ func TestRFC173S4_2d_ChainedSpineSeedForm(t *testing.T) {
 		// same-named SUB at the wrong iteration variable) is unreachable via
 		// SQL. Pinned as loud-not-silent; if that guard is ever lifted, this
 		// case must flip to "name-model" (the linearity check declines it).
-		{"twin_fork_same_array", twinFork, false, "nil", "multiple lateral array unnests"},
+		{"twin_fork_same_array", twinFork, false, "nil", "chained lateral unnest did not ordinalize"},
 		// A malformed 1-segment link mid-spine dies LOUDLY in chained
 		// classification (chainedOwnerElementMessage requires 2 segments) before
 		// the gate ever runs — the walk's own Segments<2 check is defense in

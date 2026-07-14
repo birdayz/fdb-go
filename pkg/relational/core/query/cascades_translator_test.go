@@ -133,23 +133,29 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 		t.Errorf("limit leg columns %v != scan leg columns %v (limit must preserve shape)", limitCols, scanCols)
 	}
 
-	// (3) Join → the DOTTED (source-accurate) subset of NewAnchoredJoinRecord's
-	// fields. A join leg propagates ONLY its already-qualified per-table columns
-	// (O.ID, C.PRICE, …) to a parent — NOT the bare-last-wins names (those are the
-	// join's own result-value resolution convenience; propagating them would make a
+	// (3) Join → ONLY the DOTTED (source-accurate) per-table columns: a bare leg
+	// column qualifies as UPPER(ALIAS).UPPER(COL), an already-dotted one
+	// propagates verbatim — NOT the bare-last-wins names (those were the retired
+	// name-model RC's own resolution convenience; propagating them would make a
 	// parent re-qualify them into spurious "_2" keys — the nested-parity bug).
 	join := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), logical.JoinInner, "")
 	joinLegCols := tr.legColumns(join)
-	wantRC := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-		{Alias: values.NamedCorrelationIdentifier("O"), Columns: tr.legColumns(logical.NewScan("Order", "O"))},
-		{Alias: values.NamedCorrelationIdentifier("C"), Columns: tr.legColumns(logical.NewScan("Customer", "C"))},
-	})
 	gotNames := names(joinLegCols)
-	// Expected = exactly the DOTTED fields of the RC.
+	// Expected = each leg's columns qualified by its alias (dotted verbatim).
 	wantDotted := map[string]bool{}
-	for _, f := range wantRC.Fields {
-		if strings.Contains(f.Name, ".") {
-			wantDotted[f.Name] = true
+	for _, leg := range []struct {
+		alias string
+		cols  []values.Field
+	}{
+		{"O", tr.legColumns(logical.NewScan("Order", "O"))},
+		{"C", tr.legColumns(logical.NewScan("Customer", "C"))},
+	} {
+		for _, c := range leg.cols {
+			name := strings.ToUpper(c.Name)
+			if !strings.Contains(c.Name, ".") {
+				name = strings.ToUpper(leg.alias) + "." + name
+			}
+			wantDotted[name] = true
 		}
 	}
 	for k := range wantDotted {
@@ -209,14 +215,13 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 	}
 }
 
-// TestBuildJoinResultValue_NestedNoSpuriousKeys pins the nested-parity fix
-// (RFC-077 7.6): a 3-way nested-join seed's anchored RC must carry only
-// SOURCE-ACCURATE keys and NO dedup-suffixed "_2" garbage. Before the
+// TestLegColumns_NestedNoSpuriousKeys pins the nested-parity property
+// (RFC-077 7.6): a 3-way nested join's exposed leg schema must carry only
+// SOURCE-ACCURATE dotted keys and NO dedup-suffixed "_2" garbage. Before the
 // dotted-only legColumns fix, a sub-join leg's bare columns were re-qualified
 // under sourceAlias(inner)=right-leg, colliding with the inner's verbatim dotted
-// keys, so NewRecordConstructorValue suffixed "C.PRICE_2" etc. — spurious keys the
-// opaque merge never produces.
-func TestBuildJoinResultValue_NestedNoSpuriousKeys(t *testing.T) {
+// keys — spurious keys the runtime merge never produces.
+func TestLegColumns_NestedNoSpuriousKeys(t *testing.T) {
 	t.Parallel()
 	tr := &cascadesTranslator{md: demoMetaData(t)}
 
@@ -224,25 +229,21 @@ func TestBuildJoinResultValue_NestedNoSpuriousKeys(t *testing.T) {
 	inner := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), logical.JoinInner, "")
 	outer := logical.NewJoin(inner, logical.NewScan("TypedRecord", "TR"), logical.JoinInner, "")
 
-	rv := tr.buildJoinResultValue(outer.Left, outer.Right, sourceAlias(outer.Left), sourceAlias(outer.Right))
-	rc, ok := rv.(*values.RecordConstructorValue)
-	if !ok {
-		t.Fatalf("3-way seed result value = %T, want anchored *RecordConstructorValue", rv)
+	cols := tr.legColumns(outer)
+	if cols == nil {
+		t.Fatal("3-way nested join leg schema must be derivable")
 	}
-
-	for _, f := range rc.Fields {
-		if strings.Contains(f.Name, "_2") || strings.HasSuffix(f.Name, "_3") {
-			t.Errorf("spurious dedup-suffixed key %q (nested-parity bug — a bare leg name was re-qualified into an existing dotted key)", f.Name)
+	got := map[string]bool{}
+	for _, c := range cols {
+		if strings.Contains(c.Name, "_2") || strings.HasSuffix(c.Name, "_3") {
+			t.Errorf("spurious dedup-suffixed key %q (nested-parity bug — a bare leg name was re-qualified into an existing dotted key)", c.Name)
 		}
+		got[c.Name] = true
 	}
 	// The inner join's source-accurate dotted keys propagate verbatim.
-	got := map[string]bool{}
-	for _, f := range rc.Fields {
-		got[f.Name] = true
-	}
 	for _, want := range []string{"O.PRICE", "C.PRICE", "O.ORDER_ID", "C.CUSTOMER_ID"} {
 		if !got[want] {
-			t.Errorf("3-way seed missing source-accurate dotted key %q; got %v", want, got)
+			t.Errorf("3-way nested leg schema missing source-accurate dotted key %q; got %v", want, got)
 		}
 	}
 }
@@ -451,9 +452,8 @@ func TestTranslateJoin(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected RecordConstructorValue result, got %T", sel.GetResultValue())
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("a gated 2-way join must seed the ORDINAL RC, not the name-model anchored RC (RFC-173 S2 W3b)")
-	}
+	// (The name-model anchored RC is deleted — RFC-173 S4 item B; the seed
+	// assert below is the sole shape authority.)
 	values.AssertOrdinalJoinSeed(rc) // panics on a malformed seed
 	for i, f := range rc.Fields {
 		fv, isFV := f.Value.(*values.FieldValue)
@@ -478,8 +478,8 @@ func TestTranslateJoin(t *testing.T) {
 		t.Fatalf("the 3-way cluster must translate FLAT with 3 quantifiers, got %d", got)
 	}
 	rc3, ok := sel3.GetResultValue().(*values.RecordConstructorValue)
-	if !ok || rc3.AnchoredJoin {
-		t.Fatalf("a 3-way inner cluster must seed the ORDINAL flat RC (S3 fulcrum), got %T (anchored=%v)", sel3.GetResultValue(), ok && rc3.AnchoredJoin)
+	if !ok {
+		t.Fatalf("a 3-way inner cluster must seed the ORDINAL flat RC (S3 fulcrum), got %T", sel3.GetResultValue())
 	}
 	values.AssertOrdinalJoinSeed(rc3) // three consecutive full-leg runs
 }
@@ -743,12 +743,14 @@ func TestTranslateCTEShadowsTableName(t *testing.T) {
 
 func TestTranslateCTEMultipleReferences(t *testing.T) {
 	t.Parallel()
-	// CTE referenced twice in the main query (via join). md is REQUIRED so the
-	// join's CTE-reference legs anchor (the leg columns derive from the CTE body's
-	// real table — RFC-077 7.6); the opaque-seed fallback was retired.
+	// CTE referenced twice in the main query (via join), under DISTINCT aliases
+	// — the SQL-reachable double-reference class (`FROM p AS a, p AS b`; a bare
+	// `FROM p, p` is a 42712 duplicate alias upstream). md is REQUIRED so the
+	// join's CTE-reference legs derive their columns from the CTE body's real
+	// table (RFC-077 7.6).
 	body := logical.NewScan("Order", "")
-	left := logical.NewScan("p", "")
-	right := logical.NewScan("p", "")
+	left := logical.NewScan("p", "a")
+	right := logical.NewScan("p", "b")
 	join := logical.NewJoin(left, right, logical.JoinInner, "")
 	cte := logical.NewCTE("p", body, join, false)
 
@@ -763,6 +765,15 @@ func TestTranslateCTEMultipleReferences(t *testing.T) {
 	quants := sel.GetQuantifiers()
 	if len(quants) != 2 {
 		t.Fatalf("expected 2 quantifiers, got %d", len(quants))
+	}
+
+	// The DUP-ALIAS double reference (`FROM p, p` — only constructible by
+	// direct tree building; SQL rejects it upstream) declines LOUDLY: the gate
+	// poisons indistinguishable leg correlations and the name-model fallback is
+	// deleted (RFC-173 S4 item B).
+	dupJoin := logical.NewJoin(logical.NewScan("p", ""), logical.NewScan("p", ""), logical.JoinInner, "")
+	if dupRef, _ := TranslateToCascadesWithSubqueries(logical.NewCTE("p", body, dupJoin, false), demoMetaData(t)); dupRef != nil {
+		t.Fatal("dup-aliased CTE double reference must decline loudly (gate dup poison, no name-model fallback)")
 	}
 }
 

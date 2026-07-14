@@ -16,7 +16,6 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/relational/core/embedded"
-	rquery "fdb.dev/pkg/relational/core/query"
 )
 
 // The STAR-BODIED CTE/derived-table OPAQUE ORDINAL LEG (RFC-173 S4, item B —
@@ -344,22 +343,20 @@ func TestFDB_RFC173S4_ChainedStarCTE(t *testing.T) {
 		times3("map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]"))
 }
 
-// TestRFC173StarCTEOrdinalCensus pins the producer retirement of the star-CTE
-// class: every admitted shape plans AND fires 0 P4/P5. RED-ON-REVERT (of
-// derivedBodyStarOrdinalLeg + its gate/schema arms): each single-link shape
-// fires 2 (1 P4 name-model parent + 1 P5 enclosed body) and each chained shape
-// fires 1 (P4 — the chained body itself ordinalizes fresh). The COLLIDING-label
-// bodies (single-link and chained) are the documented residuals (they keep the
-// name model, so they still fire — asserted non-zero so their eventual
-// ordinalization consciously updates this pin). Serial (process-global observer).
-func TestRFC173StarCTEOrdinalCensus(t *testing.T) { //nolint:paralleltest // process-global observer, must be serial
+// TestRFC173StarCTEOrdinalCensus pins the star-CTE class's REACH: every admitted
+// shape (single-link, chained, colliding-label — the whole retired producer
+// class) must keep PLANNING cleanly. The name-model producers and their census
+// observer are DELETED (RFC-173 S4 item B), so a regression cannot fall back
+// silently — an admission revert surfaces as a LOUD plan error here (verified
+// during the demolition: reverting the chained/colliding admissions turned each
+// shape into a producer firing pre-deletion, a plan error post-deletion).
+// Planning-only.
+func TestRFC173StarCTEOrdinalCensus(t *testing.T) {
+	t.Parallel()
 	md := buildChainedUnnestMetadata(t)
 	count := func(sql string) (int, error) {
-		n := 0
-		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
-		defer rquery.SetProducerCensusObserver(nil)
 		_, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
-		return n, err
+		return 0, err
 	}
 
 	zeroed := []struct{ name, sql string }{
@@ -386,14 +383,8 @@ func TestRFC173StarCTEOrdinalCensus(t *testing.T) { //nolint:paralleltest // pro
 		{"colliding_derived_twin", `SELECT "S2"."SUB" FROM (SELECT * FROM T4, T4."SCARR" AS "SUB") AS "S2", T4 AS "CC"`},
 	}
 	for _, tc := range zeroed {
-		n, err := count(tc.sql)
-		if err != nil {
+		if _, err := count(tc.sql); err != nil {
 			t.Errorf("%s: plan error (should ordinalize cleanly): %v\n  sql: %s", tc.name, err, tc.sql)
-			continue
-		}
-		if n != 0 {
-			t.Errorf("%s: fired %d P4/P5 producer(s), want 0 (the star-CTE opaque ordinal leg regressed "+
-				"to the name model)\n  sql: %s", tc.name, n, tc.sql)
 		}
 	}
 

@@ -669,14 +669,10 @@ func bindOrientedComparison(
 	return nil
 }
 
-// valueCorrelationWithSeeds returns v's correlation set PLUS the re-exposed leg
-// aliases of every source-anchored join RC it reads through. GetCorrelatedToOfValue
-// deliberately HIDES an anchored RC's leg QOVs (exploration-budget reasons), so a
-// value that reads another table's column through a merge RC reports an EMPTY
-// correlation set. The data-access source-correlation guard MUST see those buried
-// legs (it is the value-level twin of predicates.AddMergeSeedAliases) — otherwise a
-// merge-RC column is mistaken for the matched source's own column and the
-// field-name collision mis-binds the source PK (TestFDB_MultiJoinWithFilter).
+// valueCorrelationWithSeeds returns v's correlation set. (It used to layer the
+// name-model anchored RC's re-exposed leg aliases on top — deleted with the
+// anchored producer, RFC-173 S4 item B: GetCorrelatedToOfValue reports an
+// ordinal seed's correlations directly, nothing is hidden anymore.)
 func valueCorrelationWithSeeds(v values.Value) map[values.CorrelationIdentifier]struct{} {
 	if v == nil {
 		return nil
@@ -685,14 +681,6 @@ func valueCorrelationWithSeeds(v values.Value) map[values.CorrelationIdentifier]
 	for k := range values.GetCorrelatedToOfValue(v) {
 		out[k] = struct{}{}
 	}
-	values.WalkValue(v, func(node values.Value) bool {
-		if rc, ok := node.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
-			for a := range values.GetCorrelatedToOfAnchoredJoinLegs(rc) {
-				out[a] = struct{}{}
-			}
-		}
-		return true
-	})
 	return out
 }
 

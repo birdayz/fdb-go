@@ -310,65 +310,31 @@ func physicalProvidedAliases(expr expressions.RelationalExpression, ownAlias val
 }
 
 // legReferencesAny reports whether the leg subtree ref is correlated to ANY alias
-// in targetSet (the OTHER leg's provided aliases) — directly (Reference.GetCorrelatedTo)
-// or through a source-anchored join RC whose leg QOVs GetCorrelatedTo deliberately
-// HIDES (predicates.AddMergeSeedAliases re-exposes them). This is the merge-seed-aware
-// hasCorrelation check: a spanning predicate pushed into a merge leg reads the
-// other leg's (possibly buried) column through a merge RC, so the correlation is
-// hidden and must be re-exposed — otherwise ImplementNestedLoopJoinRule emits a
-// materialized NLJ that embeds an unbound-outer-correlated leg → 0 rows
-// (TestFDB_JoinMerge_OuterColumn_NotDropped / TestFDB_DerivedTableExistsJoin).
+// in targetSet (the OTHER leg's provided aliases) via Reference.GetCorrelatedTo.
+// (The merge-seed re-exposure walk that layered on top — the name-model anchored
+// RC hid its leg QOVs from GetCorrelatedTo — was deleted with the anchored
+// producer, RFC-173 S4 item B: an ordinal seed's correlations are reported
+// directly.)
 func legReferencesAny(ref *expressions.Reference, targetSet map[values.CorrelationIdentifier]struct{}) bool {
 	for a := range ref.GetCorrelatedTo() {
 		if _, ok := targetSet[a]; ok {
 			return true
 		}
 	}
-	for _, m := range ref.AllMembers() {
-		se, ok := m.(*expressions.SelectExpression)
-		if !ok {
-			continue
-		}
-		for _, p := range se.GetPredicates() {
-			seeds := map[values.CorrelationIdentifier]struct{}{}
-			predicates.AddMergeSeedAliases(p, seeds)
-			for a := range seeds {
-				if _, ok := targetSet[a]; ok {
-					return true
-				}
-			}
-		}
-	}
 	return false
 }
 
-// legExternalAliases returns the aliases a leg subtree REFERENCES (directly or via
-// re-exposed merge seeds) that it does NOT itself provide — its dangling external
-// dependencies. Used by the incomplete-bipartition guard: when BOTH legs of a
-// would-be materialized NLJ share an external alias, that alias is an excluded
-// sibling table the two legs join through, so the materialized NLJ is unsafe as a
-// standalone root (the sibling is unbound).
+// legExternalAliases returns the aliases a leg subtree REFERENCES that it does
+// NOT itself provide — its dangling external dependencies. Used by the
+// incomplete-bipartition guard: when BOTH legs of a would-be materialized NLJ
+// share an external alias, that alias is an excluded sibling table the two legs
+// join through, so the materialized NLJ is unsafe as a standalone root (the
+// sibling is unbound).
 func legExternalAliases(ref *expressions.Reference, provided map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
-	add := func(a values.CorrelationIdentifier) {
+	for a := range ref.GetCorrelatedTo() {
 		if _, ok := provided[a]; !ok {
 			out[a] = struct{}{}
-		}
-	}
-	for a := range ref.GetCorrelatedTo() {
-		add(a)
-	}
-	for _, m := range ref.AllMembers() {
-		se, ok := m.(*expressions.SelectExpression)
-		if !ok {
-			continue
-		}
-		for _, p := range se.GetPredicates() {
-			seeds := map[values.CorrelationIdentifier]struct{}{}
-			predicates.AddMergeSeedAliases(p, seeds)
-			for a := range seeds {
-				add(a)
-			}
 		}
 	}
 	return out
@@ -458,20 +424,10 @@ func buildCorrelatedFlatMapPlan(
 ) (*plans.RecordQueryFlatMapPlan, expressions.RelationalExpression, bool) {
 	var outerPreds, joinPreds []predicates.QueryPredicate
 	for _, pred := range preds {
-		// Classification must be MERGE-SEED-AWARE (the same authority as
-		// legReferencesAny): a predicate rebased through a merge's anchored
-		// record constructor (SelectMergeRule's multi-quantifier-child
-		// translation rewrites QOV(box) into the box's RC) HIDES its leg
-		// correlations — GetCorrelatedToOfPredicate alone classified the
-		// RC-rebased WHERE conjunct as outer-only and stranded it on the
-		// outer leg, where its inner-leg reads hit the wrong frontier row
-		// (loud OrdinalResolutionError; a silent misread under a name
-		// collision).
 		corrSet := predicates.GetCorrelatedToOfPredicate(pred)
 		if corrSet == nil {
 			corrSet = map[values.CorrelationIdentifier]struct{}{}
 		}
-		predicates.AddMergeSeedAliases(pred, corrSet)
 		if _, ok := corrSet[innerCorr]; ok {
 			joinPreds = append(joinPreds, pred)
 		} else {
@@ -882,7 +838,6 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 					if corrSet == nil {
 						corrSet = map[values.CorrelationIdentifier]struct{}{}
 					}
-					predicates.AddMergeSeedAliases(p, corrSet)
 					// A scalar-subquery alias is NOT a buried leg: its value is
 					// pre-evaluated into the ROOT evaluation context, which every
 					// below-FOD filter arm threads (RowContext/positional/strict
@@ -1007,20 +962,14 @@ func resultValueReferencesAlias(rv values.Value, alias values.CorrelationIdentif
 	return ok
 }
 
-// mergedOuterLegAliases returns the COMPLETE set of source-leg aliases the
-// inner-join's merged outer row anchors columns for: the two top-level quantifier
-// aliases PLUS every alias BURIED inside a leg that is itself a JOIN/UNNEST subtree
-// (`FROM T1, T1.arr AS V, U` anchors T1, V, U — T1 buried under the unnest leg whose
-// row flows under V). The buried aliases are read ALGEBRAICALLY off the anchored
-// result value's dotted field-name prefixes: that value IS the merged-row schema
-// (NewAnchoredJoinRecord names each leg column "LEG.COL", dotted columns verbatim),
-// so the prefixes are the exact source-alias inventory the merged binding carries.
-// A residual referencing a buried source (QOV(T1).ID) must rebase to that verbatim
-// "T1.ID" key; reading only {leftAlias,rightAlias} left it unbound → NULL → rows
-// dropped. leftAlias/rightAlias are always included, so a non-anchored result value
-// (a folded projection) and a plain `FROM A,B` join degenerate to the prior
-// behaviour (a no-op for any already-bound reference). RFC-142.
+// mergedOuterLegAliases returns the set of source-leg aliases the inner-join's
+// merged outer row anchors columns for: the two top-level quantifier aliases.
+// (The buried-alias sweep off the name-model anchored RC's dotted field-name
+// prefixes was deleted with the anchored producer, RFC-173 S4 item B — no plan
+// carries an anchored RC anymore; an ordinal seed's legs are the quantifiers
+// themselves.) RFC-142.
 func mergedOuterLegAliases(rv values.Value, leftAlias, rightAlias string) []string {
+	_ = rv
 	seen := map[string]struct{}{}
 	var out []string
 	add := func(a string) {
@@ -1036,13 +985,6 @@ func mergedOuterLegAliases(rv values.Value, leftAlias, rightAlias string) []stri
 	}
 	add(leftAlias)
 	add(rightAlias)
-	if rc, ok := rv.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
-		for _, f := range rc.Fields {
-			if dot := strings.IndexByte(f.Name, '.'); dot > 0 {
-				add(f.Name[:dot])
-			}
-		}
-	}
 	return out
 }
 
@@ -1107,9 +1049,9 @@ func legIsOrdinalSafe(p plans.RecordQueryPlan) bool {
 				return false
 			}
 			// Only an ORDINAL box (a positional concat row) can be read by
-			// ordinal; a name-model box (an AnchoredJoin resultValue) cannot.
-			rc, ok := pl.GetResultValue().(*values.RecordConstructorValue)
-			if !ok || rc.AnchoredJoin {
+			// ordinal (every RC box now — the name-model AnchoredJoin
+			// resultValue was deleted with its producer, RFC-173 S4 item B).
+			if _, ok := pl.GetResultValue().(*values.RecordConstructorValue); !ok {
 				return false
 			}
 			return legIsOrdinalSafe(pl.GetOuter()) && legIsOrdinalSafe(pl.GetInner())

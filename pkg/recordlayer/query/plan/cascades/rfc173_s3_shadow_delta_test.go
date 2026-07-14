@@ -17,7 +17,7 @@ func planChainInterning(t *testing.T, n int, aliasIdentityBaseline bool) (shadow
 		defer expressions.SetDisableAliasAwareInterning(false)
 	}
 	p := fullChainPlanner()
-	_, tasks, err := p.Plan(expressions.InitialOf(buildChainSelect(n)))
+	_, tasks, err := p.Plan(expressions.InitialOf(buildOrdinalChainSelect(n)))
 	return p.Memo().AliasAwareDedups(), p.Memo().TotalMembers(), tasks, err == nil
 }
 

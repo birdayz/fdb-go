@@ -125,3 +125,15 @@ func TestExistsValue_WithNewChild(t *testing.T) {
 		t.Fatal("WithNewChild should not mutate the original")
 	}
 }
+
+// staticBinder is a minimal CorrelationBinder for the Evaluate tests: it binds
+// each correlation to an ordinal row (the sole runtime row).
+type staticBinder map[CorrelationIdentifier]OrdinalRow
+
+func (s staticBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
+	v, ok := s[id]
+	if !ok {
+		return nil, false
+	}
+	return v, true
+}

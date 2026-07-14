@@ -24,7 +24,6 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
-	rquery "fdb.dev/pkg/relational/core/query"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -433,21 +432,19 @@ func slice3B2bMetadata(tb testing.TB) *recordlayer.RecordMetaData {
 // requires no translation in flight), so the assertions must run in Go's
 // serial phase — a parallel sibling's concurrent translation would pollute the
 // count (a real data race). Planning-only, so it needs no FDB / Docker.
-func TestRFC173Slice3B2bFaceACensus(t *testing.T) { //nolint:paralleltest // process-global observer, must be serial
+func TestRFC173Slice3B2bFaceACensus(t *testing.T) {
+	t.Parallel()
 	md := slice3B2bMetadata(t)
 	const from = `FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
 	countProducers := func(sql string) int {
-		n := 0
-		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
-		defer rquery.SetProducerCensusObserver(nil)
 		if _, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil); err != nil {
 			t.Fatalf("plan %q: %v", sql, err)
 		}
-		return n
+		return 0 // plan-success probe (the producer census observer is deleted)
 	}
-	// The admitted box+EXISTS shapes fire ZERO name-model producers (the gather
-	// owns them). Measured: the LEFT box fires 2 producers with the admission
-	// off, 0 with it on — the model discriminator the row pins can't be.
+	// The admitted box+EXISTS shapes must keep PLANNING cleanly (the gather owns
+	// them; the name-model producers are deleted, so a regression is a LOUD plan
+	// error, not a silent fallback).
 	for _, tc := range []struct{ name, sql string }{
 		{"left_box_none", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
 		{"left_box_bakeable", `SELECT "X" ` + from + ` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
@@ -465,12 +462,4 @@ func TestRFC173Slice3B2bFaceACensus(t *testing.T) { //nolint:paralleltest // pro
 			t.Fatalf("%s: fired %d name-model producer(s), want 0 (the gather must own it)", tc.name, n)
 		}
 	}
-	// Observer-fires (non-vacuity): the B2-B metadata (A/B/EE/EEV, no nested array
-	// columns) can no longer express a shape that STILL fires a producer — every
-	// box+EXISTS shape it can build now ordinalizes. The observer-mechanism
-	// non-vacuity proof therefore lives in the white-box
-	// query.TestRFC173_ProducerCensusP5EnclosureBit, which drives an ENCLOSED
-	// single unnest over a LEFT box (the surviving name-model P5 residual after the
-	// S4-B chained-outer-box retirement) and asserts the observer fires with the
-	// correct enclosure bit.
 }

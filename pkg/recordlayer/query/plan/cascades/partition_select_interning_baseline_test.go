@@ -5,51 +5,9 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
-
-// buildChainSelect builds an n-table CHAIN join T1—T2—…—Tn, each link an
-// equi-predicate Ti.NEXT_ID = T(i+1).ID. A chain is the topology that exercises
-// PartitionSelectRule's MERGE re-enumeration (the path the merge quantifier's
-// interning protects): a connected lower sub-chain of ≥2 tables both referenced
-// by spanning upper predicates collapses into one merge quantifier, and the SAME
-// sub-chain (e.g. T2⋈T3) is reachable from many bipartitions — so its sub-product
-// must INTERN to one Reference or the task count explodes super-linearly with
-// arity. (A pure STAR does NOT hit the merge branch: with all predicates through
-// the hub, a connected ≥2-table lower always contains the hub and only the hub is
-// upper-referenced → the single-live case, not the ≥2-live merge.)
-//
-// The result value is the SOURCE-ANCHORED join RESULT value (RFC-077 7.6): each
-// chain table anchored to its OWN quantifier (T1→QOV(T1), …, Tn→QOV(Tn)) — the
-// structure the real flat N-quantifier select has once composeFieldOverConstructor
-// folds the SelectMergeRule-substituted inner anchored RCs. So the re-enumeration
-// fully ANCHORS (NewReEnumerationAnchoredRecord reads each live table's columns
-// from this parent by quantifier), exactly the real production path. It exercises
-// BOTH F2 exploration-time HIDING (GetCorrelatedToOfValue must NOT descend into the
-// anchored RC — its leg QOVs are self-bound) AND the anchored re-enumeration's
-// interning (the ≥4-way chain must stay within budget). If either lapses, the task
-// count blows up.
-func buildChainSelect(n int) *expressions.SelectExpression {
-	var quants []expressions.Quantifier
-	var aliases []string
-	var preds []predicates.QueryPredicate
-	var legs []values.AnchoredJoinLeg
-	for i := 1; i <= n; i++ {
-		quants = append(quants, scanQuantifier(tName(i)))
-		aliases = append(aliases, tName(i))
-		legs = append(legs, values.AnchoredJoinLeg{
-			Alias:   values.NamedCorrelationIdentifier(tName(i)),
-			Columns: []values.Field{{Name: "ID"}, {Name: "NEXT_ID"}},
-		})
-	}
-	for i := 1; i < n; i++ {
-		preds = append(preds, chainEqPred(tName(i), "NEXT_ID", tName(i+1), "ID"))
-	}
-	seed := values.NewAnchoredJoinRecord(legs)
-	return expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
-}
 
 func tName(i int) string {
 	if i < 10 {
@@ -77,7 +35,7 @@ func fullChainPlanner() *Planner {
 // plans, more tasks).
 func planChainTasks(t *testing.T, n int) int {
 	t.Helper()
-	ref := expressions.InitialOf(buildChainSelect(n))
+	ref := expressions.InitialOf(buildOrdinalChainSelect(n))
 	_, tasks, err := fullChainPlanner().Plan(ref)
 	if err != nil {
 		t.Fatalf("%d-table chain Plan: %v (tasks=%d)", n, err, tasks)
@@ -108,31 +66,16 @@ func planChainTasks(t *testing.T, n int) int {
 // consumers resolve by identity — Go has not unified namespaces, TODO 7.1) and
 // silently read a renamed column as NULL (TestFDB_CTEChainedColumnAliases /
 // TestFDB_CascadesCTEColumnAliases). Only a MERGE select — one whose result value
-// is a merge marker (the name-model source-anchored join RC AnchoredJoin, or the
-// S3-authoritative ordinal markers IsPositionalMergeRC / IsOrdinalJoinRV), whose
-// merge quantifier is planner-internal with NO external consumer — may intern
-// alias-aware. Un-gating (returning true for non-merge selects) reopens the
-// silent-NULL regression.
+// is one of the two ordinal merge markers (IsPositionalMergeRC / IsOrdinalJoinRV;
+// the name-model AnchoredJoin marker was deleted with its producer, RFC-173 S4
+// item B), whose merge quantifier is planner-internal with NO external consumer —
+// may intern alias-aware. Un-gating (returning true for non-merge selects)
+// reopens the silent-NULL regression.
 func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 	t.Parallel()
 
 	t1 := scanQuantifier("T1")
 	t2 := scanQuantifier("T2")
-
-	// The gate opts in on THREE merge-select markers. (a) The name-model
-	// source-anchored join RC (AnchoredJoin) — the RESIDUAL path, still
-	// constructible in Slice 3 (scalar-subquery / multi-source-unnest seeds),
-	// retired with the trio in Slice 4.
-	mergeSel := expressions.NewSelectExpressionWithAliases(
-		values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-			{Alias: values.NamedCorrelationIdentifier("T1"), Columns: []values.Field{{Name: "ID"}}},
-			{Alias: values.NamedCorrelationIdentifier("T2"), Columns: []values.Field{{Name: "ID"}}},
-		}),
-		[]expressions.Quantifier{t1, t2}, nil, []string{"T1", "T2"},
-	)
-	if !mergeSel.InternsAliasAware() {
-		t.Error("a select with a source-anchored join RC result must intern alias-aware (anchored residual)")
-	}
 
 	// (b) The S3-AUTHORITATIVE positional merge row (IsPositionalMergeRC: unnamed
 	// `_i` columns over bare QOVs — PartitionSelectRule's positionalMergeCase
@@ -246,7 +189,7 @@ func TestPartitionSelect_MergeAliasPlanHashStable(t *testing.T) {
 		GetRecordQueryPlan() plans.RecordQueryPlan
 	}
 	planOnce := func() plans.RecordQueryPlan {
-		e, _, err := fullChainPlanner().Plan(expressions.InitialOf(buildChainSelect(3)))
+		e, _, err := fullChainPlanner().Plan(expressions.InitialOf(buildOrdinalChainSelect(3)))
 		if err != nil {
 			t.Fatalf("Plan: %v", err)
 		}
@@ -271,17 +214,15 @@ func TestPartitionSelect_MergeAliasPlanHashStable(t *testing.T) {
 	}
 }
 
-// TestPartitionSelect_ChainInterningBaseline is the RFC-077 7.5 + 7.6 task-count
-// gate over the SOURCE-ANCHORED chain (the production path). It pins the
-// join-re-enumeration task count for 3- and 4-table chains so any memo-interning
-// touch — and the F2 exploration-time HIDING (GetCorrelatedToOfValue must NOT
-// descend into the anchored RC) — is held to a tight tolerance. If the hiding
-// lapses (the AnchoredJoin marker lost across a rebase, or GetCorrelatedToOfValue
-// descends), the buried leg QOVs inflate the correlation order and the 4-chain
-// count jumps the +~32% blowup the Seed-bit suppression was measured to prevent;
-// if alias-aware Reference.Insert/InsertFinal interning regresses, the count
-// doubles (29915 → 60044 with a naive per-occurrence alias). The pinned numbers
-// are the only thing that catches either — a bare "must not regress" is a vibe.
+// TestPartitionSelect_ChainInterningBaseline is the RFC-077 7.5 task-count
+// gate over the ORDINAL-seeded chain (the production path since the name-model
+// producer's deletion, RFC-173 S4 item B — the ordinal corpus reproduces the
+// anchored corpus's task counts exactly, so the pins carry over unchanged). It
+// pins the join-re-enumeration task count for 3- and 4-table chains so any
+// memo-interning touch is held to a tight tolerance: if alias-aware
+// Reference.Insert/InsertFinal interning regresses, the count doubles
+// (29915 → 60044 with a naive per-occurrence alias). The pinned numbers are
+// the only thing that catches it — a bare "must not regress" is a vibe.
 func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 	t.Parallel()
 

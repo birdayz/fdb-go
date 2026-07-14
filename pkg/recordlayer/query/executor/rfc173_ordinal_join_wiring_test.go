@@ -492,15 +492,14 @@ func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 		values.NewFieldValue(qovA, "ID", values.NotNullLong),
 		values.NewFieldValue(qovB, "ID", values.NotNullLong),
 	)
-	// Today's name-model join seed: a lazy ANCHORED RC.
-	anchored := &values.RecordConstructorValue{
+	// A LAZY (un-baked) RC join seed — the shape a non-ordinal merge carries.
+	lazy := &values.RecordConstructorValue{
 		Fields: []values.RecordConstructorField{
 			{Name: "ID", Value: values.NewFieldValue(qovA, "ID", values.NotNullLong)},
 			{Name: "V", Value: values.NewFieldValue(qovA, "V", values.NotNullLong)},
 			{Name: "ID_2", Value: values.NewFieldValue(qovB, "ID", values.NotNullLong)},
 			{Name: "W", Value: values.NewFieldValue(qovB, "W", values.NotNullLong)},
 		},
-		AnchoredJoin: true,
 	}
 
 	collect := func(rv values.Value) []QueryResult {
@@ -510,7 +509,7 @@ func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 		return collectCursor(t, c)
 	}
 	ordinal := collect(seed)
-	name := collect(anchored)
+	name := collect(lazy)
 	if len(ordinal) != 2 || len(name) != 2 {
 		t.Fatalf("got %d ordinal / %d name rows, want 2/2", len(ordinal), len(name))
 	}

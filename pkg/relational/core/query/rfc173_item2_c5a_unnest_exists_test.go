@@ -43,9 +43,6 @@ func TestRFC173Item2C5a_UnnestUnderExistsGatesOrdinal(t *testing.T) {
 	if !ok {
 		t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("unnest under EXISTS seeded the ANCHORED (name-model) RC — the decline lift did not fire")
-	}
 	// Every OUTER field is a baked frontier-pinned ofOrdinal (the ordinal seed).
 	outerType := tr.ordinalLegType(scan("Order", "o"))
 	for i := 0; i < len(outerType.Fields); i++ {
@@ -137,9 +134,6 @@ func TestRFC173Item2C5a_MultiAliasOuterGatesOrdinal(t *testing.T) {
 	if !ok {
 		t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("fresh-gating FULL OUTER outer under EXISTS seeded the ANCHORED RC — Step B must birth it POSITIONAL (ordinal seed) so the per-leg windows disambiguate the dup-named legs")
-	}
 	// The ordinal seed must carry per-leg windows so the box's two legs
 	// disambiguate positionally (channels 1+2). A nil window set would mean the
 	// seed fell back to flat name-resolution — the very ambiguity Step B fixes.
@@ -148,33 +142,22 @@ func TestRFC173Item2C5a_MultiAliasOuterGatesOrdinal(t *testing.T) {
 	}
 }
 
-// TestRFC173Item2C5a_MultiSourceInnerClusterStaysNameModel is the R1 NEGATIVE
-// pin for Step B: a MULTI-SOURCE INNER cluster (`FROM A, B, A.arr AS x`) is NOT
-// a fresh-gating outer box (boxGatesFresh excludes JoinInner), so it stays
-// NAME-MODEL under EXISTS. Admitting it would gate the cluster ordinal while its
+// TestRFC173Item2C5a_MultiSourceInnerClusterDeclines is the R1 NEGATIVE pin for
+// Step B: a MULTI-SOURCE INNER cluster (`FROM A, B, A.arr AS x`) is NOT a
+// fresh-gating outer box (boxGatesFresh excludes JoinInner), so its binary seed
+// DECLINES under EXISTS. Admitting it would gate the cluster ordinal while its
 // seed still declines the flattened multi-source outer — wrong rows (R1's
-// :5117-5119 hazard). This must hold in the SAME commit as the FULL-box lift.
-func TestRFC173Item2C5a_MultiSourceInnerClusterStaysNameModel(t *testing.T) {
+// :5117-5119 hazard). With the name-model fallback DELETED (RFC-173 S4 item B)
+// the decline is a LOUD nil, never a silent name-model seed.
+func TestRFC173Item2C5a_MultiSourceInnerClusterDeclines(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
 	// FROM (Order o INNER JOIN Customer c), o.TAGS AS X — a 2-alias INNER outer.
 	outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, "")
 	j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
 	tr.unnestUnderExistential = true
-	expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
-	if expr == nil {
-		t.Fatalf("translation failed: %v", tr.translateErr)
-	}
-	sel, ok := expr.(*expressions.SelectExpression)
-	if !ok {
-		t.Fatalf("unnest expr = %T, want a SelectExpression", expr)
-	}
-	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
-	if !ok {
-		t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
-	}
-	if !rc.AnchoredJoin {
-		t.Fatal("multi-source INNER cluster under EXISTS seeded the ORDINAL RC — boxGatesFresh must exclude JoinInner (R1: the seed still declines the multi-source outer, so an ordinal cluster gate is wrong rows)")
+	if expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)); expr != nil { //nolint:errcheck // fixture
+		t.Fatalf("multi-source INNER cluster under EXISTS must DECLINE (correct-or-loud; the name-model fallback is deleted), got %T", expr)
 	}
 }
 
@@ -319,9 +302,6 @@ func TestRFC173Item2C5b_ClusteredBoxSeedsOrdinal(t *testing.T) {
 	if !ok {
 		t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("clustered-INNER FULL box under EXISTS seeded the ANCHORED RC — c5b must birth it ORDINAL (a seed-gate revert the over-determined {7,8} e2e cannot catch)")
-	}
 	if w, _ := values.OrdinalSeedLegWindows(rc); w == nil {
 		t.Fatal("clustered-INNER ordinal seed yielded NO executor windows — the buried leaves cannot resolve without them")
 	}
@@ -356,9 +336,6 @@ func TestRFC173Item2C5a_ShadowAliasGatesOrdinal(t *testing.T) {
 	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
 	if !ok {
 		t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
-	}
-	if rc.AnchoredJoin {
-		t.Fatal("shadowing AS alias under EXISTS seeded the ANCHORED RC — the structural fix must keep it ORDINAL and give the element its own positional window (no decline)")
 	}
 	// The element gets its OWN 1-field window at the last slot (offset n-1),
 	// distinct from the outer PRICE column's window — so the element binds
@@ -538,11 +515,12 @@ func TestRFC173Item2C5a_OuterConjunctNarrowing(t *testing.T) {
 		}
 	}
 
-	// CONSUMPTION: the flag flips the FULL box from ordinal to name-model, in
-	// BOTH the EXISTS and non-EXISTS paths (the flag is checked in
-	// unnestExistsSeedSafe BEFORE the under-existential gate). FROM
+	// CONSUMPTION: the flag flips the FULL box from ordinal to a LOUD decline
+	// (the name-model fallback is DELETED — RFC-173 S4 item B), in BOTH the
+	// EXISTS and non-EXISTS paths (the flag is checked in unnestExistsSeedSafe
+	// BEFORE the under-existential gate). FROM
 	// (Order o FULL OUTER Customer c), o.TAGS AS X.
-	seed := func(underExists, flag bool) *values.RecordConstructorValue {
+	translate := func(underExists, flag bool) expressions.RelationalExpression {
 		tr := newGateTranslator(t)
 		tr.unnestUnderExistential = underExists
 		if flag {
@@ -552,31 +530,24 @@ func TestRFC173Item2C5a_OuterConjunctNarrowing(t *testing.T) {
 		}
 		outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
 		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
-		expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
-		if expr == nil {
-			t.Fatalf("translation failed (underExists=%v flag=%v): %v", underExists, flag, tr.translateErr)
-		}
-		sel, ok := expr.(*expressions.SelectExpression)
-		if !ok {
-			t.Fatalf("unnest expr = %T, want a SelectExpression", expr)
-		}
-		rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
-		if !ok {
-			t.Fatalf("unnest seed = %T, want an RC", sel.GetResultValue())
-		}
-		return rc
+		return tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
 	}
 	for _, underExists := range []bool{true, false} {
 		// flag CLEAR (element-only conjunct, or none): the box ORDINALIZES — the
 		// anti-over-decline pin the {7,8} e2e structurally cannot provide.
-		if seed(underExists, false).AnchoredJoin {
-			t.Errorf("underExists=%v flag clear: FULL box seeded ANCHORED — the narrowing over-declined (element-only / no conjunct must still ordinalize)", underExists)
+		expr := translate(underExists, false)
+		if expr == nil {
+			t.Errorf("underExists=%v flag clear: FULL box declined — the narrowing over-declined (element-only / no conjunct must still ordinalize)", underExists)
+		} else if sel, ok := expr.(*expressions.SelectExpression); !ok {
+			t.Errorf("underExists=%v flag clear: unnest expr = %T, want a SelectExpression", underExists, expr)
+		} else if _, ok := sel.GetResultValue().(*values.RecordConstructorValue); !ok {
+			t.Errorf("underExists=%v flag clear: unnest seed = %T, want the ordinal RC", underExists, sel.GetResultValue())
 		}
-		// flag SET (a box-leg conjunct): the box declines to NAME-MODEL. This must
+		// flag SET (a box-leg conjunct): the box DECLINES LOUDLY. This must
 		// hold for the NON-EXISTS path too (underExists=false) — the sibling
 		// regression (a plain WHERE on a box leg over an ordinal box).
-		if !seed(underExists, true).AnchoredJoin {
-			t.Errorf("underExists=%v flag set: FULL box seeded ORDINAL — the narrowing did not fire (a box-leg conjunct must decline to name-model)", underExists)
+		if expr := translate(underExists, true); expr != nil {
+			t.Errorf("underExists=%v flag set: FULL box translated (%T) — the narrowing did not fire (a box-leg conjunct must decline loudly)", underExists, expr)
 		}
 	}
 }

@@ -306,9 +306,6 @@ func TestRFC173W4b_ClusteredSeed_Shape(t *testing.T) {
 	if !isRC {
 		t.Fatalf("seed = %T, want *RecordConstructorValue", seed)
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("the shape-1 seed must be ORDINAL, not the name-model anchored record")
-	}
 	values.AssertOrdinalJoinSeed(rc)
 
 	wantOuter := len(pu.concatType.Fields)
@@ -387,9 +384,6 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 		t.Fatal("gated cluster + first-leg correlation must translate (it was 0AF00 on the name model)")
 	}
 	rc := seedOf(t, expr)
-	if rc.AnchoredJoin {
-		t.Fatal("gated cluster outer seeded the ANCHORED record — the ordinal path must be authoritative here")
-	}
 	values.AssertOrdinalJoinSeed(rc)
 
 	// Direction 2 (item-3 flip): the JOINED-PRESERVED outer now GATES — the
@@ -404,9 +398,7 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 	if expr2 == nil {
 		t.Fatalf("gated joined-preserved outer + rightmost correlation must translate ordinal (item-3), err=%v", tr2.translateErr)
 	}
-	if rc2 := seedOf(t, expr2); rc2.AnchoredJoin {
-		t.Fatal("gated joined-preserved outer seeded the ANCHORED record — the ordinal pull-up must be authoritative (item-3)")
-	}
+	_ = seedOf(t, expr2)
 
 	// Direction 2b: a GENUINELY-UNGATED outer (dup leg bindings poison the
 	// gate) + a correlated scalar. RFC-173 S4 (R3) RETIRED the name-model
@@ -432,8 +424,8 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 	buried := clusteredProject(left, clusteredCSQ("o2", "ORDER_ID"))
 	if expr3 := tr3.translateProjectWithCorrelatedScalar(buried); expr3 == nil {
 		t.Fatalf("gated outer + buried (non-rightmost) correlation must translate ordinal (amendment D), err=%v", tr3.translateErr)
-	} else if rc3 := seedOf(t, expr3); rc3.AnchoredJoin {
-		t.Fatal("buried correlation seeded the ANCHORED record — the buried-leg spans must carry it (item-3)")
+	} else {
+		_ = seedOf(t, expr3)
 	}
 
 	// Direction 4 (W4-left): a SINGLE-SOURCE LEFT box outer now GATES — the
@@ -447,10 +439,7 @@ func TestRFC173W4b_ClusteredDispatch_BothDirections(t *testing.T) {
 	if expr4 == nil {
 		t.Fatal("gated single-source LEFT outer + correlated scalar must translate ordinal (W4-left)")
 	}
-	rc4 := seedOf(t, expr4)
-	if rc4.AnchoredJoin {
-		t.Fatal("gated single-source LEFT outer seeded the ANCHORED record — W4-left's gate flip must route it ordinal")
-	}
+	_ = seedOf(t, expr4)
 }
 
 // TestRFC173W4b_InnerOwnAliasNotOuterRef pins the classifier's skip set: an
@@ -527,8 +516,8 @@ func TestRFC173W4b_JoinInnerDispatch_Ordinal(t *testing.T) {
 	proj := expr.(*expressions.LogicalProjectionExpression)
 	sel := proj.GetQuantifiers()[0].GetRangesOver().Members()[0].(*expressions.SelectExpression)
 	rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue)
-	if !isRC || rc.AnchoredJoin {
-		t.Fatalf("JOIN-inner seeded %T (anchored=%v), want the ORDINAL seed — the join-inner gate must be gone", sel.GetResultValue(), isRC && rc.AnchoredJoin)
+	if !isRC {
+		t.Fatalf("JOIN-inner seeded %T, want the ORDINAL seed RC", sel.GetResultValue())
 	}
 	values.AssertOrdinalJoinSeed(rc)
 	innerQCorr := sel.GetQuantifiers()[1].GetAlias()

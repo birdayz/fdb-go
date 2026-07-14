@@ -40,7 +40,7 @@ type OrdinalSeedLegWindow struct {
 // The merged type's field names are the seed's OUTPUT names in order (the element
 // name uppercased to match the executor); duplicates SURVIVE (positional access).
 func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLegWindow, *RecordType) {
-	if rc == nil || rc.AnchoredJoin || len(rc.Fields) == 0 {
+	if rc == nil || len(rc.Fields) == 0 {
 		return nil, nil
 	}
 	n := len(rc.Fields)

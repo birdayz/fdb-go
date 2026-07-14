@@ -31,9 +31,6 @@ func TestRFC173W4b_ScalarSeed_Shape(t *testing.T) {
 	if !ok {
 		t.Fatalf("seed = %T, want *RecordConstructorValue", seed)
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("W4b seed must be the ORDINAL seed, not the name-model anchored record")
-	}
 	// Every field is a baked ofOrdinal reference (AssertOrdinalJoinSeed already
 	// verified this in the builder; re-assert defensively).
 	values.AssertOrdinalJoinSeed(rc)

@@ -1,7 +1,6 @@
 package query
 
 import (
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -14,10 +13,10 @@ import (
 // (the e2e EXPLAIN summary renders the gated and anchored shapes
 // identically, so the seed's presence is asserted here, at the layer that
 // builds it): a maximal 2-way INNER join under a WHERE-EXISTS filter seeds
-// the BAKED ordinal RC (FrontierPinned refs, never the anchored RC), the
-// combined predicates bake, and every narrowing declines back to the
-// anchored name model (nested-cluster leg, duplicate existential alias,
-// enclosure).
+// the BAKED ordinal RC (FrontierPinned refs), the combined predicates bake,
+// and every narrowing declines LOUDLY (nested-cluster leg, duplicate
+// existential alias, enclosure) — the name-model fallback the declines used
+// to fall to was DELETED (RFC-173 S4 item B).
 
 // c3ExistsFilter wraps j in a WHERE-EXISTS filter carrying one existential
 // subquery over table pg (aliased by alias).
@@ -55,9 +54,6 @@ func c3AssertOrdinalSeed(t *testing.T, sel *expressions.SelectExpression) {
 	if !isRC {
 		t.Fatalf("gated flatten RV = %T, want the ordinal seed RC", sel.GetResultValue())
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("gated flatten seeded the ANCHORED RC — the ordinal seed did not fire")
-	}
 	if len(rc.Fields) == 0 {
 		t.Fatal("ordinal seed RC has no fields")
 	}
@@ -69,15 +65,16 @@ func c3AssertOrdinalSeed(t *testing.T, sel *expressions.SelectExpression) {
 	}
 }
 
-// c3AssertAnchoredSeed asserts the select's RV stayed the anchored name-model RC.
-func c3AssertAnchoredSeed(t *testing.T, sel *expressions.SelectExpression) {
+// c3AssertDeclines asserts the flatten DECLINED loudly: the translation is nil
+// and a translate error names the cause (the name-model anchored fallback the
+// decline used to fall to was DELETED — RFC-173 S4 item B).
+func c3AssertDeclines(t *testing.T, tr *cascadesTranslator, f *logical.LogicalFilter) {
 	t.Helper()
-	rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue)
-	if !isRC {
-		t.Fatalf("flatten RV = %T, want the anchored RC", sel.GetResultValue())
+	if ref := tr.translateRef(f); ref != nil {
+		t.Fatalf("declined flatten shape translated (%T) — must decline loudly", ref.Members()[0])
 	}
-	if !rc.AnchoredJoin {
-		t.Fatal("declined flatten did NOT stay anchored — a narrowing failed open")
+	if tr.translateErr == nil {
+		t.Fatal("declined flatten must set a LOUD translate error, got nil")
 	}
 }
 
@@ -106,14 +103,7 @@ func TestRFC173Item2C3_FlattenGateArm(t *testing.T) {
 		tr := newGateTranslator(t)
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
 		j := inner(nested, scan("TypedRecord", "tr"))
-		sel := c3TranslateFlatten(t, tr, c3ExistsFilter(j, "q$e"))
-		c3AssertAnchoredSeed(t, sel)
-		// The RECORD matches the seed built — a Gated record over an
-		// anchored seed would misroute downstream consumers (the
-		// WHERE-conjunct baking arm, commit 4's enclosure lift).
-		if d, ok := tr.wedgeGate[j]; !ok || d.Gated {
-			t.Fatalf("narrowed flatten's record = %+v (ok=%v), want recorded NOT gated", d, ok)
-		}
+		c3AssertDeclines(t, tr, c3ExistsFilter(j, "q$e"))
 	})
 
 	t.Run("duplicate existential alias declines", func(t *testing.T) {
@@ -139,13 +129,7 @@ func TestRFC173Item2C3_FlattenGateArm(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				tr := newGateTranslator(t)
-				f := mk()
-				j := f.Input.(*logical.LogicalJoin) //nolint:errcheck // fixture shape
-				sel := c3TranslateFlatten(t, tr, f)
-				c3AssertAnchoredSeed(t, sel)
-				if d, ok := tr.wedgeGate[j]; !ok || d.Gated {
-					t.Fatalf("dup-alias flatten's record = %+v (ok=%v), want recorded NOT gated (record must match the anchored seed)", d, ok)
-				}
+				c3AssertDeclines(t, tr, mk())
 			})
 		}
 	})
@@ -155,8 +139,7 @@ func TestRFC173Item2C3_FlattenGateArm(t *testing.T) {
 		tr := newGateTranslator(t)
 		tr.inInnerCluster = true
 		j := inner(scan("Order", "o"), scan("Customer", "c"))
-		sel := c3TranslateFlatten(t, tr, c3ExistsFilter(j, "q$e"))
-		c3AssertAnchoredSeed(t, sel)
+		c3AssertDeclines(t, tr, c3ExistsFilter(j, "q$e"))
 	})
 }
 
@@ -179,94 +162,42 @@ func c3FindExplode(ref *expressions.Reference, seen map[*expressions.Reference]b
 	return nil
 }
 
-// TestRFC173Item2C3_UnnestQualifiedReadRightmostSource pins the
-// order-INDEPENDENCE of the binary unnest path's array read at the layer
-// that builds it: for a MULTI-SOURCE outer the Explode's collection
-// reference reads the QUALIFIED SEG0.FIELD key even when the unnest source
-// is the RIGHTMOST FROM leg. The bare read was last-leg-wins over the
-// merged row — correct only while the join's execution operand order
-// cooperated; the deterministic tie-break drove the swapped order and the
-// Explode returned the OTHER leg's array (silent wrong rows, caught by the
-// unnest matrix). A translation-level pin holds regardless of which operand
-// order the cost model picks — the e2e matrix coverage of the swapped order
-// is contingent on cost-model internals.
-func TestRFC173Item2C3_UnnestQualifiedReadRightmostSource(t *testing.T) {
+// TestRFC173Item2C3_EnclosedUnnestDeclines pins that an ENCLOSED lateral
+// unnest — the binary name-model residual path, forced here with
+// inInnerCluster=true — DECLINES LOUDLY: its FlatMap return value
+// (buildUnnestResultValue) was DELETED with the name-model producer (RFC-173
+// S4 item B), and no production translation reaches the enclosed binary path
+// anymore (the gathered/rotated/star-normalized paths own every reachable
+// shape; the full-suite producer census fired zero). The un-enclosed LIVE
+// paths' collection forms are pinned by the W4c/W5 seed tests
+// (unnestBakedRootCollection, translateGatheredUnnestCluster).
+func TestRFC173Item2C3_EnclosedUnnestDeclines(t *testing.T) {
 	t.Parallel()
 
-	t.Run("multi-source outer reads qualified (rightmost source)", func(t *testing.T) {
-		t.Parallel()
-		tr := newGateTranslator(t)
-		// Enclosed: routes the BINARY unnest path (the W5 gathered path owns
-		// un-enclosed multi-source shapes with its own baked correlation).
-		tr.inInnerCluster = true
-		outer := inner(scan("Customer", "c"), scan("Order", "o"))
-		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
-		ref := tr.translateRef(j)
-		if ref == nil {
-			t.Fatalf("translation failed: %v", tr.translateErr)
-		}
-		ex := c3FindExplode(ref, map[*expressions.Reference]bool{})
-		if ex == nil {
-			t.Fatal("no ExplodeExpression in the translated unnest join")
-		}
-		fv, isFV := ex.GetCollectionValue().(*values.FieldValue)
-		if !isFV {
-			t.Fatalf("Explode collection = %T, want a FieldValue over the outer QOV", ex.GetCollectionValue())
-		}
-		if !strings.EqualFold(fv.Field, "O.TAGS") {
-			t.Fatalf("Explode reads %q, want the QUALIFIED %q — a bare read is last-leg-wins over the merged row and follows the join's execution operand order", fv.Field, "O.TAGS")
-		}
-	})
-
-	t.Run("full-outer box outer reads qualified", func(t *testing.T) {
-		t.Parallel()
-		// A FULL OUTER box is merge-OPAQUE (clusterArity counts it as ONE
-		// post-flattening quantifier) yet its output row is MERGED — bare
-		// keys are last-leg-wins across both legs. clusterArity is therefore
-		// the WRONG proxy for row shape here: the authority is the outer
-		// row's visible namespace count (outerBoundAliases). A bare read
-		// over `FROM a FULL JOIN b, a.arr AS x` explodes whichever leg's
-		// array merged last.
-		tr := newGateTranslator(t)
-		tr.inInnerCluster = true
-		outer := logical.NewJoin(scan("Customer", "c"), scan("Order", "o"), logical.JoinFull, "")
-		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
-		ref := tr.translateRef(j)
-		if ref == nil {
-			t.Fatalf("translation failed: %v", tr.translateErr)
-		}
-		ex := c3FindExplode(ref, map[*expressions.Reference]bool{})
-		if ex == nil {
-			t.Fatal("no ExplodeExpression in the translated unnest join")
-		}
-		fv, isFV := ex.GetCollectionValue().(*values.FieldValue)
-		if !isFV {
-			t.Fatalf("Explode collection = %T, want a FieldValue", ex.GetCollectionValue())
-		}
-		if !strings.EqualFold(fv.Field, "O.TAGS") {
-			t.Fatalf("FULL-box Explode reads %q, want the QUALIFIED %q — the box is merge-opaque (arity 1) but its ROW is merged (bare keys last-leg-wins)", fv.Field, "O.TAGS")
-		}
-	})
-
-	t.Run("single-source outer keeps the bare read", func(t *testing.T) {
-		t.Parallel()
-		tr := newGateTranslator(t)
-		tr.inInnerCluster = true
-		j := logical.NewJoin(scan("Order", "o"), &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
-		ref := tr.translateRef(j)
-		if ref == nil {
-			t.Fatalf("translation failed: %v", tr.translateErr)
-		}
-		ex := c3FindExplode(ref, map[*expressions.Reference]bool{})
-		if ex == nil {
-			t.Fatal("no ExplodeExpression in the translated unnest join")
-		}
-		fv, isFV := ex.GetCollectionValue().(*values.FieldValue)
-		if !isFV {
-			t.Fatalf("Explode collection = %T, want a FieldValue", ex.GetCollectionValue())
-		}
-		if strings.Contains(fv.Field, ".") {
-			t.Fatalf("single-source Explode reads %q, want the BARE field (scan rows carry bare keys only)", fv.Field)
-		}
-	})
+	shapes := map[string]func() *logical.LogicalJoin{
+		"multi-source outer": func() *logical.LogicalJoin {
+			outer := inner(scan("Customer", "c"), scan("Order", "o"))
+			return logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+		},
+		"full-outer box outer": func() *logical.LogicalJoin {
+			outer := logical.NewJoin(scan("Customer", "c"), scan("Order", "o"), logical.JoinFull, "")
+			return logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+		},
+		"single-source outer": func() *logical.LogicalJoin {
+			return logical.NewJoin(scan("Order", "o"), &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+		},
+	}
+	for name, mk := range shapes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tr := newGateTranslator(t)
+			tr.inInnerCluster = true
+			if ref := tr.translateRef(mk()); ref != nil {
+				t.Fatalf("enclosed unnest translated (%T) — the deleted name-model residual must decline", ref.Members()[0])
+			}
+			if tr.translateErr == nil {
+				t.Fatal("enclosed unnest decline must be LOUD (a translate error), got nil")
+			}
+		})
+	}
 }

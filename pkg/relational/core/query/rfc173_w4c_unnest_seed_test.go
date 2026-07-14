@@ -40,9 +40,6 @@ func TestRFC173W4c_UnnestSeed_NonOrdinality(t *testing.T) {
 	if !ok {
 		t.Fatalf("seed = %T, want *RecordConstructorValue", seed)
 	}
-	if rc.AnchoredJoin {
-		t.Fatal("W4c seed must be the ORDINAL seed, not the name-model anchored record")
-	}
 	outerType := tr.ordinalLegType(outer)
 	wantOuter := len(outerType.Fields)
 	if len(rc.Fields) != wantOuter+1 {
@@ -87,9 +84,6 @@ func TestRFC173W4c_UnnestSeed_WithOrdinality(t *testing.T) {
 		t.Fatal("single-source with-ordinality unnest must ordinalize, got nil")
 	}
 	rc := seed.(*values.RecordConstructorValue)
-	if rc.AnchoredJoin {
-		t.Fatal("W4c with-ordinality seed must be the ORDINAL seed, not anchored")
-	}
 	// A full all-baked seed passes the ordinal-join contract.
 	values.AssertOrdinalJoinSeed(rc)
 

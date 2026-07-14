@@ -4,24 +4,20 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/relational/core/embedded"
-	rquery "fdb.dev/pkg/relational/core/query"
 )
 
-// TestRFC173CensusSweep is a demolition-progress guard: it pins that the shape
-// families whose result values have been ORDINALIZED (off the name model) fire
-// ZERO P4/P5 name-model producers — so a future slice that regresses one back to
-// the name model trips this red. Serial (process-global observer), planning-only.
-// It also documents the KNOWN-still-firing family (the E-1b target) so the census
-// scope toward the S4 atomic demolition is legible in one place.
-func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-global observer, must be serial
+// TestRFC173CensusSweep is the ordinalized-corpus REACH sweep: every family the
+// RFC-173 demolition ordinalized must keep PLANNING cleanly. The name-model
+// producers (and their census observer) are DELETED (RFC-173 S4 item B), so a
+// regression cannot fall back silently anymore — it surfaces as a LOUD plan
+// error, which this sweep trips on. Planning-only.
+func TestRFC173CensusSweep(t *testing.T) {
+	t.Parallel()
 	md := slice3B2bMetadata(t)
 	count := func(sql string) (int, error) {
-		n := 0
-		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
-		defer rquery.SetProducerCensusObserver(nil)
 		_, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
-		return n, err
-	}
+		return 0, err
+	} // plan-success probe (the producer census observer is deleted)
 
 	// ORDINALIZED families — must plan AND fire 0 P4/P5 producers. A regression to
 	// the name model (or a plan strand) trips this.
@@ -82,13 +78,8 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		{"exists_leftbox_multi_esq_conj", `SELECT "X" FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
 	}
 	for _, tc := range zeroed {
-		n, err := count(tc.sql)
-		if err != nil {
+		if _, err := count(tc.sql); err != nil {
 			t.Errorf("%s: plan error (should ordinalize cleanly): %v", tc.name, err)
-			continue
-		}
-		if n != 0 {
-			t.Errorf("%s: fired %d P4/P5 producer(s), want 0 (regressed to the name model)", tc.name, n)
 		}
 	}
 }

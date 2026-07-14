@@ -126,10 +126,15 @@ func TestMemoEqual_OuterJoinNotChildrenAsSet(t *testing.T) {
 	mkJoin := func(jt JoinType) *SelectExpression {
 		q1 := NamedForEachQuantifier(values.NamedCorrelationIdentifier("T1"), scanT1)
 		q2 := NamedForEachQuantifier(values.NamedCorrelationIdentifier("T2"), scanT2)
-		rv := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-			{Alias: q1.GetAlias(), Columns: []values.Field{{Name: "ID"}}},
-			{Alias: q2.GetAlias(), Columns: []values.Field{{Name: "ID"}}},
-		})
+		// The POSITIONAL merge row (IsPositionalMergeRC) — the ordinal
+		// merge-select marker; the join RV just has to reference both legs
+		// symmetrically so swapped quantifiers share the node-info hash. (The
+		// name-model anchored RC this test originally seeded was deleted with
+		// its producer, RFC-173 S4 item B.)
+		rv := values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "_0", Value: values.NewQuantifiedObjectValue(q1.GetAlias())},
+			values.RecordConstructorField{Name: "_1", Value: values.NewQuantifiedObjectValue(q2.GetAlias())},
+		)
 		return NewSelectExpressionWithJoinType(rv, []Quantifier{q1, q2}, nil, []string{"T1", "T2"}, jt)
 	}
 

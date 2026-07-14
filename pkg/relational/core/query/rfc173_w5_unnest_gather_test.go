@@ -120,8 +120,8 @@ func TestRFC173W5_GatheredSeed_Shape(t *testing.T) {
 	// The seed: full O-run + full C-run + element + ordinal — all baked (AS+AT
 	// is the full-baked form) — and pristine per AssertOrdinalJoinSeed.
 	rc, isRC := gathered.GetResultValue().(*values.RecordConstructorValue)
-	if !isRC || rc.AnchoredJoin {
-		t.Fatalf("seed = %T (anchored=%v), want the ordinal RC", gathered.GetResultValue(), isRC && rc.AnchoredJoin)
+	if !isRC {
+		t.Fatalf("seed = %T, want the ordinal RC", gathered.GetResultValue())
 	}
 	values.AssertOrdinalJoinSeed(rc)
 	cType := tr.ordinalLegType(scan("AUX", "x"))
@@ -791,9 +791,9 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 		if clear == nil {
 			t.Fatalf("%v box, verdict None: must GATHER (got nil) — the decline must fire ONLY on Unbakeable", kind)
 		}
-		if rc, ok := clear.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok || rc.AnchoredJoin {
-			t.Fatalf("%v box, verdict None: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
-				kind, clear.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
+		if _, ok := clear.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok {
+			t.Fatalf("%v box, verdict None: gathered seed must be the ordinal RC, got %T",
+				kind, clear.(*expressions.SelectExpression).GetResultValue())
 		}
 
 		trBake := newDisjointUnnestTranslator(t)
@@ -802,9 +802,9 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 		if baked == nil {
 			t.Fatalf("%v box, BAKEABLE: must GATHER (got nil) — B2 admits bakeable conjuncts; a `!= boxConjNone` blanket decline regressed", kind)
 		}
-		if rc, ok := baked.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok || rc.AnchoredJoin {
-			t.Fatalf("%v box, BAKEABLE: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
-				kind, baked.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
+		if _, ok := baked.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok {
+			t.Fatalf("%v box, BAKEABLE: gathered seed must be the ordinal RC, got %T",
+				kind, baked.(*expressions.SelectExpression).GetResultValue())
 		}
 		if _, hasRecord := trBake.unnestGatherBoxLegTypes[j]; !hasRecord {
 			t.Fatalf("%v box, BAKEABLE: gather must RECORD its legTypes for the merge-site bake (one-authority law), found no record", kind)
@@ -833,8 +833,8 @@ func TestRFC173W5_Gathered_OuterConjunctCoupling(t *testing.T) {
 	if got == nil {
 		t.Fatal("INNER cluster, UNBAKEABLE: must STILL GATHER (got nil) — the verdict couples only the OUTER-box arm; over-declining the INNER cluster drops the gather optimization")
 	}
-	if rc, ok := got.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok || rc.AnchoredJoin {
-		t.Fatalf("INNER cluster, UNBAKEABLE: gathered seed must be ORDINAL (AnchoredJoin=false), got %T anchored=%v",
-			got.(*expressions.SelectExpression).GetResultValue(), ok && rc.AnchoredJoin)
+	if _, ok := got.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue); !ok {
+		t.Fatalf("INNER cluster, UNBAKEABLE: gathered seed must be the ordinal RC, got %T",
+			got.(*expressions.SelectExpression).GetResultValue())
 	}
 }

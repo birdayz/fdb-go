@@ -330,9 +330,4 @@ func TestRFC173S3_IsPositionalMergeRC(t *testing.T) {
 			t.Errorf("%s must NOT match the merge shape", name)
 		}
 	}
-	anchored := NewRawRecordConstructorValue(field("_0", qovA), field("_1", qovB))
-	anchored.AnchoredJoin = true
-	if IsPositionalMergeRC(anchored) {
-		t.Error("an AnchoredJoin RC must NOT match (the dotted model's marker, dies per birth site)")
-	}
 }

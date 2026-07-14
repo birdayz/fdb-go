@@ -386,7 +386,6 @@ go_test(
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/metadata",
-        "//pkg/relational/core/query",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//proto",

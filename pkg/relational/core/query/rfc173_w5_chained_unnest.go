@@ -189,26 +189,6 @@ func filterInputHasChainedUnnest(input logical.LogicalOperator) bool {
 	return found
 }
 
-// chainedUnnestCollection builds the Explode collection for a chained unnest:
-// a multi-accessor FieldValue rooted at the OWNER alias (segment 0 — reads the
-// element proto message off the merged row) with the sub-path
-// (segments[1:]) descended by NAME through the proto-message arm. Ordinals are
-// the loud -1 sentinel (the descent is name-addressed; a struct element never
-// materializes positionally). Child = QOV(sourceAlias(j.Left)) = the owner
-// alias the merged row binds. Design ruling 4 condition 3.
-func chainedUnnestCollection(u *logical.LogicalUnnest, outerCorr values.CorrelationIdentifier, elementType values.Type) values.Value {
-	accs := make([]values.ResolvedAccessor, 0, len(u.Segments))
-	for _, seg := range u.Segments {
-		accs = append(accs, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
-	}
-	return &values.FieldValue{
-		Field:    strings.ToUpper(u.Segments[len(u.Segments)-1]),
-		Typ:      values.NewArrayType(true, elementType),
-		Child:    values.NewQuantifiedObjectValue(outerCorr),
-		Resolved: &values.FieldPath{Accessors: accs},
-	}
-}
-
 // translateChainedUnnestJoin lowers a chained lateral unnest (`FROM t, t.arr AS
 // x, x.sub AS y`, second unnest owned by the first's element) into the residual
 // nested FlatMap composition. The nesting falls out of translateRef(j.Left)
@@ -308,35 +288,16 @@ func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, 
 		return nil
 	}
 
-	// FAIL-OPEN name-model residual (bare-twin / CTE-rooted / 3+-link chains).
-	// The chained outer (`j.Left`) is translated with the enclosure bit LEFT AS
-	// THIS unnest's translateUnnestJoin set it (name-model residual): a chained
-	// unnest is always name-model here, and a base-table unnest nested in
-	// `j.Left` relies on that enclosure bit to stay name-model too. A PRIOR
-	// chained link in `j.Left` still dispatches chained because the dispatch is
-	// gated on isChainedUnnest, NOT on the enclosure bit (Java nests each link the
-	// same way regardless of enclosure).
-	outerRef := t.translateRef(j.Left)
-	if outerRef == nil {
-		return nil
+	// The ordinal gate DECLINED and no cap matched (an inadmissible spine —
+	// twin-fork ownership, an underivable leg). The name-model residual
+	// composition is DELETED (RFC-173 S4 item B — the full-suite producer
+	// census fired zero, so no production shape lands here); the chain is
+	// untranslatable — LOUD, never silent wrong rows.
+	if t.translateErr == nil {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"chained lateral unnest did not ordinalize (inadmissible spine)"))
 	}
-
-	collection := chainedUnnestCollection(u, outerCorr, elementType)
-	explode := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
-	innerQ := expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(explode))
-	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
-
-	resultValue := t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType, prevEnclosure)
-	if resultValue == nil {
-		return nil
-	}
-	return expressions.NewSelectExpressionWithJoinType(
-		resultValue,
-		[]expressions.Quantifier{outerQ, innerQ},
-		nil,
-		[]string{outerAlias, innerCorr.Name()},
-		expressions.JoinInner,
-	)
+	return nil
 }
 
 // chainedSpineBottomsInFullBox reports whether a chained-unnest outer subtree

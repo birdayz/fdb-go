@@ -70,20 +70,20 @@ func TestRFC173Item2C4_EnclosureLift(t *testing.T) {
 		}
 	})
 
-	t.Run("FULL box under EXISTS stays name-model", func(t *testing.T) {
+	t.Run("FULL box under EXISTS declines loud", func(t *testing.T) {
 		t.Parallel()
 		// FULL genuinely GATES as a root (opaque both ways), but existsOuterGatesFresh
 		// deliberately EXCLUDES it: its drain-birth composition with the existential
-		// semi-join is unvalidated, so the lift keeps it name-model (a dedicated FULL
-		// slice widens it). The gate authority still gates FULL as a root — the
-		// scoping is on the LIFT, not on gating.
+		// semi-join is unvalidated, so the lift keeps it out (a dedicated FULL
+		// slice widens it) — and with the name-model fallback DELETED (RFC-173 S4
+		// item B) the excluded shape declines LOUDLY instead of translating.
 		box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
 		tr := newGateTranslator(t)
-		if ref := tr.translateRef(c4ExistsFilterOver(box, "q$e")); ref == nil {
-			t.Fatalf("translation failed: %v", tr.translateErr)
+		if ref := tr.translateRef(c4ExistsFilterOver(box, "q$e")); ref != nil {
+			t.Fatalf("FULL box under EXISTS translated (%T) — must decline loudly (lift excludes FULL; no name-model fallback)", ref.Members()[0])
 		}
-		if d, ok := tr.wedgeGate[box]; !ok || d.Gated {
-			t.Fatalf("FULL box under EXISTS = %+v (recorded=%v), want recorded NOT gated (lift excludes FULL)", d, ok)
+		if tr.translateErr == nil {
+			t.Fatal("FULL box under EXISTS decline must be LOUD (a translate error), got nil")
 		}
 	})
 
@@ -104,24 +104,22 @@ func TestRFC173Item2C4_EnclosureLift(t *testing.T) {
 		}
 	})
 
-	t.Run("EXISTS box already enclosed stays name-model", func(t *testing.T) {
+	t.Run("EXISTS box already enclosed declines loud", func(t *testing.T) {
 		t.Parallel()
-		// When the WHERE-EXISTS filter is ITSELF translated inside
-		// an enclosing name-model merge (prevEnclosure true — the box is a leg of
-		// a larger transparent join / derived body that will flatten-merge it),
-		// the lift must NOT clear the enclosure. existsOuterGatesFresh probes with
-		// a FRESH position, so it would report the box as gate-eligible; lifting
-		// on that alone lets the child seed an ordinal positional row the parent
-		// then name-model merges (wrong binding). The lift only fires when
-		// prevEnclosure is false.
+		// When the WHERE-EXISTS filter is ITSELF translated inside an enclosing
+		// context (prevEnclosure true), the lift must NOT clear the enclosure —
+		// existsOuterGatesFresh probes with a FRESH position, so lifting on that
+		// alone would seed an ordinal positional row the parent then mis-binds.
+		// With the name-model fallback DELETED (RFC-173 S4 item B) the
+		// non-lifted enclosed shape declines LOUDLY.
 		box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
 		tr := newGateTranslator(t)
-		tr.inInnerCluster = true // the enclosing name-model context
-		if ref := tr.translateRef(c4ExistsFilterOver(box, "q$e")); ref == nil {
-			t.Fatalf("translation failed: %v", tr.translateErr)
+		tr.inInnerCluster = true // the enclosing context
+		if ref := tr.translateRef(c4ExistsFilterOver(box, "q$e")); ref != nil {
+			t.Fatalf("already-enclosed EXISTS box translated (%T) — must decline loudly (the lift must not clear the enclosure)", ref.Members()[0])
 		}
-		if d, ok := tr.wedgeGate[box]; !ok || d.Gated {
-			t.Fatalf("already-enclosed EXISTS box = %+v (recorded=%v), want recorded NOT gated (the parent name-model merges it)", d, ok)
+		if tr.translateErr == nil {
+			t.Fatal("already-enclosed EXISTS box decline must be LOUD (a translate error), got nil")
 		}
 	})
 

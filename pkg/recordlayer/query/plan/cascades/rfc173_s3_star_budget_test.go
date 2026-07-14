@@ -109,10 +109,6 @@ func TestRFC173S3_OrdinalStarPlanningBudget(t *testing.T) {
 			t.Fatalf("ordinal %d-spoke star did NOT converge: %v (tasks=%d) — an interning "+
 				"regression re-exploding shared sub-products blew the 100k budget", spokes, err, tasks)
 		}
-		if hits := p.Memo().MergeArmHits(); hits != 0 {
-			t.Fatalf("ordinal %d-spoke star: MergeArmHits=%d, want 0 — an ordinal star leaked "+
-				"into the anchored dispatch arm", spokes, hits)
-		}
 		if i == 0 {
 			firstTasks = tasks
 		} else if tasks != firstTasks {

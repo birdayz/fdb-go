@@ -16,7 +16,6 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/relational/core/embedded"
-	rquery "fdb.dev/pkg/relational/core/query"
 )
 
 // The BURIED-CHAINED-SPINE rotation (RFC-173 S4, item B): a chained lateral
@@ -211,17 +210,8 @@ func TestRFC173BuriedChainedRotationCensus(t *testing.T) { //nolint:paralleltest
 		{"two_trailing_legs", `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", T4 AS "T4C", T4 AS "T4D"`},
 	}
 	for _, tc := range queries {
-		n := 0
-		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
-		_, err := embedded.PlanRecordQueryWithMetadata(tc.sql, md, nil)
-		rquery.SetProducerCensusObserver(nil)
-		if err != nil {
-			t.Errorf("%s: plan error (should rotate + ordinalize cleanly): %v\n  sql: %s", tc.name, err, tc.sql)
-			continue
-		}
-		if n != 0 {
-			t.Errorf("%s: fired %d P4/P5 producer(s), want 0 (the buried-chained rotation regressed "+
-				"to the name model)\n  sql: %s", tc.name, n, tc.sql)
+		if _, err := embedded.PlanRecordQueryWithMetadata(tc.sql, md, nil); err != nil {
+			t.Errorf("%s: plan error (should rotate + ordinalize cleanly; a name-model regression is a LOUD plan error now — the producer is deleted): %v\n  sql: %s", tc.name, err, tc.sql)
 		}
 	}
 }

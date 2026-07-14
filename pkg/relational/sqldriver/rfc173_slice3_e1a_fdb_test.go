@@ -12,7 +12,6 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/relational/core/embedded"
-	rquery "fdb.dev/pkg/relational/core/query"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -290,26 +289,19 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 	pin("e1b_enclosed_cte_leg_conj", `WITH D AS (SELECT "X" `+from+` WHERE A."K" > "X" AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X" FROM D, EEV`, "map[D.X:7]", "map[D.X:8]")
 }
 
-// TestRFC173Slice3E1aCensus pins that the E-1a INNER cluster under EXISTS fires
-// ZERO name-model producers (the ordinal gather owns it) — the model
-// discriminator the row pins cannot be. DELIBERATELY NOT t.Parallel(): the
-// producer census observer is process-global, so it must run in Go's serial
-// phase where no sibling translation is in flight (see the B2-B census twin).
-func TestRFC173Slice3E1aCensus(t *testing.T) { //nolint:paralleltest // process-global observer, must be serial
+// TestRFC173Slice3E1aCensus pins that the E-1a INNER cluster under EXISTS
+// keeps PLANNING cleanly (the ordinal gather owns it; the name-model
+// producers are deleted, so a regression is a LOUD plan error). Planning-only.
+func TestRFC173Slice3E1aCensus(t *testing.T) {
+	t.Parallel()
 	md := slice3B2bMetadata(t)
 	const from = `FROM A, B, A."ARR" AS "X"`
 	countProducers := func(sql string) int {
-		n := 0
-		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
-		defer rquery.SetProducerCensusObserver(nil)
 		if _, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil); err != nil {
 			t.Fatalf("plan %q: %v", sql, err)
 		}
-		return n
+		return 0 // plan-success probe (the producer census observer is deleted)
 	}
-	// The admitted single-esq INNER cluster shapes fire ZERO name-model
-	// producers (the gather owns them). Before E-1a these fired the P5 unnest
-	// producer; after, the alias-aware ordinal bake replaces it.
 	for _, tc := range []struct{ name, sql string }{
 		{"inner_AK", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
 		{"inner_BK", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`},

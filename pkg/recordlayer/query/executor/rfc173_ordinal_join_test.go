@@ -117,9 +117,6 @@ func TestRFC173S2_RawRecordConstructor_DupNamesVerbatim(t *testing.T) {
 	if raw.Fields[0].Name != "ID" || raw.Fields[1].Name != "ID" {
 		t.Fatalf("raw RC names = [%q, %q], want [ID, ID] — duplicates must survive verbatim", raw.Fields[0].Name, raw.Fields[1].Name)
 	}
-	if raw.AnchoredJoin {
-		t.Fatal("raw RC must not be born anchored")
-	}
 
 	// Control: the name-model constructor still renames.
 	named := values.NewRecordConstructorValue(fields...)
@@ -195,16 +192,6 @@ func TestRFC173S2_OrdinalJoinSpans_NameModelDeclines(t *testing.T) {
 	)
 	if _, _, ok := ordinalJoinSpans(lazyRC); ok {
 		t.Fatal("a lazy RC must not be an ordinal join — the name model's RCs land here")
-	}
-	// Lazy ANCHORED join RC — today's name-model join seed shape.
-	anchored := &values.RecordConstructorValue{
-		Fields: []values.RecordConstructorField{
-			{Name: "ID", Value: values.NewFieldValue(qovA, "ID", values.NotNullLong)},
-		},
-		AnchoredJoin: true,
-	}
-	if _, _, ok := ordinalJoinSpans(anchored); ok {
-		t.Fatal("a lazy anchored join RC must not be an ordinal join")
 	}
 }
 
