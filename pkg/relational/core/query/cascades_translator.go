@@ -751,11 +751,10 @@ func normalizeAggOutputName(s string) string {
 // GroupByExpression to its output ordinal in [groupKeys..., aggregates...] order —
 // exactly the slot order the executor's aggregateCursor emits, so a reference baked
 // to one of these ordinals reads the right slot by Get(ordinal). It returns the KEY
-// ordinals and the AGGREGATE ordinals SEPARATELY: an aggregate reference must always
-// bake (its canonical/alias spelling mismatches the positional column name), but a
-// GROUP-KEY reference is baked only at the top level of a projection — a nested one
-// (e.g. `V + 1`) resolves by name and baking would leak the ordinal marker (`V#0`)
-// into the computed column's name-model Datum key.
+// ordinals and the AGGREGATE ordinals SEPARATELY only because they occupy DISJOINT
+// ordinal ranges with aggregate-name priority on collision — both keys AND aggregates
+// bake uniformly (RFC-173 C), top-level or nested; there is no "leave a nested key
+// lazy" policy anymore (that was a runtime-accident partition).
 func groupByOutputOrdinals(gb *expressions.GroupByExpression) (keys, aggs map[string]int) {
 	keys = map[string]int{}
 	aggs = map[string]int{}
