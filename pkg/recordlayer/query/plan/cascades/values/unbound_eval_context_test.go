@@ -48,6 +48,11 @@ func TestFieldValue_UnboundEvalContext_IsLoud(t *testing.T) {
 	v, err = lazy.Evaluate(weirdCtx{x: 2})
 	assertUnbound("correlated over struct ctx", v, err)
 
+	// (4) A BARE CorrelationBinder (not wrapped in a *RowEvalContext) that lacks
+	// this correlation — the CorrelationBinder-unbound tail (direct coverage).
+	v, err = lazy.Evaluate(otherBinder)
+	assertUnbound("correlated over unbound bare CorrelationBinder", v, err)
+
 	// A nil context stays the sanctioned NULL (ruling #3), never loud.
 	if got, gotErr := flat.Evaluate(nil); got != nil || gotErr != nil {
 		t.Fatalf("flat over nil = (%v, %v), want (nil, nil) — sanctioned NULL", got, gotErr)

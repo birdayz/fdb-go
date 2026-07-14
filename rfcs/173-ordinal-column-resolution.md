@@ -5739,14 +5739,17 @@ per-shape ordinalization gate. Items below, most-actionable first.
   slot — a continuation-payload format change, so version the payload deliberately (not done in the
   cap). Doc at query_result.go / continuation.go already flags it VESTIGIAL.
 
-### F. Make the residual silent-NULL tails loud (Torvalds P4 — needs a Graefe ruling)
-- [ ] The `!FrontierPinned` tails in `FieldValue.Evaluate` / `evaluateCorrelated` return `(nil,nil)`
-  on an unrecognized non-nil context. Post-cap these SHOULD be unreachable (production flows
-  OrdinalRow / RowEvalContext / CorrelationBinder / nil). Torvalds: make them loud unconditionally
-  and PROVE unreachability, rather than leaving a silent arm. NOTE the tension: Graefe's delta
-  review asked to *freeze* the unpinned silent behavior with a pin (added:
-  `TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent`). Reconcile — the frozen-silent pin vs
-  make-it-loud is a genuine open decision; take it to Graefe before flipping.
+### F. Make the residual silent-NULL tails loud — DONE (Graefe ruling, commit 454b3472a)
+- [x] Graefe RULED a nuanced split (not a blanket flip): the tails divide into two populations.
+  KEEP-SILENT the correlation-MATCHED raw-return arms (`return bound, nil`) — they fire only when a
+  correlation RESOLVED to a non-nil non-ordinal value, the sanctioned `birthLegBinder` raw leg (W4c);
+  pinned still loud via `frontierContractGuard`, unpinned returns raw. LOUD-unconditionally the
+  NOTHING-MATCHED tails (Evaluate's unrecognized tail + evaluateCorrelated's unbound/no-positional and
+  unrecognized tails) via a NEW `*UnboundEvalContextError{Field,Correlation,CtxType}` (distinct from
+  BakedNameContextError = "pinned hit a name context that DID resolve"), for pinned and unpinned alike.
+  Asserts met: (a) tails flipped + full sqldriver+yamsql GREEN ⇒ unreachability proven;
+  (b) `TestFieldValue_UnboundEvalContext_IsLoud`; (c) the `TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent`
+  raw-binding pin stays green.
 
 ### Doc rot from the deleted machinery — FIXED this session
 - [x] `query_result.go` QueryResult/Positional/Complete docs (claimed Datum still emitted + a shadow
