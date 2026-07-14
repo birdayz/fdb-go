@@ -76,10 +76,10 @@ func (v *ExistsValue) Evaluate(ctx any) (any, error) {
 	// EXISTS is true iff the existential quantifier's object is BOUND to a non-null row (the
 	// subplan yielded ≥1 row). Java's `getChild().eval() != null` works because Java's
 	// QuantifiedObjectValue.eval returns null for an unbound quantifier. Go's
-	// QuantifiedObjectValue.Evaluate has a single-source `ctx.Datum` fallback shim that returns
-	// the OUTER row for an *unbound* existential alias — which would wrongly report TRUE for an
-	// empty subquery. So when the child is a quantifier, look up its existential binding
-	// DIRECTLY (no outer-row fallback): unbound or null ⇒ FALSE.
+	// QuantifiedObjectValue.Evaluate, for an *unbound* alias, falls THROUGH to the frontier
+	// Positional row (the outer row) — which would wrongly report TRUE for an empty subquery.
+	// So when the child is a quantifier, look up its existential binding DIRECTLY (never that
+	// frontier-row fallback): unbound or null ⇒ FALSE.
 	if qov, ok := v.Value.(*QuantifiedObjectValue); ok {
 		switch c := ctx.(type) {
 		case CorrelationBinder: // *RowEvalContext also satisfies this

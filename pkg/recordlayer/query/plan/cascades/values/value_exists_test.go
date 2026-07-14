@@ -59,11 +59,12 @@ func TestExistsValue_EvaluateChildNonNull(t *testing.T) {
 		t.Fatalf("Evaluate (no row) = %v, want false", got)
 	}
 
-	// Revert-proof: a RowEvalContext carrying an outer row (Datum) but NO binding
-	// for the existential alias must be FALSE — never the outer-row fallback. The child QOV's
-	// `ctx.Datum` shim would otherwise return the outer row, making EXISTS wrongly report TRUE
-	// for an empty subquery. ExistsValue.Evaluate looks up the existential binding directly.
-	outerRowNoBinding := &RowEvalContext{Datum: map[string]any{"outer_col": 42}}
+	// Revert-proof: a RowEvalContext carrying an outer frontier row but NO binding
+	// for the existential alias must be FALSE — never the outer-row fallback.
+	// ExistsValue.Evaluate looks up the existential binding directly; the outer
+	// Positional row must not leak in and make EXISTS wrongly report TRUE for an
+	// empty subquery.
+	outerRowNoBinding := &RowEvalContext{Positional: fom(map[string]any{"outer_col": 42})}
 	got, err = v.Evaluate(outerRowNoBinding)
 	if err != nil {
 		t.Fatalf("Evaluate error: %v", err)
@@ -74,8 +75,8 @@ func TestExistsValue_EvaluateChildNonNull(t *testing.T) {
 
 	// And a RowEvalContext that DOES bind the existential alias to a row ⇒ TRUE.
 	boundRow := &RowEvalContext{
-		Datum:        map[string]any{"outer_col": 42},
-		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{alias: map[string]any{"col": 1}}},
+		Positional:   fom(map[string]any{"outer_col": 42}),
+		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{alias: fom(map[string]any{"col": 1})}},
 	}
 	got, err = v.Evaluate(boundRow)
 	if err != nil {

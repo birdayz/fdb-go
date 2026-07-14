@@ -2643,11 +2643,7 @@ func TestEvaluationContext_WithParams_CopiesBindings(t *testing.T) {
 func TestEvaluationContext_RowContext(t *testing.T) {
 	t.Parallel()
 	ec := EmptyEvaluationContext().WithParams([]any{int64(99)})
-	datum := map[string]any{"col": "hello"}
-	rc := ec.RowContext(datum)
-	if rc.Datum["col"] != "hello" {
-		t.Fatal("RowContext should pass through datum")
-	}
+	rc := ec.RowContext()
 	v, ok := rc.Binder.BindParameter(1, "")
 	if !ok || v != int64(99) {
 		t.Fatal("RowContext's binder should use the EvalContext's params")
@@ -2658,8 +2654,7 @@ func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
 	t.Parallel()
 	id := values.NamedCorrelationIdentifier("explode_q1")
 	ec := EmptyEvaluationContext().WithBinding(id, int64(42))
-	datum := map[string]any{"col": "hello"}
-	rc := ec.RowContext(datum)
+	rc := ec.RowContext()
 	if rc.Correlations == nil {
 		t.Fatal("RowContext should pass through correlation binder")
 	}

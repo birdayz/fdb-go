@@ -628,29 +628,28 @@ func TestQuantifiedObjectValue_Evaluate_MultiSource(t *testing.T) {
 	t.Parallel()
 	corr := NamedCorrelationIdentifier("t")
 	q := NewQuantifiedObjectValue(corr)
-	ctx := map[CorrelationIdentifier]map[string]any{
-		corr:                            {"age": int64(30)},
-		NamedCorrelationIdentifier("u"): {"other": "field"},
-	}
-	tmpEv1, errEv1 := q.Evaluate(ctx)
-	require.NoError(t, errEv1)
-	row, ok := tmpEv1.(map[string]any)
+	// Post-cap a QOV resolves its correlation's row through a CorrelationBinder;
+	// each source binds an ordinal row. QOV(t) must pick t's row, never u's.
+	binder := &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
+		corr:                            fom(map[string]any{"age": int64(30)}),
+		NamedCorrelationIdentifier("u"): fom(map[string]any{"other": "field"}),
+	}}
+	got, err := q.Evaluate(binder)
+	require.NoError(t, err)
+	row, ok := got.(OrdinalRow)
 	if !ok {
-		tmpEv0, errEv0 := q.Evaluate(ctx)
-		require.NoError(t, errEv0)
-		t.Fatalf("expected map row, got %T", tmpEv0)
+		t.Fatalf("expected an ordinal row, got %T", got)
 	}
-	if got, want := row["age"], int64(30); got != want {
-		t.Fatalf("age: got %v, want %v", got, want)
+	if v, _ := row.GetByName("age"); v != int64(30) {
+		t.Fatalf("age: got %v, want 30 (t's row, not u's)", v)
 	}
 }
 
 func TestQuantifiedObjectValue_Evaluate_SingleSource(t *testing.T) {
 	t.Parallel()
 	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
-	// Single-source: the whole row IS the correlation's row.
-	ctx := map[string]any{"age": int64(42)}
-	got, errEv0 := q.Evaluate(ctx)
+	// A bare frontier ordinal row IS the correlation's row.
+	got, errEv0 := q.Evaluate(fom(map[string]any{"age": int64(42)}))
 	require.NoError(t, errEv0)
 	if got == nil {
 		t.Fatal("single-source Evaluate should return the row")
@@ -1729,9 +1728,8 @@ func TestFieldValue_QOV_MissingCorrelation_ReturnsNil(t *testing.T) {
 	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("MISSING")), "COL", UnknownType)
 
 	rc := &RowEvalContext{
-		Datum: map[string]any{"COL": "should-not-return"},
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
-			NamedCorrelationIdentifier("OTHER"): map[string]any{"COL": "other"},
+			NamedCorrelationIdentifier("OTHER"): fom(map[string]any{"COL": "other"}),
 		}},
 	}
 	got, errEv0 := fv.Evaluate(rc)

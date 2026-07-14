@@ -65,7 +65,7 @@ func TestWithParams_CarriesScalarSubqueries(t *testing.T) {
 		WithScalarSubqueries(map[values.CorrelationIdentifier]any{alias: int64(7)}).
 		WithParams([]any{"x"})
 
-	rc := ec.RowContext(map[string]any{})
+	rc := ec.RowContext()
 	got, bound := rc.ScalarSubqueries[alias]
 	if !bound || got != int64(7) {
 		t.Fatalf("WithParams dropped the scalar-subquery bindings: got (%v, %v), want (7, true)", got, bound)
@@ -119,17 +119,12 @@ func TestBindParameter_NilParams(t *testing.T) {
 func TestRowContext(t *testing.T) {
 	t.Parallel()
 	ec := EmptyEvaluationContext().WithParams([]any{int64(99)})
-	datum := map[string]any{"NAME": "alice"}
 
-	rc := ec.RowContext(datum)
+	// RowContext is a binding-only context post-cap (no frontier row); a row flows
+	// through RowContextPositional. It carries the EvaluationContext's params.
+	rc := ec.RowContext()
 	if rc == nil {
 		t.Fatal("RowContext returned nil")
-	}
-	if rc.Datum == nil {
-		t.Fatal("RowContext.Datum is nil")
-	}
-	if rc.Datum["NAME"] != "alice" {
-		t.Fatalf("RowContext.Datum[NAME] = %v, want alice", rc.Datum["NAME"])
 	}
 	if rc.Binder == nil {
 		t.Fatal("RowContext.Binder is nil")

@@ -423,8 +423,8 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	}
 
 	// Correlated arms (Child is a QOV, so evaluateCorrelated dispatches).
-	got, err := baked.Evaluate(&RowEvalContext{Datum: nameRow})
-	assertLoud("RowEvalContext.Datum", got, err)
+	got, err := baked.Evaluate(&RowEvalContext{})
+	assertLoud("RowEvalContext (no Positional)", got, err)
 	got, err = baked.Evaluate(&RowEvalContext{Correlations: &mapBinder{id: corr, m: nameRow}})
 	assertLoud("RowEvalContext correlation map binding", got, err)
 	got, err = baked.Evaluate(&mapBinder{id: corr, m: nameRow})

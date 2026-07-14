@@ -51,13 +51,12 @@ func (ec *EvaluationContext) BindParameter(ordinal int, name string) (any, bool)
 	return nil, false
 }
 
-// RowContext returns a RowEvalContext combining a datum map with this
-// context's parameter bindings and scalar subquery results. Used when
-// evaluating expressions that mix field references, prepared-statement
-// parameters, and scalar subquery references.
-func (ec *EvaluationContext) RowContext(datum map[string]any) *values.RowEvalContext {
+// RowContext returns a binding-only RowEvalContext — this context's parameter
+// bindings, correlation bindings, and scalar subquery results, with NO frontier
+// row. Used when evaluating expressions that reference only params / correlations
+// / scalar subqueries; a row-bearing context flows through RowContextPositional.
+func (ec *EvaluationContext) RowContext() *values.RowEvalContext {
 	return &values.RowEvalContext{
-		Datum:            datum,
 		Binder:           ec,
 		Correlations:     ec,
 		ScalarSubqueries: ec.scalarSubqueries,

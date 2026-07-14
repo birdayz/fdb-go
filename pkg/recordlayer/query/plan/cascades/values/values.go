@@ -578,10 +578,10 @@ func (f *FieldValue) frontierContractGuard() error {
 
 // descendResolvedPath applies a baked path's accessors BEYOND the root to the
 // root read's result — Java resolves the whole FieldPath against nested
-// Message fields by ordinal (FieldValue.java fieldOrdinals doc); Go's
-// coexistence-window nested records are name-keyed Datum maps, so a nested
+// Message fields by ordinal (FieldValue.java fieldOrdinals doc); Go's nested
+// records surface as a proto.Message or a name-keyed record map, so a nested
 // step reads by the accessor's per-step name there (exactly what the chained
-// lazy nodes the compose rule fuses did: child evaluates to the map, the
+// lazy nodes the compose rule fuses did: child evaluates to the record, the
 // outer node reads its Field on it) and by ordinal on a positional nested
 // row. NULL propagates (a nil nested record yields NULL, matching the
 // chained-lazy nil-context arm); an unreadable non-nil nested value is loud
@@ -804,8 +804,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 	if evalCtx == nil {
 		return nil, nil
 	}
-	// Every name-keyed read in this function starts at the ROOT step's key and
-	// RFC-173 S4: the ordinal-model row is the ONLY runtime row — resolve by
+	// RFC-173: the ordinal-model row is the ONLY runtime row — resolve by
 	// ordinal, loud on a miss. The name-keyed map/Datum model is retired.
 	switch ctx := evalCtx.(type) {
 	case OrdinalRow:
@@ -1534,20 +1533,19 @@ type CorrelationBinder interface {
 	GetCorrelationBinding(id CorrelationIdentifier) (any, bool)
 }
 
-// RowEvalContext is a composite evaluation context for Value.Evaluate
-// that satisfies FieldValue (datum map), ParameterValue
-// (ParameterBinder), and CorrelationBinder. Pass this when evaluating
-// expressions that mix field references, prepared-statement parameters,
-// and correlation bindings (e.g. InJoin explode aliases).
+// RowEvalContext is a composite evaluation context for Value.Evaluate that
+// carries the RFC-173 ordinal frontier row plus prepared-statement parameters
+// (ParameterBinder), correlation bindings (CorrelationBinder), and pre-evaluated
+// scalar subqueries. Pass this when evaluating expressions that mix field
+// references, parameters, and correlation bindings (e.g. InJoin explode aliases).
 type RowEvalContext struct {
-	Datum map[string]any
-	// Positional is the RFC-173 Slice 1 authoritative ordinal-model row for the
-	// non-join frontier. When non-nil, FieldValue resolution goes through the
-	// ordinal path (resolveOrdinal / GetByName against the row's own type) BEFORE
-	// the name-keyed Datum — a loud OrdinalResolutionError on a miss, NO name-map
-	// fallback (RFC-173). It is the single frontier quantifier's row: an outer
-	// correlation still resolves via Correlations first, and only an unbound
-	// (frontier) quantifier reference falls through to this row.
+	// Positional is the RFC-173 authoritative ordinal-model row for the non-join
+	// frontier — the SOLE runtime row. When non-nil, FieldValue resolution goes
+	// through the ordinal path (resolveOrdinal / GetByName against the row's own
+	// type), a loud OrdinalResolutionError on a miss, NO name-map fallback. It is
+	// the single frontier quantifier's row: an outer correlation still resolves
+	// via Correlations first, and only an unbound (frontier) quantifier reference
+	// falls through to this row.
 	Positional       OrdinalRow
 	Binder           ParameterBinder
 	Correlations     CorrelationBinder
@@ -3314,33 +3312,22 @@ func (q *QuantifiedObjectValue) Type() Type {
 // Name returns the debug-print kind.
 func (*QuantifiedObjectValue) Name() string { return "quantifier" }
 
-// Evaluate extracts the row bound to this quantifier's correlation.
-// Eval context shapes this impl handles:
+// Evaluate extracts the row bound to this quantifier's correlation. Post-cap the
+// ordinal row is the sole runtime row; the eval-context shapes this handles:
 //
-//   - map[CorrelationIdentifier]map[string]any — multi-source shape,
-//     returns the nested map for this correlation (nil if missing).
-//   - map[string]any — single-source compat shim: IGNORES q.Correlation
-//     and returns the whole map. Safe only when there's one
-//     QuantifiedObjectValue in play; multi-source callers MUST use
-//     the per-correlation shape or two quantifiers with different
-//     correlations silently evaluate to the same row.
+//   - *RowEvalContext — a correlation binding for q.Correlation (an outer
+//     quantifier), else the frontier Positional row; nil if neither.
+//   - OrdinalRow — a bare frontier PositionalRow IS this quantifier's object.
+//   - CorrelationBinder — the row bound to q.Correlation (nil if unbound).
 //   - anything else — nil.
 //
-// The single-source shim exists so existing single-table tests /
-// callers that feed a bare row map keep working while the eval
-// path migrates. New callers MUST NOT rely on it — thread the
-// per-correlation shape end-to-end. The shim is scheduled for
-// removal once no caller needs it.
-//
-// Downstream FieldValue / nested-field resolvers then index into the
-// returned map to pick a specific column.
+// Downstream FieldValue / nested-field resolvers then read a specific column off
+// the returned row by ordinal.
 func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}
 	switch ctx := evalCtx.(type) {
-	case map[CorrelationIdentifier]map[string]any:
-		return ctx[q.Correlation], nil
 	case *RowEvalContext:
 		if ctx.Correlations != nil {
 			if val, ok := ctx.Correlations.GetCorrelationBinding(q.Correlation); ok {
@@ -3348,13 +3335,12 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 			}
 		}
 		// RFC-173: a bare QOV whole-row read resolves to the ordinal Positional row
-		// on the frontier (downstream FieldValue reads it by ordinal).
+		// on the frontier (downstream FieldValue reads it by ordinal). No name-keyed
+		// Datum fallback — the name model is retired.
 		if ctx.Positional != nil {
 			return ctx.Positional, nil
 		}
-		return ctx.Datum, nil
-	case map[string]any:
-		return ctx, nil
+		return nil, nil
 	case OrdinalRow:
 		// RFC-173: a bare frontier PositionalRow (the posNeedsCtx-false fast path in
 		// frontierRowContext flows the ordinal row directly, not wrapped in a

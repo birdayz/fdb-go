@@ -437,9 +437,9 @@ func executePredicatesFilter(
 	// (bare lookup), since the row carries no "ALIAS.COL" qualified key.
 	//
 	// When the inner plan produces MERGED rows (NLJ / FlatMap join output),
-	// the row already carries qualified "ALIAS.COL" keys, so the predicate
-	// resolves through the RowEvalContext.Datum qualified path. We must NOT
-	// bind the merged row under a single alias: a qov(b).col lookup would
+	// the row is an ordinal merged row whose per-leg windows resolve a
+	// qov(alias).col reference leg-locally. We must NOT bind the merged row
+	// under a single alias: a qov(b).col lookup would
 	// then bare-resolve to whichever quantifier last wrote the bare key —
 	// e.g. on a null-filled LEFT JOIN row (b absent), qov(b).id would wrongly
 	// pick up the outer row's bare ID instead of NULL.
@@ -479,7 +479,7 @@ func executePredicatesFilter(
 					ec = EmptyEvaluationContext()
 				}
 				ec = ec.WithBinding(innerAlias, qr.Positional.Slots[0])
-				rowCtx = ec.RowContext(nil)
+				rowCtx = ec.RowContext()
 			case qr.Positional != nil:
 				// RFC-173 Slice 1: the non-join frontier flows an authoritative
 				// ordinal row — resolve predicates by ordinal (loud on a miss, no

@@ -559,7 +559,7 @@ func scanBindContext(evalCtx *EvaluationContext) values.ParameterBinder {
 	if evalCtx == nil {
 		return nil
 	}
-	return evalCtx.RowContext(nil)
+	return evalCtx.RowContext()
 }
 
 // uuidToTupleElement converts a neutral 16-byte UUID comparand ([16]byte —
