@@ -314,10 +314,15 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 	// wrap's positional output, never a renamed-away leg. A key that cannot pull up
 	// to a bakeable output column declines through the RV verification
 	// (correct-or-decline), so t.existsFoldHasChain no longer gates the wrap.
-	// Multi-esq (>1 EXISTS) is ADMITTED: the wrap `[ForEach(box), Existential, …]`
-	// now physicalizes via PartitionSelectRule's existential peel (RFC-173). The loop
-	// below builds one existential quantifier + one correlation predicate per esq, so
-	// the gathered cluster ORDINALIZES for any number of EXISTS.
+	if len(f.ExistsSubqueries) > 1 {
+		// The B1 folded-projection (no-unnest) gathered cluster keeps single-esq for
+		// now. A multi-EXISTS wrap physicalizes via PartitionSelectRule's peel in
+		// principle, but this arm's multi-esq admission is UNPINNED (rfc173_s4_b1_nway
+		// has single-esq pins only), so it stays name-model — the fail-open direction —
+		// pending a row pin. (The UNNEST INNER-cluster multi-esq IS admitted +
+		// ordinalized via admitExistentialGather; this is the separate folded arm.)
+		return nil
+	}
 	legs := t.gatherInnerClusterLegs(join)
 	if len(legs) <= 2 {
 		return nil

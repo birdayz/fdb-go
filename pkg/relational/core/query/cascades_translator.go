@@ -159,7 +159,9 @@ type cascadesTranslator struct {
 	// side state), and read ONLY by the :1493 gate. D4-(ii) admission: a
 	// non-INNER box left with Kind ∈ {LEFT,RIGHT} at verdict ∈ {None,Bakeable}
 	// or Kind==FULL at Bakeable only (FULL+None rides the certified binary
-	// seed); single esq; no inner/outer scope collision; the esq a simple
+	// seed); single esq for LEFT/RIGHT/FULL boxes (a multi-esq box wrap strands, so
+	// it stays name-model), any esq count for the INNER cluster; no inner/outer scope
+	// collision; the esq a simple
 	// leg-correlation (buried-outer-only and whole-row-read esq shapes decline
 	// to name-model — they keep today's rows, never a loud plan failure). Reset
 	// after the unnest lowering like unnestUnderExistential.
@@ -2957,14 +2959,17 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 // recorded legTypes at the EXISTS merge site). FULL rides the certified binary
 // seed (already producer-free via c5a) until FULL+Bakeable is chartered.
 func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f *logical.LogicalFilter, verdict boxConjVerdict) bool {
-	// At least one esq. Multi-esq (>1) is ADMITTED now that it physicalizes —
-	// PartitionSelectRule peels the gathered wrap's N existentials into nested
-	// 2-quantifier existential selects (RFC-173), so the box unnest ORDINALIZES
-	// instead of declining to the name model. The gathered wrap builder already
-	// loops over every esq (rfc173_b1_exists_gather.go).
-	if len(f.ExistsSubqueries) < 1 {
+	if len(f.ExistsSubqueries) == 0 {
 		return false
 	}
+	// MULTI-ESQ admission is SHAPE-SPECIFIC. The gathered wrap `[ForEach(seed), ∃, ∃]`
+	// peels in PartitionSelectRule, but only the INNER-flat-cluster seed physicalizes;
+	// a gathered LEFT/RIGHT/FULL BOX wrap over >1 EXISTS strands (its
+	// LogicalProjectionExpression has no physical rule). For those boxes a multi-esq
+	// shape MUST stay name-model — that path DOES plan (PartitionSelectRule peels the
+	// name-model select) and returns correct rows; admitting it here would REGRESS a
+	// working query to a strand. Physicalizing the gathered box wrap is the follow-on.
+	multiEsq := len(f.ExistsSubqueries) > 1
 	// No inner/outer scope collision — a colliding unminted inner alias would
 	// get refs meaning the INNER row baked onto the outer window (silent wrong
 	// rows); the binary seed already declines on this, the gather must too.
@@ -2978,6 +2983,9 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	}
 	switch bj.Kind {
 	case logical.JoinLeft, logical.JoinRight:
+		if multiEsq {
+			return false // multi-esq LEFT/RIGHT box wrap strands — stay name-model
+		}
 		return verdict == boxConjNone || verdict == boxConjBakeable
 	case logical.JoinInner:
 		// RFC-173 S4 E-1a: the INNER flat N-way cluster under EXISTS. Its existential
@@ -2997,9 +3005,14 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 		// admitted too — it bakes IN-SELECT over the re-derivable gatedJoinLegTypes
 		// (the WHERE-path channel), not the box's recorded machinery. Unbakeable
 		// stays name-model (correct-or-loud).
+		// INNER flat cluster: multi-esq is ADMITTED — the gathered wrap physicalizes
+		// via the existential peel (pinned: TestFDB_RFC173Slice3B2bFaceA multiesq_*).
 		return verdict == boxConjNone || verdict == boxConjBakeable
 	default: // FULL — D4-(ii): only a Bakeable box-leg conjunct gathers; FULL+None
 		// stays on the certified binary seed (already producer-free via c5a).
+		if multiEsq {
+			return false // multi-esq FULL box wrap strands — stay name-model
+		}
 		return verdict == boxConjBakeable
 	}
 }
@@ -3040,9 +3053,10 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	prevGatherOK := t.unnestExistentialGatherOK
 	// RFC-173 S4 B2-B: classify the box-leg conjunct (metadata-only, mirroring
 	// the WHERE path's :2424 block) and compute the gather admission. A
-	// verdict-None LEFT/RIGHT box (single esq, no collision) takes the gathered
-	// ordinal cluster; everything else keeps the name-model binary seed, where
-	// a box-leg conjunct resolves via qualified keys.
+	// verdict-None LEFT/RIGHT box (single esq — a multi-esq box wrap strands, no
+	// collision) takes the gathered ordinal cluster; the INNER cluster gathers at any
+	// esq count; everything else keeps the name-model binary seed, where a box-leg
+	// conjunct resolves via qualified keys.
 	verdict := boxConjNone
 	if nonExistsConjunctRefsOuterLeg(f.Predicate, outerAliases) {
 		verdict = boxConjUnbakeable

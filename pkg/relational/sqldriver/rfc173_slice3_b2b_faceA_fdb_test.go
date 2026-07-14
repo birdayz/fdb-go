@@ -303,18 +303,14 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	// EXISTS(EE.CK=B.K=NULL)=false → the whole row drops → {}. A wrong-leg bind
 	// reading A.K would keep {7,8} RED.
 	pin("multiesq_nullref_leg", `SELECT "X" `+innerFrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`)
-	// LEFT-BOX multi-esq PROJECTION is a documented remaining gap: the gathered
-	// LEFT/RIGHT box wrap over >1 EXISTS does not physicalize (a LogicalProjectionExpression
-	// strands) — a LOUD strand, correct-or-loud (it name-model-stranded identically
-	// before the gather admitted it; no wrong rows). The INNER cluster + the AGGREGATE
-	// LEFT box (slice3E1a agg_multiexists_counts) both physicalize; the plain LEFT-box
-	// projection is the follow-on. Flip to a row pin ({7}) when it physicalizes.
-	t.Run("multiesq_leftbox_projection_loud", func(t *testing.T) {
-		_, _, err := runQ(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`)
-		if err == nil {
-			t.Fatal("LEFT-box multi-esq projection unexpectedly physicalized — flip to a row pin ({7})")
-		}
-	})
+	// LEFT-BOX multi-esq PROJECTION stays NAME-MODEL and PLANS via PartitionSelectRule's
+	// existential peel of the name-model select (returns correct rows) — the gather
+	// deliberately does NOT admit a multi-esq LEFT/RIGHT box (its gathered wrap strands),
+	// so admitExistentialGather keeps it name-model. `EXISTS(EE.CK=A.K=100 → true) AND
+	// EXISTS(EEV.VK=X)`: X=7 keeps, X=8 drops → {7}. (Regression guard: an earlier gather
+	// admission rerouted this to a stranding gather; a multi-esq LEFT/RIGHT box must NOT gather.)
+	pin("multiesq_leftbox_projection", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
+		"map[X:7]")
 }
 
 // slice3B2bMetadata builds the A/B/EE/EEV schema shared by the B2-B row cert
@@ -377,14 +373,20 @@ func TestRFC173Slice3B2bFaceACensus(t *testing.T) { //nolint:paralleltest // pro
 			t.Fatalf("%s: fired %d name-model producer(s), want 0 (the gather must own it)", tc.name, n)
 		}
 	}
-	// Observer-fires (non-vacuity) control: NO real-SQL shape reachable from this
-	// metadata still fires a P4/P5 producer — multi-esq now ordinalizes (gather
-	// admission), which was the last real-SQL name-model caller (verified by a
-	// producer-panic sweep of //...). The observer-wiring proof — that a genuine
-	// name-model decline DOES fire the observer — is the synthetic
-	// `unresolvable_conjunct_declines_name_model` control in
-	// TestRFC173B2_FilteredBoxUnnestCensus (a NO_SUCH_COL box conjunct, unreachable
-	// via real SQL: a real bad column is a semantic-time 42703). So this test's
-	// 0-assertions are non-vacuous by that cross-test control; no local positive
-	// control remains.
+	// Observer-fires (non-vacuity) control: the observer MUST fire when it should, so
+	// the 0-assertions above aren't vacuous. The INNER-cluster multi-esq now
+	// ordinalizes, but a multi-esq LEFT/RIGHT BOX still stays NAME-MODEL (its gathered
+	// wrap strands, so admitExistentialGather keeps it name-model — it plans correctly
+	// via PartitionSelectRule's peel of the name-model select), firing the P5
+	// unnest-result-value producer during TRANSLATION.
+	countTolerant := func(sql string) int {
+		n := 0
+		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
+		defer rquery.SetProducerCensusObserver(nil)
+		_, _ = embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+		return n
+	}
+	if n := countTolerant(`SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`); n == 0 {
+		t.Fatal("multi-esq LEFT box fired 0 producers — it must stay name-model (its gathered wrap strands); the observer-fires control is vacuous")
+	}
 }
