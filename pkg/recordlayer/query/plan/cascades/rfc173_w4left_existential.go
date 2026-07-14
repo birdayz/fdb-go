@@ -54,19 +54,22 @@ func rebaseOuterLegValueOrdinal(
 		if !isFV {
 			return node
 		}
-		// An ALREADY-baked positional ref (FrontierPinned ofOrdinal) is the gated
-		// seed's final positional form — a multi-esq peel box bakes the existential
-		// correlation at plan time (translateUnnestExistsFilter's planTimeBake arm),
-		// and this executor hoist then runs OVER that baked tree. Re-baking would add
-		// the leg window offset a SECOND time (out of range → !ok, a spurious decline
-		// of a correctly-baked box). Pass it through: FrontierPinned refs are already
-		// positional and are never leg-relative name refs (the only thing this rebase
-		// exists to convert), so this is a pure idempotence guard.
-		if fv.Resolved != nil && fv.Resolved.FrontierPinned {
-			return node
-		}
 		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
 		if !isQOV {
+			return node
+		}
+		// An ALREADY-baked positional ref over the MERGED row is final: a multi-esq
+		// peel box bakes the existential correlation at plan time
+		// (translateUnnestExistsFilter's planTimeBake arm) to an ofOrdinal over the
+		// merged QOV, and this executor hoist then runs OVER that baked tree. Its
+		// ordinal already indexes the merged layout, so re-baking would add the leg
+		// window offset a SECOND time (out of range → !ok, a spurious decline of a
+		// correctly-baked box). Pass it through — but ONLY when it is already over the
+		// merged QOV. A LEG-LOCAL FrontierPinned ref (`ofOrdinal(QOV(A), i)`, child is
+		// a source leg still in `windows`) is NOT final: guarding on the merged
+		// correlation lets it fall through to the leg-relative arm below, which
+		// translates it onto the merged row at w.Offset+i (by its Field name).
+		if fv.Resolved != nil && fv.Resolved.FrontierPinned && qov.Correlation == mergedQOV.Correlation {
 			return node
 		}
 		alias := strings.ToUpper(qov.Correlation.Name())
@@ -90,14 +93,14 @@ func rebaseOuterLegValueOrdinal(
 		}
 		var legOrdinal int
 		switch {
-		case fv.Resolved != nil && fv.Resolved.FrontierPinned:
-			acc, single := fv.Resolved.Single()
-			if !single {
-				failed = true
-				return node
-			}
-			legOrdinal = acc.Ordinal
 		case !strings.Contains(fv.Field, "."):
+			// A leg-relative ref (a name ref, OR a LEG-LOCAL FrontierPinned ofOrdinal —
+			// `ofOrdinal(QOV(A), i)`, child NOT the merged QOV so it passed the guard
+			// above) resolves the same way: NewFieldValueOfOrdinal stamps Field to the
+			// leg column's name, and a source leg has no duplicate column names, so
+			// FieldIndex(Field) == the leg-local ordinal i. w.Offset + that = the merged
+			// slot. (An already-merged FrontierPinned ref never reaches here — the
+			// precise merged-QOV guard above passed it through untouched.)
 			idx, found := w.Typ.FieldIndex(strings.ToUpper(fv.Field))
 			if !found {
 				failed = true

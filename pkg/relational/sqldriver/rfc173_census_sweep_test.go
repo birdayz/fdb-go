@@ -75,6 +75,11 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		// TestFDB_RFC173Slice3B2bFaceA multiesq_{leftbox,fullbox}_projection.
 		{"exists_leftbox_multi_esq", `SELECT "X" FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
 		{"exists_fullbox_multi_esq", `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
+		// MULTI-ESQ BOX + a BAKEABLE leg conjunct (`A.K = 100 AND EXISTS AND EXISTS`):
+		// the non-EXISTS conjunct bakes over the box's RECORDED legTypes arm while the
+		// existential correlations bake via multiEsqPeelBox — both channels gather, 0
+		// producers. Row correctness: TestFDB_RFC173Slice3B2bFaceA multiesq_leftbox_conjunct.
+		{"exists_leftbox_multi_esq_conj", `SELECT "X" FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
 	}
 	for _, tc := range zeroed {
 		n, err := count(tc.sql)

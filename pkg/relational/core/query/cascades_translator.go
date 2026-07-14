@@ -2962,13 +2962,15 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	if len(f.ExistsSubqueries) == 0 {
 		return false
 	}
-	// MULTI-ESQ admission is SHAPE-SPECIFIC. The gathered wrap `[ForEach(seed), ∃, ∃]`
-	// peels in PartitionSelectRule, but only the INNER-flat-cluster seed physicalizes;
-	// a gathered LEFT/RIGHT/FULL BOX wrap over >1 EXISTS strands (its
-	// LogicalProjectionExpression has no physical rule). For those boxes a multi-esq
-	// shape MUST stay name-model — that path DOES plan (PartitionSelectRule peels the
-	// name-model select) and returns correct rows; admitting it here would REGRESS a
-	// working query to a strand. Physicalizing the gathered box wrap is the follow-on.
+	// MULTI-ESQ admission: the gathered wrap `[ForEach(seed), ∃, ∃]` peels in
+	// PartitionSelectRule to a NestedLoopJoin, which drops the seed's windowed
+	// layout. The INNER-flat-cluster seed and the LEFT/RIGHT/FULL BOX seed BOTH
+	// physicalize this way — for the box, translateUnnestExistsFilter's
+	// multiEsqPeelBox arm bakes each existential correlation positionally at plan
+	// time (the E-1a authority) so the peel keeps ∃ with the seed rather than
+	// stranding a leg-relative name ref. So every box kind admits multi-esq below.
+	// FULL rides the same peel; only FULL+None SINGLE-esq stays on the certified
+	// binary seed (already producer-free via c5a).
 	multiEsq := len(f.ExistsSubqueries) > 1
 	// No inner/outer scope collision — a colliding unminted inner alias would
 	// get refs meaning the INNER row baked onto the outer window (silent wrong
