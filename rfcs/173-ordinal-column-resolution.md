@@ -5826,11 +5826,14 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > existential) stays cleanly declined; a MULTI-TABLE-inner sibling is a documented LOUD sentinel
   > (correct-or-loud — the retired name-map makes the ordinal miss loud, never wrong rows).
   >
-  > **REFRAME — this does NOT retire the producer.** The fix makes multi-esq PLANNABLE, but the GATHER
-  > still declines a >1-esq cluster at translation (rfc173_b1_exists_gather.go:317), so the box unnest stays
-  > NAME-MODEL (a P4/P5 producer fires). So the producer deletion is now gated on **GATHER ADMISSION of
-  > multi-esq** (ordinalize the cluster), not plannability — a distinct slice. C's last 7 anchored-reachable
-  > sites + D are gated the same way.
+  > **REFRAME — the producer is NOT fully retired yet.** The multi-esq fix + gather admission ordinalize
+  > the INNER FLAT-CLUSTER multi-esq (`A, B, A.ARR AS X WHERE EXISTS AND EXISTS` → gathers, 0 producers,
+  > row-pinned). But a LEFT/RIGHT/FULL BOX multi-esq still NAME-MODELS (fires P5): its gathered wrap
+  > strands (a `LogicalProjectionExpression` with no physical rule), so `admitExistentialGather` keeps it
+  > name-model — where it plans correctly via PartitionSelectRule's peel. So the producer deletion is gated
+  > on **physicalizing the gathered LEFT/RIGHT/FULL box multi-esq wrap** (then admit it), plus rerouting the
+  > synthetic unbakeable-conjunct decline arms (foreign_correlation / dotted_frontier — Torvalds: prove
+  > each unreachable-or-loud). C's last 7 anchored-reachable sites + D are gated on the producer death.
   >
   > FOLLOW-UP TODOs (Graefe review — separable, non-blocking, none touch wire/rows):
   > - [ ] Move the existential-needs-a-ForEach ROOT fix into `ImplementNestedLoopJoinRule` (decline when
