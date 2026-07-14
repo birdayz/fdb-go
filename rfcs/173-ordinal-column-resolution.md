@@ -5826,33 +5826,33 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > existential) stays cleanly declined; a MULTI-TABLE-inner sibling is a documented LOUD sentinel
   > (correct-or-loud — the retired name-map makes the ordinal miss loud, never wrong rows).
   >
-  > **REFRAME — the producer is NOT fully retired yet.** The multi-esq fix + gather admission ordinalize
-  > the INNER FLAT-CLUSTER multi-esq (`A, B, A.ARR AS X WHERE EXISTS AND EXISTS` → gathers, 0 producers,
-  > row-pinned). But a LEFT/RIGHT/FULL BOX multi-esq still NAME-MODELS (fires P5): its gathered wrap
-  > strands (a `LogicalProjectionExpression` with no physical rule), so `admitExistentialGather` keeps it
-  > name-model — where it plans correctly via PartitionSelectRule's peel. So the producer deletion is gated
-  > on **physicalizing the gathered LEFT/RIGHT/FULL box multi-esq wrap** (then admit it), plus rerouting the
-  > synthetic unbakeable-conjunct decline arms (foreign_correlation / dotted_frontier — Torvalds: prove
-  > each unreachable-or-loud). C's last 7 anchored-reachable sites + D are gated on the producer death.
+  > **BOX MULTI-ESQ: LANDED (box multi-esq gathers — one producer caller retired).** The multi-esq fix +
+  > gather admission first ordinalized the INNER FLAT-CLUSTER multi-esq. The LEFT/RIGHT/FULL BOX multi-esq
+  > (`A LEFT JOIN B …, A.ARR AS X WHERE EXISTS AND EXISTS`) now GATHERS + ordinalizes too (0 producers,
+  > row-pinned: `TestFDB_RFC173Slice3B2bFaceA` multiesq_{leftbox,fullbox}_projection + the B2-B/sweep
+  > censuses). The producer is NOT fully dead — the surviving name-model P5 caller is now the
+  > CHAINED-UNNEST-OVER-NESTED-OUTER-BOX (`(A LEFT B) LEFT C`, multi-link, `translateChainedUnnestJoin`'s
+  > name-model residual; `TestRFC173_ProducerCensusP5EnclosureBit`) plus bare-twin / CTE-rooted / 3+-link
+  > chains. C's last anchored-reachable sites + D remain gated on the producer's full death.
   >
-  > PRECISE ROOT CAUSE of the box-wrap strand (MEMO-TRACED — instrumented `DebugDumpExpr` walking the
-  > winning tree at the strand): the winning `LogicalProjectionExpression` is a SYMPTOM (the projection
-  > rule needs its child physical); the unphysicalized node is a 2-quantifier `SelectExpression` whose
-  > BOTH quantifiers are **ForEach** (kind=0), yet it carries an `ExistentialValuePredicate` — i.e. an
-  > EXISTS residual filter with NO Existential quantifier to anchor it. `implementExistentialSelect`
-  > matches `exactlyInAnyOrder(outer=ForEach, inner=Existential)` — it CANNOT match a 2-ForEach select, so
-  > the FirstOrDefault(inner)+IS-NOT-NULL residual is never built and nothing implements the select. Why:
-  > the `ExistentialValuePredicate` references `q$2` (a SOURCE alias, per the select's srcAliases=[X,q$2]),
-  > but the two bound quantifiers are under their QUANTIFIER aliases (q$278/q$279) — the existential
-  > quantifier the residual belongs to was PEELED to a different partition while its residual predicate
-  > stranded here, because the box-unnest peel classifies the predicate by a name in the WRONG namespace.
-  > This is the KNOWN quantifier-alias-vs-source-alias two-namespace divergence (query-engine skill "#1
-  > source of silent bugs"; TODO 7.1 "unify alias namespaces") surfacing in the box-unnest existential
-  > peel. So the box multi-esq physicalization — and therefore the producer deletion, and C's last sites,
-  > and D — is gated on the alias-namespace unification (or, narrower, on keeping an ExistentialValuePredicate
-  > with its existential quantifier through the box-unnest partition). A deep architectural slice, not a
-  > local rule add. (The INNER cluster avoids it: its seed is a single ForEach whose peel keeps each
-  > existential a proper Existential quantifier — no cross-namespace predicate stranding.)
+  > CORRECTED ROOT CAUSE (the earlier "two-namespace unification" diagnosis was a SYMPTOM, not the required
+  > fix — this is the honest record). The box-wrap strand looked like the quantifier-alias-vs-source-alias
+  > divergence (an `ExistentialValuePredicate` referencing a SOURCE name stranded from its existential
+  > quantifier). But the ACTUAL cause, memo-traced empirically: the box `[seed, ∃, ∃]` wrap peels via
+  > PartitionSelectRule to a NestedLoopJoin, which DROPS the seed's windowed positional layout — whereas a
+  > SINGLE-esq box stays a FlatMap that KEEPS the windows. So the executor's below-FOD hoist (the box's
+  > runtime rebase authority) could no longer recover the windows, and the LEG-RELATIVE existential
+  > JoinPredicate (`EE.CK = A.K`, name A) stranded unbound. The fix is NOT the alias-namespace unification
+  > — it is the same E-1a plan-time authority the INNER cluster already uses: BAKE the existential
+  > correlation positionally at plan time for a multi-esq box (`multiEsqPeelBox` in
+  > `translateUnnestExistsFilter`), so the correlation references the seed quantifier by ORDINAL (not a
+  > name). That circumvents the two-namespace issue entirely (the residual is now a proper
+  > sibling-quantifier edge ∃→seed, so the peel keeps ∃ with the seed) AND gives the executor no
+  > double-authority (the seed's FlatMap-vs-NLJ ambiguity is resolved: plan-time bake is the sole
+  > authority, and a `FrontierPinned` idempotence guard in `rebaseOuterLegValueOrdinal` stops the hoist
+  > re-offsetting an already-baked ref). Fully 4-gated (Graefe/Torvalds/@claude/codex ACK). So TODO 7.1
+  > was NOT on the critical path for the box multi-esq after all — a correlation-baking authority split
+  > closed it. (The INNER cluster never hit it: single-ForEach seed → NLJ → plan-time bake from the start.)
   >
   > FOLLOW-UP TODOs (Graefe review — separable, non-blocking, none touch wire/rows):
   > - [ ] Move the existential-needs-a-ForEach ROOT fix into `ImplementNestedLoopJoinRule` (decline when

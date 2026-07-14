@@ -93,14 +93,26 @@ func rebaseOuterLegValueOrdinal(
 		}
 		var legOrdinal int
 		switch {
+		case fv.Resolved != nil && fv.Resolved.FrontierPinned:
+			// A LEG-LOCAL baked ref (`ofOrdinal(QOV(A), i)` — child a SOURCE LEG, not
+			// the merged QOV, so the precise guard above passed it through to here).
+			// Carry its BAKED root ordinal, NOT FieldIndex(Field): an OPAQUE box leg can
+			// expose DUPLICATE buried column names (`A.K` and `B.K` merged into one leg),
+			// where FieldIndex("K") would remap the already-baked ref to the FIRST match
+			// and silently probe the WRONG column (wrong rows). acc.Ordinal is the exact
+			// leg-local slot; w.Offset + it = the merged slot. (Empirically no shape
+			// produces such a ref today — the arm is CORRECT-or-LOUD defensive: a
+			// multi-accessor path fails loud → name-model.)
+			acc, single := fv.Resolved.Single()
+			if !single {
+				failed = true
+				return node
+			}
+			legOrdinal = acc.Ordinal
 		case !strings.Contains(fv.Field, "."):
-			// A leg-relative ref (a name ref, OR a LEG-LOCAL FrontierPinned ofOrdinal —
-			// `ofOrdinal(QOV(A), i)`, child NOT the merged QOV so it passed the guard
-			// above) resolves the same way: NewFieldValueOfOrdinal stamps Field to the
-			// leg column's name, and a source leg has no duplicate column names, so
-			// FieldIndex(Field) == the leg-local ordinal i. w.Offset + that = the merged
-			// slot. (An already-merged FrontierPinned ref never reaches here — the
-			// precise merged-QOV guard above passed it through untouched.)
+			// A leg-relative NAME ref (non-baked): NewFieldValueOfOrdinal is not its
+			// source, so resolve the slot by column name. A single source leg has no
+			// duplicate column names, so FieldIndex(Field) is the leg-local ordinal.
 			idx, found := w.Typ.FieldIndex(strings.ToUpper(fv.Field))
 			if !found {
 				failed = true
