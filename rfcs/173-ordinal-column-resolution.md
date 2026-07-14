@@ -5834,10 +5834,27 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > bake carries the same `!rc.AnchoredJoin` guard, and the last lazy sites can only retire once B's
   > producer is gone (multi-esq). Sequence within C: bake the sites whose physical row is ALWAYS
   > ordinal first (post-gather seeds), leave the anchored-reachable sites for after the producer dies.
-- [ ] `groupByOutputBaker` (cascades_translator.go ~869) deliberately leaves keys lazy when
-  `GetByName` happens to resolve — minimal-necessary baking, not uniform binding. Bake uniformly.
+- [x] `groupByOutputBaker` (cascades_translator.go) baked keys uniformly — DONE (increment 1, triple-ACKed).
+  The runtime-accident "leave a nested key lazy when GetByName happens to resolve" partition is gone;
+  keys AND aggregates bake to their logical output ordinal, top-level and nested. atTop/fullNames/
+  normalizedOutputNameSet collapsed. Pin: group_by_derived_probe nested_group_key_bakes_ordinal +
+  computed_column_label_is_positional_not_ordinal (the `#0` stays out of the user label).
+  > C STATE (measured): only **7 lazy `NewFieldValue` sites remain** (79 already bake — C is ~90% done
+  > from B's translation work). The 7: expr/expr.go {ResolveIdentifier :260/:266, ResolveQualifiedProjection
+  > :299, ResolveColumnShadowingQualified :333} + cascades_translator.go {:1790 residual array (comment:
+  > "rows are name-model"), :1967 merged-row bare key, :3392 RFC-142 mergedQOV "LEG.COL" key, :4458 join-leg
+  > qualifier}. **Every one is ANCHORED-REACHABLE** — they read qualified/bare keys off merged/residual rows
+  > whose provenance can be a name-model AnchoredJoin RC (multi-esq's residual). Per the provenance-gate
+  > sequencing, they can only bake once B's producer is gone. So C is BLOCKED on the same gate as B's
+  > producer deletion: **the multi-esq N-way existential physical operator** (implementExistentialSelect is
+  > 2-quantifier; a 3+-quantifier `outer + EXISTS + EXISTS` cluster strands). That operator is the single
+  > critical-path unblocker for {B producer deletion, C's last 7 sites, D}. It is a deep Cascades physical-
+  > rule slice (chain N existential FlatMaps, Java parity) needing its own design gauntlet.
 
 ### D. Kill Go-invented name heuristics (residual silent-first-match hazards)
+> D DEPENDS ON C's last 7 sites baking, which depends on the multi-esq operator (see C STATE). D's two
+> heuristics are the runtime name-resolution fallbacks that only become dead once every reference is
+> ordinal-bound — i.e. after the multi-esq producer is gone. Same critical path.
 - [ ] `PositionalRow.GetByName` "strip qualifier if the leaf is unique" heuristic
   (positional_row.go ~111-132) — no Java analog; the last silent first-match name path. Remove once
   references are ordinal-bound (depends on C).
