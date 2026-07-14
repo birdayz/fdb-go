@@ -5937,11 +5937,48 @@ per-shape ordinalization gate. Items below, most-actionable first.
 >   to resolve" is a RUNTIME-ACCIDENT partition (rot) — kill that one UNIFORMLY now. C is not done until
 >   the anchored producer is gone AND all ~23 sites bake.
 > - C is UNBLOCKED by B, NOT subsumed. Order strictly B → C → D.
-- [ ] Bake `ResolveIdentifier` at plan time — `expr/expr.go:260` still emits a **lazy** `NewFieldValue`
-  for the common column path; ordinal is re-derived at RUNTIME via `rt.FieldIndex(f.Field)`
-  (values.go ~908) + `row.GetByName` (values.go ~555). Java binds every ref to an ordinal at plan
-  time (`ofOrdinalNumber`) and never name-resolves at runtime. ~23 lazy sites remain. Then delete
-  the runtime `FieldIndex(name)` lookup.
+- [x] Bake `ResolveIdentifier`'s FLAT arm at plan time — DONE (post-B session; commit
+  "ResolveIdentifier bakes the logical ordinal at plan time"). The single-source common
+  column path now returns `NewFieldValueWithResolvedOrdinal` bound to the column's position
+  in the resolved source's declared order (`sourceColumnOrdinal`, first-match case-folded ==
+  `RecordType.FieldIndex`), and the three consumers the probe surfaced were conformance-fixed
+  in the same increment: (1) `ColumnNameValue` split from `ExplainValue` (output-column
+  names are ordinal-free; every name derivation switched, so a baked and a lazy instance of
+  one reference derive the same name — the `SUM(AMOUNT#2)` HAVING lockstep break); (2)
+  covering-index rows conform to the record's LOGICAL slot order (descriptor-shaped, Java's
+  `IndexKeyValueToPartialRecord`, via the shared `positionalTypeForDescriptor` authority;
+  index-layout rows silently served the PK slot for a value-column ordinal — SUM(b) summed
+  ids); (3) `groupByOutputBaker` REBINDS input-bound single-accessor refs to the output
+  ordinal (the skip-if-baked guard left the source ordinal live above the aggregate). Then
+  three follow-on increments: bare-column PROJECTIONS and bare GROUP BY keys resolve through
+  the scope (kept only when the result is a childless `SourceRelativeBaked` node), plus
+  catalog-nullability + descriptor-type-name metadata conformance the typed values exposed
+  (Java cross-engine harness caught go=BIGINT vs java=INTEGER). Pins:
+  TestResolveIdentifier_BakesLogicalOrdinal (red on revert), TestGroupByOutputBaker_RebindsInputBoundRef,
+  TestBuildCoveringLogicalRow, TestColumnNameValue_IgnoresBakedOrdinals,
+  TestAggregateNaming_StableUnderOrdinalBind, TestSourceRelativeBaked.
+- [ ] Bake the CORRELATED (QOV-child) resolver arm — ATTEMPTED and deliberately REVERTED
+  (documented at the arm in expr.go): a correlated reference's runtime binding is not always
+  the source's own row (lateral unnest binds the merged row or the raw element; join legs
+  bind leg windows, merged concats, nil null-legs), and the join/exists gates make
+  admission/placement decisions on the LAZY shape. Probed consequences of construction-binding
+  it: the gated LEFT-box + NOT EXISTS composition flipped its wedge-gate admission and DROPPED
+  its WHERE conjunct (silent wrong rows); the unnest element ref (shadowing source) read a
+  foreign slot. The gate-side hardening ALREADY LANDED (the `SourceRelativeBaked` widenings:
+  legRef, rebaseLegRefsToBox, wrapRVFullyBaked, clusterPullUp, collectClusterOuterRefs,
+  bakeGatheredGroupValue, bakeUnnestElementRefOrdinal, unnestExistsRefSurvivesUnbaked) —
+  what remains is the PER-GATE AUDIT that every admission/placement decision is
+  bake-invariant, its own reviewed slice.
+- [ ] Delete the runtime `FieldIndex(name)` lookup (values.go resolveOrdinal's lazy arm +
+  evaluateOrdinal's GetByName arm) — BLOCKED on the correlated-arm slice above plus the
+  remaining name-model families (measured census below).
+  > C CENSUS (stderr probe on FieldValue name resolution, full sqldriver e2e, deduped by
+  > (field, eval-stack)): 2782 at the B-completion baseline → **1306** after the four landed
+  > increments. Remaining by family: ~458 evaluateCorrelated (the deferred QOV arm), ~420
+  > executeProjection (dotted `LEG.COL` merged-row reads + derived/CTE outputs with empty
+  > semantic catalogs), 236 in-memory-sort keys (mostly qualified `D.NAME` forms over merged
+  > rows — the D1 heuristic's clients), 63 computeGroupKey (qualified/derived), ~90 tail
+  > (multi-intersection comparison keys, flatMap legs, executeMap, mergeSort keys).
   > C DESIGN GROUNDING (Java verified, tag 4.12.11.0, FieldValue.java:164-169): `FieldValue.eval`
   > reads its child (a Message) then resolves purely by ordinal —
   > `MessageHelpers.getFieldValueForFieldOrdinals(childResult, fieldPath.getFieldOrdinals())`. The
@@ -5973,15 +6010,21 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > rule slice (chain N existential FlatMaps, Java parity) needing its own design gauntlet.
 
 ### D. Kill Go-invented name heuristics (residual silent-first-match hazards)
-> D DEPENDS ON C's last 7 sites baking, which depends on the multi-esq operator (see C STATE). D's two
-> heuristics are the runtime name-resolution fallbacks that only become dead once every reference is
-> ordinal-bound — i.e. after the multi-esq producer is gone. Same critical path.
+> D DEPENDS ON C completing (probe → 0). Post-B measurement (the "multi-esq operator" framing
+> is retired — the producer is gone): the heuristics are still LIVE, with measured clients.
 - [ ] `PositionalRow.GetByName` "strip qualifier if the leaf is unique" heuristic
-  (positional_row.go ~111-132) — no Java analog; the last silent first-match name path. Remove once
-  references are ordinal-bound (depends on C).
-- [ ] `descendResolvedPath` descends nested records by per-step NAME on map/proto (values.go ~604,617);
-  Java descends nested Message fields by ordinal (compose rule / fieldOrdinals). Make it ordinal
-  end-to-end.
+  (positional_row.go) — no Java analog; the last silent first-match name path. STILL LIVE:
+  the census probe counts 38 distinct firing sites in the sqldriver e2e suite, dominated by
+  qualified in-memory-sort keys (`I.CATEGORY` via compareByField/executeInMemorySort) over
+  frontier rows whose type has no leg window for the qualifier. Removable only after the
+  sort-key and merged-row read families ordinalize (C census).
+- [ ] `descendResolvedPath` descends nested records by per-step NAME on map/proto (values.go);
+  Java descends nested Message fields by ordinal (compose rule / fieldOrdinals). STILL LIVE:
+  28 distinct proto-descent sites in the e2e census. Blocked on retiring the `-1` ordinal
+  SENTINELS the unnest-residual multi-segment path bakes (cascades_translator.go, the
+  residual-array `Resolved` with `Ordinal: -1` "never consulted on the proto path") — an
+  ordinal proto-descent would consult them; those paths must carry real descriptor ordinals
+  first (same conformance as `positionalTypeForDescriptor`).
 
 ### E. Retire vestigial `Complete` (Torvalds P1) — DONE
 - [x] Deleted the `QueryResult.Complete` field and its ~8 `Complete: true` writers (aggregate/
