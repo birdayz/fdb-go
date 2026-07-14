@@ -165,8 +165,9 @@ func TestRFC173S3_FusedPath_Evaluate(t *testing.T) {
 		t.Fatalf("lazy chain eval = (%v, %v), want (2, nil)", lazyGot, err)
 	}
 	var chainBNCE *BakedNameContextError
-	if _, err = outer.Evaluate(row); !errors.As(err, &chainBNCE) {
-		t.Fatalf("UNfused baked chain eval = %v, want loud *BakedNameContextError (the intermediate record is a bare name-keyed map to the pinned outer)", err)
+	var chainUCE *UnboundEvalContextError
+	if _, err = outer.Evaluate(row); !errors.As(err, &chainBNCE) && !errors.As(err, &chainUCE) {
+		t.Fatalf("UNfused baked chain eval = %v, want loud *BakedNameContextError or *UnboundEvalContextError (the intermediate record is a bare name-keyed map to the pinned outer)", err)
 	}
 
 	// Nested positional row: descend by ordinal.
@@ -192,11 +193,14 @@ func TestRFC173S3_FusedPath_Evaluate(t *testing.T) {
 	}
 
 	// The frontier guard keys at the ROOT context: a pinned fused node on a
-	// name-keyed map is loud.
+	// name-keyed map is loud — a nothing-matched eval, either the frontier
+	// contract (*BakedNameContextError) or the §F unbound-context tail
+	// (*UnboundEvalContextError).
 	_, err = fused.Evaluate(map[string]any{"NESTED": map[string]any{"Y": int64(2)}})
 	var bnce *BakedNameContextError
-	if !errors.As(err, &bnce) {
-		t.Fatalf("pinned fused on name-keyed row = %v, want *BakedNameContextError", err)
+	var uce *UnboundEvalContextError
+	if !errors.As(err, &bnce) && !errors.As(err, &uce) {
+		t.Fatalf("pinned fused on name-keyed row = %v, want *BakedNameContextError or *UnboundEvalContextError", err)
 	}
 
 	// An UNPINNED fused path descends from its ROOT step's ORDINAL and then into

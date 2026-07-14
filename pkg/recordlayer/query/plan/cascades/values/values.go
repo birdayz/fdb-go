@@ -376,6 +376,30 @@ func (e *BakedNameContextError) Error() string {
 	return fmt.Sprintf("RFC-173: baked FieldValue %s#%d evaluated against a non-positional row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
 }
 
+// UnboundEvalContextError reports a FieldValue whose evaluation resolved to
+// NOTHING: an UNRECOGNIZED non-nil context type, or a correlated reference whose
+// correlation is UNBOUND and whose context supplies no frontier positional row.
+// Post-cap production flows only OrdinalRow / *RowEvalContext / CorrelationBinder
+// / nil, so reaching one of these tails is a planner/executor bug — LOUD for
+// pinned and unpinned alike (RFC-173 §F ruling); a silent NULL would hide it.
+// DISTINCT from BakedNameContextError (a PINNED node meeting a name-keyed context
+// that DID resolve to a value): here nothing resolved at all. A nil context stays
+// NULL (the sanctioned appendNullLeg / nil-binding path) and never reaches here;
+// a correlation that DID match a non-ordinal value (the sanctioned birthLegBinder
+// raw leg) returns that value and never reaches here either.
+type UnboundEvalContextError struct {
+	Field       string
+	Correlation string
+	CtxType     string
+}
+
+func (e *UnboundEvalContextError) Error() string {
+	if e.Correlation != "" {
+		return fmt.Sprintf("RFC-173: correlated FieldValue %q (correlation %q) evaluated against an unbound/unrecognized context (%s) — no frontier row resolved (planner/executor bug)", e.Field, e.Correlation, e.CtxType)
+	}
+	return fmt.Sprintf("RFC-173: FieldValue %q evaluated against an unrecognized non-nil context (%s) — no frontier row resolved (planner/executor bug)", e.Field, e.CtxType)
+}
+
 // ContainsBakedOrdinal reports whether any FieldValue in v's subtree carries
 // a FRONTIER-PINNED baked-ordinal marker — the structural "is this an S2
 // gated-join ordinal value tree" probe the coexistence-window drift asserts
@@ -786,14 +810,12 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 			return f.evaluateOrdinal(rc.Positional)
 		}
 	}
-	// Unrecognized NON-NIL context (no Positional row supplied). A FrontierPinned
-	// baked node is LOUD here (frontier-contract violation — it must receive a
-	// positional row); an unpinned node keeps the sanctioned nil-binding NULL
-	// (contract ruling #3, e.g. appendNullLeg), mirroring the nil-context arm above.
-	if err := f.frontierContractGuard(); err != nil {
-		return nil, err
-	}
-	return nil, nil
+	// Unrecognized NON-NIL context: nothing resolved. Post-cap production flows an
+	// OrdinalRow / *RowEvalContext(+Positional) / CorrelationBinder / nil — reaching
+	// here is a planner/executor bug, LOUD for pinned and unpinned alike (RFC-173 §F
+	// ruling); a silent NULL would hide it. (A nil context is the sanctioned
+	// appendNullLeg NULL, handled above.)
+	return nil, &UnboundEvalContextError{Field: f.Field, CtxType: fmt.Sprintf("%T", evalCtx)}
 }
 
 func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) (any, error) {
@@ -837,10 +859,9 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		if ctx.Positional != nil {
 			return f.evaluateOrdinal(ctx.Positional)
 		}
-		if err := f.frontierContractGuard(); err != nil {
-			return nil, err
-		}
-		return nil, nil
+		// Nothing matched and no frontier row supplied: a dangling correlation.
+		// Loud for pinned and unpinned alike (RFC-173 §F ruling) — never a silent NULL.
+		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "*RowEvalContext (correlation unbound, no positional)"}
 	case CorrelationBinder:
 		if bound, ok := ctx.GetCorrelationBinding(qov.Correlation); ok {
 			if row, ok := bound.(OrdinalRow); ok {
@@ -855,18 +876,13 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			}
 			return bound, nil
 		}
-		if err := f.frontierContractGuard(); err != nil {
-			return nil, err
-		}
-		return nil, nil
+		// Correlation unbound in this binder: a dangling reference. Loud (RFC-173 §F).
+		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: fmt.Sprintf("%T (unbound)", ctx)}
 	}
-	// Unrecognized NON-NIL context (no ordinal row supplied). A FrontierPinned
-	// node is LOUD (frontier-contract violation); an unpinned node keeps the
-	// sanctioned nil-binding NULL, mirroring Evaluate's own tail.
-	if err := f.frontierContractGuard(); err != nil {
-		return nil, err
-	}
-	return nil, nil
+	// Unrecognized NON-NIL context (no ordinal row supplied): nothing resolved.
+	// Loud for pinned and unpinned alike (RFC-173 §F ruling), mirroring Evaluate's
+	// own tail; a silent NULL would hide a planner/executor bug.
+	return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: fmt.Sprintf("%T", evalCtx)}
 }
 
 // resolveOrdinal returns the 0-based ordinal of f.Field within the record type

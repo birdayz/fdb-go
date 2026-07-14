@@ -133,12 +133,12 @@ func TestFieldValue_Evaluate(t *testing.T) {
 	if got != nil {
 		t.Fatalf("nil ctx: got %v", got)
 	}
-	// Wrong ctx type: a lazy (unpinned) node over an unrecognized non-nil context
-	// is a quiet NULL (no frontier contract) — the sanctioned off-frontier path.
-	got, errEv3 := f.Evaluate("not a map")
-	require.NoError(t, errEv3)
-	if got != nil {
-		t.Fatalf("wrong ctx type: got %v", got)
+	// Wrong ctx type: a non-nil unrecognized context is a nothing-matched eval —
+	// now a LOUD *UnboundEvalContextError, not a silent off-frontier NULL.
+	_, errEv3 := f.Evaluate("not a map")
+	var uce *UnboundEvalContextError
+	if !errors.As(errEv3, &uce) {
+		t.Fatalf("wrong ctx type: want *UnboundEvalContextError, got %v", errEv3)
 	}
 }
 
@@ -1651,10 +1651,13 @@ func TestFieldValue_QOV_FlatMap_NoFallbackToBareKey(t *testing.T) {
 		"K":   int64(99),
 		"B.K": int64(99),
 	}
-	got, errEv0 := fv.Evaluate(merged)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("expected nil (A.K not in map), got %v — bare key fallback must not happen", got)
+	// An unrecognized name-map context is a nothing-matched eval — now a loud
+	// *UnboundEvalContextError, not a silent NULL. (The old point — no bare-key
+	// fallback to "K" — is subsumed: nothing matches, so it's loud.)
+	_, errEv0 := fv.Evaluate(merged)
+	var uce *UnboundEvalContextError
+	if !errors.As(errEv0, &uce) {
+		t.Fatalf("unrecognized name-map context: want *UnboundEvalContextError, got %v", errEv0)
 	}
 }
 
@@ -1723,7 +1726,7 @@ func TestFieldValue_QOV_CorrelationIdMap(t *testing.T) {
 	}
 }
 
-func TestFieldValue_QOV_MissingCorrelation_ReturnsNil(t *testing.T) {
+func TestFieldValue_QOV_MissingCorrelation_IsLoud(t *testing.T) {
 	t.Parallel()
 	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("MISSING")), "COL", UnknownType)
 
@@ -1732,10 +1735,12 @@ func TestFieldValue_QOV_MissingCorrelation_ReturnsNil(t *testing.T) {
 			NamedCorrelationIdentifier("OTHER"): fom(map[string]any{"COL": "other"}),
 		}},
 	}
-	got, errEv0 := fv.Evaluate(rc)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("missing correlation should return nil, got %v", got)
+	// The correlation is unbound and there is no Positional row: a nothing-matched
+	// RowEvalContext eval is now a LOUD *UnboundEvalContextError, not a silent NULL.
+	_, errEv0 := fv.Evaluate(rc)
+	var uce *UnboundEvalContextError
+	if !errors.As(errEv0, &uce) {
+		t.Fatalf("missing correlation: want *UnboundEvalContextError, got %v", errEv0)
 	}
 }
 

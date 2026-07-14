@@ -29,7 +29,7 @@ func resultValueString(v any) string {
 
 // RecordLayerResultSet wraps a RecordCursor[QueryResult] and implements
 // api.ResultSet. Mirrors Java's RecordLayerResultSet: Next() advances
-// the cursor, typed accessors read from the current row's datum map.
+// the cursor, typed accessors read from the current row's positional slots.
 //
 // Column metadata is provided at construction time (derived from the
 // plan's result type or the schema catalog). Column accessors are
@@ -58,7 +58,7 @@ type RecordLayerResultSet struct {
 
 // ColumnDef describes one column in the result set.
 type ColumnDef struct {
-	Name     string // key for datum map lookup
+	Name     string // output column name (positional slot / by-name lookup key)
 	Label    string // display name (alias); empty means use Name
 	TypeName string // JDBC type name: BIGINT, STRING, DOUBLE, etc.
 	Nullable int    // api.ColumnNoNulls / ColumnNullable / ColumnNullableUnknown

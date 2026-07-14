@@ -89,17 +89,22 @@ func TestRFC173Unified_PinnedStaysLoudThroughPassthrough(t *testing.T) {
 	}
 	_, evalErr := fv.Evaluate(map[string]any{"ID": int64(7)})
 	var bnce *BakedNameContextError
-	if !errors.As(evalErr, &bnce) {
-		t.Fatalf("childless PINNED copy on a name-keyed row = %v, want loud *BakedNameContextError — the frontier contract must survive the child-stripping copy", evalErr)
+	var uce *UnboundEvalContextError
+	if !errors.As(evalErr, &bnce) && !errors.As(evalErr, &uce) {
+		t.Fatalf("childless PINNED copy on a name-keyed row = %v, want loud *BakedNameContextError or *UnboundEvalContextError — the frontier contract must survive the child-stripping copy", evalErr)
 	}
 }
 
-// TestRFC173Unified_GuardDistinction pins the fold's evaluation-contract split
-// on the SAME non-positional context: the seed constructor PINS (loud
-// *BakedNameContextError — the executor frontier contract), the wrap constructor
-// does NOT (a quiet off-frontier NULL). Post-cap the retired name-keyed read is
-// gone — a bare map is not an OrdinalRow — so the distinction is loud vs
-// quiet-NULL, not loud vs name-read.
+// TestRFC173Unified_GuardDistinction pins the §F collapse of the old
+// loud/quiet split. Pre-§F this test proved a distinction over the SAME
+// non-positional context: the pinned seed was loud while the unpinned wrap was
+// a quiet off-frontier NULL. The §F ruling RETIRES that split — a nothing-matched
+// eval against a non-positional (non-OrdinalRow) context is UNIFORMLY loud, for
+// BOTH pinned and unpinned nodes: there is no silent unpinned path left. The
+// surviving pinned-vs-unpinned distinction now lives only at a MATCHED
+// name-keyed binding (pinned → *BakedNameContextError, unpinned → raw value),
+// covered elsewhere. Here, over a bare map nothing matches, so both tails are
+// loud (in practice both hit the unbound-context tail → *UnboundEvalContextError).
 func TestRFC173Unified_GuardDistinction(t *testing.T) {
 	t.Parallel()
 	qov, _ := unifiedTestQOV(t)
@@ -111,21 +116,20 @@ func TestRFC173Unified_GuardDistinction(t *testing.T) {
 	}
 	_, evalErr := seed.Evaluate(nameRow)
 	var bnce *BakedNameContextError
-	if !errors.As(evalErr, &bnce) {
-		t.Fatalf("pinned seed node on a non-positional context = %v, want *BakedNameContextError", evalErr)
+	var uce *UnboundEvalContextError
+	if !errors.As(evalErr, &bnce) && !errors.As(evalErr, &uce) {
+		t.Fatalf("pinned seed node on a non-positional context = %v, want loud *BakedNameContextError or *UnboundEvalContextError", evalErr)
 	}
 
-	// The UNPINNED wrap node carries no frontier contract: over a non-positional
-	// context it is a QUIET NULL, never loud — the negative half of the
-	// distinction. (Its positive half — resolving positionally over an ordinal
-	// row — is covered by TestFieldValue_OrdinalEval_RFC173Slice1.)
+	// The UNPINNED wrap node is now LOUD too: post-§F it carries no silent
+	// off-frontier path — a nothing-matched eval over a non-positional context is
+	// an *UnboundEvalContextError, never a quiet NULL. (Its MATCHED positive
+	// half — resolving positionally over an ordinal row — is covered by
+	// TestFieldValue_OrdinalEval_RFC173Slice1.)
 	wrap := NewFieldValueWithResolvedOrdinal("X", 1, UnknownType)
-	got, evalErr := wrap.Evaluate(nameRow)
-	if evalErr != nil {
-		t.Fatalf("unpinned wrap node on a non-positional context must be quiet, not loud: %v", evalErr)
-	}
-	if got != nil {
-		t.Fatalf("unpinned wrap node over a non-positional context = %v, want nil (quiet off-frontier NULL)", got)
+	_, evalErr = wrap.Evaluate(nameRow)
+	if !errors.As(evalErr, &bnce) && !errors.As(evalErr, &uce) {
+		t.Fatalf("unpinned wrap node on a non-positional context = %v, want loud *BakedNameContextError or *UnboundEvalContextError (§F: no silent unpinned path)", evalErr)
 	}
 }
 

@@ -50,10 +50,9 @@ type QueryResult struct {
 	Complete bool
 }
 
-// FromStoredRecord builds a QueryResult from a stored record. The
-// datum is set to a map[string]any extracted from the proto message's
-// fields, keyed by UPPER-case field name (matching the identifier
-// folding convention).
+// FromStoredRecord builds a QueryResult from a stored record. The row is the
+// ordinal PositionalRow built from the proto message (protoToPositional — one
+// slot per descriptor field in declaration order; FieldValue reads it by ordinal).
 func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
 	return QueryResult{
 		Positional: protoToPositional(rec.Record),

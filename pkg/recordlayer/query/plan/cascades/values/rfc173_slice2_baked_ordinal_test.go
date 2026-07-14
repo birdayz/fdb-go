@@ -414,11 +414,17 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	}
 	nameRow := map[string]any{"ID": int64(7), "Q.ID": int64(7)}
 
+	// A baked node over a non-positional context is always LOUD, never a silent
+	// NULL. The error kind depends on what happened (RFC-173 §F ruling): a
+	// correlation that MATCHED a name-keyed value → *BakedNameContextError (pinned
+	// hit a name context); NOTHING matched (unrecognized context / unbound
+	// correlation) → *UnboundEvalContextError. Either proves non-silence.
 	assertLoud := func(site string, got any, err error) {
 		t.Helper()
 		var bnce *BakedNameContextError
-		if !errors.As(err, &bnce) {
-			t.Fatalf("%s: baked node over a name-keyed context must be a loud *BakedNameContextError, got (%v, %v)", site, got, err)
+		var uce *UnboundEvalContextError
+		if !errors.As(err, &bnce) && !errors.As(err, &uce) {
+			t.Fatalf("%s: baked node over a non-positional context must be LOUD (*BakedNameContextError or *UnboundEvalContextError), got (%v, %v)", site, got, err)
 		}
 	}
 
@@ -451,18 +457,21 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	// NULL there would hide a frontier bug — at BOTH tails: Evaluate's
 	// (childless orphan) and evaluateCorrelated's (QOV child, the COMMON
 	// baked shape — review catch: the first fix guarded only the rare
-	// orphan path). Lazy keeps the historical silent NULL, and a bare nil
-	// context stays NULL through the correlated path too (ruling #3).
+	// orphan path). Post-§F it is loud for LAZY/unpinned nodes too: a
+	// nothing-matched eval against an unrecognized non-nil context is an
+	// *UnboundEvalContextError, never a silent NULL. A bare nil context still
+	// stays NULL through the correlated path (ruling #3).
 	type weirdCtx struct{}
 	got, err = orphan.Evaluate(weirdCtx{})
 	assertLoud("unrecognized context: Evaluate tail (orphan)", got, err)
 	got, err = baked.Evaluate(weirdCtx{})
 	assertLoud("unrecognized context: evaluateCorrelated tail (QOV child)", got, err)
-	if v, err := NewFlatFieldValue("ID", NotNullLong).Evaluate(weirdCtx{}); v != nil || err != nil {
-		t.Fatalf("lazy orphan over unrecognized context = (%v, %v), want silent (nil, nil) — unchanged", v, err)
+	var uce *UnboundEvalContextError
+	if _, err := NewFlatFieldValue("ID", NotNullLong).Evaluate(weirdCtx{}); !errors.As(err, &uce) {
+		t.Fatalf("lazy orphan over unrecognized context = %v, want loud *UnboundEvalContextError (§F: no silent lazy NULL)", err)
 	}
-	if v, err := NewFieldValue(qov, "ID", NotNullLong).Evaluate(weirdCtx{}); v != nil || err != nil {
-		t.Fatalf("lazy correlated over unrecognized context = (%v, %v), want silent (nil, nil) — unchanged", v, err)
+	if _, err := NewFieldValue(qov, "ID", NotNullLong).Evaluate(weirdCtx{}); !errors.As(err, &uce) {
+		t.Fatalf("lazy correlated over unrecognized context = %v, want loud *UnboundEvalContextError (§F: no silent lazy NULL)", err)
 	}
 	if v, err := baked.Evaluate(nil); v != nil || err != nil {
 		t.Fatalf("baked correlated over NIL context = (%v, %v), want (nil, nil) — the ruling #3 NULL", v, err)

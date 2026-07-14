@@ -1,6 +1,7 @@
 package values
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -55,10 +56,16 @@ func TestFieldValue_ResolvedOrdinal_RFC173(t *testing.T) {
 	}
 
 	// (3) Non-ordinal context: a resolved-ordinal read has no name model to fall
-	// back to (retired at the cap). An UNPINNED baked node is a quiet NULL — the
-	// sanctioned off-frontier path, never a name read.
-	if vn, err := read1.Evaluate(map[string]any{"X": int64(7)}); err != nil || vn != nil {
-		t.Fatalf("resolved-ordinal over a non-ordinal context = (%v, %v), want (nil, nil)", vn, err)
+	// back to (retired at the cap). The retired silent-NULL is now a loud
+	// *UnboundEvalContextError — an unrecognized non-ordinal context is a
+	// nothing-matched eval, not a sanctioned off-frontier NULL.
+	if _, err := read1.Evaluate(map[string]any{"X": int64(7)}); err == nil {
+		t.Fatal("resolved-ordinal over a non-ordinal context must be a loud *UnboundEvalContextError, got nil")
+	} else {
+		var uce *UnboundEvalContextError
+		if !errors.As(err, &uce) {
+			t.Fatalf("resolved-ordinal over a non-ordinal context = %v, want loud *UnboundEvalContextError", err)
+		}
 	}
 
 	// (4) Semantic identity: distinct ordinals are distinct FieldPaths.

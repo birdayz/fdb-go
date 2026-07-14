@@ -5689,12 +5689,14 @@ per-shape ordinalization gate. Items below, most-actionable first.
   emits slot "A.B" and label "A.B"; the alignment check leaf-stripped the slot to "B" and compared
   against "A.B" → XX000 "no positional output row aligned" (the Datum fallback used to mask it).
   Fixed: accept a full-name match before the slot-side leaf strip; do NOT strip the display side
-  (would falsely align permuted qualifiers). **Regression test pending.**
+  (would falsely align permuted qualifiers). Pinned: `TestResultSet_DottedAliasPositionalAlign`
+  (+ a permuted-qualifier NON-alignment guard).
 - [x] **Legacy sort continuation dropped rows** — `continuation.go` decode. A pre-RFC-173
   (name-keyed OBJECT payload) continuation resumed under new code left every buffered row
   `Positional == nil` → all-NULL sort keys, misordered/XX000 across an upgrade mid-pagination.
-  Fixed: fail the resume loudly (the row is unreconstructable in the ordinal model) instead of
-  silently dropping data. **Regression test pending.**
+  Fixed: a single positional==nil guard (after the PK unpack) fails the resume loudly instead of
+  silently dropping data — uniform across the legacy OBJECT and v2 array shapes. Pinned:
+  `TestSortContinuation_PreservesComplete` legacy-object + v2-array rejection cases.
 
 ### B. Slice 4 — retire the name-model AnchoredJoin producer (BIG, the unpaid simplification)
 - [ ] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
@@ -5707,7 +5709,14 @@ per-shape ordinalization gate. Items below, most-actionable first.
   into the permanent runtime shape" (rfc173_ordinal_join.go) — the cap ossified it; un-ossify.
 
 ### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
-- [ ] Bake `ResolveIdentifier` at plan time — `expr.go:260` still emits a **lazy** `NewFieldValue`
+> IMPL NOTE (investigated): baking canNOT happen in `ResolveIdentifier` (expr/expr.go:205) —
+> that is SEMANTIC time, before the physical access path is chosen, and the runtime slot order
+> depends on it (a covering-index scan's row has a DIFFERENT slot order than the base table, a
+> join merge yet another). The ordinal is only fixable once the PHYSICAL row shape is known, i.e.
+> at translation/physicalization — exactly where the ordinalization gate (item B) runs. So C is
+> COUPLED to B: making the gated per-shape ordinalization UNIFORM (physical-plan-aware) is the
+> single move that closes both. Needs a Graefe design ruling on the uniform approach before code.
+- [ ] Bake `ResolveIdentifier` at plan time — `expr/expr.go:260` still emits a **lazy** `NewFieldValue`
   for the common column path; ordinal is re-derived at RUNTIME via `rt.FieldIndex(f.Field)`
   (values.go ~908) + `row.GetByName` (values.go ~555). Java binds every ref to an ordinal at plan
   time (`ofOrdinalNumber`) and never name-resolves at runtime. ~23 lazy sites remain. Then delete
