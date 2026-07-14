@@ -539,6 +539,106 @@ type chainedSpineLink struct {
 	un   *logical.LogicalUnnest
 }
 
+// rotateBuriedChainedSpine probes the BURIED chained-spine class — a CHAINED
+// lateral-unnest spine followed by TRAILING plain comma legs (`FROM t, t.arr AS
+// x, x.sub AS y, z`) — and, when it classifies, ROTATES the cluster to the
+// BOX-BOTTOM chained form the ordinal machinery owns: the trailing legs join
+// the spine's bottom (`FROM t, z, t.arr AS x, x.sub AS y`), so the spine's top
+// link is the rightmost source and the whole chain takes the chained ordinal
+// dispatch (chainedSpineWalk admits the widened INNER-box bottom; the ordinal
+// seed composes the box's per-leg windows). Without the rotation the spine is
+// a buried LEG of the trailing join, which name-models the parent (the
+// unnest-right gate poison) — the exact producer-caller class RFC-173 item B
+// retires. The chained twin of rotateEnclosedUnnest (which owns the
+// SINGLE-link buried class and declines chains); like it, the rotation is
+// inner-join-equivalent — every link references only sources at or below its
+// own spine position, and a trailing leg is independent of the links, so
+// re-parenting it below the spine preserves rows and multiplicities.
+//
+// Fail-open (ok=false keeps the ORIGINAL tree): declines on any ON-carrying
+// or non-INNER join in the peel (an ON conjunct may reference a link element,
+// which is out of scope below the links), a single-link spine
+// (rotateEnclosedUnnest's), a non-chained top link, or a rotated spine the
+// chained walk does NOT admit — so a shape the ordinal path cannot serve
+// keeps today's name-model translation instead of trading it for a decline.
+func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*logical.LogicalJoin, bool) {
+	if t.md == nil || j.Kind != logical.JoinInner || len(j.OnExistsSubqueries) > 0 ||
+		j.OnPredicate != nil || j.OnText != "" {
+		return nil, false
+	}
+	if _, rightUnnest := j.Right.(*logical.LogicalUnnest); rightUnnest {
+		return nil, false // root form — the unnest dispatch owns it
+	}
+	// Peel the TRAILING legs (collected in REVERSE FROM order) off the
+	// left-deep tree until the spine's top link surfaces.
+	var trailingRev []logical.LogicalOperator
+	cur := j
+	var spineTop *logical.LogicalJoin
+	for {
+		trailingRev = append(trailingRev, cur.Right)
+		lj, isJ := cur.Left.(*logical.LogicalJoin)
+		if !isJ {
+			return nil, false
+		}
+		if _, isU := lj.Right.(*logical.LogicalUnnest); isU {
+			spineTop = lj
+			break
+		}
+		if lj.Kind != logical.JoinInner || len(lj.OnExistsSubqueries) > 0 ||
+			lj.OnPredicate != nil || lj.OnText != "" {
+			return nil, false
+		}
+		cur = lj
+	}
+	// Collect the spine's link joins, top-down, and its bottom.
+	var linksTopDown []*logical.LogicalJoin
+	var bottom logical.LogicalOperator
+	for sj := spineTop; ; {
+		un, isU := sj.Right.(*logical.LogicalUnnest)
+		if !isU {
+			bottom = sj
+			break
+		}
+		if sj.Kind != logical.JoinInner || len(sj.OnExistsSubqueries) > 0 ||
+			sj.OnPredicate != nil || sj.OnText != "" || len(un.Segments) < 2 {
+			return nil, false
+		}
+		linksTopDown = append(linksTopDown, sj)
+		nj, isJ := sj.Left.(*logical.LogicalJoin)
+		if !isJ {
+			bottom = sj.Left
+			break
+		}
+		sj = nj
+	}
+	// Only a genuinely CHAINED spine (≥2 links, top link owned by a deeper
+	// link's element): the single-link buried class rotates via
+	// rotateEnclosedUnnest into the FLAT gathered form instead.
+	if len(linksTopDown) < 2 ||
+		!isChainedUnnest(spineTop.Left, spineTop.Right.(*logical.LogicalUnnest)) {
+		return nil, false
+	}
+	// Rebuild: bottom ⋈ trailing legs (FROM order) as the new spine bottom,
+	// then the links re-stacked bottom-most first.
+	newOp := bottom
+	for i := len(trailingRev) - 1; i >= 0; i-- {
+		newOp = &logical.LogicalJoin{Left: newOp, Right: trailingRev[i], Kind: logical.JoinInner}
+	}
+	for i := len(linksTopDown) - 1; i >= 0; i-- {
+		newOp = &logical.LogicalJoin{Left: newOp, Right: linksTopDown[i].Right, Kind: logical.JoinInner}
+	}
+	rotated := newOp.(*logical.LogicalJoin)
+	// Admission probe: rotate only when the rotated spine ORDINALIZES
+	// (chainedSpineWalk is side-effect-free). A declined rotated form (a poison
+	// trailing leg, an inadmissible bottom) keeps the original tree — its
+	// name-model translation answers correct rows today, while the rotated
+	// residual is an unverified shape.
+	if _, admitted, _ := t.chainedSpineWalk(rotated.Left); !admitted {
+		return nil, false
+	}
+	return rotated, true
+}
+
 // chainedOwnerElementSlot resolves ownerAlias to exactly one walked link and
 // returns its ELEMENT's slot in the merged ordinal row. The layout law (pinned
 // per AT-combination in the slot tests): each link appends [element, AT?] to

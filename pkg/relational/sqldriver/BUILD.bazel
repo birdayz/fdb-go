@@ -277,6 +277,7 @@ go_test(
         "rfc173_s4_baretwin_gather_fdb_test.go",
         "rfc173_s4_boxdup_buried_element_fdb_test.go",
         "rfc173_s4_boxdup_class2_fdb_test.go",
+        "rfc173_s4_buried_chained_rotation_fdb_test.go",
         "rfc173_s4_buriedbox_inner_exists_fdb_test.go",
         "rfc173_s4_c5a_fullouter_unnest_exists_fdb_test.go",
         "rfc173_s4_chained_unnest_ordinal_fdb_test.go",

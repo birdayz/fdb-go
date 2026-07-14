@@ -2558,6 +2558,32 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 	}
 
+	// RFC-173 S4: a BURIED CHAINED spine behind trailing plain legs (`FROM t,
+	// t.arr AS x, x.sub AS y, z WHERE …`) rotates to the box-bottom chained
+	// form BEFORE the buried-predicate push — the push would filter-wrap the
+	// spine inside the trailing join and hide it (the rotation peel stops at a
+	// Filter), stranding the cluster on the name-model residual. With the
+	// rotation the top link is the rightmost source, so the buried push stands
+	// down (rightIsUnnest) and the chained WHERE arm below owns the whole
+	// predicate: pure-outer conjuncts ride the lazy ⊆-outerLegs path (SARG),
+	// straddles bake positionally over the chained merged row
+	// (rebaseChainedOuterLegPredicate) — the exact treatment the box-bottom
+	// chained certificates pin. Same enclosure stance as the single-link
+	// gather probe above.
+	if f.Predicate != nil && len(f.ExistsSubqueries) == 0 && !t.inInnerCluster && !t.unnestUnderExistential {
+		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
+			if rotated, rok := t.rotateBuriedChainedSpine(join); rok {
+				f = &logical.LogicalFilter{
+					Input:            rotated,
+					Predicate:        f.Predicate,
+					PredicateText:    f.PredicateText,
+					ExistsSubqueries: f.ExistsSubqueries,
+					ScalarSubqueries: f.ScalarSubqueries,
+				}
+			}
+		}
+	}
+
 	pushedAllBuried := false
 	if f.Predicate != nil && !enclosedGathered && !existsEnclosedRotatable {
 		pushed := pushBuriedUnnestPredicateDown(f)
@@ -5818,6 +5844,19 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// ENCLOSED (the name-model residual) with the faithful diagnostics.
 	if sel := t.translateEnclosedUnnestGather(j); sel != nil {
 		return sel
+	}
+
+	// RFC-173 S4: the BURIED CHAINED spine (`FROM t, t.arr AS x, x.sub AS y,
+	// z` — a chained spine behind trailing plain legs) rotates to the
+	// box-bottom chained form and re-dispatches, so the whole cluster takes
+	// the chained ordinal seed instead of name-modeling the trailing join
+	// around a buried spine leg. Same enclosure stance as the single-link
+	// gather above; fail-open (an inadmissible rotated spine keeps the
+	// original tree and the paths below).
+	if !t.inInnerCluster && !t.unnestUnderExistential {
+		if rotated, ok := t.rotateBuriedChainedSpine(j); ok {
+			return t.translateJoin(rotated)
+		}
 	}
 
 	left := j.Left
