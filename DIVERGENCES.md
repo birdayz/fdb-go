@@ -424,3 +424,22 @@ collision mint: the inner source is born under a unique CorrelationName, so the 
 `isLocal` guard no longer swallows the parent hit — the fallthrough emits QOV(outer) and the
 query ANSWERS with Java's live-verified semantics. Both variants are pinned by
 `TestFDB_RFC173W4Left_DuplicateFromAliases`.
+
+## Element-shadows-outer vs Java AMBIGUOUS_COLUMN (dup-label unnest, shared-surface, Go-only reach)
+
+When a lateral unnest's element/AT alias DUPLICATES an outer column name (`SELECT SUB FROM t,
+t.scarr AS "SUB"`, or the CTE-boxed `WITH S AS (SELECT * FROM t, t.scarr AS "SUB") …`), Go's
+deployed RFC-142 semantics resolves the reference to the UNNEST ELEMENT (element-shadows-outer,
+last-write-wins). Java 4.12.11.0's `SemanticAnalyzer.resolveIdentifier` (SemanticAnalyzer.java
+~:417/:422) resolves a duplicate column reference as `AMBIGUOUS_COLUMN` — an ERROR. So on this
+shared surface Go RETURNS ROWS (the element) where Java REJECTS.
+
+This is INTENTIONAL and surface-wide, not a one-off: element-shadows-outer is Go's existing rule
+across the whole unnest surface (the direct form already returns the element on master). Making
+only the dup-label case throw would be a bolted-on special-case (design principle #10) and would
+re-open two silent-wrong-rows bugs the S4-B star-CTE slice fixed (a colliding derived twin was
+serving the OUTER scalar, and wrong-leg IDs). Wire compat is untouched (pure read path). Graefe
+(RFC-173 S4 item B deletion review) endorsed keeping the uniform element-shadows-outer semantics
+and booking this here as the known divergence. Pinned: `TestFDB_RFC173S4_StarCTEOrdinalLeg`
+(colliding_label_shadow). Follow-on if strict Java parity is ever required: make the dup-label
+resolution loud `AMBIGUOUS_COLUMN` UNIFORMLY (direct + CTE forms), never just the boxed case.

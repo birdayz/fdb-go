@@ -19,7 +19,7 @@ import "strings"
 // Field is `LEG.COL` (and whose Child resolves to a QuantifiedObjectValue —
 // i.e. it reads off a merged quantifier's row, not a literal anchored RC) genuinely
 // depends on the source leg `LEG`. The anchored merged row always names its legs
-// by their source alias as the dotted prefix (NewAnchoredJoinRecord), and those
+// by their source alias as the dotted prefix (the executor's mergeRows), and those
 // source aliases ARE the sibling quantifier aliases after the merge flattens — so
 // the prefix maps directly to the owned quantifier.
 //
@@ -39,8 +39,9 @@ func MergeSeedLegsOfValue(v Value) map[CorrelationIdentifier]struct{} {
 			return true
 		}
 		// The Child must bottom out in a QuantifiedObjectValue — a dotted read off
-		// a merged quantifier's row. (A dotted FieldValue over a literal anchored RC
-		// is the partition-time predicate case, handled by AddMergeSeedAliases.)
+		// a merged quantifier's row. (The literal-anchored-RC dotted case — a
+		// partition-time predicate over the name-model seed — is retired with the
+		// AnchoredJoin producer: no anchored RC is constructible anymore.)
 		if _, isQOV := leftmostQOVOfValue(fv.Child); !isQOV {
 			return true
 		}

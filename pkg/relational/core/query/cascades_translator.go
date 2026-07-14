@@ -2668,8 +2668,8 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// FlatMap binds the merged outer row under sourceAlias(j.Left) (the
 			// RIGHTMOST leg B), so QOV(A) is UNBOUND inside the inner Explode's
 			// PredicatesFilter → `X = NULL` drops every matching element. The
-			// merged row carries the qualified `A.c` key (mergeRows/
-			// NewAnchoredJoinRecord), so rebase any outer-leg reference (any
+			// merged row carries the qualified `A.c` key (the executor's mergeRows,
+			// now the sole authority), so rebase any outer-leg reference (any
 			// outerBoundAliases(j.Left) leg, e.g. A) to that key off the merged
 			// QOV — the SAME outer-leg-to-merged rebase the EXISTS path
 			// (rebaseUnnestOuterLegPredicate) and the real-JOIN+EXISTS path
@@ -3165,7 +3165,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	// So at execution the residual's QOV(T1) is unbound → `U.V > NULL` is false for
 	// every row → ALL rows silently dropped. The unnest FlatMap output anchors the
 	// outer leg's columns under BOTH bare (ID) and qualified (T1.ID) keys
-	// (buildUnnestResultValue → NewAnchoredJoinRecord), exactly as a non-unnest
+	// (the executor's mergeRows, now the sole authority), exactly as a non-unnest
 	// `WHERE EXISTS` correlates to its FROM source. Rebase every EXISTS subquery's
 	// JoinPredicate so a reference to an outer-table leg alias (outerBoundAliases of
 	// join.Left, e.g. T1) reads the qualified T1.ID key off the unnest FlatMap's
@@ -3345,7 +3345,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 // under mergedCorr (the unnest's AS/AT alias). A leg reference
 // `FieldValue{Field:"ID", Child:QOV("T1")}` becomes
 // `FieldValue{Field:"T1.ID", Child:QOV(mergedCorr)}` — the qualified "LEG.COL"
-// key the unnest FlatMap output carries (NewAnchoredJoinRecord). This is the
+// key the unnest FlatMap output carries (the executor's mergeRows). This is the
 // query-package twin of the cascades NLJ rule's rebaseOuterLegRefsToMerged (the
 // real-JOIN+EXISTS path); both turn an outer-leg-qualified residual into a read
 // off the existential outer's merged binding. References to the unnest element
