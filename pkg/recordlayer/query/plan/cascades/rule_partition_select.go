@@ -70,26 +70,6 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	if existentialCount >= 2 {
-		// A multi-esq over a MULTI-WAY ForEach JOIN (≥2 ForEach quantifiers alongside
-		// the existentials) does NOT partition here: peeling the existentials while
-		// MERGING the ≥2 ForEach legs drives the peel through the ≥2-leg anchored merge
-		// arm, whose recursive re-enumeration cannot resolve a column-less existential
-		// leg and PANICS ("anchored re-enumeration must resolve an anchored parent's
-		// legs"). Decline → the shape stays an unplannable 0AF00 (its behavior before
-		// existentials were partitionable), correct-or-loud, never a panic. The
-		// row-reachable multi-esq shapes have a SINGLE ForEach outer (a simple/2-way
-		// outer collapsed to one seed, or the gathered INNER cluster's one ordinal
-		// seed) + N existentials → they peel via Case 2 and never merge, so they are
-		// unaffected. (Physicalizing multi-way-join multi-esq is a separate slice.)
-		forEachCount := 0
-		for _, q := range quantifiers {
-			if q.Kind() == expressions.QuantifierForEach {
-				forEachCount++
-			}
-		}
-		if forEachCount >= 2 {
-			return
-		}
 		// PROJECTED multi-EXISTS (`SELECT id, EXISTS(…) AS a, EXISTS(…) AS b`) is a
 		// SEPARATE, harder case: the result value references the existential
 		// quantifiers (booleans in the SELECT list), and peeling them into sibling
@@ -585,20 +565,24 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// (every leg's source is a parent quantifier; the nil branch panics).
 		// Canonical leg order so two bipartitions producing the same upper merge
 		// intern (the anchored RC's structural identity is order-sensitive).
-		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier, newLowerSources []values.CorrelationIdentifier) values.Value {
+		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier, newLowerSources []values.CorrelationIdentifier) (values.Value, bool) {
 			if !parentIsMerge {
-				return resultValue
+				return resultValue, true
 			}
 			legs := upperLegs(newLowerAlias, newLowerSources)
 			rc := values.NewReEnumerationAnchoredRecord(parentAnchored, legs)
 			if rc == nil {
-				// Unreachable by construction: every upper leg's source is a parent
-				// quantifier, so an anchored parent always resolves. Fail LOUD if a
-				// future change breaks the invariant, rather than store nil silently
-				// (which surfaces as wrong rows). RFC-077 7.6 retired the opaque fallback.
-				panic("RFC-077 7.6: anchored re-enumeration must resolve an anchored parent's legs (upper)")
+				// A leg's source is not a column-bearing parent quantifier — the one
+				// way this arises is a multi-esq peel over an anchored merge where a
+				// column-less EXISTENTIAL would be a leg. DECLINE this bipartition
+				// (ok=false → the caller `continue`s): the shape peels via a different
+				// bipartition, gathers into a single seed, or declines LOUD — never a
+				// panic (correct-or-loud). This mirrors the LOWER re-enumeration, which
+				// already declines-on-nil rather than panicking. (The whole anchored arm
+				// is name-model residual slated for Slice-4 retirement.)
+				return nil, false
 			}
-			return rc
+			return rc, true
 		}
 
 		// addUpper appends the new lower quantifier, the upper tables, and the
@@ -652,8 +636,12 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			)
 			// No upper-to-lower correlation here, so no spanning predicate
 			// references a buried lower — nothing to rebase.
+			upperRV, ok := buildUpperResult(lowerAliasCorrelatedToByUpperAliases, nil)
+			if !ok {
+				continue
+			}
 			upperSelectExpression = addUpper(newLowerQ, nil).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(lowerAliasCorrelatedToByUpperAliases, nil))
+				BuildSelectWithResultValue(upperRV)
 
 		} else if len(lowersCorrelatedToByUppers) >= 2 {
 			if !parentIsMerge {
@@ -744,8 +732,12 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			for _, a := range lowersCorrelatedToByUppers {
 				collapsed[a] = struct{}{}
 			}
+			upperRV, ok := buildUpperResult(mergeAlias, lowersCorrelatedToByUppers)
+			if !ok {
+				continue
+			}
 			upperSelectExpression = addUpper(newLowerQ, collapsed).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(mergeAlias, lowersCorrelatedToByUppers))
+				BuildSelectWithResultValue(upperRV)
 
 		} else {
 			// Case 2: Exactly one live lower alias. Lower's result value is that
@@ -770,8 +762,12 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// (Every lower alias a spanning predicate touches is added to the live
 			// set, so with exactly one live lower the only lower alias an upper
 			// predicate can name is this one.)
+			upperRV, ok := buildUpperResult(lowerAlias, []values.CorrelationIdentifier{lowerAlias})
+			if !ok {
+				continue
+			}
 			upperSelectExpression = addUpper(newLowerQ, nil).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(lowerAlias, []values.CorrelationIdentifier{lowerAlias}))
+				BuildSelectWithResultValue(upperRV)
 		}
 
 		call.Yield(applyExistentialSourceAliases(upperSelectExpression))

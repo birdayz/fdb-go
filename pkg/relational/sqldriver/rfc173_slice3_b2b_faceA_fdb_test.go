@@ -122,9 +122,10 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	// shapes: the peel of a multi-esq over a >=2-ForEach-leg join drove the ≥2-leg
 	// anchored merge arm, whose re-enumeration can't resolve a column-less existential
 	// → panic. Fix: the B1 fold gathers the join into ONE ordinal seed (so the peel is
-	// Case 2, one live lower — never the merge arm), and PartitionSelectRule declines a
-	// multi-esq with ≥2 ForEach legs as a backstop. A,B,EEV cross-join, B.K NULL:
-	// EXISTS(EE.CK=A.K=100)=true AND EXISTS(EE.CK=B.K=NULL)=false → {}.
+	// Case 2, one live lower — never the merge arm), and PartitionSelectRule's anchored
+	// merge (buildUpperResult) now DECLINES on an unresolvable leg instead of panicking.
+	// A,B,EEV cross-join, B.K NULL: EXISTS(EE.CK=A.K=100)=true AND
+	// EXISTS(EE.CK=B.K=NULL)=false → {}.
 	t.Run("multiesq_3way_join_gathers", func(t *testing.T) {
 		rows, plan, err := runQ(t, `SELECT A."K" FROM A, B, EEV WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`)
 		if err != nil {
@@ -146,6 +147,32 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 		want := []string{"map[X:7]"}
 		if strings.Join(rows, ",") != strings.Join(want, ",") {
 			t.Fatalf("leftbox+conjunct multi-esq rows = %v, want %v\n  %s", rows, want, plan)
+		}
+	})
+
+	// 2-WAY cross-product multi-esq (regression pin): `FROM A, B WHERE EXISTS AND
+	// EXISTS` peels via the 2-quantifier path (a cross product never reaches the
+	// anchored merge arm), so it must PLAN — an earlier over-broad guard regressed it
+	// to a strand. B.K NULL: EXISTS(EE.CK=A.K=100)=true AND EXISTS(EE.CK=B.K=NULL)=false
+	// → {}.
+	t.Run("multiesq_2way_crossproduct", func(t *testing.T) {
+		rows, plan, err := runQ(t, `SELECT A."K" FROM A, B WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`)
+		if err != nil {
+			t.Fatalf("2-way multi-esq must plan (regression guard): %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("2-way multi-esq rows = %v, want [] (B.K NULL)\n  %s", rows, plan)
+		}
+	})
+	// 2-way + double NOT EXISTS: NOT EXISTS(EE.CK=A.K=100)=NOT(true)=false → drops all
+	// → {} (A's only row fails the first NOT EXISTS). Must PLAN (regression guard).
+	t.Run("multiesq_2way_double_notexists", func(t *testing.T) {
+		rows, plan, err := runQ(t, `SELECT A."K" FROM A, B WHERE NOT EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND NOT EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`)
+		if err != nil {
+			t.Fatalf("2-way double NOT EXISTS must plan (regression guard): %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("2-way double NOT EXISTS rows = %v, want []\n  %s", rows, plan)
 		}
 	})
 
