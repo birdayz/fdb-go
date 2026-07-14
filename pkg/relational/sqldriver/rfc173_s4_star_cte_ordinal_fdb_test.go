@@ -156,7 +156,9 @@ func TestFDB_RFC173S4_StarCTEOrdinalLeg(t *testing.T) {
 	// outer scalar SUB=999/20) DECLINES the star admission and stays
 	// name-model: the element's bare key must keep WINNING the collision
 	// (last-write-wins), never the outer scalar — a positional first-match
-	// would serve 999/20. Rows pin the shadow semantics on both models.
+	// would serve 999/20. Since it declines, ONLY the name-model path runs here;
+	// the rows pin that name-model shadow semantics, which the ordinal admission
+	// deliberately declines (unique-label guard) to preserve.
 	want("colliding_label_shadow", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`, []string{
 		"map[S2.SUB:100]", "map[S2.SUB:100]", "map[S2.SUB:100]",
 		"map[S2.SUB:200]", "map[S2.SUB:200]", "map[S2.SUB:200]",

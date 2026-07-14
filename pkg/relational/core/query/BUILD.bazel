@@ -54,6 +54,7 @@ go_test(
         "rfc173_w4c_unnest_seed_test.go",
         "rfc173_w4left_rcte_test.go",
         "rfc173_w4left_seed_test.go",
+        "rfc173_w5_rotation_guard_test.go",
         "rfc173_w5_unnest_gather_test.go",
     ],
     embed = [":query"],

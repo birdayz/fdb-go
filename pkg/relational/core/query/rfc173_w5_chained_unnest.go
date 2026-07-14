@@ -618,6 +618,32 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 		!isChainedUnnest(spineTop.Left, spineTop.Right.(*logical.LogicalUnnest)) {
 		return nil, false
 	}
+	// DEFENSE-IN-DEPTH (rotation safety): each trailing leg is reparented BELOW the
+	// spine links, so it must NOT laterally correlate to a link's element/AT alias —
+	// a leg that read a spine element would find it out of scope once moved below.
+	// The only lateral construct in the FROM comma-list is an UNNEST, and a trailing
+	// unnest owned by a spine element is already peeled as a FORK by chainedSpineWalk
+	// (never a plain trailing leg), so this is unreachable on today's surface. Assert
+	// it explicitly rather than rely on that reachability: decline the rotation if any
+	// trailing leg's subtree unnests off a spine link's alias. (A future lateral
+	// derived-table syntax would need the same decline — correct-or-name-model, never
+	// wrong rows.)
+	spineAliases := make(map[string]struct{}, 2*len(linksTopDown))
+	for _, lk := range linksTopDown {
+		if un, ok := lk.Right.(*logical.LogicalUnnest); ok {
+			if un.Alias != "" {
+				spineAliases[strings.ToUpper(un.Alias)] = struct{}{}
+			}
+			if un.AtAlias != "" {
+				spineAliases[strings.ToUpper(un.AtAlias)] = struct{}{}
+			}
+		}
+	}
+	for _, leg := range trailingRev {
+		if subtreeUnnestsOffAlias(leg, spineAliases) {
+			return nil, false
+		}
+	}
 	// Rebuild: bottom ⋈ trailing legs (FROM order) as the new spine bottom,
 	// then the links re-stacked bottom-most first.
 	newOp := bottom
@@ -637,6 +663,28 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 		return nil, false
 	}
 	return rotated, true
+}
+
+// subtreeUnnestsOffAlias reports whether op's subtree contains a LogicalUnnest
+// whose OWNER (Segments[0]) is one of `aliases` — i.e. a lateral unnest correlated
+// to that alias. rotateBuriedChainedSpine uses it as a defense-in-depth guard: a
+// trailing leg that laterally reads a spine element cannot be reparented below the
+// spine links. Case-insensitive to match the alias-comparison convention here.
+func subtreeUnnestsOffAlias(op logical.LogicalOperator, aliases map[string]struct{}) bool {
+	if op == nil {
+		return false
+	}
+	if un, ok := op.(*logical.LogicalUnnest); ok && len(un.Segments) > 0 {
+		if _, hit := aliases[strings.ToUpper(un.Segments[0])]; hit {
+			return true
+		}
+	}
+	for _, c := range op.Children() {
+		if subtreeUnnestsOffAlias(c, aliases) {
+			return true
+		}
+	}
+	return false
 }
 
 // chainedOwnerElementSlot resolves ownerAlias to exactly one walked link and
