@@ -5735,6 +5735,22 @@ per-shape ordinalization gate. Items below, most-actionable first.
 > `ordinalLegType` returning nil), and delete THAT specific decline — never a blind gate weakening
 > (a wrong guess ordinalizes a chained link over a name-model first-link seed = silently-wrong rows,
 > per the unnestExistsSeedSafe/`pureSpine=false` warning). Then census P5=0 + FDB green + Graefe ACK.
+>
+> STEP 0 DONE (empirical, `TestRFC173CensusSweep` GREEN): the census sweep is the ground truth and it
+> CORRECTS the box-substrate framing. Box unnests ALREADY ordinalize — `unnest_box`
+> (`… A LEFT JOIN B …, A.ARR AS X`) and `exists_box` are in the ORDINALIZED-must-fire-0 list, and
+> `fulljoin` too. So Graefe's directed "single-link unnest over a box base" increment is ALREADY
+> CLOSED. The ACTUAL residual P5 surface is only two harder shapes, both documented as flip-sentinels
+> in rfc173_census_sweep_test.go:
+>   1. **subquery-carrying WHERE conjunct** (`… WHERE A.K = (SELECT MIN(EE.CK) …) AND EXISTS(…)`):
+>      `classifyFlatLegConjunct` → Unbakeable → `admitExistentialGather` declines → name-model. A
+>      subquery conjunct has no leg-window to bake into; ordinalizing it is a genuine FUTURE SLICE
+>      (bake a subquery-carrying conjunct over the gather's legTypes). This is the real B remainder,
+>      NOT a box gate weakening.
+>   2. **multi-esq under EXISTS** (`… WHERE EXISTS(…) AND EXISTS(… X)`): STRANDS at PHYSICALIZATION
+>      ("not a physical plan"), orthogonal to the name model — a separate pre-existing limitation.
+> So B is much nearer done than the census-comment framing implied; the last P5 shapes are deep/
+> deferred (subquery-conjunct baking) or orthogonal (multi-esq physicalization), each its own slice.
 - [ ] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
   and `values/value_anchored_join_record.go` (~322 LOC). PR #485 is R3 ("first producer deleted") —
   finish the demolition (via the shrink-the-gate discipline above).
