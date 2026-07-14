@@ -5835,6 +5835,21 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > name-model residual; `TestRFC173_ProducerCensusP5EnclosureBit`) plus bare-twin / CTE-rooted / 3+-link
   > chains. C's last anchored-reachable sites + D remain gated on the producer's full death.
   >
+  > EMPIRICAL BOUNDARY (probed this slice, both directions). Two probes confirm the remaining P5 callers
+  > are gated on the box substrate (Outcome B), NOT a tractable local fix like the box multi-esq was:
+  > (1) LIFTING the `boxOuterBirthsPositional` chained-ordinal guard (rfc173_w5_chained_unnest.go:584)
+  > breaks the FULL-box loud-reject (`TestFDB_RFC173S4_FullBoxChainedSpine/nestedbox_unfiltered` plans
+  > instead of rejecting) and enters the box-substrate arc's UNVALIDATED-tower territory. (2) The pure-LEFT
+  > nested box `(A LEFT B) LEFT C, A.SARR AS X, X.SUB AS Y` does NOT physicalize even NAME-MODEL — it
+  > strands `LogicalProjectionExpression not physical`, surfaced as a LOUD plan error (never silent-wrong):
+  > exactly the documented Slice-2a' pre-existing gap (name-model cannot physicalize a box + comma-lateral
+  > unnest, "a malformed LogicalProjectionExpression, for every variant"). So P5 fires during TRANSLATION
+  > for a shape that already LOUD-FAILS at physicalization — an UNSUPPORTED shape, not a working query
+  > producing wrong rows. Retiring this caller means making the shape WORK (ordinalize = the box substrate /
+  > Outcome B), or declining it before P5 (a stopgap that must first prove Java doesn't support it — the
+  > conformance floor). Either way it is the box-substrate slice the arc sequences LAST, not a box-multi-esq-
+  > style authority split. The box multi-esq was the tractable part; the rest is genuinely Outcome B.
+  >
   > CORRECTED ROOT CAUSE (the earlier "two-namespace unification" diagnosis was a SYMPTOM, not the required
   > fix — this is the honest record). The box-wrap strand looked like the quantifier-alias-vs-source-alias
   > divergence (an `ExistentialValuePredicate` referencing a SOURCE name stranded from its existential
