@@ -2983,9 +2983,11 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	}
 	switch bj.Kind {
 	case logical.JoinLeft, logical.JoinRight:
-		if multiEsq {
-			return false // multi-esq LEFT/RIGHT box wrap strands — stay name-model
-		}
+		// A multi-esq LEFT/RIGHT box is admitted: its `[seed, ∃, ∃]` wrap peels via
+		// PartitionSelectRule to a NestedLoopJoin, and the translator BAKES each
+		// existential correlation positionally at plan time (the multiEsqPeelBox arm
+		// in translateUnnestExistsFilter), so the peel keeps ∃ with the seed instead
+		// of stranding a leg-relative name ref.
 		return verdict == boxConjNone || verdict == boxConjBakeable
 	case logical.JoinInner:
 		// RFC-173 S4 E-1a: the INNER flat N-way cluster under EXISTS. Its existential
@@ -3011,7 +3013,11 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	default: // FULL — D4-(ii): only a Bakeable box-leg conjunct gathers; FULL+None
 		// stays on the certified binary seed (already producer-free via c5a).
 		if multiEsq {
-			return false // multi-esq FULL box wrap strands — stay name-model
+			// A multi-esq FULL box gathers like LEFT/RIGHT: its wrap peels to NLJ
+			// and the existential correlations bake positionally at plan time
+			// (multiEsqPeelBox). FULL+None single-esq stays on the certified binary
+			// seed, but a multi-esq FULL peels the same as LEFT/RIGHT.
+			return verdict == boxConjNone || verdict == boxConjBakeable
 		}
 		return verdict == boxConjBakeable
 	}
@@ -3239,8 +3245,20 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	// the NLJ's dropped windows. The element-slot map is the seed's own layout.
 	lj, isInnerLJ := join.Left.(*logical.LogicalJoin)
 	isInnerCluster := seedWindowed && isInnerLJ && lj.Kind == logical.JoinInner
+	// RFC-173 S4: a MULTI-esq box (LEFT/RIGHT/FULL) is admitted to the gather but,
+	// unlike a single-esq box, its `[seed, ∃, ∃]` wrap goes through the existential
+	// PEEL (PartitionSelectRule) → NestedLoopJoin, which DROPS the windowed layout
+	// exactly like the INNER cluster. The executor's below-FOD hoist can then no
+	// longer recover the windows, so a LEG-RELATIVE JoinPredicate would strand
+	// unbound (the box+seed lost in a mis-peel). The correlation must therefore be
+	// BAKED positionally at plan time — the same E-1a authority the INNER cluster
+	// uses — which also gives the peel a proper sibling-quantifier correlation edge
+	// (∃ → seed), so the peel keeps each existential with the seed. A SINGLE-esq box
+	// stays a FlatMap that keeps the layout, so it stays leg-relative (hoist rebases).
+	multiEsqPeelBox := seedWindowed && isInnerLJ && lj.Kind != logical.JoinInner && len(f.ExistsSubqueries) > 1
+	planTimeBake := isInnerCluster || multiEsqPeelBox
 	var innerElementSlots map[string]int
-	if isInnerCluster {
+	if planTimeBake {
 		innerElementSlots = unnestSeedElementSlots(unnestExpr)
 	}
 	existsSubqueries := f.ExistsSubqueries
@@ -3294,10 +3312,10 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 				len(lf.ExistsSubqueries) == 0 && len(lf.ScalarSubqueries) == 0 &&
 				predicateIsOuterOnly(lf.Predicate, outerBoundAliases(lf.Input)) {
 				var rebased predicates.QueryPredicate
-				if isInnerCluster {
-					// E-1a: a BURIED outer-only predicate over the INNER cluster may
-					// reference a leg OR the ELEMENT (`… WHERE X = 7` — an
-					// outer-only conjunct with no inner-table ref that
+				if planTimeBake {
+					// E-1a: a BURIED outer-only predicate over the INNER cluster (or a
+					// multi-esq peel box) may reference a leg OR the ELEMENT (`… WHERE
+					// X = 7` — an outer-only conjunct with no inner-table ref that
 					// buildCorrelatedExists keeps here, review-caught). Bake BOTH
 					// channels + the safety net.
 					baked, ok := t.bakeInnerExistsPredicateOrdinal(lf.Predicate, join.Left, innerElementSlots, ordMergedType, outerLegs, mergedCorr)
@@ -3330,7 +3348,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			// each dup-named leg's own slot).
 			if !seedWindowed {
 				esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr)
-			} else if isInnerCluster {
+			} else if planTimeBake {
 				// Bake the existential correlation's LEG refs (alias-aware, dup-named
 				// disambiguation) AND the ELEMENT ref (`EEV.VK = X` — the merged
 				// corr's own slot, only merged-corr/bare refs, NOT an inner-table

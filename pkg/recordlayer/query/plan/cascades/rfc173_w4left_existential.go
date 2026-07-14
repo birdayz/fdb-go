@@ -54,6 +54,17 @@ func rebaseOuterLegValueOrdinal(
 		if !isFV {
 			return node
 		}
+		// An ALREADY-baked positional ref (FrontierPinned ofOrdinal) is the gated
+		// seed's final positional form — a multi-esq peel box bakes the existential
+		// correlation at plan time (translateUnnestExistsFilter's planTimeBake arm),
+		// and this executor hoist then runs OVER that baked tree. Re-baking would add
+		// the leg window offset a SECOND time (out of range → !ok, a spurious decline
+		// of a correctly-baked box). Pass it through: FrontierPinned refs are already
+		// positional and are never leg-relative name refs (the only thing this rebase
+		// exists to convert), so this is a pure idempotence guard.
+		if fv.Resolved != nil && fv.Resolved.FrontierPinned {
+			return node
+		}
 		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
 		if !isQOV {
 			return node

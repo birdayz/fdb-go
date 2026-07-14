@@ -69,6 +69,12 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		// + TestFDB_CorrelatedExistsProbe (sibling_*). (Was the last name-model box shape.)
 		{"exists_multi_esq", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
 		{"grouped_multi_esq", `SELECT "X", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X") GROUP BY "X"`},
+		// MULTI-ESQ BOX (LEFT/RIGHT/FULL) now ordinalizes too: the `[seed, ∃, ∃]` wrap
+		// peels to NLJ and the existential correlations bake positionally at plan time
+		// (multiEsqPeelBox), so the box gather owns them. Row correctness:
+		// TestFDB_RFC173Slice3B2bFaceA multiesq_{leftbox,fullbox}_projection.
+		{"exists_leftbox_multi_esq", `SELECT "X" FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
+		{"exists_fullbox_multi_esq", `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
 	}
 	for _, tc := range zeroed {
 		n, err := count(tc.sql)

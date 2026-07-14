@@ -381,13 +381,19 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	// EXISTS(EE.CK=B.K=NULL)=false → the whole row drops → {}. A wrong-leg bind
 	// reading A.K would keep {7,8} RED.
 	pin("multiesq_nullref_leg", `SELECT "X" `+innerFrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`)
-	// LEFT-BOX multi-esq PROJECTION stays NAME-MODEL and PLANS via PartitionSelectRule's
-	// existential peel of the name-model select (returns correct rows) — the gather
-	// deliberately does NOT admit a multi-esq LEFT/RIGHT box (its gathered wrap strands),
-	// so admitExistentialGather keeps it name-model. `EXISTS(EE.CK=A.K=100 → true) AND
-	// EXISTS(EEV.VK=X)`: X=7 keeps, X=8 drops → {7}. (Regression guard: an earlier gather
-	// admission rerouted this to a stranding gather; a multi-esq LEFT/RIGHT box must NOT gather.)
+	// LEFT-BOX multi-esq PROJECTION now GATHERS + ordinalizes: its `[seed, ∃, ∃]` wrap
+	// peels via PartitionSelectRule to a NestedLoopJoin, and each existential
+	// correlation bakes positionally at plan time (multiEsqPeelBox in
+	// translateUnnestExistsFilter) so the peel keeps ∃ with the seed instead of
+	// stranding a leg-relative name ref. `EXISTS(EE.CK=A.K=100 → true) AND
+	// EXISTS(EEV.VK=X)`: X=7 keeps, X=8 drops → {7}. (Producer-free: pinned in the
+	// B2-B census multiesq_left_box arm.)
 	pin("multiesq_leftbox_projection", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
+		"map[X:7]")
+	// FULL box multi-esq: A survives the FULL OUTER (AID=1≠BID=2, B null-supplied),
+	// unnest A.ARR=[7,8]; EXISTS(EE.CK=A.K=100)=true AND EXISTS(EEV.VK=X): X=7 keeps,
+	// X=8 drops → {7}. Same gather+peel+plan-time-bake path as LEFT/RIGHT.
+	pin("multiesq_fullbox_projection", `SELECT "X" `+ffrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
 		"map[X:7]")
 }
 
@@ -446,25 +452,24 @@ func TestRFC173Slice3B2bFaceACensus(t *testing.T) { //nolint:paralleltest // pro
 		{"left_box_none", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
 		{"left_box_bakeable", `SELECT "X" ` + from + ` WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
 		{"full_box_bakeable", `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = 100 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
+		// MULTI-ESQ box (LEFT/RIGHT/FULL) now GATHERS: its `[seed, ∃, ∃]` wrap peels
+		// via PartitionSelectRule to a NestedLoopJoin, and the existential
+		// correlations bake positionally at plan time (multiEsqPeelBox), so the box
+		// gather owns them — 0 name-model producers. (Was the last box name-model
+		// shape; formerly the observer-fires positive control.) Row correctness pinned
+		// in TestFDB_RFC173Slice3B2bFaceA multiesq_{leftbox,fullbox}_projection.
+		{"multiesq_left_box", `SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
+		{"multiesq_full_box", `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`},
 	} {
 		if n := countProducers(tc.sql); n != 0 {
 			t.Fatalf("%s: fired %d name-model producer(s), want 0 (the gather must own it)", tc.name, n)
 		}
 	}
-	// Observer-fires (non-vacuity) control: the observer MUST fire when it should, so
-	// the 0-assertions above aren't vacuous. The INNER-cluster multi-esq now
-	// ordinalizes, but a multi-esq LEFT/RIGHT BOX still stays NAME-MODEL (its gathered
-	// wrap strands, so admitExistentialGather keeps it name-model — it plans correctly
-	// via PartitionSelectRule's peel of the name-model select), firing the P5
-	// unnest-result-value producer during TRANSLATION.
-	countTolerant := func(sql string) int {
-		n := 0
-		rquery.SetProducerCensusObserver(func(rquery.ProducerCensusRecord) { n++ })
-		defer rquery.SetProducerCensusObserver(nil)
-		_, _ = embedded.PlanRecordQueryWithMetadata(sql, md, nil)
-		return n
-	}
-	if n := countTolerant(`SELECT "X" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`); n == 0 {
-		t.Fatal("multi-esq LEFT box fired 0 producers — it must stay name-model (its gathered wrap strands); the observer-fires control is vacuous")
-	}
+	// Observer-fires (non-vacuity): the B2-B metadata (A/B/EE/EEV, no nested array
+	// columns) can no longer express a shape that STILL fires a producer — every
+	// box+EXISTS shape it can build now ordinalizes. The observer-mechanism
+	// non-vacuity proof therefore lives in the white-box
+	// query.TestRFC173_ProducerCensusP5EnclosureBit, which drives a
+	// chained-unnest-over-nested-outer-box (`(A LEFT B) LEFT C`, .SARR/.SUBSTRUCT/
+	// .DEEP) — the surviving name-model P5 residual — and asserts the observer fires.
 }
