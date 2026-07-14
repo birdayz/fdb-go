@@ -3571,6 +3571,22 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			keyValues[i] = qv
 			filled = true
 		}
+		// RFC-173 item C: a BARE non-shadowed group key resolves through the
+		// scope so it carries the construction-bound ordinal (a childless
+		// source-relative baked FieldValue — the resolver's single-source
+		// bind). Field stays the bare column, so the aggregate's OUTPUT
+		// column name (AggregateKeyColumnName = Field) and every downstream
+		// name-keyed consumer are unchanged. Qualified keys, multi-source
+		// resolutions, and unresolvable names keep the translator's name
+		// emission.
+		if keyValues[i] == nil && !ref.isQualified() {
+			if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(ref.bare())); rerr == nil {
+				if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
+					keyValues[i] = fv
+					filled = true
+				}
+			}
+		}
 	}
 	if filled {
 		agg.GroupKeyValues = keyValues
