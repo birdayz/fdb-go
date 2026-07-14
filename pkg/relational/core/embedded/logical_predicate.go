@@ -2162,6 +2162,25 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						proj.ProjectedValues[i] = qv
 					}
 				}
+				// RFC-173 item C: a BARE non-shadowed column resolves through the
+				// scope so the projection carries the construction-bound ordinal
+				// (a childless source-relative baked FieldValue — the resolver's
+				// single-source bind). Anything else — a multi-source
+				// QOV-correlated resolution, an unresolvable name, a lazy result —
+				// keeps the translator's name emission unchanged. Twin of the
+				// PlanVisitor's bare-projection bind.
+				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
+					if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id); rerr == nil {
+						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
+							if proj.ProjectedValues == nil {
+								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+							}
+							if i < len(proj.ProjectedValues) {
+								proj.ProjectedValues[i] = fv
+							}
+						}
+					}
+				}
 			}
 			if parseColRef(col).isQualified() && proj != nil {
 				if proj.ProjectedValues == nil {

@@ -19,7 +19,7 @@ func buildScope(t *testing.T) (*semantic.Analyzer, *semantic.Scope) {
 		TableColumns: []semantic.Column{
 			{Id: semantic.NewUnquoted("id"), Type: "INT"},
 			{Id: semantic.NewUnquoted("name"), Type: "STRING", Nullable: true},
-			{Id: semantic.NewUnquoted("active"), Type: "BOOL"},
+			{Id: semantic.NewUnquoted("active"), Type: "BOOL", Nullable: true},
 			{Id: semantic.NewUnquoted("admin"), Type: "BOOL", Nullable: true},
 		},
 	}
@@ -83,20 +83,20 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 	tbl := &semantic.StaticTable{
 		TableName: semantic.ParseQualifiedName("MIXED", false),
 		TableColumns: []semantic.Column{
-			{Id: semantic.NewUnquoted("i"), Type: "INT"},
+			{Id: semantic.NewUnquoted("i"), Type: "INT", Nullable: true},
 			// INTEGER is a recognized synonym for INT — it must NOT fall to
 			// UNKNOWN (RFC-142 round-21: the unnest AT-ordinal column type).
-			{Id: semantic.NewUnquoted("ii"), Type: "INTEGER"},
+			{Id: semantic.NewUnquoted("ii"), Type: "INTEGER", Nullable: true},
 			// "INT NOT NULL" / "INTEGER NOT NULL" are the planner-internal
 			// non-null INT spellings (the WITH ORDINALITY ordinal) → NotNullInt.
 			{Id: semantic.NewUnquoted("inn"), Type: "INT NOT NULL"},
 			{Id: semantic.NewUnquoted("intnn"), Type: "INTEGER NOT NULL"},
-			{Id: semantic.NewUnquoted("s"), Type: "STRING"},
-			{Id: semantic.NewUnquoted("e"), Type: "ENUM"},
-			{Id: semantic.NewUnquoted("b"), Type: "BOOL"},
-			{Id: semantic.NewUnquoted("f"), Type: "FLOAT"},
-			{Id: semantic.NewUnquoted("by"), Type: "BYTES"},
-			{Id: semantic.NewUnquoted("rec"), Type: "RECORD"},
+			{Id: semantic.NewUnquoted("s"), Type: "STRING", Nullable: true},
+			{Id: semantic.NewUnquoted("e"), Type: "ENUM", Nullable: true},
+			{Id: semantic.NewUnquoted("b"), Type: "BOOL", Nullable: true},
+			{Id: semantic.NewUnquoted("f"), Type: "FLOAT", Nullable: true},
+			{Id: semantic.NewUnquoted("by"), Type: "BYTES", Nullable: true},
+			{Id: semantic.NewUnquoted("rec"), Type: "RECORD", Nullable: true},
 		},
 	}
 	cat := semantic.NewInMemoryCatalog(tbl)

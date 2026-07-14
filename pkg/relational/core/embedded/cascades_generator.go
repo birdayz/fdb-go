@@ -2615,7 +2615,21 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 	if typeDesc == nil && len(descs) > 0 {
 		typeDesc = descs[0]
 	}
-	typeName := valueTypeName(v, typeDesc)
+	// For a PLAIN column read the stored descriptor is the metadata
+	// authority: the flowed seed type conflates INT/BIGINT and FLOAT/DOUBLE
+	// (evaluation widths), which must not leak into ResultSet metadata —
+	// Java reports the DECLARED column type (INTEGER, FLOAT). The flowed
+	// type serves columns the descriptor cannot resolve (derived/CTE
+	// outputs) and every non-FieldValue expression.
+	typeName := ""
+	if _, isField := v.(*values.FieldValue); isField && colDesc != nil {
+		if t := protoFieldTypeName(colDesc, name); t != "UNKNOWN" {
+			typeName = t
+		}
+	}
+	if typeName == "" {
+		typeName = valueTypeName(v, typeDesc)
+	}
 	if typeName == "" && colDesc != nil {
 		typeName = protoFieldTypeName(colDesc, name)
 	}
