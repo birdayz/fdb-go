@@ -182,13 +182,122 @@ func TestFDB_RFC173S4_StarCTEOrdinalLeg(t *testing.T) {
 	})
 }
 
+// TestFDB_RFC173S4_ChainedStarCTE pins the CHAINED star body's rows (RFC-173 S4
+// item B, the second-to-last producer residual): a projection-less multi-link
+// unnest body (`WITH S AS (SELECT * FROM t, t.sarr AS x, x.sub AS y) …`)
+// referenced as a JOIN LEG now gates ordinal through the SAME factored gate its
+// fresh translation runs (chainedUnnestOrdinalGate via derivedBodyStarOrdinalLeg)
+// instead of name-modeling the parent (1 P4). DIFFERENTIAL: every row set below
+// was captured VERBATIM from the pre-change name-model tree (same fixture) —
+// the ordinalization changes plans, never rows.
+//
+// SARR fixture: T4(1)=[{SUB:[1,2]},{SUB:[3]}], T4(2)=[{SUB:[4]}], T4(11) empty.
+// Chained rows (ID,Y): (1,1),(1,2),(1,3),(2,4) — × 3 CC rows for the parent join.
+func TestFDB_RFC173S4_ChainedStarCTE(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+
+	md := buildChainedUnnestMetadata(t)
+	if err := saveStarCTERows(ctx, db, ks, md); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(name, q string) []string {
+		t.Helper()
+		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		if perr != nil {
+			t.Fatalf("%s: plan error: %v\n  sql: %s", name, perr, q)
+		}
+		var out []string
+		_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, sErr := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if sErr != nil {
+				return nil, sErr
+			}
+			cur, cErr := executor.ExecutePlan(ctx, plan, store, executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+			if cErr != nil {
+				return nil, cErr
+			}
+			defer cur.Close()
+			rows, rErr := executor.CollectAll(ctx, cur)
+			if rErr != nil {
+				return nil, rErr
+			}
+			for _, r := range rows {
+				out = append(out, fmt.Sprintf("%v", executor.RowValue(r)))
+			}
+			return nil, nil
+		})
+		if eerr != nil {
+			t.Fatalf("%s: exec error: %v\n  sql: %s", name, eerr, q)
+		}
+		sort.Strings(out)
+		return out
+	}
+	want := func(name, q string, exp []string) {
+		t.Helper()
+		got := run(name, q)
+		sort.Strings(exp)
+		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", exp) {
+			t.Errorf("%s: rows = %v, want %v\n  sql: %s", name, got, exp, q)
+		}
+	}
+	times3 := func(rows ...string) []string {
+		var out []string
+		for _, r := range rows {
+			out = append(out, r, r, r)
+		}
+		return out
+	}
+
+	const chainedCTE = `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y") `
+
+	want("qualified_y", chainedCTE+`SELECT "S"."Y" FROM "S", T4 AS "CC"`,
+		times3("map[S.Y:1]", "map[S.Y:2]", "map[S.Y:3]", "map[S.Y:4]"))
+
+	want("qualified_id", chainedCTE+`SELECT "S"."ID" FROM "S", T4 AS "CC"`,
+		times3("map[S.ID:1]", "map[S.ID:1]", "map[S.ID:1]", "map[S.ID:2]"))
+
+	want("id_and_y", chainedCTE+`SELECT "S"."ID", "S"."Y" FROM "S", T4 AS "CC"`,
+		times3("map[S.ID:1 S.Y:1]", "map[S.ID:1 S.Y:2]", "map[S.ID:1 S.Y:3]", "map[S.ID:2 S.Y:4]"))
+
+	// A BARE unique-name read over the enclosed chained leg.
+	want("bare_y", chainedCTE+`SELECT "Y" FROM "S", T4 AS "CC"`,
+		times3("map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]"))
+
+	// WITH ORDINALITY on the chained link: (Y,O) = (1,1),(2,2) within elem{1,2};
+	// (3,1) within elem{3}; (4,1) within elem{4}.
+	want("at_chained_link", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "O") SELECT "S"."Y", "S"."O" FROM "S", T4 AS "CC"`,
+		times3("map[S.O:1 S.Y:1]", "map[S.O:2 S.Y:2]", "map[S.O:1 S.Y:3]", "map[S.O:1 S.Y:4]"))
+
+	// A body WHERE (plain filter above the chained spine): Y > 2 keeps {3,4}.
+	want("where_body", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE "Y" > 2) SELECT "S"."Y" FROM "S", T4 AS "CC"`,
+		times3("map[S.Y:3]", "map[S.Y:4]"))
+
+	// The DERIVED-TABLE twin (LogicalCTE directly in leg position) — bare
+	// internal labels, same values (the single-link star class's twin rule).
+	want("derived_twin", `SELECT "S"."Y" FROM (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y") AS "S", T4 AS "CC"`,
+		times3("map[Y:1]", "map[Y:2]", "map[Y:3]", "map[Y:4]"))
+}
+
 // TestRFC173StarCTEOrdinalCensus pins the producer retirement of the star-CTE
 // class: every admitted shape plans AND fires 0 P4/P5. RED-ON-REVERT (of
-// derivedBodyStarOrdinalLeg + its gate/schema arms): each fires 2 (1 P4
-// name-model parent + 1 P5 enclosed body). The COLLIDING-label body and the
-// CHAINED star body are the documented residuals (they keep the name model,
-// so they still fire — asserted non-zero so their eventual ordinalization
-// consciously updates this pin). Serial (process-global observer).
+// derivedBodyStarOrdinalLeg + its gate/schema arms): each single-link shape
+// fires 2 (1 P4 name-model parent + 1 P5 enclosed body) and each chained shape
+// fires 1 (P4 — the chained body itself ordinalizes fresh). The COLLIDING-label
+// bodies (single-link and chained) are the documented residuals (they keep the
+// name model, so they still fire — asserted non-zero so their eventual
+// ordinalization consciously updates this pin). Serial (process-global observer).
 func TestRFC173StarCTEOrdinalCensus(t *testing.T) { //nolint:paralleltest // process-global observer, must be serial
 	md := buildChainedUnnestMetadata(t)
 	count := func(sql string) (int, error) {
@@ -205,6 +314,13 @@ func TestRFC173StarCTEOrdinalCensus(t *testing.T) { //nolint:paralleltest // pro
 		{"where_body", `WITH "S" AS (SELECT * FROM T4, T4."SCARR" AS "X" WHERE "X" > 150) SELECT "S"."ID" FROM "S", T4 AS "CC"`},
 		{"derived_twin", `SELECT "S"."ID" FROM (SELECT * FROM T4, T4."SCARR" AS "X") AS "S", T4 AS "CC"`},
 		{"struct_array_body", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X") SELECT "S"."ID" FROM "S", T4 AS "CC"`},
+		// The CHAINED star body (multi-link spine) — admitted through the
+		// factored chainedUnnestOrdinalGate; RED-on-revert: 1 P4 each (the
+		// chained body itself ordinalizes fresh, only the parent name-modeled).
+		{"chained_star", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y") SELECT "S"."Y" FROM "S", T4 AS "CC"`},
+		{"chained_star_at", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "O") SELECT "S"."Y", "S"."O" FROM "S", T4 AS "CC"`},
+		{"chained_star_where", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE "Y" > 2) SELECT "S"."Y" FROM "S", T4 AS "CC"`},
+		{"chained_star_derived_twin", `SELECT "S"."Y" FROM (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y") AS "S", T4 AS "CC"`},
 	}
 	for _, tc := range zeroed {
 		n, err := count(tc.sql)
@@ -224,9 +340,9 @@ func TestRFC173StarCTEOrdinalCensus(t *testing.T) { //nolint:paralleltest // pro
 		// Colliding boundary labels: positional first-match would invert the
 		// element-shadows-outer collision rule, so the admission declines.
 		{"colliding_label", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`},
-		// Chained star body: the admission would have to replicate the chained
-		// ordinal gate (spine walk + owner slots + collection bake) exactly.
-		{"chained_star", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y") SELECT "S"."Y" FROM "S", T4 AS "CC"`},
+		// The chained twin of the colliding-label body (the element alias SUB
+		// shadows the top-level scalar SUB) — same unique-label decline.
+		{"chained_colliding_label", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "SUB") SELECT "S"."SUB" FROM "S", T4 AS "CC"`},
 	}
 	for _, tc := range residual {
 		n, err := count(tc.sql)
@@ -242,10 +358,24 @@ func TestRFC173StarCTEOrdinalCensus(t *testing.T) { //nolint:paralleltest // pro
 }
 
 // saveStarCTERows writes the shared T4 fixture rows for the star-CTE tests.
+// SCARR carries the scalar-unnest values; SARR carries struct elements
+// ({SUB:[…]}) for the CHAINED star shapes (T4(1)=[{1,2},{3}], T4(2)=[{4}],
+// T4(11) empty — it vanishes from every unnest).
 func saveStarCTERows(ctx context.Context, db *recordlayer.FDBDatabase, ks subspace.Subspace, md *recordlayer.RecordMetaData) error {
 	t4Desc := md.GetRecordType("T4").Descriptor
 	scarrFD := t4Desc.Fields().ByName("SCARR")
-	mkT4 := func(id, sub int64, scarr ...int32) proto.Message {
+	sarrFD := t4Desc.Fields().ByName("SARR")
+	elemDesc := sarrFD.Message()
+	mkElem := func(sub ...int32) protoreflect.Value {
+		m := dynamicpb.NewMessage(elemDesc)
+		sl := m.NewField(elemDesc.Fields().ByName("SUB")).List()
+		for _, s := range sub {
+			sl.Append(protoreflect.ValueOfInt32(s))
+		}
+		m.Set(elemDesc.Fields().ByName("SUB"), protoreflect.ValueOfList(sl))
+		return protoreflect.ValueOfMessage(m)
+	}
+	mkT4 := func(id, sub int64, scarr []int32, sarr ...protoreflect.Value) proto.Message {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
@@ -254,6 +384,11 @@ func saveStarCTERows(ctx context.Context, db *recordlayer.FDBDatabase, ks subspa
 			sl.Append(protoreflect.ValueOfInt32(s))
 		}
 		m.Set(scarrFD, protoreflect.ValueOfList(sl))
+		al := m.NewField(sarrFD).List()
+		for _, e := range sarr {
+			al.Append(e)
+		}
+		m.Set(sarrFD, protoreflect.ValueOfList(al))
 		return m
 	}
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -262,9 +397,9 @@ func saveStarCTERows(ctx context.Context, db *recordlayer.FDBDatabase, ks subspa
 			return nil, sErr
 		}
 		for _, r := range []proto.Message{
-			mkT4(1, 999, 100, 200),
-			mkT4(2, 20, 300),
-			mkT4(11, 999),
+			mkT4(1, 999, []int32{100, 200}, mkElem(1, 2), mkElem(3)),
+			mkT4(2, 20, []int32{300}, mkElem(4)),
+			mkT4(11, 999, nil),
 		} {
 			if _, e := store.SaveRecord(r); e != nil {
 				return nil, e

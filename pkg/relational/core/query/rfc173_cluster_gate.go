@@ -3,6 +3,7 @@ package query
 import (
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
@@ -617,10 +618,13 @@ func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOpe
 //     which they only do collision-free. A colliding star body (`t.arr AS ID`)
 //     stays name-model.
 //
-// A CHAINED star body (`SELECT * FROM t, t.arr AS x, x.sub AS y`) is NOT
-// admitted yet: its fresh translation ordinalizes, but the admission would have
-// to replicate the chained gate (spine walk + owner slots + collection bake)
-// exactly — booked with the item-B residuals.
+// A CHAINED star body (`SELECT * FROM t, t.arr AS x, x.sub AS y`) is admitted
+// through the SAME gate its fresh translation runs — chainedUnnestOrdinalGate,
+// the side-effect-free factoring of translateChainedUnnestOrdinal's decision
+// (spine walk + seed-safety + owner slot + collection/seed construction) — so
+// admission ⇔ the top link ordinalizes; no admission/translation drift is
+// possible for the top link, and the gate's whole-spine derivations
+// (ordinalLegType over every prefix) cover the deeper links' schemas.
 func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOperator) (*logical.LogicalJoin, bool) {
 	if t.md == nil || t.unnestUnderExistential {
 		return nil, false
@@ -644,15 +648,38 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 	if !isU || len(u.Segments) < 2 || (u.Alias == "" && u.AtAlias == "") {
 		return nil, false
 	}
-	if t.clusterArity(j.Left) != 1 || len(outerBoundAliases(j.Left)) != 1 {
-		return nil, false
-	}
-	outerTable := findOuterScanTable(j.Left, u.Segments[0])
-	if outerTable == "" || t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
-		return nil, false
-	}
-	if _, _, isArray, _ := t.unnestArrayElementType(outerTable, u.Segments[1:]); !isArray {
-		return nil, false
+	if isChainedUnnest(j.Left, u) {
+		// The CHAINED star body: the top link is owned by a deeper link's
+		// element. Mirror translateChainedUnnestJoin's gauntlet side-effect-free:
+		// the AS==AT overwrite reject (translation loud-errors it; the admission
+		// just declines so the raw body surfaces that error itself), the
+		// classification (must be a genuine ARRAY sub-path — the non-array
+		// dispositions loud-error in translation), then the factored ordinal
+		// gate. The correlations passed are the seed's own (sourceAlias /
+		// unnestSourceCorrelation); the built values are discarded — the gate is
+		// side-effect-free construction.
+		if u.Alias != "" && u.AtAlias != "" && strings.EqualFold(u.Alias, u.AtAlias) {
+			return nil, false
+		}
+		elementType, _, disp := t.classifyChainedUnnestArray(j.Left, u)
+		if disp != derivedUnnestArray {
+			return nil, false
+		}
+		outerCorr := values.NamedCorrelationIdentifier(sourceAlias(j.Left))
+		if _, _, ok := t.chainedUnnestOrdinalGate(j, u, outerCorr, unnestSourceCorrelation(u), elementType); !ok {
+			return nil, false
+		}
+	} else {
+		if t.clusterArity(j.Left) != 1 || len(outerBoundAliases(j.Left)) != 1 {
+			return nil, false
+		}
+		outerTable := findOuterScanTable(j.Left, u.Segments[0])
+		if outerTable == "" || t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
+			return nil, false
+		}
+		if _, _, isArray, _ := t.unnestArrayElementType(outerTable, u.Segments[1:]); !isArray {
+			return nil, false
+		}
 	}
 	cols := t.ordinalLegColumns(j)
 	if cols == nil {
