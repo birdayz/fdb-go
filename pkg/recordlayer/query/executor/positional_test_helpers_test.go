@@ -13,7 +13,7 @@ import (
 
 // dmap builds a QueryResult carrying a PositionalRow from a name->value map.
 // Column order is sorted by name for determinism; reads are by GetByName, so the
-// order is immaterial to correctness. Marked Complete (a computed/synthetic row).
+// order is immaterial to correctness.
 func dmap(m map[string]any) QueryResult {
 	names := make([]string, 0, len(m))
 	for k := range m {

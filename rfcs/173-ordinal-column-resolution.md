@@ -5743,10 +5743,14 @@ per-shape ordinalization gate. Items below, most-actionable first.
 > CLOSED. The ACTUAL residual P5 surface is only two harder shapes, both documented as flip-sentinels
 > in rfc173_census_sweep_test.go:
 >   1. **subquery-carrying WHERE conjunct** (`… WHERE A.K = (SELECT MIN(EE.CK) …) AND EXISTS(…)`):
->      `classifyFlatLegConjunct` → Unbakeable → `admitExistentialGather` declines → name-model. A
->      subquery conjunct has no leg-window to bake into; ordinalizing it is a genuine FUTURE SLICE
->      (bake a subquery-carrying conjunct over the gather's legTypes). This is the real B remainder,
->      NOT a box gate weakening.
+>      `classifyLegConjunct` (rfc173_b2_box_conjunct.go:101-110) marks it `boxConjUnbakeable` when a
+>      conjunct value is a `*values.ScalarSubqueryValue` / `*values.ExistsValue`, or a QOV whose
+>      correlation is a FOREIGN alias (a scalar-subquery alias not in the box legs ∪ unnest AS/AT). The
+>      seed's per-leg windows resolve leg COLUMNS by ordinal; a subquery result / foreign correlation
+>      is not a leg column, so it has nowhere to bake. Ordinalizing it needs a genuine NEW MECHANISM —
+>      bind the scalar-subquery's result (a correlation the executor pre-evaluates) into the ordinal
+>      seed's context so the conjunct resolves alongside the baked leg refs — NOT a decline-arm
+>      deletion. This is the real B remainder and a deep FUTURE SLICE.
 >   2. **multi-esq under EXISTS** (`… WHERE EXISTS(…) AND EXISTS(… X)`): STRANDS at PHYSICALIZATION
 >      ("not a physical plan"), orthogonal to the name model — a separate pre-existing limitation.
 > So B is much nearer done than the census-comment framing implied; the last P5 shapes are deep/
