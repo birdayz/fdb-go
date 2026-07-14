@@ -284,6 +284,37 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 			t.Fatalf("expected a 0AF00 decline, got: %v", err)
 		}
 	})
+
+	// MULTI-ESQ (RFC-173 gather admission): a >1-EXISTS INNER-cluster unnest now
+	// GATHERS + ordinalizes (was name-model). Pin the risky dimensions the census
+	// (plan-only) can't — each existential must bind its OWN correlation over the
+	// gathered seed. INNER cluster `A, B, A.ARR AS X` (cross A×B, then unnest); B.K
+	// is unset (NULL). A leg-correlated EXISTS (EE.CK=A.K=100 → true) AND an
+	// ELEMENT-correlated EXISTS (EEV.VK=X, EEV has VK=7): X=7 keeps (both true), X=8
+	// drops (2nd false).
+	const innerFrom = `FROM A, B, A."ARR" AS "X"`
+	pin("multiesq_leg_and_element", `SELECT "X" `+innerFrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
+		"map[X:7]")
+	// NOT EXISTS second leg: EXISTS(EE.CK=A.K)=true AND NOT EXISTS(EEV.VK=X): X=7 →
+	// NOT(true)=false drops; X=8 → NOT(false)=true keeps → {8}.
+	pin("multiesq_notexists_element", `SELECT "X" `+innerFrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND NOT EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
+		"map[X:8]")
+	// 2nd existential correlates to B.K (NULL, unset): EXISTS(EE.CK=A.K)=true AND
+	// EXISTS(EE.CK=B.K=NULL)=false → the whole row drops → {}. A wrong-leg bind
+	// reading A.K would keep {7,8} RED.
+	pin("multiesq_nullref_leg", `SELECT "X" `+innerFrom+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = B."K")`)
+	// LEFT-BOX multi-esq PROJECTION is a documented remaining gap: the gathered
+	// LEFT/RIGHT box wrap over >1 EXISTS does not physicalize (a LogicalProjectionExpression
+	// strands) — a LOUD strand, correct-or-loud (it name-model-stranded identically
+	// before the gather admitted it; no wrong rows). The INNER cluster + the AGGREGATE
+	// LEFT box (slice3E1a agg_multiexists_counts) both physicalize; the plain LEFT-box
+	// projection is the follow-on. Flip to a row pin ({7}) when it physicalizes.
+	t.Run("multiesq_leftbox_projection_loud", func(t *testing.T) {
+		_, _, err := runQ(t, `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`)
+		if err == nil {
+			t.Fatal("LEFT-box multi-esq projection unexpectedly physicalized — flip to a row pin ({7})")
+		}
+	})
 }
 
 // slice3B2bMetadata builds the A/B/EE/EEV schema shared by the B2-B row cert
