@@ -5805,6 +5805,19 @@ per-shape ordinalization gate. Items below, most-actionable first.
   (values.go ~908) + `row.GetByName` (values.go ~555). Java binds every ref to an ordinal at plan
   time (`ofOrdinalNumber`) and never name-resolves at runtime. ~23 lazy sites remain. Then delete
   the runtime `FieldIndex(name)` lookup.
+  > C DESIGN GROUNDING (Java verified, tag 4.12.11.0, FieldValue.java:164-169): `FieldValue.eval`
+  > reads its child (a Message) then resolves purely by ordinal —
+  > `MessageHelpers.getFieldValueForFieldOrdinals(childResult, fieldPath.getFieldOrdinals())`. The
+  > ordinals live in the `FieldPath`, fixed at PLAN time; runtime never sees a name. Go's `FieldValue`
+  > already has the `Resolved` ordinal-path slot (the ordinal analogue) + `evaluateOrdinal` — C's job
+  > is to POPULATE `Resolved` at plan/physicalization time for the ~23 lazy sites, mirroring Java's
+  > FieldPath-ordinal binding, then delete the runtime `FieldIndex(name)` fallback. **Coupling with the
+  > name-model residue:** the C bake MUST be gated exactly like the `!rc.AnchoredJoin` groupBy gate —
+  > a reference over a still-name-model row (multi-esq's anchored RC, item B's residual) has no stable
+  > ordinal, so baking there would read an ordinal against the Datum map and error. So C's per-site
+  > bake carries the same `!rc.AnchoredJoin` guard, and the last lazy sites can only retire once B's
+  > producer is gone (multi-esq). Sequence within C: bake the sites whose physical row is ALWAYS
+  > ordinal first (post-gather seeds), leave the anchored-reachable sites for after the producer dies.
 - [ ] `groupByOutputBaker` (cascades_translator.go ~869) deliberately leaves keys lazy when
   `GetByName` happens to resolve — minimal-necessary baking, not uniform binding. Bake uniformly.
 
