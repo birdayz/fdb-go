@@ -5767,6 +5767,16 @@ per-shape ordinalization gate. Items below, most-actionable first.
 >      row-correctness pin (data A{K:100,ARR:[7,8]}, EE{CK:100}: `A.K=(SELECT MIN(EE.CK))` → 100=100 →
 >      {7,8}; a `=(SELECT COUNT(*))` discriminator → 100=1 → {}). Reverted the probe; safe state stays
 >      name-model.
+>
+>      MECHANISM LOCATED (exact code): the name-model path attaches a filter's scalar subqueries via
+>      `upgradeFirstFilterScalarSubqueries` (logical_predicate.go:3211) so ExecutePlan pre-evaluates them
+>      and binds `rc.ScalarSubqueries` (executor.go:2206). The ORDINAL gather/seed path does NOT run that
+>      attach for a baked subquery-conjunct, so the subquery reaches no filter that gets pre-evaluated →
+>      UnboundScalarSubqueryError. THE FIX: when the gathered-cluster seed bakes a conjunct that carries a
+>      scalar subquery, attach that subquery to the seed's filter operator (the ordinal analogue of
+>      upgradeFirstFilterScalarSubqueries), so ExecutePlan's pre-eval pass binds it before the seed runs.
+>      Focused planner slice: touch the gather/seed filter construction + a db.QueryContext correctness
+>      test + Graefe review.
 >   2. **multi-esq under EXISTS** (`… WHERE EXISTS(…) AND EXISTS(… X)`): STRANDS at PHYSICALIZATION
 >      ("not a physical plan"), orthogonal to the name model — a separate pre-existing limitation.
 > So B is much nearer done than the census-comment framing implied; the last P5 shapes are deep/
