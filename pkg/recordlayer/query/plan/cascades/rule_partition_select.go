@@ -572,14 +572,17 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			legs := upperLegs(newLowerAlias, newLowerSources)
 			rc := values.NewReEnumerationAnchoredRecord(parentAnchored, legs)
 			if rc == nil {
-				// A leg's source is not a column-bearing parent quantifier — the one
-				// way this arises is a multi-esq peel over an anchored merge where a
-				// column-less EXISTENTIAL would be a leg. DECLINE this bipartition
-				// (ok=false → the caller `continue`s): the shape peels via a different
-				// bipartition, gathers into a single seed, or declines LOUD — never a
-				// panic (correct-or-loud). This mirrors the LOWER re-enumeration, which
-				// already declines-on-nil rather than panicking. (The whole anchored arm
-				// is name-model residual slated for Slice-4 retirement.)
+				// A leg's source is not a column-bearing parent quantifier — a
+				// multi-esq peel over an anchored merge where a column-less EXISTENTIAL
+				// would be a leg, OR (per the LOWER re-enumeration's mirror decline) a
+				// dissolved-outer-box ForEach merge reached nondeterministically by
+				// exploration order. Either way DECLINE this bipartition (ok=false → the
+				// caller `continue`s): the shape peels via a different bipartition,
+				// gathers into a single seed, or declines LOUD — never a panic
+				// (correct-or-loud). This mirrors the LOWER re-enumeration, which already
+				// declines-on-nil rather than panicking; the old "unreachable by
+				// construction" panic here was in fact reachable on both paths. (The
+				// whole anchored arm is name-model residual slated for Slice-4 retirement.)
 				return nil, false
 			}
 			return rc, true
