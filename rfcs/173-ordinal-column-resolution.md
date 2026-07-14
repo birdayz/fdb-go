@@ -5814,27 +5814,33 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > EXISTS filter at BUILD time; partition-time peeling keeps EXISTS(B) a sibling — no EXISTS boundary is
   > nested). Java answers sibling multi-EXISTS trivially, so loud-early (option b) would be a DIVERGENCE.
   >
-  > IMPL ATTEMPT (findings — reverted to green, NOT shipped; a focused slice must finish it):
-  > VERIFIED BUG: `SELECT id FROM a WHERE EXISTS(SELECT 1 FROM b WHERE b.a_id=a.id) AND EXISTS(SELECT 1 FROM c)`
-  > 0AF00s on master. Dropping the guard is NOT sufficient — TWO more parts surfaced:
-  >   1. **DONE (works): source-alias propagation.** The NLJ existential path reads `GetSourceAliases()[1]`
-  >      for the inner correlation, but `GraphExpansionBuilder.BuildSelect` leaves source aliases empty →
-  >      `NewQuantifiedObjectValue: correlation is zero-value` panic (rule_implement_nested_loop_join.go:935).
-  >      Fix (validated — panic gone): a partition-built select carrying an existential must be rebuilt with
-  >      source aliases parallel to its quantifiers — an ORIGINAL quantifier keeps its carried source alias
-  >      (from `sel.GetSourceAliases()`, NOT its quantifier alias — existsInnerCorrelation renames a
-  >      join/nested inner's source ≠ esq.Alias), a fresh lower/merge ForEach's source is its own alias.
-  >      Gate on existential-presence so pure-ForEach partitions are unchanged.
-  >   2. **OPEN (the hard part): wrong rows.** With (1), the shape PLANS but returns `[]` (empty) instead of
-  >      `{1,2,4}` — a wrong bipartition or mis-placed predicate. NOT the correlation-order guardrail: the
-  >      ranged-over correlation IS already exposed for all quantifiers (rule_partition_select.go:791-797).
-  >      The `a↔EXISTS(A)` correlation is a SELECT PREDICATE (existsInnerCorrelation rebases the join pred
-  >      onto the select, added to allPreds), so the peeled bipartition's PREDICATE CLASSIFICATION +
-  >      RESULT-VALUE FLOW for the existential is where the empty-rows bug lives — needs careful debugging
-  >      with a correctness pin at each bipartition (correlated / uncorrelated / join-inner / nested), given
-  >      the silent-wrong-rows risk the merge-arm comments (line ~495) repeatedly flag. Also relax
-  >      `PartitionBinarySelectRule`'s guard for full parity. This is the remaining deep slice; the design
-  >      is ACK'd and part 1 is solved, so it is well-teed-up but must be finished carefully, not rushed.
+  > LANDED (triple-ACKed — Graefe/Torvalds/codex): sibling multi-EXISTS now PLANS. Three parts in
+  > `rule_partition_select.go`: (1) partition existentials only when ≥2 (leave ≤1 to the existing
+  > implementJoinWithExistential path); (2) `applyExistentialSourceAliases` rebuilds an existential-carrying
+  > partition select with source aliases parallel to its quantifiers (carried from the input; a join/nested
+  > inner's source ≠ its quantifier alias), reordered ForEach-outer-first to match the NLJ's slot-0=outer /
+  > slot-1=inner assumption; (3) a guardrail rejecting a bipartition that isolates an existential with no
+  > ForEach outer (a semi-join filter needs an outer; else a residual over a bind-to-nothing FirstOrDefault
+  > → empty rows). CLOSES 4 conformance divergences (exists_two_anded, exists_three_anded [recursive peel],
+  > exists_and_not_exists, two_not_exists_anded). Projected multi-EXISTS (result value references the
+  > existential) stays cleanly declined; a MULTI-TABLE-inner sibling is a documented LOUD sentinel
+  > (correct-or-loud — the retired name-map makes the ordinal miss loud, never wrong rows).
+  >
+  > **REFRAME — this does NOT retire the producer.** The fix makes multi-esq PLANNABLE, but the GATHER
+  > still declines a >1-esq cluster at translation (rfc173_b1_exists_gather.go:317), so the box unnest stays
+  > NAME-MODEL (a P4/P5 producer fires). So the producer deletion is now gated on **GATHER ADMISSION of
+  > multi-esq** (ordinalize the cluster), not plannability — a distinct slice. C's last 7 anchored-reachable
+  > sites + D are gated the same way.
+  >
+  > FOLLOW-UP TODOs (Graefe review — separable, non-blocking, none touch wire/rows):
+  > - [ ] Move the existential-needs-a-ForEach ROOT fix into `ImplementNestedLoopJoinRule` (decline when
+  >   slot-0 isn't a ForEach) — the partition-rule guardrail is prophylactic; the NLJ silently emitting
+  >   empty rows for an existential-only select is the real defect to fix at the source.
+  > - [ ] Remove the ≥2-existential gate by SUBSUMING `implementJoinWithExistential` into partitioning
+  >   (Java has no count gate; the gate exists only to avoid two paths racing). Don't let it calcify.
+  > - [ ] Relax `PartitionBinarySelectRule`'s ForEach-only guard too, for full parity.
+  > - [ ] The multi-table-JOIN-inner sibling (the loud sentinel) — the join-inner's merged-row correlation
+  >   through the peel; a follow-on once the source-alias/positional namespace debt is paid down.
 
 ### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
 > IMPL NOTE — CORRECTED by the Graefe design consult (the ORIGINAL note below was the trap):
