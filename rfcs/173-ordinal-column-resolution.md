@@ -5743,44 +5743,35 @@ per-shape ordinalization gate. Items below, most-actionable first.
 > CLOSED. The ACTUAL residual P5 surface is only two harder shapes, both documented as flip-sentinels
 > in rfc173_census_sweep_test.go:
 >   1. **subquery-carrying WHERE conjunct** (`… WHERE A.K = (SELECT MIN(EE.CK) …) AND EXISTS(…)`):
->      `classifyLegConjunct` (rfc173_b2_box_conjunct.go:101-110) marks it `boxConjUnbakeable` when a
->      conjunct value is a `*values.ScalarSubqueryValue` / `*values.ExistsValue`, or a QOV whose
->      correlation is a FOREIGN alias (a scalar-subquery alias not in the box legs ∪ unnest AS/AT). The
->      seed's per-leg windows resolve leg COLUMNS by ordinal; a subquery result / foreign correlation
->      is not a leg column, so it has nowhere to bake. Ordinalizing it needs a genuine NEW MECHANISM —
->      bind the scalar-subquery's result (a correlation the executor pre-evaluates) into the ordinal
->      seed's context so the conjunct resolves alongside the baked leg refs — NOT a decline-arm
->      deletion. This is the real B remainder and a deep FUTURE SLICE.
->
->      PROBED EMPIRICALLY (RFC-173 B): relaxing the `boxConjUnbakeable` arm for `*ScalarSubqueryValue`
->      makes the shape PLAN-ordinalize (census `exists_inner_unbakeable_conj` flips to 0 producers, no
->      plan strand) — but that is NOT proof of correctness. The exact mechanism gap: the ordinal seed's
->      filter fails LOUD `UnboundScalarSubqueryError` ("scalar subquery result not bound … the executor
->      must pre-evaluate the plan's scalar subqueries and bind them via WithScalarSubqueries") — the
->      ORDINAL seed/gather plan does not surface the scalar-subquery sub-plans for the executor's
->      pre-eval pass, which only the name-model plan does today. So the slice must: (1) relax the
->      classify arm, (2) wire the gathered-cluster ordinal plan to expose its scalar-subquery sub-plans
->      so ExecutePlan's WithScalarSubqueries pre-evaluates + binds them, (3) VERIFY via a FULL
->      `db.QueryContext` sqldriver test — NOT the census (plan-only) and NOT slice3_b2b_faceA's `runQ`
->      (raw ExecutePlan, no scalar-subquery pre-eval, so it cannot run a scalar-subquery shape at all),
->      (4) flip the census sentinel `exists_inner_unbakeable_conj` from name-model to zeroed + add the
->      row-correctness pin (data A{K:100,ARR:[7,8]}, EE{CK:100}: `A.K=(SELECT MIN(EE.CK))` → 100=100 →
->      {7,8}; a `=(SELECT COUNT(*))` discriminator → 100=1 → {}). Reverted the probe; safe state stays
->      name-model.
->
->      MECHANISM LOCATED (exact code): the name-model path attaches a filter's scalar subqueries via
->      `upgradeFirstFilterScalarSubqueries` (logical_predicate.go:3211) so ExecutePlan pre-evaluates them
->      and binds `rc.ScalarSubqueries` (executor.go:2206). The ORDINAL gather/seed path does NOT run that
->      attach for a baked subquery-conjunct, so the subquery reaches no filter that gets pre-evaluated →
->      UnboundScalarSubqueryError. THE FIX: when the gathered-cluster seed bakes a conjunct that carries a
->      scalar subquery, attach that subquery to the seed's filter operator (the ordinal analogue of
->      upgradeFirstFilterScalarSubqueries), so ExecutePlan's pre-eval pass binds it before the seed runs.
->      Focused planner slice: touch the gather/seed filter construction + a db.QueryContext correctness
->      test + Graefe review.
+>      DONE (RFC-173 B, commit CLOSED). The predicted "genuine NEW MECHANISM" (attach the subquery to the
+>      seed filter, an ordinal analogue of `upgradeFirstFilterScalarSubqueries`) turned out UNNECESSARY —
+>      that prediction rested on a CONFOUNDED probe. The earlier "the ordinal seed filter fails LOUD
+>      `UnboundScalarSubqueryError`" finding came from slice3_b2b_faceA's `runQ`, which uses raw
+>      `ExecutePlan` with `EmptyEvaluationContext` and pre-evaluates NO scalar subqueries at all — so it
+>      cannot run ANY scalar-subquery shape, baked or name-model. It told us nothing about the ordinal
+>      path. THE ACTUAL FINDING (verified through the full scalar-subquery pre-eval path,
+>      `PlanRecordQueryWithSubqueries` + `prebindScalarSubqueries`): a `*values.ScalarSubqueryValue` is a
+>      LEAF (`Children()==nil`) — the bake closure leaves it untouched while the sibling leg refs
+>      ordinalize — and it is REGISTERED in `t.scalarSubqueries` at PREDICATE-TRANSLATION time, BEFORE the
+>      classify runs. The registration is STATEMENT-level: `planScalarSubqueryPlans` → the plan's
+>      `scalarSubqueries` → `EvaluationContext.WithScalarSubqueries` binds it, and the gathered seed
+>      filter reads it back exactly as the name-model filter does. The gather ADMIT keeps the registration
+>      (the scalarMark rollback fires only on DECLINE). So this was a **decline-arm deletion after all**
+>      (the shrink-the-gate discipline), not a new mechanism: `classifyLegConjunct`
+>      (rfc173_b2_box_conjunct.go) no longer marks a `*ScalarSubqueryValue` operand Unbakeable.
+>      (`*ExistsValue` in a conjunct STAYS Unbakeable — EXISTS-in-a-box-conjunct strands at
+>      physicalization, item 2 below.) VERIFIED: census `subquery_inner_conj` fires 0 producers
+>      (ordinalizes, was `exists_inner_unbakeable_conj`); row correctness through the full pre-eval path
+>      in `TestFDB_RFC173Slice3B2bFaceA` (`subquery_conjunct_min_present` A.K=100=MIN(EE.CK)→{7,8};
+>      `_count_discriminator` 100≠COUNT(*)=1→{}; `_full_box`); white-box `scalar_subquery_operand_bakeable`;
+>      the FULL sqldriver suite green. NOTE — with this, NO runnable grouped box shape declines to the
+>      name-model anchored fallback anymore (the `!rc.AnchoredJoin` groupBy gate's last row-level pin,
+>      baretwin `grouped_subquery_conjunct_gathers`, retired into a gathered-correctness pin; the gate
+>      stays live code, exercised at translation by the stranding multi-esq shape).
 >   2. **multi-esq under EXISTS** (`… WHERE EXISTS(…) AND EXISTS(… X)`): STRANDS at PHYSICALIZATION
 >      ("not a physical plan"), orthogonal to the name model — a separate pre-existing limitation.
-> So B is much nearer done than the census-comment framing implied; the last P5 shapes are deep/
-> deferred (subquery-conjunct baking) or orthogonal (multi-esq physicalization), each its own slice.
+> So B's subquery-conjunct remainder is CLOSED (decline-arm deletion, no new mechanism); the last P5
+> shape is orthogonal (multi-esq physicalization), its own separate slice.
 - [ ] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
   and `values/value_anchored_join_record.go` (~322 LOC). PR #485 is R3 ("first producer deleted") —
   finish the demolition (via the shrink-the-gate discipline above).

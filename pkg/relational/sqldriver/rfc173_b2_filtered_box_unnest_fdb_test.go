@@ -214,19 +214,21 @@ func TestFDB_RFC173B2_FilteredBoxUnnest(t *testing.T) {
 	t.Run("at_ordinal_conjunct", func(t *testing.T) {
 		want(t, `SELECT LA."K", "X", "O" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID", LA."ARR" AS "X" AT "O" WHERE LA."K" = 100`, "100|1|7", "100|2|8")
 	})
-	// Scalar-subquery conjunct: UNBAKEABLE → name-model (the verdict ROUTING is
-	// pinned white-box by TestRFC173B2_FilteredBoxUnnestCensus's
-	// scalar_subquery_operand classifier arm; rows here pin CORRECTNESS). Two
-	// discriminating arms: comparison-FALSE ([] — MAX(CV)=900 ≠ any K) and
-	// comparison-TRUE (both LA rows: 100<900, 110<900 → all three elements) —
-	// the TRUE arm proves the subquery actually EVALUATES; before the harness
-	// pre-bound subquery results, an absent binding silently compared K to NULL
-	// and BOTH arms returned [] (indistinguishable from the FALSE arm — the
-	// silent-NULL hole values.UnboundScalarSubqueryError now closes).
-	t.Run("scalar_subquery_unbakeable_false_arm", func(t *testing.T) {
+	// Scalar-subquery conjunct: BAKES (RFC-173 B — the ScalarSubqueryValue is a leaf
+	// the bake leaves untouched while the sibling leg ref LA.K ordinalizes; the
+	// statement's scalar-subquery pre-eval binds its result, so the gathered ordinal
+	// seed filter resolves it). The verdict ROUTING (Bakeable) is pinned white-box by
+	// the query package's classifier_unbakeable_arms/scalar_subquery_operand_bakeable;
+	// rows here pin CORRECTNESS. Two discriminating arms: comparison-FALSE ([] —
+	// MAX(CV)=900 ≠ any K) and comparison-TRUE (both LA rows: 100<900, 110<900 → all
+	// three elements) — the TRUE arm proves the subquery actually EVALUATES; before the
+	// harness pre-bound subquery results, an absent binding silently compared K to NULL
+	// and BOTH arms returned [] (indistinguishable from the FALSE arm — the silent-NULL
+	// hole values.UnboundScalarSubqueryError now closes).
+	t.Run("scalar_subquery_conjunct_false_arm", func(t *testing.T) {
 		want(t, `SELECT "X" `+leftBox+` WHERE LA."K" = (SELECT MAX(CV) FROM CC)`)
 	})
-	t.Run("scalar_subquery_unbakeable_true_arm", func(t *testing.T) {
+	t.Run("scalar_subquery_conjunct_true_arm", func(t *testing.T) {
 		want(t, `SELECT "X" `+leftBox+` WHERE LA."K" < (SELECT MAX(CV) FROM CC)`, "7", "8", "9")
 	})
 	// GROUP BY over the filtered gather.

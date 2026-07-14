@@ -54,6 +54,15 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		// name-model; the enclosed-CTE P1 0-row failure came from forcing the INNER
 		// cluster to gate under a still-name-model parent — the opposite fix.)
 		{"enclosed_e1b_cte_leg", `WITH D AS (SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" > "X" AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X" FROM D, EEV`},
+		// SUBQUERY-carrying conjunct + EXISTS (RFC-173 B — the last P5 residual, now
+		// CLOSED): `A.K = (SELECT MIN(EE.CK) FROM EE) AND EXISTS(…)`. classifyLegConjunct
+		// sees only splitNonExistsPredicates (the EXISTS is handled by the gather's own
+		// machinery), so it classifies the pure scalar-subquery conjunct — a leaf
+		// ScalarSubqueryValue the bake leaves untouched while the sibling leg refs
+		// ordinalize, its result already registered in t.scalarSubqueries for the
+		// statement pre-eval. So it BAKES → the gather owns it → 0 producers. Row
+		// correctness pinned in TestFDB_RFC173Slice3B2bFaceA (subquery_conjunct_* arms).
+		{"subquery_inner_conj", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`},
 	}
 	for _, tc := range zeroed {
 		n, err := count(tc.sql)
@@ -64,16 +73,6 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		if n != 0 {
 			t.Errorf("%s: fired %d P4/P5 producer(s), want 0 (regressed to the name model)", tc.name, n)
 		}
-	}
-
-	// UNBAKEABLE conjunct (subquery-carrying) STAYS name-model (correct-or-loud):
-	// classifyFlatLegConjunct returns Unbakeable → admitExistentialGather declines
-	// → the name model owns it → producers fire. Flip-sentinel: if a future slice
-	// ordinalizes the subquery-conjunct shape, this goes red.
-	if n, err := count(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`); err != nil {
-		t.Errorf("exists_inner_unbakeable_conj: unexpected plan error: %v", err)
-	} else if n == 0 {
-		t.Error("exists_inner_unbakeable_conj now fires 0 — a subquery-carrying conjunct should stay name-model (Unbakeable decline)")
 	}
 
 	// exists_multi_esq: fires during translation but STRANDS at physicalization (a

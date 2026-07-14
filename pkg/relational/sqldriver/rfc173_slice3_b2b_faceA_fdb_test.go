@@ -138,6 +138,62 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 		})
 	}
 
+	// runQSub is runQ's scalar-subquery-aware sibling: it PRE-EVALUATES the plan's
+	// scalar subqueries (PlanRecordQueryWithSubqueries + prebindScalarSubqueries)
+	// and binds them via WithScalarSubqueries before executing — the direct-executor
+	// analog of the sql driver's fetchPage pre-pass. runQ's EmptyEvaluationContext
+	// cannot run ANY scalar-subquery shape (it would fail loud
+	// UnboundScalarSubqueryError), so a subquery-carrying conjunct is pinned here.
+	runQSub := func(t *testing.T, sql string) ([]string, string, error) {
+		t.Helper()
+		plan, subs, perr := embedded.PlanRecordQueryWithSubqueries(sql, md, nil)
+		if perr != nil {
+			return nil, "", perr
+		}
+		explain := plan.Explain()
+		var out []string
+		_, eerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, sErr := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if sErr != nil {
+				return nil, sErr
+			}
+			evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+			if bindErr != nil {
+				return nil, bindErr
+			}
+			cur, cErr := executor.ExecutePlan(ctx, plan, store, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+			if cErr != nil {
+				return nil, cErr
+			}
+			defer cur.Close()
+			rows, rErr := executor.CollectAll(ctx, cur)
+			if rErr != nil {
+				return nil, rErr
+			}
+			for _, r := range rows {
+				out = append(out, unnestSprint(executor.RowValue(r)))
+			}
+			return nil, nil
+		})
+		sort.Strings(out)
+		return out, explain, eerr
+	}
+	pinSub := func(name, sql string, want ...string) {
+		t.Run(name, func(t *testing.T) {
+			rows, plan, err := runQSub(t, sql)
+			if err != nil {
+				t.Fatalf("%q: %v", sql, err)
+			}
+			sort.Strings(want)
+			if strings.Join(rows, ",") != strings.Join(want, ",") {
+				t.Fatalf("rows = %v, want %v\n  plan: %s", rows, want, plan)
+			}
+			if strings.Contains(plan, "NWayJoinWithExistential") {
+				t.Errorf("R1: plan flattened to an N-way existential wrap (SARG-losing)\n  %s", plan)
+			}
+		})
+	}
+
 	// LEFT box + EXISTS on the PRESENT leg (A.K=100 matches EE) → {7,8}.
 	pin("leftK_present", `SELECT "X" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
 		"map[X:7]", "map[X:8]")
@@ -169,12 +225,26 @@ func TestFDB_RFC173Slice3B2bFaceA(t *testing.T) {
 	// (both keep the box-leg conjunct correct); the census pin below is the
 	// model discriminator.
 	pin("bakeable_conjunct_nullsupplied", `SELECT "X" `+from+` WHERE B."K" = 110 AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`)
-	// NOTE (RFC-173 B, the last P5 residual): a SUBQUERY-carrying box-leg conjunct
-	// (`A.K = (SELECT MIN(EE.CK) FROM EE)`) is classified Unbakeable and stays
-	// name-model. It is NOT pinned here — runQ uses raw ExecutePlan and does not
-	// pre-evaluate scalar subqueries (WithScalarSubqueries), so a scalar-subquery
-	// shape cannot execute in this harness at all; verifying its ordinalization
-	// needs a FULL sqldriver db.QueryContext test (see RFC ## LEFT FOR COMPLETION §B).
+	// SUBQUERY-carrying box-leg conjunct (RFC-173 B, the last P5 residual — now
+	// CLOSED): `A.K = (SELECT MIN(EE.CK) FROM EE)` is a scalar-subquery conjunct.
+	// classifyLegConjunct now BAKES it (the ScalarSubqueryValue is a leaf — the bake
+	// leaves it untouched, only the sibling leg refs ordinalize — and it was
+	// registered in t.scalarSubqueries at predicate-translation time, so the
+	// statement's pre-eval pass binds its result for the seed filter). The gather
+	// OWNS the shape (census exists_inner_unbakeable_conj → 0 producers); these
+	// pins prove CORRECTNESS through the scalar-subquery pre-eval path (runQSub).
+	// MIN(EE.CK)=100=A.K → conjunct TRUE, EXISTS matches → {7,8}.
+	pinSub("subquery_conjunct_min_present", `SELECT "X" `+from+` WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
+		"map[X:7]", "map[X:8]")
+	// DISCRIMINATOR: COUNT(*)=1 (EE has one row) ≠ A.K=100 → conjunct FALSE → {}. A
+	// dropped subquery binding (silent NULL) would ALSO yield {} — so this alone
+	// can't distinguish bind-present from bind-absent; the _min_present TRUE arm
+	// above is the one that proves the subquery actually EVALUATES and binds.
+	pinSub("subquery_conjunct_count_discriminator", `SELECT "X" `+from+` WHERE A."K" = (SELECT COUNT(*) FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`)
+	// FULL box variant: the FULL OUTER box's subquery conjunct bakes over the
+	// gather record identically (A survives FULL OUTER, null-supplied B) → {7,8}.
+	pinSub("subquery_conjunct_full_box", `SELECT "X" FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" = (SELECT MIN(EE."CK") FROM EE) AND EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")`,
+		"map[X:7]", "map[X:8]")
 	// FULL box + Bakeable conjunct (D4-(ii): FULL admits ONLY at Bakeable): the
 	// FULL OUTER box's A.K=100 conjunct bakes over the gather record. A survives
 	// the FULL OUTER (AID=1≠BID=2, B null-supplied), A.K=100 → {7,8}.

@@ -77,10 +77,7 @@ func TestRFC173B2_FilteredBoxUnnestCensus(t *testing.T) {
 	// PER-ARM classifier pins: each Unbakeable arm of classifyBoxLegConjunct
 	// exercised DIRECTLY (the verdict is metadata-only by contract, callable
 	// without translating). The census pair above proves the verdict ROUTES;
-	// these prove each decline ARM is live — the e2e shapes can't distinguish
-	// them (e.g. a SQL scalar subquery may reach the classifier as the minted
-	// alias's foreign QOV rather than a ScalarSubqueryValue node, leaving the
-	// subquery arm otherwise unexercised).
+	// these prove each decline ARM is live.
 	t.Run("classifier_unbakeable_arms", func(t *testing.T) {
 		t4ID := func() values.Value {
 			return values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T4")), "ID", values.UnknownType)
@@ -92,8 +89,6 @@ func TestRFC173B2_FilteredBoxUnnestCensus(t *testing.T) {
 			name string
 			pred predicates.QueryPredicate
 		}{
-			{"scalar_subquery_operand", predicates.NewComparisonPredicate(
-				t4ID(), eq(values.NewScalarSubqueryValue(values.NamedCorrelationIdentifier("SQ"))))},
 			{"exists_value_operand", predicates.NewComparisonPredicate(
 				t4ID(), eq(&values.ExistsValue{Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("EQ"))}))},
 			{"foreign_correlation", predicates.NewComparisonPredicate(
@@ -116,6 +111,20 @@ func TestRFC173B2_FilteredBoxUnnestCensus(t *testing.T) {
 				}
 			})
 		}
+		// SCALAR SUBQUERY operand is BAKEABLE (RFC-173 B): a ScalarSubqueryValue is
+		// a LEAF (Children()==nil) — the bake closure leaves it untouched while the
+		// sibling leg ref (T4.ID) ordinalizes; the subquery's result is bound by the
+		// statement's scalar-subquery pre-eval pass (it was registered in
+		// t.scalarSubqueries at predicate translation). So the conjunct bakes and the
+		// gather owns the shape. e2e correctness: TestFDB_RFC173Slice3B2bFaceA
+		// subquery_conjunct_* arms; ordinalization: census subquery_inner_conj.
+		t.Run("scalar_subquery_operand_bakeable", func(t *testing.T) {
+			pred := predicates.NewComparisonPredicate(
+				t4ID(), eq(values.NewScalarSubqueryValue(values.NamedCorrelationIdentifier("SQ"))))
+			if got := classify(t, b2BoxShapeWithPred(pred)); got != boxConjBakeable {
+				t.Fatalf("classifyBoxLegConjunct = %d, want Bakeable(%d) for a scalar-subquery operand", got, boxConjBakeable)
+			}
+		})
 		// BAKEABLE baseline over the same shape — proves the arms above are
 		// discriminating (an always-Unbakeable classifier would pass them all).
 		t.Run("bakeable_baseline", func(t *testing.T) {

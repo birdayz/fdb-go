@@ -276,20 +276,22 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 			[]string{"map[A.K:100 B.K:200 X:7]", "map[A.K:100 B.K:200 X:8]"})
 	})
 
-	// GROUPED over a NAME-MODEL FALLBACK: an UNBAKEABLE box-leg conjunct — the WHERE
-	// carries a scalar subquery, which classifyBoxLegConjunct declines pre-translation
-	// (unnestBoxLegConjunct = Unbakeable) — keeps the gather declined to name-model.
-	// The fallback is STILL a SelectExpression with an Explode quantifier, but its RC
-	// is ANCHORED and emits NO positional row. The group-by MUST NOT positionally bake
-	// `GROUP BY X` over it (a baked ordinal on the Datum map would error); the
-	// `!rc.AnchoredJoin` gate keeps it name-model. A FULL B matches one row; the
-	// conjunct passes it (A.K=100 > MAX(C.M)=55); A.arr={7,8} → GROUP BY X yields 7,8
-	// each COUNT 1. Regression pin for the anchored-fallback bake gate — re-pointed
-	// TWICE as ordinal coverage grew: from the within-box dup (gathers since class-1),
-	// then from the plain `WHERE A.K=100` conjunct (Bakeable since B2 sub-slice A, so
-	// it now gathers too); a subquery-carrying conjunct is the surviving anchored
-	// decline that still exercises this gate.
-	t.Run("grouped_over_name_model_fallback_does_not_bake", func(t *testing.T) {
+	// GROUPED over a GATHERED subquery-conjunct box (RFC-173 B): `A.K > (SELECT MAX(M)
+	// FROM C)` is a scalar-subquery box-leg conjunct that now BAKES — a
+	// ScalarSubqueryValue is a leaf the bake leaves untouched while the sibling leg ref
+	// (A.K) ordinalizes, and the statement's scalar-subquery pre-eval binds the
+	// subquery's result. So the FULL box gathers and GROUP BY X bakes POSITIONALLY over
+	// the gathered ordinal row (no name-model anchored RC). A FULL B matches one row;
+	// the conjunct passes it (A.K=100 > MAX(C.M)=55); A.arr={7,8} → GROUP BY X yields
+	// 7,8 each COUNT 1. (History: this pin exercised the `!rc.AnchoredJoin` groupBy
+	// gate — "don't positionally bake GROUP BY over a name-model box RC" — and was
+	// re-pointed as ordinal coverage grew: within-box dup → plain `A.K=100` → this
+	// subquery conjunct. RFC-173 B ordinalized the subquery conjunct too; NO runnable
+	// grouped box shape now declines to the name-model path — the remaining decliners
+	// [multi-esq / EXISTS-in-OR] strand at physicalization (0A000), so the gate's
+	// row-level pin retires here into a gathered-correctness pin. The gate stays live
+	// code, exercised at TRANSLATION by those stranding shapes.)
+	t.Run("grouped_subquery_conjunct_gathers", func(t *testing.T) {
 		wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" > (SELECT MAX("M") FROM C) GROUP BY "X"`,
 			[]string{"map[COUNT(*):1 X:7]", "map[COUNT(*):1 X:8]"})
 	})

@@ -102,15 +102,22 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 	for _, conj := range splitNonExistsPredicates(pred) {
 		predicates.ReplaceValues(conj, func(v values.Value) values.Value {
 			switch nv := v.(type) {
-			case *values.ScalarSubqueryValue, *values.ExistsValue:
-				// RFC-173 B: a scalar-subquery conjunct stays name-model. Relaxing
-				// this (empirically probed) makes the shape ordinalize but the seed's
-				// filter fails LOUD with UnboundScalarSubqueryError — the ORDINAL seed
-				// path does not pre-evaluate/bind the plan's scalar subqueries
-				// (WithScalarSubqueries), which only the name-model path does today.
-				// Ordinalizing it needs that pre-eval wired into the gathered-cluster
-				// plan; until then, Unbakeable is correct. (See the
-				// subquery_conjunct_* pins in slice3_b2b_faceA — currently name-model.)
+			case *values.ScalarSubqueryValue:
+				// RFC-173 B: a scalar-subquery conjunct BAKES. The subquery is a leaf
+				// (Children()==nil) — the bake closure leaves it untouched, only the
+				// sibling leg refs ordinalize — and it was REGISTERED in
+				// t.scalarSubqueries during predicate translation (before classify), so
+				// the statement's pre-eval pass (planScalarSubqueryPlans →
+				// WithScalarSubqueries) binds its result under nv.Alias for the seed
+				// filter to read back, exactly as the name-model path does. The gather
+				// ADMIT keeps the registration (rollback fires only on decline); no new
+				// mechanism, no filter-level attach. (Correctness pinned by
+				// TestFDB_RFC173B2_FilteredBoxUnnest scalar-subquery arms.)
+				_ = nv
+			case *values.ExistsValue:
+				// EXISTS in a conjunct stays name-model: an EXISTS over the gathered
+				// cluster strands at PHYSICALIZATION ("not a physical plan"), an
+				// orthogonal pre-existing limitation — not a scalar-subquery bind gap.
 				verdict = boxConjUnbakeable
 			case *values.QuantifiedObjectValue:
 				if _, ok := allowed[strings.ToUpper(nv.Correlation.Name())]; !ok {

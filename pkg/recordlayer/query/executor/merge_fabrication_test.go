@@ -28,7 +28,7 @@ func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 
 // TestSortContinuation_PositionalRoundTripAndReject pins the continuation round-trip
 // of the positional payload (the SOLE runtime row a resumed sort buffer must carry). It
-// also pins the CODEX-P2 regression fix: a pre-positional continuation (a legacy
+// also pins the legacy-continuation regression fix: a pre-positional continuation (a legacy
 // name-keyed JSON object, or a v2 [_, complete] array — both written by an older
 // binary) carries no positional and is therefore UNRECONSTRUCTABLE in the ordinal
 // model; decode must REJECT it loudly rather than silently decode to a

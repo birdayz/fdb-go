@@ -578,7 +578,7 @@ func TestResultSet_PositionalDupNameRead(t *testing.T) {
 	}
 }
 
-// TestResultSet_DottedAliasPositionalAlign is the Codex-P2 regression: a quoted
+// TestResultSet_DottedAliasPositionalAlign pins the dotted-output-alias regression: a quoted
 // output alias containing a dot — `SELECT v AS "A.B"`. The projection emits a slot
 // named "A.B" and the column label is "A.B"; the positional-alignment check must
 // NOT leaf-strip the slot to "B" and reject the row with XX000 "no positional
