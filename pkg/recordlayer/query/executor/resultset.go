@@ -197,7 +197,13 @@ func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
 			if isAnonymousColumnName(disp) || !isPlainColumnRef(disp) || !isPlainColumnRef(f.Name) {
 				continue
 			}
-			if !strings.EqualFold(bareLeafName(f.Name), disp) {
+			// Align when the slot name equals the display name OUTRIGHT (a quoted
+			// output alias may itself contain a dot — `SELECT v AS "A.B"` emits slot
+			// "A.B" and label "A.B", which must NOT be leaf-stripped to "B"), or when
+			// the slot's bare leaf equals a bare display ("C.NAME" slot ↔ "NAME"
+			// label). Stripping BOTH sides would falsely align permuted qualifiers
+			// ("X.NAME" vs "Y.NAME"), so only the slot side is stripped.
+			if !strings.EqualFold(f.Name, disp) && !strings.EqualFold(bareLeafName(f.Name), disp) {
 				aligned = false
 				break
 			}

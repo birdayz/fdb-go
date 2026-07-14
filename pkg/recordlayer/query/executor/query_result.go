@@ -21,42 +21,32 @@ import (
 const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 
 // QueryResult is the row type flowing through plan execution cursors.
-// Wraps a datum (the computed/flowed row), an optional stored record
+// Wraps the ordinal-model row (Positional), an optional stored record
 // (when the row originated from a scan), and an optional primary key.
 // Mirrors Java's QueryResult.
 type QueryResult struct {
-	// Positional is the RFC-173 ordinal-model row: the same row as
-	// a typed PositionalRow (field values indexed by ordinal). Non-nil marks the
-	// row as being on the NON-JOIN FRONTIER (scans, covering scans, projection/
-	// map over the frontier emit it; join producers mergeRows/qualifyOuterRow do
-	// NOT), and since Slice 1 it is what FieldValue resolution READS there —
-	// authoritative, by ordinal, loud on a miss. The name-keyed Datum is still
-	// emitted alongside for coexistence (downstream name-model consumers, final
-	// materialization) until Slice 4 retires it; a shadow test pins that the two
-	// mirror each other field-for-field.
+	// Positional is the RFC-173 ordinal-model row (a typed PositionalRow, field
+	// values indexed by ordinal) — post-cap the SOLE runtime row. Every producer
+	// emits it (scans/covering scans, projection/map, aggregate output, and join
+	// merges via concatLegPositionals), and FieldValue resolution reads it by
+	// ordinal, loud on a miss (OrdinalResolutionError). The name-keyed Datum row
+	// model it replaced is retired.
 	Positional *PositionalRow
 	Record     *recordlayer.FDBStoredRecord[proto.Message]
 	PrimaryKey tuple.Tuple
-	// Complete marks a computed/synthetic row whose Datum key set is
-	// authoritative — every legal column is present (nil-valued for SQL NULL),
-	// with no proto-style optional-field omissions.
+	// Complete marks a computed/synthetic row whose column set is authoritative —
+	// every legal column is present (nil-valued for SQL NULL), with no proto-style
+	// optional-field omissions. Set by aggregate output (finalizeGroup/
+	// emptyScalarResult), projection output (executeProjection), and the unnest
+	// FlatMap's RC-evaluated rows; left false by raw stored records
+	// (FromStoredRecord, which legitimately omit unset optionals) and join merges.
 	//
-	// SETTERS: aggregate output (finalizeGroup/emptyScalarResult, RFC-048),
-	// projection output (executeProjection — every projected column written),
-	// the unnest FlatMap's RC-evaluated rows and their §5 oracle mirror rows
-	// (flat_map_cursor — the RecordConstructor evaluates every declared
-	// column). Raw stored-record rows (FromStoredRecord) leave it false (they
-	// legitimately omit unset optional fields), and JOIN-MERGE outputs
-	// (mergeRows) DELIBERATELY leave it false — their bare keys are
-	// last-leg-wins leftovers, not a schema.
-	//
-	// CONSUMERS: (1) the RFC-048 W1 strict unresolved-reference check —
-	// against a Complete row, a referenced name that is absent is a bug, not
-	// a NULL; (2) the name-model merge's alias-fabrication authority
-	// (qualifyAlias/qualifyOuterRow) — only a Complete leg's alias provably
-	// names the whole row, so only Complete legs fabricate "ALIAS.col" keys.
-	// Because (2) affects row CONTENT, Complete must survive continuation
-	// round-trips (encodeSortContinuation's v2 payload carries it).
+	// VESTIGIAL post-cap: its two former consumers — the RFC-048 W1 strict
+	// unresolved-reference check and the name-model merge's alias fabrication
+	// (qualifyAlias) — are both retired, so nothing reads Complete today. It is
+	// still round-tripped through the sort continuation (encodeSortContinuation's
+	// versioned payload). Pending removal with the Slice-4 name-model demolition;
+	// dropping it is a continuation-payload format change, so it is not done here.
 	Complete bool
 }
 

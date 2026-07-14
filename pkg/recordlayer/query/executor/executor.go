@@ -2135,61 +2135,27 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 	}
 }
 
-// qualifyAlias writes explicit-alias-qualified keys ("ALIAS.COL") for each
-// bare column in src into dst. An explicit table alias is authoritative, so
-// these keys are never overwritten by the record-type fallback. No-op when
-// alias is empty (unaliased reference — handled by qualifyTypeFallback).
-// Pre-qualified keys (containing a dot) carry their own namespace from a
-// prior join level and are left untouched.
-//
-// No-op for an INCOMPLETE src that carries dotted keys — a JOIN-MERGE output:
-// there is no single source behind that leg's alias, and its BARE keys are
-// last-leg-wins leftovers on cross-leg name collisions. Fabricating
-// "ALIAS.COL" from them invents rows — an unmatched `d LEFT JOIN e` row
-// under an enclosing INNER join has no E.* keys (the null extension emits
-// only the preserved leg), and fabricating E.ID from the row's bare ID
-// (dept's) read the WRONG SOURCE with no error (the mixed-nesting runtime
-// pins). The merged row's own dotted keys pass through verbatim above and
-// are the only authoritative resolution.
-//
-// A COMPLETE src (a projection output / an unnest FlatMap's RC row — key set
-// == the row's full declared schema) is the one dotted-key class whose alias
-// DOES name the whole row: its dotted keys are executeProjection's
-// source-name convenience keys, not merge leftovers. Refusing here left an
-// enclosed CTE/derived body's columns with no "C.col" keys and every
-// qualified read silently NULL (all-NULL rows with correct multiplicity).
-// The Complete arm splits by key shape:
-//   - a BARE key is the leg's OWN schema column — OVERWRITE, the same
-//     explicit-alias authority the legacy bare arm applies: the outer row may
-//     already carry a stale "ALIAS.col" from a different nesting level, and
-//     the leg the user aliased HERE owns that namespace (a fill-if-absent
-//     preserved the stale value over the current leg's — wrong-source reads);
-//   - a DOTTED key fabricates a derived convenience key ("LA.K" → "C.LA.K") —
-//     fill-if-absent only, never clobbering an authoritative key an earlier
-//     merge level wrote.
-//
-// Routing note: aggregate outputs have been Complete since RFC-048, so their
-// bare keys moved from the legacy arm to the Complete-bare arm here — both
-// overwrite, so behavior is unchanged; only the arm differs.
+// passesJoinPredicates evaluates a join's residual predicates against the merged
+// leg-windowed positional row (the nil-legs entry point to passesJoinPredicatesLegs).
 func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) (bool, error) {
 	return passesJoinPredicatesLegs(combined, preds, evalCtx, nil)
 }
 
 // passesJoinPredicatesLegs is passesJoinPredicates extended with the RFC-173
-// Slice 2 ordinal-birth leg bindings. legs nil (every name-model NLJ) keeps
-// today's dispatch bit-identically. legs non-nil (an ordinal-birth cursor,
-// oracle off) evaluates the predicates against a RowEvalContext carrying the
-// DIRECT per-leg bindings (the cursor's pre-built twoLegBinder — review:
-// predicates need no windows at birth; review: legs PRE-adapted, one small
-// binder per pair, never a map or a re-adaptation): a lazy leg reference
-// QOV(leg).col resolves leg-relative against the adapted leg row (correct
-// even for the second leg), a BAKED one by its baked ordinal, an outer
-// correlation via the binder's base, and a name-model qualified-key read
-// ("A.ID", a flat FieldValue) still works via Datum.
+// Slice 2 ordinal-birth leg bindings. legs nil (the non-birth merged-row path)
+// resolves through the merged row's leg windows (spansFromMergedLegs below).
+// legs non-nil (an ordinal-birth cursor) evaluates the predicates against a
+// RowEvalContext carrying the DIRECT per-leg bindings (the cursor's pre-built
+// twoLegBinder — review: predicates need no windows at birth; review: legs
+// PRE-adapted, one small binder per pair, never a map or a re-adaptation): a
+// lazy leg reference QOV(leg).col resolves leg-relative against the adapted leg
+// row (correct even for the second leg), a BAKED one by its baked ordinal, an
+// outer correlation via the binder's base, and a qualified read ("A.ID", a flat
+// FieldValue) resolves via the merged row's leg windows.
 // legs is the CONCRETE *twoLegBinder (not the CorrelationBinder interface) so
 // the cursor's `var pair *twoLegBinder` typed-nil passes as a genuine nil —
-// an interface-typed param would make a typed-nil non-nil and route the name
-// model through a nil binder.
+// an interface-typed param would make a typed-nil non-nil and route the
+// non-birth path through a nil binder.
 // spansFromMergedLegs derives the per-leg windows from a merged row's own leg
 // metadata (RecordType.Legs), for the non-birth join-predicate path: each leg's
 // alias maps to its window [Start, Start+Width) with the sub-slice of fields as

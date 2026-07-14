@@ -57,7 +57,7 @@ func restoreContinuationValue(v any) any {
 }
 
 // jsonSafeSlice / jsonSafeMap apply jsonSafeContinuationValue element-wise for
-// the two continuation payload shapes (aggregate keyVals; sort-buffer Datum).
+// the two continuation payload shapes (aggregate keyVals; sort-buffer row slots).
 func jsonSafeSlice(in []any) []any {
 	out := make([]any, len(in))
 	for i, v := range in {
@@ -271,8 +271,8 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 // encodeSortContinuation serializes the sort cursor's state using
 // Java's MemorySortContinuation proto. The buffered records are
 // serialized as JSON bytes in the SortedRecord.message field.
-// Java uses protobuf-serialized records; Go uses JSON for the datum
-// map since QueryResult.Datum is map[string]any.
+// Java uses protobuf-serialized records; Go serializes each buffered row's
+// positional data (field names + slots) as JSON in that Go-owned field.
 func encodeSortContinuation(
 	innerCont recordlayer.RecordCursorContinuation,
 	buf []QueryResult,
@@ -300,12 +300,12 @@ func encodeSortContinuation(
 		// datum in `message` where Java stores record-proto bytes — the
 		// payload inside the opaque field is ours to version. The first byte
 		// discriminates: a JSON OBJECT is the legacy datum-only payload; a JSON
-		// ARRAY is versioned by its element count — 2 = [datum, complete] (v2),
-		// 3 = [datum, complete, positional] (v3). Complete MUST survive the
-		// round-trip: it gates the merge's alias fabrication (qualifyAlias), and
-		// dropping it made resumed buffered rows refuse fabrication while
-		// post-resume rows fabricated — qualified columns differing across a page
-		// boundary.
+		// ARRAY is versioned by its element count — 2 = [_, complete] (v2),
+		// 3 = [_, complete, positional] (v3). Slot 1 (Complete) is retained for
+		// payload-shape backward compatibility with existing continuations;
+		// post-cap it is VESTIGIAL — its former consumer, the name-model merge's
+		// alias fabrication (qualifyAlias), is deleted and nothing reads Complete
+		// now (pending removal with the Slice-4 demolition, a payload-format change).
 		//
 		// RFC-173 cap: the Positional row is the SOLE runtime output row (the
 		// name-keyed Datum is deleted), so a resumed sort buffer MUST carry it or
@@ -411,10 +411,10 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 				positional = &PositionalRow{Type: positionalTypeFromNames(pp.N), Slots: slots}
 			}
 		} else {
-			// Legacy bare-object payload (the deleted name-keyed datum): its data
-			// is unrepresentable in the ordinal model, but a CORRUPT payload must
-			// still fail the resume (fail-corrupt contract) rather than silently
-			// decode to an empty row — so validate it parses as JSON.
+			// Legacy bare-object payload (the deleted name-keyed datum): validate it
+			// parses as JSON (a corrupt payload must fail the resume, not silently
+			// decode). It carries no positional; the positional==nil guard below
+			// rejects it — its name-keyed row is unreconstructable in the ordinal model.
 			var throwaway map[string]any
 			if jErr := json.Unmarshal(sr.Message, &throwaway); jErr != nil {
 				return nil, nil, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
@@ -427,6 +427,16 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 			if pkErr != nil {
 				return nil, nil, fmt.Errorf("failed to unpack sorted record %d primary key in continuation: %w", i, pkErr)
 			}
+		}
+		// A resumed sort row MUST reconstruct a PositionalRow (the sole runtime row).
+		// A legacy bare-object payload OR a v2 [_, complete] array (both pre-positional,
+		// written by an older binary) leaves positional nil — resuming it would give
+		// all-NULL sort keys and wrong/misordered rows, since the name-keyed Datum
+		// fallback that used to read them is deleted. Fail the resume loudly (the caller
+		// restarts the query) rather than silently drop the data. A corrupt payload has
+		// already failed above; this rejects the VALID-but-unreconstructable legacy shape.
+		if positional == nil {
+			return nil, nil, fmt.Errorf("sorted record %d has no positional payload (legacy pre-RFC-173 sort continuation); it cannot be resumed under the ordinal row model — restart the query", i)
 		}
 		buf = append(buf, QueryResult{PrimaryKey: pk, Complete: complete, Positional: positional})
 	}

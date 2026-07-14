@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/gen"
@@ -29,13 +30,15 @@ func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 	}
 }
 
-// TestSortContinuation_PreservesComplete pins the continuation round-trip of
-// QueryResult.Complete (it gates downstream behavior, so dropping it across a
-// sort-buffer continuation would make resumed and post-resume rows disagree) and
-// the positional payload round-trip. Also pins the LEGACY payload path: a
-// pre-migration continuation (bare JSON object — the deleted name-keyed datum)
-// still DECODES without error, with Complete=false and no positional (its data is
-// unrepresentable in the ordinal model, but it must not crash the resume).
+// TestSortContinuation_PreservesComplete pins the continuation round-trip of the
+// positional payload (the SOLE runtime row a resumed sort buffer must carry) and
+// of Complete (vestigial post-cap, but still carried in the payload for
+// backward-compat). It also pins the CODEX-P2 regression fix: a pre-positional
+// continuation (a legacy name-keyed JSON object, or a v2 [_, complete] array —
+// both written by an older binary) carries no positional and is therefore
+// UNRECONSTRUCTABLE in the ordinal model; decode must REJECT it loudly rather than
+// silently decode to a nil-positional row (which resumes as all-NULL sort keys and
+// wrong/misordered rows now that the name-keyed Datum fallback is deleted).
 func TestSortContinuation_PreservesComplete(t *testing.T) {
 	t.Parallel()
 
@@ -59,16 +62,27 @@ func TestSortContinuation_PreservesComplete(t *testing.T) {
 		t.Fatalf("positional lost in round-trip: %+v", decoded[0].Positional)
 	}
 
-	t.Run("legacy_object_payload_decodes", func(t *testing.T) {
-		t.Parallel()
-		sr, _ := proto.Marshal(&gen.SortedRecord{Message: []byte(`{"AK":100}`)})
-		legacy, _ := proto.Marshal(&gen.MemorySortContinuation{Records: [][]byte{sr}})
-		_, decoded, err := decodeSortContinuation(legacy)
-		if err != nil {
-			t.Fatalf("legacy decode: %v", err)
-		}
-		if len(decoded) != 1 || decoded[0].Complete || decoded[0].Positional != nil {
-			t.Fatalf("legacy payload must decode with Complete=false, no positional: %+v", decoded)
-		}
-	})
+	// A resumed row with NO positional payload must be rejected loudly, never
+	// silently decoded to a nil-positional (all-NULL) row.
+	for _, tc := range []struct {
+		name    string
+		message []byte
+	}{
+		{"legacy_object_payload", []byte(`{"AK":100}`)},       // pre-migration name-keyed datum
+		{"v2_array_no_positional", []byte(`[null, false]`)},   // v2 [_, complete], no positional slot
+		{"v2_array_with_datum", []byte(`[{"AK":100}, true]`)}, // v2 carrying the old datum
+	} {
+		t.Run(tc.name+"_rejected", func(t *testing.T) {
+			t.Parallel()
+			sr, _ := proto.Marshal(&gen.SortedRecord{Message: tc.message})
+			legacy, _ := proto.Marshal(&gen.MemorySortContinuation{Records: [][]byte{sr}})
+			_, _, err := decodeSortContinuation(legacy)
+			if err == nil {
+				t.Fatal("pre-positional payload must be REJECTED (no positional) — a silently dropped row is wrong results with no error")
+			}
+			if !strings.Contains(err.Error(), "no positional payload") {
+				t.Fatalf("decode error = %q, want 'no positional payload' rejection", err)
+			}
+		})
+	}
 }

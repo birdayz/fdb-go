@@ -5668,3 +5668,79 @@ of unnest/gather/shadow. A general pre-existing planner gap in resolving a compu
 qualified inner reference against the aggregate input — tracked separately, NOT a residual of the
 positional-wrap increment and NOT a blocker. (Codex's "the patch introduces" framing was mis-attributed
 to the shadow context; the bug pre-dates and is broader than any unnest.)
+
+## LEFT FOR COMPLETION
+
+Consolidated from the **entire-PR three-reviewer pass** on the S4 atomic cap (feat/rfc173-s4 vs
+feat/rfc173-next, 267 commits / ~26k LOC): **Codex** (gpt-5.5 xhigh, full diff + ran targeted tests),
+**Torvalds** (code quality / systemic), **Graefe** (Cascades + Java fidelity). Bottom line from
+both principals: **we are better off with the cap than without it** — wire-compat is untouched
+(only the Go-owned sort-continuation payload changed, additively; magic unchanged), the name model's
+silent-NULL-on-unresolved-reference class is killed globally (one reader, `evaluateOrdinal`, loud on
+a miss), duplicate-named columns disambiguate by ordinal, and the FDB e2e tests are real. Graefe:
+"clearly better; ~70% of the way to Java — land it, keep going." Torvalds: "marginally better; the
+correctness win is real but the promised *simplification* (Slice 4 AnchoredJoin deletion) is unpaid
+debt — frozen here it is permanent hybrid rot." The runtime row is fully ordinal; **plan-time
+binding is not yet uniform** and the name-model **producer** (AnchoredJoin) still lives behind a
+per-shape ordinalization gate. Items below, most-actionable first.
+
+### A. Correctness regressions the cap exposed (Codex P2) — FIXED this session
+- [x] **Dotted output alias rejected** — `resultset.go` `isPositionallyAligned`. `SELECT v AS "A.B"`
+  emits slot "A.B" and label "A.B"; the alignment check leaf-stripped the slot to "B" and compared
+  against "A.B" → XX000 "no positional output row aligned" (the Datum fallback used to mask it).
+  Fixed: accept a full-name match before the slot-side leaf strip; do NOT strip the display side
+  (would falsely align permuted qualifiers). **Regression test pending.**
+- [x] **Legacy sort continuation dropped rows** — `continuation.go` decode. A pre-RFC-173
+  (name-keyed OBJECT payload) continuation resumed under new code left every buffered row
+  `Positional == nil` → all-NULL sort keys, misordered/XX000 across an upgrade mid-pagination.
+  Fixed: fail the resume loudly (the row is unreconstructable in the ordinal model) instead of
+  silently dropping data. **Regression test pending.**
+
+### B. Slice 4 — retire the name-model AnchoredJoin producer (BIG, the unpaid simplification)
+- [ ] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
+  and `values/value_anchored_join_record.go` (~322 LOC). PR #485 is R3 ("first producer deleted") —
+  finish the demolition.
+- [ ] Collapse the `ordinalWedgeGate` / per-shape ordinalization subsystem (`rfc173_cluster_gate.go`,
+  `_b1_exists_gather.go`, `_w5_chained_unnest.go`, …). Both reviewers flag it as the "operator
+  allowlist trap §1.4 condemns, reincarnated as 'shapes we know how to ordinalize'." Until
+  gated==everything, two plan pipelines coexist. `legWindowBinder` self-documents "must not ossify
+  into the permanent runtime shape" (rfc173_ordinal_join.go) — the cap ossified it; un-ossify.
+
+### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
+- [ ] Bake `ResolveIdentifier` at plan time — `expr.go:260` still emits a **lazy** `NewFieldValue`
+  for the common column path; ordinal is re-derived at RUNTIME via `rt.FieldIndex(f.Field)`
+  (values.go ~908) + `row.GetByName` (values.go ~555). Java binds every ref to an ordinal at plan
+  time (`ofOrdinalNumber`) and never name-resolves at runtime. ~23 lazy sites remain. Then delete
+  the runtime `FieldIndex(name)` lookup.
+- [ ] `groupByOutputBaker` (cascades_translator.go ~869) deliberately leaves keys lazy when
+  `GetByName` happens to resolve — minimal-necessary baking, not uniform binding. Bake uniformly.
+
+### D. Kill Go-invented name heuristics (residual silent-first-match hazards)
+- [ ] `PositionalRow.GetByName` "strip qualifier if the leaf is unique" heuristic
+  (positional_row.go ~111-132) — no Java analog; the last silent first-match name path. Remove once
+  references are ordinal-bound (depends on C).
+- [ ] `descendResolvedPath` descends nested records by per-step NAME on map/proto (values.go ~604,617);
+  Java descends nested Message fields by ordinal (compose rule / fieldOrdinals). Make it ordinal
+  end-to-end.
+
+### E. Retire vestigial `Complete` (Torvalds P1)
+- [ ] `QueryResult.Complete` has NO production consumer post-cap (its readers — RFC-048 W1 + the
+  name-model `qualifyAlias` fabrication — are deleted). It is still serialized into the sort
+  continuation payload (slot 1) with fail-corrupt validation. Delete the field and drop the payload
+  slot — a continuation-payload format change, so version the payload deliberately (not done in the
+  cap). Doc at query_result.go / continuation.go already flags it VESTIGIAL.
+
+### F. Make the residual silent-NULL tails loud (Torvalds P4 — needs a Graefe ruling)
+- [ ] The `!FrontierPinned` tails in `FieldValue.Evaluate` / `evaluateCorrelated` return `(nil,nil)`
+  on an unrecognized non-nil context. Post-cap these SHOULD be unreachable (production flows
+  OrdinalRow / RowEvalContext / CorrelationBinder / nil). Torvalds: make them loud unconditionally
+  and PROVE unreachability, rather than leaving a silent arm. NOTE the tension: Graefe's delta
+  review asked to *freeze* the unpinned silent behavior with a pin (added:
+  `TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent`). Reconcile — the frozen-silent pin vs
+  make-it-loud is a genuine open decision; take it to Graefe before flipping.
+
+### Doc rot from the deleted machinery — FIXED this session
+- [x] `query_result.go` QueryResult/Positional/Complete docs (claimed Datum still emitted + a shadow
+  test); the orphaned ~35-line `qualifyAlias` doc stranded above `passesJoinPredicates`
+  (executor.go); `passesJoinPredicatesLegs` "works via Datum"; continuation.go "gates qualifyAlias"
+  + the two datum-map comments; `rfc173_w5_chained_unnest.go` "reads off the merged row's Datum".

@@ -22,7 +22,7 @@ import (
 // Runtime reuses the class-2 struct-descent VERBATIM: a struct-array element
 // flows as a raw proto.Message, so the second unnest's collection is a
 // multi-accessor FieldValue rooted at the owner alias (reads the element off
-// the merged row's Datum) with the sub-field descended by name. The only new
+// the merged row) with the sub-field descended by name. The only new
 // work is CLASSIFICATION — arrayFieldElementType collapses message-array
 // elements to UnknownType, so the sub-array's element type is recovered from
 // the proto DESCRIPTOR through the owner unnest's element message (the same
@@ -191,7 +191,7 @@ func filterInputHasChainedUnnest(input logical.LogicalOperator) bool {
 
 // chainedUnnestCollection builds the Explode collection for a chained unnest:
 // a multi-accessor FieldValue rooted at the OWNER alias (segment 0 — reads the
-// element proto message off the merged row's Datum key) with the sub-path
+// element proto message off the merged row) with the sub-path
 // (segments[1:]) descended by NAME through the proto-message arm. Ordinals are
 // the loud -1 sentinel (the descent is name-addressed; a struct element never
 // materializes positionally). Child = QOV(sourceAlias(j.Left)) = the owner

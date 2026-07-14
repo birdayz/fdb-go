@@ -578,6 +578,50 @@ func TestResultSet_PositionalDupNameRead(t *testing.T) {
 	}
 }
 
+// TestResultSet_DottedAliasPositionalAlign is the Codex-P2 regression: a quoted
+// output alias containing a dot — `SELECT v AS "A.B"`. The projection emits a slot
+// named "A.B" and the column label is "A.B"; the positional-alignment check must
+// NOT leaf-strip the slot to "B" and reject the row with XX000 "no positional
+// output row aligned" (the deleted name-keyed Datum fallback used to mask it). A
+// genuinely permuted qualifier ("X.NAME" slot vs "Y.NAME" label) must still be
+// rejected — the fix strips only the slot side, never the display side.
+func TestResultSet_DottedAliasPositionalAlign(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	rowType := &values.RecordType{Fields: []values.Field{
+		{Name: "A.B", FieldType: values.UnknownType, Ordinal: 0},
+	}}
+	pos := &PositionalRow{Type: rowType, Slots: []any{int64(7)}}
+	cursor := recordlayer.FromList([]QueryResult{{Positional: pos}})
+	cols := []ColumnDef{{Name: "A.B", Label: "A.B", TypeName: "BIGINT"}}
+
+	rs := NewRecordLayerResultSet(ctx, cursor, cols)
+	defer rs.Close()
+	if !rs.Next() {
+		t.Fatal("expected a row")
+	}
+	v, err := rs.Object(1)
+	if err != nil {
+		t.Fatalf("Object(1) over a dotted alias must succeed (positional align), got: %v", err)
+	}
+	if v != int64(7) {
+		t.Fatalf("dotted alias value = %v, want 7", v)
+	}
+
+	// Guard: a permuted qualifier must NOT falsely align (slot X.NAME vs label
+	// Y.NAME are different columns; stripping both sides would wrongly match).
+	permRow := &PositionalRow{
+		Type:  &values.RecordType{Fields: []values.Field{{Name: "X.NAME", FieldType: values.UnknownType, Ordinal: 0}}},
+		Slots: []any{"wrong"},
+	}
+	permRS := NewRecordLayerResultSet(ctx, recordlayer.FromList([]QueryResult{{Positional: permRow}}), []ColumnDef{{Name: "Y.NAME", Label: "Y.NAME", TypeName: "STRING"}})
+	defer permRS.Close()
+	if permRS.positionalAligned(permRow) {
+		t.Fatal("permuted qualifier (X.NAME slot vs Y.NAME label) must NOT positionally align")
+	}
+}
+
 // TestResultSet_PositionalMisalignedIsLoud pins the correct-or-loud contract: the
 // name-keyed Datum is GONE from the read path, so a positional row whose shape does
 // NOT match the result-set columns (count or per-slot plain-name mismatch) can no
