@@ -128,6 +128,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		for _, member := range childRef.AllMembers() {
+			childSel, isChildSel := member.(*expressions.SelectExpression)
 			// An OUTER-join child SelectExpression is OPAQUE to merging: pulling
 			// its legs up into the parent would discard the child's outer-join
 			// edge (only the PARENT's JoinType is preserved on the merged
@@ -138,7 +139,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			// outer-join box is a hard optimization barrier. Leave it nested.
 			// ChildrenAsSet() = inner-equivalent (INNER or CROSS); a non-set
 			// (outer-join) child box is opaque.
-			if childSel, ok := member.(*expressions.SelectExpression); ok && !childSel.ChildrenAsSet() {
+			if isChildSel && !childSel.ChildrenAsSet() {
 				continue
 			}
 			// A DISSOLVED outer-join box — RewriteOuterJoinRule's INNER select
@@ -169,7 +170,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			// step-1 that the LEFT+EXISTS plan-shape pins require (declining
 			// there degraded step-1 to a materialized LEFT NLJ).
 			// Never wrong rows — strictly a narrower merge.
-			if childSel, ok := member.(*expressions.SelectExpression); ok && !hasExistential {
+			if isChildSel && !hasExistential {
 				childHasNullOnEmpty := false
 				for _, cq := range childSel.GetQuantifiers() {
 					if cq.IsNullOnEmpty() {

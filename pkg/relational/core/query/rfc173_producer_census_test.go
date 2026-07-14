@@ -13,16 +13,19 @@ package query
 //     P5 producers. Before S4-B it was the surviving name-model P5 residual. If the
 //     admission is reverted, the shape drops back to the name model and this trips.
 //
-//  2. CENSUS OBSERVER + ENCLOSURE BIT: P5's callers unconditionally set
-//     t.inInnerCluster = true on entry, so reading that field inside the producer
-//     would report EVERY firing as enclosed by construction. The fix threads the
-//     caller's ENTRY enclosure (prevEnclosure) into buildUnnestResultValue. The
-//     observable P5 firing left after the retirement is an ENCLOSED single unnest
-//     over a LEFT box (an unnest that is itself a leg of a larger name-model
-//     cluster): it fires P5 and MUST report Enclosed=true (== the entry enclosure).
-//     A hardcoded Enclosed=false would trip. (The un-enclosed direction that once
-//     discriminated the always-true-internal read is no longer producible — every
-//     un-enclosed unnest ordinalizes or gathers — so this pins the surviving axis.)
+//  2. CENSUS OBSERVER NON-VACUITY: the observer STILL fires for a name-model P5
+//     shape, so fact (1)'s 0-count is meaningful (not a silently-broken observer).
+//     The observable P5 firing left after the retirement is an ENCLOSED single
+//     unnest over a LEFT box (an unnest that is itself a leg of a larger name-model
+//     cluster); it fires P5 and reports the ENTRY enclosure. NOTE — the ENCLOSURE
+//     BIT is NOT discriminably pinned here: with every UN-enclosed unnest now
+//     ordinalizing/gathering, no shape produces an un-enclosed P5 firing, so the
+//     producer reading the threaded prevEnclosure vs the always-true inInnerCluster
+//     is observationally IDENTICAL for the reachable P5 shapes (both report
+//     Enclosed=true, since every surviving P5 firing IS enclosed). The prevEnclosure
+//     threading stays for correctness but is inert at the current reach; a future
+//     un-enclosed P5 shape would re-arm the discrimination. This assertion is a
+//     non-vacuity/sanity check, NOT a threading-bit regression pin.
 
 import (
 	"testing"
