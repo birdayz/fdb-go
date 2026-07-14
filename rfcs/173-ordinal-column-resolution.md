@@ -5772,9 +5772,39 @@ per-shape ordinalization gate. Items below, most-actionable first.
 >      ("not a physical plan"), orthogonal to the name model — a separate pre-existing limitation.
 > So B's subquery-conjunct remainder is CLOSED (decline-arm deletion, no new mechanism); the last P5
 > shape is orthogonal (multi-esq physicalization), its own separate slice.
-- [ ] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
+- [x] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
   and `values/value_anchored_join_record.go` (~322 LOC). PR #485 is R3 ("first producer deleted") —
   finish the demolition (via the shrink-the-gate discipline above).
+  > **B DONE — the producer and its whole dead chain are DELETED.** Sequence of the final push:
+  > (1) The last two residual caller classes retired, each differential-proven against its
+  > name-model ground truth on the same fixture: the CHAINED star body admits through the factored
+  > side-effect-free `chainedUnnestOrdinalGate` (rows byte-identical), and the COLLIDING-label star
+  > body admits with SHADOW-DEDUPED boundary labels (the RFC-142 element-wins rule; the WITH form's
+  > pinned rows unchanged, and the fix CLOSED two silent-wrong-rows bugs — the colliding derived
+  > twin served the OUTER scalar for `S2.SUB` and the WRONG LEG's values for `S2.ID`, and the
+  > chained colliding twin inverted to the outer scalar). Java grounding recorded at
+  > `derivedBodyStarOrdinalLeg`: Java resolves the duplicate CTE column as AMBIGUOUS_COLUMN
+  > (`SemanticAnalyzer.resolveIdentifier`, 4.12.11.0) — Go's deployed RFC-142 shadow semantics
+  > governs its whole unnest surface instead; aligning the collision model with Java's is a
+  > conformance question for that surface as a whole, not a per-boundary special case.
+  > (2) A stack-attributed unconditional probe at ALL THREE producer sites (P4 :968, P5 :1949, and
+  > the legColumns join-arm at :382 — a schema-derivation consumer the P4/P5 census never covered)
+  > ran the FULL sqldriver (4300+ FDB tests) + relational suites: ZERO firings.
+  > (3) DELETE-AND-COMPILE: the producers, `values.NewAnchoredJoinRecord`/`AnchoredJoinLeg`, the
+  > re-enumeration machinery (`NewReEnumerationAnchoredRecord`/`ReEnumerationLeg`/
+  > `anchoredColumnsByQuantifier`), the `AnchoredJoin` FLAG plus every consumer arm
+  > (GetCorrelatedToOfValue hiding, `AddMergeSeedAliases` + 7 call sites, PartitionSelectRule's
+  > anchored keep-all-lowers + re-enumeration merge arms and re-stamp, `isAnchoredJoinResult`,
+  > `MergeArmHits`, select.go's anchored `InternsAliasAware` arm, the generator's anchored
+  > SELECT-* arm + `anchoredJoinFirstLeg`, the equality/hash/preserve arms), and the census
+  > instrument — deleted; `go build ./... && go vet ./pkg/...` clean proves ZERO references remain
+  > (the compiler census, stronger than the runtime probe). The legColumns join arm derives its
+  > dotted schema directly (the producer's exact naming rule, no RC detour). Every declined
+  > formerly-name-model shape is now a LOUD named plan error (correct-or-loud). Wire compat
+  > untouched: all deleted sites were plan-time value construction. The interning/task baselines
+  > moved to the ordinal chain corpus, which reproduces the anchored corpus's counts exactly.
+  > With the producer gone, item C's provenance gate (`!rc.AnchoredJoin`) is retired and C's last
+  > lazy sites are UNBLOCKED (no reference can have anchored provenance anymore); D likewise.
   > STATUS: every ROW-REACHABLE shape now ordinalizes — the census sweep `zeroed` list is exhaustive
   > for physicalizable shapes and the subquery-conjunct (the last decline arm) is CLOSED. The producer
   > still has ONE caller class: **multi-esq under EXISTS**, which name-models a `NewAnchoredJoinRecord`
