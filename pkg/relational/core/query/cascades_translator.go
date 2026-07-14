@@ -830,15 +830,11 @@ func stripColumnQualifier(s string) string {
 // name exactly as before; the §5 dual-window differential requires both to agree.
 // The SAME baker feeds the SELECT projection (values.Replace), the HAVING predicate
 // (predicates.ReplaceValues), and the ORDER-BY keys, so every consumer of the
-// aggregate output ordinalizes through one rule.
-// groupByOutputBaker returns the FieldValue→baked-ordinal rewrite. atTop selects the
-// top-level policy (bake keys AND aggregates) vs the nested policy (bake aggregates
-// always; bake a group key ONLY when its bare runtime name is not itself an output
-// column, i.e. a plain GetByName would miss — otherwise skip it, so a name-resolvable
-// nested key like `V + 1` keeps its clean explain and the ordinal marker never leaks
-// into the computed column's Datum key). fullNames is the set of positional column
-// names (normalized) GetByName resolves against.
-func groupByOutputBaker(keyOrds, aggOrds map[string]int, fullNames map[string]struct{}, atTop bool) func(values.Value) values.Value {
+// aggregate output ordinalizes through one rule. RFC-173 C: keys AND aggregates bake
+// UNIFORMLY, top-level or nested — there is no "leave a name-resolvable key lazy"
+// policy anymore (that was a runtime-accident partition, not a stable structural one);
+// the only partition is provenance (an aggregate output IS a positional row here).
+func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) values.Value {
 	return func(node values.Value) values.Value {
 		fv, ok := node.(*values.FieldValue)
 		// An already-Resolved node is baked; a multi-accessor path is not a bare
@@ -862,14 +858,11 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int, fullNames map[string]st
 			return values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(name), slot, fv.Typ)
 		}
 		if slot, hit := keyOrds[key]; hit {
-			if !atTop {
-				// Nested (inside a computed expression): skip a key whose bare runtime
-				// name already resolves by GetByName against the positional row —
-				// baking it would only leak `#ordinal` into the computed column's key.
-				if _, resolvable := fullNames[normalizeAggOutputName(fv.Field)]; resolvable {
-					return node
-				}
-			}
+			// RFC-173 C: bake the group key UNIFORMLY — never
+			// leave it lazy on the runtime-accident that its bare name HAPPENS to
+			// resolve by GetByName. The provenance gate (the aggregate output is a
+			// positional row here) is the only partition; a name-resolvable nested key
+			// bakes to the same logical ordinal as a top-level one.
 			return values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(name), slot, fv.Typ)
 		}
 		return node
@@ -879,35 +872,22 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int, fullNames map[string]st
 // bakeGroupByOutputRefs rewrites, in place, each projected Value so a reference to a
 // GROUP BY output column becomes a baked-ordinal read (see groupByOutputBaker). A
 // projected value that is ITSELF a bare output reference (`SELECT region,
-// SUM(x) AS revenue`) bakes at the top level; a COMPUTED projection (`V + 1`,
-// `CAST(e.did …)`, `CASE WHEN SUM(x) …`) recurses under the nested policy.
+// SUM(x) AS revenue`) bakes directly; a COMPUTED projection (`V + 1`, `CAST(e.did …)`,
+// `CASE WHEN SUM(x) …`) recurses via values.Replace — the SAME baker for both (RFC-173
+// C: uniform bind, no top-level-vs-nested policy split).
 func bakeGroupByOutputRefs(vals []values.Value, gb *expressions.GroupByExpression) {
 	keyOrds, aggOrds := groupByOutputOrdinals(gb)
-	fullNames := normalizedOutputNameSet(gb)
-	topLevel := groupByOutputBaker(keyOrds, aggOrds, fullNames, true)
-	nested := groupByOutputBaker(keyOrds, aggOrds, fullNames, false)
+	baker := groupByOutputBaker(keyOrds, aggOrds)
 	for i, v := range vals {
 		if v == nil {
 			continue
 		}
-		if baked := topLevel(v); baked != v {
+		if baked := baker(v); baked != v {
 			vals[i] = baked
 			continue
 		}
-		vals[i] = values.Replace(v, nested)
+		vals[i] = values.Replace(v, baker)
 	}
-}
-
-// normalizedOutputNameSet is the set of a GroupByExpression's positional column
-// names (the single naming authority's output), normalized — what a name-model
-// GetByName resolves a reference against.
-func normalizedOutputNameSet(gb *expressions.GroupByExpression) map[string]struct{} {
-	names := expressions.GroupByOutputColumnNames(gb.GetGroupingKeys(), gb.GetAggregates())
-	set := make(map[string]struct{}, len(names))
-	for _, n := range names {
-		set[normalizeAggOutputName(n)] = struct{}{}
-	}
-	return set
 }
 
 // underlyingGroupBy returns the GroupByExpression an expression's output row is
@@ -5657,15 +5637,13 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// like the SELECT projection — otherwise a `HAVING SUM(x) > k` reference stays a
 	// free canonical name that misses the aggregate's ordinal PositionalRow (whose
 	// slot is canonical- or alias-named, and may render the operand spacing
-	// differently). Recurse and bake BOTH keys and aggregates: a HAVING reference
-	// nests inside the comparison and its explain is not a user-visible output name,
-	// so the ordinal-marker leak that gates projection group-key baking does not apply
-	// (and a HAVING group-key ref like `a.id` may itself mismatch the qualified output
-	// name and need baking). A predicate pushed BELOW the GroupBy is un-baked by
-	// PushFilterThroughGroupByRule, since the ordinal is aggregate-output-relative.
+	// differently). Recurse and bake BOTH keys and aggregates (a HAVING group-key ref
+	// like `a.id` may itself mismatch the qualified output name and need baking). A
+	// predicate pushed BELOW the GroupBy is un-baked by PushFilterThroughGroupByRule,
+	// since the ordinal is aggregate-output-relative.
 	hkeys, haggs := groupByOutputOrdinals(groupBy)
 	havingPred := predicates.ReplaceValues(a.HavingPredicate,
-		groupByOutputBaker(hkeys, haggs, normalizedOutputNameSet(groupBy), true))
+		groupByOutputBaker(hkeys, haggs))
 
 	return expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{havingPred},

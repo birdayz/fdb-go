@@ -36,6 +36,27 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 			"(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10), "+
 			"(11, 20, 11), (12, 20, 12), (13, 20, 13)")).Error().NotTo(gomega.HaveOccurred())
 
+	// RFC-173 C (uniform ordinal binding): a NESTED group-key reference inside a
+	// computed projection (`x.col1` within `x.col1 + 10`) now bakes to its logical
+	// ordinal — the explain renders `(COL1#0 + 10)`. Before, groupByOutputBaker left
+	// such a key LAZY on the runtime-accident that its bare name `COL1` happened to
+	// resolve by GetByName (rendering bare `(COL1 + 10)`); that runtime-accident
+	// partition is ruled out. This pins the uniform bake FIRES (the `#0`
+	// ordinal marker). Rows correctness is pinned by derived_col1_plus_10 below.
+	t.Run("nested_group_key_bakes_ordinal", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "EXPLAIN SELECT x.col1 + 10 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY 1")
+		if err != nil {
+			t.Fatalf("explain error: %v", err)
+		}
+		defer rows.Close()
+		g.Expect(rows.Next()).To(gomega.BeTrue())
+		var plan string
+		g.Expect(rows.Scan(&plan)).To(gomega.Succeed())
+		// The nested group key bakes: `COL1#0`, not a bare lazy `COL1 + 10`.
+		g.Expect(plan).To(gomega.ContainSubstring("(COL1#0 + 10)"),
+			"nested group key must bake to its logical ordinal (RFC-173 C uniform bind); plan=%s", plan)
+	})
+
 	// derived_table_group_by test 4: x.col1 + 10 through derived + GROUP BY
 	t.Run("derived_col1_plus_10", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx,
