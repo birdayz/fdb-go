@@ -225,18 +225,14 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 		})
 	}
 
-	// MULTI-EXISTS-under-aggregate: TWO EXISTS conjuncts are not admitted to the gather
-	// (admitExistentialGather requires a single esq) → name-model. This shape is a
-	// PRE-EXISTING planner gap (a name-model aggregate over a multi-EXISTS box unnest does
-	// not physicalize — confirmed identical at the pre-fix parent). It fails LOUD, never
-	// silent-wrong, so correct-or-loud holds. Pinned as a loud sentinel: if the multi-
-	// EXISTS-aggregate gap is ever closed, this flips and gets a row assertion.
-	t.Run("agg_multiexists_loud", func(t *testing.T) {
-		_, _, err := runQ(t, `SELECT COUNT("X") `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`)
-		if err == nil {
-			t.Fatalf("multi-EXISTS-under-aggregate must fail LOUD (pre-existing gap), got no error")
-		}
-	})
+	// MULTI-EXISTS-under-aggregate now PLANS (RFC-173: PartitionSelectRule peels a
+	// sibling multi-EXISTS `EXISTS(A) AND EXISTS(B)` into nested 2-quantifier
+	// existential selects the NLJ rule implements — previously a stranding gap that
+	// failed loud). COUNT("X") over the LEFT box A⋈B, A.ARR={7,8}: EXISTS(EE.CK=A.K=100)
+	// is true; EXISTS(EEV.VK=X) is true only for X=7 (EEV has VK=7) → the multi-EXISTS
+	// keeps X=7, drops X=8 → COUNT=1. (Was a loud sentinel; the gap is closed.)
+	pin("agg_multiexists_counts", `SELECT COUNT("X") `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`,
+		"map[COUNT(X):1]")
 
 	// checks-4/5 axis (review-required, ported from the B2-B cert): the
 	// dimensional coverage the core disambiguation pins don't exercise.

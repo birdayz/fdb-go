@@ -1,7 +1,6 @@
 package sqldriver_test
 
 import (
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/core/embedded"
@@ -75,26 +74,23 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		}
 	}
 
-	// exists_multi_esq: fires during translation but STRANDS at physicalization (a
-	// pre-existing multi-esq-under-EXISTS limitation, orthogonal to the census).
-	if _, err := count(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`); err == nil || !strings.Contains(err.Error(), "not a physical plan") {
-		t.Errorf("exists_multi_esq: expected the pre-existing physicalization strand, got: %v", err)
+	// exists_multi_esq: sibling multi-EXISTS now PLANS (RFC-173: PartitionSelectRule
+	// peels [outer, EXISTS, EXISTS] into nested 2-quantifier existential selects the
+	// NLJ rule implements — previously an unplannable strand). Row correctness is
+	// pinned in TestFDB_CorrelatedExistsProbe (sibling_multi_exists_*) and
+	// TestFDB_RFC173Slice3E1a (agg_multiexists_counts). The gather still declines a
+	// >1-esq CLUSTER at translation (rfc173_b1_exists_gather.go), so the box unnest
+	// stays name-model here (a P4/P5 producer fires); ORDINALIZING multi-esq (gather
+	// admission) is a separate slice — the producer count is not asserted 0 yet.
+	if n, err := count(`SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X")`); err != nil {
+		t.Errorf("exists_multi_esq: now PLANS (sibling multi-EXISTS peel), got error: %v", err)
+	} else if n == 0 {
+		t.Error("exists_multi_esq: fired 0 producers — the unnest cluster is expected name-model until gather admits multi-esq")
 	}
 
-	// GROUP BY over the multi-esq DECLINING box: the grouped path must TRANSLATE
-	// cleanly over a name-model AnchoredJoin seed (reach the `!rc.AnchoredJoin`
-	// groupBy gate in seedElementSlots, which keeps GROUP BY off the positional
-	// bake) and then STRAND at physicalization — never panic or return rows. Adding
-	// GROUP BY makes the still-declining multi-esq shape exercise that grouped-over-
-	// anchored translation path (the bare multi-esq above has no GROUP BY). A P4/P5
-	// producer fires (n>0, it stays name-model). NOTE: this does NOT by itself pin
-	// the gate's DISCRIMINATION — the shape strands for the multi-esq reason whether
-	// or not the gate rejects, so flipping the gate leaves this green; the direct
-	// pin is the query package's TestSeedElementSlots_AnchoredJoinGate. This is the
-	// translate-and-strand no-panic pin for the grouped-over-declining path.
-	if n, err := count(`SELECT "X", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X") GROUP BY "X"`); err == nil || !strings.Contains(err.Error(), "not a physical plan") {
-		t.Errorf("grouped_multi_esq_strand: expected translate-clean + physicalization strand (not a physical plan), got err: %v", err)
-	} else if n == 0 {
-		t.Error("grouped_multi_esq_strand: fired 0 producers — the shape must stay name-model (exercise the grouped-over-anchored translation path)")
+	// grouped multi-esq: the same shape with GROUP BY also plans now (the peel + the
+	// grouped-over-name-model path). Correctness is the COUNT pin in slice3E1a.
+	if _, err := count(`SELECT "X", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X") GROUP BY "X"`); err != nil {
+		t.Errorf("grouped_multi_esq: now PLANS (sibling multi-EXISTS peel), got error: %v", err)
 	}
 }

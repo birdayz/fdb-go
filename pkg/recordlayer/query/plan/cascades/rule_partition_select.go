@@ -50,17 +50,100 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Only partition joins among ForEach quantifiers. Existential
-	// quantifiers (EXISTS subqueries) have special alias semantics
-	// that break when partitioned. See PartitionBinarySelectRule
-	// for the rationale.
+	// Existential quantifiers partition ONLY when there are ≥2 of them — the
+	// sibling multi-EXISTS case (`WHERE EXISTS(A) AND EXISTS(B)`) that otherwise
+	// STRANDS: the NLJ rule is 2-quantifier and can't match [outer, EXISTS, EXISTS],
+	// and the old ForEach-only bail left it unplannable (0AF00). Peeling lower
+	// {outer, EXISTS(A)} + upper {newq(outer), EXISTS(B)} produces 2-quantifier
+	// existential selects the NLJ rule implements, recursing to 1-existential leaves.
+	// A select with ≤1 existential is left to the existing direct-NLJ /
+	// implementJoinWithExistential path (partitioning it too would race a competing
+	// alternative); subsuming that Go-only arm into partitioning is separable (Java's
+	// PartitionSelectRule admits any quantifier, but that migration is its own slice).
+	existentialCount := 0
 	for _, q := range quantifiers {
-		if q.Kind() != expressions.QuantifierForEach {
-			return
+		if q.Kind() == expressions.QuantifierExistential {
+			existentialCount++
+		}
+	}
+	if existentialCount == 1 {
+		return
+	}
+	if existentialCount >= 2 {
+		// PROJECTED multi-EXISTS (`SELECT id, EXISTS(…) AS a, EXISTS(…) AS b`) is a
+		// SEPARATE, harder case: the result value references the existential
+		// quantifiers (booleans in the SELECT list), and peeling them into sibling
+		// FlatMaps would strand the reference to the buried one. Only WHERE-EXISTS
+		// existentials — semi-join FILTERS the result value does NOT reference —
+		// partition here; a projected one keeps today's clean decline.
+		resultCorr := values.GetCorrelatedToOfValue(sel.GetResultValue())
+		for _, q := range quantifiers {
+			if q.Kind() != expressions.QuantifierExistential {
+				continue
+			}
+			if _, referenced := resultCorr[q.GetAlias()]; referenced {
+				return
+			}
 		}
 	}
 
 	plannerCfg := call.Context.GetPlannerConfiguration()
+
+	// A partition-built select carrying an existential quantifier needs its source
+	// aliases set so ImplementNestedLoopJoinRule can resolve the inner existential's
+	// correlation (it reads GetSourceAliases()[1]); the existential's source alias
+	// is NOT always its quantifier alias (existsInnerCorrelation renames a
+	// join/nested inner), so it must be CARRIED. GraphExpansionBuilder.BuildSelect
+	// leaves source aliases empty.
+	srcAliases := sel.GetSourceAliases()
+	quantAliasToSource := make(map[values.CorrelationIdentifier]string, len(quantifiers))
+	for i, q := range quantifiers {
+		if i < len(srcAliases) {
+			quantAliasToSource[q.GetAlias()] = srcAliases[i]
+		}
+	}
+	applyExistentialSourceAliases := func(s *expressions.SelectExpression) *expressions.SelectExpression {
+		if len(s.GetSourceAliases()) > 0 {
+			return s
+		}
+		orig := s.GetQuantifiers()
+		hasExistential := false
+		for _, q := range orig {
+			if q.Kind() == expressions.QuantifierExistential {
+				hasExistential = true
+				break
+			}
+		}
+		if !hasExistential {
+			return s
+		}
+		// ImplementNestedLoopJoinRule reads the OUTER from source-alias/quantifier
+		// slot 0 and the existential INNER from slot 1, so the quantifiers must be
+		// ordered [ForEach outer, Existential inner] — the shape the flat translator
+		// build always emits but a partition bipartition can invert. Reorder
+		// ForEach-first (a select's quantifier order is not semantically load-bearing
+		// — the result value binds by alias), and set source aliases parallel.
+		qs := make([]expressions.Quantifier, 0, len(orig))
+		for _, q := range orig {
+			if q.Kind() == expressions.QuantifierForEach {
+				qs = append(qs, q)
+			}
+		}
+		for _, q := range orig {
+			if q.Kind() != expressions.QuantifierForEach {
+				qs = append(qs, q)
+			}
+		}
+		srcs := make([]string, len(qs))
+		for i, q := range qs {
+			if src, ok := quantAliasToSource[q.GetAlias()]; ok {
+				srcs[i] = src
+			} else {
+				srcs[i] = q.GetAlias().Name() // a fresh lower/merge quantifier: alias IS its source
+			}
+		}
+		return expressions.NewSelectExpressionWithAliases(s.GetResultValue(), qs, s.GetPredicates(), srcs)
+	}
 
 	// Build alias → quantifier map.
 	aliasToQ := make(map[values.CorrelationIdentifier]expressions.Quantifier, len(quantifiers))
@@ -103,6 +186,27 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		if len(lowerAliases) == 0 {
+			continue
+		}
+
+		// An EXISTENTIAL quantifier is a SEMI-JOIN FILTER, not a standalone relation —
+		// it must be grouped WITH a ForEach outer it filters. A lower partition holding
+		// an existential but NO ForEach is invalid: the existential has nothing to
+		// attach to, and ImplementNestedLoopJoinRule builds a residual `QOV(inner) IS
+		// NOT NULL` over a FirstOrDefault that binds to nothing → the filter drops every
+		// row → silent empty result. (The UPPER always gets the new ForEach over the
+		// lower, so only the lower needs this check.) Reject such a bipartition; the
+		// valid peel keeps each existential with a ForEach (lower {outer, EXISTS(A)}).
+		lowerHasExistential, lowerHasForEach := false, false
+		for a := range lowerAliases {
+			switch aliasToQ[a].Kind() {
+			case expressions.QuantifierExistential:
+				lowerHasExistential = true
+			case expressions.QuantifierForEach:
+				lowerHasForEach = true
+			}
+		}
+		if lowerHasExistential && !lowerHasForEach {
 			continue
 		}
 
@@ -524,7 +628,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 			newLowerQ := expressions.NamedForEachQuantifier(
 				lowerAliasCorrelatedToByUpperAliases,
-				call.MemoizeExpression(lowerSelectExpr),
+				call.MemoizeExpression(applyExistentialSourceAliases(lowerSelectExpr)),
 			)
 			// No upper-to-lower correlation here, so no spanning predicate
 			// references a buried lower — nothing to rebase.
@@ -537,7 +641,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				if upperSelectExpression == nil {
 					continue
 				}
-				call.Yield(upperSelectExpression)
+				call.Yield(applyExistentialSourceAliases(upperSelectExpression))
 				continue
 			}
 			// ANCHORED re-enumeration arm (name-model residual). RFC-173 Slice-3
@@ -609,7 +713,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			}
 			newLowerQ := expressions.NamedForEachQuantifier(
 				mergeAlias,
-				call.MemoizeExpression(lowerSelectExpr),
+				call.MemoizeExpression(applyExistentialSourceAliases(lowerSelectExpr)),
 			)
 			// The merge collapses every live lower table into one quantifier
 			// keyed by ALIAS.COL. Any upper (spanning) predicate that named a
@@ -638,7 +742,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 			newLowerQ := expressions.NamedForEachQuantifier(
 				lowerAlias,
-				call.MemoizeExpression(lowerSelectExpr),
+				call.MemoizeExpression(applyExistentialSourceAliases(lowerSelectExpr)),
 			)
 			// The lower flows its single live table's row UNDER ITS ORIGINAL
 			// ALIAS, so an upper predicate referencing that alias still resolves
@@ -650,7 +754,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				BuildSelectWithResultValue(buildUpperResult(lowerAlias, []values.CorrelationIdentifier{lowerAlias}))
 		}
 
-		call.Yield(upperSelectExpression)
+		call.Yield(applyExistentialSourceAliases(upperSelectExpression))
 	}
 }
 
