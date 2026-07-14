@@ -5775,6 +5775,18 @@ per-shape ordinalization gate. Items below, most-actionable first.
 - [ ] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
   and `values/value_anchored_join_record.go` (~322 LOC). PR #485 is R3 ("first producer deleted") —
   finish the demolition (via the shrink-the-gate discipline above).
+  > STATUS: every ROW-REACHABLE shape now ordinalizes — the census sweep `zeroed` list is exhaustive
+  > for physicalizable shapes and the subquery-conjunct (the last decline arm) is CLOSED. The producer
+  > still has ONE caller class: **multi-esq under EXISTS**, which name-models a `NewAnchoredJoinRecord`
+  > RC during translation and then STRANDS at physicalization ("not a physical plan") — both the gather
+  > and the name-model flat form 0AF00 identically today (parity), because there is no N-way existential
+  > physical implementer (`implementExistentialSelect` is 2-quantifier, rule_implement_nested_loop_join.go).
+  > So the producer deletion is GATED on one of: (a) implement the N-way existential physical operator so
+  > multi-esq ordinalizes (a deep, orthogonal physical-rule slice — its own design + Graefe gauntlet), or
+  > (b) make multi-esq decline LOUD-EARLY at translation (before building the anchored RC), removing the
+  > last producer caller without the physical operator. (b) is the smaller path but changes multi-esq's
+  > failure from a late strand to an early loud 0AF00 — a reviewed behavioral change. Either is a distinct
+  > slice; the name-model RETIREMENT for everything that can physicalize is done.
 
 ### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
 > IMPL NOTE (investigated): baking canNOT happen in `ResolveIdentifier` (expr/expr.go:205) —
