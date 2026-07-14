@@ -81,22 +81,20 @@ func TestRFC173CensusSweep(t *testing.T) { //nolint:paralleltest // process-glob
 		t.Errorf("exists_multi_esq: expected the pre-existing physicalization strand, got: %v", err)
 	}
 
-	// GROUP BY over the multi-esq DECLINING box — the regression pin for the
-	// `!rc.AnchoredJoin` groupBy gate (seedElementSlots / cascades_translator.go:4895
-	// returns ok=false for a name-model AnchoredJoin RC, keeping GROUP BY OFF the
-	// positional bake). Now that RFC-173 B ordinalized the subquery conjunct, NO
-	// runnable grouped box shape reaches the name-model anchored fallback via rows —
-	// so this gate lost its row-level pin (baretwin grouped_subquery_conjunct_gathers
-	// now gathers). This pins the gate at TRANSLATION instead: adding GROUP BY makes
-	// the still-declining multi-esq shape REACH the gate (the bare multi-esq above
-	// never does — no GROUP BY). It must stay name-model (a P4/P5 producer FIRES,
-	// n>0 — proof it took the anchored path through the gate) and STRAND at
-	// physicalization. If the gate is flipped to bake GROUP BY over the anchored RC,
-	// a windowedOrdinalSeed over that RC would panic / error differently and this
-	// exact outcome (fires + "not a physical plan") goes red.
+	// GROUP BY over the multi-esq DECLINING box: the grouped path must TRANSLATE
+	// cleanly over a name-model AnchoredJoin seed (reach the `!rc.AnchoredJoin`
+	// groupBy gate in seedElementSlots, which keeps GROUP BY off the positional
+	// bake) and then STRAND at physicalization — never panic or return rows. Adding
+	// GROUP BY makes the still-declining multi-esq shape exercise that grouped-over-
+	// anchored translation path (the bare multi-esq above has no GROUP BY). A P4/P5
+	// producer fires (n>0, it stays name-model). NOTE: this does NOT by itself pin
+	// the gate's DISCRIMINATION — the shape strands for the multi-esq reason whether
+	// or not the gate rejects, so flipping the gate leaves this green; the direct
+	// pin is the query package's TestSeedElementSlots_AnchoredJoinGate. This is the
+	// translate-and-strand no-panic pin for the grouped-over-declining path.
 	if n, err := count(`SELECT "X", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") AND EXISTS (SELECT 1 FROM EEV WHERE EEV."VK" = "X") GROUP BY "X"`); err == nil || !strings.Contains(err.Error(), "not a physical plan") {
-		t.Errorf("grouped_multi_esq_gate: expected the anchored-RC groupBy gate to keep it name-model + strand (not a physical plan), got err: %v", err)
+		t.Errorf("grouped_multi_esq_strand: expected translate-clean + physicalization strand (not a physical plan), got err: %v", err)
 	} else if n == 0 {
-		t.Error("grouped_multi_esq_gate: fired 0 producers — the shape must stay name-model (reach the !rc.AnchoredJoin groupBy gate), else the gate pin is vacuous")
+		t.Error("grouped_multi_esq_strand: fired 0 producers — the shape must stay name-model (exercise the grouped-over-anchored translation path)")
 	}
 }

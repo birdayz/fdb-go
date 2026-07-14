@@ -42,6 +42,7 @@ go_test(
         "rfc173_cluster_gate_test.go",
         "rfc173_exists_guard_narrowing_test.go",
         "rfc173_f2left_scanfamily_test.go",
+        "rfc173_groupby_gate_test.go",
         "rfc173_item1_binding_test.go",
         "rfc173_item2_c3_flatten_gate_test.go",
         "rfc173_item2_c4_enclosure_lift_test.go",
