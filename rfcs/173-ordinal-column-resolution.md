@@ -5787,6 +5787,25 @@ per-shape ordinalization gate. Items below, most-actionable first.
   > last producer caller without the physical operator. (b) is the smaller path but changes multi-esq's
   > failure from a late strand to an early loud 0AF00 — a reviewed behavioral change. Either is a distinct
   > slice; the name-model RETIREMENT for everything that can physicalize is done.
+  >
+  > MULTI-ESQ STRUCTURAL INVESTIGATION (grounded against Java 4.12.11.0):
+  > - Java's `ImplementNestedLoopJoinRule` matches `exactlyInAnyOrder(outer, inner)` — EXACTLY 2
+  >   quantifiers, same as Go's `implementExistentialSelect`. Neither has an "N-way" operator; a
+  >   multi-quantifier select is reduced to nested/paired 2-quantifier selects by OTHER rules.
+  > - Go FLATTENS a join+EXISTS into ONE 3-quantifier select `[ForEach(L), ForEach(R), Existential]`
+  >   (cascades_translator.go:2598-2603) and DELIBERATELY AVOIDS nesting the join inside the EXISTS
+  >   filter — "nesting … causes the Cascades planner to diverge." A SINGLE existential over that shape is
+  >   handled; but multi-esq builds `[ForEach(outer), Existential(A), Existential(B)]` (2 existentials),
+  >   which the 2-quantifier NLJ rule can't match, and Go's `PartitionSelectRule` /
+  >   `PartitionBinarySelectRule` BOTH bail on any non-ForEach quantifier (existentials excluded — "special
+  >   alias semantics", rule_partition_select.go:53-61). So it strands. Java's
+  >   `SplitSelectExtractIndependentQuantifiersRule` is for independent ForEach explodes (star-joins), NOT
+  >   this — so the exact Java rule that peels a 2nd existential still needs to be located.
+  > - So option (a) is really a PEEL rule (extract one existential into a nested 2-quantifier select so the
+  >   existing NLJ rule fires twice), navigating the 2598-2603 nesting-divergence caveat — a delicate
+  >   Cascades transformation. THE OPEN DESIGN QUESTION for the gauntlet: peel-into-nested-select vs a
+  >   partition-rule extension that admits existentials; and whether Java answers the cluster multi-esq at
+  >   all (if not, option (b) loud-early is parity, not divergence — must verify against Java/conformance).
 
 ### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
 > IMPL NOTE — CORRECTED by the Graefe design consult (the ORIGINAL note below was the trap):
