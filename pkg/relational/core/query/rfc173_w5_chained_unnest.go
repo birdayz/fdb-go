@@ -361,6 +361,33 @@ func chainedSpineBottomsInFullBox(op logical.LogicalOperator) bool {
 	}
 }
 
+// chainedSpineBottomOuterBox peels a chained-unnest outer subtree's lateral
+// links (Right is a LogicalUnnest) off the top — the same peel as
+// chainedSpineBottomsInFullBox — and returns the remaining bottom operator IF
+// it is a LEFT/RIGHT OUTER box. nil for every other bottom (a plain scan, an
+// INNER cluster, a FULL box — each has its own arm). The translateFilter WHERE
+// path consults it to LOUD-REJECT a box-leg WHERE conjunct over a chained
+// LEFT/RIGHT box (the un-ordinalizable straddle, the S4 cap).
+func chainedSpineBottomOuterBox(op logical.LogicalOperator) *logical.LogicalJoin {
+	cur := op
+	sawLink := false
+	for {
+		bj, ok := cur.(*logical.LogicalJoin)
+		if !ok {
+			return nil
+		}
+		if _, isUnnest := bj.Right.(*logical.LogicalUnnest); isUnnest {
+			sawLink = true
+			cur = bj.Left
+			continue
+		}
+		if !sawLink || (bj.Kind != logical.JoinLeft && bj.Kind != logical.JoinRight) {
+			return nil
+		}
+		return bj
+	}
+}
+
 // chainedSpineWalk PEELS a chained-unnest outer into its lateral links
 // (bottom-most first) and reports whether the spine is ADMITTED to the ordinal
 // seed — the single walk authority the chained gate and chainedOwnerElementSlot
@@ -424,7 +451,7 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 		rev = append(rev, chainedSpineLink{join: bj, un: un})
 		cur = bj.Left
 	}
-	// The spine BOTTOM must compose an ordinal row. Two admitted shapes:
+	// The spine BOTTOM must compose an ordinal row. Three admitted shapes:
 	//   - clusterArity 1: a single lateral source (a plain scan through
 	//     transparent wrappers) or a merge-opaque FULL box.
 	//   - a MULTI-source gated INNER cluster (`FROM t, u, t.arr AS x, x.sub AS
@@ -432,15 +459,45 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 	//     compose into the chained merged row (ordinalLegColumns recurses into
 	//     the box arm; buriedLegBounds records each leaf's [Start,Width) window)
 	//     and the FIRST link over it ordinalizes via the GATHERED path
-	//     (translateGatheredUnnestCluster). LEFT/RIGHT multi-leg boxes are their
-	//     own slices (their null-supplying birth under a chain is unproven).
+	//     (translateGatheredUnnestCluster).
+	//   - a gated LEFT/RIGHT OUTER box (`a LEFT b [LEFT c], a.arr AS x, x.sub
+	//     AS y` — single or nested): the FIRST link gathers it as ONE OPAQUE
+	//     leg through the SAME fresh-gate authority
+	//     (translateGatheredUnnestCluster's ordinalWedgeGateDecide probe =
+	//     gatesAsFreshCluster), the box births its whole leg-concat
+	//     positionally (null-supplied legs NULL in their windows), and
+	//     ordinalLegColumns' join arm composes the identical concat into the
+	//     chained merged row. The name-model residual CANNOT serve this shape
+	//     at all post-cap (its chainedUnnestCollection descends by name over a
+	//     row with no name keys — a guaranteed loud ordinal-(-1) strand at
+	//     execution), so ordinalizing here is the only working representation
+	//     for the ELEMENT / leg-projection / element-or-AT-WHERE shapes. A
+	//     box-leg WHERE conjunct over this bottom is the un-ordinalizable
+	//     straddle (the merged-corr rebase collides with the first link's inner
+	//     Explode; a box-quantifier bake sinks below the nested outer
+	//     null-extension into the null-supplied scan) — it is set Unbakeable
+	//     upstream and DECLINES here, then translateFilter LOUD-REJECTS it (the
+	//     S4 cap; never wrong rows). FULL stays on the clusterArity==1 arm above
+	//     (pureSpine=false, box-leg-conjunct arm active + the cap's FULL-box
+	//     reject).
 	bottomInnerBox := false
+	bottomOuterBox := false
 	if t.clusterArity(cur) != 1 {
 		bj, isJoin := cur.(*logical.LogicalJoin)
-		if !isJoin || bj.Kind != logical.JoinInner || len(bj.OnExistsSubqueries) > 0 || !t.gatesAsFreshCluster(bj) {
+		if !isJoin || len(bj.OnExistsSubqueries) > 0 || !t.gatesAsFreshCluster(bj) {
 			return nil, false, false
 		}
-		bottomInnerBox = true
+		switch bj.Kind {
+		case logical.JoinInner:
+			bottomInnerBox = true
+		case logical.JoinLeft, logical.JoinRight:
+			if t.unnestBoxLegConjunct == boxConjUnbakeable {
+				return nil, false, false
+			}
+			bottomOuterBox = true
+		default:
+			return nil, false, false
+		}
 	}
 	links = make([]chainedSpineLink, 0, len(rev))
 	for i := len(rev) - 1; i >= 0; i-- {
@@ -458,17 +515,20 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 		}
 	}
 	// pureSpine reports whether the chained rebase authority handles EVERY
-	// reachable outer ref POSITIONALLY — true for a single-source bottom AND for
-	// a gated INNER box bottom (both compose per-leg ordinal windows: a
-	// single-namespace prefix, or the box's buried-leaf windows via
-	// buriedLegBounds/ordinalSlotInLegWindow). Both exempt the box-leg-conjunct
-	// decline arm (unnestExistsSeedSafe): a straddle conjunct on a box leg
-	// (`WHERE t.id = z`) bakes positionally through rebaseChainedOuterLegPredicate
-	// over the ordinal merged type's leg windows, not through the gather-record
-	// path the DIRECT box unnest uses. A FULL/LEFT/RIGHT OUTER box bottom
-	// (clusterArity 1 for FULL) keeps pureSpine=false — its bottom aliases are
-	// genuine BOX LEGS whose null-supplied semantics keep the arm active.
-	return links, true, bottomInnerBox || len(outerBoundAliases(cur)) == 1
+	// reachable outer ref POSITIONALLY — true for a single-source bottom, for
+	// a gated INNER box bottom, and for a gated LEFT/RIGHT OUTER box bottom
+	// (all compose per-leg ordinal windows: a single-namespace prefix, or the
+	// box's buried-leaf windows via buriedLegBounds/ordinalSlotInLegWindow).
+	// These exempt the box-leg-conjunct decline arm (unnestExistsSeedSafe) — a
+	// pure/INNER/LEFT-RIGHT spine has no box-leg WHERE that reaches the ordinal
+	// seed here (an INNER-box straddle bakes over the gather record; a
+	// LEFT/RIGHT-box straddle is Unbakeable and already declined above; a FULL
+	// box keeps pureSpine=false so the arm stays active and the cap
+	// loud-rejects). The LEFT/RIGHT bottom is admitted ONLY for the
+	// element/leg-projection/element-WHERE shapes, whose refs are all
+	// positional over the box's per-leg windows (buriedLegBounds/
+	// ordinalSlotInLegWindow), null-supplied legs serving NULL in their slots.
+	return links, true, bottomInnerBox || bottomOuterBox || len(outerBoundAliases(cur)) == 1
 }
 
 // chainedSpineLink is one lateral-unnest link of a chained spine as peeled by

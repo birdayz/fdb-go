@@ -282,6 +282,7 @@ go_test(
         "rfc173_s4_chained_unnest_ordinal_fdb_test.go",
         "rfc173_s4_filtered_chained_fdb_test.go",
         "rfc173_s4_fullbox_chained_fdb_test.go",
+        "rfc173_s4_nestedbox_chained_fdb_test.go",
         "rfc173_s4_withinbox_dup_fdb_test.go",
         "rfc173_slice1_frontier_pin_test.go",
         "rfc173_slice2_gate_pins_test.go",

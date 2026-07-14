@@ -469,7 +469,8 @@ func TestRFC173Slice3B2bFaceACensus(t *testing.T) { //nolint:paralleltest // pro
 	// columns) can no longer express a shape that STILL fires a producer — every
 	// box+EXISTS shape it can build now ordinalizes. The observer-mechanism
 	// non-vacuity proof therefore lives in the white-box
-	// query.TestRFC173_ProducerCensusP5EnclosureBit, which drives a
-	// chained-unnest-over-nested-outer-box (`(A LEFT B) LEFT C`, .SARR/.SUBSTRUCT/
-	// .DEEP) — the surviving name-model P5 residual — and asserts the observer fires.
+	// query.TestRFC173_ProducerCensusP5EnclosureBit, which drives an ENCLOSED
+	// single unnest over a LEFT box (the surviving name-model P5 residual after the
+	// S4-B chained-outer-box retirement) and asserts the observer fires with the
+	// correct enclosure bit.
 }

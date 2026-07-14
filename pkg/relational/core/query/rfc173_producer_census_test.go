@@ -1,22 +1,28 @@
 package query
 
 // White-box regression for the RFC-173 producer census P5 (buildUnnestResultValue)
-// hook. The census records an ENCLOSED bit per firing. P5's callers
-// (translateUnnestJoin / translateChainedUnnestJoin) unconditionally set
-// t.inInnerCluster = true on entry, so reading that field inside the producer would
-// report EVERY P5 firing as enclosed by construction — blinding the census to an
-// un-enclosed P5 residual. The fix threads the caller's ENTRY enclosure
-// (prevEnclosure) into buildUnnestResultValue.
+// hook, and the S4-B retirement of the CHAINED-UNNEST-OVER-NESTED-OUTER-BOX P5
+// caller.
 //
-// Discriminator: a chain over a NESTED-outer-box bottom (`(A LEFT B) FULL C`)
-// declines to the name-model record and fires P5 at its links (the multi-source
-// INNER box bottom now ordinalizes, so it is no longer a P5 discriminator — a
-// nested outer box does not gate fresh and stays name-model). The OUTERMOST
-// link's enclosure is the prevEnclosure passed to translateChainedUnnestJoin.
-// Translating the SAME shape fresh (prevEnclosure=false) vs enclosed (=true)
-// must therefore change the un-enclosed P5 count — the outer link flips. If the
-// producer read the always-true internal field instead (the bug), every firing
-// would report enclosed and BOTH counts would be zero.
+// Two facts are pinned:
+//
+//  1. RETIREMENT (RED-on-revert of the chainedSpineWalk LEFT/RIGHT-box admission
+//     + the SelectMergeRule dissolved-box barrier): a chained lateral unnest whose
+//     spine bottoms in a NESTED LEFT outer box (`(A LEFT B) LEFT C, A.SARR AS X,
+//     X.SUBSTRUCT AS Y, Y.DEEP AS Z`) now ORDINALIZES un-enclosed — it fires ZERO
+//     P5 producers. Before S4-B it was the surviving name-model P5 residual. If the
+//     admission is reverted, the shape drops back to the name model and this trips.
+//
+//  2. CENSUS OBSERVER + ENCLOSURE BIT: P5's callers unconditionally set
+//     t.inInnerCluster = true on entry, so reading that field inside the producer
+//     would report EVERY firing as enclosed by construction. The fix threads the
+//     caller's ENTRY enclosure (prevEnclosure) into buildUnnestResultValue. The
+//     observable P5 firing left after the retirement is an ENCLOSED single unnest
+//     over a LEFT box (an unnest that is itself a leg of a larger name-model
+//     cluster): it fires P5 and MUST report Enclosed=true (== the entry enclosure).
+//     A hardcoded Enclosed=false would trip. (The un-enclosed direction that once
+//     discriminated the always-true-internal read is no longer producible — every
+//     un-enclosed unnest ordinalizes or gathers — so this pins the surviving axis.)
 
 import (
 	"testing"
@@ -25,48 +31,57 @@ import (
 )
 
 func TestRFC173_ProducerCensusP5EnclosureBit(t *testing.T) {
-	boxBase3 := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
-		// A NESTED outer box bottom (`(A LEFT B) LEFT C`): the ordinal seed
-		// declines (a LEFT/RIGHT box is not walk-admitted — bottomInnerBox is
-		// INNER-only), so the chain declines to the name-model buildUnnestResultValue
-		// at every link. NOT a FULL box, so the RFC-173 S4 cap FULL-box straddle
-		// reject does not fire — this exercises the surviving P5 name-model residual
-		// whose enclosure bit this test pins (a FULL outer bottom would loud-reject).
+	countP5 := func(build func() (*logical.LogicalJoin, *logical.LogicalUnnest), entryEnclosure bool) (total, unenclosed int) {
+		var got []ProducerCensusRecord
+		SetProducerCensusObserver(func(rec ProducerCensusRecord) { got = append(got, rec) })
+		defer SetProducerCensusObserver(nil)
+		tr := newChainedSpineTranslator(t)
+		tr.inInnerCluster = entryEnclosure
+		j, u := build()
+		if sel := tr.translateUnnestJoin(j, u); sel == nil && tr.translateErr != nil {
+			t.Fatalf("entryEnclosure=%v: translateUnnestJoin errored: %v", entryEnclosure, tr.translateErr)
+		}
+		for _, r := range got {
+			if r.Producer == "P5" {
+				total++
+				if !r.Enclosed {
+					unenclosed++
+				}
+			}
+		}
+		return total, unenclosed
+	}
+
+	// (1) The RETIREMENT: a NESTED LEFT outer box bottom (`(A LEFT B) LEFT C`)
+	// under a 3-link chain ordinalizes and fires ZERO P5, un-enclosed. Before
+	// S4-B the chained ordinal declined (LEFT/RIGHT boxes were not walk-admitted)
+	// and every link name-modeled buildUnnestResultValue.
+	nestedChain := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		innerLeft := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinLeft, "")
 		nested := logical.NewJoin(innerLeft, scan("T4", "C"), logical.JoinLeft, "")
 		l1, _ := link(nested, "A", "SARR", "X")
 		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
 		return link(l2, "Y", "DEEP", "Z")
 	}
-
-	// Drive the production entry point translateUnnestJoin with inInnerCluster
-	// preset to the caller's entry enclosure (rather than calling
-	// translateChainedUnnestJoin directly), so EVERY link — inner and outer —
-	// reports its production enclosure, not a direct-call zero-value artifact.
-	unenclosedP5 := func(entryEnclosure bool) int {
-		var got []ProducerCensusRecord
-		SetProducerCensusObserver(func(rec ProducerCensusRecord) { got = append(got, rec) })
-		defer SetProducerCensusObserver(nil)
-		tr := newChainedSpineTranslator(t)
-		tr.inInnerCluster = entryEnclosure
-		j, u := boxBase3()
-		if sel := tr.translateUnnestJoin(j, u); sel == nil {
-			t.Fatalf("entryEnclosure=%v: translateUnnestJoin returned nil (translateErr: %v)", entryEnclosure, tr.translateErr)
-		}
-		n := 0
-		for _, r := range got {
-			if r.Producer == "P5" && !r.Enclosed {
-				n++
-			}
-		}
-		return n
+	if total, _ := countP5(nestedChain, false); total != 0 {
+		t.Fatalf("nested LEFT box chain (un-enclosed) fired %d P5 producer(s), want 0 — the S4-B "+
+			"chained LEFT/RIGHT-box admission regressed to the name model", total)
 	}
 
-	fresh, enclosed := unenclosedP5(false), unenclosedP5(true)
-	if fresh == 0 {
-		t.Fatalf("prevEnclosure=false produced ZERO un-enclosed P5 firings — the census reads the always-true internal inInnerCluster, not the caller's entry enclosure (codex P1)")
+	// (2) The surviving observable P5 firing + enclosure bit: an ENCLOSED single
+	// unnest over a LEFT box fires P5, and the firing must report Enclosed=true
+	// (the entry enclosure), never a hardcoded false.
+	enclosedSingle := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
+		box := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinLeft, "")
+		return link(box, "A", "SARR", "X")
 	}
-	if fresh <= enclosed {
-		t.Fatalf("un-enclosed P5 count did not drop when the caller was enclosed (fresh=%d, enclosed=%d) — the P5 enclosed bit is not tracking the entry enclosure (codex P1)", fresh, enclosed)
+	total, unenclosed := countP5(enclosedSingle, true)
+	if total == 0 {
+		t.Fatalf("enclosed single unnest over a LEFT box fired ZERO P5 — the census observer no longer " +
+			"sees the name-model producer (observer-mechanism vacuity)")
+	}
+	if unenclosed != 0 {
+		t.Fatalf("an ENCLOSED P5 firing reported Enclosed=false (%d of %d) — the producer reads the "+
+			"wrong enclosure (not the caller's entry prevEnclosure)", unenclosed, total)
 	}
 }

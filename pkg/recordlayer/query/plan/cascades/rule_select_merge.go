@@ -141,6 +141,46 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			if childSel, ok := member.(*expressions.SelectExpression); ok && !childSel.ChildrenAsSet() {
 				continue
 			}
+			// A DISSOLVED outer-join box — RewriteOuterJoinRule's INNER select
+			// whose null-supplying leg rides a NULL-ON-EMPTY quantifier — is the
+			// SAME outer-join box as the arm above, with the outer-join edge
+			// moved from the JoinType onto the quantifier flag. Merging it up
+			// into a ForEach-only parent produces a flat noe-carrying select
+			// that Go's PLANNING cannot re-partition (PartitionSelectRule's
+			// positional-merge arm declines to collapse a null-on-empty
+			// quantifier into a lower, and a dissolved box's flat form has NO
+			// select-level predicates left to connect a lower) — so when the
+			// REWRITING phase then prunes the child's group to that flat member
+			// as its canonical seed, a nested outer box (`(a LEFT b) LEFT c`)
+			// under any enclosing select strands unimplementable ("best
+			// expression is not a physical plan"). Java DOES flatten this form
+			// and re-derives the join from the flat seed (its
+			// PartitionSelectRule collapses defaultOnEmpty quantifiers into
+			// positional lowers and its NLJ implements any 2-quantifier
+			// select); until Go's partitioning reaches that parity, the
+			// dissolved box stays nested under a ForEach-only parent — the same
+			// hard barrier as the un-dissolved arm, so the binary NLJ/FlatMap
+			// implementation over the nested form (the route the un-enclosed
+			// nested box already plans through) survives the rewrite prune.
+			// An EXISTENTIAL-carrying parent is EXEMPT: its flat form never
+			// reaches PartitionSelectRule (≤1 existential returns; ≥2 peel),
+			// and the [ForEach×N, Existential] implementer handles noe legs
+			// via buildCorrelatedFlatMapPlan — the correlated DefaultOnEmpty
+			// step-1 that the LEFT+EXISTS plan-shape pins require (declining
+			// there degraded step-1 to a materialized LEFT NLJ).
+			// Never wrong rows — strictly a narrower merge.
+			if childSel, ok := member.(*expressions.SelectExpression); ok && !hasExistential {
+				childHasNullOnEmpty := false
+				for _, cq := range childSel.GetQuantifiers() {
+					if cq.IsNullOnEmpty() {
+						childHasNullOnEmpty = true
+						break
+					}
+				}
+				if childHasNullOnEmpty {
+					continue
+				}
+			}
 			// RFC-173 unnest-residual class 4 (chained-unnest correlation
 			// barrier): decline to merge a ForEach target when a RETAINED
 			// sibling quantifier is FREE-correlated to it AND the target is a

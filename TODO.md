@@ -1372,6 +1372,25 @@ Tests pinning the reject: `TestFDB_RFC173S4_FullBoxChainedSpine` (box-leg-filter
 `TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes/fullbox_bottom_boxleg_filter` — flip those `wantReject`
 cases back to row assertions when ordinalized.
 
+### [ ] POST-RFC-173 reach extension — ordinalize the box-leg-WHERE straddle over a chained LEFT/RIGHT outer box
+The nested LEFT/RIGHT outer box under a chained lateral unnest (`(A LEFT B) LEFT C, A.SARR AS X, X.SUB AS Y`)
+now **ordinalizes** for the element / leg-projection / element-or-AT-WHERE / deeper-link shapes (S4-B:
+`chainedSpineWalk` admits a gated LEFT/RIGHT box bottom + the `SelectMergeRule` dissolved-box barrier lets
+the box physicalize). But a **box-leg WHERE conjunct** over it (`… WHERE C.ID = 110`, references only box
+legs, no chain element) is **loud-rejected** (`chainedSpineBottomOuterBox` + the reject in `translateFilter`,
+error "WHERE on a join-leg column of an OUTER JOIN under a chained lateral unnest is not supported"). It is
+the un-ordinalizable straddle: the chained merged-corr rebase bakes onto the previous unnest alias, which
+**collides** with the first link's own inner Explode quantifier (a pushed-down `ofOrdinal` binds to the
+element row, not the merged seed → ordinal-(-1) strand); and baking it onto the box quantifier at the first
+link lets `PushFilterBelowJoinRule` **sink it below the nested outer null-extension** into the null-supplying
+scan (LEFT→INNER, silent wrong rows). The name-model residual strands at physicalization too, so there is no
+correct representation today — reject (correct-or-loud) rather than ship wrong rows. **To make it work**:
+inject the box-leg conjunct into the FIRST-LINK box select on a NON-colliding quantifier AND teach the
+pushdown to keep a positional box-leg predicate above the nested outer null-extension (the direct
+non-chained nested box already does this — its box-leg WHERE plans as `PredicatesFilter(box, [pred])` above
+the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`chained_boxleg{A,B,C}_filter`)
+— flip those `wantReject` cases to row assertions when ordinalized.
+
 ---
 
 # NEXT

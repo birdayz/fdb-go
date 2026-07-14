@@ -2840,6 +2840,34 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin {
 						ordinalSeed = true
 					}
+					// RFC-173 S4 cap: a chained spine BOTTOMING in a LEFT/RIGHT outer
+					// box with a BOX-LEG WHERE conjunct (`C.ID = 110`, references only
+					// box legs, no chain element) is the un-ordinalizable straddle —
+					// LOUD-REJECT (correct-or-loud), the same cap the FULL-box chained
+					// spine takes. The conjunct is NULL-SUPPLIED WHERE-above-OUTER: it
+					// must evaluate on the box's OUTPUT row (dropping null-padded
+					// rows). Neither representation serves it: the chained merged-corr
+					// rebase bakes onto mergedCorr (== the previous unnest alias, which
+					// COLLIDES with the first link's own inner Explode quantifier), so a
+					// pushed-down ofOrdinal binds to the ELEMENT row not the merged seed
+					// (ordinal-(-1) strand); and baking it onto the box quantifier at
+					// the first link lets PushFilterBelowJoinRule sink it below the
+					// nested outer null-extension into the null-supplying scan
+					// (LEFT→INNER, silent wrong rows). The name-model residual for this
+					// shape STRANDS at physicalization too. So a box-leg WHERE over a
+					// chained outer box is a shape with no correct representation today
+					// — reject rather than ship wrong rows. The row-answering chained
+					// shapes (element rows, leg projections, element/AT WHERE, deeper
+					// links) ordinalize and never reach here (they have no box-leg
+					// conjunct — nonExistsConjunctRefsOuterLeg is false). Ordinalizing
+					// this straddle is a post-RFC-173 reach extension (TODO.md).
+					if boxJoin := chainedSpineBottomOuterBox(join.Left); boxJoin != nil {
+						if nonExistsConjunctRefsOuterLeg(pred, outerBoundAliases(boxJoin)) {
+							t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+								"WHERE on a join-leg column of an OUTER JOIN under a chained lateral unnest is not supported"))
+							return nil
+						}
+					}
 					baked, ok := rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr, t.ordinalLegType(join.Left), ordinalSeed)
 					if !ok {
 						return nil
