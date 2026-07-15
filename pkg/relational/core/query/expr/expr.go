@@ -287,10 +287,11 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 	// FieldValue.ofFieldName resolving against the referent's result type,
 	// FieldValue.java:273-299). The referent is the resolved source's output
 	// row; its logical column order is src.Table.Columns() (declared order).
-	// First-match by case-folded name — identical to the runtime
-	// RecordType.FieldIndex the lazy node would have used, so the bound slot
-	// is the same one GetByName resolved. Unresolvable (computed alias, no
-	// source table) stays lazy.
+	// First-match by case-folded name — identical to the RecordType.FieldIndex
+	// rule the retired runtime name resolution used, so the bound slot is the
+	// same one a name read would have found. Unresolvable (computed alias, no
+	// source table) stays lazy (a plan-time artifact the bake walks rewrite, or
+	// loud if it somehow reaches evaluation).
 	if ord, ok := sourceColumnOrdinal(src, field); ok {
 		return values.NewFieldValueWithResolvedOrdinal(field, ord, columnCascadesType(col)), nil
 	}
