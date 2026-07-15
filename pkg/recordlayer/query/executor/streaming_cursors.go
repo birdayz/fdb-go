@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -849,10 +850,12 @@ func (c *nljCursor) adaptOuter(outerRow QueryResult) error {
 // QuantifiedObjectValue) — builds a hash map keyed by
 // the inner operand's evaluated value. Keys are extracted by EVALUATING
 // the operand against its leg row alone (evalLegKey) — the exact
-// resolution the linear predicate path performs per pair — so the hash
-// pre-filter can never disagree with the predicate re-check the way an
-// independent name lookup could (a divergence there silently DROPS
-// matching rows, since the hash only pre-filters candidates).
+// resolution the linear predicate path performs per pair — and then
+// CANONICALIZED (normalizeNLJHashKey) so map-key equality agrees with
+// cmpAny's promoting comparison, so the hash pre-filter can never
+// disagree with the predicate re-check the way an independent name
+// lookup or a raw-dynamic-type key could (a divergence there silently
+// DROPS matching rows, since the hash only pre-filters candidates).
 func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 	if len(c.preds) == 0 || len(c.innerRows) < 100 {
 		return
@@ -866,11 +869,13 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 		if row.Positional == nil {
 			return
 		}
-		val, ok := evalLegKey(innerVal, c.innerCorr, c.innerLegRow(i))
+		val, ok := evalLegHashKey(innerVal, c.innerCorr, c.innerLegRow(i))
 		if !ok {
-			// An operand that cannot resolve against the leg row declines the
-			// fast path entirely — the linear path evaluates (and loud-errors)
-			// the same predicate per pair.
+			// An operand that cannot resolve against the leg row — or whose
+			// key has no hashable promotion-stable canonical form ([]byte,
+			// message shapes, time.Time, NaN) — declines the fast path
+			// entirely: the linear path evaluates (and loud-errors) the same
+			// predicate per pair via cmpAny, which handles all of them.
 			return
 		}
 		// RFC-130: the hash index is additional resident memory beyond the
@@ -943,6 +948,69 @@ func evalLegKey(val values.Value, corr values.CorrelationIdentifier, leg values.
 		return nil, false
 	}
 	return v, true
+}
+
+// evalLegHashKey evaluates a baked equijoin operand against its leg row and
+// canonicalizes the result into the NLJ hash-key form. The ONLY entry point
+// for both the index build and the probe — the two sides MUST normalize
+// identically or matching rows silently vanish. ok=false on resolution
+// failure or a key outside normalizeNLJHashKey's whitelist: the builder then
+// declines the fast path entirely and the probe degrades to the full
+// candidate list, leaving the linear cmpAny evaluation as the semantics of
+// record.
+func evalLegHashKey(val values.Value, corr values.CorrelationIdentifier, leg values.OrdinalRow) (any, bool) {
+	v, ok := evalLegKey(val, corr, leg)
+	if !ok {
+		return nil, false
+	}
+	return normalizeNLJHashKey(v)
+}
+
+// normalizeNLJHashKey canonicalizes an equijoin key so Go map-key equality on
+// the result agrees with cmpAny — the promoting comparison the predicate
+// re-check applies to every surviving candidate pair. The invariant: two keys
+// the linear path treats as EQUAL must normalize to the SAME map key (a
+// false negative silently drops matching rows); extra bucket collisions are
+// harmless — the per-pair re-check filters them.
+//
+//   - Every numeric promotes to float64, mirroring cmpAny's
+//     promoteInt/promoteFloat widening: integral pairs equal as int64 are
+//     equal as float64, and any-float pairs compare as float64 already.
+//     Distinct wide int64s that collide at float64 precision are false
+//     POSITIVES only. Without this, int64(5) missed the float64(5) bucket
+//     (BIGINT=DOUBLE dropped every match ≥100 inner rows) and a
+//     covering-index float32 leg missed a stored-record float64 bucket.
+//   - NaN declines: cmpAny's <,>-based equality makes NaN compare EQUAL to
+//     every float, while a NaN map key matches nothing — no bucket can
+//     represent it.
+//   - string and bool pass through: cmpAny's arms for them are exact
+//     equality, same as map ==.
+//   - [16]byte (UUID) passes through: array == is exactly cmpAny's
+//     bytes.Compare(av[:], bv[:]) == 0.
+//   - nil (NULL) passes through: a NULL bucket only produces candidates the
+//     re-check rejects (equality on NULL is UNKNOWN), and declining instead
+//     would nuke the fast path for any leg with one NULL key.
+//   - Everything else declines. []byte and message/list shapes are
+//     unhashable map keys (a []byte key PANICKED the build at exactly 100
+//     inner rows: "hash of unhashable type: []uint8"). time.Time is hashable
+//     but its map == is wall+monotonic+location identity, not the instant
+//     equality cmpAny uses — and strings cross-match time.Time via
+//     ParseTimestamp, which no string-keyed bucket can represent.
+func normalizeNLJHashKey(v any) (any, bool) {
+	if v == nil {
+		return nil, true
+	}
+	if f, _, numeric := values.ToFloat64(v); numeric {
+		if math.IsNaN(f) {
+			return nil, false
+		}
+		return f, true
+	}
+	switch v.(type) {
+	case string, bool, [16]byte:
+		return v, true
+	}
+	return nil, false
 }
 
 // nljHashEntryBytes is the per-inner-row cost charged for the NLJ hash index:
@@ -1103,12 +1171,16 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				if outerLeg == nil {
 					outerLeg = outerRow.Positional
 				}
-				if key, ok := evalLegKey(c.hashOuterVal, c.outerCorr, outerLeg); ok {
+				if key, ok := evalLegHashKey(c.hashOuterVal, c.outerCorr, outerLeg); ok {
 					c.innerMatches = c.hashIndex[key]
 				} else {
-					// A probe that cannot resolve degrades this outer row to the
-					// full candidate list — the per-pair predicate evaluation is
-					// the semantics of record and will surface any real failure.
+					// A probe that cannot resolve — or whose key has no
+					// hashable promotion-stable canonical form (time.Time,
+					// NaN, a cross-typed []byte) — degrades this outer row to
+					// the full candidate list: the per-pair predicate
+					// evaluation is the semantics of record and will surface
+					// any real failure (or match, e.g. string-typed inner
+					// keys against a time.Time probe via ParseTimestamp).
 					c.innerMatches = c.allInnerIndices()
 				}
 			}

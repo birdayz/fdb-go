@@ -60,6 +60,7 @@ go_test(
         "merge_fabrication_test.go",
         "merge_row_build_test.go",
         "name_oracle_test.go",
+        "nlj_hash_key_test.go",
         "ordinal_join_test.go",
         "ordinal_join_wiring_test.go",
         "package_invariant_test.go",
@@ -122,6 +123,7 @@ go_test(
         "span_window_cross_agreement_test.go",
         "merge_row_build_test.go",
         "explode_element_row_test.go",
+        "nlj_hash_key_test.go",
     ],
     deps = [
         "//gen",
