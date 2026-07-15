@@ -2383,25 +2383,85 @@ func TestDistinctKey_NilPrimaryKey(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"A": 1})
 	key := distinctKey(qr)
-	expected := "A=int:1"
+	// The key is the tuple-packed slot values (Java's Key.Evaluated), not a
+	// NAME=type:value string.
+	expected := string(tuple.Tuple{1}.Pack())
 	if key != expected {
-		t.Fatalf("expected %q, got %q", expected, key)
+		t.Fatalf("expected tuple-packed %q, got %q", expected, key)
 	}
 }
 
 func TestDistinctKey_Deterministic(t *testing.T) {
 	t.Parallel()
-	// With multiple keys, the output must be sorted and stable regardless
-	// of map iteration order.
+	// With multiple slots the packed key must be stable regardless of map
+	// iteration order (dmap sorts columns by name → A,B,C).
 	qr := dmap(map[string]any{"B": 2, "A": 1, "C": 3})
 	key1 := distinctKey(qr)
 	key2 := distinctKey(qr)
 	if key1 != key2 {
 		t.Fatalf("non-deterministic: %q vs %q", key1, key2)
 	}
-	expected := "A=int:1|B=int:2|C=int:3"
+	expected := string(tuple.Tuple{1, 2, 3}.Pack())
 	if key1 != expected {
-		t.Fatalf("expected %q, got %q", expected, key1)
+		t.Fatalf("expected tuple-packed %q, got %q", expected, key1)
+	}
+}
+
+// TestDistinctKey_DelimiterInjection pins the fix for a value forging an
+// inter-column boundary. Under the old '|'-joined NAME=type:value scheme, a
+// string containing the literal separator reproduced the column boundary, so
+// two DIFFERENT rows keyed identically and DISTINCT dropped the second. Tuple
+// packing is length-prefixed, so the keys must differ.
+func TestDistinctKey_DelimiterInjection(t *testing.T) {
+	t.Parallel()
+	rowA := dorder([]string{"A", "B"}, []any{"x", "y|B=string:z"})
+	rowB := dorder([]string{"A", "B"}, []any{"x|B=string:y", "z"})
+	if distinctKey(rowA) == distinctKey(rowB) {
+		t.Fatalf("delimiter injection: distinct rows keyed identically (%q)", distinctKey(rowA))
+	}
+}
+
+// TestQueryResultKey_DelimiterInjection pins F31: the recursive-CTE UNION-DISTINCT
+// keyers (queryResultKey / cteDedupKeyer.key) had the same '|'-joined %v flaw as
+// distinctKey, and — unlike distinctKey — no per-slot type prefix, so the
+// "\x00NULL\x00" NULL sentinel also collided with the literal string. All three
+// now route through packedDedupKey (tuple encoding). Revert-proven: on the old
+// '|'-join both injection pairs key identically.
+func TestQueryResultKey_DelimiterInjection(t *testing.T) {
+	t.Parallel()
+	// Delimiter injection: ["x","y|z"] and ["x|y","z"] both rendered "x|y|z".
+	r1 := dorder([]string{"A", "B"}, []any{"x", "y|z"})
+	r2 := dorder([]string{"A", "B"}, []any{"x|y", "z"})
+	if queryResultKey(r1) == queryResultKey(r2) {
+		t.Fatalf("queryResultKey delimiter injection: distinct rows keyed identically (%q)", queryResultKey(r1))
+	}
+	// NULL-sentinel: the literal string "\x00NULL\x00" must not key equal to SQL NULL.
+	rNull := dorder([]string{"A"}, []any{nil})
+	rSent := dorder([]string{"A"}, []any{"\x00NULL\x00"})
+	if queryResultKey(rNull) == queryResultKey(rSent) {
+		t.Fatal("queryResultKey: NULL sentinel collides with the literal string \\x00NULL\\x00")
+	}
+	// Preserved: same values under differently-named columns still dedup (the
+	// recursive-CTE seed {SRC:1} vs recursive {DST:1} case, values-only + name-sorted).
+	rSrc := dorder([]string{"SRC"}, []any{int64(1)})
+	rDst := dorder([]string{"DST"}, []any{int64(1)})
+	if queryResultKey(rSrc) != queryResultKey(rDst) {
+		t.Fatal("queryResultKey: {SRC:1} and {DST:1} must still dedup as duplicates")
+	}
+}
+
+// TestDistinctKey_NullSentinelCollision guards that SQL NULL never keys equal
+// to a string that spells the "\x00NULL\x00" sentinel. Tuple packing gives nil
+// its own type code, so the two can never collide. (This is a guard, not a
+// revert-proof: the old distinctKey happened to disambiguate these two via its
+// per-slot "type:" prefix; the sibling recursive-CTE keyers that omit that
+// prefix are the ones with a genuine sentinel collision.)
+func TestDistinctKey_NullSentinelCollision(t *testing.T) {
+	t.Parallel()
+	nullRow := dorder([]string{"A"}, []any{nil})
+	sentinelStr := dorder([]string{"A"}, []any{"\x00NULL\x00"})
+	if distinctKey(nullRow) == distinctKey(sentinelStr) {
+		t.Fatal("SQL NULL keyed equal to a string holding the NULL sentinel")
 	}
 }
 
@@ -2623,10 +2683,10 @@ func TestBuildCoveringLogicalRow_WidensFloat32(t *testing.T) {
 	}
 }
 
-// distinctKey %T-tags slot values, so a covering float32 and a base float64 of
-// the same number produced DIFFERENT keys — DISTINCT/UNION across a covering
-// leg and a base leg never deduped. With the boundary normalization both
-// produce the float64 key.
+// A covering float32 and a base float64 of the same number carry different
+// tuple type codes, so they would key differently — DISTINCT/UNION across a
+// covering leg and a base leg would never dedup. The boundary normalization
+// widens the covering FLOAT to float64, so both produce the same packed key.
 func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
 	t.Parallel()
 	logicalType := &values.RecordType{Fields: []values.Field{

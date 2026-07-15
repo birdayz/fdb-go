@@ -166,9 +166,17 @@ func distinctEliminatedByUniqueKey(
 	return false
 }
 
-// collectProjectedFieldNames extracts field names from a
-// LogicalProjectionExpression's projected values. If the inner
-// expression is not a projection, returns nil to indicate "all
+// collectProjectedFieldNames returns the set of columns each projected as a
+// BARE, top-level field reference. Only a projected value that IS itself a
+// FieldValue counts: such a projection is the column value verbatim, so it is
+// injective in that column, and the DISTINCT may be elided when the bare
+// columns collectively cover a unique key. A projected value that references a
+// key column only from INSIDE an expression — id/3, f(id), a+b — is NOT
+// injective over that column (f(pk) maps many pks to one output), so it
+// contributes NOTHING: crediting its buried FieldValue would wrongly elide
+// DISTINCT over a many-to-one projection and emit duplicates.
+//
+// If the inner expression is not a projection, returns nil to indicate "all
 // columns available" (full row).
 func collectProjectedFieldNames(expr expressions.RelationalExpression) map[string]struct{} {
 	proj, ok := expr.(*expressions.LogicalProjectionExpression)
@@ -178,20 +186,13 @@ func collectProjectedFieldNames(expr expressions.RelationalExpression) map[strin
 
 	cols := make(map[string]struct{})
 	for _, v := range proj.GetProjectedValues() {
-		extractFieldNames(v, cols)
+		// TOP-LEVEL type assertion only — a FieldValue nested inside an
+		// ArithmeticValue/function is deliberately not unwrapped here.
+		if fv, ok := v.(*values.FieldValue); ok {
+			cols[fv.Field] = struct{}{}
+		}
 	}
 	return cols
-}
-
-// extractFieldNames recursively collects FieldValue.Field names from
-// a Value tree.
-func extractFieldNames(v values.Value, out map[string]struct{}) {
-	if fv, ok := v.(*values.FieldValue); ok {
-		out[fv.Field] = struct{}{}
-	}
-	for _, child := range v.Children() {
-		extractFieldNames(child, out)
-	}
 }
 
 // findRecordTypes walks down through transparent LOGICAL operators

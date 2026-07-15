@@ -1404,32 +1404,52 @@ func executeDistinct(
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
 }
 
-// distinctKey builds a DISTINCT dedup key from the row's ordinal PositionalRow.
-// Slots are keyed by ORDINAL (their fixed output position) plus the column name
-// and value type, so two rows dedup iff every column value+type matches. A
-// nil-Positional row yields the empty key.
+// distinctKey builds a DISTINCT dedup key by packing the row's ordinal slot
+// values into an FDB tuple, mirroring Java's RecordQueryUnorderedDistinctPlan,
+// which dedups via Set<Key.Evaluated> — structured value equality, never a
+// delimiter-joined string. Tuple encoding is length-prefixed and type-tagged,
+// so no slot value can forge an inter-column boundary (a string containing the
+// old "|NAME=type:" separator no longer collides two distinct rows) and SQL
+// NULL has its own tuple code, distinct from any string. Names are not part of
+// the key: a physical distinct's inner produces ONE schema, so every row shares
+// the same slot names in the same positions — the value tuple alone is the
+// comparison key, exactly as Java's comparison-key VALUES are. A nil-Positional
+// row yields the empty key.
 func distinctKey(qr QueryResult) string {
 	if qr.Positional == nil || qr.Positional.Type == nil {
 		return ""
 	}
-	var sb strings.Builder
-	for i, v := range qr.Positional.Slots {
-		if i > 0 {
-			sb.WriteByte('|')
-		}
-		if i < len(qr.Positional.Type.Fields) {
-			sb.WriteString(qr.Positional.Type.Fields[i].Name)
-		} else {
-			fmt.Fprintf(&sb, "%d", i)
-		}
-		sb.WriteByte('=')
-		if v == nil {
-			sb.WriteString("\x00NULL\x00")
-		} else {
-			fmt.Fprintf(&sb, "%T:%v", v, v)
+	return packedDedupKey(qr.Positional.Slots)
+}
+
+// packedDedupKey encodes a row's slot values into an unambiguous FDB-tuple key
+// for DISTINCT / UNION-DISTINCT deduplication — the single encoder every dedup
+// path routes through (distinctKey, cteDedupKeyer.key, queryResultKey). Tuple
+// encoding is typed and length-prefixed, so no value can forge an inter-column
+// boundary (the defect of a '|'-joined %v string, where a value containing the
+// delimiter collapsed two different rows) and NULL has its own tuple code
+// distinct from any string (the "\x00NULL\x00"-sentinel collision). Java dedups
+// via Set<Key.Evaluated> structured value equality; this is the Go equivalent.
+// The [16]byte→UUID and composite %T:%v-fallback arms mirror
+// mergeSortCursor.extractKey.
+func packedDedupKey(slots []any) string {
+	t := make(tuple.Tuple, len(slots))
+	for i, v := range slots {
+		switch tv := v.(type) {
+		case nil, int64, int, uint, uint64, float32, float64, string, []byte, bool:
+			t[i] = tv
+		case int32:
+			t[i] = int64(tv)
+		case [16]byte:
+			t[i] = tuple.UUID(tv)
+		default:
+			// Composite/nested slot (struct, array, message): the tuple layer
+			// cannot pack it, so fall back to a single length-prefixed string
+			// element — still boundary-safe, since it is one tuple slot.
+			t[i] = fmt.Sprintf("%T:%v", v, v)
 		}
 	}
-	return sb.String()
+	return string(t.Pack())
 }
 
 func executeProjection(
@@ -3956,22 +3976,13 @@ func (k *cteDedupKeyer) key(qr QueryResult) string {
 		return fmt.Sprintf("%v", qr.Positional)
 	}
 	ords := k.layoutOrdinals(qr.Positional.Type)
-	var sb strings.Builder
+	slots := make([]any, len(ords))
 	for i, ord := range ords {
-		if i > 0 {
-			sb.WriteByte('|')
-		}
-		var v any
 		if ord >= 0 {
-			v, _ = qr.Positional.Get(ord)
-		}
-		if v == nil {
-			sb.WriteString("\x00NULL\x00")
-		} else {
-			sb.WriteString(fmt.Sprintf("%v", v))
+			slots[i], _ = qr.Positional.Get(ord)
 		}
 	}
-	return sb.String()
+	return packedDedupKey(slots)
 }
 
 // queryResultKey produces a stable string key from a QueryResult's positional
@@ -3997,16 +4008,9 @@ func queryResultKey(qr QueryResult) string {
 		pairs = append(pairs, nv{name: f.Name, val: v})
 	}
 	sort.Slice(pairs, func(a, b int) bool { return pairs[a].name < pairs[b].name })
-	var sb strings.Builder
+	slots := make([]any, len(pairs))
 	for i, p := range pairs {
-		if i > 0 {
-			sb.WriteByte('|')
-		}
-		if p.val == nil {
-			sb.WriteString("\x00NULL\x00")
-		} else {
-			sb.WriteString(fmt.Sprintf("%v", p.val))
-		}
+		slots[i] = p.val
 	}
-	return sb.String()
+	return packedDedupKey(slots)
 }

@@ -472,8 +472,8 @@ one defect each found by two auditors.
 | F4 | wrong-rows | S3 (typed agg continuation) | TODO |
 | F5 | wrong-rows | S3 (typed agg continuation) | TODO |
 | F6 | wrong-rows | Theme 3 (AVG exact sum) | **DONE** `44a534a14` |
-| F7 | wrong-rows | Theme 4 (injective DISTINCT elision) | TODO |
-| F8 | wrong-rows | S2 (distinctKey tuple-pack) | TODO |
+| F7 | wrong-rows | Theme 4 (injective DISTINCT elision) | **DONE** |
+| F8 | wrong-rows | S2 (distinctKey tuple-pack) | **DONE** |
 | F9 ≡ F13 | wrong-rows | S2 (compareValues []byte arm) | **DONE** `6663cf56e` |
 | F10 | wrong-rows | S1 + S2 (covering float32 norm) | **DONE** `6663cf56e` |
 | F11 | wrong-rows (latent) | Theme 7 (STARTS_WITH range) | TODO |
@@ -484,14 +484,22 @@ one defect each found by two auditors.
 | F17 | missing-error | S5 (int32 SUM_I overflow) | TODO |
 | F18 | missing-error | S5 (MIN/MAX plan-time type gate) | TODO |
 | F19 | missing-error | Theme 7 (index-orphan ERROR) | TODO |
-| F20 | nondeterministic | S4 (deterministic cost winner) | WIP |
-| F21 | nondeterministic | S4 (comparand-aware equality) | WIP |
+| F20 | nondeterministic | S4 (deterministic cost winner) | **DONE** `a5846b405` |
+| F21 | nondeterministic | S4 (comparand-aware equality) | **DONE** `a5846b405` |
 | F22 | dead-code | Theme 8 (aggregateCursor.pending) | TODO |
 | F23 | dead-code | Theme 8 (RecordQuerySortPlan) | TODO |
 | F24 | wrong-rows | S3 (FlatMap check-value restart) | TODO |
 | F26 | structural | S3-after (outerJoinCount) | TODO |
 | F27 | wrong-rows (float) | Theme 2 (cmpAny NaN) | TODO |
 | F28 | wrong-rows (float) | Theme 2 (-0.0 vs 0.0) | TODO |
+| F30 | structural (latent) | S4 (text/distance comparands in memo equality) | TODO |
+| F31 | wrong-rows | S2 (CTE dedup keyers tuple-pack) | **DONE** |
 
+Later-surfaced (during fixing): F27, F28 (float total-ordering in the comparator /
+cmpAny), F30 (semantic_identity.go still ignores text/distance comparison fields —
+F21 follow-up), F31 (recursive-CTE `cteDedupKeyer.key`/`queryResultKey` shared the
+F8 delimiter+NULL-sentinel flaw — fixed via the shared `packedDedupKey` encoder).
 Also tracked: F9b (loud comparator residual — needs error-channel or is left
-documented); nit: stale `buildCoveringRow` comment in `ordinal_join.go`.
+documented); F29 (`TestRuleRegistry_DuplicateNamePanics` under `-count>1`, global-
+registry test isolation, not hit by count=1 CI); nit: stale `buildCoveringRow`
+comment in `ordinal_join.go`.

@@ -201,6 +201,67 @@ func TestDistinctFinal_CompositePKPartial_Wraps(t *testing.T) {
 	}
 }
 
+// TestDistinctFinal_ComputedPKExpr_Wraps verifies that a projection whose only
+// reference to the PK is BURIED inside an expression (id/3) does NOT elide the
+// DISTINCT: f(pk) is many-to-one, so eliding dedup would emit duplicates.
+// Regression for the buried-FieldValue coverage bug (SELECT DISTINCT id/3 over
+// ids 1..6 returned 6 rows instead of 3).
+func TestDistinctFinal_ComputedPKExpr_Wraps(t *testing.T) {
+	t.Parallel()
+	// id / 3 — the PK column ID appears only as an ArithmeticValue operand.
+	idOver3 := &values.ArithmeticValue{
+		Op:    values.OpDiv,
+		Left:  &values.FieldValue{Field: "ID", Typ: values.UnknownType},
+		Right: &values.ConstantValue{Value: int64(3), Typ: values.UnknownType},
+	}
+	distinctRef := buildDistinctOverProjection("USERS", []values.Value{idOver3})
+	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	if len(results) == 0 {
+		t.Fatal("ImplementDistinctFinalRule should fire")
+	}
+	foundDistinct := false
+	for _, r := range results {
+		if _, ok := r.(*physicalDistinctWrapper); ok {
+			foundDistinct = true
+		}
+	}
+	if !foundDistinct {
+		t.Fatal("expected DistinctWrapper: id/3 is not injective over the PK, so DISTINCT must NOT be elided")
+	}
+}
+
+// TestCollectProjectedFieldNames_BuriedFieldNotCredited is a white-box pin on
+// the coverage helper: a bare column reference IS credited; the same column
+// buried inside an arithmetic expression is NOT.
+func TestCollectProjectedFieldNames_BuriedFieldNotCredited(t *testing.T) {
+	t.Parallel()
+
+	bareID := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	buildProj := func(v values.Value) *expressions.LogicalProjectionExpression {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"USERS"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		return expressions.NewLogicalProjectionExpression([]values.Value{v}, scanQ)
+	}
+
+	// Bare FieldValue → credited.
+	if cols := collectProjectedFieldNames(buildProj(bareID)); len(cols) != 1 {
+		t.Fatalf("bare id: expected 1 credited column, got %v", cols)
+	} else if _, ok := cols["ID"]; !ok {
+		t.Fatalf("bare id: expected ID credited, got %v", cols)
+	}
+
+	// id / 3 → the buried ID must NOT be credited (empty covering set).
+	idOver3 := &values.ArithmeticValue{
+		Op:    values.OpDiv,
+		Left:  bareID,
+		Right: &values.ConstantValue{Value: int64(3), Typ: values.UnknownType},
+	}
+	if cols := collectProjectedFieldNames(buildProj(idOver3)); len(cols) != 0 {
+		t.Fatalf("id/3: expected NO credited columns (buried FieldValue), got %v", cols)
+	}
+}
+
 // TestDistinctFinal_CaseInsensitive verifies case-insensitive
 // matching between PK column names and projected field names.
 func TestDistinctFinal_CaseInsensitive(t *testing.T) {
