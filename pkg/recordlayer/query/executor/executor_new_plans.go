@@ -201,10 +201,10 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 }
 
 // multiIntersectionMergeCursor combines each set of matching child rows
-// into a single output row. It merges every child's Datum map (grouping
-// columns are identical across children; each child contributes its own
-// aggregate column) and then evaluates the plan's result value against the
-// merged row to produce the final record. Mirrors Java's
+// into a single output row. It concatenates every child's positional row
+// (grouping columns are identical across children; each child contributes its
+// own aggregate column) and evaluates the plan's result value against the
+// concatenation to produce the final record. Mirrors Java's
 // RecordQueryMultiIntersectionOnValuesPlan.executePlan, which binds each
 // child result to its quantifier and evaluates the resultValue.
 type multiIntersectionMergeCursor struct {
@@ -391,16 +391,16 @@ func executeUnorderedUnion(
 }
 
 // producesMergedRows reports whether a plan emits merged join rows
-// (multiple quantifiers' columns under qualified "ALIAS.COL" keys) rather
-// than single-table rows. A filter over such a plan resolves QOV
-// predicates through the qualified-key path, not an alias binding.
+// (multiple quantifiers' columns concatenated into one positional row with
+// per-leg windows) rather than single-table rows. A filter over such a plan
+// resolves QOV predicates leg-locally through the windows, not via an alias
+// binding.
 //
-// This list must stay in sync with the code that WRITES qualified
-// "ALIAS.COL" keys: mergeRows (executor.go) for the NLJ cursor, and
-// qualifyOuterRow (used by the FlatMap cursor in flat_map_cursor.go).
-// Those are the only two sites that emit merged rows today. A future
-// merged-row operator (e.g. a hash/merge join) MUST be added here, or a
-// filter over it would bind the merged row under one alias and bare-
+// This list must stay in sync with the merged-row producers: mergeRows
+// (executor.go) for the NLJ cursor, and the FlatMap cursor's merge output
+// (flat_map_cursor.go). Those are the only two sites that emit merged rows.
+// A future merged-row operator (e.g. a hash/merge join) MUST be added here,
+// or a filter over it would bind the merged row under one alias and bare-
 // resolve qov(b).col to the wrong quantifier (see DIVERGENCES.md).
 func producesMergedRows(p plans.RecordQueryPlan) bool {
 	switch p.(type) {
@@ -437,12 +437,12 @@ func executePredicatesFilter(
 	// e.g. on a null-filled LEFT JOIN row (b absent), qov(b).id would wrongly
 	// pick up the outer row's bare ID instead of NULL.
 	bindAlias := innerAlias.Name() != "" && !producesMergedRows(p.GetInner())
-	// RFC-173 Slice 1: on the positional frontier a QOV(innerAlias).col resolves
+	// On the positional frontier a QOV(innerAlias).col resolves
 	// via the bare-positional fallback in evaluateCorrelated (Correlations miss →
 	// Positional), so bindAlias is NOT a reason to wrap — only a genuine
 	// param/subquery/outer-binding is. When none is present, flow the bare row.
 	posNeedsCtx := hasBindingContext(evalCtx)
-	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// When the input flows a 2-way ordinal join's merged
 	// positional row, predicates evaluate under the LEG WINDOWS — computed
 	// once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
@@ -452,11 +452,11 @@ func executePredicatesFilter(
 			var rowCtx any
 			switch {
 			case qr.Positional != nil && windowsOK:
-				// RFC-173 Slice 2: the merged positional row of a gated 2-way
-				// ordinal join — a window-era leg reference QOV(leg).col needs
+				// The merged positional row of a gated 2-way
+				// ordinal join — a leg reference QOV(leg).col needs
 				// its leg window (unconditional: even with no binding context,
 				// the leg bindings are required; the bare merged row misreads
-				// leg-relative ordinals — the W3 wrong-slot hazard).
+				// leg-relative ordinals — a wrong-slot hazard).
 				rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
 			case qr.Positional != nil && bindAlias && isBareScalarRow(qr.Positional):
 				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
@@ -474,7 +474,7 @@ func executePredicatesFilter(
 				ec = ec.WithBinding(innerAlias, qr.Positional.Slots[0])
 				rowCtx = ec.RowContext()
 			case qr.Positional != nil:
-				// RFC-173 Slice 1: the non-join frontier flows an authoritative
+				// The non-join frontier flows an authoritative
 				// ordinal row — resolve predicates by ordinal (loud on a miss, no
 				// name-map fallback). A QOV(innerAlias).col resolves via the
 				// bare-positional fallback in evaluateCorrelated, so no alias
@@ -509,10 +509,10 @@ func executeMap(
 		return nil, err
 	}
 	resultValue := p.GetResultValue()
-	// RFC-173 Slice 1: on the positional frontier an outer correlation resolves via
+	// On the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
 	posNeedsCtx := hasBindingContext(evalCtx)
-	// RFC-173 cap: the Map output schema is row-invariant — derive the emitted
+	// The Map output schema is row-invariant — derive the emitted
 	// positional row's OUTPUT names once from the result value's record type. When
 	// the result is a RecordConstructorValue, evaluate its Fields INDIVIDUALLY into
 	// dense slots (never through the collapsing name map — a duplicate output name
@@ -526,7 +526,7 @@ func executeMap(
 		}
 		mapPosType = positionalTypeFromNames(mapPosNames)
 	}
-	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// When the input flows a 2-way ordinal join's merged
 	// positional row, the result value evaluates under the LEG WINDOWS —
 	// computed once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
@@ -537,16 +537,16 @@ func executeMap(
 		}
 		var rowCtx any
 		if qr.Positional != nil && windowsOK {
-			// RFC-173 Slice 2: the merged positional row of a gated 2-way
-			// ordinal join — a window-era leg reference QOV(leg).col needs its
+			// The merged positional row of a gated 2-way
+			// ordinal join — a leg reference QOV(leg).col needs its
 			// leg window (unconditional; see executePredicatesFilter).
 			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
 		} else if qr.Positional != nil {
-			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
+			// The non-join frontier flows an authoritative ordinal
 			// row — resolve the result value by ordinal (loud on a miss).
 			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
 		}
-		// RFC-173 cap: a Map's output IS a PositionalRow. When the result value is a
+		// A Map's output IS a PositionalRow. When the result value is a
 		// RecordConstructor, evaluate each field individually into dense slots; a
 		// scalar result wraps in a 1-slot row.
 		var pos *PositionalRow

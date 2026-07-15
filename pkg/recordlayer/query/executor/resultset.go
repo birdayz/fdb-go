@@ -132,20 +132,18 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 	// read column i from slot i-1. positionalAligned proves the slots are parallel
 	// to this result set's columns (count + per-slot name match, with computed /
 	// aggregate renderings aligned by ordinal since their two naming authorities
-	// disagree on spelling). This is also the §7 duplicate-name `SELECT *` fix: a
-	// gated 2-way ordinal join's output has two same-named columns per leg pair
-	// (bare display names, distinct by ordinal); the positional row keeps each
-	// leg's value in its own slot, which a last-wins name map could not.
+	// disagree on spelling). Ordinal reads are also what makes duplicate-name
+	// `SELECT *` correct: an ordinal join's output has two same-named columns per
+	// leg pair (bare display names, distinct by ordinal); the positional row keeps
+	// each leg's value in its own slot, which a last-wins name map could not.
 	if row := rs.current.Positional; row != nil && rs.positionalAligned(row) {
 		v, _ := row.Get(columnIndex - 1)
 		rs.wasNull = v == nil
 		return v, nil
 	}
 	// Correct-or-loud: a materialized row with no aligned positional output row is
-	// a producer that failed to birth its ordinal output — a Go planner/executor
-	// bug, never a name->NULL to paper over (the name-keyed Datum read this used to
-	// fall back to is deleted with the coexistence row model). The whole conformance
-	// corpus + the sqldriver CI suite run clean without it.
+	// a producer that failed to emit its ordinal output — a Go planner/executor
+	// bug, never a name->NULL to paper over.
 	return nil, api.NewError(api.ErrCodeInternalError,
 		fmt.Sprintf("RFC-173: result row carries no positional output row aligned to column %q (%d columns) — the plan's top operator did not emit an ordinal output row",
 			rs.columns[columnIndex-1].Name, len(rs.columns)))
@@ -157,7 +155,7 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 // the bare leaf of Name), case-insensitively. The guard is deliberately
 // all-or-nothing: a single mismatch means the positional row is NOT this
 // result set's output shape (a source row under aliased output, a permuted
-// union leg, a covering superset) and every read falls back to the Datum.
+// union leg, a covering superset) and every read goes loud.
 //
 // Both sides are compared on their BARE LEAF (qualifier stripped): a projection
 // over a gated ordinal join names its output positional slots by the qualified
@@ -262,9 +260,8 @@ func isAnonymousColumnName(s string) bool {
 }
 
 // columnDisplayName is the column's unqualified user-visible name: the Label
-// (alias) when set, else Name's bare leaf ("A.ID" → "ID" — the name model
-// qualifies datum keys per leg, but a positional slot is named by its bare
-// display name).
+// (alias) when set, else Name's bare leaf ("A.ID" → "ID" — a column Name may be
+// leg-qualified, but a positional slot is named by its bare display name).
 func columnDisplayName(c ColumnDef) string {
 	if c.Label != "" {
 		return c.Label

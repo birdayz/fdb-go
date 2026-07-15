@@ -54,20 +54,19 @@ type aggregateCursor struct {
 	// RFC-173 input-edge ordinalization. evalCtx carries params/subqueries/outer
 	// bindings so a group-key / operand reference resolves against the inner
 	// PositionalRow the SAME way executeFilter / executeProjection do
-	// (frontierRowContext → evaluateOrdinal, by the baked plan-time ordinal), robust to a covering-index
-	// layout and NOT a name-keyed Datum read. flatFrontierInput is true when the input
-	// bottoms out at a SINGLE-SOURCE flat producer (base-table scan/index, a nested
-	// StreamingAgg) beneath any number of layout-preserving / reshaping single-child
-	// nodes — the group-by SORT, a filter, a LIMIT/fetch, a projection / derived table
-	// / CTE (RecordQueryProjectionPlan/MapPlan), a DISTINCT, a WHERE-EXISTS semi-join
-	// (identity-over-outer FlatMap). Every such producer emits a flat single-source
-	// output row with an unambiguous plan-time layout, so keys/operands resolve positionally.
-	// It is FALSE the moment the chain crosses a JOIN / multi-source (a non-identity
-	// FlatMap, an NLJ, a union): a raw 2-way ordinal JOIN merge keeps its LEG WINDOWS
-	// (joinWindowsOK), and a projection / aggregate OVER a LEFT JOIN — the ON-only
-	// lenient CTE shadow path (Q51/Q54) whose out-of-schema read is a booked silent
-	// NULL — keeps the name-keyed Datum path so it is NOT forced loud through the
-	// positional frontier. Probed once at construction from the inner plan.
+	// (frontierRowContext → evaluateOrdinal, by the baked plan-time ordinal), robust
+	// to a covering-index layout — never a name-keyed read. flatFrontierInput is true
+	// when the input bottoms out at a SINGLE-SOURCE flat producer (base-table
+	// scan/index, a nested StreamingAgg) beneath any number of layout-preserving /
+	// reshaping single-child nodes — the group-by SORT, a filter, a LIMIT/fetch, a
+	// projection / derived table / CTE (RecordQueryProjectionPlan/MapPlan), a
+	// DISTINCT, a WHERE-EXISTS semi-join (identity-over-outer FlatMap). Every such
+	// producer emits a flat single-source output row with an unambiguous plan-time
+	// layout, so keys/operands resolve positionally. It is FALSE the moment the
+	// chain crosses a JOIN / multi-source (a non-identity FlatMap, an NLJ, a
+	// union): a raw 2-way ordinal JOIN merge resolves through its LEG WINDOWS
+	// (joinWindowsOK) instead — a flat input must never be mis-routed through leg
+	// windows. Probed once at construction from the inner plan.
 	evalCtx           *EvaluationContext
 	flatFrontierInput bool
 	needsRowCtx       bool
@@ -77,10 +76,10 @@ type aggregateCursor struct {
 	// passthroughs down to the join and derives its leg windows), a QUALIFIED group-key
 	// / operand reference (D.DNAME, E.SALARY) resolves LEG-LOCALLY off the merged row
 	// through legWindowRowContext — the SAME spanAwareRow resolver executeProjection /
-	// executeFilter use over the same merge — instead of the name-keyed Datum map.
+	// executeFilter use over the same merge.
 	// joinWindowsOK is true only for a genuine gated ordinal join input; a reshaping /
-	// non-join input keeps windowsOK false and falls to the name path. Probed once at
-	// construction from the inner plan.
+	// non-join input keeps windowsOK false and resolves through the general
+	// positional frontier. Probed once at construction from the inner plan.
 	joinLegSpans  []legSpan
 	joinWindowsOK bool
 
@@ -137,8 +136,8 @@ func newAggregateCursor(
 // aggregateInputIsFlatFrontier reports whether the streaming aggregate's input
 // bottoms out at a SINGLE-SOURCE flat producer whose emitted PositionalRow's
 // columns are unambiguous — so a group-key / operand name resolves against it by
-// its baked plan-time ordinal exactly as executeFilter / executeProjection resolve theirs (robust to
-// a covering-index column order), and is NOT a name-keyed Datum read.
+// its baked plan-time ordinal exactly as executeFilter / executeProjection resolve
+// theirs (robust to a covering-index column order).
 //
 // It walks single-child nodes down to the leaf:
 //   - RETURNS TRUE at a base-table SCAN / INDEX scan, or a nested StreamingAgg
@@ -153,10 +152,9 @@ func newAggregateCursor(
 //     peels to the outer; any OTHER FlatMap (a lateral join / merge producer) is
 //     multi-source and RETURNS FALSE.
 //   - RETURNS FALSE at every JOIN / multi-source node (a non-identity FlatMap, an NLJ,
-//     a union). A raw 2-way ordinal JOIN merge keeps its leg windows (joinWindowsOK);
-//     a projection / aggregate OVER a LEFT JOIN — the ON-only lenient CTE shadow path
-//     (Q51/Q54) whose out-of-schema read is a booked silent NULL — keeps the name path
-//     so it is not forced loud through the positional frontier.
+//     a union). A raw 2-way ordinal JOIN merge resolves through its leg windows
+//     (joinWindowsOK); other multi-source inputs resolve through the general
+//     positional frontier.
 func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 	for input != nil {
 		switch p := input.(type) {
@@ -165,12 +163,10 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 			*plans.RecordQueryTextIndexPlan,
 			*plans.RecordQueryVectorIndexPlan,
 			*plans.RecordQueryStreamingAggregationPlan,
-			// RFC-173: a UNION (ALL / recursive-CTE level) emits a FLAT positional
+			// A UNION (ALL / recursive-CTE level) emits a FLAT positional
 			// row per leg, re-typed to the union's output column names
 			// (remapUnionColumnsByPosition), so an aggregate over it resolves its
-			// group key / operand by name-in-row against that row — the flat
-			// frontier, not a name-keyed Datum. A birth-disabled leg (no Positional)
-			// still declines to the name path safely (the arm requires Positional).
+			// group key / operand against that row — the flat frontier.
 			*plans.RecordQueryUnionPlan,
 			*plans.RecordQueryUnorderedUnionPlan,
 			*plans.RecordQueryRecursiveLevelUnionPlan:
@@ -206,37 +202,6 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 		}
 	}
 	return false
-}
-
-// valueFieldsAllInSet reports whether EVERY FieldValue in v's value tree is a BARE
-// (childless) reference to a column in set. A value with no FieldValue (a constant /
-// computed key over none) trivially qualifies; a COMPOUND operand (SUM(v*price))
-// qualifies iff each of its bare field leaves is in set. A CHILD-BEARING FieldValue
-// (a qualified QOV(alias).col or a nested record access) is NOT a bare
-// projected-output-column read, so it DISQUALIFIES v — such a reference stays on the
-// existing name / leg-window path rather than being forced onto the projection row.
-//
-// Used to gate the projection-output arm: only a group key / operand whose columns
-// are ALL bare projected outputs resolves positionally against the projection row;
-// anything else (a mixed value, an out-of-schema Q51/Q54 shadow read, a qualified
-// access) falls through — correct-or-name, never a loud frontier miss.
-func valueFieldsAllInSet(v values.Value, set map[string]struct{}) bool {
-	all := true
-	values.WalkValue(v, func(n values.Value) bool {
-		fv, ok := n.(*values.FieldValue)
-		if !ok {
-			return true // not a field; descend into composites (arithmetic, cast, …)
-		}
-		if fv.Child != nil {
-			all = false // a qualified / nested access, not a bare output-column ref
-			return false
-		}
-		if _, in := set[strings.ToUpper(fv.Field)]; !in {
-			all = false
-		}
-		return true
-	})
-	return all
 }
 
 // withPartialState restores accumulator state from a previous transaction's
@@ -366,7 +331,7 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 //
 //   - A POSITIONALLY-BAKED value (a FieldValue with a resolved ordinal — the
 //     gathered-seed un-collapse's qualifier-honoring group key/operand) reads the
-//     flat seed row it was baked against: the simple {Datum,Positional} context, no
+//     flat seed row it was baked against: a bare positional context, no
 //     leg re-windowing (the gathered seed emits a flat row and its bakes are flat
 //     slots).
 //   - On a FLAT single-source frontier (flatFrontierInput — a scan / index / filter /
@@ -374,19 +339,18 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 //     whose chain bottoms out at a single source, NOT a 2-way ordinal JOIN merge), a
 //     name group-key / operand resolves against the inner PositionalRow by its baked
 //     plan-time ordinal (frontierRowContext → evaluateOrdinal). This is robust to a
-//     covering-index column layout (the bake binds the emitted layout, never a raw table ordinal) and is
-//     NOT a name-keyed Datum read, so it no longer depends on the name model.
+//     covering-index column layout (the bake binds the emitted layout, never a raw
+//     table ordinal).
 //   - A RAW 2-way ordinal JOIN merge (joinWindowsOK — the input flows the join's
 //     MERGED positional row through passthroughs only): a qualified group-key /
-//     operand reference QOV(leg).col (or the flat DOTTED "D.DNAME" the name-model
-//     pipeline spells it as) resolves LEG-LOCALLY through its window, exactly as
+//     operand reference QOV(leg).col (or its flat DOTTED "D.DNAME" spelling)
+//     resolves LEG-LOCALLY through its window, exactly as
 //     executeProjection / executeFilter resolve theirs over the same merge.
 //     Unconditional on a windowed input: even with no param/subquery/outer binding,
 //     the leg windows are required (the bare merged row misreads leg-relative
-//     ordinals — the W3 wrong-slot hazard).
-//   - A row with NO Positional yields NULL: post-cap every live input flows an
-//     ordinal PositionalRow, and the name-keyed Datum row model is retired, so
-//     there is no name-map left to read.
+//     ordinals — a wrong-slot hazard).
+//   - A row with NO Positional yields NULL: every live input flows an
+//     ordinal PositionalRow; there is no name-map to read.
 func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any {
 	if row.Positional == nil {
 		return nil
@@ -414,12 +378,12 @@ func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any 
 // through a plan-time-resolved ordinal ANYWHERE in its value tree — the un-collapse's
 // positionally-baked FieldValue, possibly nested inside a compound operand
 // (`SUM(A.K+B.K)`). Any baked leaf means the whole value must evaluate against the
-// positional row; a fully name-model value reads the Datum map unchanged.
+// positional row; a value with no baked leaf resolves through the frontier dispatch.
 func valueReadsBakedOrdinal(v values.Value) bool {
 	// FrontierPinned specifically — the ordinal-frontier bake the group-by makes
 	// (NewFieldValueOfOrdinal). An UNPINNED baked node (a recursive-CTE leg projection
-	// column) is never an aggregate key/operand, and reads the Datum map like any
-	// name-model value — matching intent, not over-broad on `Resolved != nil`.
+	// column) is never an aggregate key/operand — matching intent, not over-broad on
+	// `Resolved != nil`.
 	if fv, ok := v.(*values.FieldValue); ok && fv.Resolved != nil && fv.Resolved.FrontierPinned {
 		return true
 	}
@@ -794,9 +758,8 @@ type nljCursor struct {
 	// innerAdapted is the FIXED inner-rows slice adapted once at construction
 	// (parallel to innerRows); outerAdapted is the current outer row adapted
 	// once per outer-row advance. Together they make the per-candidate-pair
-	// cost one small twoLegBinder — no re-adaptation, no map (review W3a-2
-	// structural-perf catch: the name model pays no per-pair adapter work, so
-	// neither may the window).
+	// cost one small twoLegBinder — no re-adaptation, no map (per-pair adapter
+	// work would be a structural O(rows²) perf regression).
 	innerAdapted []values.OrdinalRow
 	outerAdapted values.OrdinalRow
 	// outerCorr/innerCorr are the leg correlation identifiers, resolved once.

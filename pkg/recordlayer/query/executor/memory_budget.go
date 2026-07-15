@@ -125,10 +125,9 @@ func (s *boundedSet[K]) Len() int {
 //
 //   - stored row (Record != nil): the proto wire size of the record plus the
 //     length of the tuple-encoded primary key;
-//   - computed row (Record == nil): the approximate size of the Datum — a
-//     map[string]any (sum of key lengths + per-value estimate) or a scalar
-//     value;
-//   - empty row (Record == nil, Datum == nil): a small constant.
+//   - computed row (Record == nil): the approximate size of the PositionalRow
+//     (per-slot value estimates plus column-name lengths);
+//   - empty row (Record == nil, Positional == nil): a small constant.
 func estimateQueryResultBytes(qr QueryResult) int64 {
 	if qr.Record != nil {
 		var n int64
@@ -171,12 +170,12 @@ func estimatePositionalBytes(pos *PositionalRow) int64 {
 }
 
 // emptyRowBytes is the small constant charged for a row that carries no
-// payload (no stored record, no datum). A row is never free — even an empty
-// QueryResult occupies a slot.
+// payload (no stored record, no positional row). A row is never free — even an
+// empty QueryResult occupies a slot.
 const emptyRowBytes int64 = 16
 
-// estimateDatumBytes approximates the resident bytes of a computed-row datum.
-// Handles the map[string]any rows the executor flows, slices, and scalar
+// estimateDatumBytes approximates the resident bytes of a single row value.
+// Handles map[string]any values (nested message slots), slices, and scalar
 // values; recurses one level for nested maps/slices and falls back to a fixed
 // per-value cost for everything else. Never panics.
 func estimateDatumBytes(d any) int64 {

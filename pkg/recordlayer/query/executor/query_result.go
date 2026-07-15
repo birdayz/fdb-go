@@ -26,11 +26,12 @@ const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 // Mirrors Java's QueryResult.
 type QueryResult struct {
 	// Positional is the RFC-173 ordinal-model row (a typed PositionalRow, field
-	// values indexed by ordinal) — post-cap the SOLE runtime row. Every producer
-	// emits it (scans/covering scans, projection/map, aggregate output, and join
-	// merges via concatLegPositionals), and FieldValue resolution reads it by
-	// ordinal, loud on a miss (OrdinalResolutionError). The name-keyed Datum row
-	// model it replaced is retired.
+	// values indexed by ordinal) — the SOLE runtime row. Every producer emits it
+	// (scans/covering scans, projection/map, aggregate output, and join merges
+	// via concatLegPositionals), and FieldValue resolution reads it by ordinal,
+	// loud on a miss (OrdinalResolutionError). There is no name-keyed row model:
+	// runtime name resolution would be first-match and silently wrong on
+	// duplicate column names, where the plan-time ordinal is exact.
 	Positional *PositionalRow
 	Record     *recordlayer.FDBStoredRecord[proto.Message]
 	PrimaryKey tuple.Tuple
@@ -77,14 +78,13 @@ var positionalTypeCacheSize atomic.Int64
 // unbounded-growth class it exists to stop.
 const positionalTypeCacheCap = 4096
 
-// protoToPositional is the RFC-173 ordinal-model counterpart of protoToMap: it
-// builds a PositionalRow from a proto message, one slot per descriptor field in
-// declaration order (the field's ordinal), with an UPPER-cased field name and a
-// dark UnknownType (type refinement comes with the later slices). An unset field
-// is a nil slot — matching protoToMap omitting the key (SQL NULL) — so the
-// positional row and the map agree field-for-field (pinned by the shadow test).
-// Since Slice 1 this row is what the non-join frontier RESOLVES against; the
-// name-keyed map is still emitted for coexistence (retired in Slice 4).
+// protoToPositional builds the ordinal-model PositionalRow from a proto
+// message, one slot per descriptor field in declaration order (the field's
+// ordinal), with an UPPER-cased field name and an UnknownType placeholder (the
+// runtime row carries names and ordinals; slot types are not refined). An
+// unset field is a nil slot (SQL NULL). This is the row FieldValue resolution
+// reads by ordinal; the test-only protoToMap oracle cross-checks it
+// field-for-field (the shadow test in name_oracle_test.go).
 func protoToPositional(msg proto.Message) *PositionalRow {
 	if msg == nil {
 		return nil
@@ -106,7 +106,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 
 // positionalTypeForDescriptor returns the LOGICAL RecordType for a message
 // descriptor — one field per descriptor field in declaration order (the
-// field's ordinal), UPPER-cased name, dark UnknownType. THE single authority
+// field's ordinal), UPPER-cased name, UnknownType placeholder. THE single authority
 // for a stored record's logical row shape: every physical access path that
 // serves a stored record's columns (base scan rows via protoToPositional,
 // covering-index rows via coveringIndexCursor) MUST shape its rows by this

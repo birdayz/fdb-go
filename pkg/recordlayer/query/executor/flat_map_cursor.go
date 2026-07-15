@@ -40,27 +40,26 @@ type flatMapCursor struct {
 	outerExhausted bool
 	closed         bool
 
-	// birth is the RFC-173 Slice 2 ordinal-BIRTH state, probed ONCE at
-	// construction from resultValue (nil = the lazy/name-model flatMap path).
-	// When enabled, computeResult births the positional row from the RC with
-	// per-leg bindings; the RC's baked references resolve by ordinal against
-	// that row and can no longer evaluate over name contexts.
+	// birth is the ordinal-BIRTH state, probed ONCE at construction from
+	// resultValue (nil = a non-birth FlatMap: an identity pass-through or a
+	// folded projection). When enabled, computeResult births the positional row
+	// from the RC with per-leg bindings; the RC's baked references resolve by
+	// ordinal against that row.
 	birth *ordinalJoinBirth
 
-	// outerBakedType is the RFC-173 item-2 commit-2 DISABLED-BIRTH probe
-	// result: the outer's typed RecordType recovered from the inner plan's
-	// FrontierPinned baked references over outerAlias, when this cursor has
-	// NO birth of its own (an identity-RV existential FlatMap over an
-	// ordinal outer — the E2 shape). Non-nil flips the outer binding
-	// positional (adaptLegPositional); adaptation failure is LOUD
-	// (design-ruling amendment B — never the Datum fallback, which would
-	// feed the baked references a name-keyed context). S4 KILL LIST
-	// (amendment A): dead scaffolding once the name model dies.
+	// outerBakedType is the DISABLED-BIRTH probe result: the outer's typed
+	// RecordType recovered from the inner plan's FrontierPinned baked
+	// references over outerAlias, when this cursor has NO birth of its own (an
+	// identity-RV existential FlatMap over an ordinal outer). Non-nil is the
+	// layout authority for the outer binding: adaptLegPositional adapts the
+	// outer row to it (an index-shaped covering row is re-synthesized into the
+	// logical layout the baked ordinals were bound against); adaptation
+	// failure is LOUD — never a silent wrong-slot read.
 	outerBakedType *values.RecordType
 
-	// foldLegSpans / foldWindowsOK (RFC-173 S4 commit 2, C): when this FlatMap's
-	// OUTER is a gated ordinal join (a projected-EXISTS fold whose step-1 NLJ
-	// births the leg-concat seed), the folded projection reads leg columns as
+	// foldLegSpans / foldWindowsOK: when this FlatMap's OUTER is a gated
+	// ordinal join (a projected-EXISTS fold whose step-1 NLJ births the
+	// leg-concat seed), the folded projection reads leg columns as
 	// heterogeneous refs — flat baked merged-row reads and QOV leg refs. The
 	// projection is NEVER rebased; instead it evaluates over the step-1 merged
 	// positional row through legWindowRowContext(pos, ctx, foldLegSpans), the
@@ -70,7 +69,7 @@ type flatMapCursor struct {
 	foldLegSpans  []legSpan
 	foldWindowsOK bool
 
-	// outerMergedType (RFC-173 S4 commit 4): the outer gated ordinal join's
+	// outerMergedType is the outer gated ordinal join's
 	// merged row RecordType, when this FlatMap's outer is one (nil otherwise).
 	// The identity-FlatMap pass-through propagates a leg-independent existential's
 	// gated outer positional row through it — adapting against this type (LOUD on
@@ -78,7 +77,7 @@ type flatMapCursor struct {
 	// the executor's probe-gate declining loud at translation.
 	outerMergedType *values.RecordType
 
-	// outerIdentityPassthrough (RFC-173 S4): the PLAIN-SCAN correlated-EXISTS
+	// outerIdentityPassthrough marks the PLAIN-SCAN correlated-EXISTS
 	// shape — a WHERE-EXISTS identity pass-through (RV == QOV(outer)) whose outer
 	// is neither an inner-baked existential (outerBakedType nil) nor a gated join
 	// (outerMergedType nil). The outer binds onto its OWN scan positional row
@@ -131,26 +130,25 @@ func newFlatMapCursor(
 			}
 		}
 	}
-	// The FlatMap half of the PR-447 review P1 (@claude final-pass catch): the
-	// correlated implementation pushes the join's baked ON references INTO
+	// The correlated implementation pushes the join's baked ON references INTO
 	// the inner plan (SARGs, residual filters), so LegTypes must be widened
 	// from the inner plan's predicate surfaces — a folded result value can
 	// drop a leg those references still need (see widenLegTypesFromPlan).
 	birth.widenLegTypesFromPlan(innerPlan)
-	// Producer context (RFC-142 W4c): a WITH-ORDINALITY unnest's inner IS an
-	// ordinality Explode, flowing a Datum keyed by the internal `_0`/`_1`
+	// Producer context (RFC-142): a WITH-ORDINALITY unnest's inner IS an
+	// ordinality Explode, flowing a row keyed by the internal `_0`/`_1`
 	// positions. Mark the inner leg so it binds STRICTLY POSITIONALLY (see
 	// ordinalJoinBirth.OrdinalityLegs) — a user AS/AT alias spelling `_0`/`_1`
-	// then cannot route the wrong internal key, and a name-model leg whose own
+	// then cannot route the wrong internal key, and a leg whose own
 	// columns are aliased `_0`/`_1` (shape-identical, but NOT an ordinality
-	// Explode) still binds correctly by name.
+	// Explode) still binds correctly through the normal leg adapter.
 	if birth.enabled() && innerIsOrdinalityExplode(innerPlan) {
 		if birth.OrdinalityLegs == nil {
 			birth.OrdinalityLegs = map[values.CorrelationIdentifier]struct{}{}
 		}
 		birth.OrdinalityLegs[innerAlias] = struct{}{}
 	}
-	// RFC-173 item-2 commit 2: a DISABLED-birth FlatMap (identity RV — the
+	// A DISABLED-birth FlatMap (identity RV — the
 	// WHERE-EXISTS pass-through) probes its inner plan for baked references
 	// over the outer alias; a hit means the outer must bind positionally
 	// (see outerBakedType).
@@ -161,14 +159,14 @@ func newFlatMapCursor(
 	var outerIdentityPassthrough bool
 	if !birth.enabled() {
 		outerBakedType = probeOuterBakedType(innerPlan, outerAlias)
-		// RFC-173: recognise a gated ordinal join OUTER (downstreamLegWindows
-		// accepts a genuine FrontierPinned full-coverage seed only — a name-model
-		// anchored RC is rejected). Two consumers of that recognition:
-		//   - commit 2 (C): a projected-EXISTS FOLD resolves its leg refs through
+		// Recognise a gated ordinal join OUTER (downstreamLegWindows
+		// accepts a genuine FrontierPinned full-coverage seed only). Two
+		// consumers of that recognition:
+		//   - a projected-EXISTS FOLD resolves its leg refs through
 		//     legWindowRowContext(foldLegSpans). EXCLUDES the identity pass-through
 		//     (RV == QOV(outer)) — that reads the whole-outer object, not per-leg
 		//     columns — so foldWindowsOK gates on !isIdentityOuterRV, decided once.
-		//   - commit 4: the identity pass-through propagates a leg-independent
+		//   - the identity pass-through propagates a leg-independent
 		//     existential's gated outer positional row (outerMergedType), which the
 		//     inner-probe (outerBakedType) misses when the exists inner is
 		//     leg-independent.
@@ -248,9 +246,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			}
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.
-			// The nil inner pointer is the RFC-173 NULL leg for an
-			// ordinal-birth cursor; the name-model path reconstructs the
-			// empty-Datum inner row (bit-identical to before).
+			// The nil inner pointer becomes the NULL leg for an ordinal-birth
+			// cursor and a nil inner binding for the non-birth path.
 			if c.leftOuter && !c.innerHadMatch {
 				outputRow, err := c.computeResultLegs(*c.currentOuter, nil)
 				if err != nil {
@@ -350,7 +347,7 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 // quantifier's object (the WHERE-EXISTS pass-through): the output IS the outer
 // row, flowed through unchanged (the identity branch in computeResultLegs). Such
 // a cursor must NOT reroute the outer through the leg windows — it reads the
-// whole outer object, not per-leg columns (RFC-173 S4 commit 2, C: the
+// whole outer object, not per-leg columns (the
 // projected-fold leg-window path is only for a projection over the merged row).
 // The ONE predicate both the construction-time foldWindowsOK exclusion and the
 // identity branch read, so the exclusion can never drift from the branch it
@@ -395,22 +392,20 @@ func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 }
 
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
-// the LEFT-OUTER null-inner emission. For an ordinal-birth cursor (RFC-173
-// S2) it births the positional row from the RC with per-leg bindings — the nil
-// inner pointer becomes the NULL leg (QOV(inner)→nil, contract ruling #3). The
+// the LEFT-OUTER null-inner emission. For an ordinal-birth cursor it births
+// the positional row from the RC with per-leg bindings — the nil
+// inner pointer becomes the NULL leg (QOV(inner)→nil). The
 // row IS its PositionalRow; the ordinal RC resolves its baked references by
-// ordinal against it, never over a name-keyed context. The lazy/name-model
-// cursor keeps today's Evaluate path, reconstructing the empty inner row for
-// the null-inner emission.
+// ordinal against it. A non-birth cursor (identity pass-through / folded
+// projection) keeps the Evaluate path, with a nil inner binding for the
+// null-inner emission.
 func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResult) (QueryResult, error) {
 	if c.birth.enabled() {
 		pos, err := c.birth.evaluate(c.outerAlias.Name(), c.innerAlias.Name(), &outerRow, inner, correlationBase(c.evalCtx))
 		if err != nil {
 			return QueryResult{}, err
 		}
-		// RFC-173 cap: the ordinal-birth FlatMap row IS its PositionalRow; the
-		// coexistence name-keyed Datum it used to carry alongside is deleted with
-		// the name model.
+		// The ordinal-birth FlatMap row IS its PositionalRow.
 		return QueryResult{Positional: pos}, nil
 	}
 	innerRow := QueryResult{}
@@ -441,7 +436,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// ordinal against the outer row, while QOV references to the outer/inner aliases
 	// resolve through the correlation bindings (Correlations).
 	var rowCtx any = nestedCtx.RowContextPositional(outerRow.Positional)
-	// RFC-173 S4 commit 2 (C): a PROJECTED-EXISTS fold whose OUTER is a gated
+	// A PROJECTED-EXISTS fold whose OUTER is a gated
 	// ordinal join's positional merged row. Evaluate the folded projection through
 	// legWindowRowContext — spanAwareRow resolves its dotted "T1.ID" frontier reads
 	// positionally against the leg windows, legWindowBinder its QOV leg refs, and
@@ -481,91 +476,60 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	}
 	// Identity-over-outer FlatMap (the result value is exactly the outer
 	// quantifier's object — the WHERE-EXISTS pass-through, RFC-141): the output
-	// IS the outer record flowed under the outer quantifier, so qualify its keys
-	// under the outer alias. Downstream projections reference the outer columns
-	// as `ALIAS.COL` (a FieldValue over QOV(outer)); a bare-keyed map would not
-	// resolve them. Mirrors the prior semi-join cursor's qualifyOuterRow and
-	// Java's outer-record-under-outer-quantifier flow.
+	// IS the outer row flowed under the outer quantifier, mirroring Java's
+	// outer-record-under-outer-quantifier flow.
 	if isIdentityOuterRV(c.resultValue, c.outerAlias) {
-		{
-			out := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
-			// RFC-173 item-2 commit 2, the I1 pass-through: the identity
-			// FlatMap's output IS the outer row, so the outer's positional row
-			// flows through instead of dying at the FlatMap boundary —
-			// downstream ordinal consumers keep resolving against it (merged
-			// outers keep their leg windows via the unwrapToJoinPlan identity
-			// arm). PROBE-GATED: outerBakedType is the ordinal-era
-			// discriminator. A NAME-model existential (probe negative — lazy
-			// inner refs) has name-shaped uppers reading qualifyOuterRow's
-			// qualified Datum keys as flat dotted fields ("E.FNAME"); an
-			// unconditional pass-through flipped those consumers onto the
-			// ordinal path where the dotted name loud-misses the bare-named
-			// row (the live TestFDB_CorrelatedExistsCrossJoin catch). An
-			// ordinal-era shape whose probe is negative but whose uppers are
-			// baked fails LOUD downstream (BakedNameContextError), never
-			// silent — widen the gate when that shape materializes (commit 3).
-			// The published row is the ADAPTED row — the same derivation the
-			// outer-binding arm uses: an INDEX-shaped outer positional (a
-			// covering row [V, ID] under a baked [ID, V] QOV) passes the
-			// binding through synthesis, but publishing the ORIGINAL row
-			// verbatim hands downstream baked ordinals the wrong layout — a
-			// silent wrong-slot read. Layout-matching outers flow
-			// the same row object through; adaptation failure is LOUD
-			// (amendment B). Gated on the outer actually CARRYING a
-			// positional row: propagation, not a birth — under the §5 oracle
-			// the outer never carries one, so re-synthesizing from a
-			// Datum-only outer here would be a new birth site violating the
-			// oracle registry (the executeMap frontier-propagation
-			// precedent). S4 KILL LIST (amendment A) with the disabled-birth
-			// probe.
-			// The layout authority for the propagated outer positional row: the
-			// inner-probed baked type (an ordinal-era existential whose inner
-			// carries baked outer refs), OR — RFC-173 S4 commit 4 — the outer's
-			// own gated-join merged type when the exists inner is LEG-INDEPENDENT
-			// (probe negative, so outerBakedType is nil, but the outer IS a genuine
-			// gated ordinal seed, outerMergedType != nil). Adapting against the
-			// type is a no-op on a seed-layout row but LOUD on a mismatch
-			// (amendment B: never a silent wrong-slot read).
-			adaptType := c.outerBakedType
-			if adaptType == nil {
-				adaptType = c.outerMergedType
-			}
-			if adaptType != nil && outerRow.Positional != nil {
-				adapted, aerr := adaptLegPositional(outerRow, adaptType)
-				if aerr != nil {
-					return QueryResult{}, aerr
-				}
-				if pos, isPos := adapted.(*PositionalRow); isPos {
-					out.Positional = pos
-				}
-			} else if c.outerIdentityPassthrough && outerRow.Positional != nil {
-				// RFC-173 S4 — the PLAIN-SCAN correlated-EXISTS output edge: the
-				// identity output IS the outer scan row, so its OWN positional row
-				// flows through UNCHANGED (no adapter — no baked/gated layout
-				// authority applies; the outer binds RAW at the input edge for the
-				// same reason). The downstream projection (SELECT dname) then reads
-				// by ordinal against this row instead of by name off the qualified
-				// Datum. Narrowly gated on outerIdentityPassthrough (both probes nil
-				// AND identity RV) so a name-model existential whose downstream
-				// uppers read DOTTED "ALIAS.COL" fields (the outerBakedType-negative
-				// join shape — TestFDB_CorrelatedExistsCrossJoin) is NOT flipped onto
-				// the ordinal path where the dotted name would loud-miss the
-				// bare-named row. Under the §5 oracle the outer never carries a
-				// positional, so this is pure propagation, not a birth. The row is
-				// stamped with the outer alias as a leg window (qualifyOuterPositional):
-				// the downstream projection reads its columns qualified by the outer
-				// alias ("E.FNAME"), so the baked qualified reference binds its leg
-				// window via the Legs metadata — the ordinal analog of qualifyOuterRow's
-				// "ALIAS.COL" Datum keys, and the reason a bare-named plain-scan row alone
-				// would loud-miss the qualified read (the TestFDB_CorrelatedExistsCrossJoin catch).
-				out.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
-			} else {
-				// RFC-173 cap: the identity output IS the outer row — flow its own
-				// Positional through (the name-keyed qualifyOuterRow Datum is deleted).
-				out.Positional = outerRow.Positional
-			}
-			return out, nil
+		out := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
+		// The outer's positional row flows through instead of dying at the
+		// FlatMap boundary — downstream ordinal consumers keep resolving
+		// against it (merged outers keep their leg windows via the
+		// unwrapToJoinPlan identity arm). The published row is the ADAPTED
+		// row — the same derivation the outer-binding arm uses: an
+		// INDEX-shaped outer positional (a covering row [V, ID] under a baked
+		// [ID, V] QOV) is re-synthesized into the logical layout, since
+		// publishing the ORIGINAL row verbatim would hand downstream baked
+		// ordinals the wrong layout — a silent wrong-slot read.
+		// Layout-matching outers flow the same row object through; adaptation
+		// failure is LOUD — never a silent wrong-slot read.
+		//
+		// The layout authority for the propagated outer positional row: the
+		// inner-probed baked type (an existential whose inner carries baked
+		// outer refs), else the outer's own gated-join merged type when the
+		// exists inner is LEG-INDEPENDENT (probe negative, so outerBakedType
+		// is nil, but the outer IS a genuine gated ordinal seed,
+		// outerMergedType != nil).
+		adaptType := c.outerBakedType
+		if adaptType == nil {
+			adaptType = c.outerMergedType
 		}
+		if adaptType != nil && outerRow.Positional != nil {
+			adapted, aerr := adaptLegPositional(outerRow, adaptType)
+			if aerr != nil {
+				return QueryResult{}, aerr
+			}
+			if pos, isPos := adapted.(*PositionalRow); isPos {
+				out.Positional = pos
+			}
+		} else if c.outerIdentityPassthrough && outerRow.Positional != nil {
+			// The PLAIN-SCAN correlated-EXISTS output edge: the identity
+			// output IS the outer scan row, so its OWN positional row flows
+			// through (no baked/gated layout authority applies; the outer
+			// binds RAW at the input edge for the same reason), stamped with
+			// the outer alias as a leg window (qualifyOuterPositional). The
+			// downstream projection reads its columns qualified by the outer
+			// alias ("E.FNAME"), so the baked qualified reference binds its
+			// leg window via the Legs metadata — a bare-named plain-scan row
+			// alone would loud-miss the qualified read. The stamp is only
+			// correct when the row IS the outer source's own layout, which is
+			// why this arm is gated on outerIdentityPassthrough (both layout
+			// probes nil AND identity RV).
+			out.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
+		} else {
+			// The identity output IS the outer row — flow its own Positional
+			// through.
+			out.Positional = outerRow.Positional
+		}
+		return out, nil
 	}
 	return QueryResult{Positional: foldPos}, nil
 }

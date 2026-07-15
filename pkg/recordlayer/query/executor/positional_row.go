@@ -77,9 +77,9 @@ func (r *PositionalRow) MultiLeg() bool {
 	return true
 }
 
-// RowValue returns a QueryResult's row as the value the retired name-keyed Datum
-// field carried: a bare scalar for a 1-slot `_0` row (a non-record UNNEST
-// element), else a name->value map (duplicate output names collapse last-wins).
+// RowValue returns a QueryResult's row in name-keyed form: a bare scalar for a
+// 1-slot `_0` row (a non-record UNNEST element), else a name->value map
+// (duplicate output names collapse last-wins).
 // EXPORTED for external test/differential consumers only; production code reads
 // the PositionalRow by ordinal. Nil-safe.
 func RowValue(qr QueryResult) any {
@@ -94,8 +94,8 @@ func RowValue(qr QueryResult) any {
 
 // positionalToMap projects a PositionalRow to a name->value map, for the LOCAL
 // boundaries that build a name-keyed artifact from a row (a proto record in the DML
-// insert/update path, keyed by column name). This is NOT the retired name model —
-// it is a one-shot projection at a boundary that is inherently name-keyed (a proto
+// insert/update path, keyed by column name). This is NOT runtime name resolution
+// — it is a one-shot projection at a boundary that is inherently name-keyed (a proto
 // message sets fields by name). Duplicate output names collapse last-wins (a proto
 // record cannot carry two same-named fields anyway).
 func positionalToMap(pos *PositionalRow) map[string]any {
@@ -116,8 +116,8 @@ func positionalToMap(pos *PositionalRow) map[string]any {
 // It uses a RAW RecordType (not NewRecordType) on purpose: a producer may emit
 // DUPLICATE output names (SELECT a, a; a join projecting two legs' `id`; a covering
 // index whose value column repeats a PK column), and the ordinal model keeps those
-// as DISTINCT fields by position — the RFC-173 Slice-4 "last-leg-wins collision
-// fix" — whereas NewRecordType panics on a duplicate name. Positional access is by
+// as DISTINCT fields by position, whereas NewRecordType panics on a duplicate
+// name. Positional access is by
 // ordinal, so duplicates are unambiguous; FieldIndex (name->ordinal) returns the
 // first match, which is why the shadow assert legitimately DIFFERS from the
 // last-wins name map on duplicate-named output (the §5 models-must-differ case).

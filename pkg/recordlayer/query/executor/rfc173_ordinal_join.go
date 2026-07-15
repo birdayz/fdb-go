@@ -10,21 +10,22 @@ import (
 )
 
 // This file is the RFC-173 ordinal-join executor machinery: the primitives
-// the gated wedge's merged positional row is built from — LIVE since W3b,
-// N-way flat (and positional-merge birthing) since the S3 fulcrum: the
-// translator seeds gated join clusters with the ordinal RC these
-// consume. Everything here derives from the W3 pre-code ruling
-// (rfcs/173-ordinal-column-resolution.md §4 Slice 2): spans derive from the
-// RC (condition 1), leg windows are declared window scaffolding that dies
-// when the uppers bake, S3/S4 (condition 2), the window implements
-// values.OrdinalRow completely so no new eval arm exists (condition 3), and
-// the wrong-slot hazard is pinned red→green (condition 4).
+// the gated join's merged positional row is built from — the translator seeds
+// gated join clusters (N-way flat) with the ordinal RC these consume, and
+// merge levels birth positional rows. The design invariants
+// (rfcs/173-ordinal-column-resolution.md §4): spans derive from the
+// RC (the RC is the single authority — never independent bookkeeping), leg
+// windows resolve quantifier-addressed leg references over the merged row
+// (Java's quantifier binding; needed because Go's physical join output is one
+// flat concat), the window implements
+// values.OrdinalRow completely so no new eval arm exists, and
+// the wrong-slot hazard is pinned red→green.
 
 // legSpan is one leg's slot range within the ordinal join's merged
 // positional row: the leg quantifier's alias, the leg's own RecordType, and
 // the half-open window [Offset, Offset+Width) its columns occupy in the merged
 // row. Spans are DERIVED from the ordinal join RC by ordinalJoinSpans at
-// cursor construction (review W3 condition 1: the RC is the single authority)
+// cursor construction (the RC is the single authority)
 // — never stored or maintained as independent bookkeeping.
 type legSpan struct {
 	Alias   values.CorrelationIdentifier
@@ -42,14 +43,14 @@ type legSpan struct {
 // result value into the parent PROJECTION's RC, which legitimately mixes baked
 // leg references (compose-folded through the seed) with computed values, or
 // covers a leg partially (`SELECT b.y FROM a JOIN b`), or collapses to a
-// single run (review W3a-1 NAK: the earlier any-baked⟹well-formed-or-panic
-// boundary false-positived on exactly those plans). Downstream consumers use
+// single run (an any-baked⟹well-formed-or-panic
+// boundary would false-positive on exactly those plans). Downstream consumers use
 // this probe to decide whether LEG WINDOWS apply to the join's output row —
 // windows are only meaningful when the output IS the leg concatenation; a
 // folded projection's output is a plain frontier row and gets none.
 //
 // Loud seed validation lives where the shape IS guaranteed by construction:
-// assertOrdinalJoinSeed, called by the W3b translator at the seed (and by its
+// assertOrdinalJoinSeed, called by the translator at the seed (and by its
 // pins). Cursor-side ORDINAL-BIRTH detection (does this join evaluate its
 // result value with leg bindings) is values.ContainsBakedOrdinal — deep,
 // rewrite-invariant — not this probe.
@@ -62,7 +63,7 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 	if spans, mergedType, ok = ordinalJoinSpansOf(v, nil); ok {
 		return spans, mergedType, true
 	}
-	// RFC-173 W4c: the MIXED single-source lateral-unnest seed (baked outer run
+	// The MIXED single-source lateral-unnest seed (baked outer run
 	// + a bare-scalar element) is not a pristine all-baked seed, so
 	// ordinalJoinSpansOf declines it; derive its windows (outer leg + a
 	// synthesized 1-field element leg) so the shadowing element gets its own
@@ -70,7 +71,7 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 	return unnestMixedSeedSpans(v)
 }
 
-// unnestMixedSeedSpans derives leg windows for the RFC-173 W4c MIXED single-
+// unnestMixedSeedSpans derives leg windows for the MIXED single-
 // source lateral-unnest ordinal seed (rfc173_w4c_unnest_seed.go): a full baked
 // OUTER leg run followed by EXACTLY ONE trailing bare-QuantifiedObjectValue
 // element field over a NON-record type — Java's isPrimitive() whole-object
@@ -80,16 +81,16 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 // windows the FlatMap output resolves references by positional FIRST-match —
 // which mis-resolves a name SHARED by the element AS alias and an outer column
 // (`FROM t, t.arr AS x` where t also has a column x) to the OUTER duplicate, and
-// leaves a qualified outer reference (`t.id`) unresolvable in a wrapping
-// name-model join's merged row. This synthesizes the element's OWN 1-field leg
+// leaves a qualified outer reference (`t.id`) without its leg namespace in a
+// wrapping join's merged row. This synthesizes the element's OWN 1-field leg
 // window (Alias = the element QOV correlation = the unnest AS alias; the leg's
 // single column = the RC field's name) so the element and the outer each carry
 // their own ALIAS.COL namespace — mirroring the WITH-ORDINALITY inner leg (a
-// genuine 2-field record leg, which ordinalJoinSpansOf already windows) and the
-// name-model buildUnnestResultValue's AS-alias shadowing. DECLINE-only
+// genuine 2-field record leg, which ordinalJoinSpansOf already windows) and
+// RFC-142's AS-alias shadowing rule. DECLINE-only
 // (ok=false) for every other shape: the trailing-bare-QOV-over-non-record
 // discriminator never matches a folded projection, a baked+constant fold, or the
-// S3 positional-merge RC (whose bare QOVs are over RECORD leg types).
+// positional-merge RC (whose bare QOVs are over RECORD leg types).
 func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
 	rc, isRC := v.(*values.RecordConstructorValue)
 	if !isRC || len(rc.Fields) < 2 {
@@ -103,7 +104,7 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 	// runs surround it: each run consecutive same-alias, ordinal 0..width-1, fully
 	// covered; a new alias starts a new run; a DUPLICATE alias (a run split across the
 	// element) declines. The non-record guard on the element is LOAD-BEARING against
-	// the S3 positional-merge RC (a bare QOV over a RECORD leg type — it must NOT be
+	// the positional-merge RC (a bare QOV over a RECORD leg type — it must NOT be
 	// treated as the element). Cross-agreement twin of OrdinalSeedLegWindows'
 	// element-anywhere walk — bit-for-bit, pinned by
 	// TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement.
@@ -172,12 +173,12 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 }
 
 // ordinalJoinSpansOf is ordinalJoinSpans with FUSED-reference resolution (the
-// S3 fulcrum's translated-top shape): a multi-accessor pinned path rooted at a
+// translated-top shape after a positional merge): a multi-accessor pinned path rooted at a
 // MERGE quantifier ([( _i, i), (col, j)] — the partition rule's TranslationMap
 // output) resolves to its LEAF leg by descending legRVs — the merge
 // quantifier's child result value (the positional-merge RC mapping _i →
 // QOV(leg)), the ONLY place the merged-away legs' user aliases survive. With
-// legRVs nil, multi-accessor paths decline and this is exactly the S2
+// legRVs nil, multi-accessor paths decline and this is exactly the
 // single-accessor probe.
 func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]values.Value) (spans []legSpan, mergedType *values.RecordType, ok bool) {
 	rc, isRC := v.(*values.RecordConstructorValue)
@@ -202,7 +203,7 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 			// Not every field a PINNED baked leg ref — not the seed. Unpinned
 			// baked nodes (the recursive-CTE wrap) carry no join-frontier
 			// contract; the probe keys on the FrontierPinned bit, not bare
-			// bakedness (unification review ruling).
+			// bakedness.
 			return nil, nil, false
 		}
 		alias, legType, ord, resolved := resolveSpanLeaf(fv, f.Name, legRVs)
@@ -229,7 +230,7 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 	}
 
 	if len(spans) < 2 {
-		return nil, nil, false // 1 run = folded single leg (S3 fulcrum lifted the exactly-2 wedge: N-leg flat seeds are live)
+		return nil, nil, false // 1 run = folded single leg, not a concat (N-leg flat seeds are live)
 	}
 	total := 0
 	for _, s := range spans {
@@ -238,7 +239,7 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 		}
 		total += s.Width
 	}
-	// Spans-consistency assert (review W3 extra pin). Unreachable given the
+	// Spans-consistency assert (defensive pin). Unreachable given the
 	// run construction above — pinned anyway so a future edit that breaks the
 	// derivation dies here, not in a downstream window misread.
 	if total != len(rc.Fields) {
@@ -278,7 +279,7 @@ func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 }
 
 // resolveSpanLeaf resolves one RV field to its LEAF leg (alias, leg type,
-// leg-local ordinal). A single-accessor path is the S2 seed shape: the leg is
+// leg-local ordinal). A single-accessor path is the plain seed shape: the leg is
 // the child QOV itself. A multi-accessor FUSED path descends each intermediate
 // accessor through the current quantifier's child RV in legRVs: the pristine
 // positional-merge RC's `_i` slot is a bare leg QOV (continue with it), and a
@@ -338,7 +339,7 @@ func resolveSpanLeaf(fv *values.FieldValue, fieldName string, legRVs map[values.
 			return alias, nil, 0, false
 		}
 	}
-	// RFC-173 W5 commit 2: a TERMINAL slot that is a bare NON-RECORD QOV of a
+	// A TERMINAL slot that is a bare NON-RECORD QOV of a
 	// quantifier we hold a legRV for is the gathered unnest's MIXED element
 	// carried through a partition collapse — unnestMixedSeedSpans' trailing-
 	// element synthesis lifted one level (the merge translated the seed's
@@ -409,7 +410,7 @@ func collectJoinLegRVs(join plans.RecordQueryPlan, out map[values.CorrelationIde
 }
 
 // spliceLegSpans recursively replaces a span whose LEG is itself a join plan
-// (a FULL box's gated-join leg, per the fulcrum's ordinalLegColumns concat)
+// (a FULL box's gated-join leg, per ordinalLegColumns' concat)
 // with the leg's OWN spans offset into the parent row: dotted upper
 // references name LEAF table aliases — the intermediate box alias
 // (sourceAlias, the buried rightmost table) never appears in a user query.
@@ -459,7 +460,7 @@ func spliceLegSpansDepth(spans []legSpan, legRVs map[values.CorrelationIdentifie
 // joinPlanSpans derives the leg windows for a join plan's output row: the
 // span probe with fused-reference resolution over the plan's leg RVs, then
 // the recursive box splice. Subsumes the bare ordinalJoinSpans probe (a
-// pristine S2 seed needs no legRVs and no splice — identical output).
+// pristine seed needs no legRVs and no splice — identical output).
 func joinPlanSpans(join plans.RecordQueryPlan) ([]legSpan, bool) {
 	spans, _, ok := joinPlanSpansTyped(join)
 	return spans, ok
@@ -467,9 +468,9 @@ func joinPlanSpans(join plans.RecordQueryPlan) ([]legSpan, bool) {
 
 // joinPlanSpansTyped is joinPlanSpans that ALSO returns the merged row's
 // RecordType (which ordinalJoinSpansOf already computes and joinPlanSpans
-// discards). RFC-173 S4 commit 4: the identity-FlatMap positional pass-through
+// discards). The identity-FlatMap positional pass-through
 // adapts a propagated outer against this merged type (a no-op on a seed-layout
-// row, but LOUD on a mismatch — amendment B: never a silent wrong-slot read).
+// row, but LOUD on a mismatch — never a silent wrong-slot read).
 func joinPlanSpansTyped(join plans.RecordQueryPlan) ([]legSpan, *values.RecordType, bool) {
 	rv := joinPlanRV(join)
 	if rv == nil {
@@ -479,7 +480,7 @@ func joinPlanSpansTyped(join plans.RecordQueryPlan) ([]legSpan, *values.RecordTy
 	collectJoinLegRVs(join, legRVs)
 	spans, mergedType, ok := ordinalJoinSpansOf(rv, legRVs)
 	if !ok {
-		// RFC-173 W4c: the MIXED single-source lateral-unnest seed windows via
+		// The MIXED single-source lateral-unnest seed windows via
 		// the dedicated derivation (bare-scalar element leg). It has no fused/box
 		// legs, so the spans stand without a splice.
 		if ms, mt, mok := unnestMixedSeedSpans(rv); mok {
@@ -491,7 +492,7 @@ func joinPlanSpansTyped(join plans.RecordQueryPlan) ([]legSpan, *values.RecordTy
 }
 
 // assertOrdinalJoinSeed delegates to values.AssertOrdinalJoinSeed — the LOUD
-// seed-shape validator RELOCATED to the values package (RFC-173 S2 W3b) so
+// seed-shape validator, which lives in the values package so
 // the translator, the caller of record, can invoke it at the seed without an
 // executor import. Semantics unchanged; the executor-side pins keep
 // exercising it through this name.
@@ -609,32 +610,32 @@ func buriedLegWindow(row values.OrdinalRow, s legSpan, alias string) (*legWindow
 }
 
 // adaptLegPositional is the RFC-173 sanctioned row-FORMAT adapter at the
-// join-input boundary: it bridges NAME-model legs (aggregate/union box outputs
-// that do not emit a positional row yet) into the ordinal join. A leg that
-// already carries a positional row flows it through untouched; otherwise a
-// *PositionalRow is synthesized from the name-keyed Datum by the LEG type's
-// field names (slot i = datum[Fields[i].Name]; a missing key is a nil slot =
-// SQL NULL); a nil or non-map Datum yields an all-nil row of the leg's width.
+// join-input boundary: it bridges a leg row whose positional LAYOUT differs
+// from the leg type the join's ordinals were baked against (an INDEX-shaped
+// covering row vs. the logical table-shaped leg type — see the permutation
+// note in the body). A leg whose layout already matches flows through
+// untouched; otherwise the row's slots are gathered into legType order via
+// the row's own plan-produced RecordType (a missing column is a nil slot =
+// SQL NULL); a row with no positional yields an all-nil row of the leg's
+// width.
 //
-// LOUD when the synthesis matches ZERO of the leg's columns against a
-// NON-EMPTY Datum (review W3a-1 catch): a name-model MERGE-shaped leg
-// carries dotted-qualified keys ("A.ID") the bare leg-type names never match,
-// so the silent path would all-NULL the leg — indistinguishable from a
-// legitimate all-NULL row. The W2 gate makes such legs unreachable for gated
-// joins (name-model join/exists selects are poison or enclosed), so this
-// error is a belt-and-braces tripwire on that argument, not a supported path.
-// A row whose keys are PRESENT with nil values (a genuine all-NULL row)
+// LOUD when the gather matches ZERO of the leg's columns against a NON-EMPTY
+// MERGE-shaped row: such a row carries dotted-qualified names ("A.ID") the
+// bare leg-type names never match, so the silent path would all-NULL the leg
+// — indistinguishable from a legitimate all-NULL row. The translation-time
+// cluster-arity gate makes such legs unreachable for gated joins, so this
+// error is a belt-and-braces tripwire on that invariant, not a supported path.
+// A row whose columns are PRESENT with nil values (a genuine all-NULL row)
 // matches normally and stays silent.
 //
 // This is format-only bridging — correlation-SEMANTIC bridging (an ordinal
-// join consumed as a leg of a name-model merge select) is explicitly out of
-// scope and prevented upstream by the W2 cluster-arity gate (RFC-173 §4
-// Slice 2 coexistence scoping).
+// join consumed as a leg of a wider merge select) is explicitly out of
+// scope and prevented upstream by the cluster-arity gate.
 func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.OrdinalRow, error) {
 	if qr.Positional != nil {
 		// The passthrough requires ORDERED per-slot name agreement with the
-		// leg type (PR-447 review catch, superseding the width-only
-		// tripwire): a COVERING-INDEX leg's positional row is INDEX-shaped —
+		// leg type (a width-only check is not
+		// enough): a COVERING-INDEX leg's positional row is INDEX-shaped —
 		// buildCoveringRow types it value-columns-then-PK ([V, ID]), not
 		// table order ([ID, V]) — same width, different layout, and a baked
 		// leg ordinal would silently read the wrong slot. A non-aligned
@@ -678,9 +679,9 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 			switch {
 			case rowIsMergeShaped(qr.Positional):
 				// LOUD for a genuinely MERGE-SHAPED row (leg windows or dotted-
-				// qualified field names) that matched nothing — the W3a-1 hazard:
-				// a name-model merge leg wrongly consumed by a gated join.
-				return nil, fmt.Errorf("RFC-173 leg adapter: merge-shaped leg row carries NONE of the leg type's %d columns %v (row width: %d) — a gated join must not consume a merge-shaped leg (W2 gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(qr.Positional.Slots))
+				// qualified field names) that matched nothing:
+				// a merge leg wrongly consumed by a gated join.
+				return nil, fmt.Errorf("RFC-173 leg adapter: merge-shaped leg row carries NONE of the leg type's %d columns %v (row width: %d) — a gated join must not consume a merge-shaped leg (cluster-arity gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(qr.Positional.Slots))
 			case len(qr.Positional.Slots) == len(legType.Fields):
 				// A SIMPLE row whose column names are DISJOINT from the leg type
 				// but SAME WIDTH — e.g. a materialized computed-scalar leg named by
@@ -691,8 +692,7 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 			default:
 				// A simple row of a different width that matches nothing (e.g. a
 				// bare-scalar `_0` UNNEST element bound as a redundant gather leg)
-				// degrades to an all-nil leg silently, matching the pre-cap
-				// Datum-synthesis path (a non-map datum → all-nil, no error).
+				// degrades to an all-nil leg silently.
 			}
 		}
 	}
@@ -704,7 +704,7 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 // DOTTED name over a row whose type carries leg boundaries (RecordType.Legs,
 // the merged concat / clustered box layout) — the per-leg window: qualifier →
 // the leg's window, column → FieldIndex WITHIN it. The dotted arm serves the
-// W4b correlated-scalar seed legs, whose seed leg types name columns literally
+// correlated-scalar seed legs, whose seed leg types name columns literally
 // `LEG.COL` while the physical leg emits the merged row those names address.
 // First-match on duplicate leg names mirrors FieldIndex's own first-match rule.
 func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
@@ -737,7 +737,7 @@ func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
 // rowIsMergeShaped reports whether a positional row is a JOIN-MERGE output — it
 // carries leg windows (Type.Legs) or dotted-qualified field names. Such a row's
 // bare columns are last-leg-wins leftovers, so a gated join adapting it to a
-// bare leg type that matches nothing is the W3a-1 wrong-source hazard (loud). A
+// bare leg type that matches nothing is a wrong-source hazard (loud). A
 // simple row (a scan/element leg) that matches nothing is a benign redundant
 // binding that degrades to an all-nil leg.
 func rowIsMergeShaped(pos *PositionalRow) bool {
@@ -786,7 +786,7 @@ func typeFieldNames(rt *values.RecordType) []string {
 // bound through bindings, writing merged slot i. A NULL LEG is expressed by
 // the binder returning (nil, true) for that leg's correlation — the baked
 // node's evaluateCorrelated `return bound, nil` arm yields nil, so the leg's
-// slots come out NULL (contract ruling #3: appendNullLeg ≡ evaluating the
+// slots come out NULL (appendNullLeg ≡ evaluating the
 // merged RC with the leg QOV bound to nil; the null extension falls out, no
 // ad-hoc per-row types).
 func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *values.RecordType, bindings values.CorrelationBinder) (*PositionalRow, error) {
@@ -811,7 +811,7 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 	return row, nil
 }
 
-// --- W3a-2: cursor-side birth wiring ----------------------------------------
+// --- cursor-side birth wiring ------------------------------------------------
 
 // rcOutputType derives an RC's OUTPUT row type: a RAW *RecordType (duplicate
 // names allowed and preserved verbatim — positional access is by ordinal) with
@@ -831,7 +831,7 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 		}
 		fields[i] = values.Field{Name: f.Name, FieldType: ft, Ordinal: i}
 	}
-	// RFC-173 item 3: the birthed row type carries leg boundaries — each
+	// The birthed row type carries leg boundaries — each
 	// baked leg run plus every BURIED leg a clustered box leg's type records
 	// (RecordType.Legs) — so a buried-leg reference ("B.BID") binds its OWN
 	// window through the row's Legs metadata (rowLegsBinder) on rows that
@@ -901,9 +901,9 @@ func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*
 }
 
 // ordinalJoinBirth is the per-cursor ordinal-BIRTH state, computed ONCE at
-// cursor construction (review W3 ruling: detection is the structural
+// cursor construction (detection is the structural
 // ContainsBakedOrdinal probe on the plan's result value — emergent from the
-// representation). Enabled marks the cursor as an ordinal birth site: its
+// representation, never a per-plan flag). Enabled marks the cursor as an ordinal birth site: its
 // emitted rows carry the positional row evaluated from the RC with per-leg
 // bindings — the row model's single authority.
 type ordinalJoinBirth struct {
@@ -925,14 +925,13 @@ type ordinalJoinBirth struct {
 	// the adapter's leg types when the RV is folded and Spans are unavailable.
 	LegTypes map[values.CorrelationIdentifier]*values.RecordType
 	// RawLegs are legs referenced by a BARE QuantifiedObjectValue over a
-	// NON-record type — the RFC-142 W4c lateral-unnest bare-scalar (or struct)
-	// element leg, whose whole flowed Datum IS the column (Java's isPrimitive()
+	// NON-record type — the RFC-142 lateral-unnest bare-scalar (or struct)
+	// element leg, whose whole flowed value IS the column (Java's isPrimitive()
 	// branch: the element is referenced directly, never ofOrdinal — ofOrdinal
-	// over a scalar throws). Such a leg must bind its RAW Datum, never be adapted
+	// over a scalar throws). Such a leg must bind its RAW value, never be adapted
 	// to an OrdinalRow: adaptLegPositional would synthesize an EMPTY positional
-	// row for a non-record Datum, so the element would birth NULL (the coexistence
-	// Datum masks it today; the positional row — S4's sole authority — would be
-	// wrong). Discriminated by leg SHAPE at construction, never a per-plan flag.
+	// row for a non-record value, so the element would birth NULL — silently
+	// wrong. Discriminated by leg SHAPE at construction, never a per-plan flag.
 	// The record-leg OrdinalRow path (adaptLegPositional) is unchanged.
 	RawLegs map[values.CorrelationIdentifier]struct{}
 	// OrdinalityLegs are legs whose row is a WITH-ORDINALITY Explode row
@@ -950,21 +949,20 @@ type ordinalJoinBirth struct {
 
 // newOrdinalJoinBirth probes a join plan's result value at cursor
 // construction. nil (disabled) when rv is nil or carries no baked ordinal —
-// the name-model cursor path, bit-identical to today. A LOUD error when rv
-// contains baked ordinals but is not a *RecordConstructorValue: every shape
+// the non-birth cursor path (identity pass-through / fold). A LOUD error when
+// rv contains baked ordinals but is not a *RecordConstructorValue: every shape
 // the planner can legitimately produce for an ordinal-birth join is an RC
 // (the seed, or the wrapper-merge-folded projection RC — the drift asserts
 // pin that); anything else is a planner bug and must die at construction,
-// never be silently demoted to the name model.
+// never be silently demoted to a non-birth cursor.
 func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBirth, error) {
-	// Two birth triggers during the S3 window:
-	//   - a FrontierPinned baked reference anywhere in the RV (the S2 flat
+	// Two birth triggers:
+	//   - a FrontierPinned baked reference anywhere in the RV (the flat
 	//     seed, its folds, and the post-translation MIXED upper shape whose
 	//     fields are ofOrdinal-over-innerMerge alongside bare leg QOVs);
-	//   - the S3-W2 positional-merge RC (ALL fields bare `_i`-named QOVs —
+	//   - the positional-merge RC (ALL fields bare `_i`-named QOVs —
 	//     the lowest merge level carries no baked refs at all, but its rows
 	//     must birth positional: the level above reads them by ordinal).
-	// Nothing produces the merge shape until the W2 fulcrum — dark.
 	if rv == nil || (!values.ContainsBakedOrdinal(rv) && !values.IsPositionalMergeRC(rv)) {
 		return nil, nil
 	}
@@ -973,21 +971,21 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 		return nil, fmt.Errorf("RFC-173 ordinal join birth: result value contains baked ordinal references but is a %T, want *RecordConstructorValue (seed or folded projection RC) — planner bug", rv)
 	}
 	spans, _, windowsOK := ordinalJoinSpans(rc)
-	// LegTypes come from the RESULT VALUE *and* the join PREDICATES (review
-	// PR-447 P1): a folded projection RV can DROP a leg entirely while a
+	// LegTypes come from the RESULT VALUE *and* the join PREDICATES: a
+	// folded projection RV can DROP a leg entirely while a
 	// baked cross-leg ON predicate still references it — collecting from the
-	// RV alone left the dropped leg typeless, and a name-model (Datum-only)
-	// row for it adapted to a ZERO-WIDTH binding that blew up the predicate
+	// RV alone left the dropped leg typeless, and the leg
+	// adapted to a ZERO-WIDTH binding that blew up the predicate
 	// (loud OrdinalResolutionError, "row columns []") on a legitimate plan.
 	legTypes := legTypesFromResultValue(rc)
-	// Bare QOV fields carry their leg's type directly (the S3 merge shape's
-	// `_i` columns and the mixed upper's untranslated leg): without this a
-	// bare-QOV leg is typeless and its adapter degrades to the Datum
-	// synthesis path even when the leg flows a typed row. Same
+	// Bare QOV fields carry their leg's type directly (the positional-merge
+	// shape's `_i` columns and the mixed upper's untranslated leg): without
+	// this a bare-QOV leg is typeless and its adapter degrades to an all-nil
+	// synthesis even when the leg flows a typed row. Same
 	// conflict-impossibility invariant as widenLegTypesFromPlan — every
 	// source copies the one planner-constructed typed QOV — asserted the
-	// same way (a silent first-wins here would be an inconsistent assertion
-	// of a load-bearing invariant, review nit).
+	// same way (a silent first-wins would be an inconsistent assertion
+	// of a load-bearing invariant).
 	var rawLegs map[values.CorrelationIdentifier]struct{}
 	for _, f := range rc.Fields {
 		if qov, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
@@ -998,8 +996,8 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 					panic(fmt.Sprintf("RFC-173: leg %s carries DIVERGENT types (%d vs %d fields) across the RV's bare-QOV and baked-reference sources — all references must copy the one planner-constructed typed QOV (planner bug)", qov.Correlation, len(prev.Fields), len(rt.Fields)))
 				}
 			} else {
-				// A bare QOV over a NON-record type: the W4c lateral-unnest
-				// bare-scalar/struct element leg — bind its whole flowed Datum
+				// A bare QOV over a NON-record type: the lateral-unnest
+				// bare-scalar/struct element leg — bind its whole flowed value
 				// raw (see RawLegs).
 				if rawLegs == nil {
 					rawLegs = map[values.CorrelationIdentifier]struct{}{}
@@ -1035,25 +1033,23 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 	}, nil
 }
 
-// enabled is the nil-safe Enabled read — a name-model cursor stores a nil
+// enabled is the nil-safe Enabled read — a non-birth cursor stores a nil
 // *ordinalJoinBirth.
 func (b *ordinalJoinBirth) enabled() bool { return b != nil && b.Enabled }
 
 // widenLegTypesFromPlan widens LegTypes with every BAKED leg reference found
 // in a physical plan tree's predicate surfaces — PredicatesFilter/Filter
-// predicates and scan/index comparison operands. The FlatMap half of the
-// PR-447 review P1 (@claude final-pass catch): the correlated implementation
+// predicates and scan/index comparison operands. The correlated implementation
 // pushes the join's baked ON references INTO the inner plan as SARGs and
 // residual filters, so a folded result value that DROPPED a leg leaves the
-// birth typeless for it even though the inner plan still references it — a
-// Datum-only row for that leg (aggregate-box outer) then adapts to a
+// birth typeless for it even though the inner plan still references it — the
+// untyped leg then adapts to a
 // zero-width binding and dies loudly on a legitimate plan. Called by
 // newFlatMapCursor with the inner plan; the NLJ path gets the same widening
 // directly from its predicate list in newOrdinalJoinBirth.
 //
-// WINDOW SCAFFOLDING like adaptLegPositional itself (review): the walk exists
-// only because folded RVs and Datum-only legs coexist — it dies with the
-// adapter in Slice 4 (all-positional legs leave nothing to synthesize). Its
+// The walk exists only because a folded RV can drop a leg the plan still
+// references. Its
 // exact-set plan arms fail SAFE: a missed predicate surface leaves the leg
 // typeless → loud zero-width death, never silent.
 //
@@ -1087,19 +1083,18 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 // walkBakedRefs walks a physical plan tree's predicate surfaces —
 // PredicatesFilter/Filter predicates and scan/index comparison operands —
 // applying collect to every value found there. It is the ONE baked-reference
-// plan walk (design-ruling amendment B: a single derivation path), shared by
+// plan walk (a single derivation path), shared by
 // widenLegTypesFromPlan (the birth-side type widening, width-divergence panic
-// in its collector) and probeOuterBakedType (the item-2 commit-2
+// in its collector) and probeOuterBakedType (the
 // disabled-birth probe).
 //
 // RecordQueryNestedLoopJoinPlan also implements GetPredicates but is
-// DELIBERATELY omitted (review note, arm-parity precedent): baked
-// references exist only in gated joins, and join legs are categorically
-// ineligible in the S2 wedge — a baked-ref-bearing NLJ cannot appear
-// inside a gated flatMap's inner plan. Re-examine at the S3 gate widening.
+// DELIBERATELY omitted: a baked-ref-bearing NLJ does not appear inside a
+// gated FlatMap's inner plan (an existential inner is never itself consumed
+// as a gated join leg).
 // The exact-set plan arms fail SAFE: a missed predicate surface leaves a leg
-// typeless / a probe negative — a loud zero-width death or the name-model
-// Datum binding downstream, never silent misbinding.
+// typeless / a probe negative — a loud zero-width death downstream, never
+// silent misbinding.
 func walkBakedRefs(plan plans.RecordQueryPlan, collect func(values.Value) values.Value) {
 	collectComparison := func(c *predicates.Comparison) {
 		if c != nil && c.Operand != nil {
@@ -1148,21 +1143,17 @@ func walkBakedRefs(plan plans.RecordQueryPlan, collect func(values.Value) values
 	walk(plan)
 }
 
-// probeOuterBakedType is the RFC-173 item-2 commit-2 DISABLED-BIRTH probe: a
+// probeOuterBakedType is the DISABLED-BIRTH probe: a
 // FlatMap whose own result value births no ordinal state (the identity-RV
 // existential FlatMap — WHERE-EXISTS over a gated join) can still carry BAKED
 // FrontierPinned references to the OUTER alias inside its inner plan (the
 // correlated implementation pushes the join's ON references down as SARGs and
 // residual filters). Those references resolve by ordinal and die loudly on a
-// name-keyed Datum binding (BakedNameContextError), so the cursor must bind
-// the outer positionally. The probe recovers the outer's typed RecordType
+// name-keyed binding (BakedNameContextError), so the cursor must bind
+// the outer positionally, adapted to the probed type's layout. The probe
+// recovers the outer's typed RecordType
 // from those references through the shared walker; the width-divergence panic
 // asserts the same one-seed invariant widenLegTypesFromPlan pins.
-//
-// S4 KILL LIST (design-ruling amendment A): this probe and the identity-RV
-// positional pass-through are coexistence-window scaffolding — once the name
-// model dies, every row and binding is positional and the probe decides
-// nothing. The empirical zero-producers gate covers them.
 func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) *values.RecordType {
 	var found *values.RecordType
 	walkBakedRefs(plan, func(v values.Value) values.Value {
@@ -1202,11 +1193,11 @@ func (b *ordinalJoinBirth) legType(id values.CorrelationIdentifier) *values.Reco
 }
 
 // legRows adapts the two join legs into the BIRTH-time binding map: alias →
-// values.OrdinalRow via adaptLegPositional (positional legs flow through;
-// name-model legs synthesize by leg type). A NIL QueryResult pointer is the
+// values.OrdinalRow via adaptLegPositional (layout-matching legs flow through;
+// other layouts gather into the leg type). A NIL QueryResult pointer is the
 // NULL leg (LEFT/FULL null padding): its alias maps to nil, PRESENT — the
 // binder then returns (nil, true) and the leg's baked references evaluate to
-// NULL (contract ruling #3; the null extension falls out of evaluation).
+// NULL (the null extension falls out of evaluation).
 func (b *ordinalJoinBirth) legRows(outerAlias, innerAlias string, outer, inner *QueryResult) (map[values.CorrelationIdentifier]values.OrdinalRow, map[values.CorrelationIdentifier]any, error) {
 	legs := make(map[values.CorrelationIdentifier]values.OrdinalRow, 2)
 	raw := make(map[values.CorrelationIdentifier]any)
@@ -1221,7 +1212,7 @@ func (b *ordinalJoinBirth) legRows(outerAlias, innerAlias string, outer, inner *
 
 func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, alias string, qr *QueryResult) error {
 	id := values.NamedCorrelationIdentifier(alias)
-	// A RAW leg (a bare-QOV non-record W4c unnest element) binds its whole flowed
+	// A RAW leg (a bare-QOV non-record unnest element) binds its whole flowed
 	// scalar — never adapted to a (non-record → empty) OrdinalRow. The element
 	// flows as a 1-slot `_0` PositionalRow (scalarPositionalRow), so bind the
 	// UNWRAPPED scalar, which QOV(inner).Evaluate flows as the value. A nil pointer
@@ -1283,8 +1274,8 @@ func (b *ordinalJoinBirth) evaluateLegs(legs map[values.CorrelationIdentifier]va
 }
 
 // evaluateBound births the positional row from any pre-built leg binder — the
-// zero-rebuild path the NLJ cursor's per-pair twoLegBinder uses (review
-// W3a-2: no per-pair map, no per-pair re-adaptation).
+// zero-rebuild path the NLJ cursor's per-pair twoLegBinder uses (no per-pair
+// map, no per-pair re-adaptation).
 func (b *ordinalJoinBirth) evaluateBound(bindings values.CorrelationBinder) (*PositionalRow, error) {
 	return evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings)
 }
@@ -1292,13 +1283,13 @@ func (b *ordinalJoinBirth) evaluateBound(bindings values.CorrelationBinder) (*Po
 // twoLegBinder is the NLJ cursor's per-pair leg binder: exactly the join's
 // two legs, pre-adapted rows plugged in per candidate pair — no map, no
 // re-adaptation (the inner rows are a FIXED slice adapted once at cursor
-// construction; the outer is adapted once per outer-row advance; review
-// W3a-2 structural-perf catch). A nil row IS the deliberately-NULL leg
-// (LEFT/FULL padding): (nil, true), contract ruling #3. Non-leg correlations
+// construction; the outer is adapted once per outer-row advance — per-pair
+// adapter work would be a structural perf regression). A nil row IS the
+// deliberately-NULL leg (LEFT/FULL padding): (nil, true). Non-leg correlations
 // delegate to base.
 //
 // No RAW-leg arm (unlike birthLegBinder): a raw bare-QOV-over-non-record leg is
-// the W4c lateral-unnest element, which is ALWAYS a FlatMap seed — the NLJ path
+// the lateral-unnest element, which is ALWAYS a FlatMap seed — the NLJ path
 // never carries one, so twoLegBinder's OrdinalRow-only legs are complete for it.
 type twoLegBinder struct {
 	outerID, innerID values.CorrelationIdentifier
@@ -1337,21 +1328,21 @@ func (b *ordinalJoinBirth) evaluate(outerAlias, innerAlias string, outer, inner 
 }
 
 // birthLegBinder is the BIRTH-time correlation binder: DIRECT per-leg bindings
-// (review W3 ruling: predicates and result-value evaluation need no windows at
+// (predicates and result-value evaluation need no windows at
 // birth — each leg binds to its OWN leg-local row, so both baked (leg ordinal)
 // and lazy (leg-relative resolveOrdinal) references read the right slot, even
 // for the second leg). A key PRESENT with a nil value is the deliberately-NULL
 // leg: GetCorrelationBinding returns (nil, true) and the baked node's
-// `return bound, nil` arm yields NULL (contract ruling #3). Anything else
+// `return bound, nil` arm yields NULL. Anything else
 // delegates to base (outer correlations; nil base = unbound).
 //
-// The map-based binder survives ONLY for flatMap's one-shot evaluate (one
+// The map-based binder is used ONLY for flatMap's one-shot evaluate (one
 // binder per EMITTED row — no per-candidate cost there); the NLJ's per-pair
-// hot path uses the fixed twoLegBinder below (review W3a-2 perf catch).
+// hot path uses the fixed twoLegBinder.
 type birthLegBinder struct {
 	legs map[values.CorrelationIdentifier]values.OrdinalRow
-	// raw carries bare-QOV non-record legs (the W4c unnest element) bound to
-	// their WHOLE flowed Datum — QOV(inner).Evaluate returns the scalar/struct
+	// raw carries bare-QOV non-record legs (the unnest element) bound to
+	// their WHOLE flowed value — QOV(inner).Evaluate returns the scalar/struct
 	// itself, not a positional row. A key present with a nil value is that leg's
 	// NULL binding.
 	raw  map[values.CorrelationIdentifier]any
@@ -1361,7 +1352,7 @@ type birthLegBinder struct {
 // GetCorrelationBinding implements values.CorrelationBinder.
 func (b *birthLegBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	if v, present := b.raw[id]; present {
-		return v, true // raw leg — the whole flowed Datum (nil = NULL leg)
+		return v, true // raw leg — the whole flowed value (nil = NULL leg)
 	}
 	if row, present := b.legs[id]; present {
 		if row == nil {
@@ -1471,10 +1462,10 @@ func downstreamLegWindows(input plans.RecordQueryPlan) ([]legSpan, bool) {
 }
 
 // downstreamLegWindowsTyped is downstreamLegWindows that ALSO returns the merged
-// row's RecordType (RFC-173 S4 commit 4 — the identity-FlatMap pass-through's
+// row's RecordType (the identity-FlatMap pass-through's
 // loud adaptation guard). Same acceptance as downstreamLegWindows: a genuine
-// gated ordinal join outer only (ordinalJoinSpansOf rejects a name-model
-// anchored RC — its fields are lazy, not FrontierPinned).
+// gated ordinal join outer only (ordinalJoinSpansOf accepts the pristine
+// FrontierPinned seed shape and declines everything else).
 func downstreamLegWindowsTyped(input plans.RecordQueryPlan) ([]legSpan, *values.RecordType, bool) {
 	join := unwrapToJoinPlan(input)
 	if join == nil {
@@ -1495,8 +1486,8 @@ func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 		case *plans.RecordQueryFlatMapPlan:
 			// An identity-over-OUTER FlatMap (the WHERE-EXISTS pass-through,
 			// RFC-141) is a row-preserving passthrough toward its OUTER plan:
-			// the cursor re-emits the outer row verbatim (qualifyOuterRow +
-			// the item-2 commit-2 I1 positional pass-through), so the window
+			// the cursor re-emits the outer row verbatim (the identity
+			// positional pass-through), so the window
 			// authority is the outer's join — this FlatMap's own bare-QOV RV
 			// yields no spans. Any other RV keeps the FlatMap as the terminal:
 			// the seed RC is its own authority, everything else declines in
@@ -1530,11 +1521,12 @@ func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 
 // innerIsOrdinalityExplode reports whether a FlatMap's inner plan is a
 // WITH-ORDINALITY Explode (through the single-child passthrough wrappers a
-// WHERE-on-ordinal / LIMIT can add) — the RFC-142 W4c unnest producer signal.
-// Such an inner flows a per-row Datum keyed by the internal `_0`/`_1` positions,
-// so its leg must bind POSITIONALLY (OrdinalityLegs). Only an ordinality Explode
-// qualifies: a non-ordinality Explode (an IN-list) flows a bare scalar (a
-// RawLeg, a different path), and any other inner is name-model.
+// WHERE-on-ordinal / LIMIT can add) — the RFC-142 unnest producer signal.
+// Such an inner flows a per-row two-slot row keyed by the internal `_0`/`_1`
+// positions, so its leg must bind POSITIONALLY (OrdinalityLegs). Only an
+// ordinality Explode qualifies: a non-ordinality Explode (an IN-list) flows a
+// bare scalar (a RawLeg, a different path), and any other inner binds through
+// the normal leg adapter.
 func innerIsOrdinalityExplode(input plans.RecordQueryPlan) bool {
 	for input != nil {
 		switch p := input.(type) {
@@ -1555,14 +1547,14 @@ func innerIsOrdinalityExplode(input plans.RecordQueryPlan) bool {
 
 // legWindowRowContext builds the downstream per-row eval context over the
 // join's merged positional row: like EvaluationContext.RowContextPositional,
-// but Correlations is the legWindowBinder — a window-era upper's direct leg
+// but Correlations is the legWindowBinder — an upper's direct leg
 // reference (FieldValue(QOV(leg), col), lazy or baked) resolves LEG-LOCALLY
 // through its window, an outer correlation delegates to the base
 // EvaluationContext, and only an unbound (join-quantifier) reference falls to
 // the bare merged row. Applied UNCONDITIONALLY on windowed inputs — even with
 // no param/subquery/outer binding in play — because the leg references NEED
 // the Correlations bindings (the bare merged row misreads them leg-relative:
-// the W3 wrong-slot hazard).
+// a wrong-slot hazard).
 func legWindowRowContext(pos values.OrdinalRow, ec *EvaluationContext, spans []legSpan) *values.RowEvalContext {
 	rc := &values.RowEvalContext{
 		Positional:   &spanAwareRow{parent: pos, spans: spans},

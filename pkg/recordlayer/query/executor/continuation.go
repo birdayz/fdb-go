@@ -306,8 +306,8 @@ func encodeSortContinuation(
 		// and it is written as a constant `false` dead placeholder purely to keep the
 		// 3-slot array shape wire-identical (no format-version bump).
 		//
-		// RFC-173 cap: the Positional row is the SOLE runtime output row (the
-		// name-keyed Datum is deleted), so a resumed sort buffer MUST carry it or the
+		// RFC-173: the Positional row is the SOLE runtime output row (there is
+		// no name-keyed row), so a resumed sort buffer MUST carry it or the
 		// reader rejects every buffered row after a page boundary. Slot 0 (formerly
 		// the JSON datum) is null, slot 1 is the retired-Complete placeholder, slot 2
 		// is the positional {n:[field names], s:[slots]} (decode reconstructs the

@@ -64,8 +64,8 @@ func (ec *EvaluationContext) RowContext() *values.RowEvalContext {
 }
 
 // RowContextPositional returns a RowEvalContext whose authoritative row is the
-// RFC-173 Slice 1 ordinal-model positional row (resolved by ordinal, no name-map
-// fallback), combined with this context's parameter bindings, correlation
+// ordinal-model positional row (resolved by ordinal, no name-map fallback),
+// combined with this context's parameter bindings, correlation
 // bindings, and scalar subquery results. Use it on the non-join frontier when a
 // param / scalar subquery / outer correlation is in play; when none is, flow the
 // bare OrdinalRow directly. An outer correlation resolves via Correlations first;
@@ -79,17 +79,17 @@ func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values
 	}
 }
 
-// frontierRowContext returns the eval context a row on the RFC-173 Slice 1
-// authoritative non-join ordinal frontier is resolved against: the bare
+// frontierRowContext returns the eval context a row on the non-join ordinal
+// frontier is resolved against: the bare
 // positional row (FieldValue resolves by ordinal, loud on a miss — NO name-map
-// fallback, reviewer) when no param / scalar-subquery / outer correlation binding
+// fallback) when no param / scalar-subquery / outer correlation binding
 // is in play, else a RowContextPositional so an outer correlation resolves via
 // the binder BEFORE the frontier quantifier falls to the positional row. Shared
 // by executeProjection / executeFilter / executePredicatesFilter / executeMap so
 // the frontier dispatch is identical across them. hasBindingCtx is
 // params||scalarSubqueries||bindings for the caller's evalCtx.
 func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBindingCtx bool) any {
-	// RFC-173 item C: a row whose TYPE carries leg boundaries (a merged concat /
+	// A row whose TYPE carries leg boundaries (a merged concat /
 	// clustered box row) serves its legs as correlation-bound windows, so a
 	// quantifier-addressed source-relative baked reference (QOV(leg).col with the
 	// source's declared-column ordinal) resolves positionally within its leg —

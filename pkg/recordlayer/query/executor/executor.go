@@ -989,7 +989,7 @@ func executeFilter(
 
 	preds := p.GetPredicates()
 	needsRowCtx := hasBindingContext(evalCtx)
-	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// When the input flows a 2-way ordinal join's merged
 	// positional row, filter predicates evaluate under the LEG WINDOWS —
 	// computed once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
@@ -998,14 +998,14 @@ func executeFilter(
 		pred: func(qr QueryResult) (bool, error) {
 			var rowCtx any
 			if qr.Positional != nil && windowsOK {
-				// RFC-173 Slice 2: the merged positional row of a gated 2-way
-				// ordinal join — a window-era leg reference QOV(leg).col needs
+				// The merged positional row of a gated 2-way
+				// ordinal join — a leg reference QOV(leg).col needs
 				// its leg window (unconditional: even with no binding context,
 				// the leg bindings are required; the bare merged row misreads
-				// leg-relative ordinals — the W3 wrong-slot hazard).
+				// leg-relative ordinals — a wrong-slot hazard).
 				rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
 			} else if qr.Positional != nil {
-				// RFC-173 Slice 1: the non-join frontier flows an authoritative
+				// The non-join frontier flows an authoritative
 				// ordinal row — resolve filter predicates by ordinal (loud on a
 				// miss, no name-map fallback).
 				rowCtx = frontierRowContext(qr.Positional, evalCtx, needsRowCtx)
@@ -1390,10 +1390,10 @@ func executeDistinct(
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
 }
 
-// distinctKey builds a DISTINCT dedup key from the row's ordinal PositionalRow
-// (RFC-173: the name-keyed Datum is deleted). Slots are keyed by ORDINAL (their
-// fixed output position), typed like the legacy name-keyed form so two rows dedup
-// iff every column value+type matches. A nil-Positional row yields the empty key.
+// distinctKey builds a DISTINCT dedup key from the row's ordinal PositionalRow.
+// Slots are keyed by ORDINAL (their fixed output position) plus the column name
+// and value type, so two rows dedup iff every column value+type matches. A
+// nil-Positional row yields the empty key.
 func distinctKey(qr QueryResult) string {
 	if qr.Positional == nil || qr.Positional.Type == nil {
 		return ""
@@ -1433,21 +1433,18 @@ func executeProjection(
 
 	projections := p.GetProjections()
 	aliases := p.GetAliases()
-	// RFC-173 Slice 1: on the positional frontier an outer correlation resolves via
+	// On the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
 	posNeedsCtx := hasBindingContext(evalCtx)
-	// RFC-173 P2/Slice 1: the projection's output schema is row-invariant — compute
-	// it ONCE. projNames keys the name-keyed Datum (source column name for a bare
-	// field ref, from projectionColumnName); posNames names the EMITTED positional
+	// The projection's output schema is row-invariant — compute it ONCE.
+	// posNames names the EMITTED positional
 	// row's slots by OUTPUT name — alias-preferring, via the shared
 	// values.OutputColumnName authority (the recursive-CTE leg wrap re-reads by
 	// the same rule) — so a downstream ordinal consumer resolves this derived
 	// table's OUTPUT columns, not the source column a field ref reads from — the
 	// buried-reference fix's ordinal counterpart.
-	projNames := make([]string, len(projections))
 	posNames := make([]string, len(projections))
 	for i, proj := range projections {
-		projNames[i] = projectionColumnName(proj)
 		alias := ""
 		if i < len(aliases) {
 			alias = aliases[i]
@@ -1455,29 +1452,7 @@ func executeProjection(
 		posNames[i] = values.OutputColumnName(proj, alias)
 	}
 	projType := positionalTypeFromNames(posNames)
-	// RFC-173: a projection whose OUTPUT columns are all bare (no qualified
-	// ALIAS.COL) AND uniquely named presents a clean flat frontier row, so it may
-	// emit a Positional even over a birth-disabled join input (see the emission
-	// site below). DUPLICATE bare names are excluded: a join projection
-	// `SELECT c.name, p.name` outputs [NAME, NAME], and a qualified downstream read
-	// / ORDER BY (`p.name`) cannot disambiguate the two NAME slots on a flat row
-	// (it would resolve to the first) — that shape must stay name-model, which keys
-	// the two by their qualified "C.NAME"/"P.NAME" keys. A single dotted output name
-	// marks a qualified re-projection that also stays name-model.
-	projOutputAllBare := true
-	seenProjName := make(map[string]struct{}, len(posNames))
-	for _, n := range posNames {
-		if strings.Contains(n, ".") {
-			projOutputAllBare = false
-			break
-		}
-		if _, dup := seenProjName[strings.ToUpper(n)]; dup {
-			projOutputAllBare = false
-			break
-		}
-		seenProjName[strings.ToUpper(n)] = struct{}{}
-	}
-	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// When the input flows a 2-way ordinal join's merged
 	// positional row, projections evaluate under the LEG WINDOWS — computed
 	// once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
@@ -1489,12 +1464,12 @@ func executeProjection(
 		slots := make([]any, len(projections))
 		var rowCtx any
 		if qr.Positional != nil && windowsOK {
-			// RFC-173 Slice 2: the merged positional row of a gated 2-way
-			// ordinal join — a window-era leg reference QOV(leg).col needs its
+			// The merged positional row of a gated 2-way
+			// ordinal join — a leg reference QOV(leg).col needs its
 			// leg window (unconditional; see executeFilter).
 			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
 		} else if qr.Positional != nil {
-			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
+			// The non-join frontier flows an authoritative ordinal
 			// row — resolve projections by ordinal (loud on a miss).
 			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
 		}
@@ -1506,16 +1481,15 @@ func executeProjection(
 			}
 			slots[i] = val // RFC-173: dense positional slot (kept even on dup names)
 		}
-		// RFC-173 cap: a projection's output IS a PositionalRow (the name-keyed Datum
-		// is deleted), so ALWAYS emit it — built by parallel construction from the
-		// projected values, named by the output schema (projType).
+		// A projection's output IS a PositionalRow — ALWAYS emit it, built by
+		// parallel construction from the projected values, named by the output
+		// schema (projType).
 		return QueryResult{
 			Positional: &PositionalRow{Type: projType, Slots: slots},
 			Record:     qr.Record,
 			PrimaryKey: qr.PrimaryKey,
 		}
 	})
-	_ = projOutputAllBare
 	errCursor := &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}
 	return errCursor, nil
 }
@@ -1887,7 +1861,7 @@ func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) Q
 	// RFC-173: a UNION aligns legs BY ORDINAL (SQL positional union) — re-type the
 	// leg's Positional to the union's output column names (leg 2's [REGION] → the
 	// output's [STATUS]); the slots stay in ordinal place, only the names change.
-	// The name-keyed Datum remap is deleted. The first leg's names already ARE the
+	// The first leg's names already ARE the
 	// output names, so it flows through unchanged.
 	if qr.Positional == nil || len(srcKeys) != len(targetKeys) || len(qr.Positional.Slots) != len(targetKeys) {
 		return qr
@@ -2007,7 +1981,7 @@ func widenInt32(v any) any {
 // authoritative ordinal row (qr.Positional != nil — every merge/intersection
 // branch is a plan whose output is positional), the comparison-key value resolves
 // against that bare PositionalRow (FieldValue.Evaluate → evaluateOrdinal: by
-// ordinal, loud on a miss — never a name-keyed Datum read). A comparison key is
+// ordinal, loud on a miss — never a name-keyed read). A comparison key is
 // a field extraction with no param / subquery / correlation binding, so the bare
 // positional row is the whole context — frontierRowContext(pos, nil, false)
 // collapses to exactly this. Both merge branches resolve the SAME field by
@@ -2173,19 +2147,17 @@ func executeNestedLoopJoin(
 }
 
 // concatLegPositionals builds a leg-windowed merged PositionalRow by CONCATENATING
-// two leg rows' own Positionals (parallel construction — never read back from a
-// name Datum). The merged Type carries top-level Legs [outerAlias@[0,Wo),
+// two leg rows' own Positionals (parallel construction). The merged Type carries
+// top-level Legs [outerAlias@[0,Wo),
 // innerAlias@[Wo,Wo+Wi)] so a qualified reference ("LA.K") binds its leg's window
 // (rowLegsBinder / legWindowBinder); a bare read reads its baked slot. Nested Legs (a leg
 // that is itself a merge) are preserved, the inner leg's shifted by Wo. Returns nil
-// when either leg lacks a Positional — then the caller keeps only the name Datum.
-// This is the RFC-173 birth FALLBACK for NAME-MODEL joins (the nljCursor's birth
-// path OVERWRITES .Positional when a gated join has an ordinal seed, so this only
-// takes effect for the un-gated AnchoredJoin merges the cap is retiring).
+// when either leg lacks a Positional. This is the merge for a NON-birth join
+// cursor (the nljCursor's birth path OVERWRITES .Positional when a gated join
+// has an ordinal seed).
 // legFieldName names a leg's merged column: a bare-scalar UNNEST element (a
 // 1-field `_0` row — `t.arr AS X`) is renamed to its AS alias so a downstream
-// BARE read of the alias ("X") resolves to the element directly (the ordinal
-// successor to the name model binding the element under QOV(X)). Any other field
+// BARE read of the alias ("X") resolves to the element directly. Any other field
 // keeps its own name.
 func legFieldName(fieldName, alias string, legWidth int) string {
 	if alias != "" && legWidth == 1 && fieldName == values.OrdinalFieldName(0) {
@@ -2227,11 +2199,9 @@ func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias st
 }
 
 func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryResult {
-	// RFC-173 cap: a join merge's output IS a leg-windowed PositionalRow — the two
+	// A join merge's output IS a leg-windowed PositionalRow — the two
 	// leg rows' own Positionals concatenated (concatLegPositionals), with leg windows
 	// so a qualified read (`A.ID`) resolves to its leg and a bare read by name-in-row.
-	// The name-keyed Datum merge (Pass A/B/C, qualifyAlias/qualifyTypeFallback) is
-	// deleted with the name model.
 	return QueryResult{
 		Positional: concatLegPositionals(outer.Positional, inner.Positional, outerAlias, innerAlias),
 		Record:     outer.Record,
@@ -2245,12 +2215,12 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 	return passesJoinPredicatesLegs(combined, preds, evalCtx, nil)
 }
 
-// passesJoinPredicatesLegs is passesJoinPredicates extended with the RFC-173
-// Slice 2 ordinal-birth leg bindings. legs nil (the non-birth merged-row path)
+// passesJoinPredicatesLegs is passesJoinPredicates extended with the
+// ordinal-birth leg bindings. legs nil (the non-birth merged-row path)
 // resolves through the merged row's leg windows (spansFromMergedLegs below).
 // legs non-nil (an ordinal-birth cursor) evaluates the predicates against a
 // RowEvalContext carrying the DIRECT per-leg bindings (the cursor's pre-built
-// twoLegBinder — review: predicates need no windows at birth; review: legs
+// twoLegBinder — predicates need no windows at birth; legs are
 // PRE-adapted, one small binder per pair, never a map or a re-adaptation): a
 // lazy leg reference QOV(leg).col resolves leg-relative against the adapted leg
 // row (correct even for the second leg), a BAKED one by its baked ordinal, an
@@ -2295,8 +2265,8 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 	if len(preds) == 0 {
 		return true, nil
 	}
-	// RFC-173 cap: resolve join/EXISTS predicates against the merged row's ordinal
-	// Positional (the name-keyed Datum is deleted). A birth-active cursor supplies a
+	// Resolve join/EXISTS predicates against the merged row's ordinal
+	// Positional. A birth-active cursor supplies a
 	// per-leg binder (legs); a non-birth merge derives leg windows from the merged
 	// row's own leg metadata (Type.Legs) so a QOV(leg).col — e.g. QOV(B).ID —
 	// resolves to leg B's window instead of first-matching leg A's bare "ID" on the
@@ -3215,7 +3185,7 @@ func executeRecursiveLevelUnion(
 		canonicalCols := recursiveUnionOutputColumns(p.GetInitialState())
 		if len(canonicalCols) == 0 && len(items) > 0 && items[0].Positional != nil {
 			// Positional column order is already deterministic (ordinal order),
-			// so no sort is needed — unlike the retired name-map key scrape.
+			// so no sort is needed.
 			canonicalCols = items[0].Positional.TypeNames()
 		}
 		keyer = newCTEDedupKeyer(canonicalCols)
@@ -3310,7 +3280,7 @@ func executeRecursiveDfsJoin(
 	// in tt.Add — draining with the byte-charging CollectAllBounded would
 	// double-count and trip the budget at ~half its true value (the same defect
 	// collectAllRowCapped fixes for executeRecursiveLevelUnion's initial state).
-	// Surfaced by RFC-173 S4 R1: ordinalizing the recursive body flips the cost
+	// Ordinalizing the recursive body flips the cost
 	// so this DFS plan wins over the level union for wide-payload recursive CTEs.
 	rootRows, err := collectAllRowCapped(ctx, rootCursor, props.GetMaterializationLimit(), "recursive DFS join root")
 	rootCursor.Close()
@@ -3863,8 +3833,8 @@ func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 					// Upper-case symmetrically with the aliased branch: the dedup
 					// keyer binds these names against the UPPER-cased row layouts
 					// (exact FieldIndex match), so a mixed-case name here would miss
-					// every layout and collapse distinct rows / break cycle detection
-					// (reviewer). projectionColumnName already uppers the non-field
+					// every layout and collapse distinct rows / break cycle detection.
+					// projectionColumnName already uppers the non-field
 					// path; this makes the field path explicit too.
 					out[i] = strings.ToUpper(projectionColumnName(pv))
 				}
@@ -3887,8 +3857,8 @@ func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 // projection output), so the column→ordinal bind is resolved once per row
 // LAYOUT — against the row's *RecordType, plan-produced metadata — and cached,
 // never re-derived per row. A canonical column absent from a layout keys as
-// NULL (dimension-preserving with the seed leg, exactly as the retired
-// per-row name lookup keyed a miss). Go extension: Java's recursive union has
+// NULL (dimension-preserving with the seed leg).
+// Go extension: Java's recursive union has
 // no DISTINCT arm (RecordQueryRecursiveLevelUnionPlan is UNION ALL only).
 type cteDedupKeyer struct {
 	cols []string // canonical output columns, UPPER-cased
