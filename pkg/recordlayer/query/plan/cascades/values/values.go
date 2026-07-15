@@ -977,10 +977,12 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 // reference's OWN source row (the resolver's declared-column-order ordinal).
 // Such a node is ordinal-bound but NOT yet rebased onto any composed frontier
 // (gated-join box seed, gathered seed, merged concat, group-by output): the
-// translator's rebase/collection/safety-net walks over composed rows MUST
-// treat it exactly like its lazy twin — rebind it through the walk's own
-// authority, count it as a leg reference, flag it as surviving — whereas a
-// FrontierPinned or multi-accessor path is machinery-owned and final.
+// translator's rebase/collection walks over composed rows MUST rebind it
+// through the walk's own authority (and count it as a leg reference), whereas
+// a FrontierPinned (machinery-owned) or multi-accessor path is final. At
+// runtime it reads through its source's leg window (legWindowBinder). This is
+// the source-vs-machinery half of the Go two-level-lowering bridge Java has no
+// analog for (see FieldPath.FrontierPinned).
 func (f *FieldValue) SourceRelativeBaked() bool {
 	return f.Resolved != nil && !f.Resolved.FrontierPinned && len(f.Resolved.Accessors) == 1
 }
@@ -1064,16 +1066,10 @@ func (e *OrdinalBakeError) Error() string {
 // the position is resolved ONCE, here, and carried on the node (Resolved);
 // resolveOrdinal returns it without re-deriving from the child type. The
 // DISPLAY name (Field) and Typ are read from the child's RecordType at
-// `ordinal` — the name serves diagnostics and name-model coexistence (Datum
-// keys, explain); the ordinal is authoritative (it survives even when a
-// runtime row's type names disagree with the display name).
-//
-// NOT the same as NewOrdinalFieldValue (above): that is the LEGACY lazy
-// `_<ordinal>` NAME-emulation (ordinal access spelled as name access on the
-// OrdinalFieldName key, used by the lateral-unnest lowering) — it resolves by
-// name at runtime and carries no baked marker. This constructor is the RFC-173
-// Slice 2 eager path; the `_N` emulation dies with the name machinery in
-// Slice 4.
+// `ordinal` — the name serves diagnostics/Explain; the ordinal is
+// authoritative (it survives even when a runtime row's type names disagree
+// with the display name). The bake is MACHINERY-OWNED (FrontierPinned): this
+// is the gated-join / gather seed constructor.
 //
 // Errors loudly (Java raises; no silent fallback) when the child does not
 // flow a *RecordType or the ordinal is out of range.
