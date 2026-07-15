@@ -30,6 +30,7 @@ go_test(
     # CI. Same rationale as the conformance and chaos targets.
     size = "large",
     srcs = [
+        "agg_continuation_straddle_fdb_test.go",
         "agg_index_residual_drop_probe_test.go",
         "agg_input_ordinal_fdb_test.go",
         "agg_null_semantics_probe_test.go",

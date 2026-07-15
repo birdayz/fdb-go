@@ -4270,8 +4270,7 @@ func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
 		t.Errorf("maxs[0] = %v, want 50", gotGS.maxs[0])
 	}
 
-	// keyVals: JSON round-trips int64 through float64; the decoder
-	// converts back to int64 when lossless.
+	// keyVals round-trip with exact Go types (typed codec, no float64 detour).
 	if len(gotGS.keyVals) != 2 {
 		t.Fatalf("keyVals len = %d, want 2", len(gotGS.keyVals))
 	}
@@ -4333,11 +4332,115 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if fmt.Sprintf("%v", gotGS.mins[0]) != "1.25" {
-		t.Errorf("mins[0] = %v, want 1.25", gotGS.mins[0])
+	// Assert the exact Go type, not a Sprintf string. A loose "%v == 5" tolerance
+	// masked the JSON round-trip's float64->int64 collapse: float64(5.0) rendered
+	// as "5" whether it stayed float64 or was re-narrowed to int64(5). MIN/MAX
+	// over a DOUBLE column MUST resume as float64, or finalizeGroup emits an
+	// int-typed value into a DOUBLE output slot (wrong type on the straddling row).
+	if f, ok := gotGS.mins[0].(float64); !ok || f != 1.25 {
+		t.Errorf("mins[0] = %#v (%T), want float64(1.25)", gotGS.mins[0], gotGS.mins[0])
 	}
-	if fmt.Sprintf("%v", gotGS.maxs[0]) != "5" && fmt.Sprintf("%v", gotGS.maxs[0]) != "5.0" {
-		t.Errorf("maxs[0] = %v, want 5 or 5.0", gotGS.maxs[0])
+	if f, ok := gotGS.maxs[0].(float64); !ok || f != 5.0 {
+		t.Errorf("maxs[0] = %#v (%T), want float64(5.0)", gotGS.maxs[0], gotGS.maxs[0])
+	}
+}
+
+// TestAggregateContinuation_GroupKeyBytesSurvive_F4 pins that the packed
+// group-break key survives the continuation round-trip BYTE-FOR-BYTE. The key is
+// string(tuple.Pack(...)) — arbitrary bytes. The prior JSON payload stored it in a
+// JSON string field, and json.Marshal rewrites invalid UTF-8 to U+FFFD, so a
+// tuple-packed int64>=128, any negative int, any float64, or a raw []byte key was
+// corrupted on resume: the restored key never matched the recomputed key, forcing
+// a FALSE group break that split one straddling group into two rows.
+func TestAggregateContinuation_GroupKeyBytesSurvive_F4(t *testing.T) {
+	t.Parallel()
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
+	}
+	cases := []tuple.Tuple{
+		{int64(200)},   // 0x15 0xC8 — 0xC8 is invalid UTF-8
+		{int64(-1)},    // 0x13 0xFE — 0xFE is invalid UTF-8
+		{float64(1.5)}, // 0x21 ... — float bytes are invalid UTF-8
+		{[]byte{0xff}}, // raw 0xFF — invalid UTF-8
+	}
+	for _, tup := range cases {
+		key := string(tup.Pack())
+		gs := &groupState{
+			keyVals: []any{tup[0]},
+			counts:  []int64{0},
+			sums:    []float64{0},
+			sumsI:   []int64{0},
+			allInt:  []bool{true},
+			mins:    []any{nil},
+			maxs:    []any{nil},
+		}
+		encoded, err := encodeAggregateContinuation(nil, key, gs.keyVals, gs, aggs)
+		if err != nil {
+			t.Fatalf("encode %v: %v", tup, err)
+		}
+		_, gotKey, _, err := decodeAggregateContinuation(encoded, len(aggs))
+		if err != nil {
+			t.Fatalf("decode %v: %v", tup, err)
+		}
+		if gotKey != key {
+			t.Errorf("group key for %v: got %x, want %x (byte-for-byte)", tup, gotKey, key)
+		}
+	}
+}
+
+// TestAggregateContinuation_TypesPreserved_F5 pins that keyVals and MIN/MAX
+// partial state keep their exact Go type and 64-bit precision across the
+// continuation. The prior JSON round-trip flipped []byte to a base64 string,
+// collapsed every number to float64 (re-narrowing integral doubles to int64), and
+// rounded an int64 above 2^53 through float64 — so a straddling group's key column
+// and MIN/MAX values resumed wrong-typed or off-by-one.
+func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
+	t.Parallel()
+
+	bigInt := int64(1<<60 + 1) // 1152921504606846977 — not representable in float64
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("v", values.TypeInt)},
+		{Function: expressions.AggMax, Operand: values.NewFlatFieldValue("w", values.TypeFloat)},
+	}
+	gs := &groupState{
+		keyVals: []any{[]byte{1, 2}, float64(2.0), bigInt},
+		count:   1,
+		counts:  []int64{1, 1},
+		sums:    []float64{0, 0},
+		sumsI:   []int64{0, 0},
+		allInt:  []bool{true, false},
+		mins:    []any{bigInt, nil},
+		maxs:    []any{nil, float64(2.0)},
+	}
+
+	encoded, err := encodeAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// keyVals: []byte stays []byte (not "AQI="), float64(2.0) stays float64 (not
+	// int64(2)), int64>2^53 exact (not rounded through float64).
+	if b, ok := gotGS.keyVals[0].([]byte); !ok || !bytes.Equal(b, []byte{1, 2}) {
+		t.Errorf("keyVals[0] = %#v (%T), want []byte{1,2}", gotGS.keyVals[0], gotGS.keyVals[0])
+	}
+	if f, ok := gotGS.keyVals[1].(float64); !ok || f != 2.0 {
+		t.Errorf("keyVals[1] = %#v (%T), want float64(2.0)", gotGS.keyVals[1], gotGS.keyVals[1])
+	}
+	if n, ok := gotGS.keyVals[2].(int64); !ok || n != bigInt {
+		t.Errorf("keyVals[2] = %#v (%T), want int64(%d)", gotGS.keyVals[2], gotGS.keyVals[2], bigInt)
+	}
+
+	// MIN/MAX partial state preserves type + precision the same way.
+	if n, ok := gotGS.mins[0].(int64); !ok || n != bigInt {
+		t.Errorf("mins[0] = %#v (%T), want int64(%d)", gotGS.mins[0], gotGS.mins[0], bigInt)
+	}
+	if f, ok := gotGS.maxs[1].(float64); !ok || f != 2.0 {
+		t.Errorf("maxs[1] = %#v (%T), want float64(2.0)", gotGS.maxs[1], gotGS.maxs[1])
 	}
 }
 

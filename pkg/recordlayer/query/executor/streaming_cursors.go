@@ -408,21 +408,17 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 			return "", nil, err
 		}
 		keyParts[i] = v
-		// tuple.Pack handles nil, int64, float64, string, []byte natively.
-		// For types the tuple layer doesn't support, fall back to the
-		// string representation so we still get a deterministic key.
+		// tuple.Pack handles nil, int64, float64, string, []byte, bool natively.
+		// For types the tuple layer doesn't list here (e.g. a UUID [16]byte),
+		// fall back to a deterministic %T:%v string so we still get a stable key.
 		//
-		// A UUID group key ([16]byte) DELIBERATELY takes the %T:%v fallback, NOT
-		// tuple.UUID: this packed key is stored as a JSON string in the aggregate
-		// continuation (encodeAggregateContinuation) and compared byte-for-byte on
-		// resume to detect a group change. A tuple.UUID packs 16 raw bytes that
-		// are often invalid UTF-8, which json.Marshal replaces with U+FFFD —
-		// corrupting the key so a group straddling a page boundary would falsely
-		// break. The %T:%v ASCII form is JSON-safe and equally deterministic, and
-		// the group's surfaced VALUE rides in keyVals as the [16]byte (round-tripped
-		// via the continuation's UUID tag), so the extractor/materializer are
-		// unaffected. (This is the one spot where the [16]byte→tuple.UUID discipline
-		// is intentionally not applied — the sink here is a JSON key, not the wire.)
+		// The packed key rides through the aggregate continuation VERBATIM
+		// (encodeAggGroupKey stores it as raw bytes, not a JSON string) and is
+		// compared byte-for-byte on resume to detect a group change, so any
+		// deterministic packing is safe. The group's surfaced VALUE rides
+		// separately in keyVals (typed, lossless), so a UUID key still materializes
+		// as its [16]byte. A UUID could now pack natively since the raw bytes
+		// survive; the %T:%v form is retained only to keep the key bytes stable.
 		switch tv := v.(type) {
 		case nil, int64, float64, string, []byte, bool:
 			t[i] = tv

@@ -202,17 +202,19 @@ func FuzzAggregateContinuation(f *testing.F) {
 	}); err == nil {
 		f.Add(corruptKey)
 	}
+	// A valid group key reaches the per-aggregate min/max decode with a corrupt
+	// MIN typed value (int64 tag, no payload), exercising the deeper error path.
 	if corruptMin, err := proto.Marshal(&gen.AggregateCursorContinuation{
 		PartialAggregationResults: &gen.PartialAggregationResult{
-			GroupKey: []byte(`{"g":"k","k":[]}`),
+			GroupKey: encodeAggGroupKey("k", nil),
 			AccumulatorStates: []*gen.AccumulatorState{{State: []*gen.OneOfTypedState{
 				{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
 				{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
 				{State: &gen.OneOfTypedState_DoubleState{DoubleState: 1}},
 				{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
 				{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
-				{State: &gen.OneOfTypedState_BytesState{BytesState: []byte("{not json")}},
-				{State: &gen.OneOfTypedState_BytesState{BytesState: []byte("2")}},
+				{State: &gen.OneOfTypedState_BytesState{BytesState: []byte{contValInt64}}},
+				{State: &gen.OneOfTypedState_BytesState{BytesState: appendContValue(nil, int64(2))}},
 			}}},
 		},
 	}); err == nil {
@@ -225,14 +227,15 @@ func FuzzAggregateContinuation(f *testing.F) {
 	})
 }
 
-// TestDecodeAggregateContinuationCorruptMinMax pins that corrupt JSON in a
-// present MIN/MAX accumulator state errors instead of silently dropping the
+// TestDecodeAggregateContinuationCorruptMinMax pins that corrupt bytes in a
+// present MIN/MAX typed accumulator state errors instead of silently dropping the
 // partial aggregate (which would return a wrong MIN/MAX on resume).
 func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 	t.Parallel()
 
 	// State layout (see encodeAggregateContinuation): count, then per
-	// aggregate: count_i, sum_i, sumsI_i, allInt_i, min_i, max_i.
+	// aggregate: count_i, sum_i, sumsI_i, allInt_i, min_i, max_i. min/max carry
+	// one typed continuation value each (appendContValue).
 	buildStates := func(minBytes, maxBytes []byte) []*gen.OneOfTypedState {
 		return []*gen.OneOfTypedState{
 			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
@@ -248,7 +251,7 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 		t.Helper()
 		data, err := proto.Marshal(&gen.AggregateCursorContinuation{
 			PartialAggregationResults: &gen.PartialAggregationResult{
-				GroupKey: []byte(`{"g":"k","k":[1]}`),
+				GroupKey: encodeAggGroupKey("k", []any{int64(1)}),
 				AccumulatorStates: []*gen.AccumulatorState{
 					{State: buildStates(minBytes, maxBytes)},
 				},
@@ -259,6 +262,10 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 		}
 		return data
 	}
+	// A typed value that is corrupt: the int64 tag with no 8-byte payload.
+	corruptVal := []byte{contValInt64}
+	validOne := appendContValue(nil, int64(1))
+	validTwo := appendContValue(nil, int64(2))
 
 	t.Run("corrupt group key errors", func(t *testing.T) {
 		t.Parallel()
@@ -281,7 +288,7 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 
 	t.Run("corrupt MIN state errors", func(t *testing.T) {
 		t.Parallel()
-		_, _, _, err := decodeAggregateContinuation(build(t, []byte("{not json"), []byte("2")), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, corruptVal, validTwo), 1)
 		if err == nil {
 			t.Fatal("want error, got nil (silently dropped MIN state is a wrong aggregate)")
 		}
@@ -292,7 +299,7 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 
 	t.Run("corrupt MAX state errors", func(t *testing.T) {
 		t.Parallel()
-		_, _, _, err := decodeAggregateContinuation(build(t, []byte("1"), []byte("{not json")), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, validOne, corruptVal), 1)
 		if err == nil {
 			t.Fatal("want error, got nil (silently dropped MAX state is a wrong aggregate)")
 		}
@@ -303,7 +310,7 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 
 	t.Run("valid states round-trip", func(t *testing.T) {
 		t.Parallel()
-		_, gk, gs, err := decodeAggregateContinuation(build(t, []byte("1"), []byte("2")), 1)
+		_, gk, gs, err := decodeAggregateContinuation(build(t, validOne, validTwo), 1)
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
