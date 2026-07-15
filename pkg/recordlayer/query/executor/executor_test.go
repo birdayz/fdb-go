@@ -485,7 +485,7 @@ func TestCompareAny_MixedTypes(t *testing.T) {
 	}
 }
 
-func TestSortByKeys(t *testing.T) {
+func TestExpressionSortFn(t *testing.T) {
 	t.Parallel()
 
 	items := []QueryResult{
@@ -494,7 +494,14 @@ func TestSortByKeys(t *testing.T) {
 		dmap(map[string]any{"NAME": "bob", "AGE": int64(35)}),
 	}
 
-	sortByKeys(items, []string{"name"}, nil)
+	// dmap lays columns out alphabetically: AGE@0, NAME@1 — the sort key is
+	// BAKED to NAME's slot (RFC-173: no runtime name resolution).
+	sortFn := expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("NAME", 1, values.UnknownType)},
+	})
+	if err := sortFn(items); err != nil {
+		t.Fatalf("sortFn: %v", err)
+	}
 
 	names := make([]string, len(items))
 	for i, item := range items {
@@ -1305,7 +1312,7 @@ func TestTempTable_ClearAndReuse(t *testing.T) {
 	}
 }
 
-func TestSortByKeys_Descending(t *testing.T) {
+func TestExpressionSortFn_Descending(t *testing.T) {
 	t.Parallel()
 
 	items := []QueryResult{
@@ -1314,7 +1321,12 @@ func TestSortByKeys_Descending(t *testing.T) {
 		dmap(map[string]any{"AGE": int64(30)}),
 	}
 
-	sortByKeys(items, []string{"age"}, []bool{true})
+	sortFn := expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.UnknownType), Reverse: true},
+	})
+	if err := sortFn(items); err != nil {
+		t.Fatalf("sortFn: %v", err)
+	}
 
 	ages := make([]int64, len(items))
 	for i, item := range items {
@@ -2756,16 +2768,22 @@ func TestGoToProtoValue_EnumField(t *testing.T) {
 	}
 }
 
-// ----- sortByKeys (multi-key — extends existing single-key tests) -----------
+// ----- expressionSortFn (multi-key — extends existing single-key tests) -----
 
-func TestSortByKeys_MultipleKeys(t *testing.T) {
+func TestExpressionSortFn_MultipleKeys(t *testing.T) {
 	t.Parallel()
 	items := []QueryResult{
 		dmap(map[string]any{"A": int64(2), "B": int64(1)}),
 		dmap(map[string]any{"A": int64(1), "B": int64(2)}),
 		dmap(map[string]any{"A": int64(1), "B": int64(1)}),
 	}
-	sortByKeys(items, []string{"A", "B"}, []bool{false, false})
+	sortFn := expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)},
+		{Value: values.NewFieldValueWithResolvedOrdinal("B", 1, values.UnknownType)},
+	})
+	if err := sortFn(items); err != nil {
+		t.Fatalf("sortFn: %v", err)
+	}
 
 	d0, _ := rowMapOK(items[0])
 	d1, _ := rowMapOK(items[1])
@@ -3333,11 +3351,12 @@ func TestMergeRows_DerivedTableAlias(t *testing.T) {
 	})
 
 	merged := mergeRows(outer, inner, "SQ1", "B")
-	// Qualified reads resolve leg-locally through the alias windows.
-	if v := rowVal(merged, "SQ1.X"); v != int64(1) {
+	// Qualified reads resolve leg-locally through the alias windows (a baked
+	// QOV(alias).col reference through the row's own leg metadata — legRead).
+	if v, ok := legRead(merged.Positional, "SQ1", "X"); !ok || v != int64(1) {
 		t.Errorf("SQ1.X = %v, want 1", v)
 	}
-	if v := rowVal(merged, "B.IDB"); v != int64(4) {
+	if v, ok := legRead(merged.Positional, "B", "IDB"); !ok || v != int64(4) {
 		t.Errorf("B.IDB = %v, want 4", v)
 	}
 	// The legs are recorded on the merged row's type.
@@ -4501,10 +4520,10 @@ func TestConcatCursor_CloseIdempotent(t *testing.T) {
 }
 
 // ===========================================================================
-// memorySortCursor — end-to-end via constructor
+// ORDER BY via customSortCursor + expressionSortFn (the executeSort pipeline)
 // ===========================================================================
 
-func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
+func TestSortCursor_SortsCorrectly(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{
@@ -4513,7 +4532,10 @@ func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
 		qr("NAME", "bob", "AGE", int64(25)),
 	})
 
-	c := newMemorySortCursor(inner, []string{"AGE"}, []bool{false}, nil) // ASC
+	// qr/dmap lays columns out alphabetically: AGE@0, NAME@1.
+	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.UnknownType)},
+	}), nil) // ASC
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4529,7 +4551,7 @@ func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
 	}
 }
 
-func TestMemorySortCursor_SortsDescending(t *testing.T) {
+func TestSortCursor_SortsDescending(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{
@@ -4538,7 +4560,9 @@ func TestMemorySortCursor_SortsDescending(t *testing.T) {
 		qr("X", int64(2)),
 	})
 
-	c := newMemorySortCursor(inner, []string{"X"}, []bool{true}, nil) // DESC
+	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType), Reverse: true},
+	}), nil) // DESC
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4554,11 +4578,11 @@ func TestMemorySortCursor_SortsDescending(t *testing.T) {
 	}
 }
 
-func TestMemorySortCursor_EmptyInput(t *testing.T) {
+func TestSortCursor_EmptyInput(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{})
-	c := newMemorySortCursor(inner, []string{"x"}, nil, nil)
+	c := newCustomSortCursor(inner, expressionSortFn(nil), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4567,19 +4591,29 @@ func TestMemorySortCursor_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestMemorySortCursor_OnNextAfterClose(t *testing.T) {
+// TestSortCursor_UnbakedKeyIsLoud pins the RFC-173 correct-or-loud contract on
+// the sort path: a LAZY sort key (no plan-time ordinal) cannot resolve against
+// the positional row and must surface a loud OrdinalResolutionError — never a
+// silent name read or a silent NULL ordering.
+func TestSortCursor_UnbakedKeyIsLoud(t *testing.T) {
 	t.Parallel()
 
-	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
-	c := newMemorySortCursor(inner, []string{"x"}, nil, nil)
-	c.Close()
+	inner := recordlayer.FromList([]QueryResult{
+		qr("X", int64(1)),
+		qr("X", int64(2)),
+	})
+	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFlatFieldValue("X", values.UnknownType)},
+	}), nil)
+	defer c.Close()
 
-	result, err := c.OnNext(context.Background())
-	if err != nil {
-		t.Fatalf("OnNext after Close should not error, got: %v", err)
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected a loud error for an unbaked sort key")
 	}
-	if result.HasNext() {
-		t.Fatal("OnNext after Close should return no-next")
+	var ore *values.OrdinalResolutionError
+	if !errors.As(err, &ore) {
+		t.Fatalf("expected *values.OrdinalResolutionError, got %T: %v", err, err)
 	}
 }
 
@@ -4701,10 +4735,9 @@ func TestCustomSortCursor_ReverseSort(t *testing.T) {
 		qr("N", int64(2)),
 	})
 
-	sortFn := func(buf []QueryResult) error {
-		sortByKeys(buf, []string{"N"}, []bool{true})
-		return nil
-	}
+	sortFn := expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("N", 0, values.UnknownType), Reverse: true},
+	})
 	c := newCustomSortCursor(inner, sortFn, nil)
 	defer c.Close()
 
@@ -4744,39 +4777,10 @@ func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
 	inner := recordlayer.FromList(rows)
 
 	c := newCustomSortCursor(inner, func(buf []QueryResult) error {
-		sortByKeys(buf, []string{"n"}, nil)
+		// The buffer cap trips during LOAD, before any sort runs.
 		return nil
 	}, nil)
 	c.maxBuf = 5 // limit to 5 rows
-	defer c.Close()
-
-	_, err := c.OnNext(context.Background())
-	if err == nil {
-		t.Fatal("expected SortBufferExceededError")
-	}
-	var bufErr *SortBufferExceededError
-	if !errors.As(err, &bufErr) {
-		t.Fatalf("expected *SortBufferExceededError, got %T: %v", err, err)
-	}
-	if bufErr.Limit != 5 {
-		t.Errorf("limit = %d, want 5", bufErr.Limit)
-	}
-	if bufErr.Rows != 5 {
-		t.Errorf("rows = %d, want 5", bufErr.Rows)
-	}
-}
-
-func TestMemorySortCursor_BufferLimitExceeded(t *testing.T) {
-	t.Parallel()
-
-	rows := make([]QueryResult, 10)
-	for i := range rows {
-		rows[i] = qr("n", int64(i))
-	}
-	inner := recordlayer.FromList(rows)
-
-	c := newMemorySortCursor(inner, []string{"n"}, nil, nil)
-	c.maxBuf = 5
 	defer c.Close()
 
 	_, err := c.OnNext(context.Background())

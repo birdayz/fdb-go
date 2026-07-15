@@ -4741,6 +4741,12 @@ func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expre
 	for i, k := range s.Keys {
 		nf := k.NullsFirst
 		v := k.Value
+		// A POSITIONAL key (`ORDER BY <n>`) IS an output ordinal by SQL
+		// definition — bake slot n-1 of the folded projection's output
+		// directly (RFC-173; see translateSort's twin).
+		if k.Pos > 0 && k.Pos <= len(fields) {
+			v = values.NewFieldValueWithResolvedOrdinal(fields[k.Pos-1].Name, k.Pos-1, values.UnknownType)
+		}
 		if v == nil {
 			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
 		}
@@ -5292,6 +5298,19 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 				return nil
 			}
 			return expressionOutputColumns(qs[0].GetRangesOver().Get())
+		case *expressions.TempTableInsertExpression:
+			// A recursive-CTE leg is wrapped in a TempTableInsert; the insert
+			// flows its input's rows unchanged, so the OUTPUT layout is the
+			// input's — the leg projection ALREADY NORMALIZED to the CTE's
+			// output schema (translateRecursiveCTE's normalizeLegToOutputColumns).
+			// Without this passthrough an ORDER BY over a renamed recursive CTE
+			// (`WITH RECURSIVE a(node, up) AS (...) SELECT node FROM a ORDER BY
+			// node`) could not derive the layout and its key stayed UNBAKED —
+			// loud at runtime under the ordinal model.
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
 		case *expressions.LogicalFilterExpression:
 			if e.GetInner().GetRangesOver() == nil {
 				return nil
@@ -5694,6 +5713,17 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	for i, k := range s.Keys {
 		nf := k.NullsFirst
 		v := k.Value
+		// A POSITIONAL key (`ORDER BY <n>`) IS an output ordinal by SQL
+		// definition: when the sort input is the SELECT-list projection, bake
+		// slot n-1 of its output directly (RFC-173) — no text-rendering
+		// round-trip, which diverges for computed items whose canonical source
+		// text differs from the baked output spelling (`col1 + 10` vs
+		// `(COL1#0 + 10)`).
+		if k.Pos > 0 && k.Pos <= len(inputCols) {
+			if _, isProj := innerRef.Get().(*expressions.LogicalProjectionExpression); isProj {
+				v = values.NewFieldValueWithResolvedOrdinal(inputCols[k.Pos-1], k.Pos-1, values.UnknownType)
+			}
+		}
 		if v == nil {
 			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
 		}

@@ -61,11 +61,11 @@ type flatMapCursor struct {
 	// foldLegSpans / foldWindowsOK (RFC-173 S4 commit 2, C): when this FlatMap's
 	// OUTER is a gated ordinal join (a projected-EXISTS fold whose step-1 NLJ
 	// births the leg-concat seed), the folded projection reads leg columns as
-	// heterogeneous refs — dotted frontier reads ("T1.ID") and QOV refs. The
+	// heterogeneous refs — flat baked merged-row reads and QOV leg refs. The
 	// projection is NEVER rebased; instead it evaluates over the step-1 merged
-	// positional row through legWindowRowContext(pos, ctx, foldLegSpans), the SAME
-	// coexistence context every plain gated-join downstream projection uses
-	// (spanAwareRow resolves the dotted reads, legWindowBinder the QOV refs).
+	// positional row through legWindowRowContext(pos, ctx, foldLegSpans), the
+	// SAME context every plain gated-join downstream projection uses (flat baked
+	// refs read the merged row's slots, legWindowBinder windows the QOV refs).
 	// Derived once from the outer plan's ordinal seed (downstreamLegWindows).
 	foldLegSpans  []legSpan
 	foldWindowsOK bool
@@ -82,14 +82,14 @@ type flatMapCursor struct {
 	// shape — a WHERE-EXISTS identity pass-through (RV == QOV(outer)) whose outer
 	// is neither an inner-baked existential (outerBakedType nil) nor a gated join
 	// (outerMergedType nil). The outer binds onto its OWN scan positional row
-	// (bound RAW: the inner subquery's correlated ref is LAZY — no baked ordinal —
-	// so it resolves by GetByName against the row's own type, layout-robust by
-	// construction, NOT by a QOV-child ordinal that could mis-slot a covering
-	// index), and the identity output edge propagates that same positional row so
-	// the downstream projection reads by ordinal instead of by name. false = the
-	// name-keyed Datum binding (a non-identity RV, or a baked/gated outer with its
-	// own more-specific layout authority). S4 KILL LIST: dead once the name model
-	// dies.
+	// (bound RAW: the inner subquery's correlated ref carries a SOURCE-RELATIVE
+	// baked ordinal — the resolver's declared-column-order bind — and the scan
+	// row IS the source's own layout, so the ordinal reads the right slot; a
+	// covering scan that cannot bind the logical layout is refused loud at
+	// construction), and the identity output edge propagates that same
+	// positional row so the downstream projection reads by ordinal. false = a
+	// non-identity RV, or a baked/gated outer with its own more-specific layout
+	// authority.
 	outerIdentityPassthrough bool
 
 	// Continuation state for cross-transaction resume.
@@ -360,18 +360,17 @@ func isIdentityOuterRV(rv values.Value, outerAlias values.CorrelationIdentifier)
 	return ok && qov.Correlation == outerAlias
 }
 
-// qualifyOuterPositional is the ORDINAL-model analog of qualifyOuterRow: the
-// WHERE-EXISTS identity pass-through flows the outer scan row UNDER the outer
-// quantifier, so a downstream reference qualified by the outer alias ("E.FNAME")
-// must resolve against it. In the name model qualifyOuterRow writes "ALIAS.COL"
-// Datum keys; here the equivalent is a single item-3 leg window named after the
-// alias covering the whole row — PositionalRow.GetByName then resolves both a
-// BARE column ("DNAME", via FieldIndex) and a DOTTED "ALIAS.COL" ("E.FNAME", via
-// the Legs path) off the same slots. A plain scan row carries no Legs of its own
-// (a clustered outer would be an outerMergedType shape, not this arm), so a fresh
-// single-leg RecordType is stamped over the SAME slots (the Slots are shared —
-// values are read, never mutated; only the type gains the alias window). Returns
-// the row unchanged when the alias is empty or the type is absent.
+// qualifyOuterPositional stamps the outer quantifier's leg window onto the
+// outer scan row the WHERE-EXISTS identity pass-through flows, so a downstream
+// reference qualified by the outer alias (a source-relative baked QOV(E).FNAME)
+// binds its leg window through the row's own Legs metadata (rowLegsBinder /
+// legWindowBinder) — a single leg window named after the alias covering the
+// whole row; bare references read their baked slots directly. A plain scan row
+// carries no Legs of its own (a clustered outer would be an outerMergedType
+// shape, not this arm), so a fresh single-leg RecordType is stamped over the
+// SAME slots (the Slots are shared — values are read, never mutated; only the
+// type gains the alias window). Returns the row unchanged when the alias is
+// empty or the type is absent.
 func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 	if row == nil || row.Type == nil || alias == "" {
 		return row
@@ -379,7 +378,7 @@ func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 	// A MERGED outer row (a clustered join outer — e.g. a FULL OUTER JOIN A,B)
 	// ALREADY carries its own per-leg windows (A, B): an alias-qualified read
 	// resolves through THOSE (A.K → leg A). Stamping a single whole-row alias leg
-	// here would CLOBBER them — GetByName("A.K") would then find no leg A and the
+	// here would CLOBBER them — a leg-window bind for "A.K" would then find no leg A and the
 	// dup "K" is ambiguous → unresolvable. So preserve the sub-legs; only a PLAIN
 	// scan row (no legs of its own) gets the whole-row alias window that lets a
 	// downstream `E.FNAME` resolve.
@@ -555,10 +554,10 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 				// positional, so this is pure propagation, not a birth. The row is
 				// stamped with the outer alias as a leg window (qualifyOuterPositional):
 				// the downstream projection reads its columns qualified by the outer
-				// alias ("E.FNAME"), so GetByName resolves the dotted reference via the
-				// Legs path — the ordinal analog of qualifyOuterRow's "ALIAS.COL" Datum
-				// keys, and the reason a bare-named plain-scan row alone would loud-miss
-				// the qualified read (the TestFDB_CorrelatedExistsCrossJoin catch).
+				// alias ("E.FNAME"), so the baked qualified reference binds its leg
+				// window via the Legs metadata — the ordinal analog of qualifyOuterRow's
+				// "ALIAS.COL" Datum keys, and the reason a bare-named plain-scan row alone
+				// would loud-miss the qualified read (the TestFDB_CorrelatedExistsCrossJoin catch).
 				out.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
 			} else {
 				// RFC-173 cap: the identity output IS the outer row — flow its own

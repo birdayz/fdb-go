@@ -5389,6 +5389,23 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			groupKeyExplainMap[strings.ToUpper(agg.GroupKeys[i])] = aggregateGroupKeyOutputName(gkv)
 		}
 	}
+	// colToIdx maps a NON-aliased select item's canonical text to its select-list
+	// position — the correspondence `ORDER BY <n>` (positional, whose key Expr is
+	// the item's rendered name) and a text-form computed key (`ORDER BY col1 +
+	// 10`) resolve through. Copying the EXACT projected Value (pointer) lets the
+	// translator's pull-up bake the key to its OUTPUT ordinal (RFC-173: the key
+	// must carry a plan-time ordinal; the retired runtime name read silently
+	// no-op-sorted when the rendered text and the output column spelling
+	// diverged, e.g. a baked computed column `(COL1#0 + 10)` vs the source text
+	// `col1 + 10`). First-match on duplicate renderings — the duplicates are the
+	// same expression, so the sort order is identical either way.
+	colToIdx := make(map[string]int, len(sq.projCols))
+	for i, c := range sq.projCols {
+		key := strings.ToUpper(c)
+		if _, dup := colToIdx[key]; !dup {
+			colToIdx[key] = i
+		}
+	}
 	for i := range sort.Keys {
 		upper := strings.ToUpper(sort.Keys[i].Expr)
 		if real, ok := aliasToCol[upper]; ok {
@@ -5398,9 +5415,34 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[idx]
 			}
+		} else if idx, ok := colToIdx[upper]; ok && proj != nil && sort.Keys[i].Value == nil {
+			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
+				sort.Keys[i].Value = proj.ProjectedValues[idx]
+			}
 		}
 		if groupKeyExplainMap != nil {
 			if explain, ok := groupKeyExplainMap[strings.ToUpper(sort.Keys[i].Expr)]; ok {
+				// The sort reads the row ABOVE the outermost operator. Directly
+				// over the aggregate that is the AGGREGATE output name; with a
+				// visible PROJECTION in between (mixed aliased/uneliased select
+				// list) the sort key must read the PROJECTION's OUTPUT column
+				// for the same underlying group key — the aggregate-output bare
+				// name is not a column of the projected row (a lazy key naming
+				// it is loud at runtime under the ordinal model; the retired
+				// name read no-op-sorted silently).
+				if proj != nil {
+					for pi, ptext := range proj.Projections {
+						if !strings.EqualFold(ptext, sort.Keys[i].Expr) {
+							continue
+						}
+						if pi < len(proj.Aliases) && proj.Aliases[pi] != "" {
+							explain = strings.ToUpper(proj.Aliases[pi])
+						} else {
+							explain = strings.ToUpper(ptext)
+						}
+						break
+					}
+				}
 				sort.Keys[i].Value = &values.FieldValue{Field: explain, Typ: values.UnknownType}
 			}
 		}

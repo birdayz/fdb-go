@@ -250,16 +250,17 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 // mergedLegsOfSpans builds the merged type's leg boundaries from the derived spans
 // — each plain run 1:1, each clustered BOX run its BURIED subs only (the run name
 // is its rightmost leaf's; a run-level entry would shadow that leaf with the whole
-// concat; see rcOutputType). So a dotted name-model read ("B.BID") resolves per-leg
-// on a positional-only row (PositionalRow.GetByName's dotted bridge). Mirrors the
-// values-side finalizeSeedWindows — the cross-agreement invariant (independent
+// concat; see rcOutputType). So a buried-leg reference ("B.BID") binds its OWN
+// window through the row's Legs metadata (rowLegsBinder / legWindowBinder /
+// rowSlotForLegColumn). Mirrors the values-side finalizeSeedWindows — the
+// cross-agreement invariant (independent
 // walks drift, and layout drift is wrong-offset wrong-rows). Shared by the pristine
 // and mixed span derivations so a box outer's boundaries agree in both.
 //
 // NOTE (mixed seed): this includes the trailing ELEMENT leg, whereas rcOutputType
 // (the birth ROW type) omits the bare-QOV element. The two "merged type" notions
 // disagree on the element leg — harmless today (nothing compares them; every
-// consumer reads only .Fields, and PositionalRow.GetByName resolves over the
+// consumer reads only .Fields, and the leg-window binders resolve over the
 // rcOutputType-birthed row, not this span-probe type). If a future consumer ever
 // treats this .Legs as authoritative for an rcOutputType-birthed row, reconcile.
 func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
@@ -499,22 +500,17 @@ func assertOrdinalJoinSeed(rc *values.RecordConstructorValue) {
 }
 
 // legWindowRow is a leg-relative view over the join's merged positional row:
-// leg ordinal i reads merged slot Offset+i. It is DECLARED WINDOW SCAFFOLDING
-// (review W3 condition 2): Java has no merged-row-with-leg-views — its uppers
-// reference the join quantifier after plan-time rewriting — and these windows
-// exist only because window-era uppers still reference LEGS directly
-// (FieldValue(QOV(leg), col)) across the join boundary. They DIE when the
-// uppers bake (S3 flip + S4 deletions) and must not ossify into "the runtime
-// shape of quantifier bindings".
+// leg ordinal i reads merged slot Offset+i. A correlated baked reference
+// (FieldValue(QOV(leg), col) carrying a LEG-LOCAL ordinal) bound to a leg of a
+// merged/concatenated row reads its source's own slot through this window —
+// Java's rewire-by-ordinal semantics for the two-level NLJ→FlatMap lowering.
 //
-// It implements values.OrdinalRow COMPLETELY (condition 3) — Get leg-relative,
-// GetByName leg-LOCAL (resolved against the leg's own type, so a lazy leg
-// reference stays correct even when the merged type carries the same name at a
-// different absolute slot) — so it slots into the existing evaluateCorrelated
-// binder arm with no new eval arm, and a miss stays loud (the (nil,false)
-// return becomes an OrdinalResolutionError in evaluateOrdinal). TypeNames
-// feeds that error's diagnostics via the values.ordinalRowNames optional
-// interface, reporting the LEG's columns (what this window actually exposes).
+// It implements values.OrdinalRow (Get leg-relative), so it slots into the
+// existing evaluateCorrelated binder arm with no new eval arm, and a miss
+// stays loud (the (nil,false) return becomes an OrdinalResolutionError in
+// evaluateOrdinal). TypeNames feeds that error's diagnostics via the
+// values.ordinalRowNames optional interface, reporting the LEG's columns
+// (what this window actually exposes).
 type legWindowRow struct {
 	parent  values.OrdinalRow
 	legType *values.RecordType
@@ -532,20 +528,6 @@ func (w *legWindowRow) Get(ord int) (any, bool) {
 	return w.parent.Get(w.offset + ord)
 }
 
-// GetByName resolves a leg-LOCAL column name against the LEG's own type, then
-// reads leg-relative — the merged type (with its absolute slots and possible
-// duplicate names) is never consulted.
-func (w *legWindowRow) GetByName(name string) (any, bool) {
-	if w.legType == nil {
-		return nil, false
-	}
-	i, found := w.legType.FieldIndex(name)
-	if !found {
-		return nil, false
-	}
-	return w.Get(i)
-}
-
 // TypeNames returns the LEG type's column names — the diagnostics the
 // values.OrdinalResolutionError enrichment (values.ordinalRowNames) reads via
 // optional-interface assertion.
@@ -556,13 +538,12 @@ func (w *legWindowRow) TypeNames() []string {
 	return typeFieldNames(w.legType)
 }
 
-// legWindowBinder is the coexistence-window correlation binder for uppers over
-// the ordinal join: a reference to a leg alias is bound to that leg's
-// window over the merged row, anything else delegates to base. DECLARED WINDOW
-// SCAFFOLDING (review W3 condition 2) — it exists only because window-era
-// uppers reference legs across the join boundary; when the uppers bake against
-// the merged type (S3 flip, S4 deletions) the windows die with the name model.
-// Must not ossify into the permanent runtime shape of quantifier bindings.
+// legWindowBinder is the correlation binder for uppers over the ordinal join:
+// a reference to a leg alias is bound to that leg's window over the merged
+// row, anything else delegates to base. This is the runtime half of Java's
+// rewire-by-ordinal semantics for Go's two-level NLJ→FlatMap lowering: a
+// baked QOV(leg).col reference carries a LEG-LOCAL ordinal, and the binder
+// supplies the LEG's own slice of the merged row for that ordinal to read.
 type legWindowBinder struct {
 	base  values.CorrelationBinder
 	spans []legSpan
@@ -571,8 +552,7 @@ type legWindowBinder struct {
 
 // GetCorrelationBinding implements values.CorrelationBinder: a span alias gets
 // its leg window over the merged row; any other alias delegates to base (nil
-// base: unbound). The routing mirrors spanAwareRow.GetByName's precedence for
-// the QOV-addressed twin (RFC-173 item C — a source-relative baked
+// base: unbound). Routing precedence (RFC-173 item C — a source-relative baked
 // QOV(leg).col carries a LEG-LOCAL ordinal, so the window must be the LEG's
 // OWN slice):
 //  1. a span alias match serves the BOX-LEAF sub-window when the span is a
@@ -593,8 +573,7 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 		return &legWindowRow{parent: b.row, legType: s.LegType, offset: s.Offset, width: s.Width}, true
 	}
 	// A BURIED leg inside a clustered box span — ordered AFTER the span
-	// aliases (a top-level alias always wins its own name), exactly like
-	// spanAwareRow's dotted routing.
+	// aliases (a top-level alias always wins its own name).
 	for _, s := range b.spans {
 		if s.LegType == nil {
 			continue
@@ -660,8 +639,8 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 		// table order ([ID, V]) — same width, different layout, and a baked
 		// leg ordinal would silently read the wrong slot. A non-aligned
 		// positional row is a LEGITIMATE plan shape (not a gate breach): fall
-		// through to per-name reordering below (GetByName resolves each leg
-		// column against the row's own type), with the zero-match tripwire as
+		// through to the per-layout gather below (rowSlotForLegColumn binds each leg
+		// column against the row's own plan-produced type), with the zero-match tripwire as
 		// the final guard.
 		if legType == nil || positionalMatchesLegType(qr.Positional, legType) {
 			return qr.Positional, nil
@@ -671,16 +650,28 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 	if legType == nil {
 		return row, nil
 	}
-	// RFC-173 cap: reorder the outer positional's slots into legType order by NAME
-	// (the ordinal-model replacement for the retired Datum-map synthesis). A
-	// covering-index [V, ID] row mapped to a leg type [ID, V] resolves each leg
-	// column via GetByName against the row's own index-shaped type.
+	// Layout PERMUTATION at the leg boundary: gather the row's slots into
+	// legType order via the row's own plan-produced RecordType (FieldIndex,
+	// first-match — the same rule every plan-time bake uses). A documented
+	// residual of Go's two-layout seed: gated-join legs are seeded with the
+	// LOGICAL (table-shaped) leg type while a physical leg may emit an
+	// INDEX-shaped row (buildCoveringRow types value-columns-then-PK), so the
+	// two layouts are permutations of each other. Java has no such adapter —
+	// its planner rebinds every FieldValue ordinal against the physical
+	// quantifier's actual flowed type (translateCorrelations), so the baked
+	// ordinal IS the physical slot; retiring this gather requires Go's seed to
+	// bake against the chosen physical leg layout the same way. Until then the
+	// bind is per-layout TYPE metadata, never a per-value name probe, and a
+	// zero-match merge-shaped row is loud below.
 	if qr.Positional != nil {
 		matched := 0
-		for i, f := range legType.Fields {
-			if v, present := qr.Positional.GetByName(f.Name); present {
-				row.Slots[i] = v
-				matched++
+		if qr.Positional.Type != nil {
+			for i, f := range legType.Fields {
+				if idx, ok := rowSlotForLegColumn(qr.Positional.Type, f.Name); ok {
+					v, _ := qr.Positional.Get(idx)
+					row.Slots[i] = v
+					matched++
+				}
 			}
 		}
 		if matched == 0 && len(qr.Positional.Slots) > 0 && len(legType.Fields) > 0 {
@@ -706,6 +697,41 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 		}
 	}
 	return row, nil
+}
+
+// rowSlotForLegColumn binds one leg-type column name to a slot of the source
+// row's plan-produced RecordType: the flat FieldIndex first, then — for a
+// DOTTED name over a row whose type carries leg boundaries (RecordType.Legs,
+// the merged concat / clustered box layout) — the per-leg window: qualifier →
+// the leg's window, column → FieldIndex WITHIN it. The dotted arm serves the
+// W4b correlated-scalar seed legs, whose seed leg types name columns literally
+// `LEG.COL` while the physical leg emits the merged row those names address.
+// First-match on duplicate leg names mirrors FieldIndex's own first-match rule.
+func rowSlotForLegColumn(rt *values.RecordType, name string) (int, bool) {
+	if i, ok := rt.FieldIndex(name); ok {
+		return i, true
+	}
+	di := strings.IndexByte(name, '.')
+	if di <= 0 || len(rt.Legs) == 0 {
+		return 0, false
+	}
+	qual, col := name[:di], name[di+1:]
+	for _, leg := range rt.Legs {
+		if !strings.EqualFold(leg.Name, qual) {
+			continue
+		}
+		end := leg.Start + leg.Width
+		if leg.Start < 0 || end > len(rt.Fields) {
+			break
+		}
+		for k := leg.Start; k < end; k++ {
+			if strings.EqualFold(rt.Fields[k].Name, col) {
+				return k, true
+			}
+		}
+		break
+	}
+	return 0, false
 }
 
 // rowIsMergeShaped reports whether a positional row is a JOIN-MERGE output — it
@@ -807,8 +833,8 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 	}
 	// RFC-173 item 3: the birthed row type carries leg boundaries — each
 	// baked leg run plus every BURIED leg a clustered box leg's type records
-	// (RecordType.Legs) — so a dotted name-model read ("B.BID") resolves
-	// per-leg through PositionalRow.GetByName's dotted bridge on rows that
+	// (RecordType.Legs) — so a buried-leg reference ("B.BID") binds its OWN
+	// window through the row's Legs metadata (rowLegsBinder) on rows that
 	// birth positional-only (the clustered null-supplying pad).
 	var legs []values.RecordTypeLeg
 	lastCorr := ""
@@ -1549,16 +1575,14 @@ func legWindowRowContext(pos values.OrdinalRow, ec *EvaluationContext, spans []l
 	return rc
 }
 
-// spanAwareRow is the merged positional row with QUALIFIED-name routing: the
-// name model's physical plans reference merged-row columns as flat DOTTED
-// names ("A.ID" — the executor pipeline's qualified merged-row keys), which
-// carry no leg QOV for the Correlations windows to catch. GetByName splits a
-// dotted name at its first dot and resolves alias → leg window → leg-local
-// column, so window-era flat dotted references (projections, filters, sort
-// keys) stay correct over the ordinal merged row; bare names keep the merged
-// type's first-match (unchanged Slice 1 semantics). Ordinal access passes
-// through untouched. DECLARED WINDOW SCAFFOLDING like the windows themselves
-// (review condition 2): dies when uppers bake, S3/S4.
+// spanAwareRow is the merged positional row as the eval context's Positional:
+// ordinal access passes through to the merged row untouched; MultiLeg exposes
+// the leg-window structure to the values-side correlated fall-through guard
+// (a source-relative baked ordinal must not read a multi-leg row bare — its
+// ordinal addresses one leg's own window). Every column REFERENCE over the
+// merged row resolves by plan-time-baked ordinal (a flat reference by its
+// merged-row slot, a correlated leg reference through its leg window via the
+// legWindowBinder Correlations) — there is no name-keyed read arm.
 type spanAwareRow struct {
 	parent values.OrdinalRow
 	spans  []legSpan
@@ -1579,91 +1603,6 @@ func (r *spanAwareRow) MultiLeg() bool {
 		}
 	}
 	return true
-}
-
-func (r *spanAwareRow) GetByName(name string) (any, bool) {
-	if dot := strings.IndexByte(name, '.'); dot > 0 {
-		alias, col := name[:dot], name[dot+1:]
-		// Alias namespace first (the name model's qualifyAlias precedence)…
-		for _, s := range r.spans {
-			if strings.EqualFold(s.Alias.Name(), alias) {
-				// A BOX span is NAMED by its rightmost LEAF (sourceBinding),
-				// so the alias-qualified read must window that LEAF's slice —
-				// the whole-concat window would FieldIndex across the box and
-				// first-match an earlier buried leg's duplicate column name.
-				// Same rule as the values twin's window replacement
-				// (OrdinalSeedLegWindows) and rcOutputType's subs-only Legs.
-				if s.LegType != nil {
-					for _, bl := range s.LegType.Legs {
-						if !strings.EqualFold(bl.Name, alias) {
-							continue
-						}
-						end := bl.Start + bl.Width
-						if bl.Start < 0 || end > len(s.LegType.Fields) {
-							// Malformed bounds: NOT FOUND, never the run-wide
-							// window — a whole-concat FieldIndex would silently
-							// first-match another leg's duplicate column. Same
-							// loud disposition as the values twin's bounds
-							// guard (OrdinalSeedLegWindows).
-							return nil, false
-						}
-						sub := &values.RecordType{Nullable: s.LegType.Nullable, Fields: s.LegType.Fields[bl.Start:end]}
-						w := &legWindowRow{parent: r.parent, legType: sub, offset: s.Offset + bl.Start, width: bl.Width}
-						return w.GetByName(col)
-					}
-				}
-				w := &legWindowRow{parent: r.parent, legType: s.LegType, offset: s.Offset, width: s.Width}
-				return w.GetByName(col)
-			}
-		}
-		// …then a BURIED leg inside a clustered box span (RFC-173 item 3):
-		// the box leg's type records its buried-leg boundaries
-		// (RecordType.Legs), and a reference qualified by a buried source's
-		// binding resolves at the buried window's offset within the span —
-		// exactly like a top-level leg (Java's model: a buried source is
-		// just another quantifier's window). Ordered AFTER the span aliases
-		// (a top-level alias always wins its own name).
-		for _, s := range r.spans {
-			if s.LegType == nil {
-				continue
-			}
-			for _, bl := range s.LegType.Legs {
-				if !strings.EqualFold(bl.Name, alias) {
-					continue
-				}
-				end := bl.Start + bl.Width
-				if bl.Start < 0 || end > len(s.LegType.Fields) {
-					break
-				}
-				sub := &values.RecordType{Nullable: s.LegType.Nullable, Fields: s.LegType.Fields[bl.Start:end]}
-				w := &legWindowRow{parent: r.parent, legType: sub, offset: s.Offset + bl.Start, width: bl.Width}
-				return w.GetByName(col)
-			}
-		}
-		// …then the leg's TABLE-type namespace ("PA.ID" over `FROM PA AS s`)
-		// — the ordinal counterpart of qualifyTypeFallback, keyed on the leg
-		// type's RecordName (set only for base-table scan legs, exactly the
-		// rows the name model wrote TYPE.COL fallback keys for).
-		for _, s := range r.spans {
-			if s.LegType != nil && s.LegType.RecordName != "" &&
-				!strings.EqualFold(s.Alias.Name(), s.LegType.RecordName) &&
-				strings.EqualFold(s.LegType.RecordName, alias) {
-				w := &legWindowRow{parent: r.parent, legType: s.LegType, offset: s.Offset, width: s.Width}
-				return w.GetByName(col)
-			}
-		}
-		// …then the row's OWN output naming: a dotted string can be a LITERAL
-		// column name of the merged type, not a leg-qualified path — the W4b
-		// correlated-scalar seeds name their fields `LEG.COL` / `INNER.SCALARCOL`
-		// while the QUANTIFIERS carry fresh unique ids (`q$N`, the shape-2
-		// decouple), so a flat projection read like "O.AMOUNT" matches no span
-		// alias yet is exactly an output column. Ordered LAST: a leg alias always
-		// wins over a same-spelled literal (the leg-local read and the seed-born
-		// literal denote the same value for seed rows, and alias precedence is
-		// the name model's qualifyAlias order).
-		return r.parent.GetByName(name)
-	}
-	return r.parent.GetByName(name)
 }
 
 // TypeNames feeds OrdinalResolutionError diagnostics (values.ordinalRowNames).

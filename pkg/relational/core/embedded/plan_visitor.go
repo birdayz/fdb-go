@@ -1362,7 +1362,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		}
 
 		// Handle positional references `ORDER BY N`.
-		posName, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols)
+		posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols)
 		if posErr != nil {
 			// Error during positional resolution — this was already
 			// validated by classifySelectElements, so this shouldn't
@@ -1378,7 +1378,10 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf})
+			// Pos carries the SELECT-list position: a positional key IS an
+			// output ordinal by SQL definition, so the translator bakes it
+			// directly to the projection's output slot (RFC-173).
+			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf, Pos: pos})
 			continue
 		}
 

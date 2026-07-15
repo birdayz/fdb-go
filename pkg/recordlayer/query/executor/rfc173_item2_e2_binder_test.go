@@ -199,8 +199,8 @@ func TestIntegration_RFC173Item2_ProbeNegative_LazyInner(t *testing.T) {
 	// The ordinalized output edge: the outer's positional row survives, and its
 	// outer-alias leg window resolves the alias-qualified read the same as the bare.
 	item2AssertCustomerPositional(t, results[0], int64(1), "Alice")
-	if v, ok := results[0].Positional.GetByName("CUST.NAME"); !ok || v != "Alice" {
-		t.Fatalf("GetByName(CUST.NAME) = (%v, %v), want (Alice, true) — the outer-alias leg window", v, ok)
+	if v, ok := legRead(results[0].Positional, "CUST", "NAME"); !ok || v != "Alice" {
+		t.Fatalf("legRead(CUST.NAME) = (%v, %v), want (Alice, true) — the outer-alias leg window", v, ok)
 	}
 }
 
@@ -436,19 +436,20 @@ func TestRFC173Item2_ComputeResult_PassThrough(t *testing.T) {
 		if got.Positional == nil {
 			t.Fatal("probe-negative identity output must propagate the outer's positional row (ordinalized output edge)")
 		}
-		// The row resolves BOTH a bare column (FieldIndex) and an alias-qualified
-		// reference (the Legs path) off the same slots.
-		if v, ok := got.Positional.GetByName("ID"); !ok || v != int64(1) {
-			t.Fatalf("GetByName(ID) = (%v, %v), want (1, true)", v, ok)
+		// The row resolves BOTH a bare column (its plan-time slot) and an
+		// alias-qualified reference (a baked QOV(A).col through the row's leg
+		// windows) off the same slots.
+		if v, ok := getByName(got.Positional, "ID"); !ok || v != int64(1) {
+			t.Fatalf("ID = (%v, %v), want (1, true)", v, ok)
 		}
-		if v, ok := got.Positional.GetByName("V"); !ok || v != int64(10) {
-			t.Fatalf("GetByName(V) = (%v, %v), want (10, true)", v, ok)
+		if v, ok := getByName(got.Positional, "V"); !ok || v != int64(10) {
+			t.Fatalf("V = (%v, %v), want (10, true)", v, ok)
 		}
-		if v, ok := got.Positional.GetByName("A.ID"); !ok || v != int64(1) {
-			t.Fatalf("GetByName(A.ID) = (%v, %v), want (1, true) — the outer-alias leg window", v, ok)
+		if v, ok := legRead(got.Positional, "A", "ID"); !ok || v != int64(1) {
+			t.Fatalf("legRead(A.ID) = (%v, %v), want (1, true) — the outer-alias leg window", v, ok)
 		}
-		if v, ok := got.Positional.GetByName("A.V"); !ok || v != int64(10) {
-			t.Fatalf("GetByName(A.V) = (%v, %v), want (10, true) — the outer-alias leg window", v, ok)
+		if v, ok := legRead(got.Positional, "A", "V"); !ok || v != int64(10) {
+			t.Fatalf("legRead(A.V) = (%v, %v), want (10, true) — the outer-alias leg window", v, ok)
 		}
 	})
 }

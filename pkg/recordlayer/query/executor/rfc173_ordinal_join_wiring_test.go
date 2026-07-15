@@ -406,11 +406,12 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_HashPath(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (outer ID=5 matches inner ID=5)", len(results))
 	}
 	ojAssertSlots(t, results[0].Positional, int64(5), int64(50), int64(5), int64(50))
-	// Qualified leg reads resolve through the merged row's leg windows.
-	if v := rowVal(results[0], "A.ID"); v != int64(5) {
+	// Qualified leg references (baked QOV(alias).col) resolve through the
+	// merged row's leg windows.
+	if v, ok := legRead(results[0].Positional, "A", "ID"); !ok || v != int64(5) {
 		t.Fatalf("A.ID = %v, want 5 (leg window)", v)
 	}
-	if v := rowVal(results[0], "B.W"); v != int64(50) {
+	if v, ok := legRead(results[0].Positional, "B", "W"); !ok || v != int64(50) {
 		t.Fatalf("B.W = %v, want 50 (leg window)", v)
 	}
 }
@@ -699,46 +700,6 @@ func TestRFC173S2_LegWindowRowContext(t *testing.T) {
 	}
 }
 
-// TestRFC173S2_SpanAware_BareDupName_DivergencePin (review W3b-1 ACK note):
-// a flat BARE name over a dup-named merged row resolves FIRST-MATCH through
-// spanAwareRow (merged-type FieldIndex). This is UNREACHABLE in production
-// only because the resolver rejects ambiguous bare references (42702) before
-// planning. The pin freezes the resolution so a resolver change that ever
-// lets an ambiguous bare reference through has an axis to re-examine.
-func TestRFC173S2_SpanAware_BareDupName_DivergencePin(t *testing.T) {
-	t.Parallel()
-	corrA := values.NamedCorrelationIdentifier("a")
-	corrB := values.NamedCorrelationIdentifier("b")
-	legA := &values.RecordType{Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}}}
-	legB := &values.RecordType{Fields: []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1}}}
-	qovA := values.NewQuantifiedObjectValueOfType(corrA, legA)
-	qovB := values.NewQuantifiedObjectValueOfType(corrB, legB)
-	bA, err := values.NewFieldValueOfOrdinal(qovA, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	bB, err := values.NewFieldValueOfOrdinal(qovB, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	rc := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "ID", Value: bA},
-		values.RecordConstructorField{Name: "ID", Value: bB},
-	)
-	spans, mergedType, ok := ordinalJoinSpans(rc)
-	if !ok {
-		t.Fatal("fixture RC rejected by ordinalJoinSpans")
-	}
-	row := NewPositionalRow(mergedType)
-	row.Set(0, int64(1)) // a.id
-	row.Set(1, int64(2)) // b.id
-
-	sa := &spanAwareRow{parent: row, spans: spans}
-	if v, found := sa.GetByName("ID"); !found || v != int64(1) {
-		t.Fatalf("spanAwareRow bare ID = (%v, %v), want FIRST-match (1)", v, found)
-	}
-}
-
 // TestRFC173S2_NLJ_FoldedRVDroppedLeg_PredTypes pins the PR-447 review P1: a
 // FOLDED result value can DROP a leg entirely while a baked cross-leg ON
 // predicate still references it — LegTypes derived from the RV alone misses
@@ -856,14 +817,14 @@ func TestRFC173S2_FlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 	}
 }
 
-// TestRFC173Item3_SpanAwareRow_BoxAliasReadsLeaf pins the dotted-read bridge's
-// box-span precedence (RFC-173 item 3): a BOX span is NAMED by its rightmost
-// LEAF, so an alias-qualified read through the box name must window that
-// LEAF's slice — never the whole concat, whose FieldIndex would first-match
-// an earlier BURIED leg's duplicate column name (silently the wrong column).
-// The fixture's buried leg B deliberately carries an "ID" column ahead of the
-// leaf's own "ID": pre-fix "E.ID" read B's.
-func TestRFC173Item3_SpanAwareRow_BoxAliasReadsLeaf(t *testing.T) {
+// TestRFC173Item3_LegWindowBinder_BoxAliasReadsLeaf pins the leg-window
+// binder's box-span precedence (RFC-173 item 3): a BOX span is NAMED by its
+// rightmost LEAF, so a correlated baked reference through the box name must
+// window that LEAF's slice — never the whole concat, where a leg-local
+// ordinal would land on an earlier BURIED leg's slot (silently the wrong
+// column). The fixture's buried leg B deliberately carries an "ID" column
+// ahead of the leaf's own "ID": a whole-concat window for "E.ID" reads B's.
+func TestRFC173Item3_LegWindowBinder_BoxAliasReadsLeaf(t *testing.T) {
 	t.Parallel()
 	corrA := values.NamedCorrelationIdentifier("A")
 	corrE := values.NamedCorrelationIdentifier("E")
@@ -903,17 +864,34 @@ func TestRFC173Item3_SpanAwareRow_BoxAliasReadsLeaf(t *testing.T) {
 	row.Set(1, int64(20)) // b.bid
 	row.Set(2, int64(21)) // b.id — the trap value
 	row.Set(3, int64(30)) // e.id — the correct read
-	sa := &spanAwareRow{parent: row, spans: spans}
-	if v, found := sa.GetByName("E.ID"); !found || v != int64(30) {
+
+	// The production resolution: a source-relative BAKED reference over the
+	// leg's QOV, bound through the legWindowBinder (a leg-local ordinal reads
+	// its OWN window's slot).
+	binder := &legWindowBinder{spans: spans, row: row}
+	read := func(alias, col string, legOrd int) (any, bool) {
+		fv := values.NewCorrelatedFieldValueWithResolvedOrdinal(
+			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias)),
+			col, legOrd, values.UnknownType)
+		v, err := fv.Evaluate(&values.RowEvalContext{Correlations: binder})
+		if err != nil {
+			return nil, false
+		}
+		return v, true
+	}
+	// E.ID: leg-local ordinal 0 within the LEAF's own 1-column window — must
+	// read the leaf's slot (30), not the buried dup at the box's slot 1 (21).
+	if v, found := read("E", "ID", 0); !found || v != int64(30) {
 		t.Fatalf("E.ID = (%v, %v), want the rightmost LEAF's column (30), not the buried dup (21)", v, found)
 	}
-	if v, found := sa.GetByName("B.ID"); !found || v != int64(21) {
+	// B.ID: leg-local ordinal 1 within the BURIED leg's window ([BID, ID]).
+	if v, found := read("B", "ID", 1); !found || v != int64(21) {
 		t.Fatalf("B.ID = (%v, %v), want the buried leg's column (21)", v, found)
 	}
-	if v, found := sa.GetByName("B.BID"); !found || v != int64(20) {
+	if v, found := read("B", "BID", 0); !found || v != int64(20) {
 		t.Fatalf("B.BID = (%v, %v), want 20", v, found)
 	}
-	if v, found := sa.GetByName("A.AID"); !found || v != int64(10) {
+	if v, found := read("A", "AID", 0); !found || v != int64(10) {
 		t.Fatalf("A.AID = (%v, %v), want 10", v, found)
 	}
 }

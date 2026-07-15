@@ -97,14 +97,7 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 		}
 	})
 
-	// 5. memorySortCursor in-memory sort buffer.
-	advanced(t, "memorySortCursor", func(t *testing.T) {
-		inner := recordlayer.FromList(wideRows(6, w, "ID"))
-		c := newMemorySortCursor(inner, []string{"ID"}, []bool{false}, st)
-		drainCursor(t, ctx, c)
-	})
-
-	// 6. customSortCursor in-memory sort buffer.
+	// 5. customSortCursor in-memory sort buffer.
 	advanced(t, "customSortCursor", func(t *testing.T) {
 		inner := recordlayer.FromList(wideRows(6, w, "ID"))
 		c := newCustomSortCursor(inner, func([]QueryResult) error { return nil }, st)

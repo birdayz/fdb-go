@@ -844,7 +844,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			// 1-indexed position into the SELECT list. Resolve to the
 			// matching output column's name so the downstream colIdx
 			// lookup in the sort path works uniformly.
-			posName, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
+			posName, _, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
@@ -922,7 +922,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				}
 				seenAliases[aliasKey] = true
 			}
-			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, cls.aggCols)
+			posName, _, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, cls.aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}

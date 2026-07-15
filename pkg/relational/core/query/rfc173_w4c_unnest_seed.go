@@ -207,12 +207,12 @@ func unnestSeedInnerFields(
 	if u.AtAlias != "" {
 		// The Explode flows {_0:element, _1:ordinal} — a genuine 2-field record
 		// leg. NAME the leg type by the AS/AT ALIASES (not the Explode's `_0`/`_1`)
-		// so the coexistence leg-window resolution — legWindowRow.GetByName keys on
-		// the leg TYPE names — resolves a downstream `QOV(<alias>).<AS|AT>`
-		// projection/predicate reference (the AS/AT aliases are the columns' OUTPUT
-		// names, what an upper references). The Explode still flows `_0`/`_1`; the
-		// birth's adaptLegPositional binds that ordinality Datum to this alias-named
-		// leg by OrdinalFieldName per slot. AT-only leaves the element slot named
+		// so a downstream `QOV(<alias>).<AS|AT>` projection/predicate reference
+		// bakes its leg-local ordinal against the leg TYPE names (the AS/AT
+		// aliases are the columns' OUTPUT names, what an upper references). The
+		// Explode still flows `_0`/`_1`; the birth's bindLeg binds that ordinality
+		// row to this alias-named leg strictly by position (element slot 0,
+		// ordinal slot 1). AT-only leaves the element slot named
 		// `_0` — unreferenced, since without an AS the element binds to nothing.
 		elemName := strings.ToUpper(u.Alias)
 		if elemName == "" {

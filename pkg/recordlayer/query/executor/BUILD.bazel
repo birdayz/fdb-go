@@ -53,6 +53,7 @@ go_test(
         "limit_extension_test.go",
         "memory_budget_test.go",
         "merge_fabrication_test.go",
+        "name_oracle_test.go",
         "package_invariant_test.go",
         "plan_column_names_test.go",
         "positional_row_test.go",
@@ -118,6 +119,7 @@ go_test(
         "merge_fabrication_test.go",
         "positional_test_helpers_test.go",
         "covering_logical_row_test.go",
+        "name_oracle_test.go",
     ],
     deps = [
         "//gen",

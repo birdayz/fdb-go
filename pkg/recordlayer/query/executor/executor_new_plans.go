@@ -59,9 +59,9 @@ func executeAggregateIndexScan(
 	// schema is the GROUP columns in scan order followed by the aggregate column
 	// — the exact order the row's slots are filled below (entry.Key then
 	// entry.Value). Row-invariant, so it is built once here and shared across
-	// rows. Named by the same canonical names the Datum map uses (uppercase group
-	// cols, canonical agg name), so a name-in-row lookup (GetByName) resolves
-	// identically to the legacy name-keyed read.
+	// rows. Named by the canonical output names (uppercase group
+	// cols, canonical agg name) — the exact schema plan-time bakes bind
+	// against.
 	posNames := make([]string, 0, len(groupCols)+1)
 	posNames = append(posNames, groupCols...)
 	posNames = append(posNames, canonicalName)
@@ -227,7 +227,7 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	// RFC-173: resolve the resultValue against the CONCATENATED ordinal rows of
 	// the matched children — the aggregate-index producer births a Positional per
 	// child; the grouping columns are identical across children and the aggregate
-	// columns are distinct, so the flat concatenation's first-match GetByName
+	// columns are distinct, so a plan-time bake against the flat concatenation
 	// resolves each resultValue column to the correct slot.
 	evalArg := mergeChildEvalArg(childResults)
 
@@ -265,9 +265,9 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 
 // mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is
 // evaluated against: the CONCATENATED PositionalRow of the matched child rows
-// (RFC-173 ordinal frontier — a bare OrdinalRow, resolved by GetByName against the
-// row's own concatenated type). Fields are concatenated in child order; grouping
-// columns repeat across children with the same value, so first-match GetByName is
+// (RFC-173 ordinal frontier — a bare OrdinalRow whose plan-produced concatenated
+// type the baked references read). Fields are concatenated in child order; grouping
+// columns repeat across children with the same value, so a first-match bind is
 // order-safe. Returns nil if any child lacks a Positional (should not happen — the
 // aggregate-index producer births one per child).
 func mergeChildEvalArg(childResults []QueryResult) any {

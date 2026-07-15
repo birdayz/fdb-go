@@ -6,14 +6,13 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// TestPositionalRow_RFC173P2 pins the P2 positional row: ordinal Get/Set, the
-// name->ordinal bridge (GetByName via FieldIndex) that the shadow assert relies
-// on, out-of-range safety, and nil-safety.
-func TestPositionalRow_RFC173P2(t *testing.T) {
+// TestPositionalRow_Basics pins the positional row primitives: ordinal Get/Set,
+// out-of-range safety, and nil-safety. There is NO name-keyed read on the type
+// (RFC-173): a column's slot is bound at plan time via the Type's FieldIndex.
+func TestPositionalRow_Basics(t *testing.T) {
 	t.Parallel()
 	typ := values.NewRecordType("R", false, []values.Field{
 		{Name: "id", FieldType: values.NotNullLong, Ordinal: 0},
@@ -36,32 +35,21 @@ func TestPositionalRow_RFC173P2(t *testing.T) {
 		t.Fatalf("Get(1) = (%v,%v), want (alice,true)", v, ok)
 	}
 
-	// Name bridge: GetByName resolves via FieldIndex and reads the same slot.
-	if v, ok := row.GetByName("id"); !ok || v != int64(7) {
-		t.Fatalf("GetByName(id) = (%v,%v), want (7,true)", v, ok)
-	}
-	if v, ok := row.GetByName("name"); !ok || v != "alice" {
-		t.Fatalf("GetByName(name) = (%v,%v), want (alice,true)", v, ok)
-	}
-	// GetByName agrees with positional access for every field — the property the
-	// shadow assert generalizes.
+	// The plan-time bind rule: FieldIndex names each slot; a bake against the
+	// type reads the same slot Set wrote.
 	for i, f := range typ.Fields {
-		byOrd, _ := row.Get(i)
-		byName, _ := row.GetByName(f.Name)
-		if byOrd != byName {
-			t.Fatalf("field %q: Get(%d)=%v disagrees with GetByName=%v", f.Name, i, byOrd, byName)
+		idx, ok := typ.FieldIndex(f.Name)
+		if !ok || idx != i {
+			t.Fatalf("FieldIndex(%q) = (%d,%v), want (%d,true)", f.Name, idx, ok, i)
 		}
 	}
 
-	// Out-of-range and unknown-name decline.
+	// Out-of-range decline.
 	if _, ok := row.Get(2); ok {
 		t.Error("Get out of range must return false")
 	}
 	if row.Set(-1, 0) {
 		t.Error("Set out of range must return false")
-	}
-	if _, ok := row.GetByName("missing"); ok {
-		t.Error("GetByName unknown must return false")
 	}
 
 	// Nil-safety.
@@ -69,19 +57,17 @@ func TestPositionalRow_RFC173P2(t *testing.T) {
 	if _, ok := nilRow.Get(0); ok {
 		t.Error("nil row Get must return false")
 	}
-	if _, ok := nilRow.GetByName("id"); ok {
-		t.Error("nil row GetByName must return false")
-	}
 	// Nil type yields an empty row.
 	if r := NewPositionalRow(nil); len(r.Slots) != 0 {
 		t.Errorf("NewPositionalRow(nil) slots = %d, want 0", len(r.Slots))
 	}
 }
 
-// TestPositionalRow_ShadowAssert_RFC173P2 pins the shadow assert (shadowMismatch):
-// a positional row that matches the name map agrees field-for-field (including list
-// values and absent=NULL fields), and a divergent slot is caught.
-func TestPositionalRow_ShadowAssert_RFC173P2(t *testing.T) {
+// TestPositionalRow_ShadowAssert pins the test oracle (shadowMismatch): a
+// positional row that matches the expectation map agrees field-for-field
+// (including list values and absent=NULL fields), and a divergent slot is
+// caught.
+func TestPositionalRow_ShadowAssert(t *testing.T) {
 	t.Parallel()
 	typ := values.NewRecordType("R", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
@@ -115,11 +101,12 @@ func TestPositionalRow_ShadowAssert_RFC173P2(t *testing.T) {
 	}
 }
 
-// TestProtoToPositional_ShadowsMap_RFC173P2 pins the first real producer wiring:
-// protoToPositional (which FromStoredRecord emits for every scanned row) mirrors
-// protoToMap field-for-field — set fields carry the value, unset fields are NULL
-// on both sides — over a real proto message with a mix of set and unset fields.
-func TestProtoToPositional_ShadowsMap_RFC173P2(t *testing.T) {
+// TestProtoToPositional_ShadowsMap pins the scan-row producer: protoToPositional
+// (which FromStoredRecord emits for every scanned row) agrees field-for-field
+// with the independent protoToMap oracle — set fields carry the value, unset
+// fields are NULL — over a real proto message with a mix of set and unset
+// fields.
+func TestProtoToPositional_ShadowsMap(t *testing.T) {
 	t.Parallel()
 	msg := &gen.TypedRecord{
 		Id:        proto.Int64(7),
@@ -131,17 +118,18 @@ func TestProtoToPositional_ShadowsMap_RFC173P2(t *testing.T) {
 	m := protoToMap(msg)
 	row := protoToPositional(msg)
 
-	// The scan's positional row shadow-agrees with its name-keyed map on every field.
+	// The scan's positional row shadow-agrees with the name-keyed oracle on
+	// every field.
 	if bad := shadowMismatch(row, m); bad != "" {
 		t.Fatalf("protoToPositional shadow mismatch on field %q", bad)
 	}
-	// A set field resolves positionally (via the name bridge).
-	if v, ok := row.GetByName("VAL_STRING"); !ok || v != "alice" {
-		t.Fatalf("GetByName(VAL_STRING) = (%v,%v), want (alice,true)", v, ok)
+	// A set field occupies its schema slot.
+	if v, ok := getByName(row, "VAL_STRING"); !ok || v != "alice" {
+		t.Fatalf("VAL_STRING = (%v,%v), want (alice,true)", v, ok)
 	}
 	// An unset field is NULL, present as a nil slot (not absent) — the positional
 	// row is dense over the schema, unlike the sparse map.
-	if v, ok := row.GetByName("VAL_INT32"); !ok || v != nil {
+	if v, ok := getByName(row, "VAL_INT32"); !ok || v != nil {
 		t.Fatalf("unset VAL_INT32 = (%v,%v), want (nil,true)", v, ok)
 	}
 	if _, present := m["VAL_INT32"]; present {
@@ -149,86 +137,29 @@ func TestProtoToPositional_ShadowsMap_RFC173P2(t *testing.T) {
 	}
 }
 
-// TestPositionalRow_DuplicateNames_RFC173P2 pins the finding that drove the
-// projection wiring: a projection with duplicate output names (SELECT a, a; a join
-// projecting both legs' `id`) keeps BOTH values positionally, where the name-keyed
-// map is last-wins. positionalTypeFromNames uses a raw RecordType (NewRecordType
-// would panic on the duplicate); ordinal access is unambiguous, and the shadow
-// assert legitimately DIFFERS from the last-wins map on the duplicate (the §5
-// models-must-differ case, not a bug — it's the Slice-4 collision fix).
-func TestPositionalRow_DuplicateNames_RFC173P2(t *testing.T) {
+// TestPositionalRow_DuplicateNames pins the duplicate-output-name model: a
+// projection with duplicate output names (SELECT a, a; a join projecting both
+// legs' `id`) keeps BOTH values positionally — positionalTypeFromNames uses a
+// raw RecordType (NewRecordType would panic on the duplicate); ordinal access
+// is unambiguous, and the plan-time name bind (FieldIndex) is first-match.
+func TestPositionalRow_DuplicateNames(t *testing.T) {
 	t.Parallel()
 	typ := positionalTypeFromNames([]string{"ID", "ID"})
 	if len(typ.Fields) != 2 {
 		t.Fatalf("dup-name type fields = %d, want 2 (both kept, distinct by ordinal)", len(typ.Fields))
 	}
 	row := &PositionalRow{Type: typ, Slots: []any{int64(1), int64(2)}}
-	// Both values coexist positionally (the map would keep only the last).
+	// Both values coexist positionally (a name-keyed map would keep only one).
 	if v0, _ := row.Get(0); v0 != int64(1) {
 		t.Fatalf("Get(0) = %v, want 1", v0)
 	}
 	if v1, _ := row.Get(1); v1 != int64(2) {
 		t.Fatalf("Get(1) = %v, want 2", v1)
 	}
-	// GetByName resolves to the FIRST match (FieldIndex first-match semantics).
-	if v, ok := row.GetByName("ID"); !ok || v != int64(1) {
-		t.Fatalf("GetByName(ID) = (%v,%v), want (1,true) — first match", v, ok)
-	}
-	// Shadow against a last-wins map DIFFERS at ID (map has 2, positional field 0
-	// has 1) — the §5 legitimate difference, surfaced not silently lost.
-	lastWinsMap := map[string]any{"ID": int64(2)}
-	if bad := shadowMismatch(row, lastWinsMap); bad != "ID" {
-		t.Fatalf("dup-name shadow should differ at ID (map last-wins vs positional dense), got %q", bad)
-	}
-}
-
-// TestBuildCoveringRow_ShadowAndCollision_RFC173P2 closes the coverage gap @claude
-// flagged: run the REAL covering-index bookkeeping (buildCoveringRow — upper-casing,
-// pkOffset prefix-skip, dup-name positions) and shadow-assert the positional row
-// against its own datum, including the value/PK name-collision case a synthetic unit
-// test can't reach.
-func TestBuildCoveringRow_ShadowAndCollision_RFC173P2(t *testing.T) {
-	t.Parallel()
-
-	// Non-colliding: value cols [a,b], PK col [id] — positional row shadow-agrees.
-	posType := positionalTypeFromNames([]string{"A", "B", "ID"})
-	datum, row := buildCoveringRow(
-		[]string{"a", "b"}, []string{"id"},
-		tuple.Tuple{int64(10), "hi"}, tuple.Tuple{int64(99)}, posType)
-	if bad := shadowMismatch(row, datum); bad != "" {
-		t.Fatalf("covering-row shadow mismatch on field %q", bad)
-	}
-	if v, _ := row.GetByName("A"); v != int64(10) {
-		t.Fatalf("A = %v, want 10", v)
-	}
-	if v, _ := row.GetByName("ID"); v != int64(99) {
-		t.Fatalf("ID = %v, want 99", v)
-	}
-
-	// pkOffset prefix-skip: pk carries a record-type prefix; the user PK is the tail.
-	posType2 := positionalTypeFromNames([]string{"ID"})
-	_, row2 := buildCoveringRow(nil, []string{"id"}, nil, tuple.Tuple{int64(7), int64(42)}, posType2)
-	if v, _ := row2.Get(0); v != int64(42) {
-		t.Fatalf("pkOffset skip: ID = %v, want 42 (tail, not the type-prefix 7)", v)
-	}
-
-	// VALUE/PK name COLLISION (@claude's motivating case): value col "x" + PK col "x",
-	// different values. datum is last-wins (PK overwrites); the positional row keeps
-	// BOTH by ordinal — so shadowMismatch legitimately differs at X (Slice-4 fix).
-	posType3 := positionalTypeFromNames([]string{"X", "X"})
-	datum3, row3 := buildCoveringRow(
-		[]string{"x"}, []string{"x"},
-		tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}, posType3)
-	if datum3["X"] != int64(2) {
-		t.Fatalf("datum last-wins: X = %v, want 2 (PK overwrites value)", datum3["X"])
-	}
-	if v, _ := row3.Get(0); v != int64(1) {
-		t.Fatalf("positional keeps value col: Get(0) = %v, want 1", v)
-	}
-	if v, _ := row3.Get(1); v != int64(2) {
-		t.Fatalf("positional keeps PK col: Get(1) = %v, want 2", v)
-	}
-	if bad := shadowMismatch(row3, datum3); bad != "X" {
-		t.Fatalf("collision shadow should differ at X (positional dense vs datum last-wins), got %q", bad)
+	// The plan-time name bind resolves to the FIRST match; the second slot is
+	// reachable only by ordinal — which is why duplicate-name-correct reads
+	// REQUIRE the plan-time bake (RFC-173's founding case).
+	if idx, ok := typ.FieldIndex("ID"); !ok || idx != 0 {
+		t.Fatalf("FieldIndex(ID) = (%d,%v), want (0,true) — first match", idx, ok)
 	}
 }

@@ -262,6 +262,13 @@ type SortKey struct {
 	Dir        SortDir
 	NullsFirst bool
 	Value      values.Value // resolved Value expression (nil = use text as FieldValue)
+	// Pos is the 1-based SELECT-list position for a positional key
+	// (`ORDER BY <n>`); 0 = not positional. A positional key IS an output
+	// ordinal by SQL definition, so the translator bakes it directly to the
+	// projection's output slot (RFC-173 — no text-rendering round-trip, which
+	// diverges for computed items whose canonical source text differs from the
+	// baked output spelling).
+	Pos int
 }
 
 // LogicalSort sorts its child rows by the given keys.

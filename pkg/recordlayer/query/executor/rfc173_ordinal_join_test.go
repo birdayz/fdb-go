@@ -340,9 +340,11 @@ func TestRFC173S2_SeedAssert_MalformedPanics(t *testing.T) {
 
 // TestRFC173S2_LegWindowRow pins the window mechanics over a hand-built merged
 // row: Get is leg-relative (window at offset 2 reads merged slot 2+i),
-// out-of-range is (nil,false), GetByName resolves leg-LOCALLY against the LEG
-// type even when the merged type carries the same name at a DIFFERENT absolute
-// slot (the wrong-slot axis), and TypeNames reports the leg's columns.
+// out-of-range is (nil,false) — never a read into a sibling leg — and
+// TypeNames reports the leg's columns. A leg-local plan-time bind (the LEG
+// type's FieldIndex) names exactly the leg's own columns, even when the merged
+// type carries the same name at a DIFFERENT absolute slot (the wrong-slot
+// axis).
 func TestRFC173S2_LegWindowRow(t *testing.T) {
 	t.Parallel()
 	corrA := values.NamedCorrelationIdentifier("a")
@@ -370,17 +372,18 @@ func TestRFC173S2_LegWindowRow(t *testing.T) {
 		t.Fatalf("window B Get(-1) = (%v, %v), want (nil, false)", v, found)
 	}
 
-	// GetByName is leg-LOCAL: "ID" resolves against LEG B's type (ordinal 0 →
-	// merged slot 2 → 2), even though the merged type has "ID" at absolute
-	// slot 0 holding A's ID=1 — the wrong-slot axis.
-	if v, found := winB.GetByName("ID"); !found || v != int64(2) {
-		t.Fatalf("window B GetByName(ID) = (%v, %v), want (2, true) — must be B's ID, not merged slot 0 (A's)", v, found)
+	// The plan-time bind is leg-LOCAL: "ID" resolves against LEG B's type to
+	// leg ordinal 0 (→ merged slot 2 = B's ID=2), even though the merged type
+	// has "ID" at absolute slot 0 holding A's ID=1 — the wrong-slot axis. A's
+	// "V" is not a column of B's leg type at all.
+	if idx, found := spans[1].LegType.FieldIndex("ID"); !found || idx != 0 {
+		t.Fatalf("leg B FieldIndex(ID) = (%d, %v), want (0, true) — B's own ID, not the merged slot 0", idx, found)
 	}
-	if v, found := winB.GetByName("W"); !found || v != int64(20) {
-		t.Fatalf("window B GetByName(W) = (%v, %v), want (20, true)", v, found)
+	if idx, found := spans[1].LegType.FieldIndex("W"); !found || idx != 1 {
+		t.Fatalf("leg B FieldIndex(W) = (%d, %v), want (1, true)", idx, found)
 	}
-	if _, found := winB.GetByName("V"); found {
-		t.Fatal("window B GetByName(V) must miss — V is leg A's column, not visible through B's window")
+	if _, found := spans[1].LegType.FieldIndex("V"); found {
+		t.Fatal("leg B FieldIndex(V) must miss — V is leg A's column, not visible through B's window")
 	}
 
 	wantNames := []string{"ID", "W"}

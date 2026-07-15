@@ -64,9 +64,10 @@ func TestBuildCoveringLogicalRow(t *testing.T) {
 		t.Fatalf("baked B read = %v, want 20", got)
 	}
 
-	// Name reads resolve identically to the base-scan path (same type).
-	if v, _ := row.GetByName("B"); v != int64(20) {
-		t.Fatalf("GetByName(B) = %v, want 20", v)
+	// The row's TYPE names slots identically to the base-scan path, so a
+	// plan-time bake against it lands on the same slot.
+	if idx, ok := row.Type.FieldIndex("B"); !ok || idx != 2 {
+		t.Fatalf("FieldIndex(B) = (%d, %v), want (2, true)", idx, ok)
 	}
 }
 

@@ -644,7 +644,9 @@ func TestQuantifiedObjectValue_Evaluate_MultiSource(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected an ordinal row, got %T", got)
 	}
-	if v, _ := row.GetByName("age"); v != int64(30) {
+	// t's 1-column row: AGE at slot 0. u's row carries "other" instead, so a
+	// slot-0 read distinguishes the two.
+	if v, _ := row.Get(0); v != int64(30) {
 		t.Fatalf("age: got %v, want 30 (t's row, not u's)", v)
 	}
 }

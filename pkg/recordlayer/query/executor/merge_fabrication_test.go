@@ -10,7 +10,8 @@ import (
 
 // TestMergeRows_LegWindowedQualifiedReads pins the RFC-173 merge: mergeRows
 // builds a leg-windowed positional row (concatLegPositionals), so a qualified
-// read "C.AK" / "CC2.CV" resolves LEG-LOCALLY through the alias window — the
+// reference "C.AK" / "CC2.CV" — a baked QOV(alias).col through the row's own
+// leg metadata — resolves LEG-LOCALLY through the alias window (legRead), the
 // ordinal-model successor to the retired name-model "ALIAS.COL" key
 // fabrication.
 func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
@@ -18,10 +19,10 @@ func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 	outer := dmap(map[string]any{"AK": int64(100)})
 	inner := dmap(map[string]any{"CV": int64(900)})
 	merged := mergeRows(outer, inner, "C", "CC2")
-	if v := rowVal(merged, "C.AK"); v != int64(100) {
+	if v, ok := legRead(merged.Positional, "C", "AK"); !ok || v != int64(100) {
 		t.Fatalf("C.AK = %v, want 100 (leg window)", v)
 	}
-	if v := rowVal(merged, "CC2.CV"); v != int64(900) {
+	if v, ok := legRead(merged.Positional, "CC2", "CV"); !ok || v != int64(900) {
 		t.Fatalf("CC2.CV = %v, want 900 (leg window)", v)
 	}
 }

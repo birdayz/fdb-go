@@ -11,7 +11,6 @@ package executor
 
 import (
 	"bytes"
-	"container/heap"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -936,44 +935,6 @@ func buildCoveringLogicalRow(columns, pkColumns []string, vals, pk tuple.Tuple, 
 	return &PositionalRow{Type: logicalType, Slots: slots}
 }
 
-// buildCoveringRow constructs a covering-index result row: the name-keyed datum AND
-// the RFC-173 P2 positional row, from the index value columns then PK columns. An
-// out-of-range column is absent from the datum (SQL NULL) and a nil positional slot.
-// posType is the cursor-fixed positional schema (value cols then PK cols). When a
-// value-column name collides with a PK-column name the datum is last-wins (the PK
-// write overwrites the value write) while the positional row keeps BOTH, distinct by
-// ordinal — the Slice-4 collision fix; the shadow assert legitimately differs there.
-// Extracted from coveringIndexCursor.OnNext so the real bookkeeping (upper-casing,
-// pkOffset prefix-skip, dup-name positions) is unit-testable against shadowMismatch.
-func buildCoveringRow(columns, pkColumns []string, vals, pk tuple.Tuple, posType *values.RecordType) (map[string]any, *PositionalRow) {
-	datum := make(map[string]any, len(columns)+len(pkColumns))
-	posSlots := make([]any, 0, len(columns)+len(pkColumns))
-	for i, col := range columns {
-		var v any
-		if i < len(vals) {
-			v = tupleElementToUUID(vals[i])
-			datum[strings.ToUpper(col)] = v
-		}
-		posSlots = append(posSlots, v)
-	}
-	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id));
-	// the user-level PK columns are at the tail. Skip the prefix.
-	pkOffset := 0
-	if len(pk) > len(pkColumns) {
-		pkOffset = len(pk) - len(pkColumns)
-	}
-	for i, col := range pkColumns {
-		idx := i + pkOffset
-		var v any
-		if idx < len(pk) {
-			v = tupleElementToUUID(pk[idx])
-			datum[strings.ToUpper(col)] = v
-		}
-		posSlots = append(posSlots, v)
-	}
-	return datum, &PositionalRow{Type: posType, Slots: posSlots}
-}
-
 func (c *coveringIndexCursor) Close() error {
 	c.closed = true
 	return c.inner.Close()
@@ -1613,22 +1574,79 @@ func executeSort(
 		return nil, err
 	}
 
-	keys := p.GetSortKeys()
-	keyNames := make([]string, len(keys))
-	directions := make([]bool, len(keys))
-	for i, k := range keys {
-		keyNames[i] = k.Value.Name()
-		if fv, ok := k.Value.(*values.FieldValue); ok {
-			keyNames[i] = fv.Field
-		}
-		directions[i] = k.Reverse
-	}
-
-	cursor := newMemorySortCursor(innerCursor, keyNames, directions, props.State)
+	cursor := newCustomSortCursor(innerCursor, expressionSortFn(p.GetSortKeys()), props.State)
 	if len(priorBuf) > 0 {
 		cursor.buf = priorBuf
 	}
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// expressionSortFn builds the RecordQuerySortPlan comparator: sort keys are
+// VALUES evaluated against the authoritative ordinal positional row (baked at
+// plan time; loud on a miss) — never a name lookup. Ties break by primary
+// key, directed by the last explicit key.
+func expressionSortFn(keys []expressions.SortKey) func([]QueryResult) error {
+	return func(results []QueryResult) error {
+		pkDesc := false
+		if len(keys) > 0 {
+			pkDesc = keys[len(keys)-1].Reverse
+		}
+		var sortErr error
+		sort.SliceStable(results, func(i, j int) bool {
+			if sortErr != nil {
+				return false
+			}
+			for _, k := range keys {
+				vi, err := k.Value.Evaluate(results[i].Positional)
+				if err != nil {
+					sortErr = err
+					return false
+				}
+				vj, err := k.Value.Evaluate(results[j].Positional)
+				if err != nil {
+					sortErr = err
+					return false
+				}
+				iNil, jNil := vi == nil, vj == nil
+				if iNil && jNil {
+					continue
+				}
+				if iNil || jNil {
+					// Default NULL placement: ASC nulls-first, DESC nulls-last
+					// (compareAny's nil-is-smallest rule); an explicit NULLS
+					// FIRST/LAST overrides.
+					nf := !k.Reverse
+					if k.NullsFirst != nil {
+						nf = *k.NullsFirst
+					}
+					if nf {
+						return iNil
+					}
+					return jNil
+				}
+				cmp := compareAny(vi, vj)
+				if cmp == 0 {
+					continue
+				}
+				if k.Reverse {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+			// All explicit sort keys equal — break ties by PK.
+			if results[i].PrimaryKey != nil && results[j].PrimaryKey != nil {
+				cmp := comparePKTuples(results[i].PrimaryKey, results[j].PrimaryKey)
+				if cmp != 0 {
+					if pkDesc {
+						return cmp > 0
+					}
+					return cmp < 0
+				}
+			}
+			return false
+		})
+		return sortErr
+	}
 }
 
 func executeUnion(
@@ -2157,8 +2175,8 @@ func executeNestedLoopJoin(
 // concatLegPositionals builds a leg-windowed merged PositionalRow by CONCATENATING
 // two leg rows' own Positionals (parallel construction — never read back from a
 // name Datum). The merged Type carries top-level Legs [outerAlias@[0,Wo),
-// innerAlias@[Wo,Wo+Wi)] so a qualified read ("LA.K") resolves to its leg's window
-// (GetByName's Legs path); a bare read resolves by name-in-row. Nested Legs (a leg
+// innerAlias@[Wo,Wo+Wi)] so a qualified reference ("LA.K") binds its leg's window
+// (rowLegsBinder / legWindowBinder); a bare read reads its baked slot. Nested Legs (a leg
 // that is itself a merge) are preserved, the inner leg's shifted by Wo. Returns nil
 // when either leg lacks a Positional — then the caller keeps only the name Datum.
 // This is the RFC-173 birth FALLBACK for NAME-MODEL joins (the nljCursor's birth
@@ -3174,35 +3192,36 @@ func executeRecursiveLevelUnion(
 
 	// UNION DISTINCT: track seen rows via a string key to detect
 	// and filter duplicates (cycle detection on cyclic graphs).
-	// Extract canonical column names from the seed datum so the dedup
+	// Extract canonical column names from the seed plan so the dedup
 	// key only considers CTE-relevant columns (ignoring extra join
-	// columns the recursive branch may carry in its datum).
+	// columns the recursive branch may carry in its rows).
 	distinct := p.IsDistinct()
 	// RFC-130: the UNION-DISTINCT seen-set is a cross-level cardinality-growing
 	// buffer (one key per distinct row, held across all levels) — charge each
 	// NEW key via boundedSet.
 	var seen *boundedSet[string]
-	var canonicalCols []string
+	var keyer *cteDedupKeyer
 	if distinct {
 		seen = newBoundedSet[string](props.State)
 		// Dedup on the CTE's OUTPUT columns. Prefer the seed plan's projection
 		// OUTPUT schema: after the temp table is keyed under OUTPUT names, the
-		// seed datum can carry INERT extra keys (e.g. the source column a rename
+		// seed row can carry INERT extra columns (e.g. the source column a rename
 		// projects from — {SRC, N} for `reach(n)` seeded by `SELECT src`). Those
-		// inert keys are absent from the recursive leg's rows, so scraping ALL seed
-		// datum keys would wrongly treat a recursive row and a seed row with the
+		// inert columns are absent from the recursive leg's rows, so keying ALL
+		// seed columns would wrongly treat a recursive row and a seed row with the
 		// same OUTPUT value as distinct (breaking cycle detection). The projection
 		// schema restricts the dedup to the real output columns. Fall back to
-		// scraping the datum when the seed has no projection (e.g. SELECT *).
-		canonicalCols = recursiveUnionOutputColumns(p.GetInitialState())
+		// the first row's layout when the seed has no projection (e.g. SELECT *).
+		canonicalCols := recursiveUnionOutputColumns(p.GetInitialState())
 		if len(canonicalCols) == 0 && len(items) > 0 && items[0].Positional != nil {
 			// Positional column order is already deterministic (ordinal order),
 			// so no sort is needed — unlike the retired name-map key scrape.
 			canonicalCols = items[0].Positional.TypeNames()
 		}
+		keyer = newCTEDedupKeyer(canonicalCols)
 		var deduped []QueryResult
 		for _, it := range items {
-			k := queryResultKeyForCols(it, canonicalCols)
+			k := keyer.key(it)
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return nil, err
@@ -3243,7 +3262,7 @@ func executeRecursiveLevelUnion(
 		if distinct {
 			var newItems []QueryResult
 			for _, it := range items {
-				k := queryResultKeyForCols(it, canonicalCols)
+				k := keyer.key(it)
 				added, err := seen.Add(k, int64(len(k)))
 				if err != nil {
 					return nil, err
@@ -3307,25 +3326,26 @@ func executeRecursiveDfsJoin(
 	var seen *boundedSet[string]
 	// For UNION DISTINCT, dedup on the CTE's OUTPUT columns. Prefer the root
 	// plan's projection OUTPUT schema: after the temp table is keyed under OUTPUT
-	// names, the root datum can carry INERT extra keys (the source column a rename
-	// projects from), absent from the recursive rows — scraping ALL root keys
+	// names, the root row can carry INERT extra columns (the source column a rename
+	// projects from), absent from the recursive rows — keying ALL root columns
 	// would then treat equal-output rows as distinct and break cycle detection.
-	// Fall back to scraping the root datum when there is no projection (SELECT *).
-	var canonicalCols []string
+	// Fall back to the first row's layout when there is no projection (SELECT *).
+	var keyer *cteDedupKeyer
 	if p.IsDistinct() {
 		seen = newBoundedSet[string](props.State)
-		canonicalCols = recursiveUnionOutputColumns(p.GetRoot())
+		canonicalCols := recursiveUnionOutputColumns(p.GetRoot())
 		if len(canonicalCols) == 0 && len(rootRows) > 0 && rootRows[0].Positional != nil {
 			// Ordinal order is already deterministic; no sort needed.
 			canonicalCols = rootRows[0].Positional.TypeNames()
 		}
+		keyer = newCTEDedupKeyer(canonicalCols)
 	}
 
 	const maxRecursionDepth = 256
 
 	for _, root := range rootRows {
 		if seen != nil {
-			k := queryResultKeyForCols(root, canonicalCols)
+			k := keyer.key(root)
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return nil, err
@@ -3334,7 +3354,7 @@ func executeRecursiveDfsJoin(
 				continue
 			}
 		}
-		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth, seen, canonicalCols); err != nil {
+		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth, seen, keyer); err != nil {
 			return nil, err
 		}
 	}
@@ -3353,7 +3373,7 @@ func dfsVisit(
 	results *[]QueryResult,
 	depth, maxDepth int,
 	seen *boundedSet[string],
-	canonicalCols []string,
+	keyer *cteDedupKeyer,
 ) error {
 	if depth >= maxDepth {
 		return &RecursiveCTEDepthExceededError{MaxDepth: maxDepth}
@@ -3388,7 +3408,7 @@ func dfsVisit(
 
 	for _, child := range children {
 		if seen != nil {
-			k := queryResultKeyForCols(child, canonicalCols)
+			k := keyer.key(child)
 			added, err := seen.Add(k, int64(len(k)))
 			if err != nil {
 				return err
@@ -3397,7 +3417,7 @@ func dfsVisit(
 				continue
 			}
 		}
-		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth, seen, canonicalCols); err != nil {
+		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth, seen, keyer); err != nil {
 			return err
 		}
 	}
@@ -3575,112 +3595,6 @@ func errIfBufferTruncated(result recordlayer.RecordCursorResult[QueryResult]) er
 	return nil
 }
 
-// sortByKeys sorts QueryResult slice by the given sort key names.
-// Each key references a field in the datum map; direction is
-// ascending by default.
-func sortByKeys(items []QueryResult, keys []string, directions []bool) {
-	// PK tiebreaker direction matches the last explicit sort key.
-	pkDesc := false
-	if len(directions) > 0 {
-		pkDesc = directions[len(directions)-1]
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		for k, key := range keys {
-			vi := sortKeyFromResult(items[i], key)
-			vj := sortKeyFromResult(items[j], key)
-			cmp := compareAny(vi, vj)
-			if cmp == 0 {
-				continue
-			}
-			desc := k < len(directions) && directions[k]
-			if desc {
-				return cmp > 0
-			}
-			return cmp < 0
-		}
-		// All explicit sort keys equal — break ties by PK.
-		if items[i].PrimaryKey != nil && items[j].PrimaryKey != nil {
-			cmp := comparePKTuples(items[i].PrimaryKey, items[j].PrimaryKey)
-			if cmp != 0 {
-				if pkDesc {
-					return cmp > 0
-				}
-				return cmp < 0
-			}
-		}
-		return false
-	})
-}
-
-// partialSortTopK is a Go-only extension optimization that rearranges
-// items so that the first k elements are the top-k in sorted order,
-// using a max-heap of size k. O(N log k) time, O(k) auxiliary space.
-// After this call, items[:k] contains the top-k in sorted order.
-func partialSortTopK(items []QueryResult, keys []string, directions []bool, k int) {
-	if k <= 0 || k >= len(items) {
-		sortByKeys(items, keys, directions)
-		return
-	}
-
-	less := func(a, b QueryResult) bool {
-		for i, key := range keys {
-			va := sortKeyFromResult(a, key)
-			vb := sortKeyFromResult(b, key)
-			cmp := compareAny(va, vb)
-			if cmp == 0 {
-				continue
-			}
-			desc := i < len(directions) && directions[i]
-			if desc {
-				return cmp > 0
-			}
-			return cmp < 0
-		}
-		return false
-	}
-
-	// Build a max-heap of size k (we want the SMALLEST k elements, so
-	// the heap root is the LARGEST among the current top-k — if a new
-	// element is smaller than the root, it replaces it).
-	h := &topKHeap{items: make([]QueryResult, k), less: less}
-	copy(h.items, items[:k])
-	heap.Init(h)
-
-	for i := k; i < len(items); i++ {
-		if less(items[i], h.items[0]) {
-			h.items[0] = items[i]
-			heap.Fix(h, 0)
-		}
-	}
-
-	// Extract from heap in reverse order → sorted ascending.
-	result := make([]QueryResult, k)
-	for i := k - 1; i >= 0; i-- {
-		result[i] = heap.Pop(h).(QueryResult)
-	}
-	copy(items[:k], result)
-}
-
-// topKHeap is a max-heap for the top-K partial sort. The "less"
-// function defines the desired sort order; the heap inverts it (max-
-// heap) so the root is the WORST element among the current top-K.
-type topKHeap struct {
-	items []QueryResult
-	less  func(a, b QueryResult) bool
-}
-
-func (h *topKHeap) Len() int           { return len(h.items) }
-func (h *topKHeap) Less(i, j int) bool { return h.less(h.items[j], h.items[i]) } // inverted for max-heap
-func (h *topKHeap) Swap(i, j int)      { h.items[i], h.items[j] = h.items[j], h.items[i] }
-func (h *topKHeap) Push(x any)         { h.items = append(h.items, x.(QueryResult)) }
-func (h *topKHeap) Pop() any {
-	old := h.items
-	n := len(old)
-	item := old[n-1]
-	h.items = old[:n-1]
-	return item
-}
-
 // comparePKTuples compares two primary key tuples using their packed
 // byte representation, which preserves FDB tuple ordering. Returns
 // -1, 0, or 1.
@@ -3716,19 +3630,6 @@ func projectionColumnName(v values.Value) string {
 // resolves by ordinal, loud on a miss).
 func sortEvalRow(qr QueryResult) any {
 	return qr.Positional
-}
-
-// sortKeyFromResult resolves a named sort key against the RFC-173 ordinal
-// positional row (name->ordinal against the row's own type). This is a
-// comparator helper, not the FieldValue eval path, so a positional miss yields a
-// NULL sort value rather than loud-erroring.
-func sortKeyFromResult(qr QueryResult, key string) any {
-	if qr.Positional != nil {
-		if v, ok := qr.Positional.GetByName(strings.ToUpper(key)); ok {
-			return v
-		}
-	}
-	return nil
 }
 
 func compareAny(a, b any) int {
@@ -3867,18 +3768,18 @@ func executeInMemorySort(
 	legSpans, joinWindowsOK := downstreamLegWindows(p.GetInner())
 	sortKeyValue := func(qr QueryResult, k plans.SortKey) (any, error) {
 		kv := k.ValueExpr
+		if kv == nil {
+			// RFC-173: every sort key carries its Value (the planner rules set
+			// ValueExpr unconditionally; the ordinal is baked at plan time). A
+			// nil ValueExpr is a malformed plan — loud, never a name read.
+			return nil, fmt.Errorf("RFC-173 in-memory sort: sort key %q carries no value expression — malformed plan", k.Field)
+		}
 		if joinWindowsOK && qr.Positional != nil {
-			if kv == nil {
-				kv = &values.FieldValue{Field: k.Field, Typ: values.UnknownType}
-			}
 			return kv.Evaluate(legWindowRowContext(qr.Positional, evalCtx, legSpans))
 		}
-		if kv != nil {
-			// The authoritative ordinal row on the non-join frontier (loud on a
-			// miss via FieldValue.evaluateOrdinal).
-			return kv.Evaluate(sortEvalRow(qr))
-		}
-		return compareByField(qr, k.Field), nil
+		// The authoritative ordinal row on the non-join frontier (loud on a
+		// miss via FieldValue.evaluateOrdinal).
+		return kv.Evaluate(sortEvalRow(qr))
 	}
 	sortFn := func(results []QueryResult) error {
 		pkDesc := false
@@ -3942,29 +3843,13 @@ func executeInMemorySort(
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
-func compareByField(qr QueryResult, field string) any {
-	// RFC-173: resolve against the authoritative ordinal positional row by name
-	// (comparator helper — a positional miss is a NULL sort value, not the loud
-	// FieldValue eval path).
-	if qr.Positional != nil {
-		if v, ok := qr.Positional.GetByName(strings.ToUpper(field)); ok {
-			return v
-		}
-	}
-	return nil
-}
-
-// queryResultKeyForCols produces a dedup key using only the specified
-// canonical columns. This ensures root rows (which have only seed
-// columns) and recursive rows (which may carry extra join columns)
-// produce matching keys when their CTE-relevant values are equal.
 // recursiveUnionOutputColumns returns the OUTPUT column names of a recursive
 // union leg by walking to its outermost projection plan and reading each slot's
 // alias (or the projection column name when unaliased), upper-cased. Returns nil
 // when no single-child path reaches a projection (e.g. a SELECT * seed), so the
-// caller falls back to scraping the runtime datum. Used to restrict UNION
-// DISTINCT dedup to the CTE's real output columns, ignoring inert datum keys the
-// temp-table normalization may carry.
+// caller falls back to the first row's layout. Used to restrict UNION DISTINCT
+// dedup to the CTE's real output columns (cteDedupKeyer), ignoring inert extra
+// columns the temp-table normalization may carry.
 func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 	for cur := p; cur != nil; {
 		if proj, ok := cur.(*plans.RecordQueryProjectionPlan); ok {
@@ -3975,10 +3860,10 @@ func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 				if i < len(aliases) && aliases[i] != "" {
 					out[i] = strings.ToUpper(aliases[i])
 				} else {
-					// Upper-case symmetrically with the aliased branch: dedup keys
-					// (queryResultKeyForCols) do a raw, no-fold lookup against the
-					// UPPER-cased datum keys, so a mixed-case Field here would miss
-					// every key and collapse distinct rows / break cycle detection
+					// Upper-case symmetrically with the aliased branch: the dedup
+					// keyer binds these names against the UPPER-cased row layouts
+					// (exact FieldIndex match), so a mixed-case name here would miss
+					// every layout and collapse distinct rows / break cycle detection
 					// (reviewer). projectionColumnName already uppers the non-field
 					// path; this makes the field path explicit too.
 					out[i] = strings.ToUpper(projectionColumnName(pv))
@@ -3995,19 +3880,66 @@ func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 	return nil
 }
 
-func queryResultKeyForCols(qr QueryResult, cols []string) string {
-	if len(cols) == 0 {
+// cteDedupKeyer builds the recursive-CTE UNION-DISTINCT dedup key by reading
+// the canonical output columns POSITIONALLY (row.Get(ordinal)). The canonical
+// columns are plan-derived (recursiveUnionOutputColumns — the seed projection's
+// output layout); each leg's rows flow ONE layout (the leg plan's outermost
+// projection output), so the column→ordinal bind is resolved once per row
+// LAYOUT — against the row's *RecordType, plan-produced metadata — and cached,
+// never re-derived per row. A canonical column absent from a layout keys as
+// NULL (dimension-preserving with the seed leg, exactly as the retired
+// per-row name lookup keyed a miss). Go extension: Java's recursive union has
+// no DISTINCT arm (RecordQueryRecursiveLevelUnionPlan is UNION ALL only).
+type cteDedupKeyer struct {
+	cols []string // canonical output columns, UPPER-cased
+	ords map[*values.RecordType][]int
+}
+
+func newCTEDedupKeyer(cols []string) *cteDedupKeyer {
+	upper := make([]string, len(cols))
+	for i, c := range cols {
+		upper[i] = strings.ToUpper(c)
+	}
+	return &cteDedupKeyer{cols: upper, ords: make(map[*values.RecordType][]int)}
+}
+
+// layoutOrdinals binds the canonical columns to rt's slot ordinals (-1 =
+// absent), memoized per layout. The bind rule is RecordType.FieldIndex —
+// first-match on the exact (already upper-cased) name, the same plan-time
+// rule every construction-time bake uses.
+func (k *cteDedupKeyer) layoutOrdinals(rt *values.RecordType) []int {
+	if ords, ok := k.ords[rt]; ok {
+		return ords
+	}
+	ords := make([]int, len(k.cols))
+	for i, col := range k.cols {
+		if idx, ok := rt.FieldIndex(col); ok {
+			ords[i] = idx
+		} else {
+			ords[i] = -1
+		}
+	}
+	k.ords[rt] = ords
+	return ords
+}
+
+func (k *cteDedupKeyer) key(qr QueryResult) string {
+	if len(k.cols) == 0 {
 		return queryResultKey(qr)
 	}
-	if qr.Positional == nil {
+	if qr.Positional == nil || qr.Positional.Type == nil {
 		return fmt.Sprintf("%v", qr.Positional)
 	}
+	ords := k.layoutOrdinals(qr.Positional.Type)
 	var sb strings.Builder
-	for i, col := range cols {
+	for i, ord := range ords {
 		if i > 0 {
 			sb.WriteByte('|')
 		}
-		v, _ := qr.Positional.GetByName(strings.ToUpper(col))
+		var v any
+		if ord >= 0 {
+			v, _ = qr.Positional.Get(ord)
+		}
 		if v == nil {
 			sb.WriteString("\x00NULL\x00")
 		} else {

@@ -73,7 +73,7 @@ func TestExecuteProjection_OutputNames_RFC173(t *testing.T) {
 		if v, _ := qr.Positional.Get(1); v != wantV[i] {
 			t.Fatalf("row %d: RENAMED slot = %v, want %d", i, v, wantV[i])
 		}
-		if v, _ := qr.Positional.GetByName("RENAMED"); v != wantV[i] {
+		if v, _ := getByName(qr.Positional, "RENAMED"); v != wantV[i] {
 			t.Fatalf("row %d: RENAMED by name = %v, want %d", i, v, wantV[i])
 		}
 	}
