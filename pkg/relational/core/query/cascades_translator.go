@@ -904,35 +904,55 @@ func unnestOuterLegAliases(op logical.LogicalOperator, mergedCorr values.Correla
 // RFC-142.
 func (t *cascadesTranslator) unnestArrayElementType(outerTable string, fieldSegments []string) (elementType values.Type, fieldName string, isArray, fieldPresent bool) {
 	rt := t.resolveRecordType(outerTable)
-	if rt == nil || rt.Descriptor == nil || len(fieldSegments) == 0 {
+	if rt == nil || rt.Descriptor == nil {
 		return values.UnknownType, "", false, false
 	}
-	fields := rt.Descriptor.Fields()
-	// Only single-segment array fields are supported (the column directly on
-	// the outer source). A multi-segment path (t.struct.arr) is not a top-level
-	// FROM unnest shape in the yamsql corpus; treat as a missing field (the
-	// nested-struct unnest shape is not yet supported — table fallback).
-	if len(fieldSegments) != 1 {
-		return values.UnknownType, "", false, false
+	return arrayFieldFromDescriptor(rt.Descriptor.Fields(), fieldSegments)
+}
+
+// protoFieldLookup resolves a field by SQL identifier (case-insensitive —
+// proto names are lower/snake, SQL upper).
+func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
+	if fd := fs.ByName(protoreflect.Name(strings.ToLower(name))); fd != nil {
+		return fd
 	}
-	fd := fields.ByName(protoreflect.Name(strings.ToLower(fieldSegments[0])))
-	if fd == nil {
-		// Case-insensitive fallback: proto field names are typically lower /
-		// snake, but the SQL identifier may be upper-cased.
-		for i := 0; i < fields.Len(); i++ {
-			f := fields.Get(i)
-			if strings.EqualFold(string(f.Name()), fieldSegments[0]) {
-				fd = f
-				break
-			}
+	for i := 0; i < fs.Len(); i++ {
+		if f := fs.Get(i); strings.EqualFold(string(f.Name()), name) {
+			return f
 		}
 	}
+	return nil
+}
+
+// arrayFieldFromDescriptor classifies a lateral unnest's array field by
+// per-segment descent over a proto record's fields (Java's
+// SemanticAnalyzer.lookupNestedField STRUCT rule): every INTERMEDIATE segment
+// must be a singular MESSAGE field; the FINAL segment must be repeated. Shared
+// by the base-table path (unnestArrayElementType) and the chained path (which
+// descends the OWNER unnest's element message). Returns:
+//   - (elemType, name, true, true) for a repeated final — a valid array;
+//   - (Unknown, "", false, true) for a present-but-scalar final, or a
+//     non-record/repeated intermediate — Java's "repeated type" assert;
+//   - (Unknown, "", false, false) for an absent field.
+func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegments []string) (elementType values.Type, fieldName string, isArray, fieldPresent bool) {
+	if len(fieldSegments) == 0 {
+		return values.UnknownType, "", false, false
+	}
+	for _, seg := range fieldSegments[:len(fieldSegments)-1] {
+		fd := protoFieldLookup(fields, seg)
+		if fd == nil {
+			return values.UnknownType, "", false, false
+		}
+		if fd.IsList() || fd.Kind() != protoreflect.MessageKind {
+			return values.UnknownType, "", false, true
+		}
+		fields = fd.Message().Fields()
+	}
+	fd := protoFieldLookup(fields, fieldSegments[len(fieldSegments)-1])
 	if fd == nil {
-		// No such field on the source → not an unnest; let the table path try.
 		return values.UnknownType, "", false, false
 	}
 	if !fd.IsList() {
-		// Present but scalar → WRONG_OBJECT_TYPE (a non-array correlated source).
 		return values.UnknownType, "", false, true
 	}
 	return arrayFieldElementType(fd), strings.ToUpper(string(fd.Name())), true, true
@@ -1080,6 +1100,45 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// path handles it; an AT alias is then invalid.
 	outerTable := findOuterScanTable(j.Left, u.Segments[0])
 	if outerTable == "" {
+		// RFC-173 unnest-residual class 4 (chained unnest): segment 0 names a
+		// PRIOR lateral unnest's element, not a scan. Positively gated on
+		// findOwnerUnnest (design ruling 4 condition 2 — never merely
+		// outerTable==""), and only for INNER-comma chains
+		// (!unnestUnderExistential — an under-existential chain keeps item-2's
+		// binders). A resolvable chain routes to translateChainedUnnestJoin;
+		// anything else (schema-qualified, derived-hidden) falls through to the
+		// existing fallback.
+		//
+		// NOT gated on prevEnclosure: a chained unnest is always name-model
+		// residual, and a 3+-link chain translates its OUTER (which contains the
+		// PRIOR chained link) with the enclosure bit set — so an inner chained
+		// link would observe prevEnclosure=true. Gating on !prevEnclosure would
+		// collapse the chain there (the inner link declines and the outer's
+		// translateRef returns nil). The chain shape is decided by
+		// isChainedUnnest alone, exactly as Java nests each link the same way.
+		if !t.unnestUnderExistential && isChainedUnnest(j.Left, u) {
+			if sel := t.translateChainedUnnestJoin(j, u); sel != nil {
+				return sel
+			}
+			// A chained unnest that classified to a loud error set the
+			// translate error; return nil so the caller surfaces it.
+			if t.translateErr != nil {
+				return nil
+			}
+		}
+		// segment 0 names a prior unnest's AT ORDINAL alias (`t.arr AS x AT o,
+		// o.sub AS y`): `o` binds a scalar integer, so `o.sub` is a field access
+		// on a scalar — Java rejects it at resolution (UNDEFINED_COLUMN). Surface
+		// that honest error instead of the generic fallback reject (which would
+		// rebuild `o.sub` as a phantom scan and fail with 0AF00). Only the
+		// field-access shape (a sub-path past the ordinal name) reaches here — a
+		// bare `o AS y` is a different, earlier-handled shape.
+		if len(u.Segments) >= 2 && logical.IsUnnestOrdinalAlias(j.Left, u.Segments[0]) {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q does not exist on source %q",
+				strings.Join(u.Segments[1:], "."), u.Segments[0]))
+			return nil
+		}
 		return t.unnestFallbackOrReject(j, u)
 	}
 	// Java's `generateCorrelatedFieldAccess` validates the array field against the
@@ -1116,52 +1175,77 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	//     regardless of whether the alias also names a real table. The in-scope
 	//     derived source is preferred over the catalog table, exactly as Java
 	//     resolves the in-scope quantifier alias. RFC-142.
+	var elementType values.Type
+	var fieldName string
 	if t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"unnest over a CTE/derived-table output is not yet supported"))
-		return nil
-	}
-	elementType, fieldName, isArray, fieldPresent := t.unnestArrayElementType(outerTable, u.Segments[1:])
-	if !isArray {
-		// Segment 0 matched a scan whose table is `outerTable`. Three sub-cases,
-		// matching Java's `generateAccess`/`resolveCorrelatedIdentifier`:
-		//
-		//   - PRESENT-but-scalar (fieldPresent): a real non-array correlated
-		//     source → Java's `generateCorrelatedFieldAccess` "repeated type"
-		//     assert → WRONG_OBJECT_TYPE (P2c).
-		//   - source is a REAL table but the field is MISSING: an unresolvable
-		//     correlated field on a known source — Java's `resolveCorrelatedIdentifier`
-		//     fails the field lookup → a clean UNDEFINED_COLUMN, NOT a silent table
-		//     fallback that produces a generic translation failure (P2c).
-		//   - source is NOT a real table (a derived-table alias `d` whose record
-		//     type doesn't resolve): the field can't be checked here → table path.
-		if fieldPresent {
-			t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+		// RFC-173 unnest-residual class 3: resolve the array field through the
+		// CTE/derived body's projection to a base-table array column (the
+		// flowed type is UnknownType — see rfc173_w5_derived_unnest.go). A
+		// bare passthrough classifies; every other body shape declines loudly.
+		et, outName, disp := t.classifyDerivedUnnestArray(j.Left, u)
+		switch disp {
+		case derivedUnnestArray:
+			elementType, fieldName = et, outName
+			// Fall through to the shared build path below (skip the base-table
+			// unnestArrayElementType classification — already done via the body).
+		case derivedUnnestWrongType:
+			t.setTranslateErr(api.NewError(api.ErrCodeInvalidColumnReference,
 				"join correlation can occur only on a column of repeated (array) type"))
 			return nil
-		}
-		// AT on a BARE source (`FROM T1, T1 AT ord`): segment 0 names a visible
-		// scan, but there are NO field segments to resolve — the source is the
-		// TABLE/alias itself, not an array field on it. AT is valid only on a
-		// correlated array, so this converges with the other AT-on-a-table
-		// rejection paths (unnestFallbackOrReject, demoteSchemaQualifiedUnnest) on
-		// Java's WRONG_OBJECT_TYPE — NOT an UNDEFINED_COLUMN for an empty field
-		// name. (Without the AT this single-segment shape isn't even classified as
-		// an unnest; the AT forces it here so it can be rejected faithfully.)
-		// RFC-142.
-		if u.AtAlias != "" && len(u.Segments) < 2 {
-			t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
-				"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
-			return nil
-		}
-		if t.resolveRecordType(outerTable) != nil {
-			// Known source, missing field: unresolvable correlated field.
+		case derivedUnnestUndefined:
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q does not exist on source %q",
 				strings.Join(u.Segments[1:], "."), u.Segments[0]))
 			return nil
+		default: // derivedUnnestUnsupported
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"unnest over a computed/non-passthrough CTE/derived-table output is not yet supported"))
+			return nil
 		}
-		return t.unnestFallbackOrReject(j, u)
+	} else {
+		var isArray, fieldPresent bool
+		elementType, fieldName, isArray, fieldPresent = t.unnestArrayElementType(outerTable, u.Segments[1:])
+		if !isArray {
+			// Segment 0 matched a scan whose table is `outerTable`. Three sub-cases,
+			// matching Java's `generateAccess`/`resolveCorrelatedIdentifier`:
+			//
+			//   - PRESENT-but-scalar (fieldPresent): a real non-array correlated
+			//     source → Java's `generateCorrelatedFieldAccess` "repeated type"
+			//     assert → WRONG_OBJECT_TYPE (P2c).
+			//   - source is a REAL table but the field is MISSING: an unresolvable
+			//     correlated field on a known source — Java's `resolveCorrelatedIdentifier`
+			//     fails the field lookup → a clean UNDEFINED_COLUMN, NOT a silent table
+			//     fallback that produces a generic translation failure (P2c).
+			//   - source is NOT a real table (a derived-table alias `d` whose record
+			//     type doesn't resolve): the field can't be checked here → table path.
+			if fieldPresent {
+				t.setTranslateErr(api.NewError(api.ErrCodeInvalidColumnReference,
+					"join correlation can occur only on a column of repeated (array) type"))
+				return nil
+			}
+			// AT on a BARE source (`FROM T1, T1 AT ord`): segment 0 names a visible
+			// scan, but there are NO field segments to resolve — the source is the
+			// TABLE/alias itself, not an array field on it. AT is valid only on a
+			// correlated array, so this converges with the other AT-on-a-table
+			// rejection paths (unnestFallbackOrReject, demoteSchemaQualifiedUnnest) on
+			// Java's WRONG_OBJECT_TYPE — NOT an UNDEFINED_COLUMN for an empty field
+			// name. (Without the AT this single-segment shape isn't even classified as
+			// an unnest; the AT forces it here so it can be rejected faithfully.)
+			// RFC-142.
+			if u.AtAlias != "" && len(u.Segments) < 2 {
+				t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+					"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
+				return nil
+			}
+			if t.resolveRecordType(outerTable) != nil {
+				// Known source, missing field: unresolvable correlated field.
+				t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q does not exist on source %q",
+					strings.Join(u.Segments[1:], "."), u.Segments[0]))
+				return nil
+			}
+			return t.unnestFallbackOrReject(j, u)
+		}
 	}
 
 	// CHAINED unnest (`FROM t, t.arr1 AS v1, t.arr2 AS v2`) lowers to a nested
@@ -1284,16 +1368,47 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// both legs), so the arity proxy left exactly that shape on the bare
 	// read. Only a genuine SINGLE-NAMESPACE outer (`FROM t, t.arr` — a
 	// scan/derived row, bare keys only) reads the bare field. RFC-142.
-	arrayFieldKey := fieldName
+	// For a MULTI-SEGMENT path (`t.a.b`, unnest-residual class 2) the root
+	// read is the FIRST field segment; the remaining segments descend the
+	// struct value at eval (the unpinned multi-accessor path — root by name
+	// key, suffix through FieldValue's proto-message arm, Java's
+	// FieldValue.ofFields shape).
+	rootField := fieldName
+	if len(u.Segments) > 2 {
+		rootField = strings.ToUpper(u.Segments[1])
+	}
+	arrayFieldKey := rootField
 	seg0 := strings.ToUpper(u.Segments[0])
 	if len(outerBoundAliases(j.Left)) != 1 {
-		arrayFieldKey = seg0 + "." + fieldName
+		arrayFieldKey = seg0 + "." + rootField
 	}
-	arrayValue := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(outerCorr),
-		arrayFieldKey,
-		values.NewArrayType(true, elementType),
-	)
+	var arrayValue values.Value
+	if len(u.Segments) > 2 {
+		// The root reads by Datum key; the suffix descends the struct value
+		// by field NAME (FieldValue's proto-message arm). Both ordinals are
+		// the LOUD sentinel -1 — never consulted on the name-model / proto
+		// paths, and out-of-range (a clean error) rather than a silent slot
+		// read if either ever reached the positional descent arm.
+		accs := []values.ResolvedAccessor{{Field: arrayFieldKey, Ordinal: -1}}
+		for _, seg := range u.Segments[2:] {
+			accs = append(accs, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
+		}
+		arrayValue = &values.FieldValue{
+			Field: fieldName,
+			Typ:   values.NewArrayType(true, elementType),
+			Child: values.NewQuantifiedObjectValue(outerCorr),
+			// UNPINNED: the residual's rows are name-model — the root key
+			// resolves against the Datum; only the suffix descends
+			// positionally-agnostic through the struct value.
+			Resolved: &values.FieldPath{Accessors: accs},
+		}
+	} else {
+		arrayValue = values.NewFieldValue(
+			values.NewQuantifiedObjectValue(outerCorr),
+			arrayFieldKey,
+			values.NewArrayType(true, elementType),
+		)
+	}
 	withOrdinality := u.AtAlias != ""
 	explode := expressions.NewExplodeExpressionWithOrdinality(arrayValue, withOrdinality)
 	explodeRef := expressions.InitialOf(explode)
@@ -1332,7 +1447,14 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	//     name-model (see unnestExistsSeedSafe / existsInnerScopeCollidesOuter).
 	// A decline (nil) falls back to the name-model builder.
 	var resultValue values.Value
-	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) {
+	// len(u.Segments) == 2: a SINGLE-SOURCE multi-segment path (`FROM t,
+	// t.rec.arr AS x`) stays on the name-model builder. The gather's fused
+	// baked collection (unnest-residual class 2) is the MULTI-source path
+	// (this builder is single-source, clusterArity==1); the single-source
+	// W4c ordinal seed would need its own fused-collection form, which it
+	// does not build — the name-model residual serves it correctly via the
+	// unpinned name-root collection (buildUnnestResultValue below).
+	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left) && len(u.Segments) == 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 	}
 	if resultValue == nil {

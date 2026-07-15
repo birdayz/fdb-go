@@ -115,6 +115,24 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			if childSel, ok := member.(*expressions.SelectExpression); ok && !childSel.ChildrenAsSet() {
 				continue
 			}
+			// RFC-173 unnest-residual class 4 (chained-unnest correlation
+			// barrier): decline to merge a ForEach target when a RETAINED
+			// sibling quantifier is FREE-correlated to it AND the target's
+			// child result value is NAME-MODEL. A chained `FROM t, t.arr AS x,
+			// x.sub AS y` reuses the alias `x` for both the first unnest's
+			// output (this target) and the second unnest's Explode collection
+			// (a retained sibling correlated to `x`); flattening the first
+			// unnest up would strand that collection on the merged-away alias
+			// (the retained-sibling rebase only runs for POSITIONAL-seed
+			// children — rcByAlias empty for a name-model child — so the
+			// Explode arm below would not fire). Java never flattens a lateral
+			// chain either (generateCorrelatedFieldAccess nests them). Keep the
+			// nested FlatMap-over-FlatMap; the positional-seed rebase path is
+			// unaffected. Conservative — worst case a missed flattening, never
+			// wrong rows.
+			if childRefResultIsNameModel(childRef) && siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
+				break
+			}
 			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
 				// RFC-173 Slice 2 drift assert (contract ruling #1): the
 				// translation-time cluster-arity gate SHADOWS this rule's
@@ -346,13 +364,14 @@ var _ ExpressionRule = (*SelectMergeRule)(nil)
 
 // translateQuantifierCorrelations rebuilds a RETAINED quantifier whose
 // subtree references a merged-away alias FREELY (see the call site in
-// OnMatch): the referenced SelectExpression's predicates and result value are
-// translated through the merge's aliasMap/RC substitutions (recursively — a
-// nested select may bury the reference another level down), re-memoized, and
-// wrapped in a quantifier preserving the original's alias and flags
-// (nullOnEmpty carries the dissolved-LEFT pad; strictSingle the scalar
-// contract). ok=false when nothing references a merged alias or the subtree
-// shape is not a SelectExpression — the caller keeps the original quantifier
+// OnMatch): the first rebuildable member of the referenced group — a
+// SelectExpression (predicates + result value translated through the merge's
+// aliasMap/RC substitutions, recursively) or an ExplodeExpression (its
+// collection translated — the RFC-173 unnest-residual arm) — is translated,
+// re-memoized, and wrapped in a quantifier preserving the original's alias
+// and flags (nullOnEmpty carries the dissolved-LEFT pad; strictSingle the
+// scalar contract). ok=false when nothing references a merged alias or no
+// member is a rebuildable shape — the caller keeps the original quantifier
 // (a dangling reference stays LOUD, never silently rebound). The hit test is
 // on the reference's FREE correlations (Java-aligned GetCorrelatedTo): a
 // subtree whose OWN quantifier rebinds a merged name — the dissolved box's
@@ -360,12 +379,12 @@ var _ ExpressionRule = (*SelectMergeRule)(nil)
 // the box — is NOT correlated to the merge and must not be rewritten
 // (rewriting it would capture the inner binding).
 //
-// The rebuild takes the FIRST SelectExpression member of the reference and
-// re-memoizes only its translation — deliberate, not lossy: OnMatch YIELDS
-// the merged select alongside the ORIGINAL, whose quantifier still ranges
-// over the full multi-member group, so alternative members stay reachable
-// through the pre-merge expression; the translated quantifier only needs
-// one sound member to plan through.
+// The rebuild takes the FIRST rebuildable member and re-memoizes only its
+// translation — deliberate, not lossy: OnMatch YIELDS the merged select
+// alongside the ORIGINAL, whose quantifier still ranges over the full
+// multi-member group, so alternative members stay reachable through the
+// pre-merge expression; the translated quantifier only needs one sound
+// member to plan through.
 func translateQuantifierCorrelations(
 	q expressions.Quantifier,
 	mergedAliases map[values.CorrelationIdentifier]struct{},
@@ -387,19 +406,44 @@ func translateQuantifierCorrelations(
 	if !hit {
 		return q, false
 	}
-	var newSel *expressions.SelectExpression
+	var newMember expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
-		sel, isSel := m.(*expressions.SelectExpression)
-		if !isSel {
-			continue
+		switch me := m.(type) {
+		case *expressions.SelectExpression:
+			if ns := translateSelectCorrelations(me, mergedAliases, aliasMap, rcByAlias, call); ns != nil {
+				newMember = ns
+			}
+		case *expressions.ExplodeExpression:
+			// A lateral unnest's Explode sibling whose COLLECTION baked-
+			// references a merged-away box alias gets that reference
+			// translated the same way a SelectExpression member would
+			// (Java: Quantifier.translateCorrelations reaches
+			// ExplodeExpression.translateCorrelations). DEFENSIVE, not a
+			// live-bug fix: no CURRENT path makes a box leg mergeable while
+			// a sibling Explode references it — outer boxes are opaque to
+			// this rule (the ChildrenAsSet guard above) and inner boxes are
+			// pre-flattened by legsOfGatedJoin before they reach the memo as
+			// a mergeable child. The arm exists so that if a future rewrite
+			// DOES make box legs mergeable, the stranded-collection shape is
+			// handled rather than silently dangling; it is pinned white-box
+			// by TestSelectMergeRule_TranslatesExplodeSiblingCollection
+			// (a hand-built memo that forces the merge), which is its only
+			// exercise today.
+			cb := bakedBoxRefCallback(rcByAlias)
+			col := values.RebaseValue(me.GetCollectionValue(), aliasMap)
+			col = values.Replace(col, cb)
+			if col != me.GetCollectionValue() {
+				newMember = expressions.NewExplodeExpressionWithOrdinality(col, me.GetWithOrdinality())
+			}
 		}
-		newSel = translateSelectCorrelations(sel, mergedAliases, aliasMap, rcByAlias, call)
-		break
+		if newMember != nil {
+			break
+		}
 	}
-	if newSel == nil {
+	if newMember == nil {
 		return q, false
 	}
-	newRef := call.MemoizeExpression(newSel)
+	newRef := call.MemoizeExpression(newMember)
 	switch {
 	case q.IsNullOnEmpty():
 		return expressions.NamedForEachNullOnEmptyQuantifier(q.GetAlias(), newRef), true
@@ -610,4 +654,52 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 		}
 		return node
 	}
+}
+
+// childRefResultIsNameModel reports whether a merge candidate's child result
+// value is NAME-MODEL (not a positional ordinal seed). A positional seed
+// child routes through the rcByAlias/bakedBoxRefCallback rebase (which handles
+// a retained Explode sibling); a name-model child does not, so the chained
+// barrier applies only to name-model children.
+func childRefResultIsNameModel(childRef *expressions.Reference) bool {
+	for _, m := range childRef.AllMembers() {
+		sel, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC {
+			if w, _ := values.OrdinalSeedLegWindows(rc); w != nil {
+				return false // positional ordinal seed — not name-model
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// siblingFreeCorrelatedTo reports whether some quantifier OTHER than index
+// `self` ranges over an EXPLODE that is free-correlated to `alias` — the
+// chained-unnest signature (the second unnest's Explode collection references
+// the first unnest's output alias). Scoped to Explode siblings so the barrier
+// never fires for a legitimate correlated SelectExpression-sibling merge
+// (RFC-040), which the name-model rebase handles.
+func siblingFreeCorrelatedTo(quantifiers []expressions.Quantifier, self int, alias values.CorrelationIdentifier) bool {
+	for j, q := range quantifiers {
+		if j == self {
+			continue
+		}
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		if _, corr := ref.GetCorrelatedTo()[alias]; !corr {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			if _, isExplode := m.(*expressions.ExplodeExpression); isExplode {
+				return true
+			}
+		}
+	}
+	return false
 }

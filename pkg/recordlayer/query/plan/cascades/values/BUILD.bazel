@@ -77,6 +77,8 @@ go_library(
     deps = [
         "//pkg/recordlayer/vectorcodec",
         "@com_github_google_uuid//:uuid",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 
@@ -94,6 +96,7 @@ go_test(
         "index_entry_semantic_test.go",
         "integration_test.go",
         "like_match_test.go",
+        "proto_descent_test.go",
         "pullup_test.go",
         "rebase_fuzz_test.go",
         "rebase_test.go",
@@ -113,6 +116,7 @@ go_test(
         "simplifier_value_test.go",
         "swallow_axis_test.go",
         "type_test.go",
+        "uuid_descent_test.go",
         "value_anchored_join_record_test.go",
         "value_andor_test.go",
         "value_array_constructor_test.go",
@@ -170,5 +174,9 @@ go_test(
     deps = [
         "//pkg/recordlayer/vectorcodec",
         "@com_github_stretchr_testify//require",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )

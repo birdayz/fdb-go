@@ -1091,3 +1091,174 @@ func TestSelectMerge_BakedBoxRefCallback_MultiAccessor(t *testing.T) {
 		t.Fatalf("collapsed path = %v, want the slot's leg ordinal (0) fused with the suffix (SUB#0)", accs)
 	}
 }
+
+// TestSelectMergeRule_TranslatesExplodeSiblingCollection is the red sentinel
+// for the RFC-173 unnest-residual class-1 SelectMerge/Explode arm: when a
+// dissolved box leg (a multi-quantifier ordinal-seed child) MERGES into the
+// flat select, a RETAINED sibling quantifier that is a lateral unnest's
+// Explode — whose collection is a baked reference to the box's alias — must
+// have that collection TRANSLATED so it no longer dangles on the merged-away
+// box alias (it collapses to the spliced leg reference). Without the
+// ExplodeExpression arm in translateQuantifierCorrelations the rebuilt merged
+// member carries a dangling collection: correct plans still win today, but the
+// moment the cost model prefers the merged member the Explode reads a
+// non-existent quantifier — silent wrong rows. This pins the arm directly.
+func TestSelectMergeRule_TranslatesExplodeSiblingCollection(t *testing.T) {
+	t.Parallel()
+
+	// The box: SELECT over two leg quantifiers D, E with an ordinal-seed RC
+	// result value (the shape OrdinalSeedLegWindows recognizes → the merge
+	// records rcByAlias for the box).
+	legD := values.NewRecordType("", false, []values.Field{{Name: "DID", FieldType: values.NotNullLong, Ordinal: 0}})
+	legE := values.NewRecordType("", false, []values.Field{{Name: "EARR", FieldType: values.NewArrayType(true, values.NotNullLong), Ordinal: 0}})
+	dQun := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("D"), expressions.InitialOf(&expressions.FullUnorderedScanExpression{}))
+	eQun := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("E"), expressions.InitialOf(&expressions.FullUnorderedScanExpression{}))
+	qovD := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("D"), legD)
+	qovE := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), legE)
+	dBaked, err := values.NewFieldValueOfOrdinal(qovD, 0)
+	if err != nil {
+		t.Fatalf("bake D: %v", err)
+	}
+	eBaked, err := values.NewFieldValueOfOrdinal(qovE, 0)
+	if err != nil {
+		t.Fatalf("bake E: %v", err)
+	}
+	boxRC := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "DID", Value: dBaked},
+		values.RecordConstructorField{Name: "EARR", Value: eBaked},
+	)
+	box := expressions.NewSelectExpressionWithAliases(boxRC, []expressions.Quantifier{dQun, eQun}, nil, []string{"D", "E"})
+	boxQun := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("M"), expressions.InitialOf(box))
+
+	// The Explode sibling: collection = the box's ARR column, baked over
+	// QOV(M, concat) at box ordinal 1 (the box-level reference the merge must
+	// translate). concat arity == RC arity so boxLevel() treats it box-level.
+	concat := values.NewRecordType("", false, []values.Field{
+		{Name: "DID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "EARR", FieldType: values.NewArrayType(true, values.NotNullLong), Ordinal: 1},
+	})
+	boxAliasQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), concat)
+	coll, err := values.NewFieldValueOfOrdinal(boxAliasQOV, 1)
+	if err != nil {
+		t.Fatalf("bake collection: %v", err)
+	}
+	explode := expressions.NewExplodeExpression(coll)
+	explodeQun := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("X"), expressions.InitialOf(explode))
+
+	upper := expressions.NewSelectExpressionWithAliases(
+		boxQun.GetFlowedObjectValue(),
+		[]expressions.Quantifier{boxQun, explodeQun},
+		nil,
+		[]string{"M", "X"},
+	)
+	yielded := FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(upper))
+	if len(yielded) < 1 {
+		t.Fatalf("expected a merged yield, got %d", len(yielded))
+	}
+	merged := yielded[0].(*expressions.SelectExpression)
+
+	// Find the retained Explode quantifier and assert its collection no longer
+	// references the merged-away box alias M.
+	var found bool
+	for _, q := range merged.GetQuantifiers() {
+		for _, m := range q.GetRangesOver().AllMembers() {
+			exp, isExp := m.(*expressions.ExplodeExpression)
+			if !isExp {
+				continue
+			}
+			found = true
+			cv, isFV := exp.GetCollectionValue().(*values.FieldValue)
+			if !isFV {
+				t.Fatalf("translated collection = %T, want *FieldValue", exp.GetCollectionValue())
+			}
+			qov, isQOV := cv.Child.(*values.QuantifiedObjectValue)
+			if !isQOV {
+				t.Fatalf("translated collection child = %T, want *QuantifiedObjectValue", cv.Child)
+			}
+			if qov.Correlation.Name() == "M" {
+				t.Fatalf("Explode collection STILL references the merged-away box alias M (%v) — the SelectMerge/Explode arm did not translate it (dangling collection = latent wrong rows)", cv)
+			}
+			if qov.Correlation.Name() != "E" {
+				t.Fatalf("translated collection correlates to %s, want the spliced leg E (the box's EARR owner)", qov.Correlation)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no Explode quantifier survived the merge — fixture did not exercise the arm")
+	}
+}
+
+// TestSelectMergeRule_ChainedUnnestBarrier is the RFC-173 class-4 (chained
+// unnest) merge barrier pin. It builds the memo shape a `FROM t, t.arr AS x,
+// x.sub AS y` chain lowers to — a NAME-MODEL ForEach target (the first unnest's
+// SelectExpression, whose result value is a plain QOV, NOT an ordinal-seed RC)
+// with a RETAINED sibling that ranges over an Explode whose collection is
+// free-correlated to that target's alias (the second unnest reading `x.sub`).
+//
+// RED-first: WITHOUT the barrier at rule_select_merge.go, the target is a
+// mergeable single-quantifier Select, so the rule flattens it — pulling up the
+// inner scan and stranding the Explode collection on the merged-away alias (a
+// name-model child records NO rcByAlias entry, so the positional-seed Explode
+// rebase never runs → dangling correlation → latent wrong rows). WITH the
+// barrier, `childRefResultIsNameModel && siblingFreeCorrelatedTo` fires, the
+// target is skipped, and the rule yields no broken alternative. Assert exactly
+// that: no yielded alternative carries an Explode collection still correlated
+// to the target alias that is absent from that alternative's own quantifiers.
+func TestSelectMergeRule_ChainedUnnestBarrier(t *testing.T) {
+	t.Parallel()
+
+	// The chain's first-unnest analog: a NAME-MODEL select over a scan. Its
+	// result value is qun.GetFlowedObjectValue() (a QOV, not an ordinal-seed
+	// RC) → childRefResultIsNameModel returns true.
+	tQun, _ := baseLeaf()
+	targetSel := selectWithPreds(tQun)
+	targetQun := forEachOf(targetSel)
+	targetAlias := targetQun.GetAlias()
+
+	// The chain's second-unnest analog: an Explode whose collection reads
+	// `x.sub` off the first unnest's output — free-correlated to targetAlias.
+	explode := expressions.NewExplodeExpression(qFieldValue(targetQun, "sub"))
+	explodeQun := forEachOf(explode)
+
+	upper := expressions.NewSelectExpression(
+		targetQun.GetFlowedObjectValue(),
+		[]expressions.Quantifier{targetQun, explodeQun},
+		nil,
+	)
+
+	yielded := FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(upper))
+
+	// Every yielded alternative must be well-formed: no retained Explode may
+	// dangle on the merged-away target alias.
+	for yi, y := range yielded {
+		sel, ok := y.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		aliveAliases := map[values.CorrelationIdentifier]bool{}
+		for _, q := range sel.GetQuantifiers() {
+			aliveAliases[q.GetAlias()] = true
+		}
+		for _, q := range sel.GetQuantifiers() {
+			for _, m := range q.GetRangesOver().AllMembers() {
+				exp, isExp := m.(*expressions.ExplodeExpression)
+				if !isExp {
+					continue
+				}
+				cv, isFV := exp.GetCollectionValue().(*values.FieldValue)
+				if !isFV {
+					continue
+				}
+				qov, isQOV := cv.Child.(*values.QuantifiedObjectValue)
+				if !isQOV {
+					continue
+				}
+				// A collection correlated to the (merged-away) target alias with
+				// no live quantifier binding it is the dangling-strand bug.
+				if qov.Correlation == targetAlias && !aliveAliases[targetAlias] {
+					t.Fatalf("yield[%d]: chained-unnest Explode collection dangles on merged-away target alias %s (%v) — the SelectMerge barrier failed to decline the name-model chained merge (latent wrong rows)", yi, targetAlias, cv)
+				}
+			}
+		}
+	}
+}

@@ -60,16 +60,8 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if !isJoin {
 		return nil // single-source outer — the W4c binary path owns it
 	}
-	if leftJoin.Kind != logical.JoinInner {
-		// W4-left made single-source LEFT/RIGHT boxes GATE — but the W5
-		// gather is chartered for INNER clusters only (the flat comma
-		// FROM list); a gated OUTER box as the unnest's left is not a
-		// gatherable cluster (its legs carry null-supplying roles the flat
-		// seed has no arm for). Decline to the residual.
-		return nil
-	}
-	// The left cluster must be a GATED-if-fresh inner cluster (the enclosure-
-	// free probe, side-effect-free Decide — the ordinalEligible pattern): an
+	// The left cluster must be a GATED-if-fresh cluster (the enclosure-free
+	// probe, side-effect-free Decide — the ordinalEligible pattern): an
 	// ungated cluster flows name-model rows the baked collection read cannot
 	// consume (ruling Q1 condition iii feeds Q5's fail-open residual).
 	prev := t.inInnerCluster
@@ -80,7 +72,22 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		return nil
 	}
 
-	legs := t.legsOfGatedJoin(leftJoin)
+	var legs []clusterLeg
+	if leftJoin.Kind != logical.JoinInner {
+		// A gated OUTER box as the unnest's left (unnest-residual class 1,
+		// design ruling 1(i)): the box is ONE OPAQUE leg — its legs are
+		// never gathered into the flat inner select (the flat seed has no
+		// arm for null-supplying roles; the box quantifier carries them,
+		// and its buried leaves stay addressable through the amendment-C
+		// bake windows). The unnest is the user's own INNER comma lateral
+		// over the box: a null-supplying owner's NULL array explodes to
+		// zero rows and drops that padded row — Java's Explode-over-NULL
+		// spec (RecordQueryExplodePlan: null collection → List.of()), not
+		// a LEFT violation.
+		legs = []clusterLeg{clusterLegOf(leftJoin, false)}
+	} else {
+		legs = t.legsOfGatedJoin(leftJoin)
+	}
 	fields, legTypes := t.ordinalJoinSeedFields(legs)
 	if fields == nil {
 		return nil // a leg untranslatable — same decline rule as the seed
@@ -94,9 +101,13 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// visitor qualifies shadowed bare projections (`WV` → `WV.WV`) and the
 	// span windows route the qualified read to the ELEMENT leg — probed green
 	// through the gathered path with the correct last-binding-wins semantics.
+	// Per RUN, not per map entry: legTypes also carries the amendment-C
+	// BURIED windows (each with the whole box CONCAT as its typ) — iterating
+	// entries would count a box's columns once per buried leaf and
+	// self-collide. One leg = one run = one column set.
 	seen := map[string]struct{}{}
-	for _, lt := range legTypes {
-		for _, f := range lt.typ.Fields {
+	for _, leg := range legs {
+		for _, f := range legTypes[leg.binding].typ.Fields {
 			n := strings.ToUpper(f.Name)
 			if _, dup := seen[n]; dup {
 				return nil
@@ -105,32 +116,60 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		}
 	}
 
-	// The OWNING source: segment 0 must be a gathered PLAIN leg (a box leg's
-	// alias names only its rightmost leaf — a baked read against the box concat
-	// would need the buried offset; decline, fail-open) and the classified
-	// array field must be a column of that leg's own type. Multi-segment field
-	// paths (`t.a.b`) decline: the bake addresses ONE ordinal of the leg type.
+	// The OWNING source (unnest-residual class 1, design ruling 1(iii)): the
+	// legTypes map IS the owner index — a PLAIN leg's own window keyed by
+	// its binding (== UPPER alias for the FROM-order first match; a later
+	// duplicate's minted binding is unreachable by name, the item-1
+	// first-match discipline), and every BURIED leaf of a box leg via its
+	// amendment-C window (bakeCorr = the box quantifier, leafOffset = the
+	// leaf's slot in the concat). The collection bakes at the WINDOW:
+	// ofOrdinal(QOV(corr, window type), leafOffset + arrIdx) — for a plain
+	// leg that degenerates to the old leg-local bake verbatim (offset 0,
+	// own type, own binding).
 	seg0 := strings.ToUpper(u.Segments[0])
-	ownerLeg, isPlainLeg := gatheredPlainLeg(legs, seg0)
-	if !isPlainLeg || len(u.Segments) != 2 {
+	ownerWindow, isOwner := legTypes[seg0]
+	if !isOwner || ownerWindow.typ == nil || ownerWindow.leafTyp == nil || len(u.Segments) < 2 {
 		return nil
 	}
-	ownerType := t.ordinalLegType(ownerLeg.op)
-	if ownerType == nil {
-		return nil
+	// The ROOT column of the collection path: for a single-segment path the
+	// classifier's proto-derived name; for a MULTI-SEGMENT path
+	// (unnest-residual class 2) the FIRST field segment — the remaining
+	// segments ride as a FUSED suffix (Java's lookupNestedField →
+	// ofFieldsAndFuseIfPossible shape) and descend the struct value at eval
+	// through FieldValue's proto-message arm. Suffix accessors are
+	// NAME-addressed (the proto descent resolves by field name); the
+	// classifier has already validated every intermediate as a singular
+	// record field.
+	rootField := strings.ToUpper(fieldName)
+	if len(u.Segments) > 2 {
+		rootField = strings.ToUpper(u.Segments[1])
 	}
-	arrIdx, found := ownerType.FieldIndex(strings.ToUpper(fieldName))
+	arrIdx, found := ownerWindow.leafTyp.FieldIndex(rootField)
 	if !found {
 		return nil
 	}
-	// The owner is MATCHED by its SQL alias (seg0 is a name reference the
-	// user wrote) but CORRELATED by its binding — with duplicate aliases the
-	// first match wins the name lookup while the QOV must still address that
-	// specific leg's quantifier (RFC-173 QP-REF-BIND item 1).
-	ownerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(ownerLeg.binding), ownerType)
-	collection, err := values.NewFieldValueOfOrdinal(ownerQOV, arrIdx)
+	ownerCorr := seg0
+	if ownerWindow.bakeCorr != "" {
+		ownerCorr = strings.ToUpper(ownerWindow.bakeCorr)
+	}
+	ownerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(ownerCorr), ownerWindow.typ)
+	collection, err := values.NewFieldValueOfOrdinal(ownerQOV, ownerWindow.leafOffset+arrIdx)
 	if err != nil {
 		return nil
+	}
+	if len(u.Segments) > 2 {
+		suffix := make([]values.ResolvedAccessor, 0, len(u.Segments)-2)
+		for _, seg := range u.Segments[2:] {
+			// NAME-addressed: the struct descent (FieldValue's proto-message
+			// arm) resolves each suffix step by field NAME. Ordinal is the
+			// LOUD sentinel -1 — a struct materializes as a proto message, not
+			// a positional row, so the ordinal is never consulted; should one
+			// ever reach the OrdinalRow descent arm, Get(-1) fails
+			// out-of-range (a clean error) rather than silently reading slot 0.
+			suffix = append(suffix, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
+		}
+		fused := collection.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
+		collection = &values.FieldValue{Field: strings.ToUpper(fieldName), Typ: collection.Typ, Child: collection.Child, Resolved: fused}
 	}
 	// The baked node carries the leg type's field TYPE for the array column;
 	// the classifier's proto-derived element type is authoritative for the
@@ -207,15 +246,35 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// LEFT-cluster ONs cannot reference the element (SQL scope: bound after
 	// them) and stay unrewritten.
 	var preds []predicates.QueryPredicate
-	if qp, isQP := leftJoin.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
-		preds = append(preds, qp)
+	// INNER root only: an inner cluster root's ON is WHERE-equivalent and the
+	// gather (via gatherInnerClusterPreds' "the root's own ON is the caller's"
+	// contract) must hoist it here. A NON-inner root is the class-1 OPAQUE
+	// OUTER box: its ON is the outer join's GATING condition, already carried
+	// inside the box leg's own translation — hoisting it too would re-apply it
+	// as a flat-select filter and silently convert LEFT to INNER (the padded
+	// row's NULL-supplied columns fail the re-applied ON and the row drops).
+	if leftJoin.Kind == logical.JoinInner {
+		if qp, isQP := leftJoin.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
+			preds = append(preds, qp)
+		}
 	}
 	if j.OnPredicate != nil {
 		if qp, isQP := j.OnPredicate.(predicates.QueryPredicate); isQP {
 			preds = append(preds, rewriteUnnestPredicate(qp, u))
 		}
 	}
-	preds = append(preds, gatherInnerClusterPreds(leftJoin)...)
+	// INNER root only — the SAME opaque-box barrier as the ON-hoist guard
+	// above, for the NESTED cluster ONs. A non-inner root is the class-1
+	// opaque OUTER box; its whole internal predicate spine (e.g. the nested
+	// inner cluster ON of `SRC LEFT JOIN (AUX JOIN AUX2 ON x.XID = y.YID)`)
+	// is already enforced inside the box leg's own translation. Re-collecting
+	// those here and re-applying them flat over the box's NULL-padded rows
+	// fails on the null-supplied slots and silently drops the preserved row
+	// (LEFT→INNER — the ON-hoist bug's twin). Only an INNER root's nested ONs
+	// are WHERE-equivalent and belong on the flat select.
+	if leftJoin.Kind == logical.JoinInner {
+		preds = append(preds, gatherInnerClusterPreds(leftJoin)...)
+	}
 	preds = bakeGatedJoinPredicates(preds, legTypes)
 
 	return expressions.NewSelectExpressionWithJoinType(
@@ -225,24 +284,6 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		sourceAliases,
 		expressions.JoinInner,
 	)
-}
-
-// gatheredPlainLeg resolves a gathered PLAIN (non-box) leg by its SQL alias
-// (the match is a NAME lookup — seg0 is the alias the user wrote; the caller
-// correlates the result by leg.binding). A box leg declines: its alias names
-// the rightmost leaf while its type is the whole concat — a first-position
-// bake would read the wrong slot.
-func gatheredPlainLeg(legs []clusterLeg, alias string) (clusterLeg, bool) {
-	for _, leg := range legs {
-		if !strings.EqualFold(leg.alias, alias) {
-			continue
-		}
-		if _, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
-			return clusterLeg{}, false
-		}
-		return leg, true
-	}
-	return clusterLeg{}, false
 }
 
 // gatherLegsWithBuriedUnnest walks j's direct inner-join spine collecting the
@@ -323,8 +364,11 @@ func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebui
 	}
 
 	// Classification against the unnest's OWN scope (uLeft — the sources
-	// before it in FROM order).
-	if len(u.Segments) != 2 {
+	// before it in FROM order). Multi-segment paths pass through: the
+	// gathered builder bakes them as fused root+suffix collections
+	// (unnest-residual class 2), and the classifier below validates every
+	// intermediate segment.
+	if len(u.Segments) < 2 {
 		return nil, nil, nil, "", 0, false
 	}
 	outerTable := findOuterScanTable(uLeft, u.Segments[0])

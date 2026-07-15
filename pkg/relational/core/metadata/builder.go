@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -473,10 +474,31 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, error) {
 const uuidProtoTypeName = ".com.apple.foundationdb.record.UUID"
 
 // buildMessageDescriptor converts a tableSpec into a proto DescriptorProto.
+// STRUCT columns materialize as NESTED message types of the table message;
+// struct-in-struct recurses, and a struct type name reused within one table
+// must resolve to the SAME shape (the per-table nested namespace has one slot
+// per name).
+//
+// DIVERGENCE from Java (not parity): Java's FileDescriptorSerializer
+// (Type.Record.defineProtoType) emits struct descriptors as FILE-LEVEL
+// message types, deduped and name-scoped TEMPLATE-WIDE. Go emits them nested
+// PER TABLE (one namespace per table message). Both are wire-safe — a struct
+// column's bytes are placement-independent, and Go's DDL cannot declare
+// STRUCT columns anyway (this surface is builder-only, for tests) — so the
+// scope difference is invisible to any Java/Go interop. Java additionally
+// wraps a nullable array in a synthetic single-field record; Go writes a
+// plain repeated field (the RFC-143 §3a nullable-array-wrapper divergence,
+// already tracked). If DDL struct columns land, revisit for template-wide
+// dedup.
 func buildMessageDescriptor(tbl tableSpec) (*descriptorpb.DescriptorProto, error) {
 	msg := &descriptorpb.DescriptorProto{Name: proto.String(tbl.name)}
+	ec := &structEmitCtx{
+		tableName: tbl.name,
+		descs:     map[string]*descriptorpb.DescriptorProto{},
+		types:     map[string]*api.StructType{},
+	}
 	for _, col := range tbl.columns {
-		ft, typeName, err := datatypeToProtoFieldType(col.dt)
+		ft, typeName, err := datatypeToProtoFieldType(col.dt, ec)
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 				"column %q", col.name)
@@ -492,14 +514,85 @@ func buildMessageDescriptor(tbl tableSpec) (*descriptorpb.DescriptorProto, error
 		}
 		msg.Field = append(msg.Field, field)
 	}
+	// Deterministic nested-type order (map iteration would jitter the
+	// descriptor bytes across builds of the same template).
+	names := make([]string, 0, len(ec.descs))
+	for n := range ec.descs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		msg.NestedType = append(msg.NestedType, ec.descs[n])
+	}
 	return msg, nil
+}
+
+// structEmitCtx threads the per-table nested-struct emission state:
+// descs is the name→DescriptorProto namespace (one nested message per
+// struct name), and types is the name→api.StructType index used to detect
+// a shape CONFLICT (a name reused with a different declaration).
+type structEmitCtx struct {
+	tableName string
+	descs     map[string]*descriptorpb.DescriptorProto
+	types     map[string]*api.StructType
+}
+
+// structDescriptor emits one struct type as a nested DescriptorProto,
+// registering it (and recursively any struct fields it carries) in the
+// table's nested namespace. Field numbers are the StructField indexes + 1
+// (proto field numbers are 1-based; the api index is 0-based declaration
+// order).
+func structDescriptor(st *api.StructType, ec *structEmitCtx) error {
+	if prev, seen := ec.types[st.Name()]; seen {
+		// One name, one shape: a re-registration of the same name must share
+		// the SAME nested descriptor shape (field names, indexes, and
+		// recursive field types), else the second column would silently
+		// inherit the first's descriptor. Compare with the struct's OWN
+		// nullability normalized away — a struct column's nullability is
+		// per-COLUMN (the referencing field's LABEL_OPTIONAL/REQUIRED, set
+		// from the column's dt), not a property of the shared nested message,
+		// so `nullable P1 P` + `not-null P2 P` legitimately share one `P`
+		// descriptor. Identity short-circuits first, so a SELF-REFERENTIAL
+		// struct (whose field re-enters here mid-build, against a still-empty
+		// prev) is accepted rather than mis-flagged.
+		if prev == st || prev.WithNullable(false).Equal(st.WithNullable(false)) {
+			return nil
+		}
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"struct type %q declared twice with different shapes", st.Name())
+	}
+	ec.types[st.Name()] = st // register BEFORE recursing (self-reference guard)
+	msg := &descriptorpb.DescriptorProto{Name: proto.String(st.Name())}
+	ec.descs[st.Name()] = msg
+	for i := 0; i < st.NumFields(); i++ {
+		f := st.Field(i)
+		ft, typeName, err := datatypeToProtoFieldType(f.Type(), ec)
+		if err != nil {
+			return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+				"struct %q field %q", st.Name(), f.Name())
+		}
+		field := &descriptorpb.FieldDescriptorProto{
+			Name:   proto.String(f.Name()),
+			Number: proto.Int32(int32(f.Index() + 1)), //nolint:gosec
+			Label:  datatypeToLabel(f.Type()).Enum(),
+			Type:   ft.Enum(),
+		}
+		if typeName != "" {
+			field.TypeName = proto.String(typeName)
+		}
+		msg.Field = append(msg.Field, field)
+	}
+	return nil
 }
 
 // datatypeToProtoFieldType maps an api.DataType to the corresponding
 // proto field type and (for message-typed fields) the fully-qualified
 // type name. Scalar primitives return (TYPE_*, "", nil); message types
-// return (TYPE_MESSAGE, ".pkg.Name", nil).
-func datatypeToProtoFieldType(dt api.DataType) (descriptorpb.FieldDescriptorProto_Type, string, error) {
+// return (TYPE_MESSAGE, ".pkg.Name", nil). A STRUCT column registers its
+// nested DescriptorProto in ec (the enclosing table's struct-emission
+// context); ec is always non-nil (buildMessageDescriptor threads it) and is
+// only consulted on the CodeStruct arm.
+func datatypeToProtoFieldType(dt api.DataType, ec *structEmitCtx) (descriptorpb.FieldDescriptorProto_Type, string, error) {
 	switch dt.Code() {
 	case api.CodeBoolean:
 		return descriptorpb.FieldDescriptorProto_TYPE_BOOL, "", nil
@@ -527,7 +620,21 @@ func datatypeToProtoFieldType(dt api.DataType) (descriptorpb.FieldDescriptorProt
 		// Array types use the element type's proto field type with LABEL_REPEATED.
 		// The label is handled by datatypeToLabel; here we return the element's type.
 		at := dt.(*api.ArrayType)
-		return datatypeToProtoFieldType(at.ElementType())
+		return datatypeToProtoFieldType(at.ElementType(), ec)
+	case api.CodeStruct:
+		// A STRUCT column is a nested message type of its table (Java's
+		// RecordLayerSchemaTemplate resolves DataType.StructType into nested
+		// record types). The file has no proto package, so the qualified
+		// name is .<Table>.<Struct>.
+		st := dt.(*api.StructType)
+		if st.Name() == "" {
+			return 0, "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
+				"struct column type must be named")
+		}
+		if err := structDescriptor(st, ec); err != nil {
+			return 0, "", err
+		}
+		return descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, "." + ec.tableName + "." + st.Name(), nil
 	default:
 		return 0, "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"unsupported DataType code %v", dt.Code())

@@ -201,6 +201,74 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		metadata.NewColumnSpec("XID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("WV", api.NewIntegerType(true), 2),
 	}, []string{"XID"})
+	// BXA/BXB/BXC: the RFC-173 unnest-residual class-1 trio, column names FULLY
+	// DISJOINT from every other table AND from each other (the W5 name-ambiguity
+	// gate declines shared bare names, and class 1 is specifically about the
+	// GATHERED path). BXA owns the array; BXB is the NULL-supplying side of a
+	// LEFT JOIN against BXA (BAREF matches BAID 1 and 3, NOT 2 — so id 2 is a
+	// padded row and the unnest of the PRESERVED side's own array must still
+	// fire); BXC is an extra inner leg that buries the outer box inside a
+	// larger cluster (the box-leg-owner shape).
+	b.AddTable("BXA", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("BAID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("BARR", api.NewArrayType(api.NewIntegerType(false), true), 2),
+	}, []string{"BAID"})
+	b.AddTable("BXB", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("BBID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("BAREF", api.NewLongType(true), 2),
+	}, []string{"BBID"})
+	b.AddTable("BXC", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("BCID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("BCW", api.NewLongType(true), 2),
+	}, []string{"BCID"})
+	// NST: the RFC-173 unnest-residual class-2 table — the unnest array is
+	// buried inside a STRUCT column (`NST.NREC.NARR`, a MULTI-SEGMENT field
+	// path), the shape the single-segment classifier hard-errored on
+	// ("column \"nrec.narr\" does not exist on source"). Column names (and the
+	// struct's field names) are FULLY DISJOINT from every other table so the
+	// multi-source variant passes the name-ambiguity gate and exercises the
+	// GATHERED fused root-ordinal+suffix collection.
+	b.AddTable("NST", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("NSID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("NREC", api.NewStructType("NRECT", []api.StructField{
+			api.NewStructField("NSUB", api.NewLongType(true), 0),
+			api.NewStructField("NARR", api.NewArrayType(api.NewIntegerType(false), true), 1),
+		}, true), 2),
+	}, []string{"NSID"})
+	// CXA/CXB: the RFC-173 class-1 × class-2 COMPOSITION — the unnest owner
+	// (CXA) both sits inside a gated OUTER box (`CXA LEFT JOIN CXB`, class 1)
+	// AND holds its array BEHIND a multi-segment struct path (`CXA.REC.ARR`,
+	// class 2). CXA is the PRESERVED side of the LEFT box, so a padded owner
+	// row (no CXB match) must STILL explode its own nested array — the class-1
+	// preserved-side rule flowing through the class-2 fused root+suffix
+	// collection. Column and struct-field names are FULLY DISJOINT from every
+	// other table (and from each other) so the box's opaque-leg concat passes
+	// the W5 name-ambiguity gate.
+	b.AddTable("CXA", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("CXAID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("REC", api.NewStructType("CXARECT", []api.StructField{
+			api.NewStructField("SUB", api.NewLongType(true), 0),
+			api.NewStructField("ARR", api.NewArrayType(api.NewIntegerType(false), true), 1),
+		}, true), 2),
+	}, []string{"CXAID"})
+	b.AddTable("CXB", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("CBID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("CBREF", api.NewLongType(true), 2),
+	}, []string{"CBID"})
+	// DRV: the RFC-173 unnest-residual class-3 owner — the lateral array's OWNER
+	// is a CTE/derived-table OUTPUT that bare-passes-through a base-table array
+	// column (`(SELECT DID, DARR FROM DRV) AS d, d.DARR AS EL`). Pre-slice this
+	// was a hard 0A000 (unnest over a derived/CTE output declined); class 3
+	// traces the passthrough back to the underlying base column and plans the
+	// FlatMap-over-Explode. Column names are FULLY DISJOINT from every other
+	// table (the scalar is DVAL, not the design sketch's DSC, which already names
+	// a table here). DID 3's NULL array is the Explode-over-NULL -> zero-rows
+	// axis; DVAL discriminates the intervening-WHERE case (5 < 6 = 6 <= 7).
+	b.AddTable("DRV", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("DID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("DARR", api.NewArrayType(api.NewIntegerType(false), true), 2),
+		metadata.NewColumnSpec("DVAL", api.NewLongType(true), 3),
+	}, []string{"DID"})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -222,6 +290,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	exbDesc := md.GetRecordType("EXB").Descriptor
 	wsrcDesc := md.GetRecordType("WSRC").Descriptor
 	wauxDesc := md.GetRecordType("WAUX").Descriptor
+	bxaDesc := md.GetRecordType("BXA").Descriptor
+	bxbDesc := md.GetRecordType("BXB").Descriptor
+	bxcDesc := md.GetRecordType("BXC").Descriptor
+	nstDesc := md.GetRecordType("NST").Descriptor
+	cxaDesc := md.GetRecordType("CXA").Descriptor
+	cxbDesc := md.GetRecordType("CXB").Descriptor
+	drvDesc := md.GetRecordType("DRV").Descriptor
 
 	setIntArr := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []int32) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
@@ -327,6 +402,81 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		m.Set(d.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		return m
 	}
+	// bxaRec builds a BXA record; arr=nil leaves BARR unset (NULL) — the
+	// Explode-over-NULL → zero rows axis of the class-1 matrix.
+	bxaRec := func(id int64, arr []int32) proto.Message {
+		m := dynamicpb.NewMessage(bxaDesc)
+		m.Set(bxaDesc.Fields().ByName("BAID"), protoreflect.ValueOfInt64(id))
+		if arr != nil {
+			setIntArr(m, bxaDesc, "BARR", arr)
+		}
+		return m
+	}
+	bxbRec := func(id, ref int64) proto.Message {
+		m := dynamicpb.NewMessage(bxbDesc)
+		m.Set(bxbDesc.Fields().ByName("BBID"), protoreflect.ValueOfInt64(id))
+		m.Set(bxbDesc.Fields().ByName("BAREF"), protoreflect.ValueOfInt64(ref))
+		return m
+	}
+	bxcRec := func(id, w int64) proto.Message {
+		m := dynamicpb.NewMessage(bxcDesc)
+		m.Set(bxcDesc.Fields().ByName("BCID"), protoreflect.ValueOfInt64(id))
+		m.Set(bxcDesc.Fields().ByName("BCW"), protoreflect.ValueOfInt64(w))
+		return m
+	}
+	// nstRec builds an NST record (class 2). hasRec=false leaves the STRUCT
+	// column NREC unset (NULL struct); arr=nil inside a set struct leaves the
+	// nested array unset (empty == unset on the proto2 wire) — both must
+	// explode to ZERO rows, never a NULL-element row.
+	nstRec := func(id int64, hasRec bool, sub int64, arr []int32) proto.Message {
+		m := dynamicpb.NewMessage(nstDesc)
+		m.Set(nstDesc.Fields().ByName("NSID"), protoreflect.ValueOfInt64(id))
+		if hasRec {
+			recFD := nstDesc.Fields().ByName("NREC")
+			recMsg := dynamicpb.NewMessage(recFD.Message())
+			recMsg.Set(recFD.Message().Fields().ByName("NSUB"), protoreflect.ValueOfInt64(sub))
+			if arr != nil {
+				setIntArr(recMsg, recFD.Message(), "NARR", arr)
+			}
+			m.Set(recFD, protoreflect.ValueOfMessage(recMsg))
+		}
+		return m
+	}
+	// cxaRec builds a CXA record (class-1 × class-2 composition). hasRec=false
+	// leaves the struct column REC unset (NULL struct → zero rows); arr=nil
+	// inside a set struct leaves the nested array unset (also zero rows). A
+	// populated array behind a set struct is the only exploding shape.
+	cxaRec := func(id int64, hasRec bool, sub int64, arr []int32) proto.Message {
+		m := dynamicpb.NewMessage(cxaDesc)
+		m.Set(cxaDesc.Fields().ByName("CXAID"), protoreflect.ValueOfInt64(id))
+		if hasRec {
+			recFD := cxaDesc.Fields().ByName("REC")
+			recMsg := dynamicpb.NewMessage(recFD.Message())
+			recMsg.Set(recFD.Message().Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
+			if arr != nil {
+				setIntArr(recMsg, recFD.Message(), "ARR", arr)
+			}
+			m.Set(recFD, protoreflect.ValueOfMessage(recMsg))
+		}
+		return m
+	}
+	cxbRec := func(id, ref int64) proto.Message {
+		m := dynamicpb.NewMessage(cxbDesc)
+		m.Set(cxbDesc.Fields().ByName("CBID"), protoreflect.ValueOfInt64(id))
+		m.Set(cxbDesc.Fields().ByName("CBREF"), protoreflect.ValueOfInt64(ref))
+		return m
+	}
+	// drvRec builds a DRV record (class-3 derived/CTE-output owner). arr=nil
+	// leaves DARR unset (NULL) — the Explode-over-NULL -> zero-rows axis.
+	drvRec := func(id int64, arr []int32, dval int64) proto.Message {
+		m := dynamicpb.NewMessage(drvDesc)
+		m.Set(drvDesc.Fields().ByName("DID"), protoreflect.ValueOfInt64(id))
+		if arr != nil {
+			setIntArr(m, drvDesc, "DARR", arr)
+		}
+		m.Set(drvDesc.Fields().ByName("DVAL"), protoreflect.ValueOfInt64(dval))
+		return m
+	}
 
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, sErr := recordlayer.NewStoreBuilder().
@@ -426,6 +576,44 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				m.Set(wauxDesc.Fields().ByName("WV"), protoreflect.ValueOfInt32(7))
 				return m
 			}(),
+			// BXA/BXB/BXC (RFC-173 unnest-residual class 1): BXB references BAID 1
+			// and 3 only, so BAID 2 is a LEFT-JOIN padded row (its own array must
+			// still explode) and BAID 3's matched row carries a NULL array (zero
+			// rows). BXC has the single id 5 the constant inner-leg ON keeps, and
+			// no BAID=5 twin — the reversed-polarity LEFT (BXC LEFT BXA) pads
+			// with a NULL array that must explode to zero rows.
+			bxaRec(1, []int32{10, 11}),
+			bxaRec(2, []int32{20}),
+			bxaRec(3, nil),
+			bxbRec(100, 1),
+			bxbRec(300, 3),
+			bxcRec(5, 50),
+			// NST (RFC-173 unnest-residual class 2): only NSID 1 carries
+			// elements ({70,71} inside the struct). NSID 2's struct is set but
+			// its nested array is unset; NSID 3's whole struct is unset — the
+			// two distinct "nothing to explode" depths (missing leaf vs missing
+			// intermediate), both zero rows.
+			nstRec(1, true, 7, []int32{70, 71}),
+			nstRec(2, true, 8, nil),
+			nstRec(3, false, 0, nil),
+			// CXA/CXB (RFC-173 class-1 × class-2 composition): CXB references
+			// CXAID 1 ONLY, so CXAID 2 is a LEFT-padded owner (no CXB match)
+			// whose OWN nested array {82} must STILL explode — the class-1
+			// preserved-side rule through a class-2 multi-segment struct path.
+			// CXAID 3's whole struct is unset → zero rows.
+			cxaRec(1, true, 1, []int32{80, 81}),
+			cxaRec(2, true, 2, []int32{82}),
+			cxaRec(3, false, 0, nil),
+			cxbRec(10, 1),
+			// DRV (RFC-173 unnest-residual class 3): DID 1 explodes {10,11}; DID
+			// 2 explodes the single {20}; DID 3's DARR is UNSET (NULL) → zero
+			// rows. DVAL discriminates the intervening-WHERE case: DVAL >= 6 keeps
+			// DID 2 (6) and DID 3 (7) but not DID 1 (5), and DID 3's NULL array
+			// still explodes to nothing — so `WHERE DVAL >= 6` yields ONLY DID 2's
+			// element.
+			drvRec(1, []int32{10, 11}, 5),
+			drvRec(2, []int32{20}, 6),
+			drvRec(3, nil, 7),
 		}
 		for _, r := range recs {
 			if _, e := store.SaveRecord(r); e != nil {
@@ -964,17 +1152,18 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// probe round 7 P1 (silent-wrong): `FROM (SELECT ID AS ARR FROM T1) AS D,
 		// D.ARR AS V` where a REAL table D ALSO exists with an ARRAY column ARR.
 		// The derived table D's OUTPUT column ARR is the SCALAR `ID` renamed, NOT
-		// an array. The derived table's LogicalCTE body is registered into the
-		// translator's cteScope only when its leg is translated — AFTER the
-		// metadata-validation guard — so the cteScope check missed it, and
-		// findOuterScanTable resolved segment 0 (D) to the REAL table D, validating
-		// ARR against ITS array metadata and exploding the derived row's SCALAR ARR
-		// (one wrong scalar row per outer row). The structural detection
-		// (outerSourceIsDerivedTable: a LogicalCTE leg in j.Left whose Name == D)
-		// now rejects the derived-output unnest in ALL cases — even when a real
-		// same-named table exists — never validating against the real table's
-		// metadata. RFC-142.
-		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR" FROM T1) AS "D", "D"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
+		// an array. The hazard is validating `ARR` against the REAL table D's array
+		// metadata (findOuterScanTable would resolve segment 0 D to the real D) and
+		// silently exploding the derived row's SCALAR — one wrong scalar row per
+		// outer row. The RFC-173 class-3 classifier now traces the derived output
+		// `ARR` back through the body's projection to its BASE column (T1.ID, a
+		// scalar) and reports the honest "repeated type" INVALID_COLUMN_REFERENCE — the
+		// precise disposition (superseding the earlier blanket UNSUPPORTED_QUERY),
+		// definitively NOT the real D.ARR array (which would have PLANNED, not
+		// errored). The base column is reached through the BODY's own scan, never
+		// the outer alias, so the same-named real table is structurally never
+		// consulted.
+		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR" FROM T1) AS "D", "D"."ARR" AS "V"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("P1 real table D unnest (no derived shadow) still works", func(t *testing.T) {
@@ -1107,10 +1296,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The same output-vs-base-table principle for a DERIVED table whose alias is
 		// the visible source: `FROM (SELECT ID AS ARR1 FROM T1) AS d, d.ARR1 AS V`.
 		// `d` is the visible derived source; its OUTPUT ARR1 is the scalar `ID`, not
-		// an array. The unnest correlates to the derived output (not a base table),
-		// whose element type is not recoverable here → clean UNSUPPORTED_QUERY,
-		// never a silent explode. RFC-142.
-		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR1" FROM T1) AS "d", "d"."ARR1" AS "V"`, api.ErrCodeUnsupportedQuery)
+		// an array. The RFC-173 class-3 classifier traces the derived output ARR1
+		// back through the body's projection to its base column (T1.ID, a scalar)
+		// and reports the honest "repeated type" INVALID_COLUMN_REFERENCE — never a silent
+		// explode. (Pre-class-3 the element type was unrecoverable, so this was a
+		// blanket UNSUPPORTED_QUERY; class-3 recovers the base type and gives the
+		// precise wrong-type code.)
+		assertRejected(t, md, `SELECT "V" FROM (SELECT "ID" AS "ARR1" FROM T1) AS "d", "d"."ARR1" AS "V"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("R5a normal CTE and derived queries are unaffected (no over-rejection)", func(t *testing.T) {
@@ -1149,14 +1341,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	t.Run("R10 CTE genuinely used as the unnest source is still rejected", func(t *testing.T) {
 		// Control (round-5 boundary preserved): `WITH X AS (SELECT ID AS ARR FROM T1)
 		// SELECT V FROM X, X.ARR AS V` — here X IS the CTE, used as the FROM source.
-		// Its OUTPUT column ARR is the SCALAR `ID` renamed, not an array, and the CTE
-		// output element type is not recoverable here (best-effort UnknownType), so
-		// the unnest over a CTE output must still cleanly reject — NOT silently explode
-		// a base table. findOuterScanTable resolves `X` → the CTE name `X` (the scan's
-		// Table holds the CTE name), and outerSourceIsCTE("X") is true → rejected. This
-		// is the SAME revert-proof boundary as the R5a CTE/derived-output cases; only
-		// a real table shadowing the CTE name (the test above) is now allowed.
-		assertRejected(t, md, `WITH "X" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "V" FROM "X", "X"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
+		// Its OUTPUT column ARR is the SCALAR `ID` renamed, not an array, so the
+		// unnest over a CTE output must still cleanly reject — NOT silently explode a
+		// base table. outerSourceIsCTE("X") is true, so the RFC-173 class-3 branch
+		// runs and traces the output ARR back through the body's projection to its
+		// base column (T1.ID, a scalar), reporting the honest "repeated type"
+		// WRONG_OBJECT_TYPE (superseding the earlier blanket UNSUPPORTED_QUERY). Only
+		// a real table SHADOWING the CTE name (the test above) plans; a genuine
+		// CTE-scalar-output unnest rejects.
+		assertRejected(t, md, `WITH "X" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "V" FROM "X", "X"."ARR" AS "V"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("P2b dotted ref to a table hidden behind a derived table is not unnest", func(t *testing.T) {
@@ -1169,12 +1362,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "X" FROM (SELECT "ID" FROM T1) AS "d", T1."ARR1" AS "X"`, api.ErrCodeUndefinedDatabase)
 	})
 
-	t.Run("P2c scalar correlated field is WRONG_OBJECT_TYPE", func(t *testing.T) {
+	t.Run("P2c scalar correlated field is INVALID_COLUMN_REFERENCE", func(t *testing.T) {
 		// `FROM TCOLL, TCOLL.val AS x` where TCOLL.VAL is a real SCALAR INT — a
 		// present but NON-array correlated field. Java's
-		// generateCorrelatedFieldAccess asserts repeated type → WRONG_OBJECT_TYPE.
+		// generateCorrelatedFieldAccess asserts repeated type → INVALID_COLUMN_REFERENCE (42F10).
 		// (Before the fix it fell to the table path and gave a generic failure.)
-		assertRejected(t, md, `SELECT "ID" FROM TCOLL, TCOLL."VAL" AS "X"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `SELECT "ID" FROM TCOLL, TCOLL."VAL" AS "X"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("AT on a single-name non-source comma source is WRONG_OBJECT_TYPE", func(t *testing.T) {
@@ -1493,19 +1686,23 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// on the SHADOWED base table; the translator's CTE-output rejection
 	// (UNSUPPORTED_QUERY) must surface --------------------------------------
 	//
-	// `WITH DSC AS (SELECT ID AS ARR FROM E) SELECT O FROM DSC, DSC.ARR AS V AT O`
+	// `WITH DSC AS (SELECT ID + 1 AS ARR FROM T1) SELECT O FROM DSC, DSC.ARR AS V AT O`
 	// where a REAL table DSC exists with a SCALAR ARR. The AT alias makes the early
 	// rejectAtOrdinalityOnTable pass run FIRST. Before the fix it resolved segment 0
 	// (DSC) to the SHADOWED real table DSC, saw the scalar ARR (not a list), and
 	// raised WRONG_OBJECT_TYPE (42809) — diverging from the translator, which
 	// detects the in-scope CTE source (outerSourceIsDerivedTable) and rejects with
-	// UNSUPPORTED_QUERY ("unnest over a CTE/derived-table output is not yet
-	// supported"). The fix makes atOnNonArraySource detect the CTE/derived binding
-	// for segment 0 BEFORE the md.GetRecordType lookup and skip the base-table AT
-	// check, leaving the rejection to the translator's CTE-output path. Revert-proof
-	// on the converged UNSUPPORTED_QUERY (42809 on revert). RFC-142.
+	// UNSUPPORTED_QUERY. The fix makes atOnNonArraySource detect the CTE/derived
+	// binding for segment 0 BEFORE the md.GetRecordType lookup and skip the
+	// base-table AT check, leaving the rejection to the translator's CTE-output
+	// path. Revert-proof on 0AF00 vs 42809: reverting the early-pass fix keys the
+	// shadowed real DSC's scalar ARR → 42809. The CTE body is COMPUTED (`ID + 1`)
+	// deliberately — the RFC-173 class-3 classifier declines a computed passthrough
+	// as UNSUPPORTED_QUERY, whereas a bare scalar passthrough would now trace to the
+	// base scalar and give 42809 (collapsing the 0AF00/42809 discriminator this
+	// revert-proof needs). RFC-142.
 	t.Run("AT over a CTE source shadowing a real scalar-ARR table is UNSUPPORTED_QUERY", func(t *testing.T) {
-		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "O" FROM "DSC", "DSC"."ARR" AS "V" AT "O"`, api.ErrCodeUnsupportedQuery)
+		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" + 1 AS "ARR" FROM T1) SELECT "O" FROM "DSC", "DSC"."ARR" AS "V" AT "O"`, api.ErrCodeUnsupportedQuery)
 	})
 
 	t.Run("control: AT on a real-table scalar field (no CTE) is still WRONG_OBJECT_TYPE", func(t *testing.T) {
@@ -1517,12 +1714,16 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("control: genuine CTE-output unnest (no AT) is still UNSUPPORTED_QUERY", func(t *testing.T) {
-		// The non-AT sibling of the bug query: `WITH DSC AS (…) SELECT V FROM DSC,
-		// DSC.ARR AS V` (no AT). This never reaches rejectAtOrdinalityOnTable (no AT
-		// alias), so it is the translator's outerSourceIsCTE rejection directly —
-		// pinning that the genuine CTE-output unnest stays UNSUPPORTED_QUERY both
-		// before and after the early-pass change.
-		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" AS "ARR" FROM T1) SELECT "V" FROM "DSC", "DSC"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
+		// The non-AT sibling of the bug query: `WITH DSC AS (SELECT ID + 1 AS ARR …)
+		// SELECT V FROM DSC, DSC.ARR AS V` (no AT). This never reaches
+		// rejectAtOrdinalityOnTable (no AT alias), so it is the translator's class-3
+		// path directly. The body is COMPUTED (`ID + 1`), which the class-3
+		// classifier declines as UNSUPPORTED_QUERY (no base-table column to resolve)
+		// — pinning that a computed CTE-output unnest stays UNSUPPORTED_QUERY both
+		// before and after the early-pass change. (A bare scalar passthrough, by
+		// contrast, now traces to the base scalar and gives WRONG_OBJECT_TYPE — see
+		// the R10/R5a scalar-passthrough pins above.)
+		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" + 1 AS "ARR" FROM T1) SELECT "V" FROM "DSC", "DSC"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
 	})
 
 	// --- probe round 8: ORDER BY over a shadowed unnest binding (P2a) +
@@ -2629,14 +2830,14 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V", U AT "O"`, api.ErrCodeWrongObjectType)
 	})
 
-	t.Run("P3 scalar source after a prior unnest is WRONG_OBJECT_TYPE not multiple-unnest", func(t *testing.T) {
+	t.Run("P3 scalar source after a prior unnest is INVALID_COLUMN_REFERENCE not multiple-unnest", func(t *testing.T) {
 		// The scalar-field variant: `FROM T1, T1.ARR1 AS V, T1.ID AS X` — after the
 		// real unnest T1.ARR1, the second dotted source T1.ID is a PRESENT SCALAR
 		// (not an array). Java's generateCorrelatedFieldAccess asserts the field is
-		// repeated → WRONG_OBJECT_TYPE. The array validation must fire BEFORE the
-		// multiple-unnest guard, so this is WRONG_OBJECT_TYPE, not the (misleading)
+		// repeated → INVALID_COLUMN_REFERENCE (42F10). The array validation fires BEFORE the
+		// multiple-unnest guard, so this is INVALID_COLUMN_REFERENCE, not the (misleading)
 		// multiple-unnest UNSUPPORTED_QUERY. RFC-142.
-		assertRejected(t, md, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V", T1."ID" AS "X"`, api.ErrCodeWrongObjectType)
+		assertRejected(t, md, `SELECT "ID", "V" FROM T1, T1."ARR1" AS "V", T1."ID" AS "X"`, api.ErrCodeInvalidColumnReference)
 	})
 
 	t.Run("P3 control: a genuine second array unnest is still UNSUPPORTED_QUERY", func(t *testing.T) {
@@ -3830,6 +4031,251 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if types := embedded.ResultColumnTypesForPlan(mustPlan(t, md, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL"`), md); fmt.Sprintf("%v", types) != "[BIGINT INTEGER BIGINT INTEGER INTEGER]" {
 			t.Fatalf("star column types = %v, want [BIGINT INTEGER BIGINT INTEGER INTEGER] (the mixed element's INTEGER from the Explode collection)", types)
 		}
+	})
+
+	t.Run("RFC-173 unnest-residual class 1: box-leg and outer-box owners gather", func(t *testing.T) {
+		// Class 1: the unnest OWNER (BXA) is not a plain leg of the gathered
+		// cluster — it is buried inside a gated OUTER box (`BXA LEFT JOIN BXB`),
+		// optionally itself a LEG of a larger inner cluster (`... INNER JOIN
+		// BXC`). Pre-slice the gather's owner lookup rejected any box leg
+		// (gatheredPlainLeg accepted only plain legs), so both shapes declined
+		// to the RESIDUAL binary FlatMap — which cannot resolve an owner buried
+		// inside the box (the residual reads the owner off the merged outer row
+		// by name; a box leg's own alias names its rightmost leaf, not the
+		// buried owner), so the box-leg form failed to plan at 29d77a846. Class
+		// 1 GATHERS them via the amendment-C bake windows: the flat select
+		// pairs the OPAQUE box leg with the Explode directly, so the Explode's
+		// FlatMap has the BOX (not the whole cluster) as its outer and
+		// Scan(BXC) joins OUTSIDE that Explode-FlatMap.
+
+		// (1)+(2) PLAN-SHAPE discriminator + row matrix, inner-cluster box-leg
+		// owner. Rows: BAID 1 explodes {10,11}; BAID 2 is BXB-padded but its
+		// OWN array {20} still explodes; BAID 3's NULL array explodes to zero
+		// rows. BXC's constant ON keeps its single row, contributing nothing
+		// but presence (it is what buries the box as a LEG of a larger inner
+		// cluster).
+		boxLegExplain := assertRowsOrdered(t,
+			`SELECT "BAID", "EL" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID" INNER JOIN BXC ON "BCID" = 5, BXA."BARR" AS "EL" ORDER BY "BAID", "EL"`,
+			[]string{"BAID=1|EL=10", "BAID=1|EL=11", "BAID=2|EL=20"})
+		// GATHERED signature: the Explode's FlatMap pairs the OPAQUE box
+		// directly (its outer IS the LEFT OUTER join, ON intact inside), and
+		// Scan(BXC) joins OUTSIDE that FlatMap. The RESIDUAL shape is one
+		// FlatMap over the WHOLE merged cluster — Scan(BXC) inside its outer.
+		if !strings.Contains(boxLegExplain,
+			"FlatMap(outer=NestedLoopJoin(LEFT OUTER, [1 preds], Scan(BXA), Scan(BXB)), inner=Explode") {
+			t.Fatalf("box-leg owner did not GATHER (the Explode FlatMap must pair the opaque LEFT box directly):\n%s", boxLegExplain)
+		}
+		if !strings.Contains(boxLegExplain, "Scan(BXC") {
+			t.Fatalf("Scan(BXC) missing entirely — the inside/outside check below would be vacuous:\n%s", boxLegExplain)
+		}
+		fmStart := strings.Index(boxLegExplain, "FlatMap(outer=")
+		fmInner := strings.Index(boxLegExplain[fmStart:], "inner=Explode")
+		if strings.Contains(boxLegExplain[fmStart:fmStart+fmInner], "Scan(BXC") {
+			t.Fatalf("RESIDUAL shape: Scan(BXC) sits INSIDE the Explode FlatMap's outer (the whole-cluster binary FlatMap), want it OUTSIDE:\n%s", boxLegExplain)
+		}
+
+		// (3) OUTER box directly as the unnest's left (no extra inner leg).
+		// Same rows; the load-bearing extra dimension is the ABSENCE of a
+		// hoisted PredicatesFilter: the box's gating ON must stay INSIDE the
+		// LEFT OUTER join. A hoisted copy re-applies it as a WHERE and drops
+		// the padded BAID=2 row (LEFT→INNER corruption — the regression this
+		// row matrix caught).
+		outerBoxExplain := assertRowsOrdered(t,
+			`SELECT "BAID", "EL" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID", BXA."BARR" AS "EL" ORDER BY "BAID", "EL"`,
+			[]string{"BAID=1|EL=10", "BAID=1|EL=11", "BAID=2|EL=20"})
+		if !strings.Contains(outerBoxExplain, "FlatMap(outer=NestedLoopJoin(LEFT OUTER") {
+			t.Fatalf("outer-box-left did not pair the box with its Explode:\n%s", outerBoxExplain)
+		}
+		if strings.Contains(outerBoxExplain, "PredicatesFilter") {
+			t.Fatalf("the box's gating ON leaked into a hoisted filter (LEFT→INNER corruption):\n%s", outerBoxExplain)
+		}
+
+		// (4) NULL-supplying owner polarity: BXA is the PADDED side (BXC 5 has
+		// no BAID 5 twin), so the lateral array is NULL on the padded row and
+		// explodes to zero rows — an empty result, not a NULL element row.
+		assertRows(t, `SELECT "BCID", "EL" FROM BXC LEFT JOIN BXA ON "BAID" = "BCID", BXA."BARR" AS "EL"`, nil)
+
+		// (5) AT-ordinality through the gathered box shape: ordinals restart
+		// per owner row (1,2 for BAID 1; 1 for the padded BAID 2).
+		assertRowsOrdered(t,
+			`SELECT "BAID", "EL", "ORDX" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID", BXA."BARR" AS "EL" AT "ORDX" ORDER BY "BAID", "EL"`,
+			[]string{"BAID=1|EL=10|ORDX=1", "BAID=1|EL=11|ORDX=2", "BAID=2|EL=20|ORDX=1"})
+
+		// (6) SELECT-* expansion over the box-leg shape (design ruling 5). The
+		// star expands to the FROM-order concat of every source's columns —
+		// BXA's, then the padded BXB's, then the buried BXC's, then the lateral
+		// element EL — exactly the labels the driver advertises via
+		// rows.Columns() (ResultColumnLabelsForPlan → deriveColumnsFromPlan).
+		// The explicit-column pins above never exercise the star's expansion
+		// through the gathered box cluster; this is that column-metadata pin.
+		starSQL := `SELECT * FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID" INNER JOIN BXC ON "BCID" = 5, BXA."BARR" AS "EL" ORDER BY "BAID"`
+		assertColumns(t, starSQL,
+			[]string{"BAID", "BARR", "BBID", "BAREF", "BCID", "BCW", "EL"})
+		// The star's ROW COUNT matches the explicit-column matrix: BAID 1 → 2
+		// element rows, BAID 2 (BXB-padded, its BXB columns NULL) → 1, BAID 3
+		// (NULL array) → 0 = 3 rows.
+		if _, starRows := query(t, starSQL); len(starRows) != 3 {
+			t.Fatalf("SELECT-* over the box-leg shape: got %d rows, want 3:\n%v", len(starRows), starRows)
+		}
+	})
+
+	t.Run("RFC-173 unnest-residual class 2: multi-segment struct paths", func(t *testing.T) {
+		// Class 2: the lateral array lives BEHIND a struct column — a
+		// MULTI-SEGMENT field path (`NST.NREC.NARR`), which the single-segment
+		// classifier hard-errored on (`column "nrec.narr" does not exist on
+		// source "nst"`). The classifier now descends per segment (singular
+		// message intermediates only); runtime struct descent is the
+		// FieldValue proto-message arm. Rows: only NSID 1 has elements
+		// ({70,71}); NSID 2's struct is set with an UNSET nested array and
+		// NSID 3's whole struct is UNSET — both depths of "nothing to explode"
+		// must yield ZERO rows (Java's Explode-over-NULL), never a
+		// NULL-element row.
+
+		// (a) Row pin, single-source residual path.
+		singleExplain := assertRowsOrdered(t,
+			`SELECT "NSID", "EL" FROM NST, NST."NREC"."NARR" AS "EL" ORDER BY "NSID", "EL"`,
+			[]string{"EL=70|NSID=1", "EL=71|NSID=1"})
+		unnestMustContain(t, singleExplain, "FlatMap")
+		unnestMustContain(t, singleExplain, "Explode")
+
+		// (b) AT-ordinality through the struct path: ordinals are the array
+		// positions inside the nested array, 1-based per owner row.
+		atExplain := assertRowsOrdered(t,
+			`SELECT "NSID", "EL", "ORDN" FROM NST, NST."NREC"."NARR" AS "EL" AT "ORDN" ORDER BY "NSID", "EL"`,
+			[]string{"EL=70|NSID=1|ORDN=1", "EL=71|NSID=1|ORDN=2"})
+		unnestMustContain(t, atExplain, "WITH ORDINALITY")
+
+		// (c) Multi-source GATHERED variant: NST × BXC (fully disjoint column
+		// names, so the name-ambiguity gate admits the flat gather) with the
+		// struct-path unnest as the trailing leg. BXC's single row (BCID 5,
+		// BCW 50) crosses each exploded element once. The gathered signature
+		// is the Explode's FlatMap pairing Scan(NST) — the OWNING source —
+		// directly as its outer (the fused root-ordinal+suffix collection),
+		// never a whole-cluster residual FlatMap.
+		gatheredExplain := assertRowsOrdered(t,
+			`SELECT "NSID", "EL", "BCW" FROM NST, BXC, NST."NREC"."NARR" AS "EL" WHERE "BCID" = 5 ORDER BY "NSID", "EL"`,
+			[]string{"BCW=50|EL=70|NSID=1", "BCW=50|EL=71|NSID=1"})
+		if !strings.Contains(gatheredExplain, "FlatMap(outer=Scan(NST)") {
+			t.Fatalf("multi-source struct-path unnest did not GATHER (want the Explode FlatMap over Scan(NST)):\n%s", gatheredExplain)
+		}
+
+		// (d) Error-parity guard: a multi-segment path whose intermediate is a
+		// NON-record field (`NST.NSID.NARR` — NSID is a scalar long) must
+		// ERROR at plan time, never silently plan to zero/wrong rows. The
+		// exact code/message is deliberately NOT pinned (pending live-Java
+		// classification); only THAT it errors is load-bearing.
+		if _, perr := embedded.PlanRecordQueryWithMetadata(
+			`SELECT "EL" FROM NST, NST."NSID"."NARR" AS "EL"`, md, nil); perr == nil {
+			t.Fatalf("multi-segment path through the scalar intermediate NSID must ERROR, got a plan")
+		} else {
+			t.Logf("scalar-intermediate path rejected with: %v", perr)
+		}
+	})
+
+	t.Run("RFC-173 unnest-residual class 1x2: box-leg owner with a multi-segment struct path", func(t *testing.T) {
+		// The COMPOSITION of the two residual classes at once: the unnest owner
+		// (CXA) is buried inside a gated OUTER box (`CXA LEFT JOIN CXB`, class
+		// 1) AND its array lives behind a multi-segment struct path
+		// (`CXA.REC.ARR`, class 2). The gathered builder must open the
+		// buried-box window for CXA (the opaque-leg concat) AND bake the fused
+		// root-ordinal + name-suffix collection for the struct descent — both
+		// in one flat select. CXA is the PRESERVED side, so the LEFT-padded
+		// CXAID 2 (no CXB match) still explodes its own {82}; CXAID 3's unset
+		// struct explodes to zero rows (never a NULL-element row).
+		compExplain := assertRowsOrdered(t,
+			`SELECT "CXAID", "EL" FROM CXA LEFT JOIN CXB ON "CBREF" = "CXAID", CXA."REC"."ARR" AS "EL" ORDER BY "CXAID", "EL"`,
+			[]string{"CXAID=1|EL=80", "CXAID=1|EL=81", "CXAID=2|EL=82"})
+		// GATHERED signature (class 1): the Explode's FlatMap pairs the OPAQUE
+		// LEFT box directly (its ON stays inside the join), never a
+		// whole-cluster residual FlatMap — the residual cannot resolve the
+		// owner buried inside the box.
+		if !strings.Contains(compExplain,
+			"FlatMap(outer=NestedLoopJoin(LEFT OUTER, [1 preds], Scan(CXA), Scan(CXB)), inner=Explode") {
+			t.Fatalf("class-1x2 composition did not GATHER (the Explode FlatMap must pair the opaque LEFT box directly):\n%s", compExplain)
+		}
+		// A hoisted PredicatesFilter re-applying the box ON as a WHERE would
+		// drop the padded CXAID 2 row (LEFT->INNER corruption) — its ABSENCE is
+		// load-bearing, the same guard the class-1 outer-box pin protects.
+		if strings.Contains(compExplain, "PredicatesFilter") {
+			t.Fatalf("the box's gating ON leaked into a hoisted filter (LEFT->INNER corruption):\n%s", compExplain)
+		}
+	})
+
+	t.Run("RFC-173 rotateEnclosedUnnest multi-segment: struct-path unnest before a plain leg", func(t *testing.T) {
+		// The ENCLOSED unnest class with a MULTI-SEGMENT path: the struct-path
+		// unnest is NOT trailing — it sits BEFORE a later plain leg (U), so the
+		// cluster reaches translateEnclosedUnnestGather -> rotateEnclosedUnnest,
+		// which rotates `Join(Join(NST, U), Unnest)` to the root form the
+		// gathered builder owns. The multi-segment path (`NST.NREC.NARR`) must
+		// survive the rotation (rotateEnclosedUnnest's len(Segments)>=2 lift)
+		// and bake as the fused root+suffix collection. Only NSID 1 has
+		// elements ({70,71}); U's single row (V=999) crosses each exploded
+		// element once, and the WHERE on the trailing plain leg must ride the
+		// rotated root's flat select.
+		encExplain := assertRowsOrdered(t,
+			`SELECT "NSID", "EL", "V" FROM NST, NST."NREC"."NARR" AS "EL", U WHERE "V" = 999 ORDER BY "NSID", "EL"`,
+			[]string{"EL=70|NSID=1|V=999", "EL=71|NSID=1|V=999"})
+		unnestMustContain(t, encExplain, "FlatMap")
+		unnestMustContain(t, encExplain, "Explode")
+		// GATHERED (not residual): the Explode's FlatMap pairs Scan(NST) — the
+		// OWNING source — directly as its outer, the fused root-ordinal+suffix
+		// collection, never a whole-cluster residual FlatMap.
+		if !strings.Contains(encExplain, "FlatMap(outer=Scan(NST)") {
+			t.Fatalf("enclosed multi-segment unnest did not GATHER over Scan(NST):\n%s", encExplain)
+		}
+	})
+
+	t.Run("RFC-173 unnest-residual class 3: CTE/derived-table owners", func(t *testing.T) {
+		// Class 3: the lateral array's OWNER is a CTE/derived-table OUTPUT that
+		// bare-passes-through a base-table array column. Pre-slice every such
+		// shape was a hard 0A000 (unnest over a derived/CTE output declined,
+		// because the output element type was best-effort UnknownType); class 3
+		// traces the bare passthrough back to the underlying base column (DRV.DARR)
+		// and plans the FlatMap-over-Explode. Each pin is a LATERAL unnest, so one
+		// output row per array element; DID 3's NULL array yields ZERO rows
+		// (Explode-over-NULL), never a NULL-element row. Rows are derived from the
+		// seed: DID 1 → {10,11}, DID 2 → {20}, DID 3 → NULL.
+
+		// (1) Derived-table passthrough: the derived body projects the base array
+		// column unchanged; the outer unnests `d.DARR`. DID 1 → two rows, DID 2 →
+		// one, DID 3 (NULL) → zero. The projected owner column is keyed by its
+		// qualified derived-alias label (D.DID) in the merged row.
+		p1 := assertRowsOrdered(t,
+			`SELECT "d"."DID", "EL" FROM (SELECT "DID", "DARR" FROM DRV) AS "d", "d"."DARR" AS "EL" ORDER BY "DID", "EL"`,
+			[]string{"D.DID=1|EL=10", "D.DID=1|EL=11", "D.DID=2|EL=20"})
+		unnestMustContain(t, p1, "FlatMap")
+		unnestMustContain(t, p1, "Explode")
+
+		// (2) Derived alias-rename: the passthrough is renamed (`DARR AS A`) in the
+		// derived body; the unnest correlates to the renamed output `d.A` and must
+		// still resolve back to DRV.DARR's elements.
+		assertRows(t,
+			`SELECT "EL" FROM (SELECT "DARR" AS "A" FROM DRV) AS "d", "d"."A" AS "EL"`,
+			[]string{"EL=10", "EL=11", "EL=20"})
+
+		// (3) CTE passthrough: the same bare passthrough via a WITH-CTE output
+		// (`c.DARR`) instead of an inline derived table — same rows as (1), keyed by
+		// the CTE-alias label (C.DID).
+		p3 := assertRowsOrdered(t,
+			`WITH "C" AS (SELECT "DID", "DARR" FROM DRV) SELECT "C"."DID", "EL" FROM "C", "C"."DARR" AS "EL" ORDER BY "DID", "EL"`,
+			[]string{"C.DID=1|EL=10", "C.DID=1|EL=11", "C.DID=2|EL=20"})
+		unnestMustContain(t, p3, "FlatMap")
+		unnestMustContain(t, p3, "Explode")
+
+		// (4) Derived body with an intervening WHERE: the filter runs INSIDE the
+		// derived body, so only DID 2 (DVAL=6) and DID 3 (DVAL=7) survive; DID 3's
+		// array is NULL and explodes to nothing, leaving ONLY DID 2's element. The
+		// filter must not silently drop the whole unnest, nor leak DID 1 (DVAL=5).
+		assertRowsOrdered(t,
+			`SELECT "d"."DID", "EL" FROM (SELECT "DID", "DARR" FROM DRV WHERE "DVAL" >= 6) AS "d", "d"."DARR" AS "EL" ORDER BY "DID", "EL"`,
+			[]string{"D.DID=2|EL=20"})
+
+		// (5) AT-ordinality over a derived passthrough: the 1-based ordinal restarts
+		// per owner row (1,2 for DID 1's {10,11}; 1 for DID 2's {20}).
+		p5 := assertRowsOrdered(t,
+			`SELECT "d"."DID", "EL", "O" FROM (SELECT "DID", "DARR" FROM DRV) AS "d", "d"."DARR" AS "EL" AT "O" ORDER BY "DID", "EL"`,
+			[]string{"D.DID=1|EL=10|O=1", "D.DID=1|EL=11|O=2", "D.DID=2|EL=20|O=1"})
+		unnestMustContain(t, p5, "WITH ORDINALITY")
 	})
 }
 

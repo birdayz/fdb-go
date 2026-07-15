@@ -171,14 +171,18 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatal("an element alias shadowing an outer column must GATHER (the commit-2 shadow lift)")
 	}
 
-	// (d) UNGATED left cluster (LEFT-outer box): flows name-model rows the
-	// baked collection cannot consume.
+	// (d) UNGATED left cluster: flows name-model rows the baked collection
+	// cannot consume. Re-fixtured (amendment-H) when the unnest-residual
+	// slice lifted the LEFT-box decline (a gated outer box now gathers as
+	// ONE opaque leg — TestRFC173UR_C1_OuterBoxLeft_Gathers): the still-
+	// ungated class is a DUPLICATE-BINDING cluster, poisoned by the wedge
+	// gate before any leg translates.
 	uLeft := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	jLeft := logical.NewJoin(
-		logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, ""),
+		inner(scan("SRC", "s"), scan("SRC", "s")),
 		uLeft, logical.JoinInner, "")
 	if got := tr.translateGatheredUnnestCluster(jLeft, uLeft, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-		t.Fatal("an ungated (LEFT-box) cluster must DECLINE")
+		t.Fatal("an UNGATED (duplicate-binding) cluster must DECLINE")
 	}
 
 	// (e) SINGLE-SOURCE left: the W4c binary path owns N=1.
@@ -196,12 +200,14 @@ func TestRFC173W5_Gathered_DeclineBoundary(t *testing.T) {
 		t.Fatal("segment 0 naming no gathered leg must DECLINE")
 	}
 
-	// (g) Multi-segment field paths decline (the bake addresses ONE ordinal of
-	// the owner's type).
+	// (g) A multi-segment path whose ROOT segment is not a column of the
+	// owner window declines (the class-2 lift routes VALID struct paths
+	// through the fused suffix; SRC has no column A, so the root lookup
+	// misses — re-fixtured when the lift landed, amendment-H discipline).
 	uDeep := &logical.LogicalUnnest{Segments: []string{"s", "A", "B"}, Alias: "EL"}
 	jDeep := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uDeep, logical.JoinInner, "")
 	if got := tr.translateGatheredUnnestCluster(jDeep, uDeep, innerCorr, values.NotNullLong, "A", unnestTrailing); got != nil {
-		t.Fatal("a multi-segment array path must DECLINE (single-ordinal bake)")
+		t.Fatal("a multi-segment path with a MISSING root column must DECLINE")
 	}
 }
 
@@ -508,5 +514,181 @@ func TestRFC173W5_EnclosedRotation_ThreeLegsMidUnnest(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "SID,ARR,EL,XID,V,YID,W" {
 		t.Fatalf("seed field order = %v, want [SID ARR EL XID V YID W] (element at its FROM offset, per-leg runs intact)", names)
+	}
+}
+
+// TestRFC173UR_C1_BoxLegOwner_Gathers pins unnest-residual class 1: an owner
+// BURIED inside a box leg of the gathered cluster (`FROM (s LEFT x), y,
+// s.ARR AS EL`) gathers — the collection bakes at the amendment-C WINDOW
+// (the box quantifier's correlation, the buried leaf's offset in the
+// concat), never a leg-local ordinal over a quantifier that does not exist
+// at this select. Pre-slice this shape declined to the residual (the
+// gatheredPlainLeg box decline).
+func TestRFC173UR_C1_BoxLegOwner_Gathers(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	box := logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, "")
+	left := inner(box, scan("AUX2", "y"))
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	j := logical.NewJoin(left, u, logical.JoinInner, "")
+	innerCorr := values.NamedCorrelationIdentifier("EL")
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("a buried box-leg owner must GATHER (class 1), got nil (declined)")
+	}
+	gathered := sel.(*expressions.SelectExpression)
+	quants := gathered.GetQuantifiers()
+	if len(quants) != 3 {
+		t.Fatalf("quantifiers = %d, want 3 (box leg, y, EL)", len(quants))
+	}
+	explode := quants[2].GetRangesOver().Members()[0]
+	exp, isExp := explode.(*expressions.ExplodeExpression)
+	if !isExp {
+		t.Fatalf("inner quantifier ranges over %T, want *ExplodeExpression", explode)
+	}
+	coll, isFV := exp.GetCollectionValue().(*values.FieldValue)
+	if !isFV || coll.Resolved == nil || !coll.Resolved.FrontierPinned {
+		t.Fatalf("collection = %T, want a frontier-pinned baked FieldValue", exp.GetCollectionValue())
+	}
+	qov := coll.Child.(*values.QuantifiedObjectValue)
+	// The box quantifier's binding carries the leg's minted $BOX name; the
+	// concat is 4 wide (SID, ARR, XID, V) with s's window at offset 0 —
+	// ARR = concat ordinal 1.
+	if qov.Correlation != quants[0].GetAlias() {
+		t.Fatalf("collection correlates to %s, want the BOX leg quantifier %s (amendment-C window)", qov.Correlation, quants[0].GetAlias())
+	}
+	rt := qov.Typ.(*values.RecordType)
+	if len(rt.Fields) != 4 {
+		t.Fatalf("collection QOV type = %d fields, want the 4-wide box concat", len(rt.Fields))
+	}
+	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != 1 {
+		t.Fatalf("collection ordinal = %v, want box-level 1 (offset 0 + ARR idx 1)", coll.Resolved.Accessors)
+	}
+
+	// Seed RC run layout (design ruling 5): the leg runs must be the flat
+	// concat the box + y contribute, in FROM order — box concat [SID ARR XID
+	// V] baked over the box quantifier, then y's [YID W] baked over y, then
+	// the element/ordinal run over EL. Assert the RUN structure, not just the
+	// collection: a wrong run layout mis-windows every downstream read.
+	rc := gathered.GetResultValue().(*values.RecordConstructorValue)
+	wantNames := []string{"SID", "ARR", "XID", "V", "YID", "W", "EL", "ORD"}
+	if len(rc.Fields) != len(wantNames) {
+		t.Fatalf("seed RC has %d fields, want %d (box concat + y + element/ordinal)", len(rc.Fields), len(wantNames))
+	}
+	boxAlias := quants[0].GetAlias()
+	yAlias := quants[1].GetAlias()
+	for i, want := range wantNames {
+		f := rc.Fields[i]
+		if !strings.EqualFold(f.Name, want) {
+			t.Fatalf("seed field %d = %q, want %q (FROM-order concat)", i, f.Name, want)
+		}
+		fv, ok := f.Value.(*values.FieldValue)
+		if !ok || fv.Resolved == nil {
+			t.Fatalf("seed field %d (%s) is %T, want a baked FieldValue", i, f.Name, f.Value)
+		}
+		child := fv.Child.(*values.QuantifiedObjectValue).Correlation
+		switch {
+		case i < 4 && child != boxAlias: // the 4-wide box concat run
+			t.Fatalf("seed field %d (%s) correlates to %s, want the box leg %s", i, f.Name, child, boxAlias)
+		case i >= 4 && i < 6 && child != yAlias: // y's run
+			t.Fatalf("seed field %d (%s) correlates to %s, want leg y %s", i, f.Name, child, yAlias)
+		case i >= 6 && child != innerCorr: // the element/ordinal run
+			t.Fatalf("seed field %d (%s) correlates to %s, want the element %s", i, f.Name, child, innerCorr)
+		}
+	}
+}
+
+// TestRFC173UR_C1_OuterBoxLeft_Gathers pins the sibling lift (design ruling
+// 1(i)): a gated OUTER box as the unnest's LEFT gathers as ONE OPAQUE leg —
+// never its legs into the flat select — plus the Explode. The padded row's
+// NULL array explodes to zero rows downstream (Java's Explode-over-NULL).
+// The box carries a REAL ON predicate: the box's gating ON must stay INSIDE
+// the box leg and never hoist into the flat select's predicates (a hoisted
+// copy re-applies the ON as a WHERE and converts LEFT to INNER — the padded
+// row's NULL-supplied columns fail it and the row silently drops; the FDB
+// row-matrix pin caught exactly that with an ON-free box here).
+func TestRFC173UR_C1_OuterBoxLeft_Gathers(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	box := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft,
+		chainEqPredLocal("x", "XID", "s", "SID"))
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	j := logical.NewJoin(box, u, logical.JoinInner, "")
+	innerCorr := values.NamedCorrelationIdentifier("EL")
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("an outer box as unnest-left must GATHER as one leg (class 1), got nil")
+	}
+	gathered := sel.(*expressions.SelectExpression)
+	quants := gathered.GetQuantifiers()
+	if len(quants) != 2 {
+		t.Fatalf("quantifiers = %d, want 2 (the OPAQUE box + EL — the box's legs are never gathered)", len(quants))
+	}
+	if got := len(gathered.GetPredicates()); got != 0 {
+		t.Fatalf("flat select carries %d predicates, want 0 — the OUTER box's gating ON must stay inside the box, never hoist (LEFT→INNER corruption)", got)
+	}
+	coll := quants[1].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue().(*values.FieldValue)
+	qov := coll.Child.(*values.QuantifiedObjectValue)
+	if qov.Correlation != quants[0].GetAlias() {
+		t.Fatalf("collection correlates to %s, want the box quantifier %s", qov.Correlation, quants[0].GetAlias())
+	}
+	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != 1 {
+		t.Fatalf("collection ordinal = %v, want box-level 1", coll.Resolved.Accessors)
+	}
+}
+
+// TestRFC173UR_C1_DupAliasOwner_FirstMatch pins the owner-lookup discipline
+// under DUPLICATE FROM aliases (design ruling 1(iii) — the item-1 binding
+// model): the FIRST duplicate keeps the alias as its binding, later
+// duplicates carry parser-minted ids the name lookup cannot reach, so
+// `s.ARR` resolves to the FIRST leg's window and the collection correlates
+// to THAT leg's binding — never the later duplicate's.
+func TestRFC173UR_C1_DupAliasOwner_FirstMatch(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	first := scan("SRC", "s")
+	second := scan("AUX", "s") // same SQL alias, distinct table
+	second.Binding = "Q$DUP1"  // the parser's mint for a later duplicate
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	j := logical.NewJoin(inner(first, second), u, logical.JoinInner, "")
+	innerCorr := values.NamedCorrelationIdentifier("EL")
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("a dup-alias cluster with distinct bindings must GATHER, got nil")
+	}
+	gathered := sel.(*expressions.SelectExpression)
+	quants := gathered.GetQuantifiers()
+	if len(quants) != 3 {
+		t.Fatalf("quantifiers = %d, want 3", len(quants))
+	}
+	coll := quants[2].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue().(*values.FieldValue)
+	qov := coll.Child.(*values.QuantifiedObjectValue)
+	if qov.Correlation.Name() != "S" {
+		t.Fatalf("collection correlates to %s, want the FIRST duplicate's binding S (first-match by alias, correlate by binding)", qov.Correlation)
+	}
+}
+
+// TestRFC173UR_C1_OpaqueBox_NestedClusterPredsStayInside pins the twin of the
+// ON-hoist guard: a class-1 opaque OUTER box whose null side is itself a
+// nested inner cluster (`SRC LEFT JOIN (AUX JOIN AUX2 ON x.XID = y.YID), s.ARR
+// AS EL`) must NOT leak that nested cluster's ON into the flat gathered
+// select. The ON is already enforced inside the box leg's own translation;
+// re-applying it flat over the box's NULL-padded rows fails the null-supplied
+// AUX/AUX2 slots and silently drops the preserved SRC row (LEFT→INNER). The
+// gather's flat select carries ZERO predicates for this shape.
+func TestRFC173UR_C1_OpaqueBox_NestedClusterPredsStayInside(t *testing.T) {
+	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
+	innerCluster := logical.NewJoin(scan("AUX", "x"), scan("AUX2", "y"), logical.JoinInner, "")
+	innerCluster.OnPredicate = chainEqPredLocal("x", "XID", "y", "YID")
+	box := logical.NewJoin(scan("SRC", "s"), innerCluster, logical.JoinLeft, "")
+	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	j := logical.NewJoin(box, u, logical.JoinInner, "")
+	sel := tr.translateGatheredUnnestCluster(j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, "ARR", unnestTrailing)
+	if sel == nil {
+		t.Fatal("a nested-cluster opaque box must GATHER, got nil")
+	}
+	if n := len(sel.(*expressions.SelectExpression).GetPredicates()); n != 0 {
+		t.Fatalf("opaque outer box leaked %d nested-cluster predicates into the flat select, want 0 (the box's ONs stay inside)", n)
 	}
 }

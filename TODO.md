@@ -304,7 +304,30 @@ validation gate.
     review-condition comment fixes. All four gates ACK'd the final HEAD.
 
   - [ ] **S4 atomic demolition** (LAST — gated on QP-REF-BIND items 1+2+3, the riders, and the
-    unnest-residual slice; sequencing ruling banked in the RFC): delete the flag + trio + the
+    unnest-residual slice; sequencing ruling banked in the RFC). **Gates now satisfied:** items
+    1+2+3 merged (item 3 = #483); rider 2 (aggregate metadata) DONE on feat/rfc173-next; rider 1
+    folds into S4 (flips as the ordinal seed widens); unnest-residual c1/c2/c3 DONE on
+    feat/rfc173-next. **The correlated-scalar prerequisite is DISCHARGED (W4b #465)** — JOIN-inner
+    + COMPUTED-scalar ordinalize; the lone `NewScalarSubqueryAnchoredRecord` producer is now the
+    UNGATED-OUTER residual (cascades_translator.go:3860). **Reachability: strong evidence :3860 is
+    near-dead.** Probed with a loud marker: (1) no existing sqldriver/core-query/embedded test hits
+    it; (2) direct ungated-shape probes — a correlated scalar over an UNNEST outer
+    (`SELECT c.name,(SELECT COUNT(*) FROM o WHERE o.cid=c.id) FROM c, c.arr AS x`) does NOT reach
+    :3860 (it declines at PLANNING, "could not plan query" 0AF00 — a pre-existing limitation, not
+    the anchored fallback); a dup-alias outer declines loudly in buildCorrelatedScalar; a
+    plain-single outer ordinalizes. So the research's assumption that unnest-outer "keeps the
+    anchored record" is WRONG — it declines elsewhere. **BUT S4 is NOT near-done: only the SCALAR
+    producer (#1) is near-dead. The name model's CORE is heavily live** — `NewAnchoredJoinRecord`
+    (producers #2 unnest + #3 join) at cascades_translator.go:318/:698/:1528 (every join + unnest
+    result value), and `NewReEnumerationAnchoredRecord` (#4) at rule_partition_select.go:469
+    (GROUP-BY over an anchored parent). Retiring these = making EVERY join/unnest/group-by
+    ORDINALIZE = the full RFC-173 endgame, a fresh multi-shift campaign (the RFC's ~2-shift estimate
+    is on top of these three producers, NOT just :3860). **Remaining for the S4 exit gate:** the
+    empirical zero-producers proof must cover ALL FOUR producers (probe #1's last existential-ON
+    shape; then retire #2/#3/#4 by ordinalizing their shapes), then the atomic deletion. Gated on a
+    Graefe RFC DESIGN-ACK of the demolition plan + all four impl gates (codex incl.). See the
+    corrected RFC Slice-4 PREREQUISITE block. Then:
+    delete the flag + trio + the
     three seeds + `NewReEnumerationAnchoredRecord` (dies mechanically) + 8 value-layer flag
     branches + 4 executor consumers + `select.go:251` arm-1 + the §5 oracle (load-bearing until
     now) — ONE commit, which also LIFTS the W5 bare-twin duplicate-column decline (the
@@ -2475,6 +2498,11 @@ Legs alignment, ofOrdinal nullability flow): branch 160.51s total, PASS — fast
 than the master baseline (161.68s), within noise of the c1+c2 row (154.35s). No
 regression.
 
+**2026-07-06 (RFC-173 unnest-residual c1 — box-leg owners gather, multi-segment
+struct paths, SelectMerge/Explode arm, struct-column schema surface): branch
+156.73s total, PASS — faster than the master baseline (161.68s); the NAK-round fix HEAD (proto-converter unification on the executor hot path) 160.53s, still clean. No regression.
+
+
 **2026-07-06 (RFC-173 item-1 c4 — the review-round fixes: binding-keyed sort/group
 keys, buried-EXISTS rebase, fold binding correlations):** branch 161.84s total, all
 23 subtests PASS — equal to the master `8c179a025` baseline (161.68s) and faster
@@ -3431,6 +3459,17 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       under-existential arrives via item 2's binders; the BARE-TWIN duplicate-column decline
       rides until S4 — folded into the atomic commit per the circularity ruling, with the
       differential covering it name-model-side until then).
+      **Progress (on `feat/rfc173-item3`, pending atomic-slice merge + gate re-ACK):**
+      c1 (classes 1+2 — box-leg owners + multi-segment struct paths) DONE, both in-session
+      gates ACK + codex re-confirm tracked for quota. c2 (class 3 — CTE/derived owners via
+      body-projection→descriptor, positive whitelist, P2a-closed) DONE, both in-session
+      gates ACK. c3 (class 4 — chained unnests `t.arr AS x, x.sub AS y`) DONE: nested
+      FlatMap-over-FlatMap residual, all 7 Graefe conditions pinned
+      (`rfc173_w5_chained_unnest_fdb_test.go` 11 subtests + `TestSelectMergeRule_ChainedUnnestBarrier`
+      white-box). Two real bugs found + fixed by the FDB e2e: 3+-link enclosure collapse
+      (chained dispatch de-gated from `!prevEnclosure`) and AT-on-chained-owner false 42809
+      (`atOnNonArraySource` now recognizes `FindOwnerUnnest`). Remaining before merge: slice
+      exit gates (dual-window, 1M stress, rfc153 verbatim, live-Java), codex on quota reset.
 - [ ] **Rider: the minted-binding loud-decline class flips to rows** (item-1 c5 —
       the review-round guard): the declared-loud shapes over duplicate FROM aliases,
       each pinned in rfc173_item1_keybinding_exists_fdb_test.go (P4a–P4f) with the
@@ -3453,14 +3492,20 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       (unnest owner) dup-alias unnest OWNER resolution is first-match-by-alias, not
       per-attribute (`q AS a, u AS a, a.arr AS e` → loud 42703 naming the wrong
       source) — classify vs live Java when the unnest-residual slice lands.
-- [ ] **Rider: aggregate output METADATA drift vs Java** (item-1 c4 probe finding —
-      rows are parity, metadata is not; live-verified 4.12.11.0): (a) a DISTINCT-alias
-      qualified group key labels the output column `A.QID` where Java labels the bare
-      `QID` (the dup-alias path already labels bare via the c4 fix — unify); (b) a
-      group key over a join reports type UNKNOWN where Java reports the column type
-      (BIGINT) — `buildAggColumns`' protoFieldTypeName misses join-shaped descriptors;
-      (c) unaliased `COUNT(*)` labels `COUNT(*)` where Java generates `_1`. Blocks
-      GROUP-BY-over-join corpus entries (normaliseRows compares name|type byte-equal —
-      the c4 group-by shape is FDB-test-pinned instead). Read Java's output-name
-      generation first (SemanticAnalyzer/Expression.toResultColumn) — (c) may be a
-      both-quirks booking, not a Go fix.
+- [x] **Rider: aggregate output METADATA drift vs Java** (item-1 c4 probe finding —
+      rows are parity, metadata is not; live-verified 4.12.11.0). DONE. Java rule
+      (Expressions.getStructType): output name = `expression.getName()` bare (top-level
+      clearQualifier) or `_N` positional if unnamed; type = the resolved
+      `Value.getResultType()` off the flowed join-output record. Fixed (a)+(b) in
+      `buildAggColumns`/`deriveColumnsFromAggregation`: (a) a QUALIFIED group key
+      `d.dname` now labels the BARE `DNAME` (carried as ColumnDef.Label; the qualified
+      Name stays the datum-lookup key the aggregate cursor writes — three-mirror
+      agreement intact, values still resolve); (b) the group-key TYPE resolves against
+      ALL join-leaf descriptors (allLeafDescriptors + descriptorForColumn), not just
+      findLeafDescriptor's first leaf, so a far-leg key reports STRING/BIGINT not
+      UNKNOWN. (c) is NOT a fix: plandiff ConformColumns already accepts Go's
+      descriptive `COUNT(*)` against Java's anonymous `_N` when the type matches — a
+      conformance-blessed wire-neutral read-side nicety; kept descriptive, pinned so an
+      accidental relabel is caught. Pinned by `rfc173_rider2_agg_metadata_fdb_test.go`
+      (6 subtests, red-first proven: D.DNAME + UNKNOWN drift reproduced with the fix
+      disabled) + the value-flow pin.
