@@ -158,7 +158,7 @@ func TestFDB_NWayJoinCorrelatedExists(t *testing.T) {
 
 	// MIXED projection (a bare column AND a computed expression in one SELECT).
 	// Pre-fix, the computed field's baked
-	// ordinals flipped the wrap cursor to birth-ordinal evaluation while the bare
+	// ordinals flipped the wrap cursor to build-ordinal evaluation while the bare
 	// column stayed a lazy frontier read → (NULL, 101). The TOTAL rebase bakes
 	// both, and wrapRVFullyBaked declines any RV that is not uniformly baked.
 	// p.id=1 (the e-match row): p.id + r.rc = 1 + 100 = 101.
@@ -203,9 +203,9 @@ func TestFDB_NWayJoinCorrelatedExists(t *testing.T) {
 			[]int64{1})
 	})
 
-	// SCALAR SUBQUERY in the projection: the birth context has no
+	// SCALAR SUBQUERY in the projection: the build context has no
 	// ScalarSubqueries map, so the whitelist DECLINES the
-	// wrap (ScalarSubqueryValue is not birth-evaluable) and the name-model path
+	// wrap (ScalarSubqueryValue is not build-evaluable) and the name-model path
 	// answers. Pre-whitelist this returned (1, NULL) silent-wrong.
 	t.Run("scalar_subquery_mixed", func(t *testing.T) {
 		rows, qErr := db.QueryContext(ctx,
@@ -219,14 +219,14 @@ func TestFDB_NWayJoinCorrelatedExists(t *testing.T) {
 		}
 		var id, mx int64
 		if sErr := rows.Scan(&id, &mx); sErr != nil {
-			t.Fatalf("scan (a NULL here is the scalar-subquery birth drift): %v", sErr)
+			t.Fatalf("scan (a NULL here is the scalar-subquery build drift): %v", sErr)
 		}
 		if id != 1 || mx != 300 {
 			t.Fatalf("scalar-subquery mixed = (%d, %d), want (1, 300)", id, mx)
 		}
 	})
 
-	// PARAMETER in the projection: ParameterValue is not on the birth
+	// PARAMETER in the projection: ParameterValue is not on the build
 	// whitelist either — declines to the name model, correct rows.
 	t.Run("parameter_mixed", func(t *testing.T) {
 		rows, qErr := db.QueryContext(ctx,
@@ -240,7 +240,7 @@ func TestFDB_NWayJoinCorrelatedExists(t *testing.T) {
 		}
 		var id, p int64
 		if sErr := rows.Scan(&id, &p); sErr != nil {
-			t.Fatalf("scan (a NULL here is the parameter birth drift): %v", sErr)
+			t.Fatalf("scan (a NULL here is the parameter build drift): %v", sErr)
 		}
 		if id != 1 || p != 42 {
 			t.Fatalf("parameter mixed = (%d, %d), want (1, 42)", id, p)

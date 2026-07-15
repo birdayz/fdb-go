@@ -163,7 +163,7 @@ func TestFilteredBoxUnnestCensus(t *testing.T) {
 		// it (nested buried windows derive through the box-as-one-leg concat),
 		// so the conjunct classifies BAKEABLE — pinned together with the
 		// census below and the sqldriver FDB nested-box-conjunct scenario. Note
-		// this is the GATHER authority: boxGatesFresh (the BINARY-seed/birth
+		// this is the GATHER authority: boxGatesFresh (the BINARY-seed/build
 		// gate) still excludes nested box legs — the two gates differ by
 		// design.
 		t.Run("nested_box_leg_classifies_bakeable", func(t *testing.T) {

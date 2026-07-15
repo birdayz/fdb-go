@@ -224,7 +224,7 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	childResults := result.GetValue()
 
 	// Resolve the resultValue against the CONCATENATED ordinal rows of
-	// the matched children — the aggregate-index producer births a Positional per
+	// the matched children — the aggregate-index producer builds a Positional per
 	// child; the grouping columns are identical across children and the aggregate
 	// columns are distinct, so a plan-time bake against the flat concatenation
 	// resolves each resultValue column to the correct slot.
@@ -268,7 +268,7 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 // references read). Fields are concatenated in child order; grouping
 // columns repeat across children with the same value, so a first-match bind is
 // order-safe. Returns nil if any child lacks a Positional (should not happen — the
-// aggregate-index producer births one per child).
+// aggregate-index producer builds one per child).
 func mergeChildEvalArg(childResults []QueryResult) any {
 	var fields []values.Field
 	var slots []any

@@ -138,7 +138,7 @@ func TestFDB_ClusteredBoxJoinRows(t *testing.T) {
 			t.Fatalf("rows: %v", err)
 		}
 		// pa(1,10): v/2=5 → c2.cid=5 matches. pa(9,90): v/2=45 → no c2 → c2 NULL.
-		// c2(6) unmatched → the FULL drain births a box-padded row.
+		// c2(6) unmatched → the FULL drain builds a box-padded row.
 		if n != 3 || boxPadded != 1 {
 			t.Errorf("FULL-over-LEFT = %d rows (%d box-padded), want 3 rows with exactly 1 box-padded drain row", n, boxPadded)
 		}

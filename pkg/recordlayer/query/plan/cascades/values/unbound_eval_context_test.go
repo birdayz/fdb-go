@@ -14,7 +14,7 @@ import (
 // reaching one of these tails is a planner/executor bug and silence would
 // hide it. Two shapes stay quiet instead: a nil context (the appendNullLeg
 // NULL), and a correlation that MATCHED a non-ordinal value (a raw leg
-// binding, e.g. the executor's birthLegBinder — see
+// binding, e.g. the executor's buildLegBinder — see
 // TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent).
 func TestFieldValue_UnboundEvalContext_IsLoud(t *testing.T) {
 	t.Parallel()

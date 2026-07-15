@@ -1,7 +1,7 @@
 package sqldriver_test
 
 // A merge-opaque FULL OUTER box under a lateral unnest, under WHERE-EXISTS,
-// resolves ordinally on TWO independent axes: the box births its whole
+// resolves ordinally on TWO independent axes: the box builds its whole
 // leg-concat POSITIONALLY (axis 1 — the box-outer translateRef clears the
 // enclosure) AND the seed is admitted (axis 2 — unnestExistsSeedSafe), both
 // gated by the ONE boxGatesFresh predicate. The per-leg-window rebase then
@@ -333,9 +333,9 @@ func TestFDB_FullOuterUnnestExists(t *testing.T) {
 		[]string{"7", "8"})
 
 	// LEFT — the AXIS-1 over-breadth regression pin. Axis 1 (the box-outer
-	// positional birth) admits an OUTER box, but ONLY a FULL box may take
+	// positional build) admits an OUTER box, but ONLY a FULL box may take
 	// the ordinal seed (clusterArity==1); a LEFT/RIGHT box has clusterArity>=2 so
-	// its seed stays name-based. Birthing a LEFT box positional while its seed is
+	// its seed stays name-based. Building a LEFT box positional while its seed is
 	// name-based would strand the name-based builder over a positional row — it
 	// reads FOA.K by an ABSENT qualified key → NULL → EXISTS(100=NULL) false → 0
 	// rows (WRONG; correct is {7,8}). Axis 1 must therefore fire ONLY when the

@@ -14,7 +14,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// This file pins the FlatMap executor binder for a birth-disabled join
+// This file pins the FlatMap executor binder for a build-disabled join
 // (identity result value, no ordinal state of its own): newFlatMapCursor
 // probes the inner plan for FrontierPinned baked references over the OUTER
 // alias and, on a hit, binds the outer row positionally (adaptLegPositional,
@@ -125,8 +125,8 @@ func runCorrelatedExistsShape(t *testing.T, store *recordlayer.FDBRecordStore, f
 	return results
 }
 
-// TestIntegration_DisabledBirthBinder_BakedInner pins the executor binder: a
-// birth-disabled FlatMap (identity RV — no ordinal state of its own) whose
+// TestIntegration_DisabledBuildBinder_BakedInner pins the executor binder: a
+// build-disabled FlatMap (identity RV — no ordinal state of its own) whose
 // inner plan carries a BAKED FrontierPinned reference to the outer alias must
 // bind the outer row POSITIONALLY, so the baked reference resolves by
 // ordinal — binding it as a name-keyed Datum map would leave the baked
@@ -134,7 +134,7 @@ func runCorrelatedExistsShape(t *testing.T, store *recordlayer.FDBRecordStore, f
 // every row. The emitted rows also pin the identity pass-through: the
 // identity output carries the outer's positional row across the FlatMap
 // boundary.
-func TestIntegration_DisabledBirthBinder_BakedInner(t *testing.T) {
+func TestIntegration_DisabledBuildBinder_BakedInner(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
 	insertCustomers(t, store,

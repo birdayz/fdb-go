@@ -428,7 +428,7 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 	//     AS y` — single or nested): the FIRST link gathers it as ONE OPAQUE
 	//     leg through the SAME fresh-gate authority
 	//     (translateGatheredUnnestCluster's ordinalWedgeGateDecide probe =
-	//     gatesAsFreshCluster), the box births its whole leg-concat
+	//     gatesAsFreshCluster), the box builds its whole leg-concat
 	//     positionally (null-supplied legs NULL in their windows), and
 	//     ordinalLegColumns' join arm composes the identical concat into the
 	//     chained merged row. There is no remaining name-model way to serve this
@@ -731,8 +731,8 @@ func (t *cascadesTranslator) chainedUnnestOrdinalGate(
 	// A CONSERVATIVE COHERENCE GUARD for an IMPURE bottom — the chained twin of
 	// the single-unnest law at the box-outer enclosure site ("either half alone
 	// is broken"), applied through the SAME predicate
-	// (boxOuterBirthsPositional): the seed advertises the bottom box
-	// positionally only when that predicate says the box births positional.
+	// (boxOuterBuildsPositional): the seed advertises the bottom box
+	// positionally only when that predicate says the box builds positional.
 	// HONEST SCOPE: no demonstrated wrong-rows shape motivates this guard on
 	// the reachable path — adversarial rows-probes on the pre-guard tree (a
 	// nested outer box `(A LEFT B) FULL C` under a chain, element/box-column/
@@ -745,7 +745,7 @@ func (t *cascadesTranslator) chainedUnnestOrdinalGate(
 	// until that substrate is validated, the whole chain
 	// declines to name-model: fail-open, rows correct by name, and the
 	// boundary is a pinned LAW rather than a guess that happens to work today.
-	if !pureSpine && !t.boxOuterBirthsPositional(links[0].join.Left) {
+	if !pureSpine && !t.boxOuterBuildsPositional(links[0].join.Left) {
 		return nil, nil, false
 	}
 

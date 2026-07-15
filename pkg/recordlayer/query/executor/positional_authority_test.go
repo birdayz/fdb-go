@@ -10,10 +10,10 @@ import (
 // TestPositionalAuthority_ScalarElement is the MANDATORY
 // positional-authority pin: the no-AT mixed seed references the bare-scalar
 // unnest element as a DIRECT QuantifiedObjectValue (Java's isPrimitive()
-// branch). The ordinal-birth binder must RAW-bind that leg
-// (ordinalJoinBirth.RawLegs) — never route it through adaptLegPositional,
+// branch). The ordinal-build binder must RAW-bind that leg
+// (ordinalJoinBuild.RawLegs) — never route it through adaptLegPositional,
 // which would synthesize an EMPTY positional row for a non-record row and
-// birth the element NULL. This pin asserts the element's POSITIONAL SLOT
+// build the element NULL. This pin asserts the element's POSITIONAL SLOT
 // VALUE directly. Without the raw-bind it is an empty *PositionalRow, not the
 // scalar; the pin then fails.
 func TestPositionalAuthority_ScalarElement(t *testing.T) {
@@ -49,10 +49,10 @@ func TestPositionalAuthority_ScalarElement(t *testing.T) {
 		t.Fatalf("newFlatMapCursor: %v", err)
 	}
 	defer c.Close()
-	if !c.birth.enabled() {
-		t.Fatal("the mixed seed (baked outer) must enable ordinal birth")
+	if !c.build.enabled() {
+		t.Fatal("the mixed seed (baked outer) must enable ordinal build")
 	}
-	if _, raw := c.birth.RawLegs[innerCorr]; !raw {
+	if _, raw := c.build.RawLegs[innerCorr]; !raw {
 		t.Fatalf("the bare-scalar element leg %s must be a RawLeg (bind its whole row raw)", innerCorr)
 	}
 
@@ -67,7 +67,7 @@ func TestPositionalAuthority_ScalarElement(t *testing.T) {
 		t.Fatalf("computeResult: %v", err)
 	}
 	if got.Positional == nil || len(got.Positional.Slots) != 3 {
-		t.Fatalf("birthed positional row = %v, want 3 slots [ID ARR element]", got.Positional)
+		t.Fatalf("built positional row = %v, want 3 slots [ID ARR element]", got.Positional)
 	}
 	// Slot 2 (the element) MUST be the scalar 101 — NOT an empty/all-nil
 	// positional row (the raw-bind is what prevents that).
@@ -78,7 +78,7 @@ func TestPositionalAuthority_ScalarElement(t *testing.T) {
 	if got.Positional.Slots[0] != int64(7) {
 		t.Errorf("outer ID slot = %#v, want int64(7)", got.Positional.Slots[0])
 	}
-	// The element resolves by its output name X against the birthed row.
+	// The element resolves by its output name X against the built row.
 	if m, ok := rowMapOK(got); !ok || m["X"] != int64(101) {
 		t.Errorf("element X by name = %#v, want int64(101)", got.Positional)
 	}
@@ -110,7 +110,7 @@ func TestOrdinalAliasCollision(t *testing.T) {
 			{Name: asName, FieldType: values.NotNullLong, Ordinal: 0},
 			{Name: atName, FieldType: values.NotNullInt, Ordinal: 1},
 		})
-		b := &ordinalJoinBirth{
+		b := &ordinalJoinBuild{
 			OrdinalityLegs: map[values.CorrelationIdentifier]struct{}{innerCorr: {}},
 			LegTypes:       map[values.CorrelationIdentifier]*values.RecordType{innerCorr: legType},
 		}

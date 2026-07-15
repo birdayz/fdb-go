@@ -139,7 +139,7 @@ func structPair(v any) string {
 // The struct element is UnknownType at the seed (unnestArrayElementType returns
 // UnknownType for a message element — "the runtime flows the raw element"), so
 // it is a bare QOV over a non-record type: a RawLeg that binds the whole flowed
-// element raw at the executor (ordinalJoinBirth.RawLegs), never adapted/flattened
+// element raw at the executor (ordinalJoinBuild.RawLegs), never adapted/flattened
 // to a positional row.
 //
 // NOTE on `SELECT x.field`: composite field extraction on the whole-struct

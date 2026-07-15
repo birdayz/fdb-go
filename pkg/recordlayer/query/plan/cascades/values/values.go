@@ -404,7 +404,7 @@ func (e *BakedNameContextError) Error() string {
 // that DID resolve to a value): here nothing resolved at all. A nil context stays
 // NULL (the appendNullLeg / nil-binding path) and never reaches here;
 // a correlation that DID match a non-ordinal value (e.g. the executor's
-// birthLegBinder raw leg) returns that value and never reaches here either.
+// buildLegBinder raw leg) returns that value and never reaches here either.
 type UnboundEvalContextError struct {
 	Field       string
 	Correlation string

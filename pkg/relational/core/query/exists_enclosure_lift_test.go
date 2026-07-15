@@ -71,7 +71,7 @@ func TestExistsEnclosureLift(t *testing.T) {
 	t.Run("FULL box under EXISTS declines loud", func(t *testing.T) {
 		t.Parallel()
 		// FULL genuinely GATES as a root (opaque both ways), but existsOuterGatesFresh
-		// deliberately EXCLUDES it: its drain-birth composition with the existential
+		// deliberately EXCLUDES it: its drain-build composition with the existential
 		// semi-join is unvalidated, so the lift keeps it out (a dedicated FULL-outer
 		// extension would need to widen it) — and with no remaining name-model
 		// fallback the excluded shape declines LOUDLY instead of translating.

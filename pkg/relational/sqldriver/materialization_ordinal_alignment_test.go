@@ -15,7 +15,7 @@ package sqldriver_test
 // correlated scalars, EXISTS, ANONYMOUS computed projections (`SELECT UPPER(x)` —
 // column "_i" vs slot "UPPER(X)"), aggregate columns (space-stripped ColumnDef vs
 // spaced/aliased/qualified ExplainValue slot), multi-aggregate scalars, and the
-// EMPTY-table scalar aggregate (emptyScalarResult births a positional row).
+// EMPTY-table scalar aggregate (emptyScalarResult builds a positional row).
 
 import (
 	"context"
@@ -118,7 +118,7 @@ func TestFDB_MaterializationOrdinalAlignment(t *testing.T) {
 		{"agg_aliased", `SELECT SUM(amt) AS total FROM orders`},
 		{"agg_multi_scalar", `SELECT COUNT(*), SUM(amt), MIN(amt), MAX(amt), AVG(amt) FROM orders`},
 		{"agg_grouped_multi", `SELECT status, SUM(amt), COUNT(*) FROM orders GROUP BY status`},
-		// EMPTY-table scalar aggregate: emptyScalarResult now births a positional row.
+		// EMPTY-table scalar aggregate: emptyScalarResult now builds a positional row.
 		{"agg_empty_scalar", `SELECT COUNT(*), SUM(amt) FROM orders WHERE amt > 100000`},
 	}
 	for _, sh := range shapes {

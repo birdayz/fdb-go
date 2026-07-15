@@ -50,7 +50,7 @@ type RecordLayerResultSet struct {
 
 	// posAlignType/posAligned memoize positionalAligned's verdict per row TYPE
 	// (row types are plan-invariant and pointer-shared across a cursor's rows —
-	// projType, ordinalJoinBirth.OutputType, positionalTypeCache — so the
+	// projType, ordinalJoinBuild.OutputType, positionalTypeCache — so the
 	// per-column name comparison runs once, not per row).
 	posAlignType *values.RecordType
 	posAligned   bool

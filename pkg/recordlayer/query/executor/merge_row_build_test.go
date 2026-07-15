@@ -9,7 +9,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// Pins the NESTED positional merge-row birth. PartitionBinarySelectRule
+// Pins the NESTED positional merge-row build. PartitionBinarySelectRule
 // lowers an N-way join into nested binary joins; the intermediate merge
 // level's result value is a record OF records (`_i` = leg i's WHOLE row,
 // mirroring Java's Column.unnamedOf), unlike a plain ordinal-join seed's flat
@@ -26,32 +26,32 @@ func s3MergeRC(qovA, qovB *values.QuantifiedObjectValue) *values.RecordConstruct
 	)
 }
 
-// TestMergeBirth_Constructor pins the second birth trigger: the
-// all-bare positional-merge RC enables the birth (no baked refs anywhere —
+// TestMergeBuild_Constructor pins the second build trigger: the
+// all-bare positional-merge RC enables the build (no baked refs anywhere —
 // ContainsBakedOrdinal is false, so the plain baked-ordinal trigger alone
 // would miss it), WindowsOK is false (no flat spans), and LegTypes come from
 // the bare QOVs' flowed types. A plain named RC of QOVs (not `_i`-named)
 // stays name-model.
-func TestMergeBirth_Constructor(t *testing.T) {
+func TestMergeBuild_Constructor(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
 
-	birth, err := newOrdinalJoinBirth(s3MergeRC(qovA, qovB), nil)
+	build, err := newOrdinalJoinBuild(s3MergeRC(qovA, qovB), nil)
 	if err != nil {
-		t.Fatalf("merge-RC birth: %v", err)
+		t.Fatalf("merge-RC build: %v", err)
 	}
-	if !birth.enabled() || birth.WindowsOK {
-		t.Fatalf("merge RC must birth WITHOUT windows (enabled=%v windows=%v)", birth.enabled(), birth.WindowsOK)
+	if !build.enabled() || build.WindowsOK {
+		t.Fatalf("merge RC must build WITHOUT windows (enabled=%v windows=%v)", build.enabled(), build.WindowsOK)
 	}
 	// Structural compare — qov.Type() returns a nullability-wrapped instance,
 	// not the raw pointer.
-	gotA, gotB := birth.LegTypes[qovA.Correlation], birth.LegTypes[qovB.Correlation]
+	gotA, gotB := build.LegTypes[qovA.Correlation], build.LegTypes[qovB.Correlation]
 	if gotA == nil || gotB == nil || len(gotA.Fields) != len(legA.Fields) || len(gotB.Fields) != len(legB.Fields) ||
 		gotA.Fields[1].Name != "V" || gotB.Fields[1].Name != "W" {
-		t.Fatalf("LegTypes must come from the bare QOVs' flowed types, got %v", birth.LegTypes)
+		t.Fatalf("LegTypes must come from the bare QOVs' flowed types, got %v", build.LegTypes)
 	}
-	if len(birth.OutputType.Fields) != 2 || birth.OutputType.Fields[0].Name != "_0" {
-		t.Fatalf("OutputType = %v, want the 2-slot nested merge type", birth.OutputType)
+	if len(build.OutputType.Fields) != 2 || build.OutputType.Fields[0].Name != "_0" {
+		t.Fatalf("OutputType = %v, want the 2-slot nested merge type", build.OutputType)
 	}
 
 	// A NAMED RC of QOVs is a projection of whole rows, not the merge shape —
@@ -60,17 +60,17 @@ func TestMergeBirth_Constructor(t *testing.T) {
 		values.RecordConstructorField{Name: "LEFT", Value: qovA},
 		values.RecordConstructorField{Name: "RIGHT", Value: qovB},
 	)
-	if b, err := newOrdinalJoinBirth(named, nil); err != nil || b.enabled() {
+	if b, err := newOrdinalJoinBuild(named, nil); err != nil || b.enabled() {
 		t.Fatalf("named QOV RC must stay name-model, got (%v, %v)", b, err)
 	}
 }
 
-// TestMergeBirth_NLJCursor_Nested drives the merge RC through the
+// TestMergeBuild_NLJCursor_Nested drives the merge RC through the
 // real NLJ cursor: each emitted row's Positional slot `_i` holds leg i's own
 // nested positional row, and a fused two-step reference (the shape
 // PartitionBinarySelectRule's TranslationMap produces for a buried column
 // once its leg has been merged away) reads through it end-to-end.
-func TestMergeBirth_NLJCursor_Nested(t *testing.T) {
+func TestMergeBuild_NLJCursor_Nested(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
 
@@ -129,12 +129,12 @@ func TestMergeBirth_NLJCursor_Nested(t *testing.T) {
 	}
 }
 
-// TestMergeBirth_MixedUpper pins the translated MIXED upper shape:
+// TestMergeBuild_MixedUpper pins the translated MIXED upper shape:
 // RC(_0: ofOrdinal(innerMerge, 0), _1: ofOrdinal(innerMerge, 1), _2: QOV(c))
 // — baked refs flatten the inner nesting one level, the bare leg rides
 // whole. Exercised at the primitive level (evaluateOrdinalJoinRow over a
 // two-leg binder) — the exact evaluation the cursor performs for this shape.
-func TestMergeBirth_MixedUpper(t *testing.T) {
+func TestMergeBuild_MixedUpper(t *testing.T) {
 	t.Parallel()
 	legA, legB, _, _, _ := ojWiringLegs(t)
 	legC := values.NewRecordType("", false, []values.Field{
@@ -161,14 +161,14 @@ func TestMergeBirth_MixedUpper(t *testing.T) {
 		values.RecordConstructorField{Name: values.OrdinalFieldName(2), Value: qovC},
 	)
 
-	birth, err := newOrdinalJoinBirth(mixed, nil)
-	if err != nil || !birth.enabled() || birth.WindowsOK {
-		t.Fatalf("mixed upper birth = (%v, %v), want enabled without windows", birth, err)
+	build, err := newOrdinalJoinBuild(mixed, nil)
+	if err != nil || !build.enabled() || build.WindowsOK {
+		t.Fatalf("mixed upper build = (%v, %v), want enabled without windows", build, err)
 	}
 	// The bare leg's type must be collected from the QOV directly, not only
 	// from baked references. Structural compare (nullability wrapping).
-	if gotC := birth.LegTypes[qovC.Correlation]; gotC == nil || len(gotC.Fields) != 1 || gotC.Fields[0].Name != "X" {
-		t.Fatalf("bare-QOV leg type missing: %v", birth.LegTypes)
+	if gotC := build.LegTypes[qovC.Correlation]; gotC == nil || len(gotC.Fields) != 1 || gotC.Fields[0].Name != "X" {
+		t.Fatalf("bare-QOV leg type missing: %v", build.LegTypes)
 	}
 
 	// Evaluate over the two bindings: the inner merge's nested row + c's row.
@@ -180,9 +180,9 @@ func TestMergeBirth_MixedUpper(t *testing.T) {
 		outerID: innerQOV.Correlation, innerID: qovC.Correlation,
 		outer: innerRow, inner: cRow,
 	}
-	pos, err := evaluateOrdinalJoinRow(mixed, birth.OutputType, binder)
+	pos, err := evaluateOrdinalJoinRow(mixed, build.OutputType, binder)
 	if err != nil {
-		t.Fatalf("mixed-upper row birth: %v", err)
+		t.Fatalf("mixed-upper row build: %v", err)
 	}
 	// _0/_1 flatten the inner nesting one level; _2 is c's whole row.
 	if pos.Slots[0] != values.OrdinalRow(legARow) || pos.Slots[1] != values.OrdinalRow(legBRow) {
@@ -193,14 +193,14 @@ func TestMergeBirth_MixedUpper(t *testing.T) {
 	}
 }
 
-// TestMergeBirth_FlatMapBirths pins the merge row birth over the FlatMap
-// (correlated) path: the all-bare merge RC births there too, because
+// TestMergeBuild_FlatMapBuilds pins the merge row build over the FlatMap
+// (correlated) path: the all-bare merge RC builds there too, because
 // PartitionBinarySelectRule's merge arm produces live merge-RC FlatMaps whose
 // inner plans carry baked leg SARGs — those baked operands need a positional
 // binding (a name-keyed one would die loud with BakedNameContextError at
 // scan-range build). Each emitted row's Positional slot `_i` is leg i's own
 // positional row, nested rather than flattened.
-func TestMergeBirth_FlatMapBirths(t *testing.T) {
+func TestMergeBuild_FlatMapBuilds(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
 	c, err := newFlatMapCursor(
@@ -212,8 +212,8 @@ func TestMergeBirth_FlatMapBirths(t *testing.T) {
 		t.Fatalf("newFlatMapCursor: %v", err)
 	}
 	defer c.Close()
-	if !c.birth.enabled() || c.birth.WindowsOK {
-		t.Fatalf("the merge RC must birth on the FlatMap path without windows (enabled=%v windows=%v)", c.birth.enabled(), c.birth.WindowsOK)
+	if !c.build.enabled() || c.build.WindowsOK {
+		t.Fatalf("the merge RC must build on the FlatMap path without windows (enabled=%v windows=%v)", c.build.enabled(), c.build.WindowsOK)
 	}
 
 	outerQR := ojLegQR(t, legA, int64(1), int64(10))
@@ -465,7 +465,7 @@ func TestHashJoinDeclinesFusedPred(t *testing.T) {
 	}
 
 	// a.id = m._0.id — the fused two-step rebase shape; the MIXED upper RV
-	// (baked over both legs) makes this a real ordinal-birth cursor.
+	// (baked over both legs) makes this a real ordinal-build cursor.
 	aRef, err := values.NewFieldValueOfOrdinal(qovA, 0)
 	if err != nil {
 		t.Fatalf("bake A#0: %v", err)

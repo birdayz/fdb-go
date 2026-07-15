@@ -21,7 +21,7 @@ import (
 // INNER scalar subquery — which exposes exactly ONE value — becomes a single
 // ofOrdinal(QOV(inner), 0). The inner is the LEFT-OUTER null-supplying leg, so
 // its ordinal is NULLABLE-wrapped (an outer row with no inner match yields NULL;
-// the executor's null-leg birth supplies it, no executor change). The inner RC
+// the executor's null-leg build supplies it, no executor change). The inner RC
 // field is named EXACTLY <inner>.<scalarCol> — what replaceScalarSubqueryRef
 // emits and composeFieldOverConstructor folds — and, unlike the name-model
 // anchored record, the ordinal seed emits ONE field per column (no bare+dotted

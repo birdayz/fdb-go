@@ -207,7 +207,7 @@ func TestChainedSpineSeedForm(t *testing.T) {
 		// The spine bottoms in a NESTED outer box — `(A LEFT B) FULL C` — which
 		// is clusterArity==1 (FULL is merge-opaque) and walk-ADMITTED, but does
 		// NOT gate fresh (legExposesBuriedOuterBox excludes a nested outer-box
-		// leg), so boxOuterBirthsPositional is FALSE. Without the guard, the chained
+		// leg), so boxOuterBuildsPositional is FALSE. Without the guard, the chained
 		// seed ordinalized over it — and adversarial rows-probes showed the
 		// tower COHERENTLY positional (the cleared-enclosure first-link translate
 		// ordinalizes too) with CORRECT rows. The
@@ -287,7 +287,7 @@ func TestChainedSpineSeedForm(t *testing.T) {
 		{"fork_over_full_box_unfiltered", forkOverFullBox, false, "ordinal", ""},
 		{"fork_over_full_box_filtered", forkOverFullBox, true, "nil", "FULL OUTER JOIN"},
 		// Nested outer box `(A LEFT B) FULL C`: the ordinal seed declines
-		// (boxOuterBirthsPositional false) even UNFILTERED, and the spine bottoms in
+		// (boxOuterBuildsPositional false) even UNFILTERED, and the spine bottoms in
 		// a FULL box → LOUD-REJECTS both (the outer-box chained straddle is
 		// unsupported; TODO.md tracks ordinalizing it).
 		{"nested_box_bottom_unfiltered", nestedBoxBottom, false, "nil", "FULL OUTER JOIN"},

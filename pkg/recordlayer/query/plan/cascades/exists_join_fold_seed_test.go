@@ -24,7 +24,7 @@ func commit2RecType(name string, cols ...string) *values.RecordType {
 }
 
 // A gated projected-EXISTS fold over two SCAN legs reconstructs the FULL
-// leg-concat ordinal seed the step-1 NLJ births from — a non-anchored RC of
+// leg-concat ordinal seed the step-1 NLJ builds from — a non-anchored RC of
 // baked ofOrdinal references, byte-compatible with buildOrdinalJoinResultValue,
 // which BOTH layout twins accept (full coverage). The projection is never a
 // windows source; the seed is.
@@ -82,7 +82,7 @@ func TestLegIsOrdinalSafe(t *testing.T) {
 	// An INDEX / covering-index leg is also a single source — ordinal-safe. The
 	// realistic shape: a covering index gets picked for a fold leg. If its flowed
 	// type IS a record it ordinalizes consistently (seed typed by flowedType, the
-	// NLJ births from the same seed); if it is NOT a record the reconstruction
+	// NLJ builds from the same seed); if it is NOT a record the reconstruction
 	// declines below and the leg stays name-model — never a silent-wrong path.
 	idxRec := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T2"}, commit2RecType("T2", "ID"), false)
 	if !legIsOrdinalSafe(idxRec) {

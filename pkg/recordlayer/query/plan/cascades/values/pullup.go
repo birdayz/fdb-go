@@ -75,7 +75,7 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 			if inBaked || rcHasDuplicateNames(rc) {
 				// The frontier-contract bit INHERITS from the input: a pinned
 				// seed ref pulled through the join's RC still reads a
-				// positional row (the gated join births them), so the loud
+				// positional row (the gated join builds them), so the loud
 				// guard must survive the pull-up. A dup-name disambiguation
 				// bake over a LAZY input establishes no frontier contract —
 				// unpinned.

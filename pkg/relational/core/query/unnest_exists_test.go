@@ -105,7 +105,7 @@ func TestSeedWindowAuthority(t *testing.T) {
 // clusterArity 1 but binds TWO aliases; naively rebasing such an outer under
 // EXISTS resolves a column by flat first-match and cannot disambiguate the
 // two legs' same-named columns. The fix couples two conditions on the SAME
-// boxGatesFresh predicate: a fresh-gating OUTER box (1) BIRTHS a positional
+// boxGatesFresh predicate: a fresh-gating OUTER box (1) BUILDS a positional
 // row (the box-outer translateRef clears its enclosure) AND (2) has its seed
 // admitted (unnestExistsSeedSafe), so the ordinal seed FIRES and the per-leg
 // windows disambiguate the dup-named legs by their [Start,Width) windows.
@@ -164,15 +164,15 @@ func TestMultiSourceInnerClusterDeclines(t *testing.T) {
 // regression sentinels. The AnchoredJoin/rows observables alone are MASKED:
 // an INNER cluster's seed declines via clusterArity>=2 regardless of
 // boxGatesFresh, and a LEFT/RIGHT box's seed likewise declines via
-// clusterArity — so deleting the JoinInner exclusion, or widening the birth
+// clusterArity — so deleting the JoinInner exclusion, or widening the build
 // condition back to plain boxGatesFresh, would leave those tests green while
 // re-introducing the "positional box under a name-model builder" wrong-rows
 // defect. These direct assertions turn such a change RED:
 //   - boxGatesFresh gates every OUTER box (LEFT/RIGHT/FULL) fresh, never INNER.
-//   - boxOuterBirthsPositional (the birth condition) is true ONLY for a FULL
-//     box (clusterArity==1). A LEFT/RIGHT box gates fresh yet must NOT birth
+//   - boxOuterBuildsPositional (the build condition) is true ONLY for a FULL
+//     box (clusterArity==1). A LEFT/RIGHT box gates fresh yet must NOT build
 //     positional (clusterArity>=2 → its seed stays name-model); an INNER cluster
-//     neither gates fresh nor births.
+//     neither gates fresh nor builds.
 func TestBoxGatePredicates(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
@@ -184,7 +184,7 @@ func TestBoxGatePredicates(t *testing.T) {
 		name        string
 		op          logical.LogicalOperator
 		gatesFresh  bool
-		birthsPosnl bool
+		buildsPosnl bool
 	}{
 		{"FULL", mk(logical.JoinFull), true, true},
 		{"LEFT", mk(logical.JoinLeft), true, false},
@@ -194,14 +194,14 @@ func TestBoxGatePredicates(t *testing.T) {
 		if got := tr.boxGatesFresh(tc.op); got != tc.gatesFresh {
 			t.Errorf("boxGatesFresh(%s) = %v, want %v", tc.name, got, tc.gatesFresh)
 		}
-		if got := tr.boxOuterBirthsPositional(tc.op); got != tc.birthsPosnl {
-			t.Errorf("boxOuterBirthsPositional(%s) = %v, want %v", tc.name, got, tc.birthsPosnl)
+		if got := tr.boxOuterBuildsPositional(tc.op); got != tc.buildsPosnl {
+			t.Errorf("boxOuterBuildsPositional(%s) = %v, want %v", tc.name, got, tc.buildsPosnl)
 		}
 	}
 
 	// A FULL box with a CLUSTERED (INNER-join) LEG ORDINALIZES: its buried
 	// columns ARE concatenated and a buried EXISTS ref resolves by window
-	// (verified end-to-end). So it ADMITS (gates + births positional). A
+	// (verified end-to-end). So it ADMITS (gates + builds positional). A
 	// regular WHERE conjunct on a buried leg is separately declined by the
 	// outer-conjunct narrowing.
 	clusteredFull := logical.NewJoin(
@@ -211,14 +211,14 @@ func TestBoxGatePredicates(t *testing.T) {
 	if !tr.boxGatesFresh(clusteredFull) {
 		t.Error("boxGatesFresh(clustered-INNER-leg FULL) = false, want true — an INNER-cluster buried leg's leaves are windowed")
 	}
-	if !tr.boxOuterBirthsPositional(clusteredFull) {
-		t.Error("boxOuterBirthsPositional(clustered-INNER-leg FULL) = false, want true — the buried INNER cluster is admitted")
+	if !tr.boxOuterBuildsPositional(clusteredFull) {
+		t.Error("boxOuterBuildsPositional(clustered-INNER-leg FULL) = false, want true — the buried INNER cluster is admitted")
 	}
 
 	// A nested OUTER box buried INSIDE an admitted INNER cluster
 	// (`((Order LEFT Customer) JOIN TypedRecord) FULL OUTER scan`) is ALSO admitted
 	// — the peel is intentionally shallow, and the machinery recurses to
-	// null-supply the nested LEFT box through the positional birth (verified). This
+	// null-supply the nested LEFT box through the positional build (verified). This
 	// pins that legExposesBuriedOuterBox is NOT recursive — a future "tightening"
 	// into a recursive exclusion would wrongly decline this working shape.
 	nestedOuterInInner := logical.NewJoin(
@@ -235,7 +235,7 @@ func TestBoxGatePredicates(t *testing.T) {
 	// EXCLUDED buried-OUTER-box legs: a DIRECT outer box (nested-FULL), and any
 	// WRAPPED join (Filter/Project over a join) — ordinalLegType records buried
 	// bounds only for a DIRECT LogicalJoin leg, so a wrapped inner cluster would
-	// birth positional without its buried windows. The wrapper-peel remembers it
+	// build positional without its buried windows. The wrapper-peel remembers it
 	// peeled: a wrapped join is excluded regardless of kind.
 	leftBox := func() logical.LogicalOperator {
 		return logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
@@ -256,15 +256,15 @@ func TestBoxGatePredicates(t *testing.T) {
 		// `(Filter(A JOIN B) JOIN C) FULL OUTER D`. The top leg is a direct INNER
 		// cluster (admitted by kind), but its Filter-wrapped sub-join gets no
 		// buried windows → excluded by the recursive hasWrappedBuriedJoin walk. A
-		// shallow (non-recursive) INNER admit would wrongly let this birth positional.
+		// shallow (non-recursive) INNER admit would wrongly let this build positional.
 		{"wrapped-join-in-INNER", logical.NewJoin(logical.NewFilter(innerCluster(), "1 = 1"), scan("TypedRecord", "e"), logical.JoinInner, "")},
 	} {
 		box := logical.NewJoin(tc.leg, scan("TypedRecord", "d"), logical.JoinFull, "")
 		if tr.boxGatesFresh(box) {
 			t.Errorf("boxGatesFresh(%s FULL OUTER scan) = true, want false — a wrapped join / direct outer box is not windowed here", tc.name)
 		}
-		if tr.boxOuterBirthsPositional(box) {
-			t.Errorf("boxOuterBirthsPositional(%s FULL OUTER scan) = true, want false", tc.name)
+		if tr.boxOuterBuildsPositional(box) {
+			t.Errorf("boxOuterBuildsPositional(%s FULL OUTER scan) = true, want false", tc.name)
 		}
 	}
 }

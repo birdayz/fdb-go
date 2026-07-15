@@ -173,7 +173,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 		}
 	})
 	// Projection-only WITH ORDINALITY (no WHERE): the element/ordinal reach the
-	// SELECT list via the FlatMap birth binder, which reads the box positionally.
+	// SELECT list via the FlatMap build binder, which reads the box positionally.
 	t.Run("projection_element_and_ordinal", func(t *testing.T) {
 		got := query(t, `SELECT "ID", "V", "AT" FROM T, T."ARR" AS "V" AT "AT"`)
 		want := []string{

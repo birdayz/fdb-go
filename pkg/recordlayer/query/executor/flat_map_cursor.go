@@ -40,16 +40,16 @@ type flatMapCursor struct {
 	outerExhausted bool
 	closed         bool
 
-	// birth is the ordinal-BIRTH state, probed ONCE at construction from
-	// resultValue (nil = a non-birth FlatMap: an identity pass-through or a
-	// folded projection). When enabled, computeResult births the positional row
+	// build is the ordinal-BUILD state, probed ONCE at construction from
+	// resultValue (nil = a non-build FlatMap: an identity pass-through or a
+	// folded projection). When enabled, computeResult builds the positional row
 	// from the RC with per-leg bindings; the RC's baked references resolve by
 	// ordinal against that row.
-	birth *ordinalJoinBirth
+	build *ordinalJoinBuild
 
-	// outerBakedType is the DISABLED-BIRTH probe result: the outer's typed
+	// outerBakedType is the DISABLED-BUILD probe result: the outer's typed
 	// RecordType recovered from the inner plan's FrontierPinned baked
-	// references over outerAlias, when this cursor has NO birth of its own (an
+	// references over outerAlias, when this cursor has NO build of its own (an
 	// identity-RV existential FlatMap over an ordinal outer). Non-nil is the
 	// layout authority for the outer binding: adaptLegPositional adapts the
 	// outer row to it (an index-shaped covering row is re-synthesized into the
@@ -58,7 +58,7 @@ type flatMapCursor struct {
 	outerBakedType *values.RecordType
 
 	// foldLegSpans / foldWindowsOK: when this FlatMap's OUTER is a gated
-	// ordinal join (a projected-EXISTS fold whose step-1 NLJ births the
+	// ordinal join (a projected-EXISTS fold whose step-1 NLJ builds the
 	// leg-concat seed), the folded projection reads leg columns as
 	// heterogeneous refs — flat baked merged-row reads and QOV leg refs. The
 	// projection is NEVER rebased; instead it evaluates over the step-1 merged
@@ -110,23 +110,23 @@ func newFlatMapCursor(
 	leftOuter bool,
 	props recordlayer.ExecuteProperties,
 ) (*flatMapCursor, error) {
-	birth, err := newOrdinalJoinBirth(resultValue, nil)
+	build, err := newOrdinalJoinBuild(resultValue, nil)
 	if err != nil {
 		return nil, err
 	}
 	// A TRANSLATED top RV (fused merge references) yields no spans from the RV
 	// alone — recover them through the leg subplans' result values (the merge
-	// RC is where the merged-away leg aliases survive), so the birth's leg
+	// RC is where the merged-away leg aliases survive), so the build's leg
 	// windows (Spans) get populated for the leg adapter even when the top RV
 	// was folded past a plain probe.
-	if birth.enabled() {
+	if build.enabled() {
 		legRVs := make(map[values.CorrelationIdentifier]values.Value)
 		addJoinLegRV(legRVs, outerAlias, outerPlan)
 		addJoinLegRV(legRVs, innerAlias, innerPlan)
-		if !birth.WindowsOK {
+		if !build.WindowsOK {
 			if spans, _, ok := ordinalJoinSpansOf(resultValue, legRVs); ok {
-				birth.Spans = spans
-				birth.WindowsOK = true
+				build.Spans = spans
+				build.WindowsOK = true
 			}
 		}
 	}
@@ -134,21 +134,21 @@ func newFlatMapCursor(
 	// the inner plan (SARGs, residual filters), so LegTypes must be widened
 	// from the inner plan's predicate surfaces — a folded result value can
 	// drop a leg those references still need (see widenLegTypesFromPlan).
-	birth.widenLegTypesFromPlan(innerPlan)
+	build.widenLegTypesFromPlan(innerPlan)
 	// Producer context (RFC-142): a WITH-ORDINALITY unnest's inner IS an
 	// ordinality Explode, flowing a row keyed by the internal `_0`/`_1`
 	// positions. Mark the inner leg so it binds STRICTLY POSITIONALLY (see
-	// ordinalJoinBirth.OrdinalityLegs) — a user AS/AT alias spelling `_0`/`_1`
+	// ordinalJoinBuild.OrdinalityLegs) — a user AS/AT alias spelling `_0`/`_1`
 	// then cannot route the wrong internal key, and a leg whose own
 	// columns are aliased `_0`/`_1` (shape-identical, but NOT an ordinality
 	// Explode) still binds correctly through the normal leg adapter.
-	if birth.enabled() && innerIsOrdinalityExplode(innerPlan) {
-		if birth.OrdinalityLegs == nil {
-			birth.OrdinalityLegs = map[values.CorrelationIdentifier]struct{}{}
+	if build.enabled() && innerIsOrdinalityExplode(innerPlan) {
+		if build.OrdinalityLegs == nil {
+			build.OrdinalityLegs = map[values.CorrelationIdentifier]struct{}{}
 		}
-		birth.OrdinalityLegs[innerAlias] = struct{}{}
+		build.OrdinalityLegs[innerAlias] = struct{}{}
 	}
-	// A DISABLED-birth FlatMap (identity RV — the
+	// A DISABLED-build FlatMap (identity RV — the
 	// WHERE-EXISTS pass-through) probes its inner plan for baked references
 	// over the outer alias; a hit means the outer must bind positionally
 	// (see outerBakedType).
@@ -157,7 +157,7 @@ func newFlatMapCursor(
 	var foldWindowsOK bool
 	var outerMergedType *values.RecordType
 	var outerIdentityPassthrough bool
-	if !birth.enabled() {
+	if !build.enabled() {
 		outerBakedType = probeOuterBakedType(innerPlan, outerAlias)
 		// Recognise a gated ordinal join OUTER (downstreamLegWindows
 		// accepts a genuine FrontierPinned full-coverage seed only). Two
@@ -196,7 +196,7 @@ func newFlatMapCursor(
 		resultValue:              resultValue,
 		leftOuter:                leftOuter,
 		props:                    props,
-		birth:                    birth,
+		build:                    build,
 		outerBakedType:           outerBakedType,
 		foldLegSpans:             foldLegSpans,
 		foldWindowsOK:            foldWindowsOK,
@@ -246,8 +246,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			}
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.
-			// The nil inner pointer becomes the NULL leg for an ordinal-birth
-			// cursor and a nil inner binding for the non-birth path.
+			// The nil inner pointer becomes the NULL leg for an ordinal-build
+			// cursor and a nil inner binding for the non-build path.
 			if c.leftOuter && !c.innerHadMatch {
 				outputRow, err := c.computeResultLegs(*c.currentOuter, nil)
 				if err != nil {
@@ -294,7 +294,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		// Bind the outer row as a correlation and execute the inner plan.
 		// Use initialInnerCont for the first outer row on resume.
 		//
-		// The outer binds as its POSITIONAL row. For a gated ORDINAL-birth
+		// The outer binds as its POSITIONAL row. For a gated ORDINAL-build
 		// join, or an inner plan carrying baked SARG operands over the outer alias
 		// (ofOrdinal over QOV(outer), pushed down as scan-range/index-probe
 		// comparisons), the outer must present its LEG type so those operands resolve
@@ -303,8 +303,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		// alias-qualified inner ref ("D.DID") resolves the same as a bare one.
 		var outerBinding any
 		switch {
-		case c.birth.enabled():
-			row, aerr := adaptLegPositional(outerRow, c.birth.legType(c.outerAlias))
+		case c.build.enabled():
+			row, aerr := adaptLegPositional(outerRow, c.build.legType(c.outerAlias))
 			if aerr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, aerr
 			}
@@ -392,20 +392,20 @@ func qualifyOuterPositional(row *PositionalRow, alias string) *PositionalRow {
 }
 
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
-// the LEFT-OUTER null-inner emission. For an ordinal-birth cursor it births
+// the LEFT-OUTER null-inner emission. For an ordinal-build cursor it builds
 // the positional row from the RC with per-leg bindings — the nil
 // inner pointer becomes the NULL leg (QOV(inner)→nil). The
 // row IS its PositionalRow; the ordinal RC resolves its baked references by
-// ordinal against it. A non-birth cursor (identity pass-through / folded
+// ordinal against it. A non-build cursor (identity pass-through / folded
 // projection) keeps the Evaluate path, with a nil inner binding for the
 // null-inner emission.
 func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResult) (QueryResult, error) {
-	if c.birth.enabled() {
-		pos, err := c.birth.evaluate(c.outerAlias.Name(), c.innerAlias.Name(), &outerRow, inner, correlationBase(c.evalCtx))
+	if c.build.enabled() {
+		pos, err := c.build.evaluate(c.outerAlias.Name(), c.innerAlias.Name(), &outerRow, inner, correlationBase(c.evalCtx))
 		if err != nil {
 			return QueryResult{}, err
 		}
-		// The ordinal-birth FlatMap row IS its PositionalRow.
+		// The ordinal-build FlatMap row IS its PositionalRow.
 		return QueryResult{Positional: pos}, nil
 	}
 	innerRow := QueryResult{}

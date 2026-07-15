@@ -11,8 +11,8 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// This file pins the ordinal-join wiring: the ordinal-BIRTH state on the
-// NLJ/flatMap cursors, the birth-time predicate context, and the downstream
+// This file pins the ordinal-join wiring: the ordinal-BUILD state on the
+// NLJ/flatMap cursors, the build-time predicate context, and the downstream
 // leg-window dispatch in executeFilter/executeProjection/
 // executePredicatesFilter/executeMap. These tests hand-build the
 // plans/cursors rather than driving them through a full query, so each wiring
@@ -72,7 +72,7 @@ func ojEqPred(lhs, rhs values.Value) predicates.QueryPredicate {
 func ojAssertSlots(t *testing.T, pos *PositionalRow, want ...any) {
 	t.Helper()
 	if pos == nil {
-		t.Fatal("row carries no positional row — expected an ordinal-birth emission")
+		t.Fatal("row carries no positional row — expected an ordinal-build emission")
 	}
 	if len(pos.Slots) != len(want) {
 		t.Fatalf("positional row has %d slots, want %d", len(pos.Slots), len(want))
@@ -85,9 +85,9 @@ func ojAssertSlots(t *testing.T, pos *PositionalRow, want ...any) {
 	}
 }
 
-// mustNLJCursor builds an nljCursor, failing the test on a birth-probe error.
+// mustNLJCursor builds an nljCursor, failing the test on a build-probe error.
 // The shared constructor for the pre-existing cursor-mechanics tests (nil
-// result value = name-model) and the ordinal-birth wiring tests below.
+// result value = name-model) and the ordinal-build wiring tests below.
 func mustNLJCursor(
 	t *testing.T,
 	outer recordlayer.RecordCursor[QueryResult],
@@ -107,25 +107,25 @@ func mustNLJCursor(
 	return c
 }
 
-// --- ordinalJoinBirth constructor ---------------------------------------------
+// --- ordinalJoinBuild constructor ---------------------------------------------
 
-// TestOrdinalJoinBirth_Constructor pins the once-at-construction
-// birth probe: disabled (nil) for nil/lazy result values, enabled with
+// TestOrdinalJoinBuild_Constructor pins the once-at-construction
+// build probe: disabled (nil) for nil/lazy result values, enabled with
 // windows for the pristine seed, enabled WITHOUT windows for a folded
 // projection RC, and a LOUD error for a baked non-RC shape (planner bug —
 // never a silent name-model demotion).
-func TestOrdinalJoinBirth_Constructor(t *testing.T) {
+func TestOrdinalJoinBuild_Constructor(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 
 	t.Run("nil result value disabled", func(t *testing.T) {
 		t.Parallel()
-		birth, err := newOrdinalJoinBirth(nil, nil)
-		if err != nil || birth != nil {
-			t.Fatalf("nil rv = (%v, %v), want (nil, nil)", birth, err)
+		build, err := newOrdinalJoinBuild(nil, nil)
+		if err != nil || build != nil {
+			t.Fatalf("nil rv = (%v, %v), want (nil, nil)", build, err)
 		}
-		if birth.enabled() {
-			t.Fatal("nil birth must read as disabled")
+		if build.enabled() {
+			t.Fatal("nil build must read as disabled")
 		}
 	})
 
@@ -134,42 +134,42 @@ func TestOrdinalJoinBirth_Constructor(t *testing.T) {
 		lazy := values.NewRecordConstructorValue(
 			values.RecordConstructorField{Name: "ID", Value: values.NewFieldValue(qovA, "ID", values.NotNullLong)},
 		)
-		birth, err := newOrdinalJoinBirth(lazy, nil)
-		if err != nil || birth != nil {
-			t.Fatalf("lazy RC = (%v, %v), want (nil, nil) — the name model's RCs are not birth sites", birth, err)
+		build, err := newOrdinalJoinBuild(lazy, nil)
+		if err != nil || build != nil {
+			t.Fatalf("lazy RC = (%v, %v), want (nil, nil) — the name model's RCs are not build sites", build, err)
 		}
 	})
 
 	t.Run("pristine seed enabled with windows", func(t *testing.T) {
 		t.Parallel()
-		birth, err := newOrdinalJoinBirth(seed, nil)
+		build, err := newOrdinalJoinBuild(seed, nil)
 		if err != nil {
-			t.Fatalf("seed birth: %v", err)
+			t.Fatalf("seed build: %v", err)
 		}
-		if !birth.enabled() || !birth.WindowsOK {
-			t.Fatalf("seed birth = enabled %v, windows %v, want both true", birth.enabled(), birth.WindowsOK)
+		if !build.enabled() || !build.WindowsOK {
+			t.Fatalf("seed build = enabled %v, windows %v, want both true", build.enabled(), build.WindowsOK)
 		}
-		if len(birth.Spans) != 2 || birth.Spans[0].Offset != 0 || birth.Spans[0].Width != 2 || birth.Spans[1].Offset != 2 || birth.Spans[1].Width != 2 {
-			t.Fatalf("seed spans = %+v, want offsets 0/2 widths 2/2", birth.Spans)
+		if len(build.Spans) != 2 || build.Spans[0].Offset != 0 || build.Spans[0].Width != 2 || build.Spans[1].Offset != 2 || build.Spans[1].Width != 2 {
+			t.Fatalf("seed spans = %+v, want offsets 0/2 widths 2/2", build.Spans)
 		}
 		wantNames := []string{"ID", "V", "ID", "W"}
-		if len(birth.OutputType.Fields) != len(wantNames) {
-			t.Fatalf("output type has %d fields, want %d", len(birth.OutputType.Fields), len(wantNames))
+		if len(build.OutputType.Fields) != len(wantNames) {
+			t.Fatalf("output type has %d fields, want %d", len(build.OutputType.Fields), len(wantNames))
 		}
 		for i, w := range wantNames {
-			if birth.OutputType.Fields[i].Name != w || birth.OutputType.Fields[i].Ordinal != i {
-				t.Fatalf("output field %d = {%q, ord %d}, want {%q, ord %d} — dup names preserved verbatim", i, birth.OutputType.Fields[i].Name, birth.OutputType.Fields[i].Ordinal, w, i)
+			if build.OutputType.Fields[i].Name != w || build.OutputType.Fields[i].Ordinal != i {
+				t.Fatalf("output field %d = {%q, ord %d}, want {%q, ord %d} — dup names preserved verbatim", i, build.OutputType.Fields[i].Name, build.OutputType.Fields[i].Ordinal, w, i)
 			}
 		}
 		for _, id := range []values.CorrelationIdentifier{qovA.Correlation, qovB.Correlation} {
-			if _, present := birth.LegTypes[id]; !present {
+			if _, present := build.LegTypes[id]; !present {
 				t.Fatalf("LegTypes missing leg %s", id)
 			}
 		}
-		if got := len(birth.LegTypes[qovA.Correlation].Fields); got != len(legA.Fields) {
+		if got := len(build.LegTypes[qovA.Correlation].Fields); got != len(legA.Fields) {
 			t.Fatalf("leg A type has %d fields, want %d", got, len(legA.Fields))
 		}
-		if got := len(birth.LegTypes[qovB.Correlation].Fields); got != len(legB.Fields) {
+		if got := len(build.LegTypes[qovB.Correlation].Fields); got != len(legB.Fields) {
 			t.Fatalf("leg B type has %d fields, want %d", got, len(legB.Fields))
 		}
 	})
@@ -184,21 +184,21 @@ func TestOrdinalJoinBirth_Constructor(t *testing.T) {
 			values.RecordConstructorField{Name: "V", Value: bakedAV},
 			values.RecordConstructorField{Name: "C", Value: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}},
 		)
-		birth, err := newOrdinalJoinBirth(folded, nil)
+		build, err := newOrdinalJoinBuild(folded, nil)
 		if err != nil {
-			t.Fatalf("folded birth: %v", err)
+			t.Fatalf("folded build: %v", err)
 		}
-		if !birth.enabled() || birth.WindowsOK {
-			t.Fatalf("folded birth = enabled %v, windows %v, want enabled without windows (plain projection row downstream)", birth.enabled(), birth.WindowsOK)
+		if !build.enabled() || build.WindowsOK {
+			t.Fatalf("folded build = enabled %v, windows %v, want enabled without windows (plain projection row downstream)", build.enabled(), build.WindowsOK)
 		}
-		if _, present := birth.LegTypes[qovA.Correlation]; !present {
+		if _, present := build.LegTypes[qovA.Correlation]; !present {
 			t.Fatal("folded LegTypes must recover leg A from the baked reference")
 		}
-		if _, present := birth.LegTypes[qovB.Correlation]; present {
+		if _, present := build.LegTypes[qovB.Correlation]; present {
 			t.Fatal("a leg folded away entirely must be ABSENT from LegTypes — no reference to it can exist")
 		}
-		if len(birth.OutputType.Fields) != 2 || birth.OutputType.Fields[0].Name != "V" || birth.OutputType.Fields[1].Name != "C" {
-			t.Fatalf("folded output type = %v, want [V C]", typeFieldNames(birth.OutputType))
+		if len(build.OutputType.Fields) != 2 || build.OutputType.Fields[0].Name != "V" || build.OutputType.Fields[1].Name != "C" {
+			t.Fatalf("folded output type = %v, want [V C]", typeFieldNames(build.OutputType))
 		}
 	})
 
@@ -208,49 +208,49 @@ func TestOrdinalJoinBirth_Constructor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
 		}
-		birth, err := newOrdinalJoinBirth(bakedBare, nil)
-		if err == nil || birth != nil {
-			t.Fatalf("baked non-RC = (%v, %v), want a loud error — an ordinal result value that is not an RC is a planner bug", birth, err)
+		build, err := newOrdinalJoinBuild(bakedBare, nil)
+		if err == nil || build != nil {
+			t.Fatalf("baked non-RC = (%v, %v), want a loud error — an ordinal result value that is not an RC is a planner bug", build, err)
 		}
-		if !strings.Contains(err.Error(), "ordinal join birth") {
-			t.Fatalf("error %q must identify the ordinal join birth check", err)
+		if !strings.Contains(err.Error(), "ordinal join build") {
+			t.Fatalf("error %q must identify the ordinal join build check", err)
 		}
 	})
 }
 
-// --- birth.evaluate -------------------------------------------------------------
+// --- build.evaluate -------------------------------------------------------------
 
-// TestOrdinalJoinBirth_Evaluate pins the one-shot birth: positional
+// TestOrdinalJoinBuild_Evaluate pins the one-shot build: positional
 // legs flow verbatim into the merged slots; a NIL QueryResult pointer is the
 // NULL leg (that side's slots come out NULL); a leg row built by name
 // (ojNameQR, e.g. an aggregate/box output) is adapted by the leg type; a
 // folded RV (baked ref + constant) evaluates correctly with leg bindings even
 // without spans.
-func TestOrdinalJoinBirth_Evaluate(t *testing.T) {
+func TestOrdinalJoinBuild_Evaluate(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, _, seed := ojWiringLegs(t)
-	birth, err := newOrdinalJoinBirth(seed, nil)
+	build, err := newOrdinalJoinBuild(seed, nil)
 	if err != nil {
-		t.Fatalf("seed birth: %v", err)
+		t.Fatalf("seed build: %v", err)
 	}
 	outerQR := ojLegQR(t, legA, int64(1), int64(10))
 	innerQR := ojLegQR(t, legB, int64(2), int64(20))
 
 	t.Run("both legs positional", func(t *testing.T) {
 		t.Parallel()
-		pos, err := birth.evaluate("A", "B", &outerQR, &innerQR, nil)
+		pos, err := build.evaluate("A", "B", &outerQR, &innerQR, nil)
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
-		if pos.Type != birth.OutputType {
-			t.Fatal("birthed row must carry the birth's single OutputType")
+		if pos.Type != build.OutputType {
+			t.Fatal("built row must carry the build's single OutputType")
 		}
 		ojAssertSlots(t, pos, int64(1), int64(10), int64(2), int64(20))
 	})
 
 	t.Run("outer nil is the null leg", func(t *testing.T) {
 		t.Parallel()
-		pos, err := birth.evaluate("A", "B", nil, &innerQR, nil)
+		pos, err := build.evaluate("A", "B", nil, &innerQR, nil)
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
@@ -259,7 +259,7 @@ func TestOrdinalJoinBirth_Evaluate(t *testing.T) {
 
 	t.Run("inner nil is the null leg", func(t *testing.T) {
 		t.Parallel()
-		pos, err := birth.evaluate("A", "B", &outerQR, nil, nil)
+		pos, err := build.evaluate("A", "B", &outerQR, nil, nil)
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
@@ -269,7 +269,7 @@ func TestOrdinalJoinBirth_Evaluate(t *testing.T) {
 	t.Run("leg row built by name is adapted by leg type", func(t *testing.T) {
 		t.Parallel()
 		nameInner := ojNameQR(legB, int64(2), int64(20))
-		pos, err := birth.evaluate("A", "B", &outerQR, &nameInner, nil)
+		pos, err := build.evaluate("A", "B", &outerQR, &nameInner, nil)
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
@@ -286,9 +286,9 @@ func TestOrdinalJoinBirth_Evaluate(t *testing.T) {
 			values.RecordConstructorField{Name: "V", Value: bakedAV},
 			values.RecordConstructorField{Name: "C", Value: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}},
 		)
-		fb, err := newOrdinalJoinBirth(folded, nil)
+		fb, err := newOrdinalJoinBuild(folded, nil)
 		if err != nil {
-			t.Fatalf("folded birth: %v", err)
+			t.Fatalf("folded build: %v", err)
 		}
 		// The inner leg is folded away (no LegTypes entry) AND its row was
 		// built by name (ojNameQR): adaptLegPositional(qr, nil) — a
@@ -304,13 +304,13 @@ func TestOrdinalJoinBirth_Evaluate(t *testing.T) {
 
 // --- nljCursor end-to-end (no FDB) ----------------------------------------------
 
-// TestNLJCursor_OrdinalBirth_InnerJoin drives an INNER join with the
+// TestNLJCursor_OrdinalBuild_InnerJoin drives an INNER join with the
 // ordinal seed RV over two stub legs on the LINEAR path: emitted rows carry
 // the correct positional merged row; a lazy leg predicate evaluates correctly
-// through the birth-time predicate context (leg-relative against the adapted
+// through the build-time predicate context (leg-relative against the adapted
 // leg rows — correct even for the second leg); a BAKED predicate works
 // through the leg bindings and is a loud error without them.
-func TestNLJCursor_OrdinalBirth_InnerJoin(t *testing.T) {
+func TestNLJCursor_OrdinalBuild_InnerJoin(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 
@@ -336,7 +336,7 @@ func TestNLJCursor_OrdinalBirth_InnerJoin(t *testing.T) {
 		if len(results) != 1 {
 			t.Fatalf("got %d rows, want 1 (only A.ID=1 matches B.ID=1)", len(results))
 		}
-		// The ordinal birth: the merged positional row.
+		// The ordinal build: the merged positional row.
 		ojAssertSlots(t, results[0].Positional, int64(1), int64(10), int64(1), int64(100))
 	})
 
@@ -373,10 +373,10 @@ func TestNLJCursor_OrdinalBirth_InnerJoin(t *testing.T) {
 	})
 }
 
-// TestNLJCursor_OrdinalBirth_HashPath drives the ordinal birth
+// TestNLJCursor_OrdinalBuild_HashPath drives the ordinal build
 // through the HASH join path (≥100 inner rows + a single-column equijoin):
 // same positional emission as the linear path.
-func TestNLJCursor_OrdinalBirth_HashPath(t *testing.T) {
+func TestNLJCursor_OrdinalBuild_HashPath(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 
@@ -413,10 +413,10 @@ func TestNLJCursor_OrdinalBirth_HashPath(t *testing.T) {
 	}
 }
 
-// TestNLJCursor_OrdinalBirth_LeftOuterNullLeg pins the
+// TestNLJCursor_OrdinalBuild_LeftOuterNullLeg pins the
 // unmatched-outer LEFT emission: the positional row carries the outer leg
 // verbatim and the INNER slots NULL (the nil-pointer NULL leg).
-func TestNLJCursor_OrdinalBirth_LeftOuterNullLeg(t *testing.T) {
+func TestNLJCursor_OrdinalBuild_LeftOuterNullLeg(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 
@@ -441,10 +441,10 @@ func TestNLJCursor_OrdinalBirth_LeftOuterNullLeg(t *testing.T) {
 	ojAssertSlots(t, results[1].Positional, int64(2), int64(20), nil, nil)
 }
 
-// TestNLJCursor_OrdinalBirth_FullDrain pins the FULL OUTER drain
-// emission: an inner row that matched no outer row births with the OUTER
+// TestNLJCursor_OrdinalBuild_FullDrain pins the FULL OUTER drain
+// emission: an inner row that matched no outer row builds with the OUTER
 // slots NULL (the symmetric nil-pointer NULL leg).
-func TestNLJCursor_OrdinalBirth_FullDrain(t *testing.T) {
+func TestNLJCursor_OrdinalBuild_FullDrain(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 
@@ -470,9 +470,9 @@ func TestNLJCursor_OrdinalBirth_FullDrain(t *testing.T) {
 }
 
 // TestNLJCursor_BothSeedShapesEmitPositional pins that BOTH join-seed
-// shapes — the ordinal-birth RC and a plain lazy (un-baked) join RC — emit a
+// shapes — the ordinal-build RC and a plain lazy (un-baked) join RC — emit a
 // leg-windowed Positional row: mergeRows is Positional-native, so even the
-// plain-RC merge births a positional row via concatLegPositionals.
+// plain-RC merge builds a positional row via concatLegPositionals.
 func TestNLJCursor_BothSeedShapesEmitPositional(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
@@ -524,10 +524,10 @@ func TestNLJCursor_BothSeedShapesEmitPositional(t *testing.T) {
 
 // --- flatMapCursor computeResult -------------------------------------------------
 
-// TestFlatMap_ComputeResult_OrdinalBirth pins the ordinal-birth flatMap: the
-// positional row births from the RC with leg bindings (both legs present, and
+// TestFlatMap_ComputeResult_OrdinalBuild pins the ordinal-build flatMap: the
+// positional row builds from the RC with leg bindings (both legs present, and
 // the nil inner as the NULL leg).
-func TestFlatMap_ComputeResult_OrdinalBirth(t *testing.T) {
+func TestFlatMap_ComputeResult_OrdinalBuild(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 	newCursor := func(t *testing.T) *flatMapCursor {
@@ -751,7 +751,7 @@ func TestNLJ_FoldedRVDroppedLeg_PredTypes(t *testing.T) {
 // TestFlatMap_FoldedRVDroppedLeg_PlanTypes pins the FlatMap side of the same
 // correctness trap: the correlated FlatMap implementation pushes the gated
 // join's baked ON references INTO the inner plan, so a folded result value
-// that DROPS the outer leg leaves the birth typeless for it even though the
+// that DROPS the outer leg leaves the build typeless for it even though the
 // inner plan still references it — a leg row built by name (aggregate-box
 // shape) then bound zero-width and the baked SARG died loudly on a
 // legitimate plan. newFlatMapCursor must widen LegTypes from the inner
@@ -791,9 +791,9 @@ func TestFlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)
 	}
-	// The birth must know the dropped OUTER leg's type from the inner plan's
+	// The build must know the dropped OUTER leg's type from the inner plan's
 	// baked reference…
-	outerType := c.birth.legType(outerCorr)
+	outerType := c.build.legType(outerCorr)
 	if outerType == nil {
 		t.Fatal("LegTypes missing the RV-dropped OUTER leg — the inner plan's baked SARG/residual references it")
 	}

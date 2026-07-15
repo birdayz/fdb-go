@@ -2,7 +2,7 @@ package executor
 
 // Pins the identity-FlatMap pass-through's outer-kind discrimination. A
 // gated ordinal-join outer with a LEG-INDEPENDENT existential (the exists
-// inner has no baked outer refs, so the disabled-birth probe outerBakedType
+// inner has no baked outer refs, so the disabled-build probe outerBakedType
 // is nil) must still flow its ordinal positional row through the identity
 // pass-through, keyed on the OUTER's own recognized ordinal type
 // (outerMergedType from downstreamLegWindows) — else the WHERE-EXISTS upper
@@ -32,7 +32,7 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 
 	// The identity pass-through RV: the whole outer object (QOV(outer)) — the
 	// WHERE-EXISTS shape. A leg-independent exists inner (a plain scan, no baked
-	// outer refs) leaves outerBakedType nil, so the disabled-birth probe can't
+	// outer refs) leaves outerBakedType nil, so the disabled-build probe can't
 	// recognise the ordinal outer that way.
 	identityRV := values.NewQuantifiedObjectValue(mergedCorr)
 	legIndependentInner := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
@@ -49,7 +49,7 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 	}
 	defer cGated.Close()
 	if cGated.outerBakedType != nil {
-		t.Fatal("a leg-independent exists inner must leave the disabled-birth probe (outerBakedType) NIL")
+		t.Fatal("a leg-independent exists inner must leave the disabled-build probe (outerBakedType) NIL")
 	}
 	if cGated.outerMergedType == nil {
 		t.Fatal("a gated ordinal join OUTER must be recognised (outerMergedType != nil) so its positional row can flow")

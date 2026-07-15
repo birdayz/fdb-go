@@ -998,7 +998,7 @@ func aliasesConnectedByPredicatesOrCorrelation(
 // intersecting the lower alias set is a SINGLETON — the pure-cross exemption's
 // second gate: a multi-alias component inside a disconnected lower is glued by
 // quantifier correlation, not predicates (a lateral unnest and its source),
-// and tearing it apart births plans the unnest machinery cannot evaluate.
+// and tearing it apart builds plans the unnest machinery cannot evaluate.
 // Singleton components are plain unjoined tables — the genuine
 // unavoidable cross product.
 func lowerComponentsAreSingletons(

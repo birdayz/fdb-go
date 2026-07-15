@@ -75,7 +75,7 @@ func (t *cascadesTranslator) ordinalWedgeGate(j *logical.LogicalJoin) wedgeGateD
 // leg concat. LEFT/RIGHT only: the single-source LEFT/RIGHT box is the
 // gated class the ordinal below-FOD rebase handles (it dissolves to
 // INNER + null-on-empty, the shape the machinery implements). FULL-outer
-// under EXISTS stays name-model — its drain births compose with the
+// under EXISTS stays name-model — its drain builds compose with the
 // existential semi-join in ways the LEFT/RIGHT class does not exercise; a
 // dedicated FULL-outer extension would need to widen it. The INNER case never
 // reaches here (it routes
@@ -111,11 +111,11 @@ func (t *cascadesTranslator) gatesAsFreshCluster(j *logical.LogicalJoin) bool {
 // boxGatesFresh is an enclosure-lift predicate — the SAME
 // one gate authority as existsOuterGatesFresh, WIDENED to include FULL. It
 // reports whether an OUTER-join box would gate ordinal AS A FRESH CLUSTER
-// (enclosure forced FALSE), i.e. whether the box may BIRTH a positional row
+// (enclosure forced FALSE), i.e. whether the box may BUILD a positional row
 // under a lateral unnest instead of a name-model Datum. Unlike
 // existsOuterGatesFresh (LEFT/RIGHT only — its below-FOD scalar rebase is the
-// 1+1 dissolve-to-INNER shape), this admits FULL: a box UNDER an unnest births
-// its whole leg-concat positionally (ordinalJoinBirth NULL-fills the FULL
+// 1+1 dissolve-to-INNER shape), this admits FULL: a box UNDER an unnest builds
+// its whole leg-concat positionally (ordinalJoinBuild NULL-fills the FULL
 // drain; adaptLegPositional flows it through), and the per-leg-window rebase
 // (channels 1+2) resolves each leg's dup-named columns by its [Start,Width)
 // window rather than flat first-match — so a FULL box's two same-named legs
@@ -143,7 +143,7 @@ func (t *cascadesTranslator) gatesAsFreshCluster(j *logical.LogicalJoin) bool {
 // unnestBoxLegConjunct verdict: Bakeable rides the gathered path (baked over
 // the seed's recorded legTypes), Unbakeable declines to name-model; the
 // BINARY seed declines for any non-None verdict. Only a box whose legs are SIMPLE
-// (scan / opaque box) or INNER-cluster joins may birth positional here; a nested
+// (scan / opaque box) or INNER-cluster joins may build positional here; a nested
 // LEFT/RIGHT/FULL box leg (`A FULL B FULL C` — clusterArity(FULL)==1 makes an
 // arity proxy blind to it) stays name-model until its own slice verifies it.
 func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
@@ -161,7 +161,7 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 }
 
 // legExposesBuriedOuterBox reports whether op is a box leg the positional
-// seed must NOT birth. It peels the row-shape-preserving wrappers the gate
+// seed must NOT build. It peels the row-shape-preserving wrappers the gate
 // treats as TRANSPARENT (LogicalFilter, and a LogicalProject without
 // correlated-scalar subqueries, mirroring ordinalEligible/clusterArity), then:
 //   - a DIRECT INNER-cluster join → FALSE (admitted): the positional seed concats
@@ -171,7 +171,7 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 //   - a DIRECT OUTER box (LEFT/RIGHT/FULL) → TRUE (excluded): its own slice.
 //   - a WRAPPED join (reached by peeling) → TRUE (excluded): ordinalLegType
 //     records buried bounds ONLY for a DIRECT LogicalJoin leg, so a wrapped inner
-//     cluster would birth positional WITHOUT its buried windows (a buried ref
+//     cluster would build positional WITHOUT its buried windows (a buried ref
 //     unrebased → malformed). Also SQL-unreachable (a JOIN-bodied derived table
 //     is a LogicalCTE / loud-rejected, not a transparent wrapper) — defensive.
 //   - a scan / OPAQUE box (aggregate/union/sort/CTE), wrapped or not → FALSE:
@@ -180,7 +180,7 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 // The peel is INTENTIONALLY SHALLOW: a nested OUTER box buried INSIDE an admitted
 // INNER cluster (`((A LEFT B) JOIN C) FULL OUTER D`) ordinalizes CORRECTLY (the
 // machinery recurses — legsOfGatedJoin marks the null-supplying leg, the executor
-// null-supplies through the positional birth; verified), so this must NOT be
+// null-supplies through the positional build; verified), so this must NOT be
 // tightened into a recursive exclusion. Only a WRAPPED join is excluded, because
 // the wrapper (not the join's depth) is what strips the buried-leg metadata.
 func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
@@ -197,7 +197,7 @@ func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
 			// A direct INNER cluster is admitted, BUT a WRAPPED join buried
 			// ANYWHERE inside it is excluded: buriedLegBounds records windows only
 			// for a DIRECT LogicalJoin leg, so `(Filter(A JOIN B) JOIN C)` would
-			// birth positional without windows for A/B → a buried ref malforms. A
+			// build positional without windows for A/B → a buried ref malforms. A
 			// BARE nested join (any kind, any depth) IS windowed (buriedLegBounds
 			// recurses through direct joins) and stays admitted — a nested OUTER
 			// box inside an INNER cluster ordinalizes correctly (verified).
@@ -221,7 +221,7 @@ func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
 // transparent wrapper (Filter / non-scalar Project) — at op itself or buried
 // inside a bare nested join. buriedLegBounds records positional windows only for
 // a DIRECT LogicalJoin leg, so a WRAPPED join anywhere in a box leg's subtree
-// would birth positional without its buried leaves' windows (malformed). A bare
+// would build positional without its buried leaves' windows (malformed). A bare
 // join is recursed THROUGH (its own leaves ARE windowed) looking for a wrapped
 // join deeper. A CORRELATED-scalar Project stops the walk (ineligible upstream).
 func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
@@ -376,7 +376,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// rewritten (RewriteOuterJoinRule handles LeftOuter only; FULL stays
 		// on the materialized NLJ) and never merged in either direction
 		// (ChildrenAsSet false as parent and child). Gate it (the FULL drain
-		// births are wired — see appendNullLeg).
+		// builds are wired — see appendNullLeg).
 		return wedgeGateDecision{Gated: true, Arity: 2, Reason: "binary FULL-outer box (genuinely opaque both ways)"}
 	}
 	if j.Kind != logical.JoinInner {

@@ -749,13 +749,13 @@ type nljCursor struct {
 	st       *recordlayer.ExecuteState
 	buildErr error
 
-	// birth is the join's ordinal-birth state (an *ordinalJoinBirth), probed
+	// build is the join's ordinal-build state (an *ordinalJoinBuild), probed
 	// ONCE at construction from the plan's result value (nil = un-gated merge:
 	// the emitted row is mergeRows' leg-concat positional row). When enabled,
 	// every emitted row carries the positional merged row evaluated from the RC
-	// with per-leg bindings. Gates ALL ordinal-birth work below via
-	// birth.enabled().
-	birth *ordinalJoinBirth
+	// with per-leg bindings. Gates ALL ordinal-build work below via
+	// build.enabled().
+	build *ordinalJoinBuild
 	// innerAdapted is the FIXED inner-rows slice adapted once at construction
 	// (parallel to innerRows); outerAdapted is the current outer row adapted
 	// once per outer-row advance. Together they make the per-candidate-pair
@@ -777,7 +777,7 @@ func newNLJCursor(
 	evalCtx *EvaluationContext,
 	st *recordlayer.ExecuteState,
 ) (*nljCursor, error) {
-	birth, err := newOrdinalJoinBirth(resultValue, preds)
+	build, err := newOrdinalJoinBuild(resultValue, preds)
 	if err != nil {
 		return nil, err
 	}
@@ -790,15 +790,15 @@ func newNLJCursor(
 		preds:      preds,
 		evalCtx:    evalCtx,
 		st:         st,
-		birth:      birth,
+		build:      build,
 	}
 	c.outerCorr = values.NamedCorrelationIdentifier(outerAlias)
 	c.innerCorr = values.NamedCorrelationIdentifier(innerAlias)
-	if birth.enabled() {
+	if build.enabled() {
 		// Adapt the FIXED inner side once — never per pair, which would turn
 		// every candidate-pair comparison into a re-adaptation and make the
 		// join O(rows²).
-		innerType := birth.legType(c.innerCorr)
+		innerType := build.legType(c.innerCorr)
 		c.innerAdapted = make([]values.OrdinalRow, len(innerRows))
 		for i := range innerRows {
 			row, aerr := adaptLegPositional(innerRows[i], innerType)
@@ -818,7 +818,7 @@ func newNLJCursor(
 // pairBinder builds the per-candidate-pair leg binder from PRE-adapted leg
 // rows. A nil OrdinalRow is the deliberately-NULL leg (LEFT/FULL padding —
 // the binder returns (nil, true): a leg bound to nil evaluates as NULL, never
-// an error). Only called when birth is enabled.
+// an error). Only called when build is enabled.
 func (c *nljCursor) pairBinder(outer, inner values.OrdinalRow) *twoLegBinder {
 	return &twoLegBinder{
 		outerID: c.outerCorr, innerID: c.innerCorr,
@@ -829,12 +829,12 @@ func (c *nljCursor) pairBinder(outer, inner values.OrdinalRow) *twoLegBinder {
 
 // adaptOuter adapts a just-advanced outer row ONCE (shared by every candidate
 // pair and the unmatched-outer emission for this outer row). No-op for
-// un-gated (birth-disabled) cursors.
+// un-gated (build-disabled) cursors.
 func (c *nljCursor) adaptOuter(outerRow QueryResult) error {
-	if !c.birth.enabled() {
+	if !c.build.enabled() {
 		return nil
 	}
-	row, err := adaptLegPositional(outerRow, c.birth.legType(c.outerCorr))
+	row, err := adaptLegPositional(outerRow, c.build.legType(c.outerCorr))
 	if err != nil {
 		return err
 	}
@@ -894,7 +894,7 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 }
 
 // innerLegRow returns inner row i as the leg-local OrdinalRow the equijoin
-// operand evaluates against: the pre-adapted leg row for an ordinal-birth
+// operand evaluates against: the pre-adapted leg row for an ordinal-build
 // cursor, else the row's own positional (the un-gated merge concatenates leg
 // rows verbatim, so a leg window over the merged row reads the same slots).
 func (c *nljCursor) innerLegRow(i int) values.OrdinalRow {
@@ -1046,7 +1046,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 							continue
 						}
 						// FULL drain: an unmatched INNER row, the OUTER leg is the
-						// NULL leg. The ordinal null-pad row comes from the birth RC
+						// NULL leg. The ordinal null-pad row comes from the build RC
 						// (evaluateBound with a nil outer leg — QOV(outer)→nil, the
 						// outer slots fall out NULL) when active; otherwise the
 						// inner's own positional qualified under its alias so a
@@ -1054,8 +1054,8 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// the absent outer side reads NULL.
 						qr := QueryResult{Record: c.innerRows[i].Record, PrimaryKey: c.innerRows[i].PrimaryKey}
 						qr.Positional = qualifyOuterPositional(c.innerRows[i].Positional, c.innerAlias)
-						if c.birth.enabled() {
-							pos, berr := c.birth.evaluateBound(c.pairBinder(nil, c.innerAdapted[i]))
+						if c.build.enabled() {
+							pos, berr := c.build.evaluateBound(c.pairBinder(nil, c.innerAdapted[i]))
 							if berr != nil {
 								return recordlayer.RecordCursorResult[QueryResult]{}, berr
 							}
@@ -1124,12 +1124,12 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				innerRow := c.innerRows[idx]
 				c.innerIdx++
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				// For an ordinal-birth cursor the predicate row
+				// For an ordinal-build cursor the predicate row
 				// context carries the per-leg bindings from the PRE-adapted
 				// legs (nil binder = today's path bit-identically); the same
-				// binder then births the positional row on a pass.
+				// binder then builds the positional row on a pass.
 				var pair *twoLegBinder
-				if c.birth.enabled() {
+				if c.build.enabled() {
 					pair = c.pairBinder(c.outerAdapted, c.innerAdapted[idx])
 				}
 				passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, pair)
@@ -1146,11 +1146,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
 					// A fused-top merge (a positional-merge RC) reshapes the merged legs into the
-					// RC's OUTPUT columns; the birth RC produces that ordinal output
+					// RC's OUTPUT columns; the build RC produces that ordinal output
 					// directly (evaluateBound). A plain merge keeps mergeRows'
 					// leg-concat positional row.
 					if pair != nil {
-						pos, berr := c.birth.evaluateBound(pair)
+						pos, berr := c.build.evaluateBound(pair)
 						if berr != nil {
 							return recordlayer.RecordCursorResult[QueryResult]{}, berr
 						}
@@ -1173,10 +1173,10 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.innerIdx++
 
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				// Same ordinal-birth dual emission as the hash
+				// Same ordinal-build dual emission as the hash
 				// path above (nil binder = today's path bit-identically).
 				var pair *twoLegBinder
-				if c.birth.enabled() {
+				if c.build.enabled() {
 					pair = c.pairBinder(c.outerAdapted, c.innerAdapted[idx])
 				}
 				passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, pair)
@@ -1193,10 +1193,10 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					// See the hash path: a fused-top birth reshapes to the RC's
+					// See the hash path: a fused-top build reshapes to the RC's
 					// output; a plain merge keeps mergeRows' leg-concat row.
 					if pair != nil {
-						pos, berr := c.birth.evaluateBound(pair)
+						pos, berr := c.build.evaluateBound(pair)
 						if berr != nil {
 							return recordlayer.RecordCursorResult[QueryResult]{}, berr
 						}
@@ -1222,14 +1222,14 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			switch c.joinType {
 			case plans.JoinLeftOuter, plans.JoinFullOuter:
 				// Unmatched outer (LEFT/FULL): the INNER leg is the NULL leg. The
-				// ordinal null-pad row comes from the birth RC (evaluateBound with
+				// ordinal null-pad row comes from the build RC (evaluateBound with
 				// a nil inner leg — QOV(inner)→nil, the inner slots fall out NULL,
 				// never an error) when active; otherwise the outer's own
 				// positional qualified under its alias, the absent inner side NULL.
 				qr := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
 				qr.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
-				if c.birth.enabled() {
-					pos, berr := c.birth.evaluateBound(c.pairBinder(c.outerAdapted, nil))
+				if c.build.enabled() {
+					pos, berr := c.build.evaluateBound(c.pairBinder(c.outerAdapted, nil))
 					if berr != nil {
 						return recordlayer.RecordCursorResult[QueryResult]{}, berr
 					}

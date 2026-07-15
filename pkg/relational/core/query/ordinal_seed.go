@@ -15,7 +15,7 @@ import (
 // `FieldValue.ofOrdinalNumber(QOV(leg), i)` per column — eager baking)
 // instead of the name-model anchored RC, and bakes the join predicates'
 // direct leg references to (leg QOV, field ordinal). Every gated join plan
-// carries baked values; the executor births positional merged rows from
+// carries baked values; the executor builds positional merged rows from
 // them.
 
 // ordinalLegType derives a GATED join leg's flowed RecordType: one field per
@@ -133,7 +133,7 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			// Mirror that layout: ordinalLegColumns(o.Left) ++ legColumns(unnest)
 			// — the SAME order unnestOrdinalSeed(o.Left) emits (outer run then
 			// unnestSeedInnerFields), so the second link's ofOrdinal reads land on
-			// the slots the first link births. legColumns(unnest) gives the AS/AT
+			// the slots the first link builds. legColumns(unnest) gives the AS/AT
 			// column names (element type is best-effort UnknownType — a struct
 			// element the second link descends by name, never a positional read).
 			//
@@ -159,7 +159,7 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			//
 			// LOAD-BEARING INVARIANT: legColumns(un) here must stay layout-identical
 			// (count / order / names) to unnestSeedInnerFields(un) — the actual inner
-			// fields unnestOrdinalSeed(o.Left) births — because the second link's
+			// fields unnestOrdinalSeed(o.Left) builds — because the second link's
 			// ofOrdinal reads index into THIS leg type. If either drifts (a refactor of
 			// legColumns or unnestSeedInnerFields), the reads silently land on the wrong
 			// slot. Pinned by the chained-unnest ordinal FDB test's actual-value +
@@ -550,7 +550,7 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 			// The LEFT-outer null side: the QOV's RECORD TYPE goes nullable
 			// (Java's type.withNullability(true) at the pull-up; the verify
 			// keys on the QOV's result type). Column types stay their own;
-			// the record-level bit is what the executor's null-leg birth and
+			// the record-level bit is what the executor's null-leg build and
 			// the metadata nullability read. WithNullability, NOT
 			// NewRecordType: a CLUSTERED null-supplying leg concatenates its
 			// buried legs' columns positionally and duplicate bare names

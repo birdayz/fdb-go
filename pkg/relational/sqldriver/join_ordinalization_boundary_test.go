@@ -724,7 +724,7 @@ func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 // correlated LEFT JOIN (ON c.a_id = a.id, preserved `a` a single source)
 // dissolves to an ORDINAL seed and executes correctly — including the
 // NULL-extended row for the unmatched preserved row (the executor's null-leg
-// birth). The buried case (RFC-153 (a JOIN b) LEFT JOIN c) stays name-model,
+// build). The buried case (RFC-153 (a JOIN b) LEFT JOIN c) stays name-model,
 // pinned in the embedded plan tests.
 func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 	t.Parallel()
@@ -777,6 +777,6 @@ func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 	want := []string{"1|10", "2|11", "3|<nil>"}
 	sort.Strings(want)
 	if !eqStrSlices(got, want) {
-		t.Errorf("LEFT JOIN rows = %v, want %v (a=3 NULL-extended through the ordinal null-leg birth)", got, want)
+		t.Errorf("LEFT JOIN rows = %v, want %v (a=3 NULL-extended through the ordinal null-leg build)", got, want)
 	}
 }

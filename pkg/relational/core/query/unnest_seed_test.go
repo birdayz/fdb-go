@@ -149,7 +149,7 @@ func TestUnnestSeed_ATOnly(t *testing.T) {
 // collection ROOT is baked POSITIONALLY as ofOrdinal over the outer leg
 // type, and the remaining segments ride as a NAME-addressed suffix. This is
 // what lets the single-source multi-segment unnest ORDINALIZE — the
-// name-keyed arrayValue does NOT descend under the ordinal-seed birth
+// name-keyed arrayValue does NOT descend under the ordinal-seed build
 // (proven by the corresponding FDB subtest, which fails the moment the
 // guard is relaxed WITHOUT this bake: "field NARR not resolvable in the
 // runtime row, ordinal -1"). The bake itself is array-agnostic (the
@@ -186,7 +186,7 @@ func TestUnnestBakedRootCollection_MultiSegment(t *testing.T) {
 			fv.Resolved.Accessors[1].Field, fv.Resolved.Accessors[1].Ordinal)
 	}
 	// The child is the outer QOV carrying the outer LEG TYPE, so the root ordinal
-	// resolves positionally against the ordinal-seed birth row.
+	// resolves positionally against the ordinal-seed build row.
 	qov, ok := fv.Child.(*values.QuantifiedObjectValue)
 	if !ok || qov.Correlation != outerCorr {
 		t.Fatalf("baked collection child = %T, want the outer *QuantifiedObjectValue %s", fv.Child, outerCorr)

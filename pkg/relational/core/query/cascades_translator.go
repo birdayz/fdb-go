@@ -1150,7 +1150,7 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 // unnestExistsSeedSafe reports whether a lateral unnest may take the ordinal
 // seed given its EXISTS context. A SINGLE-NAMESPACE outer always qualifies. A
 // MULTI-ALIAS outer qualifies ONLY when it is an OUTER-join box that gates fresh
-// (boxGatesFresh): the box births its whole leg-concat positionally and the
+// (boxGatesFresh): the box builds its whole leg-concat positionally and the
 // per-leg-window rebase (channels 1+2)
 // disambiguates its dup-named legs by their [Start,Width) windows, so a
 // qualified correlation to a buried leg (`FOB.K` in `a FULL OUTER b`) resolves
@@ -1237,13 +1237,13 @@ func nonExistsConjunctRefsOuterLeg(pred predicates.QueryPredicate, boxAliases ma
 	return false
 }
 
-// boxOuterBirthsPositional reports whether the unnest's OUTER box will actually
-// take the ordinal seed — the EXACT condition the box-outer POSITIONAL birth
+// boxOuterBuildsPositional reports whether the unnest's OUTER box will actually
+// take the ordinal seed — the EXACT condition the box-outer POSITIONAL build
 // (AXIS 1) must share with the seed gate (AXIS 2). Among outer boxes ONLY a FULL
 // box qualifies: clusterArity==1 holds for a merge-opaque FULL box but NEVER for
 // LEFT/RIGHT (whose clusterArity is preserved-side + 1 >= 2), so a LEFT/RIGHT
 // box's seed can never ordinalize (the :1496 clusterArity==1 gate blocks it).
-// Birthing a LEFT/RIGHT box POSITIONAL while its seed stays NAME-MODEL would
+// Building a LEFT/RIGHT box POSITIONAL while its seed stays NAME-MODEL would
 // strand the name-model builder over a positional row — it reads the box by the
 // ABSENT qualified LEG.COL keys → NULL / bare last-leg-wins → wrong rows (or a
 // loud unresolvable-field on the ON predicate). boxGatesFresh restricts to
@@ -1252,14 +1252,14 @@ func nonExistsConjunctRefsOuterLeg(pred predicates.QueryPredicate, boxAliases ma
 // declines EXACTLY when the seed does. For a single-source scan outer this is
 // false (boxGatesFresh false) and AXIS 1 is a no-op — a scan ref ignores the
 // enclosure bit — so nothing changes off the box path.
-func (t *cascadesTranslator) boxOuterBirthsPositional(left logical.LogicalOperator) bool {
+func (t *cascadesTranslator) boxOuterBuildsPositional(left logical.LogicalOperator) bool {
 	return t.clusterArity(left) == 1 && t.boxGatesFresh(left) && t.unnestExistsSeedSafe(left, false)
 }
 
 // existsInnerScopeCollidesOuter reports whether any EXISTS inner subquery's
 // plan carries a source alias equal to an outer FROM leg's. VESTIGIAL for
 // single-table catalog inners since the collision mint (buildCorrelatedExists
-// births those under a unique correlation — outerBoundAliases(esq.Plan) can
+// builds those under a unique correlation — outerBoundAliases(esq.Plan) can
 // never intersect the outer legs). It still fires for the UNMINTED shapes —
 // multi-source and CTE inners keeping their SQL names — whose merged rows
 // route by source-alias name keys, so a colliding name would be served from
@@ -1776,19 +1776,19 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		}
 	}
 
-	// AXIS 1, coupled to the seed gate (AXIS 2) via boxOuterBirthsPositional: a
-	// FULL outer box that will take the ordinal seed BIRTHS a positional row instead
+	// AXIS 1, coupled to the seed gate (AXIS 2) via boxOuterBuildsPositional: a
+	// FULL outer box that will take the ordinal seed BUILDS a positional row instead
 	// of the name-model Datum this unnest's `inInnerCluster=true` above would
-	// otherwise force. The predicate is boxOuterBirthsPositional, NOT
+	// otherwise force. The predicate is boxOuterBuildsPositional, NOT
 	// boxGatesFresh alone: a LEFT/RIGHT box gates fresh but has clusterArity>=2 so its seed
-	// stays name-model — birthing it positional would strand the name-model
+	// stays name-model — building it positional would strand the name-model
 	// builder over a positional row (wrong rows). We clear the enclosure ONLY
 	// for the box's own translateRef, then restore it — the rest of the unnest
 	// lowering keeps the enclosed bit. `prevEnclosure ||` keeps an
 	// already-enclosed unnest name-model (matching the seed's own !prevEnclosure
-	// gate below): the box only births positional when this unnest is un-enclosed.
+	// gate below): the box only builds positional when this unnest is un-enclosed.
 	savedEnclosure := t.inInnerCluster
-	t.inInnerCluster = prevEnclosure || !t.boxOuterBirthsPositional(j.Left)
+	t.inInnerCluster = prevEnclosure || !t.boxOuterBuildsPositional(j.Left)
 	outerRef := t.translateRef(j.Left)
 	t.inInnerCluster = savedEnclosure
 	if outerRef == nil {
@@ -1904,16 +1904,16 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// ordinalizes the seed. A MULTI-SEGMENT path (`FROM t, t.rec.arr AS x`,
 	// len(Segments)>2, unnest-residual class 2) also needs its COLLECTION baked
 	// as a fused ofOrdinal root (unnestBakedRootCollection below) — the shared
-	// name-keyed arrayValue does NOT descend under the ordinal-seed birth. When
+	// name-keyed arrayValue does NOT descend under the ordinal-seed build. When
 	// the bake declines (nil), the whole ordinal path declines and the name-model
 	// builder (which owns the name-keyed collection) takes over.
 	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left, false) && len(u.Segments) >= 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
-		// The COLLECTION bakes positionally under the ordinal-seed birth for
+		// The COLLECTION bakes positionally under the ordinal-seed build for
 		// EVERY segment arity: the single-segment `t.arr`
 		// collection is the suffix-free case of the same ofOrdinal root the
 		// multi-segment path fuses — the outer row is ORDINAL-addressed at the
-		// birth, so a name-keyed collection read has nothing to resolve
+		// build, so a name-keyed collection read has nothing to resolve
 		// against (the runtime name fallback is deleted).
 		if resultValue != nil {
 			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType, 1, -1); baked != nil {
@@ -3346,7 +3346,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			//     (rebaseUnnestOuterLegPredicateOrdinal → ordinalSlotInLegWindow),
 			//     so a dup-named column bakes the right alias's slot. A baked
 			//     FrontierPinned outer ref inside an existential inner plan is
-			//     exactly the shape the disabled-birth probe binds positionally.
+			//     exactly the shape the disabled-build probe binds positionally.
 			//     The translator is the SINGLE rebase authority for buried refs
 			//     (the hoist never sees them), so this cannot double-rebase.
 			//   - ANCHORED seed: the qualified "LEG.COL" read off the merged
@@ -3639,7 +3639,7 @@ func ordinalSlotInLegWindow(rt *values.RecordType, leg, field string, multiAlias
 // WIRED but scope-gated OFF end-to-end (unnestExistsSeedSafe keeps multi-alias
 // outers name-model); it goes live only when that guard lifts (channel 2, coupled
 // with the RULE-level below-FOD executor hoist). The baked ref is then exactly the
-// shape the disabled-birth probe binds positionally below the FOD. The
+// shape the disabled-build probe binds positionally below the FOD. The
 // translator is the SINGLE rebase authority for buried refs (RULE-level
 // predicates stay the executor hoist's), so no double-rebase exists. Returns
 // ok=false (caller declines, CORRECT-or-LOUD) for an outer ref the leg type
@@ -3988,7 +3988,7 @@ func isScanFamilyLeg(op logical.LogicalOperator) bool {
 	}
 }
 
-// existsLegBirthsPositional reports whether a projected-EXISTS fold leg is a
+// existsLegBuildsPositional reports whether a projected-EXISTS fold leg is a
 // bare all-INNER cluster of scan-family leaves. Such a leg is translated
 // UN-ENCLOSED (AXIS 1) so its INNER box is born as a mergeable ordinal select;
 // SelectMergeRule then FLATTENS it into the fold, making the fold an N-way
@@ -3997,7 +3997,7 @@ func isScanFamilyLeg(op logical.LogicalOperator) bool {
 // positional regardless of enclosure (returns false — no box to un-enclose); an
 // OUTER box or a wrapped join returns false (non-mergeable / out of INNER-first
 // scope).
-func existsLegBirthsPositional(op logical.LogicalOperator) bool {
+func existsLegBuildsPositional(op logical.LogicalOperator) bool {
 	j, isJoin := op.(*logical.LogicalJoin)
 	if !isJoin || j.Kind != logical.JoinInner {
 		return false
@@ -4005,7 +4005,7 @@ func existsLegBirthsPositional(op logical.LogicalOperator) bool {
 	return existsLegAllInnerScanFamily(j.Left) && existsLegAllInnerScanFamily(j.Right)
 }
 
-// existsLegAllInnerScanFamily is the recursion arm of existsLegBirthsPositional:
+// existsLegAllInnerScanFamily is the recursion arm of existsLegBuildsPositional:
 // a scan, or a bare INNER join recursively of such.
 func existsLegAllInnerScanFamily(op logical.LogicalOperator) bool {
 	switch o := op.(type) {
@@ -4048,7 +4048,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		// JoinRightOuter — RIGHT needs the operand swap translateJoin does, a
 		// booked follow-on. Both return nil → the §8 guard rejects the unfolded
 		// projected EXISTS cleanly. LEFT DOES fold (the F2-LEFT arm): the box
-		// dissolves to INNER + null-on-empty and the executor births the positional
+		// dissolves to INNER + null-on-empty and the executor builds the positional
 		// seed with the null-supplying leg NULL-filled — Java folds and answers it
 		// (live-verified 4.12.11.0).
 		return nil
@@ -4087,13 +4087,13 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	// executor's N-leg dispatch/seed. A non-bare-INNER-box leg
 	// (scan, OUTER box, wrapped) stays enclosed.
 	prevEnclosure := t.inInnerCluster
-	t.inInnerCluster = !existsLegBirthsPositional(j.Left)
+	t.inInnerCluster = !existsLegBuildsPositional(j.Left)
 	leftRef := t.translateRef(j.Left)
 	if leftRef == nil {
 		t.inInnerCluster = prevEnclosure
 		return nil
 	}
-	t.inInnerCluster = !existsLegBirthsPositional(j.Right)
+	t.inInnerCluster = !existsLegBuildsPositional(j.Right)
 	rightRef := t.translateRef(j.Right)
 	t.inInnerCluster = prevEnclosure
 	if rightRef == nil {
@@ -4148,7 +4148,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 
 	// F2-LEFT: a LEFT-outer FROM join folds as a JoinLeftOuter select
 	// — RewriteOuterJoinRule dissolves the p×q box into INNER + a null-on-empty
-	// q quantifier, and the executor births the positional seed with q NULL-filled
+	// q quantifier, and the executor builds the positional seed with q NULL-filled
 	// on non-matching outer rows (the projected EXISTS then reads that NULL).
 	foldJoinType := expressions.JoinInner
 	if j.Kind == logical.JoinLeft {
@@ -7127,7 +7127,7 @@ func (t *cascadesTranslator) namedQuantifier(alias string, ref *expressions.Refe
 //
 // Java gives every existential quantifier its own unique correlation identity;
 // the inner correlation predicate references THAT identity, never the source
-// table's name. Since the collision mint, buildCorrelatedExists already births
+// table's name. Since the collision mint, buildCorrelatedExists already builds
 // a single-table catalog inner under its own unique correlation (the scan
 // alias and the join predicate's inner refs carry the minted name), so for the
 // minted class this rename is pure identity PLUMBING — it rebases the build-

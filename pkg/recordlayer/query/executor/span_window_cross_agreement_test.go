@@ -2,7 +2,7 @@ package executor
 
 // Executor pins for span derivation over a lateral-unnest seed whose element
 // is MIXED into the merged row (carried through a partition collapse), and
-// for the NLJ birth's behavior when it has no legRVs to derive windows from.
+// for the NLJ build's behavior when it has no legRVs to derive windows from.
 
 import (
 	"strings"
@@ -92,15 +92,15 @@ func TestMixedElementSpanSynthesis(t *testing.T) {
 	}
 }
 
-// TestNLJBirthNilLegRVsWindows pins a known dimension: the NLJ birth derives
-// its spans WITHOUT legRVs (newOrdinalJoinBirth), so a TRANSLATED top (fused
-// post-merge refs) births with WindowsOK=false — the emitted row's Type
+// TestNLJBuildNilLegRVsWindows pins a known dimension: the NLJ build derives
+// its spans WITHOUT legRVs (newOrdinalJoinBuild), so a TRANSLATED top (fused
+// post-merge refs) builds with WindowsOK=false — the emitted row's Type
 // carries no leg-window boundaries of its own; downstream consumers recover
 // them separately via downstreamLegWindows. This is a LOUD decline today
 // (pinned as such) rather than a silent wrong read; if this ever produces a
 // wrong ANSWER instead of declining, that's the signal to add NLJ-side legRV
 // recovery (the FlatMap already has it).
-func TestNLJBirthNilLegRVsWindows(t *testing.T) {
+func TestNLJBuildNilLegRVsWindows(t *testing.T) {
 	t.Parallel()
 
 	legS := values.NewRecordType("", false, []values.Field{
@@ -123,15 +123,15 @@ func TestNLJBirthNilLegRVsWindows(t *testing.T) {
 		values.RecordConstructorField{Name: "BID", Value: b0},
 	)
 
-	birth, err := newOrdinalJoinBirth(top, nil)
+	build, err := newOrdinalJoinBuild(top, nil)
 	if err != nil {
-		t.Fatalf("birth: %v", err)
+		t.Fatalf("build: %v", err)
 	}
-	if birth == nil || !birth.Enabled {
-		t.Fatal("a baked translated top must birth ordinal (positional authority intact)")
+	if build == nil || !build.Enabled {
+		t.Fatal("a baked translated top must build ordinal (positional authority intact)")
 	}
-	if birth.WindowsOK {
-		t.Fatal("the NLJ birth has no legRVs — a translated top's windows must NOT derive at birth (they are recovered downstream via downstreamLegWindows)")
+	if build.WindowsOK {
+		t.Fatal("the NLJ build has no legRVs — a translated top's windows must NOT derive at build (they are recovered downstream via downstreamLegWindows)")
 	}
 }
 
@@ -184,7 +184,7 @@ func TestSpanWindowCrossAgreement_PlainSeed(t *testing.T) {
 			t.Fatalf("leg %s in spans but not windows", s.Alias)
 		}
 		if w.Offset != s.Offset || len(w.Typ.Fields) != s.Width {
-			t.Fatalf("leg %s LAYOUT DISAGREEMENT: window (offset %d, width %d) vs span (offset %d, width %d) — the rebase and the birth would read different slots",
+			t.Fatalf("leg %s LAYOUT DISAGREEMENT: window (offset %d, width %d) vs span (offset %d, width %d) — the rebase and the build would read different slots",
 				s.Alias, w.Offset, len(w.Typ.Fields), s.Offset, s.Width)
 		}
 	}

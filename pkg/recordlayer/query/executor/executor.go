@@ -2152,8 +2152,8 @@ func executeNestedLoopJoin(
 // innerAlias@[Wo,Wo+Wi)] so a qualified reference ("LA.K") binds its leg's window
 // (rowLegsBinder / legWindowBinder); a bare read reads its baked slot. Nested Legs (a leg
 // that is itself a merge) are preserved, the inner leg's shifted by Wo. Returns nil
-// when either leg lacks a Positional. This is the merge for a NON-birth join
-// cursor (the nljCursor's birth path OVERWRITES .Positional when a gated join
+// when either leg lacks a Positional. This is the merge for a NON-build join
+// cursor (the nljCursor's build path OVERWRITES .Positional when a gated join
 // has an ordinal seed).
 // legFieldName names a leg's merged column: a bare-scalar UNNEST element (a
 // 1-field `_0` row — `t.arr AS X`) is renamed to its AS alias so a downstream
@@ -2216,11 +2216,11 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 }
 
 // passesJoinPredicatesLegs is passesJoinPredicates extended with the
-// ordinal-birth leg bindings. legs nil (the non-birth merged-row path)
+// ordinal-build leg bindings. legs nil (the non-build merged-row path)
 // resolves through the merged row's leg windows (spansFromMergedLegs below).
-// legs non-nil (an ordinal-birth cursor) evaluates the predicates against a
+// legs non-nil (an ordinal-build cursor) evaluates the predicates against a
 // RowEvalContext carrying the DIRECT per-leg bindings (the cursor's pre-built
-// twoLegBinder — predicates need no windows at birth; legs are
+// twoLegBinder — predicates need no windows at build; legs are
 // PRE-adapted, one small binder per pair, never a map or a re-adaptation): a
 // lazy leg reference QOV(leg).col resolves leg-relative against the adapted leg
 // row (correct even for the second leg), a BAKED one by its baked ordinal, an
@@ -2229,9 +2229,9 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 // legs is the CONCRETE *twoLegBinder (not the CorrelationBinder interface) so
 // the cursor's `var pair *twoLegBinder` typed-nil passes as a genuine nil —
 // an interface-typed param would make a typed-nil non-nil and route the
-// non-birth path through a nil binder.
+// non-build path through a nil binder.
 // spansFromMergedLegs derives the per-leg windows from a merged row's own leg
-// metadata (RecordType.Legs), for the non-birth join-predicate path: each leg's
+// metadata (RecordType.Legs), for the non-build join-predicate path: each leg's
 // alias maps to its window [Start, Start+Width) with the sub-slice of fields as
 // its leg type, so a QOV(leg).col reference resolves leg-locally over the flat
 // merged row.
@@ -2266,8 +2266,8 @@ func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPred
 		return true, nil
 	}
 	// Resolve join/EXISTS predicates against the merged row's ordinal
-	// Positional. A birth-active cursor supplies a
-	// per-leg binder (legs); a non-birth merge derives leg windows from the merged
+	// Positional. A build-active cursor supplies a
+	// per-leg binder (legs); a non-build merge derives leg windows from the merged
 	// row's own leg metadata (Type.Legs) so a QOV(leg).col — e.g. QOV(B).ID —
 	// resolves to leg B's window instead of first-matching leg A's bare "ID" on the
 	// flat merged row. An outer correlation / param / scalar subquery resolves

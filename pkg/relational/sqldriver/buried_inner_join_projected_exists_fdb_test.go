@@ -9,7 +9,7 @@ package sqldriver_test
 // becomes a flat `[ForEach(p), ForEach(q), ForEach(r), Existential]` select —
 // the N-WAY FLAT EXISTENTIAL shape. The N-way arm of implementJoinWithExistential
 // plans it: a left-deep INNER cross-product NLJ chain (each level seeded so it
-// births a positional merged row the next level reads through its buried-leaf
+// builds a positional merged row the next level reads through its buried-leaf
 // windows), all join predicates as ONE merged-row filter, then the existential
 // FlatMap fold. Java 4.12.11.0 folds `(p JOIN q) JOIN r` under projected EXISTS
 // and answers [[10 true]]; the N-way arm matches.

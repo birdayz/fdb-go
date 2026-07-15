@@ -225,11 +225,11 @@ func TestOrdinalJoinSpans_FoldedProjectionsDecline(t *testing.T) {
 		t.Fatal("a mixed baked/constant projection RC must DECLINE — legitimate fold, not a malformed seed")
 	}
 
-	// Both shapes DO read as ordinal-birth plans via the deep probe — that is
+	// Both shapes DO read as ordinal-build plans via the deep probe — that is
 	// the cursor-side detector split: ContainsBakedOrdinal says "evaluate with
 	// leg bindings", ordinalJoinSpans says "leg windows apply downstream".
 	if !values.ContainsBakedOrdinal(folded) || !values.ContainsBakedOrdinal(mixed) {
-		t.Fatal("the deep probe must still detect folded projections as ordinal-birth plans")
+		t.Fatal("the deep probe must still detect folded projections as ordinal-build plans")
 	}
 }
 
@@ -499,7 +499,7 @@ func TestLegWindowBinder_Delegation(t *testing.T) {
 
 // --- evaluateOrdinalJoinRow ---------------------------------------------------
 
-// TestEvaluateOrdinalJoinRow pins the merged-row birth primitive:
+// TestEvaluateOrdinalJoinRow pins the merged-row build primitive:
 // both legs bound to leg-local positional rows concatenate into the merged
 // slots; a leg bound to nil — (nil, true), the sanctioned appendNullLeg
 // expression — yields NULL for exactly that leg's slots (appendNullLeg is

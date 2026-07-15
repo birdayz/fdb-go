@@ -78,7 +78,7 @@ func (t *cascadesTranslator) existsFoldableGatheredCluster(f *logical.LogicalFil
 // ofOrdinal(QOV(box), slot). THREE reference shapes are rewritten (the TOTAL
 // rebase — a QOV-only rewrite leaves dotted/bare frontier reads lazy, and a
 // MIXED result value then silently NULLs them: the baked fields flip the wrap
-// cursor to birth-ordinal evaluation, whose context has no name channel for
+// cursor to build-ordinal evaluation, whose context has no name channel for
 // the lazy remainder):
 //   - QOV-shaped: FieldValue{COL, Child: QOV(leg)} → the leg window + COL index
 //   - DOTTED frontier: FieldValue{"LEG.COL", no Child} → split at the first dot
@@ -174,8 +174,8 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 }
 
 // wrapRVFullyBaked reports whether the wrap's rebased RESULT VALUE is uniformly
-// birth-evaluable. The wrap cursor births positionally when ANY field is baked
-// and then evaluates EVERY field over the birth context. That context carries the
+// build-evaluable. The wrap cursor builds positionally when ANY field is baked
+// and then evaluates EVERY field over the build context. That context carries the
 // per-leg Correlations plus the query's pre-evaluated ScalarSubqueries map
 // (evaluateOrdinalJoinRow threads it from the base EvaluationContext) — but NO
 // name channel and NO parameter Binder — so every node must be something that
@@ -184,13 +184,13 @@ func rebaseLegRefsToBox(v values.Value, windows map[string]values.OrdinalSeedLeg
 // ScalarSubqueryValue silently NULLing), so an unknown node kind now declines
 // the wrap (fail-open to the name model) instead of being presumed safe. Allowed:
 // baked (Resolved) FieldValues, the box's own QOV, literal/constant kinds, the
-// pure computation kinds over those that the certs exercise under birth
+// pure computation kinds over those that the certs exercise under build
 // (arithmetic, boolean ops, CASE, casts, scalar functions, IN-list/LIKE), and a
 // ScalarSubqueryValue whose result is REGISTERED for pre-evaluation
 // (scalarAliases) — an uncorrelated scalar is a per-query constant the executor
-// binds by alias, so it births evaluable exactly like a ConstantValue. A scalar
+// binds by alias, so it builds evaluable exactly like a ConstantValue. A scalar
 // NOT in the registered set (a mis-orchestration) declines rather than risk an
-// UnboundScalarSubqueryError at birth. Everything else — parameters, aggregates,
+// UnboundScalarSubqueryError at build. Everything else — parameters, aggregates,
 // windowed values, foreign QOVs, lazy reads — declines.
 func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[values.CorrelationIdentifier]struct{}) bool {
 	ok := true
@@ -200,8 +200,8 @@ func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[value
 			return true
 		case *values.FieldValue:
 			// A source-relative baked ref (resolver construction bind) is NOT
-			// birth-evaluable: its ordinal addresses the reference's own
-			// source row, not the box row the birth context serves — only the
+			// build-evaluable: its ordinal addresses the reference's own
+			// source row, not the box row the build context serves — only the
 			// rebase's machinery-owned box ofOrdinals qualify. Decline like a
 			// lazy read (fail-open to the name model).
 			if nv.Resolved == nil || nv.SourceRelativeBaked() {
@@ -239,7 +239,7 @@ func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[value
 
 // registeredScalarAliases is the set of scalar-subquery aliases already registered
 // for executor pre-evaluation (t.scalarSubqueries) — the aliases wrapRVFullyBaked
-// admits into a birth-evaluable wrap result value. Every projection/filter scalar
+// admits into a build-evaluable wrap result value. Every projection/filter scalar
 // subquery on the path to the wrap is appended before the wrap is built
 // (translateProject, translateProjectOverExistsFilter), so a ScalarSubqueryValue
 // surviving into the folded RV is registered iff its alias is in this set.
@@ -398,9 +398,9 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 
 	// The wrap's result value: the folded projection with EVERY leg reference —
 	// QOV-shaped, dotted-frontier, and unique-bare — rebased onto the box output
-	// (the TOTAL rebase), then verified uniformly baked: the wrap cursor births
+	// (the TOTAL rebase), then verified uniformly baked: the wrap cursor builds
 	// positionally when any field is baked and evaluates every field over the
-	// birth context, so a single surviving lazy read would silently NULL (a
+	// build context, so a single surviving lazy read would silently NULL (a
 	// mixed-projection can produce exactly that). Correct-or-decline.
 	rv, rvOK := rebaseLegRefsToBox(resultOverride, windows, mergedType, boxQOV)
 	if !rvOK || !wrapRVFullyBaked(rv, boxBinding, t.registeredScalarAliases()) {

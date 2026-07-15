@@ -37,7 +37,7 @@ import (
 //     bare-QOV field legitimately fails AssertOrdinalJoinSeed's frontier-pin
 //     check, so the mixed shape skips the assert (a dedicated white-box
 //     seed-shape pin replaces the tripwire). Its element leg binds RAW at the
-//     executor birth (a bare-QOV non-record leg — see the ordinal-birth binder).
+//     executor build (a bare-QOV non-record leg — see the ordinal-build binder).
 //
 // Returns nil (DECLINE → the caller falls back to the name-model path) when
 // the outer leg is untranslatable, or for the degenerate no-AS/no-AT shape.
@@ -104,13 +104,13 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 //     suffix Segments[1:] (`sub…`) descend it.
 //
 // The name-keyed arrayValue the name-model path uses (`FieldValue{QOV(outer),
-// Resolved:[{rec,-1},{arr,-1}]}`) does NOT descend under the ordinal-seed birth:
-// the outer row is ORDINAL-addressed, so the ordinal-birth resolver applies all
+// Resolved:[{rec,-1},{arr,-1}]}`) does NOT descend under the ordinal-seed build:
+// the outer row is ORDINAL-addressed, so the ordinal-build resolver applies all
 // name accessors flat against the outer row and fails ("field NARR not resolvable
 // ... ordinal -1"). The ordinal form bakes the ROOT column positionally —
 // ofOrdinal(QOV(outer, outerType), FieldIndex(root)) — and rides the remaining
 // segments as a NAME-addressed FUSED suffix that descends the struct VALUE
-// through FieldValue's proto-message arm (independent of the positional birth).
+// through FieldValue's proto-message arm (independent of the positional build).
 // This is the single-leg case of the gathered unnest cluster's owner-window
 // bake: owner == the outer itself, leafOffset 0.
 //
@@ -196,7 +196,7 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 //     ordinal=ofOrdinal(inner,1)} over the alias-named 2-field leg type;
 //     fullBaked reports whether the pair covers the whole inner run (AS+AT);
 //   - WITHOUT: the element is the WHOLE flowed object — a direct inner QOV
-//     (the mixed-RC form whose leg binds RAW at the executor birth).
+//     (the mixed-RC form whose leg binds RAW at the executor build).
 //
 // ok=false is the degenerate no-AS/no-AT shape (no bindable unnest column).
 func unnestSeedInnerFields(
@@ -210,7 +210,7 @@ func unnestSeedInnerFields(
 		// so a downstream `QOV(<alias>).<AS|AT>` projection/predicate reference
 		// bakes its leg-local ordinal against the leg TYPE names (the AS/AT
 		// aliases are the columns' OUTPUT names, what an upper references). The
-		// Explode still flows `_0`/`_1`; the birth's bindLeg binds that ordinality
+		// Explode still flows `_0`/`_1`; the build's bindLeg binds that ordinality
 		// row to this alias-named leg strictly by position (element slot 0,
 		// ordinal slot 1). AT-only leaves the element slot named
 		// `_0` — unreferenced, since without an AS the element binds to nothing.
