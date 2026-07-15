@@ -43,15 +43,6 @@ func (r *w1Row) Get(ord int) (any, bool) {
 	return r.slots[ord], true
 }
 
-func (r *w1Row) GetByName(name string) (any, bool) {
-	for i, n := range r.names {
-		if n == name {
-			return r.slots[i], true
-		}
-	}
-	return nil, false
-}
-
 func (r *w1Row) TypeNames() []string { return r.names }
 
 func TestFieldValue_OrdinalMiss_IsLoud(t *testing.T) {

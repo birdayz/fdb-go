@@ -281,15 +281,6 @@ func (r *fakeExecOrdinalRow) Get(ord int) (any, bool) {
 	return r.slots[ord], true
 }
 
-func (r *fakeExecOrdinalRow) GetByName(name string) (any, bool) {
-	for i, n := range r.names {
-		if n == name {
-			return r.slots[i], true
-		}
-	}
-	return nil, false
-}
-
 // s3FusedRef builds the fused two-step reference the TranslationMap's rebuild
 // produces for a buried leg column: ofOrdinal(merge, slot) composed with the
 // leg-local ordinal (SimplifyValue fires the compose/fuse arm).

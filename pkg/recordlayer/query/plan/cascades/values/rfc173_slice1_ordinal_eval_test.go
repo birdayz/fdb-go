@@ -21,15 +21,6 @@ func (r *fakeOrdinalRow) Get(ord int) (any, bool) {
 	return r.slots[ord], true
 }
 
-func (r *fakeOrdinalRow) GetByName(name string) (any, bool) {
-	for i, n := range r.names {
-		if n == name {
-			return r.slots[i], true
-		}
-	}
-	return nil, false
-}
-
 // fom ("fake ordinal from map") wraps a name->value map as an OrdinalRow for the
 // value-eval unit tests that historically passed a bare name-keyed map to
 // Evaluate. Keys are SORTED, so a field's ordinal is its ALPHABETICAL slot

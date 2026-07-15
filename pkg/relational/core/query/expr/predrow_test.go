@@ -31,14 +31,11 @@ type predRow map[string]any
 
 func (r predRow) Get(int) (any, bool) { return nil, false }
 
-func (r predRow) GetByName(name string) (any, bool) { return lookupFold(r, name) }
-
 var _ values.OrdinalRow = predRow(nil)
 
-// ordinalPredRow serves BOTH read forms of values.OrdinalRow: Get(ordinal)
-// resolves through cols — the scope's declared column order, the same order
-// the RFC-173 construction-time bake bound ordinals against — and GetByName
-// falls back to the name map (sparse: missing = SQL NULL).
+// ordinalPredRow implements values.OrdinalRow: Get(ordinal) resolves through
+// cols — the scope's declared column order, the same order the RFC-173
+// construction-time bake bound ordinals against (sparse map: missing = SQL NULL).
 type ordinalPredRow struct {
 	cols []string
 	m    map[string]any
@@ -50,8 +47,6 @@ func (r ordinalPredRow) Get(i int) (any, bool) {
 	}
 	return lookupFold(r.m, r.cols[i])
 }
-
-func (r ordinalPredRow) GetByName(name string) (any, bool) { return lookupFold(r.m, name) }
 
 var _ values.OrdinalRow = ordinalPredRow{}
 

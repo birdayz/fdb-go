@@ -60,9 +60,11 @@ func (e *FullUnorderedScanExpression) GetFlowedType() values.Type {
 // resolves a column name to its ordinal against this child Type. Passing
 // UnknownType here — as this did before — silently discarded the flowed
 // type and forced every single-table scan back onto name resolution
-// (resolveOrdinal's *RecordType assertion failed → (0,false)). A nil/
-// UnknownType flowedType degrades cleanly (NewQuantifiedObjectValueOfType
-// falls back to UnknownType), keeping untyped seeds on the name path.
+// (resolveOrdinal's *RecordType assertion failed → (0,false)); with the name
+// path now deleted, that same failure is a loud unbaked-ref error, so carrying
+// the real flowedType is load-bearing. A nil/UnknownType flowedType still
+// degrades cleanly (NewQuantifiedObjectValueOfType falls back to UnknownType)
+// rather than panicking.
 func (e *FullUnorderedScanExpression) GetResultValue() values.Value {
 	return values.NewQuantifiedObjectValueOfType(values.UniqueCorrelationIdentifier(), e.flowedType)
 }

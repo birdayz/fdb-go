@@ -84,17 +84,6 @@ type aggregateCursor struct {
 	joinLegSpans  []legSpan
 	joinWindowsOK bool
 
-	// RFC-173 aggregate-over-PROJECTING-DERIVED-SOURCE input edge. When the input
-	// flows a PROJECTION's re-laid-out flat positional row (a derived table / CTE
-	// body over a multi-source base), a group-key / operand reference that names a
-	// PROJECTED OUTPUT column resolves against that row by its baked output ordinal —
-	// leg-independent, exactly as executeProjection resolves the projection itself —
-	// instead of the name-keyed Datum map. projOutputNames is the projection's output-column-name set
-	// (nil when no projection governs the input); an in-set reference takes the
-	// positional arm, an out-of-set one (Q51/Q54 shadow read) stays on the name path.
-	// Probed once at construction from the inner plan.
-	projOutputNames map[string]struct{}
-
 	// Current in-progress group state (streaming — only ONE group at a time).
 	currentGroupKey string
 	currentKeyVals  []any
@@ -142,7 +131,6 @@ func newAggregateCursor(
 		needsRowCtx:       hasBindingContext(evalCtx),
 		joinLegSpans:      legSpans,
 		joinWindowsOK:     windowsOK,
-		projOutputNames:   aggregateInputProjectionOutputNames(innerPlan),
 	}
 }
 
@@ -218,66 +206,6 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 		}
 	}
 	return false
-}
-
-// aggregateInputProjectionOutputNames returns the OUTPUT-column-name set of the
-// PROJECTION (derived table / CTE body) that GOVERNS the streaming aggregate's
-// input row layout, or nil when no projection governs it (a plain scan, a raw
-// join merge, or an aggregate directly over a join — those are handled by the
-// flat-frontier / join-leg-window arms).
-//
-// It walks the layout-preserving wrappers (the group-by SORT, filters, LIMIT,
-// the covering-index fetch, DISTINCT) down to the FIRST reshaping PROJECTION and
-// returns its emitted positional-row column names via the SAME values.OutputColumnName
-// authority executeProjection uses to name posNames — so membership here is
-// exactly the set a plan-time bake against the projection output resolves. The names
-// are the alias-preferring output names (b AS L → "L"), NOT the source columns.
-//
-// Purpose: an aggregate over a PROJECTING derived source over a MULTI-SOURCE base
-// (SELECT max(y) FROM (SELECT y, b AS L FROM t1,t2) AS q GROUP BY l — Java-parity,
-// GroupByQueryTests:699) flows the projection's re-laid-out flat positional row
-// [Y, L], not the pre-projection join merge. A group key / operand that names a
-// projected OUTPUT column resolves LEG-INDEPENDENTLY against that row by its baked ordinal,
-// exactly as executeProjection resolves the projection itself — so the aggregate
-// need not (and cannot) see the buried join's leg windows. A read NOT in the
-// output set (a Q51/Q54 out-of-schema shadow read) is left to the name-keyed
-// Datum path (its booked silent NULL), never forced loud through the frontier.
-func aggregateInputProjectionOutputNames(input plans.RecordQueryPlan) map[string]struct{} {
-	for input != nil {
-		switch p := input.(type) {
-		case *plans.RecordQueryProjectionPlan:
-			projections := p.GetProjections()
-			aliases := p.GetAliases()
-			names := make(map[string]struct{}, len(projections))
-			for i, proj := range projections {
-				alias := ""
-				if i < len(aliases) {
-					alias = aliases[i]
-				}
-				names[strings.ToUpper(values.OutputColumnName(proj, alias))] = struct{}{}
-			}
-			return names
-		case *plans.RecordQueryFetchFromPartialRecordPlan:
-			input = p.GetInner()
-		case *plans.RecordQuerySortPlan:
-			input = p.GetInner()
-		case *plans.RecordQueryInMemorySortPlan:
-			input = p.GetInner()
-		case *plans.RecordQueryLimitPlan:
-			input = p.GetInner()
-		case *plans.RecordQueryTypeFilterPlan:
-			input = p.GetInner()
-		case *plans.RecordQueryFilterPlan:
-			input = p.GetInner()
-		case *plans.RecordQueryPredicatesFilterPlan:
-			input = p.GetInner()
-		case *plans.RecordQueryDistinctPlan:
-			input = p.GetInner()
-		default:
-			return nil
-		}
-	}
-	return nil
 }
 
 // valueFieldsAllInSet reports whether EVERY FieldValue in v's value tree is a BARE

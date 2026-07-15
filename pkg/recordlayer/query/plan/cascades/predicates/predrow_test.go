@@ -36,13 +36,6 @@ func (r predRow) Get(ord int) (any, bool) {
 // GetByName is retained to satisfy values.OrdinalRow, but RFC-173 item C retired
 // the runtime name path, so production never calls it — the ordinal Get above is
 // the sole read path.
-func (r predRow) GetByName(name string) (any, bool) {
-	if v, ok := r[name]; ok {
-		return v, true
-	}
-	return nil, false
-}
-
 // pbake returns a BAKED flat FieldValue whose ordinal is field's slot in the
 // SORTED key set of schema — the RFC-173 item C plan-time ordinal bind. predRow.Get
 // reads positionally over the same sorted order, so the read hits the right slot.

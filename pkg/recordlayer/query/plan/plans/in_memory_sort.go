@@ -13,12 +13,20 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// SortKey is a column + direction for in-memory sorting.
+// SortKey is a sort key + direction for in-memory sorting. ValueExpr is
+// REQUIRED (RFC-173): it carries the key's plan-time-baked Value, which the
+// executor evaluates POSITIONALLY per row. The field-only form (a Field lookup
+// with a nil ValueExpr) is no longer supported — the runtime name fallback was
+// deleted, so the executor rejects a nil ValueExpr as a malformed plan (loud,
+// never a name read; pinned by TestSortCursor_UnbakedKeyIsLoud). Field is
+// DISPLAY-ONLY (Explain + ordering-hint name match). Every planner path that
+// builds a SortKey sets ValueExpr unconditionally (rule_implement_in_memory_sort,
+// rule_implement_streaming_agg).
 type SortKey struct {
 	Field      string
 	Desc       bool
 	NullsFirst bool
-	ValueExpr  values.Value // when non-nil, evaluate per-row instead of field lookup
+	ValueExpr  values.Value // REQUIRED: the plan-time-baked key Value, evaluated per row
 }
 
 // RecordQueryInMemorySortPlan materializes the inner plan's output and
