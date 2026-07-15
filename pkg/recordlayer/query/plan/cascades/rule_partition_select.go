@@ -439,9 +439,18 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		//     from its array source; the SINGLETON requirement
 		//     (lowerComponentsAreSingletons) bounds the exemption itself — a
 		//     multi-alias component in the lower is a real join component, not an
-		//     unavoidable cross product, so exempting it would admit a bipartition
-		//     the connectivity guard exists to reject (a loud 0AF00 mis-partition,
-		//     not a silent wrong row, but the guard still discriminates).
+		//     unavoidable cross product. Dropping the singleton conjunct does NOT
+		//     surface as a plan-time error: the mis-partition (a lower unioning a
+		//     whole multi-alias component with an extra leg, e.g. {A,Explode(A.ARR),B}
+		//     for `FROM A, B, EE, A.ARR AS X`) PLANS cleanly and is cost-CHOSEN,
+		//     then fails only at RUNTIME in the executor via the RFC-173 ordinal
+		//     tripwire — RowEvalContext "multi-leg row cannot serve a source-relative
+		//     ordinal" — because positionalMergeCase mis-wires the source-relative
+		//     references for such a lower. That deeper gap (Go's positionalMergeCase
+		//     cannot correctly wire a bipartition Java's PartitionSelectRule — which
+		//     has only isCrossProduct — both plans AND executes) is a tracked
+		//     follow-on; this guard keeps Go correct meanwhile by never admitting the
+		//     shape into the search.
 		//   - For an ORDINAL parent (the
 		//     gathered flat unnest seed — every parent),
 		//     a quantifier-level correlation edge IS

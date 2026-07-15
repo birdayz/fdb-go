@@ -480,7 +480,7 @@ one defect each found by two auditors.
 | F12 | wrong-rows (latent) | Theme 7 (full-tree pushdown) | TODO |
 | F14 | wrong-rows | S1 (hash key normalize) | **DONE** `91b566c61` |
 | F15 | crash | Theme 2 (hash key whitelist) | **DONE** `91b566c61` |
-| F16 ≡ F25 | structural | Theme 5 (guard comment + unit pin) | TODO |
+| F16 ≡ F25 | structural | Theme 5 (guard comment + unit pin) | **DONE** |
 | F17 | missing-error | S5 (int32 SUM_I overflow) | TODO |
 | F18 | missing-error | S5 (MIN/MAX plan-time type gate) | TODO |
 | F19 | missing-error | Theme 7 (index-orphan ERROR) | TODO |

@@ -355,6 +355,7 @@ go_test(
         "rule_normalize_predicates_test.go",
         "rule_ordered_index_scan_test.go",
         "rule_partition_binary_select_test.go",
+        "rule_partition_select_singleton_guard_test.go",
         "rule_partition_select_test.go",
         "rule_predicate_push_down_test.go",
         "rule_predicate_to_logical_union_test.go",
@@ -818,6 +819,7 @@ go_test(
         "positional_merge.go",
         "select_merge_ordinal_child_test.go",
         "f20_winner_f21_memo_test.go",
+        "rule_partition_select_singleton_guard_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
