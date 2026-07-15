@@ -763,10 +763,6 @@ func typeFieldNames(rt *values.RecordType) []string {
 // slots come out NULL (contract ruling #3: appendNullLeg ≡ evaluating the
 // merged RC with the leg QOV bound to nil; the null extension falls out, no
 // ad-hoc per-row types).
-//
-// This is the PRIMITIVE: DisablePositionalEmission (the §5 name-model oracle)
-// is respected by CALLERS (the W3b cursor birth sites, which are oracle-
-// registry entries), not here.
 func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *values.RecordType, bindings values.CorrelationBinder) (*PositionalRow, error) {
 	if len(rc.Fields) != len(mergedType.Fields) {
 		panic(fmt.Sprintf("RFC-173 ordinal join row: RC has %d fields but merged type has %d — the merged type must derive from this RC (ordinalJoinSpans)", len(rc.Fields), len(mergedType.Fields)))
@@ -881,11 +877,9 @@ func legTypesFromResultValue(rv values.Value) map[values.CorrelationIdentifier]*
 // ordinalJoinBirth is the per-cursor ordinal-BIRTH state, computed ONCE at
 // cursor construction (review W3 ruling: detection is the structural
 // ContainsBakedOrdinal probe on the plan's result value — emergent from the
-// representation, nothing for S4 to delete). Enabled marks the cursor as an
-// ordinal birth site: its emitted rows carry a positional row evaluated from
-// the RC with per-leg bindings, DUAL with the untouched name-model Datum
-// (the coexistence-window invariant — the name side retires in Slice 4),
-// gated per emission on the §5 DisablePositionalEmission oracle.
+// representation). Enabled marks the cursor as an ordinal birth site: its
+// emitted rows carry the positional row evaluated from the RC with per-leg
+// bindings — the row model's single authority.
 type ordinalJoinBirth struct {
 	// Enabled is true iff the result value contains a baked ordinal reference
 	// (values.ContainsBakedOrdinal, deep). A nil/lazy result value yields a nil
@@ -915,15 +909,16 @@ type ordinalJoinBirth struct {
 	// wrong). Discriminated by leg SHAPE at construction, never a per-plan flag.
 	// The record-leg OrdinalRow path (adaptLegPositional) is unchanged.
 	RawLegs map[values.CorrelationIdentifier]struct{}
-	// OrdinalityLegs are legs whose Datum is a WITH-ORDINALITY Explode row,
-	// keyed by the INTERNAL OrdinalFieldName positions (`_0`=element,
-	// `_1`=1-based ordinal). Such a leg binds STRICTLY POSITIONALLY (slot i =
-	// Datum[_i]), never by the leg type's AS/AT alias NAMES — a user may spell an
-	// alias `_0`/`_1` (`FROM t, t.arr AS "_1" AT "_0"`), and a name lookup would
-	// route the wrong internal key. Distinguished by PRODUCER CONTEXT (the
-	// FlatMap knows its inner is an ordinality Explode — newFlatMapCursor sets
-	// this), NOT the Datum SHAPE: a name-model leg whose own columns are aliased
-	// `_0`/`_1` is shape-identical but binds correctly by NAME (adaptLegPositional).
+	// OrdinalityLegs are legs whose row is a WITH-ORDINALITY Explode row
+	// (element at slot 0, 1-based ordinal at slot 1). Such a leg binds
+	// STRICTLY POSITIONALLY (leg slot i = row slot i), never by the leg
+	// type's AS/AT alias NAMES — a user may spell an alias `_0`/`_1`
+	// (`FROM t, t.arr AS "_1" AT "_0"`), and a name lookup would route the
+	// wrong internal key. Distinguished by PRODUCER CONTEXT (the FlatMap
+	// knows its inner is an ordinality Explode — newFlatMapCursor sets
+	// this), NOT the row SHAPE: a leg whose own columns are aliased
+	// `_0`/`_1` is shape-identical but binds correctly by NAME
+	// (adaptLegPositional).
 	OrdinalityLegs map[values.CorrelationIdentifier]struct{}
 }
 
@@ -1218,11 +1213,12 @@ func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.
 		}
 		return nil
 	}
-	// A WITH-ORDINALITY Explode leg binds STRICTLY POSITIONALLY: its row is keyed
-	// by the internal OrdinalFieldName positions (`_0`=element, `_1`=ordinal), so
-	// slot i = the row's `_i` field — the leg type's AS/AT alias NAMES never
-	// participate in the lookup (a user may spell an alias `_0`/`_1`). See
-	// OrdinalityLegs (producer context, set by newFlatMapCursor).
+	// A WITH-ORDINALITY Explode leg binds STRICTLY POSITIONALLY: the producer
+	// (explodeOrdinalityResult) emits the element at slot 0 and the 1-based
+	// ordinal at slot 1 under the internal `[_0,_1]` schema, so slot i = row
+	// slot i — the leg type's AS/AT alias NAMES never participate (a user may
+	// spell an alias `_0`/`_1`). See OrdinalityLegs (producer context, set by
+	// newFlatMapCursor).
 	if _, isOrd := b.OrdinalityLegs[id]; isOrd {
 		if qr == nil {
 			legs[id] = nil
@@ -1232,7 +1228,7 @@ func (b *ordinalJoinBirth) bindLeg(legs map[values.CorrelationIdentifier]values.
 		row := NewPositionalRow(lt)
 		if lt != nil && qr.Positional != nil {
 			for i := range lt.Fields {
-				if v, ok := qr.Positional.GetByName(values.OrdinalFieldName(i)); ok {
+				if v, ok := qr.Positional.Get(i); ok {
 					row.Slots[i] = v
 				}
 			}
@@ -1306,9 +1302,6 @@ func (b *twoLegBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (a
 // evaluate is the one-shot birth: adapt both legs (nil pointer = NULL leg),
 // then evaluate the RC per-field into a PositionalRow under OutputType. base
 // resolves outer correlations beyond the two legs (may be nil).
-//
-// Callers respect executor.DisablePositionalEmission (the §5 oracle): this is
-// the primitive, oracle gating lives at the birth sites.
 func (b *ordinalJoinBirth) evaluate(outerAlias, innerAlias string, outer, inner *QueryResult, base values.CorrelationBinder) (*PositionalRow, error) {
 	legs, raw, err := b.legRows(outerAlias, innerAlias, outer, inner)
 	if err != nil {

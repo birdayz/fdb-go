@@ -410,13 +410,6 @@ func producesMergedRows(p plans.RecordQueryPlan) bool {
 	return false
 }
 
-// isStringMap reports whether datum is a name-keyed row map. Small readability
-// helper for the predicates-filter row-context dispatch.
-func isStringMap(datum any) bool {
-	_, ok := datum.(map[string]any)
-	return ok
-}
-
 func executePredicatesFilter(
 	ctx context.Context,
 	p *plans.RecordQueryPredicatesFilterPlan,

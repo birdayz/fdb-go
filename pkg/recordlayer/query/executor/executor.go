@@ -1989,15 +1989,11 @@ func widenInt32(v any) any {
 // authoritative ordinal row (qr.Positional != nil — every merge/intersection
 // branch is a plan whose output is positional), the comparison-key value resolves
 // against that bare PositionalRow (FieldValue.Evaluate → evaluateOrdinal: by
-// ordinal, or GetByName against the row's OWN type — never a name-keyed Datum
-// read, so it no longer trips the RFC-173 gate). A comparison key is a field
-// extraction with no param / subquery / correlation binding, so the bare
+// ordinal, loud on a miss — never a name-keyed Datum read). A comparison key is
+// a field extraction with no param / subquery / correlation binding, so the bare
 // positional row is the whole context — frontierRowContext(pos, nil, false)
 // collapses to exactly this. Both merge branches resolve the SAME field by
-// ordinal/name-in-row, so merge/intersection order is preserved byte-for-byte.
-// A name-only row (no Positional — the §5 DisablePositionalEmission oracle, or a
-// producer that never births a positional row) keeps the exact prior bare-Datum
-// path.
+// ordinal, so merge/intersection order is preserved byte-for-byte.
 func compKeyEvalArg(qr QueryResult) any {
 	return qr.Positional
 }
@@ -3044,16 +3040,11 @@ func executeExplode(
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
 
-// explodeOrdinalityResult builds a WITH-ORDINALITY box output row. It carries
-// BOTH representations: the name-keyed `{_0:element, _1:ordinal}` Datum (read by
-// the §5 name-model oracle and by the FlatMap birth binder, which extracts each
-// slot from the map) AND — the RFC-173 ordinal frontier — a PositionalRow of the
-// box's `[_0,_1]` schema, so a downstream reference over the box (a pushed-down
+// explodeOrdinalityResult builds a WITH-ORDINALITY box output row: a
+// PositionalRow of the box's `[_0,_1]` schema (element at slot 0, 1-based
+// ordinal at slot 1), so a downstream reference over the box (a pushed-down
 // WHERE predicate on the AS element / AT ordinal, evaluated by the
-// PredicatesFilter over the Explode) resolves by ORDINAL (frontierRowContext ->
-// evaluateOrdinal -> row.GetByName("_0"/"_1") against the box's own type) instead
-// of a name-keyed Datum read. The positional side is suppressed under the §5
-// oracle (DisablePositionalEmission), which reads the box by name.
+// PredicatesFilter over the Explode) resolves by ORDINAL.
 func explodeOrdinalityResult(ordType *values.RecordType, element any, ordinal int) QueryResult {
 	if ordType == nil {
 		ordType = positionalTypeFromNames([]string{"_0", "_1"})
@@ -3128,18 +3119,6 @@ func resultFromValue(v values.Value) (QueryResult, error) {
 func isBareScalarRow(pos *PositionalRow) bool {
 	return pos != nil && pos.Type != nil && len(pos.Type.Fields) == 1 &&
 		pos.Type.Fields[0].Name == values.OrdinalFieldName(0)
-}
-
-// explodeOrdinalityRow builds the 2-field anonymous record a WITH
-// ORDINALITY Explode emits: the element under the ordinal-0 key and the
-// 1-based ordinal under the ordinal-1 key (Java's q1._0 / q1._1). Keyed by
-// the same `_0`/`_1` names values.OrdinalFieldName produces, so an
-// ordinal-indexed FieldValue resolves them.
-func explodeOrdinalityRow(element any, ordinal int) map[string]any {
-	return map[string]any{
-		values.OrdinalFieldName(0): element,
-		values.OrdinalFieldName(1): int64(ordinal),
-	}
 }
 
 func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (recordlayer.RecordCursor[QueryResult], error) {
