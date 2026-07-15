@@ -253,6 +253,7 @@ go_test(
         "rfc173_census_sweep_test.go",
         "rfc173_compkey_ordinal_fdb_test.go",
         "rfc173_correlated_index_exists_permanent_fdb_test.go",
+        "rfc173_derived_computed_projection_fdb_test.go",
         "rfc173_enclosed_unnest_exists_ordinal_fdb_test.go",
         "rfc173_exists_outer_ordinal_fdb_test.go",
         "rfc173_exists_scope_shadow_fdb_test.go",
