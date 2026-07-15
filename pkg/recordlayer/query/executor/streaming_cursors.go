@@ -533,7 +533,17 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 			val = gs.maxs[i]
 		case expressions.AggAvg:
 			if gs.counts[i] > 0 {
-				val = gs.sums[i] / float64(gs.counts[i])
+				if gs.allInt[i] {
+					// All-integer operands: divide the EXACT int64 running sum
+					// (converted to double once), not the incrementally-added
+					// float64 sum, which loses low-order bits past 2^53. Mirrors
+					// Java AverageAccumulatorState.longAverageState (LongState
+					// SUM via Math.addExact, finish = total.doubleValue()/count)
+					// and Cascades AVG_L ((double)longSum / count).
+					val = float64(gs.sumsI[i]) / float64(gs.counts[i])
+				} else {
+					val = gs.sums[i] / float64(gs.counts[i])
+				}
 			} else {
 				val = nil
 			}

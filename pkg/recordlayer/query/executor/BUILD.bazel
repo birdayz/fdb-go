@@ -38,6 +38,7 @@ go_library(
 go_test(
     name = "executor_test",
     srcs = [
+        "aggregate_avg_precision_test.go",
         "bench_proto_test.go",
         "charge_coverage_test.go",
         "continuation_decode_test.go",
@@ -124,6 +125,7 @@ go_test(
         "merge_row_build_test.go",
         "explode_element_row_test.go",
         "nlj_hash_key_test.go",
+        "aggregate_avg_precision_test.go",
     ],
     deps = [
         "//gen",

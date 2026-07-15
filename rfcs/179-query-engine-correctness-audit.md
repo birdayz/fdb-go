@@ -203,6 +203,15 @@ must agree with FDB tuple order and with the promoting predicate semantics.
   IEEE/Java-faithful NaN equality. *Pin:* `cmpAny(NaN, NaN)`==equal,
   `cmpAny(NaN, 5.0)`==not-equal; a linear NLJ over NaN float keys matches Java.
 
+- **F28 [wrong-rows, follow-on — surfaced gating C2]** `executor_new_plans.go`
+  (`compareValues` float64 arm) / `comparisons.go` (`cmpAny`) — `-0.0` and `0.0`
+  compare EQUAL, but FDB tuple encoding orders `-0.0 < 0.0` and Java
+  `Double.compare` likewise. An in-memory sort/dedup thus disagrees with the
+  indexed plan on the sign of zero. Clusters with F27 as the float-total-ordering
+  fix (do both in the comparator + cmpAny at once). *Fix:* order `-0.0 < 0.0`
+  (Java `Double.compare` / `math.Signbit`). *Pin:* `compareValues(-0.0, 0.0) < 0`
+  + an FDB `ORDER BY` over a FLOAT column containing both zeros.
+
 **Theme-2 principle:** the extension must agree with the indexed plan and the
 predicate. A comparator that renders with `fmt`, splits by representation, or
 panics is a bug even though Java "can't express" the query.

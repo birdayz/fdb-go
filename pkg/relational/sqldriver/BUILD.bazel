@@ -49,6 +49,7 @@ go_test(
         "array_cardinality_index_fdb_test.go",
         "array_unnest_ordinality_fdb_test.go",
         "array_unnest_struct_fdb_test.go",
+        "avg_bigint_precision_fdb_test.go",
         "avg_double_insert_fdb_test.go",
         "avg_fractional_probe_test.go",
         "bare_bool_where_probe_test.go",
