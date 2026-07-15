@@ -511,7 +511,32 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 				case *values.FieldValue:
 					// A source-relative baked ref resolves like its lazy twin
 					// (the pull-up re-bakes it); machinery-owned baked nodes decline.
-					if (n.Resolved != nil && !n.SourceRelativeBaked()) || n.Child != nil || !clusterFieldResolvable(n.Field, pu, innerKey) {
+					if n.Resolved != nil && !n.SourceRelativeBaked() {
+						ok = false
+						return false
+					}
+					// A QUANTIFIER-ADDRESSED leg read (the resolver's SRB
+					// emission for a qualified projection over a join,
+					// FieldValue{Child: QOV(leg), COL}) resolves when the leg
+					// span carries the column — flattenClusterLegRefs rewrites
+					// it onto the level-2 output before the flat bake.
+					if n.Child != nil {
+						qov, isQOV := n.Child.(*values.QuantifiedObjectValue)
+						if !isQOV {
+							ok = false
+							return false
+						}
+						leg, isLeg := pu.legByAlias[strings.ToUpper(qov.Correlation.Name())]
+						if !isLeg {
+							ok = false
+							return false
+						}
+						if _, found := leg.typ.FieldIndex(strings.ToUpper(n.Field)); !found {
+							ok = false
+						}
+						return false
+					}
+					if !clusterFieldResolvable(n.Field, pu, innerKey) {
 						ok = false
 					}
 					return false
@@ -531,6 +556,37 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 		}
 	}
 	return true
+}
+
+// flattenClusterLegRefs rewrites QUANTIFIER-ADDRESSED cluster-leg reads
+// (FieldValue{Child: QOV(leg), COL} — the resolver's SRB emission for a
+// qualified projection over a join) into the level-2 output's flat dotted
+// read `LEG.COL`, left lazy so bakeFlatRefsAgainstColumns bakes it against
+// the output layout. Non-leg and machinery-baked references pass through.
+func flattenClusterLegRefs(v values.Value, pu *clusterPullUp) values.Value {
+	return values.Replace(v, func(node values.Value) values.Value {
+		fv, isFV := node.(*values.FieldValue)
+		if !isFV || fv.Child == nil {
+			return node
+		}
+		if fv.Resolved != nil && !fv.SourceRelativeBaked() {
+			return node
+		}
+		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		if !isQOV {
+			return node
+		}
+		alias := strings.ToUpper(qov.Correlation.Name())
+		leg, isLeg := pu.legByAlias[alias]
+		if !isLeg {
+			return node
+		}
+		col := strings.ToUpper(fv.Field)
+		if _, found := leg.typ.FieldIndex(col); !found {
+			return node
+		}
+		return &values.FieldValue{Field: alias + "." + col, Typ: fv.Typ}
+	})
 }
 
 // clusterFieldResolvable resolves one flat field name against the dotted seed
@@ -707,6 +763,18 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 			continue
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+	}
+	// RFC-173 item C: the level-2 output row is the seed RC's POSITIONAL row
+	// (dotted `LEG.COL` names plus the scalar's `ALIAS.COL` field) — bake each
+	// flat projection read to its slot at plan time. A QUANTIFIER-ADDRESSED
+	// leg read (the resolver's SRB emission) first flattens onto the output's
+	// dotted name, then bakes with the rest. A lazy dotted read reaching the
+	// runtime positional row fails loud (ordinal -1); the retired name
+	// resolution no longer serves it.
+	if inputCols := expressionOutputColumns(joinSelect); inputCols != nil {
+		for i, v := range projected {
+			projected[i] = bakeFlatRefsAgainstColumns(flattenClusterLegRefs(v, pu), inputCols)
+		}
 	}
 	projQ := t.namedQuantifier("", joinRef)
 	return expressions.NewLogicalProjectionExpressionWithAliases(

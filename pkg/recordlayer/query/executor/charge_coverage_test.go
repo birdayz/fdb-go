@@ -122,14 +122,16 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 		preds := []predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
 				Operand: &values.FieldValue{
-					Child: &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
-					Field: "K",
+					Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
+					Field:    "K",
+					Resolved: values.NewFieldPathOfSingle("K", 0, false),
 				},
 				Comparison: predicates.Comparison{
 					Type: predicates.ComparisonEquals,
 					Operand: &values.FieldValue{
-						Child: &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
-						Field: "K",
+						Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
+						Field:    "K",
+						Resolved: values.NewFieldPathOfSingle("K", 0, false),
 					},
 				},
 			},

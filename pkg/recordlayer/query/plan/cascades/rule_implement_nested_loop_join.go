@@ -2951,6 +2951,21 @@ func correlatedFastPathOperand(
 	if outerVal.Resolved != nil && outerVal.Resolved.FrontierPinned {
 		return outerVal
 	}
+	// RFC-173 item C: a SOURCE-RELATIVE bake (the resolver's construction-time
+	// ordinal, addressed to a real SQL source) transfers to the rebuilt operand
+	// verbatim — the fast path only admits references to the outer source
+	// itself (outerValRefsBuriedLeg declines buried legs), so the row bound
+	// under outerCorrelation IS that source's row and the declared-column-order
+	// ordinal reads the same slot the name model resolved. Rebuilding it LAZY
+	// would degrade a baked reference to a runtime name read (deleted).
+	if outerVal.SourceRelativeBaked() {
+		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+			values.NewQuantifiedObjectValue(outerCorrelation),
+			bareColumnName(outerVal, outerAlias),
+			outerVal.Resolved.Root().Ordinal,
+			outerVal.Typ,
+		)
+	}
 	return values.NewFieldValue(
 		values.NewQuantifiedObjectValue(outerCorrelation),
 		bareColumnName(outerVal, outerAlias), outerVal.Typ,

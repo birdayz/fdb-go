@@ -571,15 +571,60 @@ type legWindowBinder struct {
 
 // GetCorrelationBinding implements values.CorrelationBinder: a span alias gets
 // its leg window over the merged row; any other alias delegates to base (nil
-// base: unbound).
+// base: unbound). The routing mirrors spanAwareRow.GetByName's precedence for
+// the QOV-addressed twin (RFC-173 item C — a source-relative baked
+// QOV(leg).col carries a LEG-LOCAL ordinal, so the window must be the LEG's
+// OWN slice):
+//  1. a span alias match serves the BOX-LEAF sub-window when the span is a
+//     clustered box named by its rightmost leaf (the whole-concat window would
+//     misread a leg-local ordinal against an earlier buried leg's slots);
+//  2. a BURIED leg inside any span serves its sub-window at the buried offset.
 func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
+	alias := id.Name()
 	for _, s := range b.spans {
-		if s.Alias == id {
-			return &legWindowRow{parent: b.row, legType: s.LegType, offset: s.Offset, width: s.Width}, true
+		if !strings.EqualFold(s.Alias.Name(), alias) {
+			continue
+		}
+		if s.LegType != nil {
+			if w, ok := buriedLegWindow(b.row, s, alias); ok {
+				return w, true
+			}
+		}
+		return &legWindowRow{parent: b.row, legType: s.LegType, offset: s.Offset, width: s.Width}, true
+	}
+	// A BURIED leg inside a clustered box span — ordered AFTER the span
+	// aliases (a top-level alias always wins its own name), exactly like
+	// spanAwareRow's dotted routing.
+	for _, s := range b.spans {
+		if s.LegType == nil {
+			continue
+		}
+		if w, ok := buriedLegWindow(b.row, s, alias); ok {
+			return w, true
 		}
 	}
 	if b.base != nil {
 		return b.base.GetCorrelationBinding(id)
+	}
+	return nil, false
+}
+
+// buriedLegWindow serves the sub-window of the buried leg named `alias` within
+// a clustered box span's flat concat (RecordType.Legs bounds), or ok=false.
+// Malformed bounds are a MISS (never the run-wide window — a whole-concat read
+// would silently serve another leg's slots; the caller's miss disposition is
+// loud downstream).
+func buriedLegWindow(row values.OrdinalRow, s legSpan, alias string) (*legWindowRow, bool) {
+	for _, bl := range s.LegType.Legs {
+		if !strings.EqualFold(bl.Name, alias) {
+			continue
+		}
+		end := bl.Start + bl.Width
+		if bl.Start < 0 || end > len(s.LegType.Fields) {
+			return nil, false
+		}
+		sub := &values.RecordType{Nullable: s.LegType.Nullable, Fields: s.LegType.Fields[bl.Start:end]}
+		return &legWindowRow{parent: row, legType: sub, offset: s.Offset + bl.Start, width: bl.Width}, true
 	}
 	return nil, false
 }
@@ -1321,6 +1366,49 @@ func correlationBase(ec *EvaluationContext) values.CorrelationBinder {
 	return ec
 }
 
+// rowLegsBinder resolves a correlation to its LEG WINDOW derived from the
+// row's OWN Type.Legs — the RFC-173 item C runtime half of the
+// quantifier-addressed reference model: a SOURCE-RELATIVE baked reference
+// (FieldValue{QOV(leg), col, Resolved: source ordinal}) evaluated over a
+// merged/concatenated row binds its leg's window, where the source-relative
+// ordinal reads the source's own slot (legWindowRow.Get = parent.Get(offset+i)
+// — Java's quantifier binding, ordinal within the quantifier's row). The
+// window authority is the row TYPE's leg boundaries (concatLegPositionals /
+// ordinalLegType stamp them at row construction), NOT a plan-shape probe — so
+// every merged row serves its legs uniformly, gated joins and leg-concat
+// fallback merges alike. Aliases not in the row's legs delegate to base (an
+// outer correlation); a miss with no base stays unbound (loud downstream).
+type rowLegsBinder struct {
+	base values.CorrelationBinder
+	row  *PositionalRow
+}
+
+// GetCorrelationBinding implements values.CorrelationBinder. First-match on
+// duplicate leg names mirrors RecordType.FieldIndex's first-match rule.
+func (b *rowLegsBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
+	if b.row != nil && b.row.Type != nil {
+		name := id.Name()
+		for _, leg := range b.row.Type.Legs {
+			if !strings.EqualFold(leg.Name, name) {
+				continue
+			}
+			end := leg.Start + leg.Width
+			if leg.Start < 0 || end > len(b.row.Type.Fields) {
+				// Malformed bounds: skip — a whole-row fallback would silently
+				// misread another leg's slots; the unbound miss stays loud at
+				// the evaluateCorrelated tail.
+				break
+			}
+			sub := &values.RecordType{Nullable: b.row.Type.Nullable, Fields: b.row.Type.Fields[leg.Start:end]}
+			return &legWindowRow{parent: b.row, legType: sub, offset: leg.Start, width: leg.Width}, true
+		}
+	}
+	if b.base != nil {
+		return b.base.GetCorrelationBinding(id)
+	}
+	return nil, false
+}
+
 // scalarSubqueriesFromBinder unwraps a birth-time correlation binder to the
 // pre-evaluated scalar-subquery map carried by the base *EvaluationContext, so a
 // FOLDED birth result value's ScalarSubqueryValue resolves at birth (the B1
@@ -1484,6 +1572,21 @@ type spanAwareRow struct {
 }
 
 func (r *spanAwareRow) Get(ord int) (any, bool) { return r.parent.Get(ord) }
+
+// MultiLeg reports whether the merged row spans MORE than one leg window (or a
+// single leg narrower than the row) — the values-side correlated fall-through
+// guard's probe (see PositionalRow.MultiLeg).
+func (r *spanAwareRow) MultiLeg() bool {
+	if len(r.spans) == 0 {
+		return false
+	}
+	if len(r.spans) == 1 && r.spans[0].Offset == 0 {
+		if tn, ok := r.parent.(interface{ TypeNames() []string }); ok && r.spans[0].Width == len(tn.TypeNames()) {
+			return false
+		}
+	}
+	return true
+}
 
 func (r *spanAwareRow) GetByName(name string) (any, bool) {
 	if dot := strings.IndexByte(name, '.'); dot > 0 {

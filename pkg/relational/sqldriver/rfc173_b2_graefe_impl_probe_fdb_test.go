@@ -636,9 +636,15 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// keys (branch-2 spelled qualified still resolves U.AID), for both a
 	// plain and a JOIN-SEEDED union. Pins the seed-arm advertising as sound;
 	// probed while hunting Q18-siblings — the union arm needs no decline.
+	// (Rows render sorted-by-key. The PLAIN union body's layout is derivable,
+	// so the parent's unique qualified projection leaves key BARE under the
+	// ordinal model — AID/CV, AID first. The JOIN-SEEDED body's layout is not
+	// derivable at emission (the resolver falls to the dotted name and the
+	// leg row itself carries the qualified key), so that variant keeps the
+	// name-model U.AID/C2.CV keys, CV first. Same values, same rows in both.)
 	t.Run("Q24_union_branch_keys_normalize", func(t *testing.T) {
 		check(t, `WITH "U" AS (SELECT "AID" FROM LA UNION ALL SELECT LB."BID" FROM LB) SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
-			"900|1", "<nil>|2", "900|1", "<nil>|3")
+			"1|900", "2|<nil>", "1|900", "3|<nil>")
 		check(t, `WITH "U" AS (SELECT "AID" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID" UNION ALL SELECT LB."BID" FROM LB) SELECT "U"."AID", "C2"."CV" FROM "U" LEFT JOIN CC AS "C2" ON "U"."AID" = "C2"."CID"`,
 			"900|1", "<nil>|2", "900|1", "<nil>|3")
 	})
@@ -827,10 +833,13 @@ func TestFDB_RFC173B2_GraefeImplProbe2(t *testing.T) {
 	// column K, but the sort executes over the projected row where alias K
 	// is unambiguous — the validation's ambiguity arm now defers to the
 	// alias exactly like its ColumnNotFound arm always did. checkOrdered:
-	// K DESC = 2,2,1,1 (the ordering itself is the assertion).
+	// K DESC = 2,2,1,1 in the K slot (the ordering itself is the assertion).
+	// (Rows render sorted-by-key: the ordinal model keys the unique qualified
+	// leaf LB.BID BARE — BID sorts before K — where the name model's LB.BID
+	// key sorted after K. Same values, same emission order.)
 	t.Run("Q42_orderby_alias_precedes_scope_ambiguity", func(t *testing.T) {
 		checkOrdered(t, `SELECT LA."AID" AS "K", LB."BID" FROM "s"."LA", LB ORDER BY "K" DESC`,
-			"2|1", "2|3", "1|1", "1|3")
+			"1|2", "3|2", "1|1", "3|1")
 	})
 	// Q43: the live resolver's strictness dividend, pinned against a
 	// leniency regression (review-requested): a reference through the

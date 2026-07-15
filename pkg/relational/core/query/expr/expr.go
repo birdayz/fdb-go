@@ -258,17 +258,25 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 			return nil, &semantic.CorrelatedShadowError{Qualifier: qualifier.Name(), Field: field}
 		}
 		corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
-		// RFC-173 item C: the CORRELATED arm deliberately stays LAZY — unlike
-		// the flat arm below, a correlated reference's runtime binding is not
-		// always the source's own row (a lateral unnest binds the merged row
-		// or the raw element; join legs bind leg windows, merged concats, or
-		// nil null-legs), and the join/exists gate machinery makes admission
-		// and placement decisions on the LAZY reference shape. Construction-
-		// binding here flips those gates and mis-slots reads (probed: the
-		// gated LEFT-box + NOT EXISTS composition drops its WHERE conjunct).
-		// The gated-seed machinery bakes these refs box-relative itself; the
-		// construction-time bind for the correlated arm is its own follow-up
-		// slice with a per-gate audit.
+		// RFC-173 item C: the CORRELATED arm binds the SOURCE-RELATIVE ordinal
+		// at construction (Java's FieldValue.ofFieldName against the referent's
+		// result type). The node is SourceRelativeBaked — UNPINNED and
+		// single-accessor — so every admission/placement gate that keys on the
+		// lazy reference shape treats it exactly like its lazy twin (the
+		// SourceRelativeBaked widenings; per-gate audit in RFC-173 §C). At
+		// runtime the correlation binds a source-shaped row (the source's own
+		// row or its leg window), where the declared-column-order ordinal reads
+		// the very slot the retired name resolution found. Unresolvable
+		// (computed alias, empty derived-table catalog) stays lazy — a loud
+		// OrdinalResolutionError at runtime, never a silent wrong-slot read.
+		if ord, ok := sourceColumnOrdinal(src, field); ok {
+			return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+				values.NewQuantifiedObjectValue(corrID),
+				field,
+				ord,
+				columnCascadesType(col),
+			), nil
+		}
 		return values.NewFieldValue(
 			values.NewQuantifiedObjectValue(corrID),
 			field,
@@ -335,11 +343,46 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 	if src.CorrelationName == "" || src.CorrelationName == src.Alias.Name() {
 		return nil, nil
 	}
+	// RFC-173 item C: bind the source-relative ordinal at construction when the
+	// source's declared column order resolves it (see ResolveIdentifier's
+	// correlated arm) — the LATER-DUP-LEG binding (`q AS a`) resolves through
+	// the gated-seed machinery / leg window, which the fallback deletion now
+	// requires (a lazy ref over the ordinal row is loud). The UNION dup-alias
+	// face (not yet supported) declines UPSTREAM at the union-branch build
+	// before reaching here.
+	if ord, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
+		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
+			col.Id.Name(),
+			ord,
+			columnCascadesType(col),
+		), nil
+	}
 	return values.NewFieldValue(
 		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
 		col.Id.Name(),
 		columnCascadesType(col),
 	), nil
+}
+
+// QualifierIsDuplicated reports whether the given qualifier ALIAS names MORE
+// than one local scope source (`FROM p AS a, q AS a`) — a duplicate plain
+// alias. RFC-173 item C: such a reference must NOT bake (the RFC-173 collision
+// mint gives the two sources distinct correlations, but the qualified
+// reference stays display-keyed and dies LOUD at the executor's
+// ordinal-resolution guard — the dup-alias-under-UNION face; Java rejects a
+// duplicate alias at binding). A single-match qualifier bakes normally.
+func (r *Resolver) QualifierIsDuplicated(qualifier semantic.Identifier) bool {
+	if qualifier.IsZero() {
+		return false
+	}
+	n := 0
+	for _, s := range r.scope.Sources() {
+		if s.Alias.EqualsIgnoreQuoting(qualifier) {
+			n++
+		}
+	}
+	return n > 1
 }
 
 // ResolveColumnShadowingQualified resolves a column reference and, when it binds
@@ -369,6 +412,17 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	// OUTPUT column name verbatim (see ResolveIdentifier).
 	field := col.Id.Name()
 	corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
+	// RFC-173 item C: bind the source-relative ordinal at construction when the
+	// shadowing source's declared column order resolves it (see
+	// ResolveIdentifier's correlated arm); unresolvable stays lazy.
+	if ord, ok := sourceColumnOrdinal(src, field); ok {
+		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+			values.NewQuantifiedObjectValue(corrID),
+			field,
+			ord,
+			columnCascadesType(col),
+		), true, nil
+	}
 	return values.NewFieldValue(
 		values.NewQuantifiedObjectValue(corrID),
 		field,

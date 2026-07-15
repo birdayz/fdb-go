@@ -562,8 +562,8 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 
 	projected := plans.NewRecordQueryProjectionPlan(
 		[]values.Value{
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-			&values.FieldValue{Field: "B", Typ: values.UnknownType},
+			values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType),
+			values.NewFieldValueWithResolvedOrdinal("B", 1, values.UnknownType),
 		},
 		inner,
 	)
@@ -803,7 +803,7 @@ func TestParameterBinding_Filter(t *testing.T) {
 	filter := plans.NewRecordQueryFilterPlan(
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "X"},
+				values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
 				predicates.Comparison{
 					Type:    predicates.ComparisonGreaterThan,
 					Operand: param1,
@@ -2423,8 +2423,8 @@ func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"NAME": "alice", "AGE": int64(30)})
 	keyVals := []values.Value{
-		&values.FieldValue{Field: "NAME", Typ: values.TypeString},
-		&values.FieldValue{Field: "AGE", Typ: values.TypeInt},
+		values.NewFieldValueWithResolvedOrdinal("NAME", 1, values.TypeString),
+		values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.TypeInt),
 	}
 	fn := intersectionCompKeyFunc(keyVals)
 	got := fn(qr)
@@ -2508,7 +2508,7 @@ func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"PRICE": int64(100)})
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+		values.NewFieldValueWithResolvedOrdinal("PRICE", 0, values.TypeInt),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
 	)
 	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
@@ -2524,7 +2524,7 @@ func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 	t.Parallel()
 	qr := dmap(map[string]any{"PRICE": int64(100)})
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+		values.NewFieldValueWithResolvedOrdinal("PRICE", 0, values.TypeInt),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(999)),
 	)
 	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
@@ -3429,7 +3429,7 @@ func TestMergeSortCursor_TwoSortedInputs(t *testing.T) {
 		qr("id", int64(6)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3467,7 +3467,7 @@ func TestMergeSortCursor_Deduplication(t *testing.T) {
 		qr("id", int64(4)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3506,7 +3506,7 @@ func TestMergeSortCursor_Reverse(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3535,7 +3535,7 @@ func TestMergeSortCursor_EmptyInputs(t *testing.T) {
 	left := recordlayer.FromList([]QueryResult{})
 	right := recordlayer.FromList([]QueryResult{})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3554,7 +3554,7 @@ func TestMergeSortCursor_ZeroCursors(t *testing.T) {
 	t.Parallel()
 
 	// No cursors at all.
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		nil,
 		[]values.Value{compKey},
@@ -3579,7 +3579,7 @@ func TestMergeSortCursor_SingleInputPassthrough(t *testing.T) {
 		qr("id", int64(30)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{input},
 		[]values.Value{compKey},
@@ -3630,7 +3630,7 @@ func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
 		qr("id", nil),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3680,7 +3680,7 @@ func TestMergeSortCursor_UnequalLengthInputs(t *testing.T) {
 		qr("id", int64(7)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3718,7 +3718,7 @@ func TestMergeSortCursor_DedupWithAllDuplicates(t *testing.T) {
 		qr("id", int64(3)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3760,7 +3760,7 @@ func TestMergeSortCursor_ThreeInputs(t *testing.T) {
 		qr("id", int64(9)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{a, b, ch},
 		[]values.Value{compKey},
@@ -3798,8 +3798,8 @@ func TestMergeSortCursor_MultipleComparisonKeys(t *testing.T) {
 	})
 
 	compKeys := []values.Value{
-		values.NewFlatFieldValue("group", values.TypeInt),
-		values.NewFlatFieldValue("id", values.TypeInt),
+		values.NewFieldValueWithResolvedOrdinal("group", 0, values.TypeInt),
+		values.NewFieldValueWithResolvedOrdinal("id", 1, values.TypeInt),
 	}
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
@@ -3837,7 +3837,7 @@ func TestMergeSortCursor_OneEmptyOneNonEmpty(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3871,7 +3871,7 @@ func TestMergeSortCursor_StringComparisonKeys(t *testing.T) {
 		qr("name", "dave"),
 	})
 
-	compKey := values.NewFlatFieldValue("name", values.TypeString)
+	compKey := values.NewFieldValueWithResolvedOrdinal("name", 0, values.TypeString)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3898,7 +3898,7 @@ func TestMergeSortCursor_CloseIdempotent(t *testing.T) {
 	t.Parallel()
 
 	input := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{input},
 		[]values.Value{compKey},
@@ -3936,7 +3936,7 @@ func TestMergeSortCursor_ReverseDedup(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4643,9 +4643,9 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		qr("dept", "B", "amount", int64(30)),
 	})
 
-	groupKeys := []values.Value{values.NewFlatFieldValue("dept", values.TypeString)}
+	groupKeys := []values.Value{values.NewFieldValueWithResolvedOrdinal("dept", 1, values.TypeString)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: values.NewFlatFieldValue("amount", values.TypeInt)},
+		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.TypeInt)},
 	}
 	c := newAggregateCursor(inner, groupKeys, aggs, nil, nil)
 	defer c.Close()

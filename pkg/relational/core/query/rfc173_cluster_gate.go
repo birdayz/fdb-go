@@ -731,17 +731,27 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 	return labels, true
 }
 
+// starSpineAliasBinding is one spine link label's binding: the link's VISIBLE
+// correlation name plus the label's slot WITHIN the link's leg window (the
+// element rides slot 0, the AT ordinal slot 1 — the runtime OrdinalityLegs
+// layout, `_0`=element / `_1`=ordinal).
+type starSpineAliasBinding struct {
+	Corr string
+	Ord  int
+}
+
 // starSpineAliasBindings walks a star body's unnest-right spine (the top join
 // down through every lateral link) and returns each link's AS/AT LABEL mapped
 // to the link's VISIBLE correlation name (unnestSourceCorrelation — the
 // quantifier both bindings ride, the exact correlation the SQL resolver's
-// ResolveColumnShadowingQualified emits for a reference to the binding), plus
-// the total alias-column COUNT (kept separately: two links sharing a label
-// collapse to one map key but still contribute two seed columns — the count
-// anchors the bottom-region boundary in the shadow dedup, and the shared-label
-// shape itself declines at the unique guard).
-func starSpineAliasBindings(j *logical.LogicalJoin) (map[string]string, int) {
-	bindings := make(map[string]string, 2)
+// ResolveColumnShadowingQualified emits for a reference to the binding) plus
+// the label's leg-window ordinal, plus the total alias-column COUNT (kept
+// separately: two links sharing a label collapse to one map key but still
+// contribute two seed columns — the count anchors the bottom-region boundary
+// in the shadow dedup, and the shared-label shape itself declines at the
+// unique guard).
+func starSpineAliasBindings(j *logical.LogicalJoin) (map[string]starSpineAliasBinding, int) {
+	bindings := make(map[string]starSpineAliasBinding, 2)
 	count := 0
 	for cur := logical.LogicalOperator(j); ; {
 		bj, isJoin := cur.(*logical.LogicalJoin)
@@ -753,12 +763,14 @@ func starSpineAliasBindings(j *logical.LogicalJoin) (map[string]string, int) {
 			break
 		}
 		corr := unnestSourceCorrelation(un).Name()
+		ord := 0
 		if un.Alias != "" {
-			bindings[strings.ToUpper(un.Alias)] = corr
+			bindings[strings.ToUpper(un.Alias)] = starSpineAliasBinding{Corr: corr, Ord: ord}
+			ord++
 			count++
 		}
 		if un.AtAlias != "" {
-			bindings[strings.ToUpper(un.AtAlias)] = corr
+			bindings[strings.ToUpper(un.AtAlias)] = starSpineAliasBinding{Corr: corr, Ord: ord}
 			count++
 		}
 		cur = bj.Left

@@ -391,11 +391,14 @@ func TestRFC173S2_LegWindowRow(t *testing.T) {
 }
 
 // TestRFC173S2_LegWindow_WrongSlotHazard is the red→green pin on the EXACT
-// hazard the W3 pre-code ruling exists for (review condition 4): a LAZY leg
-// reference FieldValue(QOV(B), "ID") derives a LEG-relative ordinal (0, from
-// B's type) — evaluated over the MERGED positional row without windows it
-// reads absolute slot 0 and returns A's ID, silently wrong; through the leg
-// window binder it reads window B slot 0 = merged slot 2, correct.
+// hazard the W3 pre-code ruling exists for (review condition 4): a SOURCE-RELATIVE
+// leg reference FieldValue(QOV(B), "W") carries a LEG-relative ordinal (1, from
+// B's type). Evaluated over the bare MERGED positional row WITHOUT leg context it
+// cannot address B's own window; under RFC-173 item C's correct-or-loud rule a
+// source-relative ordinal over a MULTI-LEG row with no leg binding fails LOUD
+// rather than silently misreading the wrong leg's slot (A.V at absolute slot 1).
+// Through the leg window binder it reads window B slot 1 = merged slot 3, correct
+// (B's W = 20).
 func TestRFC173S2_LegWindow_WrongSlotHazard(t *testing.T) {
 	t.Parallel()
 	corrA := values.NamedCorrelationIdentifier("a")
@@ -409,45 +412,44 @@ func TestRFC173S2_LegWindow_WrongSlotHazard(t *testing.T) {
 	}
 	merged := ojMergedRow(t, mergedType) // [A.ID=1, A.V=10, B.ID=2, B.W=20]
 
-	// The discriminating probe is B.W (review W3a-1: probing B.ID yields
-	// A's ID=1 under EITHER misread mechanism — leg-relative resolveOrdinal(0)
-	// at absolute slot 0, or first-match GetByName("ID") on the dup-named
-	// merged type. B.W's leg-relative ordinal is 1 → absolute slot 1 = A.V=10,
-	// while GetByName("W") on the merged type would find slot 3 = 20 — so the
-	// 10 assertion proves the misread is the resolveOrdinal path specifically).
-	lazyBW := values.NewFieldValue(qovB, "W", values.NotNullLong)
+	// The discriminating probe is B.W: its source-relative ordinal is 1. Over the
+	// bare merged row a leg-oblivious read would land on absolute slot 1 = A.V=10
+	// (the wrong leg) — item C forbids that silent misread, so a source-relative
+	// ordinal over a MULTI-LEG row with no leg binding is loud.
+	bwRef := values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "W", 1, values.NotNullLong)
 
-	// (i) THE HAZARD, proven real: merged row as bare Positional, no leg
-	// bindings — lazy B.W's leg-relative ordinal 1 reads absolute slot 1 =
-	// A's V. This assertion is the RED half: if it ever starts returning 20,
-	// the window scaffolding has become dead weight and the ruling needs
-	// revisit.
-	got, err := lazyBW.Evaluate(&values.RowEvalContext{Positional: merged})
-	if err != nil {
-		t.Fatalf("hazard eval errored: %v", err)
-	}
-	if got != int64(10) {
-		t.Fatalf("lazy B.W over the bare merged row = %v, want the MISREAD 10 (A's V at absolute slot 1, via leg-relative resolveOrdinal) — the hazard the leg windows exist for", got)
+	// (i) THE HAZARD, caught: merged row as a bare multi-leg Positional, no leg
+	// bindings — item C's correct-or-loud rule refuses to serve B's source-relative
+	// ordinal against the foreign merged slots and errors loudly instead of
+	// misreading A's V. This is the RED half: a silent read here would be the bug
+	// the leg windows exist to prevent.
+	if _, err := bwRef.Evaluate(&values.RowEvalContext{Positional: merged}); err == nil {
+		t.Fatal("B.W over the bare multi-leg merged row must be LOUD (correct-or-loud), not a silent misread of A's V at absolute slot 1")
+	} else {
+		var ue *values.UnboundEvalContextError
+		if !errors.As(err, &ue) {
+			t.Fatalf("hazard eval error = %v, want *UnboundEvalContextError (multi-leg row cannot serve a source-relative ordinal)", err)
+		}
 	}
 
 	// (ii) GREEN: the same node through the leg window binder reads window B
 	// slot 1 = merged slot 3 = B's W.
 	binder := &legWindowBinder{spans: spans, row: merged}
-	got, err = lazyBW.Evaluate(&values.RowEvalContext{Correlations: binder})
+	got, err := bwRef.Evaluate(&values.RowEvalContext{Correlations: binder})
 	if err != nil {
 		t.Fatalf("windowed eval errored: %v", err)
 	}
 	if got != int64(20) {
-		t.Fatalf("lazy B.W through the leg window = %v, want 20 (B's W)", got)
+		t.Fatalf("B.W through the leg window = %v, want 20 (B's W)", got)
 	}
-	// Secondary: lazy B.ID misreads too (leg-relative 0 → absolute 0 = A's ID)
-	// and the window corrects it.
-	lazyBID := values.NewFieldValue(qovB, "ID", values.NotNullLong)
-	if got, _ := lazyBID.Evaluate(&values.RowEvalContext{Positional: merged}); got != int64(1) {
-		t.Fatalf("lazy B.ID over the bare merged row = %v, want the misread 1", got)
+	// Secondary: B.ID's source-relative ordinal 0 is likewise loud over the bare
+	// multi-leg merged row and correct (2) through the window.
+	bidRef := values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong)
+	if _, err := bidRef.Evaluate(&values.RowEvalContext{Positional: merged}); err == nil {
+		t.Fatal("B.ID over the bare multi-leg merged row must be LOUD, not a silent misread of A's ID")
 	}
-	if got, _ := lazyBID.Evaluate(&values.RowEvalContext{Correlations: binder}); got != int64(2) {
-		t.Fatalf("lazy B.ID through the leg window = %v, want 2", got)
+	if got, _ := bidRef.Evaluate(&values.RowEvalContext{Correlations: binder}); got != int64(2) {
+		t.Fatalf("B.ID through the leg window = %v, want 2", got)
 	}
 
 	// A BAKED B#0 through the binder reads the same correct slot.

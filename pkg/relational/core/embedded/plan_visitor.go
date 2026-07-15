@@ -608,6 +608,25 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					if i < len(proj.ProjectedValues) {
 						if qv != nil {
 							proj.ProjectedValues[i] = qv
+						} else if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+							// RFC-173 item C: a qualified projection over a join
+							// emits the resolver's QUANTIFIER-ADDRESSED
+							// source-relative baked reference — the executor
+							// binds the leg window off the merged row's own leg
+							// boundaries (rowLegsBinder), so the read is
+							// positional. A DUPLICATED bare leaf keeps its
+							// QUALIFIED datum key (alias-pinned) so the two
+							// same-named columns do not collapse; a unique leaf
+							// keys bare.
+							proj.ProjectedValues[i] = bv
+							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
+								if proj.Aliases == nil {
+									proj.Aliases = make([]string, len(proj.Projections))
+								}
+								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
+									proj.Aliases[i] = strings.ToUpper(col)
+								}
+							}
 						} else {
 							proj.ProjectedValues[i] = &values.FieldValue{
 								Field: strings.ToUpper(col),
@@ -1430,6 +1449,58 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 // the two cannot diverge: it returns a value ONLY when the reference binds a
 // later duplicate leg (binding != alias); every other qualified key (distinct
 // aliases, first-occurrence legs) is untouched.
+// bareLeafDuplicated reports whether the BARE leaf of projection column i
+// collides (case-insensitive) with another projection column's EFFECTIVE
+// output label (its alias when aliased, else its bare leaf) — the shape whose
+// OUTPUT must stay QUALIFIED (`SELECT a.k, b.k` → columns A.K/B.K;
+// `SELECT t1.id AS id, t2.id` → the second stays T2.ID, colliding with the
+// alias), the name model's disambiguation rule that keeps two same-named leg
+// columns from collapsing in the datum map. A UNIQUE leaf keys bare.
+func bareLeafDuplicated(projCols, projAliases []string, i int) bool {
+	if i >= len(projCols) {
+		return false
+	}
+	leaf := parseColRef(projCols[i]).bare()
+	for j, c := range projCols {
+		if j == i {
+			continue
+		}
+		other := parseColRef(c).bare()
+		if j < len(projAliases) && projAliases[j] != "" {
+			other = projAliases[j]
+		}
+		if strings.EqualFold(other, leaf) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveQualifiedBaked resolves a QUALIFIED column reference through the scope
+// and returns it ONLY when the resolver produced a QUANTIFIER-ADDRESSED BAKED
+// reference (a QOV-child SourceRelativeBaked node — the RFC-173 item C
+// construction-bound ordinal). The executor binds the leg's window off the
+// merged row's own leg boundaries (rowLegsBinder), so the source-relative
+// ordinal reads positionally over the composed row. A CHILDLESS bake carries an
+// ordinal relative to its OWN source row (would misread another leg's slot over
+// a merged row) — excluded. A DUPLICATE plain alias (`FROM p AS a, q AS a`)
+// declines (stays display-keyed, loud). Any resolution error or lazy result
+// returns nil, keeping the caller's legacy emission (loud at runtime, never a
+// silent wrong-slot read).
+func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
+	if !ref.isQualified() {
+		return nil
+	}
+	rv, err := resolver.ResolveIdentifier(semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
+	if err != nil || rv == nil {
+		return nil
+	}
+	if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child != nil && fv.SourceRelativeBaked() {
+		return fv
+	}
+	return nil
+}
+
 func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) {
 	sort := findSort(op)
 	if sort == nil {
@@ -1455,6 +1526,14 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(ref.table), id)
 			if err == nil && qv != nil {
 				sort.Keys[i].Value = qv
+				continue
+			}
+			// RFC-173 item C: every other QUALIFIED sort key resolves through
+			// the scope to the quantifier-addressed source-relative baked
+			// reference so the key resolves positionally through its leg window
+			// (rowLegsBinder) instead of the retired flat dotted name read.
+			if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+				sort.Keys[i].Value = bv
 			}
 			continue
 		}

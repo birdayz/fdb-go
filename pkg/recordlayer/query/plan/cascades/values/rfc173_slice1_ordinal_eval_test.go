@@ -2,6 +2,7 @@ package values
 
 import (
 	"errors"
+	"sort"
 	"testing"
 )
 
@@ -31,18 +32,48 @@ func (r *fakeOrdinalRow) GetByName(name string) (any, bool) {
 
 // fom ("fake ordinal from map") wraps a name->value map as an OrdinalRow for the
 // value-eval unit tests that historically passed a bare name-keyed map to
-// Evaluate. RFC-173 retired the name-keyed row, so the ordinal PositionalRow
-// (here fakeOrdinalRow) is the sole eval context: a lazy FieldValue resolves by
-// GetByName (exact match on .Field). A key PRESENT with a nil value reads as SQL
-// NULL; an ABSENT key is a loud *OrdinalResolutionError (the frontier's
-// no-silent-miss contract), so a test that wants NULL must include the key.
+// Evaluate. Keys are SORTED, so a field's ordinal is its ALPHABETICAL slot
+// position — deterministic across runs (Go map iteration order is randomized).
+// RFC-173 item C retired the name-keyed row AND the runtime name->ordinal
+// fallback: the ordinal PositionalRow (here fakeOrdinalRow) is the sole eval
+// context and every column reference must carry a plan-time ordinal — a BAKED
+// FieldValue (fomB's baker, or NewFieldValueWithResolvedOrdinal /
+// NewCorrelatedFieldValueWithResolvedOrdinal) reads row.Get(ordinal). A LAZY
+// flat reference no longer resolves against fom by name; it fails loud. A key
+// PRESENT with a nil value reads as SQL NULL; an ABSENT key is a loud miss
+// (out-of-range ordinal), never a silent NULL — a test that wants NULL must
+// include the key.
 func fom(m map[string]any) *fakeOrdinalRow {
 	r := &fakeOrdinalRow{}
-	for k, v := range m {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		r.names = append(r.names, k)
-		r.slots = append(r.slots, v)
+		r.slots = append(r.slots, m[k])
 	}
 	return r
+}
+
+// fomB is fom plus a baker: bk(field, typ) returns a BAKED flat FieldValue whose
+// ordinal is field's (sorted) slot in the row — RFC-173 item C, every ref binds
+// its ordinal at plan time so runtime access is positional (row.Get(ordinal)),
+// never a name lookup. bk panics if field is absent from the row (a test bug —
+// bake only real columns; loud-miss behavior is exercised with a lazy
+// NewFlatFieldValue instead).
+func fomB(m map[string]any) (*fakeOrdinalRow, func(string, Type) *FieldValue) {
+	r := fom(m)
+	bk := func(field string, typ Type) *FieldValue {
+		for i, n := range r.names {
+			if n == field {
+				return NewFieldValueWithResolvedOrdinal(field, i, typ)
+			}
+		}
+		panic("fomB: baked field not present in row: " + field)
+	}
+	return r, bk
 }
 
 type ordEvalBinder struct {
@@ -57,22 +88,23 @@ func (b *ordEvalBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bo
 	return nil, false
 }
 
-// TestFieldValue_OrdinalEval_RFC173Slice1 exercises the DARK ordinal read path
+// TestFieldValue_OrdinalEval_RFC173Slice1 exercises the ordinal read path
 // FieldValue.Evaluate takes when the runtime row is an OrdinalRow (RFC-173
-// Slice 1). No production producer flows an OrdinalRow yet — this drives the
-// branch directly. It pins: (1) a flat reference resolves against the row's OWN
-// renamed type (the CTE-column-rename fix — the name map, keyed by the
-// UNDERLYING names, would read NULL); (2) a typed QOV-child reference bound to an
-// ordinal row resolves by ordinal; (3)+(4) a resolution miss is a LOUD
-// OrdinalResolutionError, never a silent NULL (reviewer: no name-map fallback on
-// the authoritative frontier).
+// Slice 1). It pins: (1) a BAKED flat reference reads its plan-time ordinal
+// positionally (the CTE-column-rename fix — post item-C the rename is baked, not
+// re-derived by name); (2) a BAKED QOV-child reference bound to an ordinal row
+// reads by ordinal; (3)+(4) a resolution miss (lazy flat miss / out-of-range
+// ordinal) is a LOUD OrdinalResolutionError, never a silent NULL (RFC-173 item C:
+// no name fallback on the authoritative frontier).
 func TestFieldValue_OrdinalEval_RFC173Slice1(t *testing.T) {
 	t.Parallel()
 
 	// (1) Flat FieldValue over an ordinal row — the CTE-rename shape. The row's
-	// TYPE carries the RENAMED names [X, Y]; slots are positional [10, 20]. Flat
-	// "X" resolves name->ordinal against the row's own type → slot 0.
-	flat := NewFlatFieldValue("X", UnknownType)
+	// TYPE carries the RENAMED names [X, Y]; slots are positional [10, 20]. Post
+	// RFC-173 item C the CTE rename is handled by BAKING X's ordinal at plan time
+	// (the retired runtime name->ordinal fallback is gone), so the baked "X" reads
+	// positional slot 0 directly.
+	flat := NewFieldValueWithResolvedOrdinal("X", 0, UnknownType)
 	renamedRow := &fakeOrdinalRow{names: []string{"X", "Y"}, slots: []any{int64(10), int64(20)}}
 	got, err := flat.Evaluate(renamedRow)
 	if err != nil {
@@ -83,14 +115,14 @@ func TestFieldValue_OrdinalEval_RFC173Slice1(t *testing.T) {
 	}
 
 	// (2) QOV-child FieldValue bound to an ordinal row (correlated path). The QOV
-	// is typed [ID, V]; "V" resolves to ordinal 1 → slot 1.
+	// is typed [ID, V]; "V" is BAKED to ordinal 1 → slot 1.
 	rt := NewRecordType("", false, []Field{
 		{Name: "ID", FieldType: UnknownType, Ordinal: 0},
 		{Name: "V", FieldType: UnknownType, Ordinal: 1},
 	})
 	corr := UniqueCorrelationIdentifier()
 	qov := NewQuantifiedObjectValueOfType(corr, rt)
-	fv := NewFieldValue(qov, "V", UnknownType)
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(qov, "V", 1, UnknownType)
 	binder := &ordEvalBinder{id: corr, bound: &fakeOrdinalRow{slots: []any{int64(10), int64(20)}}}
 	got, err = fv.Evaluate(&RowEvalContext{Correlations: binder})
 	if err != nil {

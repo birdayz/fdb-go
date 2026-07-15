@@ -157,7 +157,7 @@ func TestFDB_RFC173S4_BoxDupBuriedElementPredicate(t *testing.T) {
 		}
 	}
 
-	one := []string{"map[A.K:7 X:7]"} // the discriminating single row (mis-resolution → nil)
+	one := []string{"map[K:7 X:7]"} // the discriminating single row (mis-resolution → nil)
 
 	// PLACEMENT AXIS (c) — buried-vs-ELEMENT, the gated path the fix wires. Box-DUP
 	// (A.K dups scan B.K) AND NON-DUP (sibling E, no dup) BOTH resolve — proving the
@@ -187,37 +187,37 @@ func TestFDB_RFC173S4_BoxDupBuriedElementPredicate(t *testing.T) {
 	// drop (unbound → NULL = 300 → false), so both rows discriminate BOTH disjuncts bake.
 	t.Run("buried_element_in_or", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" = "X" OR A."K" = 300`,
-			[]string{"map[A.K:300 X:9]", "map[A.K:7 X:7]"})
+			[]string{"map[K:300 X:9]", "map[K:7 X:7]"})
 	})
 	// TWO buried refs + the element in ONE conjunct (`A.K + A.AID = X`): both buried leaves
 	// (A.K and A.AID, distinct slots in the box's A window) bake plus the element. A.K=7,
 	// A.AID=1 → 8 = X → the element 8 of ARR[7,8]. A non-recursing / single-ref bake → [].
 	t.Run("buried_element_two_buried_refs", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" + A."AID" = "X"`,
-			[]string{"map[A.K:7 X:8]"})
+			[]string{"map[K:7 X:8]"})
 	})
 
 	// PLACEMENT AXIS (a) — buried-vs-LITERAL pushes INTO the box (not the Explode filter);
 	// must stay correct (not regressed). A.K=7 keeps both its elements.
 	t.Run("placement_a_buried_literal_preserved", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" = 7`,
-			[]string{"map[A.K:7 X:7]", "map[A.K:7 X:8]"})
+			[]string{"map[K:7 X:7]", "map[K:7 X:8]"})
 	})
 	// PLACEMENT AXIS (b) — buried-vs-SCAN realizes as a JOIN predicate; must stay correct.
 	// A.K∈{7,300,NULL} <> B.K=200: keeps 7 & 300, drops NULL (NULL<>200=NULL).
 	t.Run("placement_b_buried_scan_preserved", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" <> B."K"`,
-			[]string{"map[A.K:300 X:9]", "map[A.K:7 X:7]", "map[A.K:7 X:8]"})
+			[]string{"map[K:300 X:9]", "map[K:7 X:7]", "map[K:7 X:8]"})
 	})
 
 	// FULL-NULL: the buried_element_box_dup case above already proves `A.K = X` DROPS the
-	// padded A.K=NULL row (its `one` result excludes map[A.K:<nil> X:55], NULL=55 → NULL
+	// padded A.K=NULL row (its `one` result excludes map[K:<nil> X:55], NULL=55 → NULL
 	// three-valued). Its contrast partner — `A.K IS NULL` KEEPS the padded row — proves the
 	// padded buried A.K resolves through the gather (a spurious match or unresolved read
 	// would diverge), a distinct axis.
 	t.Run("full_null_is_null_keeps", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" WHERE A."K" IS NULL`,
-			[]string{"map[A.K:<nil> X:55]"})
+			[]string{"map[K:<nil> X:55]"})
 	})
 
 	// NO-REGRESSION controls: box-only (no sibling → name-model path, bake not called) and

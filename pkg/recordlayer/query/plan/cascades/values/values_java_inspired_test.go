@@ -34,8 +34,10 @@ import (
 // surfaces with the failing row visible.
 func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// RFC-173 item C: operands carry plan-time ordinals — sorted {a,b,c} → a=0,
+	// b=1, c=2 (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -81,8 +83,10 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 // Math.addExact throwing ArithmeticException). The executor maps it to 22003.
 func TestArithmeticValue_OverflowPanics(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// RFC-173 item C: operands carry plan-time ordinals — sorted {a,b,c} → a=0,
+	// b=1, c=2 (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -119,8 +123,10 @@ func TestArithmeticValue_OverflowPanics(t *testing.T) {
 // Asymmetric for sub: MAX - (-1) overflows, but MAX - 1 = MAX-1.
 func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// RFC-173 item C: operands carry plan-time ordinals — sorted {a,b,c} → a=0,
+	// b=1, c=2 (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -156,9 +162,11 @@ func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 // to rewrite against.
 func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
-	c := &FieldValue{Field: "c", Typ: TypeInt}
+	// RFC-173 item C: operands carry plan-time ordinals — sorted {a,b,c} → a=0,
+	// b=1, c=2 (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	c := NewFieldValueWithResolvedOrdinal("c", 2, TypeInt)
 	// (a + b) * c
 	tree := &ArithmeticValue{
 		Op:    OpMul,
@@ -193,8 +201,10 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 // ArithmeticException). The executor surfaces it as a SQL error.
 func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// RFC-173 item C: operands carry plan-time ordinals — sorted {a,b,c} → a=0,
+	// b=1, c=2 (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	for _, op := range []ArithmeticOp{OpDiv, OpMod} {
 		op := op
 		t.Run(op.Symbol(), func(t *testing.T) {
@@ -219,8 +229,10 @@ func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 // to SQLSTATE 42804 by the executor.
 func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// RFC-173 item C: operands carry plan-time ordinals — sorted {a,b,c} → a=0,
+	// b=1, c=2 (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	cases := []struct {
 		name string
 		row  map[string]any

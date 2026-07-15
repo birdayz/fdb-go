@@ -54,11 +54,11 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 		if predicateReferencesOnlyKeys(p, groupKeySet) {
 			// RFC-173: a HAVING group-key reference is baked to the group-by OUTPUT
 			// ordinal. Below the GroupBy the row is the scan/inner layout, where that
-			// ordinal is invalid — so un-bake the pushed copy back to a name-relative
-			// reference (its display name is the group key's own column name, which
-			// resolves against the inner row). The residual copy that stays ABOVE the
-			// GroupBy keeps its baked ordinal.
-			pushable = append(pushable, predicates.ReplaceValues(p, unbakeGroupKeyRef))
+			// ordinal is invalid — so the pushed copy REBINDS to the GROUPING KEY'S
+			// OWN VALUE (the inner-row-addressed expression, itself construction-
+			// baked), Java's pushdown translation. The residual copy that stays
+			// ABOVE the GroupBy keeps its output-baked ordinal.
+			pushable = append(pushable, predicates.ReplaceValues(p, rebindGroupKeyRefToInner(gb.GetGroupingKeys())))
 		} else {
 			residual = append(residual, p)
 		}
@@ -79,18 +79,30 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 	}
 }
 
-// unbakeGroupKeyRef drops a FieldValue's RFC-173 baked-ordinal marker, restoring a
-// name-relative reference. Used when pushing a HAVING predicate BELOW the GroupBy:
-// the ordinal was resolved against the group-by OUTPUT row, which does not exist
-// below the aggregate, so the reference must resolve by its (group-key column) name
-// against the inner row instead. The display name is the group key's own column
-// name, which the inner scan/join row carries.
-func unbakeGroupKeyRef(v values.Value) values.Value {
-	fv, ok := v.(*values.FieldValue)
-	if !ok || fv.Resolved == nil {
+// rebindGroupKeyRefToInner returns the Value replacement that rewrites a
+// pushed HAVING reference naming a group key into THAT GROUPING KEY'S OWN
+// VALUE — the inner-row-addressed expression (itself RFC-173
+// construction-baked), which is what the reference denotes below the
+// aggregate. This is Java's push-down translation; the retired alternative
+// (strip the bake, re-resolve the bare name at runtime) is a deleted name
+// read. A reference matching no key is returned unchanged.
+func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Value {
+	return func(v values.Value) values.Value {
+		fv, ok := v.(*values.FieldValue)
+		if !ok {
+			return v
+		}
+		for _, k := range keys {
+			kfv, isFV := k.(*values.FieldValue)
+			if !isFV {
+				continue
+			}
+			if strings.EqualFold(kfv.Field, fv.Field) {
+				return k
+			}
+		}
 		return v
 	}
-	return &values.FieldValue{Field: fv.Field, Typ: fv.Typ, Child: fv.Child}
 }
 
 func buildGroupKeySet(keys []values.Value) map[string]struct{} {

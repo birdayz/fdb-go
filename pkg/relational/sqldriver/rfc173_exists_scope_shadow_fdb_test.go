@@ -209,7 +209,7 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 	// pre-mint; pinned as rows-invariance for the mint.
 	want("colliding_plain",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < OT."K")`,
-		[]string{"map[OT.K:50]", "map[OT.K:50]", "map[OT.K:50]"},
+		[]string{"map[K:50]", "map[K:50]", "map[K:50]"},
 		"")
 
 	// Non-correlated colliding inner (clean-build path, JoinPredicate nil):
@@ -226,7 +226,7 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 	// constant-true per pair → 3 rows.
 	want("noncolliding_control",
 		`SELECT OT."K" FROM OT, ST AS "S2" WHERE EXISTS (SELECT 1 FROM ST WHERE ST."C" < OT."K")`,
-		[]string{"map[OT.K:50]", "map[OT.K:50]", "map[OT.K:50]"},
+		[]string{"map[K:50]", "map[K:50]", "map[K:50]"},
 		"")
 
 	// NESTED EXISTS with a COLLIDING middle — the nestedOuterScopes
@@ -412,7 +412,7 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 	// the shape answers (Java live: constant-true ∃ → 3 rows)…
 	want("foldable_colliding_answers",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1)`,
-		[]string{"map[OT.K:50]", "map[OT.K:50]", "map[OT.K:50]"},
+		[]string{"map[K:50]", "map[K:50]", "map[K:50]"},
 		"")
 
 	// …while a GENUINELY-READ colliding ref still declines (Java live
@@ -429,7 +429,7 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 	// ∃ non-empty → both MA rows → {11,12}.
 	want("case1_exists_positive_answers",
 		`SELECT MA."ID" FROM MA, OT WHERE EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" > 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
-		[]string{"map[MA.ID:11]", "map[MA.ID:12]"},
+		[]string{"map[ID:11]", "map[ID:12]"},
 		"")
 
 	// A REFERENCE-FREE conjunct (1 = 0) carries the identical polarity
@@ -499,6 +499,6 @@ func TestFDB_RFC173_ExistsInnerShadow(t *testing.T) {
 	// 2 MA × 1 OT rows → [50, 50].
 	want("multisource_noncolliding_answers",
 		`SELECT OT."K" FROM MA, OT WHERE EXISTS (SELECT 1 FROM ST, MA AS "MI" WHERE ST."C" < OT."K")`,
-		[]string{"map[OT.K:50]", "map[OT.K:50]"},
+		[]string{"map[K:50]", "map[K:50]"},
 		"")
 }

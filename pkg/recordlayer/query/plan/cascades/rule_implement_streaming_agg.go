@@ -76,9 +76,13 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	sortKeys := make([]plans.SortKey, len(groupingKeys))
 	for i, gk := range groupingKeys {
-		if fv, ok := gk.(*values.FieldValue); ok && fv.Child == nil {
-			// A BARE field reference — the fast path: the InMemorySort executor reads
-			// the row's `Field` key directly (compareByField).
+		if fv, ok := gk.(*values.FieldValue); ok && fv.Child == nil && fv.Resolved == nil {
+			// A BARE LAZY field reference — the fast path: the InMemorySort
+			// executor reads the row's `Field` key directly (compareByField).
+			// A BAKED childless key (RFC-173 item C — plan-time ordinal) must
+			// NOT collapse to its name string: the ValueExpr path below carries
+			// the baked ordinal so the sort reads the same slot the aggregate
+			// groups by.
 			sortKeys[i] = plans.SortKey{Field: fv.Field}
 		} else {
 			// A CORRELATED/qualified group key (a FieldValue carrying a Child QOV,

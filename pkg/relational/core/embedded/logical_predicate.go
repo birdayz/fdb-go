@@ -2188,9 +2188,36 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				}
 				if len(sq.joins) > 0 {
 					if i < len(proj.ProjectedValues) {
-						proj.ProjectedValues[i] = &values.FieldValue{
-							Field: strings.ToUpper(col),
-							Typ:   values.UnknownType,
+						// RFC-173 item C: a qualified projection over a join
+						// emits the resolver's QUANTIFIER-ADDRESSED
+						// source-relative baked reference when resolvable (the
+						// executor binds the leg window off the merged row's
+						// own leg boundaries — rowLegsBinder); the flat dotted
+						// "ALIAS.COL" name read was the retired name model.
+						// Twin of the PlanVisitor's qualified-projection bind
+						// (incl. the DUPLICATED-bare-leaf qualified output pin).
+						cr := parseColRef(col)
+						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
+							// A DUPLICATE plain alias on THIS (subquery /
+							// union-branch) build path stays display-keyed and
+							// dies LOUD — the dup-alias-under-UNION face is not
+							// yet a supported Go extension (Java rejects the
+							// duplicate alias); the top-level dup-alias shapes
+							// (plan_visitor path) remain supported.
+							proj.ProjectedValues[i] = bv
+							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
+								if proj.Aliases == nil {
+									proj.Aliases = make([]string, len(proj.Projections))
+								}
+								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
+									proj.Aliases[i] = strings.ToUpper(col)
+								}
+							}
+						} else {
+							proj.ProjectedValues[i] = &values.FieldValue{
+								Field: strings.ToUpper(col),
+								Typ:   values.UnknownType,
+							}
 						}
 					}
 				} else {
@@ -3455,7 +3482,12 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		if ac.aggFunc == "" || (ac.aggExpr == nil && ac.aggArg == "") {
 			continue
 		}
-		idx := -1
+		// Collect EVERY matching aggregate slot — a HAVING that repeats a
+		// SELECT-list aggregate (`SELECT SUM(x) … HAVING SUM(x) > k`) creates a
+		// SECOND slot with the same canonical text; leaving it unresolved sends
+		// it down the lossy text reparse (parseAggregateText), whose flat dotted
+		// operand refs the ordinal frontier cannot resolve (RFC-173 item C).
+		var idxs []int
 		for i, aggText := range agg.Aggregates {
 			arg := ac.aggArg
 			if arg == "" && ac.aggExpr != nil {
@@ -3470,8 +3502,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 			expected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + arg + ")")
 			if strings.ToUpper(aggText) == expected {
-				idx = i
-				break
+				idxs = append(idxs, i)
+				continue
 			}
 			// The aggregate node's text may carry the BARE column while the
 			// parsed arg is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main
@@ -3480,12 +3512,11 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			if ref := parseColRef(arg); ref.isQualified() {
 				bareExpected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + ref.bare() + ")")
 				if strings.ToUpper(aggText) == bareExpected {
-					idx = i
-					break
+					idxs = append(idxs, i)
 				}
 			}
 		}
-		if idx < 0 {
+		if len(idxs) == 0 {
 			continue
 		}
 		var v values.Value
@@ -3512,7 +3543,9 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 			v = qv
 		}
-		operands[idx] = v
+		for _, idx := range idxs {
+			operands[idx] = v
+		}
 	}
 	agg.AggregateOperands = operands
 
@@ -3562,6 +3595,19 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			// >=2 arm is owned there, not here).
 			if qv, err := resolver.ResolveQualifiedProjection(qualID, semantic.NewUnquoted(ref.bare())); err == nil && qv != nil {
 				keyValues[i] = qv
+				filled = true
+				continue
+			}
+			// RFC-173 item C: every other QUALIFIED group key resolves through
+			// the scope to the quantifier-addressed source-relative baked
+			// reference (QOV(leg).col with the construction-bound ordinal) —
+			// the executor binds the leg's window off the merged row's own leg
+			// boundaries (rowLegsBinder), so the key resolves positionally
+			// instead of falling to the retired flat dotted "ALIAS.COL" name
+			// read. The group-key OUTPUT column is labeled by the BARE field
+			// (AggregateKeyColumnName) — the unified Java label rule.
+			if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+				keyValues[i] = bv
 				filled = true
 				continue
 			}

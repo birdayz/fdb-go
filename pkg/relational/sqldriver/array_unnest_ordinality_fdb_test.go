@@ -1092,7 +1092,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The same shape carrying the outer T1.ID through: each unnested element
 		// (101/201/202/203) pairs with its outer ID, and U.V=999 never appears.
 		assertRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U`, []string{
-			"T1.ID=1|V=101", "T1.ID=2|V=201", "T1.ID=2|V=202", "T1.ID=2|V=203",
+			"ID=1|V=101", "ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
 		})
 	})
 
@@ -1102,7 +1102,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// shadowing qualification only redirects a BARE `v`, the ambiguous one the
 		// unnest binding owns; `U.V` is unambiguous and unaffected.
 		assertRows(t, `SELECT "U"."V" FROM T1, T1."ARR1" AS "V", U`, []string{
-			"U.V=999", "U.V=999", "U.V=999", "U.V=999",
+			"V=999", "V=999", "V=999", "V=999",
 		})
 	})
 
@@ -1418,8 +1418,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// outer column PB.ID flows through the outer FlatMap merged row alongside
 		// the unnested element. RFC-142.
 		plan := assertRows(t, `SELECT PB."ID", "X" FROM (SELECT "V" FROM PA, PA."ARR" AS "V") AS "d", PB, PB."ARR" AS "X"`, []string{
-			"PB.ID=1|X=90", "PB.ID=1|X=90", "PB.ID=1|X=91",
-			"PB.ID=1|X=91", "PB.ID=1|X=92", "PB.ID=1|X=92",
+			"ID=1|X=90", "ID=1|X=90", "ID=1|X=91",
+			"ID=1|X=91", "ID=1|X=92", "ID=1|X=92",
 		})
 		// The OUTER unnest (PB.ARR) is a FlatMap over an Explode, and the derived
 		// table `d` carries its OWN FlatMap/Explode in the inner leg — two
@@ -1447,9 +1447,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// the derived table's own (non-ordinal) inner unnest. 2 derived rows × 3
 		// PB.ARR elements = 6 rows; ordinal 1,2,3 each appears twice.
 		plan := assertRows(t, `SELECT PB."ID", "X", "O" FROM (SELECT "V" FROM PA, PA."ARR" AS "V") AS "d", PB, PB."ARR" AS "X" AT "O"`, []string{
-			"O=1|PB.ID=1|X=90", "O=1|PB.ID=1|X=90",
-			"O=2|PB.ID=1|X=91", "O=2|PB.ID=1|X=91",
-			"O=3|PB.ID=1|X=92", "O=3|PB.ID=1|X=92",
+			"ID=1|O=1|X=90", "ID=1|O=1|X=90",
+			"ID=1|O=2|X=91", "ID=1|O=2|X=91",
+			"ID=1|O=3|X=92", "ID=1|O=3|X=92",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
@@ -1849,7 +1849,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// column: each element pairs with its outer ID and U.V=999 never leaks into
 		// the ordering.
 		assertOrderedRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U ORDER BY "V" DESC`, []string{
-			"T1.ID=2|V=203", "T1.ID=2|V=202", "T1.ID=2|V=201", "T1.ID=1|V=101",
+			"ID=2|V=203", "ID=2|V=202", "ID=2|V=201", "ID=1|V=101",
 		})
 	})
 
@@ -1889,7 +1889,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The inner projection reads the qualified element V.V; the inner sort reads it
 		// POSITIONALLY at the element slot (.V#3), never the bare V that mergeRows
 		// clobbers with GW.V and never GW.V's own slot (.V#5).
-		unnestMustContain(t, explain, "Project([V.V]")
+		unnestMustContain(t, explain, "Project([V.V#0]")
 		unnestMustContain(t, explain, ".V#3 DESC]")
 		unnestMustNotContain(t, explain, "Project([V],")
 		unnestMustNotContain(t, explain, "InMemorySort([V DESC]")
@@ -1919,7 +1919,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		unnestMustContain(t, explain, "Project([V.V]")
+		unnestMustContain(t, explain, "Project([V.V#0]")
 		unnestMustNotContain(t, explain, "Project([V],")
 	})
 
@@ -2381,7 +2381,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// DESC. Proves the qualified computed sort key composes with a projected outer
 		// column and the unnest element drives the order, never U.V=999.
 		assertOrderedRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U ORDER BY "V" * 1 DESC`, []string{
-			"T1.ID=2|V=203", "T1.ID=2|V=202", "T1.ID=2|V=201", "T1.ID=1|V=101",
+			"ID=2|V=203", "ID=2|V=202", "ID=2|V=201", "ID=1|V=101",
 		})
 	})
 
@@ -2429,7 +2429,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// id2's 201 and 203 survive (∈UV.V), 202 is dropped. Pins the outer column
 		// flows alongside the element-correlated existential. RFC-142.
 		assertRows(t, `SELECT T1."ID", "VAL" FROM T1, T1."ARR1" AS "VAL" WHERE EXISTS (SELECT 1 FROM UV WHERE "UV"."V" = "VAL")`, []string{
-			"T1.ID=2|VAL=201", "T1.ID=2|VAL=203",
+			"ID=2|VAL=201", "ID=2|VAL=203",
 		})
 	})
 
@@ -2689,7 +2689,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// buried-table column resolves AND the element filter pushed. Before the fix:
 		// EMPTY. RFC-142.
 		assertRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U WHERE "V" > 150 AND EXISTS (SELECT 1 FROM UV WHERE "UV"."ID" = T1."ID")`, []string{
-			"T1.ID=2|V=201", "T1.ID=2|V=202", "T1.ID=2|V=203",
+			"ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
 		})
 	})
 
@@ -3194,7 +3194,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The buried-unnest element WHERE composing with the outer T1.ID projection:
 		// each surviving element pairs with its outer ID, and U.V=999 never appears.
 		assertRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U WHERE "V" >= 202`, []string{
-			"T1.ID=2|V=202", "T1.ID=2|V=203",
+			"ID=2|V=202", "ID=2|V=203",
 		})
 	})
 
@@ -3266,7 +3266,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// only redirects the BARE `V` the unnest binding owns. Every (T1×ARR1×U) row has
 		// U.V=999, so it is one group of count 4 (101,201,202,203).
 		assertRows(t, `SELECT "U"."V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V", U GROUP BY "U"."V"`, []string{
-			"N=4|U.V=999",
+			"N=4|V=999",
 		})
 	})
 
@@ -3332,10 +3332,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// JU id1 with T1 id2 and JU id2 with T1 id1 (8 rows). Assert exactly the inner
 		// matches. Before the fix: the cross product (wrong K pairings, 8 rows).
 		plan := assertRows(t, `SELECT T1."ID", JU."K", "X" FROM T1 INNER JOIN JU ON JU."ID" = T1."ID", T1."ARR1" AS "X"`, []string{
-			"JU.K=1001|T1.ID=1|X=101",
-			"JU.K=2002|T1.ID=2|X=201",
-			"JU.K=2002|T1.ID=2|X=202",
-			"JU.K=2002|T1.ID=2|X=203",
+			"ID=1|K=1001|X=101",
+			"ID=2|K=2002|X=201",
+			"ID=2|K=2002|X=202",
+			"ID=2|K=2002|X=203",
 		})
 		// The unnest still lowers to a FlatMap over an Explode; the explicit join's ON
 		// equality is attached to the inner scan (not a cross join).
@@ -3349,10 +3349,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// outer row. Proves the ON-predicate attach composes with the ordinality
 		// 2-field record.
 		plan := assertRows(t, `SELECT T1."ID", "X", "O" FROM T1 INNER JOIN JU ON JU."ID" = T1."ID", T1."ARR1" AS "X" AT "O"`, []string{
-			"O=1|T1.ID=1|X=101",
-			"O=1|T1.ID=2|X=201",
-			"O=2|T1.ID=2|X=202",
-			"O=3|T1.ID=2|X=203",
+			"ID=1|O=1|X=101",
+			"ID=2|O=1|X=201",
+			"ID=2|O=2|X=202",
+			"ID=2|O=3|X=203",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
@@ -3363,7 +3363,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// 201 are filtered). The ON predicate must NOT be dropped (else id0/id2's other
 		// rows would leak) and the element filter pushes into the inner Explode.
 		assertRows(t, `SELECT T1."ID", "X" FROM T1 INNER JOIN JU ON JU."ID" = T1."ID", T1."ARR1" AS "X" WHERE "X" > 201`, []string{
-			"T1.ID=2|X=202", "T1.ID=2|X=203",
+			"ID=2|X=202", "ID=2|X=203",
 		})
 	})
 
@@ -3379,7 +3379,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// map carries the single `V.V` key, with NO outer T1.ID / ARR1 array. Before the
 		// fix: an unqualified star → the ENTIRE FlatMap row (outer columns leaked).
 		plan := assertRows(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V"`, []string{
-			"V.V=101", "V.V=201", "V.V=202", "V.V=203",
+			"V=101", "V=201", "V=202", "V=203",
 		})
 		unnestMustContain(t, plan, "FlatMap")
 		unnestMustContain(t, plan, "Explode")
@@ -3392,7 +3392,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// columns, 1-based and resetting per outer row. Assert exactly those two
 		// columns (no outer T1 columns). RFC-142.
 		plan := assertRows(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V" AT "O"`, []string{
-			"V.O=1|V.V=101", "V.O=1|V.V=201", "V.O=2|V.V=202", "V.O=3|V.V=203",
+			"O=1|V=101", "O=1|V=201", "O=2|V=202", "O=3|V=203",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
@@ -3403,7 +3403,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// path, not the lone-qualifier path). The outer ID flows AND the element V is
 		// the only star-expanded column. RFC-142.
 		assertRows(t, `SELECT T1."ID", "V".* FROM T1, T1."ARR1" AS "V"`, []string{
-			"T1.ID=1|V.V=101", "T1.ID=2|V.V=201", "T1.ID=2|V.V=202", "T1.ID=2|V.V=203",
+			"ID=1|V=101", "ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
 		})
 	})
 
@@ -3420,7 +3420,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// column (ARR1.ARR1) — the SAME unnest virtual source the explicit-alias
 		// `V.*` case (R18 P2b above) uses. Before the fix: 42F01. RFC-142.
 		plan := assertRows(t, `SELECT "ARR1".* FROM T1, T1."ARR1"`, []string{
-			"ARR1.ARR1=101", "ARR1.ARR1=201", "ARR1.ARR1=202", "ARR1.ARR1=203",
+			"ARR1=101", "ARR1=201", "ARR1=202", "ARR1=203",
 		})
 		unnestMustContain(t, plan, "FlatMap")
 		unnestMustContain(t, plan, "Explode")
@@ -3439,8 +3439,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// ordinal because it lives under the AS correlation, not because O is the
 		// qualifier. RFC-142.
 		plan := assertRows(t, `SELECT "ARR1".* FROM T1, T1."ARR1" AT "O"`, []string{
-			"ARR1.ARR1=101|ARR1.O=1", "ARR1.ARR1=201|ARR1.O=1",
-			"ARR1.ARR1=202|ARR1.O=2", "ARR1.ARR1=203|ARR1.O=3",
+			"ARR1=101|O=1", "ARR1=201|O=1",
+			"ARR1=202|O=2", "ARR1=203|O=3",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
@@ -3451,7 +3451,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// whitelist still accepts the explicit AS alias V. Pins that the
 		// default-alias whitelist addition did not disturb the explicit-alias path.
 		assertRows(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V"`, []string{
-			"V.V=101", "V.V=201", "V.V=202", "V.V=203",
+			"V=101", "V=201", "V=202", "V=203",
 		})
 	})
 
@@ -3564,7 +3564,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// qualified twin, not the scalar element) resolves through the same projection
 		// layer. All 6 crossed rows share SID=1.
 		assertRows(t, `SELECT WSRC."SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY WSRC."SID"`, []string{
-			"N=6|WSRC.SID=1",
+			"N=6|SID=1",
 		})
 		// GLOBAL aggregate COUNT(*) references no column, so it keeps the FLAT gathered
 		// seed — 1 WSRC row × {7,8} × 3 WAUX = 6. Pin the NO-wrap shape (ZERO Project) so
@@ -4116,14 +4116,14 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// bare-QOV element yielded partial leg coverage; the strict positional
 		// context then loudly missed the dotted read). ON keeps XID=1 only.
 		r18Explain := assertRows(t, `SELECT WSRC."SID", WAUX."WV", "EL" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL"`, []string{
-			"EL=7|WAUX.WV=5|WSRC.SID=1", "EL=8|WAUX.WV=5|WSRC.SID=1",
+			"EL=7|SID=1|WV=5", "EL=8|SID=1|WV=5",
 		})
 		if !strings.Contains(r18Explain, "FlatMap(outer=Scan(WSRC)") {
 			t.Fatalf("the ON-carrying dotted-projection query must plan through the GATHERED path:\n%s", r18Explain)
 		}
 		// The AS+AT (full-baked) form of the same shape, plus an element WHERE.
 		assertRows(t, `SELECT WSRC."SID", "EL", "O" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL" AT "O" WHERE "EL" > 7`, []string{
-			"EL=8|O=2|WSRC.SID=1",
+			"EL=8|O=2|SID=1",
 		})
 
 		// SHADOWING through the gathered path (the commit-2 lift, R16's class):
@@ -4469,11 +4469,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 
 		// (1) Derived-table passthrough: the derived body projects the base array
 		// column unchanged; the outer unnests `d.DARR`. DID 1 → two rows, DID 2 →
-		// one, DID 3 (NULL) → zero. The projected owner column is keyed by its
-		// qualified derived-alias label (D.DID) in the merged row.
+		// one, DID 3 (NULL) → zero. The projected owner column keys BARE (DID) —
+		// the ordinal model's unique-leaf keying.
 		p1 := assertRowsOrdered(t,
 			`SELECT "d"."DID", "EL" FROM (SELECT "DID", "DARR" FROM DRV) AS "d", "d"."DARR" AS "EL" ORDER BY "DID", "EL"`,
-			[]string{"D.DID=1|EL=10", "D.DID=1|EL=11", "D.DID=2|EL=20"})
+			[]string{"DID=1|EL=10", "DID=1|EL=11", "DID=2|EL=20"})
 		unnestMustContain(t, p1, "FlatMap")
 		unnestMustContain(t, p1, "Explode")
 
@@ -4485,11 +4485,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			[]string{"EL=10", "EL=11", "EL=20"})
 
 		// (3) CTE passthrough: the same bare passthrough via a WITH-CTE output
-		// (`c.DARR`) instead of an inline derived table — same rows as (1), keyed by
-		// the CTE-alias label (C.DID).
+		// (`c.DARR`) instead of an inline derived table — same rows as (1); the
+		// unique qualified projection leaf keys BARE (DID) under the ordinal model.
 		p3 := assertRowsOrdered(t,
 			`WITH "C" AS (SELECT "DID", "DARR" FROM DRV) SELECT "C"."DID", "EL" FROM "C", "C"."DARR" AS "EL" ORDER BY "DID", "EL"`,
-			[]string{"C.DID=1|EL=10", "C.DID=1|EL=11", "C.DID=2|EL=20"})
+			[]string{"DID=1|EL=10", "DID=1|EL=11", "DID=2|EL=20"})
 		unnestMustContain(t, p3, "FlatMap")
 		unnestMustContain(t, p3, "Explode")
 
@@ -4499,13 +4499,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// filter must not silently drop the whole unnest, nor leak DID 1 (DVAL=5).
 		assertRowsOrdered(t,
 			`SELECT "d"."DID", "EL" FROM (SELECT "DID", "DARR" FROM DRV WHERE "DVAL" >= 6) AS "d", "d"."DARR" AS "EL" ORDER BY "DID", "EL"`,
-			[]string{"D.DID=2|EL=20"})
+			[]string{"DID=2|EL=20"})
 
 		// (5) AT-ordinality over a derived passthrough: the 1-based ordinal restarts
 		// per owner row (1,2 for DID 1's {10,11}; 1 for DID 2's {20}).
 		p5 := assertRowsOrdered(t,
 			`SELECT "d"."DID", "EL", "O" FROM (SELECT "DID", "DARR" FROM DRV) AS "d", "d"."DARR" AS "EL" AT "O" ORDER BY "DID", "EL"`,
-			[]string{"D.DID=1|EL=10|O=1", "D.DID=1|EL=11|O=2", "D.DID=2|EL=20|O=1"})
+			[]string{"DID=1|EL=10|O=1", "DID=1|EL=11|O=2", "DID=2|EL=20|O=1"})
 		unnestMustContain(t, p5, "WITH ORDINALITY")
 	})
 

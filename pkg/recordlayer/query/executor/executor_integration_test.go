@@ -268,7 +268,7 @@ func TestIntegration_FilterPlan(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(100)),
@@ -324,7 +324,7 @@ func TestIntegration_SortLimitPlan(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false}},
+			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false}},
 			scan,
 		)
 		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 0)
@@ -492,7 +492,7 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "ORDER_ID"},
+					values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(601)),
@@ -765,7 +765,7 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(150)),
@@ -775,7 +775,7 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 			scan,
 		)
 		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: true}},
+			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: true}},
 			filter,
 		)
 		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 0)
@@ -832,7 +832,7 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 		// to the result-set columns — the name-keyed Datum no longer backs the read.
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{&values.FieldValue{Field: "ORDER_ID"}, &values.FieldValue{Field: "PRICE"}},
+			[]values.Value{values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType), values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			scan,
 		)
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -910,7 +910,7 @@ func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{&values.FieldValue{Field: "PRICE"}},
+			[]values.Value{values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			scan,
 		)
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -976,7 +976,7 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThanEq,
 						Operand: values.LiteralValue(int64(30)),
@@ -986,12 +986,12 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 			scan,
 		)
 		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false}},
+			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false}},
 			filter,
 		)
 		// Project PRICE, ORDER_ID so the output row is ordinal-aligned to the columns.
 		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{&values.FieldValue{Field: "PRICE"}, &values.FieldValue{Field: "ORDER_ID"}},
+			[]values.Value{values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
 			sorted,
 		)
 
@@ -1055,7 +1055,7 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		proj := plans.NewRecordQueryProjectionPlan(
-			[]values.Value{&values.FieldValue{Field: "ORDER_ID"}, &values.FieldValue{Field: "PRICE"}},
+			[]values.Value{values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType), values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			scan,
 		)
 		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -1145,7 +1145,7 @@ func TestIntegration_ProjectionPlan(t *testing.T) {
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				&values.FieldValue{Field: "PRICE"},
+				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 			},
 			scan,
 		)
@@ -1201,8 +1201,8 @@ func TestIntegration_ProjectionPlan_MultiColumn(t *testing.T) {
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				&values.FieldValue{Field: "ORDER_ID"},
-				&values.FieldValue{Field: "PRICE"},
+				values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
+				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 			},
 			scan,
 		)
@@ -1315,7 +1315,7 @@ func TestIntegration_ParameterBinding_Filter(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.NewParameterValue(1),
@@ -1513,7 +1513,7 @@ func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
 			outerScan, innerScan,
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "QUANTITY"},
+					values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(5)),
@@ -1584,7 +1584,7 @@ func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
 			outerScan, innerScan,
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "QUANTITY"},
+					values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(5)),
@@ -1660,7 +1660,7 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "ORDER_ID"},
+					values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(8201)),
@@ -1823,10 +1823,10 @@ func TestIntegration_StreamingAggregation_CountAndSum(t *testing.T) {
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
-			[]values.Value{&values.FieldValue{Field: "PRICE"}},
+			[]values.Value{values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "ORDER_ID"}},
-				{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "QUANTITY"}},
+				{Function: expressions.AggCount, Operand: values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
+				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType)},
 			},
 		)
 
@@ -1902,9 +1902,9 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "ORDER_ID"}},
-				{Function: expressions.AggMin, Operand: &values.FieldValue{Field: "PRICE"}},
-				{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "PRICE"}},
+				{Function: expressions.AggCount, Operand: values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
+				{Function: expressions.AggMin, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggMax, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			},
 		)
 
@@ -2021,7 +2021,7 @@ func TestIntegration_LimitWithOffset(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false}},
+			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false}},
 			scan,
 		)
 		// OFFSET 2, LIMIT 2 — skip first 2 (price=10,20), take next 2 (price=30,40)
@@ -2082,9 +2082,9 @@ func TestIntegration_Aggregation_MinMaxAvg(t *testing.T) {
 			scan,
 			nil, // no grouping keys — aggregate over all
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggMin, Operand: &values.FieldValue{Field: "PRICE"}},
-				{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "PRICE"}},
-				{Function: expressions.AggAvg, Operand: &values.FieldValue{Field: "PRICE"}},
+				{Function: expressions.AggMin, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggMax, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggAvg, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			},
 		)
 
@@ -2144,7 +2144,7 @@ func TestIntegration_DeletePlan_WithFilter(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(75)),
@@ -2218,7 +2218,7 @@ func TestIntegration_ParameterBinding_Delete(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "ORDER_ID"},
+					values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: &values.ParameterValue{Ordinal: 1},
@@ -2289,12 +2289,12 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
-			[]values.Value{&values.FieldValue{Field: "PRICE"}},
+			[]values.Value{values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "ORDER_ID"}},
-				{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "QUANTITY"}},
-				{Function: expressions.AggMin, Operand: &values.FieldValue{Field: "QUANTITY"}},
-				{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "QUANTITY"}},
+				{Function: expressions.AggCount, Operand: values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
+				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType)},
+				{Function: expressions.AggMin, Operand: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType)},
+				{Function: expressions.AggMax, Operand: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType)},
 			},
 		)
 
@@ -2383,7 +2383,7 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(200)),
@@ -2393,13 +2393,13 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 			scan,
 		)
 		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false}},
+			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false}},
 			filter,
 		)
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				&values.FieldValue{Field: "PRICE"},
-				&values.FieldValue{Field: "QUANTITY"},
+				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
+				values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType),
 			},
 			sorted,
 		)
@@ -2579,10 +2579,10 @@ func TestIntegration_Aggregation_EmptyInput(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "ORDER_ID"}},
-				{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "PRICE"}},
-				{Function: expressions.AggMin, Operand: &values.FieldValue{Field: "PRICE"}},
-				{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "PRICE"}},
+				{Function: expressions.AggCount, Operand: values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType)},
+				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggMin, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
+				{Function: expressions.AggMax, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			},
 		)
 
@@ -2642,7 +2642,7 @@ func TestIntegration_UpdatePlan_MultipleFields(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "ORDER_ID"},
+					values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(17201)),
@@ -2782,8 +2782,8 @@ func TestIntegration_SortPlan_MultiKey(t *testing.T) {
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		sorted := plans.NewRecordQuerySortPlan(
 			[]expressions.SortKey{
-				{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false},
-				{Value: &values.FieldValue{Field: "QUANTITY"}, Reverse: true},
+				{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false},
+				{Value: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType), Reverse: true},
 			},
 			scan,
 		)
@@ -2850,7 +2850,7 @@ func TestIntegration_UnionPlan_DisjointLegs(t *testing.T) {
 		filterLow := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonLessThan,
 						Operand: values.LiteralValue(int64(100)),
@@ -2864,7 +2864,7 @@ func TestIntegration_UnionPlan_DisjointLegs(t *testing.T) {
 		filterHigh := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonGreaterThan,
 						Operand: values.LiteralValue(int64(100)),
@@ -2931,7 +2931,7 @@ func TestIntegration_FilterPlan_NoMatch(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "PRICE"},
+					values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
 					predicates.Comparison{
 						Type:    predicates.ComparisonEquals,
 						Operand: values.LiteralValue(int64(99999)),
@@ -3164,7 +3164,7 @@ func TestIntegration_FilterPlan_IsNull(t *testing.T) {
 		filter := plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "QUANTITY"},
+					values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType),
 					predicates.Comparison{Type: predicates.ComparisonIsNull},
 				),
 			},
@@ -3221,7 +3221,7 @@ func TestIntegration_Aggregation_AVG(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggAvg, Operand: &values.FieldValue{Field: "PRICE"}},
+				{Function: expressions.AggAvg, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)},
 			},
 		)
 
@@ -3275,14 +3275,14 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "QUANTITY"}, Reverse: false},
+			{Value: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType), Reverse: false},
 		}, scan)
 		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			sort,
-			[]values.Value{&values.FieldValue{Field: "QUANTITY", Typ: values.TypeInt}},
+			[]values.Value{values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.TypeInt)},
 			[]expressions.AggregateSpec{
 				{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}},
-				{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "PRICE", Typ: values.TypeInt}},
+				{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt)},
 			},
 		)
 
@@ -3349,8 +3349,8 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 		nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan1, scan2, nil, plans.JoinInner, "ORDER", "ORDER", nil)
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
-				&values.FieldValue{Field: "ORDER_ID", Typ: values.TypeInt},
-				&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+				values.NewFieldValueWithResolvedOrdinal("ORDER_ID", 0, values.TypeInt),
+				values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt),
 			},
 			nlj,
 		)
@@ -3408,7 +3408,7 @@ func TestIntegration_SortPlan_Reverse(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "PRICE"}, Reverse: true},
+			{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: true},
 		}, scan)
 
 		cursor, err := ExecutePlan(ctx, sort, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -3461,11 +3461,11 @@ func TestIntegration_FilterPlan_CompoundPredicate(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		pricePred := predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt),
 			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(100)),
 		)
 		qtyPred := predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "QUANTITY", Typ: values.TypeInt},
+			values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.TypeInt),
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 		)
 		andPred := predicates.NewAnd(pricePred, qtyPred)
@@ -3518,7 +3518,7 @@ func TestIntegration_LimitOverSort(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "PRICE"}, Reverse: true},
+			{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: true},
 		}, scan)
 		limit := plans.NewRecordQueryLimitPlan(sort, int64(3), int64(0))
 
@@ -3625,11 +3625,11 @@ func TestIntegration_FilterPlan_OrPredicate(t *testing.T) {
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		lowPred := predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt),
 			predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(20)),
 		)
 		highPred := predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+			values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.TypeInt),
 			predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(100)),
 		)
 		orPred := predicates.NewOr(lowPred, highPred)

@@ -52,9 +52,9 @@ func TestRFC173Commit2_CursorResolvesFoldPositionally(t *testing.T) {
 	// dotted-frontier read (A.V), another dotted read into the OTHER leg (B.W),
 	// and a QOV-based leg ref (QOV(A).ID). None can resolve via the Datum below.
 	foldRV := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "AV", Value: &values.FieldValue{Field: "A.V", Typ: values.NotNullLong}},
-		values.RecordConstructorField{Name: "BW", Value: &values.FieldValue{Field: "B.W", Typ: values.NotNullLong}},
-		values.RecordConstructorField{Name: "AIDQ", Value: values.NewFieldValue(qovA, "ID", values.NotNullLong)},
+		values.RecordConstructorField{Name: "AV", Value: values.NewFieldValueWithResolvedOrdinal("A.V", 1, values.NotNullLong)},
+		values.RecordConstructorField{Name: "BW", Value: values.NewFieldValueWithResolvedOrdinal("B.W", 3, values.NotNullLong)},
+		values.RecordConstructorField{Name: "AIDQ", Value: values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong)},
 	)
 
 	mergedCorr := values.NamedCorrelationIdentifier("M")

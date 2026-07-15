@@ -68,6 +68,24 @@ func (r *PositionalRow) TypeNames() []string {
 	return names
 }
 
+// MultiLeg reports whether this row is a MULTI-LEG composed row (a merged
+// concat / clustered box row whose Type carries leg boundaries beyond a
+// single whole-row window). Consulted by values.FieldValue's correlated
+// fall-through arms: a source-relative baked ordinal cannot be served by a
+// multi-leg row (RFC-173 item C correct-or-loud).
+func (r *PositionalRow) MultiLeg() bool {
+	if r == nil || r.Type == nil || len(r.Type.Legs) == 0 {
+		return false
+	}
+	if len(r.Type.Legs) == 1 {
+		l := r.Type.Legs[0]
+		if l.Start == 0 && l.Width == len(r.Type.Fields) {
+			return false // a single whole-row window IS the source row
+		}
+	}
+	return true
+}
+
 // GetByName resolves name -> ordinal via the row's RecordType (FieldIndex, P1's
 // sound list-position lookup) then reads that slot. This is the bridge the P2
 // shadow assert uses to compare positional access against the legacy name-keyed
@@ -108,28 +126,15 @@ func (r *PositionalRow) GetByName(name string) (any, bool) {
 					break
 				}
 			}
-			// RFC-173: a QUALIFIED read ("V.X") over a frontier row whose leaf column
-			// is UNIQUE can only mean that column, so strip the qualifier and resolve
-			// the leaf. This mirrors the name model's nameReadRootKey fallback (Datum
-			// tried the qualified key then the root key). It is gated on UNIQUENESS:
-			// a join projection [NAME, NAME, QTY] (`SELECT c.name, p.name`) has an
-			// AMBIGUOUS leaf "NAME", and stripping "P.NAME" → the FIRST NAME (c.name)
-			// would mis-resolve a qualified ORDER BY / read — so an ambiguous leaf is
-			// left unresolved (nil,false) and the caller falls through to the
-			// name-keyed Datum (which disambiguates by the qualified key). The Legs
-			// path above already handles a leg-windowed join row with matching leg
-			// qualifiers; this fallback only fires when the qualifier matched no leg.
-			if ci, ok := r.Type.FieldIndex(col); ok {
-				leafCount := 0
-				for _, f := range r.Type.Fields {
-					if strings.EqualFold(f.Name, col) {
-						leafCount++
-					}
-				}
-				if leafCount == 1 {
-					return r.Get(ci)
-				}
-			}
+			// RFC-173 item D: the unique-leaf-strip heuristic (qualifier
+			// matched no leg → strip it and resolve the leaf when UNIQUE) is
+			// DELETED. Its one live consumer (lookupJoinKeyPositional's
+			// alias-qualified probe) already falls back to the BARE column
+			// read, whose FieldIndex first-match returns the identical slot
+			// for a unique leaf — so a dotted name that matches neither the
+			// flat type nor a leg window is now simply not found. Qualified
+			// reads bake at plan time; the leg-window arm above serves the
+			// leg-addressed runtime forms.
 		}
 		return nil, false
 	}

@@ -66,10 +66,15 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	for i, sk := range sortKeys {
 		field := ""
 		var valExpr values.Value
-		if fv, ok := sk.Value.(*values.FieldValue); ok && fv.Child == nil {
-			// A BARE field reference — the fast path: the executor reads the row's
-			// `Field` key directly (compareByField).
+		if fv, ok := sk.Value.(*values.FieldValue); ok && fv.Child == nil && fv.Resolved == nil {
+			// A BARE LAZY field reference — the fast path: the executor reads
+			// the row's `Field` key directly (compareByField). A BAKED childless
+			// key (RFC-173 item C) must NOT collapse to its name string — the
+			// ValueExpr path carries the plan-time ordinal.
 			field = strings.ToUpper(fv.Field)
+		} else if fv, ok := sk.Value.(*values.FieldValue); ok && fv.Child == nil {
+			field = strings.ToUpper(values.ColumnNameValue(sk.Value))
+			valExpr = sk.Value
 		} else {
 			// A CORRELATED/qualified reference (FieldValue with a Child QOV, e.g. a
 			// lateral-unnest `v.v` or a JOIN leg `T2.SK`) — or any non-FieldValue

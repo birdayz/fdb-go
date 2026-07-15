@@ -2,13 +2,14 @@ package values
 
 import "testing"
 
-// TestFieldValue_ResolveOrdinal_RFC173P1 pins P1's name->ordinal substrate for
-// the RFC-173 column-resolution migration: a FieldValue over a record-typed
-// child resolves f.Field to its declared ordinal (dark, non-authoritative), the
-// ordinal round-trips to the same field name (the invariant P2's positional
-// evaluation rests on), and the unresolvable cases — nil-Child leaf, non-record
-// child, absent field — correctly decline (those references stay on the name
-// path until P2 lands).
+// TestFieldValue_ResolveOrdinal_RFC173P1 pins the RFC-173 item C contract for
+// resolveOrdinal: the LAZY runtime name->ordinal derivation is RETIRED, so a
+// FieldValue over a record-typed child no longer resolves an ordinal by name —
+// it DECLINES. The ordinal is bound at PLAN time on a BAKED accessor, which
+// resolveOrdinal then returns directly. The declared ordinal still round-trips to
+// its field name (the invariant positional evaluation rests on), and the
+// unresolvable cases — nil-Child leaf, non-record child, absent lazy field —
+// correctly decline.
 func TestFieldValue_ResolveOrdinal_RFC173P1(t *testing.T) {
 	t.Parallel()
 	rec := NewRecordType("R", false, []Field{
@@ -17,18 +18,26 @@ func TestFieldValue_ResolveOrdinal_RFC173P1(t *testing.T) {
 	})
 	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), rec)
 
-	// Resolvable field -> its declared ordinal.
-	fv := NewFieldValue(qov, "name", NullableString)
-	ord, ok := fv.resolveOrdinal()
-	if !ok || ord != 1 {
-		t.Fatalf("resolveOrdinal(name) = (%d,%v), want (1,true)", ord, ok)
+	// RFC-173 item C: a LAZY typed-child node no longer derives an ordinal by name.
+	if _, ok := NewFieldValue(qov, "name", NullableString).resolveOrdinal(); ok {
+		t.Fatal("lazy typed-child must DECLINE post item-C (name-derive retired)")
 	}
-	// Round-trip invariant P2 will rely on: GetField(ordinal).Name == f.Field.
-	if got, ok2 := rec.GetField(ord); !ok2 || got.Name != fv.Field {
-		t.Fatalf("round-trip: GetField(%d).Name = %q, want %q", ord, got.Name, fv.Field)
+	// The declared ordinal for "name" is its slice position (1), and it round-trips
+	// to the field name — the invariant positional evaluation rests on.
+	ord, ok := rec.FieldIndex("name")
+	if !ok || ord != 1 {
+		t.Fatalf("FieldIndex(name) = (%d,%v), want (1,true)", ord, ok)
+	}
+	if got, ok2 := rec.GetField(ord); !ok2 || got.Name != "name" {
+		t.Fatalf("round-trip: GetField(%d).Name = %q, want %q", ord, got.Name, "name")
+	}
+	// A BAKED accessor carries that ordinal — resolveOrdinal returns it directly.
+	baked := NewCorrelatedFieldValueWithResolvedOrdinal(qov, "name", ord, NullableString)
+	if bord, bok := baked.resolveOrdinal(); !bok || bord != 1 {
+		t.Fatalf("baked resolveOrdinal(name) = (%d,%v), want (1,true)", bord, bok)
 	}
 
-	// nil-Child leaf: unresolvable (the P1 hard case — stays on the name path).
+	// nil-Child leaf: unresolvable (no child type to bind against).
 	if _, ok := NewFlatFieldValue("id", NotNullLong).resolveOrdinal(); ok {
 		t.Error("nil-Child leaf must not resolve an ordinal")
 	}
@@ -57,13 +66,25 @@ func TestFieldValue_ResolveOrdinal_RawDivergentRecord_RFC173P1(t *testing.T) {
 		{Name: "a", FieldType: NotNullLong, Ordinal: 1},
 		{Name: "b", FieldType: NotNullLong, Ordinal: 0},
 	}}
-	fv := NewFieldValue(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("raw"), raw), "b", NotNullLong)
-	ord, ok := fv.resolveOrdinal()
+	// Post RFC-173 item C the ordinal is bound at PLAN time. The plan-time
+	// derivation (RecordType.FieldIndex) uses the SLICE POSITION (1), NOT the stored
+	// Field.Ordinal (0) — so a raw divergent record bakes the correct slot. A lazy
+	// node declines (name-derive retired); the baked node returns the derived slot.
+	ord, ok := raw.FieldIndex("b")
 	if !ok || ord != 1 {
-		t.Fatalf("raw-record resolveOrdinal(b) = (%d,%v), want (1,true) — the SLICE POSITION, not the stored Ordinal 0", ord, ok)
+		t.Fatalf("raw-record FieldIndex(b) = (%d,%v), want (1,true) — the SLICE POSITION, not the stored Ordinal 0", ord, ok)
 	}
-	if g, _ := raw.GetField(ord); g.Name != "b" {
-		t.Fatalf("raw round-trip: GetField(%d).Name = %q, want b", ord, g.Name)
+	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("raw"), raw)
+	if _, lok := NewFieldValue(qov, "b", NotNullLong).resolveOrdinal(); lok {
+		t.Fatal("lazy typed-child must DECLINE post item-C (name-derive retired)")
+	}
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(qov, "b", ord, NotNullLong)
+	rord, rok := fv.resolveOrdinal()
+	if !rok || rord != 1 {
+		t.Fatalf("baked resolveOrdinal(b) = (%d,%v), want (1,true)", rord, rok)
+	}
+	if g, _ := raw.GetField(rord); g.Name != "b" {
+		t.Fatalf("raw round-trip: GetField(%d).Name = %q, want b", rord, g.Name)
 	}
 }
 
@@ -82,10 +103,15 @@ func TestFieldValue_OrdinalOrderingPrecondition_RFC173P1(t *testing.T) {
 		{Name: "a", FieldType: NotNullLong, Ordinal: 0},
 		{Name: "b", FieldType: NotNullLong, Ordinal: 1},
 	})
-	fvB := NewFieldValue(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), ordered), "b", NotNullLong)
-	ordB, ok := fvB.resolveOrdinal()
+	// Post RFC-173 item C a LAZY node declines; the ordinal is bound at plan time
+	// (slice position via FieldIndex) and a BAKED accessor returns it.
+	ordB, ok := ordered.FieldIndex("b")
 	if !ok || ordB != 1 {
-		t.Fatalf("ordered: resolveOrdinal(b) = (%d,%v), want (1,true)", ordB, ok)
+		t.Fatalf("ordered: FieldIndex(b) = (%d,%v), want (1,true)", ordB, ok)
+	}
+	fvB := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), ordered), "b", ordB, NotNullLong)
+	if o, bok := fvB.resolveOrdinal(); !bok || o != 1 {
+		t.Fatalf("ordered: baked resolveOrdinal(b) = (%d,%v), want (1,true)", o, bok)
 	}
 	if g, ok := ordered.GetField(ordB); !ok || g.Name != fvB.Field {
 		t.Fatalf("ordered round-trip broke: GetField(%d).Name=%q, want %q", ordB, g.Name, fvB.Field)
@@ -102,10 +128,13 @@ func TestFieldValue_OrdinalOrderingPrecondition_RFC173P1(t *testing.T) {
 			t.Fatalf("NewRecordType must normalise Field[%d].Ordinal to %d, got %d", i, i, f.Ordinal)
 		}
 	}
-	fvA := NewFieldValue(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("n"), normalized), "a", NotNullLong)
-	ordA, ok := fvA.resolveOrdinal()
+	ordA, ok := normalized.FieldIndex("a")
 	if !ok || ordA != 0 {
-		t.Fatalf("normalised: resolveOrdinal(a) = (%d,%v), want (0,true)", ordA, ok)
+		t.Fatalf("normalised: FieldIndex(a) = (%d,%v), want (0,true)", ordA, ok)
+	}
+	fvA := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("n"), normalized), "a", ordA, NotNullLong)
+	if o, aok := fvA.resolveOrdinal(); !aok || o != 0 {
+		t.Fatalf("normalised: baked resolveOrdinal(a) = (%d,%v), want (0,true)", o, aok)
 	}
 	if g, _ := normalized.GetField(ordA); g.Name != "a" {
 		t.Fatalf("normalised round-trip broke: GetField(%d).Name=%q, want a", ordA, g.Name)

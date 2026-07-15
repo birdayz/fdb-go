@@ -85,13 +85,15 @@ func TestFieldValue_OrdinalPresentNil_IsNull(t *testing.T) {
 	// unset optional reads NULL here (never an absent key), never a violation.
 	row := &w1Row{names: []string{"COUNT(*)", "SUM(AMOUNT)"}, slots: []any{int64(3), nil}}
 
-	v, err := (&FieldValue{Field: "SUM(AMOUNT)"}).Evaluate(row)
+	// RFC-173 item C: each reference carries its plan-time ordinal — the field's slot
+	// in the row (COUNT(*)=0, SUM(AMOUNT)=1), read positionally. Present-nil reads NULL.
+	v, err := NewFieldValueWithResolvedOrdinal("SUM(AMOUNT)", 1, UnknownType).Evaluate(row)
 	require.NoError(t, err)
 	if v != nil {
 		t.Fatalf("present nil-valued key: want nil value, got %v", v)
 	}
 
-	v, err = (&FieldValue{Field: "COUNT(*)"}).Evaluate(row)
+	v, err = NewFieldValueWithResolvedOrdinal("COUNT(*)", 0, UnknownType).Evaluate(row)
 	require.NoError(t, err)
 	if v != int64(3) {
 		t.Fatalf("present key: want 3, got %v", v)

@@ -2539,8 +2539,23 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		cd := deriveProjectionColumnDef(v, alias, i, descs)
 		if cd.Nullable == api.ColumnNoNulls {
-			if fv, ok := v.(*values.FieldValue); ok && fv.Child == nil {
-				if d := descriptorForColumn(fv.Field, descs); d != nil {
+			// The projected reference is either a FLAT (childless) read — its
+			// Field may carry the "LEG.COL" qualifier — or the resolver's
+			// QUANTIFIER-ADDRESSED bake (FieldValue{Child: QOV(leg), COL});
+			// compose the qualified lookup for the latter so the null-born
+			// upgrade fires for both emissions (the QOV form skipped it and
+			// reported a null-supplying window's column NoNulls).
+			lookup := ""
+			if fv, ok := v.(*values.FieldValue); ok {
+				switch child := fv.Child.(type) {
+				case nil:
+					lookup = fv.Field
+				case *values.QuantifiedObjectValue:
+					lookup = child.Correlation.Name() + "." + fv.Field
+				}
+			}
+			if lookup != "" {
+				if d := descriptorForColumn(lookup, descs); d != nil {
 					if _, born := nullBorn[d.FullName()]; born {
 						cd.Nullable = api.ColumnNullable
 					}
@@ -2666,6 +2681,23 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 			// bare ("NAME") for a single source; the user-visible label is
 			// always the bare column, matching Java.
 			displayLabel = strings.ToUpper(parseColRef(fv.Field).bare())
+		}
+	} else if fv, isField := v.(*values.FieldValue); isField && fv.Field != "" {
+		// A MACHINERY-pinned alias — the duplicated-bare-leaf dedup pins the
+		// projected reference's QUALIFIED spelling ("A.NAME" for QOV(A).NAME)
+		// as the alias so the two same-named datum keys do not collapse — is
+		// an INTERNAL key, not a user label: Java reports the bare column for
+		// `SELECT c.name, p.name` (both NAME, JDBC allows duplicate labels).
+		// Detect it by a DOTTED label whose leaf equals the projected
+		// reference's own leaf (the reference may since have been rebased —
+		// a projected-EXISTS fold re-anchors it onto the merged row — so the
+		// qualifier cannot be compared, only the leaf). A user alias that is
+		// dotted AND leaf-matches the projected column degrades to the bare
+		// leaf too — a pathological corner traded for the duplicated-leaf
+		// class matching Java's metadata.
+		if ref := parseColRef(label); ref.isQualified() &&
+			strings.EqualFold(ref.bare(), parseColRef(fv.Field).bare()) {
+			displayLabel = strings.ToUpper(ref.bare())
 		}
 	}
 	nullable := api.ColumnNullable
@@ -3201,6 +3233,12 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 			}
 			cols = append(cols, col)
 		}
+		// DUPLICATE bare labels stay BARE — Java's rule (the SELECT-list
+		// Identifier post-clearQualifier: `SELECT t1.id, t2.id` labels both
+		// columns ID; JDBC allows duplicate labels), pinned by the
+		// cross-engine conformance metadata corpus. The datum Name keeps the
+		// QUALIFIED form (bareLeafDuplicated) so internal reads never
+		// collapse the two columns — only the user-visible label is bare.
 		return cols
 	}
 

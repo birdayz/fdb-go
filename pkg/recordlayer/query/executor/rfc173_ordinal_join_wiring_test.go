@@ -325,8 +325,8 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_InnerJoin(t *testing.T) {
 		ojLegQR(t, legB, int64(3), int64(300)),
 	}
 	lazyPred := ojEqPred(
-		values.NewFieldValue(qovA, "ID", values.NotNullLong),
-		values.NewFieldValue(qovB, "ID", values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 
 	t.Run("lazy leg predicate + dual emission", func(t *testing.T) {
@@ -392,8 +392,8 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_HashPath(t *testing.T) {
 		ojLegQR(t, legA, int64(200), int64(2000)), // no hash match
 	}
 	pred := ojEqPred(
-		values.NewFieldValue(qovA, "ID", values.NotNullLong),
-		values.NewFieldValue(qovB, "ID", values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
 		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
@@ -430,8 +430,8 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_LeftOuterNullLeg(t *testing.T) {
 	}
 	innerRows := []QueryResult{ojLegQR(t, legB, int64(1), int64(100))}
 	pred := ojEqPred(
-		values.NewFieldValue(qovA, "ID", values.NotNullLong),
-		values.NewFieldValue(qovB, "ID", values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinLeftOuter,
 		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
@@ -458,8 +458,8 @@ func TestRFC173S2_NLJCursor_OrdinalBirth_FullDrain(t *testing.T) {
 		ojLegQR(t, legB, int64(3), int64(300)), // matches no outer row
 	}
 	pred := ojEqPred(
-		values.NewFieldValue(qovA, "ID", values.NotNullLong),
-		values.NewFieldValue(qovB, "ID", values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinFullOuter,
 		"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
@@ -489,8 +489,8 @@ func TestRFC173S2_NLJCursor_DualEmissionInvariance(t *testing.T) {
 		ojLegQR(t, legB, int64(2), int64(200)),
 	}
 	pred := ojEqPred(
-		values.NewFieldValue(qovA, "ID", values.NotNullLong),
-		values.NewFieldValue(qovB, "ID", values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	// A LAZY (un-baked) RC join seed — the shape a non-ordinal merge carries.
 	lazy := &values.RecordConstructorValue{
@@ -673,13 +673,13 @@ func TestRFC173S2_LegWindowRowContext(t *testing.T) {
 	})
 	rowCtx := legWindowRowContext(merged, ec, spans)
 
-	// The hazard pin, through the REAL builder: lazy B.W's leg-relative
+	// The hazard pin, through the REAL builder: B.W's source-relative
 	// ordinal is 1 — the bare merged row would misread absolute slot 1
 	// (A.V=10); the window reads merged slot 3 = 20.
-	lazyBW := values.NewFieldValue(qovB, "W", values.NotNullLong)
-	got, err := lazyBW.Evaluate(rowCtx)
+	bwRef := values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "W", 1, values.NotNullLong)
+	got, err := bwRef.Evaluate(rowCtx)
 	if err != nil {
-		t.Fatalf("lazy B.W through legWindowRowContext: %v", err)
+		t.Fatalf("B.W through legWindowRowContext: %v", err)
 	}
 	if got != int64(20) {
 		t.Fatalf("lazy B.W = %v, want 20 (B's W through the leg window, not A's V at absolute slot 1)", got)
@@ -693,7 +693,7 @@ func TestRFC173S2_LegWindowRowContext(t *testing.T) {
 		t.Fatalf("baked B#0 = (%v, %v), want (2, nil)", got, err)
 	}
 	// An OUTER correlation delegates through the base EvaluationContext.
-	outerRef := values.NewFieldValue(values.NewQuantifiedObjectValue(outerID), "X", values.NotNullLong)
+	outerRef := values.NewCorrelatedFieldValueWithResolvedOrdinal(values.NewQuantifiedObjectValue(outerID), "X", 0, values.NotNullLong)
 	if got, err := outerRef.Evaluate(rowCtx); err != nil || got != int64(42) {
 		t.Fatalf("outer correlation OUT.X = (%v, %v), want (42, nil) — must resolve via the base binder", got, err)
 	}

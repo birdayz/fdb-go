@@ -40,8 +40,8 @@ func TestExecuteProjection_OutputNames_RFC173(t *testing.T) {
 	// SELECT id, v AS renamed FROM tt — one bare column, one renamed.
 	proj := plans.NewRecordQueryProjectionPlanWithAliases(
 		[]values.Value{
-			values.NewFlatFieldValue("ID", values.UnknownType),
-			values.NewFlatFieldValue("V", values.UnknownType),
+			values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
+			values.NewFieldValueWithResolvedOrdinal("V", 1, values.UnknownType),
 		},
 		[]string{"", "RENAMED"},
 		plans.NewRecordQueryTempTableScanPlan(alias),

@@ -206,7 +206,7 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	if !strings.Contains(ex2, "inner=PredicatesFilter(Explode") {
 		t.Fatalf("threelink_straddling_match: straddle must land at the innermost Explode; plan=%s", ex2)
 	}
-	wantRows("threelink_straddling_match", r2, []string{"map[T4.ID:11 Z:11]"}, q2)
+	wantRows("threelink_straddling_match", r2, []string{"map[ID:11 Z:11]"}, q2)
 
 	// AND with inner ref: ID=1 ∩ Z>11 → {12,13}. AND-splits: the inner conjunct Z>11
 	// lands at the innermost Explode; the outer conjunct ID=1 lands as a mid-chain
@@ -256,7 +256,7 @@ func TestFDB_RFC173S4_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	}
 	// T4(11) Z=11 matches ID=11, × 3 T4C rows.
 	wantRows("boxbase_straddle_ordinalizes", r5,
-		[]string{"map[T4.ID:11 Z:11]", "map[T4.ID:11 Z:11]", "map[T4.ID:11 Z:11]"}, q5)
+		[]string{"map[ID:11 Z:11]", "map[ID:11 Z:11]", "map[ID:11 Z:11]"}, q5)
 
 	// A 2-CHAIN buried behind a trailing table (join.Right is a SCAN, not an unnest →
 	// never reaches the chained ordinal dispatch): stays on the buried-unnest path.

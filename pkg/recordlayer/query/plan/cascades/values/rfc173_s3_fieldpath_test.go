@@ -139,40 +139,43 @@ func TestRFC173S3_FusedPath_Evaluate(t *testing.T) {
 	_, outer := bakedChain(t)
 	fused := SimplifyValue(outer).(*FieldValue)
 
-	// Positional root, name-keyed nested record.
+	// Positional root, name-keyed nested record: the map[string]any descent
+	// is DELETED (RFC-173 item D — no live path flows a name-keyed map into
+	// a fused nested step; nested records surface as proto.Message or a
+	// positional row). A pinned fused path over a map nested value is LOUD,
+	// never a silent name read.
 	row := &fakeOrdinalRow{
 		names: []string{"NESTED", "W"},
 		slots: []any{map[string]any{"X": int64(1), "Y": int64(2)}, int64(9)},
 	}
-	got, err := fused.Evaluate(row)
-	if err != nil || got != int64(2) {
-		t.Fatalf("fused eval over positional root = (%v, %v), want (2, nil)", got, err)
+	var mapORE *OrdinalResolutionError
+	if _, err := fused.Evaluate(row); !errors.As(err, &mapORE) {
+		t.Fatalf("pinned fused descent into a name-keyed map = %v, want loud *OrdinalResolutionError (item D: the map name descent is deleted)", err)
 	}
-	// The LAZY chain computes the same value on the ordinal substrate: over a
-	// nested ORDINAL row, the inner step reads the nested row and the outer step
-	// resolves its column against it. (A nested name-keyed record — a proto.Message
-	// or map — is descended by the FUSED node's descendResolvedPath, the production
-	// path proven by the executor suite; a lazy chain re-enters Evaluate, so its
-	// intermediate must itself be an ordinal row.) The BAKED chain below cannot
-	// evaluate at all: its pinned outer sees the nested record as a bare context and
-	// the frontier guard is LOUD — fusion is what makes a baked nested access
-	// executable, which is why Java has no chained form.
+	// A LAZY chain can no longer compute this value post RFC-173 item C: the inner
+	// step (a lazy QOV-child "NESTED") carries no plan-time ordinal, and the retired
+	// runtime name->ordinal resolution is gone, so it fails LOUD
+	// (*OrdinalResolutionError) rather than reading the nested row by name. Only the
+	// FUSED node (descendResolvedPath) makes a nested access executable — which is
+	// why fusion exists and why Java has no chained form. The BAKED (unfused) chain
+	// is likewise loud below: its pinned outer sees the nested record as a bare
+	// context and the frontier guard fires.
 	qovBase := fused.Child.(*QuantifiedObjectValue)
 	lazyChain := NewFieldValue(NewFieldValue(qovBase, "NESTED", nil), "Y", NotNullLong)
 	nestedOrd := &fakeOrdinalRow{names: []string{"X", "Y"}, slots: []any{int64(1), int64(2)}}
-	lazyGot, err := lazyChain.Evaluate(&fakeOrdinalRow{names: []string{"NESTED", "W"}, slots: []any{nestedOrd, int64(9)}})
-	if err != nil || lazyGot != int64(2) {
-		t.Fatalf("lazy chain eval = (%v, %v), want (2, nil)", lazyGot, err)
+	var lazyORE *OrdinalResolutionError
+	if _, err := lazyChain.Evaluate(&fakeOrdinalRow{names: []string{"NESTED", "W"}, slots: []any{nestedOrd, int64(9)}}); !errors.As(err, &lazyORE) {
+		t.Fatalf("lazy chain eval = %v, want loud *OrdinalResolutionError (item C: an unbaked step no longer resolves by name)", err)
 	}
 	var chainBNCE *BakedNameContextError
 	var chainUCE *UnboundEvalContextError
-	if _, err = outer.Evaluate(row); !errors.As(err, &chainBNCE) && !errors.As(err, &chainUCE) {
+	if _, err := outer.Evaluate(row); !errors.As(err, &chainBNCE) && !errors.As(err, &chainUCE) {
 		t.Fatalf("UNfused baked chain eval = %v, want loud *BakedNameContextError or *UnboundEvalContextError (the intermediate record is a bare name-keyed map to the pinned outer)", err)
 	}
 
 	// Nested positional row: descend by ordinal.
 	nested := &fakeOrdinalRow{names: []string{"X", "Y"}, slots: []any{int64(3), int64(4)}}
-	got, err = fused.Evaluate(&fakeOrdinalRow{names: []string{"NESTED", "W"}, slots: []any{nested, int64(9)}})
+	got, err := fused.Evaluate(&fakeOrdinalRow{names: []string{"NESTED", "W"}, slots: []any{nested, int64(9)}})
 	if err != nil || got != int64(4) {
 		t.Fatalf("fused eval over nested positional = (%v, %v), want (4, nil)", got, err)
 	}
@@ -206,14 +209,16 @@ func TestRFC173S3_FusedPath_Evaluate(t *testing.T) {
 	// An UNPINNED fused path descends from its ROOT step's ORDINAL and then into
 	// the nested record — reading the display name (the LAST step, "Y") at the top
 	// level would be the trap. Here the root reads ordinal 0 (NESTED), never the
-	// top-level "Y" planted at ordinal 1.
+	// top-level "Y" planted at ordinal 1. (The nested record is a POSITIONAL
+	// row — the map[string]any vehicle this pin previously rode is deleted
+	// with the name descent, RFC-173 item D.)
 	unpinned := &FieldValue{
 		Field: "Y", Typ: NotNullLong,
 		Resolved: NewFieldPathOfSingle("NESTED", 0, false).WithSuffix(NewFieldPathOfSingle("Y", 1, false)),
 	}
 	got, err = unpinned.Evaluate(&fakeOrdinalRow{
 		names: []string{"NESTED", "Y"},
-		slots: []any{map[string]any{"Y": int64(5)}, int64(99)}, // ordinal 1 "Y"=99 is the trap
+		slots: []any{&fakeOrdinalRow{names: []string{"X", "Y"}, slots: []any{int64(0), int64(5)}}, int64(99)}, // ordinal 1 "Y"=99 is the trap
 	})
 	if err != nil || got != int64(5) {
 		t.Fatalf("unpinned fused ordinal descent = (%v, %v), want (5, nil) — root ordinal 0, then descend Y", got, err)

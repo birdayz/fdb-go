@@ -410,9 +410,12 @@ func tryMultiAggregateIntersection(
 	// name, so the comparison key matches identical group values across the
 	// per-aggregate streams. With a WHERE-equality prefix (cat='books')
 	// each stream emits exactly that one group; the keys still match.
+	// RFC-173 item C: each child row's layout is [groupCols..., FUNC(col)]
+	// (the aggregateIndexCursor's posType), so a grouping-column comparison
+	// key IS slot i — baked at plan time, read positionally per child row.
 	comparisonKey := make([]values.Value, len(groupCols))
 	for i, col := range groupCols {
-		comparisonKey[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+		comparisonKey[i] = values.NewFieldValueWithResolvedOrdinal(col, i, values.UnknownType)
 	}
 
 	// Result value = Record(groupCol0, ..., agg0, agg1, ...).
@@ -424,18 +427,25 @@ func tryMultiAggregateIntersection(
 	// resolves against the merged row the executor builds. Output field
 	// names match the single-aggregate path so the projection above reads
 	// the same keys regardless of which plan won.
+	// RFC-173 item C: the merge cursor evaluates the result value against the
+	// CONCATENATION of the matched child rows, each child spanning
+	// len(groupCols)+1 slots ([groupCols..., FUNC(col)]). A grouping column
+	// reads child 0's slot i (identical across children — the first-match the
+	// retired name read performed); child i's aggregate sits at its span's
+	// last slot. Baked, both read positionally.
+	childWidth := len(groupCols) + 1
 	fields := make([]values.RecordConstructorField, 0, len(groupCols)+len(aggs))
-	for _, col := range groupCols {
+	for i, col := range groupCols {
 		fields = append(fields, values.RecordConstructorField{
 			Name:  col,
-			Value: &values.FieldValue{Field: col, Typ: values.UnknownType},
+			Value: values.NewFieldValueWithResolvedOrdinal(col, i, values.UnknownType),
 		})
 	}
 	for i := range aggs {
 		colName := aggregateFlowedColumnName(matched[i].aggFunction.String(), matched[i].aggColumn)
 		fields = append(fields, values.RecordConstructorField{
 			Name:  colName,
-			Value: &values.FieldValue{Field: colName, Typ: values.UnknownType},
+			Value: values.NewFieldValueWithResolvedOrdinal(colName, i*childWidth+len(groupCols), values.UnknownType),
 		})
 	}
 	resultValue := values.NewRecordConstructorValue(fields...)

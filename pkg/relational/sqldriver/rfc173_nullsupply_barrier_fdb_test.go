@@ -124,5 +124,5 @@ func TestFDB_RFC173_NullSupplyBarrier(t *testing.T) {
 	// IS NULL variant — the sharpest discriminator: ONLY the null-padded rows.
 	run("left_where_is_null",
 		`SELECT "A"."ID" FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID" WHERE "B"."ID" IS NULL`,
-		[]string{"map[A.ID:11]", "map[A.ID:2]", "map[A.ID:3]"})
+		[]string{"map[ID:11]", "map[ID:2]", "map[ID:3]"})
 }

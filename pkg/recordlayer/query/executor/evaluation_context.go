@@ -89,6 +89,23 @@ func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values
 // the frontier dispatch is identical across them. hasBindingCtx is
 // params||scalarSubqueries||bindings for the caller's evalCtx.
 func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBindingCtx bool) any {
+	// RFC-173 item C: a row whose TYPE carries leg boundaries (a merged concat /
+	// clustered box row) serves its legs as correlation-bound windows, so a
+	// quantifier-addressed source-relative baked reference (QOV(leg).col with the
+	// source's declared-column ordinal) resolves positionally within its leg —
+	// Java's quantifier binding. The leg binder chains to the eval context for
+	// outer correlations.
+	if pr, isPR := pos.(*PositionalRow); isPR && pr != nil && pr.Type != nil && len(pr.Type.Legs) > 0 {
+		rc := &values.RowEvalContext{
+			Positional:   pos,
+			Correlations: &rowLegsBinder{base: correlationBase(ec), row: pr},
+		}
+		if ec != nil {
+			rc.Binder = ec
+			rc.ScalarSubqueries = ec.scalarSubqueries
+		}
+		return rc
+	}
 	if hasBindingCtx && ec != nil {
 		return ec.RowContextPositional(pos)
 	}

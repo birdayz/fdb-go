@@ -18,8 +18,9 @@ import (
 //	    of the same duplicate name hit their OWN slots;
 //	(2) an out-of-range resolved ordinal is a LOUD OrdinalResolutionError
 //	    (no name fallback — reviewer's rule);
-//	(3) on a name-keyed row the ordinal is inert and the field NAME reads,
-//	    exactly like a flat FieldValue (both-model coexistence);
+//	(3) over a non-ordinal context there is no retired name model to fall back
+//	    to (RFC-173 item C) — the read is a LOUD *UnboundEvalContextError, and a
+//	    flat name read over the ordinal row is likewise loud, never a silent NULL;
 //	(4) the ordinal is part of the Value's semantic identity (equality and
 //	    hash) — Java: distinct ofOrdinalNumber ordinals are distinct
 //	    FieldPaths — so the memo can never merge reads of two duplicate-named
@@ -41,12 +42,19 @@ func TestFieldValue_ResolvedOrdinal_RFC173(t *testing.T) {
 	if err != nil || v1 != int64(11) {
 		t.Fatalf("ordinal 1 read: got (%v, %v), want (11, nil) — first-match name collapse would give 2", v1, err)
 	}
-	// Control: a flat (name) read of the duplicate name collapses to slot 0 —
-	// the review-P2 silent-wrong this accessor exists to prevent.
+	// Control: a flat (name) read has NO plan-time ordinal, so post RFC-173 item C
+	// it can no longer resolve against the ordinal row by name — it fails LOUD
+	// (*OrdinalResolutionError) instead of silently collapsing to slot 0. That loud
+	// failure is the STRONGER form of the review-P2 silent-wrong this accessor
+	// exists to prevent.
 	flat := NewFlatFieldValue("X", UnknownType)
-	vf, err := flat.Evaluate(dupRow)
-	if err != nil || vf != int64(2) {
-		t.Fatalf("flat control read: got (%v, %v), want (2, nil)", vf, err)
+	if _, err := flat.Evaluate(dupRow); err == nil {
+		t.Fatal("flat name read over an ordinal row must be a loud *OrdinalResolutionError, got nil")
+	} else {
+		var ordErr *OrdinalResolutionError
+		if !errors.As(err, &ordErr) {
+			t.Fatalf("flat control read: got %v, want *OrdinalResolutionError", err)
+		}
 	}
 
 	// (2) Out-of-range resolved ordinal: loud, never a silent NULL.

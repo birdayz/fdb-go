@@ -198,8 +198,8 @@ func TestFDB_RFC173S4_OrderByGather(t *testing.T) {
 
 	// The discriminating ordered results: DESC and ASC differ, so a dead-key mis-bind
 	// (which leaves the element-ordered [7,8,9,11] output for BOTH directions) fails.
-	descK := []string{"map[EL:9 P.K:300]", "map[EL:7 P.K:100]", "map[EL:8 P.K:100]", "map[EL:11 P.K:<nil>]"}
-	ascK := []string{"map[EL:11 P.K:<nil>]", "map[EL:7 P.K:100]", "map[EL:8 P.K:100]", "map[EL:9 P.K:300]"}
+	descK := []string{"map[EL:9 K:300]", "map[EL:7 K:100]", "map[EL:8 K:100]", "map[EL:11 K:<nil>]"}
+	ascK := []string{"map[EL:11 K:<nil>]", "map[EL:7 K:100]", "map[EL:8 K:100]", "map[EL:9 K:300]"}
 
 	// 1. dup (2-leg bare-twin): P,Q share K. DESC reorders to 300 first; NULL last.
 	t.Run("dup_desc", func(t *testing.T) {
@@ -248,18 +248,18 @@ func TestFDB_RFC173S4_OrderByGather(t *testing.T) {
 	// positionally via the SAME authority (element-first) — must stay correct.
 	t.Run("element_desc", func(t *testing.T) {
 		wantOrdered(t, `SELECT P."K", "EL" FROM P, Q, P."ARR" AS "EL" ORDER BY "EL" DESC`,
-			[]string{"map[EL:11 P.K:<nil>]", "map[EL:9 P.K:300]", "map[EL:8 P.K:100]", "map[EL:7 P.K:100]"}, ".EL#")
+			[]string{"map[EL:11 K:<nil>]", "map[EL:9 K:300]", "map[EL:8 K:100]", "map[EL:7 K:100]"}, ".EL#")
 	})
 	// 5. box class-1 FULL-NULL ((S FULL XT), Y, XT.XARR): S.SK is BURIED in the box and
 	// NULL-padded on the X-only row. The buried box column sorts, and the padded row's
 	// S.SK=NULL sorts in the SAME position as a real NULL (DESC last, ASC first).
 	t.Run("box_fullnull_desc", func(t *testing.T) {
 		wantOrdered(t, `SELECT S."SK", "EL" FROM S FULL OUTER JOIN XT ON S."SID" = XT."XID", Y, XT."XARR" AS "EL" ORDER BY S."SK" DESC, "EL"`,
-			[]string{"map[EL:9 S.SK:300]", "map[EL:7 S.SK:100]", "map[EL:8 S.SK:100]", "map[EL:55 S.SK:<nil>]"}, ".SK#")
+			[]string{"map[EL:9 SK:300]", "map[EL:7 SK:100]", "map[EL:8 SK:100]", "map[EL:55 SK:<nil>]"}, ".SK#")
 	})
 	t.Run("box_fullnull_asc", func(t *testing.T) {
 		wantOrdered(t, `SELECT S."SK", "EL" FROM S FULL OUTER JOIN XT ON S."SID" = XT."XID", Y, XT."XARR" AS "EL" ORDER BY S."SK" ASC, "EL"`,
-			[]string{"map[EL:55 S.SK:<nil>]", "map[EL:7 S.SK:100]", "map[EL:8 S.SK:100]", "map[EL:9 S.SK:300]"}, ".SK#")
+			[]string{"map[EL:55 SK:<nil>]", "map[EL:7 SK:100]", "map[EL:8 SK:100]", "map[EL:9 SK:300]"}, ".SK#")
 	})
 	// 6. CONTROL — single-source (no gather, no bake): the NULL-ordering REFERENCE. The
 	// gather cases above sort NULL to the IDENTICAL position (nulls smallest), proving the

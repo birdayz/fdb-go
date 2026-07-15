@@ -138,7 +138,7 @@ func TestFDB_RFC173_GatePinA_TwoWayUnderThreeWay(t *testing.T) {
 		if !strings.Contains(plan, "FlatMap(outer=FlatMap(") {
 			t.Errorf("plan lost the nested name-model FlatMap merge chain:\n%s", plan)
 		}
-		if !strings.Contains(plan, "Project([A.ID, B.ID, C.ID]") {
+		if !strings.Contains(plan, "Project([A.ID#0, B.ID#0, C.ID#0]") {
 			t.Errorf("plan lost the 3-column projection:\n%s", plan)
 		}
 		return plan
@@ -330,7 +330,7 @@ func TestFDB_RFC173_GroupByHavingOverTwoWayJoin(t *testing.T) {
 		// The aggregate sits over the ordinal join: StreamingAgg on the
 		// group key, directly over the SINGLE FlatMap (the gated 2-way);
 		// HAVING is the PredicatesFilter above the agg.
-		for _, frag := range []string{"StreamingAgg(keys=[A.ID]", "FlatMap(outer=", "PredicatesFilter("} {
+		for _, frag := range []string{"StreamingAgg(keys=[A.ID#0]", "FlatMap(outer=", "PredicatesFilter("} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}
@@ -353,7 +353,7 @@ func TestFDB_RFC173_GroupByHavingOverTwoWayJoin(t *testing.T) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
 		plan := rfc173PinExplain(t, db, ctx, q)
-		for _, frag := range []string{"StreamingAgg(keys=[A.ID]", "FlatMap(outer="} {
+		for _, frag := range []string{"StreamingAgg(keys=[A.ID#0]", "FlatMap(outer="} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}
@@ -368,7 +368,7 @@ func TestFDB_RFC173_GroupByHavingOverTwoWayJoin(t *testing.T) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
 		plan := rfc173PinExplain(t, db, ctx, q)
-		for _, frag := range []string{"InMemorySort([COUNT(C.ID) DESC", "StreamingAgg(keys=[A.ID]"} {
+		for _, frag := range []string{"InMemorySort([COUNT(C.ID) DESC", "StreamingAgg(keys=[A.ID#0]"} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}
@@ -385,7 +385,7 @@ func TestFDB_RFC173_GroupByHavingOverTwoWayJoin(t *testing.T) {
 			t.Errorf("rows = %v, want %v (in order)", got, want)
 		}
 		plan := rfc173PinExplain(t, db, ctx, q)
-		for _, frag := range []string{"Limit(3", "InMemorySort([A.ID DESC, C.ID DESC]", "FlatMap(outer="} {
+		for _, frag := range []string{"Limit(3", "InMemorySort([A.ID#0 DESC, C.ID#0 DESC]", "FlatMap(outer="} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
 			}

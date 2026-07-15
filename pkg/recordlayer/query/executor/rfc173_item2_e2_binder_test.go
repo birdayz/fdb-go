@@ -59,12 +59,12 @@ func item2ExistsShape(t *testing.T, baked bool) (plans.RecordQueryPlan, values.C
 		}
 		outerRef = b
 	} else {
-		outerRef = values.NewFieldValue(qovCust, "PRICE", values.NotNullInt)
+		outerRef = values.NewCorrelatedFieldValueWithResolvedOrdinal(qovCust, "PRICE", 3, values.NotNullInt)
 	}
 
 	innerPlan := plans.NewRecordQueryPredicatesFilterPlan(
 		plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false),
-		[]predicates.QueryPredicate{ojEqPred(&values.FieldValue{Field: "PRICE"}, outerRef)},
+		[]predicates.QueryPredicate{ojEqPred(values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.NotNullInt), outerRef)},
 	)
 	outerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
 	fm := plans.NewRecordQueryFlatMapPlan(
@@ -153,9 +153,13 @@ func TestIntegration_RFC173Item2_DisabledBirthBinder_BakedInner(t *testing.T) {
 	if !isMap || datum["CUSTOMER_ID"] != int64(1) {
 		t.Fatalf("row = %v, want the outer row for customer 1", results[0].Positional)
 	}
-	// The alias-qualified read resolves through the outer-alias leg window.
-	if v := rowVal(results[0], "CUST.NAME"); v != "Alice" {
-		t.Fatalf("CUST.NAME = %v, want Alice (outer-alias leg window)", v)
+	// The identity output IS the bare Customer row (no leg windows), so the
+	// column reads by its own name. (The alias-qualified "CUST.NAME" spelling
+	// this pin previously used resolved only through the deleted
+	// unique-leaf-strip heuristic — RFC-173 item D; a qualified read over a
+	// window-less row is not a real runtime form.)
+	if v := rowVal(results[0], "NAME"); v != "Alice" {
+		t.Fatalf("NAME = %v, want Alice (the bare Customer row)", v)
 	}
 	// The I1 pass-through: the outer's positional row survives the boundary.
 	item2AssertCustomerPositional(t, results[0], int64(1), "Alice")

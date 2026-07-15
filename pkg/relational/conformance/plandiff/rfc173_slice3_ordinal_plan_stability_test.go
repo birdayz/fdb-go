@@ -41,23 +41,29 @@ func ordinalSeedPlanCorpus() []Query {
 // temporarily log eng.Plan(q).Tree. Regenerate ONLY on an intentional plan-shape
 // change (and then the vs-Java plan-tree harness — plandiff.Run with a live
 // NewJavaEngineHTTP — must confirm the new shape still matches Java).
+// The renderings carry the RFC-173 item-C plan-time bakes: each WHERE-conjunct
+// leg reference shows its LEG-RELATIVE ordinal (`A.B_ID#1` — column 1 of A's
+// own row), and the self-join's duplicated NAME leaves carry their
+// qualified-alias pins (`P.NAME AS P.NAME`). The TREE (operators, join order,
+// column set) is byte-identical to the pre-bake golden — a representation
+// change, not a plan change.
 var ordinalSeedPlanGolden = map[string]string{
 	"ordinal_3way_chain": `Project(A.ID, C.NAME)
-  Filter((A.B_ID = B.ID AND B.C_ID = C.ID))
+  Filter((A.B_ID#1 = B.ID#0 AND B.C_ID#1 = C.ID#0))
     InnerJoin
       InnerJoin
         Scan(A)
         Scan(B)
       Scan(C)`,
 	"ordinal_3way_star": `Project(H.ID, X.V, Y.W)
-  Filter((H.ID = X.HID AND H.ID = Y.HID))
+  Filter((H.ID#0 = X.HID#1 AND H.ID#0 = Y.HID#1))
     InnerJoin
       InnerJoin
         Scan(H)
         Scan(X)
       Scan(Y)`,
-	"ordinal_self_3way": `Project(G.ID, P.NAME, GP.NAME)
-  Filter((G.PARENT = P.ID AND P.PARENT = GP.ID))
+	"ordinal_self_3way": `Project(G.ID, P.NAME AS P.NAME, GP.NAME AS GP.NAME)
+  Filter((G.PARENT#1 = P.ID#0 AND P.PARENT#1 = GP.ID#0))
     InnerJoin
       InnerJoin
         Scan(NODE AS G)

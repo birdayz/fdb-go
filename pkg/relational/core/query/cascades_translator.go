@@ -510,6 +510,15 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 			name := o.Projections[i]
 			if i < len(o.Aliases) && o.Aliases[i] != "" {
 				name = o.Aliases[i]
+			} else if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+				// A qualified-but-unaliased passthrough (`SELECT t.arr FROM t`)
+				// flows under the BARE column name — the resolver emits the
+				// verbatim OUTPUT attribute (col.Id.Name(), qualifier-free), so
+				// the runtime slot is keyed bare. Mirrors projectionOutputNames
+				// (the class-3 derived-unnest authority); keeping the dotted
+				// spelling here mis-keyed the boundary layout and declined the
+				// qualified-passthrough unnest (RFC-173 item C).
+				name = name[dot+1:]
 			}
 			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
 		}
@@ -530,6 +539,18 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		return t.legColumns(o)
 	case *logical.LogicalJoin:
 		return t.legColumns(o)
+	case *logical.LogicalCTE:
+		// A derived-table / CTE reference used as a FROM source flows its
+		// BODY's output columns, renamed by an explicit column-alias list
+		// (`… AS d(a, b)`). RFC-173 item C: an unnest over such an outer bakes
+		// its collection against this layout.
+		cols := t.derivedOutputColumns(o.Body)
+		if len(o.ColumnAliases) == len(cols) {
+			for i := range cols {
+				cols[i].Name = strings.ToUpper(o.ColumnAliases[i])
+			}
+		}
+		return cols
 	}
 	return nil
 }
@@ -813,6 +834,17 @@ func groupByOutputOrdinals(gb *expressions.GroupByExpression) (keys, aggs map[st
 		if s := stripColumnQualifier(full); s != "" && s != full {
 			addKeyAlias(s, ord)
 		}
+		// A QUANTIFIER-ADDRESSED group key (QOV(alias).col — the RFC-173 item C
+		// resolver bind) names its output column by the BARE field
+		// (AggregateKeyColumnName), but SELECT/HAVING/ORDER-BY re-reads spell it
+		// QUALIFIED ("C.NAME"). Register the qualified form as an alias of the
+		// same ordinal so those references bake instead of falling to the
+		// retired name read.
+		if fv, isFV := k.(*values.FieldValue); isFV {
+			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+				addKeyAlias(normalizeAggOutputName(qov.Correlation.Name()+"."+fv.Field), ord)
+			}
+		}
 		ord++
 	}
 	// A canonical/alias collision means a DUPLICATE AGGREGATE (the SELECT copy and
@@ -890,6 +922,42 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 		key := normalizeAggOutputName(name)
 		if slot, hit := aggOrds[key]; hit {
 			return values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(name), slot, fv.Typ)
+		}
+		// A QUALIFIED reference to a group key whose OUTPUT column is BARE
+		// (`SELECT A.K … GROUP BY A.K` over a gathered seed — the machinery
+		// bake displays the bare column): strip the qualifier and match the
+		// leaf, ONLY when the leaf uniquely names one key output (the
+		// plan-time twin of the retired leaf-unique strip; an ambiguous leaf
+		// stays unresolved — loud, never first-match).
+		if _, hit := keyOrds[key]; !hit {
+			if stripped := stripColumnQualifier(key); stripped != key {
+				if slot, ok := keyOrds[normalizeAggOutputName(stripped)]; ok {
+					// UNAMBIGUOUS iff every key whose leaf is `stripped` maps
+					// to the SAME output ordinal — a bare "K" and a seed-
+					// qualified "Q$N.K" registered as aliases of the SAME
+					// group-key slot are NOT an ambiguity (both denote slot
+					// `slot`); only two DIFFERENT ordinals under one leaf are.
+					ambiguous := false
+					for k, o := range keyOrds {
+						if stripColumnQualifier(k) == stripped && o != slot {
+							ambiguous = true
+							break
+						}
+					}
+					if !ambiguous {
+						// Display the group key's OWN OUTPUT column name (the
+						// bare leaf — AggregateKeyColumnName), so the projected
+						// slot is named identically to the group-key output it
+						// reads (`SELECT A.K … GROUP BY A.K` → output column K).
+						// RFC-173 item C datum-key model: the internal row/datum
+						// key is the BARE column (the user-facing LABEL is bare
+						// via deriveProjectionColumnDef's clearQualifier — Java
+						// getColumnLabel; the qualified getColumnName is not
+						// surfaced through database/sql).
+						return values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(stripped), slot, fv.Typ)
+					}
+				}
+			}
 		}
 		if slot, hit := keyOrds[key]; hit {
 			// RFC-173 C: bake the group key UNIFORMLY — never
@@ -1844,7 +1912,13 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// builder (which owns the name-keyed collection) takes over.
 	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left, false) && len(u.Segments) >= 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
-		if resultValue != nil && len(u.Segments) > 2 {
+		// The COLLECTION bakes positionally under the ordinal-seed birth for
+		// EVERY segment arity (RFC-173 item C): the single-segment `t.arr`
+		// collection is the suffix-free case of the same ofOrdinal root the
+		// multi-segment path fuses — the outer row is ORDINAL-addressed at the
+		// birth, so a name-keyed collection read has nothing to resolve
+		// against (the runtime name fallback is deleted).
+		if resultValue != nil {
 			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType, 1, -1); baked != nil {
 				bakedExplode := expressions.NewExplodeExpressionWithOrdinality(baked, withOrdinality)
 				innerQ = expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(bakedExplode))
@@ -2333,10 +2407,18 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 					bindings, _ := starSpineAliasBindings(bj)
 					proj.ProjectedValues = make([]values.Value, len(starCols))
 					for i, c := range starCols {
-						if corr, isAlias := bindings[strings.ToUpper(c.Name)]; isAlias {
-							proj.ProjectedValues[i] = values.NewFieldValue(
-								values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corr)),
+						if b, isAlias := bindings[strings.ToUpper(c.Name)]; isAlias {
+							// RFC-173 item C: bake the label's leg-window slot
+							// (element 0 / AT ordinal 1) — the same
+							// source-relative bake ResolveColumnShadowingQualified
+							// emits for a hand-written reference to the binding. A
+							// LAZY qualified read reaches the runtime leg window
+							// unbaked and fails loud (ordinal -1); the retired
+							// name resolution is not there to catch it.
+							proj.ProjectedValues[i] = values.NewCorrelatedFieldValueWithResolvedOrdinal(
+								values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(b.Corr)),
 								strings.ToUpper(c.Name),
+								b.Ord,
 								c.FieldType,
 							)
 						}
@@ -3297,6 +3379,19 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 						// whole composition rather than ship a half-baked tree.
 						return nil
 					}
+					// The buried conjunct may ALSO reference the unnest ELEMENT
+					// (`EXISTS (… WHERE MA.C = X)` — outer-only relative to the
+					// EXISTS inner, mixing a leg ref and the element). Below the
+					// FOD only the merged outer row is bound, so the element ref
+					// must bake to its seed slot exactly like the leg refs —
+					// unbaked it read an unbound correlation, the comparison
+					// went NULL, and EXISTS silently dropped every row (R5m/R5n).
+					baked = bakeUnnestElementRefOrdinal(baked, unnestSeedElementSlots(unnestExpr), mergedCorr, ordMergedType)
+					if unnestExistsRefSurvivesUnbaked(baked, outerLegs, mergedCorr) {
+						// The safety net (the E-1a floor): a surviving outer/element
+						// ref would mis-resolve silently — decline instead.
+						return nil
+					}
 					rebased = baked
 				} else {
 					rebased = rebaseUnnestOuterLegPredicate(lf.Predicate, outerLegs, mergedCorr)
@@ -4189,7 +4284,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	// would pick the WRONG leg — mergeRows writes both), so the qualified key must
 	// be PRESERVED and resolve against the qualified merged-row key. This is the
 	// sort-key analog of rebaseOuterLegValue / the P1a alias-binding fix.
-	src := classifySortSource(f.Input)
+	src := t.classifySortSource(f.Input)
 
 	// RFC-173 S4 F2-LEFT: Java's Cascades cannot plan ANY ORDER BY over the LEFT
 	// projected-EXISTS fold (verified 4.12.11.0 — "could not plan query", even a
@@ -4315,7 +4410,10 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 					typ = vt
 				}
 			}
-			projVals[i] = &values.FieldValue{Field: name, Typ: typ}
+			// RFC-173 item C: the cleanup column reads the fold's output slot i
+			// (the fold RC's first outputCount fields ARE the output columns in
+			// order) — baked, so it resolves positionally on the folded row.
+			projVals[i] = values.NewFieldValueWithResolvedOrdinal(name, i, typ)
 			// Reuse the original SELECT-list alias (""==unaliased) so the cleanup's
 			// label derivation matches the non-hidden-sort path exactly.
 			if i < len(p.Aliases) {
@@ -4351,6 +4449,16 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 type sortSource struct {
 	isJoin     bool
 	legAliases []string
+	// legTypes are the per-leg flowed layouts, parallel to legAliases
+	// (ordinalLegType; nil entries for underivable legs), and singleType the
+	// single-table layout — the RFC-173 item C layout authorities that let
+	// sortKeySourceValue emit BAKED source-column references. Baked, the
+	// value-based output-membership match (sortKeyInOutput /
+	// pullUpToOutputField) compares equal against the resolver's baked
+	// projection values (baked vs lazy is UNEQUAL by the identity refinement),
+	// and an appended hidden sort column resolves positionally at eval.
+	legTypes   []*values.RecordType
+	singleType *values.RecordType
 }
 
 // classifySortSource inspects the fold's FROM input. A binary INNER LogicalJoin
@@ -4358,7 +4466,7 @@ type sortSource struct {
 // else (a single scan, a CTE/derived table) is single-table. Only INNER joins
 // reach the projected-EXISTS fold (buildExistentialJoinSelect rejects outer
 // joins), so we classify only that shape as a join.
-func classifySortSource(input logical.LogicalOperator) sortSource {
+func (t *cascadesTranslator) classifySortSource(input logical.LogicalOperator) sortSource {
 	if j, ok := input.(*logical.LogicalJoin); ok && j.Kind == logical.JoinInner {
 		// BINDING correlations, not display aliases (RFC-173 QP-REF-BIND
 		// item 1): the fold's quantifiers and merged-row keys carry the
@@ -4372,6 +4480,7 @@ func classifySortSource(input logical.LogicalOperator) sortSource {
 		// must attribute to ITS leg, never degrade to the bare
 		// first-match read (which silently sorted by the wrong column).
 		var legAliases []string
+		var legTypes []*values.RecordType
 		var collect func(op logical.LogicalOperator)
 		collect = func(op logical.LogicalOperator) {
 			if cj, isJ := op.(*logical.LogicalJoin); isJ {
@@ -4381,13 +4490,16 @@ func classifySortSource(input logical.LogicalOperator) sortSource {
 			}
 			if b := sourceBinding(op); b != "" {
 				legAliases = append(legAliases, b)
+				// The leg's flowed layout (nil when underivable — the
+				// source value then stays lazy, loud at eval).
+				legTypes = append(legTypes, t.ordinalLegType(op))
 			}
 		}
 		collect(j.Left)
 		collect(j.Right)
-		return sortSource{isJoin: true, legAliases: legAliases}
+		return sortSource{isJoin: true, legAliases: legAliases, legTypes: legTypes}
 	}
-	return sortSource{isJoin: false}
+	return sortSource{isJoin: false, singleType: t.ordinalLegType(input)}
 }
 
 // sortKeyName returns the upper-cased name a sort key resolves against the folded
@@ -4459,20 +4571,36 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	}
 	if s.isJoin {
 		if qual, col, ok := splitQualifier(field); ok {
-			for _, leg := range s.legAliases {
+			for li, leg := range s.legAliases {
 				if leg != "" && strings.ToUpper(leg) == qual {
-					return values.NewFieldValue(
-						values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(qual)),
-						col, values.UnknownType,
-					)
+					qov := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(qual))
+					// RFC-173 item C: bake the leg-local (source-relative)
+					// ordinal when the leg's layout is derivable — the baked
+					// twin of the resolver's construction bind, so the
+					// value-based output-membership match compares equal
+					// against baked projection values and an appended hidden
+					// column resolves positionally through its leg window.
+					if li < len(s.legTypes) && s.legTypes[li] != nil {
+						if idx, found := s.legTypes[li].FieldIndex(col); found {
+							return values.NewCorrelatedFieldValueWithResolvedOrdinal(qov, col, idx, values.UnknownType)
+						}
+					}
+					return values.NewFieldValue(qov, col, values.UnknownType)
 				}
 			}
 		}
 		return &values.FieldValue{Field: stripSortQualifier(field), Typ: values.UnknownType}
 	}
 	// Single-table: the outer scan row carries bare keys, so the source column is
-	// the bare leaf (`t1.id`→ID), regardless of the qualifier.
-	return &values.FieldValue{Field: stripSortQualifier(field), Typ: values.UnknownType}
+	// the bare leaf (`t1.id`→ID), regardless of the qualifier. Bake the ordinal
+	// when the layout is derivable (RFC-173 item C — see the join arm above).
+	bare := stripSortQualifier(field)
+	if s.singleType != nil {
+		if idx, found := s.singleType.FieldIndex(bare); found {
+			return values.NewFieldValueWithResolvedOrdinal(bare, idx, values.UnknownType)
+		}
+	}
+	return &values.FieldValue{Field: bare, Typ: values.UnknownType}
 }
 
 // sortKeyInOutput reports whether some output field genuinely PROJECTS the source
@@ -4683,7 +4811,19 @@ func pullUpSortKeyValue(k logical.SortKey, v values.Value, fields []values.Recor
 			return pulled
 		}
 	}
-	// Bare/already-resolved key (or an outer-row reference): resolves against the
+	// (3) Bare OUTPUT-COLUMN name over the folded output (`ORDER BY id` where
+	// `id` is an output column carried through): bake the OUTPUT ordinal at
+	// plan time (RFC-173 item C) — first-match case-insensitive, the same rule
+	// the retired runtime name read (RecordType.FieldIndex) applied, so the
+	// baked slot is the very one GetByName found.
+	if fv, isFV := v.(*values.FieldValue); isFV && fv.Child == nil && fv.Resolved == nil {
+		for i, f := range fields {
+			if strings.EqualFold(f.Name, fv.Field) {
+				return values.NewFieldValueWithResolvedOrdinal(f.Name, i, fv.Typ)
+			}
+		}
+	}
+	// Already-resolved key (or an outer-row reference): resolves against the
 	// flowed record unchanged.
 	return v
 }
@@ -4714,16 +4854,18 @@ func pullUpSortKeyValue(k logical.SortKey, v values.Value, fields []values.Recor
 // passes keep the pulled-up name faithful to the named alias.
 func pullUpToOutputField(v values.Value, fields []values.RecordConstructorField) (values.Value, bool) {
 	// Pass 1: exact pointer identity — the field whose Value the sort key IS.
-	for _, f := range fields {
+	// The pulled-up reference carries the OUTPUT ordinal (RFC-173 item C —
+	// baked at plan time; the folded row is positional).
+	for i, f := range fields {
 		if f.Value != nil && f.Value == v {
-			return &values.FieldValue{Field: f.Name, Typ: values.UnknownType}, true
+			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, values.UnknownType), true
 		}
 	}
 	// Pass 2: structural semantic equality — for keys whose Value was rebuilt
 	// (not pointer-copied) but is structurally the projected expression.
-	for _, f := range fields {
+	for i, f := range fields {
 		if f.Value != nil && values.SemanticEqualsUnderAliasMap(v, f.Value, values.AliasMap{}) {
-			return &values.FieldValue{Field: f.Name, Typ: values.UnknownType}, true
+			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, values.UnknownType), true
 		}
 	}
 	return nil, false
@@ -5102,6 +5244,406 @@ func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) 
 	return names
 }
 
+// expressionOutputColumns derives the OUTPUT column names, in ordinal order, of
+// a translated expression's row — the plan-time layout authority the RFC-173
+// item C consumer bakes resolve flat references against (Java's
+// FieldValue.ofFieldName against childValue.getResultType()). Coverage:
+//   - LogicalProjectionExpression: the projection's output names
+//     (values.OutputColumnName — the same authority the executor's posNames
+//     derivation reads, so the baked ordinal and the emitted slot agree).
+//   - GroupByExpression: [groupKeys..., aggregates...] via
+//     GroupByOutputColumnNames (the aggregateCursor's emission order).
+//   - LogicalUnion/RecursiveUnion: the FIRST leg's layout (legs are
+//     positionally aligned by construction).
+//   - Row-shape-preserving unaries (Filter/Sort/Limit/Distinct/Unique): peel.
+//
+// nil for every underivable shape — the caller leaves the reference lazy, a
+// LOUD OrdinalResolutionError at eval, never a guessed slot.
+func expressionOutputColumns(expr expressions.RelationalExpression) []string {
+	for expr != nil {
+		switch e := expr.(type) {
+		case *expressions.LogicalProjectionExpression:
+			return projectionOutputColumnNames(e)
+		case *expressions.GroupByExpression:
+			return expressions.GroupByOutputColumnNames(e.GetGroupingKeys(), e.GetAggregates())
+		case *expressions.SelectExpression:
+			// A SELECT whose result value is a RECORD CONSTRUCTOR flows one
+			// output column per RC field, named by the field (the RC is the
+			// row authority — executeProjection/computeResultLegs emit slots
+			// in RC field order). A non-RC result value (a bare QOV
+			// passthrough) has no derivable flat layout here.
+			if rc, isRC := e.GetResultValue().(*values.RecordConstructorValue); isRC {
+				names := make([]string, len(rc.Fields))
+				for i, f := range rc.Fields {
+					names[i] = strings.ToUpper(f.Name)
+				}
+				return names
+			}
+			return nil
+		case *expressions.LogicalUnionExpression:
+			qs := e.GetQuantifiers()
+			if len(qs) == 0 || qs[0].GetRangesOver() == nil {
+				return nil
+			}
+			return expressionOutputColumns(qs[0].GetRangesOver().Get())
+		case *expressions.RecursiveUnionExpression:
+			qs := e.GetQuantifiers()
+			if len(qs) == 0 || qs[0].GetRangesOver() == nil {
+				return nil
+			}
+			return expressionOutputColumns(qs[0].GetRangesOver().Get())
+		case *expressions.LogicalFilterExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.LogicalSortExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.LogicalLimitExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.LogicalDistinctExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.LogicalUniqueExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.FullUnorderedScanExpression:
+			// The scan row conforms to the record's logical column order
+			// (item B's contract — positionalTypeForDescriptor).
+			if rt, isRT := e.GetFlowedType().(*values.RecordType); isRT && len(rt.Fields) > 0 {
+				names := make([]string, len(rt.Fields))
+				for i, f := range rt.Fields {
+					names[i] = strings.ToUpper(f.Name)
+				}
+				return names
+			}
+			return nil
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// expressionOutputLegs derives the per-quantifier LEG boundaries of a
+// translated SELECT's flat output — the plan-time twin of the runtime row's
+// RecordType.Legs (concatLegPositionals). Valid ONLY when the select's output
+// IS the concatenation of its ForEach quantifiers' outputs (sum of leg widths
+// == the flat column count); nil otherwise (a reshaping projection, an
+// existential quantifier mix, an underivable leg).
+func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) []values.RecordTypeLeg {
+	sel, isSel := expr.(*expressions.SelectExpression)
+	if !isSel {
+		return nil
+	}
+	aliases := sel.GetSourceAliases()
+	quants := sel.GetQuantifiers()
+	if len(aliases) < len(quants) {
+		return nil
+	}
+	legs := make([]values.RecordTypeLeg, 0, len(quants))
+	off := 0
+	for i, q := range quants {
+		if q.Kind() != expressions.QuantifierForEach {
+			return nil
+		}
+		if q.GetRangesOver() == nil {
+			return nil
+		}
+		legCols := expressionOutputColumns(q.GetRangesOver().Get())
+		if legCols == nil {
+			return nil
+		}
+		legs = append(legs, values.RecordTypeLeg{Name: strings.ToUpper(aliases[i]), Start: off, Width: len(legCols)})
+		off += len(legCols)
+	}
+	if off != flatCount {
+		return nil
+	}
+	return legs
+}
+
+// bakeDottedRefsToLegQOV rewrites a childless DOTTED lazy reference whose
+// qualifier names a ForEach quantifier of the input select (peering through
+// row-shape-preserving unaries) into the resolver's LEG-ADDRESSED
+// source-relative bake: FieldValue{Child: QOV(leg), leaf, ord = leg-local
+// first-match} (RFC-173 item C). The executor binds the leg window by alias
+// off the merged row's own leg boundaries, so the read is
+// ORIENTATION-INDEPENDENT — a physical join reorder cannot shift the slot,
+// which a flat concat ordinal would (that is why the flat bake declines the
+// non-RC select shape). A duplicate quantifier alias, an underivable leg
+// layout, or a leaf missing from the leg leaves the reference untouched
+// (loud at eval, never a wrong slot).
+func bakeDottedRefsToLegQOV(v values.Value, input expressions.RelationalExpression) values.Value {
+	if v == nil {
+		return v
+	}
+	sel := peelToSelectExpression(input)
+	if sel == nil {
+		return v
+	}
+	aliases := sel.GetSourceAliases()
+	quants := sel.GetQuantifiers()
+	if len(aliases) < len(quants) {
+		return v
+	}
+	type legLayout struct {
+		alias values.CorrelationIdentifier
+		key   string
+		cols  []string
+	}
+	layouts := map[string]*legLayout{}
+	var ordered []*legLayout // quantifier order
+	addKey := func(key string, lay *legLayout) {
+		if key == "" {
+			return
+		}
+		if _, dup := layouts[key]; dup {
+			layouts[key] = nil // ambiguous qualifier — never bake through it
+			return
+		}
+		layouts[key] = lay
+	}
+	for i, q := range quants {
+		if q.Kind() != expressions.QuantifierForEach || q.GetRangesOver() == nil {
+			continue
+		}
+		key := strings.ToUpper(aliases[i])
+		if key == "" {
+			continue
+		}
+		lay := &legLayout{alias: q.GetAlias(), key: key, cols: expressionOutputColumns(q.GetRangesOver().Get())}
+		ordered = append(ordered, lay)
+		addKey(key, lay)
+		// A leg is ALSO addressable by its scan TABLE name when aliased
+		// differently (`FROM PA AS "s" …` read as PA."ID") — the ordinal leg
+		// type's RecordName contract (ordinalLegType: "a reference qualified
+		// by the TABLE name while the leg is aliased differently resolves
+		// through the span's type name"). Registered through the same
+		// duplicate-poisoning as aliases: two legs scanning one table make
+		// the table-qualified read ambiguous — left lazy (loud), never
+		// first-match.
+		if tn := strings.ToUpper(expressionScanTypeName(q.GetRangesOver().Get())); tn != "" && tn != key {
+			addKey(tn, lay)
+		}
+	}
+	// A SINGLE-ForEach select (a wrapper: its one quantifier flows the WHOLE
+	// row, existential siblings contribute no columns) bakes FLAT: the select
+	// output IS the quantifier's row, so a bare leaf — or a dotted read
+	// qualified by the quantifier's own alias — resolves to the row's flat
+	// slot (first-match, the retired GetByName's rule). A leg-QOV bake here
+	// would be WRONG: the quantifier's alias can collide with an INNER leg
+	// window of the flowed row (the gathered-unnest select is named by its
+	// rightmost source, e.g. the element X), and the runtime binder would
+	// bind that inner window — the E1a wrong-slot trap.
+	if len(ordered) == 1 {
+		lay := ordered[0]
+		if lay.cols == nil {
+			return v
+		}
+		baker := func(node values.Value) values.Value {
+			fv, ok := node.(*values.FieldValue)
+			if !ok || fv.Child != nil || fv.Resolved != nil {
+				return node
+			}
+			leaf := fv.Field
+			if dot := strings.IndexByte(fv.Field, '.'); dot > 0 {
+				if strings.ToUpper(fv.Field[:dot]) != lay.key {
+					return node
+				}
+				leaf = fv.Field[dot+1:]
+			}
+			for i, c := range lay.cols {
+				if strings.EqualFold(c, leaf) {
+					return values.NewFieldValueWithResolvedOrdinal(fv.Field, i, fv.Typ)
+				}
+			}
+			return node
+		}
+		if baked := baker(v); baked != v {
+			return baked
+		}
+		return values.Replace(v, baker)
+	}
+	// MULTI-ForEach: each quantifier IS a leg of the flowed concat — dotted
+	// reads bake LEG-ADDRESSED (orientation-independent), bare reads stay
+	// untouched (a bare read over a multi-leg select resolved through the
+	// select's own seed RC when derivable — the flat bake's territory).
+	legBake := func(lay *legLayout, leaf string, typ values.Type) values.Value {
+		for i, c := range lay.cols {
+			if strings.EqualFold(c, leaf) {
+				return values.NewCorrelatedFieldValueWithResolvedOrdinal(
+					values.NewQuantifiedObjectValue(lay.alias), strings.ToUpper(leaf), i, typ)
+			}
+		}
+		return nil
+	}
+	baker := func(node values.Value) values.Value {
+		fv, ok := node.(*values.FieldValue)
+		if !ok || fv.Child != nil || fv.Resolved != nil {
+			return node
+		}
+		dot := strings.IndexByte(fv.Field, '.')
+		if dot <= 0 {
+			return node
+		}
+		lay := layouts[strings.ToUpper(fv.Field[:dot])]
+		if lay == nil || lay.cols == nil {
+			return node
+		}
+		if baked := legBake(lay, fv.Field[dot+1:], fv.Typ); baked != nil {
+			return baked
+		}
+		return node
+	}
+	if baked := baker(v); baked != v {
+		return baked
+	}
+	return values.Replace(v, baker)
+}
+
+// expressionScanTypeName returns the SCAN TABLE name a leg expression flows
+// (the ordinal leg type's RecordName — set for a table scan, empty for
+// projections/derived shapes), walking transparent filters. Empty when the
+// leg is not a plain scan.
+func expressionScanTypeName(expr expressions.RelationalExpression) string {
+	for expr != nil {
+		switch e := expr.(type) {
+		case *expressions.FullUnorderedScanExpression:
+			if rts := e.GetRecordTypes(); len(rts) == 1 {
+				return rts[0]
+			}
+			return ""
+		case *expressions.LogicalFilterExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return ""
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		default:
+			return ""
+		}
+	}
+	return ""
+}
+
+// peelToSelectExpression walks row-shape-preserving unary expressions down to
+// the SelectExpression whose quantifier legs shape the flowed row; nil when
+// the chain ends elsewhere.
+func peelToSelectExpression(expr expressions.RelationalExpression) *expressions.SelectExpression {
+	for expr != nil {
+		switch e := expr.(type) {
+		case *expressions.SelectExpression:
+			return e
+		case *expressions.LogicalSortExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.LogicalLimitExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.LogicalDistinctExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.LogicalUniqueExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		case *expressions.LogicalFilterExpression:
+			if e.GetInner().GetRangesOver() == nil {
+				return nil
+			}
+			expr = e.GetInner().GetRangesOver().Get()
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// wholeRowLegFor synthesizes the single-source LEG boundary for a flat input
+// layout: when the input expression flows ONE source (aliased A) and its
+// select-level leg boundaries are not derivable (expressionOutputLegs nil — a
+// projection/CTE boundary, not a multi-leg select), a DOTTED reference
+// "A.LEAF" addresses the WHOLE input row (the row IS the A row). The retired
+// spanAwareRow served exactly this at runtime (qualifier → window, here the
+// full row); this is its plan-time twin (RFC-173 item C/D), so the dotted
+// read bakes instead of reaching the runtime lazily. Returns nil when the
+// alias is empty (nothing to route).
+func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
+	if alias == "" || len(cols) == 0 {
+		return nil
+	}
+	return []values.RecordTypeLeg{{Name: strings.ToUpper(alias), Start: 0, Width: len(cols)}}
+}
+
+// bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no
+// Resolved) whose Field matches an output column — exact first-match,
+// case-insensitive, the retired GetByName's own rule — into a baked-ordinal
+// reference over that column's slot (RFC-173 item C). A DOTTED field that
+// matches no column verbatim resolves through the leg boundaries when
+// supplied (qualifier → leg window, leaf → first match WITHIN the window —
+// the retired spanAwareRow routing, reproduced at plan time). Non-matching
+// and non-flat values are returned unchanged (a miss stays lazy → loud at
+// eval).
+func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.RecordTypeLeg) values.Value {
+	if v == nil || len(cols) == 0 {
+		return v
+	}
+	baker := func(node values.Value) values.Value {
+		fv, ok := node.(*values.FieldValue)
+		if !ok || fv.Child != nil || fv.Resolved != nil {
+			return node
+		}
+		// Exact first-match on the flat names (dotted VERBATIM columns like a
+		// hidden "O.SUM(AMOUNT)" slot match here — GetByName's own precedence).
+		for i, c := range cols {
+			if strings.EqualFold(c, fv.Field) {
+				return values.NewFieldValueWithResolvedOrdinal(fv.Field, i, fv.Typ)
+			}
+		}
+		// Dotted qualifier → leg window → leaf within the window.
+		if dot := strings.IndexByte(fv.Field, '.'); dot > 0 && len(legs) > 0 {
+			qual, leaf := fv.Field[:dot], fv.Field[dot+1:]
+			for _, leg := range legs {
+				if !strings.EqualFold(leg.Name, qual) {
+					continue
+				}
+				end := leg.Start + leg.Width
+				if leg.Start < 0 || end > len(cols) {
+					break
+				}
+				for k := leg.Start; k < end; k++ {
+					if strings.EqualFold(cols[k], leaf) {
+						return values.NewFieldValueWithResolvedOrdinal(fv.Field, k, fv.Typ)
+					}
+				}
+				break
+			}
+		}
+		return node
+	}
+	if baked := baker(v); baked != v {
+		return baked
+	}
+	return values.Replace(v, baker)
+}
+
 // nameResolvesInColumns reports whether the group-key name resolves (exact, case-insensitive)
 // against the input row's output columns.
 func nameResolvesInColumns(key string, cols []string) bool {
@@ -5126,6 +5668,28 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	// (the silent DESC==ASC bug). A key already carrying a resolved ordinal is left as-is
 	// by the bake; a non-seed input has seedQOV nil, so keys and quantifier are untouched.
 	bake := t.gatheredSeedBakeContext(innerRef, sourceAlias(s.Input))
+	// RFC-173 item C: the input expression's OUTPUT layout, when derivable —
+	// a FLAT lazy sort key naming an output column bakes to its slot at plan
+	// time (Java resolves the key against the child's result type); the
+	// select's leg boundaries serve dotted keys.
+	inputCols := expressionOutputColumns(innerRef.Get())
+	inputLegs := expressionOutputLegs(innerRef.Get(), len(inputCols))
+	if inputLegs == nil {
+		inputLegs = wholeRowLegFor(sourceAlias(s.Input), inputCols)
+	}
+	// An ORDER BY over an AGGREGATE output binds its keys to the aggregate's
+	// output ordinals, spelled CANONICALLY (AggregateKeyColumnName — the same
+	// authority the aggregate's provided-ordering hint advertises), so a
+	// group-key ORDER BY renders identically to the provided ordering and the
+	// enforcer sort is elided (Java: the sort requirement is satisfied by the
+	// streaming aggregate's own group-key order). RFC-173 item C.
+	sortGB := underlyingGroupBy(innerRef.Get())
+	var sortGBNames []string
+	var sortGBKeyOrds, sortGBAggOrds map[string]int
+	if sortGB != nil {
+		sortGBNames = expressions.GroupByOutputColumnNames(sortGB.GetGroupingKeys(), sortGB.GetAggregates())
+		sortGBKeyOrds, sortGBAggOrds = groupByOutputOrdinals(sortGB)
+	}
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
 		nf := k.NullsFirst
@@ -5133,9 +5697,43 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		if v == nil {
 			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
 		}
+		if sortGB != nil {
+			// WHOLE-value match first: an ORDER BY key that IS a group key /
+			// aggregate output — including a COMPUTED key (GROUP BY
+			// COALESCE(...) ORDER BY COALESCE(...)) — rebases onto the
+			// aggregate OUTPUT ordinal, spelled canonically. Leaving the
+			// computed key input-relative is the silent mis-sort trap: an
+			// enforcer sort above the aggregate would evaluate the
+			// pre-aggregate ordinals against the output row (a dead read of
+			// whatever occupies that slot), and the provided-ordering match
+			// (which the canonical spelling restores) can never fire.
+			whole := normalizeAggOutputName(expressions.AggregateKeyColumnName(v))
+			slot, hit := sortGBKeyOrds[whole]
+			if !hit {
+				slot, hit = sortGBAggOrds[whole]
+			}
+			if hit && slot >= 0 && slot < len(sortGBNames) {
+				v = values.NewFieldValueWithResolvedOrdinal(sortGBNames[slot], slot, values.UnknownType)
+			} else {
+				tmp := []values.Value{v}
+				bakeGroupByOutputRefs(tmp, sortGB)
+				if tmp[0] != v {
+					if fv, isFV := tmp[0].(*values.FieldValue); isFV && fv.Child == nil && fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
+						if o := fv.Resolved.Accessors[0].Ordinal; o >= 0 && o < len(sortGBNames) {
+							tmp[0] = values.NewFieldValueWithResolvedOrdinal(sortGBNames[o], o, fv.Typ)
+						}
+					}
+					v = tmp[0]
+				}
+			}
+		}
 		if bake.seedQOV != nil {
 			v = bakeGatheredGroupValue(v, bake.windows, bake.elementSlots, bake.seedQOV)
 		}
+		v = bakeFlatRefsAgainstColumns(v, inputCols, inputLegs...)
+		// A surviving dotted read over a leg of the input select bakes
+		// LEG-ADDRESSED (same rationale as translateProject's pass).
+		v = bakeDottedRefsToLegQOV(v, innerRef.Get())
 		sortKeys[i] = expressions.SortKey{
 			Value:      v,
 			Reverse:    k.Dir == logical.SortDesc,
@@ -5272,6 +5870,29 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	// misses the aggregate's ordinal PositionalRow (whose slot is alias-named).
 	if gb := underlyingGroupBy(innerRef.Get()); gb != nil {
 		bakeGroupByOutputRefs(projected, gb)
+	}
+	// RFC-173 item C: any remaining FLAT lazy reference bakes against the input
+	// expression's derivable output layout (union legs, derived projections) —
+	// the plan-time twin of the retired GetByName's FieldIndex first-match,
+	// with the select's per-quantifier LEG boundaries serving dotted refs. A
+	// single-source input without select-level legs routes a dotted ref
+	// qualified by ITS OWN alias over the whole row (wholeRowLegFor).
+	if inputCols := expressionOutputColumns(innerRef.Get()); inputCols != nil {
+		inputLegs := expressionOutputLegs(innerRef.Get(), len(inputCols))
+		if inputLegs == nil {
+			inputLegs = wholeRowLegFor(sourceAlias(p.Input), inputCols)
+		}
+		for i, v := range projected {
+			projected[i] = bakeFlatRefsAgainstColumns(v, inputCols, inputLegs...)
+		}
+	}
+	// RFC-173 item C: a surviving DOTTED lazy read whose qualifier names a
+	// ForEach leg of the input select bakes LEG-ADDRESSED (orientation-
+	// independent — see bakeDottedRefsToLegQOV). The flat bake above cannot
+	// serve these: a non-RC select has no derivable flat layout, and a flat
+	// concat ordinal would break under physical join reorder.
+	for i, v := range projected {
+		projected[i] = bakeDottedRefsToLegQOV(v, innerRef.Get())
 	}
 	return expressions.NewLogicalProjectionExpressionWithAliases(
 		projected,
@@ -5457,6 +6078,14 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
+	// RFC-173 item C: flat lazy references (the scalar-column pickup and the
+	// outer-column reads) bake against the seed select's output layout — the
+	// same generic plan-time bind translateProject applies.
+	if inputCols := expressionOutputColumns(joinSelect); inputCols != nil {
+		for i, v := range projected {
+			projected[i] = bakeFlatRefsAgainstColumns(v, inputCols)
+		}
+	}
 
 	projQ := t.namedQuantifier("", joinRef)
 	return expressions.NewLogicalProjectionExpressionWithAliases(
@@ -5550,6 +6179,18 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// (bakeGatedJoinPredicates fires on the SelectExpression).
 	bake := t.gatheredSeedBakeContext(innerRef, sourceAlias(a.Input))
 	groupByQuant := bake.quant
+	// RFC-173 item C: the aggregate input's derivable OUTPUT layout — a flat
+	// lazy group key / aggregate operand over a union or derived projection
+	// bakes to its input slot at plan time (Java resolves against the child's
+	// result type).
+	aggInputCols := expressionOutputColumns(innerRef.Get())
+	aggInputLegs := expressionOutputLegs(innerRef.Get(), len(aggInputCols))
+	if aggInputLegs == nil {
+		// A single-source aggregate input without select-level legs routes a
+		// dotted key/operand qualified by ITS OWN alias over the whole row
+		// (wholeRowLegFor — `MAX("V"."X") FROM "V"` reads the V row itself).
+		aggInputLegs = wholeRowLegFor(sourceAlias(a.Input), aggInputCols)
+	}
 	groupKeys := make([]values.Value, len(a.GroupKeys))
 	for i, key := range a.GroupKeys {
 		if i < len(a.GroupKeyValues) && a.GroupKeyValues[i] != nil {
@@ -5560,6 +6201,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if bake.seedQOV != nil {
 			groupKeys[i] = bakeGatheredGroupValue(groupKeys[i], bake.windows, bake.elementSlots, bake.seedQOV)
 		}
+		groupKeys[i] = bakeFlatRefsAgainstColumns(groupKeys[i], aggInputCols, aggInputLegs...)
 	}
 	// Correct-or-loud floor for the PROJECTING-CTE-aggregate class: the bake was SKIPPED
 	// (findWindowedSeed couldn't reach an identity-wrapped seed) but the input is a
@@ -5609,6 +6251,9 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if bake.seedQOV != nil && spec.Operand != nil {
 			spec.Operand = bakeGatheredGroupValue(spec.Operand, bake.windows, bake.elementSlots, bake.seedQOV)
 		}
+		// RFC-173 item C: flat lazy operand references bake against the
+		// aggregate input's derivable output layout (see groupKeys above).
+		spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols, aggInputLegs...)
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			spec.Alias = strings.ToUpper(a.Aliases[i])
 		}
@@ -7226,10 +7871,14 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 				Typ:   values.UnknownType,
 				Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(cu[:dot])),
 			}
-		} else if ordinalReads {
-			out[i] = values.NewFieldValueWithResolvedOrdinal(cu, i, values.UnknownType)
 		} else {
-			out[i] = &values.FieldValue{Field: cu, Typ: values.UnknownType}
+			// RFC-173 item C: read slot i by ordinal for BOTH the
+			// projection-topped leg (read i ↔ emitted slot i by construction)
+			// and the logical-name fallback (a scan/aggregate/union top, whose
+			// physical row conforms to the logical column order — item B's
+			// contract). The name-keyed lazy read this replaces resolved the
+			// same slot by FieldIndex over that same order.
+			out[i] = values.NewFieldValueWithResolvedOrdinal(cu, i, values.UnknownType)
 		}
 	}
 	return out

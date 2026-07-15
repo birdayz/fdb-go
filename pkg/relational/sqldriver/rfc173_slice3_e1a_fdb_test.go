@@ -197,32 +197,22 @@ func TestFDB_RFC173Slice3E1a(t *testing.T) {
 	//   correct rows (kept; refusing it would regress a Java-supported, master-correct query).
 	pin("agg_cte_projecting_single_bare", `WITH D AS (SELECT "AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
 	pin("agg_cte_projecting_bare_reorder", `WITH D AS (SELECT "BID", "AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
-	//   QUALIFIED projection — output column "A.AID" ≠ the key "AID" → name-model reads NULL
-	//   (silent-wrong). Refuse LOUD. Correctly ordinalizing it (resolve against the projected
-	//   output's own layout) is a REQUIRED cap-blocker — Java answers it (GroupByQueryTests:699).
-	t.Run("agg_cte_qualreorder_loud", func(t *testing.T) {
-		sql := `WITH D AS (SELECT B."BID", A."AID", A."K" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`
-		if _, _, err := runQ(t, sql); err == nil {
-			t.Fatalf("qualified-projection aggregate must be LOUD (name-model mis-names → silent NULL), got no error: %s", sql)
-		}
-	})
+	//   QUALIFIED projection — ORDINALIZED (the former cap-blocker, closed): the body's
+	//   qualified reads bake leg-addressed (bakeDottedRefsToLegQOV) and the group key bakes
+	//   against the projected output layout, so the query ANSWERS with Java's rows
+	//   (GroupByQueryTests:699). This was a LOUD refusal while the name model mis-named the
+	//   output column ("A.AID" ≠ key "AID" → silent NULL); the loud pin is superseded by
+	//   the row assertion — the stronger check.
+	pin("agg_cte_qualreorder", `WITH D AS (SELECT B."BID", A."AID", A."K" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
 	// A LAYOUT-PRESERVING wrapper (ORDER BY, LIMIT) between the aggregate and the gather does
 	// NOT reshape columns — findWindowedSeed walks it, so an IDENTITY SELECT-* under a sort/limit
 	// still ORDINALIZES correctly (review-caught: a bare `SELECT * … ORDER BY` aggregated silently
 	// NULLed when the walk stopped at the sort).
 	pin("agg_cte_star_orderby_limit", `WITH D AS (SELECT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") ORDER BY A."AID" LIMIT 100) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
-	// The FLOOR sees through those same wrappers (+ UNION ALL): a QUALIFIED projection under a
-	// sort or a union still mis-names → LOUD, never a silent NULL that the wrapper hides.
-	for _, tc := range []struct{ name, sql string }{
-		{"agg_cte_qual_orderby_loud", `WITH D AS (SELECT A."AID" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") ORDER BY A."AID" LIMIT 100) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`},
-		{"agg_cte_qual_union_loud", `WITH D AS (SELECT A."AID" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") UNION ALL SELECT A."AID" ` + from + ` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := runQ(t, tc.sql); err == nil {
-				t.Fatalf("qualified projection under a sort/union must be LOUD (the wrapper must not hide the silent NULL): %s", tc.sql)
-			}
-		})
-	}
+	// The qualified projection ORDINALIZES through those same wrappers (+ UNION ALL) too —
+	// the former loud floor is superseded by row assertions (see agg_cte_qualreorder).
+	pin("agg_cte_qual_orderby", `WITH D AS (SELECT A."AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") ORDER BY A."AID" LIMIT 100) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):2]")
+	pin("agg_cte_qual_union", `WITH D AS (SELECT A."AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K") UNION ALL SELECT A."AID" `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "map[AID:1 COUNT(*):4]")
 
 	// MULTI-EXISTS-under-aggregate now PLANS (RFC-173: PartitionSelectRule peels a
 	// sibling multi-EXISTS `EXISTS(A) AND EXISTS(B)` into nested 2-quantifier

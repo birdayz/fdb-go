@@ -111,8 +111,10 @@ func TestConstantValue_Evaluate(t *testing.T) {
 
 func TestFieldValue_Evaluate(t *testing.T) {
 	t.Parallel()
-	f := &FieldValue{Field: "name", Typ: TypeString}
-	row := fom(map[string]any{"name": "Alice", "age": int64(30)})
+	// RFC-173 item C: "name" carries a plan-time ordinal (its sorted slot in the
+	// {age, name} row = 1); Evaluate reads row.Get(1) positionally.
+	row, bk := fomB(map[string]any{"name": "Alice", "age": int64(30)})
+	f := bk("name", TypeString)
 	got, errEv0 := f.Evaluate(row)
 	require.NoError(t, errEv0)
 	if got != "Alice" {
@@ -144,8 +146,10 @@ func TestFieldValue_Evaluate(t *testing.T) {
 
 func TestArithmeticValue_Evaluate(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// RFC-173 item C: operands carry plan-time ordinals — sorted {a, b} → a=slot 0,
+	// b=slot 1 (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 
 	cases := []struct {
 		op   ArithmeticOp
@@ -832,7 +836,8 @@ func TestRecordConstructorValue_Shape(t *testing.T) {
 func TestRecordConstructorValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "id", Typ: TypeInt}},
+		// RFC-173 item C: "id" carries its plan-time ordinal (sole column → slot 0).
+		RecordConstructorField{Name: "a", Value: NewFieldValueWithResolvedOrdinal("id", 0, TypeInt)},
 		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
 	)
 	ctx := fom(map[string]any{"id": int64(7)})
@@ -1331,10 +1336,20 @@ func TestScalarFunctionValue_Evaluate(t *testing.T) {
 
 	str := func(s string) Value { return &ConstantValue{Value: s, Typ: TypeString} }
 	bytesV := func(b []byte) Value { return &ConstantValue{Value: b, Typ: TypeString} }
-	field := func(name string) Value { return &FieldValue{Field: name, Typ: TypeString} }
 	row := &fakeOrdinalRow{
 		names: []string{"NAME", "BLANK", "BIN"},
 		slots: []any{"Alice", "", []byte{0xff, 0xfe}},
+	}
+	// RFC-173 item C: a column reference carries its plan-time ordinal — the field's
+	// slot in row.names (NAME=0, BLANK=1, BIN=2), read positionally.
+	field := func(name string) Value {
+		for i, n := range row.names {
+			if n == name {
+				return NewFieldValueWithResolvedOrdinal(name, i, TypeString)
+			}
+		}
+		t.Fatalf("field %q not present in row", name)
+		return nil
 	}
 
 	cases := []struct {
@@ -1543,7 +1558,9 @@ func TestFieldValue_QOV_CorrelationBinder(t *testing.T) {
 	t.Parallel()
 	corrA := NamedCorrelationIdentifier("A")
 	corrB := NamedCorrelationIdentifier("B")
-	fv := NewFieldValue(NewQuantifiedObjectValue(corrA), "NAME", UnknownType)
+	// RFC-173 item C: the correlated NAME ref carries its plan-time ordinal — sorted
+	// {ID, NAME} → NAME=slot 1 in the bound row.
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrA), "NAME", 1, UnknownType)
 
 	rc := &RowEvalContext{
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
@@ -1561,7 +1578,9 @@ func TestFieldValue_QOV_CorrelationBinder(t *testing.T) {
 func TestFieldValue_QOV_CorrelationBinder_OtherTable(t *testing.T) {
 	t.Parallel()
 	corrB := NamedCorrelationIdentifier("B")
-	fv := NewFieldValue(NewQuantifiedObjectValue(corrB), "NAME", UnknownType)
+	// RFC-173 item C: correlated NAME ref carries its plan-time ordinal — single
+	// column {NAME} → slot 0 in the bound row.
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrB), "NAME", 0, UnknownType)
 
 	rc := &RowEvalContext{
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
@@ -1610,7 +1629,9 @@ func TestFieldValue_QOV_FlatMap_QualifiedKey(t *testing.T) {
 func TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField(t *testing.T) {
 	t.Parallel()
 	merge := NamedCorrelationIdentifier("$M_2:T3_2:T4")
-	fv := NewFieldValue(NewQuantifiedObjectValue(merge), "T3.T2_ID", UnknownType)
+	// RFC-173 item C: the qualified ref carries its plan-time ordinal — sorted
+	// {ID, T3.T2_ID, T4.T3_ID} → T3.T2_ID = slot 1 in the merged row.
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(merge), "T3.T2_ID", 1, UnknownType)
 
 	merged := map[string]any{
 		"T3.T2_ID": int64(7),
@@ -1713,7 +1734,9 @@ func TestFieldValue_QOV_NullFK_NoMatch(t *testing.T) {
 func TestFieldValue_QOV_CorrelationIdMap(t *testing.T) {
 	t.Parallel()
 	corrE := NamedCorrelationIdentifier("EMP")
-	fv := NewFieldValue(NewQuantifiedObjectValue(corrE), "SALARY", UnknownType)
+	// RFC-173 item C: correlated SALARY ref carries its plan-time ordinal — sorted
+	// {NAME, SALARY} → SALARY = slot 1 in the bound row.
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrE), "SALARY", 1, UnknownType)
 
 	ctx := &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
 		corrE:                              fom(map[string]any{"SALARY": int64(100), "NAME": "Alice"}),
@@ -1746,7 +1769,8 @@ func TestFieldValue_QOV_MissingCorrelation_IsLoud(t *testing.T) {
 
 func TestFieldValue_NoChild_BackwardCompat(t *testing.T) {
 	t.Parallel()
-	fv := &FieldValue{Field: "NAME", Typ: UnknownType}
+	// RFC-173 item C: a flat reference carries its plan-time ordinal (slot 0).
+	fv := NewFieldValueWithResolvedOrdinal("NAME", 0, UnknownType)
 
 	row := &fakeOrdinalRow{names: []string{"NAME"}, slots: []any{"Alice"}}
 	got, errEv0 := fv.Evaluate(row)
@@ -1758,7 +1782,9 @@ func TestFieldValue_NoChild_BackwardCompat(t *testing.T) {
 
 func TestFieldValue_NoChild_QualifiedString_BackwardCompat(t *testing.T) {
 	t.Parallel()
-	fv := &FieldValue{Field: "EMP.NAME", Typ: UnknownType}
+	// RFC-173 item C: the qualified flat reference carries its plan-time ordinal —
+	// slot 0 in the row, so it reads the EMP.NAME slot, never the bare "NAME".
+	fv := NewFieldValueWithResolvedOrdinal("EMP.NAME", 0, UnknownType)
 
 	row := &fakeOrdinalRow{names: []string{"EMP.NAME", "NAME"}, slots: []any{"Alice", "wrong"}}
 	got, errEv0 := fv.Evaluate(row)

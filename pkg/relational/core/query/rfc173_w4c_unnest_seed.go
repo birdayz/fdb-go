@@ -49,7 +49,14 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 ) values.Value {
 	outerType := t.ordinalLegType(outer)
 	if outerType == nil || len(outerType.Fields) == 0 {
-		return nil // decline → name-model fallback
+		// A DERIVED-TABLE outer flows its projection's OUTPUT columns as a
+		// positional row (see unnestBakedRootCollection) — derive that layout
+		// so the seed's outer run and the collection bake share one type.
+		if cols := t.derivedOutputColumns(outer); len(cols) > 0 {
+			outerType = &values.RecordType{Fields: cols}
+		} else {
+			return nil // decline → name-model fallback
+		}
 	}
 
 	var fields []values.RecordConstructorField
@@ -120,7 +127,15 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 ) values.Value {
 	outerType := t.ordinalLegType(outer)
 	if outerType == nil || len(outerType.Fields) == 0 {
-		return nil
+		// A DERIVED-TABLE outer (`FROM (SELECT …) AS d, d.arr AS x`) is not a
+		// scan/gated-box leg, so ordinalLegType declines — but it flows a
+		// POSITIONAL row of its projection's OUTPUT columns, against which the
+		// collection ordinal is sound. Derive that layout (RFC-173 item C).
+		if cols := t.derivedOutputColumns(outer); len(cols) > 0 {
+			outerType = &values.RecordType{Fields: cols}
+		} else {
+			return nil
+		}
 	}
 	if rootSegmentIndex < 0 || rootSegmentIndex >= len(u.Segments) {
 		return nil

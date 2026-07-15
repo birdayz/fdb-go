@@ -713,8 +713,29 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 			}
 			if rcv, isRC := rc.(*values.RecordConstructorValue); isRC && n.Resolved != nil && boxLevel(qov.Typ, rcv) {
 				accs := n.Resolved.Accessors
-				if len(accs) >= 1 && accs[0].Ordinal >= 0 && accs[0].Ordinal < len(rcv.Fields) && rcv.Fields[accs[0].Ordinal].Value != nil {
-					slot := rcv.Fields[accs[0].Ordinal].Value
+				rootOrd := -1
+				if len(accs) >= 1 {
+					rootOrd = accs[0].Ordinal
+				}
+				// RFC-173 item C: a SOURCE-RELATIVE baked reference's ordinal is
+				// relative to its OWN leg's row, NOT the box's concatenated RC —
+				// and the box is NAMED by its rightmost leg, so a leg-addressed
+				// reference (QOV(E).ID#0) arrives under the very alias being
+				// collapsed. Resolving it by the RAW ordinal against the concat
+				// picks the FIRST leg's slot (D.ID for ord 0) — the wrong leg,
+				// RFC-173's raw-RC duplicate conflation (`e.id IS NULL` became
+				// `d.id IS NULL`, mis-partitioned below the null-extension, and
+				// the LEFT-join anti-join returned zero rows). Re-base by the
+				// reference's OWN leg exactly like the values.Replace collapse
+				// (LegAwareRootOrdinal): match the seed field over the SAME
+				// correlation at the leg-local ordinal. Machinery-owned bakes
+				// (FrontierPinned / multi-accessor) keep the raw collapse —
+				// their ordinal IS box-relative by construction.
+				if n.SourceRelativeBaked() && len(accs) >= 1 {
+					rootOrd = values.LegAwareRootOrdinal(n, accs[0].Ordinal, rcv, rootOrd)
+				}
+				if len(accs) >= 1 && rootOrd >= 0 && rootOrd < len(rcv.Fields) && rcv.Fields[rootOrd].Value != nil {
+					slot := rcv.Fields[rootOrd].Value
 					if len(accs) == 1 {
 						mark(slot)
 						return slot

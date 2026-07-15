@@ -83,8 +83,8 @@ func TestRFC173S3_MergeBirth_NLJCursor_Nested(t *testing.T) {
 		ojLegQR(t, legB, int64(1), int64(100)),
 	}
 	pred := ojEqPred(
-		values.NewFieldValue(qovA, "ID", values.NotNullLong),
-		values.NewFieldValue(qovB, "ID", values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
 		"A", "B", []predicates.QueryPredicate{pred}, s3MergeRC(qovA, qovB), EmptyEvaluationContext(), nil)
@@ -489,7 +489,7 @@ func TestRFC173S3_HashJoinDeclinesFusedPred(t *testing.T) {
 		values.RecordConstructorField{Name: "BID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
 	)
 	pred := ojEqPred(
-		values.NewFieldValue(qovA, "ID", values.NotNullLong),
+		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
 		s3FusedRef(t, mergeQOV, 0, 0),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,

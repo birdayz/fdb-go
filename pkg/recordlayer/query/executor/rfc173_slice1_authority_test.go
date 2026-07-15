@@ -63,7 +63,7 @@ func authorityCollect(t *testing.T, p plans.RecordQueryPlan, evalCtx *Evaluation
 // production dispatch).
 func TestFrontierOrdinalAuthority_RFC173Slice1(t *testing.T) {
 	t.Parallel()
-	fieldV := values.NewFlatFieldValue("V", values.UnknownType)
+	fieldV := values.NewFieldValueWithResolvedOrdinal("V", 0, values.UnknownType)
 
 	t.Run("projection", func(t *testing.T) {
 		t.Parallel()

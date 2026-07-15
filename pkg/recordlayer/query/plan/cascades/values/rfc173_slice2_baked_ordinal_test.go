@@ -398,9 +398,10 @@ func TestFieldValueBaked_PushDownThroughRC_ByOrdinal_RFC173S2(t *testing.T) {
 // (name-keyed / unrecognized) context is a loud *BakedNameContextError at every
 // tail — never a silent display-name read (which would return the FIRST of
 // duplicate same-named columns) and never a silent NULL that would hide a
-// frontier bug. Lazy nodes carry no frontier contract: they resolve
-// POSITIONALLY over an ordinal row and are a quiet NULL over a non-positional
-// context (the retired name-keyed read is gone at the cap).
+// frontier bug. Post RFC-173 item C a LAZY node carries no plan-time ordinal, so
+// it too fails loud over an ordinal row (*OrdinalResolutionError — the retired
+// name resolution is gone) and over a non-positional context
+// (*UnboundEvalContextError, §F); only a bare nil context stays NULL (ruling #3).
 func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 	t.Parallel()
 	rt := NewRecordType("", false, []Field{
@@ -477,12 +478,14 @@ func TestFieldValueBaked_LoudOnNameContext_RFC173S2(t *testing.T) {
 		t.Fatalf("baked correlated over NIL context = (%v, %v), want (nil, nil) — the ruling #3 NULL", v, err)
 	}
 
-	// Lazy node over an ORDINAL row: resolves its column positionally — post-cap
-	// the retired name-keyed Datum read is gone, so the ordinal row is the sole
-	// context (a lazy reference falls to the row's own type via GetByName).
+	// Lazy node over an ORDINAL row: post RFC-173 item C a lazy reference carries no
+	// plan-time ordinal and the retired runtime name->ordinal resolution is gone, so
+	// it fails LOUD (*OrdinalResolutionError) rather than reading its column by name.
+	// Only a BAKED accessor reads positionally now.
 	lazy := NewFieldValue(qov, "ID", NotNullLong)
-	if v, err := lazy.Evaluate(&fakeOrdinalRow{names: []string{"ID"}, slots: []any{int64(7)}}); err != nil || v != int64(7) {
-		t.Fatalf("lazy over ordinal row = (%v, %v), want (7, nil)", v, err)
+	var lazyORE *OrdinalResolutionError
+	if _, err := lazy.Evaluate(&fakeOrdinalRow{names: []string{"ID"}, slots: []any{int64(7)}}); !errors.As(err, &lazyORE) {
+		t.Fatalf("lazy over ordinal row = %v, want loud *OrdinalResolutionError (item C: unbaked ref no longer resolves by name)", err)
 	}
 }
 

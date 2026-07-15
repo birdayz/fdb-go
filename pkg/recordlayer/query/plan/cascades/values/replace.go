@@ -1,6 +1,9 @@
 package values
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Replace applies replacementFn to every node in the Value tree
 // rooted at v, in pre-order (parent before children). If
@@ -372,8 +375,28 @@ func withChildren(v Value, newChildren []Value) Value {
 			// the correlated probe the rfc153 plan pins forbid.
 			if rc, isRC := newChildren[0].(*RecordConstructorValue); isRC {
 				accs := vt.Resolved.Accessors
-				if len(accs) >= 1 && accs[0].Ordinal >= 0 && accs[0].Ordinal < len(rc.Fields) && rc.Fields[accs[0].Ordinal].Value != nil {
-					slot := rc.Fields[accs[0].Ordinal].Value
+				rootOrd := -1
+				if len(accs) >= 1 {
+					rootOrd = accs[0].Ordinal
+				}
+				// RFC-173 item C: a SOURCE-RELATIVE baked node's root ordinal is
+				// relative to the reference's OWN source row, NOT this seed RC.
+				// Re-base the root into the seed by the reference's LEG
+				// (vt.Child's correlation), matching the seed field whose value is
+				// a FieldValue over that SAME leg. A bare-name match would pick the
+				// first colliding occurrence (dept.id before emp.id) — the wrong
+				// leg, RFC-173's raw-RC duplicate conflation; and the raw source
+				// ordinal would pick the seed's slot-0 (e.g. the outer scan's PK),
+				// fabricating a wrong comparand that then mis-SARGs. Falls back to
+				// the lazy-twin name authority when no leg-tagged field bears the
+				// reference's correlation. Machinery-owned bakes (FrontierPinned /
+				// multi-accessor) keep the ordinal collapse — their ordinal IS
+				// seed-relative by construction.
+				if vt.SourceRelativeBaked() && len(accs) >= 1 {
+					rootOrd = LegAwareRootOrdinal(vt, accs[0].Ordinal, rc, rootOrd)
+				}
+				if len(accs) >= 1 && rootOrd >= 0 && rootOrd < len(rc.Fields) && rc.Fields[rootOrd].Value != nil {
+					slot := rc.Fields[rootOrd].Value
 					if len(accs) == 1 {
 						return slot
 					}
@@ -431,4 +454,52 @@ func withChildren(v Value, newChildren []Value) Value {
 // value's Children().
 type SelfWithChildren interface {
 	WithChildrenValue(newChildren []Value) Value
+}
+
+// LegAwareRootOrdinal resolves the seed-RC slot for a SourceRelativeBaked
+// reference collapsed over a flat leg-concatenation seed (a merged box/join
+// whose RC concatenates each leg's columns, every field a baked FieldValue over
+// its OWN leg's QOV — NewRawRecordConstructorValue, values.go). The reference's
+// baked ordinal is relative to its OWN leg, so applying it directly to the seed
+// picks the wrong slot; and with columns colliding across legs (dept.id AND
+// emp.id) a bare-name match picks the first occurrence — again the wrong leg,
+// RFC-173's raw-RC duplicate conflation. Disambiguate by the reference's OWN leg
+// (vt.Child's correlation): pick the seed field whose value is a FieldValue over
+// that SAME correlation, matched by leg-relative ordinal (name as the within-leg
+// tiebreak — a single source has unique column names). Falls back to the
+// lazy-twin name authority (then fallbackOrd) when no seed field bears the
+// reference's correlation — a differently-shaped seed (e.g. a lateral-unnest
+// whose leg field is a bare QOV) resolves by name exactly as before.
+func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue, fallbackOrd int) int {
+	if childCorr, ok := ownCorrelationOfLeaf(vt.Child); ok {
+		for i, f := range rc.Fields {
+			fv, isFV := f.Value.(*FieldValue)
+			if !isFV {
+				continue
+			}
+			fc, ok := ownCorrelationOfLeaf(fv.Child)
+			if !ok || fc != childCorr {
+				continue
+			}
+			if fieldValueLegOrdinal(fv) == srcOrd || strings.EqualFold(fv.Field, vt.Field) {
+				return i
+			}
+		}
+	}
+	// No leg-tagged field for this correlation: the lazy-twin name authority.
+	for i, f := range rc.Fields {
+		if strings.EqualFold(f.Name, vt.Field) {
+			return i
+		}
+	}
+	return fallbackOrd
+}
+
+// fieldValueLegOrdinal returns fv's root source-relative ordinal (its leg-local
+// slot), or -1 when fv carries no baked ordinal.
+func fieldValueLegOrdinal(fv *FieldValue) int {
+	if fv.Resolved != nil && len(fv.Resolved.Accessors) > 0 {
+		return fv.Resolved.Accessors[0].Ordinal
+	}
+	return -1
 }

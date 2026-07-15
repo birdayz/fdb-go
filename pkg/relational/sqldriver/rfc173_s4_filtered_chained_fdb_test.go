@@ -169,7 +169,7 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 10`,
 			[]string{"map[Y:1]", "map[Y:2]", "map[Y:3]"}, "Scan(T4, [=])")
 		wantSet(t, `SELECT T4."ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = 20`,
-			[]string{"map[T4.ID:20 Y:4]", "map[T4.ID:20 Y:5]", "map[T4.ID:20 Y:6]"}, "Scan(T4, [=])")
+			[]string{"map[ID:20 Y:4]", "map[ID:20 Y:5]", "map[ID:20 Y:6]"}, "Scan(T4, [=])")
 	})
 
 	// STRADDLING (`T4.ID = y`): references the inner element y → keeps the rebase → the whole
@@ -178,7 +178,7 @@ func TestFDB_RFC173S4_FilteredChained(t *testing.T) {
 	t.Run("straddling_inner_filter", func(t *testing.T) {
 		t.Parallel()
 		wantSet(t, `SELECT T4."ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" = "Y"`,
-			[]string{"map[T4.ID:3 Y:3]"}, "inner=PredicatesFilter")
+			[]string{"map[ID:3 Y:3]"}, "inner=PredicatesFilter")
 	})
 
 	// INNER-element-only filter (`y > 2`) → PredicatesFilter on the inner Explode.

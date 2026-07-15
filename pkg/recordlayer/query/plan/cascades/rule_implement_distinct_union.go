@@ -209,6 +209,7 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 		for i, p := range comparisonParts {
 			comparisonKeys[i] = p.Value
 		}
+		comparisonKeys = bakeMergeComparisonKeys(comparisonKeys, requestedOrdering, childPlans[0].GetResultType())
 
 		unionPlan := plans.NewRecordQueryMergeSortUnionPlan(
 			childPlans, comparisonKeys, isReverse, true)

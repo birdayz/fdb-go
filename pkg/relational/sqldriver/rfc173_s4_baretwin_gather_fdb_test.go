@@ -188,7 +188,7 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 	// declines; name-model resolves the qualified group key. COUNT over the 2 unnest rows.
 	t.Run("grouped_bare_twin", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"map[A.K:100 COUNT(*):2]"})
+			[]string{"map[COUNT(*):2 K:100]"})
 	})
 
 	// GROUPED bare-twin with a cross-leg WHERE — the outer-filter-under-aggregate axis.
@@ -202,7 +202,7 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 	// This pins that the grouped path does NOT ship the NAK'd wrong rows.
 	t.Run("grouped_bare_twin_cross_leg_where", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 200 GROUP BY A."K"`,
-			[]string{"map[A.K:100 COUNT(*):2]"})
+			[]string{"map[COUNT(*):2 K:100]"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 999 GROUP BY A."K"`, nil)
 	})
 
@@ -213,7 +213,7 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 	// is 100+200=300 → SUM=600 (a top-level-only bug would give 100+100=200 → 400).
 	t.Run("grouped_compound_operand_on_dup_column", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", SUM(A."K" + B."K") AS "TOT" FROM A, B, A."ARR" AS "X" GROUP BY A."K"`,
-			[]string{`map[A.K:100 TOT:600]`})
+			[]string{`map[K:100 TOT:600]`})
 	})
 
 	// MID-LIST element grouped bare-twin (`FROM A, A.arr AS X, B` — the unnest is NOT
@@ -225,9 +225,9 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 	// cross-leg dup WORKS (not the fail-open decline — the authority windows it).
 	t.Run("mid_list_element_grouped_bare_twin", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B GROUP BY A."K"`,
-			[]string{"map[A.K:100 COUNT(*):2]"})
+			[]string{"map[COUNT(*):2 K:100]"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 200 GROUP BY A."K"`,
-			[]string{"map[A.K:100 COUNT(*):2]"})
+			[]string{"map[COUNT(*):2 K:100]"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 999 GROUP BY A."K"`, nil)
 	})
 
@@ -260,7 +260,7 @@ func TestFDB_RFC173S4_BareTwinGather(t *testing.T) {
 	// byte-identical to today (a single user projection, no nested positional Project).
 	t.Run("non_ambiguous_gather_is_byte_identical_raw_seed", func(t *testing.T) {
 		explain := wantRows(t, `SELECT A."K", C."M", "X" FROM A, C, A."ARR" AS "X"`,
-			[]string{"map[A.K:100 C.M:55 X:7]", "map[A.K:100 C.M:55 X:8]"})
+			[]string{"map[K:100 M:55 X:7]", "map[K:100 M:55 X:8]"})
 		if strings.Count(explain, "Project(") != 1 {
 			t.Fatalf("non-ambiguous gather must keep the raw seed (single Project, no wrap); plan=%s", explain)
 		}
