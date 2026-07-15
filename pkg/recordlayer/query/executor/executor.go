@@ -317,31 +317,29 @@ func executeIndexScan(
 		// cannot be mapped (a nested/expression index column has no
 		// top-level logical slot; those shapes keep name resolution).
 		logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
-		if logicalOrds == nil {
-			// CORRECT-or-LOUD: this covering scan cannot present a row in
-			// the record's LOGICAL slot order (a nested/expression index
-			// column has no top-level logical slot; a multi-type scan has no
-			// single logical shape). Flat column references are BAKED to
-			// their logical ordinal, so emitting an INDEX-layout row would
-			// read a baked ordinal at the wrong slot whenever index-order !=
-			// logical-order — silent wrong rows for a top-level sibling
-			// projection over the same scan (descriptor [ID,A,ADDR] + index
-			// row [A,ADDR.CITY,ID]: `A#1` would read ADDR.CITY). Refuse LOUD
-			// rather than serve a row a baked ordinal misreads. Empirically
-			// unreachable across the suite today (no covering scan hits this
-			// fallback) — closing this gap means building the LOGICAL row
-			// for nested columns too (Java's IndexKeyValueToPartialRecord
-			// over a descriptor-shaped partial record).
-			return nil, fmt.Errorf("executor: covering scan over index %q cannot bind a logical-ordinal row "+
-				"(a nested/expression column or multi-type scan has no single logical slot order); a non-covering scan is required", p.GetIndexName())
+		if logicalOrds != nil {
+			return &coveringIndexCursor{
+				inner:       indexCursor,
+				columns:     cov,
+				pkColumns:   pkCols,
+				logicalType: logicalType,
+				logicalOrds: logicalOrds,
+			}, nil
 		}
-		return &coveringIndexCursor{
-			inner:       indexCursor,
-			columns:     cov,
-			pkColumns:   pkCols,
-			logicalType: logicalType,
-			logicalOrds: logicalOrds,
-		}, nil
+		// This covering scan cannot present a row in the record's LOGICAL slot
+		// order: a nested/expression index column (e.g. `ADDR.CITY`) has no
+		// top-level logical slot, and a multi-type scan has no single logical
+		// shape. Flat column references are BAKED to their logical ordinal, so an
+		// INDEX-layout covering row would read a baked ordinal at the wrong slot
+		// whenever index-order != logical-order (descriptor [ID,A,ADDR] + index
+		// row [A,ADDR.CITY,ID]: `A#1` would read ADDR.CITY — a wrong slot). Rather
+		// than serve a misread-able covering row (or fail the query loud), fall
+		// back to fetching the full record by PK — the base record layout, which a
+		// baked ordinal reads correctly. Slower than covering but correct; the
+		// covering optimization simply doesn't apply to these shapes. (Java serves
+		// them from the covering index via IndexKeyValueToPartialRecord's
+		// descriptor-shaped partial record — porting that would restore covering
+		// here, but the fetch fallback is correct in the meantime.)
 	}
 
 	resultCursor := &indexFetchCursor{
@@ -2960,13 +2958,13 @@ func executeTableFunction(
 	list, ok := result.([]any)
 	if !ok {
 		return applySkipLimit(
-			recordlayer.FromList([]QueryResult{{Positional: explodeElementRow(result)}}),
+			recordlayer.FromList([]QueryResult{{Positional: explodeElementRow(result, arrayElementType(sv))}}),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
 	items := make([]QueryResult, len(list))
 	for i, elem := range list {
-		items[i] = QueryResult{Positional: explodeElementRow(elem)}
+		items[i] = QueryResult{Positional: explodeElementRow(elem, arrayElementType(sv))}
 	}
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
@@ -3007,7 +3005,7 @@ func executeExplode(
 			), nil
 		}
 		return applySkipLimit(
-			recordlayer.FromList([]QueryResult{{Positional: explodeElementRow(result)}}),
+			recordlayer.FromList([]QueryResult{{Positional: explodeElementRow(result, p.GetElementType())}}),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
@@ -3023,7 +3021,7 @@ func executeExplode(
 			items[i] = explodeOrdinalityResult(ordType, elem, i+1)
 			continue
 		}
-		items[i] = QueryResult{Positional: explodeElementRow(elem)}
+		items[i] = QueryResult{Positional: explodeElementRow(elem, p.GetElementType())}
 	}
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
@@ -3053,23 +3051,65 @@ func scalarPositionalRow(v any) *PositionalRow {
 
 // explodeElementRow wraps one Explode/Stream element as a PositionalRow: a
 // ROW-shaped element (a map[string]any — e.g. a constant array of records, a
-// VALUES list) becomes a multi-column row keyed by its field names (sorted for a
-// deterministic ordinal order; reads are by name); any other (scalar) element
-// wraps in the 1-slot `_0` bare-scalar shape.
-func explodeElementRow(elem any) *PositionalRow {
-	if m, ok := elem.(map[string]any); ok {
-		names := make([]string, 0, len(m))
-		for k := range m {
-			names = append(names, k)
-		}
-		sort.Strings(names)
-		slots := make([]any, len(names))
-		for i, n := range names {
-			slots[i] = m[n]
+// VALUES list) becomes a multi-column row laid out in the element type's
+// DECLARED field order — the order the plan-time ordinals were baked against.
+// A baked ordinal reads by POSITION, so the row MUST match declared order, not
+// an alphabetical (or map-iteration) order, or a reference baked at ordinal i
+// silently reads a different field. Any other (scalar) element wraps in the
+// 1-slot `_0` bare-scalar shape. elemType is the array element type (declared
+// RecordType); nil/non-record falls back to sorted names (best-effort — a baked
+// ordinal against an unknown declared order cannot be made sound here).
+func explodeElementRow(elem any, elemType values.Type) *PositionalRow {
+	m, ok := elem.(map[string]any)
+	if !ok {
+		return scalarPositionalRow(elem)
+	}
+	if rt, isRT := elemType.(*values.RecordType); isRT && len(rt.Fields) > 0 {
+		slots := make([]any, len(rt.Fields))
+		names := make([]string, len(rt.Fields))
+		for i, f := range rt.Fields {
+			names[i] = f.Name
+			slots[i] = mapFieldFold(m, f.Name)
 		}
 		return &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}
 	}
-	return scalarPositionalRow(elem)
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	slots := make([]any, len(names))
+	for i, n := range names {
+		slots[i] = m[n]
+	}
+	return &PositionalRow{Type: positionalTypeFromNames(names), Slots: slots}
+}
+
+// mapFieldFold looks up a record field's value in a name-keyed element map,
+// case-insensitively (the element map may be keyed by the raw or upper-cased
+// field name); an absent field is a NULL slot.
+func mapFieldFold(m map[string]any, field string) any {
+	if v, ok := m[field]; ok {
+		return v
+	}
+	for k, v := range m {
+		if strings.EqualFold(k, field) {
+			return v
+		}
+	}
+	return nil
+}
+
+// arrayElementType returns the declared element type of an array-typed value —
+// the order plan-time ordinals were baked against — or nil when unknown.
+func arrayElementType(v values.Value) values.Type {
+	if v == nil {
+		return nil
+	}
+	if at, ok := v.Type().(*values.ArrayType); ok {
+		return at.ElementType
+	}
+	return nil
 }
 
 // resultFromValue wraps a single Value's evaluation (against a nil row — a

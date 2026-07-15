@@ -47,6 +47,7 @@ go_test(
         "evaluation_context_test.go",
         "executor_integration_test.go",
         "executor_test.go",
+        "explode_element_row_test.go",
         "flat_map_continuation_test.go",
         "flatmap_fold_leg_window_test.go",
         "flatmap_outer_baked_binder_test.go",
@@ -120,6 +121,7 @@ go_test(
         "projection_output_names_test.go",
         "span_window_cross_agreement_test.go",
         "merge_row_build_test.go",
+        "explode_element_row_test.go",
     ],
     deps = [
         "//gen",
