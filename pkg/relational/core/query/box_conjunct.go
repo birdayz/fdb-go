@@ -16,11 +16,14 @@ package query
 //
 // The verdict is computed PRE-translation (metadata-only): a post-merge
 // decline would be poisoned by translation side state (the enclosedGatherCache
-// lesson), and a post-merge loud error would regress shapes the name model
-// answers correctly today. Anything not POSITIVELY bakeable — a subquery or
-// EXISTS value in the conjunct, a foreign correlation, an unresolvable
-// box-leg reference — is Unbakeable and keeps today's name-model plan
-// (fail-open, correct rows).
+// lesson), and a post-merge loud error would regress shapes a surviving
+// non-ordinal lowering still answers correctly. Anything not POSITIVELY
+// bakeable — a subquery or EXISTS value in the conjunct, a foreign
+// correlation, an unresolvable box-leg reference — is Unbakeable and DECLINES
+// the gather (correct-or-loud): a shape with a surviving non-ordinal lowering
+// takes it; an enclosed outer box whose anchored seed was deleted is
+// untranslatable and LOUD-rejects (0AF00 "join did not ordinalize"), never a
+// silent wrong-rows plan.
 
 import (
 	"strings"
@@ -36,7 +39,7 @@ type boxConjVerdict int
 const (
 	boxConjNone       boxConjVerdict = 0 // no box-leg conjunct
 	boxConjBakeable   boxConjVerdict = 1 // every box-leg ref resolves in the seed's buried windows — the gather ADMITS
-	boxConjUnbakeable boxConjVerdict = 2 // EXISTS-path / subquery-carrying / unresolvable — the gather DECLINES (name model)
+	boxConjUnbakeable boxConjVerdict = 2 // EXISTS-path / subquery-carrying / unresolvable — the gather DECLINES (correct-or-loud residual)
 )
 
 // classifyBoxLegConjunct decides Bakeable vs Unbakeable for a NON-EXISTS WHERE

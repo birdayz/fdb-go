@@ -423,7 +423,7 @@ half (`SELECT p.v FROM p WHERE EXISTS(… q AS p WHERE p.v=…)`) CLOSED with th
 collision mint: the inner source is born under a unique CorrelationName, so the resolver's
 `isLocal` guard no longer swallows the parent hit — the fallthrough emits QOV(outer) and the
 query ANSWERS with Java's live-verified semantics. Both variants are pinned by
-`TestFDB_RFC173W4Left_DuplicateFromAliases`.
+`TestFDB_DuplicateFromAliases`.
 
 ## Element-shadows-outer vs Java AMBIGUOUS_COLUMN (dup-label unnest, shared-surface, Go-only reach)
 
@@ -440,6 +440,6 @@ only the dup-label case throw would be a bolted-on special-case (design principl
 re-open two silent-wrong-rows bugs the S4-B star-CTE slice fixed (a colliding derived twin was
 serving the OUTER scalar, and wrong-leg IDs). Wire compat is untouched (pure read path). Graefe
 (RFC-173 S4 item B deletion review) endorsed keeping the uniform element-shadows-outer semantics
-and booking this here as the known divergence. Pinned: `TestFDB_RFC173S4_StarCTEOrdinalLeg`
+and booking this here as the known divergence. Pinned: `TestFDB_StarBodyCTEJoinLeg`
 (colliding_label_shadow). Follow-on if strict Java parity is ever required: make the dup-label
 resolution loud `AMBIGUOUS_COLUMN` UNIFORMLY (direct + CTE forms), never just the boxed case.

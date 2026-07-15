@@ -500,16 +500,27 @@ func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue,
 	}
 	// No seed field bears the reference's correlation — a differently-shaped seed
 	// (e.g. a lateral-unnest whose leg field is a bare QOV, not a FieldValue over
-	// the leg). Fall back to the plan-time name authority: the FIRST bare-name
-	// match (RecordType.FieldIndex's first-match
-	// rule). INVARIANT: this path is reached only
-	// when NO leg carries the correlation, so the cross-leg first-match cannot
-	// mis-pick a colliding sibling leg's column (that case took the leg-scoped
-	// arm above). Pinned by TestLegAwareRootOrdinal.
+	// the leg). Fall back to the plan-time name authority, but ONLY when the name
+	// resolves UNIQUELY. A DUPLICATE name here would first-match a colliding
+	// sibling leg's column: a bare-QOV leg carries no per-field correlation for
+	// the leg-scoped arm above to key on, so two bare-QOV legs exposing the same
+	// column name reach here unresolved, and a first-match would silently pick
+	// the wrong leg — the exact conflation this function exists to kill. A
+	// duplicate POISONS the collapse (returns -1 so the caller leaves the
+	// reference un-collapsed — loud on a positional row, never a wrong slot),
+	// matching the ambiguity-poison discipline of bakeMergeComparisonKeys /
+	// rich_ordering. Pinned by TestLegAwareRootOrdinal.
+	nameMatch := -1
 	for i, f := range rc.Fields {
 		if strings.EqualFold(f.Name, vt.Field) {
-			return i
+			if nameMatch >= 0 {
+				return -1 // ambiguous cross-leg name — poison, never first-match
+			}
+			nameMatch = i
 		}
+	}
+	if nameMatch >= 0 {
+		return nameMatch
 	}
 	return fallbackOrd
 }

@@ -710,4 +710,27 @@ func TestLegAwareRootOrdinal(t *testing.T) {
 	if got := LegAwareRootOrdinal(ref("Z", "NOPE", 0), 0, noLegSeed, -99); got != -99 {
 		t.Fatalf("name-fallback: no name match must return fallbackOrd -99, got %d", got)
 	}
+
+	// (4) Poison-on-dup in the cross-leg name fallback. A bare-QOV leg (field
+	// Value is a QOV, not a FieldValue over the leg) carries no per-field
+	// correlation, so the leg-scoped arm can't key on it — two bare-QOV legs
+	// exposing the SAME column name both reach the name fallback unresolved. A
+	// first-match there would silently pick the wrong leg (the I3 conflation this
+	// function exists to kill). The fallback must POISON (return -1 → caller
+	// leaves the ref un-collapsed, loud on a positional row, never a wrong slot).
+	dupBareSeed := NewRawRecordConstructorValue(
+		RecordConstructorField{Name: "X", Value: qov("P")}, // bare-QOV leg, name X
+		RecordConstructorField{Name: "X", Value: qov("Q")}, // bare-QOV leg, name X (collision)
+	)
+	if got := LegAwareRootOrdinal(ref("Z", "X", 0), 0, dupBareSeed, -5); got != -1 {
+		t.Fatalf("bare-QOV dup name must POISON (return -1), got %d — first-match would pick a colliding sibling leg", got)
+	}
+	// A UNIQUE name in the same bare-QOV shape still resolves (no over-poisoning).
+	uniqBareSeed := NewRawRecordConstructorValue(
+		RecordConstructorField{Name: "Y", Value: qov("P")},
+		RecordConstructorField{Name: "X", Value: qov("Q")},
+	)
+	if got := LegAwareRootOrdinal(ref("Z", "X", 0), 0, uniqBareSeed, -5); got != 1 {
+		t.Fatalf("bare-QOV unique name must resolve to slot 1, got %d", got)
+	}
 }

@@ -433,9 +433,15 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		//     exempt: those are the UNAVOIDABLE cross products (`FROM a, b,
 		//     c`, the EXISTS body `SELECT 1 FROM t2, t3, t4 …`), the only
 		//     bipartitions such a select has. BOTH restrictions are
-		//     load-bearing: a component-straddling lower ({d,PB} for
-		//     `FROM (derived) d, PB, PB.ARR AS X`) tears a lateral unnest from
-		//     its array source.
+		//     load-bearing: the component-ALIGNED requirement (isCrossProduct)
+		//     rejects a straddling lower ({d,PB} for
+		//     `FROM (derived) d, PB, PB.ARR AS X`), which tears a lateral unnest
+		//     from its array source; the SINGLETON requirement
+		//     (lowerComponentsAreSingletons) bounds the exemption itself — a
+		//     multi-alias component in the lower is a real join component, not an
+		//     unavoidable cross product, so exempting it would admit a bipartition
+		//     the connectivity guard exists to reject (a loud 0AF00 mis-partition,
+		//     not a silent wrong row, but the guard still discriminates).
 		//   - For an ORDINAL parent (the
 		//     gathered flat unnest seed — every parent),
 		//     a quantifier-level correlation edge IS

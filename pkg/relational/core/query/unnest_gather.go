@@ -25,9 +25,12 @@ import (
 // was ruled out for over-constraining re-enumeration).
 //
 // The single-source binary seed (unnest_seed.go) remains the N=1 path (this
-// builder is N>=2 only); the name-model builder remains the fail-open
-// residual for every decline — several ungated/residual compositions work
-// today via that path, and declining loud instead would regress them.
+// builder is N>=2 only). A decline is correct-or-loud: shapes that retain a
+// surviving non-ordinal lowering fall back to it (several ungated/residual
+// compositions work today that way, and declining loud instead would regress
+// them); an enclosed outer box whose anchored seed was deleted has no such
+// residual and is LOUD-rejected downstream (0AF00 "join did not ordinalize"),
+// never silently wrong.
 
 // unnestTrailing is the unnestPos for the ROOT form: the unnest follows every
 // plain leg in FROM order (`FROM A, B, A.arr AS x`), so the element fields and
@@ -81,8 +84,10 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		// ADMITTED — the WHERE-merge arm bakes it over this seed's RECORDED
 		// legTypes (the seed⟺merge one-authority law; the record is written at
 		// the tail below). Only an UNBAKEABLE verdict (EXISTS path,
-		// subquery-carrying, unresolvable ref) declines to the binary name-model
-		// path, where the qualified key resolves. (The gathered path is
+		// subquery-carrying, unresolvable ref) declines — correct-or-loud: a shape
+		// with a surviving non-ordinal lowering takes it; an enclosed outer box,
+		// whose anchored seed was deleted, is LOUD-rejected downstream (never a
+		// silent wrong-rows plan). (The gathered path is
 		// unreachable under EXISTS — translateUnnestJoin gates it on
 		// !unnestUnderExistential — so a non-None verdict here always reflects a
 		// plain non-EXISTS WHERE.)
