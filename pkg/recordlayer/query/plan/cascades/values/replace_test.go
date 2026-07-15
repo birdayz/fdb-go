@@ -669,16 +669,32 @@ func TestLegAwareRootOrdinal(t *testing.T) {
 		t.Fatalf("colliding leg: d.id must resolve to seed slot 0 (dept.id), got %d", got)
 	}
 
-	// (2) Ordinal-preferred tiebreak: if a reference's source ordinal and Field
+	// (2) Ordinal-preferred tiebreak: when a reference's source ordinal and Field
 	// disagree (an upstream construction inconsistency), the ORDINAL wins — the
 	// baked slot is the authority (RFC-173's ordinal-not-name principle). Leg E
-	// here has FNAME at leg-ordinal 0 and ID at leg-ordinal 5; a ref {Field:ID,
-	// srcOrd:0} picks the ordinal-0 slot (0), not the name-"ID" slot (1).
+	// has ID at leg-ordinal 5 (slot 0) and FNAME at leg-ordinal 0 (slot 1); a ref
+	// {Field:ID, srcOrd:0} must pick the ordinal-0 slot (1), NOT the name-"ID"
+	// slot (0). Ordering ID FIRST is deliberate: the retired
+	// `ordinal==srcOrd || name`-OR predecessor name-first-matches slot 0 here, so
+	// this assertion FAILS on a revert to it (the pin catches the real regression,
+	// not just a hypothetical strict-name scan).
 	skewSeed := NewRawRecordConstructorValue(
-		legField("FNAME", "E", 0), legField("ID", "E", 5),
+		legField("ID", "E", 5), legField("FNAME", "E", 0),
 	)
-	if got := LegAwareRootOrdinal(ref("E", "ID", 0), 0, skewSeed, -1); got != 0 {
-		t.Fatalf("ordinal-preferred: srcOrd 0 must win over name ID (name would give 1), got %d", got)
+	if got := LegAwareRootOrdinal(ref("E", "ID", 0), 0, skewSeed, -1); got != 1 {
+		t.Fatalf("ordinal-preferred: srcOrd 0 must win over name ID → slot 1 (FNAME@0); got %d (the retired OR-code gives 0)", got)
+	}
+
+	// (2b) The within-leg NAME tiebreak — the `return nameMatch` arm. When NO leg
+	// field's ordinal matches srcOrd but a name does, resolve by name. Leg E has
+	// FNAME@3 and ID@5, neither at ordinal 0; a ref {Field:ID, srcOrd:0} misses on
+	// ordinal and resolves ID by name at slot 1. (Exercises the branch the ordinal
+	// and cross-leg arms otherwise shadow.)
+	nameTieSeed := NewRawRecordConstructorValue(
+		legField("FNAME", "E", 3), legField("ID", "E", 5),
+	)
+	if got := LegAwareRootOrdinal(ref("E", "ID", 0), 0, nameTieSeed, -1); got != 1 {
+		t.Fatalf("within-leg name tiebreak: e.id with no ordinal-0 field must resolve ID by name at slot 1, got %d", got)
 	}
 
 	// (3) Cross-leg name-fallback: no seed field bears the reference's correlation
