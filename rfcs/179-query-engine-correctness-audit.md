@@ -454,3 +454,44 @@ guarantee than Java's plan-time behavior) stays tracked beyond the comment fix.
 Refuted (recorded, no action): LegAwareRootOrdinal total-miss fallback (by
 design), unpinned-baked-non-row whole-object return (handled), REWRITING
 tie-break alias hashing (already normalized).
+
+---
+
+## Findings index (all findings + systemic mapping + status)
+
+Every confirmed finding, the systemic chokepoint (S1–S5) or theme it belongs to,
+and its landing status. F27/F28 surfaced during fixing; F9≡F13 and F16≡F25 are
+one defect each found by two auditors.
+
+| # | Severity | Systemic fix / theme | Status |
+|---|---|---|---|
+| F0 | wrong-rows | S4 (root-unpinned guard) | TODO |
+| F1 | wrong-rows | S3 (OrElse continuation) | TODO |
+| F2 | wrong-rows | S3 (retire leftOuter flag) | TODO |
+| F3 | wrong-rows + **WIRE** | S5 (permuted MIN/MAX) | TODO |
+| F4 | wrong-rows | S3 (typed agg continuation) | TODO |
+| F5 | wrong-rows | S3 (typed agg continuation) | TODO |
+| F6 | wrong-rows | Theme 3 (AVG exact sum) | **DONE** `44a534a14` |
+| F7 | wrong-rows | Theme 4 (injective DISTINCT elision) | TODO |
+| F8 | wrong-rows | S2 (distinctKey tuple-pack) | TODO |
+| F9 ≡ F13 | wrong-rows | S2 (compareValues []byte arm) | **DONE** `6663cf56e` |
+| F10 | wrong-rows | S1 + S2 (covering float32 norm) | **DONE** `6663cf56e` |
+| F11 | wrong-rows (latent) | Theme 7 (STARTS_WITH range) | TODO |
+| F12 | wrong-rows (latent) | Theme 7 (full-tree pushdown) | TODO |
+| F14 | wrong-rows | S1 (hash key normalize) | **DONE** `91b566c61` |
+| F15 | crash | Theme 2 (hash key whitelist) | **DONE** `91b566c61` |
+| F16 ≡ F25 | structural | Theme 5 (guard comment + unit pin) | TODO |
+| F17 | missing-error | S5 (int32 SUM_I overflow) | TODO |
+| F18 | missing-error | S5 (MIN/MAX plan-time type gate) | TODO |
+| F19 | missing-error | Theme 7 (index-orphan ERROR) | TODO |
+| F20 | nondeterministic | S4 (deterministic cost winner) | WIP |
+| F21 | nondeterministic | S4 (comparand-aware equality) | WIP |
+| F22 | dead-code | Theme 8 (aggregateCursor.pending) | TODO |
+| F23 | dead-code | Theme 8 (RecordQuerySortPlan) | TODO |
+| F24 | wrong-rows | S3 (FlatMap check-value restart) | TODO |
+| F26 | structural | S3-after (outerJoinCount) | TODO |
+| F27 | wrong-rows (float) | Theme 2 (cmpAny NaN) | TODO |
+| F28 | wrong-rows (float) | Theme 2 (-0.0 vs 0.0) | TODO |
+
+Also tracked: F9b (loud comparator residual — needs error-channel or is left
+documented); nit: stale `buildCoveringRow` comment in `ordinal_join.go`.

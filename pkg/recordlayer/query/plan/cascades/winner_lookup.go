@@ -37,14 +37,34 @@ func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrderin
 		if w := ref.Winner(required); w != nil {
 			return w
 		}
+		// No exact-key winner. Among ALL stamped winners whose ordering
+		// Satisfies the requirement, return the CHEAPEST under `less` — the
+		// same cost-aware selection the un-stamped fallback below performs.
+		// Returning the FIRST satisfying winner in map order was both
+		// cost-blind AND nondeterministic (Go map iteration is randomized),
+		// flipping the chosen plan across plannings. Java prunes each
+		// Reference to ONE winner via the phase's total-order cost model,
+		// whose PlanningCostModel.compare ends in a deterministic planHash
+		// tie-break precisely so the planner "select[s] the same plan on
+		// subsequent plannings"; lessWithHashTieBreak reproduces that final
+		// tie-break around WHATEVER comparator the caller passed, so the min
+		// is UNIQUE — hence order-independent — even under a custom `less`
+		// that does not itself break cost ties.
+		tieBrokenLess := lessWithHashTieBreak(less)
+		var best expressions.RelationalExpression
 		for key, winner := range ref.GetWinners() {
 			props, ok := key.(expressions.PhysicalProperties)
 			if !ok {
 				continue
 			}
 			if props.Satisfies(required) {
-				return winner
+				if best == nil || tieBrokenLess(winner, best) {
+					best = winner
+				}
 			}
+		}
+		if best != nil {
+			return best
 		}
 	}
 
@@ -73,6 +93,31 @@ func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrderin
 		return w
 	}
 	return findBestValidPhysicalExpr(ref, less)
+}
+
+// lessWithHashTieBreak wraps a cost comparator with the deterministic
+// structural plan-hash tie-break (PlanningCostModel criterion #17) so the
+// derived order is TOTAL: a<b, b<a, or — when the comparator ties — a strict
+// order by costExprHash. Winner selection over Reference.GetWinners() iterates
+// a Go map (randomized order), so a merely cost-PARTIAL comparator would let
+// the chosen winner flip across plannings even after collecting all
+// candidates; wrapping makes the minimum unique and therefore
+// iteration-order-independent. Mirrors Java PlanningCostModel.compare, whose
+// final planHash arm exists so the planner "select[s] the same plan on
+// subsequent plannings". The default PlanningCostModelLess already ends in this
+// exact hash tie-break, so wrapping it is a no-op there; the wrap is what makes
+// determinism hold for ANY custom comparator a caller passes (which need not
+// carry its own tie-break).
+func lessWithHashTieBreak(less func(a, b expressions.RelationalExpression) bool) func(a, b expressions.RelationalExpression) bool {
+	return func(a, b expressions.RelationalExpression) bool {
+		if less(a, b) {
+			return true
+		}
+		if less(b, a) {
+			return false
+		}
+		return costExprHash(a) < costExprHash(b)
+	}
 }
 
 // findBestValidPhysicalExpr returns the cheapest physical member of ref

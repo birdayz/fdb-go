@@ -112,15 +112,11 @@ func (p *RecordQueryScanPlan) EqualsWithoutChildren(other RecordQueryPlan) bool 
 			return false
 		}
 	}
-	if len(p.scanComparisons) != len(o.scanComparisons) {
-		return false
-	}
-	for i := range p.scanComparisons {
-		if p.scanComparisons[i].GetRangeType() != o.scanComparisons[i].GetRangeType() {
-			return false
-		}
-	}
-	return true
+	// Compare scan comparisons by shape AND comparand — the PK bounds that
+	// define the key range. A primary scan is a memo leaf too, so a
+	// comparand-blind compare would collapse Scan(pk = 5) and Scan(pk = 7) into
+	// one Reference (the F21 defect, same as RecordQueryIndexPlan).
+	return scanComparisonRangesEqual(p.scanComparisons, o.scanComparisons)
 }
 
 func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
@@ -130,9 +126,7 @@ func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
 		h.Write([]byte(name))
 		h.Write([]byte{0})
 	}
-	for _, cr := range p.scanComparisons {
-		h.Write([]byte{byte(cr.GetRangeType())})
-	}
+	writeScanComparisonRangesHash(h, p.scanComparisons)
 	if p.reverse {
 		h.Write([]byte{1})
 	} else {

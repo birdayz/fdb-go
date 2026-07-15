@@ -242,6 +242,7 @@ go_test(
         "expression_matcher_test.go",
         "expression_partition_test.go",
         "expression_rule_call_test.go",
+        "f20_winner_f21_memo_test.go",
         "fused_max_match_fuzz_test.go",
         "fuzz_cte_test.go",
         "graph_expansion_test.go",
@@ -816,6 +817,7 @@ go_test(
         "ordinal_star_planning_budget_test.go",
         "positional_merge.go",
         "select_merge_ordinal_child_test.go",
+        "f20_winner_f21_memo_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

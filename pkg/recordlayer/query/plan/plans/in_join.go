@@ -3,6 +3,7 @@ package plans
 import (
 	"fmt"
 	"hash/fnv"
+	"reflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -80,7 +81,14 @@ func (p *RecordQueryInJoinPlan) EqualsWithoutChildren(other RecordQueryPlan) boo
 	// differently-hashed → plan-cache churn + nondeterministic Explain (RFC-164
 	// WS-4). Identity is alias-invariant; the real alias is retained on the field
 	// for execution (GetBindingName), which is unaffected.
-	return p.sorted == o.sorted && p.reverse == o.reverse
+	//
+	// inValues IS included: the static IN-list is the join's comparand — an
+	// InJoin over (1,2,3) binds different values than one over (4,5,6) and is a
+	// DIFFERENT plan. Excluding it let the memo collapse the two (an InJoin is a
+	// non-leaf node deduped by HashCodeWithoutChildren + EqualsWithoutChildren),
+	// mirroring the F21 comparand-blind index-scan defect. Java's
+	// InValuesJoinPlan.equalsWithoutChildren compares Objects.equals(values, ...).
+	return p.sorted == o.sorted && p.reverse == o.reverse && inValuesEqual(p.inValues, o.inValues)
 }
 
 func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
@@ -93,7 +101,25 @@ func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
 	if p.reverse {
 		h.Write([]byte{2})
 	}
+	// inValues folded — hash analog of EqualsWithoutChildren (see there). %#v
+	// pins Go type + value, so inValuesEqual-equal lists (identical types +
+	// values) fold identically; the leading length keeps distinct-length lists
+	// apart cheaply.
+	fmt.Fprintf(h, "|inv:%d:%#v", len(p.inValues), p.inValues)
 	return h.Sum64()
+}
+
+// inValuesEqual compares two static IN-list comparands element-wise. The lists
+// hold plan-time-evaluated literals ([]any of int64 / string / []byte / …);
+// reflect.DeepEqual is the safe faithful equivalent of Java List.equals here —
+// it never panics on the non-comparable slice carriers (e.g. []byte) that a raw
+// `==` would, and treats a nil list and an empty list as distinct exactly as
+// Java's null-vs-empty-list does.
+func inValuesEqual(a, b []any) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return (a == nil) == (b == nil)
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 func (p *RecordQueryInJoinPlan) Explain() string {
