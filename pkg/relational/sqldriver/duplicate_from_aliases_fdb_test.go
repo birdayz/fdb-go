@@ -261,7 +261,7 @@ func TestFDB_DuplicateFromAliases(t *testing.T) {
 	var fv int64
 	if err := db.QueryRowContext(ctx,
 		"SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM q AS p WHERE p.v = 10)").Scan(&fv); err != nil {
-		t.Errorf("single-source shadowed fallthrough must ANSWER (Java parity, amendment (a)): %v", err)
+		t.Errorf("single-source shadowed fallthrough must ANSWER (Java parity): %v", err)
 	} else if fv != 10 {
 		t.Errorf("single-source shadowed fallthrough = %d, want 10 (outer p.v)", fv)
 	}

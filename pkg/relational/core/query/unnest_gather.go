@@ -191,7 +191,7 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// Explode (ordinalLegType columns are best-effort for derived shapes).
 	collection.Typ = values.NewArrayType(true, elementType)
 
-	// Legs translate FRESH (the S3 fulcrum: legs of a GATED parent gate
+	// Legs translate FRESH (legs of a GATED parent gate
 	// independently); the Explode is one more ordinary quantifier, correlated
 	// to its owner by the baked collection itself.
 	prevEnclosure := t.inInnerCluster

@@ -884,7 +884,7 @@ func stripColumnQualifier(s string) string {
 // runtime name lookup. UNPINNED deliberately — on the aggregate's PositionalRow the
 // read is Get(ordinal) (order, not spelling, so a canonical-vs-alias name mismatch
 // no longer misses), and on the name-model Datum it reads by the reference's own
-// name exactly as before; the §5 dual-window differential requires both to agree.
+// name exactly as before; the differential requires both to agree.
 // The SAME baker feeds the SELECT projection (values.Replace), the HAVING predicate
 // (predicates.ReplaceValues), and the ORDER-BY keys, so every consumer of the
 // aggregate output ordinalizes through one rule: keys AND aggregates bake
@@ -6520,7 +6520,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		// merged rows cannot carry the binding, so the resolver's
 		// binding-qualified reads would serve silent NULLs. Decline LOUDLY
 		// (correct-or-loud; the ordinal seed is the only representation for
-		// duplicate legs — the dual-window carve-out class).
+		// duplicate legs — the differential carve-out class).
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"duplicate FROM alias: leg %s requires the ordinal seed; the name-model join cannot serve it (%s)",
 			leg, gateDecision.Reason))
@@ -7711,7 +7711,7 @@ func extractOutputProjectionNames(op logical.LogicalOperator) []string {
 // the logical name was a silent NULL under the tolerant name model (recursion
 // stalled one level early: `recursive_cte_depth_counter` returned 2 instead of
 // Java's 10 — a pre-existing silent-wrong) and a loud OrdinalResolutionError
-// under the ordinal model. Found by the dual-window differential on
+// under the ordinal model. Found by the differential on
 // its first run.
 //
 // The WRAP form (not an alias override on the leg's own projection) is
@@ -7761,7 +7761,7 @@ func (t *cascadesTranslator) recursiveBodyIsPositional(op logical.LogicalOperato
 // enabling ordinal reads in the wrap). Falls back to the LOGICAL names when
 // the leg's top expression is not a projection (bare-column shapes, where the
 // two coincide; a computed column under a non-projection top would loud-error
-// under ordinal resolution, which the §5 dual-window differential watches for).
+// under ordinal resolution, which the differential watches for).
 //
 // The names come from the shared values.OutputColumnName authority — the SAME
 // rule executeProjection uses for the emitted positional row's slot names

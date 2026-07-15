@@ -190,7 +190,7 @@ func TestPositionalArmDecoupling(t *testing.T) {
 // lifted name-model blanket — and asserts the recursive PLAIN-JOIN body join
 // GATES ordinal. This is the durable regression net: a silent revert
 // that re-broadens the blanket forces inInnerCluster=true → the body join declines
-// → this fails. The dual-window differential CANNOT catch that revert (it
+// → this fails. The differential CANNOT catch that revert (it
 // compares two EMISSION modes over the SHARED translator, so a name-model revert
 // makes both modes agree and the differential stays green — a green-but-latent gap).
 func TestRecursiveBodyGatesOrdinal(t *testing.T) {

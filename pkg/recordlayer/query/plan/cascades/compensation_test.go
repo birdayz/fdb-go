@@ -1471,7 +1471,7 @@ func TestResultCompensation_Amend_ReplacesUnmatched(t *testing.T) {
 	unmatchedVal := values.NewUnmatchedAggregateValue(unmatchedID)
 	f := ResultCompensationOfValue(unmatchedVal)
 
-	// Before amendment, this should be impossible (contains unmatched).
+	// An unmatched value makes the compensation impossible.
 	if !f.IsImpossible() {
 		t.Fatal("ResultCompensation with UnmatchedAggregateValue should be impossible")
 	}

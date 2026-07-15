@@ -944,7 +944,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// plan so fetchPage pre-binds their results. This path historically
 	// DISCARDED them (`ref, _ :=`), and the unbound value silently evaluated
 	// NULL — the DELETE compared v > NULL (UNKNOWN) and removed NOTHING, with
-	// both dual-window models identically wrong; the loud
+	// both differential models identically wrong; the loud
 	// values.UnboundScalarSubqueryError is what surfaced it.
 	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(dmlScalarSubqueryPlans, md, dmlStats)
 	if dmlSubErr != nil {
@@ -2503,7 +2503,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	// Leaf descriptors under a NULL-SUPPLYING (DefaultOnEmpty) subtree: a
 	// column defined by one of these serves NULL on the outer join's padded
 	// rows, so its metadata reports NULLABLE regardless of the proto's
-	// Required (amendment B / ruling I3's second half — Java gets this from
+	// Required (Java gets this from
 	// the flowed result type; the name-model lazy projections here flow
 	// none). Keyed by descriptor FullName. Coarse by design in the safe
 	// direction: a self-joined table on both sides marks the preserved read
@@ -2710,8 +2710,8 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 	// type says what this query serves — a NOT NULL column read through a
 	// LEFT-outer null-supplying window is nullable (the padded rows serve
 	// NULL), which Java reports via the plan's result type
-	// (FieldValue.computeResultType's nullable override; amendment B /
-	// ruling I3's second half). A KNOWN-typed nullable flowed value
+	// (FieldValue.computeResultType's nullable override).
+	// A KNOWN-typed nullable flowed value
 	// therefore upgrades NoNulls — never the reverse; an UNKNOWN type
 	// (name-model lazy dotted refs never flow one) says nothing.
 	if nullable == api.ColumnNoNulls {

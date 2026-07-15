@@ -73,7 +73,7 @@ func TestSelectMergeRule_OrdinalChildComposes(t *testing.T) {
 	)
 	yieldedMulti := FireExpressionRule(NewSelectMergeRule(), expressions.InitialOf(parent))
 	if len(yieldedMulti) == 0 {
-		t.Fatal("ordinal child into multi-quantifier parent must MERGE (composition is legal post-fulcrum), got no yields")
+		t.Fatal("ordinal child into multi-quantifier parent must MERGE (composition is legal), got no yields")
 	}
 	// The yield must actually COMPOSE, not just exist: the merged select
 	// splices the child's quantifiers in place of the child quantifier
