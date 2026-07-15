@@ -50,7 +50,7 @@ func (p *RecordQueryStreamingAggregationPlan) GetResultType() values.Type {
 
 // OutputColumnNames is the SINGLE naming authority for this plan's output row:
 // grouping keys (in GROUP BY order) then aggregates (in aggregate order), each
-// alias-preferring. RFC-173: the ordinal model bakes downstream references against
+// alias-preferring. The ordinal model bakes downstream references against
 // this order, and the executor's aggregateCursor emits its PositionalRow with these
 // exact names — so a reference over the aggregate resolves by Get(ordinal) (Java's
 // getFieldValueForFieldOrdinals) instead of a spelling-sensitive name lookup.

@@ -442,8 +442,7 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.Sco
 func mapPredicateWalkError(walkErr error) *api.Error {
 	var ambigErr *semantic.AmbiguousColumnError
 	if errors.As(walkErr, &ambigErr) {
-		// Java's exact SemanticAnalyzer text, from the reference as written
-		// (RFC-173 QP-REF-BIND item 1, M5).
+		// Java's exact SemanticAnalyzer text, from the reference as written.
 		return api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", ambigErr.Reference())
 	}
 	var inListNull *expr.InListNullError
@@ -493,8 +492,8 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 }
 
 // bindingOrAlias resolves a FROM leg's binding correlation name: the
-// parser-minted duplicate-leg id when present, else the alias (RFC-173
-// QP-REF-BIND item 1). The single mint authority (assignFromLegBindingIDs)
+// parser-minted duplicate-leg id when present, else the alias. The single
+// mint authority (assignFromLegBindingIDs)
 // sets bindingID only on LATER duplicate legs; every non-duplicate leg keeps
 // its alias as the correlation, so the resolver emits QOV(binding) addressing
 // the leg's own quantifier — never the colliding alias namespace. Every scope
@@ -633,8 +632,8 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			aliasID = semantic.NewUnquoted(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
-		// present, else the alias (RFC-173 QP-REF-BIND item 1). Duplicate
-		// PLAIN aliases now REGISTER (per-attribute resolution owns the
+		// present, else the alias. Duplicate
+		// PLAIN aliases REGISTER (per-attribute resolution owns the
 		// ambiguity); only a shadowing (unnest) duplicate still errors, and
 		// that keeps the drop-risk taxonomy exactly as before for the class
 		// AddSource can still reject.
@@ -714,8 +713,8 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		scopeOK = addTableSource(j.tableName, j.alias, j.bindingID)
 	}
 	if !scopeOK {
-		// FAIL-CLOSED (pre-existing silent-wrong-rows bug, caught by the
-		// RFC-173 W3b-2 gate-pin probes): the scope could not be built, so no
+		// FAIL-CLOSED (guards a silent-wrong-rows bug class): the scope could
+		// not be built, so no
 		// ON predicate can be resolved. When the failure is a DROP RISK — a
 		// resolvable-but-unscopable source (JOIN-bodied derived-table
 		// decline, duplicate alias) — returning nil here would leave
@@ -1685,7 +1684,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 			aliasID = semantic.NewUnquoted(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
-		// present, else the alias (RFC-173 QP-REF-BIND item 1).
+		// present, else the alias.
 		binding := bindingOrAlias(bindingID, aliasID)
 		// Try metadata first, then CTE scopes.
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
@@ -2162,7 +2161,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						proj.ProjectedValues[i] = qv
 					}
 				}
-				// RFC-173 item C: a BARE non-shadowed column resolves through the
+				// A BARE non-shadowed column resolves through the
 				// scope so the projection carries the construction-bound ordinal
 				// (a childless source-relative baked FieldValue — the resolver's
 				// single-source bind). Anything else — a multi-source
@@ -2188,12 +2187,12 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				}
 				if len(sq.joins) > 0 {
 					if i < len(proj.ProjectedValues) {
-						// RFC-173 item C: a qualified projection over a join
+						// A qualified projection over a join
 						// emits the resolver's QUANTIFIER-ADDRESSED
 						// source-relative baked reference when resolvable (the
 						// executor binds the leg window off the merged row's
-						// own leg boundaries — rowLegsBinder); the flat dotted
-						// "ALIAS.COL" name read was the retired name model.
+						// own leg boundaries — rowLegsBinder); a flat dotted
+						// "ALIAS.COL" name lookup does not run this path.
 						// Twin of the PlanVisitor's qualified-projection bind
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
 						cr := parseColRef(col)
@@ -2800,8 +2799,8 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		var ambigErr *semantic.AmbiguousColumnError
 		if errors.As(err, &ambigErr) {
 			// Java's exact SemanticAnalyzer text, from the reference as
-			// written (RFC-173 QP-REF-BIND item 1, M5 — live-verified for
-			// duplicate AND distinct aliases, bare AND qualified).
+			// written — verified against both duplicate and distinct
+			// aliases, bare and qualified.
 			return api.NewErrorf(api.ErrCodeAmbiguousColumn,
 				"Ambiguous reference %s", ambigErr.Reference())
 		}
@@ -3486,7 +3485,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// SELECT-list aggregate (`SELECT SUM(x) … HAVING SUM(x) > k`) creates a
 		// SECOND slot with the same canonical text; leaving it unresolved sends
 		// it down the lossy text reparse (parseAggregateText), whose flat dotted
-		// operand refs the ordinal frontier cannot resolve (RFC-173 item C).
+		// operand refs the ordinal frontier cannot resolve.
 		var idxs []int
 		for i, aggText := range agg.Aggregates {
 			arg := ac.aggArg
@@ -3582,7 +3581,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		var qualID semantic.Identifier
 		if ref.isQualified() {
 			qualID = semantic.NewUnquoted(ref.table)
-			// The dup-alias twin (RFC-173 QP-REF-BIND item 1): a qualified key
+			// The dup-alias twin: a qualified key
 			// binding a LATER duplicate-alias leg must group by the BINDING
 			// correlation (`Q$DUP1.QID`) — the join row's actual namespace —
 			// never the display alias, whose bare FieldValue fallback misses
@@ -3598,12 +3597,12 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 				filled = true
 				continue
 			}
-			// RFC-173 item C: every other QUALIFIED group key resolves through
+			// Every other QUALIFIED group key resolves through
 			// the scope to the quantifier-addressed source-relative baked
 			// reference (QOV(leg).col with the construction-bound ordinal) —
 			// the executor binds the leg's window off the merged row's own leg
 			// boundaries (rowLegsBinder), so the key resolves positionally
-			// instead of falling to the retired flat dotted "ALIAS.COL" name
+			// instead of through a flat dotted "ALIAS.COL" name
 			// read. The group-key OUTPUT column is labeled by the BARE field
 			// (AggregateKeyColumnName) — the unified Java label rule.
 			if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
@@ -3617,7 +3616,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			keyValues[i] = qv
 			filled = true
 		}
-		// RFC-173 item C: a BARE non-shadowed group key resolves through the
+		// A BARE non-shadowed group key resolves through the
 		// scope so it carries the construction-bound ordinal (a childless
 		// source-relative baked FieldValue — the resolver's single-source
 		// bind). Field stays the bare column, so the aggregate's OUTPUT
@@ -4008,7 +4007,7 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 			aliasID = semantic.NewUnquoted(tableName)
 		}
 		// The binding correlation: the parser-minted duplicate-leg id when
-		// present, else the alias (RFC-173 QP-REF-BIND item 1).
+		// present, else the alias.
 		binding := bindingOrAlias(bindingID, aliasID)
 		if src, ok := cteScopes[strings.ToUpper(tableName)]; ok {
 			src.Alias = aliasID
@@ -5393,11 +5392,11 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// position — the correspondence `ORDER BY <n>` (positional, whose key Expr is
 	// the item's rendered name) and a text-form computed key (`ORDER BY col1 +
 	// 10`) resolve through. Copying the EXACT projected Value (pointer) lets the
-	// translator's pull-up bake the key to its OUTPUT ordinal (RFC-173: the key
-	// must carry a plan-time ordinal; the retired runtime name read silently
-	// no-op-sorted when the rendered text and the output column spelling
-	// diverged, e.g. a baked computed column `(COL1#0 + 10)` vs the source text
-	// `col1 + 10`). First-match on duplicate renderings — the duplicates are the
+	// translator's pull-up bake the key to its OUTPUT ordinal: the key
+	// must carry a plan-time ordinal, since a runtime name read silently
+	// no-op-sorts when the rendered text and the output column spelling
+	// diverge, e.g. a baked computed column `(COL1#0 + 10)` vs the source text
+	// `col1 + 10`. First-match on duplicate renderings — the duplicates are the
 	// same expression, so the sort order is identical either way.
 	colToIdx := make(map[string]int, len(sq.projCols))
 	for i, c := range sq.projCols {
@@ -6158,8 +6157,8 @@ func buildLogicalPlanForUnionWithCatalog(
 // (alias, plan) pairs that the LogicalFilter/LogicalProject need to
 // carry to the Cascades translator.
 func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) []semantic.ScopeSource {
-	// A DUPLICATE-PRESERVING slice in FROM order, never an alias-keyed map
-	// (RFC-173 QP-REF-BIND item 1): duplicate outer aliases are legal, and a
+	// A DUPLICATE-PRESERVING slice in FROM order, never an alias-keyed map:
+	// duplicate outer aliases are legal, and a
 	// map collapsed them last-wins — an inner correlated reference then saw
 	// only ONE leg (false 42703 for the lost leg's columns; a missed terminal
 	// ambiguity for shared ones) and bound the survivor under the DISPLAY
@@ -6254,8 +6253,8 @@ type existsSubqueryPlanner struct {
 	// schema-qualified TABLE against the ACTIVE schema, not the hardcoded default
 	// `s`. Empty falls back to defaultEmbeddedSchema. RFC-142 (P2b).
 	schemaName string
-	// outerScopes is a DUPLICATE-PRESERVING slice in FROM order (RFC-173
-	// QP-REF-BIND item 1) — see buildOuterScopeSources.
+	// outerScopes is a DUPLICATE-PRESERVING slice in FROM order — see
+	// buildOuterScopeSources.
 	outerScopes                []semantic.ScopeSource
 	cteScopes                  map[string]semantic.ScopeSource
 	cteOnScopes                map[string]semantic.ScopeSource    // ON-resolution-only CTE sources (join/unnest bodies; see buildCTEOnOnlySource)
@@ -6608,7 +6607,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve inner table %q: %v", sq.tableName, tblErr), Cause: tblErr}
 	}
 	aliasID := semantic.NewUnquoted(innerAlias)
-	// RFC-173 collision mint: a SINGLE-TABLE catalog inner is BORN under a
+	// Collision mint: a SINGLE-TABLE catalog inner is BORN under a
 	// unique correlation identity, never its SQL source name. The SQL name
 	// (aliasID) stays the scope-resolution qualifier — `MA.c` inside the
 	// subquery still resolves against the inner source, SHADOWING a
@@ -7504,7 +7503,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
 	}
-	// RFC-173 QP-REF-BIND item 1: the correlated-scalar lowering keys legs by
+	// The correlated-scalar lowering keys legs by
 	// DISPLAY alias — its inner plan and scalar output naming are not
 	// binding-aware — so a duplicate outer alias in scope (a minted Q$DUPn
 	// binding) would resolve per-attribute at the front end and then serve a
@@ -7922,14 +7921,14 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// group-key projection stored as a visible aggCol (DISTINCT-of-key).
 		// computedScalarVal is set for a COMPUTED projection (`UPPER(x)`, `a+b`);
 		// it is materialized as the inner's projected output AFTER the sort/limit
-		// below (RFC-173 W4b shape 3).
+		// below.
 		var computedScalarVal values.Value
 		switch {
 		case len(sq.projCols) == 1:
 			// A COMPUTED projection (`SELECT UPPER(x)`, `a+b`, `CAST(...)`) is NOT
 			// a stored inner column, so — unlike a plain column ref — it is not
 			// present in the inner row. Left as-is it resolves to nothing → a
-			// SILENT NULL (the pre-W4b bug). Walk it here and MATERIALIZE it as
+			// SILENT NULL. Walk it here and MATERIALIZE it as
 			// the inner's single projected output below (positional key `_0`,
 			// mirroring Java's inner SelectExpression.resultValue). A plain column
 			// ref keeps the existing bare/qualified path.
@@ -8099,12 +8098,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			strictSingle = true
 		}
 
-		// COMPUTED scalar (RFC-173 W4b shape 3): materialize the walked expression
+		// COMPUTED scalar: materialize the walked expression
 		// as the inner's single projected output — positional key `_0`, mirroring
 		// Java's inner SelectExpression.resultValue. Placed AFTER sort/limit so
 		// ORDER BY keys resolved over the source rows (the projection drops them).
-		// Now BOTH the name-model scalar ref (<inner>._0) and the ordinal seed
-		// (ofOrdinal(inner,0)) resolve the computed value, fixing the silent NULL.
+		// Both the name-model scalar ref (<inner>._0) and the ordinal seed
+		// (ofOrdinal(inner,0)) resolve the computed value, so it never reads as NULL.
 		if computedScalarVal != nil {
 			proj := logical.NewProject(innerOp, []string{sq.projCols[0]}, []string{""})
 			proj.ProjectedValues = []values.Value{computedScalarVal}

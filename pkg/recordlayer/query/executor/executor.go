@@ -307,8 +307,8 @@ func executeIndexScan(
 		for _, col := range pkCols {
 			posNames = append(posNames, strings.ToUpper(col))
 		}
-		// RFC-173 item C: a covering-index row conforms to the record's
-		// LOGICAL slot order — Java's IndexKeyValueToPartialRecord builds a
+		// A covering-index row must conform to the record's LOGICAL slot
+		// order — Java's IndexKeyValueToPartialRecord builds a
 		// descriptor-shaped partial record, so a FieldValue ordinal baked
 		// against the record type reads the same slot on the base-scan and
 		// covering paths. Non-covered fields stay nil (Java: unset partial
@@ -318,19 +318,20 @@ func executeIndexScan(
 		// top-level logical slot; those shapes keep name resolution).
 		logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
 		if logicalOrds == nil {
-			// RFC-173 item C — CORRECT-or-LOUD: this covering scan cannot present a
-			// row in the record's LOGICAL slot order (a nested/expression index
-			// column has no top-level logical slot; a multi-type scan has no single
-			// logical shape). With flat column references now BAKED to their logical
-			// ordinal, emitting an INDEX-layout row would read a baked ordinal at the
-			// wrong slot whenever index-order != logical-order — silent wrong rows for
-			// a top-level sibling projection over the same scan (descriptor [ID,A,ADDR]
-			// + index row [A,ADDR.CITY,ID]: `A#1` would read ADDR.CITY). Refuse LOUD
-			// rather than serve a row a baked ordinal misreads. Empirically unreachable
-			// across the suite (no covering scan hits this fallback); the loud cap
-			// surfaces the shape instead of regressing to silent-wrong. Follow-on to
-			// lift the cap: build the LOGICAL row for nested columns too (Java's
-			// IndexKeyValueToPartialRecord over a descriptor-shaped partial record).
+			// CORRECT-or-LOUD: this covering scan cannot present a row in
+			// the record's LOGICAL slot order (a nested/expression index
+			// column has no top-level logical slot; a multi-type scan has no
+			// single logical shape). Flat column references are BAKED to
+			// their logical ordinal, so emitting an INDEX-layout row would
+			// read a baked ordinal at the wrong slot whenever index-order !=
+			// logical-order — silent wrong rows for a top-level sibling
+			// projection over the same scan (descriptor [ID,A,ADDR] + index
+			// row [A,ADDR.CITY,ID]: `A#1` would read ADDR.CITY). Refuse LOUD
+			// rather than serve a row a baked ordinal misreads. Empirically
+			// unreachable across the suite today (no covering scan hits this
+			// fallback) — closing this gap means building the LOGICAL row
+			// for nested columns too (Java's IndexKeyValueToPartialRecord
+			// over a descriptor-shaped partial record).
 			return nil, fmt.Errorf("executor: covering scan over index %q cannot bind a logical-ordinal row "+
 				"(a nested/expression column or multi-type scan has no single logical slot order); a non-covering scan is required", p.GetIndexName())
 		}
@@ -861,8 +862,8 @@ type coveringIndexCursor struct {
 	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	columns   []string
 	pkColumns []string
-	// logicalType/logicalOrds shape the cursor's LOGICAL-ordinal rows (RFC-173
-	// item C): logicalType is the record's descriptor-shaped RecordType and
+	// logicalType/logicalOrds shape the cursor's LOGICAL-ordinal rows:
+	// logicalType is the record's descriptor-shaped RecordType and
 	// logicalOrds[i] the logical slot of the i-th [columns..., pkColumns...]
 	// value. A covering scan whose columns cannot ALL map to a logical slot
 	// (nested/expression index, or a multi-type scan) is refused LOUD at
@@ -1479,7 +1480,7 @@ func executeProjection(
 				evalErr = err
 				return qr
 			}
-			slots[i] = val // RFC-173: dense positional slot (kept even on dup names)
+			slots[i] = val // dense positional slot (kept even on dup names)
 		}
 		// A projection's output IS a PositionalRow — ALWAYS emit it, built by
 		// parallel construction from the projected values, named by the output
@@ -1858,7 +1859,7 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 }
 
 func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) QueryResult {
-	// RFC-173: a UNION aligns legs BY ORDINAL (SQL positional union) — re-type the
+	// A UNION aligns legs BY ORDINAL (SQL positional union) — re-type the
 	// leg's Positional to the union's output column names (leg 2's [REGION] → the
 	// output's [STATUS]); the slots stay in ordinal place, only the names change.
 	// The first leg's names already ARE the
@@ -1977,7 +1978,7 @@ func widenInt32(v any) any {
 }
 
 // compKeyEvalArg is the eval argument for an intersection/merge-sort COMPARISON
-// KEY extraction (RFC-173 read-boundary ordinalization). When the row carries an
+// KEY extraction. When the row carries an
 // authoritative ordinal row (qr.Positional != nil — every merge/intersection
 // branch is a plan whose output is positional), the comparison-key value resolves
 // against that bare PositionalRow (FieldValue.Evaluate → evaluateOrdinal: by
@@ -1999,9 +2000,8 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 				// row; the runtime typed-error family is unreachable
 				// here. ComparisonKeyFunc has no error channel, so a
 				// stray error is a planner invariant violation (panic,
-				// matching the prior no-recover behaviour). RFC-173:
-				// resolve against the ordinal row when present
-				// (compKeyEvalArg), else the bare Datum.
+				// matching the prior no-recover behaviour). Resolves
+				// against the ordinal row via compKeyEvalArg.
 				v, err := kv.Evaluate(compKeyEvalArg(qr))
 				if err != nil {
 					panic(err)
@@ -2704,7 +2704,7 @@ func executeUpdate(
 			if fd == nil {
 				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
 			}
-			// RFC-173: the SET expr resolves each referenced column by ordinal against
+			// The SET expr resolves each referenced column by ordinal against
 			// the base record's PositionalRow (an unset optional reads as a nil slot →
 			// SQL NULL); RowContextPositional also binds any params / scalar subqueries.
 			var rowCtx any
@@ -2987,9 +2987,9 @@ func executeExplode(
 	if result == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
-	// RFC-173: the WITH-ORDINALITY box's ordinal-frontier output type
-	// (`[_0,_1]`), recovered once from the plan's result type so every emitted
-	// row carries a PositionalRow of that schema. Nil unless with-ordinality.
+	// The WITH-ORDINALITY box's ordinal output type (`[_0,_1]`), recovered
+	// once from the plan's result type so every emitted row carries a
+	// PositionalRow of that schema. Nil unless with-ordinality.
 	var ordType *values.RecordType
 	if p.IsWithOrdinality() {
 		if rt, ok := p.GetResultType().(*values.RecordType); ok {
@@ -3596,7 +3596,7 @@ func projectionColumnName(v values.Value) string {
 }
 
 // sortEvalRow returns the row a sort-key Value expression should be evaluated
-// against: the RFC-173 authoritative ordinal positional row (Value.Evaluate then
+// against: the authoritative ordinal positional row (Value.Evaluate then
 // resolves by ordinal, loud on a miss).
 func sortEvalRow(qr QueryResult) any {
 	return qr.Positional
@@ -3730,7 +3730,7 @@ func executeInMemorySort(
 	}
 
 	keys := p.GetSortKeys()
-	// RFC-173: when the sort input flows a merged ordinal-join row, evaluate the
+	// When the sort input flows a merged ordinal-join row, evaluate the
 	// sort keys through the SAME leg-window context the downstream projection/
 	// filter use (legWindowRowContext -> spanAwareRow), so a QUALIFIED key
 	// (`p.name`) over a multi-way join resolves to its BURIED leg — the box span's
@@ -3739,10 +3739,10 @@ func executeInMemorySort(
 	sortKeyValue := func(qr QueryResult, k plans.SortKey) (any, error) {
 		kv := k.ValueExpr
 		if kv == nil {
-			// RFC-173: every sort key carries its Value (the planner rules set
+			// Every sort key carries its Value (the planner rules set
 			// ValueExpr unconditionally; the ordinal is baked at plan time). A
 			// nil ValueExpr is a malformed plan — loud, never a name read.
-			return nil, fmt.Errorf("RFC-173 in-memory sort: sort key %q carries no value expression — malformed plan", k.Field)
+			return nil, fmt.Errorf("in-memory sort: sort key %q carries no value expression — malformed plan", k.Field)
 		}
 		if joinWindowsOK && qr.Positional != nil {
 			return kv.Evaluate(legWindowRowContext(qr.Positional, evalCtx, legSpans))

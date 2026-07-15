@@ -674,9 +674,9 @@ func TestBuildLogicalPlanWithCatalog_InsertSelectJoin(t *testing.T) {
 		t.Fatalf("expected resolved Predicate on JOIN-WHERE, PredicateText=%q", filter.PredicateText)
 	}
 	if got := filter.Predicate.Explain(); !(strings.Contains(got, "PRICE") && strings.Contains(got, "> 5")) {
-		// RFC-173 item C: the resolved predicate renders the column baked +
-		// qualified (e.g. "O.PRICE#2 > 5") — the predicate still resolves; the
-		// display carries the plan-time ordinal + source qualifier.
+		// The resolved predicate renders the column baked + qualified (e.g.
+		// "O.PRICE#2 > 5") — the predicate still resolves; the display
+		// carries the plan-time ordinal + source qualifier.
 		t.Fatalf("expected a resolved PRICE > 5 predicate, got %q", got)
 	}
 }
@@ -814,13 +814,12 @@ func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
 }
 
 // Self-join without explicit alias — `Order JOIN Order ON ...` produces two
-// sources both named ORDER. RFC-173 QP-REF-BIND item 1: the duplicate
-// sources now REGISTER (per-leg binding ids) and the ON reference resolves
-// per-ATTRIBUTE — both ORDER legs carry order_id, so the loud error is
-// Java's exact 42702 (`Ambiguous reference ORDER.ORDER_ID`, the live-probed
-// class), replacing the pre-item-1 generic ON-clause drop-hazard decline.
-// Still fail-closed — better a precise error than wrong rows; the silent
-// ON-drop cross-product class this pin was born for stays impossible.
+// sources both named ORDER. The duplicate sources REGISTER (per-leg binding
+// ids) and the ON reference resolves per-ATTRIBUTE — both ORDER legs carry
+// order_id, so the loud error is Java's exact 42702 (`Ambiguous reference
+// ORDER.ORDER_ID`). Still fail-closed — better a precise error than wrong
+// rows; a silent ON-clause drop that produced a cross product stays
+// impossible.
 func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FailsClosed(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)

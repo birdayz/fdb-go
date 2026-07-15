@@ -168,8 +168,8 @@ func TestTransitiveCorrelationOrder_RangesOverEdges(t *testing.T) {
 }
 
 // TestBoundAliasesOfReference pins the buried-alias collector the partition
-// classifier keys on (RFC-173 item C follow-on): every quantifier alias bound
-// anywhere inside the reference's subgraph is reported — including aliases
+// classifier keys on: every quantifier alias bound anywhere inside the
+// reference's subgraph is reported — including aliases
 // nested one level down — so a predicate referencing a subquery-INTERNAL
 // alias (an existential's hoisted join predicate, `B2.A_ID = A.ID`) is
 // classified as correlated to the existential quantifier that owns it, never

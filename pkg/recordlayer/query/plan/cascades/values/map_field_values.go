@@ -315,8 +315,8 @@ func EqualsWithoutChildren(a, b Value) bool {
 		if !ok {
 			return false
 		}
-		// RFC-173 identity: BAKED nodes (Resolved != nil)
-		// compare by their ordinal PATH alone — Java's semantics exactly
+		// BAKED nodes (Resolved != nil) compare by their ordinal PATH
+		// alone — Java's semantics exactly
 		// (ResolvedAccessor.equals is getOrdinal()-only, FieldValue.java:
 		// 675-689; two same-named columns at different ordinals stay distinct,
 		// the duplicate-name pin; alias-mapped twins over same-shaped legs

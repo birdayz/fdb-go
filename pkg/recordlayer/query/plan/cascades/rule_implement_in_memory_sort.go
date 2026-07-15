@@ -64,11 +64,11 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 
 	planKeys := make([]plans.SortKey, len(sortKeys))
 	for i, sk := range sortKeys {
-		// RFC-173: ValueExpr ALWAYS drives the executor — the sort key Value
-		// carries its plan-time-baked ordinal (a childless baked output-column
-		// key, a CORRELATED/qualified leg reference, or a computed key) and
-		// evaluates against the positional row. Field is DISPLAY-ONLY (Explain
-		// + the ordering-hint name match). A key that somehow escaped the
+		// ValueExpr ALWAYS drives the executor — the sort key Value carries its
+		// plan-time-baked ordinal (a childless baked output-column key, a
+		// CORRELATED/qualified leg reference, or a computed key) and evaluates
+		// against the positional row. Field is DISPLAY-ONLY (Explain + the
+		// ordering-hint name match). A key that somehow escaped the
 		// translator's bake fails loud at evaluation — never a name read.
 		field := ""
 		if fv, ok := sk.Value.(*values.FieldValue); ok && fv.Child == nil {

@@ -79,9 +79,9 @@ func TestFDB_CorrelatedExistsProbe(t *testing.T) {
 	// correlated EXISTS: a has a b → a1,a2,a4.
 	check("correlated_exists", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id)",
 		[]int64{1, 2, 4})
-	// SIBLING multi-EXISTS (two top-level EXISTS) — 0AF00'd before RFC-173 dropped
-	// PartitionSelectRule's ForEach-only guard for the ≥2-existential case, which peels
-	// [a, EXISTS(b), EXISTS(c)] into nested 2-quantifier existential selects. Correlated
+	// SIBLING multi-EXISTS (two top-level EXISTS): PartitionSelectRule's peel for the
+	// ≥2-existential case turns [a, EXISTS(b), EXISTS(c)] into nested 2-quantifier
+	// existential selects. Correlated
 	// EXISTS(b matches a) AND uncorrelated EXISTS(c non-empty): c has a row → same as
 	// correlated_exists → a1,a2,a4.
 	check("sibling_multi_exists_corr_uncorr", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM c)",
@@ -96,12 +96,11 @@ func TestFDB_CorrelatedExistsProbe(t *testing.T) {
 	// true → {3}.
 	check("sibling_notexists_and_exists", "SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM c)",
 		[]int64{3})
-	// Sibling multi-EXISTS where ONE inner is a MULTI-TABLE JOIN (`FROM b b2, c`) —
-	// formerly a LOUD sentinel: the join-inner's merged-row correlation through the
-	// peel did not resolve (`A_ID not resolvable`). RFC-173 item C's construction-time
-	// ordinal bind closed it (the correlated outer reference reads its slot
-	// positionally through the peel), so this is now the promised row assertion:
-	// {1} — only a1 has a b that c references.
+	// Sibling multi-EXISTS where ONE inner is a MULTI-TABLE JOIN (`FROM b b2, c`):
+	// the construction-time ordinal bind resolves the join-inner's merged-row
+	// correlation through the peel (the correlated outer reference reads its slot
+	// positionally), so the row assertion is: {1} — only a1 has a b that c
+	// references.
 	check("sibling_multitable_inner", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM b b2, c WHERE b2.a_id = a.id AND c.b_id = b2.id)",
 		[]int64{1})
 	// correlated NOT EXISTS: a has no b → a3.

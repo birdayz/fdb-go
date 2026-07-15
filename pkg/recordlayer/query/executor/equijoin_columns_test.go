@@ -8,8 +8,8 @@ import (
 )
 
 // bakedQovField builds a plan-time-BAKED FieldValue over a QuantifiedObjectValue
-// child — the "QOV(alias).col @ ordinal" shape join predicates carry after the
-// RFC-173 item C construction-time bind.
+// child — the "QOV(alias).col @ ordinal" shape join predicates carry after
+// construction-time ordinal binding.
 func bakedQovField(alias, col string, ord int) *values.FieldValue {
 	return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias)),

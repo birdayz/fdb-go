@@ -128,8 +128,8 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 		return nil, api.NewError(api.ErrCodeInvalidColumnReference,
 			fmt.Sprintf("column index %d out of range [1, %d]", columnIndex, len(rs.columns)))
 	}
-	// RFC-173: the ordinal-model positional row is the SOLE runtime output row —
-	// read column i from slot i-1. positionalAligned proves the slots are parallel
+	// The ordinal-model positional row is the SOLE runtime output row — read
+	// column i from slot i-1. positionalAligned proves the slots are parallel
 	// to this result set's columns (count + per-slot name match, with computed /
 	// aggregate renderings aligned by ordinal since their two naming authorities
 	// disagree on spelling). Ordinal reads are also what makes duplicate-name
@@ -145,7 +145,7 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 	// a producer that failed to emit its ordinal output — a Go planner/executor
 	// bug, never a name->NULL to paper over.
 	return nil, api.NewError(api.ErrCodeInternalError,
-		fmt.Sprintf("RFC-173: result row carries no positional output row aligned to column %q (%d columns) — the plan's top operator did not emit an ordinal output row",
+		fmt.Sprintf("result row carries no positional output row aligned to column %q (%d columns) — the plan's top operator did not emit an ordinal output row",
 			rs.columns[columnIndex-1].Name, len(rs.columns)))
 }
 

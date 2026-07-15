@@ -1,8 +1,8 @@
 package executor
 
-// TEST-ONLY name-model oracles. Production has no name-keyed row anywhere
-// (RFC-173: every reference bakes its ordinal at plan time; every runtime row
-// is positional). These helpers survive purely as ASSERTION oracles: protoToMap
+// TEST-ONLY name-model oracles. Production has no name-keyed row anywhere —
+// every reference bakes its ordinal at plan time, and every runtime row is
+// positional. These helpers survive purely as ASSERTION oracles: protoToMap
 // exercises the shared proto→row-value conversion through an independent shape,
 // and shadowMismatch cross-checks a positional row field-for-field against a
 // name-keyed expectation map.

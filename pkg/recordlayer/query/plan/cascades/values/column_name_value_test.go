@@ -2,14 +2,15 @@ package values
 
 import "testing"
 
-// TestColumnNameValue_IgnoresBakedOrdinals pins the RFC-173 item C rendering
-// split: ExplainValue keeps the baked `#<ordinal>` accessor discriminator
-// (EXPLAIN/debug — collapsing two different reads is a bug there), while
-// ColumnNameValue — the NAME-derivation rendering every output-column-name
-// derivation goes through — renders the SAME text for a lazy and a baked
-// reference. Without the split, plan-time ordinal binding changes derived
-// column names ("SUM(AMOUNT)" vs "SUM(AMOUNT#2)") and the naming lockstep
-// between layers that render different instances of one reference breaks.
+// TestColumnNameValue_IgnoresBakedOrdinals pins the rendering split between
+// ExplainValue and ColumnNameValue: ExplainValue keeps the baked `#<ordinal>`
+// accessor discriminator (EXPLAIN/debug — collapsing two different reads is
+// a bug there), while ColumnNameValue — the NAME-derivation rendering every
+// output-column-name derivation goes through — renders the SAME text for a
+// lazy and a baked reference. Without the split, plan-time ordinal binding
+// would change derived column names ("SUM(AMOUNT)" vs "SUM(AMOUNT#2)") and
+// break the naming lockstep between layers that render different instances
+// of one reference.
 func TestColumnNameValue_IgnoresBakedOrdinals(t *testing.T) {
 	t.Parallel()
 

@@ -16683,9 +16683,9 @@ func TestFDB_NestedDerivedThreeLevels(t *testing.T) {
 	})
 
 	t.Run("expression_alias_propagates_through_3_levels", func(t *testing.T) {
-		// RFC-173 Slice 1: an aliased computed expression resolves through nested
-		// derived tables by its OUTPUT name `doubled` (the source-name reverse-map
-		// is retired). doubled = val+val over {10,20,30,40,50} → {20,40,60,80,100},
+		// An aliased computed expression resolves through nested
+		// derived tables by its OUTPUT name `doubled`, not a source-name
+		// reverse-map. doubled = val+val over {10,20,30,40,50} → {20,40,60,80,100},
 		// SUM = 300.
 		rows := collectRows(t, db, `
 			SELECT SUM(doubled) FROM (

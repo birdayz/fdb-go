@@ -167,13 +167,14 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 		aliases = []string{la, ra}
 	}
 
-	// RFC-173: ordinalization of a LEFT/RIGHT box happens
-	// at TRANSLATION (the cluster gate births the declaration-order ordinal
-	// seed, null-supplying leg RECORD-nullable). The box's result value flows
-	// through this rewrite UNCHANGED — a raw positional RC, null-extended by
-	// the executor's null-leg birth. No rewrite-time reconversion: rebuilding
-	// a seed here would stamp per-column nullability, contradicting the
-	// record-level nullable wrap the seed carries.
+	// Ordinalization of a LEFT/RIGHT box happens at TRANSLATION: for a
+	// merge of ≥2 legs, translation builds the declaration-order ordinal
+	// seed with the null-supplying leg marked RECORD-nullable. The box's
+	// result value flows through this rewrite UNCHANGED — a raw positional
+	// RC, null-extended by the executor when the null-supplying leg is
+	// empty. No rewrite-time reconversion: rebuilding a seed here would
+	// stamp per-column nullability, contradicting the record-level
+	// nullable wrap the seed carries.
 	resultValue := sel.GetResultValue()
 
 	// The outer SelectExpression is INNER (outer-join semantics now live entirely in

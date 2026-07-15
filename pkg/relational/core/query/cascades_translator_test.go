@@ -432,11 +432,9 @@ func TestTranslateJoin(t *testing.T) {
 	// md is REQUIRED to translate a join (leg columns derive from metadata,
 	// RFC-077 7.6; nil-md is untranslatable — TestTranslateJoinNilMd).
 	//
-	// RFC-173 Slice 2 W3b: a MAXIMAL 2-way inner join is in the ordinal wedge
-	// — its seed result value is the ORDINAL RC (every field a BAKED
-	// ofOrdinalNumber leg reference, no AnchoredJoin flag, dup names legal),
-	// not the name-model anchored RC. The anchored seed remains for non-gated
-	// joins (3-way control below).
+	// A maximal 2-way inner join gates ordinal: its seed result value is the
+	// ordinal RC (every field a BAKED ofOrdinalNumber leg reference, dup
+	// names legal), never the name-model anchored RC.
 	left := logical.NewScan("Order", "")
 	right := logical.NewScan("Customer", "")
 	join := logical.NewJoin(left, right, logical.JoinInner, "")
@@ -452,8 +450,8 @@ func TestTranslateJoin(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected RecordConstructorValue result, got %T", sel.GetResultValue())
 	}
-	// (The name-model anchored RC is deleted — RFC-173 S4 item B; the seed
-	// assert below is the sole shape authority.)
+	// The name-model anchored RC no longer exists for a gated join; the seed
+	// assert below is the sole shape authority.
 	values.AssertOrdinalJoinSeed(rc) // panics on a malformed seed
 	for i, f := range rc.Fields {
 		fv, isFV := f.Value.(*values.FieldValue)
@@ -462,9 +460,9 @@ func TestTranslateJoin(t *testing.T) {
 		}
 	}
 
-	// S3 fulcrum: a 3-way inner cluster translates FLAT — one select, three
-	// quantifiers, the N-leg ordinal seed (Java flattens inner joins at
-	// translation; nested binaries are never seeded).
+	// A 3-way inner cluster translates FLAT — one select, three quantifiers,
+	// the N-leg ordinal seed (Java flattens inner joins at translation;
+	// nested binaries are never seeded).
 	three := logical.NewJoin(join, logical.NewScan("TypedRecord", ""), logical.JoinInner, "")
 	ref3, _ := TranslateToCascadesWithSubqueries(three, demoMetaData(t))
 	if ref3 == nil {
@@ -479,7 +477,7 @@ func TestTranslateJoin(t *testing.T) {
 	}
 	rc3, ok := sel3.GetResultValue().(*values.RecordConstructorValue)
 	if !ok {
-		t.Fatalf("a 3-way inner cluster must seed the ORDINAL flat RC (S3 fulcrum), got %T", sel3.GetResultValue())
+		t.Fatalf("a 3-way inner cluster must seed the ORDINAL flat RC, got %T", sel3.GetResultValue())
 	}
 	values.AssertOrdinalJoinSeed(rc3) // three consecutive full-leg runs
 }
@@ -769,8 +767,8 @@ func TestTranslateCTEMultipleReferences(t *testing.T) {
 
 	// The DUP-ALIAS double reference (`FROM p, p` — only constructible by
 	// direct tree building; SQL rejects it upstream) declines LOUDLY: the gate
-	// poisons indistinguishable leg correlations and the name-model fallback is
-	// deleted (RFC-173 S4 item B).
+	// poisons indistinguishable leg correlations, and there is no name-model
+	// fallback to fall back to.
 	dupJoin := logical.NewJoin(logical.NewScan("p", ""), logical.NewScan("p", ""), logical.JoinInner, "")
 	if dupRef, _ := TranslateToCascadesWithSubqueries(logical.NewCTE("p", body, dupJoin, false), demoMetaData(t)); dupRef != nil {
 		t.Fatal("dup-aliased CTE double reference must decline loudly (gate dup poison, no name-model fallback)")

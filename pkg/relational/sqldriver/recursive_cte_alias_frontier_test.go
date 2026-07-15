@@ -9,12 +9,11 @@ import (
 	"github.com/onsi/gomega"
 )
 
-// These tests pin the RFC-173 Slice-1 alias/frontier naming contract for
-// recursive-CTE leg normalization (review P2). A leg's normalization wrap
+// These tests pin the alias/frontier naming contract for
+// recursive-CTE leg normalization. A leg's normalization wrap
 // (normalizeLegToOutputColumns) re-reads the leg's output by its PHYSICAL
 // column names. On the positional frontier the physical slot names are the
-// OUTPUT names — ALIAS-preferring (executeProjection's posNames; RFC-173 §4
-// Slice 1 Step 2b) — so a leg whose top projection carries an alias must be
+// OUTPUT names — ALIAS-preferring (executeProjection's posNames) — so a leg whose top projection carries an alias must be
 // re-read by that alias, not by values.ProjectionColumnName of the projected
 // value (the source column / computed rendering). Reading the source name
 // against an alias-named positional row is a GetByName miss, and the ordinal
@@ -25,11 +24,11 @@ import (
 // coincide (`SELECT n + 1` — physical "(N + 1)" both sides; bare-column
 // renames; star seeds), so this dimension was green while broken.
 
-// TestFDB_RecursiveCTEAliasedComputedColumn_RFC173 pins the recursive-branch
+// TestFDB_RecursiveCTEAliasedComputedColumn pins the recursive-branch
 // shape: `SELECT n + 1 AS n`. The recursive leg's wrap always fires; the leg's
 // positional row is slot-named by the alias N while the wrap (pre-fix) read
 // "(N + 1)" — OrdinalResolutionError at level 1 of the recursion.
-func TestFDB_RecursiveCTEAliasedComputedColumn_RFC173(t *testing.T) {
+func TestFDB_RecursiveCTEAliasedComputedColumn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -54,7 +53,7 @@ func TestFDB_RecursiveCTEAliasedComputedColumn_RFC173(t *testing.T) {
 	g.Expect(db.ExecContext(ctx, "INSERT INTO t VALUES (1)")).Error().NotTo(gomega.HaveOccurred())
 
 	// Identical to the pinned alias-free depth counter
-	// (TestFDB_RecursiveCTEComputedColumn_RFC173) except the recursive branch
+	// (TestFDB_RecursiveCTEComputedColumn) except the recursive branch
 	// aliases its computed column: `SELECT n + 1 AS n`.
 	rows, err := db.QueryContext(ctx,
 		"WITH RECURSIVE c AS (SELECT id AS n FROM t UNION ALL SELECT n + 1 AS n FROM c WHERE n < 10) SELECT n FROM c ORDER BY n")
@@ -85,13 +84,13 @@ func TestFDB_RecursiveCTEAliasedComputedColumn_RFC173(t *testing.T) {
 	g.Expect(dgot).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}))
 }
 
-// TestFDB_RecursiveCTEColumnListRenamesAliasedSeed_RFC173 pins the seed shape:
+// TestFDB_RecursiveCTEColumnListRenamesAliasedSeed pins the seed shape:
 // an explicit CTE column list `c(v)` renames a seed whose projection carries
 // its own alias (`SELECT id AS x`). The seed wrap fires (outCols V != seedOut
 // X); the seed's positional row is slot-named X (the alias) while the wrap
 // (pre-fix) read the SOURCE column ID — OrdinalResolutionError before the
 // first row lands in the temp table.
-func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed_RFC173(t *testing.T) {
+func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -131,12 +130,12 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed_RFC173(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5}))
 }
 
-// TestFDB_RecursiveCTEColumnListAndAliasedBranches_RFC173 combines both axes —
-// review's reported shape with a table-backed seed (FROM-less SELECT is
-// unsupported, matching Java's visitSimpleTable rejection): the column list
-// renames an aliased seed AND the recursive branch aliases its computed
-// column. Both wraps fire; both must read the alias-named frontier slots.
-func TestFDB_RecursiveCTEColumnListAndAliasedBranches_RFC173(t *testing.T) {
+// TestFDB_RecursiveCTEColumnListAndAliasedBranches combines both axes —
+// a table-backed seed (FROM-less SELECT is unsupported, matching Java's
+// visitSimpleTable rejection): the column list renames an aliased seed AND
+// the recursive branch aliases its computed column. Both wraps fire; both
+// must read the alias-named frontier slots.
+func TestFDB_RecursiveCTEColumnListAndAliasedBranches(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -178,7 +177,7 @@ func TestFDB_RecursiveCTEColumnListAndAliasedBranches_RFC173(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5}))
 }
 
-// TestFDB_RecursiveCTEAliasedJoinBodyColumn_RFC173 pins the join-body-with-
+// TestFDB_RecursiveCTEAliasedJoinBodyColumn pins the join-body-with-
 // alias shape (`SELECT b.id AS cur, b.parent AS orig FROM walk a, t b`): a
 // join body is OFF the positional frontier (merged rows carry no Positional),
 // so leg re-reads resolve against the name-keyed Datum — which stores BOTH the
@@ -186,7 +185,7 @@ func TestFDB_RecursiveCTEColumnListAndAliasedBranches_RFC173(t *testing.T) {
 // name the wrap reads (alias-preferring after the fix), and the wrap must
 // still strip qualified keys from the temp table (the rekey-gate invariant):
 // the deep chain only completes if every level advances.
-func TestFDB_RecursiveCTEAliasedJoinBodyColumn_RFC173(t *testing.T) {
+func TestFDB_RecursiveCTEAliasedJoinBodyColumn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -233,20 +232,20 @@ func TestFDB_RecursiveCTEAliasedJoinBodyColumn_RFC173(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6}))
 }
 
-// TestFDB_RecursiveCTEDuplicateAliases_RFC173 pins DUPLICATE output aliases in
-// a recursive leg (review P2 on PR #446): `SELECT a + 1 AS x, b + 1 AS x` emits
+// TestFDB_RecursiveCTEDuplicateAliases pins DUPLICATE output aliases in
+// a recursive leg: `SELECT a + 1 AS x, b + 1 AS x` emits
 // two slots BOTH named X, and any name-based re-read collapses them —
 // positional GetByName resolves the FIRST matching slot (b silently copied a:
-// rows (2,2),(3,3) instead of (2,11),(3,12)), the name-keyed Datum is
+// rows (2,2),(3,3) instead of (2,11),(3,12)), while a name-keyed row would be
 // last-wins (a copied b and the recursion stalled). The leg-normalization wrap
 // therefore reads a projection-top leg by ORDINAL
 // (values.NewFieldValueWithResolvedOrdinal — Java's FieldValue.ofOrdinalNumber
-// model; RFC-173 §4 Slice 1 makes ordinal authoritative on the frontier), so
+// model; ordinal position is authoritative on the frontier), so
 // read i hits emitted slot i by construction and duplicate names cease to
 // matter. Duplicate SELECT output names are legal SQL and preserved
 // positionally everywhere else in the engine (positionalTypeFromNames keeps
 // them as distinct fields).
-func TestFDB_RecursiveCTEDuplicateAliases_RFC173(t *testing.T) {
+func TestFDB_RecursiveCTEDuplicateAliases(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -273,7 +272,7 @@ func TestFDB_RecursiveCTEDuplicateAliases_RFC173(t *testing.T) {
 	type row struct{ a, b int64 }
 	want := []row{{1, 10}, {2, 11}, {3, 12}}
 
-	// Column-list form (review's reported shape).
+	// Column-list form.
 	rows, err := db.QueryContext(ctx,
 		"WITH RECURSIVE c(a, b) AS (SELECT id, v FROM t UNION ALL SELECT a + 1 AS x, b + 1 AS x FROM c WHERE a < 3) SELECT a, b FROM c ORDER BY a")
 	g.Expect(err).NotTo(gomega.HaveOccurred())

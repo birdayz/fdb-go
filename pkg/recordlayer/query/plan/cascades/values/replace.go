@@ -351,7 +351,7 @@ func withChildren(v Value, newChildren []Value) Value {
 		if len(newChildren) != 1 {
 			return v
 		}
-		// RFC-173: the rebuild FUSES a baked node over a new BAKED
+		// The rebuild FUSES a baked node over a new BAKED
 		// FieldValue child into one multi-accessor node — Java's architecture,
 		// where fuse is a property of the rebuild itself (FieldValue.withNewChild
 		// = ofFieldsAndFuseIfPossible, FieldValue.java:278-280): a TranslationMap
@@ -384,7 +384,7 @@ func withChildren(v Value, newChildren []Value) Value {
 				// (vt.Child's correlation), matching the seed field whose value is
 				// a FieldValue over that SAME leg. A bare-name match would pick the
 				// first colliding occurrence (dept.id before emp.id) — the wrong
-				// leg, RFC-173's raw-RC duplicate conflation; and the raw source
+				// leg, the raw-RC duplicate-name conflation; and the raw source
 				// ordinal would pick the seed's slot-0 (e.g. the outer scan's PK),
 				// fabricating a wrong comparand that then mis-SARGs. Falls back to
 				// the plan-time name authority when no leg-tagged field bears the
@@ -417,9 +417,9 @@ func withChildren(v Value, newChildren []Value) Value {
 				return &FieldValue{Field: fused.Last().Field, Typ: vt.Typ, Child: inner.Child, Resolved: fused}
 			}
 		}
-		// Preserve the RFC-173 baked-ordinal marker: dropping Resolved would
+		// Preserve the baked-ordinal marker: dropping Resolved would
 		// silently degrade a BAKED node to lazy — a conflation hazard for
-		// duplicate same-named columns (§5 pin). Covers Replace/RebaseValue and
+		// duplicate same-named columns. Covers Replace/RebaseValue and
 		// every simplifier rebuild that funnels through WithChildren.
 		return &FieldValue{Field: vt.Field, Typ: vt.Typ, Child: newChildren[0], Resolved: vt.Resolved}
 
@@ -462,7 +462,7 @@ type SelfWithChildren interface {
 // baked ordinal is relative to its OWN leg, so applying it directly to the seed
 // picks the wrong slot; and with columns colliding across legs (dept.id AND
 // emp.id) a bare-name match picks the first occurrence — again the wrong leg,
-// RFC-173's raw-RC duplicate conflation. Disambiguate by the reference's OWN leg
+// the raw-RC duplicate-name conflation. Disambiguate by the reference's OWN leg
 // (vt.Child's correlation): pick the seed field whose value is a FieldValue over
 // that SAME correlation, matched by leg-relative ordinal (name as the within-leg
 // tiebreak — a single source has unique column names). Falls back to the

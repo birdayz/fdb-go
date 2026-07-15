@@ -27,7 +27,7 @@ import (
 // dynamically exactly as metadata.Builder.buildFileDescriptor does (descriptorpb
 // + protodesc.NewFile), so the record type, its nested struct element, and the
 // UnionDescriptor are all real proto descriptors; records are written as genuine
-// dynamicpb messages and the unnest SQL runs the full Cascades path. RFC-173 W4c.
+// dynamicpb messages and the unnest SQL runs the full Cascades path.
 func buildStructArrayMetadata(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
 	fdp := &descriptorpb.FileDescriptorProto{
@@ -129,7 +129,7 @@ func structPair(v any) string {
 	return fmt.Sprintf("%s:%d", sku, qty)
 }
 
-// TestFDB_ArrayUnnestStruct is the RFC-173 W4c STRUCT-ARRAY (array-of-rows)
+// TestFDB_ArrayUnnestStruct is the STRUCT-ARRAY (array-of-rows)
 // lateral-unnest e2e proof. It pins the design's WHOLE-OBJECT ruling for a
 // STRUCT-array element (`FROM t, t.structArr AS x`): Go keeps a whole-object
 // binding — deliberately NOT porting Java's field-flattening. The
@@ -149,7 +149,7 @@ func structPair(v any) string {
 // raw element is not field-readable (the executor returns the whole bound object
 // for a non-map binding). Making `x.field` extract a field while `x` still binds
 // the whole struct is a query-engine design change (composite field extraction +
-// whole-object/field-access disambiguation), not a W4c test gap. Pinning it as a
+// whole-object/field-access disambiguation), not a gap in this test. Pinning it as a
 // passing assertion would require that feature; asserting the current
 // non-resolution would pin a limitation as if desired. Neither is done here.
 func TestFDB_ArrayUnnestStruct(t *testing.T) {

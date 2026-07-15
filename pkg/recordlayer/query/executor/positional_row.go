@@ -4,9 +4,9 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// PositionalRow is the RFC-173 typed positional runtime row — the SOLE runtime
-// row: field values indexed by ORDINAL, paired with the RecordType that names
-// and types each slot. Positional access (Slots[ordinal]) mirrors Java's
+// PositionalRow is the typed positional runtime row — the SOLE runtime row:
+// field values indexed by ORDINAL, paired with the RecordType that names and
+// types each slot. Positional access (Slots[ordinal]) mirrors Java's
 // MessageHelpers.getFieldValueForFieldOrdinals; every column reference reads
 // its plan-time-baked ordinal (there is no runtime name resolution — the
 // Type's names serve plan-time binding and diagnostics).
@@ -63,7 +63,8 @@ func (r *PositionalRow) TypeNames() []string {
 // concat / clustered box row whose Type carries leg boundaries beyond a
 // single whole-row window). Consulted by values.FieldValue's correlated
 // fall-through arms: a source-relative baked ordinal cannot be served by a
-// multi-leg row (RFC-173 item C correct-or-loud).
+// multi-leg row without a leg binding — such a read must fail loud rather
+// than silently address the wrong leg's slot.
 func (r *PositionalRow) MultiLeg() bool {
 	if r == nil || r.Type == nil || len(r.Type.Legs) == 0 {
 		return false
@@ -119,8 +120,10 @@ func positionalToMap(pos *PositionalRow) map[string]any {
 // as DISTINCT fields by position, whereas NewRecordType panics on a duplicate
 // name. Positional access is by
 // ordinal, so duplicates are unambiguous; FieldIndex (name->ordinal) returns the
-// first match, which is why the shadow assert legitimately DIFFERS from the
-// last-wins name map on duplicate-named output (the §5 models-must-differ case).
+// first match, which is why a name-keyed lookup legitimately differs from
+// positional access on duplicate-named output: name lookup sees only the
+// first match (or last-wins, for a map built by positionalToMap), while every
+// ordinal slot stays independently addressable.
 func positionalTypeFromNames(names []string) *values.RecordType {
 	fields := make([]values.Field, len(names))
 	for i, n := range names {

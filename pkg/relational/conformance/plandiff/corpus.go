@@ -12338,7 +12338,7 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id, s FROM T_DSE_15 WHERE s >= 'banana' ORDER BY id",
 		},
 
-		// ===== DayShift JOIN shape diversity (T_DSJ_01..T_DSJ_15) =====
+		// ===== JOIN shape diversity (T_DSJ_01..T_DSJ_15) =====
 		{
 			// INNER JOIN ON single-key (non-PK on right) — pins the
 			// explicit JOIN syntax for the simplest "many children point
@@ -12686,8 +12686,7 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "WITH g AS (SELECT gid FROM T_DSC_12A) SELECT count(*) FROM g, T_DSC_12B b WHERE g.gid = b.gid",
 		},
-		// Skipped union_all_two_simple_no_wrap (added during this shift's
-		// CTE batch, dropped same-shift): UNION ALL row order without an
+		// Skipped union_all_two_simple_no_wrap: UNION ALL row order without an
 		// outer ORDER BY is non-deterministic between engines, and adding
 		// ORDER BY would hit Java's intermittent UNION-ALL-ORDER-BY bug
 		// (TODO #44 Tier D). The shape is already covered indirectly via
@@ -12708,12 +12707,11 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Recursive branch ALIASES its computed column (`SELECT n + 1 AS n`)
 			// — distinct from `recursive_cte_depth_counter`, which is alias-free.
-			// The alias renames the leg's positional-frontier slot (RFC-173:
-			// posNames is alias-preferring), so the leg-normalization wrap must
-			// re-read by the ALIAS, not the computed rendering "(N + 1)" — the
-			// pre-fix read was a loud OrdinalResolutionError in ordinal mode and
-			// works only by Datum-double-keying in name mode (review P2, RFC-173
-			// Slice-1 follow-up).
+			// The alias renames the leg's positional-frontier slot (posNames is
+			// alias-preferring), so the leg-normalization wrap must re-read by
+			// the ALIAS, not the computed rendering "(N + 1)" — the pre-fix read
+			// was a loud OrdinalResolutionError in ordinal mode and works only
+			// by Datum-double-keying in name mode.
 			Name:           "recursive_cte_aliased_computed_branch",
 			SchemaTemplate: "CREATE TABLE T_RCA1 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_RCA1 VALUES (1)"},
@@ -17971,14 +17969,13 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_SSA_01 VALUES (1, 10), (2, 20), (3, 30)"},
 			Query:          "SELECT id, v, v - (SELECT AVG(v) FROM T_SSA_01) AS diff FROM T_SSA_01 ORDER BY id",
 		},
-		// RFC-173 W4-left commit 4 — duplicate FROM-source aliases. Java
-		// allows the duplicate at FROM (unique quantifier ids) and raises
-		// AMBIGUOUS_COLUMN (42702, "Ambiguous reference p") at REFERENCE
-		// resolution; Go rejects at the FROM walk with the same code/text
-		// (the exact per-reference check is the QP-REF-BIND (per-reference binding)
-		// charter). Referenced duplicates are PARITY entries (both engines
-		// error identically); the unreferenced SELECT * corner is a marked
-		// divergence (Java answers with duplicate columns; DIVERGENCES.md).
+		// Duplicate FROM-source aliases. Java allows the duplicate at FROM
+		// (unique quantifier ids) and raises AMBIGUOUS_COLUMN (42702,
+		// "Ambiguous reference p") at REFERENCE resolution; Go rejects with
+		// the same code/text via the same per-reference check. Referenced
+		// duplicates are PARITY entries (both engines error identically);
+		// the unreferenced SELECT * corner is a marked divergence (Java
+		// answers with duplicate columns; DIVERGENCES.md).
 		{
 			Name:           "dup_from_alias_referenced_unaliased",
 			SchemaTemplate: "CREATE TABLE T_DUP_P (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_Q (qid BIGINT, PRIMARY KEY (qid))",
@@ -17997,25 +17994,25 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// The PREDICATED disjoint-dup form: per-attribute binding (a.id is
 			// unambiguous — only T_DUP_C carries id) resolves to that leg and the
-			// predicate pushes into it. PARITY since RFC-173 QP-REF-BIND item 1 c2
-			// (the front-end flip): Java answers [[2]], Go now answers [[2]]
-			// (live-verified). Pre-item-1 Go declined 0AF00 (indistinguishable
-			// correlations); the binding-id mint made the legs distinguishable.
+			// predicate pushes into it. PARITY: Java answers [[2]], Go answers
+			// [[2]] (live-verified). Go previously declined with 0AF00
+			// (indistinguishable correlations); the binding-id mint made the
+			// legs distinguishable.
 			Name:           "dup_from_alias_disjoint_where",
 			SchemaTemplate: "CREATE TABLE T_DUP_C (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_D (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_C VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_D VALUES (7)"},
 			Query:          "SELECT a.id FROM T_DUP_C AS a, T_DUP_D AS a WHERE a.id = 2",
 		},
 		{
-			// RFC-173 S4 commit 4 — a gated dup-outer flatten with a
-			// LEG-INDEPENDENT EXISTS. Java accepts the duplicate FROM
-			// (per-attribute a.qid → the q leg, the only leg carrying qid) and
-			// the UNCORRELATED EXISTS (always true — p is non-empty), so it
-			// answers the full cross product's q values: 6 rows, qid ∈ {5,7,9}
-			// each twice. PARITY — Go now matches (the identity-FlatMap
-			// pass-through flows the gated outer's positional row so the
-			// minted-dup upper resolves positionally); pre-commit-4 Go declined
-			// this valid query (a mislabeled reach gap, not a Java divergence).
+			// A gated dup-outer flatten with a LEG-INDEPENDENT EXISTS. Java
+			// accepts the duplicate FROM (per-attribute a.qid → the q leg,
+			// the only leg carrying qid) and the UNCORRELATED EXISTS (always
+			// true — p is non-empty), so it answers the full cross product's
+			// q values: 6 rows, qid ∈ {5,7,9} each twice. PARITY — Go matches
+			// (the identity-FlatMap pass-through flows the gated outer's
+			// positional row so the minted-dup upper resolves positionally);
+			// Go previously declined this valid query (a mislabeled reach
+			// gap, not a Java divergence).
 			Name:           "dup_from_alias_leg_independent_exists",
 			SchemaTemplate: "CREATE TABLE T_DUP_EIP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_EIQ (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_EIP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_EIQ VALUES (5), (7), (9)"},
@@ -18036,22 +18033,21 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// SELECT * over duplicate aliases: Java answers with DUPLICATE columns
-			// in FROM order (unique quantifier ids; no dedup). PARITY since RFC-173
-			// QP-REF-BIND item 1 c2/c3: Go now answers cols [ID V QID ID V], full
-			// cross product (the ordinal seed's positional row serves the duplicate
-			// labels — deriveColumnsFromJoin's RV-divergence arm). Pre-item-1 Go
-			// rejected 42702 at the FROM walk.
+			// in FROM order (unique quantifier ids; no dedup). PARITY: Go answers
+			// cols [ID V QID ID V], full cross product (the ordinal seed's
+			// positional row serves the duplicate labels —
+			// deriveColumnsFromJoin's RV-divergence arm). Go previously rejected
+			// with 42702 at the FROM walk.
 			Name:           "dup_from_alias_select_star",
 			SchemaTemplate: "CREATE TABLE T_DUP_S (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_T (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_S VALUES (1, 10)", "INSERT INTO T_DUP_T VALUES (7)"},
 			Query:          "SELECT * FROM T_DUP_S, T_DUP_T, T_DUP_S",
 		},
-		// RFC-173 W4-left — the column-aware duplicate-alias dimensions the
-		// first cut shipped without (review findings). Three-source
-		// duplicates compare EVERY pair (the colliding pair need not involve
-		// the first source); derived/CTE legs derive their real output
-		// columns; an undefined table under a duplicate alias stays the
-		// undefined-table error.
+		// The column-aware duplicate-alias check covers dimensions an
+		// earlier cut missed: three-source duplicates compare EVERY pair
+		// (the colliding pair need not involve the first source);
+		// derived/CTE legs derive their real output columns; an undefined
+		// table under a duplicate alias stays the undefined-table error.
 		{
 			// The colliding pair (F, G — both carry qid) does not involve
 			// the FIRST source under the alias (E, disjoint). Java resolves
@@ -18076,7 +18072,7 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_DUP_H VALUES (1)"},
 			Query:          "SELECT * FROM nosuch_dup AS a, T_DUP_H AS a",
 			Divergence: &Divergence{
-				Reason:          "Both engines reject the undefined table; cosmetic message wording differs. The RFC-173 W4-left dup-alias check skips undefined-table pairs so 42F01 is not masked as 42702.",
+				Reason:          "Both engines reject the undefined table; cosmetic message wording differs. The dup-alias check skips undefined-table pairs so 42F01 is not masked as 42702.",
 				Direction:       DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "table \"NOSUCH_DUP\" does not exist",
 			},
@@ -18093,7 +18089,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// A computed UNALIASED projection in a JOIN-bodied recursive leg
 			// — its physical rendering carries a dot; the leg remap must
-			// never first-dot-split it (the S4 kill-list hazard, hardened).
+			// never first-dot-split it.
 			Name:           "rcte_computed_join_leg",
 			SchemaTemplate: "CREATE TABLE T_RCC_01 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_RCC_01 VALUES (1), (2), (3), (4)"},
@@ -18127,7 +18123,7 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls: []string{"INSERT INTO T_DUP_GA VALUES (1)", "INSERT INTO T_DUP_GB VALUES (2)"},
 			Query:     `SELECT a."COUNT(*)" FROM (SELECT COUNT(*) FROM T_DUP_GA) AS a, (SELECT COUNT(*) FROM T_DUP_GB) AS a`,
 			Divergence: &Divergence{
-				Reason:          "Both engines reject; Java's generated aggregate output name differs from the text 'COUNT(*)', so the quoted reference is a NON-EXISTING column there ('Attempting to query non existing column A.COUNT(*)'), while Go's generated name matches both duplicate legs and rejects as ambiguous (the review-found silent one-side read, RFC-173 W4-left).",
+				Reason:          "Both engines reject; Java's generated aggregate output name differs from the text 'COUNT(*)', so the quoted reference is a NON-EXISTING column there ('Attempting to query non existing column A.COUNT(*)'), while Go's generated name matches both duplicate legs and rejects as ambiguous (matching both legs prevents a silent one-side read).",
 				Direction:       DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "Ambiguous reference A.COUNT(*)",
 			},
@@ -18135,23 +18131,23 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// The unreferenced CTE star corner — same class as
 			// dup_from_alias_select_star: Java answers with duplicate columns.
-			// PARITY since RFC-173 QP-REF-BIND item 1 c2/c3: Go now answers cols
-			// [ID ID], full cross product (live-verified). Pre-item-1 Go rejected
-			// 42702 at the FROM walk (naming the CTE's derived column).
+			// PARITY: Go answers cols [ID ID], full cross product
+			// (live-verified). Go previously rejected with 42702 at the FROM
+			// walk (naming the CTE's derived column).
 			Name:           "dup_from_alias_cte_star",
 			SchemaTemplate: "CREATE TABLE T_DUP_X (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_X VALUES (1)"},
 			Query:          "WITH w AS (SELECT id FROM T_DUP_X) SELECT * FROM w, w",
 		},
-		// RFC-173 item-1 c4 — the EXISTS-over-un-collapsed-cross-join class
-		// (an inner predicate referencing ONLY outer legs stays buried in the
-		// existential subplan; the buried-reference ordinal rebase makes it
-		// read the merged outer row) and the dup-alias sort/group key
-		// binding. All live-verified vs 4.12.11.0.
+		// The EXISTS-over-un-collapsed-cross-join class (an inner predicate
+		// referencing ONLY outer legs stays buried in the existential
+		// subplan; the buried-reference ordinal rebase makes it read the
+		// merged outer row) and the dup-alias sort/group key binding. All
+		// live-verified vs 4.12.11.0.
 		{
 			// Correlated EXISTS over an un-collapsed cross join, correlation on
-			// the FIRST leg, DISTINCT aliases — the item-2 regression shape
-			// (worked pre-item-2, then died on the ordinal frontier). PARITY:
+			// the FIRST leg, DISTINCT aliases — a regression shape that once
+			// worked, then broke when ordinal resolution landed. PARITY:
 			// both answer [[1] [1] [1]] (id=1 row × three q rows).
 			Name: "exists_crossjoin_buried_first_leg",
 			SchemaTemplate: "CREATE TABLE T_XCJ_A (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
@@ -18174,15 +18170,16 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT b.qid FROM T_XCJ_C AS a, T_XCJ_D AS b WHERE EXISTS (SELECT 1 FROM T_XCJ_C WHERE b.qid = 7)",
 		},
 		{
-			// RFC-173 S4 F2-LEFT: a PROJECTED EXISTS over a LEFT JOIN (scan legs).
-			// Go rejected it (0AF00, INNER-only fold); Java folds and answers it —
-			// live-verified 4.12.11.0 on THIS exact shape (NO ORDER BY). A Java-parity
-			// REACH gap now closed the producer-consistent way: the translator builds
-			// a JoinLeftOuter select; the executor takes the commit-2 ORDINAL path
-			// (correlatedStep1 false on the undissolved LEFT, gatedSeedStep1 true) with
-			// a JoinLeftOuter NLJ that null-extends the null-supplying leg positionally
-			// — NO name-model :698 producer. q.qid=7 matches NEITHER p row, so q is
-			// NULL-extended for both; EXISTS(r.id = q.qid=NULL) → false. PARITY: both
+			// A PROJECTED EXISTS over a LEFT JOIN (scan legs). Go rejected it
+			// (0AF00, INNER-only fold); Java folds and answers it —
+			// live-verified 4.12.11.0 on THIS exact shape (NO ORDER BY). The
+			// reach gap is closed the producer-consistent way: the translator
+			// builds a JoinLeftOuter select; the executor takes the ORDINAL
+			// path (correlatedStep1 false on the undissolved LEFT,
+			// gatedSeedStep1 true) with a JoinLeftOuter NLJ that null-extends
+			// the null-supplying leg positionally — no name-model producer
+			// involved. q.qid=7 matches NEITHER p row, so q is NULL-extended
+			// for both; EXISTS(r.id = q.qid=NULL) → false. PARITY: both
 			// answer [[10 false] [20 false]], scan-order deterministic.
 			// NOTE: an ORDER BY on top makes Java's Cascades fail to plan
 			// ("could not plan query") while Go handles it — a SEPARATE Go-beyond-Java

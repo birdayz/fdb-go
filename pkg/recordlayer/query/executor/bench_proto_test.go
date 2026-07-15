@@ -65,10 +65,8 @@ func BenchmarkProtoToMap_SparseRecord(b *testing.B) {
 	}
 }
 
-// BenchmarkProtoToPositional_Order measures the RFC-173 ordinal-row build alone
-// on the 5-field Order — the ADDED per-row cost of dual emission during the
-// migration window (FromStoredRecord now runs protoToMap AND protoToPositional
-// per scanned row; Slice 4 retires the map side).
+// BenchmarkProtoToPositional_Order measures the ordinal-row build alone on the
+// 5-field Order — the cost FromStoredRecord pays on every scanned row.
 func BenchmarkProtoToPositional_Order(b *testing.B) {
 	msg := makeOrder(1, 100, 5)
 	b.ResetTimer()
@@ -87,11 +85,12 @@ func BenchmarkProtoToPositional_TypedRecord(b *testing.B) {
 	}
 }
 
-// BenchmarkDualEmission_Order measures the FULL RFC-173 migration-window scan
-// cost per row (protoToMap + protoToPositional — exactly what FromStoredRecord
-// does). Compare against BenchmarkProtoToMap_Order (the pre-RFC-173 single
-// emission) to read the dual-emission overhead the RFC §4 P2 hard part requires
-// to be measured and bounded.
+// BenchmarkDualEmission_Order measures the combined cost of building both the
+// production positional row (protoToPositional) and the test-only oracle map
+// (protoToMap, defined in name_oracle_test.go) for the same message — the
+// cost of running the field-for-field shadow check alongside a scan. Compare
+// against BenchmarkProtoToMap_Order / BenchmarkProtoToPositional_Order to see
+// each half in isolation.
 func BenchmarkDualEmission_Order(b *testing.B) {
 	msg := makeOrder(1, 100, 5)
 	b.ResetTimer()

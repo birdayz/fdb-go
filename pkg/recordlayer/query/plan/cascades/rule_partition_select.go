@@ -933,14 +933,14 @@ func aliasesConnectedByPredicates(
 	return aliasesConnectedByPredicatesOrCorrelation(aliases, preds, nil)
 }
 
-// aliasesConnectedByPredicatesOrCorrelation is the RFC-173 W5 connectivity
-// reading for ORDINAL parents: the union graph of predicate edges AND
-// quantifier-level correlation edges (fullCorrelationOrder — an Explode's
-// genuine dependency on its array source, the edge Java's
-// Quantifier.getCorrelatedTo carries). Plain table quantifiers have no
-// correlation edges, so with a nil correlationOrder this IS
-// aliasesConnectedByPredicates (which delegates here); the widening admits
-// only the unnest-with-source pairings the flat gathered seed relies on.
+// aliasesConnectedByPredicatesOrCorrelation is the connectivity reading for
+// ORDINAL parents: the union graph of predicate edges AND quantifier-level
+// correlation edges (fullCorrelationOrder — an Explode's genuine dependency
+// on its array source, the edge Java's Quantifier.getCorrelatedTo carries).
+// Plain table quantifiers have no correlation edges, so with a nil
+// correlationOrder this IS aliasesConnectedByPredicates (which delegates
+// here); admitting correlation edges additionally connects the
+// unnest-with-source pairings a flat gathered seed relies on.
 func aliasesConnectedByPredicatesOrCorrelation(
 	aliases map[values.CorrelationIdentifier]struct{},
 	preds []predicates.QueryPredicate,

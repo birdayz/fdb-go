@@ -563,12 +563,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						proj.ProjectedValues[i] = qv
 					}
 				}
-				// RFC-173 item C: a BARE non-shadowed column resolves through the
-				// scope so the projection carries the construction-bound ordinal
-				// (a childless source-relative baked FieldValue — the resolver's
+				// A BARE non-shadowed column resolves through the scope so the
+				// projection carries the construction-bound ordinal (a
+				// childless source-relative baked FieldValue — the resolver's
 				// single-source bind). Anything else — a multi-source
-				// QOV-correlated resolution, an unresolvable name, a lazy result —
-				// keeps the translator's name emission unchanged.
+				// QOV-correlated resolution, an unresolvable name, a lazy
+				// result — keeps the translator's name emission unchanged.
 				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
 					if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id); rerr == nil {
 						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
@@ -587,13 +587,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
 				if len(sq.joins) > 0 {
-					// RFC-173 QP-REF-BIND item 1: qualified projections over
-					// joins run the per-attribute check (Java's 42702 — the
-					// pre-item-1 bypass never resolved them), and a reference
-					// binding to a LATER duplicate-alias leg is emitted
-					// QOV-correlated to that leg's binding so the gated
-					// seed's bake addresses the right quantifier. Every other
-					// reference keeps the alias-keyed merged-row read.
+					// Qualified projections over joins run the per-attribute
+					// check (Java's 42702), and a reference binding to a
+					// LATER duplicate-alias leg is emitted QOV-correlated to
+					// that leg's binding so the ordinal bake addresses the
+					// right quantifier. Every other reference keeps the
+					// alias-keyed merged-row read.
 					ref := parseColRef(col)
 					qv, qerr := resolver.ResolveQualifiedProjection(
 						semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
@@ -609,15 +608,14 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						if qv != nil {
 							proj.ProjectedValues[i] = qv
 						} else if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
-							// RFC-173 item C: a qualified projection over a join
-							// emits the resolver's QUANTIFIER-ADDRESSED
-							// source-relative baked reference — the executor
-							// binds the leg window off the merged row's own leg
-							// boundaries (rowLegsBinder), so the read is
-							// positional. A DUPLICATED bare leaf keeps its
-							// QUALIFIED datum key (alias-pinned) so the two
-							// same-named columns do not collapse; a unique leaf
-							// keys bare.
+							// A qualified projection over a join emits the
+							// resolver's QUANTIFIER-ADDRESSED source-relative
+							// baked reference — the executor binds the leg
+							// window off the merged row's own leg boundaries
+							// (rowLegsBinder), so the read is positional. A
+							// DUPLICATED bare leaf keeps its QUALIFIED datum
+							// key (alias-pinned) so the two same-named columns
+							// do not collapse; a unique leaf keys bare.
 							proj.ProjectedValues[i] = bv
 							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
 								if proj.Aliases == nil {
@@ -698,18 +696,16 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						// the sort executes over the projected row, where
 						// that alias key is unambiguous (the output-first
 						// rule the ColumnNotFound arm below applies).
-						// orderByOutputAliasBinding enforces both
-						// review-caught restrictions: the raw key must BE a
-						// bare identifier, and the name must bind exactly
-						// one output column; everything else surfaces the
-						// scope's 42702.
+						// orderByOutputAliasBinding enforces both restrictions:
+						// the raw key must BE a bare identifier, and the name
+						// must bind exactly one output column; everything else
+						// surfaces the scope's 42702.
 						if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
 							continue
 						}
 						// Java's exact SemanticAnalyzer text — the reference as
 						// written, byte-equal in the conformance harness
-						// (RFC-173 QP-REF-BIND item 1, M5; live-verified for
-						// duplicate AND distinct aliases).
+						// (verified for duplicate AND distinct aliases).
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 							"Ambiguous reference %s", ambigErr.Reference())
 					}
@@ -1380,7 +1376,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			seenOrderCols[key] = true
 			// Pos carries the SELECT-list position: a positional key IS an
 			// output ordinal by SQL definition, so the translator bakes it
-			// directly to the projection's output slot (RFC-173).
+			// directly to the projection's output slot.
 			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf, Pos: pos})
 			continue
 		}
@@ -1443,9 +1439,9 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 // ORDER BY over an unnest — the shadowing case where the sort sits
 // BELOW the merge and a later FROM item could clobber the bare key. RFC-142.
 // A QUALIFIED sort key has the dup-alias twin of the same silent-wrong-order
-// hazard (RFC-173 QP-REF-BIND item 1): the sort sits BELOW the projection over
-// the JOIN row, whose namespace carries the BINDING correlation (`Q$DUP1.QID`)
-// for a later duplicate-alias leg — a key left as the SQL alias (`A.QID`)
+// hazard: the sort sits BELOW the projection over the JOIN row, whose
+// namespace carries the BINDING correlation (`Q$DUP1.QID`) for a later
+// duplicate-alias leg — a key left as the SQL alias (`A.QID`)
 // silently misses and the rows come back in scan order (the projection reads
 // the binding, the sort read the display alias). Route qualified keys through
 // ResolveQualifiedProjection — the SAME helper the projection path uses, so
@@ -1481,8 +1477,8 @@ func bareLeafDuplicated(projCols, projAliases []string, i int) bool {
 
 // resolveQualifiedBaked resolves a QUALIFIED column reference through the scope
 // and returns it ONLY when the resolver produced a QUANTIFIER-ADDRESSED BAKED
-// reference (a QOV-child SourceRelativeBaked node — the RFC-173 item C
-// construction-bound ordinal). The executor binds the leg's window off the
+// reference (a QOV-child SourceRelativeBaked node — a construction-bound
+// ordinal). The executor binds the leg's window off the
 // merged row's own leg boundaries (rowLegsBinder), so the source-relative
 // ordinal reads positionally over the composed row. A CHILDLESS bake carries an
 // ordinal relative to its OWN source row (would misread another leg's slot over
@@ -1531,10 +1527,10 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 				sort.Keys[i].Value = qv
 				continue
 			}
-			// RFC-173 item C: every other QUALIFIED sort key resolves through
-			// the scope to the quantifier-addressed source-relative baked
-			// reference so the key resolves positionally through its leg window
-			// (rowLegsBinder) instead of the retired flat dotted name read.
+			// Every other QUALIFIED sort key resolves through the scope to
+			// the quantifier-addressed source-relative baked reference so
+			// the key resolves positionally through its leg window
+			// (rowLegsBinder) instead of a flat dotted name read.
 			if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
 				sort.Keys[i].Value = bv
 			}

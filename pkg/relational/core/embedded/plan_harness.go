@@ -408,7 +408,7 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.
 // ResultColumnDefsForPlan returns the FULL production ColumnDef set for a plan
 // — the same deriveColumnsFromPlan output the live Execute() path hands to
 // NewRecordLayerResultSet — so an FDB test can drive the REAL result-set read
-// path (including the RFC-173 §7 positional-aligned column read) for shapes
+// path (including the positional-aligned column read) for shapes
 // that cannot be seeded through the SQL driver (no SQL array-literal form).
 func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	return deriveColumnsFromPlan(plan, md)

@@ -9,19 +9,17 @@ import (
 	"github.com/onsi/gomega"
 )
 
-// TestFDB_RecursiveCTEStarMetadata_RFC173 pins result-set COLUMN METADATA for
+// TestFDB_RecursiveCTEStarMetadata pins result-set COLUMN METADATA for
 // `SELECT *` directly over a recursive CTE (no projection above the recursive
-// plan). Pre-fix, deriveColumnsFromPlan had no arm for the recursive plan
-// nodes (RecursiveDfsJoin / RecursiveLevelUnion): the walk fell through to the
-// leaf handler, found no scan, and returned NO columns — rows flowed with the
-// right values, but Rows.Columns() was empty and every database/sql Scan
-// failed with "expected 0 destination arguments in Scan". Found while
-// reproducing the alias-frontier bug (the combined review-P2 shape uses
-// `SELECT * FROM c`); alias-free shapes were equally affected, so this is a
-// distinct pre-existing gap, pinned here on its own axis. The fix recurses
-// into the SEED leg — whose (possibly normalization-wrapped) projection
-// carries the CTE's output columns — mirroring the plain-UNION arm.
-func TestFDB_RecursiveCTEStarMetadata_RFC173(t *testing.T) {
+// plan). Without a deriveColumnsFromPlan arm for the recursive plan nodes
+// (RecursiveDfsJoin / RecursiveLevelUnion), the walk falls through to the leaf
+// handler, finds no scan, and returns NO columns — rows flow with the right
+// values, but Rows.Columns() is empty and every database/sql Scan fails with
+// "expected 0 destination arguments in Scan". This affects alias-free shapes
+// too, so it is pinned here on its own axis. The fix recurses into the SEED
+// leg — whose (possibly normalization-wrapped) projection carries the CTE's
+// output columns — mirroring the plain-UNION arm.
+func TestFDB_RecursiveCTEStarMetadata(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")

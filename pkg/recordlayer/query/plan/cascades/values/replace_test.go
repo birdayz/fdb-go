@@ -635,8 +635,8 @@ func TestReplaceLeavesOnceMaybe_SelfReferentialTerminates(t *testing.T) {
 	}
 }
 
-// TestLegAwareRootOrdinal pins the RFC-173 item C leg-aware collapse: the
-// tiebreak (ordinal-preferred over name) and the cross-leg name fallback are the
+// TestLegAwareRootOrdinal pins the leg-aware collapse: the tiebreak
+// (ordinal-preferred over name) and the cross-leg name fallback are the
 // conflation-sensitive paths and get a dedicated pin. A SourceRelativeBaked ref
 // collapsed over a flat leg-concatenation seed must re-base by the reference's
 // OWN leg (its QOV correlation), never by bare name — else colliding cross-leg
@@ -671,7 +671,7 @@ func TestLegAwareRootOrdinal(t *testing.T) {
 
 	// (2) Ordinal-preferred tiebreak: when a reference's source ordinal and Field
 	// disagree (an upstream construction inconsistency), the ORDINAL wins — the
-	// baked slot is the authority (RFC-173's ordinal-not-name principle). Leg E
+	// baked slot is the authority (ordinal-not-name principle). Leg E
 	// has ID at leg-ordinal 5 (slot 0) and FNAME at leg-ordinal 0 (slot 1); a ref
 	// {Field:ID, srcOrd:0} must pick the ordinal-0 slot (1), NOT the name-"ID"
 	// slot (0). Ordering ID FIRST is deliberate: the retired

@@ -129,8 +129,8 @@ func TestMemoEqual_OuterJoinNotChildrenAsSet(t *testing.T) {
 		// The POSITIONAL merge row (IsPositionalMergeRC) — the ordinal
 		// merge-select marker; the join RV just has to reference both legs
 		// symmetrically so swapped quantifiers share the node-info hash. (The
-		// name-model anchored RC this test originally seeded was deleted with
-		// its producer, RFC-173 S4 item B.)
+		// name-model anchored RC this test originally seeded was deleted along
+		// with its producer.)
 		rv := values.NewRawRecordConstructorValue(
 			values.RecordConstructorField{Name: "_0", Value: values.NewQuantifiedObjectValue(q1.GetAlias())},
 			values.RecordConstructorField{Name: "_1", Value: values.NewQuantifiedObjectValue(q2.GetAlias())},

@@ -114,8 +114,8 @@ func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBinding
 
 // hasBindingContext reports whether an eval context carries any resolvable
 // binding beyond a bare row — a param, a pre-evaluated scalar subquery, or a
-// correlation binding. It gates whether the RFC-173 positional frontier needs a
-// wrapping RowContextPositional (to resolve an outer correlation) or can flow the
+// correlation binding. It gates whether a positional row needs a wrapping
+// RowContextPositional (to resolve an outer correlation) or can flow as the
 // bare ordinal row.
 func hasBindingContext(ec *EvaluationContext) bool {
 	return ec != nil && (len(ec.params) > 0 || len(ec.scalarSubqueries) > 0 || len(ec.bindings) > 0)

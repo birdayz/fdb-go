@@ -5,9 +5,9 @@ package sqldriver_test
 //   SELECT x FROM (SELECT a AS x FROM t) i                    (1-level alias)
 //   SELECT a FROM (SELECT a FROM (SELECT a FROM t) i) s       (2-level, NO alias)
 //   SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s  (2-level alias)
-// RFC-173 Slice 1 fixed the last case: identifier resolution keeps the OUTPUT
-// column name verbatim (the source-name reverse-map is retired), so the alias
-// `x` is no longer buried under the source column `a` beyond one level.
+// Identifier resolution keeps the OUTPUT column name verbatim (there is no
+// source-name reverse-map), so the alias `x` is not buried under the source
+// column `a` beyond one level.
 
 import (
 	"context"
@@ -82,11 +82,11 @@ func TestFDB_NestedDerivedTableProbe(t *testing.T) {
 		}
 	})
 	t.Run("two_level_inner_alias", func(t *testing.T) {
-		// RFC-173 Slice 1 (buried-reference precursor): an alias introduced in an
-		// inner derived table now resolves through any nesting depth, because
-		// identifier resolution keeps the OUTPUT column name verbatim (the
-		// source-name reverse-map is retired). Previously this failed 42703 because
-		// the alias name `x` was buried under the source column `a`.
+		// An alias introduced in an inner derived table resolves through any
+		// nesting depth, because identifier resolution keeps the OUTPUT column
+		// name verbatim rather than reverse-mapping to the source name. Without
+		// that, this would fail 42703 because the alias name `x` is buried under
+		// the source column `a`.
 		got, err := vals("SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s")
 		if err != nil {
 			t.Fatalf("2-level inner-alias derived should resolve `x`: %v", err)

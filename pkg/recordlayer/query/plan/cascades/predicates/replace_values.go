@@ -10,10 +10,10 @@ import (
 // p itself when nothing changed.
 //
 // This is the EXPORTED home of the walk (the cascades package's
-// replacePredicateValues delegates here): the RFC-173
-// translator bakes gated-join leg references at the seed with it, and the
-// planner's rule-side callers share the identical spine so predicate-value
-// rewrites can never diverge between the two layers.
+// replacePredicateValues delegates here): the translator bakes gated-join
+// leg references at the seed with it, and the planner's rule-side callers
+// share the identical spine so predicate-value rewrites can never diverge
+// between the two layers.
 func ReplaceValues(p QueryPredicate, fn func(values.Value) values.Value) QueryPredicate {
 	return transformEmbeddedValues(p, func(v values.Value) values.Value {
 		return values.Replace(v, fn)

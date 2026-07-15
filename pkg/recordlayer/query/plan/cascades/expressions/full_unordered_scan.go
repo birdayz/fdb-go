@@ -55,7 +55,7 @@ func (e *FullUnorderedScanExpression) GetFlowedType() values.Type {
 // identity should bind via a Quantifier (which ranges over the
 // Reference holding this expression).
 //
-// The QOV flows e.flowedType (RFC-173): Java's scan quantifier
+// The QOV flows e.flowedType: Java's scan quantifier
 // result type is always the record type, and FieldValue.resolveOrdinal
 // resolves a column name to its ordinal against this child Type. Passing
 // UnknownType here would silently discard the flowed
@@ -94,8 +94,8 @@ func (e *FullUnorderedScanExpression) GetCorrelatedToWithoutChildren() map[value
 // discriminates; the concrete record type rides a TypeFilter ABOVE the scan,
 // never on the leaf. recordTypes NAMES are the sole discriminator.
 //
-// Go's UnknownType is the analog of Java's AnyRecord. RFC-173 types the
-// QUERY scan leaf directly (so FieldValue.resolveOrdinal can resolve a column
+// Go's UnknownType is the analog of Java's AnyRecord. The QUERY scan leaf is
+// typed directly (so FieldValue.resolveOrdinal can resolve a column
 // against it) while candidate scans keep UnknownType. Wildcarding UnknownType
 // here restores Java's names-only match — top subsumes concrete, the direction
 // scan-leaf subsumption (rule_match_leaf.go) needs. Two CONCRETE types still
@@ -125,7 +125,7 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 // HashCodeWithoutChildren mixes a class-discriminating constant with
 // the canonical record-type list. It MUST NOT mix flowedType — matching
 // Java's names-only scan hash. EqualsWithoutChildren treats a UnknownType
-// flowedType as a wildcard (RFC-173), so a typed query scan and an
+// flowedType as a wildcard, so a typed query scan and an
 // UnknownType candidate scan over the same record types must hash IDENTICALLY
 // or they land in different memo buckets and the wildcard match never fires.
 func (e *FullUnorderedScanExpression) HashCodeWithoutChildren() uint64 {

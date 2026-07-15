@@ -55,7 +55,7 @@ func executeAggregateIndexScan(
 
 	canonicalName := p.CanonicalAggColumnName()
 	groupCols := p.GetGroupCols()
-	// RFC-173 producer birth: the aggregate-index row's authoritative ordinal
+	// The aggregate-index row's authoritative ordinal
 	// schema is the GROUP columns in scan order followed by the aggregate column
 	// — the exact order the row's slots are filled below (entry.Key then
 	// entry.Value). Row-invariant, so it is built once here and shared across
@@ -98,7 +98,7 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 
 	entry := result.GetValue()
 
-	// RFC-173 producer birth: emit the authoritative ordinal row (real slots read
+	// Emit the authoritative ordinal row (real slots read
 	// from the index entry). Slot order matches c.posType: group cols then the
 	// aggregate column.
 	slots := make([]any, len(c.posType.Fields))
@@ -178,8 +178,7 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 				// typed-error family is unreachable and ComparisonKeyFunc
 				// has no error channel, so a stray error is a planner
 				// invariant violation (panic, matching prior no-recover).
-				// RFC-173: resolve against the ordinal row when present
-				// (compKeyEvalArg), else the bare Datum.
+				// Resolves against the ordinal row via compKeyEvalArg.
 				v, err := kv.Evaluate(compKeyEvalArg(qr))
 				if err != nil {
 					panic(err)
@@ -224,7 +223,7 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 
 	childResults := result.GetValue()
 
-	// RFC-173: resolve the resultValue against the CONCATENATED ordinal rows of
+	// Resolve the resultValue against the CONCATENATED ordinal rows of
 	// the matched children — the aggregate-index producer births a Positional per
 	// child; the grouping columns are identical across children and the aggregate
 	// columns are distinct, so a plan-time bake against the flat concatenation
@@ -232,7 +231,7 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	evalArg := mergeChildEvalArg(childResults)
 
 	qr := QueryResult{}
-	// RFC-173: emit the authoritative ordinal OUTPUT row. The resultValue is a
+	// Emit the authoritative ordinal OUTPUT row. The resultValue is a
 	// RecordConstructorValue whose Fields ARE the output columns in output order
 	// (the same rc.Fields deriveColumnsFromMultiIntersection names the ColumnDefs
 	// from), so evaluating each field against the concatenated child positional row
@@ -265,8 +264,8 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 
 // mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is
 // evaluated against: the CONCATENATED PositionalRow of the matched child rows
-// (RFC-173 ordinal frontier — a bare OrdinalRow whose plan-produced concatenated
-// type the baked references read). Fields are concatenated in child order; grouping
+// (a bare OrdinalRow whose plan-produced concatenated type the baked
+// references read). Fields are concatenated in child order; grouping
 // columns repeat across children with the same value, so a first-match bind is
 // order-safe. Returns nil if any child lacks a Positional (should not happen — the
 // aggregate-index producer births one per child).
@@ -881,8 +880,8 @@ func (m *mergeSortCursor) isBetter(a, b QueryResult) bool {
 		// Merge-order keys are field extractions; the runtime typed-error
 		// family is unreachable and the comparator has no error channel, so
 		// a stray error is a planner invariant violation (panic, matching
-		// the prior no-recover behaviour). RFC-173: resolve against each
-		// row's ordinal row when present (compKeyEvalArg), else bare Datum.
+		// the prior no-recover behaviour). Resolves against each
+		// row's ordinal row via compKeyEvalArg.
 		va, err := key.Evaluate(compKeyEvalArg(a))
 		if err != nil {
 			panic(err)
@@ -912,8 +911,8 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 		// Merge-dedup keys are field extractions; the runtime typed-error
 		// family is unreachable and extractKey has no error channel, so a
 		// stray error is a planner invariant violation (panic, matching the
-		// prior no-recover behaviour). RFC-173: resolve against the ordinal
-		// row when present (compKeyEvalArg), else the bare Datum.
+		// prior no-recover behaviour). Resolves against the ordinal
+		// row via compKeyEvalArg.
 		v, err := key.Evaluate(compKeyEvalArg(qr))
 		if err != nil {
 			panic(err)

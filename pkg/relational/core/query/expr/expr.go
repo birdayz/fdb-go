@@ -227,25 +227,26 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		}
 	}
 	if src.CorrelationName != "" && needsQualification {
-		// RFC-173 QP-REF-BIND item 1: a PARENT-scope resolution (Java's
-		// zero-match fallthrough, live-verified) whose correlation name is
-		// SHADOWED by a local source's is emitted-uncorrelatable — QOV(name)
-		// would bind the INNER leg's quantifier (the executor's rebase cannot
-		// tell the two apart). Decline LOUDLY here; the class answers in Java
-		// (unique quantifier ids everywhere) and flips when cross-scope binding
-		// ids land (booked — the item-3-adjacent follow-on). The UNSHADOWED
-		// fallthrough (distinct inner alias) emits normally below and answers.
+		// A PARENT-scope resolution (Java's zero-match fallthrough) whose
+		// correlation name is SHADOWED by a local source is
+		// emitted-uncorrelatable — QOV(name) would bind the INNER leg's
+		// quantifier (the executor's rebase cannot tell the two apart).
+		// Decline LOUDLY here; this matches Java's behavior (unique
+		// quantifier ids everywhere) and will flip once cross-scope binding
+		// ids are supported (a known follow-on). The UNSHADOWED fallthrough
+		// (distinct inner alias) emits normally below and answers.
 		//
 		// This branch is the MULTI-SOURCE-inner catch: with ≥2 inner sources
 		// needsQualification is already true, so a shadowing local leg that
-		// LACKS the column is caught here at PLAN time (CorrelatedShadowError →
-		// 42703). The SINGLE-source-inner shadow (`… EXISTS (SELECT 1 FROM q AS
-		// p …)`) no longer reaches either arm: the RFC-173 collision mint gives
-		// a single-table correlated-EXISTS inner a unique CorrelationName, so
-		// the parent hit is NOT isLocal, no local corrName matches src's, and
-		// the fallthrough EMITS QOV(parent) normally — the query ANSWERS with
-		// Java's semantics (amendment (a), live-verified). Both variants are
-		// pinned by TestFDB_RFC173W4Left_DuplicateFromAliases.
+		// LACKS the column is caught here at PLAN time (CorrelatedShadowError
+		// → 42703). The SINGLE-source-inner shadow (`… EXISTS (SELECT 1 FROM
+		// q AS p …)`) no longer reaches either arm: the duplicate-FROM-alias
+		// mint gives a single-table correlated-EXISTS inner a unique
+		// CorrelationName, so the parent hit is NOT isLocal, no local
+		// corrName matches src's, and the fallthrough EMITS QOV(parent)
+		// normally — the query ANSWERS with Java's semantics. Both variants
+		// are pinned by an FDB integration test for duplicate FROM-alias
+		// handling.
 		for _, localSrc := range r.scope.Sources() {
 			if localSrc.CorrelationName != src.CorrelationName {
 				continue
@@ -258,15 +259,14 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 			return nil, &semantic.CorrelatedShadowError{Qualifier: qualifier.Name(), Field: field}
 		}
 		corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
-		// RFC-173 item C: the CORRELATED arm binds the SOURCE-RELATIVE ordinal
-		// at construction (Java's FieldValue.ofFieldName against the referent's
+		// The CORRELATED arm binds the SOURCE-RELATIVE ordinal at
+		// construction (Java's FieldValue.ofFieldName against the referent's
 		// result type). The node is SourceRelativeBaked — UNPINNED and
-		// single-accessor — so every admission/placement gate that keys on the
-		// lazy reference shape treats it exactly like its lazy twin (the
-		// SourceRelativeBaked widenings; per-gate audit in RFC-173 §C). At
+		// single-accessor — so every admission/placement gate that keys on
+		// the lazy reference shape treats it exactly like its lazy twin. At
 		// runtime the correlation binds a source-shaped row (the source's own
-		// row or its leg window), where the declared-column-order ordinal reads
-		// the very slot the retired name resolution found. Unresolvable
+		// row or its leg window), where the declared-column-order ordinal
+		// reads the same slot a name lookup would have found. Unresolvable
 		// (computed alias, empty derived-table catalog) stays lazy — a loud
 		// OrdinalResolutionError at runtime, never a silent wrong-slot read.
 		if ord, ok := sourceColumnOrdinal(src, field); ok {
@@ -283,15 +283,14 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 			columnCascadesType(col),
 		), nil
 	}
-	// RFC-173 item C: bind the LOGICAL ordinal at plan time (Java's
-	// FieldValue.ofFieldName resolving against the referent's result type,
-	// FieldValue.java:273-299). The referent is the resolved source's output
-	// row; its logical column order is src.Table.Columns() (declared order).
-	// First-match by case-folded name — identical to the RecordType.FieldIndex
-	// rule the retired runtime name resolution used, so the bound slot is the
-	// same one a name read would have found. Unresolvable (computed alias, no
-	// source table) stays lazy (a plan-time artifact the bake walks rewrite, or
-	// loud if it somehow reaches evaluation).
+	// Bind the LOGICAL ordinal at plan time (Java's FieldValue.ofFieldName
+	// resolving against the referent's result type, FieldValue.java:273-299).
+	// The referent is the resolved source's output row; its logical column
+	// order is src.Table.Columns() (declared order). First-match by
+	// case-folded name — identical to the RecordType.FieldIndex rule — so the
+	// bound slot is the same one a name read would have found. Unresolvable
+	// (computed alias, no source table) stays lazy (a plan-time artifact the
+	// bake walks rewrite, or loud if it somehow reaches evaluation).
 	if ord, ok := sourceColumnOrdinal(src, field); ok {
 		return values.NewFieldValueWithResolvedOrdinal(field, ord, columnCascadesType(col)), nil
 	}
@@ -318,12 +317,12 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, bool) {
 }
 
 // ResolveQualifiedProjection resolves a QUALIFIED projection reference on the
-// join path: it ALWAYS runs the per-attribute ambiguity check (Java's 42702;
-// RFC-173 QP-REF-BIND item 1) and returns a non-nil Value only when the
-// reference binds to a LATER duplicate-alias leg (src.CorrelationName differs
-// from the alias) — the QOV-correlated read addressing THAT leg's quantifier,
-// which the gated seed's bake resolves positionally. nil Value + nil error
-// keeps the caller's legacy alias-keyed emission (behavior-preserving for
+// join path: it ALWAYS runs the per-attribute ambiguity check (Java's 42702)
+// and returns a non-nil Value only when the reference binds to a LATER
+// duplicate-alias leg (src.CorrelationName differs from the alias) — the
+// QOV-correlated read addressing THAT leg's quantifier, which the ordinal
+// bake resolves positionally. nil Value + nil error keeps the caller's legacy
+// alias-keyed emission (behavior-preserving for
 // every non-duplicate query); non-ambiguity resolution misses also return
 // nil,nil (column validation owns 42703 on this path, as before). The
 // AmbiguousColumnError disposition is per-caller: the projection path
@@ -344,13 +343,12 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 	if src.CorrelationName == "" || src.CorrelationName == src.Alias.Name() {
 		return nil, nil
 	}
-	// RFC-173 item C: bind the source-relative ordinal at construction when the
-	// source's declared column order resolves it (see ResolveIdentifier's
-	// correlated arm) — the LATER-DUP-LEG binding (`q AS a`) resolves through
-	// the gated-seed machinery / leg window, which the fallback deletion now
-	// requires (a lazy ref over the ordinal row is loud). The UNION dup-alias
-	// face (not yet supported) declines UPSTREAM at the union-branch build
-	// before reaching here.
+	// Bind the source-relative ordinal at construction when the source's
+	// declared column order resolves it (see ResolveIdentifier's correlated
+	// arm) — the LATER-DUP-LEG binding (`q AS a`) resolves through the leg
+	// window, since a lazy ref over the ordinal row is a loud runtime error.
+	// The UNION dup-alias case (not yet supported) declines UPSTREAM at the
+	// union-branch build before reaching here.
 	if ord, ok := sourceColumnOrdinal(src, col.Id.Name()); ok {
 		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(src.CorrelationName)),
@@ -368,11 +366,11 @@ func (r *Resolver) ResolveQualifiedProjection(qualifier, id semantic.Identifier)
 
 // QualifierIsDuplicated reports whether the given qualifier ALIAS names MORE
 // than one local scope source (`FROM p AS a, q AS a`) — a duplicate plain
-// alias. RFC-173 item C: such a reference must NOT bake (the RFC-173 collision
-// mint gives the two sources distinct correlations, but the qualified
-// reference stays display-keyed and dies LOUD at the executor's
-// ordinal-resolution guard — the dup-alias-under-UNION face; Java rejects a
-// duplicate alias at binding). A single-match qualifier bakes normally.
+// alias. Such a reference must NOT bake: the duplicate-FROM-alias mint gives
+// the two sources distinct correlations, but the qualified reference stays
+// display-keyed and dies LOUD at the executor's ordinal-resolution guard —
+// matching Java, which rejects a duplicate alias at binding. A single-match
+// qualifier bakes normally.
 func (r *Resolver) QualifierIsDuplicated(qualifier semantic.Identifier) bool {
 	if qualifier.IsZero() {
 		return false
@@ -413,9 +411,9 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	// OUTPUT column name verbatim (see ResolveIdentifier).
 	field := col.Id.Name()
 	corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
-	// RFC-173 item C: bind the source-relative ordinal at construction when the
-	// shadowing source's declared column order resolves it (see
-	// ResolveIdentifier's correlated arm); unresolvable stays lazy.
+	// Bind the source-relative ordinal at construction when the shadowing
+	// source's declared column order resolves it (see ResolveIdentifier's
+	// correlated arm); unresolvable stays lazy.
 	if ord, ok := sourceColumnOrdinal(src, field); ok {
 		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
 			values.NewQuantifiedObjectValue(corrID),

@@ -104,7 +104,7 @@ type cascadesTranslator struct {
 	// when ref is nil and reports it instead of the generic "could not plan".
 	translateErr error
 
-	// inInnerCluster is the RFC-173 Slice 2 enclosure flag: true while
+	// inInnerCluster is the enclosure flag: true while
 	// translating a subtree whose selects merge (post-flattening) into an
 	// enclosing name-model select — inner-join legs and the existential/unnest
 	// flatten legs. A join translated under the flag is a leg of a bigger
@@ -139,8 +139,8 @@ type cascadesTranslator struct {
 	// (so the bake site knows to look); the wrap it once gated is deleted.
 	underAggregate bool
 	// unnestUnderExistential is set while lowering a lateral unnest that is the
-	// OUTER of an EXISTS composition (translateUnnestExistsFilter). RFC-173 commit
-	// 5a ORDINALIZES this class: the W4c ordinal-seed gate is taken when the outer
+	// OUTER of an EXISTS composition (translateUnnestExistsFilter). This class
+	// ordinalizes: the ordinal-seed gate is taken when the outer
 	// is a SINGLE ALIAS (unnestExistsSeedSafe), and the EXISTS correlation rebases
 	// on ONE layout authority (translateUnnestExistsFilter) — the translator
 	// pre-bakes when the seed has no executor windows (mixed/AT-only), else the
@@ -153,9 +153,10 @@ type cascadesTranslator struct {
 	unnestUnderExistential bool
 	// unnestExistentialGatherOK admits the under-EXISTS unnest to the GATHERED
 	// ordinal cluster (the multi-alias box path) instead of the name-model
-	// binary seed — RFC-173 S4 B2-B. Computed PRE-translation, metadata-only in
+	// binary seed. Computed PRE-translation, metadata-only in
 	// translateUnnestExistsFilter (a decline is never poisoned by translation
-	// side state), and read ONLY by the :1493 gate. D4-(ii) admission: a
+	// side state), and read only by the gathered-cluster admission check in
+	// translateUnnestJoin. Admission: a
 	// non-INNER box left with Kind ∈ {LEFT,RIGHT} at verdict ∈ {None,Bakeable}
 	// or Kind==FULL at Bakeable only (FULL+None rides the certified binary
 	// seed); single esq for LEFT/RIGHT/FULL boxes (a multi-esq box wrap strands, so
@@ -215,8 +216,8 @@ type cascadesTranslator struct {
 	// bars subquery-bearing legs (a scalar-subquery leg would double-append
 	// t.scalarSubqueries — the translateUnnestJoin call-ordering hazard).
 	enclosedGatherCache map[*logical.LogicalJoin]expressions.RelationalExpression
-	// wedgeGate records the Slice 2 gate decision per translateJoin seed —
-	// consumed by the W3 ordinal seed, pinned by tests. Lazily initialized so
+	// wedgeGate records the ordinal-wedge gate decision per translateJoin seed —
+	// consumed by the ordinal seed, pinned by tests. Lazily initialized so
 	// hand-built test translators need no constructor change.
 	wedgeGate map[*logical.LogicalJoin]wedgeGateDecision
 }
@@ -516,8 +517,8 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				// verbatim OUTPUT attribute (col.Id.Name(), qualifier-free), so
 				// the runtime slot is keyed bare. Mirrors projectionOutputNames
 				// (the class-3 derived-unnest authority); keeping the dotted
-				// spelling here mis-keyed the boundary layout and declined the
-				// qualified-passthrough unnest (RFC-173 item C).
+				// spelling here mis-keys the boundary layout and silently declines
+				// the qualified-passthrough unnest case.
 				name = name[dot+1:]
 			}
 			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
@@ -542,8 +543,8 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 	case *logical.LogicalCTE:
 		// A derived-table / CTE reference used as a FROM source flows its
 		// BODY's output columns, renamed by an explicit column-alias list
-		// (`… AS d(a, b)`). RFC-173 item C: an unnest over such an outer bakes
-		// its collection against this layout.
+		// (`… AS d(a, b)`). An unnest over such an outer bakes its collection
+		// against this layout.
 		cols := t.derivedOutputColumns(o.Body)
 		if len(o.ColumnAliases) == len(cols) {
 			for i := range cols {
@@ -799,7 +800,7 @@ func normalizeAggOutputName(s string) string {
 // to one of these ordinals reads the right slot by Get(ordinal). It returns the KEY
 // ordinals and the AGGREGATE ordinals SEPARATELY only because they occupy DISJOINT
 // ordinal ranges with aggregate-name priority on collision — both keys AND aggregates
-// bake uniformly (RFC-173 C), top-level or nested; there is no "leave a nested key
+// bake uniformly, top-level or nested; there is no "leave a nested key
 // lazy" policy anymore (that was a runtime-accident partition).
 func groupByOutputOrdinals(gb *expressions.GroupByExpression) (keys, aggs map[string]int) {
 	keys = map[string]int{}
@@ -834,8 +835,8 @@ func groupByOutputOrdinals(gb *expressions.GroupByExpression) (keys, aggs map[st
 		if s := stripColumnQualifier(full); s != "" && s != full {
 			addKeyAlias(s, ord)
 		}
-		// A QUANTIFIER-ADDRESSED group key (QOV(alias).col — the RFC-173 item C
-		// resolver bind) names its output column by the BARE field
+		// A QUANTIFIER-ADDRESSED group key (QOV(alias).col — the resolver's
+		// construction-time bind) names its output column by the BARE field
 		// (AggregateKeyColumnName), but SELECT/HAVING/ORDER-BY re-reads spell it
 		// QUALIFIED ("C.NAME"). Register the qualified form as an alias of the
 		// same ordinal so those references bake instead of falling to the
@@ -886,7 +887,7 @@ func stripColumnQualifier(s string) string {
 // name exactly as before; the §5 dual-window differential requires both to agree.
 // The SAME baker feeds the SELECT projection (values.Replace), the HAVING predicate
 // (predicates.ReplaceValues), and the ORDER-BY keys, so every consumer of the
-// aggregate output ordinalizes through one rule. RFC-173 C: keys AND aggregates bake
+// aggregate output ordinalizes through one rule: keys AND aggregates bake
 // UNIFORMLY, top-level or nested — there is no "leave a name-resolvable key lazy"
 // policy anymore (that was a runtime-accident partition, not a stable structural one);
 // the only partition is provenance (an aggregate output IS a positional row here).
@@ -900,7 +901,7 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 		// output-column ref — leave it. A SINGLE-accessor node (lazy or baked)
 		// that names a group-by output column IS a bare output-column ref and
 		// MUST (re)bind to the OUTPUT ordinal: a ref baked upstream against its
-		// source's row (RFC-173 item C construction-time bind) carries the
+		// source's row (the resolver's construction-time bind) carries the
 		// INPUT ordinal, which is dead on the aggregate's output row — exactly
 		// the rebind Java's pull-up translation performs structurally. For a
 		// node already bound to the output row the by-name rebind reproduces
@@ -949,7 +950,7 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 						// bare leaf — AggregateKeyColumnName), so the projected
 						// slot is named identically to the group-key output it
 						// reads (`SELECT A.K … GROUP BY A.K` → output column K).
-						// RFC-173 item C datum-key model: the internal row/datum
+						// The internal row/datum
 						// key is the BARE column (the user-facing LABEL is bare
 						// via deriveProjectionColumnDef's clearQualifier — Java
 						// getColumnLabel; the qualified getColumnName is not
@@ -960,7 +961,7 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 			}
 		}
 		if slot, hit := keyOrds[key]; hit {
-			// RFC-173 C: bake the group key UNIFORMLY — never
+			// Bake the group key UNIFORMLY — never
 			// leave it lazy on the runtime-accident that its bare name HAPPENS to
 			// resolve by GetByName. The provenance gate (the aggregate output is a
 			// positional row here) is the only partition; a name-resolvable nested key
@@ -975,8 +976,8 @@ func groupByOutputBaker(keyOrds, aggOrds map[string]int) func(values.Value) valu
 // GROUP BY output column becomes a baked-ordinal read (see groupByOutputBaker). A
 // projected value that is ITSELF a bare output reference (`SELECT region,
 // SUM(x) AS revenue`) bakes directly; a COMPUTED projection (`V + 1`, `CAST(e.did …)`,
-// `CASE WHEN SUM(x) …`) recurses via values.Replace — the SAME baker for both (RFC-173
-// C: uniform bind, no top-level-vs-nested policy split).
+// `CASE WHEN SUM(x) …`) recurses via values.Replace — the SAME baker for both
+// (uniform bind, no top-level-vs-nested policy split).
 func bakeGroupByOutputRefs(vals []values.Value, gb *expressions.GroupByExpression) {
 	keyOrds, aggOrds := groupByOutputOrdinals(gb)
 	baker := groupByOutputBaker(keyOrds, aggOrds)
@@ -1030,8 +1031,8 @@ func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressio
 	return expressions.InitialOf(expr)
 }
 
-// translateSubqueryRef translates an EXISTS-subquery plan. RFC-173 Slice 2:
-// an existential quantifier's child select is NEVER merged into its parent
+// translateSubqueryRef translates an EXISTS-subquery plan. An existential
+// quantifier's child select is NEVER merged into its parent
 // (SelectMergeRule only targets ForEach quantifiers), so the subquery roots a
 // FRESH cluster regardless of where the enclosing select sits — a 2-way join
 // inside an EXISTS gates on its own arity, not the outer enclosure.
@@ -1149,8 +1150,8 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 // unnestExistsSeedSafe reports whether a lateral unnest may take the ordinal
 // seed given its EXISTS context. A SINGLE-NAMESPACE outer always qualifies. A
 // MULTI-ALIAS outer qualifies ONLY when it is an OUTER-join box that gates fresh
-// (boxGatesFresh) — the RFC-173 S4 Step-B lift: the box births its whole
-// leg-concat positionally and the per-leg-window rebase (channels 1+2)
+// (boxGatesFresh): the box births its whole leg-concat positionally and the
+// per-leg-window rebase (channels 1+2)
 // disambiguates its dup-named legs by their [Start,Width) windows, so a
 // qualified correlation to a buried leg (`FOB.K` in `a FULL OUTER b`) resolves
 // to THAT leg, not the same-named column of the other leg. This is coupled to
@@ -1468,9 +1469,9 @@ func arrayFieldElementType(fd protoreflect.FieldDescriptor) values.Type {
 // records ErrCodeWrongObjectType (Java's WRONG_OBJECT_TYPE) and returns nil so
 // the planner surfaces the faithful diagnostic. RFC-142.
 func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
-	// RFC-173 Slice 2: the entire unnest lowering (FlatMap-over-Explode,
-	// dotted-prefix bipartition machinery, multi-source fallback rebuilds via
-	// unnestFallbackOrReject) is name-model until Slice 3 (review W4-deferral ruling) — every join
+	// The entire unnest lowering (FlatMap-over-Explode, dotted-prefix
+	// bipartition machinery, multi-source fallback rebuilds via
+	// unnestFallbackOrReject) stays on the name model — every join
 	// translated beneath it, including the fallback's rebuilt LogicalJoins,
 	// is marked enclosed so it cannot gate ordinal.
 	//
@@ -1525,12 +1526,12 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// path handles it; an AT alias is then invalid.
 	outerTable := findOuterScanTable(j.Left, u.Segments[0])
 	if outerTable == "" {
-		// RFC-173 unnest-residual class 4 (chained unnest): segment 0 names a
+		// Unnest-residual class 4 (chained unnest): segment 0 names a
 		// PRIOR lateral unnest's element, not a scan. Positively gated on
-		// findOwnerUnnest (design ruling 4 condition 2 — never merely
+		// findOwnerUnnest (never merely
 		// outerTable==""), and only for INNER-comma chains
-		// (!unnestUnderExistential — an under-existential chain keeps item-2's
-		// binders). A resolvable chain routes to translateChainedUnnestJoin;
+		// (!unnestUnderExistential — an under-existential chain keeps its own
+		// EXISTS-composition binders). A resolvable chain routes to translateChainedUnnestJoin;
 		// anything else (schema-qualified, derived-hidden) falls through to the
 		// existing fallback.
 		//
@@ -1603,9 +1604,9 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	var elementType values.Type
 	var fieldName string
 	if t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
-		// RFC-173 unnest-residual class 3: resolve the array field through the
+		// Unnest-residual class 3: resolve the array field through the
 		// CTE/derived body's projection to a base-table array column (the
-		// flowed type is UnknownType — see rfc173_w5_derived_unnest.go). A
+		// flowed type is UnknownType — see classifyDerivedUnnestArray below). A
 		// bare passthrough classifies; every other body shape declines loudly.
 		et, outName, disp := t.classifyDerivedUnnestArray(j.Left, u)
 		switch disp {
@@ -1745,45 +1746,41 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		return nil
 	}
 
-	// RFC-173 W5: a MULTI-SOURCE outer over a gated inner cluster gathers FLAT
-	// — the Explode becomes an ordinary quantifier of one (N+1)-way select whose
-	// collection is a genuine baked correlation to the OWNING source's own
-	// quantifier (Java's shape; the flat-at-translation design ruling). Runs
-	// AFTER the full validation gauntlet above (the rejections are shared
-	// verbatim) and BEFORE the binary path translates j.Left as one enclosed
-	// ref (the gathered path translates legs FRESH; translating both ways would
-	// double-append side state, e.g. collected scalar-subquery plans). Enclosed
-	// and under-existential unnests keep today's paths (the enclosed class is
-	// the next W5 commit; the existential class is re-chartered to the
-	// W4-left+EXISTS slice). A nil is a DECLINE — the binary fallback below.
-	// RFC-173 S4 B2-B: an under-EXISTS unnest ADMITTED by
-	// unnestExistentialGatherOK (computed pre-translation in
-	// translateUnnestExistsFilter) takes the gathered ordinal cluster — the
-	// same path the non-EXISTS box unnest takes since B2-A. A non-admitted
+	// A MULTI-SOURCE outer over a gated inner cluster gathers FLAT — the Explode
+	// becomes an ordinary quantifier of one (N+1)-way select whose collection is
+	// a genuine baked correlation to the OWNING source's own quantifier, matching
+	// Java's shape. Runs AFTER the full validation gauntlet above (the rejections
+	// are shared verbatim) and BEFORE the binary path translates j.Left as one
+	// enclosed ref (the gathered path translates legs FRESH; translating both
+	// ways would double-append side state, e.g. collected scalar-subquery plans).
+	// A nil is a DECLINE — the binary fallback below.
+	//
+	// An under-EXISTS unnest admitted by unnestExistentialGatherOK (computed
+	// pre-translation in translateUnnestExistsFilter) takes the gathered ordinal
+	// cluster — the same path a non-EXISTS box unnest takes. A non-admitted
 	// existential unnest keeps the name-model binary seed below.
-	// RFC-173 S4: a NON-ENCLOSED unnest gathers the flat ordinal cluster. An
-	// ENCLOSED unnest (prevEnclosure — an inner link of a chain, or a leg of a
-	// larger name-model composition over an OUTER/nested box) keeps the name-model
-	// binary residual: its ordinal seed would be a child under a still-name-model
-	// outer-box parent (the outer-box residency retires with item 3 /
-	// buildUnnestResultValue), so gathering it here strands the residual's box-leg
-	// rebase at ordinal -1. A box outer's ON stays the null-on-empty condition
-	// INSIDE the dissolve (translateGatheredUnnestCluster's :275 LEFT/FULL guard).
-	// An under-EXISTS unnest still declines the gather when its flat-leg conjunct is
-	// UNBAKEABLE (unnestExistentialGatherOK false) — that shape keeps the name-model
-	// residual (the scalar-subquery reach class) until item 3.
+	//
+	// A NON-ENCLOSED unnest gathers the flat ordinal cluster. An ENCLOSED unnest
+	// (prevEnclosure — an inner link of a chain, or a leg of a larger name-model
+	// composition over an OUTER/nested box) keeps the name-model binary residual:
+	// its ordinal seed would be a child under a still-name-model outer-box
+	// parent, so gathering it here would strand the residual's box-leg rebase at
+	// ordinal -1. A box outer's ON stays the null-on-empty condition INSIDE the
+	// dissolve (translateGatheredUnnestCluster's LEFT/FULL guard). An under-EXISTS
+	// unnest still declines the gather when its flat-leg conjunct is UNBAKEABLE
+	// (unnestExistentialGatherOK false) — that shape keeps the name-model residual
+	// (the scalar-subquery reach class).
 	if !prevEnclosure && (!t.unnestUnderExistential || t.unnestExistentialGatherOK) {
 		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName, unnestTrailing); sel != nil {
 			return sel
 		}
 	}
 
-	// RFC-173 S4 Step-B, AXIS 1 (coupled to the seed gate / AXIS 2 via
-	// boxOuterBirthsPositional): a FULL outer box that will take the ordinal seed
-	// BIRTHS a positional row instead of the name-model Datum this unnest's
-	// :1074 `inInnerCluster=true` would otherwise force (the :167 enclosure
-	// poison). The predicate is boxOuterBirthsPositional, NOT boxGatesFresh
-	// alone: a LEFT/RIGHT box gates fresh but has clusterArity>=2 so its seed
+	// AXIS 1, coupled to the seed gate (AXIS 2) via boxOuterBirthsPositional: a
+	// FULL outer box that will take the ordinal seed BIRTHS a positional row instead
+	// of the name-model Datum this unnest's `inInnerCluster=true` above would
+	// otherwise force. The predicate is boxOuterBirthsPositional, NOT
+	// boxGatesFresh alone: a LEFT/RIGHT box gates fresh but has clusterArity>=2 so its seed
 	// stays name-model — birthing it positional would strand the name-model
 	// builder over a positional row (wrong rows). We clear the enclosure ONLY
 	// for the box's own translateRef, then restore it — the rest of the unnest
@@ -1872,32 +1869,32 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	innerQ := expressions.NamedForEachQuantifier(innerCorr, explodeRef)
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
 
-	// RFC-173 W4c: ordinalize the seed when the OUTER is a SINGLE SOURCE
-	// (clusterArity==1) AND the unnest is NOT ENCLOSED in a larger name-model
-	// composition. The name model is deleted in S4, so this ordinal seed is what
-	// keeps the ISOLATED single-source lateral unnest alive. Three decline gates,
-	// all the W2/W5 "enclosure = poison" boundary — an ENCLOSED unnest's ordinal
-	// seed (baked ofOrdinal refs, non-anchored RC) is flattened by SelectMergeRule
-	// into a name-model parent whose machinery cannot consume it:
+	// Ordinalize the seed when the OUTER is a SINGLE SOURCE (clusterArity==1) AND
+	// the unnest is NOT ENCLOSED in a larger name-model composition — this
+	// ordinal seed is what keeps the ISOLATED single-source lateral unnest alive.
+	// Three decline gates, all the same "enclosure = poison" boundary — an
+	// ENCLOSED unnest's ordinal seed (baked ofOrdinal refs, non-anchored RC)
+	// would be flattened by SelectMergeRule into a name-model parent whose
+	// machinery cannot consume it:
 	//   - clusterArity(j.Left) > 1: a multi-source OUTER (`FROM A, B, A.arr AS x`)
 	//     — ordinalizing a flattened multi-table outer cluster erases the buried
-	//     source names (W5).
+	//     source names.
 	//   - prevEnclosure: the unnest is a LEG of a larger multi-source join cluster
 	//     (`FROM A, A.arr AS x, B`). It flattens into the (unnest × B) select; a
 	//     GROUP BY / aggregation over it re-enumerates via PartitionSelectRule,
 	//     whose anchored re-enumeration (NewReEnumerationAnchoredRecord) cannot
 	//     resolve a non-anchored ordinal-seed leg (a loud panic). Stays name-model
-	//     until W5 ordinalizes the enclosing multi-source cluster. (A projection
-	//     over such a leg WOULD work via the coexistence Datum's qualified keys,
-	//     but the aggregation path forces the whole class name-model — the two are
-	//     indistinguishable here, at lowering.)
-	//   - unnestUnderExistential (RFC-173 commit 5a — LIFTED, but only for a
-	//     SINGLE-ALIAS outer, see unnestExistsSeedSafe): the unnest is the OUTER of
-	//     an EXISTS semi-join. This used to force name-model because the existential
-	//     rebase read outer-leg refs by name and panicked on baked ofOrdinal refs;
-	//     commit 5a leaves the EXISTS correlation's outer-leg refs LEG-RELATIVE (the
-	//     mixed seed now carries executor windows) and the executor's below-FOD hoist
-	//     rebases them POSITIONALLY — so a single-source unnest under EXISTS gates
+	//     until the enclosing multi-source cluster itself ordinalizes. (A
+	//     projection over such a leg WOULD work via the name-keyed Datum's
+	//     qualified keys, but the aggregation path forces the whole class
+	//     name-model — the two are indistinguishable here, at lowering.)
+	//   - unnestUnderExistential, but only for a SINGLE-ALIAS outer (see
+	//     unnestExistsSeedSafe): the unnest is the OUTER of an EXISTS semi-join.
+	//     This used to force name-model because the existential rebase read
+	//     outer-leg refs by name and panicked on baked ofOrdinal refs; leaving
+	//     the EXISTS correlation's outer-leg refs LEG-RELATIVE (the mixed seed
+	//     now carries executor windows) lets the executor's below-FOD hoist
+	//     rebase them POSITIONALLY — so a single-source unnest under EXISTS gates
 	//     ordinal like any other. A MULTI-ALIAS outer (a merge-opaque FULL OUTER box),
 	//     or an EXISTS inner scanning a table aliased the same as an outer leg, stays
 	//     name-model (see unnestExistsSeedSafe / existsInnerScopeCollidesOuter).
@@ -1913,7 +1910,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left, false) && len(u.Segments) >= 2 {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 		// The COLLECTION bakes positionally under the ordinal-seed birth for
-		// EVERY segment arity (RFC-173 item C): the single-segment `t.arr`
+		// EVERY segment arity: the single-segment `t.arr`
 		// collection is the suffix-free case of the same ofOrdinal root the
 		// multi-segment path fuses — the outer row is ORDINAL-addressed at the
 		// birth, so a name-keyed collection read has nothing to resolve
@@ -1929,10 +1926,9 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	}
 	if resultValue == nil {
 		// The ordinal seed declined (multi-source enclosed outer, exists-unsafe
-		// scope, an underivable leg). The name-model FlatMap return value is
-		// DELETED (RFC-173 S4 item B — the full-suite producer census fired
-		// zero, so no production shape lands here); the shape is untranslatable
-		// — LOUD, never silent wrong rows.
+		// scope, an underivable leg). There is no name-model FlatMap fallback
+		// left (a full-suite producer census found no production shape reaching
+		// here); the shape is untranslatable — LOUD, never silent wrong rows.
 		if t.translateErr == nil {
 			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 				"lateral unnest did not ordinalize (multi-source or enclosed outer, or an exists-unsafe scope)"))
@@ -2291,7 +2287,7 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 	if op == nil {
 		return nil
 	}
-	// RFC-173 Slice 2: opaque boundaries cut inner-join-cluster enclosure —
+	// Opaque boundaries cut inner-join-cluster enclosure —
 	// they lower to non-SelectExpression boxes SelectMergeRule cannot merge
 	// through, so a join beneath them roots its OWN cluster (fresh gate walk).
 	// Transparent ops (scan/filter/project/CTE) and joins (which manage their
@@ -2366,7 +2362,7 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 		// to the CTE itself (infinite recursion).
 		var result expressions.RelationalExpression
 		t.inCTEDefiningScope(key, body, func() {
-			// RFC-173 S4 (star opaque ordinal leg): an ADMITTED projection-less
+			// Star opaque ordinal leg: an ADMITTED projection-less
 			// unnest body (`WITH S AS (SELECT * FROM t, t.arr AS x)`) NORMALIZES
 			// to the explicit bare projection of its boundary labels — exactly
 			// what the user would write by hand — so it translates as the
@@ -2408,7 +2404,7 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 					proj.ProjectedValues = make([]values.Value, len(starCols))
 					for i, c := range starCols {
 						if b, isAlias := bindings[strings.ToUpper(c.Name)]; isAlias {
-							// RFC-173 item C: bake the label's leg-window slot
+							// Bake the label's leg-window slot
 							// (element 0 / AT ordinal 1) — the same
 							// source-relative bake ResolveColumnShadowingQualified
 							// emits for a hand-written reference to the binding. A
@@ -2430,8 +2426,8 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 		})
 		return result
 	}
-	// Type the scan leaf with the table's canonical record type (RFC-173
-	// Slice 1). tableColumns sources fields from the proto descriptor in
+	// Type the scan leaf with the table's canonical record type.
+	// tableColumns sources fields from the proto descriptor in
 	// declaration order with UPPER-cased names — the SAME order and case the
 	// runtime PositionalRow carries (protoToPositional), so FieldValue.
 	// resolveOrdinal's plan-time ordinal matches the runtime slot by
@@ -2450,7 +2446,7 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
-	// RFC-173: fold a POSITIVE WHERE-EXISTS over an unconditional-one-row
+	// Fold a POSITIVE WHERE-EXISTS over an unconditional-one-row
 	// aggregate (esq.AlwaysTrue) to TRUE — drop its existential quantifier AND
 	// rewrite its EXISTS marker in the predicate to TRUE (foldAlwaysTrueExists),
 	// before any routing. EXISTS(unconditional-one-row) is always satisfied, so
@@ -2500,7 +2496,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// Explode and preserves the EXISTS subqueries + existential markers in the
 	// residual outer filter, so the EXISTS dispatch then handles only the remaining
 	// existential + outer conjuncts. RFC-142.
-	// RFC-173 W5 commit 3: when the input is an ENCLOSED-unnest cluster the
+	// When the input is an ENCLOSED-unnest cluster the
 	// gathered path will take (`FROM A, A.arr AS x, B WHERE …`), the push must
 	// STAND DOWN — its restructured tree (a Filter wrapping the unnest join)
 	// un-gathers the cluster, and a spanning conjunct (`x > B.c`, never
@@ -2535,7 +2531,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 	}
 
-	// RFC-173 S4: the ENCLOSED-MIDDLE unnest under EXISTS (`FROM A, A.arr AS x,
+	// The ENCLOSED-MIDDLE unnest under EXISTS (`FROM A, A.arr AS x,
 	// B WHERE [x > c AND] EXISTS (…)`). The rotation dispatch below routes this
 	// to translateUnnestExistsFilter, which FOLDS the non-EXISTS conjuncts into
 	// the gathered unnest select itself (splitNonExistsPredicates) — so, exactly
@@ -2554,7 +2550,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 	}
 
-	// RFC-173 S4: a BURIED CHAINED spine behind trailing plain legs (`FROM t,
+	// A BURIED CHAINED spine behind trailing plain legs (`FROM t,
 	// t.arr AS x, x.sub AS y, z WHERE …`) rotates to the box-bottom chained
 	// form BEFORE the buried-predicate push — the push would filter-wrap the
 	// spine inside the trailing join and hide it (the rotation peel stops at a
@@ -2638,7 +2634,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			if u, isUnnest := join.Right.(*logical.LogicalUnnest); isUnnest {
 				return t.translateUnnestExistsFilter(f, join, u)
 			}
-			// RFC-173 S4: the ENCLOSED-MIDDLE unnest under EXISTS
+			// The ENCLOSED-MIDDLE unnest under EXISTS
 			// (`FROM A, A.arr AS x, B WHERE [x > c AND] EXISTS (…)`). Here the
 			// unnest is a BURIED leg (`join.Right` is the trailing plain leg B, not
 			// the unnest), so the root-form dispatch above misses it and the join
@@ -2666,8 +2662,8 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// predicates — for an OUTER join that turns a preserved-side
 			// WHERE conjunct into ON semantics (the failing row NULL-PADS
 			// instead of dropping: `dept d LEFT JOIN emp e ... WHERE d.id=3
-			// AND NOT EXISTS(...)` returned every dept — W4-left red-first
-			// pin g; master-identical, a pre-existing silent-wrong). OUTER
+			// AND NOT EXISTS(...)` returned every dept — a pre-existing
+			// silent-wrong, reproducible on master too). OUTER
 			// kinds fall through to the generic arm below: the join
 			// translates as its own (enclosed) select with proper
 			// WHERE-above-LEFT placement and the existential select wraps
@@ -2698,7 +2694,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		// Restored after so no sibling translation observes it.
 		prevOuterConj := t.unnestBoxLegConjunct
 		if bu, isUnnest := join.Right.(*logical.LogicalUnnest); isUnnest {
-			// RFC-173 S4 cap: a WHERE conjunct on a join-leg column of a LEFT/RIGHT
+			// A WHERE conjunct on a join-leg column of a LEFT/RIGHT
 			// OUTER box at the BOTTOM of a CHAINED lateral-unnest spine is the
 			// un-ordinalizable straddle — LOUD-REJECT (correct-or-loud). The conjunct
 			// is NULL-SUPPLIED WHERE-above-OUTER: it must evaluate on the box's
@@ -2711,11 +2707,11 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// (LEFT→INNER, silent wrong rows), and the name-model residual strands
 			// at physicalization. The check is metadata-only, so it runs BEFORE the
 			// join translates: the doomed translation must not run at all (its
-			// fallback would fire the retiring name-model result-value producers for
+			// fallback would fire the name-model result-value producers for
 			// a plan that is discarded). Row-answering chained shapes (element rows,
 			// leg projections, element/AT WHERE, deeper links) carry no box-leg
 			// conjunct and never trip this. Ordinalizing the straddle is a
-			// post-RFC-173 reach extension (TODO.md).
+			// booked reach extension (TODO.md).
 			if isChainedUnnest(join.Left, bu) {
 				if boxJoin := chainedSpineBottomOuterBox(join.Left); boxJoin != nil &&
 					nonExistsConjunctRefsOuterLeg(f.Predicate, outerBoundAliases(boxJoin)) {
@@ -2768,7 +2764,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// (rebaseOuterLegRefsToMerged) perform. A single outer scan
 			// (`FROM t, t.arr`) flows under segment-0's own alias, so its leg is
 			// the merged corr itself and the rebase is a no-op. RFC-142.
-			// RFC-173 W5 commit 3: the ENCLOSED gathered form (`FROM A, A.arr
+			// The ENCLOSED gathered form (`FROM A, A.arr
 			// AS x, B WHERE …` — translateJoin above returned the flat
 			// gathered select via rotation). Same WHERE treatment as the
 			// root-form gathered arm below: rewrite element/ordinal refs to
@@ -2804,7 +2800,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			}
 			if u, ok := join.Right.(*logical.LogicalUnnest); ok {
 				pred = rewriteUnnestPredicate(pred, u)
-				// RFC-173 B2: the GATHERED BOX-outer seed (exactly 2 quantifiers —
+				// The GATHERED BOX-outer seed (exactly 2 quantifiers —
 				// the $BOX leg + the Explode, indistinguishable by count from the
 				// binary name-model select). The gather RECORDED its legTypes; the
 				// conjunct bakes over that EXACT map (the seed⟺merge one-authority
@@ -2827,7 +2823,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					for _, mp := range toMerge {
 						if predicateRefsBuriedLeg(mp, recorded) {
 							t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
-								"RFC-173 B2: a box-leg conjunct reference survived the merge bake unbaked (verdict/bake drift)"))
+								"box-leg conjunct reference survived the merge bake unbaked (verdict/bake drift)"))
 							return nil
 						}
 					}
@@ -2840,7 +2836,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					)
 				}
 				if len(sel.GetQuantifiers()) > 2 {
-					// RFC-173 W5: the GATHERED flat unnest select — the cluster
+					// The GATHERED flat unnest select — the cluster
 					// legs are the select's OWN quantifiers, so an outer-leg
 					// reference (`FieldValue(QOV(MA), c)`) is a GENUINE leg ref;
 					// there is no merged row to rebase onto (the rebase would
@@ -2848,8 +2844,8 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					// cross-leg conjuncts through the cluster's own spine
 					// instead, exactly as a gated join's WHERE merge does.
 					//
-					// (The commit-1 spanning fail-open is GONE — it guarded a
-					// RETRACTED phantom: non-discriminating seed data misread a
+					// (An earlier spanning fail-open here is gone — it guarded a
+					// phantom bug: non-discriminating seed data misread a
 					// correct all-rows result as a dropped predicate. Spanning
 					// conjuncts classify, rewrite (bare QOVs are translated),
 					// and filter correctly through the gathered path.)
@@ -2879,11 +2875,11 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					// linearity-agnostic: ordinalLegType accumulates every link's columns in spine
 					// order regardless of ownership topology, so fork spines rebase identically.
 					// The rebase FORM: every RC seed is ORDINAL now (the name-model
-					// NewAnchoredJoinRecord fallback was deleted with its producer,
-					// RFC-173 S4 item B) and takes the POSITIONAL bake (ofOrdinal).
+					// NewAnchoredJoinRecord fallback was deleted with its producer)
+					// and takes the POSITIONAL bake (ofOrdinal).
 					_, ordinalSeed := sel.GetResultValue().(*values.RecordConstructorValue)
 					// (The box-leg-WHERE-over-a-chained-OUTER-box straddle never reaches
-					// this rebase: the RFC-173 S4 cap loud-rejects it BEFORE the join
+					// this rebase: the check above loud-rejects it BEFORE the join
 					// translates — see the hoisted check at the top of this merge arm —
 					// so the doomed translation never runs its name-model fallback.)
 					baked, ok := rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr, t.ordinalLegType(join.Left), ordinalSeed)
@@ -2896,7 +2892,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 				}
 			}
 			toMerge := []predicates.QueryPredicate{pred}
-			// RFC-173 Slice 2 W3b: WHERE conjuncts merged into a GATED join's
+			// WHERE conjuncts merged into a GATED join's
 			// select are join predicates too — bake their direct leg
 			// references exactly like the ON predicates at the seed (contract
 			// ruling #2: eager (leg, ordinal), one baking rule for every
@@ -2921,20 +2917,18 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 	}
 
-	// RFC-173 Slice 2: when this filter carries EXISTS subqueries, its select
+	// When this filter carries EXISTS subqueries, its select
 	// gains existential quantifiers (buildExistentialSelect below) — a
 	// name-model parent the outer ForEach leg merges into (post-flattening
 	// arity ≥ 3 counting the existential). A join inside the leg (derived
 	// table over a join) must therefore gate name-model: mark it enclosed.
 	//
-	// RFC-173 item-2 commit 4 — the ENCLOSURE LIFT: a gate-eligible OUTER box
-	// (a single-source LEFT/RIGHT box that gates as W4-left) is NOT enclosed,
-	// so it gates ORDINAL and implementExistentialSelect's below-FOD ordinal
-	// rebase fires (the W4-left machinery was dead until now purely because
-	// this arm poisoned the gate). Everything else keeps the name-model
-	// enclosure — a buried/clustered/FULL box, a non-join input. The decision
-	// routes through the ONE gate authority (existsOuterGatesFresh →
-	// ordinalWedgeGateDecide, ruling condition 4).
+	// THE ENCLOSURE LIFT: a gate-eligible OUTER box (a single-source LEFT/RIGHT
+	// box that gates fresh — see boxGatesFresh) is NOT enclosed, so it gates
+	// ORDINAL and implementExistentialSelect's below-FOD ordinal rebase fires.
+	// Everything else keeps the name-model enclosure — a buried/clustered/FULL
+	// box, a non-join input. The decision routes through the ONE gate authority
+	// (existsOuterGatesFresh → ordinalWedgeGateDecide).
 	prevEnclosure := t.inInnerCluster
 	if len(f.ExistsSubqueries) > 0 {
 		// Lift the enclosure ONLY when not ALREADY enclosed: if this
@@ -2996,14 +2990,14 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 //	    re-applying the element filter at the wrong (outer) level.
 //
 // RFC-142 (P2b).
-// admitExistentialGather is the RFC-173 S4 B2-B admission predicate for the
+// admitExistentialGather is the admission predicate for the
 // under-EXISTS box unnest — metadata-only, computed PRE-translation (a decline
 // is never poisoned by translation side state). See the
-// unnestExistentialGatherOK field doc for the D4-(ii) charter: a non-INNER
+// unnestExistentialGatherOK field doc: a non-INNER
 // LEFT/RIGHT box at verdict ∈ {None, Bakeable} is admitted (a None shape's
 // merge is a no-op; a Bakeable box-leg conjunct bakes over the gather's
 // recorded legTypes at the EXISTS merge site). FULL rides the certified binary
-// seed (already producer-free via c5a) until FULL+Bakeable is chartered.
+// seed (already producer-free) until FULL+Bakeable is supported.
 func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f *logical.LogicalFilter, verdict boxConjVerdict) bool {
 	if len(f.ExistsSubqueries) == 0 {
 		return false
@@ -3016,7 +3010,7 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 	// time (the E-1a authority) so the peel keeps ∃ with the seed rather than
 	// stranding a leg-relative name ref. So every box kind admits multi-esq below.
 	// FULL rides the same peel; only FULL+None SINGLE-esq stays on the certified
-	// binary seed (already producer-free via c5a).
+	// binary seed (already producer-free).
 	multiEsq := len(f.ExistsSubqueries) > 1
 	// No inner/outer scope collision — a colliding unminted inner alias would
 	// get refs meaning the INNER row baked onto the outer window (silent wrong
@@ -3038,7 +3032,7 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 		// of stranding a leg-relative name ref.
 		return verdict == boxConjNone || verdict == boxConjBakeable
 	case logical.JoinInner:
-		// RFC-173 S4 E-1a: the INNER flat N-way cluster under EXISTS. Its existential
+		// E-1a: the INNER flat N-way cluster under EXISTS. Its existential
 		// correlation leg refs are BAKED alias-aware in the translator (over the
 		// gathered seed's OrdinalSeedLegWindows), NOT left leg-relative for the
 		// executor hoist — the INNER cluster physicalizes to a NestedLoopJoin whose
@@ -3051,15 +3045,16 @@ func (t *cascadesTranslator) admitExistentialGather(join *logical.LogicalJoin, f
 		// correctly. A CTE/DISTINCT-WRAPPED aggregate qualifies its group keys with the
 		// wrapper alias (unbakeable over the seed windows), so the direct-gate declines it to
 		// name-model (correct rows) rather than partial-baking a silent collapse.
-		// RFC-173 S4 E-1b: a Bakeable leg conjunct (`… A.K = 100 AND EXISTS(…)`) is
+		// E-1b: a Bakeable leg conjunct (`… A.K = 100 AND EXISTS(…)`) is
 		// admitted too — it bakes IN-SELECT over the re-derivable gatedJoinLegTypes
 		// (the WHERE-path channel), not the box's recorded machinery. Unbakeable
 		// stays name-model (correct-or-loud).
 		// INNER flat cluster: multi-esq is ADMITTED — the gathered wrap physicalizes
-		// via the existential peel (pinned: TestFDB_RFC173Slice3B2bFaceA multiesq_*).
+		// via the existential peel (pinned by the box multi-EXISTS-gather FDB
+		// integration tests).
 		return verdict == boxConjNone || verdict == boxConjBakeable
-	default: // FULL — D4-(ii): only a Bakeable box-leg conjunct gathers; FULL+None
-		// stays on the certified binary seed (already producer-free via c5a).
+	default: // FULL: only a Bakeable box-leg conjunct gathers; FULL+None
+		// stays on the certified binary seed (already producer-free).
 		if multiEsq {
 			// A multi-esq FULL box gathers like LEFT/RIGHT: its wrap peels to NLJ
 			// and the existential correlations bake positionally at plan time
@@ -3097,16 +3092,16 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	// Lower the unnest leg (validates the array field; records a faithful
 	// diagnostic + returns nil for an invalid unnest, e.g. AT-on-a-non-array).
 	// unnestUnderExistential is set so unnestExistsSeedSafe applies the single-alias
-	// SCOPE gate: RFC-173 commit 5a ORDINALIZES a single-source unnest under EXISTS
-	// (the W4c ordinal seed) and leaves the EXISTS correlation LEG-RELATIVE for the
+	// SCOPE gate: a single-source unnest under EXISTS ordinalizes
+	// (takes the ordinal seed) and leaves the EXISTS correlation LEG-RELATIVE for the
 	// executor's positional rebase. A MULTI-ALIAS outer stays name-model.
 	outerAliases := outerBoundAliases(join.Left)
 	prevCollision := t.unnestExistsScopeCollision
 	t.unnestExistsScopeCollision = existsInnerScopeCollidesOuter(f.ExistsSubqueries, outerAliases)
 	prevOuterConj := t.unnestBoxLegConjunct
 	prevGatherOK := t.unnestExistentialGatherOK
-	// RFC-173 S4 B2-B: classify the box-leg conjunct (metadata-only, mirroring
-	// the WHERE path's :2424 block) and compute the gather admission. A
+	// Classify the box-leg conjunct (metadata-only, mirroring
+	// the non-EXISTS WHERE-merge arm in translateFilter) and compute the gather admission. A
 	// verdict-None LEFT/RIGHT box (single esq — a multi-esq box wrap strands, no
 	// collision) takes the gathered ordinal cluster; the INNER cluster gathers at any
 	// esq count; everything else keeps the name-model binary seed, where a box-leg
@@ -3115,7 +3110,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	if nonExistsConjunctRefsOuterLeg(f.Predicate, outerAliases) {
 		verdict = boxConjUnbakeable
 		if bj, isBoxJoin := join.Left.(*logical.LogicalJoin); isBoxJoin {
-			// RFC-173 S4 E-1b: an INNER flat cluster's leg conjunct classifies via
+			// E-1b: an INNER flat cluster's leg conjunct classifies via
 			// the flat arm (top-level leg windows); a box's via the box arm (buried
 			// leaves). Both feed admitExistentialGather's Bakeable admission.
 			if bj.Kind == logical.JoinInner {
@@ -3153,9 +3148,9 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			return nil
 		}
 		merged := append([]predicates.QueryPredicate{}, sel.GetPredicates()...)
-		// RFC-173 S4 B2-B: an ADMITTED Bakeable box conjunct bakes over the
-		// gather's RECORDED legTypes — the FUNCTIONAL twin of the WHERE path's
-		// record arm (:2530), with EXISTS-context adaptations (the gatheredHere
+		// An ADMITTED Bakeable box conjunct bakes over the
+		// gather's RECORDED legTypes — the FUNCTIONAL twin of the non-EXISTS
+		// WHERE-merge arm's record handling in translateFilter, with EXISTS-context adaptations (the gatheredHere
 		// guard — EXISTS admission can hold while the gather was
 		// enclosure-skipped, which the WHERE path has no gate for — and the
 		// multi-`nonExists`-pred iteration appending to `merged`). The gather recorded its box-leg types;
@@ -3186,12 +3181,12 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			toMerge, drift := bakeGatedJoinPredicatesChecked(rewritten, recorded)
 			if drift {
 				t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
-					"RFC-173 B2-B: a box-leg conjunct reference survived the merge bake unbaked (verdict/bake drift)"))
+					"box-leg conjunct reference survived the merge bake unbaked (verdict/bake drift)"))
 				return nil
 			}
 			merged = append(merged, toMerge...)
 		} else if isInnerCluster && gatheredHere && seedWindowed {
-			// RFC-173 S4 E-1b: an ADMITTED INNER flat cluster (verdict None or a
+			// E-1b: an ADMITTED INNER flat cluster (verdict None or a
 			// Bakeable leg conjunct) whose gather PRODUCED THE WINDOWED SEED bakes the
 			// conjunct IN-SELECT over the cluster's leg windows — RE-DERIVED on the spot
 			// via gatedJoinLegTypes (the WHERE path's channel), NOT the box's
@@ -3268,7 +3263,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	// RFC-142.
 	mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join))
 	outerLegs := outerBoundAliases(join.Left)
-	// RFC-173 commit 5a — the EXISTS correlation's outer-leg refs, routed by whether
+	// The EXISTS correlation's outer-leg refs, routed by whether
 	// the seed carries executor WINDOWS, checked DIRECTLY (not proxied through
 	// !rc.AnchoredJoin):
 	//   - WINDOWED ordinal seed (mixed no-AT → 1 outer window, fully-baked AS+AT →
@@ -3287,13 +3282,13 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	if s, ok := unnestExpr.(*expressions.SelectExpression); ok {
 		seedWindowed, ordMergedType = windowedOrdinalSeed(s)
 	}
-	// RFC-173 S4 E-1a: a windowed INNER flat cluster (admitted by
+	// E-1a: a windowed INNER flat cluster (admitted by
 	// admitExistentialGather) bakes BOTH the JoinPredicate channel AND the buried
 	// (esq.Plan) channel alias-aware in the translator — the hoist cannot recover
 	// the NLJ's dropped windows. The element-slot map is the seed's own layout.
 	lj, isInnerLJ := join.Left.(*logical.LogicalJoin)
 	isInnerCluster := seedWindowed && isInnerLJ && lj.Kind == logical.JoinInner
-	// RFC-173 S4: a MULTI-esq box (LEFT/RIGHT/FULL) is admitted to the gather but,
+	// A MULTI-esq box (LEFT/RIGHT/FULL) is admitted to the gather but,
 	// unlike a single-esq box, its `[seed, ∃, ∃]` wrap goes through the existential
 	// PEEL (PartitionSelectRule) → NestedLoopJoin, which DROPS the windowed layout
 	// exactly like the INNER cluster. The executor's below-FOD hoist can then no
@@ -3684,7 +3679,7 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			// carries leg boundaries (rt.Legs — a MULTI-ALIAS outer like a FULL OUTER
 			// box): a qualified ref to a dup-named column must pick THAT leg's slot,
 			// not the flat first-match across the whole merged prefix (which silently
-			// reads the OTHER alias's same-named column — the RFC-173 S4 c5a hazard).
+			// reads the OTHER alias's same-named column).
 			// A single-alias outer has no rt.Legs and falls back to a flat FieldIndex.
 			ord, found := ordinalSlotInLegWindow(outerLegType, leg, strings.ToUpper(fv.Field), len(outerLegs) > 1)
 			if !found {
@@ -3906,7 +3901,7 @@ func (t *cascadesTranslator) buildExistentialSelect(
 	// inner binding live (Java's single SelectExpression: all FROM quantifiers +
 	// the existential + the projection).
 	if join, ok := f.Input.(*logical.LogicalJoin); ok && resultOverride != nil {
-		// RFC-173 Outcome-B B1 (U-1): a gated arity>=3 non-dup INNER cluster
+		// B1: a gated arity>=3 non-dup INNER cluster
 		// ordinalizes via the existential wrap over its own gathered cluster —
 		// the join stays a separately-enumerated (SARG-preserving) expression
 		// and the projection + EXISTS correlations rebase onto its positional
@@ -3976,9 +3971,9 @@ func (t *cascadesTranslator) buildExistentialSelect(
 // isScanFamilyLeg reports whether a logical leg is a single scan source
 // (optionally under filters) — the logical proxy for the executor's
 // legIsOrdinalSafe, which unwraps Filter/Fetch/FetchOnDemand to a Scan/Index
-// base. The RFC-173 S4 F2-LEFT projected-EXISTS fold ordinalizes ONLY when both
+// base. The F2-LEFT projected-EXISTS fold ordinalizes ONLY when both
 // legs are scan-family; a join/unnest/union/aggregate leg (a buried box) is not
-// and must decline rather than fall to the name-model :698 path. Conservative:
+// and must decline rather than fall to the name-model producer path. Conservative:
 // anything not recognised as scan-under-filters returns false (decline).
 func isScanFamilyLeg(op logical.LogicalOperator) bool {
 	for {
@@ -3998,7 +3993,7 @@ func isScanFamilyLeg(op logical.LogicalOperator) bool {
 // UN-ENCLOSED (AXIS 1) so its INNER box is born as a mergeable ordinal select;
 // SelectMergeRule then FLATTENS it into the fold, making the fold an N-way
 // `[ForEach×N, Existential]` select the generalized implementJoinWithExistential
-// plans (RFC-173 S4 :2908/:3033, N-way flat existential). A scan leg is already
+// plans (N-way flat existential). A scan leg is already
 // positional regardless of enclosure (returns false — no box to un-enclose); an
 // OUTER box or a wrapped join returns false (non-mergeable / out of INNER-first
 // scope).
@@ -4032,8 +4027,8 @@ func existsLegAllInnerScanFamily(op logical.LogicalOperator) bool {
 // folded projection as the result value instead of the join's anchored record,
 // so the projected ExistsValue is evaluated by the FlatMap with the inner
 // binding live (RFC-141 §8). INNER and LEFT-with-scan-legs reach here for the
-// projected fold (the LEFT case emits a JoinLeftOuter select — RFC-173 S4
-// F2-LEFT); a LEFT with a non-scan (buried-box) leg, and RIGHT/FULL, are left
+// projected fold (the LEFT case emits a JoinLeftOuter select — the F2-LEFT
+// arm); a LEFT with a non-scan (buried-box) leg, and RIGHT/FULL, are left
 // unfolded and the §8 guard rejects them cleanly.
 
 func (t *cascadesTranslator) buildExistentialJoinSelect(
@@ -4052,27 +4047,27 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		// rewritten, never merged). RIGHT: the fold's JoinType has no
 		// JoinRightOuter — RIGHT needs the operand swap translateJoin does, a
 		// booked follow-on. Both return nil → the §8 guard rejects the unfolded
-		// projected EXISTS cleanly. LEFT DOES fold (RFC-173 S4 F2-LEFT): the box
+		// projected EXISTS cleanly. LEFT DOES fold (the F2-LEFT arm): the box
 		// dissolves to INNER + null-on-empty and the executor births the positional
 		// seed with the null-supplying leg NULL-filled — Java folds and answers it
 		// (live-verified 4.12.11.0).
 		return nil
 	}
 	if j.Kind == logical.JoinLeft && (!isScanFamilyLeg(j.Left) || !isScanFamilyLeg(j.Right)) {
-		// RFC-173 S4 F2-LEFT is SCAN-leg scope only. A buried box
+		// F2-LEFT is SCAN-leg scope only. A buried box
 		// `(a JOIN b) LEFT JOIN c` — any non-scan preserved/null-supplying leg —
 		// does not ordinalize (the executor's legIsOrdinalSafe rejects the join
-		// leg → gatedSeedStep1 false), so folding it would fall through to the
-		// name-model :698 path with a null-extended name-keyed row: correct today
-		// via the coexistence Datum but a producer the demolition removes. Decline
-		// (→ §8 → clean 0AF00) as a reach gap (Java answers it; Go rejects) rather
-		// than mint a name-model producer. INNER keeps its buried-box behavior
-		// (task-scope :698, no null-extension); the asymmetry is deliberate — the
-		// LEFT null-extension is exactly what the ordinal seed must carry.
+		// leg → gatedSeedStep1 false), so folding it would fall through to a
+		// name-model path with a null-extended name-keyed row: correct today
+		// via the row's name-keyed Datum, but that path is slated for removal.
+		// Decline (→ §8 → clean 0AF00) as a reach gap (Java answers it; Go rejects)
+		// rather than mint a new name-model producer. INNER keeps its buried-box
+		// behavior (name-keyed, no null-extension); the asymmetry is deliberate —
+		// the LEFT null-extension is exactly what the ordinal seed must carry.
 		return nil
 	}
 	if j.Kind == logical.JoinLeft && f != nil && len(splitNonExistsPredicates(f.Predicate)) > 0 {
-		// RFC-173 S4 F2-LEFT is the NO-WHERE shape. A non-EXISTS WHERE predicate over
+		// F2-LEFT is the NO-WHERE shape. A non-EXISTS WHERE predicate over
 		// a LEFT fold would land in the JoinLeftOuter select's predicate list where the
 		// NLJ treats it as an ON condition — null-extending non-matching rows instead
 		// of FILTERING them: `... LEFT JOIN q ON q.qid = p.id WHERE p.v = 10` keeps
@@ -4083,13 +4078,13 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		// is unaffected — ON ≡ WHERE for an inner join, so the predicate filters.
 		return nil
 	}
-	// RFC-173 Slice 2: same enclosure as translateJoinWithExists — the
+	// Same enclosure as translateJoinWithExists — the
 	// existential flatten is a name-model parent; its ForEach legs are enclosed.
-	// RFC-173 S4 :2908/:3033, AXIS 1: a bare INNER gated-box fold leg is translated
+	// AXIS 1: a bare INNER gated-box fold leg is translated
 	// UN-ENCLOSED so its box is born as a mergeable ordinal select; SelectMergeRule
 	// flattens it into the fold, making the fold an N-way [ForEach×N, Existential]
 	// select the generalized implementJoinWithExistential plans. Coupled to the
-	// executor N-leg dispatch/seed (two-site certificate). A non-bare-INNER-box leg
+	// executor's N-leg dispatch/seed. A non-bare-INNER-box leg
 	// (scan, OUTER box, wrapped) stays enclosed.
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = !existsLegBirthsPositional(j.Left)
@@ -4104,7 +4099,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	if rightRef == nil {
 		return nil
 	}
-	// RFC-173 QP-REF-BIND item 1: the fold's quantifiers and source aliases
+	// The fold's quantifiers and source aliases
 	// carry the BINDING correlation (== the alias for every non-duplicate
 	// leg; the parser-minted id for a later duplicate). The resolver emits
 	// binding-qualified references for a duplicate leg (QOV(Q$DUPn).COL), and
@@ -4151,7 +4146,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
-	// RFC-173 S4 F2-LEFT: a LEFT-outer FROM join folds as a JoinLeftOuter select
+	// F2-LEFT: a LEFT-outer FROM join folds as a JoinLeftOuter select
 	// — RewriteOuterJoinRule dissolves the p×q box into INNER + a null-on-empty
 	// q quantifier, and the executor births the positional seed with q NULL-filled
 	// on non-matching outer rows (the projected EXISTS then reads that NULL).
@@ -4207,9 +4202,9 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 		})
 	}
 
-	// RFC-173 S4: this projected-EXISTS fold does NOT force enclosure on f.Input.
-	// The former `t.inInnerCluster = true` here was a name-model PRODUCER — one of
-	// the enclosure setters the endgame retires. It was never load-bearing: f.Input
+	// This projected-EXISTS fold does NOT force enclosure on f.Input.
+	// An earlier `t.inInnerCluster = true` here was a name-model producer that
+	// has since been retired. It was never load-bearing: f.Input
 	// is scan / opaque-box (translateOp clears it) / LogicalCTE, and the only f.Input
 	// that can carry a name-model construct is a CTE body over a join/unnest — which
 	// projected-EXISTS-over-CTE declines (0AF00) unconditionally, so the enclosure's
@@ -4286,7 +4281,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	// sort-key analog of rebaseOuterLegValue / the P1a alias-binding fix.
 	src := t.classifySortSource(f.Input)
 
-	// RFC-173 S4 F2-LEFT: Java's Cascades cannot plan ANY ORDER BY over the LEFT
+	// F2-LEFT: Java's Cascades cannot plan ANY ORDER BY over the LEFT
 	// projected-EXISTS fold (verified 4.12.11.0 — "could not plan query", even a
 	// bare key), and classifySortSource classifies only INNER as a join source, so
 	// a LEFT source's qualified sort key degrades to the bare last-leg-wins read and
@@ -4410,7 +4405,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 					typ = vt
 				}
 			}
-			// RFC-173 item C: the cleanup column reads the fold's output slot i
+			// The cleanup column reads the fold's output slot i
 			// (the fold RC's first outputCount fields ARE the output columns in
 			// order) — baked, so it resolves positionally on the folded row.
 			projVals[i] = values.NewFieldValueWithResolvedOrdinal(name, i, typ)
@@ -4451,7 +4446,7 @@ type sortSource struct {
 	legAliases []string
 	// legTypes are the per-leg flowed layouts, parallel to legAliases
 	// (ordinalLegType; nil entries for underivable legs), and singleType the
-	// single-table layout — the RFC-173 item C layout authorities that let
+	// single-table layout — the layout authorities that let
 	// sortKeySourceValue emit BAKED source-column references. Baked, the
 	// value-based output-membership match (sortKeyInOutput /
 	// pullUpToOutputField) compares equal against the resolver's baked
@@ -4468,13 +4463,13 @@ type sortSource struct {
 // joins), so we classify only that shape as a join.
 func (t *cascadesTranslator) classifySortSource(input logical.LogicalOperator) sortSource {
 	if j, ok := input.(*logical.LogicalJoin); ok && j.Kind == logical.JoinInner {
-		// BINDING correlations, not display aliases (RFC-173 QP-REF-BIND
-		// item 1): the fold's quantifiers and merged-row keys carry the
+		// BINDING correlations, not display aliases: the fold's quantifiers
+		// and merged-row keys carry the
 		// binding (buildExistentialJoinSelect), and a duplicate-alias sort
 		// key resolves to a binding-qualified value — display-named
 		// legAliases ([A, A]) failed to attribute it and the key silently
 		// degraded to the bare last-leg-wins read. Identical to the alias
-		// for every non-duplicate leg. Item 3: BURIED bindings under a box
+		// for every non-duplicate leg. BURIED bindings under a box
 		// leg join the set (structural walk) — a sort key qualified by a
 		// buried source (`ORDER BY d.id` over `(dept LEFT emp) JOIN cat`)
 		// must attribute to ITS leg, never degrade to the bare
@@ -4574,7 +4569,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 			for li, leg := range s.legAliases {
 				if leg != "" && strings.ToUpper(leg) == qual {
 					qov := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(qual))
-					// RFC-173 item C: bake the leg-local (source-relative)
+					// Bake the leg-local (source-relative)
 					// ordinal when the leg's layout is derivable — the baked
 					// twin of the resolver's construction bind, so the
 					// value-based output-membership match compares equal
@@ -4593,7 +4588,7 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	}
 	// Single-table: the outer scan row carries bare keys, so the source column is
 	// the bare leaf (`t1.id`→ID), regardless of the qualifier. Bake the ordinal
-	// when the layout is derivable (RFC-173 item C — see the join arm above).
+	// when the layout is derivable (see the join arm above).
 	bare := stripSortQualifier(field)
 	if s.singleType != nil {
 		if idx, found := s.singleType.FieldIndex(bare); found {
@@ -4743,7 +4738,7 @@ func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expre
 		v := k.Value
 		// A POSITIONAL key (`ORDER BY <n>`) IS an output ordinal by SQL
 		// definition — bake slot n-1 of the folded projection's output
-		// directly (RFC-173; see translateSort's twin).
+		// directly (see translateSort's twin).
 		if k.Pos > 0 && k.Pos <= len(fields) {
 			v = values.NewFieldValueWithResolvedOrdinal(fields[k.Pos-1].Name, k.Pos-1, values.UnknownType)
 		}
@@ -4819,7 +4814,7 @@ func pullUpSortKeyValue(k logical.SortKey, v values.Value, fields []values.Recor
 	}
 	// (3) Bare OUTPUT-COLUMN name over the folded output (`ORDER BY id` where
 	// `id` is an output column carried through): bake the OUTPUT ordinal at
-	// plan time (RFC-173 item C) — first-match case-insensitive, the same rule
+	// plan time — first-match case-insensitive, the same rule
 	// the retired runtime name read (RecordType.FieldIndex) applied, so the
 	// baked slot is the very one GetByName found.
 	if fv, isFV := v.(*values.FieldValue); isFV && fv.Child == nil && fv.Resolved == nil {
@@ -4860,8 +4855,8 @@ func pullUpSortKeyValue(k logical.SortKey, v values.Value, fields []values.Recor
 // passes keep the pulled-up name faithful to the named alias.
 func pullUpToOutputField(v values.Value, fields []values.RecordConstructorField) (values.Value, bool) {
 	// Pass 1: exact pointer identity — the field whose Value the sort key IS.
-	// The pulled-up reference carries the OUTPUT ordinal (RFC-173 item C —
-	// baked at plan time; the folded row is positional).
+	// The pulled-up reference carries the OUTPUT ordinal, baked at plan time —
+	// the folded row is positional.
 	for i, f := range fields {
 		if f.Value != nil && f.Value == v {
 			return values.NewFieldValueWithResolvedOrdinal(f.Name, i, values.UnknownType), true
@@ -5251,8 +5246,8 @@ func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) 
 }
 
 // expressionOutputColumns derives the OUTPUT column names, in ordinal order, of
-// a translated expression's row — the plan-time layout authority the RFC-173
-// item C consumer bakes resolve flat references against (Java's
+// a translated expression's row — the plan-time layout authority baked
+// consumer references resolve flat references against (Java's
 // FieldValue.ofFieldName against childValue.getResultType()). Coverage:
 //   - LogicalProjectionExpression: the projection's output names
 //     (values.OutputColumnName — the same authority the executor's posNames
@@ -5338,7 +5333,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 			expr = e.GetInner().GetRangesOver().Get()
 		case *expressions.FullUnorderedScanExpression:
 			// The scan row conforms to the record's logical column order
-			// (item B's contract — positionalTypeForDescriptor).
+			// (positionalTypeForDescriptor).
 			if rt, isRT := e.GetFlowedType().(*values.RecordType); isRT && len(rt.Fields) > 0 {
 				names := make([]string, len(rt.Fields))
 				for i, f := range rt.Fields {
@@ -5396,7 +5391,7 @@ func expressionOutputLegs(expr expressions.RelationalExpression, flatCount int) 
 // qualifier names a ForEach quantifier of the input select (peering through
 // row-shape-preserving unaries) into the resolver's LEG-ADDRESSED
 // source-relative bake: FieldValue{Child: QOV(leg), leaf, ord = leg-local
-// first-match} (RFC-173 item C). The executor binds the leg window by alias
+// first-match}. The executor binds the leg window by alias
 // off the merged row's own leg boundaries, so the read is
 // ORIENTATION-INDEPENDENT — a physical join reorder cannot shift the slot,
 // which a flat concat ordinal would (that is why the flat bake declines the
@@ -5599,10 +5594,8 @@ func peelToSelectExpression(expr expressions.RelationalExpression) *expressions.
 // layout: when the input expression flows ONE source (aliased A) and its
 // select-level leg boundaries are not derivable (expressionOutputLegs nil — a
 // projection/CTE boundary, not a multi-leg select), a DOTTED reference
-// "A.LEAF" addresses the WHOLE input row (the row IS the A row). The retired
-// spanAwareRow served exactly this at runtime (qualifier → window, here the
-// full row); this is its plan-time twin (RFC-173 item C/D), so the dotted
-// read bakes instead of reaching the runtime lazily. Returns nil when the
+// "A.LEAF" addresses the WHOLE input row (the row IS the A row). This bakes the
+// dotted read at plan time instead of resolving it by name at eval. Returns nil when the
 // alias is empty (nothing to route).
 func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 	if alias == "" || len(cols) == 0 {
@@ -5613,13 +5606,13 @@ func wholeRowLegFor(alias string, cols []string) []values.RecordTypeLeg {
 
 // bakeFlatRefsAgainstColumns rewrites each FLAT LAZY FieldValue (nil child, no
 // Resolved) whose Field matches an output column — exact first-match,
-// case-insensitive, the retired GetByName's own rule — into a baked-ordinal
-// reference over that column's slot (RFC-173 item C). A DOTTED field that
+// case-insensitive — into a baked-ordinal
+// reference over that column's slot. A DOTTED field that
 // matches no column verbatim resolves through the leg boundaries when
-// supplied (qualifier → leg window, leaf → first match WITHIN the window —
-// the retired spanAwareRow routing, reproduced at plan time). Non-matching
-// and non-flat values are returned unchanged (a miss stays lazy → loud at
-// eval).
+// supplied (qualifier → leg window, leaf → first match WITHIN the window),
+// matching the runtime's leg-window routing but resolved at plan time.
+// Non-matching and non-flat values are returned unchanged (a miss stays lazy
+// → loud at eval).
 func bakeFlatRefsAgainstColumns(v values.Value, cols []string, legs ...values.RecordTypeLeg) values.Value {
 	if v == nil || len(cols) == 0 {
 		return v
@@ -5687,7 +5680,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	// (the silent DESC==ASC bug). A key already carrying a resolved ordinal is left as-is
 	// by the bake; a non-seed input has seedQOV nil, so keys and quantifier are untouched.
 	bake := t.gatheredSeedBakeContext(innerRef, sourceAlias(s.Input))
-	// RFC-173 item C: the input expression's OUTPUT layout, when derivable —
+	// The input expression's OUTPUT layout, when derivable —
 	// a FLAT lazy sort key naming an output column bakes to its slot at plan
 	// time (Java resolves the key against the child's result type); the
 	// select's leg boundaries serve dotted keys.
@@ -5701,7 +5694,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	// authority the aggregate's provided-ordering hint advertises), so a
 	// group-key ORDER BY renders identically to the provided ordering and the
 	// enforcer sort is elided (Java: the sort requirement is satisfied by the
-	// streaming aggregate's own group-key order). RFC-173 item C.
+	// streaming aggregate's own group-key order).
 	sortGB := underlyingGroupBy(innerRef.Get())
 	var sortGBNames []string
 	var sortGBKeyOrds, sortGBAggOrds map[string]int
@@ -5715,7 +5708,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		v := k.Value
 		// A POSITIONAL key (`ORDER BY <n>`) IS an output ordinal by SQL
 		// definition: when the sort input is the SELECT-list projection, bake
-		// slot n-1 of its output directly (RFC-173) — no text-rendering
+		// slot n-1 of its output directly — no text-rendering
 		// round-trip, which diverges for computed items whose canonical source
 		// text differs from the baked output spelling (`col1 + 10` vs
 		// `(COL1#0 + 10)`).
@@ -5788,7 +5781,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		})
 	}
 
-	// RFC-173 S4 (EXISTS-in-ON): an INNER join carrying an ON-clause EXISTS is
+	// An INNER join carrying an ON-clause EXISTS is
 	// SEMANTICALLY IDENTICAL to WHERE-EXISTS — Java folds every inner-join ON
 	// predicate into the WHERE of one SelectExpression (QueryVisitor.visitSimpleTable
 	// conjoins inner-join expressions into the WHERE), so `JOIN e ON e.c_id = c.id
@@ -5839,7 +5832,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	// (LogicalOperator.generateSelect): the projection is built first with the
 	// existential binding live, then the sort wraps it, its keys rebased onto
 	// the projected output record.
-	// RFC-173 Outcome-B B1 widening: the fold ALSO fires for a plain WHERE-EXISTS
+	// B1 widening: the fold ALSO fires for a plain WHERE-EXISTS
 	// (no projected EXISTS) over a gated arity>=3 non-dup INNER cluster — the B1
 	// wrap needs the projection folded in (its leg references only resolve over
 	// the wrapped box when rebased at translation; an ordinary Map above the wrap
@@ -5892,7 +5885,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
-	// RFC-173: a SELECT list over a GROUP BY resolves each aggregate/group-key
+	// A SELECT list over a GROUP BY resolves each aggregate/group-key
 	// reference to the aggregate OUTPUT COLUMN by ordinal (Java's
 	// FieldValue.ofOrdinalNumber over the GroupByExpression result) — so the
 	// alias-named aggregate slot resolves even though the projection references the
@@ -5901,9 +5894,9 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	if gb := underlyingGroupBy(innerRef.Get()); gb != nil {
 		bakeGroupByOutputRefs(projected, gb)
 	}
-	// RFC-173 item C: any remaining FLAT lazy reference bakes against the input
+	// Any remaining FLAT lazy reference bakes against the input
 	// expression's derivable output layout (union legs, derived projections) —
-	// the plan-time twin of the retired GetByName's FieldIndex first-match,
+	// the same first-match-by-name rule, applied at plan time,
 	// with the select's per-quantifier LEG boundaries serving dotted refs. A
 	// single-source input without select-level legs routes a dotted ref
 	// qualified by ITS OWN alias over the whole row (wholeRowLegFor).
@@ -5916,7 +5909,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 			projected[i] = bakeFlatRefsAgainstColumns(v, inputCols, inputLegs...)
 		}
 	}
-	// RFC-173 item C: a surviving DOTTED lazy read whose qualifier names a
+	// A surviving DOTTED lazy read whose qualifier names a
 	// ForEach leg of the input select bakes LEG-ADDRESSED (orientation-
 	// independent — see bakeDottedRefsToLegQOV). The flat bake above cannot
 	// serve these: a non-RC select has no derivable flat layout, and a flat
@@ -5934,7 +5927,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.LogicalProject) expressions.RelationalExpression {
 	csq := p.CorrelatedScalarSubqueries[0]
 
-	// RFC-173 W4b shape 1: a MULTI-TABLE outer cluster dispatches to the
+	// A MULTI-TABLE outer cluster dispatches to the
 	// clustered-outer ordinal path first. decline=true is the CORRECT-or-LOUD
 	// policy: a known non-rightmost correlation that did not ordinalize would
 	// silently NULL (JOIN..ON / LEFT outers) or mis-plan (comma clusters) under
@@ -5943,7 +5936,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		return sel
 	}
 
-	// RFC-173 S4: the OUTER inherits the enclosing context (the former
+	// The OUTER inherits the enclosing context (the former
 	// `t.inInnerCluster = true` name-model producer is retired). Only a single-source
 	// (clusterArity==1) or ungated outer reaches here — a buried-join/multi-source
 	// outer is arity≠1 and declines regardless of the flag — so inheriting
@@ -6013,10 +6006,10 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	if outerCols == nil || outerAlias == "" || scalarCol == "" || csq.InnerAlias == "" {
 		return nil
 	}
-	// RFC-173 W4b: ordinalize the 2-leg seed when the OUTER is a SINGLE SOURCE
+	// Ordinalize the 2-leg seed when the OUTER is a SINGLE SOURCE
 	// (clusterArity==1); the clustered-outer dispatch above already ordinalized
-	// the gated multi-table outers (shape 1). The name-model anchored fallback
-	// was RETIRED in S4 (R3), so this ordinal seed is the sole surviving
+	// the gated multi-table outers. The name-model anchored fallback
+	// has been retired, so this ordinal seed is the sole surviving
 	// correlated-scalar seed; a decline (nil) loud-declines below.
 	//
 	// The former innerScalarIsRowColumn guard (shape 3) is GONE: a COMPUTED scalar
@@ -6042,8 +6035,8 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		}
 	}
 	if resultValue == nil {
-		// RFC-173 S4 (R3): the name-model NewScalarSubqueryAnchoredRecord
-		// fallback is RETIRED — a full-corpus census reached it from no SQL
+		// The name-model NewScalarSubqueryAnchoredRecord
+		// fallback is retired — a full-corpus census reached it from no SQL
 		// query. A correlated scalar whose outer did not ordinalize declines
 		// LOUDLY (correct-or-loud, never a silent name-model result). Probe the
 		// gate ONCE for the diagnosis:
@@ -6079,7 +6072,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// wraps it in a strict FirstOrDefault (a second row → 21000). A user LIMIT
 	// leaves StrictSingle false — the LIMIT is the user's deliberate truncation.
 	// The quantifier carries innerLegCorr — the ordinal seed's fresh unique id
-	// (the sole surviving path; the name-model fallback was retired in S4/R3).
+	// (the sole surviving path; the name-model fallback has been retired).
 	var innerQ expressions.Quantifier
 	if csq.StrictSingle {
 		innerQ = expressions.NamedForEachStrictSingleQuantifier(innerLegCorr, innerRef)
@@ -6108,7 +6101,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
-	// RFC-173 item C: flat lazy references (the scalar-column pickup and the
+	// Flat lazy references (the scalar-column pickup and the
 	// outer-column reads) bake against the seed select's output layout — the
 	// same generic plan-time bind translateProject applies.
 	if inputCols := expressionOutputColumns(joinSelect); inputCols != nil {
@@ -6202,14 +6195,14 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	if innerRef == nil {
 		return nil
 	}
-	// RFC-173 S4 qualifier-honoring resolution: a GATHERED unnest input un-collapses to
+	// A GATHERED unnest input un-collapses to
 	// the raw per-leg seed, so positionally BAKE the group keys / operands to their flat
 	// slots via the shared gatheredSeedBakeContext (see its doc) — the qualifier-honoring
 	// read that replaces the retired name-keyed wrap. The outer WHERE already baked itself
 	// (bakeGatedJoinPredicates fires on the SelectExpression).
 	bake := t.gatheredSeedBakeContext(innerRef, sourceAlias(a.Input))
 	groupByQuant := bake.quant
-	// RFC-173 item C: the aggregate input's derivable OUTPUT layout — a flat
+	// The aggregate input's derivable OUTPUT layout — a flat
 	// lazy group key / aggregate operand over a union or derived projection
 	// bakes to its input slot at plan time (Java resolves against the child's
 	// result type).
@@ -6241,9 +6234,10 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// "AID") but silently NULL for a QUALIFIED/mis-naming one (`SELECT A."AID"` names the
 	// output "A.AID", which the key "AID" cannot match). So refuse LOUD only when a group
 	// key does NOT resolve against the governing projection's output-column names; a
-	// name-resolvable (bare) projection is kept (pre-cap correct, review-caught). Both
-	// sub-cases still need the projected-output-layout ordinalization at the cap (a required
-	// cap-blocker: Java answers GROUP BY over a projecting derived source, GroupByQueryTests:699).
+	// name-resolvable (bare) projection is kept (pre-existing correct behavior,
+	// review-caught). Both sub-cases still need projected-output-layout
+	// ordinalization (Java answers GROUP BY over a projecting derived source,
+	// GroupByQueryTests:699) — booked as a TODO.
 	if bake.seedQOV == nil && positionalGatherUnbaked(innerRef.Get(), map[*expressions.Reference]bool{}) {
 		if proj := governingProjection(innerRef.Get(), map[*expressions.Reference]bool{}); proj != nil {
 			names := projectionOutputColumnNames(proj)
@@ -6281,7 +6275,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if bake.seedQOV != nil && spec.Operand != nil {
 			spec.Operand = bakeGatheredGroupValue(spec.Operand, bake.windows, bake.elementSlots, bake.seedQOV)
 		}
-		// RFC-173 item C: flat lazy operand references bake against the
+		// Flat lazy operand references bake against the
 		// aggregate input's derivable output layout (see groupKeys above).
 		spec.Operand = bakeFlatRefsAgainstColumns(spec.Operand, aggInputCols, aggInputLegs...)
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
@@ -6312,7 +6306,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		return nil
 	}
 
-	// RFC-173: the HAVING predicate filters the aggregate OUTPUT, so its
+	// The HAVING predicate filters the aggregate OUTPUT, so its
 	// aggregate/group-key references bake to the group-by output ordinals exactly
 	// like the SELECT projection — otherwise a `HAVING SUM(x) > k` reference stays a
 	// free canonical name that misses the aggregate's ordinal PositionalRow (whose
@@ -6425,7 +6419,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		return t.translateUnnestJoin(j, u)
 	}
 
-	// RFC-173 W5 commit 3: the ENCLOSED unnest class (`FROM A, A.arr AS x, B`
+	// The ENCLOSED unnest class (`FROM A, A.arr AS x, B`
 	// — an unnest join buried as a leg of this inner cluster) gathers into
 	// the same flat (N+1)-quantifier select via rotation. Fail-open: nil
 	// falls through to the paths below, which translate the buried unnest
@@ -6434,7 +6428,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		return sel
 	}
 
-	// RFC-173 S4: the BURIED CHAINED spine (`FROM t, t.arr AS x, x.sub AS y,
+	// The BURIED CHAINED spine (`FROM t, t.arr AS x, x.sub AS y,
 	// z` — a chained spine behind trailing plain legs) rotates to the
 	// box-bottom chained form and re-dispatches, so the whole cluster takes
 	// the chained ordinal seed instead of name-modeling the trailing join
@@ -6455,13 +6449,13 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		kind = logical.JoinLeft
 	}
 
-	// RFC-173 Slice 2: decide (and record) the ordinal-wedge gate for this
-	// seed BEFORE leg translation mutates the enclosure flag. W3b consumes
-	// it below: a gated join seeds the ORDINAL result value + baked
+	// Decide (and record) the ordinal-wedge gate for this
+	// seed BEFORE leg translation mutates the enclosure flag. Consumed
+	// below: a gated join seeds the ORDINAL result value + baked
 	// predicates instead of the name-model anchored RC.
 	gateDecision := t.ordinalWedgeGate(j)
 
-	// S3 fulcrum: a GATED INNER root with NESTED inner joins translates FLAT
+	// A GATED INNER root with NESTED inner joins translates FLAT
 	// — one select over ALL the cluster's direct-nesting legs (Java flattens
 	// inner joins at translation, QueryVisitor.java:429-434; nested binaries
 	// are never seeded). Derived/filter boundaries stay legs and compose via
@@ -6486,11 +6480,11 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// the OnExists subplan loop: existential subplans are never merged into
 	// this select, so they root fresh clusters too.
 	prevEnclosure := t.inInnerCluster
-	// S3 fulcrum: legs of a GATED parent translate FRESH (their own inner
+	// Legs of a GATED parent translate FRESH (their own inner
 	// joins gate independently; SelectMergeRule composes ordinal RVs -- see
 	// translateGatheredInnerCluster). Enclosure poisoning survives only for
 	// NAME-MODEL parents (a non-gated inner cluster, a LEFT box preserved
-	// leg -- the RFC-153 dissolve/flatten machinery stays name-model to W4).
+	// leg -- the RFC-153 dissolve/flatten machinery stays name-model).
 	t.inInnerCluster = !gateDecision.Gated && (kind == logical.JoinInner || kind == logical.JoinLeft)
 	leftRef := t.translateRef(left)
 	if leftRef == nil {
@@ -6508,7 +6502,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	}
 	leftAlias := sourceAlias(left)
 	rightAlias := sourceAlias(right)
-	// RFC-173 QP-REF-BIND item 1: a GATED binary join's quantifiers and
+	// A GATED binary join's quantifiers and
 	// row namespaces carry the BINDING correlation (== the alias for every
 	// non-duplicate leg; the parser-minted id for a later duplicate) —
 	// matching the ordinal seed RC's QOVs, the bake maps and the executor's
@@ -6587,12 +6581,12 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	rvLeft, rvRight := j.Left, j.Right
 	var resultValue values.Value
 	if gateDecision.Gated {
-		// RFC-173 Slice 2 W3b — the ordinal wedge seed: baked ofOrdinalNumber
+		// The ordinal wedge seed: baked ofOrdinalNumber
 		// concatenation of the two legs + eager (leg, ordinal) predicate
-		// baking (contract ruling #2).
-		// W4-left: rvLeft/rvRight are DECLARATION order (I2 — only the
+		// baking.
+		// rvLeft/rvRight are DECLARATION order — only the
 		// null-supplying ROLE keys on the original kind; a RIGHT join's null
-		// side is its LEFT operand).
+		// side is its LEFT operand.
 		var legTypes map[string]bakeLegType
 		resultValue, legTypes = t.buildOrdinalJoinResultValue([]clusterLeg{
 			clusterLegOf(rvLeft, j.Kind == logical.JoinRight),
@@ -6602,8 +6596,8 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	}
 	if resultValue == nil {
 		// UNGATED, or a gated leg's columns are not derivable (the catalog-free
-		// nil-md path). The name-model anchored seed is DELETED (RFC-173 S4 item
-		// B — the full-suite producer census fired zero, so no production shape
+		// nil-md path). The name-model anchored seed has been deleted (a
+		// full-suite producer census fired zero, so no production shape
 		// reaches here); an ungated join is untranslatable — LOUD, with the
 		// gate's own Reason naming the cause, never silent wrong rows.
 		if t.translateErr == nil {
@@ -6689,8 +6683,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		})
 	}
 
-	// RFC-173 QP-REF-BIND item 2, commit 3: the flatten consults the wedge
-	// gate (ONE authority — ordinalWedgeGate; design-ruling condition 4) and,
+	// The flatten consults the wedge
+	// gate (ONE authority — ordinalWedgeGate) and,
 	// when the join gates, seeds the baked ordinal RC below instead of the
 	// anchored one. Decided BEFORE leg translation mutates the enclosure flag
 	// (the translateJoin convention). Two flatten-specific narrowings on top
@@ -6699,10 +6693,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	//     buildOrdinalJoinResultValue types them as single-source legs — a
 	//     nested-cluster leg would seed a 2-leg concat whose windows
 	//     disagree with the arity SelectMergeRule's flattening produces.
-	//     The DECLINE is the safety mechanism itself (the historical S2
-	//     drift assert died with the exactly-2 wedge at the S3 fulcrum).
-	//     The N-way flatten rides the gathered-cluster machinery when a
-	//     later slice routes it here.
+	//     The DECLINE is the safety mechanism itself. The N-way flatten
+	//     rides the gathered-cluster machinery instead.
 	//   - No existential-alias collisions: an EXISTS alias colliding with a
 	//     leg alias (or another EXISTS alias) makes the flat select's
 	//     correlations indistinguishable — fail toward the name model, the
@@ -6739,8 +6731,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 	// Record the NARROWED decision — the map is the one truth downstream
-	// consumers (the WHERE-conjunct baking arm today, commit 4's enclosure
-	// lift) read, and a Gated record over an ANCHORED seed would misroute
+	// consumers (the WHERE-conjunct baking arm, the ENCLOSURE LIFT above)
+	// read, and a Gated record over an ANCHORED seed would misroute
 	// them. The record always matches the seed actually built below.
 	if t.wedgeGate == nil {
 		t.wedgeGate = make(map[*logical.LogicalJoin]wedgeGateDecision)
@@ -6749,7 +6741,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 
 	// Flatten join + EXISTS into a single SelectExpression
 	// with ForEach(left), ForEach(right), and Existential quantifiers.
-	// RFC-173 Slice 2 (pre-commit-3 residual): a NON-gated flat select is a
+	// A NON-gated flat select is a
 	// name-model merge-absorbing parent, so its ForEach legs are ENCLOSED — a
 	// nested join there must not gate ordinal. Legs of a GATED flatten
 	// translate FRESH (the translateJoin gated-parent convention: their own
@@ -6769,7 +6761,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 
 	leftAlias := sourceAlias(left)
 	rightAlias := sourceAlias(right)
-	// RFC-173 QP-REF-BIND item 1: a GATED flatten's quantifiers and source
+	// A GATED flatten's quantifiers and source
 	// aliases carry the BINDING correlation (== the alias for every
 	// non-duplicate leg; the parser-minted id for a later duplicate) —
 	// matching the ordinal seed RC's QOVs and the executor's span windows,
@@ -6818,9 +6810,9 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 
-	// Add EXISTS subqueries as existential quantifiers. RFC-173 S4 commit 4: a
-	// minted-binding (duplicate-alias) gated flatten with a LEG-INDEPENDENT EXISTS
-	// no longer declines here — the executor's identity-FlatMap pass-through now
+	// Add EXISTS subqueries as existential quantifiers. A minted-binding
+	// (duplicate-alias) gated flatten with a LEG-INDEPENDENT EXISTS does not
+	// decline here — the executor's identity-FlatMap pass-through
 	// propagates the gated outer's own positional row (keyed on the outer's
 	// ordinal seed via downstreamLegWindows, not the exists inner's probe), so
 	// the minted-dup upper (QOV(Q$DUPn)) resolves positionally instead of serving
@@ -6840,23 +6832,18 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
-	// The RV uses DECLARATION order (design ruling I2: Java assembles the
+	// The RV uses DECLARATION order (Java assembles the
 	// result value in source order regardless of join type).
 	//
-	// RFC-173 QP-REF-BIND item 2, commit 3: a GATED flatten seeds the baked
+	// A GATED flatten seeds the baked
 	// ordinal RC over its two ForEach legs — existential quantifiers
 	// contribute NO columns (Java's model: existentials carry no output) —
 	// and bakes the COMBINED predicate list (join ON + WHERE conjuncts + the
-	// EXISTS correlation predicates). The baked correlation predicates are
-	// what flow into the existential FlatMap's inner plan as FrontierPinned
-	// references over the merged outer, where the item-2 commit-2
-	// disabled-birth binder binds the outer positionally and the ordinal
-	// existential rebase (W4-left machinery) handles the merged references.
-	// This retires the W4-left F2 scope note: the ordinal seed here was
-	// twice REVERTED because those executor binders did not exist — the 2+1
-	// select's correlated-FlatMap path bound name maps and the seed's baked
-	// refs died loudly (E1). Commit 2 landed the binders; E2 validated this
-	// exact seed end-to-end.
+	// EXISTS correlation predicates). The baked correlation predicates
+	// flow into the existential FlatMap's inner plan as FrontierPinned
+	// references over the merged outer, where the outer binder binds the
+	// outer positionally and the ordinal existential rebase handles the
+	// merged references.
 	var resultValue values.Value
 	if gatedFlatten {
 		var legTypes map[string]bakeLegType
@@ -6868,8 +6855,8 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	}
 	if resultValue == nil {
 		// UNGATED, or a gated leg's columns are not derivable (the catalog-free
-		// nil-md path). The name-model anchored seed is DELETED (RFC-173 S4 item
-		// B); mirrors translateJoin — a nil result value must not flow into the
+		// nil-md path). The name-model anchored seed has been deleted; mirrors
+		// translateJoin — a nil result value must not flow into the
 		// SelectExpression (it would nil-deref downstream, e.g.
 		// GetCorrelatedToOfValue), so the shape is untranslatable — LOUD, with
 		// the gate's own Reason naming the cause.
@@ -7272,13 +7259,13 @@ func sourceAlias(op logical.LogicalOperator) string {
 }
 
 // sourceBinding is the leg's BINDING correlation name: sourceAlias unless the
-// parser minted a duplicate-alias binding id (RFC-173 QP-REF-BIND item 1 —
-// LogicalScan/LogicalCTE/LogicalUnnest.Binding, carried from the single mint
+// parser minted a duplicate-alias binding id (LogicalScan/LogicalCTE/LogicalUnnest.Binding,
+// carried from the single mint
 // authority assignFromLegBindingIDs). Every correlation / bake-map / window
 // key reads THIS; display surfaces keep sourceAlias. Minted ids are
 // FOLD-STABLE upper form (`Q$DUPN`) so the existing UPPER-fold lookups treat
 // them exactly like aliases; alias-bound legs return sourceAlias's UPPER
-// form, so non-duplicate queries are byte-identical to the pre-item-1 keying.
+// form, so non-duplicate queries are byte-identical to the original alias-only keying.
 // mintedBindingLeg returns the first FROM-leg source in the given subtrees
 // carrying a parser-minted duplicate-alias binding (Scan/CTE/Unnest .Binding
 // — set ONLY when a later duplicate leg was renamed; "" everywhere else), or
@@ -7287,7 +7274,7 @@ func sourceAlias(op logical.LogicalOperator) string {
 // same-named legs collide last-wins; the resolver's binding-qualified
 // references read NULL off the display-keyed row). Callers use this to
 // decline LOUDLY at every name-model construction a minted-binding query can
-// narrow into — never silent wrong rows (RFC-173 QP-REF-BIND item 1). It does
+// narrow into — never silent wrong rows. It does
 // NOT descend into existential/scalar subquery plans: those translate their
 // own FROM and guard themselves. It DOES descend through CTE/derived bodies
 // (Children()): deliberate — a dup buried in a body that reaches a name-model
@@ -7465,21 +7452,21 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	cteName := strings.ToUpper(c.Name)
 
-	// RFC-173 S4 (R1): the recursive-CTE body is ORDINALIZED. The old blanket
+	// The recursive-CTE body ordinalizes where possible. An earlier blanket
 	// `t.inInnerCluster = true` forced every body join name-model; lifting it
 	// (surgically — this site only; inInnerCluster is a genuine enclosure flag
-	// at the non-recursive unnest/existential/w4b sites, where a broad lift
-	// breaks multi-source unnest) lets the gate's own arms classify each body
-	// sub-join: a plain inner/outer body GATES and takes the ordinal branch
-	// (buildOrdinalJoinResultValue → a positional row aligned by position to the
-	// CTE output — Java's seed-typed frontier, RecursiveUnionExpression.mergeValues);
-	// an unnest/existential body stays name-model via the gate's :106/:112/:143
-	// arms and keeps the dotted-split normalization arm (which survives to
-	// convergence). normalizeLegToOutputColumns detects the ordinalized body
-	// (any baked-ordinal projected value) and re-emits POSITIONALLY; the temp
-	// table stays a positional QueryResult buffer keyed by outCols in
-	// NAME-METADATA only, the coexisting bare-outCols Datum riding alongside for
-	// UNION-DISTINCT dedup and Main name resolution until Slice 4 retires Datum.
+	// at the non-recursive unnest/existential/scalar-subquery sites, where a
+	// broad lift breaks multi-source unnest) lets the gate's own arms classify
+	// each body sub-join independently: a plain inner/outer body GATES and
+	// takes the ordinal branch (buildOrdinalJoinResultValue → a positional row
+	// aligned by position to the CTE output — Java's seed-typed frontier,
+	// RecursiveUnionExpression.mergeValues); an unnest/existential body stays
+	// name-model (per the gate's own classification) and keeps the dotted-split
+	// normalization arm (which survives to convergence). normalizeLegToOutputColumns
+	// detects the ordinalized body (any baked-ordinal projected value) and
+	// re-emits POSITIONALLY; the temp table stays a positional QueryResult
+	// buffer keyed by outCols in NAME-METADATA only, with a bare-outCols Datum
+	// riding alongside for UNION-DISTINCT dedup and Main name resolution.
 
 	// The body must be a UNION ALL or UNION DISTINCT.
 	union, ok := c.Body.(*logical.LogicalUnion)
@@ -7521,7 +7508,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// names, overridden by an explicit column-alias list `WITH RECURSIVE d(a, b)`.
 	//
 	// The temp table is keyed under these OUTPUT names. Identifier resolution
-	// keeps OUTPUT names (the source-name reverse-map is retired, RFC-173), so a
+	// keeps OUTPUT names (the source-name reverse-map has been retired), so a
 	// recursive predicate `b.id = a.up` reads field UP — the CTE's OUTPUT column —
 	// not the seed's source PARENT. The temp table (which the self-reference scans)
 	// must therefore be keyed by UP for the join predicate to match. Both legs are
@@ -7537,7 +7524,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// gate below never length-matched, the temp table stayed keyed by the base
 	// columns, and a recursive reference to `a` was a silent NULL under the name
 	// model / a loud OrdinalResolutionError under the ordinal model (review P2 +
-	// reviewer's pre-existing corner, RFC-173 Slice 1 gauntlet). Derive the seed
+	// reviewer's pre-existing corner). Derive the seed
 	// schema from the operator's output — table columns for a scan
 	// (derivedOutputColumns) — so the alias list applies and the seed normalizes
 	// onto it.
@@ -7602,7 +7589,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	//
 	// The temp table is keyed under outCols so it agrees with the recursive
 	// predicates, which read the CTE's OUTPUT columns (the source-name reverse-map
-	// is retired, RFC-173). recursiveRemapValues never persists a qualified key:
+	// has been retired). recursiveRemapValues never persists a qualified key:
 	// each read is FieldValue{Field: <bare>, Child: QOV(<qualifier>)} — it reads
 	// the qualified datum key ("B.ID") while projectionColumnName returns the BARE
 	// field, so the qualified key (which would collide with the next recursion
@@ -7724,7 +7711,7 @@ func extractOutputProjectionNames(op logical.LogicalOperator) []string {
 // the logical name was a silent NULL under the tolerant name model (recursion
 // stalled one level early: `recursive_cte_depth_counter` returned 2 instead of
 // Java's 10 — a pre-existing silent-wrong) and a loud OrdinalResolutionError
-// under the ordinal model. Found by the RFC-173 §5 dual-window differential on
+// under the ordinal model. Found by the dual-window differential on
 // its first run.
 //
 // The WRAP form (not an alias override on the leg's own projection) is
@@ -7744,7 +7731,7 @@ func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, 
 }
 
 // recursiveBodyIsPositional reports whether a recursive-CTE branch's output row
-// is POSITIONAL (RFC-173 S4 R1): its FROM is a GATED (ordinal) join, so the
+// is POSITIONAL: its FROM is a GATED (ordinal) join, so the
 // branch emits a positional flat concat rather than name-keyed dotted datums,
 // and the leg normalization must read by ordinal (recursiveRemapValues'
 // positional arm). Peels the branch's top projection + transparent filters to
@@ -7779,15 +7766,13 @@ func (t *cascadesTranslator) recursiveBodyIsPositional(op logical.LogicalOperato
 // The names come from the shared values.OutputColumnName authority — the SAME
 // rule executeProjection uses for the emitted positional row's slot names
 // (upper-cased ALIAS when the projected column carries one, else the
-// values.ProjectionColumnName rendering; RFC-173 §4 Slice 1: posNames is
+// values.ProjectionColumnName rendering; posNames is
 // alias-preferring) — so an aliased leg on the positional frontier
 // (`SELECT v + 1 AS v`, or a seed `SELECT id AS x` renamed by an explicit CTE
 // column list) is re-read by the alias the executor actually writes. Reading
-// the source/computed rendering there is a GetByName miss and the ordinal
-// model is loud on a miss by design: OrdinalResolutionError on a valid
-// recursive CTE (review P2, Slice-1 follow-up). The name-keyed Datum stores the
-// alias key alongside the source key, so the alias also resolves on the
-// off-frontier (join-body) name path — one read name valid on both models.
+// the source/computed rendering instead would miss, and a missed ordinal read
+// is loud by design (OrdinalResolutionError) on a valid recursive CTE. The
+// alias-preferring name is what the executor writes — a downstream read uses it.
 // The second return is the per-column classification of the NAME'S
 // PROVENANCE: true when the emitted name is a plain *values.FieldValue's
 // Field string VERBATIM (unaliased — an identifier, possibly a
@@ -7833,7 +7818,7 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // When the names came from the leg's own top projection (ordinalReads), a bare
 // read ALSO carries a plan-time-resolved ordinal accessor (read i ↔ the leg's
 // emitted positional slot i by construction — Java's FieldValue.ofOrdinalNumber
-// model, which RFC-173 §4 Slice 1 makes authoritative on the frontier). The
+// model, authoritative on the positional frontier). The
 // ordinal read is what makes DUPLICATE output aliases sound: `SELECT a+1 AS x,
 // b+1 AS x` emits two slots both named X, and every name-based resolution
 // collapses them (positional GetByName is first-match; the name-keyed Datum is
@@ -7852,25 +7837,24 @@ func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []
 // are not qualifiers, and an ALIAS-derived name (one identifier by
 // definition; a QUOTED alias may legally contain a dot). A string-grammar
 // discriminator here misread those and manufactured garbage correlations
-// like QOV("(B") / QOV("1") / QOV("A") — the S4 kill-list first-dot-split
+// like QOV("(B") / QOV("1") / QOV("A") — a first-dot-split
 // hazard (review findings, three classes). verbatimField nil = the
 // logical-name fallback path, identifiers by construction.
 //
-// RESIDUAL (pre-existing, dies with the name machinery in S4): within a
+// RESIDUAL (pre-existing): within a
 // verbatim Field string itself, "is this dot a qualifier?" stays ambiguous —
 // the lazy name-model FieldValue spells both the qualified "B.ID" and a
 // QUOTED identifier containing a dot ("A-B.C", reachable only through a
 // quoted CTE column alias re-projected in a recursive leg; proto field names
 // cannot carry dots) in the same string. Master's unconditional first-dot
-// split broke the quoted class identically; disambiguating needs the lazy
-// dotted-Field constructor to mark qualifier provenance — the name-model
-// machinery S4 deletes.
+// split breaks the quoted class identically; disambiguating would need the
+// lazy dotted-Field constructor to mark qualifier provenance.
 func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, positional bool) []values.Value {
 	out := make([]values.Value, len(cols))
 	for i, c := range cols {
 		cu := strings.ToUpper(c)
 		if positional {
-			// RFC-173 S4 (R1): an ORDINALIZED recursive body emits a positional
+			// An ORDINALIZED recursive body emits a positional
 			// row; read EVERY column by ordinal (slot i) — the dotted-split name
 			// arm below mis-reads a positional row (QOV(<qualifier>) has no
 			// namespace on it → OrdinalResolutionError). This node is an UNPINNED
@@ -7881,8 +7865,8 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 			//     bust the RFC-130 budget);
 			//   - Resolved.Root() = the FULL physName cu ("C.ID") at ordinal i —
 			//     the ordinal is what the read uses; the qualified name is
-			//     diagnostics only (it matched the body's qualified output key in
-			//     the retired name model).
+			//     diagnostics only (it matched the body's qualified output key
+			//     under name-based resolution).
 			bare := cu
 			if dot := strings.IndexByte(cu, '.'); dot >= 0 {
 				bare = cu[dot+1:]
@@ -7902,11 +7886,11 @@ func recursiveRemapValues(cols []string, verbatimField []bool, ordinalReads, pos
 				Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(cu[:dot])),
 			}
 		} else {
-			// RFC-173 item C: read slot i by ordinal for BOTH the
+			// Read slot i by ordinal for BOTH the
 			// projection-topped leg (read i ↔ emitted slot i by construction)
 			// and the logical-name fallback (a scan/aggregate/union top, whose
-			// physical row conforms to the logical column order — item B's
-			// contract). The name-keyed lazy read this replaces resolved the
+			// physical row conforms to the logical column order). The
+			// name-keyed lazy read this replaces resolved the
 			// same slot by FieldIndex over that same order.
 			out[i] = values.NewFieldValueWithResolvedOrdinal(cu, i, values.UnknownType)
 		}

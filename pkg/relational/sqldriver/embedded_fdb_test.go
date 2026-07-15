@@ -27,8 +27,8 @@ import (
 // clusterFilePath is written once in TestMain and shared across tests.
 var clusterFilePath string
 
-// RFC-048 W1 ("no unresolved reference") is now enforced STRUCTURALLY by the
-// RFC-173 ordinal frontier, so this binary needs no armed hook. The ordinal
+// RFC-048 W1 ("no unresolved reference") is now enforced STRUCTURALLY by
+// ordinal (positional) column resolution, so this binary needs no armed hook. The ordinal
 // PositionalRow is the sole runtime row and FieldValue.evaluateOrdinal is LOUD
 // on a miss (*OrdinalResolutionError), never a silent name->NULL. A reference to
 // a name absent from a complete row therefore FAILS its query outright — a
@@ -7765,7 +7765,7 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	rows.Close()
 }
 
-// TestFDB_DerivedAliasColumnTypeShadow pins RFC-173 item C's descriptor-metadata
+// TestFDB_DerivedAliasColumnTypeShadow pins the descriptor-metadata
 // guard: a DERIVED/CTE output alias whose name COLLIDES with a stored field name
 // must report the DERIVED column's type, not the coincidentally-named stored
 // field's. `SELECT q.id FROM (SELECT x AS id FROM B) q` — q.id is x's DOUBLE, but

@@ -14,7 +14,7 @@ import (
 )
 
 // SortKey is a sort key + direction for in-memory sorting. ValueExpr is
-// REQUIRED (RFC-173): it carries the key's plan-time-baked Value, which the
+// REQUIRED: it carries the key's plan-time-baked Value, which the
 // executor evaluates POSITIONALLY per row. The field-only form (a Field lookup
 // with a nil ValueExpr) is no longer supported — the runtime name fallback was
 // deleted, so the executor rejects a nil ValueExpr as a malformed plan (loud,

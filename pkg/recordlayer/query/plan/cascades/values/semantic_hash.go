@@ -110,7 +110,7 @@ func writeSemanticHash(h io.Writer, v Value) {
 			_, _ = io.WriteString(h, f.Name+",")
 		}
 	case *FieldValue:
-		// RFC-173: a BAKED node's identity is its ordinal PATH alone
+		// A BAKED node's identity is its ordinal PATH alone
 		// (Java ResolvedAccessor.equals compares getOrdinal() only,
 		// FieldValue.java:675-689; the display name is rendering, not
 		// identity) — so the hash folds ONLY the per-step ordinals. Mixing

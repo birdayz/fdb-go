@@ -59,7 +59,7 @@ func EvaluateScalarSubquery(
 		return nil, nil
 	}
 
-	// Extract the single column value from the row. RFC-173: the ordinal
+	// Extract the single column value from the row. The ordinal
 	// Positional row is authoritative — a scalar subquery projects exactly one
 	// column, so its single slot IS the scalar value, read by ordinal (no name
 	// lookup).

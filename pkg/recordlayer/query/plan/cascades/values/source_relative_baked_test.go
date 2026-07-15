@@ -2,10 +2,10 @@ package values
 
 import "testing"
 
-// TestSourceRelativeBaked pins the RFC-173 item C provenance discriminator the
-// translator's rebase/collection/safety-net walks key on: a SINGLE-accessor
-// UNPINNED path (the resolver's construction-time source bind) must be treated
-// like a lazy reference — rebind/count/flag it — while machinery-owned nodes
+// TestSourceRelativeBaked pins the provenance discriminator the translator's
+// rebase/collection/safety-net walks key on: a SINGLE-accessor UNPINNED path
+// (the resolver's construction-time source bind) must be treated like a lazy
+// reference — rebind/count/flag it — while machinery-owned nodes
 // (FrontierPinned box ofOrdinals, multi-accessor paths) are final.
 func TestSourceRelativeBaked(t *testing.T) {
 	t.Parallel()

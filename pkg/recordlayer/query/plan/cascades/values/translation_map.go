@@ -1,6 +1,6 @@
 package values
 
-// RFC-173 — the TranslationMap port (Java
+// The TranslationMap port (Java
 // com.apple.foundationdb.record.query.plan.cascades.values.translation.TranslationMap,
 // TranslationMap.java:39-73 / RegularTranslationMap.java:42-228). The planner's
 // cross-boundary reference rebase: a map from source quantifier alias to a

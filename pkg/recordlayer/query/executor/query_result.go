@@ -25,7 +25,7 @@ const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 // (when the row originated from a scan), and an optional primary key.
 // Mirrors Java's QueryResult.
 type QueryResult struct {
-	// Positional is the RFC-173 ordinal-model row (a typed PositionalRow, field
+	// Positional is the ordinal-model row (a typed PositionalRow, field
 	// values indexed by ordinal) — the SOLE runtime row. Every producer emits it
 	// (scans/covering scans, projection/map, aggregate output, and join merges
 	// via concatLegPositionals), and FieldValue resolution reads it by ordinal,
@@ -111,7 +111,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 // serves a stored record's columns (base scan rows via protoToPositional,
 // covering-index rows via coveringIndexCursor) MUST shape its rows by this
 // type, so a plan-time LOGICAL ordinal reads the same slot on every path
-// (RFC-173 item C; Java's IndexKeyValueToPartialRecord reconstructs a
+// (mirrors Java's IndexKeyValueToPartialRecord, which reconstructs a
 // descriptor-shaped partial record for exactly this reason). Cached per
 // descriptor (see positionalTypeCache).
 func positionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.RecordType {

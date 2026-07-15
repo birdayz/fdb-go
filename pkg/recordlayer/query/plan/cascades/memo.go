@@ -117,9 +117,9 @@ func (m *Memo) MergeCount() int { return m.mergeCount }
 
 // AliasAwareDedups sums, over every Reference in the memo, the extra dedup the
 // alias-aware interning tier performed (Reference.AliasAwareDedups) — the
-// "shadow" of the merge re-enumeration's shared-sub-product collapse. The
-// RFC-173 Slice-3 shadow-delta pin asserts this equals the member-count delta
-// between alias-aware interning and the alias-identity baseline.
+// "shadow" of the merge re-enumeration's shared-sub-product collapse.
+// TestAliasAwareInterningShadowDelta asserts this equals the member-count
+// delta between alias-aware interning and the alias-identity baseline.
 func (m *Memo) AliasAwareDedups() int {
 	total := 0
 	seen := make(map[*expressions.Reference]struct{}, len(m.refs))

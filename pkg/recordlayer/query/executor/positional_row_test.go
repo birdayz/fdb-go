@@ -10,8 +10,8 @@ import (
 )
 
 // TestPositionalRow_Basics pins the positional row primitives: ordinal Get/Set,
-// out-of-range safety, and nil-safety. There is NO name-keyed read on the type
-// (RFC-173): a column's slot is bound at plan time via the Type's FieldIndex.
+// out-of-range safety, and nil-safety. There is NO name-keyed read on the type:
+// a column's slot is bound at plan time via the Type's FieldIndex.
 func TestPositionalRow_Basics(t *testing.T) {
 	t.Parallel()
 	typ := values.NewRecordType("R", false, []values.Field{
@@ -158,7 +158,7 @@ func TestPositionalRow_DuplicateNames(t *testing.T) {
 	}
 	// The plan-time name bind resolves to the FIRST match; the second slot is
 	// reachable only by ordinal — which is why duplicate-name-correct reads
-	// REQUIRE the plan-time bake (RFC-173's founding case).
+	// REQUIRE the plan-time bake.
 	if idx, ok := typ.FieldIndex("ID"); !ok || idx != 0 {
 		t.Fatalf("FieldIndex(ID) = (%d,%v), want (0,true) — first match", idx, ok)
 	}

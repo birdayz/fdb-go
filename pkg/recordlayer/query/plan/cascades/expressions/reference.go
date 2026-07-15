@@ -72,10 +72,9 @@ type Reference struct {
 	// re-enumeration selects) collapsed an incoming member that the two
 	// alias-IDENTITY tiers did NOT catch — the "extra dedup" the alias-aware
 	// tier buys (RFC-077 7.5). Per-Reference (each Plan owns its References),
-	// so it is race-free without a global. Summed via Memo.AliasAwareDedups
-	// for the RFC-173 Slice-3 shadow-delta pin: this count is the shadow of
-	// the sub-product-sharing that keeps the join re-enumeration task count
-	// off the 29915→60044 blowup.
+	// so it is race-free without a global. Summed via Memo.AliasAwareDedups,
+	// this count is the shadow of the sub-product-sharing that keeps the
+	// join re-enumeration task count off the 29915→60044 blowup.
 	aliasAwareDedups int
 
 	// id is a monotonic identity assigned by the Memo on first
@@ -193,7 +192,8 @@ func (r *Reference) Members() []RelationalExpression {
 
 // AliasAwareDedups returns how many incoming members this Reference collapsed
 // via the alias-aware interning tier (the extra dedup beyond alias-identity).
-// The RFC-173 Slice-3 shadow-delta pin sums this across the memo.
+// A regression test sums this across the memo to bound the join
+// re-enumeration task count.
 func (r *Reference) AliasAwareDedups() int {
 	return r.Canonical().aliasAwareDedups
 }
@@ -400,14 +400,15 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 // (RFC-077 7.5). Only merge re-enumeration selects opt in today.
 type aliasAwareInterner interface{ InternsAliasAware() bool }
 
-// disableAliasAwareInterning is a TEST-ONLY switch (RFC-173 Slice-3 shadow-delta
-// pin) that suppresses the alias-aware interning tier, so a corpus can be planned
-// in the alias-IDENTITY baseline to recover the pre-interning member population.
+// disableAliasAwareInterning is a TEST-ONLY switch that suppresses the
+// alias-aware interning tier, so a corpus can be planned in the
+// alias-IDENTITY baseline to recover the pre-interning member population.
 // It is read in Insert/InsertFinal's hot path but only ever WRITTEN by a
 // NON-PARALLEL test: Go runs non-parallel tests sequentially, before the parallel
 // phase, with a happens-before barrier between the phases, so a plain bool is
-// race-free (the write is never concurrent with a read). Mirrors the same
-// non-parallel test-only global-flag discipline used elsewhere in RFC-173.
+// race-free (the write is never concurrent with a read). The same
+// non-parallel test-only global-flag discipline is used for other
+// planner test switches.
 //
 // The non-parallel constraint is enforced by -race, NOT just convention: adding
 // t.Parallel() to the setter's caller makes the write concurrent with a hot-path

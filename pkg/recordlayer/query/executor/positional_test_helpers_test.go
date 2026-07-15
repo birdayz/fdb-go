@@ -8,10 +8,10 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// RFC-173 cap test helpers: the executor row model is the ordinal PositionalRow
-// (the name-keyed map[string]any Datum is deleted). These helpers let tests that
-// previously constructed / asserted against a name-keyed Datum keep working by
-// building and reading a PositionalRow by column name.
+// Test helpers for the executor's ordinal PositionalRow row model — there is
+// no name-keyed map[string]any row in production. These helpers build and
+// read a PositionalRow by column name so tests can stay concise and readable
+// (the `dmap`/`rowMap`-style names read as if rows were plain maps).
 
 // dmap builds a QueryResult carrying a PositionalRow from a name->value map.
 // Column order is sorted by name for determinism; test reads resolve the slot
@@ -68,8 +68,8 @@ func rowMapOK(qr QueryResult) (map[string]any, bool) {
 
 // getByName is the TEST-ONLY name read-out: it resolves name → ordinal via the
 // row's Type (FieldIndex, first-match) and reads that slot. Production has no
-// name-keyed read arm (RFC-173 — every reference is baked to an ordinal at
-// plan time); tests keep this convenience purely to ASSERT on named columns.
+// name-keyed read arm — every reference is baked to an ordinal at plan time;
+// tests keep this convenience purely to ASSERT on named columns.
 func getByName(pos *PositionalRow, name string) (any, bool) {
 	if pos == nil || pos.Type == nil {
 		return nil, false

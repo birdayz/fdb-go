@@ -56,14 +56,13 @@ func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) Value 
 // For each field in the constructor, check if v equals that field's
 // value. If so, v can be accessed as the output field name.
 //
-// RFC-173: the emitted reference is re-framed to the RC's OUTPUT
-// column i, so when the ordinal matters it is BAKED — a lazy name node over a
-// duplicate-named RC output would later resolve to the FIRST same-named column
-// regardless of which column matched (the duplicate-name conflation hazard).
-// Baking is gated: only a baked input (bakedness must survive pull-up)
-// or a dup-named RC (only ordinal
-// seeds build them — projection RCs suffix duplicates) bakes; a lazy input
-// over a clean-named RC emits a lazy node.
+// The emitted reference is re-framed to the RC's OUTPUT column i, so when the
+// ordinal matters it is BAKED — a lazy name node over a duplicate-named RC
+// output would later resolve to the FIRST same-named column regardless of
+// which column matched (the duplicate-name conflation hazard). Baking is
+// gated: only a baked input (bakedness must survive pull-up) or a dup-named
+// RC (only ordinal seeds build them — projection RCs suffix duplicates)
+// bakes; a lazy input over a clean-named RC emits a lazy node.
 func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias CorrelationIdentifier) Value {
 	inBaked, inPinned := false, false
 	if fv, ok := v.(*FieldValue); ok && fv.Resolved != nil {
@@ -115,10 +114,10 @@ func rcHasDuplicateNames(rc *RecordConstructorValue) bool {
 // FieldAccessValue or prefix the field with the alias ("alias.field").
 func pullUpThroughPassthrough(v Value, alias CorrelationIdentifier) Value {
 	if fv, ok := v.(*FieldValue); ok {
-		// Preserve the RFC-173 baked-ordinal marker through the copy: the
-		// passthrough is an identity result value (same record flows), so the
-		// baked position stays valid; dropping it would silently degrade a
-		// BAKED node to lazy (the conflation hazard).
+		// Preserve the baked-ordinal marker through the copy: the passthrough
+		// is an identity result value (same record flows), so the baked
+		// position stays valid; dropping it would silently degrade a BAKED
+		// node to lazy (the conflation hazard).
 		return &FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
 	}
 	return nil
@@ -203,7 +202,7 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 // result values. Field accesses pass through unchanged.
 func pushDownThroughPassthrough(v Value) Value {
 	if fv, ok := v.(*FieldValue); ok {
-		// Preserve the RFC-173 baked-ordinal marker — see pullUpThroughPassthrough.
+		// Preserve the baked-ordinal marker — see pullUpThroughPassthrough.
 		return &FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
 	}
 	return nil

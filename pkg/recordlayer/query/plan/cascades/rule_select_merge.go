@@ -84,9 +84,9 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 
 	quantifiers := sel.GetQuantifiers()
 
-	// RFC-173 Outcome-B B1: an EXISTENTIAL WRAP select — exactly ONE ForEach
-	// (the box) plus existential quantifier(s) — must NOT have a POSITIONAL
-	// ordinal-seed box dissolved into it. The wrap is the semi-join shape
+	// An EXISTENTIAL WRAP select — exactly ONE ForEach (the box) plus
+	// existential quantifier(s) — must NOT have a POSITIONAL ordinal-seed
+	// box dissolved into it. The wrap is the semi-join shape
 	// implementExistentialSelect plans as FlatMap(box, FirstOrDefault(inner))
 	// with the box SEPARATELY enumerated (index SARGs live). Merging the box up
 	// yields a flat [ForEach×N, Existential] select that Go can only implement
@@ -95,10 +95,8 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// predicate-free left-deep cross-product with the join predicates as one
 	// post-filter — a strictly worse alternative that small-cardinality costing
 	// can still pick. A parent with >= 2 ForEach quantifiers (the projected-
-	// EXISTS-over-buried-box fold, :2908/:3033) is UNAFFECTED — its flatten is
-	// load-bearing (the N-way arm is its only implementer). NAME-MODEL children
-	// are UNAFFECTED (their flat alternative is unimplementable anyway — the
-	// N-way arm declines an anchored seed — so they keep merging as always).
+	// EXISTS-over-buried-box fold) is UNAFFECTED — its flatten is load-bearing
+	// (the N-way arm is its only implementer).
 	forEachCount, hasExistential := 0, false
 	for _, q := range quantifiers {
 		switch q.Kind() {
@@ -182,8 +180,8 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 					continue
 				}
 			}
-			// RFC-173 unnest-residual class 4 (chained-unnest correlation
-			// barrier): decline to merge a ForEach target when a RETAINED
+			// The chained-unnest correlation barrier: decline to merge a
+			// ForEach target when a RETAINED
 			// sibling quantifier is FREE-correlated to it AND the target is a
 			// LATERAL-UNNEST first link. A chained `FROM t, t.arr AS x, x.sub AS
 			// y` reuses the alias `x` for both the first unnest's output (this
@@ -213,7 +211,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 				siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
 				break
 			}
-			// The B1 existential-wrap guard (see the header above the target
+			// The existential-wrap guard (see the header above the target
 			// loop): a MULTI-WAY (>2-window) positional ordinal-seed box under a
 			// single-ForEach existential parent stays nested. 2-window seeds (the
 			// arity-2 gatedFlatten world, the LEFT-residual internals) keep
@@ -349,9 +347,9 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// through the merged child's result value — Java's
 	// Quantifier.translateCorrelations, which Go's merge never needed until
 	// the dissolved-LEFT fold produced the first stranded case: a
-	// box-level-baked reference (an enclosing scope's ON conjunct, an
-	// amendment-C buried bake) addresses the box quantifier POSITIONALLY;
-	// when the box's child select merges up, that positional read would
+	// box-level-baked reference (an enclosing scope's ON conjunct addressing
+	// a buried column) addresses the box quantifier POSITIONALLY; when the
+	// box's child select merges up, that positional read would
 	// re-bind by name to the same-named pulled-up LEG with the wrong type —
 	// the divergent-baked-types class. Collapsing through the RC resolves
 	// it to the exact leg reference the ordinal named, so the retained
@@ -449,7 +447,7 @@ var _ ExpressionRule = (*SelectMergeRule)(nil)
 // OnMatch): the first rebuildable member of the referenced group — a
 // SelectExpression (predicates + result value translated through the merge's
 // aliasMap/RC substitutions, recursively) or an ExplodeExpression (its
-// collection translated — the RFC-173 unnest-residual arm) — is translated,
+// collection translated, the lateral-unnest arm below) — is translated,
 // re-memoized, and wrapped in a quantifier preserving the original's alias
 // and flags (nullOnEmpty carries the dissolved-LEFT pad; strictSingle the
 // scalar contract). ok=false when nothing references a merged alias or no
@@ -701,20 +699,20 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 				if len(accs) >= 1 {
 					rootOrd = accs[0].Ordinal
 				}
-				// RFC-173 item C: a SOURCE-RELATIVE baked reference's ordinal is
-				// relative to its OWN leg's row, NOT the box's concatenated RC —
-				// and the box is NAMED by its rightmost leg, so a leg-addressed
-				// reference (QOV(E).ID#0) arrives under the very alias being
-				// collapsed. Resolving it by the RAW ordinal against the concat
-				// picks the FIRST leg's slot (D.ID for ord 0) — the wrong leg,
-				// RFC-173's raw-RC duplicate conflation (`e.id IS NULL` became
-				// `d.id IS NULL`, mis-partitioned below the null-extension, and
-				// the LEFT-join anti-join returned zero rows). Re-base by the
-				// reference's OWN leg exactly like the values.Replace collapse
-				// (LegAwareRootOrdinal): match the seed field over the SAME
-				// correlation at the leg-local ordinal. Machinery-owned bakes
-				// (FrontierPinned / multi-accessor) keep the raw collapse —
-				// their ordinal IS box-relative by construction.
+				// A SOURCE-RELATIVE baked reference's ordinal is relative to its
+				// OWN leg's row, NOT the box's concatenated RC — and the box is
+				// NAMED by its rightmost leg, so a leg-addressed reference
+				// (QOV(E).ID#0) arrives under the very alias being collapsed.
+				// Resolving it by the RAW ordinal against the concat picks the
+				// FIRST leg's slot (D.ID for ord 0) — the wrong leg: a bug once
+				// turned `e.id IS NULL` into `d.id IS NULL`, mis-partitioning
+				// below the null-extension so the LEFT-join anti-join returned
+				// zero rows. Re-base by the reference's OWN leg exactly like the
+				// values.Replace collapse (LegAwareRootOrdinal): match the seed
+				// field over the SAME correlation at the leg-local ordinal.
+				// Machinery-owned bakes (FrontierPinned / multi-accessor) keep
+				// the raw collapse — their ordinal IS box-relative by
+				// construction.
 				if n.SourceRelativeBaked() && len(accs) >= 1 {
 					rootOrd = values.LegAwareRootOrdinal(n, accs[0].Ordinal, rcv, rootOrd)
 				}

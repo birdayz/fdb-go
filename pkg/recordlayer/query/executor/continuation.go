@@ -306,7 +306,7 @@ func encodeSortContinuation(
 		// and it is written as a constant `false` dead placeholder purely to keep the
 		// 3-slot array shape wire-identical (no format-version bump).
 		//
-		// RFC-173: the Positional row is the SOLE runtime output row (there is
+		// The Positional row is the SOLE runtime output row (there is
 		// no name-keyed row), so a resumed sort buffer MUST carry it or the
 		// reader rejects every buffered row after a page boundary. Slot 0 (formerly
 		// the JSON datum) is null, slot 1 is the retired-Complete placeholder, slot 2
@@ -416,12 +416,12 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 		// A resumed sort row MUST reconstruct a PositionalRow (the sole runtime row).
 		// A legacy bare-object payload OR a v2 [_, complete] array (both pre-positional,
 		// written by an older binary) leaves positional nil — resuming it would give
-		// all-NULL sort keys and wrong/misordered rows, since the name-keyed Datum
+		// all-NULL sort keys and wrong/misordered rows, since the name-keyed
 		// fallback that used to read them is deleted. Fail the resume loudly (the caller
 		// restarts the query) rather than silently drop the data. A corrupt payload has
 		// already failed above; this rejects the VALID-but-unreconstructable legacy shape.
 		if positional == nil {
-			return nil, nil, fmt.Errorf("sorted record %d has no positional payload (legacy pre-RFC-173 sort continuation); it cannot be resumed under the ordinal row model — restart the query", i)
+			return nil, nil, fmt.Errorf("sorted record %d has no positional payload (a legacy sort continuation predating the positional row model); it cannot be resumed under the ordinal row model — restart the query", i)
 		}
 		buf = append(buf, QueryResult{PrimaryKey: pk, Positional: positional})
 	}

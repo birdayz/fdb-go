@@ -189,7 +189,7 @@ type FieldValue struct {
 	Typ   Type
 	Child Value // base value (nil = legacy flat field reference)
 
-	// Resolved is the RFC-173 baked-ordinal path — Java's construction-time
+	// Resolved is the baked-ordinal path — Java's construction-time
 	// FieldPath resolution, where the accessor IS an ordinal and runtime access
 	// is positional: resolveOrdinal returns the accessor's ordinal directly, so
 	// a positional-row read is row.Get(ordinal) — position-preserving by
@@ -211,7 +211,7 @@ type FieldValue struct {
 	// load-bearing):
 	//   - MACHINERY-OWNED (FrontierPinned): built by the join/gather seed
 	//     machinery over a typed leg QOV (NewFieldValueOfOrdinal) or fused by
-	//     the rebase walks; the ordinal is FINAL for the executor's birthed
+	//     the rebase walks; the ordinal is FINAL for the executor's assembled
 	//     row / leg window.
 	//   - SOURCE-RELATIVE (unpinned single-accessor): the resolver's
 	//     construction bind against the reference's OWN source's declared
@@ -252,7 +252,7 @@ type ResolvedAccessor struct {
 	Ordinal int
 }
 
-// FieldPath is the RFC-173 multi-accessor path — Java's FieldValue.FieldPath
+// FieldPath is the multi-accessor path — Java's FieldValue.FieldPath
 // (FieldValue.java:373): ONE FieldValue node holds a whole path, never chained
 // nodes. IMMUTABLE after construction (replace-never-mutate):
 // FieldValue copy sites share the pointer; WithSuffix
@@ -269,13 +269,13 @@ type FieldPath struct {
 	Accessors []ResolvedAccessor
 
 	// FrontierPinned marks a MACHINERY-OWNED bake: the node was built by the
-	// gated-join/gather seed machinery (NewFieldValueOfOrdinal over a typed
+	// join/gather seed machinery (NewFieldValueOfOrdinal over a typed
 	// leg QOV, or a rebase-walk fusion), its ordinal FINAL for the executor's
-	// birthed row / leg window. Unpinned baked nodes are SOURCE-RELATIVE —
+	// assembled row / leg window. Unpinned baked nodes are SOURCE-RELATIVE —
 	// the resolver's bind against the reference's own source's declared
 	// column order (see FieldValue.SourceRelativeBaked).
 	//
-	// The distinction is LOAD-BEARING, not migration residue: the seed-shape
+	// The distinction is LOAD-BEARING: the seed-shape
 	// probes (ordinalJoinSpansOf, IsOrdinalJoinRV, the leg-type harvesters)
 	// key on the pin to tell a machinery-built leg-concat SEED from a user
 	// projection of resolver-baked references over the same legs, and the
@@ -383,15 +383,15 @@ func (p *FieldPath) Equals(o *FieldPath) bool {
 // evaluated against a NAME-keyed or unrecognized row context.
 // Never a silent name read or silent NULL: the display name is
 // diagnostics-only and resolving by it would return the FIRST of duplicate
-// same-named columns — the conflation RFC-173 exists to kill. (A nil context
-// stays NULL — that is the sanctioned appendNullLeg / nil-binding path.)
+// same-named columns — the conflation ordinal identity exists to avoid.
+// (A nil context stays NULL — that is the appendNullLeg / nil-binding path.)
 type BakedNameContextError struct {
 	Field   string
 	Ordinal int
 }
 
 func (e *BakedNameContextError) Error() string {
-	return fmt.Sprintf("RFC-173: baked FieldValue %s#%d evaluated against a non-positional row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
+	return fmt.Sprintf("baked FieldValue %s#%d evaluated against a non-positional row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
 }
 
 // UnboundEvalContextError reports a FieldValue whose evaluation resolved to
@@ -402,9 +402,9 @@ func (e *BakedNameContextError) Error() string {
 // pinned and unpinned alike; a silent NULL would hide it.
 // DISTINCT from BakedNameContextError (a PINNED node meeting a name-keyed context
 // that DID resolve to a value): here nothing resolved at all. A nil context stays
-// NULL (the sanctioned appendNullLeg / nil-binding path) and never reaches here;
-// a correlation that DID match a non-ordinal value (the sanctioned birthLegBinder
-// raw leg) returns that value and never reaches here either.
+// NULL (the appendNullLeg / nil-binding path) and never reaches here;
+// a correlation that DID match a non-ordinal value (e.g. the executor's
+// birthLegBinder raw leg) returns that value and never reaches here either.
 type UnboundEvalContextError struct {
 	Field       string
 	Correlation string
@@ -413,15 +413,15 @@ type UnboundEvalContextError struct {
 
 func (e *UnboundEvalContextError) Error() string {
 	if e.Correlation != "" {
-		return fmt.Sprintf("RFC-173: correlated FieldValue %q (correlation %q) evaluated against an unbound/unrecognized context (%s) — no frontier row resolved (planner/executor bug)", e.Field, e.Correlation, e.CtxType)
+		return fmt.Sprintf("correlated FieldValue %q (correlation %q) evaluated against an unbound/unrecognized context (%s) — no frontier row resolved (planner/executor bug)", e.Field, e.Correlation, e.CtxType)
 	}
-	return fmt.Sprintf("RFC-173: FieldValue %q evaluated against an unrecognized non-nil context (%s) — no frontier row resolved (planner/executor bug)", e.Field, e.CtxType)
+	return fmt.Sprintf("FieldValue %q evaluated against an unrecognized non-nil context (%s) — no frontier row resolved (planner/executor bug)", e.Field, e.CtxType)
 }
 
 // ContainsBakedOrdinal reports whether any FieldValue in v's subtree carries
 // a MACHINERY-OWNED (FrontierPinned) baked-ordinal marker — the structural
-// "is this a gated-join ordinal value tree" probe the join machinery keys on
-// (SelectMergeRule target loop, the executor's ordinal-join birth).
+// "is this an ordinal-join value tree" probe the join machinery keys on
+// (SelectMergeRule target loop, the executor's ordinal-join construction).
 // Deliberately blind to UNPINNED baked nodes (source-relative resolver
 // bakes): those carry no join-frontier contract and must not trip join-seed
 // machinery.
@@ -449,8 +449,8 @@ func ContainsBakedOrdinal(v Value) bool {
 // ForEach quantifiers, covering them) lives at the interning gate; the
 // executor checks the QOVs against its two legs. Unconstructible from SQL:
 // the generator names all columns, so CTE column-rename selects never match.
-// Lives beside ContainsBakedOrdinal — the two value-shape probes the ordinal
-// birth triggers on.
+// Lives beside ContainsBakedOrdinal — the two value-shape probes ordinal
+// join construction triggers on.
 func IsPositionalMergeRC(v Value) bool {
 	rc, isRC := v.(*RecordConstructorValue)
 	if !isRC || len(rc.Fields) < 2 {
@@ -536,7 +536,7 @@ func (f *FieldValue) Type() Type {
 	return f.Typ
 }
 
-// OrdinalRow is the RFC-173 ordinal-model runtime row FieldValue.Evaluate
+// OrdinalRow is the ordinal-model runtime row FieldValue.Evaluate
 // reads. It is satisfied structurally by executor.PositionalRow, which lives
 // in a higher layer — the interface here avoids the import cycle.
 //
@@ -550,7 +550,7 @@ type OrdinalRow interface {
 	Get(ordinal int) (any, bool)
 }
 
-// OrdinalResolutionError is the loud internal error (RFC-173) raised when
+// OrdinalResolutionError is the loud internal error raised when
 // a FieldValue's column cannot be resolved against the authoritative ordinal
 // runtime row. Authority + a silent name-map fallback would mean a
 // resolution bug never surfaces, so this is a query error, not a NULL. Ordinal
@@ -564,7 +564,7 @@ type OrdinalResolutionError struct {
 }
 
 func (e *OrdinalResolutionError) Error() string {
-	return fmt.Sprintf("RFC-173 ordinal resolution: field %q not resolvable in the runtime row (ordinal %d, row columns %v) — malformed plan", e.Field, e.Ordinal, e.Available)
+	return fmt.Sprintf("ordinal resolution: field %q not resolvable in the runtime row (ordinal %d, row columns %v) — malformed plan", e.Field, e.Ordinal, e.Available)
 }
 
 // ordinalRowNames extracts the row type's column names for diagnostics, when
@@ -589,7 +589,7 @@ func rowIsMultiLeg(row OrdinalRow) bool {
 
 // evaluateOrdinal reads f's column from an ordinal-model runtime row: the
 // plan-time-baked ordinal (resolveOrdinal) reads its slot positionally — NO
-// name resolution of any kind (RFC-173). A miss is loud. For a multi-accessor
+// name resolution of any kind. A miss is loud. For a multi-accessor
 // baked path the root read yields the NESTED record, and the remaining
 // accessors descend into it (descendResolvedPath).
 func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
@@ -599,18 +599,18 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 		}
 		return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: ord, Available: ordinalRowNames(row)}
 	}
-	// RFC-173: there is NO runtime name-resolution fallback.
+	// There is NO runtime name-resolution fallback.
 	// Every column reference must bind its ordinal at plan time; an
 	// UNBAKED reference has no stable ordinal and fails LOUD here (correct-or-loud —
 	// never a silent name read that could serve the wrong slot).
 	return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: -1, Available: ordinalRowNames(row)}
 }
 
-// frontierContractGuard enforces the RFC-173 FRONTIER CONTRACT for a
+// frontierContractGuard enforces the FRONTIER CONTRACT for a
 // FrontierPinned baked node: the executor guarantees a positional row, so a
 // non-nil context that is NOT a positional/ordinal row is a planner/executor
 // bug — reported as a loud *BakedNameContextError rather than a silent NULL that
-// would hide it. An unpinned node (and a nil context — the sanctioned
+// would hide it. An unpinned node (and a nil context — the
 // appendNullLeg / nil-binding NULL) returns nil (no
 // violation). The pinned-node "never silently NULL off the positional
 // frontier" invariant lives here, at the non-positional tail of Evaluate /
@@ -826,7 +826,7 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}
-	// RFC-173: the ordinal-model row is the ONLY runtime row — resolve by
+	// The ordinal-model row is the ONLY runtime row — resolve by
 	// ordinal, loud on a miss.
 	if row, ok := evalCtx.(OrdinalRow); ok {
 		return f.evaluateOrdinal(row)
@@ -839,20 +839,20 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	// Unrecognized NON-NIL context: nothing resolved. Production flows an
 	// OrdinalRow / *RowEvalContext(+Positional) / CorrelationBinder / nil — reaching
 	// here is a planner/executor bug, LOUD for pinned and unpinned alike;
-	// a silent NULL would hide it. (A nil context is the sanctioned
+	// a silent NULL would hide it. (A nil context is the
 	// appendNullLeg NULL, handled above.)
 	return nil, &UnboundEvalContextError{Field: f.Field, CtxType: fmt.Sprintf("%T", evalCtx)}
 }
 
 func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) (any, error) {
-	// nil context = NULL for baked and lazy alike — the sanctioned
+	// nil context = NULL for baked and lazy alike — the
 	// appendNullLeg / nil-binding NULL, mirroring
 	// Evaluate's own nil arm. The loud tail guard below is only for
 	// unrecognized NON-nil contexts.
 	if evalCtx == nil {
 		return nil, nil
 	}
-	// RFC-173: the ordinal-model row is the ONLY runtime row — resolve by
+	// The ordinal-model row is the ONLY runtime row — resolve by
 	// ordinal, loud on a miss.
 	switch ctx := evalCtx.(type) {
 	case OrdinalRow:
@@ -871,7 +871,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		if ctx.Correlations != nil {
 			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
 				// A quantifier bound to an ordinal-model row resolves by
-				// ordinal. A nil binding is the sanctioned null leg (outer-join
+				// ordinal. A nil binding is the null leg (outer-join
 				// no-match) — NULL, not loud. A FrontierPinned node bound to any
 				// other non-ordinal value (a name-keyed map, a stray struct) is a
 				// frontier-contract violation — loud.
@@ -907,7 +907,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			if row, ok := bound.(OrdinalRow); ok {
 				return f.evaluateOrdinal(row)
 			}
-			// nil binding = sanctioned null leg (NULL); any other non-ordinal
+			// nil binding = null leg (NULL); any other non-ordinal
 			// binding is a frontier-contract violation for a pinned node.
 			if bound != nil {
 				if err := f.frontierContractGuard(); err != nil {
@@ -931,7 +931,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 // f.Child flows a RecordType containing f.Field; (0, false) for a nil-Child
 // leaf, a non-record child, or an absent/anonymous field.
 //
-// RFC-173: the ordinal substrate — AUTHORITATIVE for every runtime read.
+// The ordinal substrate is AUTHORITATIVE for every runtime read.
 // evaluateOrdinal resolves
 // through it, loud on a miss, no name fallback, for frontier and BAKED
 // join-leg references alike (the Resolved fast path below). Side-effect-free,
@@ -967,7 +967,7 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 // baked path — the construction-time bind against the
 // reference's OWN source row (the resolver's declared-column-order ordinal).
 // Such a node is ordinal-bound but NOT yet rebased onto any composed frontier
-// (gated-join box seed, gathered seed, merged concat, group-by output): the
+// (join box seed, gathered seed, merged concat, group-by output): the
 // translator's rebase/collection walks over composed rows MUST rebind it
 // through the walk's own authority (and count it as a leg reference), whereas
 // a FrontierPinned (machinery-owned) or multi-accessor path is final. At
@@ -1047,7 +1047,7 @@ type OrdinalBakeError struct {
 }
 
 func (e *OrdinalBakeError) Error() string {
-	return fmt.Sprintf("RFC-173 ordinal bake: cannot resolve ordinal %d: %s (child type %v)", e.Ordinal, e.Reason, e.ChildType)
+	return fmt.Sprintf("ordinal bake: cannot resolve ordinal %d: %s (child type %v)", e.Ordinal, e.Reason, e.ChildType)
 }
 
 // NewFieldValueOfOrdinal constructs a BAKED FieldValue accessing the child's
@@ -1059,7 +1059,7 @@ func (e *OrdinalBakeError) Error() string {
 // `ordinal` — the name serves diagnostics/Explain; the ordinal is
 // authoritative (it survives even when a runtime row's type names disagree
 // with the display name). The bake is MACHINERY-OWNED (FrontierPinned): this
-// is the gated-join / gather seed constructor.
+// is the join / gather seed constructor.
 //
 // Errors loudly (Java raises; no silent fallback) when the child does not
 // flow a *RecordType or the ordinal is out of range.
@@ -1094,8 +1094,8 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 	if childNullable && typ != nil && !typ.IsNullable() {
 		typ = WithNullability(typ, true)
 	}
-	// FrontierPinned: this constructor is the gated-join seed's — the executor
-	// births positional rows for every context these nodes evaluate in, so
+	// FrontierPinned: this constructor is the join seed's — the executor
+	// supplies positional rows for every context these nodes evaluate in, so
 	// these nodes only ever resolve by ordinal.
 	return &FieldValue{
 		Field:    fld.Name,
@@ -1634,12 +1634,12 @@ type CorrelationBinder interface {
 }
 
 // RowEvalContext is a composite evaluation context for Value.Evaluate that
-// carries the RFC-173 ordinal frontier row plus prepared-statement parameters
+// carries the ordinal frontier row plus prepared-statement parameters
 // (ParameterBinder), correlation bindings (CorrelationBinder), and pre-evaluated
 // scalar subqueries. Pass this when evaluating expressions that mix field
 // references, parameters, and correlation bindings (e.g. InJoin explode aliases).
 type RowEvalContext struct {
-	// Positional is the RFC-173 authoritative ordinal-model row for the non-join
+	// Positional is the authoritative ordinal-model row for the non-join
 	// frontier — the SOLE runtime row. When non-nil, FieldValue resolution goes
 	// through the ordinal path (the plan-time-baked ordinal, resolveOrdinal), a
 	// loud OrdinalResolutionError on a miss, NO name resolution. It is the
@@ -3158,8 +3158,8 @@ func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstruc
 }
 
 // NewRawRecordConstructorValue constructs a RecordConstructorValue keeping
-// every field name VERBATIM — duplicate names allowed. It exists for the
-// RFC-173 ordinal-join seeds:
+// every field name VERBATIM — duplicate names allowed. It exists for
+// ordinal-join seeds:
 // a join's ordinal RC concatenates the legs' columns, each field a
 // BAKED FieldValue over its leg's QOV, and duplicate names across legs
 // (`SELECT * FROM a JOIN b` with same-named columns) MUST survive verbatim —
@@ -3170,7 +3170,7 @@ func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstruc
 // appends _2/_3 suffixes, which is correct there (SQL projection column
 // naming) — a raw duplicate under name-keyed plan-time lookup (FieldIndex
 // first-match) silently
-// resolves to the first match, the exact conflation RFC-173 exists to kill.
+// resolves to the first match, the exact conflation ordinal identity exists to avoid.
 func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
 	out := make([]RecordConstructorField, len(fields))
 	copy(out, fields)
@@ -3335,7 +3335,7 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 type QuantifiedObjectValue struct {
 	Correlation CorrelationIdentifier
 	// Typ is the row type (struct shape) this quantifier produces —
-	// a *RecordType on the typed frontier (RFC-173; the translator
+	// a *RecordType on the typed frontier (the translator
 	// stamps it from the inner expression's result type), or
 	// UnknownType where inference hasn't reached.
 	Typ Type
@@ -3385,7 +3385,7 @@ func (q *QuantifiedObjectValue) Type() Type {
 // Name returns the debug-print kind.
 func (*QuantifiedObjectValue) Name() string { return "quantifier" }
 
-// Evaluate extracts the row bound to this quantifier's correlation. Post-cap the
+// Evaluate extracts the row bound to this quantifier's correlation. The
 // ordinal row is the sole runtime row; the eval-context shapes this handles:
 //
 //   - *RowEvalContext — a correlation binding for q.Correlation (an outer
@@ -3407,7 +3407,7 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 				return val, nil
 			}
 		}
-		// RFC-173: a bare QOV whole-row read resolves to the ordinal Positional row
+		// A bare QOV whole-row read resolves to the ordinal Positional row
 		// on the frontier (downstream FieldValue reads it by ordinal). No
 		// name-keyed fallback exists.
 		if ctx.Positional != nil {
@@ -3415,7 +3415,7 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 		}
 		return nil, nil
 	case OrdinalRow:
-		// RFC-173: a bare frontier PositionalRow (the posNeedsCtx-false fast path in
+		// A bare frontier PositionalRow (the posNeedsCtx-false fast path in
 		// frontierRowContext flows the ordinal row directly, not wrapped in a
 		// RowEvalContext) IS this quantifier's object — the same resolution the
 		// *RowEvalContext Positional fallback gives, so a QOV-child FieldValue

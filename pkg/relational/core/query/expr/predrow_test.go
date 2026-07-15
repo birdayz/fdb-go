@@ -20,10 +20,10 @@ func lookupFold(m map[string]any, name string) (any, bool) {
 	return nil, true
 }
 
-// predRow wraps a name->value map as a values.OrdinalRow for tests. RFC-173 made
-// the ordinal row the SOLE value-eval context (a Value/PredicateValue no longer
-// resolves against a bare map[string]any). GetByName resolves the flat field by
-// name; a missing key is SQL NULL (sparse — the pre-cap map-context behavior).
+// predRow wraps a name->value map as a values.OrdinalRow for tests. The
+// ordinal row is the SOLE value-eval context (a Value/PredicateValue does
+// not resolve against a bare map[string]any). GetByName resolves the flat
+// field by name; a missing key is SQL NULL (sparse map-context behavior).
 // Ordinal reads always miss, so predRow only serves lazy (name-resolving)
 // FieldValues — resolver-built values carry a baked ordinal and need
 // ordinalPredRow.
@@ -34,8 +34,8 @@ func (r predRow) Get(int) (any, bool) { return nil, false }
 var _ values.OrdinalRow = predRow(nil)
 
 // ordinalPredRow implements values.OrdinalRow: Get(ordinal) resolves through
-// cols — the scope's declared column order, the same order the RFC-173
-// construction-time bake bound ordinals against (sparse map: missing = SQL NULL).
+// cols — the scope's declared column order, the same order construction-time
+// baking bound ordinals against (sparse map: missing = SQL NULL).
 type ordinalPredRow struct {
 	cols []string
 	m    map[string]any

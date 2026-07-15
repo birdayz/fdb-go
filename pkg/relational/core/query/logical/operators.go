@@ -82,7 +82,7 @@ type LogicalScan struct {
 	Alias string
 	// Binding is the scan's binding correlation name when its FROM alias
 	// DUPLICATES an earlier leg's at the same level ("" = the alias binds —
-	// every non-duplicate leg). RFC-173 QP-REF-BIND item 1: carried from the
+	// every non-duplicate leg). Carried from the
 	// parser's single mint authority (assignFromLegBindingIDs); consumers
 	// read it via sourceBinding and never re-derive binding identity from
 	// the alias. The SQL alias stays the DISPLAY qualifier (sourceAlias).
@@ -116,7 +116,7 @@ type LogicalUnnest struct {
 	// resolves segment-by-segment against the scope.
 	Segments []string
 	// Binding carries the comma source's duplicate-alias binding id
-	// (RFC-173 QP-REF-BIND item 1, see LogicalScan.Binding) so the
+	// (see LogicalScan.Binding) so the
 	// TABLE-FIRST demotion (demoteSchemaQualifiedUnnest) can restore it on
 	// the demoted LogicalScan — a mis-classified schema-qualified TABLE leg
 	// is a table leg for binding purposes. A GENUINE unnest never consumes
@@ -265,9 +265,9 @@ type SortKey struct {
 	// Pos is the 1-based SELECT-list position for a positional key
 	// (`ORDER BY <n>`); 0 = not positional. A positional key IS an output
 	// ordinal by SQL definition, so the translator bakes it directly to the
-	// projection's output slot (RFC-173 — no text-rendering round-trip, which
+	// projection's output slot — no text-rendering round-trip, which
 	// diverges for computed items whose canonical source text differs from the
-	// baked output spelling).
+	// baked output spelling.
 	Pos int
 }
 
@@ -666,8 +666,8 @@ type LogicalCTE struct {
 	ColumnAliases  []string // WITH c(a, b) AS (...) → renames body's output columns
 	TraversalOrder TraversalOrder
 	// Binding is the derived/CTE leg's binding correlation name when its
-	// FROM alias duplicates an earlier leg's ("" = Name binds). RFC-173
-	// QP-REF-BIND item 1 — see LogicalScan.Binding.
+	// FROM alias duplicates an earlier leg's ("" = Name binds). See
+	// LogicalScan.Binding.
 	Binding string
 }
 

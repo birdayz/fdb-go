@@ -79,13 +79,12 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 		}
 	})
 	t.Run("undefined_column_over_derived_still_42703", func(t *testing.T) {
-		// RFC-173 buried-reference fix: projectionInputRedefinesColumns skips the
-		// base-scan column validation over an intervening derived projection, so
-		// the derived table's OUTPUT namespace [V] is authoritative — a column NOT
-		// in it (ZZZ) must still be rejected by the resolver, not silently pass
-		// through to `a`'s base columns (reviewer coverage catch). The fail-open
-		// default in projectionInputRedefinesColumns must not swallow a real
-		// undefined-column error.
+		// projectionInputRedefinesColumns skips the base-scan column validation
+		// over an intervening derived projection, so the derived table's OUTPUT
+		// namespace [V] is authoritative — a column NOT in it (ZZZ) must still be
+		// rejected by the resolver, not silently pass through to `a`'s base
+		// columns. The fail-open default in projectionInputRedefinesColumns must
+		// not swallow a real undefined-column error.
 		rows, err := db.QueryContext(ctx, "SELECT sub.zzz FROM (SELECT id AS v FROM a) sub")
 		if err == nil {
 			for rows.Next() {

@@ -495,7 +495,7 @@ func TestExpressionSortFn(t *testing.T) {
 	}
 
 	// dmap lays columns out alphabetically: AGE@0, NAME@1 — the sort key is
-	// BAKED to NAME's slot (RFC-173: no runtime name resolution).
+	// BAKED to NAME's slot (no runtime name resolution).
 	sortFn := expressionSortFn([]expressions.SortKey{
 		{Value: values.NewFieldValueWithResolvedOrdinal("NAME", 1, values.UnknownType)},
 	})
@@ -2205,9 +2205,9 @@ func TestMergeRows_InnerOverridesOuter(t *testing.T) {
 	}
 }
 
-// TestMergeRows_ScalarOuter: RFC-173 cap — a bare-scalar outer leg (the
+// TestMergeRows_ScalarOuter pins that a bare-scalar outer leg (the
 // scalarPositionalRow `_0` wrapper) concatenates with the inner leg like any
-// other row; the retired name model's "non-map Datum passthrough" is gone.
+// other row.
 func TestMergeRows_ScalarOuter(t *testing.T) {
 	t.Parallel()
 	outer := QueryResult{Positional: scalarPositionalRow("string-datum"), PrimaryKey: tuple.Tuple{int64(1)}}
@@ -3328,16 +3328,15 @@ func TestFromStoredRecord(t *testing.T) {
 	}
 }
 
-// TestMergeRows_ChainedJoin verifies that mergeRows does not clobber
-// already-qualified keys when the outer row is itself a merged NLJ
-// result. Regression test for the join_chained conformance failure
-// where the third row of a 3-way join returned dept.name instead of
 // TestMergeRows_DerivedTableAlias verifies that mergeRows qualifies each leg's
-// columns under its alias via leg windows (RFC-173): a qualified read "SQ1.X"
-// resolves through the leg's window, not a flat qualified key. The name model's
-// bare-key re-qualification clobber (the old ChainedJoin unit test) can no longer
-// occur — legs are ordinal windows, never re-written bare keys; that behavior is
-// covered end-to-end by the three-way-join yamsql scenarios.
+// columns under its alias via leg windows: a qualified read "SQ1.X" resolves
+// through the leg's window, not a flat qualified key. This is also the
+// regression mergeRows once had — a chained 3-way join whose outer row was
+// itself a merged NLJ result returned dept.name instead of the right column
+// (the join_chained conformance failure) — but a bare-key re-qualification
+// clobber can no longer occur at all: legs are ordinal windows, never
+// re-written bare keys. That shape is now covered end-to-end by the
+// three-way-join yamsql scenarios.
 func TestMergeRows_DerivedTableAlias(t *testing.T) {
 	t.Parallel()
 
@@ -4591,8 +4590,8 @@ func TestSortCursor_EmptyInput(t *testing.T) {
 	}
 }
 
-// TestSortCursor_UnbakedKeyIsLoud pins the RFC-173 correct-or-loud contract on
-// the sort path: a LAZY sort key (no plan-time ordinal) cannot resolve against
+// TestSortCursor_UnbakedKeyIsLoud pins the correct-or-loud contract on the
+// sort path: a LAZY sort key (no plan-time ordinal) cannot resolve against
 // the positional row and must surface a loud OrdinalResolutionError — never a
 // silent name read or a silent NULL ordering.
 func TestSortCursor_UnbakedKeyIsLoud(t *testing.T) {

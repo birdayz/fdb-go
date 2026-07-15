@@ -11,9 +11,9 @@ import (
 )
 
 // bakeMergeComparisonKeys resolves LAZY childless FieldValue merge keys into
-// PLAN-TIME-BAKED values (RFC-173 — Java's comparison-key values are
-// ordinal-resolved OrderingPart values, never name-resolved at runtime). The
-// keys arrive lazy because the physical wrappers' Hint(Rich)Ordering builds
+// PLAN-TIME-BAKED values — Java's comparison-key values are ordinal-resolved
+// OrderingPart values, never name-resolved at runtime. The keys arrive lazy
+// because the physical wrappers' Hint(Rich)Ordering builds
 // them from index/PK COLUMN NAMES for ordering MATCHING (a string-keyed axis)
 // — fine for matching, but evaluating a lazy key against the runtime ordinal
 // row would need a runtime name resolution, which does not exist (loud
@@ -72,8 +72,8 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *RequestedOrdering, 
 		if isRT && rt != nil {
 			// Bake only when the name resolves UNIQUELY. A first-match FieldIndex
 			// over a RecordType with DUPLICATE names (a join row flowing here)
-			// would silently probe the wrong slot — RFC-173's conflation. A
-			// duplicate passes through lazy (loud at runtime, never a wrong slot).
+			// would silently probe the wrong slot. A duplicate passes through
+			// lazy (loud at runtime, never a wrong slot).
 			// Single-table branches carry no dups, so this never fires today; it
 			// fences the join-flows-here future.
 			if idx, unique := uniqueUpperFieldIndex(rt, fv.Field); unique {

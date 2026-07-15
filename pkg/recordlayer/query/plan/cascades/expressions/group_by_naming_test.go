@@ -8,7 +8,7 @@ import (
 
 // TestAggregateNaming_StableUnderOrdinalBind pins that the canonical
 // aggregate/group-key OUTPUT column names do not change when the operand
-// references are bound to plan-time ordinals (RFC-173 item C): the naming
+// references are bound to plan-time ordinals: the naming
 // authority renders through values.ColumnNameValue, so a baked and a lazy
 // instance of the same reference derive the same column name. Drift here
 // broke the HAVING lockstep ("SUM(AMOUNT#2)" ref vs "SUM(AMOUNT)" output

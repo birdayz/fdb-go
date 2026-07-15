@@ -76,16 +76,15 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	sortKeys := make([]plans.SortKey, len(groupingKeys))
 	for i, gk := range groupingKeys {
-		// RFC-173: ValueExpr ALWAYS drives the pre-aggregate sort — the
-		// aggregateCursor groups by `gk.Evaluate(row)`, so the REQUIRED sort
-		// must order by the SAME evaluated key (a qualified `V.V` leg
-		// reference collapsed to its bare Field would sort by the
-		// last-leg-wins bare key and split contiguous groups — RFC-142, the
-		// streaming-aggregate twin of the in-memory ORDER BY P2a). The key's
-		// ordinal is baked at plan time; Field is DISPLAY-ONLY (Explain + the
-		// ordering-hint name match): a bare childless key renders its bare
-		// name, anything else the full explain rendering — the exact naming
-		// the retired name fast path produced.
+		// ValueExpr ALWAYS drives the pre-aggregate sort — the aggregateCursor
+		// groups by `gk.Evaluate(row)`, so the REQUIRED sort must order by the
+		// SAME evaluated key (a qualified `V.V` leg reference collapsed to its
+		// bare Field would sort by the last-leg-wins bare key and split
+		// contiguous groups — the streaming-aggregate twin of the in-memory
+		// ORDER BY key-collapse hazard, RFC-142). The key's ordinal is baked
+		// at plan time; Field is DISPLAY-ONLY (Explain + the ordering-hint
+		// name match): a bare childless key renders its bare name, anything
+		// else the full explain rendering.
 		field := ""
 		if fv, ok := gk.(*values.FieldValue); ok && fv.Child == nil && fv.Resolved == nil {
 			field = fv.Field

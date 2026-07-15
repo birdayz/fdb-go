@@ -217,7 +217,7 @@ func composeFieldOverConstructor(v Value) Value {
 	if !ok {
 		return nil
 	}
-	// RFC-173: a BAKED node composes by ORDINAL — Java's
+	// A BAKED node composes by ORDINAL — Java's
 	// ComposeFieldValueOverRecordConstructorRule.findColumn is
 	// getColumns().get(fieldOrdinal). Composing by the display name would pick
 	// the FIRST of two duplicate same-named columns regardless of which the
@@ -236,16 +236,15 @@ func composeFieldOverConstructor(v Value) Value {
 		}
 		o := acc.Ordinal
 		if o < 0 || o >= len(rc.Fields) {
-			panic(fmt.Sprintf("RFC-173: baked FieldValue %s#%d composed over its own %d-column RecordConstructor — tree inconsistent with the bake (planner bug; Java throws IndexOutOfBounds)", fv.Field, o, len(rc.Fields)))
+			panic(fmt.Sprintf("baked FieldValue %s#%d composed over its own %d-column RecordConstructor — tree inconsistent with the bake (planner bug; Java throws IndexOutOfBounds)", fv.Field, o, len(rc.Fields)))
 		}
 		return rc.Fields[o].Value
 	}
 	// LAZY compose: name-based, but DECLINE when the name is ambiguous — a
-	// dup-named RC (constructible only by RFC-173 ordinal seeds) matched by a
-	// lazy reference has no defensible first-match answer; a wrong fold here
-	// is the duplicate-name conflation. Ambiguous references are the
-	// resolver's to reject
-	// (42702); the simplifier just refuses to guess.
+	// dup-named RC (constructible only by ordinal seeds) matched by a lazy
+	// reference has no defensible first-match answer; a wrong fold here is
+	// the duplicate-name conflation. Ambiguous references are the resolver's
+	// to reject (42702); the simplifier just refuses to guess.
 	var match Value
 	for _, field := range rc.Fields {
 		if field.Name == fv.Field {

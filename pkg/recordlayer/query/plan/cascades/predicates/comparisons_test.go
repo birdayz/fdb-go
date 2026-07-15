@@ -510,7 +510,7 @@ func TestComparison_Eval_IsNullIsNotNull(t *testing.T) {
 // present-and-NULL, and missing-from-row.
 func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
 	t.Parallel()
-	// RFC-173 item C: the LHS carries its plan-time ordinal (sole column "name" →
+	// The LHS carries its plan-time ordinal (sole column "name" →
 	// slot 0), read positionally from the row.
 	isNull := NewComparisonPredicate(
 		pbake("name", values.TypeString, "name"),
@@ -541,10 +541,10 @@ func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
 		})
 	}
 
-	// "Missing from row" is no longer a silent NULL: RFC-173 item C makes an absent
-	// column (an out-of-range ordinal) a LOUD *OrdinalResolutionError, surfaced by
-	// Eval as (TriUnknown, error) — a malformed plan, not TRUE. This REPLACES the
-	// retired sparse-name-map behavior where a missing column read as SQL NULL.
+	// "Missing from row" is not a silent NULL: an absent column (an
+	// out-of-range ordinal) is a LOUD *OrdinalResolutionError, surfaced by
+	// Eval as (TriUnknown, error) — a malformed plan, not TRUE. This differs
+	// from a sparse name-map lookup, where a missing column reads as SQL NULL.
 	t.Run("missing from row is loud", func(t *testing.T) {
 		t.Parallel()
 		got, err := isNull.Eval(predRow(map[string]any{}))
@@ -709,7 +709,7 @@ func TestComparison_Eval_Strings(t *testing.T) {
 func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	t.Parallel()
 	// Predicate: field `age >= 18` against a row represented as a
-	// map. FieldValue.Evaluate resolves the column by its RFC-173 plan-time ordinal
+	// map. FieldValue.Evaluate resolves the column by its plan-time ordinal
 	// (sole column "age" → slot 0); Value.Evaluate drives the predicate.
 	operand := pbake("age", values.TypeInt, "age")
 	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}
@@ -729,7 +729,7 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	}
 
 	// The baked operand carries its plan-time ordinal, so ExplainValue renders it
-	// with the RFC-173 ordinal suffix ("age#0") — the injective (name, ordinal)
+	// with the ordinal suffix ("age#0") — the injective (name, ordinal)
 	// rendering. The predicate still composes as `operand OP rhs`.
 	if got := pred.Explain(); got != "age#0 >= 18" {
 		t.Fatalf("Explain: got %q", got)
@@ -751,7 +751,7 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 	t.Parallel()
 	row := map[string]any{"age": int64(21), "rank": int64(3)}
 
-	// (age >= 18) AND (rank < 5) — RFC-173 item C: each ref carries its plan-time
+	// (age >= 18) AND (rank < 5) — each ref carries its plan-time
 	// ordinal (sorted {age, rank} → age=0, rank=1).
 	tree := NewAnd(
 		NewComparisonPredicate(pbake("age", values.TypeInt, "age", "rank"),
@@ -772,7 +772,7 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 // exercises Value.Evaluate recursion.
 func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 	t.Parallel()
-	// (a + b) > 10 — RFC-173 item C: each operand carries its plan-time ordinal
+	// (a + b) > 10 — each operand carries its plan-time ordinal
 	// (sorted {a, b} → a=0, b=1).
 	sum := &values.ArithmeticValue{
 		Op:    values.OpAdd,
@@ -801,7 +801,7 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 // `a = b` couldn't compose at all.
 func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
 	t.Parallel()
-	// age = rank_cutoff (both FieldValues) — RFC-173 item C: each carries its
+	// age = rank_cutoff (both FieldValues) — each carries its
 	// plan-time ordinal (sorted {age, cutoff} → age=0, cutoff=1).
 	pred := NewComparisonPredicate(
 		pbake("age", values.TypeInt, "age", "cutoff"),
@@ -836,7 +836,7 @@ func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
 // (missing-field row) behaves identically to a literal nil.
 func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
 	t.Parallel()
-	// RFC-173 item C: each side carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
+	// Each side carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
 	dist := NewComparisonPredicate(
 		pbake("a", values.TypeInt, "a", "b"),
 		Comparison{Type: ComparisonIsDistinctFrom, Operand: pbake("b", values.TypeInt, "a", "b")},
@@ -875,7 +875,7 @@ func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
 // arbitrary Value trees compose as RHS, not just FieldValue.
 func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
 	t.Parallel()
-	// RFC-173 item C: each ref carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
+	// Each ref carries its plan-time ordinal (sorted {a, b} → a=0, b=1).
 	pred := NewComparisonPredicate(
 		pbake("a", values.TypeInt, "a", "b"),
 		Comparison{
@@ -1152,7 +1152,7 @@ func TestComparison_Eval_LikeWithEscape(t *testing.T) {
 // see handover follow-up "Arithmetic over floats").
 func TestComparisonPredicate_FloatComparisons(t *testing.T) {
 	t.Parallel()
-	// RFC-173 item C: "price" carries its plan-time ordinal (sole column → slot 0).
+	// "price" carries its plan-time ordinal (sole column → slot 0).
 	pred := NewComparisonPredicate(
 		pbake("price", values.TypeFloat, "price"),
 		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(float64(3.14))},
@@ -1184,7 +1184,7 @@ func TestComparisonPredicate_FloatComparisons(t *testing.T) {
 // Non-string operands degrade to UNKNOWN per SQL 3VL.
 func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 	t.Parallel()
-	// RFC-173 item C: each ref carries its plan-time ordinal (sorted {name, pattern}
+	// Each ref carries its plan-time ordinal (sorted {name, pattern}
 	// → name=0, pattern=1).
 	pred := NewComparisonPredicate(
 		pbake("name", values.TypeString, "name", "pattern"),

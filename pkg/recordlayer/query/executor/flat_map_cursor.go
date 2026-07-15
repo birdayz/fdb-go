@@ -294,7 +294,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		// Bind the outer row as a correlation and execute the inner plan.
 		// Use initialInnerCont for the first outer row on resume.
 		//
-		// RFC-173: the outer binds as its POSITIONAL row. For a gated ORDINAL-birth
+		// The outer binds as its POSITIONAL row. For a gated ORDINAL-birth
 		// join, or an inner plan carrying baked SARG operands over the outer alias
 		// (ofOrdinal over QOV(outer), pushed down as scan-range/index-probe
 		// comparisons), the outer must present its LEG type so those operands resolve
@@ -447,7 +447,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	}
 	var foldPos *PositionalRow
 	if rc, isRC := c.resultValue.(*values.RecordConstructorValue); isRC {
-		// RFC-173: emit the authoritative ordinal OUTPUT row. The folded SELECT
+		// Emit the authoritative ordinal OUTPUT row. The folded SELECT
 		// list's RC.Fields ARE the output columns in output order, so a slot per
 		// field — evaluated INDIVIDUALLY against rowCtx (never through a collapsing
 		// name map, so a duplicate output name keeps both slots) — is the row's

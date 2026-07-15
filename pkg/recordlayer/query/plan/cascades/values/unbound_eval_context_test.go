@@ -5,16 +5,16 @@ import (
 	"testing"
 )
 
-// TestFieldValue_UnboundEvalContext_IsLoud pins the RFC-173 §F ruling: a
-// FieldValue whose evaluation resolves to NOTHING — an UNRECOGNIZED non-nil
-// context type, or a correlated reference whose correlation is UNBOUND with no
-// frontier positional row — is a LOUD *UnboundEvalContextError, never a silent
-// NULL, for pinned AND unpinned nodes alike. Post-cap production flows only
+// TestFieldValue_UnboundEvalContext_IsLoud pins the rule that a FieldValue
+// whose evaluation resolves to NOTHING — an UNRECOGNIZED non-nil context
+// type, or a correlated reference whose correlation is UNBOUND with no
+// frontier positional row — is a LOUD *UnboundEvalContextError, never a
+// silent NULL, for pinned AND unpinned nodes alike. Production flows only
 // OrdinalRow / *RowEvalContext(+Positional) / CorrelationBinder / nil, so
-// reaching one of these tails is a planner/executor bug and silence would hide
-// it. The two SANCTIONED shapes never reach here and stay quiet: a nil context
-// (the appendNullLeg / ruling-#3 NULL), and a correlation that MATCHED a
-// non-ordinal value (the birthLegBinder raw leg — see
+// reaching one of these tails is a planner/executor bug and silence would
+// hide it. Two shapes stay quiet instead: a nil context (the appendNullLeg
+// NULL), and a correlation that MATCHED a non-ordinal value (a raw leg
+// binding, e.g. the executor's birthLegBinder — see
 // TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent).
 func TestFieldValue_UnboundEvalContext_IsLoud(t *testing.T) {
 	t.Parallel()
@@ -53,8 +53,8 @@ func TestFieldValue_UnboundEvalContext_IsLoud(t *testing.T) {
 	v, err = lazy.Evaluate(otherBinder)
 	assertUnbound("correlated over unbound bare CorrelationBinder", v, err)
 
-	// A nil context stays the sanctioned NULL (ruling #3), never loud.
+	// A nil context stays NULL, never loud.
 	if got, gotErr := flat.Evaluate(nil); got != nil || gotErr != nil {
-		t.Fatalf("flat over nil = (%v, %v), want (nil, nil) — sanctioned NULL", got, gotErr)
+		t.Fatalf("flat over nil = (%v, %v), want (nil, nil)", got, gotErr)
 	}
 }

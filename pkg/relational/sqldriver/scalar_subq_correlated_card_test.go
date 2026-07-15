@@ -124,7 +124,7 @@ func TestFDB_ScalarSubqCorrelatedCardinality(t *testing.T) {
 }
 
 // TestFDB_ScalarSubqCorrelatedCardinality_SurvivesPushdown is a defensive
-// design-review pin (RFC-173 W4b): the strict-single quantifier flag must SURVIVE inner-predicate planning
+// pin: the strict-single quantifier flag must SURVIVE inner-predicate planning
 // (pushdown / SARG). With an index on emp(dept_id) the correlation `e.dept_id =
 // d.id` becomes an index SARG pushed into the scan; if any planning step minted a
 // fresh SelectExpression that dropped `strictSingle`, the strict FirstOrDefault

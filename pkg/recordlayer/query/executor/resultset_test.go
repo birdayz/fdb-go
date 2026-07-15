@@ -11,9 +11,9 @@ import (
 )
 
 // posResult builds a QueryResult carrying the ordinal output row the executor
-// produces at runtime: one slot per column, in column order, named by the column's
-// datum name, valued from m (nil when absent — a SQL NULL). The name-keyed Datum is
-// GONE from the read path (RFC-173), so the reader materializes solely from this
+// produces at runtime: one slot per column, in column order, named by the
+// column's name, valued from m (nil when absent — a SQL NULL). There is no
+// name-keyed row on the read path — the reader materializes solely from this
 // positional row; these reader-unit tests feed it directly instead of a name map.
 func posResult(cols []ColumnDef, m map[string]any) QueryResult {
 	fields := make([]values.Field, len(cols))
@@ -530,19 +530,19 @@ func TestResultSet_CloseIdempotent(t *testing.T) {
 	}
 }
 
-// TestResultSet_PositionalDupNameRead pins the RFC-173 §7 duplicate-name
-// `SELECT *` fix at the driver read boundary: a row carrying an ALIGNED
-// positional row (one slot per column, per-slot names matching the columns'
-// unqualified display names) reads column i from slot i-1 — so two same-named
-// columns from different join legs surface their OWN values even though the
-// name-keyed coexistence Datum is last-wins-conflated on the bare key.
+// TestResultSet_PositionalDupNameRead pins duplicate-name `SELECT *` at the
+// driver read boundary: a row carrying an ALIGNED positional row (one slot
+// per column, per-slot names matching the columns' unqualified display
+// names) reads column i from slot i-1 — so two same-named columns from
+// different join legs surface their OWN values instead of collapsing to one
+// (a name-keyed lookup on the bare column name would return only the
+// last-written value).
 func TestResultSet_PositionalDupNameRead(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
 	// The gated 2-way ordinal join's `SELECT *` shape over a(id,name) × b(id,name):
-	// merged type [ID NAME ID NAME] (duplicates preserved — raw RecordType), the
-	// Datum derived from it is last-wins on the bare keys (datumFromPositional).
+	// merged type [ID NAME ID NAME] (duplicates preserved — raw RecordType).
 	mergedType := &values.RecordType{Fields: []values.Field{
 		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
 		{Name: "NAME", FieldType: values.UnknownType, Ordinal: 1},
@@ -573,7 +573,7 @@ func TestResultSet_PositionalDupNameRead(t *testing.T) {
 			t.Fatalf("Object(%d): %v", i+1, err)
 		}
 		if v != w {
-			t.Errorf("column %d = %v, want %v (per-leg positional value, not the last-wins Datum)", i+1, v, w)
+			t.Errorf("column %d = %v, want %v (per-leg positional value, not the last-written value a name-keyed read would return)", i+1, v, w)
 		}
 	}
 }
@@ -582,9 +582,9 @@ func TestResultSet_PositionalDupNameRead(t *testing.T) {
 // output alias containing a dot — `SELECT v AS "A.B"`. The projection emits a slot
 // named "A.B" and the column label is "A.B"; the positional-alignment check must
 // NOT leaf-strip the slot to "B" and reject the row with XX000 "no positional
-// output row aligned" (the deleted name-keyed Datum fallback used to mask it). A
-// genuinely permuted qualifier ("X.NAME" slot vs "Y.NAME" label) must still be
-// rejected — the fix strips only the slot side, never the display side.
+// output row aligned". A genuinely permuted qualifier ("X.NAME" slot vs
+// "Y.NAME" label) must still be rejected — the fix strips only the slot side,
+// never the display side.
 func TestResultSet_DottedAliasPositionalAlign(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -622,12 +622,13 @@ func TestResultSet_DottedAliasPositionalAlign(t *testing.T) {
 	}
 }
 
-// TestResultSet_PositionalMisalignedIsLoud pins the correct-or-loud contract: the
-// name-keyed Datum is GONE from the read path, so a positional row whose shape does
-// NOT match the result-set columns (count or per-slot plain-name mismatch) can no
-// longer be answered — the reader returns a loud XX000 rather than silently reading
-// a stale/absent name key. (A misaligned positional row is a producer bug: the top
-// operator failed to emit the output row in the result-set's shape.)
+// TestResultSet_PositionalMisalignedIsLoud pins the correct-or-loud contract:
+// there is no name-keyed row on the read path, so a positional row whose
+// shape does NOT match the result-set columns (count or per-slot plain-name
+// mismatch) can no longer be answered — the reader returns a loud XX000
+// rather than silently reading a stale/absent name key. (A misaligned
+// positional row is a producer bug: the top operator failed to emit the
+// output row in the result-set's shape.)
 func TestResultSet_PositionalMisalignedIsLoud(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

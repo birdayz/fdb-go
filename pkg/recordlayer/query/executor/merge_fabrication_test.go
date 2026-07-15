@@ -8,12 +8,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// TestMergeRows_LegWindowedQualifiedReads pins the RFC-173 merge: mergeRows
-// builds a leg-windowed positional row (concatLegPositionals), so a qualified
+// TestMergeRows_LegWindowedQualifiedReads pins mergeRows: it builds a
+// leg-windowed positional row (concatLegPositionals), so a qualified
 // reference "C.AK" / "CC2.CV" — a baked QOV(alias).col through the row's own
-// leg metadata — resolves LEG-LOCALLY through the alias window (legRead), the
-// ordinal-model successor to the retired name-model "ALIAS.COL" key
-// fabrication.
+// leg metadata — resolves LEG-LOCALLY through the alias window (legRead).
 func TestMergeRows_LegWindowedQualifiedReads(t *testing.T) {
 	t.Parallel()
 	outer := dmap(map[string]any{"AK": int64(100)})

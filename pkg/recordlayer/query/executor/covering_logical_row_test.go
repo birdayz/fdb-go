@@ -7,14 +7,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// TestBuildCoveringLogicalRow pins the RFC-173 item C covering-index row
-// conformance: a covering scan's row is shaped by the record's LOGICAL
-// RecordType (descriptor field order — Java's IndexKeyValueToPartialRecord
-// partial record), NOT the index layout [covered..., pk...]. A FieldValue
-// ordinal baked against the record type must read the same slot on the
-// base-scan and covering paths; with the index-layout row, a baked read of a
-// value column silently served the PK column (SUM(b) summing ids — the
-// TestFDB_MultiColumnIndex regression).
+// TestBuildCoveringLogicalRow pins covering-index row conformance: a covering
+// scan's row is shaped by the record's LOGICAL RecordType (descriptor field
+// order — Java's IndexKeyValueToPartialRecord partial record), NOT the index
+// layout [covered..., pk...]. A FieldValue ordinal baked against the record
+// type must read the same slot on the base-scan and covering paths; with the
+// index-layout row, a baked read of a value column silently served the PK
+// column (SUM(b) summing ids — the TestFDB_MultiColumnIndex regression).
 func TestBuildCoveringLogicalRow(t *testing.T) {
 	t.Parallel()
 

@@ -62,7 +62,7 @@ func TestNotValue_Evaluate_TypeMismatchDegrades(t *testing.T) {
 // context — NOT(active) where active is a row column.
 func TestNotValue_Evaluate_FieldLookup(t *testing.T) {
 	t.Parallel()
-	// RFC-173 item C: "active" carries its plan-time ordinal (sole column → slot 0).
+	// "active" carries its plan-time ordinal (sole column → slot 0).
 	v := NewNotValue(NewFieldValueWithResolvedOrdinal("active", 0, TypeBool))
 	got, errEv0 := v.Evaluate(fom(map[string]any{"active": true}))
 	require.NoError(t, errEv0)

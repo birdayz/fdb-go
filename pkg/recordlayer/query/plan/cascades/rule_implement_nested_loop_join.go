@@ -44,9 +44,9 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// N ForEach (N≥2) + 1 trailing Existential = join with a projected/WHERE
 	// EXISTS. Build the N-way inner join first, then wrap with the EXISTS
 	// semi-join. The 2-leg case (N==2, len==3) is the working projected-EXISTS
-	// fold; N>2 is the N-WAY FLAT EXISTENTIAL GENERALIZATION (RFC-173 S4
-	// :2908/:3033) — a buried INNER box under a projected EXISTS flattens (an
-	// INNER box is merge-transparent) to `[ForEach×N, Existential]`, which
+	// fold; N>2 is the N-WAY FLAT EXISTENTIAL GENERALIZATION: a buried INNER
+	// box under a projected EXISTS flattens (an INNER box is
+	// merge-transparent) to `[ForEach×N, Existential]`, which
 	// implementJoinWithExistential dispatches to its N-way arm.
 	if len(quants) >= 3 &&
 		quants[len(quants)-1].Kind() == expressions.QuantifierExistential &&
@@ -750,23 +750,24 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		}
 	}
 
-	// Below-FOD OUTER-LEG references. A GATED outer box's result value is a
-	// baked ordinal seed and its output row is the merged POSITIONAL row: a
+	// Below-FOD OUTER-LEG references. When the outer box's result value is a
+	// baked ordinal seed, its output row is the merged POSITIONAL row: a
 	// below-FOD buried-leg reference (`b.emp_id = e.id`, e a leg of the box)
-	// was rebased ABOVE the fast path (windowsHoisted) to a BAKED
+	// was already rebased, above this point (windowsHoisted), to a BAKED
 	// ofOrdinalNumber over the box's binding (outerCorr) at
-	// legOffset+columnOrdinal — the 1+1 twin of
-	// implementJoinWithExistential's 2+1 ordinal rebase; the executor binds
-	// the box row positionally via the disabled-birth probe (the FlatMap's
-	// identity RV + these baked inner refs over outerCorr). Re-running the
-	// window rebase here would DOUBLE-rebase (the merged corr coincides with
-	// the inner-leg window key) — the whole reason the rebase was hoisted.
+	// legOffset+columnOrdinal. This is the 2-quantifier (1 outer + 1 inner)
+	// counterpart of implementJoinWithExistential's 3-quantifier (2 ForEach +
+	// 1 Existential) ordinal rebase; the executor binds the box row
+	// positionally through the FlatMap's identity result value plus these
+	// baked inner references over outerCorr. Re-running the window rebase
+	// here would DOUBLE-rebase (the merged corr coincides with the inner-leg
+	// window key) — the whole reason the rebase was hoisted.
 	//
 	// A NON-windowed outer (no ordinal seed windows) FAILS CLOSED: a
 	// below-FOD predicate referencing any alias beyond the binding alias and
 	// the existential inner's own legs is a buried reference this builder
-	// cannot bind — it would silently resolve against the wrong frontier row.
-	// Decline the yield; do not gamble on the correlation-unchecked fallback.
+	// cannot bind — it would silently resolve against the wrong row. Decline
+	// the yield; do not gamble on the correlation-unchecked fallback.
 	if len(joinPreds) > 0 && outerCorr.Name() != "" && !windowsHoisted {
 		for _, p := range joinPreds {
 			corrSet := predicates.GetCorrelatedToOfPredicate(p)
@@ -1040,8 +1041,8 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias string, base int) ([]val
 	}
 }
 
-// reconstructFoldStep1Seed rebuilds the full leg-concat ordinal seed for a
-// gated projected-EXISTS fold. The step-1 NLJ births a
+// reconstructFoldStep1Seed rebuilds the full leg-concat ordinal seed for an
+// ordinalized projected-EXISTS fold. The step-1 NLJ produces a
 // positional merged row from this seed; the step-2 FlatMap then evaluates the
 // folded projection over that row through legWindowRowContext (spanAwareRow +
 // legWindowBinder), so the projection is NEVER rebased — its dotted and
@@ -1053,7 +1054,7 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias string, base int) ([]val
 // canonical builder types legs via ordinalLegType and asserts the seed shape;
 // for a single-source scan the flowed types coincide, which the cross-agreement
 // fixture covers). Returns nil when a leg is not ordinal-safe or its type is not
-// a record (the caller keeps the original RV, ungated).
+// a record (the caller keeps the original RV unchanged).
 func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias string) values.Value {
 	if !legIsOrdinalSafe(leftPlan) || !legIsOrdinalSafe(rightPlan) {
 		return nil
@@ -1099,17 +1100,20 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 
 // foldStep1Seed is the step-1 result-value decision for the 3-quantifier
 // join+EXISTS arm. It returns the FULL leg-concat
-// ordinal seed (and gated=true) for an INDEPENDENT-legs PROJECTED-EXISTS fold
-// over ordinal-safe legs — the step-1 NLJ then births a positional merged row
-// the step-2 FlatMap resolves the projection over (legWindowRowContext) — and
-// otherwise returns the original RV unchanged (gated=false).
-// The gates, in order: (1) NOT a correlated step 1 (a correlated FlatMap binds
-// legs by NAME, where a baked seed hits the loud BakedNameContextError — the F2
-// seed reverted twice on that wall); (2) the RV is a projected fold (references
-// the existential quantifier — a WHERE-EXISTS pass-through does not); (3) the
-// legs are ordinal-safe single sources and reconstruct a seed BOTH layout twins
-// accept (full coverage). Extracted so the exact decision is white-box pinned:
-// a functional test is BLIND to a silent revert of this decision.
+// ordinal seed (with the second result true) for an INDEPENDENT-legs
+// PROJECTED-EXISTS fold over ordinal-safe legs — the step-1 NLJ then
+// produces a positional merged row the step-2 FlatMap resolves the
+// projection over (legWindowRowContext) — and otherwise returns the
+// original RV unchanged (second result false).
+// The conditions, in order: (1) NOT a correlated step 1 (a correlated
+// FlatMap binds legs by NAME, where a baked seed hits the loud
+// BakedNameContextError — an earlier, simpler version of this seed had to
+// be reverted twice over exactly this trap); (2) the RV is a projected fold
+// (references the existential quantifier — a WHERE-EXISTS pass-through
+// does not); (3) the legs are ordinal-safe single sources and reconstruct a
+// seed BOTH layout twins accept (full coverage). Extracted so the exact
+// decision is white-box pinned: a functional test is BLIND to a silent
+// revert of this decision.
 func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias string) (values.Value, bool) {
 	if correlatedStep1 || !resultValueReferencesAlias(rv, existAlias) {
 		return rv, false
@@ -1225,17 +1229,18 @@ func rebaseOuterLegValue(
 			corr := strings.ToUpper(qov.Correlation.String())
 			for _, leg := range legAliases {
 				if leg != "" && strings.ToUpper(leg) == corr {
-					// RFC-173 drift assert: this rewrite degrades the
-					// reference to a lazy dotted name over a merge correlation
-					// — a silent baked→lazy degradation for an eager ordinal
-					// node. It only fires on the lazy EXISTS-over-join and
-					// RFC-153 buried-preserved-leg rebase paths;
-					// a PINNED baked node here means the gate
-					// mis-scoped (unpinned wrap nodes are childless and never
-					// reach this arm; the assert polices the gate's frontier,
-					// so it keys on the FrontierPinned contract bit).
+					// This rewrite degrades the reference to a lazy dotted
+					// name over a merge correlation — a silent baked→lazy
+					// degradation for an eager ordinal node. It only fires
+					// on the lazy EXISTS-over-join and RFC-153
+					// buried-preserved-leg rebase paths; a PINNED baked node
+					// reaching here means translation routed an ordinal
+					// join into this lazy rebase machinery by mistake
+					// (unpinned wrap nodes are childless and never reach
+					// this arm, so the assert keys on the FrontierPinned
+					// contract bit to catch exactly that misrouting).
 					if fv.Resolved != nil && fv.Resolved.FrontierPinned {
-						panic(fmt.Sprintf("RFC-173: rebaseOuterLegValue would re-anchor BAKED FieldValue %s#%d (leg %s) to merge alias %s — the cluster-arity gate mis-scoped an ordinal join into the lazy rebase machinery (planner bug)",
+						panic(fmt.Sprintf("rebaseOuterLegValue would re-anchor BAKED FieldValue %s#%d (leg %s) to merge alias %s — an ordinal join was routed into the lazy rebase machinery instead of the ordinal one (planner bug)",
 							fv.Field, fv.Resolved.Root().Ordinal, corr, mergedCorr.Name()))
 					}
 					qualField := corr + "." + strings.ToUpper(fv.Field)
@@ -1274,8 +1279,8 @@ func rebaseOuterLegValue(
 // IS known, so we rebase `QOV(A).col` → `FieldValue(QOV($m), "A.col")` — the
 // authoritative qualified key the merged outer row carries (review condition 4) —
 // using the exact rebaseOuterLegValue/rebaseOuterLegRefsToMerged machinery the
-// EXISTS-over-join path uses. The GATED ordinal twin is
-// rebasePlanOuterRefsOrdinal (rfc173_w4left_existential.go) — the two walks
+// EXISTS-over-join path uses. The ordinal twin is
+// rebasePlanOuterRefsOrdinal (left_outer_existential.go) — the two walks
 // and planReferencesAnyBuriedAlias enumerate the same node kinds and must
 // move together. Pass-through nodes are rebuilt around their rebased
 // inner; an unhandled node is returned as-is and caught by the post-rebase
@@ -1939,15 +1944,17 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		joinType = plans.JoinInner
 	}
 
-	// A GATED projected-EXISTS fold over SCAN legs births
-	// the FULL leg-concat ordinal seed at step 1; the step-2 FlatMap then evaluates
-	// the folded projection over that positional merged row through
-	// legWindowRowContext (spanAwareRow resolves dotted "T1.ID" reads positionally,
-	// legWindowBinder resolves QOV refs), so the projection is NEVER rebased — no
-	// planner rebase, no dotted-name split. SCOPED to the independent-legs
-	// materialized NLJ: a correlated step-1 binds legs by NAME, where a baked seed
-	// hits the loud BakedNameContextError (the F2 seed reverted twice on that wall).
-	// Only reached when both legs are ordinal-safe single sources (scan-family).
+	// A projected-EXISTS fold over SCAN legs produces the FULL leg-concat
+	// ordinal seed at step 1; the step-2 FlatMap then evaluates the folded
+	// projection over that positional merged row through
+	// legWindowRowContext (spanAwareRow resolves dotted "T1.ID" reads
+	// positionally, legWindowBinder resolves QOV refs), so the projection is
+	// NEVER rebased — no planner rebase, no dotted-name split. SCOPED to the
+	// independent-legs materialized NLJ: a correlated step-1 binds legs by
+	// NAME, where a baked seed hits the loud BakedNameContextError (an
+	// earlier, simpler version of this seed had to be reverted twice over
+	// exactly this trap). Only reached when both legs are ordinal-safe
+	// single sources (scan-family).
 	step1RV, gatedSeedStep1 := foldStep1Seed(
 		sel.GetResultValue(), quants[2].GetAlias(), correlatedStep1,
 		leftPlan, rightPlan, leftAlias, rightAlias)
@@ -2017,12 +2024,13 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// scan's own binding below the FOD. Without this rebase E.ID evaluates to
 	// NULL ⇒ the correlation never matches ⇒ WHERE EXISTS drops every joined
 	// row and NOT EXISTS admits all.
-	// RFC-173: a GATED ordinal seed takes the ORDINAL rebase — leg
-	// references become baked ofOrdinalNumber over the merged POSITIONAL row
-	// (offsets from the seed's own runs); the lazy qualified-key
-	// rewrite remains for non-windowed step-1 RVs and is DEAD for gated ones
-	// (its FrontierPinned panic polices exactly that). An un-mappable reference
-	// DECLINES the yield (CORRECT-or-LOUD, never a half-rebased tree).
+	// When step 1 produced an ordinal seed, existential predicates take the
+	// ORDINAL rebase — leg references become baked ofOrdinalNumber over the
+	// merged POSITIONAL row (offsets from the seed's own runs); the lazy
+	// qualified-key rewrite remains for non-windowed step-1 RVs and is DEAD
+	// when an ordinal seed was used (its FrontierPinned panic polices
+	// exactly that). An un-mappable reference DECLINES the yield
+	// (CORRECT-or-LOUD, never a half-rebased tree).
 	ordinalWindows, mergedRowType := ordinalSeedLegWindowsOf(step1RV)
 	var mergedQOV *values.QuantifiedObjectValue
 	if ordinalWindows != nil {
@@ -2044,25 +2052,25 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		existPreds = rebased
 	}
 
-	// RFC-173: outer-leg references BURIED INSIDE the existential subplan get
-	// the SAME rebase as the lifted existPreds above. An EXISTS whose inner
+	// Outer-leg references BURIED INSIDE the existential subplan get the
+	// SAME rebase as the lifted existPreds above. An EXISTS whose inner
 	// WHERE references only outer legs (`EXISTS (SELECT 1 FROM q WHERE
 	// a.v = 10)`) keeps that predicate in its own plan tree —
 	// existsInnerCorrelation lifts only inner↔outer correlation predicates —
 	// and the step-2 FlatMap binds ONLY mergedOuterCorr, so the buried
 	// QOV(leg) is unbound at runtime: the frontier fallback then evaluates
 	// the field against the inner scan's own row (loud OrdinalResolutionError
-	// on the ordinal frontier; silent wrong rows pre-ordinal). Gate on the
+	// on the ordinal frontier; silent wrong rows pre-ordinal). Check the
 	// EXPRESSION-level correlation set (the same authority the step-1
 	// orientation reads): an existential subtree that references NO outer leg
 	// skips both the rebase and the fail-closed verification, keeping every
 	// leg-independent EXISTS — including plan shapes the rebase walk does not
 	// enumerate — byte-identical. A leg-referencing subtree is rebased, then
 	// verified: a surviving leg reference declines the yield
-	// (CORRECT-or-LOUD, the 1+1 path's convention; those shapes evaluated an
-	// unbound correlation before, so a decline is strictly no worse).
-	// Window keys usually repeat the leg aliases — duplicates and map order
-	// are irrelevant (every consumer builds a set).
+	// (CORRECT-or-LOUD; those shapes evaluated an unbound correlation
+	// before, so a decline is strictly no worse). Window keys usually repeat
+	// the leg aliases — duplicates and map order are irrelevant (every
+	// consumer builds a set).
 	verifyAliases := append([]string{}, outerLegAliases...)
 	for alias := range ordinalWindows {
 		verifyAliases = append(verifyAliases, alias)
@@ -2145,7 +2153,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			// existential quantifier alias is re-aliased below.
 			projected = sel.GetResultValue()
 		} else if ordinalWindows != nil {
-			// Gated ordinal seed: the projected-EXISTS fold's leg references
+			// Ordinal seed: the projected-EXISTS fold's leg references
 			// rebase to baked merged ordinals (the lazy rewrite would
 			// panic on the baked refs — same policing as the predicate side).
 			var ok bool
@@ -2226,7 +2234,7 @@ func existInnerIsScanSafe(p plans.RecordQueryPlan) bool {
 //
 // The step-1 join is a LEFT-DEEP INNER CROSS-PRODUCT NLJ chain: each level
 // NLJ(accumulatedInner, nextLeg) is seeded (reconstructFoldStep1Seed) so it
-// births a positional merged row, and the accumulated inner is itself an ordinal
+// produces a positional merged row, and the accumulated inner is itself an ordinal
 // NLJ whose buried scan leaves the next level reads positionally through their
 // [Start,Width) windows (planBuriedLegConcat / legIsOrdinalSafe). The chain
 // carries NO join predicates (a buried leg is bound under the accumulated alias,
@@ -2384,7 +2392,7 @@ func (r *ImplementNestedLoopJoinRule) implementNWayJoinWithExistential(
 	topSeed := topNLJ.GetResultValue()
 
 	// The per-leg ordinal windows over the merged positional row (P, Q, R …),
-	// with buried-leaf sub-windows finalized. nil ⇒ not a pristine gated seed.
+	// with buried-leaf sub-windows finalized. nil ⇒ not a pristine ordinal seed.
 	ordinalWindows, mergedRowType := ordinalSeedLegWindowsOf(topSeed)
 	if ordinalWindows == nil {
 		return
@@ -2835,7 +2843,7 @@ func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
 // (matchJoinPKPredicate's deep-flowed arm accepted the buried ref without
 // rebasing it). Declining routes it to the below-FOD rebase, which rewrites
 // the buried reference to the merged row's QUALIFIED key or a
-// BAKED ordinal (gated box) — both leg-correct. The optimization is only lost
+// BAKED ordinal (an ordinalized box) — both leg-correct. The optimization is only lost
 // for existential correlations into a buried box leg; the common
 // single-source and rightmost-leg cases still take the fast path.
 func outerValRefsBuriedLeg(outerVal *values.FieldValue, outerAlias string) bool {
@@ -2860,7 +2868,7 @@ func bareColumnName(fv *values.FieldValue, expectedAlias string) string {
 
 // correlatedFastPathOperand builds the outer-side operand pushed into the
 // parameterized inner PK/index scan. A BAKED ordinal ref (FrontierPinned — the
-// gated-seed contract) is used AS-IS: it already reads its outer column
+// ordinal-seed contract) is used AS-IS: it already reads its outer column
 // POSITIONALLY off the merged row bound under outerCorrelation, and re-deriving
 // it by bare NAME would misread a SHADOWED or duplicate
 // column name in the merged row — the unnest's AS/AT alias and an outer column

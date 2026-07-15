@@ -36,7 +36,7 @@ func (w *physicalStreamingAggWrapper) GetPlan() *plans.RecordQueryStreamingAggre
 func (w *physicalStreamingAggWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 func (w *physicalStreamingAggWrapper) GetResultValue() values.Value {
-	// RFC-173: flow a TYPED QOV whose RecordType is the aggregate's output schema
+	// Flow a TYPED QOV whose RecordType is the aggregate's output schema
 	// ([groupKeys, aggregates], the plan's single naming authority), so the resolver
 	// BAKES downstream references to ordinals at plan time (Java's getFieldNameToOrdinalMap).
 	// A downstream ref then reads the aggregateCursor's PositionalRow by Get(ordinal) — order,
@@ -107,9 +107,9 @@ func (w *physicalStreamingAggWrapper) HintOrdering() properties.Ordering {
 	// the ORDER-BY-over-aggregate bake use). Advertising the raw grouping-key
 	// VALUES (input-relative bakes over the pre-aggregate row) mis-rendered
 	// the provided keys and made a satisfied ORDER BY look unsatisfied — a
-	// spurious second InMemorySort above the aggregate (RFC-173 item C); an
-	// evaluating consumer (a merge comparison key) would also have read the
-	// aggregate's output row with a dead pre-aggregate ordinal.
+	// spurious second InMemorySort above the aggregate; an evaluating consumer
+	// (a merge comparison key) would also have read the aggregate's output row
+	// with a dead pre-aggregate ordinal.
 	groupKeys := w.plan.GetGroupingKeys()
 	keys := make([]values.Value, len(groupKeys))
 	for i, k := range groupKeys {

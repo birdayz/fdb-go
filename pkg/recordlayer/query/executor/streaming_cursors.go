@@ -51,14 +51,14 @@ type aggregateCursor struct {
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 
-	// RFC-173 input-edge ordinalization. evalCtx carries params/subqueries/outer
-	// bindings so a group-key / operand reference resolves against the inner
-	// PositionalRow the SAME way executeFilter / executeProjection do
-	// (frontierRowContext → evaluateOrdinal, by the baked plan-time ordinal), robust
-	// to a covering-index layout — never a name-keyed read. flatFrontierInput is true
-	// when the input bottoms out at a SINGLE-SOURCE flat producer (base-table
-	// scan/index, a nested StreamingAgg) beneath any number of layout-preserving /
-	// reshaping single-child nodes — the group-by SORT, a filter, a LIMIT/fetch, a
+	// evalCtx carries params/subqueries/outer bindings so a group-key / operand
+	// reference resolves against the inner PositionalRow the SAME way
+	// executeFilter / executeProjection do (frontierRowContext → evaluateOrdinal,
+	// by the baked plan-time ordinal), robust to a covering-index layout — never
+	// a name-keyed read. flatFrontierInput is true when the input bottoms out at
+	// a SINGLE-SOURCE flat producer (base-table scan/index, a nested
+	// StreamingAgg) beneath any number of layout-preserving / reshaping
+	// single-child nodes — the group-by SORT, a filter, a LIMIT/fetch, a
 	// projection / derived table / CTE (RecordQueryProjectionPlan/MapPlan), a
 	// DISTINCT, a WHERE-EXISTS semi-join (identity-over-outer FlatMap). Every such
 	// producer emits a flat single-source output row with an unambiguous plan-time
@@ -71,10 +71,10 @@ type aggregateCursor struct {
 	flatFrontierInput bool
 	needsRowCtx       bool
 
-	// RFC-173 aggregate-over-JOIN input edge. When the input flows a 2-way ordinal
-	// join's MERGED positional row (downstreamLegWindows unwraps the layout-preserving
-	// passthroughs down to the join and derives its leg windows), a QUALIFIED group-key
-	// / operand reference (D.DNAME, E.SALARY) resolves LEG-LOCALLY off the merged row
+	// When the input flows a 2-way ordinal join's MERGED positional row
+	// (downstreamLegWindows unwraps the layout-preserving passthroughs down to
+	// the join and derives its leg windows), a QUALIFIED group-key / operand
+	// reference (D.DNAME, E.SALARY) resolves LEG-LOCALLY off the merged row
 	// through legWindowRowContext — the SAME spanAwareRow resolver executeProjection /
 	// executeFilter use over the same merge.
 	// joinWindowsOK is true only for a genuine gated ordinal join input; a reshaping /
@@ -324,10 +324,10 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 
 // aggregateEvalArg is the eval argument for a GROUP-BY key / aggregate operand.
 //
-// RFC-173 input-edge ordinalization: the streaming aggregate reads its keys /
-// operands off the inner row exactly the way executeFilter / executeProjection
-// read their predicate / projected values — the ONE frontier dispatch, so the
-// aggregate input resolves positionally on the same shapes those do.
+// The streaming aggregate reads its keys / operands off the inner row exactly
+// the way executeFilter / executeProjection read their predicate / projected
+// values — the ONE frontier dispatch, so the aggregate input resolves
+// positionally on the same shapes those do.
 //
 //   - A POSITIONALLY-BAKED value (a FieldValue with a resolved ordinal — the
 //     gathered-seed un-collapse's qualifier-honoring group key/operand) reads the
@@ -368,7 +368,7 @@ func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any 
 		// QOV(leg).col resolves LEG-LOCALLY through its window.
 		return legWindowRowContext(row.Positional, c.evalCtx, c.joinLegSpans)
 	}
-	// The general birth-of-Positional consumer: a flat output-named positional
+	// The general positional-row consumer: a flat output-named positional
 	// (projecting derived source, recursive-CTE / bare-projected-join row, or a
 	// constant operand) resolves by its baked plan-time ordinal — authoritative.
 	return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
@@ -496,7 +496,7 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 
 func (c *aggregateCursor) finalizeGroup() QueryResult {
 	gs := c.current
-	// RFC-173: build the OUTPUT ORDINAL ROW. Order + naming MUST match
+	// Build the OUTPUT ORDINAL ROW. Order + naming MUST match
 	// streamingAggOutputNames (the plan's authoritative output schema the planner
 	// baked downstream ordinals against): grouping keys in order (aggKeyName), then
 	// aggregates in order (ALIAS-preferring, else aggResultName). A downstream ref
@@ -552,7 +552,7 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 }
 
 func (c *aggregateCursor) emptyScalarResult() QueryResult {
-	// RFC-173: emit the authoritative ordinal row, SAME order + naming as
+	// Emit the authoritative ordinal row, SAME order + naming as
 	// finalizeGroup's aggregate arm (there are no grouping keys on the empty-scalar
 	// path — an empty GROUP BY yields zero rows, not this single all-groups row).
 	posNames := make([]string, 0, len(c.aggregates))
@@ -749,11 +749,12 @@ type nljCursor struct {
 	st       *recordlayer.ExecuteState
 	buildErr error
 
-	// birth is the RFC-173 ordinal-BIRTH state, probed ONCE at construction
-	// from the plan's result value (nil = un-gated merge: the emitted row is
-	// mergeRows' leg-concat positional row). When enabled, every emitted row
-	// carries the positional merged row evaluated from the RC with per-leg
-	// bindings. Gates ALL ordinal-birth work below via birth.enabled().
+	// birth is the join's ordinal-birth state (an *ordinalJoinBirth), probed
+	// ONCE at construction from the plan's result value (nil = un-gated merge:
+	// the emitted row is mergeRows' leg-concat positional row). When enabled,
+	// every emitted row carries the positional merged row evaluated from the RC
+	// with per-leg bindings. Gates ALL ordinal-birth work below via
+	// birth.enabled().
 	birth *ordinalJoinBirth
 	// innerAdapted is the FIXED inner-rows slice adapted once at construction
 	// (parallel to innerRows); outerAdapted is the current outer row adapted
@@ -794,7 +795,9 @@ func newNLJCursor(
 	c.outerCorr = values.NamedCorrelationIdentifier(outerAlias)
 	c.innerCorr = values.NamedCorrelationIdentifier(innerAlias)
 	if birth.enabled() {
-		// Adapt the FIXED inner side once (review W3a-2: never per pair).
+		// Adapt the FIXED inner side once — never per pair, which would turn
+		// every candidate-pair comparison into a re-adaptation and make the
+		// join O(rows²).
 		innerType := birth.legType(c.innerCorr)
 		c.innerAdapted = make([]values.OrdinalRow, len(innerRows))
 		for i := range innerRows {
@@ -814,8 +817,8 @@ func newNLJCursor(
 
 // pairBinder builds the per-candidate-pair leg binder from PRE-adapted leg
 // rows. A nil OrdinalRow is the deliberately-NULL leg (LEFT/FULL padding —
-// the binder returns (nil, true), contract ruling #3). Only called when
-// birth is enabled.
+// the binder returns (nil, true): a leg bound to nil evaluates as NULL, never
+// an error). Only called when birth is enabled.
 func (c *nljCursor) pairBinder(outer, inner values.OrdinalRow) *twoLegBinder {
 	return &twoLegBinder{
 		outerID: c.outerCorr, innerID: c.innerCorr,
@@ -843,7 +846,7 @@ func (c *nljCursor) adaptOuter(outerRow QueryResult) error {
 // for equijoin predicates. If exactly one predicate is an equality
 // comparison between an outer-leg and an inner-leg column reference —
 // both PLAN-TIME BAKED (source-relative ordinal over the leg's
-// QuantifiedObjectValue, RFC-173 item C) — builds a hash map keyed by
+// QuantifiedObjectValue) — builds a hash map keyed by
 // the inner operand's evaluated value. Keys are extracted by EVALUATING
 // the operand against its leg row alone (evalLegKey) — the exact
 // resolution the linear predicate path performs per pair — so the hash
@@ -949,7 +952,7 @@ const nljHashEntryBytes int64 = 24
 // extractEquijoinOperands extracts the outer- and inner-side operand VALUES
 // from a single-equality equijoin predicate. Each operand must be a PLAN-TIME
 // BAKED leg column reference — a single-accessor FieldValue over its leg's
-// QuantifiedObjectValue (the RFC-173 item C source-relative bind) — whose
+// QuantifiedObjectValue (a source-relative bind) — whose
 // correlation names one of the two legs. Anything else (a fused multi-accessor
 // rebase, a computed operand, a reference to a buried leg of a lower join)
 // declines the fast path: (nil, nil), the linear predicate path handles it.
@@ -1086,7 +1089,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			c.innerIdx = 0
 			c.innerMatches = nil
 			c.outerMatched = false
-			// RFC-173 S2: adapt the new outer leg ONCE for all its candidate
+			// Adapt the new outer leg ONCE for all its candidate
 			// pairs (no-op for un-gated cursors).
 			if err := c.adaptOuter(outerRow); err != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -1121,7 +1124,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				innerRow := c.innerRows[idx]
 				c.innerIdx++
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				// RFC-173 S2: for an ordinal-birth cursor the predicate row
+				// For an ordinal-birth cursor the predicate row
 				// context carries the per-leg bindings from the PRE-adapted
 				// legs (nil binder = today's path bit-identically); the same
 				// binder then births the positional row on a pass.
@@ -1142,7 +1145,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.outerMatched = true
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					// A fused-top merge (the S3 positional-merge RC) reshapes the merged legs into the
+					// A fused-top merge (a positional-merge RC) reshapes the merged legs into the
 					// RC's OUTPUT columns; the birth RC produces that ordinal output
 					// directly (evaluateBound). A plain merge keeps mergeRows'
 					// leg-concat positional row.
@@ -1170,7 +1173,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.innerIdx++
 
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				// RFC-173 S2: same ordinal-birth dual emission as the hash
+				// Same ordinal-birth dual emission as the hash
 				// path above (nil binder = today's path bit-identically).
 				var pair *twoLegBinder
 				if c.birth.enabled() {
@@ -1221,7 +1224,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				// Unmatched outer (LEFT/FULL): the INNER leg is the NULL leg. The
 				// ordinal null-pad row comes from the birth RC (evaluateBound with
 				// a nil inner leg — QOV(inner)→nil, the inner slots fall out NULL,
-				// contract ruling #3) when active; otherwise the outer's own
+				// never an error) when active; otherwise the outer's own
 				// positional qualified under its alias, the absent inner side NULL.
 				qr := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
 				qr.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias)

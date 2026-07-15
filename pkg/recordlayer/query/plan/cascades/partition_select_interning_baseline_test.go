@@ -66,22 +66,21 @@ func planChainTasks(t *testing.T, n int) int {
 // consumers resolve by identity — Go has not unified namespaces, TODO 7.1) and
 // silently read a renamed column as NULL (TestFDB_CTEChainedColumnAliases /
 // TestFDB_CascadesCTEColumnAliases). Only a MERGE select — one whose result value
-// is one of the two ordinal merge markers (IsPositionalMergeRC / IsOrdinalJoinRV;
-// the name-model AnchoredJoin marker was deleted with its producer, RFC-173 S4
-// item B), whose merge quantifier is planner-internal with NO external consumer —
-// may intern alias-aware. Un-gating (returning true for non-merge selects)
-// reopens the silent-NULL regression.
+// is one of the two ordinal merge markers (IsPositionalMergeRC / IsOrdinalJoinRV),
+// whose merge quantifier is planner-internal with NO external consumer — may
+// intern alias-aware. Un-gating (returning true for non-merge selects) reopens
+// the silent-NULL regression.
 func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 	t.Parallel()
 
 	t1 := scanQuantifier("T1")
 	t2 := scanQuantifier("T2")
 
-	// (b) The S3-AUTHORITATIVE positional merge row (IsPositionalMergeRC: unnamed
-	// `_i` columns over bare QOVs — PartitionSelectRule's positionalMergeCase
-	// shape). Same rationale: the collapsed lower's quantifiers are
-	// planner-internal, so alias-identity dedup would re-explode shared
-	// sub-products per bipartition.
+	// (b) The positional merge row (IsPositionalMergeRC: unnamed `_i` columns
+	// over bare QOVs — PartitionSelectRule's positionalMergeCase shape). Same
+	// rationale: the collapsed lower's quantifiers are planner-internal, so
+	// alias-identity dedup would re-explode shared sub-products per
+	// bipartition.
 	posMergeSel := expressions.NewSelectExpressionWithAliases(
 		values.NewRawRecordConstructorValue(
 			values.RecordConstructorField{Name: "_0", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1"))},
@@ -90,22 +89,21 @@ func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 		[]expressions.Quantifier{t1, t2}, nil, []string{"T1", "T2"},
 	)
 	if !posMergeSel.InternsAliasAware() {
-		t.Error("a positional merge row (IsPositionalMergeRC) must intern alias-aware — the S3-authoritative merge marker")
+		t.Error("a positional merge row (IsPositionalMergeRC) must intern alias-aware")
 	}
 
-	// (c) The S3-AUTHORITATIVE ordinal JOIN-SEED result value (IsOrdinalJoinRV:
-	// every field a pinned baked leg reference over ≥2 quantifiers), reusing the
-	// dispatch-authority corpus. The ordinal successor of the AnchoredJoin marker.
+	// (c) The ordinal JOIN-SEED result value (IsOrdinalJoinRV: every field a
+	// pinned baked leg reference over ≥2 quantifiers).
 	if !buildOrdinalChainSelect(2).InternsAliasAware() {
-		t.Error("an ordinal join-seed RC (IsOrdinalJoinRV) must intern alias-aware — the S3-authoritative seed marker")
+		t.Error("an ordinal join-seed RC (IsOrdinalJoinRV) must intern alias-aware")
 	}
 
-	// (c') The W5 MIXED unnest seed (interning-widening ruling): baked outer
-	// run + a bare TYPED non-record QOV element — a whole-leg reference is as
-	// position-determined as a pinned bake, so the gathered unnest select
-	// interns alias-aware too (it participates in re-enumeration; identity
-	// dedup would re-explode its sub-products). An UNTYPED bare QOV keeps
-	// declining — the CTE-rename/lazy rationale is untouched.
+	// (c') A MIXED unnest seed: baked outer run + a bare TYPED non-record QOV
+	// element — a whole-leg reference is as position-determined as a pinned
+	// bake, so the gathered unnest select interns alias-aware too (it
+	// participates in re-enumeration; identity dedup would re-explode its
+	// sub-products). An UNTYPED bare QOV keeps declining — the CTE-rename/lazy
+	// rationale is untouched.
 	srcType := values.NewRecordType("SRC", false, []values.Field{
 		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
 	})
@@ -120,7 +118,7 @@ func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 			values.NamedCorrelationIdentifier("EL"), values.NotNullLong)},
 	)
 	if !values.IsOrdinalJoinRV(mixedRC) {
-		t.Error("the W5 mixed unnest seed (baked run + bare TYPED element QOV) must classify IsOrdinalJoinRV")
+		t.Error("a mixed unnest seed (baked run + bare TYPED element QOV) must classify IsOrdinalJoinRV")
 	}
 	untypedRC := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "SID", Value: srcFV},
@@ -215,10 +213,9 @@ func TestPartitionSelect_MergeAliasPlanHashStable(t *testing.T) {
 }
 
 // TestPartitionSelect_ChainInterningBaseline is the RFC-077 7.5 task-count
-// gate over the ORDINAL-seeded chain (the production path since the name-model
-// producer's deletion, RFC-173 S4 item B — the ordinal corpus reproduces the
-// anchored corpus's task counts exactly, so the pins carry over unchanged). It
-// pins the join-re-enumeration task count for 3- and 4-table chains so any
+// gate over the ORDINAL-seeded chain (the sole production path since the
+// name-model producer was deleted). It pins the join-re-enumeration task
+// count for 3- and 4-table chains so any
 // memo-interning touch is held to a tight tolerance: if alias-aware
 // Reference.Insert/InsertFinal interning regresses, the count doubles
 // (29915 → 60044 with a naive per-occurrence alias). The pinned numbers are

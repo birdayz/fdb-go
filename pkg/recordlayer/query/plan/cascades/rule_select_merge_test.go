@@ -1093,7 +1093,7 @@ func TestSelectMerge_BakedBoxRefCallback_MultiAccessor(t *testing.T) {
 }
 
 // TestSelectMergeRule_TranslatesExplodeSiblingCollection is the red sentinel
-// for the RFC-173 unnest-residual class-1 SelectMerge/Explode arm: when a
+// for the SelectMerge/Explode arm: when a
 // dissolved box leg (a multi-quantifier ordinal-seed child) MERGES into the
 // flat select, a RETAINED sibling quantifier that is a lateral unnest's
 // Explode — whose collection is a baked reference to the box's alias — must
@@ -1188,8 +1188,8 @@ func TestSelectMergeRule_TranslatesExplodeSiblingCollection(t *testing.T) {
 	}
 }
 
-// TestSelectMergeRule_ChainedUnnestBarrier is the RFC-173 class-4 (chained
-// unnest) merge barrier pin. It builds the memo shape a `FROM t, t.arr AS x,
+// TestSelectMergeRule_ChainedUnnestBarrier pins the chained-unnest merge
+// barrier. It builds the memo shape a `FROM t, t.arr AS x,
 // x.sub AS y` chain lowers to — a NAME-MODEL ForEach target (the first unnest's
 // SelectExpression, whose result value is a plain QOV, NOT an ordinal-seed RC)
 // with a RETAINED sibling that ranges over an Explode whose collection is

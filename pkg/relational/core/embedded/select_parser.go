@@ -113,18 +113,17 @@ type joinClause struct {
 	// bindingID is the leg's binding correlation name when its alias
 	// DUPLICATES an earlier FROM leg's at the same level; empty when the
 	// alias itself binds (every non-duplicate leg — zero change for
-	// non-duplicate queries). RFC-173 QP-REF-BIND item 1, the F3-ruled
-	// coexistence mechanism: Java mints CorrelationIdentifier.uniqueId for
+	// non-duplicate queries). Java mints CorrelationIdentifier.uniqueId for
 	// EVERY quantifier and keeps the SQL alias as a display qualifier only
-	// (LogicalOperator.newNamedOperator); the coexistence port mints only
+	// (LogicalOperator.newNamedOperator); Go mints only
 	// where collision forces it. Minted DETERMINISTICALLY from the leg's
 	// FROM position (`Q$DUPN`, N = the leg's 1-based join ordinal; fold-stable upper form) so two
 	// plannings of the same query produce identical correlation ids (the
 	// stablePlanHash determinism lesson — never an atomic counter).
 	// Assigned ONCE by assignFromLegBindingIDs (the single mint authority);
 	// consumers READ it, never re-derive it from the alias. The logical
-	// builders carry it today (LogicalScan/LogicalCTE/LogicalUnnest.Binding);
-	// the semantic-scope builders wire up in the item-1 lift commit.
+	// builders carry it (LogicalScan/LogicalCTE/LogicalUnnest.Binding); the
+	// semantic-scope builders read it too.
 	bindingID string
 	// catalogAwareInnerPlan is set by the catalog-aware builder when
 	// it pre-builds the derived table's inner plan with upgraded
@@ -1898,7 +1897,7 @@ func uidSegments(tableName antlrgen.ITableNameContext) []string {
 }
 
 // assignFromLegBindingIDs mints the per-leg binding correlation ids for
-// duplicate FROM-source aliases (RFC-173 QP-REF-BIND item 1 design ruling).
+// duplicate FROM-source aliases.
 // The FIRST leg under an alias binds the alias itself; each LATER duplicate
 // mints the deterministic position-keyed `Q$DUPN` (N = the leg's 1-based
 // position in the joins slice — the primary source is position 0 and, being
