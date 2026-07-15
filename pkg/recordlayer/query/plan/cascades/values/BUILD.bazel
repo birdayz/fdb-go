@@ -98,6 +98,7 @@ go_test(
         "fold_error_test.go",
         "folder_test.go",
         "functional_dependency_test.go",
+        "fused_wrong_slot_hazard_test.go",
         "index_entry_semantic_test.go",
         "integration_test.go",
         "like_match_test.go",

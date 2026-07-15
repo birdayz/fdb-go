@@ -465,7 +465,7 @@ one defect each found by two auditors.
 
 | # | Severity | Systemic fix / theme | Status |
 |---|---|---|---|
-| F0 | wrong-rows | S4 (root-unpinned guard) | TODO |
+| F0 | wrong-rows | S4 (root-unpinned guard) | **DONE** |
 | F1 | wrong-rows | S3 (OrElse continuation) | TODO |
 | F2 | wrong-rows | S3 (retire leftOuter flag) | TODO |
 | F3 | wrong-rows + **WIRE** | S5 (permuted MIN/MAX) | TODO |

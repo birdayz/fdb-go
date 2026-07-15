@@ -378,8 +378,8 @@ func withChildren(v Value, newChildren []Value) Value {
 				if len(accs) >= 1 {
 					rootOrd = accs[0].Ordinal
 				}
-				// A SOURCE-RELATIVE baked node's root ordinal is
-				// relative to the reference's OWN source row, NOT this seed RC.
+				// An UNPINNED baked node's ROOT ordinal is relative to the
+				// reference's OWN source row, NOT this seed RC.
 				// Re-base the root into the seed by the reference's LEG
 				// (vt.Child's correlation), matching the seed field whose value is
 				// a FieldValue over that SAME leg. A bare-name match would pick the
@@ -388,10 +388,15 @@ func withChildren(v Value, newChildren []Value) Value {
 				// ordinal would pick the seed's slot-0 (e.g. the outer scan's PK),
 				// fabricating a wrong comparand that then mis-SARGs. Falls back to
 				// the plan-time name authority when no leg-tagged field bears the
-				// reference's correlation. Machinery-owned bakes (FrontierPinned /
-				// multi-accessor) keep the ordinal collapse — their ordinal IS
-				// seed-relative by construction.
-				if vt.SourceRelativeBaked() && len(accs) >= 1 {
+				// reference's correlation. Keyed on the ROOT's leg-relativity
+				// (RootIsLegRelativeUnpinned), NOT the accessor count: a FUSED
+				// unpinned path (WithSuffix inherits the inner's unpinned leg-relative
+				// root) is ALSO source-relative and MUST be rebased — collapsing it by
+				// the RAW root would fuse the suffix onto the WRONG leg's seed field
+				// (leg-0 by accident for a first-leg reference, a foreign leg
+				// otherwise). Only FrontierPinned bakes keep the raw collapse — their
+				// ordinal IS seed-relative by construction.
+				if vt.RootIsLegRelativeUnpinned() && len(accs) >= 1 {
 					rootOrd = LegAwareRootOrdinal(vt, accs[0].Ordinal, rc, rootOrd)
 				}
 				if len(accs) >= 1 && rootOrd >= 0 && rootOrd < len(rc.Fields) && rc.Fields[rootOrd].Value != nil {

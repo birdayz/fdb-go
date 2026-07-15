@@ -858,12 +858,14 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 	case OrdinalRow:
 		// A bare ordinal-model row IS the single non-join frontier
 		// quantifier's row — a correlated reference to that quantifier
-		// resolves by ordinal against it, loud on a miss. A SOURCE-RELATIVE
-		// baked reference over a MULTI-LEG row is the one exception: its
-		// ordinal addresses its source's own window, which this row is not —
-		// reading it here would silently serve another leg's slot
-		// (correct-or-loud).
-		if f.SourceRelativeBaked() && rowIsMultiLeg(ctx) {
+		// resolves by ordinal against it, loud on a miss. An UNPINNED
+		// leg-relative baked reference over a MULTI-LEG row is the one
+		// exception: its ROOT ordinal addresses its source's own window, which
+		// this row is not — reading it here would silently serve another leg's
+		// slot (correct-or-loud). Keyed on the ROOT's leg-relativity, not the
+		// accessor count, so a FUSED (multi-accessor) unpinned twin of the same
+		// reference goes loud too rather than reading+descending a foreign slot.
+		if f.RootIsLegRelativeUnpinned() && rowIsMultiLeg(ctx) {
 			return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "OrdinalRow (multi-leg row cannot serve a source-relative ordinal)"}
 		}
 		return f.evaluateOrdinal(ctx)
@@ -888,13 +890,15 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		}
 		// No explicit correlation binding matched, so the reference is to
 		// the frontier quantifier itself — resolve by ordinal against the
-		// authoritative positional row, loud on a miss. A SOURCE-RELATIVE
-		// baked reference over a MULTI-LEG row must NOT fall through: its
-		// ordinal addresses its source's own window and the leg binder above
-		// already declined the correlation — a whole-row read would silently
-		// serve another leg's slot (correct-or-loud).
+		// authoritative positional row, loud on a miss. An UNPINNED
+		// leg-relative baked reference over a MULTI-LEG row must NOT fall
+		// through: its ROOT ordinal addresses its source's own window and the
+		// leg binder above already declined the correlation — a whole-row read
+		// would silently serve another leg's slot (correct-or-loud). Keyed on
+		// the ROOT's leg-relativity, not the accessor count, so a FUSED
+		// (multi-accessor) unpinned twin goes loud too.
 		if ctx.Positional != nil {
-			if f.SourceRelativeBaked() && rowIsMultiLeg(ctx.Positional) {
+			if f.RootIsLegRelativeUnpinned() && rowIsMultiLeg(ctx.Positional) {
 				return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "*RowEvalContext (multi-leg row cannot serve a source-relative ordinal)"}
 			}
 			return f.evaluateOrdinal(ctx.Positional)
@@ -976,6 +980,39 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 // analog for (see FieldPath.FrontierPinned).
 func (f *FieldValue) SourceRelativeBaked() bool {
 	return f.Resolved != nil && !f.Resolved.FrontierPinned && len(f.Resolved.Accessors) == 1
+}
+
+// RootIsLegRelativeUnpinned reports whether f's baked path still carries a
+// LEG-RELATIVE (source-relative, machinery-UNowned) ROOT ordinal — an UNPINNED
+// bake, REGARDLESS of accessor count. The root ordinal addresses the
+// reference's OWN source window, so it is NOT yet valid against a composed
+// frontier (a MULTI-LEG merged row, or a leg-concatenation seed RC): it must be
+// rebased by the reference's leg, and until then a MULTI-LEG merged row cannot
+// serve it without a leg binding (its slot N is a foreign leg's).
+//
+// DELIBERATELY broader than SourceRelativeBaked, which additionally requires a
+// SINGLE accessor. A FUSED unpinned path (composeFieldOverField / the
+// withChildren rebuild-fuse — WithSuffix inherits the inner node's unpinned
+// root) keeps a leg-relative ROOT yet has len(Accessors)>1, so SourceRelativeBaked
+// misses it. Two consequences the narrow predicate got WRONG:
+//   - EVAL (the multi-leg fall-through guards): the guard would read a foreign
+//     leg's root slot and descend into it (silently NULL on
+//     descendResolvedPath's unpinned default arm, or a wrong nested value).
+//     Keying on the ROOT's leg-relativity makes the fused twin go LOUD too,
+//     preserving the property Java gets structurally (FieldValue.eval resolves
+//     the ordinal against the CHILD's own flowed Message, never a
+//     differently-composed row).
+//   - PLAN-TIME leg-concat collapse (values.Replace / the select-merge box
+//     collapse): the fused node kept its RAW leg-relative root and fused its
+//     suffix onto the WRONG leg's seed field for any non-first leg. Keying the
+//     LegAwareRootOrdinal rebase on this predicate lands the fuse on the
+//     reference's OWN leg.
+//
+// Kept DISTINCT from SourceRelativeBaked so the OTHER plan-time single-accessor
+// sites (which legitimately want the narrower shape) are untouched; only the
+// two guards and the two proven-buggy leg-concat collapse sites use this.
+func (f *FieldValue) RootIsLegRelativeUnpinned() bool {
+	return f.Resolved != nil && !f.Resolved.FrontierPinned
 }
 
 // NewFieldValue constructs a FieldValue with a child (base) value.

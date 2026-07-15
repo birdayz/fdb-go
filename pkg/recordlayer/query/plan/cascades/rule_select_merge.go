@@ -710,10 +710,15 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 				// zero rows. Re-base by the reference's OWN leg exactly like the
 				// values.Replace collapse (LegAwareRootOrdinal): match the seed
 				// field over the SAME correlation at the leg-local ordinal.
-				// Machinery-owned bakes (FrontierPinned / multi-accessor) keep
+				// Keyed on the ROOT's leg-relativity (RootIsLegRelativeUnpinned),
+				// NOT the accessor count: a FUSED unpinned path (fused by an earlier
+				// merge round) keeps its leg-relative ROOT and MUST be rebased too —
+				// the raw collapse would fuse its suffix (the arm below) onto the
+				// WRONG leg's seed field for a non-first leg. Only FrontierPinned
+				// bakes keep
 				// the raw collapse — their ordinal IS box-relative by
 				// construction.
-				if n.SourceRelativeBaked() && len(accs) >= 1 {
+				if n.RootIsLegRelativeUnpinned() && len(accs) >= 1 {
 					rootOrd = values.LegAwareRootOrdinal(n, accs[0].Ordinal, rcv, rootOrd)
 				}
 				if len(accs) >= 1 && rootOrd >= 0 && rootOrd < len(rcv.Fields) && rcv.Fields[rootOrd].Value != nil {

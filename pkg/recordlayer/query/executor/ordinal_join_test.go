@@ -453,6 +453,44 @@ func TestLegWindow_WrongSlotHazard(t *testing.T) {
 		t.Fatalf("B.ID through the leg window = %v, want 2", got)
 	}
 
+	// (iii) THE FUSED TWIN, also caught. A source-relative leg reference that
+	// picks up a suffix (composeFieldOverField / the withChildren rebuild-fuse)
+	// becomes a MULTI-accessor node whose ROOT ordinal stays leg-relative and
+	// UNPINNED. That shape used to slip the old guard (which required a single
+	// accessor) and read a FOREIGN leg's root slot, then descend into it —
+	// silently. It must be held to the SAME correct-or-loud bar as its
+	// single-accessor twin. Built here via the exported rebuild-fuse producer
+	// (Java's withNewChild == ofFieldsAndFuseIfPossible), which yields the
+	// identical node composeFieldOverField does.
+	hdrType := values.NewRecordType("", false, []values.Field{{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 0}})
+	innerFused := &values.FieldValue{Field: "HDR", Typ: hdrType, Child: qovB, Resolved: values.NewFieldPathOfSingle("HDR", 0, false)}
+	outerFused := &values.FieldValue{Field: "SUB", Typ: values.NotNullLong, Child: innerFused, Resolved: values.NewFieldPathOfSingle("SUB", 0, false)}
+	fused, ok := values.WithChildren(outerFused, []values.Value{innerFused}).(*values.FieldValue)
+	if !ok {
+		t.Fatal("withChildren rebuild-fuse did not produce a *FieldValue")
+	}
+	if len(fused.Resolved.Accessors) != 2 || fused.Resolved.FrontierPinned || fused.SourceRelativeBaked() {
+		t.Fatalf("fused node shape = (accessors %d, pinned %v, sourceRelativeBaked %v), want (2, false, false) — the multi-accessor unpinned shape that slips the old single-accessor guard", len(fused.Resolved.Accessors), fused.Resolved.FrontierPinned, fused.SourceRelativeBaked())
+	}
+	// bare-OrdinalRow arm.
+	if _, err := fused.Evaluate(merged); err == nil {
+		t.Fatal("fused B.HDR.SUB over the bare multi-leg merged row must be LOUD, not a silent misread/NULL of a foreign leg's slot")
+	} else {
+		var ue *values.UnboundEvalContextError
+		if !errors.As(err, &ue) {
+			t.Fatalf("fused hazard eval error = %v, want *UnboundEvalContextError", err)
+		}
+	}
+	// RowEvalContext-Positional fall-through arm.
+	if _, err := fused.Evaluate(&values.RowEvalContext{Positional: merged}); err == nil {
+		t.Fatal("fused B.HDR.SUB over a multi-leg RowEvalContext{Positional} must be LOUD")
+	} else {
+		var ue *values.UnboundEvalContextError
+		if !errors.As(err, &ue) {
+			t.Fatalf("fused RowEvalContext hazard eval error = %v, want *UnboundEvalContextError", err)
+		}
+	}
+
 	// A BAKED B#0 through the binder reads the same correct slot.
 	bakedBID, err := values.NewFieldValueOfOrdinal(qovB, 0)
 	if err != nil {
