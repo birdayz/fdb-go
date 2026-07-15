@@ -472,6 +472,7 @@ type SelfWithChildren interface {
 // whose leg field is a bare QOV) resolves by name exactly as before.
 func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue, fallbackOrd int) int {
 	if childCorr, ok := ownCorrelationOfLeaf(vt.Child); ok {
+		nameMatch := -1
 		for i, f := range rc.Fields {
 			fv, isFV := f.Value.(*FieldValue)
 			if !isFV {
@@ -481,12 +482,31 @@ func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue,
 			if !ok || fc != childCorr {
 				continue
 			}
-			if fieldValueLegOrdinal(fv) == srcOrd || strings.EqualFold(fv.Field, vt.Field) {
+			// Prefer the leg-local ORDINAL match — the reference's baked slot is
+			// the authority. NAME is only a tiebreak for a seed field that carries
+			// no baked ordinal (fieldValueLegOrdinal == -1). A single source has
+			// unique column names, so within one leg the ordinal and name agree;
+			// preferring the ordinal is strictly safer should a construction
+			// inconsistency ever make a reference's srcOrd and Field disagree.
+			if fieldValueLegOrdinal(fv) == srcOrd {
 				return i
 			}
+			if nameMatch < 0 && strings.EqualFold(fv.Field, vt.Field) {
+				nameMatch = i
+			}
+		}
+		if nameMatch >= 0 {
+			return nameMatch
 		}
 	}
-	// No leg-tagged field for this correlation: the lazy-twin name authority.
+	// No seed field bears the reference's correlation — a differently-shaped seed
+	// (e.g. a lateral-unnest whose leg field is a bare QOV, not a FieldValue over
+	// the leg). Fall back to the lazy-twin name authority: the FIRST bare-name
+	// match, reproducing the retired runtime name-model exactly (GetByName's
+	// RecordType.FieldIndex first-match). INVARIANT: this path is reached only
+	// when NO leg carries the correlation, so the cross-leg first-match cannot
+	// mis-pick a colliding sibling leg's column (that case took the leg-scoped
+	// arm above). Pinned by TestLegAwareRootOrdinal.
 	for i, f := range rc.Fields {
 		if strings.EqualFold(f.Name, vt.Field) {
 			return i

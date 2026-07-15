@@ -71,7 +71,13 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *RequestedOrdering, 
 			continue
 		}
 		if isRT && rt != nil {
-			if idx, found := rt.FieldIndex(strings.ToUpper(fv.Field)); found {
+			// Bake only when the name resolves UNIQUELY. A first-match FieldIndex
+			// over a RecordType with DUPLICATE names (a join row flowing here)
+			// would silently probe the wrong slot — RFC-173's conflation. A
+			// duplicate passes through lazy (loud at runtime, never a wrong slot).
+			// Single-table branches carry no dups, so this never fires today; it
+			// fences the join-flows-here future.
+			if idx, unique := uniqueUpperFieldIndex(rt, fv.Field); unique {
 				out[i] = values.NewFieldValueWithResolvedOrdinal(fv.Field, idx, fv.Typ)
 				continue
 			}
@@ -79,6 +85,20 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *RequestedOrdering, 
 		out[i] = k
 	}
 	return out
+}
+
+// uniqueUpperFieldIndex returns the ordinal (slice position) of the field whose
+// name matches `name` case-insensitively, and true ONLY when exactly one field
+// matches. A duplicate name (a merged join RecordType) returns false so the
+// caller declines to first-match-bake a colliding column.
+func uniqueUpperFieldIndex(rt *values.RecordType, name string) (int, bool) {
+	idx, count := -1, 0
+	for i, f := range rt.Fields {
+		if strings.EqualFold(f.Name, name) {
+			idx, count = i, count+1
+		}
+	}
+	return idx, count == 1
 }
 
 // ImplementInUnionRule implements a SELECT over ExplodeExpressions
