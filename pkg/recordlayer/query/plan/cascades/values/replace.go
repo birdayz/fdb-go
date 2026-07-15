@@ -351,7 +351,7 @@ func withChildren(v Value, newChildren []Value) Value {
 		if len(newChildren) != 1 {
 			return v
 		}
-		// RFC-173 S3-W2: the rebuild FUSES a baked node over a new BAKED
+		// RFC-173: the rebuild FUSES a baked node over a new BAKED
 		// FieldValue child into one multi-accessor node — Java's architecture,
 		// where fuse is a property of the rebuild itself (FieldValue.withNewChild
 		// = ofFieldsAndFuseIfPossible, FieldValue.java:278-280): a TranslationMap
@@ -359,14 +359,13 @@ func withChildren(v Value, newChildren []Value) Value {
 		// the enclosing reference automatically, no map composition. Gated
 		// both-baked — the DEFINITION of fusibility (a lazy node has no path to
 		// concatenate; in Java the condition is vacuously always true) — so lazy
-		// chains keep their shape through the coexistence window and the gate
-		// self-widens as W2/W3 bake everything. Must produce the IDENTICAL node
+		// chains keep their shape. Must produce the IDENTICAL node
 		// to composeFieldOverField (pinned by the rebuild≡compose property test).
 		// inner.Child != nil mirrors compose's gate exactly: a CHILDLESS baked
 		// inner (the recursive-CTE wrap shape) stays chained through BOTH
 		// mechanisms — there is no base to re-anchor the fused path onto.
 		if vt.Resolved != nil {
-			// RFC-173 item 3: COLLAPSE a baked ordinal path over an
+			// COLLAPSE a baked ordinal path over an
 			// RC LITERAL child — the merge's TranslationMap replaces a box
 			// quantifier with the box's ordinal RC, and the parent's window
 			// ref then IS the RC field's own value (a planner-constructed
@@ -379,7 +378,7 @@ func withChildren(v Value, newChildren []Value) Value {
 				if len(accs) >= 1 {
 					rootOrd = accs[0].Ordinal
 				}
-				// RFC-173 item C: a SOURCE-RELATIVE baked node's root ordinal is
+				// A SOURCE-RELATIVE baked node's root ordinal is
 				// relative to the reference's OWN source row, NOT this seed RC.
 				// Re-base the root into the seed by the reference's LEG
 				// (vt.Child's correlation), matching the seed field whose value is
@@ -388,7 +387,7 @@ func withChildren(v Value, newChildren []Value) Value {
 				// leg, RFC-173's raw-RC duplicate conflation; and the raw source
 				// ordinal would pick the seed's slot-0 (e.g. the outer scan's PK),
 				// fabricating a wrong comparand that then mis-SARGs. Falls back to
-				// the lazy-twin name authority when no leg-tagged field bears the
+				// the plan-time name authority when no leg-tagged field bears the
 				// reference's correlation. Machinery-owned bakes (FrontierPinned /
 				// multi-accessor) keep the ordinal collapse — their ordinal IS
 				// seed-relative by construction.
@@ -501,9 +500,9 @@ func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue,
 	}
 	// No seed field bears the reference's correlation — a differently-shaped seed
 	// (e.g. a lateral-unnest whose leg field is a bare QOV, not a FieldValue over
-	// the leg). Fall back to the lazy-twin name authority: the FIRST bare-name
-	// match, reproducing the retired runtime name-model exactly (GetByName's
-	// RecordType.FieldIndex first-match). INVARIANT: this path is reached only
+	// the leg). Fall back to the plan-time name authority: the FIRST bare-name
+	// match (RecordType.FieldIndex's first-match
+	// rule). INVARIANT: this path is reached only
 	// when NO leg carries the correlation, so the cross-leg first-match cannot
 	// mis-pick a colliding sibling leg's column (that case took the leg-scoped
 	// arm above). Pinned by TestLegAwareRootOrdinal.

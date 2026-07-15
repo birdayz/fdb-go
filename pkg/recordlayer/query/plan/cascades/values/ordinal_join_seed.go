@@ -3,19 +3,18 @@ package values
 import "fmt"
 
 // AssertOrdinalJoinSeed is the LOUD RFC-173 ordinal-join seed-shape validator:
-// the Slice 2 translator calls it on every ordinal join RC it builds, where
+// the translator calls it on every ordinal join RC it builds, where
 // the pristine shape IS guaranteed by construction — every field a BAKED
-// FieldValue over a leg QuantifiedObjectValue flowing a *RecordType, exactly
-// TWO consecutive full-coverage leg runs with baked ordinals 0..width-1
+// FieldValue over a leg QuantifiedObjectValue flowing a *RecordType,
+// consecutive full-coverage leg runs with baked ordinals 0..width-1
 // ascending. Any violation panics: at the SEED a malformed ordinal RC is
-// unconditionally a planner bug (review W3a-1 ruling: strictness lives
+// unconditionally a planner bug (strictness lives
 // seed-time, where legitimate result-value rewrites — wrapper merges, folded
 // projections, partial coverage — cannot yet have happened; the executor's
 // cursor-side ordinalJoinSpans probe DECLINES those shapes, never panics).
 //
 // Lives in values (not executor) because the TRANSLATOR is the caller of
-// record — the standing review condition on the W3b seed: a seed flip that
-// lands without this assert is a NAK on sight.
+// record — a seed must never be built without this assert.
 func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 	if rc == nil || len(rc.Fields) == 0 {
 		panic("RFC-173 ordinal join seed malformed: empty RC")
@@ -37,9 +36,9 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 		}
 		acc, single := fv.Resolved.Single()
 		if !single {
-			// The S2-era seed is SINGLE-accessor by construction (contract
-			// ruling #2); a fused multi-accessor path in a join seed means a
-			// compose fired where it must not (the W1 bake gate failed).
+			// The seed is SINGLE-accessor by construction; a fused
+			// multi-accessor path in a join seed means a
+			// compose fired where it must not.
 			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) carries a %d-accessor path — the seed bakes single-accessor leg references only", i, f.Name, len(fv.Resolved.Accessors)))
 		}
 		qov, isQOV := fv.Child.(*QuantifiedObjectValue)
@@ -65,7 +64,7 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 		}
 	}
 	if len(runs) < 2 {
-		panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: %d leg runs — a join seed concatenates at least two legs (the S3 fulcrum lifted the exactly-2 wedge)", len(runs)))
+		panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: %d leg runs — a join seed concatenates at least two legs", len(runs)))
 	}
 	for _, r := range runs {
 		if r.width != len(r.legType.Fields) {

@@ -56,14 +56,14 @@ func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) Value 
 // For each field in the constructor, check if v equals that field's
 // value. If so, v can be accessed as the output field name.
 //
-// RFC-173 Slice 2: the emitted reference is re-framed to the RC's OUTPUT
+// RFC-173: the emitted reference is re-framed to the RC's OUTPUT
 // column i, so when the ordinal matters it is BAKED — a lazy name node over a
 // duplicate-named RC output would later resolve to the FIRST same-named column
-// regardless of which column matched (§5 conflation hazard). Baking is gated
-// to keep the stage dark: only a baked input (bakedness must survive pull-up)
-// or a dup-named RC (unconstructible under the name model — only ordinal
-// seeds build them) bakes; a lazy input over a clean-named RC emits the lazy
-// node it always did.
+// regardless of which column matched (the duplicate-name conflation hazard).
+// Baking is gated: only a baked input (bakedness must survive pull-up)
+// or a dup-named RC (only ordinal
+// seeds build them — projection RCs suffix duplicates) bakes; a lazy input
+// over a clean-named RC emits a lazy node.
 func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias CorrelationIdentifier) Value {
 	inBaked, inPinned := false, false
 	if fv, ok := v.(*FieldValue); ok && fv.Resolved != nil {
@@ -88,8 +88,8 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 	return nil
 }
 
-// rcHasDuplicateNames reports whether two RC columns share a name — the §5
-// duplicate-name shape, constructible only by ordinal seeds (RFC-173 S2+).
+// rcHasDuplicateNames reports whether two RC columns share a name — the
+// duplicate-name shape, constructible only by ordinal seeds.
 func rcHasDuplicateNames(rc *RecordConstructorValue) bool {
 	seen := make(map[string]struct{}, len(rc.Fields))
 	for _, f := range rc.Fields {
@@ -118,7 +118,7 @@ func pullUpThroughPassthrough(v Value, alias CorrelationIdentifier) Value {
 		// Preserve the RFC-173 baked-ordinal marker through the copy: the
 		// passthrough is an identity result value (same record flows), so the
 		// baked position stays valid; dropping it would silently degrade a
-		// BAKED node to lazy (§5 conflation hazard).
+		// BAKED node to lazy (the conflation hazard).
 		return &FieldValue{Field: fv.Field, Typ: fv.Typ, Resolved: fv.Resolved}
 	}
 	return nil
@@ -152,13 +152,13 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 	// FieldValue → resolve the field to its input expression.
 	if rc, ok := resultValue.(*RecordConstructorValue); ok {
 		if fv, ok := v.(*FieldValue); ok {
-			// RFC-173 Slice 2: a BAKED node resolves by ORDINAL — same rationale
+			// A BAKED node resolves by ORDINAL — same rationale
 			// as composeFieldOverConstructor: a name lookup would pick the FIRST
 			// of two duplicate same-named output columns regardless of which the
-			// ordinal denotes (§5 conflation hazard). Out-of-range = malformed;
+			// ordinal denotes (the conflation hazard). Out-of-range = malformed;
 			// decline rather than guess. A MULTI-accessor path declines too:
 			// the root ordinal selects the column but the remaining steps would
-			// need re-anchoring over it — S3-W2 territory, and nil is the
+			// need re-anchoring over it; nil is the
 			// generic can't-push-down answer.
 			if fv.Resolved != nil {
 				if acc, single := fv.Resolved.Single(); single {
@@ -170,7 +170,7 @@ func PushDownValue(v Value, resultValue Value, upperAlias CorrelationIdentifier)
 			}
 			// LAZY push-down: name-based, but DECLINE on an ambiguous name —
 			// same rationale as composeFieldOverConstructor's lazy arm (a
-			// dup-named RC has no defensible first match; review W2 checklist).
+			// dup-named RC has no defensible first match).
 			var match Value
 			for _, field := range rc.Fields {
 				if field.Name == fv.Field {

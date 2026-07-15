@@ -7,11 +7,11 @@ import (
 
 // OrdinalSeedLegWindow is one leg's window in a pristine ordinal join seed's
 // merged positional layout: the leg's starting slot and its flowed record
-// type (design ruling on the W4-left slice: the layout derivation lives in
+// type. The layout derivation lives in
 // ONE place — this package — with the planner's existential rebase
 // delegating here and the executor's span derivation pinned to agree by a
 // cross-agreement fixture; independent walks drift, and layout drift is
-// wrong-offset wrong-rows).
+// wrong-offset wrong-rows.
 type OrdinalSeedLegWindow struct {
 	Offset int
 	Typ    *RecordType
@@ -19,13 +19,13 @@ type OrdinalSeedLegWindow struct {
 
 // OrdinalSeedLegWindows derives per-leg windows (UPPER alias → window, in a
 // map) plus the merged row's RecordType from a gated ordinal seed RC. TWO shapes
-// are accepted (decline-not-panic — nil windows for anything else: anchored,
-// translated/fused, folded, S3 positional-merge):
+// are accepted (decline-not-panic — nil windows for anything else:
+// translated/fused, folded, positional-merge):
 //
 //   - PRISTINE (fully-baked AS+AT, or the 2+1 join seed): EVERY field a
 //     single-accessor frontier-pinned bake over a leg QOV, consecutive
 //     full-coverage runs (AssertOrdinalJoinSeed's shape).
-//   - MIXED single-source lateral-unnest (W4c no-AT): a full baked OUTER leg run
+//   - MIXED single-source lateral-unnest (no-AT): a full baked OUTER leg run
 //     followed by EXACTLY ONE trailing bare-QuantifiedObjectValue element over a
 //     NON-record type (Java's isPrimitive() whole-object scalar element, which
 //     cannot be ofOrdinal-baked). Its OWN 1-field leg window is synthesized so
@@ -131,7 +131,7 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[string]OrdinalSeedLe
 // pristine (≥2-leg concat) and mixed (baked-prefix + element) branches so a
 // clustered BOX outer disambiguates its buried leaves IDENTICALLY in both.
 //
-// RFC-173 item 3: a clustered box leg's type carries its buried-leg boundaries
+// A clustered box leg's type carries its buried-leg boundaries
 // (RecordType.Legs, recorded by the translator's ordinalLegType — the one place
 // that walks the box); a read qualified by a buried binding resolves positionally
 // exactly like a top-level leg's (Java's rewire-by-ordinal — a buried source is
@@ -197,7 +197,7 @@ func finalizeSeedWindows(windows map[string]OrdinalSeedLegWindow, mergedFields [
 // isMixedSeedElement reports whether an RC field is the MIXED-seed scalar element
 // (at ANY position — the walk is element-anywhere): a bare QuantifiedObjectValue
 // over a NON-record type (the whole-object scalar element the seed cannot
-// ofOrdinal-bake). A bare QOV over a RECORD type (the S3 positional-merge RC) is NOT
+// ofOrdinal-bake). A bare QOV over a RECORD type (the positional-merge RC) is NOT
 // this — it declines. LOAD-BEARING guard.
 func isMixedSeedElement(f RecordConstructorField) bool {
 	qov, isQOV := f.Value.(*QuantifiedObjectValue)

@@ -315,14 +315,14 @@ func EqualsWithoutChildren(a, b Value) bool {
 		if !ok {
 			return false
 		}
-		// RFC-173 identity (S3-W3 flip landed): BAKED nodes (Resolved != nil)
+		// RFC-173 identity: BAKED nodes (Resolved != nil)
 		// compare by their ordinal PATH alone — Java's semantics exactly
 		// (ResolvedAccessor.equals is getOrdinal()-only, FieldValue.java:
 		// 675-689; two same-named columns at different ordinals stay distinct,
-		// §5 duplicate-name pin; alias-mapped twins over same-shaped legs now
+		// the duplicate-name pin; alias-mapped twins over same-shaped legs
 		// intern as one member). Baked vs lazy is UNEQUAL by contract: worst
-		// case a missed dedup, never a conflation. Lazy vs lazy stays
-		// name-only (dies with the name model in S4). FrontierPinned is
+		// case a missed dedup, never a conflation. Lazy vs lazy is
+		// name-only (lazy nodes are plan-time-only carriers). FrontierPinned is
 		// deliberately NOT compared: an evaluation-contract marker, not a
 		// value distinction (like Java excluding name/type from
 		// ResolvedAccessor equality).

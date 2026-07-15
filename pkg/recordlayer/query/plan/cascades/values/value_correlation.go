@@ -39,9 +39,8 @@ func MergeSeedLegsOfValue(v Value) map[CorrelationIdentifier]struct{} {
 			return true
 		}
 		// The Child must bottom out in a QuantifiedObjectValue — a dotted read off
-		// a merged quantifier's row. (The literal-anchored-RC dotted case — a
-		// partition-time predicate over the name-model seed — is retired with the
-		// AnchoredJoin producer: no anchored RC is constructible anymore.)
+		// a merged quantifier's row. (No anchored RC is constructible, so a
+		// literal-anchored-RC dotted case cannot occur.)
 		if _, isQOV := leftmostQOVOfValue(fv.Child); !isQOV {
 			return true
 		}
@@ -52,8 +51,8 @@ func MergeSeedLegsOfValue(v Value) map[CorrelationIdentifier]struct{} {
 }
 
 // leftmostQOVOfValue descends the leftmost FieldValue chain and reports the
-// QuantifiedObjectValue correlation it bottoms out in (mirrors leftmostQOV in
-// value_anchored_join_record.go, exposed here for MergeSeedLegsOfValue).
+// QuantifiedObjectValue correlation it bottoms out in (for
+// MergeSeedLegsOfValue).
 func leftmostQOVOfValue(v Value) (CorrelationIdentifier, bool) {
 	for {
 		switch x := v.(type) {

@@ -217,11 +217,11 @@ func composeFieldOverConstructor(v Value) Value {
 	if !ok {
 		return nil
 	}
-	// RFC-173 Slice 2: a BAKED node composes by ORDINAL — Java's
+	// RFC-173: a BAKED node composes by ORDINAL — Java's
 	// ComposeFieldValueOverRecordConstructorRule.findColumn is
 	// getColumns().get(fieldOrdinal). Composing by the display name would pick
 	// the FIRST of two duplicate same-named columns regardless of which the
-	// ordinal denotes (§5 conflation hazard). An out-of-range ordinal against
+	// ordinal denotes (the conflation hazard). An out-of-range ordinal against
 	// the node's OWN child RC is always a tree inconsistency — a planner bug,
 	// loud like Java's IndexOutOfBounds (the fail-loud re-stamp treatment),
 	// never a silent decline that rides the broken node into the plan.
@@ -230,7 +230,7 @@ func composeFieldOverConstructor(v Value) Value {
 		if !single {
 			// A fused multi-accessor path over its own RC: the ROOT ordinal
 			// selects the column; the remaining steps would need re-anchoring
-			// over the column's value tree (S3-W2's compose widening). Decline
+			// over the column's value tree. Decline
 			// the fold — the node stays as-is, no wrong answer possible.
 			return nil
 		}
@@ -243,8 +243,9 @@ func composeFieldOverConstructor(v Value) Value {
 	// LAZY compose: name-based, but DECLINE when the name is ambiguous — a
 	// dup-named RC (constructible only by RFC-173 ordinal seeds) matched by a
 	// lazy reference has no defensible first-match answer; a wrong fold here
-	// is the §5 conflation. Ambiguous references are the resolver's to reject
-	// (42702); the simplifier just refuses to guess (review W2 checklist).
+	// is the duplicate-name conflation. Ambiguous references are the
+	// resolver's to reject
+	// (42702); the simplifier just refuses to guess.
 	var match Value
 	for _, field := range rc.Fields {
 		if field.Name == fv.Field {
@@ -281,13 +282,10 @@ func tryCastConstant(cv *ConstantValue, target Type) (out *ConstantValue) {
 // field(x, p1.withSuffix(p2)) — chained FieldValue nodes fuse into ONE node
 // carrying the whole path (Java's canonical form; chained nodes are not).
 //
-// GATED TO FULLY-BAKED CHAINS during the S3-W1 dark window (staging ruling):
-// firing on lazy chains would rewrite every nested-access chain corpus-wide —
-// memo identity, Explain renderings, every rule matching chained FieldValues —
-// making W1 anything but dark. No baked-over-baked chain is constructible in
-// the S2 wedge (seed refs sit directly over leg QOVs; wrap nodes are
-// childless), so the gate makes the rule genuinely unreachable in production
-// until S3-W2 widens it to all FieldValues WITH the shape-change pins.
+// GATED TO FULLY-BAKED CHAINS: firing on lazy chains would rewrite every
+// nested-access chain corpus-wide —
+// memo identity, Explain renderings, every rule matching chained FieldValues.
+// A lazy chain keeps its shape; only baked-over-baked chains fuse.
 // Java's inverse (ExpandFusedFieldValueRule) is deliberately NOT ported:
 // Java never co-resides the two (Compose in DefaultValueSimplificationRuleSet,
 // Expand only in MaxMatchMapSimplification), and compose-only cannot loop.

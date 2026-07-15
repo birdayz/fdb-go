@@ -110,12 +110,12 @@ func writeSemanticHash(h io.Writer, v Value) {
 			_, _ = io.WriteString(h, f.Name+",")
 		}
 	case *FieldValue:
-		// RFC-173 S3-W3: a BAKED node's identity is its ordinal PATH alone
+		// RFC-173: a BAKED node's identity is its ordinal PATH alone
 		// (Java ResolvedAccessor.equals compares getOrdinal() only,
 		// FieldValue.java:675-689; the display name is rendering, not
 		// identity) — so the hash folds ONLY the per-step ordinals. Mixing
-		// the name in (as the coexistence window did) would break
-		// equal ⟹ same-hash for the alias-mapped twins the flip makes equal.
+		// the name in would break
+		// equal ⟹ same-hash for alias-mapped twins that compare equal.
 		// Lazy nodes keep the name bucket ('#' doubled, same escape as
 		// ExplainValue, so a field literally named "X#0" cannot collide with
 		// an ordinal discriminator); baked vs lazy are UNEQUAL by contract,
