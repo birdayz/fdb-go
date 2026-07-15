@@ -1,14 +1,12 @@
 package cascades
 
-// RFC-173 Slice 2 W2 — red→green pins proving the two coexistence-window
-// drift asserts actually FIRE (review: an unpinned tripwire that looks
-// healthy is worse than none — if the assert or its ContainsBakedOrdinal
-// probe had a walk bug, W3 would go live with a dead assert). Both asserts
-// are unreachable from production in W2 (nothing constructs baked result
-// values); these pins hand-construct the violating shapes.
+// RFC-173 — red→green pins proving the SelectMerge ordinal-child guard
+// actually FIRES (an unpinned tripwire that looks
+// healthy is worse than none — if the guard or its ContainsBakedOrdinal
+// probe had a walk bug, it would sit dead). The pins hand-construct the
+// violating shapes.
 
 import (
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -18,7 +16,7 @@ import (
 
 // bakedLegRC builds a 2-way-ordinal-seed-shaped result value: an RC whose
 // fields are BAKED FieldValue.ofOrdinalNumber references over one leg QOV —
-// the W3 gated-join seed shape in miniature.
+// the gated-join seed shape in miniature.
 func bakedLegRC(t *testing.T, corr values.CorrelationIdentifier) *values.RecordConstructorValue {
 	t.Helper()
 	legType := values.NewRecordType("", false, []values.Field{
@@ -55,14 +53,14 @@ func ordinalChildSelect(t *testing.T) *expressions.SelectExpression {
 	)
 }
 
-// TestRFC173S2_SelectMergeDriftAssert_Fires pins that merging an ORDINAL
-// child into a MULTI-quantifier parent panics (the cluster-arity gate
-// mis-scoped — contract ruling #1's loud assert), and that the ALLOWED
-// single-quantifier pure-wrapper merge of the same child proceeds silently.
+// TestRFC173S2_SelectMergeDriftAssert_Fires pins the SelectMerge composition
+// behavior for an ORDINAL child: merging into a multi-quantifier parent is
+// legitimate composition (no panic), and the single-quantifier pure-wrapper
+// merge of the same child proceeds silently.
 func TestRFC173S2_SelectMergeDriftAssert_Fires(t *testing.T) {
 	t.Parallel()
 
-	// S3 fulcrum POSITIVE pin (replacing the deleted drift assert): an
+	// POSITIVE pin: an
 	// ORDINAL child select merging into a multi-quantifier parent is
 	// LEGITIMATE composition -- no panic, and the merged select splices the
 	// child quantifiers in.
@@ -166,60 +164,5 @@ func TestRFC173S2_SelectMergeDriftAssert_Fires(t *testing.T) {
 		if n := len(fm.GetQuantifiers()); n != 2 {
 			t.Fatalf("yield %d changed the quantifier count to %d, want 2 — the ordinal box must stay a box", yi, n)
 		}
-	}
-}
-
-// TestRFC173S2_ReStampDriftAssert_Fires pins that re-anchoring a BAKED
-// FieldValue to a dotted merge name (PartitionSelectRule's re-stamp,
-// rebaseBuriedLowerReferences) panics — the silent baked→lazy degradation
-// over a re-typed child that the eager bake forbids — while the same
-// re-stamp over a LAZY reference proceeds unchanged in behavior.
-func TestRFC173S2_ReStampDriftAssert_Fires(t *testing.T) {
-	t.Parallel()
-
-	legCorr := values.NamedCorrelationIdentifier("a")
-	mergeCorr := values.NamedCorrelationIdentifier("$m")
-	buried := map[values.CorrelationIdentifier]struct{}{legCorr: {}}
-
-	legType := values.NewRecordType("", false, []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-	})
-	qov := values.NewQuantifiedObjectValueOfType(legCorr, legType)
-	baked, err := values.NewFieldValueOfOrdinal(qov, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	bakedPred := &predicates.ComparisonPredicate{
-		Operand:    baked,
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
-	}
-	func() {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Error("rebaseBuriedLowerReferences must PANIC on a BAKED reference — the drift assert is dead")
-				return
-			}
-			if msg, ok := r.(string); !ok || !strings.Contains(msg, "RFC-173") {
-				t.Errorf("panic is not the RFC-173 drift assert: %v", r)
-			}
-		}()
-		rebaseBuriedLowerReferences(bakedPred, buried, mergeCorr)
-	}()
-
-	// Control: a LAZY buried reference re-stamps to the dotted merge name as
-	// before (the name model's re-anchoring, untouched).
-	lazyPred := &predicates.ComparisonPredicate{
-		Operand:    values.NewFieldValue(values.NewQuantifiedObjectValue(legCorr), "ID", values.NotNullLong),
-		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
-	}
-	got := rebaseBuriedLowerReferences(lazyPred, buried, mergeCorr)
-	cp, ok := got.(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("re-stamped predicate is %T", got)
-	}
-	fv, ok := cp.Operand.(*values.FieldValue)
-	if !ok || fv.Field != "A.ID" {
-		t.Fatalf("lazy re-stamp = %+v, want FieldValue A.ID over the merge QOV (unchanged name-model behavior)", cp.Operand)
 	}
 }

@@ -6,19 +6,16 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// positionalMergeCase is the S3 fulcrum's Java-aligned merge arm
-// (PartitionSelectRule.java:283-322): when the parent result value is NOT an
-// AnchoredJoin RC (the ordinal model — flat translation seeds and their
-// folds), a collapse of ≥2 live lowers builds the UNNAMED positional merged
+// positionalMergeCase is the Java-aligned merge arm
+// (PartitionSelectRule.java:283-322): a collapse of ≥2 live lowers builds the
+// UNNAMED positional merged
 // row (RC(_i: QOV(live_i)) — Column.unnamedOf per collapsed leg) and rebases
 // every upper reference through a TranslationMap
 // `.When(live_i).Then(ofOrdinalNumber(QOV(merge), i))` — enclosing baked
 // references FUSE into two-step FieldPaths during the rebuild (Java's
-// withNewChild mechanic, the W2 commit-1 fuse arm). The dotted-name re-stamp
-// trio never runs on this arm; it survives on the ANCHORED arm for the
-// name-model shapes that die per birth site (dissolved-LEFT W4, unnest W5).
+// withNewChild mechanic, the fuse arm).
 //
-// The arm currently ALWAYS yields (invalid shapes die loudly at the tripwire
+// The arm ALWAYS yields (invalid shapes die loudly at the tripwire
 // or the constructors); the caller's nil-check is cheap defense for future
 // decline arms, not a live contract.
 func (r *PartitionSelectRule) positionalMergeCase(
@@ -32,8 +29,7 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	lowerBuilder *GraphExpansionBuilder,
 	upperPredicates []predicates.QueryPredicate,
 ) *expressions.SelectExpression {
-	// RFC-173 item 3 (S1 made LEFT gate-eligible; the W4-era anchored-only
-	// tripwire retired): a null-on-empty quantifier — the dissolved-LEFT
+	// A null-on-empty quantifier — the dissolved-LEFT
 	// machinery — SPLICES through a merged select as a quantifier but must
 	// never be COLLAPSED into a positional lower: the null-extension is
 	// per-outer-row (Java's SelectMergeRule matches via
@@ -55,7 +51,7 @@ func (r *PartitionSelectRule) positionalMergeCase(
 
 	// The collapsed lower's result value: the nested positional merge row.
 	// Field types flow the legs' whole row types (record-of-records — the
-	// commit-2 executor birth's shape). Go's Quantifier.GetFlowedObjectValue
+	// executor birth's shape). Go's Quantifier.GetFlowedObjectValue
 	// is UNTYPED (Java's is always typed) — recover each leg's row type from
 	// the select's own value surfaces, where every baked reference is a copy
 	// of the one planner-constructed typed leg QOV: an untyped merge slot
@@ -75,8 +71,8 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	lowerRC := values.NewRawRecordConstructorValue(fields...)
 	lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerRC)
 
-	// Per-plan deterministic merge alias — same discipline as the anchored
-	// arm (NextMergeAlias, RFC-077 7.5: stable plan hash; alias-aware
+	// Per-plan deterministic merge alias (NextMergeAlias, RFC-077 7.5:
+	// stable plan hash; alias-aware
 	// interning collapses same-shape merges across bipartitions).
 	var mergeAlias values.CorrelationIdentifier
 	if call.memo != nil {

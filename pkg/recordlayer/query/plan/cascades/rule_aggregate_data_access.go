@@ -427,11 +427,11 @@ func tryMultiAggregateIntersection(
 	// resolves against the merged row the executor builds. Output field
 	// names match the single-aggregate path so the projection above reads
 	// the same keys regardless of which plan won.
-	// RFC-173 item C: the merge cursor evaluates the result value against the
+	// RFC-173: the merge cursor evaluates the result value against the
 	// CONCATENATION of the matched child rows, each child spanning
 	// len(groupCols)+1 slots ([groupCols..., FUNC(col)]). A grouping column
-	// reads child 0's slot i (identical across children — the first-match the
-	// retired name read performed); child i's aggregate sits at its span's
+	// reads child 0's slot i (identical across children);
+	// child i's aggregate sits at its span's
 	// last slot. Baked, both read positionally.
 	childWidth := len(groupCols) + 1
 	fields := make([]values.RecordConstructorField, 0, len(groupCols)+len(aggs))

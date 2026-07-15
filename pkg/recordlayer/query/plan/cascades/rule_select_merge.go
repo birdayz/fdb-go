@@ -193,13 +193,13 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			// flattens a lateral chain either (generateCorrelatedFieldAccess
 			// nests them). Keep the nested FlatMap-over-FlatMap.
 			//
-			// The barrier covers BOTH row models of the first link:
-			//   - NAME-MODEL first link (childRefResultIsNameModel): the
+			// The barrier covers BOTH result-value shapes of the first link:
+			//   - NON-SEED first link (childRefResultIsNonSeed): the
 			//     retained-sibling rebase runs only for positional-seed children
-			//     (rcByAlias empty for a name-model child), so the Explode arm
+			//     (rcByAlias empty for a non-seed child), so the Explode arm
 			//     below would not fire — merging strands the collection.
-			//   - ORDINAL first link (childRefIsPositionalUnnestSelect, RFC-173
-			//     S4 Slice 1): the chained link now takes an ordinal seed, so its
+			//   - ORDINAL first link (childRefIsPositionalUnnestSelect):
+			//     the chained link takes an ordinal seed, so its
 			//     first-link child is a POSITIONAL unnest select. The
 			//     positional-seed rebase DOES fire but cannot compose the chained
 			//     collection's fused ofOrdinal+name suffix (the deferred ordinal
@@ -209,7 +209,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			//     positional-child check: a GATED BOX child (no Explode
 			//     quantifier of its own) still merges via the rebase, unaffected.
 			// Conservative — worst case a missed flattening, never wrong rows.
-			if (childRefResultIsNameModel(childRef) || childRefIsPositionalUnnestSelect(childRef)) &&
+			if (childRefResultIsNonSeed(childRef) || childRefIsPositionalUnnestSelect(childRef)) &&
 				siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
 				break
 			}
@@ -232,27 +232,12 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 				}
 			}
 			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
-				// RFC-173 Slice 2 drift assert (contract ruling #1): the
-				// translation-time cluster-arity gate SHADOWS this rule's
-				// mergeability, so an ORDINAL child (baked result value) may
-				// only ever merge into a PURE WRAPPER parent — a select whose
-				// single quantifier is this child (the derived-table /
-				// WHERE-fold flattening that leaves the post-merge select at
-				// exactly the child's 2 ForEach legs). A parent with any
-				// OTHER quantifier would flatten the ordinal child into a
-				// ≥3-quantifier select — the name-model partition machinery
-				// the gate exists to keep baked values out of. That means the
-				// gate mis-scoped: a loud planner error, never a silent
-				// wrong-model merge (a decline is equally forbidden — it
-				// changes plan shapes).
-				//
-				// S3 fulcrum: an ORDINAL child select merging into a
-				// multi-quantifier parent is LEGITIMATE composition -- the
+				// An ORDINAL child select merging into a
+				// multi-quantifier parent is LEGITIMATE composition — the
 				// spliced references compose via translateValueCorrelations
 				// over ReplaceLeavesOnceMaybe, and baked-over-baked rebuilds
-				// FUSE into multi-accessor FieldPaths (the W2 commit-1 arm).
-				// The S2 drift assert that forbade this shape died with the
-				// exactly-2 wedge; the positive compose pin covers it.
+				// FUSE into multi-accessor FieldPaths (the fuse arm);
+				// the positive compose pin covers it.
 				targets = append(targets, mergeTarget{
 					idx:       i,
 					child:     wp,
@@ -306,8 +291,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 		} else if len(childQs) > 1 {
 			// Multi-quantifier child (e.g., Select with 2+ sources):
 			// the parent's alias must be replaced with the child's
-			// result value. TWO regimes by the child RV's row model
-			// (RFC-173 item 3):
+			// result value. TWO regimes by the child RV's shape:
 			//   - POSITIONAL ordinal-seed RC (a dissolved gated box): the
 			//     SURGICAL substitution (rcByAlias → bakedBoxRefCallback) —
 			//     baked refs collapse through the RC to the exact leg
@@ -317,9 +301,9 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			//     TranslationMap substitution would put the dup-bare-named
 			//     concat under a lazy read — FieldIndex first-match,
 			//     silently the wrong column.
-			//   - NAME-MODEL child (anchored record): the TranslationMap
-			//     substitution, as always — the anchored RC is name-keyed
-			//     and the child alias disappears without a re-binder.
+			//   - NON-SEED child: the TranslationMap
+			//     substitution — the child alias disappears with the RV
+			//     substituted in place.
 			childResultValue := target.childExpr.GetResultValue()
 			capturedResult := childResultValue
 			parentAlias := q.GetAlias()
@@ -347,7 +331,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if len(aliasMap) > 0 {
 		newResultValue = values.RebaseValue(newResultValue, aliasMap)
 	}
-	// Apply TranslationMap for name-model multi-quantifier children, and the
+	// Apply TranslationMap for non-seed multi-quantifier children, and the
 	// surgical baked-collapse callback for positional-seed children (lazy
 	// refs re-bind by name to the pulled-up leg — see the regime comment at
 	// the multi-quantifier arm above).
@@ -360,7 +344,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 		newResultValue = values.Replace(newResultValue, cb)
 	}
 
-	// RFC-173 item 3: RETAINED quantifiers whose subtrees hold BAKED
+	// RETAINED quantifiers whose subtrees hold BAKED
 	// references over a MERGED-AWAY alias get those references translated
 	// through the merged child's result value — Java's
 	// Quantifier.translateCorrelations, which Go's merge never needed until
@@ -375,7 +359,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// partition/orientation machinery needs for the correlated probe. LAZY
 	// references are deliberately LEFT ALONE: outside references address
 	// legs by their own aliases (Go's box quantifier is NAMED by its
-	// rightmost leaf), so after the merge pulls the legs up a name-model
+	// rightmost leaf), so after the merge pulls the legs up a lazy
 	// read re-binds to the correct leg quantifier by construction —
 	// substituting the RC under a lazy read would instead first-match a
 	// duplicate bare name across the whole concat (silently the wrong
@@ -647,7 +631,7 @@ func translateSelectCorrelations(
 // result-value RC — the exact leg reference the ordinal named (a
 // multi-accessor path collapses its root and fuses the suffix). LAZY
 // references over the same alias are skipped whole (their QOV child is
-// pointer-marked before the walk descends): a name-model read re-binds to
+// pointer-marked before the walk descends): a lazy read re-binds to
 // the pulled-up leg quantifier of the same name. The alias collision is a
 // property of the PLANNING-time dissolved-LEFT regime specifically —
 // RewriteOuterJoinRule's box select is quantified by its rightmost leaf's
@@ -775,12 +759,12 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 	}
 }
 
-// childRefResultIsNameModel reports whether a merge candidate's child result
-// value is NAME-MODEL (not a positional ordinal seed). A positional seed
+// childRefResultIsNonSeed reports whether a merge candidate's child result
+// value is NOT a positional ordinal seed. A positional seed
 // child routes through the rcByAlias/bakedBoxRefCallback rebase (which handles
-// a retained Explode sibling); a name-model child does not, so the chained
-// barrier applies only to name-model children.
-func childRefResultIsNameModel(childRef *expressions.Reference) bool {
+// a retained Explode sibling); a non-seed child does not, so the chained
+// barrier applies only to non-seed children.
+func childRefResultIsNonSeed(childRef *expressions.Reference) bool {
 	for _, m := range childRef.AllMembers() {
 		sel, ok := m.(*expressions.SelectExpression)
 		if !ok {
@@ -788,7 +772,7 @@ func childRefResultIsNameModel(childRef *expressions.Reference) bool {
 		}
 		if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC {
 			if w, _ := values.OrdinalSeedLegWindows(rc); w != nil {
-				return false // positional ordinal seed — not name-model
+				return false // positional ordinal seed
 			}
 		}
 		return true
@@ -798,11 +782,11 @@ func childRefResultIsNameModel(childRef *expressions.Reference) bool {
 
 // childRefIsPositionalUnnestSelect reports whether a merge candidate's child is
 // a POSITIONAL ordinal-seed SelectExpression that is ITSELF a lateral unnest —
-// it has an Explode among its OWN quantifiers (RFC-173 S4 Slice 1: the ORDINAL
-// chained first link). This is the positional twin of childRefResultIsNameModel
-// for the chained-unnest barrier: like the name-model chain, an ordinal chained
+// it has an Explode among its OWN quantifiers (the ORDINAL
+// chained first link). This is the positional twin of childRefResultIsNonSeed
+// for the chained-unnest barrier: like the non-seed chain, an ordinal chained
 // first link must stay NESTED (Java never flattens a lateral chain), because the
-// positional-seed rebase cannot yet compose the retained Explode sibling's fused
+// positional-seed rebase cannot compose the retained Explode sibling's fused
 // ofOrdinal+name-suffix collection through the merge.
 //
 // A GATED BOX child (a positional seed whose quantifiers are all ForEach over
@@ -843,7 +827,7 @@ func childRefIsPositionalUnnestSelect(childRef *expressions.Reference) bool {
 // chained-unnest signature (the second unnest's Explode collection references
 // the first unnest's output alias). Scoped to Explode siblings so the barrier
 // never fires for a legitimate correlated SelectExpression-sibling merge
-// (RFC-040), which the name-model rebase handles.
+// (RFC-040), which the merge's substitution handles.
 func siblingFreeCorrelatedTo(quantifiers []expressions.Quantifier, self int, alias values.CorrelationIdentifier) bool {
 	for j, q := range quantifiers {
 		if j == self {

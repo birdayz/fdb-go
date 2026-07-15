@@ -11,13 +11,13 @@ import (
 )
 
 // bakeMergeComparisonKeys resolves LAZY childless FieldValue merge keys into
-// PLAN-TIME-BAKED values (RFC-173 item C — Java's comparison-key values are
+// PLAN-TIME-BAKED values (RFC-173 — Java's comparison-key values are
 // ordinal-resolved OrderingPart values, never name-resolved at runtime). The
 // keys arrive lazy because the physical wrappers' Hint(Rich)Ordering builds
 // them from index/PK COLUMN NAMES for ordering MATCHING (a string-keyed axis)
 // — fine for matching, but evaluating a lazy key against the runtime ordinal
-// row is exactly the retired name-resolution path (loud
-// OrdinalResolutionError today). Two bake authorities, in order:
+// row would need a runtime name resolution, which does not exist (loud
+// OrdinalResolutionError). Two bake authorities, in order:
 //
 //  1. The REQUESTED ordering's own part value — the translator's bake for the
 //     same column (matched by ColumnNameValue, the same bridge orderingKeyFor
@@ -25,12 +25,11 @@ import (
 //     values are already in the merge row's domain. A column name carried by
 //     two semantically different requested parts is ambiguous — skipped.
 //  2. The inner plan's flowed RecordType (when the plan flows one), by
-//     first-match field name — the identical slot the lazy node's retired
-//     GetByName would have found.
+//     first-match field name — the plan-time FieldIndex rule.
 //
 // Baked keys and computed/correlated keys pass through untouched. A lazy key
 // that resolves through NEITHER authority passes through lazy: a record-backed
-// (Datum) merge row still evaluates it through the proto descriptor (the
+// merge row still evaluates it through the proto descriptor (the
 // legitimate record-boundary resolution, same as Java's Message field access),
 // and a positional merge row fails LOUD (OrdinalResolutionError) — never a
 // silent wrong slot.

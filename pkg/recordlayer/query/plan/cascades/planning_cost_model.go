@@ -1792,8 +1792,8 @@ func concretePlanDepth(p plans.RecordQueryPlan, kind planMatchKind) int {
 // predicate content is folded via Explain text that RENDERS minted aliases
 // (q$N). Minted identifiers differ on every planning of the same query, so a
 // tie-break that hashes them ranks two cost-tied candidates in a different
-// order each planning — the nondeterministic-EXPLAIN class the item-2
-// commit-3 pins caught live (the existential step-1 NLJ's operand order
+// order each planning — a nondeterministic-EXPLAIN hazard
+// caught live by the pins (the existential step-1 NLJ's operand order
 // flipped across runs). Java's planHash is alias-blind at every node
 // (QuantifiedObjectValue.planHash folds BASE_HASH only); predicates and
 // values fold through the alias-blind SemanticHashCode here for the same

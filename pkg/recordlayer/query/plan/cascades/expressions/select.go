@@ -223,8 +223,7 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 // is a planner-INTERNAL synthetic alias with no external consumer, so two merge
 // selects equal up to a consistent quantifier-alias renaming ARE the same memo
 // member and must intern (otherwise the join re-enumeration's shared
-// sub-products re-explode per path). (The name-model marker — the AnchoredJoin
-// source-anchored RC — was deleted with its producer, RFC-173 S4 item B.)
+// sub-products re-explode per path).
 //
 // All OTHER expressions return false. The reason is NOT alias-namespace naming
 // (item 7.1 already unified quantifier and table alias naming) — it is the column
@@ -238,19 +237,19 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 // dedup, exactly as before this change. Widening this gate is gated on migrating
 // Go's column resolution to Java's ordinal/group model, not on 7.1.
 func (e *SelectExpression) InternsAliasAware() bool {
-	// S3 fulcrum: the POSITIONAL merge row (unnamed `_i` columns over bare
+	// The POSITIONAL merge row (unnamed `_i` columns over bare
 	// QOVs — the exact PartitionSelectRule.java:284-291 shape, structurally
-	// recognized per the W2 ruling: no imperative marker) is the ordinal
+	// recognized, no imperative marker) is the ordinal
 	// model's merge-select marker. The collapsed lower's quantifiers are
 	// planner-internal; alias-identity dedup would re-explode shared
 	// sub-products per bipartition (the documented 29915→60044 task blowup).
 	if values.IsPositionalMergeRC(e.resultValue) {
 		return true
 	}
-	// S3 fulcrum: the ordinal JOIN-SELECT result value (every field a pinned
+	// The ordinal JOIN-SELECT result value (every field a pinned
 	// baked/fused leg reference over >=2 quantifiers - the flat N-leg seed and
-	// its translated upper forms) is the ordinal successor of the AnchoredJoin
-	// marker itself: same shapes, same planner-internal quantifiers, same
+	// its translated upper forms) is the second merge-select
+	// marker: same planner-internal quantifiers, same
 	// re-explosion without alias-aware dedup (the N-way chain blows the task
 	// budget through repeated sub-product exploration per bipartition).
 	if values.IsOrdinalJoinRV(e.resultValue) {

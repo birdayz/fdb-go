@@ -8,11 +8,11 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// RFC-173 W4-left commit 2 — the ORDINAL existential rebase. The
+// RFC-173 — the ORDINAL existential rebase. The
 // EXISTS-over-join implementation binds the inner join's merged row under a
 // fresh correlation and rewrites outer-leg references so they resolve inside
-// the existential FlatMap. The name-model form (rebaseOuterLegRefsToMerged)
-// rewrites them to LAZY qualified "LEG.COL" reads over the merged Datum —
+// the existential FlatMap. The lazy form (rebaseOuterLegRefsToMerged)
+// rewrites them to LAZY qualified "LEG.COL" reads over the merged row —
 // machinery the FrontierPinned panic bars from BAKED references (a silent
 // baked→lazy degradation). For a GATED ordinal seed the correct target is
 // the merged POSITIONAL row: each leg reference — baked (ofOrdinal over the
@@ -23,11 +23,11 @@ import (
 // NLJ→FlatMap makes the merged positional row the binding, so the ordinal
 // offset rebase is the per-quantifier edge composed with the seed layout.
 // Any reference the windows cannot map DECLINES the yield (CORRECT-or-LOUD;
-// the name-model machinery stays dead for gated seeds).
+// the lazy rebase stays dead for gated seeds).
 
 // ordinalLegWindow aliases the values-level layout window (the derivation
-// was CONSOLIDATED into values.OrdinalSeedLegWindows per the impl-review
-// condition: the executor's span derivation is pinned to agree with the
+// is CONSOLIDATED into values.OrdinalSeedLegWindows:
+// the executor's span derivation is pinned to agree with the
 // same function by a cross-agreement fixture — independent walks drift,
 // and layout drift is wrong-offset wrong-rows).
 type ordinalLegWindow = values.OrdinalSeedLegWindow
@@ -101,8 +101,8 @@ func rebaseOuterLegValueOrdinal(
 			// where FieldIndex("K") would remap the already-baked ref to the FIRST match
 			// and silently probe the WRONG column (wrong rows). acc.Ordinal is the exact
 			// leg-local slot; w.Offset + it = the merged slot. (Empirically no shape
-			// produces such a ref today — the arm is CORRECT-or-LOUD defensive: a
-			// multi-accessor path fails loud → name-model.)
+			// produces such a ref — the arm is CORRECT-or-LOUD defensive: a
+			// multi-accessor path declines the yield.)
 			acc, single := fv.Resolved.Single()
 			if !single {
 				failed = true
@@ -129,7 +129,7 @@ func rebaseOuterLegValueOrdinal(
 		// buried-leg SUBwindow, a full-concat ordinal could spill past w.Typ into the
 		// NEXT leg's slots (w.Offset+legOrdinal is still a valid MERGED ordinal, so
 		// NewFieldValueOfOrdinal below would NOT catch it → a silent wrong-column read).
-		// Decline instead (correct-or-loud → name-model).
+		// Decline instead (correct-or-loud).
 		if legOrdinal < 0 || legOrdinal >= len(w.Typ.Fields) {
 			failed = true
 			return node
@@ -226,7 +226,7 @@ func rebaseOuterLegRefsOrdinal(
 		}
 		return predicates.NewNot(newChild), true
 	default:
-		// A shape the name-model twin also passes through untouched: safe
+		// A shape the lazy twin also passes through untouched: safe
 		// only if it carries NO leg references — probe and decline if it does.
 		for alias := range windows {
 			if _, refs := predicates.GetCorrelatedToOfPredicate(p)[values.NamedCorrelationIdentifier(alias)]; refs {
@@ -247,7 +247,7 @@ func ordinalSeedLegWindowsOf(rv values.Value) (map[string]ordinalLegWindow, *val
 	return ordinalSeedLegWindows(rc)
 }
 
-// rebasePlanOuterRefsOrdinal is the PLAN-TREE twin of the name-model
+// rebasePlanOuterRefsOrdinal is the PLAN-TREE twin of the lazy
 // rebasePlanBuriedRefs for a GATED ordinal seed: it rewrites every outer-leg
 // reference BURIED INSIDE an already-built plan tree to a baked
 // ofOrdinalNumber over the merged positional row, exactly as

@@ -9,8 +9,8 @@ import (
 // Java's QueryPredicate.replaceValuesMaybe. Pointer-equality stable: returns
 // p itself when nothing changed.
 //
-// This is the EXPORTED home of the walk (moved from the cascades package's
-// replacePredicateValues, which now delegates here): the RFC-173 Slice 2
+// This is the EXPORTED home of the walk (the cascades package's
+// replacePredicateValues delegates here): the RFC-173
 // translator bakes gated-join leg references at the seed with it, and the
 // planner's rule-side callers share the identical spine so predicate-value
 // rewrites can never diverge between the two layers.
@@ -24,7 +24,7 @@ func ReplaceValues(p QueryPredicate, fn func(values.Value) values.Value) QueryPr
 // embedded in a predicate — the Go analog of Java's
 // QueryPredicate.translateLeafPredicate (ValuePredicate.java:149: each
 // predicate's embedded Value goes through Value.translateCorrelations).
-// LEAF-ONLY by construction (the W2 pre-code ruling): the map fires on
+// LEAF-ONLY by construction: the map fires on
 // correlation-bearing leaves via values.TranslateCorrelations — never on
 // interior nodes — and shares the exact predicate spine ReplaceValues uses,
 // so the two rewrite families cannot diverge. Pointer-stable.

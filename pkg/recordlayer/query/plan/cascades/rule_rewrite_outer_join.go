@@ -167,20 +167,13 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 		aliases = []string{la, ra}
 	}
 
-	// RFC-173 W4-left: ordinalization of a single-source LEFT/RIGHT happens
+	// RFC-173: ordinalization of a LEFT/RIGHT box happens
 	// at TRANSLATION (the cluster gate births the declaration-order ordinal
-	// seed, null-supplying leg RECORD-nullable). A dissolved box arriving
-	// here is either already ordinal-seeded — a raw positional RC flowing
-	// through unchanged, null-extended by the executor's null-leg birth — or
-	// a name-model box the gate deliberately kept anchored (an ENCLOSED box
-	// under a name-model parent, or a clustered leg): its anchored RC flows
-	// through unchanged too, and the parent's merge resolves it by the
-	// qualified keys. The rewrite-time reconverter that used to rebuild an
-	// ordinal seed from the anchored RC was deleted: for gated boxes the
-	// gate made its input unbirthable, and for the enclosed name-model
-	// residual it re-created the ordinal-under-name-model mix the enclosure
-	// guard exists to prevent (per-column nullability, contradicting design
-	// ruling I3, on top).
+	// seed, null-supplying leg RECORD-nullable). The box's result value flows
+	// through this rewrite UNCHANGED — a raw positional RC, null-extended by
+	// the executor's null-leg birth. No rewrite-time reconversion: rebuilding
+	// a seed here would stamp per-column nullability, contradicting the
+	// record-level nullable wrap the seed carries.
 	resultValue := sel.GetResultValue()
 
 	// The outer SelectExpression is INNER (outer-join semantics now live entirely in

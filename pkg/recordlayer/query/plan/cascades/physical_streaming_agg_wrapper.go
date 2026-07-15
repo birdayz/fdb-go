@@ -40,7 +40,7 @@ func (w *physicalStreamingAggWrapper) GetResultValue() values.Value {
 	// ([groupKeys, aggregates], the plan's single naming authority), so the resolver
 	// BAKES downstream references to ordinals at plan time (Java's getFieldNameToOrdinalMap).
 	// A downstream ref then reads the aggregateCursor's PositionalRow by Get(ordinal) — order,
-	// not spelling — instead of the untyped-QOV lazy GetByName that missed redundant name forms.
+	// not spelling — robust to redundant spellings of the same column.
 	return values.NewQuantifiedObjectValueOfType(values.UniqueCorrelationIdentifier(), w.plan.OutputRecordType())
 }
 

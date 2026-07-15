@@ -43,10 +43,8 @@ func (w *physicalFlatMapWrapper) ChildrenAsSet() bool { return false }
 // GetCorrelatedToWithoutChildren returns empty for join FlatMaps. This is
 // correct for joins — correlations flow through the quantifier children, and a
 // join's result is a merge of those children's bound rows, not an external
-// correlation. GetCorrelatedToOfValue reports nothing for a source-anchored join
-// result value (the AnchoredJoin gate in value_correlation.go, RFC-077 7.6,
-// successor of the retired opaque merge); a re-enumeration merge would report its aliases, but
-// those name the join's own (bound) legs, not external correlations. When
+// correlation. A merge result value's aliases
+// name the join's own (bound) legs, not external correlations. When
 // correlated subqueries are ported, the merge value's correlation contribution
 // must propagate genuinely-external aliases.
 func (w *physicalFlatMapWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
@@ -97,9 +95,8 @@ func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.
 // SCAN through a residual filter, which is enough for single-input sort elimination
 // (TestEndToEnd_SortElimThroughResidualFilter) — no join-ordering propagation needed.
 // Sound outer-ordering propagation THROUGH a join — derived from w.plan's actual outer,
-// not an arbitrary Reference member — is a NET-NEW capability (the retired
-// ImplementIndexScanRule never provided it either, so leaving it off is not a
-// retirement regression). It is deliberately deferred: reporting Unknown is always
+// not an arbitrary Reference member — is a NET-NEW capability no prior rule
+// provided either. It is deliberately deferred: reporting Unknown is always
 // sound (it only ever leaves a redundant sort, never removes a needed one), whereas a
 // wrong propagated ordering removes a needed sort and silently mis-orders rows. Keeping
 // Unknown is the conservative, correct choice; enabling join-sort-elimination is future

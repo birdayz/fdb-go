@@ -308,11 +308,11 @@ func (o *RichOrdering) bindingMapForExplain(explain string) []OrderingBinding {
 
 // orderingKeyFor resolves a requested-ordering part's Value to the ordering
 // set's key for it: the exact ExplainValue rendering first, then the
-// ordinal-FREE ColumnNameValue rendering (RFC-173 item C — a plan-time BAKED
+// ordinal-FREE ColumnNameValue rendering (a plan-time BAKED
 // reference renders "COL#2" while a provider's ordering key for the same
-// column is the lazy "COL"; the ordering match is a same-COLUMN question, and
-// the ordinal-free fallback reproduces exactly the name-level match the
-// retired lazy twin performed). ok=false when neither rendering is a known
+// column is the lazy "COL"; the ordering match is a same-COLUMN question, so
+// the ordinal-free rendering makes it name-level). ok=false when neither
+// rendering is a known
 // ordering key.
 func (o *RichOrdering) orderingKeyFor(v values.Value) (string, bool) {
 	k := values.ExplainValue(v)
