@@ -105,11 +105,13 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 
 	for i := range c.groupCols {
 		if i < len(entry.Key) {
-			// Normalize a UUID group key (tuple.UUID off the aggregate index)
-			// to the neutral [16]byte the value layer uses, matching the
-			// covering cursor — otherwise a residual HAVING/filter compare in
-			// cmpAny (which only knows [16]byte) would miss it.
-			slots[i] = tupleElementToUUID(entry.Key[i])
+			// Normalize the group key into the row domain, matching the
+			// covering cursor: tuple.UUID → [16]byte (otherwise a residual
+			// HAVING/filter compare in cmpAny, which only knows [16]byte,
+			// would miss it) and float32 → float64 (the base path widens
+			// FLOAT; a raw float32 group key would split sorts/dedup/joins
+			// against base-sourced rows).
+			slots[i] = tupleElementToRowValue(entry.Key[i])
 		}
 	}
 
@@ -1038,6 +1040,39 @@ func compareValues(a, b any) int {
 			}
 			return 0
 		}
+	case float32:
+		// Defense in depth: covering-index reads normalize float32 → float64 at
+		// the row boundary (tupleElementToRowValue), so this arm should not be
+		// reachable from production rows — but a float32 that slips through any
+		// other path must still compare numerically, not by the fmt fallback's
+		// lexical decimal string ("10.5" < "2.5").
+		av64 := float64(av)
+		if math.IsNaN(av64) {
+			break
+		}
+		bv := toFloat64(b)
+		if !math.IsNaN(bv) {
+			if av64 < bv {
+				return -1
+			}
+			if av64 > bv {
+				return 1
+			}
+			return 0
+		}
+	case bool:
+		// false < true — FDB tuple order (0x26 < 0x27), same as Java's
+		// Boolean.compare. The fmt fallback happens to get this right
+		// ("false" < "true" lexically), but only by accident; pin it.
+		if bv, ok := b.(bool); ok {
+			if av == bv {
+				return 0
+			}
+			if !av {
+				return -1
+			}
+			return 1
+		}
 	case string:
 		if bv, ok := b.(string); ok {
 			if av < bv {
@@ -1047,6 +1082,16 @@ func compareValues(a, b any) int {
 				return 1
 			}
 			return 0
+		}
+	case []byte:
+		// BYTES sorts by unsigned lexicographic byte order — the same order the
+		// FDB tuple byte-string encoding gives an indexed BYTES column, so an
+		// in-memory sort / merge / dedup of a non-indexed BYTES column agrees
+		// with an ordered index scan of the same data. Without this arm the
+		// fmt.Sprintf("%v") fallback below would compare decimal-list strings
+		// ("[0 1]" < "[0]" because ' ' < ']'), putting {0x02} after {0x0A}.
+		if bv, ok := b.([]byte); ok {
+			return bytes.Compare(av, bv)
 		}
 	case [16]byte:
 		// UUID sorts by unsigned big-endian bytes — the same order the tuple.UUID
@@ -1058,6 +1103,14 @@ func compareValues(a, b any) int {
 			return bytes.Compare(av[:], bv[:])
 		}
 	}
+	// Should-never-happen fallback: every type the row domain can carry (nil,
+	// int64/int32, float64/float32, string, []byte, [16]byte, bool) has a typed
+	// arm above, so for a well-typed query this is only reachable by a NaN sort
+	// key or a cross-type mismatch the planner's type checking excludes. It
+	// compares fmt.Sprintf("%v") strings LEXICALLY, which is NOT tuple order for
+	// anything numeric or binary — a typed arm must be added for any new row
+	// type before it can be sorted/merged. No error channel exists here
+	// (comparators return int); see F9b for making this loud.
 	as := fmt.Sprintf("%v", a)
 	bs := fmt.Sprintf("%v", b)
 	if as < bs {

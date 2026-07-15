@@ -30,6 +30,44 @@ fix reads Java first and ports Java's mechanism** — no invented shortcuts.
 
 ---
 
+## Root causes (why these exist)
+
+These 27 defects are not 27 accidents. They are five recurring structural
+patterns, each spawning a *family* of bugs. The meta-cause underneath all five:
+**this is a 1:1 Java port done at the STRUCTURE level but not the INVARIANT
+level.** The port faithfully copied Java's classes/rules/algorithm shapes, but
+Java's correctness *also* rests on invariants invisible in the class structure —
+the type system, the typed-proto continuations, the single value representation.
+Copy the structure, skip the invariant, then add extensions on top → green on the
+happy path, latent at every boundary. Test coverage is the *symptom* (dimensionally
+thin — every bug lives in an unprobed axis; two even pin the wrong answer), not
+the cause. The bugs were *written* because of these five patterns:
+
+1. **Go-only fast paths / extensions that don't preserve Java's invariants.**
+   The dominant pattern (5 of 8 themes). Java's Cascades has one way — sort via
+   index order, NLJ via per-pair `Comparisons`, typed-proto continuations. Go
+   bolted on shortcuts Java lacks: in-memory sort, hash-join fast path, JSON
+   continuations, an in-memory `leftOuter` flag, DISTINCT-elision heuristics.
+   Each extension owns the correctness Java's architecture gave for free, and each
+   dropped it. → F1, F2, F8, F9/F13, F14, F15, F7.
+2. **No single value-representation domain.** The same logical value has
+   different Go representations by path: `float32` (covering) vs `float64` (base),
+   `int32`→`int64` losing the INT type, `[]byte` vs `[16]byte`. Java has one
+   descriptor-shaped typed representation. Go never canonicalizes at the read
+   boundaries, so comparator/dedup/hash disagree across paths. → F5, F10, F14b, F17.
+3. **Resume state in memory instead of in the continuation.** `innerHadMatch`,
+   the OrElse decision, check-value handling live in cursor memory or JSON-lossy
+   blobs, not typed proto. Java's continuation IS the source of truth for resume.
+   "Cross-page resume ≠ single pass" is a whole class. → F1, F2, F4, F5, F24.
+4. **Structural proxies instead of algebraic properties.** Graefe's rule:
+   *properties derived from the expression tree, not imperative flags.* Go
+   substitutes a structural shortcut that approximates the property until an edge
+   diverges — guard on `len(Accessors)==1` not "root unpinned" (F0), plan equality
+   by range-type not comparand (F21), winner by map-iteration not cost (F20). → F0, F20, F21.
+5. **Type/index derivation not from the operand's static type.** Go decides
+   index family / operator / error behavior late or by the widened runtime type,
+   not statically like Java. F3 even crosses into the WIRE. → F3, F17, F18.
+
 ## Principles (the invariants being restored)
 
 1. **Cross-page resume is behaviorally identical to a single pass.** Every bit of
@@ -338,6 +376,44 @@ type. F3 is the one true wire divergence in this audit — fix it first.
 Correctness-first, contained-first, wire-first. Each fix: **read Java → port →
 revert-proven regression → full gate (Graefe/Torvalds/@claude/Codex) → commit.**
 Fable subagents do the coding; Graefe gates every query-engine change.
+
+### Systemic-first (root-cause order)
+
+Several findings are not independent — they collapse into a handful of **systemic
+chokepoints**, one per root-cause pattern. Fix the chokepoint and the dependent
+findings largely fall out; the residual per-finding fixes are then small. So we
+lead with the chokepoints:
+
+- **S1 — one value-canonicalization boundary (Pattern 2).** A single
+  `tupleElementToRowValue`-style normalizer that every read boundary (covering
+  read, base read, aggregate-index key, index-entry decode) routes through,
+  widening `float32→float64`, canonicalizing int/bytes/UUID representations. → collapses
+  **F10, F14b, part of F5**, and prevents the next representation bug. *(Landed as
+  part of C2: the covering-read normalizer + its reuse at the aggregate-index key.)*
+- **S2 — one total, tuple-order-faithful comparator (Patterns 1+2).**
+  `compareValues` has a typed arm for every row-domain type (agreeing with FDB
+  tuple order) and the residual `fmt` fallback dies loud (F9b). → collapses
+  **F8, F9/F13, F10-comparator**, and the `mergeSort`/DISTINCT paths that share it.
+  *(Arms landed in C2; loud residual is F9b.)*
+- **S3 — typed continuations end-to-end (Pattern 3).** Replace the JSON
+  aggregate continuation with a typed codec (no U+FFFD / type loss) and route
+  LEFT-OUTER/FlatMap resume through Java's `OrElse`/DefaultOnEmpty continuation
+  state instead of in-memory flags. → collapses **F4, F5, F1, F2, F24**. The
+  larger workstream — sequence F4/F5 (contained, typed agg codec) before
+  F1/F2/F24 (the FlatMap/OrElse lowering).
+- **S4 — property-derived guards, not structural proxies (Pattern 4).** Key each
+  guard/selection on the algebraic property: root-unpinned (F0), full comparand
+  equality (F21), cost-minimal deterministic winner (F20). Three sites, one
+  discipline — a themed batch.
+- **S5 — static-type-derived aggregate/index selection (Pattern 5).** Derive
+  index family / operator / error from the operand's static type at plan time:
+  permuted MIN/MAX (F3, WIRE), int32 `SUM_I` overflow (F17), MIN/MAX non-numeric
+  plan-time reject (F18). Themed batch; F3 first (wire).
+
+Residual (not part of a chokepoint): F7 (DISTINCT injective elision), F16/F25
+(guard comment + unit pin), F19 (index-orphan ERROR), F11/F12 (STARTS_WITH range,
+full-tree pushdown), F22/F23 (dead code), F26 (outerJoinCount, after S3's
+F1/F2/F24), F27 (cmpAny NaN).
 
 **F3 runs in parallel** (Graefe): the wire divergence is independent of items
 1–11, so it need not wait its ordinal position. **F26 sequences after F1/F2/F24**

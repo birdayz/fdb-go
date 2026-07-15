@@ -2502,6 +2502,152 @@ func TestCompareValues_Strings(t *testing.T) {
 	}
 }
 
+// BYTES must compare in unsigned lexicographic byte order — FDB tuple order —
+// not by the fmt fallback's decimal-list string ("[0 1]" < "[0]" because
+// ' ' < ']'). Regression: an unindexed ORDER BY on a BYTES column disagreed
+// with the same query's indexed plan (F9/F13).
+func TestCompareValues_Bytes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		a, b []byte
+		want int // sign
+	}{
+		{"single_bytes_numeric_not_lexical", []byte{0x02}, []byte{0x0A}, -1}, // fmt: "[2]" > "[10]"
+		{"prefix_sorts_first", []byte{0x00}, []byte{0x00, 0x01}, -1},         // fmt: "[0]" > "[0 1]"
+		{"high_byte_beats_longer", []byte{0xFF}, []byte{0x00, 0x01}, 1},
+		{"empty_before_zero", []byte{}, []byte{0x00}, -1},
+		{"equal", []byte{0x00, 0xFF}, []byte{0x00, 0xFF}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := compareValues(c.a, c.b)
+			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
+				t.Errorf("compareValues(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+			}
+			// Antisymmetry: the reversed call must flip the sign.
+			rev := compareValues(c.b, c.a)
+			if (got < 0 && rev <= 0) || (got > 0 && rev >= 0) || (got == 0 && rev != 0) {
+				t.Errorf("compareValues not antisymmetric: (a,b)=%d (b,a)=%d", got, rev)
+			}
+		})
+	}
+}
+
+// float32 must compare numerically (defense in depth behind the covering-read
+// normalization): the fmt fallback compared "10.5" < "2.5" lexically (F10).
+func TestCompareValues_Float32(t *testing.T) {
+	t.Parallel()
+	if compareValues(float32(10.5), float32(2.5)) <= 0 {
+		t.Fatal("float32 10.5 > 2.5 (was lexical \"10.5\" < \"2.5\")")
+	}
+	if compareValues(float32(2.5), float32(10.5)) >= 0 {
+		t.Fatal("float32 2.5 < 10.5")
+	}
+	if compareValues(float32(1.5), float64(1.5)) != 0 {
+		t.Fatal("float32(1.5) == float64(1.5) across widths")
+	}
+	if compareValues(float64(1.5), float32(1.5)) != 0 {
+		t.Fatal("float64(1.5) == float32(1.5) across widths")
+	}
+	if compareValues(float32(2.5), int64(3)) >= 0 {
+		t.Fatal("float32(2.5) < int64(3)")
+	}
+	if compareValues(int64(3), float32(2.5)) <= 0 {
+		t.Fatal("int64(3) > float32(2.5)")
+	}
+}
+
+// bool: false < true — FDB tuple order (0x26 < 0x27). Previously correct only
+// by lexical accident ("false" < "true" in the fmt fallback); now pinned.
+func TestCompareValues_Bool(t *testing.T) {
+	t.Parallel()
+	if compareValues(false, true) >= 0 {
+		t.Fatal("false < true")
+	}
+	if compareValues(true, false) <= 0 {
+		t.Fatal("true > false")
+	}
+	if compareValues(true, true) != 0 || compareValues(false, false) != 0 {
+		t.Fatal("equal bools == 0")
+	}
+}
+
+// --- covering-read row-domain normalization (F10) ---
+
+// tupleElementToRowValue must place index-entry elements in the SAME domain the
+// base-record path produces: float32 (32-bit tuple float) widens to float64
+// (values.ProtoScalarKindToRowValue widens FLOAT), tuple.UUID becomes the
+// neutral [16]byte, everything else passes through untouched.
+func TestTupleElementToRowValue(t *testing.T) {
+	t.Parallel()
+	if got := tupleElementToRowValue(float32(1.5)); got != float64(1.5) {
+		t.Fatalf("float32 → %T:%v, want float64:1.5", got, got)
+	}
+	u := tuple.UUID{0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00}
+	if got := tupleElementToRowValue(u); got != [16]byte(u) {
+		t.Fatalf("tuple.UUID → %T, want [16]byte", got)
+	}
+	for _, v := range []any{nil, int64(7), "s", true, float64(2.5)} {
+		if got := tupleElementToRowValue(v); got != v {
+			t.Fatalf("passthrough %T:%v changed to %T:%v", v, v, got, got)
+		}
+	}
+	// []byte passes through by identity (interface compare would fail on slices).
+	b := []byte{0x01}
+	if got, ok := tupleElementToRowValue(b).([]byte); !ok || &got[0] != &b[0] {
+		t.Fatalf("[]byte should pass through unchanged")
+	}
+}
+
+// buildCoveringLogicalRow must emit FLOAT slots as float64 — the covering row
+// and the base-record row must be interchangeable for compareValues,
+// distinctKey and join keys (a covering leg previously carried raw float32 and
+// never deduped/merged against a base-scan leg).
+func TestBuildCoveringLogicalRow_WidensFloat32(t *testing.T) {
+	t.Parallel()
+	logicalType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "F", FieldType: values.NotNullFloat, Ordinal: 1},
+	}}
+	// Index on F, PK ID: entry key (f), primary key (id).
+	pos := buildCoveringLogicalRow(
+		[]string{"F"}, []string{"ID"},
+		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
+		logicalType, []int{1, 0})
+	if got := pos.Slots[1]; got != float64(2.5) {
+		t.Fatalf("covering FLOAT slot = %T:%v, want float64:2.5 (base-record domain)", got, got)
+	}
+	if got := pos.Slots[0]; got != int64(1) {
+		t.Fatalf("covering PK slot = %T:%v, want int64:1", got, got)
+	}
+}
+
+// distinctKey %T-tags slot values, so a covering float32 and a base float64 of
+// the same number produced DIFFERENT keys — DISTINCT/UNION across a covering
+// leg and a base leg never deduped. With the boundary normalization both
+// produce the float64 key.
+func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
+	t.Parallel()
+	logicalType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "F", FieldType: values.NotNullFloat, Ordinal: 1},
+	}}
+	covering := QueryResult{Positional: buildCoveringLogicalRow(
+		[]string{"F"}, []string{"ID"},
+		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
+		logicalType, []int{1, 0})}
+	// The base-record path widens FLOAT to float64 (ProtoScalarKindToRowValue).
+	base := QueryResult{Positional: &PositionalRow{
+		Type:  logicalType,
+		Slots: []any{int64(1), float64(2.5)},
+	}}
+	if distinctKey(covering) != distinctKey(base) {
+		t.Fatalf("covering row key %q != base row key %q — dedup split across access paths",
+			distinctKey(covering), distinctKey(base))
+	}
+}
+
 // --- passesJoinPredicates unit tests ---
 
 func TestPassesJoinPredicates_Empty(t *testing.T) {
