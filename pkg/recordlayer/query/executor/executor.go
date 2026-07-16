@@ -3756,13 +3756,15 @@ func compareAny(a, b any) int {
 		return bytes.Compare(av[:], bv[:])
 	case []byte:
 		// BYTES/BINARY sorts by unsigned byte content (bytes.Compare) — same order
-		// as the FDB tuple encoding and predicates.cmpAny, so a MIN/MAX or
-		// aggregate-sort over a bytes value agrees with an ordered index scan.
-		// SQL MIN/MAX over a bare BYTES column is rejected at plan time (0A000,
-		// non-orderable, Java parity), so a plain []byte is not reachable via that
-		// path today — but WITHOUT this arm a []byte falls to `default: return 0`,
-		// silently reporting every bytes value equal and freezing the running
-		// extremum at the first row. Matches the [16]byte UUID arm above.
+		// as the FDB tuple encoding and predicates.cmpAny. Defensive/unreachable
+		// today, exactly like the string/bool/[16]byte arms above: compareAny's sole
+		// callers (streaming MIN/MAX, streaming_cursors.go) gate operands through
+		// isNumeric, which admits only int/float, so no []byte reaches here — and SQL
+		// MIN/MAX over a bare BYTES column is separately rejected at plan time (0A000,
+		// non-orderable, Java parity). The arm exists so that IF the numeric gate is
+		// relaxed or a new caller added, a []byte orders correctly instead of hitting
+		// `default: return 0` (silently equal, freezing the extremum). Symmetric with
+		// the [16]byte UUID arm; kept for that completeness, not a live path.
 		bv, ok := b.([]byte)
 		if !ok {
 			return 0
