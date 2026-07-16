@@ -2,6 +2,7 @@ package predicates
 
 import (
 	"errors"
+	"math"
 	"regexp"
 	"strings"
 	"testing"
@@ -1327,4 +1328,118 @@ func FuzzLikeMatchEscape(f *testing.F) {
 				pattern, s, escape, got, want)
 		}
 	})
+}
+
+// cmpAny must impose Java's Double.compare total order on floats: NaN is the
+// GREATEST value (NaN vs a number is never equal, so `NaN = 5.0` is false and
+// `NaN > 5.0` is true), NaN compares equal to NaN, and -0.0 sorts strictly
+// before 0.0 (so `-0.0 = 0.0` is FALSE, matching Double.equals /
+// doubleToLongBits). Native `<`/`>` comparison would report every NaN pair and
+// the ±0 pair as EQUAL, diverging from the Record Layer's Comparisons.
+func TestCmpAny_FloatTotalOrder(t *testing.T) {
+	t.Parallel()
+	negZero := math.Copysign(0, -1)
+	nan := math.NaN()
+	cases := []struct {
+		name string
+		a, b any
+		want int // sign
+		ok   bool
+	}{
+		{"nan_equals_nan", nan, nan, 0, true},
+		{"nan_greater_than_finite", nan, 5.0, 1, true},
+		{"finite_less_than_nan", 5.0, nan, -1, true},
+		{"nan_greater_than_neg", nan, -5.0, 1, true},
+		{"nan_greater_than_int_mixed", nan, int64(100), 1, true},
+		{"int_less_than_nan_mixed", int64(100), nan, -1, true},
+		// cmpAny is the PREDICATE comparator: -0.0 == +0.0 (IEEE numeric equality),
+		// so `-0.0 >= 0.0` keeps the -0.0 row (Go-correct vs Java, RFC-082). The SORT
+		// total order (values.CompareFloat64, -0.0 < 0.0) is tested separately in
+		// values.TestCompareFloat64 — the two deliberately differ on signed zero.
+		{"neg_zero_equals_pos_zero_predicate", negZero, 0.0, 0, true},
+		{"pos_zero_equals_neg_zero_predicate", 0.0, negZero, 0, true},
+		{"neg_zero_equals_itself", negZero, negZero, 0, true},
+		// Normal finite values are unaffected by the edge-value handling.
+		{"finite_ordering_unchanged", 2.5, 10.5, -1, true},
+		{"finite_equal_unchanged", 3.25, 3.25, 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := cmpAny(c.a, c.b)
+			if ok != c.ok {
+				t.Fatalf("cmpAny(%v, %v) ok=%v, want %v", c.a, c.b, ok, c.ok)
+			}
+			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
+				t.Errorf("cmpAny(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
+// The `=`/`!=`/`<`/`<=`/`>`/`>=` predicate outcomes on float edge values must
+// match Java: NaN (Comparisons.compareEquals uses Double.equals for `=`,
+// Comparisons.compare uses Double.compareTo for `<`/`>`; the two are
+// consistent) and signed zero.
+func TestComparison_EvalAgainst_FloatEdgeValues(t *testing.T) {
+	t.Parallel()
+	negZero := math.Copysign(0, -1)
+	nan := math.NaN()
+	eval := func(typ ComparisonType, left, right any) TriBool {
+		v, err := Comparison{Type: typ}.EvalAgainst(left, right)
+		if err != nil {
+			t.Fatalf("EvalAgainst(%v, %v, %v) error: %v", typ, left, right, err)
+		}
+		return v
+	}
+	cases := []struct {
+		name        string
+		typ         ComparisonType
+		left, right any
+		want        TriBool
+	}{
+		// NaN vs a number: not equal; NaN is greater.
+		{"nan_eq_num_false", ComparisonEquals, nan, 5.0, TriFalse},
+		{"nan_neq_num_true", ComparisonNotEquals, nan, 5.0, TriTrue},
+		{"nan_lt_num_false", ComparisonLessThan, nan, 5.0, TriFalse},
+		{"nan_le_num_false", ComparisonLessThanOrEq, nan, 5.0, TriFalse},
+		{"nan_gt_num_true", ComparisonGreaterThan, nan, 5.0, TriTrue},
+		{"nan_ge_num_true", ComparisonGreaterThanEq, nan, 5.0, TriTrue},
+		{"num_lt_nan_true", ComparisonLessThan, 5.0, nan, TriTrue},
+		{"num_gt_nan_false", ComparisonGreaterThan, 5.0, nan, TriFalse},
+		// NaN vs NaN: equal under compare; both strict orderings false.
+		{"nan_eq_nan_true", ComparisonEquals, nan, nan, TriTrue},
+		{"nan_neq_nan_false", ComparisonNotEquals, nan, nan, TriFalse},
+		{"nan_lt_nan_false", ComparisonLessThan, nan, nan, TriFalse},
+		{"nan_le_nan_true", ComparisonLessThanOrEq, nan, nan, TriTrue},
+		{"nan_ge_nan_true", ComparisonGreaterThanEq, nan, nan, TriTrue},
+		// Signed zero: -0.0 != 0.0 (Double.equals) and -0.0 < 0.0.
+		// Predicate: -0.0 == +0.0 (IEEE numeric equality), so `=` TRUE, `!=` FALSE,
+		// `<` FALSE, `<=` TRUE, `>` FALSE, `>=` TRUE — Go keeps the -0.0 row on
+		// `v >= 0.0` where Java (Double.compare) drops it (RFC-082 Go-correct).
+		{"negzero_eq_zero_true", ComparisonEquals, negZero, 0.0, TriTrue},
+		{"negzero_neq_zero_false", ComparisonNotEquals, negZero, 0.0, TriFalse},
+		{"negzero_lt_zero_false", ComparisonLessThan, negZero, 0.0, TriFalse},
+		{"negzero_le_zero_true", ComparisonLessThanOrEq, negZero, 0.0, TriTrue},
+		{"negzero_gt_zero_false", ComparisonGreaterThan, negZero, 0.0, TriFalse},
+		{"negzero_ge_zero_true", ComparisonGreaterThanEq, negZero, 0.0, TriTrue},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := eval(c.typ, c.left, c.right)
+			if got != c.want {
+				t.Errorf("%s: EvalAgainst(%v, %v) = %v, want %v",
+					c.name, c.left, c.right, triStr(got), triStr(c.want))
+			}
+		})
+	}
+}
+
+func triStr(t TriBool) string {
+	if t == TriUnknown {
+		return "UNKNOWN"
+	}
+	if *t {
+		return "TRUE"
+	}
+	return "FALSE"
 }

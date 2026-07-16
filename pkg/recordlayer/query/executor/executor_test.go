@@ -2610,6 +2610,48 @@ func TestCompareValues_NumericTypes(t *testing.T) {
 	}
 }
 
+// The sort/merge/dedup comparator must impose the SAME total order the FDB
+// tuple encoding gives an indexed FLOAT column, so an in-memory ORDER BY and
+// an ordered index scan of the same data agree. That order is Java's
+// Double.compare: -0.0 sorts strictly before 0.0, NaN sorts LAST (greatest),
+// and NaN compares equal to NaN. A native float `<`/`>`/`==` comparator gets
+// both edge values wrong (-0.0 == 0.0, and NaN != NaN with `<`/`>` both false).
+func TestCompareValues_FloatTotalOrder(t *testing.T) {
+	t.Parallel()
+	nan := math.NaN()
+	cases := []struct {
+		name string
+		a, b any
+		want int // sign: -1 a<b, 0 equal, +1 a>b
+	}{
+		{"neg_zero_before_pos_zero", math.Copysign(0, -1), 0.0, -1},
+		{"pos_zero_after_neg_zero", 0.0, math.Copysign(0, -1), 1},
+		{"neg_zero_equals_itself", math.Copysign(0, -1), math.Copysign(0, -1), 0},
+		{"pos_zero_equals_itself", 0.0, 0.0, 0},
+		{"nan_greater_than_finite", nan, 5.0, 1},
+		{"finite_less_than_nan", 5.0, nan, -1},
+		{"nan_equals_nan", nan, nan, 0},
+		{"nan_greater_than_neg", nan, -5.0, 1},
+		{"nan_greater_than_inf", nan, math.Inf(1), 1},
+		{"nan_greater_than_int", nan, int64(100), 1},
+		{"int_less_than_nan", int64(100), nan, -1},
+		// float32 arm mirrors float64 on both edge values.
+		{"f32_neg_zero_before_pos_zero", float32(math.Copysign(0, -1)), float32(0.0), -1},
+		{"f32_nan_greater_than_finite", float32(math.NaN()), float32(5.0), 1},
+		// Normal finite values are unaffected by the edge-value handling.
+		{"finite_ordering_unchanged", 2.5, 10.5, -1},
+		{"finite_equal_unchanged", 3.25, 3.25, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := compareValues(c.a, c.b)
+			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
+				t.Errorf("compareValues(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
 func TestCompareValues_CrossTypeNotEqual(t *testing.T) {
 	t.Parallel()
 	// int vs string must NOT return 0 (the NaN bug would make them "equal")

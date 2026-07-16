@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math"
 	"slices"
 	"strconv"
 
@@ -1109,16 +1108,11 @@ func compareValues(a, b any) int {
 			}
 			return 0
 		default:
-			bf := toFloat64(b)
-			if !math.IsNaN(bf) {
-				af := float64(av)
-				if af < bf {
-					return -1
-				}
-				if af > bf {
-					return 1
-				}
-				return 0
+			// int64 vs a floating operand: promote and use the
+			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
+			// A non-numeric b falls through to the fmt fallback.
+			if bf, ok := toFloat64Scalar(b); ok {
+				return values.CompareFloat64(float64(av), bf)
 			}
 		}
 	case int32:
@@ -1141,51 +1135,33 @@ func compareValues(a, b any) int {
 			}
 			return 0
 		default:
-			bf := toFloat64(b)
-			if !math.IsNaN(bf) {
-				af := float64(av)
-				if af < bf {
-					return -1
-				}
-				if af > bf {
-					return 1
-				}
-				return 0
+			// int32 vs a floating operand: promote and use the
+			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
+			// A non-numeric b falls through to the fmt fallback.
+			if bf, ok := toFloat64Scalar(b); ok {
+				return values.CompareFloat64(float64(av), bf)
 			}
 		}
 	case float64:
-		if math.IsNaN(av) {
-			break
-		}
-		bv := toFloat64(b)
-		if !math.IsNaN(bv) {
-			if av < bv {
-				return -1
-			}
-			if av > bv {
-				return 1
-			}
-			return 0
+		// Java-faithful float total order (values.CompareFloat64):
+		// NaN sorts greatest and NaN==NaN, -0.0 < 0.0 — matching the
+		// FDB tuple order an indexed FLOAT column uses, so an in-memory
+		// sort/merge/dedup agrees with an ordered index scan on both
+		// edge values. A non-numeric b is a cross-type mismatch the
+		// planner's type checking excludes; fall through to the fmt
+		// fallback.
+		if bf, ok := toFloat64Scalar(b); ok {
+			return values.CompareFloat64(av, bf)
 		}
 	case float32:
 		// Defense in depth: covering-index reads normalize float32 → float64 at
 		// the row boundary (tupleElementToRowValue), so this arm should not be
 		// reachable from production rows — but a float32 that slips through any
 		// other path must still compare numerically, not by the fmt fallback's
-		// lexical decimal string ("10.5" < "2.5").
-		av64 := float64(av)
-		if math.IsNaN(av64) {
-			break
-		}
-		bv := toFloat64(b)
-		if !math.IsNaN(bv) {
-			if av64 < bv {
-				return -1
-			}
-			if av64 > bv {
-				return 1
-			}
-			return 0
+		// lexical decimal string ("10.5" < "2.5"). Same Java-faithful float
+		// total order as the float64 arm (NaN greatest, -0.0 < 0.0).
+		if bf, ok := toFloat64Scalar(b); ok {
+			return values.CompareFloat64(float64(av), bf)
 		}
 	case bool:
 		// false < true — FDB tuple order (0x26 < 0x27), same as Java's

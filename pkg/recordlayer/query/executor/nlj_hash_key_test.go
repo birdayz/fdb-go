@@ -220,16 +220,17 @@ func TestNLJCursor_HashPath_StringKeys(t *testing.T) {
 }
 
 // TestNLJCursor_HashPath_NaNKeys pins hash/linear AGREEMENT on NaN join
-// keys. cmpAny's <,>-based equality makes NaN compare EQUAL to every float
-// (neither < nor > holds) — that is the linear path's current semantics of
-// record — while a NaN Go map key matches NOTHING (inserted buckets are
-// unreachable, probes always miss). No bucket layout can represent "matches
-// everything", so NaN must abandon the hash: an inner-side NaN declines the
-// index at build, an outer-side NaN degrades that probe to the full
-// candidate list. The expected row counts below follow cmpAny; if cmpAny's
-// NaN equality ever changes, these counts change WITH it — the invariant
-// under test is that the ≥100-row hash path returns exactly what the linear
-// path returns.
+// keys. cmpAny follows Java's Double semantics (values.CompareFloat64):
+// NaN never equals a non-NaN float (NaN is the greatest value, so
+// `NaN = 5.0` is false), and NaN equals NaN. A NaN Go map key, meanwhile,
+// matches NOTHING through the hash (its bucket is unreachable, probes
+// always miss), so NaN must abandon the hash entirely: an inner-side NaN
+// declines the index at build, an outer-side NaN degrades that probe to
+// the full candidate list — and in both cases the per-pair predicate
+// re-check (cmpAny) is the sole authority on which pairs match. The
+// invariant under test is that the ≥100-row hash path returns exactly what
+// the linear path returns, and that both agree with Java: NaN matches only
+// another NaN, never a number.
 func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 	t.Parallel()
 
@@ -250,13 +251,14 @@ func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
 		defer c.Close()
 		if c.hashIndex != nil {
-			t.Fatal("an inner NaN key must DECLINE the hash index — its bucket would be unreachable while cmpAny matches it against every probe")
+			t.Fatal("an inner NaN key must DECLINE the hash index — its bucket would be unreachable, so the whole join falls back to the linear predicate")
 		}
 		results := collectCursor(t, c)
-		// Linear semantics: int64(5) matches float64(5) AND the NaN key
-		// (cmpAny returns equal for NaN vs any float).
-		if len(results) != 2 {
-			t.Fatalf("got %d rows, want 2 (float64(5) and the NaN inner key both cmpAny-equal int64(5))", len(results))
+		// Java-faithful linear semantics: int64(5) matches float64(5) only;
+		// the NaN inner key does NOT equal int64(5) (NaN vs a number is never
+		// equal), so it is not a match.
+		if len(results) != 1 {
+			t.Fatalf("got %d rows, want 1 (only float64(5) equals int64(5); the NaN inner key does not)", len(results))
 		}
 	})
 
@@ -276,9 +278,40 @@ func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 			t.Fatal("clean float inner keys must build the hash — only the NaN PROBE degrades")
 		}
 		results := collectCursor(t, c)
-		// Linear semantics: a NaN probe cmpAny-equals EVERY float inner key.
-		if len(results) != 120 {
-			t.Fatalf("got %d rows, want 120 (a NaN probe cmpAny-equals every float inner key)", len(results))
+		// Java-faithful linear semantics: a NaN probe equals NO non-NaN float
+		// (NaN is the greatest value, never equal to a finite number). The
+		// degraded full-candidate list is re-checked per pair and matches none.
+		if len(results) != 0 {
+			t.Fatalf("got %d rows, want 0 (a NaN probe equals no numeric inner key)", len(results))
+		}
+	})
+
+	t.Run("NaN matches NaN", func(t *testing.T) {
+		t.Parallel()
+		// The positive edge: NaN = NaN is TRUE (Double.compare(NaN,NaN)==0).
+		// An inner NaN declines the hash, so the linear predicate decides —
+		// and it must match the NaN outer against exactly the NaN inner key,
+		// never against the finite floats.
+		legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullDouble, values.NotNullDouble)
+		pred := nljKeyEqPred(qovA, qovB, values.NotNullDouble, values.NotNullDouble)
+		innerRows := make([]QueryResult, 120)
+		for i := range innerRows {
+			key := float64(i)
+			if i == 7 {
+				key = math.NaN()
+			}
+			innerRows[i] = ojLegQR(t, legB, key, int64(i*10))
+		}
+		outerRows := []QueryResult{ojLegQR(t, legA, math.NaN(), int64(50))}
+		c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
+			"A", "B", []predicates.QueryPredicate{pred}, seed, EmptyEvaluationContext(), nil)
+		defer c.Close()
+		if c.hashIndex != nil {
+			t.Fatal("an inner NaN key must DECLINE the hash index")
+		}
+		results := collectCursor(t, c)
+		if len(results) != 1 {
+			t.Fatalf("got %d rows, want 1 (NaN outer equals only the NaN inner key)", len(results))
 		}
 	})
 }
