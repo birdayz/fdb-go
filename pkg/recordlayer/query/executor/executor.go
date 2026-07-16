@@ -3754,6 +3754,20 @@ func compareAny(a, b any) int {
 			return 0
 		}
 		return bytes.Compare(av[:], bv[:])
+	case []byte:
+		// BYTES/BINARY sorts by unsigned byte content (bytes.Compare) — same order
+		// as the FDB tuple encoding and predicates.cmpAny, so a MIN/MAX or
+		// aggregate-sort over a bytes value agrees with an ordered index scan.
+		// SQL MIN/MAX over a bare BYTES column is rejected at plan time (0A000,
+		// non-orderable, Java parity), so a plain []byte is not reachable via that
+		// path today — but WITHOUT this arm a []byte falls to `default: return 0`,
+		// silently reporting every bytes value equal and freezing the running
+		// extremum at the first row. Matches the [16]byte UUID arm above.
+		bv, ok := b.([]byte)
+		if !ok {
+			return 0
+		}
+		return bytes.Compare(av, bv)
 	default:
 		return 0
 	}

@@ -491,6 +491,30 @@ func TestCompareAny_Bool(t *testing.T) {
 	}
 }
 
+func TestCompareAny_Bytes(t *testing.T) {
+	t.Parallel()
+	// BYTES compares by unsigned byte content (F46). Without the []byte arm these
+	// fall to compareAny's `default: return 0` and silently report equal, which
+	// would freeze a MIN/MAX running extremum at the first row.
+	if compareAny([]byte{1, 2}, []byte{1, 3}) >= 0 {
+		t.Fatal("{1,2} should be < {1,3}")
+	}
+	if compareAny([]byte{1, 3}, []byte{1, 2}) <= 0 {
+		t.Fatal("{1,3} should be > {1,2}")
+	}
+	if compareAny([]byte{1, 2}, []byte{1, 2}) != 0 {
+		t.Fatal("{1,2} should equal {1,2}")
+	}
+	// A shorter prefix sorts before its extension.
+	if compareAny([]byte{1}, []byte{1, 0}) >= 0 {
+		t.Fatal("{1} should be < {1,0}")
+	}
+	// High byte compares UNSIGNED (0xFF > 0x01), not sign-extended.
+	if compareAny([]byte{0xFF}, []byte{0x01}) <= 0 {
+		t.Fatal("{0xFF} should be > {0x01} (unsigned byte order)")
+	}
+}
+
 func TestCompareAny_MixedTypes(t *testing.T) {
 	t.Parallel()
 	if compareAny(int64(1), "hello") != 0 {
