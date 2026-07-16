@@ -496,9 +496,16 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 // int64 and float64 across rows. Java never sees that mix — its encapsulation
 // wraps the operand in PromoteValue, so MIN_D receives doubles only. Until Go
 // grows plan-time operand promotion, the same numeric promotion is applied here
-// PER PAIR (widest float type present wins), which computes exactly what Java
-// computes over the promoted operand — including the lossy corners (long→double
-// beyond 2^53, long→float beyond 2^24 round identically in both).
+// PER PAIR (widest float type present wins), which computes what Java computes
+// over the promoted operand for two-type streams (promotion is monotone, so
+// pairwise and whole-stream promotion select the same extremum; long→double
+// beyond 2^53 and long→float beyond 2^24 round identically in both). Two
+// precision corners remain where PAIRWISE differs from Java's STATIC promotion,
+// both scoped to the RFC-083 PromoteValue follow-up: an all-int-branch group
+// emits int64 where Java emits double (value-equal below 2^53, Go more precise
+// above), and in a three-type stream an int > 2^24 paired against a float32
+// BEFORE any float64 arrives rounds long→float where Java's static DOUBLE lane
+// would round long→double. No-crash, no-drop corners only.
 //
 // For FLOAT/DOUBLE this MUST use Go's math.Min / math.Max, NOT a total-order
 // comparator. Go's math.Min/math.Max have special-cases identical to Java's
