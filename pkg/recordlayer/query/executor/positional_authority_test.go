@@ -43,7 +43,7 @@ func TestPositionalAuthority_ScalarElement(t *testing.T) {
 
 	c, err := newFlatMapCursor(
 		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
-		outerCorr, innerCorr, mixed, false, recordlayer.ExecuteProperties{},
+		outerCorr, innerCorr, mixed, recordlayer.ExecuteProperties{},
 	)
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)
@@ -188,7 +188,7 @@ func TestPositionalAuthority_NullElement(t *testing.T) {
 	)
 	c, err := newFlatMapCursor(
 		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
-		outerCorr, innerCorr, mixed, false, recordlayer.ExecuteProperties{},
+		outerCorr, innerCorr, mixed, recordlayer.ExecuteProperties{},
 	)
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)

@@ -67,52 +67,12 @@ func TestDefaultOnEmpty_DefaultRow_ResumableAndNoReEmit(t *testing.T) {
 	}
 }
 
-// TestFlatMapLeftOuter_ResumedMidInner_NoSpuriousNull pins F2: an in-memory
-// leftOuter FlatMap resumed MID-inner (a value was already emitted for this outer
-// on a prior page, so an inner continuation is pending) must NOT fabricate a
-// (outer, NULL) row when the resumed inner is now immediately exhausted — the
-// outer already matched. Pre-fix, innerHadMatch reset to false on resume and the
-// null-extension fired spuriously. (Production LEFT OUTER now lowers to
-// DefaultOnEmpty/OrElse whose serialized USE_INNER state carries this decision;
-// this keeps the residual in-memory cursor correct.)
-func TestFlatMapLeftOuter_ResumedMidInner_NoSpuriousNull(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-
-	outerPK := tuple.Tuple{int64(5)}
-	outerType := values.NewRecordType("", false, []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-	})
-	outerPos := NewPositionalRow(outerType)
-	outerPos.Set(0, int64(5))
-	outerRow := QueryResult{Positional: outerPos, PrimaryKey: outerPK}
-
-	c := &flatMapCursor{
-		outerCursor: recordlayer.FromList([]QueryResult{outerRow}),
-		innerPlan:   plans.NewRecordQueryExplodePlan(nil), // resumed PAST its last row → empty
-		store:       nil,
-		evalCtx:     EmptyEvaluationContext(),
-		outerAlias:  values.NamedCorrelationIdentifier("O"),
-		innerAlias:  values.NamedCorrelationIdentifier("I"),
-		resultValue: values.LiteralValue(int64(1)),
-		leftOuter:   true,
-		props:       recordlayer.ExecuteProperties{},
-		// Resume state: this outer was resumed mid-inner (inner continuation
-		// pending) and the saved check value matches this outer's PK.
-		initialInnerCont:  []byte("stale-inner-pos"),
-		hasPendingInner:   true,
-		pendingCheckValue: outerPK.Pack(),
-	}
-	defer func() { _ = c.Close() }()
-
-	res, err := c.OnNext(ctx)
-	if err != nil {
-		t.Fatalf("OnNext: %v", err)
-	}
-	if res.HasNext() {
-		t.Fatalf("a resumed-mid-inner outer that already matched must NOT re-emit a null-extended row; got %+v", res.GetValue())
-	}
-}
+// (The former TestFlatMapLeftOuter_ResumedMidInner_NoSpuriousNull pinned the F2
+// spurious-null resume bug on the cursor's in-memory leftOuter/innerHadMatch flag
+// pair. That flag pair was dead in production — LEFT OUTER lowers to
+// DefaultOnEmpty/OrElse, whose serialized USE_INNER state carries the decision
+// resume-safely (pinned by TestDefaultOnEmpty_DefaultRow_ResumableAndNoReEmit
+// above) — and has been deleted along with this test.)
 
 // TestFlatMap_CheckValueMismatch_RestartsNotErrors pins F24(1): on a check-value
 // mismatch (outer row changed/deleted between transactions), the FlatMap must
@@ -133,7 +93,6 @@ func TestFlatMap_CheckValueMismatch_RestartsNotErrors(t *testing.T) {
 		outerAlias:        values.NamedCorrelationIdentifier("O"),
 		innerAlias:        values.NamedCorrelationIdentifier("I"),
 		resultValue:       values.LiteralValue(int64(1)),
-		leftOuter:         false,
 		props:             recordlayer.ExecuteProperties{},
 		initialInnerCont:  []byte("stale"),
 		hasPendingInner:   true,

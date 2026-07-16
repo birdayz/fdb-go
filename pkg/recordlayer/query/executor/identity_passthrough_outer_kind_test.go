@@ -43,7 +43,7 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 	// set (from downstreamLegWindowsTyped), outerBakedType nil (leg-independent inner).
 	gatedOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, "A", "B", seed)
 	cGated, err := newFlatMapCursor(recordlayer.FromList([]QueryResult{}), gatedOuter, legIndependentInner, nil,
-		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, false, recordlayer.ExecuteProperties{})
+		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{})
 	if err != nil {
 		t.Fatalf("newFlatMapCursor (gated): %v", err)
 	}
@@ -84,7 +84,7 @@ func TestIdentityPassThroughDiscriminatesOuterKind(t *testing.T) {
 	)
 	nameModelOuter := plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, nil, plans.JoinInner, "A", "B", nameModelRV)
 	cName, err := newFlatMapCursor(recordlayer.FromList([]QueryResult{}), nameModelOuter, legIndependentInner, nil,
-		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, false, recordlayer.ExecuteProperties{})
+		EmptyEvaluationContext(), mergedCorr, existCorr, identityRV, recordlayer.ExecuteProperties{})
 	if err != nil {
 		t.Fatalf("newFlatMapCursor (name-model): %v", err)
 	}

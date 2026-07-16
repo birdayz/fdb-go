@@ -1863,9 +1863,6 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}
 	case *plans.RecordQueryFlatMapPlan:
-		if t.IsLeftOuter() {
-			_, _ = h.Write([]byte{1})
-		}
 		if rv := t.GetResultValue(); rv != nil {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}

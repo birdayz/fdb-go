@@ -22,6 +22,12 @@ import (
 // proto (outer+inner+check_value). check_value stores the outer row's
 // PK bytes; on resume, verifies the outer row hasn't changed between
 // transactions (concurrent-modification detection).
+// LEFT-OUTER note: this cursor has NO leftOuter/innerHadMatch state. LEFT-OUTER
+// null-extension is emergent from the inner plan being wrapped in DefaultOnEmpty
+// (OrElse continuation carries the empty-vs-nonempty decision, resume-safe), as in
+// Java — see rule_implement_nested_loop_join.go. The earlier in-memory flag pair
+// re-decided the extension per page (the F2 spurious-null resume bug) and was
+// removed as dead code once the OrElse lowering became the only production path.
 type flatMapCursor struct {
 	outerCursor recordlayer.RecordCursor[QueryResult]
 	innerPlan   plans.RecordQueryPlan
@@ -30,12 +36,10 @@ type flatMapCursor struct {
 	outerAlias  values.CorrelationIdentifier
 	innerAlias  values.CorrelationIdentifier
 	resultValue values.Value
-	leftOuter   bool
 	props       recordlayer.ExecuteProperties
 
 	innerCursor    recordlayer.RecordCursor[QueryResult]
 	currentOuter   *QueryResult
-	innerHadMatch  bool
 	outerExhausted bool
 	closed         bool
 
@@ -106,7 +110,6 @@ func newFlatMapCursor(
 	evalCtx *EvaluationContext,
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
-	leftOuter bool,
 	props recordlayer.ExecuteProperties,
 ) (*flatMapCursor, error) {
 	build, err := newOrdinalJoinBuild(resultValue, nil)
@@ -193,7 +196,6 @@ func newFlatMapCursor(
 		outerAlias:               outerAlias,
 		innerAlias:               innerAlias,
 		resultValue:              resultValue,
-		leftOuter:                leftOuter,
 		props:                    props,
 		build:                    build,
 		outerBakedType:           outerBakedType,
@@ -220,7 +222,6 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				return recordlayer.RecordCursorResult[QueryResult]{}, err
 			}
 			if result.HasNext() {
-				c.innerHadMatch = true
 				innerRow := result.GetValue()
 
 				outputRow, err := c.computeResult(*c.currentOuter, innerRow)
@@ -242,18 +243,6 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				// position so the next page resumes correctly.
 				cont := c.buildContinuation(innerCont)
 				return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
-			}
-
-			// LEFT OUTER: emit outer row with NULLs when inner had no match.
-			// The nil inner pointer becomes the NULL leg for an ordinal-build
-			// cursor and a nil inner binding for the non-build path.
-			if c.leftOuter && !c.innerHadMatch {
-				outputRow, err := c.computeResultLegs(*c.currentOuter, nil)
-				if err != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, err
-				}
-				cont := c.buildContinuation(innerCont)
-				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
 		}
 
@@ -277,7 +266,6 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 
 		outerRow := outerResult.GetValue()
 		c.currentOuter = &outerRow
-		c.innerHadMatch = false
 		c.priorOuterContinuation = c.lastOuterContinuation
 		c.lastOuterContinuation = outerResult.GetContinuation()
 
@@ -334,17 +322,6 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			innerContBytes = c.initialInnerCont
 			c.initialInnerCont = nil
 			c.hasPendingInner = false
-			// Resuming this outer MID-inner: a mid-inner continuation is only
-			// written after this outer already emitted ≥1 inner row (a value emit),
-			// so the outer already matched. Seed innerHadMatch=true — otherwise a
-			// resumed inner that is now immediately exhausted would re-decide "no
-			// match" and fabricate a spurious (outer, NULL) LEFT-OUTER row for an
-			// outer that DID match (the F2 in-memory-had-match resume bug). The
-			// Java-faithful production path lowers LEFT OUTER to DefaultOnEmpty/
-			// OrElse (whose serialized USE_INNER state carries this decision), so
-			// production never depends on this flag; this keeps the in-memory
-			// cursor correct for its white-box/test use.
-			c.innerHadMatch = true
 		}
 		innerCursor, err := ExecutePlan(ctx, c.innerPlan, c.store, correlatedCtx, innerContBytes, c.props)
 		if err != nil {

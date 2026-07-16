@@ -533,7 +533,7 @@ func TestFlatMap_ComputeResult_OrdinalBuild(t *testing.T) {
 	newCursor := func(t *testing.T) *flatMapCursor {
 		t.Helper()
 		c, err := newFlatMapCursor(nil, nil, nil, nil, EmptyEvaluationContext(),
-			qovA.Correlation, qovB.Correlation, seed, false, recordlayer.ExecuteProperties{})
+			qovA.Correlation, qovB.Correlation, seed, recordlayer.ExecuteProperties{})
 		if err != nil {
 			t.Fatalf("newFlatMapCursor: %v", err)
 		}
@@ -785,7 +785,7 @@ func TestFlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 	)
 
 	c, err := newFlatMapCursor(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
-		outerCorr, values.NamedCorrelationIdentifier("B"), foldedRV, false,
+		outerCorr, values.NamedCorrelationIdentifier("B"), foldedRV,
 		recordlayer.ExecuteProperties{})
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)

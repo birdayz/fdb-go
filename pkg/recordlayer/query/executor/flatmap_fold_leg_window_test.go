@@ -59,7 +59,7 @@ func TestCursorResolvesFoldPositionally(t *testing.T) {
 	existCorr := values.NamedCorrelationIdentifier("EX")
 	c, err := newFlatMapCursor(
 		recordlayer.FromList([]QueryResult{}), step1, scanB, nil,
-		EmptyEvaluationContext(), mergedCorr, existCorr, foldRV, false,
+		EmptyEvaluationContext(), mergedCorr, existCorr, foldRV,
 		recordlayer.ExecuteProperties{})
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)

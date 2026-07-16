@@ -2069,7 +2069,6 @@ func executeFlatMap(
 		outerCursor, p.GetOuter(), p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetResultValue(),
-		p.IsLeftOuter(),
 		nestedProps,
 	)
 	if err != nil {

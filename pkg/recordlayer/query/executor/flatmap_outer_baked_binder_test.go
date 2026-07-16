@@ -227,7 +227,7 @@ func TestLoudAdaptationFailure(t *testing.T) {
 	})
 	c, err := newFlatMapCursor(outer, nil, innerPlan, nil, EmptyEvaluationContext(),
 		qovA.Correlation, values.NamedCorrelationIdentifier("B"),
-		values.NewQuantifiedObjectValue(qovA.Correlation), false, recordlayer.ExecuteProperties{})
+		values.NewQuantifiedObjectValue(qovA.Correlation), recordlayer.ExecuteProperties{})
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestComputeResult_PassThrough(t *testing.T) {
 		t.Helper()
 		c, err := newFlatMapCursor(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
 			qovA.Correlation, qovB.Correlation,
-			values.NewQuantifiedObjectValue(qovA.Correlation), false, recordlayer.ExecuteProperties{})
+			values.NewQuantifiedObjectValue(qovA.Correlation), recordlayer.ExecuteProperties{})
 		if err != nil {
 			t.Fatalf("newFlatMapCursor: %v", err)
 		}

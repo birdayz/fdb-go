@@ -15,6 +15,12 @@ import (
 // The key difference from RecordQueryNestedLoopJoinPlan: the inner plan
 // is parameterized by the outer row via correlation bindings. This
 // enables targeted index probes on the inner side (O(N×logM) vs O(N×M)).
+// LEFT-OUTER note: the plan carries NO leftOuter flag. LEFT-OUTER semantics are
+// emergent from the inner being wrapped in DefaultOnEmpty (whose OrElse
+// continuation makes the null-extension resume-safe), exactly like Java's
+// RecordQueryFlatMapPlan — see rule_implement_nested_loop_join.go's lowering. An
+// earlier in-memory leftOuter/innerHadMatch flag pair re-decided the extension per
+// page and was the F2 spurious-null resume bug; it was removed as dead code.
 type RecordQueryFlatMapPlan struct {
 	outer                        RecordQueryPlan
 	inner                        RecordQueryPlan
@@ -22,7 +28,6 @@ type RecordQueryFlatMapPlan struct {
 	innerAlias                   values.CorrelationIdentifier
 	resultValue                  values.Value
 	inheritOuterRecordProperties bool
-	leftOuter                    bool
 }
 
 func NewRecordQueryFlatMapPlan(
@@ -55,16 +60,13 @@ func (p *RecordQueryFlatMapPlan) GetResultValue() values.Value                { 
 func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 	return p.inheritOuterRecordProperties
 }
-func (p *RecordQueryFlatMapPlan) IsLeftOuter() bool   { return p.leftOuter }
-func (p *RecordQueryFlatMapPlan) SetLeftOuter(v bool) { p.leftOuter = v }
 
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
 	if !ok {
 		return false
 	}
-	return p.outerAlias == o.outerAlias && p.innerAlias == o.innerAlias &&
-		p.leftOuter == o.leftOuter
+	return p.outerAlias == o.outerAlias && p.innerAlias == o.innerAlias
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
@@ -73,11 +75,7 @@ func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte(p.outerAlias.Name()))
 	h.Write([]byte{0})
 	h.Write([]byte(p.innerAlias.Name()))
-	var flags byte
-	if p.leftOuter {
-		flags |= 1
-	}
-	h.Write([]byte{0, flags})
+	h.Write([]byte{0})
 	return h.Sum64()
 }
 

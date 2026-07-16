@@ -206,7 +206,7 @@ func TestMergeBuild_FlatMapBuilds(t *testing.T) {
 	c, err := newFlatMapCursor(
 		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
 		qovA.Correlation, qovB.Correlation,
-		s3MergeRC(qovA, qovB), false, recordlayer.ExecuteProperties{},
+		s3MergeRC(qovA, qovB), recordlayer.ExecuteProperties{},
 	)
 	if err != nil {
 		t.Fatalf("newFlatMapCursor: %v", err)
