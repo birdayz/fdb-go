@@ -7651,6 +7651,15 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 		return extractOutputColumns(o.Input)
 	case *logical.LogicalFilter:
 		return extractOutputColumns(o.Input)
+	case *logical.LogicalCTE:
+		// A CTE carrier's output is its MAIN query's output — a nested-WITH
+		// body (`c2(a) AS (WITH c3 … SELECT x FROM c3)`) wraps its SELECT in
+		// LogicalCTE(c3, Main=SELECT). Without this arm the c2(a) column-alias
+		// projection in translateCTE never applied (extractOutputColumns
+		// returned nil ≠ len(aliases)) and c2's output kept the body's inner
+		// spelling — a later `SELECT a FROM c2` died at runtime with an
+		// ordinal-resolution error on the aliased name.
+		return extractOutputColumns(o.Main)
 	}
 	return nil
 }

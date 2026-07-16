@@ -878,6 +878,27 @@ func buildCTEColumnSource(
 	if md == nil || cteName == "" || cteQuery == nil {
 		return semantic.ScopeSource{}, false
 	}
+	// A NESTED WITH on the body (`c2 AS (WITH c3 … SELECT … FROM c3)`): the
+	// body's FROM names resolve against the nested CTEs FIRST (lexical
+	// scoping — the same shadowing the plan build applies via
+	// buildCTEBodyQuery). Derive each nested CTE's schema recursively into a
+	// SCOPED extension of priorCTEs (declaration order, so a later nested CTE
+	// sees an earlier one) and resolve the body against that. Without this the
+	// registration declined (body table `c3` unknown), the enclosing CTE fell
+	// to the ON-only class, and every later NAMED read of it failed to plan.
+	if ctes := cteQuery.Ctes(); ctes != nil {
+		scoped := make(map[string]semantic.ScopeSource, len(priorCTEs)+2)
+		for k, vv := range priorCTEs {
+			scoped[k] = vv
+		}
+		for _, nq := range ctes.AllNamedQuery() {
+			nname := functions.FullIdToName(nq.GetName())
+			if src, ok := buildCTEColumnSource(md, nname, nq.Query(), scoped); ok {
+				scoped[strings.ToUpper(nname)] = applyCTEColumnAliases(src, nq.GetColumnAliases())
+			}
+		}
+		priorCTEs = scoped
+	}
 	// The CTE body is either a simple QueryTermDefault (non-recursive) or a
 	// SetQuery / UNION ALL (recursive). For recursive CTEs, derive the column
 	// schema from the seed (left) branch of the UNION.

@@ -200,3 +200,26 @@ tests:
     rows:
       - [3, 30]
       - [4, 40]
+  # RFC-180 regression pin (reviewer-caught restore-composition bug): a VALID
+  # nested-WITH CTE body must not evict the ENCLOSING CTE from scope. The
+  # nested build snapshots/restores the CTE maps; buildCTEBodySelfHidden
+  # restores the enclosing name by mutating the map OBJECT it captured — a
+  # clone-and-reassign restore stranded that write in an orphaned map, so c2
+  # vanished after its own body build and the main query's NAMED column reads
+  # over c2 failed (SELECT * near-missed it: no column resolution). Both the
+  # main query and a later sibling reference c2 by column here.
+  - query: |-
+      WITH c1(w) AS (SELECT id FROM t),
+           c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3)
+      SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
+    rows:
+      - [1, 1]
+      - [2, 2]
+  - query: |-
+      WITH c1(w) AS (SELECT id FROM t WHERE id >= 3),
+           c2(a) AS (WITH c3(x) AS (SELECT id FROM t WHERE id <= 2) SELECT x FROM c3),
+           c4(b) AS (SELECT a FROM c2)
+      SELECT b FROM c4 ORDER BY b
+    rows:
+      - [1]
+      - [2]

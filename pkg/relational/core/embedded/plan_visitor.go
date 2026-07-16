@@ -1354,11 +1354,36 @@ func (v *PlanVisitor) buildCTEBodyQuery(inner antlrgen.IQueryContext) (logical.L
 	if inner.Ctes() == nil {
 		return v.VisitQueryBody(inner.QueryExpressionBody())
 	}
-	savedScopes := maps.Clone(v.cteScopes)
-	savedOn := maps.Clone(v.cteOnScopes)
-	savedBodies := maps.Clone(v.cteBodies)
+	// Restore by MUTATING the original map objects, never by reassigning the
+	// fields to clones: this build runs inside buildCTEBodySelfHidden's
+	// self-hide window, whose own deferred restore writes the enclosing CTE's
+	// entry back into the map OBJECT it captured. A field reassignment here
+	// would strand that restore in an orphaned map — the enclosing CTE would
+	// vanish from scope after its own body build (a later reference to it
+	// resolves against the base catalog instead: unknown table, or a
+	// same-named base table silently). The two restore mechanisms compose
+	// only on shared object identity.
+	origScopes, origOn, origBodies := v.cteScopes, v.cteOnScopes, v.cteBodies
+	savedScopes := maps.Clone(origScopes)
+	savedOn := maps.Clone(origOn)
+	savedBodies := maps.Clone(origBodies)
+	restoreScope := func(dst, src map[string]semantic.ScopeSource) {
+		if dst == nil {
+			return
+		}
+		clear(dst)
+		maps.Copy(dst, src)
+	}
 	defer func() {
-		v.cteScopes, v.cteOnScopes, v.cteBodies = savedScopes, savedOn, savedBodies
+		restoreScope(origScopes, savedScopes)
+		restoreScope(origOn, savedOn)
+		if origBodies != nil {
+			clear(origBodies)
+			maps.Copy(origBodies, savedBodies)
+		}
+		// Field identity: the nested VisitQuery may have lazily allocated a
+		// map onto a nil field; point the fields back at the originals.
+		v.cteScopes, v.cteOnScopes, v.cteBodies = origScopes, origOn, origBodies
 	}()
 	return v.VisitQuery(inner)
 }
