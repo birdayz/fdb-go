@@ -838,6 +838,21 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 				lowIsNullBoundary = true
 				hasLow = true
 			}
+		default:
+			// Mirror Java ScanComparisons.InequalityRangeCombiner.addComparison
+			// (ScanComparisons.java:648) `default: throw`. The only INEQUALITY-typed
+			// comparison the endpoint combiner cannot turn into a low/high bound is
+			// STARTS_WITH: it is a PREFIX_STRING range handled ABOVE as the sole
+			// inequality (len(ineqs)==1). If STARTS_WITH arrives here it was merged
+			// with a second inequality on the same column — that intersection is not
+			// a representable single scan range, so fail LOUD rather than drop the
+			// bound and silently return a superset. (NOT_EQUALS is ComparisonType.NONE
+			// in Java — residual, never sargable into a scan range — so it does not
+			// reach this combiner; any other type arriving here is likewise an
+			// unexpected-invariant bug to surface, not to paper over.)
+			return recordlayer.TupleRange{}, fmt.Errorf(
+				"scanComparisonsToTupleRange: unexpected inequality comparison %v combined with another inequality on the same column (not a representable single scan range)",
+				ineq.Type)
 		}
 	}
 

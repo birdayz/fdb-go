@@ -843,6 +843,45 @@ func TestScanComparisonsToTupleRange_EqualityPlusStartsWith(t *testing.T) {
 	}
 }
 
+// TestScanComparisonsToTupleRange_StartsWithPlusInequality_Loud pins F39: a
+// STARTS_WITH merged with a SECOND inequality on the same column (so the
+// len(ineqs)==1 PREFIX_STRING fast-path is skipped and STARTS_WITH reaches the
+// endpoint combiner) must FAIL LOUD, mirroring Java
+// ScanComparisons.InequalityRangeCombiner.addComparison's `default: throw`.
+// STARTS_WITH ∩ (> v) is not a representable single scan range; the old code had
+// no STARTS_WITH case and no default in the endpoint switch, so it silently
+// dropped the STARTS_WITH bound and returned a superset (every row matching the
+// bare `> v`, ignoring the prefix).
+//
+// Revert-proof: without the `default: return error` arm, scanComparisonsToTupleRange
+// returns (range, nil) with only the `> v` bound applied — err==nil and the prefix
+// silently lost. The test asserts a non-nil error naming the STARTS_WITH type.
+func TestScanComparisonsToTupleRange_StartsWithPlusInequality_Loud(t *testing.T) {
+	t.Parallel()
+
+	// One inequality ComparisonRange carrying BOTH comparisons on the same column.
+	ineq := predicates.EmptyComparisonRange()
+	resSw := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
+	if !resSw.Ok {
+		t.Fatal("merge STARTS_WITH failed")
+	}
+	resBoth := resSw.Range.Merge(&predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue("abd")})
+	if !resBoth.Ok {
+		t.Fatal("merge STARTS_WITH + GREATER_THAN failed")
+	}
+	if got := len(resBoth.Range.GetInequalityComparisons()); got != 2 {
+		t.Fatalf("expected 2 inequalities in the merged range, got %d", got)
+	}
+
+	_, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{resBoth.Range}, nil)
+	if err == nil {
+		t.Fatal("STARTS_WITH combined with a second inequality must fail loud (Java default: throw), got nil error")
+	}
+	if !strings.Contains(err.Error(), "unexpected inequality comparison") {
+		t.Fatalf("error=%q, want it to mention the unexpected inequality comparison", err.Error())
+	}
+}
+
 func TestParameterBinding_ScanComparison(t *testing.T) {
 	t.Parallel()
 
