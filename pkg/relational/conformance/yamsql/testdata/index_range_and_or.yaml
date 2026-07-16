@@ -2,14 +2,18 @@
 # Tests index scan selection for range predicates (>=, <=) combined
 # with AND and OR, mirroring Java's compound comparison range behavior.
 
-schema: |
+# RFC-180 Y3: this file was authored in a foreign format (`schema:` +
+# per-test `name:`) and NEVER LOADED — the runner errored on the missing
+# schema_template since introduction. Converted to the runner's format.
+name: index_range_and_or
+schema_template: |
   CREATE TABLE t1 (
     id BIGINT NOT NULL,
     col1 BIGINT,
     col2 BIGINT,
     PRIMARY KEY (id)
-  );
-  CREATE INDEX i1 ON t1 (col1);
+  )
+  CREATE INDEX i1 ON t1 (col1)
 
 setup:
   - INSERT INTO t1 VALUES (1, 10, 1)
@@ -27,8 +31,8 @@ setup:
   - INSERT INTO t1 VALUES (13, 20, 13)
 
 tests:
-  - name: equality_filter_via_index
-    query: SELECT * FROM t1 WHERE col1 = 20 ORDER BY id
+  # equality_filter_via_index
+  - query: SELECT * FROM t1 WHERE col1 = 20 ORDER BY id
     rows:
       - [6, 20, 6]
       - [7, 20, 7]
@@ -39,8 +43,8 @@ tests:
       - [12, 20, 12]
       - [13, 20, 13]
 
-  - name: and_range_both_bounds
-    query: SELECT * FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
+  # and_range_both_bounds
+  - query: SELECT * FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
     rows:
       - [1, 10, 1]
       - [2, 10, 2]
@@ -56,8 +60,8 @@ tests:
       - [12, 20, 12]
       - [13, 20, 13]
 
-  - name: and_range_lower_bound_only
-    query: SELECT * FROM t1 WHERE col1 >= 15 ORDER BY id
+  # and_range_lower_bound_only
+  - query: SELECT * FROM t1 WHERE col1 >= 15 ORDER BY id
     rows:
       - [6, 20, 6]
       - [7, 20, 7]
@@ -68,8 +72,8 @@ tests:
       - [12, 20, 12]
       - [13, 20, 13]
 
-  - name: and_range_upper_bound_only
-    query: SELECT * FROM t1 WHERE col1 <= 15 ORDER BY id
+  # and_range_upper_bound_only
+  - query: SELECT * FROM t1 WHERE col1 <= 15 ORDER BY id
     rows:
       - [1, 10, 1]
       - [2, 10, 2]
@@ -77,12 +81,12 @@ tests:
       - [4, 10, 4]
       - [5, 10, 5]
 
-  - name: and_range_empty_result
-    query: SELECT * FROM t1 WHERE col1 >= 30 ORDER BY id
+  # and_range_empty_result
+  - query: SELECT * FROM t1 WHERE col1 >= 30 ORDER BY id
     rows: []
 
-  - name: case_when_with_in_list
-    query: |
+  # case_when_with_in_list
+  - query: |
       SELECT id,
              CASE WHEN col1 = 10 THEN 100
                   WHEN col2 IN (6, 7, 8, 9) THEN 200
@@ -105,8 +109,8 @@ tests:
       - [12, 300]
       - [13, 300]
 
-  - name: case_when_without_else_returns_null
-    query: |
+  # case_when_without_else_returns_null
+  - query: |
       SELECT id,
              CASE WHEN col1 = 10 THEN 100
                   WHEN col2 IN (6, 7, 8, 9) THEN 200
@@ -128,8 +132,8 @@ tests:
       - [12, null]
       - [13, null]
 
-  - name: or_with_equality_on_indexed_col
-    query: SELECT id, col1 FROM t1 WHERE col1 = 10 OR col1 = 20 ORDER BY id
+  # or_with_equality_on_indexed_col
+  - query: SELECT id, col1 FROM t1 WHERE col1 = 10 OR col1 = 20 ORDER BY id
     rows:
       - [1, 10]
       - [2, 10]
@@ -145,15 +149,15 @@ tests:
       - [12, 20]
       - [13, 20]
 
-  - name: and_equality_with_secondary_filter
-    query: SELECT id, col1, col2 FROM t1 WHERE col1 = 20 AND col2 > 10 ORDER BY id
+  # and_equality_with_secondary_filter
+  - query: SELECT id, col1, col2 FROM t1 WHERE col1 = 20 AND col2 > 10 ORDER BY id
     rows:
       - [11, 20, 11]
       - [12, 20, 12]
       - [13, 20, 13]
 
-  - name: not_equal_filter
-    query: SELECT id, col1 FROM t1 WHERE col1 <> 10 ORDER BY id
+  # not_equal_filter
+  - query: SELECT id, col1 FROM t1 WHERE col1 <> 10 ORDER BY id
     rows:
       - [6, 20]
       - [7, 20]

@@ -24,9 +24,11 @@ setup:
       (5, 2, 150),
       (6, 3, 1000)
 tests:
-  # Single aggregate from dedicated index
+  # Single aggregate from dedicated index. Note: the token
+  # "AggregateIndexScan" never existed in any explain output; the
+  # operator renders as AggregateIndex(...) (plans/aggregate_index.go).
   - query: SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
-    plan_contains: AggregateIndexScan
+    plan_contains: AggregateIndex
     rows:
       - [1, 600]
       - [2, 200]
@@ -34,7 +36,7 @@ tests:
 
   # Single COUNT from dedicated index
   - query: SELECT customer_id, COUNT(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
-    plan_contains: AggregateIndexScan
+    plan_contains: AggregateIndex
     rows:
       - [1, 3]
       - [2, 2]
@@ -42,7 +44,7 @@ tests:
 
   # SUM with WHERE on group key (bounded AISCAN)
   - query: SELECT customer_id, SUM(amount) FROM orders WHERE customer_id = 1 GROUP BY customer_id
-    plan_contains: AggregateIndexScan
+    plan_contains: AggregateIndex
     rows:
       - [1, 600]
 

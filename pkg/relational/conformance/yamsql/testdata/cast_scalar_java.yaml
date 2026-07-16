@@ -64,6 +64,8 @@ tests:
     rows:
       - [null]
 
-  # STRING → INT error (non-numeric)
+  # STRING → INT error (non-numeric). 22018 does not exist in Java's
+  # ErrorCode enum; Java CastValue → SemanticException.INVALID_CAST →
+  # 22F3H (ErrorCode.java:89).
   - query: SELECT CAST(str_col AS BIGINT) FROM test_cast WHERE id = 1
-    error: "22018"
+    error: "22F3H"

@@ -11,11 +11,11 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2516 query/assertion cases** across 18 feature areas.
+**319 scenarios · 2517 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
-| Aggregates & GROUP BY | 49 | 301 |
+| Aggregates & GROUP BY | 49 | 302 |
 | Joins | 60 | 264 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
 | CTEs | 12 | 85 |
@@ -53,7 +53,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `aggregate_index_having` | 2 | Aggregate index with HAVING filter |
 | `aggregate_index_multi_group` | 1 | Aggregate index with multi-column GROUP BY |
 | `aggregate_index_sum` | 2 | SUM aggregate index via DDL |
-| `aggregate_index_update` | 5 | Aggregate index correctness after UPDATE |
+| `aggregate_index_update` | 6 | Aggregate index correctness after UPDATE |
 | `aggregate_null_edge` | 7 | Aggregate NULL edge cases |
 | `aggregate_nulls` | 9 | SQL-spec aggregate NULL semantics hardened in swingshift-35 (c370213e): |
 | `aggregate_order_by_java` | 6 | Aggregate queries with ORDER BY. |

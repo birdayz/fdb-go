@@ -18,10 +18,12 @@ setup:
       (4, 2, 5, 30, 5),
       (5, 3, 10, 10, 0)
 tests:
-  # SUM of expression (qty * unit_price)
+  # SUM of expression (qty * unit_price). Original pins (650/615/650)
+  # were hand-math errors: 2·100 + 3·50 + 1·200 + 5·30 + 10·10 = 800
+  # (the per-group stanza below sums to 800 too).
   - query: SELECT SUM(qty * unit_price) FROM line_items
     rows:
-      - [650]
+      - [800]
 
   # SUM of expression per group
   - query: SELECT order_id, SUM(qty * unit_price) AS total FROM line_items GROUP BY order_id ORDER BY order_id
@@ -30,10 +32,10 @@ tests:
       - [2, 350]
       - [3, 100]
 
-  # SUM with subtraction (net = qty*price - discount)
+  # SUM with subtraction (net = qty*price - discount): 800 - 35 = 765.
   - query: SELECT SUM(qty * unit_price - discount) FROM line_items
     rows:
-      - [615]
+      - [765]
 
   # COUNT with expression in HAVING
   - query: SELECT order_id, COUNT(*) FROM line_items GROUP BY order_id HAVING SUM(qty * unit_price) > 200 ORDER BY order_id
@@ -56,4 +58,4 @@ tests:
   # Multiple expression aggregates
   - query: SELECT SUM(qty), SUM(unit_price), SUM(qty * unit_price), SUM(discount) FROM line_items
     rows:
-      - [21, 390, 650, 35]
+      - [21, 390, 800, 35]

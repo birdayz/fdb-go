@@ -12,18 +12,18 @@ setup:
 tests:
   # Single-column UPDATE
   - query: UPDATE t SET x = x + 1 WHERE id = 1
-    rows_affected: 1
+    rowcount: 1
   - query: SELECT x FROM t WHERE id = 1
     rows:
       - [101]
   # Reset for multi-column test
   - query: UPDATE t SET x = 100 WHERE id = 1
-    rows_affected: 1
+    rowcount: 1
   # Multi-column UPDATE: y = y - x should use ORIGINAL x (100),
   # not the already-updated x (180).
   # x = 100 + 80 = 180, y = 80 - 100 = -20
   - query: UPDATE t SET x = x + y, y = y - x WHERE id = 1
-    rows_affected: 1
+    rowcount: 1
   - query: SELECT x, y FROM t WHERE id = 1
     rows:
       - [180, -20]

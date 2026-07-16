@@ -13,6 +13,7 @@
 package yamsql
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,6 +40,19 @@ type Scenario struct {
 type Test struct {
 	// Query is the SQL to execute.
 	Query string `yaml:"query"`
+	// Exec is an authoring alias for Query for non-query DML steps
+	// (`- exec: UPDATE …`). Load normalizes it into Query, so every
+	// downstream consumer reads Query only. Exactly one of query/exec may
+	// be set. HISTORY: this field did not exist for the corpus's first
+	// months — the YAML unmarshaller silently DROPPED `exec:` keys, so
+	// every such stanza ran as an EMPTY statement that "succeeded" without
+	// executing any DML, and the scenario's post-DML expectations verified
+	// nothing. That silent hole is why Load now rejects unknown fields.
+	Exec string `yaml:"exec"`
+	// Rowcount, if set on a non-query statement, asserts the driver-reported
+	// affected-row count. Pointer so an explicit `rowcount: 0` is
+	// distinguishable from absent. (Silently ignored before the same fix.)
+	Rowcount *int64 `yaml:"rowcount"`
 	// Rows is the expected ordered result set. Each inner sequence is
 	// one row of column values. Use nil/~ for SQL NULL.
 	Rows [][]any `yaml:"rows"`
@@ -86,13 +100,20 @@ func (t Test) EffectiveErrorCode() string {
 }
 
 // Load parses a scenario from a YAML file.
+//
+// Decoding is STRICT: an unknown field is a load error, never a silent no-op.
+// The corpus shipped for months with `exec:`/`rowcount:` stanzas the struct
+// didn't have — the unmarshaller dropped the keys, the "statements" ran empty,
+// and the scenarios' post-DML assertions verified nothing while green.
 func Load(path string) (*Scenario, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	var s Scenario
-	if err := yaml.Unmarshal(data, &s); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&s); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if s.SchemaTemplate == "" {
@@ -100,6 +121,29 @@ func Load(path string) (*Scenario, error) {
 	}
 	if s.Name == "" {
 		s.Name = strings.TrimSuffix(filepath.Base(path), ".yaml")
+	}
+	for i := range s.Tests {
+		t := &s.Tests[i]
+		switch {
+		case t.Query != "" && t.Exec != "":
+			return nil, fmt.Errorf("%s: tests[%d]: query and exec are mutually exclusive", path, i)
+		case t.Query == "" && t.Exec == "":
+			return nil, fmt.Errorf("%s: tests[%d]: one of query/exec is required", path, i)
+		case t.Exec != "":
+			if IsQuery(t.Exec) {
+				return nil, fmt.Errorf("%s: tests[%d]: exec is for non-query statements; use query: for %q", path, i, t.Exec)
+			}
+			if len(t.Rows) != 0 {
+				return nil, fmt.Errorf("%s: tests[%d]: exec cannot expect rows", path, i)
+			}
+			t.Query, t.Exec = t.Exec, ""
+		}
+		if t.Rowcount != nil && IsQuery(t.Query) {
+			return nil, fmt.Errorf("%s: tests[%d]: rowcount is only valid on non-query statements", path, i)
+		}
+		if t.Rowcount != nil && t.EffectiveErrorCode() != "" {
+			return nil, fmt.Errorf("%s: tests[%d]: rowcount and error assertions are mutually exclusive", path, i)
+		}
 	}
 	return &s, nil
 }

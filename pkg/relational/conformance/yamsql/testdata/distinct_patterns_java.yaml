@@ -27,19 +27,22 @@ tests:
       - ['B']
       - ['C']
 
-  # DISTINCT includes NULL as a distinct value
+  # DISTINCT includes NULL as a distinct value. Java's default for
+  # ascending ORDER BY is NULLS FIRST (ParseHelpers.java:167-172 —
+  # isNullsLast = isDescending); Go matches.
   - query: SELECT DISTINCT cat FROM t ORDER BY cat
     rows:
+      - [null]
       - ['A']
       - ['B']
       - ['C']
-      - [null]
 
-  # DISTINCT on multiple columns
+  # DISTINCT on multiple columns. ASC NULLS FIRST: NULL val sorts
+  # before non-NULL within the same cat.
   - query: SELECT DISTINCT cat, val FROM t WHERE cat IS NOT NULL ORDER BY cat, val
     rows:
-      - ['A', 10]
       - ['A', null]
+      - ['A', 10]
       - ['B', 20]
       - ['B', 30]
       - ['C', 20]
@@ -51,21 +54,26 @@ tests:
       - [40]
       - [60]
 
-  # DISTINCT preserves only unique rows (full row)
+  # DISTINCT preserves only unique rows (full row). ASC NULLS FIRST
+  # on both keys: NULL cat rows first (NULL val before 10), then a
+  # NULL val leads each cat group.
   - query: SELECT DISTINCT cat, val FROM t ORDER BY cat, val
     rows:
-      - ['A', 10]
+      - [null, null]
+      - [null, 10]
       - ['A', null]
+      - ['A', 10]
       - ['B', 20]
       - ['B', 30]
       - ['C', 20]
-      - [null, 10]
-      - [null, null]
 
-  # COUNT(DISTINCT col) — Go extension
+  # COUNT(DISTINCT col): the pinned rows came from the removed legacy
+  # hash-dedup extension (RFC-145 removed the interpreter pipeline).
+  # Both engines now reject — UNSUPPORTED_QUERY 0AF00 for non-ALL
+  # aggregators (ExpressionVisitor.java:353). DISTINCT aggregates via
+  # Cascades is tracked feature work.
   - query: SELECT COUNT(DISTINCT cat) FROM t
-    rows:
-      - [3]
+    error_code: "0AF00"
 
   # DISTINCT + LIMIT
   - query: SELECT DISTINCT val FROM t WHERE val IS NOT NULL ORDER BY val LIMIT 2

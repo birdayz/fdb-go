@@ -164,16 +164,21 @@ tests:
       - ['2024-01-01', 1]
       - ['2024-03-15', 1]
       - ['2024-06-20', 1]
-  # DISTINCT on DATE column.
+  # DISTINCT on DATE column. No ORDER BY — scan-order output is legal;
+  # distinct preserves scan order.
   - query: SELECT DISTINCT d FROM Events WHERE d IS NOT NULL
+    unordered: true
     rows:
       - ['2024-01-01']
       - ['2024-03-15']
       - ['2024-06-20']
-  # COUNT(DISTINCT d) — counts unique non-NULL date values.
+  # COUNT(DISTINCT d): the previously pinned rows came from the removed
+  # legacy hash-dedup extension (RFC-145 removed the interpreter
+  # pipeline). Both engines now reject — UNSUPPORTED_QUERY 0AF00 for
+  # non-ALL aggregators (ExpressionVisitor.java:353). DISTINCT
+  # aggregates via Cascades is tracked feature work.
   - query: SELECT COUNT(DISTINCT d) FROM Events
-    rows:
-      - [3]
+    error_code: "0AF00"
   # IN operator with temporal literals.
   - query: SELECT COUNT(*) FROM Events WHERE d IN ('2024-03-15', '2024-06-20')
     rows:

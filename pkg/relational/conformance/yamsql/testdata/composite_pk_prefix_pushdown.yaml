@@ -138,13 +138,13 @@ tests:
     rows: []
 
   # -------------------------------------------------------------------
-  # Type-mismatch on the leading PK col: `WHERE a = 'notanint'`. The
-  # extractor bails (LiteralMatchesPKKind fails), falling to the
-  # scan which surfaces 22000 via evalPredicate.
+  # Type-mismatch on the leading PK col: `WHERE a = 'notanint'`.
+  # Java RelOpValue promoteOperands → COMPARISON_OF_INCOMPATIBLE_TYPES
+  # → 42804; Go matches exactly.
   # -------------------------------------------------------------------
 
   - query: SELECT a, b FROM kv2 WHERE a = 'notanint'
-    error_code: "22000"
+    error_code: "42804"
 
   # -------------------------------------------------------------------
   # UPDATE / DELETE via pure-prefix pushdown.
