@@ -223,3 +223,16 @@ tests:
     rows:
       - [1]
       - [2]
+  # Codex-caught: an UNDERIVABLE nested CTE (join-shaped body) shadowing an
+  # outer same-name CTE must not leave the OUTER schema visible to the
+  # enclosing body — before the fix the enclosing body's reads validated
+  # against outer c1(w)'s schema and baked foreign ordinals over the inner's
+  # row (silent wrong slot). With the shadow eviction the shape declines
+  # LOUD: join-bodied CTE schema derivation is the documented ON-only reach
+  # gap, so c2's registration declines and the named read cannot plan.
+  # Correct-or-loud; rows ([1,1],[2,2]) when join-bodied derivation lands.
+  - query: |-
+      WITH c1(w) AS (SELECT id FROM t),
+           c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM c1 WHERE id <= 2)
+      SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
+    error_code: "0AF00"

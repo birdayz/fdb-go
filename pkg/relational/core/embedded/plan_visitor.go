@@ -210,11 +210,25 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				v.cteScopes[upper] = src
+				// SHADOWING an enclosing same-name CTE across derivability
+				// classes: the inner registration must also EVICT the outer's
+				// entry from the OPPOSITE map, or later resolution consults
+				// the stale outer schema through the map this registration
+				// did not write (false 42703 in JOIN ON / wrong slot —
+				// silent misread). Mirrors the catalog path's opposite-map
+				// deletions.
+				delete(v.cteOnScopes, upper)
 			} else {
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
 				// resolvable — or LOUDLY dropped (marker) — never silent.
 				registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes)
+				// Opposite-map eviction, ON-only arm: an underivable inner
+				// shadowing a DERIVABLE outer must remove the outer's
+				// cteScopes entry, or the body/main resolves named reads
+				// against the stale outer schema (the twin of
+				// the derivable arm's eviction above).
+				delete(v.cteScopes, upper)
 			}
 			// Eagerly build the CTE body plan so scalar subqueries
 			// that reference this CTE can wrap themselves with it.

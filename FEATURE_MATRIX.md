@@ -11,14 +11,14 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2520 query/assertion cases** across 18 feature areas.
+**319 scenarios · 2522 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
 | Aggregates & GROUP BY | 49 | 302 |
 | Joins | 60 | 264 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
-| CTEs | 12 | 87 |
+| CTEs | 12 | 88 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 8 | 48 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
@@ -28,7 +28,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | NULL handling | 5 | 26 |
 | NULL handling & boolean logic | 2 | 48 |
 | Index usage | 9 | 162 |
-| Types | 12 | 144 |
+| Types | 12 | 145 |
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
@@ -204,7 +204,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 
 | Scenario | Cases | What it pins |
 |---|--:|---|
-| `cte` | 23 | WITH ... |
+| `cte` | 24 | WITH ... |
 | `cte_aggregate` | 4 | CTE materialization + GROUP BY aggregation. |
 | `cte_error_codes` | 6 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | CTE patterns from Java's cte.yamsql. |
@@ -389,7 +389,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `type_coercion_java` | 11 | Implicit type coercion in comparisons |
 | `type_mismatch_alignment` | 7 | Java's ExceptionUtil.translateErrorCode maps |
 | `type_promotion` | 8 | Verifies implicit type promotion in comparisons and arithmetic. |
-| `uuid_column` | 5 | UUID column type. |
+| `uuid_column` | 6 | UUID column type. |
 
 ## Keys & primary keys
 

@@ -895,6 +895,14 @@ func buildCTEColumnSource(
 			nname := functions.FullIdToName(nq.GetName())
 			if src, ok := buildCTEColumnSource(md, nname, nq.Query(), scoped); ok {
 				scoped[strings.ToUpper(nname)] = applyCTEColumnAliases(src, nq.GetColumnAliases())
+			} else {
+				// A DECLARED nested name SHADOWS an outer same-name CTE even
+				// when its schema is not derivable (join-shaped body):
+				// leaving the cloned outer entry in place validated the
+				// enclosing body against the OUTER schema and baked its
+				// ordinals over the inner's row — silent wrong slot. Absent
+				// from the map = resolve loud, never stale.
+				delete(scoped, strings.ToUpper(nname))
 			}
 		}
 		priorCTEs = scoped

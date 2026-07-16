@@ -68,6 +68,19 @@ func (e *NumericRangeOverflowError) Error() string {
 
 type SumOverflowError struct{}
 
+// rejectUnsupportedResume converts a non-empty incoming continuation on a
+// cursor shape with NO continuation handling into a typed decline. These
+// cursors previously DROPPED the bytes and restarted from row 0 — inside a
+// resumed branch-tagged concat that is an infinite repeat (a VALUES branch
+// re-emits its rows on every page) or silent duplicates, never an error
+// Correct-or-loud until each shape gains real resume.
+func rejectUnsupportedResume(continuation []byte, shape string) error {
+	if len(continuation) == 0 {
+		return nil
+	}
+	return &UnsupportedContinuationError{Shape: shape}
+}
+
 // UnsupportedContinuationError reports a resume attempt on a cursor shape
 // that has no continuation support yet (RFC-180 WS-A follow-ups). The driver
 // maps it to SQLSTATE 0A000 — a typed decline, never a silent wrong start
@@ -120,6 +133,9 @@ func ExecutePlan(
 	case *plans.RecordQueryStreamingAggregationPlan:
 		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
 	case *plans.RecordQueryExplodePlan:
+		if err := rejectUnsupportedResume(continuation, "explode"); err != nil {
+			return nil, err
+		}
 		return executeExplode(p, evalCtx, props)
 	case *plans.RecordQueryDeletePlan:
 		return executeDelete(ctx, p, store, evalCtx, continuation, props)
@@ -128,12 +144,21 @@ func ExecutePlan(
 	case *plans.RecordQueryUpdatePlan:
 		return executeUpdate(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTempTableScanPlan:
+		if err := rejectUnsupportedResume(continuation, "temp-table scan"); err != nil {
+			return nil, err
+		}
 		return executeTempTableScan(p, evalCtx, props)
 	case *plans.RecordQueryTempTableInsertPlan:
 		return executeTempTableInsert(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTableFunctionPlan:
+		if err := rejectUnsupportedResume(continuation, "table function"); err != nil {
+			return nil, err
+		}
 		return executeTableFunction(p, evalCtx, props)
 	case *plans.RecordQueryValuesPlan:
+		if err := rejectUnsupportedResume(continuation, "VALUES"); err != nil {
+			return nil, err
+		}
 		return executeValues(p, evalCtx)
 	case *plans.RecordQueryRecursiveLevelUnionPlan:
 		return executeRecursiveLevelUnion(ctx, p, store, evalCtx, continuation, props)

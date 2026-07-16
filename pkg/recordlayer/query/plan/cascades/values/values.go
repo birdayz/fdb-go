@@ -3152,16 +3152,22 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 		// (UUID.fromString; invalid → SemanticException INVALID_UUID_VALUE).
 		// Same routine and wording as Go's PromoteValue UUID arm — Java
 		// routes CAST and promotion through the one helper, so must we.
+		// Every failure is a TYPED InvalidCastError (→ 22F3H): the codebase's
+		// generic fall-through-NULL for unknown sources is wrong here — Java
+		// has no non-string coercion to UUID at all, so CAST(bigint AS UUID)
+		// silently NULLing every row was a silent-wrong.
 		switch val := v.(type) {
 		case string:
 			u, perr := uuid.Parse(val)
 			if perr != nil {
-				return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", val)
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Invalid UUID value for the UUID type %s", val)}
 			}
 			return [16]byte(u), nil
 		case [16]byte:
 			// Already the neutral UUID representation (RFC-162).
 			return val, nil
+		default:
+			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %T to UUID", v)}
 		}
 	}
 	return nil, nil
