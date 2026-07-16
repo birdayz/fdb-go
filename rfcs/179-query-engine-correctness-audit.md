@@ -392,11 +392,29 @@ type. F3 is the one true wire divergence in this audit — fix it first.
 - **F22 [dead-code]** `streaming_cursors.go:92` — `aggregateCursor.pending` is never
   assigned; the emit-pending branch is unreachable. *Fix:* delete field + block.
 - **F23 [dead-code]** `sort.go:25` — `RecordQuerySortPlan`/`executeSort`/
-  `expressionSortFn`/`compareAny` are production-dead (no non-test constructor); an
-  orphaned port of Java's legacy-planner plan. A second sort pipeline with a weaker
-  comparator violates "no parallel pipelines." *Fix:* delete the plan + executor
-  arms + switch cases; migrate tests to `RecordQueryInMemorySortPlan`. Correct
-  DIVERGENCES.md.
+  `expressionSortFn` are production-dead (no non-test constructor); an orphaned port
+  of Java's legacy-planner plan. A second sort pipeline with a weaker comparator
+  violates "no parallel pipelines." *Fix:* delete the plan + executor arms + switch
+  cases; migrate tests to `RecordQueryInMemorySortPlan`. Correct DIVERGENCES.md.
+  (NOTE: `compareAny` is NOT dead — it is the live streaming MIN/MAX comparator
+  (`streaming_cursors.go`); an earlier revision of this entry wrongly listed it as
+  production-dead. Its float semantics were the F48 defect below.)
+- **F48 [wrong-rows]** `executor.go compareAny` / `streaming_cursors.go` — the
+  streaming MIN/MAX comparator used native float `<`/`>`, so `MIN`/`MAX` over a
+  FLOAT/DOUBLE column diverged from Java's `NumericAggregationValue` `MIN_D`/`MAX_D`
+  = `Math.min`/`Math.max`: NaN was order-dependently ignored instead of propagating
+  into both extremes, and `-0.0`/`+0.0` read equal (first-seen wins) instead of
+  `-0.0 < +0.0`. The F27/F28 total-order fix landed on `cmpAny` (predicate) and
+  `compareValues` (sort) but NOT on this aggregate sibling. *Fix:* new `aggMinMax`
+  uses Go's `math.Min`/`math.Max` (special-cases identical to Java's `Math.min/max` —
+  NaN-propagating, signed-zero-correct) for FLOAT/DOUBLE; integers keep the
+  total-order path. Deliberately a DIFFERENT float semantic than the ordering
+  authority (`CompareFloat64` makes NaN greatest — right for MAX, WRONG for MIN),
+  mirroring Java's `Math.min/max` vs `Double.compare` split. `compareAny`'s float arm
+  is also routed through `CompareFloat64` so it is no longer a divergent third
+  comparator. *Pin:* `TestAggMinMax_FloatNaNAndSignedZero` (revert-proven: MIN over
+  `{2.0, NaN}` returns `2.0` not `NaN` with the comparator path) + `TestCompareAny_Float64`
+  total-order assertions. Found by the pre-merge full-branch sweep (Torvalds + @claude).
 
 ---
 
@@ -423,7 +441,14 @@ lead with the chokepoints:
   `compareValues` has a typed arm for every row-domain type (agreeing with FDB
   tuple order) and the residual `fmt` fallback dies loud (F9b). → collapses
   **F8, F9/F13, F10-comparator**, and the `mergeSort`/DISTINCT paths that share it.
-  *(Arms landed in C2; loud residual is F9b.)*
+  *(Arms landed in C2; loud residual is F9b.)* The ORDERING authority is
+  `values.CompareFloat64` (-0.0 < 0.0, NaN greatest), shared by sort/predicate and —
+  after F48 — `compareAny`. **Aggregate MIN/MAX is a deliberate SECOND float
+  semantic**, not a violation of "one authority": Java's `MIN_D`/`MAX_D` are
+  `Math.min`/`Math.max` (NaN-propagating, so NaN wins BOTH extremes — a total order
+  cannot express that), distinct from `Double.compare` (tuple/index order). Go
+  mirrors the split via `aggMinMax` (`math.Min`/`math.Max`) for floats (F48). Two
+  float semantics, both Java-faithful, for two different operations.
 - **S3 — typed continuations end-to-end (Pattern 3).** Replace the JSON
   aggregate continuation with a typed codec (no U+FFFD / type loss) and route
   LEFT-OUTER/FlatMap resume through Java's `OrElse`/DefaultOnEmpty continuation
@@ -528,6 +553,9 @@ one defect each found by two auditors.
 | F46 | wrong-cmp (latent) | S2 (compareAny []byte arm, defensive) | **DONE** |
 | A1 | dead-code probe | Theme 5 (lowerComponentsAreSingletons guard — verified live+pinned) | **DONE** (already pinned) |
 | F9b | correct-or-loud | S2 (compareValues fmt residual — unreachable for real types) | **RESIDUAL** (documented) |
+| F47 | dead-code (non-blocking) | Theme 8 (flatMapCursor innerHadMatch test-only flag) | **RESIDUAL** (low-priority) |
+| F48 | wrong-rows | S2 (streaming MIN/MAX float = Math.min/max, NaN+signed-zero) | **DONE** (sweep-found) |
+| F49 | index-vs-residual (pre-existing) | Theme 2 (`WHERE f > -0.0` residual drops the index-returned 0.0 row) | **RESIDUAL** (RFC-082, documented) |
 
 Later-surfaced (during fixing): F27, F28 (float total-ordering in the comparator /
 cmpAny), F30 (semantic_identity.go still ignores text/distance comparison fields —

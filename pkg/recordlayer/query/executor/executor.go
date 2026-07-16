@@ -3702,13 +3702,12 @@ func compareAny(a, b any) int {
 	case float64:
 		switch bv := b.(type) {
 		case float64:
-			if av < bv {
-				return -1
-			}
-			if av > bv {
-				return 1
-			}
-			return 0
+			// Single total-order float authority (F27/F28): -0.0 < 0.0, NaN greatest,
+			// matching FDB tuple/index order and the sort/predicate comparators — not
+			// native </> (which leaves -0.0==+0.0 and NaN incomparable). NOTE: streaming
+			// MIN/MAX does NOT reach this arm — aggMinMax intercepts floats and uses
+			// Java's Math.min/max (NaN-propagating) instead; see aggMinMax.
+			return values.CompareFloat64(av, bv)
 		case int64:
 			fb := float64(bv)
 			if av < fb {

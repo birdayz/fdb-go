@@ -473,6 +473,85 @@ func TestCompareAny_Float64(t *testing.T) {
 	if compareAny(float64(3.14), float64(3.14)) != 0 {
 		t.Fatal("3.14 should equal 3.14")
 	}
+	// compareAny's float arm is the single total-order authority (F27/F28/F48): it
+	// routes through values.CompareFloat64, NOT native </>. So -0.0 sorts strictly
+	// below +0.0 and NaN is the greatest element — matching FDB tuple/index order and
+	// the sort/predicate comparators. (Native </> would report both as 0.)
+	negZero := math.Copysign(0, -1)
+	if compareAny(negZero, float64(0)) >= 0 {
+		t.Fatal("-0.0 should sort strictly before +0.0 (total order), not equal")
+	}
+	if compareAny(float64(0), negZero) <= 0 {
+		t.Fatal("+0.0 should sort strictly after -0.0")
+	}
+	nan := math.NaN()
+	if compareAny(nan, float64(1e308)) <= 0 {
+		t.Fatal("NaN should be the greatest element (> any finite)")
+	}
+	if compareAny(float64(1e308), nan) >= 0 {
+		t.Fatal("any finite should be < NaN")
+	}
+	if compareAny(nan, nan) != 0 {
+		t.Fatal("NaN should equal NaN under the canonical total order")
+	}
+}
+
+// TestAggMinMax_FloatNaNAndSignedZero pins F48: streaming MIN/MAX over FLOAT/DOUBLE
+// must match Java's NumericAggregationValue MIN_D/MAX_D (= Math.min/Math.max), NOT a
+// total-order comparator. NaN PROPAGATES into both extremes (order-independent) and
+// -0.0 < +0.0. The old code used compareAny with native float </>, which left NaN
+// order-dependently ignored and -0.0/+0.0 first-seen-wins.
+func TestAggMinMax_FloatNaNAndSignedZero(t *testing.T) {
+	t.Parallel()
+	nan := math.NaN()
+
+	// NaN propagates into MAX regardless of arrival order (native </> would keep 2.0
+	// when NaN arrives second).
+	if got := aggMinMax(aggMinMax(nil, 2.0, false), nan, false).(float64); !math.IsNaN(got) {
+		t.Fatalf("MAX(2.0, NaN[second]) = %v, want NaN (Java Math.max propagates)", got)
+	}
+	if got := aggMinMax(aggMinMax(nil, nan, false), 2.0, false).(float64); !math.IsNaN(got) {
+		t.Fatalf("MAX(NaN[first], 2.0) = %v, want NaN", got)
+	}
+	// NaN propagates into MIN too — must be NaN, NOT the smallest finite (this is why
+	// CompareFloat64's NaN-greatest total order is WRONG for MIN).
+	if got := aggMinMax(aggMinMax(nil, 2.0, true), nan, true).(float64); !math.IsNaN(got) {
+		t.Fatalf("MIN(2.0, NaN[second]) = %v, want NaN (Java Math.min propagates, not smallest-finite)", got)
+	}
+	if got := aggMinMax(aggMinMax(nil, nan, true), 2.0, true).(float64); !math.IsNaN(got) {
+		t.Fatalf("MIN(NaN[first], 2.0) = %v, want NaN", got)
+	}
+
+	// Signed zero: MIN(-0.0,+0.0) = -0.0, MAX(-0.0,+0.0) = +0.0 (native </> keeps
+	// first-seen since -0.0 == +0.0).
+	negZero := math.Copysign(0, -1)
+	if got := aggMinMax(aggMinMax(nil, 0.0, true), negZero, true).(float64); !math.Signbit(got) {
+		t.Fatalf("MIN(+0.0[first], -0.0) = %v (signbit=%v), want -0.0", got, math.Signbit(got))
+	}
+	if got := aggMinMax(aggMinMax(nil, negZero, false), 0.0, false).(float64); math.Signbit(got) {
+		t.Fatalf("MAX(-0.0[first], +0.0) = %v (signbit=%v), want +0.0", got, math.Signbit(got))
+	}
+
+	// float32 mirrors (MIN_F/MAX_F).
+	nan32 := float32(math.NaN())
+	if got := aggMinMax(aggMinMax(nil, float32(2), false), nan32, false).(float32); !math.IsNaN(float64(got)) {
+		t.Fatalf("float32 MAX(2, NaN) = %v, want NaN", got)
+	}
+	if got := aggMinMax(aggMinMax(nil, float32(2), true), nan32, true).(float32); !math.IsNaN(float64(got)) {
+		t.Fatalf("float32 MIN(2, NaN) = %v, want NaN", got)
+	}
+	negZero32 := float32(math.Copysign(0, -1))
+	if got := aggMinMax(aggMinMax(nil, float32(0), true), negZero32, true).(float32); !math.Signbit(float64(got)) {
+		t.Fatalf("float32 MIN(+0.0, -0.0) = %v, want -0.0", got)
+	}
+
+	// Integer regression (compareAny path — no NaN/signed-zero).
+	if got := aggMinMax(aggMinMax(nil, int64(5), true), int64(3), true).(int64); got != 3 {
+		t.Fatalf("MIN(5,3) = %d, want 3", got)
+	}
+	if got := aggMinMax(aggMinMax(nil, int64(5), false), int64(3), false).(int64); got != 5 {
+		t.Fatalf("MAX(5,3) = %d, want 5", got)
+	}
 }
 
 func TestCompareAny_Bool(t *testing.T) {

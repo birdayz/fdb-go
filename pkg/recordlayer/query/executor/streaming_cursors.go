@@ -480,15 +480,61 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 					Message: "unable to encapsulate aggregate operation due to type mismatch(es)",
 				}
 			}
-			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
-				gs.mins[i] = val
-			}
-			if gs.maxs[i] == nil || compareAny(val, gs.maxs[i]) > 0 {
-				gs.maxs[i] = val
-			}
+			gs.mins[i] = aggMinMax(gs.mins[i], val, true)
+			gs.maxs[i] = aggMinMax(gs.maxs[i], val, false)
 		}
 	}
 	return nil
+}
+
+// aggMinMax folds val into the running MIN (isMin=true) or MAX extremum, matching
+// Java's NumericAggregationValue MIN_*/MAX_* operators (NumericAggregationValue.java:679-687),
+// which are Math.min / Math.max per numeric type.
+//
+// For FLOAT/DOUBLE this MUST use Go's math.Min / math.Max, NOT a total-order
+// comparator. Go's math.Min/math.Max have special-cases identical to Java's
+// Math.min/Math.max: NaN PROPAGATES into BOTH extremes (min(x,NaN)=max(x,NaN)=NaN)
+// and -0.0 sorts below +0.0 (min(-0.0,+0.0)=-0.0, max(-0.0,+0.0)=+0.0). A total-order
+// comparator (values.CompareFloat64, used by the sort/predicate path) makes NaN the
+// GREATEST element — correct for MAX but WRONG for MIN, which must yield NaN, not the
+// smallest finite. So float MIN/MAX is deliberately a DIFFERENT float semantic than
+// the ordering authority, exactly mirroring Java's Math.min/max (MIN_D/MAX_D) vs
+// Double.compare (tuple/index order) split. Integer types (int/int32/int64) have no
+// NaN or signed zero, so they use the total-order compareAny.
+func aggMinMax(acc, val any, isMin bool) any {
+	if acc == nil {
+		return val
+	}
+	switch v := val.(type) {
+	case float64:
+		if a, ok := acc.(float64); ok {
+			if isMin {
+				return math.Min(a, v)
+			}
+			return math.Max(a, v)
+		}
+	case float32:
+		if a, ok := acc.(float32); ok {
+			// Widen to float64 for the op (preserves NaN and signed zero exactly),
+			// then narrow back — equivalent to Java's Math.min/max((float)…).
+			if isMin {
+				return float32(math.Min(float64(a), float64(v)))
+			}
+			return float32(math.Max(float64(a), float64(v)))
+		}
+	}
+	// Integer numerics (no NaN / signed zero), or an unexpected acc/val type mix:
+	// fall back to the total-order comparator.
+	if isMin {
+		if compareAny(val, acc) < 0 {
+			return val
+		}
+		return acc
+	}
+	if compareAny(val, acc) > 0 {
+		return val
+	}
+	return acc
 }
 
 func (c *aggregateCursor) finalizeGroup() QueryResult {
