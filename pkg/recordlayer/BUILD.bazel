@@ -209,6 +209,7 @@ go_test(
         "hnsw_iterator_error_test.go",
         "hnsw_stats_test.go",
         "index_bug_verify_test.go",
+        "index_candidacy_classification_test.go",
         "index_edge_cases_test.go",
         "index_maintainer_test.go",
         "index_predicate_test.go",
@@ -354,6 +355,7 @@ go_test(
         allow_empty = True,
     ),
     embed = [":recordlayer"],
+    embedsrcs = ["index.go"],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",
