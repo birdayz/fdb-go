@@ -101,6 +101,7 @@ go_test(
         "rfc153_joined_preserved_plan_test.go",
         "scope_ambiguous_test.go",
         "select_helpers_test.go",
+        "sort_pullup_test.go",
         "sql_plan_fuzz_test.go",
         "system_rows_test.go",
         "tri_bool_test.go",

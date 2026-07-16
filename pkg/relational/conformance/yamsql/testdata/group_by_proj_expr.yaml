@@ -38,9 +38,12 @@ tests:
   # outExpr referencing a GROUP BY column that has no bare groupCol entry
   # in the SELECT list. Before the fix, the proto-path rowMap was missing
   # the GROUP BY column seed, causing 42703 for the a+1 expression.
+  # RFC-180 Y3: the original pin recorded [30, 2] for the a=1 group — arithmetically
+  # wrong (rows 1,2,3 have a=1, so SUM(c) = 10+20+30 = 60). A pinned wrong answer,
+  # caught when the corpus was re-enabled.
   - query: SELECT SUM(c), a + 1 FROM t GROUP BY a ORDER BY a + 1
     rows:
-      - [30, 2]
+      - [60, 2]
       - [150, 3]
   - query: SELECT a + b, MAX(c) FROM t GROUP BY a, b ORDER BY a + b
     rows:
@@ -48,3 +51,13 @@ tests:
       - [3, 30]
       - [3, 50]
       - [4, 60]
+  # RFC-180 Y3 regression pin (sort-key pull-up): the computed ORDER BY key must
+  # bind to the projection OUTPUT slot, never to a stale source-scope ordinal.
+  # Before the fix, the key `b + 1` kept base-row ordinal B#2 and read slot 1 of
+  # the 2-column projected row — i.e. it silently sorted by SUM(c). This data is
+  # chosen so SUM is ANTI-monotone in b (b=1 → 120, b=2 → 90): the misread
+  # returns [3, 90] first; the correct order is b+1 ascending.
+  - query: SELECT b + 1, SUM(c) FROM t GROUP BY b ORDER BY b + 1
+    rows:
+      - [2, 120]
+      - [3, 90]

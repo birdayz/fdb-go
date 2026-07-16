@@ -70,7 +70,12 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
+	if translateErr != nil {
+		// Surface the translator's typed diagnostic over the generic fallback —
+		// same precedence the production generator applies.
+		return "", translateErr
+	}
 	if ref == nil {
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
@@ -154,7 +159,12 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
+	if translateErr != nil {
+		// Surface the translator's typed diagnostic over the generic fallback —
+		// same precedence the production generator applies.
+		return "", translateErr
+	}
 	if ref == nil {
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}

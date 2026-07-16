@@ -5405,6 +5405,35 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			colToIdx[key] = i
 		}
 	}
+	// GROUPED-select correspondence (Java LogicalOperator.generateSelect): for
+	// an aggregate query the SELECT list lives in aggCols, not projCols, so the
+	// maps above are empty — but the reshaping POST-AGGREGATE projection carries
+	// the items' rendered texts, aliases, and resolved output Values. Map them
+	// to their output slots so a computed ORDER BY key (`ORDER BY a + b` over
+	// `SELECT a + b, MAX(c) … GROUP BY a, b`) copies the EXACT projected Value
+	// pointer and the translator's pull-up (pullUpToOutputField) bakes the key
+	// to the projection OUTPUT ordinal. Without this the key resolves against
+	// the FROM scope (base-row ordinals) and the enforcer sort ABOVE the
+	// projection reads a foreign slot — silent mis-sort when the ordinal lands
+	// in range, an ordinal-model malformed-plan error when it doesn't.
+	// First-match semantics mirror colToIdx; existing entries win.
+	if proj != nil {
+		for i, ptext := range proj.Projections {
+			key := strings.ToUpper(ptext)
+			if _, dup := colToIdx[key]; !dup {
+				colToIdx[key] = i
+			}
+		}
+		for i, alias := range proj.Aliases {
+			if alias == "" {
+				continue
+			}
+			key := strings.ToUpper(alias)
+			if _, dup := aliasToIdx[key]; !dup {
+				aliasToIdx[key] = i
+			}
+		}
+	}
 	for i := range sort.Keys {
 		upper := strings.ToUpper(sort.Keys[i].Expr)
 		if real, ok := aliasToCol[upper]; ok {
