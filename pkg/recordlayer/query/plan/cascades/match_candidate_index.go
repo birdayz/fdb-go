@@ -349,8 +349,15 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 			// still translates by covered name. Only a FieldValue-over-FieldValue is
 			// a genuine chain; declining it (rather than dropping v.Child) lets the
 			// recursive-decomposition path handle a deeper match or report not-pushable.
-			if _, chained := v.Child.(*values.FieldValue); chained {
-				return nil, false
+			// ALLOWLIST (not a chained-only blocklist): a bare column is Child==nil (a
+			// baked leaf / resolved ordinal — the post-ordinalization shape) OR the
+			// source QuantifiedObjectValue directly. ANY other child — a FieldValue
+			// chain, or a composite like a RecordConstructorValue — is not the indexed
+			// Value and must decline (else its accessor structure is silently dropped).
+			if v.Child != nil {
+				if _, isBareSource := v.Child.(*values.QuantifiedObjectValue); !isBareSource {
+					return nil, false
+				}
 			}
 			if _, covered := coveredColumns[strings.ToUpper(v.Field)]; covered {
 				return values.NewFieldValue(

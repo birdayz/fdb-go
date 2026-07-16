@@ -197,4 +197,26 @@ func TestValueIndexScanMatchCandidate_PushValueThroughFetch_ChainedFieldDeclines
 	if !isQOV || childQOV.Correlation != tgt {
 		t.Fatalf("translated child=%v, want QOV(TGT)", fv.Child)
 	}
+
+	// BAKED bare column: FieldValue{CITY, Child: nil} — the post-ordinalization
+	// (resolved-ordinal / leaf) shape the covering merge actually produces. An
+	// over-restrictive "Child must be QOV(SRC)" check WRONGLY declined this and
+	// regressed the covering-index merge; only this baked case (not the bare-QOV
+	// case above) reveals that. It must STILL translate.
+	baked := values.NewFieldValue(nil, "CITY", values.UnknownType)
+	gotBaked, okBaked := c.PushValueThroughFetch(baked, src, tgt)
+	if !okBaked {
+		t.Fatal("baked bare CITY (Child==nil, the post-ordinalization covering shape) must push through fetch")
+	}
+	if bfv, isFV := gotBaked.(*values.FieldValue); !isFV || bfv.Field != "CITY" {
+		t.Fatalf("translated baked value=%v, want FieldValue{CITY, ...}", gotBaked)
+	}
+
+	// A FieldValue over a NON-QOV, non-nil composite child (here a constant) is not
+	// a bare column and must DECLINE — pins the allowlist (Child==nil || Child==QOV),
+	// not a chained-only blocklist that would let this slip through and drop the child.
+	overConst := values.NewFieldValue(&values.ConstantValue{Value: "x", Typ: values.UnknownType}, "CITY", values.UnknownType)
+	if got2, ok2 := c.PushValueThroughFetch(overConst, src, tgt); ok2 {
+		t.Fatalf("FieldValue over a non-QOV composite must NOT push through fetch, got ok=true value=%v", got2)
+	}
 }
