@@ -3664,6 +3664,18 @@ func compareAny(a, b any) int {
 	if i, ok := b.(int32); ok {
 		b = int64(i)
 	}
+	// A plain Go int normalizes to int64 exactly as int32 does above. Row values
+	// arrive int64 (tuple decode / the tupleElementToRowValue canonicalization),
+	// so an int is not reachable here today — but WITHOUT this arm an int falls to
+	// the switch's `default: return 0`, silently reporting equal-to-everything and
+	// corrupting a streaming MIN/MAX (the only callers). Normalize it, matching the
+	// int32 arm, so a future int-valued comparand cannot silently misorder.
+	if i, ok := a.(int); ok {
+		a = int64(i)
+	}
+	if i, ok := b.(int); ok {
+		b = int64(i)
+	}
 	switch av := a.(type) {
 	case int64:
 		switch bv := b.(type) {

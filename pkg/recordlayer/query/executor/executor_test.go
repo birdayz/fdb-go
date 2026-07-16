@@ -417,6 +417,24 @@ func TestCompareAny_Integers(t *testing.T) {
 	if compareAny(int64(1), int64(1)) != 0 {
 		t.Fatal("1 should equal 1")
 	}
+	// Plain Go int must normalize to int64 (F42): without the int arm these fall
+	// to the switch's `default: return 0`, silently reporting equal.
+	if compareAny(int(1), int(2)) >= 0 {
+		t.Fatal("int(1) should be < int(2)")
+	}
+	if compareAny(int(2), int(1)) <= 0 {
+		t.Fatal("int(2) should be > int(1)")
+	}
+	if compareAny(int(1), int(1)) != 0 {
+		t.Fatal("int(1) should equal int(1)")
+	}
+	// Mixed int / int64 must also normalize and order correctly.
+	if compareAny(int(1), int64(2)) >= 0 {
+		t.Fatal("int(1) should be < int64(2)")
+	}
+	if compareAny(int64(2), int(1)) <= 0 {
+		t.Fatal("int64(2) should be > int(1)")
+	}
 }
 
 func TestCompareAny_Strings(t *testing.T) {
