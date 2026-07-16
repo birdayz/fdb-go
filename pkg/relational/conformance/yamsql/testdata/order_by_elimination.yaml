@@ -177,9 +177,10 @@ tests:
       - [3]
 
   # -------------------------------------------------------------------
-  # NULLS FIRST/LAST — ASC + NULLS FIRST matches natural order for
-  # non-null data (tuple order puts NULLs first in ASC); NULLS LAST
-  # needs sort even when direction matches.
+  # NULLS FIRST/LAST — ASC + NULLS FIRST matches natural order
+  # (tuple order puts NULLs first in ASC); over a NOT NULL PK, an
+  # explicit NULLS LAST is equally satisfiable (there are no NULLs
+  # to place), so both succeed with rows in PK order.
   # -------------------------------------------------------------------
 
   # ASC + NULLS FIRST (explicit): eliminate.
@@ -191,13 +192,12 @@ tests:
       - [4]
       - [5]
 
-  # ASC + NULLS LAST on PK: requested NULLS placement diverges from
-  # natural order (PK ASC is NULLS FIRST). No scan satisfies the
-  # NULLS LAST request, and Cascades has no rule to rearrange
-  # NULL placement post-scan, so rejection emerges from "no scan
-  # satisfies". Result rows would be the same (id is NOT NULL) but
-  # the planner can't prove that — same architectural reason as
-  # Java's UnableToPlan.
+  # ASC + NULLS LAST on PK: the query SUCCEEDS. id is the NOT NULL
+  # primary key, so the scan emits no NULLs and the PK-order ASC scan
+  # satisfies the explicit NULLS LAST request — rows come back [1..5]
+  # in PK order. (An earlier comment here claimed this shape was
+  # rejected via "no scan satisfies"; that contradicted the pinned
+  # rows below, which have always asserted success.)
   - query: SELECT id FROM t ORDER BY id ASC NULLS LAST
     rows:
       - [1]

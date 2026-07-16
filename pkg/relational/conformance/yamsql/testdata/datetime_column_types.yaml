@@ -206,7 +206,7 @@ tests:
   # UPDATE with temporal WHERE clause.
   # ---------------------------------------------------------------
   - query: UPDATE Events SET ts = '2024-03-15 11:00:00' WHERE id = 1
-    rows_affected: 1
+    rowcount: 1
   - query: SELECT ts FROM Events WHERE id = 1
     rows:
       - ['2024-03-15 11:00:00']
@@ -214,8 +214,10 @@ tests:
   # ---------------------------------------------------------------
   # DELETE with temporal WHERE clause.
   # ---------------------------------------------------------------
+  # Exactly one row matches: id=3 (ts 2024-01-01). id=4's ts is NULL,
+  # so the comparison is UNKNOWN and the row is not deleted.
   - query: DELETE FROM Events WHERE ts < '2024-02-01 00:00:00'
-    rows_affected: 1
+    rowcount: 1
   - query: SELECT COUNT(*) FROM Events
     rows:
       - [3]

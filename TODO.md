@@ -4846,3 +4846,15 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       `projectionOverAggregate` (translator) peels Filter/Sort/Limit;
       `underlyingGroupBy` peels Filter/Sort. One authority for "operators that
       pass the row through unchanged".
+- [ ] **Grouped correlated EXISTS port (RFC-180 Y4):** Java plans
+      `EXISTS(… GROUP BY … HAVING …)` (existential quantifier over a
+      GroupByExpression); Go's correlated-EXISTS fallback rebuilds only
+      FROM+WHERE and now declines TYPED 0AF00 (buildCorrelatedExists guard —
+      before the guard it silently dropped the grouping and returned wrong
+      rows, yamsql exists_with_aggregate). Port the aggregate into the
+      rebuilt inner; restore the [Alice] rows pin.
+- [ ] **Boolean-CASE WHERE predicate wrap (RFC-180 Y4):** Java wraps a
+      boolean-typed non-BooleanValue (CASE/PickValue) used as a predicate in
+      ValuePredicate(= TRUE) (Expression.java:371-400) and plans it as a
+      residual filter; Go declines 0AF00. Port the wrap; restore the rows
+      pins in case_when_in_java / case_exists_combo.

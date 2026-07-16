@@ -9,7 +9,13 @@ setup:
   - INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
   - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 50)
 tests:
-  # Customers with total orders > 150
+  # Customers with total orders > 150. TRACKED PARITY GAP (RFC-180): Java
+  # plans a correlated EXISTS over a GROUP BY/HAVING subquery (answer:
+  # [Alice]); Go's correlated-EXISTS fallback rebuilds only FROM + WHERE, so
+  # before the RFC-180 guard it silently DROPPED the grouping and returned
+  # [Alice, Bob] — Bob's group sums to 50 and fails HAVING. Until the port
+  # lands, Go declines TYPED (correct-or-loud, never wrong rows). Restore the
+  # [Alice] rows pin when the grouped correlated-EXISTS port lands.
   - query: >
       SELECT c.name FROM customers c
       WHERE EXISTS (
@@ -18,8 +24,7 @@ tests:
         GROUP BY o.customer_id
         HAVING SUM(o.amount) > 150
       )
-    rows:
-      - ["Alice"]
+    error_code: "0AF00"
 
   # Simple EXISTS (any order)
   - query: >

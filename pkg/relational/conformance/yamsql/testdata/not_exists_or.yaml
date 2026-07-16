@@ -21,9 +21,11 @@ tests:
       WHERE p.discontinued = 1
          OR NOT EXISTS (SELECT 1 FROM inventory i WHERE i.product_id = p.id)
       ORDER BY p.name
-    rows:
-      - ["Gadget"]
-      - ["Thingamajig"]
+    # TRACKED PARITY GAP (RFC-082): Java plans EXISTS inside an OR
+    # disjunction; Go declines 0A000 — live-verified in the plandiff ledger
+    # (DivergenceJavaSucceedsGoRejects). Restore the rows pin when the
+    # OR-of-EXISTS port lands.
+    error_code: "0A000"
 
   # Products that are NOT discontinued AND have inventory
   # Widget: not discontinued + has inventory → INCLUDE

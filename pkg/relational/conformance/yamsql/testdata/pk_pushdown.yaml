@@ -134,12 +134,16 @@ tests:
     rows:
       - [80]
 
-  # Type mismatch between PK (BIGINT) and literal (STRING). Pushdown
-  # MUST fall through to the scan path so evalPredicate surfaces
-  # 22000 (CANNOT_CONVERT_TYPE) — otherwise the pushdown would
-  # silently return zero rows, masking the user's bug.
+  # Type mismatch between PK (BIGINT) and literal (STRING) — a genuine
+  # cross-type comparison, rejected at PLAN time, never a silent
+  # zero-row pushdown. Java: RelOpValue.promoteOperands finds no
+  # maximum type → SemanticException COMPARISON_OF_INCOMPATIBLE_TYPES
+  # → DATATYPE_MISMATCH 42804 "The operands of a comparison operator
+  # are not compatible." Go matches. (An earlier revision pinned the
+  # legacy scan path's runtime 22000; that predated the Cascades
+  # plan-time gate.)
   - query: SELECT id FROM t WHERE id = 'notanumber'
-    error_code: "22000"
+    error_code: "42804"
 
   # Non-PK string column equality → scan path (name is not the PK;
   # id is). Verifies pushdown detection doesn't fire and the scan
@@ -218,10 +222,11 @@ tests:
       - [400]
 
   # Composite PK with type mismatch on one column (k is STRING, g is
-  # BIGINT) — `g = 'notanumber'` should surface 22000 via the scan
-  # path, not return an empty set from pushdown.
+  # BIGINT) — `g = 'notanumber'` is a cross-type comparison: same
+  # plan-time DATATYPE_MISMATCH 42804 as the single-col case above
+  # (RelOpValue.promoteOperands), not an empty set from pushdown.
   - query: SELECT v FROM kv WHERE k = 'a' AND g = 'notanumber'
-    error_code: "22000"
+    error_code: "42804"
 
   # AND with an extra non-PK predicate — pushdown still fires,
   # narrowing the scan to the exact PK, and the scan's evalPredicate

@@ -30,13 +30,18 @@ tests:
       - ["Charlie", 1]
 
   # Derived table with SUM aggregate joined to base table.
+  # Alice (100+200) and Charlie (300) tie at sum_total=300; ORDER BY
+  # sum_total DESC alone leaves their relative order unspecified
+  # (join emission order, not a semantic guarantee), so the query
+  # carries a deterministic c.name tie-break — alphabetical within
+  # the tie: Alice before Charlie.
   - query: >
       SELECT c.name, sq.sum_total
       FROM customers c,
         (SELECT customer_id, SUM(total) AS sum_total FROM orders GROUP BY customer_id) sq
       WHERE sq.customer_id = c.id
-      ORDER BY sq.sum_total DESC
+      ORDER BY sq.sum_total DESC, c.name
     rows:
-      - ["Charlie", 300]
       - ["Alice", 300]
+      - ["Charlie", 300]
       - ["Bob", 150]

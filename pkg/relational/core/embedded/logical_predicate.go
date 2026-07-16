@@ -6538,6 +6538,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: %v", err), Cause: err}
 	}
 
+	// An inner with HAVING / QUALIFY cannot ride this fallback: the rebuild
+	// below carries only FROM + WHERE, so a group-eliminating filter would be
+	// silently DROPPED and the semijoin would keep outer rows whose every
+	// group fails HAVING — wrong rows (yamsql exists_with_aggregate:
+	// `EXISTS(… GROUP BY o.customer_id HAVING SUM(o.amount) > 150)` kept a
+	// customer whose group sums to 50). Java plans this shape (an existential
+	// quantifier over a GroupByExpression); the port is the RFC-180 booked
+	// follow-up — until then decline TYPED, never wrong rows.
+	//
+	// A HAVING-less GROUP BY is deliberately NOT declined: for EXISTS the
+	// drop is semantics-preserving — grouping a non-empty row set yields ≥1
+	// group and grouping an empty set yields none, so EXISTS(GROUP BY over S)
+	// ⇔ EXISTS(S). A NON-grouped aggregate inner likewise continues: it is
+	// unconditionally one row, which BuildExists flags (AlwaysTrue) and the
+	// translator folds to TRUE — or declines loudly under NOT EXISTS.
+	if sq.havingExpr != nil || sq.qualifyExpr != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated EXISTS over a GROUP BY / HAVING subquery is not supported")
+	}
+
 	// Strip the session-schema qualifier off a schema-qualified table source
 	// (`s.PB` → `PB` when `s` is the active schema and PB exists) BEFORE building
 	// the scan/join tree and resolving the join sources. The normal catalog-aware

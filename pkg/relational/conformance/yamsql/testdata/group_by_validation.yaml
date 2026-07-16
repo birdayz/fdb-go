@@ -128,10 +128,11 @@ tests:
       - [10]
       - [20]
 
-  # COUNT(DISTINCT) is rejected by both engines (see
-  # distinct_aggregates.yaml for the full rationale).
+  # COUNT(DISTINCT) is rejected by both engines: non-ALL aggregators
+  # hit ExpressionVisitor.java:353's ALL-only assert → UNSUPPORTED_QUERY
+  # 0AF00 (see distinct_aggregates.yaml for the full rationale).
   - query: SELECT COUNT(DISTINCT z) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 AS z ORDER BY z
-    error_code: "0A000"
+    error_code: "0AF00"
 
   # Arithmetic on aggregates with qualified args (Java
   # groupby-tests.yamsql line 143). t1 rows: (1,10,100), (2,10,200),

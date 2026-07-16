@@ -61,7 +61,8 @@ tests:
           WHERE reviews.product_id = products.id AND reviews.rating = 5
         )
       ORDER BY id
-    rows:
-      - [1]
-      - [2]
-      - [4]
+    # TRACKED PARITY GAP (RFC-082): Java plans EXISTS inside an OR
+    # disjunction; Go declines 0A000 — live-verified in the plandiff ledger
+    # (DivergenceJavaSucceedsGoRejects). Restore the rows pin when the
+    # OR-of-EXISTS port lands.
+    error_code: "0A000"

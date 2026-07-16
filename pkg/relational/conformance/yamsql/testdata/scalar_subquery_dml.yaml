@@ -4,8 +4,10 @@
 # (as a value to compare against, not IN-subquery), and other DML +
 # scalar-subquery interactions. Different code path from the
 # dml_subquery.yaml IN/EXISTS coverage — those go through the in-list
-# evaluator; this exercises the new SubqueryExpressionAtomContext as a
-# scalar value source.
+# evaluator; this exercises SubqueryExpressionAtomContext as a scalar
+# value source. Note the split: scalar subqueries in DELETE ... WHERE
+# work; scalar subqueries in UPDATE ... SET are declined at plan time
+# (0AF00) — see the per-stanza comments.
 name: scalar_subquery_dml
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
@@ -14,16 +16,23 @@ setup:
   - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)
   - INSERT INTO config VALUES ('threshold', 25), ('multiplier', 100)
 tests:
-  # UPDATE SET col = (SELECT scalar) — set every row's v to the
-  # scalar subquery result (a constant pulled from the config table).
+  # UPDATE SET col = (SELECT scalar) — declined at plan time. Go's
+  # grammar (a Go-only extension) PARSES the subquery in SET position
+  # but the planner declines it: "subqueries are not supported in
+  # UPDATE ... SET" → 0AF00. Java cannot parse this shape at all
+  # (42601 syntax error). Lifting the Go decline is TODO L121c.
   - query: UPDATE t SET v = (SELECT n FROM config WHERE k = 'multiplier')
+    error_code: "0AF00"
+  # The declined UPDATE mutated nothing — seed values intact.
   - query: SELECT id, v FROM t ORDER BY id
     rows:
-      - [1, 100]
-      - [2, 100]
-      - [3, 100]
-      - [4, 100]
-  # Reset.
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [4, 40]
+  # Plain UPDATE with arithmetic (no subquery) still works. The seed
+  # already satisfies v = id * 10, so this is a state no-op — kept to
+  # make the state explicit for the DELETE below.
   - query: UPDATE t SET v = id * 10
   - query: SELECT id, v FROM t ORDER BY id
     rows:
@@ -38,9 +47,13 @@ tests:
     rows:
       - [1, 10]
       - [2, 20]
-  # UPDATE arithmetic with subquery on RHS.
+  # UPDATE arithmetic with subquery on RHS — same plan-time decline
+  # as the SET = (SELECT ...) stanza above: 0AF00 in Go (Java: 42601
+  # at parse). TODO L121c.
   - query: UPDATE t SET v = v + (SELECT n FROM config WHERE k = 'threshold')
+    error_code: "0AF00"
+  # Nothing changed — rows keep their post-DELETE values.
   - query: SELECT id, v FROM t ORDER BY id
     rows:
-      - [1, 35]
-      - [2, 45]
+      - [1, 10]
+      - [2, 20]
