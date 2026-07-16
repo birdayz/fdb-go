@@ -65,6 +65,7 @@ go_test(
         "nlj_hash_key_test.go",
         "ordinal_join_test.go",
         "ordinal_join_wiring_test.go",
+        "orphan_index_entry_test.go",
         "package_invariant_test.go",
         "plan_column_names_test.go",
         "positional_authority_test.go",
@@ -128,6 +129,7 @@ go_test(
         "nlj_hash_key_test.go",
         "aggregate_avg_precision_test.go",
         "flat_map_resume_safety_test.go",
+        "orphan_index_entry_test.go",
     ],
     deps = [
         "//gen",

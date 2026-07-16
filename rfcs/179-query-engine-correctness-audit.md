@@ -483,7 +483,7 @@ one defect each found by two auditors.
 | F16 ≡ F25 | structural | Theme 5 (guard comment + unit pin) | **DONE** |
 | F17 | missing-error | S5 (int32 SUM_I overflow) | **DONE** |
 | F18 | missing-error | S5 (MIN/MAX plan-time type gate) | **DONE** |
-| F19 | missing-error | Theme 7 (index-orphan ERROR) | TODO |
+| F19 | missing-error | Theme 7 (index-orphan ERROR) | **DONE** |
 | F20 | nondeterministic | S4 (deterministic cost winner) | **DONE** `a5846b405` |
 | F21 | nondeterministic | S4 (comparand-aware equality) | **DONE** `a5846b405` |
 | F22 | dead-code | Theme 8 (aggregateCursor.pending) | TODO |

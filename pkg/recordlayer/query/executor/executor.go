@@ -833,35 +833,65 @@ type indexFetchCursor struct {
 }
 
 func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, err
-		}
-		result, err := c.inner.OnNext(ctx)
-		if err != nil {
-			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
-		}
-		if !result.HasNext() {
-			return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
-		}
-
-		entry := result.GetValue()
-		pk := entry.PrimaryKey()
-		if pk == nil {
-			continue
-		}
-
-		rec, err := c.store.LoadRecord(pk)
-		if err != nil {
-			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), fmt.Errorf("executor: loading record for index entry pk %v: %w", pk, err)
-		}
-		if rec == nil {
-			continue
-		}
-
-		qr := FromStoredRecord(rec)
-		return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+	// One index entry per call: the fetch either yields its record, exhausts, or
+	// raises on an orphan/malformed entry. No loop — orphans no longer
+	// skip-and-continue (that silently dropped rows); they abort with a typed
+	// error like Java's IndexOrphanBehavior.ERROR default.
+	if err := ctx.Err(); err != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, err
 	}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if !result.HasNext() {
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+	}
+
+	entry := result.GetValue()
+	indexName := ""
+	if entry.Index != nil {
+		indexName = entry.Index.Name
+	}
+	pk := entry.PrimaryKey()
+	if pk == nil {
+		// A malformed index entry that resolves to no primary key is detectable
+		// corruption, not a row to drop. Java resolves the PK before fetching
+		// (IndexEntry.getPrimaryKey) and the ERROR orphan path below is loud for
+		// any missing base record; a nil PK is the same class of fault, so raise
+		// rather than silently continue.
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
+			&recordlayer.RecordCoreStorageError{
+				Message:   "record not found from index entry",
+				IndexName: indexName,
+				IndexKey:  entry.Key,
+			}
+	}
+
+	rec, err := c.store.LoadRecord(pk)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), fmt.Errorf("executor: loading record for index entry pk %v: %w", pk, err)
+	}
+	if rec == nil {
+		// Port Java's IndexOrphanBehavior.ERROR (RecordQueryIndexPlan →
+		// FetchIndexRecords.PRIMARY_KEY → FDBRecordStoreBase.loadIndexEntryRecord):
+		// an index entry whose base record is missing means the index and the
+		// records disagree — index corruption, an out-of-band delete, or a
+		// maintainer bug. Query execution never uses SKIP here; silently
+		// continuing would return fewer rows and hide the corruption. Raise the
+		// same typed error Java throws, carrying its INDEX_NAME / PRIMARY_KEY /
+		// INDEX_KEY log info.
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}),
+			&recordlayer.RecordCoreStorageError{
+				Message:    "record not found from index entry",
+				IndexName:  indexName,
+				PrimaryKey: pk,
+				IndexKey:   entry.Key,
+			}
+	}
+
+	qr := FromStoredRecord(rec)
+	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
 func (c *indexFetchCursor) Close() error {

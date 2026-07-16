@@ -1,6 +1,10 @@
 package recordlayer
 
-import "fmt"
+import (
+	"fmt"
+
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+)
 
 // Phase 1: Store existence errors (replace sentinels from store.go)
 
@@ -168,6 +172,31 @@ type KeyExpressionError struct {
 
 func (e *KeyExpressionError) Error() string {
 	return e.Message
+}
+
+// RecordCoreStorageError signals storage-level corruption detected while
+// resolving an index entry to its base record. Matches Java's
+// com.apple.foundationdb.record.RecordCoreStorageException.
+//
+// When a record is fetched from an index entry with IndexOrphanBehavior.ERROR
+// (FDBRecordStoreBase.loadIndexEntryRecord) and the referenced record is
+// missing, Java throws this exception rather than dropping the row, attaching
+// LogMessageKeys.INDEX_NAME / PRIMARY_KEY / INDEX_KEY. An index entry with no
+// base record means the index and the records disagree — index corruption, an
+// out-of-band delete, or a maintainer bug — and both query execution
+// (RecordQueryIndexPlan → FetchIndexRecords.PRIMARY_KEY) and the index-from-index
+// rebuild (scanIndexRecords defaults to ERROR) use this loud path. Silently
+// skipping would convert detectable corruption into quietly-fewer rows.
+type RecordCoreStorageError struct {
+	Message    string      // Java's RecordCoreStorageException message
+	IndexName  string      // LogMessageKeys.INDEX_NAME
+	PrimaryKey tuple.Tuple // LogMessageKeys.PRIMARY_KEY (nil if the entry yielded no PK)
+	IndexKey   tuple.Tuple // LogMessageKeys.INDEX_KEY
+}
+
+func (e *RecordCoreStorageError) Error() string {
+	return fmt.Sprintf("%s (index_name=%s, primary_key=%v, index_key=%v)",
+		e.Message, e.IndexName, e.PrimaryKey, e.IndexKey)
 }
 
 // PartlyBuiltError is returned when an OnlineIndexer encounters an index that was
