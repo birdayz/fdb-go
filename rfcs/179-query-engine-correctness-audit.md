@@ -364,6 +364,26 @@ type. F3 is the one true wire divergence in this audit — fix it first.
   columns today) — becomes wrong rows the moment they land. *Fix:* full-tree match
   + reject if still correlated to the source alias. *Pin:* white-box
   `PushValueThroughFetch(nested)` must return `ok=false`.
+- **F35 [wrong-rows]** `cascades_generator.go:GetMatchCandidates` — every index
+  with a value root was offered as a VALUE-index scan candidate with no type
+  filter, so an atomic-mutation/aggregate-only index (`count`, `count_not_null`,
+  `count_updates`, `sum`, `max_ever_*`, `min_ever_*`, `max_ever_version`,
+  `bitmap_value`) leaked into value-scan candidacy. A plain SQL `MAX`/`MIN` over a
+  table whose only secondary index is a monotone `MAX_EVER`/`MIN_EVER` was served
+  by scanning that index as a value source → after deleting the current
+  max-holder, the query returned the STALE running extremum instead of recomputing
+  the current one. Java splits this at `IndexMaintainerFactory.createMatchCandidates`:
+  `AtomicMutationIndexMaintainerFactory`/`BitmapValueIndexMaintainerFactory` never
+  call `expandValueIndexMatchCandidate` (their maintainers reject a `BY_VALUE` scan
+  at runtime). *Fix:* new `Index.IsAtomicMutationIndex()` deny-list gates the
+  value-candidate fallthrough, AFTER the aggregate (permuted MIN/MAX, COUNT/SUM)
+  and vector candidate checks — deny-list, not allow-list, so VALUE/VERSION/RANK/
+  permuted stay value-scannable exactly as in Java. A dropped atomic index leaves a
+  plain MAX/MIN to fall back to a base-record `StreamingAgg` (correct current
+  extremum). *Pin:* `TestFDB_AggregateIndex_StaleEverNotServedByValueScan` (DELETE
+  the max-holder → MAX returns the current 100, not the stale 250; plan has no
+  IndexScan/AggregateIndex over the `_EVER` index) + plan-harness fallback shape;
+  F3 permuted verified unaffected. Revert-proven red→green.
 
 ---
 
@@ -496,7 +516,7 @@ one defect each found by two auditors.
 | F31 | wrong-rows | S2 (CTE dedup keyers tuple-pack) | **DONE** |
 | F33 | wrong-rows | S3 (sort continuation type loss) | **DONE** |
 | F34 | wrong-rows | S3 (agg keyVals exotic-type residual + comment) | **DONE** |
-| F35 | wrong-rows (latent) | Theme 7 (atomic-mutation index candidacy) | TODO |
+| F35 | wrong-rows | Theme 7 (atomic-mutation index candidacy) | **DONE** |
 
 Later-surfaced (during fixing): F27, F28 (float total-ordering in the comparator /
 cmpAny), F30 (semantic_identity.go still ignores text/distance comparison fields —
@@ -505,4 +525,6 @@ F8 delimiter+NULL-sentinel flaw — fixed via the shared `packedDedupKey` encode
 Also tracked: F9b (loud comparator residual — needs error-channel or is left
 documented); F29 (`TestRuleRegistry_DuplicateNamePanics` under `-count>1`, global-
 registry test isolation, not hit by count=1 CI); nit: stale `buildCoveringRow`
-comment in `ordinal_join.go`.
+comment in `ordinal_join.go`. Cleanup (S3 follow-on): the typed continuation codec's
+DECODE-ONLY `contValJSON` tag (15) was deleted — pre-release there are no older
+binaries, nothing produced it, so it was an untested dead branch.

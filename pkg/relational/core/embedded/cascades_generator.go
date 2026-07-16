@@ -1948,10 +1948,13 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 		// not per-record values, so a plain ordered scan (e.g. StreamingAgg over the
 		// index) reads stale data. In Java these types have no value-scan candidate
 		// (AtomicMutationIndexMaintainerFactory / BitmapValueIndexMaintainerFactory
-		// never call expandValueIndexMatchCandidate); their aggregate contribution
-		// arrives via tryAggregateIndexCandidate above, so dropping them here leaves
-		// a plain MAX/MIN over only such an index to fall back to a base-record
-		// StreamingAgg, which computes the correct current extremum.
+		// never call expandValueIndexMatchCandidate). The subset with a legitimate
+		// aggregate use — COUNT/SUM and permuted MIN/MAX — was already claimed as an
+		// aggregate candidate by tryAggregateIndexCandidate above and never reaches
+		// here; the running-extremum (_EVER) and bitmap types get no candidate at
+		// all. Either way, dropping them here leaves a plain MAX/MIN over only such
+		// an index to fall back to a base-record StreamingAgg, which computes the
+		// correct current extremum.
 		if idx.IsAtomicMutationIndex() {
 			continue
 		}
