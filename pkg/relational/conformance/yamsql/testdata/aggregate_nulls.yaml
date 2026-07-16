@@ -39,3 +39,20 @@ tests:
   - query: SELECT COUNT(*) FROM t WHERE grp = 'no_such_group'
     rows:
       - [0]
+  # RFC-180 Y3 regression pin: GROUP BY k ORDER BY k with a NULL group. The
+  # default for ascending order is NULLS FIRST (Java ParseHelpers.isNullsLast:
+  # ASC NULLS FIRST / DESC NULLS LAST — also FDB tuple order, null smallest).
+  # The planner elides the enforcer sort against the streaming aggregate's
+  # provided ordering, so the pre-aggregate sort's NULL placement IS the output
+  # order. Before the fix the pre-aggregate sort omitted NullsFirst (zero-value
+  # = NULLS LAST) and the NULL group came out LAST — wrong rows, not cosmetics.
+  - query: SELECT grp, COUNT(*) FROM t GROUP BY grp ORDER BY grp
+    rows:
+      - [~, 2]
+      - [a, 3]
+      - [b, 1]
+  - query: SELECT grp, COUNT(*) FROM t GROUP BY grp ORDER BY grp DESC
+    rows:
+      - [b, 1]
+      - [a, 3]
+      - [~, 2]

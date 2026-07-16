@@ -62,7 +62,10 @@ tests:
   - query: >
       SELECT player, SUM(score) FROM scores
       GROUP BY player ORDER BY player
+    # ASC default is NULLS FIRST (Java ParseHelpers.isNullsLast — also FDB
+    # tuple order, null smallest). The old pin recorded Go's pre-fix NULLS
+    # LAST divergence.
     rows:
+      - [null, 200]
       - ["Alice", 100]
       - ["Bob", 50]
-      - [null, 200]

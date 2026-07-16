@@ -12,10 +12,13 @@ tests:
   - query: >
       SELECT region, COUNT(*), SUM(amount) FROM t
       GROUP BY region ORDER BY region
+    # ASC default is NULLS FIRST (Java ParseHelpers.isNullsLast — also FDB
+    # tuple order, null smallest). The old pins recorded Go's pre-fix NULLS
+    # LAST divergence.
     rows:
+      - [null, 2, 125]
       - ["East", 2, 300]
       - ["West", 1, 150]
-      - [null, 2, 125]
 
   # HAVING on NULL group
   - query: >
@@ -23,6 +26,6 @@ tests:
       GROUP BY region HAVING SUM(amount) > 100
       ORDER BY region
     rows:
+      - [null, 125]
       - ["East", 300]
       - ["West", 150]
-      - [null, 125]
