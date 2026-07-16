@@ -560,6 +560,7 @@ one defect each found by two auditors.
 | F48 | wrong-rows | S2 (streaming MIN/MAX float = Math.min/max, NaN+signed-zero) | **DONE** (sweep-found) |
 | F49 | index-vs-residual (pre-existing) | Theme 2 (`WHERE f > -0.0` residual drops the index-returned 0.0 row) | **RESIDUAL** (RFC-082, documented) |
 | F50 | dead-code | Theme 8 (compareAny — dead after F48/F23; integer MIN/MAX folded into aggMinMax) | **DONE** (deleted) |
+| F51 | crash + wrong-rows | S2/S1 (mixed int/float MIN/MAX operand from unpromoted CASE — per-pair numeric promotion in aggMinMax; plan-time PromoteValue stays the RFC-083 follow-up) | **DONE** (re-gate found) |
 
 Later-surfaced (during fixing): F27, F28 (float total-ordering in the comparator /
 cmpAny), F30 (semantic_identity.go still ignores text/distance comparison fields —
