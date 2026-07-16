@@ -489,7 +489,7 @@ one defect each found by two auditors.
 | F22 | dead-code | Theme 8 (aggregateCursor.pending) | **DONE** |
 | F23 | dead-code | Theme 8 (RecordQuerySortPlan) | **DONE** |
 | F24 | wrong-rows | S3 (FlatMap check-value restart) | **DONE** |
-| F26 | structural | S3-after (outerJoinCount) | TODO |
+| F26 | structural | (was S3-after) | **REJECTED** (false positive) |
 | F27 | wrong-rows (float) | Theme 2 (cmpAny NaN) | TODO |
 | F28 | wrong-rows (float) | Theme 2 (-0.0 vs 0.0) | TODO |
 | F30 | structural (latent) | S4 (text/distance comparands in memo equality) | TODO |

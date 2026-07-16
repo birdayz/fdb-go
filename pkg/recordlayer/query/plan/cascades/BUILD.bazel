@@ -304,6 +304,7 @@ go_test(
         "predicate_semantic_hash_test.go",
         "predicate_simplify_fuzz_test.go",
         "requested_ordering_test.go",
+        "rewriting_cost_model_outer_join_test.go",
         "rfc152_outer_join_materialization_test.go",
         "rfc153_failclosed_verifier_test.go",
         "rfc153_p2_correlation_test.go",
@@ -822,6 +823,7 @@ go_test(
         "f20_winner_f21_memo_test.go",
         "rule_partition_select_singleton_guard_test.go",
         "select_merge_fused_leg_test.go",
+        "rewriting_cost_model_outer_join_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
