@@ -489,7 +489,9 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 
 // aggMinMax folds val into the running MIN (isMin=true) or MAX extremum, matching
 // Java's NumericAggregationValue MIN_*/MAX_* operators (NumericAggregationValue.java:679-687),
-// which are Math.min / Math.max per numeric type.
+// which are Math.min / Math.max per numeric type. It is the SOLE MIN/MAX comparator;
+// the accumulate loop's isNumeric gate guarantees both operands are one of
+// int64/int32/int/float64/float32.
 //
 // For FLOAT/DOUBLE this MUST use Go's math.Min / math.Max, NOT a total-order
 // comparator. Go's math.Min/math.Max have special-cases identical to Java's
@@ -500,41 +502,52 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 // smallest finite. So float MIN/MAX is deliberately a DIFFERENT float semantic than
 // the ordering authority, exactly mirroring Java's Math.min/max (MIN_D/MAX_D) vs
 // Double.compare (tuple/index order) split. Integer types (int/int32/int64) have no
-// NaN or signed zero, so they use the total-order compareAny.
+// NaN or signed zero, so they take the ordinary int64 min/max (Java MIN_I/MIN_L /
+// MAX_I/MAX_L).
 func aggMinMax(acc, val any, isMin bool) any {
 	if acc == nil {
 		return val
 	}
 	switch v := val.(type) {
 	case float64:
-		if a, ok := acc.(float64); ok {
-			if isMin {
-				return math.Min(a, v)
-			}
-			return math.Max(a, v)
+		a := acc.(float64)
+		if isMin {
+			return math.Min(a, v)
 		}
+		return math.Max(a, v)
 	case float32:
-		if a, ok := acc.(float32); ok {
-			// Widen to float64 for the op (preserves NaN and signed zero exactly),
-			// then narrow back — equivalent to Java's Math.min/max((float)…).
-			if isMin {
-				return float32(math.Min(float64(a), float64(v)))
-			}
-			return float32(math.Max(float64(a), float64(v)))
+		a := acc.(float32)
+		// Widen to float64 for the op (preserves NaN and signed zero exactly), then
+		// narrow back — equivalent to Java's Math.min/max((float)…).
+		if isMin {
+			return float32(math.Min(float64(a), float64(v)))
 		}
+		return float32(math.Max(float64(a), float64(v)))
 	}
-	// Integer numerics (no NaN / signed zero), or an unexpected acc/val type mix:
-	// fall back to the total-order comparator.
-	if isMin {
-		if compareAny(val, acc) < 0 {
-			return val
-		}
-		return acc
-	}
-	if compareAny(val, acc) > 0 {
+	// Integer numerics (int64/int32/int). Row integers arrive int64 via the
+	// tupleElementToRowValue canonicalization; int32/int are accepted for
+	// robustness. Widen to int64 and take the ordinary min/max.
+	ai, aok := asInt64(acc)
+	vi, vok := asInt64(val)
+	if aok && vok && ((isMin && vi < ai) || (!isMin && vi > ai)) {
 		return val
 	}
 	return acc
+}
+
+// asInt64 widens an integer aggregate operand to int64. Only int64/int32/int reach
+// aggMinMax's integer path (isNumeric gates the operands; floats are handled above),
+// so the false return is a contract guard, not a live branch.
+func asInt64(x any) (int64, bool) {
+	switch n := x.(type) {
+	case int64:
+		return n, true
+	case int32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	}
+	return 0, false
 }
 
 func (c *aggregateCursor) finalizeGroup() QueryResult {

@@ -405,97 +405,6 @@ func TestQueryResult_FromStoredRecord_NilSafe(t *testing.T) {
 	}
 }
 
-func TestCompareAny_Integers(t *testing.T) {
-	t.Parallel()
-
-	if compareAny(int64(1), int64(2)) >= 0 {
-		t.Fatal("1 should be < 2")
-	}
-	if compareAny(int64(2), int64(1)) <= 0 {
-		t.Fatal("2 should be > 1")
-	}
-	if compareAny(int64(1), int64(1)) != 0 {
-		t.Fatal("1 should equal 1")
-	}
-	// Plain Go int must normalize to int64 (F42): without the int arm these fall
-	// to the switch's `default: return 0`, silently reporting equal.
-	if compareAny(int(1), int(2)) >= 0 {
-		t.Fatal("int(1) should be < int(2)")
-	}
-	if compareAny(int(2), int(1)) <= 0 {
-		t.Fatal("int(2) should be > int(1)")
-	}
-	if compareAny(int(1), int(1)) != 0 {
-		t.Fatal("int(1) should equal int(1)")
-	}
-	// Mixed int / int64 must also normalize and order correctly.
-	if compareAny(int(1), int64(2)) >= 0 {
-		t.Fatal("int(1) should be < int64(2)")
-	}
-	if compareAny(int64(2), int(1)) <= 0 {
-		t.Fatal("int64(2) should be > int(1)")
-	}
-}
-
-func TestCompareAny_Strings(t *testing.T) {
-	t.Parallel()
-
-	if compareAny("a", "b") >= 0 {
-		t.Fatal("'a' should be < 'b'")
-	}
-	if compareAny("b", "a") <= 0 {
-		t.Fatal("'b' should be > 'a'")
-	}
-}
-
-func TestCompareAny_NilHandling(t *testing.T) {
-	t.Parallel()
-
-	if compareAny(nil, nil) != 0 {
-		t.Fatal("nil should equal nil")
-	}
-	if compareAny(nil, int64(1)) >= 0 {
-		t.Fatal("nil should sort before non-nil")
-	}
-	if compareAny(int64(1), nil) <= 0 {
-		t.Fatal("non-nil should sort after nil")
-	}
-}
-
-func TestCompareAny_Float64(t *testing.T) {
-	t.Parallel()
-	if compareAny(float64(1.5), float64(2.5)) >= 0 {
-		t.Fatal("1.5 should be < 2.5")
-	}
-	if compareAny(float64(2.5), float64(1.5)) <= 0 {
-		t.Fatal("2.5 should be > 1.5")
-	}
-	if compareAny(float64(3.14), float64(3.14)) != 0 {
-		t.Fatal("3.14 should equal 3.14")
-	}
-	// compareAny's float arm is the single total-order authority (F27/F28/F48): it
-	// routes through values.CompareFloat64, NOT native </>. So -0.0 sorts strictly
-	// below +0.0 and NaN is the greatest element — matching FDB tuple/index order and
-	// the sort/predicate comparators. (Native </> would report both as 0.)
-	negZero := math.Copysign(0, -1)
-	if compareAny(negZero, float64(0)) >= 0 {
-		t.Fatal("-0.0 should sort strictly before +0.0 (total order), not equal")
-	}
-	if compareAny(float64(0), negZero) <= 0 {
-		t.Fatal("+0.0 should sort strictly after -0.0")
-	}
-	nan := math.NaN()
-	if compareAny(nan, float64(1e308)) <= 0 {
-		t.Fatal("NaN should be the greatest element (> any finite)")
-	}
-	if compareAny(float64(1e308), nan) >= 0 {
-		t.Fatal("any finite should be < NaN")
-	}
-	if compareAny(nan, nan) != 0 {
-		t.Fatal("NaN should equal NaN under the canonical total order")
-	}
-}
-
 // TestAggMinMax_FloatNaNAndSignedZero pins F48: streaming MIN/MAX over FLOAT/DOUBLE
 // must match Java's NumericAggregationValue MIN_D/MAX_D (= Math.min/Math.max), NOT a
 // total-order comparator. NaN PROPAGATES into both extremes (order-independent) and
@@ -545,65 +454,19 @@ func TestAggMinMax_FloatNaNAndSignedZero(t *testing.T) {
 		t.Fatalf("float32 MIN(+0.0, -0.0) = %v, want -0.0", got)
 	}
 
-	// Integer regression (compareAny path — no NaN/signed-zero).
+	// Integer path (int64/int32/int, no NaN/signed-zero — Java MIN_I/MIN_L/MAX_I/MAX_L).
 	if got := aggMinMax(aggMinMax(nil, int64(5), true), int64(3), true).(int64); got != 3 {
 		t.Fatalf("MIN(5,3) = %d, want 3", got)
 	}
 	if got := aggMinMax(aggMinMax(nil, int64(5), false), int64(3), false).(int64); got != 5 {
 		t.Fatalf("MAX(5,3) = %d, want 5", got)
 	}
-}
-
-func TestCompareAny_Bool(t *testing.T) {
-	t.Parallel()
-	if compareAny(false, true) >= 0 {
-		t.Fatal("false should be < true")
+	// int32 and plain int widen to int64 (asInt64) and order correctly.
+	if got := aggMinMax(aggMinMax(nil, int32(5), true), int32(3), true).(int32); got != 3 {
+		t.Fatalf("MIN(int32 5,3) = %d, want 3", got)
 	}
-	if compareAny(true, false) <= 0 {
-		t.Fatal("true should be > false")
-	}
-	if compareAny(true, true) != 0 {
-		t.Fatal("true should equal true")
-	}
-	if compareAny(false, false) != 0 {
-		t.Fatal("false should equal false")
-	}
-}
-
-func TestCompareAny_Bytes(t *testing.T) {
-	t.Parallel()
-	// BYTES compares by unsigned byte content (F46). Without the []byte arm these
-	// fall to compareAny's `default: return 0` and silently report equal, which
-	// would freeze a MIN/MAX running extremum at the first row.
-	if compareAny([]byte{1, 2}, []byte{1, 3}) >= 0 {
-		t.Fatal("{1,2} should be < {1,3}")
-	}
-	if compareAny([]byte{1, 3}, []byte{1, 2}) <= 0 {
-		t.Fatal("{1,3} should be > {1,2}")
-	}
-	if compareAny([]byte{1, 2}, []byte{1, 2}) != 0 {
-		t.Fatal("{1,2} should equal {1,2}")
-	}
-	// A shorter prefix sorts before its extension.
-	if compareAny([]byte{1}, []byte{1, 0}) >= 0 {
-		t.Fatal("{1} should be < {1,0}")
-	}
-	// High byte compares UNSIGNED (0xFF > 0x01), not sign-extended.
-	if compareAny([]byte{0xFF}, []byte{0x01}) <= 0 {
-		t.Fatal("{0xFF} should be > {0x01} (unsigned byte order)")
-	}
-}
-
-func TestCompareAny_MixedTypes(t *testing.T) {
-	t.Parallel()
-	if compareAny(int64(1), "hello") != 0 {
-		t.Fatal("mismatched types should return 0")
-	}
-	if compareAny(float64(1.0), int64(1)) != 0 {
-		t.Fatal("float64 vs int64 should return 0 (no cross-type)")
-	}
-	if compareAny(true, int64(1)) != 0 {
-		t.Fatal("bool vs int64 should return 0")
+	if got := aggMinMax(aggMinMax(nil, int(5), false), int(3), false).(int); got != 5 {
+		t.Fatalf("MAX(int 5,3) = %d, want 5", got)
 	}
 }
 
@@ -5151,7 +5014,10 @@ func expressionSortFn(keys []expressions.SortKey) func([]QueryResult) error {
 					}
 					return jNil
 				}
-				cmp := compareAny(vi, vj)
+				// Mirror the production sort comparator (executeInMemorySort uses
+				// compareValues, the S2 total-order authority) rather than a separate
+				// scalar comparator, so this fixture exercises the real ordering.
+				cmp := compareValues(vi, vj)
 				if cmp == 0 {
 					continue
 				}
