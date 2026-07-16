@@ -330,6 +330,23 @@ func TestInMemorySortPlan_GetResultType_NilInner(t *testing.T) {
 	}
 }
 
+// TestInMemorySortPlan_GetResultType_PreservesInnerType (F40) pins that a sort
+// FLOWS THROUGH its inner's result type — a sort reorders rows but preserves the
+// row shape. This is the assertion the deleted RecordQuerySortPlan's
+// PreservesInnerType test couldn't migrate because GetResultType() returned
+// UnknownType unconditionally.
+func TestInMemorySortPlan_GetResultType_PreservesInnerType(t *testing.T) {
+	t.Parallel()
+	inner := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	keys := []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	}
+	p := NewRecordQueryInMemorySortPlan(inner, keys)
+	if !values.NotNullLong.Equals(p.GetResultType()) {
+		t.Fatalf("GetResultType() = %v, want NotNullLong (from inner)", p.GetResultType())
+	}
+}
+
 func TestInMemorySortPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
 	p := NewRecordQueryInMemorySortPlan(nil, nil)
@@ -385,8 +402,8 @@ func TestInMemorySortPlan_EqualsWithoutChildren_DifferentKeyCount(t *testing.T) 
 
 func TestInMemorySortPlan_EqualsWithoutChildren_DifferentDesc(t *testing.T) {
 	t.Parallel()
-	// Isolate the direction: share one ValueExpr pointer + Field so only Desc
-	// differs (InMemorySort compares SortKey structs by identity).
+	// Isolate the direction: share one semantically-equal ValueExpr + Field so
+	// only Desc differs.
 	fv := &values.FieldValue{Field: "id", Typ: values.UnknownType}
 	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
 		{Field: "id", ValueExpr: fv, Desc: false},
@@ -444,6 +461,49 @@ func TestInMemorySortPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different sort keys should (very likely) have different hashes")
+	}
+}
+
+// TestInMemorySortPlan_SemanticSortKeyIdentity (F41) pins that sort-plan
+// identity is SEMANTIC on the ValueExpr, not pointer identity. Two plans whose
+// sort keys carry DISTINCT but semantically-equal ValueExpr instances must be
+// EqualsWithoutChildren-equal (was FALSE before the fix — pointer compare via
+// struct `!=`) and hash identically. This is the incomplete-F21 case: pointer
+// identity would split a semantically-single sort into two memo members.
+func TestInMemorySortPlan_SemanticSortKeyIdentity(t *testing.T) {
+	t.Parallel()
+	// Distinct FieldValue instances, same semantics + direction.
+	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: true, NullsFirst: true},
+	})
+	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: true, NullsFirst: true},
+	})
+	if !a.EqualsWithoutChildren(b) {
+		t.Fatal("semantically-equal sort keys with distinct ValueExpr instances must be EqualsWithoutChildren-equal (F41)")
+	}
+	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
+		t.Fatal("semantically-equal sort keys must hash identically (equal⟹same-hash)")
+	}
+}
+
+// TestInMemorySortPlan_SortKeyValueDistinguishes (F41) pins that the semantic
+// ValueExpr is actually PART of identity: same display Field but a different
+// underlying sort Value ⇒ NOT equal, and (very likely) hashes apart.
+func TestInMemorySortPlan_SortKeyValueDistinguishes(t *testing.T) {
+	t.Parallel()
+	// Field is display-only — hold it constant so only the Value differs.
+	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "k", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	})
+	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "k", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	})
+	if a.EqualsWithoutChildren(b) {
+		t.Fatal("different sort Values (same display Field) must NOT be EqualsWithoutChildren-equal (F41)")
+	}
+	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
+		t.Fatal("different sort Values should (very likely) hash apart")
 	}
 }
 

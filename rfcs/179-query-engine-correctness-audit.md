@@ -492,7 +492,7 @@ one defect each found by two auditors.
 | F26 | structural | (was S3-after) | **REJECTED** (false positive) |
 | F27 | wrong-rows (float) | Theme 2 (cmpAny NaN) | **DONE** |
 | F28 | wrong-rows (float) | Theme 2 (-0.0 vs 0.0) | **DONE** |
-| F30 | structural (latent) | S4 (text/distance comparands in memo equality) | TODO |
+| F30 | structural (latent) | S4 (text/distance comparands in memo equality) | **DONE** |
 | F31 | wrong-rows | S2 (CTE dedup keyers tuple-pack) | **DONE** |
 | F33 | wrong-rows | S3 (sort continuation type loss) | **DONE** |
 | F34 | wrong-rows | S3 (agg keyVals exotic-type residual + comment) | **DONE** |

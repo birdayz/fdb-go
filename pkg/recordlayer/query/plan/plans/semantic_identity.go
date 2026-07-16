@@ -93,16 +93,39 @@ func comparisonRangeEqual(a, b *predicates.ComparisonRange) bool {
 }
 
 // comparisonEqual compares two comparisons in the dimensions that define an
-// index/scan key range: operator type, LIKE escape, parameter binding, and the
-// comparand operand (semantic, alias-invariant-hash-compatible). A
-// parameter-bound comparand may be carried in ParameterName (Java's
-// ParameterComparison) or in Operand (a ParameterValue); folding both covers
-// either representation.
+// index/scan key range: operator type, LIKE escape, parameter binding, the
+// text-search comparand fields, and the comparand operand (semantic,
+// alias-invariant-hash-compatible). A parameter-bound comparand may be carried
+// in ParameterName (Java's ParameterComparison) or in Operand (a
+// ParameterValue); folding both covers either representation.
+//
+// The text-search fields (Java's TextComparison / TextWithMaxDistanceComparison
+// / TextContainsAllPrefixesComparison families) are part of the comparand: two
+// TEXT_CONTAINS comparisons over the same field differing ONLY in tokenizer,
+// analyzer, max-distance, or strict-prefix read DIFFERENT results, so they are
+// distinct identities — the exact F21 memo-poisoning class, for text comparands.
+// Java's RecordQueryIndexPlan.equalsWithoutChildren compares
+// Objects.equals(scanParameters), i.e. the WHOLE comparand including these
+// subclass fields.
+//
+// The DistanceRank comparand fields (QueryVector / EfSearch / IsReturningVectors)
+// are deliberately NOT folded here: a DistanceRank comparison is always lowered
+// to a RecordQueryVectorIndexPlan (never carried in a ComparisonRange that
+// reaches this helper), and that plan disambiguates them at the plan level
+// (RecordQueryVectorIndexPlan.EqualsWithoutChildren compares queryVector via
+// ValuesStructurallyEqual, plus efSearch / isReturningVectors) — Go's
+// architectural equivalent of Java's DistanceRankValueComparison.equals().
 func comparisonEqual(a, b *predicates.Comparison) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
 	if a.Type != b.Type || a.Escape != b.Escape || a.ParameterName != b.ParameterName {
+		return false
+	}
+	if a.TextTokenizerName != b.TextTokenizerName ||
+		a.TextAnalyzerName != b.TextAnalyzerName ||
+		a.TextMaxDistance != b.TextMaxDistance ||
+		a.TextStrictPrefix != b.TextStrictPrefix {
 		return false
 	}
 	return semanticValueEquals(a.Operand, b.Operand)
@@ -149,5 +172,19 @@ func writeComparisonHash(w io.Writer, c *predicates.Comparison) {
 	_, _ = w.Write(buf[:])
 	_, _ = io.WriteString(w, c.ParameterName)
 	_, _ = w.Write([]byte{0})
+	// Text-search comparand fields — folded so equal⟹same-hash holds with
+	// comparisonEqual (which compares this same set). Length-delimited (0 byte
+	// terminator) so "ab"+"c" can't collide with "a"+"bc".
+	_, _ = io.WriteString(w, c.TextTokenizerName)
+	_, _ = w.Write([]byte{0})
+	_, _ = io.WriteString(w, c.TextAnalyzerName)
+	_, _ = w.Write([]byte{0})
+	binary.BigEndian.PutUint64(buf[:], uint64(c.TextMaxDistance))
+	_, _ = w.Write(buf[:])
+	if c.TextStrictPrefix {
+		_, _ = w.Write([]byte{1})
+	} else {
+		_, _ = w.Write([]byte{0})
+	}
 	writeValueHash(w, c.Operand)
 }
