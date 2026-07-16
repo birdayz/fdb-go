@@ -480,6 +480,190 @@ func TestIntegration_SortContinuation_BytesKeyStraddle_F33(t *testing.T) {
 	}
 }
 
+// TestIntegration_SortContinuation_ArrayStructStraddle_F53 pins F53 end-to-end:
+// an ORDER BY over a table with an ARRAY column (Order.tags, []any in the row
+// domain) and a STRUCT column (Order.flower, a raw proto.Message) whose
+// in-memory sort buffer straddles page boundaries — forced by a
+// ScannedRecordsLimit that stops the inner scan mid-buffer, so the buffered
+// rows ride encodeSortContinuation and are restored by decodeSortContinuation
+// (with the store-metadata descriptor resolver) on resume. Before F53 the FIRST
+// checkpoint failed hard with "continuation: cannot encode value of type
+// []any" — a completely legitimate `SELECT * ... ORDER BY` could not resume at
+// all. The resumed rows must carry the tags array ([]any of strings, not a
+// lossy blob) and the flower struct (a proto message field-for-field equal to
+// what was stored) intact.
+func TestIntegration_SortContinuation_ArrayStructStraddle_F53(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	type wantRow struct {
+		price      int64
+		tags       []string
+		flowerType string
+	}
+	// Inserted out of price order so the sort actually reorders.
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300), Tags: []string{"c1", "c2"}, Flower: &gen.Flower{Type: proto.String("rose"), Color: gen.Color_RED.Enum()}},
+		&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Tags: []string{"a1"}, Flower: &gen.Flower{Type: proto.String("lily"), Color: gen.Color_BLUE.Enum()}},
+		&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(500), Tags: []string{"e1", "e2", "e3"}, Flower: &gen.Flower{Type: proto.String("tulip"), Color: gen.Color_YELLOW.Enum()}},
+		&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(200), Tags: []string{"b1", "b2"}, Flower: &gen.Flower{Type: proto.String("iris"), Color: gen.Color_PINK.Enum()}},
+		&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(400), Tags: []string{"d1"}, Flower: &gen.Flower{Type: proto.String("daisy"), Color: gen.Color_RED.Enum()}},
+	)
+	want := []wantRow{
+		{100, []string{"a1"}, "lily"},
+		{200, []string{"b1", "b2"}, "iris"},
+		{300, []string{"c1", "c2"}, "rose"},
+		{400, []string{"d1"}, "daisy"},
+		{500, []string{"e1", "e2", "e3"}, "tulip"},
+	}
+
+	// Order proto declaration order: order_id(0), flower(1), price(2), tags(3).
+	const flowerOrdinal, priceOrdinal, tagsOrdinal = 1, 2, 3
+
+	var got []wantRow
+	var continuation []byte
+	pages := 0
+	for {
+		pages++
+		if pages > 50 {
+			t.Fatal("resume loop did not converge (over 50 pages)")
+		}
+		exhausted, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			s, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+				SetSubspace(testSubspace(t)).Open()
+			if err != nil {
+				return nil, err
+			}
+			scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+			sorted := plans.NewRecordQueryInMemorySortPlan(
+				scan,
+				[]plans.SortKey{{
+					Field:     "PRICE",
+					ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", priceOrdinal, values.UnknownType),
+					Desc:      false,
+				}},
+			)
+			// Stop the inner scan after 2 records per transaction so the sort buffer
+			// (with its ARRAY + STRUCT slots) straddles page boundaries and rides
+			// the continuation.
+			props := recordlayer.DefaultExecuteProperties().WithScannedRecordsLimit(2)
+			cursor, err := ExecutePlan(ctx, sorted, s, EmptyEvaluationContext(), continuation, props)
+			if err != nil {
+				return nil, err
+			}
+			defer cursor.Close()
+
+			var nextCont []byte
+			done := false
+			for {
+				res, oerr := cursor.OnNext(ctx)
+				if oerr != nil {
+					return nil, oerr
+				}
+				if res.HasNext() {
+					pos := res.GetValue().Positional
+					pv, ok := pos.Get(priceOrdinal)
+					if !ok {
+						return nil, fmt.Errorf("no slot at price ordinal %d", priceOrdinal)
+					}
+					price, isInt := pv.(int64)
+					if !isInt {
+						return nil, fmt.Errorf("price slot = %#v (%T), want int64", pv, pv)
+					}
+					tv, ok := pos.Get(tagsOrdinal)
+					if !ok {
+						return nil, fmt.Errorf("no slot at tags ordinal %d", tagsOrdinal)
+					}
+					tagsAny, isList := tv.([]any)
+					if !isList {
+						return nil, fmt.Errorf("tags slot = %#v (%T), want []any — the ARRAY column must survive the sort-continuation resume", tv, tv)
+					}
+					tags := make([]string, len(tagsAny))
+					for i, e := range tagsAny {
+						str, isStr := e.(string)
+						if !isStr {
+							return nil, fmt.Errorf("tags[%d] = %#v (%T), want string", i, e, e)
+						}
+						tags[i] = str
+					}
+					fv, ok := pos.Get(flowerOrdinal)
+					if !ok {
+						return nil, fmt.Errorf("no slot at flower ordinal %d", flowerOrdinal)
+					}
+					// Pre-checkpoint rows carry *gen.Flower; resumed rows carry a
+					// dynamicpb message over the SAME descriptor. Both are
+					// proto.Message — read the "type" field reflectively.
+					fm, isMsg := fv.(proto.Message)
+					if !isMsg {
+						return nil, fmt.Errorf("flower slot = %#v (%T), want proto.Message — the STRUCT column must survive the sort-continuation resume", fv, fv)
+					}
+					refl := fm.ProtoReflect()
+					if name := string(refl.Descriptor().FullName()); name != "com.apple.foundationdb.record.Flower" {
+						return nil, fmt.Errorf("flower slot type = %q, want com.apple.foundationdb.record.Flower", name)
+					}
+					typeFD := refl.Descriptor().Fields().ByName("type")
+					if typeFD == nil {
+						return nil, fmt.Errorf("flower descriptor has no 'type' field")
+					}
+					got = append(got, wantRow{
+						price:      price,
+						tags:       tags,
+						flowerType: refl.Get(typeFD).String(),
+					})
+					continue
+				}
+				if res.GetNoNextReason().IsSourceExhausted() {
+					done = true
+				} else {
+					cb, cerr := res.GetContinuation().ToBytes()
+					if cerr != nil {
+						return nil, cerr
+					}
+					nextCont = cb
+				}
+				break
+			}
+			continuation = nextCont
+			return done, nil
+		})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if exhausted.(bool) {
+			break
+		}
+	}
+
+	// The straddle must actually have occurred (more than one page) or the test
+	// never exercised the sort continuation encode/decode with ARRAY/STRUCT slots.
+	if pages < 2 {
+		t.Fatalf("sort completed in %d page(s); expected multiple pages (the scan limit did not force a straddle)", pages)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		g := got[i]
+		if g.price != w.price {
+			t.Errorf("row %d price = %d, want %d (sort order corrupted across the resume)", i, g.price, w.price)
+		}
+		if len(g.tags) != len(w.tags) {
+			t.Errorf("row %d tags = %v, want %v", i, g.tags, w.tags)
+		} else {
+			for j := range w.tags {
+				if g.tags[j] != w.tags[j] {
+					t.Errorf("row %d tags[%d] = %q, want %q (ARRAY column corrupted across the resume)", i, j, g.tags[j], w.tags[j])
+				}
+			}
+		}
+		if g.flowerType != w.flowerType {
+			t.Errorf("row %d flower.type = %q, want %q (STRUCT column corrupted across the resume)", i, g.flowerType, w.flowerType)
+		}
+	}
+}
+
 // TestIntegration_DeletePlan tests deleting a record via the executor.
 func TestIntegration_DeletePlan(t *testing.T) {
 	t.Parallel()

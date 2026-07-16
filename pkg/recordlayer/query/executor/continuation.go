@@ -14,6 +14,8 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // The streaming-aggregate and in-memory-sort continuations are GO-INTERNAL: the
@@ -49,26 +51,41 @@ import (
 //   - time.Time — DATE/TIMESTAMP values flow through the row domain as STRINGS
 //     today (so a time.Time key is not currently reachable), but a time.Time is
 //     encoded losslessly (MarshalBinary) rather than left to round-trip wrong.
+//   - []any — an ARRAY column slot (values.ProtoFieldToRowValue turns a repeated
+//     field into []any): uvarint element count + each element recursively, so a
+//     nested array (struct arrays' element lists) round-trips too;
+//   - proto.Message — a STRUCT column slot (protoScalarToRowValue keeps a nested
+//     message raw): uvarint-length-prefixed full type name + uvarint-length-
+//     prefixed proto.Marshal bytes. Decode is TWO-PHASE: readContValue has no
+//     descriptor (the schema's message types are dynamicpb-built from store
+//     metadata, NOT registered in protoregistry.GlobalTypes), so it returns a
+//     pendingProtoRowValue placeholder; the continuation decode path resolves it
+//     against the store's metadata descriptors (resolvePendingProtoValues) or
+//     errors LOUDLY — a placeholder never leaks into the row domain.
 //
-// A value whose Go type is NONE of the above — []any, a proto.Message (needs its
-// descriptor to decode), a map, or any other non-scalar the codec cannot
-// faithfully reconstruct — is a correct-or-loud ERROR on encode, NOT a silent
-// JSON blob: a straddling group / sort buffer with such a key must FAIL the resume
-// loudly, never resume with a mistyped value.
+// A value whose Go type is NONE of the above — a map, or any other non-scalar
+// the codec cannot faithfully reconstruct — is a correct-or-loud ERROR on
+// encode, NOT a silent JSON blob: a straddling group / sort buffer with such a
+// key must FAIL the resume loudly, never resume with a mistyped value.
 const (
-	contValNil     byte = 0
-	contValInt64   byte = 1
-	contValFloat64 byte = 2
-	contValString  byte = 3
-	contValBytes   byte = 4
-	contValBool    byte = 5
-	contValUUID    byte = 6 // neutral [16]byte / tuple.UUID
-	contValInt32   byte = 7
-	contValFloat32 byte = 8
-	contValInt     byte = 9  // platform int, restored as int
-	contValUint64  byte = 10 // index-sourced integer in (2^63, 2^64)
-	contValBigInt  byte = 11 // *big.Int / big.Int, sign byte + big-endian magnitude
-	contValTime    byte = 12 // time.Time via MarshalBinary
+	contValNil      byte = 0
+	contValInt64    byte = 1
+	contValFloat64  byte = 2
+	contValString   byte = 3
+	contValBytes    byte = 4
+	contValBool     byte = 5
+	contValUUID     byte = 6 // neutral [16]byte / tuple.UUID
+	contValInt32    byte = 7
+	contValFloat32  byte = 8
+	contValInt      byte = 9  // platform int, restored as int
+	contValUint64   byte = 10 // index-sourced integer in (2^63, 2^64)
+	contValBigInt   byte = 11 // *big.Int / big.Int, sign byte + big-endian magnitude
+	contValTime     byte = 12 // time.Time via MarshalBinary
+	contValList     byte = 13 // []any: uvarint count + each element recursively
+	contValProtoMsg byte = 14 // proto.Message: full type name + proto.Marshal bytes
+	// Tag 15 was contValJSON — the deleted lossy JSON fallback — and is
+	// PERMANENTLY RETIRED: never reuse it. Decode treats 15 as an unknown tag,
+	// so a legacy JSON payload keeps failing loudly instead of decoding wrong.
 )
 
 // appendContValue appends v to buf in the typed, lossless continuation encoding.
@@ -121,14 +138,54 @@ func appendContValue(buf []byte, v any) ([]byte, error) {
 		buf = append(buf, contValTime)
 		buf = binary.AppendUvarint(buf, uint64(len(mb)))
 		return append(buf, mb...), nil
+	case []any:
+		// An ARRAY column slot. Elements recurse through appendContValue, so
+		// nested lists and struct elements work; an unencodable element
+		// propagates its loud error.
+		buf = append(buf, contValList)
+		buf = binary.AppendUvarint(buf, uint64(len(t)))
+		for _, e := range t {
+			var err error
+			buf, err = appendContValue(buf, e)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return buf, nil
+	case proto.Message:
+		// A STRUCT column slot (protoScalarToRowValue keeps nested messages
+		// raw — generated or dynamicpb). Encoded as full type name + marshal
+		// bytes; decode rebuilds it via a metadata descriptor resolver (see
+		// pendingProtoRowValue). This interface case must stay BELOW every
+		// concrete case: none of them implement proto.Message today, and any
+		// future one must keep its more specific encoding.
+		return appendContProtoMessage(buf, t)
 	default:
 		// Correct-or-loud: a non-scalar the codec cannot faithfully reconstruct
-		// (a proto.Message needs its descriptor to decode; []any / map have no
-		// stable typed form) must FAIL the encode, so a straddling group / sort
-		// buffer whose key or partial is such a value fails the resume loudly
-		// rather than silently resuming with a mistyped value.
+		// (a map has no stable typed form) must FAIL the encode, so a
+		// straddling group / sort buffer whose key or partial is such a value
+		// fails the resume loudly rather than silently resuming with a
+		// mistyped value.
 		return nil, fmt.Errorf("continuation: cannot encode value of type %T (unsupported continuation value)", v)
 	}
+}
+
+// appendContProtoMessage encodes a proto.Message row value as
+// contValProtoMsg || uvarint(len(fullName)) || fullName ||
+// uvarint(len(payload)) || payload. The full type name is what the decode-side
+// resolver looks up in the store's metadata descriptors (the schema's message
+// types are dynamicpb-built, not in protoregistry.GlobalTypes).
+func appendContProtoMessage(buf []byte, msg proto.Message) ([]byte, error) {
+	fullName := string(msg.ProtoReflect().Descriptor().FullName())
+	payload, err := proto.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("continuation: cannot encode proto message value of type %q: %w", fullName, err)
+	}
+	buf = append(buf, contValProtoMsg)
+	buf = binary.AppendUvarint(buf, uint64(len(fullName)))
+	buf = append(buf, fullName...)
+	buf = binary.AppendUvarint(buf, uint64(len(payload)))
+	return append(buf, payload...), nil
 }
 
 // appendContBigInt encodes an arbitrary-precision integer as
@@ -249,8 +306,160 @@ func readContValue(b []byte) (any, []byte, error) {
 		var u [16]byte
 		copy(u[:], b[:16])
 		return u, b[16:], nil
+	case contValList:
+		cnt, m := binary.Uvarint(b)
+		if m <= 0 {
+			return nil, nil, fmt.Errorf("continuation: bad list-count prefix (tag %d)", tag)
+		}
+		b = b[m:]
+		// Each element consumes at least one tag byte, so a count exceeding the
+		// remaining bytes is corrupt — reject before allocating.
+		if cnt > uint64(len(b)) {
+			return nil, nil, fmt.Errorf("continuation: list count %d exceeds remaining bytes (tag %d)", cnt, tag)
+		}
+		out := make([]any, 0, cnt)
+		for i := uint64(0); i < cnt; i++ {
+			var v any
+			var err error
+			v, b, err = readContValue(b)
+			if err != nil {
+				return nil, nil, err
+			}
+			out = append(out, v)
+		}
+		return out, b, nil
+	case contValProtoMsg:
+		name, rest, err := readContBytes(b, tag)
+		if err != nil {
+			return nil, nil, err
+		}
+		payload, rest, err := readContBytes(rest, tag)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Copy: payload aliases the proto buffer; the placeholder must own its
+		// bytes (string(name) already copies).
+		own := make([]byte, len(payload))
+		copy(own, payload)
+		// No descriptor here — return the placeholder; the caller MUST resolve
+		// it (resolvePendingProtoValues) or error loudly. It must never leak
+		// into the row domain.
+		return pendingProtoRowValue{TypeName: string(name), Bytes: own}, rest, nil
 	default:
 		return nil, nil, fmt.Errorf("continuation: unknown typed-value tag %d", tag)
+	}
+}
+
+// pendingProtoRowValue is the DESCRIPTOR-LESS decode of a contValProtoMsg value
+// (a STRUCT column slot in a buffered sort row). readContValue cannot rebuild
+// the message itself: the schema's message types are dynamicpb-built from store
+// metadata, not registered in protoregistry.GlobalTypes, so decoding needs the
+// store's descriptors. Every decode path must either resolve the placeholder
+// (resolvePendingProtoValues, with a resolver over the store metadata) or fail
+// LOUDLY — a placeholder leaking into the row domain would evaluate as a wrong,
+// mistyped value.
+type pendingProtoRowValue struct {
+	TypeName string // the message's full proto name (descriptor lookup key)
+	Bytes    []byte // proto.Marshal payload
+}
+
+// protoDescriptorResolver resolves a proto message full name to its message
+// descriptor. A name the resolver cannot find MUST return an error (never
+// (nil, nil)) — an unresolvable buffered struct value fails the resume loudly.
+type protoDescriptorResolver func(fullName string) (protoreflect.MessageDescriptor, error)
+
+// resolvePendingProtoValues walks a decoded row value RECURSIVELY (lists may
+// contain messages — struct arrays) and replaces every pendingProtoRowValue
+// with the real message: dynamicpb.NewMessage over the resolved descriptor +
+// proto.Unmarshal. A nil resolver, an unresolvable type name, or a payload
+// that does not unmarshal is a LOUD error — never a silent nil slot.
+func resolvePendingProtoValues(v any, resolve protoDescriptorResolver) (any, error) {
+	switch t := v.(type) {
+	case pendingProtoRowValue:
+		if resolve == nil {
+			return nil, fmt.Errorf("continuation: value carries a proto message of type %q but no descriptor resolver is available — cannot rebuild it", t.TypeName)
+		}
+		desc, err := resolve(t.TypeName)
+		if err != nil {
+			return nil, fmt.Errorf("continuation: cannot resolve descriptor for proto message type %q: %w", t.TypeName, err)
+		}
+		if desc == nil {
+			// Defensive: a resolver must error, not return nil — but a nil
+			// descriptor here would panic dynamicpb, so reject it loudly.
+			return nil, fmt.Errorf("continuation: descriptor resolver returned no descriptor for proto message type %q", t.TypeName)
+		}
+		msg := dynamicpb.NewMessage(desc)
+		if uErr := proto.Unmarshal(t.Bytes, msg); uErr != nil {
+			return nil, fmt.Errorf("continuation: cannot unmarshal buffered proto message of type %q: %w", t.TypeName, uErr)
+		}
+		return msg, nil
+	case []any:
+		for i, e := range t {
+			nv, err := resolvePendingProtoValues(e, resolve)
+			if err != nil {
+				return nil, err
+			}
+			t[i] = nv
+		}
+		return t, nil
+	default:
+		return v, nil
+	}
+}
+
+// metadataMessageResolver builds a protoDescriptorResolver over the store's
+// RecordMetaData: the schema's message descriptors are dynamicpb-built from
+// store metadata (NOT registered in protoregistry.GlobalTypes), so a buffered
+// STRUCT value's descriptor is found by walking the metadata's record-type
+// file descriptors — top-level and nested messages, plus transitive imports (a
+// struct column's message type may live in an imported file).
+func metadataMessageResolver(md *recordlayer.RecordMetaData) protoDescriptorResolver {
+	return func(fullName string) (protoreflect.MessageDescriptor, error) {
+		if md == nil {
+			return nil, fmt.Errorf("no record metadata available to resolve message descriptors")
+		}
+		target := protoreflect.FullName(fullName)
+		seen := make(map[string]bool)
+		var files []protoreflect.FileDescriptor
+		var addFile func(fd protoreflect.FileDescriptor)
+		addFile = func(fd protoreflect.FileDescriptor) {
+			if fd == nil || seen[fd.Path()] {
+				return
+			}
+			seen[fd.Path()] = true
+			files = append(files, fd)
+			imports := fd.Imports()
+			for i := 0; i < imports.Len(); i++ {
+				addFile(imports.Get(i).FileDescriptor)
+			}
+		}
+		for _, rt := range md.RecordTypes() {
+			if rt.Descriptor != nil {
+				addFile(rt.Descriptor.ParentFile())
+			}
+		}
+		if ud := md.GetUnionDescriptor(); ud != nil {
+			addFile(ud.ParentFile())
+		}
+		var findIn func(msgs protoreflect.MessageDescriptors) protoreflect.MessageDescriptor
+		findIn = func(msgs protoreflect.MessageDescriptors) protoreflect.MessageDescriptor {
+			for i := 0; i < msgs.Len(); i++ {
+				m := msgs.Get(i)
+				if m.FullName() == target {
+					return m
+				}
+				if found := findIn(m.Messages()); found != nil {
+					return found
+				}
+			}
+			return nil
+		}
+		for _, fd := range files {
+			if found := findIn(fd.Messages()); found != nil {
+				return found, nil
+			}
+		}
+		return nil, fmt.Errorf("message type %q not found in the store's record metadata descriptors", fullName)
 	}
 }
 
@@ -457,6 +666,16 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		if gkErr != nil {
 			return nil, "", nil, fmt.Errorf("failed to decode group key in aggregate continuation: %w", gkErr)
 		}
+		// Group keys are SCALARS — the aggregate encoder never writes a
+		// contValProtoMsg key, so a pendingProtoRowValue here is a crafted or
+		// corrupt continuation. It must error loudly (the nil resolver makes
+		// resolvePendingProtoValues reject any placeholder), never leak the
+		// descriptor-less placeholder into the resumed group's output row.
+		for ki := range keyVals {
+			if _, gErr := resolvePendingProtoValues(keyVals[ki], nil); gErr != nil {
+				return nil, "", nil, fmt.Errorf("invalid group-key value %d in aggregate continuation: %w", ki, gErr)
+			}
+		}
 	}
 
 	if len(par.AccumulatorStates) == 0 {
@@ -507,6 +726,11 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 			if dErr != nil {
 				return nil, "", nil, fmt.Errorf("failed to decode MIN state in aggregate continuation: %w", dErr)
 			}
+			// MIN partials are SCALARS; a pendingProtoRowValue is crafted/corrupt
+			// input and must error loudly (see the group-key guard above).
+			if _, gErr := resolvePendingProtoValues(minVal, nil); gErr != nil {
+				return nil, "", nil, fmt.Errorf("invalid MIN state in aggregate continuation: %w", gErr)
+			}
 			gs.mins[i] = minVal
 		}
 		idx++
@@ -514,6 +738,10 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 			maxVal, _, dErr := readContValue(v.BytesState)
 			if dErr != nil {
 				return nil, "", nil, fmt.Errorf("failed to decode MAX state in aggregate continuation: %w", dErr)
+			}
+			// MAX partials are SCALARS; same guard as MIN.
+			if _, gErr := resolvePendingProtoValues(maxVal, nil); gErr != nil {
+				return nil, "", nil, fmt.Errorf("invalid MAX state in aggregate continuation: %w", gErr)
 			}
 			gs.maxs[i] = maxVal
 		}
@@ -614,7 +842,11 @@ func encodeSortContinuation(
 }
 
 // decodeSortContinuation deserializes the MemorySortContinuation proto.
-func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryResult, err error) {
+// resolve rebuilds buffered STRUCT column slots (contValProtoMsg placeholders,
+// see pendingProtoRowValue) from the store's metadata descriptors; nil is
+// valid ONLY for buffers without struct slots — a placeholder with no resolver
+// fails the resume loudly, never silently.
+func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (innerContinuation []byte, buf []QueryResult, err error) {
 	msg := &gen.MemorySortContinuation{}
 	if err := proto.Unmarshal(data, msg); err != nil {
 		return nil, nil, fmt.Errorf("failed to unmarshal sort continuation: %w", err)
@@ -666,6 +898,17 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 				slots, _, sErr := readContSlice(pp.B)
 				if sErr != nil {
 					return nil, nil, fmt.Errorf("failed to decode sorted record %d slots in continuation: %w", i, sErr)
+				}
+				// Rebuild STRUCT column slots (and struct elements inside ARRAY
+				// slots) from their descriptor-less placeholders. Any failure —
+				// no resolver, unresolvable type, bad payload — is a LOUD
+				// error: a placeholder must never leak into the row domain.
+				for si := range slots {
+					rv, rErr := resolvePendingProtoValues(slots[si], resolve)
+					if rErr != nil {
+						return nil, nil, fmt.Errorf("failed to rebuild sorted record %d slot %d in continuation: %w", i, si, rErr)
+					}
+					slots[si] = rv
 				}
 				positional = &PositionalRow{Type: positionalTypeFromNames(pp.N), Slots: slots}
 			}

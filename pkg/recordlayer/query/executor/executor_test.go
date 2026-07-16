@@ -4653,7 +4653,7 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotBuf, err := decodeSortContinuation(encoded)
+	gotInner, gotBuf, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -4700,7 +4700,7 @@ func TestSortContinuation_EmptyBuffer(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotBuf, err := decodeSortContinuation(encoded)
+	gotInner, gotBuf, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

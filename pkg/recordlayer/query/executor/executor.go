@@ -3647,7 +3647,16 @@ func executeInMemorySort(
 	var innerContinuation []byte
 	var priorBuf []QueryResult
 	if continuation != nil {
-		ic, buf, decErr := decodeSortContinuation(continuation)
+		// Buffered STRUCT column slots are rebuilt from the store's metadata
+		// descriptors (the schema's message types are dynamicpb-built, not in
+		// protoregistry.GlobalTypes). A nil store leaves the resolver nil: a
+		// buffer with struct slots then fails the resume loudly rather than
+		// leaking a descriptor-less placeholder into the row domain.
+		var resolve protoDescriptorResolver
+		if store != nil {
+			resolve = metadataMessageResolver(store.GetRecordMetaData())
+		}
+		ic, buf, decErr := decodeSortContinuation(continuation, resolve)
 		if decErr != nil {
 			return nil, fmt.Errorf("invalid sort continuation: %w", decErr)
 		}
