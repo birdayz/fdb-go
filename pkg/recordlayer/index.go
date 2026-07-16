@@ -392,6 +392,34 @@ func (idx *Index) IsClearWhenZero() bool {
 	return ok && v == "true"
 }
 
+// IsAtomicMutationIndex reports whether this index is maintained via FDB atomic
+// mutations that store aggregated or running-extremum entries rather than
+// per-record values. Such indexes (COUNT/SUM totals, MAX_EVER/MIN_EVER running
+// extrema, BITMAP_VALUE bitsets) must never be offered as an ordinary VALUE-index
+// scan source: their entries are not the underlying record values, so an ordered
+// per-record scan (e.g. a StreamingAgg over the index) reads stale/mislaid data.
+//
+// Mirrors Java, where AtomicMutationIndexMaintainerFactory (count, count_not_null,
+// count_updates, sum, max_ever_*, min_ever_*, max_ever_version) and
+// BitmapValueIndexMaintainerFactory never call expandValueIndexMatchCandidate —
+// these types only ever reach the aggregate expansion path (or none), and their
+// maintainers reject a BY_VALUE scan at runtime. VALUE, VERSION, RANK, and the
+// PERMUTED_MIN/MAX types are deliberately excluded here: they are genuinely
+// value-scannable (their Java maintainers support BY_VALUE).
+func (idx *Index) IsAtomicMutationIndex() bool {
+	switch idx.Type {
+	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates,
+		IndexTypeSum,
+		IndexTypeMaxEverLong, IndexTypeMinEverLong,
+		IndexTypeMaxEverTuple, IndexTypeMinEverTuple,
+		IndexTypeMaxEverVersion,
+		IndexTypeBitmapValue:
+		return true
+	default:
+		return false
+	}
+}
+
 // SetClearWhenZero enables or disables the clear-when-zero behavior.
 // Matches Java's IndexOptions.CLEAR_WHEN_ZERO.
 func (idx *Index) SetClearWhenZero(clear bool) *Index {

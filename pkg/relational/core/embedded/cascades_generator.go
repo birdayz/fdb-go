@@ -1942,6 +1942,19 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 			candidates = append(candidates, vecCand)
 			continue
 		}
+		// Atomic-mutation / aggregate-only index types (COUNT/SUM totals,
+		// MAX_EVER/MIN_EVER running extrema, BITMAP_VALUE bitsets) must not become
+		// VALUE-index scan candidates: their entries are aggregated/running values,
+		// not per-record values, so a plain ordered scan (e.g. StreamingAgg over the
+		// index) reads stale data. In Java these types have no value-scan candidate
+		// (AtomicMutationIndexMaintainerFactory / BitmapValueIndexMaintainerFactory
+		// never call expandValueIndexMatchCandidate); their aggregate contribution
+		// arrives via tryAggregateIndexCandidate above, so dropping them here leaves
+		// a plain MAX/MIN over only such an index to fall back to a base-record
+		// StreamingAgg, which computes the correct current extremum.
+		if idx.IsAtomicMutationIndex() {
+			continue
+		}
 		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
 	}
 	if len(defs) > 0 {

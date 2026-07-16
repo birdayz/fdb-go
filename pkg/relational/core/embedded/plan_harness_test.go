@@ -822,6 +822,60 @@ CREATE INDEX max_price_by_cat AS SELECT MAX_EVER(price) FROM ORDERS GROUP BY cat
 	}
 }
 
+// everOnlySchema has ONLY monotone MAX_EVER / MIN_EVER indexes on price — no
+// permuted / plain aggregate index. A plain SQL MAX()/MIN() query therefore has
+// no legitimate aggregate index to match.
+const everOnlySchema = `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_ever_price AS SELECT MAX_EVER(price) FROM ORDERS GROUP BY category
+CREATE INDEX min_ever_price AS SELECT MIN_EVER(price) FROM ORDERS GROUP BY category
+`
+
+// TestPlanHarness_PlainMaxMinOverEverIndex_FallsBackToBaseAgg pins that a plain
+// SQL MAX()/MIN() query is NOT served by scanning an explicit monotone MAX_EVER /
+// MIN_EVER index. Those indexes store running extrema maintained by atomic
+// mutations, not per-record values; scanning one as an ordinary VALUE index
+// (StreamingAgg over IndexScan) reads stale data that deletes never lower. With
+// no permuted/plain aggregate index present, the query must fall back to an
+// aggregation over the base-record scan — mirroring Java, whose
+// AtomicMutationIndexMaintainerFactory never produces a value-scan candidate.
+//
+// Revert-proof: removing the IsAtomicMutationIndex candidacy filter in
+// cascades_generator makes the _EVER index a value candidate again, and the plan
+// regresses to StreamingAgg(IndexScan(<_EVER index>, COVERING)) — the assertion
+// below then fails.
+func TestPlanHarness_PlainMaxMinOverEverIndex_FallsBackToBaseAgg(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		agg   string
+		query string
+	}{
+		{"MAX", "SELECT category, MAX(price) FROM orders GROUP BY category"},
+		{"MIN", "SELECT category, MIN(price) FROM orders GROUP BY category"},
+	} {
+		tc := tc
+		t.Run(tc.agg, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanQueryForTest(tc.query, everOnlySchema, nil)
+			if err != nil {
+				t.Fatalf("plan %s: %v", tc.agg, err)
+			}
+			t.Logf("%s plan: %s", tc.agg, plan)
+			// The only indexes are the monotone _EVER indexes; any IndexScan means
+			// the planner scanned one as a value source (the F35 bug).
+			assertPlanNotContains(t, plan, "IndexScan")
+			// Correct shape: aggregate over a base-record scan.
+			assertPlanContains(t, plan, "StreamingAgg")
+			assertPlanContains(t, plan, "Scan(ORDERS")
+		})
+	}
+}
+
 // --- Multi-table schemas ---
 
 const multiTableSchema = `

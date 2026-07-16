@@ -1291,6 +1291,112 @@ func TestFDB_AggregateIndex_PermutedMinMaxSemantics(t *testing.T) {
 	})
 }
 
+// TestFDB_AggregateIndex_StaleEverNotServedByValueScan is the wrong-rows
+// regression for F35. When the ONLY index on a column is an explicit monotone
+// MAX_EVER / MIN_EVER index (created via the max_ever()/min_ever() DDL functions)
+// and no permuted/plain aggregate index exists, a plain `SELECT MAX(col) … GROUP
+// BY g` query must NOT be served by scanning the _EVER index. Its entries are
+// running extrema maintained by atomic mutations — never lowered by deletes — so
+// a StreamingAgg over them returns stale values. The query must fall back to an
+// aggregation over the base records, which reflects deletes and yields the true
+// current extremum, exactly as Java (whose AtomicMutationIndexMaintainerFactory
+// never builds a value-scan candidate).
+//
+// Revert-proof: after deleting the extremum-holding record, the plain MAX/MIN
+// must return the next remaining value (100), not the stale monotone _EVER value
+// (250 / 50). Removing the IsAtomicMutationIndex candidacy filter makes the
+// planner scan the _EVER index and this returns the stale value → red.
+func TestFDB_AggregateIndex_StaleEverNotServedByValueScan(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "staleever",
+		"CREATE TABLE highscores (id BIGINT NOT NULL, player STRING, score BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX max_ever_score AS SELECT MAX_EVER(score) FROM highscores GROUP BY player "+
+			"CREATE INDEX min_ever_score AS SELECT MIN_EVER(score) FROM highscores GROUP BY player")
+
+	for _, s := range []struct {
+		id     int
+		player string
+		score  int
+	}{
+		{1, "alice", 100},
+		{2, "alice", 250},
+		{3, "alice", 50},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO highscores VALUES (%d, '%s', %d)", s.id, s.player, s.score,
+		)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", s.id, err)
+		}
+	}
+
+	// queryExtremum runs the grouped aggregate and returns alice's single value.
+	queryExtremum := func(t *testing.T, agg string) int64 {
+		t.Helper()
+		q := fmt.Sprintf("SELECT player, %s(score) FROM highscores GROUP BY player ORDER BY player", agg)
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("QueryContext(%s): %v", agg, err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatalf("%s: no rows", agg)
+		}
+		var player string
+		var v int64
+		if err := rows.Scan(&player, &v); err != nil {
+			t.Fatalf("Scan(%s): %v", agg, err)
+		}
+		if player != "alice" {
+			t.Fatalf("%s: unexpected player %q", agg, player)
+		}
+		return v
+	}
+
+	t.Run("plan_does_not_scan_ever_index", func(t *testing.T) {
+		// The only secondary indexes are the monotone _EVER indexes; any IndexScan
+		// means the planner scanned one as a value source (the F35 bug), and an
+		// AggregateIndex would mean it wrongly matched the aggregate path.
+		for _, agg := range []string{"MAX", "MIN"} {
+			q := fmt.Sprintf("SELECT player, %s(score) FROM highscores GROUP BY player ORDER BY player", agg)
+			plan := planExplainVia(t, ctx, db, q)
+			t.Logf("%s plan: %s", agg, plan)
+			if strings.Contains(plan, "IndexScan") {
+				t.Errorf("plain %s must not scan the monotone _EVER index; plan: %s", agg, plan)
+			}
+			if strings.Contains(plan, "AggregateIndex") {
+				t.Errorf("plain %s must not be served by an AggregateIndex over the _EVER index; plan: %s", agg, plan)
+			}
+		}
+	})
+
+	t.Run("max_reflects_delete_not_stale_ever", func(t *testing.T) {
+		// Delete alice's 250 (the current max). max_ever stays 250 (monotone); the
+		// base-record aggregation must recompute the current max = 100.
+		if _, err := db.ExecContext(ctx, "DELETE FROM highscores WHERE id = 2"); err != nil {
+			t.Fatalf("DELETE id=2: %v", err)
+		}
+		if got := queryExtremum(t, "MAX"); got != 100 {
+			t.Errorf("MAX after deleting 250: got %d, want 100 (a stale _EVER scan would give 250)", got)
+		}
+	})
+
+	t.Run("min_reflects_delete_not_stale_ever", func(t *testing.T) {
+		// alice now holds {100, 50}; delete the 50 (current min). min_ever stays 50
+		// (monotone); the base aggregation must recompute the current min = 100.
+		if _, err := db.ExecContext(ctx, "DELETE FROM highscores WHERE id = 3"); err != nil {
+			t.Fatalf("DELETE id=3: %v", err)
+		}
+		if got := queryExtremum(t, "MIN"); got != 100 {
+			t.Errorf("MIN after deleting 50: got %d, want 100 (a stale _EVER scan would give 50)", got)
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_UngroupedAndEmpty(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
