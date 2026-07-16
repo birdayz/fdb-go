@@ -2057,9 +2057,16 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		aggFunc = expressions.AggSum
 	case recordlayer.IndexTypeCount, recordlayer.IndexTypeCountNotNull:
 		aggFunc = expressions.AggCount
-	case recordlayer.IndexTypeMaxEverLong, recordlayer.IndexTypeMaxEverTuple:
+	case recordlayer.IndexTypePermutedMax:
+		// Plain SQL MAX(col) resolves to a PERMUTED_MAX index (Java's
+		// NumericAggregationValue.Max.getIndexTypeName()), which tracks the true
+		// current maximum under deletes/updates. The monotone MAX_EVER/MIN_EVER
+		// index types are intentionally NOT matched here: a plain MAX/MIN query
+		// served from a monotone _EVER index would return stale extrema. The
+		// separate max_ever()/min_ever() aggregate would match those — but Go's
+		// read side does not expose them as query aggregates (only MAX/MIN).
 		aggFunc = expressions.AggMax
-	case recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple:
+	case recordlayer.IndexTypePermutedMin:
 		aggFunc = expressions.AggMin
 	default:
 		return nil

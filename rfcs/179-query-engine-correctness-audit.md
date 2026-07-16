@@ -468,9 +468,9 @@ one defect each found by two auditors.
 | F0 | wrong-rows | S4 (root-unpinned guard) | **DONE** |
 | F1 | wrong-rows | S3 (OrElse continuation) | TODO |
 | F2 | wrong-rows | S3 (retire leftOuter flag) | TODO |
-| F3 | wrong-rows + **WIRE** | S5 (permuted MIN/MAX) | TODO |
+| F3 | wrong-rows + **WIRE** | S5 (permuted MIN/MAX) | **DONE** |
 | F4 | wrong-rows | S3 (typed agg continuation) | **DONE** |
-| F5 | wrong-rows | S3 (typed agg continuation) | **DONE** |
+| F5 | wrong-rows | S3 (typed agg continuation) | **PARTIAL** (whitelist; F34 residual) |
 | F6 | wrong-rows | Theme 3 (AVG exact sum) | **DONE** `44a534a14` |
 | F7 | wrong-rows | Theme 4 (injective DISTINCT elision) | **DONE** |
 | F8 | wrong-rows | S2 (distinctKey tuple-pack) | **DONE** |
@@ -495,6 +495,8 @@ one defect each found by two auditors.
 | F30 | structural (latent) | S4 (text/distance comparands in memo equality) | TODO |
 | F31 | wrong-rows | S2 (CTE dedup keyers tuple-pack) | **DONE** |
 | F33 | wrong-rows | S3 (sort continuation type loss) | TODO |
+| F34 | wrong-rows | S3 (agg keyVals exotic-type residual + comment) | TODO |
+| F35 | wrong-rows (latent) | Theme 7 (atomic-mutation index candidacy) | TODO |
 
 Later-surfaced (during fixing): F27, F28 (float total-ordering in the comparator /
 cmpAny), F30 (semantic_identity.go still ignores text/distance comparison fields —

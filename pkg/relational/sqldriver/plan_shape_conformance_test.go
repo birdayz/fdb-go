@@ -1160,14 +1160,22 @@ func TestFDB_AggregateIndex_MaxMinHaving(t *testing.T) {
 	})
 }
 
-func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
+// TestFDB_AggregateIndex_PermutedMinMaxSemantics pins the CURRENT-extremum
+// semantics of plain SQL MAX/MIN aggregate indexes. A `CREATE INDEX … AS SELECT
+// MAX(col) … GROUP BY g` materializes a PERMUTED_MAX index (Java's
+// NumericAggregationValue.Max.getIndexTypeName()), NOT a monotone MAX_EVER
+// index. The permuted index tracks the true current maximum/minimum under
+// deletes and updates: deleting or lowering the extremum-holding record must be
+// reflected. (A MAX_EVER index would go stale — it only ever grows.) The plan
+// must be served by the aggregate index, not a slower streaming/scan fallback.
+func TestFDB_AggregateIndex_PermutedMinMaxSemantics(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mmever",
+	db := setupPlanShapeDB(t, "permmm",
 		"CREATE TABLE highscores (id BIGINT NOT NULL, player STRING, score BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_score AS SELECT MAX(score) FROM highscores GROUP BY player "+
 			"CREATE INDEX min_score AS SELECT MIN(score) FROM highscores GROUP BY player")
@@ -1191,138 +1199,95 @@ func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 		}
 	}
 
-	t.Run("initial_max", func(t *testing.T) {
-		rows, err := db.QueryContext(ctx, "SELECT player, MAX(score) FROM highscores GROUP BY player ORDER BY player")
+	type row struct {
+		player string
+		v      int64
+	}
+	// queryExtrema runs a grouped MAX/MIN query and returns rows ordered by player.
+	queryExtrema := func(t *testing.T, agg string) []row {
+		t.Helper()
+		q := fmt.Sprintf("SELECT player, %s(score) FROM highscores GROUP BY player ORDER BY player", agg)
+		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
-			t.Fatalf("QueryContext: %v", err)
+			t.Fatalf("QueryContext(%s): %v", agg, err)
 		}
 		defer rows.Close()
-		type row struct {
-			player string
-			max    int64
-		}
 		var got []row
 		for rows.Next() {
 			var r row
-			if err := rows.Scan(&r.player, &r.max); err != nil {
+			if err := rows.Scan(&r.player, &r.v); err != nil {
 				t.Fatalf("Scan: %v", err)
 			}
 			got = append(got, r)
 		}
-		want := []row{{"alice", 250}, {"bob", 300}}
+		return got
+	}
+	assertRows := func(t *testing.T, got, want []row) {
+		t.Helper()
 		if len(got) != len(want) {
-			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+			t.Fatalf("row count: got %d (%+v), want %d (%+v)", len(got), got, len(want), want)
 		}
 		for i, w := range want {
 			if got[i] != w {
 				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
 			}
 		}
+	}
+
+	t.Run("plan_uses_aggregate_index", func(t *testing.T) {
+		// The optimization must actually fire: EXPLAIN must show the aggregate
+		// index serving the query, not a StreamingAgg / full-scan fallback.
+		for _, agg := range []string{"MAX", "MIN"} {
+			q := fmt.Sprintf("SELECT player, %s(score) FROM highscores GROUP BY player ORDER BY player", agg)
+			plan := planExplainVia(t, ctx, db, q)
+			t.Logf("%s plan: %s", agg, plan)
+			if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, agg) {
+				t.Errorf("expected AggregateIndex(%s) plan, got: %s", agg, plan)
+			}
+		}
 	})
 
-	t.Run("delete_max_holder_ever_persists", func(t *testing.T) {
-		// Delete alice's 250-score record. _EVER semantics: MAX stays 250.
+	t.Run("initial_extrema", func(t *testing.T) {
+		assertRows(t, queryExtrema(t, "MAX"), []row{{"alice", 250}, {"bob", 300}})
+		assertRows(t, queryExtrema(t, "MIN"), []row{{"alice", 50}, {"bob", 150}})
+	})
+
+	t.Run("delete_max_holder_lowers_max", func(t *testing.T) {
+		// Delete alice's 250 (the current max). PERMUTED: MAX recomputes to the
+		// next-highest remaining (100). A MAX_EVER index would wrongly keep 250.
 		if _, err := db.ExecContext(ctx, "DELETE FROM highscores WHERE id = 2"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-
-		rows, err := db.QueryContext(ctx, "SELECT player, MAX(score) FROM highscores GROUP BY player ORDER BY player")
-		if err != nil {
-			t.Fatalf("QueryContext: %v", err)
-		}
-		defer rows.Close()
-		type row struct {
-			player string
-			max    int64
-		}
-		var got []row
-		for rows.Next() {
-			var r row
-			if err := rows.Scan(&r.player, &r.max); err != nil {
-				t.Fatalf("Scan: %v", err)
-			}
-			got = append(got, r)
-		}
-		// _EVER: alice's MAX is still 250 even though that record is deleted
-		want := []row{{"alice", 250}, {"bob", 300}}
-		if len(got) != len(want) {
-			t.Fatalf("row count: got %d, want %d", len(got), len(want))
-		}
-		for i, w := range want {
-			if got[i] != w {
-				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
-			}
-		}
+		assertRows(t, queryExtrema(t, "MAX"), []row{{"alice", 100}, {"bob", 300}})
 	})
 
-	t.Run("new_max_updates_ever", func(t *testing.T) {
-		// Insert a new high score for alice → MAX should update to 500
-		if _, err := db.ExecContext(ctx, "INSERT INTO highscores VALUES (6, 'alice', 500)"); err != nil {
-			t.Fatalf("INSERT: %v", err)
-		}
-
-		rows, err := db.QueryContext(ctx, "SELECT player, MAX(score) FROM highscores GROUP BY player ORDER BY player")
-		if err != nil {
-			t.Fatalf("QueryContext: %v", err)
-		}
-		defer rows.Close()
-		type row struct {
-			player string
-			max    int64
-		}
-		var got []row
-		for rows.Next() {
-			var r row
-			if err := rows.Scan(&r.player, &r.max); err != nil {
-				t.Fatalf("Scan: %v", err)
-			}
-			got = append(got, r)
-		}
-		// alice: new high of 500, bob: still 300
-		want := []row{{"alice", 500}, {"bob", 300}}
-		if len(got) != len(want) {
-			t.Fatalf("row count: got %d, want %d", len(got), len(want))
-		}
-		for i, w := range want {
-			if got[i] != w {
-				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
-			}
-		}
-	})
-
-	t.Run("min_ever_persists_after_delete", func(t *testing.T) {
-		// alice's min is 50 (id=3). Delete it. MIN_EVER: min stays 50.
+	t.Run("delete_min_holder_raises_min", func(t *testing.T) {
+		// alice now holds {100, 50}; delete the 50 (current min). PERMUTED: MIN
+		// recomputes to 100. A MIN_EVER index would wrongly keep 50.
 		if _, err := db.ExecContext(ctx, "DELETE FROM highscores WHERE id = 3"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
+		assertRows(t, queryExtrema(t, "MIN"), []row{{"alice", 100}, {"bob", 150}})
+	})
 
-		rows, err := db.QueryContext(ctx, "SELECT player, MIN(score) FROM highscores GROUP BY player ORDER BY player")
-		if err != nil {
-			t.Fatalf("QueryContext: %v", err)
+	t.Run("insert_new_max", func(t *testing.T) {
+		// alice now holds {100}; insert 500 → MAX rises to 500.
+		if _, err := db.ExecContext(ctx, "INSERT INTO highscores VALUES (6, 'alice', 500)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
 		}
-		defer rows.Close()
-		type row struct {
-			player string
-			min    int64
+		assertRows(t, queryExtrema(t, "MAX"), []row{{"alice", 500}, {"bob", 300}})
+	})
+
+	t.Run("update_lowers_max", func(t *testing.T) {
+		// UPDATE the current max-holder (id=6, 500) down to 10. alice now holds
+		// {100, 10}; PERMUTED: MAX recomputes to 100. A MAX_EVER index would
+		// wrongly keep 500 (it never decreases).
+		if _, err := db.ExecContext(ctx, "UPDATE highscores SET score = 10 WHERE id = 6"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
 		}
-		var got []row
-		for rows.Next() {
-			var r row
-			if err := rows.Scan(&r.player, &r.min); err != nil {
-				t.Fatalf("Scan: %v", err)
-			}
-			got = append(got, r)
-		}
-		// _EVER: alice's MIN is still 50, bob's MIN is still 150
-		want := []row{{"alice", 50}, {"bob", 150}}
-		if len(got) != len(want) {
-			t.Fatalf("row count: got %d, want %d", len(got), len(want))
-		}
-		for i, w := range want {
-			if got[i] != w {
-				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
-			}
-		}
+		assertRows(t, queryExtrema(t, "MAX"), []row{{"alice", 100}, {"bob", 300}})
+		// MIN also reflects the lowered value.
+		assertRows(t, queryExtrema(t, "MIN"), []row{{"alice", 10}, {"bob", 150}})
 	})
 }
 

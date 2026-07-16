@@ -735,9 +735,16 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 	case "COUNT_NOT_NULL":
 		return recordlayer.NewCountNotNullIndex(idx.name, gke), nil
 	case "MAX":
-		return recordlayer.NewMaxEverLongIndex(idx.name, gke), nil
+		// Plain SQL MAX(col) is a PERMUTED_MAX index, matching Java's
+		// NumericAggregationValue.Max.getIndexTypeName() == IndexTypes.PERMUTED_MAX.
+		// It tracks the TRUE current maximum under deletes/updates (a MIN_EVER/
+		// MAX_EVER index is monotone and goes stale). With no ORDER BY on the
+		// aggregate, Java sets the permuted size to 0 (MaterializedViewIndexGenerator:
+		// permutedSize = aggregateOrderIndex < 0 ? 0 : ...). The SEPARATE max_ever()
+		// SQL function maps to the _EVER indexes below.
+		return recordlayer.NewPermutedMaxIndex(idx.name, gke, 0), nil
 	case "MIN":
-		return recordlayer.NewMinEverLongIndex(idx.name, gke), nil
+		return recordlayer.NewPermutedMinIndex(idx.name, gke, 0), nil
 	case "MAX_EVER_TUPLE":
 		return recordlayer.NewMaxEverTupleIndex(idx.name, gke), nil
 	case "MIN_EVER_TUPLE":

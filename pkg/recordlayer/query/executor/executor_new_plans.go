@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -51,8 +52,6 @@ func executeAggregateIndexScan(
 		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
 
-	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
-
 	canonicalName := p.CanonicalAggColumnName()
 	groupCols := p.GetGroupCols()
 	// The aggregate-index row's authoritative ordinal
@@ -67,6 +66,18 @@ func executeAggregateIndexScan(
 	posNames = append(posNames, canonicalName)
 	posType := positionalTypeFromNames(posNames)
 
+	// PERMUTED_MIN/MAX indexes keep the current extremum per group in the
+	// SECONDARY (permuted) subspace, not the primary VALUE tree; the aggregate
+	// value lives inside the entry KEY, not entry.Value. Scan BY_GROUP — the same
+	// scan Java's AggregateIndexMatchCandidate builds (IndexScanType.BY_GROUP) —
+	// so a plain SQL MAX/MIN served from a permuted index reflects the true
+	// current extremum under deletes/updates (a monotone _EVER index goes stale).
+	if idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax {
+		return newPermutedAggregateIndexCursor(store, idx, scanRange, continuation, scanProps, len(groupCols), posType)
+	}
+
+	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
+
 	return &aggregateIndexCursor{
 		inner:     indexCursor,
 		groupCols: groupCols,
@@ -78,6 +89,103 @@ func executeAggregateIndexScan(
 		posType:       posType,
 	}, nil
 }
+
+// newPermutedAggregateIndexCursor builds a cursor over a PERMUTED_MIN/MAX
+// index's secondary (permuted) subspace. Each permuted entry's KEY has the
+// layout [groupPrefix..., value..., groupSuffix...] where groupPrefix is the
+// first (groupingCount - permutedSize) grouping columns, value is the grouped
+// aggregate column, and groupSuffix is the trailing permutedSize grouping
+// columns (Java's PermutedMinMaxIndexMaintainer). The grouping key is
+// reconstructed in its original order as prefix ++ suffix, and the aggregate
+// value is read from the middle. For the plain SQL MAX/MIN DDL path permutedSize
+// is 0, so the layout collapses to [group..., value] with an empty suffix.
+func newPermutedAggregateIndexCursor(
+	store *recordlayer.FDBRecordStore,
+	idx *recordlayer.Index,
+	scanRange recordlayer.TupleRange,
+	continuation []byte,
+	scanProps recordlayer.ScanProperties,
+	groupCount int,
+	posType *values.RecordType,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
+	if !ok {
+		return nil, fmt.Errorf("executor: permuted index %q root is %T, want *GroupingKeyExpression",
+			idx.Name, idx.RootExpression)
+	}
+	totalSize := gke.ColumnSize()
+	permutedSize := 0
+	if v, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			permutedSize = n
+		}
+	}
+	inner := store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, continuation, scanProps)
+	return &permutedAggregateIndexCursor{
+		inner:      inner,
+		groupCount: groupCount,
+		valueStart: gke.GetGroupingCount() - permutedSize,
+		valueEnd:   totalSize - permutedSize,
+		posType:    posType,
+	}, nil
+}
+
+// permutedAggregateIndexCursor emits one (group..., extremum) row per permuted
+// secondary entry, reading both the grouping key and the aggregate value out of
+// the entry KEY (the permuted subspace stores an empty value).
+type permutedAggregateIndexCursor struct {
+	inner      recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	groupCount int
+	valueStart int
+	valueEnd   int
+	posType    *values.RecordType
+	closed     bool
+}
+
+func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if !result.HasNext() {
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+	}
+
+	key := result.GetValue().Key
+	slots := make([]any, len(c.posType.Fields))
+
+	// Grouping key in original order: the first valueStart columns come straight
+	// from the key; the remaining grouping columns are the permuted suffix, which
+	// sits after the value at key[valueEnd:]. Normalize into the row domain the
+	// same way the covering/aggregate cursors do (UUID → [16]byte, float32 →
+	// float64) so residual HAVING/sort/joins compare consistently.
+	for i := 0; i < c.groupCount && i < len(slots); i++ {
+		ki := i
+		if i >= c.valueStart {
+			ki = c.valueEnd + (i - c.valueStart)
+		}
+		if ki < len(key) {
+			slots[i] = tupleElementToRowValue(key[ki])
+		}
+	}
+
+	// Aggregate value: the single grouped column at key[valueStart:valueEnd].
+	if aggOrd := c.groupCount; aggOrd < len(slots) && c.valueStart < c.valueEnd && c.valueStart < len(key) {
+		slots[aggOrd] = tupleElementToRowValue(key[c.valueStart])
+	}
+
+	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
+	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+}
+
+func (c *permutedAggregateIndexCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *permutedAggregateIndexCursor) IsClosed() bool { return c.closed }
+
+var _ recordlayer.RecordCursor[QueryResult] = (*permutedAggregateIndexCursor)(nil)
 
 type aggregateIndexCursor struct {
 	inner         recordlayer.RecordCursor[*recordlayer.IndexEntry]

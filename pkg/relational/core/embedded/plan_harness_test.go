@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -719,6 +720,59 @@ CREATE INDEX multi_idx AS SELECT COUNT(*), SUM(amount) FROM ORDERS GROUP BY stat
 	t.Logf("got expected error: %v", err)
 }
 
+// TestPlanHarness_AggregateIndexDDL_MinMaxPermutedType pins the wire/metadata
+// identity of plain SQL MAX(col)/MIN(col) aggregate indexes: they materialize
+// as PERMUTED_MAX / PERMUTED_MIN with permuted size 0, matching Java's
+// NumericAggregationValue.Max/Min.getIndexTypeName() and
+// MaterializedViewIndexGenerator (permutedSize = aggregateOrderIndex < 0 ? 0).
+// A monotone MAX_EVER_LONG / MIN_EVER_LONG index would go stale under deletes;
+// the permuted index tracks the true current extremum, and — critically for a
+// cluster shared with Java — is the identical index type Java writes for the
+// same DDL text.
+func TestPlanHarness_AggregateIndexDDL_MinMaxPermutedType(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
+CREATE INDEX min_price_by_cat AS SELECT MIN(price) FROM ORDERS GROUP BY category
+`
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		idxName  string
+		wantType string
+	}{
+		{"MAX_PRICE_BY_CAT", recordlayer.IndexTypePermutedMax},
+		{"MIN_PRICE_BY_CAT", recordlayer.IndexTypePermutedMin},
+	} {
+		idx := tmpl.Underlying().GetIndex(tc.idxName)
+		if idx == nil {
+			t.Fatalf("index %s not found in metadata", tc.idxName)
+		}
+		if idx.Type != tc.wantType {
+			t.Errorf("index %s type = %q, want %q (NOT a monotone _EVER type)", tc.idxName, idx.Type, tc.wantType)
+		}
+		if got := idx.Options[recordlayer.IndexOptionPermutedSize]; got != "0" {
+			t.Errorf("index %s permuted size = %q, want %q", tc.idxName, got, "0")
+		}
+	}
+}
+
+// TestPlanHarness_AggregateIndexDDL_MinEver verifies the SEPARATE min_ever()
+// SQL function in a CREATE INDEX materializes a monotone MIN_EVER index — the
+// wire/metadata identity for the _EVER function, kept distinct from plain
+// MIN() (which maps to permuted_min). Go's read side does not expose min_ever()
+// as a query aggregate, so there is no served-query shape to assert — only the
+// DDL index type. A plain MIN() query is intentionally NOT served by this
+// index (that would return stale extrema); it falls back to an aggregation over
+// a scan.
 func TestPlanHarness_AggregateIndexDDL_MinEver(t *testing.T) {
 	t.Parallel()
 	schema := `
@@ -730,18 +784,20 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX min_price_by_cat AS SELECT MIN_EVER(price) FROM ORDERS GROUP BY category
 `
-	plan, err := PlanQueryForTest(
-		"SELECT category, MIN(price) FROM orders GROUP BY category",
-		schema, nil)
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "AggregateIndex") {
-		t.Fatalf("expected AggregateIndex for MIN_EVER, got: %s", plan)
+	idx := tmpl.Underlying().GetIndex("MIN_PRICE_BY_CAT")
+	if idx == nil {
+		t.Fatal("index MIN_PRICE_BY_CAT not found in metadata")
+	}
+	if idx.Type != recordlayer.IndexTypeMinEverTuple {
+		t.Fatalf("MIN_EVER index type = %q, want %q", idx.Type, recordlayer.IndexTypeMinEverTuple)
 	}
 }
 
+// TestPlanHarness_AggregateIndexDDL_MaxEver mirrors _MinEver for max_ever().
 func TestPlanHarness_AggregateIndexDDL_MaxEver(t *testing.T) {
 	t.Parallel()
 	schema := `
@@ -753,15 +809,16 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX max_price_by_cat AS SELECT MAX_EVER(price) FROM ORDERS GROUP BY category
 `
-	plan, err := PlanQueryForTest(
-		"SELECT category, MAX(price) FROM orders GROUP BY category",
-		schema, nil)
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "AggregateIndex") {
-		t.Fatalf("expected AggregateIndex for MAX_EVER, got: %s", plan)
+	idx := tmpl.Underlying().GetIndex("MAX_PRICE_BY_CAT")
+	if idx == nil {
+		t.Fatal("index MAX_PRICE_BY_CAT not found in metadata")
+	}
+	if idx.Type != recordlayer.IndexTypeMaxEverTuple {
+		t.Fatalf("MAX_EVER index type = %q, want %q", idx.Type, recordlayer.IndexTypeMaxEverTuple)
 	}
 }
 
