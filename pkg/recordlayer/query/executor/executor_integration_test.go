@@ -593,11 +593,12 @@ func TestIntegration_SortContinuation_ArrayStructStraddle_F53(t *testing.T) {
 						return nil, fmt.Errorf("no slot at flower ordinal %d", flowerOrdinal)
 					}
 					// Rows carry *gen.Flower on BOTH sides of a checkpoint: the
-					// restore is registry-first, so the resumed slot keeps the
-					// generated concrete type. That identity is load-bearing —
-					// the %T-keyed group/dedup paths (computeGroupKey,
-					// packedDedupKey) would otherwise never match a restored
-					// row against an equal fresh one.
+					// restore rebuilds the ENCODED representation (a generated
+					// row encodes flag 0 → protoregistry), so the resumed slot
+					// keeps the generated concrete type. That identity is
+					// load-bearing — the %T-keyed group/dedup paths
+					// (computeGroupKey, packedDedupKey) would otherwise never
+					// match a restored row against an equal fresh one.
 					fm, isFlower := fv.(*gen.Flower)
 					if !isFlower {
 						return nil, fmt.Errorf("flower slot = %#v (%T), want *gen.Flower — the STRUCT column must survive the sort-continuation resume with its generated type", fv, fv)

@@ -55,15 +55,21 @@ import (
 //     field into []any): uvarint element count + each element recursively, so a
 //     nested array (struct arrays' element lists) round-trips too;
 //   - proto.Message — a STRUCT column slot (protoScalarToRowValue keeps a nested
-//     message raw): uvarint-length-prefixed full type name + uvarint-length-
-//     prefixed proto.Marshal bytes. Decode is TWO-PHASE: readContValue returns a
-//     pendingProtoRowValue placeholder, which the continuation decode path
-//     resolves (resolvePendingProtoValues) REGISTRY-FIRST — a type compiled into
-//     the binary rebuilds as its generated Go type (identity with fresh rows;
-//     the %T-keyed group/dedup paths depend on it) — falling back to the store's
-//     metadata descriptors + dynamicpb for dynamic schemas (whose fresh rows are
-//     dynamicpb too), or errors LOUDLY — a placeholder never leaks into the row
-//     domain.
+//     message raw): one representation flag byte (0 = the encoded value was a
+//     generated Go message, 1 = a *dynamicpb.Message) + uvarint-length-prefixed
+//     full type name + uvarint-length-prefixed proto.Marshal bytes. Decode is
+//     TWO-PHASE: readContValue returns a pendingProtoRowValue placeholder,
+//     which the continuation decode path resolves (resolvePendingProtoValues)
+//     BY THE ENCODED REPRESENTATION — flag 0 rebuilds via
+//     protoregistry.GlobalTypes as the generated type; flag 1 rebuilds via the
+//     store's metadata descriptors + dynamicpb. NEVER across representations:
+//     fresh rows materialize as the schema's representation (a dynamic record
+//     schema importing a compiled message type still materializes
+//     *dynamicpb.Message rows even though the name IS registered), and the
+//     %T-keyed group/dedup paths would split equal rows straddling a
+//     checkpoint if the restored concrete type differed from a fresh row's.
+//     An unresolvable representation errors LOUDLY — a placeholder never
+//     leaks into the row domain.
 //
 // List decode and placeholder resolution recurse per nesting level; both are
 // capped at maxContNestingDepth — a continuation token is EXTERNAL wire input,
@@ -179,17 +185,27 @@ func appendContValue(buf []byte, v any) ([]byte, error) {
 }
 
 // appendContProtoMessage encodes a proto.Message row value as
-// contValProtoMsg || uvarint(len(fullName)) || fullName ||
-// uvarint(len(payload)) || payload. The full type name is what the decode-side
-// resolver looks up in the store's metadata descriptors (the schema's message
-// types are dynamicpb-built, not in protoregistry.GlobalTypes).
+// contValProtoMsg || flag || uvarint(len(fullName)) || fullName ||
+// uvarint(len(payload)) || payload. The flag byte records the ORIGINAL Go
+// representation — 1 = the value was a *dynamicpb.Message, 0 = a generated
+// message — so the decode side rebuilds the SAME concrete type a freshly-
+// materialized row carries (the %T-keyed group/dedup paths depend on that
+// identity). The full name ALONE cannot pick the representation: a dynamic
+// record schema importing a compiled message type materializes dynamicpb rows
+// even though the name IS registered in protoregistry.GlobalTypes. The name is
+// the decode-side lookup key — flag 0 in protoregistry.GlobalTypes, flag 1 in
+// the store's metadata descriptors.
 func appendContProtoMessage(buf []byte, msg proto.Message) ([]byte, error) {
 	fullName := string(msg.ProtoReflect().Descriptor().FullName())
 	payload, err := proto.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("continuation: cannot encode proto message value of type %q: %w", fullName, err)
 	}
-	buf = append(buf, contValProtoMsg)
+	flag := byte(0)
+	if _, isDynamic := msg.(*dynamicpb.Message); isDynamic {
+		flag = 1
+	}
+	buf = append(buf, contValProtoMsg, flag)
 	buf = binary.AppendUvarint(buf, uint64(len(fullName)))
 	buf = append(buf, fullName...)
 	buf = binary.AppendUvarint(buf, uint64(len(payload)))
@@ -359,7 +375,16 @@ func readContValueDepth(b []byte, depth int) (any, []byte, error) {
 		}
 		return out, b, nil
 	case contValProtoMsg:
-		name, rest, err := readContBytes(b, tag)
+		// The representation flag: 0 = generated, 1 = *dynamicpb.Message (see
+		// appendContProtoMessage). Any other value is corrupt/crafted.
+		if err := need(1); err != nil {
+			return nil, nil, err
+		}
+		flag := b[0]
+		if flag > 1 {
+			return nil, nil, fmt.Errorf("continuation: bad proto-message representation flag %d (tag %d)", flag, tag)
+		}
+		name, rest, err := readContBytes(b[1:], tag)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -374,7 +399,7 @@ func readContValueDepth(b []byte, depth int) (any, []byte, error) {
 		// No descriptor here — return the placeholder; the caller MUST resolve
 		// it (resolvePendingProtoValues) or error loudly. It must never leak
 		// into the row domain.
-		return pendingProtoRowValue{TypeName: string(name), Bytes: own}, rest, nil
+		return pendingProtoRowValue{TypeName: string(name), Bytes: own, Dynamic: flag == 1}, rest, nil
 	default:
 		return nil, nil, fmt.Errorf("continuation: unknown typed-value tag %d", tag)
 	}
@@ -383,15 +408,16 @@ func readContValueDepth(b []byte, depth int) (any, []byte, error) {
 // pendingProtoRowValue is the DESCRIPTOR-LESS decode of a contValProtoMsg value
 // (a STRUCT column slot in a buffered sort row). readContValue deliberately does
 // NOT rebuild the message itself: rebuilding is a POLICY decision that differs
-// per decode path — the sort path resolves registry-first with a metadata
-// fallback (resolvePendingProtoValues), while the aggregate paths REJECT any
+// per decode path — the sort path rebuilds the encoded representation
+// (resolvePendingProtoValues), while the aggregate paths REJECT any
 // placeholder outright (rejectPendingProtoValues — their state is scalar-only,
 // and a resolvable crafted token must not be laundered into a resumed group).
 // Every decode path must do one or the other; a placeholder leaking into the
 // row domain would evaluate as a wrong, mistyped value.
 type pendingProtoRowValue struct {
-	TypeName string // the message's full proto name (descriptor lookup key)
+	TypeName string // the message's full proto name (the representation-specific lookup key)
 	Bytes    []byte // proto.Marshal payload
+	Dynamic  bool   // the ORIGINAL representation: true = *dynamicpb.Message, false = generated
 }
 
 // protoDescriptorResolver resolves a proto message full name to its message
@@ -401,21 +427,26 @@ type protoDescriptorResolver func(fullName string) (protoreflect.MessageDescript
 
 // resolvePendingProtoValues walks a decoded row value RECURSIVELY (lists may
 // contain messages — struct arrays) and replaces every pendingProtoRowValue
-// with the real message. Resolution is REGISTRY-FIRST: a type compiled into
-// this binary (a generated type such as *gen.Flower) rebuilds via
-// protoregistry.GlobalTypes as that generated type — NOT as a
-// *dynamicpb.Message. The group/dedup keys (computeGroupKey, packedDedupKey,
-// mergeSortCursor.extractKey) fall back to %T:%v for composite slots, so a
-// restored slot whose concrete Go type differs from a freshly-read row's would
-// never key-match it: equal rows straddling a checkpoint would split into
-// duplicate groups / duplicate DISTINCT rows (wrong results, no error). Only a
-// name the registry does not carry (a dynamic, metadata-built schema type)
-// falls back to the resolver's descriptor + dynamicpb.NewMessage — identity is
-// consistent there too, because fresh rows on that path are dynamicpb as well.
-// A nil resolver (for an unregistered type), an unresolvable type name, or a
-// payload that does not unmarshal is a LOUD error — never a silent nil slot.
-// The list walk shares readContValue's nesting budget (defense in depth: the
-// cap must not depend on the caller having decoded through readContValue).
+// with the real message, rebuilt as its ENCODED representation:
+//   - flag 0 (generated): protoregistry.GlobalTypes — the value was a generated
+//     Go message (e.g. *gen.Flower) when encoded, so it rebuilds as that
+//     generated type. A name the registry does not carry is a LOUD error.
+//   - flag 1 (dynamic): the resolver's metadata descriptor +
+//     dynamicpb.NewMessage — the value was a *dynamicpb.Message when encoded (a
+//     dynamic, metadata-built schema — INCLUDING one that imports a compiled
+//     message type, whose rows are still dynamicpb even though the name is
+//     registered). A nil resolver or an unresolvable name is a LOUD error.
+//
+// NEVER across representations: the group/dedup keys (computeGroupKey,
+// packedDedupKey, mergeSortCursor.extractKey) fall back to %T:%v for composite
+// slots, so a restored slot whose concrete Go type differs from a freshly-
+// materialized row's would never key-match it — equal rows straddling a
+// checkpoint would split into duplicate groups / duplicate DISTINCT rows
+// (wrong results, no error). Falling back registry→resolver (or the reverse)
+// recreates exactly that split from the other side. A payload that does not
+// unmarshal is a LOUD error too — never a silent nil slot. The list walk
+// shares readContValue's nesting budget (defense in depth: the cap must not
+// depend on the caller having decoded through readContValue).
 func resolvePendingProtoValues(v any, resolve protoDescriptorResolver) (any, error) {
 	return resolvePendingProtoValuesDepth(v, resolve, 0)
 }
@@ -425,15 +456,25 @@ func resolvePendingProtoValues(v any, resolve protoDescriptorResolver) (any, err
 func resolvePendingProtoValuesDepth(v any, resolve protoDescriptorResolver, depth int) (any, error) {
 	switch t := v.(type) {
 	case pendingProtoRowValue:
-		if mt := recordlayer.FindRegisteredMessageType(protoreflect.FullName(t.TypeName)); mt != nil {
+		if !t.Dynamic {
+			// Flag 0: the encoder saw a generated message, so ONLY the registry
+			// may rebuild it. A metadata + dynamicpb rebuild would change the
+			// concrete Go type and split %T-keyed group/dedup identity.
+			mt := recordlayer.FindRegisteredMessageType(protoreflect.FullName(t.TypeName))
+			if mt == nil {
+				return nil, fmt.Errorf("continuation: proto message type %q was encoded from a generated message but is not registered in this binary — cannot rebuild it", t.TypeName)
+			}
 			msg := mt.New().Interface()
 			if uErr := proto.Unmarshal(t.Bytes, msg); uErr != nil {
 				return nil, fmt.Errorf("continuation: cannot unmarshal buffered proto message of type %q: %w", t.TypeName, uErr)
 			}
 			return msg, nil
 		}
+		// Flag 1: the encoder saw a *dynamicpb.Message, so ONLY the metadata
+		// resolver may rebuild it — even when the name IS registered (a dynamic
+		// schema importing a compiled type still materializes dynamicpb rows).
 		if resolve == nil {
-			return nil, fmt.Errorf("continuation: value carries a proto message of type %q but no descriptor resolver is available — cannot rebuild it", t.TypeName)
+			return nil, fmt.Errorf("continuation: value carries a dynamic proto message of type %q but no descriptor resolver is available — cannot rebuild it", t.TypeName)
 		}
 		desc, err := resolve(t.TypeName)
 		if err != nil {
@@ -471,9 +512,9 @@ func resolvePendingProtoValuesDepth(v any, resolve protoDescriptorResolver, dept
 // resolvePendingProtoValues: group keys and MIN/MAX partials are never proto
 // messages (the aggregate encoder never writes a contValProtoMsg there), so a
 // tag-14 placeholder is crafted/corrupt input and must be rejected even when
-// its type name IS resolvable — the registry-first resolution above would
-// happily rebuild a registered type, and that must not launder a crafted
-// token into a resumed group. Recursion depth is bounded by readContValue's
+// its type name IS resolvable — the representation-tagged resolution above
+// would happily rebuild a well-formed token, and that must not launder a
+// crafted token into a resumed group. Recursion depth is bounded by readContValue's
 // decode budget (this helper only ever sees values it decoded).
 func rejectPendingProtoValues(v any) error {
 	switch t := v.(type) {
@@ -506,10 +547,12 @@ func validateAggExtremum(v any) error {
 
 // metadataMessageResolver builds a protoDescriptorResolver over the store's
 // RecordMetaData: a dynamic schema's message descriptors are dynamicpb-built
-// from store metadata (NOT registered in protoregistry.GlobalTypes), so a
-// buffered STRUCT value's descriptor is found in the metadata's record-type
-// file descriptors — top-level and nested messages, plus transitive imports (a
-// struct column's message type may live in an imported file). The full-name →
+// from store metadata (usually not in protoregistry.GlobalTypes — and a
+// flag-1 slot must rebuild from metadata even when its name IS registered),
+// so a buffered dynamic STRUCT value's descriptor is found in the metadata's
+// record-type file descriptors — top-level and nested messages, plus
+// transitive imports (a struct column's message type may live in an imported
+// file). The full-name →
 // descriptor index is built ONCE, lazily on the first lookup (a resume without
 // unregistered struct slots never pays the schema walk), then reused — the
 // pre-index resolver re-walked every record type's file tree PER placeholder,
@@ -778,8 +821,8 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		// Group keys are SCALARS — the aggregate encoder never writes a
 		// contValProtoMsg key, so a pendingProtoRowValue here is a crafted or
 		// corrupt continuation. It must error loudly via the EXPLICIT rejection
-		// walk (NOT resolvePendingProtoValues, whose registry-first resolution
-		// would happily rebuild a registered type from a crafted token), never
+		// walk (NOT resolvePendingProtoValues, whose representation-tagged
+		// resolution would happily rebuild a resolvable crafted token), never
 		// leak a placeholder into the resumed group's output row.
 		for ki := range keyVals {
 			if gErr := rejectPendingProtoValues(keyVals[ki]); gErr != nil {
@@ -953,11 +996,11 @@ func encodeSortContinuation(
 
 // decodeSortContinuation deserializes the MemorySortContinuation proto.
 // Buffered STRUCT column slots (contValProtoMsg placeholders, see
-// pendingProtoRowValue) rebuild REGISTRY-FIRST as their generated Go type;
-// resolve covers only the dynamic-schema fallback (metadata descriptors +
-// dynamicpb). nil is valid ONLY for buffers whose struct slots are all
-// registry-resolvable (or absent) — an unregistered placeholder with no
-// resolver fails the resume loudly, never silently.
+// pendingProtoRowValue) rebuild as their ENCODED representation — flag 0
+// (generated) via protoregistry.GlobalTypes, flag 1 (*dynamicpb.Message) via
+// resolve (metadata descriptors + dynamicpb). A nil resolve is valid ONLY for
+// buffers with no dynamic (flag-1) struct slots — a dynamic placeholder with
+// no resolver fails the resume loudly, never silently.
 func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (innerContinuation []byte, buf []QueryResult, err error) {
 	msg := &gen.MemorySortContinuation{}
 	if err := proto.Unmarshal(data, msg); err != nil {
