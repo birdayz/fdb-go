@@ -1454,8 +1454,8 @@ func TestAggregateValue_GetIndexTypeName(t *testing.T) {
 		AggCount:     "COUNT_NOT_NULL",
 		AggCountStar: "COUNT",
 		AggSum:       "SUM",
-		AggMin:       "MIN_EVER_LONG",
-		AggMax:       "MAX_EVER_LONG",
+		AggMin:       "permuted_min",
+		AggMax:       "permuted_max",
 		AggAvg:       "",
 		AggInvalid:   "",
 	}

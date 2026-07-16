@@ -3606,8 +3606,8 @@ func (a *AggregateValue) Evaluate(any) (any, error) {
 //	AggCount     → COUNT_NOT_NULL  (counts non-null values)
 //	AggCountStar → COUNT           (counts all rows incl. NULL)
 //	AggSum       → SUM
-//	AggMin       → MIN_EVER_LONG   (or MIN_EVER_TUPLE for non-numeric)
-//	AggMax       → MAX_EVER_LONG   (or MAX_EVER_TUPLE)
+//	AggMin       → permuted_min    (current-extremum index, tracks deletes)
+//	AggMax       → permuted_max    (current-extremum index, tracks deletes)
 //	AggAvg       → ""              (no direct index — computed from
 //	                                 SUM/COUNT pair instead)
 //	AggInvalid   → ""
@@ -3625,9 +3625,13 @@ func (a *AggregateValue) GetIndexTypeName() string {
 	case AggSum:
 		return "SUM"
 	case AggMin:
-		return "MIN_EVER_LONG"
+		// permuted_min (the recordlayer IndexTypePermutedMin value; a string
+		// literal here because the values package cannot import recordlayer).
+		// Java NumericAggregationValue.Min.getIndexTypeName() = PERMUTED_MIN — a
+		// current-extremum index that tracks deletes, NOT the monotone min_ever.
+		return "permuted_min"
 	case AggMax:
-		return "MAX_EVER_LONG"
+		return "permuted_max"
 	case AggAvg, AggInvalid:
 		return ""
 	}
