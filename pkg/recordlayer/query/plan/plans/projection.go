@@ -76,7 +76,7 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 // code path reads a rendering; rendering is for humans, identity is
 // structural. The escape is RETAINED as an explain-format guarantee —
 // debugging output that collapses two different reads is still a bug — and
-// its tests (TestFieldValue_ExplainOrdinalEscape_RFC173, the plans-level
+// its tests (TestFieldValue_ExplainOrdinalEscape, the plans-level
 // TestProjectionPlan_Identity_OrdinalVsLiteralHashField) now pin exactly
 // that, plus the matching injective discriminator in writeSemanticHash's
 // FieldValue arm.

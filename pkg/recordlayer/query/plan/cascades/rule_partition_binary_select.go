@@ -190,16 +190,6 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	// PartitionSelectRule (the ≥3-way twin) already flattens the same way.
 	for _, pred := range flattenConjuncts(sel.GetPredicates()) {
 		correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
-		// Re-expose the buried leg aliases of any source-anchored join RC the
-		// predicate reads through (GetCorrelatedToOfPredicate HIDES them for
-		// exploration-budget reasons). A spanning predicate like `c.c_bid = b.bid`
-		// reads B's column through a (B⋈A) merge RC; without un-hiding B, its
-		// correlation reports only the merge alias, so it is routed into the merge
-		// leg instead of creating the correlation to the OTHER leg — the materialized
-		// NLJ then embeds it with B unbound → 0 rows
-		// (TestFDB_JoinMerge_OuterColumn_NotDropped). PartitionSelectRule (the ≥3-way
-		// twin) layers the same re-exposure on its classification.
-		predicates.AddMergeSeedAliases(pred, correlatedTo)
 		if _, ok := correlatedTo[rightAlias]; ok {
 			rightPredicates = append(rightPredicates, pred)
 		} else {

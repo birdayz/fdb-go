@@ -115,7 +115,7 @@ func TestFDB_VectorSearch_QualifyE2E(t *testing.T) {
 		}
 		ids := make([]int64, 0, len(results))
 		for _, r := range results {
-			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+			ids = append(ids, executor.RowValue(r).(map[string]any)["ID"].(int64))
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 		if ids[0] != 1 || ids[1] != 2 {

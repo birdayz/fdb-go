@@ -1,12 +1,104 @@
 package cascades
 
 import (
+	"strings"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+// bakeMergeComparisonKeys resolves LAZY childless FieldValue merge keys into
+// PLAN-TIME-BAKED values — Java's comparison-key values are ordinal-resolved
+// OrderingPart values, never name-resolved at runtime. The keys arrive lazy
+// because the physical wrappers' Hint(Rich)Ordering builds
+// them from index/PK COLUMN NAMES for ordering MATCHING (a string-keyed axis)
+// — fine for matching, but evaluating a lazy key against the runtime ordinal
+// row would need a runtime name resolution, which does not exist (loud
+// OrdinalResolutionError). Two bake authorities, in order:
+//
+//  1. The REQUESTED ordering's own part value — the translator's bake for the
+//     same column (matched by ColumnNameValue, the same bridge orderingKeyFor
+//     uses). The requested ordering was pushed down TO this select, so its
+//     values are already in the merge row's domain. A column name carried by
+//     two semantically different requested parts is ambiguous — skipped.
+//  2. The inner plan's flowed RecordType (when the plan flows one), by
+//     first-match field name — the plan-time FieldIndex rule.
+//
+// Baked keys and computed/correlated keys pass through untouched. A lazy key
+// that resolves through NEITHER authority passes through lazy: a record-backed
+// merge row still evaluates it through the proto descriptor (the
+// legitimate record-boundary resolution, same as Java's Message field access),
+// and a positional merge row fails LOUD (OrdinalResolutionError) — never a
+// silent wrong slot.
+func bakeMergeComparisonKeys(keys []values.Value, requested *RequestedOrdering, rowType values.Type) []values.Value {
+	var reqByCol map[string]values.Value
+	if requested != nil {
+		for _, part := range requested.GetParts() {
+			fv, isFV := part.Value.(*values.FieldValue)
+			if !isFV || fv.Child != nil || fv.Resolved == nil {
+				continue
+			}
+			col := values.ColumnNameValue(part.Value)
+			if col == "" {
+				continue
+			}
+			if reqByCol == nil {
+				reqByCol = map[string]values.Value{}
+			}
+			if prev, dup := reqByCol[col]; dup && (prev == nil || !values.SemanticEqualsUnderAliasMap(prev, part.Value, nil)) {
+				// Ambiguous: two different bakes share the rendered column
+				// name. Poison the entry so neither substitutes.
+				reqByCol[col] = nil
+				continue
+			}
+			reqByCol[col] = part.Value
+		}
+	}
+	rt, isRT := rowType.(*values.RecordType)
+	out := make([]values.Value, len(keys))
+	for i, k := range keys {
+		fv, isFV := k.(*values.FieldValue)
+		if !isFV || fv.Child != nil || fv.Resolved != nil {
+			out[i] = k
+			continue
+		}
+		if rv, hit := reqByCol[values.ColumnNameValue(fv)]; hit && rv != nil {
+			out[i] = rv
+			continue
+		}
+		if isRT && rt != nil {
+			// Bake only when the name resolves UNIQUELY. A first-match FieldIndex
+			// over a RecordType with DUPLICATE names (a join row flowing here)
+			// would silently probe the wrong slot. A duplicate passes through
+			// lazy (loud at runtime, never a wrong slot).
+			// Single-table branches carry no dups, so this never fires today; it
+			// fences the join-flows-here future.
+			if idx, unique := uniqueUpperFieldIndex(rt, fv.Field); unique {
+				out[i] = values.NewFieldValueWithResolvedOrdinal(fv.Field, idx, fv.Typ)
+				continue
+			}
+		}
+		out[i] = k
+	}
+	return out
+}
+
+// uniqueUpperFieldIndex returns the ordinal (slice position) of the field whose
+// name matches `name` case-insensitively, and true ONLY when exactly one field
+// matches. A duplicate name (a merged join RecordType) returns false so the
+// caller declines to first-match-bake a colliding column.
+func uniqueUpperFieldIndex(rt *values.RecordType, name string) (int, bool) {
+	idx, count := -1, 0
+	for i, f := range rt.Fields {
+		if strings.EqualFold(f.Name, name) {
+			idx, count = i, count+1
+		}
+	}
+	return idx, count == 1
+}
 
 // ImplementInUnionRule implements a SELECT over ExplodeExpressions
 // as a RecordQueryInUnionPlan — the inner plan is executed once per
@@ -154,6 +246,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				for i, p := range comparisonParts {
 					comparisonKeys[i] = p.Value
 				}
+				comparisonKeys = bakeMergeComparisonKeys(comparisonKeys, requestedOrdering, innerPlans[0].GetResultType())
 
 				maxSize := 0
 				if call.Context != nil {

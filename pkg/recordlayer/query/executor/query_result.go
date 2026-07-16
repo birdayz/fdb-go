@@ -21,47 +21,28 @@ import (
 const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 
 // QueryResult is the row type flowing through plan execution cursors.
-// Wraps a datum (the computed/flowed row), an optional stored record
+// Wraps the ordinal-model row (Positional), an optional stored record
 // (when the row originated from a scan), and an optional primary key.
 // Mirrors Java's QueryResult.
 type QueryResult struct {
-	Datum any
-	// Positional is the RFC-173 ordinal-model sibling of Datum: the same row as
-	// a typed PositionalRow (field values indexed by ordinal). Non-nil marks the
-	// row as being on the NON-JOIN FRONTIER (scans, covering scans, projection/
-	// map over the frontier emit it; join producers mergeRows/qualifyOuterRow do
-	// NOT), and since Slice 1 it is what FieldValue resolution READS there —
-	// authoritative, by ordinal, loud on a miss. The name-keyed Datum is still
-	// emitted alongside for coexistence (downstream name-model consumers, final
-	// materialization) until Slice 4 retires it; a shadow test pins that the two
-	// mirror each other field-for-field.
+	// Positional is the ordinal-model row (a typed PositionalRow, field
+	// values indexed by ordinal) — the SOLE runtime row. Every producer emits it
+	// (scans/covering scans, projection/map, aggregate output, and join merges
+	// via concatLegPositionals), and FieldValue resolution reads it by ordinal,
+	// loud on a miss (OrdinalResolutionError). There is no name-keyed row model:
+	// runtime name resolution would be first-match and silently wrong on
+	// duplicate column names, where the plan-time ordinal is exact.
 	Positional *PositionalRow
 	Record     *recordlayer.FDBStoredRecord[proto.Message]
 	PrimaryKey tuple.Tuple
-	// Complete marks a computed/synthetic row whose Datum key set is
-	// authoritative — every legal column is present (nil-valued for SQL NULL),
-	// with no proto-style optional-field omissions. Set by aggregate output
-	// (finalizeGroup/emptyScalarResult). Consumers use it to enable the RFC-048
-	// W1 strict unresolved-reference check: against such a row, a referenced
-	// name that is absent is a bug, not a NULL. Raw stored-record rows
-	// (FromStoredRecord) leave it false, because they legitimately omit unset
-	// optional fields.
-	Complete bool
 }
 
-// FromStoredRecord builds a QueryResult from a stored record. The
-// datum is set to a map[string]any extracted from the proto message's
-// fields, keyed by UPPER-case field name (matching the identifier
-// folding convention).
+// FromStoredRecord builds a QueryResult from a stored record. The row is the
+// ordinal PositionalRow built from the proto message (protoToPositional — one
+// slot per descriptor field in declaration order; FieldValue reads it by ordinal).
 func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
-	datum := protoToMap(rec.Record)
-	var pos *PositionalRow
-	if !DisablePositionalEmission { // §5 dual-window differential oracle gate
-		pos = protoToPositional(rec.Record)
-	}
 	return QueryResult{
-		Datum:      datum,
-		Positional: pos,
+		Positional: protoToPositional(rec.Record),
 		Record:     rec,
 		PrimaryKey: rec.PrimaryKey,
 	}
@@ -97,14 +78,13 @@ var positionalTypeCacheSize atomic.Int64
 // unbounded-growth class it exists to stop.
 const positionalTypeCacheCap = 4096
 
-// protoToPositional is the RFC-173 ordinal-model counterpart of protoToMap: it
-// builds a PositionalRow from a proto message, one slot per descriptor field in
-// declaration order (the field's ordinal), with an UPPER-cased field name and a
-// dark UnknownType (type refinement comes with the later slices). An unset field
-// is a nil slot — matching protoToMap omitting the key (SQL NULL) — so the
-// positional row and the map agree field-for-field (pinned by the shadow test).
-// Since Slice 1 this row is what the non-join frontier RESOLVES against; the
-// name-keyed map is still emitted for coexistence (retired in Slice 4).
+// protoToPositional builds the ordinal-model PositionalRow from a proto
+// message, one slot per descriptor field in declaration order (the field's
+// ordinal), with an UPPER-cased field name and an UnknownType placeholder (the
+// runtime row carries names and ordinals; slot types are not refined). An
+// unset field is a nil slot (SQL NULL). This is the row FieldValue resolution
+// reads by ordinal; the test-only protoToMap oracle cross-checks it
+// field-for-field (the shadow test in name_oracle_test.go).
 func protoToPositional(msg proto.Message) *PositionalRow {
 	if msg == nil {
 		return nil
@@ -113,37 +93,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 	desc := refl.Descriptor()
 	fields := desc.Fields()
 	n := fields.Len()
-	var rt *values.RecordType
-	if v, ok := positionalTypeCache.Load(desc); ok {
-		rt = v.(*values.RecordType)
-	} else {
-		positionalTypeCacheMu.Lock()
-		// Re-check under the lock: a racing miss on the same descriptor may
-		// have stored while we waited.
-		if v, ok := positionalTypeCache.Load(desc); ok {
-			rt = v.(*values.RecordType)
-		} else {
-			rtFields := make([]values.Field, n)
-			for i := 0; i < n; i++ {
-				rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
-			}
-			rt = values.NewRecordType("", false, rtFields)
-			if positionalTypeCacheSize.Add(1) > positionalTypeCacheCap {
-				// Descriptor churn (dynamicpb across many schema loads) must
-				// not grow the cache without bound: wipe and re-warm. Under
-				// the miss lock the bound is EXACT — no racing store can
-				// land after the reset (review finding: the lock-free wipe
-				// let concurrent misses transiently overshoot the cap).
-				positionalTypeCache.Range(func(k, _ any) bool {
-					positionalTypeCache.Delete(k)
-					return true
-				})
-				positionalTypeCacheSize.Store(1)
-			}
-			positionalTypeCache.Store(desc, rt)
-		}
-		positionalTypeCacheMu.Unlock()
-	}
+	rt := positionalTypeForDescriptor(desc)
 	slots := make([]any, n)
 	for i := 0; i < n; i++ {
 		fd := fields.Get(i)
@@ -154,38 +104,48 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 	return &PositionalRow{Type: rt, Slots: slots}
 }
 
-// protoToMap converts a proto.Message to map[string]any with
-// UPPER-case keys. Only set fields are included; unset fields are
-// omitted (NULL semantics — FieldValue.Evaluate returns nil for
-// missing keys).
-//
-// An EMPTY repeated field is omitted too (protoreflect's Has()
-// reports false for an empty list) and so reads back as SQL NULL.
-// Go writes a plain repeated field with no nullable-array wrapper,
-// so a NULL array and an empty array are wire-indistinguishable;
-// both materialize as NULL here. CARDINALITY of such a column is
-// therefore NULL, not 0, for an empty/unset array — an instance of
-// the RFC-143 §3a nullable-array-wrapper divergence (Java's wrapper
-// distinguishes the two), out of scope for the Phase 1 function. The
-// function itself is correct: nil array → nil, populated array →
-// len.
-func protoToMap(msg proto.Message) map[string]any {
-	if msg == nil {
-		return nil
+// positionalTypeForDescriptor returns the LOGICAL RecordType for a message
+// descriptor — one field per descriptor field in declaration order (the
+// field's ordinal), UPPER-cased name, UnknownType placeholder. THE single authority
+// for a stored record's logical row shape: every physical access path that
+// serves a stored record's columns (base scan rows via protoToPositional,
+// covering-index rows via coveringIndexCursor) MUST shape its rows by this
+// type, so a plan-time LOGICAL ordinal reads the same slot on every path
+// (mirrors Java's IndexKeyValueToPartialRecord, which reconstructs a
+// descriptor-shaped partial record for exactly this reason). Cached per
+// descriptor (see positionalTypeCache).
+func positionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.RecordType {
+	if v, ok := positionalTypeCache.Load(desc); ok {
+		return v.(*values.RecordType)
 	}
-	refl := msg.ProtoReflect()
-	desc := refl.Descriptor()
+	positionalTypeCacheMu.Lock()
+	defer positionalTypeCacheMu.Unlock()
+	// Re-check under the lock: a racing miss on the same descriptor may
+	// have stored while we waited.
+	if v, ok := positionalTypeCache.Load(desc); ok {
+		return v.(*values.RecordType)
+	}
 	fields := desc.Fields()
-	m := make(map[string]any, fields.Len())
-	for i := 0; i < fields.Len(); i++ {
-		fd := fields.Get(i)
-		if !refl.Has(fd) {
-			continue
-		}
-		key := strings.ToUpper(string(fd.Name()))
-		m[key] = protoFieldToGo(fd, refl.Get(fd))
+	n := fields.Len()
+	rtFields := make([]values.Field, n)
+	for i := 0; i < n; i++ {
+		rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
 	}
-	return m
+	rt := values.NewRecordType("", false, rtFields)
+	if positionalTypeCacheSize.Add(1) > positionalTypeCacheCap {
+		// Descriptor churn (dynamicpb across many schema loads) must
+		// not grow the cache without bound: wipe and re-warm. Under
+		// the miss lock the bound is EXACT — no racing store can
+		// land after the reset (review finding: the lock-free wipe
+		// let concurrent misses transiently overshoot the cap).
+		positionalTypeCache.Range(func(k, _ any) bool {
+			positionalTypeCache.Delete(k)
+			return true
+		})
+		positionalTypeCacheSize.Store(1)
+	}
+	positionalTypeCache.Store(desc, rt)
+	return rt
 }
 
 // protoFieldToGo converts a protoreflect.Value to a native Go value suitable

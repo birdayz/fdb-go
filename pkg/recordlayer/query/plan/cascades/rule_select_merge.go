@@ -84,6 +84,30 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 
 	quantifiers := sel.GetQuantifiers()
 
+	// An EXISTENTIAL WRAP select — exactly ONE ForEach (the box) plus
+	// existential quantifier(s) — must NOT have a POSITIONAL ordinal-seed
+	// box dissolved into it. The wrap is the semi-join shape
+	// implementExistentialSelect plans as FlatMap(box, FirstOrDefault(inner))
+	// with the box SEPARATELY enumerated (index SARGs live). Merging the box up
+	// yields a flat [ForEach×N, Existential] select that Go can only implement
+	// MATERIALIZED: PartitionSelectRule is ForEach-only (it never partitions a
+	// select carrying an existential), so the N-way existential arm builds a
+	// predicate-free left-deep cross-product with the join predicates as one
+	// post-filter — a strictly worse alternative that small-cardinality costing
+	// can still pick. A parent with >= 2 ForEach quantifiers (the projected-
+	// EXISTS-over-buried-box fold) is UNAFFECTED — its flatten is load-bearing
+	// (the N-way arm is its only implementer).
+	forEachCount, hasExistential := 0, false
+	for _, q := range quantifiers {
+		switch q.Kind() {
+		case expressions.QuantifierForEach:
+			forEachCount++
+		case expressions.QuantifierExistential:
+			hasExistential = true
+		}
+	}
+	existentialWrap := hasExistential && forEachCount == 1
+
 	// Identify which ForEach quantifiers have a mergeable child.
 	// A child is mergeable if the Reference contains a
 	// RelationalExpressionWithPredicates member (LogicalFilter or Select).
@@ -102,6 +126,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		for _, member := range childRef.AllMembers() {
+			childSel, isChildSel := member.(*expressions.SelectExpression)
 			// An OUTER-join child SelectExpression is OPAQUE to merging: pulling
 			// its legs up into the parent would discard the child's outer-join
 			// edge (only the PARENT's JoinType is preserved on the merged
@@ -112,49 +137,105 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			// outer-join box is a hard optimization barrier. Leave it nested.
 			// ChildrenAsSet() = inner-equivalent (INNER or CROSS); a non-set
 			// (outer-join) child box is opaque.
-			if childSel, ok := member.(*expressions.SelectExpression); ok && !childSel.ChildrenAsSet() {
+			if isChildSel && !childSel.ChildrenAsSet() {
 				continue
 			}
-			// RFC-173 unnest-residual class 4 (chained-unnest correlation
-			// barrier): decline to merge a ForEach target when a RETAINED
-			// sibling quantifier is FREE-correlated to it AND the target's
-			// child result value is NAME-MODEL. A chained `FROM t, t.arr AS x,
-			// x.sub AS y` reuses the alias `x` for both the first unnest's
-			// output (this target) and the second unnest's Explode collection
-			// (a retained sibling correlated to `x`); flattening the first
-			// unnest up would strand that collection on the merged-away alias
-			// (the retained-sibling rebase only runs for POSITIONAL-seed
-			// children — rcByAlias empty for a name-model child — so the
-			// Explode arm below would not fire). Java never flattens a lateral
-			// chain either (generateCorrelatedFieldAccess nests them). Keep the
-			// nested FlatMap-over-FlatMap; the positional-seed rebase path is
-			// unaffected. Conservative — worst case a missed flattening, never
-			// wrong rows.
-			if childRefResultIsNameModel(childRef) && siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
+			// A DISSOLVED outer-join box — RewriteOuterJoinRule's INNER select
+			// whose null-supplying leg rides a NULL-ON-EMPTY quantifier — is the
+			// SAME outer-join box as the arm above, with the outer-join edge
+			// moved from the JoinType onto the quantifier flag. Merging it up
+			// into a ForEach-only parent produces a flat noe-carrying select
+			// that Go's PLANNING cannot re-partition (PartitionSelectRule's
+			// positional-merge arm declines to collapse a null-on-empty
+			// quantifier into a lower, and a dissolved box's flat form has NO
+			// select-level predicates left to connect a lower) — so when the
+			// REWRITING phase then prunes the child's group to that flat member
+			// as its canonical seed, a nested outer box (`(a LEFT b) LEFT c`)
+			// under any enclosing select strands unimplementable ("best
+			// expression is not a physical plan"). Java DOES flatten this form
+			// and re-derives the join from the flat seed (its
+			// PartitionSelectRule collapses defaultOnEmpty quantifiers into
+			// positional lowers and its NLJ implements any 2-quantifier
+			// select); until Go's partitioning reaches that parity, the
+			// dissolved box stays nested under a ForEach-only parent — the same
+			// hard barrier as the un-dissolved arm, so the binary NLJ/FlatMap
+			// implementation over the nested form (the route the un-enclosed
+			// nested box already plans through) survives the rewrite prune.
+			// An EXISTENTIAL-carrying parent is EXEMPT: its flat form never
+			// reaches PartitionSelectRule (≤1 existential returns; ≥2 peel),
+			// and the [ForEach×N, Existential] implementer handles noe legs
+			// via buildCorrelatedFlatMapPlan — the correlated DefaultOnEmpty
+			// step-1 that the LEFT+EXISTS plan-shape pins require (declining
+			// there degraded step-1 to a materialized LEFT NLJ).
+			// Never wrong rows — strictly a narrower merge.
+			if isChildSel && !hasExistential {
+				childHasNullOnEmpty := false
+				for _, cq := range childSel.GetQuantifiers() {
+					if cq.IsNullOnEmpty() {
+						childHasNullOnEmpty = true
+						break
+					}
+				}
+				if childHasNullOnEmpty {
+					continue
+				}
+			}
+			// The chained-unnest correlation barrier: decline to merge a
+			// ForEach target when a RETAINED
+			// sibling quantifier is FREE-correlated to it AND the target is a
+			// LATERAL-UNNEST first link. A chained `FROM t, t.arr AS x, x.sub AS
+			// y` reuses the alias `x` for both the first unnest's output (this
+			// target) and the second unnest's Explode collection (a retained
+			// sibling correlated to `x`); flattening the first unnest up would
+			// strand that collection on the merged-away alias. Java never
+			// flattens a lateral chain either (generateCorrelatedFieldAccess
+			// nests them). Keep the nested FlatMap-over-FlatMap.
+			//
+			// The barrier covers BOTH result-value shapes of the first link:
+			//   - NON-SEED first link (childRefResultIsNonSeed): the
+			//     retained-sibling rebase runs only for positional-seed children
+			//     (rcByAlias empty for a non-seed child), so the Explode arm
+			//     below would not fire — merging strands the collection.
+			//   - ORDINAL first link (childRefIsPositionalUnnestSelect):
+			//     the chained link takes an ordinal seed, so its
+			//     first-link child is a POSITIONAL unnest select. The
+			//     positional-seed rebase DOES fire but cannot compose the chained
+			//     collection's fused ofOrdinal+name suffix (the deferred ordinal
+			//     compose direction), leaving the flattened root select
+			//     unimplementable. Keep it nested — Java's shape — where each
+			//     link implements as its own FlatMap. This is NARROWER than a
+			//     positional-child check: a GATED BOX child (no Explode
+			//     quantifier of its own) still merges via the rebase, unaffected.
+			// Conservative — worst case a missed flattening, never wrong rows.
+			if (childRefResultIsNonSeed(childRef) || childRefIsPositionalUnnestSelect(childRef)) &&
+				siblingFreeCorrelatedTo(quantifiers, i, q.GetAlias()) {
 				break
 			}
+			// The existential-wrap guard (see the header above the target
+			// loop): a MULTI-WAY (>2-window) positional ordinal-seed box under a
+			// single-ForEach existential parent stays nested. 2-window seeds (the
+			// arity-2 gatedFlatten world, the LEFT-residual internals) keep
+			// merging exactly as before — their flat form is implementable
+			// without the N-way materialization. `continue` (skip this member,
+			// not the target) is safe because the guard keys on the RESULT
+			// VALUE, which every semantically-equal member of the reference
+			// shares — no other member of this child can be admissible.
+			if existentialWrap {
+				if childSel, isSel := member.(*expressions.SelectExpression); isSel {
+					if rc, isRC := childSel.GetResultValue().(*values.RecordConstructorValue); isRC {
+						if w, _ := values.OrdinalSeedLegWindows(rc); len(w) > 2 {
+							continue
+						}
+					}
+				}
+			}
 			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
-				// RFC-173 Slice 2 drift assert (contract ruling #1): the
-				// translation-time cluster-arity gate SHADOWS this rule's
-				// mergeability, so an ORDINAL child (baked result value) may
-				// only ever merge into a PURE WRAPPER parent — a select whose
-				// single quantifier is this child (the derived-table /
-				// WHERE-fold flattening that leaves the post-merge select at
-				// exactly the child's 2 ForEach legs). A parent with any
-				// OTHER quantifier would flatten the ordinal child into a
-				// ≥3-quantifier select — the name-model partition machinery
-				// the gate exists to keep baked values out of. That means the
-				// gate mis-scoped: a loud planner error, never a silent
-				// wrong-model merge (a decline is equally forbidden — it
-				// changes plan shapes).
-				//
-				// S3 fulcrum: an ORDINAL child select merging into a
-				// multi-quantifier parent is LEGITIMATE composition -- the
+				// An ORDINAL child select merging into a
+				// multi-quantifier parent is LEGITIMATE composition — the
 				// spliced references compose via translateValueCorrelations
 				// over ReplaceLeavesOnceMaybe, and baked-over-baked rebuilds
-				// FUSE into multi-accessor FieldPaths (the W2 commit-1 arm).
-				// The S2 drift assert that forbade this shape died with the
-				// exactly-2 wedge; the positive compose pin covers it.
+				// FUSE into multi-accessor FieldPaths (the fuse arm);
+				// the positive compose pin covers it.
 				targets = append(targets, mergeTarget{
 					idx:       i,
 					child:     wp,
@@ -208,8 +289,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 		} else if len(childQs) > 1 {
 			// Multi-quantifier child (e.g., Select with 2+ sources):
 			// the parent's alias must be replaced with the child's
-			// result value. TWO regimes by the child RV's row model
-			// (RFC-173 item 3):
+			// result value. TWO regimes by the child RV's shape:
 			//   - POSITIONAL ordinal-seed RC (a dissolved gated box): the
 			//     SURGICAL substitution (rcByAlias → bakedBoxRefCallback) —
 			//     baked refs collapse through the RC to the exact leg
@@ -219,9 +299,9 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			//     TranslationMap substitution would put the dup-bare-named
 			//     concat under a lazy read — FieldIndex first-match,
 			//     silently the wrong column.
-			//   - NAME-MODEL child (anchored record): the TranslationMap
-			//     substitution, as always — the anchored RC is name-keyed
-			//     and the child alias disappears without a re-binder.
+			//   - NON-SEED child: the TranslationMap
+			//     substitution — the child alias disappears with the RV
+			//     substituted in place.
 			childResultValue := target.childExpr.GetResultValue()
 			capturedResult := childResultValue
 			parentAlias := q.GetAlias()
@@ -249,7 +329,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if len(aliasMap) > 0 {
 		newResultValue = values.RebaseValue(newResultValue, aliasMap)
 	}
-	// Apply TranslationMap for name-model multi-quantifier children, and the
+	// Apply TranslationMap for non-seed multi-quantifier children, and the
 	// surgical baked-collapse callback for positional-seed children (lazy
 	// refs re-bind by name to the pulled-up leg — see the regime comment at
 	// the multi-quantifier arm above).
@@ -262,14 +342,14 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 		newResultValue = values.Replace(newResultValue, cb)
 	}
 
-	// RFC-173 item 3: RETAINED quantifiers whose subtrees hold BAKED
+	// RETAINED quantifiers whose subtrees hold BAKED
 	// references over a MERGED-AWAY alias get those references translated
 	// through the merged child's result value — Java's
 	// Quantifier.translateCorrelations, which Go's merge never needed until
 	// the dissolved-LEFT fold produced the first stranded case: a
-	// box-level-baked reference (an enclosing scope's ON conjunct, an
-	// amendment-C buried bake) addresses the box quantifier POSITIONALLY;
-	// when the box's child select merges up, that positional read would
+	// box-level-baked reference (an enclosing scope's ON conjunct addressing
+	// a buried column) addresses the box quantifier POSITIONALLY; when the
+	// box's child select merges up, that positional read would
 	// re-bind by name to the same-named pulled-up LEG with the wrong type —
 	// the divergent-baked-types class. Collapsing through the RC resolves
 	// it to the exact leg reference the ordinal named, so the retained
@@ -277,7 +357,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// partition/orientation machinery needs for the correlated probe. LAZY
 	// references are deliberately LEFT ALONE: outside references address
 	// legs by their own aliases (Go's box quantifier is NAMED by its
-	// rightmost leaf), so after the merge pulls the legs up a name-model
+	// rightmost leaf), so after the merge pulls the legs up a lazy
 	// read re-binds to the correct leg quantifier by construction —
 	// substituting the RC under a lazy read would instead first-match a
 	// duplicate bare name across the whole concat (silently the wrong
@@ -367,7 +447,7 @@ var _ ExpressionRule = (*SelectMergeRule)(nil)
 // OnMatch): the first rebuildable member of the referenced group — a
 // SelectExpression (predicates + result value translated through the merge's
 // aliasMap/RC substitutions, recursively) or an ExplodeExpression (its
-// collection translated — the RFC-173 unnest-residual arm) — is translated,
+// collection translated, the lateral-unnest arm below) — is translated,
 // re-memoized, and wrapped in a quantifier preserving the original's alias
 // and flags (nullOnEmpty carries the dissolved-LEFT pad; strictSingle the
 // scalar contract). ok=false when nothing references a merged alias or no
@@ -549,7 +629,7 @@ func translateSelectCorrelations(
 // result-value RC — the exact leg reference the ordinal named (a
 // multi-accessor path collapses its root and fuses the suffix). LAZY
 // references over the same alias are skipped whole (their QOV child is
-// pointer-marked before the walk descends): a name-model read re-binds to
+// pointer-marked before the walk descends): a lazy read re-binds to
 // the pulled-up leg quantifier of the same name. The alias collision is a
 // property of the PLANNING-time dissolved-LEFT regime specifically —
 // RewriteOuterJoinRule's box select is quantified by its rightmost leaf's
@@ -615,8 +695,34 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 			}
 			if rcv, isRC := rc.(*values.RecordConstructorValue); isRC && n.Resolved != nil && boxLevel(qov.Typ, rcv) {
 				accs := n.Resolved.Accessors
-				if len(accs) >= 1 && accs[0].Ordinal >= 0 && accs[0].Ordinal < len(rcv.Fields) && rcv.Fields[accs[0].Ordinal].Value != nil {
-					slot := rcv.Fields[accs[0].Ordinal].Value
+				rootOrd := -1
+				if len(accs) >= 1 {
+					rootOrd = accs[0].Ordinal
+				}
+				// A SOURCE-RELATIVE baked reference's ordinal is relative to its
+				// OWN leg's row, NOT the box's concatenated RC — and the box is
+				// NAMED by its rightmost leg, so a leg-addressed reference
+				// (QOV(E).ID#0) arrives under the very alias being collapsed.
+				// Resolving it by the RAW ordinal against the concat picks the
+				// FIRST leg's slot (D.ID for ord 0) — the wrong leg: a bug once
+				// turned `e.id IS NULL` into `d.id IS NULL`, mis-partitioning
+				// below the null-extension so the LEFT-join anti-join returned
+				// zero rows. Re-base by the reference's OWN leg exactly like the
+				// values.Replace collapse (LegAwareRootOrdinal): match the seed
+				// field over the SAME correlation at the leg-local ordinal.
+				// Keyed on the ROOT's leg-relativity (RootIsLegRelativeUnpinned),
+				// NOT the accessor count: a FUSED unpinned path (fused by an earlier
+				// merge round) keeps its leg-relative ROOT and MUST be rebased too —
+				// the raw collapse would fuse its suffix (the arm below) onto the
+				// WRONG leg's seed field for a non-first leg. Only FrontierPinned
+				// bakes keep
+				// the raw collapse — their ordinal IS box-relative by
+				// construction.
+				if n.RootIsLegRelativeUnpinned() && len(accs) >= 1 {
+					rootOrd = values.LegAwareRootOrdinal(n, accs[0].Ordinal, rcv, rootOrd)
+				}
+				if len(accs) >= 1 && rootOrd >= 0 && rootOrd < len(rcv.Fields) && rcv.Fields[rootOrd].Value != nil {
+					slot := rcv.Fields[rootOrd].Value
 					if len(accs) == 1 {
 						mark(slot)
 						return slot
@@ -656,12 +762,12 @@ func bakedBoxRefCallback(rcByAlias map[values.CorrelationIdentifier]values.Value
 	}
 }
 
-// childRefResultIsNameModel reports whether a merge candidate's child result
-// value is NAME-MODEL (not a positional ordinal seed). A positional seed
+// childRefResultIsNonSeed reports whether a merge candidate's child result
+// value is NOT a positional ordinal seed. A positional seed
 // child routes through the rcByAlias/bakedBoxRefCallback rebase (which handles
-// a retained Explode sibling); a name-model child does not, so the chained
-// barrier applies only to name-model children.
-func childRefResultIsNameModel(childRef *expressions.Reference) bool {
+// a retained Explode sibling); a non-seed child does not, so the chained
+// barrier applies only to non-seed children.
+func childRefResultIsNonSeed(childRef *expressions.Reference) bool {
 	for _, m := range childRef.AllMembers() {
 		sel, ok := m.(*expressions.SelectExpression)
 		if !ok {
@@ -669,10 +775,52 @@ func childRefResultIsNameModel(childRef *expressions.Reference) bool {
 		}
 		if rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue); isRC {
 			if w, _ := values.OrdinalSeedLegWindows(rc); w != nil {
-				return false // positional ordinal seed — not name-model
+				return false // positional ordinal seed
 			}
 		}
 		return true
+	}
+	return false
+}
+
+// childRefIsPositionalUnnestSelect reports whether a merge candidate's child is
+// a POSITIONAL ordinal-seed SelectExpression that is ITSELF a lateral unnest —
+// it has an Explode among its OWN quantifiers (the ORDINAL
+// chained first link). This is the positional twin of childRefResultIsNonSeed
+// for the chained-unnest barrier: like the non-seed chain, an ordinal chained
+// first link must stay NESTED (Java never flattens a lateral chain), because the
+// positional-seed rebase cannot compose the retained Explode sibling's fused
+// ofOrdinal+name-suffix collection through the merge.
+//
+// A GATED BOX child (a positional seed whose quantifiers are all ForEach over
+// scans/joins — NO Explode of its own) is EXCLUDED: its retained-Explode-sibling
+// merge IS handled by the positional-seed rebase (the gathered-unnest owner-window
+// bake), so it stays mergeable. Only a child that is itself an unnest FlatMap
+// trips the barrier.
+func childRefIsPositionalUnnestSelect(childRef *expressions.Reference) bool {
+	for _, m := range childRef.AllMembers() {
+		sel, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		rc, isRC := sel.GetResultValue().(*values.RecordConstructorValue)
+		if !isRC {
+			continue
+		}
+		if w, _ := values.OrdinalSeedLegWindows(rc); w == nil {
+			continue // not a positional ordinal seed
+		}
+		for _, q := range sel.GetQuantifiers() {
+			qr := q.GetRangesOver()
+			if qr == nil {
+				continue
+			}
+			for _, cm := range qr.AllMembers() {
+				if _, isExplode := cm.(*expressions.ExplodeExpression); isExplode {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -682,7 +830,7 @@ func childRefResultIsNameModel(childRef *expressions.Reference) bool {
 // chained-unnest signature (the second unnest's Explode collection references
 // the first unnest's output alias). Scoped to Explode siblings so the barrier
 // never fires for a legitimate correlated SelectExpression-sibling merge
-// (RFC-040), which the name-model rebase handles.
+// (RFC-040), which the merge's substitution handles.
 func siblingFreeCorrelatedTo(quantifiers []expressions.Quantifier, self int, alias values.CorrelationIdentifier) bool {
 	for j, q := range quantifiers {
 		if j == self {

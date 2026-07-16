@@ -1,29 +1,31 @@
-# min_max_string.yaml — MIN/MAX on string columns
+# min_max_string.yaml — MIN/MAX on string columns is REJECTED
 #
-# Exercises MIN/MAX with string values (lexicographic comparison).
+# MIN/MAX over a NON-NUMERIC column is rejected at PLAN time. Java's
+# NumericAggregationValue installs its operator map with numeric-only entries
+# (INT/LONG/FLOAT/DOUBLE); a STRING operand yields a null lookup and
+# Verify.verifyNotNull throws "unable to encapsulate aggregate operation due to
+# type mismatch(es)" (VerifyException) at encapsulate time. Go mirrors this with a
+# plan-time operand-type gate surfacing 0A000 (feature_not_supported). The
+# rejection is data-independent, so it fires even though the table has rows.
 name: min_max_string
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'Charlie'), (2, 'Alice'), (3, 'Bob'), (4, 'Dave')
 tests:
-  # MIN on string
+  # MIN on string — rejected (numeric-only operator map).
   - query: SELECT MIN(name) FROM t
-    rows:
-      - ["Alice"]
+    error_code: "0A000"
 
-  # MAX on string
+  # MAX on string — rejected.
   - query: SELECT MAX(name) FROM t
-    rows:
-      - ["Dave"]
+    error_code: "0A000"
 
-  # MIN/MAX in GROUP BY
+  # MIN/MAX over string in a GROUP BY — still rejected at plan time.
   - query: >
       SELECT CASE WHEN id <= 2 THEN 'first' ELSE 'second' END,
         MIN(name), MAX(name)
       FROM t
       GROUP BY CASE WHEN id <= 2 THEN 'first' ELSE 'second' END
       ORDER BY CASE WHEN id <= 2 THEN 'first' ELSE 'second' END
-    rows:
-      - ["first", "Alice", "Charlie"]
-      - ["second", "Bob", "Dave"]
+    error_code: "0A000"

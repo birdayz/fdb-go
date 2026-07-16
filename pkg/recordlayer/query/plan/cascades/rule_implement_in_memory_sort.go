@@ -64,30 +64,23 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 
 	planKeys := make([]plans.SortKey, len(sortKeys))
 	for i, sk := range sortKeys {
+		// ValueExpr ALWAYS drives the executor — the sort key Value carries its
+		// plan-time-baked ordinal (a childless baked output-column key, a
+		// CORRELATED/qualified leg reference, or a computed key) and evaluates
+		// against the positional row. Field is DISPLAY-ONLY (Explain + the
+		// ordering-hint name match). A key that somehow escaped the
+		// translator's bake fails loud at evaluation — never a name read.
 		field := ""
-		var valExpr values.Value
 		if fv, ok := sk.Value.(*values.FieldValue); ok && fv.Child == nil {
-			// A BARE field reference — the fast path: the executor reads the row's
-			// `Field` key directly (compareByField).
-			field = strings.ToUpper(fv.Field)
+			field = strings.ToUpper(values.ColumnNameValue(sk.Value))
 		} else {
-			// A CORRELATED/qualified reference (FieldValue with a Child QOV, e.g. a
-			// lateral-unnest `v.v` or a JOIN leg `T2.SK`) — or any non-FieldValue
-			// computed key — must be EVALUATED per row so it resolves the QUALIFIED
-			// merged-row key (`V.V`), not the last-leg-wins BARE key a Field lookup
-			// would read. Collapsing a qualified FieldValue to its bare `Field` here
-			// dropped the leg correlation and sorted by the wrong column when a later
-			// FROM item shadowed the bare name (RFC-142 P2a). Field is
-			// still set (to the rendered `LEG.COL`) for Explain; ValueExpr drives the
-			// executor.
 			field = values.ExplainValue(sk.Value)
-			valExpr = sk.Value
 		}
 		nf := !sk.Reverse // default: ASC→true, DESC→false
 		if sk.NullsFirst != nil {
 			nf = *sk.NullsFirst
 		}
-		planKeys[i] = plans.SortKey{Field: field, Desc: sk.Reverse, NullsFirst: nf, ValueExpr: valExpr}
+		planKeys[i] = plans.SortKey{Field: field, Desc: sk.Reverse, NullsFirst: nf, ValueExpr: sk.Value}
 	}
 
 	// The baked innerPlan is only a PLACEHOLDER: range the sort's quantifier over

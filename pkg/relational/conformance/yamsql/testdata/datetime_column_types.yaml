@@ -143,13 +143,20 @@ tests:
   - query: SELECT COALESCE(d, '1970-01-01') FROM Events WHERE id = 1
     rows:
       - ['2024-03-15']
-  # MIN/MAX aggregates on temporal columns (lexicographic = chronological for ISO).
+  # MIN/MAX aggregates on temporal columns are REJECTED. DATE/TIMESTAMP are
+  # stored as ISO-8601 STRING (proto TYPE_STRING) and carry no distinct type at
+  # the aggregate-operand level, so they hit the same numeric-only operator-map
+  # gate as any STRING column: 0A000 "unable to encapsulate aggregate operation
+  # due to type mismatch(es)" (Java NumericAggregationValue rejects a non-numeric
+  # operand; Java 4.11.1.0 has no temporal column types at all). This is a
+  # data-independent PLAN-time rejection — the prior runtime !isNumeric check
+  # already rejected these; the plan-time gate makes it fire before execution.
+  # A lexicographic (ORDER BY … LIMIT 1) temporal min/max would be a separate
+  # net-new feature.
   - query: SELECT MIN(d) FROM Events
-    rows:
-      - ['2024-01-01']
+    error_code: "0A000"
   - query: SELECT MAX(ts) FROM Events
-    rows:
-      - ['2024-06-20 14:45:30']
+    error_code: "0A000"
   # GROUP BY on DATE column (NULL forms its own group per SQL standard).
   - query: SELECT d, COUNT(*) FROM Events GROUP BY d
     rows:
@@ -177,10 +184,11 @@ tests:
       - ['2024-01-01', 1]
       - ['2024-03-15', 1]
       - ['2024-06-20', 1]
-  # Aggregate on empty result set returns NULL (SQL standard).
+  # MIN over a temporal column is rejected at PLAN time regardless of the row
+  # set (data-independent), so an empty filter still errors — it never reaches
+  # the "empty aggregate returns NULL" runtime path.
   - query: SELECT MIN(d) FROM Events WHERE id = 999
-    rows:
-      - [null]
+    error_code: "0A000"
   # DAYOFWEEK: 2024-03-15 is a Friday → MySQL convention Sunday=1, Friday=6.
   - query: SELECT DAYOFWEEK(d) FROM Events WHERE id = 1
     rows:

@@ -36,7 +36,12 @@ func (w *physicalStreamingAggWrapper) GetPlan() *plans.RecordQueryStreamingAggre
 func (w *physicalStreamingAggWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 func (w *physicalStreamingAggWrapper) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	// Flow a TYPED QOV whose RecordType is the aggregate's output schema
+	// ([groupKeys, aggregates], the plan's single naming authority), so the resolver
+	// BAKES downstream references to ordinals at plan time (Java's getFieldNameToOrdinalMap).
+	// A downstream ref then reads the aggregateCursor's PositionalRow by Get(ordinal) — order,
+	// not spelling — robust to redundant spellings of the same column.
+	return values.NewQuantifiedObjectValueOfType(values.UniqueCorrelationIdentifier(), w.plan.OutputRecordType())
 }
 
 func (w *physicalStreamingAggWrapper) GetQuantifiers() []expressions.Quantifier {
@@ -96,8 +101,21 @@ func (w *physicalStreamingAggWrapper) HintOrdering() properties.Ordering {
 	if w.plan == nil || len(w.plan.GetGroupingKeys()) == 0 {
 		return properties.Ordering{IsKnown: false}
 	}
-	keys := make([]values.Value, len(w.plan.GetGroupingKeys()))
-	copy(keys, w.plan.GetGroupingKeys())
+	// The advertised ordering is over the aggregate's OUTPUT row: group key i
+	// flows as output column i, NAMED by the canonical group-key output name
+	// (AggregateKeyColumnName — the same authority the runtime output row and
+	// the ORDER-BY-over-aggregate bake use). Advertising the raw grouping-key
+	// VALUES (input-relative bakes over the pre-aggregate row) mis-rendered
+	// the provided keys and made a satisfied ORDER BY look unsatisfied — a
+	// spurious second InMemorySort above the aggregate; an evaluating consumer
+	// (a merge comparison key) would also have read the aggregate's output row
+	// with a dead pre-aggregate ordinal.
+	groupKeys := w.plan.GetGroupingKeys()
+	keys := make([]values.Value, len(groupKeys))
+	for i, k := range groupKeys {
+		keys[i] = values.NewFieldValueWithResolvedOrdinal(
+			expressions.AggregateKeyColumnName(k), i, values.UnknownType)
+	}
 	desc := make([]bool, len(keys))
 	if idx, ok := w.plan.GetInner().(*plans.RecordQueryIndexPlan); ok && idx.IsReverse() {
 		for i := range desc {

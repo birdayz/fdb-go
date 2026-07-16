@@ -153,9 +153,16 @@ func PlanningExplorationRules() []ExpressionRule {
 		NewInComparisonToExplodeRule(),
 		NewSplitSelectExtractIndependentQuantifiersRule(),
 		NewEliminateNullOnEmptyRule(),
-		// Re-fire the LEFT-OUTER canonicalizer in PLANNING (like the other rewrite
-		// rules below) so a LEFT OUTER that only surfaces here is still rewritten to
-		// the correlated null-supplying form the FlatMap path consumes.
+		// Re-fire the LEFT-OUTER canonicalizer in PLANNING so a LEFT OUTER that only
+		// surfaces here is still rewritten to the correlated null-supplying form the
+		// FlatMap path consumes. This is a Go-only rule (Java's PlanningRuleSet has no
+		// RewriteOuterJoinRule) and an INTENTIONAL divergence: unlike Java, Go keeps the
+		// un-rewritten outer-join SelectExpression as the REWRITING prune survivor (it is
+		// directly implementable as a materialized RecordQueryNestedLoopJoinPlan, RFC-152 —
+		// see RewritingCostModelLess), so PLANNING re-derives the rewritten form here to
+		// keep the correlated-FlatMap alternative available alongside the materialized NLJ.
+		// (Java can drop it because outerJoinCount forces the rewritten form to survive the
+		// prune — a guard Go must NOT adopt, or it would suppress the materialized NLJ.)
 		NewRewriteOuterJoinRule(),
 		NewPartitionSelectRule(),
 		NewPartitionBinarySelectRule(),

@@ -52,61 +52,6 @@ func GetCorrelatedToOfPredicate(p QueryPredicate) map[CorrelationIdentifier]stru
 	return out
 }
 
-// AddMergeSeedAliases augments out with the source (leg) aliases of every
-// source-anchored join RESULT value referenced by p's value trees (RFC-077 F2,
-// partition-time RE-EXPOSURE).
-//
-// values.GetCorrelatedToOfValue (and hence GetCorrelatedToOfPredicate)
-// deliberately HIDES an anchored join RC's leg QOVs — reporting them in the
-// global correlation set inflates exploration order and tips large star joins
-// past the task budget (see the anchored-RC arm in value_correlation.go).
-// PartitionSelectRule's predicate classification, however, MUST see them: a
-// predicate that reads a buried table's column through the merge genuinely
-// depends on that table. Missing it misclassifies a predicate spanning both
-// partition halves as lower-only, which pushes it below the merge to a leaf scan
-// where the buried alias is unbound — the 0-row dual-correlation join. Callers
-// that need partition-time (not exploration-time) correlations layer this on top.
-func AddMergeSeedAliases(p QueryPredicate, out map[CorrelationIdentifier]struct{}) {
-	if p == nil || out == nil {
-		return
-	}
-	collect := func(v values.Value) {
-		if v == nil {
-			return
-		}
-		values.WalkValue(v, func(node values.Value) bool {
-			// Source-anchored join RESULT value (RFC-077 F2, partition-time
-			// RE-EXPOSURE). GetCorrelatedToOfValue HIDES this RC's leg QOVs (so the
-			// global exploration order stays bounded). But PartitionSelectRule's
-			// predicate classification MUST see the buried leg aliases: a predicate
-			// reading a buried table's column through the anchored RC genuinely
-			// depends on that table. Re-collect them by walking INTO the RC's fields
-			// (its FieldValue(QOV(leg), col) children). Without this a spanning
-			// predicate is misclassified as lower-only and pushed below the merge to
-			// a leaf where the buried alias is unbound — the 0-row dual-correlation
-			// join (TestFDB_JoinMerge_OuterColumn_NotDropped).
-			if rc, ok := node.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
-				for a := range values.GetCorrelatedToOfAnchoredJoinLegs(rc) {
-					out[a] = struct{}{}
-				}
-			}
-			return true
-		})
-	}
-	WalkPredicate(p, func(node QueryPredicate) bool {
-		switch np := node.(type) {
-		case *ValuePredicate:
-			collect(np.Value)
-		case *ComparisonPredicate:
-			collect(np.Operand)
-			collect(np.Comparison.Operand)
-		case *Placeholder:
-			collect(np.Value)
-		}
-		return true
-	})
-}
-
 // CorrelationIdentifier is re-exported as a type alias so package
 // consumers don't need to import values just for the map key type.
 type CorrelationIdentifier = values.CorrelationIdentifier

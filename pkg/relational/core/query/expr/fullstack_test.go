@@ -95,10 +95,15 @@ func TestFullStack_Pipeline(t *testing.T) {
 			want: predicates.TriFalse,
 		},
 	}
+	// Declared column order of this test's USERS table — the order the
+	// resolver baked ordinals against.
+	pipelineRow := func(m map[string]any) ordinalPredRow {
+		return ordinalPredRow{cols: []string{"ID", "NAME", "AGE", "ACTIVE"}, m: m}
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, errEv0 := simplified.Eval(tc.row)
+			got, errEv0 := simplified.Eval(pipelineRow(tc.row))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v (simplified predicate: %s)",
@@ -122,7 +127,7 @@ func TestFullStack_Pipeline(t *testing.T) {
 	// 9. Pin the Explain output so Simplify regressions or
 	// Explain-formatting changes surface here. Bare boolean ACTIVE lifts
 	// to `ACTIVE = TRUE` (RFC-146), matching Java's toUnderlyingPredicate.
-	wantExplain := "(ID >= 18 AND (NAME IS NOT NULL OR ACTIVE = TRUE))"
+	wantExplain := "(ID#0 >= 18 AND (NAME#1 IS NOT NULL OR ACTIVE#3 = TRUE))"
 	if got := simplified.Explain(); got != wantExplain {
 		t.Fatalf("Explain: got %q, want %q", got, wantExplain)
 	}
@@ -248,7 +253,13 @@ func TestFullStack_RichPredicates(t *testing.T) {
 				t.Fatalf("WalkPredicate: %v", err)
 			}
 			simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
-			got, errEv0 := simplified.Eval(tc.row)
+			// Declared column order of this test's USERS table — the order
+			// the resolver baked ordinals against.
+			richRow := ordinalPredRow{
+				cols: []string{"ID", "NAME", "ROLE", "ACTIVE", "ADMIN"},
+				m:    tc.row,
+			}
+			got, errEv0 := simplified.Eval(richRow)
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Errorf("got %v, want %v (pred: %s)", got, tc.want, simplified.Explain())

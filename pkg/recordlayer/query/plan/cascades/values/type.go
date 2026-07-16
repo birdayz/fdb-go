@@ -356,7 +356,7 @@ type RecordType struct {
 	// type). Never nil.
 	Fields []Field
 	// Legs marks the buried-leg boundaries of a CLUSTERED box leg's flat
-	// ordinal concat (RFC-173 item 3): the translator's ordinalLegType walks
+	// ordinal concat: the translator's ordinalLegType walks
 	// the box's legs and records each buried source's binding + starting
 	// slot, so the ONE layout authority (OrdinalSeedLegWindows) can emit
 	// additive per-buried-leg sub-windows — a projection read qualified by a
@@ -393,10 +393,10 @@ func NewRecordType(name string, nullable bool, fields []Field) *RecordType {
 			}
 			seenNames[f.Name] = struct{}{}
 		}
-		// RFC-173: a record's fields are positionally indexed — Field.Ordinal is
+		// A record's fields are positionally indexed — Field.Ordinal is
 		// the field's slice position, matching Java's Record (ordinal == index) and
-		// keeping GetField(ordinal) consistent with the declared Ordinal. Every prod
-		// construction site already sets Ordinal to the slice position (audited); we
+		// keeping GetField(ordinal) consistent with the declared Ordinal. Every
+		// construction site sets Ordinal to the slice position; we
 		// normalise here so the ordinal-resolution substrate (FieldValue.resolveOrdinal)
 		// is SOUND by construction — ordinal access can never read a different field
 		// than name access. A caller that passed a divergent Ordinal is corrected, not
@@ -493,7 +493,7 @@ func (r *RecordType) LookupField(name string) (Field, bool) {
 // Type.Record.computeFieldNameToOrdinal builds as the field's LIST POSITION
 // (IntStream.range + identity), not the protobuf fieldIndex. Unlike reading a
 // stored Field.Ordinal, position is correct even for a raw RecordType that was
-// built without NewRecordType's normalization (RFC-173 P1 review). Empty name
+// built without NewRecordType's normalization. Empty name
 // never matches (anonymous fields aren't addressable by name).
 func (r *RecordType) FieldIndex(name string) (int, bool) {
 	if name == "" {
@@ -516,12 +516,13 @@ func (r *RecordType) GetField(ordinal int) (Field, bool) {
 	return r.Fields[ordinal], true
 }
 
-// OrdinalFieldName is the runtime map key used for an anonymous record
+// OrdinalFieldName is the display name for an anonymous record
 // field addressed by ordinal position. Java's planner names anonymous
 // explode-with-ordinality fields `_0` (element) and `_1` (ordinal) — see
-// the `q1._0` / `q1._1` access in the EXPLAIN output. The runtime Datum is
-// a name-keyed `map[string]any`, so an ordinal-addressed FieldValue
-// (Java's `FieldValue.ofOrdinalNumber`) reads the `_<ordinal>` key.
+// the `q1._0` / `q1._1` access in the EXPLAIN output. The positional row
+// type carries these names for the WITH-ORDINALITY element/ordinal slots;
+// an ordinal-addressed FieldValue
+// (Java's `FieldValue.ofOrdinalNumber`) reads the slot by ordinal.
 func OrdinalFieldName(ordinal int) string {
 	return "_" + strconv.Itoa(ordinal)
 }
@@ -530,7 +531,7 @@ func OrdinalFieldName(ordinal int) string {
 // ordinal-addressed field key (`_0`, `_1`, …) — OrdinalFieldName's inverse,
 // digits-only (OrdinalFieldName never emits signs, so `_-1`/`_+0` are NOT
 // ordinal keys). User columns cannot take this form (a parsed identifier's
-// leading `_` is legal, but the S3 positional-merge and Explode-ordinality
+// leading `_` is legal, but the positional-merge and Explode-ordinality
 // producers are the only writers of these keys in a merged row).
 func IsOrdinalFieldName(name string) bool {
 	if len(name) < 2 || name[0] != '_' {
@@ -1007,8 +1008,8 @@ func IsPromotable(from, to Type) bool {
 //
 // NONE handling: NONE is the type of the untyped empty array `[]`;
 // it identity-promotes to any ARRAY type without changing
-// nullability. (NOT yet implemented for arrays — primitives only
-// for now; structured-type recursion lands with the next port.)
+// nullability. (NOT implemented for arrays — primitives only;
+// structured-type recursion is future work.)
 //
 // This is the primitive-only version. RECORD / ARRAY recursion is
 // future work — caller should fall back to nil for compound types
@@ -1250,7 +1251,7 @@ func WithNullability(t Type, nullable bool) Type {
 		}
 		return &PrimitiveType{TypeCode: tt.TypeCode, Nullable: nullable}
 	case *RecordType:
-		// Legs carries the RFC-173 buried-leg boundary metadata — dropping
+		// Legs carries the buried-leg boundary metadata — dropping
 		// it on the nullability flip silently strips a clustered outer-join
 		// leg's dotted-read windows (the null-supplying wrap is exactly
 		// where the flip happens).

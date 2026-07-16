@@ -140,3 +140,44 @@ func ifaceEq(a, b any) bool {
 	}
 	return a == b
 }
+
+// TestCompareFloat64 pins the single Java-Double.compare-faithful total order
+// both the predicate comparator (cmpAny) and the sort/merge comparator
+// (compareValues) delegate to: -0.0 sorts strictly before 0.0, NaN is the
+// greatest value and NaN==NaN, and finite values keep their natural order.
+func TestCompareFloat64(t *testing.T) {
+	t.Parallel()
+	negZero := math.Copysign(0, -1)
+	nan := math.NaN()
+	cases := []struct {
+		name string
+		a, b float64
+		want int // sign
+	}{
+		{"neg_zero_before_pos_zero", negZero, 0.0, -1},
+		{"pos_zero_after_neg_zero", 0.0, negZero, 1},
+		{"neg_zero_eq_neg_zero", negZero, negZero, 0},
+		{"pos_zero_eq_pos_zero", 0.0, 0.0, 0},
+		{"nan_eq_nan", nan, nan, 0},
+		{"nan_gt_finite", nan, 5.0, 1},
+		{"finite_lt_nan", 5.0, nan, -1},
+		{"nan_gt_neg_finite", nan, -5.0, 1},
+		{"nan_gt_pos_inf", nan, math.Inf(1), 1},
+		{"nan_gt_neg_inf", nan, math.Inf(-1), 1},
+		{"pos_inf_lt_nan", math.Inf(1), nan, -1},
+		{"finite_order", 2.5, 10.5, -1},
+		{"finite_reverse", 10.5, 2.5, 1},
+		{"finite_equal", 3.25, 3.25, 0},
+		{"neg_lt_pos", -1.0, 1.0, -1},
+		{"pos_inf_gt_finite", math.Inf(1), 1e300, 1},
+		{"neg_inf_lt_finite", math.Inf(-1), -1e300, -1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := CompareFloat64(c.a, c.b)
+			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
+				t.Errorf("CompareFloat64(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}

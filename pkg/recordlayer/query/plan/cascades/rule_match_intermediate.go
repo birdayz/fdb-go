@@ -621,16 +621,14 @@ func bindOrientedComparison(
 		// exclude the matched source. A flat FieldValue (no correlation) is
 		// assumed to be over the matched source.
 		//
-		// CRUCIAL: include the source-anchored join RC's HIDDEN leg aliases
-		// (valueCorrelationWithSeeds). A multi-way join reads the OTHER side's
-		// column through a merge RC (e.g. `(R⋈S).ID`), whose leg QOVs
-		// GetCorrelatedToOfValue deliberately HIDES → an empty correlation set,
-		// which this guard would otherwise treat as "of the matched source" and
-		// the field-name collision (`.ID` vs the source PK `id`) would bind the
-		// source's PK to the OTHER table's id — the wrong column, 0 rows
-		// (TestFDB_MultiJoinWithFilter). Un-hiding the merge legs makes the guard
-		// reject such a column so the predicate stays a residual filter.
-		colCorr := valueCorrelationWithSeeds(orient.column)
+		// CRUCIAL: a multi-way join reads the OTHER side's
+		// column through a merge RC (e.g. `(R⋈S).ID`) whose correlation set
+		// names the merge legs — never the matched source — so the guard
+		// rejects such a column and the predicate stays a residual filter
+		// (a field-name collision, `.ID` vs the source PK `id`, would
+		// otherwise bind the source's PK to the OTHER table's id — the wrong
+		// column, 0 rows; TestFDB_MultiJoinWithFilter).
+		colCorr := values.GetCorrelatedToOfValue(orient.column)
 		if len(colCorr) > 0 {
 			if _, ofSource := colCorr[sourceAlias]; !ofSource {
 				continue
@@ -669,37 +667,10 @@ func bindOrientedComparison(
 	return nil
 }
 
-// valueCorrelationWithSeeds returns v's correlation set PLUS the re-exposed leg
-// aliases of every source-anchored join RC it reads through. GetCorrelatedToOfValue
-// deliberately HIDES an anchored RC's leg QOVs (exploration-budget reasons), so a
-// value that reads another table's column through a merge RC reports an EMPTY
-// correlation set. The data-access source-correlation guard MUST see those buried
-// legs (it is the value-level twin of predicates.AddMergeSeedAliases) — otherwise a
-// merge-RC column is mistaken for the matched source's own column and the
-// field-name collision mis-binds the source PK (TestFDB_MultiJoinWithFilter).
-func valueCorrelationWithSeeds(v values.Value) map[values.CorrelationIdentifier]struct{} {
-	if v == nil {
-		return nil
-	}
-	out := map[values.CorrelationIdentifier]struct{}{}
-	for k := range values.GetCorrelatedToOfValue(v) {
-		out[k] = struct{}{}
-	}
-	values.WalkValue(v, func(node values.Value) bool {
-		if rc, ok := node.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
-			for a := range values.GetCorrelatedToOfAnchoredJoinLegs(rc) {
-				out[a] = struct{}{}
-			}
-		}
-		return true
-	})
-	return out
-}
-
 // comparandIndependentOfSource reports whether comparand can be bound into a scan
 // range over the matched source — i.e. it is evaluable WITHOUT a row of that source.
 // It is independent iff:
-//   - its correlation set (incl. hidden merge-RC legs) is non-empty and EXCLUDES
+//   - its correlation set is non-empty and EXCLUDES
 //     sourceAlias — a pure OUTER correlation (the valid join-probe comparand,
 //     `a = outer.fk`); or
 //   - it references no column at all — a constant/literal (`a = 5`).
@@ -714,7 +685,7 @@ func comparandIndependentOfSource(comparand values.Value, sourceAlias values.Cor
 		// nothing to evaluate against a source row, so no circular range is possible.
 		return true
 	}
-	cc := valueCorrelationWithSeeds(comparand)
+	cc := values.GetCorrelatedToOfValue(comparand)
 	if _, ofSource := cc[sourceAlias]; ofSource {
 		return false
 	}

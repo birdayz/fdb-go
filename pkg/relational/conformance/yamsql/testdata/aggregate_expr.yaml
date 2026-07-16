@@ -80,10 +80,13 @@ tests:
       - [3, 150]
       - [5, 100]
 
-  # Non-numeric expression into SUM/AVG — rejects with 22023 (invalid parameter).
-  # CASE returning a string: SUM can't fold strings.
+  # Non-numeric expression into SUM — rejected at PLAN time (0A000). The CASE's
+  # static result type is STRING, so it hits the numeric-only aggregate operator-
+  # map gate ("unable to encapsulate aggregate operation due to type
+  # mismatch(es)"), matching Java NumericAggregationValue.encapsulate — before
+  # the old runtime 22023 (invalid-parameter) fold ever runs.
   - query: "SELECT SUM(CASE WHEN id = 1 THEN 'hello' ELSE 'world' END) FROM t"
-    error_code: "22023"
+    error_code: "0A000"
   # SUM(CASE WHEN cond THEN val ELSE 0 END) — conditional sum. Common
   # SQL idiom for filtered aggregation. id=1 contributes 100, id=2
   # contributes 50, id=3 contributes 0 → 150.

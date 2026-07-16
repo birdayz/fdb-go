@@ -36,6 +36,44 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 			"(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10), "+
 			"(11, 20, 11), (12, 20, 12), (13, 20, 13)")).Error().NotTo(gomega.HaveOccurred())
 
+	// A NESTED group-key reference inside a computed projection (`x.col1` within
+	// `x.col1 + 10`) bakes to its logical ordinal — the explain renders
+	// `(COL1#0 + 10)`. groupByOutputBaker must never leave such a key LAZY on
+	// the accident that its bare name `COL1` happens to resolve by GetByName
+	// (which would render the bare `(COL1 + 10)`). This pins the uniform bake
+	// FIRES (the `#0` ordinal marker). Rows correctness is pinned by
+	// derived_col1_plus_10 below.
+	t.Run("nested_group_key_bakes_ordinal", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "EXPLAIN SELECT x.col1 + 10 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY 1")
+		if err != nil {
+			t.Fatalf("explain error: %v", err)
+		}
+		defer rows.Close()
+		g.Expect(rows.Next()).To(gomega.BeTrue())
+		var plan string
+		g.Expect(rows.Scan(&plan)).To(gomega.Succeed())
+		// The nested group key bakes: `COL1#0`, not a bare lazy `COL1 + 10`.
+		g.Expect(plan).To(gomega.ContainSubstring("(COL1#0 + 10)"),
+			"nested group key must bake to its logical ordinal; plan=%s", plan)
+	})
+
+	// The baked `#0` marker stays OUT of the user-visible column label: an
+	// unaliased computed column is labelled `_0` (deriveProjectionColumnDef), not
+	// its explain rendering — so the ordinal marker reaches EXPLAIN and the internal
+	// positional slot name (writer+reader agree via OutputColumnName) but never the
+	// result-set header.
+	t.Run("computed_column_label_is_positional_not_ordinal", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT x.col1 + 10 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY 1")
+		if err != nil {
+			t.Fatalf("query error: %v", err)
+		}
+		defer rows.Close()
+		cols, err := rows.Columns()
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(cols).To(gomega.Equal([]string{"_0"}),
+			"unaliased computed column must label `_0`, never leak the baked `#0` ordinal marker; got %v", cols)
+	})
+
 	// derived_table_group_by test 4: x.col1 + 10 through derived + GROUP BY
 	t.Run("derived_col1_plus_10", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx,

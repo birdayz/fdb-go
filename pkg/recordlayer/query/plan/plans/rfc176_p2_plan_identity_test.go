@@ -49,13 +49,14 @@ func rfc176PlanBuilders() []rfc176PlanBuilder {
 		{"Projection", func(vs []values.Value) RecordQueryPlan {
 			return NewRecordQueryProjectionPlan(vs, inner)
 		}},
-		{"Sort", func(vs []values.Value) RecordQueryPlan {
-			keys := make([]expressions.SortKey, len(vs))
-			for i, v := range vs {
-				keys[i] = expressions.SortKey{Value: v, Reverse: i%2 == 1}
-			}
-			return NewRecordQuerySortPlan(keys, inner)
-		}},
+		// NOTE: the sort operator is intentionally absent here. The RFC-176 P2
+		// semantic-Value-identity plan was RecordQuerySortPlan, which is now
+		// removed as producer-less dead code. The live sort plan,
+		// RecordQueryInMemorySortPlan, deliberately does NOT participate in
+		// RFC-176 P2: its EqualsWithoutChildren compares SortKey structs by
+		// identity (ValueExpr pointer) and its hash folds Field+Desc only — so
+		// it cannot satisfy this suite's "identical payloads rebuilt compare
+		// equal" guard (distinct-but-semantically-equal Value instances).
 		{"StreamingAggregation", func(vs []values.Value) RecordQueryPlan {
 			return NewRecordQueryStreamingAggregationPlan(inner, vs,
 				[]expressions.AggregateSpec{{Function: expressions.AggCount, Operand: vs[0]}})
@@ -81,15 +82,15 @@ func rfc176PlanBuilders() []rfc176PlanBuilder {
 	}
 }
 
-// TestPlanIdentity_EqualImpliesSameHash_AllTen_RFC176 is the plan-level
-// equal⟹same-hash property test over all ten plan types migrated to semantic
+// TestPlanIdentity_EqualImpliesSameHash_AllNine_RFC176 is the plan-level
+// equal⟹same-hash property test over all nine plan types migrated to semantic
 // Value identity (RFC-176 P2): for every pair of instances of each type,
 // EqualsWithoutChildren(a, b) implies identical HashCodeWithoutChildren. A
 // violation means a hash-first memo lookup can miss an "equal" existing
 // member and insert a duplicate — the defect class RFC-176 §1 documents,
 // live on pre-P2 comparator/merge-sort-union (equality on key COUNT only,
 // hash on the full key renderings).
-func TestPlanIdentity_EqualImpliesSameHash_AllTen_RFC176(t *testing.T) {
+func TestPlanIdentity_EqualImpliesSameHash_AllNine_RFC176(t *testing.T) {
 	t.Parallel()
 	pool := rfc176ValuePool()
 	for _, b := range rfc176PlanBuilders() {

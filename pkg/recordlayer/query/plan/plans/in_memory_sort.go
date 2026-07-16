@@ -13,12 +13,20 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// SortKey is a column + direction for in-memory sorting.
+// SortKey is a sort key + direction for in-memory sorting. ValueExpr is
+// REQUIRED: it carries the key's plan-time-baked Value, which the
+// executor evaluates POSITIONALLY per row. The field-only form (a Field lookup
+// with a nil ValueExpr) is no longer supported — the runtime name fallback was
+// deleted, so the executor rejects a nil ValueExpr as a malformed plan (loud,
+// never a name read; pinned by TestSortCursor_UnbakedKeyIsLoud). Field is
+// DISPLAY-ONLY (Explain + ordering-hint name match). Every planner path that
+// builds a SortKey sets ValueExpr unconditionally (rule_implement_in_memory_sort,
+// rule_implement_streaming_agg).
 type SortKey struct {
 	Field      string
 	Desc       bool
 	NullsFirst bool
-	ValueExpr  values.Value // when non-nil, evaluate per-row instead of field lookup
+	ValueExpr  values.Value // REQUIRED: the plan-time-baked key Value, evaluated per row
 }
 
 // RecordQueryInMemorySortPlan materializes the inner plan's output and
@@ -44,7 +52,16 @@ func NewRecordQueryInMemorySortPlan(inner RecordQueryPlan, sortKeys []SortKey) *
 func (p *RecordQueryInMemorySortPlan) GetInner() RecordQueryPlan { return p.inner }
 func (p *RecordQueryInMemorySortPlan) GetSortKeys() []SortKey    { return p.sortKeys }
 
-func (p *RecordQueryInMemorySortPlan) GetResultType() values.Type { return values.UnknownType }
+// GetResultType returns the inner plan's result type: an in-memory sort
+// reorders rows but preserves the inner's row shape, so it flows the inner's
+// type through (matching pass-through plans like Filter / Fetch). Nil inner
+// degrades to UnknownType.
+func (p *RecordQueryInMemorySortPlan) GetResultType() values.Type {
+	if p.inner == nil {
+		return values.UnknownType
+	}
+	return p.inner.GetResultType()
+}
 
 func (p *RecordQueryInMemorySortPlan) GetChildren() []RecordQueryPlan {
 	if p.inner == nil {
@@ -53,6 +70,13 @@ func (p *RecordQueryInMemorySortPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
+// EqualsWithoutChildren compares the sort keys by SEMANTIC identity (RFC-176 P2
+// / F21): each key's plan-time-baked ValueExpr is compared via the plans-package
+// semanticValueEquals (semantic Value equality under the empty alias map), not
+// by pointer. Two independently-built sort keys over the same Value are the same
+// plan — pointer identity would spuriously split them into distinct memo members
+// (the incomplete-F21 case). Field is DISPLAY-ONLY but folded so an explain-name
+// difference still separates identities; Desc / NullsFirst are the direction.
 func (p *RecordQueryInMemorySortPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInMemorySortPlan)
 	if !ok {
@@ -62,11 +86,22 @@ func (p *RecordQueryInMemorySortPlan) EqualsWithoutChildren(other RecordQueryPla
 		return false
 	}
 	for i := range p.sortKeys {
-		if p.sortKeys[i] != o.sortKeys[i] {
+		if !sortKeyEqual(p.sortKeys[i], o.sortKeys[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// sortKeyEqual reports semantic equality of two sort keys: display Field,
+// direction (Desc / NullsFirst), and the semantic ValueExpr. Pairs with
+// HashCodeWithoutChildren, which folds the identical set — preserving the
+// equal⟹same-hash memo invariant.
+func sortKeyEqual(a, b SortKey) bool {
+	return a.Field == b.Field &&
+		a.Desc == b.Desc &&
+		a.NullsFirst == b.NullsFirst &&
+		semanticValueEquals(a.ValueExpr, b.ValueExpr)
 }
 
 func (p *RecordQueryInMemorySortPlan) HashCodeWithoutChildren() uint64 {
@@ -74,11 +109,20 @@ func (p *RecordQueryInMemorySortPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte("inmemsort|"))
 	for _, k := range p.sortKeys {
 		h.Write([]byte(k.Field))
+		h.Write([]byte{0})
 		if k.Desc {
 			h.Write([]byte{1})
 		} else {
 			h.Write([]byte{0})
 		}
+		if k.NullsFirst {
+			h.Write([]byte{1})
+		} else {
+			h.Write([]byte{0})
+		}
+		// Fold the semantic ValueExpr so equal⟹same-hash holds with
+		// sortKeyEqual (which compares the ValueExpr semantically).
+		writeValueHash(h, k.ValueExpr)
 	}
 	return h.Sum64()
 }

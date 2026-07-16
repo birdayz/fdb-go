@@ -2714,6 +2714,72 @@ load-bearing ordinal infrastructure; `select.go:274` survives for the CTE-rename
 S4 exit gate proves zero anchored producers EMPIRICALLY (caller-free constructors, exhausted
 decline reasons), never by inventory argument.
 
+## S4 producer-zeroing — commit 2 (projected-EXISTS-over-join) B1 design-ACK (Graefe)
+
+**The residual.** `SELECT a.x, EXISTS(...) AS f FROM a JOIN b` routes through `buildExistentialJoinSelect`
+(cascades_translator.go:2817), which sets `inInnerCluster=true` UNCONDITIONALLY (:2833) → the outer INNER
+join stays name-model (the `:698` `buildJoinResultValue`/`NewAnchoredJoinRecord` producer). This is distinct
+from the WHERE-EXISTS flatten (`translateJoinWithExists`), which ALREADY ordinalizes when the join gates
+(F2-clean: existentials contribute no columns) — that is why lifting the gate's `:112 OnExistsSubqueries`
+arm is a no-op (it fires only for EXISTS-in-ON, a different shape). The projected-EXISTS RV *references the
+existential quantifier* (the `EXISTS` flag is an output column), so it is a PROJECTION, not a full seed.
+
+**Two empirical corrections to the initial framing (verified in the executor).** (1) The gated-ordinal
+projected-EXISTS *rebase* machinery is ALREADY built and live (`rule_implement_nested_loop_join.go`
+:1943-2071 — `rebaseOuterLegRefsOrdinal`/`rebaseOuterLegValueOrdinal`/exist-QOV→existCorr), gated on
+`ordinalWindows != nil`; and the `:1793` projected-fold decline is `correlatedStep1`-only. (2) The real
+blocker is the WINDOWS SOURCE: the executor reads windows from `sel.GetResultValue()` (the projection),
+which BOTH layout twins reject — `OrdinalSeedLegWindows` (a non-baked `ExistsValue` field + the
+full-coverage invariant) and its executor twin `ordinalJoinSpansOf` (`rfc173_ordinal_join.go:216`
+`if s.Width != len(s.LegType.Fields) { return false // partial leg coverage — a folded projection }`). A
+projection is categorically not a full-coverage seed.
+
+**Ruling: B1 (windows from the complete merged row), both twins UNCHANGED. B2 (relax full-coverage) NAK'd**
+— it would force relaxing both fixture-pinned twins in lockstep, breaking merged-row completeness
+(wrong-offset wrong-rows). Structure: **step-1 NLJ RV = the full ordinal leg-concat seed**
+(`buildOrdinalJoinResultValue` over the two legs), the projection applied ONLY at **step-2** (leg refs as
+`ofOrdinal` over `mergedOuterCorr`, `ExistsValue` over `existCorr`, live binding). Windows derive from the
+complete seed (the rule reconstructs it, byte-identical to `translateJoin`'s seed; the cross-agreement
+fixture guards the reconstruction). Q2 execution gap: the disabled-birth binder (`probeOuterBakedType`,
+walks only the inner plan) must ALSO see baked outer refs in the FlatMap RV. I3 is a no-op (INNER-only
+flatten, both legs non-null); I2 belongs to the scalar slice, not here.
+
+**⚠️ Scoping wall (the F2 seed was REVERTED TWICE here — A2 above).** The 2+1 existential select also
+implements through CORRELATED-FlatMap step-1 paths whose bindings are NAME maps; a baked seed hits the loud
+`BakedNameContextError` live (the `corr_exists_join_outer` dualwindow entry). **Commit-2 B1 scope =
+INDEPENDENT-LEGS projected-EXISTS only** (`correlatedStep1==false` → the materialized-NLJ branch, the
+primary `t1 JOIN t2 ON t2.t1_id=t1.id` shape). The `:1793`/`:1784` correlated-step-1 declines STAY
+(fail-closed); correlated projected-EXISTS defers to the booked correlated-FlatMap positional binders.
+Getting this scope wrong is the third revert. **Impl-ACK deliverables:** (1) B1 structure landed, both twins
+unchanged; (2) exec-binding confirmation (`probeOuterBakedType` fires on RV baked refs, proven by a
+projected-EXISTS row flowing positionally e2e); (3) two cross-agreement fixture rows (both-accept
+reconstructed seed / both-decline folded projection); (4) item-5 white-box sentinel + EXPLAIN + the
+`projected_exists_*` matrix green under both windows (dualwindow — the net that caught both prior reverts).
+
+**LANDED via C (the design-revision, not B1's rebase).** Two B1 impl attempts failed on the
+twice-reverted data-form wall: the fold projection's leg refs are HETEROGENEOUS — dotted frontier
+reads (`FieldValue{Field:"T1.ID", Child:nil}`, the common `SELECT t1.id` case) AND QOV refs —
+which no rebase converts to positional. The revision (Graefe): **don't rebase the projection —
+resolve it.** The step-1 NLJ births the full leg-concat seed (`reconstructFoldStep1Seed` from the
+leg plans' `GetResultType`, gated by `foldStep1Seed` on independent, ordinal-safe SCAN legs — the
+`legWindowRowContext` inputs need no translator change), and the step-2 FlatMap cursor evaluates the
+folded projection over that positional row through `legWindowRowContext` — `spanAwareRow.GetByName`
+resolves the dotted reads by splitting at the executor against typed `Legs` (not SQL text),
+`legWindowBinder` the QOV refs, and the composed context binds the existential inner for the
+`ExistsValue`. Both layout twins UNCHANGED (consulted only for the full-coverage step-1 seed). The
+identity WHERE-EXISTS pass-through is excluded (`resultIsIdentityOuter`). Scope: independent scan-leg
+folds (the common case); correlated folds (the F2 NAME-binder wall) and buried gated-box legs are
+booked follow-ons. Pins: three white-box guards (`reconstructFoldStep1Seed` / `legIsOrdinalSafe` /
+`foldStep1Seed` — the wiring gate the dualwindow differential is blind to, since a name-model revert
+leaves both windows agreeing) + the `projected_exists_*` matrix + dualwindow, all green; no regression
+across the exists / join / unnest / CTE / aggregate FDB suites. In-session gates GRANTED on HEAD
+817191109 (impl 8e9ee26d9 + cursor pin 6a489a0c5 + code-quality polish 817191109): the query-engine
+architect impl-ACK (verified line-by-line — resolve-don't-rebase, both twins untouched, the cursor
+branch pinned discriminatingly) and the code-quality ACK (no CRITICAL/MAJOR; MINOR polish + index-leg
+coverage folded in). @claude + codex remain as merge-gates (pending a pushed PR / quota). Scope:
+independent scan-leg folds; correlated folds (the F2 name-binder wall) and buried gated-box legs are
+booked as their own future design+impl slices.
+
 ## ROADMAP STATE (authoritative; update this block as slices land)
 
 **Done:** Slice 1 (non-join frontier + §5 oracle) · Slice 2 (wedge gate, 2-way seeds) ·
@@ -4532,3 +4598,1459 @@ plan-shape assert (`FlatMap(outer=FlatMap(` + exactly 2 Explode legs);
 (7) WITH ORDINALITY inner + BOTH levels (independent ordinals) + shadow-
 precedence (top-level `SUB` column shadowed by the element's `x.SUB`). Plus
 3-chain rows, empty/NULL owner → zero rows, SELECT * columns.
+
+## S4 CAP SCOPING — empirical (feat/rfc173-s4, experiment reverted)
+
+Ran the join-name-model gate change (skip the three join declines :143/:157/:190) over the FULL
+54-target suite. Result: **50 pass / 4 fail**, and EVERY FDB failure is a RECURSIVE CTE:
+- sqldriver: TestFDB_RecursiveCTERename, RecursiveCTECrossJoin, RecursiveCTERekeyGate,
+  CascadesRecursiveCTE(PostOrder), RecursiveCTEHierarchy, RecursiveCTEBasic,
+  RFC130_RecursiveCTE(NoDoubleCharge/CrossLevel).
+- dualwindow: recursive_cte_{tree_descendants,filtered_branch,linked_list,multi_column,
+  subtree_from_internal_node,bounded_chain,depth_bounded_walk,wide_tree_count} — name-vs-ordinal
+  divergence.
+- conformance: recursive_cte_count errored + a stale RFC-082 golden (behavior-shift, updatable).
+- query_test: the unit gate-decision pins (TestRFC173Item2C3_FlattenGateArm, WedgeGate) — EXPECTED
+  (they assert the OLD decision; update with the change).
+
+**Every NON-recursive-CTE join shape passes under this crude blanket-skip — BUT that is a coverage
+artifact, not a license** (Graefe ruling af259dec): the FDB corpus doesn't stress "inner cluster
+directly under an existential/unnest flatten," so the blanket-skip's over-lift of those residuals
+went unpunished. The recursive-CTE break is real: `translateRecursiveCTE` blankets its whole
+lowering with `t.inInnerCluster = true` (cascades_translator.go:4953-4955); its name-keyed
+temp-table / `recursiveRemapValues` machinery reads by NAME, so ordinalizing interior joins
+mis-reads them.
+
+### GRAEFE RULING — (A), with a premise correction and the CORRECT gate condition
+
+**Premise correction:** `NewReEnumerationAnchoredRecord` is the GENERAL N-way join partition
+re-enumeration producer (PartitionSelectRule, rule_partition_select.go:469/567), NOT the recursive
+frontier. Recursive-CTE machinery has ZERO trio references — it is firewalled from the ordinal join
+machine by the `FrontierPinned` bit (values.go:411). Java has no AnchoredJoin at all (Go-only
+bridge). So **(B) as posed is a phantom**: no single commit deletes the AnchoredJoin trio by
+ordinalizing the recursive frontier, because the trio has THREE independent name-model blockers —
+(1) recursive-body joins (4954 → NewAnchoredJoinRecord :698), (2) multi-source lateral unnest
+(:1528), (3) correlated-scalar-subquery projection (NewScalarSubqueryAnchoredRecord :3860) — gated
+by :106/:112/:401, none in the {:143,:157,:190} skip set. The trio dies at the CONVERGENCE of
+R1∧R2∧R3, not at the recursive one.
+
+**RULE: (A) — the pre-cap join-ordinalization slice — as the next stacked PR.** Correct gate
+condition is a DISTINCT name-model-enclosure bit (NOT the blanket skip, which fails the existential
+residual):
+- `:143` unchanged (`ordinalEligible` already recurses with enclosure forced false → name-model
+  constructs decline, plain cluster legs are eligible; the circular chain self-resolves once
+  parents gate).
+- `:190`/`:157` read a new `inNameModelEnclosure` bit set (defer-scoped) at the GENUINE name-model
+  sites — :1058 (unnest), :2833/:2950/:3751 (existential), :2344 (existential cond), :4399 (flatten
+  cond), :4954 (recursive) — NOT `inInnerCluster`. The circular site :4151 leaves the bit unchanged
+  → inherits the ancestor's name-model-ness → circular class gates, genuine residuals stay
+  name-model. DELETE `:157` (dead since item 3).
+- Net residual after (A): {recursive-CTE, existential, lateral unnest, correlated-scalar,
+  dup-binding}. Everything else gates.
+
+**ACCEPTANCE GATE (hard, before impl-ACK):** (i) the two contested pins stay GREEN —
+`TestRFC173S2_WedgeGate_Translation/derived_join_leg_under_exists_filter_enclosed` and
+`TestRFC173Item2C3_FlattenGateArm/"enclosed flatten declines"` (they pin the existential residual;
+a blanket skip that fails them = automatic NAK); (ii) the duplicate-bare-name IDENTITY pin —
+`FieldValue` node identity is still name-based (map_field_values.go:260-262; semantic_hash.go:108),
+so once dup bare names coexist positionally they can conflate into one memo member → wrong plans;
+prove distinct memo members before shipping the SELECT-* win.
+
+**Gate (ii) mechanism — CHARACTERIZED (S4 investigation, current line refs):** `writeSemanticHash`
+for a `*FieldValue` (semantic_hash.go:120-139) is a HARD FORK on `Resolved`:
+  - `Resolved != nil` (BAKED): identity is the ORDINAL PATH alone — `fieldpath:#<ord0>#<ord1>…`
+    (the display Field name is NOT folded in). Two references to duplicate bare "X" that resolve to
+    DIFFERENT slots hash+compare DISTINCT → separate memo members. SAFE.
+  - `Resolved == nil` (LAZY): identity is the NAME BUCKET — `field:<Field>`. Two lazy references to
+    bare "X" CONFLATE regardless of which leg they mean → one memo member → wrong plans. THE RISK.
+The equality arm (map_field_values.go:314-337) mirrors this: baked → `Resolved.Equals` (ordinal),
+lazy → name. So gate (ii) is NOT an open blocker — it reduces to a REQUIREMENT: the join
+ordinalization must emit dup-bare-name references BAKED (ordinal-resolved), exactly as producer #2's
+positional wrap does (`ofOrdinal(QOV, slot)` carries a Resolved ordinal path). A lazy name-only
+`FieldValue{Field:"X"}` for a shadowed join column is the ONLY way to trip the conflation, so the
+impl gate is "no lazy dup-bare-name node survives to the memo" — a checkable structural property, not
+an unsolved memo-theory problem. The proof test: build the join-ordinalized RC for `FROM a, b` where
+both have column X, assert the two X references carry distinct `Resolved` ordinal paths (hence
+distinct `SemanticHashCode`), and an EXPLAIN of `SELECT * FROM a, b` shows both X columns.
+**Additional constraint (found + pinned, `TestRFC173S4_DupBareNameMemoIdentity`):** `NewRecordType`
+PANICS on a duplicate field name, so the ordinal join SEED TYPE cannot carry two bare "X" fields —
+the seed must name dup slots DISTINCTLY (qualified, e.g. `A.X`/`B.X`) while the ordinal references
+bind by slot. This is a hard reason Rule A must qualify-then-ordinalize rather than flow two bare
+"X" names; the test pins baked-distinct / lazy-conflate identity as the regression sentinel for the
+gate.
+
+**After (A):** three independent residual slices (none gates another) — R1 recursive-CTE
+ordinalization (lift the 4954 blanket, positional temp-table norm; Java already consumes the ordinal
+model), R2 multi-source lateral unnest seed (:1528), R3 correlated-scalar-subquery seed (:3860).
+**Trio demolition = the convergence commit after R1∧R2∧R3** — that, not "B," is the real atomic cap;
+(A) is its load-bearing first stack.
+
+**STATE UPDATE (S4 census, current HEAD):** ALL THREE residual slices have LANDED — R1 recursive
+(:5060 comment "the recursive-CTE body is ORDINALIZED… lifting it surgically"), R2 gathered
+multi-source unnest (:1528, fully retired this session across plain/box/N-way/shadow/AT-only/global-
+operand, double four-gate-reviewed), R3 correlated-scalar (:3908-3977 "the name-model
+NewScalarSubqueryAnchoredRecord fallback is RETIRED… the ordinal seed is the sole surviving
+correlated-scalar seed; a decline loud-declines"). So the trio's THREE residual producers are dead.
+What REMAINS live is NOT a fourth residual — it is the GENERAL binary-join ANCHORED branch:
+`buildJoinResultValue` (:714) called at :4402 / :4650, the `!gated` arm that fires for the
+NON-enclosure residual join classes (dup-binding, leg-contains-name-model-join, arity<2). The common
+GATED join already takes the ordinal branch; this anchored arm is the last name-model join producer,
+and it is EXACTLY the site Graefe's refinement 1 flags — ordinalizing it must first prove the
+ordinal-leg-under-anchored-parent composition (or narrow it class-by-class producer-#2-style:
+dup-binding first, its own executor pass-through already widened in S4 commit 4). The `:334`/`:1552`
+AnchoredJoinRecord sites are the unnest/derived residual builders that back the loud declines. Net:
+the atomic cap (task #16) is gated on retiring the :4402/:4650 anchored-residual arm, not on R1/R2/R3
+(done). Producer #4 (`NewReEnumerationAnchoredRecord`, rule_partition_select.go:469) is NOT independent
+(census correction): it RE-STAMPS a parent source-anchored join RC over the upper's immediate
+quantifiers during PartitionSelectRule re-enumeration, firing ONLY when `isAnchoredJoinResult(parent)`
+is true (`:435`, `parentIsMerge`). So it is the re-enumeration counterpart of producer #3's anchored
+RC — once #3's join seed is ordinal, the parent is no longer an anchored merge and this re-stamp path
+does not fire; PartitionSelectRule would instead need an ORDINAL re-enumeration path. #3 and #4 are
+the two faces of the SAME AnchoredJoin machinery (seed + re-enumeration); they retire together, gated
+on the name-model leg classes.
+
+### DESIGN REFINEMENT (Graefe design review of Rule A, ACK-WITH-REFINEMENT) — S4
+Gate (ii) ✓ (correct + pinned by `TestRFC173S4_DupBareNameMemoIdentity`); bit-over-blanket-skip ✓.
+But (A) as a global GATE-CONDITION SWAP is NOT a clean shippable slice — three blocking refinements
+before impl-ACK, and a re-scope to the proven per-site cadence:
+
+1. **The anchored `else` branch is a GENUINE name-model producer, not a "circular site."** At
+   `cascades_translator.go:4291` (join seed) and `:4650` (flatten builder) the `!gated` branch calls
+   `buildJoinResultValue → NewAnchoredJoinRecord`. A join reaches it for NON-enclosure reasons
+   (dup-binding, leg-contains-name-model-join, arity<2) and legitimately encloses its legs. So the
+   RFC's "leave the bit unchanged at the circular site → inherits ancestor name-model-ness"
+   UNDER-approximates: a plain-gateable join that is a leg of a `4291`-anchored residual would flip
+   to ordinal UNDER a name-model-anchored parent — the exact MIRROR of the `:154`/`ordinalEligible`
+   decline (proven wrong-answer hazard), and the reverse composition (anchored RC reading a
+   positional leg by name) is NOWHERE proven safe. Reachable bare-bushy shape:
+   `FROM a, a.arr AS u, (c JOIN d)` → `((a⋈u)⋈(c⋈d))`, the `(a⋈u)` leg ineligible so the top anchors,
+   `(c⋈d)` the plain right leg that would flip. FIX: set `inNameModelEnclosure` in the anchored
+   branch too — BUT then `inNameModelEnclosure ≡ inInnerCluster` for every reachable chain, so the
+   gate swap changes NO live query (a no-op refactor). Hence the re-scope below.
+2. **Extend the gate-(ii) proof to an EXTERNAL-reference path.** Seed-field baking controls the
+   seed's own fields, not WHERE/GROUP BY/ORDER BY/correlated-outer references INTO the ordinalized
+   join — the resolver can emit those lazy. Add a dup-column-join WHERE/GROUP BY pin (the surface
+   producer #2 needed the named-projection wrap for), not just `SELECT *`.
+3. **Migrate the flatten pin + add a real-lowering companion.** `TestRFC173Item2C3_FlattenGateArm/
+   "enclosed flatten declines"` manually pokes `inInnerCluster = true`; under the arm-repoint it must
+   read `inNameModelEnclosure` or it flips red. Migrate the poke AND add an EXISTS-over-inner-join
+   under a real outer name-model parent so the existential residual is pinned through the PRODUCTION
+   path, not a hand-set flag.
+
+**RE-SCOPE — smallest safe first increment is the next GENUINE-SITE LIFT, producer-#2-style, NOT the
+gate refactor.** R1 (recursive, :5060) ordinalized its body by surgically NOT setting `inInnerCluster`
+at that one site — no new bit — and R2 retired producer #2 one narrow class at a time, each
+four-gate-clean. Follow that: land **R3 correlated-scalar (`:3850`)** — one `t.inInnerCluster = true`,
+one residual class (already flagged "RETIRED in S4 (R3)") — lifted surgically, and pin (a) rows
+correct, (b) dup-bare-name memo identity on that shape, (c) EXPLAIN shows the ordinal join, (d) the
+two existential pins + the anchored-residual composition (refinement 1) stay green. Introduce the
+`inNameModelEnclosure` bit ONLY when a concrete site can't be lifted surgically the way R1 was — with
+a failing shape driving it, not a speculative global swap. Stale line refs to refresh against HEAD:
+`:1058/:2833/:2950/:3751/:2344/:4399/:4954/:4151` → `:1074/:2908/:3033/:3850/:4539/:5060/:4291`; R1
+(recursive) has already LANDED, so the "After (A)" list above is stale on that item.
+
+**MECHANISM confirming refinement 1 — why the composition is FUNDAMENTALLY unsafe (S4 deep-read).** The
+anchored branch fires when `ordinalWedgeGate` returns `!Gated`, and (per `ordinalEligible`,
+rfc173_cluster_gate.go:240-265) a join is non-gated precisely when a LEG cannot be ordinal-typed — a
+NAME-MODEL leg (name-model unnest, dissolved-LEFT cluster, mixed derived nesting), a per-row
+correlated-scalar project, or a recursive body. `NewAnchoredJoinRecord` reads its legs BY ALIAS
+(`FieldValue(QOV(leg), col)` keyed on the display alias). So if Rule A flipped a gateable sibling leg
+to ORDINAL under such an anchored parent, the parent's alias-keyed read would hit that leg's
+POSITIONAL row by NAME and silent-NULL — the exact positional-seed-name-read defect producer #2's
+named-projection wrap exists to cure. That is why the mix is unsafe and why the anchored branch is not
+a "lift": it is the IRREDUCIBLE name-model residual for joins at least one of whose legs is itself a
+name-model construct. Retiring it therefore does NOT reduce to a gate tweak — it requires ordinalizing
+the LEG CLASSES that make a join non-gateable (name-model unnest legs beyond the gathered case,
+dissolved-LEFT clusters), OR wrapping the anchored parent's ordinal legs in the same named-projection
+layer producer #2 uses so the alias read resolves. Net: producer #3 is co-extensive with "ordinalize
+every remaining name-model LEG class," gated on the same wrap/qualify discipline R2 proved — a
+multi-slice effort, not a single lift. The atomic cap fires only once no SQL shape reaches :4402/:4650
+with a name-model leg.
+
+**ENDGAME STATE (2026-07-08, after the `:3234` + `:4051` retirements).** The UNCONDITIONAL `inInnerCluster = true` producers are now down to ONE hard blocker: `:1151` (`translateUnnestJoin`, the `:1074` non-gathered unnest producer), plus `:2083` (`translateOp`'s opaque-box save/restore) which is a RESTORE that only fires when the flag is already set — it DIES-WITH `:1151` (once no producer sets the flag, the `if t.inInnerCluster` guard never enters). The other `inInnerCluster` writes are the RFC-173-correct CONDITIONAL tree-property forms (`:3113`/`:3119` = `!existsLegBirthsPositional`, `:4515` = `!gateDecision.Gated && …`, `:4763` = `!gatedFlatten`) — not producers to retire. So the atomic cap (task #16) is now singularly gated on `:1151`, which is BLOCKED on the compose direction (the name-ambiguous bare-twin: `FROM A, B, A.arr AS x` with shared leg column names). Retired this session: `:2908` (conditionalized earlier), `:3033`=`:3234` (clean lift), `:3850`=`:4051` (outer-inherit + inner-fresh). See the LANDED notes below.
+
+**`:1151` de-risk CONFIRMS it is genuinely LOAD-BEARING (NOT a clean lift like `:3234`/`:4051`).** Clearing it (`= false` probe) STRANDS the CHAINED unnest: `SELECT ID, Y FROM T4, T4.SARR AS X, X.SUB AS Y` (and the AT-ordinal variants) fails `field "T4.ID" not resolvable in the runtime row (ordinal -1, row columns [X]) — malformed plan` (TestFDB_RFC173ChainedUnnest). Without the enclosure the chained/non-gathered unnest legs gate ORDINAL under a name-model unnest builder whose ordinal seed does NOT carry the outer's own columns (`T4.ID`) → the outer projection reads an ordinal that isn't in the runtime row → malformed plan. So retiring `:1151` is NOT a producer-lift; it is the actual **compose-direction slice**: ordinalize the non-gathered/chained unnest SEED so it CARRIES the outer columns (the R2 gathered path already does this for the multi-source + aggregate cases; the residual is the chained-element unnest `X.SUB AS Y` and the name-ambiguous bare-twin). That is a substantial producer-#2-style slice (translator seed change + windowing), not the incremental setter-clear the other two were — the honest reason the atomic cap cannot fire yet.
+
+**`:1151` SLICE 1 LANDED (2026-07-08) — the CHAINED-unnest ordinal seed (a producer CONVERSION, not the setter clear).** `translateChainedUnnestJoin` now gives the chained lateral unnest (`FROM t, t.arr AS x, x.sub AS y`) its own ORDINAL result-value seed when the FIRST link ordinalizes, replacing the name-model `buildUnnestResultValue`. A THIN composition of two existing builders (per the design steer): the result value is `unnestOrdinalSeed(j.Left, …)` (its outer positional run carries the first link's merged `[outer cols … element]` row positionally — a new `ordinalLegColumns` unnest-right-join arm supplies that leg type, `ordinalLegColumns(o.Left) ++ legColumns(unnest)`, guarded so the panic tripwire for genuine name-model joins is preserved); the collection is `unnestBakedRootCollection` generalized with a `rootSegmentIndex` param (0 = the chained OWNER-ALIAS root `x`, 1 = the existing single-source table-struct root, byte-identical). `SelectMergeRule`'s chained-unnest barrier was extended (`childRefIsPositionalUnnestSelect`) to keep an ORDINAL first link NESTED too (the positional-seed rebase cannot yet compose the retained Explode sibling's fused ofOrdinal+name-suffix collection — the deferred compose direction), narrower than a blanket positional-child check (a gated box still merges). The enclosure is cleared ONLY for the first link's own `translateRef`, and the seed/collection are built BEFORE that clear so a decline never strands an ordinal first link under the name-model builder. FAIL-OPEN: the bare-twin / CTE-rooted / 3+-link / enclosed / **any-ancestor-FILTER** cases keep the name-model residual. Certificate `sqldriver/rfc173_s4_chained_unnest_ordinal_fdb_test.go` (2-chain + AT-both-links + SELECT-star labels from the ordinal RC + shadow-column precedence + root-shadow (first-unnest-alias/outer-column collision) + outer-column-WHERE + element-WHERE + 3-link fail-open decline). Ordinal path FIRES for the UNFILTERED chained shape (independently verified — a name-model-fallback panic probe never trips for the unfiltered 2-chain; and a success-side panic probe fires for the unfiltered 2-chain but NOT for the filtered outer-WHERE shape). Two review-surfaced corrections folded (both real, both dimensional test-gaps the multi-gate caught): (1) codex P2 — the collection rooted by NAME (`FieldIndex(Segments[0])`) picked an OUTER column SHADOWING the owner alias; fixed to root at the ELEMENT's explicit slot (`len(ordinalLegColumns(firstBase))`). (2) codex P1 — an ordinal chained unnest under an OUTER-COLUMN WHERE (`… x.sub AS y WHERE t.id=1`) was `field "T.ID" not resolvable — malformed plan`, because the barrier that keeps the ordinal first link nested (to preserve the chained Explode) hides the outer columns from the ancestor filter's rebase; fixed by a DOWNWARD `chainedUnnestUnderFilter` suppress bit (set in translateFilter, read once in the chained ordinal gate) that declines to name-model under ANY ancestor filter — the name-model qualified name keys resolve the predicate. Carrying the outer-column predicate across the barrier positionally IS the Slice 2 compose direction.
+
+RESIDENCY (honest): this narrows `:1151` for the UNFILTERED chained shape ONLY; the FILTERED chained case joins {bare-twin, Q5-residual} as Slice 2 scope. It does NOT clear `:1151` or unblock the atomic cap — any surviving fail-open to `buildUnnestResultValue` keeps the name model alive. **Slice 2 (the name-ambiguous bare-twin ordinal-projection compose + the outer-column-predicate positional rebase across the barrier + a Q5 census) remains the deferred frontier.** Fully 4-gated (Graefe design + impl ACK, @claude ACK, Torvalds ACK, codex clean) — with two review-surfaced correctness fixes folded (the P2 owner-alias shadow root + the P1 outer-column-filter suppress).
+
+#### SLICE 2a LANDED (2026-07-08, Graefe design-ACK) — the NAME-AMBIGUOUS CROSS-LEG BARE-TWIN gathers via the RAW SEED (NOT the positional wrap — the wrap was tried, NAK'd for wrong-rows, and dropped). `FROM A, B, A.arr AS x` where two SEPARATE legs share a bare column name (`k`) previously DECLINED the gathered ordinal path at `rfc173_w5_unnest_gather.go:126-135` (dup-name → name-model). It now GATHERS via the RAW flat seed — NO decline, NO wrap. Each plain leg is its OWN quantifier in the flat select (`Scan(A)`, `Scan(B)`), so a QUALIFIED `A.k`/`B.k` routes to its own scan in the SELECT list, an outer WHERE, and a cross-leg predicate alike — there is no flat-row collision for qualified reads (the collision exists only for a BARE `k`, which errors 42702 at semantic analysis BEFORE the translator, Java-matching standard SQL). The `:126-135` any-dup decline became a NARROWER `declineBuriedDup` that fires ONLY for a box-involved dup; a NON-GROUPED non-box cross-leg dup falls through to the raw seed; the wrap `wrapGatheredPositionalKeys` is GROUP-BY-only again (its original purpose). **The GROUPED non-box cross-leg dup DECLINES to name-model** (`if t.underAggregate && nonBoxCrossLegDup { return nil }`) — the deferred grouped-bare-twin increment: the grouped path is stuck between the wrap (name-BLIND to qualifiers — the grouped ordinal resolution looks up bare `k`, not `A.k`/`B.k`, so a dup collapses to first-match and `WHERE B.k=200 GROUP BY A.k` drops every row, the identical outer-filter first-match class in the grouped path) and the raw seed (a GROUP BY over the positional seed reads a shadow-qualified key it lacks and groups every row under NULL, `A.k=<nil>` — the exact shadow-key defect the wrap was built to fix). Disambiguating a grouped dup needs the wrap's ordinal resolution to HONOR the qualifier (route `B.k` to the ALIAS.COL window key), a compose-direction change deferred with the box increment; declining restores master's pre-2a behavior (name-model resolves the qualified grouped read) — no regression. **Design history — why NOT the wrap.** The design-ACK'd blueprint was "gather via the positional wrap"; the impl was NAK'd by @claude with a real WRONG-ROWS bug (forbidden): `wrapGatheredPositionalKeys` emits per-leg window keys (`A.k`→slot1, `B.k`→slot4) AND a bare pass-through (`k`→slot1 = A's k, first-match); the SELECT projection resolves qualified `B.k` to the `B.k` window key, but the OUTER WHERE `PredicatesFilter` (built above the wrap) resolved qualified `B.k` to the bare `k` key (=A's k=100), so `WHERE B.k=200` evaluated 100=200 and dropped every row (same outer-filter first-match class codex caught on Slice 1). Forcing the wrap off exposed that the RAW seed already resolves ALL cases correctly (verified vs real FDB: `SELECT A.k,B.k`, `WHERE B.k=200→[7,8]`, `WHERE B.k=999→[]`, `WHERE A.k<>B.k→[7,8]`, `WHERE A.k=100→[7,8]`). So the wrap was both unnecessary AND the source of the bug; the raw seed is strictly simpler and correct. SCOPE (conservative, matching the de-risked shape): only NON-BOX cross-leg dups (two single-namespace scan legs) gather; a box-involved dup DECLINES — a box is ONE opaque quantifier whose buried column can't be qualified apart. Two decline classes: (i) WITHIN-ONE-LEG buried dup (a merge-opaque box's concat carrying two same-named columns, e.g. Order.PRICE + Customer.PRICE in a `(A FULL B)` box); (ii) CROSS-LEG dup where either leg peels to a box. Both are the later increment (2a'). The name-model fallback's OWN handling of a box-involved dup + comma-lateral unnest is a PRE-EXISTING gap (it cannot physicalize the shape — a malformed `LogicalProjectionExpression`, for every variant; it declined to name-model before 2a too) folded into 2a'. Certificate `sqldriver/rfc173_s4_baretwin_gather_fdb_test.go` (10 subtests): qualified bare-twin resolves by QUANTIFIER via the raw seed (single Project, no wrap); bare element X resolves; WHERE on a qualified bare-twin resolves on the FIRST leg AND a LATER leg AND a cross-leg predicate (the wrap-regression pins — `WHERE B.k=200`, `WHERE B.k=999`, `WHERE A.k<>B.k`); ORDER BY on the first AND a later leg's dup column (the outer-operator sibling axis); grouped bare-twin COUNT and grouped bare-twin + cross-leg WHERE (`WHERE B.k=200 GROUP BY A.k`) both DECLINE to name-model and answer correctly — pinning that the grouped path does NOT ship the outer-filter first-match wrong rows; bare-ambiguous 42702; non-ambiguous byte-identical raw seed; within-box buried dup declines to name-model; box-involved cross-leg dup declines AND fails-to-plan (safety: no wrong rows) rather than answering — flips green when 2a' lands. White-box `TestRFC173W5_Gathered_DeclineBoundary` case (b) two-scan dup gathers via the raw `SelectExpression`; case (b2) box-involved (FULL box + colliding scan) declines; case (b3) the SAME two-scan dup UNDER AGGREGATE declines (the grouped forward sentinel — the only difference from (b) is `underAggregate`; a plan-shape pin the E2E-rows tests can't provide, forcing re-certification when qualifier-honoring grouped resolution lands). Full sqldriver package + query white-box + docscheck green. **Fully 4-gated on HEAD 9f3a66573 (Graefe design + impl ACK, @claude ACK — 18 FDB probes incl. a multi-row later leg so a first-match misresolution surfaces as a wrong VALUE not just count, Torvalds ACK, codex clean).** The slice surfaced and pinned THREE real bugs: the wrap's outer-WHERE wrong-rows (@claude's NAK → the raw-seed pivot), the box-involved malformed fallback (→ decline + fails-to-plan safety pin), and the grouped bare-twin + cross-leg WHERE (Graefe's required probe → grouped decline + b3 forward sentinel). Narrows `:1151`'s bare-twin residency for the NON-GROUPED non-box cross-leg case; the box-involved dup (2a') + the GROUPED bare-twin (needs qualifier-honoring grouped ordinal resolution, folded with 2a') + outer-column-predicate rebase (2b) + Q5 census remain — Graefe's strategic note: {box dup, grouped bare-twin, outer-predicate rebase} all converge on ONE substrate (qualifier-honoring ordinal resolution — ordinal projections that route ALIAS.COL to leg windows); build it once and it closes all three, then Q5 + the `:1151` clear + the atomic cap. BOOKED non-blocking follow-ups for Slice 2 (both optimization/test-fidelity, not correctness): (a) clear `chainedUnnestUnderFilter` in `translateSubqueryRef` (next to the `inInnerCluster` clear) so a FILTER-LESS subquery under an outer filter keeps its ordinalization instead of being coarsely suppressed — fresh-scope discipline, correct either way; (b) a name-model-vs-ordinal plan-shape discriminator on the element-WHERE decline test (today the outer-column-WHERE malformed-without-suppress is the mechanism sentinel; the element-WHERE test guards rows only, since name-model and ordinal share the nested-FlatMap shape).
+
+#### QUALIFIER-HONORING RESOLUTION LANDED (2026-07-09, Graefe design-ACK (C)/(A)/(H)) — the GROUPED gather UN-COLLAPSES; the wrap + ALIAS.COL name keys RETIRED. This is the ONE substrate Graefe flagged (the grouped bare-twin + the disjoint/shadow grouped element all converge on it). **Root cause of the deferral:** the `wrapGatheredPositionalKeys` layer collapsed the N per-leg quantifiers into ONE fresh name-keyed projection quantifier (a divergence from Java, which keeps the per-leg select under the group-by and pulls up by ordinal), then needed ALIAS.COL NAME keys — name-model residue — to disambiguate; and the grouped ordinal resolution was name-BLIND to qualifiers. **Fix (Graefe ruled (C) don't-collapse over (B) second-bake-path):** `translateGatheredUnnestCluster` returns the RAW per-leg seed for a grouped gather (no wrap), and `translateAggregate` POSITIONALLY BAKES the group keys / operands over it — the qualifier-honoring read that replaces the wrap's name key. The outer WHERE bakes for FREE (the input is now a `SelectExpression`, so the existing `bakeGatedJoinPredicates` fires — the proof (B)'s second bake path was never needed). **The slot-source (Graefe (A), one authority):** leg columns resolve via `values.OrdinalSeedLegWindows` (the SHARED layout authority, agreeing bit-for-bit with the executor's `unnestMixedSeedSpans` by `TestRFC173W4c_MixedSeedSpanLayoutCrossAgreement`). It was EXTENDED — with its executor twin, in lockstep, fixture re-pinned — to admit the multi-source gathered seed and then GENERALIZED to **element-ANYWHERE** (`FROM A, A.arr AS x, B` — the mid-list element splits the leg run; the walk windows the leading legs, steps over the element's slot, windows the trailing legs). Trailing is just "element at last, no trailing legs." **The element (Graefe (H), field-identity NOT a window):** the element's slot is its rc index, located via the seed's OWN element predicate `fieldValueReferencesInner` (one definition, no ad-hoc scan) — it is a single distinguished field, not a layout window that could drift (rc-index↔slot is the substrate the authority stands on). Resolution order: a QUALIFIED read whose alias names a LEG window wins (`U.V` is U's V, never a same-named element); a BARE read is element-first (an element AS alias shadowing a later leg column reads the element). Operand bake RECURSES the value tree (`values.Replace`) so `SUM(A.k+B.k)` bakes BOTH dup leaves (top-level-only = silent wrong rows); `valueReadsBakedOrdinal` (executor) is recursion-aware and per-value gated so the name-model group-by population reads Datum unchanged. **DELETED:** `wrapGatheredPositionalKeys`, `gatheredPositionalWrapEligible`, `gatheredBakeSlotMap`, the `gatheredBakeSlots` stash — the wrap and its ALIAS.COL name keys are gone. Sentinels flipped: `DeclineBoundary` (b3) now asserts the grouped bare-twin GATHERS (raw `SelectExpression`); the disjoint/shadow plan-shape assertions now assert the un-collapse (a baked-ordinal `StreamingAgg` key over the raw NLJ gather, NO wrap Project). Certificate: `rfc173_s4_baretwin_gather_fdb_test.go` grows the grouped bare-twin (resolves via un-collapse), grouped + cross-leg WHERE, compound operand `SUM(A.k+B.k)`=600 (recursion pin, top-level-only=400), and the MID-LIST element grouped bare-twin (works — the element-anywhere leg windows); the whole `TestFDB_ArrayUnnestOrdinality` family (disjoint `GROUP BY EL` + `SUM(WSRC.SID)` outer-leg aggregate, R19/R20 shadow, HAVING, LIKE ESCAPE) green on rows AND the wrap-gone plan. Full `bazelisk test //... -stress` green. **Closes the grouped bare-twin AND the disjoint/shadow grouped element** — the substrate is real and one-path. Next applications of the SAME substrate: box-dup (buried leaves + the FULL-NULL de-risk) and 2b (the chained SelectMergeRule barrier — a different structure), each its own de-risked, 4-gated increment; then Q5 + the `:1151` clear + the atomic cap. BAKE-GATE (codex P2, fixed): a gathered unnest that DECLINES to the name-model path still flows a `SelectExpression` with an Explode quantifier, but its RC is ANCHORED and emits no positional row — `translateAggregate` gates the positional bake on `!rc.AnchoredJoin` so a name-model fallback's grouped element/leg reads stay name-model (baking a name-model row would evaluate the ordinal against the Datum map and error); pinned then by `grouped_over_name_model_fallback_does_not_bake` (RFC-173 B later ordinalized that subquery-conjunct shape, so the row-level pin retired into `grouped_subquery_conjunct_gathers`; the gate's translation-level pin is now the census sweep's `grouped_multi_esq_gate`). BOOKED follow-up (Torvalds N2, non-blocking): `OrdinalSeedLegWindows` (planner) and `unnestMixedSeedSpans` (executor) are TWO element-anywhere walks kept bit-for-bit agreeing by the cross-agreement fixture — a real duplication (different key normalization `ToUpper` vs `String()`, different split-run rejection: map-dedup vs an explicit `seen`). The honest end-state is the executor deriving spans FROM the values authority instead of re-walking; collapse the two walks before any THIRD extension, not another parallel edit. **Fully 4-gated on HEAD 030eb9870 (Graefe design + impl ACK — verified the cross-agreement invariant untouched and every fix property-based; @claude ACK — 6 FDB-probed axes incl. two-elements + multi-leg-both-sides cross-agreement, no wrong rows; Torvalds ACK — "NAK lifted, ship it"; codex clean).** The multi-gate process surfaced two real defects this slice: codex's anchored-fallback bake gap (a gather declining to name-model still flows an Explode select whose anchored RC emits no positional row — baking there errors; gated on `!rc.AnchoredJoin`, pinned) and a dead fail-open decline that had drifted after leg translation into a latent double-registration trap (independently flagged by @claude's 131/0 instrumentation and Torvalds — deleted). The wrap and the ALIAS.COL name keys are gone; the grouped bare-twin, the disjoint/shadow grouped element (element at any position × leg-column aggregate), and the compound-operand recursion are all certified on rows AND the wrap-gone plan.
+
+#### SLICE 2b LANDED (2026-07-09, FULLY 4-GATED on 60cbb0c08 — Graefe design + impl ACK, @claude ACK, Torvalds ACK, codex clean) — filtered-chained ORDINALIZES; the coarse `chainedUnnestUnderFilter` decline is RETIRED. A chained lateral unnest under an ancestor WHERE (`FROM t, t.SARR AS x, x.SUB AS y WHERE <pred>`) previously declined to the name-model residual (`buildUnnestResultValue` → `NewAnchoredJoinRecord`) via a COARSE downward suppress bit (`chainedUnnestUnderFilter`, set in translateFilter, read in the chained ordinal gate — Slice 1's `:1151` codex-P1 stopgap). It now ORDINALIZES for every non-subquery, non-OR filter shape, retiring 10+ name-model-caller invocations toward the atomic cap. The field + its set/save/restore + the gate are all DELETED. **Predicate placement is PER CONJUNCT (Graefe design-ACK'd the ⊆-outerLegs form over an enumerated x/y one):** `rebaseChainedOuterLegPredicate` splits the top-level AND (bakeConjuncts discipline); `chainedPredScanPushable(p, outerLegs)` gates on `GetCorrelatedToOfPredicate(p) ⊆ outerLegs` — a conjunct whose correlations are all outer BASE legs (`{t}`) is PUSHABLE-TO-SCAN (PushFilterBelowJoinRule sends it to `Scan(t)`), so leave its refs LAZY (`QOV(t)`, a SARG); a conjunct referencing ANY in-chain correlation (the first-link element x, the second-link element y) is NOT scan-pushable, stays at the inner Explode whose row is `QOV(mergedCorr)`'s merged `[t-cols ++ x]` row, so REBASE its outer-leg refs to the qualified `leg.col` key there. Structural (⊆-outerLegs) not enumerated: ONE branch, every in-chain correlation flows keep-rebase uniformly, no per-element drift. The gate-mirrors-rule coupling is verified END-TO-END (SARG on `Scan(t, [=])` for outer-only, inner `PredicatesFilter` for x/y-referencing / straddling `t.id = y`). **AXIS AUDIT (Graefe condition, "audit before removing a coarse decline"):** every NON-OR filter shape the coarse decline was catching — eq / AND / IN-list / BETWEEN / arithmetic / IS-NULL / NOT / 3-conjunct / straddling — row-verified correct on the ordinal path. **Two residuals decline to name-model (correct-or-loud).** **(1) An OR in the filter — @claude's correctness gate caught a REGRESSION in the first cut** (which ordinalized ORs): `(t.id=10 AND y>2) OR (t.id=3 AND y<5)` returned correct rows on the name-model parent but MALFORMED-PLANNED once ordinalized, because `rebaseChainedOuterLegPredicate` name-keys the whole OR (only the top-level AND is split), then NormalizePredicatesRule distributes it to CNF and PredicatePushDownRule pushes the extracted PURE-OUTER clause (`t.id=10 OR t.id=3`) to the first-link ORDINAL FlatMap where the name key strands (ordinal -1). A NARROW `chainedUnderOrFilter` bit — the disciplined successor to the retired coarse bit, set in translateFilter iff `predicateContainsOr(f.Predicate)`, read once at the chained gate — declines any OR-carrying filter to name-model (correct rows). Ordinalizing the OR needs the POSITIONAL bake (an `ofOrdinal` resolves on the ordinal row at BOTH the first-link FlatMap and the inner Explode, unlike a name key); a first attempt tripped a "leg X DIVERGENT baked types (5 vs 6 fields)" drift panic — the chained seed's merged type must be aligned with the `OrdinalSeedLegWindows` bake authority first (booked). **(2) A SCALAR SUBQUERY in the filter.** It rides the wedgeGate POSITIONAL bake (`rebaseUnnestOuterLegPredicateOrdinal`), a DIFFERENT path than the per-conjunct name-keyed rebase, and once the chained unnest ordinalizes it bakes the outer ref to ordinal -1 → a malformed plan. HEAD shipped it SILENT-WRONG `[]` (name-model swallowed it). Rejected LOUDLY now (Graefe ruling (C): typed `0A000` in translateFilter, gated `len(f.ScalarSubqueries) > 0 && filterInputHasChainedUnnest(f.Input)` — TYPED, no text match). **The gate WALKS the join spine** (not just the direct rightmost source), so a chained unnest buried behind a trailing table (`FROM t, t.a AS x, x.b AS y, z`) or a join leg is caught too — the direct-only first cut left that buried shape as the same silent-`[]` (Graefe's (i) altitude probe caught it; widened + pinned). It STOPS at relation boundaries (Project/CTE/Aggregate) so an ENCAPSULATED derived-table chained unnest is not falsely gated. **The audit surfaced a bigger PRE-EXISTING silent-wrong (booked, orthogonal):** scalar-subquery-in-a-WHERE-comparison returns `[]` for a PLAIN table too (`WHERE id = (SELECT MAX(id) FROM t2)` → `[]`) — it's a general scalar-subquery-in-WHERE hole (projection-position scalar subqueries work), NOT chained-specific; the chained case additionally would CRASH, so 2b's 0A000 prevents the silent-`[]` → crash regression. Java answers both → reach gap; the `0A000` sentinel flips green when the general feature lands. IN-subquery / EXISTS in a filter over a chained unnest fail 0AF00 UPSTREAM of the chained dispatch (orthogonal). Certificate `sqldriver/rfc173_s4_filtered_chained_fdb_test.go` (10 non-subquery shapes with SARG/inner-filter end-to-end plan asserts + `scalar_subquery_loud_0A000` + `scalar_subquery_buried_loud_0A000`); the two now-stale filtered subtests in `rfc173_s4_chained_unnest_ordinal_fdb_test.go` (which claimed "declines to name-model") are DELETED — filtered coverage lives in the new cert; that cert keeps the UNFILTERED ordinal path + the genuine 3-link clusterArity-poison decline. B1 corpus (1641) + full suite green. **The Slice-2a booked follow-ups:** (b) "name-model-vs-ordinal plan-shape discriminator on the element-WHERE decline test" is now VOID (the element-WHERE test is deleted; it ordinalizes, and the end-to-end SARG/inner-filter asserts in the new cert ARE the plan-shape discriminator). (a) "clear the suppress bit in translateSubqueryRef" is NOT void — the coarse `chainedUnnestUnderFilter` is deleted, but its subquery-scope leak MIGRATED to the narrow `chainedUnderOrFilter` (an OR-carrying OUTER filter's bit leaks into an inline-EXISTS subquery, over-declining its chained unnest to name-model — correct rows, missed opt); the translateSubqueryRef-style clear is re-booked with the positional-bake slice (Torvalds flagged the optimistic void-ing). Reviews (fully 4-gated on 60cbb0c08): Graefe design-ACK (⊆-outerLegs refinement + ruling (C) + retire-after-audit) → conditional impl-ACK on fffb88f53 (core + enclosing-correlation by-construction ACK'd; (i) altitude needed a probe) → finalized impl-ACK on dc7e3a5f8 ((i) altitude widened gate verified) + design-ACK on the narrow OR-decline (traced predicateContainsOr's De Morgan completeness himself). @claude NAK on fffb88f53 (the OR-ordinalization regression — the first cut ordinalized ORs and MALFORMED-PLANNED the nested-outer-conjunct shape `(t.id=10 AND y>2) OR (t.id=3 AND y<5)`, correct on the name-model parent; caught by "verify the rows, not the read") → ACK on dc7e3a5f8 (fix: the narrow `chainedUnderOrFilter` decline + the `or_over_chained_declines_correct_rows` regression cert on the axis the flat-OR cert missed; re-verified predicateContainsOr sound). Torvalds NAK on fffb88f53 (stale filtered subtests + no-op `rebaseUnnestOuterLegPredicateImpl` wrapper split + 42703 doc tour) → narrow NAK on dc7e3a5f8 (a LYING "no such predicate reaches here" comment — the OR DOES reach the rebase on the name-model-declined path) → ACK on 60cbb0c08 (comment corrected to the true name-model-seed mechanism, re-traced; scope-leak Finding B disclosed + re-booked). codex clean on both (its one P1 was a working-tree artifact of a throwaway probe). The multi-gate process flushed TWO real defects the first cut shipped — @claude's OR-ordinalization malformed-plan and Graefe's (i) buried-scalar-subquery silent-`[]` — plus Torvalds' lying-comment; "verify the rows, not the read" earned its keep. Residuals booked in TODO.md: ordinalize the OR via the positional bake (align the chained seed's merged type with the bake authority), the general scalar-subquery-in-WHERE feature (unblocks both plain + chained), the x.K scalar-sibling resolver gap (42703, orthogonal). Next: Q5 census + the `:1151` clear + the atomic cap.
+
+#### SLICE 2c LANDED (2026-07-09, Graefe design-ACK) — the 2-chain OR ORDINALIZES via the POSITIONAL bake; `chainedUnderOrFilter` RETIRED. The 2b OR-decline interim is closed for the 2-chain. **Root cause of the 2b "leg X DIVERGENT baked types (5 vs 6 fields)" panic: a WRONG-TYPE-IN-THE-BAKE bug, NOT an `OrdinalSeedLegWindows` disagreement.** Dumped the types for `FROM T4, T4.SARR AS X, X.SUB AS Y`: the seed's OUTER leg run bakes over `QOV(outerCorr=X, ordinalLegType)` = a **5-field** type `[ID SARR SCARR SUB X]`; the full seed RC is 6 fields `[… X Y]`; `OrdinalSeedLegWindows` correctly derives the 6-field merged type. The first positional-bake attempt passed the **6-field merged type** as the QOV type, but the outer QOV is the **5-field ordinalLegType** (same correlation X) → drift tripwire. The fix: bake outer-col refs over `ordinalLegType(join.Left)` (the outer QOV's OWN type), NOT the merged type — an `ofOrdinal(QOV(X, ordinalLegType), slot)` matches the seed's outer run bit-for-bit and resolves on the ordinal row at every level CNF+pushdown lands the clause (Graefe confirmed structurally: a pushed pure-outer clause lands at X's ForEach = the first-link ordinal row = ordinalLegType). So `OrdinalSeedLegWindows` / the executor span / the cross-agreement fixture are UNTOUCHED — no authority extension, no lockstep, no fixture re-pin. `rebaseChainedOuterLegPredicate` now takes `ordType` + `ordinalSeed` + returns `(pred, ok)` (`!ok` → decline to name-model); over an ORDINAL seed the keep-branch bakes POSITIONALLY (`rebaseUnnestOuterLegPredicateOrdinal(p, ordType, ordType, …)`), over a NAME-MODEL seed it keeps the NAME-KEY rebase (the caller sets `ordinalSeed` from `sel`'s own RC — `!AnchoredJoin`). **This seed-form gate is LOAD-BEARING — codex + @claude both caught a first-cut regression** where the positional bake fired on the name-model FALLBACK (gated on `isChainedUnnest`, not on whether the seed ordinalized): a mixed-inner-ref clause (`t.id = z`, `(t.id=10 AND z<13) OR (t.id=20)`) over a 3+-link chain, OR a 2-CHAIN buried behind a trailing table (`FROM t, t.a AS x, x.b AS y, z WHERE t.id = y`), then rewrote outer refs to `ofOrdinal(QOV)` against the name-keyed row → `field … not resolvable, ordinal -1, malformed plan` (correct rows on the parent). The `ordinalSeed` check routes ANY name-model seed (3+-link clusterArity-declined, buried-2-chain, or `!ok` decline) to the NAME-KEY rebase, exactly as HEAD. Regression cert `TestFDB_RFC173S4_ThreeLinkFilteredNameModel` (3-link straddle-match / mixed-OR / and-inner / pure-outer-OR + the buried-2-chain straddle). `chainedUnderOrFilter` (field + set + gate) + `predicateContainsOr` DELETED — a decline retired; the subquery-scope leak the coarse bit carried is GONE with the flag, not merely booked. `:1161` narrows for FREE (line 404 clears the enclosure on the ordinal path; a declining shape keeps it — no strand). **SCOPE (Graefe (A), bounded — the disciplined incremental split):** the POSITIONAL bake fires for the ordinalizing 2-CHAIN only; every name-model chained seed keeps the name-key rebase (correct rows). A 3+-link chain declines EARLIER (clusterArity poison, untouched) and stays name-model CORRECT. Its ORDINALIZATION — lifting clusterArity + the mixed-inner-ref placement fix (the strand lives in `pushBuriedUnnestPredicateDown` + `rewriteUnnestPredicate`, baking the deepest element against the 2-chain row) — + the FULL `:1161` retire are the DEEPER-NESTING slice (booked), which inherits this validated substrate. Scalar-subquery stays the separate `:2720`/0A000 residual. **Audit (Graefe condition, before removing a decline):** 2-chain OR ordinalizes (`t.id=1 OR y=9`→{7,8,9}); 3-link OR stays name-model (`t.id=1 OR t.id=2` over `…SUBSTRUCT AS Y, Y.DEEP AS Z`→{11,12,13,20}, no strand); OR-with-scalar-subquery→0A000 first; 2-chain all-shapes ordinalize; 3-link = HEAD; B1 (1641) + query package green. Cert: the `or_over_chained_declines_correct_rows` subtest renamed to `…_ordinalizes` (a lying cert is a docscheck fail) + the NOT(OR)/NOT(AND) De Morgan comments fixed to the ordinalize reality. Reviews: Graefe design-ACK (bounded slice + audit) + impl-ACK on 7950a6ed0. codex NAK + @claude NAK on 7950a6ed0 — BOTH caught the same regression (the positional bake fired on the name-model chained fallback, stranding a mixed-inner-ref clause; @claude additionally found the buried-2-chain variant); Torvalds ACK on 7950a6ed0 but flagged the missing filtered-3-link-OR sentinel as unprobed — the exact axis the NAK hit. Fixed by the `ordinalSeed` seed-form discriminator + the `ThreeLinkFilteredNameModel` regression cert. **FULLY 4-GATED on the fixed HEAD `4cde13db2`:** Graefe re-ACK (owned that his impl-ACK missed a successful positional bake — `ok=true` — firing against a name-model seed, which the `!ok` fallback never catches; the fix routes on the seed's emergent form per principle #10); Torvalds ACK (Finding #1 confirmed load-bearing; `ordinalSeed` threading minimal, `!AnchoredJoin` an honest established discriminator = the EXISTS-path signal at :2666, cert data discriminating on all three faces plan/exec/rows); @claude ACK (re-ran the three regressing probes — all now return the parent's correct rows; the 2-chain OR slot-3 win intact; the `!AnchoredJoin` discriminator complete in BOTH directions — no reachable name-model plan presents as a non-AnchoredJoin RC, incl. the `unnestUnderExistential && chained` non-RC path which defaults to the safe name-key rebase); codex clean (no actionable correctness issues; ran both certs green). "Verify the rows, not the read" earned its keep again — the audit's pure-outer-OR sample missed the mixed-inner-ref name-model path.
+
+#### SLICE 2d LANDED (2026-07-09, Graefe design-ACK; corrected same-day after a 3-gate NAK round) — LINEAR 3+-link chains ORDINALIZE at any depth, filtered or not; forks/box-bases decline; the boundary is pinned WHITE-BOX. **The record keeps the failure honestly: the first cut (272b3e855) over-claimed.** What it claimed: "filtered 3-link ordinalizes; the `Scan(T4,[=])` SARG is an ordinal-only discriminator; the 2c bake already places mixed clauses at depth 3." What was actually true (translate-level stderr tracing + a NEUTERED-GATE control run): only UNFILTERED 3/4-link chains ordinalized — every FILTERED 3+-link shape still ran the NAME-MODEL fallback, because `unnestExistsSeedSafe`'s box-leg-conjunct arm (`unnestOuterConjunctOnBoxLeg && len(outerBoundAliases)>1`, the c5a guard) fires on any chained firstBase (multi-alias by construction); the SARG is MODEL-INDEPENDENT (the lazy ⊆-outerLegs path precedes the seed-form fork, so both models SARG identically — the "discriminating" certs passed VERBATIM on the name-model parent, confirmed independently by a reviewer's parent-worktree control where all 7 EXPLAINs were byte-identical); and a second reviewer's adversarial probe found a REGRESSION the unscoped gate lift shipped: a FORK chain (`FROM T4, T4.SARR X, X.SUBSTRUCT Y, X.SUB W` — W's owner X is TWO links back) was admitted, rooted its collection at the PRECEDING link's element slot (`elementRootIdx`), and malformed-planned at `ordinal -1` (correct rows on the parent via name-model); with colliding field names it would have been SILENTLY WRONG. **The corrective commit (this HEAD):** (1) **owner-LINEARITY enforcement** — `translateChainedUnnestOrdinal` checks `u.Segments[0] == firstUnnest.Alias` (EqualFold) AND `chainedBaseOrdinalizes` runs over `j.Left` (NOT firstBase — walking firstBase alone would skip firstUnnest's own linearity, admitting a fork exactly one level below the dispatching link: `…, x.substruct AS y, x.substruct AS y2, y2.deep AS z`), with a per-level `un.Segments[0] == preceding link's Alias` check in the recursion; forks decline to name-model (correct by name). (2) **the box-leg-conjunct arm SCOPED, not bypassed** (Graefe form ruling): `unnestExistsSeedSafe(left, spineBase bool)` — the ONE arm becomes `flag && !spineBase && multiAlias`; only the chained gate passes `spineBase=chainedBaseOrdinalizes-admitted`, every other caller passes false, and every OTHER decline arm (existential today, anything later) stays live for spines automatically — so FILTERED linear spines now genuinely ordinalize (trace-verified; the depth-3 straddle `T4.ID=Z` resolves through the 2c positional bake FOR REAL this time). (3) **The boundary pinned at the only layer that can see it** — `rfc173_2d_chained_spine_seed_test.go` white-box pins assert the seed RC's `AnchoredJoin` flag off `translateChainedUnnestJoin` per shape: linear 2/3/4-link × filtered/unfiltered → ordinal; top-fork (±filter), MID-SPINE fork, box-base (±filter — the arm scoping must not leak the bypass to a genuine box) → name-model; twin-fork + 1-segment-mid-spine → LOUD upstream rejections (pinned as loud-not-silent). ONE-TIME FEATURE-OFF CONTROL run at introduction: gate neutered → all six linear ordinal pins FAIL (they discriminate by construction). Plus fork rows-certs e2e (`fork_projection`/`fork_filtered` → name-model rows) and honest cert rewrites (every "SARG ⇒ ordinal" claim deleted; the SQL certs are rows+placement pins and say so). **Scope/accounting (unchanged from the design-ACK):** box-base chains + `!ok` declines still reach `NewAnchoredJoinRecord` (chained producer NARROWS, zeros only with c5b); `:1161` narrows (box/cluster readers remain — cluster_gate.go:315,356, w4b:565); the deep-WHERE 42703 (4+-link AS / any AT in WHERE) is a PRE-EXISTING semantic-resolver gap booked separately (reproduces name-model, upstream of translation; clean projections resolve at every depth incl. AT). **Standing discipline adopted (Graefe ruling):** any cert offered as a model-discriminator comes with a neutered-feature control run, or it doesn't count — a cert that passes with the feature off pins nothing. Reviews: Graefe design-ACK (bounded gate lift) then NAK-round corrections — Torvalds NAK on 272b3e855 (independent parent-worktree control: certs pass verbatim, EXPLAINs byte-identical; lying cert names; the doc-placement botch fixed here) + @claude NAK (the fork kill, differentially verified vs parent; demanded linearity at BOTH walk levels) + Graefe corrective rulings (arm-scoping form, white-box pin strategy, one-corrective-commit). 4-gate on the corrective HEAD. **SECOND CORRECTIVE ROUND (same day) — two more gate kills on 59eb67aaa, both fixed + pinned:** (1) a P1 SILENT-WRONG: `clusterArity(FULL OUTER)==1` (merge-opaque) let a spine BOTTOMING IN A FULL BOX through the walk base case with spineBase=true, suppressing the box-leg-conjunct arm for GENUINE box legs — under a box-leg WHERE the first link kept a name-model seed while the chained link built an ordinal seed OVER it (the mismatch class): `FROM T4 A FULL OUTER JOIN T4 B ON A.ID+10=B.ID, A.SARR X, X.SUB Y WHERE A.ID=1` returned wrong A-side values (parent correct). FIX: the walk returns (admitted, pureSpine) — admission UNCHANGED (FULL-box bottoms stay admitted, pre-slice parity: unfiltered still ordinalizes), but pureSpine = `len(outerBoundAliases(bottom))==1` (the ARM'S OWN authority, not a structural box probe — any future single-arity multi-alias source stays conservatively impure); only pureSpine exempts the arm, so a box-leg WHERE declines the WHOLE chain coherently with the first link's gate. Pinned white-box (full_box_bottom walk rows: admitted-impure; full_box_bottom_filtered → name-model / unfiltered → ordinal seed-form) + e2e (`fullbox_bottom_boxleg_filter` — the exact repro, correct rows). (2) a FALSE COVERAGE CLAIM in the white-box file itself — the one_segment_mid_spine comment said the walk's Segments<2 check was "pinned directly in the walk test below"; it was NOT (a reviewer's control run neutering the check stayed green — the same disease this round exists to cure). FIX: the 1-segment walk case added (it discriminates: with the check gone, the linearity comparison passes vacuously and the walk admits). PLUS harvested reviewer probe dimensions into the cert: the depth-3 SHADOW-SLOT straddle `T4.SUB=Z` (the positive slot-3 pin — a slot-0/ID misread returns a different row set) ± OR, and AT-first/AT-mid ordinal rows (P=2 discriminates the mid ordinal); the walk unit test now also pins (admitted, pure) for full-box / 1-segment / AT shapes. **FULLY 4-GATED on the round-2 HEAD `c1f6e2059`:** Graefe re-ACK (admission byte-equivalent to the ACK'd form; the pureSpine authority choice is "the right one-authority move" — the arm's own outerBoundAliases measure, fail direction conservative; the P1 family named: every bug in this class is "two sites disagreeing about which model a row is in"); Torvalds ACK (four fresh adversarial controls, all discriminating — Control E revert fails EXACTLY full_box_bottom_filtered at unit level and reproduces the silent-wrong live e2e, A.ID served from the other leg's slot; two-bool return endorsed; nit for a future touch: rename the spineBase parameter to pureSpine); @claude ACK (coherence holds BY CONSTRUCTION — monotone admission, pureSpine IS the first-link gate's own predicate, reverse split impossible via prevEnclosure; three-way differential conclusive: kill on 59eb67aaa / fixed on c1f6e2059 / pre-slice parity byte-identical on the unfiltered FULL-box chain; 23-probe battery green; non-blocking harvest residue: P=2 first-link AT data + the fullbox boxlegB/3link/inner-only probe trio); codex clean ("the pure-spine distinction is propagated consistently and prevents filtered FULL-box-bottomed chains from mixing ordinal and name-model seeds"; suites pass). Three reviewers, three distinct real finds on one slice (the false-discriminator certs, the fork kill, the FULL-box P1) — the multi-gate compounding as designed.
+
+#### FORK SLICE LANDED (2026-07-10, Graefe design-ACK) — FORK spines ORDINALIZE via OWNER-SLOT rooting; the 2d linearity declines RETIRED. Charter: a chained link whose owner is NOT the immediately preceding link (`FROM T4, T4.SARR X, X.SUBSTRUCT Y, X.SUB W` top-fork; `…, X.SUBSTRUCT Y, X.SUBSTRUCT Y2, Y2.DEEP Z` mid-spine fork) now takes the ordinal seed, ±filter, ±AT. **Mechanism (purely translation-side — no executor/birth/window coupling):** `chainedSpineWalk` peels the left-deep unnest-right spine ONCE (bottom-first links + admitted + pureSpine), generalizing ownership from "immediately preceding" to "resolves BY ALIAS to exactly ONE deeper link" — resolved INSIDE the same single walk (Graefe's one-authority requirement); `chainedOwnerElementSlot(links, ownerAlias)` roots the collection at the OWNER's element slot = `len(ordinalLegColumns(owner.join.Left))` — the LAYOUT LAW (pinned per AT-combination in `TestRFC173S4_Fork_OwnerElementSlot`): each link appends [element, AT?], so the element is always the FIRST column its link contributes — invariant under the owner's own AT (ordinal FOLLOWS the element), downstream links (append after), upstream ATs incl. a one-column AT-ONLY link (Graefe's added pin case; parser-unreachable — AS defaults to the last segment — pinned defensively). Slot-EXPLICIT rooting only (the shadowing law). **De-risk (all probes conclusive before code):** dup-owner aliases 42712-LOUD upstream (link/table/case-fold variants — `TestRFC173Fork_DupAliasRejected` pins it; the walk's exactly-one-match arm is DEFENSIVE fail-toward-name-model); layout dumped per AT combination; the SILENT axis reproduced under a linearity-bypass control — disjoint names strand LOUD (ordinal -1), COLLIDING names (E1{SUB2, SS[E2{SUB2}]}) return `[W:100]` SILENTLY (Y's field served for X's) — proving the colliding cert's teeth; consumer sweep: the chained rebase is linearity-AGNOSTIC (ordinalLegType accumulates per spine order; alias-set pushability; seed-form routing). **Controls run at introduction:** (i) full feature-off (walk ownership linear-only + dispatch tip-only) → ALL FOUR fork seed-form pins FAIL (top_fork ±filter, mid_spine_fork, fork_over_full_box_unfiltered); (ii) MIS-ROOT control (tip slot instead of owner slot — the pre-slice bug) → `TestFDB_RFC173Fork_CollidingSubfield/colliding_fork` FAILS with exactly `[map[W:100]]`. **Coupling (Graefe's REQUIRED cert):** fork admission × impure bottom — fork-over-FULL-box + box-leg WHERE declines the WHOLE chain to name-model via the untouched pureSpine arm, pinned white-box (`fork_over_full_box_filtered` → name-model / unfiltered → ordinal) + e2e (`fork_over_box_boxleg_filter` in the FullBoxChainedSpine cert). **Certs:** the 2d fork rows-certs RENAMED (`fork_projection_declines_namemodel` → `fork_projection_ordinalizes` + filtered + a NEW fork straddle `T4.ID=W`→{1,1}); the colliding-schema cert (fork/filtered/straddle {1,2} + the LINEAR mid-element read {100} — owner-slot must resolve Y for `Y.SUB2`, X for `X.SUB2`); the walk unit table extended (genuine_fork_spine admitted-pure-4-links; table_owned_mid_spine + orphan_owner + duplicate_alias_spine declined defensively; full_box rows unchanged). **Fold-ins:** the `spineBase` comment straggler (2d seed test) + the two pre-2d "declines earlier via clusterArity poison" doc-rot comments at the chained rebase — rewritten to the post-fork reality. **Scope unchanged:** box bases, the pureSpine arm, prevEnclosure, EXISTS-over-chained (0AF00 upstream), twin-fork (upstream-rejected, pinned loud). **Endgame accounting:** P1's chained residual narrows to {box-base, FULL-box-filtered, enclosed, defensive !ok} — next: the box-substrate slice (box-base + box-leg-conjunct TOGETHER, axis-coupled de-risk), circular arms last. Reviews: Graefe design-consult ACK (fork-first over box-substrate — risk ordering) + design-ACK finalized on the probe results (dup-owner ruling: decline, minted bindings don't apply — owner resolution is inherently SQL-name-based). 4-gate on the impl HEAD. **FULLY 4-GATED (impl 94f5b1ccc + comments-only ghost-fix e2bf12484):** Graefe impl-ACK (traced the walk directly — one-authority geometry correct, AT-only links excluded as owners, the slot helper "carries the layout law where it lives"; "the controls are the strongest this arc has produced"; "the de-risk-first discipline made the impl almost an afterthought"); @claude ACK (15-probe battery byte-identical parent↔fork on his data; NEW adversarial variants all correct — 3-branch fork, owner-at-first-link under 4 links, AT-dense fork with per-link ordinals; coherence closed by PREFIX-STABILITY — the level-k walk applies the identical ownership predicate over the identical deeper-set, and forward-reference owners are impossible by FROM-order visibility; independent teeth-check: neutering the slot helper in his worktree fails exactly the fork seed-form pins); Torvalds comments-only NAK → ACK on e2bf12484 (five adversarial controls all reproduced — Controls F/F2 prove BOTH feature halves pinned separately, Control G reproduces [W:100] verbatim; the NAK: SEVEN stale chainedBaseOrdinalizes ghosts incl. the walk's own godoc naming its dead predecessor — all rewritten, verified mechanically via -U0 comment-only diff filter); codex clean (fork admission validates ownership + owner-slot rooting preserves seed-safety; the comments delta confirmed docs-only). Unharvested probe extras booked for a future touch: threebranch_fork, fork_owner_first_link_4deep, at_dense_fork row pins, fork_over_fullbox_inner_only.
+
+#### BOX-SUBSTRATE DE-RISK ARC (2026-07-10, Graefe-gated rounds 1-4) — the coarse lifts REJECTED by evidence; Outcome A (the chained AXIS-coupling) LANDED; Outcome B booked with the circular arms. **The empirical chain (every step trace/probe-verified, every wrong theory falsified in-round):** (R1) the channel-2 spike (arm softened + WHERE-merge bake) produced silent-wrong rows ({A.ID:20, B.ID:nil} for WHERE B.ID=20) — initially misattributed to "empty rt.Legs → flat fallback" (REFUTED: a layout probe shows windows ALREADY propagate through chained merged types incl. box bottoms; a prototyped bottom-only propagation BROKE the 2c certs — per-link windows are load-bearing for runtime qualified-name resolution — and was reverted; commit b8441025a's message carries the refuted claim, corrected here and in the hardening pin's HONEST REACHABILITY note: the ordinalSlotInLegWindow multi-alias-without-windows decline is a DEFENSIVE fail-closed law, no currently-reachable shape hits it). (R2) TRUE mechanism, trace-confirmed: the box-leg conjunct takes the LAZY scan-pushable fork ({B} ⊆ outerLegs), leaving a FOREIGN-correlation name read at the merged select — unpushable and unrebaseable by any planner rule, and the runtime bare-name fallback over an ordinal row first-matches across legs (A's slot 0). The name model is safe ONLY because its name-key rebase re-anchors to mergedCorr. (R3) The pureBottom lazy-fork gate (impure-bottom conjuncts always rebase) is CORRECT but INSUFFICIENT: the bake is altitude+slot-correct yet evaluates NULL — the box NLJ is not birthActive (the birth triggers on ContainsBakedOrdinal over the box's OWN result value; a name-model box emits no positional row, and adaptLegPositional's synthesis from the merged multi-namespace box Datum is unfaithful → silent NULL). gather:93 and the seed arm are a COUPLED PAIR (the gather comment says so): lifting either alone recreates the mismatch; lifting BOTH plus the bake STILL fails — two more uncoupled sites gate even the simple class (legIsOrdinalSafe rejects non-INNER legs, rule_implement_nested_loop_join.go:1106; the FULL NLJ is built with sel.GetResultValue() VERBATIM, :166). The null-supply semantics floor HOLDS throughout (padded rows excluded; TestFDB_RFC173_NullSupplyBarrier pins it; the pushdown rules never descend a null-supplying leg — PushFilterBelowJoinRule is JoinInner-only, pushIntoSelect = Java's push-by-translation). A FrontierPinned push-barrier spike proved the logical rules are NOT the mover (plans unchanged) — the relocation is IMPLEMENTATION-time (the below-FOD hoist). **LANDED (Outcome A):** the chained gate now requires `boxOuterBirthsPositional(bottom)` for an IMPURE bottom — the AXIS-1↔AXIS-2 coupling law ("either half alone is broken") extended to the chained path, closing a LATENT UNFILTERED mismatch: a nested outer box (`(A LEFT B) FULL C`) is walk-admitted (arity-1, merge-opaque) but boxGatesFresh-FALSE → pre-coupling the chained seed ordinalized over a box whose first-link translate kept the name-model record → positional reads met a name-keyed row → silent NULL/empty. Pinned: nested_box_bottom_unfiltered/filtered seed-form cases (feature-off control: removing the coupling flips the unfiltered pin to ordinal — discriminating). **BOOKED (Outcome B — the box-substrate ordinalization, sequenced WITH the circular-arm lifts, LAST before the cap):** the executor-birth mapper's 5-site checklist — the enclosure declines (cluster_gate :315/:356), legIsOrdinalSafe non-INNER widening, the FULL-NLJ ordinal-seed build, the arm/pureSpine re-scoping + pureBottom lazy-fork gate + WHERE-merge bake (one coupled commit, none standalone) — plus the below-FOD hoist leg-row rebase gap and the grouped-consumer row-loss (both reachable only under the lift). The executor's positional-birth machinery itself is COMPLETE for FULL boxes (NLJ null-leg births, adaptLegPositional passthrough, layout agreement ordinalLegType ≡ rcOutputType incl. Legs) — the gap is translate/planner coupling, not executor capability. **RECORD AMENDMENT (review round, two independent falsifications of the Outcome-A story):** the "latent silent-NULL" claim was theory #4 to fall — adversarial rows-probes on the PRE-guard tree (both reviewers, independently: 22-probe differential + instrumented seed-build traces) show the nested-outer-box chained tower answers CORRECTLY on every reachable observable (element rows, box-column projections, the null-supplied leg): the cleared-enclosure recursive translate ordinalizes the FIRST link too (the :1565 gate does not consult boxGatesFresh), so the tower is COHERENTLY positional — not mismatched — with dual emission backstopping any residual read. The R3 silent-NULLs came from the SPIKE configuration and were extrapolated to the unfiltered path without a rows probe — the same failure mode as the commit-1 misattribution, repeated. Outcome A therefore lands as what it verifiably is: a CONSERVATIVE COHERENCE GUARD over an UNVALIDATED tower (ordinal-over-non-fresh-gating-box has zero e2e coverage and is excluded from the box slices' verified surface) — the boundary becomes a pinned LAW before the name model (the current backstop) is deleted at the cap, rather than an accident of dual emission that would flip to wrong rows there. The guard comment, the nested_box_bottom pin comments, and this entry carry the honest framing; the null-supply cert's data-comment arithmetic corrected (store holds IDs 1,2,3,11; a buggy pre-join push yields 4 padded rows) and its plan-placement note marked OBSERVED-not-asserted. Reviewer probe harvest: the three nested-box projection shapes land as hard asserts (the wrong-rows tripwire for Outcome B / name-model deletion). **FULLY 4-GATED (b8441025a + 90e9fbe82 + amendment 2095b0ce8):** Graefe impl-ACK → re-confirm on the amended framing WITH OWNERSHIP ("I endorsed theory #4 without demanding the rows-probe… it passed through me too"; NEW STANDING RULE: a "latent bug on HEAD" claim is a rows-probe-plus-trace obligation on the PRE-change tree before it enters a commit record or an ACK — the sibling of the feature-off control; the amended justification is the architecturally SOUNDER one: "the cap deletes the name model behind verified boundaries" not "deletes and hopes"). Torvalds NAK → ACK (his instrumented probes falsified theory #4 — coupling reached via SQL, seed builds coupling-off, rows fully correct incl. the null-supplied leg, the first link ordinalizes too since :1565 never consults boxGatesFresh; resolution (b) verified faithful, zero refuted-claim residue by grep, the six tripwires "the real prize"; "the code was never the problem here — the story was, and now the story is true"). @claude ACK ×2 (22-probe differential parent↔arc byte-identical; the six harvested row sets byte-identical to his battery; "applied faithfully, and improved"). codex clean ×3 (guard coherent fallback; hardening preserves single-alias; the amendment docs-only). Arc totals: FOUR theories falsified (flat-fallback, window-propagation, logical-rule mover, the latent-NULL mechanism — the last countersigned by two gates before falling), THREE revertible spikes, ZERO unsound code shipped, two standing disciplines added (feature-off control; the latent-bug rows-probe obligation), and the wrong-rows tripwire fence around the one unvalidated tower.
+
+#### EXISTS-COMPOSITION COMMIT 1 (2026-07-10, Graefe design-ACK) — the COLLISION MINT: a single-table correlated EXISTS inner is BORN under a unique correlation identity; inner-shadow semantics land LIVE-JAVA-GROUNDED. **The finding (de-risk probes, three-way-discriminating datasets — inner-shadow vs per-outer-row vs FOD-first-row pairwise distinct on every query):** R5o pinned a WRONG-ROWS shared-surface divergence — `FROM MA, MA.ARR AS X WHERE EXISTS (SELECT 1 FROM MA WHERE MA.C < X)` answered per-OUTER-row rows ({12,20,21}) where Java's SemanticAnalyzer.resolveAcrossFragments (innermost fragment first — standard SQL shadowing) binds the inner re-declared MA → X > min(MA.C) → ALL FIVE elements. **Live-verified on the 4.12.11.0 conformance server (RunWithSetup, 10-probe basket, temp spec deleted after pinning): r5o_exact → [10 11 12 20 21]; q1 3-row-ST fixture → [10 200 20 300] (4 excluded — min-C, not exists-nonempty); NOT-EXISTS twin → [4]; nested-colliding-middle → [12 20 21]; multisource-colliding → 3 rows; plain-colliding/controls all inner-shadow.** The polarity split was the airtight core: Go answered the NOT-EXISTS twin CORRECTLY (negation forbids the outer-routing hoist, the conjunct stays under the ∃ and binds inner) while positive EXISTS outer-read the same name — no coherent scoping semantics differs by polarity, so the AMBIGUOUS NAME, not the runtime, was the defect. **Mechanism chain (traced with a temporary executor pred-dump):** buildCorrelatedExists resolves the inner-qualified ref in the inner scope (bare emission, single-source) → qualifyBareFields stamps it with the SQL source name → at the join level the name simultaneously denotes the inner scan and the outer leg → existsInnerScopeCollidesOuter declines the rename (its "capture" rationale is VACUOUS for single-table inners: shadowing makes an outer-intended ref inexpressible from inside the subquery — the DECLINE, not the rename, created the wrong rows; the plain-table twin proves it, the rename path was always correct) → the name-model rebase reinterprets the ref leg-relative → positive-polarity outer-routing pre-filters per outer row. **The fix (Graefe (a): mint decisively over a routing patch — QP-REF-BIND at the birth site, Java's own model):** buildCorrelatedExists mints `strings.ToUpper(UniqueCorrelationIdentifier())` for a single-table catalog inner (multi-source + CTE inners keep the SQL name; the rename path declines them); the SQL alias stays the SCOPE-RESOLUTION qualifier (shadowing preserved) while the scan, qualifyBareFields, and nestedOuterScopes' CorrelationName all carry the minted identity — capture structurally impossible, and existsInnerCorrelation's rename rebases minted→esq.Alias exactly as it did the source name. CONSEQUENCE PAIR from one mechanism: rows flip to Java's (the conformance fix) AND outerBoundAliases(esq.Plan)={minted} never collides → the guard is vestigial for these shapes → the under-EXISTS unnest seed ORDINALIZES (the S4 goal); the traced plan shows both flips — ordinal seed + the correlation conjunct relocated UNDER the FOD (`q$N.C < X.X#3`, minted inner binding + ordinal-baked element slot). **Certs (rfc173_exists_scope_shadow_fdb_test.go — every expectation is the LIVE Java row set):** colliding_unnest rows + PLACEMENT pin (FirstOrDefault(PredicatesFilter(Scan(ST)) — the conjunct under the ∃); NOT-EXISTS twin (the polarity that already worked, pinned against regression); plain-colliding + noncolliding controls (rename-path rows-invariance); noncorrelated-colliding (the mint's no-op boundary, clean path); nested-colliding-middle {12,20,21} (the Graefe-amendment threading cert: the inner-inner's middle-correlation binds the MINTED runtime binding, not the outer leg) + nested-noncolliding-middle (0 rows); R5o REPINNED to the Java rows with the honest history in its comment. **Controls at introduction:** mint neutered → colliding_unnest fails FIRST at the placement pin, and with the placement pin blanked fails on rows with EXACTLY the pre-mint per-outer-row set {200,20,300}; R5o pre-mint fails with {12,20,21} (both directions of the repin discriminate). **Fixture law learned the hard way (recorded so it isn't relearned):** the first probe fixture put OT's pk at 1 — colliding with ST's pk 1 across record types in the shared store extent — OT's save silently OVERWROTE ST row 1 and all four "wrong rows" observations were CORRECT answers on the clobbered store; a full false-alarm round (incl. a master-worktree comparison) burned before the executor trace showed R1 never scanned. Probe fixtures MUST use pk-disjoint ranges across record types. **Booked follow-ups:** (commit 2, separate per Graefe (b)) clean-path guard narrowing (JoinPredicate==nil && safeToRename — rows already correct, model-flip only); (commit 3, Graefe (c)) multi-source colliding inners LOUD-decline 0A000 (Java answers 3 rows — live-verified — Go still per-outer-row; interim correct-or-loud, mint-per-leg booked as the conformance gap to close); buildCorrelatedScalar carries the same capture class for correlated scalars (sibling mint, own probe first); Go lacks Java's array-constructor literal (`INSERT … [10,200]` → 0A000 unsupported-atom — a reach gap found by the live probe); the Case-2 nested hoist (middle-only-EXISTS) leaves an inner-inner middle-ref dangling — pre-existing, unchanged by the mint, needs its own probe. **ROUND-1 GATE RESULTS on 179412762 + the round-2 corrective:** Graefe impl-ACK ("the birth-site identity fix, correctly scoped"; the unplanned dupalias-fallthrough flip reviewed and endorsed as "the mint working as principle #10 predicts — exactly how a sentinel retires"; one rec: pin the NOT-EXISTS twin of the fallthrough — landed round 2). @claude ACK (17-probe differential battery parent↔commit, cert-identical fixture; non-colliding rows-invariance byte-identical; **BONUS FIND: NOT EXISTS around the NESTED colliding pair was ALSO wrong pre-mint** — parent [] → commit {10,11}, Java-grounded by complement and then LIVE-verified round 2 — so the round-1 record's "NOT EXISTS was already correct pre-mint" was TWIN-ONLY, corrected here and in the mint's code comment; quoted-lowercase alias shapes fail 42703 identically both sides — pre-existing upstream limitation, no mint exposure). Torvalds narrow comments-only NAK (substance fully verified incl. all three controls reproduced under his hand and the three-way dataset recomputed; the NAK: THREE stale-mechanism comments describing the pre-mint world as current — the unnestExistsScopeCollision field doc citing the exact R5o query as its living example, the guard godoc missing its post-mint vestigial-for-single-table surface, the existsInnerCorrelation godoc presenting the collision story as the current contract — plus the cert header's MA pk IDs contradicting the fixture; ALL FOUR fixed round 2). codex (gpt-5.6-sol ultra) P2 REAL FIND: **a QUOTED SQL alias can legally spell `"Q$N"`** — a raw mint colliding with a visible outer alias would silently rebind that alias's references to the inner scan, with results depending on the process-global counter (planning history). Fixed round 2: `mintDistinctUpper(visible, next)` — mint-until-distinct against every visible name (outer scopes' Alias+CorrelationName + the inner SQL alias), injectable counter for deterministic unit pins (mint_distinct_test.go: skip-on-collision, case-folded collision, production-counter postcondition); e2e `qdollar_quoted_outer_alias` pin (live Java [5]). Round-2 cert harvest, all LIVE-Java-grounded via a second one-shot probe basket: notexists_around_nested_colliding {10,11} (the bonus-find pin), nested_colliding_shared_id_col all-5 (the shared-ID axis), qdollar_quoted_outer_alias [5], the dupalias NOT-EXISTS fallthrough twin (answers 20 — the complement row; Graefe's polarity rec). @claude's triple-nested and remaining battery extras live in his kept review worktrees for commits 2/3. **ROUND-2 GATES (5d3ff856b): FULLY 4-GATED** — Graefe re-ACK (closure argument completed by name-source enumeration: outer Alias/CorrelationName cover user sources + enclosing mints + dup-alias ids; sibling/translate-time mints separated by the monotonic counter; CTE lookups keyed by table name; one comment ask — state esq.Alias is a distinct generated namespace — landed in commit 2); Torvalds ACK (all four NAK items verified faithful; his Control J: neutering the mint's skip loop flips three unit pins red; "the e2e qdollar pin is honestly scoped — a rows-level collision pin would have been theater"); @claude ACK (17-probe battery zero deltas vs 179412762 as predicted; dup-alias Q$DUP corrNames and nested mints verified in/safe from the visible set; unnest element aliases covered via unnestVirtualScopeSource; ONE residual, non-blocking: an ALIASED outer CTE leg is dropped from outerScopes by addSrc's silent resolve-failure arm, so its quoted alias escapes visible — booked); codex clean ("collision-avoidance covers the visible alias and correlation namespaces; retry and case-folding validated").
+
+#### EXISTS-COMPOSITION COMMIT 2 (2026-07-10) — the CLEAN-PATH GUARD NARROWING (Graefe disposition (b)): existsInnerScopeCollidesOuter now SKIPS an esq whose JoinPredicate is nil AND whose plan existsInnerSafeToRename re-identifies — the clean-build colliding class (`EXISTS (SELECT 1 FROM ST WHERE ST.C < 50)` / `EXISTS (SELECT 1 FROM ST)` under a colliding unnest) stops forcing name-model and ORDINALIZES. Soundness: no cross-scope predicate exists to mis-serve, the plan's internal refs are self-contained (built by the full planner without outer scopes), and existsInnerCorrelation rebinds the FOD under esq.Alias (a generated name no SQL leg shares) — the runtime interface is collision-free even though the plan's SOURCE alias equals an outer leg's. Rows are MODEL-INVARIANT here (already correct pre-narrowing) — the flip is seed-level, pinned WHITE-BOX by TestRFC173_ExistsGuardNarrowing (direct guard cases: nilpred+safe+colliding skips; pred-carrying colliding counts; nilpred+rename-declined join plan counts; non-colliding never counts) with a feature-off control at introduction (skip arm neutered → EXACTLY the skip pin fails, conservative pins stay green). e2e: cleanpath_nowhere_colliding (all 5, live-Java) + the existing colliding_noncorrelated rows pin. Also in this commit: triple_nested_colliding cert (live-Java 0 rows — the three-level composition; @claude's battery shape, grounded fresh per the standing discipline); the mint's visible set folds p.cteScopes names (the cheap half of @claude's residual — an unaliased CTE leg's name can no longer escape) with the ALIASED-CTE-leg half booked (it is really the outer-CTE-leg scope-registration gap, the same family as the derived-table registration fix; correlated refs to such legs die 42703 today); Graefe's esq.Alias distinct-namespace note landed in the mint comment. **COMMIT-2 GATES (19726db83): FULLY 4-GATED** — Graefe ACK (the three-layer soundness argument: nil JoinPredicate removes the CARRIER, clean-build self-containment, esq.Alias rebinding; "the narrowing admits only the shape where all three layers hold"); Torvalds ACK (Control K: skip neutered → exactly the skip pin red, package failure count confirms zero blast radius; independently traced the skip's reachability closure — correlated nil-pred esqs are minted so never arrive colliding); @claude ACK (four-axis differential battery: flipped-class rows-invariance ×4 variants, polarity, conservative join-inner boundary; found + three-commit-classified a PRE-EXISTING LOUD reach gap: TWO sibling EXISTS over a lateral unnest fail to plan — booked below); codex P2 round 3 (REAL, the third real find this slice): **esq.Alias itself was never collision-checked against user SQL names** — any counter-consuming change (the mint's own skip loop!) SHIFTS which quoted-"Q$N" queries hit the alignment, regressing a VALID query (`WITH "Q$1" … AS "Q$3" … EXISTS`) to a loud best-expression planner failure, history-dependent.
+
+#### EXISTS-COMPOSITION COMMIT 3a (2026-07-10) — SUBQUERY-ALIAS distinct minting (codex round-3 P2): ALL THREE subquery binding mints (BuildExists esq.Alias, BuildScalar, correlated-scalar) route through mintSubqueryAlias = mintDistinctIdentifier(visibleScopeNames(), UniqueCorrelationIdentifier) — the same skip law as the inner-correlation mint, so NO generated identity in the planner can ever equal a user-visible SQL name (outer Alias+CorrelationName + CTE registry names; the inner-correlation mint adds the inner SQL alias on top; visibleScopeNames extracted as the one authority). mintDistinctUpper refactored onto mintDistinctIdentifier (the identifier-preserving core — esq.Alias keeps its case; unit pin identifier_form_preserves_case_and_skips). e2e sentinel qdollar_cte_counter_shift (codex's exact shape, live Java {10,20,4}): quoted "Q$1" CTE + "Q$3" unnest alias + EXISTS must plan and answer REGARDLESS of counter state. Live-grounded in the same basket: the multi-EXISTS-over-unnest reach gap Java-side — Java ANSWERS both (constant-true pair → all 5; correlated pair → {10,20}) → booked as a shared-surface parity item (TODO (f)); Go fails loud (best-expression), pre-existing, orthogonal. **3a GATE ROUND:** Graefe ACK with OWNERSHIP ("I certified one direction of a two-directional invariant" — the standing lesson: closure arguments are stated over the INVARIANT, "no generated identity equals a user-visible name," never per-identity; his sibling-exclusion closure argument landed in the visibleScopeNames comment: the SET covers scope-chain co-occurrence, counter MONOTONICITY covers generated-vs-generated). @claude ACK (34-probe battery byte-identical; quoted-Q$ scalar twins verified at multiple offsets; stacked quoted aliases clean; raw-mint audit — cascades_generator.go:1935 match-candidate space correctly out of surface; NEW pre-existing flag booked as TODO (h): uncorrelated scalar-in-projection silent-NULL + internal-mint-label leak in the column name, contradicting the scalar-in-WHERE booking's projection-position claim — Java-probe first). Torvalds NAK ×2 + codex P2, CONVERGENT ON THE SAME FIND: **the 3a commit shipped WHOLESALE ENCODING CORRUPTION** — TODO.md (~2600 lines) and the flagship cert's comments (29 lines) double-encoded to mojibake incl. C1/NEL control chars, tests green because SQL/rows are pure ASCII, and the commit message called it "parser-regen churn" WITHOUT LOOKING. Root cause found: `perl -0pi` with `\x{NNNN}` wide-char escapes in the replacement upgrades the entire slurped string to wide-char and re-encodes every existing UTF-8 byte on write — the twice-ignored "Wide character in print" warning IS the corruption alarm. STANDING RULE: never edit files containing non-ASCII with perl replacements carrying wide chars (or ignore that warning); use the structured Edit tooling; and READ THE DIFF before describing it — a 2600-line delta described as churn is a record failure regardless of green CI. Torvalds' second driver: the w4b in-tree quantifier mints (rfc173_w4b_clustered_outer.go:149/:673) live in the same expression-tree namespace as user correlations with no out-of-surface argument — booked as TODO (g), the translator-side half of the namespace law. CORRECTIVE (this commit): both files restored from the 19726db83 blobs with the substantive edits re-applied cleanly (the (f) booking, the counter-shift sentinel pin); (g)/(h) booked; the two-mechanism closure comment landed. CORRECTIVE GATES (d1daa3c32): Torvalds ACK (byte-level: zero mojibake, UTF-8 clean, substantive edits intact; "both drivers closed at the root"); codex clean ("correctly restores corrupted UTF-8 content, no runtime change"). The 3a substance was byte-untouched, covered by the standing Graefe+@claude ACKs on 40709dbc4.
+
+#### EXISTS-COMPOSITION COMMIT 3b (2026-07-10, Graefe disposition (c)) — the MULTI-SOURCE SCOPE-AMBIGUITY DECLINE: an UNMINTED multi-source EXISTS inner whose join predicate references a leg name that REUSES an outer FROM name now declines LOUD (0A000 CorrelatedExistsError "scope-ambiguous") instead of answering per-outer-row rows. Structural detection at buildCorrelatedExists AFTER the outer-only split: GetCorrelatedToOfPredicate(rest) ∩ fullInnerAliases ∩ outerAliases ≠ ∅ → decline; gated to len(sq.joins)>0 (minted single-table inners never enter — their inner refs are Q$N). Parent-fallthrough refs cannot false-positive: in a multi-source scope a shadowed parent hit already dies at plan time (CorrelatedShadowError 42703, the dupalias variant-(2) pin), so a surviving intersection ref is inner-bound by construction. Certs: multisource_colliding_declines — the q5 shape pins the 0A000 as the FORWARD SENTINEL (Java live: 3 rows — the pin flips to Java rows when mint-per-leg lands and the conformance gap closes); multisource_noncolliding_answers — the no-over-fire control, CORRELATED ON AN OUTER TABLE COLUMN so it genuinely reaches the fallback's multi-source arm ([50,50], live-grounded fresh; the first control draft correlated on the ELEMENT and died upstream in the pre-existing multi-table-FROM-referencing-element 0AF00, never reaching the decline — the control was redesigned rather than pinned as a false discriminator). Feature-off control at introduction: decline neutered → EXACTLY the sentinel fails ("planned OK instead" — i.e. the pre-decline path reached the wrong-rows runtime), the no-over-fire control stays green. This closes the slice's disposition: single-table inners MINTED (inner-shadow semantics, ordinalize), clean-path inners NARROWED (ordinalize), multi-source colliding inners LOUD (0A000 sentinel), mint-per-leg booked as the remaining conformance reach item. **3b GATE ROUND:** Graefe ACK ("disposition (c) executed precisely; the false-positive argument is what makes this sound rather than merely safe"); Torvalds ACK (reach-INSTRUMENTED: exactly 2 arm entries across the cert — the sentinel and the control; Control N verbatim; independently traced the case split incl. inner-only conjuncts on colliding names being coverage, not over-fire); @claude ACK (the decline also converts TWO MORE parent-side silent-wrong shapes to loud — the q5 NOT-EXISTS twin, parent [50,50] vs Java-implied 0, and the first-leg-collides variant, parent [50] vs Java 3 — both harvested as pins; the unreferenced-colliding-leg shape answers correctly on both sides, so NO decline-scope gap: an unreferenced leg is only an iteration variable, no read exists to be ambiguous; ON-only collisions die upstream in the TODO-(f) family). codex TWO REAL FINDS, fixed in the 3b-fix commit: **(P1) the nested-EXISTS branches returned BEFORE the decline** — a colliding multi-source inner with a nested constant-true EXISTS bypassed the guard entirely (Case 1 assigned the ambiguous non-EXISTS pred as the join predicate → one outer-dependent row where Java answers 3, live-verified); the check now runs on the FULL walked predicate BEFORE the nested branches (Case 2's hoist covered by the nested planner's recursive check), tail check removed (one authority, rest ⊂ pred). **(P2) the decline tested DISPLAY aliases** — under a minted middle (Alias MID, CorrelationName Q$N) only Q$N binds at runtime, so an innermost leg re-declaring MID cannot collide, yet the display-name test 0A000'd a base-planning valid query; the outer set is now the ACTUALLY-BOUND names (CorrelationName when present, else Alias). 3b-fix certs, all live-Java-grounded fresh: multisource_colliding_nested_bypass (0A000; Java 3), multisource_colliding_notexists (0A000; Java 0 — the polarity harvest), multisource_colliding_first_leg (0A000; Java 3 — the leg-position harvest), minted_middle_local_shadow_answers ([50] — the P2 regression un-done). Feature-off control: moved check neutered → the colliding sentinels fail ("planned OK instead"), the minted-middle and no-over-fire controls stay green. **3b-FIX GATE ROUND (b23450347):** Graefe ACK with ownership (the nested bypass passed his site-blessing — new ledger rule: verifying a check site means verifying it is ON EVERY PATH, not just semantically placed; named the 3a-dependency: the P1 equivalence argument holds BECAUSE generated identities are mint-law collision-proof — 3a is load-bearing for 3b; booked the name-set roles refactor). @claude ACK with a cert-quality catch: the landed minted_middle pin does NOT discriminate P2 — its innermost is NON-correlated, clean-builds, and never reached ANY form of the decline (it answered [50] on the parent too, so **the 3b-fix commit message's "0A000'd a query that planned at the base commit" is FALSE for that shape** — corrected here; the record stands corrected in this entry since the pushed message cannot be amended). Torvalds NAK (narrow, converging): his Control P — display-alias set restored inside the new placement — left the ENTIRE cert green, proving the bound-name fix shipped with no reachable discriminator; his attributed reach probe showed the minted-middle shape never enters the arm; and the truly-correlated variant dies loud upstream in the multi-EXISTS composition gap. codex round 5 (real): the moved check scanned the UNSIMPLIFIED predicate — a constant-foldable ref (`COALESCE(1, a.id) = 1`) that never survives to the join predicate tripped a false 0A000 the tail-era check accepted. **CORRECTIVE (3b-fix2, this commit):** (1) the decline extracted into scopeAmbiguousName(pred, innerLegNames, outerScopes) and the call site checks SimplifyPredicateValues(pred) — same placement, foldable refs eliminated first; (2) TestScopeAmbiguousName pins the set semantics DETERMINISTICALLY (ordinary-leg collides / minted-middle display NOT bound / Alias fallback / non-inner never counts / the fold composition WITH TEETH — the unsimplified form still detects, proving the simplify step is what admits foldables); Control-P reversion (display-alias comparison) flips EXACTLY the minted-middle case red; (3) the false-history comment on the minted_middle pin rewritten to honest scope (the shape never reached any check; no reachable answers-vs-decline shape for the display-alias over-fire exists today); (4) the CORRELATED minted-middle variant pinned as the honest ERROR-CLASS discriminator (parent: false 0A000 scope-ambiguous; now: the pre-existing loud best-expression reach-gap error — flips to rows when the composition gap closes); (5) the middle-JOIN-LEG scope gap (nestedOuterScopes carries only the primary) booked into the (e) scope-registration family; (6) the outerBound-vs-outerAliases cross-reference and the 3a-load-bearing note landed in the comments; (7) the name-set roles refactor booked as TODO (i).
+
+#### EXISTS-COMPOSITION 3b-FIX3 (2026-07-10) — the CASE-1 ANTI-JOIN POLARITY GUARD (codex round 6, real P1): a Case-1 nested-EXISTS middle routes its OUTER-ONLY conjuncts through esq.JoinPredicate — and the semi-join OUTER-ROUTES them, valid for positive polarity (P ∧ ∃(Q) ≡ ∃(P∧Q)) but computing P ∧ ¬∃(Q) under NOT EXISTS where ¬∃(P∧Q) is due: EVERY ¬P outer row silently dropped (live-verified: the non-colliding shape returns [] where Java answers {11,12}; PRE-EXISTING — reachable through any non-colliding multi-source middle with an outer-only conjunct + nested EXISTS; the 3b-fix2 fold admission merely opened one more door). **The inside placement CANNOT fix it:** both mechanisms tried (an inner filter layer; folding into the exists-filter's predicate) die at physical planning — the multi-EXISTS best-expression family (TODO (f)) — while the leak path PLANS (wrong rows). Polarity is unknown at build time, so unconditional inside placement would regress the PLANNING, previously-CORRECT positive class to loud. **The fix is polarity-scoped across the two layers that each know half the story:** the BUILDER flags the leak at its source (ExistsSubquery.OuterOnlyJoinConjuncts, set by Case 1's split-detect and propagated through the Case-2 hoist), keeping positive routing byte-identical; the TRANSLATOR — where polarity is known — declines LOUDLY (declineNegatedOuterOnlyEsq: negated marker × flagged esq → 0A000) at all four esq-consuming sites (buildExistentialSelect, buildExistentialJoinSelect, translateJoinWithExists, the ON-lift path defensively). Certs, live-Java-grounded fresh: case1_notexists_noncolliding + case1_notexists_colliding_foldable (0A000 sentinels; Java {11,12} recorded — flip when (f) closes); case1_exists_positive_answers ({11,12} — the no-regression control: positive outer-routing is a genuine equivalence and keeps answering). Feature-off (guard neutered) → exactly the decline pins fail "planned OK instead", the positive control stays green. Also in this commit: the four 3b-fix3 seam pins from the review harvest (foldable_colliding_answers 3 rows / nonfoldable_colliding_declines — the e2e twin of the unit fold-teeth pair, both live-grounded). The guard-integrity law (Graefe): this round bought the POLARITY dimension explicitly — PATH × FORM × NAMESPACE × POLARITY; an outer-routing equivalence claimed by a guard is polarity-conditional and must be pinned on both sides. Graefe's refinement (his ACK): PATH/FORM/NAMESPACE are integrity conditions on the guard's INPUT; polarity is the VALIDITY DOMAIN of the transformation the guard permits — every algebraic equivalence a routing decision relies on has a domain, and the guard must check membership (generalizes past EXISTS: outer-join simplifications and aggregate pushdowns share the structure). **3b-fix3 GATE ROUND (585d9d6ee): Graefe ACK, Torvalds ACK (Controls S+T; consumer sweep closed; wantDecline-message nit), @claude ACK (Case-2 hoist verified with a real parent-side kill; HAVING no-gap via the :4620 blanket rejection; mixed-conjunct + true-outer-only boundary confirmed); codex round 7: THREE MORE REAL FINDS, fixed in 3b-fix4 (this commit):** (P1a) the flag under-covered — splitOuterOnlyConjuncts deliberately keeps REFERENCE-FREE conjuncts (`1 = 0`, parameters) in rest, yet they outer-route all the same → the polarity hazard via constants escaped the flag; the flag test is now hasNonInnerConjunct (anything not referencing an inner source). (P1b) PROJECTED EXISTS bypassed the guard entirely — the synthesized filter's Predicate is nil and the polarity lives in a NotValue inside the RESULT VALUE; and the projected-POSITIVE control then caught a THIRD pre-existing silent-wrong: outer-routing FILTERS THE ROW STREAM, but a projected boolean must never filter rows (live: Go 0 rows where Java emits (id,false) pairs) — so the value-side guard declines a flagged esq referenced by ANY result value in BOTH polarities (the P∧∃ equivalence licenses outer-routing only for WHERE consumption under positive polarity — the CONSUMPTION MODE is part of the validity domain, alongside polarity). (P2) the decline emitted 0AF00 where the documented contract says 0A000 — ErrCodeUnsupportedOperation now. Certs live-grounded fresh (5-query basket): case1_notexists_reffree + case1_notexists_mixed + case2_hoist_notexists (decline sentinels, Java {11,12} each), projected_notexists_flagged + projected_exists_flagged (decline sentinels; Java (11,true),(12,true) / (11,false),(12,false) recorded for the flips). Controls: Control-U (outer-only-based flag restored) fails exactly the reffree pin; Control-V (both value-guard sites neutered) fails exactly the projected pins; the join-flatten site proved to be the live route for projected shapes (the first single-site Control-V left the cert green — the control itself was corrected to cover both sites). Riders: Torvalds' wantDecline message interpolates wantSub; the :4620 HAVING comment future-proofs the fifth-consumer wiring; TODO (j) books Graefe's one-outer-routing-authority consolidation.
+
+#### EXISTS-COMPOSITION 3b-FIX5 (2026-07-10) — the TAUTOLOGY over-decline (codex round 8, real P2) + the round's doc/test debts. **The find:** hasNonInnerConjunct flagged EVERY reference-free leaf, but a statically-TRUE conjunct (`1 = 1`) outer-routes as a NO-OP — flagging it regressed semantics-neutral queries that planned correctly on the base (the NOT/projected guards then 0A000'd them). Fix: a non-inner leaf flags only if it can actually FILTER — a fully-constant comparison (IsConstantValue both sides) that Evals to TriTrue is skipped; statically-FALSE and non-static leaves stay flagged (a routed FALSE drops every outer row — the reffree sentinel's class). e2e: case1_notexists_tautology_answers (live Java 0 rows — the middle ∃ is non-empty — and Go must keep ANSWERING, not decline). **THE GUARD-DERIVATION RULE (Graefe, verbatim): the guard's coverage set must equal the TRANSFORMATION'S movement set — never a classifier's convenience set.** P1a was flagging from splitOuterOnlyConjuncts' classification; the tautology fix refines to the transformation's HAZARD set (moves AND filters). **THE VALIDITY-DOMAIN TABLE (Graefe requirement; @claude's six-cell matrix, verified empirically exact on live probes):**
+
+| consumption × polarity | positive | negative |
+|---|---|---|
+| WHERE | VALID — answers (P ∧ ∃(Q) ≡ ∃(P∧Q)) | DECLINE 0A000 (would compute P ∧ ¬∃(Q)) |
+| ON (lift path) | VALID — answers | DECLINE 0A000 |
+| projected | DECLINE 0A000 (outer-routing filters the row stream; a projected boolean must not) | DECLINE 0A000 |
+| HAVING | (kept out of the surface by translateAggregate's blanket HavingExistsSubqueries rejection — empty cells waiting; wire declineNegatedOuterOnlyEsq if ever narrowed) | (same) |
+
+Statically-TRUE conjuncts are outside the hazard set in every cell (routing TRUE is a no-op). The table lives in the OuterOnlyJoinConjuncts field doc (operators.go) as the discoverable authority. **Torvalds' 3403252cb NAK items, all landed:** the projected-positive cert comment rewritten to the true story (it was the pre-widening draft asserting "must not fire" two lines above its own wantDecline — the control CAUGHT the third silent-wrong and the comment now says so); the falsified field doc replaced with the matrix; TestHasNonInnerConjunct pins the classification deterministically (9 rows: inner/outer/contradiction/tautology/mixed-AND/inner-plus-tautology/OR-atomic both directions/nil). @claude's 3403252cb ACK verified the fold+flag composition (a PURELY reference-free `1=0` folds away pre-flag and answers correctly on both sides — the reachable hazard is the mixed composition, which the sentinel pins) and the full six-cell matrix parent↔commit.
+
+#### EXISTS-COMPOSITION SLICE — CLOSED, FULLY 4-GATED on bcfff218c (2026-07-10). Final round: Graefe ACK (the hazard-set fixpoint adopted — movement ∩ semantic-effect; fail direction verified: the skip only narrows over-declining, never widens under-flagging; "done being surprising"); Torvalds ACK (Control Y flips exactly the contradiction row — the boundary is control-exact; one safe conservatism recorded: all-constant OR tautologies stay flagged, over-decline direction); @claude ACK (four-edge static boundary incl. the `1+1=2` fold composition and his constructed non-static `OT.K = OT.K` value-tautology — NULL-sensitive, correctly stays declined; 68-probe battery byte-identical outside the tautology class); codex clean ("the tautology exemption is limited to row-context-independent comparisons that evaluate to TRUE, preserving the guard for filtering predicates"). **SLICE TALLY — 12 commits (179412762 → bcfff218c), 8 gate rounds, every round a real find: FOUR shared-surface silent-wrong classes fixed (the R5o inner-shadow divergence; the Case-1 WHERE-negative leak; the Case-2 hoist leak; the projected row-stream filtering) + one loud-regression class fixed (the tautology over-decline) + two identity-namespace hazards closed (the mint collision, the esq.Alias counter-shift) + one encoding-corruption incident caught and reversed. Every decline is a forward sentinel with live Java rows recorded; every guard is control-verified in both directions; the durable artifacts are the guard-integrity law (PATH × FORM × NAMESPACE × validity-domain[polarity × consumption-mode]), the guard-derivation rule (hazard set, not classifier convenience), and the collision-proof identity model. Booked residuals: mint-per-leg (the conformance reach gap, sentinels flip when it lands), the (e) scope-registration family, (f) multi-EXISTS composition planning, (g) w4b translator-side mints, (h) scalar-projection silent-NULL, (i) name-set roles refactor, (j) one-outer-routing authority, @claude's non-static boundary e2e pin (outer_ref_taut_still_declines — unit-covered today via the classification table's conservative arm).** Next: the remaining P2 producers (EXISTS-in-ON, N-way WHERE-EXISTS) per the S4 roadmap.
+
+#### P2 N-WAY WHERE-EXISTS — ATTEMPTED (commit A) then REVERTED (Graefe ruling): a HARD WALL found; a new PREREQUISITE slice booked (2026-07-10).
+Commit A (d6164dc62 + fixups 7045a3908 + docs 0dd9e9777, all on feat/rfc173-s4) retired the arity-2
+narrowing so a comma / N-way `FROM a,b,c WHERE EXISTS(…)` was born FLAT `[ForEach×N, Existential]` ordinal
+instead of the name-model 2+1. It was CORRECT on every row axis (all pins green, live-Java-grounded) and
+fully four-gate-reviewed — Graefe impl-ACK, Torvalds/@claude/codex NAKs all addressed (derived/opaque-box
+leg + LIMIT/DISTINCT exist-inner regressions fixed via scan-family + existInnerFoldSimple N-way narrowings;
+P4b regrounded). **But codex P1#2 (confirmed by EXPLAIN diff, NOT the row-parity phantom I first mis-called
+it) exposed a plan-quality regression: the born-flat existential fold CROSS-PRODUCTS
+(`NLJ(NLJ(A,B),C)`+top-filter) where the name model got a correlated INDEXED join
+(`FlatMap(Scan(C),FlatMap(Scan(B),indexScan(A)))`).** Graefe BLOCK: not a cost detail — the fold plans
+legs in isolation with nil join predicates and is structurally incapable of the correlated index probe;
+PartitionSelectRule permanently declines the existential select, so the cross-product is the sole memo
+member; the atomic cap forces every N-way WHERE-EXISTS through this fold.
+
+**THE WALL (confirmed by Graefe + an Option-B prototype).** The prescribed fix — a 2-level hoist so the
+inner `[ForEach×N]` reaches PartitionSelectRule+index-matching — was prototyped (translation-time 2-level;
+SelectMergeRule supplies the flat form; verified inverses). It gave CORRECT ROWS but STILL cross-products:
+`implementExistentialSelect`'s ordinal branch rebases the existential's buried-leg correlation
+(`e.eref=a.id`) via `ordinalSeedLegWindowsOf(planResultValue(outerPlan))`, which recognizes ONLY the
+pristine ordinal-seed RC — the CROSS-PRODUCT's row. An INDEX-matched box (nested FlatMaps) flows a different
+row shape → the ordinal rebase fails closed, leaving only the cross-product box for the fold; the name-model
+branch needs a NAME-keyed merged row = the very producer being retired. **Producer-retirement and
+existential-index-matching are MUTUALLY EXCLUSIVE under the current fold: the name model indexes precisely
+because it resolves buried refs BY NAME over an index-matched box; the ordinal fold can only rebase against
+the ordinal-seed (cross-product) row.**
+
+**RULING: REVERT commit A (done — restores the name-model indexed plan exactly, no cost regression, the
+producer stays; the 2-leg/consolidation parts were byte-compatible no-ops).**
+
+**>>> SUPERSEDED — GRAEFE FEASIBILITY RULING (2026-07-10): the booked "ordinal-fold-over-index-matched-box"
+enhancement is NOT ACHIEVABLE and NOT NEEDED; the correlated-index EXISTS name path is PERMANENT and
+JAVA-CORRECT. <<<** The deeper post-revert windowing recon (confirmed at 4 code sites) showed the index-matched
+box is name-keyed BY NECESSITY: the correlated index scan `Scan(A,[=b.aid])` requires NAME binding to flow
+the sibling comparand into A's index (`correlatedStep1` at rule_implement_nested_loop_join.go:1973 IS the
+SARG signal; `buildCorrelatedFlatMapPlan` :449 passes the name-model RC through with NAMED correlations;
+`foldStep1Seed` :1244 returns gated=false the instant correlatedStep1 is set). Baked positional `ofOrdinal`
+refs cannot resolve against a name-keyed row; re-birthing the box ordinal BREAKS the SARG. **The "ordinal
+twin of name resolution over an index-matched box" IS name resolution** — the two are irreconcilable at the
+row level, not fixable by better window recovery. Graefe's RULING — Option (a), ~0 net code: the
+correlatedStep1 name path is PERMANENT and Java-correct (Java binds EVERY correlation by name — no
+positional-correlation concept; the ordinal seed is a Go-only optimization for the INDEPENDENT-legs
+materialized-NLJ case). Rejected (b) positional index-matching (no Java analog); rejected (c) accept the
+cross-product (discards the index where it matters MOST). **CONSEQUENCE — THE ATOMIC CAP (task #16) IS
+RE-SCOPED: it CANNOT delete NewAnchoredJoinRecord entirely. The correlated-index existential shape (a common
+textbook semijoin) KEEPS the name model, correctly. The cap deletes the name model ONLY for shapes that do
+NOT need name binding (independent-legs materialized joins); the correlatedStep1 name path survives as
+Java-correct, not a shortfall.** Pinned: TestFDB_RFC173_CorrelatedIndexExistsStaysIndexed (EXPLAIN asserts
+the SARG'd `[=]` index scan + correct rows) — the permanence sentinel; trips if a future producer-retirement
+re-ordinalizes this shape and drops the index. The "HARD PREREQUISITE for the cap" framing below is
+WITHDRAWN — there is no prerequisite; there is a permanent Java-correct name path.
+
+The historical booking (now withdrawn):
+BOOKED — a dedicated slice
+"ordinal-fold-over-index-matched-box": teach `ordinalSeedLegWindows` to recover the merged positional
+layout from an INDEX-MATCHED box plan (walk the pushed-down FlatMap, not just the RC), so the buried-ref
+rebase bakes ordinals over the box's actual planned output — the ordinal twin of the name-model
+`rebaseOuterLegRefsToMerged`, lockstep-verified against `finalizeSeedWindows` (the c5a drift sentinel). A
+few-hundred-LOC executor enhancement + pins, on the order of the W4-left existential work. This slice is a
+HARD PREREQUISITE for the atomic cap (the cap deletes the name model, routing every N-way WHERE-EXISTS
+through this fold; without it the cap ships the cross-product universally). **DURABLE LESSONS: (1) row-parity
+is NOT plan-parity — a reviewer's plan-shape claim demands an EXPLAIN diff, not a rows-only differential (I
+nearly banked a false "phantom"). (2) producer-retirement is not free where the producer's NAME resolution
+is load-bearing for a downstream optimization (here index matching); retiring it needs the ordinal twin of
+that resolution BUILT FIRST — a general S4 hazard for the remaining producers, not a one-off.** EXISTS-in-ON
+(commit B) is UNAFFECTED (it composes over the same fold but was never started); it waits behind this
+prerequisite only insofar as it would hit the same wall for its N≥3 chained-ON shape.
+
+#### P2 POST-REVERT RECON (2026-07-10, two read-only agents) — the prerequisite is DEEPER than the scope ruling framed; the tractable slice is 2-way EXISTS-in-ON.
+**(A) The index-hoist prerequisite is a research problem, not a few-hundred-LOC enhancement.** The windowing
+recon: the FlatMap box node (GetOuter/GetInner/GetOuterAlias/GetInnerAlias/leaf GetResultType) carries
+enough structure to RECONSTRUCT an alias→offset,width window map (add a FlatMap arm to
+`planBuriedLegConcat`, mirroring its NLJ arm) — BUT the recovered windows describe a positional layout the
+box DOES NOT PRODUCE. The index-matched box's runtime row is a NAME-MODEL row (qualified `"A.ID"` keys),
+because the correlated index scan `Scan(A,[=b.aid])` REQUIRES name binding to correlate `b.aid` into A's
+index (`buildCorrelatedFlatMapPlan` passes the name-model RV straight through; `foldStep1Seed` returns
+gated=false for any correlatedStep1 precisely because "a correlated FlatMap binds legs by NAME, where a
+baked seed hits BakedNameContextError"). So baking `ofOrdinal(mergedQOV, offset+idx)` refs would not resolve
+against the box's name-keyed runtime row. To make it work you must re-birth the box as an ordinal seed AND
+get the executor to bind it positionally — which is EXACTLY the wall `correlatedStep1` gates OFF. **The
+"ordinal twin of name resolution over an index-matched box" is essentially name resolution itself** — the
+indexed box is name-bound by necessity, and the ordinal fold fundamentally needs positional. These are
+irreconcilable at the row level. CONSTRAINT ON THE CAP: the atomic cap cannot ordinalize the
+existential-over-buried-index-correlation shape without losing the index; either the cap KEEPS a
+name-resolution path for that specific shape, or it accepts the cross-product there. Escalated to Graefe.
+**(B) The tractable producer slice: 2-way EXISTS-in-ON** (`a JOIN b ON EXISTS(…)`, producer 2's EXISTS
+residual). Two top-level scan legs + one existential — NO buried inner join, so the wall (buried-leg
+correlation + N-way cross-product) structurally cannot arise. Ordinalizing routes to
+`implementJoinWithExistential`'s 2-leg arm, which is ordinal-capable AND index-preserving (a leg-to-leg
+correlated index join takes `correlatedStep1`; `outerValRefsBuriedLeg` never fires — no buried alias). The
+only work is narrowing the gate's `:278` OnExistsSubqueries poison to fire only for ENCLOSED or N-way
+EXISTS-in-ON (the ≥3-quantifier-partition hazard the poison actually guards); a non-enclosed 2-way gates
+ordinal. **DE-RISKED (the commit-A lesson applied — EXPLAIN diff, 2026-07-10):** the base (name-model) 2-way
+EXISTS-in-ON is `FlatMap(NLJ(INNER,[1 preds],Scan(B),Scan(A)), exists)` — NOT indexed; the existential's
+presence ALREADY drops even a 2-way join from the indexed `FlatMap(Scan(B),TypeFilter(Scan(A,[=])))` (the
+plain-join plan) to a plain NLJ, on the name model itself. So there is NO index to lose (unlike N-way, where
+the BURIED inner box indexed). The 2-way WHERE-EXISTS (already ordinal on HEAD) has the byte-identical NLJ
+plan — confirming ordinalization preserves it. CLEAN. (Prototype the ordinalized plan and EXPLAIN-diff it
+against this base NLJ before landing, to confirm no drop to a cross-product.)
+
+**LANDED (2-way EXISTS-in-ON producer retirement).** A single targeted gate narrowing in
+ordinalWedgeGateDecide (rfc173_cluster_gate.go:278): a BARE 2-way NON-ENCLOSED INNER EXISTS-in-ON
+(both legs a single SCAN SOURCE through filters — `isScanFamilyLeg`, the F2-LEFT tight check — not
+enclosed) GATES ordinal. **`clusterArity==1` is NOT sufficient (Torvalds catch, empirically probed): a
+FULL-outer box AND an aggregate/union/sort box are also clusterArity==1 + ordinalEligible, but a FULL box
+HAS a buried join (the wall) + a null-drain and an opaque box flows a merged row the scan-scan 2-leg seed
+is unverified over — isScanFamilyLeg excludes all of them.** translateJoin's binary arm ALREADY builds the ordinal seed when gated (:4885) and ALREADY
+attaches the OnExists existentials (:4915), so NO new builder is needed — the narrowing alone routes the
+shape to the ordinal seed, retiring buildJoinResultValue (producer #2) for this shape. The poison STAYS for
+enclosed (rides into ≥3-quantifier partition) and N-way (the buried-inner-box index-matching wall)
+EXISTS-in-ON. EXPLAIN-verified NO regression: base and ordinalized plans are byte-identical
+`FlatMap(NLJ(INNER,[1 preds],Scan(B),Scan(A)), exists)` (the existential already drops even a 2-way join to
+a plain NLJ on the name model, so no index is lost). Pins: the existing exists_in_on FDB row pins (unchanged
+— dualwindow-blind to a name-model revert, so retirement is pinned STRUCTURALLY) + TestRFC173S4_ExistsInOnGate
+(bare-2-way gates / enclosed-stays-poison / N-way-stays-poison, both directions). Producer #2's residuals
+after this: the enclosure declines (lift atomically at S4) + N-way EXISTS-in-ON (the deep wall).
+**GATE-ROUND fixes (four-gate on 48402600f): Torvalds NAK — clusterArity==1 admitted FULL/aggregate box
+legs (a FULL box has a buried join + null-drain; empirically probed to gate) → tightened to isScanFamilyLeg
+(scan-through-filter only). codex P1 (silent-wrong) — a DUPLICATE-ALIAS scan pair (`p a JOIN q a ON … EXISTS`)
+passes isScanFamilyLeg (both scans) but the 2-leg fold LOSES the later leg's parser-minted Q$DUPn binding →
+silent NULLs; the gated arm returns before the pairwise dup-binding poison → added
+`mintedBindingLeg(j.Left,j.Right)==""` so a dup-alias falls to the name-model loud decline (0AF00, base
+behaviour — verified). Graefe IMPL-ACK (his FULL-box exclusion reasoning was the error Torvalds caught);
+@claude ACK (all 6 row/plan axes RAN live-Java clean, incl. the dup-column-window disambiguation and the
+EXPLAIN no-index-lost diff). Poison pins added: full_box/aggregate/dup_alias stay poison, both directions.**
+**codex ROUND 2 (delta P1, another silent regression): a CTE-BACKED leg whose body is a JOIN passes
+isScanFamilyLeg (a bare LogicalScan of the CTE name) but resolves through cteScope to an N-way join → the
+cross-product/index-matching wall. The `clusterArity==1` check I had REMOVED (Torvalds called it "dead")
+catches exactly this — clusterArity is cteScope-AWARE and returns the body's arity (≥2). So the final
+predicate needs BOTH `isScanFamilyLeg` (excludes FULL/aggregate boxes, which are clusterArity==1) AND
+`clusterArity==1` (excludes CTE-backed joins, which are isScanFamilyLeg-true) — neither alone is sufficient;
+clusterArity==1 is LOAD-BEARING, not dead (the "dead code" call was wrong because the CTE case was
+untested). Pin added: cte_backed_join_leg_stays_poison. Final gate predicate:
+`JoinInner && !enclosed && isScanFamilyLeg(both) && clusterArity(both)==1 && mintedBindingLeg==""`.**
+**Graefe ROUND 2 (NAK — a FOURTH cell): the isScanFamilyLeg + clusterArity==1 pair still leaked a
+CTE-name leg whose body is an OPAQUE BOX (aggregate/union/sort) — the box is clusterArity==1 AND
+isScanFamilyLeg is cteScope-BLIND (sees the bare scan), so it slipped both. The arity side-check only
+patched the CTE-JOIN (arity≥2) sub-case. ROOT-CAUSE FIX (Graefe + Torvalds both pointed here, principle 10 —
+fix the cause not a downstream observable): a SINGLE cteScope-AWARE predicate `scanFamilyLegCteAware` that
+resolves a CTE-name scan THROUGH cteScope and checks the BODY is a bare scan — covering FULL/aggregate
+boxes, N-way join legs, CTE-backed joins AND CTE-backed opaque boxes in one place. clusterArity==1 DROPPED
+(subsumed). Final predicate: `JoinInner && !enclosed && scanFamilyLegCteAware(both) && mintedBindingLeg==""`.
+Pin added: cte_backed_aggregate_leg_stays_poison. FOUR real regressions found across this one gate change's
+review (FULL-box leak, dup-alias silent-wrong, CTE-join, CTE-opaque-box) — a strong four-gate validation.**
+**codex ROUND 3 (a FIFTH edge): the cteScope-aware predicate's delete-during-walk (copied from
+clusterArity) mishandled SAME-NAME CTE SHADOWING — `WITH c AS (SELECT * FROM c)` shadowing an outer join:
+deleting the scope entry resolved the inner `c` to the BASE TABLE (→ scan-family → over-gate), whereas
+translateScan resolves it to the OUTER shadowed binding via cteShadowStack. FIX: walk the body under
+`inCTEDefiningScope` (the SAME cteShadowStack mechanism translateScan/legColumns use), so classification is
+in lockstep with translation for the shadow case too. Pin: cte_same_name_shadow_stays_poison (gates under
+delete, poison under inCTEDefiningScope). Graefe IMPL-ACK (verified nested/CTE-chain resolution + the
+cteExprScope safety tightening); Torvalds ACK (root-cause not downstream; 2 nits fixed: the gate comment
+doc-rot narrating the retired isScanFamilyLeg, and the F2-LEFT booking). **FIVE real regressions on one gate
+narrowing — the four-gate discipline at its most load-bearing; none caught by a green 55/55 suite or my own
+reasoning.** **SLICE CLOSED — FULLY 4-GATED on a542ffee7 (2026-07-10): Graefe IMPL-ACK (scanFamilyLegCteAware
+in lockstep with translation for all CTE cases incl. shadow), Torvalds ACK (root-cause not downstream;
+doc-rot + duplicated-block fixed), @claude ACK (all 6 row/plan axes RAN live-Java clean, carries through the
+tightenings), codex clean ("aligns scan-family CTE resolution with the translator's lexical shadow-stack
+behavior"). 5 commits (48402600f → a542ffee7). Producer #2 (buildJoinResultValue) retired for the 2-way
+EXISTS-in-ON shape; its residuals are the enclosure declines (lift atomically at S4) + N-way EXISTS-in-ON
+(the deep index-matching wall). Booked: F2-LEFT's isScanFamilyLeg is cteScope-blind (same class — verify
+silent-vs-reach).** **PRODUCER MATRIX:** P1 (legColumns:347) = name-
+derivation helper, retires with the nested residuals of P2/P3, not standalone. P2 (buildJoinResultValue:727)
+= (i) 2-way EXISTS-in-ON RETIRABLE-NOW, (ii) enclosure declines lift atomically at S4 (circular, the
+forceOrdinalSpike certificate models it). P3 (buildUnnestResultValue:1673) = BLOCKED on W5
+(multi-source-cluster ordinalization) — its Explode is never index-matched but its residuals feed the
+multi-source reorder + partition-rule GROUP BY. P4 (NewReEnumerationAnchoredRecord, partition_select
+:469/:567) = BLOCKED on W4b clusterPullUp (correlated scalar) + W5 (multi-source unnest); NOT the
+existential wall — its ordinal twin `positionalMergeCase` ALREADY EXISTS, it's just starved of ordinal
+seeds. So the remaining producers split: 2-way EXISTS-in-ON (now), P3/P4 (W5/W4b gate-ordinalization
+prerequisites), and the N-way existential-over-indexed-box (the deep wall in (A)).
+
+#### NEXT PRODUCER SLICE — W5 unnest-residual decline-lifts (recon 2026-07-10). The W5 gathered-unnest
+machinery (translateGatheredUnnestCluster, rfc173_w5_unnest_gather.go:51; executor rfc173_ordinal_join.go)
+is MERGED and live — `FROM A,B,A.arr AS x` / `FROM A,A.arr,B` already ordinalize. buildUnnestResultValue
+(producer P3, cascades_translator.go:1660) fires ONLY on the FAIL-OPEN declines inside the gather:
+box-leg WHERE conjunct (:93-95 unnestOuterConjunctOnBoxLeg), owner-window-missing (:110-113/:153-155),
+degenerate no-AS/no-AT (:247-249), and the exists-unsafe MULTI-alias outer (unnestExistsSeedSafe,
+cascades_translator.go:905-914). **CORRECTION (verified against the decline sites, NOT just the recon summary): these are NOT trivial
+decline-lifts — each residual is declined for a REAL correctness reason, not a fail-open-that-would-just-work.**
+The box-leg WHERE conjunct (:93-95) is guarded because an opaque box leg exposes NO per-leg window → a
+positional gather leaves the merged `A.col` conjunct unresolvable (`ordinal -1`, malformed plan); lifting it
+needs the box-leaf WINDOWING (the c5a/c5b class), not a one-line gate change. owner-window-missing
+(:110-113) is a genuinely untranslatable leg. So the tractable-W5 framing is qualified: retiring P3 for the
+box-leg/multi-segment shapes needs the buried-leaf windowing slice (the completion work booked on
+feat/rfc173-item3 — confirm/port to feat/rfc173-s4), and the exists-unsafe multi-alias residual stays
+name-model by the permanent-wall ruling. The recon's "one decline-lift" applies only to any residual that
+declines PURELY for arity/enclosure (a circular symptom that lifts at S4), not to these
+windowing/untranslatable ones. **CLEAN on the index axis (no wall):**
+a lateral unnest has NO correlated index scan (its collection is ofOrdinal(QOV(owner), FieldIndex(ARR)) —
+a read into the owner's own row, exploded by RecordQueryExplodePlan over an in-memory array; the outer comma
+legs are cross-products). So there is no index to lose (EXPLAIN-provable, array_unnest_ordinality pins).
+**CARVE-OUT: the exists-unsafe multi-alias residual (`FROM t, t.arr AS v WHERE EXISTS(…)`) is the ONE
+sub-class that CAN correlate into a buried leg → it touches the PERMANENT wall and stays name-model by the
+correlatedStep1 ruling above.** LEVERAGE: W5 progress retires P3 AND simultaneously peels the
+multi-source-unnest feeder off P4's anchored arm (NewReEnumerationAnchoredRecord) — its ordinal seeds
+already route to the ready positionalMergeCase (rfc173_positional_merge.go). W4b-clusterPullUp (the
+correlated-scalar NESTED-leg poison, rfc173_cluster_gate.go:487/:635) is DEFERRED — a booked structural
+rework (per-row apply the flat concat + positionalMergeCase's flat merge row cannot host), not a
+decline-lift. Each W5 decline-lift is a full four-gate slice: EXPLAIN-verify no plan change (the commit-A
+lesson), rows + white-box gate pins, red-first.
+
+**THE PRECISE REMAINING-SLICE LIST (S4 deep-read, the actionable roadmap).** A name-model leg is
+name-model because a name-model PARENT set `inInnerCluster`, tripping one of the THREE enclosure
+poison gates in `ordinalWedgeGateDecide` (rfc173_cluster_gate.go): (154) `!ordinalEligible(leg)` —
+"a leg contains a name-model join"; (167) `kind!=Inner && inInnerCluster` — "outer box enclosed in a
+name-model parent"; (208) `inInnerCluster` (inner) — the inner enclosure guard. All three comments
+say verbatim the residency "retires at S4… this guard dies with" the name-model parents. An
+UN-enclosed LEFT/RIGHT/FULL box already GATES (:187/:206); an un-enclosed inner cluster gates. So the
+anchored branch dies when `inInnerCluster` is NEVER set — i.e. when the parents that set it are all
+ordinalized. Those parents are a FINITE, enumerable list — the `inInnerCluster = true` sites (verified at HEAD:
+:1074, :1991-defer, :2908, :3033, :3850, plus the CONDITIONAL :4291-join and :4539-flatten which set
+`!gated`; :5060 recursive already lifted). Per-site retire-condition VARIES (nuance, not a uniform
+lift):
+  - :5060 recursive body — ✅ the enclosure IS lifted (R1: the body ordinalizes, sub-joins classify).
+  - :3850 correlated-scalar — the SEED producer is retired (R3) BUT this site still sets the enclosure
+    for the OUTER's own translation (a correlated-scalar outer is legitimately name-model-enclosed);
+    whether that residual enclosure still forces a real box name-model needs its own analysis — it is
+    NOT simply "done."
+  - **:1074 unnest** — the non-gathered name-model unnest parent (R2 ordinalized the GATHERED
+    multi-source + aggregate cases; this is the residual).
+  - **:2908 / :3033 existential** — `buildExistentialSelect` (S4 commit 2 zeroed the projected-EXISTS-
+    over-join :698 producer; these are the remaining existential-flatten enclosure setters). **SCOPED
+    (c5a-session): BLOCKED, not a clean lift.** :2908 is now `buildExistentialJoinSelect:3009`, :3033 is
+    `translateProjectOverExistsFilter:3134`. S4 commit 2 already retired their SCAN-LEG residency at the
+    EXECUTOR (`legIsOrdinalSafe`/`reconstructFoldStep1Seed`, "no translator change — scan legs are
+    positional-capable regardless of enclosure"). What the two enclosures still carry is EXACTLY the two
+    follow-ons commit 2 booked: (a) BURIED GATED-BOX legs (`legIsOrdinalSafe` rejects a join leg → the
+    name-model `:698` fallback runs, kept correct by the enclosure) — blocked on BURIED-LEAF WINDOWING
+    under the fold seed (the SAME wall as c5a's clustered-leg FULL box / c5b); (b) CORRELATED folds —
+    blocked on the F2 name-binder wall (`BakedNameContextError`, reverted twice). No cheap
+    conditional-lift like commit 4's `existsOuterGatesFresh` — `buildExistentialJoinSelect` FLATTENS the
+    join into a name-model `ForEach(left)+ForEach(right)` builder, so lifting requires the builder to
+    ADOPT an ordinal seed (a producer-#2 slice). Sequence AFTER buried-leaf windowing (c5b) lands.
+  - **:4539 flatten** — the existential/outer flatten builder's enclosure (`!gatedFlatten`). Per the
+    c5a-session scoping, `:1074` (non-gathered unnest) and this `:4539` are the more tractable NEXT
+    clean slices than :2908/:3033 (which consume buried-leaf windowing first).
+  - **BURIED-LEAF WINDOWING under a seed is the shared high-leverage prerequisite (c5b).** c5a's
+    clustered-leg FULL box AND :2908/:3033's buried-gated-box residency both wait on ONE piece: concat a
+    gated-box leg's BURIED-LEAF columns into the positional seed + resolve a qualified buried ref
+    (`a.col` where `a` is inside `(a JOIN b) t1`) by its leaf `[Start,Width)` window (reuse the
+    channels-1+2 per-leg-window rebase + the R2 gathered box-leg buried-leaf qualification — don't
+    re-derive). Landing c5b unblocks multiple enclosure sites at once.
+  - :4291-join is the join site itself (Graefe refinement 1 — the anchored `else` branch), not a
+    separate parent.
+Each site is ONE producer-#2-style slice: ordinalize that parent's seed (positional + named-projection
+wrap where an anchored consumer reads it), pin rows + memo-identity + EXPLAIN + the existential pins,
+four-gate it. When every `inInnerCluster` setter's name-model residency is retired, the three
+enclosure guards never fire → every box/cluster gates → :4402/:4650 is unreachable → producers #3+#4
+are dead → the atomic cap (task #16) deletes NewAnchoredJoinRecord / NewReEnumerationAnchoredRecord /
+the name model. That is the whole remaining RFC-173 endgame — a concrete per-site worklist (verify each
+site's residual empirically, since some, like R3's :3850, are partially retired already), not a
+gate-theory question.
+
+### NEXT SLICE — :2908/:3033 projected-EXISTS buried-gated-box ordinalization (design-ACK'd direction, re-scoped)
+> **SUPERSEDED by the REVISED DESIGN at the end of this section.** The "port buried-leaf windowing to the
+> fold for a bare INNER gated-box leg / three-part flip" direction below was ACK'd, then INVALIDATED by
+> implementation (corrections #1 and #2): an INNER box is mergeable, so it FLATTENS into the fold (it has no
+> opaque leg to window); the windowing is an opaque-OUTER-box mechanism with no fold entry. The actual
+> mechanism is the N-WAY FLAT EXISTENTIAL GENERALIZATION — see the REVISED DESIGN. The windowing prose below
+> is kept for the audit trail (it explains WHY the pivot happened) but is NOT the mechanism to build.
+c5b landed buried-leaf windowing, which was the sequenced prerequisite for this slice. Empirical residual
+map (verified against the code, not the stale line refs): :1074 unnest residual is largely BLOCKED (its
+tractable-looking multi-source INNER case is the NAME-AMBIGUOUS bare-twin — shared leg columns trip the
+gathered path's name-ambiguity decline — which waits for the S4 compose direction); :3850 correlated-
+scalar is largely RETIRED (`translateClusteredOuterScalar` ordinalizes every multi-table outer). So
+:2908/:3033 is the correctly-sequenced next slice.
+
+#### LANDED (2026-07-08, Graefe design-ACK) — `:4051` (`:3850`, `translateProjectWithCorrelatedScalar`) enclosure producer RETIRED. The former single `t.inInnerCluster = true` under a `defer` conflated TWO architecturally distinct positions (Graefe split them): the OUTER (`p.Input`) and the correlated-scalar INNER (`csq.InnerPlan`). Principled form landed (not a blanket `=false`): the OUTER now INHERITS `prevEnclosure` (the force deleted — only a single-source or ungated outer reaches this path; a buried-join/multi-source outer is `clusterArity≠1` and declines LOUDLY 0AF00 regardless of the flag, so the force had no observable effect, and forcing `=false` would be a latent wrong assertion when the whole project is itself a name-model leg); the INNER now roots a FRESH cluster via `translateSubqueryRef` (a correlated-scalar subquery is NEVER merged into its parent — same class as the EXISTS inner — so it gates on its own arity, not the outer enclosure; this makes the two never-merged-subquery classes consistent and removes the defer's outer/inner conflation for good). De-risk: outer decomposition byte-identical `=true` vs the lift (single/plain-join/derived-single outer correct; derived-JOIN outer `0AF00` — the reach gap). INNER certificate (the blind spot Graefe caught — my outer decomposition held a plain-table inner): inner-JOIN scalar and inner-aggregate-over-JOIN answer CORRECT values (`[[100 7][200 NULL]]`) with the inner rooted fresh; StrictSingle still `21000` on a 2-inner-row scalar; an inner WHERE-EXISTS declines at the FRONT-END (`0A000`, no SubqueryPlanner) so the inner-EXISTS `:2467` enclosed-gather reader is not reachable via this path. Full suite 55/55. Certificate pinned in `sqldriver/rfc173_s4_4051_cleanlift_fdb_test.go`. Producer count: one fewer `inInnerCluster` setter toward the atomic cap. (The `translateSubqueryRef`-inner + outer-inherit form IS the principled end-state Graefe specified, so no follow-up booking is needed beyond the shared `inInnerCluster`→downward-parameter refactor already booked for `:3234`.)
+
+#### LANDED (2026-07-08, Graefe design-ACK) — `:3234` (`:3033`, `translateProjectOverExistsFilter`) enclosure producer RETIRED as a CLEAN LIFT (`t.inInnerCluster = true` → `= false`). The de-risk below invalidated the prior "flatten-enabling conditional" design; Graefe then traced the flip's DIRECTION and ACK'd the lift because the enclosure was the SUPPRESSOR of the correct path, not its protector. For an ENCLOSED multi-source lateral-unnest derived body with a spanning conjunct (`FROM A, A.arr AS x, B WHERE x = B.bk`), `=true` SUPPRESSED translateFilter's enclosed-gather rotation (`:2211`'s `!t.inInnerCluster`) → spanning conjunct on an unbound element → silent-0; `=false` FIRES the rotation → the gathered path that the DIRECT (non-wrapped) form already answers correctly (CONTROL `[X=7]`). Today the derived-wrapped projected-EXISTS shape is discarded by the `0AF00` CTE-carrier reach gap (byte-identical either way — the certificate below), so clearing is safe now AND correct-direction when the gap closes. Certificate + forward sentinel pinned in `sqldriver/rfc173_s4_3234_cleanlift_fdb_test.go` (CONTROL `[X=7]` invariant + the `0AF00` decline that TRIPS when the reach gap closes, forcing the author to confirm the gathered rows). BOOKED (Graefe condition 3): the genuine decouple of `:2211`'s caller-contextual read is retiring the mutable `inInnerCluster` field for a downward enclosure-context parameter (Volcano required-property style, ~15 threading sites) — a separate architectural refactor, NOT a producer-retirement blocker; no clean local tree predicate exists (a filter's "merge leg vs fresh root" is caller state, not subtree-derivable). Producer count: one fewer `inInnerCluster` setter toward the atomic cap.
+
+#### EMPIRICAL FINDING (2026-07-08) — the `:3234` (`:3033`, `translateProjectOverExistsFilter`) residual is NOT the flatten-enabling conditional the design hypothesized; it is a CLEAN-LIFT candidate over a SEPARATE `0AF00` reach gap. A prior design pass proposed a `:2908`-style conditional (`existsDerivedLegBirthsPositional`: clear the enclosure for an identity/star derived body over a bare-INNER cluster so `SelectMergeRule` flattens the CTE body into the fold → positional seed). A `forceOrdinalSpike` dual-run de-risk (probe in `pkg/relational/conformance/ordinalspike/`) **invalidated the premise**:
+- The target shape `SELECT c, EXISTS(…) FROM (SELECT * FROM a JOIN b …) d [WHERE …]` declines `0AF00` ("Cascades planner could not plan query") in **BOTH** spike states (OFF=name-model, ON=whole-gate ordinal). So `:3234`'s enclosure is **not what blocks it**, and the hypothesized flatten **does not fire** under ordinalization — the design's must-verify-#1 is empirically FALSE.
+- Decomposition (spike OFF): every ingredient plans **alone** — derived-over-join with no EXISTS `[[1 7][2 8]]`; projected-EXISTS over a plain table `[[1 true][2 false]]`; projected-EXISTS over a plain JOIN (the `:2908` arm) `[[1 true][2 false]]`; projected-EXISTS over a derived-**single**-table `[[1 true][2 false]]`. Only the **combination** projected/WHERE-EXISTS over a derived-over-**JOIN** `0AF00`s. That `0AF00` is a distinct REACH gap (the existential fold's generic path over a `LogicalCTE` carrier does not flatten the buried join), orthogonal to name-model demolition.
+- Clearing `:3234` (`t.inInnerCluster = false` probe) left the FULL suite 55/55 and the decomposition rows byte-identical (`0AF00` unchanged for the derived-over-join shape; s1/s3 still correct) — so it reads as a CLEAN LIFT (producer retirement, no new enablement), NOT the `existsDerivedLegBirthsPositional` conditional (there is nothing to enable). **Open before impl (Graefe design-ACK required):** (a) prove the enclosure is truly non-load-bearing across EVERY `f.Input` shape, not just the CTE carrier — a `LogicalProject`/`LogicalFilter`-over-join `f.Input` that escapes `translateOp`'s opaque-cut is untested and could be load-bearing (positional-seed-flattened-into-name-model-fold hazard); (b) decide whether the derived-over-join `0AF00` is booked as a separate read-side reach extension. The `existsDerivedLegBirthsPositional` predicate + the SQL-shape pin list from the prior design are RETAINED for that reach-gap slice, not this one.
+
+**Design correction (Graefe design-ACK): the load-bearing work is in the EXECUTOR, not the translator.**
+The projected-EXISTS fold `buildExistentialJoinSelect` (cascades_translator.go:3027) passes a name-model
+`resultValue` through; the ordinalization happens in the executor — `foldStep1Seed`
+(rule_implement_nested_loop_join.go:1159) REPLACES the name-model RC with `reconstructFoldStep1Seed`'s
+positional `step1RV`. So this is NOT a translator-resultValue flip (my initial framing was wrong); it is a
+THREE-PART coupled flip spanning the translator↔executor boundary:
+  1. **Translator AXIS 1** (buildExistentialJoinSelect): clear `inInnerCluster` at the leg `translateRef`
+     (:3073/:3078) ONLY for a bare gated-box leg, so that leg's PLAN births positional (ordinal-capable),
+     not a name-model plan the executor can't seed.
+  2. **Executor seed production — THE LOAD-BEARING NEW WORK** (not a c5b reuse): widen `legIsOrdinalSafe`
+     (:1084, today scan-family only, `default→false` on any JOIN/FlatMap leg) to ADMIT a bare gated-box
+     leg plan — mirror c5b's bare-vs-wrapped distinction (`legExposesBuriedOuterBox`/`hasWrappedBuriedJoin`)
+     as the PLAN-level analog (admit a bare nested join, exclude a wrapped/OUTER box); and extend
+     `reconstructFoldStep1Seed` (:1120, today a flat scan-per-leg `ofOrdinal` run with NO `rt.Legs`) to
+     emit the BURIED-LEAF-WINDOWED seed for a gated-box leg — port c5b's `buriedLegBounds` windowing to the
+     plan level so the leg's concat carries `rt.Legs` windows.
+  3. **Executor rebase — REUSED** (the only clean c5b reuse): `ordinalSeedLegWindowsOf(step1RV)` (:2052)
+     + the below-FOD exist-pred hoist (:2057+) already resolve a buried exist-pred ref positionally by its
+     `[Start,Width)` window ONCE the seed carries them.
+
+**Mirror `translateJoinWithExists` (the :4655 `gatedFlatten` sibling), NOT c5a's unnest arm.** :4539 =
+`translateJoinWithExists` is a DISTINCT, ALREADY-FLIPPED builder (WHERE-EXISTS-over-a-join) that already
+does the coupled flip (`gatedFlatten = ordinalWedgeGateDecide(j).Gated`, `inInnerCluster = !gatedFlatten`,
+ordinal seed via `buildOrdinalJoinResultValue`) over the SAME executor. It is the REFERENCE to mirror, not
+a residual to close; its own `!gatedFlatten` residual (arity≠2 N-way / existential-alias collisions) is
+separately blocked. c5a's unnest path is a DIFFERENT executor arm — `implementJoinWithExistential`
+explicitly declines explode legs (:1803) and defers to `translateUnnestExistsFilter`.
+
+**Two-site certificate.** The coupling predicate and B1 certificate SPAN the translator↔executor boundary
+(logical `LogicalOperator` AXIS-1 vs physical `RecordQueryPlan` seed production) — they cannot be one Go
+function. Pin an INVARIANT enforced at two sites with a red-first test that toggling EITHER gate alone
+reddens (mirroring the c5a/c5b `ClusteredBoxSeedsOrdinal` / `OuterConjunctCoupling` coupled-flip
+discipline). Skipping the executor half strands a translator-flipped positional box-leg plan under a
+`foldStep1Seed` that still declines (gated=false → name-model step-1 over a positional plan) — the exact
+positional-seed-under-name-model mismatch the whole c5a/c5b chain kept hitting.
+
+**F2 wall (correlated folds, sub-class b) stays declined — enforced in the executor.** `foldStep1Seed`
+gate (1) is `!correlatedStep1` (:1160; a correlated FlatMap binds legs by name → `BakedNameContextError`,
+reverted twice on that wall). The translator AXIS-1 gate MUST MIRROR the executor's
+`correlatedStep1`/ordinal-safe/independent-legs condition, or it births a positional box leg under a fold
+the executor declines → strand.
+
+**Sequencing (Graefe steer):** (1) executor seed-production widening LEADS — the shared wall both
+existential builders hit; the translator flip is inert without it. (2) INNER buried-box FIRST.
+**EMPIRICAL CORRECTION to the initial premise** (characterized against the code, not assumed): the INNER
+buried-box projected EXISTS `SELECT p.v, EXISTS(…) FROM (p JOIN q) JOIN r` DECLINES cleanly (0AF00) TODAY
+— it does NOT produce name-model rows. The buried box plans fine OUTSIDE a fold and a scan-leg fold works
+(commit 2), but the fold over a NON-SCAN leg has no ordinal seed (legIsOrdinalSafe rejects the JOIN leg)
+AND no name-model fallback in the fold path → decline. So it is a REACH-GAP ENABLEMENT (Java folds and
+answers `[[10 true]]`; Go declines), same family as the LEFT buried box but WITHOUT null-extension — NOT a
+demolition of a working name-model producer. The oracle is therefore (a) the dual-window cross-agreement
+`ordinal == name-model` on the PRODUCED ordinal plan (it validates that reading the reconstructed
+positional seed by ordinal windows equals reading it by name-model qualified keys — a property of the
+ordinal plan, so it needs NO separate name-model plan and is available despite the e2e decline) for SEED
+NAME-KEY-FAITHFULNESS, plus (b) Java 4.12.11.0 rows for CORRECTNESS. INNER-first still holds (no
+null-extension → strictly simpler than LEFT), but the risk is HIGHER than "pure demolition with a built-in
+row oracle" — there is no Go name-model row baseline; correctness rests on Java + the dual-window layout
+certificate. Pinned as a reach-gap decline sentinel today (rfc173_s4_buriedbox_inner_exists_fdb_test.go).
+**EMPIRICAL CORRECTION #2 (the buried-leaf-windowing design does NOT apply to an INNER box — it FLATTENS).**
+An implementation attempt (executor `legIsOrdinalSafe`/`reconstructFoldStep1Seed` widening + translator
+AXIS-1 enclosure lift) revealed, via instrumentation, that once AXIS-1 un-encloses a bare INNER box leg so
+it births ordinal, `SelectMergeRule` FLATTENS it into the fold — the fold SelectExpression becomes a
+4-quantifier `[ForEach, ForEach, ForEach, Existential]` (p, q, r flat), NOT the opaque
+`[ForEach(box), ForEach(r), Existential]` the buried-leaf-windowing design assumed.
+`implementJoinWithExistential` handles EXACTLY 2 ForEach legs + 1 Existential, so the 4-quantifier flatten
+is unmatched → no plan → 0AF00 (the same decline, deeper cause). ROOT: an INNER box is NOT merge-opaque
+(unlike c5a/c5b's FULL/OUTER boxes, which stay one quantifier BECAUSE `SelectMergeRule` cannot merge an
+outer join); the buried-leaf windowing (`.Legs` sub-windows on an OPAQUE box QOV) is inherently an
+OPAQUE-box mechanism. So the slices are MIS-PARTITIONED: the ordinalized INNER buried box is the **N-WAY
+FLAT FOLD** (`≥3 ForEach + Existential` — the `:4539` `translateJoinWithExists` N-way residual Graefe noted
+as "separately blocked: arity≠2"), which needs `implementJoinWithExistential` GENERALIZED to N legs; the
+buried-leaf windowing applies to an OUTER (opaque) box leg (the `:2908/:3033` case proper). This FLIPS the
+tractability read: the OUTER/opaque box (windowing, stays 3-quantifier) is the more direct slice; the INNER
+box (flattens → N-way) requires the N-way fold generalization. The impl attempt was reverted; the finding
+stands. Re-scoping pending Graefe design steer. (3) LEFT buried-box FOLLOW-ON —
+closes the :3043 `0AF00` reach gap (Java answers `(a JOIN b) LEFT JOIN c` under projected EXISTS), higher
+value + higher risk: needs NULL-EXTENSION in the reconstructed seed (the null-supplying leg NULL-filled;
+c5b's nested-LEFT-in-INNER proved the executor null-supplies through the positional birth) and has NO Go
+name-model oracle (it's `0AF00` today) → validate against Java 4.12.11.0 directly, not a dual-window
+differential. (4) FULL/RIGHT stay declined (buildExistentialJoinSelect:3032, implementJoinWithExistential
+:1780 — a FULL semi-join can't carry the drain). Java-alignment note: Java keeps both source aliases in a
+SINGLE FlatMap and resolves leg refs by NAME (Go's two-level NLJ→FlatMap is the divergence), so the
+ordinal seed is a Go-side positional adaptation of the two-level split, not a Java construct — Java
+confirms the ROWS the fold must produce, not the mechanism; the correctness anchor is the cross-agreement
+(ordinal == name-model/Java rows), which is why INNER-first (oracle available) is the proving ground.
+
+#### REVISED DESIGN (the actual mechanism — Graefe re-scope, re-ACK pending): N-WAY FLAT EXISTENTIAL GENERALIZATION
+> **LANDED at `bc54d6300`, four-gate CLOSED** (Graefe impl-ACK + @claude + Torvalds + codex). Plus the
+> executor FOUNDATION `76985b2be`, which is **LIVE and LOAD-BEARING — NOT dormant** despite its commit
+> message: the N-way fold's left-deep chain reads each accumulated-inner box through EXACTLY the plan-level
+> buried-leaf windowing that commit added (`planBuriedLegConcat` / `legIsOrdinalSafe` NLJ arm /
+> `reconstructFoldStep1Seed` `.Legs`). **GRAEFE CORRECTION (must-not-lose): the pivot's claim below — "no
+> `.Legs` windowing for the fold / windowing retracted / stays on the opaque-OUTER-box path" — was WRONG.**
+> The user's INNER box flattens (no single opaque leg), but the left-deep 2-ary NLJ chain creates its OWN
+> accumulated-inner boxes that DO need `.Legs` sub-windows to split the buried legs into flat `P,Q,R` windows
+> over the top merged row. Graefe's ORIGINAL three-part-flip (executor windowing) was the accurate design; the
+> pivot over-corrected. A future reviewer must NOT delete `76985b2be` as "dead/dormant code" — it is the
+> foundation the chain wires. `implementNWayJoinWithExistential` plans the `[ForEach×N, Existential]` fold via
+> the recursive left-deep chain below; sentinel 0AF00→rows, discriminating pin `[[7 true],[8 false]]` (guards
+> last-leg-wins), NOT-EXISTS pin `[20]`, 4-leg discriminating pin (depth-3 windowing), red-first two-site
+> coupling verified, full suite green. Closes the projected-EXISTS fold AND the WHERE-EXISTS arity≠2 residual.
+> codex P1 (correlated JOIN-inner EXISTS silent-wrong) fail-closed; the PRE-EXISTING 2-leg twin is filed
+> (Known gaps) as a scheduled high-priority follow-on. **[RESOLVED afterward at `de5354139` — the proper
+> fix (enforce the inner ON under correlation) landed FRONT-END in `buildCorrelatedExists`, not the fold
+> arm; a correlated inner-JOIN EXISTS routes name-model by the permanent wall and never reaches
+> `implementJoinWithExistential`, so the fold-arm twin was UNREACHABLE, not unfixed. Re-verified on s4
+> across 8 shapes; pinned in `TestFDB_CorrelatedExistsJoinOnEnforced`.]** OUTER buried box (FULL drain /
+> LEFT null-extension) remains deferred.
+The windowing direction above is CORRECT for the fold (Graefe correction — see the LANDED banner: the
+pivot's "retracted" was wrong; the chain's accumulated-inner boxes use it). Verified against the code:
+`SelectMergeRule` merges
+INNER/CROSS but NEVER outer (`rule_select_merge.go:81` gates on `!sel.ChildrenAsSet()` — inner-equivalence
+only; `:97` skips `IsNullOnEmpty`/outer quantifiers). So a bare INNER box under a projected-EXISTS fold is
+MERGEABLE → it dissolves into flat top-level ForEach legs; the fold SelectExpression becomes
+`[ForEach(p), ForEach(q), ForEach(r), Existential]` (N ForEach + 1 Existential). The dispatch
+(`rule_implement_nested_loop_join.go:46-54`) matches EXACTLY `len==3` (2 ForEach + 1 Existential) or `==2`,
+so the 4-quantifier flatten matches NO arm → `0AF00`. **The real target is generalizing the fold to N ForEach
+legs**, not windowing an opaque leg an INNER box does not have.
+
+**The two "blocked" narrowings do NOT wall the flat case (Graefe re-analysis):**
+- **"Arity drift"** (`translateJoinWithExists:4644-4648`) was about a NESTED-CLUSTER leg — a 2-leg opaque
+  CONCAT whose windows would disagree with post-flatten arity. The flat N-way fold has NO nested concat: p,
+  q, r are flat SINGLE-SOURCE ForEach legs, each its own quantifier. The drift concern is a DIFFERENT
+  sub-shape (the opaque-box windowing case, which belongs to OUTER boxes) and does not apply to flat arity>2.
+- **"Indistinguishable correlations"** (existential-alias-collision, `:4664`) is a real but SOLVABLE
+  constraint: the binding-keyed leg discipline (`Q$DUP`, `sourceBinding`/`legBinding`) already distinguishes
+  N legs; the fold keys each of the N legs by its binding exactly as the 2-leg gated flatten does (`:4727`).
+
+**Mechanism (compose existing pieces, don't re-derive):**
+- **Step-1 N-way inner join:** `implementJoinWithExistential` builds a single 2-ary NLJ
+  (`NewRecordQueryNestedLoopJoinPlan`, `:2004`) as the FlatMap outer. N legs need a LEFT-DEEP N-way NLJ
+  chain. The N-way inner-join implementation ALREADY EXISTS — the gathered inner cluster
+  (`translateGatheredInnerCluster`, `rfc173_ordinal_seed.go:389`) produces flat N-way selects that plan
+  today; compose that N-way inner join with the existential FlatMap rather than re-derive an N-way NLJ.
+- **Seed:** `reconstructFoldStep1Seed` (`:1120`) already iterates a leg SLICE — generalizing 2→N is
+  mechanical. **[SUPERSEDED — Graefe correction: this "NO `.Legs` windowing" claim was WRONG.]** The
+  as-built recursive chain DOES emit `.Legs` sub-windows: each chain level's `accPlan` is an accumulated
+  ordinal BOX (a nested NLJ), and `reconstructFoldStep1Seed`→`planBuriedLegConcat` walks it to split its
+  buried leaves into flat `P,Q,R` windows over the top merged row (the `.Legs` on the box QOV type that
+  `finalizeSeedWindows` splices). A single top-level scan leg gets its own top-QOV window (no `.Legs`), but
+  the box legs the chain creates NEED `.Legs`. See the LANDED banner.
+- **Anchoring/rebase:** `mergedOuterLegAliases` (`:2020-2026`) is ALREADY N-aware (anchors the top-level
+  aliases PLUS every buried alias); the below-FOD `rebaseOuterLegRefsOrdinal` threads through the N-way
+  merged positional row.
+- **Dispatch:** relax `:46-54` to admit `≥3 ForEach + 1 Existential` (or an N-ForEach + Existential arm).
+
+**Two-site coupling (revised):** the arity relaxation spans the translator
+(`buildExistentialJoinSelect`/`translateJoinWithExists` no longer restricted to arity-2) ↔ the executor
+(`implementJoinWithExistential` N-leg dispatch + N-way step-1 chain). Red-first certificate: toggling EITHER
+the dispatch arity OR the seed N-generalization back to 2 reddens.
+
+**Sequencing:** the **3-FLAT-LEG case FIRST** — that IS the sentinel (`(p JOIN q) JOIN r` flattens to p,q,r),
+the minimal extension of the working 2-leg fold; then arbitrary N. **One change closes TWO residuals:** the
+projected-EXISTS fold (`buildExistentialJoinSelect`, after the INNER box flattens) AND the WHERE-EXISTS
+flatten (`translateJoinWithExists` arity≠2). **Correctness gate (unchanged from the re-ACK, matters MORE for
+N-way — more legs = more leg-bind ambiguity, the `NewAnchoredJoinRecord` last-leg-wins hazard):** a
+DISCRIMINATING buried-leg fixture (a `p`-only projected column + a `p`-only EXISTS-correlated column, fixture
+rows where a mis-bind to q/r FLIPS the answer) + JAVA-DERIVED expected rows (run the conformance server, not
+hand-derived). **OUTER buried box stays DEFERRED** — FULL is structurally declined for the semi-join
+(`:3032`/`:1780`, can't carry the drain); LEFT needs null-extension + above-join-WHERE placement. Lower value,
+harder; not the next slice.
+
+**IMPL PROGRESS (empirical refinement, design-ACK'd path, impl NOT yet landed — clean handoff state):**
+Restored AXIS-1 (the enclosure lift in `buildExistentialJoinSelect` via `existsLegBirthsPositional`),
+confirmed it fires and flattens the box to `[ForEach×N, Existential]` — then reverted it (inert alone until
+the executor N-leg dispatch lands; don't ship a translator half that changes nothing observable). Two
+empirical facts that NARROW the remaining work and de-risk the path:
+  1. **A flat N-way INNER join PLANS today** — `SELECT p.v FROM p, q, r WHERE …` and
+     `SELECT p.v FROM (p JOIN q) JOIN r` both return rows. So there is NO N-way-inner-join machinery to
+     build (the earlier "the NLJ rule is 2-leg, so flat N-way is unplannable" worry was FALSE — some
+     rule already decomposes a flat ≥3-ForEach inner select to binary NLJs). The ONLY gap is the N-way
+     existential WRAP.
+  2. **The existential wrap is the entire gap** — `SELECT p.v, EXISTS(…) FROM p, q, r WHERE …` (flat comma
+     3-way) declines 0AF00 identically to the buried-box explicit-join form. So the shape to fix is
+     `[ForEach×N, Existential]`, independent of comma-vs-explicit-join surface.
+REMAINING IMPL (the actual next-context work): (a) RESTORE AXIS-1 (the `existsLegBirthsPositional` enclosure
+lift — it survives the pivot, only the windowing was retracted); (b) relax the dispatch
+(`rule_implement_nested_loop_join.go:46-54`) to route `≥N ForEach + trailing Existential`; (c) generalize
+`implementJoinWithExistential`'s step-1 (currently a single 2-ary NLJ at `:2004`) and `reconstructFoldStep1Seed`
+(`:1120`, iterates a 2-elem leg slice) to N legs — **[as-built: a left-deep 2-ary NLJ CHAIN with `.Legs`
+windowing on each accumulated inner, NOT a reuse of external flat-N-way planning; the earlier "reuse rather
+than a chain" framing was superseded by the impl]**; (d) the discriminating buried-leg fixture + Java-derived
+rows; (e) the two-site
+coupling certificate (AXIS-1 ↔ executor N-leg dispatch, red-first on toggling either back to 2); (f) four-gate.
+The sentinel `rfc173_s4_buriedbox_inner_exists_fdb_test.go` flips 0AF00→rows when it lands.
+
+**CONCRETE IMPL APPROACH — the RECURSIVE LEFT-DEEP CHAIN (reconciles the windowing; verified against the
+planner constraints):** two further empirical facts pin the mechanism precisely:
+  - The GROUPING escape does NOT work: `SELECT s.v, EXISTS(…) FROM (SELECT … FROM p,q,r …) AS s` DECLINES
+    0AF00 — the planner INLINES the derived table back to the flat `[ForEach×N, Existential]`. So the N-way
+    generalization is UNAVOIDABLE; the shape cannot be reduced to the working single-source fold by wrapping.
+  - The step-1 N-way inner join is NOT built by reusing a pre-planned flat select (implementJoinWithExistential
+    has only the N leg PLANS, not a memoized inner group). It is a LEFT-DEEP NLJ CHAIN, built RECURSIVELY:
+    `step1([l0..lk]) = NLJ(step1([l0..lk-1]), lkPlan, preds, INNER, accAlias, lkAlias, levelSeed)`. The KEY
+    insight: the accumulated inner `step1([l0..lk-1])` is itself an NLJ whose merged row is read by the next
+    level POSITIONALLY through its `[Start,Width)` buried-leaf windows — i.e. it is exactly a "gated box leg"
+    to the next level. So each level's `levelSeed` is `reconstructFoldStep1Seed([accPlan, lkPlan], …)` with
+    the SAME `.Legs`-windowing (`planBuriedLegConcat` walking `accPlan`'s NLJ tree, `legIsOrdinalSafe` admitting
+    the accumulated NLJ) that the reverted c5a/c5b-style windowing built. THE WINDOWING CODE IS NOT DEAD — it
+    was applied to the wrong SHAPE (a single box leg that flattens); its correct home is the chain's
+    accumulated inner. RESTORE `planBuriedLegConcat` + the `legIsOrdinalSafe` NLJ arm + `reconstructFoldStep1Seed`
+    `.Legs` generalization, and drive them from the recursive chain.
+  - Per-level predicate placement: put each join predicate at the SHALLOWEST level where all its referenced
+    legs are bound; a predicate referencing a leg buried in the accumulated inner rebases to that leg's
+    accumulated window (`rebaseOuterLegRefsOrdinal`, the SAME below-FOD rebase). Simplest-correct first: all
+    join preds on the TOP level rebased to the full merged windows (cross-product-then-filter — correct, the
+    cost model can push later); pin the discriminating fixture to prove correctness regardless of placement.
+  - Step-2 (the existential FlatMap) is unchanged in STRUCTURE — it wraps the top-level N-way merged row;
+    `mergedOuterLegAliases` is already N-aware and `rebaseOuterLegRefsOrdinal` already resolves buried
+    exist-pred refs through the top windows.
+
+### PER-LEG-WINDOW REBASE (channel 1 + channel 2) — LANDED + four-gate-reviewed; Step B coupling FOUND
+The multi-alias-under-EXISTS ordinalization substrate is built + reviewed:
+- **Channel 1** (translator): `ordinalSlotInLegWindow` resolves a qualified outer ref WITHIN its
+  `rt.Legs` window (was flat first-match, qualifier-dropped) — four-gate-clean (43ef8a70d + hardening).
+- **Channel 2 Step A** (values + executor): the mixed-seed branch of `OrdinalSeedLegWindows` +
+  `unnestMixedSeedSpans` now emit the per-buried-leaf box windows (shared `finalizeSeedWindows` /
+  `mergedLegsOfSpans`), so a box outer's dup-named columns disambiguate — four-gate-clean, behavior-
+  preserving + dormant behind the guard, all `mergedType.Legs` consumers traced inert.
+- **3-way cross-agreement fixture** (`TestRFC173S4_ThreeWayBoxCrossAgreement`): channel-1 ↔
+  channel-2-values ↔ channel-2-executor agree on every box-leaf absolute slot.
+
+**Step B (the guard lift) is COUPLED to an enclosure site — the deep finding.** The c5a target
+(`(a FULL OUTER b), a.arr AS x WHERE EXISTS(…c.col…)`) is UNNEST-under-EXISTS (top join Inner, FULL
+OUTER buried in the unnest's outer), so it is NOT blocked by the JOIN-under-EXISTS FULL+EXISTS reject
+(buildExistentialJoinSelect:2924, which checks the EXISTS join's own kind). It reaches
+`unnestExistsSeedSafe`. BUT `translateUnnestJoin` sets `inInnerCluster=true`, and the `:167` gate poison
+("an OUTER box that is a LEG of an enclosing … unnest flatten stays name-model") makes the FULL OUTER
+box OUTER a name-model Datum, not a positional producer. `unnestOrdinalSeed` bakes it POSITIONALLY, so
+lifting `unnestExistsSeedSafe` alone ships a positional seed over a name-model box row → the
+`adaptLegPositional` zero-match tripwire (Graefe's Q3). So Step B requires FIRST lifting the `:167`
+enclosure poison for the box-under-unnest case (make the box outer ordinal/positional) — one of the
+enclosure-site slices in the worklist above. Step B is NOT a standalone flip; it is entangled with the
+:167 enclosure ordinalization. The substrate (channels 1+2) is correct + necessary regardless — it is
+the layout the box-under-unnest needs once the box outer births positional.
+
+**Step B DESIGN-ACK'd (ACK-WITH-REFINEMENT) — the COUPLED TWO-AXIS FLIP.** NOT a blanket `:1074`
+lift (that NAKs: R1's :5117-5119 warns a broad lift breaks the multi-source INNER cluster
+`FROM A,B,A.arr AS x` — it would gate that cluster ordinal while the seed still declines it, wrong
+rows; also breaks the fallback rebuild :1530 and the chained-unnest path :1136). The ACK'd form is a
+SURGICAL, COUPLED flip of TWO axes gated by ONE predicate:
+  - `boxGatesFresh(j.Left)` — a NEW predicate mirroring `existsOuterGatesFresh` (:86-99): the input is
+    an OUTER-join box that gates via `ordinalWedgeGateDecide` with enclosure forced FALSE (the ONE gate
+    authority — no parallel re-derivation, query-engine ruling condition 4). Excludes JoinInner (the R1
+    multi-source hazard).
+  - AXIS 1 — box-outer enclosure at the `:1356` `translateRef(j.Left)` ONLY: `t.inInnerCluster =
+    prevEnclosure || !boxGatesFresh(j.Left)` (keep `prevEnclosure ||` so an already-enclosed unnest
+    keeps the box name-model, matching the seed's own `!prevEnclosure` gate at :1473). This lets the
+    FULL box birth a POSITIONAL row (its ordinalJoinBirth NULL-fills the FULL drain; adaptLegPositional
+    flows it through — traced sound).
+  - AXIS 2 — `unnestExistsSeedSafe` (:864): admit the multi-alias box: `len(outerBoundAliases)==1 ||
+    boxGatesFresh(left)`.
+  - MUST flip TOGETHER in ONE commit via the SAME `boxGatesFresh` predicate — either half alone is
+    broken (seed-gate-only → positional seed over name-model box → adaptLegPositional zero-match;
+    :1356-only → name-model builder over a positional box). The B1-certificate coupled-flip discipline.
+Refinements to close in the slice: (a) the array collection is name-addressed dotted (`"O.TAGS"` at
+:1398-1426), resolving via the coexistence dotted bridge — the e2e MUST assert the unnest YIELDS
+element rows, not just plan shape. (b) `legsOfGatedJoin` marks NEITHER FULL leg null-supplying
+(:246-247, booked) — row values correct (NLJ + nil-leg binding), but columns typed NOT NULL vs Java's
+all-FULL-columns-nullable; CLOSE it (mark both FULL legs record-level nullable, :489-501) OR pin
+answer-invariant. (c) rewrite `TestRFC173Item2C5a_MultiAliasOuterDeclines` — its assertion INVERTS
+anchored→ordinal, its doc block ("the decline is correct") stops being true.
+E2E (FDB, real rows + plan): dup-named cols across A,B; a null-supplied SURVIVING row (A row no B
+match, A.arr non-empty); `WHERE EXISTS` AND `WHERE NOT EXISTS` correlating on a QUALIFIED ref to the
+null-supplied dup-named leg; assert exact rows + correct-leg bind + ordinal seed shape; a NEGATIVE pin
+that `FROM A,B,A.arr AS x` (multi-source INNER cluster) stays name-model (the R1 hazard). Re-request
+impl-ACK on the diff.
+
+**Step B IMPLEMENTED + e2e-VERIFIED + impl-review round applied.** The coupled flip landed:
+`boxGatesFresh` (rfc173_cluster_gate.go, the one gate authority widened to FULL, JoinInner excluded);
+AXIS 2 in `unnestExistsSeedSafe` (`|| t.boxGatesFresh(left)`); AXIS 1 at the box-outer `translateRef`.
+
+**Impl-review round (three gates): Graefe NAK→fixed, @claude NAK→fixed, Torvalds ACK.** Graefe caught a
+SILENT WRONG-ANSWER: AXIS 1 gated on `boxGatesFresh` alone admits LEFT/RIGHT boxes, but only a FULL box
+takes the ordinal seed (`clusterArity==1`; LEFT/RIGHT are preserved-side+1 ≥ 2). A LEFT/RIGHT box would
+birth POSITIONAL while its seed stayed name-model → the name-model builder reads the box by absent
+qualified LEG.COL keys → wrong rows (`(FOA LEFT FOB), FOA.arr WHERE EXISTS(…FOA.K…)` → 0 rows, should
+be {7,8}; reproduced RED — loud unresolvable-field). FIX: AXIS 1 now gates on `boxOuterBirthsPositional`
+= `clusterArity==1 && boxGatesFresh && unnestExistsSeedSafe` — the box births positional EXACTLY when
+the seed ordinalizes it (couples the two axes on the seed's ACTUAL condition, folding the EXISTS
+scope-collision guard). @claude caught that the R1 negative unit test was MASKED by `clusterArity` (an
+INNER cluster's seed declines via arity regardless of the JoinInner guard) — added
+`TestRFC173Item2C5a_BoxGatePredicates`, a direct white-box pin of `boxGatesFresh` (FULL/LEFT/RIGHT true,
+INNER false) and `boxOuterBirthsPositional` (FULL true, LEFT/RIGHT/INNER false), so deleting the guard
+or re-widening AXIS 1 turns red. Torvalds: extracted the thrice-copied fresh-cluster probe into
+`gatesAsFreshCluster`. Added e2e pins: the LEFT regression (correct rows) and an IS-NULL-on-FULL-leg
+probe (Graefe Q5 — the NOT-NULL type marker must not constant-fold `FOB.K IS NULL` to false; answer
+{7,8} confirms answer-invariance for a null-CONSUMING predicate, not just equality-NULL propagation).
+Pins: `TestRFC173Item2C5a_MultiAliasOuterGatesOrdinal` (the FULL box now seeds ORDINAL + carries
+windows — the old `…Declines` inverted per refinement c) and `…_MultiSourceInnerClusterStaysNameModel`
+(R1 negative). E2E `TestFDB_RFC173S4_C5a_FullOuterUnnestExists`: all rows correct across
+EXISTS/NOT-EXISTS on BOTH the null-supplied leg (Q1/Q2 — the correct-leg-bind discriminators) and the
+present leg (Q3/Q4), plus the multi-source INNER negative (R1). Refinement (a) closed — the unnest
+YIELDS element rows {7,8}. Refinement (b) closed by PINNING ANSWER-INVARIANT (not the type change):
+the FULL null-supplied leg's value is nil via the NLJ regardless of the NOT-NULL type marker, so the
+`FOB.K`-correlated EXISTS evaluates correctly (documented at legsOfGatedJoin).
+
+**FOLLOW-UP FINDING (clustered-leg FULL box — gate over-breadth, one level deeper).** Post-ACK
+probing of the dimension @claude flagged (clustered-leg FULL box) DEMONSTRATED a loud regression:
+`clusterArity(FULL)==1` UNCONDITIONALLY, so `(A JOIN B) FULL OUTER C` under unnest-under-EXISTS also
+gated + birthed positional — but the positional seed concats only the RIGHTMOST leg's columns (`(FOA
+JOIN FOD) FULL OUTER FOB` births only FOB's `[BID,K]`); the clustered leg's BURIED leaves (`FOD.K`)
+are not windowed → `field "FOD.K" not resolvable ... malformed plan`. Pre-Step-B this shape stayed
+name-model (3 aliases → declined) and answered correctly, so Step B's gate was too broad — the SAME
+over-breadth class as the LEFT/RIGHT AXIS-1 finding, one level deeper. FIX (same shape as the LEFT/RIGHT
+fix — narrow the gate): `boxGatesFresh` now EXCLUDES a box whose leg EXPOSES A BURIED JOIN
+(`legExposesBuriedJoin`), so a clustered-leg FULL box stays name-model (correct via qualified keys).
+The predicate PEELS the transparent wrappers the gate recurses through (LogicalFilter, non-scalar
+LogicalProject) before checking for a join — a shallow `*LogicalJoin` type check MISSES `Filter(A JOIN
+B) FULL OUTER C` (codex P2), and a `clusterArity>=2` proxy MISSES a nested FULL box leg (`A FULL B FULL
+C` — clusterArity(FULL)==1) AND over-excludes an opaque derived-table CTE; the structural peel catches
+both join cases while admitting opaque single-namespace legs (scan, aggregate/union, derived CTE).
+Buried-leaf ordinalization under a FULL box is deferred to a follow-up item-3 slice. Fail-closed (loud
+malformed plan, not silent wrong rows) confirms the decoupling tripwire works. Pins:
+`TestRFC173Item2C5a_BoxGatePredicates` clustered-leg + Filter(join)/Project(join)/nested-FULL cases (all
+boxGatesFresh/boxOuterBirthsPositional false) + the e2e `CLUSTERED/buried-leaf-FULL-box-stays-name-model`
+(correct rows via name-model, red-first as malformed). Review round: Torvalds ACK, @claude ACK
+(recommended the transparency-peel hardening), codex P2 (the wrapper slip) — all folded in.
+
+**c5b LANDED (clustered-INNER FULL box ordinalizes — the buried-leaf machinery ALREADY WORKED).** The
+"deferred item-3 slice" above turned out NOT to need new executor infra. A probe with
+`legExposesBuriedJoin` lifted proved that `(A JOIN B) FULL OUTER C, A.arr AS x WHERE EXISTS(…FOD.K…)`
+(buried FOD.K INSIDE EXISTS) resolves CORRECTLY — the box's positional birth concats the clustered
+leg's buried columns and the executor below-FOD hoist resolves the buried ref by its [Start,Width)
+window (channels 1+2). The earlier `[BID K]` "birth gap" was actually FOLLOW-UP FINDING #2 (the
+outer-conjunct issue — the probe used `WHERE FOD.K=200`, outside EXISTS). So `legExposesBuriedJoin` was
+an OVER-conservative defensive exclusion. c5b RELAXES it: renamed `legExposesBuriedOuterBox`, excludes
+only a buried OUTER-box leg (Kind != JoinInner — nested LEFT/RIGHT/FULL, unverified), ADMITS a buried
+INNER-cluster leg. The outer-conjunct clustered case is covered by the FINDING-#2 narrowing. Pins:
+`BoxGatePredicates` inverted (clustered-INNER admits; Filter/Project(LEFT-box) + nested-FULL still
+excluded) + e2e `c5b/clustered-buried-exists-resolves` and `c5b/clustered-buried-correct-leg` (the
+`FOD.K>150` conjunct discriminates: a mis-bind to FOA.K=100/FOB.K=NULL → 0 rows). This unblocks the
+buried-gated-box residency of :2908/:3033 (shared machinery).
+
+**c5b review round (Graefe/Torvalds/@claude/codex).** Graefe PROBED a nested OUTER box buried INSIDE the
+admitted INNER cluster (`((A LEFT B) JOIN C) FULL OUTER D`) with null-supply discriminators — it
+ordinalizes CORRECTLY (the machinery recurses; the executor null-supplies through the positional
+birth). So the shallow peel is CORRECT, NOT over-broad: `legExposesBuriedOuterBox` stays NON-recursive
+(pinned by BoxGatePredicates `nested-OUTER-in-INNER` admit). codex P2: a WRAPPED join (`Filter/Project`
+over a join) is admitted by the peel but `ordinalLegType` records buried bounds ONLY for a DIRECT
+LogicalJoin leg → no windows → malformed; FIXED by peel-remembering (a peeled join excludes regardless
+of kind; SQL-unreachable anyway). @claude (blocking): the {7,8} e2e is over-determined (name-model
+yields it too), so added `TestRFC173Item2C5b_ClusteredBoxSeedsOrdinal` — a white-box `AnchoredJoin==false`
++ windows pin so a seed-gate/AXIS-1 revert (not touching boxGatesFresh) turns red. Graefe recs folded:
+the FIRST buried leaf (FOA.K) discriminator e2e; the shallow-peel comment. Torvalds: doc wording (the
+peel STOPS at the first join, does not "bottom out") + ACK. The nested-LEFT-in-INNER null-supply e2e is
+a Graefe-recommended follow-on (the shape is unit-pinned as admitted).
+
+**codex P2 (round 2, fixed): the outer-conjunct regression had a NON-EXISTS sibling.** FINDING #2's
+narrowing was set ONLY in the EXISTS path (translateUnnestExistsFilter), but a FULL box under a PLAIN
+(non-EXISTS) unnest with a WHERE on a box leg — `(a FULL b), a.arr AS x WHERE a.col=V` — ALSO
+ordinalizes (AXIS 1 fires regardless of EXISTS) and merges the conjunct via the name-model rebase →
+malformed. This was a LATENT c5a regression (the scan-legged shape, verified red) that c5b's clustered
+admission surfaced. FIX: generalized the flag `unnestExistsOuterConjunctOnBoxLeg` → `unnestOuterConjunctOnBoxLeg`,
+set it in BOTH the EXISTS and the non-EXISTS filter-over-unnest merge (translateFilter), and moved its
+check in unnestExistsSeedSafe BEFORE the `!unnestUnderExistential` early return so it declines in either
+path. Pins: e2e `NONEXISTS-CONJUNCT/scan-box-stays-name-model` + `.../clustered-box-stays-name-model`
+(both red-first as malformed); the OuterConjunctNarrowing unit test now loops underExists={true,false}.
+
+**codex P2 (round 3, fixed): a WRAPPED join buried INSIDE an admitted INNER cluster.** legExposesBuriedOuterBox
+returned false at the top INNER join WITHOUT recursing, so `(Filter(A JOIN B) JOIN C) FULL OUTER D` —
+a Filter-wrapped sub-join nested in the admitted INNER cluster — slipped through, but buriedLegBounds
+records windows only for a DIRECT LogicalJoin leg → A/B get no windows → malformed. FIX: the INNER-admit
+arm now recurses via hasWrappedBuriedJoin, which excludes a wrapped join at ANY depth while ADMITTING a
+bare nested join (buriedLegBounds recurses through bare joins — Graefe verified `((A LEFT B) JOIN C)`
+ordinalizes correctly). Pin: BoxGatePredicates `wrapped-join-in-INNER` exclude case (the bare
+`nested-OUTER-in-INNER` admit pin stays green). SQL-unreachable, defensive — same family as round 1.
+
+**codex P2 (round 4, fixed): the outer-conjunct narrowing was BYPASSED by the gathered path.** The
+FINDING #2 narrowing (below) declines an ordinal box to name-model in `unnestExistsSeedSafe` — the BINARY
+seed gate. But `translateGatheredUnnestCluster` is tried FIRST in `translateUnnestJoin`, and it handles a
+FULL box as ONE OPAQUE leg. A box with NO shared leg-column name (`(A FULL B), a.arr WHERE a.col=V`,
+DISTINCT A/B columns) does NOT trip the gathered path's name-ambiguous decline, so it gathers
+positionally BEFORE the seed gate consults the flag → the box-leg conjunct merges by name with no per-leg
+window → `field "a.col" not resolvable … ordinal -1` (malformed). The earlier NONEXISTS-CONJUNCT pins used
+SHARED-column tables (FOA/FOB share K), which decline the gathered path on the dup name → binary → flag
+honored, masking the gap (a SHARED-vs-DISTINCT-column dimension the pins missed). FIX: the gathered
+OUTER-box arm declines to name-model when `unnestOuterConjunctOnBoxLeg` is set, coupling it to the binary
+seed gate so the two paths decline in lockstep. An INNER cluster is NOT declined (each leg keeps its own
+window → a leg conjunct resolves through the gather). Pins: e2e NONEXISTS-CONJUNCT/`noshare-fullbox-first-leg`
++ `/second-leg` (both red-first malformed) + `/inner-cluster-leg-resolves`.
+
+**Review round 5 (@claude NAK — test completeness; Graefe + Torvalds ACK; codex clean — all folded).** The
+round-4 fix was CORRECT (all four gates verified the logic + the airtight lockstep coupling), but pinned
+only e2e, and the over-decline dimension was VACUOUS: the `inner-cluster-leg-resolves` rows {7,8} are
+OVER-DETERMINED (the name-model fallback yields them too), so an INNER over-decline ships GREEN
+(@claude + Graefe both mutation-proved this independently). FIX: added the white-box
+`TestRFC173W5_Gathered_OuterConjunctCoupling` (on the `newDisjointUnnestTranslator` disjoint-column
+harness) that pins the DECISION, not the rows — flag SET → OUTER FULL/LEFT box DECLINES (nil); flag CLEAR
+→ gathers an ORDINAL seed (`AnchoredJoin==false`); flag SET → INNER cluster STILL gathers ordinal. Both
+directions red-first-verified by mutation (delete the fix → the OUTER assertion reddens; over-decline the
+INNER arm → the INNER assertion reddens — the exact mutation that previously left the suite green). The
+`inner-cluster-leg-resolves` e2e comment no longer over-claims the over-decline-guard role (the white-box
+pin owns it); Torvalds nit folded (the site comment says "non-EXISTS" — the gathered path is unreachable
+under EXISTS). Non-blocking follow-ons carried forward: the nested-LEFT-in-INNER null-supply e2e, and the
+positional-conjunct BAKE for BOTH entry points (binary + gathered) as FINDING #2's eventual deep fix.
+
+**FOLLOW-UP FINDING #2 (outer WHERE conjunct on a box leg — a SHIPPED c5a regression).** Dimensional
+probing (the c5a e2e only tested box-leg refs INSIDE EXISTS) found that a regular NON-EXISTS WHERE
+conjunct referencing a box leg on an ORDINAL FULL box under unnest under EXISTS
+(`(a FULL OUTER b), a.arr AS x WHERE a.col = V AND EXISTS(…)`) → `field "a.col" not resolvable
+(ordinal -1, row columns [b's cols]) — malformed plan`. VERIFIED a regression: pre-c5a (parent
+0d5ea3dcd, via worktree) the shape was name-model and answered correctly. ROOT CAUSE: the non-EXISTS
+conjunct is merged into the unnest SELECT, where the box's output is NAME-KEYED (coexistence Datum) —
+a positional bake there does NOT reach the executor's positional row the way an EXISTS-inner ref does
+(the below-FOD hoist rebases those). An attempted ordinal rebase (rebaseUnnestOuterLegPredicateOrdinal
+on the merged conjunct) turned the loud malformed plan into SILENT 0 rows (strictly worse) — reverted.
+FIX (narrowing, same family as LEFT/RIGHT + clustered-leg): `unnestExistsSeedSafe` declines the
+MULTI-alias box to name-model when the enclosing filter has a non-EXISTS conjunct on a box leg
+(`unnestExistsOuterConjunctOnBoxLeg`, set in translateUnnestExistsFilter) — correct via qualified keys.
+Single-source outers are UNAFFECTED (pristine prefix resolves a bare conjunct). Pins:
+`OUTER-CONJUNCT/box-leg-stays-name-model` (red-first as malformed) + `OUTER-CONJUNCT/single-source-ok`.
+FULL positional ordinalization of such a conjunct (routing unnest-SELECT box-leg predicates through the
+executor positional mechanism) is the deferred follow-on.
+
+**FINDING (name-model oracle carve-out for dup-named box seeds).** The §5 dual-window differential is
+NOT a valid gate for this shape: the name-model oracle resolves dup-named box columns LAST-LEG-WINS
+(the name-keyed Datum cannot keep two same-named legs distinct — the exact conflation RFC-173
+eliminates). So the oracle reads a QUALIFIED first-leg ref (`FOA.K`) as the last leg's K and DIVERGES
+from the positional path — while the positional path resolves each leg by its [Start,Width) window.
+This is not a bug in the flip; it is the c4 §7 observable (correct rows alone don't distinguish
+ordinal from name — the name model is the broken reference here). The e2e turns it into a POSITIVE
+proof: toggling the oracle CHANGING the Q3 answer proves the positional seed fired (a name-model
+revert would make them agree → red), and the asymmetry (oracle agrees on the LAST-leg Q2, diverges on
+the FIRST-leg Q3) precisely characterizes the conflation. The name-model BUILDER (the pre-flip native
+path) is correct here via qualified keys — so there is NO latent master wrong-answer; only the
+test-only oracle mechanism conflates a positional dup-named seed, an enumerated carve-out.
+
+## S4 R2 — gathered multi-source unnest GROUP BY ordinalization (LANDED: 43871b83b)
+
+The first producer-retiring increment against R2 (multi-source lateral unnest, the :1528 producer):
+a gathered multi-source unnest GROUP BY now ORDINALIZES for the plain-leg AS class instead of
+declining to the name model.
+
+### The bug (a shipped wrong answer)
+`SELECT EL, COUNT(*) FROM WSRC, WSRC.WARR AS EL, WAUX GROUP BY EL` (disjoint columns → the
+name-ambiguity gate does NOT decline it) GATHERS, but the positional seed exposes only BARE column
+names. A grouped element reference is a correlated `FieldValue{Field:"EL", Child:QOV}` that qualifies
+to the shadow-qualified "EL.EL" key — which the seed lacks — so `GROUP BY EL` grouped every row under
+NULL. The seed CANNOT carry the shadow key: it is a strict positional contract (a duplicate field
+panics the span run invariant "run ordinals must be 0..width-1 ascending").
+
+### The fix (Graefe #1: "the collapse preserves the named projection the group-by consumes")
+Keep the positional seed INTERNAL; place a NAMED-PROJECTION layer above it
+(`wrapGatheredForGroupBy`, rfc173_w5_unnest_gather.go). Two load-bearing realizations, each reached
+by falsifying the alternatives:
+- it MUST be a `LogicalProjectionExpression`, NOT a `SelectExpression` — `SelectMergeRule` fuses a
+  Select-over-Select and drops the shadow key (a Select is a `RelationalExpressionWithPredicates`
+  merge target; a projection is not, and `ProjectionElim`/`ProjectionMerge` don't fire on a
+  non-identity projection-over-join);
+- its field VALUES NAME-read the inner seed (`FieldValue(QOV(inner), col)`, unpinned) so they do NOT
+  re-trigger the positional-seed ordinal-join birth (`ContainsBakedOrdinal` false) — the projection
+  RC can therefore carry the bare + `ALIAS.COL` + "EL.EL"/"EL.O" shadow keys the grouped read
+  resolves against.
+`underAggregate` (formerly the decline stopgap) now TRIGGERS the wrap; Graefe WITHDREW his "must
+remove the flag" condition since it ordinalizes rather than entrenching the name model.
+
+### Derivation — 4 falsified shortcuts (do NOT re-attempt)
+1. executor nested-descent (the original R1-design premise): the group key is an un-rebased NAME
+   ref, not `ofOrdinal(merge,i)` — nothing to descend.
+2. value-collapse (rewrite the group key to `QOV(EL)`): `QOV` over the post-join merged row returns
+   the WHOLE ROW, and it breaks every name-model group-by.
+3. shadow key placed IN the positional seed (`unnestSeedInnerFields`): panics the span run invariant.
+4. fused-Select projection layer: `SelectMergeRule` dissolves it; the shadow key is lost.
+
+### The eligibility gate (four-gate review — codex found 4 edges, each declined to name-model)
+`gatheredGroupByWrapEligible` — checked BEFORE leg translation (so an ineligible shape declines
+without double-registering a leg's uncorrelated scalar subquery) — narrows the wrap to the
+FAITHFULLY-COVERED plain-leg AS class. Declined to the name-model residual (correct rows, each pinned
+by an e2e test):
+- **BOX leg** (`leg.op` a `LogicalJoin`): the qualified twins would key the box binding over the
+  concat type, not the leaf-source keys (`WAUX.WV`) a buried-leaf operand references → silent NULL.
+  [Graefe blocking NAK / codex P1]
+- **element/AT alias SHADOWS an outer column**: the bare "WV.WV" shadow read GetByName-resolves the
+  OUTER column, not the element → wrong group. [codex P1] — INITIALLY declined; NOW ORDINALIZED by
+  the positional element-first binding (see the roadmap's "positional shadow binding — ✅ LANDED").
+- **AT-only unnest** (no AS): the SAME class — for `WSRC.WARR AT O`, `u.Alias` DEFAULTS to the array
+  column "WARR" (diagnostic-confirmed), so the grouped ordinal qualifies as `WARR.O`. [codex P2] —
+  INITIALLY declined; NOW ORDINALIZED by the same positional binding (the wrap re-exposes the ordinal
+  under both bare "O" and the "WARR.O" shadow). The `u.Alias == ""` check is dead code (no reachable
+  grouped gather has an empty Alias; a truly anonymous unnest declines earlier at
+  unnestSeedInnerFields) and now only guards the offset arithmetic.
+- **decline-after-leg-translation** double-registers a leg's scalar subquery — fixed by moving the
+  eligibility check before leg translation. [codex P2]
+Gate tally: Torvalds ACK; Graefe ACK (blocking cleared — the box-leg gate is EXACTLY coincident with
+the failure class, both silent-NULL sources fire iff `leg.op` is a join); @claude ACK; codex
+convergent over the four rounds.
+
+### Follow-up roadmap (each removes a decline arm; all done → REMOVE `underAggregate`)
+- **box-leg leaf-source qualification — ✅ LANDED (5b5630c55, four-gate-clean)**: the wrap
+  RECURSIVELY walks a box leg's buried leaves (`emitLeafKeys` via `t.legsOfGatedJoin` — the SAME
+  traversal `addBuriedBakeWindows` uses to populate `legTypes`, the structural symmetry is the
+  correctness proof) and keys each operand by its OWN leaf alias over its `leafTyp` columns
+  (`WAUX.WV`), NAME-read over the seed. The box-leg decline is removed; a buried-leaf bare-name
+  duplicate is still declined by the name-ambiguity gate (which iterates the box's WHOLE concat, so
+  buried duplicates ARE seen — the earlier "checks only top-level legs" concern was wrong, the
+  concat covers them). Tested: box-leg grouped `SUM(WAUX.WV)` ordinalizes with correct rows AND a
+  LEFT-box NO-MATCH null-extension (S=NULL). Graefe/Torvalds/@claude ACK, codex clean. Producer #2
+  (:1528) now retires for BOTH plain-leg and box-leg grouped gathers. FOLLOW-UP coverage (TODO):
+  nested box (box-in-box) and 3+-buried-leaf shapes are covered by the invariant (twin ≡ bare
+  name-read) but unexercised — pin them.
+- **positional shadow binding — ✅ LANDED (the shadow-collision AND AT-only decline arms, together)**:
+  the wrap now binds EVERY re-exposed key POSITIONALLY (`ofOrdinal` over the seed's own type), so
+  the two former decline classes both ordinalize. Root cause: when the element AS alias shadows an
+  outer column of the same bare name (`WSRC, WAUX, WSRC.WARR AS WV GROUP BY WV`, WAUX has a WV
+  column) the ORDINAL SEED carries BOTH under the bare name "WV" (ordinalJoinSeedFields does not
+  shadow; the name-ambiguity gate checks leg-vs-leg only). A NAME-read of "WV" resolves the FIRST
+  match = the OUTER WAUX.WV → WRONG rows (measured WV=5/6/7). The fix, three parts:
+  * **ELEMENT-FIRST**: identify the element/ordinal seed fields via `fieldValueReferencesInner`
+    (their VALUE reads the Explode inner correlation — a QOV(inner) for a scalar element, ofOrdinal-
+    over-QOV(inner) for with-ordinality) and bind them by their OWN slots FIRST, so the bare name and
+    the "EL.EL"/"EL.O" shadow twins WIN the element over any same-named outer column.
+  * **POSITIONAL LEAF KEYS**: each leaf-source operand (`WAUX.WV`) binds at its own seed slot =
+    `legStart + leafOffset + colIdx`, where `legStart` is the running sum of preceding legs' run
+    widths PLUS `elemCount` once past the unnest's FROM position (`unnestPos`). This is
+    order-INDEPENDENT: it is correct whether the outer precedes the element (disjoint) OR the element
+    precedes the outer (ENCLOSED) — a name-read only worked in the disjoint order. `leafOffset` is
+    box-concat-relative and composes: a box leg recurses its buried leaves at the SAME box `legStart`.
+  * **POSITIONAL PASS-THROUGH**: remaining bare names bind by slot; a cross-leg duplicate keeps the
+    FROM-order first match (the name-model's first-match discipline).
+  * **Option (a) (shadow IN the seed) was falsified** — the outer bare column is a REAL leg column
+    still needed qualified; dropping its seed field shifts every span window. Shadowing lives in the
+    WRAP's namespace, not the seed. **Pinning is safe** — a LogicalProjectionExpression is not a join,
+    so a baked ordinal here does NOT fire newOrdinalJoinBirth (empirically confirmed).
+  * **AT-only falls out for free**: with no AS the element alias defaults to the ARRAY COLUMN
+    ("WARR"), so the grouped ordinal qualifies as "WARR.O" — which the wrap now re-exposes as the
+    ordinal's own slot under both the bare "O" and the "WARR.O" shadow. Same class, same fix.
+  Tests (all plan-asserted, correct rows): disjoint shadow (element wins bare "WV"=7/8, WAUX.WV
+  stays reachable as SUM=18), ENCLOSED shadow (element before the leg — the order the positional
+  leaf offset exists for), AT-only GROUP BY O. `gatheredGroupByWrapEligible` now declines ONLY on an
+  underivable leg type (needed for the offset arithmetic).
+- **N-way — ✅ PINNED (95aadac66, test-only)**: a 3-plain-leg disjoint gather (WSRC,
+  WSRC.WARR AS EL, WAUX, GW) with a grouped aggregate over the THIRD leg (SUM(GW.V)) ordinalizes
+  (EL=7/8, S=2997), plan-asserted. The wrap already handled N legs; this pins it.
+- **global-aggregate element/leaf OPERAND — ✅ LANDED (Graefe/@claude review catch)**: a GLOBAL
+  aggregate (no GROUP BY) whose OPERAND references a column — `SUM(EL)`, `SUM(WAUX.WV)` over a
+  gathered multi-source unnest — previously skipped the wrap (the trigger was `len(GroupKeys) > 0`)
+  and name-read the bare positional seed → NULL (measured `SUM(EL)`=NULL, should be 45). This was
+  PRE-EXISTING (present at base, both reviewers verified) — the same positional-seed-name-read defect
+  the wrap cures, on the global path. Fix: `translateAggregate` now also triggers the wrap when
+  `aggregateOperandReferencesColumn(a)` (any operand that is not COUNT(*)/a constant). A global
+  COUNT(*) references nothing → keeps the flat seed (no wrap), which also preserves the
+  duplicate-FROM-alias raw-gather shape exactly. Tests: `SUM(EL)`=45 and `SUM(WAUX.WV)`=36 ordinalize
+  (1 Project — a global aggregate has no outer-SELECT Project), COUNT(*) stays flat (0 Project).
+Producer #2 (:1528) is now retired for the gathered aggregate class across ALL its shapes (plain-leg,
+box-leg, N-way, disjoint/enclosed shadow, AT-only, and GLOBAL element/leaf operands); the only
+residual decline is an underivable leg type or a cross-leg unqualified-ambiguous reference (the
+name-ambiguity gate, a distinct SQL-error concern). The trio demolition remains the R1∧R2∧R3
+convergence commit.
+
+### NOT-OUR-BUG (found via codex on the named-projection review) — GENERAL derived-table + GROUP BY
+Codex flagged `SELECT E, COUNT(*) FROM (SELECT EL AS E FROM WSRC, WSRC.WARR AS EL, WAUX) AS D GROUP
+BY D.E` → `42703: column "E" does not exist` as a regression of this increment. It is NOT this
+increment, and NOT W5/unnest/ordinal at all — DIAGNOSTIC-NARROWED to a GENERAL bug: **GROUP BY over
+ANY derived table fails 42703**. Proof (variations, all no-unnest):
+  - `SELECT SID, COUNT(*) FROM WSRC GROUP BY SID` → OK (base table, no derived);
+  - `SELECT SID, COUNT(*) FROM (SELECT SID FROM WSRC) AS D GROUP BY D.SID` → 42703 (simplest
+    possible derived table, no alias, no unnest);
+  - `SELECT E FROM (SELECT EL AS E FROM …unnest…) AS D` (no GROUP BY) → OK.
+So the failing dimension is the pair {derived-table-in-FROM, GROUP BY}, independent of unnest,
+alias, or qualification. The wrap never fires for these (`underAggregate=false` in the derived body,
+diagnostic-confirmed) and the same 42703 reproduces at `a34e9e21d` (before the wrap existed). This
+is a general pre-existing engine gap (grouping over a subquery-in-FROM), tracked separately from
+RFC-173 — NOT a residual of the named-projection increment and NOT a blocker for it.
+
+### NOT-OUR-BUG #2 (found via codex on the positional-wrap review) — GENERAL computed QUALIFIED group key
+Codex flagged `GROUP BY WAUX.WV + 1` (a COMPUTED expression over a QUALIFIED column) as a wrong-answer
+of the shadow increment (`K=<nil>`, "unresolved reference WAUX.WV + 1"). Attribution (probes, all
+reverted): it is NOT shadow-specific and NOT gather-specific — **a computed qualified group key
+returns NULL for ANY multi-table query**:
+  - `SELECT WSRC.SID + 1, COUNT(*) FROM WSRC, WAUX GROUP BY WSRC.SID + 1` → `K=<nil>` (PLAIN join, NO
+    unnest/gather at all);
+  - the same `WSRC.SID + 1` fails identically on the parent commit's name-read wrap (472a86323);
+  - a BARE qualified group key (`GROUP BY WAUX.WV`, no arithmetic) resolves correctly — only the
+    COMPUTED form breaks.
+So the failing dimension is {computed expression, qualified column reference, GROUP BY}, independent
+of unnest/gather/shadow. A general pre-existing planner gap in resolving a computed group key's
+qualified inner reference against the aggregate input — tracked separately, NOT a residual of the
+positional-wrap increment and NOT a blocker. (Codex's "the patch introduces" framing was mis-attributed
+to the shadow context; the bug pre-dates and is broader than any unnest.)
+
+## LEFT FOR COMPLETION
+
+Consolidated from the **entire-PR three-reviewer pass** on the S4 atomic cap (feat/rfc173-s4 vs
+feat/rfc173-next, 267 commits / ~26k LOC): **Codex** (gpt-5.5 xhigh, full diff + ran targeted tests),
+**Torvalds** (code quality / systemic), **Graefe** (Cascades + Java fidelity). Bottom line from
+both principals: **we are better off with the cap than without it** — wire-compat is untouched
+(only the Go-owned sort-continuation payload changed, additively; magic unchanged), the name model's
+silent-NULL-on-unresolved-reference class is killed globally (one reader, `evaluateOrdinal`, loud on
+a miss), duplicate-named columns disambiguate by ordinal, and the FDB e2e tests are real. Graefe:
+"clearly better; ~70% of the way to Java — land it, keep going." Torvalds: "marginally better; the
+correctness win is real but the promised *simplification* (Slice 4 AnchoredJoin deletion) is unpaid
+debt — frozen here it is permanent hybrid rot." The runtime row is fully ordinal; **plan-time
+binding is not yet uniform** and the name-model **producer** (AnchoredJoin) still lives behind a
+per-shape ordinalization gate. Items below, most-actionable first.
+
+### A. Correctness regressions the cap exposed (Codex P2) — FIXED this session
+- [x] **Dotted output alias rejected** — `resultset.go` `isPositionallyAligned`. `SELECT v AS "A.B"`
+  emits slot "A.B" and label "A.B"; the alignment check leaf-stripped the slot to "B" and compared
+  against "A.B" → XX000 "no positional output row aligned" (the Datum fallback used to mask it).
+  Fixed: accept a full-name match before the slot-side leaf strip; do NOT strip the display side
+  (would falsely align permuted qualifiers). Pinned: `TestResultSet_DottedAliasPositionalAlign`
+  (+ a permuted-qualifier NON-alignment guard).
+- [x] **Legacy sort continuation dropped rows** — `continuation.go` decode. A pre-RFC-173
+  (name-keyed OBJECT payload) continuation resumed under new code left every buffered row
+  `Positional == nil` → all-NULL sort keys, misordered/XX000 across an upgrade mid-pagination.
+  Fixed: a single positional==nil guard (after the PK unpack) fails the resume loudly instead of
+  silently dropping data — uniform across the legacy OBJECT and v2 array shapes. Pinned:
+  `TestSortContinuation_PreservesComplete` legacy-object + v2-array rejection cases.
+
+### B. Slice 4 — retire the name-model AnchoredJoin producer (BIG, the unpaid simplification)
+> GRAEFE DESIGN RULING (sequenced plan for B→C→D):
+> - **Census is the roadmap.** The name-model surface is exactly P4 (buildJoinResultValue) + P5
+>   (buildUnnestResultValue); P1/P2/P3 derive and retire for free. Drive `TestFDB_RFC173_ProducerCensus`
+>   counts to zero.
+> - **SEQUENCE: P5 box-substrate NEXT, P4 general arm LAST.** The enclosed firings are NOT a separate
+>   worklist — for the box class the un-enclosed firing IS the enclosure root, so ordinalizing the root
+>   zeroes the whole subtree. The only live root left is P5 box-substrate. P4's `!gated` arm
+>   ({dup-binding, leg-contains-name-model-join, arity<2}) is gated on every OTHER producer dying
+>   ("leg-contains-name-model-join" is non-empty precisely while any producer name-models), so P4
+>   collapses near-free once P5 is ordinal. Doing P4 first fights the dependency (largest blast radius).
+> - **Generalize the gate by SHRINKING, never growing.** Each increment DELETES a decline arm from
+>   `ordinalWedgeGateDecide` (one uniform ordinal seed builder — Java's (quantifier, ordinal) —
+>   never a bespoke per-shape ordinalizer branch). Measure by decline-arms-removed + census→0. Endgame:
+>   arm unreachable → delete it → AnchoredJoin has no caller → delete it → gate always-gated → delete gate.
+> - **NEXT COMMIT (Graefe-directed):** ordinalize a SINGLE-LINK unnest over a FULL-outer box base
+>   (`FROM (a FULL OUTER b) x, x.arr AS y`) — `rfc173_w4c_unnest_seed.go::unnestOrdinalSeed` + the
+>   declining arm at `cascades_translator.go:~1862` (the `clusterArity(j.Left)==1` guard rejects the
+>   multi-alias box outer). boxGatesFresh already admits it; the executor already births FULL legs
+>   positionally; build the unnest ordinal seed over that positional birth instead of declining to P5.
+>   Sentinel: `TestFDB_RFC173_ProducerCensus` pins P5=0 for the shape (red→green). Chained / LEFT-RIGHT-box
+>   / nested-box variants are separate follow-on slices.
+>
+> IMPL REFINEMENT (investigated, sharpens the ruling — do NOT skip step 0):
+> `clusterArity` returns 1 for a FULL OUTER join (rfc173_cluster_gate.go:628 "genuinely opaque"), so
+> the `clusterArity(j.Left)==1` guard at cascades_translator.go:~1862 ALREADY ADMITS a full-outer box
+> base — the SINGLE-LINK full-box unnest likely already ordinalizes (or `unnestOrdinalSeed` declines
+> inside via `ordinalLegType`). Graefe's "the guard rejects the box outer" was imprecise. So:
+> **STEP 0 (empirical, before any gate edit):** run `TestFDB_RFC173_ProducerCensus` over candidate box
+> shapes (single-link vs CHAINED over full box; LEFT/RIGHT box; nested box) to identify EXACTLY which
+> still fires P5 — the census records `{Producer:P5, Enclosed, Shape}` per firing. The census names the
+> live class "box-base CHAINED-unnest", so the P5-firing shape is likely `FROM (a FULL OUTER b) x,
+> x.arr AS y, y.sub AS z` (chained over a box), NOT the single link. Pick the smallest firing shape,
+> trace WHERE it declines (the gate `clusterArity==1`, `unnestExistsSeedSafe`, or `unnestOrdinalSeed`/
+> `ordinalLegType` returning nil), and delete THAT specific decline — never a blind gate weakening
+> (a wrong guess ordinalizes a chained link over a name-model first-link seed = silently-wrong rows,
+> per the unnestExistsSeedSafe/`pureSpine=false` warning). Then census P5=0 + FDB green + Graefe ACK.
+>
+> STEP 0 DONE (empirical, `TestRFC173CensusSweep` GREEN): the census sweep is the ground truth and it
+> CORRECTS the box-substrate framing. Box unnests ALREADY ordinalize — `unnest_box`
+> (`… A LEFT JOIN B …, A.ARR AS X`) and `exists_box` are in the ORDINALIZED-must-fire-0 list, and
+> `fulljoin` too. So Graefe's directed "single-link unnest over a box base" increment is ALREADY
+> CLOSED. The ACTUAL residual P5 surface is only two harder shapes, both documented as flip-sentinels
+> in rfc173_census_sweep_test.go:
+>   1. **subquery-carrying WHERE conjunct** (`… WHERE A.K = (SELECT MIN(EE.CK) …) AND EXISTS(…)`):
+>      DONE (RFC-173 B, commit CLOSED). The predicted "genuine NEW MECHANISM" (attach the subquery to the
+>      seed filter, an ordinal analogue of `upgradeFirstFilterScalarSubqueries`) turned out UNNECESSARY —
+>      that prediction rested on a CONFOUNDED probe. The earlier "the ordinal seed filter fails LOUD
+>      `UnboundScalarSubqueryError`" finding came from slice3_b2b_faceA's `runQ`, which uses raw
+>      `ExecutePlan` with `EmptyEvaluationContext` and pre-evaluates NO scalar subqueries at all — so it
+>      cannot run ANY scalar-subquery shape, baked or name-model. It told us nothing about the ordinal
+>      path. THE ACTUAL FINDING (verified through the full scalar-subquery pre-eval path,
+>      `PlanRecordQueryWithSubqueries` + `prebindScalarSubqueries`): a `*values.ScalarSubqueryValue` is a
+>      LEAF (`Children()==nil`) — the bake closure leaves it untouched while the sibling leg refs
+>      ordinalize — and it is REGISTERED in `t.scalarSubqueries` at PREDICATE-TRANSLATION time, BEFORE the
+>      classify runs. The registration is STATEMENT-level: `planScalarSubqueryPlans` → the plan's
+>      `scalarSubqueries` → `EvaluationContext.WithScalarSubqueries` binds it, and the gathered seed
+>      filter reads it back exactly as the name-model filter does. The gather ADMIT keeps the registration
+>      (the scalarMark rollback fires only on DECLINE). So this was a **decline-arm deletion after all**
+>      (the shrink-the-gate discipline), not a new mechanism: `classifyLegConjunct`
+>      (rfc173_b2_box_conjunct.go) no longer marks a `*ScalarSubqueryValue` operand Unbakeable.
+>      (`*ExistsValue` in a conjunct STAYS Unbakeable — EXISTS-in-a-box-conjunct strands at
+>      physicalization, item 2 below.) VERIFIED: census `subquery_inner_conj` fires 0 producers
+>      (ordinalizes, was `exists_inner_unbakeable_conj`); row correctness through the full pre-eval path
+>      in `TestFDB_RFC173Slice3B2bFaceA` (`subquery_conjunct_min_present` A.K=100=MIN(EE.CK)→{7,8};
+>      `_count_discriminator` 100≠COUNT(*)=1→{}; `_full_box`); white-box `scalar_subquery_operand_bakeable`;
+>      the FULL sqldriver suite green. NOTE — with this, NO runnable grouped box shape declines to the
+>      name-model anchored fallback anymore (the `!rc.AnchoredJoin` groupBy gate's last row-level pin,
+>      baretwin `grouped_subquery_conjunct_gathers`, retired into a gathered-correctness pin; the gate
+>      stays live code, exercised at translation by the stranding multi-esq shape).
+>   2. **multi-esq under EXISTS** (`… WHERE EXISTS(…) AND EXISTS(… X)`): STRANDS at PHYSICALIZATION
+>      ("not a physical plan"), orthogonal to the name model — a separate pre-existing limitation.
+> So B's subquery-conjunct remainder is CLOSED (decline-arm deletion, no new mechanism); the last P5
+> shape is orthogonal (multi-esq physicalization), its own separate slice.
+- [x] Delete `NewAnchoredJoinRecord` (live at ~4 `cascades_translator.go` sites: :382,:968,:1949,:2064)
+  and `values/value_anchored_join_record.go` (~322 LOC). PR #485 is R3 ("first producer deleted") —
+  finish the demolition (via the shrink-the-gate discipline above).
+  > **B DONE — the producer and its whole dead chain are DELETED.** Sequence of the final push:
+  > (1) The last two residual caller classes retired, each differential-proven against its
+  > name-model ground truth on the same fixture: the CHAINED star body admits through the factored
+  > side-effect-free `chainedUnnestOrdinalGate` (rows byte-identical), and the COLLIDING-label star
+  > body admits with SHADOW-DEDUPED boundary labels (the RFC-142 element-wins rule; the WITH form's
+  > pinned rows unchanged, and the fix CLOSED two silent-wrong-rows bugs — the colliding derived
+  > twin served the OUTER scalar for `S2.SUB` and the WRONG LEG's values for `S2.ID`, and the
+  > chained colliding twin inverted to the outer scalar). Java grounding recorded at
+  > `derivedBodyStarOrdinalLeg`: Java resolves the duplicate CTE column as AMBIGUOUS_COLUMN
+  > (`SemanticAnalyzer.resolveIdentifier`, 4.12.11.0) — Go's deployed RFC-142 shadow semantics
+  > governs its whole unnest surface instead; aligning the collision model with Java's is a
+  > conformance question for that surface as a whole, not a per-boundary special case.
+  > (2) A stack-attributed unconditional probe at ALL THREE producer sites (P4 :968, P5 :1949, and
+  > the legColumns join-arm at :382 — a schema-derivation consumer the P4/P5 census never covered)
+  > ran the FULL sqldriver (4300+ FDB tests) + relational suites: ZERO firings.
+  > (3) DELETE-AND-COMPILE: the producers, `values.NewAnchoredJoinRecord`/`AnchoredJoinLeg`, the
+  > re-enumeration machinery (`NewReEnumerationAnchoredRecord`/`ReEnumerationLeg`/
+  > `anchoredColumnsByQuantifier`), the `AnchoredJoin` FLAG plus every consumer arm
+  > (GetCorrelatedToOfValue hiding, `AddMergeSeedAliases` + 7 call sites, PartitionSelectRule's
+  > anchored keep-all-lowers + re-enumeration merge arms and re-stamp, `isAnchoredJoinResult`,
+  > `MergeArmHits`, select.go's anchored `InternsAliasAware` arm, the generator's anchored
+  > SELECT-* arm + `anchoredJoinFirstLeg`, the equality/hash/preserve arms), and the census
+  > instrument — deleted; `go build ./... && go vet ./pkg/...` clean proves ZERO references remain
+  > (the compiler census, stronger than the runtime probe). The legColumns join arm derives its
+  > dotted schema directly (the producer's exact naming rule, no RC detour). Every declined
+  > formerly-name-model shape is now a LOUD named plan error (correct-or-loud). Wire compat
+  > untouched: all deleted sites were plan-time value construction. The interning/task baselines
+  > moved to the ordinal chain corpus, which reproduces the anchored corpus's counts exactly.
+  > With the producer gone, item C's provenance gate (`!rc.AnchoredJoin`) is retired and C's last
+  > lazy sites are UNBLOCKED (no reference can have anchored provenance anymore); D likewise.
+  > STATUS: every ROW-REACHABLE shape now ordinalizes — the census sweep `zeroed` list is exhaustive
+  > for physicalizable shapes and the subquery-conjunct (the last decline arm) is CLOSED. The producer
+  > still has ONE caller class: **multi-esq under EXISTS**, which name-models a `NewAnchoredJoinRecord`
+  > RC during translation and then STRANDS at physicalization ("not a physical plan") — both the gather
+  > and the name-model flat form 0AF00 identically today (parity), because there is no N-way existential
+  > physical implementer (`implementExistentialSelect` is 2-quantifier, rule_implement_nested_loop_join.go).
+  > So the producer deletion is GATED on one of: (a) implement the N-way existential physical operator so
+  > multi-esq ordinalizes (a deep, orthogonal physical-rule slice — its own design + Graefe gauntlet), or
+  > (b) make multi-esq decline LOUD-EARLY at translation (before building the anchored RC), removing the
+  > last producer caller without the physical operator. (b) is the smaller path but changes multi-esq's
+  > failure from a late strand to an early loud 0AF00 — a reviewed behavioral change. Either is a distinct
+  > slice; the name-model RETIREMENT for everything that can physicalize is done.
+  >
+  > MULTI-ESQ STRUCTURAL INVESTIGATION (grounded against Java 4.12.11.0):
+  > - Java's `ImplementNestedLoopJoinRule` matches `exactlyInAnyOrder(outer, inner)` — EXACTLY 2
+  >   quantifiers, same as Go's `implementExistentialSelect`. Neither has an "N-way" operator; a
+  >   multi-quantifier select is reduced to nested/paired 2-quantifier selects by OTHER rules.
+  > - Go FLATTENS a join+EXISTS into ONE 3-quantifier select `[ForEach(L), ForEach(R), Existential]`
+  >   (cascades_translator.go:2598-2603) and DELIBERATELY AVOIDS nesting the join inside the EXISTS
+  >   filter — "nesting … causes the Cascades planner to diverge." A SINGLE existential over that shape is
+  >   handled; but multi-esq builds `[ForEach(outer), Existential(A), Existential(B)]` (2 existentials),
+  >   which the 2-quantifier NLJ rule can't match, and Go's `PartitionSelectRule` /
+  >   `PartitionBinarySelectRule` BOTH bail on any non-ForEach quantifier (existentials excluded — "special
+  >   alias semantics", rule_partition_select.go:53-61). So it strands. Java's
+  >   `SplitSelectExtractIndependentQuantifiersRule` is for independent ForEach explodes (star-joins), NOT
+  >   this — so the exact Java rule that peels a 2nd existential still needs to be located.
+  > - So option (a) is really a PEEL rule (extract one existential into a nested 2-quantifier select so the
+  >   existing NLJ rule fires twice), navigating the 2598-2603 nesting-divergence caveat — a delicate
+  >   Cascades transformation.
+  >
+  > GRAEFE DESIGN-ACK (the fix DIRECTION, consult): Java's `PartitionSelectRule` matches
+  > `combinations(all(anyQuantifier()))` gated ONLY on `size >= 3` — existentials are FIRST-CLASS, carried
+  > into lower/upper preserving kind. For `[a, EXISTS(A), EXISTS(B)]` it peels lower `{a, EXISTS(A)}` +
+  > upper `{newq(a), EXISTS(B)}`, each a 2-quantifier existential select the NLJ rule implements. **The fix
+  > is 1:1: DROP Go's ForEach-only guard** (rule_partition_select.go:53-61) — the Go-only divergence. The
+  > 2598-2603 "nesting diverges" caveat does NOT apply (it warns against wrapping a join select inside an
+  > EXISTS filter at BUILD time; partition-time peeling keeps EXISTS(B) a sibling — no EXISTS boundary is
+  > nested). Java answers sibling multi-EXISTS trivially, so loud-early (option b) would be a DIVERGENCE.
+  >
+  > LANDED (triple-ACKed — Graefe/Torvalds/codex): sibling multi-EXISTS now PLANS. Three parts in
+  > `rule_partition_select.go`: (1) partition existentials only when ≥2 (leave ≤1 to the existing
+  > implementJoinWithExistential path); (2) `applyExistentialSourceAliases` rebuilds an existential-carrying
+  > partition select with source aliases parallel to its quantifiers (carried from the input; a join/nested
+  > inner's source ≠ its quantifier alias), reordered ForEach-outer-first to match the NLJ's slot-0=outer /
+  > slot-1=inner assumption; (3) a guardrail rejecting a bipartition that isolates an existential with no
+  > ForEach outer (a semi-join filter needs an outer; else a residual over a bind-to-nothing FirstOrDefault
+  > → empty rows). CLOSES 4 conformance divergences (exists_two_anded, exists_three_anded [recursive peel],
+  > exists_and_not_exists, two_not_exists_anded). Projected multi-EXISTS (result value references the
+  > existential) stays cleanly declined; a MULTI-TABLE-inner sibling is a documented LOUD sentinel
+  > (correct-or-loud — the retired name-map makes the ordinal miss loud, never wrong rows).
+  >
+  > **BOX MULTI-ESQ: LANDED (box multi-esq gathers — one producer caller retired).** The multi-esq fix +
+  > gather admission first ordinalized the INNER FLAT-CLUSTER multi-esq. The LEFT/RIGHT/FULL BOX multi-esq
+  > (`A LEFT JOIN B …, A.ARR AS X WHERE EXISTS AND EXISTS`) now GATHERS + ordinalizes too (0 producers,
+  > row-pinned: `TestFDB_RFC173Slice3B2bFaceA` multiesq_{leftbox,fullbox}_projection + the B2-B/sweep
+  > censuses). The producer is NOT fully dead — the surviving name-model P5 caller is now the
+  > CHAINED-UNNEST-OVER-NESTED-OUTER-BOX (`(A LEFT B) LEFT C`, multi-link, `translateChainedUnnestJoin`'s
+  > name-model residual; `TestRFC173_ProducerCensusP5EnclosureBit`) plus bare-twin / CTE-rooted / 3+-link
+  > chains. C's last anchored-reachable sites + D remain gated on the producer's full death.
+  >
+  > EMPIRICAL BOUNDARY (probed this slice, both directions). Two probes confirm the remaining P5 callers
+  > are gated on the box substrate (Outcome B), NOT a tractable local fix like the box multi-esq was:
+  > (1) LIFTING the `boxOuterBirthsPositional` chained-ordinal guard (rfc173_w5_chained_unnest.go:584)
+  > breaks the FULL-box loud-reject (`TestFDB_RFC173S4_FullBoxChainedSpine/nestedbox_unfiltered` plans
+  > instead of rejecting) and enters the box-substrate arc's UNVALIDATED-tower territory. (2) The pure-LEFT
+  > nested box `(A LEFT B) LEFT C, A.SARR AS X, X.SUB AS Y` does NOT physicalize even NAME-MODEL — it
+  > strands `LogicalProjectionExpression not physical`, surfaced as a LOUD plan error (never silent-wrong):
+  > exactly the documented Slice-2a' pre-existing gap (name-model cannot physicalize a box + comma-lateral
+  > unnest, "a malformed LogicalProjectionExpression, for every variant"). So P5 fires during TRANSLATION
+  > for a shape that already LOUD-FAILS at physicalization — an UNSUPPORTED shape, not a working query
+  > producing wrong rows. Retiring this caller means making the shape WORK (ordinalize = the box substrate /
+  > Outcome B), or declining it before P5 (a stopgap that must first prove Java doesn't support it — the
+  > conformance floor). Either way it is the box-substrate slice the arc sequences LAST, not a box-multi-esq-
+  > style authority split. The box multi-esq was the tractable part; the rest is genuinely Outcome B.
+  >
+  > CORRECTED ROOT CAUSE (the earlier "two-namespace unification" diagnosis was a SYMPTOM, not the required
+  > fix — this is the honest record). The box-wrap strand looked like the quantifier-alias-vs-source-alias
+  > divergence (an `ExistentialValuePredicate` referencing a SOURCE name stranded from its existential
+  > quantifier). But the ACTUAL cause, memo-traced empirically: the box `[seed, ∃, ∃]` wrap peels via
+  > PartitionSelectRule to a NestedLoopJoin, which DROPS the seed's windowed positional layout — whereas a
+  > SINGLE-esq box stays a FlatMap that KEEPS the windows. So the executor's below-FOD hoist (the box's
+  > runtime rebase authority) could no longer recover the windows, and the LEG-RELATIVE existential
+  > JoinPredicate (`EE.CK = A.K`, name A) stranded unbound. The fix is NOT the alias-namespace unification
+  > — it is the same E-1a plan-time authority the INNER cluster already uses: BAKE the existential
+  > correlation positionally at plan time for a multi-esq box (`multiEsqPeelBox` in
+  > `translateUnnestExistsFilter`), so the correlation references the seed quantifier by ORDINAL (not a
+  > name). That circumvents the two-namespace issue entirely (the residual is now a proper
+  > sibling-quantifier edge ∃→seed, so the peel keeps ∃ with the seed) AND gives the executor no
+  > double-authority (the seed's FlatMap-vs-NLJ ambiguity is resolved: plan-time bake is the sole
+  > authority, and a `FrontierPinned` idempotence guard in `rebaseOuterLegValueOrdinal` stops the hoist
+  > re-offsetting an already-baked ref). Fully 4-gated (Graefe/Torvalds/@claude/codex ACK). So TODO 7.1
+  > was NOT on the critical path for the box multi-esq after all — a correlation-baking authority split
+  > closed it. (The INNER cluster never hit it: single-ForEach seed → NLJ → plan-time bake from the start.)
+  >
+  > FOLLOW-UP TODOs (Graefe review — separable, non-blocking, none touch wire/rows):
+  > - [ ] Move the existential-needs-a-ForEach ROOT fix into `ImplementNestedLoopJoinRule` (decline when
+  >   slot-0 isn't a ForEach) — the partition-rule guardrail is prophylactic; the NLJ silently emitting
+  >   empty rows for an existential-only select is the real defect to fix at the source.
+  > - [ ] Remove the ≥2-existential gate by SUBSUMING `implementJoinWithExistential` into partitioning
+  >   (Java has no count gate; the gate exists only to avoid two paths racing). Don't let it calcify.
+  > - [ ] Relax `PartitionBinarySelectRule`'s ForEach-only guard too, for full parity.
+  > - [ ] The multi-table-JOIN-inner sibling (the loud sentinel) — the join-inner's merged-row correlation
+  >   through the peel; a follow-on once the source-alias/positional namespace debt is paid down.
+
+### C. Uniform plan-time ordinal binding (Java parity — the remaining ~30%)
+> IMPL NOTE — CORRECTED by the Graefe design consult (the ORIGINAL note below was the trap):
+> ~~baking canNOT happen in ResolveIdentifier because a covering-index row has a DIFFERENT physical
+> slot order than the base table, so bake late against the PHYSICAL shape~~ — WRONG, and walking into
+> it bakes a covering-index physical ordinal that winner selection then invalidates by picking the base
+> scan. **Java binds the ordinal against the referent's LOGICAL result type** (`FieldValue.ofFieldName` /
+> `resolveFieldPath`, FieldValue.java:273-299 — the ordinal is fixed against `childValue.getResultType()`
+> at construction, LOGICAL). Every physical access path — base scan, covering index
+> (`IndexKeyValueToPartialRecord` reconstructs a descriptor-shaped partial Message) — is REQUIRED to
+> conform to that logical slot order; that conformance IS item B's contract and is precisely why a
+> pre-baked LOGICAL ordinal survives winner selection promoting a different access path. So: the bake
+> LOCATION (ResolveIdentifier vs translation) is a plumbing choice, NOT a correctness one — the value
+> baked MUST be the LOGICAL ordinal (identical across all access paths), NEVER the physical slot order.
+> (If Go's covering-index / merge row does NOT conform to the logical order, that is a B positional-row
+> bug the logical-ordinal bake will SURFACE — a feature, not a reason to bake physical-late.)
+>
+> GRAEFE DESIGN-ACK (the C direction; conditions binding on impl):
+> - **Bake the LOGICAL ordinal** against the referent's result type, not the physical row shape (above).
+> - **Flattening survival:** a baked ordinal survives SelectMergeRule ONLY because merge TRANSLATES the
+>   reference (rewrites its path over the new child via `translateValueCorrelations` / `RebaseValue` /
+>   `translateQuantifierCorrelations` in rule_select_merge.go), never re-derives by name — Java's
+>   `withNewChild` fusing the fieldPath. Go already has this invariant; C must not break it.
+> - **Provenance gate is sound; runtime-accident partition is NOT.** The `!rc.AnchoredJoin` gate
+>   partitions by PROVENANCE (a stable structural property), monotonically shrinking as B's producer
+>   dies — a coherent intermediate. But `groupByOutputBaker` leaving keys lazy "when GetByName HAPPENS
+>   to resolve" is a RUNTIME-ACCIDENT partition (rot) — kill that one UNIFORMLY now. C is not done until
+>   the anchored producer is gone AND all ~23 sites bake.
+> - C is UNBLOCKED by B, NOT subsumed. Order strictly B → C → D.
+- [x] Bake `ResolveIdentifier`'s FLAT arm at plan time — DONE (post-B session; commit
+  "ResolveIdentifier bakes the logical ordinal at plan time"). The single-source common
+  column path now returns `NewFieldValueWithResolvedOrdinal` bound to the column's position
+  in the resolved source's declared order (`sourceColumnOrdinal`, first-match case-folded ==
+  `RecordType.FieldIndex`), and the three consumers the probe surfaced were conformance-fixed
+  in the same increment: (1) `ColumnNameValue` split from `ExplainValue` (output-column
+  names are ordinal-free; every name derivation switched, so a baked and a lazy instance of
+  one reference derive the same name — the `SUM(AMOUNT#2)` HAVING lockstep break); (2)
+  covering-index rows conform to the record's LOGICAL slot order (descriptor-shaped, Java's
+  `IndexKeyValueToPartialRecord`, via the shared `positionalTypeForDescriptor` authority;
+  index-layout rows silently served the PK slot for a value-column ordinal — SUM(b) summed
+  ids); (3) `groupByOutputBaker` REBINDS input-bound single-accessor refs to the output
+  ordinal (the skip-if-baked guard left the source ordinal live above the aggregate). Then
+  three follow-on increments: bare-column PROJECTIONS and bare GROUP BY keys resolve through
+  the scope (kept only when the result is a childless `SourceRelativeBaked` node), plus
+  catalog-nullability + descriptor-type-name metadata conformance the typed values exposed
+  (Java cross-engine harness caught go=BIGINT vs java=INTEGER). Pins:
+  TestResolveIdentifier_BakesLogicalOrdinal (red on revert), TestGroupByOutputBaker_RebindsInputBoundRef,
+  TestBuildCoveringLogicalRow, TestColumnNameValue_IgnoresBakedOrdinals,
+  TestAggregateNaming_StableUnderOrdinalBind, TestSourceRelativeBaked.
+- [ ] Bake the CORRELATED (QOV-child) resolver arm — ATTEMPTED and deliberately REVERTED
+  (documented at the arm in expr.go): a correlated reference's runtime binding is not always
+  the source's own row (lateral unnest binds the merged row or the raw element; join legs
+  bind leg windows, merged concats, nil null-legs), and the join/exists gates make
+  admission/placement decisions on the LAZY shape. Probed consequences of construction-binding
+  it: the gated LEFT-box + NOT EXISTS composition flipped its wedge-gate admission and DROPPED
+  its WHERE conjunct (silent wrong rows); the unnest element ref (shadowing source) read a
+  foreign slot. The gate-side hardening ALREADY LANDED (the `SourceRelativeBaked` widenings:
+  legRef, rebaseLegRefsToBox, wrapRVFullyBaked, clusterPullUp, collectClusterOuterRefs,
+  bakeGatheredGroupValue, bakeUnnestElementRefOrdinal, unnestExistsRefSurvivesUnbaked) —
+  what remains is the PER-GATE AUDIT that every admission/placement decision is
+  bake-invariant, its own reviewed slice.
+- [ ] Delete the runtime `FieldIndex(name)` lookup (values.go resolveOrdinal's lazy arm +
+  evaluateOrdinal's GetByName arm) — BLOCKED on the correlated-arm slice above plus the
+  remaining name-model families (measured census below).
+  > C CENSUS (stderr probe on FieldValue name resolution, full sqldriver e2e, deduped by
+  > (field, eval-stack)): 2782 at the B-completion baseline → **1306** after the four landed
+  > increments. Remaining by family: ~458 evaluateCorrelated (the deferred QOV arm), ~420
+  > executeProjection (dotted `LEG.COL` merged-row reads + derived/CTE outputs with empty
+  > semantic catalogs), 236 in-memory-sort keys (mostly qualified `D.NAME` forms over merged
+  > rows — the D1 heuristic's clients), 63 computeGroupKey (qualified/derived), ~90 tail
+  > (multi-intersection comparison keys, flatMap legs, executeMap, mergeSort keys).
+  > C DESIGN GROUNDING (Java verified, tag 4.12.11.0, FieldValue.java:164-169): `FieldValue.eval`
+  > reads its child (a Message) then resolves purely by ordinal —
+  > `MessageHelpers.getFieldValueForFieldOrdinals(childResult, fieldPath.getFieldOrdinals())`. The
+  > ordinals live in the `FieldPath`, fixed at PLAN time; runtime never sees a name. Go's `FieldValue`
+  > already has the `Resolved` ordinal-path slot (the ordinal analogue) + `evaluateOrdinal` — C's job
+  > is to POPULATE `Resolved` at plan/physicalization time for the ~23 lazy sites, mirroring Java's
+  > FieldPath-ordinal binding, then delete the runtime `FieldIndex(name)` fallback. **Coupling with the
+  > name-model residue:** the C bake MUST be gated exactly like the `!rc.AnchoredJoin` groupBy gate —
+  > a reference over a still-name-model row (multi-esq's anchored RC, item B's residual) has no stable
+  > ordinal, so baking there would read an ordinal against the Datum map and error. So C's per-site
+  > bake carries the same `!rc.AnchoredJoin` guard, and the last lazy sites can only retire once B's
+  > producer is gone (multi-esq). Sequence within C: bake the sites whose physical row is ALWAYS
+  > ordinal first (post-gather seeds), leave the anchored-reachable sites for after the producer dies.
+- [x] `groupByOutputBaker` (cascades_translator.go) baked keys uniformly — DONE (increment 1, triple-ACKed).
+  The runtime-accident "leave a nested key lazy when GetByName happens to resolve" partition is gone;
+  keys AND aggregates bake to their logical output ordinal, top-level and nested. atTop/fullNames/
+  normalizedOutputNameSet collapsed. Pin: group_by_derived_probe nested_group_key_bakes_ordinal +
+  computed_column_label_is_positional_not_ordinal (the `#0` stays out of the user label).
+  > C STATE (measured): only **7 lazy `NewFieldValue` sites remain** (79 already bake — C is ~90% done
+  > from B's translation work). The 7: expr/expr.go {ResolveIdentifier :260/:266, ResolveQualifiedProjection
+  > :299, ResolveColumnShadowingQualified :333} + cascades_translator.go {:1790 residual array (comment:
+  > "rows are name-model"), :1967 merged-row bare key, :3392 RFC-142 mergedQOV "LEG.COL" key, :4458 join-leg
+  > qualifier}. **Every one is ANCHORED-REACHABLE** — they read qualified/bare keys off merged/residual rows
+  > whose provenance can be a name-model AnchoredJoin RC (multi-esq's residual). Per the provenance-gate
+  > sequencing, they can only bake once B's producer is gone. So C is BLOCKED on the same gate as B's
+  > producer deletion: **the multi-esq N-way existential physical operator** (implementExistentialSelect is
+  > 2-quantifier; a 3+-quantifier `outer + EXISTS + EXISTS` cluster strands). That operator is the single
+  > critical-path unblocker for {B producer deletion, C's last 7 sites, D}. It is a deep Cascades physical-
+  > rule slice (chain N existential FlatMaps, Java parity) needing its own design gauntlet.
+
+### D. Kill Go-invented name heuristics (residual silent-first-match hazards)
+> D DEPENDS ON C completing (probe → 0). Post-B measurement (the "multi-esq operator" framing
+> is retired — the producer is gone): the heuristics are still LIVE, with measured clients.
+- [ ] `PositionalRow.GetByName` "strip qualifier if the leaf is unique" heuristic
+  (positional_row.go) — no Java analog; the last silent first-match name path. STILL LIVE:
+  the census probe counts 38 distinct firing sites in the sqldriver e2e suite, dominated by
+  qualified in-memory-sort keys (`I.CATEGORY` via compareByField/executeInMemorySort) over
+  frontier rows whose type has no leg window for the qualifier. Removable only after the
+  sort-key and merged-row read families ordinalize (C census).
+- [ ] `descendResolvedPath` descends nested records by per-step NAME on map/proto (values.go);
+  Java descends nested Message fields by ordinal (compose rule / fieldOrdinals). STILL LIVE:
+  28 distinct proto-descent sites in the e2e census. Blocked on retiring the `-1` ordinal
+  SENTINELS the unnest-residual multi-segment path bakes (cascades_translator.go, the
+  residual-array `Resolved` with `Ordinal: -1` "never consulted on the proto path") — an
+  ordinal proto-descent would consult them; those paths must carry real descriptor ordinals
+  first (same conformance as `positionalTypeForDescriptor`).
+
+### E. Retire vestigial `Complete` (Torvalds P1) — DONE
+- [x] Deleted the `QueryResult.Complete` field and its ~8 `Complete: true` writers (aggregate/
+  projection/unnest-RC/map outputs). The sort-continuation payload slot 1 is now written as a constant
+  `false` DEAD PLACEHOLDER and IGNORED on decode (no boolean validation) — so the wire format stays
+  byte-identical (the 3-slot array shape), avoiding a format-version bump, while the field and the
+  "fail-corrupt-on-dead-data" validation are gone (Torvalds' actual concern). A fully-clean slot
+  removal is a coordinated payload-version bump, deferred to the Slice-4 demolition. Tests updated
+  (continuation round-trip drops the Complete assertions; the pre-positional 1-/2-element cases now
+  hit the uniform positional==nil rejection). Green: executor/values/cascades/query/embedded units +
+  sqldriver.
+
+### F. Make the residual silent-NULL tails loud — DONE (Graefe ruling, commit 454b3472a)
+- [x] Graefe RULED a nuanced split (not a blanket flip): the tails divide into two populations.
+  KEEP-SILENT the correlation-MATCHED raw-return arms (`return bound, nil`) — they fire only when a
+  correlation RESOLVED to a non-nil non-ordinal value, the sanctioned `birthLegBinder` raw leg (W4c);
+  pinned still loud via `frontierContractGuard`, unpinned returns raw. LOUD-unconditionally the
+  NOTHING-MATCHED tails (Evaluate's unrecognized tail + evaluateCorrelated's unbound/no-positional and
+  unrecognized tails) via a NEW `*UnboundEvalContextError{Field,Correlation,CtxType}` (distinct from
+  BakedNameContextError = "pinned hit a name context that DID resolve"), for pinned and unpinned alike.
+  Asserts met: (a) tails flipped + full sqldriver+yamsql GREEN ⇒ unreachability proven;
+  (b) `TestFieldValue_UnboundEvalContext_IsLoud`; (c) the `TestFieldValue_UnpinnedNonOrdinalBinding_IsSilent`
+  raw-binding pin stays green.
+
+### Doc rot from the deleted machinery — FIXED this session
+- [x] `query_result.go` QueryResult/Positional/Complete docs (claimed Datum still emitted + a shadow
+  test); the orphaned ~35-line `qualifyAlias` doc stranded above `passesJoinPredicates`
+  (executor.go); `passesJoinPredicatesLegs` "works via Datum"; continuation.go "gates qualifyAlias"
+  + the two datum-map comments; `rfc173_w5_chained_unnest.go` "reads off the merged row's Datum".

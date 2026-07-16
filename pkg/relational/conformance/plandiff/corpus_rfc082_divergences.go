@@ -11,8 +11,7 @@ package plandiff
 //     SQL-correct; column labels are not wire format (see CLAUDE.md
 //     "query reach is not the hard line").
 //   - JavaSucceedsGoRejects: Go has a tracked capability gap (UUID equality
-//     predicates, EXISTS under OR / multiple EXISTS) and rejects rather than
-//     returning wrong rows.
+//     predicates, EXISTS under OR) and rejects rather than returning wrong rows.
 //   - BothErrorMessagesDrift: both engines reject; only the message wording
 //     differs (pinned by a cause-specific substring).
 //
@@ -33,14 +32,22 @@ package plandiff
 // skipped the empty-table implicit group under HAVING). Full plan-level
 // LEFT/RIGHT-join parity remains RFC-135 §4 R7.
 //
-// RFC-173 Slice 1 (buried-reference precursor): four JavaSucceedsGoRejects
-// entries were LIFTED because Go now resolves a derived-table/CTE column
-// reference to its OUTPUT column name (the source-name reverse-map is retired),
-// matching Java instead of rejecting. They now run as plain cross-engine
-// equivalence: `derived_table_projection_alias` (SELECT s.s over `x + y AS s`),
+// Four JavaSucceedsGoRejects entries were removed because Go now resolves a
+// derived-table/CTE column reference to its OUTPUT column name (the
+// source-name reverse-map is retired), matching Java instead of rejecting.
+// They now run as plain cross-engine equivalence:
+// `derived_table_projection_alias` (SELECT s.s over `x + y AS s`),
 // `nested_derived_arithmetic_2deep` / `nested_derived_arithmetic_projection`
 // (aliased expression `doubled` through nested derived tables), and
 // `nested_derived_double_where` (aliased columns `x`/`y` through two levels).
+//
+// A further four JavaSucceedsGoRejects entries were removed because Go now
+// PLANS a sibling multi-EXISTS `WHERE EXISTS(A) AND EXISTS(B)` —
+// PartitionSelectRule admits existential quantifiers (Java parity) and peels them
+// into nested 2-quantifier existential selects. They now run as plain cross-engine
+// equivalence: `exists_two_anded`, `exists_three_anded` (three ANDed, via recursive
+// peeling), `exists_and_not_exists`, and `two_not_exists_anded`. (A sibling with a
+// MULTI-TABLE-join inner remains a tracked loud gap.)
 var rfc082Divergences = map[string]Divergence{
 	"add_int_overflow_rejected":                      {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "integer overflow"},
 	"agg_min_max_with_filter":                        {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(1), float64(20), float64(20)}, {float64(2), float64(30), float64(40)}}},
@@ -63,14 +70,10 @@ var rfc082Divergences = map[string]Divergence{
 	"error_undefined_column_where":                   {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "column \"NONEXISTENT\" does not exist"},
 	"error_undefined_table_from":                     {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "table \"NOSUCHTABLE\" does not exist"},
 	"error_unknown_qualifier_select":                 {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "column reference with qualifier \"X\" cannot be resolved"},
-	"error_unknown_qualifier_where":                  {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "column reference with qualifier \"X\" cannot be resolved"},
+	"error_unknown_qualifier_where":                  {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "no FROM source aliased as X"},
 	"error_update_nonexistent_col":                   {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs (Go now reports a clean 42703 at build time, matching INSERT/SELECT, instead of the old leaky executor error)", GoErrorContains: "column \"NONEXISTENT\" not found in table"},
-	"exists_and_not_exists":                          {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "Cascades planner could not plan query"},
 	"exists_or_outer_predicate":                      {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "EXISTS within an OR (disjunction) is not supported"},
 	"exists_or_predicate":                            {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "EXISTS within an OR (disjunction) is not supported"},
-	"exists_over_cte_outer_with_probe":               {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "resolve inner table \"BIG\": table not found"},
-	"exists_three_anded":                             {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "Cascades planner could not plan query"},
-	"exists_two_anded":                               {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "Cascades planner could not plan query"},
 	"exists_with_aggregate":                          {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(10), float64(1)}, {float64(20), float64(1)}}},
 	"join_aggregate_having":                          {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{"A", float64(6)}, {"B", float64(5)}}},
 	"limit_clause_rejected":                          {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: LIMIT clause is not supported.", GoExpectedRows: [][]any{{float64(1)}, {float64(2)}}},
@@ -88,7 +91,7 @@ var rfc082Divergences = map[string]Divergence{
 	"order_by_string_desc":                           {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(2), "cherry"}, {float64(3), "banana"}, {float64(1), "apple"}}},
 	"order_by_two_columns_asc_desc":                  {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(1), float64(1), float64(30)}, {float64(3), float64(1), float64(10)}, {float64(4), float64(2), float64(40)}, {float64(2), float64(2), float64(20)}}},
 	"recursive_cte_basic":                            {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: order by is not supported in subquery", GoExpectedRows: [][]any{{float64(1)}, {float64(2)}, {float64(3)}, {float64(4)}}},
-	"recursive_cte_body_references_seed_alias":       {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-173 Slice-1 known gap (Graefe reverse probe, PR #446): shared-surface divergence — Java's recursive-CTE inner type carries the SEED's output names (X), so the body's `x` resolves and Java runs the recursion; Go's normalization exposes the column-list names (V) inside the body per Postgres (the column list renames the CTE's columns for ALL references; PG rejects `x` here too), so Go rejects with a clean plan-time 42703 rather than resolving under Java's seed-name model", GoErrorContains: "column \"X\" does not exist"},
+	"recursive_cte_body_references_seed_alias":       {Direction: DivergenceJavaSucceedsGoRejects, Reason: "Known gap: shared-surface divergence — Java's recursive-CTE inner type carries the SEED's output names (X), so the body's `x` resolves and Java runs the recursion; Go's normalization exposes the column-list names (V) inside the body per Postgres (the column list renames the CTE's columns for ALL references; PG rejects `x` here too), so Go rejects with a clean plan-time 42703 rather than resolving under Java's seed-name model", GoErrorContains: "column \"X\" does not exist"},
 	"recursive_cte_column_list_renames_aliased_seed": {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Attempting to query non existing column V (Java's recursive-CTE inner type carries the SEED's output names only — QueryVisitor.handleRecursiveNamedQuery applies the column-alias list to the union's OUTPUT, so `v` is not visible inside the recursive branch; Go exposes the column-list names inside the body, Postgres-style)", GoExpectedRows: [][]any{{float64(5)}}},
 	"scalar_subquery_in_projection":                  {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: syntax error:\nSELECT id, (SELECT MAX(v) FROM T_SSQ_01) AS max_v FROM T_SSQ_01 ORDER BY id\n            ^^^^^^", GoExpectedRows: [][]any{{float64(1), float64(30)}, {float64(2), float64(30)}, {float64(3), float64(30)}}},
 	"scalar_subquery_in_where":                       {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: syntax error:\nSELECT id FROM T_SSQ_02 WHERE v > (SELECT MIN(v) FROM T_SSQ_02) ORDER BY id\n                                   ^^^^^^", GoExpectedRows: [][]any{{float64(2)}, {float64(3)}}},
@@ -97,8 +100,7 @@ var rfc082Divergences = map[string]Divergence{
 	"string_concat_via_plus":                         {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "string + string"},
 	"string_ordering":                                {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: Cascades planner could not plan query", GoExpectedRows: [][]any{{float64(2), "apple"}, {float64(1), "banana"}, {float64(3), "cherry"}, {float64(4), "date"}}},
 	"sub_int_overflow_rejected":                      {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "integer overflow"},
-	"sum_over_string_rejected":                       {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "cannot aggregate non-numeric value of type string"},
-	"two_not_exists_anded":                           {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "Cascades planner could not plan query"},
+	"sum_over_string_rejected":                       {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject SUM over a non-numeric operand at plan time; Go's numeric-operand gate now emits Java's verbatim SemanticException message", GoErrorContains: "unable to encapsulate aggregate operation due to type mismatch"},
 	"undefined_column":                               {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "column \"NO_SUCH_COL\" does not exist"},
 	"undefined_table":                                {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "table \"NO_SUCH_TABLE\" does not exist"},
 	"union_all_outer_where_filter_count":             {Direction: DivergenceJavaSucceedsGoRejects, Reason: "RFC-082: Go capability gap (tracked); Go rejects rather than returning wrong rows", GoErrorContains: "Cascades planner could not plan query"},

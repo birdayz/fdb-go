@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math"
 	"slices"
+	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -51,23 +51,146 @@ func executeAggregateIndexScan(
 		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
 
+	canonicalName := p.CanonicalAggColumnName()
+	groupCols := p.GetGroupCols()
+	// The aggregate-index row's authoritative ordinal
+	// schema is the GROUP columns in scan order followed by the aggregate column
+	// — the exact order the row's slots are filled below (entry.Key then
+	// entry.Value). Row-invariant, so it is built once here and shared across
+	// rows. Named by the canonical output names (uppercase group
+	// cols, canonical agg name) — the exact schema plan-time bakes bind
+	// against.
+	posNames := make([]string, 0, len(groupCols)+1)
+	posNames = append(posNames, groupCols...)
+	posNames = append(posNames, canonicalName)
+	posType := positionalTypeFromNames(posNames)
+
+	// PERMUTED_MIN/MAX indexes keep the current extremum per group in the
+	// SECONDARY (permuted) subspace, not the primary VALUE tree; the aggregate
+	// value lives inside the entry KEY, not entry.Value. Scan BY_GROUP — the same
+	// scan Java's AggregateIndexMatchCandidate builds (IndexScanType.BY_GROUP) —
+	// so a plain SQL MAX/MIN served from a permuted index reflects the true
+	// current extremum under deletes/updates (a monotone _EVER index goes stale).
+	if idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax {
+		return newPermutedAggregateIndexCursor(store, idx, scanRange, continuation, scanProps, len(groupCols), posType)
+	}
+
 	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
 
 	return &aggregateIndexCursor{
 		inner:     indexCursor,
-		groupCols: p.GetGroupCols(),
+		groupCols: groupCols,
 		// Single source for the aggregate column key: the plan's
 		// CanonicalAggColumnName is also what planColumnNamesWithMD reports via
 		// OutputColumnNames, so the cursor's row key and the reported name can't
 		// drift (RFC-081).
-		canonicalName: p.CanonicalAggColumnName(),
+		canonicalName: canonicalName,
+		posType:       posType,
 	}, nil
 }
+
+// newPermutedAggregateIndexCursor builds a cursor over a PERMUTED_MIN/MAX
+// index's secondary (permuted) subspace. Each permuted entry's KEY has the
+// layout [groupPrefix..., value..., groupSuffix...] where groupPrefix is the
+// first (groupingCount - permutedSize) grouping columns, value is the grouped
+// aggregate column, and groupSuffix is the trailing permutedSize grouping
+// columns (Java's PermutedMinMaxIndexMaintainer). The grouping key is
+// reconstructed in its original order as prefix ++ suffix, and the aggregate
+// value is read from the middle. For the plain SQL MAX/MIN DDL path permutedSize
+// is 0, so the layout collapses to [group..., value] with an empty suffix.
+func newPermutedAggregateIndexCursor(
+	store *recordlayer.FDBRecordStore,
+	idx *recordlayer.Index,
+	scanRange recordlayer.TupleRange,
+	continuation []byte,
+	scanProps recordlayer.ScanProperties,
+	groupCount int,
+	posType *values.RecordType,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
+	if !ok {
+		return nil, fmt.Errorf("executor: permuted index %q root is %T, want *GroupingKeyExpression",
+			idx.Name, idx.RootExpression)
+	}
+	totalSize := gke.ColumnSize()
+	permutedSize := 0
+	if v, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			permutedSize = n
+		}
+	}
+	inner := store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, continuation, scanProps)
+	return &permutedAggregateIndexCursor{
+		inner:      inner,
+		groupCount: groupCount,
+		valueStart: gke.GetGroupingCount() - permutedSize,
+		valueEnd:   totalSize - permutedSize,
+		posType:    posType,
+	}, nil
+}
+
+// permutedAggregateIndexCursor emits one (group..., extremum) row per permuted
+// secondary entry, reading both the grouping key and the aggregate value out of
+// the entry KEY (the permuted subspace stores an empty value).
+type permutedAggregateIndexCursor struct {
+	inner      recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	groupCount int
+	valueStart int
+	valueEnd   int
+	posType    *values.RecordType
+	closed     bool
+}
+
+func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if !result.HasNext() {
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+	}
+
+	key := result.GetValue().Key
+	slots := make([]any, len(c.posType.Fields))
+
+	// Grouping key in original order: the first valueStart columns come straight
+	// from the key; the remaining grouping columns are the permuted suffix, which
+	// sits after the value at key[valueEnd:]. Normalize into the row domain the
+	// same way the covering/aggregate cursors do (UUID → [16]byte, float32 →
+	// float64) so residual HAVING/sort/joins compare consistently.
+	for i := 0; i < c.groupCount && i < len(slots); i++ {
+		ki := i
+		if i >= c.valueStart {
+			ki = c.valueEnd + (i - c.valueStart)
+		}
+		if ki < len(key) {
+			slots[i] = tupleElementToRowValue(key[ki])
+		}
+	}
+
+	// Aggregate value: the single grouped column at key[valueStart:valueEnd].
+	if aggOrd := c.groupCount; aggOrd < len(slots) && c.valueStart < c.valueEnd && c.valueStart < len(key) {
+		slots[aggOrd] = tupleElementToRowValue(key[c.valueStart])
+	}
+
+	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
+	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+}
+
+func (c *permutedAggregateIndexCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *permutedAggregateIndexCursor) IsClosed() bool { return c.closed }
+
+var _ recordlayer.RecordCursor[QueryResult] = (*permutedAggregateIndexCursor)(nil)
 
 type aggregateIndexCursor struct {
 	inner         recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	groupCols     []string
 	canonicalName string
+	posType       *values.RecordType
 	closed        bool
 }
 
@@ -81,23 +204,32 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 	}
 
 	entry := result.GetValue()
-	datum := make(map[string]any, len(c.groupCols)+1)
 
-	for i, col := range c.groupCols {
+	// Emit the authoritative ordinal row (real slots read
+	// from the index entry). Slot order matches c.posType: group cols then the
+	// aggregate column.
+	slots := make([]any, len(c.posType.Fields))
+
+	for i := range c.groupCols {
 		if i < len(entry.Key) {
-			// Normalize a UUID group key (tuple.UUID off the aggregate index)
-			// to the neutral [16]byte the value layer uses, matching the
-			// covering cursor — otherwise a residual HAVING/filter compare in
-			// cmpAny (which only knows [16]byte) would miss it.
-			datum[col] = tupleElementToUUID(entry.Key[i])
+			// Normalize the group key into the row domain, matching the
+			// covering cursor: tuple.UUID → [16]byte (otherwise a residual
+			// HAVING/filter compare in cmpAny, which only knows [16]byte,
+			// would miss it) and float32 → float64 (the base path widens
+			// FLOAT; a raw float32 group key would split sorts/dedup/joins
+			// against base-sourced rows).
+			slots[i] = tupleElementToRowValue(entry.Key[i])
 		}
 	}
 
 	if len(entry.Value) > 0 {
-		datum[c.canonicalName] = entry.Value[0]
+		if aggOrd := len(c.groupCols); aggOrd < len(slots) {
+			slots[aggOrd] = entry.Value[0]
+		}
 	}
 
-	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
+	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
+	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
 func (c *aggregateIndexCursor) Close() error {
@@ -155,7 +287,8 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 				// typed-error family is unreachable and ComparisonKeyFunc
 				// has no error channel, so a stray error is a planner
 				// invariant violation (panic, matching prior no-recover).
-				v, err := kv.Evaluate(qr.Datum)
+				// Resolves against the ordinal row via compKeyEvalArg.
+				v, err := kv.Evaluate(compKeyEvalArg(qr))
 				if err != nil {
 					panic(err)
 				}
@@ -171,15 +304,15 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 		if qr.PrimaryKey != nil {
 			return qr.PrimaryKey
 		}
-		return tuple.Tuple{fmt.Sprintf("%v", qr.Datum)}
+		return tuple.Tuple{fmt.Sprintf("%v", qr.Positional)}
 	}
 }
 
 // multiIntersectionMergeCursor combines each set of matching child rows
-// into a single output row. It merges every child's Datum map (grouping
-// columns are identical across children; each child contributes its own
-// aggregate column) and then evaluates the plan's result value against the
-// merged row to produce the final record. Mirrors Java's
+// into a single output row. It concatenates every child's positional row
+// (grouping columns are identical across children; each child contributes its
+// own aggregate column) and evaluates the plan's result value against the
+// concatenation to produce the final record. Mirrors Java's
 // RecordQueryMultiIntersectionOnValuesPlan.executePlan, which binds each
 // child result to its quantifier and evaluates the resultValue.
 type multiIntersectionMergeCursor struct {
@@ -198,23 +331,78 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	}
 
 	childResults := result.GetValue()
-	merged := make(map[string]any)
-	for _, cr := range childResults {
-		if m, ok := cr.Datum.(map[string]any); ok {
-			for k, v := range m {
-				merged[k] = v
-			}
-		}
-	}
 
-	var datum any = merged
-	if c.resultValue != nil {
-		datum, err = c.resultValue.Evaluate(merged)
-		if err != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, err
+	// Resolve the resultValue against the CONCATENATED ordinal rows of
+	// the matched children — the aggregate-index producer builds a Positional per
+	// child; the grouping columns are identical across children and the aggregate
+	// columns are distinct, so a plan-time bake against the flat concatenation
+	// resolves each resultValue column to the correct slot.
+	evalArg := mergeChildEvalArg(childResults)
+
+	qr := QueryResult{}
+	// Emit the authoritative ordinal OUTPUT row. The resultValue is a
+	// RecordConstructorValue whose Fields ARE the output columns in output order
+	// (the same rc.Fields deriveColumnsFromMultiIntersection names the ColumnDefs
+	// from), so evaluating each field against the concatenated child positional row
+	// produces a per-slot output row whose names/order match the result-set columns.
+	if rc, ok := c.resultValue.(*values.RecordConstructorValue); ok {
+		posNames := make([]string, len(rc.Fields))
+		posSlots := make([]any, len(rc.Fields))
+		for i, f := range rc.Fields {
+			posNames[i] = f.Name
+			fv, ferr := f.Value.Evaluate(evalArg)
+			if ferr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, ferr
+			}
+			posSlots[i] = fv
+		}
+		qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	} else if c.resultValue != nil {
+		// Non-RC resultValue: a scalar output row.
+		datum, derr := c.resultValue.Evaluate(evalArg)
+		if derr != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, derr
+		}
+		qr.Positional = scalarPositionalRow(datum)
+	} else if p, ok := evalArg.(*PositionalRow); ok {
+		// No resultValue: the concatenated child row IS the output.
+		qr.Positional = p
+	}
+	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+}
+
+// mergeChildEvalArg builds the eval argument the MultiIntersection resultValue is
+// evaluated against: the CONCATENATED PositionalRow of the matched child rows
+// (a bare OrdinalRow whose plan-produced concatenated type the baked
+// references read). Fields are concatenated in child order; grouping
+// columns repeat across children with the same value, so a first-match bind is
+// order-safe. Returns nil if any child lacks a Positional (should not happen — the
+// aggregate-index producer builds one per child).
+func mergeChildEvalArg(childResults []QueryResult) any {
+	var fields []values.Field
+	var slots []any
+	ord := 0
+	for _, cr := range childResults {
+		p := cr.Positional
+		if p == nil || p.Type == nil {
+			return nil
+		}
+		for i, f := range p.Type.Fields {
+			nf := f
+			nf.Ordinal = ord
+			fields = append(fields, nf)
+			var v any
+			if i < len(p.Slots) {
+				v = p.Slots[i]
+			}
+			slots = append(slots, v)
+			ord++
 		}
 	}
-	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Complete: true}, result.GetContinuation()), nil
+	if len(fields) == 0 {
+		return nil
+	}
+	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}
 }
 
 func (c *multiIntersectionMergeCursor) Close() error {
@@ -311,16 +499,16 @@ func executeUnorderedUnion(
 }
 
 // producesMergedRows reports whether a plan emits merged join rows
-// (multiple quantifiers' columns under qualified "ALIAS.COL" keys) rather
-// than single-table rows. A filter over such a plan resolves QOV
-// predicates through the qualified-key path, not an alias binding.
+// (multiple quantifiers' columns concatenated into one positional row with
+// per-leg windows) rather than single-table rows. A filter over such a plan
+// resolves QOV predicates leg-locally through the windows, not via an alias
+// binding.
 //
-// This list must stay in sync with the code that WRITES qualified
-// "ALIAS.COL" keys: mergeRows (executor.go) for the NLJ cursor, and
-// qualifyOuterRow (used by the FlatMap cursor in flat_map_cursor.go).
-// Those are the only two sites that emit merged rows today. A future
-// merged-row operator (e.g. a hash/merge join) MUST be added here, or a
-// filter over it would bind the merged row under one alias and bare-
+// This list must stay in sync with the merged-row producers: mergeRows
+// (executor.go) for the NLJ cursor, and the FlatMap cursor's merge output
+// (flat_map_cursor.go). Those are the only two sites that emit merged rows.
+// A future merged-row operator (e.g. a hash/merge join) MUST be added here,
+// or a filter over it would bind the merged row under one alias and bare-
 // resolve qov(b).col to the wrong quantifier (see DIVERGENCES.md).
 func producesMergedRows(p plans.RecordQueryPlan) bool {
 	switch p.(type) {
@@ -328,13 +516,6 @@ func producesMergedRows(p plans.RecordQueryPlan) bool {
 		return true
 	}
 	return false
-}
-
-// isStringMap reports whether datum is a name-keyed row map. Small readability
-// helper for the predicates-filter row-context dispatch.
-func isStringMap(datum any) bool {
-	_, ok := datum.(map[string]any)
-	return ok
 }
 
 func executePredicatesFilter(
@@ -357,75 +538,56 @@ func executePredicatesFilter(
 	// (bare lookup), since the row carries no "ALIAS.COL" qualified key.
 	//
 	// When the inner plan produces MERGED rows (NLJ / FlatMap join output),
-	// the row already carries qualified "ALIAS.COL" keys, so the predicate
-	// resolves through the RowEvalContext.Datum qualified path. We must NOT
-	// bind the merged row under a single alias: a qov(b).col lookup would
+	// the row is an ordinal merged row whose per-leg windows resolve a
+	// qov(alias).col reference leg-locally. We must NOT bind the merged row
+	// under a single alias: a qov(b).col lookup would
 	// then bare-resolve to whichever quantifier last wrote the bare key —
 	// e.g. on a null-filled LEFT JOIN row (b absent), qov(b).id would wrongly
 	// pick up the outer row's bare ID instead of NULL.
 	bindAlias := innerAlias.Name() != "" && !producesMergedRows(p.GetInner())
-	needsRowCtx := bindAlias || (evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0))
-	// RFC-173 Slice 1: on the positional frontier a QOV(innerAlias).col resolves
+	// On the positional frontier a QOV(innerAlias).col resolves
 	// via the bare-positional fallback in evaluateCorrelated (Correlations miss →
 	// Positional), so bindAlias is NOT a reason to wrap — only a genuine
 	// param/subquery/outer-binding is. When none is present, flow the bare row.
 	posNeedsCtx := hasBindingContext(evalCtx)
-	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// When the input flows a 2-way ordinal join's merged
 	// positional row, predicates evaluate under the LEG WINDOWS — computed
 	// once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) (bool, error) {
-			var rowCtx any = qr.Datum
-			// RFC-048 W1: a HAVING/filter reference to a name absent from a
-			// complete row (aggregate output) is a bug, not a NULL.
-			strict := StrictReferenceCheck && qr.Complete
+			var rowCtx any
 			switch {
 			case qr.Positional != nil && windowsOK:
-				// RFC-173 Slice 2: the merged positional row of a gated 2-way
-				// ordinal join — a window-era leg reference QOV(leg).col needs
+				// The merged positional row of a gated 2-way
+				// ordinal join — a leg reference QOV(leg).col needs
 				// its leg window (unconditional: even with no binding context,
 				// the leg bindings are required; the bare merged row misreads
-				// leg-relative ordinals — the W3 wrong-slot hazard).
+				// leg-relative ordinals — a wrong-slot hazard).
 				rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
+			case qr.Positional != nil && bindAlias && isBareScalarRow(qr.Positional):
+				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
+				// Explode flows a raw int64, wrapped by scalarPositionalRow into a
+				// 1-slot `_0` row — RFC-142). A WHERE on the element references the
+				// whole QuantifiedObjectValue(innerAlias) (Java binds the primitive
+				// flowed value directly, not a FieldValue — see
+				// generateCorrelatedFieldAccess), so bind the UNWRAPPED scalar under
+				// innerAlias so QOV(innerAlias) resolves to it. Without this the QOV
+				// whole-row fallback returns the 1-slot row, not the scalar.
+				ec := evalCtx
+				if ec == nil {
+					ec = EmptyEvaluationContext()
+				}
+				ec = ec.WithBinding(innerAlias, qr.Positional.Slots[0])
+				rowCtx = ec.RowContext()
 			case qr.Positional != nil:
-				// RFC-173 Slice 1: the non-join frontier flows an authoritative
+				// The non-join frontier flows an authoritative
 				// ordinal row — resolve predicates by ordinal (loud on a miss, no
 				// name-map fallback). A QOV(innerAlias).col resolves via the
 				// bare-positional fallback in evaluateCorrelated, so no alias
 				// binding is needed here.
 				rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
-			case isStringMap(qr.Datum) && (strict || needsRowCtx):
-				m := qr.Datum.(map[string]any) //nolint:errcheck // guarded by isStringMap
-				ec := evalCtx
-				if ec == nil {
-					ec = EmptyEvaluationContext()
-				}
-				if bindAlias {
-					ec = ec.WithBinding(innerAlias, m)
-				}
-				if strict {
-					rowCtx = ec.RowContextStrict(m)
-				} else {
-					rowCtx = ec.RowContext(m)
-				}
-			case !isStringMap(qr.Datum) && bindAlias:
-				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
-				// Explode flows int64(101), not a map — RFC-142). A WHERE on the
-				// element references the whole QuantifiedObjectValue(innerAlias)
-				// (Java binds the primitive flowed value directly, not a
-				// FieldValue — see generateCorrelatedFieldAccess), so bind the
-				// scalar under innerAlias and evaluate through a RowEvalContext
-				// whose Correlations resolves QOV(innerAlias) to it. Without this
-				// binding QOV(innerAlias).eval returns NULL and the predicate
-				// filters every element out.
-				ec := evalCtx
-				if ec == nil {
-					ec = EmptyEvaluationContext()
-				}
-				ec = ec.WithBinding(innerAlias, qr.Datum)
-				rowCtx = ec.RowContext(nil)
 			}
 			for _, pred := range preds {
 				res, err := pred.Eval(rowCtx)
@@ -455,22 +617,24 @@ func executeMap(
 		return nil, err
 	}
 	resultValue := p.GetResultValue()
-	// RFC-173 Slice 1: on the positional frontier an outer correlation resolves via
+	// On the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
 	posNeedsCtx := hasBindingContext(evalCtx)
-	// RFC-173 Slice 1: the Map output schema is row-invariant — derive the emitted
-	// positional row's OUTPUT names once from the result value's record type (nil
-	// when the result isn't a record; then no positional row is emitted).
-	var mapPosNames []string
+	// The Map output schema is row-invariant — derive the emitted
+	// positional row's OUTPUT names once from the result value's record type. When
+	// the result is a RecordConstructorValue, evaluate its Fields INDIVIDUALLY into
+	// dense slots (never through the collapsing name map — a duplicate output name
+	// keeps both slots by ordinal), mirroring executeProjection.
 	var mapPosType *values.RecordType
+	mapRC, _ := resultValue.(*values.RecordConstructorValue)
 	if rt, ok := resultValue.Type().(*values.RecordType); ok {
-		mapPosNames = make([]string, len(rt.Fields))
+		mapPosNames := make([]string, len(rt.Fields))
 		for i, fld := range rt.Fields {
 			mapPosNames[i] = fld.Name
 		}
 		mapPosType = positionalTypeFromNames(mapPosNames)
 	}
-	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// When the input flows a 2-way ordinal join's merged
 	// positional row, the result value evaluates under the LEG WINDOWS —
 	// computed once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
@@ -479,53 +643,41 @@ func executeMap(
 		if evalErr != nil {
 			return qr
 		}
-		var rowCtx any = qr.Datum
-		switch {
-		case qr.Positional != nil && windowsOK:
-			// RFC-173 Slice 2: the merged positional row of a gated 2-way
-			// ordinal join — a window-era leg reference QOV(leg).col needs its
+		var rowCtx any
+		if qr.Positional != nil && windowsOK {
+			// The merged positional row of a gated 2-way
+			// ordinal join — a leg reference QOV(leg).col needs its
 			// leg window (unconditional; see executePredicatesFilter).
 			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
-		case qr.Positional != nil:
-			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
-			// row — resolve the result value by ordinal (loud on a miss, no
-			// name-map fallback), taking precedence over the name-keyed Datum.
+		} else if qr.Positional != nil {
+			// The non-join frontier flows an authoritative ordinal
+			// row — resolve the result value by ordinal (loud on a miss).
 			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
-		case StrictReferenceCheck && qr.Complete:
-			// RFC-048 W1: a projection reading a name absent from a complete row
-			// (aggregate output) is a bug, not a NULL. Production passes the raw
-			// Datum map here (no parameter binder / scalar-subquery resolver), so
-			// the strict context must carry ONLY Datum + Strict — adding a Binder or
-			// ScalarSubqueries would let a param/subquery resolve in the test binary
-			// while it returns NULL in production, i.e. strict mode would change
-			// results. Bare strict context = identical resolution + miss reporting.
-			if m, ok := qr.Datum.(map[string]any); ok {
-				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
-			}
 		}
-		m, err := resultValue.Evaluate(rowCtx)
-		if err != nil {
-			evalErr = err
-			return qr
-		}
-		// RFC-173 Slice 1: dual-emit the ordinal positional row (OUTPUT-named),
-		// built from the evaluated result so it mirrors the name-keyed Datum
-		// field-for-field — but ONLY when the input is itself on the non-join
-		// frontier (carried a Positional). A Map OVER A JOIN re-emits join-qualified
-		// columns resolved by name; emitting a Positional there would wrongly flip
-		// the consumer onto the ordinal path. Positional propagates along the
-		// frontier and stops at the join/aggregate boundary.
+		// A Map's output IS a PositionalRow. When the result value is a
+		// RecordConstructor, evaluate each field individually into dense slots; a
+		// scalar result wraps in a 1-slot row.
 		var pos *PositionalRow
-		if qr.Positional != nil {
-			if mm, ok := m.(map[string]any); ok && mapPosNames != nil {
-				slots := make([]any, len(mapPosNames))
-				for i, name := range mapPosNames {
-					slots[i] = mm[name]
+		if mapRC != nil && mapPosType != nil {
+			slots := make([]any, len(mapRC.Fields))
+			for i, f := range mapRC.Fields {
+				fv, ferr := f.Value.Evaluate(rowCtx)
+				if ferr != nil {
+					evalErr = ferr
+					return qr
 				}
-				pos = &PositionalRow{Type: mapPosType, Slots: slots}
+				slots[i] = fv
 			}
+			pos = &PositionalRow{Type: mapPosType, Slots: slots}
+		} else {
+			m, err := resultValue.Evaluate(rowCtx)
+			if err != nil {
+				evalErr = err
+				return qr
+			}
+			pos = scalarPositionalRow(m)
 		}
-		return QueryResult{Datum: m, Positional: pos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
+		return QueryResult{Positional: pos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
 	return &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}, nil
 }
@@ -585,14 +737,14 @@ func executeFirstOrDefault(
 		return nil, lerr
 	}
 	defaultVal := p.GetDefaultValue()
-	var datum any
-	if defaultVal != nil {
-		datum, err = defaultVal.Evaluate(nil)
-		if err != nil {
-			return nil, err
-		}
+	if defaultVal == nil {
+		return newSingleResultCursor(QueryResult{Positional: scalarPositionalRow(nil)}), nil
 	}
-	return newSingleResultCursor(QueryResult{Datum: datum}), nil
+	qr, err := resultFromValue(defaultVal)
+	if err != nil {
+		return nil, err
+	}
+	return newSingleResultCursor(qr), nil
 }
 
 func executeDefaultOnEmpty(
@@ -603,33 +755,52 @@ func executeDefaultOnEmpty(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
-	if err != nil {
-		return nil, err
-	}
-	firstResult, err := inner.OnNext(ctx)
-	if err != nil {
-		_ = inner.Close()
-		return nil, err
-	}
-	if firstResult.HasNext() {
-		return newPrependResultCursor(firstResult.GetValue(), inner), nil
-	}
-	_ = inner.Close()
-	// Out-of-band (resource-limit) stop before the first row → truncated input;
-	// error rather than fabricate the default (RFC-106a; see FirstOrDefault).
-	if lerr := errIfBufferTruncated(firstResult); lerr != nil {
-		return nil, lerr
-	}
-	defaultVal := p.GetDefaultValue()
-	var datum any
-	if defaultVal != nil {
-		datum, err = defaultVal.Evaluate(nil)
+	// Java RecordQueryDefaultOnEmptyPlan.executePlan delegates to
+	//   RecordCursor.orElse(cont -> child.executePlan(store, ctx, cont, clearSkipAndLimit),
+	//                        (executor, cont) -> RecordCursor.fromList(executor, [default], cont),
+	//                        continuation)
+	//     .skipThenLimit(skip, limit)
+	// OrElseCursor serializes state UNDECIDED/USE_INNER/USE_OTHER, so once the
+	// inner has produced a row the resumed cursor stays on USE_INNER (never
+	// fabricating the default), and EVERY emitted row's continuation carries the
+	// inner's real position — which fixes both a paging loop that never advanced
+	// (a single-result default cursor emitted a nil StartContinuation forever) and
+	// a spurious null-extension on a mid-stream resume past the last inner row.
+	//
+	// The inner (primary) clears skip/limit; the default (alternative) is a
+	// single-row list cursor that respects its continuation; skip/limit apply to
+	// the whole OrElse — mirroring Java's clearSkipAndLimit-on-child +
+	// skipThenLimit-on-orElse split. An out-of-band inner stop before the first
+	// row flows through OrElse's UNDECIDED no-next (Java's behaviour): the caller
+	// resumes and the default is NEVER fabricated on truncation, so the eager
+	// RFC-106a truncation error is unnecessary here (DefaultOnEmpty is a streaming
+	// cursor; the eager FirstOrDefault/scalar-subquery paths keep their guard).
+	nestedProps := props.ClearSkipAndLimit()
+	primaryFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+		inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, cont, nestedProps)
 		if err != nil {
-			return nil, err
+			return &errResultCursor{err: err}
 		}
+		return inner
 	}
-	return newSingleResultCursor(QueryResult{Datum: datum}), nil
+	alternativeFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+		// Evaluate the default lazily (only when the inner is empty), matching
+		// Java's else-lambda: onEmptyResultValue.eval runs inside fromList's
+		// supplier. A nil default flows a scalar NULL row.
+		var defaultRow QueryResult
+		if defaultVal := p.GetDefaultValue(); defaultVal != nil {
+			qr, err := resultFromValue(defaultVal)
+			if err != nil {
+				return &errResultCursor{err: err}
+			}
+			defaultRow = qr
+		} else {
+			defaultRow = QueryResult{Positional: scalarPositionalRow(nil)}
+		}
+		return recordlayer.FromListWithContinuation([]QueryResult{defaultRow}, cont)
+	}
+	orElse := recordlayer.OrElseWithContinuation(primaryFactory, alternativeFactory, continuation)
+	return applySkipLimit(orElse, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeInJoin(
@@ -837,12 +1008,13 @@ func (m *mergeSortCursor) isBetter(a, b QueryResult) bool {
 		// Merge-order keys are field extractions; the runtime typed-error
 		// family is unreachable and the comparator has no error channel, so
 		// a stray error is a planner invariant violation (panic, matching
-		// the prior no-recover behaviour).
-		va, err := key.Evaluate(a.Datum)
+		// the prior no-recover behaviour). Resolves against each
+		// row's ordinal row via compKeyEvalArg.
+		va, err := key.Evaluate(compKeyEvalArg(a))
 		if err != nil {
 			panic(err)
 		}
-		vb, err := key.Evaluate(b.Datum)
+		vb, err := key.Evaluate(compKeyEvalArg(b))
 		if err != nil {
 			panic(err)
 		}
@@ -867,8 +1039,9 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 		// Merge-dedup keys are field extractions; the runtime typed-error
 		// family is unreachable and extractKey has no error channel, so a
 		// stray error is a planner invariant violation (panic, matching the
-		// prior no-recover behaviour).
-		v, err := key.Evaluate(qr.Datum)
+		// prior no-recover behaviour). Resolves against the ordinal
+		// row via compKeyEvalArg.
+		v, err := key.Evaluate(compKeyEvalArg(qr))
 		if err != nil {
 			panic(err)
 		}
@@ -935,16 +1108,11 @@ func compareValues(a, b any) int {
 			}
 			return 0
 		default:
-			bf := toFloat64(b)
-			if !math.IsNaN(bf) {
-				af := float64(av)
-				if af < bf {
-					return -1
-				}
-				if af > bf {
-					return 1
-				}
-				return 0
+			// int64 vs a floating operand: promote and use the
+			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
+			// A non-numeric b falls through to the fmt fallback.
+			if bf, ok := toFloat64Scalar(b); ok {
+				return values.CompareFloat64(float64(av), bf)
 			}
 		}
 	case int32:
@@ -967,31 +1135,46 @@ func compareValues(a, b any) int {
 			}
 			return 0
 		default:
-			bf := toFloat64(b)
-			if !math.IsNaN(bf) {
-				af := float64(av)
-				if af < bf {
-					return -1
-				}
-				if af > bf {
-					return 1
-				}
-				return 0
+			// int32 vs a floating operand: promote and use the
+			// Java-faithful float total order (NaN greatest, -0.0 < 0.0).
+			// A non-numeric b falls through to the fmt fallback.
+			if bf, ok := toFloat64Scalar(b); ok {
+				return values.CompareFloat64(float64(av), bf)
 			}
 		}
 	case float64:
-		if math.IsNaN(av) {
-			break
+		// Java-faithful float total order (values.CompareFloat64):
+		// NaN sorts greatest and NaN==NaN, -0.0 < 0.0 — matching the
+		// FDB tuple order an indexed FLOAT column uses, so an in-memory
+		// sort/merge/dedup agrees with an ordered index scan on both
+		// edge values. A non-numeric b is a cross-type mismatch the
+		// planner's type checking excludes; fall through to the fmt
+		// fallback.
+		if bf, ok := toFloat64Scalar(b); ok {
+			return values.CompareFloat64(av, bf)
 		}
-		bv := toFloat64(b)
-		if !math.IsNaN(bv) {
-			if av < bv {
+	case float32:
+		// Defense in depth: covering-index reads normalize float32 → float64 at
+		// the row boundary (tupleElementToRowValue), so this arm should not be
+		// reachable from production rows — but a float32 that slips through any
+		// other path must still compare numerically, not by the fmt fallback's
+		// lexical decimal string ("10.5" < "2.5"). Same Java-faithful float
+		// total order as the float64 arm (NaN greatest, -0.0 < 0.0).
+		if bf, ok := toFloat64Scalar(b); ok {
+			return values.CompareFloat64(float64(av), bf)
+		}
+	case bool:
+		// false < true — FDB tuple order (0x26 < 0x27), same as Java's
+		// Boolean.compare. The fmt fallback happens to get this right
+		// ("false" < "true" lexically), but only by accident; pin it.
+		if bv, ok := b.(bool); ok {
+			if av == bv {
+				return 0
+			}
+			if !av {
 				return -1
 			}
-			if av > bv {
-				return 1
-			}
-			return 0
+			return 1
 		}
 	case string:
 		if bv, ok := b.(string); ok {
@@ -1003,6 +1186,16 @@ func compareValues(a, b any) int {
 			}
 			return 0
 		}
+	case []byte:
+		// BYTES sorts by unsigned lexicographic byte order — the same order the
+		// FDB tuple byte-string encoding gives an indexed BYTES column, so an
+		// in-memory sort / merge / dedup of a non-indexed BYTES column agrees
+		// with an ordered index scan of the same data. Without this arm the
+		// fmt.Sprintf("%v") fallback below would compare decimal-list strings
+		// ("[0 1]" < "[0]" because ' ' < ']'), putting {0x02} after {0x0A}.
+		if bv, ok := b.([]byte); ok {
+			return bytes.Compare(av, bv)
+		}
 	case [16]byte:
 		// UUID sorts by unsigned big-endian bytes — the same order the tuple.UUID
 		// wire encoding and the filter-path predicates.cmpAny use, so an
@@ -1013,6 +1206,14 @@ func compareValues(a, b any) int {
 			return bytes.Compare(av[:], bv[:])
 		}
 	}
+	// Should-never-happen fallback: every type the row domain can carry (nil,
+	// int64/int32, float64/float32, string, []byte, [16]byte, bool) has a typed
+	// arm above, so for a well-typed query this is only reachable by a NaN sort
+	// key or a cross-type mismatch the planner's type checking excludes. It
+	// compares fmt.Sprintf("%v") strings LEXICALLY, which is NOT tuple order for
+	// anything numeric or binary — a typed arm must be added for any new row
+	// type before it can be sorted/merged. No error channel exists here
+	// (comparators return int); see F9b for making this loud.
 	as := fmt.Sprintf("%v", a)
 	bs := fmt.Sprintf("%v", b)
 	if as < bs {
@@ -1088,6 +1289,21 @@ func (c *concatCursor[T]) Close() error {
 	return firstErr
 }
 
+// errResultCursor yields a stored error on the first OnNext. Used to defer a
+// cursor-construction error through a factory that cannot itself return an error
+// (e.g. OrElse's primary/alternative factories, which have signature
+// func([]byte) RecordCursor[QueryResult]). Mirrors recordlayer.errorCursor.
+type errResultCursor struct {
+	err error
+}
+
+func (c *errResultCursor) OnNext(context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	return recordlayer.RecordCursorResult[QueryResult]{}, c.err
+}
+
+func (c *errResultCursor) Close() error   { return nil }
+func (c *errResultCursor) IsClosed() bool { return false }
+
 // singleResultCursor yields one result then ends.
 type singleResultCursor struct {
 	value  QueryResult
@@ -1114,26 +1330,3 @@ func (c *singleResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursor
 
 func (c *singleResultCursor) Close() error   { c.closed = true; return nil }
 func (c *singleResultCursor) IsClosed() bool { return c.closed }
-
-// prependResultCursor yields one value then delegates to inner.
-type prependResultCursor struct {
-	first   QueryResult
-	inner   recordlayer.RecordCursor[QueryResult]
-	yielded bool
-	closed  bool
-}
-
-func newPrependResultCursor(first QueryResult, inner recordlayer.RecordCursor[QueryResult]) *prependResultCursor {
-	return &prependResultCursor{first: first, inner: inner}
-}
-
-func (c *prependResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	if !c.yielded {
-		c.yielded = true
-		return recordlayer.NewResultWithValue(c.first, &recordlayer.StartContinuation{}), nil
-	}
-	return c.inner.OnNext(ctx)
-}
-
-func (c *prependResultCursor) Close() error   { c.closed = true; return c.inner.Close() }
-func (c *prependResultCursor) IsClosed() bool { return c.closed }

@@ -86,11 +86,11 @@ func posMergeSelect(a1, a2 string) *SelectExpression {
 	return NewSelectExpressionWithAliases(rv, []Quantifier{q1, q2}, nil, []string{a1, a2})
 }
 
-// TestReference_AbsorbFoldsAliasAwareDedups is the RFC-173 Slice-3 regression for
-// the shadow-delta metric under reference merges (review finding): Absorb reinserts
-// only the loser's KEPT members, so the loser's HISTORICAL alias-aware dedups
-// would be discarded when AliasAwareDedups canonicalizes to the survivor —
-// undercounting the shadow. Absorb must FOLD the loser's counter into the survivor.
+// TestReference_AbsorbFoldsAliasAwareDedups pins the shadow-delta metric under
+// reference merges: Absorb reinserts only the loser's KEPT members, so the
+// loser's HISTORICAL alias-aware dedups would be discarded when
+// AliasAwareDedups canonicalizes to the survivor — undercounting the shadow.
+// Absorb must FOLD the loser's counter into the survivor.
 func TestReference_AbsorbFoldsAliasAwareDedups(t *testing.T) {
 	t.Parallel()
 

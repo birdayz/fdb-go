@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -554,6 +555,74 @@ CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
 	}
 }
 
+// TestAggregateIndexCandidate_DeclinesNonzeroPermutedSize pins F52: a permuted
+// MIN/MAX index with permutedSize > 0 stores its BY_GROUP keys as
+// [prefix-groups, extremum, permuted-suffix-groups] — not logical group order.
+// The SQL aggregate candidate models neither the bounds translation (a
+// group-column scan range built in logical order would bind the extremum slot →
+// missing rows) nor the true stream ordering (the groupCols ordering hint is
+// false → ORDER BY elimination / multi-aggregate intersection mis-merge). Go's
+// own DDL always writes permutedSize=0; a nonzero permutation arrives only via
+// record-layer API / Java-written shared-cluster metadata. Candidacy must
+// DECLINE it (fall back to a base-record StreamingAgg — correct rows), while
+// permutedSize=0 (control) stays matched.
+func TestAggregateIndexCandidate_DeclinesNonzeroPermutedSize(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
+`
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatalf("schema DDL: %v", err)
+	}
+	md := tmpl.Underlying()
+	var idx *recordlayer.Index
+	for name, i := range md.GetAllIndexes() {
+		if strings.EqualFold(name, "max_price_by_cat") {
+			idx = i
+			break
+		}
+	}
+	if idx == nil {
+		t.Fatalf("permuted index max_price_by_cat not found in built metadata (have %v)",
+			func() []string {
+				var names []string
+				for n := range md.GetAllIndexes() {
+					names = append(names, n)
+				}
+				return names
+			}())
+	}
+	if idx.Type != recordlayer.IndexTypePermutedMax {
+		t.Fatalf("index type = %q, want %q", idx.Type, recordlayer.IndexTypePermutedMax)
+	}
+
+	// Control — DDL-built permutedSize=0 must produce an aggregate candidate.
+	if got := tryAggregateIndexCandidate(idx, md); got == nil {
+		t.Fatal("permutedSize=0 (DDL-built) must produce an aggregate candidate — the guard over-rejects")
+	}
+
+	// Java-written shared-cluster shape: permutedSize=1 → the physical key is
+	// [category-prefix?, extremum, permuted-suffix]; candidacy must decline.
+	idx.Options[recordlayer.IndexOptionPermutedSize] = "1"
+	if got := tryAggregateIndexCandidate(idx, md); got != nil {
+		t.Fatalf("permutedSize=1 must DECLINE aggregate candidacy (bounds/ordering are not "+
+			"modeled for a nonzero permutation — missing/misordered rows), got candidate %v", got)
+	}
+
+	// A malformed permutedSize (unparseable) must also decline, not default open.
+	idx.Options[recordlayer.IndexOptionPermutedSize] = "not-a-number"
+	if got := tryAggregateIndexCandidate(idx, md); got != nil {
+		t.Fatal("malformed permutedSize must DECLINE candidacy (fail-safe), got a candidate")
+	}
+}
+
 func TestPlanHarness_AggregateIndexDDL_Min(t *testing.T) {
 	t.Parallel()
 	schema := `
@@ -719,6 +788,59 @@ CREATE INDEX multi_idx AS SELECT COUNT(*), SUM(amount) FROM ORDERS GROUP BY stat
 	t.Logf("got expected error: %v", err)
 }
 
+// TestPlanHarness_AggregateIndexDDL_MinMaxPermutedType pins the wire/metadata
+// identity of plain SQL MAX(col)/MIN(col) aggregate indexes: they materialize
+// as PERMUTED_MAX / PERMUTED_MIN with permuted size 0, matching Java's
+// NumericAggregationValue.Max/Min.getIndexTypeName() and
+// MaterializedViewIndexGenerator (permutedSize = aggregateOrderIndex < 0 ? 0).
+// A monotone MAX_EVER_LONG / MIN_EVER_LONG index would go stale under deletes;
+// the permuted index tracks the true current extremum, and — critically for a
+// cluster shared with Java — is the identical index type Java writes for the
+// same DDL text.
+func TestPlanHarness_AggregateIndexDDL_MinMaxPermutedType(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
+CREATE INDEX min_price_by_cat AS SELECT MIN(price) FROM ORDERS GROUP BY category
+`
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		idxName  string
+		wantType string
+	}{
+		{"MAX_PRICE_BY_CAT", recordlayer.IndexTypePermutedMax},
+		{"MIN_PRICE_BY_CAT", recordlayer.IndexTypePermutedMin},
+	} {
+		idx := tmpl.Underlying().GetIndex(tc.idxName)
+		if idx == nil {
+			t.Fatalf("index %s not found in metadata", tc.idxName)
+		}
+		if idx.Type != tc.wantType {
+			t.Errorf("index %s type = %q, want %q (NOT a monotone _EVER type)", tc.idxName, idx.Type, tc.wantType)
+		}
+		if got := idx.Options[recordlayer.IndexOptionPermutedSize]; got != "0" {
+			t.Errorf("index %s permuted size = %q, want %q", tc.idxName, got, "0")
+		}
+	}
+}
+
+// TestPlanHarness_AggregateIndexDDL_MinEver verifies the SEPARATE min_ever()
+// SQL function in a CREATE INDEX materializes a monotone MIN_EVER index — the
+// wire/metadata identity for the _EVER function, kept distinct from plain
+// MIN() (which maps to permuted_min). Go's read side does not expose min_ever()
+// as a query aggregate, so there is no served-query shape to assert — only the
+// DDL index type. A plain MIN() query is intentionally NOT served by this
+// index (that would return stale extrema); it falls back to an aggregation over
+// a scan.
 func TestPlanHarness_AggregateIndexDDL_MinEver(t *testing.T) {
 	t.Parallel()
 	schema := `
@@ -730,18 +852,20 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX min_price_by_cat AS SELECT MIN_EVER(price) FROM ORDERS GROUP BY category
 `
-	plan, err := PlanQueryForTest(
-		"SELECT category, MIN(price) FROM orders GROUP BY category",
-		schema, nil)
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "AggregateIndex") {
-		t.Fatalf("expected AggregateIndex for MIN_EVER, got: %s", plan)
+	idx := tmpl.Underlying().GetIndex("MIN_PRICE_BY_CAT")
+	if idx == nil {
+		t.Fatal("index MIN_PRICE_BY_CAT not found in metadata")
+	}
+	if idx.Type != recordlayer.IndexTypeMinEverTuple {
+		t.Fatalf("MIN_EVER index type = %q, want %q", idx.Type, recordlayer.IndexTypeMinEverTuple)
 	}
 }
 
+// TestPlanHarness_AggregateIndexDDL_MaxEver mirrors _MinEver for max_ever().
 func TestPlanHarness_AggregateIndexDDL_MaxEver(t *testing.T) {
 	t.Parallel()
 	schema := `
@@ -753,15 +877,70 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX max_price_by_cat AS SELECT MAX_EVER(price) FROM ORDERS GROUP BY category
 `
-	plan, err := PlanQueryForTest(
-		"SELECT category, MAX(price) FROM orders GROUP BY category",
-		schema, nil)
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "AggregateIndex") {
-		t.Fatalf("expected AggregateIndex for MAX_EVER, got: %s", plan)
+	idx := tmpl.Underlying().GetIndex("MAX_PRICE_BY_CAT")
+	if idx == nil {
+		t.Fatal("index MAX_PRICE_BY_CAT not found in metadata")
+	}
+	if idx.Type != recordlayer.IndexTypeMaxEverTuple {
+		t.Fatalf("MAX_EVER index type = %q, want %q", idx.Type, recordlayer.IndexTypeMaxEverTuple)
+	}
+}
+
+// everOnlySchema has ONLY monotone MAX_EVER / MIN_EVER indexes on price — no
+// permuted / plain aggregate index. A plain SQL MAX()/MIN() query therefore has
+// no legitimate aggregate index to match.
+const everOnlySchema = `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_ever_price AS SELECT MAX_EVER(price) FROM ORDERS GROUP BY category
+CREATE INDEX min_ever_price AS SELECT MIN_EVER(price) FROM ORDERS GROUP BY category
+`
+
+// TestPlanHarness_PlainMaxMinOverEverIndex_FallsBackToBaseAgg pins that a plain
+// SQL MAX()/MIN() query is NOT served by scanning an explicit monotone MAX_EVER /
+// MIN_EVER index. Those indexes store running extrema maintained by atomic
+// mutations, not per-record values; scanning one as an ordinary VALUE index
+// (StreamingAgg over IndexScan) reads stale data that deletes never lower. With
+// no permuted/plain aggregate index present, the query must fall back to an
+// aggregation over the base-record scan — mirroring Java, whose
+// AtomicMutationIndexMaintainerFactory never produces a value-scan candidate.
+//
+// Revert-proof: removing the IsAtomicMutationIndex candidacy filter in
+// cascades_generator makes the _EVER index a value candidate again, and the plan
+// regresses to StreamingAgg(IndexScan(<_EVER index>, COVERING)) — the assertion
+// below then fails.
+func TestPlanHarness_PlainMaxMinOverEverIndex_FallsBackToBaseAgg(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		agg   string
+		query string
+	}{
+		{"MAX", "SELECT category, MAX(price) FROM orders GROUP BY category"},
+		{"MIN", "SELECT category, MIN(price) FROM orders GROUP BY category"},
+	} {
+		tc := tc
+		t.Run(tc.agg, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanQueryForTest(tc.query, everOnlySchema, nil)
+			if err != nil {
+				t.Fatalf("plan %s: %v", tc.agg, err)
+			}
+			t.Logf("%s plan: %s", tc.agg, plan)
+			// The only indexes are the monotone _EVER indexes; any IndexScan means
+			// the planner scanned one as a value source (the F35 bug).
+			assertPlanNotContains(t, plan, "IndexScan")
+			// Correct shape: aggregate over a base-record scan.
+			assertPlanContains(t, plan, "StreamingAgg")
+			assertPlanContains(t, plan, "Scan(ORDERS")
+		})
 	}
 }
 

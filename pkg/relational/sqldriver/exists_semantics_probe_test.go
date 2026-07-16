@@ -133,9 +133,9 @@ func TestFDB_ExistsSemanticsProbe(t *testing.T) {
 	ck("not_exists_with_uncorrelated_scalar_inside",
 		"SELECT id FROM parent p WHERE NOT EXISTS (SELECT 1 FROM child c WHERE p.id > (SELECT MIN(c2.id) FROM child c2) - 9)", []int64{1})
 
-	// A CTE whose body carries a WHERE-EXISTS, consumed as a JOIN LEG (RFC-173
-	// commit 5b): the EXISTS rider used to poison clusterArity for the whole
-	// enclosing cluster (name-model); the rider is transparent now and the
+	// A CTE whose body carries a WHERE-EXISTS, consumed as a JOIN LEG: the
+	// EXISTS rider used to poison clusterArity for the whole enclosing
+	// cluster (forcing it name-model); the rider is transparent now and the
 	// cluster gates ordinal — d = parents with children = {1,2}; the join
 	// keeps p2 ∈ {1,2}.
 	ck("cte_exists_body_as_join_leg",

@@ -1,6 +1,7 @@
 package values
 
 import (
+	"errors"
 	"testing"
 
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -110,5 +111,50 @@ func TestFieldValue_DescendProtoMessage(t *testing.T) {
 	}
 	if _, err := fusedMiss.descendResolvedPath(om.Interface()); err == nil {
 		t.Fatal("a missing proto field on a pinned path must be LOUD (OrdinalResolutionError), got nil")
+	}
+}
+
+// TestFieldValue_DescendDefaultArm pins the descend default arm: a nested step
+// whose current value is NEITHER an OrdinalRow NOR a proto.Message (a scalar
+// descended past a leaf, or a bare name-keyed map). The RFC-retired name model
+// would have name-read the map here; the ordinal engine must NOT — a PINNED
+// path is LOUD (OrdinalResolutionError), an UNPINNED path is SQL NULL, and in
+// NEITHER case does a map key matching the field name get silently read.
+func TestFieldValue_DescendDefaultArm(t *testing.T) {
+	t.Parallel()
+
+	descend := func(pinned bool, root any) (any, error) {
+		fv := &FieldValue{
+			Field: "SUB",
+			Typ:   NotNullLong,
+			Resolved: &FieldPath{
+				// 2 accessors → one descent step lands `cur` on `root`.
+				Accessors:      []ResolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "SUB", Ordinal: 0}},
+				FrontierPinned: pinned,
+			},
+		}
+		return fv.descendResolvedPath(root)
+	}
+
+	// A name-keyed map whose key MATCHES the descent field — the exact bait the
+	// deleted name model would have taken. The default arm must never read it.
+	nameBait := map[string]any{"SUB": int64(777)}
+
+	// (1) Unpinned scalar → NULL.
+	if got, err := descend(false, int64(99)); err != nil || got != nil {
+		t.Fatalf("unpinned descent into a scalar must be (nil, nil), got (%v, %v)", got, err)
+	}
+	// (2) Unpinned name-keyed map → NULL, NOT the matching key's 777.
+	if got, err := descend(false, nameBait); err != nil || got != nil {
+		t.Fatalf("unpinned descent into a name-keyed map must be NULL (no silent name read), got (%v, %v)", got, err)
+	}
+	// (3) Pinned scalar → LOUD.
+	var ore *OrdinalResolutionError
+	if _, err := descend(true, int64(99)); !errors.As(err, &ore) {
+		t.Fatalf("pinned descent into a scalar must be LOUD OrdinalResolutionError, got %v", err)
+	}
+	// (4) Pinned name-keyed map → LOUD, never the matching key's 777.
+	if _, err := descend(true, nameBait); !errors.As(err, &ore) {
+		t.Fatalf("pinned descent into a name-keyed map must be LOUD (no silent name read), got %v", err)
 	}
 }

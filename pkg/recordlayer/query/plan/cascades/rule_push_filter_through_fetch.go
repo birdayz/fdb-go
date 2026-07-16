@@ -188,15 +188,45 @@ func tryPushComparisonPredicate(
 	return predicates.NewComparisonPredicate(newOperand, newComp), true
 }
 
-// tryTranslateValue attempts to translate a value through the fetch.
-// Recursively processes composite values (like ArithmeticValue) by
-// translating their children first, then reconstructing the parent.
-// Leaf values correlated to the source alias are translated via
-// PushValue. Uncorrelated values and constants pass through unchanged.
+// tryTranslateValue attempts to translate a value through the fetch, returning
+// nil if the value cannot be fully pushed.
 //
-// Ports Java's mapMaybe-based recursive translation in
-// ScanWithFetchMatchCandidate.pushValueThroughFetch.
+// Ports Java's ScanWithFetchMatchCandidate.pushValueThroughFetch: the recursive
+// mapMaybe translation is done by tryTranslateValueRec; this wrapper applies
+// Java's FINAL filter — the translation succeeded only if the result is no
+// longer correlated to the source alias
+// (translatedValueOptional.filter(v -> !v.getCorrelatedTo().contains(sourceAlias)),
+// ScanWithFetchMatchCandidate.java:75). A residual source correlation means some
+// leaf could not be pushed through the fetch — e.g. a chained accessor whose
+// intermediate steps have no covered column, or a translate function that
+// rebased a leaf but left another child correlated. Emitting such a value would
+// read a nested field off the flat partial record and fail plan validation
+// downstream; declining here keeps the (un-pushed) filter above the fetch, which
+// is a valid plan. Without this filter Go relied on nil-propagation from
+// untranslatable leaves alone, which misses a leaf that "translates" (ok=true)
+// but stays correlated.
 func tryTranslateValue(
+	fetchPlan *plans.RecordQueryFetchFromPartialRecordPlan,
+	oldAlias, newAlias values.CorrelationIdentifier,
+	v values.Value,
+) values.Value {
+	translated := tryTranslateValueRec(fetchPlan, oldAlias, newAlias, v)
+	if translated == nil {
+		return nil
+	}
+	if _, stillCorrelated := values.GetCorrelatedToOfValue(translated)[oldAlias]; stillCorrelated {
+		return nil
+	}
+	return translated
+}
+
+// tryTranslateValueRec is the recursive mapMaybe core: it translates composite
+// values (like ArithmeticValue) by translating their children first, then
+// reconstructing the parent. Leaf values correlated to the source alias are
+// translated via PushValue; uncorrelated values and constants pass through
+// unchanged. The final "no residual source correlation" check lives in the
+// tryTranslateValue wrapper, matching Java's structure.
+func tryTranslateValueRec(
 	fetchPlan *plans.RecordQueryFetchFromPartialRecordPlan,
 	oldAlias, newAlias values.CorrelationIdentifier,
 	v values.Value,
@@ -227,7 +257,7 @@ func tryTranslateValue(
 	}
 	translated := make([]values.Value, len(children))
 	for i, child := range children {
-		tc := tryTranslateValue(fetchPlan, oldAlias, newAlias, child)
+		tc := tryTranslateValueRec(fetchPlan, oldAlias, newAlias, child)
 		if tc == nil {
 			return nil
 		}

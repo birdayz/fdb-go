@@ -1,6 +1,6 @@
 package values
 
-// RFC-173 S3-W2 — the TranslationMap port (Java
+// The TranslationMap port (Java
 // com.apple.foundationdb.record.query.plan.cascades.values.translation.TranslationMap,
 // TranslationMap.java:39-73 / RegularTranslationMap.java:42-228). The planner's
 // cross-boundary reference rebase: a map from source quantifier alias to a
@@ -8,16 +8,13 @@ package values
 // that alias. The partition rule's merge case builds
 // `.When(lowerAlias).Then(ofOrdinalNumber(QOV(newUpper), i))` per collapsed
 // leg (PartitionSelectRule.java:296-303) and applies it to the upper result
-// value and predicates — the positional replacement for the dotted-name
-// re-stamp machinery (rebaseBuriedLowerReferences / buildUpperResult), which
-// dies at the W2 fulcrum commit.
+// value and predicates.
 //
-// DARK until the fulcrum: nothing in production calls TranslateCorrelations
-// yet. The composition mechanic that makes it work — a baked enclosing
+// The composition mechanic that makes it work — a baked enclosing
 // FieldValue fusing over the baked replacement during the rebuild — lives in
-// the generic withChildren arm (replace.go), per the W2 pre-code ruling:
-// fuse is a property of the rebuild, not of this map, so every future map
-// user (matching pull-up, W4 scalar subquery, W5 unnest) composes for free.
+// the generic withChildren arm (replace.go):
+// fuse is a property of the rebuild, not of this map, so every map
+// user (matching pull-up, scalar subquery, unnest) composes for free.
 //
 // Java's rebaseWithAliasMap (RegularTranslationMap.java:100-108, the
 // alias→alias identity-rebase form) is deliberately NOT mirrored here: Go
@@ -96,7 +93,7 @@ func (w *TranslationMapWhen) Then(fn TranslationFunction) *TranslationMapBuilder
 
 // Build snapshots the accumulated entries — the returned map is IMMUTABLE
 // (Java's ImmutableMap.copyOf): further builder use cannot mutate a map
-// already handed out (review catch: sharing b.fns let a built empty map stop
+// already handed out (sharing b.fns let a built empty map stop
 // defining only identities when the builder was reused).
 func (b *TranslationMapBuilder) Build() TranslationMap {
 	fns := make(map[CorrelationIdentifier]TranslationFunction, len(b.fns))

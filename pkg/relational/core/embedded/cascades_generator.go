@@ -10,6 +10,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -423,45 +424,12 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed query plan: "+err.Error())
 	}
-	// Plan scalar subqueries independently through the Cascades pipeline.
-	var scalarSubs []scalarSubqueryBinding
-	for _, ssq := range scalarSubqueryPlans {
-		// Pass md so the scalar subquery's own join legs can anchor (RFC-077 7.6);
-		// nested scalar subqueries are not collected here, so any they contain are
-		// dropped — matching the previous behavior (TranslateToCascades discards
-		// them too).
-		subRef, _ := query.TranslateToCascadesWithSubqueries(ssq.Plan, md)
-		if subRef == nil {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Cascades planner could not plan scalar subquery")
-		}
-		subPlanner := cascades.NewPlanner(rules, planCtx).
-			WithImplementationRules(cascades.DefaultImplementationRules()).
-			WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
-			WithStatistics(stats).
-			WithMaxTasks(100_000)
-		subBest, _, subErr := subPlanner.Plan(subRef)
-		if subErr != nil || subBest == nil {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Cascades planner could not plan scalar subquery")
-		}
-		subPh, ok := subBest.(planExtractor)
-		if !ok {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"scalar subquery plan extraction failed")
-		}
-		subPlan := subPh.GetRecordQueryPlan()
-		if subPlan == nil {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"scalar subquery physical plan nil")
-		}
-		if err := cascades.ValidatePlanInvariants(subPlan); err != nil {
-			return nil, api.NewError(api.ErrCodeInternalError, "malformed scalar-subquery plan: "+err.Error())
-		}
-		scalarSubs = append(scalarSubs, scalarSubqueryBinding{
-			alias: ssq.Alias,
-			plan:  subPlan,
-		})
+	// Plan scalar subqueries independently through the Cascades pipeline
+	// (planScalarSubqueryPlans — the one planning path, shared with the
+	// plan harness).
+	scalarSubs, subErr := planScalarSubqueryPlans(scalarSubqueryPlans, md, stats)
+	if subErr != nil {
+		return nil, subErr
 	}
 
 	ls.setPlan(physPlan)
@@ -924,7 +892,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	// Pass md so DML join legs (e.g. UPDATE … FROM a JOIN b) anchor (RFC-077 7.6).
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	ref, dmlScalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}
@@ -972,14 +940,27 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed DML plan: "+err.Error())
 	}
 
+	// Plan the DML statement's scalar subqueries (`DELETE … WHERE v > (SELECT
+	// …)`) through the same shared pipeline as SELECT and carry them on the
+	// plan so fetchPage pre-binds their results. This path historically
+	// DISCARDED them (`ref, _ :=`), and the unbound value silently evaluated
+	// NULL — the DELETE compared v > NULL (UNKNOWN) and removed NOTHING, with
+	// both differential models identically wrong; the loud
+	// values.UnboundScalarSubqueryError is what surfaced it.
+	dmlScalarSubs, dmlSubErr := planScalarSubqueryPlans(dmlScalarSubqueryPlans, md, dmlStats)
+	if dmlSubErr != nil {
+		return nil, dmlSubErr
+	}
+
 	ls.setPlan(physPlan)
 	ls.setCache(PlanCacheSkip)
 	return &cascadesPlan{
-		conn:         g.c,
-		md:           md,
-		physicalPlan: physPlan,
-		explain:      logicalOp.Explain(""),
-		dryRun:       dryRun,
+		conn:             g.c,
+		md:               md,
+		physicalPlan:     physPlan,
+		explain:          logicalOp.Explain(""),
+		scalarSubqueries: dmlScalarSubs,
+		dryRun:           dryRun,
 	}, nil
 }
 
@@ -1035,15 +1016,6 @@ func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext
 	}, nil
 }
 
-// scalarSubqueryBinding pairs a correlation alias with a planned
-// inner RecordQueryPlan for a scalar subquery. The executor pre-runs
-// each and binds the scalar result under the alias before running
-// the outer plan.
-type scalarSubqueryBinding struct {
-	alias values.CorrelationIdentifier
-	plan  plans.RecordQueryPlan
-}
-
 // cascadesPlan wraps a Cascades-planned SELECT query with a pre-computed
 // physical plan. Planning happens at Plan-time; Execute only runs the plan.
 type cascadesPlan struct {
@@ -1051,7 +1023,7 @@ type cascadesPlan struct {
 	md               *recordlayer.RecordMetaData
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
-	scalarSubqueries []scalarSubqueryBinding
+	scalarSubqueries []PlannedScalarSubquery
 
 	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
 	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
@@ -1210,7 +1182,7 @@ type paginatingRows struct {
 	ss               subspace.Subspace
 	plan             plans.RecordQueryPlan
 	md               *recordlayer.RecordMetaData
-	scalarSubqueries []scalarSubqueryBinding
+	scalarSubqueries []PlannedScalarSubquery
 	cols             []executor.ColumnDef
 
 	// emitted counts rows actually returned to the caller across all pages.
@@ -1668,14 +1640,14 @@ func (r *paginatingRows) fetchPage() error {
 		if len(r.scalarSubqueries) > 0 {
 			scalarResults := make(map[values.CorrelationIdentifier]any, len(r.scalarSubqueries))
 			for _, ssq := range r.scalarSubqueries {
-				result, ssqErr := executor.EvaluateScalarSubquery(r.ctx, ssq.plan, store, evalCtx, props)
+				result, ssqErr := executor.EvaluateScalarSubquery(r.ctx, ssq.Plan, store, evalCtx, props)
 				if ssqErr != nil {
 					// Route the subquery error through the same translation as the
 					// outer plan so a subquery scan-limit/deadline hit surfaces as
 					// 54F01, not a raw *ScanLimitReachedError (RFC-106a).
 					return nil, translateExecErrorCtx(r.ctx, ssqErr)
 				}
-				scalarResults[ssq.alias] = result
+				scalarResults[ssq.Alias] = result
 			}
 			evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
 		}
@@ -1971,6 +1943,22 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 			candidates = append(candidates, vecCand)
 			continue
 		}
+		// Atomic-mutation / aggregate-only index types (COUNT/SUM totals,
+		// MAX_EVER/MIN_EVER running extrema, BITMAP_VALUE bitsets) must not become
+		// VALUE-index scan candidates: their entries are aggregated/running values,
+		// not per-record values, so a plain ordered scan (e.g. StreamingAgg over the
+		// index) reads stale data. In Java these types have no value-scan candidate
+		// (AtomicMutationIndexMaintainerFactory / BitmapValueIndexMaintainerFactory
+		// never call expandValueIndexMatchCandidate). The subset with a legitimate
+		// aggregate use — COUNT/SUM and permuted MIN/MAX — was already claimed as an
+		// aggregate candidate by tryAggregateIndexCandidate above and never reaches
+		// here; the running-extremum (_EVER) and bitmap types get no candidate at
+		// all. Either way, dropping them here leaves a plain MAX/MIN over only such
+		// an index to fall back to a base-record StreamingAgg, which computes the
+		// correct current extremum.
+		if idx.IsAtomicMutationIndex() {
+			continue
+		}
 		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
 	}
 	if len(defs) > 0 {
@@ -2086,9 +2074,16 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		aggFunc = expressions.AggSum
 	case recordlayer.IndexTypeCount, recordlayer.IndexTypeCountNotNull:
 		aggFunc = expressions.AggCount
-	case recordlayer.IndexTypeMaxEverLong, recordlayer.IndexTypeMaxEverTuple:
+	case recordlayer.IndexTypePermutedMax:
+		// Plain SQL MAX(col) resolves to a PERMUTED_MAX index (Java's
+		// NumericAggregationValue.Max.getIndexTypeName()), which tracks the true
+		// current maximum under deletes/updates. The monotone MAX_EVER/MIN_EVER
+		// index types are intentionally NOT matched here: a plain MAX/MIN query
+		// served from a monotone _EVER index would return stale extrema. The
+		// separate max_ever()/min_ever() aggregate would match those — but Go's
+		// read side does not expose them as query aggregates (only MAX/MIN).
 		aggFunc = expressions.AggMax
-	case recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple:
+	case recordlayer.IndexTypePermutedMin:
 		aggFunc = expressions.AggMin
 	default:
 		return nil
@@ -2097,6 +2092,29 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
 	if !ok {
 		return nil
+	}
+
+	// A permuted index with permutedSize > 0 stores its BY_GROUP keys as
+	// [prefix-groups, extremum, permuted-suffix-groups] — NOT logical group
+	// order. The SQL aggregate candidate models neither of the two consequences:
+	// a group-column scan range built in logical order would bind the extremum
+	// slot (missing rows), and the advertised groupCols ordering hint is false
+	// for the physical stream (ORDER BY elimination / multi-aggregate
+	// intersection would mis-merge). Go's own DDL always writes permutedSize=0
+	// (Java MaterializedViewIndexGenerator with no aggregate ORDER BY), so a
+	// nonzero permutation only arrives via record-layer API / Java-written
+	// shared-cluster metadata — decline candidacy for it and let the query fall
+	// back to a base-record StreamingAgg (correct rows, slower). The record-layer
+	// aggregate-function API path (evaluatePermutedMinMaxAggregate) serves
+	// permuted reads with proper prefix-trimming and stays available.
+	// Permutation-aware SQL candidacy (bounds translation + true ordering model,
+	// as Java's planner does) is the tracked follow-up.
+	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
+		if v, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+			if n, err := strconv.Atoi(v); err != nil || n != 0 {
+				return nil
+			}
+		}
 	}
 
 	allCols := gke.FieldNames()
@@ -2532,7 +2550,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	// Leaf descriptors under a NULL-SUPPLYING (DefaultOnEmpty) subtree: a
 	// column defined by one of these serves NULL on the outer join's padded
 	// rows, so its metadata reports NULLABLE regardless of the proto's
-	// Required (amendment B / ruling I3's second half — Java gets this from
+	// Required (Java gets this from
 	// the flowed result type; the name-model lazy projections here flow
 	// none). Keyed by descriptor FullName. Coarse by design in the safe
 	// direction: a self-joined table on both sides marks the preserved read
@@ -2568,8 +2586,23 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		cd := deriveProjectionColumnDef(v, alias, i, descs)
 		if cd.Nullable == api.ColumnNoNulls {
-			if fv, ok := v.(*values.FieldValue); ok && fv.Child == nil {
-				if d := descriptorForColumn(fv.Field, descs); d != nil {
+			// The projected reference is either a FLAT (childless) read — its
+			// Field may carry the "LEG.COL" qualifier — or the resolver's
+			// QUANTIFIER-ADDRESSED bake (FieldValue{Child: QOV(leg), COL});
+			// compose the qualified lookup for the latter so the null-born
+			// upgrade fires for both emissions (the QOV form skipped it and
+			// reported a null-supplying window's column NoNulls).
+			lookup := ""
+			if fv, ok := v.(*values.FieldValue); ok {
+				switch child := fv.Child.(type) {
+				case nil:
+					lookup = fv.Field
+				case *values.QuantifiedObjectValue:
+					lookup = child.Correlation.Name() + "." + fv.Field
+				}
+			}
+			if lookup != "" {
+				if d := descriptorForColumn(lookup, descs); d != nil {
 					if _, born := nullBorn[d.FullName()]; born {
 						cd.Nullable = api.ColumnNullable
 					}
@@ -2622,12 +2655,12 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 	var name string
 	if fv, ok := v.(*values.FieldValue); ok {
 		if fv.Child != nil {
-			name = values.ExplainValue(v)
+			name = values.ColumnNameValue(v)
 		} else {
 			name = fv.Field
 		}
 	} else {
-		name = values.ExplainValue(v)
+		name = values.ColumnNameValue(v)
 	}
 	var label string
 	if alias != "" {
@@ -2644,7 +2677,28 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 	if typeDesc == nil && len(descs) > 0 {
 		typeDesc = descs[0]
 	}
-	typeName := valueTypeName(v, typeDesc)
+	// For a PLAIN column read the stored descriptor is the metadata
+	// authority: the flowed seed type conflates INT/BIGINT and FLOAT/DOUBLE
+	// (evaluation widths), which must not leak into ResultSet metadata —
+	// Java reports the DECLARED column type (INTEGER, FLOAT). The flowed
+	// type serves columns the descriptor cannot resolve (derived/CTE
+	// outputs) and every non-FieldValue expression.
+	typeName := ""
+	if _, isField := v.(*values.FieldValue); isField && colDesc != nil {
+		// The stored descriptor is the metadata authority for a BASE column read —
+		// but ONLY to recover the eval-width the flowed seed conflates (INTEGER↔
+		// BIGINT, FLOAT↔DOUBLE). A DERIVED/CTE OUTPUT alias whose name coincidentally
+		// matches a stored field flows a genuinely DIFFERENT type (`SELECT q.id FROM
+		// (SELECT x AS id FROM B) q`: q.id is x's DOUBLE, but the derived leg carries
+		// B's descriptor so descriptorForColumn finds B.ID's BIGINT). Let the
+		// descriptor override only when it REFINES the flowed type within its family.
+		if t := protoFieldTypeName(colDesc, name); t != "UNKNOWN" && descriptorRefinesFlowed(t, valueTypeName(v, typeDesc)) {
+			typeName = t
+		}
+	}
+	if typeName == "" {
+		typeName = valueTypeName(v, typeDesc)
+	}
 	if typeName == "" && colDesc != nil {
 		typeName = protoFieldTypeName(colDesc, name)
 	}
@@ -2675,6 +2729,23 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 			// always the bare column, matching Java.
 			displayLabel = strings.ToUpper(parseColRef(fv.Field).bare())
 		}
+	} else if fv, isField := v.(*values.FieldValue); isField && fv.Field != "" {
+		// A MACHINERY-pinned alias — the duplicated-bare-leaf dedup pins the
+		// projected reference's QUALIFIED spelling ("A.NAME" for QOV(A).NAME)
+		// as the alias so the two same-named datum keys do not collapse — is
+		// an INTERNAL key, not a user label: Java reports the bare column for
+		// `SELECT c.name, p.name` (both NAME, JDBC allows duplicate labels).
+		// Detect it by a DOTTED label whose leaf equals the projected
+		// reference's own leaf (the reference may since have been rebased —
+		// a projected-EXISTS fold re-anchors it onto the merged row — so the
+		// qualifier cannot be compared, only the leaf). A user alias that is
+		// dotted AND leaf-matches the projected column degrades to the bare
+		// leaf too — a pathological corner traded for the duplicated-leaf
+		// class matching Java's metadata.
+		if ref := parseColRef(label); ref.isQualified() &&
+			strings.EqualFold(ref.bare(), parseColRef(fv.Field).bare()) {
+			displayLabel = strings.ToUpper(ref.bare())
+		}
 	}
 	nullable := api.ColumnNullable
 	if colDesc != nil {
@@ -2686,8 +2757,8 @@ func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []pr
 	// type says what this query serves — a NOT NULL column read through a
 	// LEFT-outer null-supplying window is nullable (the padded rows serve
 	// NULL), which Java reports via the plan's result type
-	// (FieldValue.computeResultType's nullable override; amendment B /
-	// ruling I3's second half). A KNOWN-typed nullable flowed value
+	// (FieldValue.computeResultType's nullable override).
+	// A KNOWN-typed nullable flowed value
 	// therefore upgrades NoNulls — never the reverse; an UNKNOWN type
 	// (name-model lazy dotted refs never flow one) says nothing.
 	if nullable == api.ColumnNoNulls {
@@ -2742,7 +2813,7 @@ func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.Messa
 	typeRef := name
 	if fv, ok := f.Value.(*values.FieldValue); ok {
 		if fv.Child != nil {
-			typeRef = strings.ToUpper(values.ExplainValue(f.Value))
+			typeRef = strings.ToUpper(values.ColumnNameValue(f.Value))
 		} else {
 			typeRef = strings.ToUpper(fv.Field)
 		}
@@ -2755,8 +2826,8 @@ func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.Messa
 // display name, typeRef the string descriptorForColumn keys on (the value's
 // qualified reference for a fold, the bare column name for an ordinal seed), and
 // value the defining Value (its Type() supplies a synthesized column's type and
-// nullability). Extracted from foldedColumnDef so the RFC-173 ordinal-unnest arm
-// can reuse the identical resolution while keying the descriptor lookup on the
+// nullability). Extracted from foldedColumnDef so the ordinal-unnest arm can
+// reuse the identical resolution while keying the descriptor lookup on the
 // BARE field name (a baked ofOrdinal renders "T1.ID#0" under ExplainValue — the
 // "#0" suffix misses the proto descriptor).
 func columnDefFromRef(name, label, typeRef string, value values.Value, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
@@ -2807,17 +2878,16 @@ func columnDefFromRef(name, label, typeRef string, value values.Value, descs []p
 	}
 }
 
-// ordinalUnnestColumnDef derives ONE result-set column of an RFC-173 lateral-
-// unnest ORDINAL seed (rfc173_w4c_unnest_seed.go / the WITH-ORDINALITY seed).
-// The seed's OUTER leg columns are BAKED ofOrdinal FieldValues whose ExplainValue
-// carries the "#ordinal" suffix (e.g. "T1.ID#0"), which misses the proto
-// descriptor and mis-reports a stored column's type/nullability (a pk drops from
-// NOT NULL to nullable). Because an ordinal seed's field NAMES are exactly the
-// bare column / AS / AT alias names, key the descriptor lookup on the bare name —
-// so an outer stored column resolves its descriptor (pk NOT NULL) exactly as the
-// name-model's LAZY anchored RC did, while the descriptor-less element/ordinal
-// still type from their own Value (element from the array element, ordinal INT
-// NOT NULL). RFC-142/173.
+// ordinalUnnestColumnDef derives ONE result-set column of a lateral-unnest
+// ORDINAL seed (the WITH-ORDINALITY seed). The seed's OUTER leg columns are
+// BAKED ofOrdinal FieldValues whose ExplainValue carries the "#ordinal" suffix
+// (e.g. "T1.ID#0"), which misses the proto descriptor and mis-reports a stored
+// column's type/nullability (a pk drops from NOT NULL to nullable). Because an
+// ordinal seed's field NAMES are exactly the bare column / AS / AT alias
+// names, key the descriptor lookup on the bare name — so an outer stored
+// column resolves its descriptor (pk NOT NULL) exactly as a name-keyed lookup
+// would, while the descriptor-less element/ordinal still types from its own
+// Value (element from the array element, ordinal INT NOT NULL). RFC-142.
 // columnDefDisplayName is the column's unqualified user-visible name — the
 // exact value RecordLayerResultSet.positionalAligned compares each positional
 // slot's field name against: the Label (alias) when set, else the bare leaf of
@@ -2836,8 +2906,8 @@ func columnDefDisplayName(c executor.ColumnDef) string {
 // fails to render the ordinal RC's authoritative output sequence: a different
 // column count, or any position whose merged DISPLAY name (the value
 // positionalAligned compares) differs from the RC field's bare name. It is the
-// RFC-173 QP-REF-BIND item-1 trigger for `SELECT *` over a duplicate-alias
-// cluster: the planner may group same-table dup legs (physical `P ⋈ (P ⋈ Q)`),
+// trigger for `SELECT *` over a duplicate-alias cluster: the planner may
+// group same-table dup legs (physical `P ⋈ (P ⋈ Q)`),
 // so the structural merge reorders to `[ID V ID V QID]` while the RC — which
 // the positional row mirrors — keeps FROM order `[ID V QID ID V]` with duplicate
 // bare labels. When the sequences AGREE (every non-reordered case, incl.
@@ -2928,43 +2998,42 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 
 	merged := qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
 
-	// RFC-173 W5: the GATHERED multi-source unnest star (`SELECT * FROM A, B,
-	// A.arr AS x`) plans as an NLJ whose FlatMap leg is a PARTITION SUB-PRODUCT
-	// — a positional-merge RC whose fields are planner-internal `_N` names —
-	// so the leg-merge above leaks `_0`/`_1` into the user-visible columns
-	// (and misses the element entirely). The translated ordinal TOP RV carries
-	// the true SQL-order output names (each f.Name IS the datum/positional key
-	// by construction — the same rule the FlatMap fold arm relies on), and the
-	// §7 positional-aligned read then serves the VALUES from the positional
+	// The GATHERED multi-source unnest star (`SELECT * FROM A, B, A.arr AS x`)
+	// plans as an NLJ whose FlatMap leg is a PARTITION SUB-PRODUCT — a
+	// positional-merge RC whose fields are planner-internal `_N` names — so
+	// the leg-merge above leaks `_0`/`_1` into the user-visible columns (and
+	// misses the element entirely). The translated ordinal TOP RV carries the
+	// true SQL-order output names (each f.Name IS the datum/positional key by
+	// construction — the same rule the FlatMap fold arm relies on), and the
+	// positional-aligned read then serves the VALUES from the positional
 	// row's matching slots. Derive from the RV, keyed on bare names against
 	// BOTH legs' leaf descriptors (ordinalUnnestColumnDef). Scoped by the
-	// STRUCTURAL discriminator — a leg subplan whose RV is the S3
+	// STRUCTURAL discriminator — a leg subplan whose RV is the
 	// positional-merge RC (the sub-product that folds to `_N` columns) —
 	// never by the derived NAMES: a user column literally named `_0` over a
 	// plain gated join is a legal identifier and must keep the merge path's
-	// qualified metadata byte-identical (review finding, pinned).
+	// qualified metadata byte-identical.
 	// AND the GATHERED-UNNEST signature — an Explode-bearing FlatMap leg
 	// (gatheredExplodeElement): a PLAIN multi-way join's partition also
 	// leaves a positional-merge subplan, but ITS fold keeps qualified
 	// duplicate-name keys (deriveColumnsFromJoin handles an NLJ-shaped
-	// sub-product), so rerouting it dropped the `A.K`/`B.K` names by-name
-	// reads rely on (second review finding, pinned).
-	// RFC-173 QP-REF-BIND item 1 — the second structural trigger: the
-	// name-model merge DIVERGES from the ordinal RV's authoritative output
-	// sequence. A duplicate-alias `SELECT *` (`SELECT * FROM p, q, p`) lets the
-	// planner GROUP the same-table legs (physical `P ⋈ (P ⋈ Q)`), so the
-	// structural leg-merge reorders to `[ID V ID V QID]`, while the ordinal TOP
-	// RV carries every slot in FROM order with duplicate BARE labels (Java's
-	// exact star layout, live-verified `[ID V QID ID V]`) — the sequence the
-	// positional row mirrors and positionalAligned reads by slot. Item-1 c2's
-	// binding-keyed qualification made each dup leg's qualified name DISTINCT
-	// (`P.ID` vs `Q$DUP2.ID`), so the pre-c2 same-qualified-name collision check
-	// no longer fires; the divergence of the DISPLAY sequences is the faithful
-	// signal. Distinct-alias duplicates ("A.K" / "B.K") whose merge is NOT
-	// reordered keep the byte-identical merge path (their display sequence
-	// equals the RV's), exactly as before.
+	// sub-product), so rerouting it would drop the `A.K`/`B.K` names by-name
+	// reads rely on.
+	// The second structural trigger: the name-model merge DIVERGES from the
+	// ordinal RV's authoritative output sequence. A duplicate-alias
+	// `SELECT *` (`SELECT * FROM p, q, p`) lets the planner GROUP the
+	// same-table legs (physical `P ⋈ (P ⋈ Q)`), so the structural leg-merge
+	// reorders to `[ID V ID V QID]`, while the ordinal TOP RV carries every
+	// slot in FROM order with duplicate BARE labels (Java's exact star
+	// layout: `[ID V QID ID V]`) — the sequence the positional row mirrors
+	// and positionalAligned reads by slot. The binding-keyed qualification
+	// makes each dup leg's qualified name DISTINCT (`P.ID` vs `Q$DUP2.ID`),
+	// so a same-qualified-name collision check can no longer catch this
+	// case; the divergence of the DISPLAY sequences is the faithful signal.
+	// Distinct-alias duplicates ("A.K" / "B.K") whose merge is NOT reordered
+	// keep the byte-identical merge path (their display sequence equals the
+	// RV's), exactly as before.
 	rc, isOrdinalRC := nlj.GetResultValue().(*values.RecordConstructorValue)
-	isOrdinalRC = isOrdinalRC && !rc.AnchoredJoin
 	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
 	elemAlias, collField, elemValue := gatheredExplodeElement(nlj)
 	if isOrdinalRC && len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) &&
@@ -3005,7 +3074,7 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 }
 
 // hasPositionalMergeLeg reports whether a leg subplan (transitively, through
-// inner-plan wrappers and nested join plans) carries the S3 POSITIONAL-MERGE
+// inner-plan wrappers and nested join plans) carries the POSITIONAL-MERGE
 // RC as its result value — the partition sub-product whose column fold
 // renders planner-internal `_N` names. The STRUCTURAL twin of the retired
 // name-based check: keying on derived names misfired on a user column
@@ -3108,22 +3177,23 @@ func arrayElementTypeNameFromDescs(collField string, descs []protoreflect.Messag
 }
 
 func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	// RFC-173 W4c: an ORDINAL lateral-unnest seed (a NON-anchored RC over a
-	// FlatMap-over-Explode, carrying baked ofOrdinal outer columns) replaces the
-	// name-model anchored seed for a single-source unnest. It lands here exactly
-	// like the anchored arm below, but two things differ: its baked outer fields
-	// render "T1.ID#0" under ExplainValue (foldedColumnDef's value-derived
-	// descriptor lookup then misses and mis-reports a pk's nullability), and its
-	// FULL outer run KEEPS a column the element AS/AT alias SHADOWS (the name
-	// model dropped it in buildUnnestResultValue). Derive the SELECT-* columns to
-	// MATCH the name model: outer columns resolved against the scan descriptor by
-	// their BARE name (pk NOT NULL), the shadowed outer column dropped, the
-	// element/ordinal typed from their own Value (element nullable from the array
-	// element, ordinal INT NOT NULL). Scoped by findExplodePlan (the unnest
-	// signature — excludes the W4b correlated-scalar-subquery ordinal seed, whose
-	// inner is not an Explode) AND ContainsBakedOrdinal (excludes name-model /
-	// projected-EXISTS folds). RFC-142/173.
-	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin &&
+	// An ORDINAL lateral-unnest seed (a NON-anchored RC over a
+	// FlatMap-over-Explode, carrying baked ofOrdinal outer columns) replaces
+	// the name-model anchored seed for a single-source unnest. It lands here
+	// exactly like the anchored arm below, but two things differ: its baked
+	// outer fields render "T1.ID#0" under ExplainValue (foldedColumnDef's
+	// value-derived descriptor lookup then misses and mis-reports a pk's
+	// nullability), and its FULL outer run KEEPS a column the element AS/AT
+	// alias SHADOWS (the name model dropped it in buildUnnestResultValue).
+	// Derive the SELECT-* columns to MATCH the name model: outer columns
+	// resolved against the scan descriptor by their BARE name (pk NOT NULL),
+	// the shadowed outer column dropped, the element/ordinal typed from their
+	// own Value (element nullable from the array element, ordinal INT NOT
+	// NULL). Scoped by findExplodePlan (the unnest signature — excludes the
+	// correlated-scalar-subquery ordinal seed below, whose inner is not an
+	// Explode) AND ContainsBakedOrdinal (excludes name-model /
+	// projected-EXISTS folds). RFC-142.
+	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok &&
 		len(rc.Fields) > 0 && findExplodePlan(fm.GetInner()) != nil && values.ContainsBakedOrdinal(rc) {
 		descs := allLeafDescriptors(fm.GetOuter(), md)
 		innerCorr := fm.GetInnerAlias()
@@ -3153,7 +3223,7 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 	// into its result value — an ordinary (non-anchored-join) RecordConstructor.
 	// Its field names ARE the output columns (e.g. ID, HAS_T2), so derive from
 	// them directly rather than merging the outer+inner table columns.
-	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin && len(rc.Fields) > 0 {
+	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && len(rc.Fields) > 0 {
 		// RFC-141 ROOT FIX: derive each folded column's metadata DIRECTLY
 		// from the RecordConstructorField's Name — the SAME name the fold set as the
 		// output column key and that RecordConstructorValue.Evaluate keys the
@@ -3176,17 +3246,18 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 		// against its defining leg descriptor).
 		descs := allLeafDescriptors(fm.GetOuter(), md)
 
-		// RFC-173 W4b: the correlated-scalar-subquery-in-projection ordinal seed
-		// (scalarSubqueryOrdinalSeed) is ALSO a raw (non-anchored) RC and lands
-		// here. Unlike a regular gated-join ordinal seed — whose legs are BOTH
-		// typed via ordinalLegType — its INNER scalar leg is typed UnknownType at
-		// translation (Go quantifier flowed types are untyped). foldedColumnDef
-		// resolves types only against the OUTER leaf descriptors, so it cannot
-		// reach the inner subquery's type and falls back to BIGINT — regressing a
-		// DOUBLE (AVG) / STRING / etc. scalar to BIGINT. Derive that one field's
-		// type from the INNER plan (a scalar subquery exposes exactly ONE output
-		// column), exactly as the retired name-model path did via its outer+inner
-		// merge. Scoping: IsOrdinalJoinRV excludes RFC-141 projected-EXISTS folds
+		// The correlated-scalar-subquery-in-projection ordinal seed
+		// (scalarSubqueryOrdinalSeed) is ALSO a raw (non-anchored) RC and
+		// lands here. Unlike a regular gated-join ordinal seed — whose legs
+		// are BOTH typed via ordinalLegType — its INNER scalar leg is typed
+		// UnknownType at translation (Go quantifier flowed types are
+		// untyped). foldedColumnDef resolves types only against the OUTER
+		// leaf descriptors, so it cannot reach the inner subquery's type and
+		// falls back to BIGINT — regressing a DOUBLE (AVG) / STRING / etc.
+		// scalar to BIGINT. Derive that one field's type from the INNER plan
+		// (a scalar subquery exposes exactly ONE output column), exactly as
+		// the retired name-model path did via its outer+inner merge.
+		// Scoping: IsOrdinalJoinRV excludes RFC-141 projected-EXISTS folds
 		// (their result value is not an ordinal-join RC), and the per-field
 		// untyped-inner-leg test excludes regular gated-join seeds (their inner
 		// legs are already typed, so isCorrelatedScalarInnerLeg is false for them).
@@ -3210,6 +3281,12 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 			}
 			cols = append(cols, col)
 		}
+		// DUPLICATE bare labels stay BARE — Java's rule (the SELECT-list
+		// Identifier post-clearQualifier: `SELECT t1.id, t2.id` labels both
+		// columns ID; JDBC allows duplicate labels), pinned by the
+		// cross-engine conformance metadata corpus. The datum Name keeps the
+		// QUALIFIED form (bareLeafDuplicated) so internal reads never
+		// collapse the two columns — only the user-visible label is bare.
 		return cols
 	}
 
@@ -3228,32 +3305,6 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 	if qov, ok := fm.GetResultValue().(*values.QuantifiedObjectValue); ok &&
 		strings.EqualFold(qov.Correlation.Name(), fm.GetOuterAlias().Name()) {
 		return deriveColumnsFromPlan(fm.GetOuter(), md)
-	}
-
-	// RFC-142: a lateral array unnest (`FROM t, t.arr AS x [AT o]`) lowers to a
-	// FlatMap(outer, Explode) whose result value is a source-anchored join record
-	// (buildUnnestResultValue → NewAnchoredJoinRecord) carrying the outer leg's
-	// columns PLUS the unnested element x (and, under ordinality, the ordinal o).
-	// The inner Explode plan has NO derivable record columns, so the outer+inner
-	// merge below would report ONLY the outer columns — dropping the element (and
-	// ordinal) from the result-set metadata, so `SELECT *` omitted them. Derive the
-	// columns directly from the result value's BARE (user-visible, non-dotted)
-	// fields instead: those ARE the SELECT-* column set (outer columns + element +
-	// ordinal), in declaration order — the same per-field derivation the RFC-141
-	// projected-EXISTS fold uses (foldedColumnDef), restricted to the bare keys (the
-	// qualified ALIAS.COL forms are resolution-convenience duplicates, exactly as a
-	// normal join's `SELECT *` reports bare labels via qualifyAndMergeColumns).
-	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && rc.AnchoredJoin &&
-		findExplodePlan(fm.GetInner()) != nil {
-		descs := allLeafDescriptors(fm.GetOuter(), md)
-		var cols []executor.ColumnDef
-		for _, f := range rc.Fields {
-			if strings.Contains(f.Name, ".") {
-				continue // qualified ALIAS.COL duplicate key — not a user column
-			}
-			cols = append(cols, foldedColumnDef(f, descs))
-		}
-		return cols
 	}
 
 	outerCols := deriveColumnsFromPlan(fm.GetOuter(), md)
@@ -3276,7 +3327,7 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 }
 
 // isCorrelatedScalarInnerLeg reports whether an ordinal-seed field is the INNER
-// scalar leg of a correlated-scalar-subquery ordinal seed (RFC-173 W4b): a
+// scalar leg of a correlated-scalar-subquery ordinal seed: a
 // FieldValue over the inner-alias QOV whose flowed type is UnknownType (the
 // scalarSubqueryOrdinalSeed types this one leg UnknownType because Go quantifier
 // flowed types are untyped at translation). A regular gated-join seed's inner
@@ -3301,60 +3352,21 @@ func isCorrelatedScalarInnerLeg(f values.RecordConstructorField, innerAlias stri
 // outer/inner assignment. The translator builds the binary join seed in SQL
 // order [outer, inner]; comparing the SQL-first leg against the physical
 // outerAlias tells us whether columns need to be emitted in reversed order.
-//
-// The SQL-first leg is carried by the source-anchored RecordConstructorValue
-// (AnchoredJoin) — its FIELDS are declared in SQL column order (outer leg's
-// columns first), so the SQL-first leg is the correlation of the FIRST field's
-// anchored leg QOV. (The retired opaque merge seed it replaced was removed in
-// RFC-077 7.6.)
 func joinResultValueIsReversed(rv values.Value, physOuterAlias, physInnerAlias string) bool {
-	if first, ok := anchoredJoinFirstLeg(rv); ok {
-		return first != "" && first == physInnerAlias
-	}
-	// RFC-173 W4-left: the gated LEFT/RIGHT ordinal seed keeps DECLARATION
-	// order (design ruling I2) while the physical legs run in EXECUTION
-	// (swapped) order — the SQL-first leg is the FIRST field's root baked
-	// QOV. Without this arm a RIGHT join's SELECT * metadata derived in
-	// execution order while the positional row followed the seed: the driver
-	// scanned dept values against emp columns (caught by the parity matrix).
-	if rc, isRC := rv.(*values.RecordConstructorValue); isRC && !rc.AnchoredJoin &&
+	_ = physOuterAlias
+	// The gated LEFT/RIGHT ordinal seed keeps DECLARATION order while the
+	// physical legs run in EXECUTION (swapped) order — the SQL-first leg is
+	// the FIRST field's root baked QOV. Without this arm a RIGHT join's
+	// SELECT * metadata derived in execution order while the positional row
+	// followed the seed: the driver scanned dept values against emp columns
+	// (caught by the parity matrix).
+	if rc, isRC := rv.(*values.RecordConstructorValue); isRC &&
 		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) {
 		if corr, ok := valueRootCorrelation(rc.Fields[0].Value); ok {
 			return strings.EqualFold(corr.Name(), physInnerAlias)
 		}
 	}
 	return false
-}
-
-// anchoredJoinFirstLeg returns the upper-cased correlation name of the SQL-first
-// (outer) leg of a source-anchored join result value (RFC-077 7.6): the leg QOV
-// the first field is anchored to. Reports false for any other value shape. The
-// first field is FieldValue(QOV(outerLeg), col); a nested-join leg's field value
-// may be a FieldValue whose child is another anchored RC, so descend the leftmost
-// FieldValue chain until a QuantifiedObjectValue is found.
-func anchoredJoinFirstLeg(rv values.Value) (string, bool) {
-	rc, ok := rv.(*values.RecordConstructorValue)
-	if !ok || !rc.AnchoredJoin || len(rc.Fields) == 0 {
-		return "", false
-	}
-	cur := rc.Fields[0].Value
-	for {
-		switch v := cur.(type) {
-		case *values.QuantifiedObjectValue:
-			return strings.ToUpper(v.Correlation.Name()), true
-		case *values.FieldValue:
-			if v.Child == nil {
-				return "", true
-			}
-			cur = v.Child
-		default:
-			// e.g. a nested anchored RC reached directly — recurse into its first leg.
-			if inner, ok := anchoredJoinFirstLeg(cur); ok {
-				return inner, true
-			}
-			return "", true
-		}
-	}
 }
 
 func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAlias, secondAlias string) []executor.ColumnDef {
@@ -3401,7 +3413,7 @@ func buildAggColumns(
 		// The datum lookup key (ColumnDef.Name) MUST be the name the aggregate
 		// cursor writes — executor aggKeyName: a FieldValue keys by its bare
 		// Field, everything else by ExplainValue. A resolved group key carrying
-		// a correlation Child (the RFC-173 dup-alias binding FieldValue(
+		// a correlation Child (the duplicate-alias binding FieldValue(
 		// QOV(Q$DUP1), QID); the RFC-142 shadow-qualified twin) explains as the
 		// QUALIFIED "Q$DUP1.QID" while the cursor keys the output row by the
 		// bare "QID" — deriving the column Name from ExplainValue read the
@@ -3410,7 +3422,7 @@ func buildAggColumns(
 		// has three mirrors that must agree: executor aggKeyName,
 		// aggregateGroupKeyOutputName (logical_predicate.go), and this
 		// derivation. So the qualified Name is load-bearing and stays.
-		name := values.ExplainValue(k)
+		name := values.ColumnNameValue(k)
 		if fv, ok := k.(*values.FieldValue); ok {
 			name = fv.Field
 		}
@@ -3485,7 +3497,7 @@ func aggOperandName(a expressions.AggregateSpec) string {
 	if a.OperandName != "" {
 		return strings.ReplaceAll(a.OperandName, " ", "")
 	}
-	return values.ExplainValue(a.Operand)
+	return values.ColumnNameValue(a.Operand)
 }
 
 // aggregateResultType derives the SQL type name of an aggregate's result
@@ -3547,7 +3559,7 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 		switch av.Op {
 		case values.AggSum, values.AggMin, values.AggMax:
 			if av.Operand != nil && desc != nil {
-				operandName := values.ExplainValue(av.Operand)
+				operandName := values.ColumnNameValue(av.Operand)
 				if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
 					return t
 				}
@@ -3662,6 +3674,35 @@ func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string
 	return "UNKNOWN"
 }
 
+// descriptorRefinesFlowed reports whether the stored-descriptor type `descType`
+// legitimately REFINES the flowed value type `flowed`. The descriptor override in
+// column-metadata derivation exists only to recover the eval-width the flowed seed
+// conflates within a numeric family (INTEGER↔BIGINT, FLOAT↔DOUBLE). A derived/CTE
+// output alias colliding with a stored field name flows a genuinely different type,
+// so the descriptor must NOT override across families — only within one, or on an
+// exact match.
+func descriptorRefinesFlowed(descType, flowed string) bool {
+	if flowed == "" {
+		return true // no flowed type to trust — the descriptor is the sole authority
+	}
+	if df := numericFamily(descType); df != "" && df == numericFamily(flowed) {
+		return true // same numeric family: the descriptor recovers the conflated width
+	}
+	return strings.EqualFold(descType, flowed)
+}
+
+// numericFamily buckets a JDBC type name into its width-conflation family, or ""
+// for a non-numeric type (which must match exactly).
+func numericFamily(t string) string {
+	switch strings.ToUpper(t) {
+	case "INTEGER", "BIGINT":
+		return "int"
+	case "FLOAT", "DOUBLE":
+		return "float"
+	}
+	return ""
+}
+
 func protoKindToTypeName(k protoreflect.Kind) string {
 	switch k {
 	case protoreflect.BoolKind:
@@ -3735,8 +3776,8 @@ func findUnfoldableProjectedExists(op logical.LogicalOperator) string {
 		// existential SelectExpression whose result value is the projection
 		// RecordConstructor evaluated by the FlatMap, while the correlated-scalar
 		// path (translateProjectWithCorrelatedScalar) builds a DIFFERENT structure
-		// — a LEFT-OUTER join select anchored on the outer row with
-		// NewScalarSubqueryAnchoredRecord and its own per-row LIMIT-peel. Composing
+		// — a LEFT-OUTER join select over the outer row (the ordinal scalar seed)
+		// with its own per-row LIMIT-peel. Composing
 		// both into one SelectExpression is a 3-way quantifier nest the NLJ rule
 		// does not implement (the multi-quantifier boundary the port rejects).
 		// Without this check the fold's early return in translateProject bypasses
@@ -4015,8 +4056,8 @@ func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, 
 	if logical.OuterSourceIsDerivedTable(left, u.Segments[0]) {
 		return false
 	}
-	// RFC-173 class 4: segment 0 names a PRIOR lateral unnest's element (a
-	// CHAINED unnest, `… t.arr AS x, x.sub AS y AT o`). The translator lowers it
+	// Segment 0 names a PRIOR lateral unnest's element (a CHAINED unnest,
+	// `… t.arr AS x, x.sub AS y AT o`). The translator lowers it
 	// (translateChainedUnnestJoin) with ordinality support, so AT here is VALID,
 	// not "AT on a table" — leave it to the translator's per-case disposition
 	// (array→plan, scalar sub→UNDEFINED_COLUMN, present-scalar sub→INVALID_
@@ -4148,8 +4189,8 @@ func rejectDuplicateUnnestAliasInner(op logical.LogicalOperator, md *recordlayer
 
 // fromLegSchema describes one FROM-chain leaf source for the RFC-142
 // duplicate unnest-alias check: its UPPER alias. (The column-derivation
-// fields died with the FROM-level 42702 approximation — RFC-173 QP-REF-BIND
-// item 1 moved ambiguity to per-attribute reference resolution.)
+// fields died when ambiguity checking moved to per-attribute reference
+// resolution, replacing an earlier FROM-level 42702 approximation.)
 type fromLegSchema struct {
 	alias string
 }
@@ -4196,18 +4237,16 @@ func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordM
 		}
 	}
 	walk(j, ctes)
-	// RFC-173 QP-REF-BIND item 1: the W4-left FROM-level duplicate-alias
-	// 42702 approximation is RETIRED — Java's model is live. Duplicate FROM
-	// aliases register freely (the parser mints per-leg binding ids,
-	// assignFromLegBindingIDs), every reference resolves per-ATTRIBUTE at
-	// the semantic scope (Scope.ResolveQualifiedColumn/ResolveColumn — ≥2
-	// matches raise Java's exact `Ambiguous reference X` 42702), and the
-	// cluster gate admits binding-distinguished duplicate legs into the
-	// ordinal seed. Undefined tables keep failing through
-	// validateTablesAndColumns (42F01 — resolution declines on unknowable
-	// tables, so the ambiguity path cannot mask it). Only the RFC-142
-	// unnest-alias half below remains: Java genuinely forbids a duplicate
-	// unnest AS/AT alias at FROM.
+	// Duplicate FROM aliases register freely (the parser mints per-leg
+	// binding ids, assignFromLegBindingIDs), every reference resolves
+	// per-ATTRIBUTE at the semantic scope (Scope.ResolveQualifiedColumn/
+	// ResolveColumn — ≥2 matches raise Java's exact `Ambiguous reference X`
+	// 42702), and the cluster gate admits binding-distinguished duplicate
+	// legs into the ordinal seed, matching Java's live model. Undefined
+	// tables keep failing through validateTablesAndColumns (42F01 —
+	// resolution declines on unknowable tables, so the ambiguity path cannot
+	// mask it). Only the RFC-142 unnest-alias half below remains: Java
+	// genuinely forbids a duplicate unnest AS/AT alias at FROM.
 	if len(unnests) == 0 {
 		return nil
 	}
@@ -4370,6 +4409,18 @@ func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) e
 		resolved, err := functions.ResolveQualifiedTableName(scan.Table, schemaName)
 		if err != nil {
 			return err
+		}
+		// Keep a DEFAULTED alias in lockstep with the strip — the same
+		// alias-desync root fix the catalog sub-build path applies by
+		// normalizing sq before building (logical_predicate.go, the
+		// normalize-first comment): a no-alias `s.LB` parses with
+		// alias == tableName == "S.LB", and leaving the dotted alias on the
+		// scan while the ON-upgrade scope registers the bare "LB" makes the
+		// upgraded predicate's QOV(LB) miss the leg at translation — the
+		// INNER form failed leg attribution loud and the LEFT form silently
+		// padded every row (review-caught by the Q37 pin family).
+		if scan.Alias == scan.Table {
+			scan.Alias = resolved
 		}
 		scan.Table = resolved
 	}

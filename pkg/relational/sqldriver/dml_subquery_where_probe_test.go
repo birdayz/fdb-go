@@ -120,4 +120,67 @@ func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
 			t.Errorf("DELETE … WHERE id IN (subquery) err = %v, want 0AF00 (unsupported)", err)
 		}
 	})
+
+	// SCALAR subquery in DML WHERE — the dimension the EXISTS pins above never
+	// probed. planDML used to DISCARD the translator's scalar subqueries, so
+	// the unbound value silently evaluated NULL: `a > NULL` was UNKNOWN for
+	// every row and the DELETE removed NOTHING (RowsAffected 0, all rows
+	// survive) — green in any both-models harness because both windows were
+	// identically wrong. planDML now plans + carries the subqueries and
+	// fetchPage pre-binds them, so the threshold is real. A threshold row
+	// (id=25) makes MAX(ref.id)=25 discriminating against a={10,20,30}.
+	t.Run("delete_where_scalar_subquery_threshold", func(t *testing.T) {
+		reset()
+		mwjoMustExec(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (25, 0)")
+		res, err := db.ExecContext(ctx, "DELETE FROM t WHERE a > (SELECT MAX(id) FROM ref)")
+		if err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			t.Errorf("RowsAffected = %d, want 1 (only a=30 exceeds MAX(ref.id)=25)", n)
+		}
+		if got := remainingIDs(); !eq(got, []int64{1, 2}) {
+			t.Errorf("remaining = %v, want [1 2]", got)
+		}
+	})
+	t.Run("update_where_scalar_subquery_threshold", func(t *testing.T) {
+		reset()
+		mwjoMustExec(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (25, 0)")
+		res, err := db.ExecContext(ctx, "UPDATE t SET a = 99 WHERE a < (SELECT MAX(id) FROM ref)")
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if n, _ := res.RowsAffected(); n != 2 {
+			t.Errorf("RowsAffected = %d, want 2 (a=10 and a=20 are below MAX(ref.id)=25)", n)
+		}
+		var updated int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM t WHERE a = 99").Scan(&updated); err != nil {
+			t.Fatalf("count updated: %v", err)
+		}
+		if updated != 2 {
+			t.Errorf("rows with a=99 = %d, want 2", updated)
+		}
+	})
+
+	// NESTED scalar subquery — a subquery inside a subquery's own WHERE. The
+	// INNER one is dropped at collection (planScalarSubqueryPlans documents
+	// nested subqueries are not collected), so its value is UNBOUND when the
+	// outer subquery plan runs. PIN: this must be LOUD, never a silent NULL
+	// that quietly empties the outer subquery's result (the pre-fix behavior
+	// class). Flip-sentinel: goes red when nested collection lands, at which
+	// point the correct rows must be asserted instead.
+	t.Run("delete_where_nested_scalar_subquery_loud", func(t *testing.T) {
+		reset()
+		_, err := db.ExecContext(ctx,
+			"DELETE FROM t WHERE a > (SELECT MAX(id) FROM ref WHERE id > (SELECT MIN(id) FROM ref))")
+		if err == nil {
+			t.Fatalf("nested scalar subquery must fail LOUDLY (inner subquery is not collected), got nil error")
+		}
+		if !strings.Contains(err.Error(), "scalar subquery result not bound") {
+			t.Fatalf("want the unbound-scalar-subquery error, got: %v", err)
+		}
+		if got := remainingIDs(); !eq(got, []int64{1, 2, 3}) {
+			t.Errorf("loud failure must delete NOTHING; remaining = %v, want [1 2 3]", got)
+		}
+	})
 }

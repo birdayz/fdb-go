@@ -59,17 +59,6 @@ type Memo struct {
 	// via MergeCount for tests that assert the optimization fires.
 	mergeCount int
 
-	// mergeArmHits counts how many times PartitionSelectRule takes the
-	// ANCHORED re-enumeration arm (the name-model dispatch, parentIsMerge
-	// true — rule_partition_select.go). Exposed via MergeArmHits so the
-	// RFC-173 Slice-3 dispatch-authority pin can assert 0 on an
-	// ordinal-seeded corpus: the positional arm must be the SOLE producer
-	// for every ordinal-seeding shape (a non-zero count means an ordinal
-	// seed leaked into the anchored arm). The anchored arm SURVIVES for the
-	// name-model residual (scalar-subquery / multi-source-unnest seeds), so
-	// this is a per-corpus certification, not a global assertion.
-	mergeArmHits int
-
 	// mergeAliasCounter hands out per-plan deterministic merge-quantifier
 	// aliases for PartitionSelectRule's N-way join re-enumeration (RFC-077
 	// 7.5). It is per-Memo (one Memo per Plan call), so the SAME query planned
@@ -126,16 +115,11 @@ func (m *Memo) track(ref *expressions.Reference) {
 // (RFC-037). Used by tests to assert the merge optimization fires.
 func (m *Memo) MergeCount() int { return m.mergeCount }
 
-// MergeArmHits returns how many times PartitionSelectRule took the anchored
-// re-enumeration arm (the name-model dispatch). The RFC-173 Slice-3
-// dispatch-authority pin asserts this is 0 on an ordinal-seeded corpus.
-func (m *Memo) MergeArmHits() int { return m.mergeArmHits }
-
 // AliasAwareDedups sums, over every Reference in the memo, the extra dedup the
 // alias-aware interning tier performed (Reference.AliasAwareDedups) — the
-// "shadow" of the merge re-enumeration's shared-sub-product collapse. The
-// RFC-173 Slice-3 shadow-delta pin asserts this equals the member-count delta
-// between alias-aware interning and the alias-identity baseline.
+// "shadow" of the merge re-enumeration's shared-sub-product collapse.
+// TestAliasAwareInterningShadowDelta asserts this equals the member-count
+// delta between alias-aware interning and the alias-identity baseline.
 func (m *Memo) AliasAwareDedups() int {
 	total := 0
 	seen := make(map[*expressions.Reference]struct{}, len(m.refs))
@@ -168,16 +152,6 @@ func (m *Memo) TotalMembers() int {
 		total += len(c.AllMembers())
 	}
 	return total
-}
-
-// RecordMergeArmHit increments the anchored-arm counter. Called by
-// PartitionSelectRule when it takes the parentIsMerge (name-model)
-// re-enumeration dispatch. No-op when the memo is nil (standalone rule tests
-// run without a Memo).
-func (m *Memo) RecordMergeArmHit() {
-	if m != nil {
-		m.mergeArmHits++
-	}
 }
 
 // NextMergeAlias returns a per-plan deterministic, collision-PROOF quantifier

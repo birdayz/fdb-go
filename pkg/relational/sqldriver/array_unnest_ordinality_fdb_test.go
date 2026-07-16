@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -108,7 +109,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// unnested ELEMENT: `... AS VAL WHERE EXISTS (SELECT 1 FROM UV WHERE UV.V =
 	// VAL)`. Its V values are a PROPER SUBSET of T1.ARR1's elements (201, 203) so
 	// the existential is non-trivially true for SOME elements and false for others
-	// — the probe round 9 P2c case (the inner query must see the unnest binding VAL
+	// (the inner query must see the unnest binding VAL
 	// in its outer scope, else translation fails). RFC-142.
 	b.AddTable("UV", []metadata.ColumnSpec{
 		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
@@ -143,8 +144,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// element-flow scan order is 1,2,1,2 — value 1 at positions 0 and 2, value 2 at
 	// positions 1 and 3, never adjacent. GW (group-witness) carries a SCALAR V whose
 	// value (999) is DISTINCT from every element. `SELECT V, COUNT(*) FROM GD,
-	// GD.ARR AS V, GW GROUP BY V` groups by the SHADOWING unnest element V.V (round-15
-	// qualification), but the streaming aggregate's REQUIRED pre-aggregate InMemorySort
+	// GD.ARR AS V, GW GROUP BY V` groups by the SHADOWING unnest element V.V (the
+	// qualified column, not the bare name), but the streaming aggregate's REQUIRED pre-aggregate InMemorySort
 	// must order by the SAME key — if it sorts by the BARE `V` (which mergeRows keys
 	// last-leg-wins as GW.V=999, a constant → a NO-OP sort), the scan order stays
 	// 1,2,1,2 and the streaming aggregate splits each value into TWO non-contiguous
@@ -190,7 +191,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	}, []string{"ID"})
 	// WSRC/WAUX: FULLY DISJOINT column names — the only pair in this schema
 	// with no shared bare name, so a multi-source unnest over them passes the
-	// W5 commit-1 name-ambiguity gate and exercises the GATHERED flat path
+	// name-ambiguity check and exercises the GATHERED flat path
 	// (every other pair here shares ID/ARR and correctly declines to the
 	// name-model residual).
 	b.AddTable("WSRC", []metadata.ColumnSpec{
@@ -201,9 +202,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		metadata.NewColumnSpec("XID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("WV", api.NewIntegerType(true), 2),
 	}, []string{"XID"})
-	// BXA/BXB/BXC: the RFC-173 unnest-residual class-1 trio, column names FULLY
-	// DISJOINT from every other table AND from each other (the W5 name-ambiguity
-	// gate declines shared bare names, and class 1 is specifically about the
+	// BXA/BXB/BXC: the unnest-residual class-1 trio, column names FULLY
+	// DISJOINT from every other table AND from each other (the name-ambiguity
+	// check declines shared bare names, and class 1 is specifically about the
 	// GATHERED path). BXA owns the array; BXB is the NULL-supplying side of a
 	// LEFT JOIN against BXA (BAREF matches BAID 1 and 3, NOT 2 — so id 2 is a
 	// padded row and the unnest of the PRESERVED side's own array must still
@@ -221,12 +222,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		metadata.NewColumnSpec("BCID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("BCW", api.NewLongType(true), 2),
 	}, []string{"BCID"})
-	// NST: the RFC-173 unnest-residual class-2 table — the unnest array is
+	// NST: the unnest-residual class-2 table — the unnest array is
 	// buried inside a STRUCT column (`NST.NREC.NARR`, a MULTI-SEGMENT field
-	// path), the shape the single-segment classifier hard-errored on
+	// path), the shape a single-segment classifier would hard-error on
 	// ("column \"nrec.narr\" does not exist on source"). Column names (and the
 	// struct's field names) are FULLY DISJOINT from every other table so the
-	// multi-source variant passes the name-ambiguity gate and exercises the
+	// multi-source variant passes the name-ambiguity check and exercises the
 	// GATHERED fused root-ordinal+suffix collection.
 	b.AddTable("NST", []metadata.ColumnSpec{
 		metadata.NewColumnSpec("NSID", api.NewLongType(false), 1),
@@ -235,15 +236,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			api.NewStructField("NARR", api.NewArrayType(api.NewIntegerType(false), true), 1),
 		}, true), 2),
 	}, []string{"NSID"})
-	// CXA/CXB: the RFC-173 class-1 × class-2 COMPOSITION — the unnest owner
-	// (CXA) both sits inside a gated OUTER box (`CXA LEFT JOIN CXB`, class 1)
+	// CXA/CXB: the class-1 × class-2 COMPOSITION — the unnest owner
+	// (CXA) both sits inside an OUTER box (`CXA LEFT JOIN CXB`, class 1)
 	// AND holds its array BEHIND a multi-segment struct path (`CXA.REC.ARR`,
 	// class 2). CXA is the PRESERVED side of the LEFT box, so a padded owner
 	// row (no CXB match) must STILL explode its own nested array — the class-1
 	// preserved-side rule flowing through the class-2 fused root+suffix
 	// collection. Column and struct-field names are FULLY DISJOINT from every
 	// other table (and from each other) so the box's opaque-leg concat passes
-	// the W5 name-ambiguity gate.
+	// the name-ambiguity check.
 	b.AddTable("CXA", []metadata.ColumnSpec{
 		metadata.NewColumnSpec("CXAID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("REC", api.NewStructType("CXARECT", []api.StructField{
@@ -255,11 +256,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		metadata.NewColumnSpec("CBID", api.NewLongType(false), 1),
 		metadata.NewColumnSpec("CBREF", api.NewLongType(true), 2),
 	}, []string{"CBID"})
-	// DRV: the RFC-173 unnest-residual class-3 owner — the lateral array's OWNER
+	// DRV: the unnest-residual class-3 owner — the lateral array's OWNER
 	// is a CTE/derived-table OUTPUT that bare-passes-through a base-table array
-	// column (`(SELECT DID, DARR FROM DRV) AS d, d.DARR AS EL`). Pre-slice this
-	// was a hard 0A000 (unnest over a derived/CTE output declined); class 3
-	// traces the passthrough back to the underlying base column and plans the
+	// column (`(SELECT DID, DARR FROM DRV) AS d, d.DARR AS EL`). Without class-3
+	// handling this is a hard 0A000 (unnest over a derived/CTE output declined);
+	// class 3 traces the passthrough back to the underlying base column and plans the
 	// FlatMap-over-Explode. Column names are FULLY DISJOINT from every other
 	// table (the scalar is DVAL, not the design sketch's DSC, which already names
 	// a table here). DID 3's NULL array is the Explode-over-NULL -> zero-rows
@@ -533,7 +534,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			// GD: TWO rows whose arrays REPEAT the same element values across rows in
 			// non-contiguous flow order — id1.ARR={1,2}, id2.ARR={1,2}. The element scan
 			// order is 1,2,1,2: value 1 at flow positions 0,2 and value 2 at 1,3, never
-			// adjacent. A no-op pre-aggregate sort (the round-19 bug) leaves this order, so
+			// adjacent. A no-op pre-aggregate sort leaves this order, so
 			// the streaming aggregate splits each value into two groups. The fix sorts by
 			// the qualified element key (1,1,2,2) → one group per value, count 2.
 			gdRec(1, []int32{1, 2}, []string{"a_b", "axy"}),
@@ -546,7 +547,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			// 300 (no EXA match) so the predicate genuinely discriminates within EXB.
 			idRec(exaDesc, 100), idRec(exaDesc, 200),
 			idRec(exbDesc, 200), idRec(exbDesc, 300),
-			// WSRC/WAUX (W5): one array-bearing source row, two aux rows so the
+			// WSRC/WAUX: one array-bearing source row, two aux rows so the
 			// gathered flat cross is a real 2x2 = elements {7,8} x aux {5,6}.
 			func() proto.Message {
 				m := dynamicpb.NewMessage(wsrcDesc)
@@ -568,15 +569,14 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			}(),
 			// WV=7 makes the spanning WHERE genuinely DISCRIMINATING: with only
 			// {5,6}, EL>WV was all-true over elements {7,8} and an all-rows
-			// result was indistinguishable from a dropped predicate (the exact
-			// mistake that briefly booked a phantom "spanning drop" bug).
+			// result would be indistinguishable from a dropped predicate.
 			func() proto.Message {
 				m := dynamicpb.NewMessage(wauxDesc)
 				m.Set(wauxDesc.Fields().ByName("XID"), protoreflect.ValueOfInt64(3))
 				m.Set(wauxDesc.Fields().ByName("WV"), protoreflect.ValueOfInt32(7))
 				return m
 			}(),
-			// BXA/BXB/BXC (RFC-173 unnest-residual class 1): BXB references BAID 1
+			// BXA/BXB/BXC (unnest-residual class 1): BXB references BAID 1
 			// and 3 only, so BAID 2 is a LEFT-JOIN padded row (its own array must
 			// still explode) and BAID 3's matched row carries a NULL array (zero
 			// rows). BXC has the single id 5 the constant inner-leg ON keeps, and
@@ -588,7 +588,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			bxbRec(100, 1),
 			bxbRec(300, 3),
 			bxcRec(5, 50),
-			// NST (RFC-173 unnest-residual class 2): only NSID 1 carries
+			// NST (unnest-residual class 2): only NSID 1 carries
 			// elements ({70,71} inside the struct). NSID 2's struct is set but
 			// its nested array is unset; NSID 3's whole struct is unset — the
 			// two distinct "nothing to explode" depths (missing leaf vs missing
@@ -596,7 +596,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			nstRec(1, true, 7, []int32{70, 71}),
 			nstRec(2, true, 8, nil),
 			nstRec(3, false, 0, nil),
-			// CXA/CXB (RFC-173 class-1 × class-2 composition): CXB references
+			// CXA/CXB (class-1 × class-2 composition): CXB references
 			// CXAID 1 ONLY, so CXAID 2 is a LEFT-padded owner (no CXB match)
 			// whose OWN nested array {82} must STILL explode — the class-1
 			// preserved-side rule through a class-2 multi-segment struct path.
@@ -605,7 +605,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			cxaRec(2, true, 2, []int32{82}),
 			cxaRec(3, false, 0, nil),
 			cxbRec(10, 1),
-			// DRV (RFC-173 unnest-residual class 3): DID 1 explodes {10,11}; DID
+			// DRV (unnest-residual class 3): DID 1 explodes {10,11}; DID
 			// 2 explodes the single {20}; DID 3's DARR is UNSET (NULL) → zero
 			// rows. DVAL discriminates the intervening-WHERE case: DVAL >= 6 keeps
 			// DID 2 (6) and DID 3 (7) but not DID 1 (5), and DID 3's NULL array
@@ -655,7 +655,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				keys := make([]string, 0, len(m))
 				for k := range m {
 					keys = append(keys, k)
@@ -837,8 +837,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// The ordinal being an INT usable in arithmetic is proven by the "filter on
 	// ordinal" subtests above (`WHERE "AT" + 1 = 3`) AND the computed-projection
 	// subtest below. The AT-ordinal COLUMN TYPE (non-null INT, not UNKNOWN) is
-	// pinned at plan time by TestFDB_ArrayUnnestOrdinalityColumnType (RFC-142
-	// round-21) — that guards the metadata dimension the row-value subtests don't.
+	// pinned at plan time by TestFDB_ArrayUnnestOrdinalityColumnType (RFC-142)
+	// — that guards the metadata dimension the row-value subtests don't.
 
 	t.Run("computed projection over ordinal returns correct integers", func(t *testing.T) {
 		// `SELECT id, ord + 1` over the AT ordinal. The ordinal must resolve to a
@@ -1065,11 +1065,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	// --- probe round 7: later-same-named-column-after-unnest (P2) + derived-
+	// --- Later-same-named-column-after-unnest (P2) + derived-
 	// alias-shadows-real-table (P1) silent-wrong shapes -----------------------
 
 	t.Run("P2 later FROM item same-named column does not overwrite unnest", func(t *testing.T) {
-		// probe round 7 P2 (silent-wrong): `FROM t, t.arr AS v, u` where U has a
+		// Silent-wrong hazard: `FROM t, t.arr AS v, u` where U has a
 		// SCALAR column V=999, DISTINCT from every unnested element. A bare
 		// `SELECT v` resolves (via the unnest's Shadowing scope source) to the
 		// unnest element binding. But the unnest is NOT the rightmost FROM leg —
@@ -1091,7 +1091,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The same shape carrying the outer T1.ID through: each unnested element
 		// (101/201/202/203) pairs with its outer ID, and U.V=999 never appears.
 		assertRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U`, []string{
-			"T1.ID=1|V=101", "T1.ID=2|V=201", "T1.ID=2|V=202", "T1.ID=2|V=203",
+			"ID=1|V=101", "ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
 		})
 	})
 
@@ -1101,7 +1101,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// shadowing qualification only redirects a BARE `v`, the ambiguous one the
 		// unnest binding owns; `U.V` is unambiguous and unaffected.
 		assertRows(t, `SELECT "U"."V" FROM T1, T1."ARR1" AS "V", U`, []string{
-			"U.V=999", "U.V=999", "U.V=999", "U.V=999",
+			"V=999", "V=999", "V=999", "V=999",
 		})
 	})
 
@@ -1149,13 +1149,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("P1 derived alias shadowing a real same-named table rejects cleanly", func(t *testing.T) {
-		// probe round 7 P1 (silent-wrong): `FROM (SELECT ID AS ARR FROM T1) AS D,
+		// Silent-wrong hazard: `FROM (SELECT ID AS ARR FROM T1) AS D,
 		// D.ARR AS V` where a REAL table D ALSO exists with an ARRAY column ARR.
 		// The derived table D's OUTPUT column ARR is the SCALAR `ID` renamed, NOT
 		// an array. The hazard is validating `ARR` against the REAL table D's array
 		// metadata (findOuterScanTable would resolve segment 0 D to the real D) and
 		// silently exploding the derived row's SCALAR — one wrong scalar row per
-		// outer row. The RFC-173 class-3 classifier now traces the derived output
+		// outer row. The class-3 classifier traces the derived output
 		// `ARR` back through the body's projection to its BASE column (T1.ID, a
 		// scalar) and reports the honest "repeated type" INVALID_COLUMN_REFERENCE — the
 		// precise disposition (superseding the earlier blanket UNSUPPORTED_QUERY),
@@ -1199,7 +1199,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID", "V1", "V2" FROM T1, T1."ARR1" AS "V1", T1."ARR1_NN" AS "V2"`, api.ErrCodeUnsupportedQuery)
 	})
 
-	// --- probe round 4: classifier precision (P1 / P2a / P2b / P2c) ---------
+	// --- Classifier precision (P1 / P2a / P2b / P2c) ---------
 	//
 	// The lateral-unnest classifier must be PRECISE: a comma/JOIN source is a
 	// lateral unnest IFF segment 0 names a VISIBLE in-scope FROM-source alias in
@@ -1231,7 +1231,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// path. PA(1)×PB(1) = one row; the executor flows both the aliased
 		// (PID/BID) and qualified (PA.ID/B.ID) forms of each projected column.
 		plan := assertRows(t, `SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA, s."PB" AS "B"`, []string{
-			"B.ID=1|BID=1|PA.ID=1|PID=1",
+			"BID=1|PID=1",
 		})
 		// A real cross join — NO Explode/FlatMap unnest machinery.
 		unnestMustContain(t, plan, "NestedLoopJoin")
@@ -1243,12 +1243,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// Control: the schema qualifier on the SECOND leg must not perturb the
 		// row set vs the bare-name form. Same single cross-product row.
 		assertRows(t, `SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA, PB AS "B"`, []string{
-			"B.ID=1|BID=1|PA.ID=1|PID=1",
+			"BID=1|PID=1",
 		})
 	})
 
 	t.Run("R5b schema-qualified table where alias equals schema name is a cross join", func(t *testing.T) {
-		// probe round 5 P2b (valid-query-fails): `FROM PA AS s, s.PB AS B` — the
+		// Valid-query-fails hazard: `FROM PA AS s, s.PB AS B` — the
 		// prior source PA is aliased `s`, which ALSO equals the session schema
 		// name. So `s.PB` is BOTH "field PB on source s" AND "schema-qualified
 		// table PB". Java's generateAccess resolves TABLE first (tableExists:
@@ -1258,7 +1258,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// validation failed (the valid query was rejected). It must now plan
 		// IDENTICALLY to the un-aliased `FROM PA, s.PB AS B` control below.
 		plan := assertRows(t, `SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA AS "s", "s"."PB" AS "B"`, []string{
-			"B.ID=1|BID=1|PA.ID=1|PID=1",
+			"BID=1|PID=1",
 		})
 		// A real cross join — NO Explode/FlatMap unnest machinery.
 		unnestMustContain(t, plan, "NestedLoopJoin")
@@ -1277,7 +1277,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5a CTE-output unnest does not explode the base table array", func(t *testing.T) {
-		// probe round 5 P2a (silent-wrong): `WITH T1 AS (SELECT ID AS ARR1 FROM T1)
+		// Silent-wrong hazard: `WITH T1 AS (SELECT ID AS ARR1 FROM T1)
 		// SELECT V FROM T1, T1.ARR1 AS V` — the CTE alias T1 SHADOWS the real record
 		// type T1. The CTE OUTPUT column ARR1 is the SCALAR `ID` renamed, NOT an
 		// array; but the real base table T1 HAS an array column ARR1. Java validates
@@ -1296,7 +1296,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The same output-vs-base-table principle for a DERIVED table whose alias is
 		// the visible source: `FROM (SELECT ID AS ARR1 FROM T1) AS d, d.ARR1 AS V`.
 		// `d` is the visible derived source; its OUTPUT ARR1 is the scalar `ID`, not
-		// an array. The RFC-173 class-3 classifier traces the derived output ARR1
+		// an array. The class-3 classifier traces the derived output ARR1
 		// back through the body's projection to its base column (T1.ID, a scalar)
 		// and reports the honest "repeated type" INVALID_COLUMN_REFERENCE — never a silent
 		// explode. (Pre-class-3 the element type was unrecoverable, so this was a
@@ -1319,7 +1319,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R10 real table aliased with a CTE name shadows the CTE and unnests", func(t *testing.T) {
-		// probe round 10 (OVER-rejection): `WITH X AS (SELECT ID AS ARR FROM T1)
+		// The over-rejection hazard: `WITH X AS (SELECT ID AS ARR FROM T1)
 		// SELECT V FROM D AS X, X.ARR AS V` — a CTE named X exists, but the FROM uses
 		// `D AS X`, a REAL table D (array column ARR={50,51}) aliased X, which SHADOWS
 		// the unused CTE. Segment 0 `X` resolves to the VISIBLE scan `D AS X`, so the
@@ -1339,11 +1339,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R10 CTE genuinely used as the unnest source is still rejected", func(t *testing.T) {
-		// Control (round-5 boundary preserved): `WITH X AS (SELECT ID AS ARR FROM T1)
+		// Control: `WITH X AS (SELECT ID AS ARR FROM T1)
 		// SELECT V FROM X, X.ARR AS V` — here X IS the CTE, used as the FROM source.
 		// Its OUTPUT column ARR is the SCALAR `ID` renamed, not an array, so the
 		// unnest over a CTE output must still cleanly reject — NOT silently explode a
-		// base table. outerSourceIsCTE("X") is true, so the RFC-173 class-3 branch
+		// base table. outerSourceIsCTE("X") is true, so the class-3 branch
 		// runs and traces the output ARR back through the body's projection to its
 		// base column (T1.ID, a scalar), reporting the honest "repeated type"
 		// WRONG_OBJECT_TYPE (superseding the earlier blanket UNSUPPORTED_QUERY). Only
@@ -1397,10 +1397,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID" FROM T1, T1."NOPE" AS "X"`, api.ErrCodeUndefinedColumn)
 	})
 
-	// --- probe round 6: two-FROM-scope unnest + AT-on-bare-source (P2a / P3) --
+	// --- Two-FROM-scope unnest + AT-on-bare-source (P2a / P3) --
 
 	t.Run("R6 P2a derived-table with its own unnest plus an outer unnest plans", func(t *testing.T) {
-		// probe round 6 P2a (valid-query-fails): `FROM (SELECT V FROM PA, PA.ARR AS
+		// Valid-query-fails hazard: `FROM (SELECT V FROM PA, PA.ARR AS
 		// V) AS d, PB, PB.ARR AS X` is TWO separate FROM scopes. The INNER unnest
 		// (PA.ARR AS V) lives inside the derived table `d`'s OWN body; the OUTER
 		// scope has exactly ONE unnest (PB.ARR AS X). The multiple-unnest guard
@@ -1417,8 +1417,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// outer column PB.ID flows through the outer FlatMap merged row alongside
 		// the unnested element. RFC-142.
 		plan := assertRows(t, `SELECT PB."ID", "X" FROM (SELECT "V" FROM PA, PA."ARR" AS "V") AS "d", PB, PB."ARR" AS "X"`, []string{
-			"PB.ID=1|X=90", "PB.ID=1|X=90", "PB.ID=1|X=91",
-			"PB.ID=1|X=91", "PB.ID=1|X=92", "PB.ID=1|X=92",
+			"ID=1|X=90", "ID=1|X=90", "ID=1|X=91",
+			"ID=1|X=91", "ID=1|X=92", "ID=1|X=92",
 		})
 		// The OUTER unnest (PB.ARR) is a FlatMap over an Explode, and the derived
 		// table `d` carries its OWN FlatMap/Explode in the inner leg — two
@@ -1446,15 +1446,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// the derived table's own (non-ordinal) inner unnest. 2 derived rows × 3
 		// PB.ARR elements = 6 rows; ordinal 1,2,3 each appears twice.
 		plan := assertRows(t, `SELECT PB."ID", "X", "O" FROM (SELECT "V" FROM PA, PA."ARR" AS "V") AS "d", PB, PB."ARR" AS "X" AT "O"`, []string{
-			"O=1|PB.ID=1|X=90", "O=1|PB.ID=1|X=90",
-			"O=2|PB.ID=1|X=91", "O=2|PB.ID=1|X=91",
-			"O=3|PB.ID=1|X=92", "O=3|PB.ID=1|X=92",
+			"ID=1|O=1|X=90", "ID=1|O=1|X=90",
+			"ID=1|O=2|X=91", "ID=1|O=2|X=91",
+			"ID=1|O=3|X=92", "ID=1|O=3|X=92",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
 
 	t.Run("R6 P3 AT on a bare source alias is WRONG_OBJECT_TYPE", func(t *testing.T) {
-		// probe round 6 P3 (wrong error code): `FROM T1, T1 AT ord` — AT is present
+		// Wrong-error-code hazard: `FROM T1, T1 AT ord` — AT is present
 		// but there are NO field segments (the source is the bare table/alias `T1`,
 		// not `T1.field`). Segment 0 (T1) resolves to a visible scan, so it reaches
 		// the known-source branch with an EMPTY field name. Before the fix that
@@ -1604,8 +1604,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// raw executor flows both the aliased (TID/UV) and qualified (T1.ID/U.V)
 		// forms of each projected column (same as the P2a schema-qualified test).
 		plan := assertRows(t, `SELECT T1."ID" AS "TID", "U"."V" AS "UV" FROM T1, "U"`, []string{
-			"T1.ID=0|TID=0|U.V=999|UV=999", "T1.ID=1|TID=1|U.V=999|UV=999",
-			"T1.ID=2|TID=2|U.V=999|UV=999", "T1.ID=3|TID=3|U.V=999|UV=999",
+			"TID=0|UV=999", "TID=1|UV=999",
+			"TID=2|UV=999", "TID=3|UV=999",
 		})
 		unnestMustContain(t, plan, "NestedLoopJoin")
 		unnestMustNotContain(t, plan, "Explode")
@@ -1676,7 +1676,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// tables. The gate must leave it a real join (no Explode/FlatMap unnest):
 		// T1 ids {0,1,2,3} INNER-joined with the single U row (id=1) on ID → one row.
 		plan := assertRows(t, `SELECT T1."ID" AS "TID", "U"."V" AS "UV" FROM T1 INNER JOIN "U" ON "U"."ID" = T1."ID"`, []string{
-			"T1.ID=1|TID=1|U.V=999|UV=999",
+			"TID=1|UV=999",
 		})
 		unnestMustNotContain(t, plan, "Explode")
 	})
@@ -1697,7 +1697,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// base-table AT check, leaving the rejection to the translator's CTE-output
 	// path. Revert-proof on 0AF00 vs 42809: reverting the early-pass fix keys the
 	// shadowed real DSC's scalar ARR → 42809. The CTE body is COMPUTED (`ID + 1`)
-	// deliberately — the RFC-173 class-3 classifier declines a computed passthrough
+	// deliberately — the class-3 classifier declines a computed passthrough
 	// as UNSUPPORTED_QUERY, whereas a bare scalar passthrough would now trace to the
 	// base scalar and give 42809 (collapsing the 0AF00/42809 discriminator this
 	// revert-proof needs). RFC-142.
@@ -1726,7 +1726,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `WITH "DSC" AS (SELECT "ID" + 1 AS "ARR" FROM T1) SELECT "V" FROM "DSC", "DSC"."ARR" AS "V"`, api.ErrCodeUnsupportedQuery)
 	})
 
-	// --- probe round 8: ORDER BY over a shadowed unnest binding (P2a) +
+	// --- ORDER BY over a shadowed unnest binding (P2a) +
 	// WHERE EXISTS over a lateral unnest (P2b) ---------------------------------
 
 	// orderedQuery plans + executes a SELECT and returns the rows in EXECUTION
@@ -1757,7 +1757,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				keys := make([]string, 0, len(m))
 				for k := range m {
 					keys = append(keys, k)
@@ -1814,12 +1814,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("P2a ORDER BY on a shadowed unnest element sorts by the element asc", func(t *testing.T) {
-		// probe round 8 P2a (silent-wrong order): `FROM t, t.arr AS v, u` where U
+		// Silent-wrong-order hazard: `FROM t, t.arr AS v, u` where U
 		// has a SCALAR column V=999. A bare `ORDER BY v` resolves (via the unnest's
 		// Shadowing scope source) to the unnest element binding, but the unnest is
 		// NOT the rightmost FROM leg — U is — so the outer NestedLoopJoin's
 		// mergeRows OVERWRITES the bare `v` sort key last-leg-wins with U.V=999. The
-		// PROJECTION reads the protected qualified `v.v` (the round-7 P2 fix), but
+		// PROJECTION reads the protected qualified `v.v`, but
 		// the SORT KEY was emitted BARE, so every row tied on the constant 999 →
 		// rows in the WRONG (insertion) order. The fix qualifies a bare sort key
 		// that binds to the Shadowing unnest source to `v.v` — identical to the
@@ -1848,7 +1848,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// column: each element pairs with its outer ID and U.V=999 never leaks into
 		// the ordering.
 		assertOrderedRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U ORDER BY "V" DESC`, []string{
-			"T1.ID=2|V=203", "T1.ID=2|V=202", "T1.ID=2|V=201", "T1.ID=1|V=101",
+			"ID=2|V=203", "ID=2|V=202", "ID=2|V=201", "ID=1|V=101",
 		})
 	})
 
@@ -1867,13 +1867,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	//
 	// The bug is a PLAN-CONSTRUCTION divergence in the catalog builder, so the
 	// revert-proof axis is the inner plan SHAPE rendered in EXPLAIN (the inner SELECT
-	// plan of an EXISTS subquery is rendered inline). With the fix the inner is
-	// `Project([V.V], InMemorySort([V.V DESC], …))` (qualified element); on revert it
-	// is `Project([V], InMemorySort([V DESC], …))` (the bare, GW.V-clobbered key) —
-	// the EXACT string difference asserted below, on BOTH the projection and the sort.
-	// (A scalar-subquery-over-unnest's value is not yet pre-evaluated in execution —
-	// a separate gap — so the plan-shape assertion is the faithful proof here, exactly
-	// as the column-type tests assert on the planned Value.)
+	// plan of an EXISTS subquery is rendered inline). The inner PROJECTION reads the
+	// qualified `V.V` (the unnest element); the inner SORT KEY now reads the element
+	// POSITIONALLY — `.V#3`, a baked ordinal at the element's seed slot (GD's run
+	// ID/ARR/SARR is slots 0-2, so the mid-list element V is slot 3) — because ORDER BY
+	// over a gathered ordinal seed bakes leg-column AND element keys through the SAME
+	// authority the GROUP BY path uses (translateSort → gatheredSeedBakeContext →
+	// bakeGatheredGroupValue; element-first, so bare `V` shadows GW.V). On revert the
+	// sort is the bare, GW.V-clobbered `InMemorySort([V DESC]`; a mis-bind to GW.V would
+	// bake `.V#5` (GW.V's slot), never `.V#3`. (A scalar-subquery-over-unnest's value is
+	// not yet pre-evaluated in execution — a separate gap — so the plan-shape assertion
+	// is the faithful proof here, exactly as the column-type tests assert on the Value.)
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest projection AND sort key", func(t *testing.T) {
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
 			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW ORDER BY "V" DESC)`, md, nil)
@@ -1881,27 +1885,28 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		// The inner projection AND the inner sort must read the QUALIFIED V.V (the
-		// unnest element), not the bare V that mergeRows clobbers with GW.V.
-		unnestMustContain(t, explain, "Project([V.V]")
-		unnestMustContain(t, explain, "InMemorySort([V.V DESC]")
-		// Pre-fix the catalog builder emitted the bare key for both — assert it is gone
-		// so the test fails on revert (a bare `Project([V],` / `InMemorySort([V DESC]`).
+		// The inner projection reads the qualified element V.V; the inner sort reads it
+		// POSITIONALLY at the element slot (.V#3), never the bare V that mergeRows
+		// clobbers with GW.V and never GW.V's own slot (.V#5).
+		unnestMustContain(t, explain, "Project([V.V#0]")
+		unnestMustContain(t, explain, ".V#3 DESC]")
 		unnestMustNotContain(t, explain, "Project([V],")
 		unnestMustNotContain(t, explain, "InMemorySort([V DESC]")
+		unnestMustNotContain(t, explain, ".V#5 DESC]")
 	})
 
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest sort key ASC", func(t *testing.T) {
-		// The ASC mirror pins the sort-key half independent of DESC: the catalog
-		// builder's sort key is the qualified V.V for either direction.
+		// The ASC mirror pins the sort-key half independent of DESC: the sort key bakes
+		// to the element slot (.V#3) for either direction, never GW.V's (.V#5) or bare V.
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
 			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW ORDER BY "V" ASC)`, md, nil)
 		if perr != nil {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		unnestMustContain(t, explain, "InMemorySort([V.V ASC]")
+		unnestMustContain(t, explain, ".V#3 ASC]")
 		unnestMustNotContain(t, explain, "InMemorySort([V ASC]")
+		unnestMustNotContain(t, explain, ".V#5 ASC]")
 	})
 
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest bare projection no ORDER BY", func(t *testing.T) {
@@ -1913,12 +1918,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		unnestMustContain(t, explain, "Project([V.V]")
+		unnestMustContain(t, explain, "Project([V.V#0]")
 		unnestMustNotContain(t, explain, "Project([V],")
 	})
 
 	t.Run("P2b WHERE EXISTS over a lateral unnest returns matching elements", func(t *testing.T) {
-		// probe round 8 P2b (translation failure): `SELECT v FROM t, t.arr AS v
+		// Translation-failure hazard: `SELECT v FROM t, t.arr AS v
 		// WHERE EXISTS (...)` — translateFilter routes join+EXISTS to
 		// translateJoinWithExists, which translated the join's right child via
 		// translateRef. When that child is a LogicalUnnest, translateRef returns nil
@@ -2001,12 +2006,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5c AT+EXISTS correlating on the outer table", func(t *testing.T) {
-		// RFC-173 commit 5a: a WITH-ORDINALITY unnest under EXISTS whose
+		// A WITH-ORDINALITY unnest under EXISTS whose
 		// correlation reads the OUTER TABLE column MA.ID (id ∈ {1,2} differs from
 		// every element {10..21} and every ordinal {1,2,3}). JU.ID ∈ {1,2} → both
 		// outer rows match → all 5 elements survive. The AS+AT seed is fully
 		// baked, so the translator LEAVES the correlation leg-relative for the
-		// executor's below-FOD window branch (the ONE-authority branch, gated on
+		// executor's below-FOD window branch — exactly one of translator or
+		// executor may rebase the correlation, never both (gated on
 		// OrdinalSeedLegWindows); pre-rebasing here would double-rebase over a
 		// fully-baked seed. NOTE this AT+EQUALITY shape is NOT the discriminating
 		// pin: its equality correlation is swallowed by the EXISTS fast path
@@ -2019,7 +2025,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5d AS alias shadows the EXISTS-correlation outer column", func(t *testing.T) {
-		// RFC-173 commit 5a: the unnest AS alias `ID` SHADOWS the outer correlation
+		// The unnest AS alias `ID` SHADOWS the outer correlation
 		// column TCOLL.ID (also U's PK). The merged ordinal row would carry two
 		// columns named "ID" (the outer TCOLL.ID and the element), so any name-level
 		// read is ambiguous — unnestExistsSeedSafe declines the ordinal seed for a
@@ -2033,15 +2039,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5e AT+EXISTS NON-equality correlation discriminates the double-rebase", func(t *testing.T) {
-		// RFC-173 commit 5a — the DISCRIMINATING pin for the one-authority gate
-		// (the branch-selection fix). A WITH-ORDINALITY (AS+AT) seed is FULLY
-		// baked, so the EXECUTOR (commit-4's below-FOD window branch) owns the
+		// The DISCRIMINATING pin for the branch selection between translator-side
+		// and executor-side rebasing. A WITH-ORDINALITY (AS+AT) seed is FULLY
+		// baked, so the EXECUTOR (the below-FOD window branch) owns the
 		// leg-relative rebase of the outer correlation; the translator must NOT
 		// pre-rebase. A NON-equality correlation (`JU.K < MA.ID + 1000`) cannot be
 		// swallowed by the equality fast path, so it routes THROUGH the below-FOD
-		// window branch — the exact path a double-rebase corrupts. Under the pre-fix
+		// window branch — the exact path a double-rebase corrupts. Under a
 		// double-rebase the translator-baked slot-0 ref was re-shifted by the inner
-		// leg's window offset and every element survived; with the gate it is left
+		// leg's window offset and every element survived; correctly, it is left
 		// leg-relative and the executor rebases it once. MA1.ID+1000=1001, and
 		// JU.K∈{1001,2002} has none < 1001 → MA1 dropped; MA2.ID+1000=1002 and
 		// JU.K=1001 < 1002 → MA2 kept. Only MA2's elements {20,21} survive.
@@ -2068,7 +2074,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5f mixed no-AT EXISTS equality preserves the baked correlation", func(t *testing.T) {
-		// RFC-173 commit 5a — the mixed (no-AT) twin of R5c, the translator
+		// The mixed (no-AT) twin of R5c, the translator
 		// PRE-REBASE branch (OrdinalSeedLegWindows nil → the executor has no window
 		// authority). The translator bakes MA.ID to an ofOrdinal; the EXISTS fast
 		// path must PRESERVE that bake (correlatedFastPathOperand) rather than
@@ -2083,7 +2089,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5g mixed no-AT + NON-equality EXISTS through the below-FOD pass-through arm", func(t *testing.T) {
-		// RFC-173 commit 5a — pins the THIRD one-authority arm. A mixed no-AT seed
+		// The third rebase arm. A mixed no-AT seed
 		// has OrdinalSeedLegWindows nil (bare-QOV element), so the TRANSLATOR
 		// pre-rebases MA.ID to a baked ofOrdinal. A NON-equality correlation
 		// (`JU.K < MA.ID + 1000`) is NOT swallowed by the equality fast path, so the
@@ -2120,21 +2126,28 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	t.Run("R5o EXISTS inner scans a table aliased the same as an outer leg (scope collision)", func(t *testing.T) {
-		// The existsInnerScopeCollidesOuter gate: the EXISTS inner scans MA — the
-		// SAME table (and raw alias) as the outer leg MA. A leg-relative outer ref
-		// `QOV(MA).C` would be captured by existsInnerCorrelation's inner-alias
-		// rename (MA → unique), so the gate forces the ANCHORED seed (the
-		// name-model rebase moves the ref to the merged corr's qualified key,
-		// which the rename does not touch). The inner MA is non-empty; the outer
-		// `MA.C < X` keeps MA1's 12 and MA2's {20,21}. → {12,20,21}.
+	t.Run("R5o EXISTS inner re-declares an outer leg's name (inner-shadow semantics)", func(t *testing.T) {
+		// The inner FROM re-declares MA, SHADOWING the outer leg — `MA."C"`
+		// binds the INNER re-declared MA (Java SemanticAnalyzer.
+		// resolveAcrossFragments: innermost fragment first; LIVE-verified on
+		// the 4.12.11.0 conformance server, which answers ALL FIVE elements).
+		// EXISTS is true iff ANY inner MA row has C < X, i.e. X > min(C) =
+		// min(11,5) = 5 — every element qualifies. The collision mint
+		// (buildCorrelatedExists) makes this structural: the inner scan is
+		// BORN under a unique correlation, so the join predicate cannot carry
+		// the ambiguous name MA. This pin previously recorded the pre-mint
+		// divergence ({12,20,21} — the name-model rebase read the OUTER leg's
+		// C per row, and positive-polarity outer-routing pre-filtered), which
+		// disagreed with Java AND with Go's own NOT-EXISTS handling of the
+		// same name (negation forbids the hoist, so the conjunct stayed under
+		// the ∃ and bound inner).
 		assertRows(t, `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM MA WHERE MA."C" < "X")`, []string{
-			"X=12", "X=20", "X=21",
+			"X=10", "X=11", "X=12", "X=20", "X=21",
 		})
 	})
 
-	t.Run("R5q EXISTS inner aliased the same as the unnest OUTPUT alias (5a fixed)", func(t *testing.T) {
-		// A shape commit 5a fixed (malformed plan at the PR base, correct now): the
+	t.Run("R5q EXISTS inner aliased the same as the unnest OUTPUT alias", func(t *testing.T) {
+		// A shape that used to produce a malformed plan, now correct: the
 		// EXISTS inner JU is aliased `X` — the SAME as the unnest AS alias. The inner
 		// ref `X.ID` binds the inner JU (not the element), correlated to the outer
 		// MA.ID. Both MA rows match a JU id, so all elements survive. Pinned so the
@@ -2196,7 +2209,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5x multi-table-inner EXISTS with an element conjunct stays LOUD or correct", func(t *testing.T) {
-		// The booked multi-table-inner class: the element-referencing conjunct
+		// The multi-table-inner class: the element-referencing conjunct
 		// (`MB.D + 3 > X - MA.ID`) historically landed as a filter on the Explode
 		// INSIDE the unnest box — outer side, where the inner legs are unbound —
 		// silently returning [] at the name-model base. The current baked refs
@@ -2226,7 +2239,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				got = append(got, unnestSprint(m["X"]))
 			}
 			return nil, nil
@@ -2253,14 +2266,15 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// NOTE: the AS-alias-shadows-outer-column shape where the EXISTS ALSO
 	// references the element via that alias (e.g. `FROM TCOLL, TCOLL.ARR AS ID
 	// WHERE EXISTS (SELECT 1 FROM U WHERE U.ID = ID AND U.V > TCOLL.ID)`) is a
-	// PRE-EXISTING name-model bug (the shadowed element ref resolves wrong at the
-	// PR base too) — it is NOT pinned here to correct rows because name-model
-	// cannot deliver them. Commit 5a's job is only to not REGRESS it: round-5's
-	// ordinal path made it NON-DETERMINISTIC (map-order slot pick), and
-	// unnestExistsSeedSafe's shadow decline restores the deterministic base
-	// behavior. The decline is pinned white-box by TestRFC173Item2C5a_
-	// ShadowAliasDeclines; the underlying name-model shadowed-element bug is booked
-	// as a follow-on (RFC + tracked, with the pre-existing NOT-EXISTS / scalar bugs).
+	// PRE-EXISTING name-model bug (the shadowed element ref resolves wrong there
+	// too) — it is NOT pinned here to correct rows because name-model cannot
+	// deliver them. The ordinal path must at least not make it WORSE: without a
+	// decline it would make the shadowed reference NON-DETERMINISTIC (map-order
+	// slot pick) instead of merely wrong; unnestExistsSeedSafe declines the
+	// ordinal seed for this shape and restores the deterministic name-model
+	// behavior. The decline itself is pinned white-box in the query package's
+	// EXISTS-seed tests; the underlying name-model shadowed-element bug remains
+	// an open follow-on alongside the pre-existing NOT-EXISTS / scalar bugs.
 
 	t.Run("R5k EXISTS mixing an inner correlation AND an outer-only conjunct", func(t *testing.T) {
 		// The MIXED shape: one EXISTS predicate carries BOTH a genuine inner
@@ -2287,7 +2301,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5m EXISTS conjunct references an outer leg AND the unnest element but not the inner", func(t *testing.T) {
-		// RFC-173 commit 5a: `MA.C = X` references the outer leg MA AND the unnest
+		// `MA.C = X` references the outer leg MA AND the unnest
 		// element X, but NOT the EXISTS inner (JU). It is still outer-only relative
 		// to the EXISTS (the executor routes it outer-side — no inner-leg ref), and
 		// MA.C is unresolvable over the ordinal row. The classifier keys on the
@@ -2301,7 +2315,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R5n EXISTS with outer-leg + element and an INEQUALITY (the classifier discriminator)", func(t *testing.T) {
-		// The pin the round-4 classifier missed (an earlier version keyed on "outer
+		// The pin an earlier classifier version missed (it keyed on "outer
 		// leg and nothing else", which the unnest element X defeated). `MA.C < X`
 		// references the outer leg MA AND the unnest element X but
 		// NOT the inner JU — the executor routes it outer-side (no inner-leg ref), so
@@ -2327,25 +2341,25 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	// --- probe round 9: computed ORDER BY over an unnest column (P2a) +
+	// --- Computed ORDER BY over an unnest column (P2a) +
 	// duplicate AS==AT alias (P2b) + correlated subquery over the unnest
 	// binding (P2c) ------------------------------------------------------------
 
 	t.Run("P2a computed ORDER BY over a shadowed unnest element sorts desc", func(t *testing.T) {
-		// probe round 9 P2a (silent-wrong, no-op sort): a COMPUTED ORDER BY
-		// expression (`V + 0`) over a lateral-unnest element. The round-8 P2a fix
-		// qualified a BARE sort key (`ORDER BY V`) via qualifyShadowedSortKeys, but a
+		// Silent-wrong, no-op-sort hazard: a COMPUTED ORDER BY
+		// expression (`V + 0`) over a lateral-unnest element. Qualifying a BARE sort
+		// key (`ORDER BY V`) via qualifyShadowedSortKeys handles the plain case, but a
 		// COMPUTED key flows through upgradeSortKeyValues, which built its resolver
 		// via buildProjectionResolverWithCTEScopes — that resolver returns nil for an
 		// unnest (it resolves the dotted source `T1.ARR1` as a TABLE and fails),
 		// never registering the unnest's AS/AT virtual columns. So the sort key stayed
 		// raw text (`InMemorySort(["V" + 0 DESC])`), the executor compared a
 		// non-existent field, and the sort was a NO-OP — rows came back in insertion
-		// order. The fix falls back to buildSelectScope (the single scope builder that
-		// knows the unnest virtual source) so the computed expression resolves against
-		// the unnest binding and sorts for real. `FROM t, t.arr AS V, U` puts the
+		// order. Falling back to buildSelectScope (the single scope builder that
+		// knows the unnest virtual source) lets the computed expression resolve against
+		// the unnest binding and sort for real. `FROM t, t.arr AS V, U` puts the
 		// unnest before a LATER same-named U.V=999, so a no-op sort (or a sort on the
-		// clobbered bare `v`=999) is detectable: with the fix the elements descend
+		// clobbered bare `v`=999) is detectable: correctly, the elements descend
 		// 203,202,201,101. RFC-142.
 		assertOrderedRows(t, `SELECT "V" FROM T1, T1."ARR1" AS "V", U ORDER BY "V" + 0 DESC`, []string{
 			"V=203", "V=202", "V=201", "V=101",
@@ -2368,12 +2382,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// DESC. Proves the qualified computed sort key composes with a projected outer
 		// column and the unnest element drives the order, never U.V=999.
 		assertOrderedRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U ORDER BY "V" * 1 DESC`, []string{
-			"T1.ID=2|V=203", "T1.ID=2|V=202", "T1.ID=2|V=201", "T1.ID=1|V=101",
+			"ID=2|V=203", "ID=2|V=202", "ID=2|V=201", "ID=1|V=101",
 		})
 	})
 
 	t.Run("P2b duplicate AS == AT alias is rejected cleanly", func(t *testing.T) {
-		// probe round 9 P2b (silent-wrong, overwrite): `FROM t, t.arr AS X AT X` —
+		// Silent-wrong, overwrite hazard: `FROM t, t.arr AS X AT X` —
 		// the AS element alias and the AT ordinal alias are IDENTICAL. The element
 		// and the ordinal are appended under the SAME bare+qualified names in
 		// buildUnnestResultValue; RecordConstructorValue.Evaluate stores fields in a
@@ -2385,7 +2399,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("P2c correlated EXISTS over the unnest element returns matching elements", func(t *testing.T) {
-		// probe round 9 P2c (translation failure): `SELECT VAL FROM t, t.arr AS VAL
+		// Translation-failure hazard: `SELECT VAL FROM t, t.arr AS VAL
 		// WHERE EXISTS (SELECT 1 FROM UV WHERE UV.V = VAL)` — the inner EXISTS query
 		// correlates to the UNNEST element binding VAL. The unnest's virtual Shadowing
 		// source was added only to the MAIN SELECT scope; the EXISTS planner built its
@@ -2416,7 +2430,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// id2's 201 and 203 survive (∈UV.V), 202 is dropped. Pins the outer column
 		// flows alongside the element-correlated existential. RFC-142.
 		assertRows(t, `SELECT T1."ID", "VAL" FROM T1, T1."ARR1" AS "VAL" WHERE EXISTS (SELECT 1 FROM UV WHERE "UV"."V" = "VAL")`, []string{
-			"T1.ID=2|VAL=201", "T1.ID=2|VAL=203",
+			"ID=2|VAL=201", "ID=2|VAL=203",
 		})
 	})
 
@@ -2432,11 +2446,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
 
-	// --- probe round 12: EXISTS over a lateral unnest correlating to the ORIGINAL
+	// --- EXISTS over a lateral unnest correlating to the ORIGINAL
 	// OUTER TABLE (P2a) ---------------------------------------------------------
 
 	t.Run("R12 P2a EXISTS over unnest correlating to the OUTER TABLE returns matching elements", func(t *testing.T) {
-		// probe round 12 P2a (silent-wrong, drops rows): `SELECT VAL FROM T1,
+		// Silent-wrong, drops-rows hazard: `SELECT VAL FROM T1,
 		// T1.ARR AS VAL WHERE EXISTS (SELECT 1 FROM U WHERE U.V > T1.ID)` — the EXISTS
 		// subquery's residual correlation is to the ORIGINAL outer table T1 (via
 		// T1.ID), NOT the unnest element/ordinal. buildCorrelatedExists resolved
@@ -2478,7 +2492,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	t.Run("R12 P2a EXISTS over unnest correlating to BOTH the outer table AND the element", func(t *testing.T) {
 		// The combined correlation: the EXISTS subquery's inner predicate references
 		// BOTH the original outer table (T1.ID — the rebased outer-leg residual) AND
-		// the unnest ELEMENT (VAL — bound by the FlatMap, the round-9 P2c path), each
+		// the unnest ELEMENT (VAL — bound by the FlatMap, the P2c path above), each
 		// compared against the inner column U.V in the SAME existential WHERE:
 		//   EXISTS (SELECT 1 FROM U WHERE U.V > VAL AND U.V > T1.ID)
 		// U.V=999, so `999 > VAL` holds for every element (max 203) AND `999 > T1.ID`
@@ -2519,9 +2533,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
 
-	// --- probe round 13: EXISTS over a lateral unnest that is NOT the rightmost
-	// FROM item — the BURIED-UNNEST class. The round-12 fix handled the unnest as
-	// the rightmost leg (routes through translateUnnestExistsFilter). When ANOTHER
+	// --- EXISTS over a lateral unnest that is NOT the rightmost
+	// FROM item — the BURIED-UNNEST class. translateUnnestExistsFilter handles the unnest as
+	// the rightmost leg. When ANOTHER
 	// comma source follows the unnest (`FROM T1, T1.arr AS V, U`), the TOP-LEVEL
 	// join's right child is that source (U), so the filter routes to the GENERIC
 	// join+EXISTS path. The outer of the existential FlatMap is then the inner-join
@@ -2629,12 +2643,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	// --- probe round 17: a BURIED (non-rightmost) lateral-unnest element/ordinal
+	// --- A BURIED (non-rightmost) lateral-unnest element/ordinal
 	// WHERE conjunct COMBINED with EXISTS ------------------------------------------
 	//
 	// `FROM T1, T1.ARR1 AS V, U WHERE V > x AND EXISTS (…)` — the unnest is NOT the
 	// rightmost FROM item (U is), so the TOP-LEVEL LogicalJoin's Right is U and the
-	// unnest is BURIED in join.Left. The round-16 fix (pushBuriedUnnestPredicateDown)
+	// unnest is BURIED in join.Left. pushBuriedUnnestPredicateDown
 	// folds `V > x` into the inner Explode — but it ran ONLY when no EXISTS was
 	// present. With an EXISTS in the same WHERE, the EXISTS early-return fired FIRST
 	// and routed the WHOLE filter through the generic join+EXISTS path
@@ -2676,7 +2690,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// buried-table column resolves AND the element filter pushed. Before the fix:
 		// EMPTY. RFC-142.
 		assertRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U WHERE "V" > 150 AND EXISTS (SELECT 1 FROM UV WHERE "UV"."ID" = T1."ID")`, []string{
-			"T1.ID=2|V=201", "T1.ID=2|V=202", "T1.ID=2|V=203",
+			"ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
 		})
 	})
 
@@ -2733,19 +2747,20 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 
 	t.Run("R17 control: buried unnest EXISTS with no element filter is unchanged", func(t *testing.T) {
 		// Control: the SAME buried-unnest+EXISTS shape WITHOUT an element filter — the
-		// round-13 path. EXISTS holds for T1.ID ∈ {1,2}, so ALL four elements survive.
-		// Proves the round-17 pre-push leaves the no-element-filter EXISTS case (the
-		// existing round-13 behavior) exactly as it was. RFC-142.
+		// buried-unnest-correlates-to-outer-table path pinned above. EXISTS holds for
+		// T1.ID ∈ {1,2}, so ALL four elements survive. Proves the pre-push for the
+		// element/ordinal filter leaves the no-element-filter EXISTS case exactly as
+		// it was. RFC-142.
 		assertRows(t, `SELECT "V" FROM T1, T1."ARR1" AS "V", U WHERE EXISTS (SELECT 1 FROM UV WHERE "UV"."ID" = T1."ID")`, []string{
 			"V=101", "V=201", "V=202", "V=203",
 		})
 	})
 
-	// --- probe round 11: schema-qualified table inside a SUBQUERY (P2) +
+	// --- Schema-qualified table inside a SUBQUERY (P2) +
 	// invalid array source after a prior unnest (P3) --------------------------
 
 	t.Run("P2 schema-qualified table inside an EXISTS subquery is a cross join not unnest", func(t *testing.T) {
-		// probe round 11 P2 (valid-query-fails): `SELECT ID FROM T1 WHERE EXISTS
+		// Valid-query-fails hazard: `SELECT ID FROM T1 WHERE EXISTS
 		// (SELECT 1 FROM PA AS s, s.PB AS B ...)` with session schema `s`. Inside the
 		// EXISTS subquery, the prior source PA is aliased `s`, which ALSO equals the
 		// session schema name, so `s.PB` is BOTH "field PB on source s" AND the
@@ -2818,7 +2833,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("P3 AT-on-non-array after a prior unnest is WRONG_OBJECT_TYPE not multiple-unnest", func(t *testing.T) {
-		// probe round 11 P3 (wrong error code): `FROM T1, T1.ARR1 AS V, U AT O` — the
+		// Wrong-error-code hazard: `FROM T1, T1.ARR1 AS V, U AT O` — the
 		// FROM list has ONE real array unnest (T1.ARR1 AS V) followed by an AT on the
 		// NON-ARRAY table U. The multiple-unnest guard (containsLateralUnnest(j.Left))
 		// used to fire BEFORE the right-side array validation, so this wrongly reported
@@ -2851,7 +2866,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		assertRejected(t, md, `SELECT "ID", "V", "W" FROM T1, T1."ARR1" AS "V", T1."ARR1_NN" AS "W"`, api.ErrCodeUnsupportedQuery)
 	})
 
-	// --- probe round 12: schema-qualified table inside a subquery resolved
+	// --- Schema-qualified table inside a subquery resolved
 	// against a NON-DEFAULT session schema (P2b) -------------------------------
 
 	// querySchema plans + executes a SELECT under a NON-DEFAULT session schema (the
@@ -2884,7 +2899,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				keys := make([]string, 0, len(m))
 				for k := range m {
 					keys = append(keys, k)
@@ -2916,9 +2931,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	}
 
 	t.Run("R12 P2b schema-qualified table inside a subquery resolves against the ACTIVE schema", func(t *testing.T) {
-		// probe round 12 P2b (misclassification in a non-default schema): the round-11
-		// fix demoted a schema-qualified-table unnest INSIDE an EXISTS subquery, but
-		// only against the HARDCODED default schema "s" — the subquery planner
+		// Misclassification-in-a-non-default-schema hazard: demoting a
+		// schema-qualified-table unnest INSIDE an EXISTS subquery worked only
+		// against the HARDCODED default schema "s" — the subquery planner
 		// (existsSubqueryPlanner) built the subquery plan through
 		// buildLogicalPlanForQueryWithCTECatalog → buildLogicalPlanForSelectWithCTECatalog,
 		// which fell back to defaultEmbeddedSchema. So in a session whose schema is
@@ -2929,7 +2944,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// Cascades translation failed). The fix threads v.schemaName through the
 		// subquery planner and its recursive catalog builders, so the demotion uses
 		// the ACTIVE schema. `main.PB` plans as the real table PB (cross join), exactly
-		// as the default-schema sibling (the round-11 `s` test). EXISTS is
+		// as the default-schema sibling (the `s`-schema test above). EXISTS is
 		// non-correlated, PA(1)×PB(1) → one row → TRUE for every T1 id. RFC-142.
 		plan := assertRowsSchema(t, `SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM PA AS "main", "main"."PB" AS "B")`, "main", []string{
 			"ID=0", "ID=1", "ID=2", "ID=3",
@@ -2978,7 +2993,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustContain(t, plan, "NestedLoopJoin")
 	})
 
-	// --- probe round 15: a CORRELATED subquery whose OWN FROM clause has a lateral
+	// --- A CORRELATED subquery whose OWN FROM clause has a lateral
 	// array unnest correlating to the OUTER query. The unnest lives INSIDE the
 	// subquery (`EXISTS (SELECT 1 FROM T1, T1.ARR1 AS VAL WHERE VAL = UV.V)`), and
 	// the inner WHERE correlates to the outer (UV.V). The catalog-aware build of the
@@ -3065,7 +3080,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// correlated scalar aggregate) — both carry the SAME correct value, which is
 		// what the unnest fix proves; the dual label is pre-existing labeling behavior.
 		plan := assertRows(t, `SELECT "ID", (SELECT MAX("VAL") FROM T1, T1."ARR1" AS "VAL" WHERE "VAL" < "UV"."V") AS "M" FROM UV`, []string{
-			"ID=1|M=101|T1.MAX(VAL)=101", "ID=2|M=202|T1.MAX(VAL)=202",
+			"ID=1|M=101", "ID=2|M=202",
 		})
 		unnestMustContain(t, plan, "Explode")
 	})
@@ -3081,7 +3096,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	// --- probe round 25 P2a: a CORRELATED subquery whose OWN FROM has a
+	// --- A CORRELATED subquery whose OWN FROM has a
 	// SCHEMA-QUALIFIED table source (`s.PB`, `s` the session schema). The outer
 	// correlation (`B.ID = T1.ID`) makes the catalog-aware inner build fail with an
 	// undefined column, so EXISTS/scalar fall back to buildCorrelatedExists /
@@ -3139,16 +3154,16 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// aggregate, keyed by the subquery's primary alias); both carry the same value
 		// — the dual label is pre-existing behavior. RFC-142.
 		assertRows(t, `SELECT "ID", (SELECT MAX("B"."ID") FROM PA AS "s", "s"."PB" AS "B" WHERE "B"."ID" = T1."ID") AS "M" FROM T1`, []string{
-			"ID=0|M=<nil>|S.MAX(ID)=<nil>", "ID=1|M=1|S.MAX(ID)=1",
-			"ID=2|M=<nil>|S.MAX(ID)=<nil>", "ID=3|M=<nil>|S.MAX(ID)=<nil>",
+			"ID=0|M=<nil>", "ID=1|M=1",
+			"ID=2|M=<nil>", "ID=3|M=<nil>",
 		})
 	})
 
-	// --- probe round 16: unnest × {non-rightmost-filter, GROUP BY, aggregate
+	// --- Unnest × {non-rightmost-filter, GROUP BY, aggregate
 	// ORDER BY} ---------------------------------------------------------------
 
 	t.Run("R16 P1 WHERE on a BURIED (non-rightmost) unnest element filters elements", func(t *testing.T) {
-		// probe round 16 P1 (silent-wrong, drops rows): `FROM T1, T1.ARR1 AS V, U
+		// Silent-wrong, drops-rows hazard: `FROM T1, T1.ARR1 AS V, U
 		// WHERE V > 201` — the lateral unnest `T1.ARR1 AS V` is NOT the rightmost FROM
 		// item (U is), so the TOP-LEVEL LogicalJoin's Right is U (a scan) and the unnest
 		// is BURIED in join.Left. translateFilter's unnest-element WHERE rewrite only
@@ -3181,7 +3196,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// The buried-unnest element WHERE composing with the outer T1.ID projection:
 		// each surviving element pairs with its outer ID, and U.V=999 never appears.
 		assertRows(t, `SELECT T1."ID", "V" FROM T1, T1."ARR1" AS "V", U WHERE "V" >= 202`, []string{
-			"T1.ID=2|V=202", "T1.ID=2|V=203",
+			"ID=2|V=202", "ID=2|V=203",
 		})
 	})
 
@@ -3210,7 +3225,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 
 	t.Run("R16 P1 control: WHERE on the rightmost unnest still filters", func(t *testing.T) {
 		// Control: when the unnest IS the rightmost FROM item (`FROM T1, U, T1.ARR1 AS
-		// V WHERE V > 201`), the direct (round-1) rewrite path handles it. Proves the
+		// V WHERE V > 201`), the direct rewrite path handles it. Proves the
 		// buried-unnest fix did not perturb the direct path. Same element set survives.
 		assertRows(t, `SELECT "V" FROM T1, U, T1."ARR1" AS "V" WHERE "V" > 201`, []string{
 			"V=202", "V=203",
@@ -3218,7 +3233,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	})
 
 	t.Run("R16 P2a GROUP BY on a buried unnest element groups by the element", func(t *testing.T) {
-		// probe round 16 P2a (silent-wrong grouping): `SELECT V, COUNT(*) FROM T1,
+		// Silent-wrong-grouping hazard: `SELECT V, COUNT(*) FROM T1,
 		// T1.ARR1 AS V, U GROUP BY V` where U has its OWN column V=999. A simple column
 		// group key does NOT populate groupByExprs, so `GROUP BY V` bypassed the
 		// resolver and fell back to a bare FieldValue{V} — which mergeRows overwrites
@@ -3232,7 +3247,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// and the user alias `N` (the engine's pre-existing dual-label for the raw
 		// executor path) — both the same value; the SQL driver projects them to `N`.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V", U GROUP BY "V"`, []string{
-			"COUNT(*)=1|N=1|V=101", "COUNT(*)=1|N=1|V=201", "COUNT(*)=1|N=1|V=202", "COUNT(*)=1|N=1|V=203",
+			"N=1|V=101", "N=1|V=201", "N=1|V=202", "N=1|V=203",
 		})
 	})
 
@@ -3242,8 +3257,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// distinct → each group is count 1. Add the NOT-NULL array so id3 contributes
 		// 301 — proving the group key tracks the element across all outer rows.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1_NN" AS "V", U GROUP BY "V"`, []string{
-			"COUNT(*)=1|N=1|V=101", "COUNT(*)=1|N=1|V=201", "COUNT(*)=1|N=1|V=202",
-			"COUNT(*)=1|N=1|V=203", "COUNT(*)=1|N=1|V=301",
+			"N=1|V=101", "N=1|V=201", "N=1|V=202",
+			"N=1|V=203", "N=1|V=301",
 		})
 	})
 
@@ -3253,12 +3268,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// only redirects the BARE `V` the unnest binding owns. Every (T1×ARR1×U) row has
 		// U.V=999, so it is one group of count 4 (101,201,202,203).
 		assertRows(t, `SELECT "U"."V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V", U GROUP BY "U"."V"`, []string{
-			"COUNT(*)=4|N=4|U.V=999",
+			"N=4|V=999",
 		})
 	})
 
 	t.Run("R16 P2b aggregate ORDER BY on the group key sorts descending", func(t *testing.T) {
-		// probe round 16 P2b (silent-wrong order): `SELECT V, COUNT(*) FROM T1, T1.ARR1
+		// Silent-wrong-order hazard: `SELECT V, COUNT(*) FROM T1, T1.ARR1
 		// AS V GROUP BY V ORDER BY V DESC` — for a GROUPED query the ORDER BY sort is
 		// ABOVE the aggregate output, but qualifyShadowedSortKeys resolved the sort key
 		// against the PRE-aggregate FROM scope and rewrote it to V.V. The aggregate rows
@@ -3267,7 +3282,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// ORDER BY key that names a GROUP-BY output column, so the sort reads the bare
 		// group output and orders for real. T1.ARR1 distinct elements: 101,201,202,203.
 		assertRowsOrdered(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V" ORDER BY "V" DESC`, []string{
-			"COUNT(*)=1|N=1|V=203", "COUNT(*)=1|N=1|V=202", "COUNT(*)=1|N=1|V=201", "COUNT(*)=1|N=1|V=101",
+			"N=1|V=203", "N=1|V=202", "N=1|V=201", "N=1|V=101",
 		})
 	})
 
@@ -3276,13 +3291,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// group keys ascending. A no-op sort (the bug) would coincide with insertion
 		// order, so DESC above is the revert-proof and ASC pins the symmetric direction.
 		assertRowsOrdered(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V" ORDER BY "V" ASC`, []string{
-			"COUNT(*)=1|N=1|V=101", "COUNT(*)=1|N=1|V=201", "COUNT(*)=1|N=1|V=202", "COUNT(*)=1|N=1|V=203",
+			"N=1|V=101", "N=1|V=201", "N=1|V=202", "N=1|V=203",
 		})
 	})
 
-	t.Run("R16 P2b non-grouped ORDER BY over an unnest still orders (round-7 path)", func(t *testing.T) {
-		// The pre-aggregate (NON-grouped) ORDER BY over an unnest must STILL get the
-		// round-7/round-8 V.V qualification (the unnest is below the sort, no aggregate):
+	t.Run("R16 P2b non-grouped ORDER BY over an unnest still orders", func(t *testing.T) {
+		// The pre-aggregate (NON-grouped) ORDER BY over an unnest must STILL get
+		// the V.V qualification (the unnest is below the sort, no aggregate):
 		// `SELECT V FROM T1, T1.ARR1 AS V, U ORDER BY V DESC` — the bare sort key must
 		// resolve to the unnest element V.V (else a later U.V clobbers it). Proves the
 		// P2b fix narrowed the skip to GROUPED queries only and did not break the
@@ -3299,10 +3314,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	// --- probe round 18: every scope/resolver/column-enumeration path must be
+	// --- Every scope/resolver/column-enumeration path must be
 	// unnest-aware. Two silent-wrong shapes (P2a JOIN-ON dropped, P2b qualified
 	// star not expanded) plus the convergence paths (CTE-scope WHERE builder,
-	// projection-resolver) the audit made unnest-aware. RFC-142. -------------
+	// projection-resolver) made unnest-aware. RFC-142. -------------
 
 	t.Run("R18 P2a explicit JOIN ON before a comma unnest applies the ON predicate", func(t *testing.T) {
 		// `FROM T1 INNER JOIN JU ON JU.ID = T1.ID, T1.ARR1 AS X` — the LogicalUnnest
@@ -3319,10 +3334,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// JU id1 with T1 id2 and JU id2 with T1 id1 (8 rows). Assert exactly the inner
 		// matches. Before the fix: the cross product (wrong K pairings, 8 rows).
 		plan := assertRows(t, `SELECT T1."ID", JU."K", "X" FROM T1 INNER JOIN JU ON JU."ID" = T1."ID", T1."ARR1" AS "X"`, []string{
-			"JU.K=1001|T1.ID=1|X=101",
-			"JU.K=2002|T1.ID=2|X=201",
-			"JU.K=2002|T1.ID=2|X=202",
-			"JU.K=2002|T1.ID=2|X=203",
+			"ID=1|K=1001|X=101",
+			"ID=2|K=2002|X=201",
+			"ID=2|K=2002|X=202",
+			"ID=2|K=2002|X=203",
 		})
 		// The unnest still lowers to a FlatMap over an Explode; the explicit join's ON
 		// equality is attached to the inner scan (not a cross join).
@@ -3336,10 +3351,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// outer row. Proves the ON-predicate attach composes with the ordinality
 		// 2-field record.
 		plan := assertRows(t, `SELECT T1."ID", "X", "O" FROM T1 INNER JOIN JU ON JU."ID" = T1."ID", T1."ARR1" AS "X" AT "O"`, []string{
-			"O=1|T1.ID=1|X=101",
-			"O=1|T1.ID=2|X=201",
-			"O=2|T1.ID=2|X=202",
-			"O=3|T1.ID=2|X=203",
+			"ID=1|O=1|X=101",
+			"ID=2|O=1|X=201",
+			"ID=2|O=2|X=202",
+			"ID=2|O=3|X=203",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
@@ -3350,7 +3365,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// 201 are filtered). The ON predicate must NOT be dropped (else id0/id2's other
 		// rows would leak) and the element filter pushes into the inner Explode.
 		assertRows(t, `SELECT T1."ID", "X" FROM T1 INNER JOIN JU ON JU."ID" = T1."ID", T1."ARR1" AS "X" WHERE "X" > 201`, []string{
-			"T1.ID=2|X=202", "T1.ID=2|X=203",
+			"ID=2|X=202", "ID=2|X=203",
 		})
 	})
 
@@ -3366,7 +3381,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// map carries the single `V.V` key, with NO outer T1.ID / ARR1 array. Before the
 		// fix: an unqualified star → the ENTIRE FlatMap row (outer columns leaked).
 		plan := assertRows(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V"`, []string{
-			"V.V=101", "V.V=201", "V.V=202", "V.V=203",
+			"V=101", "V=201", "V=202", "V=203",
 		})
 		unnestMustContain(t, plan, "FlatMap")
 		unnestMustContain(t, plan, "Explode")
@@ -3379,7 +3394,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// columns, 1-based and resetting per outer row. Assert exactly those two
 		// columns (no outer T1 columns). RFC-142.
 		plan := assertRows(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V" AT "O"`, []string{
-			"V.O=1|V.V=101", "V.O=1|V.V=201", "V.O=2|V.V=202", "V.O=3|V.V=203",
+			"O=1|V=101", "O=1|V=201", "O=2|V=202", "O=3|V=203",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
@@ -3390,7 +3405,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// path, not the lone-qualifier path). The outer ID flows AND the element V is
 		// the only star-expanded column. RFC-142.
 		assertRows(t, `SELECT T1."ID", "V".* FROM T1, T1."ARR1" AS "V"`, []string{
-			"T1.ID=1|V.V=101", "T1.ID=2|V.V=201", "T1.ID=2|V.V=202", "T1.ID=2|V.V=203",
+			"ID=1|V=101", "ID=2|V=201", "ID=2|V=202", "ID=2|V=203",
 		})
 	})
 
@@ -3407,7 +3422,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// column (ARR1.ARR1) — the SAME unnest virtual source the explicit-alias
 		// `V.*` case (R18 P2b above) uses. Before the fix: 42F01. RFC-142.
 		plan := assertRows(t, `SELECT "ARR1".* FROM T1, T1."ARR1"`, []string{
-			"ARR1.ARR1=101", "ARR1.ARR1=201", "ARR1.ARR1=202", "ARR1.ARR1=203",
+			"ARR1=101", "ARR1=201", "ARR1=202", "ARR1=203",
 		})
 		unnestMustContain(t, plan, "FlatMap")
 		unnestMustContain(t, plan, "Explode")
@@ -3426,19 +3441,19 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// ordinal because it lives under the AS correlation, not because O is the
 		// qualifier. RFC-142.
 		plan := assertRows(t, `SELECT "ARR1".* FROM T1, T1."ARR1" AT "O"`, []string{
-			"ARR1.ARR1=101|ARR1.O=1", "ARR1.ARR1=201|ARR1.O=1",
-			"ARR1.ARR1=202|ARR1.O=2", "ARR1.ARR1=203|ARR1.O=3",
+			"ARR1=101|O=1", "ARR1=201|O=1",
+			"ARR1=202|O=2", "ARR1=203|O=3",
 		})
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
 
 	t.Run("explicit-alias qualified star still works (control)", func(t *testing.T) {
 		// Control: the explicit-alias case (`FROM T1, T1.ARR1 AS V` → `V.*`) the
-		// round-17 expansion already handled must stay green — the validator
+		// qualified-star expansion already handled must stay green — the validator
 		// whitelist still accepts the explicit AS alias V. Pins that the
 		// default-alias whitelist addition did not disturb the explicit-alias path.
 		assertRows(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V"`, []string{
-			"V.V=101", "V.V=201", "V.V=202", "V.V=203",
+			"V=101", "V=201", "V=202", "V=203",
 		})
 	})
 
@@ -3488,10 +3503,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	// --- probe round 19: the streaming-aggregate REQUIRED pre-aggregate sort must
-	// carry the QUALIFIED group-key ValueExpr, NOT the bare field — the follow-on to
-	// the round-15/16 GROUP-BY-shadowing fix. The round-16 fix made `GROUP BY V` over
-	// a shadowing unnest alias resolve to the qualified key V.V, but
+	// --- The streaming-aggregate REQUIRED pre-aggregate sort must
+	// carry the QUALIFIED group-key ValueExpr, NOT the bare field. `GROUP BY V` over
+	// a shadowing unnest alias resolves to the qualified key V.V, but
 	// ImplementStreamingAggregationRule built its InMemorySort(FullScan) pre-aggregate
 	// sort from `fv.Field` ONLY (the bare `V`). The aggregate cursor GROUPS by the
 	// qualified V.V, but the inserted sort ordered by the merged row's BARE `V` key
@@ -3499,8 +3513,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// a constant → a NO-OP sort). Sort and group key DISAGREE → contiguous array
 	// elements split into multiple non-contiguous groups → duplicate/wrong counts. The
 	// fix routes a qualified FieldValue group key (Child != nil) through the SortKey's
-	// ValueExpr per-row path, exactly like ImplementInMemorySortRule (round-8 P2a), so
-	// the pre-aggregate sort and the grouping use the SAME key. RFC-142. ----------
+	// ValueExpr per-row path, exactly like ImplementInMemorySortRule does for a plain
+	// ORDER BY, so the pre-aggregate sort and the grouping use the SAME key. RFC-142. ----------
 
 	t.Run("R19 GROUP BY buried shadowing unnest element with NON-CONTIGUOUS duplicates counts per element", func(t *testing.T) {
 		// THE revert-proof: GD has duplicate element values that recur NON-CONTIGUOUSLY
@@ -3513,8 +3527,226 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// value with count 2. The fix sorts by the qualified V.V → order 1,1,2,2 → one
 		// group per value, count 2. Assert exact (element, count): one row per element.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V"`, []string{
-			"COUNT(*)=2|N=2|V=1", "COUNT(*)=2|N=2|V=2",
+			"N=2|V=1", "N=2|V=2",
 		})
+	})
+
+	t.Run("DISJOINT gathered multi-source unnest GROUP BY ORDINALIZES via the un-collapse positional bake", func(t *testing.T) {
+		// Regression for a shipped WRONG-ANSWER bug.
+		// A DISJOINT-column multi-source unnest GROUP-BY (`FROM WSRC, WSRC.WARR AS EL,
+		// WAUX GROUP BY EL`) has no shared name, so the name-ambiguity gate does NOT
+		// decline it — it GATHERS (ordinal path). The grouped element reference used to
+		// resolve to a shadow-qualified "EL.EL" name key which the POSITIONAL seed lacks
+		// → `GROUP BY EL` grouped EVERY row under NULL (got [EL=<nil>, N=6]). The
+		// qualifier-honoring-resolution fix UN-COLLAPSES: the raw per-leg seed is the
+		// group-by INPUT (no wrap), and the group-by POSITIONALLY BAKES its key — the
+		// element to its rc slot (fieldValueReferencesInner), a leg column to its window
+		// (OrdinalSeedLegWindows) — so `GROUP BY EL` reads the element slot by ordinal.
+		// This retires the named-projection wrap AND its ALIAS.COL name keys. WSRC has 1
+		// row (SID=1, WARR={7,8}); WAUX has 3 rows, so each element crosses 3×.
+		ex := assertRows(t, `SELECT "EL", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
+			"EL=7|N=3", "EL=8|N=3",
+		})
+		// PROVE the un-collapse fired, not the retired wrap NOR a name-model fallback:
+		// the StreamingAgg groups by a BAKED ORDINAL key (`#<n>`) directly over the raw
+		// gather NLJ (FlatMap(Scan(WSRC),Explode) ⋈ Scan(WAUX)) — NO named-projection
+		// layer (a single outer SELECT Project, not two). A name-model decline would
+		// plan the FlatMap-over-merged-outer shape; the wrap would nest a second Project.
+		if strings.Count(ex, "Project(") != 1 ||
+			!strings.Contains(ex, "FlatMap(outer=Scan(WSRC)") ||
+			!regexp.MustCompile(`StreamingAgg\(keys=\[[^]]*#\d`).MatchString(ex) {
+			t.Fatalf("expected the un-collapse gather (baked-ordinal group key, no wrap), got plan: %s", ex)
+		}
+		// The OUTER-column aggregate (SUM over the gathered outer source) resolves too.
+		assertRows(t, `SELECT "EL", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY "EL"`, []string{
+			"EL=7|S=3", "EL=8|S=3",
+		})
+		// Grouping by an OUTER-source QUALIFIED column (the group KEY is WSRC.SID, a
+		// qualified twin, not the scalar element) resolves through the same projection
+		// layer. All 6 crossed rows share SID=1.
+		assertRows(t, `SELECT WSRC."SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX GROUP BY WSRC."SID"`, []string{
+			"N=6|SID=1",
+		})
+		// GLOBAL aggregate COUNT(*) references no column, so it keeps the FLAT gathered
+		// seed — 1 WSRC row × {7,8} × 3 WAUX = 6. Pin the NO-wrap shape (ZERO Project) so
+		// the surgical trigger stays surgical.
+		exGCount := assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"N=6",
+		})
+		if strings.Count(exGCount, "Project(") >= 1 {
+			t.Fatalf("global COUNT(*) must keep the flat seed (no wrap), got: %s", exGCount)
+		}
+		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) ORDINALIZES via
+		// the UN-COLLAPSE: the operand is positionally BAKED to the element's rc slot
+		// (fieldValueReferencesInner) over the raw gather — NO wrap. Each
+		// element {7,8} appears 3× (WAUX) → SUM=(7+8)*3=45. The plan is StreamingAgg over
+		// the raw NLJ gather with NO Project (a global aggregate has no outer-SELECT
+		// Project, and the wrap is retired).
+		exGSum := assertRows(t, `SELECT SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"S=45",
+		})
+		if strings.Count(exGSum, "Project(") != 0 || !strings.Contains(exGSum, "FlatMap(outer=Scan(WSRC)") {
+			t.Fatalf("global SUM(EL) must ORDINALIZE via the un-collapse (baked operand over the raw gather, no wrap), got: %s", exGSum)
+		}
+		// A global aggregate over a BURIED leaf column (SUM(WAUX.WV)) needs the same
+		// wrap. WAUX has WV=5,6,7 → each crossed with both elements {7,8} → SUM=(5+6+7)*2=36.
+		assertRows(t, `SELECT SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"S=36",
+		})
+		// TRANSPARENCY (the wrap must not REGRESS a previously-correct bare/outer-column
+		// global aggregate): SUM(WSRC.SID)=1×6 rows=6 keeps its value through the now-fired
+		// wrap, and a MIXED COUNT(*),SUM(EL) computes BOTH correctly (the trigger fires on
+		// the SUM leg; COUNT(*) still counts all 6). These pin the wrap's superset property
+		// — it re-exposes every seed column by position, so a previously-correct operand
+		// stays correct through it (only NULL-reading element/qualified operands change).
+		assertRows(t, `SELECT SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"S=6",
+		})
+		assertRows(t, `SELECT COUNT(*) AS "N", SUM("EL") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"N=6|S=45",
+		})
+		// TWO-FIX INTERSECTION (global operand + shadow): a SHADOWED bare operand SUM(WV)
+		// binds the ELEMENT (element-first) while the qualified twin SUM(WAUX.WV) reads
+		// the OUTER leaf — BOTH correct in one global query. Element WV=7,8 → SE=45; outer
+		// WAUX.WV=5,6,7 → S=36. This is the grouped/global consistency the fix targets.
+		assertRows(t, `SELECT SUM(WAUX."WV") AS "S", SUM("WV") AS "SE" FROM WSRC, WAUX, WSRC."WARR" AS "WV"`, []string{
+			"S=36|SE=45",
+		})
+		// AVG(EL) is the only aggregate returning a NON-integer type through the wrap:
+		// mean of {7,7,7,8,8,8} = 7.5 (proves the wrap preserves the operand's double type).
+		assertRows(t, `SELECT AVG("EL") AS "A" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
+			"A=7.5",
+		})
+		// GUARD: the broadened trigger is INERT without a gathered multi-source unnest —
+		// a single-source global aggregate keeps its exact prior plan (no wrap). SID=1.
+		exNoGather := assertRows(t, `SELECT SUM(WSRC."SID") AS "S" FROM WSRC`, []string{
+			"S=1",
+		})
+		if strings.Count(exNoGather, "Project(") >= 1 {
+			t.Fatalf("non-gather global aggregate must not gain a wrap, got: %s", exNoGather)
+		}
+		// SHADOW-COLLISION ORDINALIZES via POSITIONAL binding: WAUX has a WV column and
+		// `WSRC.WARR AS WV` names the element WV too, so the seed carries BOTH under the
+		// bare name "WV". The un-collapse bakes the BARE group key `WV` to the ELEMENT's
+		// own rc slot FIRST (fieldValueReferencesInner element-first), winning
+		// over the outer WAUX.WV at its own leg-window slot — a name-read would GetByName
+		// the first match (WAUX.WV) and group WRONG (measured WV=5/6/7). The rows prove the
+		// ELEMENT won: GROUP BY WV yields the array elements 7,8 (3 WAUX rows each), NOT
+		// WAUX's WV. The plan is StreamingAgg over the raw gather with a baked-ordinal key
+		// (the element slot) and NO wrap (a single outer SELECT Project).
+		exShadow := assertRows(t, `SELECT "WV", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
+			"N=3|WV=7", "N=3|WV=8",
+		})
+		if strings.Count(exShadow, "Project(") != 1 ||
+			!regexp.MustCompile(`StreamingAgg\(keys=\[[^]]*#\d`).MatchString(exShadow) {
+			t.Fatalf("element-shadows-outer-column should ORDINALIZE via the un-collapse element-first bake (baked-ordinal key, no wrap), got: %s", exShadow)
+		}
+		// And the OUTER shadowed column stays reachable QUALIFIED (WAUX.WV, its own leaf
+		// slot) for an aggregate operand — SUM(WAUX.WV) over the 6 crossed rows: each of
+		// WAUX's 3 rows (WV=5,6,7 → sum 18) is crossed with both elements {7,8}, so per
+		// element group the outer WV sum is 5+6+7=18.
+		assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WAUX, WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
+			"S=18|WV=7", "S=18|WV=8",
+		})
+		// ENCLOSED shadow (element PRECEDES the same-named leg): `WSRC, WSRC.WARR AS WV,
+		// WAUX` inserts the element block at the unnest's FROM position (before WAUX), so
+		// WAUX.WV sits at a LATER seed slot than the element WV. This is the order the
+		// positional leaf-slot offset exists for — a bare name-read would resolve "WV" to
+		// the FIRST match (now the ELEMENT) and read WAUX.WV wrong; positional binding
+		// keys WAUX.WV to its OWN slot (legStart past the inserted element block). Rows
+		// must match the disjoint order exactly (element still wins the bare "WV").
+		exEncl := assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WSRC."WARR" AS "WV", WAUX GROUP BY "WV"`, []string{
+			"S=18|WV=7", "S=18|WV=8",
+		})
+		if strings.Count(exEncl, "Project(") != 1 {
+			t.Fatalf("enclosed shadow (element before the same-named leg) should ORDINALIZE, got: %s", exEncl)
+		}
+		// ORDINAL-alias shadow (the AT alias, not the element, shadows an outer column):
+		// `AS EL AT SID` names the ordinal SID, which shadows WSRC.SID. The element-first
+		// binding wins the bare "SID" for the ORDINAL (its own slot), so GROUP BY SID
+		// groups by the 1-based ordinal (1,2), NOT the outer WSRC.SID (all 1). Each of
+		// the 2 ordinals × 3 WAUX rows = COUNT 3. The mirror of the element-shadow case.
+		exOrdSh := assertRows(t, `SELECT "SID", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "SID", WAUX GROUP BY "SID"`, []string{
+			"N=3|SID=1", "N=3|SID=2",
+		})
+		if strings.Count(exOrdSh, "Project(") != 1 {
+			t.Fatalf("ordinal-alias shadow (AT alias shadows an outer column) should ORDINALIZE, got: %s", exOrdSh)
+		}
+		// The OUTER shadowed column stays reachable QUALIFIED: SUM(WSRC.SID) over each
+		// ordinal group reads the outer SID (=1), 3 crossed rows per group → 3.
+		assertRows(t, `SELECT "SID", SUM(WSRC."SID") AS "S" FROM WSRC, WSRC."WARR" AS "EL" AT "SID", WAUX GROUP BY "SID"`, []string{
+			"S=3|SID=1", "S=3|SID=2",
+		})
+		// BOTH element AND ordinal shadow DIFFERENT outer columns at once (`AS WV AT XID`
+		// — WV shadows WAUX.WV, XID shadows WAUX.XID). Element-first binds BOTH slots, so
+		// GROUP BY WV = element {7,8} and GROUP BY XID = ordinal {1,2}, while the outer
+		// columns stay reachable qualified (SUM(WAUX.WV)=5+6+7=18 per element group). The
+		// two shadows do not interfere.
+		assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC, WAUX, WSRC."WARR" AS "WV" AT "XID" GROUP BY "WV"`, []string{
+			"S=18|WV=7", "S=18|WV=8",
+		})
+		assertRows(t, `SELECT "XID", COUNT(*) AS "N" FROM WSRC, WAUX, WSRC."WARR" AS "WV" AT "XID" GROUP BY "XID"`, []string{
+			"N=3|XID=1", "N=3|XID=2",
+		})
+		// Element shadows a BURIED leaf of a LEFT-JOIN box (`AS WV` over `WSRC LEFT JOIN
+		// WAUX`, WAUX.WV buried): the positional leaf slot (legStart+leafOffset+colIdx)
+		// distinguishes the buried WAUX.WV from the element WV. GROUP BY WV = element
+		// {7,8}; SUM(WAUX.WV) = the buried col (WAUX matches XID=1,WV=5) per group.
+		exBoxShadow := assertRows(t, `SELECT "WV", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "WV" GROUP BY "WV"`, []string{
+			"S=5|WV=7", "S=5|WV=8",
+		})
+		if strings.Count(exBoxShadow, "Project(") != 1 {
+			t.Fatalf("element shadowing a box's buried leaf should ORDINALIZE, got: %s", exBoxShadow)
+		}
+		// BOX leg (the unnest's left is an OUTER-join box) ORDINALIZES via leaf-source
+		// qualification: the wrap walks the box's buried leaves and keys each operand by
+		// its OWN leaf alias (`WAUX.WV`), not the box binding, so a grouped
+		// `SUM(WAUX.WV)` over a table BURIED in the box resolves. WSRC(SID=1) LEFT JOIN
+		// WAUX on SID=XID matches WAUX(XID=1,WV=5); × element {7,8} = 2 rows.
+		exBox := assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID", WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
+			"EL=7|S=5", "EL=8|S=5",
+		})
+		if strings.Count(exBox, "Project(") != 1 {
+			t.Fatalf("box-leg grouped unnest should ORDINALIZE via leaf-source qualification, got: %s", exBox)
+		}
+		// BOX leg NO-MATCH: the LEFT box's ON never matches (WV=99999 exists in no
+		// WAUX row), so WAUX is NULL-EXTENDED. SUM over the null-extended buried column
+		// must be NULL (not 0, not a stale value) — the null-supplying leaf resolves
+		// through the leaf-source key correctly. 1 WSRC row (null WAUX) × {7,8} = 2 rows.
+		assertRows(t, `SELECT "EL", SUM(WAUX."WV") AS "S" FROM WSRC LEFT JOIN WAUX ON WSRC."SID" = WAUX."XID" AND WAUX."WV" = 99999, WSRC."WARR" AS "EL" GROUP BY "EL"`, []string{
+			"EL=7|S=<nil>", "EL=8|S=<nil>",
+		})
+		// WITH ORDINALITY — grouping by the AT ordinal (`AS EL AT O ... GROUP BY O`)
+		// resolves through the "EL.O" shadow twin the wrap adds. WARR={7,8} → O=1,2;
+		// each × 3 WAUX rows.
+		exOrd := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL" AT "O", WAUX GROUP BY "O"`, []string{
+			"N=3|O=1", "N=3|O=2",
+		})
+		if strings.Count(exOrd, "Project(") != 1 {
+			t.Fatalf("ordinality GROUP BY O should ORDINALIZE via the EL.O shadow, got: %s", exOrd)
+		}
+		// AT-ONLY (no AS) ORDINALIZES too — it is the SAME shadow class as above. With no
+		// AS the element alias defaults to the ARRAY COLUMN "WARR", so the grouped ordinal
+		// reference qualifies as "WARR.O" (not "O.O"). The wrap binds the ordinal by its
+		// own seed slot and re-exposes it under BOTH the bare "O" and the "WARR.O" shadow
+		// (the element defaulting to WARR is exactly the shadow the positional element-
+		// first binding already handles), so GROUP BY O resolves through "WARR.O".
+		exAtOnly := assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AT "O", WAUX GROUP BY "O"`, []string{
+			"N=3|O=1", "N=3|O=2",
+		})
+		if strings.Count(exAtOnly, "Project(") != 1 {
+			t.Fatalf("AT-only GROUP BY O should ORDINALIZE via the WARR.O shadow (positional binding), got: %s", exAtOnly)
+		}
+		// N-WAY (3 plain legs): WSRC, WAUX, GW all disjoint-named — the gather collapses
+		// 3 legs and the wrap re-exposes each leg's qualified twins, so a grouped
+		// SUM(GW.V) over the THIRD leg resolves. WSRC(1) × element {7,8} × WAUX(3) ×
+		// GW(1 row, V=999) = 6 rows; per element 3 crossings → SUM(GW.V)=2997.
+		exNway := assertRows(t, `SELECT "EL", SUM(GW."V") AS "S" FROM WSRC, WSRC."WARR" AS "EL", WAUX, GW GROUP BY "EL"`, []string{
+			"EL=7|S=2997", "EL=8|S=2997",
+		})
+		if strings.Count(exNway, "Project(") != 1 {
+			t.Fatalf("N-way (3 plain legs) grouped gather should ORDINALIZE, got: %s", exNway)
+		}
 	})
 
 	t.Run("R19 GROUP BY buried shadowing unnest ORDINAL with NON-CONTIGUOUS positions counts per ordinal", func(t *testing.T) {
@@ -3529,7 +3761,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// ordinal, count 2. The unnest's group key V.O is qualified (a FieldValue with a
 		// Child), so it exercises the SAME Child!=nil routing as the element key.
 		assertRows(t, `SELECT "O", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" AT "O", GW GROUP BY "O"`, []string{
-			"COUNT(*)=2|N=2|O=1", "COUNT(*)=2|N=2|O=2",
+			"N=2|O=1", "N=2|O=2",
 		})
 	})
 
@@ -3541,18 +3773,19 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// way). Proves the fix does not regress the plain single-unnest grouped case: each
 		// value is one group of count 2.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V"`, []string{
-			"COUNT(*)=2|N=2|V=1", "COUNT(*)=2|N=2|V=2",
+			"N=2|V=1", "N=2|V=2",
 		})
 	})
 
-	// --- probe round 20: every POST-aggregate consumer that references a grouped
+	// --- Every POST-aggregate consumer that references a grouped
 	// unnest key must read it under the aggregate OUTPUT name (the bare `V`), NOT
-	// the qualified PRE-aggregate value `V.V`. The round-15/16 fix stores the
+	// the qualified PRE-aggregate value `V.V`. Grouping stores the
 	// QUALIFIED FieldValue(QOV(V), V) in GroupKeyValues so grouping is on the
 	// unnest ELEMENT (not a later same-named column); the aggregate cursor outputs
-	// that key under aggKeyName = the BARE `V`. Round-18 already rebased the
-	// post-aggregate ORDER BY (aggregateGroupKeyOutputName). Round-20 is the same
-	// rebase for the post-aggregate PROJECTION (computed expressions) and HAVING.
+	// that key under aggKeyName = the BARE `V`. The post-aggregate ORDER BY
+	// (aggregateGroupKeyOutputName) is already rebased the same way; this section
+	// pins the same rebase for the post-aggregate PROJECTION (computed
+	// expressions) and HAVING.
 	// Before the fix a computed projection / HAVING reference to `V` resolved to
 	// the qualified `V.V` and read NULL from the bare-V aggregate rows. RFC-142. ---
 
@@ -3573,7 +3806,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// aggregate labels — all the same values; the SQL driver projects them to the
 		// user alias VP.
 		assertRows(t, `SELECT "V" + 1 AS "VP", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V"`, []string{
-			"(V + 1)=2|COUNT(*)=2|N=2|VP=2|_0=2", "(V + 1)=3|COUNT(*)=2|N=2|VP=3|_0=3",
+			"N=2|VP=2", "N=2|VP=3",
 		})
 	})
 
@@ -3582,13 +3815,13 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// its OWN column V=999. The computed projection `V + 1` must read the unnest
 		// ELEMENT (V.V), NOT GW.V (which mergeRows keys last-leg-wins into the bare
 		// `V`). With the bug the qualified `V.V` reads NULL; a naive "use the bare V"
-		// rebase WITHOUT the round-15 grouping would group by GW.V=999. The fix
-		// groups by the element (round-16) AND rebases the projection to the bare
+		// rebase without grouping by the qualified key would group by GW.V=999. The fix
+		// groups by the element AND rebases the projection to the bare
 		// aggregate-output key — so V+1 is element+1, never 1000. Elements 1,2 →
 		// computed 2,3, count 2 each. (Same full raw-executor key set as above:
 		// `(V + 1)`, `_0`, `COUNT(*)`/`N`, `VP`.)
 		assertRows(t, `SELECT "V" + 1 AS "VP", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V"`, []string{
-			"(V + 1)=2|COUNT(*)=2|N=2|VP=2|_0=2", "(V + 1)=3|COUNT(*)=2|N=2|VP=3|_0=3",
+			"N=2|VP=2", "N=2|VP=3",
 		})
 	})
 
@@ -3600,10 +3833,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// FieldValue at slot 0 (no `_0`); the computed `V + 1` is at slot 1, so the
 		// raw row carries the positional `_1` and the canonical `(V + 1)` alongside VP.
 		assertRows(t, `SELECT "V", "V" + 1 AS "VP", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V"`, []string{
-			"(V + 1)=102|COUNT(*)=1|N=1|V=101|VP=102|_1=102",
-			"(V + 1)=202|COUNT(*)=1|N=1|V=201|VP=202|_1=202",
-			"(V + 1)=203|COUNT(*)=1|N=1|V=202|VP=203|_1=203",
-			"(V + 1)=204|COUNT(*)=1|N=1|V=203|VP=204|_1=204",
+			"N=1|V=101|VP=102",
+			"N=1|V=201|VP=202",
+			"N=1|V=202|VP=203",
+			"N=1|V=203|VP=204",
 		})
 	})
 
@@ -3616,7 +3849,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// aggregate-output `V`, so `V > 201` keeps the element groups 202,203 (101,
 		// 201 filtered). T1.ARR1 distinct elements 101,201,202,203, each count 1.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM T1, T1."ARR1" AS "V" GROUP BY "V" HAVING "V" > 201`, []string{
-			"COUNT(*)=1|N=1|V=202", "COUNT(*)=1|N=1|V=203",
+			"N=1|V=202", "N=1|V=203",
 		})
 	})
 
@@ -3626,9 +3859,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// ELEMENT (V.V), not GW.V (which would keep every group since 999 > 1). The
 		// fix groups + filters by the element: elements 1,2 → `V > 1` keeps only the
 		// element-2 group (count 2). With the bug HAVING read NULL → all dropped; a
-		// bare-V-without-round-16 would group/filter on 999 (wrong group, all kept).
+		// bare-V grouping without qualifying by the element would group/filter on 999
+		// (wrong group, all kept).
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V", GW GROUP BY "V" HAVING "V" > 1`, []string{
-			"COUNT(*)=2|N=2|V=2",
+			"N=2|V=2",
 		})
 	})
 
@@ -3640,7 +3874,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// elements every count is 1, so the same predicate there keeps none — here GD's
 		// duplicates make it keep both, a non-trivial pass.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V" HAVING COUNT(*) > 1`, []string{
-			"COUNT(*)=2|N=2|V=1", "COUNT(*)=2|N=2|V=2",
+			"N=2|V=1", "N=2|V=2",
 		})
 	})
 
@@ -3659,7 +3893,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// groups survive. Proves the rebased group-key reference composes with the
 		// aggregate reference inside one AND predicate.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."ARR" AS "V" GROUP BY "V" HAVING "V" > 0 AND COUNT(*) > 1`, []string{
-			"COUNT(*)=2|N=2|V=1", "COUNT(*)=2|N=2|V=2",
+			"N=2|V=1", "N=2|V=2",
 		})
 	})
 
@@ -3679,7 +3913,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// the `x`). The fix copies the whole Comparison and replaces only the
 		// rebased operand, preserving Escape — so exactly the "a_b" group survives.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."SARR" AS "V" GROUP BY "V" HAVING "V" LIKE 'a!_%' ESCAPE '!' AND COUNT(*) > 0`, []string{
-			"COUNT(*)=2|N=2|V=a_b",
+			"N=2|V=a_b",
 		})
 	})
 
@@ -3690,20 +3924,20 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// — without this control a buggy escape-dropping rebase would make the
 		// escape test indistinguishable from the unescaped one.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."SARR" AS "V" GROUP BY "V" HAVING "V" LIKE 'a_%' AND COUNT(*) > 0`, []string{
-			"COUNT(*)=2|N=2|V=a_b", "COUNT(*)=2|N=2|V=axy",
+			"N=2|V=a_b", "N=2|V=axy",
 		})
 	})
 
 	t.Run("HAVING LIKE ESCAPE on a SHADOWED grouped unnest key preserves the escape", func(t *testing.T) {
 		// Escape preservation crossed with the shadowing path (`FROM GD, GD.SARR AS
 		// V, GW GROUP BY V HAVING V LIKE … ESCAPE … AND COUNT(*) > 0`): GW shadows
-		// the BARE element key, so grouping is on the QUALIFIED V.V (round-15/16)
+		// the BARE element key, so grouping is on the QUALIFIED V.V
 		// and the HAVING reference rebases through the SAME post-aggregate path.
 		// Both the qualification AND the escape must survive: the group key is the
 		// unnest element (not GW.V), and `a!_%` matches only "a_b". GW.V/O are
 		// non-string scalars distinct from every element, never the grouped value.
 		assertRows(t, `SELECT "V", COUNT(*) AS "N" FROM GD, GD."SARR" AS "V", GW GROUP BY "V" HAVING "V" LIKE 'a!_%' ESCAPE '!' AND COUNT(*) > 0`, []string{
-			"COUNT(*)=2|N=2|V=a_b",
+			"N=2|V=a_b",
 		})
 	})
 
@@ -3722,7 +3956,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustContain(t, plan, "PredicatesFilter")
 	})
 
-	// --- probe round 25 P2b: `SELECT *` over a lateral unnest must include the
+	// --- `SELECT *` over a lateral unnest must include the
 	// unnested element (and, under AT, the ordinal) in the RESULT-SET COLUMN
 	// metadata. The unnest lowers to FlatMap(outer, Explode) whose result value is a
 	// source-anchored join record carrying the outer columns + element [+ ordinal];
@@ -3833,9 +4067,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 	})
 
-	t.Run("W5 gathered flat multi-source unnest over disjoint legs", func(t *testing.T) {
+	t.Run("gathered flat multi-source unnest over disjoint legs", func(t *testing.T) {
 		// WSRC/WAUX are the schema's ONLY disjoint-column pair, so this is the
-		// one shape that passes the W5 commit-1 name-ambiguity gate and takes
+		// one shape that passes the name-ambiguity check and takes
 		// the GATHERED flat path end-to-end. Rows: elements {7,8} x aux rows
 		// {5,6}. The PLAN discriminates the path: gathered = the FlatMap pairs
 		// the OWNING source scan directly with the Explode (its outer is
@@ -3864,13 +4098,10 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 
 		// A conjunct SPANNING the element and a cluster leg — with GENUINELY
-		// DISCRIMINATING data (WV=7 excludes EL=7 but not EL=8; the commit-1
-		// seeds {5,6} made EL>WV all-true, and an all-rows result was briefly
-		// misread as a dropped predicate — a phantom bug the investigation
-		// retracted; the fail-open that guarded it is REMOVED). The spanning
-		// conjunct routes through the GATHERED path — pinned by the plan
-		// signature, not just rows (the design-ruling condition on the
-		// fail-open removal).
+		// DISCRIMINATING data (WV=7 excludes EL=7 but not EL=8; seeding only
+		// {5,6} would make EL>WV all-true, indistinguishable from a dropped
+		// predicate). The spanning conjunct routes through the GATHERED path —
+		// pinned by the plan signature, not just rows.
 		spanExplain := assertRows(t, `SELECT "EL", "WV" FROM WSRC, WAUX, WSRC."WARR" AS "EL" WHERE "EL" > "WV"`, []string{
 			"EL=7|WV=5", "EL=7|WV=6", "EL=8|WV=5", "EL=8|WV=6", "EL=8|WV=7",
 		})
@@ -3878,24 +4109,23 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("the spanning WHERE must plan through the GATHERED path (the fail-open is gone):\n%s", spanExplain)
 		}
 
-		// The R18 CLASS through the gathered path (the commit-2 lift): an
-		// explicit JOIN..ON cluster before the comma unnest, DOTTED outer
-		// projections, MIXED (no-AT) element — the exact shape whose windows
-		// declined before the span-derivation extension (the merge-collapsed
+		// An explicit JOIN..ON cluster before the comma unnest, DOTTED outer
+		// projections, MIXED (no-AT) element — a shape whose windows
+		// used to decline before span derivation covered it (the merge-collapsed
 		// bare-QOV element yielded partial leg coverage; the strict positional
 		// context then loudly missed the dotted read). ON keeps XID=1 only.
 		r18Explain := assertRows(t, `SELECT WSRC."SID", WAUX."WV", "EL" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL"`, []string{
-			"EL=7|WAUX.WV=5|WSRC.SID=1", "EL=8|WAUX.WV=5|WSRC.SID=1",
+			"EL=7|SID=1|WV=5", "EL=8|SID=1|WV=5",
 		})
 		if !strings.Contains(r18Explain, "FlatMap(outer=Scan(WSRC)") {
 			t.Fatalf("the ON-carrying dotted-projection query must plan through the GATHERED path:\n%s", r18Explain)
 		}
 		// The AS+AT (full-baked) form of the same shape, plus an element WHERE.
 		assertRows(t, `SELECT WSRC."SID", "EL", "O" FROM WSRC INNER JOIN WAUX ON WAUX."XID" = WSRC."SID", WSRC."WARR" AS "EL" AT "O" WHERE "EL" > 7`, []string{
-			"EL=8|O=2|WSRC.SID=1",
+			"EL=8|O=2|SID=1",
 		})
 
-		// SHADOWING through the gathered path (the commit-2 lift, R16's class):
+		// SHADOWING through the gathered path:
 		// the element alias WV shadows WAUX's column WV — the projection must
 		// return the ELEMENT values (last-binding-wins), never the aux column.
 		// The visitor qualifies the shadowed bare projection (WV → WV.WV) and
@@ -3907,7 +4137,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("the shadowed-element query must plan through the GATHERED path (the shadow decline is lifted):\n%s", shadowExplain)
 		}
 
-		// The ENCLOSED class (commit 3): the unnest BETWEEN the sources in
+		// The ENCLOSED class: the unnest BETWEEN the sources in
 		// FROM order (`FROM A, A.arr AS x, B`) — the unnest join is a buried
 		// LEG of the enclosing cluster, rotated into the same gathered flat
 		// select. Same rows as the trailing-unnest form (inner-join
@@ -3930,8 +4160,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			"EL=7|WV=5", "EL=8|WV=5",
 		})
 		// Enclosed + an element-equality spanning WHERE (the conjunct is only
-		// in scope at the flat select — the class the pre-W5 residual silently
-		// returned 0 rows for).
+		// in scope at the flat select — a class a plain name-based residual
+		// would silently return 0 rows for).
 		assertRows(t, `SELECT "EL", "WV" FROM WSRC, WSRC."WARR" AS "EL", WAUX WHERE WAUX."WV" = "EL"`, []string{
 			"EL=7|WV=7",
 		})
@@ -3952,11 +4182,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			"EL=7|WV=5", "EL=7|WV=6",
 		})
 
-		// SELECT * over the gathered multi-source star (commit 4's fix
-		// target — could not PLAN before W5). Columns must be the SQL FROM
+		// SELECT * over the gathered multi-source star — could not PLAN before
+		// the gathered path existed. Columns must be the SQL FROM
 		// order with the element/ordinal at the unnest's position (the
 		// enclosed form preserves FROM order through the rotation), and the
-		// VALUES must arrive through the REAL result-set read path — the §7
+		// VALUES must arrive through the REAL result-set read path — a
 		// positional-aligned column read serving the ordinal row's slots (the
 		// name-keyed Datum of the translated NLJ top never carries the bare
 		// output keys; without the aligned read every column reads NULL).
@@ -4033,17 +4263,17 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 	})
 
-	t.Run("RFC-173 unnest-residual class 1: box-leg and outer-box owners gather", func(t *testing.T) {
+	t.Run("unnest-residual class 1: box-leg and outer-box owners gather", func(t *testing.T) {
 		// Class 1: the unnest OWNER (BXA) is not a plain leg of the gathered
-		// cluster — it is buried inside a gated OUTER box (`BXA LEFT JOIN BXB`),
+		// cluster — it is buried inside an OUTER box (`BXA LEFT JOIN BXB`),
 		// optionally itself a LEG of a larger inner cluster (`... INNER JOIN
-		// BXC`). Pre-slice the gather's owner lookup rejected any box leg
-		// (gatheredPlainLeg accepted only plain legs), so both shapes declined
-		// to the RESIDUAL binary FlatMap — which cannot resolve an owner buried
+		// BXC`). A gather whose owner lookup only accepts plain legs
+		// (gatheredPlainLeg) rejects any box leg, so such shapes fall back
+		// to a RESIDUAL binary FlatMap — which cannot resolve an owner buried
 		// inside the box (the residual reads the owner off the merged outer row
 		// by name; a box leg's own alias names its rightmost leaf, not the
-		// buried owner), so the box-leg form failed to plan at 29d77a846. Class
-		// 1 GATHERS them via the amendment-C bake windows: the flat select
+		// buried owner), so the box-leg form fails to plan. Class
+		// 1 GATHERS them via bake windows over the box: the flat select
 		// pairs the OPAQUE box leg with the Explode directly, so the Explode's
 		// FlatMap has the BOX (not the whole cluster) as its outer and
 		// Scan(BXC) joins OUTSIDE that Explode-FlatMap.
@@ -4101,7 +4331,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			`SELECT "BAID", "EL", "ORDX" FROM BXA LEFT JOIN BXB ON "BAREF" = "BAID", BXA."BARR" AS "EL" AT "ORDX" ORDER BY "BAID", "EL"`,
 			[]string{"BAID=1|EL=10|ORDX=1", "BAID=1|EL=11|ORDX=2", "BAID=2|EL=20|ORDX=1"})
 
-		// (6) SELECT-* expansion over the box-leg shape (design ruling 5). The
+		// (6) SELECT-* expansion over the box-leg shape. The
 		// star expands to the FROM-order concat of every source's columns —
 		// BXA's, then the padded BXB's, then the buried BXC's, then the lateral
 		// element EL — exactly the labels the driver advertises via
@@ -4119,7 +4349,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 	})
 
-	t.Run("RFC-173 unnest-residual class 2: multi-segment struct paths", func(t *testing.T) {
+	t.Run("unnest-residual class 2: multi-segment struct paths", func(t *testing.T) {
 		// Class 2: the lateral array lives BEHIND a struct column — a
 		// MULTI-SEGMENT field path (`NST.NREC.NARR`), which the single-segment
 		// classifier hard-errored on (`column "nrec.narr" does not exist on
@@ -4172,7 +4402,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 	})
 
-	t.Run("RFC-173 unnest-residual class 1x2: box-leg owner with a multi-segment struct path", func(t *testing.T) {
+	t.Run("unnest-residual class 1x2: box-leg owner with a multi-segment struct path", func(t *testing.T) {
 		// The COMPOSITION of the two residual classes at once: the unnest owner
 		// (CXA) is buried inside a gated OUTER box (`CXA LEFT JOIN CXB`, class
 		// 1) AND its array lives behind a multi-segment struct path
@@ -4201,7 +4431,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 	})
 
-	t.Run("RFC-173 rotateEnclosedUnnest multi-segment: struct-path unnest before a plain leg", func(t *testing.T) {
+	t.Run("rotateEnclosedUnnest multi-segment: struct-path unnest before a plain leg", func(t *testing.T) {
 		// The ENCLOSED unnest class with a MULTI-SEGMENT path: the struct-path
 		// unnest is NOT trailing — it sits BEFORE a later plain leg (U), so the
 		// cluster reaches translateEnclosedUnnestGather -> rotateEnclosedUnnest,
@@ -4225,11 +4455,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 	})
 
-	t.Run("RFC-173 unnest-residual class 3: CTE/derived-table owners", func(t *testing.T) {
+	t.Run("unnest-residual class 3: CTE/derived-table owners", func(t *testing.T) {
 		// Class 3: the lateral array's OWNER is a CTE/derived-table OUTPUT that
-		// bare-passes-through a base-table array column. Pre-slice every such
-		// shape was a hard 0A000 (unnest over a derived/CTE output declined,
-		// because the output element type was best-effort UnknownType); class 3
+		// bare-passes-through a base-table array column. Without class-3 handling
+		// every such shape is a hard 0A000 (unnest over a derived/CTE output
+		// declined, because the output element type was best-effort UnknownType);
+		// class 3
 		// traces the bare passthrough back to the underlying base column (DRV.DARR)
 		// and plans the FlatMap-over-Explode. Each pin is a LATERAL unnest, so one
 		// output row per array element; DID 3's NULL array yields ZERO rows
@@ -4238,11 +4469,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 
 		// (1) Derived-table passthrough: the derived body projects the base array
 		// column unchanged; the outer unnests `d.DARR`. DID 1 → two rows, DID 2 →
-		// one, DID 3 (NULL) → zero. The projected owner column is keyed by its
-		// qualified derived-alias label (D.DID) in the merged row.
+		// one, DID 3 (NULL) → zero. The projected owner column keys BARE (DID) —
+		// the ordinal model's unique-leaf keying.
 		p1 := assertRowsOrdered(t,
 			`SELECT "d"."DID", "EL" FROM (SELECT "DID", "DARR" FROM DRV) AS "d", "d"."DARR" AS "EL" ORDER BY "DID", "EL"`,
-			[]string{"D.DID=1|EL=10", "D.DID=1|EL=11", "D.DID=2|EL=20"})
+			[]string{"DID=1|EL=10", "DID=1|EL=11", "DID=2|EL=20"})
 		unnestMustContain(t, p1, "FlatMap")
 		unnestMustContain(t, p1, "Explode")
 
@@ -4254,11 +4485,11 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			[]string{"EL=10", "EL=11", "EL=20"})
 
 		// (3) CTE passthrough: the same bare passthrough via a WITH-CTE output
-		// (`c.DARR`) instead of an inline derived table — same rows as (1), keyed by
-		// the CTE-alias label (C.DID).
+		// (`c.DARR`) instead of an inline derived table — same rows as (1); the
+		// unique qualified projection leaf keys BARE (DID) under the ordinal model.
 		p3 := assertRowsOrdered(t,
 			`WITH "C" AS (SELECT "DID", "DARR" FROM DRV) SELECT "C"."DID", "EL" FROM "C", "C"."DARR" AS "EL" ORDER BY "DID", "EL"`,
-			[]string{"C.DID=1|EL=10", "C.DID=1|EL=11", "C.DID=2|EL=20"})
+			[]string{"DID=1|EL=10", "DID=1|EL=11", "DID=2|EL=20"})
 		unnestMustContain(t, p3, "FlatMap")
 		unnestMustContain(t, p3, "Explode")
 
@@ -4268,14 +4499,54 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// filter must not silently drop the whole unnest, nor leak DID 1 (DVAL=5).
 		assertRowsOrdered(t,
 			`SELECT "d"."DID", "EL" FROM (SELECT "DID", "DARR" FROM DRV WHERE "DVAL" >= 6) AS "d", "d"."DARR" AS "EL" ORDER BY "DID", "EL"`,
-			[]string{"D.DID=2|EL=20"})
+			[]string{"DID=2|EL=20"})
 
 		// (5) AT-ordinality over a derived passthrough: the 1-based ordinal restarts
 		// per owner row (1,2 for DID 1's {10,11}; 1 for DID 2's {20}).
 		p5 := assertRowsOrdered(t,
 			`SELECT "d"."DID", "EL", "O" FROM (SELECT "DID", "DARR" FROM DRV) AS "d", "d"."DARR" AS "EL" AT "O" ORDER BY "DID", "EL"`,
-			[]string{"D.DID=1|EL=10|O=1", "D.DID=1|EL=11|O=2", "D.DID=2|EL=20|O=1"})
+			[]string{"DID=1|EL=10|O=1", "DID=1|EL=11|O=2", "DID=2|EL=20|O=1"})
 		unnestMustContain(t, p5, "WITH ORDINALITY")
+	})
+
+	// False-rejection hazard: a class-3 derived-unnest whose WITH-CTE owner
+	// is referenced by a RANGE ALIAS (`WITH "C" AS (...) ... FROM "C" AS "D", "D"."DARR"
+	// AS "EL"`) looked up cteScope by the alias `D`, not the CTE name `C`, and wrongly
+	// declined (0AF00). derivedOwnerBody now resolves the alias through the outer scan's
+	// Table. The aliased form must answer IDENTICALLY to the unaliased form (the control,
+	// which resolved because u.Segments[0] already equalled the CTE name) — the range
+	// alias is transparent to the unnest result.
+	t.Run("aliased WITH-CTE owner unnest resolves (range alias transparent)", func(t *testing.T) {
+		const cte = `WITH "C" AS (SELECT "DID", "DARR" FROM DRV) `
+		_, unaliased := query(t, cte+`SELECT "DID", "EL" FROM "C", "C"."DARR" AS "EL"`)
+		_, aliased := query(t, cte+`SELECT "DID", "EL" FROM "C" AS "D", "D"."DARR" AS "EL"`)
+		if len(aliased) == 0 {
+			t.Fatal("aliased WITH-CTE unnest returned zero rows — the range alias was falsely rejected")
+		}
+		if !unnestEqualStrs(aliased, unaliased) {
+			t.Fatalf("aliased WITH-CTE unnest rows %v != unaliased control %v — the range alias must be transparent", aliased, unaliased)
+		}
+	})
+
+	// Scope-boundary hazard: the alias resolver must NOT descend into a
+	// CTE/derived BODY (a hidden inner scope). A derived table `X` hides `T1 AS D` in its
+	// body while the VISIBLE owner is `C AS D` (the CTE carrying DARR). Binding `D.DARR`
+	// must resolve to C, never the hidden T1 (which has no DARR → a false reject or
+	// wrong-owner classification). aliasedScanTable walks Main-only (like
+	// findDerivedOwnerCTE), so the hidden body scan is out of scope.
+	t.Run("aliased CTE owner ignores a hidden same-aliased body scan (scope boundary)", func(t *testing.T) {
+		const q = `WITH "C" AS (SELECT "DID", "DARR" FROM DRV) ` +
+			`SELECT "EL" FROM (SELECT "ID" FROM T1 AS "D") AS "X", "C" AS "D", "D"."DARR" AS "EL"`
+		const control = `WITH "C" AS (SELECT "DID", "DARR" FROM DRV) ` +
+			`SELECT "EL" FROM (SELECT "ID" FROM T1 AS "Z") AS "X", "C" AS "D", "D"."DARR" AS "EL"`
+		_, hidden := query(t, q)      // hidden body scan aliased D (must be ignored)
+		_, plain := query(t, control) // same shape, body scan aliased Z (no shadow)
+		if len(hidden) == 0 {
+			t.Fatal("hidden-body scope leak: the resolver crossed into the derived body and mis-resolved the owner")
+		}
+		if !unnestEqualStrs(hidden, plain) {
+			t.Fatalf("hidden-body D=%v != no-shadow control=%v — a same-aliased body scan must be out of scope", hidden, plain)
+		}
 	})
 }
 

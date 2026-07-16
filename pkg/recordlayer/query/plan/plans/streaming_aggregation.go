@@ -48,6 +48,28 @@ func (p *RecordQueryStreamingAggregationPlan) GetResultType() values.Type {
 	return values.UnknownType
 }
 
+// OutputColumnNames is the SINGLE naming authority for this plan's output row:
+// grouping keys (in GROUP BY order) then aggregates (in aggregate order), each
+// alias-preferring. The ordinal model bakes downstream references against
+// this order, and the executor's aggregateCursor emits its PositionalRow with these
+// exact names — so a reference over the aggregate resolves by Get(ordinal) (Java's
+// getFieldValueForFieldOrdinals) instead of a spelling-sensitive name lookup.
+func (p *RecordQueryStreamingAggregationPlan) OutputColumnNames() []string {
+	return expressions.GroupByOutputColumnNames(p.groupingKeys, p.aggregates)
+}
+
+// OutputRecordType is OutputColumnNames as a RAW RecordType (ordinal == slice
+// position; dup-name-safe). Flowed as the aggregate's result-value QOV type so the
+// resolver BAKES downstream references to ordinals at plan time.
+func (p *RecordQueryStreamingAggregationPlan) OutputRecordType() *values.RecordType {
+	names := p.OutputColumnNames()
+	fields := make([]values.Field, len(names))
+	for i, n := range names {
+		fields[i] = values.Field{Name: n, FieldType: values.UnknownType, Ordinal: i}
+	}
+	return &values.RecordType{Fields: fields}
+}
+
 func (p *RecordQueryStreamingAggregationPlan) GetChildren() []RecordQueryPlan {
 	if p.inner == nil {
 		return nil

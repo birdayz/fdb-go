@@ -634,3 +634,103 @@ func TestReplaceLeavesOnceMaybe_SelfReferentialTerminates(t *testing.T) {
 		t.Fatalf("replacement's child = %T, want the un-re-replaced *QuantifiedObjectValue(B)", fv.Child)
 	}
 }
+
+// TestLegAwareRootOrdinal pins the leg-aware collapse: the tiebreak
+// (ordinal-preferred over name) and the cross-leg name fallback are the
+// conflation-sensitive paths and get a dedicated pin. A SourceRelativeBaked ref
+// collapsed over a flat leg-concatenation seed must re-base by the reference's
+// OWN leg (its QOV correlation), never by bare name — else colliding cross-leg
+// columns (dept.id / emp.id) conflate to the first occurrence.
+func TestLegAwareRootOrdinal(t *testing.T) {
+	t.Parallel()
+	qov := func(name string) *QuantifiedObjectValue {
+		return NewQuantifiedObjectValue(NamedCorrelationIdentifier(name))
+	}
+	// ref builds a SourceRelativeBaked reference over leg `corr`.
+	ref := func(corr, field string, ord int) *FieldValue {
+		return NewCorrelatedFieldValueWithResolvedOrdinal(qov(corr), field, ord, UnknownType)
+	}
+	legField := func(name, corr string, ord int) RecordConstructorField {
+		return RecordConstructorField{Name: name, Value: ref(corr, name, ord)}
+	}
+
+	// (1) Colliding cross-leg names: dept(ID,DNAME) ++ emp(ID,DEPT_ID,FNAME).
+	// e.id (leg E, source ordinal 0) must pick emp.id at seed slot 2 — NOT the
+	// first "ID" (dept.id, slot 0), the raw-RC duplicate conflation that produced
+	// the I3 wrong-rows bug.
+	i3seed := NewRawRecordConstructorValue(
+		legField("ID", "D", 0), legField("DNAME", "D", 1),
+		legField("ID", "E", 0), legField("DEPT_ID", "E", 1), legField("FNAME", "E", 2),
+	)
+	if got := LegAwareRootOrdinal(ref("E", "ID", 0), 0, i3seed, -1); got != 2 {
+		t.Fatalf("colliding leg: e.id must resolve to seed slot 2 (emp.id), got %d", got)
+	}
+	if got := LegAwareRootOrdinal(ref("D", "ID", 0), 0, i3seed, -1); got != 0 {
+		t.Fatalf("colliding leg: d.id must resolve to seed slot 0 (dept.id), got %d", got)
+	}
+
+	// (2) Ordinal-preferred tiebreak: when a reference's source ordinal and Field
+	// disagree (an upstream construction inconsistency), the ORDINAL wins — the
+	// baked slot is the authority (ordinal-not-name principle). Leg E
+	// has ID at leg-ordinal 5 (slot 0) and FNAME at leg-ordinal 0 (slot 1); a ref
+	// {Field:ID, srcOrd:0} must pick the ordinal-0 slot (1), NOT the name-"ID"
+	// slot (0). Ordering ID FIRST is deliberate: the retired
+	// `ordinal==srcOrd || name`-OR predecessor name-first-matches slot 0 here, so
+	// this assertion FAILS on a revert to it (the pin catches the real regression,
+	// not just a hypothetical strict-name scan).
+	skewSeed := NewRawRecordConstructorValue(
+		legField("ID", "E", 5), legField("FNAME", "E", 0),
+	)
+	if got := LegAwareRootOrdinal(ref("E", "ID", 0), 0, skewSeed, -1); got != 1 {
+		t.Fatalf("ordinal-preferred: srcOrd 0 must win over name ID → slot 1 (FNAME@0); got %d (the retired OR-code gives 0)", got)
+	}
+
+	// (2b) The within-leg NAME tiebreak — the `return nameMatch` arm. When NO leg
+	// field's ordinal matches srcOrd but a name does, resolve by name. Leg E has
+	// FNAME@3 and ID@5, neither at ordinal 0; a ref {Field:ID, srcOrd:0} misses on
+	// ordinal and resolves ID by name at slot 1. (Exercises the branch the ordinal
+	// and cross-leg arms otherwise shadow.)
+	nameTieSeed := NewRawRecordConstructorValue(
+		legField("FNAME", "E", 3), legField("ID", "E", 5),
+	)
+	if got := LegAwareRootOrdinal(ref("E", "ID", 0), 0, nameTieSeed, -1); got != 1 {
+		t.Fatalf("within-leg name tiebreak: e.id with no ordinal-0 field must resolve ID by name at slot 1, got %d", got)
+	}
+
+	// (3) Cross-leg name-fallback: no seed field bears the reference's correlation
+	// (a differently-shaped seed). Falls back to the FIRST bare-name match — the
+	// retired name-model authority. INVARIANT: reachable only when NO leg carries
+	// the corr, so it cannot mis-pick a colliding sibling (that took arm (1)).
+	noLegSeed := NewRawRecordConstructorValue(
+		legField("ID", "D", 0), legField("DNAME", "D", 1),
+	)
+	if got := LegAwareRootOrdinal(ref("Z", "ID", 0), 0, noLegSeed, -99); got != 0 {
+		t.Fatalf("name-fallback: unknown-corr ref must match first name 'ID' at slot 0, got %d", got)
+	}
+	if got := LegAwareRootOrdinal(ref("Z", "NOPE", 0), 0, noLegSeed, -99); got != -99 {
+		t.Fatalf("name-fallback: no name match must return fallbackOrd -99, got %d", got)
+	}
+
+	// (4) Poison-on-dup in the cross-leg name fallback. A bare-QOV leg (field
+	// Value is a QOV, not a FieldValue over the leg) carries no per-field
+	// correlation, so the leg-scoped arm can't key on it — two bare-QOV legs
+	// exposing the SAME column name both reach the name fallback unresolved. A
+	// first-match there would silently pick the wrong leg (the I3 conflation this
+	// function exists to kill). The fallback must POISON (return -1 → caller
+	// leaves the ref un-collapsed, loud on a positional row, never a wrong slot).
+	dupBareSeed := NewRawRecordConstructorValue(
+		RecordConstructorField{Name: "X", Value: qov("P")}, // bare-QOV leg, name X
+		RecordConstructorField{Name: "X", Value: qov("Q")}, // bare-QOV leg, name X (collision)
+	)
+	if got := LegAwareRootOrdinal(ref("Z", "X", 0), 0, dupBareSeed, -5); got != -1 {
+		t.Fatalf("bare-QOV dup name must POISON (return -1), got %d — first-match would pick a colliding sibling leg", got)
+	}
+	// A UNIQUE name in the same bare-QOV shape still resolves (no over-poisoning).
+	uniqBareSeed := NewRawRecordConstructorValue(
+		RecordConstructorField{Name: "Y", Value: qov("P")},
+		RecordConstructorField{Name: "X", Value: qov("Q")},
+	)
+	if got := LegAwareRootOrdinal(ref("Z", "X", 0), 0, uniqBareSeed, -5); got != 1 {
+		t.Fatalf("bare-QOV unique name must resolve to slot 1, got %d", got)
+	}
+}

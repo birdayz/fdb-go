@@ -102,10 +102,10 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **To close:** delegate to `q.GetRangesOver().GetCorrelatedTo()` and re-enable the Java-faithful guards. Plan-shape sensitive (the guards start rejecting): needs its own review cycle with plandiff + the correlated-join sentinels, not a drive-by rewire.
 
-### Go has explicit Sort/InMemorySort physical operators
+### Go has an explicit in-memory sort physical operator
 
 **Java:** Relies on `RemoveSortRule` to eliminate sorts; no in-memory sort plan exists.
-**Go:** Has `RecordQuerySortPlan` and `RecordQueryInMemorySortPlan`.
+**Go:** Has `RecordQueryInMemorySortPlan` (produced by `ImplementInMemorySortRule`). The Java-ported `ImplementSortRule` still eliminates the sort via index ordering where possible; `RecordQueryInMemorySortPlan` is the fallback when no index satisfies the requested ordering. (A legacy `RecordQuerySortPlan` — an orphaned port of Java's legacy-planner sort plan — was removed as producer-less dead code: Go has no legacy planner, so nothing ever constructed it.)
 
 Correctness improvement — ensures ORDER BY works even when no index satisfies it.
 
@@ -168,7 +168,15 @@ Go-only criteria 15b and 15c are workarounds for the missing `advancePlannerStag
 
 ### Cost Model: RewritingCostModelLess
 
-All 4 criteria ported: fewer SelectExpressions, fewer TableFunctionExpressions, fewer CNF conjuncts, more predicates at deeper levels. `Planner.WithCostModel()` wires the appropriate cost model per phase.
+Java 4.12.11.0's `RewritingCostModel.compare()` has **six** ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports criteria **1–5** (`selectCount`, `tableFunctionCount`, CNF conjuncts, predicate-count-by-level, deep hash tie-break). `Planner.WithCostModel()` wires the cost model per phase.
+
+**Criterion 0 — `outerJoinCount` — is DELIBERATELY NOT ported. This is an intentional, justified divergence, not a gap.**
+
+In Java, `outerJoinCount` (penalize any surviving `OuterJoinExpression`, checked FIRST) is a **correctness guard**, not a heuristic. Java's `OuterJoinExpression` is a logical-only node with **no physical operator** and exactly one consumer (`RewriteOuterJoinRule`); it *must* be rewritten before planning. Java's single-final-expression prune keeps one survivor per group, and without `outerJoinCount` the un-rewritten `OuterJoinExpression` (0 selects) would beat the rewritten form (2 selects) on the `selectCount` tie-break, survive the prune, and hand the planning phase an **unimplementable** node — the query would fail to plan. `outerJoinCount` forces the implementable rewritten form to win. (Evidence: `OuterJoinExpression.java` is logical-only; `PlanningRuleSet.java` has no rule matching it; `RewritingCostModel.java:60-68` comment states the rationale.)
+
+Go has **no such correctness problem**: Go's outer join is a `SelectExpression{joinType: LEFT/FULL OUTER}` that is **directly implementable** — `ImplementNestedLoopJoinRule` plans it as a materialized `RecordQueryNestedLoopJoinPlan` (RFC-152), a read-side extension Java lacks (Java has only the correlated `RecordQueryFlatMapPlan` re-scan). Go deliberately keeps the un-rewritten outer-join select as the REWRITING prune survivor (it wins on `selectCount`, 1<2), so PLANNING can derive **both** the materialized NLJ (scan the inner once) and the correlated FlatMap (re-scan) and cost-choose (RFC-152). **Porting `outerJoinCount` would force the rewritten form to win the prune, discard the outer-join select, and suppress the materialized-NLJ alternative — a plan regression, proven by `TestFDB_ArrayUnnestOrdinality` (asserts the materialized `NestedLoopJoin(LEFT OUTER, …)` box).** Pinned by `TestRewritingCostModel_KeepsUnrewrittenOuterJoin` / `TestRewritingBoundary_KeepsUnrewrittenOuterJoin`, which go RED if `outerJoinCount` is (re-)introduced.
+
+**Companion divergence — `RewriteOuterJoinRule` runs in Go's PLANNING phase (`PlanningExplorationRules`); Java's `PlanningRuleSet` does not contain it.** Because Go keeps the un-rewritten outer-join select as the prune survivor (above), PLANNING re-fires the canonicalizer to re-derive the rewritten form and keep the correlated-FlatMap alternative available alongside the materialized NLJ. Kept as an intentional divergence (Java can drop it precisely because `outerJoinCount` makes the rewritten form the sole survivor — the guard Go must not adopt). Empirically the full outer-join FDB suite is green whether or not this PLANNING re-fire is present (the correlated FlatMap is also derivable directly by `ImplementNestedLoopJoinRule.yieldGeneralFlatMap`), so a future cleanup could remove it — but only after pinning the correlated-LEFT-OUTER index-nested-loop (RFC-042) path with a dedicated plan-shape test.
 
 ### Properties: 18/18
 
@@ -274,7 +282,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `GROUP BY` | Rejects ALL forms (`UnableToPlanException`) | Full support (streaming + hash aggregation) |
 | `LIMIT` / `OFFSET` | Rejects at parse time (uses JDBC `setMaxRows`) | `RecordQueryLimitPlan` |
 | `SELECT DISTINCT` (complex shapes) | Rejects most via Cascades | Broad support via `RecordQueryDistinctPlan` + hash distinct |
-| In-memory sort | No physical sort operator; `RemoveSortRule` eliminates or fails | `RecordQuerySortPlan` / `RecordQueryInMemorySortPlan` |
+| In-memory sort | No physical sort operator; `RemoveSortRule` eliminates or fails | `RecordQueryInMemorySortPlan` |
 | Hash aggregation | Only streaming aggregation (requires ordered input) | `RecordQueryHashAggregationPlan` |
 | `INFORMATION_SCHEMA` | Rejects (`Unknown reference INFORMATION_SCHEMA.TABLES`) | Working system tables |
 | `NOT NULL` on scalar columns | Rejects (`NOT NULL is only allowed for ARRAY column type`) | SQL-standard behavior |
@@ -284,7 +292,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
 | Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
 
-Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQuerySortPlan`, `RecordQueryValuesPlan`, `RecordQueryMergeSortUnionPlan`, `RecordQueryNestedLoopJoinPlan`.
+Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQueryValuesPlan`, `RecordQueryMergeSortUnionPlan`, `RecordQueryNestedLoopJoinPlan`.
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 
@@ -416,11 +424,30 @@ end-to-end. `SELECT *` over duplicates answers with Java's positional duplicate-
 `dup_from_alias_select_star`, `dup_from_alias_cte_star` all flipped (annotations deleted).
 Remaining marked corners are message-drift only (undefined table under a dup alias stays 42F01;
 the generated-aggregate quoted reference; the `…, a AS b` 42712-vs-42F01 lazy quirk) and the
-cross-scope-shadowed correlated fallthrough (`SELECT p.v FROM p WHERE EXISTS(… q AS p WHERE
-p.v=…)`) — resolution falls through (Java-aligned M1), but EMITTING a QOV bound to the inner
-leg's quantifier awaits cross-scope binding ids; it declines LOUDLY (never wrong rows) via one
-of two mechanisms depending on the inner scope's arity: a MULTI-source inner scope trips the
-plan-time `CorrelatedShadowError` (42703) in `expr.ResolveIdentifier`, while a SINGLE-source
-inner scope short-circuits the resolver's `isLocal` guard and declines one step later at the
-executor's ordinal-resolution guard (field unresolvable in the inner row). Both are pinned by
-`TestFDB_RFC173W4Left_DuplicateFromAliases`.
+MULTI-source-inner half of the cross-scope-shadowed correlated fallthrough: a multi-source inner
+scope still trips the plan-time `CorrelatedShadowError` (42703) in `expr.ResolveIdentifier`
+(cross-scope binding ids for multi-source inners remain the booked follow-on). The SINGLE-source
+half (`SELECT p.v FROM p WHERE EXISTS(… q AS p WHERE p.v=…)`) CLOSED with the RFC-173 S4
+collision mint: the inner source is born under a unique CorrelationName, so the resolver's
+`isLocal` guard no longer swallows the parent hit — the fallthrough emits QOV(outer) and the
+query ANSWERS with Java's live-verified semantics. Both variants are pinned by
+`TestFDB_DuplicateFromAliases`.
+
+## Element-shadows-outer vs Java AMBIGUOUS_COLUMN (dup-label unnest, shared-surface, Go-only reach)
+
+When a lateral unnest's element/AT alias DUPLICATES an outer column name (`SELECT SUB FROM t,
+t.scarr AS "SUB"`, or the CTE-boxed `WITH S AS (SELECT * FROM t, t.scarr AS "SUB") …`), Go's
+deployed RFC-142 semantics resolves the reference to the UNNEST ELEMENT (element-shadows-outer,
+last-write-wins). Java 4.12.11.0's `SemanticAnalyzer.resolveIdentifier` (SemanticAnalyzer.java
+~:417/:422) resolves a duplicate column reference as `AMBIGUOUS_COLUMN` — an ERROR. So on this
+shared surface Go RETURNS ROWS (the element) where Java REJECTS.
+
+This is INTENTIONAL and surface-wide, not a one-off: element-shadows-outer is Go's existing rule
+across the whole unnest surface (the direct form already returns the element on master). Making
+only the dup-label case throw would be a bolted-on special-case (design principle #10) and would
+re-open two silent-wrong-rows bugs the S4-B star-CTE slice fixed (a colliding derived twin was
+serving the OUTER scalar, and wrong-leg IDs). Wire compat is untouched (pure read path). Graefe
+(RFC-173 S4 item B deletion review) endorsed keeping the uniform element-shadows-outer semantics
+and booking this here as the known divergence. Pinned: `TestFDB_StarBodyCTEJoinLeg`
+(colliding_label_shadow). Follow-on if strict Java parity is ever required: make the dup-label
+resolution loud `AMBIGUOUS_COLUMN` UNIFORMLY (direct + CTE forms), never just the boxed case.

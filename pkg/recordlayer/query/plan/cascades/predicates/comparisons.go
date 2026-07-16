@@ -567,14 +567,22 @@ func likeMatch(pattern, s string, escape rune) bool {
 // because the literal arrived as int64.
 func cmpAny(a, b any) (int, bool) {
 	if af, bf, ok := promoteFloat(a, b); ok {
-		switch {
-		case af < bf:
-			return -1, true
-		case af > bf:
-			return 1, true
-		default:
-			return 0, true
+		// PREDICATE numeric comparison (=, !=, <, >, <=, >=): SQL/IEEE numeric
+		// equality treats -0.0 == +0.0, so `-0.0 >= 0.0` KEEPS the -0.0 row. Go
+		// deliberately keeps that row where Java's Double.compare-based `>=` drops
+		// it — a documented Go-correct-vs-Java-wrong divergence (RFC-082,
+		// double_negative_zero_ge_predicate). This is why the SORT comparator
+		// (executor compareValues, which uses values.CompareFloat64 with
+		// -0.0 < 0.0 to match FDB tuple / index order) and this PREDICATE comparator
+		// MUST differ on signed zero. Check IEEE equality first:
+		if af == bf {
+			return 0, true // normal-equal AND -0.0 == +0.0 (== is false for NaN)
 		}
+		// Not IEEE-equal, or a NaN is involved (== is false for NaN). Fall to the
+		// Double.compare total order (NaN greatest) so `NaN = x` is not-equal — the
+		// fix for cmpAny previously reporting every NaN pair as EQUAL via native
+		// `<`/`>`. NaN vs NaN resolves to 0 here (matching Java Double.equals).
+		return values.CompareFloat64(af, bf), true
 	}
 	if ai, bi, ok := promoteInt(a, b); ok {
 		switch {

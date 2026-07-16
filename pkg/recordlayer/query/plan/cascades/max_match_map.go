@@ -880,7 +880,7 @@ func expandValueForMatching(v values.Value) []values.Value {
 	// resident ONLY in MaxMatchMapSimplificationRuleSet.java:50 — never in
 	// the general simplifier, per the stack-overflow warning against
 	// co-residing with the compose rule): a FUSED multi-accessor FieldValue
-	// (live since the S3 fulcrum's TranslationMap rebase) emits every split
+	// (produced by the TranslationMap rebase) emits every split
 	// form — a p-accessor fused prefix with the remaining suffix chained,
 	// for each p — so a candidate in ANY partial-to-full split shape (the
 	// fully-chained pre-compose shape AND the one-step-split shape a

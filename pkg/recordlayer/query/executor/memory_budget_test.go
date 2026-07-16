@@ -58,8 +58,8 @@ func TestEstimateQueryResultBytes_StoredRecord(t *testing.T) {
 func TestEstimateQueryResultBytes_ComputedRow(t *testing.T) {
 	t.Parallel()
 
-	narrow := QueryResult{Datum: map[string]any{"ID": int64(1), "P": "x"}}
-	wide := QueryResult{Datum: map[string]any{"ID": int64(1), "P": string(make([]byte, 1000))}}
+	narrow := dmap(map[string]any{"ID": int64(1), "P": "x"})
+	wide := dmap(map[string]any{"ID": int64(1), "P": string(make([]byte, 1000))})
 
 	nb := estimateQueryResultBytes(narrow)
 	wb := estimateQueryResultBytes(wide)
@@ -86,18 +86,18 @@ func TestEstimateQueryResultBytes_NilSafety(t *testing.T) {
 		qr   QueryResult
 	}{
 		{"both-nil", QueryResult{}},
-		{"datum-nil", QueryResult{Datum: nil}},
-		{"empty-map", QueryResult{Datum: map[string]any{}}},
-		{"empty-slice", QueryResult{Datum: []any{}}},
-		{"nil-map-value", QueryResult{Datum: map[string]any{"X": nil}}},
+		{"scalar-nil", dscalar(nil)},
+		{"empty-map", dmap(map[string]any{})},
+		{"empty-slice", dscalar([]any{})},
+		{"nil-map-value", dmap(map[string]any{"X": nil})},
 		{"nil-proto-record", QueryResult{
 			Record:     &recordlayer.FDBStoredRecord[proto.Message]{},
 			PrimaryKey: nil,
 		}},
-		{"scalar-int", QueryResult{Datum: int64(42)}},
-		{"scalar-string", QueryResult{Datum: "hello"}},
-		{"nested-map", QueryResult{Datum: map[string]any{"M": map[string]any{"K": "v"}}}},
-		{"nested-slice", QueryResult{Datum: []any{"a", []byte("bc"), int64(3)}}},
+		{"scalar-int", dscalar(int64(42))},
+		{"scalar-string", dscalar("hello")},
+		{"nested-map", dmap(map[string]any{"M": map[string]any{"K": "v"}})},
+		{"nested-slice", dscalar([]any{"a", []byte("bc"), int64(3)})},
 	}
 	for _, tc := range cases {
 		tc := tc

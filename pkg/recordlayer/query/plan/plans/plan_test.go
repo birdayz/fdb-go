@@ -3,7 +3,6 @@ package plans
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -74,20 +73,10 @@ func TestSize_CountsAllNodes(t *testing.T) {
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 	filter := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
 
-	keys := []expressions.SortKey{{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}}}
-	sort := NewRecordQuerySortPlan(keys, filter)
+	keys := []SortKey{{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}}}
+	sort := NewRecordQueryInMemorySortPlan(filter, keys)
 	if got := Size(sort); got != 3 {
-		t.Fatalf("Size(Sort(Filter(Scan))) = %d, want 3", got)
-	}
-}
-
-func TestRecordQuerySortPlan_PreservesInnerType(t *testing.T) {
-	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
-	keys := []expressions.SortKey{{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}}}
-	sort := NewRecordQuerySortPlan(keys, scan)
-	if !values.NotNullLong.Equals(sort.GetResultType()) {
-		t.Fatalf("sort result type=%v, want %v", sort.GetResultType(), values.NotNullLong)
+		t.Fatalf("Size(InMemorySort(Filter(Scan))) = %d, want 3", got)
 	}
 }
 

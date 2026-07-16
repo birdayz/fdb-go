@@ -160,7 +160,7 @@ func TestScope_AddSource_DuplicateAlias(t *testing.T) {
 	c := buildTestCatalog()
 	users, _ := c.LookupTable(ParseQualifiedName("users", false))
 
-	// RFC-173 QP-REF-BIND item 1: duplicate PLAIN aliases are ACCEPTED —
+	// Duplicate PLAIN aliases are ACCEPTED —
 	// Java registers quantifiers freely (unique ids) and errors
 	// per-ATTRIBUTE at reference resolution; the two sources are
 	// distinguished by CorrelationName (the parser-minted binding id).

@@ -69,8 +69,8 @@ func TestBuildLogicalPlanWithCatalog_WhereWalked(t *testing.T) {
 	// (rlcatalog is case-insensitive); ExplainValue renders literals
 	// unquoted via valueLiteralString.
 	got := op.Explain("")
-	if !strings.Contains(got, "PRICE > 5") {
-		t.Fatalf("expected PRICE > 5 in Explain, got %q", got)
+	if want := "Filter(PRICE#2 > 5)\n  Scan(ORDER)"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 }
 
@@ -90,8 +90,8 @@ func TestBuildLogicalPlanWithCatalog_WhereAnd(t *testing.T) {
 		t.Fatal("expected Predicate on AND shape")
 	}
 	got := filter.Predicate.Explain()
-	if !strings.Contains(got, "PRICE > 5") || !strings.Contains(got, "ORDER_ID = 1") {
-		t.Fatalf("expected both leaves in predicate, got %q", got)
+	if want := "(PRICE#2 > 5 AND ORDER_ID#0 = 1)"; got != want {
+		t.Fatalf("Predicate.Explain: got %q, want %q", got, want)
 	}
 }
 
@@ -173,8 +173,8 @@ func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate non-nil")
 	}
-	if got := filter.Predicate.Explain(); got != "PRICE = 3" {
-		t.Fatalf("Predicate.Explain: got %q, want PRICE = 3", got)
+	if got := filter.Predicate.Explain(); got != "PRICE#2 = 3" {
+		t.Fatalf("Predicate.Explain: got %q, want PRICE#2 = 3", got)
 	}
 }
 
@@ -251,8 +251,8 @@ func TestBuildLogicalPlanWithCatalog_DeleteWhere(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate on DELETE WHERE")
 	}
-	if got := filter.Predicate.Explain(); got != "PRICE > 5" {
-		t.Fatalf("Predicate.Explain: got %q, want PRICE > 5", got)
+	if got := filter.Predicate.Explain(); got != "PRICE#2 > 5" {
+		t.Fatalf("Predicate.Explain: got %q, want PRICE#2 > 5", got)
 	}
 }
 
@@ -287,8 +287,8 @@ func TestBuildLogicalPlanWithCatalog_UpdateWhere(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate on UPDATE WHERE")
 	}
-	if got := filter.Predicate.Explain(); got != "ORDER_ID = 1" {
-		t.Fatalf("Predicate.Explain: got %q, want ORDER_ID = 1", got)
+	if got := filter.Predicate.Explain(); got != "ORDER_ID#0 = 1" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER_ID#0 = 1", got)
 	}
 }
 
@@ -673,8 +673,11 @@ func TestBuildLogicalPlanWithCatalog_InsertSelectJoin(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatalf("expected resolved Predicate on JOIN-WHERE, PredicateText=%q", filter.PredicateText)
 	}
-	if got := filter.Predicate.Explain(); !strings.Contains(got, "PRICE > 5") {
-		t.Fatalf("expected PRICE > 5 in resolved predicate, got %q", got)
+	if got := filter.Predicate.Explain(); !(strings.Contains(got, "PRICE") && strings.Contains(got, "> 5")) {
+		// The resolved predicate renders the column baked + qualified (e.g.
+		// "O.PRICE#2 > 5") — the predicate still resolves; the display
+		// carries the plan-time ordinal + source qualifier.
+		t.Fatalf("expected a resolved PRICE > 5 predicate, got %q", got)
 	}
 }
 
@@ -777,8 +780,8 @@ func TestBuildLogicalPlanWithCatalog_JoinQualifiedColumn(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatalf("expected Predicate on JOIN shape; PredicateText=%q", filter.PredicateText)
 	}
-	if got := filter.Predicate.Explain(); !strings.Contains(got, "PRICE > 5") {
-		t.Fatalf("expected PRICE > 5 in JOIN predicate, got %q", got)
+	if got := filter.Predicate.Explain(); !(strings.Contains(got, "PRICE") && strings.Contains(got, "> 5")) {
+		t.Fatalf("expected a resolved PRICE > 5 JOIN predicate, got %q", got)
 	}
 }
 
@@ -811,13 +814,12 @@ func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
 }
 
 // Self-join without explicit alias — `Order JOIN Order ON ...` produces two
-// sources both named ORDER. RFC-173 QP-REF-BIND item 1: the duplicate
-// sources now REGISTER (per-leg binding ids) and the ON reference resolves
-// per-ATTRIBUTE — both ORDER legs carry order_id, so the loud error is
-// Java's exact 42702 (`Ambiguous reference ORDER.ORDER_ID`, the live-probed
-// class), replacing the pre-item-1 generic ON-clause drop-hazard decline.
-// Still fail-closed — better a precise error than wrong rows; the silent
-// ON-drop cross-product class this pin was born for stays impossible.
+// sources both named ORDER. The duplicate sources REGISTER (per-leg binding
+// ids) and the ON reference resolves per-ATTRIBUTE — both ORDER legs carry
+// order_id, so the loud error is Java's exact 42702 (`Ambiguous reference
+// ORDER.ORDER_ID`). Still fail-closed — better a precise error than wrong
+// rows; a silent ON-clause drop that produced a cross product stays
+// impossible.
 func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FailsClosed(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
@@ -867,10 +869,10 @@ func TestBuildLogicalPlanWithCatalog_ThreeWayJoin(t *testing.T) {
 	}
 	got := filter.Predicate.Explain()
 	// Both branches of the AND should resolve.
-	if !strings.Contains(got, "PRICE > 5") {
+	if !(strings.Contains(got, "PRICE") && strings.Contains(got, "> 5")) {
 		t.Errorf("expected PRICE > 5, got %q", got)
 	}
-	if !strings.Contains(got, "ID > 0") {
+	if !(strings.Contains(got, "ID") && strings.Contains(got, "> 0")) {
 		t.Errorf("expected ID > 0 (from TypedRecord.id), got %q", got)
 	}
 }

@@ -2,7 +2,9 @@ package expressions
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -41,6 +43,18 @@ type AggregateSpec struct {
 	Operand     values.Value
 	Alias       string
 	OperandName string // canonical operand text for result-map keying (e.g. "PRICE*QTY")
+	// OperandIntType is the operand's STATIC integer width at plan time, used by
+	// the SUM/AVG accumulator to pick int32 vs int64 overflow semantics — Java's
+	// NumericAggregationValue selects SUM_I (Math.addExact on int, int32 overflow,
+	// result INT) vs SUM_L (int64 overflow, result LONG) from the operand's static
+	// TypeCode. values.TypeCodeInt means the operand is a SQL INTEGER column
+	// (proto TYPE_INT32) → int32 overflow; any other value (including the zero
+	// TypeCodeUnknown) keeps the int64 (SUM_L) domain. This is a SEPARATE field
+	// because Go's resolver widens every integer column reference to LONG
+	// (values.TypeInt == NullableLong), so Operand.Type() cannot carry the
+	// INT32/INT64 distinction — the translator sources it from the proto-faithful
+	// record type instead.
+	OperandIntType values.TypeCode
 }
 
 // IsCountStar reports whether agg is a COUNT(*)-equivalent aggregate: COUNT with
@@ -92,6 +106,78 @@ func NewGroupByExpression(
 		aggregates:   aggregates,
 		inner:        inner,
 	}
+}
+
+// AggregateKeyColumnName is the canonical output-column name for one grouping
+// key. THE single naming authority for a group key — the plan's OutputColumnNames,
+// the executor's aggregateCursor, and the translator's ordinal baking all read
+// the name from here so a baked ordinal and the emitted positional slot can never
+// disagree.
+func AggregateKeyColumnName(k values.Value) string {
+	if fv, ok := k.(*values.FieldValue); ok {
+		return strings.ToUpper(fv.Field)
+	}
+	return strings.ToUpper(values.ColumnNameValue(k))
+}
+
+// AggregateResultColumnName is the canonical output-column name for one aggregate
+// (function + operand), IGNORING any alias: the SELECT list references this
+// canonical text and the projection above applies the alias. THE single naming
+// authority for an aggregate column (same rationale as AggregateKeyColumnName).
+func AggregateResultColumnName(agg AggregateSpec) string {
+	opName := "?"
+	if agg.OperandName != "" {
+		opName = strings.ReplaceAll(agg.OperandName, " ", "")
+	} else if agg.Operand != nil {
+		switch v := agg.Operand.(type) {
+		case *values.ConstantValue:
+			if v.Value == nil {
+				opName = "*"
+			} else {
+				opName = v.Name()
+			}
+		case *values.FieldValue:
+			opName = v.Field
+		default:
+			opName = values.ColumnNameValue(agg.Operand)
+		}
+	}
+	switch agg.Function {
+	case AggCount:
+		return strings.ToUpper(fmt.Sprintf("COUNT(%s)", opName))
+	case AggSum:
+		return strings.ToUpper(fmt.Sprintf("SUM(%s)", opName))
+	case AggMin:
+		return strings.ToUpper(fmt.Sprintf("MIN(%s)", opName))
+	case AggMax:
+		return strings.ToUpper(fmt.Sprintf("MAX(%s)", opName))
+	case AggAvg:
+		return strings.ToUpper(fmt.Sprintf("AVG(%s)", opName))
+	default:
+		return strings.ToUpper(fmt.Sprintf("AGG(%s)", opName))
+	}
+}
+
+// GroupByOutputColumnNames is THE single naming authority for a streaming
+// aggregate's output ROW: grouping keys (in GROUP BY order) then aggregates (in
+// aggregate order), each aggregate ALIAS-preferring (upper alias, else the
+// canonical AggregateResultColumnName). The order — [groupKeys..., aggregates...]
+// — is the ordinal order the executor's aggregateCursor emits and the translator
+// bakes downstream references against. Returns an empty slice when there are no
+// output columns.
+func GroupByOutputColumnNames(groupingKeys []values.Value, aggregates []AggregateSpec) []string {
+	names := make([]string, 0, len(groupingKeys)+len(aggregates))
+	for _, k := range groupingKeys {
+		names = append(names, AggregateKeyColumnName(k))
+	}
+	for _, a := range aggregates {
+		if a.Alias != "" {
+			names = append(names, strings.ToUpper(a.Alias))
+		} else {
+			names = append(names, AggregateResultColumnName(a))
+		}
+	}
+	return names
 }
 
 func (e *GroupByExpression) GetGroupingKeys() []values.Value { return e.groupingKeys }

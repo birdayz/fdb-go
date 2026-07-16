@@ -719,7 +719,10 @@ type FDBIndexedRecord struct {
 
 // ScanIndexRecords scans a secondary index and fetches the actual records.
 // For each index entry, it loads the record by primary key.
-// Orphan index entries (pointing to deleted records) are skipped.
+// An orphan index entry (pointing to a record that no longer exists) raises a
+// RecordCoreStorageError — this mirrors Java's scanIndexRecords, whose default
+// IndexOrphanBehavior is ERROR (not SKIP), so store corruption surfaces loudly
+// instead of returning fewer records.
 // Matches Java's FDBRecordStore.scanIndexRecords().
 func (store *FDBRecordStore) ScanIndexRecords(
 	indexName string,
@@ -742,46 +745,64 @@ func (store *FDBRecordStore) ScanIndexRecords(
 }
 
 // indexRecordCursor maps index entries to stored records by loading each record
-// via its primary key. Skips orphan entries (where the record no longer exists).
+// via its primary key. An orphan entry (the record no longer exists) raises a
+// RecordCoreStorageError, matching Java's IndexOrphanBehavior.ERROR default.
 type indexRecordCursor struct {
 	inner RecordCursor[*IndexEntry]
 	store *FDBRecordStore
 }
 
 func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBIndexedRecord], error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return RecordCursorResult[*FDBIndexedRecord]{}, err
-		}
-		result, err := c.inner.OnNext(ctx)
-		if err != nil {
-			return RecordCursorResult[*FDBIndexedRecord]{}, err
-		}
-		if !result.HasNext() {
-			return NewResultNoNext[*FDBIndexedRecord](
-				result.GetNoNextReason(),
-				result.GetContinuation(),
-			), nil
-		}
-
-		entry := result.GetValue()
-		pk := entry.PrimaryKey()
-
-		rec, err := c.store.LoadRecord(pk)
-		if err != nil {
-			return RecordCursorResult[*FDBIndexedRecord]{}, fmt.Errorf("load record for index entry %v: %w", pk, err)
-		}
-		if rec == nil {
-			// Orphan index entry — record was deleted but index not cleaned up.
-			// Skip it (matches Java's IndexOrphanBehavior.SKIP).
-			continue
-		}
-
-		return NewResultWithValue(&FDBIndexedRecord{
-			IndexEntry: entry,
-			Record:     rec,
-		}, result.GetContinuation()), nil
+	// One index entry per call: the fetch either yields its record, exhausts, or
+	// raises on an orphan. No loop — orphans no longer skip-and-continue (that
+	// silently dropped rows); they abort with a typed error like Java's
+	// IndexOrphanBehavior.ERROR default.
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*FDBIndexedRecord]{}, err
 	}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return RecordCursorResult[*FDBIndexedRecord]{}, err
+	}
+	if !result.HasNext() {
+		return NewResultNoNext[*FDBIndexedRecord](
+			result.GetNoNextReason(),
+			result.GetContinuation(),
+		), nil
+	}
+
+	entry := result.GetValue()
+	indexName := ""
+	if entry.Index != nil {
+		indexName = entry.Index.Name
+	}
+	pk := entry.PrimaryKey()
+
+	rec, err := c.store.LoadRecord(pk)
+	if err != nil {
+		return RecordCursorResult[*FDBIndexedRecord]{}, fmt.Errorf("load record for index entry %v: %w", pk, err)
+	}
+	if rec == nil {
+		// Orphan index entry — the record is gone but its index entry is not.
+		// Java's scanIndexRecords defaults to IndexOrphanBehavior.ERROR
+		// (FDBRecordStoreBase.fetchIndexRecords → loadIndexEntryRecord), and the
+		// index-from-index rebuild (IndexingByIndex) relies on that default, so an
+		// orphan aborts the scan rather than silently dropping the row. Raise the
+		// same typed error Java throws. (The index scrubber, which repairs
+		// orphans, has its own SKIP/RETURN path in index_validation.go and does
+		// not come through here.)
+		return RecordCursorResult[*FDBIndexedRecord]{}, &RecordCoreStorageError{
+			Message:    "record not found from index entry",
+			IndexName:  indexName,
+			PrimaryKey: pk,
+			IndexKey:   entry.Key,
+		}
+	}
+
+	return NewResultWithValue(&FDBIndexedRecord{
+		IndexEntry: entry,
+		Record:     rec,
+	}, result.GetContinuation()), nil
 }
 
 func (c *indexRecordCursor) Close() error {

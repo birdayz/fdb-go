@@ -25,13 +25,21 @@ func EmptyEvaluationContext() *EvaluationContext {
 }
 
 // WithParams returns a copy with prepared-statement parameter bindings.
-// Params is 0-indexed; ParameterValue ordinals are 1-based.
+// Params is 0-indexed; ParameterValue ordinals are 1-based. The copy CARRIES
+// scalarSubqueries like every other With* copy — dropping them would make
+// binding ORDER load-bearing (WithScalarSubqueries().WithParams() would
+// silently unbind the subqueries, and unbound is a loud
+// *values.UnboundScalarSubqueryError at row time).
 func (ec *EvaluationContext) WithParams(params []any) *EvaluationContext {
 	newBindings := make(map[values.CorrelationIdentifier]any, len(ec.bindings))
 	for k, v := range ec.bindings {
 		newBindings[k] = v
 	}
-	return &EvaluationContext{bindings: newBindings, params: params}
+	return &EvaluationContext{
+		bindings:         newBindings,
+		params:           params,
+		scalarSubqueries: ec.scalarSubqueries,
+	}
 }
 
 // BindParameter implements values.ParameterBinder. Ordinal is 1-based;
@@ -43,13 +51,12 @@ func (ec *EvaluationContext) BindParameter(ordinal int, name string) (any, bool)
 	return nil, false
 }
 
-// RowContext returns a RowEvalContext combining a datum map with this
-// context's parameter bindings and scalar subquery results. Used when
-// evaluating expressions that mix field references, prepared-statement
-// parameters, and scalar subquery references.
-func (ec *EvaluationContext) RowContext(datum map[string]any) *values.RowEvalContext {
+// RowContext returns a binding-only RowEvalContext — this context's parameter
+// bindings, correlation bindings, and scalar subquery results, with NO frontier
+// row. Used when evaluating expressions that reference only params / correlations
+// / scalar subqueries; a row-bearing context flows through RowContextPositional.
+func (ec *EvaluationContext) RowContext() *values.RowEvalContext {
 	return &values.RowEvalContext{
-		Datum:            datum,
 		Binder:           ec,
 		Correlations:     ec,
 		ScalarSubqueries: ec.scalarSubqueries,
@@ -57,8 +64,8 @@ func (ec *EvaluationContext) RowContext(datum map[string]any) *values.RowEvalCon
 }
 
 // RowContextPositional returns a RowEvalContext whose authoritative row is the
-// RFC-173 Slice 1 ordinal-model positional row (resolved by ordinal, no name-map
-// fallback), combined with this context's parameter bindings, correlation
+// ordinal-model positional row (resolved by ordinal, no name-map fallback),
+// combined with this context's parameter bindings, correlation
 // bindings, and scalar subquery results. Use it on the non-join frontier when a
 // param / scalar subquery / outer correlation is in play; when none is, flow the
 // bare OrdinalRow directly. An outer correlation resolves via Correlations first;
@@ -72,16 +79,33 @@ func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values
 	}
 }
 
-// frontierRowContext returns the eval context a row on the RFC-173 Slice 1
-// authoritative non-join ordinal frontier is resolved against: the bare
+// frontierRowContext returns the eval context a row on the non-join ordinal
+// frontier is resolved against: the bare
 // positional row (FieldValue resolves by ordinal, loud on a miss — NO name-map
-// fallback, reviewer) when no param / scalar-subquery / outer correlation binding
+// fallback) when no param / scalar-subquery / outer correlation binding
 // is in play, else a RowContextPositional so an outer correlation resolves via
 // the binder BEFORE the frontier quantifier falls to the positional row. Shared
 // by executeProjection / executeFilter / executePredicatesFilter / executeMap so
 // the frontier dispatch is identical across them. hasBindingCtx is
 // params||scalarSubqueries||bindings for the caller's evalCtx.
 func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBindingCtx bool) any {
+	// A row whose TYPE carries leg boundaries (a merged concat /
+	// clustered box row) serves its legs as correlation-bound windows, so a
+	// quantifier-addressed source-relative baked reference (QOV(leg).col with the
+	// source's declared-column ordinal) resolves positionally within its leg —
+	// Java's quantifier binding. The leg binder chains to the eval context for
+	// outer correlations.
+	if pr, isPR := pos.(*PositionalRow); isPR && pr != nil && pr.Type != nil && len(pr.Type.Legs) > 0 {
+		rc := &values.RowEvalContext{
+			Positional:   pos,
+			Correlations: &rowLegsBinder{base: correlationBase(ec), row: pr},
+		}
+		if ec != nil {
+			rc.Binder = ec
+			rc.ScalarSubqueries = ec.scalarSubqueries
+		}
+		return rc
+	}
 	if hasBindingCtx && ec != nil {
 		return ec.RowContextPositional(pos)
 	}
@@ -90,64 +114,12 @@ func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBinding
 
 // hasBindingContext reports whether an eval context carries any resolvable
 // binding beyond a bare row — a param, a pre-evaluated scalar subquery, or a
-// correlation binding. It gates whether the RFC-173 positional frontier needs a
-// wrapping RowContextPositional (to resolve an outer correlation) or can flow the
+// correlation binding. It gates whether a positional row needs a wrapping
+// RowContextPositional (to resolve an outer correlation) or can flow as the
 // bare ordinal row.
 func hasBindingContext(ec *EvaluationContext) bool {
 	return ec != nil && (len(ec.params) > 0 || len(ec.scalarSubqueries) > 0 || len(ec.bindings) > 0)
 }
-
-// RowContextStrict is RowContext with the RFC-048 W1 unresolved-reference
-// check armed. Use it only for rows whose key set is complete (QueryResult
-// .Complete) — see RowEvalContext.Strict. Callers gate on StrictReferenceCheck
-// so production keeps the cheaper bare-map fast path.
-func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowEvalContext {
-	rc := ec.RowContext(datum)
-	rc.Strict = true
-	return rc
-}
-
-// DisablePositionalEmission, when true, stops the row-birth sites — the
-// oracle REGISTRY: FromStoredRecord, the covering-index cursor, and the
-// RFC-173 Slice 2 ordinal-join births (nljCursor pairBinder/evaluateBound emission sites,
-// flatMapCursor.computeResultLegs) — from emitting the RFC-173 PositionalRow,
-// recreating the pre-Slice-1 NAME model end-to-end: no positional row is
-// born, so the frontier gates (`qr.Positional != nil`) never fire and every
-// producer/consumer runs name resolution + name emission, exactly the
-// pre-flip world. Every NEW positional birth site MUST gate on this flag and
-// be added to this list (the §4 standing obligation). It exists for ONE purpose: the §5 dual-window corpus
-// DIFFERENTIAL (ordinal result == name result row-for-row across the corpus,
-// with enumerated carve-outs), which needs the name model as a live oracle
-// during the dual-representation window (retired with the map side in Slice 4).
-// It is NOT a resolution fallback — reviewer's no-name-fallback rule governs
-// resolution; this suppresses EMISSION, in test builds only. Default false;
-// production pays one bool read per scanned row. Tests that flip it must own
-// the whole test binary phase (no concurrent queries in the other mode).
-var DisablePositionalEmission bool
-
-// SetNameModelOracle flips BOTH §5 name-model oracle globals together:
-// DisablePositionalEmission (suppresses the positional row at every birth
-// site) and values.OracleBakedNameFallback (lets BAKED FieldValues — RFC-173
-// S2+ eager ordinal nodes, whose name reads are otherwise loud errors —
-// resolve by display name against the name-keyed rows the suppression leaves
-// behind). The two flags share ONE meaning — "the process is running the
-// pre-RFC-173 name model" — so this setter is the only sanctioned write site
-// (review hardening: no harness can flip one without the other). Test-only;
-// callers own the whole test-binary phase. Retires with the name map in
-// Slice 4.
-func SetNameModelOracle(v bool) {
-	DisablePositionalEmission = v
-	values.OracleBakedNameFallback = v
-}
-
-// StrictReferenceCheck, when true, makes filter/projection cursors evaluate
-// QueryResult.Complete rows through a Strict RowEvalContext, so a reference to
-// a name absent from the (complete) row is reported via
-// values.ReportUnresolvedReference instead of silently yielding NULL. It is
-// the RFC-048 W1 invariant's master switch: default false (production is
-// untouched and pays nothing), turned on by tests to prove no code path emits
-// an unresolved reference. Set it once at test start, before any query runs.
-var StrictReferenceCheck bool
 
 // WithScalarSubqueries returns a copy with pre-evaluated scalar
 // subquery results bound by correlation alias.

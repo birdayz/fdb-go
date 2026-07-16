@@ -134,8 +134,14 @@ func (p *RecordQueryIndexPlan) GetResultType() values.Type { return p.flowedType
 // GetChildren returns nil — index scans are leaves.
 func (p *RecordQueryIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 
-// EqualsWithoutChildren compares index name, scan comparisons,
-// record types, and reverse flag.
+// EqualsWithoutChildren compares index name, scan comparisons (shape AND
+// comparands), record types, and reverse flag. The comparands are load-bearing:
+// an index scan is a memo LEAF, deduped by HashCodeWithoutChildren +
+// EqualsWithoutChildren, so comparing only the range SHAPE would collapse
+// IndexScan([= 5]) and IndexScan([= 7]) into one Reference and let extraction
+// materialize the wrong-comparand scan. Mirrors Java's
+// RecordQueryIndexPlan.equalsWithoutChildren, which compares
+// Objects.equals(scanParameters, that.scanParameters) — full comparand equality.
 func (p *RecordQueryIndexPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryIndexPlan)
 	if !ok {
@@ -155,27 +161,19 @@ func (p *RecordQueryIndexPlan) EqualsWithoutChildren(other RecordQueryPlan) bool
 			return false
 		}
 	}
-	if len(p.scanComparisons) != len(o.scanComparisons) {
-		return false
-	}
-	for i := range p.scanComparisons {
-		if p.scanComparisons[i].GetRangeType() != o.scanComparisons[i].GetRangeType() {
-			return false
-		}
-	}
-	return true
+	return scanComparisonRangesEqual(p.scanComparisons, o.scanComparisons)
 }
 
-// HashCodeWithoutChildren mixes index name + scan comparison types +
-// reverse flag.
+// HashCodeWithoutChildren mixes index name + scan comparisons (shape AND
+// comparands) + reverse flag. Folding the comparands (not just the range
+// shape) is the hash analog of EqualsWithoutChildren: two different-comparand
+// scans hash apart, so the memo leaf dedup keeps them in distinct References.
 func (p *RecordQueryIndexPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("indexplan|"))
 	h.Write([]byte(p.indexName))
 	h.Write([]byte{0})
-	for _, cr := range p.scanComparisons {
-		h.Write([]byte{byte(cr.GetRangeType())})
-	}
+	writeScanComparisonRangesHash(h, p.scanComparisons)
 	if p.reverse {
 		h.Write([]byte{1})
 	} else {

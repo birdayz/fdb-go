@@ -12,7 +12,7 @@ import (
 // sensitivity: the two operand orders of a symmetric join MUST hash
 // differently, or cost-tied swapped-operand alternatives compare equal and
 // the winner follows task arrival order — a nondeterministic EXPLAIN (caught
-// live by the item-2 commit-3 flatten pins: the existential step-1 NLJ over
+// live by the flatten pins: the existential step-1 NLJ over
 // two same-shaped scans flipped operand order across runs). A commutative
 // child fold (`h ^= f(child)`) fails this; the fold must be positional.
 func TestCostModel_PlanHashOrderSensitive(t *testing.T) {
@@ -39,7 +39,7 @@ func TestCostModel_PlanHashOrderSensitive(t *testing.T) {
 // identifiers (fresh q$N per planning — the FlatMap outer/inner aliases,
 // the alias-carrying PredicatesFilter) MUST hash identically, or two
 // cost-tied candidates rank in a different order on every planning of the
-// same query and the EXPLAIN'd winner flips run to run (the item-2 commit-3
+// same query and the EXPLAIN'd winner flips run to run (the
 // live catch: the existential step-1 NLJ operand order was nondeterministic
 // because the tie-break hashed the translation-minted existential alias and
 // the per-firing merged-outer correlation).

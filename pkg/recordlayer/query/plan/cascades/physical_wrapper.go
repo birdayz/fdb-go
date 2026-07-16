@@ -378,7 +378,6 @@ func isLeafReplaceable(p plans.RecordQueryPlan) bool {
 		*plans.RecordQueryStreamingAggregationPlan,
 		*plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryLimitPlan,
-		*plans.RecordQuerySortPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryAggregateIndexPlan:
 		return true

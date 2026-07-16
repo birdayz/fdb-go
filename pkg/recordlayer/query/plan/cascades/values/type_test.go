@@ -1828,8 +1828,8 @@ func TestValue_Type_RecordConstructor(t *testing.T) {
 	}
 }
 
-// TestWithNullability_RecordCarriesLegs pins the RFC-173 buried-leg boundary
-// metadata through the nullability flip: WithNullability on a RecordType must
+// TestWithNullability_RecordCarriesLegs pins the buried-leg boundary metadata
+// through the nullability flip: WithNullability on a RecordType must
 // carry Legs — dropping it silently strips a clustered outer-join leg's
 // dotted-read windows exactly at the null-supplying wrap, the one place the
 // flip always happens (Docker-independent twin of the FDB metadata pin).
@@ -1853,8 +1853,8 @@ func TestWithNullability_RecordCarriesLegs(t *testing.T) {
 
 // TestNewFieldValueOfOrdinal_NullableRecordNullablesColumn pins Java's
 // FieldValue.computeResultType port: a column baked over a record-level
-// NULLABLE child (the LEFT-outer null-supplying leg's wrap, ruling I3) gets
-// a NULLABLE column type — the padded row serves NULL in every slot. Keyed
+// NULLABLE child (the LEFT-outer null-supplying leg's wrap) gets a NULLABLE
+// column type — the padded row serves NULL in every slot. Keyed
 // on the STORED QOV Typ (QOV.Type() blanket-wraps nullable, so the marker is
 // only observable there). A NOT NULL child record keeps the column type
 // verbatim.

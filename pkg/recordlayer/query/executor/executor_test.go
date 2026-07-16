@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"testing"
 
@@ -55,9 +56,9 @@ func TestExecuteValues_SingleRow(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row, ok := results[0].Datum.(map[string]any)
+	row, ok := rowMapOK(results[0])
 	if !ok {
-		t.Fatalf("datum = %T, want map[string]any", results[0].Datum)
+		t.Fatalf("datum = %T, want map[string]any", results[0].Positional)
 	}
 	if row["constant"] != int64(42) {
 		t.Errorf("row['constant'] = %v, want 42", row["constant"])
@@ -218,7 +219,7 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMapOK(results[0])
 	if row["'PROJECTED'"] != "projected" {
 		t.Errorf("projection result = %v, want 'projected'", row["'PROJECTED'"])
 	}
@@ -231,7 +232,7 @@ func TestExecuteSort_OverValues(t *testing.T) {
 	inner := plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	})
-	sortPlan := plans.NewRecordQuerySortPlan(nil, inner)
+	sortPlan := plans.NewRecordQueryInMemorySortPlan(inner, nil)
 
 	cursor, err := ExecutePlan(ctx, sortPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -404,101 +405,140 @@ func TestQueryResult_FromStoredRecord_NilSafe(t *testing.T) {
 	}
 }
 
-func TestCompareAny_Integers(t *testing.T) {
+// TestAggMinMax_FloatNaNAndSignedZero pins F48: streaming MIN/MAX over FLOAT/DOUBLE
+// must match Java's NumericAggregationValue MIN_D/MAX_D (= Math.min/Math.max), NOT a
+// total-order comparator. NaN PROPAGATES into both extremes (order-independent) and
+// -0.0 < +0.0. The old code used compareAny with native float </>, which left NaN
+// order-dependently ignored and -0.0/+0.0 first-seen-wins.
+func TestAggMinMax_FloatNaNAndSignedZero(t *testing.T) {
 	t.Parallel()
+	nan := math.NaN()
 
-	if compareAny(int64(1), int64(2)) >= 0 {
-		t.Fatal("1 should be < 2")
+	// NaN propagates into MAX regardless of arrival order (native </> would keep 2.0
+	// when NaN arrives second).
+	if got := aggMinMax(aggMinMax(nil, 2.0, false), nan, false).(float64); !math.IsNaN(got) {
+		t.Fatalf("MAX(2.0, NaN[second]) = %v, want NaN (Java Math.max propagates)", got)
 	}
-	if compareAny(int64(2), int64(1)) <= 0 {
-		t.Fatal("2 should be > 1")
+	if got := aggMinMax(aggMinMax(nil, nan, false), 2.0, false).(float64); !math.IsNaN(got) {
+		t.Fatalf("MAX(NaN[first], 2.0) = %v, want NaN", got)
 	}
-	if compareAny(int64(1), int64(1)) != 0 {
-		t.Fatal("1 should equal 1")
+	// NaN propagates into MIN too — must be NaN, NOT the smallest finite (this is why
+	// CompareFloat64's NaN-greatest total order is WRONG for MIN).
+	if got := aggMinMax(aggMinMax(nil, 2.0, true), nan, true).(float64); !math.IsNaN(got) {
+		t.Fatalf("MIN(2.0, NaN[second]) = %v, want NaN (Java Math.min propagates, not smallest-finite)", got)
+	}
+	if got := aggMinMax(aggMinMax(nil, nan, true), 2.0, true).(float64); !math.IsNaN(got) {
+		t.Fatalf("MIN(NaN[first], 2.0) = %v, want NaN", got)
+	}
+
+	// Signed zero: MIN(-0.0,+0.0) = -0.0, MAX(-0.0,+0.0) = +0.0 (native </> keeps
+	// first-seen since -0.0 == +0.0).
+	negZero := math.Copysign(0, -1)
+	if got := aggMinMax(aggMinMax(nil, 0.0, true), negZero, true).(float64); !math.Signbit(got) {
+		t.Fatalf("MIN(+0.0[first], -0.0) = %v (signbit=%v), want -0.0", got, math.Signbit(got))
+	}
+	if got := aggMinMax(aggMinMax(nil, negZero, false), 0.0, false).(float64); math.Signbit(got) {
+		t.Fatalf("MAX(-0.0[first], +0.0) = %v (signbit=%v), want +0.0", got, math.Signbit(got))
+	}
+
+	// float32 mirrors (MIN_F/MAX_F).
+	nan32 := float32(math.NaN())
+	if got := aggMinMax(aggMinMax(nil, float32(2), false), nan32, false).(float32); !math.IsNaN(float64(got)) {
+		t.Fatalf("float32 MAX(2, NaN) = %v, want NaN", got)
+	}
+	if got := aggMinMax(aggMinMax(nil, float32(2), true), nan32, true).(float32); !math.IsNaN(float64(got)) {
+		t.Fatalf("float32 MIN(2, NaN) = %v, want NaN", got)
+	}
+	negZero32 := float32(math.Copysign(0, -1))
+	if got := aggMinMax(aggMinMax(nil, float32(0), true), negZero32, true).(float32); !math.Signbit(float64(got)) {
+		t.Fatalf("float32 MIN(+0.0, -0.0) = %v, want -0.0", got)
+	}
+
+	// Integer path (int64/int32/int, no NaN/signed-zero — Java MIN_I/MIN_L/MAX_I/MAX_L).
+	if got := aggMinMax(aggMinMax(nil, int64(5), true), int64(3), true).(int64); got != 3 {
+		t.Fatalf("MIN(5,3) = %d, want 3", got)
+	}
+	if got := aggMinMax(aggMinMax(nil, int64(5), false), int64(3), false).(int64); got != 5 {
+		t.Fatalf("MAX(5,3) = %d, want 5", got)
+	}
+	// int32 and plain int widen to int64 (asInt64) and order correctly.
+	if got := aggMinMax(aggMinMax(nil, int32(5), true), int32(3), true).(int32); got != 3 {
+		t.Fatalf("MIN(int32 5,3) = %d, want 3", got)
+	}
+	if got := aggMinMax(aggMinMax(nil, int(5), false), int(3), false).(int); got != 5 {
+		t.Fatalf("MAX(int 5,3) = %d, want 5", got)
 	}
 }
 
-func TestCompareAny_Strings(t *testing.T) {
+// TestAggMinMax_MixedNumericOperands pins the unpromoted-CASE regression: an
+// operand like `MIN(CASE WHEN c THEN dbl_col ELSE 0 END)` delivers int64 on ELSE
+// rows and float64 on THEN rows. Java never sees the mix (its encapsulation wraps
+// the operand in PromoteValue, so MIN_D receives doubles only); Go promotes the
+// pair inside aggMinMax to the widest float type present, computing exactly what
+// Java computes over the promoted operand. Pre-fix, acc=int64 + val=float64
+// PANICKED on the acc.(float64) assertion, and the opposite order SILENTLY
+// DROPPED the int value (asInt64(float64) failed and the fold returned acc).
+func TestAggMinMax_MixedNumericOperands(t *testing.T) {
 	t.Parallel()
 
-	if compareAny("a", "b") >= 0 {
-		t.Fatal("'a' should be < 'b'")
+	// The panic order: acc int64 (ELSE first), val float64 (THEN second).
+	if got := aggMinMax(int64(0), float64(1.5), false).(float64); got != 1.5 {
+		t.Fatalf("MAX(int64(0), 1.5) = %v, want 1.5 (pre-fix: panic on acc.(float64))", got)
 	}
-	if compareAny("b", "a") <= 0 {
-		t.Fatal("'b' should be > 'a'")
+	if got := aggMinMax(int64(0), float64(1.5), true).(float64); got != 0.0 {
+		t.Fatalf("MIN(int64(0), 1.5) = %v, want 0 (double-promoted)", got)
+	}
+	// The silent-drop order: acc float64, val int64 — val must win MIN, not vanish.
+	if got := aggMinMax(float64(1.5), int64(1), true).(float64); got != 1.0 {
+		t.Fatalf("MIN(1.5, int64(1)) = %v, want 1 (pre-fix: int silently dropped, returned 1.5)", got)
+	}
+	if got := aggMinMax(float64(1.5), int64(7), false).(float64); got != 7.0 {
+		t.Fatalf("MAX(1.5, int64(7)) = %v, want 7", got)
+	}
+	// NaN propagates through a mixed pair too (Java: promoted double NaN).
+	if got := aggMinMax(int64(3), math.NaN(), true).(float64); !math.IsNaN(got) {
+		t.Fatalf("MIN(int64(3), NaN) = %v, want NaN", got)
+	}
+	// FLOAT lane: float32 + int promotes to float32 (Java MIN_F over the
+	// float-promoted operand), not float64.
+	if got := aggMinMax(float32(2.5), int64(1), true).(float32); got != 1.0 {
+		t.Fatalf("MIN(float32(2.5), int64(1)) = %v, want float32(1)", got)
+	}
+	if got := aggMinMax(int32(4), float32(2.5), false).(float32); got != 4.0 {
+		t.Fatalf("MAX(int32(4), float32(2.5)) = %v, want float32(4)", got)
+	}
+	// Mixed float widths promote to DOUBLE (the float64 lane claims first).
+	if got := aggMinMax(float32(2.5), float64(1.25), true).(float64); got != 1.25 {
+		t.Fatalf("MIN(float32(2.5), float64(1.25)) = %v, want 1.25 (double lane)", got)
+	}
+	// Once promoted, the accumulator stays float across subsequent int rows.
+	acc := aggMinMax(aggMinMax(aggMinMax(nil, int64(3), true), float64(1.5), true), int64(1), true)
+	if got := acc.(float64); got != 1.0 {
+		t.Fatalf("MIN over {3, 1.5, 1} mixed = %v, want 1.0", got)
 	}
 }
 
-func TestCompareAny_NilHandling(t *testing.T) {
-	t.Parallel()
-
-	if compareAny(nil, nil) != 0 {
-		t.Fatal("nil should equal nil")
-	}
-	if compareAny(nil, int64(1)) >= 0 {
-		t.Fatal("nil should sort before non-nil")
-	}
-	if compareAny(int64(1), nil) <= 0 {
-		t.Fatal("non-nil should sort after nil")
-	}
-}
-
-func TestCompareAny_Float64(t *testing.T) {
-	t.Parallel()
-	if compareAny(float64(1.5), float64(2.5)) >= 0 {
-		t.Fatal("1.5 should be < 2.5")
-	}
-	if compareAny(float64(2.5), float64(1.5)) <= 0 {
-		t.Fatal("2.5 should be > 1.5")
-	}
-	if compareAny(float64(3.14), float64(3.14)) != 0 {
-		t.Fatal("3.14 should equal 3.14")
-	}
-}
-
-func TestCompareAny_Bool(t *testing.T) {
-	t.Parallel()
-	if compareAny(false, true) >= 0 {
-		t.Fatal("false should be < true")
-	}
-	if compareAny(true, false) <= 0 {
-		t.Fatal("true should be > false")
-	}
-	if compareAny(true, true) != 0 {
-		t.Fatal("true should equal true")
-	}
-	if compareAny(false, false) != 0 {
-		t.Fatal("false should equal false")
-	}
-}
-
-func TestCompareAny_MixedTypes(t *testing.T) {
-	t.Parallel()
-	if compareAny(int64(1), "hello") != 0 {
-		t.Fatal("mismatched types should return 0")
-	}
-	if compareAny(float64(1.0), int64(1)) != 0 {
-		t.Fatal("float64 vs int64 should return 0 (no cross-type)")
-	}
-	if compareAny(true, int64(1)) != 0 {
-		t.Fatal("bool vs int64 should return 0")
-	}
-}
-
-func TestSortByKeys(t *testing.T) {
+func TestExpressionSortFn(t *testing.T) {
 	t.Parallel()
 
 	items := []QueryResult{
-		{Datum: map[string]any{"NAME": "charlie", "AGE": int64(30)}},
-		{Datum: map[string]any{"NAME": "alice", "AGE": int64(25)}},
-		{Datum: map[string]any{"NAME": "bob", "AGE": int64(35)}},
+		dmap(map[string]any{"NAME": "charlie", "AGE": int64(30)}),
+		dmap(map[string]any{"NAME": "alice", "AGE": int64(25)}),
+		dmap(map[string]any{"NAME": "bob", "AGE": int64(35)}),
 	}
 
-	sortByKeys(items, []string{"name"}, nil)
+	// dmap lays columns out alphabetically: AGE@0, NAME@1 — the sort key is
+	// BAKED to NAME's slot (no runtime name resolution).
+	sortFn := expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("NAME", 1, values.UnknownType)},
+	})
+	if err := sortFn(items); err != nil {
+		t.Fatalf("sortFn: %v", err)
+	}
 
 	names := make([]string, len(items))
 	for i, item := range items {
-		names[i] = item.Datum.(map[string]any)["NAME"].(string)
+		names[i] = rowMap(item)["NAME"].(string)
 	}
 	if names[0] != "alice" || names[1] != "bob" || names[2] != "charlie" {
 		t.Fatalf("sort by name = %v, want [alice bob charlie]", names)
@@ -518,7 +558,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 		inner,
 	)
 
-	sorted := plans.NewRecordQuerySortPlan(nil, filtered)
+	sorted := plans.NewRecordQueryInMemorySortPlan(filtered, nil)
 
 	limited := plans.NewRecordQueryLimitPlan(sorted, 10, 0)
 
@@ -543,7 +583,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMapOK(results[0])
 	if row["'RESULT'"] != "result" {
 		t.Errorf("composite pipeline result = %v, want 'result'", row["'RESULT'"])
 	}
@@ -562,8 +602,8 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 
 	projected := plans.NewRecordQueryProjectionPlan(
 		[]values.Value{
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-			&values.FieldValue{Field: "B", Typ: values.UnknownType},
+			values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType),
+			values.NewFieldValueWithResolvedOrdinal("B", 1, values.UnknownType),
 		},
 		inner,
 	)
@@ -581,7 +621,7 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	datum := results[0].Datum.(map[string]any)
+	datum, _ := rowMapOK(results[0])
 	if datum["A"] != int64(1) {
 		t.Errorf("A = %v, want 1", datum["A"])
 	}
@@ -762,6 +802,118 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 	}
 }
 
+// TestScanComparisonsToTupleRange_StartsWith pins the STARTS_WITH → PREFIX_STRING
+// range. STARTS_WITH is planner-sargable (it binds into a ComparisonRange and the
+// residual filter is dropped), so the scan MUST bound itself to the prefix. Mirrors
+// Java ScanComparisons.toTupleRange building
+// new TupleRange(startTuple, startTuple, PREFIX_STRING, PREFIX_STRING).
+//
+// Revert-proof: without the STARTS_WITH arm in scanComparisonsToTupleRange the
+// comparison matches neither the low nor the high switch, sets no bound, and the
+// range degenerates to TREE_START..TREE_END — silently returning every row
+// instead of only the prefix-matching ones.
+func TestScanComparisonsToTupleRange_StartsWith(t *testing.T) {
+	t.Parallel()
+
+	ineq := predicates.EmptyComparisonRange()
+	res := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
+	if !res.Ok {
+		t.Fatal("merge STARTS_WITH failed")
+	}
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.Low) != 1 || r.Low[0] != "abc" {
+		t.Fatalf("low=%v, want [abc]", r.Low)
+	}
+	if len(r.High) != 1 || r.High[0] != "abc" {
+		t.Fatalf("high=%v, want [abc]", r.High)
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypePrefixString {
+		t.Fatalf("lowEndpoint=%v, want PrefixString", r.LowEndpoint)
+	}
+	if r.HighEndpoint != recordlayer.EndpointTypePrefixString {
+		t.Fatalf("highEndpoint=%v, want PrefixString", r.HighEndpoint)
+	}
+}
+
+// TestScanComparisonsToTupleRange_EqualityPlusStartsWith pins that the STARTS_WITH
+// prefix element is appended AFTER the equality prefix — startTuple = prefix +
+// comparand, both endpoints PREFIX_STRING (Java ScanComparisons.toTupleRange
+// baseTuple.addObject(comparand)).
+func TestScanComparisonsToTupleRange_EqualityPlusStartsWith(t *testing.T) {
+	t.Parallel()
+
+	eq := predicates.EmptyComparisonRange()
+	resEq := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(7))})
+	if !resEq.Ok {
+		t.Fatal("merge eq failed")
+	}
+
+	ineq := predicates.EmptyComparisonRange()
+	resSw := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
+	if !resSw.Ok {
+		t.Fatal("merge STARTS_WITH failed")
+	}
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{resEq.Range, resSw.Range}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.Low) != 2 || r.Low[0] != int64(7) || r.Low[1] != "abc" {
+		t.Fatalf("low=%v, want [7, abc]", r.Low)
+	}
+	if len(r.High) != 2 || r.High[0] != int64(7) || r.High[1] != "abc" {
+		t.Fatalf("high=%v, want [7, abc]", r.High)
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypePrefixString || r.HighEndpoint != recordlayer.EndpointTypePrefixString {
+		t.Fatalf("endpoints=%v/%v, want PrefixString/PrefixString", r.LowEndpoint, r.HighEndpoint)
+	}
+}
+
+// TestScanComparisonsToTupleRange_StartsWithPlusInequality_Loud pins F39: a
+// STARTS_WITH merged with a SECOND inequality on the same column (so the
+// len(ineqs)==1 PREFIX_STRING fast-path is skipped and STARTS_WITH reaches the
+// endpoint combiner) must FAIL LOUD, mirroring Java
+// ScanComparisons.InequalityRangeCombiner.addComparison's `default: throw`.
+// STARTS_WITH ∩ (> v) is not a representable single scan range; the old code had
+// no STARTS_WITH case and no default in the endpoint switch, so it silently
+// dropped the STARTS_WITH bound and returned a superset (every row matching the
+// bare `> v`, ignoring the prefix).
+//
+// Revert-proof: without the `default: return error` arm, scanComparisonsToTupleRange
+// returns (range, nil) with only the `> v` bound applied — err==nil and the prefix
+// silently lost. The test asserts a non-nil error naming the STARTS_WITH type.
+func TestScanComparisonsToTupleRange_StartsWithPlusInequality_Loud(t *testing.T) {
+	t.Parallel()
+
+	// One inequality ComparisonRange carrying BOTH comparisons on the same column.
+	ineq := predicates.EmptyComparisonRange()
+	resSw := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
+	if !resSw.Ok {
+		t.Fatal("merge STARTS_WITH failed")
+	}
+	resBoth := resSw.Range.Merge(&predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue("abd")})
+	if !resBoth.Ok {
+		t.Fatal("merge STARTS_WITH + GREATER_THAN failed")
+	}
+	if got := len(resBoth.Range.GetInequalityComparisons()); got != 2 {
+		t.Fatalf("expected 2 inequalities in the merged range, got %d", got)
+	}
+
+	_, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{resBoth.Range}, nil)
+	if err == nil {
+		t.Fatal("STARTS_WITH combined with a second inequality must fail loud (Java default: throw), got nil error")
+	}
+	if !strings.Contains(err.Error(), "unexpected inequality comparison") {
+		t.Fatalf("error=%q, want it to mention the unexpected inequality comparison", err.Error())
+	}
+}
+
 func TestParameterBinding_ScanComparison(t *testing.T) {
 	t.Parallel()
 
@@ -803,7 +955,7 @@ func TestParameterBinding_Filter(t *testing.T) {
 	filter := plans.NewRecordQueryFilterPlan(
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "X"},
+				values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
 				predicates.Comparison{
 					Type:    predicates.ComparisonGreaterThan,
 					Operand: param1,
@@ -827,8 +979,8 @@ func TestParameterBinding_Filter(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2 (20 and 30 > 15)", len(results))
 	}
-	v0 := results[0].Datum.(map[string]any)["X"].(int64)
-	v1 := results[1].Datum.(map[string]any)["X"].(int64)
+	v0, _ := rowMap(results[0])["X"].(int64)
+	v1, _ := rowMap(results[1])["X"].(int64)
 	if v0 != 20 || v1 != 30 {
 		t.Errorf("values = [%d, %d], want [20, 30]", v0, v1)
 	}
@@ -855,7 +1007,7 @@ func TestParameterBinding_Values(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	datum := results[0].Datum.(map[string]any)
+	datum, _ := rowMapOK(results[0])
 	if datum["param"] != int64(99) {
 		t.Errorf("param = %v, want 99", datum["param"])
 	}
@@ -886,7 +1038,7 @@ func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 (1×1 cross)", len(results))
 	}
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMapOK(results[0])
 	if row["constant"] != "hello" {
 		t.Errorf("constant = %v, want 'hello' (inner overwrites)", row["constant"])
 	}
@@ -1020,7 +1172,7 @@ func TestExecuteStreamingAggregation_CountGroupBy(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 group", len(results))
 	}
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMapOK(results[0])
 	if row["COUNT(CONSTANT)"] != int64(1) {
 		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
 	}
@@ -1053,7 +1205,7 @@ func TestExecuteStreamingAggregation_NoGroups_Count(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMapOK(results[0])
 	if row["COUNT(CONSTANT)"] != int64(1) {
 		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
 	}
@@ -1092,7 +1244,7 @@ func TestExecuteAggregation_EmptyInput_NoGroupKeys(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 (COUNT over empty = 0)", len(results))
 	}
-	row := results[0].Datum.(map[string]any)
+	row, _ := rowMapOK(results[0])
 	if row["COUNT(CONSTANT)"] != int64(0) {
 		t.Errorf("COUNT(empty) = %v, want 0", row["COUNT(CONSTANT)"])
 	}
@@ -1119,8 +1271,8 @@ func TestExecuteExplode_List(t *testing.T) {
 		t.Fatalf("got %d results, want 3", len(results))
 	}
 	for i, want := range []int64{1, 2, 3} {
-		if results[i].Datum != want {
-			t.Errorf("results[%d].Datum = %v, want %d", i, results[i].Datum, want)
+		if rowScalar(results[i]) != want {
+			t.Errorf("results[%d] = %v, want %d", i, rowScalar(results[i]), want)
 		}
 	}
 }
@@ -1179,7 +1331,7 @@ func TestExecuteTempTable_InsertAndScan(t *testing.T) {
 	if len(scanned) != 1 {
 		t.Fatalf("scan returned %d rows, want 1", len(scanned))
 	}
-	row := scanned[0].Datum.(map[string]any)
+	row, _ := rowMapOK(scanned[0])
 	if row["constant"] != int64(42) {
 		t.Errorf("scanned value = %v, want 42", row["constant"])
 	}
@@ -1260,8 +1412,8 @@ func TestExecuteTableFunction_StreamValue(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
 	}
-	if results[0].Datum != int64(10) || results[1].Datum != int64(20) {
-		t.Errorf("results = %v, %v, want 10, 20", results[0].Datum, results[1].Datum)
+	if rowScalar(results[0]) != int64(10) || rowScalar(results[1]) != int64(20) {
+		t.Errorf("results = %v, %v, want 10, 20", rowScalar(results[0]), rowScalar(results[1]))
 	}
 }
 
@@ -1287,8 +1439,8 @@ func TestTempTable_ClearAndReuse(t *testing.T) {
 	t.Parallel()
 
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: int64(1)})
-	tt.Add(QueryResult{Datum: int64(2)})
+	tt.Add(dscalar(int64(1)))
+	tt.Add(dscalar(int64(2)))
 
 	if len(tt.GetList()) != 2 {
 		t.Fatalf("got %d items, want 2", len(tt.GetList()))
@@ -1299,26 +1451,31 @@ func TestTempTable_ClearAndReuse(t *testing.T) {
 		t.Fatalf("after clear, got %d items, want 0", len(tt.GetList()))
 	}
 
-	tt.Add(QueryResult{Datum: int64(3)})
+	tt.Add(dscalar(int64(3)))
 	if len(tt.GetList()) != 1 {
 		t.Fatalf("after re-add, got %d items, want 1", len(tt.GetList()))
 	}
 }
 
-func TestSortByKeys_Descending(t *testing.T) {
+func TestExpressionSortFn_Descending(t *testing.T) {
 	t.Parallel()
 
 	items := []QueryResult{
-		{Datum: map[string]any{"AGE": int64(25)}},
-		{Datum: map[string]any{"AGE": int64(35)}},
-		{Datum: map[string]any{"AGE": int64(30)}},
+		dmap(map[string]any{"AGE": int64(25)}),
+		dmap(map[string]any{"AGE": int64(35)}),
+		dmap(map[string]any{"AGE": int64(30)}),
 	}
 
-	sortByKeys(items, []string{"age"}, []bool{true})
+	sortFn := expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.UnknownType), Reverse: true},
+	})
+	if err := sortFn(items); err != nil {
+		t.Fatalf("sortFn: %v", err)
+	}
 
 	ages := make([]int64, len(items))
 	for i, item := range items {
-		ages[i] = item.Datum.(map[string]any)["AGE"].(int64)
+		ages[i] = rowMap(item)["AGE"].(int64)
 	}
 	if ages[0] != 35 || ages[1] != 30 || ages[2] != 25 {
 		t.Fatalf("sort by age DESC = %v, want [35 30 25]", ages)
@@ -2170,16 +2327,10 @@ func TestScanComparisons_MultiEqualityThenInequality(t *testing.T) {
 
 func TestMergeRows_BothMaps(t *testing.T) {
 	t.Parallel()
-	outer := QueryResult{
-		Datum:      map[string]any{"A": 1, "B": 2},
-		PrimaryKey: tuple.Tuple{int64(1)},
-	}
-	inner := QueryResult{
-		Datum:      map[string]any{"C": 3, "D": 4},
-		PrimaryKey: tuple.Tuple{int64(2)},
-	}
+	outer := dmapPK(tuple.Tuple{int64(1)}, map[string]any{"A": 1, "B": 2})
+	inner := dmapPK(tuple.Tuple{int64(2)}, map[string]any{"C": 3, "D": 4})
 	merged := mergeRows(outer, inner, "", "")
-	m := merged.Datum.(map[string]any)
+	m, _ := rowMapOK(merged)
 	if m["A"] != 1 || m["B"] != 2 || m["C"] != 3 || m["D"] != 4 {
 		t.Fatalf("unexpected merged datum: %v", m)
 	}
@@ -2190,22 +2341,28 @@ func TestMergeRows_BothMaps(t *testing.T) {
 
 func TestMergeRows_InnerOverridesOuter(t *testing.T) {
 	t.Parallel()
-	outer := QueryResult{Datum: map[string]any{"K": "outer"}}
-	inner := QueryResult{Datum: map[string]any{"K": "inner"}}
+	outer := dmap(map[string]any{"K": "outer"})
+	inner := dmap(map[string]any{"K": "inner"})
 	merged := mergeRows(outer, inner, "", "")
-	m := merged.Datum.(map[string]any)
+	m, _ := rowMapOK(merged)
 	if m["K"] != "inner" {
 		t.Fatalf("inner should override outer on key conflict, got %v", m["K"])
 	}
 }
 
-func TestMergeRows_NonMapDatum(t *testing.T) {
+// TestMergeRows_ScalarOuter pins that a bare-scalar outer leg (the
+// scalarPositionalRow `_0` wrapper) concatenates with the inner leg like any
+// other row.
+func TestMergeRows_ScalarOuter(t *testing.T) {
 	t.Parallel()
-	outer := QueryResult{Datum: "string-datum", PrimaryKey: tuple.Tuple{int64(1)}}
-	inner := QueryResult{Datum: map[string]any{"C": 3}}
+	outer := QueryResult{Positional: scalarPositionalRow("string-datum"), PrimaryKey: tuple.Tuple{int64(1)}}
+	inner := dmap(map[string]any{"C": 3})
 	merged := mergeRows(outer, inner, "", "")
-	if merged.Datum != "string-datum" {
-		t.Fatalf("expected outer datum passthrough, got %v", merged.Datum)
+	if got := rowVal(merged, "_0"); got != "string-datum" {
+		t.Fatalf("expected scalar outer leg preserved, got %v", got)
+	}
+	if got := rowVal(merged, "C"); got != 3 {
+		t.Fatalf("expected inner leg C=3, got %v", got)
 	}
 }
 
@@ -2356,12 +2513,12 @@ func TestAggResultName_UnknownFunction(t *testing.T) {
 func TestDistinctKey_WithDatum(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(42)}
-	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"A": 1}}
+	qr := dmapPK(pk, map[string]any{"A": 1})
 	key := distinctKey(qr)
 	if key == "" {
 		t.Fatal("expected non-empty key from datum map")
 	}
-	qr2 := QueryResult{PrimaryKey: tuple.Tuple{int64(99)}, Datum: map[string]any{"A": 1}}
+	qr2 := dmapPK(tuple.Tuple{int64(99)}, map[string]any{"A": 1})
 	if distinctKey(qr) != distinctKey(qr2) {
 		t.Fatal("same datum values should produce same distinct key regardless of PK")
 	}
@@ -2369,27 +2526,87 @@ func TestDistinctKey_WithDatum(t *testing.T) {
 
 func TestDistinctKey_NilPrimaryKey(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"A": 1}}
+	qr := dmap(map[string]any{"A": 1})
 	key := distinctKey(qr)
-	expected := "A=int:1"
+	// The key is the tuple-packed slot values (Java's Key.Evaluated), not a
+	// NAME=type:value string.
+	expected := string(tuple.Tuple{1}.Pack())
 	if key != expected {
-		t.Fatalf("expected %q, got %q", expected, key)
+		t.Fatalf("expected tuple-packed %q, got %q", expected, key)
 	}
 }
 
 func TestDistinctKey_Deterministic(t *testing.T) {
 	t.Parallel()
-	// With multiple keys, the output must be sorted and stable regardless
-	// of map iteration order.
-	qr := QueryResult{Datum: map[string]any{"B": 2, "A": 1, "C": 3}}
+	// With multiple slots the packed key must be stable regardless of map
+	// iteration order (dmap sorts columns by name → A,B,C).
+	qr := dmap(map[string]any{"B": 2, "A": 1, "C": 3})
 	key1 := distinctKey(qr)
 	key2 := distinctKey(qr)
 	if key1 != key2 {
 		t.Fatalf("non-deterministic: %q vs %q", key1, key2)
 	}
-	expected := "A=int:1|B=int:2|C=int:3"
+	expected := string(tuple.Tuple{1, 2, 3}.Pack())
 	if key1 != expected {
-		t.Fatalf("expected %q, got %q", expected, key1)
+		t.Fatalf("expected tuple-packed %q, got %q", expected, key1)
+	}
+}
+
+// TestDistinctKey_DelimiterInjection pins the fix for a value forging an
+// inter-column boundary. Under the old '|'-joined NAME=type:value scheme, a
+// string containing the literal separator reproduced the column boundary, so
+// two DIFFERENT rows keyed identically and DISTINCT dropped the second. Tuple
+// packing is length-prefixed, so the keys must differ.
+func TestDistinctKey_DelimiterInjection(t *testing.T) {
+	t.Parallel()
+	rowA := dorder([]string{"A", "B"}, []any{"x", "y|B=string:z"})
+	rowB := dorder([]string{"A", "B"}, []any{"x|B=string:y", "z"})
+	if distinctKey(rowA) == distinctKey(rowB) {
+		t.Fatalf("delimiter injection: distinct rows keyed identically (%q)", distinctKey(rowA))
+	}
+}
+
+// TestQueryResultKey_DelimiterInjection pins F31: the recursive-CTE UNION-DISTINCT
+// keyers (queryResultKey / cteDedupKeyer.key) had the same '|'-joined %v flaw as
+// distinctKey, and — unlike distinctKey — no per-slot type prefix, so the
+// "\x00NULL\x00" NULL sentinel also collided with the literal string. All three
+// now route through packedDedupKey (tuple encoding). Revert-proven: on the old
+// '|'-join both injection pairs key identically.
+func TestQueryResultKey_DelimiterInjection(t *testing.T) {
+	t.Parallel()
+	// Delimiter injection: ["x","y|z"] and ["x|y","z"] both rendered "x|y|z".
+	r1 := dorder([]string{"A", "B"}, []any{"x", "y|z"})
+	r2 := dorder([]string{"A", "B"}, []any{"x|y", "z"})
+	if queryResultKey(r1) == queryResultKey(r2) {
+		t.Fatalf("queryResultKey delimiter injection: distinct rows keyed identically (%q)", queryResultKey(r1))
+	}
+	// NULL-sentinel: the literal string "\x00NULL\x00" must not key equal to SQL NULL.
+	rNull := dorder([]string{"A"}, []any{nil})
+	rSent := dorder([]string{"A"}, []any{"\x00NULL\x00"})
+	if queryResultKey(rNull) == queryResultKey(rSent) {
+		t.Fatal("queryResultKey: NULL sentinel collides with the literal string \\x00NULL\\x00")
+	}
+	// Preserved: same values under differently-named columns still dedup (the
+	// recursive-CTE seed {SRC:1} vs recursive {DST:1} case, values-only + name-sorted).
+	rSrc := dorder([]string{"SRC"}, []any{int64(1)})
+	rDst := dorder([]string{"DST"}, []any{int64(1)})
+	if queryResultKey(rSrc) != queryResultKey(rDst) {
+		t.Fatal("queryResultKey: {SRC:1} and {DST:1} must still dedup as duplicates")
+	}
+}
+
+// TestDistinctKey_NullSentinelCollision guards that SQL NULL never keys equal
+// to a string that spells the "\x00NULL\x00" sentinel. Tuple packing gives nil
+// its own type code, so the two can never collide. (This is a guard, not a
+// revert-proof: the old distinctKey happened to disambiguate these two via its
+// per-slot "type:" prefix; the sibling recursive-CTE keyers that omit that
+// prefix are the ones with a genuine sentinel collision.)
+func TestDistinctKey_NullSentinelCollision(t *testing.T) {
+	t.Parallel()
+	nullRow := dorder([]string{"A"}, []any{nil})
+	sentinelStr := dorder([]string{"A"}, []any{"\x00NULL\x00"})
+	if distinctKey(nullRow) == distinctKey(sentinelStr) {
+		t.Fatal("SQL NULL keyed equal to a string holding the NULL sentinel")
 	}
 }
 
@@ -2398,7 +2615,7 @@ func TestDistinctKey_Deterministic(t *testing.T) {
 func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(7)}
-	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"X": 1}}
+	qr := dmapPK(pk, map[string]any{"X": 1})
 	fn := intersectionCompKeyFunc(nil)
 	got := fn(qr)
 	if len(got) != 1 || got[0] != int64(7) {
@@ -2408,7 +2625,7 @@ func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 
 func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"X": 1}}
+	qr := dmap(map[string]any{"X": 1})
 	fn := intersectionCompKeyFunc(nil)
 	got := fn(qr)
 	if len(got) != 1 {
@@ -2421,10 +2638,10 @@ func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 
 func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"NAME": "alice", "AGE": int64(30)}}
+	qr := dmap(map[string]any{"NAME": "alice", "AGE": int64(30)})
 	keyVals := []values.Value{
-		&values.FieldValue{Field: "NAME", Typ: values.TypeString},
-		&values.FieldValue{Field: "AGE", Typ: values.TypeInt},
+		values.NewFieldValueWithResolvedOrdinal("NAME", 1, values.TypeString),
+		values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.TypeInt),
 	}
 	fn := intersectionCompKeyFunc(keyVals)
 	got := fn(qr)
@@ -2464,6 +2681,48 @@ func TestCompareValues_NumericTypes(t *testing.T) {
 	}
 }
 
+// The sort/merge/dedup comparator must impose the SAME total order the FDB
+// tuple encoding gives an indexed FLOAT column, so an in-memory ORDER BY and
+// an ordered index scan of the same data agree. That order is Java's
+// Double.compare: -0.0 sorts strictly before 0.0, NaN sorts LAST (greatest),
+// and NaN compares equal to NaN. A native float `<`/`>`/`==` comparator gets
+// both edge values wrong (-0.0 == 0.0, and NaN != NaN with `<`/`>` both false).
+func TestCompareValues_FloatTotalOrder(t *testing.T) {
+	t.Parallel()
+	nan := math.NaN()
+	cases := []struct {
+		name string
+		a, b any
+		want int // sign: -1 a<b, 0 equal, +1 a>b
+	}{
+		{"neg_zero_before_pos_zero", math.Copysign(0, -1), 0.0, -1},
+		{"pos_zero_after_neg_zero", 0.0, math.Copysign(0, -1), 1},
+		{"neg_zero_equals_itself", math.Copysign(0, -1), math.Copysign(0, -1), 0},
+		{"pos_zero_equals_itself", 0.0, 0.0, 0},
+		{"nan_greater_than_finite", nan, 5.0, 1},
+		{"finite_less_than_nan", 5.0, nan, -1},
+		{"nan_equals_nan", nan, nan, 0},
+		{"nan_greater_than_neg", nan, -5.0, 1},
+		{"nan_greater_than_inf", nan, math.Inf(1), 1},
+		{"nan_greater_than_int", nan, int64(100), 1},
+		{"int_less_than_nan", int64(100), nan, -1},
+		// float32 arm mirrors float64 on both edge values.
+		{"f32_neg_zero_before_pos_zero", float32(math.Copysign(0, -1)), float32(0.0), -1},
+		{"f32_nan_greater_than_finite", float32(math.NaN()), float32(5.0), 1},
+		// Normal finite values are unaffected by the edge-value handling.
+		{"finite_ordering_unchanged", 2.5, 10.5, -1},
+		{"finite_equal_unchanged", 3.25, 3.25, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := compareValues(c.a, c.b)
+			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
+				t.Errorf("compareValues(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
 func TestCompareValues_CrossTypeNotEqual(t *testing.T) {
 	t.Parallel()
 	// int vs string must NOT return 0 (the NaN bug would make them "equal")
@@ -2490,11 +2749,157 @@ func TestCompareValues_Strings(t *testing.T) {
 	}
 }
 
+// BYTES must compare in unsigned lexicographic byte order — FDB tuple order —
+// not by the fmt fallback's decimal-list string ("[0 1]" < "[0]" because
+// ' ' < ']'). Regression: an unindexed ORDER BY on a BYTES column disagreed
+// with the same query's indexed plan (F9/F13).
+func TestCompareValues_Bytes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		a, b []byte
+		want int // sign
+	}{
+		{"single_bytes_numeric_not_lexical", []byte{0x02}, []byte{0x0A}, -1}, // fmt: "[2]" > "[10]"
+		{"prefix_sorts_first", []byte{0x00}, []byte{0x00, 0x01}, -1},         // fmt: "[0]" > "[0 1]"
+		{"high_byte_beats_longer", []byte{0xFF}, []byte{0x00, 0x01}, 1},
+		{"empty_before_zero", []byte{}, []byte{0x00}, -1},
+		{"equal", []byte{0x00, 0xFF}, []byte{0x00, 0xFF}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := compareValues(c.a, c.b)
+			if (c.want < 0 && got >= 0) || (c.want > 0 && got <= 0) || (c.want == 0 && got != 0) {
+				t.Errorf("compareValues(%v, %v) = %d, want sign %d", c.a, c.b, got, c.want)
+			}
+			// Antisymmetry: the reversed call must flip the sign.
+			rev := compareValues(c.b, c.a)
+			if (got < 0 && rev <= 0) || (got > 0 && rev >= 0) || (got == 0 && rev != 0) {
+				t.Errorf("compareValues not antisymmetric: (a,b)=%d (b,a)=%d", got, rev)
+			}
+		})
+	}
+}
+
+// float32 must compare numerically (defense in depth behind the covering-read
+// normalization): the fmt fallback compared "10.5" < "2.5" lexically (F10).
+func TestCompareValues_Float32(t *testing.T) {
+	t.Parallel()
+	if compareValues(float32(10.5), float32(2.5)) <= 0 {
+		t.Fatal("float32 10.5 > 2.5 (was lexical \"10.5\" < \"2.5\")")
+	}
+	if compareValues(float32(2.5), float32(10.5)) >= 0 {
+		t.Fatal("float32 2.5 < 10.5")
+	}
+	if compareValues(float32(1.5), float64(1.5)) != 0 {
+		t.Fatal("float32(1.5) == float64(1.5) across widths")
+	}
+	if compareValues(float64(1.5), float32(1.5)) != 0 {
+		t.Fatal("float64(1.5) == float32(1.5) across widths")
+	}
+	if compareValues(float32(2.5), int64(3)) >= 0 {
+		t.Fatal("float32(2.5) < int64(3)")
+	}
+	if compareValues(int64(3), float32(2.5)) <= 0 {
+		t.Fatal("int64(3) > float32(2.5)")
+	}
+}
+
+// bool: false < true — FDB tuple order (0x26 < 0x27). Previously correct only
+// by lexical accident ("false" < "true" in the fmt fallback); now pinned.
+func TestCompareValues_Bool(t *testing.T) {
+	t.Parallel()
+	if compareValues(false, true) >= 0 {
+		t.Fatal("false < true")
+	}
+	if compareValues(true, false) <= 0 {
+		t.Fatal("true > false")
+	}
+	if compareValues(true, true) != 0 || compareValues(false, false) != 0 {
+		t.Fatal("equal bools == 0")
+	}
+}
+
+// --- covering-read row-domain normalization (F10) ---
+
+// tupleElementToRowValue must place index-entry elements in the SAME domain the
+// base-record path produces: float32 (32-bit tuple float) widens to float64
+// (values.ProtoScalarKindToRowValue widens FLOAT), tuple.UUID becomes the
+// neutral [16]byte, everything else passes through untouched.
+func TestTupleElementToRowValue(t *testing.T) {
+	t.Parallel()
+	if got := tupleElementToRowValue(float32(1.5)); got != float64(1.5) {
+		t.Fatalf("float32 → %T:%v, want float64:1.5", got, got)
+	}
+	u := tuple.UUID{0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00}
+	if got := tupleElementToRowValue(u); got != [16]byte(u) {
+		t.Fatalf("tuple.UUID → %T, want [16]byte", got)
+	}
+	for _, v := range []any{nil, int64(7), "s", true, float64(2.5)} {
+		if got := tupleElementToRowValue(v); got != v {
+			t.Fatalf("passthrough %T:%v changed to %T:%v", v, v, got, got)
+		}
+	}
+	// []byte passes through by identity (interface compare would fail on slices).
+	b := []byte{0x01}
+	if got, ok := tupleElementToRowValue(b).([]byte); !ok || &got[0] != &b[0] {
+		t.Fatalf("[]byte should pass through unchanged")
+	}
+}
+
+// buildCoveringLogicalRow must emit FLOAT slots as float64 — the covering row
+// and the base-record row must be interchangeable for compareValues,
+// distinctKey and join keys (a covering leg previously carried raw float32 and
+// never deduped/merged against a base-scan leg).
+func TestBuildCoveringLogicalRow_WidensFloat32(t *testing.T) {
+	t.Parallel()
+	logicalType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "F", FieldType: values.NotNullFloat, Ordinal: 1},
+	}}
+	// Index on F, PK ID: entry key (f), primary key (id).
+	pos := buildCoveringLogicalRow(
+		[]string{"F"}, []string{"ID"},
+		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
+		logicalType, []int{1, 0})
+	if got := pos.Slots[1]; got != float64(2.5) {
+		t.Fatalf("covering FLOAT slot = %T:%v, want float64:2.5 (base-record domain)", got, got)
+	}
+	if got := pos.Slots[0]; got != int64(1) {
+		t.Fatalf("covering PK slot = %T:%v, want int64:1", got, got)
+	}
+}
+
+// A covering float32 and a base float64 of the same number carry different
+// tuple type codes, so they would key differently — DISTINCT/UNION across a
+// covering leg and a base leg would never dedup. The boundary normalization
+// widens the covering FLOAT to float64, so both produce the same packed key.
+func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
+	t.Parallel()
+	logicalType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "F", FieldType: values.NotNullFloat, Ordinal: 1},
+	}}
+	covering := QueryResult{Positional: buildCoveringLogicalRow(
+		[]string{"F"}, []string{"ID"},
+		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
+		logicalType, []int{1, 0})}
+	// The base-record path widens FLOAT to float64 (ProtoScalarKindToRowValue).
+	base := QueryResult{Positional: &PositionalRow{
+		Type:  logicalType,
+		Slots: []any{int64(1), float64(2.5)},
+	}}
+	if distinctKey(covering) != distinctKey(base) {
+		t.Fatalf("covering row key %q != base row key %q — dedup split across access paths",
+			distinctKey(covering), distinctKey(base))
+	}
+}
+
 // --- passesJoinPredicates unit tests ---
 
 func TestPassesJoinPredicates_Empty(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"A": 1}}
+	qr := dmap(map[string]any{"A": 1})
 	ok, err := passesJoinPredicates(qr, nil, EmptyEvaluationContext())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2506,9 +2911,9 @@ func TestPassesJoinPredicates_Empty(t *testing.T) {
 
 func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"PRICE": int64(100)}}
+	qr := dmap(map[string]any{"PRICE": int64(100)})
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+		values.NewFieldValueWithResolvedOrdinal("PRICE", 0, values.TypeInt),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
 	)
 	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
@@ -2522,9 +2927,9 @@ func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 
 func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 	t.Parallel()
-	qr := QueryResult{Datum: map[string]any{"PRICE": int64(100)}}
+	qr := dmap(map[string]any{"PRICE": int64(100)})
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+		values.NewFieldValueWithResolvedOrdinal("PRICE", 0, values.TypeInt),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(999)),
 	)
 	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
@@ -2552,39 +2957,6 @@ func TestProjectionColumnName_NonFieldValue(t *testing.T) {
 	want := strings.ToUpper(values.ExplainValue(cv))
 	if got := projectionColumnName(cv); got != want {
 		t.Fatalf("expected %s, got %s", want, got)
-	}
-}
-
-// --- fieldFromDatum unit tests ---
-
-func TestFieldFromDatum_MapFound(t *testing.T) {
-	t.Parallel()
-	datum := map[string]any{"NAME": "alice", "AGE": int64(30)}
-	if v := fieldFromDatum(datum, "name"); v != "alice" {
-		t.Fatalf("expected alice, got %v", v)
-	}
-}
-
-func TestFieldFromDatum_MapNotFound(t *testing.T) {
-	t.Parallel()
-	datum := map[string]any{"NAME": "alice"}
-	if v := fieldFromDatum(datum, "MISSING"); v != nil {
-		t.Fatalf("expected nil, got %v", v)
-	}
-}
-
-func TestFieldFromDatum_NonMap(t *testing.T) {
-	t.Parallel()
-	if v := fieldFromDatum("not-a-map", "NAME"); v != nil {
-		t.Fatalf("expected nil for non-map, got %v", v)
-	}
-}
-
-func TestFieldFromDatum_CaseInsensitive(t *testing.T) {
-	t.Parallel()
-	datum := map[string]any{"PRICE": int64(100)}
-	if v := fieldFromDatum(datum, "price"); v != int64(100) {
-		t.Fatalf("expected 100, got %v (case-insensitive lookup via ToUpper)", v)
 	}
 }
 
@@ -2676,11 +3048,7 @@ func TestEvaluationContext_WithParams_CopiesBindings(t *testing.T) {
 func TestEvaluationContext_RowContext(t *testing.T) {
 	t.Parallel()
 	ec := EmptyEvaluationContext().WithParams([]any{int64(99)})
-	datum := map[string]any{"col": "hello"}
-	rc := ec.RowContext(datum)
-	if rc.Datum["col"] != "hello" {
-		t.Fatal("RowContext should pass through datum")
-	}
+	rc := ec.RowContext()
 	v, ok := rc.Binder.BindParameter(1, "")
 	if !ok || v != int64(99) {
 		t.Fatal("RowContext's binder should use the EvalContext's params")
@@ -2691,8 +3059,7 @@ func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
 	t.Parallel()
 	id := values.NamedCorrelationIdentifier("explode_q1")
 	ec := EmptyEvaluationContext().WithBinding(id, int64(42))
-	datum := map[string]any{"col": "hello"}
-	rc := ec.RowContext(datum)
+	rc := ec.RowContext()
 	if rc.Correlations == nil {
 		t.Fatal("RowContext should pass through correlation binder")
 	}
@@ -2715,24 +3082,24 @@ func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
 func TestTempTable_AddAndGetList(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: int64(1)})
-	tt.Add(QueryResult{Datum: int64(2)})
+	tt.Add(dscalar(int64(1)))
+	tt.Add(dscalar(int64(2)))
 
 	list := tt.GetList()
 	if len(list) != 2 {
 		t.Fatalf("expected 2, got %d", len(list))
 	}
-	if list[0].Datum != int64(1) || list[1].Datum != int64(2) {
-		t.Errorf("unexpected contents: %v %v", list[0].Datum, list[1].Datum)
+	if rowScalar(list[0]) != int64(1) || rowScalar(list[1]) != int64(2) {
+		t.Errorf("unexpected contents: %v %v", rowScalar(list[0]), rowScalar(list[1]))
 	}
 }
 
 func TestTempTable_GetListReturnsSnapshot(t *testing.T) {
 	t.Parallel()
 	tt := NewTempTable()
-	tt.Add(QueryResult{Datum: int64(1)})
+	tt.Add(dscalar(int64(1)))
 	snap := tt.GetList()
-	tt.Add(QueryResult{Datum: int64(2)})
+	tt.Add(dscalar(int64(2)))
 
 	if len(snap) != 1 {
 		t.Fatal("snapshot should not grow when new items added")
@@ -2756,7 +3123,7 @@ func TestEvaluationContext_GetOrCreateTempTable(t *testing.T) {
 	ec := EmptyEvaluationContext()
 	id := values.NamedCorrelationIdentifier("tt1")
 	tt1 := ec.GetOrCreateTempTable(id, nil)
-	tt1.Add(QueryResult{Datum: int64(1)})
+	tt1.Add(dscalar(int64(1)))
 
 	tt2 := ec.GetOrCreateTempTable(id, nil)
 	if len(tt2.GetList()) != 1 {
@@ -2771,7 +3138,7 @@ func TestEvaluationContext_GetOrCreateTempTable_DistinctIDs(t *testing.T) {
 	id2 := values.NamedCorrelationIdentifier("tt2")
 
 	tt1 := ec.GetOrCreateTempTable(id1, nil)
-	tt1.Add(QueryResult{Datum: int64(1)})
+	tt1.Add(dscalar(int64(1)))
 
 	tt2 := ec.GetOrCreateTempTable(id2, nil)
 	if len(tt2.GetList()) != 0 {
@@ -2794,20 +3161,26 @@ func TestGoToProtoValue_EnumField(t *testing.T) {
 	}
 }
 
-// ----- sortByKeys (multi-key — extends existing single-key tests) -----------
+// ----- expressionSortFn (multi-key — extends existing single-key tests) -----
 
-func TestSortByKeys_MultipleKeys(t *testing.T) {
+func TestExpressionSortFn_MultipleKeys(t *testing.T) {
 	t.Parallel()
 	items := []QueryResult{
-		{Datum: map[string]any{"A": int64(2), "B": int64(1)}},
-		{Datum: map[string]any{"A": int64(1), "B": int64(2)}},
-		{Datum: map[string]any{"A": int64(1), "B": int64(1)}},
+		dmap(map[string]any{"A": int64(2), "B": int64(1)}),
+		dmap(map[string]any{"A": int64(1), "B": int64(2)}),
+		dmap(map[string]any{"A": int64(1), "B": int64(1)}),
 	}
-	sortByKeys(items, []string{"A", "B"}, []bool{false, false})
+	sortFn := expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)},
+		{Value: values.NewFieldValueWithResolvedOrdinal("B", 1, values.UnknownType)},
+	})
+	if err := sortFn(items); err != nil {
+		t.Fatalf("sortFn: %v", err)
+	}
 
-	d0 := items[0].Datum.(map[string]any)
-	d1 := items[1].Datum.(map[string]any)
-	d2 := items[2].Datum.(map[string]any)
+	d0, _ := rowMapOK(items[0])
+	d1, _ := rowMapOK(items[1])
+	d2, _ := rowMapOK(items[2])
 	if d0["A"] != int64(1) || d0["B"] != int64(1) {
 		t.Errorf("row 0: got A=%v B=%v, want 1,1", d0["A"], d0["B"])
 	}
@@ -2824,9 +3197,9 @@ func TestSortByKeys_MultipleKeys(t *testing.T) {
 func TestCollectAll_MultipleItems(t *testing.T) {
 	t.Parallel()
 	items := []QueryResult{
-		{Datum: int64(1)},
-		{Datum: int64(2)},
-		{Datum: int64(3)},
+		dscalar(int64(1)),
+		dscalar(int64(2)),
+		dscalar(int64(3)),
 	}
 	cursor := recordlayer.FromList(items)
 	results, err := CollectAll(context.Background(), cursor)
@@ -2837,8 +3210,8 @@ func TestCollectAll_MultipleItems(t *testing.T) {
 		t.Fatalf("expected 3, got %d", len(results))
 	}
 	for i, r := range results {
-		if r.Datum != int64(i+1) {
-			t.Errorf("item %d: got %v, want %d", i, r.Datum, i+1)
+		if rowScalar(r) != int64(i+1) {
+			t.Errorf("item %d: got %v, want %d", i, rowScalar(r), i+1)
 		}
 	}
 }
@@ -3330,9 +3703,9 @@ func TestFromStoredRecord(t *testing.T) {
 	}
 	qr := FromStoredRecord(rec)
 
-	m, ok := qr.Datum.(map[string]any)
+	m, ok := rowMapOK(qr)
 	if !ok {
-		t.Fatalf("Datum type %T, want map[string]any", qr.Datum)
+		t.Fatalf("Datum type %T, want map[string]any", qr.Positional)
 	}
 	if m["ORDER_ID"] != int64(42) {
 		t.Errorf("ORDER_ID = %v, want 42", m["ORDER_ID"])
@@ -3348,93 +3721,39 @@ func TestFromStoredRecord(t *testing.T) {
 	}
 }
 
-// TestMergeRows_ChainedJoin verifies that mergeRows does not clobber
-// already-qualified keys when the outer row is itself a merged NLJ
-// result. Regression test for the join_chained conformance failure
-// where the third row of a 3-way join returned dept.name instead of
-// emp.name in the first projection column.
-func TestMergeRows_ChainedJoin(t *testing.T) {
-	t.Parallel()
-
-	// Simulate the output of the first NLJ: emp(3, Carol, 10) JOIN dept(10, Engineering).
-	// The inner (dept) overwrites bare keys ("ID", "NAME") because it runs second.
-	firstNLJ := QueryResult{
-		Datum: map[string]any{
-			"ID":          int64(10),     // dept's ID (overwrote emp's)
-			"NAME":        "Engineering", // dept's NAME (overwrote emp's)
-			"DEPT_ID":     int64(10),
-			"EMP.ID":      int64(3), // emp's qualified key
-			"EMP.NAME":    "Carol",  // emp's qualified key
-			"EMP.DEPT_ID": int64(10),
-			"DEPT.ID":     int64(10),
-			"DEPT.NAME":   "Engineering",
-		},
-	}
-	project := QueryResult{
-		Datum: map[string]any{
-			"ID":     int64(102),
-			"EMP_ID": int64(3),
-		},
-	}
-
-	// The second NLJ merges firstNLJ (outer, alias="DEPT") with project (inner, alias="PROJECT").
-	merged := mergeRows(firstNLJ, project, "DEPT", "PROJECT")
-	m, ok := merged.Datum.(map[string]any)
-	if !ok {
-		t.Fatalf("merged.Datum type = %T, want map[string]any", merged.Datum)
-	}
-
-	// The critical check: EMP.NAME must still be "Carol", not "Engineering".
-	// Before the fix, re-qualifying the bare key "NAME" (= "Engineering") under
-	// outerType "EMP" overwrote the correct "EMP.NAME" = "Carol".
-	if v := m["EMP.NAME"]; v != "Carol" {
-		t.Errorf("EMP.NAME = %v, want Carol", v)
-	}
-	if v := m["DEPT.NAME"]; v != "Engineering" {
-		t.Errorf("DEPT.NAME = %v, want Engineering", v)
-	}
-	if v := m["EMP.ID"]; v != int64(3) {
-		t.Errorf("EMP.ID = %v, want 3", v)
-	}
-	if v := m["PROJECT.ID"]; v != int64(102) {
-		t.Errorf("PROJECT.ID = %v, want 102", v)
-	}
-	if v := m["PROJECT.EMP_ID"]; v != int64(3) {
-		t.Errorf("PROJECT.EMP_ID = %v, want 3", v)
-	}
-}
-
-// TestMergeRows_DerivedTableAlias verifies that mergeRows correctly
-// qualifies keys under the derived table alias (e.g. "SQ1") rather
-// than the underlying table name.
+// TestMergeRows_DerivedTableAlias verifies that mergeRows qualifies each leg's
+// columns under its alias via leg windows: a qualified read "SQ1.X" resolves
+// through the leg's window, not a flat qualified key. This is also the
+// regression mergeRows once had — a chained 3-way join whose outer row was
+// itself a merged NLJ result returned dept.name instead of the right column
+// (the join_chained conformance failure) — but a bare-key re-qualification
+// clobber can no longer occur at all: legs are ordinal windows, never
+// re-written bare keys. That shape is now covered end-to-end by the
+// three-way-join yamsql scenarios.
 func TestMergeRows_DerivedTableAlias(t *testing.T) {
 	t.Parallel()
 
-	// Derived table output: (SELECT ida AS x FROM a) AS sq1
-	// executeProjection produces {IDA: 1, X: 1}
-	outer := QueryResult{
-		Datum: map[string]any{
-			"IDA": int64(1),
-			"X":   int64(1),
-		},
-	}
-	inner := QueryResult{
-		Datum: map[string]any{
-			"IDB": int64(4),
-		},
-	}
+	// Derived table output: (SELECT ida AS x FROM a) AS sq1 -> row {IDA, X}.
+	outer := dmap(map[string]any{
+		"IDA": int64(1),
+		"X":   int64(1),
+	})
+	inner := dmap(map[string]any{
+		"IDB": int64(4),
+	})
 
 	merged := mergeRows(outer, inner, "SQ1", "B")
-	m, ok := merged.Datum.(map[string]any)
-	if !ok {
-		t.Fatalf("merged.Datum type = %T, want map[string]any", merged.Datum)
-	}
-
-	if v := m["SQ1.X"]; v != int64(1) {
+	// Qualified reads resolve leg-locally through the alias windows (a baked
+	// QOV(alias).col reference through the row's own leg metadata — legRead).
+	if v, ok := legRead(merged.Positional, "SQ1", "X"); !ok || v != int64(1) {
 		t.Errorf("SQ1.X = %v, want 1", v)
 	}
-	if v := m["B.IDB"]; v != int64(4) {
+	if v, ok := legRead(merged.Positional, "B", "IDB"); !ok || v != int64(4) {
 		t.Errorf("B.IDB = %v, want 4", v)
+	}
+	// The legs are recorded on the merged row's type.
+	if merged.Positional == nil || merged.Positional.Type == nil || len(merged.Positional.Type.Legs) != 2 {
+		t.Fatalf("merged row should carry 2 leg windows, got %+v", merged.Positional)
 	}
 }
 
@@ -3442,13 +3761,13 @@ func TestMergeRows_DerivedTableAlias(t *testing.T) {
 // mergeSortCursor tests
 // ---------------------------------------------------------------------------
 
-// qr is a shorthand to build a QueryResult with a map datum.
+// qr is a shorthand to build a QueryResult with a positional row.
 func qr(kvs ...any) QueryResult {
 	m := make(map[string]any, len(kvs)/2)
 	for i := 0; i < len(kvs)-1; i += 2 {
 		m[kvs[i].(string)] = kvs[i+1]
 	}
-	return QueryResult{Datum: m}
+	return dmap(m)
 }
 
 // collectMergeSortCursor drains a mergeSortCursor and returns all results.
@@ -3472,9 +3791,9 @@ func collectMergeSortCursor(t *testing.T, c *mergeSortCursor) []QueryResult {
 // fieldVal returns the int64 at key k from a QueryResult datum.
 func fieldVal(t *testing.T, r QueryResult, k string) int64 {
 	t.Helper()
-	m, ok := r.Datum.(map[string]any)
+	m, ok := rowMapOK(r)
 	if !ok {
-		t.Fatalf("datum type %T, want map[string]any", r.Datum)
+		t.Fatalf("datum type %T, want map[string]any", r.Positional)
 	}
 	v, ok := m[k]
 	if !ok {
@@ -3521,7 +3840,7 @@ func TestMergeSortCursor_TwoSortedInputs(t *testing.T) {
 		qr("id", int64(6)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3559,7 +3878,7 @@ func TestMergeSortCursor_Deduplication(t *testing.T) {
 		qr("id", int64(4)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3598,7 +3917,7 @@ func TestMergeSortCursor_Reverse(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3627,7 +3946,7 @@ func TestMergeSortCursor_EmptyInputs(t *testing.T) {
 	left := recordlayer.FromList([]QueryResult{})
 	right := recordlayer.FromList([]QueryResult{})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3646,7 +3965,7 @@ func TestMergeSortCursor_ZeroCursors(t *testing.T) {
 	t.Parallel()
 
 	// No cursors at all.
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		nil,
 		[]values.Value{compKey},
@@ -3671,7 +3990,7 @@ func TestMergeSortCursor_SingleInputPassthrough(t *testing.T) {
 		qr("id", int64(30)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{input},
 		[]values.Value{compKey},
@@ -3722,7 +4041,7 @@ func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
 		qr("id", nil),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3738,19 +4057,19 @@ func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
 
 	// Verify nil values come first and non-nil values are ordered.
 	// Expected order: nil, 1, nil, 3
-	m0 := results[0].Datum.(map[string]any)
+	m0, _ := rowMapOK(results[0])
 	if m0["id"] != nil {
 		t.Errorf("results[0].id = %v, want nil", m0["id"])
 	}
 	if fieldVal(t, results[1], "id") != 1 {
-		t.Errorf("results[1].id = %v, want 1", results[1].Datum)
+		t.Errorf("results[1].id = %v, want 1", results[1].Positional)
 	}
-	m2 := results[2].Datum.(map[string]any)
+	m2, _ := rowMapOK(results[2])
 	if m2["id"] != nil {
 		t.Errorf("results[2].id = %v, want nil", m2["id"])
 	}
 	if fieldVal(t, results[3], "id") != 3 {
-		t.Errorf("results[3].id = %v, want 3", results[3].Datum)
+		t.Errorf("results[3].id = %v, want 3", results[3].Positional)
 	}
 }
 
@@ -3772,7 +4091,7 @@ func TestMergeSortCursor_UnequalLengthInputs(t *testing.T) {
 		qr("id", int64(7)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3810,7 +4129,7 @@ func TestMergeSortCursor_DedupWithAllDuplicates(t *testing.T) {
 		qr("id", int64(3)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3852,7 +4171,7 @@ func TestMergeSortCursor_ThreeInputs(t *testing.T) {
 		qr("id", int64(9)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{a, b, ch},
 		[]values.Value{compKey},
@@ -3890,8 +4209,8 @@ func TestMergeSortCursor_MultipleComparisonKeys(t *testing.T) {
 	})
 
 	compKeys := []values.Value{
-		values.NewFlatFieldValue("group", values.TypeInt),
-		values.NewFlatFieldValue("id", values.TypeInt),
+		values.NewFieldValueWithResolvedOrdinal("group", 0, values.TypeInt),
+		values.NewFieldValueWithResolvedOrdinal("id", 1, values.TypeInt),
 	}
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
@@ -3929,7 +4248,7 @@ func TestMergeSortCursor_OneEmptyOneNonEmpty(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3963,7 +4282,7 @@ func TestMergeSortCursor_StringComparisonKeys(t *testing.T) {
 		qr("name", "dave"),
 	})
 
-	compKey := values.NewFlatFieldValue("name", values.TypeString)
+	compKey := values.NewFieldValueWithResolvedOrdinal("name", 0, values.TypeString)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -3978,7 +4297,7 @@ func TestMergeSortCursor_StringComparisonKeys(t *testing.T) {
 	}
 	expectedNames := []string{"alice", "bob", "charlie", "dave"}
 	for i, want := range expectedNames {
-		m := results[i].Datum.(map[string]any)
+		m, _ := rowMapOK(results[i])
 		got := m["name"].(string)
 		if got != want {
 			t.Errorf("results[%d].name = %q, want %q", i, got, want)
@@ -3990,7 +4309,7 @@ func TestMergeSortCursor_CloseIdempotent(t *testing.T) {
 	t.Parallel()
 
 	input := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{input},
 		[]values.Value{compKey},
@@ -4028,7 +4347,7 @@ func TestMergeSortCursor_ReverseDedup(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	compKey := values.NewFieldValueWithResolvedOrdinal("id", 0, values.TypeInt)
 	c := newMergeSortCursor(
 		[]recordlayer.RecordCursor[QueryResult]{left, right},
 		[]values.Value{compKey},
@@ -4138,8 +4457,7 @@ func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
 		t.Errorf("maxs[0] = %v, want 50", gotGS.maxs[0])
 	}
 
-	// keyVals: JSON round-trips int64 through float64; the decoder
-	// converts back to int64 when lossless.
+	// keyVals round-trip with exact Go types (typed codec, no float64 detour).
 	if len(gotGS.keyVals) != 2 {
 		t.Fatalf("keyVals len = %d, want 2", len(gotGS.keyVals))
 	}
@@ -4201,11 +4519,115 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if fmt.Sprintf("%v", gotGS.mins[0]) != "1.25" {
-		t.Errorf("mins[0] = %v, want 1.25", gotGS.mins[0])
+	// Assert the exact Go type, not a Sprintf string. A loose "%v == 5" tolerance
+	// masked the JSON round-trip's float64->int64 collapse: float64(5.0) rendered
+	// as "5" whether it stayed float64 or was re-narrowed to int64(5). MIN/MAX
+	// over a DOUBLE column MUST resume as float64, or finalizeGroup emits an
+	// int-typed value into a DOUBLE output slot (wrong type on the straddling row).
+	if f, ok := gotGS.mins[0].(float64); !ok || f != 1.25 {
+		t.Errorf("mins[0] = %#v (%T), want float64(1.25)", gotGS.mins[0], gotGS.mins[0])
 	}
-	if fmt.Sprintf("%v", gotGS.maxs[0]) != "5" && fmt.Sprintf("%v", gotGS.maxs[0]) != "5.0" {
-		t.Errorf("maxs[0] = %v, want 5 or 5.0", gotGS.maxs[0])
+	if f, ok := gotGS.maxs[0].(float64); !ok || f != 5.0 {
+		t.Errorf("maxs[0] = %#v (%T), want float64(5.0)", gotGS.maxs[0], gotGS.maxs[0])
+	}
+}
+
+// TestAggregateContinuation_GroupKeyBytesSurvive_F4 pins that the packed
+// group-break key survives the continuation round-trip BYTE-FOR-BYTE. The key is
+// string(tuple.Pack(...)) — arbitrary bytes. The prior JSON payload stored it in a
+// JSON string field, and json.Marshal rewrites invalid UTF-8 to U+FFFD, so a
+// tuple-packed int64>=128, any negative int, any float64, or a raw []byte key was
+// corrupted on resume: the restored key never matched the recomputed key, forcing
+// a FALSE group break that split one straddling group into two rows.
+func TestAggregateContinuation_GroupKeyBytesSurvive_F4(t *testing.T) {
+	t.Parallel()
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
+	}
+	cases := []tuple.Tuple{
+		{int64(200)},   // 0x15 0xC8 — 0xC8 is invalid UTF-8
+		{int64(-1)},    // 0x13 0xFE — 0xFE is invalid UTF-8
+		{float64(1.5)}, // 0x21 ... — float bytes are invalid UTF-8
+		{[]byte{0xff}}, // raw 0xFF — invalid UTF-8
+	}
+	for _, tup := range cases {
+		key := string(tup.Pack())
+		gs := &groupState{
+			keyVals: []any{tup[0]},
+			counts:  []int64{0},
+			sums:    []float64{0},
+			sumsI:   []int64{0},
+			allInt:  []bool{true},
+			mins:    []any{nil},
+			maxs:    []any{nil},
+		}
+		encoded, err := encodeAggregateContinuation(nil, key, gs.keyVals, gs, aggs)
+		if err != nil {
+			t.Fatalf("encode %v: %v", tup, err)
+		}
+		_, gotKey, _, err := decodeAggregateContinuation(encoded, len(aggs))
+		if err != nil {
+			t.Fatalf("decode %v: %v", tup, err)
+		}
+		if gotKey != key {
+			t.Errorf("group key for %v: got %x, want %x (byte-for-byte)", tup, gotKey, key)
+		}
+	}
+}
+
+// TestAggregateContinuation_TypesPreserved_F5 pins that keyVals and MIN/MAX
+// partial state keep their exact Go type and 64-bit precision across the
+// continuation. The prior JSON round-trip flipped []byte to a base64 string,
+// collapsed every number to float64 (re-narrowing integral doubles to int64), and
+// rounded an int64 above 2^53 through float64 — so a straddling group's key column
+// and MIN/MAX values resumed wrong-typed or off-by-one.
+func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
+	t.Parallel()
+
+	bigInt := int64(1<<60 + 1) // 1152921504606846977 — not representable in float64
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("v", values.TypeInt)},
+		{Function: expressions.AggMax, Operand: values.NewFlatFieldValue("w", values.TypeFloat)},
+	}
+	gs := &groupState{
+		keyVals: []any{[]byte{1, 2}, float64(2.0), bigInt},
+		count:   1,
+		counts:  []int64{1, 1},
+		sums:    []float64{0, 0},
+		sumsI:   []int64{0, 0},
+		allInt:  []bool{true, false},
+		mins:    []any{bigInt, nil},
+		maxs:    []any{nil, float64(2.0)},
+	}
+
+	encoded, err := encodeAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// keyVals: []byte stays []byte (not "AQI="), float64(2.0) stays float64 (not
+	// int64(2)), int64>2^53 exact (not rounded through float64).
+	if b, ok := gotGS.keyVals[0].([]byte); !ok || !bytes.Equal(b, []byte{1, 2}) {
+		t.Errorf("keyVals[0] = %#v (%T), want []byte{1,2}", gotGS.keyVals[0], gotGS.keyVals[0])
+	}
+	if f, ok := gotGS.keyVals[1].(float64); !ok || f != 2.0 {
+		t.Errorf("keyVals[1] = %#v (%T), want float64(2.0)", gotGS.keyVals[1], gotGS.keyVals[1])
+	}
+	if n, ok := gotGS.keyVals[2].(int64); !ok || n != bigInt {
+		t.Errorf("keyVals[2] = %#v (%T), want int64(%d)", gotGS.keyVals[2], gotGS.keyVals[2], bigInt)
+	}
+
+	// MIN/MAX partial state preserves type + precision the same way.
+	if n, ok := gotGS.mins[0].(int64); !ok || n != bigInt {
+		t.Errorf("mins[0] = %#v (%T), want int64(%d)", gotGS.mins[0], gotGS.mins[0], bigInt)
+	}
+	if f, ok := gotGS.maxs[1].(float64); !ok || f != 2.0 {
+		t.Errorf("maxs[1] = %#v (%T), want float64(2.0)", gotGS.maxs[1], gotGS.maxs[1])
 	}
 }
 
@@ -4231,7 +4653,7 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotBuf, err := decodeSortContinuation(encoded)
+	gotInner, gotBuf, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -4245,14 +4667,14 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 
 	// Check datum values.
 	for i, want := range []string{"alice", "bob", "carol"} {
-		m := gotBuf[i].Datum.(map[string]any)
+		m, _ := rowMapOK(gotBuf[i])
 		if m["name"] != want {
 			t.Errorf("buf[%d].name = %v, want %q", i, m["name"], want)
 		}
 	}
-	// Ages: JSON round-trips through float64 → int64 conversion.
+	// Ages: the typed slot codec keeps int64 exactly (no JSON float64 detour).
 	for i, want := range []int64{30, 25, 35} {
-		m := gotBuf[i].Datum.(map[string]any)
+		m, _ := rowMapOK(gotBuf[i])
 		if m["age"] != want {
 			t.Errorf("buf[%d].age = %v (%T), want %d", i, m["age"], m["age"], want)
 		}
@@ -4278,7 +4700,7 @@ func TestSortContinuation_EmptyBuffer(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotBuf, err := decodeSortContinuation(encoded)
+	gotInner, gotBuf, err := decodeSortContinuation(encoded, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -4593,10 +5015,81 @@ func TestConcatCursor_CloseIdempotent(t *testing.T) {
 }
 
 // ===========================================================================
-// memorySortCursor — end-to-end via constructor
+// ORDER BY via the live newCustomSortCursor (executeInMemorySort's cursor)
 // ===========================================================================
 
-func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
+// expressionSortFn is a test fixture: the ordinal-positional sort comparator
+// used to drive the live newCustomSortCursor (buffer + yield + error
+// propagation) in isolation. Sort keys are VALUES evaluated against the
+// authoritative ordinal positional row (baked at plan time; loud on a miss) —
+// never a name lookup. Ties break by primary key, directed by the last
+// explicit key. The production sort path (executeInMemorySort) carries its own
+// equivalent comparator; that end-to-end path is covered by the sqldriver FDB
+// sort suites.
+func expressionSortFn(keys []expressions.SortKey) func([]QueryResult) error {
+	return func(results []QueryResult) error {
+		pkDesc := false
+		if len(keys) > 0 {
+			pkDesc = keys[len(keys)-1].Reverse
+		}
+		var sortErr error
+		sort.SliceStable(results, func(i, j int) bool {
+			if sortErr != nil {
+				return false
+			}
+			for _, k := range keys {
+				vi, err := k.Value.Evaluate(results[i].Positional)
+				if err != nil {
+					sortErr = err
+					return false
+				}
+				vj, err := k.Value.Evaluate(results[j].Positional)
+				if err != nil {
+					sortErr = err
+					return false
+				}
+				iNil, jNil := vi == nil, vj == nil
+				if iNil && jNil {
+					continue
+				}
+				if iNil || jNil {
+					nf := !k.Reverse
+					if k.NullsFirst != nil {
+						nf = *k.NullsFirst
+					}
+					if nf {
+						return iNil
+					}
+					return jNil
+				}
+				// Mirror the production sort comparator (executeInMemorySort uses
+				// compareValues, the S2 total-order authority) rather than a separate
+				// scalar comparator, so this fixture exercises the real ordering.
+				cmp := compareValues(vi, vj)
+				if cmp == 0 {
+					continue
+				}
+				if k.Reverse {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+			if results[i].PrimaryKey != nil && results[j].PrimaryKey != nil {
+				cmp := comparePKTuples(results[i].PrimaryKey, results[j].PrimaryKey)
+				if cmp != 0 {
+					if pkDesc {
+						return cmp > 0
+					}
+					return cmp < 0
+				}
+			}
+			return false
+		})
+		return sortErr
+	}
+}
+
+func TestSortCursor_SortsCorrectly(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{
@@ -4605,7 +5098,10 @@ func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
 		qr("NAME", "bob", "AGE", int64(25)),
 	})
 
-	c := newMemorySortCursor(inner, []string{"AGE"}, []bool{false}, nil) // ASC
+	// qr/dmap lays columns out alphabetically: AGE@0, NAME@1.
+	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("AGE", 0, values.UnknownType)},
+	}), nil) // ASC
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4621,7 +5117,7 @@ func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
 	}
 }
 
-func TestMemorySortCursor_SortsDescending(t *testing.T) {
+func TestSortCursor_SortsDescending(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{
@@ -4630,7 +5126,9 @@ func TestMemorySortCursor_SortsDescending(t *testing.T) {
 		qr("X", int64(2)),
 	})
 
-	c := newMemorySortCursor(inner, []string{"X"}, []bool{true}, nil) // DESC
+	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType), Reverse: true},
+	}), nil) // DESC
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4646,11 +5144,11 @@ func TestMemorySortCursor_SortsDescending(t *testing.T) {
 	}
 }
 
-func TestMemorySortCursor_EmptyInput(t *testing.T) {
+func TestSortCursor_EmptyInput(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{})
-	c := newMemorySortCursor(inner, []string{"x"}, nil, nil)
+	c := newCustomSortCursor(inner, expressionSortFn(nil), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4659,19 +5157,29 @@ func TestMemorySortCursor_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestMemorySortCursor_OnNextAfterClose(t *testing.T) {
+// TestSortCursor_UnbakedKeyIsLoud pins the correct-or-loud contract on the
+// sort path: a LAZY sort key (no plan-time ordinal) cannot resolve against
+// the positional row and must surface a loud OrdinalResolutionError — never a
+// silent name read or a silent NULL ordering.
+func TestSortCursor_UnbakedKeyIsLoud(t *testing.T) {
 	t.Parallel()
 
-	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
-	c := newMemorySortCursor(inner, []string{"x"}, nil, nil)
-	c.Close()
+	inner := recordlayer.FromList([]QueryResult{
+		qr("X", int64(1)),
+		qr("X", int64(2)),
+	})
+	c := newCustomSortCursor(inner, expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFlatFieldValue("X", values.UnknownType)},
+	}), nil)
+	defer c.Close()
 
-	result, err := c.OnNext(context.Background())
-	if err != nil {
-		t.Fatalf("OnNext after Close should not error, got: %v", err)
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected a loud error for an unbaked sort key")
 	}
-	if result.HasNext() {
-		t.Fatal("OnNext after Close should return no-next")
+	var ore *values.OrdinalResolutionError
+	if !errors.As(err, &ore) {
+		t.Fatalf("expected *values.OrdinalResolutionError, got %T: %v", err, err)
 	}
 }
 
@@ -4691,14 +5199,14 @@ func TestAggregateCursor_SingleGroup_CountStar(t *testing.T) {
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
 	}
-	c := newAggregateCursor(inner, nil, aggs) // nil groupingKeys → scalar mode
+	c := newAggregateCursor(inner, nil, aggs, nil, nil) // nil groupingKeys → scalar mode
 	defer c.Close()
 
 	results := collectCursor(t, c)
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
-	m := results[0].Datum.(map[string]any)
+	m, _ := rowMapOK(results[0])
 	if m["COUNT(*)"] != int64(3) {
 		t.Errorf("COUNT(*) = %v, want 3", m["COUNT(*)"])
 	}
@@ -4711,14 +5219,14 @@ func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}},
 	}
-	c := newAggregateCursor(inner, nil, aggs)
+	c := newAggregateCursor(inner, nil, aggs, nil, nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
 	if len(results) != 1 {
 		t.Fatalf("scalar aggregate on empty input: got %d results, want 1", len(results))
 	}
-	m := results[0].Datum.(map[string]any)
+	m, _ := rowMapOK(results[0])
 	if m["COUNT(*)"] != int64(0) {
 		t.Errorf("COUNT(*) on empty = %v, want 0", m["COUNT(*)"])
 	}
@@ -4735,11 +5243,11 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		qr("dept", "B", "amount", int64(30)),
 	})
 
-	groupKeys := []values.Value{values.NewFlatFieldValue("dept", values.TypeString)}
+	groupKeys := []values.Value{values.NewFieldValueWithResolvedOrdinal("dept", 1, values.TypeString)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: values.NewFlatFieldValue("amount", values.TypeInt)},
+		{Function: expressions.AggSum, Operand: values.NewFieldValueWithResolvedOrdinal("amount", 0, values.TypeInt)},
 	}
-	c := newAggregateCursor(inner, groupKeys, aggs)
+	c := newAggregateCursor(inner, groupKeys, aggs, nil, nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4747,7 +5255,7 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		t.Fatalf("got %d groups, want 2", len(results))
 	}
 
-	m0 := results[0].Datum.(map[string]any)
+	m0, _ := rowMapOK(results[0])
 	if m0["DEPT"] != "A" {
 		t.Errorf("group 0 key = %v, want A", m0["DEPT"])
 	}
@@ -4755,7 +5263,7 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		t.Errorf("group 0 SUM = %v, want 30", m0["SUM(AMOUNT)"])
 	}
 
-	m1 := results[1].Datum.(map[string]any)
+	m1, _ := rowMapOK(results[1])
 	if m1["DEPT"] != "B" {
 		t.Errorf("group 1 key = %v, want B", m1["DEPT"])
 	}
@@ -4768,7 +5276,7 @@ func TestAggregateCursor_OnNextAfterClose(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
-	c := newAggregateCursor(inner, nil, nil)
+	c := newAggregateCursor(inner, nil, nil, nil, nil)
 	c.Close()
 
 	result, err := c.OnNext(context.Background())
@@ -4793,10 +5301,9 @@ func TestCustomSortCursor_ReverseSort(t *testing.T) {
 		qr("N", int64(2)),
 	})
 
-	sortFn := func(buf []QueryResult) error {
-		sortByKeys(buf, []string{"N"}, []bool{true})
-		return nil
-	}
+	sortFn := expressionSortFn([]expressions.SortKey{
+		{Value: values.NewFieldValueWithResolvedOrdinal("N", 0, values.UnknownType), Reverse: true},
+	})
 	c := newCustomSortCursor(inner, sortFn, nil)
 	defer c.Close()
 
@@ -4836,39 +5343,10 @@ func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
 	inner := recordlayer.FromList(rows)
 
 	c := newCustomSortCursor(inner, func(buf []QueryResult) error {
-		sortByKeys(buf, []string{"n"}, nil)
+		// The buffer cap trips during LOAD, before any sort runs.
 		return nil
 	}, nil)
 	c.maxBuf = 5 // limit to 5 rows
-	defer c.Close()
-
-	_, err := c.OnNext(context.Background())
-	if err == nil {
-		t.Fatal("expected SortBufferExceededError")
-	}
-	var bufErr *SortBufferExceededError
-	if !errors.As(err, &bufErr) {
-		t.Fatalf("expected *SortBufferExceededError, got %T: %v", err, err)
-	}
-	if bufErr.Limit != 5 {
-		t.Errorf("limit = %d, want 5", bufErr.Limit)
-	}
-	if bufErr.Rows != 5 {
-		t.Errorf("rows = %d, want 5", bufErr.Rows)
-	}
-}
-
-func TestMemorySortCursor_BufferLimitExceeded(t *testing.T) {
-	t.Parallel()
-
-	rows := make([]QueryResult, 10)
-	for i := range rows {
-		rows[i] = qr("n", int64(i))
-	}
-	inner := recordlayer.FromList(rows)
-
-	c := newMemorySortCursor(inner, []string{"n"}, nil, nil)
-	c.maxBuf = 5
 	defer c.Close()
 
 	_, err := c.OnNext(context.Background())

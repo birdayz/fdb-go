@@ -26,7 +26,7 @@ type UpdateTransform struct {
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.UpdateExpression`.
 // Java's full implementation includes a Type.Record `targetType` and
 // a `transformations` map keyed by FieldPath. We keep the simpler
-// list-of-transforms shape; FieldPath is a string for now (Java
+// list-of-transforms shape with a plain-string FieldPath (Java
 // models it as a list of accessors, but the planner serialises to
 // dot-separated form anyway).
 type UpdateExpression struct {

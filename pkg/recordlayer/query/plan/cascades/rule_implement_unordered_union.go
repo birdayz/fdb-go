@@ -195,14 +195,15 @@ func colNamesEqual(a, b []string) bool {
 }
 
 // columnRenameValue builds a RecordConstructorValue that renames
-// columns positionally from src to dst names. When evaluated against
-// a datum map, each field reads src[i] and writes to dst[i].
+// columns positionally from src to dst names: field i reads the input
+// row's SLOT i (the read is positional by definition of the rename, so the
+// ordinal is baked at plan time) and writes to dst[i].
 func columnRenameValue(srcCols, dstCols []string) *values.RecordConstructorValue {
 	fields := make([]values.RecordConstructorField, len(dstCols))
 	for i := range dstCols {
 		fields[i] = values.RecordConstructorField{
 			Name:  dstCols[i],
-			Value: &values.FieldValue{Field: srcCols[i]},
+			Value: values.NewFieldValueWithResolvedOrdinal(srcCols[i], i, values.UnknownType),
 		}
 	}
 	return values.NewRecordConstructorValue(fields...)

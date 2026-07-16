@@ -34,8 +34,10 @@ import (
 // surfaces with the failing row visible.
 func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
+	// (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -67,7 +69,7 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got, errEv0 := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			got, errEv0 := av.Evaluate(fom(map[string]any{"a": tc.l, "b": tc.r}))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
@@ -81,8 +83,10 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 // Math.addExact throwing ArithmeticException). The executor maps it to 22003.
 func TestArithmeticValue_OverflowPanics(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
+	// (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -102,7 +106,7 @@ func TestArithmeticValue_OverflowPanics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			v, err := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			v, err := av.Evaluate(fom(map[string]any{"a": tc.l, "b": tc.r}))
 			if v != nil || err == nil {
 				t.Fatalf("op %v %d %d: got (%v, %v), want (nil, ArithmeticOverflowError)", tc.op, tc.l, tc.r, v, err)
 			}
@@ -119,8 +123,10 @@ func TestArithmeticValue_OverflowPanics(t *testing.T) {
 // Asymmetric for sub: MAX - (-1) overflows, but MAX - 1 = MAX-1.
 func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
+	// (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	cases := []struct {
 		name string
 		op   ArithmeticOp
@@ -139,7 +145,7 @@ func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got, errEv0 := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			got, errEv0 := av.Evaluate(fom(map[string]any{"a": tc.l, "b": tc.r}))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
@@ -156,9 +162,11 @@ func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 // to rewrite against.
 func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
-	c := &FieldValue{Field: "c", Typ: TypeInt}
+	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
+	// (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
+	c := NewFieldValueWithResolvedOrdinal("c", 2, TypeInt)
 	// (a + b) * c
 	tree := &ArithmeticValue{
 		Op:    OpMul,
@@ -179,7 +187,7 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, errEv0 := tree.Evaluate(tc.row)
+			got, errEv0 := tree.Evaluate(fom(tc.row))
 			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
@@ -193,14 +201,16 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 // ArithmeticException). The executor surfaces it as a SQL error.
 func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
+	// (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	for _, op := range []ArithmeticOp{OpDiv, OpMod} {
 		op := op
 		t.Run(op.Symbol(), func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: op, Left: a, Right: b}
-			v, err := av.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
+			v, err := av.Evaluate(fom(map[string]any{"a": int64(5), "b": int64(0)}))
 			if v != nil || err == nil {
 				t.Fatalf("%v by zero: got (%v, %v), want (nil, ArithmeticDivisionByZeroError)", op, v, err)
 			}
@@ -219,8 +229,10 @@ func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 // to SQLSTATE 42804 by the executor.
 func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// Operands carry plan-time ordinals — sorted {a,b,c} → a=0, b=1, c=2
+	// (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 	cases := []struct {
 		name string
 		row  map[string]any
@@ -234,7 +246,7 @@ func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-			v, err := av.Evaluate(tc.row)
+			v, err := av.Evaluate(fom(tc.row))
 			if v != nil || err == nil {
 				t.Fatalf("type mismatch %v: got (%v, %v), want (nil, ScalarTypeMismatchError)", tc.row, v, err)
 			}

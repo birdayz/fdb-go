@@ -52,7 +52,13 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 	var pushable, residual []predicates.QueryPredicate
 	for _, p := range f.GetPredicates() {
 		if predicateReferencesOnlyKeys(p, groupKeySet) {
-			pushable = append(pushable, p)
+			// A HAVING group-key reference is baked to the group-by OUTPUT
+			// ordinal. Below the GroupBy the row is the scan/inner layout, where that
+			// ordinal is invalid — so the pushed copy REBINDS to the GROUPING KEY'S
+			// OWN VALUE (the inner-row-addressed expression, itself construction-
+			// baked), Java's pushdown translation. The residual copy that stays
+			// ABOVE the GroupBy keeps its output-baked ordinal.
+			pushable = append(pushable, predicates.ReplaceValues(p, rebindGroupKeyRefToInner(gb.GetGroupingKeys())))
 		} else {
 			residual = append(residual, p)
 		}
@@ -70,6 +76,31 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 	} else {
 		gbQ := expressions.ForEachQuantifier(call.MemoizeExpression(newGB))
 		call.Yield(expressions.NewLogicalFilterExpression(residual, gbQ))
+	}
+}
+
+// rebindGroupKeyRefToInner returns the Value replacement that rewrites a
+// pushed HAVING reference naming a group key into THAT GROUPING KEY'S OWN
+// VALUE — the inner-row-addressed expression (itself construction-baked),
+// which is what the reference denotes below the aggregate. This is Java's
+// push-down translation; resolving the bare name by string at runtime instead
+// would be a lossy shortcut. A reference matching no key is returned unchanged.
+func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Value {
+	return func(v values.Value) values.Value {
+		fv, ok := v.(*values.FieldValue)
+		if !ok {
+			return v
+		}
+		for _, k := range keys {
+			kfv, isFV := k.(*values.FieldValue)
+			if !isFV {
+				continue
+			}
+			if strings.EqualFold(kfv.Field, fv.Field) {
+				return k
+			}
+		}
+		return v
 	}
 }
 

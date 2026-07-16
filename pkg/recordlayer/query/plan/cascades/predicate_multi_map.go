@@ -814,8 +814,8 @@ func replaceUnmatchedAggregateValues(
 }
 
 // replacePredicateValues delegates to the exported predicates.ReplaceValues —
-// the walk moved there (RFC-173 S2) so the translator can bake gated-join leg
-// references with the identical spine: single source, no rule-vs-seed drift.
+// the walk lives there so the translator can bake gated-join leg references
+// with the identical spine: single source, no rule-vs-seed drift.
 func replacePredicateValues(p predicates.QueryPredicate, fn func(values.Value) values.Value) predicates.QueryPredicate {
 	return predicates.ReplaceValues(p, fn)
 }

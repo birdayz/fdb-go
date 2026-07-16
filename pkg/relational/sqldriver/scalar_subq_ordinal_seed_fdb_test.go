@@ -1,12 +1,12 @@
 package sqldriver_test
 
-// RFC-173 W4b e2e: the correlated-scalar-subquery-in-projection seed ORDINALIZES
+// E2E: the correlated-scalar-subquery-in-projection seed ORDINALIZES
 // when the outer is a single source, and executes correctly end-to-end. The
 // ordinal-vs-name-model choice is invisible in EXPLAIN, so the seed SHAPE is
-// pinned white-box (rfc173_w4b_scalar_seed_test.go); this proves the ordinal
-// path returns correct rows AND that both a QUALIFIED outer ref (d.id) and a
-// BARE one (id) resolve to the single outer ordinal (single-source
-// alias-normalization — design condition b: the ordinal seed emits ONE field
+// pinned white-box in the query package's scalar-subquery-seed test; this
+// proves the ordinal path returns correct rows AND that both a QUALIFIED
+// outer ref (d.id) and a BARE one (id) resolve to the single outer ordinal
+// (single-source alias-normalization: the ordinal seed emits ONE field
 // per column, no bare+qualified duplicates, so a qualified ref must resolve via
 // the leg's RecordName span rather than a second name-model field).
 
@@ -18,7 +18,7 @@ import (
 	"testing"
 )
 
-func TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed(t *testing.T) {
+func TestFDB_ScalarSubqueryOrdinalSeed(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -89,7 +89,7 @@ func TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed(t *testing.T) {
 	})
 }
 
-// TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed_ColumnType pins the RESULT-SET
+// TestFDB_ScalarSubqueryOrdinalSeed_ColumnType pins the RESULT-SET
 // COLUMN TYPE of the ordinalized correlated-scalar subquery for a NON-BIGINT
 // scalar. The ordinal seed types the inner scalar leg UnknownType at translation
 // (Go quantifier flowed types are untyped), so deriveColumnsFromFlatMap must
@@ -100,7 +100,7 @@ func TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed(t *testing.T) {
 // test is RED at all also proves the ORDINAL path is taken here — the name-model
 // path already reports the true type, so a name-model plan would be GREEN
 // unconditionally.
-func TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
+func TestFDB_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -183,7 +183,7 @@ func TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 	// change is not collateral damage. (A NON-BIGINT-typed scalar that BOTH
 	// exercises the bug AND executes cleanly is unreachable here: string columns
 	// are descriptor-resolved, string aggregates are planner-rejected, and string
-	// EXPRESSIONS like CAST/UPPER surface a SEPARATE pre-existing W4b executor
+	// EXPRESSIONS like CAST/UPPER surface a SEPARATE pre-existing executor
 	// limitation — a computed-projection inner produces a name-model merge row the
 	// ordinal leg adapter rejects. The two numeric cases above are the clean
 	// RED→GREEN proofs.)
@@ -196,17 +196,18 @@ func TestFDB_RFC173W4b_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 	})
 }
 
-// TestFDB_RFC173W4b_ScalarInnerShapeProbe maps the inner-shape safety boundary of
+// TestFDB_ScalarInnerShapeProbe maps the inner-shape safety boundary of
 // the ordinal seed: every inner shape must EXECUTE without tripping the ordinal
 // leg adapter ("name-model leg row carries NONE of the leg type's 1 columns"),
-// which is the seed's regression signature. EVERY inner shape now ordinalizes:
-// plain-column, aggregate, computed-expression (RFC-173 W4b shape 3 materializes
-// the computation as the inner's projected output), AND JOIN-inners (shape 2 —
-// the seed's inner leg is keyed by a fresh unique correlation id, so the
-// JOIN-inner's own typed QOV no longer collides at widenLegTypesFromPlan). This
-// pins that the ordinal path runs cleanly on every shape — no runtime error.
-// (Correct-rows pins: TestFDB_RFC173W4b_ComputedScalar, TestFDB_RFC173W4b_JoinInnerScalar.)
-func TestFDB_RFC173W4b_ScalarInnerShapeProbe(t *testing.T) {
+// which is the seed's regression signature. EVERY inner shape ordinalizes:
+// plain-column, aggregate, computed-expression (the computed-scalar shape
+// materializes the computation as the inner's projected output), AND
+// JOIN-inners (the seed's inner leg is keyed by a fresh unique correlation
+// id, so the JOIN-inner's own typed QOV no longer collides at
+// widenLegTypesFromPlan). This pins that the ordinal path runs cleanly on
+// every shape — no runtime error. (Correct-rows pins: the companion
+// computed-scalar and join-inner tests.)
+func TestFDB_ScalarInnerShapeProbe(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")

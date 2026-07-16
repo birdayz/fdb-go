@@ -139,7 +139,7 @@ func runParamRankQuery(t *testing.T, ctx context.Context, db *recordlayer.FDBDat
 			return nil, rErr
 		}
 		for _, r := range results {
-			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+			ids = append(ids, executor.RowValue(r).(map[string]any)["ID"].(int64))
 		}
 		return nil, nil
 	})
@@ -421,7 +421,7 @@ func runVecQueryIDs(t *testing.T, ctx context.Context, db *recordlayer.FDBDataba
 			return nil, rErr
 		}
 		for _, r := range results {
-			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+			ids = append(ids, executor.RowValue(r).(map[string]any)["ID"].(int64))
 		}
 		return nil, nil
 	})

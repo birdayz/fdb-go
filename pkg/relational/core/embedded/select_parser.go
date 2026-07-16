@@ -113,18 +113,17 @@ type joinClause struct {
 	// bindingID is the leg's binding correlation name when its alias
 	// DUPLICATES an earlier FROM leg's at the same level; empty when the
 	// alias itself binds (every non-duplicate leg — zero change for
-	// non-duplicate queries). RFC-173 QP-REF-BIND item 1, the F3-ruled
-	// coexistence mechanism: Java mints CorrelationIdentifier.uniqueId for
+	// non-duplicate queries). Java mints CorrelationIdentifier.uniqueId for
 	// EVERY quantifier and keeps the SQL alias as a display qualifier only
-	// (LogicalOperator.newNamedOperator); the coexistence port mints only
+	// (LogicalOperator.newNamedOperator); Go mints only
 	// where collision forces it. Minted DETERMINISTICALLY from the leg's
 	// FROM position (`Q$DUPN`, N = the leg's 1-based join ordinal; fold-stable upper form) so two
 	// plannings of the same query produce identical correlation ids (the
 	// stablePlanHash determinism lesson — never an atomic counter).
 	// Assigned ONCE by assignFromLegBindingIDs (the single mint authority);
 	// consumers READ it, never re-derive it from the alias. The logical
-	// builders carry it today (LogicalScan/LogicalCTE/LogicalUnnest.Binding);
-	// the semantic-scope builders wire up in the item-1 lift commit.
+	// builders carry it (LogicalScan/LogicalCTE/LogicalUnnest.Binding); the
+	// semantic-scope builders read it too.
 	bindingID string
 	// catalogAwareInnerPlan is set by the catalog-aware builder when
 	// it pre-builds the derived table's inner plan with upgraded
@@ -844,7 +843,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			// 1-indexed position into the SELECT list. Resolve to the
 			// matching output column's name so the downstream colIdx
 			// lookup in the sort path works uniformly.
-			posName, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
+			posName, _, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
@@ -922,7 +921,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				}
 				seenAliases[aliasKey] = true
 			}
-			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, cls.aggCols)
+			posName, _, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, cls.aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
@@ -1428,6 +1427,23 @@ func exprReferencesColumn(expr antlrgen.IExpressionContext) bool {
 // distinction). Refs inside aggregate calls are correctly computed by the
 // aggregate itself — walking into them would flag false positives.
 func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
+	return harvestColumnRefsImpl(expr, false)
+}
+
+// harvestColumnRefsOutsideSubqueries is harvestColumnRefs with the
+// harvestAggregates nested-query-scope boundary: refs syntactically inside a
+// subquery bind to THAT query block, not the enclosing SELECT. The CTE
+// ON-only derivation validates its body's INPUT reads with this variant — a
+// scalar-subquery item's local columns are not reads of the derived source
+// (the subquery's own build resolves them in its own scope; a CORRELATED
+// read into the derived source surfaces through that build, loud at
+// translation). The GROUP-BY validator keeps the non-stopping walk: a
+// correlated ref into the outer query DOES need the group-check there.
+func harvestColumnRefsOutsideSubqueries(expr antlrgen.IExpressionContext) []string {
+	return harvestColumnRefsImpl(expr, true)
+}
+
+func harvestColumnRefsImpl(expr antlrgen.IExpressionContext, stopAtNestedQuery bool) []string {
 	if expr == nil {
 		return nil
 	}
@@ -1437,6 +1453,17 @@ func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
 	visit = func(n antlr.Tree) {
 		if n == nil {
 			return
+		}
+		if stopAtNestedQuery {
+			// Same boundary as harvestAggregates: a `query` node (scalar
+			// `(SELECT …)`, EXISTS) or a bare `queryExpressionBody` (IN
+			// subquery) opens a nested scope; match the INTERFACE for the
+			// body — the concrete node of the alternative-labelled rule is
+			// never a bare *QueryExpressionBodyContext.
+			switch n.(type) {
+			case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
+				return
+			}
 		}
 		// Don't recurse into aggregate function calls — the aggregate
 		// resolves its own argument from the group's accumulator.
@@ -1478,12 +1505,31 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 		if n == nil {
 			return
 		}
-		// Stop at scalar subquery boundaries: aggregates inside a
-		// subquery belong to the subquery, not the outer expression.
-		// Without this guard `SELECT (SELECT MAX(v) FROM t) FROM t2`
-		// would mis-promote the outer slot to an aggregate column,
-		// dropping it from projCols entirely.
-		if _, ok := n.(*antlrgen.SubqueryExpressionAtomContext); ok {
+		// Stop at every NESTED QUERY SCOPE: an aggregate syntactically inside a
+		// subquery belongs to THAT subquery's query block, not the enclosing
+		// SELECT (same scoping Java's SemanticAnalyzer applies — an aggregate
+		// binds to its innermost query scope). A subquery in an expression is
+		// carried by a `query` node (scalar `(SELECT …)` and EXISTS both wrap
+		// one) or, when there is no `query` wrapper, by a bare
+		// `queryExpressionBody` (an IN subquery: `x IN (SELECT COUNT(*) FROM e)`
+		// → InPredicate → InList → queryExpressionBody). `queryExpressionBody`
+		// is an ALTERNATIVE-LABELLED rule, so the concrete node is
+		// *QueryTermDefaultContext / *SetQueryContext (which EMBED
+		// QueryExpressionBodyContext and implement IQueryExpressionBodyContext) —
+		// never a bare *QueryExpressionBodyContext — so match the INTERFACE, not
+		// that concrete type. Guarding the nested query node (not per-atom types)
+		// is the complete boundary and cannot be out-enumerated by a new subquery
+		// atom. Without it the nested aggregate leaks into the OUTER query's
+		// aggregate set — mis-promoting the outer slot (dropping it from
+		// projCols) or wrongly classifying the outer query as an aggregate
+		// (spurious 42803 on its non-grouped columns). Guarding *QueryContext
+		// (not only the body) also truncates a subquery's own `ctes?` — a WITH
+		// aggregate belongs to the CTE, not the enclosing SELECT. A real outer
+		// aggregate that merely CONTAINS a subquery (`HAVING COUNT(*) IN (…)`) is
+		// harvested normally — it lives OUTSIDE the subquery's query node, which
+		// the pre-order walk reaches first.
+		switch n.(type) {
+		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
 			return
 		}
 		if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok {
@@ -1505,6 +1551,71 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 	}
 	visit(expr)
 	return out
+}
+
+// queryInnerIsUnconditionalOneRow reports whether an EXISTS subquery body is a
+// NON-GROUPED aggregate that ALWAYS produces EXACTLY ONE row — so EXISTS over it
+// is unconditionally TRUE. A non-grouped COUNT(*)/MAX/SUM yields one row even
+// over an empty (post-WHERE) input (COUNT->0, MAX/SUM->NULL). Excluded because
+// they can change that cardinality: GROUP BY (zero rows over an empty group),
+// HAVING (empties the group), QUALIFY (a window filter over the single row),
+// LIMIT 0 / positive OFFSET (eliminates the row), and a WINDOWED aggregate
+// (COUNT(*) OVER (...) is row-preserving, one per input row — not one-row).
+func queryInnerIsUnconditionalOneRow(q antlrgen.IQueryContext) bool {
+	if q == nil {
+		return false
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return false
+	}
+	simpleTable, stOk := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !stOk {
+		return false
+	}
+	sq, err := extractFromQueryTerm(body)
+	if err != nil || sq == nil {
+		return false
+	}
+	if len(sq.groupBy) > 0 || sq.havingExpr != nil || sq.qualifyExpr != nil {
+		return false
+	}
+	// A LIMIT/OFFSET clause can eliminate the single aggregate row. Only fold
+	// when the clause PROVABLY preserves it: limit >= 1, offset == 0, and every
+	// atom parses cleanly. Reading sq.limit/sq.offset alone is unsafe — an
+	// unparseable atom (`LIMIT 0.0`, `LIMIT 1 OFFSET 1.0`) silently defaults to
+	// the -1/0 sentinels, hiding a row-eliminating clause. See
+	// limitClauseKeepsSingleRow.
+	if !limitClauseKeepsSingleRow(simpleTable) {
+		return false
+	}
+	if !(sq.countStar || len(sq.aggCols) > 0) {
+		return false
+	}
+	return !queryScopeHasWindowedAggregate(body)
+}
+
+// queryScopeHasWindowedAggregate reports whether THIS query's own SELECT (not a
+// nested subquery's) contains a windowed aggregate (`… OVER (…)`). Stops at
+// nested query scopes — their window functions belong to them.
+func queryScopeHasWindowedAggregate(n antlr.Tree) bool {
+	if n == nil {
+		return false
+	}
+	if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.OverClause() != nil {
+		return true
+	}
+	for i := 0; i < n.GetChildCount(); i++ {
+		c := n.GetChild(i)
+		switch c.(type) {
+		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
+			continue // a nested subquery scope
+		}
+		if queryScopeHasWindowedAggregate(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // aggColFromAwf reconstructs an aggSelectCol from an AggregateWindowedFunction
@@ -1786,7 +1897,7 @@ func uidSegments(tableName antlrgen.ITableNameContext) []string {
 }
 
 // assignFromLegBindingIDs mints the per-leg binding correlation ids for
-// duplicate FROM-source aliases (RFC-173 QP-REF-BIND item 1 design ruling).
+// duplicate FROM-source aliases.
 // The FIRST leg under an alias binds the alias itself; each LATER duplicate
 // mints the deterministic position-keyed `Q$DUPN` (N = the leg's 1-based
 // position in the joins slice — the primary source is position 0 and, being

@@ -62,22 +62,25 @@ func TestNotValue_Evaluate_TypeMismatchDegrades(t *testing.T) {
 // context — NOT(active) where active is a row column.
 func TestNotValue_Evaluate_FieldLookup(t *testing.T) {
 	t.Parallel()
-	v := NewNotValue(&FieldValue{Field: "active", Typ: TypeBool})
-	got, errEv0 := v.Evaluate(map[string]any{"active": true})
+	// "active" carries its plan-time ordinal (sole column → slot 0).
+	v := NewNotValue(NewFieldValueWithResolvedOrdinal("active", 0, TypeBool))
+	got, errEv0 := v.Evaluate(fom(map[string]any{"active": true}))
 	require.NoError(t, errEv0)
 	if got != false {
 		t.Fatalf("active=true: got %v, want false", got)
 	}
-	got, errEv1 := v.Evaluate(map[string]any{"active": false})
+	got, errEv1 := v.Evaluate(fom(map[string]any{"active": false}))
 	require.NoError(t, errEv1)
 	if got != true {
 		t.Fatalf("active=false: got %v, want true", got)
 	}
-	// Missing field → NULL → NULL.
-	got, errEv2 := v.Evaluate(map[string]any{})
+	// NULL field → NOT(NULL) → NULL. (Post-cap a field PRESENT-with-nil is SQL
+	// NULL; an ABSENT column is a loud miss, not a NULL — so NULL propagation is
+	// pinned with a present-nil slot, not an omitted key.)
+	got, errEv2 := v.Evaluate(fom(map[string]any{"active": nil}))
 	require.NoError(t, errEv2)
 	if got != nil {
-		t.Fatalf("missing field: got %v, want nil", got)
+		t.Fatalf("null field: got %v, want nil", got)
 	}
 }
 

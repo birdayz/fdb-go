@@ -140,3 +140,83 @@ func TestValueIndexScanMatchCandidate_ToScanPlan(t *testing.T) {
 		t.Fatal("second comparison should be empty (unbound)")
 	}
 }
+
+// TestValueIndexScanMatchCandidate_PushValueThroughFetch_ChainedFieldDeclines pins
+// that PushValueThroughFetch translates ONLY a top-level bare field over the source
+// quantifier by covered-column name. A chained accessor (ADDR.CITY) whose LEAF name
+// collides with a covered top-level column (CITY) must NOT translate to a flat read
+// of the index entry's CITY column — that is a silent wrong-rows/wrong-value bug.
+//
+// Java ref: ScanWithFetchMatchCandidate.pushValueThroughFetch matches the WHOLE value
+// tree (accessor chain included) against a provided index Value via semanticEquals and
+// accepts only when no source correlation remains; a chained ADDR.CITY does not
+// semantically equal the flat top-level CITY, so it is rejected.
+//
+// Revert-proof: before the fix the FieldValue arm matched by leaf name only and
+// rebuilt a flat FieldValue{CITY, QOV(TGT)}, silently dropping the ADDR accessor —
+// ok==true with the wrong value. After the fix the chained shape returns ok==false,
+// while the legitimate bare shape still translates.
+func TestValueIndexScanMatchCandidate_PushValueThroughFetch_ChainedFieldDeclines(t *testing.T) {
+	t.Parallel()
+
+	src := values.NamedCorrelationIdentifier("SRC")
+	tgt := values.NamedCorrelationIdentifier("TGT")
+	sarg := values.UniqueCorrelationIdentifier()
+	c := NewValueIndexScanMatchCandidate(
+		"idx_city",
+		[]string{"T"},
+		[]string{"CITY"},
+		[]values.CorrelationIdentifier{sarg},
+		values.UnknownType,
+		false,
+		nil,
+	)
+
+	// Chained ADDR.CITY: FieldValue{CITY, Child: FieldValue{ADDR, Child: QOV(SRC)}}.
+	// Its leaf name (CITY) collides with the covered top-level column but the value
+	// is a different indexed Value — must decline.
+	inner := values.NewFieldValue(values.NewQuantifiedObjectValue(src), "ADDR", values.UnknownType)
+	chained := values.NewFieldValue(inner, "CITY", values.UnknownType)
+	got, ok := c.PushValueThroughFetch(chained, src, tgt)
+	if ok {
+		t.Fatalf("chained ADDR.CITY must NOT push through fetch (leaf-name collision), got ok=true value=%v", got)
+	}
+
+	// Bare top-level CITY over the source: FieldValue{CITY, Child: QOV(SRC)} — the
+	// legitimate case that must STILL translate (guard against over-restriction).
+	bare := values.NewFieldValue(values.NewQuantifiedObjectValue(src), "CITY", values.UnknownType)
+	gotBare, okBare := c.PushValueThroughFetch(bare, src, tgt)
+	if !okBare {
+		t.Fatal("bare top-level CITY over the source must push through fetch")
+	}
+	fv, isFV := gotBare.(*values.FieldValue)
+	if !isFV || fv.Field != "CITY" {
+		t.Fatalf("translated value=%v, want FieldValue{CITY, ...}", gotBare)
+	}
+	childQOV, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV || childQOV.Correlation != tgt {
+		t.Fatalf("translated child=%v, want QOV(TGT)", fv.Child)
+	}
+
+	// BAKED bare column: FieldValue{CITY, Child: nil} — the post-ordinalization
+	// (resolved-ordinal / leaf) shape the covering merge actually produces. An
+	// over-restrictive "Child must be QOV(SRC)" check WRONGLY declined this and
+	// regressed the covering-index merge; only this baked case (not the bare-QOV
+	// case above) reveals that. It must STILL translate.
+	baked := values.NewFieldValue(nil, "CITY", values.UnknownType)
+	gotBaked, okBaked := c.PushValueThroughFetch(baked, src, tgt)
+	if !okBaked {
+		t.Fatal("baked bare CITY (Child==nil, the post-ordinalization covering shape) must push through fetch")
+	}
+	if bfv, isFV := gotBaked.(*values.FieldValue); !isFV || bfv.Field != "CITY" {
+		t.Fatalf("translated baked value=%v, want FieldValue{CITY, ...}", gotBaked)
+	}
+
+	// A FieldValue over a NON-QOV, non-nil composite child (here a constant) is not
+	// a bare column and must DECLINE — pins the allowlist (Child==nil || Child==QOV),
+	// not a chained-only blocklist that would let this slip through and drop the child.
+	overConst := values.NewFieldValue(&values.ConstantValue{Value: "x", Typ: values.UnknownType}, "CITY", values.UnknownType)
+	if got2, ok2 := c.PushValueThroughFetch(overConst, src, tgt); ok2 {
+		t.Fatalf("FieldValue over a non-QOV composite must NOT push through fetch, got ok=true value=%v", got2)
+	}
+}

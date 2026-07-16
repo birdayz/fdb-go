@@ -4,8 +4,9 @@ package sqldriver_test
 // outer scope (buildOuterScopeSources) registered only REAL tables and lateral
 // unnest legs — a derived-table source (`FROM (SELECT ...) e`) resolved
 // through analyzer.ResolveTable, failed silently, and the correlated
-// reference died with 42703 ("no FROM source aliased as E" single-source,
-// `column reference with qualifier "E" cannot be resolved` join form) even
+// reference died with 42703 ("no FROM source aliased as E" — the shared
+// mapPredicateWalkError classifier now surfaces one consistent message for both
+// the single-source and join forms) even
 // though the SELECT scope registers the same source via
 // buildDerivedTableSource. Table-alias correlation, uncorrelated EXISTS, and
 // plain derived joins always worked — the gap was EXISTS-correlation-specific.

@@ -107,45 +107,46 @@ func classifyPrimitiveType(cdt antlrgen.IConvertedDataTypeContext) string {
 // PredicatedExpression→ConstantExpressionAtom).
 //
 // Returns:
-//   - (name, true, nil): positional reference resolved to an output column.
-//   - ("", false, nil): the expression isn't a positional reference at all
+//   - (name, n, true, nil): positional reference resolved to an output column;
+//     n is the 1-based SELECT-list position (the output ordinal + 1).
+//   - ("", 0, false, nil): the expression isn't a positional reference at all
 //     (caller falls through to column / expression paths).
-//   - ("", false, err): expression IS a positive integer literal but N is
+//   - ("", 0, false, err): expression IS a positive integer literal but N is
 //     out of range. Postgres / MySQL error on this instead of treating the
 //     integer as a constant sort / group key, so we do the same.
-func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, bool, error) {
+func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, int, bool, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	atom, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
 	if !ok {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	dec, ok := atom.Constant().(*antlrgen.DecimalConstantContext)
 	if !ok {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	n, err := strconv.ParseInt(dec.DecimalLiteral().GetText(), 10, 64)
 	if err != nil || n < 1 {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	listLen := len(projCols)
 	if listLen == 0 {
 		listLen = len(aggCols)
 	}
 	if int(n) > listLen {
-		return "", false, api.NewErrorf(api.ErrCodeInvalidParameter,
+		return "", 0, false, api.NewErrorf(api.ErrCodeInvalidParameter,
 			"%s position %d is out of range: SELECT list has %d entries", clause, n, listLen)
 	}
 	switch {
 	case len(projCols) > 0:
 		if int(n) <= len(projAliases) && projAliases[n-1] != "" {
-			return projAliases[n-1], true, nil
+			return projAliases[n-1], int(n), true, nil
 		}
-		return projCols[n-1], true, nil
+		return projCols[n-1], int(n), true, nil
 	case len(aggCols) > 0:
-		return aggCols[n-1].outName, true, nil
+		return aggCols[n-1].outName, int(n), true, nil
 	}
-	return "", false, nil
+	return "", 0, false, nil
 }

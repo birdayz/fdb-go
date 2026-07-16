@@ -352,8 +352,8 @@ func TestPlanCache_ScalarSubqueryBindings(t *testing.T) {
 
 	plan := &stubPlan{label: "main"}
 	alias := values.NamedCorrelationIdentifier("sq1")
-	subs := []scalarSubqueryBinding{
-		{alias: alias, plan: &stubPlan{label: "sub1"}},
+	subs := []PlannedScalarSubquery{
+		{Alias: alias, Plan: &stubPlan{label: "sub1"}},
 	}
 
 	c.Put("sql", plan, subs)
@@ -365,7 +365,7 @@ func TestPlanCache_ScalarSubqueryBindings(t *testing.T) {
 	if gotPlan != plan {
 		t.Fatal("wrong plan returned")
 	}
-	if len(gotSubs) != 1 || gotSubs[0].alias.Name() != "sq1" {
+	if len(gotSubs) != 1 || gotSubs[0].Alias.Name() != "sq1" {
 		t.Fatalf("wrong subs returned: %v", gotSubs)
 	}
 }
@@ -598,10 +598,10 @@ func TestPlanCache_UpdateReplacesSubs(t *testing.T) {
 	t.Parallel()
 	c := NewPlanCache(4)
 
-	subs1 := []scalarSubqueryBinding{{alias: values.NamedCorrelationIdentifier("a")}}
-	subs2 := []scalarSubqueryBinding{
-		{alias: values.NamedCorrelationIdentifier("b")},
-		{alias: values.NamedCorrelationIdentifier("c")},
+	subs1 := []PlannedScalarSubquery{{Alias: values.NamedCorrelationIdentifier("a")}}
+	subs2 := []PlannedScalarSubquery{
+		{Alias: values.NamedCorrelationIdentifier("b")},
+		{Alias: values.NamedCorrelationIdentifier("c")},
 	}
 	c.Put("sql", &stubPlan{label: "v1"}, subs1)
 	c.Put("sql", &stubPlan{label: "v2"}, subs2)
@@ -610,7 +610,7 @@ func TestPlanCache_UpdateReplacesSubs(t *testing.T) {
 	if !ok || plan.(*stubPlan).label != "v2" {
 		t.Fatal("expected updated plan v2")
 	}
-	if len(gotSubs) != 2 || gotSubs[0].alias.Name() != "b" || gotSubs[1].alias.Name() != "c" {
+	if len(gotSubs) != 2 || gotSubs[0].Alias.Name() != "b" || gotSubs[1].Alias.Name() != "c" {
 		t.Fatalf("expected updated subs [b c], got %v", gotSubs)
 	}
 	checkInvariants(t, c)
@@ -645,8 +645,8 @@ func TestPlanCache_RaceSameKey(t *testing.T) {
 			for i := 0; i < ops; i++ {
 				k := keys[rng.Intn(len(keys))]
 				if rng.Intn(2) == 0 {
-					c.Put(k, &stubPlan{label: k}, []scalarSubqueryBinding{
-						{alias: values.NamedCorrelationIdentifier(k)},
+					c.Put(k, &stubPlan{label: k}, []PlannedScalarSubquery{
+						{Alias: values.NamedCorrelationIdentifier(k)},
 					})
 				} else {
 					plan, subs, ok := c.Get(k)
@@ -654,7 +654,7 @@ func TestPlanCache_RaceSameKey(t *testing.T) {
 						// Force reads of the returned, post-unlock values.
 						_ = plan.Explain()
 						for _, s := range subs {
-							_ = s.alias.Name()
+							_ = s.Alias.Name()
 						}
 					}
 				}

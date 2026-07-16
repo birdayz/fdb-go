@@ -64,13 +64,37 @@ func NewPlanningCostModelLessWithContext(stats properties.StatisticsProvider, ct
 	}
 }
 
-// RewritingCostModelLess is the Java-aligned cost model for the REWRITING
-// phase. Mirrors Java's RewritingCostModel.compare():
+// RewritingCostModelLess is the cost model for the REWRITING phase. It ports the
+// tail of Java's RewritingCostModel.compare():
 //  1. Fewer SelectExpressions
 //  2. Fewer TableFunctionExpressions
 //  3. Fewer normalized residual predicate conjuncts (CNF full-size)
 //  4. More predicates at deeper levels (push predicates down)
 //  5. Semantic hash tiebreak
+//
+// DELIBERATE OMISSION — Java's FIRST criterion, outerJoinCount (penalize any
+// surviving OuterJoinExpression), is NOT ported, and must not be. In Java it is a
+// CORRECTNESS GUARD, not a heuristic: Java's OuterJoinExpression is a logical-only
+// node with NO physical operator and exactly one consumer (RewriteOuterJoinRule),
+// so it MUST be rewritten before planning. Java's single-final-expression prune
+// keeps one survivor per group; without outerJoinCount the un-rewritten
+// OuterJoinExpression (0 selects) would beat the rewritten form (2 selects) on the
+// selectCount tie-break, survive the prune, and leave the planning phase with an
+// UNIMPLEMENTABLE node — the query would fail to plan. outerJoinCount forces the
+// implementable rewritten form to survive.
+//
+// Go has no such correctness problem, because Go's outer join IS directly
+// implementable: an outer-join SelectExpression is planned by
+// ImplementNestedLoopJoinRule as a MATERIALIZED RecordQueryNestedLoopJoinPlan
+// (RFC-152) — a read-side extension Java lacks (Java has only the correlated
+// FlatMap re-scan). Go deliberately keeps the un-rewritten outer-join select as the
+// REWRITING prune survivor (it wins on selectCount, 1<2) precisely so PLANNING can
+// derive BOTH the materialized NLJ (scan the inner once) AND the correlated FlatMap
+// (re-scan) and cost-choose. Porting outerJoinCount would force the rewritten form
+// to win the prune, discard the outer-join select, and thereby SUPPRESS the
+// materialized-NLJ alternative — a regression, not a fix (pinned by
+// TestFDB_ArrayUnnestOrdinality, which asserts the materialized NLJ box, and by
+// TestRewritingCostModel_KeepsUnrewrittenOuterJoin).
 func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
 	return rewritingCostModelCompare(a, b) < 0
 }
@@ -1792,8 +1816,8 @@ func concretePlanDepth(p plans.RecordQueryPlan, kind planMatchKind) int {
 // predicate content is folded via Explain text that RENDERS minted aliases
 // (q$N). Minted identifiers differ on every planning of the same query, so a
 // tie-break that hashes them ranks two cost-tied candidates in a different
-// order each planning — the nondeterministic-EXPLAIN class the item-2
-// commit-3 pins caught live (the existential step-1 NLJ's operand order
+// order each planning — a nondeterministic-EXPLAIN hazard
+// caught live by the pins (the existential step-1 NLJ's operand order
 // flipped across runs). Java's planHash is alias-blind at every node
 // (QuantifiedObjectValue.planHash folds BASE_HASH only); predicates and
 // values fold through the alias-blind SemanticHashCode here for the same
@@ -1839,9 +1863,6 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}
 	case *plans.RecordQueryFlatMapPlan:
-		if t.IsLeftOuter() {
-			_, _ = h.Write([]byte{1})
-		}
 		if rv := t.GetResultValue(); rv != nil {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}

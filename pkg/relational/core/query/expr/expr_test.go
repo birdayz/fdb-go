@@ -19,7 +19,7 @@ func buildScope(t *testing.T) (*semantic.Analyzer, *semantic.Scope) {
 		TableColumns: []semantic.Column{
 			{Id: semantic.NewUnquoted("id"), Type: "INT"},
 			{Id: semantic.NewUnquoted("name"), Type: "STRING", Nullable: true},
-			{Id: semantic.NewUnquoted("active"), Type: "BOOL"},
+			{Id: semantic.NewUnquoted("active"), Type: "BOOL", Nullable: true},
 			{Id: semantic.NewUnquoted("admin"), Type: "BOOL", Nullable: true},
 		},
 	}
@@ -83,20 +83,20 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 	tbl := &semantic.StaticTable{
 		TableName: semantic.ParseQualifiedName("MIXED", false),
 		TableColumns: []semantic.Column{
-			{Id: semantic.NewUnquoted("i"), Type: "INT"},
+			{Id: semantic.NewUnquoted("i"), Type: "INT", Nullable: true},
 			// INTEGER is a recognized synonym for INT — it must NOT fall to
 			// UNKNOWN (RFC-142 round-21: the unnest AT-ordinal column type).
-			{Id: semantic.NewUnquoted("ii"), Type: "INTEGER"},
+			{Id: semantic.NewUnquoted("ii"), Type: "INTEGER", Nullable: true},
 			// "INT NOT NULL" / "INTEGER NOT NULL" are the planner-internal
 			// non-null INT spellings (the WITH ORDINALITY ordinal) → NotNullInt.
 			{Id: semantic.NewUnquoted("inn"), Type: "INT NOT NULL"},
 			{Id: semantic.NewUnquoted("intnn"), Type: "INTEGER NOT NULL"},
-			{Id: semantic.NewUnquoted("s"), Type: "STRING"},
-			{Id: semantic.NewUnquoted("e"), Type: "ENUM"},
-			{Id: semantic.NewUnquoted("b"), Type: "BOOL"},
-			{Id: semantic.NewUnquoted("f"), Type: "FLOAT"},
-			{Id: semantic.NewUnquoted("by"), Type: "BYTES"},
-			{Id: semantic.NewUnquoted("rec"), Type: "RECORD"},
+			{Id: semantic.NewUnquoted("s"), Type: "STRING", Nullable: true},
+			{Id: semantic.NewUnquoted("e"), Type: "ENUM", Nullable: true},
+			{Id: semantic.NewUnquoted("b"), Type: "BOOL", Nullable: true},
+			{Id: semantic.NewUnquoted("f"), Type: "FLOAT", Nullable: true},
+			{Id: semantic.NewUnquoted("by"), Type: "BYTES", Nullable: true},
+			{Id: semantic.NewUnquoted("rec"), Type: "RECORD", Nullable: true},
 		},
 	}
 	cat := semantic.NewInMemoryCatalog(tbl)
@@ -465,12 +465,12 @@ func TestResolver_ResolveIsNull(t *testing.T) {
 	tmpEv0,
 
 		// Evaluate.
-		errEv0 := cp.Eval(map[string]any{"NAME": nil})
+		errEv0 := cp.Eval(usersRow(map[string]any{"NAME": nil}))
 	require.NoError(t, errEv0)
 	if tmpEv0 != predicates.TriTrue {
 		t.Fatal("NULL IS NULL should be TRUE")
 	}
-	tmpEv1, errEv1 := cp.Eval(map[string]any{"NAME": "foo"})
+	tmpEv1, errEv1 := cp.Eval(usersRow(map[string]any{"NAME": "foo"}))
 	require.NoError(t, errEv1)
 	if tmpEv1 != predicates.TriFalse {
 		t.Fatal("'foo' IS NULL should be FALSE")
@@ -572,13 +572,13 @@ func TestResolver_ResolveIn(t *testing.T) {
 
 	// Eval against a row.
 	row := map[string]any{"ID": int64(2)}
-	tmpEv0, errEv0 := cp.Eval(row)
+	tmpEv0, errEv0 := cp.Eval(usersRow(row))
 	require.NoError(t, errEv0)
 	if tmpEv0 != predicates.TriTrue {
 		t.Fatal("2 IN (1,2,3) should be TRUE")
 	}
 	row["ID"] = int64(9)
-	tmpEv1, errEv1 := cp.Eval(row)
+	tmpEv1, errEv1 := cp.Eval(usersRow(row))
 	require.NoError(t, errEv1)
 	if tmpEv1 != predicates.TriFalse {
 		t.Fatal("9 IN (1,2,3) should be FALSE")
@@ -691,7 +691,7 @@ func TestResolver_FeedsCascadesSimplify(t *testing.T) {
 	simplified := cascades.Simplify(combined, cascades.DefaultSimplifyRules())
 
 	// Tautology should fold; `id > 0` survives alone.
-	if got, want := simplified.Explain(), "ID > 0"; got != want {
+	if got, want := simplified.Explain(), "ID#0 > 0"; got != want {
 		t.Fatalf("Simplify: got %q, want %q", got, want)
 	}
 }
@@ -723,14 +723,14 @@ func TestResolver_Integration_AgeGreaterEighteen(t *testing.T) {
 	}
 
 	row := map[string]any{"ID": int64(7)} // id+1 = 8 > 5 → TRUE
-	got, errEv0 := pred.Eval(row)
+	got, errEv0 := pred.Eval(usersRow(row))
 	require.NoError(t, errEv0)
 	if got != predicates.TriTrue {
 		t.Fatalf("8 > 5: expected TRUE, got %v", got)
 	}
 	row["ID"] = int64(2)
 	tmpEv0, // 2+1 = 3 > 5 → FALSE
-		errEv1 := pred.Eval(row)
+		errEv1 := pred.Eval(usersRow(row))
 	require.NoError(t, errEv1)
 	got = tmpEv0
 	if got != predicates.TriFalse {
@@ -738,7 +738,7 @@ func TestResolver_Integration_AgeGreaterEighteen(t *testing.T) {
 	}
 
 	// Explain output should read cleanly.
-	if got, want := pred.Explain(), "(ID + 1) > 5"; got != want {
+	if got, want := pred.Explain(), "(ID#0 + 1) > 5"; got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 }

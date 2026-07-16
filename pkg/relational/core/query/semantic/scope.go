@@ -85,12 +85,12 @@ func (s *Scope) AllSourcesRecursive() []ScopeSource {
 // AddSource appends a FROM-clause source. Duplicate PLAIN aliases at the
 // same level are ACCEPTED — Java registers quantifiers freely (unique ids;
 // the SQL alias is only a display qualifier) and errors per-ATTRIBUTE at
-// reference resolution (RFC-173 QP-REF-BIND item 1); the caller
-// distinguishes duplicate legs via CorrelationName (the parser-minted
-// binding id). A duplicate involving a SHADOWING source (a lateral-unnest
-// AS/AT binding, either direction) still errors: Java genuinely forbids a
-// duplicate unnest alias at FROM (RFC-142), and the scope-level signal is
-// what the join-ON builder's drop-risk taxonomy keys on.
+// reference resolution; the caller distinguishes duplicate legs via
+// CorrelationName (the parser-minted binding id). A duplicate involving a
+// SHADOWING source (a lateral-unnest AS/AT binding, either direction) still
+// errors: Java genuinely forbids a duplicate unnest alias at FROM (RFC-142),
+// and the scope-level signal is what the join-ON builder's drop-risk
+// taxonomy keys on.
 func (s *Scope) AddSource(src ScopeSource) error {
 	for _, existing := range s.sources {
 		if !existing.Alias.EqualsIgnoreQuoting(src.Alias) {
@@ -167,8 +167,7 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 }
 
 // ResolveQualifiedColumn handles `alias.col` with Java's PER-ATTRIBUTE
-// semantics (SemanticAnalyzer.resolveIdentifierMaybe + resolveAcrossFragments,
-// RFC-173 QP-REF-BIND item 1):
+// semantics (SemanticAnalyzer.resolveIdentifierMaybe + resolveAcrossFragments):
 //   - ALL alias-matching sources at a level are candidates; >1 carrying the
 //     column is ambiguous (42702 at the caller) — ambiguity is TERMINAL, it
 //     never falls through to a parent scope;
@@ -259,8 +258,8 @@ type AmbiguousColumnError struct {
 // Reference renders the ambiguous reference AS WRITTEN (normalized) — Java's
 // message operand: `A.ID` for a qualified reference, `ID` for a bare one.
 // The callers' user-facing mapping is `Ambiguous reference %s` byte-equal to
-// Java's SemanticAnalyzer text (RFC-173 QP-REF-BIND item 1, live-verified for
-// duplicate AND distinct aliases, bare AND qualified).
+// Java's SemanticAnalyzer text (verified for duplicate AND distinct aliases,
+// bare AND qualified).
 func (e *AmbiguousColumnError) Reference() string {
 	if e.Qualifier.Name() != "" {
 		return e.Qualifier.Name() + "." + e.Id.Name()
@@ -326,18 +325,18 @@ func (e *DuplicateAliasError) Error() string {
 }
 
 // CorrelatedShadowError is returned when a qualified reference resolves to a
-// PARENT-scope source (Java's zero-match fallthrough) whose correlation name is
-// SHADOWED by a local FROM source that lacks the column — the RFC-173
-// QP-REF-BIND item-1 emitted-uncorrelatable case. Emitting QOV(correlation)
-// would bind the local (inner) leg's quantifier, so resolution declines LOUDLY
-// (never wrong rows); the class answers in Java (unique quantifier ids) and
-// flips when cross-scope binding ids land. Carries the reference as written for
-// the surfaced message.
+// PARENT-scope source (Java's zero-match fallthrough) whose correlation name
+// is SHADOWED by a local FROM source that lacks the column — an
+// emitted-uncorrelatable case. Emitting QOV(correlation) would bind the local
+// (inner) leg's quantifier, so resolution declines LOUDLY (never wrong rows);
+// this matches Java (unique quantifier ids) and will flip once cross-scope
+// binding ids are supported. Carries the reference as written for the
+// surfaced message.
 type CorrelatedShadowError struct {
 	Qualifier string
 	Field     string
 }
 
 func (e *CorrelatedShadowError) Error() string {
-	return fmt.Sprintf("correlated reference %s.%s is shadowed by a same-named FROM source that lacks the column; cross-scope binding is not yet supported (RFC-173 QP-REF-BIND follow-on)", e.Qualifier, e.Field)
+	return fmt.Sprintf("correlated reference %s.%s is shadowed by a same-named FROM source that lacks the column; cross-scope binding is not yet supported", e.Qualifier, e.Field)
 }

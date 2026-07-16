@@ -17,7 +17,7 @@ func wideRows(n, wbytes int, key string) []QueryResult {
 	pad := string(make([]byte, wbytes))
 	rows := make([]QueryResult, n)
 	for i := range rows {
-		rows[i] = QueryResult{Datum: map[string]any{"ID": int64(i), key: pad}}
+		rows[i] = dmap(map[string]any{"ID": int64(i), key: pad})
 	}
 	return rows
 }
@@ -97,14 +97,7 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 		}
 	})
 
-	// 5. memorySortCursor in-memory sort buffer.
-	advanced(t, "memorySortCursor", func(t *testing.T) {
-		inner := recordlayer.FromList(wideRows(6, w, "ID"))
-		c := newMemorySortCursor(inner, []string{"ID"}, []bool{false}, st)
-		drainCursor(t, ctx, c)
-	})
-
-	// 6. customSortCursor in-memory sort buffer.
+	// 5. customSortCursor in-memory sort buffer.
 	advanced(t, "customSortCursor", func(t *testing.T) {
 		inner := recordlayer.FromList(wideRows(6, w, "ID"))
 		c := newCustomSortCursor(inner, func([]QueryResult) error { return nil }, st)
@@ -116,20 +109,22 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 	advanced(t, "nljCursor hash-index", func(t *testing.T) {
 		innerRows := make([]QueryResult, 150)
 		for i := range innerRows {
-			innerRows[i] = QueryResult{Datum: map[string]any{"K": int64(i)}}
+			innerRows[i] = dmap(map[string]any{"K": int64(i)})
 		}
-		outer := recordlayer.FromList([]QueryResult{{Datum: map[string]any{"K": int64(1)}}})
+		outer := recordlayer.FromList([]QueryResult{dmap(map[string]any{"K": int64(1)})})
 		preds := []predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
 				Operand: &values.FieldValue{
-					Child: &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
-					Field: "K",
+					Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("O")},
+					Field:    "K",
+					Resolved: values.NewFieldPathOfSingle("K", 0, false),
 				},
 				Comparison: predicates.Comparison{
 					Type: predicates.ComparisonEquals,
 					Operand: &values.FieldValue{
-						Child: &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
-						Field: "K",
+						Child:    &values.QuantifiedObjectValue{Correlation: values.NamedCorrelationIdentifier("I")},
+						Field:    "K",
+						Resolved: values.NewFieldPathOfSingle("K", 0, false),
 					},
 				},
 			},

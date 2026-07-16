@@ -14,14 +14,11 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/onsi/gomega"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	_ "fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
@@ -30,60 +27,26 @@ import (
 // clusterFilePath is written once in TestMain and shared across tests.
 var clusterFilePath string
 
-// RFC-048 W1: the entire sqldriver test binary runs with the executor's
-// "no unresolved reference" invariant armed. Every query in every test — all
-// the aggregate / HAVING / correlated-scalar-subquery shapes Exhibit-A came
-// from — is therefore checked: if any of them evaluates a reference to a name
-// absent from a *complete* row (aggregate output), it is recorded here and the
-// binary fails, even when the individual test "passed". This is the standing
-// E2E proof of the RFC-048 success criterion ("no production code path emits
-// an unresolved reference today"). The flag is set ONCE in TestMain before any
-// test runs and never mutated afterwards, so it is safe under t.Parallel();
-// the hook only appends under a mutex. Strict mode does not change any returned
-// value — it only reports misses — so results are identical with it on.
-var (
-	w1mu         sync.Mutex
-	w1violations = map[string]int{}
-)
-
-func armW1() {
-	executor.StrictReferenceCheck = true
-	values.ReportUnresolvedReference = func(field string, available []string) {
-		avail := append([]string(nil), available...)
-		sort.Strings(avail)
-		key := fmt.Sprintf("unresolved reference %q against complete-row keys %v", field, avail)
-		w1mu.Lock()
-		w1violations[key]++
-		w1mu.Unlock()
-	}
-}
-
-func finishW1(code int) int {
-	w1mu.Lock()
-	defer w1mu.Unlock()
-	if len(w1violations) == 0 {
-		return code
-	}
-	fmt.Fprintf(os.Stderr, "\nRFC-048 W1: %d distinct unresolved-reference violation(s) — a silent name->NULL was emitted against a complete row:\n", len(w1violations))
-	for v, n := range w1violations {
-		fmt.Fprintf(os.Stderr, "  - %s (x%d)\n", v, n)
-	}
-	if code == 0 {
-		return 1
-	}
-	return code
-}
+// RFC-048 W1 ("no unresolved reference") is now enforced STRUCTURALLY by
+// ordinal (positional) column resolution, so this binary needs no armed hook. The ordinal
+// PositionalRow is the sole runtime row and FieldValue.evaluateOrdinal is LOUD
+// on a miss (*OrdinalResolutionError), never a silent name->NULL. A reference to
+// a name absent from a complete row therefore FAILS its query outright — a
+// strictly stronger guarantee than the retired report-and-continue hook. Every
+// query in every test below is thus checked for free: a green binary IS the
+// standing E2E proof of the RFC-048 success criterion ("no production code path
+// emits an unresolved reference"). The unit-level proof of the loud-miss
+// mechanism lives in
+// pkg/recordlayer/query/plan/cascades/values/w1_unresolved_reference_test.go.
 
 func TestMain(m *testing.M) {
-	armW1() // RFC-048 W1: arm the invariant for the whole test binary.
-
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
 		// No Docker — run non-FDB tests only.
-		os.Exit(finishW1(m.Run()))
+		os.Exit(m.Run())
 	}
 	defer container.Terminate(context.Background()) //nolint:errcheck
 
@@ -106,7 +69,7 @@ func TestMain(m *testing.M) {
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(finishW1(m.Run()))
+	os.Exit(m.Run())
 }
 
 // expectUnsupportedOperator asserts that err unwraps to an *api.Error
@@ -7799,6 +7762,59 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	g.Expect(hasPrecision).To(gomega.BeFalse(), "DOUBLE should not report decimal precision")
 
 	g.Expect(rows.Next()).To(gomega.BeTrue())
+	rows.Close()
+}
+
+// TestFDB_DerivedAliasColumnTypeShadow pins the descriptor-metadata
+// guard: a DERIVED/CTE output alias whose name COLLIDES with a stored field name
+// must report the DERIVED column's type, not the coincidentally-named stored
+// field's. `SELECT q.id FROM (SELECT x AS id FROM B) q` — q.id is x's DOUBLE, but
+// the derived leg carries B's descriptor, so descriptorForColumn finds B.ID's
+// BIGINT. The descriptor may only refine the flowed eval-width within a family;
+// across families (BIGINT vs DOUBLE) the flowed type wins. Rows were always
+// correct — this pins the reported column-type metadata (RED-on-revert of the
+// descriptorRefinesFlowed family guard).
+func TestFDB_DerivedAliasColumnTypeShadow(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_alias_shadow")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_alias_shadow")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE alias_shadow_tmpl "+
+			"CREATE TABLE B (id BIGINT NOT NULL, x DOUBLE, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_alias_shadow/main WITH TEMPLATE alias_shadow_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_alias_shadow?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO B (id, x) VALUES (7, 3.5)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// The derived `id` is x AS id (DOUBLE), NOT the stored B.id (BIGINT).
+	rows, err := db.QueryContext(ctx, `SELECT "q"."id" FROM (SELECT "x" AS "id" FROM B) AS "q"`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	colTypes, err := rows.ColumnTypes()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(colTypes).To(gomega.HaveLen(1))
+	g.Expect(colTypes[0].DatabaseTypeName()).To(gomega.Equal("DOUBLE"),
+		"derived alias q.id (= x DOUBLE) must report DOUBLE, not the shadowed stored B.ID BIGINT")
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var v float64
+	g.Expect(rows.Scan(&v)).NotTo(gomega.HaveOccurred())
+	g.Expect(v).To(gomega.Equal(3.5))
 	rows.Close()
 }
 

@@ -15,6 +15,33 @@ type ExistsSubquery struct {
 	Alias         values.CorrelationIdentifier
 	Plan          LogicalOperator
 	JoinPredicate predicates.QueryPredicate
+	// AlwaysTrue marks an EXISTS whose inner subquery ALWAYS produces at least
+	// one row, so `EXISTS(inner)` is unconditionally TRUE — set by the front-end
+	// for a NON-GROUPED aggregate inner (COUNT(*)/MAX/SUM with no GROUP BY /
+	// HAVING / QUALIFY / LIMIT 0 / positive OFFSET / windowed OVER). A POSITIVE
+	// WHERE-EXISTS consumer folds it to TRUE by NOT emitting the existential
+	// quantifier AND rewriting its EXISTS marker in the predicate to TRUE
+	// (foldAlwaysTrueExists / stripFoldedExistsMarkers) — which sidesteps the
+	// correlated-aggregate semi-join entirely (no joined-outer / windowed-DML
+	// hazard). NOT EXISTS (→ FALSE) and projected consumers do NOT fold on this
+	// flag (booked).
+	AlwaysTrue bool
+	// OuterOnlyJoinConjuncts marks a JoinPredicate carrying conjuncts with
+	// NO inner-source reference that can FILTER (a nested-EXISTS middle
+	// routes them here; the inside placement does not plan for that
+	// composition; statically-TRUE tautologies are excluded - routing TRUE
+	// is a no-op). The outer-routing validity matrix, enforced by
+	// declineNegatedOuterOnlyEsq (predicate side) and
+	// declineNegatedOuterOnlyEsqValue (value side) in the translator:
+	//
+	//	WHERE/ON + positive  -> VALID   (P AND EXISTS(Q) == EXISTS(P AND Q))
+	//	WHERE/ON + negative  -> DECLINE (would compute P AND NOT-EXISTS(Q))
+	//	projected + either   -> DECLINE (outer-routing filters the row
+	//	                        stream; a projected boolean must not)
+	//
+	// HAVING is kept out of the surface by translateAggregate's blanket
+	// rejection of HavingExistsSubqueries.
+	OuterOnlyJoinConjuncts bool
 }
 
 // ScalarSubquery pairs a correlation alias with the logical plan for
@@ -55,7 +82,7 @@ type LogicalScan struct {
 	Alias string
 	// Binding is the scan's binding correlation name when its FROM alias
 	// DUPLICATES an earlier leg's at the same level ("" = the alias binds —
-	// every non-duplicate leg). RFC-173 QP-REF-BIND item 1: carried from the
+	// every non-duplicate leg). Carried from the
 	// parser's single mint authority (assignFromLegBindingIDs); consumers
 	// read it via sourceBinding and never re-derive binding identity from
 	// the alias. The SQL alias stays the DISPLAY qualifier (sourceAlias).
@@ -89,7 +116,7 @@ type LogicalUnnest struct {
 	// resolves segment-by-segment against the scope.
 	Segments []string
 	// Binding carries the comma source's duplicate-alias binding id
-	// (RFC-173 QP-REF-BIND item 1, see LogicalScan.Binding) so the
+	// (see LogicalScan.Binding) so the
 	// TABLE-FIRST demotion (demoteSchemaQualifiedUnnest) can restore it on
 	// the demoted LogicalScan — a mis-classified schema-qualified TABLE leg
 	// is a table leg for binding purposes. A GENUINE unnest never consumes
@@ -235,6 +262,13 @@ type SortKey struct {
 	Dir        SortDir
 	NullsFirst bool
 	Value      values.Value // resolved Value expression (nil = use text as FieldValue)
+	// Pos is the 1-based SELECT-list position for a positional key
+	// (`ORDER BY <n>`); 0 = not positional. A positional key IS an output
+	// ordinal by SQL definition, so the translator bakes it directly to the
+	// projection's output slot — no text-rendering round-trip, which
+	// diverges for computed items whose canonical source text differs from the
+	// baked output spelling.
+	Pos int
 }
 
 // LogicalSort sorts its child rows by the given keys.
@@ -632,8 +666,8 @@ type LogicalCTE struct {
 	ColumnAliases  []string // WITH c(a, b) AS (...) → renames body's output columns
 	TraversalOrder TraversalOrder
 	// Binding is the derived/CTE leg's binding correlation name when its
-	// FROM alias duplicates an earlier leg's ("" = Name binds). RFC-173
-	// QP-REF-BIND item 1 — see LogicalScan.Binding.
+	// FROM alias duplicates an earlier leg's ("" = Name binds). See
+	// LogicalScan.Binding.
 	Binding string
 }
 

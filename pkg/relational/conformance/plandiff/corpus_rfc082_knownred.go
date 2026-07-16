@@ -45,7 +45,7 @@ var rfc082KnownRed = map[string]bool{
 	// early (count 2 instead of Java's 10) because the normalization wrap read
 	// the leg output by its LOGICAL name while the row is keyed by the PHYSICAL
 	// name. Fixed by legPhysicalOutputNames (values.ProjectionColumnName naming
-	// contract) — found by the RFC-173 §5 dual-window differential.
+	// contract) — found via a cross-engine plan differential.
 	// Pre-existing inline annotations that drifted (now re-classified red):
 	"distinct_count":                               true,
 	"group_by_null_bucket":                         true,

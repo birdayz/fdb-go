@@ -111,19 +111,23 @@ func TestConstantValue_Evaluate(t *testing.T) {
 
 func TestFieldValue_Evaluate(t *testing.T) {
 	t.Parallel()
-	f := &FieldValue{Field: "name", Typ: TypeString}
-	row := map[string]any{"name": "Alice", "age": int64(30)}
+	// "name" carries a plan-time ordinal (its sorted slot in the
+	// {age, name} row = 1); Evaluate reads row.Get(1) positionally.
+	row, bk := fomB(map[string]any{"name": "Alice", "age": int64(30)})
+	f := bk("name", TypeString)
 	got, errEv0 := f.Evaluate(row)
 	require.NoError(t, errEv0)
 	if got != "Alice" {
 		t.Fatalf("field lookup: got %v", got)
 	}
-	// Missing field: NULL.
+	// Missing field: post-cap an ABSENT column over an ordinal row is a LOUD
+	// *OrdinalResolutionError (an unresolved reference), never a silent NULL. A
+	// real SQL NULL is key-present-value-nil, tested elsewhere.
 	missing := &FieldValue{Field: "nope", Typ: TypeString}
-	got, errEv1 := missing.Evaluate(row)
-	require.NoError(t, errEv1)
-	if got != nil {
-		t.Fatalf("missing field: got %v", got)
+	_, errEv1 := missing.Evaluate(row)
+	var ordErr *OrdinalResolutionError
+	if !errors.As(errEv1, &ordErr) {
+		t.Fatalf("missing field: want *OrdinalResolutionError, got %v", errEv1)
 	}
 	// nil ctx.
 	got, errEv2 := f.Evaluate(nil)
@@ -131,18 +135,21 @@ func TestFieldValue_Evaluate(t *testing.T) {
 	if got != nil {
 		t.Fatalf("nil ctx: got %v", got)
 	}
-	// Wrong ctx type.
-	got, errEv3 := f.Evaluate("not a map")
-	require.NoError(t, errEv3)
-	if got != nil {
-		t.Fatalf("wrong ctx type: got %v", got)
+	// Wrong ctx type: a non-nil unrecognized context is a nothing-matched eval —
+	// now a LOUD *UnboundEvalContextError, not a silent off-frontier NULL.
+	_, errEv3 := f.Evaluate("not a map")
+	var uce *UnboundEvalContextError
+	if !errors.As(errEv3, &uce) {
+		t.Fatalf("wrong ctx type: want *UnboundEvalContextError, got %v", errEv3)
 	}
 }
 
 func TestArithmeticValue_Evaluate(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	b := &FieldValue{Field: "b", Typ: TypeInt}
+	// operands carry plan-time ordinals — sorted {a, b} → a=slot 0,
+	// b=slot 1 (fom sorts keys), read positionally from the row.
+	a := NewFieldValueWithResolvedOrdinal("a", 0, TypeInt)
+	b := NewFieldValueWithResolvedOrdinal("b", 1, TypeInt)
 
 	cases := []struct {
 		op   ArithmeticOp
@@ -158,7 +165,7 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-		got, errEv0 := av.Evaluate(map[string]any{"a": tc.a, "b": tc.b})
+		got, errEv0 := av.Evaluate(fom(map[string]any{"a": tc.a, "b": tc.b}))
 		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Fatalf("op %v: got %v, want %v", tc.op, got, tc.want)
@@ -168,7 +175,7 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	// Division by zero returns ArithmeticDivisionByZeroError on the error
 	// channel (matches Java's ArithmeticException; executor maps it to 22012).
 	divZ := &ArithmeticValue{Op: OpDiv, Left: a, Right: b}
-	if v, err := divZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); v != nil || err == nil {
+	if v, err := divZ.Evaluate(fom(map[string]any{"a": int64(5), "b": int64(0)})); v != nil || err == nil {
 		t.Fatalf("div by zero: got (%v, %v), want (nil, ArithmeticDivisionByZeroError)", v, err)
 	} else {
 		var divByZero *ArithmeticDivisionByZeroError
@@ -179,7 +186,7 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 
 	// MOD by zero same error contract as Div.
 	modZ := &ArithmeticValue{Op: OpMod, Left: a, Right: b}
-	if v, err := modZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); v != nil || err == nil {
+	if v, err := modZ.Evaluate(fom(map[string]any{"a": int64(5), "b": int64(0)})); v != nil || err == nil {
 		t.Fatalf("mod by zero: got (%v, %v), want (nil, ArithmeticDivisionByZeroError)", v, err)
 	} else {
 		var divByZero *ArithmeticDivisionByZeroError
@@ -190,12 +197,12 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 
 	// NULL propagation.
 	sum := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	got, errEv1 := sum.Evaluate(map[string]any{"a": nil, "b": int64(1)})
+	got, errEv1 := sum.Evaluate(fom(map[string]any{"a": nil, "b": int64(1)}))
 	require.NoError(t, errEv1)
 	if got != nil {
 		t.Fatalf("NULL lhs: got %v", got)
 	}
-	got, errEv2 := sum.Evaluate(map[string]any{"a": int64(1), "b": nil})
+	got, errEv2 := sum.Evaluate(fom(map[string]any{"a": int64(1), "b": nil}))
 	require.NoError(t, errEv2)
 	if got != nil {
 		t.Fatalf("NULL rhs: got %v", got)
@@ -204,7 +211,7 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	// Type mismatch returns ScalarTypeMismatchError on the error channel
 	// (Java-aligned).
 	tm := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	if v, err := tm.Evaluate(map[string]any{"a": "foo", "b": int64(1)}); v != nil || err == nil {
+	if v, err := tm.Evaluate(fom(map[string]any{"a": "foo", "b": int64(1)})); v != nil || err == nil {
 		t.Fatalf("type mismatch: got (%v, %v), want (nil, ScalarTypeMismatchError)", v, err)
 	} else {
 		var mismatch *ScalarTypeMismatchError
@@ -217,13 +224,13 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	// Evaluate, full coercion waits on the Phase 4.0 Type hierarchy
 	// Float arithmetic: both float or mixed int+float → float promotion.
 	floatOp := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	got, errEv3 := floatOp.Evaluate(map[string]any{"a": float64(1.5), "b": float64(2.5)})
+	got, errEv3 := floatOp.Evaluate(fom(map[string]any{"a": float64(1.5), "b": float64(2.5)}))
 	require.NoError(t, errEv3)
 	if got != float64(4) {
 		t.Fatalf("float arith: got %v, want 4.0", got)
 	}
 	mixedOp := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	got, errEv4 := mixedOp.Evaluate(map[string]any{"a": int64(1), "b": float64(2.5)})
+	got, errEv4 := mixedOp.Evaluate(fom(map[string]any{"a": int64(1), "b": float64(2.5)}))
 	require.NoError(t, errEv4)
 	if got != float64(3.5) {
 		t.Fatalf("mixed int/float arith: got %v, want 3.5", got)
@@ -625,29 +632,30 @@ func TestQuantifiedObjectValue_Evaluate_MultiSource(t *testing.T) {
 	t.Parallel()
 	corr := NamedCorrelationIdentifier("t")
 	q := NewQuantifiedObjectValue(corr)
-	ctx := map[CorrelationIdentifier]map[string]any{
-		corr:                            {"age": int64(30)},
-		NamedCorrelationIdentifier("u"): {"other": "field"},
-	}
-	tmpEv1, errEv1 := q.Evaluate(ctx)
-	require.NoError(t, errEv1)
-	row, ok := tmpEv1.(map[string]any)
+	// Post-cap a QOV resolves its correlation's row through a CorrelationBinder;
+	// each source binds an ordinal row. QOV(t) must pick t's row, never u's.
+	binder := &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
+		corr:                            fom(map[string]any{"age": int64(30)}),
+		NamedCorrelationIdentifier("u"): fom(map[string]any{"other": "field"}),
+	}}
+	got, err := q.Evaluate(binder)
+	require.NoError(t, err)
+	row, ok := got.(OrdinalRow)
 	if !ok {
-		tmpEv0, errEv0 := q.Evaluate(ctx)
-		require.NoError(t, errEv0)
-		t.Fatalf("expected map row, got %T", tmpEv0)
+		t.Fatalf("expected an ordinal row, got %T", got)
 	}
-	if got, want := row["age"], int64(30); got != want {
-		t.Fatalf("age: got %v, want %v", got, want)
+	// t's 1-column row: AGE at slot 0. u's row carries "other" instead, so a
+	// slot-0 read distinguishes the two.
+	if v, _ := row.Get(0); v != int64(30) {
+		t.Fatalf("age: got %v, want 30 (t's row, not u's)", v)
 	}
 }
 
 func TestQuantifiedObjectValue_Evaluate_SingleSource(t *testing.T) {
 	t.Parallel()
 	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
-	// Single-source: the whole row IS the correlation's row.
-	ctx := map[string]any{"age": int64(42)}
-	got, errEv0 := q.Evaluate(ctx)
+	// A bare frontier ordinal row IS the correlation's row.
+	got, errEv0 := q.Evaluate(fom(map[string]any{"age": int64(42)}))
 	require.NoError(t, errEv0)
 	if got == nil {
 		t.Fatal("single-source Evaluate should return the row")
@@ -830,10 +838,11 @@ func TestRecordConstructorValue_Shape(t *testing.T) {
 func TestRecordConstructorValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
-		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "id", Typ: TypeInt}},
+		// "id" carries its plan-time ordinal (sole column → slot 0).
+		RecordConstructorField{Name: "a", Value: NewFieldValueWithResolvedOrdinal("id", 0, TypeInt)},
 		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
 	)
-	ctx := map[string]any{"id": int64(7)}
+	ctx := fom(map[string]any{"id": int64(7)})
 	tmpEv1, errEv1 := r.Evaluate(ctx)
 	require.NoError(t, errEv1)
 	out, ok := tmpEv1.(map[string]any)
@@ -1329,8 +1338,21 @@ func TestScalarFunctionValue_Evaluate(t *testing.T) {
 
 	str := func(s string) Value { return &ConstantValue{Value: s, Typ: TypeString} }
 	bytesV := func(b []byte) Value { return &ConstantValue{Value: b, Typ: TypeString} }
-	field := func(name string) Value { return &FieldValue{Field: name, Typ: TypeString} }
-	row := map[string]any{"NAME": "Alice", "BLANK": "", "BIN": []byte{0xff, 0xfe}}
+	row := &fakeOrdinalRow{
+		names: []string{"NAME", "BLANK", "BIN"},
+		slots: []any{"Alice", "", []byte{0xff, 0xfe}},
+	}
+	// a column reference carries its plan-time ordinal — the field's
+	// slot in row.names (NAME=0, BLANK=1, BIN=2), read positionally.
+	field := func(name string) Value {
+		for i, n := range row.names {
+			if n == name {
+				return NewFieldValueWithResolvedOrdinal(name, i, TypeString)
+			}
+		}
+		t.Fatalf("field %q not present in row", name)
+		return nil
+	}
 
 	cases := []struct {
 		name string
@@ -1432,8 +1454,8 @@ func TestAggregateValue_GetIndexTypeName(t *testing.T) {
 		AggCount:     "COUNT_NOT_NULL",
 		AggCountStar: "COUNT",
 		AggSum:       "SUM",
-		AggMin:       "MIN_EVER_LONG",
-		AggMax:       "MAX_EVER_LONG",
+		AggMin:       "permuted_min",
+		AggMax:       "permuted_max",
 		AggAvg:       "",
 		AggInvalid:   "",
 	}
@@ -1538,13 +1560,14 @@ func TestFieldValue_QOV_CorrelationBinder(t *testing.T) {
 	t.Parallel()
 	corrA := NamedCorrelationIdentifier("A")
 	corrB := NamedCorrelationIdentifier("B")
-	fv := NewFieldValue(NewQuantifiedObjectValue(corrA), "NAME", UnknownType)
+	// the correlated NAME ref carries its plan-time ordinal — sorted
+	// {ID, NAME} → NAME=slot 1 in the bound row.
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrA), "NAME", 1, UnknownType)
 
 	rc := &RowEvalContext{
-		Datum: map[string]any{"irrelevant": "data"},
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
-			corrA: map[string]any{"NAME": "Alice", "ID": int64(1)},
-			corrB: map[string]any{"NAME": "Bob", "ID": int64(2)},
+			corrA: fom(map[string]any{"NAME": "Alice", "ID": int64(1)}),
+			corrB: fom(map[string]any{"NAME": "Bob", "ID": int64(2)}),
 		}},
 	}
 	got, errEv0 := fv.Evaluate(rc)
@@ -1557,13 +1580,14 @@ func TestFieldValue_QOV_CorrelationBinder(t *testing.T) {
 func TestFieldValue_QOV_CorrelationBinder_OtherTable(t *testing.T) {
 	t.Parallel()
 	corrB := NamedCorrelationIdentifier("B")
-	fv := NewFieldValue(NewQuantifiedObjectValue(corrB), "NAME", UnknownType)
+	// correlated NAME ref carries its plan-time ordinal — single
+	// column {NAME} → slot 0 in the bound row.
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrB), "NAME", 0, UnknownType)
 
 	rc := &RowEvalContext{
-		Datum: map[string]any{"NAME": "wrong"},
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
-			NamedCorrelationIdentifier("A"): map[string]any{"NAME": "Alice"},
-			corrB:                           map[string]any{"NAME": "Bob"},
+			NamedCorrelationIdentifier("A"): fom(map[string]any{"NAME": "Alice"}),
+			corrB:                           fom(map[string]any{"NAME": "Bob"}),
 		}},
 	}
 	got, errEv0 := fv.Evaluate(rc)
@@ -1573,35 +1597,43 @@ func TestFieldValue_QOV_CorrelationBinder_OtherTable(t *testing.T) {
 	}
 }
 
+// TestFieldValue_QOV_FlatMap_QualifiedKey pins qualified-column resolution over a
+// merged join row on the ordinal substrate. The QOV(EMP).NAME reference is BAKED
+// at plan time to the ordinal of the EMP leg's NAME column, so it reads that slot
+// exactly — never the bare "NAME" at a different ordinal. (The name-model
+// alias+field->"EMP.NAME" key CONSTRUCTION this originally exercised moved to
+// plan-time baking + the executor leg-window layer; see the executor's
+// leg-window and ThreeWayJoin tests for the end-to-end proof.)
 func TestFieldValue_QOV_FlatMap_QualifiedKey(t *testing.T) {
 	t.Parallel()
-	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("EMP")), "NAME", UnknownType)
-
-	merged := map[string]any{
-		"NAME":      "wrong-bare",
-		"EMP.NAME":  "Alice",
-		"DEPT.NAME": "Engineering",
+	// Merged row: bare "NAME" at ordinal 0, the EMP leg's NAME at ordinal 1.
+	row := &fakeOrdinalRow{
+		names: []string{"NAME", "EMP.NAME", "DEPT.NAME"},
+		slots: []any{"wrong-bare", "Alice", "Engineering"},
 	}
-	got, errEv0 := fv.Evaluate(merged)
+	fv := NewFieldValueWithResolvedOrdinal("EMP.NAME", 1, UnknownType)
+	got, errEv0 := fv.Evaluate(row)
 	require.NoError(t, errEv0)
 	if got != "Alice" {
-		t.Fatalf("expected Alice from EMP.NAME, got %v", got)
+		t.Fatalf("baked EMP.NAME ordinal must read slot 1 (Alice), got %v", got)
 	}
 }
 
 // TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField pins the RFC-069
-// merged-Datum resolution fix. A re-enumerated N-way join collapses a buried
-// table (T3) into a merge quantifier ($m) whose row flows that table's columns
-// under their OWN qualified keys (T3.T2_ID), preserved verbatim by the
-// source-anchored join RC / the executor's mergeRows — NOT re-prefixed with the merge alias. A
-// FieldValue{Child: QOV($m), Field: "T3.T2_ID"} accessed against the merged
-// Datum (map / RowEvalContext.Datum) must resolve "T3.T2_ID" directly; the naive
-// qualKey = $m + "." + Field would invent the never-written key "$M.T3.T2_ID"
-// and return nil → the 0-rows bug.
+// merged-row resolution fix on the ordinal substrate. A re-enumerated N-way join
+// collapses a buried table (T3) into a merge quantifier ($m) whose row flows that
+// table's columns under their OWN qualified names (T3.T2_ID), preserved verbatim
+// by the join's merged positional row — NOT re-prefixed with the merge alias. A
+// FieldValue{Child: QOV($m), Field: "T3.T2_ID"} resolves "T3.T2_ID" DIRECTLY
+// against the ordinal row (GetByName exact match); the naive qualKey =
+// $m + "." + Field would invent the never-written key "$M.T3.T2_ID" — the
+// 0-rows bug. Post-cap the resolution is exact and loud on a miss (no fallback).
 func TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField(t *testing.T) {
 	t.Parallel()
 	merge := NamedCorrelationIdentifier("$M_2:T3_2:T4")
-	fv := NewFieldValue(NewQuantifiedObjectValue(merge), "T3.T2_ID", UnknownType)
+	// the qualified ref carries its plan-time ordinal — sorted
+	// {ID, T3.T2_ID, T4.T3_ID} → T3.T2_ID = slot 1 in the merged row.
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(merge), "T3.T2_ID", 1, UnknownType)
 
 	merged := map[string]any{
 		"T3.T2_ID": int64(7),
@@ -1609,27 +1641,28 @@ func TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField(t *testing.T) {
 		"ID":       int64(99), // bare key from the last-written table
 	}
 
-	// map[string]any context (the NLJ passesJoinPredicates path).
-	got, errEv0 := fv.Evaluate(merged)
+	// Bare ordinal-row context (the NLJ passesJoinPredicates path).
+	got, errEv0 := fv.Evaluate(fom(merged))
 	require.NoError(t, errEv0)
 	if got != int64(7) {
-		t.Errorf("map ctx: T3.T2_ID via $m = %v, want 7", got)
+		t.Errorf("ordinal-row ctx: T3.T2_ID via $m = %v, want 7", got)
 	}
 
-	// RowEvalContext.Datum context (the PredicatesFilter path, no binding for $m).
-	rc := &RowEvalContext{Datum: merged}
+	// RowEvalContext.Positional context (the PredicatesFilter path, no binding for $m).
+	rc := &RowEvalContext{Positional: fom(merged)}
 	got, errEv1 := fv.Evaluate(rc)
 	require.NoError(t, errEv1)
 	if got != int64(7) {
-		t.Errorf("RowEvalContext.Datum ctx: T3.T2_ID via $m = %v, want 7", got)
+		t.Errorf("RowEvalContext.Positional ctx: T3.T2_ID via $m = %v, want 7", got)
 	}
 
-	// A qualified field NOT present must still miss (no spurious fallback).
+	// A qualified field NOT present is a LOUD miss (no spurious fallback to a
+	// bare key) — the ordinal frontier's no-silent-miss contract.
 	missing := NewFieldValue(NewQuantifiedObjectValue(merge), "T9.X", UnknownType)
-	got, errEv2 := missing.Evaluate(merged)
-	require.NoError(t, errEv2)
-	if got != nil {
-		t.Errorf("absent qualified key must resolve nil, got %v", got)
+	_, errEv2 := missing.Evaluate(fom(merged))
+	var ordErr *OrdinalResolutionError
+	if !errors.As(errEv2, &ordErr) {
+		t.Errorf("absent qualified key must be a loud *OrdinalResolutionError, got %v", errEv2)
 	}
 }
 
@@ -1641,50 +1674,59 @@ func TestFieldValue_QOV_FlatMap_NoFallbackToBareKey(t *testing.T) {
 		"K":   int64(99),
 		"B.K": int64(99),
 	}
-	got, errEv0 := fv.Evaluate(merged)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("expected nil (A.K not in map), got %v — bare key fallback must not happen", got)
+	// An unrecognized name-map context is a nothing-matched eval — now a loud
+	// *UnboundEvalContextError, not a silent NULL. (The old point — no bare-key
+	// fallback to "K" — is subsumed: nothing matches, so it's loud.)
+	_, errEv0 := fv.Evaluate(merged)
+	var uce *UnboundEvalContextError
+	if !errors.As(errEv0, &uce) {
+		t.Fatalf("unrecognized name-map context: want *UnboundEvalContextError, got %v", errEv0)
 	}
 }
 
+// TestFieldValue_QOV_NullKeyDisambiguation pins that two legs' same-suffix columns
+// (A.K, B.K) are disambiguated by ORDINAL: each reference is baked to its own leg's
+// slot, so A.K and B.K read distinct values even alongside a bare "K". (This is the
+// duplicate-named-column disambiguation the merged positional row / leg windows do;
+// the retired name model keyed it by the qualified string.)
 func TestFieldValue_QOV_NullKeyDisambiguation(t *testing.T) {
 	t.Parallel()
-	fvA := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("A")), "K", UnknownType)
-	fvB := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("B")), "K", UnknownType)
-
-	merged := map[string]any{
-		"A.K": int64(10),
-		"B.K": int64(20),
-		"K":   int64(10),
+	row := &fakeOrdinalRow{
+		names: []string{"A.K", "B.K", "K"},
+		slots: []any{int64(10), int64(20), int64(10)},
 	}
-	gotA, errEv0 := fvA.Evaluate(merged)
+	fvA := NewFieldValueWithResolvedOrdinal("A.K", 0, UnknownType)
+	fvB := NewFieldValueWithResolvedOrdinal("B.K", 1, UnknownType)
+	gotA, errEv0 := fvA.Evaluate(row)
 	require.NoError(t, errEv0)
-	gotB, errEv1 := fvB.Evaluate(merged)
+	gotB, errEv1 := fvB.Evaluate(row)
 	require.NoError(t, errEv1)
 	if gotA != int64(10) {
-		t.Errorf("A.K: expected 10, got %v", gotA)
+		t.Errorf("A.K (ordinal 0): expected 10, got %v", gotA)
 	}
 	if gotB != int64(20) {
-		t.Errorf("B.K: expected 20, got %v", gotB)
+		t.Errorf("B.K (ordinal 1): expected 20, got %v", gotB)
 	}
 }
 
+// TestFieldValue_QOV_NullFK_NoMatch pins the outer-join null-supply on the ordinal
+// substrate: the A leg found no match, so its column is NULL-SUPPLIED (present-nil
+// at A's ordinal), not absent — the baked A.K reads that nil slot (SQL NULL),
+// never falling back to the bare "K". The matched B leg reads its own value.
 func TestFieldValue_QOV_NullFK_NoMatch(t *testing.T) {
 	t.Parallel()
-	fvA := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("A")), "K", UnknownType)
-	fvB := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("B")), "K", UnknownType)
-
-	merged := map[string]any{
-		"B.K": int64(10),
-		"K":   int64(10),
+	row := &fakeOrdinalRow{
+		names: []string{"A.K", "B.K", "K"},
+		slots: []any{nil, int64(10), int64(10)}, // A.K null-supplied (no match)
 	}
-	gotA, errEv0 := fvA.Evaluate(merged)
+	fvA := NewFieldValueWithResolvedOrdinal("A.K", 0, UnknownType)
+	fvB := NewFieldValueWithResolvedOrdinal("B.K", 1, UnknownType)
+	gotA, errEv0 := fvA.Evaluate(row)
 	require.NoError(t, errEv0)
-	gotB, errEv1 := fvB.Evaluate(merged)
+	gotB, errEv1 := fvB.Evaluate(row)
 	require.NoError(t, errEv1)
 	if gotA != nil {
-		t.Fatalf("A.K absent from map → must be nil, got %v", gotA)
+		t.Fatalf("A.K null-supplied → must be nil (never bare-K fallback), got %v", gotA)
 	}
 	if gotB != int64(10) {
 		t.Fatalf("B.K expected 10, got %v", gotB)
@@ -1694,12 +1736,14 @@ func TestFieldValue_QOV_NullFK_NoMatch(t *testing.T) {
 func TestFieldValue_QOV_CorrelationIdMap(t *testing.T) {
 	t.Parallel()
 	corrE := NamedCorrelationIdentifier("EMP")
-	fv := NewFieldValue(NewQuantifiedObjectValue(corrE), "SALARY", UnknownType)
+	// correlated SALARY ref carries its plan-time ordinal — sorted
+	// {NAME, SALARY} → SALARY = slot 1 in the bound row.
+	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrE), "SALARY", 1, UnknownType)
 
-	ctx := map[CorrelationIdentifier]map[string]any{
-		corrE:                              {"SALARY": int64(100), "NAME": "Alice"},
-		NamedCorrelationIdentifier("DEPT"): {"NAME": "Eng"},
-	}
+	ctx := &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
+		corrE:                              fom(map[string]any{"SALARY": int64(100), "NAME": "Alice"}),
+		NamedCorrelationIdentifier("DEPT"): fom(map[string]any{"NAME": "Eng"}),
+	}}
 	got, errEv0 := fv.Evaluate(ctx)
 	require.NoError(t, errEv0)
 	if got != int64(100) {
@@ -1707,28 +1751,30 @@ func TestFieldValue_QOV_CorrelationIdMap(t *testing.T) {
 	}
 }
 
-func TestFieldValue_QOV_MissingCorrelation_ReturnsNil(t *testing.T) {
+func TestFieldValue_QOV_MissingCorrelation_IsLoud(t *testing.T) {
 	t.Parallel()
 	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("MISSING")), "COL", UnknownType)
 
 	rc := &RowEvalContext{
-		Datum: map[string]any{"COL": "should-not-return"},
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
-			NamedCorrelationIdentifier("OTHER"): map[string]any{"COL": "other"},
+			NamedCorrelationIdentifier("OTHER"): fom(map[string]any{"COL": "other"}),
 		}},
 	}
-	got, errEv0 := fv.Evaluate(rc)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("missing correlation should return nil, got %v", got)
+	// The correlation is unbound and there is no Positional row: a nothing-matched
+	// RowEvalContext eval is now a LOUD *UnboundEvalContextError, not a silent NULL.
+	_, errEv0 := fv.Evaluate(rc)
+	var uce *UnboundEvalContextError
+	if !errors.As(errEv0, &uce) {
+		t.Fatalf("missing correlation: want *UnboundEvalContextError, got %v", errEv0)
 	}
 }
 
 func TestFieldValue_NoChild_BackwardCompat(t *testing.T) {
 	t.Parallel()
-	fv := &FieldValue{Field: "NAME", Typ: UnknownType}
+	// a flat reference carries its plan-time ordinal (slot 0).
+	fv := NewFieldValueWithResolvedOrdinal("NAME", 0, UnknownType)
 
-	row := map[string]any{"NAME": "Alice"}
+	row := &fakeOrdinalRow{names: []string{"NAME"}, slots: []any{"Alice"}}
 	got, errEv0 := fv.Evaluate(row)
 	require.NoError(t, errEv0)
 	if got != "Alice" {
@@ -1738,9 +1784,11 @@ func TestFieldValue_NoChild_BackwardCompat(t *testing.T) {
 
 func TestFieldValue_NoChild_QualifiedString_BackwardCompat(t *testing.T) {
 	t.Parallel()
-	fv := &FieldValue{Field: "EMP.NAME", Typ: UnknownType}
+	// the qualified flat reference carries its plan-time ordinal —
+	// slot 0 in the row, so it reads the EMP.NAME slot, never the bare "NAME".
+	fv := NewFieldValueWithResolvedOrdinal("EMP.NAME", 0, UnknownType)
 
-	row := map[string]any{"EMP.NAME": "Alice", "NAME": "wrong"}
+	row := &fakeOrdinalRow{names: []string{"EMP.NAME", "NAME"}, slots: []any{"Alice", "wrong"}}
 	got, errEv0 := fv.Evaluate(row)
 	require.NoError(t, errEv0)
 	if got != "Alice" {

@@ -433,7 +433,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `information_schema` | 5 | INFORMATION_SCHEMA.* system-table queries. |
 | `integer_range` | 12 | INTEGER (32-bit) column range enforcement. |
 | `java_alignment_probes` | 14 | Probes derived from Java's yamsql test suite to verify Go matches |
-| `min_max_string` | 3 | MIN/MAX on string columns |
+| `min_max_string` | 3 | MIN/MAX on string columns is REJECTED |
 | `mixed_agg_nonagg` | 4 | Mixed aggregate and non-aggregate expressions |
 | `multi_feature` | 3 | End-to-end scenario chaining several features at once: CTE + WHERE + |
 | `multi_feature_integer` | 11 | Integration tests combining multiple SQL features against INTEGER (INT32) |

@@ -189,101 +189,119 @@ type FieldValue struct {
 	Typ   Type
 	Child Value // base value (nil = legacy flat field reference)
 
-	// Resolved is the RFC-173 baked-ordinal marker — Java's construction-time
+	// Resolved is the baked-ordinal path — Java's construction-time
 	// FieldPath resolution, where the accessor IS an ordinal and runtime access
-	// is positional. nil = LAZY node (today's model: the column position is
-	// re-derived from the child's flowed type on every resolveOrdinal). Non-nil
-	// = BAKED node: resolveOrdinal returns the accessor's ordinal directly, so
+	// is positional: resolveOrdinal returns the accessor's ordinal directly, so
 	// a positional-row read is row.Get(ordinal) — position-preserving by
 	// construction, and therefore sound under DUPLICATE output names, which
 	// every name-based resolution collapses (RecordType.FieldIndex is
-	// first-match; the name-keyed Datum is last-wins). Field is then a DISPLAY
-	// name for diagnostics and name-model coexistence.
+	// first-match). Field is a DISPLAY name for diagnostics and Explain.
 	//
-	// Two construction shapes during the coexistence window:
-	//   - NewFieldValueOfOrdinal (gated-join seeds): child-bearing over a typed
-	//     leg QOV, FrontierPinned — the executor guarantees positional rows, so
-	//     a name-keyed read is a loud *BakedNameContextError.
-	//   - NewFieldValueWithResolvedOrdinal (recursive-CTE leg wrap): childless,
-	//     unpinned — no frontier guarantee; off the positional frontier Field
-	//     names the Datum read key, so one Value works under both row models.
-	// Both are SINGLE-accessor paths; multi-accessor paths exist only via the
-	// baked-gated compose rule (S3-W1, dark) until the S3-W2/W3 flip.
+	// Every RUNTIME-evaluated FieldValue is BAKED (Resolved non-nil): the
+	// runtime name-resolution fallback is deleted, so a LAZY node (nil) that
+	// reaches evaluation fails loud (OrdinalResolutionError). Lazy nodes
+	// survive only as PLAN-TIME artifacts that are never evaluated against a
+	// row — match-candidate columns, ordering-hint name carriers (compared by
+	// name, never evaluated), and transient resolver/translator trees that the
+	// bake walks (bakeFlatRefsAgainstColumns, bakeGroupByOutputRefs,
+	// pullUpSortKeyValue, the seed constructions) bind before the plan
+	// finalizes.
 	//
-	// Identity refinement (contract, RFC-173 §4 Slice 2 ruling #2, widened
-	// element-wise by the S3 staging ruling): BAKED nodes compare by
-	// per-element (Field, Ordinal) list equality (FieldPath.Equals); baked vs
-	// lazy is UNEQUAL (worst case a missed dedup, never a conflation); lazy vs
-	// lazy stays name-only. FrontierPinned is EXCLUDED from
-	// identity/hash/Explain (an evaluation-contract marker, not a value
-	// distinction — like Java excluding name/type from ResolvedAccessor
-	// equality). Every FieldValue copy/rebuild site MUST preserve this marker —
-	// dropping it silently degrades a baked node to lazy, which conflates
-	// duplicate same-named columns at different ordinals (§5 duplicate-name
-	// pin). For baked nodes Field equals the LAST accessor's name (Java
-	// getLastFieldName) — display and name-model coexistence only.
+	// Two bake KINDS (see FieldPath.FrontierPinned for why the distinction is
+	// load-bearing):
+	//   - MACHINERY-OWNED (FrontierPinned): built by the join/gather seed
+	//     machinery over a typed leg QOV (NewFieldValueOfOrdinal) or fused by
+	//     the rebase walks; the ordinal is FINAL for the executor's assembled
+	//     row / leg window.
+	//   - SOURCE-RELATIVE (unpinned single-accessor): the resolver's
+	//     construction bind against the reference's OWN source's declared
+	//     column order; translator walks rebase it onto composed frontiers,
+	//     and at runtime it reads through its leg's window.
+	//
+	// Identity (Java's FieldValue identity contract): BAKED nodes compare by
+	// per-element ORDINAL
+	// list equality (FieldPath.Equals); baked vs lazy is UNEQUAL (worst case a
+	// missed dedup, never a conflation); lazy vs lazy is name-only.
+	// FrontierPinned is EXCLUDED from identity/hash/Explain (an evaluation-
+	// contract marker, not a value distinction — like Java excluding name/type
+	// from ResolvedAccessor equality). Every FieldValue copy/rebuild site MUST
+	// preserve Resolved — dropping it silently degrades a baked node to lazy,
+	// which is loud at evaluation but conflates duplicate same-named columns
+	// in plan-time matching. For baked nodes Field equals the LAST accessor's
+	// name (Java getLastFieldName) — display only.
 	Resolved *FieldPath
 }
 
 // ResolvedAccessor is the construction-time-resolved accessor a BAKED
 // FieldValue carries — Java's FieldValue.ResolvedAccessor (FieldValue.java:~630),
-// whose equals/hashCode are ordinal-only. Deliberately minimal for Slice 2's
-// 2-way wedge (a single ordinal); Slice 3 widens it to a multi-accessor path
-// (Java's FieldPath + the compose rule) when nested/buried ordinal paths land.
+// whose equals/hashCode are ordinal-only.
 //
 // IMMUTABLE after construction: FieldValue copy sites deliberately SHARE the
 // pointer (withChildren, the pullup/pushdown passthrough copies). Any future
-// change to the accessor — including Slice 3's path widening — must REPLACE it
+// change to the accessor must REPLACE it
 // with a new value, never mutate in place, or every shared copy silently
-// changes identity (review convention pin).
+// changes identity.
 type ResolvedAccessor struct {
 	// Field is the PER-STEP display name (Java ResolvedAccessor.getField();
 	// "" = pure ordinal access, Java's null name). NOT part of the path's
-	// identity — the S3-W3 flip landed Java's ordinal-only element equality
-	// (FieldValue.java:675-689); the name survives for the coexistence
-	// window's name-model reads (descendResolvedPath map descent,
-	// nameReadRootKey, the §5 oracle) and Explain rendering, and dies with
-	// them in S4.
+	// identity — Java's element equality is ordinal-only
+	// (FieldValue.java:675-689); the name survives only for nested-record
+	// descent by per-step name (descendResolvedPath, into a proto.Message or a
+	// nested record map) and Explain rendering.
 	Field   string
 	Ordinal int
 }
 
-// FieldPath is the RFC-173 S3 multi-accessor path — Java's FieldValue.FieldPath
+// FieldPath is the multi-accessor path — Java's FieldValue.FieldPath
 // (FieldValue.java:373): ONE FieldValue node holds a whole path, never chained
-// nodes. IMMUTABLE after construction (replace-never-mutate, the S2 accessor
-// convention carried over): FieldValue copy sites share the pointer; WithSuffix
-// returns a NEW path (Java :525-534). In the S2-compatible window every
-// production path is single-accessor (the gated-join seed and the
-// recursive-CTE wrap); multi-accessor paths are produced only by the
-// baked-gated compose rule until the S3-W2/W3 flip widens it.
+// nodes. IMMUTABLE after construction (replace-never-mutate):
+// FieldValue copy sites share the pointer; WithSuffix
+// returns a NEW path (Java :525-534). Single-accessor paths come from the
+// resolver's construction binds and the seed machinery;
+// multi-accessor paths are produced by the
+// baked compose rule (fusing an inner path with an outer suffix).
 // INVARIANT: a FieldPath carried by a FieldValue is NON-EMPTY — a zero-step
 // path reads nothing and is not a meaningful accessor (Java's FieldPath.EMPTY
-// exists only for prefix arithmetic Go doesn't port in W1). Both constructors
+// exists only for prefix arithmetic Go doesn't port). Both constructors
 // (NewFieldPathOfSingle, WithSuffix) uphold it; Root()/Last() panic on a
 // hand-built violation rather than tolerating it.
 type FieldPath struct {
 	Accessors []ResolvedAccessor
 
-	// FrontierPinned carries the S2 gated-join FRONTIER CONTRACT: the node was
-	// baked at a gated-join seed whose executor births positional rows, so a
-	// name-keyed read is a planner/executor bug (loud *BakedNameContextError,
-	// bakedNameReadGuard). Unpinned baked nodes (the recursive-CTE wrap) have
-	// no such guarantee and keep the quiet name-model read off the positional
-	// frontier. The contract is a property of the VALUE, invariant under
-	// transformation — pullup/pushdown passthrough copies strip Child but
-	// share this pointer, so keying the guard on child presence would let a
-	// semantics-preserving rewrite silently demote a loud node (unification
-	// review ruling). Lives ON THE PATH, once, not per-accessor: the contract
-	// governs the ROOT read context; accessors beyond the first read nested
-	// records, where the bit is meaningless (S3 staging ruling — N copies of
-	// a one-meaning bit desynchronize). EXCLUDED from identity/hash/Explain:
-	// an evaluation-contract marker, not a value distinction. Dies in Slice 4
-	// with the guard and the name model.
+	// FrontierPinned marks a MACHINERY-OWNED bake: the node was built by the
+	// join/gather seed machinery (NewFieldValueOfOrdinal over a typed
+	// leg QOV, or a rebase-walk fusion), its ordinal FINAL for the executor's
+	// assembled row / leg window. Unpinned baked nodes are SOURCE-RELATIVE —
+	// the resolver's bind against the reference's own source's declared
+	// column order (see FieldValue.SourceRelativeBaked).
+	//
+	// The distinction is LOAD-BEARING: the seed-shape
+	// probes (ordinalJoinSpansOf, IsOrdinalJoinRV, the leg-type harvesters)
+	// key on the pin to tell a machinery-built leg-concat SEED from a user
+	// projection of resolver-baked references over the same legs, and the
+	// translator's rebase/collection walks must rebind source-relative nodes
+	// through the composed frontier while leaving machinery-final nodes
+	// untouched. Collapsing the two kinds requires rebinding EVERY reference
+	// against its chosen physical layout at plan time (Java's
+	// translateCorrelations model, where the planner rewrites correlations
+	// structurally and no seed-vs-resolver provenance survives) — the
+	// remaining architectural gap between Go's two-level join lowering and
+	// Java's quantifier rewiring.
+	//
+	// The contract is a property of the VALUE, invariant under transformation
+	// — pullup/pushdown passthrough copies strip Child but share this pointer,
+	// so keying machinery-ownership on child presence would let a semantics-
+	// preserving rewrite silently demote a node.
+	// Lives ON THE PATH, once, not per-accessor: it governs the ROOT read
+	// context; accessors beyond the first read nested records, where the bit
+	// is meaningless (N copies of a one-meaning bit
+	// desynchronize). EXCLUDED from identity/hash/Explain: an evaluation-
+	// contract marker, not a value distinction.
 	FrontierPinned bool
 }
 
 // NewFieldPathOfSingle is Java's FieldPath.ofSingle (FieldValue.java:563) —
-// the constructor every S2-era single-accessor bake goes through.
+// the constructor every single-accessor bake goes through.
 func NewFieldPathOfSingle(field string, ordinal int, frontierPinned bool) *FieldPath {
 	return &FieldPath{
 		Accessors:      []ResolvedAccessor{{Field: field, Ordinal: ordinal}},
@@ -300,11 +318,11 @@ func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
 	if suffix == nil || len(suffix.Accessors) == 0 {
 		// A nil/empty SUFFIX argument is a degenerate "append nothing" —
 		// tolerated defensively. An empty RECEIVER violates the type's
-		// non-empty invariant and gets no arm (S3-W1 review: don't
+		// non-empty invariant and gets no arm (don't
 		// half-admit empties); empty+empty therefore passes the violating
 		// receiver through — acceptable because an empty path is
-		// hand-buildable only (both constructors uphold non-empty, verified
-		// tree-wide in the W1 review) and the violation surfaces loudly at
+		// hand-buildable only (both constructors uphold non-empty) and the
+		// violation surfaces loudly at
 		// the first Root()/Last().
 		return p
 	}
@@ -315,7 +333,7 @@ func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
 }
 
 // Root returns the first accessor — the one the ROOT read context resolves
-// (positional row slot / name-keyed Datum key).
+// (a positional row slot).
 func (p *FieldPath) Root() ResolvedAccessor { return p.Accessors[0] }
 
 // Last returns the final accessor — the path's display leaf (Java
@@ -323,8 +341,8 @@ func (p *FieldPath) Root() ResolvedAccessor { return p.Accessors[0] }
 func (p *FieldPath) Last() ResolvedAccessor { return p.Accessors[len(p.Accessors)-1] }
 
 // Single returns the path's only accessor when the path is single-step —
-// the S2-era shape every join-seed probe expects; ok=false for multi-accessor
-// paths (probes DECLINE those shapes until S3-W2 makes them real).
+// the shape the plain join-seed probes expect; ok=false for multi-accessor
+// paths (those probes DECLINE fused shapes).
 func (p *FieldPath) Single() (ResolvedAccessor, bool) {
 	if len(p.Accessors) != 1 {
 		return ResolvedAccessor{}, false
@@ -333,8 +351,8 @@ func (p *FieldPath) Single() (ResolvedAccessor, bool) {
 }
 
 // Equals is Java FieldPath.equals (FieldValue.java:411-420): element-wise list
-// equality over the accessors' ORDINALS (the S3-W3 flip landed Java's
-// ResolvedAccessor.equals = getOrdinal()-only, :675-689). The per-step Field
+// equality over the accessors' ORDINALS (Java's
+// ResolvedAccessor.equals is getOrdinal()-only, :675-689). The per-step Field
 // is NOT compared — display/rendering, not identity. FrontierPinned is
 // likewise excluded (evaluation contract, not identity).
 func (p *FieldPath) Equals(o *FieldPath) bool {
@@ -345,15 +363,15 @@ func (p *FieldPath) Equals(o *FieldPath) bool {
 		return false
 	}
 	for i := range p.Accessors {
-		// ORDINAL-ONLY element identity (the S3-W3 flip): Java's
+		// ORDINAL-ONLY element identity: Java's
 		// ResolvedAccessor.equals compares getOrdinal() alone
 		// (FieldValue.java:675-689 — name and type excluded), and FieldPath
-		// equality is the accessor-list equality over it (:411-420). The
-		// coexistence window's (Field, Ordinal) pair was a REFINEMENT that
-		// could only under-dedup; the flip closes it — alias-mapped baked
-		// references over same-shaped legs now intern as one memo member,
+		// equality is the accessor-list equality over it (:411-420). A
+		// (Field, Ordinal) pair identity would be a REFINEMENT that
+		// could only under-dedup — ordinal-only makes alias-mapped baked
+		// references over same-shaped legs intern as one memo member,
 		// exactly Java's dedup. The per-step Field survives on the accessor
-		// for the name-model oracle reads and Explain rendering only.
+		// for nested-record descent and Explain rendering only.
 		if p.Accessors[i].Ordinal != o.Accessors[i].Ordinal {
 			return false
 		}
@@ -361,56 +379,52 @@ func (p *FieldPath) Equals(o *FieldPath) bool {
 	return true
 }
 
-// OracleBakedNameFallback is the §5 dual-window differential's TEST-ONLY
-// bridge: when true, a BAKED FieldValue evaluated against a NAME-keyed row
-// context reads its display name instead of erroring — recreating the
-// pre-RFC-173 name model end-to-end (including its duplicate-name conflation,
-// which is exactly why dup-name corpus shapes are carved out of the
-// differential by RFC citation). It travels WITH executor.
-// DisablePositionalEmission — the dualwindow harness sets both at the phase
-// barrier. NEVER set in production: with the flag false (always, outside the
-// oracle), a baked node hitting a name-keyed context is a loud
-// *BakedNameContextError, because the gated ordinal frontier guarantees
-// positional rows — a name-keyed context there is a planner/executor bug.
-// Retires with the name map in Slice 4.
-var OracleBakedNameFallback bool
-
 // BakedNameContextError reports a BAKED FieldValue (ordinal authoritative)
-// evaluated against a NAME-keyed or unrecognized row context outside the §5
-// oracle. Never a silent name read or silent NULL: the display name is
+// evaluated against a NAME-keyed or unrecognized row context.
+// Never a silent name read or silent NULL: the display name is
 // diagnostics-only and resolving by it would return the FIRST of duplicate
-// same-named columns — the conflation RFC-173 exists to kill. (A nil context
-// stays NULL — that is the sanctioned appendNullLeg / nil-binding path,
-// contract ruling #3.)
+// same-named columns — the conflation ordinal identity exists to avoid.
+// (A nil context stays NULL — that is the appendNullLeg / nil-binding path.)
 type BakedNameContextError struct {
 	Field   string
 	Ordinal int
 }
 
 func (e *BakedNameContextError) Error() string {
-	return fmt.Sprintf("RFC-173: baked FieldValue %s#%d evaluated against a non-positional row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
+	return fmt.Sprintf("baked FieldValue %s#%d evaluated against a non-positional row context — the ordinal frontier must supply a positional row (planner/executor bug)", e.Field, e.Ordinal)
 }
 
-// bakedNameReadGuard is called at every NAME-keyed read arm in Evaluate/
-// evaluateCorrelated: lazy nodes pass (the name model is their source of
-// truth), and so do UNPINNED baked nodes (the recursive-CTE wrap shape — no
-// frontier guarantee, the name-keyed Datum read is their sanctioned
-// off-frontier path); FRONTIER-PINNED nodes fail loudly unless the §5 oracle
-// bridge is active.
-func (f *FieldValue) bakedNameReadGuard() error {
-	if f.Resolved == nil || !f.Resolved.FrontierPinned || OracleBakedNameFallback {
-		return nil
+// UnboundEvalContextError reports a FieldValue whose evaluation resolved to
+// NOTHING: an UNRECOGNIZED non-nil context type, or a correlated reference whose
+// correlation is UNBOUND and whose context supplies no frontier positional row.
+// Production flows only OrdinalRow / *RowEvalContext / CorrelationBinder
+// / nil, so reaching one of these tails is a planner/executor bug — LOUD for
+// pinned and unpinned alike; a silent NULL would hide it.
+// DISTINCT from BakedNameContextError (a PINNED node meeting a name-keyed context
+// that DID resolve to a value): here nothing resolved at all. A nil context stays
+// NULL (the appendNullLeg / nil-binding path) and never reaches here;
+// a correlation that DID match a non-ordinal value (e.g. the executor's
+// buildLegBinder raw leg) returns that value and never reaches here either.
+type UnboundEvalContextError struct {
+	Field       string
+	Correlation string
+	CtxType     string
+}
+
+func (e *UnboundEvalContextError) Error() string {
+	if e.Correlation != "" {
+		return fmt.Sprintf("correlated FieldValue %q (correlation %q) evaluated against an unbound/unrecognized context (%s) — no frontier row resolved (planner/executor bug)", e.Field, e.Correlation, e.CtxType)
 	}
-	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Root().Ordinal}
+	return fmt.Sprintf("FieldValue %q evaluated against an unrecognized non-nil context (%s) — no frontier row resolved (planner/executor bug)", e.Field, e.CtxType)
 }
 
 // ContainsBakedOrdinal reports whether any FieldValue in v's subtree carries
-// a FRONTIER-PINNED baked-ordinal marker — the structural "is this an S2
-// gated-join ordinal value tree" probe the coexistence-window drift asserts
-// key on (SelectMergeRule target loop, the executor's ordinal-join birth).
-// Deliberately blind to UNPINNED baked nodes (the recursive-CTE wrap): those
-// carry no join-frontier contract and must not trip join-seed machinery.
-// Retires with the name model in Slice 4.
+// a MACHINERY-OWNED (FrontierPinned) baked-ordinal marker — the structural
+// "is this an ordinal-join value tree" probe the join machinery keys on
+// (SelectMergeRule target loop, the executor's ordinal-join construction).
+// Deliberately blind to UNPINNED baked nodes (source-relative resolver
+// bakes): those carry no join-frontier contract and must not trip join-seed
+// machinery.
 func ContainsBakedOrdinal(v Value) bool {
 	found := false
 	WalkValue(v, func(n Value) bool {
@@ -426,8 +440,8 @@ func ContainsBakedOrdinal(v Value) bool {
 	return found
 }
 
-// IsPositionalMergeRC is the VALUE-level half of the S3 structural
-// merge-select recognition (W2 ruling Q3 — no imperative marker, the exact
+// IsPositionalMergeRC is the VALUE-level half of the structural
+// merge-select recognition (no imperative marker — the exact
 // shape PartitionSelectRule.java:284-291 builds and nothing else can): an RC
 // whose every field is auto-generated-named ("_i", in position order — Java
 // Type.java:2922 isAutoGenerated) and whose value is a BARE QOV of a distinct
@@ -435,11 +449,11 @@ func ContainsBakedOrdinal(v Value) bool {
 // ForEach quantifiers, covering them) lives at the interning gate; the
 // executor checks the QOVs against its two legs. Unconstructible from SQL:
 // the generator names all columns, so CTE column-rename selects never match.
-// Lives beside ContainsBakedOrdinal — the two value-shape probes the ordinal
-// birth triggers on.
+// Lives beside ContainsBakedOrdinal — the two value-shape probes ordinal
+// join construction triggers on.
 func IsPositionalMergeRC(v Value) bool {
 	rc, isRC := v.(*RecordConstructorValue)
-	if !isRC || len(rc.Fields) < 2 || rc.AnchoredJoin {
+	if !isRC || len(rc.Fields) < 2 {
 		return false
 	}
 	seen := make(map[CorrelationIdentifier]struct{}, len(rc.Fields))
@@ -471,12 +485,12 @@ func IsPositionalMergeRC(v Value) bool {
 // selects keep the alias-identity dedup that Go's column derivation requires.
 func IsOrdinalJoinRV(v Value) bool {
 	rc, isRC := v.(*RecordConstructorValue)
-	if !isRC || rc.AnchoredJoin || len(rc.Fields) < 2 {
+	if !isRC || len(rc.Fields) < 2 {
 		return false
 	}
 	roots := make(map[CorrelationIdentifier]struct{}, 2)
 	for _, f := range rc.Fields {
-		// RFC-173 W5 (the interning-widening ruling): a bare TYPED
+		// A bare TYPED
 		// QuantifiedObjectValue field is the gathered unnest's whole-object
 		// element leg (the mixed no-AT seed) — as position-determined as a
 		// FrontierPinned bake (a whole-leg reference; no name resolution can
@@ -522,26 +536,21 @@ func (f *FieldValue) Type() Type {
 	return f.Typ
 }
 
-// OrdinalRow is the RFC-173 ordinal-model runtime row FieldValue.Evaluate reads
-// on the authoritative (non-join) frontier, in place of the legacy name-keyed
-// map[string]any. It is satisfied structurally by executor.PositionalRow, which
-// lives in a higher layer — the interface here avoids the import cycle.
+// OrdinalRow is the ordinal-model runtime row FieldValue.Evaluate
+// reads. It is satisfied structurally by executor.PositionalRow, which lives
+// in a higher layer — the interface here avoids the import cycle.
 //
-// Get(ordinal) is the primary path: a FieldValue with a typed child resolves its
-// column to an ordinal (resolveOrdinal, against the child Type) and reads the
-// slot positionally — Java's MessageHelpers.getFieldValueForFieldOrdinals.
-// GetByName(name) serves a Go-only FLAT FieldValue (nil child, no child Type to
-// resolve against): it resolves name->ordinal against the ROW's own Type (the
-// authoritative positional type — e.g. a CTE's renamed columns, positionally
-// aligned to the slots), NOT the legacy name map. Both loud-error (never a
-// silent NULL) on a miss: on the authoritative frontier column existence is
-// validated at plan time (42703), so a runtime miss is a malformed plan.
+// Get(ordinal) is the ONLY read: every FieldValue carries a plan-time-baked
+// ordinal (Resolved) and reads its slot positionally — Java's
+// MessageHelpers.getFieldValueForFieldOrdinals. A miss is a loud error (never
+// a silent NULL): column existence is validated at plan time (42703), so a
+// runtime miss is a malformed plan. There is no name-keyed read arm — Java's
+// runtime never sees a column name (FieldValue.java:164-169).
 type OrdinalRow interface {
 	Get(ordinal int) (any, bool)
-	GetByName(name string) (any, bool)
 }
 
-// OrdinalResolutionError is the loud internal error (RFC-173 Slice 1) raised when
+// OrdinalResolutionError is the loud internal error raised when
 // a FieldValue's column cannot be resolved against the authoritative ordinal
 // runtime row. Authority + a silent name-map fallback would mean a
 // resolution bug never surfaces, so this is a query error, not a NULL. Ordinal
@@ -555,7 +564,7 @@ type OrdinalResolutionError struct {
 }
 
 func (e *OrdinalResolutionError) Error() string {
-	return fmt.Sprintf("RFC-173 ordinal resolution: field %q not resolvable in the runtime row (ordinal %d, row columns %v) — malformed plan", e.Field, e.Ordinal, e.Available)
+	return fmt.Sprintf("ordinal resolution: field %q not resolvable in the runtime row (ordinal %d, row columns %v) — malformed plan", e.Field, e.Ordinal, e.Available)
 }
 
 // ordinalRowNames extracts the row type's column names for diagnostics, when
@@ -567,12 +576,22 @@ func ordinalRowNames(row OrdinalRow) []string {
 	return nil
 }
 
-// evaluateOrdinal reads f's column from an ordinal-model runtime row. It is the
-// authoritative frontier's resolution — NO name-map fallback (RFC-173). A typed
-// child yields an ordinal (resolveOrdinal) read positionally; a flat reference
-// falls to the row's own type (GetByName). A miss on either is loud. For a
-// multi-accessor baked path the root read yields the NESTED record, and the
-// remaining accessors descend into it (descendPath).
+// rowIsMultiLeg reports whether an ordinal row is a MULTI-LEG composed row (a
+// merged concat / clustered box row) — consulted via an optional interface the
+// executor's PositionalRow/spanAwareRow implement. A multi-leg row cannot
+// serve a SOURCE-RELATIVE baked ordinal (the ordinal addresses one leg's own
+// window); the correlated fall-through arms go LOUD instead of reading a
+// foreign slot (correct-or-loud).
+func rowIsMultiLeg(row OrdinalRow) bool {
+	ml, ok := row.(interface{ MultiLeg() bool })
+	return ok && ml.MultiLeg()
+}
+
+// evaluateOrdinal reads f's column from an ordinal-model runtime row: the
+// plan-time-baked ordinal (resolveOrdinal) reads its slot positionally — NO
+// name resolution of any kind. A miss is loud. For a multi-accessor
+// baked path the root read yields the NESTED record, and the remaining
+// accessors descend into it (descendResolvedPath).
 func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 	if ord, ok := f.resolveOrdinal(); ok {
 		if v, inRange := row.Get(ord); inRange {
@@ -580,45 +599,44 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 		}
 		return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: ord, Available: ordinalRowNames(row)}
 	}
-	if v, ok := row.GetByName(f.Field); ok {
-		return v, nil
-	}
+	// There is NO runtime name-resolution fallback.
+	// Every column reference must bind its ordinal at plan time; an
+	// UNBAKED reference has no stable ordinal and fails LOUD here (correct-or-loud —
+	// never a silent name read that could serve the wrong slot).
 	return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: -1, Available: ordinalRowNames(row)}
+}
+
+// frontierContractGuard enforces the FRONTIER CONTRACT for a
+// FrontierPinned baked node: the executor guarantees a positional row, so a
+// non-nil context that is NOT a positional/ordinal row is a planner/executor
+// bug — reported as a loud *BakedNameContextError rather than a silent NULL that
+// would hide it. An unpinned node (and a nil context — the
+// appendNullLeg / nil-binding NULL) returns nil (no
+// violation). The pinned-node "never silently NULL off the positional
+// frontier" invariant lives here, at the non-positional tail of Evaluate /
+// evaluateCorrelated.
+func (f *FieldValue) frontierContractGuard() error {
+	if f.Resolved == nil || !f.Resolved.FrontierPinned {
+		return nil
+	}
+	return &BakedNameContextError{Field: f.Field, Ordinal: f.Resolved.Root().Ordinal}
 }
 
 // descendResolvedPath applies a baked path's accessors BEYOND the root to the
 // root read's result — Java resolves the whole FieldPath against nested
-// Message fields by ordinal (FieldValue.java fieldOrdinals doc); Go's
-// coexistence-window nested records are name-keyed Datum maps, so a nested
+// Message fields by ordinal (FieldValue.java fieldOrdinals doc); Go's nested
+// records surface as a proto.Message or a name-keyed record map, so a nested
 // step reads by the accessor's per-step name there (exactly what the chained
-// lazy nodes the compose rule fuses did: child evaluates to the map, the
+// lazy nodes the compose rule fuses did: child evaluates to the record, the
 // outer node reads its Field on it) and by ordinal on a positional nested
 // row. NULL propagates (a nil nested record yields NULL, matching the
 // chained-lazy nil-context arm); an unreadable non-nil nested value is loud
 // for a pinned path (a quiet NULL would hide a frontier bug) and NULL for an
 // unpinned one (the lazy tail's historical behavior).
-// nameReadRootKey is the Datum key a NAME-keyed read starts at: the ROOT
-// accessor's per-step name for a baked path (a fused multi-accessor node must
-// read the root record first and descend — reading the display name, which is
-// the LAST step's name, would look up the leaf at the top level), f.Field for
-// everything else (identical for single-accessor paths by construction).
-func (f *FieldValue) nameReadRootKey() string {
-	if f.Resolved != nil {
-		return f.Resolved.Root().Field
-	}
-	return f.Field
-}
-
-// nameRead is the plain name-keyed map read: root key, then the baked path's
-// nested descent (a no-op for lazy nodes and single-accessor paths).
-func (f *FieldValue) nameRead(row map[string]any) (any, error) {
-	return f.descendResolvedPath(row[f.nameReadRootKey()])
-}
-
 func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 	// <= 1 (not == 1): a hand-built zero-accessor path violates the type
 	// invariant, but a slice-bounds panic in the eval hot path is the wrong
-	// place to report it (S3-W1 review).
+	// place to report it.
 	if f.Resolved == nil || len(f.Resolved.Accessors) <= 1 {
 		return rootVal, nil
 	}
@@ -627,9 +645,13 @@ func (f *FieldValue) descendResolvedPath(rootVal any) (any, error) {
 		if cur == nil {
 			return nil, nil
 		}
+		// No live path flows a name-keyed record map into a fused path's
+		// nested step: nested records surface as a proto.Message (the record
+		// layer's verbatim struct column, name-addressed like Java's
+		// MessageHelpers.getFieldOnMessage) or a positional row (ordinal). A
+		// map nested value takes the default arm: loud for a pinned path,
+		// NULL for an unpinned one — never a silent name read.
 		switch rec := cur.(type) {
-		case map[string]any:
-			cur = rec[acc.Field]
 		case OrdinalRow:
 			v, inRange := rec.Get(acc.Ordinal)
 			if !inRange {
@@ -804,236 +826,107 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}
-	// RFC-173 Slice 1: an ordinal-model row is authoritative on the non-join
-	// frontier — resolve by ordinal, no name-map fallback.
+	// The ordinal-model row is the ONLY runtime row — resolve by
+	// ordinal, loud on a miss.
 	if row, ok := evalCtx.(OrdinalRow); ok {
 		return f.evaluateOrdinal(row)
 	}
-	if row, ok := evalCtx.(map[string]any); ok {
-		if err := f.bakedNameReadGuard(); err != nil {
-			return nil, err
-		}
-		return f.nameRead(row)
-	}
 	if rc, ok := evalCtx.(*RowEvalContext); ok {
-		// RFC-173 Slice 1: an ordinal-model row on the RowEvalContext is
-		// authoritative on the non-join frontier — resolve by ordinal, no
-		// name-map fallback, loud on a miss. It takes precedence over
-		// the name-keyed Datum.
 		if rc.Positional != nil {
 			return f.evaluateOrdinal(rc.Positional)
 		}
-		if rc.Datum != nil {
-			if err := f.bakedNameReadGuard(); err != nil {
-				return nil, err
-			}
-			v, present := rc.Datum[f.nameReadRootKey()]
-			if !present && rc.Strict && ReportUnresolvedReference != nil {
-				ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
-			}
-			return f.descendResolvedPath(v)
-		}
 	}
-	// Unrecognized NON-NIL context: a lazy node keeps the historical silent
-	// NULL; a BAKED node fails loudly — silently NULLing an eager ordinal
-	// reference would hide a frontier bug (review W1 catch). The nil-context
-	// NULL above is the sanctioned appendNullLeg path and stays.
-	if err := f.bakedNameReadGuard(); err != nil {
-		return nil, err
-	}
-	return nil, nil
-}
-
-// mapKeys returns the keys of a datum map, for unresolved-reference
-// diagnostics. Only called on the W1 violation path (never in prod).
-func mapKeys(m map[string]any) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	return ks
+	// Unrecognized NON-NIL context: nothing resolved. Production flows an
+	// OrdinalRow / *RowEvalContext(+Positional) / CorrelationBinder / nil — reaching
+	// here is a planner/executor bug, LOUD for pinned and unpinned alike;
+	// a silent NULL would hide it. (A nil context is the
+	// appendNullLeg NULL, handled above.)
+	return nil, &UnboundEvalContextError{Field: f.Field, CtxType: fmt.Sprintf("%T", evalCtx)}
 }
 
 func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) (any, error) {
-	// nil context = NULL for baked and lazy alike — the sanctioned
-	// appendNullLeg / nil-binding NULL (contract ruling #3), mirroring
+	// nil context = NULL for baked and lazy alike — the
+	// appendNullLeg / nil-binding NULL, mirroring
 	// Evaluate's own nil arm. The loud tail guard below is only for
 	// unrecognized NON-nil contexts.
 	if evalCtx == nil {
 		return nil, nil
 	}
-	// Every name-keyed read in this function starts at the ROOT step's key and
-	// descends the remaining accessors (nameReadRootKey/descendResolvedPath) —
-	// a fused multi-accessor node's display Field is the LAST step's name, and
-	// reading it at the top level is the display-name-root-read trap (S3-W1
-	// review catch: this function is the fused node's PRIMARY eval path — the
-	// compose rule's only constructible output is fused-over-QOV). Identical
-	// byte-for-byte to the S2 reads for lazy nodes and single-accessor paths.
-	rootKey := f.nameReadRootKey()
-	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(rootKey)
+	// The ordinal-model row is the ONLY runtime row — resolve by
+	// ordinal, loud on a miss.
 	switch ctx := evalCtx.(type) {
 	case OrdinalRow:
-		// RFC-173 Slice 1: a bare ordinal-model row IS the single non-join
-		// frontier quantifier's row — a correlated reference to that quantifier
-		// resolves by ordinal against it (no name-map fallback, loud on a miss).
+		// A bare ordinal-model row IS the single non-join frontier
+		// quantifier's row — a correlated reference to that quantifier
+		// resolves by ordinal against it, loud on a miss. An UNPINNED
+		// leg-relative baked reference over a MULTI-LEG row is the one
+		// exception: its ROOT ordinal addresses its source's own window, which
+		// this row is not — reading it here would silently serve another leg's
+		// slot (correct-or-loud). Keyed on the ROOT's leg-relativity, not the
+		// accessor count, so a FUSED (multi-accessor) unpinned twin of the same
+		// reference goes loud too rather than reading+descending a foreign slot.
+		if f.RootIsLegRelativeUnpinned() && rowIsMultiLeg(ctx) {
+			return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "OrdinalRow (multi-leg row cannot serve a source-relative ordinal)"}
+		}
 		return f.evaluateOrdinal(ctx)
 	case *RowEvalContext:
 		if ctx.Correlations != nil {
 			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
-				// RFC-173 Slice 1: a quantifier bound to an ordinal-model row
-				// resolves by ordinal, no name fallback.
+				// A quantifier bound to an ordinal-model row resolves by
+				// ordinal. A nil binding is the null leg (outer-join
+				// no-match) — NULL, not loud. A FrontierPinned node bound to any
+				// other non-ordinal value (a name-keyed map, a stray struct) is a
+				// frontier-contract violation — loud.
 				if row, ok := bound.(OrdinalRow); ok {
 					return f.evaluateOrdinal(row)
 				}
-				if bm, ok := bound.(map[string]any); ok {
-					if err := f.bakedNameReadGuard(); err != nil {
+				if bound != nil {
+					if err := f.frontierContractGuard(); err != nil {
 						return nil, err
 					}
-					if v, ok := bm[rootKey]; ok {
-						return f.descendResolvedPath(v)
-					}
-					if v, ok := bm[strings.ToLower(rootKey)]; ok {
-						return f.descendResolvedPath(v)
-					}
-					return nil, nil
 				}
-				// NOTE (recorded W3 borderline, @claude PR-447 finding 4): a
-				// BAKED field access over a non-OrdinalRow non-map binding gets
-				// the raw bound object without bakedNameReadGuard. Unreachable
-				// under the S2 wedge (gated legs bind OrdinalRows); re-examine
-				// when S3 widens the gate.
 				return bound, nil
 			}
 		}
-		// RFC-173 Slice 1: no explicit correlation binding matched, so the
-		// reference is to the frontier quantifier itself — resolve by ordinal
-		// against the authoritative positional row (no name fallback,
-		// loud on a miss). Precedes the name-keyed Datum path.
+		// No explicit correlation binding matched, so the reference is to
+		// the frontier quantifier itself — resolve by ordinal against the
+		// authoritative positional row, loud on a miss. An UNPINNED
+		// leg-relative baked reference over a MULTI-LEG row must NOT fall
+		// through: its ROOT ordinal addresses its source's own window and the
+		// leg binder above already declined the correlation — a whole-row read
+		// would silently serve another leg's slot (correct-or-loud). Keyed on
+		// the ROOT's leg-relativity, not the accessor count, so a FUSED
+		// (multi-accessor) unpinned twin goes loud too.
 		if ctx.Positional != nil {
+			if f.RootIsLegRelativeUnpinned() && rowIsMultiLeg(ctx.Positional) {
+				return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "*RowEvalContext (multi-leg row cannot serve a source-relative ordinal)"}
+			}
 			return f.evaluateOrdinal(ctx.Positional)
 		}
-		if ctx.Datum != nil {
-			if err := f.bakedNameReadGuard(); err != nil {
-				return nil, err
-			}
-			if v, ok := ctx.Datum[qualKey]; ok {
-				return f.descendResolvedPath(v)
-			}
-			// PINNED baked path, oracle window: an unbound quantifier here IS
-			// the row's own frontier quantifier (the ordinal side reads
-			// ctx.Positional for exactly this case), and a pinned path's root
-			// key is that row's OWN output column — for the S3 positional-merge
-			// row a fused reference's `_i` slot, which the coexistence Datum
-			// carries BARE (no qualified form ever exists for a merge
-			// quantifier). Pinned-only, deliberately twice-guarded: LAZY
-			// references keep the qualified-only read (a bare fallback would
-			// resurrect the cross-leg last-wins misread the qualified keys
-			// exist to prevent), and UNPINNED baked paths (the recursive-CTE
-			// wrap) keep their historical live-side NULL — the guard above
-			// already stops pinned+live, so this arm is reachable pinned only
-			// under the §5 oracle.
-			if f.Resolved != nil && f.Resolved.FrontierPinned {
-				if v, ok := ctx.Datum[rootKey]; ok {
-					return f.descendResolvedPath(v)
-				}
-			}
-			// Already-qualified field (e.g. "T3.ID") accessed through a merge
-			// quantifier: a re-enumerated N-way join collapses a buried table
-			// into a merge quantifier whose row flows that table's columns under
-			// their own qualified ALIAS.COL keys (the executor's mergeRows
-			// preserves dotted keys verbatim — they are NOT re-prefixed with the
-			// merge alias). Prepending the merge alias above would invent a key
-			// (e.g. "$M.T3.ID") that was never written. Mirror the binding path
-			// (bm[rootKey]) by resolving the qualified field directly. (RFC-043.)
-			if strings.Contains(rootKey, ".") {
-				if v, ok := ctx.Datum[strings.ToUpper(rootKey)]; ok {
-					return f.descendResolvedPath(v)
-				}
-				if v, ok := ctx.Datum[rootKey]; ok {
-					return f.descendResolvedPath(v)
-				}
-			}
-		}
-		return nil, nil
+		// Nothing matched and no frontier row supplied: a dangling correlation.
+		// Loud for pinned and unpinned alike — never a silent NULL.
+		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: "*RowEvalContext (correlation unbound, no positional)"}
 	case CorrelationBinder:
 		if bound, ok := ctx.GetCorrelationBinding(qov.Correlation); ok {
 			if row, ok := bound.(OrdinalRow); ok {
 				return f.evaluateOrdinal(row)
 			}
-			if bm, ok := bound.(map[string]any); ok {
-				if err := f.bakedNameReadGuard(); err != nil {
+			// nil binding = null leg (NULL); any other non-ordinal
+			// binding is a frontier-contract violation for a pinned node.
+			if bound != nil {
+				if err := f.frontierContractGuard(); err != nil {
 					return nil, err
 				}
-				if v, ok := bm[rootKey]; ok {
-					return f.descendResolvedPath(v)
-				}
-				if v, ok := bm[strings.ToLower(rootKey)]; ok {
-					return f.descendResolvedPath(v)
-				}
-				return nil, nil
 			}
-			// Same recorded W3 borderline as the RowEvalContext arm above
-			// (@claude PR-447 finding 4): re-examine when S3 widens the gate.
 			return bound, nil
 		}
-		return nil, nil
-	case map[CorrelationIdentifier]map[string]any:
-		if sub, ok := ctx[qov.Correlation]; ok {
-			if err := f.bakedNameReadGuard(); err != nil {
-				return nil, err
-			}
-			return f.descendResolvedPath(sub[rootKey])
-		}
-		return nil, nil
-	case map[string]any:
-		if err := f.bakedNameReadGuard(); err != nil {
-			return nil, err
-		}
-		if v, ok := ctx[qualKey]; ok {
-			return f.descendResolvedPath(v)
-		}
-		// PINNED baked path, oracle window — the raw-map twin of the
-		// *RowEvalContext arm above, NARROWED to MERGE-SLOT roots: a fused
-		// reference through a MERGE quantifier roots at the row's own `_i`
-		// slot, which mergeRows carries BARE (its qualified form uses the
-		// merge alias's ORIGINAL case, `$m"1._0`, which the upper-cased
-		// qualKey never matches; a QUOTED user identifier `"_0"` is legal SQL,
-		// but the S3 positional-merge and Explode-ordinality producers are
-		// the only `_i` WRITERS in a merged row, and this arm is pinned- and
-		// oracle-only, dying in S4). A pinned ref over a DIRECT leg
-		// (rootKey = a user column) must NOT take this arm: the bare key is
-		// mergeRows' last-wins spill, and reading it turns `a.k = b.k` into
-		// `k = k` — the cross-leg conflation that produced a full cross
-		// product on the NULL-key corpus entry when this arm was first cut
-		// too wide. Pinned-only; the guard above already stops pinned+live,
-		// so this arm is reachable only under the §5 oracle. Without it a
-		// gathered join's spanning WHERE — evaluated by the NLJ over the raw
-		// merged map — silently dropped every row oracle-side.
-		if f.Resolved != nil && f.Resolved.FrontierPinned && IsOrdinalFieldName(rootKey) {
-			if v, ok := ctx[rootKey]; ok {
-				return f.descendResolvedPath(v)
-			}
-		}
-		// Already-qualified field accessed through a merge quantifier — see the
-		// *RowEvalContext branch above for the rationale. (RFC-043.)
-		if strings.Contains(rootKey, ".") {
-			if v, ok := ctx[strings.ToUpper(rootKey)]; ok {
-				return f.descendResolvedPath(v)
-			}
-			if v, ok := ctx[rootKey]; ok {
-				return f.descendResolvedPath(v)
-			}
-		}
-		return nil, nil
+		// Correlation unbound in this binder: a dangling reference. Loud.
+		return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: fmt.Sprintf("%T (unbound)", ctx)}
 	}
-	// Unrecognized NON-NIL context: same guard as Evaluate's tail — a BAKED
-	// correlated reference (the COMMON baked shape: every real field access
-	// over a quantifier lands here) silently NULLing would hide a frontier
-	// bug; loud instead. Lazy keeps the historical silent NULL.
-	if err := f.bakedNameReadGuard(); err != nil {
-		return nil, err
-	}
-	return nil, nil
+	// Unrecognized NON-NIL context (no ordinal row supplied): nothing resolved.
+	// Loud for pinned and unpinned alike, mirroring Evaluate's
+	// own tail; a silent NULL would hide a planner/executor bug.
+	return nil, &UnboundEvalContextError{Field: f.Field, Correlation: qov.Correlation.Name(), CtxType: fmt.Sprintf("%T", evalCtx)}
 }
 
 // resolveOrdinal returns the 0-based ordinal of f.Field within the record type
@@ -1042,20 +935,18 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 // f.Child flows a RecordType containing f.Field; (0, false) for a nil-Child
 // leaf, a non-record child, or an absent/anonymous field.
 //
-// RFC-173: the ordinal substrate for the name -> ordinal column-resolution
-// migration (retiring the name-based AnchoredJoin model). AUTHORITATIVE since
-// Slice 1 on the non-join positional frontier (evaluateOrdinal resolves
-// through it, loud on a miss, no name fallback) and since Slice 2 for BAKED
-// join-leg references (the Resolved fast path below). Side-effect-free, so
-// computing it can never perturb planning. The nil-Child lazy leaf (legacy
-// flat field, no child type to resolve against) is the case that stays on the
-// name path — see RFC-173 §4 P1.
+// The ordinal substrate is AUTHORITATIVE for every runtime read.
+// evaluateOrdinal resolves
+// through it, loud on a miss, no name fallback, for frontier and BAKED
+// join-leg references alike (the Resolved fast path below). Side-effect-free,
+// so computing it can never perturb planning. A nil-Child leaf or non-record
+// child yields false and fails loud at evaluation.
 func (f *FieldValue) resolveOrdinal() (int, bool) {
-	// RFC-173: a BAKED node's position was resolved at construction
+	// A BAKED node's position was resolved at construction
 	// (NewFieldValueOfOrdinal / NewFieldValueWithResolvedOrdinal) — it is
 	// authoritative and returned before any lazy child-type derivation:
 	// positional by construction, duplicate-name-proof. The display name is
-	// diagnostics and off-frontier coexistence only. For a multi-accessor
+	// diagnostics-only. For a multi-accessor
 	// path this is the ROOT ordinal (the slot the root read context resolves;
 	// evaluateOrdinal descends the remaining accessors).
 	if f.Resolved != nil {
@@ -1064,15 +955,64 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	if f.Child == nil {
 		return 0, false
 	}
-	rt, ok := f.Child.Type().(*RecordType)
-	if !ok {
+	if _, ok := f.Child.Type().(*RecordType); !ok {
 		return 0, false
 	}
-	// Return the field's SLICE POSITION (FieldIndex), not a stored Field.Ordinal —
-	// position IS the Java ordinal (Type.Record.computeFieldNameToOrdinal is list
-	// position), and it is sound even for a raw RecordType that bypassed
-	// NewRecordType's normalization (RFC-173 P1 review decision).
-	return rt.FieldIndex(f.Field)
+	// There is NO runtime name-derive fallback (no rt.FieldIndex here). A
+	// FieldValue with a typed child but no baked Resolved ordinal is an
+	// UNBAKED site: its ordinal must be bound at plan time. Return false so
+	// evaluateOrdinal fails LOUD rather than re-deriving the ordinal by name at
+	// runtime (Java binds every FieldPath ordinal at plan time; runtime never sees
+	// a name — FieldValue.java:164-169).
+	return 0, false
+}
+
+// SourceRelativeBaked reports whether f carries a SINGLE-accessor UNPINNED
+// baked path — the construction-time bind against the
+// reference's OWN source row (the resolver's declared-column-order ordinal).
+// Such a node is ordinal-bound but NOT yet rebased onto any composed frontier
+// (join box seed, gathered seed, merged concat, group-by output): the
+// translator's rebase/collection walks over composed rows MUST rebind it
+// through the walk's own authority (and count it as a leg reference), whereas
+// a FrontierPinned (machinery-owned) or multi-accessor path is final. At
+// runtime it reads through its source's leg window (legWindowBinder). This is
+// the source-vs-machinery half of the Go two-level-lowering bridge Java has no
+// analog for (see FieldPath.FrontierPinned).
+func (f *FieldValue) SourceRelativeBaked() bool {
+	return f.Resolved != nil && !f.Resolved.FrontierPinned && len(f.Resolved.Accessors) == 1
+}
+
+// RootIsLegRelativeUnpinned reports whether f's baked path still carries a
+// LEG-RELATIVE (source-relative, machinery-UNowned) ROOT ordinal — an UNPINNED
+// bake, REGARDLESS of accessor count. The root ordinal addresses the
+// reference's OWN source window, so it is NOT yet valid against a composed
+// frontier (a MULTI-LEG merged row, or a leg-concatenation seed RC): it must be
+// rebased by the reference's leg, and until then a MULTI-LEG merged row cannot
+// serve it without a leg binding (its slot N is a foreign leg's).
+//
+// DELIBERATELY broader than SourceRelativeBaked, which additionally requires a
+// SINGLE accessor. A FUSED unpinned path (composeFieldOverField / the
+// withChildren rebuild-fuse — WithSuffix inherits the inner node's unpinned
+// root) keeps a leg-relative ROOT yet has len(Accessors)>1, so SourceRelativeBaked
+// misses it. Two consequences the narrow predicate got WRONG:
+//   - EVAL (the multi-leg fall-through guards): the guard would read a foreign
+//     leg's root slot and descend into it (silently NULL on
+//     descendResolvedPath's unpinned default arm, or a wrong nested value).
+//     Keying on the ROOT's leg-relativity makes the fused twin go LOUD too,
+//     preserving the property Java gets structurally (FieldValue.eval resolves
+//     the ordinal against the CHILD's own flowed Message, never a
+//     differently-composed row).
+//   - PLAN-TIME leg-concat collapse (values.Replace / the select-merge box
+//     collapse): the fused node kept its RAW leg-relative root and fused its
+//     suffix onto the WRONG leg's seed field for any non-first leg. Keying the
+//     LegAwareRootOrdinal rebase on this predicate lands the fuse on the
+//     reference's OWN leg.
+//
+// Kept DISTINCT from SourceRelativeBaked so the OTHER plan-time single-accessor
+// sites (which legitimately want the narrower shape) are untouched; only the
+// two guards and the two proven-buggy leg-concat collapse sites use this.
+func (f *FieldValue) RootIsLegRelativeUnpinned() bool {
+	return f.Resolved != nil && !f.Resolved.FrontierPinned
 }
 
 // NewFieldValue constructs a FieldValue with a child (base) value.
@@ -1081,35 +1021,53 @@ func NewFieldValue(child Value, field string, typ Type) *FieldValue {
 	return &FieldValue{Field: field, Typ: typ, Child: child}
 }
 
-// NewFlatFieldValue constructs a FieldValue without a child (legacy
-// flat model).
+// NewFlatFieldValue constructs a childless LAZY FieldValue (no baked ordinal).
+// PLAN-TIME ONLY: such a node fails loud if it ever reaches runtime evaluation
+// (the name-resolution fallback is deleted). Callers are match-candidate /
+// ordering-hint carriers (compared by name, never evaluated) and resolver/
+// translator trees the bake walks rewrite before the plan finalizes.
 func NewFlatFieldValue(field string, typ Type) *FieldValue {
 	return &FieldValue{Field: field, Typ: typ}
 }
 
 // NewFieldValueWithResolvedOrdinal constructs a flat FieldValue carrying a
-// plan-time-resolved ordinal accessor — Java's FieldValue.ofOrdinalNumber. On
-// an ordinal-frontier row the read is row.Get(ordinal) (positional by
-// construction, duplicate-name-proof); on a name-keyed row it reads by field
-// name exactly like NewFlatFieldValue — the accessor is UNPINNED (no
-// join-frontier contract; the caller — the recursive-CTE leg wrap — has legs
-// that legitimately flow name-keyed rows until S3/S4 flips joins positional).
-// Distinct from NewOrdinalFieldValue, which is a NAME encoding (`_<ordinal>`
-// Datum key) for anonymous WITH-ORDINALITY fields, not positional access.
+// plan-time-resolved ordinal accessor — Java's FieldValue.ofOrdinalNumber. The
+// read is row.Get(ordinal) (positional by construction, duplicate-name-proof).
+// The accessor is UNPINNED (a source-relative bake, not machinery-owned — the
+// caller resolves a column against a source's declared column order).
+// Distinct from NewOrdinalFieldValue, which bakes the anonymous `_<ordinal>`
+// WITH-ORDINALITY element/ordinal columns.
 func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *FieldValue {
 	return &FieldValue{Field: field, Typ: typ, Resolved: NewFieldPathOfSingle(field, ordinal, false)}
 }
 
+// NewCorrelatedFieldValueWithResolvedOrdinal constructs a QOV-child FieldValue
+// carrying a plan-time-resolved SOURCE-RELATIVE ordinal accessor — the
+// construction bind for the CORRELATED resolver arm (Java's
+// FieldValue.ofFieldName over a QuantifiedObjectValue, FieldValue.java:273-299:
+// the FieldPath ordinal is fixed against the referent's result type at
+// construction). The accessor is UNPINNED and single-accessor, so the node is
+// SourceRelativeBaked: ordinal-bound against the reference's OWN source row
+// (the resolver's declared-column-order ordinal), but NOT rebased onto any
+// composed frontier — every translator/executor walk that rebinds lazy
+// references treats it identically (the SourceRelativeBaked widenings). At
+// runtime the correlation binds a source-shaped row (the source's own row or
+// its leg window — both flow the source's declared column order), so the
+// source-relative ordinal reads the right slot.
+func NewCorrelatedFieldValueWithResolvedOrdinal(child Value, field string, ordinal int, typ Type) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ, Child: child, Resolved: NewFieldPathOfSingle(field, ordinal, false)}
+}
+
 // NewOrdinalFieldValue accesses a record field by ORDINAL position,
-// mirroring Java's `FieldValue.ofOrdinalNumber(child, ordinal)`. Go's
-// runtime Datum is a name-keyed map, and anonymous record fields (the
-// element/ordinal of a WITH ORDINALITY Explode) are keyed by their
-// ordinal name `_0`/`_1` (see OrdinalFieldName) — so ordinal access is
-// name access on the `_<ordinal>` key. Used by the lateral-unnest lowering
-// to bind the AS alias to field 0 (element) and the AT alias to field 1
-// (the INT NOT NULL ordinal).
+// mirroring Java's `FieldValue.ofOrdinalNumber(child, ordinal)`. The field
+// DISPLAY name is the ordinal name `_0`/`_1` (see OrdinalFieldName — the
+// WITH-ORDINALITY Explode's anonymous element/ordinal columns), and the
+// ordinal is BAKED at construction: the Explode's positional
+// row serves slot `ordinal` directly. Used by the lateral-unnest lowering to
+// bind the AS alias to field 0 (element) and the AT alias to field 1 (the INT
+// NOT NULL ordinal).
 func NewOrdinalFieldValue(child Value, ordinal int, typ Type) *FieldValue {
-	return &FieldValue{Field: OrdinalFieldName(ordinal), Typ: typ, Child: child}
+	return &FieldValue{Field: OrdinalFieldName(ordinal), Typ: typ, Child: child, Resolved: NewFieldPathOfSingle(OrdinalFieldName(ordinal), ordinal, false)}
 }
 
 // OrdinalBakeError is the loud construction-time error NewFieldValueOfOrdinal
@@ -1126,7 +1084,7 @@ type OrdinalBakeError struct {
 }
 
 func (e *OrdinalBakeError) Error() string {
-	return fmt.Sprintf("RFC-173 ordinal bake: cannot resolve ordinal %d: %s (child type %v)", e.Ordinal, e.Reason, e.ChildType)
+	return fmt.Sprintf("ordinal bake: cannot resolve ordinal %d: %s (child type %v)", e.Ordinal, e.Reason, e.ChildType)
 }
 
 // NewFieldValueOfOrdinal constructs a BAKED FieldValue accessing the child's
@@ -1135,16 +1093,10 @@ func (e *OrdinalBakeError) Error() string {
 // the position is resolved ONCE, here, and carried on the node (Resolved);
 // resolveOrdinal returns it without re-deriving from the child type. The
 // DISPLAY name (Field) and Typ are read from the child's RecordType at
-// `ordinal` — the name serves diagnostics and name-model coexistence (Datum
-// keys, explain); the ordinal is authoritative (it survives even when a
-// runtime row's type names disagree with the display name).
-//
-// NOT the same as NewOrdinalFieldValue (above): that is the LEGACY lazy
-// `_<ordinal>` NAME-emulation (ordinal access spelled as name access on the
-// OrdinalFieldName key, used by the lateral-unnest lowering) — it resolves by
-// name at runtime and carries no baked marker. This constructor is the RFC-173
-// Slice 2 eager path; the `_N` emulation dies with the name machinery in
-// Slice 4.
+// `ordinal` — the name serves diagnostics/Explain; the ordinal is
+// authoritative (it survives even when a runtime row's type names disagree
+// with the display name). The bake is MACHINERY-OWNED (FrontierPinned): this
+// is the join / gather seed constructor.
 //
 // Errors loudly (Java raises; no silent fallback) when the child does not
 // flow a *RecordType or the ordinal is out of range.
@@ -1163,7 +1115,7 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 	typ := fld.FieldType
 	// Java FieldValue.computeResultType: the accessed field's type is
 	// overridden NULLABLE when the child's record type is nullable — the
-	// LEFT-outer null-supplying leg's record-level wrap (design ruling I3)
+	// LEFT-outer null-supplying leg's record-level wrap
 	// makes every column read through it nullable, because the padded row
 	// serves NULL in every slot (how Java reports LEFT JOIN metadata
 	// nullable without a per-column seed wrap). Keyed on the STORED Typ for
@@ -1179,9 +1131,9 @@ func NewFieldValueOfOrdinal(child Value, ordinal int) (*FieldValue, error) {
 	if childNullable && typ != nil && !typ.IsNullable() {
 		typ = WithNullability(typ, true)
 	}
-	// FrontierPinned: this constructor is the gated-join seed's — the executor
-	// births positional rows for every context these nodes evaluate in, so a
-	// name-keyed read is loud (bakedNameReadGuard).
+	// FrontierPinned: this constructor is the join seed's — the executor
+	// supplies positional rows for every context these nodes evaluate in, so
+	// these nodes only ever resolve by ordinal.
 	return &FieldValue{
 		Field:    fld.Name,
 		Typ:      typ,
@@ -1307,16 +1259,15 @@ func ContainsAggregate(v Value) bool {
 }
 
 // ProjectionColumnName is the projection output-column NAMING CONTRACT: the
-// name a projected Value's result is keyed under in the executor's name-keyed
-// row (executeProjection's projNames) and, alias-absent, in the positional
-// row's type (posNames). A FieldValue projects under its (possibly dotted)
+// name a projected Value's result is keyed under, alias-absent, in the
+// emitted positional row's type (executeProjection's posNames). A FieldValue
+// projects under its (possibly dotted)
 // Field; any other Value under its upper-cased explain rendering (a computed
 // expression like `n + 1` is keyed "(N + 1)"). Shared here so the
 // planner/translator side can READ a projection's output by the exact key the
 // executor WRITES — reading by any other rendering (e.g. the logical layer's
-// un-parenthesized "N + 1") is a silent NULL under the name model and a loud
-// OrdinalResolutionError under the ordinal model (RFC-173 §5 dual-window
-// differential, first catch).
+// un-parenthesized "N + 1") is a loud
+// OrdinalResolutionError on valid SQL.
 func ProjectionColumnName(v Value) string {
 	if fv, ok := v.(*FieldValue); ok {
 		return fv.Field
@@ -1329,11 +1280,11 @@ func ProjectionColumnName(v Value) string {
 // posNames) and therefore the name any downstream re-reader must use on the
 // ordinal frontier — the upper-cased ALIAS when the column carries one, else
 // the ProjectionColumnName rendering. It lives here so every site derives the
-// name from ONE rule instead of a hand-synchronized copy: the RFC-173 Slice-1
-// alias-frontier bug was exactly two copies of this rule disagreeing (the
+// name from ONE rule instead of a hand-synchronized copy — two copies of this
+// rule have disagreed before (the
 // executor wrote alias-preferring slot names while the recursive-CTE leg wrap
 // re-read by ProjectionColumnName alone — a loud OrdinalResolutionError on
-// valid SQL, no fallback by design). Both sites now delegate here.
+// valid SQL, no fallback by design). Both sites delegate here.
 func OutputColumnName(v Value, alias string) string {
 	if alias != "" {
 		return strings.ToUpper(alias)
@@ -1355,7 +1306,21 @@ func OutputColumnName(v Value, alias string) string {
 //	BooleanValue      → TRUE / FALSE / NULL
 //	CastValue         → CAST(child AS TypeX)
 //	NullValue         → NULL
-func ExplainValue(v Value) string {
+func ExplainValue(v Value) string { return explainValueOrdinals(v, true) }
+
+// ColumnNameValue renders v exactly like ExplainValue but WITHOUT the baked
+// `#<ordinal>` accessor discriminators — the NAME-derivation rendering. Every
+// place that derives an OUTPUT COLUMN NAME from a Value (aggregate result
+// columns, group-key output columns, sort-key field refs, projection column
+// defs) must use this form, never ExplainValue: a reference's column NAME
+// must not change when the reference is bound to its ordinal at plan time,
+// or the naming lockstep between the layers that render the
+// name from DIFFERENT instances of the same reference (one baked, one lazy)
+// silently breaks. ExplainValue keeps the ordinal discriminators for
+// EXPLAIN/debug output, where collapsing two different reads is itself a bug.
+func ColumnNameValue(v Value) string { return explainValueOrdinals(v, false) }
+
+func explainValueOrdinals(v Value, withOrdinals bool) string {
 	if v == nil {
 		return ""
 	}
@@ -1395,16 +1360,19 @@ func ExplainValue(v Value) string {
 		if cv.Resolved != nil && len(cv.Resolved.Accessors) > 1 {
 			steps := make([]string, len(cv.Resolved.Accessors))
 			for i, acc := range cv.Resolved.Accessors {
-				steps[i] = strings.ReplaceAll(acc.Field, "#", "##") + "#" + strconv.Itoa(acc.Ordinal)
+				steps[i] = strings.ReplaceAll(acc.Field, "#", "##")
+				if withOrdinals {
+					steps[i] += "#" + strconv.Itoa(acc.Ordinal)
+				}
 			}
 			path := strings.Join(steps, ".")
 			if cv.Child != nil {
-				return ExplainValue(cv.Child) + "." + path
+				return explainValueOrdinals(cv.Child, withOrdinals) + "." + path
 			}
 			return path
 		}
 		if cv.Child != nil {
-			name = ExplainValue(cv.Child) + "." + name
+			name = explainValueOrdinals(cv.Child, withOrdinals) + "." + name
 		}
 		// A baked ordinal accessor renders its ordinal (Java's FieldPath
 		// `#ordinal` syntax) alongside the name: two reads of DUPLICATE-named
@@ -1412,16 +1380,18 @@ func ExplainValue(v Value) string {
 		// the bare name would make different plans read identically (PR #446
 		// round 2). FrontierPinned deliberately does NOT render: it is an
 		// evaluation-contract marker, not part of the value's identity.
-		if cv.Resolved != nil {
+		// ColumnNameValue drops the discriminator: a column's NAME is the
+		// same whether the reference is lazy or baked.
+		if cv.Resolved != nil && withOrdinals {
 			return name + "#" + strconv.Itoa(cv.Resolved.Root().Ordinal)
 		}
 		return name
 	case *ArithmeticValue:
-		return "(" + ExplainValue(cv.Left) + " " + cv.Op.symbol() + " " + ExplainValue(cv.Right) + ")"
+		return "(" + explainValueOrdinals(cv.Left, withOrdinals) + " " + cv.Op.symbol() + " " + explainValueOrdinals(cv.Right, withOrdinals) + ")"
 	case *StrictRankLimitValue:
 		// Renders as the strict adjustment it computes (max(0, K-1)); matches the
 		// prior ArithmeticValue "(K - 1)" form so plan output is unchanged.
-		return "(" + ExplainValue(cv.K) + " - 1)"
+		return "(" + explainValueOrdinals(cv.K, withOrdinals) + " - 1)"
 	case *BooleanValue:
 		if cv.Value == nil {
 			return "NULL"
@@ -1431,13 +1401,13 @@ func ExplainValue(v Value) string {
 		}
 		return "FALSE"
 	case *CastValue:
-		return "CAST(" + ExplainValue(cv.Child) + " AS " + explainTypeName(cv.Target) + ")"
+		return "CAST(" + explainValueOrdinals(cv.Child, withOrdinals) + " AS " + explainTypeName(cv.Target) + ")"
 	case *PromoteValue:
-		return "PROMOTE(" + ExplainValue(cv.Child) + " TO " + explainTypeName(cv.Target) + ")"
+		return "PROMOTE(" + explainValueOrdinals(cv.Child, withOrdinals) + " TO " + explainTypeName(cv.Target) + ")"
 	case *RecordConstructorValue:
 		parts := make([]string, 0, len(cv.Fields))
 		for _, f := range cv.Fields {
-			parts = append(parts, f.Name+": "+ExplainValue(f.Value))
+			parts = append(parts, f.Name+": "+explainValueOrdinals(f.Value, withOrdinals))
 		}
 		return "{" + strings.Join(parts, ", ") + "}"
 	case *NullValue:
@@ -1446,13 +1416,13 @@ func ExplainValue(v Value) string {
 		if cv.Op == AggCountStar {
 			return "COUNT(*)"
 		}
-		return cv.Op.Symbol() + "(" + ExplainValue(cv.Operand) + ")"
+		return cv.Op.Symbol() + "(" + explainValueOrdinals(cv.Operand, withOrdinals) + ")"
 	case *QuantifiedObjectValue:
 		return cv.Correlation.Name()
 	case *ScalarFunctionValue:
 		parts := make([]string, len(cv.Args))
 		for i, a := range cv.Args {
-			parts[i] = ExplainValue(a)
+			parts[i] = explainValueOrdinals(a, withOrdinals)
 		}
 		return cv.FuncName + "(" + strings.Join(parts, ", ") + ")"
 	case *ParameterValue:
@@ -1473,20 +1443,20 @@ func ExplainValue(v Value) string {
 	case *PickValue:
 		parts := make([]string, len(cv.Alternatives))
 		for i, a := range cv.Alternatives {
-			parts[i] = ExplainValue(a)
+			parts[i] = explainValueOrdinals(a, withOrdinals)
 		}
-		sel := ExplainValue(cv.Selector)
+		sel := explainValueOrdinals(cv.Selector, withOrdinals)
 		return "CASE(" + sel + ", [" + strings.Join(parts, ", ") + "])"
 	case *ConditionSelectorValue:
 		conds := make([]string, len(cv.Implications))
 		for i, c := range cv.Implications {
-			conds[i] = ExplainValue(c)
+			conds[i] = explainValueOrdinals(c, withOrdinals)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
 	case *CardinalityValue:
 		// Java: ExplainTokens.addFunctionCall(FunctionNames.CARDINALITY, ...).
 		// Renders `cardinality(<child>)`, e.g. `cardinality(_.int_arr)`.
-		return "cardinality(" + ExplainValue(cv.Child) + ")"
+		return "cardinality(" + explainValueOrdinals(cv.Child, withOrdinals) + ")"
 	case *ScalarSubqueryValue:
 		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
 	case *UnmatchedAggregateValue:
@@ -1700,44 +1670,24 @@ type CorrelationBinder interface {
 	GetCorrelationBinding(id CorrelationIdentifier) (any, bool)
 }
 
-// RowEvalContext is a composite evaluation context for Value.Evaluate
-// that satisfies FieldValue (datum map), ParameterValue
-// (ParameterBinder), and CorrelationBinder. Pass this when evaluating
-// expressions that mix field references, prepared-statement parameters,
-// and correlation bindings (e.g. InJoin explode aliases).
+// RowEvalContext is a composite evaluation context for Value.Evaluate that
+// carries the ordinal frontier row plus prepared-statement parameters
+// (ParameterBinder), correlation bindings (CorrelationBinder), and pre-evaluated
+// scalar subqueries. Pass this when evaluating expressions that mix field
+// references, parameters, and correlation bindings (e.g. InJoin explode aliases).
 type RowEvalContext struct {
-	Datum map[string]any
-	// Positional is the RFC-173 Slice 1 authoritative ordinal-model row for the
-	// non-join frontier. When non-nil, FieldValue resolution goes through the
-	// ordinal path (resolveOrdinal / GetByName against the row's own type) BEFORE
-	// the name-keyed Datum — a loud OrdinalResolutionError on a miss, NO name-map
-	// fallback (RFC-173). It is the single frontier quantifier's row: an outer
-	// correlation still resolves via Correlations first, and only an unbound
-	// (frontier) quantifier reference falls through to this row.
+	// Positional is the authoritative ordinal-model row for the non-join
+	// frontier — the SOLE runtime row. When non-nil, FieldValue resolution goes
+	// through the ordinal path (the plan-time-baked ordinal, resolveOrdinal), a
+	// loud OrdinalResolutionError on a miss, NO name resolution. It is the
+	// single frontier quantifier's row: an outer correlation still resolves via
+	// Correlations first, and only an unbound (frontier) quantifier reference
+	// falls through to this row.
 	Positional       OrdinalRow
 	Binder           ParameterBinder
 	Correlations     CorrelationBinder
 	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
-	// Strict turns a local field-reference miss (a top-level FieldValue whose
-	// name is absent from Datum) from a silent nil into a reported violation
-	// via ReportUnresolvedReference. It is set ONLY when evaluating against a
-	// row whose key set is complete — i.e. a computed/synthetic row (aggregate
-	// output, projection, join-merge) that has no proto-style optional-field
-	// omissions, where an absent name is unambiguously an unresolved reference
-	// rather than a legitimate SQL NULL. Base-record rows (which legitimately
-	// omit unset optional fields) leave this false. See RFC-048 W1.
-	Strict bool
 }
-
-// ReportUnresolvedReference, when non-nil, is invoked by FieldValue.Evaluate
-// whenever a Strict RowEvalContext is asked for a local field name that is not
-// present in its (complete) row. It is the RFC-048 W1 "no unresolved
-// reference" invariant: a silent name->NULL — the cardinal silent-wrong — is
-// turned into a loud, attributable signal. It is nil by default (zero
-// production overhead and behaviour beyond the map lookup that already
-// happens); test/debug builds install a hook that fails the test. `field` is
-// the missing name; `available` is the row's actual key set (for diagnostics).
-var ReportUnresolvedReference func(field string, available []string)
 
 func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
 	if r.Binder == nil {
@@ -3220,32 +3170,6 @@ type RecordConstructorField struct {
 // Mirrors Java's `RecordConstructorValue`.
 type RecordConstructorValue struct {
 	Fields []RecordConstructorField
-
-	// AnchoredJoin marks a source-anchored join RESULT value (RFC-077 7.6):
-	// the RecordConstructorValue NewAnchoredJoinRecord builds, whose fields are
-	// each FieldValue(QuantifiedObjectValue(leg), col) over the enclosing
-	// select's OWN immediate join quantifiers. It is the structural successor of
-	// the retired opaque merge's Seed provenance bit, carrying the SAME
-	// dual-purpose semantics (RFC-077 F2):
-	//   - exploration-time HIDING: GetCorrelatedToOfValue does NOT descend into an
-	//     anchored-join RC, so its self-bound leg QOVs are excluded from the
-	//     value's reported external correlation set (mirroring the retired seed bit's
-	//     "report nothing"). Reporting them inflates every enclosing select's
-	//     correlation order and tips the ≥4-way STAR past the task budget.
-	//   - partition-time RE-EXPOSURE: PartitionSelectRule keeps ALL lower aliases
-	//     live for an anchored-join result (the seed never names the real
-	//     projection), and AddMergeSeedAliases re-collects the buried leg QOVs by
-	//     walking INTO the RC's fields — so a predicate reading a buried column is
-	//     classified as spanning, not pushed below the merge (the 0-row bug).
-	//
-	// An ORDINARY RecordConstructorValue (a SELECT projection) leaves this false:
-	// its correlations are real and must be reported. The flag is the honest
-	// structural marker that "this RC is a join result, not a user projection",
-	// NOT a downstream-observable heuristic — and it is PRESERVED through every
-	// Value reconstruction (WithChildren, Replace, RebaseValue, and the value
-	// simplifier's RecordConstructor/liftConstructor rebuilds) so the hiding
-	// survives SelectMergeRule's flatten-time substitution of nested join legs.
-	AnchoredJoin bool
 }
 
 // NewRecordConstructorValue constructs a RecordConstructorValue.
@@ -3271,18 +3195,19 @@ func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstruc
 }
 
 // NewRawRecordConstructorValue constructs a RecordConstructorValue keeping
-// every field name VERBATIM — duplicate names allowed. It exists for the
-// RFC-173 ordinal-join seeds (review W3 ruling: dedicated raw RC constructor):
-// the 2-way join's ordinal RC concatenates the two legs' columns, each field a
+// every field name VERBATIM — duplicate names allowed. It exists for
+// ordinal-join seeds:
+// a join's ordinal RC concatenates the legs' columns, each field a
 // BAKED FieldValue over its leg's QOV, and duplicate names across legs
 // (`SELECT * FROM a JOIN b` with same-named columns) MUST survive verbatim —
-// positional access is by ordinal, so duplicates are unambiguous, and §5's
-// duplicate-name identity pin is unconstructible without them.
+// positional access is by ordinal, so duplicates are unambiguous, and the
+// duplicate-name identity pins are unconstructible without them.
 //
-// NEVER use this for a name-model RC: NewRecordConstructorValue (above)
+// NEVER use this for a projection RC: NewRecordConstructorValue (above)
 // appends _2/_3 suffixes, which is correct there (SQL projection column
-// naming, name-keyed Datum rows) — a raw duplicate in the name model silently
-// resolves to the first match, the exact conflation RFC-173 exists to kill.
+// naming) — a raw duplicate under name-keyed plan-time lookup (FieldIndex
+// first-match) silently
+// resolves to the first match, the exact conflation ordinal identity exists to avoid.
 func NewRawRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
 	out := make([]RecordConstructorField, len(fields))
 	copy(out, fields)
@@ -3440,16 +3365,14 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 // parent expression (`t.col`) then projects a FieldValue with
 // operand = QuantifiedObjectValue{Correlation: t}.
 //
-// Mirrors Java's `QuantifiedObjectValue`. Evaluate reads
-// the row directly out of the eval context when it's a
-// `map[CorrelationIdentifier]map[string]any` (the multi-source
-// shape); for the single-source `map[string]any` shape it returns
-// the map verbatim so downstream FieldValue lookups can index into
-// it.
+// Mirrors Java's `QuantifiedObjectValue`. Evaluate resolves this quantifier's
+// row from the eval context: a correlation binding for Correlation (an outer
+// quantifier), else the frontier Positional row (the sole runtime row), else
+// nil. Downstream FieldValue lookups then read a column off that row by ordinal.
 type QuantifiedObjectValue struct {
 	Correlation CorrelationIdentifier
 	// Typ is the row type (struct shape) this quantifier produces —
-	// a *RecordType on the typed frontier (RFC-173; the translator
+	// a *RecordType on the typed frontier (the translator
 	// stamps it from the inner expression's result type), or
 	// UnknownType where inference hasn't reached.
 	Typ Type
@@ -3499,41 +3422,41 @@ func (q *QuantifiedObjectValue) Type() Type {
 // Name returns the debug-print kind.
 func (*QuantifiedObjectValue) Name() string { return "quantifier" }
 
-// Evaluate extracts the row bound to this quantifier's correlation.
-// Eval context shapes this impl handles:
+// Evaluate extracts the row bound to this quantifier's correlation. The
+// ordinal row is the sole runtime row; the eval-context shapes this handles:
 //
-//   - map[CorrelationIdentifier]map[string]any — multi-source shape,
-//     returns the nested map for this correlation (nil if missing).
-//   - map[string]any — single-source compat shim: IGNORES q.Correlation
-//     and returns the whole map. Safe only when there's one
-//     QuantifiedObjectValue in play; multi-source callers MUST use
-//     the per-correlation shape or two quantifiers with different
-//     correlations silently evaluate to the same row.
+//   - *RowEvalContext — a correlation binding for q.Correlation (an outer
+//     quantifier), else the frontier Positional row; nil if neither.
+//   - OrdinalRow — a bare frontier PositionalRow IS this quantifier's object.
+//   - CorrelationBinder — the row bound to q.Correlation (nil if unbound).
 //   - anything else — nil.
 //
-// The single-source shim exists so existing single-table tests /
-// callers that feed a bare row map keep working while the eval
-// path migrates. New callers MUST NOT rely on it — thread the
-// per-correlation shape end-to-end. The shim is scheduled for
-// removal once no caller needs it.
-//
-// Downstream FieldValue / nested-field resolvers then index into the
-// returned map to pick a specific column.
+// Downstream FieldValue / nested-field resolvers then read a specific column off
+// the returned row by ordinal.
 func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}
 	switch ctx := evalCtx.(type) {
-	case map[CorrelationIdentifier]map[string]any:
-		return ctx[q.Correlation], nil
 	case *RowEvalContext:
 		if ctx.Correlations != nil {
 			if val, ok := ctx.Correlations.GetCorrelationBinding(q.Correlation); ok {
 				return val, nil
 			}
 		}
-		return ctx.Datum, nil
-	case map[string]any:
+		// A bare QOV whole-row read resolves to the ordinal Positional row
+		// on the frontier (downstream FieldValue reads it by ordinal). No
+		// name-keyed fallback exists.
+		if ctx.Positional != nil {
+			return ctx.Positional, nil
+		}
+		return nil, nil
+	case OrdinalRow:
+		// A bare frontier PositionalRow (the posNeedsCtx-false fast path in
+		// frontierRowContext flows the ordinal row directly, not wrapped in a
+		// RowEvalContext) IS this quantifier's object — the same resolution the
+		// *RowEvalContext Positional fallback gives, so a QOV-child FieldValue
+		// (`c2.name`) reads its column by ordinal against it.
 		return ctx, nil
 	case CorrelationBinder:
 		val, ok := ctx.GetCorrelationBinding(q.Correlation)
@@ -3683,8 +3606,8 @@ func (a *AggregateValue) Evaluate(any) (any, error) {
 //	AggCount     → COUNT_NOT_NULL  (counts non-null values)
 //	AggCountStar → COUNT           (counts all rows incl. NULL)
 //	AggSum       → SUM
-//	AggMin       → MIN_EVER_LONG   (or MIN_EVER_TUPLE for non-numeric)
-//	AggMax       → MAX_EVER_LONG   (or MAX_EVER_TUPLE)
+//	AggMin       → permuted_min    (current-extremum index, tracks deletes)
+//	AggMax       → permuted_max    (current-extremum index, tracks deletes)
 //	AggAvg       → ""              (no direct index — computed from
 //	                                 SUM/COUNT pair instead)
 //	AggInvalid   → ""
@@ -3702,9 +3625,13 @@ func (a *AggregateValue) GetIndexTypeName() string {
 	case AggSum:
 		return "SUM"
 	case AggMin:
-		return "MIN_EVER_LONG"
+		// permuted_min (the recordlayer IndexTypePermutedMin value; a string
+		// literal here because the values package cannot import recordlayer).
+		// Java NumericAggregationValue.Min.getIndexTypeName() = PERMUTED_MIN — a
+		// current-extremum index that tracks deletes, NOT the monotone min_ever.
+		return "permuted_min"
 	case AggMax:
-		return "MAX_EVER_LONG"
+		return "permuted_max"
 	case AggAvg, AggInvalid:
 		return ""
 	}

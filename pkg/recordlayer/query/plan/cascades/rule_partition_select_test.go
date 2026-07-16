@@ -36,74 +36,6 @@ func joinPred(a, b string) predicates.QueryPredicate {
 	)
 }
 
-// TestRebaseBuriedLowerReferences pins the RFC-069 correctness fix: a spanning
-// upper predicate referencing a lower table COLLAPSED INTO THE MERGE QUANTIFIER
-// must be rewritten so its column access flows through the merge quantifier by
-// qualified ALIAS.COL name. Emitting it unrebased (referencing the bare buried
-// alias the upper select no longer binds) makes an INVALID memo member that a
-// later re-partition mis-classifies → resolves to null → 0 rows.
-func TestRebaseBuriedLowerReferences(t *testing.T) {
-	t.Parallel()
-
-	t3 := values.NamedCorrelationIdentifier("T3")
-	t2 := values.NamedCorrelationIdentifier("T2")
-	// rebaseBuriedLowerReferences treats the merge alias opaquely (it never parses
-	// the name), so a plain identifier is sufficient — the synthetic "$m_…" string
-	// scheme was retired in RFC-077 7.5 (merge quantifiers now carry a uniqueId).
-	merge := values.UniqueCorrelationIdentifier()
-
-	// Spanning predicate t3.t2_id = t2.id, where T3 is collapsed into the merge
-	// and T2 is an upper table.
-	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(t3), "t2_id", values.UnknownType),
-		predicates.Comparison{
-			Type:    predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(t2), "id", values.UnknownType),
-		},
-	)
-
-	buried := map[values.CorrelationIdentifier]struct{}{t3: {}}
-	got := rebaseBuriedLowerReferences(pred, buried, merge)
-
-	// After rebasing, the predicate must NOT reference the bare buried alias T3.
-	corr := predicates.GetCorrelatedToOfPredicate(got)
-	if _, stillT3 := corr[t3]; stillT3 {
-		t.Fatalf("rebased predicate still references buried alias T3: corr=%v", corr)
-	}
-	// It MUST reference the merge quantifier (which the upper select binds) and
-	// still the upper table T2.
-	if _, hasMerge := corr[merge]; !hasMerge {
-		t.Errorf("rebased predicate does not reference the merge quantifier %q: corr=%v", merge.Name(), corr)
-	}
-	if _, hasT2 := corr[t2]; !hasT2 {
-		t.Errorf("rebased predicate dropped the upper reference T2: corr=%v", corr)
-	}
-
-	// The collapsed side must read the buried column through the merge by the
-	// qualified key T3.T2_ID (matching the source-anchored join RC's ALIAS.COL keys).
-	cp := got.(*predicates.ComparisonPredicate)
-	lhs := cp.Operand.(*values.FieldValue)
-	lhsQOV, ok := lhs.Child.(*values.QuantifiedObjectValue)
-	if !ok || lhsQOV.Correlation != merge {
-		t.Fatalf("collapsed side does not route through the merge quantifier: %#v", lhs)
-	}
-	if lhs.Field != "T3.T2_ID" {
-		t.Errorf("collapsed side field = %q, want qualified %q", lhs.Field, "T3.T2_ID")
-	}
-
-	// The upper side (T2) is untouched.
-	rhs := cp.Comparison.Operand.(*values.FieldValue)
-	rhsQOV := rhs.Child.(*values.QuantifiedObjectValue)
-	if rhsQOV.Correlation != t2 || rhs.Field != "id" {
-		t.Errorf("upper side wrongly rewritten: %#v", rhs)
-	}
-
-	// Empty buried set ⇒ identity (case 1 / case 2 path).
-	if rebaseBuriedLowerReferences(pred, nil, merge) != pred {
-		t.Errorf("empty buried set must be identity")
-	}
-}
-
 // scanQuantifier builds a named ForEach quantifier over a fresh base scan,
 // standing in for a SQL table source aliased `name`.
 func scanQuantifier(name string) expressions.Quantifier {
@@ -126,122 +58,6 @@ func chainEqPred(a, aCol, b, bCol string) predicates.QueryPredicate {
 			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(b)), bCol, values.UnknownType),
 		},
 	)
-}
-
-// TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier is the unit-level
-// regression for the deeply-nested-FlatMap projection bug. The flat 3-way seed
-// SELECT t1.id FROM t3,t2,t1 WHERE t3.t2_id=t2.id AND t2.t1_id=t1.id carries the
-// translator-built SEED merge value (RFC-074: the sole canonical merge value, now
-// the source-anchored join RC). A seed names only its two immediate source aliases but hides
-// the real projection (in the Project above), so the rule must keep ALL lowers
-// live. When PartitionSelectRule collapses ≥2 tables into a single merge
-// quantifier ($m), those original aliases are no longer bound at the upper level —
-// they live inside $m's merged row under qualified ALIAS.COL keys. Flowing the
-// seed merge UNCHANGED then looked up correlations the upper never binds, so the
-// top FlatMap's resultValue evaluated to nil and the projected (deeply-nested)
-// T1.ID came back NULL → 200 rows with t1.id != 1.
-//
-// The fix re-stamps the upper result as a source-anchored join RC over the upper's
-// IMMEDIATE quantifiers (merge alias + upper tables) in the merge case. This pins
-// that: a merge-case upper must NEVER carry a result value naming an alias it does
-// not bind — it must be a source-anchored join RC keyed on bound aliases.
-func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
-	t.Parallel()
-
-	t1, t2, t3 := scanQuantifier("T1"), scanQuantifier("T2"), scanQuantifier("T3")
-
-	// Seed result value: the source-anchored join RESULT value over all three
-	// tables — the structure the real flat N-quantifier select carries once
-	// SelectMergeRule flattens the binary seeds (RFC-077 7.6). isAnchoredJoinResult
-	// marks it so the rule keeps ALL lowers live (the genuine projection lives in
-	// the Project above); the leg QOVs are re-exposed at partition time.
-	seed := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-		{Alias: values.NamedCorrelationIdentifier("T1"), Columns: []values.Field{{Name: "ID"}, {Name: "T1_ID"}, {Name: "T2_ID"}}},
-		{Alias: values.NamedCorrelationIdentifier("T2"), Columns: []values.Field{{Name: "ID"}, {Name: "T1_ID"}, {Name: "T2_ID"}}},
-		{Alias: values.NamedCorrelationIdentifier("T3"), Columns: []values.Field{{Name: "ID"}, {Name: "T1_ID"}, {Name: "T2_ID"}}},
-	})
-	sel := expressions.NewSelectExpressionWithAliases(
-		seed,
-		[]expressions.Quantifier{t3, t2, t1},
-		[]predicates.QueryPredicate{
-			chainEqPred("T3", "T2_ID", "T2", "ID"),
-			chainEqPred("T2", "T1_ID", "T1", "ID"),
-		},
-		[]string{"T3", "T2", "T1"},
-	)
-
-	ref := expressions.InitialOf(sel)
-	yielded := FireExpressionRuleWithMemo(NewPartitionSelectRule(), ref, EmptyPlanContext(), nil)
-
-	if len(yielded) == 0 {
-		t.Fatal("PartitionSelectRule yielded no partitions for the 3-way chain seed")
-	}
-
-	sawMergeCaseUpper := false
-	for i, y := range yielded {
-		upper, ok := y.(*expressions.SelectExpression)
-		if !ok {
-			t.Fatalf("yield[%d]: expected *SelectExpression, got %T", i, y)
-		}
-		rv := upper.GetResultValue()
-
-		// The bug signature: an upper that still carries a result value naming an
-		// unbound alias after collapsing a lower into a merge quantifier. Detect a
-		// merge-collapsing partition STRUCTURALLY: it has a quantifier ranging over
-		// a lower SelectExpression whose result value is a source-anchored join RC
-		// (RecordConstructorValue with AnchoredJoin, the collapsed ≥2-live merge). The merge quantifier now carries a plain
-		// uniqueId alias (RFC-077 7.5 retired the synthetic "$m…" string), so the
-		// old name-prefix check is gone — the collapsed-merge child is the honest,
-		// rename-stable signal.
-		hasMergeQuant := false
-		for _, q := range upper.GetQuantifiers() {
-			childRef := q.GetRangesOver()
-			if childRef == nil {
-				continue
-			}
-			for _, m := range childRef.Members() {
-				lsel, ok := m.(*expressions.SelectExpression)
-				if !ok {
-					continue
-				}
-				if rc, ok := lsel.GetResultValue().(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
-					hasMergeQuant = true
-					break
-				}
-			}
-			if hasMergeQuant {
-				break
-			}
-		}
-
-		if hasMergeQuant {
-			sawMergeCaseUpper = true
-			rc, ok := rv.(*values.RecordConstructorValue)
-			if !ok || !rc.AnchoredJoin {
-				t.Errorf("yield[%d]: merge-case upper result = %T (anchored=%v), want source-anchored *RecordConstructorValue", i, rv, ok && rc.AnchoredJoin)
-				continue
-			}
-			// The re-stamped anchored RC must anchor exactly to the upper's bound
-			// aliases: the merge quantifier plus the single upper table. Every leg QOV
-			// correlation must be one the upper select actually binds (no dangling
-			// original alias).
-			bound := make(map[values.CorrelationIdentifier]struct{})
-			for _, q := range upper.GetQuantifiers() {
-				bound[q.GetAlias()] = struct{}{}
-			}
-			for a := range values.GetCorrelatedToOfAnchoredJoinLegs(rc) {
-				if _, ok := bound[a]; !ok {
-					t.Errorf("yield[%d]: re-stamped anchored RC anchors to alias %q the upper does not bind: bound=%v",
-						i, a.Name(), bound)
-				}
-			}
-		}
-	}
-
-	if !sawMergeCaseUpper {
-		t.Fatal("no merge-collapsing partition was generated for the chain seed — " +
-			"the (T1⋈T2)⋈T3 associativity (the one the cost model selects) was not explored")
-	}
 }
 
 // TestMergeQuantifierAlias_Injective REMOVED (RFC-077 7.5): the synthetic
@@ -348,5 +164,40 @@ func TestTransitiveCorrelationOrder_RangesOverEdges(t *testing.T) {
 	}
 	if len(order[src.GetAlias()]) != 0 {
 		t.Fatalf("PB must not depend on X: %v", order[src.GetAlias()])
+	}
+}
+
+// TestBoundAliasesOfReference pins the buried-alias collector the partition
+// classifier keys on: every quantifier alias bound anywhere inside the
+// reference's subgraph is reported — including aliases
+// nested one level down — so a predicate referencing a subquery-INTERNAL
+// alias (an existential's hoisted join predicate, `B2.A_ID = A.ID`) is
+// classified as correlated to the existential quantifier that owns it, never
+// sunk into the outer's partition half where the alias can never bind.
+func TestBoundAliasesOfReference(t *testing.T) {
+	t.Parallel()
+
+	inner := expressions.NewSelectExpressionWithAliases(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B2")),
+		[]expressions.Quantifier{
+			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("B2"),
+				expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
+			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("C"),
+				expressions.InitialOf(&expressions.FullUnorderedScanExpression{})),
+		},
+		nil, nil)
+	outer := expressions.NewSelectExpressionWithAliases(
+		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q")),
+		[]expressions.Quantifier{
+			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("Q"),
+				expressions.InitialOf(inner)),
+		},
+		nil, nil)
+
+	got := boundAliasesOfReference(expressions.InitialOf(outer))
+	for _, want := range []string{"Q", "B2", "C"} {
+		if _, ok := got[values.NamedCorrelationIdentifier(want)]; !ok {
+			t.Fatalf("bound aliases missing %s (got %v)", want, got)
+		}
 	}
 }

@@ -53,6 +53,12 @@ type PlanVisitor struct {
 	md        *recordlayer.RecordMetaData
 	cteScopes map[string]semantic.ScopeSource
 	cteBodies map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
+	// cteOnScopes carries the ON-resolution-only sources for declared CTEs
+	// whose schema derivation declined the global cteScopes (join/unnest
+	// bodies) — consumed ONLY by upgradeJoinOnPredicates so an enclosing
+	// explicit join's ON resolves (or fails LOUD via the nil-Table marker)
+	// instead of being silently dropped. See buildCTEOnOnlySource.
+	cteOnScopes map[string]semantic.ScopeSource
 
 	// schemaName is the session schema (e.g. "s"). It is used ONLY to run Java's
 	// table-first resolution order in the lateral-unnest classifier: a dotted
@@ -167,10 +173,21 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		if v.cteBodies == nil {
 			v.cteBodies = make(map[string]logical.LogicalOperator)
 		}
+		if v.cteOnScopes == nil {
+			v.cteOnScopes = make(map[string]semantic.ScopeSource)
+		}
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
 			upper := strings.ToUpper(name)
 			if _, exists := v.cteScopes[upper]; exists {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"found '%s' more than once", name)
+			}
+			// An ON-only registration is a DECLARED name too — without this
+			// arm a join-bodied CTE (never in cteScopes) evaded the duplicate
+			// check on the visitor path (the CTECatalog chain's innerCTEs
+			// tracker got this right).
+			if _, exists := v.cteOnScopes[upper]; exists {
 				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
 					"found '%s' more than once", name)
 			}
@@ -191,6 +208,11 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				v.cteScopes[upper] = src
+			} else {
+				// Declared but not globally derivable (join/unnest body): the
+				// ON-only registration keeps an enclosing explicit join's ON
+				// resolvable — or LOUDLY dropped (marker) — never silent.
+				registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes)
 			}
 			// Eagerly build the CTE body plan so scalar subqueries
 			// that reference this CTE can wrap themselves with it.
@@ -201,7 +223,14 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				if isRecBody {
 					v.inRecursiveCTEBody = true
 				}
-				bodyOp, bodyErr := v.VisitQueryBody(inner.QueryExpressionBody())
+				// Self-invisible body build (buildCTEBodySelfHidden, both
+				// maps): SQL scoping makes `FROM T1` inside T1's body the
+				// TABLE, never the CTE being defined — CTE-first scope
+				// resolution would otherwise resolve the body against its
+				// own OUTPUT schema (the R5a shadow pin 42703'd on ID).
+				bodyOp, bodyErr := buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, isRecBody, func() (logical.LogicalOperator, error) {
+					return v.VisitQueryBody(inner.QueryExpressionBody())
+				})
 				if isRecBody {
 					v.inRecursiveCTEBody = false
 				}
@@ -263,7 +292,17 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					}
 					v.inRecursiveCTEBody = true
 				}
-				body, err = v.VisitQueryBody(inner.QueryExpressionBody())
+				// Self-invisible rebuild (buildCTEBodySelfHidden). NOT the
+				// same scoping as the eager build: this arm runs after ALL
+				// registrations, so a body referencing a LATER-declared
+				// sibling resolves here where the eager build correctly
+				// failed — the rebuild converts SQL's forward-reference
+				// rejection into a non-SQL acceptance (review-caught,
+				// pre-existing; booked as the forward-visibility
+				// Java-conformance probe on the output-naming slice).
+				body, err = buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, recursive, func() (logical.LogicalOperator, error) {
+					return v.VisitQueryBody(inner.QueryExpressionBody())
+				})
 				if recursive {
 					v.inRecursiveCTEBody = false
 				}
@@ -524,19 +563,36 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						proj.ProjectedValues[i] = qv
 					}
 				}
+				// A BARE non-shadowed column resolves through the scope so the
+				// projection carries the construction-bound ordinal (a
+				// childless source-relative baked FieldValue — the resolver's
+				// single-source bind). Anything else — a multi-source
+				// QOV-correlated resolution, an unresolvable name, a lazy
+				// result — keeps the translator's name emission unchanged.
+				if proj.ProjectedValues == nil || (i < len(proj.ProjectedValues) && proj.ProjectedValues[i] == nil) {
+					if rv, rerr := resolver.ResolveIdentifier(semantic.Identifier{}, id); rerr == nil {
+						if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child == nil && fv.SourceRelativeBaked() {
+							if proj.ProjectedValues == nil {
+								proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+							}
+							if i < len(proj.ProjectedValues) {
+								proj.ProjectedValues[i] = fv
+							}
+						}
+					}
+				}
 			}
 			if parseColRef(col).isQualified() && proj != nil {
 				if proj.ProjectedValues == nil {
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
 				if len(sq.joins) > 0 {
-					// RFC-173 QP-REF-BIND item 1: qualified projections over
-					// joins run the per-attribute check (Java's 42702 — the
-					// pre-item-1 bypass never resolved them), and a reference
-					// binding to a LATER duplicate-alias leg is emitted
-					// QOV-correlated to that leg's binding so the gated
-					// seed's bake addresses the right quantifier. Every other
-					// reference keeps the alias-keyed merged-row read.
+					// Qualified projections over joins run the per-attribute
+					// check (Java's 42702), and a reference binding to a
+					// LATER duplicate-alias leg is emitted QOV-correlated to
+					// that leg's binding so the ordinal bake addresses the
+					// right quantifier. Every other reference keeps the
+					// alias-keyed merged-row read.
 					ref := parseColRef(col)
 					qv, qerr := resolver.ResolveQualifiedProjection(
 						semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
@@ -551,6 +607,24 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					if i < len(proj.ProjectedValues) {
 						if qv != nil {
 							proj.ProjectedValues[i] = qv
+						} else if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+							// A qualified projection over a join emits the
+							// resolver's QUANTIFIER-ADDRESSED source-relative
+							// baked reference — the executor binds the leg
+							// window off the merged row's own leg boundaries
+							// (rowLegsBinder), so the read is positional. A
+							// DUPLICATED bare leaf keeps its QUALIFIED datum
+							// key (alias-pinned) so the two same-named columns
+							// do not collapse; a unique leaf keys bare.
+							proj.ProjectedValues[i] = bv
+							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
+								if proj.Aliases == nil {
+									proj.Aliases = make([]string, len(proj.Projections))
+								}
+								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
+									proj.Aliases[i] = strings.ToUpper(col)
+								}
+							}
 						} else {
 							proj.ProjectedValues[i] = &values.FieldValue{
 								Field: strings.ToUpper(col),
@@ -617,10 +691,21 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
+						// A BARE key naming exactly ONE projection output
+						// alias takes precedence over FROM-scope ambiguity —
+						// the sort executes over the projected row, where
+						// that alias key is unambiguous (the output-first
+						// rule the ColumnNotFound arm below applies).
+						// orderByOutputAliasBinding enforces both restrictions:
+						// the raw key must BE a bare identifier, and the name
+						// must bind exactly one output column; everything else
+						// surfaces the scope's 42702.
+						if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
+							continue
+						}
 						// Java's exact SemanticAnalyzer text — the reference as
 						// written, byte-equal in the conformance harness
-						// (RFC-173 QP-REF-BIND item 1, M5; live-verified for
-						// duplicate AND distinct aliases).
+						// (verified for duplicate AND distinct aliases).
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 							"Ambiguous reference %s", ambigErr.Reference())
 					}
@@ -693,6 +778,16 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 				var corrErr *CorrelatedExistsError
 				if errors.As(walkErr, &corrErr) {
+					// Route through the SAME classifier the WHERE-EXISTS path uses so
+					// both forms agree on the SQLSTATE: a GENUINE resolution failure in
+					// the ON (missing column/source) unwraps to 42703/42702, while only a
+					// DELIBERATE Unsupported decline (nested-subquery / OUTER-ON /
+					// collision / RIGHT-FULL) reports 0A000. Without this the projected
+					// path reported 0A000 for a genuine missing column, diverging from the
+					// WHERE-EXISTS path's 42703.
+					if mapped := mapPredicateWalkError(walkErr); mapped != nil {
+						return nil, mapped
+					}
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 				}
 				// RFC-141 R4 (P1b): a SELECT item with a NESTED EXISTS is
@@ -710,7 +805,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (9) Upgrade JOIN ON predicates.
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, v.cteScopes); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, v.cteScopes, v.cteOnScopes); err != nil {
 			return nil, err
 		}
 	}
@@ -726,6 +821,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		schemaName:  v.schemaName,
 		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName),
 		cteScopes:   v.cteScopes,
+		cteOnScopes: v.cteOnScopes,
 		cteBodies:   v.cteBodies,
 	}
 
@@ -822,51 +918,17 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	if resolver != nil && sq.whereExpr.Expression() != nil {
 		walked, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
 		if walkErr != nil {
-			var ambigErr *semantic.AmbiguousColumnError
-			if errors.As(walkErr, &ambigErr) {
-				// Java's exact text, from the reference as written (M5).
-				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-					"Ambiguous reference %s", ambigErr.Reference())
-			}
-			var inListNull *expr.InListNullError
-			if errors.As(walkErr, &inListNull) {
-				return nil, api.NewError(api.ErrCodeWrongObjectType,
-					"NULL values are not allowed in the IN list")
-			}
-			var colNotFound *semantic.ColumnNotFoundError
-			if errors.As(walkErr, &colNotFound) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q does not exist", colNotFound.Id.Name())
-			}
-			var srcNotFound *semantic.SourceNotFoundError
-			if errors.As(walkErr, &srcNotFound) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
-			}
-			var inColRef *expr.InColumnRefError
-			if errors.As(walkErr, &inColRef) {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					inColRef.Error())
-			}
-			var binErr *expr.InvalidBinaryLiteralError
-			if errors.As(walkErr, &binErr) {
-				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
-			}
-			var corrExistsErr *CorrelatedExistsError
-			if errors.As(walkErr, &corrExistsErr) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"nested correlated EXISTS: %v", walkErr)
-			}
-			// A structured *api.Error from the walk is a deliberate, already
-			// SQLSTATE-classified rejection raised by a nested subquery's build
-			// (e.g. an EXISTS subquery whose own WHERE buries a scalar EXISTS, which
-			// BuildExists' postBuild guard rejects with ErrCodeUnsupportedQuery —
-			// RFC-141 R4). Surface it VERBATIM rather than fall through to
-			// the text-fallback predicate builder below, which declines the EXISTS
-			// shape and reports a generic "could not plan", masking the real reason.
-			var apiErr *api.Error
-			if errors.As(walkErr, &apiErr) {
-				return nil, apiErr
+			// Classify the walk failure through the SHARED mapper (the same one the
+			// projected-EXISTS path and every mapPredicateWalkError caller use) so
+			// every path agrees on the SQLSTATE: a genuine resolution error
+			// (Ambiguous/ColumnNotFound/SourceNotFound/Shadow/…) → 42703/42702, a
+			// deliberate unsupported-shape decline → 0A000, and a structured
+			// *api.Error (a nested subquery build's own already-classified rejection,
+			// e.g. RFC-141 R4's ErrCodeUnsupportedQuery) verbatim rather than the
+			// generic "could not plan" of the text-fallback below. A single ladder
+			// so a new arm can never reach one EXISTS path but not the other.
+			if mapped := mapPredicateWalkError(walkErr); mapped != nil {
+				return nil, mapped
 			}
 		} else {
 			preWalkPred = walked
@@ -1296,7 +1358,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		}
 
 		// Handle positional references `ORDER BY N`.
-		posName, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols)
+		posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols)
 		if posErr != nil {
 			// Error during positional resolution — this was already
 			// validated by classifySelectElements, so this shouldn't
@@ -1312,7 +1374,10 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf})
+			// Pos carries the SELECT-list position: a positional key IS an
+			// output ordinal by SQL definition, so the translator bakes it
+			// directly to the projection's output slot.
+			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf, Pos: pos})
 			continue
 		}
 
@@ -1374,15 +1439,67 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 // ORDER BY over an unnest — the shadowing case where the sort sits
 // BELOW the merge and a later FROM item could clobber the bare key. RFC-142.
 // A QUALIFIED sort key has the dup-alias twin of the same silent-wrong-order
-// hazard (RFC-173 QP-REF-BIND item 1): the sort sits BELOW the projection over
-// the JOIN row, whose namespace carries the BINDING correlation (`Q$DUP1.QID`)
-// for a later duplicate-alias leg — a key left as the SQL alias (`A.QID`)
+// hazard: the sort sits BELOW the projection over the JOIN row, whose
+// namespace carries the BINDING correlation (`Q$DUP1.QID`) for a later
+// duplicate-alias leg — a key left as the SQL alias (`A.QID`)
 // silently misses and the rows come back in scan order (the projection reads
 // the binding, the sort read the display alias). Route qualified keys through
 // ResolveQualifiedProjection — the SAME helper the projection path uses, so
 // the two cannot diverge: it returns a value ONLY when the reference binds a
 // later duplicate leg (binding != alias); every other qualified key (distinct
 // aliases, first-occurrence legs) is untouched.
+// bareLeafDuplicated reports whether the BARE leaf of projection column i
+// collides (case-insensitive) with another projection column's EFFECTIVE
+// output label (its alias when aliased, else its bare leaf) — the shape whose
+// OUTPUT must stay QUALIFIED (`SELECT a.k, b.k` → columns A.K/B.K;
+// `SELECT t1.id AS id, t2.id` → the second stays T2.ID, colliding with the
+// alias), the name model's disambiguation rule that keeps two same-named leg
+// columns from collapsing in the datum map. A UNIQUE leaf keys bare.
+func bareLeafDuplicated(projCols, projAliases []string, i int) bool {
+	if i >= len(projCols) {
+		return false
+	}
+	leaf := parseColRef(projCols[i]).bare()
+	for j, c := range projCols {
+		if j == i {
+			continue
+		}
+		other := parseColRef(c).bare()
+		if j < len(projAliases) && projAliases[j] != "" {
+			other = projAliases[j]
+		}
+		if strings.EqualFold(other, leaf) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveQualifiedBaked resolves a QUALIFIED column reference through the scope
+// and returns it ONLY when the resolver produced a QUANTIFIER-ADDRESSED BAKED
+// reference (a QOV-child SourceRelativeBaked node — a construction-bound
+// ordinal). The executor binds the leg's window off the
+// merged row's own leg boundaries (rowLegsBinder), so the source-relative
+// ordinal reads positionally over the composed row. A CHILDLESS bake carries an
+// ordinal relative to its OWN source row (would misread another leg's slot over
+// a merged row) — excluded. A DUPLICATE plain alias (`FROM p AS a, q AS a`)
+// declines (stays display-keyed, loud). Any resolution error or lazy result
+// returns nil, keeping the caller's legacy emission (loud at runtime, never a
+// silent wrong-slot read).
+func resolveQualifiedBaked(resolver *expr.Resolver, ref colRef) values.Value {
+	if !ref.isQualified() {
+		return nil
+	}
+	rv, err := resolver.ResolveIdentifier(semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
+	if err != nil || rv == nil {
+		return nil
+	}
+	if fv, isFV := rv.(*values.FieldValue); isFV && fv.Child != nil && fv.SourceRelativeBaked() {
+		return fv
+	}
+	return nil
+}
+
 func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) {
 	sort := findSort(op)
 	if sort == nil {
@@ -1408,6 +1525,14 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 			qv, err := resolver.ResolveQualifiedProjection(semantic.NewUnquoted(ref.table), id)
 			if err == nil && qv != nil {
 				sort.Keys[i].Value = qv
+				continue
+			}
+			// Every other QUALIFIED sort key resolves through the scope to
+			// the quantifier-addressed source-relative baked reference so
+			// the key resolves positionally through its leg window
+			// (rowLegsBinder) instead of a flat dotted name read.
+			if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+				sort.Keys[i].Value = bv
 			}
 			continue
 		}
@@ -1455,6 +1580,32 @@ func parseLimitClause(simpleTable *antlrgen.SimpleTableContext) (limit, offset i
 		}
 	}
 	return limit, offset
+}
+
+// limitClauseKeepsSingleRow reports whether simpleTable's LIMIT/OFFSET clause
+// (if any) provably preserves a single input row. It is STRICTER than reading
+// the (limit, offset) ints parseLimitClause returns: those sentinels conflate an
+// ABSENT clause with a syntactically-accepted-but-unparseable atom. Both `LIMIT
+// 0.0` and `LIMIT 1 OFFSET 1.0` parse (REAL_LITERAL is a decimalLiteral) yet
+// ParseInt fails, silently leaving limit=-1 / offset=0 — so a nonzero OFFSET
+// that failed to parse is indistinguishable from no offset via sq.offset alone.
+// A `LIMIT ?` parameter is likewise unknown at plan time. For the always-true
+// aggregate fold an unverifiable clause must DECLINE, never silently fold to
+// every row. So require EVERY atom to parse cleanly (no parameter, no non-integer
+// literal), then trust the resolved values: limit >= 1 keeps the row, offset == 0
+// does not skip it.
+func limitClauseKeepsSingleRow(simpleTable *antlrgen.SimpleTableContext) bool {
+	lc := simpleTable.LimitClause()
+	if lc == nil {
+		return true
+	}
+	for _, atom := range lc.AllLimitClauseAtom() {
+		if _, err := strconv.ParseInt(atom.GetText(), 10, 64); err != nil {
+			return false
+		}
+	}
+	limit, offset := parseLimitClause(simpleTable)
+	return limit >= 1 && offset == 0
 }
 
 // visitLimit checks the ANTLR parse tree for a LIMIT clause. Go
@@ -1563,8 +1714,12 @@ func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.Logica
 	if setQ == nil {
 		return nil, nil
 	}
-	if len(v.cteScopes) == 0 && (v.schemaName == "" || v.schemaName == defaultEmbeddedSchema) {
+	// BOTH maps must be empty to short-circuit to the scope-less variant — the
+	// THIRD instance of the empty-scope hole (the review-proven union-branch
+	// cross-product): a join/unnest-bodied CTE lives ONLY in cteOnScopes, and
+	// dropping it here silently dropped a union branch's join ON.
+	if len(v.cteScopes) == 0 && len(v.cteOnScopes) == 0 && (v.schemaName == "" || v.schemaName == defaultEmbeddedSchema) {
 		return buildLogicalPlanForUnionWithCatalog(setQ, v.md)
 	}
-	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.schemaName, v.cteScopes, v.inRecursiveCTEBody)
+	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.schemaName, v.cteScopes, v.cteOnScopes, v.inRecursiveCTEBody)
 }

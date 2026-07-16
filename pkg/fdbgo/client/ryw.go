@@ -87,7 +87,7 @@ type rywEntry struct {
 	// Distinct from value==nil ("Set to empty bytes", a present key).
 	absent bool
 	// dependent: a DEPENDENT_WRITE — a standalone atomic resolved against a DB base
-	// (C++ stack bottom is an atomic, isDependent()==true). Set ONCE at the entry's birth
+	// (C++ stack bottom is an atomic, isDependent()==true). Set ONCE at the entry's build
 	// and carried UNCHANGED through later folds (C++ isDependent() reads singletonOperation,
 	// the stack bottom, which coalesceOver never mutates — WriteMap.cpp:480). Drives
 	// conflict filtering. A plain Set, a fold over a Set, and an atomic over a cleared base
@@ -110,7 +110,7 @@ type rywEntry struct {
 }
 
 // isDependentLocked reports whether this entry is a C++ DEPENDENT_WRITE (is_independent()
-// false) for conflict-map purposes. A resolved entry uses its birth-time dependent flag; an
+// false) for conflict-map purposes. A resolved entry uses its build-time dependent flag; an
 // unresolved chain is INDEPENDENT iff it contains a versionstamp (unreadable — C++ marks
 // SetVersionstamped* independent), else DEPENDENT. Caller holds c.mu.
 //

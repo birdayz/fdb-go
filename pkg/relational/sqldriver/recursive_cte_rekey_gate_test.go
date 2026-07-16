@@ -9,10 +9,10 @@ import (
 	"github.com/onsi/gomega"
 )
 
-// TestFDB_RecursiveCTERekeyGate is the RFC-173 Slice 1 gate: after retiring the
-// source-name reverse-map, a RENAMED recursive CTE keys its temp table under the
-// CTE's OUTPUT column names (not the seed's source columns). Both legs normalize
-// to those OUTPUT names before the temp-table insert.
+// TestFDB_RecursiveCTERekeyGate pins that a RENAMED recursive CTE keys its
+// temp table under the CTE's OUTPUT column names (not the seed's source
+// columns). Both legs normalize to those OUTPUT names before the
+// temp-table insert.
 //
 // The load-bearing invariant it pins: the recursive-body normalization must NEVER
 // persist a QUALIFIED datum key (e.g. "B.ID") into the temp table. The recursive
@@ -104,20 +104,20 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 	g.Expect(dgot).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6, 7, 8, 100}))
 }
 
-// TestFDB_RecursiveCTEComputedColumn_RFC173 pins the dual-window differential's
-// first catch: a recursive CTE whose recursive leg projects a COMPUTED expression
-// (`SELECT n + 1`). The leg's normalization WRAP re-read the leg output by its
-// LOGICAL column name ("N + 1"), but the physical row is keyed by the PHYSICAL
-// name (values.ProjectionColumnName → "(N + 1)") — a mismatch the tolerant name
-// map absorbed as a silent NULL, so `WHERE n < 10` stopped the recursion one
-// level early and count(*) returned 2 instead of 10. Every suite recursive CTE
-// used bare columns (logical == physical), so this dimension was unprobed until
-// the §5 differential flagged it. The fix KEEPS the wrap — it is what strips
-// qualified keys before the temp-table insert (see normalizeLegToOutputColumns)
-// — but makes it read by the PHYSICAL names (legPhysicalOutputNames, via the
-// shared values.ProjectionColumnName naming contract), so reader and writer
-// cannot drift.
-func TestFDB_RecursiveCTEComputedColumn_RFC173(t *testing.T) {
+// TestFDB_RecursiveCTEComputedColumn pins a recursive CTE whose recursive leg
+// projects a COMPUTED expression (`SELECT n + 1`). The leg's normalization
+// WRAP used to re-read the leg output by its LOGICAL column name ("N + 1"),
+// but the physical row is keyed by the PHYSICAL name
+// (values.ProjectionColumnName → "(N + 1)") — a mismatch a tolerant name map
+// absorbed as a silent NULL, so `WHERE n < 10` stopped the recursion one level
+// early and count(*) returned 2 instead of 10. Every other recursive CTE in
+// the suite used bare columns (logical == physical), so this dimension went
+// unprobed until this test caught it. The fix KEEPS the wrap — it is what
+// strips qualified keys before the temp-table insert (see
+// normalizeLegToOutputColumns) — but makes it read by the PHYSICAL names
+// (legPhysicalOutputNames, via the shared values.ProjectionColumnName naming
+// contract), so reader and writer cannot drift.
+func TestFDB_RecursiveCTEComputedColumn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -164,16 +164,15 @@ func TestFDB_RecursiveCTEComputedColumn_RFC173(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}))
 }
 
-// TestFDB_RecursiveCTEStarSeedAliases_RFC173 pins the twice-flagged (review P2 +
-// reviewer pre-existing corner) star-seed alias drop: a projection-less seed
-// (`SELECT * FROM t`) exposed no projection columns, so an explicit CTE
-// column-alias list (`cte(a, b)`) never length-matched the alias gate and was
-// silently dropped — the temp table stayed keyed by the base columns and a
-// recursive reference to `a` was a silent NULL under the name model / a loud
-// OrdinalResolutionError under the ordinal model. The fix derives the seed
-// schema from the operator's output (table columns for a scan) so the alias
-// list applies and the seed normalizes onto it.
-func TestFDB_RecursiveCTEStarSeedAliases_RFC173(t *testing.T) {
+// TestFDB_RecursiveCTEStarSeedAliases pins a star-seed alias drop: a
+// projection-less seed (`SELECT * FROM t`) exposed no projection columns, so an
+// explicit CTE column-alias list (`cte(a, b)`) never length-matched the alias
+// gate and was silently dropped — the temp table stayed keyed by the base
+// columns and a recursive reference to `a` resolved to a silent NULL or a loud
+// OrdinalResolutionError. The fix derives the seed schema from the operator's
+// output (table columns for a scan) so the alias list applies and the seed
+// normalizes onto it.
+func TestFDB_RecursiveCTEStarSeedAliases(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")

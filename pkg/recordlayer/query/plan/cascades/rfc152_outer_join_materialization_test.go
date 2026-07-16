@@ -96,21 +96,21 @@ func TestRFC152_RewriteOuterJoinYieldsNullOnEmpty(t *testing.T) {
 	}
 }
 
-// TestRFC173_RewriteOuterJoinDeclinesFullOuter pins that RewriteOuterJoinRule
-// yields NOTHING for a FULL OUTER SelectExpression (review re-ruling condition
-// 2 on the RFC-173 Slice 2 LEFT-OUTER poison). The fixture is deliberately the
-// EXACT shape the LEFT-OUTER test above fires on — 2 ForEach quantifiers, an
-// ON-predicate correlated to the preserved leg — with ONLY the join type
-// flipped to FULL, so the decline is attributable to the join type alone.
+// TestRewriteOuterJoinDeclinesFullOuter pins that RewriteOuterJoinRule
+// yields NOTHING for a FULL OUTER SelectExpression. The fixture is
+// deliberately the EXACT shape the LEFT-OUTER test above fires on — 2
+// ForEach quantifiers, an ON-predicate correlated to the preserved leg —
+// with ONLY the join type flipped to FULL, so the decline is attributable
+// to the join type alone.
 //
-// This pin is load-bearing for the RFC-173 cluster-arity gate: FULL OUTER
-// boxes gate into the ordinal wedge unconditionally BECAUSE this rule never
-// rewrites them — translation-time opacity holds through all planner phases
-// (the premise the LEFT-OUTER poison re-ruling corrected: LEFT boxes DISSOLVE
-// here post-translation, so their opacity was false). Extending this rule to
-// FULL would dissolve gated FULL boxes into merge-eligible INNER selects and
-// break the gate's premise — this pin must fail BEFORE the gate does.
-func TestRFC173_RewriteOuterJoinDeclinesFullOuter(t *testing.T) {
+// This pin is load-bearing for translation-time ordinalization: FULL OUTER
+// boxes are ALWAYS translated into the ordinal (positional) form, on the
+// premise that this rule never rewrites them, so they stay opaque boxes
+// through every planner phase (unlike LEFT/RIGHT boxes, which this rule
+// dissolves post-translation). Extending this rule to FULL would dissolve
+// ordinalized FULL boxes into merge-eligible INNER selects and break that
+// premise — this pin must fail BEFORE the ordinalization logic does.
+func TestRewriteOuterJoinDeclinesFullOuter(t *testing.T) {
 	t.Parallel()
 
 	aliasA := values.NamedCorrelationIdentifier("A")
@@ -138,8 +138,8 @@ func TestRFC173_RewriteOuterJoinDeclinesFullOuter(t *testing.T) {
 	yielded := FireExpressionRule(NewRewriteOuterJoinRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("RewriteOuterJoinRule yielded %d expression(s) for a FULL OUTER select, want 0 — "+
-			"the RFC-173 gate premise (FULL boxes stay opaque through all planner phases because this rule never rewrites them) is broken; "+
-			"fix the rule or re-rule the RFC-173 Slice 2 FULL-outer gating BEFORE extending the rewrite", len(yielded))
+			"the premise that FULL boxes stay opaque through all planner phases (because this rule never rewrites them) is broken; "+
+			"fix the rule or revisit FULL-outer ordinalization BEFORE extending the rewrite", len(yielded))
 	}
 }
 
@@ -164,11 +164,10 @@ func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans
 	// Preserved-only: materialized NLJ (inner = bare Scan(B), scanned once).
 	preservedNLJ = plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter, "A", "B", resVal)
 	// Preserved-only: re-scan FlatMap (inner re-scans full Scan(B) per outer row).
+	// LEFT-OUTER semantics live in the DefaultOnEmpty wrapper, as in production.
 	innerFilter := plans.NewRecordQueryPredicatesFilterPlan(scanB, []predicates.QueryPredicate{pred})
 	innerDoE := plans.NewRecordQueryDefaultOnEmptyPlan(innerFilter, values.NewNullValue(values.UnknownType))
-	fm := plans.NewRecordQueryFlatMapPlan(scanA, innerDoE, aliasA, aliasB, resVal, false)
-	fm.SetLeftOuter(true)
-	preservedFlatMap = fm
+	preservedFlatMap = plans.NewRecordQueryFlatMapPlan(scanA, innerDoE, aliasA, aliasB, resVal, false)
 
 	// Probe: card-1 equality-bound Scan(B) inner (a point probe, scanned per outer).
 	eqProbe := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
@@ -176,9 +175,7 @@ func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans
 	probeScanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false).
 		WithScanComparisons([]*predicates.ComparisonRange{eqRange})
 	probeDoE := plans.NewRecordQueryDefaultOnEmptyPlan(probeScanB, values.NewNullValue(values.UnknownType))
-	fmp := plans.NewRecordQueryFlatMapPlan(scanA, probeDoE, aliasA, aliasB, resVal, false)
-	fmp.SetLeftOuter(true)
-	probeFlatMap = fmp
+	probeFlatMap = plans.NewRecordQueryFlatMapPlan(scanA, probeDoE, aliasA, aliasB, resVal, false)
 	probeNLJ = plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter, "A", "B", resVal)
 	return
 }

@@ -1,6 +1,9 @@
 package values
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Replace applies replacementFn to every node in the Value tree
 // rooted at v, in pre-order (parent before children). If
@@ -195,11 +198,7 @@ func withChildren(v Value, newChildren []Value) Value {
 		for i, f := range vt.Fields {
 			fields[i] = RecordConstructorField{Name: f.Name, Value: newChildren[i]}
 		}
-		// Preserve the AnchoredJoin marker (RFC-077 F2) — it must survive the
-		// flatten-time substitution SelectMergeRule does via values.Replace, or
-		// the exploration-time correlation hiding silently lapses after the first
-		// rebase and the ≥4-way STAR blows past the task budget.
-		return &RecordConstructorValue{Fields: fields, AnchoredJoin: vt.AnchoredJoin}
+		return &RecordConstructorValue{Fields: fields}
 	case *AggregateValue:
 		if vt.Op == AggCountStar {
 			return v // COUNT(*) has no operand children
@@ -352,7 +351,7 @@ func withChildren(v Value, newChildren []Value) Value {
 		if len(newChildren) != 1 {
 			return v
 		}
-		// RFC-173 S3-W2: the rebuild FUSES a baked node over a new BAKED
+		// The rebuild FUSES a baked node over a new BAKED
 		// FieldValue child into one multi-accessor node — Java's architecture,
 		// where fuse is a property of the rebuild itself (FieldValue.withNewChild
 		// = ofFieldsAndFuseIfPossible, FieldValue.java:278-280): a TranslationMap
@@ -360,14 +359,13 @@ func withChildren(v Value, newChildren []Value) Value {
 		// the enclosing reference automatically, no map composition. Gated
 		// both-baked — the DEFINITION of fusibility (a lazy node has no path to
 		// concatenate; in Java the condition is vacuously always true) — so lazy
-		// chains keep their shape through the coexistence window and the gate
-		// self-widens as W2/W3 bake everything. Must produce the IDENTICAL node
+		// chains keep their shape. Must produce the IDENTICAL node
 		// to composeFieldOverField (pinned by the rebuild≡compose property test).
 		// inner.Child != nil mirrors compose's gate exactly: a CHILDLESS baked
 		// inner (the recursive-CTE wrap shape) stays chained through BOTH
 		// mechanisms — there is no base to re-anchor the fused path onto.
 		if vt.Resolved != nil {
-			// RFC-173 item 3: COLLAPSE a baked ordinal path over an
+			// COLLAPSE a baked ordinal path over an
 			// RC LITERAL child — the merge's TranslationMap replaces a box
 			// quantifier with the box's ordinal RC, and the parent's window
 			// ref then IS the RC field's own value (a planner-constructed
@@ -376,8 +374,33 @@ func withChildren(v Value, newChildren []Value) Value {
 			// the correlated probe the rfc153 plan pins forbid.
 			if rc, isRC := newChildren[0].(*RecordConstructorValue); isRC {
 				accs := vt.Resolved.Accessors
-				if len(accs) >= 1 && accs[0].Ordinal >= 0 && accs[0].Ordinal < len(rc.Fields) && rc.Fields[accs[0].Ordinal].Value != nil {
-					slot := rc.Fields[accs[0].Ordinal].Value
+				rootOrd := -1
+				if len(accs) >= 1 {
+					rootOrd = accs[0].Ordinal
+				}
+				// An UNPINNED baked node's ROOT ordinal is relative to the
+				// reference's OWN source row, NOT this seed RC.
+				// Re-base the root into the seed by the reference's LEG
+				// (vt.Child's correlation), matching the seed field whose value is
+				// a FieldValue over that SAME leg. A bare-name match would pick the
+				// first colliding occurrence (dept.id before emp.id) — the wrong
+				// leg, the raw-RC duplicate-name conflation; and the raw source
+				// ordinal would pick the seed's slot-0 (e.g. the outer scan's PK),
+				// fabricating a wrong comparand that then mis-SARGs. Falls back to
+				// the plan-time name authority when no leg-tagged field bears the
+				// reference's correlation. Keyed on the ROOT's leg-relativity
+				// (RootIsLegRelativeUnpinned), NOT the accessor count: a FUSED
+				// unpinned path (WithSuffix inherits the inner's unpinned leg-relative
+				// root) is ALSO source-relative and MUST be rebased — collapsing it by
+				// the RAW root would fuse the suffix onto the WRONG leg's seed field
+				// (leg-0 by accident for a first-leg reference, a foreign leg
+				// otherwise). Only FrontierPinned bakes keep the raw collapse — their
+				// ordinal IS seed-relative by construction.
+				if vt.RootIsLegRelativeUnpinned() && len(accs) >= 1 {
+					rootOrd = LegAwareRootOrdinal(vt, accs[0].Ordinal, rc, rootOrd)
+				}
+				if len(accs) >= 1 && rootOrd >= 0 && rootOrd < len(rc.Fields) && rc.Fields[rootOrd].Value != nil {
+					slot := rc.Fields[rootOrd].Value
 					if len(accs) == 1 {
 						return slot
 					}
@@ -399,9 +422,9 @@ func withChildren(v Value, newChildren []Value) Value {
 				return &FieldValue{Field: fused.Last().Field, Typ: vt.Typ, Child: inner.Child, Resolved: fused}
 			}
 		}
-		// Preserve the RFC-173 baked-ordinal marker: dropping Resolved would
+		// Preserve the baked-ordinal marker: dropping Resolved would
 		// silently degrade a BAKED node to lazy — a conflation hazard for
-		// duplicate same-named columns (§5 pin). Covers Replace/RebaseValue and
+		// duplicate same-named columns. Covers Replace/RebaseValue and
 		// every simplifier rebuild that funnels through WithChildren.
 		return &FieldValue{Field: vt.Field, Typ: vt.Typ, Child: newChildren[0], Resolved: vt.Resolved}
 
@@ -435,4 +458,83 @@ func withChildren(v Value, newChildren []Value) Value {
 // value's Children().
 type SelfWithChildren interface {
 	WithChildrenValue(newChildren []Value) Value
+}
+
+// LegAwareRootOrdinal resolves the seed-RC slot for a SourceRelativeBaked
+// reference collapsed over a flat leg-concatenation seed (a merged box/join
+// whose RC concatenates each leg's columns, every field a baked FieldValue over
+// its OWN leg's QOV — NewRawRecordConstructorValue, values.go). The reference's
+// baked ordinal is relative to its OWN leg, so applying it directly to the seed
+// picks the wrong slot; and with columns colliding across legs (dept.id AND
+// emp.id) a bare-name match picks the first occurrence — again the wrong leg,
+// the raw-RC duplicate-name conflation. Disambiguate by the reference's OWN leg
+// (vt.Child's correlation): pick the seed field whose value is a FieldValue over
+// that SAME correlation, matched by leg-relative ordinal (name as the within-leg
+// tiebreak — a single source has unique column names). Falls back to the
+// lazy-twin name authority (then fallbackOrd) when no seed field bears the
+// reference's correlation — a differently-shaped seed (e.g. a lateral-unnest
+// whose leg field is a bare QOV) resolves by name exactly as before.
+func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue, fallbackOrd int) int {
+	if childCorr, ok := ownCorrelationOfLeaf(vt.Child); ok {
+		nameMatch := -1
+		for i, f := range rc.Fields {
+			fv, isFV := f.Value.(*FieldValue)
+			if !isFV {
+				continue
+			}
+			fc, ok := ownCorrelationOfLeaf(fv.Child)
+			if !ok || fc != childCorr {
+				continue
+			}
+			// Prefer the leg-local ORDINAL match — the reference's baked slot is
+			// the authority. NAME is only a tiebreak for a seed field that carries
+			// no baked ordinal (fieldValueLegOrdinal == -1). A single source has
+			// unique column names, so within one leg the ordinal and name agree;
+			// preferring the ordinal is strictly safer should a construction
+			// inconsistency ever make a reference's srcOrd and Field disagree.
+			if fieldValueLegOrdinal(fv) == srcOrd {
+				return i
+			}
+			if nameMatch < 0 && strings.EqualFold(fv.Field, vt.Field) {
+				nameMatch = i
+			}
+		}
+		if nameMatch >= 0 {
+			return nameMatch
+		}
+	}
+	// No seed field bears the reference's correlation — a differently-shaped seed
+	// (e.g. a lateral-unnest whose leg field is a bare QOV, not a FieldValue over
+	// the leg). Fall back to the plan-time name authority, but ONLY when the name
+	// resolves UNIQUELY. A DUPLICATE name here would first-match a colliding
+	// sibling leg's column: a bare-QOV leg carries no per-field correlation for
+	// the leg-scoped arm above to key on, so two bare-QOV legs exposing the same
+	// column name reach here unresolved, and a first-match would silently pick
+	// the wrong leg — the exact conflation this function exists to kill. A
+	// duplicate POISONS the collapse (returns -1 so the caller leaves the
+	// reference un-collapsed — loud on a positional row, never a wrong slot),
+	// matching the ambiguity-poison discipline of bakeMergeComparisonKeys /
+	// rich_ordering. Pinned by TestLegAwareRootOrdinal.
+	nameMatch := -1
+	for i, f := range rc.Fields {
+		if strings.EqualFold(f.Name, vt.Field) {
+			if nameMatch >= 0 {
+				return -1 // ambiguous cross-leg name — poison, never first-match
+			}
+			nameMatch = i
+		}
+	}
+	if nameMatch >= 0 {
+		return nameMatch
+	}
+	return fallbackOrd
+}
+
+// fieldValueLegOrdinal returns fv's root source-relative ordinal (its leg-local
+// slot), or -1 when fv carries no baked ordinal.
+func fieldValueLegOrdinal(fv *FieldValue) int {
+	if fv.Resolved != nil && len(fv.Resolved.Accessors) > 0 {
+		return fv.Resolved.Accessors[0].Ordinal
+	}
+	return -1
 }

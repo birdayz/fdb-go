@@ -164,7 +164,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				m, _ := r.Datum.(map[string]any)
+				m, _ := executor.RowValue(r).(map[string]any)
 				keys := make([]string, 0, len(m))
 				for k := range m {
 					keys = append(keys, k)

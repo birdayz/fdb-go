@@ -208,6 +208,74 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 	}
 }
 
+// TestTryTranslateValue_FinalCorrelationFilter pins F38: pushValueThroughFetch
+// must apply Java's FINAL filter — a translated value still correlated to the
+// source alias is NOT a successful push and must be declined (nil), even when the
+// translate function reported ok=true. Go previously relied on nil-propagation
+// from untranslatable leaves alone, which misses a leaf that "translates"
+// (ok=true) yet leaves a residual source correlation (Java's
+// "value.withChildren(mappedChildren) // this may be correlated to sourceAlias"
+// arm, then translatedValueOptional.filter(v -> !v.getCorrelatedTo().contains(
+// sourceAlias)) — ScanWithFetchMatchCandidate.java:71-75).
+//
+// Revert-proof: tryTranslateValueRec (the raw mapMaybe core) returns the
+// still-correlated value; the tryTranslateValue wrapper rejects it. Collapse the
+// wrapper into the core (drop the final filter) and the residual-correlated value
+// leaks out — a nested read off a flat partial record, failing plan validation.
+func TestTryTranslateValue_FinalCorrelationFilter(t *testing.T) {
+	t.Parallel()
+
+	src := values.UniqueCorrelationIdentifier()
+	tgt := values.UniqueCorrelationIdentifier()
+
+	indexPlan := plans.NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false)
+
+	// "Succeeds" (ok=true) but ECHOES the value back unchanged — the
+	// unconditional-rebase escape: claims translation yet the result is still
+	// QOV(src), correlated to the source alias.
+	echoFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
+		return v, true
+	}
+	echoFetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		indexPlan, echoFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+	)
+
+	srcQOV := values.NewQuantifiedObjectValue(src)
+
+	// Precondition: the raw recursive core returns the still-correlated value.
+	raw := tryTranslateValueRec(echoFetch, src, tgt, srcQOV)
+	if raw == nil {
+		t.Fatal("precondition: tryTranslateValueRec should return the echoed value, got nil")
+	}
+	if _, corr := values.GetCorrelatedToOfValue(raw)[src]; !corr {
+		t.Fatal("precondition: the echoed value must still be correlated to src")
+	}
+
+	// The wrapper applies Java's final filter and DECLINES it.
+	if got := tryTranslateValue(echoFetch, src, tgt, srcQOV); got != nil {
+		t.Fatalf("residual source-correlated translation must be declined (nil), got %v", got)
+	}
+
+	// Positive control (guard against over-rejection): a proper rebase
+	// QOV(src) -> QOV(tgt) must be accepted, correlated to tgt not src.
+	rebaseFn := func(_ values.Value, _, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
+		return values.NewQuantifiedObjectValue(targetAlias), true
+	}
+	rebaseFetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		indexPlan, rebaseFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+	)
+	got := tryTranslateValue(rebaseFetch, src, tgt, srcQOV)
+	if got == nil {
+		t.Fatal("a clean rebase to the target alias must be accepted, got nil")
+	}
+	if _, corrSrc := values.GetCorrelatedToOfValue(got)[src]; corrSrc {
+		t.Fatalf("accepted translation must not be correlated to src, got %v", got)
+	}
+	if _, corrTgt := values.GetCorrelatedToOfValue(got)[tgt]; !corrTgt {
+		t.Fatalf("accepted translation must be correlated to tgt, got %v", got)
+	}
+}
+
 func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 	t.Parallel()
 

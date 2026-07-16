@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -51,13 +52,42 @@ type aggregateCursor struct {
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 
+	// evalCtx carries params/subqueries/outer bindings so a group-key / operand
+	// reference resolves against the inner PositionalRow the SAME way
+	// executeFilter / executeProjection do (frontierRowContext → evaluateOrdinal,
+	// by the baked plan-time ordinal), robust to a covering-index layout — never
+	// a name-keyed read. flatFrontierInput is true when the input bottoms out at
+	// a SINGLE-SOURCE flat producer (base-table scan/index, a nested
+	// StreamingAgg) beneath any number of layout-preserving / reshaping
+	// single-child nodes — the group-by SORT, a filter, a LIMIT/fetch, a
+	// projection / derived table / CTE (RecordQueryProjectionPlan/MapPlan), a
+	// DISTINCT, a WHERE-EXISTS semi-join (identity-over-outer FlatMap). Every such
+	// producer emits a flat single-source output row with an unambiguous plan-time
+	// layout, so keys/operands resolve positionally. It is FALSE the moment the
+	// chain crosses a JOIN / multi-source (a non-identity FlatMap, an NLJ, a
+	// union): a raw 2-way ordinal JOIN merge resolves through its LEG WINDOWS
+	// (joinWindowsOK) instead — a flat input must never be mis-routed through leg
+	// windows. Probed once at construction from the inner plan.
+	evalCtx           *EvaluationContext
+	flatFrontierInput bool
+	needsRowCtx       bool
+
+	// When the input flows a 2-way ordinal join's MERGED positional row
+	// (downstreamLegWindows unwraps the layout-preserving passthroughs down to
+	// the join and derives its leg windows), a QUALIFIED group-key / operand
+	// reference (D.DNAME, E.SALARY) resolves LEG-LOCALLY off the merged row
+	// through legWindowRowContext — the SAME spanAwareRow resolver executeProjection /
+	// executeFilter use over the same merge.
+	// joinWindowsOK is true only for a genuine gated ordinal join input; a reshaping /
+	// non-join input keeps windowsOK false and resolves through the general
+	// positional frontier. Probed once at construction from the inner plan.
+	joinLegSpans  []legSpan
+	joinWindowsOK bool
+
 	// Current in-progress group state (streaming — only ONE group at a time).
 	currentGroupKey string
 	currentKeyVals  []any
 	current         *groupState
-
-	// Completed group waiting to be emitted (from the last group break).
-	pending *QueryResult
 
 	// For the no-grouping-keys case (scalar aggregation like COUNT(*)).
 	scalarMode bool
@@ -84,13 +114,90 @@ func newAggregateCursor(
 	inner recordlayer.RecordCursor[QueryResult],
 	groupingKeys []values.Value,
 	aggregates []expressions.AggregateSpec,
+	innerPlan plans.RecordQueryPlan,
+	evalCtx *EvaluationContext,
 ) *aggregateCursor {
+	legSpans, windowsOK := downstreamLegWindows(innerPlan)
 	return &aggregateCursor{
-		inner:        inner,
-		groupingKeys: groupingKeys,
-		aggregates:   aggregates,
-		scalarMode:   len(groupingKeys) == 0,
+		inner:             inner,
+		groupingKeys:      groupingKeys,
+		aggregates:        aggregates,
+		scalarMode:        len(groupingKeys) == 0,
+		evalCtx:           evalCtx,
+		flatFrontierInput: aggregateInputIsFlatFrontier(innerPlan),
+		needsRowCtx:       hasBindingContext(evalCtx),
+		joinLegSpans:      legSpans,
+		joinWindowsOK:     windowsOK,
 	}
+}
+
+// aggregateInputIsFlatFrontier reports whether the streaming aggregate's input
+// bottoms out at a SINGLE-SOURCE flat producer whose emitted PositionalRow's
+// columns are unambiguous — so a group-key / operand name resolves against it by
+// its baked plan-time ordinal exactly as executeFilter / executeProjection resolve
+// theirs (robust to a covering-index column order).
+//
+// It walks single-child nodes down to the leaf:
+//   - RETURNS TRUE at a base-table SCAN / INDEX scan, or a nested StreamingAgg
+//     (single-source flat producers).
+//   - PEELS THROUGH the layout-preserving wrappers (the group-by SORT, a filter, a
+//     type filter, a LIMIT, the covering-index fetch) AND the reshaping single-source
+//     producers (projection / derived table / CTE, DISTINCT, Map) — each re-emits a
+//     flat single-source positional row, and what matters for layout safety is the
+//     absence of a JOIN below, not the exact reshaping node.
+//   - For a FlatMap: a WHERE-EXISTS identity-over-outer semi-join is a row-preserving
+//     passthrough toward its OUTER (the outer scan row flows through unchanged), so it
+//     peels to the outer; any OTHER FlatMap (a lateral join / merge producer) is
+//     multi-source and RETURNS FALSE.
+//   - RETURNS FALSE at every JOIN / multi-source node (a non-identity FlatMap, an NLJ,
+//     a union). A raw 2-way ordinal JOIN merge resolves through its leg windows
+//     (joinWindowsOK); other multi-source inputs resolve through the general
+//     positional frontier.
+func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
+	for input != nil {
+		switch p := input.(type) {
+		case *plans.RecordQueryScanPlan,
+			*plans.RecordQueryIndexPlan,
+			*plans.RecordQueryTextIndexPlan,
+			*plans.RecordQueryVectorIndexPlan,
+			*plans.RecordQueryStreamingAggregationPlan,
+			// A UNION (ALL / recursive-CTE level) emits a FLAT positional
+			// row per leg, re-typed to the union's output column names
+			// (remapUnionColumnsByPosition), so an aggregate over it resolves its
+			// group key / operand against that row — the flat frontier.
+			*plans.RecordQueryUnionPlan,
+			*plans.RecordQueryUnorderedUnionPlan,
+			*plans.RecordQueryRecursiveLevelUnionPlan:
+			return true
+		case *plans.RecordQueryFetchFromPartialRecordPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryInMemorySortPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryLimitPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryTypeFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryPredicatesFilterPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryDistinctPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryProjectionPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryMapPlan:
+			input = p.GetInner()
+		case *plans.RecordQueryFlatMapPlan:
+			if qov, ok := p.GetResultValue().(*values.QuantifiedObjectValue); ok && qov.Correlation == p.GetOuterAlias() {
+				input = p.GetOuter()
+				continue
+			}
+			return false
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // withPartialState restores accumulator state from a previous transaction's
@@ -105,14 +212,6 @@ func (c *aggregateCursor) withPartialState(groupKey string, keyVals []any, gs *g
 func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
-	}
-
-	// If we have a pending completed group from a previous group break,
-	// emit it now.
-	if c.pending != nil {
-		row := *c.pending
-		c.pending = nil
-		return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
 	}
 
 	// If inner is exhausted, emit the final group (if any).
@@ -211,6 +310,79 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 	return recordlayer.NewResultWithValue(completed, nonEndContinuation), nil
 }
 
+// aggregateEvalArg is the eval argument for a GROUP-BY key / aggregate operand.
+//
+// The streaming aggregate reads its keys / operands off the inner row exactly
+// the way executeFilter / executeProjection read their predicate / projected
+// values — the ONE frontier dispatch, so the aggregate input resolves
+// positionally on the same shapes those do.
+//
+//   - A POSITIONALLY-BAKED value (a FieldValue with a resolved ordinal — the
+//     gathered-seed un-collapse's qualifier-honoring group key/operand) reads the
+//     flat seed row it was baked against: a bare positional context, no
+//     leg re-windowing (the gathered seed emits a flat row and its bakes are flat
+//     slots).
+//   - On a FLAT single-source frontier (flatFrontierInput — a scan / index / filter /
+//     projection / derived table / CTE / DISTINCT / semi-join / nested StreamingAgg
+//     whose chain bottoms out at a single source, NOT a 2-way ordinal JOIN merge), a
+//     name group-key / operand resolves against the inner PositionalRow by its baked
+//     plan-time ordinal (frontierRowContext → evaluateOrdinal). This is robust to a
+//     covering-index column layout (the bake binds the emitted layout, never a raw
+//     table ordinal).
+//   - A RAW 2-way ordinal JOIN merge (joinWindowsOK — the input flows the join's
+//     MERGED positional row through passthroughs only): a qualified group-key /
+//     operand reference QOV(leg).col (or its flat DOTTED "D.DNAME" spelling)
+//     resolves LEG-LOCALLY through its window, exactly as
+//     executeProjection / executeFilter resolve theirs over the same merge.
+//     Unconditional on a windowed input: even with no param/subquery/outer binding,
+//     the leg windows are required (the bare merged row misreads leg-relative
+//     ordinals — a wrong-slot hazard).
+//   - A row with NO Positional yields NULL: every live input flows an
+//     ordinal PositionalRow; there is no name-map to read.
+func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any {
+	if row.Positional == nil {
+		return nil
+	}
+	if valueReadsBakedOrdinal(v) {
+		// A baked ordinal operand reads plan-time-resolved slots directly off the
+		// positional row (evaluateOrdinal), so pass it as the bare ordinal row.
+		return &values.RowEvalContext{Positional: row.Positional}
+	}
+	if c.flatFrontierInput {
+		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
+	}
+	if c.joinWindowsOK {
+		// A RAW 2-way ordinal JOIN merge: a qualified group-key / operand
+		// QOV(leg).col resolves LEG-LOCALLY through its window.
+		return legWindowRowContext(row.Positional, c.evalCtx, c.joinLegSpans)
+	}
+	// The general positional-row consumer: a flat output-named positional
+	// (projecting derived source, recursive-CTE / bare-projected-join row, or a
+	// constant operand) resolves by its baked plan-time ordinal — authoritative.
+	return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
+}
+
+// valueReadsBakedOrdinal reports whether v (a group key / aggregate operand) reads
+// through a plan-time-resolved ordinal ANYWHERE in its value tree — the un-collapse's
+// positionally-baked FieldValue, possibly nested inside a compound operand
+// (`SUM(A.K+B.K)`). Any baked leaf means the whole value must evaluate against the
+// positional row; a value with no baked leaf resolves through the frontier dispatch.
+func valueReadsBakedOrdinal(v values.Value) bool {
+	// FrontierPinned specifically — the ordinal-frontier bake the group-by makes
+	// (NewFieldValueOfOrdinal). An UNPINNED baked node (a recursive-CTE leg projection
+	// column) is never an aggregate key/operand — matching intent, not over-broad on
+	// `Resolved != nil`.
+	if fv, ok := v.(*values.FieldValue); ok && fv.Resolved != nil && fv.Resolved.FrontierPinned {
+		return true
+	}
+	for _, c := range v.Children() {
+		if valueReadsBakedOrdinal(c) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error) {
 	if c.scalarMode {
 		return "", nil, nil
@@ -218,26 +390,22 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 	keyParts := make([]any, len(c.groupingKeys))
 	t := make(tuple.Tuple, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
-		v, err := k.Evaluate(row.Datum)
+		v, err := k.Evaluate(c.aggregateEvalArg(k, row))
 		if err != nil {
 			return "", nil, err
 		}
 		keyParts[i] = v
-		// tuple.Pack handles nil, int64, float64, string, []byte natively.
-		// For types the tuple layer doesn't support, fall back to the
-		// string representation so we still get a deterministic key.
+		// tuple.Pack handles nil, int64, float64, string, []byte, bool natively.
+		// For types the tuple layer doesn't list here (e.g. a UUID [16]byte),
+		// fall back to a deterministic %T:%v string so we still get a stable key.
 		//
-		// A UUID group key ([16]byte) DELIBERATELY takes the %T:%v fallback, NOT
-		// tuple.UUID: this packed key is stored as a JSON string in the aggregate
-		// continuation (encodeAggregateContinuation) and compared byte-for-byte on
-		// resume to detect a group change. A tuple.UUID packs 16 raw bytes that
-		// are often invalid UTF-8, which json.Marshal replaces with U+FFFD —
-		// corrupting the key so a group straddling a page boundary would falsely
-		// break. The %T:%v ASCII form is JSON-safe and equally deterministic, and
-		// the group's surfaced VALUE rides in keyVals as the [16]byte (round-tripped
-		// via the continuation's UUID tag), so the extractor/materializer are
-		// unaffected. (This is the one spot where the [16]byte→tuple.UUID discipline
-		// is intentionally not applied — the sink here is a JSON key, not the wire.)
+		// The packed key rides through the aggregate continuation VERBATIM
+		// (encodeAggGroupKey stores it as raw bytes, not a JSON string) and is
+		// compared byte-for-byte on resume to detect a group change, so any
+		// deterministic packing is safe. The group's surfaced VALUE rides
+		// separately in keyVals (typed, lossless), so a UUID key still materializes
+		// as its [16]byte. A UUID could now pack natively since the raw bytes
+		// survive; the %T:%v form is retained only to keep the key bytes stable.
 		switch tv := v.(type) {
 		case nil, int64, float64, string, []byte, bool:
 			t[i] = tv
@@ -269,7 +437,7 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 	gs.count++
 
 	for i, agg := range c.aggregates {
-		val, err := agg.Operand.Evaluate(row.Datum)
+		val, err := agg.Operand.Evaluate(c.aggregateEvalArg(agg.Operand, row))
 		if err != nil {
 			return err
 		}
@@ -286,7 +454,20 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 			gs.sums[i] += num
 			if intVal, ok := val.(int64); ok {
 				s := gs.sumsI[i] + intVal
-				if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
+				if agg.OperandIntType == values.TypeCodeInt {
+					// INT operand (SQL INTEGER, proto TYPE_INT32): Java SUM_I /
+					// AVG_I sum the int component with Math.addExact((int)…),
+					// overflowing at the int32 boundary and surfacing as
+					// numeric-out-of-range (22003). Go widens the INTEGER value to
+					// int64, so the int32-bounded running sum leaving that range is
+					// the SAME overflow Java raises — check it here, not only at the
+					// int64 boundary below.
+					if s > math.MaxInt32 || s < math.MinInt32 {
+						return &SumOverflowError{}
+					}
+				} else if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
+					// LONG operand (SUM_L / AVG_L): Math.addExact on long — int64
+					// overflow.
 					return &SumOverflowError{}
 				}
 				gs.sumsI[i] = s
@@ -299,29 +480,153 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 					Message: "unable to encapsulate aggregate operation due to type mismatch(es)",
 				}
 			}
-			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
-				gs.mins[i] = val
-			}
-			if gs.maxs[i] == nil || compareAny(val, gs.maxs[i]) > 0 {
-				gs.maxs[i] = val
-			}
+			gs.mins[i] = aggMinMax(gs.mins[i], val, true)
+			gs.maxs[i] = aggMinMax(gs.maxs[i], val, false)
 		}
 	}
 	return nil
 }
 
+// aggMinMax folds val into the running MIN (isMin=true) or MAX extremum, matching
+// Java's NumericAggregationValue MIN_*/MAX_* operators (NumericAggregationValue.java:679-687),
+// which are Math.min / Math.max per numeric type. It is the SOLE MIN/MAX comparator;
+// the accumulate loop's isNumeric gate guarantees both operands are one of
+// int64/int32/int/float64/float32 — but NOT that acc and val share a type: an
+// unpromoted CASE/PickValue operand (`MIN(CASE WHEN c THEN dbl ELSE 0 END)`) mixes
+// int64 and float64 across rows. Java never sees that mix — its encapsulation
+// wraps the operand in PromoteValue, so MIN_D receives doubles only. Until Go
+// grows plan-time operand promotion, the same numeric promotion is applied here
+// PER PAIR (widest float type present wins), which computes what Java computes
+// over the promoted operand for two-type streams (promotion is monotone, so
+// pairwise and whole-stream promotion select the same extremum; long→double
+// beyond 2^53 and long→float beyond 2^24 round identically in both). Two
+// precision corners remain where PAIRWISE differs from Java's STATIC promotion,
+// both scoped to the RFC-083 PromoteValue follow-up: an all-int-branch group
+// emits int64 where Java emits double (value-equal below 2^53, Go more precise
+// above), and in a three-type stream an int > 2^24 paired against a float32
+// BEFORE any float64 arrives rounds long→float where Java's static DOUBLE lane
+// would round long→double. No-crash, no-drop corners only.
+//
+// For FLOAT/DOUBLE this MUST use Go's math.Min / math.Max, NOT a total-order
+// comparator. Go's math.Min/math.Max have special-cases identical to Java's
+// Math.min/Math.max: NaN PROPAGATES into BOTH extremes (min(x,NaN)=max(x,NaN)=NaN)
+// and -0.0 sorts below +0.0 (min(-0.0,+0.0)=-0.0, max(-0.0,+0.0)=+0.0). A total-order
+// comparator (values.CompareFloat64, used by the sort/predicate path) makes NaN the
+// GREATEST element — correct for MAX but WRONG for MIN, which must yield NaN, not the
+// smallest finite. So float MIN/MAX is deliberately a DIFFERENT float semantic than
+// the ordering authority, exactly mirroring Java's Math.min/max (MIN_D/MAX_D) vs
+// Double.compare (tuple/index order) split. Integer types (int/int32/int64) have no
+// NaN or signed zero, so an all-integer pair takes the ordinary int64 min/max
+// (Java MIN_I/MIN_L / MAX_I/MAX_L).
+func aggMinMax(acc, val any, isMin bool) any {
+	if acc == nil {
+		return val
+	}
+	_, aIsF64 := acc.(float64)
+	_, vIsF64 := val.(float64)
+	_, aIsF32 := acc.(float32)
+	_, vIsF32 := val.(float32)
+	switch {
+	case aIsF64 || vIsF64:
+		// DOUBLE lane (Java MIN_D/MAX_D over the double-promoted operand).
+		a, aok := asFloat64(acc)
+		v, vok := asFloat64(val)
+		if !aok || !vok {
+			return acc // non-numeric mix: contract guard (isNumeric-gated upstream)
+		}
+		if isMin {
+			return math.Min(a, v)
+		}
+		return math.Max(a, v)
+	case aIsF32 || vIsF32:
+		// FLOAT lane (Java MIN_F/MAX_F over the float-promoted operand). An int
+		// side converts directly to float32 (Java's (float) promotion, one
+		// rounding); the min/max itself computes in float64 — exact for float32
+		// operands — and narrows back to one of them (or canonical NaN).
+		a, aok := asFloat32(acc)
+		v, vok := asFloat32(val)
+		if !aok || !vok {
+			return acc // contract guard
+		}
+		if isMin {
+			return float32(math.Min(float64(a), float64(v)))
+		}
+		return float32(math.Max(float64(a), float64(v)))
+	}
+	// Integer numerics (int64/int32/int). Row integers arrive int64 via the
+	// tupleElementToRowValue canonicalization; int32/int are accepted for
+	// robustness. Widen to int64 and take the ordinary min/max.
+	ai, aok := asInt64(acc)
+	vi, vok := asInt64(val)
+	if aok && vok && ((isMin && vi < ai) || (!isMin && vi > ai)) {
+		return val
+	}
+	return acc
+}
+
+// asInt64 widens an integer aggregate operand to int64. Only int64/int32/int reach
+// aggMinMax's integer path (isNumeric gates the operands; floats are handled above),
+// so the false return is a contract guard, not a live branch.
+func asInt64(x any) (int64, bool) {
+	switch n := x.(type) {
+	case int64:
+		return n, true
+	case int32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	}
+	return 0, false
+}
+
+// asFloat64 promotes a numeric aggregate operand to float64 (Java's double
+// promotion: float→double exact; long→double rounds beyond 2^53 identically).
+func asFloat64(x any) (float64, bool) {
+	switch n := x.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+// asFloat32 promotes a numeric aggregate operand to float32 for the FLOAT lane
+// (Java's (float) promotion; the float64-present case never reaches here — the
+// DOUBLE lane claims it first).
+func asFloat32(x any) (float32, bool) {
+	switch n := x.(type) {
+	case float32:
+		return n, true
+	case int64:
+		return float32(n), true
+	case int32:
+		return float32(n), true
+	case int:
+		return float32(n), true
+	}
+	return 0, false
+}
+
 func (c *aggregateCursor) finalizeGroup() QueryResult {
 	gs := c.current
-	result := make(map[string]any)
+	// Build the OUTPUT ORDINAL ROW. Order + naming MUST match
+	// streamingAggOutputNames (the plan's authoritative output schema the planner
+	// baked downstream ordinals against): grouping keys in order (aggKeyName), then
+	// aggregates in order (ALIAS-preferring, else aggResultName). A downstream ref
+	// baked to this schema reads by Get(ord) — position is the authority, matched
+	// to these exact names at plan time.
+	posNames := make([]string, 0, len(c.groupingKeys)+len(c.aggregates))
+	posSlots := make([]any, 0, len(c.groupingKeys)+len(c.aggregates))
 	for i, k := range c.groupingKeys {
-		name := aggKeyName(k)
-		result[name] = gs.keyVals[i]
-		if len(name) >= 2 && name[0] == '(' && name[len(name)-1] == ')' {
-			stripped := name[1 : len(name)-1]
-			if _, exists := result[stripped]; !exists {
-				result[stripped] = gs.keyVals[i]
-			}
-		}
+		posNames = append(posNames, aggKeyName(k))
+		posSlots = append(posSlots, gs.keyVals[i])
 	}
 	for i, agg := range c.aggregates {
 		name := aggResultName(agg)
@@ -347,39 +652,57 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 			val = gs.maxs[i]
 		case expressions.AggAvg:
 			if gs.counts[i] > 0 {
-				val = gs.sums[i] / float64(gs.counts[i])
+				if gs.allInt[i] {
+					// All-integer operands: divide the EXACT int64 running sum
+					// (converted to double once), not the incrementally-added
+					// float64 sum, which loses low-order bits past 2^53. Mirrors
+					// Java AverageAccumulatorState.longAverageState (LongState
+					// SUM via Math.addExact, finish = total.doubleValue()/count)
+					// and Cascades AVG_L ((double)longSum / count).
+					val = float64(gs.sumsI[i]) / float64(gs.counts[i])
+				} else {
+					val = gs.sums[i] / float64(gs.counts[i])
+				}
 			} else {
 				val = nil
 			}
 		}
-		result[name] = val
-		if agg.Alias != "" && agg.Alias != name {
-			result[agg.Alias] = val
+		// Alias-preferring output name (matches streamingAggOutputNames), so a downstream ref
+		// over an ALIASED aggregate (SUM(a*b) AS foo, a derived-table projection) resolves.
+		posName := name
+		if agg.Alias != "" {
+			posName = strings.ToUpper(agg.Alias)
 		}
-		if agg.OperandName != "" {
-			spaced := strings.ToUpper(agg.Function.String() + "(" + agg.OperandName + ")")
-			if spaced != name {
-				result[spaced] = val
-			}
-		}
+		posNames = append(posNames, posName)
+		posSlots = append(posSlots, val)
 	}
-	return QueryResult{Datum: result, Complete: true}
+	return QueryResult{
+		Positional: &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots},
+	}
 }
 
 func (c *aggregateCursor) emptyScalarResult() QueryResult {
-	result := make(map[string]any)
+	// Emit the authoritative ordinal row, SAME order + naming as
+	// finalizeGroup's aggregate arm (there are no grouping keys on the empty-scalar
+	// path — an empty GROUP BY yields zero rows, not this single all-groups row).
+	posNames := make([]string, 0, len(c.aggregates))
+	posSlots := make([]any, 0, len(c.aggregates))
 	for _, agg := range c.aggregates {
 		name := aggResultName(agg)
 		var val any
 		if agg.Function == expressions.AggCount {
 			val = int64(0)
 		}
-		result[name] = val
-		if agg.Alias != "" && agg.Alias != name {
-			result[agg.Alias] = val
+		posName := name
+		if agg.Alias != "" {
+			posName = strings.ToUpper(agg.Alias)
 		}
+		posNames = append(posNames, posName)
+		posSlots = append(posSlots, val)
 	}
-	return QueryResult{Datum: result, Complete: true}
+	return QueryResult{
+		Positional: &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots},
+	}
 }
 
 func (c *aggregateCursor) Close() error {
@@ -390,121 +713,17 @@ func (c *aggregateCursor) Close() error {
 func (c *aggregateCursor) IsClosed() bool { return c.closed }
 
 // ---------------------------------------------------------------------------
-// memorySortCursor — streaming ORDER BY
-// ---------------------------------------------------------------------------
-
-// memorySortCursor implements RecordCursor[QueryResult] for ORDER BY.
-// Two phases: LOAD (pull from inner into buffer) and EMIT (return
-// sorted records one-by-one). When the inner cursor hits a limit
-// during LOAD, the buffer and limit are propagated upward via
-// MemorySortContinuation proto so the next transaction can continue
-// loading into the same buffer.
-//
-// Mirrors Java's MemorySortCursor.
-type memorySortCursor struct {
-	inner recordlayer.RecordCursor[QueryResult]
-	keys  []string
-	dirs  []bool
-
-	buf     []QueryResult
-	loaded  bool
-	emitIdx int
-	closed  bool
-	maxBuf  int                       // 0 = use DefaultMaxSortBufferRows
-	st      *recordlayer.ExecuteState // RFC-130 statement memory budget
-}
-
-func newMemorySortCursor(
-	inner recordlayer.RecordCursor[QueryResult],
-	keys []string,
-	dirs []bool,
-	st *recordlayer.ExecuteState,
-) *memorySortCursor {
-	return &memorySortCursor{
-		inner: inner,
-		keys:  keys,
-		dirs:  dirs,
-		st:    st,
-	}
-}
-
-func (c *memorySortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	if c.closed {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
-	}
-	if c.loaded {
-		return c.emitNext()
-	}
-
-	limit := c.maxBuf
-	if limit <= 0 {
-		limit = DefaultMaxSortBufferRows
-	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, err
-		}
-		result, err := c.inner.OnNext(ctx)
-		if err != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, err
-		}
-		if !result.HasNext() {
-			reason := result.GetNoNextReason()
-			if reason == recordlayer.SourceExhausted {
-				sortByKeys(c.buf, c.keys, c.dirs)
-				c.loaded = true
-				return c.emitNext()
-			}
-			contBytes, encErr := encodeSortContinuation(
-				result.GetContinuation(), c.buf,
-			)
-			if encErr != nil {
-				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-			}
-			return recordlayer.NewResultNoNext[QueryResult](
-				reason, recordlayer.NewBytesContinuation(contBytes),
-			), nil
-		}
-		v := result.GetValue()
-		// RFC-130: the in-memory sort buffer is a cardinality-growing buffer —
-		// charge each row's bytes against the statement memory budget before
-		// keeping it.
-		if c.st.HasMemLimit() {
-			if err := c.st.ChargeMemory(estimateQueryResultBytes(v)); err != nil {
-				return recordlayer.RecordCursorResult[QueryResult]{}, err
-			}
-		}
-		c.buf = append(c.buf, v)
-		if len(c.buf) >= limit {
-			return recordlayer.RecordCursorResult[QueryResult]{}, &SortBufferExceededError{
-				Rows:  len(c.buf),
-				Limit: limit,
-			}
-		}
-	}
-}
-
-func (c *memorySortCursor) emitNext() (recordlayer.RecordCursorResult[QueryResult], error) {
-	if c.emitIdx >= len(c.buf) {
-		return recordlayer.NewResultNoNext[QueryResult](
-			recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
-		), nil
-	}
-	row := c.buf[c.emitIdx]
-	c.emitIdx++
-	return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
-}
-
-func (c *memorySortCursor) Close() error {
-	c.closed = true
-	return c.inner.Close()
-}
-
-func (c *memorySortCursor) IsClosed() bool { return c.closed }
-
-// ---------------------------------------------------------------------------
 // customSortCursor — streaming sort with pluggable comparator
 // ---------------------------------------------------------------------------
+
+// customSortCursor implements RecordCursor[QueryResult] for ORDER BY.
+// Two phases: LOAD (pull from inner into buffer) and EMIT (return
+// sorted records one-by-one). When the inner cursor hits a limit
+// during LOAD, the buffer and limit are propagated upward via the sort
+// continuation so the next transaction can continue loading into the
+// same buffer. Mirrors Java's MemorySortCursor; the comparator is a
+// pluggable sortFn evaluating the plan's sort-key Values against each
+// row's positional row.
 
 type customSortCursor struct {
 	inner  recordlayer.RecordCursor[QueryResult]
@@ -626,12 +845,12 @@ type nljCursor struct {
 	evalCtx    *EvaluationContext
 
 	// hashIndex is a hash index on inner rows keyed by the equijoin
-	// column. When non-nil, inner row lookup is O(1) per outer row
-	// instead of O(N). Built by newNLJCursor when it detects a
-	// single-column equijoin predicate.
+	// inner operand's evaluated value. When non-nil, inner row lookup is
+	// O(1) per outer row instead of O(N). Built by newNLJCursor when it
+	// detects a single-equality equijoin over two baked leg references.
 	hashIndex    map[any][]int // join-key → indices into innerRows
-	hashJoinCol  string        // inner-side column name for hash lookup
-	outerJoinCol string        // outer-side column name for hash lookup
+	hashOuterVal values.Value  // outer-side baked operand, probes the index
+	allIdx       []int         // lazy 0..N-1 candidate list for a failed probe
 
 	currentOuter   *QueryResult
 	innerIdx       int
@@ -660,36 +879,22 @@ type nljCursor struct {
 	st       *recordlayer.ExecuteState
 	buildErr error
 
-	// birth is the RFC-173 Slice 2 ordinal-BIRTH state, probed ONCE at
-	// construction from the plan's result value (nil = name-model join,
-	// today's path bit-identically). When enabled, every emitted row
-	// additionally carries the positional merged row evaluated from the RC
-	// with per-leg bindings — DUAL emission: the name-model Datum
-	// (mergeRows/qualifyOuterRow) stays byte-identical — gated per emission
-	// on the §5 DisablePositionalEmission oracle.
-	birth *ordinalJoinBirth
-	// birthActive = birth enabled AND the §5 oracle off, read once at
-	// construction (a cursor's lifetime never straddles an oracle phase —
-	// tests own whole phases). Gates ALL ordinal work below.
-	birthActive bool
+	// build is the join's ordinal-build state (an *ordinalJoinBuild), probed
+	// ONCE at construction from the plan's result value (nil = un-gated merge:
+	// the emitted row is mergeRows' leg-concat positional row). When enabled,
+	// every emitted row carries the positional merged row evaluated from the RC
+	// with per-leg bindings. Gates ALL ordinal-build work below via
+	// build.enabled().
+	build *ordinalJoinBuild
 	// innerAdapted is the FIXED inner-rows slice adapted once at construction
 	// (parallel to innerRows); outerAdapted is the current outer row adapted
 	// once per outer-row advance. Together they make the per-candidate-pair
-	// cost one small twoLegBinder — no re-adaptation, no map (review W3a-2
-	// structural-perf catch: the name model pays no per-pair adapter work, so
-	// neither may the window).
+	// cost one small twoLegBinder — no re-adaptation, no map (per-pair adapter
+	// work would be a structural O(rows²) perf regression).
 	innerAdapted []values.OrdinalRow
 	outerAdapted values.OrdinalRow
 	// outerCorr/innerCorr are the leg correlation identifiers, resolved once.
 	outerCorr, innerCorr values.CorrelationIdentifier
-	// mergeRC is set iff the result value is the S3 positional-merge RC: the
-	// emitted Datum is then the MERGE SHAPE (slot `_i` = leg i's own Datum,
-	// mergeShapeDatum) on BOTH the live and §5-oracle sides — the partition
-	// rule rebases every upper reference through the merge quantifier, so
-	// mergeRows' flat keys would silently NULL them all (0-row joins on the
-	// oracle side, where no positional row backs the reads). NOT gated on
-	// birthActive: the oracle side is exactly where the flat Datum bites.
-	mergeRC *values.RecordConstructorValue
 }
 
 func newNLJCursor(
@@ -702,7 +907,7 @@ func newNLJCursor(
 	evalCtx *EvaluationContext,
 	st *recordlayer.ExecuteState,
 ) (*nljCursor, error) {
-	birth, err := newOrdinalJoinBirth(resultValue, preds)
+	build, err := newOrdinalJoinBuild(resultValue, preds)
 	if err != nil {
 		return nil, err
 	}
@@ -715,17 +920,15 @@ func newNLJCursor(
 		preds:      preds,
 		evalCtx:    evalCtx,
 		st:         st,
-		birth:      birth,
+		build:      build,
 	}
 	c.outerCorr = values.NamedCorrelationIdentifier(outerAlias)
 	c.innerCorr = values.NamedCorrelationIdentifier(innerAlias)
-	if rc, isRC := resultValue.(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
-		c.mergeRC = rc
-	}
-	if birth.enabled() && !DisablePositionalEmission {
-		c.birthActive = true
-		// Adapt the FIXED inner side once (review W3a-2: never per pair).
-		innerType := birth.legType(c.innerCorr)
+	if build.enabled() {
+		// Adapt the FIXED inner side once — never per pair, which would turn
+		// every candidate-pair comparison into a re-adaptation and make the
+		// join O(rows²).
+		innerType := build.legType(c.innerCorr)
 		c.innerAdapted = make([]values.OrdinalRow, len(innerRows))
 		for i := range innerRows {
 			row, aerr := adaptLegPositional(innerRows[i], innerType)
@@ -742,81 +945,10 @@ func newNLJCursor(
 	return c, nil
 }
 
-// recoverOracleDatumSpans recovers the DATUM spans for a TRANSLATED
-// (fused-reference) NLJ top from the leg subplans' result values — the NLJ
-// twin of newFlatMapCursor's legRV recovery, feeding ONLY the §5 oracle's
-// qualified keys (oracleFusedDatum → oracleNameDatum). The adapter-side
-// Spans/WindowsOK stay untouched: the live NLJ never consults DatumSpans
-// (its Datum is mergeRows/mergeShapeDatum), and flipping WindowsOK would
-// re-route the leg adapter's legType lookups (the Q6-pinned dimension).
-// Spliced per the DatumSpans contract (a box leg's window opens to the leaf
-// aliases dotted reads actually name).
-func (c *nljCursor) recoverOracleDatumSpans(outerPlan, innerPlan plans.RecordQueryPlan) {
-	if !c.birth.enabled() || c.birthActive {
-		return
-	}
-	legRVs := make(map[values.CorrelationIdentifier]values.Value)
-	addJoinLegRV(legRVs, c.outerCorr, outerPlan)
-	addJoinLegRV(legRVs, c.innerCorr, innerPlan)
-	if len(c.birth.DatumSpans) == 0 {
-		if spans, _, ok := ordinalJoinSpansOf(c.birth.RC, legRVs); ok {
-			c.birth.DatumSpans = spans
-		}
-	}
-	// Splice even when the birth arrived with PRISTINE seed spans — the exact
-	// FlatMap ordering (flat_map_cursor.go runs the splice as a separate step
-	// after recovery): a seed whose leg is a gated-join BOX carries a span
-	// named after the box alias covering the whole concat, and oracleNameDatum
-	// would qualify every column under that one alias instead of the leaf
-	// aliases dotted reads actually name (review finding: the early
-	// return skipped the splice for already-windowed births).
-	if len(c.birth.DatumSpans) > 0 && len(legRVs) > 0 {
-		c.birth.DatumSpans = spliceLegSpans(c.birth.DatumSpans, legRVs)
-	}
-}
-
-// oracleFusedDatum is the §5 NAME-MODEL ORACLE's emitted row for a
-// TRANSLATED ordinal-RC NLJ top (fused post-merge references — the gathered
-// N-way join/unnest star): mergeRows' flat keys never carry the RC's OUTPUT
-// names (a merge leg's columns live inside its nested `_i` map, under the
-// merge alias's original case), so every bare or dotted downstream read —
-// the projection's lazy `EL.EL`, a sort key — silently NULLed oracle-side
-// (the dualwindow differential's first W5/3-way catch). Reconstruct the
-// output row exactly like the FlatMap's oracle arm: evaluate the RC per
-// field over the leg bindings (values.OracleBakedNameFallback bridges the
-// baked reads), bare names plus ALIAS.COL keys from the recovered
-// DatumSpans. A nil leg Datum is the LEFT/FULL null leg — its references
-// evaluate NULL (contract ruling #3). TEST-ONLY (oracle emissions); dies
-// with the oracle in Slice 4.
-func (c *nljCursor) oracleFusedDatum(outerDatum, innerDatum any) (map[string]any, error) {
-	od, _ := outerDatum.(map[string]any)
-	rowCtx := c.evalCtx.
-		WithBinding(c.outerCorr, outerDatum).
-		WithBinding(c.innerCorr, innerDatum).
-		RowContext(od)
-	return c.birth.oracleNameDatum(rowCtx)
-}
-
-// oracleSwapFusedDatum applies the emission-time Datum swap for a fused top
-// on the oracle side (mirroring the mergeRC swap): predicates already ran
-// over the mergeRows keys; only the EMITTED row carries the reconstructed
-// output-shaped Datum consumers read.
-func (c *nljCursor) oracleSwapFusedDatum(combined *QueryResult, outerDatum, innerDatum any) error {
-	if c.birthActive || !c.birth.enabled() || c.mergeRC != nil {
-		return nil
-	}
-	m, err := c.oracleFusedDatum(outerDatum, innerDatum)
-	if err != nil {
-		return err
-	}
-	combined.Datum = m
-	return nil
-}
-
 // pairBinder builds the per-candidate-pair leg binder from PRE-adapted leg
 // rows. A nil OrdinalRow is the deliberately-NULL leg (LEFT/FULL padding —
-// the binder returns (nil, true), contract ruling #3). Only called when
-// birthActive.
+// the binder returns (nil, true): a leg bound to nil evaluates as NULL, never
+// an error). Only called when build is enabled.
 func (c *nljCursor) pairBinder(outer, inner values.OrdinalRow) *twoLegBinder {
 	return &twoLegBinder{
 		outerID: c.outerCorr, innerID: c.innerCorr,
@@ -827,12 +959,12 @@ func (c *nljCursor) pairBinder(outer, inner values.OrdinalRow) *twoLegBinder {
 
 // adaptOuter adapts a just-advanced outer row ONCE (shared by every candidate
 // pair and the unmatched-outer emission for this outer row). No-op for
-// name-model cursors.
+// un-gated (build-disabled) cursors.
 func (c *nljCursor) adaptOuter(outerRow QueryResult) error {
-	if !c.birthActive {
+	if !c.build.enabled() {
 		return nil
 	}
-	row, err := adaptLegPositional(outerRow, c.birth.legType(c.outerCorr))
+	row, err := adaptLegPositional(outerRow, c.build.legType(c.outerCorr))
 	if err != nil {
 		return err
 	}
@@ -842,23 +974,39 @@ func (c *nljCursor) adaptOuter(outerRow QueryResult) error {
 
 // tryBuildHashIndex attempts to build a hash index on the inner rows
 // for equijoin predicates. If exactly one predicate is an equality
-// comparison between outer.col and inner.col, builds a hash map
-// keyed by the inner column value.
+// comparison between an outer-leg and an inner-leg column reference —
+// both PLAN-TIME BAKED (source-relative ordinal over the leg's
+// QuantifiedObjectValue) — builds a hash map keyed by
+// the inner operand's evaluated value. Keys are extracted by EVALUATING
+// the operand against its leg row alone (evalLegKey) — the exact
+// resolution the linear predicate path performs per pair — and then
+// CANONICALIZED (normalizeNLJHashKey) so map-key equality agrees with
+// cmpAny's promoting comparison, so the hash pre-filter can never
+// disagree with the predicate re-check the way an independent name
+// lookup or a raw-dynamic-type key could (a divergence there silently
+// DROPS matching rows, since the hash only pre-filters candidates).
 func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 	if len(c.preds) == 0 || len(c.innerRows) < 100 {
 		return
 	}
-	outerCol, innerCol := extractEquijoinColumns(c.preds, c.outerAlias, innerAlias)
-	if outerCol == "" || innerCol == "" {
+	outerVal, innerVal := extractEquijoinOperands(c.preds, c.outerAlias, innerAlias)
+	if outerVal == nil || innerVal == nil {
 		return
 	}
 	idx := make(map[any][]int, len(c.innerRows))
 	for i, row := range c.innerRows {
-		m, ok := row.Datum.(map[string]any)
-		if !ok {
+		if row.Positional == nil {
 			return
 		}
-		val := lookupJoinKey(m, innerCol, innerAlias)
+		val, ok := evalLegHashKey(innerVal, c.innerCorr, c.innerLegRow(i))
+		if !ok {
+			// An operand that cannot resolve against the leg row — or whose
+			// key has no hashable promotion-stable canonical form ([]byte,
+			// message shapes, time.Time, NaN) — declines the fast path
+			// entirely: the linear path evaluates (and loud-errors) the same
+			// predicate per pair via cmpAny, which handles all of them.
+			return
+		}
 		// RFC-130: the hash index is additional resident memory beyond the
 		// already-charged innerRows — one int per inner row plus, for a new
 		// key, the key's own bytes. Charge it; a budget breach is captured in
@@ -876,19 +1024,137 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 		idx[val] = append(idx[val], i)
 	}
 	c.hashIndex = idx
-	c.hashJoinCol = innerCol
-	c.outerJoinCol = outerCol
+	c.hashOuterVal = outerVal
+}
+
+// innerLegRow returns inner row i as the leg-local OrdinalRow the equijoin
+// operand evaluates against: the pre-adapted leg row for an ordinal-build
+// cursor, else the row's own positional (the un-gated merge concatenates leg
+// rows verbatim, so a leg window over the merged row reads the same slots).
+func (c *nljCursor) innerLegRow(i int) values.OrdinalRow {
+	if c.innerAdapted != nil {
+		return c.innerAdapted[i]
+	}
+	return c.innerRows[i].Positional
+}
+
+// allInnerIndices is the degraded hash-probe candidate list: every inner row.
+// Built lazily, once.
+func (c *nljCursor) allInnerIndices() []int {
+	if c.allIdx == nil {
+		c.allIdx = make([]int, len(c.innerRows))
+		for i := range c.allIdx {
+			c.allIdx[i] = i
+		}
+	}
+	return c.allIdx
+}
+
+// oneLegBinder binds exactly one leg correlation to its leg-local row — the
+// single-sided twin of twoLegBinder for hash-key extraction, where only the
+// key operand's own leg is in scope.
+type oneLegBinder struct {
+	id  values.CorrelationIdentifier
+	leg values.OrdinalRow
+}
+
+func (b oneLegBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
+	if id == b.id {
+		return b.leg, true
+	}
+	return nil, false
+}
+
+// evalLegKey evaluates a baked equijoin operand against its leg row alone.
+// ok=false (never an error) on any resolution failure — the caller declines
+// the hash fast path and the linear predicate path surfaces the failure.
+func evalLegKey(val values.Value, corr values.CorrelationIdentifier, leg values.OrdinalRow) (any, bool) {
+	if leg == nil {
+		return nil, false
+	}
+	v, err := val.Evaluate(&values.RowEvalContext{Correlations: oneLegBinder{id: corr, leg: leg}})
+	if err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// evalLegHashKey evaluates a baked equijoin operand against its leg row and
+// canonicalizes the result into the NLJ hash-key form. The ONLY entry point
+// for both the index build and the probe — the two sides MUST normalize
+// identically or matching rows silently vanish. ok=false on resolution
+// failure or a key outside normalizeNLJHashKey's whitelist: the builder then
+// declines the fast path entirely and the probe degrades to the full
+// candidate list, leaving the linear cmpAny evaluation as the semantics of
+// record.
+func evalLegHashKey(val values.Value, corr values.CorrelationIdentifier, leg values.OrdinalRow) (any, bool) {
+	v, ok := evalLegKey(val, corr, leg)
+	if !ok {
+		return nil, false
+	}
+	return normalizeNLJHashKey(v)
+}
+
+// normalizeNLJHashKey canonicalizes an equijoin key so Go map-key equality on
+// the result agrees with cmpAny — the promoting comparison the predicate
+// re-check applies to every surviving candidate pair. The invariant: two keys
+// the linear path treats as EQUAL must normalize to the SAME map key (a
+// false negative silently drops matching rows); extra bucket collisions are
+// harmless — the per-pair re-check filters them.
+//
+//   - Every numeric promotes to float64, mirroring cmpAny's
+//     promoteInt/promoteFloat widening: integral pairs equal as int64 are
+//     equal as float64, and any-float pairs compare as float64 already.
+//     Distinct wide int64s that collide at float64 precision are false
+//     POSITIVES only. Without this, int64(5) missed the float64(5) bucket
+//     (BIGINT=DOUBLE dropped every match ≥100 inner rows) and a
+//     covering-index float32 leg missed a stored-record float64 bucket.
+//   - NaN declines: cmpAny's <,>-based equality makes NaN compare EQUAL to
+//     every float, while a NaN map key matches nothing — no bucket can
+//     represent it.
+//   - string and bool pass through: cmpAny's arms for them are exact
+//     equality, same as map ==.
+//   - [16]byte (UUID) passes through: array == is exactly cmpAny's
+//     bytes.Compare(av[:], bv[:]) == 0.
+//   - nil (NULL) passes through: a NULL bucket only produces candidates the
+//     re-check rejects (equality on NULL is UNKNOWN), and declining instead
+//     would nuke the fast path for any leg with one NULL key.
+//   - Everything else declines. []byte and message/list shapes are
+//     unhashable map keys (a []byte key PANICKED the build at exactly 100
+//     inner rows: "hash of unhashable type: []uint8"). time.Time is hashable
+//     but its map == is wall+monotonic+location identity, not the instant
+//     equality cmpAny uses — and strings cross-match time.Time via
+//     ParseTimestamp, which no string-keyed bucket can represent.
+func normalizeNLJHashKey(v any) (any, bool) {
+	if v == nil {
+		return nil, true
+	}
+	if f, _, numeric := values.ToFloat64(v); numeric {
+		if math.IsNaN(f) {
+			return nil, false
+		}
+		return f, true
+	}
+	switch v.(type) {
+	case string, bool, [16]byte:
+		return v, true
+	}
+	return nil, false
 }
 
 // nljHashEntryBytes is the per-inner-row cost charged for the NLJ hash index:
 // the int slot in the bucket slice plus amortized map/slice-header overhead.
 const nljHashEntryBytes int64 = 24
 
-// extractEquijoinColumns extracts the outer and inner column names
-// from a single-column equijoin predicate. Returns ("","") if the
-// predicates don't match the pattern.
-func extractEquijoinColumns(preds []predicates.QueryPredicate, outerAlias, innerAlias string) (string, string) {
-	var outerCol, innerCol string
+// extractEquijoinOperands extracts the outer- and inner-side operand VALUES
+// from a single-equality equijoin predicate. Each operand must be a PLAN-TIME
+// BAKED leg column reference — a single-accessor FieldValue over its leg's
+// QuantifiedObjectValue (a source-relative bind) — whose
+// correlation names one of the two legs. Anything else (a fused multi-accessor
+// rebase, a computed operand, a reference to a buried leg of a lower join)
+// declines the fast path: (nil, nil), the linear predicate path handles it.
+func extractEquijoinOperands(preds []predicates.QueryPredicate, outerAlias, innerAlias string) (outerVal, innerVal values.Value) {
+	var o, in values.Value
 	eqCount := 0
 	for _, p := range preds {
 		cp, ok := p.(*predicates.ComparisonPredicate)
@@ -898,104 +1164,49 @@ func extractEquijoinColumns(preds []predicates.QueryPredicate, outerAlias, inner
 		if cp.Comparison.Type != predicates.ComparisonEquals {
 			continue
 		}
-		lhs := fieldName(cp.Operand)
-		rhs := fieldName(cp.Comparison.Operand)
-		if lhs == "" || rhs == "" {
+		lIsOuter, lOK := bakedLegOperand(cp.Operand, outerAlias, innerAlias)
+		rIsOuter, rOK := bakedLegOperand(cp.Comparison.Operand, outerAlias, innerAlias)
+		if !lOK || !rOK {
 			continue
 		}
-		lhsTable, lhsCol := splitQualified(lhs)
-		rhsTable, rhsCol := splitQualified(rhs)
-		if matchesAlias(lhsTable, outerAlias) && matchesAlias(rhsTable, innerAlias) {
-			outerCol = lhsCol
-			innerCol = rhsCol
+		switch {
+		case lIsOuter && !rIsOuter:
+			o, in = cp.Operand, cp.Comparison.Operand
 			eqCount++
-		} else if matchesAlias(lhsTable, innerAlias) && matchesAlias(rhsTable, outerAlias) {
-			outerCol = rhsCol
-			innerCol = lhsCol
+		case !lIsOuter && rIsOuter:
+			o, in = cp.Comparison.Operand, cp.Operand
 			eqCount++
 		}
 	}
 	if eqCount != 1 {
-		return "", ""
+		return nil, nil
 	}
-	return outerCol, innerCol
+	return o, in
 }
 
-func fieldName(v values.Value) string {
-	if v == nil {
-		return ""
+// bakedLegOperand reports whether v is a baked SINGLE-accessor column
+// reference over one of the join's two legs, and which side it names
+// (isOuter). Pinned (seed-rebased) and source-relative bakes both qualify —
+// either resolves by its leg-local ordinal against the leg row. A FUSED
+// multi-accessor path declines: its root ordinal addresses a merge-shaped
+// intermediate, not the leg row. ok=false for every other shape.
+func bakedLegOperand(v values.Value, outerAlias, innerAlias string) (isOuter, ok bool) {
+	fv, isFV := v.(*values.FieldValue)
+	if !isFV || fv.Resolved == nil || len(fv.Resolved.Accessors) != 1 {
+		return false, false
 	}
-	if fv, ok := v.(*values.FieldValue); ok {
-		// A FUSED multi-accessor path (the S3 merge rebase: `m._i.col`) has NO
-		// name-keyed hash key: its display Field is the LEAF column, but the
-		// quantifier's rows are merge-shaped (`_i` slots) — keying the hash
-		// index on "M.col" probes a key the rows never carry, so the index
-		// comes up empty and the ≥100-row fast path silently drops every
-		// match. Decline; the linear path evaluates the fused reference
-		// correctly.
-		if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
-			return ""
-		}
-		// A FieldValue qualified via a QuantifiedObjectValue child
-		// (QOV(alias).col — the form re-enumerated join predicates use)
-		// carries its table alias in the child's correlation, not in the
-		// bare Field. Return the qualified "ALIAS.COL" so extractEquijoinColumns
-		// can tell the outer side from the inner side. Without this, the bare
-		// field has an empty qualifier, matchesAlias("",x) is always true, and
-		// the equijoin column extraction picks outer/inner backwards — the hash
-		// index is then keyed on the wrong column and the join returns 0 rows
-		// (only on the ≥100-row hash-join path, so the bug is data-dependent).
-		// The legacy flat form (Field already "ALIAS.COL", no child) is
-		// returned unchanged.
-		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-			alias := qov.Correlation.Name()
-			if alias != "" {
-				return alias + "." + fv.Field
-			}
-		}
-		return fv.Field
+	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	if !isQOV {
+		return false, false
 	}
-	return ""
-}
-
-func splitQualified(name string) (table, col string) {
-	for i := len(name) - 1; i >= 0; i-- {
-		if name[i] == '.' {
-			return name[:i], name[i+1:]
-		}
+	alias := qov.Correlation.Name()
+	switch {
+	case strings.EqualFold(alias, outerAlias):
+		return true, true
+	case strings.EqualFold(alias, innerAlias):
+		return false, true
 	}
-	return "", name
-}
-
-// matchesAlias reports whether a field's table qualifier `table` refers to
-// quantifier `alias`. An empty `table` (an unqualified field, e.g. the legacy
-// flat "COL" form with no dot) matches ANY alias — the permissive fallback for
-// fields that carry no qualifier. Callers that must distinguish sides (e.g.
-// extractEquijoinColumns) therefore depend on fieldName() returning a QUALIFIED
-// name for QOV-child FieldValues; otherwise both sides match the first branch
-// and outer/inner are picked backwards (see equijoin_columns_test.go).
-func matchesAlias(table, alias string) bool {
-	if table == "" {
-		return true
-	}
-	return strings.EqualFold(table, alias)
-}
-
-func lookupJoinKey(m map[string]any, col, alias string) any {
-	if v, ok := m[col]; ok {
-		return v
-	}
-	qualified := alias + "." + col
-	if v, ok := m[qualified]; ok {
-		return v
-	}
-	for k, v := range m {
-		_, c := splitQualified(k)
-		if strings.EqualFold(c, col) {
-			return v
-		}
-	}
-	return nil
+	return false, false
 }
 
 func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -1031,28 +1242,17 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						if c.matchedInner[i] {
 							continue
 						}
-						// qualifyOuterRow is repurposed here for an INNER
-						// row: it qualifies the inner row's columns under
-						// innerAlias and leaves the outer columns absent, so
-						// downstream qualified refs to the outer side resolve
-						// to NULL.
-						qr := qualifyOuterRow(c.innerRows[i], c.innerAlias)
-						// The merge-shape swap on the FULL drain too (the OUTER leg is
-						// the empty-map NULL leg) — unreachable until LEFT/FULL gate in
-						// W4 (the merge arm's IsNullOnEmpty tripwire), handled so all
-						// three emission paths agree.
-						if c.mergeRC != nil {
-							qr.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, nil, c.innerRows[i].Datum)
-						}
-						if serr := c.oracleSwapFusedDatum(&qr, nil, c.innerRows[i].Datum); serr != nil {
-							return recordlayer.RecordCursorResult[QueryResult]{}, serr
-						}
-						// RFC-173 S2: ordinal birth of the drain row — the
-						// OUTER leg is the NULL leg (nil row), symmetric to
-						// the unmatched-outer emission below. The inner was
-						// adapted once at construction.
-						if c.birthActive {
-							pos, berr := c.birth.evaluateBound(c.pairBinder(nil, c.innerAdapted[i]))
+						// FULL drain: an unmatched INNER row, the OUTER leg is the
+						// NULL leg. The ordinal null-pad row comes from the build RC
+						// (evaluateBound with a nil outer leg — QOV(outer)→nil, the
+						// outer slots fall out NULL) when active; otherwise the
+						// inner's own positional qualified under its alias so a
+						// downstream qualified ref to the inner side resolves, and
+						// the absent outer side reads NULL.
+						qr := QueryResult{Record: c.innerRows[i].Record, PrimaryKey: c.innerRows[i].PrimaryKey}
+						qr.Positional = qualifyOuterPositional(c.innerRows[i].Positional, c.innerAlias)
+						if c.build.enabled() {
+							pos, berr := c.build.evaluateBound(c.pairBinder(nil, c.innerAdapted[i]))
 							if berr != nil {
 								return recordlayer.RecordCursorResult[QueryResult]{}, berr
 							}
@@ -1086,18 +1286,31 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			c.innerIdx = 0
 			c.innerMatches = nil
 			c.outerMatched = false
-			// RFC-173 S2: adapt the new outer leg ONCE for all its candidate
-			// pairs (no-op for name-model cursors).
+			// Adapt the new outer leg ONCE for all its candidate
+			// pairs (no-op for un-gated cursors).
 			if err := c.adaptOuter(outerRow); err != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, err
 			}
 
-			// Hash probe: resolve inner row candidates for this outer row.
-			if c.hashIndex != nil {
-				outerMap, _ := outerRow.Datum.(map[string]any)
-				if outerMap != nil {
-					key := lookupJoinKey(outerMap, c.outerJoinCol, c.outerAlias)
+			// Hash probe: resolve inner row candidates for this outer row by
+			// evaluating the OUTER operand against the outer leg row — the
+			// same resolution the predicate re-check performs per pair.
+			if c.hashIndex != nil && outerRow.Positional != nil {
+				outerLeg := c.outerAdapted
+				if outerLeg == nil {
+					outerLeg = outerRow.Positional
+				}
+				if key, ok := evalLegHashKey(c.hashOuterVal, c.outerCorr, outerLeg); ok {
 					c.innerMatches = c.hashIndex[key]
+				} else {
+					// A probe that cannot resolve — or whose key has no
+					// hashable promotion-stable canonical form (time.Time,
+					// NaN, a cross-typed []byte) — degrades this outer row to
+					// the full candidate list: the per-pair predicate
+					// evaluation is the semantics of record and will surface
+					// any real failure (or match, e.g. string-typed inner
+					// keys against a time.Time probe via ParseTimestamp).
+					c.innerMatches = c.allInnerIndices()
 				}
 			}
 		}
@@ -1112,12 +1325,12 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				innerRow := c.innerRows[idx]
 				c.innerIdx++
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				// RFC-173 S2: for an ordinal-birth cursor the predicate row
+				// For an ordinal-build cursor the predicate row
 				// context carries the per-leg bindings from the PRE-adapted
 				// legs (nil binder = today's path bit-identically); the same
-				// binder then births the positional row on a pass.
+				// binder then builds the positional row on a pass.
 				var pair *twoLegBinder
-				if c.birthActive {
+				if c.build.enabled() {
 					pair = c.pairBinder(c.outerAdapted, c.innerAdapted[idx])
 				}
 				passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, pair)
@@ -1133,18 +1346,12 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.outerMatched = true
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					if c.mergeRC != nil {
-						// EMISSION-time swap, after the predicates ran: the
-						// cursor's own (leg-baked) predicates still read the
-						// mergeRows keys on the oracle side; only the EMITTED
-						// merge row carries the merge-shape Datum consumers read.
-						combined.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, c.currentOuter.Datum, innerRow.Datum)
-					}
-					if serr := c.oracleSwapFusedDatum(&combined, c.currentOuter.Datum, innerRow.Datum); serr != nil {
-						return recordlayer.RecordCursorResult[QueryResult]{}, serr
-					}
+					// A fused-top merge (a positional-merge RC) reshapes the merged legs into the
+					// RC's OUTPUT columns; the build RC produces that ordinal output
+					// directly (evaluateBound). A plain merge keeps mergeRows'
+					// leg-concat positional row.
 					if pair != nil {
-						pos, berr := c.birth.evaluateBound(pair)
+						pos, berr := c.build.evaluateBound(pair)
 						if berr != nil {
 							return recordlayer.RecordCursorResult[QueryResult]{}, berr
 						}
@@ -1167,10 +1374,10 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.innerIdx++
 
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				// RFC-173 S2: same ordinal-birth dual emission as the hash
+				// Same ordinal-build dual emission as the hash
 				// path above (nil binder = today's path bit-identically).
 				var pair *twoLegBinder
-				if c.birthActive {
+				if c.build.enabled() {
 					pair = c.pairBinder(c.outerAdapted, c.innerAdapted[idx])
 				}
 				passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, pair)
@@ -1187,18 +1394,10 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
-					if c.mergeRC != nil {
-						// EMISSION-time swap, after the predicates ran: the
-						// cursor's own (leg-baked) predicates still read the
-						// mergeRows keys on the oracle side; only the EMITTED
-						// merge row carries the merge-shape Datum consumers read.
-						combined.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, c.currentOuter.Datum, innerRow.Datum)
-					}
-					if serr := c.oracleSwapFusedDatum(&combined, c.currentOuter.Datum, innerRow.Datum); serr != nil {
-						return recordlayer.RecordCursorResult[QueryResult]{}, serr
-					}
+					// See the hash path: a fused-top build reshapes to the RC's
+					// output; a plain merge keeps mergeRows' leg-concat row.
 					if pair != nil {
-						pos, berr := c.birth.evaluateBound(pair)
+						pos, berr := c.build.evaluateBound(pair)
 						if berr != nil {
 							return recordlayer.RecordCursorResult[QueryResult]{}, berr
 						}
@@ -1223,26 +1422,15 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 		if !matched {
 			switch c.joinType {
 			case plans.JoinLeftOuter, plans.JoinFullOuter:
-				qr := qualifyOuterRow(outerRow, c.outerAlias)
-				// A merge-RC cursor's null extension carries the merge SHAPE
-				// too — the NULL leg is the empty map, exactly the name
-				// model's reconstructed empty inner row (unreachable today:
-				// the merge arm's IsNullOnEmpty tripwire keeps LEFT/FULL
-				// selects anchored until W4; handled rather than half-covered
-				// so the shape is ready when LEFT gates).
-				if c.mergeRC != nil {
-					qr.Datum = mergeShapeDatum(c.mergeRC, c.outerCorr, c.innerCorr, outerRow.Datum, nil)
-				}
-				if serr := c.oracleSwapFusedDatum(&qr, outerRow.Datum, nil); serr != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, serr
-				}
-				// RFC-173 S2: ordinal birth of the null-padded row — the
-				// INNER leg is the NULL leg (nil row): the RC evaluates with
-				// QOV(inner)→nil and the inner slots fall out NULL (contract
-				// ruling #3's appendNullLeg equivalence). The outer was
-				// adapted once at its advance.
-				if c.birthActive {
-					pos, berr := c.birth.evaluateBound(c.pairBinder(c.outerAdapted, nil))
+				// Unmatched outer (LEFT/FULL): the INNER leg is the NULL leg. The
+				// ordinal null-pad row comes from the build RC (evaluateBound with
+				// a nil inner leg — QOV(inner)→nil, the inner slots fall out NULL,
+				// never an error) when active; otherwise the outer's own
+				// positional qualified under its alias, the absent inner side NULL.
+				qr := QueryResult{Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}
+				qr.Positional = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
+				if c.build.enabled() {
+					pos, berr := c.build.evaluateBound(c.pairBinder(c.outerAdapted, nil))
 					if berr != nil {
 						return recordlayer.RecordCursorResult[QueryResult]{}, berr
 					}
@@ -1263,7 +1451,6 @@ func (c *nljCursor) IsClosed() bool { return c.closed }
 
 var (
 	_ recordlayer.RecordCursor[QueryResult] = (*aggregateCursor)(nil)
-	_ recordlayer.RecordCursor[QueryResult] = (*memorySortCursor)(nil)
 	_ recordlayer.RecordCursor[QueryResult] = (*nljCursor)(nil)
 	_ recordlayer.RecordCursor[QueryResult] = (*customSortCursor)(nil)
 )

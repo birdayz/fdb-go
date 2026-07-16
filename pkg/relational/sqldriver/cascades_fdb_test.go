@@ -1879,6 +1879,179 @@ func TestFDB_CascadesMinMaxStringRejected(t *testing.T) {
 	t.Logf("Scalar subquery MIN(name) correctly rejected: %v", err)
 }
 
+// TestFDB_CascadesMinMaxNonNumericEmptyRejected extends the MIN/MAX-over-STRING
+// rejection to the DATA-INDEPENDENT cases Java rejects at PLAN time: an EMPTY
+// table and an all-NULL column. Before the plan-time gate the executor's
+// runtime !isNumeric check fired only per NON-NIL row, so an empty / all-NULL
+// STRING column never reached it, the aggregator emitted one NULL row, and the
+// query SUCCEEDED — a data-dependent error. Java rejects at encapsulate time
+// (NumericAggregationValue: VerifyException "unable to encapsulate aggregate
+// operation due to type mismatch(es)"), regardless of data. Revert-proof: with
+// the plan-time gate removed, MAX(name) over an empty table emits one NULL row
+// (no error) and this test fails.
+func TestFDB_CascadesMinMaxNonNumericEmptyRejected(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_mmempty_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("mmempty_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// A rejection may surface at plan time (QueryContext) or, for a query that
+	// planned, during row iteration (rows.Err) — accept either, require 0A000 /
+	// "type mismatch".
+	reject := func(q string) {
+		t.Helper()
+		rows, qerr := db.QueryContext(ctx, q)
+		if qerr != nil {
+			if strings.Contains(qerr.Error(), "0A000") || strings.Contains(qerr.Error(), "type mismatch") {
+				t.Logf("%s → rejected: %v", q, qerr)
+				return
+			}
+			t.Fatalf("%s: expected 0A000 / type mismatch, got: %v", q, qerr)
+		}
+		defer rows.Close()
+		for rows.Next() {
+		}
+		rerr := rows.Err()
+		if rerr == nil {
+			t.Fatalf("%s: expected 0A000 / type mismatch, got no error (emitted a NULL row)", q)
+		}
+		if !strings.Contains(rerr.Error(), "0A000") && !strings.Contains(rerr.Error(), "type mismatch") {
+			t.Fatalf("%s: expected 0A000 / type mismatch, got: %v", q, rerr)
+		}
+		t.Logf("%s → rejected: %v", q, rerr)
+	}
+
+	// (a) EMPTY table — no rows at all.
+	reject("SELECT MAX(name) FROM t")
+	reject("SELECT MIN(name) FROM t")
+
+	// (b) all-NULL column — rows exist but name is NULL in every one.
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, NULL)"); err != nil {
+		t.Fatalf("INSERT NULL 1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (2, NULL)"); err != nil {
+		t.Fatalf("INSERT NULL 2: %v", err)
+	}
+	reject("SELECT MAX(name) FROM t")
+	reject("SELECT MIN(name) FROM t")
+}
+
+// TestFDB_CascadesSumIntOverflow verifies that SUM/AVG over an INTEGER (proto
+// TYPE_INT32) column raise numeric-out-of-range (22003) once the running sum
+// passes the int32 boundary — matching Java NumericAggregationValue SUM_I / AVG_I
+// (Math.addExact on int, result TypeCode.INT), which Java selects at PLAN time
+// from the operand's static INT type. The NEGATIVE CONTROL (same magnitudes in a
+// BIGINT column) must NOT error: SUM_L / AVG_L sum in int64. Revert-proof: with
+// the executor's int32 overflow check removed, SUM(v) returns 4000000000 (a
+// BIGINT-range value) instead of erroring, and this test fails.
+func TestFDB_CascadesSumIntOverflow(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_sumovf_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("sumovf_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE t (id BIGINT NOT NULL, v INTEGER, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Two rows of 2_000_000_000 (each fits int32 max 2_147_483_647). As INTEGER
+	// the running SUM 4_000_000_000 overflows int32; as BIGINT it fits int64.
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, CAST(2000000000 AS INTEGER), 2000000000)"); err != nil {
+		t.Fatalf("INSERT 1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (2, CAST(2000000000 AS INTEGER), 2000000000)"); err != nil {
+		t.Fatalf("INSERT 2: %v", err)
+	}
+
+	mustOverflow := func(q string) {
+		t.Helper()
+		rows, qerr := db.QueryContext(ctx, q)
+		if qerr != nil {
+			if strings.Contains(qerr.Error(), "22003") {
+				t.Logf("%s → overflow: %v", q, qerr)
+				return
+			}
+			t.Fatalf("%s: expected 22003, got: %v", q, qerr)
+		}
+		defer rows.Close()
+		for rows.Next() {
+		}
+		rerr := rows.Err()
+		if rerr == nil {
+			t.Fatalf("%s: expected 22003 overflow, got no error (returned a BIGINT-range value)", q)
+		}
+		if !strings.Contains(rerr.Error(), "22003") {
+			t.Fatalf("%s: expected 22003, got: %v", q, rerr)
+		}
+		t.Logf("%s → overflow: %v", q, rerr)
+	}
+
+	// SUM(v) / AVG(v) over INTEGER — overflow int32 → 22003.
+	mustOverflow("SELECT SUM(v) FROM t")
+	mustOverflow("SELECT AVG(v) FROM t")
+
+	// NEGATIVE CONTROL: SUM(w) / AVG(w) over BIGINT — SUM_L / AVG_L, must NOT error.
+	var sumW int64
+	if err := db.QueryRowContext(ctx, "SELECT SUM(w) FROM t").Scan(&sumW); err != nil {
+		t.Fatalf("SUM(BIGINT) should succeed: %v", err)
+	}
+	if sumW != 4000000000 {
+		t.Fatalf("expected SUM(w)=4000000000, got %d", sumW)
+	}
+	var avgW float64
+	if err := db.QueryRowContext(ctx, "SELECT AVG(w) FROM t").Scan(&avgW); err != nil {
+		t.Fatalf("AVG(BIGINT) should succeed: %v", err)
+	}
+	if avgW != 2000000000 {
+		t.Fatalf("expected AVG(w)=2000000000, got %v", avgW)
+	}
+	t.Logf("SUM(BIGINT)=%d AVG(BIGINT)=%v (no overflow, correct)", sumW, avgW)
+}
+
 // Tied sort keys must break by primary key. When the sort direction
 // is DESC, the PK tiebreaker is also DESC (matching Java's index scan
 // behaviour where a reverse scan on a composite index emits PKs in

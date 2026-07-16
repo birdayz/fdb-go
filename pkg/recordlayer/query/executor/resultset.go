@@ -29,7 +29,7 @@ func resultValueString(v any) string {
 
 // RecordLayerResultSet wraps a RecordCursor[QueryResult] and implements
 // api.ResultSet. Mirrors Java's RecordLayerResultSet: Next() advances
-// the cursor, typed accessors read from the current row's datum map.
+// the cursor, typed accessors read from the current row's positional slots.
 //
 // Column metadata is provided at construction time (derived from the
 // plan's result type or the schema catalog). Column accessors are
@@ -50,7 +50,7 @@ type RecordLayerResultSet struct {
 
 	// posAlignType/posAligned memoize positionalAligned's verdict per row TYPE
 	// (row types are plan-invariant and pointer-shared across a cursor's rows —
-	// projType, ordinalJoinBirth.OutputType, positionalTypeCache — so the
+	// projType, ordinalJoinBuild.OutputType, positionalTypeCache — so the
 	// per-column name comparison runs once, not per row).
 	posAlignType *values.RecordType
 	posAligned   bool
@@ -58,7 +58,7 @@ type RecordLayerResultSet struct {
 
 // ColumnDef describes one column in the result set.
 type ColumnDef struct {
-	Name     string // key for datum map lookup
+	Name     string // output column name (positional slot / by-name lookup key)
 	Label    string // display name (alias); empty means use Name
 	TypeName string // JDBC type name: BIGINT, STRING, DOUBLE, etc.
 	Nullable int    // api.ColumnNoNulls / ColumnNullable / ColumnNullableUnknown
@@ -128,35 +128,25 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 		return nil, api.NewError(api.ErrCodeInvalidColumnReference,
 			fmt.Sprintf("column index %d out of range [1, %d]", columnIndex, len(rs.columns)))
 	}
-	// RFC-173 §7: when the row carries the ordinal-model positional row and its
-	// slots are PROVABLY parallel to this result set's columns (count + per-slot
-	// name match — positionalAligned), read column i from slot i-1. This is the
-	// §7 duplicate-name `SELECT *` fix arriving via the positional row: a gated
-	// 2-way ordinal join's `SELECT *` output has two same-named columns per leg
-	// pair (bare display names, distinct by ordinal), so the name-keyed Datum —
-	// last-wins by construction (datumFromPositional) — conflates them, while
-	// the positional row keeps each leg's value in its own slot. For every
-	// duplicate-free row the positional slots and the Datum mirror each other
-	// field-for-field (pinned by the shadow test), so this read is
-	// value-identical there; any row whose positional shape does not match the
-	// columns (aggregates, unions, name-model joins — no positional; covering/
-	// projected subsets — count or name mismatch) falls back to the name-keyed
-	// Datum lookup below, unchanged. Retires with the name map in Slice 4, when
-	// the positional row is the only row.
+	// The ordinal-model positional row is the SOLE runtime output row — read
+	// column i from slot i-1. positionalAligned proves the slots are parallel
+	// to this result set's columns (count + per-slot name match, with computed /
+	// aggregate renderings aligned by ordinal since their two naming authorities
+	// disagree on spelling). Ordinal reads are also what makes duplicate-name
+	// `SELECT *` correct: an ordinal join's output has two same-named columns per
+	// leg pair (bare display names, distinct by ordinal); the positional row keeps
+	// each leg's value in its own slot, which a last-wins name map could not.
 	if row := rs.current.Positional; row != nil && rs.positionalAligned(row) {
 		v, _ := row.Get(columnIndex - 1)
 		rs.wasNull = v == nil
 		return v, nil
 	}
-	colName := strings.ToUpper(rs.columns[columnIndex-1].Name)
-	m, ok := rs.current.Datum.(map[string]any)
-	if !ok {
-		rs.wasNull = true
-		return nil, nil
-	}
-	v, exists := m[colName]
-	rs.wasNull = !exists || v == nil
-	return v, nil
+	// Correct-or-loud: a materialized row with no aligned positional output row is
+	// a producer that failed to emit its ordinal output — a Go planner/executor
+	// bug, never a name->NULL to paper over.
+	return nil, api.NewError(api.ErrCodeInternalError,
+		fmt.Sprintf("result row carries no positional output row aligned to column %q (%d columns) — the plan's top operator did not emit an ordinal output row",
+			rs.columns[columnIndex-1].Name, len(rs.columns)))
 }
 
 // positionalAligned reports whether a positional row's slots are parallel to
@@ -165,7 +155,16 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 // the bare leaf of Name), case-insensitively. The guard is deliberately
 // all-or-nothing: a single mismatch means the positional row is NOT this
 // result set's output shape (a source row under aliased output, a permuted
-// union leg, a covering superset) and every read falls back to the Datum.
+// union leg, a covering superset) and every read goes loud.
+//
+// Both sides are compared on their BARE LEAF (qualifier stripped): a projection
+// over a gated ordinal join names its output positional slots by the qualified
+// output name (ProjectionColumnName → "C.NAME"), while the result-set column
+// display name is the bare leaf ("NAME"). The two denote the SAME output column
+// and the read is purely by ordinal (slot i ↔ column i, both in output order) —
+// so leaf-name equality is the correct structural sanity check. Duplicate leaf
+// names (`SELECT c.id, o.id` → [ID, ID]) stay safe: alignment is by ordinal, and
+// each column reads its own slot regardless of the shared name.
 func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
 	if row.Type == nil {
 		return false
@@ -176,7 +175,33 @@ func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
 	aligned := len(row.Type.Fields) == len(rs.columns) && len(row.Slots) == len(rs.columns)
 	if aligned {
 		for i, f := range row.Type.Fields {
-			if !strings.EqualFold(f.Name, columnDisplayName(rs.columns[i])) {
+			disp := columnDisplayName(rs.columns[i])
+			// A column whose display name is NOT a plain (dotted) identifier has no
+			// canonical user-facing spelling to match — it is a synthesized rendering
+			// of a computed expression or an aggregate:
+			//   - the ANONYMOUS `_i` placeholder deriveProjectionColumnDef assigns an
+			//     unaliased non-field projection (`SELECT UPPER(x)`), while the emitted
+			//     slot is named by ProjectionColumnName ("UPPER(X)");
+			//   - an AGGREGATE column ("SUM(QTY*UNIT_PRICE)", "MAX(X.COL2)", a `... AS
+			//     revenue` alias) whose ColumnDef name and positional slot name are
+			//     produced by two different rendering authorities that disagree on
+			//     spacing, internal qualifiers, or alias-vs-rendering.
+			// In every such case the slot IS this output column: both the positional
+			// slots and the result-set columns are built in output/projection order, so
+			// slot i ↔ column i by construction. Align by ordinal (the count guard and
+			// the plain-identifier name checks below still hold for every other slot —
+			// so a permuted union leg or a source row under aliased output, whose
+			// columns ARE plain identifiers, is still rejected).
+			if isAnonymousColumnName(disp) || !isPlainColumnRef(disp) || !isPlainColumnRef(f.Name) {
+				continue
+			}
+			// Align when the slot name equals the display name OUTRIGHT (a quoted
+			// output alias may itself contain a dot — `SELECT v AS "A.B"` emits slot
+			// "A.B" and label "A.B", which must NOT be leaf-stripped to "B"), or when
+			// the slot's bare leaf equals a bare display ("C.NAME" slot ↔ "NAME"
+			// label). Stripping BOTH sides would falsely align permuted qualifiers
+			// ("X.NAME" vs "Y.NAME"), so only the slot side is stripped.
+			if !strings.EqualFold(f.Name, disp) && !strings.EqualFold(bareLeafName(f.Name), disp) {
 				aligned = false
 				break
 			}
@@ -187,10 +212,56 @@ func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
 	return aligned
 }
 
+// bareLeafName strips a leading qualifier from a positional slot's name
+// ("C.NAME" → "NAME"), the same reduction columnDisplayName applies to a
+// column's Name. A name with no qualifier (an aggregate output "COUNT(*)", a
+// bare column) is returned unchanged.
+func bareLeafName(s string) string {
+	if dot := strings.LastIndex(s, "."); dot >= 0 {
+		return s[dot+1:]
+	}
+	return s
+}
+
+// isPlainColumnRef reports whether s is a plain (optionally dotted) SQL column
+// reference — an identifier of letters/digits/underscore, e.g. "NAME", "C.ID",
+// "CUSTOMER_ID". Anything containing a paren, space, arithmetic operator, comma,
+// etc. is a SYNTHESIZED rendering of a computed expression or an aggregate
+// ("SUM(QTY * PRICE)", "UPPER(X)", "(A + B)"), which has no canonical spelling to
+// name-match on — such columns align by ordinal instead. A plain reference is the
+// only kind whose two naming authorities are guaranteed to agree.
+func isPlainColumnRef(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// isAnonymousColumnName reports whether s is the positional placeholder `_i`
+// (an underscore followed by one-or-more digits) that deriveProjectionColumnDef
+// assigns to an unaliased non-field projection. Such a column has no user-facing
+// name, so a positional slot at the same ordinal aligns by position alone.
+func isAnonymousColumnName(s string) bool {
+	if len(s) < 2 || s[0] != '_' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // columnDisplayName is the column's unqualified user-visible name: the Label
-// (alias) when set, else Name's bare leaf ("A.ID" → "ID" — the name model
-// qualifies datum keys per leg, but a positional slot is named by its bare
-// display name).
+// (alias) when set, else Name's bare leaf ("A.ID" → "ID" — a column Name may be
+// leg-qualified, but a positional slot is named by its bare display name).
 func columnDisplayName(c ColumnDef) string {
 	if c.Label != "" {
 		return c.Label

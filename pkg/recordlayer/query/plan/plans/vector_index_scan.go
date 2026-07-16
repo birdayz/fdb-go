@@ -213,13 +213,10 @@ func (p *RecordQueryVectorIndexPlan) EqualsWithoutChildren(other RecordQueryPlan
 			return false
 		}
 	}
-	if len(p.prefixComparisons) != len(o.prefixComparisons) {
+	// Prefix comparisons by shape AND comparand (the F21 defect, same as
+	// RecordQueryIndexPlan): different prefix bounds define different key ranges.
+	if !scanComparisonRangesEqual(p.prefixComparisons, o.prefixComparisons) {
 		return false
-	}
-	for i := range p.prefixComparisons {
-		if p.prefixComparisons[i].GetRangeType() != o.prefixComparisons[i].GetRangeType() {
-			return false
-		}
 	}
 	return values.ValuesStructurallyEqual(p.queryVector, o.queryVector) &&
 		values.ValuesStructurallyEqual(p.k, o.k)
@@ -237,9 +234,7 @@ func (p *RecordQueryVectorIndexPlan) HashCodeWithoutChildren() uint64 {
 	} else {
 		h.Write([]byte{0})
 	}
-	for _, cr := range p.prefixComparisons {
-		h.Write([]byte{byte(cr.GetRangeType())})
-	}
+	writeScanComparisonRangesHash(h, p.prefixComparisons)
 	return h.Sum64()
 }
 
