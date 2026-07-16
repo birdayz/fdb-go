@@ -486,8 +486,8 @@ one defect each found by two auditors.
 | F19 | missing-error | Theme 7 (index-orphan ERROR) | **DONE** |
 | F20 | nondeterministic | S4 (deterministic cost winner) | **DONE** `a5846b405` |
 | F21 | nondeterministic | S4 (comparand-aware equality) | **DONE** `a5846b405` |
-| F22 | dead-code | Theme 8 (aggregateCursor.pending) | TODO |
-| F23 | dead-code | Theme 8 (RecordQuerySortPlan) | TODO |
+| F22 | dead-code | Theme 8 (aggregateCursor.pending) | **DONE** |
+| F23 | dead-code | Theme 8 (RecordQuerySortPlan) | **DONE** |
 | F24 | wrong-rows | S3 (FlatMap check-value restart) | **DONE** |
 | F26 | structural | S3-after (outerJoinCount) | TODO |
 | F27 | wrong-rows (float) | Theme 2 (cmpAny NaN) | TODO |

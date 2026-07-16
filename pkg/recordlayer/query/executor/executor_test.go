@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"testing"
 
@@ -231,7 +232,7 @@ func TestExecuteSort_OverValues(t *testing.T) {
 	inner := plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	})
-	sortPlan := plans.NewRecordQuerySortPlan(nil, inner)
+	sortPlan := plans.NewRecordQueryInMemorySortPlan(inner, nil)
 
 	cursor, err := ExecutePlan(ctx, sortPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -525,7 +526,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 		inner,
 	)
 
-	sorted := plans.NewRecordQuerySortPlan(nil, filtered)
+	sorted := plans.NewRecordQueryInMemorySortPlan(filtered, nil)
 
 	limited := plans.NewRecordQueryLimitPlan(sorted, 10, 0)
 
@@ -4901,8 +4902,76 @@ func TestConcatCursor_CloseIdempotent(t *testing.T) {
 }
 
 // ===========================================================================
-// ORDER BY via customSortCursor + expressionSortFn (the executeSort pipeline)
+// ORDER BY via the live newCustomSortCursor (executeInMemorySort's cursor)
 // ===========================================================================
+
+// expressionSortFn is a test fixture: the ordinal-positional sort comparator
+// used to drive the live newCustomSortCursor (buffer + yield + error
+// propagation) in isolation. Sort keys are VALUES evaluated against the
+// authoritative ordinal positional row (baked at plan time; loud on a miss) —
+// never a name lookup. Ties break by primary key, directed by the last
+// explicit key. The production sort path (executeInMemorySort) carries its own
+// equivalent comparator; that end-to-end path is covered by the sqldriver FDB
+// sort suites.
+func expressionSortFn(keys []expressions.SortKey) func([]QueryResult) error {
+	return func(results []QueryResult) error {
+		pkDesc := false
+		if len(keys) > 0 {
+			pkDesc = keys[len(keys)-1].Reverse
+		}
+		var sortErr error
+		sort.SliceStable(results, func(i, j int) bool {
+			if sortErr != nil {
+				return false
+			}
+			for _, k := range keys {
+				vi, err := k.Value.Evaluate(results[i].Positional)
+				if err != nil {
+					sortErr = err
+					return false
+				}
+				vj, err := k.Value.Evaluate(results[j].Positional)
+				if err != nil {
+					sortErr = err
+					return false
+				}
+				iNil, jNil := vi == nil, vj == nil
+				if iNil && jNil {
+					continue
+				}
+				if iNil || jNil {
+					nf := !k.Reverse
+					if k.NullsFirst != nil {
+						nf = *k.NullsFirst
+					}
+					if nf {
+						return iNil
+					}
+					return jNil
+				}
+				cmp := compareAny(vi, vj)
+				if cmp == 0 {
+					continue
+				}
+				if k.Reverse {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+			if results[i].PrimaryKey != nil && results[j].PrimaryKey != nil {
+				cmp := comparePKTuples(results[i].PrimaryKey, results[j].PrimaryKey)
+				if cmp != 0 {
+					if pkDesc {
+						return cmp > 0
+					}
+					return cmp < 0
+				}
+			}
+			return false
+		})
+		return sortErr
+	}
+}
 
 func TestSortCursor_SortsCorrectly(t *testing.T) {
 	t.Parallel()

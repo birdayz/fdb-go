@@ -75,7 +75,6 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		return computeDistinctRecordsForMap(w)
 	case *plans.RecordQueryFilterPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
-		*plans.RecordQuerySortPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryInsertPlan,
@@ -163,7 +162,6 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		return true
 	case *plans.RecordQueryFilterPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
-		*plans.RecordQuerySortPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryProjectionPlan,
@@ -216,7 +214,6 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		return nil
 	case *plans.RecordQueryFilterPlan,
 		*plans.RecordQueryPredicatesFilterPlan,
-		*plans.RecordQuerySortPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryProjectionPlan,
@@ -358,8 +355,7 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		return properties.ExactlyOne()
 
 	// --- Transparent: same cardinality as child ---
-	case *plans.RecordQuerySortPlan,
-		*plans.RecordQueryTypeFilterPlan,
+	case *plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryTempTableInsertPlan:

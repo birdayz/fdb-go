@@ -9,14 +9,16 @@
 //   - RecordQueryScanPlan — primary-key scan over a record type.
 //   - RecordQueryFilterPlan — applies a QueryPredicate to an inner
 //     plan's row stream.
-//   - RecordQuerySortPlan — sorts an inner plan's row stream.
+//   - RecordQueryInMemorySortPlan — sorts an inner plan's row stream in
+//     memory (Go extension; Java's Cascades eliminates the sort via index
+//     ordering, RemoveSortRule/ImplementSortRule).
 //
 // The seed deliberately omits Java's full surface (Execute method,
 // PlanHashable, continuation handling, complex covering-index
 // machinery) — those land as the rule chain that produces these
 // plans starts consuming them. The seed is the type structure +
 // node-info equality so PrimaryScanRule / ImplementFilterRule /
-// ImplementSortRule (all B5 Batch A) have a target to yield into.
+// ImplementInMemorySortRule have a target to yield into.
 //
 // Why a separate sub-package vs cascades/expressions/: physical and
 // logical plan trees live in different namespaces in Java. A

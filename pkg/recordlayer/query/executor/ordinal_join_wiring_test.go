@@ -599,7 +599,6 @@ func TestDownstreamLegWindows(t *testing.T) {
 	t.Run("passthrough wrappers", func(t *testing.T) {
 		t.Parallel()
 		wrappers := map[string]plans.RecordQueryPlan{
-			"sort":              plans.NewRecordQuerySortPlan(nil, nlj),
 			"in-memory sort":    plans.NewRecordQueryInMemorySortPlan(nlj, nil),
 			"limit":             plans.NewRecordQueryLimitPlan(nlj, 10, 0),
 			"distinct":          plans.NewRecordQueryDistinctPlan(nlj),
@@ -611,7 +610,7 @@ func TestDownstreamLegWindows(t *testing.T) {
 			assertSpans(t, name, w)
 		}
 		// Nested passthroughs unwrap transitively.
-		assertSpans(t, "limit(distinct(sort))", plans.NewRecordQueryLimitPlan(plans.NewRecordQueryDistinctPlan(plans.NewRecordQuerySortPlan(nil, nlj)), 5, 0))
+		assertSpans(t, "limit(distinct(in-memory sort))", plans.NewRecordQueryLimitPlan(plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryInMemorySortPlan(nlj, nil)), 5, 0))
 	})
 	t.Run("non-join input declines", func(t *testing.T) {
 		t.Parallel()

@@ -1496,8 +1496,6 @@ func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 				continue
 			}
 			return p
-		case *plans.RecordQuerySortPlan:
-			input = p.GetInner()
 		case *plans.RecordQueryInMemorySortPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryLimitPlan:

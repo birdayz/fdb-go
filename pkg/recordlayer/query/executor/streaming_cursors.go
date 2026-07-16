@@ -89,9 +89,6 @@ type aggregateCursor struct {
 	currentKeyVals  []any
 	current         *groupState
 
-	// Completed group waiting to be emitted (from the last group break).
-	pending *QueryResult
-
 	// For the no-grouping-keys case (scalar aggregation like COUNT(*)).
 	scalarMode bool
 
@@ -174,8 +171,6 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 			return true
 		case *plans.RecordQueryFetchFromPartialRecordPlan:
 			input = p.GetInner()
-		case *plans.RecordQuerySortPlan:
-			input = p.GetInner()
 		case *plans.RecordQueryInMemorySortPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryLimitPlan:
@@ -217,14 +212,6 @@ func (c *aggregateCursor) withPartialState(groupKey string, keyVals []any, gs *g
 func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
-	}
-
-	// If we have a pending completed group from a previous group break,
-	// emit it now.
-	if c.pending != nil {
-		row := *c.pending
-		c.pending = nil
-		return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
 	}
 
 	// If inner is exhausted, emit the final group (if any).

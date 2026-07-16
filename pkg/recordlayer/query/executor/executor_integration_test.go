@@ -323,9 +323,9 @@ func TestIntegration_SortLimitPlan(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false}},
+		sorted := plans.NewRecordQueryInMemorySortPlan(
 			scan,
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false}},
 		)
 		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 0)
 
@@ -774,9 +774,9 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 			},
 			scan,
 		)
-		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: true}},
+		sorted := plans.NewRecordQueryInMemorySortPlan(
 			filter,
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: true}},
 		)
 		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 0)
 
@@ -985,9 +985,9 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 			},
 			scan,
 		)
-		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false}},
+		sorted := plans.NewRecordQueryInMemorySortPlan(
 			filter,
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false}},
 		)
 		// Project PRICE, ORDER_ID so the output row is ordinal-aligned to the columns.
 		proj := plans.NewRecordQueryProjectionPlan(
@@ -2020,9 +2020,9 @@ func TestIntegration_LimitWithOffset(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false}},
+		sorted := plans.NewRecordQueryInMemorySortPlan(
 			scan,
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false}},
 		)
 		// OFFSET 2, LIMIT 2 — skip first 2 (price=10,20), take next 2 (price=30,40)
 		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 2)
@@ -2392,9 +2392,9 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 			},
 			scan,
 		)
-		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false}},
+		sorted := plans.NewRecordQueryInMemorySortPlan(
 			filter,
+			[]plans.SortKey{{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false}},
 		)
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
@@ -2780,12 +2780,12 @@ func TestIntegration_SortPlan_MultiKey(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sorted := plans.NewRecordQuerySortPlan(
-			[]expressions.SortKey{
-				{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: false},
-				{Value: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType), Reverse: true},
-			},
+		sorted := plans.NewRecordQueryInMemorySortPlan(
 			scan,
+			[]plans.SortKey{
+				{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: false},
+				{Field: "QUANTITY", ValueExpr: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType), Desc: true},
+			},
 		)
 
 		cursor, err := ExecutePlan(ctx, sorted, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -3274,9 +3274,9 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
-			{Value: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType), Reverse: false},
-		}, scan)
+		sort := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
+			{Field: "QUANTITY", ValueExpr: values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.UnknownType), Desc: false},
+		})
 		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			sort,
 			[]values.Value{values.NewFieldValueWithResolvedOrdinal("QUANTITY", 4, values.TypeInt)},
@@ -3407,9 +3407,9 @@ func TestIntegration_SortPlan_Reverse(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
-			{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: true},
-		}, scan)
+		sort := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
+			{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: true},
+		})
 
 		cursor, err := ExecutePlan(ctx, sort, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
@@ -3517,9 +3517,9 @@ func TestIntegration_LimitOverSort(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
-			{Value: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Reverse: true},
-		}, scan)
+		sort := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
+			{Field: "PRICE", ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType), Desc: true},
+		})
 		limit := plans.NewRecordQueryLimitPlan(sort, int64(3), int64(0))
 
 		cursor, err := ExecutePlan(ctx, limit, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())

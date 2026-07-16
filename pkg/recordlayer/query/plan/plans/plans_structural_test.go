@@ -300,16 +300,17 @@ func TestFilterPlan_CopiesPredicateSlice(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RecordQuerySortPlan
+// RecordQueryInMemorySortPlan (the live Go-only physical sort; the legacy
+// RecordQuerySortPlan was removed as producer-less dead code)
 // ---------------------------------------------------------------------------
 
-func TestSortPlan_Construction(t *testing.T) {
+func TestInMemorySortPlan_Construction(t *testing.T) {
 	t.Parallel()
-	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
+	keys := []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: false},
 	}
 	inner := stub("Inner")
-	p := NewRecordQuerySortPlan(keys, inner)
+	p := NewRecordQueryInMemorySortPlan(inner, keys)
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -321,105 +322,111 @@ func TestSortPlan_Construction(t *testing.T) {
 	}
 }
 
-func TestSortPlan_GetResultType_NilInner(t *testing.T) {
+func TestInMemorySortPlan_GetResultType_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQuerySortPlan(nil, nil)
+	p := NewRecordQueryInMemorySortPlan(nil, nil)
 	if !values.UnknownType.Equals(p.GetResultType()) {
 		t.Fatalf("GetResultType() = %v, want UnknownType for nil inner", p.GetResultType())
 	}
 }
 
-func TestSortPlan_GetChildren_NilInner(t *testing.T) {
+func TestInMemorySortPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQuerySortPlan(nil, nil)
+	p := NewRecordQueryInMemorySortPlan(nil, nil)
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
 	}
 }
 
-func TestSortPlan_Explain(t *testing.T) {
+func TestInMemorySortPlan_Explain(t *testing.T) {
 	t.Parallel()
-	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-		{Value: &values.FieldValue{Field: "name", Typ: values.UnknownType}, Reverse: true},
+	keys := []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}, Desc: true},
 	}
-	p := NewRecordQuerySortPlan(keys, stub("Scan(T)"))
+	p := NewRecordQueryInMemorySortPlan(stub("Scan(T)"), keys)
 	got := p.Explain()
-	if !strings.Contains(got, "Sort") {
-		t.Fatalf("Explain = %q, missing 'Sort'", got)
+	if !strings.Contains(got, "InMemorySort") {
+		t.Fatalf("Explain = %q, missing 'InMemorySort'", got)
 	}
-	if !strings.Contains(got, "2 keys") {
-		t.Fatalf("Explain = %q, missing '2 keys'", got)
+	if !strings.Contains(got, "id ASC") {
+		t.Fatalf("Explain = %q, missing 'id ASC'", got)
+	}
+	if !strings.Contains(got, "name DESC") {
+		t.Fatalf("Explain = %q, missing 'name DESC'", got)
 	}
 }
 
-func TestSortPlan_EqualsWithoutChildren_Same(t *testing.T) {
+func TestInMemorySortPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
+	keys := []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: false},
 	}
-	a := NewRecordQuerySortPlan(keys, nil)
-	b := NewRecordQuerySortPlan(keys, nil)
+	a := NewRecordQueryInMemorySortPlan(nil, keys)
+	b := NewRecordQueryInMemorySortPlan(nil, keys)
 	if !a.EqualsWithoutChildren(b) {
 		t.Fatal("same sort keys should be equal")
 	}
 }
 
-func TestSortPlan_EqualsWithoutChildren_DifferentKeyCount(t *testing.T) {
+func TestInMemorySortPlan_EqualsWithoutChildren_DifferentKeyCount(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQuerySortPlan([]expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-	}, nil)
-	b := NewRecordQuerySortPlan([]expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-		{Value: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
-	}, nil)
+	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	})
+	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	})
 	if a.EqualsWithoutChildren(b) {
 		t.Fatal("different key counts should not be equal")
 	}
 }
 
-func TestSortPlan_EqualsWithoutChildren_DifferentReverse(t *testing.T) {
+func TestInMemorySortPlan_EqualsWithoutChildren_DifferentDesc(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQuerySortPlan([]expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
-	}, nil)
-	b := NewRecordQuerySortPlan([]expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: true},
-	}, nil)
+	// Isolate the direction: share one ValueExpr pointer + Field so only Desc
+	// differs (InMemorySort compares SortKey structs by identity).
+	fv := &values.FieldValue{Field: "id", Typ: values.UnknownType}
+	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "id", ValueExpr: fv, Desc: false},
+	})
+	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "id", ValueExpr: fv, Desc: true},
+	})
 	if a.EqualsWithoutChildren(b) {
-		t.Fatal("different reverse flags should not be equal")
+		t.Fatal("different direction flags should not be equal")
 	}
 }
 
-func TestSortPlan_EqualsWithoutChildren_DifferentValue(t *testing.T) {
+func TestInMemorySortPlan_EqualsWithoutChildren_DifferentValue(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQuerySortPlan([]expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-	}, nil)
-	b := NewRecordQuerySortPlan([]expressions.SortKey{
-		{Value: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
-	}, nil)
+	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	})
+	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	})
 	if a.EqualsWithoutChildren(b) {
-		t.Fatal("different values should not be equal")
+		t.Fatal("different keys should not be equal")
 	}
 }
 
-func TestSortPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
+func TestInMemorySortPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	s := NewRecordQuerySortPlan(nil, nil)
+	s := NewRecordQueryInMemorySortPlan(nil, nil)
 	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	if s.EqualsWithoutChildren(scan) {
-		t.Fatal("SortPlan should not equal ScanPlan")
+		t.Fatal("InMemorySortPlan should not equal ScanPlan")
 	}
 }
 
-func TestSortPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
+func TestInMemorySortPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
-	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	keys := []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
 	}
-	p := NewRecordQuerySortPlan(keys, nil)
+	p := NewRecordQueryInMemorySortPlan(nil, keys)
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -427,27 +434,27 @@ func TestSortPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	}
 }
 
-func TestSortPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
+func TestInMemorySortPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQuerySortPlan([]expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-	}, nil)
-	b := NewRecordQuerySortPlan([]expressions.SortKey{
-		{Value: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
-	}, nil)
+	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	})
+	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
+		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different sort keys should (very likely) have different hashes")
 	}
 }
 
-func TestSortPlan_CopiesKeySlice(t *testing.T) {
+func TestInMemorySortPlan_CopiesKeySlice(t *testing.T) {
 	t.Parallel()
-	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	keys := []SortKey{
+		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
 	}
-	p := NewRecordQuerySortPlan(keys, nil)
-	keys[0].Reverse = true
-	if p.GetSortKeys()[0].Reverse {
+	p := NewRecordQueryInMemorySortPlan(nil, keys)
+	keys[0].Desc = true
+	if p.GetSortKeys()[0].Desc {
 		t.Fatal("sort plan should have an independent copy of the key slice")
 	}
 }
@@ -1367,7 +1374,7 @@ func TestAllPlanTypes_DistinctTypeHashes(t *testing.T) {
 	hashes := map[string]uint64{
 		"Limit":          NewRecordQueryLimitPlan(nil, 0, 0).HashCodeWithoutChildren(),
 		"Filter":         NewRecordQueryFilterPlan(nil, nil).HashCodeWithoutChildren(),
-		"Sort":           NewRecordQuerySortPlan(nil, nil).HashCodeWithoutChildren(),
+		"InMemorySort":   NewRecordQueryInMemorySortPlan(nil, nil).HashCodeWithoutChildren(),
 		"Distinct":       NewRecordQueryDistinctPlan(nil).HashCodeWithoutChildren(),
 		"Project":        NewRecordQueryProjectionPlan(nil, nil).HashCodeWithoutChildren(),
 		"Union":          NewRecordQueryUnionPlan(nil).HashCodeWithoutChildren(),

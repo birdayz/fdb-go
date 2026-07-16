@@ -99,8 +99,6 @@ func ExecutePlan(
 		return executeDistinct(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryProjectionPlan:
 		return executeProjection(ctx, p, store, evalCtx, continuation, props)
-	case *plans.RecordQuerySortPlan:
-		return executeSort(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryUnionPlan:
 		return executeUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryIntersectionPlan:
@@ -1623,113 +1621,6 @@ func (c *errCheckCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRe
 
 func (c *errCheckCursor) Close() error   { return c.inner.Close() }
 func (c *errCheckCursor) IsClosed() bool { return c.inner.IsClosed() }
-
-// executeSort implements ORDER BY. When a row limit is set (from a
-// LIMIT clause pushed down via ExecuteProperties), uses a heap-based
-// top-K algorithm that keeps only the needed rows in memory — O(K)
-// space instead of O(N). Go-only extension optimization.
-func executeSort(
-	ctx context.Context,
-	p *plans.RecordQuerySortPlan,
-	store *recordlayer.FDBRecordStore,
-	evalCtx *EvaluationContext,
-	continuation []byte,
-	props recordlayer.ExecuteProperties,
-) (recordlayer.RecordCursor[QueryResult], error) {
-	// Deserialize the sort continuation (if resuming). Extract the
-	// inner continuation for the leaf cursor and the buffered records.
-	// Mirrors Java's RecordQuerySortPlan + MemorySortCursorContinuation.
-	var innerContinuation []byte
-	var priorBuf []QueryResult
-
-	if continuation != nil {
-		ic, buf, decErr := decodeSortContinuation(continuation)
-		if decErr != nil {
-			return nil, fmt.Errorf("invalid sort continuation: %w", decErr)
-		}
-		innerContinuation = ic
-		priorBuf = buf
-	}
-
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
-	if err != nil {
-		return nil, err
-	}
-
-	cursor := newCustomSortCursor(innerCursor, expressionSortFn(p.GetSortKeys()), props.State)
-	if len(priorBuf) > 0 {
-		cursor.buf = priorBuf
-	}
-	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
-}
-
-// expressionSortFn builds the RecordQuerySortPlan comparator: sort keys are
-// VALUES evaluated against the authoritative ordinal positional row (baked at
-// plan time; loud on a miss) — never a name lookup. Ties break by primary
-// key, directed by the last explicit key.
-func expressionSortFn(keys []expressions.SortKey) func([]QueryResult) error {
-	return func(results []QueryResult) error {
-		pkDesc := false
-		if len(keys) > 0 {
-			pkDesc = keys[len(keys)-1].Reverse
-		}
-		var sortErr error
-		sort.SliceStable(results, func(i, j int) bool {
-			if sortErr != nil {
-				return false
-			}
-			for _, k := range keys {
-				vi, err := k.Value.Evaluate(results[i].Positional)
-				if err != nil {
-					sortErr = err
-					return false
-				}
-				vj, err := k.Value.Evaluate(results[j].Positional)
-				if err != nil {
-					sortErr = err
-					return false
-				}
-				iNil, jNil := vi == nil, vj == nil
-				if iNil && jNil {
-					continue
-				}
-				if iNil || jNil {
-					// Default NULL placement: ASC nulls-first, DESC nulls-last
-					// (compareAny's nil-is-smallest rule); an explicit NULLS
-					// FIRST/LAST overrides.
-					nf := !k.Reverse
-					if k.NullsFirst != nil {
-						nf = *k.NullsFirst
-					}
-					if nf {
-						return iNil
-					}
-					return jNil
-				}
-				cmp := compareAny(vi, vj)
-				if cmp == 0 {
-					continue
-				}
-				if k.Reverse {
-					return cmp > 0
-				}
-				return cmp < 0
-			}
-			// All explicit sort keys equal — break ties by PK.
-			if results[i].PrimaryKey != nil && results[j].PrimaryKey != nil {
-				cmp := comparePKTuples(results[i].PrimaryKey, results[j].PrimaryKey)
-				if cmp != 0 {
-					if pkDesc {
-						return cmp > 0
-					}
-					return cmp < 0
-				}
-			}
-			return false
-		})
-		return sortErr
-	}
-}
 
 func executeUnion(
 	ctx context.Context,
@@ -3596,29 +3487,6 @@ func (c *filterResultCursor) Close() error {
 
 func (c *filterResultCursor) IsClosed() bool { return c.closed }
 
-// sortResultCursor collects all inner results, sorts them, then
-// yields in sorted order. Used by RecordQuerySortPlan.
-type sortResultCursor struct {
-	items []QueryResult
-	pos   int
-}
-
-func newSortResultCursor(items []QueryResult) *sortResultCursor {
-	return &sortResultCursor{items: items}
-}
-
-func (c *sortResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	if c.pos >= len(c.items) {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
-	}
-	v := c.items[c.pos]
-	c.pos++
-	return recordlayer.NewResultWithValue(v, &recordlayer.StartContinuation{}), nil
-}
-
-func (c *sortResultCursor) Close() error   { return nil }
-func (c *sortResultCursor) IsClosed() bool { return false }
-
 // MaterializationLimitExceededError is returned when an operator tries to
 // buffer more rows in memory than the configured materialization limit.
 type MaterializationLimitExceededError struct {
@@ -3751,6 +3619,14 @@ func sortEvalRow(qr QueryResult) any {
 	return qr.Positional
 }
 
+// compareAny orders two scalar row values. Its only live consumer is the
+// streaming MIN/MAX aggregate accumulator (newGroupState / accumulateRow),
+// which is guarded numeric-only (isNumeric) and receives int64-widened
+// operands (ProtoScalarKindToRowValue widens int32→int64), so the numeric +
+// string + bool + UUID arms below cover every value it actually sees. A pair
+// of unhandled/mismatched types falls through to 0 ("equal") — acceptable for
+// MIN/MAX given the numeric guard. int32 and float32 are normalized to their
+// 64-bit forms up front so a stray narrow scalar still orders correctly.
 func compareAny(a, b any) int {
 	if a == nil && b == nil {
 		return 0
@@ -3766,6 +3642,12 @@ func compareAny(a, b any) int {
 	}
 	if f, ok := b.(float32); ok {
 		b = float64(f)
+	}
+	if i, ok := a.(int32); ok {
+		a = int64(i)
+	}
+	if i, ok := b.(int32); ok {
+		b = int64(i)
 	}
 	switch av := a.(type) {
 	case int64:

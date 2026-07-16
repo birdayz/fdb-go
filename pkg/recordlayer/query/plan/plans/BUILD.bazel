@@ -36,7 +36,6 @@ go_library(
         "score_for_rank.go",
         "selector.go",
         "semantic_identity.go",
-        "sort.go",
         "streaming_aggregation.go",
         "table_function.go",
         "temp_table_insert.go",

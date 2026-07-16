@@ -102,10 +102,10 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **To close:** delegate to `q.GetRangesOver().GetCorrelatedTo()` and re-enable the Java-faithful guards. Plan-shape sensitive (the guards start rejecting): needs its own review cycle with plandiff + the correlated-join sentinels, not a drive-by rewire.
 
-### Go has explicit Sort/InMemorySort physical operators
+### Go has an explicit in-memory sort physical operator
 
 **Java:** Relies on `RemoveSortRule` to eliminate sorts; no in-memory sort plan exists.
-**Go:** Has `RecordQuerySortPlan` and `RecordQueryInMemorySortPlan`.
+**Go:** Has `RecordQueryInMemorySortPlan` (produced by `ImplementInMemorySortRule`). The Java-ported `ImplementSortRule` still eliminates the sort via index ordering where possible; `RecordQueryInMemorySortPlan` is the fallback when no index satisfies the requested ordering. (A legacy `RecordQuerySortPlan` — an orphaned port of Java's legacy-planner sort plan — was removed as producer-less dead code: Go has no legacy planner, so nothing ever constructed it.)
 
 Correctness improvement — ensures ORDER BY works even when no index satisfies it.
 
@@ -274,7 +274,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `GROUP BY` | Rejects ALL forms (`UnableToPlanException`) | Full support (streaming + hash aggregation) |
 | `LIMIT` / `OFFSET` | Rejects at parse time (uses JDBC `setMaxRows`) | `RecordQueryLimitPlan` |
 | `SELECT DISTINCT` (complex shapes) | Rejects most via Cascades | Broad support via `RecordQueryDistinctPlan` + hash distinct |
-| In-memory sort | No physical sort operator; `RemoveSortRule` eliminates or fails | `RecordQuerySortPlan` / `RecordQueryInMemorySortPlan` |
+| In-memory sort | No physical sort operator; `RemoveSortRule` eliminates or fails | `RecordQueryInMemorySortPlan` |
 | Hash aggregation | Only streaming aggregation (requires ordered input) | `RecordQueryHashAggregationPlan` |
 | `INFORMATION_SCHEMA` | Rejects (`Unknown reference INFORMATION_SCHEMA.TABLES`) | Working system tables |
 | `NOT NULL` on scalar columns | Rejects (`NOT NULL is only allowed for ARRAY column type`) | SQL-standard behavior |
@@ -284,7 +284,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
 | Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
 
-Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQuerySortPlan`, `RecordQueryValuesPlan`, `RecordQueryMergeSortUnionPlan`, `RecordQueryNestedLoopJoinPlan`.
+Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQueryValuesPlan`, `RecordQueryMergeSortUnionPlan`, `RecordQueryNestedLoopJoinPlan`.
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 

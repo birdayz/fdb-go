@@ -18,7 +18,7 @@ type SortKey struct {
 
 // LogicalSortExpression represents an unimplemented sort over the inner
 // Quantifier's rows. The sort keys list is the requested ordering — the
-// planner may either materialise it (RecordQuerySortPlan) or eliminate
+// planner may either materialise it (RecordQueryInMemorySortPlan) or eliminate
 // it if the chosen scan plan already satisfies it.
 //
 // Ports Java's
