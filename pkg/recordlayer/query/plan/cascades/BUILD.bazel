@@ -275,6 +275,7 @@ go_test(
         "phase3_correctness_new_test.go",
         "phase3_correctness_test.go",
         "physical_properties_test.go",
+        "pk_suffix_ordering_test.go",
         "plan_choice_multicolumn_test.go",
         "plan_choice_test.go",
         "plan_context_builder_test.go",
@@ -824,6 +825,7 @@ go_test(
         "rule_partition_select_singleton_guard_test.go",
         "select_merge_fused_leg_test.go",
         "rewriting_cost_model_outer_join_test.go",
+        "pk_suffix_ordering_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

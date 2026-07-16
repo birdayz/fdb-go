@@ -175,12 +175,13 @@ tests:
       - [1, 10]
       - [2, 20]
   # Nested WITH (Java cte.yamsql line 89): outer c1 renames (w, z);
-  # inner c3 selects id from c1. Java 4.10.1.0+ errors 42703 (c1 is
-  # visible but id is not in its renamed cols). Go errors 42F01
-  # because the inner SELECT can't resolve `c1` as a table — the CTE
-  # scope inheritance across nested WITH isn't propagating to the
-  # inner query's execSelectQuery. Divergence pinned; fix would
-  # require CTE scoping work beyond swingshift-41.
+  # inner c3 selects id from c1. Java errors 42703 (c1 is visible via
+  # lexical CTE scoping but id is not among its renamed columns).
+  # DIVERGENCE CLOSED (RFC-180): the nested WITH used to be silently
+  # DROPPED by the CTE body build (VisitQueryBody skipped the body's
+  # ctes), so `c3` was an unknown table (42F01). buildCTEBodyQuery now
+  # builds the body as a full query — nested CTEs register with lexical
+  # shadowing, enclosing CTEs stay visible — and Go matches Java's 42703.
   - query: |-
       WITH c1(w, z) AS (SELECT id, v FROM t),
            c2(a, b) AS (
@@ -188,7 +189,7 @@ tests:
              SELECT * FROM c3
            )
       SELECT * FROM c1, c2
-    error_code: "42F01"
+    error_code: "42703"
   # CTE with aggregate (GROUP BY + SUM) joined to base table.
   - query: |-
       WITH sums AS (SELECT id, SUM(v) AS total FROM t GROUP BY id)

@@ -135,6 +135,14 @@ type joinClause struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
+	// pos is the 1-indexed SELECT-list position for a POSITIONAL key
+	// (`ORDER BY 1`); 0 = not positional. A positional key IS an output
+	// ordinal by SQL definition — carrying it (instead of only the
+	// name-resolved text) lets a UNION lift bind the key to the union
+	// OUTPUT slot: the text resolves against the RIGHT leg's spelling and
+	// then fails name-validation against the LEFT leg when the legs spell
+	// that position differently (RFC-180, union_with_aggregate).
+	pos int
 	// nullsFirst overrides the Java-default NULL ordering when the user
 	// specifies NULLS FIRST / NULLS LAST explicitly. nil = use the
 	// direction-implied default (ASC → NULLS FIRST, DESC → NULLS LAST,
@@ -843,7 +851,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 			// 1-indexed position into the SELECT list. Resolve to the
 			// matching output column's name so the downstream colIdx
 			// lookup in the sort path works uniformly.
-			posName, _, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
+			posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
@@ -857,7 +865,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 						"duplicate column %q in ORDER BY", posName)
 				}
 				seenOrderCols[key] = true
-				cls.orderBy = append(cls.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: posName, pos: pos, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 				continue
 			}
 			// Prefer plain column / aggregate lookup (works in all sort paths,

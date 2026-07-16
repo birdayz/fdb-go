@@ -149,6 +149,17 @@ func (c *ValueIndexScanMatchCandidate) GetTraversal() *Traversal {
 // key column, parallel to GetSargableAliases).
 func (c *ValueIndexScanMatchCandidate) GetColumnNames() []string { return c.columnNames }
 
+// GetPKColumnNames returns the primary-key column names of the record
+// type the index ranges over, in PK order. Consumers append the
+// trimPrimaryKey'd remainder after the index key columns to model the
+// FULL entry key (Java: ValueIndexExpansionVisitor.fullKey) — index
+// entries are (index key, primary key), so the scan's sort order and
+// its matched ordering parts extend into the PK suffix. The PK is NOT
+// part of the sargable surface (see unmatchedFieldsForIndex in
+// planning_cost_model.go): unlike Java, Go's candidate never folds the
+// PK into sargableAliases, and that invariant must hold.
+func (c *ValueIndexScanMatchCandidate) GetPKColumnNames() []string { return c.pkColumnNames }
+
 // GetSargableAliases returns the ordered parameter list (one per
 // index key column).
 func (c *ValueIndexScanMatchCandidate) GetSargableAliases() []values.CorrelationIdentifier {
@@ -199,6 +210,42 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		}
 
 		parts = append(parts, NewMatchedOrderingPart(paramID, colValue, cr, sortOrder))
+	}
+
+	// Continue the matched ordering into the trimmed primary-key suffix.
+	// Index entries are (index key, primary key), so after the index key
+	// columns the entry order continues through the PK remainder. Java
+	// gets this for free: its expansion (ValueIndexExpansionVisitor)
+	// registers PK placeholders, so sortParameterIds spans the FULL key
+	// (getFullKeyExpression) and the loop above emits PK parts natively.
+	// Go's candidate keeps the PK out of the sargable surface (see
+	// GetPKColumnNames), so the PK parts are synthesized here instead:
+	// unbound (empty comparison range), directional by isReverse — which
+	// is what lets SatisfiesRequestedOrdering resolve an ORDER BY on the
+	// PK against an equality-prefixed index scan and pick the scan
+	// direction, exactly like Java's satisfiesRequestedOrdering over
+	// full-key ordering parts.
+	//
+	// Gates: (1) fan-out indexes get no suffix — positions past a
+	// duplicating key part are not sort-ordered (Java breaks its loop
+	// there); (2) the suffix only continues a FULLY emitted index key —
+	// if the loop above stopped early the positions would not be
+	// contiguous and the suffix would claim an order the entries don't
+	// have. PK columns already in the index key are trimmed
+	// (Index.trimPrimaryKey), matching fullKey construction.
+	if !c.createsDuplicates && len(parts) == len(c.columnNames) {
+		for _, col := range trimmedPKSuffix(c.columnNames, c.pkColumnNames) {
+			colValue := values.NewFieldValue(nil, col, values.UnknownType)
+			sortOrder := MatchedSortOrderAscending
+			if isReverse {
+				sortOrder = MatchedSortOrderDescending
+			}
+			// PK parts have no sargable alias by design; the parameter id
+			// is only informational on MatchedOrderingPart (no production
+			// consumer reads it), so a fresh identifier is used.
+			parts = append(parts, NewMatchedOrderingPart(
+				values.UniqueCorrelationIdentifier(), colValue, nil, sortOrder))
+		}
 	}
 	return parts
 }

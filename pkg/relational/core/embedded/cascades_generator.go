@@ -1765,6 +1765,12 @@ func translateExecError(err error) error {
 	if errors.As(err, &aggTypeMismatch) {
 		return api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
 	}
+	// A cursor shape with no continuation support yet (RFC-180 WS-A
+	// follow-ups) declines resume typed — 0A000, not an internal error.
+	var unsupCont *executor.UnsupportedContinuationError
+	if errors.As(err, &unsupCont) {
+		return api.NewError(api.ErrCodeUnsupportedOperation, unsupCont.Error())
+	}
 	var rangeOverflow *executor.NumericRangeOverflowError
 	if errors.As(err, &rangeOverflow) {
 		return api.NewError(api.ErrCodeNumericValueOutOfRange, rangeOverflow.Error())

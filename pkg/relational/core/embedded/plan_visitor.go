@@ -31,6 +31,7 @@ package embedded
 
 import (
 	"errors"
+	"maps"
 	"strconv"
 	"strings"
 
@@ -176,21 +177,22 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		if v.cteOnScopes == nil {
 			v.cteOnScopes = make(map[string]semantic.ScopeSource)
 		}
+		// Duplicate detection is scoped to THIS WITH clause: a name already
+		// registered from an ENCLOSING query's WITH is legal lexical
+		// SHADOWING (a nested body's `WITH c1 …` shadows the outer c1 inside
+		// the body — buildCTEBodyQuery snapshots/restores the maps), not a
+		// duplicate. Consulting the shared maps here mis-fired 42712 on the
+		// shadowing shape Java accepts (cte.yamsql). ON-only registrations
+		// are declared names too, so one set covers both arms.
+		declaredHere := make(map[string]struct{}, len(ctesCtx.AllNamedQuery()))
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
 			upper := strings.ToUpper(name)
-			if _, exists := v.cteScopes[upper]; exists {
+			if _, exists := declaredHere[upper]; exists {
 				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
 					"found '%s' more than once", name)
 			}
-			// An ON-only registration is a DECLARED name too — without this
-			// arm a join-bodied CTE (never in cteScopes) evaded the duplicate
-			// check on the visitor path (the CTECatalog chain's innerCTEs
-			// tracker got this right).
-			if _, exists := v.cteOnScopes[upper]; exists {
-				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
-					"found '%s' more than once", name)
-			}
+			declaredHere[upper] = struct{}{}
 			if src, ok := buildCTEColumnSource(v.md, name, nq.Query(), v.cteScopes); ok {
 				// Apply CTE column aliases: WITH c1(x, y) AS (...)
 				if colAliases := nq.GetColumnAliases(); colAliases != nil {
@@ -229,7 +231,19 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				// resolution would otherwise resolve the body against its
 				// own OUTPUT schema (the R5a shadow pin 42703'd on ID).
 				bodyOp, bodyErr := buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, isRecBody, func() (logical.LogicalOperator, error) {
-					return v.VisitQueryBody(inner.QueryExpressionBody())
+					if isRecBody {
+						// Recursive bodies are SetQuery-shaped by contract and
+						// this arm builds the body WITHOUT its own ctes — a
+						// nested WITH inside one would be SILENTLY DROPPED
+						// (the exact bug class buildCTEBodyQuery fixes), so
+						// decline typed instead.
+						if inner.Ctes() != nil {
+							return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+								"nested WITH inside a recursive CTE body is not supported")
+						}
+						return v.VisitQueryBody(inner.QueryExpressionBody())
+					}
+					return v.buildCTEBodyQuery(inner)
 				})
 				if isRecBody {
 					v.inRecursiveCTEBody = false
@@ -301,7 +315,17 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				// pre-existing; booked as the forward-visibility
 				// Java-conformance probe on the output-naming slice).
 				body, err = buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, recursive, func() (logical.LogicalOperator, error) {
-					return v.VisitQueryBody(inner.QueryExpressionBody())
+					if recursive {
+						// Same silent-drop hazard as the eager arm: decline a
+						// nested WITH typed rather than build the body without
+						// its ctes.
+						if inner.Ctes() != nil {
+							return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+								"nested WITH inside a recursive CTE body is not supported")
+						}
+						return v.VisitQueryBody(inner.QueryExpressionBody())
+					}
+					return v.buildCTEBodyQuery(inner)
 				})
 				if recursive {
 					v.inRecursiveCTEBody = false
@@ -849,6 +873,17 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// (14) Upgrade HAVING predicate.
 	if sq.havingExpr != nil {
 		upgradeHavingPredicate(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner)
+		// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
+		// HAVING walk has no lowering — ScalarSubqueryValue's evaluation
+		// contract is pre-eval (uncorrelated) only, and the projection attach
+		// (13) already ran and nil'd the lists, so anything here would reach
+		// the executor as an unbindable alias (runtime
+		// UnboundScalarSubqueryError on a valid query). Decline TYPED; Java's
+		// quantifier lowering is the booked follow-up.
+		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"correlated scalar subquery in a WHERE/HAVING predicate is not supported")
+		}
 	}
 
 	// (15) Upgrade sort key values.
@@ -933,6 +968,24 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		} else {
 			preWalkPred = walked
 		}
+	}
+
+	// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
+	// WHERE walk above has no lowering. ScalarSubqueryValue's evaluation
+	// contract is pre-eval (uncorrelated) only — the uncorrelated list below
+	// attaches to the filter (upgradeFirstFilterScalarSubqueries) and the
+	// executor pre-binds it, but the correlated list's ONLY consumer is the
+	// PROJECTION path (materialized per-row column), whose attach step (13)
+	// already ran and nil'd the lists. A WHERE-position reference therefore
+	// reached the executor with an unbindable alias — the loud runtime
+	// UnboundScalarSubqueryError on a valid query (yamsql scalar_subquery_java:
+	// `WHERE e.salary = (SELECT MAX(e2.salary) … WHERE e2.dept_id =
+	// e.dept_id)`). Java lowers the subquery to a quantifier and lets the
+	// predicate reference its result — the booked RFC-180 follow-up; until
+	// then decline TYPED at plan time.
+	if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"correlated scalar subquery in a WHERE/HAVING predicate is not supported")
 	}
 
 	hasSubqueries := len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0
@@ -1284,6 +1337,30 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	}
 
 	return op, stripPrefix
+}
+
+// buildCTEBodyQuery builds a CTE body plan, PRESERVING the body's own WITH
+// clause. A body that is itself `WITH inner AS (…) SELECT … FROM inner` must
+// build as a FULL query: its nested CTEs register and wrap (LogicalCTE) with
+// lexical shadowing — the inner name wins INSIDE the body, the enclosing
+// query's same-named CTE stays bound outside it. Before this helper both
+// body-build sites called VisitQueryBody(inner.QueryExpressionBody()),
+// silently DROPPING the body's ctes: the nested WITH vanished, its filter
+// with it, and `FROM c1` inside c2's body resolved to the ENCLOSING c1 —
+// wrong rows (yamsql cte_error_codes: 9 rows for 6; Java's cte.yamsql pins
+// the shadowing). The visitor's CTE maps are snapshotted and restored so the
+// nested registrations stay scoped to the body build.
+func (v *PlanVisitor) buildCTEBodyQuery(inner antlrgen.IQueryContext) (logical.LogicalOperator, error) {
+	if inner.Ctes() == nil {
+		return v.VisitQueryBody(inner.QueryExpressionBody())
+	}
+	savedScopes := maps.Clone(v.cteScopes)
+	savedOn := maps.Clone(v.cteOnScopes)
+	savedBodies := maps.Clone(v.cteBodies)
+	defer func() {
+		v.cteScopes, v.cteOnScopes, v.cteBodies = savedScopes, savedOn, savedBodies
+	}()
+	return v.VisitQuery(inner)
 }
 
 // visitOrderBy builds the LogicalSort operator by reading ORDER BY

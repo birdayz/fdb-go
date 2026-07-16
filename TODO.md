@@ -4858,3 +4858,29 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       ValuePredicate(= TRUE) (Expression.java:371-400) and plans it as a
       residual filter; Go declines 0AF00. Port the wrap; restore the rows
       pins in case_when_in_java / case_exists_combo.
+- [ ] **Correlated scalar subquery in WHERE/HAVING — quantifier lowering
+      (RFC-180 Y4, extension):** ScalarSubqueryValue is pre-eval
+      (uncorrelated) only; the correlated materialized-column lowering exists
+      only for PROJECTION position. WHERE/HAVING-position correlated scalars
+      now decline TYPED 0AF00 (plan_visitor point checks — before the guard
+      they planned and died at runtime with UnboundScalarSubqueryError).
+      Lower via a quantifier (Java-style) and restore the rows pins in
+      scalar_subquery_java.
+- [ ] **Scalar subquery over a FROM-less SELECT (RFC-180 Y4, extension):**
+      `SELECT (SELECT COUNT(*) FROM t) AS total` declines 0AF00 — the
+      LogicalValues path carries no subquery plans. Restore rows pin when
+      wired.
+- [ ] **LIKE-prefix covering access path (RFC-180 Y4, plan-shape parity):**
+      Java plans `WHERE name LIKE 'bl%'` over an indexed column as an
+      UNBOUNDED covering index scan + residual LIKE + deferred FETCH
+      (never a LIKE→range conversion — RangeConstraints.java:780). Go
+      full-scans (rows correct). Implement the covering/filter-before-fetch
+      path; then flip like_patterns_java's plan_not_contains pin to a
+      covering plan_contains.
+- [ ] **HAVING-EXISTS error-surface alignment (RFC-180 Y4):** Java rejects
+      `SELECT COUNT(*) FROM t HAVING EXISTS(…)` at semantic analysis with
+      42803 GROUPING_ERROR "Invalid reference to non-grouping expression …
+      exists(q…)" (LogicalOperator.generateGroupBy →
+      SemanticAnalyzer.isComposableFrom; live-probed). Go declines 0AF00 via
+      the HavingExistsSubqueries planner gate. Align: reject at semantic
+      analysis with 42803 + Java's message shape; flip the exists.yaml pin.

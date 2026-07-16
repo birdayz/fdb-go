@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2517 query/assertion cases** across 18 feature areas.
+**319 scenarios · 2518 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -19,7 +19,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Joins | 60 | 264 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
 | CTEs | 12 | 85 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 8 | 47 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 8 | 48 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
 | Scalar functions & expressions | 32 | 347 |
@@ -224,7 +224,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `composite_aggregate_intersection` | 7 | Multi-aggregate queries using |
 | `union` | 2 | UNION / UNION ALL — set operations over SELECT results. |
 | `union_aggregate_java` | 7 | Aggregate over UNION ALL patterns from |
-| `union_columns` | 11 | UNION column-binding: SQL standard is positional, not name-based. |
+| `union_columns` | 12 | UNION column-binding: SQL standard is positional, not name-based. |
 | `union_comprehensive` | 4 | Comprehensive UNION tests |
 | `union_empty_tables_java` | 9 | UNION ALL behavior on empty tables |
 | `union_star` | 5 | Java's union.yamsql tests UNION ALL with SELECT * on either side. |

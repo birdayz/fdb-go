@@ -91,10 +91,11 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	if idxW, ok := fetchInnerExpr.(*physicalIndexScanWrapper); ok && !idxW.covering {
 		coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
 		coveringIdxW := &physicalIndexScanWrapper{
-			plan:        coveredPlan,
-			columnNames: idxW.columnNames,
-			unique:      idxW.unique,
-			covering:    true,
+			plan:          coveredPlan,
+			columnNames:   idxW.columnNames,
+			pkColumnNames: idxW.pkColumnNames,
+			unique:        idxW.unique,
+			covering:      true,
 		}
 		coveringRef := expressions.InitialOf(coveringIdxW)
 		innerQ := expressions.ForEachQuantifier(coveringRef)

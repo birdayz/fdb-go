@@ -58,10 +58,11 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		if isCountOnlyAggregation(gb.GetAggregates()) {
 			if idxWrapper := findIndexScanWrapper(innerRef); idxWrapper != nil && !idxWrapper.covering {
 				coveringWrapper := &physicalIndexScanWrapper{
-					plan:        idxWrapper.plan.WithCovering(nil),
-					columnNames: idxWrapper.columnNames,
-					unique:      idxWrapper.unique,
-					covering:    true,
+					plan:          idxWrapper.plan.WithCovering(nil),
+					columnNames:   idxWrapper.columnNames,
+					pkColumnNames: idxWrapper.pkColumnNames,
+					unique:        idxWrapper.unique,
+					covering:      true,
 				}
 				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringWrapper))
 				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(coveringWrapper.plan, groupingKeys, gb.GetAggregates())

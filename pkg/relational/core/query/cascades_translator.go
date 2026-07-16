@@ -5729,8 +5729,25 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 		// text differs from the baked output spelling (`col1 + 10` vs
 		// `(COL1#0 + 10)`).
 		if k.Pos > 0 && k.Pos <= len(inputCols) {
-			if _, isProj := innerRef.Get().(*expressions.LogicalProjectionExpression); isProj {
+			switch innerRef.Get().(type) {
+			case *expressions.LogicalProjectionExpression:
 				v = values.NewFieldValueWithResolvedOrdinal(inputCols[k.Pos-1], k.Pos-1, values.UnknownType)
+			case *expressions.LogicalUnionExpression:
+				// A positional key over a UNION binds to the union OUTPUT
+				// slot (the legs' spellings of that position may differ —
+				// the ordinal is the authority; the name is cosmetic, taken
+				// from the first leg via expressionOutputColumns). RFC-180.
+				v = values.NewFieldValueWithResolvedOrdinal(inputCols[k.Pos-1], k.Pos-1, values.UnknownType)
+			}
+		} else if k.Pos > 0 {
+			// A positional key whose slot the input's output layout cannot
+			// serve (no derivable columns) must not silently fall back to the
+			// TEXT rendering — that text is the RIGHT union leg's spelling
+			// and misresolves. Loud, never a misread. RFC-180.
+			if _, isUnion := innerRef.Get().(*expressions.LogicalUnionExpression); isUnion {
+				t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+					"positional ORDER BY %d is not derivable from the UNION output", k.Pos))
+				return nil
 			}
 		}
 		if v == nil {

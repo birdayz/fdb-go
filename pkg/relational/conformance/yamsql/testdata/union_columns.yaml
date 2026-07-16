@@ -102,3 +102,19 @@ tests:
       - [20]
       - [100]
       - [200]
+
+  # RFC-180 regression pins: POSITIONAL ORDER BY over a union binds to the
+  # union OUTPUT slot by ordinal. The dimensional gap that let the original
+  # bug through: every prior union-ORDER-BY test used SAME-named legs, so the
+  # text-resolved key always happened to validate. Here the legs spell
+  # position 2 differently (v vs w) — before the fix the parser resolved the
+  # ordinal against the RIGHT leg's text and the left-leg name validation
+  # rejected it (42703). Positional ORDER BY is a Go extension (live-probed:
+  # Java 4.12.11.0 has none, and attaches a trailing ORDER BY to the right
+  # leg only — see DIVERGENCES.md).
+  - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY 2 DESC
+    rows:
+      - [2, 200]
+      - [1, 100]
+      - [2, 20]
+      - [1, 10]

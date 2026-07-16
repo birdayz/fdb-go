@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -316,7 +317,7 @@ func DataAccessForMatchPartition(
 		if u, ok := cand.(interface{ IsUnique() bool }); ok {
 			unique = u.IsUnique()
 		}
-		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames())
+		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames(), candidatePKColumns(cand))
 
 		if comp.IsNeeded() {
 			if fmc, ok := comp.(*ForMatchCompensation); ok {
@@ -359,11 +360,28 @@ func candidateScanProps(cand MatchCandidate) (unique bool, columnNames []string)
 	return unique, cand.GetColumnNames()
 }
 
+// candidatePKColumns returns the candidate's primary-key column list for
+// ordering-property extension, or nil when the candidate does not expose
+// one or its index fans out (createsDuplicates): positions past a fan-out
+// key part are not sort-ordered, so the PK suffix must not extend the
+// ordering there (Java's computeOrderingFromScanComparisons breaks the
+// sorted-suffix loop at a duplicating key part).
+func candidatePKColumns(cand MatchCandidate) []string {
+	if dup, ok := cand.(interface{ CreatesDuplicates() bool }); ok && dup.CreatesDuplicates() {
+		return nil
+	}
+	if c, ok := cand.(interface{ GetPKColumnNames() []string }); ok {
+		return c.GetPKColumnNames()
+	}
+	return nil
+}
+
 // wrapAccessScan wraps a per-access scan plan, propagating the access's
 // candidate unique flag + column order (used by the intersection branches).
 func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) expressions.RelationalExpression {
-	unique, columnNames := candidateScanProps(access.GetPartialMatch().GetMatchCandidate())
-	return wrapScanPlanWithCoverage(plan, false, nil, unique, columnNames)
+	cand := access.GetPartialMatch().GetMatchCandidate()
+	unique, columnNames := candidateScanProps(cand)
+	return wrapScanPlanWithCoverage(plan, false, nil, unique, columnNames, candidatePKColumns(cand))
 }
 
 // wrapScanPlanWithCoverage wraps a scan plan as the properly-typed physical
@@ -386,13 +404,13 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) exp
 //
 // For a bare IndexScan (no Fetch — e.g. a primary scan) isCovering IS applied
 // directly, since there is no fetch to defer to.
-func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string, unique bool, columnNames []string) expressions.RelationalExpression {
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string, unique bool, columnNames []string, pkColumnNames []string) expressions.RelationalExpression {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
 			// Covering is decided downstream by MergeProjectionAndFetchRule (see
 			// the doc above) — do not consult isCovering/coveringColumns here.
 			_ = coveringColumns
-			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, unique: unique, columnNames: columnNames}
+			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, unique: unique, columnNames: columnNames, pkColumnNames: pkColumnNames}
 			idxRef := expressions.InitialOf(idxWrapper)
 			fetchQ := expressions.ForEachQuantifier(idxRef)
 			return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
@@ -402,7 +420,7 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 		if isCovering {
 			idxPlan = idxPlan.WithCovering(coveringColumns)
 		}
-		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering, unique: unique, columnNames: columnNames}
+		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering, unique: unique, columnNames: columnNames, pkColumnNames: pkColumnNames}
 	}
 	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
 		return &physicalVectorIndexScanWrapper{plan: vecPlan}
@@ -469,6 +487,34 @@ func (s *scanPlanExpression) WithQuantifiers(_ []expressions.Quantifier) express
 // GetRecordQueryPlan returns the underlying plan.
 func (s *scanPlanExpression) GetRecordQueryPlan() plans.RecordQueryPlan {
 	return s.plan
+}
+
+// pkScanFromDataAccessPlan unwraps the plan shapes scanPlanExpression
+// carries down to a primary-key scan, looking through the TypeFilter the
+// primary candidate adds when available and queried record types differ
+// (a type filter preserves the scan's order). Returns nil when the leaf
+// is not a PK scan.
+func pkScanFromDataAccessPlan(plan plans.RecordQueryPlan) *plans.RecordQueryScanPlan {
+	if tf, ok := plan.(*plans.RecordQueryTypeFilterPlan); ok {
+		plan = tf.GetInner()
+	}
+	sp, _ := plan.(*plans.RecordQueryScanPlan)
+	return sp
+}
+
+// HintOrdering: a data-access PK scan produces rows in PK order, exactly
+// like physicalScanWrapper. Without this the SARGed primary scan the
+// data-access path memoizes (as this plan-backed leaf, not as
+// physicalScanWrapper) reads as unordered and ImplementSortRule cannot
+// elide a sort it satisfies.
+func (s *scanPlanExpression) HintOrdering() properties.Ordering {
+	return pkScanOrdering(pkScanFromDataAccessPlan(s.plan))
+}
+
+// HintRichOrdering — the FIXED-equality-prefix PK ordering; see
+// pkScanRichOrdering.
+func (s *scanPlanExpression) HintRichOrdering() *RichOrdering {
+	return pkScanRichOrdering(pkScanFromDataAccessPlan(s.plan))
 }
 
 // compile-time check

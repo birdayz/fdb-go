@@ -5300,7 +5300,17 @@ func buildUnionRightBranchStrippingOrderBy(
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			lifted.sortKeys = append(lifted.sortKeys, logical.SortKey{Expr: e, Dir: dir, NullsFirst: nullsFirst})
+			// Carry the SELECT-list position for a POSITIONAL key: the ordinal
+			// binds to the union OUTPUT slot (a Go extension — live-probed Java
+			// 4.12.11.0 has NO positional ORDER BY at all, and attaches a
+			// trailing ORDER BY to the RIGHT LEG ONLY, not the combined union;
+			// Go deliberately implements the SQL-standard combined-result
+			// semantics, see union_columns.yaml). Without Pos the key's TEXT
+			// resolves against the RIGHT leg's spelling and then fails the
+			// LEFT-leg name validation when the legs spell the position
+			// differently (`SELECT '2024', … UNION ALL SELECT '2025', …
+			// ORDER BY 1`). RFC-180.
+			lifted.sortKeys = append(lifted.sortKeys, logical.SortKey{Expr: e, Pos: ob.pos, Dir: dir, NullsFirst: nullsFirst})
 		}
 		sq.orderBy = nil
 	}
@@ -5995,6 +6005,15 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 	}
 	for _, k := range sort.Keys {
 		if k.Expr == "" {
+			continue
+		}
+		// A POSITIONAL key binds to the union OUTPUT slot by ordinal — its
+		// Expr carries the RIGHT leg's rendering of that slot (where the
+		// parser resolved it), which legitimately differs from the left
+		// leg's spelling. In-range is guaranteed upstream
+		// (resolveSelectListPosition errors out-of-range) plus the union's
+		// equal-column-count validation. RFC-180.
+		if k.Pos > 0 {
 			continue
 		}
 		upper := strings.ToUpper(k.Expr)

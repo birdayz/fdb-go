@@ -451,3 +451,19 @@ serving the OUTER scalar, and wrong-leg IDs). Wire compat is untouched (pure rea
 and booking this here as the known divergence. Pinned: `TestFDB_StarBodyCTEJoinLeg`
 (colliding_label_shadow). Follow-on if strict Java parity is ever required: make the dup-label
 resolution loud `AMBIGUOUS_COLUMN` UNIFORMLY (direct + CTE forms), never just the boxed case.
+
+## UNION ALL trailing ORDER BY: combined-result vs Java's right-leg-only (RFC-180, live-probed)
+
+Java 4.12.11.0 attaches a trailing `ORDER BY` after `… UNION ALL SELECT …` to
+the RIGHT LEG ONLY (QueryVisitor.visitSetQuery visits legs independently; each
+leg keeps its own ORDER BY) — live-probed: `SELECT id FROM a UNION ALL SELECT
+id FROM b ORDER BY id DESC` returns the interleave of left-natural with
+right-DESC (`[6],[1],[2],[5]`), not a total order. Java also has NO positional
+`ORDER BY <n>` at all (ExpressionVisitor.visitOrderByExpression does no
+SQL-92 ordinal resolution; a bare integer becomes a constant sort key →
+UnableToPlan). Go deliberately implements the SQL-standard COMBINED-result
+semantics for the trailing ORDER BY (documented in union_columns.yaml) and
+supports positional keys as a read-side extension, binding them to the union
+OUTPUT slot by ordinal (SortKey.Pos carried through the union lift;
+translateSort bakes the slot). Both are Go read-side extensions on a surface
+where Java's own behavior is non-standard; wire compat is untouched.

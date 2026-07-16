@@ -68,6 +68,19 @@ func (e *NumericRangeOverflowError) Error() string {
 
 type SumOverflowError struct{}
 
+// UnsupportedContinuationError reports a resume attempt on a cursor shape
+// that has no continuation support yet (RFC-180 WS-A follow-ups). The driver
+// maps it to SQLSTATE 0A000 — a typed decline, never a silent wrong start
+// (before RFC-180 the buffered union fed the PARENT's continuation to every
+// child; a raw-key scan child consumed it as a scan position).
+type UnsupportedContinuationError struct {
+	Shape string
+}
+
+func (e *UnsupportedContinuationError) Error() string {
+	return "unsupported continuation: " + e.Shape + " cannot resume from a continuation"
+}
+
 func (*SumOverflowError) Error() string { return "long overflow" }
 
 // ExecutePlan executes a RecordQueryPlan tree against a store,
@@ -1667,7 +1680,7 @@ func executeUnion(
 			}
 		}
 		if allKnown {
-			return executeUnionStreaming(ctx, inners, store, evalCtx, props, md, firstBranchKeys)
+			return executeUnionStreaming(ctx, inners, store, evalCtx, continuation, props, md, firstBranchKeys)
 		}
 	}
 
@@ -1680,30 +1693,54 @@ func executeUnionStreaming(
 	inners []plans.RecordQueryPlan,
 	store *recordlayer.FDBRecordStore,
 	evalCtx *EvaluationContext,
+	continuation []byte,
 	props recordlayer.ExecuteProperties,
 	md *recordlayer.RecordMetaData,
 	targetKeys []string,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners))
-	for i, inner := range inners {
-		c, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
-		if err != nil {
-			for _, prev := range cursors {
-				prev.Close()
+	// Each branch is a lazy CursorFactory resumable from its OWN continuation,
+	// folded through recordlayer.ConcatCursors — Java's ConcatCursor with the
+	// wire-compatible branch-tagged ConcatContinuation proto (an N-way union
+	// is a right-nested chain of binary concats). Before RFC-180 (A1) the
+	// incoming continuation was silently DISCARDED and every child started at
+	// nil, so a mid-union page break replayed the union from row 0 on resume:
+	// an outer aggregate that correctly restores its own partial state then
+	// re-consumed the whole union per page (SUM over a grouped UNION ALL
+	// returned 3×13=39 for 13 — yamsql union_aggregate_java).
+	branchFactory := func(i int) recordlayer.CursorFactory[QueryResult] {
+		inner := inners[i]
+		return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndLimit())
+			if err != nil {
+				return &errResultCursor{err: fmt.Errorf("union branch %d: %w", i, err)}
 			}
-			return nil, err
-		}
-		if i > 0 {
-			srcKeys := planColumnNamesWithMD(inner, md)
-			if srcKeys != nil && !slices.Equal(srcKeys, targetKeys) {
-				c = recordlayer.MapCursor(c, func(qr QueryResult) QueryResult {
-					return remapUnionColumnsByPosition(qr, srcKeys, targetKeys)
-				})
+			if i > 0 {
+				srcKeys := planColumnNamesWithMD(inner, md)
+				if srcKeys != nil && !slices.Equal(srcKeys, targetKeys) {
+					c = recordlayer.MapCursor(c, func(qr QueryResult) QueryResult {
+						return remapUnionColumnsByPosition(qr, srcKeys, targetKeys)
+					})
+				}
 			}
+			return c
 		}
-		cursors = append(cursors, c)
 	}
-	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
+	var cursor recordlayer.RecordCursor[QueryResult]
+	if len(inners) == 1 {
+		cursor = branchFactory(0)(continuation)
+	} else {
+		// Fold right-to-left: tail = branch n-1; each step wraps
+		// (branch i, tail) in a binary concat factory.
+		tail := branchFactory(len(inners) - 1)
+		for i := len(inners) - 2; i >= 1; i-- {
+			fi, next := branchFactory(i), tail
+			tail = func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+				return recordlayer.ConcatCursors(fi, next, cont)
+			}
+		}
+		cursor = recordlayer.ConcatCursors(branchFactory(0), tail, continuation)
+	}
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeUnionBuffered(
@@ -1716,9 +1753,18 @@ func executeUnionBuffered(
 	md *recordlayer.RecordMetaData,
 	firstBranchKeys []string,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	// This buffered fallback (branch column names not statically known)
+	// cannot resume: before RFC-180 (A2) it fed the PARENT's continuation
+	// verbatim to EVERY child — a raw-key scan child consumed it as a scan
+	// position, silently starting mid-stream. Correct-or-loud: no
+	// continuation support until per-branch states land (WS-A follow-up);
+	// the streaming path above (all names known) resumes properly.
+	if len(continuation) > 0 {
+		return nil, &UnsupportedContinuationError{Shape: "buffered union (branch column names not statically known)"}
+	}
 	var all []QueryResult
 	for branchIdx, inner := range inners {
-		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
+		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
 		if err != nil {
 			return nil, err
 		}

@@ -545,14 +545,17 @@ func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC106a_UnionAllBranchTruncationErrors pins the streaming-cursor
-// out-of-band fix: a UNION ALL branch cut off by a scan limit (paginate mode)
-// must error rather than silently advance to the next branch and drop the rest of
-// the truncated one. The concat cursor carries no per-branch continuation state,
-// so a mid-branch out-of-band stop is terminal. Without a scan limit set,
-// out-of-band never fires and UNION ALL is unchanged. Revert-proof: drop the
-// IsOutOfBand error in concatCursor → the query returns a truncated row set.
-func TestFDB_RFC106a_UnionAllBranchTruncationErrors(t *testing.T) {
+// TestFDB_UnionAllResumesAcrossScanLimitPages pins the RFC-180 WS-A union
+// resume: a UNION ALL whose first branch spans many scan-limit pages must
+// return the COMPLETE row set — the streaming union folds its branches
+// through recordlayer.ConcatCursors (Java's branch-tagged ConcatContinuation),
+// so each page resumes the in-progress branch exactly where it stopped.
+// Historically this asserted a loud 54F01 instead: the correct-or-loud
+// stopgap for the era when the union DISCARDED its continuation and a resume
+// silently replayed branch A from row 0. Revert-proof: restore the
+// continuation-discarding executeUnionStreaming → duplicated branch-A pages
+// (row count > 51) or a loud out-of-band error — either fails this pin.
+func TestFDB_UnionAllResumesAcrossScanLimitPages(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc106a_unionall", "unionall",
 		"CREATE TABLE A (id BIGINT, PRIMARY KEY (id)) "+
@@ -573,10 +576,22 @@ func TestFDB_RFC106a_UnionAllBranchTruncationErrors(t *testing.T) {
 		t.Fatalf("INSERT B: %v", err)
 	}
 
-	// Branch A (50 rows) truncates at the scan limit of 5; concat must error, not
-	// drop A's remaining rows and continue to B.
-	_, err := drainIDs(ctx, conn, "SELECT id FROM A UNION ALL SELECT id FROM B")
-	wantExecLimit(t, err)
+	// Branch A (50 rows) hits the scanned-rows limit of 5 per page. With
+	// per-branch continuation states (RFC-180 WS-A: the streaming union folds
+	// through recordlayer.ConcatCursors, Java's branch-tagged
+	// ConcatContinuation) the union RESUMES across pages exactly like Java's
+	// paginating execution — the old loud 54F01 here was the correct-or-loud
+	// STOPGAP for the era when the union discarded its continuation and a
+	// resume silently replayed branch A from row 0. The stopgap is obsolete;
+	// the stronger pin is the complete result: all 50 A rows plus B's one,
+	// no drops, no duplicates.
+	n, err := drainIDs(ctx, conn, "SELECT id FROM A UNION ALL SELECT id FROM B")
+	if err != nil {
+		t.Fatalf("union across page boundaries: %v", err)
+	}
+	if n != 51 {
+		t.Fatalf("union across page boundaries returned %d rows, want 51 (50 from A + 1 from B)", n)
+	}
 }
 
 // drainPairs runs sql scanning two columns (int, int), returning the row count.

@@ -112,9 +112,10 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		wrapper := &physicalIndexScanWrapper{
-			plan:        idxPlan,
-			columnNames: colNames,
-			unique:      cand.IsUnique(),
+			plan:          idxPlan,
+			columnNames:   colNames,
+			pkColumnNames: candidatePKColumns(cand),
+			unique:        cand.IsUnique(),
 		}
 		call.Yield(wrapper)
 	}

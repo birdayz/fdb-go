@@ -1,6 +1,10 @@
 # RFC-180: Query-Engine Quality Remediation
 
-**Status:** Draft — awaiting Graefe/Torvalds review
+**Status:** Workstream Y COMPLETE (corpus 319/319 green, un-skip landed);
+A partially landed (union streaming resume); B/C/D/E/F/G3/G4/H/I open
+**Reviews:** RFC ACK'd by Graefe (3 binding notes incorporated) and Torvalds
+(G1/Y6/histogram NAK items fixed); every engine commit through the
+Graefe+Torvalds gate
 **Scope:** everything the post-RFC-179 quality assessment surfaced: the un-audited
 cursor families, plan-identity stragglers, the ordering-representation split, the
 front-end text IR, the dead/skipped safety nets, and the yamsql-corpus fallout
@@ -353,15 +357,16 @@ Codex on the PR, re-request after every push.
 
 | Id | Severity | One-liner | Status |
 |---|---|---|---|
-| Y1–Y6 | wrong-rows/red-net | 67/319 yamsql failures + dark TestMain | **OPEN — red** |
+| Y1–Y6 | wrong-rows/red-net | 67/319 yamsql failures + dark TestMain | **DONE** — corpus 319/319; ~110 Java-verdict re-pins; 12 engine fixes (sort pull-up, NULLS FIRST, UUID CAST, IN homogeneity, 0AF00 choke point, grouped-EXISTS guard, scalar-in-predicate guard, CTE shadowing, union positional ORDER BY, union streaming resume, ProjectionMergeRule composition, PK-suffix ordering); strict loader (exec:/rowcount: silent-drop hole killed); Y6 fatal-in-CI |
 | A1–A7 | wrong-rows (latent) + loud-gap | union/IN continuation family | OPEN |
 | B1–B5 | memo-collapse / nondeterministic | plan-identity stragglers | OPEN |
 | C1–C4 | wrong-rows | lossy dedup/group keys | OPEN |
 | D1–D4 | wrong-rows (D1) / divergence | ordering-representation split | OPEN |
 | E1 | nondeterministic | compensation map-order | OPEN |
 | F-1–F-4 | wrong-rows-history / rule-violation | text IR reparse | OPEN |
-| G1 | process | yamsql un-skip (in tree; commits with the Y-green batch — pre-commit runs the corpus, so a red commit is impossible by construction) | **IN TREE** |
+| G1 | process | yamsql un-skip | **DONE** (landed with the Y-green batch) |
 | G2 | dead-code | plangen deleted | **DONE** |
+| A1/A2 | wrong-rows (latent) + loud-gap | union streaming resume via ConcatCursors; buffered fallback correct-or-loud | **DONE** (A3–A7 remain) |
 | G3–G4 | net-gap | comparator fuzz + float cross-plan e2e | OPEN |
 | H1 | wrong-value write | int64→float32 ±Inf | OPEN |
 | H2–H8 | minor/hygiene | see workstream H | OPEN |
