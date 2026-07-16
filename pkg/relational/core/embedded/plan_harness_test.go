@@ -555,6 +555,74 @@ CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
 	}
 }
 
+// TestAggregateIndexCandidate_DeclinesNonzeroPermutedSize pins F52: a permuted
+// MIN/MAX index with permutedSize > 0 stores its BY_GROUP keys as
+// [prefix-groups, extremum, permuted-suffix-groups] — not logical group order.
+// The SQL aggregate candidate models neither the bounds translation (a
+// group-column scan range built in logical order would bind the extremum slot →
+// missing rows) nor the true stream ordering (the groupCols ordering hint is
+// false → ORDER BY elimination / multi-aggregate intersection mis-merge). Go's
+// own DDL always writes permutedSize=0; a nonzero permutation arrives only via
+// record-layer API / Java-written shared-cluster metadata. Candidacy must
+// DECLINE it (fall back to a base-record StreamingAgg — correct rows), while
+// permutedSize=0 (control) stays matched.
+func TestAggregateIndexCandidate_DeclinesNonzeroPermutedSize(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
+`
+	tmpl, err := buildSchemaTemplateFromDDL(schema)
+	if err != nil {
+		t.Fatalf("schema DDL: %v", err)
+	}
+	md := tmpl.Underlying()
+	var idx *recordlayer.Index
+	for name, i := range md.GetAllIndexes() {
+		if strings.EqualFold(name, "max_price_by_cat") {
+			idx = i
+			break
+		}
+	}
+	if idx == nil {
+		t.Fatalf("permuted index max_price_by_cat not found in built metadata (have %v)",
+			func() []string {
+				var names []string
+				for n := range md.GetAllIndexes() {
+					names = append(names, n)
+				}
+				return names
+			}())
+	}
+	if idx.Type != recordlayer.IndexTypePermutedMax {
+		t.Fatalf("index type = %q, want %q", idx.Type, recordlayer.IndexTypePermutedMax)
+	}
+
+	// Control — DDL-built permutedSize=0 must produce an aggregate candidate.
+	if got := tryAggregateIndexCandidate(idx, md); got == nil {
+		t.Fatal("permutedSize=0 (DDL-built) must produce an aggregate candidate — the guard over-rejects")
+	}
+
+	// Java-written shared-cluster shape: permutedSize=1 → the physical key is
+	// [category-prefix?, extremum, permuted-suffix]; candidacy must decline.
+	idx.Options[recordlayer.IndexOptionPermutedSize] = "1"
+	if got := tryAggregateIndexCandidate(idx, md); got != nil {
+		t.Fatalf("permutedSize=1 must DECLINE aggregate candidacy (bounds/ordering are not "+
+			"modeled for a nonzero permutation — missing/misordered rows), got candidate %v", got)
+	}
+
+	// A malformed permutedSize (unparseable) must also decline, not default open.
+	idx.Options[recordlayer.IndexOptionPermutedSize] = "not-a-number"
+	if got := tryAggregateIndexCandidate(idx, md); got != nil {
+		t.Fatal("malformed permutedSize must DECLINE candidacy (fail-safe), got a candidate")
+	}
+}
+
 func TestPlanHarness_AggregateIndexDDL_Min(t *testing.T) {
 	t.Parallel()
 	schema := `

@@ -10,6 +10,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2091,6 +2092,29 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
 	if !ok {
 		return nil
+	}
+
+	// A permuted index with permutedSize > 0 stores its BY_GROUP keys as
+	// [prefix-groups, extremum, permuted-suffix-groups] — NOT logical group
+	// order. The SQL aggregate candidate models neither of the two consequences:
+	// a group-column scan range built in logical order would bind the extremum
+	// slot (missing rows), and the advertised groupCols ordering hint is false
+	// for the physical stream (ORDER BY elimination / multi-aggregate
+	// intersection would mis-merge). Go's own DDL always writes permutedSize=0
+	// (Java MaterializedViewIndexGenerator with no aggregate ORDER BY), so a
+	// nonzero permutation only arrives via record-layer API / Java-written
+	// shared-cluster metadata — decline candidacy for it and let the query fall
+	// back to a base-record StreamingAgg (correct rows, slower). The record-layer
+	// aggregate-function API path (evaluatePermutedMinMaxAggregate) serves
+	// permuted reads with proper prefix-trimming and stays available.
+	// Permutation-aware SQL candidacy (bounds translation + true ordering model,
+	// as Java's planner does) is the tracked follow-up.
+	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
+		if v, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+			if n, err := strconv.Atoi(v); err != nil || n != 0 {
+				return nil
+			}
+		}
 	}
 
 	allCols := gke.FieldNames()
