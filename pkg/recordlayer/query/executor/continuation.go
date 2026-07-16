@@ -54,8 +54,7 @@ import (
 // descriptor to decode), a map, or any other non-scalar the codec cannot
 // faithfully reconstruct — is a correct-or-loud ERROR on encode, NOT a silent
 // JSON blob: a straddling group / sort buffer with such a key must FAIL the resume
-// loudly, never resume with a mistyped value. contValJSON survives ONLY to decode a
-// token written by an older binary; nothing produces it now.
+// loudly, never resume with a mistyped value.
 const (
 	contValNil     byte = 0
 	contValInt64   byte = 1
@@ -70,7 +69,6 @@ const (
 	contValUint64  byte = 10 // index-sourced integer in (2^63, 2^64)
 	contValBigInt  byte = 11 // *big.Int / big.Int, sign byte + big-endian magnitude
 	contValTime    byte = 12 // time.Time via MarshalBinary
-	contValJSON    byte = 15 // DECODE-ONLY legacy tag; never produced now
 )
 
 // appendContValue appends v to buf in the typed, lossless continuation encoding.
@@ -251,16 +249,6 @@ func readContValue(b []byte) (any, []byte, error) {
 		var u [16]byte
 		copy(u[:], b[:16])
 		return u, b[16:], nil
-	case contValJSON:
-		run, rest, err := readContBytes(b, tag)
-		if err != nil {
-			return nil, nil, err
-		}
-		var v any
-		if jErr := json.Unmarshal(run, &v); jErr != nil {
-			return nil, nil, fmt.Errorf("continuation: bad JSON legacy value: %w", jErr)
-		}
-		return v, rest, nil
 	default:
 		return nil, nil, fmt.Errorf("continuation: unknown typed-value tag %d", tag)
 	}
