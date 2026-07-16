@@ -756,33 +756,52 @@ func executeDefaultOnEmpty(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
-	if err != nil {
-		return nil, err
+	// Java RecordQueryDefaultOnEmptyPlan.executePlan delegates to
+	//   RecordCursor.orElse(cont -> child.executePlan(store, ctx, cont, clearSkipAndLimit),
+	//                        (executor, cont) -> RecordCursor.fromList(executor, [default], cont),
+	//                        continuation)
+	//     .skipThenLimit(skip, limit)
+	// OrElseCursor serializes state UNDECIDED/USE_INNER/USE_OTHER, so once the
+	// inner has produced a row the resumed cursor stays on USE_INNER (never
+	// fabricating the default), and EVERY emitted row's continuation carries the
+	// inner's real position — which fixes both a paging loop that never advanced
+	// (a single-result default cursor emitted a nil StartContinuation forever) and
+	// a spurious null-extension on a mid-stream resume past the last inner row.
+	//
+	// The inner (primary) clears skip/limit; the default (alternative) is a
+	// single-row list cursor that respects its continuation; skip/limit apply to
+	// the whole OrElse — mirroring Java's clearSkipAndLimit-on-child +
+	// skipThenLimit-on-orElse split. An out-of-band inner stop before the first
+	// row flows through OrElse's UNDECIDED no-next (Java's behaviour): the caller
+	// resumes and the default is NEVER fabricated on truncation, so the eager
+	// RFC-106a truncation error is unnecessary here (DefaultOnEmpty is a streaming
+	// cursor; the eager FirstOrDefault/scalar-subquery paths keep their guard).
+	nestedProps := props.ClearSkipAndLimit()
+	primaryFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+		inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, cont, nestedProps)
+		if err != nil {
+			return &errResultCursor{err: err}
+		}
+		return inner
 	}
-	firstResult, err := inner.OnNext(ctx)
-	if err != nil {
-		_ = inner.Close()
-		return nil, err
+	alternativeFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+		// Evaluate the default lazily (only when the inner is empty), matching
+		// Java's else-lambda: onEmptyResultValue.eval runs inside fromList's
+		// supplier. A nil default flows a scalar NULL row.
+		var defaultRow QueryResult
+		if defaultVal := p.GetDefaultValue(); defaultVal != nil {
+			qr, err := resultFromValue(defaultVal)
+			if err != nil {
+				return &errResultCursor{err: err}
+			}
+			defaultRow = qr
+		} else {
+			defaultRow = QueryResult{Positional: scalarPositionalRow(nil)}
+		}
+		return recordlayer.FromListWithContinuation([]QueryResult{defaultRow}, cont)
 	}
-	if firstResult.HasNext() {
-		return newPrependResultCursor(firstResult.GetValue(), inner), nil
-	}
-	_ = inner.Close()
-	// Out-of-band (resource-limit) stop before the first row → truncated input;
-	// error rather than fabricate the default (RFC-106a; see FirstOrDefault).
-	if lerr := errIfBufferTruncated(firstResult); lerr != nil {
-		return nil, lerr
-	}
-	defaultVal := p.GetDefaultValue()
-	if defaultVal == nil {
-		return newSingleResultCursor(QueryResult{Positional: scalarPositionalRow(nil)}), nil
-	}
-	qr, err := resultFromValue(defaultVal)
-	if err != nil {
-		return nil, err
-	}
-	return newSingleResultCursor(qr), nil
+	orElse := recordlayer.OrElseWithContinuation(primaryFactory, alternativeFactory, continuation)
+	return applySkipLimit(orElse, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeInJoin(
@@ -1294,6 +1313,21 @@ func (c *concatCursor[T]) Close() error {
 	return firstErr
 }
 
+// errResultCursor yields a stored error on the first OnNext. Used to defer a
+// cursor-construction error through a factory that cannot itself return an error
+// (e.g. OrElse's primary/alternative factories, which have signature
+// func([]byte) RecordCursor[QueryResult]). Mirrors recordlayer.errorCursor.
+type errResultCursor struct {
+	err error
+}
+
+func (c *errResultCursor) OnNext(context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	return recordlayer.RecordCursorResult[QueryResult]{}, c.err
+}
+
+func (c *errResultCursor) Close() error   { return nil }
+func (c *errResultCursor) IsClosed() bool { return false }
+
 // singleResultCursor yields one result then ends.
 type singleResultCursor struct {
 	value  QueryResult
@@ -1320,26 +1354,3 @@ func (c *singleResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursor
 
 func (c *singleResultCursor) Close() error   { c.closed = true; return nil }
 func (c *singleResultCursor) IsClosed() bool { return c.closed }
-
-// prependResultCursor yields one value then delegates to inner.
-type prependResultCursor struct {
-	first   QueryResult
-	inner   recordlayer.RecordCursor[QueryResult]
-	yielded bool
-	closed  bool
-}
-
-func newPrependResultCursor(first QueryResult, inner recordlayer.RecordCursor[QueryResult]) *prependResultCursor {
-	return &prependResultCursor{first: first, inner: inner}
-}
-
-func (c *prependResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	if !c.yielded {
-		c.yielded = true
-		return recordlayer.NewResultWithValue(c.first, &recordlayer.StartContinuation{}), nil
-	}
-	return c.inner.OnNext(ctx)
-}
-
-func (c *prependResultCursor) Close() error   { c.closed = true; return c.inner.Close() }
-func (c *prependResultCursor) IsClosed() bool { return c.closed }

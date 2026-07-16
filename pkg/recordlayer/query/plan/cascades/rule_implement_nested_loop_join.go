@@ -496,25 +496,33 @@ func buildCorrelatedFlatMapPlan(
 	}
 
 	// LEFT-OUTER null-extension, the Java way (ImplementNestedLoopJoinRule.java:310-330
-	// / ImplementSimpleSelectRule:100-109): when the inner quantifier is null-on-empty
-	// (produced by RewriteOuterJoinRule for a LEFT OUTER), wrap the inner in
-	// DefaultOnEmpty so a non-matching outer row yields one all-NULL inner row instead
-	// of being dropped. The FlatMap stays a PURE map (leftOuter flag NOT set) — the
-	// outer-join semantics are emergent from this wrapper, exactly like Java's FlatMap.
-	// The ON-predicates already sit BELOW this boundary (inside the rewritten inner
-	// SUBSEL), so they filter before the null-fill — correct LEFT-OUTER semantics.
+	// / ImplementSimpleSelectRule:100-109): wrap the inner in DefaultOnEmpty so a
+	// non-matching outer row yields one all-NULL inner row instead of being dropped.
+	// The FlatMap stays a PURE map (no leftOuter flag) — the outer-join semantics are
+	// emergent from this wrapper, exactly like Java's FlatMap, and DefaultOnEmpty's
+	// OrElse continuation carries the empty-vs-nonempty decision so the null-extension
+	// is resume-safe across pages (the prior in-memory leftOuter flag re-decided this
+	// from scratch on every resume → spurious null rows / paging that never advanced).
+	// Two sources land here: a quantifier RewriteOuterJoinRule marked null-on-empty
+	// (innerNullOnEmpty), and a directly LEFT-OUTER join type — both are LEFT OUTER and
+	// both lower identically.
+	//
+	// The ON-predicates already sit BELOW this boundary (inside the correlated inner
+	// SUBSEL / pushed onto the inner probe), so they filter before the null-fill —
+	// correct LEFT-OUTER semantics.
 	//
 	// Predicate placement follows Java's planPartitionToPhysical: the wrap
 	// (DefaultOnEmpty) comes FIRST, the select-level predicates filter ABOVE
 	// it. Every select-level predicate reaching a null-on-empty inner is
-	// WHERE-class (the ON-predicates live inside the leg subsel by the
-	// rewrite contract), so it must see the null-extended row and drop it on
-	// a non-matching comparison (`… LEFT JOIN e ON … WHERE e.fname = 'x'`
-	// drops the null-extended rows; placed below the wrap, the filter ran
-	// before the null-fill and the extended row survived unfiltered — rows
-	// Java drops). The strict-single (scalar subquery) wrap keeps its
-	// predicates BELOW: they are the subquery's own correlation, part of the
-	// subquery body the at-most-one-row check applies to.
+	// WHERE-class (the ON-predicates live inside the leg subsel / inner probe),
+	// so it must see the null-extended row and drop it on a non-matching
+	// comparison (`… LEFT JOIN e ON … WHERE e.fname = 'x'` drops the
+	// null-extended rows; placed below the wrap, the filter ran before the
+	// null-fill and the extended row survived unfiltered — rows Java drops). The
+	// strict-single (scalar subquery) wrap keeps its predicates BELOW: they are
+	// the subquery's own correlation, part of the subquery body the
+	// at-most-one-row check applies to.
+	nullOnEmpty := innerNullOnEmpty || joinType == plans.JoinLeftOuter
 	var innerWrapped plans.RecordQueryPlan = innerPlan
 	if innerStrictSingle {
 		if len(joinPreds) > 0 {
@@ -527,13 +535,12 @@ func buildCorrelatedFlatMapPlan(
 		// default on empty) AND raises 21000 on a second row. It is a non-pushable
 		// barrier (unlike a LIMIT the planner could push into the scan) and, because
 		// the FlatMap re-executes the inner per outer row, the check runs fresh per
-		// outer row. The FlatMap's LEFT-OUTER flag becomes moot (the FirstOrDefault
-		// already supplies the empty→NULL row), so this fully replaces the prior
-		// LIMIT-1 + leftOuter mechanism for the strict scalar case.
+		// outer row. The FirstOrDefault already supplies the empty→NULL row, so this
+		// fully handles the strict scalar case without any leftOuter mechanism.
 		innerWrapped = plans.NewRecordQueryFirstOrDefaultPlanStrict(
 			innerWrapped, values.NewNullValue(values.UnknownType),
 		)
-	} else if innerNullOnEmpty {
+	} else if nullOnEmpty {
 		innerWrapped = plans.NewRecordQueryDefaultOnEmptyPlan(
 			innerWrapped, values.NewNullValue(values.UnknownType),
 		)
@@ -560,10 +567,6 @@ func buildCorrelatedFlatMapPlan(
 		outerCorr, innerCorr,
 		resultValue, false,
 	)
-	switch joinType {
-	case plans.JoinLeftOuter:
-		flatMapPlan.SetLeftOuter(true)
-	}
 	return flatMapPlan, innerExprForMemo, true
 }
 

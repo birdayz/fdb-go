@@ -3,7 +3,6 @@ package executor
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -282,11 +281,22 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		c.priorOuterContinuation = c.lastOuterContinuation
 		c.lastOuterContinuation = outerResult.GetContinuation()
 
-		if len(c.pendingCheckValue) > 0 && outerRow.PrimaryKey != nil {
-			currentCheck := outerRow.PrimaryKey.Pack()
-			if !bytes.Equal(currentCheck, c.pendingCheckValue) {
-				return recordlayer.RecordCursorResult[QueryResult]{},
-					fmt.Errorf("flatMap: outer row changed between transactions (check_value mismatch)")
+		// Java FlatMapPipelinedCursor (:210-220) consults the check value ONLY
+		// while an initial inner continuation is pending (initialInnerContinuation
+		// != null), and a mismatch RESTARTS the inner from the beginning for the
+		// (changed) outer rather than erroring — "this handles common cases of the
+		// data changing between transactions, such as the outer record being
+		// deleted or a new record being inserted right before it". The Cascades
+		// RecordQueryFlatMapPlan passes checker=null (no check at all); Go keeps the
+		// check as a resume-safety net but MUST mirror Java's restart-not-error
+		// semantics, or a legitimately-resumed page (or a deleted outer) hard-fails.
+		if c.initialInnerCont != nil {
+			if len(c.pendingCheckValue) > 0 && outerRow.PrimaryKey != nil &&
+				!bytes.Equal(outerRow.PrimaryKey.Pack(), c.pendingCheckValue) {
+				// Outer row changed: drop the stale inner continuation and rescan
+				// the inner from the start for this outer (Java's behaviour).
+				c.initialInnerCont = nil
+				c.hasPendingInner = false
 			}
 			c.pendingCheckValue = nil
 		}
@@ -324,6 +334,17 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			innerContBytes = c.initialInnerCont
 			c.initialInnerCont = nil
 			c.hasPendingInner = false
+			// Resuming this outer MID-inner: a mid-inner continuation is only
+			// written after this outer already emitted ≥1 inner row (a value emit),
+			// so the outer already matched. Seed innerHadMatch=true — otherwise a
+			// resumed inner that is now immediately exhausted would re-decide "no
+			// match" and fabricate a spurious (outer, NULL) LEFT-OUTER row for an
+			// outer that DID match (the F2 in-memory-had-match resume bug). The
+			// Java-faithful production path lowers LEFT OUTER to DefaultOnEmpty/
+			// OrElse (whose serialized USE_INNER state carries this decision), so
+			// production never depends on this flag; this keeps the in-memory
+			// cursor correct for its white-box/test use.
+			c.innerHadMatch = true
 		}
 		innerCursor, err := ExecutePlan(ctx, c.innerPlan, c.store, correlatedCtx, innerContBytes, c.props)
 		if err != nil {
@@ -547,27 +568,31 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 
 	fmc := &gen.FlatMapContinuation{}
 
-	if c.currentOuter != nil && c.currentOuter.PrimaryKey != nil {
-		fmc.CheckValue = c.currentOuter.PrimaryKey.Pack()
-	}
-
-	// Java FlatMapPipelinedCursor.Continuation (FlatMapPipelinedCursor.java:373)
-	// ALWAYS pairs priorOuterContinuation (the position AT the current outer row)
-	// with the inner continuation — there is no "value emit vs limit emit"
-	// distinction. The decision is purely whether the inner has a resumable
-	// position:
+	// Java FlatMapPipelinedCursor.Continuation.toByteString (:415-430) pairs the
+	// position AT the current outer row with the inner continuation, and the
+	// check value is written ONLY in the mid-inner branch (alongside the inner
+	// continuation) — never in the advanced-outer branch. The decision is purely
+	// whether the inner has a resumable position:
 	//   - inner NOT exhausted (a value emit mid-inner, or an inner out-of-band
-	//     stop): encode (priorOuter, inner) so resume re-opens THIS outer and
-	//     continues its inner after the last row. Encoding the ADVANCED outer
-	//     position here (as a prior Go-only innerTimeLimited flag did for the
-	//     value-emit path) skips the rest of this outer's inner rows on resume —
-	//     a silent row-drop on any mid-inner page boundary.
-	//   - inner exhausted (END): advance to the next outer (lastOuter, no inner).
-	//     Equivalent to Java's (priorOuter, inner=END), which re-opens the outer
-	//     and immediately advances.
+	//     stop): encode (priorOuter, checkValue, inner) so resume re-opens THIS
+	//     outer, validates the check value, and continues its inner after the last
+	//     row. Encoding the ADVANCED outer position here (as a prior Go-only
+	//     innerTimeLimited flag did for the value-emit path) skips the rest of this
+	//     outer's inner rows on resume — a silent row-drop on any mid-inner page
+	//     boundary.
+	//   - inner exhausted (END): advance to the next outer (lastOuter, no inner,
+	//     NO check value). Java writes only setOuterContinuation here. Writing the
+	//     check value in this branch mismatches DETERMINISTICALLY on resume: the
+	//     resumed outer is the NEXT row, whose PK differs from the exhausted row's
+	//     PK, so the stale check value never matches (this is the F24 trap the
+	//     LEFT-OUTER null-inner emission hit — a null-extension page boundary
+	//     wrote check_value into an advanced-outer continuation).
 	if innerCont != nil && !innerCont.IsEnd() {
 		if c.priorOuterContinuation != nil && !c.priorOuterContinuation.IsEnd() {
 			fmc.OuterContinuation, _ = c.priorOuterContinuation.ToBytes()
+		}
+		if c.currentOuter != nil && c.currentOuter.PrimaryKey != nil {
+			fmc.CheckValue = c.currentOuter.PrimaryKey.Pack()
 		}
 		fmc.InnerContinuation, _ = innerCont.ToBytes()
 	} else {

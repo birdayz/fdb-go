@@ -466,8 +466,8 @@ one defect each found by two auditors.
 | # | Severity | Systemic fix / theme | Status |
 |---|---|---|---|
 | F0 | wrong-rows | S4 (root-unpinned guard) | **DONE** |
-| F1 | wrong-rows | S3 (OrElse continuation) | TODO |
-| F2 | wrong-rows | S3 (retire leftOuter flag) | TODO |
+| F1 | wrong-rows | S3 (OrElse continuation) | **DONE** |
+| F2 | wrong-rows | S3 (retire leftOuter flag) | **DONE** |
 | F3 | wrong-rows + **WIRE** | S5 (permuted MIN/MAX) | **DONE** |
 | F4 | wrong-rows | S3 (typed agg continuation) | **DONE** |
 | F5 | wrong-rows | S3 (typed agg continuation) | **PARTIAL** (whitelist; F34 residual) |
@@ -488,7 +488,7 @@ one defect each found by two auditors.
 | F21 | nondeterministic | S4 (comparand-aware equality) | **DONE** `a5846b405` |
 | F22 | dead-code | Theme 8 (aggregateCursor.pending) | TODO |
 | F23 | dead-code | Theme 8 (RecordQuerySortPlan) | TODO |
-| F24 | wrong-rows | S3 (FlatMap check-value restart) | TODO |
+| F24 | wrong-rows | S3 (FlatMap check-value restart) | **DONE** |
 | F26 | structural | S3-after (outerJoinCount) | TODO |
 | F27 | wrong-rows (float) | Theme 2 (cmpAny NaN) | TODO |
 | F28 | wrong-rows (float) | Theme 2 (-0.0 vs 0.0) | TODO |

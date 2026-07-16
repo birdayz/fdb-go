@@ -50,6 +50,7 @@ go_test(
         "executor_test.go",
         "explode_element_row_test.go",
         "flat_map_continuation_test.go",
+        "flat_map_resume_safety_test.go",
         "flatmap_fold_leg_window_test.go",
         "flatmap_outer_baked_binder_test.go",
         "frontier_ordinal_authority_test.go",
@@ -126,6 +127,7 @@ go_test(
         "explode_element_row_test.go",
         "nlj_hash_key_test.go",
         "aggregate_avg_precision_test.go",
+        "flat_map_resume_safety_test.go",
     ],
     deps = [
         "//gen",

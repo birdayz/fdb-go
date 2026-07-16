@@ -210,6 +210,7 @@ go_test(
         "lateral_unnest_chain_fdb_test.go",
         "left_box_where_exists_ordinal_fdb_test.go",
         "left_join_buried_box_scope_fdb_test.go",
+        "left_join_continuation_fdb_test.go",
         "left_join_exists_residual_fdb_test.go",
         "left_join_mixed_outer_nesting_fdb_test.go",
         "leftjoin_where_on_probe_test.go",
