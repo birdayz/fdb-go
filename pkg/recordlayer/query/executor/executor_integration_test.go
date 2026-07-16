@@ -592,25 +592,20 @@ func TestIntegration_SortContinuation_ArrayStructStraddle_F53(t *testing.T) {
 					if !ok {
 						return nil, fmt.Errorf("no slot at flower ordinal %d", flowerOrdinal)
 					}
-					// Pre-checkpoint rows carry *gen.Flower; resumed rows carry a
-					// dynamicpb message over the SAME descriptor. Both are
-					// proto.Message — read the "type" field reflectively.
-					fm, isMsg := fv.(proto.Message)
-					if !isMsg {
-						return nil, fmt.Errorf("flower slot = %#v (%T), want proto.Message — the STRUCT column must survive the sort-continuation resume", fv, fv)
-					}
-					refl := fm.ProtoReflect()
-					if name := string(refl.Descriptor().FullName()); name != "com.apple.foundationdb.record.Flower" {
-						return nil, fmt.Errorf("flower slot type = %q, want com.apple.foundationdb.record.Flower", name)
-					}
-					typeFD := refl.Descriptor().Fields().ByName("type")
-					if typeFD == nil {
-						return nil, fmt.Errorf("flower descriptor has no 'type' field")
+					// Rows carry *gen.Flower on BOTH sides of a checkpoint: the
+					// restore is registry-first, so the resumed slot keeps the
+					// generated concrete type. That identity is load-bearing —
+					// the %T-keyed group/dedup paths (computeGroupKey,
+					// packedDedupKey) would otherwise never match a restored
+					// row against an equal fresh one.
+					fm, isFlower := fv.(*gen.Flower)
+					if !isFlower {
+						return nil, fmt.Errorf("flower slot = %#v (%T), want *gen.Flower — the STRUCT column must survive the sort-continuation resume with its generated type", fv, fv)
 					}
 					got = append(got, wantRow{
 						price:      price,
 						tags:       tags,
-						flowerType: refl.Get(typeFD).String(),
+						flowerType: fm.GetType(),
 					})
 					continue
 				}

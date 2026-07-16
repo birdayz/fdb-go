@@ -56,12 +56,20 @@ import (
 //     nested array (struct arrays' element lists) round-trips too;
 //   - proto.Message — a STRUCT column slot (protoScalarToRowValue keeps a nested
 //     message raw): uvarint-length-prefixed full type name + uvarint-length-
-//     prefixed proto.Marshal bytes. Decode is TWO-PHASE: readContValue has no
-//     descriptor (the schema's message types are dynamicpb-built from store
-//     metadata, NOT registered in protoregistry.GlobalTypes), so it returns a
-//     pendingProtoRowValue placeholder; the continuation decode path resolves it
-//     against the store's metadata descriptors (resolvePendingProtoValues) or
-//     errors LOUDLY — a placeholder never leaks into the row domain.
+//     prefixed proto.Marshal bytes. Decode is TWO-PHASE: readContValue returns a
+//     pendingProtoRowValue placeholder, which the continuation decode path
+//     resolves (resolvePendingProtoValues) REGISTRY-FIRST — a type compiled into
+//     the binary rebuilds as its generated Go type (identity with fresh rows;
+//     the %T-keyed group/dedup paths depend on it) — falling back to the store's
+//     metadata descriptors + dynamicpb for dynamic schemas (whose fresh rows are
+//     dynamicpb too), or errors LOUDLY — a placeholder never leaks into the row
+//     domain.
+//
+// List decode and placeholder resolution recurse per nesting level; both are
+// capped at maxContNestingDepth — a continuation token is EXTERNAL wire input,
+// and a crafted token of deeply nested one-element lists would otherwise cost
+// one stack frame per two payload bytes and overflow the stack (an
+// unrecoverable runtime crash, not an error).
 //
 // A value whose Go type is NONE of the above — a map, or any other non-scalar
 // the codec cannot faithfully reconstruct — is a correct-or-loud ERROR on
@@ -204,10 +212,26 @@ func appendContBigInt(buf []byte, i *big.Int) []byte {
 	return append(buf, mag...)
 }
 
+// maxContNestingDepth caps list (tag 13) nesting for the decode recursion
+// (readContValue) AND the placeholder-resolution walk (resolvePendingProtoValues).
+// A continuation token is EXTERNAL wire input: without a cap, a crafted token of
+// deeply nested one-element lists costs one stack frame per two payload bytes
+// and overflows the stack — an unrecoverable runtime crash, not an error. No
+// real row nests anywhere near this deep (an ARRAY column is one level, a
+// struct array's element lists two).
+const maxContNestingDepth = 64
+
 // readContValue decodes one typed continuation value, returning it and the
 // unconsumed tail. A truncated or unknown-tag payload is a corrupt continuation
-// and errors — never a silent wrong resume.
+// and errors — never a silent wrong resume. Nesting beyond maxContNestingDepth
+// is rejected loudly (see the const).
 func readContValue(b []byte) (any, []byte, error) {
+	return readContValueDepth(b, 0)
+}
+
+// readContValueDepth is readContValue with the nesting budget threaded through:
+// depth is the number of enclosing lists (0 at the top level).
+func readContValueDepth(b []byte, depth int) (any, []byte, error) {
 	if len(b) == 0 {
 		return nil, nil, fmt.Errorf("continuation: truncated typed value")
 	}
@@ -307,6 +331,12 @@ func readContValue(b []byte) (any, []byte, error) {
 		copy(u[:], b[:16])
 		return u, b[16:], nil
 	case contValList:
+		// The nesting budget: reject a list nested deeper than the cap BEFORE
+		// recursing into its elements (a crafted token of one-element lists
+		// would otherwise recurse once per two payload bytes — stack overflow).
+		if depth >= maxContNestingDepth {
+			return nil, nil, fmt.Errorf("continuation: list nesting exceeds %d levels (tag %d) — corrupt or crafted token", maxContNestingDepth, tag)
+		}
 		cnt, m := binary.Uvarint(b)
 		if m <= 0 {
 			return nil, nil, fmt.Errorf("continuation: bad list-count prefix (tag %d)", tag)
@@ -321,7 +351,7 @@ func readContValue(b []byte) (any, []byte, error) {
 		for i := uint64(0); i < cnt; i++ {
 			var v any
 			var err error
-			v, b, err = readContValue(b)
+			v, b, err = readContValueDepth(b, depth+1)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -351,13 +381,14 @@ func readContValue(b []byte) (any, []byte, error) {
 }
 
 // pendingProtoRowValue is the DESCRIPTOR-LESS decode of a contValProtoMsg value
-// (a STRUCT column slot in a buffered sort row). readContValue cannot rebuild
-// the message itself: the schema's message types are dynamicpb-built from store
-// metadata, not registered in protoregistry.GlobalTypes, so decoding needs the
-// store's descriptors. Every decode path must either resolve the placeholder
-// (resolvePendingProtoValues, with a resolver over the store metadata) or fail
-// LOUDLY — a placeholder leaking into the row domain would evaluate as a wrong,
-// mistyped value.
+// (a STRUCT column slot in a buffered sort row). readContValue deliberately does
+// NOT rebuild the message itself: rebuilding is a POLICY decision that differs
+// per decode path — the sort path resolves registry-first with a metadata
+// fallback (resolvePendingProtoValues), while the aggregate paths REJECT any
+// placeholder outright (rejectPendingProtoValues — their state is scalar-only,
+// and a resolvable crafted token must not be laundered into a resumed group).
+// Every decode path must do one or the other; a placeholder leaking into the
+// row domain would evaluate as a wrong, mistyped value.
 type pendingProtoRowValue struct {
 	TypeName string // the message's full proto name (descriptor lookup key)
 	Bytes    []byte // proto.Marshal payload
@@ -370,12 +401,37 @@ type protoDescriptorResolver func(fullName string) (protoreflect.MessageDescript
 
 // resolvePendingProtoValues walks a decoded row value RECURSIVELY (lists may
 // contain messages — struct arrays) and replaces every pendingProtoRowValue
-// with the real message: dynamicpb.NewMessage over the resolved descriptor +
-// proto.Unmarshal. A nil resolver, an unresolvable type name, or a payload
-// that does not unmarshal is a LOUD error — never a silent nil slot.
+// with the real message. Resolution is REGISTRY-FIRST: a type compiled into
+// this binary (a generated type such as *gen.Flower) rebuilds via
+// protoregistry.GlobalTypes as that generated type — NOT as a
+// *dynamicpb.Message. The group/dedup keys (computeGroupKey, packedDedupKey,
+// mergeSortCursor.extractKey) fall back to %T:%v for composite slots, so a
+// restored slot whose concrete Go type differs from a freshly-read row's would
+// never key-match it: equal rows straddling a checkpoint would split into
+// duplicate groups / duplicate DISTINCT rows (wrong results, no error). Only a
+// name the registry does not carry (a dynamic, metadata-built schema type)
+// falls back to the resolver's descriptor + dynamicpb.NewMessage — identity is
+// consistent there too, because fresh rows on that path are dynamicpb as well.
+// A nil resolver (for an unregistered type), an unresolvable type name, or a
+// payload that does not unmarshal is a LOUD error — never a silent nil slot.
+// The list walk shares readContValue's nesting budget (defense in depth: the
+// cap must not depend on the caller having decoded through readContValue).
 func resolvePendingProtoValues(v any, resolve protoDescriptorResolver) (any, error) {
+	return resolvePendingProtoValuesDepth(v, resolve, 0)
+}
+
+// resolvePendingProtoValuesDepth is resolvePendingProtoValues with the nesting
+// budget threaded through: depth is the number of enclosing lists.
+func resolvePendingProtoValuesDepth(v any, resolve protoDescriptorResolver, depth int) (any, error) {
 	switch t := v.(type) {
 	case pendingProtoRowValue:
+		if mt := recordlayer.FindRegisteredMessageType(protoreflect.FullName(t.TypeName)); mt != nil {
+			msg := mt.New().Interface()
+			if uErr := proto.Unmarshal(t.Bytes, msg); uErr != nil {
+				return nil, fmt.Errorf("continuation: cannot unmarshal buffered proto message of type %q: %w", t.TypeName, uErr)
+			}
+			return msg, nil
+		}
 		if resolve == nil {
 			return nil, fmt.Errorf("continuation: value carries a proto message of type %q but no descriptor resolver is available — cannot rebuild it", t.TypeName)
 		}
@@ -394,8 +450,11 @@ func resolvePendingProtoValues(v any, resolve protoDescriptorResolver) (any, err
 		}
 		return msg, nil
 	case []any:
+		if depth >= maxContNestingDepth {
+			return nil, fmt.Errorf("continuation: list nesting exceeds %d levels while resolving proto placeholders — corrupt or crafted token", maxContNestingDepth)
+		}
 		for i, e := range t {
-			nv, err := resolvePendingProtoValues(e, resolve)
+			nv, err := resolvePendingProtoValuesDepth(e, resolve, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -407,60 +466,110 @@ func resolvePendingProtoValues(v any, resolve protoDescriptorResolver) (any, err
 	}
 }
 
+// rejectPendingProtoValues walks a decoded value (lists recursively) and errors
+// on any pendingProtoRowValue. The aggregate decode paths use it instead of
+// resolvePendingProtoValues: group keys and MIN/MAX partials are never proto
+// messages (the aggregate encoder never writes a contValProtoMsg there), so a
+// tag-14 placeholder is crafted/corrupt input and must be rejected even when
+// its type name IS resolvable — the registry-first resolution above would
+// happily rebuild a registered type, and that must not launder a crafted
+// token into a resumed group. Recursion depth is bounded by readContValue's
+// decode budget (this helper only ever sees values it decoded).
+func rejectPendingProtoValues(v any) error {
+	switch t := v.(type) {
+	case pendingProtoRowValue:
+		return fmt.Errorf("continuation: unexpected proto message value of type %q (this state only carries scalar values)", t.TypeName)
+	case []any:
+		for _, e := range t {
+			if err := rejectPendingProtoValues(e); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateAggExtremum gates a decoded MIN/MAX partial to exactly what the
+// accumulator can produce: accumulateRow's isNumeric gate + aggMinMax only ever
+// yield int64/int32/int/float64/float32 — or nil for "no non-NULL rows yet".
+// Any other decoded shape (a tag-13 []any, a string, a proto placeholder) is a
+// crafted or corrupt continuation and must error loudly, never seed the fold
+// with a value aggMinMax cannot compare.
+func validateAggExtremum(v any) error {
+	switch v.(type) {
+	case nil, int64, int32, int, float64, float32:
+		return nil
+	default:
+		return fmt.Errorf("continuation: MIN/MAX partial has type %T — the accumulator only produces int64/int32/int/float64/float32 or nil (corrupt or crafted continuation)", v)
+	}
+}
+
 // metadataMessageResolver builds a protoDescriptorResolver over the store's
-// RecordMetaData: the schema's message descriptors are dynamicpb-built from
-// store metadata (NOT registered in protoregistry.GlobalTypes), so a buffered
-// STRUCT value's descriptor is found by walking the metadata's record-type
+// RecordMetaData: a dynamic schema's message descriptors are dynamicpb-built
+// from store metadata (NOT registered in protoregistry.GlobalTypes), so a
+// buffered STRUCT value's descriptor is found in the metadata's record-type
 // file descriptors — top-level and nested messages, plus transitive imports (a
-// struct column's message type may live in an imported file).
+// struct column's message type may live in an imported file). The full-name →
+// descriptor index is built ONCE, lazily on the first lookup (a resume without
+// unregistered struct slots never pays the schema walk), then reused — the
+// pre-index resolver re-walked every record type's file tree PER placeholder,
+// O(rows × schema) on a struct-heavy buffer. The returned closure memoizes
+// without a lock: it serves a single sequential decode pass and is NOT safe
+// for concurrent use.
 func metadataMessageResolver(md *recordlayer.RecordMetaData) protoDescriptorResolver {
+	var index map[protoreflect.FullName]protoreflect.MessageDescriptor
 	return func(fullName string) (protoreflect.MessageDescriptor, error) {
 		if md == nil {
 			return nil, fmt.Errorf("no record metadata available to resolve message descriptors")
 		}
-		target := protoreflect.FullName(fullName)
-		seen := make(map[string]bool)
-		var files []protoreflect.FileDescriptor
-		var addFile func(fd protoreflect.FileDescriptor)
-		addFile = func(fd protoreflect.FileDescriptor) {
-			if fd == nil || seen[fd.Path()] {
-				return
-			}
-			seen[fd.Path()] = true
-			files = append(files, fd)
-			imports := fd.Imports()
-			for i := 0; i < imports.Len(); i++ {
-				addFile(imports.Get(i).FileDescriptor)
-			}
+		if index == nil {
+			index = buildMetadataMessageIndex(md)
 		}
-		for _, rt := range md.RecordTypes() {
-			if rt.Descriptor != nil {
-				addFile(rt.Descriptor.ParentFile())
-			}
-		}
-		if ud := md.GetUnionDescriptor(); ud != nil {
-			addFile(ud.ParentFile())
-		}
-		var findIn func(msgs protoreflect.MessageDescriptors) protoreflect.MessageDescriptor
-		findIn = func(msgs protoreflect.MessageDescriptors) protoreflect.MessageDescriptor {
-			for i := 0; i < msgs.Len(); i++ {
-				m := msgs.Get(i)
-				if m.FullName() == target {
-					return m
-				}
-				if found := findIn(m.Messages()); found != nil {
-					return found
-				}
-			}
-			return nil
-		}
-		for _, fd := range files {
-			if found := findIn(fd.Messages()); found != nil {
-				return found, nil
-			}
+		if found, ok := index[protoreflect.FullName(fullName)]; ok {
+			return found, nil
 		}
 		return nil, fmt.Errorf("message type %q not found in the store's record metadata descriptors", fullName)
 	}
+}
+
+// buildMetadataMessageIndex walks the metadata's record-type file descriptors
+// — top-level and nested messages, plus transitive imports — into a full-name
+// → descriptor map. First registration wins (files are visited in record-type
+// order, matching the pre-index resolver's first-match file scan).
+func buildMetadataMessageIndex(md *recordlayer.RecordMetaData) map[protoreflect.FullName]protoreflect.MessageDescriptor {
+	index := make(map[protoreflect.FullName]protoreflect.MessageDescriptor)
+	seen := make(map[string]bool)
+	var addMsgs func(msgs protoreflect.MessageDescriptors)
+	addMsgs = func(msgs protoreflect.MessageDescriptors) {
+		for i := 0; i < msgs.Len(); i++ {
+			m := msgs.Get(i)
+			if _, dup := index[m.FullName()]; !dup {
+				index[m.FullName()] = m
+			}
+			addMsgs(m.Messages())
+		}
+	}
+	var addFile func(fd protoreflect.FileDescriptor)
+	addFile = func(fd protoreflect.FileDescriptor) {
+		if fd == nil || seen[fd.Path()] {
+			return
+		}
+		seen[fd.Path()] = true
+		addMsgs(fd.Messages())
+		imports := fd.Imports()
+		for i := 0; i < imports.Len(); i++ {
+			addFile(imports.Get(i).FileDescriptor)
+		}
+	}
+	for _, rt := range md.RecordTypes() {
+		if rt.Descriptor != nil {
+			addFile(rt.Descriptor.ParentFile())
+		}
+	}
+	if ud := md.GetUnionDescriptor(); ud != nil {
+		addFile(ud.ParentFile())
+	}
+	return index
 }
 
 // readContBytes reads a uvarint-length-prefixed byte run, returning a subslice
@@ -668,11 +777,12 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		}
 		// Group keys are SCALARS — the aggregate encoder never writes a
 		// contValProtoMsg key, so a pendingProtoRowValue here is a crafted or
-		// corrupt continuation. It must error loudly (the nil resolver makes
-		// resolvePendingProtoValues reject any placeholder), never leak the
-		// descriptor-less placeholder into the resumed group's output row.
+		// corrupt continuation. It must error loudly via the EXPLICIT rejection
+		// walk (NOT resolvePendingProtoValues, whose registry-first resolution
+		// would happily rebuild a registered type from a crafted token), never
+		// leak a placeholder into the resumed group's output row.
 		for ki := range keyVals {
-			if _, gErr := resolvePendingProtoValues(keyVals[ki], nil); gErr != nil {
+			if gErr := rejectPendingProtoValues(keyVals[ki]); gErr != nil {
 				return nil, "", nil, fmt.Errorf("invalid group-key value %d in aggregate continuation: %w", ki, gErr)
 			}
 		}
@@ -726,9 +836,9 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 			if dErr != nil {
 				return nil, "", nil, fmt.Errorf("failed to decode MIN state in aggregate continuation: %w", dErr)
 			}
-			// MIN partials are SCALARS; a pendingProtoRowValue is crafted/corrupt
-			// input and must error loudly (see the group-key guard above).
-			if _, gErr := resolvePendingProtoValues(minVal, nil); gErr != nil {
+			// MIN partials are scalar NUMERICS or nil — anything else (a []any,
+			// a string, a proto placeholder) is crafted/corrupt (validateAggExtremum).
+			if gErr := validateAggExtremum(minVal); gErr != nil {
 				return nil, "", nil, fmt.Errorf("invalid MIN state in aggregate continuation: %w", gErr)
 			}
 			gs.mins[i] = minVal
@@ -739,8 +849,8 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 			if dErr != nil {
 				return nil, "", nil, fmt.Errorf("failed to decode MAX state in aggregate continuation: %w", dErr)
 			}
-			// MAX partials are SCALARS; same guard as MIN.
-			if _, gErr := resolvePendingProtoValues(maxVal, nil); gErr != nil {
+			// MAX partials: same numeric-or-nil gate as MIN.
+			if gErr := validateAggExtremum(maxVal); gErr != nil {
 				return nil, "", nil, fmt.Errorf("invalid MAX state in aggregate continuation: %w", gErr)
 			}
 			gs.maxs[i] = maxVal
@@ -842,10 +952,12 @@ func encodeSortContinuation(
 }
 
 // decodeSortContinuation deserializes the MemorySortContinuation proto.
-// resolve rebuilds buffered STRUCT column slots (contValProtoMsg placeholders,
-// see pendingProtoRowValue) from the store's metadata descriptors; nil is
-// valid ONLY for buffers without struct slots — a placeholder with no resolver
-// fails the resume loudly, never silently.
+// Buffered STRUCT column slots (contValProtoMsg placeholders, see
+// pendingProtoRowValue) rebuild REGISTRY-FIRST as their generated Go type;
+// resolve covers only the dynamic-schema fallback (metadata descriptors +
+// dynamicpb). nil is valid ONLY for buffers whose struct slots are all
+// registry-resolvable (or absent) — an unregistered placeholder with no
+// resolver fails the resume loudly, never silently.
 func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (innerContinuation []byte, buf []QueryResult, err error) {
 	msg := &gen.MemorySortContinuation{}
 	if err := proto.Unmarshal(data, msg); err != nil {

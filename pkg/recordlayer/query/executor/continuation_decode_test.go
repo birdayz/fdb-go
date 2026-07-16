@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"strings"
@@ -18,6 +19,10 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
@@ -542,6 +547,38 @@ func TestSortContinuation_LegacyTypedSlotBlobRejected_F33(t *testing.T) {
 // F53: ARRAY ([]any) and STRUCT (proto.Message) slots in the typed codec
 // ===========================================================================
 
+// unregisteredDynamicMessage builds a proto message whose type exists ONLY as
+// a runtime descriptor (protodesc over a synthetic FileDescriptorProto) —
+// never registered in protoregistry.GlobalTypes. This is the dynamic-schema
+// shape whose restore must go through the metadata resolver → dynamicpb
+// fallback; a REGISTERED type (any gen.* message) restores registry-first and
+// can no longer exercise the resolver-rejection paths.
+func unregisteredDynamicMessage(tb testing.TB) (*dynamicpb.Message, protoreflect.MessageDescriptor) {
+	tb.Helper()
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("f54_unregistered.proto"),
+		Syntax:  proto.String("proto2"),
+		Package: proto.String("f54test"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Ghost"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:   proto.String("label"),
+				Number: proto.Int32(1),
+				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+			}},
+		}},
+	}
+	fd, err := protodesc.NewFile(fdp, nil)
+	if err != nil {
+		tb.Fatalf("build synthetic file descriptor: %v", err)
+	}
+	md := fd.Messages().Get(0)
+	m := dynamicpb.NewMessage(md)
+	m.Set(md.Fields().ByName("label"), protoreflect.ValueOfString("boo"))
+	return m, md
+}
+
 // demoMetadataResolver builds the PRODUCTION descriptor resolver
 // (metadataMessageResolver) over the demo schema's RecordMetaData — the same
 // resolver executeInMemorySort hands decodeSortContinuation.
@@ -669,8 +706,10 @@ func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 		t.Fatalf("slots len = %d, want 4", len(gotSlots))
 	}
 
-	// STRUCT slot: rebuilt as a proto message (dynamicpb over the SAME
-	// descriptor the metadata carries), field-for-field equal to the original.
+	// STRUCT slot: rebuilt as a proto message (registry-first — the generated
+	// type; concrete-type identity is pinned separately in
+	// TestSortContinuation_GeneratedTypeIdentity_F54), field-for-field equal
+	// to the original.
 	gotFlower, ok := gotSlots[0].(proto.Message)
 	if !ok {
 		t.Fatalf("slots[0] = %#v (%T), want a proto.Message", gotSlots[0], gotSlots[0])
@@ -707,9 +746,10 @@ func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 		t.Errorf("slots[3] = %#v (%T), want int64(5)", gotSlots[3], gotSlots[3])
 	}
 
-	// SECOND checkpoint: a resumed buffer (now holding a dynamicpb message)
-	// must re-encode — the next scan-limit boundary checkpoints the SAME rows
-	// again. A dynamicpb.Message rides the same proto.Message arm.
+	// SECOND checkpoint: a resumed buffer must re-encode — the next scan-limit
+	// boundary checkpoints the SAME rows again. A restored message (generated
+	// type registry-first, or dynamicpb on the dynamic-schema fallback) rides
+	// the same proto.Message arm.
 	reEncoded, err := encodeSortContinuation(nil, got)
 	if err != nil {
 		t.Fatalf("re-encode of a resumed buffer: %v", err)
@@ -727,14 +767,18 @@ func TestSortContinuation_ArrayAndStructSlots_F53(t *testing.T) {
 }
 
 // TestSortContinuation_StructSlot_NoResolverRejected_F53 pins the
-// correct-or-loud half: a buffered STRUCT slot decoded WITHOUT a descriptor
-// resolver (nil — e.g. a store-less unit path) is a LOUD error, never a silent
-// placeholder or nil slot leaking into the row domain.
+// correct-or-loud half: a buffered STRUCT slot whose type is neither
+// registered (registry-first restore) nor resolvable — decoded WITHOUT a
+// descriptor resolver (nil — e.g. a store-less unit path) — is a LOUD error,
+// never a silent placeholder or nil slot leaking into the row domain. Uses an
+// UNREGISTERED dynamic type: a gen.* message would restore from
+// protoregistry.GlobalTypes without any resolver (pinned in
+// TestSortContinuation_GeneratedTypeIdentity_F54).
 func TestSortContinuation_StructSlot_NoResolverRejected_F53(t *testing.T) {
 	t.Parallel()
 
-	flower := &gen.Flower{Type: proto.String("rose")}
-	buf := []QueryResult{dorder([]string{"FLOWER"}, []any{flower})}
+	ghost, _ := unregisteredDynamicMessage(t)
+	buf := []QueryResult{dorder([]string{"GHOST"}, []any{ghost})}
 	encoded, err := encodeSortContinuation(nil, buf)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
@@ -749,16 +793,17 @@ func TestSortContinuation_StructSlot_NoResolverRejected_F53(t *testing.T) {
 }
 
 // TestSortContinuation_StructSlot_UnresolvableTypeRejected_F53 pins that a
-// buffered STRUCT slot whose type name the store metadata does NOT carry (a
-// schema drift between checkpoint and resume, or a crafted token) is a LOUD
-// error — never a silent nil.
+// buffered STRUCT slot whose type name neither the registry nor the store
+// metadata carries (a schema drift between checkpoint and resume, or a crafted
+// token) is a LOUD error — never a silent nil.
 func TestSortContinuation_StructSlot_UnresolvableTypeRejected_F53(t *testing.T) {
 	t.Parallel()
 
-	// MemorySortContinuation lives in record_sorting.proto, which the demo
-	// schema does not import — unresolvable through the metadata resolver.
-	alien := &gen.MemorySortContinuation{Continuation: []byte{1}}
-	buf := []QueryResult{dorder([]string{"X"}, []any{alien})}
+	// f54test.Ghost exists only as a runtime descriptor: not in
+	// protoregistry.GlobalTypes (registry miss) and not in the demo schema's
+	// metadata (resolver miss).
+	ghost, _ := unregisteredDynamicMessage(t)
+	buf := []QueryResult{dorder([]string{"X"}, []any{ghost})}
 	encoded, err := encodeSortContinuation(nil, buf)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
@@ -769,6 +814,45 @@ func TestSortContinuation_StructSlot_UnresolvableTypeRejected_F53(t *testing.T) 
 	}
 	if !strings.Contains(decErr.Error(), "not found in the store's record metadata descriptors") {
 		t.Errorf("Error() = %q, want 'not found in the store's record metadata descriptors'", decErr)
+	}
+}
+
+// TestSortContinuation_DynamicSchemaFallback_F54 pins the dynamic-schema half
+// of registry-first resolution: an UNREGISTERED type (runtime descriptor only)
+// still restores through the resolver → dynamicpb fallback, proto-equal to the
+// original. Fresh rows on a dynamic schema are dynamicpb too, so concrete-type
+// identity is consistent on this path as well.
+func TestSortContinuation_DynamicSchemaFallback_F54(t *testing.T) {
+	t.Parallel()
+
+	ghost, md := unregisteredDynamicMessage(t)
+	buf := []QueryResult{dorder([]string{"GHOST", "ID"}, []any{ghost, int64(1)})}
+	encoded, err := encodeSortContinuation(nil, buf)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	resolve := func(fullName string) (protoreflect.MessageDescriptor, error) {
+		if fullName != string(md.FullName()) {
+			return nil, fmt.Errorf("unexpected descriptor lookup %q", fullName)
+		}
+		return md, nil
+	}
+	_, got, err := decodeSortContinuation(encoded, resolve)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 || got[0].Positional == nil {
+		t.Fatalf("decoded buf = %+v, want 1 positional row", got)
+	}
+	gotGhost, ok := got[0].Positional.Slots[0].(*dynamicpb.Message)
+	if !ok {
+		t.Fatalf("slots[0] = %T, want *dynamicpb.Message (the dynamic-schema fallback — fresh rows there are dynamicpb too)", got[0].Positional.Slots[0])
+	}
+	if !proto.Equal(gotGhost, ghost) {
+		t.Errorf("slots[0] = %v, want %v (field-for-field equal)", gotGhost, ghost)
+	}
+	if v, ok := got[0].Positional.Slots[1].(int64); !ok || v != 1 {
+		t.Errorf("slots[1] = %#v, want int64(1)", got[0].Positional.Slots[1])
 	}
 }
 
@@ -876,6 +960,259 @@ func TestContValue_RetiredJSONTagRejected_F53(t *testing.T) {
 	if !strings.Contains(err.Error(), "unknown typed-value tag 15") {
 		t.Errorf("Error() = %q, want 'unknown typed-value tag 15'", err)
 	}
+}
+
+// ===========================================================================
+// F54: registry-first STRUCT restore (concrete-type identity), decode nesting
+// cap, MIN/MAX scalar-numeric gate
+// ===========================================================================
+
+// TestSortContinuation_GeneratedTypeIdentity_F54 pins that a buffered STRUCT
+// slot whose message type is COMPILED INTO the binary restores with the SAME
+// concrete Go type a freshly-read row carries (*gen.Flower, not
+// *dynamicpb.Message). The group/dedup keys (computeGroupKey, packedDedupKey,
+// mergeSortCursor.extractKey) fall back to %T:%v for composite slots, so a
+// restored slot with a different concrete type would NEVER key-match an equal
+// fresh row: equal rows straddling a checkpoint split into duplicate groups /
+// duplicate DISTINCT rows — wrong results, no error. Decode must resolve
+// registry-first (protoregistry.GlobalTypes), using the metadata resolver →
+// dynamicpb only for dynamic schemas (where fresh rows are dynamicpb too, so
+// identity is consistent on that path as well).
+func TestSortContinuation_GeneratedTypeIdentity_F54(t *testing.T) {
+	t.Parallel()
+
+	flower := &gen.Flower{Type: proto.String("rose"), Color: gen.Color_RED.Enum()}
+	elem := &gen.Flower{Type: proto.String("lily"), Color: gen.Color_BLUE.Enum()}
+	names := []string{"FLOWER", "STRUCT_ARR", "ID"}
+	slots := []any{flower, []any{elem}, int64(1)}
+	buf := []QueryResult{dorder(names, slots)}
+
+	encoded, err := encodeSortContinuation(nil, buf)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		resolve func(t *testing.T) protoDescriptorResolver
+	}{
+		// The production path: a resolver is present, but the registry must
+		// still win for registered types (the resolver would hand back a
+		// dynamicpb message with a different %T).
+		{"with metadata resolver", func(t *testing.T) protoDescriptorResolver { return demoMetadataResolver(t) }},
+		// A registered type needs NO resolver at all.
+		{"nil resolver, registry alone", func(_ *testing.T) protoDescriptorResolver { return nil }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, got, decErr := decodeSortContinuation(encoded, tc.resolve(t))
+			if decErr != nil {
+				t.Fatalf("decode: %v (a registered struct type must restore from the registry)", decErr)
+			}
+			if len(got) != 1 || got[0].Positional == nil {
+				t.Fatalf("decoded buf = %+v, want 1 positional row", got)
+			}
+			gotSlots := got[0].Positional.Slots
+
+			gotFlower, ok := gotSlots[0].(*gen.Flower)
+			if !ok {
+				t.Fatalf("slots[0] = %T, want *gen.Flower — a dynamicpb restore breaks %%T-keyed group/dedup identity across the checkpoint", gotSlots[0])
+			}
+			if !proto.Equal(gotFlower, flower) {
+				t.Errorf("slots[0] = %v, want %v", gotFlower, flower)
+			}
+
+			arr, ok := gotSlots[1].([]any)
+			if !ok || len(arr) != 1 {
+				t.Fatalf("slots[1] = %#v (%T), want a 1-element []any", gotSlots[1], gotSlots[1])
+			}
+			gotElem, ok := arr[0].(*gen.Flower)
+			if !ok {
+				t.Fatalf("slots[1][0] = %T, want *gen.Flower (identity must hold inside ARRAY-OF-STRUCT too)", arr[0])
+			}
+			if !proto.Equal(gotElem, elem) {
+				t.Errorf("slots[1][0] = %v, want %v", gotElem, elem)
+			}
+
+			// The SYMPTOM pin: the restored row's dedup key must equal the
+			// original row's — a %T divergence here is the duplicate-groups /
+			// duplicate-DISTINCT-rows bug.
+			if orig, restored := packedDedupKey(slots), packedDedupKey(gotSlots); orig != restored {
+				t.Errorf("packedDedupKey diverged across the checkpoint:\n  original = %q\n  restored = %q\n(equal rows straddling a resume would split into duplicate groups/DISTINCT rows)", orig, restored)
+			}
+		})
+	}
+}
+
+// TestContValue_NestingDepthCapped_F54 pins the decode-side recursion budget:
+// a continuation token is EXTERNAL wire input, and a crafted token of deeply
+// nested one-element lists (tag 13) costs one stack frame per two payload
+// bytes — without a cap a small token overflows the stack (an unrecoverable
+// runtime crash, not an error). Deep nesting must be a LOUD decode error;
+// reasonable nesting must keep round-tripping.
+func TestContValue_NestingDepthCapped_F54(t *testing.T) {
+	t.Parallel()
+
+	// levels nested single-element lists around one nil: [13 01] × levels + [00].
+	deep := func(levels int) []byte {
+		return append(bytes.Repeat([]byte{contValList, 0x01}, levels), contValNil)
+	}
+
+	t.Run("65-deep crafted token rejected", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := readContValue(deep(65))
+		if err == nil {
+			t.Fatal("want error for a 65-deep nested-list token, got nil (unbounded recursion — a longer token is a stack overflow, not an error)")
+		}
+		if !strings.Contains(err.Error(), "nesting") {
+			t.Errorf("Error() = %q, want a nesting-depth rejection", err)
+		}
+	})
+
+	t.Run("64-deep boundary still decodes", func(t *testing.T) {
+		t.Parallel()
+		v, rest, err := readContValue(deep(64))
+		if err != nil {
+			t.Fatalf("readContValue(64-deep) = %v, want the boundary to decode (the cap must reject only BEYOND the budget)", err)
+		}
+		if len(rest) != 0 {
+			t.Errorf("trailing bytes = %d, want 0", len(rest))
+		}
+		if _, ok := v.([]any); !ok {
+			t.Errorf("decoded = %T, want []any", v)
+		}
+	})
+
+	t.Run("depth-3 list round-trips", func(t *testing.T) {
+		t.Parallel()
+		in := []any{[]any{[]any{int64(7), "x"}, nil}, int64(1)}
+		enc, err := appendContValue(nil, in)
+		if err != nil {
+			t.Fatalf("appendContValue: %v", err)
+		}
+		got, rest, err := readContValue(enc)
+		if err != nil {
+			t.Fatalf("readContValue: %v", err)
+		}
+		if len(rest) != 0 {
+			t.Errorf("trailing bytes = %d, want 0", len(rest))
+		}
+		l1, ok := got.([]any)
+		if !ok || len(l1) != 2 {
+			t.Fatalf("round-trip = %#v, want 2-element []any", got)
+		}
+		l2, ok := l1[0].([]any)
+		if !ok || len(l2) != 2 || l2[1] != nil {
+			t.Fatalf("level 2 = %#v, want []any{[]any{...}, nil}", l1[0])
+		}
+		l3, ok := l2[0].([]any)
+		if !ok || len(l3) != 2 || l3[0] != int64(7) || l3[1] != "x" {
+			t.Fatalf("level 3 = %#v, want []any{int64(7), \"x\"}", l2[0])
+		}
+	})
+
+	t.Run("placeholder-resolution walk capped", func(t *testing.T) {
+		t.Parallel()
+		// resolvePendingProtoValues recurses through lists the same way; its
+		// walk needs its own budget (defense in depth — its input is decoded
+		// values, but the cap must not depend on the caller's).
+		v := any(nil)
+		for i := 0; i < 70; i++ {
+			v = []any{v}
+		}
+		if _, err := resolvePendingProtoValues(v, nil); err == nil {
+			t.Fatal("want error resolving a 70-deep nested list, got nil (unbounded recursion)")
+		}
+	})
+}
+
+// TestDecodeAggregateContinuation_NonScalarMinMaxRejected_F54 pins the MIN/MAX
+// decode gate: the accumulator (accumulateRow's isNumeric gate + aggMinMax) can
+// only ever produce int64/int32/int/float64/float32 — or nil for "no rows yet"
+// — as an extremum. A decoded MIN/MAX of any OTHER shape (a tag-13 []any, a
+// string, a proto placeholder) is a crafted or corrupt continuation and must
+// error LOUDLY, never seed the fold with a value aggMinMax cannot compare.
+func TestDecodeAggregateContinuation_NonScalarMinMaxRejected_F54(t *testing.T) {
+	t.Parallel()
+
+	buildStates := func(minBytes, maxBytes []byte) []*gen.OneOfTypedState {
+		return []*gen.OneOfTypedState{
+			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
+			{State: &gen.OneOfTypedState_Int64State{Int64State: 3}},
+			{State: &gen.OneOfTypedState_DoubleState{DoubleState: 1.5}},
+			{State: &gen.OneOfTypedState_Int64State{Int64State: 6}},
+			{State: &gen.OneOfTypedState_Int64State{Int64State: 1}},
+			{State: &gen.OneOfTypedState_BytesState{BytesState: minBytes}},
+			{State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes}},
+		}
+	}
+	build := func(t *testing.T, minBytes, maxBytes []byte) []byte {
+		t.Helper()
+		data, err := proto.Marshal(&gen.AggregateCursorContinuation{
+			PartialAggregationResults: &gen.PartialAggregationResult{
+				GroupKey: mustAggGroupKey(t, "k", []any{int64(1)}),
+				AccumulatorStates: []*gen.AccumulatorState{
+					{State: buildStates(minBytes, maxBytes)},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return data
+	}
+
+	validOne := mustContValue(t, int64(1))
+	listVal := mustContValue(t, []any{int64(1)})
+	strVal := mustContValue(t, "z")
+
+	t.Run("list MIN state rejected", func(t *testing.T) {
+		t.Parallel()
+		_, _, _, err := decodeAggregateContinuation(build(t, listVal, validOne), 1)
+		if err == nil {
+			t.Fatal("want error, got nil (a []any MIN partial is crafted/corrupt — the accumulator only produces numerics)")
+		}
+		if !strings.Contains(err.Error(), "invalid MIN state") {
+			t.Errorf("Error() = %q, want 'invalid MIN state' rejection", err)
+		}
+	})
+
+	t.Run("list MAX state rejected", func(t *testing.T) {
+		t.Parallel()
+		_, _, _, err := decodeAggregateContinuation(build(t, validOne, listVal), 1)
+		if err == nil {
+			t.Fatal("want error, got nil (a []any MAX partial is crafted/corrupt)")
+		}
+		if !strings.Contains(err.Error(), "invalid MAX state") {
+			t.Errorf("Error() = %q, want 'invalid MAX state' rejection", err)
+		}
+	})
+
+	t.Run("string MIN state rejected", func(t *testing.T) {
+		t.Parallel()
+		_, _, _, err := decodeAggregateContinuation(build(t, strVal, validOne), 1)
+		if err == nil {
+			t.Fatal("want error, got nil (Go MIN/MAX is numeric-only — accumulateRow raises AggregateTypeMismatchError for non-numerics, so no genuine continuation carries a string extremum)")
+		}
+		if !strings.Contains(err.Error(), "invalid MIN state") {
+			t.Errorf("Error() = %q, want 'invalid MIN state' rejection", err)
+		}
+	})
+
+	t.Run("every accumulator-producible width accepted", func(t *testing.T) {
+		t.Parallel()
+		for _, v := range []any{int64(1), int32(2), int(3), float64(4.5), float32(5.5), nil} {
+			data := build(t, mustContValue(t, v), mustContValue(t, v))
+			_, _, gs, err := decodeAggregateContinuation(data, 1)
+			if err != nil {
+				t.Fatalf("decode with %T extremum: %v (the gate must accept every width the accumulator can produce)", v, err)
+			}
+			if gs == nil || gs.mins[0] != v || gs.maxs[0] != v {
+				t.Errorf("extremum %#v (%T) did not round-trip: mins[0]=%#v maxs[0]=%#v", v, v, gs.mins[0], gs.maxs[0])
+			}
+		}
+	})
 }
 
 // TestContValue_CorruptListAndProto_F53 pins that truncated/corrupt tag-13/14

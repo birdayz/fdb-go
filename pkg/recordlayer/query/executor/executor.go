@@ -3647,11 +3647,14 @@ func executeInMemorySort(
 	var innerContinuation []byte
 	var priorBuf []QueryResult
 	if continuation != nil {
-		// Buffered STRUCT column slots are rebuilt from the store's metadata
-		// descriptors (the schema's message types are dynamicpb-built, not in
-		// protoregistry.GlobalTypes). A nil store leaves the resolver nil: a
-		// buffer with struct slots then fails the resume loudly rather than
-		// leaking a descriptor-less placeholder into the row domain.
+		// Buffered STRUCT column slots rebuild registry-first (a generated
+		// message type restores as its generated Go type — concrete-type
+		// identity with fresh rows, which the %T-keyed group/dedup paths
+		// depend on); this resolver covers the dynamic-schema fallback, whose
+		// message types are dynamicpb-built and not in
+		// protoregistry.GlobalTypes. A nil store leaves the resolver nil: a
+		// buffer with unregistered struct slots then fails the resume loudly
+		// rather than leaking a descriptor-less placeholder into the row domain.
 		var resolve protoDescriptorResolver
 		if store != nil {
 			resolve = metadataMessageResolver(store.GetRecordMetaData())

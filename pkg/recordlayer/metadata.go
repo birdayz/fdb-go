@@ -853,6 +853,23 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	}, nil
 }
 
+// FindRegisteredMessageType returns the message type registered for fullName
+// in the process-global protobuf registry (protoregistry.GlobalTypes) — the
+// GENERATED Go type (e.g. *gen.Order) — or nil when the name is not registered
+// (a dynamic, metadata-built schema type). This is the same registry-first
+// policy Build applies to record-type message factories above: a caller that
+// rebuilds a proto value from serialized bytes must prefer the generated type
+// so the restored value has the SAME concrete Go type as a freshly-read
+// record, falling back to dynamicpb over metadata descriptors only for
+// dynamic schemas (where fresh records are dynamicpb too).
+func FindRegisteredMessageType(fullName protoreflect.FullName) protoreflect.MessageType {
+	mt, err := protoregistry.GlobalTypes.FindMessageByName(fullName)
+	if err != nil {
+		return nil
+	}
+	return mt
+}
+
 // RecordTypeBuilder provides methods to configure a specific record type
 type RecordTypeBuilder struct {
 	recordType *RecordType
