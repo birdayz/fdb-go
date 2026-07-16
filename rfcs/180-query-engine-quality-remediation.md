@@ -32,8 +32,13 @@ engineered and pinned. But:
   `plangen` parallel pipeline (deleted by this RFC).
 
 Two actions were executed immediately on owner direction, ahead of this review:
-`pkg/relational/core/query/plangen/` is deleted, and the yamsql runner skip is
-removed. The corpus is red; Workstream Y makes it green honestly.
+`pkg/relational/core/query/plangen/` is deleted (committed), and the yamsql
+runner skip is removed **in the working tree**. The un-skip cannot land as a
+commit yet: the pre-commit hook runs `just test`, which now includes the red
+corpus — and `--no-verify` is forbidden. So the un-skip commits together with
+the final Workstream Y batch that makes the corpus green, and the branch does
+not merge before that. Until then the removal lives in the tree and this RFC;
+if the session ends first, re-applying it is a one-line change documented here.
 
 ## Ground rules (unchanged from RFC-179)
 
@@ -49,7 +54,9 @@ harness), never against Go's current output.
 Re-enabling `TestYamsqlConformance` (skip removed at
 `pkg/relational/conformance/yamsql/runner_test.go:61`; the skip predated the
 Cascades unification and was added *while 18 scenarios failed* — skip-while-red)
-surfaces **67 failing scenarios of 319**. Failure histogram:
+surfaces **67 failing scenarios of 319**. Failure histogram (counted per failing
+*test stanza* — ~125 across the 67 scenarios; a scenario fails if any stanza
+does, and "green" in Y5 means every stanza of every scenario):
 
 | Count | Kind | Bucket |
 |---|---|---|
@@ -86,9 +93,15 @@ Protocol, in order:
   mis-framed). Confirmed gaps become ports (NULLIF, plain UNION-distinct, UUID
   cast, UPDATE-SET-subquery = L121c) or stay documented declines only if Java
   also declines.
-- **Y5 (keep it lit):** the runner stays un-skipped from this commit forward.
-  The corpus joins CI the moment it is green; until then the branch does not
-  merge. Scenario fixes land in batches with the bucket name in the commit.
+- **Y5 (keep it lit):** the runner stays un-skipped. The corpus joins CI the
+  moment it is green; until then the branch does not merge. Scenario fixes land
+  in batches with the bucket name in the commit.
+- **Y6 (no dark net, Torvalds):** `runner_test.go` TestMain swallows the
+  container-startup error (`os.Exit(m.Run())` → everything skips as "FDB not
+  available"). In CI that converts any Docker hiccup into a green run with zero
+  scenarios executed — the exact dark-safety-net pattern this RFC exists to
+  kill. Fix with the un-skip commit: startup failure is FATAL when running in
+  CI (env-gated), skip stays only for genuinely Docker-less local machines.
 
 ## Workstream A — union/IN continuation family (pattern 3, wholesale)
 
@@ -125,11 +138,15 @@ row-granular resume surface (e.g. `ExecuteContinuationStatement`) lands.
 **Fix (read Java first):** port Java's merge-cursor continuation architecture —
 `UnionCursorContinuation`/`MergeCursorState` (per-child typed proto states,
 `RecordCursorProto.UnionContinuation`), `ConcatCursor`'s branch-tagged
-continuation, and per-row aggregate/NLJ continuations. Route everything through
-the RFC-179 typed codec. A7 becomes error-propagating. Pins: mid-stream resume
-e2e per operator (union streaming/buffered/unordered, IN-join/union, concat,
-merge-sort, aggregate emit phase) with adversarial page boundaries, exactly like
-the F4/F5 pins.
+continuation, and per-row aggregate/NLJ continuations. **Wire-format precedence
+(Graefe, binding): continuations are wire artifacts — a Java client must be able
+to resume a Go union continuation. Java's `RecordCursorProto` messages are the
+authoritative format wherever Java defines one; the RFC-179 typed codec wraps
+only state for which Java has no format.** A7 becomes error-propagating. Pins:
+mid-stream resume e2e per operator (union streaming/buffered/unordered,
+IN-join/union, concat, merge-sort, aggregate emit phase) with adversarial page
+boundaries, exactly like the F4/F5 pins — plus a Java-decodes-Go-continuation
+conformance check for the proto-defined ones.
 
 ## Workstream B — finish the F21 comparand-into-identity migration (plan/plans/)
 
@@ -203,9 +220,16 @@ The planner has three ordering domains; Java has one (`Ordering` /
 `sortWinnerFromChild` onto the existing Java-faithful `rich_ordering.go`
 (value-based `OrderingPart`s, no arity cap, no name strings); delete
 `physicalOrdering`'s string array; replace D3's stringify with property
-equality; make D4 impossible (error) rather than approximate. Interim pin
-regardless of schedule: a 9-sort-key e2e that today demonstrates the
-truncation.
+equality; make D4 impossible (error) rather than approximate. No fourth
+"bridge" representation (Graefe, binding). When the comparable struct dies, the
+winner-memo keying moves to semantic hash + `equals` bucketing, Java's
+approach — the map-key convenience is currently load-bearing and must not
+survive as a hidden constraint on the design.
+
+**D1 stopgap (Graefe, binding — lands in the early Y/E/B/C batch, not with D):**
+`OrderingFromSortKeys`/`OrderingFromNameDir` become LOUD past capacity —
+decline the winner stamp (plan keeps its sort) instead of silently truncating.
+One guard, deleted when D lands. Plus the 9-sort-key e2e pin.
 
 ## Workstream E — compensation determinism (F20 class)
 
@@ -316,7 +340,8 @@ Correctness-first, contained-first, then architecture:
    batches; Y3 engine bugs DFS'd as found; Y4 parity ports as verified). The
    two Y3 engine bugs on their face (`SUM(MAX)` layer, scalar-subquery
    binding) immediately.
-2. **E** (tiny) → **B** (mechanical) → **C** (shared encoder) → **H1–H8**.
+2. **E** (tiny) → **D1 stopgap** (loud past-capacity guard) → **B**
+   (mechanical) → **C** (shared encoder) → **H1–H8**.
 3. **F-1/F-2/F-4** (kill the reparse + classifiers), then **A** (the big
    continuation port), then **D** (ordering unification, Graefe-led design
    first), then **F-3** (IR migration), then **G3/G4**, then **I**.
@@ -328,14 +353,14 @@ Codex on the PR, re-request after every push.
 
 | Id | Severity | One-liner | Status |
 |---|---|---|---|
-| Y1–Y5 | wrong-rows/red-net | 67/319 yamsql failures | **OPEN — red** |
+| Y1–Y6 | wrong-rows/red-net | 67/319 yamsql failures + dark TestMain | **OPEN — red** |
 | A1–A7 | wrong-rows (latent) + loud-gap | union/IN continuation family | OPEN |
 | B1–B5 | memo-collapse / nondeterministic | plan-identity stragglers | OPEN |
 | C1–C4 | wrong-rows | lossy dedup/group keys | OPEN |
 | D1–D4 | wrong-rows (D1) / divergence | ordering-representation split | OPEN |
 | E1 | nondeterministic | compensation map-order | OPEN |
 | F-1–F-4 | wrong-rows-history / rule-violation | text IR reparse | OPEN |
-| G1 | process | yamsql re-enabled | **DONE (red)** |
+| G1 | process | yamsql un-skip (in tree; commits with the Y-green batch — pre-commit runs the corpus, so a red commit is impossible by construction) | **IN TREE** |
 | G2 | dead-code | plangen deleted | **DONE** |
 | G3–G4 | net-gap | comparator fuzz + float cross-plan e2e | OPEN |
 | H1 | wrong-value write | int64→float32 ±Inf | OPEN |
