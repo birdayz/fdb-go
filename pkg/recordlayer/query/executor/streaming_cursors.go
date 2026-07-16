@@ -467,7 +467,20 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 			gs.sums[i] += num
 			if intVal, ok := val.(int64); ok {
 				s := gs.sumsI[i] + intVal
-				if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
+				if agg.OperandIntType == values.TypeCodeInt {
+					// INT operand (SQL INTEGER, proto TYPE_INT32): Java SUM_I /
+					// AVG_I sum the int component with Math.addExact((int)…),
+					// overflowing at the int32 boundary and surfacing as
+					// numeric-out-of-range (22003). Go widens the INTEGER value to
+					// int64, so the int32-bounded running sum leaving that range is
+					// the SAME overflow Java raises — check it here, not only at the
+					// int64 boundary below.
+					if s > math.MaxInt32 || s < math.MinInt32 {
+						return &SumOverflowError{}
+					}
+				} else if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
+					// LONG operand (SUM_L / AVG_L): Math.addExact on long — int64
+					// overflow.
 					return &SumOverflowError{}
 				}
 				gs.sumsI[i] = s

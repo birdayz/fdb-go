@@ -43,6 +43,18 @@ type AggregateSpec struct {
 	Operand     values.Value
 	Alias       string
 	OperandName string // canonical operand text for result-map keying (e.g. "PRICE*QTY")
+	// OperandIntType is the operand's STATIC integer width at plan time, used by
+	// the SUM/AVG accumulator to pick int32 vs int64 overflow semantics — Java's
+	// NumericAggregationValue selects SUM_I (Math.addExact on int, int32 overflow,
+	// result INT) vs SUM_L (int64 overflow, result LONG) from the operand's static
+	// TypeCode. values.TypeCodeInt means the operand is a SQL INTEGER column
+	// (proto TYPE_INT32) → int32 overflow; any other value (including the zero
+	// TypeCodeUnknown) keeps the int64 (SUM_L) domain. This is a SEPARATE field
+	// because Go's resolver widens every integer column reference to LONG
+	// (values.TypeInt == NullableLong), so Operand.Type() cannot carry the
+	// INT32/INT64 distinction — the translator sources it from the proto-faithful
+	// record type instead.
+	OperandIntType values.TypeCode
 }
 
 // IsCountStar reports whether agg is a COUNT(*)-equivalent aggregate: COUNT with

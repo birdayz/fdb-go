@@ -6214,6 +6214,13 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		// (wholeRowLegFor — `MAX("V"."X") FROM "V"` reads the V row itself).
 		aggInputLegs = wholeRowLegFor(sourceAlias(a.Input), aggInputCols)
 	}
+	// Proto-FAITHFUL typed columns of the aggregate input (a SQL INTEGER stays
+	// TypeCodeInt here, unlike the resolver's widened LONG). Sources each SUM/AVG
+	// operand's static integer width for the int32-vs-int64 overflow decision
+	// (Java NumericAggregationValue picks SUM_I vs SUM_L from the operand's static
+	// TypeCode). nil for a non-scan / derived input — those operands keep the
+	// int64 (SUM_L) domain.
+	aggInputFields := t.legColumns(a.Input)
 	groupKeys := make([]values.Value, len(a.GroupKeys))
 	for i, key := range a.GroupKeys {
 		if i < len(a.GroupKeyValues) && a.GroupKeyValues[i] != nil {
@@ -6281,6 +6288,31 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			spec.Alias = strings.ToUpper(a.Aliases[i])
 		}
+		// PLAN-TIME numeric-operand gate (Java NumericAggregationValue.encapsulate).
+		// Java looks the aggregate up in an operator map keyed by (function, operand
+		// TypeCode) whose entries are ONLY numeric (INT/LONG/FLOAT/DOUBLE); a
+		// non-numeric operand yields a null lookup and Verify.verifyNotNull throws
+		// "unable to encapsulate aggregate operation due to type mismatch(es)" at
+		// PLAN time — data-INDEPENDENT, so an empty or all-NULL table errors too
+		// (not the data-dependent per-row runtime gate). Mirror that for
+		// SUM/AVG/MIN/MAX; the operand's static type is reliable for the
+		// numeric/non-numeric split (only the INT32→LONG width is widened, and both
+		// are numeric). COUNT accepts any type (CountValue, not
+		// NumericAggregationValue) and is not gated. Unknown static type falls
+		// through to the runtime backstop.
+		if aggregateRejectsNonNumericOperand(spec.Function) && spec.Operand != nil {
+			if ot := spec.Operand.Type(); ot != nil {
+				if code := ot.Code(); code != values.TypeCodeUnknown && !code.IsNumeric() {
+					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation,
+						"unable to encapsulate aggregate operation due to type mismatch(es)"))
+					return nil
+				}
+			}
+		}
+		// Static integer WIDTH of the operand (SUM_I vs SUM_L): sourced from the
+		// proto-faithful input columns because the resolver widened the operand's
+		// own Type() to LONG. INTEGER (TYPE_INT32) → int32 overflow in the executor.
+		spec.OperandIntType = aggregateOperandIntType(spec.Operand, aggInputFields)
 		aggSpecs = append(aggSpecs, spec)
 	}
 	groupBy := expressions.NewGroupByExpression(
@@ -6323,6 +6355,60 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		[]predicates.QueryPredicate{havingPred},
 		expressions.ForEachQuantifier(groupByRef),
 	)
+}
+
+// aggregateRejectsNonNumericOperand reports whether fn is one of the numeric
+// aggregates whose Java operator map (NumericAggregationValue) has numeric-only
+// entries, so a non-numeric operand must be rejected at plan time. COUNT is the
+// only aggregate that accepts a non-numeric operand.
+func aggregateRejectsNonNumericOperand(fn expressions.AggregateFunction) bool {
+	switch fn {
+	case expressions.AggSum, expressions.AggAvg, expressions.AggMin, expressions.AggMax:
+		return true
+	}
+	return false
+}
+
+// aggregateOperandColumn returns the bare (qualifier-stripped, upper-cased)
+// column name when v is a single column reference — a FieldValue with no
+// arithmetic/child wrapping — else ("", false). Only a bare column has a
+// derivable proto integer width; arithmetic / cast / constant operands keep the
+// int64 SUM_L domain.
+func aggregateOperandColumn(v values.Value) (string, bool) {
+	fv, ok := v.(*values.FieldValue)
+	if !ok || fv.Child != nil {
+		return "", false
+	}
+	return strings.ToUpper(stripColumnQualifier(fv.Field)), true
+}
+
+// aggregateOperandIntType returns the operand's STATIC integer width for the
+// int32-vs-int64 SUM/AVG overflow decision, keyed off the proto-faithful input
+// record type (Go's resolver widens INTEGER column references to LONG, so the
+// operand's own Type() cannot carry the INT32/INT64 split — see the
+// TypeInt==NullableLong bridge). Returns values.TypeCodeInt only when the operand
+// is a single column whose backing proto field is TYPE_INT32 (SQL INTEGER) and
+// the name match is unambiguous; values.TypeCodeUnknown otherwise — never a
+// narrower, wrong overflow width.
+func aggregateOperandIntType(operand values.Value, inputFields []values.Field) values.TypeCode {
+	col, ok := aggregateOperandColumn(operand)
+	if !ok {
+		return values.TypeCodeUnknown
+	}
+	result := values.TypeCodeUnknown
+	matches := 0
+	for _, f := range inputFields {
+		if strings.EqualFold(stripColumnQualifier(f.Name), col) {
+			if f.FieldType != nil {
+				result = f.FieldType.Code()
+			}
+			matches++
+		}
+	}
+	if matches != 1 {
+		return values.TypeCodeUnknown
+	}
+	return result
 }
 
 func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
