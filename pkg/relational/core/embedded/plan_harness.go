@@ -57,7 +57,7 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
 	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return "", api.NewError(api.ErrCodeUndefinedFunction, "unsupported: "+fn)
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
 		return "", err
@@ -146,7 +146,7 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
 	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return "", api.NewError(api.ErrCodeUndefinedFunction, "unsupported: "+fn)
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
 		return "", err

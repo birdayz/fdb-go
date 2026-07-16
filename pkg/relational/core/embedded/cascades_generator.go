@@ -297,7 +297,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return nil, api.NewError(api.ErrCodeUndefinedFunction,
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Unsupported operator "+fn)
 	}
 
@@ -877,7 +877,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 					continue
 				}
 				if fn := findUnsupportedFunctionInParseTree(el.Expression()); fn != "" {
-					return nil, api.NewError(api.ErrCodeUndefinedFunction, "Unsupported operator "+fn)
+					return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 				}
 			}
 		}
@@ -887,7 +887,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return nil, api.NewError(api.ErrCodeUndefinedFunction,
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Unsupported operator "+fn)
 	}
 

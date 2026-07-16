@@ -39,7 +39,7 @@ tests:
   # path); the INSERT-VALUES write path is out of that scope and still
   # rejects it ("Unsupported operator ABS"), matching Java.
   - query: INSERT INTO t VALUES (50, ABS(-7))
-    error_code: "42883"
+    error_code: "0AF00"
   # INSERT VALUES with COALESCE.
   - query: INSERT INTO t VALUES (6, COALESCE(null, null, 77))
   - query: SELECT n FROM t WHERE id = 6

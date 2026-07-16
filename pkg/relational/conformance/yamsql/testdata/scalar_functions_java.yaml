@@ -86,14 +86,17 @@ tests:
 
   # NULLIF
   - query: SELECT NULLIF(int_col, 10) FROM vals WHERE id = 1
-    rows:
-      - [null]
-
+    # Java does not support NULLIF at 4.12.11.0 (not in SqlFunctionCatalog;
+    # SemanticAnalyzer.resolveScalarFunction → UNSUPPORTED_QUERY 0AF00
+    # "Unsupported operator NULLIF"). The old rows pinned a retired
+    # pre-Cascades Go extension.
+    error_code: "0AF00"
   - query: SELECT NULLIF(int_col, 99) FROM vals WHERE id = 1
-    rows:
-      - [10]
-
-  # COALESCE in GROUP BY
+    # Java does not support NULLIF at 4.12.11.0 (not in SqlFunctionCatalog;
+    # SemanticAnalyzer.resolveScalarFunction → UNSUPPORTED_QUERY 0AF00
+    # "Unsupported operator NULLIF"). The old rows pinned a retired
+    # pre-Cascades Go extension.
+    error_code: "0AF00"
   - query: SELECT COALESCE(int_col, 0), COUNT(*) FROM vals GROUP BY COALESCE(int_col, 0) ORDER BY COALESCE(int_col, 0)
     rows:
       - [0, 1]

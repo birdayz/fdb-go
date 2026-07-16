@@ -5087,7 +5087,7 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 			return nil, err
 		}
 		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Unsupported operator "+fn)
 		}
 		if err := validateQualifiedStarSources(sq, md); err != nil {
@@ -5146,7 +5146,7 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 			return nil, err
 		}
 		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Unsupported operator "+fn)
 		}
 		if err := validateQualifiedStarSources(sq, md); err != nil {
@@ -5322,7 +5322,7 @@ func buildUnionRightBranchStrippingOrderBy(
 	}
 
 	if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-		return nil, lifted, api.NewError(api.ErrCodeUndefinedFunction, "Unsupported operator "+fn)
+		return nil, lifted, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 	if err := validateQualifiedStarSources(sq, md); err != nil {
 		return nil, lifted, err

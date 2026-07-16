@@ -392,7 +392,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// Validate unsupported functions before building the plan.
 	for _, expr := range cls.projExprs {
 		if fn := findUnsupportedFunctionInParseTree(expr); fn != "" {
-			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Unsupported operator "+fn)
 		}
 	}

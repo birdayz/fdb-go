@@ -2,7 +2,7 @@ package sqldriver_test
 
 // Pins the keyword operators: DIV (integer division) and MOD (modulo) work like
 // `/` and `%`; XOR is logical exclusive-or. Shift operators `<<` / `>>` are parsed
-// but unimplemented (42883 "Unsupported operator"), a clean rejection.
+// but unimplemented (0AF00 "Unsupported operator"), a clean rejection.
 
 import (
 	"context"
@@ -52,8 +52,8 @@ func TestFDB_KeywordOperatorsProbe(t *testing.T) {
 	rejected := func(name, expr string) {
 		t.Run(name, func(t *testing.T) {
 			_, err := db.QueryContext(ctx, "SELECT "+expr+" FROM t WHERE id = 1")
-			if err == nil || !strings.Contains(err.Error(), "42883") {
-				t.Errorf("%s error = %v, want 42883 (shift operator unsupported)", expr, err)
+			if err == nil || !strings.Contains(err.Error(), "0AF00") {
+				t.Errorf("%s error = %v, want 0AF00 (shift operator unsupported)", expr, err)
 			}
 		})
 	}
