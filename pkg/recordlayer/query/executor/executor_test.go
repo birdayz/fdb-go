@@ -769,6 +769,79 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 	}
 }
 
+// TestScanComparisonsToTupleRange_StartsWith pins the STARTS_WITH → PREFIX_STRING
+// range. STARTS_WITH is planner-sargable (it binds into a ComparisonRange and the
+// residual filter is dropped), so the scan MUST bound itself to the prefix. Mirrors
+// Java ScanComparisons.toTupleRange building
+// new TupleRange(startTuple, startTuple, PREFIX_STRING, PREFIX_STRING).
+//
+// Revert-proof: without the STARTS_WITH arm in scanComparisonsToTupleRange the
+// comparison matches neither the low nor the high switch, sets no bound, and the
+// range degenerates to TREE_START..TREE_END — silently returning every row
+// instead of only the prefix-matching ones.
+func TestScanComparisonsToTupleRange_StartsWith(t *testing.T) {
+	t.Parallel()
+
+	ineq := predicates.EmptyComparisonRange()
+	res := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
+	if !res.Ok {
+		t.Fatal("merge STARTS_WITH failed")
+	}
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.Low) != 1 || r.Low[0] != "abc" {
+		t.Fatalf("low=%v, want [abc]", r.Low)
+	}
+	if len(r.High) != 1 || r.High[0] != "abc" {
+		t.Fatalf("high=%v, want [abc]", r.High)
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypePrefixString {
+		t.Fatalf("lowEndpoint=%v, want PrefixString", r.LowEndpoint)
+	}
+	if r.HighEndpoint != recordlayer.EndpointTypePrefixString {
+		t.Fatalf("highEndpoint=%v, want PrefixString", r.HighEndpoint)
+	}
+}
+
+// TestScanComparisonsToTupleRange_EqualityPlusStartsWith pins that the STARTS_WITH
+// prefix element is appended AFTER the equality prefix — startTuple = prefix +
+// comparand, both endpoints PREFIX_STRING (Java ScanComparisons.toTupleRange
+// baseTuple.addObject(comparand)).
+func TestScanComparisonsToTupleRange_EqualityPlusStartsWith(t *testing.T) {
+	t.Parallel()
+
+	eq := predicates.EmptyComparisonRange()
+	resEq := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(7))})
+	if !resEq.Ok {
+		t.Fatal("merge eq failed")
+	}
+
+	ineq := predicates.EmptyComparisonRange()
+	resSw := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
+	if !resSw.Ok {
+		t.Fatal("merge STARTS_WITH failed")
+	}
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{resEq.Range, resSw.Range}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.Low) != 2 || r.Low[0] != int64(7) || r.Low[1] != "abc" {
+		t.Fatalf("low=%v, want [7, abc]", r.Low)
+	}
+	if len(r.High) != 2 || r.High[0] != int64(7) || r.High[1] != "abc" {
+		t.Fatalf("high=%v, want [7, abc]", r.High)
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypePrefixString || r.HighEndpoint != recordlayer.EndpointTypePrefixString {
+		t.Fatalf("endpoints=%v/%v, want PrefixString/PrefixString", r.LowEndpoint, r.HighEndpoint)
+	}
+}
+
 func TestParameterBinding_ScanComparison(t *testing.T) {
 	t.Parallel()
 

@@ -476,8 +476,8 @@ one defect each found by two auditors.
 | F8 | wrong-rows | S2 (distinctKey tuple-pack) | **DONE** |
 | F9 ≡ F13 | wrong-rows | S2 (compareValues []byte arm) | **DONE** `6663cf56e` |
 | F10 | wrong-rows | S1 + S2 (covering float32 norm) | **DONE** `6663cf56e` |
-| F11 | wrong-rows (latent) | Theme 7 (STARTS_WITH range) | TODO |
-| F12 | wrong-rows (latent) | Theme 7 (full-tree pushdown) | TODO |
+| F11 | wrong-rows (latent) | Theme 7 (STARTS_WITH range) | **DONE** |
+| F12 | wrong-rows (latent) | Theme 7 (full-tree pushdown) | **DONE** |
 | F14 | wrong-rows | S1 (hash key normalize) | **DONE** `91b566c61` |
 | F15 | crash | Theme 2 (hash key whitelist) | **DONE** `91b566c61` |
 | F16 ≡ F25 | structural | Theme 5 (guard comment + unit pin) | **DONE** |

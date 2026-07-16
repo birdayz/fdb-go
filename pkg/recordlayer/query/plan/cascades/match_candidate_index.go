@@ -335,6 +335,23 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		switch v := value.(type) {
 		case *values.FieldValue:
+			// Only a TOP-LEVEL bare column translates by covered-column name;
+			// decline a CHAINED accessor (v.Child is itself a FieldValue). Java's
+			// pushValueThroughFetch (ScanWithFetchMatchCandidate.java ~51-76) matches
+			// the WHOLE value tree — accessor chain included — against a provided
+			// index Value via semanticEquals, so a chained accessor (e.g. ADDR.CITY,
+			// FieldValue{CITY, Child: FieldValue{ADDR, …}}) whose LEAF name happens to
+			// collide with a covered top-level column is NOT the same indexed Value;
+			// translating it here to a flat read of the index entry's CITY column
+			// would return wrong rows/values. A BARE column reference — v.Child a
+			// source QuantifiedObjectValue, OR a baked leaf (Child nil / a resolved
+			// ordinal, the post-ordinalization shape) — is the covering case and
+			// still translates by covered name. Only a FieldValue-over-FieldValue is
+			// a genuine chain; declining it (rather than dropping v.Child) lets the
+			// recursive-decomposition path handle a deeper match or report not-pushable.
+			if _, chained := v.Child.(*values.FieldValue); chained {
+				return nil, false
+			}
 			if _, covered := coveredColumns[strings.ToUpper(v.Field)]; covered {
 				return values.NewFieldValue(
 					values.NewQuantifiedObjectValue(targetAlias),

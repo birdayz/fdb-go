@@ -707,6 +707,50 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		return recordlayer.TupleRangeAllOf(prefix), nil
 	}
 
+	// STARTS_WITH is a single-comparison PREFIX_STRING range, handled BEFORE the
+	// general low/high combiner — mirrors Java ScanComparisons.toTupleRange
+	// (ScanComparisons.java ~302-308): when the sole inequality is STARTS_WITH,
+	// build startTuple = equality prefix + comparand and return
+	// new TupleRange(startTuple, startTuple, PREFIX_STRING, PREFIX_STRING). The
+	// PREFIX_STRING endpoints strip the tuple-packed trailing null on the low and
+	// strinc past it on the high, bounding the scan to keys with that string
+	// prefix. Without this arm STARTS_WITH matches neither the low nor the high
+	// switch below, sets no bound, and the scan degenerates to the full
+	// equality-prefix range — silently returning every row under the prefix.
+	if ineqs := nextRange.GetInequalityComparisons(); len(ineqs) == 1 && ineqs[0].Type == predicates.ComparisonStartsWith {
+		startsWith := ineqs[0]
+		if startsWith.Operand == nil {
+			// No prefix operand to bound against: fall back to the equality prefix
+			// rather than fabricate a bound (defensive — the planner always binds a
+			// prefix operand for STARTS_WITH).
+			return recordlayer.TupleRangeAllOf(prefix), nil
+		}
+		val, err := startsWith.Operand.Evaluate(binder)
+		if err != nil {
+			return recordlayer.TupleRange{}, err
+		}
+		// A NULL prefix operand makes `col STARTS_WITH NULL` UNKNOWN for every row
+		// (SQL 3VL) → unsatisfiable → empty result, consistent with the ordered-
+		// inequality NULL-comparand handling below. Return an explicit empty range
+		// (begin == end) rather than PREFIX_STRING over a null element.
+		if val == nil {
+			return recordlayer.TupleRange{
+				Low:          prefix,
+				High:         prefix,
+				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
+			}, nil
+		}
+		val = uuidToTupleElement(val)
+		startTuple := append(append(tuple.Tuple{}, prefix...), val)
+		return recordlayer.TupleRange{
+			Low:          startTuple,
+			High:         startTuple,
+			LowEndpoint:  recordlayer.EndpointTypePrefixString,
+			HighEndpoint: recordlayer.EndpointTypePrefixString,
+		}, nil
+	}
+
 	var lowEndpoint, highEndpoint recordlayer.EndpointType
 	var lowItem, highItem any
 	hasLow := false
