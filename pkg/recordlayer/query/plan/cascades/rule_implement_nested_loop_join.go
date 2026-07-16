@@ -1864,9 +1864,9 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		// A select-level OUTER join type in the correlated arm is not
 		// constructible today (the flatten and EXISTS-in-ON are INNER-only;
 		// an undissolved outer box never gains an existential quantifier),
-		// and the orientation swap above would hand
-		// buildCorrelatedFlatMapPlan's SetLeftOuter the WRONG side. Decline
-		// defensively rather than null-extend the preserved leg.
+		// and the orientation swap above would wrap the WRONG side's inner in
+		// the DefaultOnEmpty null-extension boundary. Decline defensively
+		// rather than null-extend the preserved leg.
 		return
 	}
 	if correlatedStep1 && resultValueReferencesAlias(sel.GetResultValue(), quants[2].GetAlias()) {

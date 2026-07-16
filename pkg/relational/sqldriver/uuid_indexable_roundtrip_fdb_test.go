@@ -293,11 +293,11 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 }
 
 // ORDER BY / DISTINCT on a NON-INDEXED UUID column forces the in-memory sort
-// path (executeInMemorySort), whose comparators (compareValues/compareAny) are
-// separate from the filter-path cmpAny. Without a [16]byte arm they fall back to
-// fmt.Sprintf("%v")/return-0 and mis-order (or don't order) UUIDs. An indexed
-// column would mask this via the ordered index scan, so this table deliberately
-// has NO index on v, and rows are inserted OUT of byte order.
+// path (executeInMemorySort), whose comparator (compareValues) is separate from
+// the filter-path cmpAny. Without a [16]byte arm it falls back to
+// fmt.Sprintf("%v") and mis-orders UUIDs. An indexed column would mask this via
+// the ordered index scan, so this table deliberately has NO index on v, and rows
+// are inserted OUT of byte order.
 func TestFDB_UUIDNonIndexedSort(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

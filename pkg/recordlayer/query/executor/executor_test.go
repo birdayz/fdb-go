@@ -470,6 +470,54 @@ func TestAggMinMax_FloatNaNAndSignedZero(t *testing.T) {
 	}
 }
 
+// TestAggMinMax_MixedNumericOperands pins the unpromoted-CASE regression: an
+// operand like `MIN(CASE WHEN c THEN dbl_col ELSE 0 END)` delivers int64 on ELSE
+// rows and float64 on THEN rows. Java never sees the mix (its encapsulation wraps
+// the operand in PromoteValue, so MIN_D receives doubles only); Go promotes the
+// pair inside aggMinMax to the widest float type present, computing exactly what
+// Java computes over the promoted operand. Pre-fix, acc=int64 + val=float64
+// PANICKED on the acc.(float64) assertion, and the opposite order SILENTLY
+// DROPPED the int value (asInt64(float64) failed and the fold returned acc).
+func TestAggMinMax_MixedNumericOperands(t *testing.T) {
+	t.Parallel()
+
+	// The panic order: acc int64 (ELSE first), val float64 (THEN second).
+	if got := aggMinMax(int64(0), float64(1.5), false).(float64); got != 1.5 {
+		t.Fatalf("MAX(int64(0), 1.5) = %v, want 1.5 (pre-fix: panic on acc.(float64))", got)
+	}
+	if got := aggMinMax(int64(0), float64(1.5), true).(float64); got != 0.0 {
+		t.Fatalf("MIN(int64(0), 1.5) = %v, want 0 (double-promoted)", got)
+	}
+	// The silent-drop order: acc float64, val int64 — val must win MIN, not vanish.
+	if got := aggMinMax(float64(1.5), int64(1), true).(float64); got != 1.0 {
+		t.Fatalf("MIN(1.5, int64(1)) = %v, want 1 (pre-fix: int silently dropped, returned 1.5)", got)
+	}
+	if got := aggMinMax(float64(1.5), int64(7), false).(float64); got != 7.0 {
+		t.Fatalf("MAX(1.5, int64(7)) = %v, want 7", got)
+	}
+	// NaN propagates through a mixed pair too (Java: promoted double NaN).
+	if got := aggMinMax(int64(3), math.NaN(), true).(float64); !math.IsNaN(got) {
+		t.Fatalf("MIN(int64(3), NaN) = %v, want NaN", got)
+	}
+	// FLOAT lane: float32 + int promotes to float32 (Java MIN_F over the
+	// float-promoted operand), not float64.
+	if got := aggMinMax(float32(2.5), int64(1), true).(float32); got != 1.0 {
+		t.Fatalf("MIN(float32(2.5), int64(1)) = %v, want float32(1)", got)
+	}
+	if got := aggMinMax(int32(4), float32(2.5), false).(float32); got != 4.0 {
+		t.Fatalf("MAX(int32(4), float32(2.5)) = %v, want float32(4)", got)
+	}
+	// Mixed float widths promote to DOUBLE (the float64 lane claims first).
+	if got := aggMinMax(float32(2.5), float64(1.25), true).(float64); got != 1.25 {
+		t.Fatalf("MIN(float32(2.5), float64(1.25)) = %v, want 1.25 (double lane)", got)
+	}
+	// Once promoted, the accumulator stays float across subsequent int rows.
+	acc := aggMinMax(aggMinMax(aggMinMax(nil, int64(3), true), float64(1.5), true), int64(1), true)
+	if got := acc.(float64); got != 1.0 {
+		t.Fatalf("MIN over {3, 1.5, 1} mixed = %v, want 1.0", got)
+	}
+}
+
 func TestExpressionSortFn(t *testing.T) {
 	t.Parallel()
 

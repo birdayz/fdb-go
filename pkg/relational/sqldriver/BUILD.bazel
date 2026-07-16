@@ -36,6 +36,7 @@ go_test(
         "agg_null_semantics_probe_test.go",
         "agg_over_projecting_derived_source_fdb_test.go",
         "agg_reshaping_input_ordinal_fdb_test.go",
+        "aggregate_case_mixed_type_fdb_test.go",
         "aggregate_edge_probe_test.go",
         "aggregate_edges_probe_test.go",
         "aggregate_index_sum_probe_test.go",

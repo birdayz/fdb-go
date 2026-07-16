@@ -491,7 +491,14 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 // Java's NumericAggregationValue MIN_*/MAX_* operators (NumericAggregationValue.java:679-687),
 // which are Math.min / Math.max per numeric type. It is the SOLE MIN/MAX comparator;
 // the accumulate loop's isNumeric gate guarantees both operands are one of
-// int64/int32/int/float64/float32.
+// int64/int32/int/float64/float32 — but NOT that acc and val share a type: an
+// unpromoted CASE/PickValue operand (`MIN(CASE WHEN c THEN dbl ELSE 0 END)`) mixes
+// int64 and float64 across rows. Java never sees that mix — its encapsulation
+// wraps the operand in PromoteValue, so MIN_D receives doubles only. Until Go
+// grows plan-time operand promotion, the same numeric promotion is applied here
+// PER PAIR (widest float type present wins), which computes exactly what Java
+// computes over the promoted operand — including the lossy corners (long→double
+// beyond 2^53, long→float beyond 2^24 round identically in both).
 //
 // For FLOAT/DOUBLE this MUST use Go's math.Min / math.Max, NOT a total-order
 // comparator. Go's math.Min/math.Max have special-cases identical to Java's
@@ -502,23 +509,38 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 // smallest finite. So float MIN/MAX is deliberately a DIFFERENT float semantic than
 // the ordering authority, exactly mirroring Java's Math.min/max (MIN_D/MAX_D) vs
 // Double.compare (tuple/index order) split. Integer types (int/int32/int64) have no
-// NaN or signed zero, so they take the ordinary int64 min/max (Java MIN_I/MIN_L /
-// MAX_I/MAX_L).
+// NaN or signed zero, so an all-integer pair takes the ordinary int64 min/max
+// (Java MIN_I/MIN_L / MAX_I/MAX_L).
 func aggMinMax(acc, val any, isMin bool) any {
 	if acc == nil {
 		return val
 	}
-	switch v := val.(type) {
-	case float64:
-		a := acc.(float64)
+	_, aIsF64 := acc.(float64)
+	_, vIsF64 := val.(float64)
+	_, aIsF32 := acc.(float32)
+	_, vIsF32 := val.(float32)
+	switch {
+	case aIsF64 || vIsF64:
+		// DOUBLE lane (Java MIN_D/MAX_D over the double-promoted operand).
+		a, aok := asFloat64(acc)
+		v, vok := asFloat64(val)
+		if !aok || !vok {
+			return acc // non-numeric mix: contract guard (isNumeric-gated upstream)
+		}
 		if isMin {
 			return math.Min(a, v)
 		}
 		return math.Max(a, v)
-	case float32:
-		a := acc.(float32)
-		// Widen to float64 for the op (preserves NaN and signed zero exactly), then
-		// narrow back — equivalent to Java's Math.min/max((float)…).
+	case aIsF32 || vIsF32:
+		// FLOAT lane (Java MIN_F/MAX_F over the float-promoted operand). An int
+		// side converts directly to float32 (Java's (float) promotion, one
+		// rounding); the min/max itself computes in float64 — exact for float32
+		// operands — and narrows back to one of them (or canonical NaN).
+		a, aok := asFloat32(acc)
+		v, vok := asFloat32(val)
+		if !aok || !vok {
+			return acc // contract guard
+		}
 		if isMin {
 			return float32(math.Min(float64(a), float64(v)))
 		}
@@ -546,6 +568,41 @@ func asInt64(x any) (int64, bool) {
 		return int64(n), true
 	case int:
 		return int64(n), true
+	}
+	return 0, false
+}
+
+// asFloat64 promotes a numeric aggregate operand to float64 (Java's double
+// promotion: float→double exact; long→double rounds beyond 2^53 identically).
+func asFloat64(x any) (float64, bool) {
+	switch n := x.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+// asFloat32 promotes a numeric aggregate operand to float32 for the FLOAT lane
+// (Java's (float) promotion; the float64-present case never reaches here — the
+// DOUBLE lane claims it first).
+func asFloat32(x any) (float32, bool) {
+	switch n := x.(type) {
+	case float32:
+		return n, true
+	case int64:
+		return float32(n), true
+	case int32:
+		return float32(n), true
+	case int:
+		return float32(n), true
 	}
 	return 0, false
 }
