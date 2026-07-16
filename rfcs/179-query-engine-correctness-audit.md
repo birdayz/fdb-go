@@ -410,11 +410,13 @@ type. F3 is the one true wire divergence in this audit — fix it first.
   NaN-propagating, signed-zero-correct) for FLOAT/DOUBLE; integers keep the
   total-order path. Deliberately a DIFFERENT float semantic than the ordering
   authority (`CompareFloat64` makes NaN greatest — right for MAX, WRONG for MIN),
-  mirroring Java's `Math.min/max` vs `Double.compare` split. `compareAny`'s float arm
-  is also routed through `CompareFloat64` so it is no longer a divergent third
-  comparator. *Pin:* `TestAggMinMax_FloatNaNAndSignedZero` (revert-proven: MIN over
-  `{2.0, NaN}` returns `2.0` not `NaN` with the comparator path) + `TestCompareAny_Float64`
-  total-order assertions. Found by the pre-merge full-branch sweep (Torvalds + @claude).
+  mirroring Java's `Math.min/max` vs `Double.compare` split. `compareAny` itself was
+  then DELETED (F50): with floats intercepted by `aggMinMax` and the F23 sort path
+  gone, its only live use was the integer fallback, now folded into `aggMinMax`
+  directly — no divergent third comparator survives. *Pin:*
+  `TestAggMinMax_FloatNaNAndSignedZero` (revert-proven: MIN over `{2.0, NaN}`
+  returns `2.0` not `NaN` with a comparator-based fold). Found by the pre-merge
+  full-branch sweep (Torvalds + @claude independently).
 
 ---
 
@@ -442,13 +444,14 @@ lead with the chokepoints:
   tuple order) and the residual `fmt` fallback dies loud (F9b). → collapses
   **F8, F9/F13, F10-comparator**, and the `mergeSort`/DISTINCT paths that share it.
   *(Arms landed in C2; loud residual is F9b.)* The ORDERING authority is
-  `values.CompareFloat64` (-0.0 < 0.0, NaN greatest), shared by sort/predicate and —
-  after F48 — `compareAny`. **Aggregate MIN/MAX is a deliberate SECOND float
+  `values.CompareFloat64` (-0.0 < 0.0, NaN greatest), shared by the sort and
+  predicate comparators. **Aggregate MIN/MAX is a deliberate SECOND float
   semantic**, not a violation of "one authority": Java's `MIN_D`/`MAX_D` are
   `Math.min`/`Math.max` (NaN-propagating, so NaN wins BOTH extremes — a total order
   cannot express that), distinct from `Double.compare` (tuple/index order). Go
-  mirrors the split via `aggMinMax` (`math.Min`/`math.Max`) for floats (F48). Two
-  float semantics, both Java-faithful, for two different operations.
+  mirrors the split via `aggMinMax` (`math.Min`/`math.Max`) for floats (F48); the
+  old scalar comparator behind MIN/MAX (`compareAny`) was deleted outright (F50).
+  Two float semantics, both Java-faithful, for two different operations.
 - **S3 — typed continuations end-to-end (Pattern 3).** Replace the JSON
   aggregate continuation with a typed codec (no U+FFFD / type loss) and route
   LEFT-OUTER/FlatMap resume through Java's `OrElse`/DefaultOnEmpty continuation
@@ -546,16 +549,17 @@ one defect each found by two auditors.
 | F37 | metadata-cosmetic | SUM(INT) result column BIGINT vs Java INT (value correct) | **RESIDUAL** (needs typed plumbing) |
 | F38 | correct-or-loud (latent) | Theme 7 (pushValueThroughFetch final still-correlated reject) | **DONE** |
 | F39 | wrong-rows (latent) | Theme 7 (STARTS_WITH ∩ inequality loud reject) | **DONE** |
-| F42 | wrong-cmp (latent) | S2 (compareAny plain-int normalize) | **DONE** |
+| F42 | wrong-cmp (latent) | S2 (plain-int normalize; now aggMinMax/asInt64 after the compareAny deletion) | **DONE** |
 | F43 | plan-quality pin | Theme 7 (RFC-042 correlated-LEFT-OUTER re-fire pin) | **DONE** |
 | F44 | (not a bug) | -0.0 insert — parity via shared proto/wire (verified) | **N/A** (benign) |
 | F45 | fail-safe test | Theme 7 (index-candidacy coverage assertion) | **DONE** |
-| F46 | wrong-cmp (latent) | S2 (compareAny []byte arm, defensive) | **DONE** |
+| F46 | wrong-cmp (latent) | S2 (compareAny []byte arm) | **SUPERSEDED** — the defensive arm, and then the whole comparator, were deleted as dead after F48 (aggMinMax bypasses it for floats; MIN/MAX operands are numeric-gated; bare-BYTES MIN/MAX stays plan-time 0A000) |
 | A1 | dead-code probe | Theme 5 (lowerComponentsAreSingletons guard — verified live+pinned) | **DONE** (already pinned) |
 | F9b | correct-or-loud | S2 (compareValues fmt residual — unreachable for real types) | **RESIDUAL** (documented) |
-| F47 | dead-code (non-blocking) | Theme 8 (flatMapCursor innerHadMatch test-only flag) | **RESIDUAL** (low-priority) |
+| F47 | dead-code | Theme 8 (FlatMap leftOuter/innerHadMatch flag pair + plan IsLeftOuter chain) | **DONE** (removed end-to-end; LEFT OUTER is DefaultOnEmpty/OrElse-only) |
 | F48 | wrong-rows | S2 (streaming MIN/MAX float = Math.min/max, NaN+signed-zero) | **DONE** (sweep-found) |
 | F49 | index-vs-residual (pre-existing) | Theme 2 (`WHERE f > -0.0` residual drops the index-returned 0.0 row) | **RESIDUAL** (RFC-082, documented) |
+| F50 | dead-code | Theme 8 (compareAny — dead after F48/F23; integer MIN/MAX folded into aggMinMax) | **DONE** (deleted) |
 
 Later-surfaced (during fixing): F27, F28 (float total-ordering in the comparator /
 cmpAny), F30 (semantic_identity.go still ignores text/distance comparison fields —
