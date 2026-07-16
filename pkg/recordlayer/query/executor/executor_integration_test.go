@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -352,6 +354,129 @@ func TestIntegration_SortLimitPlan(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestIntegration_SortContinuation_BytesKeyStraddle_F33 pins F33 end-to-end: an
+// ORDER BY on a BYTES column (Order.vector_data) whose in-memory sort buffer
+// straddles page boundaries — forced by a ScannedRecordsLimit that stops the inner
+// scan mid-buffer, so the partial buffer rides an encodeSortContinuation and is
+// restored by decodeSortContinuation on resume — returns rows in the CORRECT byte
+// order. Before F33 the buffered []byte sort keys resumed as base64 STRINGS (JSON),
+// so the comparator sorted them in base64-string order (wrong) instead of
+// lexicographic byte order. The byte values below deliberately order differently
+// under bytes.Compare than their base64 strings, and include high bytes (0xFF) that
+// JSON base64-encodes, so a string-typed resume misorders them.
+func TestIntegration_SortContinuation_BytesKeyStraddle_F33(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(1), VectorData: []byte{0x02, 0xff}},
+		&gen.Order{OrderId: proto.Int64(2), VectorData: []byte{0x01}},
+		&gen.Order{OrderId: proto.Int64(3), VectorData: []byte{0x03, 0x00}},
+		&gen.Order{OrderId: proto.Int64(4), VectorData: []byte{0x00, 0xaa}},
+		&gen.Order{OrderId: proto.Int64(5), VectorData: []byte{0x02, 0x01}},
+		&gen.Order{OrderId: proto.Int64(6), VectorData: []byte{0x01, 0xff}},
+	)
+
+	// Expected ASC lexicographic byte order of vector_data.
+	wantOrder := [][]byte{
+		{0x00, 0xaa}, {0x01}, {0x01, 0xff}, {0x02, 0x01}, {0x02, 0xff}, {0x03, 0x00},
+	}
+
+	// vector_data is Order proto field 8 → positional ordinal 7 (0-based proto
+	// declaration order: order_id0, flower1, price2, tags3, quantity4, coord_x5,
+	// coord_y6, vector_data7 — the sibling PRICE tests use ordinal 2).
+	const vectorDataOrdinal = 7
+
+	var got [][]byte
+	var continuation []byte
+	pages := 0
+	for {
+		pages++
+		if pages > 50 {
+			t.Fatal("resume loop did not converge (over 50 pages)")
+		}
+		exhausted, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			s, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+				SetSubspace(testSubspace(t)).Open()
+			if err != nil {
+				return nil, err
+			}
+			scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+			sorted := plans.NewRecordQueryInMemorySortPlan(
+				scan,
+				[]plans.SortKey{{
+					Field:     "VECTOR_DATA",
+					ValueExpr: values.NewFieldValueWithResolvedOrdinal("VECTOR_DATA", vectorDataOrdinal, values.UnknownType),
+					Desc:      false,
+				}},
+			)
+			// Stop the inner scan after 2 records per transaction so the sort buffer
+			// straddles page boundaries and rides the continuation.
+			props := recordlayer.DefaultExecuteProperties().WithScannedRecordsLimit(2)
+			cursor, err := ExecutePlan(ctx, sorted, s, EmptyEvaluationContext(), continuation, props)
+			if err != nil {
+				return nil, err
+			}
+			defer cursor.Close()
+
+			var nextCont []byte
+			done := false
+			for {
+				res, oerr := cursor.OnNext(ctx)
+				if oerr != nil {
+					return nil, oerr
+				}
+				if res.HasNext() {
+					v, ok := res.GetValue().Positional.Get(vectorDataOrdinal)
+					if !ok {
+						return nil, fmt.Errorf("no slot at ordinal %d", vectorDataOrdinal)
+					}
+					b, isBytes := v.([]byte)
+					if !isBytes {
+						return nil, fmt.Errorf("vector_data slot = %#v (%T), want []byte — a JSON-lossy resume flips it to a base64 string", v, v)
+					}
+					got = append(got, b)
+					continue
+				}
+				if res.GetNoNextReason().IsSourceExhausted() {
+					done = true
+				} else {
+					cb, cerr := res.GetContinuation().ToBytes()
+					if cerr != nil {
+						return nil, cerr
+					}
+					nextCont = cb
+				}
+				break
+			}
+			continuation = nextCont
+			return done, nil
+		})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if exhausted.(bool) {
+			break
+		}
+	}
+
+	// The straddle must actually have occurred (more than one page) or the test
+	// never exercised the sort continuation encode/decode.
+	if pages < 2 {
+		t.Fatalf("sort completed in %d page(s); expected multiple pages (the scan limit did not force a straddle)", pages)
+	}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("got %d rows, want %d: %v", len(got), len(wantOrder), got)
+	}
+	for i, want := range wantOrder {
+		if !bytes.Equal(got[i], want) {
+			t.Errorf("row %d vector_data = %x, want %x (sort order corrupted across the resume)", i, got[i], want)
+		}
 	}
 }
 

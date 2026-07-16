@@ -1330,12 +1330,15 @@ func FuzzLikeMatchEscape(f *testing.F) {
 	})
 }
 
-// cmpAny must impose Java's Double.compare total order on floats: NaN is the
-// GREATEST value (NaN vs a number is never equal, so `NaN = 5.0` is false and
-// `NaN > 5.0` is true), NaN compares equal to NaN, and -0.0 sorts strictly
-// before 0.0 (so `-0.0 = 0.0` is FALSE, matching Double.equals /
-// doubleToLongBits). Native `<`/`>` comparison would report every NaN pair and
-// the ±0 pair as EQUAL, diverging from the Record Layer's Comparisons.
+// cmpAny is the PREDICATE comparator. On floats it checks IEEE numeric equality
+// FIRST (-0.0 == +0.0), then falls to the Double.compare total order only for
+// ordering and NaN. So: -0.0 == +0.0 (`-0.0 = 0.0` is TRUE, `-0.0 >= 0.0` keeps
+// the row — a Go-correct divergence from Java's Double.compare, pinned by the
+// RFC-082 corpus); NaN is never equal to a number (`NaN = 5.0` false, `NaN > 5.0`
+// true) but NaN == NaN (matching Java Double.equals). This deliberately DIFFERS
+// from the SORT total order (values.CompareFloat64, -0.0 < 0.0, tested in
+// values.TestCompareFloat64) — predicate truth may exceed Java; sort order must
+// match the FDB tuple/index. Native `<`/`>` would report every NaN pair as EQUAL.
 func TestCmpAny_FloatTotalOrder(t *testing.T) {
 	t.Parallel()
 	negZero := math.Copysign(0, -1)

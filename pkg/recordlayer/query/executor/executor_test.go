@@ -4601,7 +4601,7 @@ func TestSortContinuation_RoundTrip(t *testing.T) {
 			t.Errorf("buf[%d].name = %v, want %q", i, m["name"], want)
 		}
 	}
-	// Ages: JSON round-trips through float64 → int64 conversion.
+	// Ages: the typed slot codec keeps int64 exactly (no JSON float64 detour).
 	for i, want := range []int64{30, 25, 35} {
 		m, _ := rowMapOK(gotBuf[i])
 		if m["age"] != want {
