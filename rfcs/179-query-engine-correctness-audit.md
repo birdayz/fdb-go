@@ -517,6 +517,17 @@ one defect each found by two auditors.
 | F33 | wrong-rows | S3 (sort continuation type loss) | **DONE** |
 | F34 | wrong-rows | S3 (agg keyVals exotic-type residual + comment) | **DONE** |
 | F35 | wrong-rows | Theme 7 (atomic-mutation index candidacy) | **DONE** |
+| F36 | (not a bug) | temporal MIN/MAX — Java has no temporal types at our pin | **N/A** (future extension) |
+| F37 | metadata-cosmetic | SUM(INT) result column BIGINT vs Java INT (value correct) | **RESIDUAL** (needs typed plumbing) |
+| F38 | correct-or-loud (latent) | Theme 7 (pushValueThroughFetch final still-correlated reject) | **DONE** |
+| F39 | wrong-rows (latent) | Theme 7 (STARTS_WITH ∩ inequality loud reject) | **DONE** |
+| F42 | wrong-cmp (latent) | S2 (compareAny plain-int normalize) | **DONE** |
+| F43 | plan-quality pin | Theme 7 (RFC-042 correlated-LEFT-OUTER re-fire pin) | **DONE** |
+| F44 | (not a bug) | -0.0 insert — parity via shared proto/wire (verified) | **N/A** (benign) |
+| F45 | fail-safe test | Theme 7 (index-candidacy coverage assertion) | **DONE** |
+| F46 | wrong-cmp (latent) | S2 (compareAny []byte arm, defensive) | **DONE** |
+| A1 | dead-code probe | Theme 5 (lowerComponentsAreSingletons guard — verified live+pinned) | **DONE** (already pinned) |
+| F9b | correct-or-loud | S2 (compareValues fmt residual — unreachable for real types) | **RESIDUAL** (documented) |
 
 Later-surfaced (during fixing): F27, F28 (float total-ordering in the comparator /
 cmpAny), F30 (semantic_identity.go still ignores text/distance comparison fields —

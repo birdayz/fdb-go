@@ -213,6 +213,7 @@ go_test(
         "left_join_continuation_fdb_test.go",
         "left_join_exists_residual_fdb_test.go",
         "left_join_mixed_outer_nesting_fdb_test.go",
+        "left_outer_planning_refire_fdb_test.go",
         "leftjoin_where_on_probe_test.go",
         "like_escape_probe_test.go",
         "like_pattern_probe_test.go",
