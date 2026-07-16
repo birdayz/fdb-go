@@ -26,9 +26,11 @@ tests:
       - [2, 'apricot']
       - [7, 'app']
 
-  # Suffix match: LIKE '%ry'
+  # Suffix match: LIKE '%ry' — 'blueberry' also ends in 'ry'; the
+  # original pin missed it.
   - query: SELECT id, name FROM items WHERE name LIKE '%ry' ORDER BY id
     rows:
+      - [4, 'blueberry']
       - [5, 'cherry']
 
   # Contains: LIKE '%an%'

@@ -144,6 +144,18 @@ func Load(path string) (*Scenario, error) {
 		if t.Rowcount != nil && t.EffectiveErrorCode() != "" {
 			return nil, fmt.Errorf("%s: tests[%d]: rowcount and error assertions are mutually exclusive", path, i)
 		}
+		// Assertions the runner can only honor on the Query path must not
+		// ride on a DML statement — the non-query branch returns before the
+		// plan/row diffing, so they would be silently ignored (the exact
+		// dropped-assertion class this loader exists to kill).
+		if !IsQuery(t.Query) {
+			if t.PlanContains != "" || t.PlanNotContains != "" {
+				return nil, fmt.Errorf("%s: tests[%d]: plan assertions are only valid on queries", path, i)
+			}
+			if t.Unordered {
+				return nil, fmt.Errorf("%s: tests[%d]: unordered is only valid on queries", path, i)
+			}
+		}
 	}
 	return &s, nil
 }

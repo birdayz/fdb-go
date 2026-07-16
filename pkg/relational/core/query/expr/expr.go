@@ -73,6 +73,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/semantic"
 )
@@ -699,11 +700,42 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// the residual path compares [16]byte==[16]byte. Mirrors the equality
 	// PromoteValue arm in promoteStringComparandToUuid.
 	parseStringToUUID := left.Type() != nil && values.IsUuid(left.Type())
+	// Java's constant-array type unification (SemanticAnalyzer.
+	// resolveArrayTypeFromElementTypes): all non-NULL elements must have ONE
+	// type, else DATATYPE_MISMATCH — checked on the RAW literal types, before
+	// any LHS-driven normalization, exactly where Java checks. Without this,
+	// a mixed list (`id IN (1, 'two', 3)`) kept the string verbatim and the
+	// point-probe silently matched nothing — silent wrong rows where Java
+	// rejects at plan time.
+	inElemClass := func(lit any) string {
+		switch lit.(type) {
+		case int64, int32, int:
+			return "LONG"
+		case float64, float32:
+			return "DOUBLE"
+		case string:
+			return "STRING"
+		case bool:
+			return "BOOLEAN"
+		case []byte:
+			return "BYTES"
+		}
+		return fmt.Sprintf("%T", lit)
+	}
+	seenClass := ""
 	list := make([]any, 0, len(rhs))
 	for i, v := range rhs {
 		lit, ok := values.EvaluateConstant(v)
 		if !ok {
 			return nil, fmt.Errorf("expr.ResolveIn: element %d is not constant (%T)", i, v)
+		}
+		if lit != nil {
+			if c := inElemClass(lit); seenClass == "" {
+				seenClass = c
+			} else if c != seenClass {
+				// Java verbatim message (Assert.thatUnchecked, ErrorCode.DATATYPE_MISMATCH).
+				return nil, api.NewError(api.ErrCodeDatatypeMismatch, "could not determine type of constant array")
+			}
 		}
 		if widenIntToDouble {
 			switch n := lit.(type) {

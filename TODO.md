@@ -4825,3 +4825,24 @@ unnest-residual slice → S4. The riders are standalone and start immediately:
       accidental relabel is caught. Pinned by `rfc173_rider2_agg_metadata_fdb_test.go`
       (6 subtests, red-first proven: D.DNAME + UNKNOWN drift reproduced with the fix
       disabled) + the value-flow pin.
+
+### RFC-180 follow-ups (query-engine quality remediation)
+
+- [ ] **Grouped-select ORDER BY widening (Graefe, be9e66c62 review):** a computed
+      ORDER BY key over a grouped reshaping projection that is NOT a SELECT-list
+      output currently declines typed 0AF00 (`translateSort` pull-up miss). Java
+      widens the select with the missing expression and re-projects
+      (`LogicalOperator.generateSelect`, `remainingOrderByExpressions`). Port the
+      widening for the grouped path (the EXISTS-fold path already has its own
+      instance booked under RFC-141 Phase 2 FOLLOW-UP). Pin: replace
+      `TestGroupedOrderBy_UnderivableKeyDeclinesTyped` with a row-level pin.
+- [ ] **Java-harness-verify the NULLS-default corpus flips (Graefe, efc07340e
+      review):** the aggregate_null_edge / aggregate_with_null_groups /
+      coalesce_in_join / distinct_patterns_java / order_by_nulls_java NULL-order
+      pins were corrected from ParseHelpers.java source (ASC NULLS FIRST / DESC
+      NULLS LAST). Close the provenance loop with a live cross-engine run (add
+      the shapes to the plandiff corpus or run them via SqlPlanSteps).
+- [ ] **Unify the two row-shape-transparency sets (Graefe nit):**
+      `projectionOverAggregate` (translator) peels Filter/Sort/Limit;
+      `underlyingGroupBy` peels Filter/Sort. One authority for "operators that
+      pass the row through unchanged".

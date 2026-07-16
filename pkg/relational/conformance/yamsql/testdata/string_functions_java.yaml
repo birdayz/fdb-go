@@ -64,15 +64,20 @@ tests:
     rows:
       - [4]
 
-  # String in GROUP BY
+  # String in GROUP BY — ORDER BY first_char is byte order: space
+  # (0x20) sorts before the letters, so the '  padded  ' group comes
+  # first.
   - query: SELECT UPPER(SUBSTRING(val, 1, 1)) AS first_char, COUNT(*) FROM texts WHERE val IS NOT NULL AND LENGTH(val) > 0 GROUP BY first_char ORDER BY first_char
     rows:
+      - [' ', 1]
       - ['H', 1]
       - ['L', 1]
       - ['U', 1]
-      - [' ', 1]
 
-  # Concatenation via || operator (Go extension)
+  # || is a logicalOperator (OR) in Java's grammar
+  # (RelationalParser.g4:1274-1276), so `val || '!'` parses as a
+  # boolean OR whose operand check fails with DATATYPE_MISMATCH
+  # (42804). Go matches (walk.go documents the alignment). The old
+  # rows pinned a retired pre-Cascades concat extension.
   - query: SELECT val || '!' FROM texts WHERE id = 1
-    rows:
-      - ['Hello World!']
+    error: "42804"

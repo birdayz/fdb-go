@@ -207,31 +207,38 @@ tests:
       - [5]
 
   # -------------------------------------------------------------------
-  # LIMIT / OFFSET clauses are rejected at parse time as of
-  # fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY / 0AF00) — Java's
-  # AstNormalizer.visitLimitClause throws
-  # "LIMIT clause is not supported." (or
-  # "OFFSET clause is not supported." — Java checks offset first).
-  # Pagination is JDBC-only via Statement.setMaxRows. The
-  # early-termination plumbing remains in execSelectQueryFull for
-  # eventual setMaxRows-routing, but is unreachable from SQL. Pin
-  # the rejection here too so the surface stays Java-aligned.
+  # LIMIT / OFFSET on eliminated-sort scans. LIMIT is a Go read-side
+  # extension (RFC-128); Java's rejection stays live-pinned in
+  # plandiff. The old 0AF00 pins predated the extension.
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM t ORDER BY id LIMIT 3
-    error_code: "0AF00"
+    rows:
+      - [1]
+      - [2]
+      - [3]
 
   - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 2
-    error_code: "0AF00"
+    rows:
+      - [3]
+      - [4]
 
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    error_code: "0AF00"
+    rows:
+      - [3, 10]
+      - [5, 15]
+      - [2, 20]
 
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
-    error_code: "0AF00"
+    rows:
+      - [5]
+      - [4]
 
   - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    error_code: "0AF00"
+    rows:
+      - [10]
+      - [15]
+      - [20]
 
   # -------------------------------------------------------------------
   # ORDER BY alias + natural-order elim
@@ -248,9 +255,11 @@ tests:
       - [4]
       - [5]
 
-  # Alias + LIMIT — LIMIT rejected at parse time (0AF00).
+  # Alias + LIMIT (Go extension, RFC-128).
   - query: SELECT id AS pk FROM t ORDER BY pk LIMIT 2
-    error_code: "0AF00"
+    rows:
+      - [1]
+      - [2]
 
   # Alias that shadows a different col — ORDER BY matches the
   # alias's underlying column, not the alias's own name.
@@ -312,9 +321,11 @@ tests:
       - [1, 20]
       - [1, 10]
 
-  # ORDER BY id DESC + LIMIT — LIMIT rejected at parse time (0AF00).
+  # ORDER BY id DESC + LIMIT (Go extension, RFC-128).
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
-    error_code: "0AF00"
+    rows:
+      - [5]
+      - [4]
 
   # PK equality + ORDER BY id DESC — single row, direction irrelevant
   # to the row set. Pins that the reverse-scan branch doesn't break
@@ -335,12 +346,14 @@ tests:
       - [2, 20]
       - [2, 10]
 
-  # ORDER BY DESC with alias + LIMIT — LIMIT rejected at parse time
-  # (0AF00). The alias-resolves-to-PK-col reverse-scan path is still
-  # exercised by the LIMIT-less ORDER BY DESC alias case below /
-  # earlier.
+  # ORDER BY DESC with alias + LIMIT (Go extension, RFC-128) —
+  # exercises the alias-resolves-to-PK-col reverse-scan path with a
+  # row bound.
   - query: SELECT id AS pk FROM t ORDER BY pk DESC LIMIT 3
-    error_code: "0AF00"
+    rows:
+      - [5]
+      - [4]
+      - [3]
 
   # ORDER BY DESC on a non-leading naturalOrder col, but the leading
   # col is equated in WHERE. Equality-prefix relaxation: a is constant
@@ -366,11 +379,11 @@ tests:
       - [2, 10]
       - [2, 20]
 
-  # Leading PK col equated + LIMIT — LIMIT rejected at parse time
-  # (0AF00). The equality-prefix-relaxation forward-scan path is
-  # still exercised by the LIMIT-less case immediately above.
+  # Leading PK col equated + LIMIT (Go extension, RFC-128) — the
+  # equality-prefix-relaxation forward-scan path with a row bound.
   - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC LIMIT 1
-    error_code: "0AF00"
+    rows:
+      - [2, 10]
 
   # ORDER BY includes the equated col followed by a non-equated col.
   # `ORDER BY a DESC, b DESC` with a equated — a's direction is
@@ -427,11 +440,12 @@ tests:
       - [5, 15]
       - [3, 10]
 
-  # Same with LIMIT — LIMIT rejected at parse time (0AF00). The
-  # reverse-scan path is still exercised by the LIMIT-less DESC case
-  # immediately above.
+  # Same with LIMIT (Go extension, RFC-128) — reverse scan bounded
+  # to the top two v values.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
-    error_code: "0AF00"
+    rows:
+      - [4, 40]
+      - [1, 30]
 
   # Composite secondary index range: idx_region_plan ordering is
   # (region, plan, id). ORDER BY plan DESC under a pure-prefix
@@ -446,9 +460,9 @@ tests:
       - [1, 'us', 'pro']
       - [2, 'us', 'free']
 
-  # Equated leading + DESC on trailing non-equated col + LIMIT —
-  # LIMIT rejected at parse time (0AF00). The composite-secondary
-  # reverse-scan path under equality-prefix relaxation is still
-  # exercised by the LIMIT-less DESC case earlier in this file.
+  # Equated leading + DESC on trailing non-equated col + LIMIT (Go
+  # extension, RFC-128). region='eu' rows: (4, 'pro'), (5, 'free');
+  # plan DESC puts 'pro' first, LIMIT 1 keeps id=4.
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
-    error_code: "0AF00"
+    rows:
+      - [4]

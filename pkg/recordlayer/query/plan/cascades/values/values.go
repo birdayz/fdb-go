@@ -3147,6 +3147,22 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			}
 			return float64(0), nil
 		}
+	case TypeCodeUuid:
+		// Java CastValue.STRING_TO_UUID → PromoteValue.stringToUuidValue
+		// (UUID.fromString; invalid → SemanticException INVALID_UUID_VALUE).
+		// Same routine and wording as Go's PromoteValue UUID arm — Java
+		// routes CAST and promotion through the one helper, so must we.
+		switch val := v.(type) {
+		case string:
+			u, perr := uuid.Parse(val)
+			if perr != nil {
+				return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", val)
+			}
+			return [16]byte(u), nil
+		case [16]byte:
+			// Already the neutral UUID representation (RFC-162).
+			return val, nil
+		}
 	}
 	return nil, nil
 }

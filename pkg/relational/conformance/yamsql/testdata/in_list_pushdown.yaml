@@ -10,7 +10,7 @@
 # returned via pushdown must match the scan path, including NOT IN
 # (which bails to scan), IN with a subquery (bails), IN with NULL
 # elements (NULL dropped, zero rows from UNKNOWN branch), type-mismatch
-# (bails to scan which surfaces 22000), mixed-predicate WHERE with
+# (rejected 42809 per Java SemanticAnalyzer), mixed-predicate WHERE with
 # residual post-filters.
 name: in_list_pushdown
 schema_template: |
@@ -92,9 +92,9 @@ tests:
       - [3, 'three']
 
   # NULL in IN list — Java rejects with "NULL values are not allowed
-  # in the IN list" (22000); aligned Go-side .
+  # in the IN list" — WRONG_OBJECT_TYPE 42809 (SemanticAnalyzer.java:768).
   - query: SELECT id FROM t WHERE id IN (5, NULL)
-    error_code: "22000"
+    error_code: "42809"
 
   # All values → all rows (order by id to deterministically compare).
   - query: SELECT id FROM t WHERE id IN (1, 2, 3, 4, 5) ORDER BY id
@@ -180,20 +180,24 @@ tests:
 
   # NULL in IN list rejected (Java alignment).
   - query: SELECT id FROM t WHERE id IN (1, NULL, 3) ORDER BY id
-    error_code: "22000"
+    error_code: "42809"
 
   # IN with only NULL — Java-aligned rejection.
   - query: SELECT id FROM t WHERE id IN (NULL)
-    error_code: "22000"
+    error_code: "42809"
 
   # -------------------------------------------------------------------
   # Type mismatch — cross-type IN element
   # -------------------------------------------------------------------
 
-  # id is BIGINT; string literal in the list bails to scan; scan's
-  # evalPredicate surfaces 22000 per the standard cross-type rule.
+  # id is BIGINT; a mixed-type constant list is rejected at plan time —
+  # Java SemanticAnalyzer.resolveArrayTypeFromElementTypes: all non-NULL
+  # elements must have ONE type, else DATATYPE_MISMATCH (42804) "could not
+  # determine type of constant array". (The old 22000 pin described a
+  # deleted legacy path; before the RFC-180 fix Go silently returned zero
+  # matching sub-probes here — wrong rows, no error.)
   - query: SELECT id FROM t WHERE id IN (1, 'two', 3)
-    error_code: "22000"
+    error_code: "42804"
 
   # -------------------------------------------------------------------
   # String PK — IN on a STRING-kind single-col PK

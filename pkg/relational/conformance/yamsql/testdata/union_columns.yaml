@@ -40,8 +40,7 @@ tests:
       - [2, 200]
 
   # ORDER BY DESC on union — pins that ORDER BY DESC applies to the
-  # combined result. (LIMIT was incidental; rejected at parse time as
-  # of fdb-relational 4.11.1.0.)
+  # combined result.
   - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY v DESC
     rows:
       - [2, 200]
@@ -55,11 +54,14 @@ tests:
   - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w
     error_code: "42703"
 
-  # LIMIT / OFFSET on a UNION are rejected at parse time
-  # (fdb-relational 4.11.1.0 / Go aligned). Java checks offset first,
-  # so the combined shape errors on OFFSET.
+  # LIMIT / OFFSET on a UNION. LIMIT is a Go read-side extension
+  # (RFC-128); Java's rejection stays live-pinned in plandiff.
+  # Combined sorted v: 10, 20, 100, 200 — OFFSET 1 skips 10,
+  # LIMIT 2 keeps 20 and 100.
   - query: SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1
-    error_code: "0AF00"
+    rows:
+      - [20]
+      - [100]
 
   # UNION (without ALL) — Java rejects "only UNION ALL is supported"
   # (0A000); aligned .

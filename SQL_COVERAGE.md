@@ -15,27 +15,27 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 - **unsupported** — an explicitly-unsupported feature we cleanly reject (SQLSTATE `0A000`/`0AF00`/`0AF01`/`42883`).
 - **error-path** — correct rejection/constraint semantics (unknown column, overflow, unique violation, type mismatch, …): supported behaviour, not a gap.
 
-**319 scenarios · 2517 test cases** — 2217 supported (88.1%), 106 unsupported-feature pins, 194 error-path pins.
+**319 scenarios · 2517 test cases** — 2235 supported (88.8%), 86 unsupported-feature pins, 196 error-path pins.
 
 | Feature area | Cases | Supported | Unsupported | Error-path | Supported % |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 302 | 272 | 18 | 12 | 90.1% |
 | Joins | 264 | 255 | 3 | 6 | 96.6% |
-| Subqueries (EXISTS / IN / scalar) | 281 | 238 | 27 | 16 | 84.7% |
-| CTEs | 85 | 62 | 6 | 17 | 72.9% |
-| Set operations (UNION / INTERSECT / EXCEPT) | 47 | 38 | 5 | 4 | 80.9% |
+| Subqueries (EXISTS / IN / scalar) | 281 | 241 | 25 | 15 | 85.8% |
+| CTEs | 85 | 63 | 5 | 17 | 74.1% |
+| Set operations (UNION / INTERSECT / EXCEPT) | 47 | 39 | 4 | 4 | 83.0% |
 | DML (INSERT / UPDATE / DELETE) | 194 | 179 | 1 | 14 | 92.3% |
-| Ordering & pagination | 114 | 95 | 15 | 4 | 83.3% |
-| Scalar functions & expressions | 347 | 308 | 14 | 25 | 88.8% |
+| Ordering & pagination | 114 | 110 | 0 | 4 | 96.5% |
+| Scalar functions & expressions | 347 | 305 | 14 | 28 | 87.9% |
 | Predicates & WHERE | 104 | 102 | 0 | 2 | 98.1% |
 | Column resolution & aliasing | 55 | 29 | 0 | 26 | 52.7% |
 | NULL handling | 26 | 22 | 0 | 4 | 84.6% |
 | NULL handling & boolean logic | 48 | 48 | 0 | 0 | 100.0% |
-| Index usage | 162 | 159 | 1 | 2 | 98.1% |
+| Index usage | 162 | 160 | 0 | 2 | 98.8% |
 | Types | 144 | 124 | 4 | 16 | 86.1% |
 | Keys & primary keys | 132 | 127 | 0 | 5 | 96.2% |
 | Error codes & validation | 37 | 8 | 2 | 27 | 21.6% |
 | End-to-end scenarios | 20 | 20 | 0 | 0 | 100.0% |
 | Other | 155 | 131 | 10 | 14 | 84.5% |
-| **Total** | **2517** | **2217** | **106** | **194** | **88.1%** |
+| **Total** | **2517** | **2235** | **86** | **196** | **88.8%** |
 

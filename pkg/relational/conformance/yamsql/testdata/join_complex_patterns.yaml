@@ -41,8 +41,9 @@ tests:
       - [1, 150]
       - [1, 200]
 
-  # Join with expression in WHERE
+  # Join with expression in WHERE. The (1,3) pair does NOT qualify:
+  # 150 + 100 = 250, and the predicate is strictly > 250 — the
+  # original pin included it by mistake.
   - query: SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id AND c.price + p.price > 250 ORDER BY c.id
     rows:
       - [1, 2]
-      - [1, 3]

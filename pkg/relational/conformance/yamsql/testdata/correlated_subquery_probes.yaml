@@ -5,9 +5,9 @@
 # outer-scope stack on EmbeddedConnection was removed in RFC-145/RFC-147).
 #
 # Scalar subquery correlation (`SELECT (SELECT COUNT(*) FROM p WHERE
-# p.x = outer.id) FROM outer`) is NOT supported: scalar subqueries are
-# pre-evaluated before the outer scan starts (to avoid nested FDB txns),
-# which precludes per-row outer-row binding. Pinned below as 42703.
+# p.x = outer.id) FROM outer`) is a Go read-side extension: Java's
+# grammar has no subquery expression atom (live-pinned by plandiff
+# scalar_subq_in_select_list). Pinned below as rows.
 name: correlated_subquery_probes
 schema_template: |
   CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id))
@@ -30,11 +30,17 @@ tests:
   # AstNormalizer.visitInPredicate; CLAUDE.md #10 alignment).
   - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
     error_code: "0AF00"
-  # Correlated scalar subquery — scalar subqueries are pre-evaluated
-  # before the outer scan starts (no per-row execution), so correlation
-  # is unsupported. Inner errors 42703 at pre-eval time.
+  # Correlated scalar subquery in the projection — a Go extension
+  # (Java's grammar has no subquery expression atom; live-pinned by
+  # plandiff scalar_subq_in_select_list). The old 42703 pinned the
+  # retired pre-eval architecture. Alice and Bob have one project
+  # each; Carol has none.
   - query: SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp
-    error_code: "42703"
+    unordered: true
+    rows:
+      - ['Alice', 1]
+      - ['Bob', 1]
+      - ['Carol', 0]
   # Uncorrelated EXISTS still works (baseline).
   - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project) ORDER BY id
     rows:
@@ -47,12 +53,15 @@ tests:
   # the "outer rows whose id is in the inner result" semantics.
   - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project) ORDER BY id
     error_code: "0AF00"
-  # LIMIT inside an EXISTS subquery is rejected at parse time as of
-  # fdb-relational 4.11.1.0 (LIMIT clause is not supported., 0AF00).
-  # Pre-rejection this probe pinned that ordering inside a
-  # set-existence check is benign; now LIMIT itself wins.
+  # LIMIT inside an EXISTS subquery. LIMIT is a Go read-side extension
+  # (RFC-128); Java's rejection stays live-pinned in plandiff.
+  # Uncorrelated EXISTS over a non-empty table is true for every outer
+  # row — ordering inside a set-existence check is benign.
   - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project ORDER BY id LIMIT 1) ORDER BY id
-    error_code: "0AF00"
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Carol']
 
   # Correlated EXISTS with additional inner filter: keep outer iff the
   # inner has a project with emp_id = outer.id AND inner.id >= 100.

@@ -1,6 +1,7 @@
 # order_by_nulls_java.yaml — ORDER BY with NULL values and multiple
-# columns. Tests SQL standard NULL ordering behavior (NULLs sort last
-# in ASC, first in DESC in most implementations).
+# columns. Java's default NULL ordering is ASC NULLS FIRST / DESC
+# NULLS LAST (ParseHelpers.java:167-172); Go matches. (This is the
+# opposite of Postgres, which defaults to NULLS LAST on ASC.)
 name: order_by_nulls_java
 schema_template: |
   CREATE TABLE items (
@@ -19,35 +20,38 @@ setup:
       (5, 'B', 50, null),
       (6, null, null, null)
 tests:
-  # ORDER BY column with NULLs — ASC (NULLs last)
+  # ORDER BY column with NULLs — ASC default is NULLS FIRST
+  # (ParseHelpers.java:167-172).
   - query: SELECT id, price FROM items ORDER BY price, id
     rows:
+      - [2, null]
+      - [6, null]
       - [5, 50]
       - [1, 100]
       - [4, 150]
       - [3, 200]
-      - [2, null]
-      - [6, null]
 
-  # ORDER BY DESC — NULLs first
+  # ORDER BY DESC — default is NULLS LAST.
   - query: SELECT id, price FROM items ORDER BY price DESC, id
     rows:
-      - [2, null]
-      - [6, null]
       - [3, 200]
       - [4, 150]
       - [1, 100]
       - [5, 50]
+      - [2, null]
+      - [6, null]
 
-  # Multi-column ORDER BY with NULLs in both columns
+  # Multi-column ORDER BY with NULLs in both columns — ASC NULLS FIRST
+  # on both keys: NULL categories first, NULL prices first within each
+  # category.
   - query: SELECT id, category, price FROM items ORDER BY category, price, id
     rows:
+      - [6, null, null]
+      - [4, null, 150]
       - [1, 'A', 100]
       - [3, 'A', 200]
-      - [5, 'B', 50]
       - [2, 'B', null]
-      - [4, null, 150]
-      - [6, null, null]
+      - [5, 'B', 50]
 
   # ORDER BY with WHERE filtering NULLs
   - query: SELECT id, price FROM items WHERE price IS NOT NULL ORDER BY price
@@ -57,19 +61,21 @@ tests:
       - [4, 150]
       - [3, 200]
 
-  # ORDER BY + LIMIT with NULLs
+  # ORDER BY + LIMIT with NULLs — ASC NULLS FIRST puts the NULL-price
+  # rows ahead of the smallest non-null price.
   - query: SELECT id, price FROM items ORDER BY price, id LIMIT 3
     rows:
+      - [2, null]
+      - [6, null]
       - [5, 50]
-      - [1, 100]
-      - [4, 150]
 
-  # ORDER BY DESC + LIMIT — NULLs first, then highest
+  # ORDER BY DESC + LIMIT — DESC default is NULLS LAST, so the
+  # highest non-null ratings win: 5 (id=1), 4 (id=4), 3 (id=2).
   - query: SELECT id FROM items ORDER BY rating DESC, id LIMIT 3
     rows:
-      - [3]
-      - [5]
-      - [6]
+      - [1]
+      - [4]
+      - [2]
 
   # GROUP BY with ORDER BY on aggregate
   - query: SELECT category, COUNT(*) AS cnt FROM items WHERE category IS NOT NULL GROUP BY category ORDER BY cnt DESC
@@ -77,10 +83,11 @@ tests:
       - ['A', 2]
       - ['B', 2]
 
-  # Mixed ASC/DESC
+  # Mixed ASC/DESC — price DESC default is NULLS LAST, so within
+  # category B the non-null 50 precedes the NULL price.
   - query: SELECT id, category, price FROM items WHERE category IS NOT NULL ORDER BY category ASC, price DESC, id
     rows:
       - [3, 'A', 200]
       - [1, 'A', 100]
-      - [2, 'B', null]
       - [5, 'B', 50]
+      - [2, 'B', null]

@@ -70,24 +70,15 @@ tests:
       - [~]
       - [0]
       - [1]
-  # DISTINCT on expression with positional ORDER BY referring to that
-  # expression — rejected. Note: DISTINCT is intentionally exempt from
-  # the natural-order satisfiability gate (per nightshift-60 — DISTINCT
-  # is a Go-only feature with its own pipeline), so 0AF01
-  # (ErrCodeUnsupportedSort) does NOT fire here. Instead the rejection
-  # comes from the ORDER BY column-resolution path
-  # (`select_query_full.go#1052`): positional `1` resolves to the
-  # first SELECT-list expression `v / 2` whose synthetic internal name
-  # has no matching proto field descriptor, so the lookup returns
-  # nil and raises `ErrCodeInvalidParameter` (22023) "ORDER BY column
-  # ... not found in table ...". Same code path that rejects ORDER BY
-  # of any expression-named-projection.
-  #
   # Go extension: DISTINCT + positional ORDER BY on an expression.
   # Java rejects all DISTINCT; Go's Cascades + ImplementDistinctFinalRule
   # handles this correctly via in-memory sort + hash distinct composition.
+  # ASC default is NULLS FIRST (Java ParseHelpers.java:167-172) — the
+  # old pin put NULL last, contradicting this file's own
+  # `SELECT DISTINCT v FROM t ORDER BY v` stanza above, which already
+  # pins NULLS FIRST.
   - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
     rows:
+      - [~]
       - [0]
       - [1]
-      - [~]

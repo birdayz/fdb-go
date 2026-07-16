@@ -55,12 +55,12 @@ tests:
     rows:
       - [3]
 
-  # Index pushdown + LIMIT — LIMIT rejected at parse time as of
-  # fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY / 0AF00). The
-  # index-pushdown ORDER BY path is exercised by the LIMIT-less
-  # cases above.
+  # Index pushdown + LIMIT. LIMIT is a Go read-side extension
+  # (RFC-128); Java's rejection stays live-pinned in plandiff.
+  # active rows are ids 1 and 3; LIMIT 1 keeps id=1.
   - query: SELECT id FROM t WHERE status = 'active' ORDER BY id LIMIT 1
-    error_code: "0AF00"
+    rows:
+      - [1]
 
   # Non-indexed column → falls through to full scan (still correct).
   - query: SELECT id FROM t WHERE v = 30

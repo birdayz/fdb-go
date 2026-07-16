@@ -49,16 +49,17 @@ tests:
   # registry only installs numeric MIN / MAX overloads (CLAUDE.md
   # gotcha: "MIN(s) / MAX(s) over non-numeric columns is unsupported
   # by fdb-relational"). Go's embedded engine matches at runtime via
-  # `requireMinMaxNumeric`. Lexicographic min/max would need an
-  # `ORDER BY ... LIMIT 1` rewrite — but LIMIT itself is also
-  # rejected at parse time as of fdb-relational 4.11.1.0
-  # (UNSUPPORTED_QUERY / 0AF00), so even that workaround is
-  # unavailable. Same architectural reason: function registry has no
-  # non-numeric MIN/MAX evaluator.
+  # `requireMinMaxNumeric`. Same architectural reason: function
+  # registry has no non-numeric MIN/MAX evaluator. (The `ORDER BY ...
+  # LIMIT 1` rewrite below is the Go-side workaround.)
   - query: SELECT (SELECT MIN(name) FROM t) FROM t WHERE id = 1
     error_code: "0A000"
   # Subquery whose inner SELECT contains an ORDER BY + LIMIT 1
-  # (a common idiom for "first row by some criterion") — LIMIT is
-  # rejected at parse time as of fdb-relational 4.11.1.0.
+  # (a common idiom for "first row by some criterion"). LIMIT is a Go
+  # read-side extension (RFC-128); Java's rejection stays live-pinned
+  # in plandiff. Scores: alice 9.5, bob 7.25, carol NULL. DESC default
+  # is NULLS LAST (Java ParseHelpers.java:167-172), so the max
+  # non-null score wins → 'alice'.
   - query: SELECT (SELECT name FROM t ORDER BY score DESC LIMIT 1) FROM t WHERE id = 1
-    error_code: "0AF00"
+    rows:
+      - ['alice']

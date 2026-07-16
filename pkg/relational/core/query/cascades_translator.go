@@ -5830,11 +5830,15 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 }
 
 // projectionOverAggregate reports whether p's row is produced by a GROUP BY
-// aggregate underneath (peeling only row-shape-preserving operators, the same
-// transparency set underlyingGroupBy applies). Above an aggregate, the ONLY
-// addressable columns are the projection's own outputs — no base-table column
-// survives the reshape — which is what licenses translateSort's
-// pull-up-or-decline handling of its sort keys.
+// aggregate underneath, peeling only row-shape-preserving operators
+// (Filter/Sort like underlyingGroupBy, plus Limit — Limit preserves slots
+// too; underlyingGroupBy just never encounters one below a sort). Above an
+// aggregate, the ONLY addressable columns are the projection's own outputs —
+// no base-table column survives the reshape — which is what licenses
+// translateSort's pull-up-or-decline handling of its sort keys. NOTE the
+// coupling with underlyingGroupBy: that helper deliberately STOPS at a
+// projection, so for any sort input where this returns true, sortGB is nil
+// and the two rebase paths are mutually exclusive by construction.
 func projectionOverAggregate(p *logical.LogicalProject) bool {
 	cur := p.Input
 	for {

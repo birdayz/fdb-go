@@ -40,10 +40,13 @@ tests:
       - [20, 400]
       - [30, 500]
 
-  # HAVING with both aggregate and grouped column.
+  # HAVING with both aggregate and grouped column. Group 30 (sum 500)
+  # also satisfies both predicates (500 > 400, 30 >= 20) — the
+  # original pin missed it.
   - query: SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 >= 20 AND SUM(col2) > 400 ORDER BY col1
     rows:
       - [20, 700]
+      - [30, 500]
 
   # --- JOIN patterns (Java join-tests.yamsql) ---
 
