@@ -1496,20 +1496,19 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			// list undetected — the same exposure as the materialized inner
 			// itself, which re-collects whatever the new transaction sees.
 			if c.resumePending {
-				c.resumePending = false
 				if len(c.resumeCheck) > 0 && outerRow.PrimaryKey != nil &&
 					!bytes.Equal(outerRow.PrimaryKey.Pack(), c.resumeCheck) {
-					// Java FlatMapPipelinedCursor (and this package's own
-					// flatMapCursor): a check-value mismatch means the data
-					// changed between transactions — DISCARD the stale inner
-					// position and restart this outer row's inner from
-					// scratch, never error. innerIdx/outerMatched keep their
-					// fresh-reset values. (Java keeps an unconsumed initial
-					// inner continuation armed for a LATER outer row whose
-					// check value matches; discarding on the first row is
-					// the safer reading and unobservable for a PK-ordered
-					// outer resumed past the saved key.)
+					// Not the saved outer row (data changed between
+					// transactions — e.g. a row inserted before it): run
+					// THIS row's inner from its fresh-reset start and keep
+					// the state ARMED for the saved row when it re-appears.
+					// Java nulls initialInnerContinuation ONLY in the match
+					// branch (FlatMapPipelinedCursor:216-219); discarding on
+					// the first mismatch would re-emit the saved row's
+					// already-delivered pairs when it arrives later
+					// (duplicate rows). Never an error either way.
 				} else {
+					c.resumePending = false
 					c.innerIdx = c.resumeInnerIdx
 					c.outerMatched = c.resumeOuterMatched
 				}
@@ -1763,6 +1762,12 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (empty continuation payload)"}
 	}
 	if len(fmc.GetInnerContinuation()) == 0 {
+		if len(fmc.GetOuterContinuation()) == 0 {
+			// A check-value-only token is unreachable from this encoder
+			// (the check rides only with mid-inner state); reject rather
+			// than misread it as a fresh scan.
+			return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (check value without positions)"}
+		}
 		return fmc.GetOuterContinuation(), nil, nil
 	}
 	tup, terr := tuple.Unpack(fmc.GetInnerContinuation())

@@ -270,26 +270,6 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		c.priorOuterContinuation = c.lastOuterContinuation
 		c.lastOuterContinuation = outerResult.GetContinuation()
 
-		// Java FlatMapPipelinedCursor (:210-220) consults the check value ONLY
-		// while an initial inner continuation is pending (initialInnerContinuation
-		// != null), and a mismatch RESTARTS the inner from the beginning for the
-		// (changed) outer rather than erroring — "this handles common cases of the
-		// data changing between transactions, such as the outer record being
-		// deleted or a new record being inserted right before it". The Cascades
-		// RecordQueryFlatMapPlan passes checker=null (no check at all); Go keeps the
-		// check as a resume-safety net but MUST mirror Java's restart-not-error
-		// semantics, or a legitimately-resumed page (or a deleted outer) hard-fails.
-		if c.initialInnerCont != nil {
-			if len(c.pendingCheckValue) > 0 && outerRow.PrimaryKey != nil &&
-				!bytes.Equal(outerRow.PrimaryKey.Pack(), c.pendingCheckValue) {
-				// Outer row changed: drop the stale inner continuation and rescan
-				// the inner from the start for this outer (Java's behaviour).
-				c.initialInnerCont = nil
-				c.hasPendingInner = false
-			}
-			c.pendingCheckValue = nil
-		}
-
 		// Bind the outer row as a correlation and execute the inner plan.
 		// Use initialInnerCont for the first outer row on resume.
 		//
@@ -318,11 +298,29 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias.Name())
 		}
 		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerBinding)
+		// Java FlatMapPipelinedCursor (:210-220): the initial inner
+		// continuation stays ARMED across outer rows until the row whose
+		// check value matches (or either check value is absent) CONSUMES it
+		// — Java nulls initialInnerContinuation ONLY in the match branch. A
+		// mismatching row (data changed between transactions — e.g. a row
+		// inserted before the saved one) runs its inner from the beginning
+		// while the armed state waits for the saved row to re-appear;
+		// discarding on the first mismatch would re-emit the saved row's
+		// already-delivered inner prefix when it arrives later (duplicate
+		// rows). The Cascades RecordQueryFlatMapPlan passes checker=null in
+		// Java (no check at all); Go keeps the PK check as a resume-safety
+		// net with Java's restart-not-error semantics.
 		var innerContBytes []byte
 		if c.initialInnerCont != nil {
-			innerContBytes = c.initialInnerCont
-			c.initialInnerCont = nil
-			c.hasPendingInner = false
+			if len(c.pendingCheckValue) > 0 && outerRow.PrimaryKey != nil &&
+				!bytes.Equal(outerRow.PrimaryKey.Pack(), c.pendingCheckValue) {
+				// Not the saved outer row: fresh inner, stay armed.
+			} else {
+				innerContBytes = c.initialInnerCont
+				c.initialInnerCont = nil
+				c.hasPendingInner = false
+				c.pendingCheckValue = nil
+			}
 		}
 		innerCursor, err := ExecutePlan(ctx, c.innerPlan, c.store, correlatedCtx, innerContBytes, c.props)
 		if err != nil {
@@ -592,8 +590,12 @@ func (c *flatMapCursor) wrapOuterContinuation(outerCont recordlayer.RecordCursor
 	if c.hasPendingInner {
 		// Snapshot the pending inner bytes now: the cursor nils
 		// initialInnerCont when it consumes the pending resume, and an
-		// already-issued continuation must not change under it.
+		// already-issued continuation must not change under it. The check
+		// value rides along — without it a re-resume would apply the armed
+		// inner to the FIRST outer row unverified (the wrong row, if the
+		// saved one is no longer first).
 		cont.pendingInner = c.initialInnerCont
+		cont.checkValue = c.pendingCheckValue
 	}
 	return cont
 }

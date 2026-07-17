@@ -276,6 +276,57 @@ func TestNLJContinuation_ArmedResumeSurvivesOuterStop(t *testing.T) {
 	}
 }
 
+// TestNLJContinuation_ArmedStateAppliesToLaterMatchingRow pins Java's
+// kept-armed contract (FlatMapPipelinedCursor nulls initialInnerContinuation
+// ONLY in the match branch): when a NEW outer row appears at the resume
+// position (inserted between transactions before the saved row), the
+// mismatching row runs its inner from scratch while the armed state WAITS,
+// and the saved row — arriving later — resumes at its saved inner position.
+// Discarding on the first mismatch would re-emit the saved row's
+// already-delivered pairs: duplicate rows.
+func TestNLJContinuation_ArmedStateAppliesToLaterMatchingRow(t *testing.T) {
+	t.Parallel()
+	outers := nljTestRows("K", 2)
+	inners := nljTestRows("J", 3)
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nil)
+	fullKeys, conts := drainNLJ(t, full)
+	if len(fullKeys) != 6 {
+		t.Fatalf("cross fixture must emit 6 pairs, got %d", len(fullKeys))
+	}
+
+	// conts[3] = after the saved outer row K1's FIRST pair (innerIdx=1).
+	outerCont, rs, derr := decodeNLJContinuation(conts[3])
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	if rs == nil || rs.innerIdx != 1 {
+		t.Fatalf("fixture must capture innerIdx=1 on the second outer, got %+v", rs)
+	}
+
+	// Insert a NEW row X at the resume position: the resumed outer yields
+	// X (mismatch) first, then the saved K1 (match).
+	x := dmap(map[string]any{"K": int64(99)})
+	x.PrimaryKey = tuple.Tuple{"K", int64(99)}
+	newOuters := []QueryResult{outers[0], x, outers[1]}
+	resumed := nljTestCursor(t, recordlayer.FromListWithContinuation(newOuters, outerCont), inners, plans.JoinInner, nil)
+	resumed.applyResume(rs)
+	gotKeys, _ := drainNLJ(t, resumed)
+
+	// X emits ALL 3 pairs; the saved K1 resumes at innerIdx=1 → 2 pairs.
+	// 6 rows (X full + K1 full) means the armed state was discarded and
+	// K1's first pair duplicated.
+	if len(gotKeys) != 5 {
+		t.Fatalf("armed state must apply to the LATER matching row (want 3 new + 2 resumed = 5 rows), got %d: %v",
+			len(gotKeys), gotKeys)
+	}
+	// The last two rows must be exactly the full run's K1 suffix.
+	for i, want := range fullKeys[4:] {
+		if gotKeys[3+i] != want {
+			t.Fatalf("resumed K1 suffix row %d = %q, want %q", i, gotKeys[3+i], want)
+		}
+	}
+}
+
 // TestNLJContinuation_UnresumableOuterDeclines pins the zero-length-token
 // corner: a LEFT NLJ over an outer that yields NO continuation bytes (a
 // FirstOrDefault-style single-result cursor) emits its advanced-outer
