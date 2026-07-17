@@ -348,9 +348,10 @@ func executeIndexScan(
 		// against the record type reads the same slot on the base-scan and
 		// covering paths. Non-covered fields stay nil (Java: unset partial
 		// fields — the planner's covering gate guarantees they are never
-		// referenced). Falls back to the index-layout row when any column
-		// cannot be mapped (a nested/expression index column has no
-		// top-level logical slot; those shapes keep name resolution).
+		// referenced). When any column cannot be mapped (a
+		// nested/expression index column has no top-level logical slot),
+		// this falls THROUGH to the full-record fetch below — never an
+		// index-layout row, which a baked logical ordinal would misread.
 		logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
 		if logicalOrds != nil {
 			return &coveringIndexCursor{

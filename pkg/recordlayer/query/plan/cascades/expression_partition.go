@@ -111,9 +111,10 @@ func (p *PlanPartition) HasPrimaryKey() bool {
 }
 
 // GetOrdering returns the Ordering from the first expression in this
-// partition. Per-expression property — not a partitioning dimension.
-// For precise ordering, use GetExpressionPropertyValue on individual
-// expressions.
+// partition. Ordering IS a partitioning dimension — the partition key
+// folds orderingPartitionHash — so members share an ordering hash;
+// the first expression's Ordering is representative. For the precise
+// per-expression value, use GetExpressionPropertyValue.
 func (p *PlanPartition) GetOrdering() properties.Ordering {
 	for _, e := range p.GetExpressions() {
 		if props, ok := p.exprProps[e]; ok {

@@ -57,9 +57,10 @@ type Planner struct {
 	planningExpressionRules []ExpressionRule
 
 	// MaxTasks caps the total tasks executed before the planner
-	// gives up (returns the partial result). Defaults to 100_000.
-	// Hitting the cap is a strong signal of a non-terminating rule —
-	// callers should report.
+	// gives up: Plan returns nil and ErrPlannerCapHit (no partial
+	// result — matching Java's throw). Defaults to 100_000. Hitting
+	// the cap is a strong signal of a non-terminating rule — callers
+	// should report.
 	MaxTasks int
 
 	tasksRun int

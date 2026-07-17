@@ -156,8 +156,8 @@ func (u *LogicalUnnest) Explain(indent string) string {
 // PredicateText is the fallback: the canonical source text of the
 // WHERE expression. Used when the expression shape is out of the
 // walker's scope (UnsupportedExpressionShapeError) or when the
-// builder is constructed without a metadata-backed catalog (today's
-// naive_generator Explain path, which has no transaction in scope).
+// builder is constructed without a metadata-backed catalog (the
+// catalog-less Explain path, which has no transaction in scope).
 type LogicalFilter struct {
 	Input            LogicalOperator
 	Predicate        predicates.QueryPredicate // preferred when non-nil

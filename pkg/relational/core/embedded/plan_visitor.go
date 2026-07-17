@@ -26,8 +26,9 @@ package embedded
 // resolution, subquery planning) are inlined into VisitSimpleTable
 // rather than delegated to the monolithic _postBuild function.
 //
-// The proto/naive generator continues using extractFromSimpleTable (which
-// calls classifySelectElements internally and merges with FROM info).
+// The selectQuery parse path (extractFromSimpleTable) remains the other
+// consumer of classifySelectElements; both builders share the same
+// classification so their aggregate layouts agree.
 
 import (
 	"errors"
