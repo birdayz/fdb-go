@@ -290,10 +290,14 @@ The standing no-text-matching violation ("criminal", per owner):
 
 ## Workstream H — small correctness + hygiene batch
 
-- **H1** `executor.go:2834`: int64→float32 conversion has no range check —
-  SUM(BIGINT) into a FLOAT column silently writes ±Inf. Mirror the float64
-  arm's `22003` range check (verify Java `CastValue` first, per the existing
-  TODO). *Silent wrong-value write; do not wait for RFC-083.*
+- **H1** ~~`executor.go:2834`: int64→float32 range check~~ — RESOLVED
+  INVALID: the premise is unreachable. MaxInt64 (≈9.2e18) is far below
+  MaxFloat32 (≈3.4e38), so an integer→float32 widening can never produce
+  ±Inf; the conversion is precision-lossy above 2^24, exactly like Java's
+  PromoteValue.LONG_TO_FLOAT (`Float.valueOf((Long)in)`, verified at tag
+  4.12.11.0). Go already matches Java; a range check would be dead code.
+  The mis-premised TODO at the site is replaced with the verified
+  semantics.
 - **H2** OrElse wrapper drops its serialized decision when the active child
   emits nil-byte continuations (executor cursor combinators).
 - **H3** `plans/index_key_value_to_partial_record.go:75-92`: silent nil on
