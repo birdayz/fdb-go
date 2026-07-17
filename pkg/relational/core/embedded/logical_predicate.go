@@ -278,7 +278,7 @@ func buildDerivedTableSource(
 		if innerSQ.projCols != nil {
 			cols = make([]semantic.Column, 0, len(innerSQ.projCols))
 			for i, col := range innerSQ.projCols {
-				name := col
+				name := col.name
 				if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 					name = innerSQ.projAliases[i]
 				}
@@ -326,14 +326,18 @@ func buildDerivedTableSource(
 	if projCols == nil {
 		// SELECT * — use all columns from the inner table in schema order.
 		allCols := innerTbl.Columns()
-		projCols = make([]string, len(allCols))
+		projCols = make([]projCol, len(allCols))
 		for i, c := range allCols {
-			projCols[i] = c.Id.Name()
+			projCols[i] = projCol{name: c.Id.Name(), bare: c.Id.Name()}
 		}
 	}
 	columns := make([]semantic.Column, 0, len(projCols))
 	for i, col := range projCols {
-		bareName := parseColRef(col).bare()
+		// Structured segments; a rebased/computed name is one opaque label.
+		bareName := col.bare
+		if bareName == "" {
+			bareName = col.name
+		}
 		innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
 		if !found {
 			return semantic.ScopeSource{}, false
@@ -1001,7 +1005,10 @@ func buildCTEColumnSource(
 		columns = make([]semantic.Column, 0, len(innerSQ.projCols))
 		for i, col := range innerSQ.projCols {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
-			bareName := parseColRef(col).bare()
+			bareName := col.bare
+			if bareName == "" {
+				bareName = col.name
+			}
 			outName := bareName
 			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 				outName = innerSQ.projAliases[i]
@@ -1343,21 +1350,21 @@ func derivedEmittedBareNames(md *recordlayer.RecordMetaData, schemaName string, 
 						return nil, false
 					}
 				}
-			} else if !deeper[parseColRef(col).bare()] {
+			} else if !deeper[colBareOrName(col)] {
 				return nil, false
 			}
 		}
-		switch ref := parseColRef(col); {
+		switch {
 		case i < len(sq.projAliases) && sq.projAliases[i] != "":
 			set[sq.projAliases[i]] = true
 		case isComputed:
 			// unaliased computed: keys by its rendering — nothing readable
-		case !ref.isQualified() && ref.bare() != "":
-			// the "" guard: a mixed-star sentinel slot (projCols[i]=="") must
+		case !col.qualified && col.bare != "":
+			// the "" guard: a mixed-star sentinel slot (name=="") must
 			// not deposit a junk claim in a soundness-critical set
-			set[ref.bare()] = true
-		case ref.isQualified() && positionalFrontier:
-			set[ref.bare()] = true
+			set[col.bare] = true
+		case col.qualified && positionalFrontier:
+			set[col.bare] = true
 		}
 	}
 	return set, true
@@ -1371,8 +1378,14 @@ func derivedEmittedBareNames(md *recordlayer.RecordMetaData, schemaName string, 
 // entries, which ARE checked.
 func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 	for _, ac := range sq.aggCols {
-		if ac.groupCol != "" && !emitted[parseColRef(ac.groupCol).bare()] {
-			return false
+		if ac.groupCol != "" {
+			bare := ac.groupColBare
+			if bare == "" {
+				bare = ac.groupCol
+			}
+			if !emitted[bare] {
+				return false
+			}
 		}
 		if ac.aggArg != "" {
 			bare := ac.aggArgBare
@@ -1398,7 +1411,7 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 			}
 			continue
 		}
-		if !emitted[parseColRef(col).bare()] {
+		if !emitted[colBareOrName(col)] {
 			return false
 		}
 	}
@@ -1611,8 +1624,8 @@ func buildCTEOnOnlySource(
 			quoted = i < len(aliasQuoted) && aliasQuoted[i]
 		} else {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
-			if ref := parseColRef(col); !isComputed && !ref.isQualified() {
-				outName = ref.bare()
+			if !isComputed && !col.qualified && col.bare != "" {
+				outName = col.bare
 			}
 		}
 		if outName == "" {
@@ -2189,7 +2202,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				}
 				continue
 			}
-			if err := resolveColumnName(resolver, col); err != nil {
+			if err := resolveColumnName(resolver, col.name); err != nil {
 				return nil, err
 			}
 			// A BARE column that binds to a lateral-unnest SHADOWING source
@@ -2203,8 +2216,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			// ResolveColumnShadowingQualified so the catalog and top-level paths shadow
 			// identically. Without this a shadowed unnest projection inside a subquery
 			// reads the wrong column (silent-wrong). RFC-142.
-			if ref := parseColRef(col); !ref.isQualified() && proj != nil {
-				id := semantic.NewUnquoted(ref.bare())
+			if !col.qualified && col.bare != "" && proj != nil {
+				id := semantic.NewUnquoted(col.bare)
 				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
 					if proj.ProjectedValues == nil {
 						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
@@ -2233,7 +2246,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 					}
 				}
 			}
-			if parseColRef(col).isQualified() && proj != nil {
+			if col.qualified && proj != nil {
 				if proj.ProjectedValues == nil {
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
@@ -2247,7 +2260,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						// "ALIAS.COL" name lookup does not run this path.
 						// Twin of the PlanVisitor's qualified-projection bind
 						// (incl. the DUPLICATED-bare-leaf qualified output pin).
-						cr := parseColRef(col)
+						cr := colRef{table: col.qualifier, col: col.bare}
 						if bv := resolveQualifiedBaked(resolver, cr); bv != nil && !resolver.QualifierIsDuplicated(semantic.NewUnquoted(cr.table)) {
 							// A DUPLICATE plain alias on THIS (subquery /
 							// union-branch) build path stays display-keyed and
@@ -2256,27 +2269,26 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 							// duplicate alias); the top-level dup-alias shapes
 							// (plan_visitor path) remain supported.
 							proj.ProjectedValues[i] = bv
-							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
+							if bareLeafDuplicated(projColNames(sq.projCols), sq.projAliases, i) {
 								if proj.Aliases == nil {
 									proj.Aliases = make([]string, len(proj.Projections))
 								}
 								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-									proj.Aliases[i] = strings.ToUpper(col)
+									proj.Aliases[i] = strings.ToUpper(col.name)
 								}
 							}
 						} else {
 							proj.ProjectedValues[i] = &values.FieldValue{
-								Field: strings.ToUpper(col),
+								Field: strings.ToUpper(col.name),
 								Typ:   values.UnknownType,
 							}
 						}
 					}
 				} else {
 					var qualifier semantic.Identifier
-					ref := parseColRef(col)
-					id := semantic.NewUnquoted(ref.bare())
-					if ref.isQualified() {
-						qualifier = semantic.NewUnquoted(ref.table)
+					id := semantic.NewUnquoted(colBareOrName(col))
+					if col.qualified {
+						qualifier = semantic.NewUnquoted(col.qualifier)
 					}
 					if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
@@ -4071,7 +4083,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 			continue
 		}
-		if err := checkColumn(col); err != nil {
+		if err := checkColumn(col.name); err != nil {
 			return err
 		}
 	}
@@ -5452,7 +5464,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	if sq.projAliases != nil && sq.projCols != nil {
 		for i, a := range sq.projAliases {
 			if a != "" && i < len(sq.projCols) {
-				aliasToCol[strings.ToUpper(a)] = sq.projCols[i]
+				aliasToCol[strings.ToUpper(a)] = sq.projCols[i].name
 				aliasToIdx[strings.ToUpper(a)] = i
 			}
 		}
@@ -5502,7 +5514,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// same expression, so the sort order is identical either way.
 	colToIdx := make(map[string]int, len(sq.projCols))
 	for i, c := range sq.projCols {
-		key := strings.ToUpper(c)
+		key := strings.ToUpper(c.name)
 		if _, dup := colToIdx[key]; !dup {
 			colToIdx[key] = i
 		}
@@ -5998,7 +6010,8 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		}
 	}
 
-	var newCols, newAliases, newQuals []string
+	var newCols []projCol
+	var newAliases, newQuals []string
 	var newExprs []antlrgen.IExpressionContext
 	for i, col := range sq.projCols {
 		qual := ""
@@ -6030,7 +6043,9 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 			continue
 		}
 		for _, c := range cols {
-			newCols = append(newCols, qual+"."+c)
+			// Star expansion mints the qualified reference structurally —
+			// the segments are known here, never re-derived from the name.
+			newCols = append(newCols, projCol{name: qual + "." + c, bare: c, qualifier: qual, qualified: true})
 			newAliases = append(newAliases, "")
 			newExprs = append(newExprs, nil)
 			newQuals = append(newQuals, "")
@@ -6080,9 +6095,10 @@ func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schema
 			continue
 		}
 		srcCols := src.Table.Columns()
-		cols := make([]string, len(srcCols))
+		cols := make([]projCol, len(srcCols))
 		for k, c := range srcCols {
-			cols[k] = qual + "." + strings.ToUpper(c.Id.Name())
+			bare := strings.ToUpper(c.Id.Name())
+			cols[k] = projCol{name: qual + "." + bare, bare: bare, qualifier: qual, qualified: true}
 		}
 		sq.projCols = cols
 		sq.projAliases = make([]string, len(srcCols))
@@ -6118,12 +6134,13 @@ func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData, schema
 		return
 	}
 	fields := rt.Descriptor.Fields()
-	cols := make([]string, fields.Len())
+	cols := make([]projCol, fields.Len())
 	aliases := make([]string, fields.Len())
 	exprs := make([]antlrgen.IExpressionContext, fields.Len())
 	quals := make([]string, fields.Len())
 	for i := 0; i < fields.Len(); i++ {
-		cols[i] = qual + "." + strings.ToUpper(string(fields.Get(i).Name()))
+		bare := strings.ToUpper(string(fields.Get(i).Name()))
+		cols[i] = projCol{name: qual + "." + bare, bare: bare, qualifier: qual, qualified: true}
 	}
 	sq.projCols = cols
 	sq.projAliases = aliases
@@ -7612,6 +7629,15 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 
 // resolveCorrelatedColumnValueStructured resolves a structured group key —
 // segments come from the parse tree, never a re-parse of the display text.
+// colBareOrName: the structured bare segment, or the whole name as one
+// opaque label for computed/rebased entries — never a dot split.
+func colBareOrName(c projCol) string {
+	if c.bare != "" {
+		return c.bare
+	}
+	return c.name
+}
+
 func resolveCorrelatedColumnValueStructured(resolver *expr.Resolver, key logical.GroupKey, hasJoins bool) (values.Value, error) {
 	if hasJoins {
 		// Merged join rows carry alias-qualified keys; the DISPLAY is that
@@ -7972,7 +7998,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 	}
 	for _, pc := range sq.projCols {
-		if _, echo := visAggNames[strings.ToUpper(pc)]; !echo {
+		if _, echo := visAggNames[strings.ToUpper(pc.name)]; !echo {
 			outCount++
 		}
 	}
@@ -8176,7 +8202,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		if scalarCol == "" {
 			for i := range sq.aggCols {
 				if sq.aggCols[i].visible && sq.aggCols[i].aggFunc == "" && sq.aggCols[i].groupCol != "" {
-					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].groupCol).bare())
+					gcBare := sq.aggCols[i].groupColBare
+					if gcBare == "" {
+						gcBare = sq.aggCols[i].groupCol
+					}
+					scalarCol = strings.ToUpper(gcBare)
 					break
 				}
 			}
@@ -8303,9 +8333,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 			if computedScalarVal == nil && scalarCol == "" {
 				if len(sq.joins) > 0 {
-					scalarCol = strings.ToUpper(sq.projCols[0])
+					scalarCol = strings.ToUpper(sq.projCols[0].name)
 				} else {
-					scalarCol = strings.ToUpper(parseColRef(sq.projCols[0]).bare())
+					scalarCol = strings.ToUpper(colBareOrName(sq.projCols[0]))
 				}
 			}
 		case len(sq.projCols) == 0 && len(sq.groupBy) > 0:
@@ -8319,7 +8349,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			// to the error rather than silently resolving to NULL.
 			for i := range sq.aggCols {
 				if sq.aggCols[i].visible && sq.aggCols[i].groupCol != "" {
-					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].groupCol).bare())
+					gcBare := sq.aggCols[i].groupColBare
+					if gcBare == "" {
+						gcBare = sq.aggCols[i].groupCol
+					}
+					scalarCol = strings.ToUpper(gcBare)
 					break
 				}
 			}
@@ -8410,7 +8444,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// Both the name-model scalar ref (<inner>._0) and the ordinal seed
 		// (ofOrdinal(inner,0)) resolve the computed value, so it never reads as NULL.
 		if computedScalarVal != nil {
-			proj := logical.NewProject(innerOp, []string{sq.projCols[0]}, []string{""})
+			proj := logical.NewProject(innerOp, []string{sq.projCols[0].name}, []string{""})
 			proj.ProjectedValues = []values.Value{computedScalarVal}
 			proj.IsComputed = []bool{true}
 			innerOp = proj

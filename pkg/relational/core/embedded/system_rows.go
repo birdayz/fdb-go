@@ -182,15 +182,15 @@ func projectSystemRows(in driver.Rows, sq *selectQuery) (driver.Rows, error) {
 		for i, col := range sq.projCols {
 			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-					"computed expressions in INFORMATION_SCHEMA SELECT are not supported (%s)", col)
+					"computed expressions in INFORMATION_SCHEMA SELECT are not supported (%s)", col.name)
 			}
-			idx, found := idxByCol[strings.ToUpper(col)]
+			idx, found := idxByCol[strings.ToUpper(col.name)]
 			if !found {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q not found in INFORMATION_SCHEMA.%s", col, sq.tableName)
+					"column %q not found in INFORMATION_SCHEMA.%s", col.name, sq.tableName)
 			}
 			projIdx[i] = idx
-			name := col
+			name := col.name
 			if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 				name = sq.projAliases[i]
 			}

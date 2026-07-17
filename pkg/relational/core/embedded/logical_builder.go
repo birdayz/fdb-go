@@ -175,7 +175,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		rows := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
 		for i, col := range sq.projCols {
-			expr := col
+			expr := col.name
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				expr = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 			}
@@ -593,8 +593,8 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// ORDER BY 1` must sort by id, never the SCORE column).
 			// Rebase to the item's UNDERLYING text; Pos still rides along
 			// for output-slot baking where the input IS a projection.
-			if ob.pos >= 1 && ob.pos <= len(sq.projCols) && sq.projCols[ob.pos-1] != "" {
-				expr = strip(sq.projCols[ob.pos-1])
+			if ob.pos >= 1 && ob.pos <= len(sq.projCols) && sq.projCols[ob.pos-1].name != "" {
+				expr = strip(sq.projCols[ob.pos-1].name)
 				// Rebased to the underlying projection text — segments
 				// follow the same internal-name rule.
 				ob.bare, ob.qualifier, ob.qualified = expr, "", false
@@ -633,7 +633,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
 		for i, col := range sq.projCols {
-			projs[i] = strip(col)
+			projs[i] = strip(col.name)
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				projs[i] = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 				computed[i] = true

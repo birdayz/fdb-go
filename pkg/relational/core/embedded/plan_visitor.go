@@ -591,7 +591,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 				continue
 			}
-			if err := resolveColumnName(resolver, col); err != nil {
+			if err := resolveColumnName(resolver, col.name); err != nil {
 				return nil, err
 			}
 			// A BARE column that binds to a lateral-unnest SHADOWING source
@@ -602,8 +602,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			// mergeRows; the qualified `v.v` survives (dotted keys are preserved
 			// verbatim). Without this the bare projection reads the wrong column
 			// (P2, silent-wrong). RFC-142.
-			if ref := parseColRef(col); !ref.isQualified() && proj != nil {
-				id := semantic.NewUnquoted(ref.bare())
+			if !col.qualified && col.bare != "" && proj != nil {
+				id := semantic.NewUnquoted(col.bare)
 				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
 					if proj.ProjectedValues == nil {
 						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
@@ -631,7 +631,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					}
 				}
 			}
-			if parseColRef(col).isQualified() && proj != nil {
+			if col.qualified && proj != nil {
 				if proj.ProjectedValues == nil {
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
@@ -642,9 +642,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					// that leg's binding so the ordinal bake addresses the
 					// right quantifier. Every other reference keeps the
 					// alias-keyed merged-row read.
-					ref := parseColRef(col)
 					qv, qerr := resolver.ResolveQualifiedProjection(
-						semantic.NewUnquoted(ref.table), semantic.NewUnquoted(ref.bare()))
+						semantic.NewUnquoted(col.qualifier), semantic.NewUnquoted(col.bare))
 					if qerr != nil {
 						var ambigErr *semantic.AmbiguousColumnError
 						if errors.As(qerr, &ambigErr) {
@@ -656,7 +655,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					if i < len(proj.ProjectedValues) {
 						if qv != nil {
 							proj.ProjectedValues[i] = qv
-						} else if bv := resolveQualifiedBaked(resolver, ref); bv != nil {
+						} else if bv := resolveQualifiedBaked(resolver, colRef{table: col.qualifier, col: col.bare}); bv != nil {
 							// A qualified projection over a join emits the
 							// resolver's QUANTIFIER-ADDRESSED source-relative
 							// baked reference — the executor binds the leg
@@ -666,27 +665,26 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 							// key (alias-pinned) so the two same-named columns
 							// do not collapse; a unique leaf keys bare.
 							proj.ProjectedValues[i] = bv
-							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
+							if bareLeafDuplicated(projColNames(sq.projCols), sq.projAliases, i) {
 								if proj.Aliases == nil {
 									proj.Aliases = make([]string, len(proj.Projections))
 								}
 								if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-									proj.Aliases[i] = strings.ToUpper(col)
+									proj.Aliases[i] = strings.ToUpper(col.name)
 								}
 							}
 						} else {
 							proj.ProjectedValues[i] = &values.FieldValue{
-								Field: strings.ToUpper(col),
+								Field: strings.ToUpper(col.name),
 								Typ:   values.UnknownType,
 							}
 						}
 					}
 				} else {
 					var qualifier semantic.Identifier
-					ref := parseColRef(col)
-					id := semantic.NewUnquoted(ref.bare())
-					if ref.isQualified() {
-						qualifier = semantic.NewUnquoted(ref.table)
+					id := semantic.NewUnquoted(colBareOrName(col))
+					if col.qualified {
+						qualifier = semantic.NewUnquoted(col.qualifier)
 					}
 					if rv, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
