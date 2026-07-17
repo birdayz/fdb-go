@@ -584,14 +584,14 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			// Pos carries through (as in the visitor twin): a positional
-			// key IS an output ordinal, and the translator bakes it to the
-			// output slot directly. Historically this path leaned on
-			// upgradeSortKeyValues' TEXT alias-rebasing of the resolved
-			// item name — which the BareRef gate correctly forbids (the
-			// name may collide with a source column: `SELECT id AS score …
-			// ORDER BY 1` must sort by slot 1, never by the SCORE column).
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef})
+			// Pos is NOT carried here: this sort sits below the OUTER
+			// projection, so its translated input can be a DERIVED
+			// source's projection — baking the SELECT ordinal into that
+			// foreign slot misbinds (`SELECT b FROM (SELECT a, b …) d
+			// ORDER BY 1` must order by b, never source slot 1 = a). The
+			// positional semantics are already carried by the Expr rebase
+			// to the item's underlying text above.
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, BareRef: ob.bareRef})
 		}
 		op = logical.NewSort(op, keys)
 	}

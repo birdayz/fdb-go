@@ -143,3 +143,14 @@ tests:
   - query: SELECT id AS score FROM scores ORDER BY 1 DESC LIMIT 1
     rows:
       - [8]
+  # A positional key is an ordinal into THIS select's output list — never
+  # into a DERIVED source's projection that happens to sit below the sort.
+  # Misbinding bakes slot 1 = d.id (DESC -> id 8 -> score 105) instead of
+  # ordering by score (120).
+  - query: |-
+      SELECT (SELECT score FROM (SELECT id, score FROM scores) d ORDER BY 1 DESC LIMIT 1) AS top FROM scores LIMIT 1
+    rows:
+      - [120]
+  - query: SELECT score FROM (SELECT id, score FROM scores) d ORDER BY 1 DESC LIMIT 1
+    rows:
+      - [120]
