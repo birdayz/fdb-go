@@ -185,6 +185,14 @@ func (p *Planner) OrderingSourceRef(expr expressions.RelationalExpression) (*exp
 	return d.orderingSourceRef(), true
 }
 
+// TieBrokenCostLess supplies extraction's fallback GetBest with a
+// TOTAL-ORDER comparator (properties.TieBrokenCostSelector): the scalar
+// cost comparator ties routinely and GetBest would otherwise resolve by
+// member insertion order, flipping picks across plannings.
+func (p *Planner) TieBrokenCostLess(stats properties.StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
+	return lessWithHashTieBreak(properties.CostLessWith(stats))
+}
+
 // WithImplementationRules adds rules for PhasePlanning. These run
 // after the REWRITING phase converges. Returns p for chaining.
 func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {

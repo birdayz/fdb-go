@@ -506,7 +506,15 @@ func findExpressionsByType(e expressions.RelationalExpression, stats properties.
 // Uses scalar EstimateCost to rank, matching Java's evaluateAtRef
 // which expects exactly one member per Reference at cost-model time.
 func bestPhysicalChild(ref *expressions.Reference, stats properties.StatisticsProvider) expressions.RelationalExpression {
-	best := ref.GetBest(properties.CostLessWith(stats))
+	// The scalar cost comparator is NOT a total order (Cost ties are routine
+	// under default stats) and GetBest resolves ties by member insertion
+	// order — which shifts across plannings (memo merges, alias
+	// renumbering), flipping the picked child and with it every parent
+	// criteria comparison run-to-run. Wrap with the deterministic
+	// plan-hash tie-break so the minimum is unique (Java
+	// PlanningCostModel.compare's final planHash arm; Java additionally
+	// avoids most ties via prune-to-1, which Go lacks mid-phase).
+	best := ref.GetBest(lessWithHashTieBreak(properties.CostLessWith(stats)))
 	if best != nil {
 		if _, ok := best.(physicalPlanExpression); ok {
 			return best

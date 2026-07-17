@@ -457,3 +457,69 @@ func TestFinalOfChildrenVisibleToSemanticEquality(t *testing.T) {
 		t.Fatal("Get() must expose the pinned final of a finals-only Reference")
 	}
 }
+
+// TestSortElimination_DeclinesWhenExtractionRelinkRefused pins RFC-181
+// P0.4 — the extraction twin of the rule-time executable-plan
+// verification: when the spine wrapper's WithChildren KEEPS its original
+// concrete plan (the pinned ordered inner is not leaf-replaceable, e.g. a
+// projection), the rebuilt wrapper would execute the OLD unordered child
+// under an already-elided sort. rebuildOrderedSpine must verify the
+// concrete embed and DECLINE the elision — the sort stays.
+func TestSortElimination_DeclinesWhenExtractionRelinkRefused(t *testing.T) {
+	t.Parallel()
+
+	// Ordered member that is NOT leaf-replaceable: a projection wrapper
+	// delegating over an in-memory sort on STATUS.
+	sorted := sortedMemberOn(t, "STATUS")
+	sortedRef := expressions.InitialOf(sorted)
+	orderedProjection := NewPhysicalProjectionWrapper(
+		plans.NewRecordQueryProjectionPlan(
+			[]values.Value{values.NewFlatFieldValue("STATUS", values.UnknownType)},
+			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+		),
+		expressions.ForEachQuantifier(sortedRef),
+	)
+
+	// The filter's source group: cheap unordered scan (winner) + the
+	// non-leaf-replaceable ordered projection.
+	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	innerRef := expressions.InitialOf(scanExpr)
+	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	cheap := findPhysicalExpr(innerRef)
+	if cheap == nil {
+		t.Fatal("no physical scan")
+	}
+	innerRef.InsertFinal(cheap)
+	innerRef.Insert(orderedProjection)
+	innerRef.InsertFinal(orderedProjection)
+	innerRef.SetWinner(cheap)
+
+	filterWrap := &physicalPredicatesFilterWrapper{
+		plan: plans.NewRecordQueryPredicatesFilterPlan(
+			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		),
+		innerQuant: expressions.ForEachQuantifier(innerRef),
+	}
+	filterRef := expressions.InitialOf(filterWrap)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(filterRef),
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	if err != nil {
+		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("plan is nil")
+	}
+	if _, isSort := plan.(*expressions.LogicalSortExpression); !isSort {
+		t.Fatalf("the elision must DECLINE when the spine relink cannot reach the executable plan (projection child is not leaf-replaceable for the filter's WithChildren); got %T with the sort already gone", plan)
+	}
+}

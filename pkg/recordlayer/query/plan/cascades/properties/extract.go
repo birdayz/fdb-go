@@ -144,7 +144,7 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 		best = sel.BestMember(ref)
 	}
 	if !isPhysicalPlan(best) {
-		best = ref.GetBest(CostLessWith(stats))
+		best = ref.GetBest(costLessFor(sel, stats))
 	}
 	if best == nil {
 		return nil, nil
@@ -163,6 +163,26 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	}
 
 	return rebuildExpressionFromSelectorVisited(best, sel, stats, visited)
+}
+
+// TieBrokenCostSelector is the optional extension of BestMemberSelector a
+// selector implements to supply a TOTAL-ORDER cost comparator for the
+// extraction fallbacks. The scalar CostLessWith is not total (Cost ties are
+// routine), and GetBest resolves ties by member insertion order — which
+// shifts across plannings. The planner supplies its hash-tie-broken
+// comparator through this seam; without it the fallbacks keep the raw
+// comparator (test-only paths).
+type TieBrokenCostSelector interface {
+	TieBrokenCostLess(stats StatisticsProvider) func(a, b expressions.RelationalExpression) bool
+}
+
+func costLessFor(sel BestMemberSelector, stats StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
+	if tb, ok := sel.(TieBrokenCostSelector); ok {
+		if less := tb.TieBrokenCostLess(stats); less != nil {
+			return less
+		}
+	}
+	return CostLessWith(stats)
 }
 
 // SortElisionSelector is the optional extension of BestMemberSelector a
@@ -261,7 +281,49 @@ func rebuildOrderedSpine(
 		}
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
-	return rebuildWithFreshChildren(e, freshChildren)
+	rebuilt, err := rebuildWithFreshChildren(e, freshChildren)
+	if err != nil || rebuilt == nil {
+		return rebuilt, err
+	}
+	// A pin that did not reach the EXECUTABLE plan is not a pin — the same
+	// verification pinOrderedSpine applies at rule time: WithChildren may
+	// keep its ORIGINAL concrete plan when the pinned inner is not
+	// leaf-replaceable, leaving the quantifier pointing at the pinned
+	// member while GetRecordQueryPlan() still executes the OLD child. On a
+	// delegating spine node, verify the rebuilt wrapper's concrete plan
+	// embeds the pinned child's plan; decline the elision otherwise (the
+	// sort stays — always order-correct).
+	if delegates && srcRef != nil {
+		rp, ok1 := rebuilt.(physicalPlanHolder)
+		var pinnedChildPlan plans.RecordQueryPlan
+		for _, q := range rebuilt.GetQuantifiers() {
+			if inner := q.GetRangesOver().Get(); inner != nil {
+				if ip, ok := inner.(physicalPlanHolder); ok {
+					pinnedChildPlan = ip.GetRecordQueryPlan()
+				}
+			}
+		}
+		if !ok1 || pinnedChildPlan == nil || !planEmbedsDirectChild(rp.GetRecordQueryPlan(), pinnedChildPlan) {
+			return nil, nil
+		}
+	}
+	return rebuilt, nil
+}
+
+// planEmbedsDirectChild reports whether child is among plan's immediate
+// concrete children (pointer identity — WithChildren embeds the exact plan
+// object it relinked to). The properties-side twin of the cascades
+// package's planHasDirectChild.
+func planEmbedsDirectChild(plan, child plans.RecordQueryPlan) bool {
+	if plan == nil || child == nil {
+		return false
+	}
+	for _, c := range plan.GetChildren() {
+		if c == child {
+			return true
+		}
+	}
+	return false
 }
 
 // rebuildExpressionFromSelectorVisited is the same switch-based
