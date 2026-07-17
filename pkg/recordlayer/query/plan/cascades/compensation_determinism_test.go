@@ -7,6 +7,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -235,4 +236,34 @@ func TestPlannerComplexityGuards(t *testing.T) {
 			t.Fatalf("exactly one rule must be excluded: %d -> %d", len(er)+len(ir), len(er2)+len(ir2))
 		}
 	})
+}
+
+// TestRollUpPlanPartitions_MergesByPropertyEquality pins RFC-180 D3: two
+// partitions whose interesting property values are SEMANTICALLY equal but
+// pointer-distinct (fresh ordering Values) must merge — the retired %v
+// string key rendered interface pointers as addresses, so equal orderings
+// never merged (RED pre-fix).
+func TestRollUpPlanPartitions_MergesByPropertyEquality(t *testing.T) {
+	t.Parallel()
+	mkPart := func() *PlanPartition {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+		ord := properties.Ordering{
+			IsKnown:    true,
+			Keys:       []values.Value{values.NewFlatFieldValue("A", values.UnknownType)},
+			Descending: []bool{false},
+		}
+		return &PlanPartition{
+			partitionProps: properties.PropertyMap{properties.PropOrdering: ord},
+			exprProps: map[expressions.RelationalExpression]properties.PropertyMap{
+				scan: {properties.PropOrdering: ord},
+			},
+		}
+	}
+	merged := RollUpPlanPartitions([]*PlanPartition{mkPart(), mkPart()}, properties.PropOrdering)
+	if len(merged) != 1 {
+		t.Fatalf("semantically-equal ordering partitions must merge into one, got %d", len(merged))
+	}
+	if len(merged[0].GetExpressions()) != 2 {
+		t.Fatalf("merged partition must carry both expressions, got %d", len(merged[0].GetExpressions()))
+	}
 }

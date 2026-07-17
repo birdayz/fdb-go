@@ -204,8 +204,13 @@ func TestToPlanPartitions_FallbackWhenNoPropertiesMap(t *testing.T) {
 	// Don't set plan properties — triggers fallback.
 
 	partitions := ToPlanPartitions(ref)
-	if len(partitions) == 0 {
-		t.Fatal("fallback should still produce partitions")
+	// RFC-180 D4: a nil PlanPropertiesMap is a planner sequencing bug —
+	// the retired fallback lumped every member into ONE unordered
+	// partition (unordered members leaked as sort-free finals). The
+	// contract is now a DECLINE: no partitions, so the consuming rule
+	// yields nothing and planning fails loudly instead of approximating.
+	if len(partitions) != 0 {
+		t.Fatalf("nil properties map must decline (no partitions), got %d", len(partitions))
 	}
 }
 
