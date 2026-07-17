@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/api"
+
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
 	"fdb.dev/pkg/recordlayer"
@@ -401,4 +403,74 @@ func TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatalf("columns not found in derived metadata: %v (cols %+v)", want, cols)
 	}
+}
+
+// TestJoinDerivedDupName_SlotIdentitySurvivesCollision pins leg-relative
+// slot identity under duplicate output names: `SELECT v*2 AS foo, y AS
+// foo` gives the leg TWO "D.FOO" columns — a name map keeps only the
+// last, but the QOV read's baked accessor addresses slot 0 (the BIGINT
+// arithmetic). Inheritance resolves the ordinal WITHIN the leg's columns,
+// so d.foo types BIGINT, not the colliding STRING slot.
+func TestJoinDerivedDupName_SlotIdentitySurvivesCollision(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y STRING, PRIMARY KEY (id))",
+		&captureLogger{})
+	q := parseQuery(t, "WITH d AS (SELECT v * 2 AS foo, y AS foo FROM b_md) SELECT a.id, d.foo FROM a_md AS a, d")
+	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	if err != nil {
+		// Duplicate output names may legitimately be rejected at planning —
+		// then there is no metadata to mis-type and the collision cannot
+		// occur. Assert the rejection is loud rather than silently planning.
+		return
+	}
+	cp, ok := p.(*cascadesPlan)
+	if !ok {
+		t.Fatalf("plan is %T, want *cascadesPlan", p)
+	}
+	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	for _, c := range cols {
+		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
+			if c.TypeName != "BIGINT" {
+				t.Fatalf("d.foo typed %q, want BIGINT (slot 0) — name-map collision inherited the wrong duplicate: %+v", c.TypeName, cols)
+			}
+			return
+		}
+	}
+	t.Fatalf("no FOO column in derived metadata: %+v", cols)
+}
+
+// TestLeftJoinDerived_InheritanceNeverUnNullExtends pins the upgrade-only
+// nullability rule at the inherit sites: the null-born (LEFT-JOIN
+// null-extension) adjustment runs BEFORE type inheritance, and copying an
+// inner column's NoNulls back would un-null-extend a column that serves
+// NULL on unmatched outer rows. Inheritance may only ever UPGRADE to
+// nullable.
+func TestLeftJoinDerived_InheritanceNeverUnNullExtends(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		&captureLogger{})
+	// The projected-EXISTS column is synthesized NOT NULL by the inner
+	// derivation — the exact shape whose NoNulls must not survive the
+	// LEFT JOIN's null extension.
+	q := parseQuery(t, "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS c WHERE c.id = b_md.id) AS foo FROM b_md) SELECT a.id, d.foo FROM a_md AS a LEFT JOIN d ON a.id = d.bid")
+	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	cp, ok := p.(*cascadesPlan)
+	if !ok {
+		t.Fatalf("plan is %T, want *cascadesPlan", p)
+	}
+	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	for _, c := range cols {
+		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
+			if c.Nullable != api.ColumnNullable {
+				t.Fatalf("d.foo on the null-supplying side of a LEFT JOIN must report NULLABLE (unmatched rows serve NULL); got %v", c.Nullable)
+			}
+			return
+		}
+	}
+	t.Fatalf("no FOO column in derived metadata: %+v", cols)
 }

@@ -2700,7 +2700,11 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 						if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(innerCols) {
 							if ic := innerCols[ord]; ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
 								cd.TypeName = ic.TypeName
-								cd.Nullable = ic.Nullable
+								// Upgrade-only, like every inherit site: the
+								// null-born adjustment ran before inheritance.
+								if ic.Nullable == api.ColumnNullable {
+									cd.Nullable = api.ColumnNullable
+								}
 								inherited = true
 							}
 						}
@@ -2708,21 +2712,54 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					if !inherited {
 						// A QOV-addressed read over a JOIN resolves against
 						// QUALIFIED inner keys ("D.FOO" — deriveColumnsFromJoin
-						// keys per-leg columns by their leg alias), so compose
-						// the qualified lookup first, exactly like the
-						// null-born lookup above; the bare key serves
-						// single-source shapes.
+						// keys per-leg columns by their leg alias). When the
+						// read also carries a BAKED ordinal, resolve it WITHIN
+						// the leg's columns (qualified-prefix slice, leg order
+						// preserved by the join derivation): a name lookup
+						// alone loses slot identity when a leg duplicates an
+						// output name — the map keeps only the last "D.FOO"
+						// while the accessor addresses a specific slot. The
+						// name lookup serves unbaked QOV reads; the bare key
+						// serves single-source shapes.
+						inheritFrom := func(ic executor.ColumnDef) {
+							cd.TypeName = ic.TypeName
+							// Nullability only ever UPGRADES here: the
+							// null-born (LEFT-JOIN null-extension) adjustment
+							// ran before inheritance, and copying an inner
+							// NoNulls back would un-null-extend the column —
+							// unmatched outer rows still serve NULL.
+							if ic.Nullable == api.ColumnNullable {
+								cd.Nullable = api.ColumnNullable
+							}
+							inherited = true
+						}
 						if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-							if ic, found := innerByName[strings.ToUpper(qov.Correlation.Name()+"."+fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-								cd.TypeName = ic.TypeName
-								cd.Nullable = ic.Nullable
-								inherited = true
+							legPrefix := strings.ToUpper(qov.Correlation.Name()) + "."
+							if fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
+								ord := fv.Resolved.Accessors[0].Ordinal
+								legIdx := 0
+								for _, ic := range innerCols {
+									if !strings.HasPrefix(strings.ToUpper(ic.Name), legPrefix) {
+										continue
+									}
+									if legIdx == ord {
+										if ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+											inheritFrom(ic)
+										}
+										break
+									}
+									legIdx++
+								}
+							}
+							if !inherited {
+								if ic, found := innerByName[legPrefix+strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+									inheritFrom(ic)
+								}
 							}
 						}
 						if !inherited {
 							if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-								cd.TypeName = ic.TypeName
-								cd.Nullable = ic.Nullable
+								inheritFrom(ic)
 							}
 						}
 					}
