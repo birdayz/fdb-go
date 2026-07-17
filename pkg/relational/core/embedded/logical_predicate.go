@@ -5521,7 +5521,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// aggregate reshaping strip below the sort, or a union), Pos survives
 	// untouched — those inputs ARE select-list carriers and the
 	// translator's Pos bake against them is the correct binding.
-	if proj != nil && operatorContains(proj, sort) {
+	if proj != nil && sortOwnedBySelect(proj, sort) {
 		for i := range sort.Keys {
 			pos := sort.Keys[i].Pos
 			if pos < 1 || pos > len(proj.Projections) {
@@ -8441,6 +8441,33 @@ func collectScanTableNamesInner(op logical.LogicalOperator, names map[string]boo
 	for _, ch := range op.Children() {
 		collectScanTableNamesInner(ch, names)
 	}
+}
+
+// sortOwnedBySelect reports whether sort is THIS select shell's own sort:
+// reachable from the select's projection through row-preserving single-child
+// operators only. A Sort below another Project/Aggregate belongs to a NESTED
+// select (derived table / CTE body); rewriting its ordinals against the
+// OUTER projection would swap in an unrelated item — `SELECT total FROM
+// (SELECT id AS x, SUM(score) AS total … ORDER BY 1 …) d` must keep the
+// inner ordinal on inner item 1, never the outer's slot 1.
+func sortOwnedBySelect(proj *logical.LogicalProject, sort *logical.LogicalSort) bool {
+	cur := proj.Input
+	for cur != nil {
+		if cur == logical.LogicalOperator(sort) {
+			return true
+		}
+		switch cur.(type) {
+		case *logical.LogicalFilter, *logical.LogicalLimit, *logical.LogicalDistinct:
+			ch := cur.Children()
+			if len(ch) != 1 {
+				return false
+			}
+			cur = ch[0]
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // operatorContains reports whether target appears in root's subtree

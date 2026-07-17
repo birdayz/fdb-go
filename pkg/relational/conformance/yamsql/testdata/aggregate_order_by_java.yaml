@@ -169,3 +169,11 @@ tests:
       - [100, 1]
       - [80, 2]
       - [120, 3]
+  # An OUTER select with no ORDER BY must never rewrite a NESTED select's
+  # positional key against its own projection: the inner ORDER BY 1 is the
+  # inner item 1 (id), so the top group is id 8 (total 105) — not the
+  # outer's slot 1 (total, which would pick 120).
+  - query: |-
+      SELECT total FROM (SELECT id AS x, SUM(score) AS total FROM scores GROUP BY id ORDER BY 1 DESC LIMIT 1) d
+    rows:
+      - [105]
