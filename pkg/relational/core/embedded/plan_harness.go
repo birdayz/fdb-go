@@ -70,6 +70,9 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
+	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
+		return "", arityErr
+	}
 	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
 		// Surface the translator's typed diagnostic over the generic fallback —
@@ -159,6 +162,9 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
+	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
+		return "", arityErr
+	}
 	ref, _, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
 		// Surface the translator's typed diagnostic over the generic fallback —

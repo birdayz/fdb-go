@@ -7565,21 +7565,25 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 		switch {
 		case len(origCols) == len(c.ColumnAliases):
 			body = logical.NewProject(body, origCols, c.ColumnAliases)
-		case len(origCols) > 0:
+		case len(origCols) > 0 && cteBodyWidthIsExact(body):
 			// The POINT-OF-TRUTH arity check (Java SemanticAnalyzer.
 			// validateCteColumnAliases): the body is BUILT here, so its
 			// output width is the real one — every shape (nested WITH,
 			// lateral unnest, qualified stars, shadowed sources) validates
 			// uniformly, with no parallel static width predictor to drift.
 			// Silently skipping the aliases instead executed the CTE with
-			// the mismatched list ignored.
+			// the mismatched list ignored. Rejection fires only for
+			// EXACT-width roots (Project): an Aggregate root's
+			// extractOutputColumns is its deduplicated internal layout,
+			// which legitimately differs from the visible SELECT list
+			// (`SELECT id, id … GROUP BY id` is 2 visible over 1 internal).
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeInvalidColumnReference,
 				"cte query has %d column(s), however %d aliases defined",
 				len(origCols), len(c.ColumnAliases)))
 			return nil
 		}
-		// origCols unknown (nil): shapes extractOutputColumns cannot model
-		// stay lenient — never reject a valid query on an unknown width.
+		// Unknown or inexact widths stay lenient — never reject a valid
+		// query on an unmodeled shape.
 	}
 	name := strings.ToUpper(c.Name)
 	// Save the OUTER binding this registration shadows (nil = unbound): the
@@ -7676,6 +7680,59 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 		// spelling — a later `SELECT a FROM c2` died at runtime with an
 		// ordinal-resolution error on the aliased name.
 		return extractOutputColumns(o.Main)
+	}
+	return nil
+}
+
+// cteBodyWidthIsExact reports whether extractOutputColumns(op) is the
+// body's VISIBLE output width (a projection root — possibly under
+// row-preserving Sort/Limit/Filter/Distinct — lists the SELECT items
+// one-to-one). Aggregate roots are NOT exact: their column list is the
+// deduplicated internal grouping layout, which a SELECT list may read
+// multiple times.
+func cteBodyWidthIsExact(op logical.LogicalOperator) bool {
+	switch o := op.(type) {
+	case *logical.LogicalProject:
+		return true
+	case *logical.LogicalDistinct:
+		return cteBodyWidthIsExact(o.Input)
+	case *logical.LogicalSort:
+		return cteBodyWidthIsExact(o.Input)
+	case *logical.LogicalLimit:
+		return cteBodyWidthIsExact(o.Input)
+	case *logical.LogicalFilter:
+		return cteBodyWidthIsExact(o.Input)
+	case *logical.LogicalCTE:
+		return cteBodyWidthIsExact(o.Main)
+	}
+	return false
+}
+
+// ValidateCTEAliasArities walks the BUILT logical tree and applies the
+// point-of-truth alias-arity check to EVERY LogicalCTE carrying column
+// aliases — including CTEs that are never referenced (whose bodies
+// translateCTE registers lazily and never descends into) and CTEs nested
+// inside another CTE's body. Same exact-width rule as translateCTE's inline
+// backstop; recursive CTEs are excluded (their seed/recursive arms have
+// their own validation path).
+func ValidateCTEAliasArities(op logical.LogicalOperator) error {
+	if op == nil {
+		return nil
+	}
+	if c, ok := op.(*logical.LogicalCTE); ok {
+		if len(c.ColumnAliases) > 0 && !c.Recursive {
+			if origCols := extractOutputColumns(c.Body); len(origCols) > 0 &&
+				len(origCols) != len(c.ColumnAliases) && cteBodyWidthIsExact(c.Body) {
+				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
+					"cte query has %d column(s), however %d aliases defined",
+					len(origCols), len(c.ColumnAliases))
+			}
+		}
+	}
+	for _, child := range op.Children() {
+		if err := ValidateCTEAliasArities(child); err != nil {
+			return err
+		}
 	}
 	return nil
 }

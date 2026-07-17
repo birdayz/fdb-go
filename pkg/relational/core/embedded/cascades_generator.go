@@ -354,6 +354,13 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
+	// Point-of-truth CTE alias arity over the WHOLE built tree — covers
+	// unused CTEs (whose bodies the translator registers lazily and never
+	// descends into) and CTEs nested inside another CTE's body.
+	if arityErr := query.ValidateCTEAliasArities(logicalOp); arityErr != nil {
+		return nil, arityErr
+	}
+
 	ref, scalarSubqueryPlans, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if translateErr != nil {
 		// A translation error carrying a specific SQL error code (RFC-142:

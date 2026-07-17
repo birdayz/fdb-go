@@ -2146,7 +2146,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
-		expandQualifiedStars(sq, md, schemaName, cteScopes)
+		if starErr := expandQualifiedStars(sq, md, schemaName, cteScopes); starErr != nil {
+			return nil, starErr
+		}
 		needRebuild = true
 	}
 	if needRebuild {
@@ -5815,9 +5817,9 @@ func hasAnyQualifiedStar(sq *selectQuery) bool {
 // query degrades to an UNQUALIFIED star → returns the ENTIRE FlatMap row (outer
 // columns included) instead of just the unnest source's columns (silent-wrong).
 // RFC-142.
-func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) {
+func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
 	if sq == nil || sq.projCols == nil || sq.projStarQualifiers == nil {
-		return
+		return nil
 	}
 	hasQualifiedStar := false
 	for _, q := range sq.projStarQualifiers {
@@ -5827,7 +5829,7 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		}
 	}
 	if !hasQualifiedStar {
-		return
+		return nil
 	}
 
 	// Build a map of source alias → table columns, CTE-FIRST (execution's
@@ -5838,6 +5840,7 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 	// leaves the sentinel: downstream declines loud.
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	sourceColumns := make(map[string][]string)
+	derivedAliases := make(map[string]struct{})
 	addSource := func(tableName, alias string) {
 		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
 			if src.Table == nil {
@@ -5882,6 +5885,8 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		// stays; downstream resolves or declines loud.
 		if sq.derivedQuery == nil {
 			addSource(sq.tableName, alias)
+		} else {
+			derivedAliases[strings.ToUpper(alias)] = struct{}{}
 		}
 	}
 	for i, j := range sq.joins {
@@ -5903,6 +5908,22 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		// Derived join legs: same bypass as the derived primary above.
 		if j.derivedQuery == nil {
 			addSource(j.tableName, alias)
+		} else {
+			derivedAliases[strings.ToUpper(alias)] = struct{}{}
+		}
+	}
+
+	// A qualified star BOUND TO A DERIVED source rejects PLAN-TIME: no
+	// relation can speak for the derived alias here, and leaving the
+	// sentinel produced a plan that died at row time with a raw
+	// ordinal-resolution error on a valid-shaped query.
+	for _, q := range sq.projStarQualifiers {
+		if q == "" {
+			continue
+		}
+		if _, isDerived := derivedAliases[strings.ToUpper(q)]; isDerived {
+			return api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"qualified star over derived table %q is not supported", q)
 		}
 	}
 
@@ -5948,6 +5969,7 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 	sq.projAliases = newAliases
 	sq.projExprs = newExprs
 	sq.projStarQualifiers = newQuals
+	return nil
 }
 
 // expandProjQualifier handles `SELECT <qualifier>.*` when it is the

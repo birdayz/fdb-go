@@ -319,3 +319,23 @@ tests:
            c(a) AS (WITH x(m, n) AS (SELECT id, v FROM t WHERE id <= 2) SELECT m, n FROM x)
       SELECT a FROM c
     error_code: "42F10"
+  # Round-8 pins: (a) an alias-arity mismatch inside an UNUSED outer CTE
+  # still validates — the tree walker covers bodies the lazy translator
+  # never descends into; (b) a duplicate group-key read stays VALID (the
+  # aggregate's internal layout dedups to one slot, but the visible SELECT
+  # is two — inexact roots never reject); (c) the no-filter derived-alias
+  # star collision rejects PLAN-TIME 0AF00 (was: raw runtime
+  # ordinal-resolution error).
+  - query: |-
+      WITH o AS (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT id FROM t)
+      SELECT id FROM t WHERE id = 1
+    error_code: "42F10"
+  - query: |-
+      WITH c(a, b) AS (SELECT id, id FROM t GROUP BY id)
+      SELECT COUNT(*) FROM c
+    rows:
+      - [4]
+  - query: |-
+      WITH x AS (SELECT id FROM t)
+      SELECT x.*, x.id FROM (SELECT id, v FROM t) AS x ORDER BY x.id
+    error_code: "0AF00"
