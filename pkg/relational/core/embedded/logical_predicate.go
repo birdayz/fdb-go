@@ -5533,7 +5533,15 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 				// name is not a column of the projected row (a lazy key naming
 				// it is loud at runtime under the ordinal model; the retired
 				// name read no-op-sorted silently).
-				if proj != nil {
+				//
+				// DEFERRED-strip inversion: when the reshaping projection sits
+				// ABOVE the sort (a group key read only by ORDER BY defers the
+				// strip), the sort reads the AGGREGATE row — redirecting the
+				// key to the projection ALIAS would read a column that exists
+				// only above (loud failure), or silently bind a same-named
+				// hidden key. Redirect only when the sort is above the
+				// projection.
+				if proj != nil && !operatorContains(proj, sort) {
 					for pi, ptext := range proj.Projections {
 						if !strings.EqualFold(ptext, sort.Keys[i].Expr) {
 							continue
@@ -8400,4 +8408,22 @@ func collectScanTableNamesInner(op logical.LogicalOperator, names map[string]boo
 	for _, ch := range op.Children() {
 		collectScanTableNamesInner(ch, names)
 	}
+}
+
+// operatorContains reports whether target appears in root's subtree
+// (including root itself). Used to determine relative operator placement
+// when a pass's rewrite depends on which of two operators is above.
+func operatorContains(root, target logical.LogicalOperator) bool {
+	if root == nil {
+		return false
+	}
+	if root == target {
+		return true
+	}
+	for _, ch := range root.Children() {
+		if operatorContains(ch, target) {
+			return true
+		}
+	}
+	return false
 }

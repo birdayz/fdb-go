@@ -11,14 +11,14 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2538 query/assertion cases** across 18 feature areas.
+**319 scenarios · 2542 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
-| Aggregates & GROUP BY | 49 | 302 |
+| Aggregates & GROUP BY | 49 | 305 |
 | Joins | 60 | 264 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
-| CTEs | 12 | 104 |
+| CTEs | 12 | 105 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 8 | 48 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
@@ -56,7 +56,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `aggregate_index_update` | 6 | Aggregate index correctness after UPDATE |
 | `aggregate_null_edge` | 7 | Aggregate NULL edge cases |
 | `aggregate_nulls` | 9 | SQL-spec aggregate NULL semantics hardened in swingshift-35 (c370213e): |
-| `aggregate_order_by_java` | 6 | Aggregate queries with ORDER BY. |
+| `aggregate_order_by_java` | 9 | Aggregate queries with ORDER BY. |
 | `aggregate_sum_large` | 2 | SUM with large values |
 | `aggregate_with_null_groups` | 2 | Aggregates with NULL in group keys |
 | `avg` | 3 | AVG over BIGINT returns DOUBLE (float) — matches Java's |
@@ -204,7 +204,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 
 | Scenario | Cases | What it pins |
 |---|--:|---|
-| `cte` | 40 | WITH ... |
+| `cte` | 41 | WITH ... |
 | `cte_aggregate` | 4 | CTE materialization + GROUP BY aggregation. |
 | `cte_error_codes` | 6 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | CTE patterns from Java's cte.yamsql. |

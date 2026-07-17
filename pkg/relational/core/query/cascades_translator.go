@@ -7564,7 +7564,17 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 		origCols := extractOutputColumns(body)
 		switch {
 		case len(origCols) == len(c.ColumnAliases):
-			body = logical.NewProject(body, origCols, c.ColumnAliases)
+			// The re-aliasing projection reads POSITIONALLY (baked
+			// ordinals), not by name: CTE column lists are positional,
+			// and duplicate body output labels (`SELECT id AS x, v AS x`)
+			// would make both name-based reads bind the first slot,
+			// silently duplicating its values.
+			proj := logical.NewProject(body, origCols, c.ColumnAliases)
+			proj.ProjectedValues = make([]values.Value, len(origCols))
+			for i, col := range origCols {
+				proj.ProjectedValues[i] = values.NewFieldValueWithResolvedOrdinal(strings.ToUpper(col), i, values.UnknownType)
+			}
+			body = proj
 		case len(origCols) > 0 && cteBodyWidthIsExact(body):
 			// The POINT-OF-TRUTH arity check (Java SemanticAnalyzer.
 			// validateCteColumnAliases): the body is BUILT here, so its

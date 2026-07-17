@@ -63,3 +63,35 @@ tests:
     rows:
       - ['chess', 5]
       - ['go', 3]
+  # A group key read ONLY by ORDER BY defers the reshaping projection past
+  # the sort; sort keys naming SELECT aliases are rebased to the underlying
+  # expression (alias first — SQL resolves output names before source
+  # columns). Mixed alias + hidden-key ordering:
+  - query: SELECT player AS x FROM scores GROUP BY player, game ORDER BY x, game
+    rows:
+      - ['Alice']
+      - ['Alice']
+      - ['Bob']
+      - ['Bob']
+      - ['Charlie']
+      - ['Charlie']
+  # The alias SHADOWS a hidden group key name: ORDER BY game must sort by
+  # the alias (player), not silently by the hidden key.
+  - query: SELECT player AS game FROM scores GROUP BY player, game ORDER BY game DESC
+    rows:
+      - ['Charlie']
+      - ['Charlie']
+      - ['Bob']
+      - ['Bob']
+      - ['Alice']
+      - ['Alice']
+  # Positional ORDER BY under the deferred strip: the visible slot is
+  # rebased to its underlying expression (internal slots differ).
+  - query: SELECT player AS x FROM scores GROUP BY player, game ORDER BY 1 DESC
+    rows:
+      - ['Charlie']
+      - ['Charlie']
+      - ['Bob']
+      - ['Bob']
+      - ['Alice']
+      - ['Alice']

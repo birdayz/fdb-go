@@ -529,6 +529,27 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		}
 	}
 
+	if len(sq.orderBy) > 0 && len(sq.postSortStripProj) > 0 {
+		// The sort sits BELOW the deferred reshaping projection, over the
+		// aggregate's internal layout: rebase keys naming SELECT aliases
+		// (alias first — SQL resolves output names before source columns)
+		// and positional keys (visible slots differ from internal ones) to
+		// the underlying expressions.
+		for i := range sq.orderBy {
+			ob := &sq.orderBy[i]
+			if ob.pos >= 1 && ob.pos <= len(sq.postSortStripProj) {
+				ob.colName = sq.postSortStripProj[ob.pos-1]
+				ob.pos = 0
+				continue
+			}
+			for j, al := range sq.postSortStripAliases {
+				if al != "" && strings.EqualFold(al, strip(ob.colName)) && j < len(sq.postSortStripProj) {
+					ob.colName = sq.postSortStripProj[j]
+					break
+				}
+			}
+		}
+	}
 	if len(sq.orderBy) > 0 {
 		keys := make([]logical.SortKey, 0, len(sq.orderBy))
 		for _, ob := range sq.orderBy {

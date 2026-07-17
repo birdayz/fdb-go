@@ -496,7 +496,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// simpleTable.OrderByClause() and resolves positional references
 	// against the SELECT column list.
 	hasAggregate := cls.countStar || len(cls.aggCols) > 0
-	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, cls.groupBy, cls.groupByAliases)
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, cls.groupBy, cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
@@ -1431,7 +1431,7 @@ func (v *PlanVisitor) buildCTEBodyQuery(inner antlrgen.IQueryContext) (logical.L
 // resolution. aggCols is the aggregate classification from
 // classifySelectElements, used as a fallback when the SELECT list
 // was reclassified (projCols nil, aggCols non-nil).
-func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int) logical.LogicalOperator {
+func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int, deferredStripProj, deferredStripAliases []string) logical.LogicalOperator {
 	orderByCtx := simpleTable.OrderByClause()
 	if orderByCtx == nil {
 		return op
@@ -1456,6 +1456,22 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			return name, false
 		}
 		return groupBy[idx], true
+	}
+
+	// rebaseToInternal rewrites a sort key for the DEFERRED-strip case: the
+	// sort sits BELOW the reshaping projection, over the aggregate's
+	// internal layout, so a key naming a SELECT alias (which exists only
+	// ABOVE the projection) is rebased to its underlying expression. The
+	// alias is checked FIRST — SQL resolves ORDER BY names against output
+	// columns before source columns, so `SELECT id AS v … GROUP BY id, v
+	// ORDER BY v` sorts by id (the alias), not the hidden group key v.
+	rebaseToInternal := func(name string) string {
+		for i, al := range deferredStripAliases {
+			if al != "" && strings.EqualFold(al, name) && i < len(deferredStripProj) {
+				return deferredStripProj[i]
+			}
+		}
+		return name
 	}
 
 	obExprs := orderByCtx.AllOrderByExpression()
@@ -1510,7 +1526,14 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			seenOrderCols[key] = true
 			// Pos carries the SELECT-list position: a positional key IS an
 			// output ordinal by SQL definition, so the translator bakes it
-			// directly to the projection's output slot.
+			// directly to the projection's output slot. Under a DEFERRED
+			// strip the sort input is the aggregate's INTERNAL layout whose
+			// slots differ from the visible ones — bake the underlying
+			// expression text instead and drop the positional binding.
+			if len(deferredStripProj) > 0 && pos >= 1 && pos <= len(deferredStripProj) {
+				keys = append(keys, logical.SortKey{Expr: deferredStripProj[pos-1], Dir: dir, NullsFirst: nf})
+				continue
+			}
 			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf, Pos: pos})
 			continue
 		}
@@ -1518,6 +1541,9 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		// Prefer plain column / aggregate lookup.
 		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 		if nameErr == nil {
+			if len(deferredStripProj) > 0 {
+				colName = rebaseToInternal(colName)
+			}
 			// Resolve GROUP BY alias (`ORDER BY z` where `GROUP BY
 			// x.col1 AS z`) to the underlying column before building
 			// the sort key, so the Cascades planner sees a field that

@@ -370,3 +370,14 @@ tests:
       SELECT id FROM t WHERE id = (WITH c(a, b) AS (SELECT id AS x, id AS y FROM t GROUP BY id) SELECT COUNT(*) FROM c)
     rows:
       - [4]
+  # Round-11 pin: duplicate body output LABELS re-alias positionally — the
+  # re-aliasing projection reads baked ordinals, so b gets slot 1 (v), not
+  # a second copy of slot 0.
+  - query: |-
+      WITH c(a, b) AS (SELECT id AS x, v AS x FROM t)
+      SELECT a, b FROM c ORDER BY a
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [4, 40]
