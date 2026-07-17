@@ -1504,7 +1504,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					// changed between transactions — DISCARD the stale inner
 					// position and restart this outer row's inner from
 					// scratch, never error. innerIdx/outerMatched keep their
-					// fresh-reset values.
+					// fresh-reset values. (Java keeps an unconsumed initial
+					// inner continuation armed for a LATER outer row whose
+					// check value matches; discarding on the first row is
+					// the safer reading and unobservable for a PK-ordered
+					// outer resumed past the saved key.)
 				} else {
 					c.innerIdx = c.resumeInnerIdx
 					c.outerMatched = c.resumeOuterMatched
@@ -1694,6 +1698,18 @@ type nljContinuation struct {
 
 func (w *nljContinuation) IsEnd() bool { return false }
 
+// The inner payload's third tuple slot is a KIND enum: 0 = normal mid-inner
+// state, 1 = FULL OUTER (declines on resume), 2 = the outer child provided NO
+// resume position (declines on resume — without this marker an advanced-outer
+// envelope over a continuation-less outer, e.g. a FirstOrDefault single-result
+// cursor, would marshal to ZERO bytes, which every consumer misreads: the
+// relational driver as exhaustion, a fresh executor call as a full restart).
+const (
+	nljKindMidInner    = 0
+	nljKindFullOuter   = 1
+	nljKindUnresumable = 2
+)
+
 func (w *nljContinuation) ToBytes() ([]byte, error) {
 	fmc := &gen.FlatMapContinuation{CheckValue: w.checkValue}
 	if w.outerCont != nil && !w.outerCont.IsEnd() {
@@ -1703,16 +1719,20 @@ func (w *nljContinuation) ToBytes() ([]byte, error) {
 		}
 		fmc.OuterContinuation = b
 	}
-	if w.hasInner || w.fullOuter {
+	switch {
+	case w.fullOuter:
+		fmc.InnerContinuation = tuple.Tuple{int64(0), int64(0), int64(nljKindFullOuter)}.Pack()
+	case w.hasInner:
 		matched := int64(0)
 		if w.outerMatched {
 			matched = 1
 		}
-		drain := int64(0)
-		if w.fullOuter {
-			drain = 1
-		}
-		fmc.InnerContinuation = tuple.Tuple{int64(w.innerIdx), matched, drain}.Pack()
+		fmc.InnerContinuation = tuple.Tuple{int64(w.innerIdx), matched, int64(nljKindMidInner)}.Pack()
+	case len(fmc.OuterContinuation) == 0 && len(fmc.CheckValue) == 0:
+		// Advanced-outer envelope with nothing to restore: never emit an
+		// empty token — mark the position unresumable so a resume declines
+		// loudly instead of silently restarting or ending the statement.
+		fmc.InnerContinuation = tuple.Tuple{int64(0), int64(0), int64(nljKindUnresumable)}.Pack()
 	}
 	return proto.Marshal(fmc)
 }
@@ -1751,12 +1771,18 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 	}
 	idx, iok := tup[0].(int64)
 	matched, mok := tup[1].(int64)
-	drain, dok := tup[2].(int64)
-	if !iok || !mok || !dok || idx < 0 {
+	kind, kok := tup[2].(int64)
+	if !iok || !mok || !kok || idx < 0 {
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
 	}
-	if drain != 0 {
+	switch kind {
+	case nljKindMidInner:
+	case nljKindFullOuter:
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join FULL OUTER (does not resume)"}
+	case nljKindUnresumable:
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (outer child provides no resume position)"}
+	default:
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
 	}
 	return fmc.GetOuterContinuation(), &nljResumeState{
 		innerIdx:     int(idx),

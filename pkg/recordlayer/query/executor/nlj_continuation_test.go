@@ -276,6 +276,57 @@ func TestNLJContinuation_ArmedResumeSurvivesOuterStop(t *testing.T) {
 	}
 }
 
+// TestNLJContinuation_UnresumableOuterDeclines pins the zero-length-token
+// corner: a LEFT NLJ over an outer that yields NO continuation bytes (a
+// FirstOrDefault-style single-result cursor) emits its advanced-outer
+// envelope after the null pad — with nothing to restore, that envelope used
+// to marshal to ZERO bytes, which the relational driver reads as exhaustion
+// and a fresh executor call reads as a full restart. The token must be
+// NON-empty and decline loudly on decode.
+func TestNLJContinuation_UnresumableOuterDeclines(t *testing.T) {
+	t.Parallel()
+	// One outer row with an EMPTY continuation, no inner match → LEFT pad,
+	// whose advanced-outer continuation has no outer bytes.
+	outer := &bareContinuationCursor{rows: nljTestRows("K", 1)}
+	c := nljTestCursor(t, outer, nil, plans.JoinLeftOuter, nil)
+	res, err := c.OnNext(context.Background())
+	if err != nil || !res.HasNext() {
+		t.Fatalf("LEFT pad emission: %v", err)
+	}
+	b, berr := res.GetContinuation().ToBytes()
+	if berr != nil {
+		t.Fatalf("ToBytes: %v", berr)
+	}
+	if len(b) == 0 {
+		t.Fatal("the advanced-outer envelope must never marshal to zero bytes")
+	}
+	if _, _, derr := decodeNLJContinuation(b); derr == nil || !strings.Contains(derr.Error(), "no resume position") {
+		t.Fatalf("a continuation-less outer position must decline loudly on resume, got %v", derr)
+	}
+}
+
+// bareContinuationCursor emits rows whose continuations carry NO bytes —
+// models FirstOrDefault/singleResultCursor outers.
+type bareContinuationCursor struct {
+	rows   []QueryResult
+	pos    int
+	closed bool
+}
+
+func (p *bareContinuationCursor) OnNext(context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if p.pos < len(p.rows) {
+		r := p.rows[p.pos]
+		p.pos++
+		// nil continuation — exactly what singleResultCursor emits.
+		return recordlayer.NewResultWithValue(r, nil), nil
+	}
+	return recordlayer.NewResultNoNext[QueryResult](
+		recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
+	), nil
+}
+func (p *bareContinuationCursor) Close() error   { p.closed = true; return nil }
+func (p *bareContinuationCursor) IsClosed() bool { return p.closed }
+
 // pausingCursor emits its rows, then returns an out-of-band pause with a
 // bytes continuation — models an outer child hitting a scan/time limit.
 type pausingCursor struct {
