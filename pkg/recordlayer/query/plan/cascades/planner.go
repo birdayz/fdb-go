@@ -865,7 +865,13 @@ func stampOrderingWinners(ref *expressions.Reference, costModel func(a, b expres
 			}
 		}
 		props := expressions.OrderingFromNameDir(names, ord.Descending)
-		if props.IsEmpty() {
+		if props.IsEmpty() || props.OrderingOverflowed() {
+			// An overflowed key holds only the first-8 prefix: stamping a
+			// 9+-column provider under it would let a DIFFERENT 9+-column
+			// requirement with the same prefix map-hit the winner directly
+			// (Reference.Winner bypasses Satisfies) and elide its sort with
+			// the wrong tail ordering — the exact bug class the overflow
+			// flag exists to kill.
 			continue
 		}
 		existing := ref.Winner(props)

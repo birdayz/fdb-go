@@ -911,18 +911,11 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 	}
 
 	// Phase 7: Quantifier intersection.
-	// matchedQuantifiers = union of both sides.
-	matchedSet := make(map[values.CorrelationIdentifier]expressions.Quantifier)
-	for _, q := range c.matchedQuantifiers {
-		matchedSet[q.GetAlias()] = q
-	}
-	for _, q := range other.matchedQuantifiers {
-		matchedSet[q.GetAlias()] = q
-	}
-	intersectedMatched := make([]expressions.Quantifier, 0, len(matchedSet))
-	for _, q := range matchedSet {
-		intersectedMatched = append(intersectedMatched, q)
-	}
+	// matchedQuantifiers = union of both sides, INSERTION-ORDERED (Java
+	// LinkedIdentitySet): ranging a map here leaked iteration order into
+	// the compensation's quantifier list — downstream expression trees, and
+	// with them plan identity, varied run to run.
+	intersectedMatched := unionQuantifiersOrdered(c.matchedQuantifiers, other.matchedQuantifiers)
 
 	// unmatchedQuantifiers = intersection of both sides.
 	otherUnmatchedSet := make(map[values.CorrelationIdentifier]struct{})
@@ -996,17 +989,11 @@ func (c *ForMatchCompensation) Union(other *ForMatchCompensation) Compensation {
 	}
 
 	// Check: union of matched quantifiers must have at most one ForEach.
-	matchedSet := make(map[values.CorrelationIdentifier]expressions.Quantifier)
-	for _, q := range c.matchedQuantifiers {
-		matchedSet[q.GetAlias()] = q
-	}
-	for _, q := range other.matchedQuantifiers {
-		matchedSet[q.GetAlias()] = q
-	}
+	// Insertion-ordered union (Java LinkedIdentitySet) — see the
+	// intersection path for why map iteration order must not leak here.
+	unionedMatched := unionQuantifiersOrdered(c.matchedQuantifiers, other.matchedQuantifiers)
 	forEachCount := 0
-	var unionedMatched []expressions.Quantifier
-	for _, q := range matchedSet {
-		unionedMatched = append(unionedMatched, q)
+	for _, q := range unionedMatched {
 		if q.Kind() == expressions.QuantifierForEach {
 			forEachCount++
 		}
@@ -1173,3 +1160,23 @@ var (
 	_ Compensation = impossibleCompensation{}
 	_ Compensation = (*ForMatchCompensation)(nil)
 )
+
+// unionQuantifiersOrdered unions two quantifier lists preserving first-seen
+// insertion order, deduplicating by alias — the Go analog of Java's
+// LinkedIdentitySet union in Compensation.intersect/union. Determinism here
+// is load-bearing: the result feeds compensation expression trees whose
+// shape participates in plan identity.
+func unionQuantifiersOrdered(a, b []expressions.Quantifier) []expressions.Quantifier {
+	seen := make(map[values.CorrelationIdentifier]struct{}, len(a)+len(b))
+	out := make([]expressions.Quantifier, 0, len(a)+len(b))
+	for _, list := range [][]expressions.Quantifier{a, b} {
+		for _, q := range list {
+			if _, dup := seen[q.GetAlias()]; dup {
+				continue
+			}
+			seen[q.GetAlias()] = struct{}{}
+			out = append(out, q)
+		}
+	}
+	return out
+}
