@@ -487,14 +487,19 @@ func executeUnorderedUnion(
 	if len(inners) == 0 {
 		return recordlayer.Empty[QueryResult](), nil
 	}
-	// Correct-or-loud (the RFC-180 A2 defect class, same treatment as
-	// executeUnionBuffered): this eager concat has no per-child continuation
-	// encoding, and before this guard it fed the PARENT's continuation verbatim
-	// to EVERY child — a raw-key scan child consumed it as a scan position and
-	// silently started mid-stream. Decline typed until per-branch states land
-	// (WS-A follow-up); children below always start fresh (nil).
-	if len(continuation) > 0 {
-		return nil, &UnsupportedContinuationError{Shape: "unordered union"}
+	if len(inners) == 1 {
+		return ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndLimit())
+	}
+	// Java UnorderedUnionCursor: per-child slots in UnionCursorContinuation,
+	// order unspecified (a deterministic serial order is a legal
+	// realization), a limit-stopped child does not stop the union — the
+	// remaining children keep emitting — and the union's terminal carries
+	// the strongest child reason with every child's resume slot. This
+	// replaces the RFC-180 A2 loud decline (which itself replaced feeding
+	// the parent token raw to every child).
+	resume, derr := decodeUnionContinuation(continuation, len(inners))
+	if derr != nil {
+		return nil, derr
 	}
 	var md *recordlayer.RecordMetaData
 	if store != nil {
@@ -510,13 +515,22 @@ func executeUnorderedUnion(
 	// union does. A no-op when names already agree (the common case).
 	firstBranchKeys := planColumnNamesWithMD(inners[0], md)
 	childProps := props.ClearSkipAndLimit()
-	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners))
+	u := &unorderedUnionCursor{
+		children:  make([]recordlayer.RecordCursor[QueryResult], len(inners)),
+		states:    make([]recordlayer.RecordCursorContinuation, len(inners)),
+		reasons:   make([]recordlayer.NoNextReason, len(inners)),
+		stopped:   make([]bool, len(inners)),
+		exhausted: make([]bool, len(inners)),
+	}
 	for i, inner := range inners {
-		c, err := ExecutePlan(ctx, inner, store, evalCtx, nil, childProps)
+		if resume[i].exhausted {
+			u.exhausted[i] = true
+			u.states[i] = &recordlayer.EndContinuation{}
+			continue
+		}
+		c, err := ExecutePlan(ctx, inner, store, evalCtx, resume[i].continuation, childProps)
 		if err != nil {
-			for _, prev := range cursors {
-				_ = prev.Close()
-			}
+			_ = u.Close()
 			return nil, err
 		}
 		if i > 0 && firstBranchKeys != nil {
@@ -528,10 +542,124 @@ func executeUnorderedUnion(
 				})
 			}
 		}
-		cursors = append(cursors, c)
+		u.children[i] = c
+		if len(resume[i].continuation) > 0 {
+			u.states[i] = recordlayer.NewBytesContinuation(resume[i].continuation)
+		}
 	}
-	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(u, props.Skip, props.ReturnedRowLimit), nil
 }
+
+// unorderedUnionCursor is the serial realization of Java's
+// UnorderedUnionCursor: children emit in deterministic index order (Java's
+// order is explicitly unspecified), a child's out-of-band stop parks that
+// child and the union keeps emitting from the rest (a shared scan/time
+// limiter parks them all in short order), and the terminal result carries the
+// STRONGEST stopped-child reason with a per-child UnionContinuation slot —
+// exhausted children marked, stopped children at their positions. Every
+// emitted row's continuation snapshots all children's current states.
+type unorderedUnionCursor struct {
+	children   []recordlayer.RecordCursor[QueryResult] // nil = exhausted at resume
+	states     []recordlayer.RecordCursorContinuation  // last-known per child; nil = START
+	reasons    []recordlayer.NoNextReason              // valid where stopped
+	stopped    []bool
+	exhausted  []bool
+	idx        int
+	closed     bool
+	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
+}
+
+func (u *unorderedUnionCursor) snapshotContinuation() recordlayer.RecordCursorContinuation {
+	children := make([]recordlayer.RecordCursorContinuation, len(u.states))
+	copy(children, u.states)
+	return &mergeSortContinuation{children: children}
+}
+
+func (u *unorderedUnionCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if u.closed {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+	}
+	if u.lastNoNext != nil {
+		return *u.lastNoNext, nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
+		// Find the next live child from the current position.
+		live := -1
+		for off := 0; off < len(u.children); off++ {
+			i := (u.idx + off) % len(u.children)
+			if u.children[i] != nil && !u.exhausted[i] && !u.stopped[i] {
+				live = i
+				break
+			}
+		}
+		if live < 0 {
+			// Terminal: all children exhausted → genuine end; any stopped
+			// child → strongest reason + per-child resume slots.
+			anyStopped := false
+			reason := recordlayer.SourceExhausted
+			found := false
+			for i := range u.children {
+				if !u.stopped[i] {
+					continue
+				}
+				anyStopped = true
+				if !found || u.reasons[i].IsOutOfBand() || reason.IsSourceExhausted() {
+					reason = u.reasons[i]
+					found = true
+				}
+			}
+			if !anyStopped {
+				return recordlayer.NewResultNoNext[QueryResult](
+					recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
+				), nil
+			}
+			res := recordlayer.NewResultNoNext[QueryResult](reason, u.snapshotContinuation())
+			u.lastNoNext = &res
+			return res, nil
+		}
+		u.idx = live
+		result, err := u.children[live].OnNext(ctx)
+		if err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
+		if result.HasNext() {
+			u.states[live] = result.GetContinuation()
+			return recordlayer.NewResultWithValue(result.GetValue(), u.snapshotContinuation()), nil
+		}
+		reason := result.GetNoNextReason()
+		if reason == recordlayer.SourceExhausted {
+			u.exhausted[live] = true
+			u.states[live] = &recordlayer.EndContinuation{}
+		} else {
+			u.stopped[live] = true
+			u.reasons[live] = reason
+			u.states[live] = result.GetContinuation()
+		}
+		u.idx = (live + 1) % len(u.children)
+	}
+}
+
+func (u *unorderedUnionCursor) Close() error {
+	if u.closed {
+		return nil
+	}
+	u.closed = true
+	var firstErr error
+	for _, c := range u.children {
+		if c == nil {
+			continue
+		}
+		if err := c.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (u *unorderedUnionCursor) IsClosed() bool { return u.closed }
 
 // producesMergedRows reports whether a plan emits merged join rows
 // (multiple quantifiers' columns concatenated into one positional row with
@@ -1582,58 +1710,6 @@ func (c *emptyCursor[T]) OnNext(context.Context) (recordlayer.RecordCursorResult
 }
 func (c *emptyCursor[T]) IsClosed() bool { return c.closed }
 func (c *emptyCursor[T]) Close() error   { c.closed = true; return nil }
-
-type concatCursor[T any] struct {
-	cursors []recordlayer.RecordCursor[T]
-	idx     int
-	closed  bool
-}
-
-func newConcatCursor[T any](cursors []recordlayer.RecordCursor[T]) *concatCursor[T] {
-	return &concatCursor[T]{cursors: cursors}
-}
-
-func (c *concatCursor[T]) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[T], error) {
-	for c.idx < len(c.cursors) {
-		if err := ctx.Err(); err != nil {
-			return recordlayer.RecordCursorResult[T]{}, err
-		}
-		result, err := c.cursors[c.idx].OnNext(ctx)
-		if err != nil {
-			return result, err
-		}
-		if result.HasNext() {
-			return result, nil
-		}
-		// A branch that stopped OUT-OF-BAND (a scan/byte/time resource limit in
-		// paginate mode) cannot be resumed across the concat boundary — concat
-		// carries no per-branch continuation state, so advancing to the next branch
-		// would silently drop the rest of this one. Error instead (RFC-106a;
-		// same reasoning as the multidim skip-scan). SourceExhausted → next branch.
-		// Without a scan limit set, out-of-band never fires, so UNION ALL is unchanged.
-		if result.GetNoNextReason().IsOutOfBand() {
-			return recordlayer.RecordCursorResult[T]{}, &recordlayer.ScanLimitReachedError{Reason: result.GetNoNextReason()}
-		}
-		c.idx++
-	}
-	return recordlayer.NewResultNoNext[T](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
-}
-
-func (c *concatCursor[T]) IsClosed() bool { return c.closed }
-
-func (c *concatCursor[T]) Close() error {
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	var firstErr error
-	for _, cur := range c.cursors {
-		if err := cur.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
 
 // errResultCursor yields a stored error on the first OnNext. Used to defer a
 // cursor-construction error through a factory that cannot itself return an error

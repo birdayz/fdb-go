@@ -358,6 +358,7 @@ go_test(
         "unique_violation_probe_test.go",
         "unnest_exists_gather_fdb_test.go",
         "unnest_ordinality_pushdown_fdb_test.go",
+        "unordered_union_continuation_fdb_test.go",
         "update_assignment_probe_test.go",
         "update_constraint_enforcement_probe_test.go",
         "update_index_maintenance_probe_test.go",

@@ -4937,7 +4937,19 @@ func TestNLJCursor_InnerJoin_PredicateFilters(t *testing.T) {
 // concatCursor
 // ===========================================================================
 
-func TestConcatCursor_MultipleCursors(t *testing.T) {
+// newUnorderedUnionForTest builds the cursor over pre-built children — the
+// executor recipe minus plan execution (pinned separately via the SQL e2e).
+func newUnorderedUnionForTest(children ...recordlayer.RecordCursor[QueryResult]) *unorderedUnionCursor {
+	return &unorderedUnionCursor{
+		children:  children,
+		states:    make([]recordlayer.RecordCursorContinuation, len(children)),
+		reasons:   make([]recordlayer.NoNextReason, len(children)),
+		stopped:   make([]bool, len(children)),
+		exhausted: make([]bool, len(children)),
+	}
+}
+
+func TestUnorderedUnionCursor_MultipleChildren(t *testing.T) {
 	t.Parallel()
 
 	c1 := recordlayer.FromList([]QueryResult{
@@ -4952,7 +4964,7 @@ func TestConcatCursor_MultipleCursors(t *testing.T) {
 		qr("id", int64(5)),
 	})
 
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{c1, c2, c3})
+	cc := newUnorderedUnionForTest(c1, c2, c3)
 	defer cc.Close()
 
 	results := collectCursor(t, cc)
@@ -4967,7 +4979,7 @@ func TestConcatCursor_MultipleCursors(t *testing.T) {
 	}
 }
 
-func TestConcatCursor_EmptyFirst(t *testing.T) {
+func TestUnorderedUnionCursor_EmptyFirst(t *testing.T) {
 	t.Parallel()
 
 	empty := recordlayer.FromList([]QueryResult{})
@@ -4976,7 +4988,7 @@ func TestConcatCursor_EmptyFirst(t *testing.T) {
 		qr("id", int64(8)),
 	})
 
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{empty, nonempty})
+	cc := newUnorderedUnionForTest(empty, nonempty)
 	defer cc.Close()
 
 	results := collectCursor(t, cc)
@@ -4988,40 +5000,27 @@ func TestConcatCursor_EmptyFirst(t *testing.T) {
 	}
 }
 
-func TestConcatCursor_AllEmpty(t *testing.T) {
+func TestUnorderedUnionCursor_AllEmpty(t *testing.T) {
 	t.Parallel()
 
-	e1 := recordlayer.FromList([]QueryResult{})
-	e2 := recordlayer.FromList([]QueryResult{})
-
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{e1, e2})
+	cc := newUnorderedUnionForTest(
+		recordlayer.FromList([]QueryResult{}),
+		recordlayer.FromList([]QueryResult{}),
+	)
 	defer cc.Close()
 
-	results := collectCursor(t, cc)
-	if len(results) != 0 {
+	if results := collectCursor(t, cc); len(results) != 0 {
 		t.Fatalf("got %d results, want 0", len(results))
 	}
 }
 
-func TestConcatCursor_NoCursors(t *testing.T) {
+func TestUnorderedUnionCursor_CloseIdempotent(t *testing.T) {
 	t.Parallel()
 
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{})
-	defer cc.Close()
-
-	results := collectCursor(t, cc)
-	if len(results) != 0 {
-		t.Fatalf("got %d results, want 0", len(results))
-	}
-}
-
-func TestConcatCursor_CloseIdempotent(t *testing.T) {
-	t.Parallel()
-
-	c1 := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
-	c2 := recordlayer.FromList([]QueryResult{qr("id", int64(2))})
-
-	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{c1, c2})
+	cc := newUnorderedUnionForTest(
+		recordlayer.FromList([]QueryResult{qr("id", int64(1))}),
+		recordlayer.FromList([]QueryResult{qr("id", int64(2))}),
+	)
 
 	if cc.IsClosed() {
 		t.Fatal("should not be closed initially")
@@ -5034,6 +5033,70 @@ func TestConcatCursor_CloseIdempotent(t *testing.T) {
 	}
 	if err := cc.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// TestUnorderedUnionCursor_StopSlotsAndResume pins the Java
+// UnorderedUnionCursor contract the old eager concat declined (RFC-180 A2 →
+// E3/E4): a limit-stopped child parks while the others keep emitting; the
+// terminal carries the STRONGEST child reason and per-child UnionContinuation
+// slots (exhausted children marked, stopped children at their positions);
+// and a re-call replays the cached terminal (the flaky child would surface
+// MORE rows without the guard).
+func TestUnorderedUnionCursor_StopSlotsAndResume(t *testing.T) {
+	t.Parallel()
+	rows := nljTestRows("K", 2)
+	flaky := &flakyOuterCursor{first: rows[:1], rest: rows[1:]} // 1 row, pause, then MORE
+	done := recordlayer.FromList([]QueryResult{qr("id", int64(9))})
+	cc := newUnorderedUnionForTest(flaky, done)
+	defer cc.Close()
+
+	var emitted int
+	var terminal recordlayer.RecordCursorResult[QueryResult]
+	ctx := context.Background()
+	for {
+		res, err := cc.OnNext(ctx)
+		if err != nil {
+			t.Fatalf("OnNext: %v", err)
+		}
+		if !res.HasNext() {
+			terminal = res
+			break
+		}
+		emitted++
+	}
+	// Child 0's row + child 1's row: the pause parks child 0, child 1 keeps
+	// emitting (Java: a limited child does not stop the union).
+	if emitted != 2 {
+		t.Fatalf("emitted %d rows, want 2 (the stopped child must not stop the union)", emitted)
+	}
+	if terminal.GetNoNextReason() != recordlayer.TimeLimitReached {
+		t.Fatalf("terminal reason = %v, want the stopped child's TimeLimitReached (strongest)", terminal.GetNoNextReason())
+	}
+	b, berr := terminal.GetContinuation().ToBytes()
+	if berr != nil {
+		t.Fatalf("ToBytes: %v", berr)
+	}
+	slots, derr := decodeUnionContinuation(b, 2)
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	if slots[0].exhausted || len(slots[0].continuation) == 0 {
+		t.Fatalf("stopped child slot = %+v, want its resume position", slots[0])
+	}
+	if !slots[1].exhausted {
+		t.Fatalf("exhausted child slot = %+v, want the exhausted marker", slots[1])
+	}
+
+	// Terminal replay: without the cache, the flaky child's next pull would
+	// surface its post-pause rows.
+	again, err := cc.OnNext(ctx)
+	if err != nil {
+		t.Fatalf("re-call: %v", err)
+	}
+	ab, _ := again.GetContinuation().ToBytes()
+	if again.HasNext() || again.GetNoNextReason() != terminal.GetNoNextReason() || string(ab) != string(b) {
+		t.Fatal("re-call must replay the cached terminal verbatim")
 	}
 }
 
@@ -5565,13 +5628,13 @@ func TestGetMaterializationLimit_NegativeFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestExecuteUnorderedUnion_ResumeDeclinesTyped pins the correct-or-loud guard
-// on the unordered union's resume path (RFC-180 A2 defect class): the unordered
-// concat has no per-child continuation encoding, so a non-empty continuation
-// must decline with a typed UnsupportedContinuationError — never be fed
-// verbatim to every child, where a raw-key scan child would consume the
-// PARENT's token as a scan position and silently start mid-stream.
-func TestExecuteUnorderedUnion_ResumeDeclinesTyped(t *testing.T) {
+// TestExecuteUnorderedUnion_ResumeContract pins the resumable unordered
+// union (Java UnorderedUnionCursor parity — this replaced the RFC-180 A2 loud
+// decline, which itself replaced feeding the parent token verbatim to every
+// child): a VALID per-child UnionContinuation resumes (exhausted children
+// skipped), while unrecognized bytes still decline loudly as a parse error —
+// never reach a child raw.
+func TestExecuteUnorderedUnion_ResumeContract(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -5596,13 +5659,28 @@ func TestExecuteUnorderedUnion_ResumeDeclinesTyped(t *testing.T) {
 		t.Fatalf("fresh unordered union yielded %d rows, want 2", len(rows))
 	}
 
-	// Resume attempt (non-empty continuation): typed decline, no cursor.
-	_, err = ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), []byte("parent-token"), recordlayer.DefaultExecuteProperties())
-	var uErr *UnsupportedContinuationError
-	if !errors.As(err, &uErr) {
-		t.Fatalf("unordered-union resume: err = %v, want *UnsupportedContinuationError (a silent nil error means the parent token was misrouted to the children)", err)
+	// A valid token marking child 0 exhausted resumes: only child 1 emits.
+	tok, terr := proto.Marshal(&gen.UnionContinuation{FirstExhausted: proto.Bool(true)})
+	if terr != nil {
+		t.Fatalf("marshal: %v", terr)
 	}
-	if uErr.Shape != "unordered union" {
-		t.Fatalf("UnsupportedContinuationError.Shape = %q, want %q", uErr.Shape, "unordered union")
+	cursor, err = ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), tok, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("valid resume: %v", err)
+	}
+	rows, err = CollectAll(ctx, cursor)
+	cursor.Close()
+	if err != nil {
+		t.Fatalf("resumed CollectAll: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("resume with child 0 exhausted yielded %d rows, want 1 (child 1 only)", len(rows))
+	}
+
+	// Unrecognized bytes: loud parse error, never fed to a child raw.
+	_, err = ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), []byte("parent-token"), recordlayer.DefaultExecuteProperties())
+	var pErr *recordlayer.ContinuationParseError
+	if !errors.As(err, &pErr) {
+		t.Fatalf("garbage resume: err = %v, want *ContinuationParseError (a nil error means the token was misrouted to the children)", err)
 	}
 }

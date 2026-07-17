@@ -518,11 +518,12 @@ intersection non-max `consume()` advance). What remains is classified below.
 - **Sort codec**: Go-owned typed payload inside Java's MemorySortContinuation
   wrapper. Cascades emits no physical sort Java could resume (RemoveSortRule);
   resume semantics are row-set-equivalent to Java's minimum-key re-scan.
-- **UnorderedUnion**: Go is an eager deterministic concat that DECLINES
-  continuations loudly (correct-or-loud, RFC-180 A2) and errors on a child's
-  out-of-band stop; Java streams whenAny with full resumability. Feature gap,
-  never silent wrongness. Same for the reason-aggregation difference it
-  subsumes.
+- **UnorderedUnion**: RESOLVED — Go now matches Java's UnorderedUnionCursor
+  contract serially: per-child UnionCursorContinuation slots, a limit-stopped
+  child parks while the rest keep emitting, strongest-reason terminal, full
+  resumability. The deterministic child order remains a legal realization of
+  Java's explicitly unspecified order. (The former eager concat's loud
+  declines are gone; the dead concat cursor was deleted.)
 - **ProbableIntersectionCursor / bloom-filter weak reads**: entirely
   unimplemented (no plan type reaches it); Java's own docs flag the
   Guava-serialized bloom bytes as a cross-compat hazard. Missing capability,
