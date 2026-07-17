@@ -171,12 +171,18 @@ type SortElisionSelector interface {
 	// OrderedChildWinner returns a physical member of childRef whose
 	// ordering satisfies sortExpr's keys, or nil (sort must stay).
 	OrderedChildWinner(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression
+	// OrderingSourceRef reports whether expr merely PRESERVES its
+	// input's order, returning the child group the ordering flows from.
+	// Extraction pins that group when eliding a sort (see
+	// rebuildOrderedSpine).
+	OrderingSourceRef(expr expressions.RelationalExpression) (*expressions.Reference, bool)
 }
 
 // sortWinnerFromChild asks the selector for a child member that already
-// provides the sort's ordering. If one exists, returns the rebuilt member
-// (sort eliminated). If not — or the selector doesn't implement
-// SortElisionSelector — returns nil.
+// provides the sort's ordering. If one exists, returns the member rebuilt
+// with its ordering spine PINNED (sort eliminated). If not — or the
+// selector doesn't implement SortElisionSelector, or the spine cannot be
+// pinned — returns nil and the sort stays.
 func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) expressions.RelationalExpression {
 	elider, ok := sel.(SortElisionSelector)
 	if !ok {
@@ -190,11 +196,72 @@ func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMe
 	if winner == nil || !isPhysicalPlan(winner) {
 		return nil
 	}
-	rebuilt, err := rebuildExpressionFromSelectorVisited(winner, sel, stats, visited)
-	if err != nil {
+	rebuilt, err := rebuildOrderedSpine(winner, sortExpr, elider, sel, stats, visited, map[*expressions.Reference]bool{})
+	if err != nil || rebuilt == nil {
 		return nil
 	}
 	return rebuilt
+}
+
+// rebuildOrderedSpine rebuilds a sort-elision winner with its ordering
+// spine pinned. An order-PRESERVING wrapper (OrderingSourceRef) derives
+// its ordering from a child group that may hold BOTH the satisfying
+// ordered member and a cheaper unordered one; the generic rebuild
+// (rebuildExpressionFromSelectorVisited) resolves every group to its
+// overall winner, which would relink the wrapper to the unordered member
+// AFTER the sort above it was already discarded — silently unordered
+// output. So along the spine the child group is resolved via
+// OrderedChildWinner and recursively pinned into a fresh singleton
+// Reference; the first self-providing node (an ordered scan) ends the
+// spine and its own children extract generically. Any level that cannot
+// be pinned (no satisfying member, or a cyclic reference revisits a
+// pinned group) returns nil — the caller keeps the sort, which is always
+// order-correct.
+func rebuildOrderedSpine(
+	e expressions.RelationalExpression,
+	sortExpr *expressions.LogicalSortExpression,
+	elider SortElisionSelector,
+	sel BestMemberSelector,
+	stats StatisticsProvider,
+	visited map[*expressions.Reference]bool,
+	pinned map[*expressions.Reference]bool,
+) (expressions.RelationalExpression, error) {
+	srcRef, delegates := elider.OrderingSourceRef(e)
+	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
+	for _, q := range e.GetQuantifiers() {
+		childRef := q.GetRangesOver()
+		if delegates && childRef == srcRef && srcRef != nil {
+			if pinned[srcRef] {
+				return nil, nil // cycle on the spine — decline elision
+			}
+			pinned[srcRef] = true
+			om := elider.OrderedChildWinner(sortExpr, srcRef)
+			if om == nil || !isPhysicalPlan(om) {
+				return nil, nil // spine broken — decline elision
+			}
+			inner, err := rebuildOrderedSpine(om, sortExpr, elider, sel, stats, visited, pinned)
+			if err != nil {
+				return nil, err
+			}
+			if inner == nil {
+				return nil, nil
+			}
+			freshChildren = append(freshChildren, expressions.ForEachQuantifier(expressions.InitialOf(inner)))
+			continue
+		}
+		inner, err := extractBestPlanFromSelectorVisited(childRef, sel, stats, visited)
+		if err != nil {
+			return nil, err
+		}
+		var freshRef *expressions.Reference
+		if inner == nil {
+			freshRef = &expressions.Reference{}
+		} else {
+			freshRef = expressions.InitialOf(inner)
+		}
+		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
+	}
+	return rebuildWithFreshChildren(e, freshChildren)
 }
 
 // rebuildExpressionFromSelectorVisited is the same switch-based

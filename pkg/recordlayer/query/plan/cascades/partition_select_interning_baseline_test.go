@@ -268,8 +268,13 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// those tasks previously popped, type-asserted, failed, and counted.
 		// The surviving counts are the REAL rule-firing workload, which is
 		// what the interning sentinels actually guard.
-		{3, 1554},
-		{4, 6998},
+		//
+		// The final-survival OptimizeInputs guard (ContainsFinal — a pruned
+		// dual-inserted loser no longer drives child optimization) plus the
+		// delegation-truthful ordering satisfaction trimmed 1554→1500
+		// (3-table, -3.5%) / 6998→6706 (4-table, -4.2%).
+		{3, 1500},
+		{4, 6706},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)

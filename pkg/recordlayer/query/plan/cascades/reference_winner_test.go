@@ -7,6 +7,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func TestReference_Winner_NoWinner(t *testing.T) {
@@ -166,6 +167,151 @@ func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 	// elision hook must decline.
 	if w := p.OrderedChildWinner(sort, scanRef); w != nil {
 		t.Fatalf("ASC NULLS LAST must not elide against a natural-ASC index scan; got %T", w)
+	}
+}
+
+// TestSortElimination_PinsOrderedSpineThroughWrapper reproduces the
+// transparent-wrapper relink hole: Sort over a group whose satisfying
+// member is a FILTER WRAPPER (order-preserving delegator), where the
+// wrapper's child group holds BOTH an ordered index scan and a cheaper
+// unordered scan stamped as the group's overall winner. Eliding the sort
+// and then rebuilding generically resolves the child group to its overall
+// winner — the UNORDERED scan — producing unordered output with the sort
+// already gone. The elision path must pin the spine: the rebuilt tree
+// must contain the ordered index scan.
+func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+		nil,
+	)
+	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
+	idxPlan := extractIndexPlan(cand.ToScanPlan(emptyPrefix, false))
+	if idxPlan == nil {
+		t.Fatal("could not extract index plan from candidate")
+	}
+	orderedScan := &physicalIndexScanWrapper{
+		plan:        idxPlan,
+		columnNames: []string{"STATUS"},
+		unique:      false,
+	}
+
+	// The wrapper's child group: cheap unordered scan (stamped overall
+	// winner) + the ordered index scan.
+	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	innerRef := expressions.InitialOf(scanExpr)
+	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	cheap := findPhysicalExpr(innerRef)
+	if cheap == nil {
+		t.Fatal("no physical scan")
+	}
+	innerRef.InsertFinal(cheap)
+	innerRef.Insert(orderedScan)
+	innerRef.InsertFinal(orderedScan)
+	innerRef.SetWinner(cheap) // generic extraction would relink to THIS
+
+	// The order-preserving filter wrapper over that group.
+	filterWrap := &physicalPredicatesFilterWrapper{
+		plan: plans.NewRecordQueryPredicatesFilterPlan(
+			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		),
+		innerQuant: expressions.ForEachQuantifier(innerRef),
+	}
+	filterRef := expressions.InitialOf(filterWrap)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(filterRef),
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	if err != nil {
+		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("plan is nil")
+	}
+	// The sort must be elided (the filter's source group HAS a satisfying
+	// member) — and the pinned spine must carry the ORDERED index scan,
+	// not the group's cheap overall winner.
+	if _, isSort := plan.(*expressions.LogicalSortExpression); isSort {
+		t.Fatalf("sort should be elided through the order-preserving filter wrapper; got %T", plan)
+	}
+	if !subtreeContainsIndexScan(plan) {
+		t.Fatalf("elided-sort spine was relinked to the unordered winner — the ordered index scan is gone (plan root %T)", plan)
+	}
+}
+
+// subtreeContainsIndexScan walks an extracted (singleton-ref) tree for a
+// physical index scan wrapper.
+func subtreeContainsIndexScan(e expressions.RelationalExpression) bool {
+	if e == nil {
+		return false
+	}
+	if IsPhysicalIndexScan(e) {
+		return true
+	}
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			if subtreeContainsIndexScan(m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestSortElimination_DeclinesWhenSpineUnpinnable pins the conservative
+// arm: when the order-preserving wrapper's source group has NO satisfying
+// member, elision must decline and the sort stays — an elided sort over
+// an unpinnable spine is exactly the unordered-output hole.
+func TestSortElimination_DeclinesWhenSpineUnpinnable(t *testing.T) {
+	t.Parallel()
+
+	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	innerRef := expressions.InitialOf(scanExpr)
+	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	cheap := findPhysicalExpr(innerRef)
+	if cheap == nil {
+		t.Fatal("no physical scan")
+	}
+	innerRef.InsertFinal(cheap)
+	innerRef.SetWinner(cheap)
+
+	filterWrap := &physicalPredicatesFilterWrapper{
+		plan: plans.NewRecordQueryPredicatesFilterPlan(
+			plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		),
+		innerQuant: expressions.ForEachQuantifier(innerRef),
+	}
+	filterRef := expressions.InitialOf(filterWrap)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(filterRef),
+	)
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	if w := p.OrderedChildWinner(sort, filterRef); w != nil {
+		t.Fatalf("a delegating wrapper over an orderless group must not satisfy; got %T", w)
 	}
 }
 

@@ -99,6 +99,12 @@ func (w *physicalFetchFromPartialRecordWrapper) HintCost(child []properties.Cost
 	return fetchCost(child[0])
 }
 
+// orderingSourceRef: this wrapper PRESERVES its input's order (see
+// orderingDelegator in winner_lookup.go).
+func (w *physicalFetchFromPartialRecordWrapper) orderingSourceRef() *expressions.Reference {
+	return w.innerQuant.GetRangesOver()
+}
+
 func (w *physicalFetchFromPartialRecordWrapper) HintOrdering() properties.Ordering {
 	ref := w.innerQuant.GetRangesOver()
 	if ref == nil {

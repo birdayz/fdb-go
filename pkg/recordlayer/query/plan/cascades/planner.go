@@ -171,6 +171,20 @@ func (p *Planner) OrderedChildWinner(sortExpr *expressions.LogicalSortExpression
 	return bestSatisfyingMember(childRef, ro, p.costModel)
 }
 
+// OrderingSourceRef reports whether expr is an order-PRESERVING wrapper
+// (orderingDelegator) and returns the child group its ordering flows
+// from. Implements the second half of the sort-elision seam: extraction
+// must pin that group to a satisfying member when it elides a sort —
+// rebuilding through the group's overall winner could relink the spine
+// to a cheaper UNORDERED member after the sort is already gone.
+func (p *Planner) OrderingSourceRef(expr expressions.RelationalExpression) (*expressions.Reference, bool) {
+	d, ok := expr.(orderingDelegator)
+	if !ok {
+		return nil, false
+	}
+	return d.orderingSourceRef(), true
+}
+
 // WithImplementationRules adds rules for PhasePlanning. These run
 // after the REWRITING phase converges. Returns p for chaining.
 func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {

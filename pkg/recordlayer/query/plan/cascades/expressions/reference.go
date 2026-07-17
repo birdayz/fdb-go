@@ -532,6 +532,22 @@ func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
 	return false
 }
 
+// ContainsFinal reports whether expr is a FINAL member of this Reference
+// (by identity). Distinct from ContainsExactly, which also admits
+// exploratory members: PLANNING-phase expression rules dual-insert
+// physical yields into BOTH sets while pruning trims only finals — a
+// pruned loser therefore still passes ContainsExactly via its
+// exploratory copy.
+func (r *Reference) ContainsFinal(expr RelationalExpression) bool {
+	r = r.Canonical()
+	for _, m := range r.finalMembers {
+		if m == expr {
+			return true
+		}
+	}
+	return false
+}
+
 // PruneWith replaces final members with the single best expression.
 // Mirrors Java's Reference.pruneWith.
 func (r *Reference) PruneWith(expr RelationalExpression) {

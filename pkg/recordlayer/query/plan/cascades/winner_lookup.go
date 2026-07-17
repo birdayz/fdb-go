@@ -132,11 +132,37 @@ func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less
 	return nil
 }
 
+// orderingDelegator is implemented by physical wrappers that PRESERVE
+// their input's order rather than producing one — their HintOrdering
+// delegates to the inner child group. Ordering satisfaction and
+// extraction-time sort elision must resolve through the SOURCE GROUP
+// (which member actually provides the order), never through a flat
+// first-known-member estimate: the estimate both over-claims (the group's
+// eventual extraction winner may be a different, unordered member — the
+// sort would be elided and then rebuilt over an unordered child) and
+// under-claims (the first known ordering may be a different ordering
+// than the one requested while a later member provides it).
+type orderingDelegator interface {
+	orderingSourceRef() *expressions.Reference
+}
+
+// maxOrderingDelegationDepth bounds the delegator chain walk. Physical
+// plan wrappers nest far shallower than this; hitting the cap means a
+// cyclic reference (e.g. a recursive-CTE back-edge) reached the ordering
+// spine — answered conservatively (not satisfied ⇒ the sort stays).
+const maxOrderingDelegationDepth = 64
+
 // memberSatisfiesOrdering reports whether a physical member's derived rich
 // ordering satisfies the requested ordering. Non-physical members and
 // nil-inner Fetch shells never satisfy (a Fetch shell's inner is resolved
 // only at extraction; costed without it, it ranks artificially cheap).
+// Order-preserving wrappers resolve through their source group (see
+// orderingDelegator).
 func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *RequestedOrdering) bool {
+	return memberSatisfiesOrderingDepth(m, requested, 0)
+}
+
+func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested *RequestedOrdering, depth int) bool {
 	// Physicality gates FIRST: a preserve request must not admit a logical
 	// member or a nil-inner Fetch shell either — bestSatisfyingMember
 	// promises "cheapest PHYSICAL member" unconditionally.
@@ -149,6 +175,21 @@ func memberSatisfiesOrdering(m expressions.RelationalExpression, requested *Requ
 	}
 	if requested == nil || requested.IsPreserve() {
 		return true
+	}
+	if d, ok := m.(orderingDelegator); ok {
+		if depth >= maxOrderingDelegationDepth {
+			return false
+		}
+		srcRef := d.orderingSourceRef()
+		if srcRef == nil {
+			return false
+		}
+		for _, sm := range srcRef.AllMembers() {
+			if memberSatisfiesOrderingDepth(sm, requested, depth+1) {
+				return true
+			}
+		}
+		return false
 	}
 	ro := computeWrapperRichOrdering(pe)
 	if ro == nil {
