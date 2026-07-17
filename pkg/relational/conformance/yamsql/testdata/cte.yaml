@@ -284,3 +284,12 @@ tests:
       WITH c(a, b) AS (SELECT x.*, y.id, y.v FROM t AS x, t AS y WHERE x.id = y.id)
       SELECT COUNT(*) FROM c
     error_code: "42F10"
+  # ...and star width resolves CTE-FIRST: with a preceding CTE shadowing the
+  # base table (t(z) = 1 column vs base t = 2), p.* expands to the CTE's
+  # width — md-first counted 3 and rejected this valid two-alias list.
+  - query: |-
+      WITH t(z) AS (SELECT id FROM t),
+           c(a, b) AS (SELECT p.*, q.z FROM t AS p, t AS q WHERE p.z = q.z)
+      SELECT COUNT(*) FROM c
+    rows:
+      - [4]

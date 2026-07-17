@@ -1654,7 +1654,7 @@ func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName strin
 	// `WITH c(a,b) AS (<underivable body> SELECT id ...)` silently accepted a
 	// two-alias list over a one-column body instead of erroring like the
 	// derivable twin.
-	if n := staticCTEProjectionCount(cteQuery, md, schemaName); n > 0 {
+	if n := staticCTEProjectionCount(cteQuery, md, cteScopes); n > 0 {
 		if list, ok := colAliases.(*antlrgen.FullIdListContext); ok && list != nil {
 			if nAliases := len(list.AllFullId()); nAliases > 0 && nAliases != n {
 				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
@@ -1670,19 +1670,16 @@ func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName strin
 	return nil
 }
 
-// staticCTEProjectionCount returns the CTE body's statically-extractable
-// projection count: len(projCols) when the body's SELECT list is explicit,
-// -1 when unknown (SELECT *, unextractable shape, recursive seeds with
-// differing arms are still validated by their own paths). A qualified-star
-// slot (`x.*`) occupies ONE projCols entry but expands to every source
-// column — it is EXPANDED against the source schema (the same
-// expandQualifiedStars pass the SELECT build runs) so a mixed-star body
-// still validates its true width; a star whose source cannot be resolved
-// leaves its sentinel in place and the count stays unknown. (Skipping
-// validation for every star-bearing body let a two-alias list over a
-// four-column mixed-star body execute; counting the sentinel rejected
-// valid CTEs — both review-caught.)
-func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext, md *recordlayer.RecordMetaData, schemaName string) int {
+// staticCTEProjectionCount returns the CTE body's statically-derivable
+// OUTPUT width: one per explicit SELECT item, plus the source's column
+// count for each qualified-star slot (`x.*`), resolved CTE-FIRST (a
+// preceding CTE shadowing a catalog table supplies ITS width — md-first
+// rejected valid alias lists over shadowed sources). -1 = unknown (bare
+// SELECT *, unextractable shape, derived-table/tombstoned/unknown star
+// source) and validation is skipped. Review-driven shape: counting the
+// star SENTINEL rejected valid CTEs; skipping validation for star-bearing
+// bodies accepted malformed ones; md-only expansion ignored shadowing.
+func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) int {
 	if cteQuery == nil || md == nil {
 		return -1
 	}
@@ -1694,14 +1691,57 @@ func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext, md *recordlayer.R
 	if err != nil || innerSQ == nil || innerSQ.projCols == nil {
 		return -1
 	}
-	if hasAnyQualifiedStar(innerSQ) {
-		expandQualifiedStars(innerSQ, md, schemaName)
-		// An unresolved star leaves its sentinel: width still unknown.
-		if hasAnyQualifiedStar(innerSQ) {
+	// Source widths, CTE-FIRST (execution's shadowing order — a preceding
+	// CTE shadowing a catalog table supplies ITS column count; resolving the
+	// star against the base table rejected valid alias lists over shadowed
+	// sources). A tombstoned/underivable/unknown source makes the width
+	// unknown for slots that star it.
+	sourceWidth := map[string]int{}
+	addSrc := func(tableName, alias string) {
+		width := -1
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+			if src.Table != nil {
+				width = len(src.Table.Columns())
+			}
+		} else if rt := md.GetRecordType(tableName); rt != nil && rt.Descriptor != nil {
+			width = rt.Descriptor.Fields().Len()
+		}
+		key := strings.ToUpper(alias)
+		if key == "" {
+			key = strings.ToUpper(tableName)
+		}
+		sourceWidth[key] = width
+	}
+	addSrc(innerSQ.tableName, innerSQ.tableAlias)
+	for _, j := range innerSQ.joins {
+		if j.derivedQuery != nil {
+			// Derived-table leg: width not statically modeled here.
+			key := strings.ToUpper(j.alias)
+			if key == "" {
+				key = strings.ToUpper(j.tableName)
+			}
+			sourceWidth[key] = -1
+			continue
+		}
+		addSrc(j.tableName, j.alias)
+	}
+	total := 0
+	for i := range innerSQ.projCols {
+		q := ""
+		if i < len(innerSQ.projStarQualifiers) {
+			q = innerSQ.projStarQualifiers[i]
+		}
+		if q == "" {
+			total++
+			continue
+		}
+		w, known := sourceWidth[strings.ToUpper(q)]
+		if !known || w < 0 {
 			return -1
 		}
+		total += w
 	}
-	return len(innerSQ.projCols)
+	return total
 }
 
 // applyCTEColumnAliases renames the columns of a CTE ScopeSource
@@ -2188,7 +2228,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
-		expandQualifiedStars(sq, md, schemaName)
+		expandQualifiedStars(sq, md, schemaName, cteScopes)
 		needRebuild = true
 	}
 	if needRebuild {
@@ -5857,7 +5897,7 @@ func hasAnyQualifiedStar(sq *selectQuery) bool {
 // query degrades to an UNQUALIFIED star → returns the ENTIRE FlatMap row (outer
 // columns included) instead of just the unnest source's columns (silent-wrong).
 // RFC-142.
-func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) {
+func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) {
 	if sq == nil || sq.projCols == nil || sq.projStarQualifiers == nil {
 		return
 	}
@@ -5872,10 +5912,31 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		return
 	}
 
-	// Build a map of source alias → table columns.
+	// Build a map of source alias → table columns, CTE-FIRST (execution's
+	// shadowing order): a preceding CTE shadowing a catalog table supplies
+	// ITS columns — md-first expanded `p.*` over a shadowed source against
+	// the BASE table's schema, minting columns the CTE row does not carry
+	// (42703 downstream on a valid query). A tombstoned CTE (nil Table)
+	// leaves the sentinel: downstream declines loud.
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
 	sourceColumns := make(map[string][]string)
 	addSource := func(tableName, alias string) {
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+			if src.Table == nil {
+				return
+			}
+			cteCols := src.Table.Columns()
+			cols := make([]string, len(cteCols))
+			for i, c := range cteCols {
+				cols[i] = strings.ToUpper(c.Id.Name())
+			}
+			key := strings.ToUpper(alias)
+			if key == "" {
+				key = strings.ToUpper(tableName)
+			}
+			sourceColumns[key] = cols
+			return
+		}
 		rt := md.GetRecordType(tableName)
 		if rt == nil || rt.Descriptor == nil {
 			return

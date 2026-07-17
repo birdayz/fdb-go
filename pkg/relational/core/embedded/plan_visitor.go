@@ -546,7 +546,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
-		expandQualifiedStars(sq, v.md, v.schemaName)
+		expandQualifiedStars(sq, v.md, v.schemaName, v.cteScopes)
 		needRebuild = true
 	}
 	if needRebuild {
