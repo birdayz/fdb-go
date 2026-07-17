@@ -3530,8 +3530,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	for _, ac := range sq.aggCols {
 		// A PLAIN-column aggregate arg (`MIN(pid)`, `MIN(c2.pid)`) carries
 		// aggArg only — the parser's resolveArg captures no aggExpr for a bare
-		// FullColumnName. It must STILL resolve here: the text fallback
-		// (parseAggregateText) keeps a qualified arg as ONE opaque dotted
+		// FullColumnName. It must STILL resolve here: the translator's
+		// bare-column lazy read keeps a qualified arg as ONE opaque dotted
 		// FieldValue{"C2.PID"}, which key-misses the scan row's bare "PID" at
 		// accumulation and silently aggregates NULL (a sub-planned scalar
 		// subquery's rows carry bare keys only). COUNT(*) has neither and skips.
@@ -3540,9 +3540,9 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		}
 		// Collect EVERY matching aggregate slot — a HAVING that repeats a
 		// SELECT-list aggregate (`SELECT SUM(x) … HAVING SUM(x) > k`) creates a
-		// SECOND slot with the same canonical text; leaving it unresolved sends
-		// it down the lossy text reparse (parseAggregateText), whose flat dotted
-		// operand refs the ordinal frontier cannot resolve.
+		// SECOND slot with the same canonical text; leaving it unresolved makes
+		// the translator fall back to the lazy bare-column read, whose flat
+		// dotted operand refs the ordinal frontier cannot resolve.
 		var idxs []int
 		for i, aggText := range agg.Aggregates {
 			arg := ac.aggArg
@@ -3858,6 +3858,21 @@ func canonicalAggName(funcSymbol string, operand values.Value) string {
 		}
 	}
 	return fn + "(" + inner + ")"
+}
+
+// canonicalAggOperandText returns the operand segment of a canonical
+// aggregate name this builder just produced via canonicalAggName — the text
+// between the outermost parens. Operates only on our own rendering (never
+// user SQL), purely to keep AggregateCall.Operand identical to the name's
+// keyed segment. (Follow-up with F-3: canonicalAggName should return the
+// pair instead of render-then-unrender.)
+func canonicalAggOperandText(cname string) string {
+	l := strings.Index(cname, "(")
+	r := strings.LastIndex(cname, ")")
+	if l < 0 || r <= l {
+		return ""
+	}
+	return cname[l+1 : r]
 }
 
 func rewriteAggregateValue(v values.Value) values.Value {
@@ -7938,6 +7953,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// itself is resolved separately so the qualifier still binds.
 		singleSource := len(sq.joins) == 0
 		var aggTexts, aggAliases []string
+		var aggCalls []logical.AggregateCall
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
 		exprAggNames := make(map[string]struct{}) // join-path collision tracking only
@@ -7994,6 +8010,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				aggSeen[cname] = struct{}{}
 				aggTexts = append(aggTexts, cname)
+				aggCalls = append(aggCalls, logical.AggregateCall{
+					Func:       strings.ToUpper(fn),
+					Operand:    canonicalAggOperandText(cname),
+					Star:       opVal == nil,
+					BareColumn: e == nil && arg != "",
+				})
 				aggAliases = append(aggAliases, cname)
 				aggOperands = append(aggOperands, opVal)
 				return cname, nil
@@ -8028,6 +8050,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				exprAggNames[name] = struct{}{}
 			}
 			aggTexts = append(aggTexts, fn+"("+bareArg+")")
+			aggCalls = append(aggCalls, logical.AggregateCall{
+				Func:       strings.ToUpper(fn),
+				Operand:    strings.ToUpper(bareArg),
+				Star:       bareArg == "*",
+				BareColumn: e == nil && arg != "",
+			})
 			aggAliases = append(aggAliases, name)
 			aggOperands = append(aggOperands, opVal)
 			return name, nil
@@ -8103,6 +8131,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 		}
 		aggOp := logical.NewAggregate(innerOp, sq.groupBy, aggTexts, aggAliases, "")
+		aggOp.Calls = aggCalls
 		aggOp.AggregateOperands = aggOperands
 		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{

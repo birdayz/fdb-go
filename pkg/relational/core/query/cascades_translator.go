@@ -688,14 +688,14 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 // expression (SUM(a*b)), or DISTINCT canonicalizes differently between the two, so the union
 // position-remap would read a missing key → NULL (RFC-081). False for a 0-aggregate branch.
 //
-// The aggregate TEXT is the reliable signal: AggregateOperands is nil for many shapes (e.g.
-// SUM(col)) depending on the build path, and a.Aggregates is canonical planner output (not raw
-// SQL), so inspecting it is sound here.
+// The parse-tree-derived Calls are the signal (RFC-180 F-2): AggregateOperands is nil for
+// many shapes (e.g. SUM(col)) depending on the build path, and text scanning of the
+// canonical rendering is retired.
 func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 	if len(a.Aggregates) == 0 || a.HasDistinctAggregate {
 		return false
 	}
-	for i, text := range a.Aggregates {
+	for i := range a.Aggregates {
 		// A constant operand — COUNT(1), COUNT(NULL), COUNT(TRUE) — folds into count-star,
 		// so a grouped aggregate index reports COUNT(*) ≠ the logical text. The resolved
 		// operand reliably distinguishes a literal (ConstantValue) from a column, which the
@@ -712,49 +712,20 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 				return false
 			}
 		}
-		arg, ok := aggregateArgText(text)
-		if !ok {
+		// Structured classification (RFC-180 F-2): the parse-tree-derived
+		// call info replaces text scanning of the canonical rendering. A
+		// dotted operand text is conservatively rejected (qualified
+		// rendering; a delimited identifier containing a dot only costs
+		// the optimization, never correctness).
+		if i >= len(a.Calls) {
 			return false
 		}
-		if arg == "*" {
+		call := a.Calls[i]
+		if call.Star {
 			continue // COUNT(*)
 		}
-		if !isBareColumnIdentifier(arg) {
-			return false // qualified / expression / numeric-literal operand → name diverges
-		}
-	}
-	return true
-}
-
-// aggregateArgText returns the argument of a canonical aggregate text "FUNC(arg)" — the
-// content between the first '(' and the last ')'. ok=false when not in that shape.
-func aggregateArgText(text string) (string, bool) {
-	openIdx := strings.IndexByte(text, '(')
-	closeIdx := strings.LastIndexByte(text, ')')
-	if openIdx < 0 || closeIdx <= openIdx {
-		return "", false
-	}
-	return text[openIdx+1 : closeIdx], true
-}
-
-// isBareColumnIdentifier reports whether s is a single unqualified SQL identifier
-// ([A-Za-z_][A-Za-z0-9_]*): no qualifier dot, whitespace (DISTINCT), operator (expression),
-// '*', or leading digit (numeric literal). Exactly the operands whose FUNC(s) name is identical
-// in the logical schema and the physical row key.
-func isBareColumnIdentifier(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c == '_':
-		case c >= '0' && c <= '9':
-			if i == 0 {
-				return false
-			}
-		default:
-			return false
+		if call.Distinct || !call.BareColumn || strings.Contains(call.Operand, ".") {
+			return false // qualified / expression / distinct operand → name diverges
 		}
 	}
 	return true
@@ -6397,23 +6368,47 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		}
 	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
-	for i, aggText := range a.Aggregates {
-		spec, ok := parseAggregateText(aggText)
-		if !ok {
+	for i := range a.Aggregates {
+		// STRUCTURED aggregate info only (RFC-180 F-1): the builders capture
+		// function/operand/star/distinct from the parse tree in
+		// LogicalAggregate.Calls. SQL text is never re-parsed here — the
+		// deleted splitter mangled nested arithmetic ("(AMOUNT+10)*2" split
+		// on the inner '+') into unresolvable operands that accumulated to
+		// NULL and silently dropped HAVING groups.
+		if i >= len(a.Calls) {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"aggregate %q carries no structured call info (builder did not populate LogicalAggregate.Calls)", a.Aggregates[i]))
 			return nil
 		}
+		call := a.Calls[i]
+		fn, fnOK := aggregateFunctionByName(call.Func)
+		if !fnOK {
+			return nil
+		}
+		if call.Distinct {
+			// DISTINCT aggregates decline here exactly as before (the
+			// distinct path is served elsewhere); a bare decline keeps the
+			// established error surface.
+			return nil
+		}
+		spec := expressions.AggregateSpec{Function: fn, OperandName: call.Operand}
 		// The resolved operand (set by upgradeAggregateOperands /
 		// buildCorrelatedScalar via resolver.WalkExpression) is the single
-		// source of truth. parseAggregateText only reconstructs the operand by
-		// re-scanning the slot-name text, and parseOperandValue is a naive
-		// left-to-right splitter that mangles nested/parenthesised arithmetic
-		// (e.g. "(AMOUNT+10)*2" splits on the inner '+' into garbage atoms),
-		// yielding an unresolvable operand that accumulates to NULL and silently
-		// drops HAVING groups. Whenever a resolved operand is present, it wins —
-		// never the lossy reparse. (A prior `!isArith` guard preferred the
-		// reparse for arithmetic operands; that was the operand-routing hole.)
-		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
+		// source of truth. A parse-tree-classified BARE COLUMN keeps its
+		// well-defined lazy name read when the catalog pass did not run;
+		// COUNT(*) keeps its null-constant operand. A COMPUTED operand with
+		// no resolved Value declines TYPED — never a text reparse.
+		switch {
+		case i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil:
 			spec.Operand = a.AggregateOperands[i]
+		case call.Star:
+			spec.Operand = &values.ConstantValue{Value: nil, Typ: values.UnknownType}
+		case call.BareColumn:
+			spec.Operand = &values.FieldValue{Field: strings.ToUpper(call.Operand), Typ: values.UnknownType}
+		default:
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"aggregate operand %q did not resolve to a typed Value; computed operands are never re-parsed from text", call.Operand))
+			return nil
 		}
 		if bake.seedQOV != nil && spec.Operand != nil {
 			spec.Operand = bakeGatheredGroupValue(spec.Operand, bake.windows, bake.elementSlots, bake.seedQOV)
@@ -6547,83 +6542,24 @@ func aggregateOperandIntType(operand values.Value, inputFields []values.Field) v
 	return result
 }
 
-func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
-	upper := strings.ToUpper(strings.TrimSpace(text))
-	lparen := strings.Index(upper, "(")
-	if lparen < 0 {
-		return expressions.AggregateSpec{}, false
-	}
-	rparen := strings.LastIndex(upper, ")")
-	if rparen < lparen {
-		return expressions.AggregateSpec{}, false
-	}
-	funcName := strings.TrimSpace(upper[:lparen])
-	operandText := strings.TrimSpace(upper[lparen+1 : rparen])
-
-	var fn expressions.AggregateFunction
-	switch funcName {
+// aggregateFunctionByName maps the parse-tree-captured aggregate function
+// name (logical.AggregateCall.Func) to its typed AggregateFunction. Unknown
+// names decline (same surface as the retired text parser).
+func aggregateFunctionByName(name string) (expressions.AggregateFunction, bool) {
+	switch name {
 	case "COUNT":
-		fn = expressions.AggCount
+		return expressions.AggCount, true
 	case "SUM":
-		fn = expressions.AggSum
+		return expressions.AggSum, true
 	case "MIN":
-		fn = expressions.AggMin
+		return expressions.AggMin, true
 	case "MAX":
-		fn = expressions.AggMax
+		return expressions.AggMax, true
 	case "AVG":
-		fn = expressions.AggAvg
+		return expressions.AggAvg, true
 	default:
-		return expressions.AggregateSpec{}, false
+		return 0, false
 	}
-
-	if strings.HasPrefix(operandText, "DISTINCT ") {
-		return expressions.AggregateSpec{}, false
-	}
-
-	var operand values.Value
-	if operandText == "*" {
-		operand = &values.ConstantValue{Value: nil, Typ: values.UnknownType}
-	} else {
-		operand = parseOperandValue(operandText)
-	}
-
-	return expressions.AggregateSpec{Function: fn, Operand: operand, OperandName: operandText}, true
-}
-
-func parseOperandValue(text string) values.Value {
-	for _, op := range []struct {
-		sym string
-		op  values.ArithmeticOp
-	}{
-		{"+", values.OpAdd},
-		{"-", values.OpSub},
-		{"*", values.OpMul},
-		{"/", values.OpDiv},
-	} {
-		idx := strings.Index(text, op.sym)
-		if idx > 0 && idx < len(text)-1 {
-			left := strings.TrimSpace(text[:idx])
-			right := strings.TrimSpace(text[idx+1:])
-			if left != "" && right != "" {
-				return &values.ArithmeticValue{
-					Op:    op.op,
-					Left:  parseAtomValue(left),
-					Right: parseAtomValue(right),
-				}
-			}
-		}
-	}
-	return parseAtomValue(text)
-}
-
-func parseAtomValue(text string) values.Value {
-	if n, err := strconv.ParseInt(text, 10, 64); err == nil {
-		return &values.ConstantValue{Value: n, Typ: values.NullableLong}
-	}
-	if f, err := strconv.ParseFloat(text, 64); err == nil {
-		return &values.ConstantValue{Value: f, Typ: values.NullableDouble}
-	}
-	return &values.FieldValue{Field: text, Typ: values.UnknownType}
 }
 
 func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {

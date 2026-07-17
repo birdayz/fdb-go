@@ -375,10 +375,14 @@ func (d *LogicalDistinct) Explain(indent string) string {
 // GroupKeys are the grouping-column expressions; Aggregates holds the
 // aggregate-call text with aliases.
 type LogicalAggregate struct {
-	Input                  LogicalOperator
-	GroupKeys              []string
-	GroupKeyValues         []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
-	Aggregates             []string       // e.g. "SUM(a)", "COUNT(*)"
+	Input          LogicalOperator
+	GroupKeys      []string
+	GroupKeyValues []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
+	Aggregates     []string       // e.g. "SUM(a)", "COUNT(*)"
+	// Calls carries the structured per-aggregate info parallel to
+	// Aggregates (see AggregateCall). Builders populate it from the parse
+	// tree; the translator requires it.
+	Calls                  []AggregateCall
 	Aliases                []string       // parallel to Aggregates
 	AggregateOperands      []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
 	HasDistinctAggregate   bool           // true when any aggregate uses DISTINCT (e.g. COUNT(DISTINCT x))
@@ -386,6 +390,25 @@ type LogicalAggregate struct {
 	HavingPredicate        predicates.QueryPredicate
 	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING
 	HavingScalarSubqueries []ScalarSubquery // scalar subquery plans inside HAVING
+}
+
+// AggregateCall is the STRUCTURED form of one aggregate in the SELECT list,
+// captured from the parse tree at build time — function, operand text (for
+// result-map keying), and the star/distinct/bare-column classification. The
+// translator consumes this instead of re-parsing the display text in
+// Aggregates: a missing entry is a typed decline, never a string split
+// (RFC-180 F-1 — the text reparse mangled nested arithmetic and silently
+// dropped HAVING groups).
+type AggregateCall struct {
+	Func     string // upper-case aggregate function name (COUNT/SUM/MIN/MAX/AVG)
+	Operand  string // canonical operand text; "*" for COUNT(*)
+	Star     bool   // COUNT(*) (or COUNT(<non-null const>) collapsed to it)
+	Distinct bool
+	// BareColumn: the operand is a single column reference PER THE PARSE
+	// TREE — a lazy FieldValue read of Operand is well-defined without
+	// catalog resolution. False for computed/expression operands, which
+	// require a resolved Value.
+	BareColumn bool
 }
 
 func NewAggregate(input LogicalOperator, groupKeys, aggs, aliases []string, having string) *LogicalAggregate {

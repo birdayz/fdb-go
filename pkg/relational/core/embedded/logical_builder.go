@@ -414,6 +414,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		var aggs, aggAliases []string
+		var aggCalls []logical.AggregateCall
 		hasDistinct := false
 		keys := make([]string, len(sq.groupBy))
 		for i, k := range sq.groupBy {
@@ -422,6 +423,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		if sq.countStar {
 			aggs = []string{"COUNT(*)"}
 			aggAliases = []string{sq.countStarAlias}
+			aggCalls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
 		} else {
 			for _, ac := range sq.aggCols {
 				if ac.aggFunc != "" {
@@ -439,6 +441,13 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 						hasDistinct = true
 					}
 					aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
+					aggCalls = append(aggCalls, logical.AggregateCall{
+						Func:       strings.ToUpper(ac.aggFunc),
+						Operand:    arg,
+						Star:       arg == "*",
+						Distinct:   ac.aggDistinct,
+						BareColumn: ac.aggArg != "" && ac.aggExpr == nil,
+					})
 					aggAliases = append(aggAliases, ac.outName)
 				}
 			}
@@ -448,6 +457,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			having = canonicalTextOf(sq.havingExpr)
 		}
 		aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
+		aggOp.Calls = aggCalls
 		aggOp.HasDistinctAggregate = hasDistinct
 		op = aggOp
 

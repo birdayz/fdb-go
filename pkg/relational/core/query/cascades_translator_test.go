@@ -324,6 +324,13 @@ func TestTranslateUnion(t *testing.T) {
 // i.e. COUNT(*) or FUNC(<bare column>); a qualified operand (SUM(T.C)), a constant
 // (COUNT(1)/COUNT(NULL)), an expression, or DISTINCT canonicalizes differently → gated (clean
 // error, never wrong rows). 0-aggregate (group-only) is also gated.
+// aggCallsFor attaches structured calls to a test aggregate (RFC-180 F-2:
+// the gate consumes Calls, not text).
+func aggCallsFor(a *logical.LogicalAggregate, calls ...logical.AggregateCall) *logical.LogicalAggregate {
+	a.Calls = calls
+	return a
+}
+
 func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	t.Parallel()
 	tr := &cascadesTranslator{}
@@ -341,9 +348,9 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 		// regression of previously-working ungrouped union join legs).
 		{"ungrouped COUNT(1) [not re-gated]", logical.NewAggregate(scan, nil, []string{"COUNT(1)"}, []string{""}, "")},
 		{"ungrouped SUM(T.C) [not re-gated]", logical.NewAggregate(scan, nil, []string{"SUM(T.C)"}, []string{""}, "")},
-		{"grouped COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")},
-		{"grouped SUM(V),COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"SUM(V)", "COUNT(*)"}, []string{"", ""}, "")},
-		{"grouped COUNT(X) bare col", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")},
+		{"grouped COUNT(*)", aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "*", Star: true})},
+		{"grouped SUM(V),COUNT(*)", aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"SUM(V)", "COUNT(*)"}, []string{"", ""}, ""), logical.AggregateCall{Func: "SUM", Operand: "V", BareColumn: true}, logical.AggregateCall{Func: "COUNT", Operand: "*", Star: true})},
+		{"grouped COUNT(X) bare col", aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "X", BareColumn: true})},
 	} {
 		if !tr.unionBranchNormalizable(tc.agg) {
 			t.Errorf("%s: must be normalizable", tc.name)
@@ -351,13 +358,13 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	}
 
 	// Divergent forms → gated.
-	qualified := logical.NewAggregate(scan, []string{"G"}, []string{"SUM(T.C)"}, []string{""}, "")
+	qualified := aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"SUM(T.C)"}, []string{""}, ""), logical.AggregateCall{Func: "SUM", Operand: "T.C", BareColumn: true})
 	if tr.unionBranchNormalizable(qualified) {
 		t.Error("qualified aggregate SUM(T.C) must NOT be normalizable (physical strips qualifier → SUM(C))")
 	}
 
 	// COUNT(<numeric constant>) — gated by both the text (leading digit) and the ConstantValue operand.
-	constNum := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(1)"}, []string{""}, "")
+	constNum := aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(1)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "1"})
 	constNum.AggregateOperands = []values.Value{&values.ConstantValue{Value: int64(1)}}
 	if tr.unionBranchNormalizable(constNum) {
 		t.Error("COUNT(1) must NOT be normalizable (count-star name mismatch)")
@@ -365,14 +372,14 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 
 	// COUNT(NULL) — text arg "NULL" LOOKS like an identifier, so only the ConstantValue operand
 	// catches it. This is why the gate combines text + operand.
-	constNull := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(NULL)"}, []string{""}, "")
+	constNull := aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(NULL)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "NULL"})
 	constNull.AggregateOperands = []values.Value{&values.ConstantValue{Value: nil}}
 	if tr.unionBranchNormalizable(constNull) {
 		t.Error("COUNT(NULL) must NOT be normalizable (constant folds to count-star; text alone misses it)")
 	}
 
 	// DISTINCT → gated via the branch flag.
-	distinct := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")
+	distinct := aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "X", BareColumn: true})
 	distinct.HasDistinctAggregate = true
 	if tr.unionBranchNormalizable(distinct) {
 		t.Error("DISTINCT aggregate must NOT be normalizable")
@@ -551,6 +558,10 @@ func TestTranslateAggregate(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")
 	agg := logical.NewAggregate(scan, []string{"CATEGORY"}, []string{"SUM(PRICE)", "COUNT(*)"}, []string{"total", "cnt"}, "")
+	agg.Calls = []logical.AggregateCall{
+		{Func: "SUM", Operand: "PRICE", BareColumn: true},
+		{Func: "COUNT", Operand: "*", Star: true},
+	}
 	ref := TranslateToCascades(agg)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for aggregate")
@@ -577,6 +588,7 @@ func TestTranslateAggregateNoGroup(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")
 	agg := logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"cnt"}, "")
+	agg.Calls = []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}
 	ref := TranslateToCascades(agg)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for scalar aggregate")
@@ -590,31 +602,62 @@ func TestTranslateAggregateNoGroup(t *testing.T) {
 	}
 }
 
-func TestParseAggregateText(t *testing.T) {
+func TestAggregateFunctionByName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		input string
 		fn    expressions.AggregateFunction
 		ok    bool
 	}{
-		{"COUNT(*)", expressions.AggCount, true},
-		{"SUM(PRICE)", expressions.AggSum, true},
-		{"AVG(X)", expressions.AggAvg, true},
-		{"MIN(Y)", expressions.AggMin, true},
-		{"MAX(Z)", expressions.AggMax, true},
-		{"count(*)", expressions.AggCount, true},
-		{"UNKNOWN(X)", 0, false},
-		{"noparen", 0, false},
+		{"COUNT", expressions.AggCount, true},
+		{"SUM", expressions.AggSum, true},
+		{"AVG", expressions.AggAvg, true},
+		{"MIN", expressions.AggMin, true},
+		{"MAX", expressions.AggMax, true},
+		{"UNKNOWN", 0, false},
 	}
 	for _, tc := range tests {
-		spec, ok := parseAggregateText(tc.input)
-		if ok != tc.ok {
-			t.Errorf("parseAggregateText(%q): ok=%v, want %v", tc.input, ok, tc.ok)
-			continue
+		fn, ok := aggregateFunctionByName(tc.input)
+		if ok != tc.ok || (ok && fn != tc.fn) {
+			t.Errorf("aggregateFunctionByName(%q) = (%d, %v), want (%d, %v)", tc.input, fn, ok, tc.fn, tc.ok)
 		}
-		if ok && spec.Function != tc.fn {
-			t.Errorf("parseAggregateText(%q): fn=%d, want %d", tc.input, spec.Function, tc.fn)
-		}
+	}
+}
+
+// TestTranslateAggregate_StructuredCallsOnly pins RFC-180 F-1: the translator
+// consumes LogicalAggregate.Calls (parse-tree-derived) and never re-parses
+// aggregate SQL text. Missing call info and unresolved COMPUTED operands are
+// TYPED declines; a parse-tree-classified bare column keeps its lazy read.
+func TestTranslateAggregate_StructuredCallsOnly(t *testing.T) {
+	t.Parallel()
+
+	build := func(calls []logical.AggregateCall, texts []string) *logical.LogicalAggregate {
+		scan := logical.NewScan("orders", "")
+		agg := logical.NewAggregate(scan, []string{"STATUS"}, texts, make([]string, len(texts)), "")
+		agg.Calls = calls
+		return agg
+	}
+
+	// Bare-column operand without a resolved Value: lazy FieldValue survives.
+	ref, _, err := TranslateToCascadesWithError(build(
+		[]logical.AggregateCall{{Func: "SUM", Operand: "PRICE", BareColumn: true}},
+		[]string{"SUM(PRICE)"}), nil)
+	if err != nil || ref == nil {
+		t.Fatalf("bare-column aggregate must translate: ref=%v err=%v", ref, err)
+	}
+
+	// Missing Calls entry: typed decline, never a text reparse.
+	ref, _, err = TranslateToCascadesWithError(build(nil, []string{"SUM(PRICE)"}), nil)
+	if ref != nil || err == nil {
+		t.Fatalf("missing structured call info must decline typed: ref=%v err=%v", ref, err)
+	}
+
+	// Computed operand with no resolved Value: typed decline.
+	ref, _, err = TranslateToCascadesWithError(build(
+		[]logical.AggregateCall{{Func: "SUM", Operand: "(AMOUNT+10)*2"}},
+		[]string{"SUM((AMOUNT+10)*2)"}), nil)
+	if ref != nil || err == nil {
+		t.Fatalf("unresolved computed operand must decline typed: ref=%v err=%v", ref, err)
 	}
 }
 

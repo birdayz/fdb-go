@@ -2560,12 +2560,15 @@ func deriveColumnsFromMultiIntersection(mi *plans.RecordQueryMultiIntersectionOn
 	cols := make([]executor.ColumnDef, 0, len(rc.Fields))
 	for _, f := range rc.Fields {
 		name := strings.ToUpper(f.Name)
-		// Aggregate columns are flowed under "FUNC(col)" / "FUNC(*)"; a
-		// grouping column is a plain field name. Resolve grouping columns
-		// against the record type, default aggregates to BIGINT.
+		// A grouping slot flows a plain column read (FieldValue); every
+		// other slot is an aggregate output. Classify by the RESOLVED
+		// Value, never by "(" in the rendered name (RFC-180 F-2): a
+		// delimited column literally named "SUM(X)" would misclassify.
+		// Grouping columns resolve their type against the record type;
+		// aggregates default to BIGINT.
 		typeName := "BIGINT"
-		if !strings.Contains(name, "(") && desc != nil {
-			if t := protoFieldTypeName(desc, name); t != "UNKNOWN" {
+		if fv, isCol := f.Value.(*values.FieldValue); isCol && desc != nil {
+			if t := protoFieldTypeName(desc, strings.ToUpper(fv.Field)); t != "UNKNOWN" {
 				typeName = t
 			}
 		}
