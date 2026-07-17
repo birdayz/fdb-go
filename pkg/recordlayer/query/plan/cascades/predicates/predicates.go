@@ -169,6 +169,15 @@ func PredicateEquals(a, b QueryPredicate) bool {
 			!valueNamesEqual(ap.Operand, bp.Operand) {
 			return false
 		}
+		// DistanceRank comparands (query vector + HNSW knobs) join for the
+		// same reason: logical_qualify builds DistanceRank predicates into
+		// AND/OR trees BEFORE lowering to a vector-index scan, so two K-NN
+		// searches differing only in query vector must not dedup to one.
+		// The plan-layer exemption (semantic_identity.go: "never reaches
+		// this helper") does not transfer to the predicate layer.
+		if !distanceRankFieldsEqual(&ap.Comparison, &bp.Comparison) {
+			return false
+		}
 		if ap.Comparison.Type.IsUnary() {
 			return true
 		}
@@ -526,4 +535,24 @@ func (p *NotPredicate) Explain() string {
 		return "NOT " + child
 	}
 	return "NOT (" + child + ")"
+}
+
+// distanceRankFieldsEqual compares the DistanceRank comparand fields
+// (QueryVector + the optional HNSW knobs). The pointer knobs compare by
+// value-or-both-nil: nil means "index default", which is a distinct identity
+// from an explicit setting.
+func distanceRankFieldsEqual(a, b *Comparison) bool {
+	if !valueNamesEqual(a.QueryVector, b.QueryVector) {
+		return false
+	}
+	if (a.EfSearch == nil) != (b.EfSearch == nil) {
+		return false
+	}
+	if a.EfSearch != nil && *a.EfSearch != *b.EfSearch {
+		return false
+	}
+	if (a.IsReturningVectors == nil) != (b.IsReturningVectors == nil) {
+		return false
+	}
+	return a.IsReturningVectors == nil || *a.IsReturningVectors == *b.IsReturningVectors
 }

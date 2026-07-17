@@ -26,9 +26,15 @@ func comparisonPredicatePool() []*ComparisonPredicate {
 		{Operand: x, Comparison: Comparison{Type: ComparisonTextContainsAll, Operand: lit(5), TextStrictPrefix: true}},
 		{Operand: x, Comparison: Comparison{Type: ComparisonIsNull}},
 		{Operand: x, Comparison: Comparison{Type: ComparisonIsNull, Operand: &values.NullValue{}}},
+		{Operand: x, Comparison: Comparison{Type: ComparisonDistanceRankLessThan, Operand: lit(10), QueryVector: lit(1)}},
+		{Operand: x, Comparison: Comparison{Type: ComparisonDistanceRankLessThan, Operand: lit(10), QueryVector: lit(2)}},
+		{Operand: x, Comparison: Comparison{Type: ComparisonDistanceRankLessThan, Operand: lit(10), QueryVector: lit(1), EfSearch: intPtr(64)}},
+		{Operand: x, Comparison: Comparison{Type: ComparisonDistanceRankLessThan, Operand: lit(10), QueryVector: lit(1), IsReturningVectors: boolPtr(true)}},
 		{Operand: x, Comparison: Comparison{Type: ComparisonEquals, Operand: lit(5)}},
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 // TestComparisonPredicate_EqualImpliesSameHash pins the predicate-layer
 // equal⟹same-hash invariant for BOTH equality layers against
@@ -78,5 +84,21 @@ func TestComparisonPredicate_Discriminators(t *testing.T) {
 	}
 	if SemanticHashCode(nilOp) != SemanticHashCode(litOp) {
 		t.Error("equal unary predicates must hash equal (operand hash must not fold)")
+	}
+	// DistanceRank comparands: logical_qualify attaches these predicates to
+	// AND/OR trees BEFORE vector-index lowering, so two K-NN searches
+	// differing only in query vector (or an HNSW knob) must NOT dedup.
+	vecA, vecB, withEf, withRet := pool[12], pool[13], pool[14], pool[15]
+	if PredicateEquals(vecA, vecB) {
+		t.Error("K-NN predicates with different query vectors must NOT compare equal")
+	}
+	if PredicateEquals(vecA, withEf) {
+		t.Error("explicit EfSearch is a distinct identity from index-default (nil)")
+	}
+	if PredicateEquals(vecA, withRet) {
+		t.Error("explicit IsReturningVectors is a distinct identity from index-default (nil)")
+	}
+	if SemanticEqualsUnderAliasMap(vecA, vecB, nil) {
+		t.Error("K-NN predicates with different query vectors must NOT be semantically equal")
 	}
 }

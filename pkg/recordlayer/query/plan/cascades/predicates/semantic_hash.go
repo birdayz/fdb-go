@@ -37,11 +37,27 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 		// The text-search comparand fields fold because both equality layers
 		// compare them (see PredicateEquals). Length-delimit the strings so
 		// "ab"+"c" cannot collide with "a"+"bc".
-		_, _ = io.WriteString(h, "cp:"+strconv.Itoa(int(t.Comparison.Type))+":"+t.Comparison.ParameterName+":"+string(t.Comparison.Escape)+":")
+		// ParameterName is length-delimited so a name ending in a digit
+		// cannot bleed into the escape-rune fold.
+		_, _ = io.WriteString(h, "cp:"+strconv.Itoa(int(t.Comparison.Type))+":"+strconv.Itoa(len(t.Comparison.ParameterName))+":"+t.Comparison.ParameterName+":"+string(t.Comparison.Escape)+":")
 		_, _ = io.WriteString(h, strconv.Itoa(len(t.Comparison.TextTokenizerName))+":"+t.Comparison.TextTokenizerName+":")
 		_, _ = io.WriteString(h, strconv.Itoa(len(t.Comparison.TextAnalyzerName))+":"+t.Comparison.TextAnalyzerName+":")
 		_, _ = io.WriteString(h, strconv.Itoa(t.Comparison.TextMaxDistance)+":")
 		_, _ = io.WriteString(h, strconv.FormatBool(t.Comparison.TextStrictPrefix)+":")
+		// DistanceRank comparands fold because both equality layers compare
+		// them; the optional knobs fold a presence marker so nil ("index
+		// default") and an explicit value cannot collide.
+		_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Comparison.QueryVector), 16)+":")
+		if t.Comparison.EfSearch != nil {
+			_, _ = io.WriteString(h, "e"+strconv.Itoa(*t.Comparison.EfSearch)+":")
+		} else {
+			_, _ = io.WriteString(h, "-:")
+		}
+		if t.Comparison.IsReturningVectors != nil {
+			_, _ = io.WriteString(h, "r"+strconv.FormatBool(*t.Comparison.IsReturningVectors)+":")
+		} else {
+			_, _ = io.WriteString(h, "-:")
+		}
 		_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Operand), 16))
 		_, _ = io.WriteString(h, "/")
 		// Unary comparisons (IS [NOT] NULL) ignore Comparison.Operand at Eval
