@@ -35,11 +35,13 @@ func planChainInterning(t *testing.T, n int, aliasIdentityBaseline bool) (shadow
 //     RE-EXPLODE — the direct dedup is the seed of a larger population delta.
 //     This is the shadow↔delta equivalence in its exact, convergent form.
 //   - 4-chain (the scale where the tier becomes load-bearing): the shadow is
-//     exactly 56, planning CONVERGES with the tier on, and does NOT converge
-//     with it off (the alias-identity population blows the 100k task budget —
-//     the 29915→60044-class super-linear re-explosion the tier exists to
-//     prevent). The shadow is not cosmetic: it is exactly what keeps the join
-//     re-enumeration tractable.
+//     exactly 56, and turning the tier off costs MULTIPLES of the deduped
+//     task count (the 29915→60044-class super-linear re-explosion the tier
+//     exists to prevent; asserted as the ≥2x ratio below — before the
+//     root-operator rule index cut every configuration ~7x, the same
+//     blow-up was observable as outright non-convergence against the 100k
+//     task budget). The shadow is not cosmetic: it is exactly what keeps
+//     the join re-enumeration tractable.
 //
 // NON-PARALLEL: it toggles the process-global alias-identity baseline
 // (SetDisableAliasAwareInterning). Go runs non-parallel tests sequentially,

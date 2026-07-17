@@ -99,4 +99,9 @@ func TestRuleIndex_ProductionRootsAreConcrete(t *testing.T) {
 	for _, r := range DefaultImplementationRules() {
 		checkMatcher(reflect.TypeOf(r).String(), r.Matcher())
 	}
+	// The REWRITING implementation rule set (FinalizeExpressionsRule et al)
+	// is registered in NewPlanner, not a exported list — sweep it too.
+	for _, r := range NewPlanner(nil, nil).rewritingImplRules {
+		checkMatcher(reflect.TypeOf(r).String(), r.Matcher())
+	}
 }

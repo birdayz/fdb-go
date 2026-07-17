@@ -107,8 +107,17 @@ type predicateMatcher[T predicates.QueryPredicate] struct {
 func (m *predicateMatcher[T]) RootType() string { return m.rootType }
 
 // RootOperator returns the one concrete type BindMatches admits — computed
-// from the type parameter (matching.RootOperatorMatcher).
-func (m *predicateMatcher[T]) RootOperator() reflect.Type { return reflect.TypeFor[T]() }
+// from the type parameter (matching.RootOperatorMatcher). An interface
+// type parameter returns nil (always bucket) — same guard as
+// ExpressionMatcher; indexing under an interface type would key the rule
+// where no concrete lookup ever hits.
+func (m *predicateMatcher[T]) RootOperator() reflect.Type {
+	t := reflect.TypeFor[T]()
+	if t.Kind() == reflect.Interface {
+		return nil
+	}
+	return t
+}
 
 func (m *predicateMatcher[T]) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
 	if _, ok := in.(T); !ok {

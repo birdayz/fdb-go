@@ -289,3 +289,23 @@ func TestMemoMerge_CorrelatedToInvariant(t *testing.T) {
 		t.Fatal("forwarded loser must report the survivor's correlation set")
 	}
 }
+
+// TestMemoMerge_PanicsDuringPlanning pins the RFC-037 §0 phase tripwire:
+// once PLANNING is active, ANY cross-group merge must panic — the per-ref
+// winners/matches check alone has a blind spot for refs carrying only
+// pushed ConstraintMap entries, which a merge would orphan (the map keys
+// canonical refs at access time and cannot re-home entries written before
+// the union-find repoint).
+func TestMemoMerge_PanicsDuringPlanning(t *testing.T) {
+	t.Parallel()
+	a := expressions.InitialOf(fixtureScan("A"))
+	m := NewMemo(a)
+	b := expressions.InitialOf(fixtureScan("B"))
+	m.MarkPlanningActive()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("cross-group merge during PLANNING must panic (RFC-037 is REWRITING-only)")
+		}
+	}()
+	m.merge(a, b)
+}

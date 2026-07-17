@@ -208,7 +208,18 @@ func CombineRequestedOrderings(current, added []*RequestedOrdering) ([]*Requeste
 			}
 		}
 		if !subsumed {
-			fresh = append(fresh, n)
+			// Java's newConstraint is a Set: exact duplicates WITHIN the
+			// pushed batch collapse too.
+			dup := false
+			for _, f := range fresh {
+				if f.IsDistinct() == n.IsDistinct() && f.IsExhaustive() == n.IsExhaustive() && PartsEqual(f.parts, n.parts) {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				fresh = append(fresh, n)
+			}
 		}
 	}
 	if len(fresh) == 0 {

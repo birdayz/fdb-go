@@ -216,9 +216,17 @@ func (m *Memo) merge(a, b *expressions.Reference) {
 	if a == b {
 		return
 	}
-	// Scope tripwire: cross-group merging is REWRITING-only. Partial
-	// matches / winners are PLANNING artifacts that embed un-canonicalized
-	// References; merging in their presence would be unsound.
+	// Scope tripwire: cross-group merging is REWRITING-only (RFC-037 §0).
+	// Partial matches / winners are PLANNING artifacts that embed
+	// un-canonicalized References; merging in their presence would be
+	// unsound. The phase flag closes the per-ref check's blind spot: a ref
+	// carrying ONLY pushed constraints (no winners/matches yet) would slip
+	// the artifact check, and a merge would orphan its ConstraintMap
+	// entries — the map keys canonical refs at access time, which cannot
+	// re-home entries written BEFORE the union-find repoint.
+	if m.planningActive {
+		panic("cascades: cross-group merge during PLANNING (RFC-037 is REWRITING-only)")
+	}
 	if a.HasWinnersOrMatches() || b.HasWinnersOrMatches() {
 		panic("cascades: cross-group merge on a Reference carrying PLANNING-phase winners/partial matches (RFC-037 is REWRITING-only)")
 	}

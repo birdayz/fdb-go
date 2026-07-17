@@ -22,6 +22,9 @@ func (t *InitiatePlannerPhaseTask) Run(p *Planner) {
 	// Before PLANNING starts, adjust partial matches from REWRITING.
 	if t.Phase == PhasePlanning {
 		AdjustMatches(t.RootRef)
+		if p.memo != nil {
+			p.memo.MarkPlanningActive()
+		}
 	}
 
 	p.push(&OptimizeGroupTask{Phase: t.Phase, Ref: t.RootRef})
