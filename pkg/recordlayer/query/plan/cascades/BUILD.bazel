@@ -227,6 +227,7 @@ go_test(
         "alias_map_test.go",
         "benchmark_test.go",
         "comparison_simplify_test.go",
+        "compensation_determinism_test.go",
         "compensation_fuzz_test.go",
         "compensation_test.go",
         "correlated_intersection_guard_test.go",
@@ -826,6 +827,7 @@ go_test(
         "select_merge_fused_leg_test.go",
         "rewriting_cost_model_outer_join_test.go",
         "pk_suffix_ordering_test.go",
+        "compensation_determinism_test.go",
     ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
