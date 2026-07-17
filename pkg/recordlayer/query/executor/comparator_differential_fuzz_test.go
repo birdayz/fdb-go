@@ -47,6 +47,11 @@ func FuzzCompareValues_TupleOrderAgreement(f *testing.F) {
 	f.Add(uint8(2), uint64(0), uint64(0), "a\x00b", "a")
 	f.Add(uint8(3), uint64(0), uint64(0), "\x00\xff", "\x00")
 	f.Add(uint8(4), uint64(math.Float32bits(float32(math.NaN()))), uint64(0x80000000), "", "") // f32 NaN vs -0.0
+	// Deterministic kill for the float32 fmt-fallback bug class: lexically
+	// "2.5" > "10.5" while the numeric/tuple order says 2.5 < 10.5 — a
+	// reverted float32 arm fails on the SEED corpus, not just under fuzzing.
+	f.Add(uint8(4), uint64(math.Float32bits(2.5)), uint64(math.Float32bits(10.5)), "", "")
+	f.Add(uint8(0), math.Float64bits(math.NaN()), math.Float64bits(math.NaN()), "", "") // NaN==NaN branch
 
 	f.Fuzz(func(t *testing.T, kind uint8, aBits, bBits uint64, aStr, bStr string) {
 		var a, b any
@@ -119,6 +124,7 @@ func FuzzCmpAnyVsCompareValues_PredicateSortSplit(f *testing.F) {
 	f.Add(uint8(1), uint8(3), uint64(5), math.Float64bits(5.0)) // int64 5 vs 5.0
 	f.Add(uint8(0), uint8(1), uint64(7), uint64(7))             // int32 vs int64
 	f.Add(uint8(2), uint8(3), uint64(math.Float32bits(1.5)), math.Float64bits(1.5))
+	f.Add(uint8(2), uint8(2), uint64(math.Float32bits(2.5)), uint64(math.Float32bits(10.5))) // lexical-vs-numeric split
 
 	mk := func(kind uint8, bits uint64) any {
 		switch kind % 4 {
