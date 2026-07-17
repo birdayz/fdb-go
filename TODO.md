@@ -1395,6 +1395,36 @@ the box). Tests pinning the reject: `TestFDB_RFC173S4_NestedLeftBoxChained` (`ch
 
 # NEXT
 
+> ## [ ] RFC-181 — query-engine correctness wave 3 (rfcs/181-query-engine-correctness-wave3.md)
+> Owner priority: the NAME-MODEL findings first. Execution order (details in the RFC):
+> 1. [ ] WS-N interim pins (red today): quoted case-colliding ORDER BY; column literally
+>        named "A.ID" on a join; duplicate-named ORDER BY with baked key (poison bypass);
+>        quoted "Q$1" table alias; cross-leg same-name-different-type metadata.
+> 2. [ ] WS-N Phase A — resolver provenance end-to-end (typed leg+accessors on every
+>        FieldValue; structural rebases; kills N-F2/N-F3/N-F5).
+> 3. [ ] WS-N Phase B — alias namespace split (machine-minted quantifier aliases only;
+>        delete EqualFold on correlation names; TODO 7.1; kills N-F6).
+> 4. [ ] WS-N Phase C — ordering on Value identity (delete orderingKeyFor's three
+>        rendering bridges + normLookup; kills N-F1).
+> 5. [ ] WS-N Phase D — metadata from the flowed type (positional ColumnDef; delete
+>        descriptorForColumn/innerByName/qualifyAndMergeColumns/colref.go; kills N-F4).
+> Interleaved at phase boundaries (independent wrong-rows P0s, each small+red-pinned):
+> - [ ] P0.1 PK-intersection ordering gate (row DROPS, plain SQL) + reverse threading
+> - [ ] P0.2 streaming-agg ordered child pinned (FinalOf) instead of shared-group memoize
+> - [ ] P0.3 union-leg pinning (delegator-hint lie + arity bake → dup rows through DISTINCT)
+> - [ ] P0.4 rebuildOrderedSpine executable-plan verification (extraction twin of RFC-180's)
+> - [ ] P0.5 INT/FLOAT 32-bit arithmetic lanes (silent wrong values on INTEGER schemas)
+> - [ ] P0.6 bestPhysicalChild hash tie-break + properties-side comparator injection
+> - [ ] P0.7 PushSetOperationThroughFetch rebuild over pushed inners (cost/EXPLAIN lie)
+> Then: WS-C (continuation round 2; audit complete — C1 recursive-CTE resume misroute
+> is SILENT CORRUPTION, one-line stopgap guard immediately, then the full
+> RecursiveCursorContinuation port; C2 cross-engine SQL handoff silent-restart decision +
+> conformance pin; C3 FlatMapPipelinedWithCheck kept-armed port (IN-join uses it);
+> C4 LoadByKeys guard; intersectionMultiCursor consume()), WS-T (plan-time promotion lattice, cast-engine unification, MinInt64/-1,
+> number+string '+', document-and-pin items), WS-P (ConstraintsMap epoch port retiring
+> dual-insertion + 15b/15c + round cap; un-gate REWRITING OptimizeInputs; fix stale
+> DIVERGENCES advancePlannerStage claim).
+
 > ## [ ] RFC-180 follow-up — output-label collision mis-binds sort keys over the IMMEDIATE reshaping strip (pre-existing)
 > `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`
 > sorts by PLAYER (the aliased column), not the aggregate: the sort sits ABOVE the reshaping projection
