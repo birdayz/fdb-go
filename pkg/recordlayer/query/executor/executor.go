@@ -2222,6 +2222,19 @@ func executeNestedLoopJoin(
 		return nil, err
 	}
 
+	// Decode the NLJ page continuation (nljContinuation: a
+	// FlatMapContinuation envelope wrapping the outer position, the current
+	// outer's check value, and the tuple-packed inner position). Anything
+	// else — including the retired pre-continuation binary's one-byte fake
+	// marker — declines loudly: forwarding unrecognized bytes to the outer
+	// child risks a key-value cursor's raw-suffix fallback silently
+	// accepting them as a scan position (wrong rows).
+	outerContinuation, nljResume, decodeErr := decodeNLJContinuation(continuation)
+	if decodeErr != nil {
+		props.State.ReleaseMemory(innerCharged)
+		return nil, decodeErr
+	}
+
 	// Stream the outer side one row at a time via nljCursor.
 	outerProps := props.ClearSkipAndLimit()
 	if p.GetJoinType() == plans.JoinFullOuter {
@@ -2245,7 +2258,7 @@ func executeNestedLoopJoin(
 		// it is passed through unconditionally only for code uniformity.
 		outerProps = outerProps.ClearRowAndTimeLimits()
 	}
-	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, outerProps)
+	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, outerContinuation, outerProps)
 	if err != nil {
 		props.State.ReleaseMemory(innerCharged)
 		return nil, err
@@ -2266,6 +2279,7 @@ func executeNestedLoopJoin(
 	// its charges — inner rows plus any hash index — at page teardown. ADD
 	// to the tally: newNLJCursor already accumulated the hash-index charges.
 	cursor.chargedBytes += innerCharged
+	cursor.applyResume(nljResume)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 

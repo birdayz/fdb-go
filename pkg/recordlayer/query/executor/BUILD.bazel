@@ -65,6 +65,7 @@ go_test(
         "merge_union_continuation_integration_test.go",
         "merge_union_continuation_test.go",
         "name_oracle_test.go",
+        "nlj_continuation_test.go",
         "nlj_hash_key_test.go",
         "ordinal_join_test.go",
         "ordinal_join_wiring_test.go",
@@ -140,6 +141,7 @@ go_test(
         "merge_union_continuation_test.go",
         "streaming_row_continuation_integration_test.go",
         "streaming_row_continuation_test.go",
+        "nlj_continuation_test.go",
     ],
     deps = [
         "//gen",

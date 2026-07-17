@@ -1,11 +1,15 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
 	"strings"
 
+	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -13,17 +17,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
-
-// nonEndContinuation is a FAKE per-row continuation now used ONLY by the
-// nested-loop-join cursor's row emits: the NLJ has no continuation machinery
-// beyond passing the raw OUTER continuation through (its materialized inner
-// side, per-outer inner index, and FULL-outer matched bitmap have no serialized
-// form), so a genuinely resumable per-row continuation would need a new NLJ
-// continuation format — out of scope for the aggregate/sort retirement.
-// Resuming from these bytes fails loudly on decode rather than silently
-// restarting. The aggregate and sort cursors carry REAL lazily-encoded per-row
-// continuations (aggregateCursorContinuation / sortEmitContinuation).
-var nonEndContinuation = recordlayer.NewBytesContinuation([]byte{0})
 
 // SortBufferExceededError is returned when an in-memory sort
 // materializes more rows than the configured limit. Prevents OOM
@@ -1003,6 +996,18 @@ type nljCursor struct {
 	// the inner side is rebuilt and re-charged each page (live-bytes model).
 	chargedBytes int64
 
+	// Continuation state (the FlatMapPipelinedCursor pattern flatMapCursor
+	// also ports): priorOuterCont is the outer position that re-produces
+	// the CURRENT outer row on resume, lastOuterCont the advanced position
+	// that produces the next one. The resume* fields hold a decoded page
+	// continuation, applied when the first outer row arrives.
+	priorOuterCont     recordlayer.RecordCursorContinuation
+	lastOuterCont      recordlayer.RecordCursorContinuation
+	resumePending      bool
+	resumeInnerIdx     int
+	resumeOuterMatched bool
+	resumeCheck        []byte
+
 	// FULL OUTER JOIN drain state. matchedInner[i] is set when
 	// innerRows[i] passes the join predicates against any outer row;
 	// after the outer side is exhausted, the drain phase emits every
@@ -1403,7 +1408,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 							}
 							qr.Positional = pos
 						}
-						return recordlayer.NewResultWithValue(qr, nonEndContinuation), nil
+						// FULL OUTER never resumes (the drain bitmap has no
+						// serialized form; limits are cleared so the whole
+						// join runs in one page) — the marker continuation
+						// rejects loudly on decode.
+						return recordlayer.NewResultWithValue(qr, &nljContinuation{fullDrain: true}), nil
 					}
 				}
 				return recordlayer.NewResultNoNext[QueryResult](
@@ -1422,11 +1431,17 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					c.outerExhausted = true
 					continue
 				}
+				// Out-of-band outer stop between rows: wrap the outer's
+				// position in the NLJ envelope so every NLJ continuation
+				// decodes uniformly (a raw pass-through would be ambiguous
+				// against the mid-inner format on resume).
 				return recordlayer.NewResultNoNext[QueryResult](
-					reason, result.GetContinuation(),
+					reason, &nljContinuation{outerCont: result.GetContinuation()},
 				), nil
 			}
 			outerRow := result.GetValue()
+			c.priorOuterCont = c.lastOuterCont
+			c.lastOuterCont = result.GetContinuation()
 			c.currentOuter = &outerRow
 			c.innerIdx = 0
 			c.innerMatches = nil
@@ -1457,6 +1472,22 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					// keys against a time.Time probe via ParseTimestamp).
 					c.innerMatches = c.allInnerIndices()
 				}
+			}
+			// A decoded page continuation resumes THIS outer row mid-inner:
+			// verify the row is the one the continuation was taken over
+			// (Java's check value), then restore the inner position and the
+			// matched flag. innerMatches was recomputed above
+			// deterministically (same innerRows order, same probe), so the
+			// restored index addresses the same candidate list.
+			if c.resumePending {
+				c.resumePending = false
+				if len(c.resumeCheck) > 0 && outerRow.PrimaryKey != nil &&
+					!bytes.Equal(outerRow.PrimaryKey.Pack(), c.resumeCheck) {
+					return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf(
+						"nested loop join resume: outer row does not match the continuation's check value — underlying data changed between pages")
+				}
+				c.innerIdx = c.resumeInnerIdx
+				c.outerMatched = c.resumeOuterMatched
 			}
 		}
 
@@ -1502,7 +1533,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						}
 						combined.Positional = pos
 					}
-					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
+					return recordlayer.NewResultWithValue(combined, c.midInnerContinuation()), nil
 				}
 				if c.currentOuter == nil {
 					break
@@ -1548,7 +1579,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						}
 						combined.Positional = pos
 					}
-					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
+					return recordlayer.NewResultWithValue(combined, c.midInnerContinuation()), nil
 				}
 				if c.currentOuter == nil {
 					break
@@ -1581,10 +1612,136 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					}
 					qr.Positional = pos
 				}
-				return recordlayer.NewResultWithValue(qr, nonEndContinuation), nil
+				// Last emission for this outer row: resume advances to the
+				// next outer (no inner state, no check value — Java writes
+				// only the advanced outer position in this branch).
+				return recordlayer.NewResultWithValue(qr, &nljContinuation{outerCont: c.lastOuterCont}), nil
 			}
 		}
 	}
+}
+
+// midInnerContinuation snapshots the page continuation for a pair emission:
+// the PRIOR outer position (re-produces the current outer row on resume), the
+// current outer's PK as the check value, and the already-advanced inner
+// position with the matched flag. Fields are copied at emit time — later
+// cursor advances do not mutate an issued continuation.
+func (c *nljCursor) midInnerContinuation() recordlayer.RecordCursorContinuation {
+	w := &nljContinuation{
+		outerCont:    c.priorOuterCont,
+		hasInner:     true,
+		innerIdx:     c.innerIdx,
+		outerMatched: c.outerMatched,
+	}
+	if c.currentOuter != nil && c.currentOuter.PrimaryKey != nil {
+		w.checkValue = c.currentOuter.PrimaryKey.Pack()
+	}
+	return w
+}
+
+// nljContinuation lazily encodes the nested-loop-join page continuation at
+// ToBytes() time using the FlatMapContinuation message — the NLJ is a flat
+// map over (outer row → matching inner rows), so it reuses the same
+// prior-outer / check-value / inner-position mechanics flatMapCursor ports
+// from Java's FlatMapPipelinedCursor. The inner position is a tuple-packed
+// (innerIdx, outerMatched, fullDrain) triple: the inner side re-materializes
+// deterministically on resume, so an index is the complete inner state. A
+// between-outer stop carries only the advanced outer position. Replaces the
+// retired fake one-byte marker, whose bytes reached the outer child raw on
+// resume and could be swallowed by a key-value cursor's raw-suffix fallback —
+// a silently wrong scan position.
+type nljContinuation struct {
+	outerCont    recordlayer.RecordCursorContinuation // prior (mid-inner) or advanced (between-outer); nil = scan start
+	checkValue   []byte                               // current outer PK (mid-inner only)
+	hasInner     bool
+	innerIdx     int
+	outerMatched bool
+	fullDrain    bool // FULL OUTER drain marker — rejects loudly on decode
+}
+
+func (w *nljContinuation) IsEnd() bool { return false }
+
+func (w *nljContinuation) ToBytes() ([]byte, error) {
+	fmc := &gen.FlatMapContinuation{CheckValue: w.checkValue}
+	if w.outerCont != nil && !w.outerCont.IsEnd() {
+		b, err := w.outerCont.ToBytes()
+		if err != nil {
+			return nil, fmt.Errorf("nested loop join continuation outer: %w", err)
+		}
+		fmc.OuterContinuation = b
+	}
+	if w.hasInner || w.fullDrain {
+		matched := int64(0)
+		if w.outerMatched {
+			matched = 1
+		}
+		drain := int64(0)
+		if w.fullDrain {
+			drain = 1
+		}
+		fmc.InnerContinuation = tuple.Tuple{int64(w.innerIdx), matched, drain}.Pack()
+	}
+	return proto.Marshal(fmc)
+}
+
+// nljResumeState is the decoded mid-inner half of an NLJ page continuation.
+type nljResumeState struct {
+	innerIdx     int
+	outerMatched bool
+	check        []byte
+}
+
+// decodeNLJContinuation parses NLJ page-continuation bytes (the
+// nljContinuation encoding). Empty input means a fresh scan. Anything that is
+// not this binary's format — including the retired one-byte fake marker —
+// declines loudly: forwarding unrecognized bytes to the outer child risks a
+// key-value cursor's raw-suffix fallback silently accepting them as a scan
+// position (wrong rows). The FULL OUTER drain marker also declines (that
+// phase's bitmap has no serialized form and never legitimately paginates).
+func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resume *nljResumeState, err error) {
+	if len(continuation) == 0 {
+		return nil, nil, nil
+	}
+	fmc := &gen.FlatMapContinuation{}
+	if uerr := proto.Unmarshal(continuation, fmc); uerr != nil {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (unrecognized continuation bytes)"}
+	}
+	if len(fmc.GetOuterContinuation()) == 0 && len(fmc.GetInnerContinuation()) == 0 && len(fmc.GetCheckValue()) == 0 {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (empty continuation payload)"}
+	}
+	if len(fmc.GetInnerContinuation()) == 0 {
+		return fmc.GetOuterContinuation(), nil, nil
+	}
+	tup, terr := tuple.Unpack(fmc.GetInnerContinuation())
+	if terr != nil || len(tup) != 3 {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
+	}
+	idx, iok := tup[0].(int64)
+	matched, mok := tup[1].(int64)
+	drain, dok := tup[2].(int64)
+	if !iok || !mok || !dok || idx < 0 {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (malformed inner position payload)"}
+	}
+	if drain != 0 {
+		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join FULL OUTER drain (does not resume)"}
+	}
+	return fmc.GetOuterContinuation(), &nljResumeState{
+		innerIdx:     int(idx),
+		outerMatched: matched != 0,
+		check:        fmc.GetCheckValue(),
+	}, nil
+}
+
+// applyResume arms the cursor with a decoded mid-inner resume state; a nil
+// state is a no-op (fresh scan or between-outer resume).
+func (c *nljCursor) applyResume(rs *nljResumeState) {
+	if rs == nil {
+		return
+	}
+	c.resumePending = true
+	c.resumeInnerIdx = rs.innerIdx
+	c.resumeOuterMatched = rs.outerMatched
+	c.resumeCheck = rs.check
 }
 
 func (c *nljCursor) Close() error {
