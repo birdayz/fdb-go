@@ -324,6 +324,13 @@ func TestTranslateUnion(t *testing.T) {
 // i.e. COUNT(*) or FUNC(<bare column>); a qualified operand (SUM(T.C)), a constant
 // (COUNT(1)/COUNT(NULL)), an expression, or DISTINCT canonicalizes differently → gated (clean
 // error, never wrong rows). 0-aggregate (group-only) is also gated.
+// aggCallsFor attaches structured calls to a test aggregate (RFC-180 F-2:
+// the gate consumes Calls, not text).
+func aggCallsFor(a *logical.LogicalAggregate, calls ...logical.AggregateCall) *logical.LogicalAggregate {
+	a.Calls = calls
+	return a
+}
+
 func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	t.Parallel()
 	tr := &cascadesTranslator{}
@@ -341,9 +348,9 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 		// regression of previously-working ungrouped union join legs).
 		{"ungrouped COUNT(1) [not re-gated]", logical.NewAggregate(scan, nil, []string{"COUNT(1)"}, []string{""}, "")},
 		{"ungrouped SUM(T.C) [not re-gated]", logical.NewAggregate(scan, nil, []string{"SUM(T.C)"}, []string{""}, "")},
-		{"grouped COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")},
-		{"grouped SUM(V),COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"SUM(V)", "COUNT(*)"}, []string{"", ""}, "")},
-		{"grouped COUNT(X) bare col", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")},
+		{"grouped COUNT(*)", aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "*", Star: true})},
+		{"grouped SUM(V),COUNT(*)", aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"SUM(V)", "COUNT(*)"}, []string{"", ""}, ""), logical.AggregateCall{Func: "SUM", Operand: "V", BareColumn: true}, logical.AggregateCall{Func: "COUNT", Operand: "*", Star: true})},
+		{"grouped COUNT(X) bare col", aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "X", BareColumn: true})},
 	} {
 		if !tr.unionBranchNormalizable(tc.agg) {
 			t.Errorf("%s: must be normalizable", tc.name)
@@ -351,13 +358,13 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	}
 
 	// Divergent forms → gated.
-	qualified := logical.NewAggregate(scan, []string{"G"}, []string{"SUM(T.C)"}, []string{""}, "")
+	qualified := aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"SUM(T.C)"}, []string{""}, ""), logical.AggregateCall{Func: "SUM", Operand: "T.C", BareColumn: true})
 	if tr.unionBranchNormalizable(qualified) {
 		t.Error("qualified aggregate SUM(T.C) must NOT be normalizable (physical strips qualifier → SUM(C))")
 	}
 
 	// COUNT(<numeric constant>) — gated by both the text (leading digit) and the ConstantValue operand.
-	constNum := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(1)"}, []string{""}, "")
+	constNum := aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(1)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "1"})
 	constNum.AggregateOperands = []values.Value{&values.ConstantValue{Value: int64(1)}}
 	if tr.unionBranchNormalizable(constNum) {
 		t.Error("COUNT(1) must NOT be normalizable (count-star name mismatch)")
@@ -365,14 +372,14 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 
 	// COUNT(NULL) — text arg "NULL" LOOKS like an identifier, so only the ConstantValue operand
 	// catches it. This is why the gate combines text + operand.
-	constNull := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(NULL)"}, []string{""}, "")
+	constNull := aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(NULL)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "NULL"})
 	constNull.AggregateOperands = []values.Value{&values.ConstantValue{Value: nil}}
 	if tr.unionBranchNormalizable(constNull) {
 		t.Error("COUNT(NULL) must NOT be normalizable (constant folds to count-star; text alone misses it)")
 	}
 
 	// DISTINCT → gated via the branch flag.
-	distinct := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")
+	distinct := aggCallsFor(logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, ""), logical.AggregateCall{Func: "COUNT", Operand: "X", BareColumn: true})
 	distinct.HasDistinctAggregate = true
 	if tr.unionBranchNormalizable(distinct) {
 		t.Error("DISTINCT aggregate must NOT be normalizable")

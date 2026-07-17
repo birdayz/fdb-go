@@ -688,14 +688,14 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 // expression (SUM(a*b)), or DISTINCT canonicalizes differently between the two, so the union
 // position-remap would read a missing key → NULL (RFC-081). False for a 0-aggregate branch.
 //
-// The aggregate TEXT is the reliable signal: AggregateOperands is nil for many shapes (e.g.
-// SUM(col)) depending on the build path, and a.Aggregates is canonical planner output (not raw
-// SQL), so inspecting it is sound here.
+// The parse-tree-derived Calls are the signal (RFC-180 F-2): AggregateOperands is nil for
+// many shapes (e.g. SUM(col)) depending on the build path, and text scanning of the
+// canonical rendering is retired.
 func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 	if len(a.Aggregates) == 0 || a.HasDistinctAggregate {
 		return false
 	}
-	for i, text := range a.Aggregates {
+	for i := range a.Aggregates {
 		// A constant operand — COUNT(1), COUNT(NULL), COUNT(TRUE) — folds into count-star,
 		// so a grouped aggregate index reports COUNT(*) ≠ the logical text. The resolved
 		// operand reliably distinguishes a literal (ConstantValue) from a column, which the
@@ -712,49 +712,20 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 				return false
 			}
 		}
-		arg, ok := aggregateArgText(text)
-		if !ok {
+		// Structured classification (RFC-180 F-2): the parse-tree-derived
+		// call info replaces text scanning of the canonical rendering. A
+		// dotted operand text is conservatively rejected (qualified
+		// rendering; a delimited identifier containing a dot only costs
+		// the optimization, never correctness).
+		if i >= len(a.Calls) {
 			return false
 		}
-		if arg == "*" {
+		call := a.Calls[i]
+		if call.Star {
 			continue // COUNT(*)
 		}
-		if !isBareColumnIdentifier(arg) {
-			return false // qualified / expression / numeric-literal operand → name diverges
-		}
-	}
-	return true
-}
-
-// aggregateArgText returns the argument of a canonical aggregate text "FUNC(arg)" — the
-// content between the first '(' and the last ')'. ok=false when not in that shape.
-func aggregateArgText(text string) (string, bool) {
-	openIdx := strings.IndexByte(text, '(')
-	closeIdx := strings.LastIndexByte(text, ')')
-	if openIdx < 0 || closeIdx <= openIdx {
-		return "", false
-	}
-	return text[openIdx+1 : closeIdx], true
-}
-
-// isBareColumnIdentifier reports whether s is a single unqualified SQL identifier
-// ([A-Za-z_][A-Za-z0-9_]*): no qualifier dot, whitespace (DISTINCT), operator (expression),
-// '*', or leading digit (numeric literal). Exactly the operands whose FUNC(s) name is identical
-// in the logical schema and the physical row key.
-func isBareColumnIdentifier(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c == '_':
-		case c >= '0' && c <= '9':
-			if i == 0 {
-				return false
-			}
-		default:
-			return false
+		if call.Distinct || !call.BareColumn || strings.Contains(call.Operand, ".") {
+			return false // qualified / expression / distinct operand → name diverges
 		}
 	}
 	return true
