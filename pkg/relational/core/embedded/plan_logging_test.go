@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+
 	"fdb.dev/pkg/relational/api"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -564,4 +566,33 @@ func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
 		}
 	}
 	t.Fatal("no FOO column in derived metadata")
+}
+
+// TestLegWalk_DuplicateAliasDeclines pins unique-match-or-decline: the
+// plan-level leg walk is not query-scope-aware (a folded query block has
+// no projection node to stop at), so an interior block reusing a
+// top-block alias must make the walk DECLINE — attaching the interior
+// branch's null extension to the outer alias would transfer metadata
+// across scopes. Constructed directly: two join levels both binding
+// alias "X".
+func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
+	t.Parallel()
+	scan := func() plans.RecordQueryPlan {
+		return plans.NewRecordQueryScanPlan([]string{"T"}, cascadesvalues.UnknownType, false)
+	}
+	innerJoin := plans.NewRecordQueryNestedLoopJoinPlan(
+		scan(), scan(), nil, plans.JoinFullOuter, "X", "Y", nil)
+	top := plans.NewRecordQueryNestedLoopJoinPlan(
+		innerJoin, scan(), nil, plans.JoinInner, "A", "X", nil)
+
+	if _, _, found := legPlanFor(top, "X"); found {
+		t.Fatal("a duplicated alias across join levels must DECLINE (scope-ambiguous), not first-match")
+	}
+	// Unique aliases still resolve.
+	if _, _, found := legPlanFor(top, "A"); !found {
+		t.Fatal("a unique alias must resolve")
+	}
+	if leg, ns, found := legPlanFor(top, "Y"); !found || leg == nil || !ns {
+		t.Fatalf("Y is unique and inside a FULL join's inner — found=%v ns=%v", found, ns)
+	}
 }

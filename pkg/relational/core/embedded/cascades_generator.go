@@ -2589,74 +2589,73 @@ func deriveColumnsFromMultiIntersection(mi *plans.RecordQueryMultiIntersectionOn
 // nullBorn detection). found=false when the alias doesn't name a leg of
 // this plan — callers fall back to the name-keyed lookups.
 func legPlanFor(p plans.RecordQueryPlan, alias string) (leg plans.RecordQueryPlan, nullSupplying bool, found bool) {
-	return legPlanForNS(p, alias, false)
+	// UNIQUE-match-or-decline: the plan-level walk is not query-scope-aware
+	// — a FOLDED query block (a projected-EXISTS CTE lowered to a FlatMap)
+	// has no RecordQueryProjectionPlan for the opaque-boundary guard to
+	// stop at, so an interior block reusing a top-block alias would
+	// shadow-match and attach the WRONG branch's null extension. Every
+	// candidate is therefore collected; only an unambiguous single match is
+	// used, and a duplicated alias declines to the name-keyed fallbacks
+	// (which degrade toward nullable — the safe direction — never toward a
+	// foreign branch's metadata). Exact scoping needs resolver-carried leg
+	// provenance (the RFC-142 model), not plan-side alias search.
+	matches := collectLegMatches(p, alias, false, nil)
+	if len(matches) != 1 {
+		return nil, false, false
+	}
+	return matches[0].leg, matches[0].nullSupplying, true
 }
 
-// legPlanForNS is legPlanFor with the ANCESTOR null-supplying state
-// accumulated: a leg found below another join inherits every enclosing
-// null extension on its path (a FULL join null-supplies EVERYTHING inside
-// both its legs; a LEFT join everything inside its inner; a traversed
-// DefaultOnEmpty wrapper its whole subtree) — discarding it reported
-// NoNulls for columns that serve NULL on the outer join's unmatched rows.
-func legPlanForNS(p plans.RecordQueryPlan, alias string, acc bool) (leg plans.RecordQueryPlan, nullSupplying bool, found bool) {
+type legMatch struct {
+	leg           plans.RecordQueryPlan
+	nullSupplying bool
+}
+
+func collectLegMatches(p plans.RecordQueryPlan, alias string, acc bool, out []legMatch) []legMatch {
 	for p != nil {
 		switch n := p.(type) {
 		case *plans.RecordQueryNestedLoopJoinPlan:
-			// The null extension may live in the JOIN TYPE itself (a LEFT
-			// NLJ null-supplies its inner; FULL null-supplies both) — not
-			// only in a DefaultOnEmpty node inside the leg.
 			jt := n.GetJoinType()
 			outerNS := acc || jt == plans.JoinFullOuter
 			innerNS := acc || jt == plans.JoinLeftOuter || jt == plans.JoinFullOuter
 			if strings.EqualFold(n.GetOuterAlias(), alias) {
-				return n.GetOuter(), outerNS || legHasDefaultOnEmpty(n.GetOuter()), true
+				out = append(out, legMatch{n.GetOuter(), outerNS || legHasDefaultOnEmpty(n.GetOuter())})
+			} else {
+				out = collectLegMatches(n.GetOuter(), alias, outerNS, out)
 			}
 			if strings.EqualFold(n.GetInnerAlias(), alias) {
-				return n.GetInner(), innerNS || legHasDefaultOnEmpty(n.GetInner()), true
+				out = append(out, legMatch{n.GetInner(), innerNS || legHasDefaultOnEmpty(n.GetInner())})
+			} else {
+				out = collectLegMatches(n.GetInner(), alias, innerNS, out)
 			}
-			// Nested join chains: recurse into both legs, each carrying its
-			// side's accumulated null extension.
-			if l, ns, ok := legPlanForNS(n.GetOuter(), alias, outerNS); ok {
-				return l, ns, true
-			}
-			if l, ns, ok := legPlanForNS(n.GetInner(), alias, innerNS); ok {
-				return l, ns, true
-			}
-			return nil, false, false
+			return out
 		case *plans.RecordQueryFlatMapPlan:
 			if strings.EqualFold(n.GetOuterAlias().Name(), alias) {
-				return n.GetOuter(), acc || legHasDefaultOnEmpty(n.GetOuter()), true
+				out = append(out, legMatch{n.GetOuter(), acc || legHasDefaultOnEmpty(n.GetOuter())})
+			} else {
+				out = collectLegMatches(n.GetOuter(), alias, acc, out)
 			}
 			if strings.EqualFold(n.GetInnerAlias().Name(), alias) {
-				return n.GetInner(), acc || legHasDefaultOnEmpty(n.GetInner()), true
+				out = append(out, legMatch{n.GetInner(), acc || legHasDefaultOnEmpty(n.GetInner())})
+			} else {
+				out = collectLegMatches(n.GetInner(), alias, acc, out)
 			}
-			if l, ns, ok := legPlanForNS(n.GetOuter(), alias, acc); ok {
-				return l, ns, true
-			}
-			if l, ns, ok := legPlanForNS(n.GetInner(), alias, acc); ok {
-				return l, ns, true
-			}
-			return nil, false, false
+			return out
 		case *plans.RecordQueryDefaultOnEmptyPlan:
-			// Traversing a null-extension wrapper: everything below it
-			// null-supplies.
 			acc = true
 			p = n.GetInner()
 		case *plans.RecordQueryProjectionPlan:
-			// A projection is a QUERY-BLOCK boundary: aliases below it
-			// belong to the derived table's own scope, and piercing it
-			// could shadow-match an interior join that reuses a top-block
-			// alias. Not-found here degrades to the name-keyed fallbacks.
-			return nil, false, false
+			// Query-block boundary — aliases below belong to another scope.
+			return out
 		default:
 			ip, ok := p.(innerPlan)
 			if !ok {
-				return nil, false, false
+				return out
 			}
 			p = ip.GetInner()
 		}
 	}
-	return nil, false, false
+	return out
 }
 
 func legHasDefaultOnEmpty(p plans.RecordQueryPlan) bool {
