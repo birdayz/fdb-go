@@ -546,7 +546,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// (`ORDER BY d.x`) names the source column, never the SELECT
 			// alias — stripping the qualifier before matching rebased
 			// d.x onto a same-named alias and silently mis-sorted.
-			if strings.Contains(ob.colName, ".") {
+			// Qualification is the parse tree's segment count, not dots in
+			// the name: a delimited identifier may contain a dot ("x.y").
+			if ob.qualified {
 				continue
 			}
 			for j, al := range sq.postSortStripAliases {
@@ -572,7 +574,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Qualified: strings.Contains(ob.colName, ".")})
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Qualified: ob.qualified})
 		}
 		op = logical.NewSort(op, keys)
 	}

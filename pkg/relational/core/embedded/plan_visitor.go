@@ -1465,10 +1465,12 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 	// alias is checked FIRST — SQL resolves ORDER BY names against output
 	// columns before source columns, so `SELECT id AS v … GROUP BY id, v
 	// ORDER BY v` sorts by id (the alias), not the hidden group key v.
-	rebaseToInternal := func(name string) string {
+	rebaseToInternal := func(name string, qualified bool) string {
 		// Output aliases bind BARE identifiers only: a QUALIFIED key
 		// (`ORDER BY d.x`) names the source column, never the SELECT alias.
-		if strings.Contains(name, ".") {
+		// Qualification is the parse tree's segment count, not dots in the
+		// name: a delimited identifier may contain a dot ("x.y").
+		if qualified {
 			return name
 		}
 		for i, al := range deferredStripAliases {
@@ -1546,8 +1548,9 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		// Prefer plain column / aggregate lookup.
 		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 		if nameErr == nil {
+			qualified := exprIsQualifiedColumn(obExpr.Expression())
 			if len(deferredStripProj) > 0 {
-				colName = rebaseToInternal(colName)
+				colName = rebaseToInternal(colName, qualified)
 			}
 			// Resolve GROUP BY alias (`ORDER BY z` where `GROUP BY
 			// x.col1 AS z`) to the underlying column before building
@@ -1561,7 +1564,7 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 				continue
 			}
 			seenOrderCols[key] = true
-			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, Qualified: strings.Contains(colName, ".")})
+			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, Qualified: qualified})
 		} else {
 			// Expression ORDER BY — use canonical text to get
 			// proper spacing (GetText concatenates without whitespace).

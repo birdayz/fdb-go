@@ -103,3 +103,15 @@ tests:
       GROUP BY player, x ORDER BY d.x DESC, player ASC LIMIT 1
     rows:
       - ['Alice']
+  # A DELIMITED alias containing a dot is a BARE identifier — it must
+  # still bind as an output alias (qualification is the parse tree's
+  # segment count, not dots in the joined name).
+  - query: |-
+      SELECT player AS "x.y" FROM scores GROUP BY player, game ORDER BY "x.y" DESC
+    rows:
+      - ['Charlie']
+      - ['Charlie']
+      - ['Bob']
+      - ['Bob']
+      - ['Alice']
+      - ['Alice']
