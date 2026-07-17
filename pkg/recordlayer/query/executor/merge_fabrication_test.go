@@ -73,8 +73,10 @@ func TestSortContinuation_PositionalRoundTripAndReject(t *testing.T) {
 			if err == nil {
 				t.Fatal("pre-positional payload must be REJECTED (no positional) — a silently dropped row is wrong results with no error")
 			}
-			if !strings.Contains(err.Error(), "no positional payload") {
-				t.Fatalf("decode error = %q, want 'no positional payload' rejection", err)
+			// RFC-180 H6: legacy shapes are rejected as not-this-binary's
+			// format (bad arity or non-array payload), never resumed.
+			if !strings.Contains(err.Error(), "want 3") && !strings.Contains(err.Error(), "failed to unmarshal sorted record") {
+				t.Fatalf("decode error = %q, want strict-format rejection", err)
 			}
 		})
 	}

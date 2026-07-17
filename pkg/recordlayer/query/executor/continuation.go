@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -1041,68 +1040,48 @@ func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (inner
 		if pErr := proto.Unmarshal(srBytes, sr); pErr != nil {
 			return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d in continuation: %w", i, pErr)
 		}
-		// Payload discrimination (see encodeSortContinuation): a JSON ARRAY is
-		// [_, _] or [_, _, positional] — slot 0 is the deleted datum and slot 1 the
-		// retired-Complete placeholder, both IGNORED. A legacy bare JSON OBJECT
-		// payload carries no positional (pre-migration).
-		var positional *PositionalRow
-		trimmed := bytes.TrimLeft(sr.Message, " \t\r\n")
-		if len(trimmed) > 0 && trimmed[0] == '[' {
-			var wrapper []json.RawMessage
-			if jErr := json.Unmarshal(sr.Message, &wrapper); jErr != nil {
-				return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d array payload in continuation: %w", i, jErr)
-			}
-			// Slot 1 (the retired-Complete placeholder) is IGNORED. Only a
-			// 3-element array carries a positional (slot 2); any other arity leaves
-			// positional nil and is rejected by the positional==nil guard below.
-			if len(wrapper) == 3 {
-				// Positional payload {n:[names], b:<typed-codec slot blob>}. `b` is a
-				// base64 JSON string that json unmarshals back into the []byte blob;
-				// readContSlice decodes the typed slots losslessly. Reconstruct the
-				// PositionalRow — the sole runtime output row the reader consumes.
-				var pp struct {
-					N []string `json:"n"`
-					B []byte   `json:"b"` // typed-codec slot blob (base64 in JSON)
-				}
-				if jErr := json.Unmarshal(wrapper[2], &pp); jErr != nil {
-					return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d positional payload in continuation: %w", i, jErr)
-				}
-				// A 3-element array with no typed blob is an OLD binary's
-				// {n, s:[JSON slots]} payload (the lossy form F33 retired): its slots
-				// cannot be reconstructed without type/precision loss, so FAIL the
-				// resume loudly (fail-closed) rather than decode wrong values. A
-				// present positional always encodes at least the uvarint slot count,
-				// so len(pp.B)==0 unambiguously means "no typed blob".
-				if len(pp.B) == 0 {
-					return nil, nil, false, fmt.Errorf("sorted record %d has no typed slot blob (a legacy sort continuation predating the typed slot codec); its slots cannot be resumed losslessly — restart the query", i)
-				}
-				slots, _, sErr := readContSlice(pp.B)
-				if sErr != nil {
-					return nil, nil, false, fmt.Errorf("failed to decode sorted record %d slots in continuation: %w", i, sErr)
-				}
-				// Rebuild STRUCT column slots (and struct elements inside ARRAY
-				// slots) from their descriptor-less placeholders. Any failure —
-				// no resolver, unresolvable type, bad payload — is a LOUD
-				// error: a placeholder must never leak into the row domain.
-				for si := range slots {
-					rv, rErr := resolvePendingProtoValues(slots[si], resolve)
-					if rErr != nil {
-						return nil, nil, false, fmt.Errorf("failed to rebuild sorted record %d slot %d in continuation: %w", i, si, rErr)
-					}
-					slots[si] = rv
-				}
-				positional = &PositionalRow{Type: positionalTypeFromNames(pp.N), Slots: slots}
-			}
-		} else {
-			// Legacy bare-object payload (the deleted name-keyed datum): validate it
-			// parses as JSON (a corrupt payload must fail the resume, not silently
-			// decode). It carries no positional; the positional==nil guard below
-			// rejects it — its name-keyed row is unreconstructable in the ordinal model.
-			var throwaway map[string]any
-			if jErr := json.Unmarshal(sr.Message, &throwaway); jErr != nil {
-				return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d message in continuation: %w", i, jErr)
-			}
+		// SINGLE payload format (RFC-180 H6 — the pre-release tolerance
+		// branches for the bare-object datum, the two-element array and the
+		// lossy {n, s:[JSON slots]} form are deleted by the same argument
+		// that deleted JSON tag 15: no shipped binary ever wrote them):
+		// a 3-element JSON array whose slot 2 is {n:[names], b:<typed-codec
+		// slot blob>}. Slots 0/1 are historical placeholders, ignored.
+		// Anything else fails the resume loudly.
+		var wrapper []json.RawMessage
+		if jErr := json.Unmarshal(sr.Message, &wrapper); jErr != nil {
+			return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d payload in continuation: %w", i, jErr)
 		}
+		if len(wrapper) != 3 {
+			return nil, nil, false, fmt.Errorf("sorted record %d payload has %d elements, want 3 — not a sort continuation this binary wrote", i, len(wrapper))
+		}
+		var pp struct {
+			N []string `json:"n"`
+			B []byte   `json:"b"` // typed-codec slot blob (base64 in JSON)
+		}
+		if jErr := json.Unmarshal(wrapper[2], &pp); jErr != nil {
+			return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d positional payload in continuation: %w", i, jErr)
+		}
+		// A present positional always encodes at least the uvarint slot
+		// count, so an empty blob is not a shape this binary produces.
+		if len(pp.B) == 0 {
+			return nil, nil, false, fmt.Errorf("sorted record %d has no typed slot blob — not a sort continuation this binary wrote; restart the query", i)
+		}
+		slots, _, sErr := readContSlice(pp.B)
+		if sErr != nil {
+			return nil, nil, false, fmt.Errorf("failed to decode sorted record %d slots in continuation: %w", i, sErr)
+		}
+		// Rebuild STRUCT column slots (and struct elements inside ARRAY
+		// slots) from their descriptor-less placeholders. Any failure —
+		// no resolver, unresolvable type, bad payload — is a LOUD
+		// error: a placeholder must never leak into the row domain.
+		for si := range slots {
+			rv, rErr := resolvePendingProtoValues(slots[si], resolve)
+			if rErr != nil {
+				return nil, nil, false, fmt.Errorf("failed to rebuild sorted record %d slot %d in continuation: %w", i, si, rErr)
+			}
+			slots[si] = rv
+		}
+		positional := &PositionalRow{Type: positionalTypeFromNames(pp.N), Slots: slots}
 		var pk tuple.Tuple
 		if sr.PrimaryKey != nil {
 			var pkErr error
@@ -1110,16 +1089,6 @@ func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (inner
 			if pkErr != nil {
 				return nil, nil, false, fmt.Errorf("failed to unpack sorted record %d primary key in continuation: %w", i, pkErr)
 			}
-		}
-		// A resumed sort row MUST reconstruct a PositionalRow (the sole runtime row).
-		// A legacy bare-object payload OR a v2 [_, complete] array (both pre-positional,
-		// written by an older binary) leaves positional nil — resuming it would give
-		// all-NULL sort keys and wrong/misordered rows, since the name-keyed
-		// fallback that used to read them is deleted. Fail the resume loudly (the caller
-		// restarts the query) rather than silently drop the data. A corrupt payload has
-		// already failed above; this rejects the VALID-but-unreconstructable legacy shape.
-		if positional == nil {
-			return nil, nil, false, fmt.Errorf("sorted record %d has no positional payload (a legacy sort continuation predating the positional row model); it cannot be resumed under the ordinal row model — restart the query", i)
 		}
 		buf = append(buf, QueryResult{PrimaryKey: pk, Positional: positional})
 	}

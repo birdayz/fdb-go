@@ -10,6 +10,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -78,6 +79,19 @@ func TestExecuteFlatMapCorruptContinuation(t *testing.T) {
 	}
 }
 
+// validSlotBlobB64 returns a base64 typed-codec blob for one NULL slot —
+// the minimal valid strict-format positional payload.
+func validSlotBlobB64(t *testing.T) string {
+	t.Helper()
+	b, err := appendContValue(nil, nil)
+	if err != nil {
+		t.Fatalf("appendContValue: %v", err)
+	}
+	var cnt []byte
+	cnt = binary.AppendUvarint(cnt, 1)
+	return base64.StdEncoding.EncodeToString(append(cnt, b...))
+}
+
 func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 	t.Parallel()
 
@@ -115,13 +129,15 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte("{not json")})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
 			},
-			wantErr: "failed to unmarshal sorted record 0 message",
+			wantErr: "failed to unmarshal sorted record 0 payload",
 		},
 		{
 			name: "SortedRecord with corrupt primary key",
 			data: func(t *testing.T) []byte {
 				sr := mustMarshal(t, &gen.SortedRecord{
-					Message:    []byte(`{"a":1}`),
+					// Valid strict-format payload so the decode reaches the
+					// PK unpack (the payload parses first now).
+					Message:    []byte(`[null, null, {"n":["A"], "b":"` + validSlotBlobB64(t) + `"}]`),
 					PrimaryKey: []byte{0xff}, // not a valid packed tuple
 				})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
@@ -129,27 +145,25 @@ func TestDecodeSortContinuationCorruptRecords(t *testing.T) {
 			wantErr: "failed to unpack sorted record 0 primary key",
 		},
 		{
-			// A 1-element array carries no positional (slot 2 absent) — pre-positional
-			// / corrupt. Only a 3-element array [_, _, positional] is resumable; any
-			// other arity is rejected by the positional==nil guard, not silently
-			// mis-split (which would resume with wrong rows).
+			// Only the 3-element array [_, _, positional] is a shape this
+			// binary writes; any other arity fails loudly (RFC-180 H6 —
+			// legacy tolerance branches deleted).
 			name: "1-element array (no positional)",
 			data: func(t *testing.T) []byte {
 				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}]`)})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
 			},
-			wantErr: "no positional payload",
+			wantErr: "want 3",
 		},
 		{
-			// A 2-element v2 [_, complete] array is pre-positional (the retired
-			// Complete slot, no positional). Slot 1 is ignored now; the row has no
-			// reconstructable positional → rejected.
+			// A 2-element pre-release array is not a shape this binary
+			// writes — rejected by arity (RFC-180 H6).
 			name: "v2 2-element array (no positional)",
 			data: func(t *testing.T) []byte {
 				sr := mustMarshal(t, &gen.SortedRecord{Message: []byte(`[{"a":1}, null]`)})
 				return mustMarshal(t, &gen.MemorySortContinuation{Records: [][]byte{sr}})
 			},
-			wantErr: "no positional payload",
+			wantErr: "want 3",
 		},
 	}
 

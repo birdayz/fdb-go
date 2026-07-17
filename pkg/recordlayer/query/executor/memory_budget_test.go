@@ -1,8 +1,12 @@
 package executor
 
 import (
+	"context"
 	"errors"
 	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -255,5 +259,35 @@ func TestBoundedSet_ChargesNewKeysOnly(t *testing.T) {
 	}
 	if st.MemUsed() != 12 {
 		t.Fatalf("memUsed = %d, want 12 after two distinct keys", st.MemUsed())
+	}
+}
+
+// TestResumedSortBufferChargesMemory pins RFC-180 H4: rows restored from a
+// sort continuation charge the RFC-130 statement memory budget exactly like
+// fresh fill-loop rows — a resume must not smuggle an arbitrarily large
+// buffer past the limit. The restored buffer here exceeds a tiny budget, so
+// the resume fails with MemoryLimitExceededError instead of materializing.
+func TestResumedSortBufferChargesMemory(t *testing.T) {
+	t.Parallel()
+	buf := make([]QueryResult, 8)
+	for i := range buf {
+		buf[i] = QueryResult{Positional: &PositionalRow{
+			Type:  positionalTypeFromNames([]string{"A"}),
+			Slots: []any{string(make([]byte, 64))},
+		}}
+	}
+	cont, err := encodeSortContinuation(nil, buf, true)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	plan := plans.NewRecordQueryInMemorySortPlan(
+		plans.NewRecordQueryValuesPlan(nil),
+		[]plans.SortKey{{Field: "A", ValueExpr: values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)}},
+	)
+	props := recordlayer.ExecuteProperties{State: recordlayer.NewExecuteState(64)}
+	_, err = executeInMemorySort(context.Background(), plan, nil, &EvaluationContext{}, cont, props)
+	var mem *recordlayer.MemoryLimitExceededError
+	if !errors.As(err, &mem) {
+		t.Fatalf("resumed over-budget buffer must trip the memory limit, got %v", err)
 	}
 }

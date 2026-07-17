@@ -3906,6 +3906,18 @@ func executeInMemorySort(
 	}
 
 	cursor := newCustomSortCursor(innerCursor, sortFn, props.State)
+	// RFC-180 H4: a RESUMED buffer is memory like any other — the fill loop
+	// charges every fresh row against the RFC-130 statement budget
+	// (customSortCursor.OnNext), so restored rows must charge identically at
+	// injection or a resume smuggles an arbitrarily large buffer past the
+	// limit.
+	if len(priorBuf) > 0 && props.State.HasMemLimit() {
+		for _, r := range priorBuf {
+			if cerr := props.State.ChargeMemory(estimateQueryResultBytes(r)); cerr != nil {
+				return nil, cerr
+			}
+		}
+	}
 	switch {
 	case emitPhase:
 		// Emit-phase resume (sortEmitContinuation): the inner was EXHAUSTED when
