@@ -279,17 +279,56 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 					continue
 				}
 
+				// The comparison keys are the inner's ORDERING CONTRACT for
+				// the InUnion merge-dedup — the partition-level first-member
+				// ESTIMATE (a delegator's group hint) is not tethered to the
+				// baked plan. Pick the cheapest member that STRUCTURALLY
+				// satisfies the contract (delegators resolve through their
+				// source groups), spine-PIN it (executable-plan verified),
+				// and bake THAT plan over a FinalOf singleton; an unpinnable
+				// partition skips this candidate — the sort-based
+				// alternative still plans.
+				legReqParts := make([]RequestedOrderingPart, len(comparisonParts))
+				for i, p := range comparisonParts {
+					so := RequestedSortOrderAny
+					if p.SortOrder != ProvidedSortOrderFixed {
+						so = p.SortOrder.ToRequestedSortOrder()
+					}
+					legReqParts[i] = RequestedOrderingPart{Value: p.Value, SortOrder: so}
+				}
+				legReq := NewRequestedOrdering(legReqParts, DistinctnessPreserveDistinctness, false)
+				tieBrokenLess := lessWithHashTieBreak(call.CostModel())
+				var best expressions.RelationalExpression
+				for _, pe := range innerExprs {
+					if !memberSatisfiesOrdering(pe, legReq) {
+						continue
+					}
+					if best == nil || tieBrokenLess(pe, best) {
+						best = pe
+					}
+				}
+				if best == nil {
+					continue
+				}
+				pinned := pinOrderedSpine(best, legReq, call.CostModel())
+				if pinned == nil {
+					continue
+				}
+				pp, isPhys := pinned.(physicalPlanExpression)
+				if !isPhys {
+					continue
+				}
+
 				maxSize := 0
 				if call.Context != nil {
 					maxSize = call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
 				}
-				newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 				inUnionPlan := plans.NewRecordQueryInUnionPlanWithMaxSize(
-					innerPlans[0], bindingNames, comparisonKeys, isReverse, maxSize)
+					pp.GetRecordQueryPlan(), bindingNames, comparisonKeys, isReverse, maxSize)
 				inUnionPlan.SetInSources(inSources)
 				call.YieldFinalExpression(NewPhysicalInUnionWrapper(
 					inUnionPlan,
-					expressions.NewPhysicalQuantifier(newRef),
+					expressions.NewPhysicalQuantifier(expressions.FinalOf(pinned)),
 				))
 			}
 		}
