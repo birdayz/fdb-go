@@ -1647,12 +1647,46 @@ func buildCTEOnOnlySource(
 // registration authority both build pipelines (the plan visitor and the
 // CTECatalog chain) share, so a declared CTE can never reach
 // upgradeJoinOnPredicates untracked (the silent ON-drop class).
-func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) {
+func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
+	// Column-alias arity validates against the body's STATICALLY known
+	// projection count even when schema derivation declines — the derivable
+	// branch's validation (registration loops) never runs for this class, so
+	// `WITH c(a,b) AS (<underivable body> SELECT id ...)` silently accepted a
+	// two-alias list over a one-column body instead of erroring like the
+	// derivable twin.
+	if n := staticCTEProjectionCount(cteQuery); n > 0 {
+		if list, ok := colAliases.(*antlrgen.FullIdListContext); ok && list != nil {
+			if nAliases := len(list.AllFullId()); nAliases > 0 && nAliases != n {
+				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
+					"cte query has %d column(s), however %d aliases defined", n, nAliases)
+			}
+		}
+	}
 	if src, ok := buildCTEOnOnlySource(upperName, cteQuery, colAliases, md, schemaName, cteScopes, dst); ok {
 		dst[upperName] = src
-		return
+		return nil
 	}
 	dst[upperName] = semantic.ScopeSource{} // marker: declared, underivable → loud drop risk
+	return nil
+}
+
+// staticCTEProjectionCount returns the CTE body's statically-extractable
+// projection count: len(projCols) when the body's SELECT list is explicit,
+// -1 when unknown (SELECT *, unextractable shape, recursive seeds with
+// differing arms are still validated by their own paths).
+func staticCTEProjectionCount(cteQuery antlrgen.IQueryContext) int {
+	if cteQuery == nil {
+		return -1
+	}
+	body, ok := cteQuery.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return -1
+	}
+	innerSQ, err := extractFromQueryTerm(body)
+	if err != nil || innerSQ == nil || innerSQ.projCols == nil {
+		return -1
+	}
+	return len(innerSQ.projCols)
 }
 
 // applyCTEColumnAliases renames the columns of a CTE ScopeSource
@@ -4833,7 +4867,9 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				// delete below: a body leg naming the outer same-name
 				// correctly classifies against the OUTER binding (which is
 				// what the body's reference means, pre-state scoping).
-				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
+				if regErr := registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes); regErr != nil {
+					return nil, regErr
+				}
 				// The mirror of the derivable arm's shadow delete: an inner
 				// ON-ONLY registration must EVICT a same-named OUTER
 				// derivable entry, or this level's MAIN query resolves the
@@ -5011,7 +5047,9 @@ func buildLogicalPlanForQueryWithCatalog(
 				// delete below: a body leg naming the outer same-name
 				// correctly classifies against the OUTER binding (which is
 				// what the body's reference means, pre-state scoping).
-				registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes)
+				if regErr := registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes); regErr != nil {
+					return nil, regErr
+				}
 				// The mirror of the derivable arm's shadow delete: an inner
 				// ON-ONLY registration must EVICT a same-named OUTER
 				// derivable entry, or this level's MAIN query resolves the

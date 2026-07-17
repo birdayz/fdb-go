@@ -222,7 +222,9 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				// Declared but not globally derivable (join/unnest body): the
 				// ON-only registration keeps an enclosing explicit join's ON
 				// resolvable — or LOUDLY dropped (marker) — never silent.
-				registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes)
+				if regErr := registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes); regErr != nil {
+					return nil, regErr
+				}
 				// Opposite-map eviction, ON-only arm: an underivable inner
 				// shadowing a DERIVABLE outer must displace the outer's
 				// cteScopes entry, or the body/main resolves named reads

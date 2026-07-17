@@ -249,3 +249,21 @@ tests:
       WITH c2(a) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM t WHERE id <= 2)
       SELECT a FROM c2 ORDER BY a
     rows: []
+  # A COMPUTED enclosing projection routes through the projection resolver
+  # (buildProjectionResolverWithCTEScopes), which AddSource'd the tombstone
+  # unchecked — Scope.ResolveColumn nil-dereferenced (recovered → XX000 on a
+  # valid-shaped query). AddSource now rejects nil-Table sources at the
+  # chokepoint, so EVERY resolver path declines clean.
+  - query: |-
+      WITH c1(w) AS (SELECT id FROM t),
+           c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id + 1 FROM c1)
+      SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
+    error_code: "0AF00"
+  # Alias-arity validation must not be bypassed by a tombstoned (underivable)
+  # body: the derivable branch's 42F10 check never ran for this class, so a
+  # two-alias list over a statically one-column body executed instead of
+  # erroring like its derivable twin.
+  - query: |-
+      WITH c2(a, b) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM t)
+      SELECT a FROM c2
+    error_code: "42F10"
