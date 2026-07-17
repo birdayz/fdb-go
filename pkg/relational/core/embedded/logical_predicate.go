@@ -29,9 +29,9 @@ package embedded
 //   buildWherePredicateForTable  (single source — primary table)
 //   buildWherePredicateForJoins  (multi source — JOIN chain)
 //
-// Plumbed into naive_generator.ExplainFn via
+// Plumbed into the connection's Explain path via
 // EmbeddedConnection.cachedMetaData() — when the session schema cache
-// already holds the active schema, ExplainFn upgrades to predicate-tree
+// already holds the active schema, Explain upgrades to predicate-tree
 // rendering; cold cache stays on the text-builder path so EXPLAIN
 // remains deterministic and IO-free.
 
@@ -1940,10 +1940,6 @@ func unnestScopeSourceAdder(scope *semantic.Scope) func(j joinClause) bool {
 // LogicalFilter node differs when the walker succeeds. Passing md=nil
 // is equivalent to calling buildLogicalPlanForSelect: every WHERE
 // degrades to text.
-//
-// Follow-up wiring (not in this shift): plumb md into
-// naive_generator's ExplainFn so Explain output shows simplified
-// predicate trees when metadata is available.
 func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string) (logical.LogicalOperator, error) {
 	return buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, nil, nil)
 }

@@ -4,7 +4,6 @@ go_library(
     name = "executor",
     srcs = [
         "continuation.go",
-        "covering_optimizer.go",
         "evaluation_context.go",
         "executor.go",
         "executor_new_plans.go",
@@ -82,7 +81,6 @@ go_test(
         "bench_proto_test.go",
         "charge_coverage_test.go",
         "continuation.go",
-        "covering_optimizer.go",
         "equijoin_columns_test.go",
         "eval_must_test.go",
         "evaluation_context.go",
