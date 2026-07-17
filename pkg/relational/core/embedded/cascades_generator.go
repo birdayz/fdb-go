@@ -2619,7 +2619,20 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	// folded FlatMap's own column derivation (foldedColumnDef). The inner columns
 	// are derived lazily — only when a column's type is genuinely unresolved — so
 	// the ordinary projection path pays nothing.
+	var innerCols []executor.ColumnDef
+	var innerDerived bool
 	var innerByName map[string]executor.ColumnDef
+	deriveInner := func() {
+		if innerDerived {
+			return
+		}
+		innerDerived = true
+		innerCols = deriveColumnsFromPlan(proj.GetInner(), md)
+		innerByName = make(map[string]executor.ColumnDef, len(innerCols))
+		for _, ic := range innerCols {
+			innerByName[strings.ToUpper(ic.Name)] = ic
+		}
+	}
 	cols := make([]executor.ColumnDef, len(projections))
 	for i, v := range projections {
 		alias := ""
@@ -2653,17 +2666,45 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		if cd.TypeName == "" || cd.TypeName == "UNKNOWN" {
 			// Inherit from the inner column the projection reads (matched by the
-			// projected FieldValue's field = the inner output key).
-			if fv, ok := v.(*values.FieldValue); ok && fv.Child == nil {
-				if innerByName == nil {
-					innerByName = make(map[string]executor.ColumnDef)
-					for _, ic := range deriveColumnsFromPlan(proj.GetInner(), md) {
-						innerByName[strings.ToUpper(ic.Name)] = ic
+			// projected FieldValue's field = the inner output key). BOTH read
+			// emissions inherit: the FLAT (childless) form AND the resolver's
+			// QUANTIFIER-ADDRESSED bake (FieldValue{Child: QOV(inner)}) — a
+			// projection has exactly one input, so the QOV form reads the same
+			// inner output the flat form does. The QOV form arrives when the
+			// planner KEEPS a projection spine unmerged (e.g. an ordering-pinned
+			// spine under an elided sort): the outer read of a derived column
+			// like `val * 2 AS doubled` is then a plain rename of the inner
+			// output, and refusing to inherit reported UNKNOWN where Java types
+			// it from the flowed result type regardless of plan shape.
+			fv, isField := v.(*values.FieldValue)
+			if isField {
+				_, viaQOV := fv.Child.(*values.QuantifiedObjectValue)
+				if fv.Child == nil || viaQOV {
+					deriveInner()
+					// The BAKED ordinal is the structural linkage (RFC-142): a
+					// plan-time reference reads the inner output SLOT, and the
+					// inner's column NAME for that slot may be a positional
+					// label ("_1" for an unaliased computed column) that no
+					// name lookup can hit — e.g. an unmerged projection spine
+					// where the outer reads `DOUBLED#1` while the inner derives
+					// slot 1 as "_1" (correctly typed). Resolve by ordinal
+					// first; the name map serves lazy (unbaked) reads.
+					inherited := false
+					if fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
+						if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(innerCols) {
+							if ic := innerCols[ord]; ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+								cd.TypeName = ic.TypeName
+								cd.Nullable = ic.Nullable
+								inherited = true
+							}
+						}
 					}
-				}
-				if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-					cd.TypeName = ic.TypeName
-					cd.Nullable = ic.Nullable
+					if !inherited {
+						if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+							cd.TypeName = ic.TypeName
+							cd.Nullable = ic.Nullable
+						}
+					}
 				}
 			}
 		}

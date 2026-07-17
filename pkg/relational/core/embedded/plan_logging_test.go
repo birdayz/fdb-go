@@ -280,3 +280,41 @@ func TestPlanCacheEvent_String(t *testing.T) {
 		}
 	}
 }
+
+// TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine pins
+// column-metadata typing against PLAN SHAPE: `doubled` (val * 2) through
+// two derived-table levels must report BIGINT no matter whether the
+// planner merged the nested projections or an ordering-pinned spine kept
+// them stacked. The inherit path in deriveColumnsFromProjection only
+// fired for FLAT (childless) FieldValues; the pinned/unmerged shape reads
+// the inner output through a QUANTIFIER-ADDRESSED FieldValue (Child=QOV),
+// which skipped inheritance and reported UNKNOWN — a cross-engine
+// metadata divergence (Java types it from the flowed result type
+// regardless of shape).
+func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t, "CREATE TABLE t_nd8 (id BIGINT, val BIGINT, PRIMARY KEY (id))", &captureLogger{})
+	q := parseQuery(t, "SELECT id, doubled FROM (SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id")
+	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	cp, ok := p.(*cascadesPlan)
+	if !ok {
+		t.Fatalf("plan is %T, want *cascadesPlan", p)
+	}
+	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	doubledIdx := -1
+	for i := range cols {
+		if strings.EqualFold(cols[i].Label, "DOUBLED") || strings.EqualFold(cols[i].Name, "DOUBLED") {
+			doubledIdx = i
+			break
+		}
+	}
+	if doubledIdx < 0 {
+		t.Fatalf("no DOUBLED column in derived metadata: %+v", cols)
+	}
+	if got := cols[doubledIdx].TypeName; got != "BIGINT" {
+		t.Fatalf("DOUBLED type = %q, want BIGINT (metadata typing must not depend on whether the projection spine was merged)", got)
+	}
+}

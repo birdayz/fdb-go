@@ -102,6 +102,16 @@ func InitialOf(e RelationalExpression) *Reference {
 	return &Reference{members: []RelationalExpression{e}, plannerStage: StageCanonical}
 }
 
+// FinalOf returns a Reference holding e as its only FINAL member, at
+// StagePlanned — Java's memoizePlan shape (Reference.ofFinalExpressions).
+// Used for spine-pinned singletons minted DURING PLANNING: with an empty
+// exploratory set and the target stage already reached, no ExploreGroup
+// task can explore the singleton and grow it past the pin, and no stage
+// advancement can promote-and-clear its finals.
+func FinalOf(e RelationalExpression) *Reference {
+	return &Reference{finalMembers: []RelationalExpression{e}, plannerStage: StagePlanned}
+}
+
 // Canonical follows the forwarding chain to the surviving Reference and
 // compresses the path so subsequent lookups are O(1). For a live
 // (non-forwarded) Reference it returns the receiver unchanged. Safe on
