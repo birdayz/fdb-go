@@ -377,16 +377,15 @@ Codex on the PR, re-request after every push.
 | Id | Severity | One-liner | Status |
 |---|---|---|---|
 | Y1–Y6 | wrong-rows/red-net | 67/319 yamsql failures + dark TestMain | **DONE** — corpus 319/319; ~110 Java-verdict re-pins; 12 engine fixes (sort pull-up, NULLS FIRST, UUID CAST, IN homogeneity, 0AF00 choke point, grouped-EXISTS guard, scalar-in-predicate guard, CTE shadowing, union positional ORDER BY, union streaming resume, ProjectionMergeRule composition, PK-suffix ordering); strict loader (exec:/rowcount: silent-drop hole killed); Y6 fatal-in-CI |
-| A1–A7 | wrong-rows (latent) + loud-gap | union/IN continuation family | OPEN |
-| B1–B5 | memo-collapse / nondeterministic | plan-identity stragglers | OPEN |
-| C1–C4 | wrong-rows | lossy dedup/group keys | OPEN |
-| D1–D4 | wrong-rows (D1) / divergence | ordering-representation split | OPEN |
-| E1 | nondeterministic | compensation map-order | OPEN |
-| F-1–F-4 | wrong-rows-history / rule-violation | text IR reparse | OPEN |
+| A1–A7 | wrong-rows (latent) + loud-gap | union/IN continuation family | **DONE** — real continuations for aggregate/sort/union/InJoin; fabricated-continuation family deleted |
+| B1–B5 | memo-collapse / nondeterministic | plan-identity stragglers | **DONE** — comparand identity completed (semanticValueEquals/writeValueHash on every straggler) |
+| C1–C4 | wrong-rows | lossy dedup/group keys | **DONE** — lossless typed codec; keyless fallbacks correct-or-loud |
+| D1–D4 | wrong-rows (D1) / divergence | ordering-representation split | D1/D3/D4 **DONE** (overflowed requirements unsatisfiable; property-equality roll-up with semantic null placement; fallback declines); D2 staged (rich_ordering keys, Graefe-led) |
+| E1 | nondeterministic | compensation map-order | **DONE** — deterministic quantifier iteration, pinned |
+| F-1–F-4 | wrong-rows-history / rule-violation | text IR reparse | **DONE** — F-1/F-2/F-4 killed the reparse/classifiers/errstring; F-3 aggregate stage deleted `Aggregates []string` (later stages staged: GroupKeys/Having/PredicateText/SortKey.Expr) |
 | G1 | process | yamsql un-skip | **DONE** (landed with the Y-green batch) |
 | G2 | dead-code | plangen deleted | **DONE** |
-| A1/A2 | wrong-rows (latent) + loud-gap | union streaming resume via ConcatCursors; buffered fallback correct-or-loud | **DONE** (A3–A7 remain) |
-| G3–G4 | net-gap | comparator fuzz + float cross-plan e2e | OPEN |
-| H1 | wrong-value write | int64→float32 ±Inf | OPEN |
-| H2–H8 | minor/hygiene | see workstream H | OPEN |
-| I1–I3 | parity/perf | planner guards | OPEN |
+| G3–G4 | net-gap | comparator fuzz + float cross-plan e2e | **DONE** — differential fuzz nets landed; surfaced + fixed the aggMinMax NaN/±Inf Java divergence |
+| H1 | wrong-value write | int64→float32 ±Inf | **INVALID** — premise unreachable (see Workstream H); kill seed pinned |
+| H2–H8 | minor/hygiene | see workstream H | **DONE** — skeleton deletions, resumed-buffer live-bytes accounting (H4), strict sort-continuation codec (H6) |
+| I1–I3 | parity/perf | planner guards | I1/I2 **DONE** (queue/match/round caps, corpus-validated, trip-pinned); I3 staged (blocked on a typed matcher-root API) |
