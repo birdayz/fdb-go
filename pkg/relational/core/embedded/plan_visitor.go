@@ -1590,12 +1590,12 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			}
 			seenOrderCols[key] = true
 			sk := logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef, Bare: kb, Qualifier: kq, Qualified: kqf}
-			if colName != origColName || sk.Expr != colName {
-				// A rebased/alias-resolved name is an internal OUTPUT name,
-				// and a stripped prefix bakes the qualifier away — either
-				// way the key is BARE from here on (the group-key strip
-				// rule); the parse-tree segments describe the original
-				// reference, not this name.
+			if kb != "" && (colName != origColName || sk.Expr != colName) {
+				// A COLUMN key rebased/alias-resolved to an internal OUTPUT
+				// name, or with its prefix stripped — BARE from here on
+				// (the group-key strip rule); the parse-tree segments
+				// describe the original reference, not this name.
+				// Expression keys keep zero segments.
 				sk.Bare, sk.Qualifier, sk.Qualified = sk.Expr, "", false
 			}
 			keys = append(keys, sk)

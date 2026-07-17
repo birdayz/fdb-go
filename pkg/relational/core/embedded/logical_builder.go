@@ -547,6 +547,11 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			ob := &sq.orderBy[i]
 			if ob.pos >= 1 && ob.pos <= len(sq.postSortStripProj) {
 				ob.colName = sq.postSortStripProj[ob.pos-1]
+				// The rebased name is internal projection text — the
+				// original reference's segments no longer describe it
+				// (stale segments silently mis-resolve against a
+				// same-spelled source column).
+				ob.bare, ob.qualifier, ob.qualified = ob.colName, "", false
 				ob.pos = 0
 				continue
 			}
@@ -562,6 +567,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			for j, al := range sq.postSortStripAliases {
 				if al != "" && strings.EqualFold(al, ob.colName) && j < len(sq.postSortStripProj) {
 					ob.colName = sq.postSortStripProj[j]
+					// Same rule as the positional rebase above: internal
+					// text, segments cleared to the rebased bare.
+					ob.bare, ob.qualifier, ob.qualified = ob.colName, "", false
 					break
 				}
 			}
@@ -587,6 +595,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// for output-slot baking where the input IS a projection.
 			if ob.pos >= 1 && ob.pos <= len(sq.projCols) && sq.projCols[ob.pos-1] != "" {
 				expr = strip(sq.projCols[ob.pos-1])
+				// Rebased to the underlying projection text — segments
+				// follow the same internal-name rule.
+				ob.bare, ob.qualifier, ob.qualified = expr, "", false
 			}
 			nullsFirst := ob.ascending
 			if ob.nullsFirst != nil {
@@ -599,9 +610,11 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// select-list-carrying input (the aggregate reshaping
 			// projection or a union) — never a derived source's slots.
 			sk := logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef, Bare: ob.bare, Qualifier: ob.qualifier, Qualified: ob.qualified}
-			if expr != ob.colName {
-				// Stripped/rebased to an internal name — bare from here on
-				// (the group-key strip rule).
+			if ob.bare != "" && expr != ob.colName {
+				// A COLUMN key stripped/rebased to an internal name — bare
+				// from here on (the group-key strip rule). Expression keys
+				// keep zero segments: their Expr is a rendering, never a
+				// reference.
 				sk.Bare, sk.Qualifier, sk.Qualified = expr, "", false
 			}
 			keys = append(keys, sk)

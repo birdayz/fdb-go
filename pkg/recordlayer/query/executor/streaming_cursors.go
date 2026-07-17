@@ -1527,12 +1527,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			// (Java's check value), then restore the inner position and the
 			// matched flag. innerMatches was recomputed above
 			// deterministically (same innerRows order, same probe), so the
-			// restored index addresses the same candidate list. Note the
-			// index (unlike Java's key-positional inner continuation) is a
-			// SNAPSHOT position: the check value guards the OUTER row only,
-			// so an inner-side mutation between pages shifts the candidate
-			// list undetected — the same exposure as the materialized inner
-			// itself, which re-collects whatever the new transaction sees.
+			// restored index addresses the same candidate list. The saved
+			// inner PK then verifies the ordinal or repositions it
+			// (repositionInner) — key-positional like Java's inner-cursor
+			// continuation; only a deleted saved row degrades to the
+			// documented ordinal residue.
 			if c.resumePending {
 				if len(c.resumeCheck) > 0 && outerRow.PrimaryKey != nil &&
 					!bytes.Equal(outerRow.PrimaryKey.Pack(), c.resumeCheck) {

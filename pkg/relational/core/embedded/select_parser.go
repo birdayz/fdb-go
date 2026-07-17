@@ -267,6 +267,7 @@ type aggSelectCol struct {
 	// false-positive.
 	aggArgQualified bool
 	aggArgBare      string
+	aggArgQualifier string
 	// visible is true when the aggregate appears in the user's SELECT list.
 	// Non-visible entries are harvested from HAVING or ORDER BY — they
 	// contribute to accumulation/evaluation but are excluded from (or
@@ -313,26 +314,26 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 // Shares the AggregateWindowedFunction → (funcName, argCol, argExpr, outName)
 // extraction with aggColFromAwf via extractAwfFields; this wrapper adds the
 // SELECT-list element unwrap + the alias-from-AS overlay.
-func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, argQualified bool, argBare string, ok bool) {
+func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, argQualified bool, argBare, argQualifier string, ok bool) {
 	pred, pok := e.Expression().(*antlrgen.PredicatedExpressionContext)
 	if !pok {
-		return "", "", nil, "", false, false, "", false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	fc, fcok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
 	if !fcok {
-		return "", "", nil, "", false, false, "", false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	agg, aggok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 	if !aggok {
-		return "", "", nil, "", false, false, "", false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
 	if !awfok {
-		return "", "", nil, "", false, false, "", false
+		return "", "", nil, "", false, false, "", "", false
 	}
-	fn, arg, aExpr, outName, isDistinct, argQual, argBare, fieldsOk := extractAwfFields(awf)
+	fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, fieldsOk := extractAwfFields(awf)
 	if !fieldsOk {
-		return "", "", nil, "", false, false, "", false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	// SELECT-list-only overlay: an explicit `AS alias` on the SELECT element
 	// wins over the reconstructed default ("SUM(v)") as the output column
@@ -340,7 +341,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	if e.Uid() != nil {
 		outName = functions.StripIdentifierQuotes(e.Uid().GetText())
 	}
-	return fn, arg, aExpr, outName, isDistinct, argQual, argBare, true
+	return fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, true
 }
 
 // extractAwfFields classifies an AggregateWindowedFunction into the pieces
@@ -362,7 +363,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 // matches by surfacing distinct=true to callers, which then reject.
 // Same architectural reason in both engines: visitor doesn't handle
 // the DISTINCT case.
-func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, argQualified bool, argBare string, ok bool) {
+func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, argQualified bool, argBare, argQualifier string, ok bool) {
 	distinct = awf.DISTINCT() != nil
 	resolveArg := func(fa antlrgen.IFunctionArgContext) {
 		if fa == nil {
@@ -380,6 +381,13 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 				uids := fid.AllUid()
 				argQualified = len(uids) > 1
 				argBare = functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+				if argQualified {
+					parts := make([]string, len(uids)-1)
+					for qi, u := range uids[:len(uids)-1] {
+						parts[qi] = functions.StripIdentifierQuotes(u.GetText())
+					}
+					argQualifier = strings.Join(parts, ".")
+				}
 				return
 			}
 		}
@@ -409,7 +417,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 		funcName = "AVG"
 		resolveArg(awf.FunctionArg())
 	default:
-		return "", "", nil, "", false, false, "", false
+		return "", "", nil, "", false, false, "", "", false
 	}
 	display := argCol
 	if display == "" && argExpr != nil {
@@ -423,7 +431,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 	default:
 		outName = funcName + "(" + display + ")"
 	}
-	return funcName, argCol, argExpr, outName, distinct, argQualified, argBare, true
+	return funcName, argCol, argExpr, outName, distinct, argQualified, argBare, argQualifier, true
 }
 
 // columnNameFromExpr extracts a plain column name (or aggregate output name like
@@ -514,7 +522,7 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"%s: unsupported aggregate %T", context, agg.AggregateWindowedFunction())
 		}
-		_, _, _, outName, _, _, _, ok := extractAwfFields(awf)
+		_, _, _, outName, _, _, _, _, ok := extractAwfFields(awf)
 		if !ok {
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s: unsupported aggregate function", context)
 		}
@@ -701,12 +709,12 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 					if e.Uid() != nil {
 						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
 					}
-				} else if fn, argCol, argExpr, alias, isDistinct, argQual, argBare, isAgg := extractAggFunc(e); isAgg {
+				} else if fn, argCol, argExpr, alias, isDistinct, argQual, argBare, argQualifier, isAgg := extractAggFunc(e); isAgg {
 					if containsNestedAggregateInSelectElement(e, argExpr) {
 						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 							"unsupported nested aggregate(s)")
 					}
-					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, visible: true})
+					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, aggArgQualified: argQual, aggArgBare: argBare, aggArgQualifier: argQualifier, visible: true})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
@@ -1756,7 +1764,7 @@ func queryScopeHasWindowedAggregate(n antlr.Tree) bool {
 // HAVING resolver's lookup name and the SELECT-list default alias
 // ("COUNT(*)", "SUM(v)"). Returns false for unknown aggregate shapes.
 func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol, bool) {
-	fn, argCol, argExpr, outName, isDistinct, argQual, argBare, ok := extractAwfFields(awf)
+	fn, argCol, argExpr, outName, isDistinct, argQual, argBare, argQualifier, ok := extractAwfFields(awf)
 	if !ok {
 		return aggSelectCol{}, false
 	}
@@ -1768,6 +1776,7 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 		aggDistinct:     isDistinct,
 		aggArgQualified: argQual,
 		aggArgBare:      argBare,
+		aggArgQualifier: argQualifier,
 	}, true
 }
 

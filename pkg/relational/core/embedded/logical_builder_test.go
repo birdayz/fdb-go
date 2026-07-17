@@ -640,3 +640,47 @@ func TestOrderByKeySegments_ParseTreeTruth(t *testing.T) {
 		t.Fatalf("c2 segments = %+v", ob)
 	}
 }
+
+// TestSortKeySegments_AliasRebaseClearsStaleSegments pins the review-caught
+// hole: the deferred-strip loop rebases an alias key's colName IN PLACE, so
+// the key's parse-tree segments (Bare = the alias spelling) go stale — a
+// source column spelled like the alias would silently mis-resolve. The
+// rebase must clear the segments to the internal name.
+func TestSortKeySegments_AliasRebaseClearsStaleSegments(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, `SELECT id AS v FROM t ORDER BY v`)
+	// Force the deferred-strip shape the builder rebases under.
+	sq.postSortStripProj = []string{"ID"}
+	sq.postSortStripAliases = []string{"V"}
+	op := buildSelectShell(logical.NewScan("t", ""), sq, "")
+	sort, ok := op.(*logical.LogicalSort)
+	if !ok {
+		if s2, ok2 := findSortOp(op); ok2 {
+			sort = s2
+		} else {
+			t.Fatalf("no sort in %T", op)
+		}
+	}
+	k := sort.Keys[0]
+	if k.Expr != "ID" {
+		t.Fatalf("rebased key Expr = %q, want ID", k.Expr)
+	}
+	if k.Bare != "ID" || k.Qualified {
+		t.Fatalf("rebased key kept stale segments: %+v (Bare must be the internal name, never the alias spelling)", k)
+	}
+}
+
+// findSortOp walks the shell for the sort operator.
+func findSortOp(op logical.LogicalOperator) (*logical.LogicalSort, bool) {
+	for op != nil {
+		if s, ok := op.(*logical.LogicalSort); ok {
+			return s, true
+		}
+		ch := op.Children()
+		if len(ch) == 0 {
+			return nil, false
+		}
+		op = ch[0]
+	}
+	return nil, false
+}

@@ -3594,7 +3594,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 			var qualID semantic.Identifier
 			if ac.aggArgQualified {
-				qualID = semantic.NewUnquoted(strings.TrimSuffix(ac.aggArg, "."+bareArg))
+				qualID = semantic.NewUnquoted(ac.aggArgQualifier)
 			}
 			qv, rerr := resolver.ResolveIdentifier(qualID, semantic.NewUnquoted(bareArg))
 			if rerr != nil || qv == nil {
@@ -7714,7 +7714,7 @@ func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isA
 	if !ok {
 		return "", "", false
 	}
-	f, a, aExpr, _, _, _, _, ok := extractAwfFields(awf)
+	f, a, aExpr, _, _, _, _, _, ok := extractAwfFields(awf)
 	if !ok || aExpr != nil {
 		return "", "", false
 	}
