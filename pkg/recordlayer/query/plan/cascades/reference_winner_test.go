@@ -423,3 +423,37 @@ func TestPlan_OrderedMemberSelectable(t *testing.T) {
 		t.Fatalf("expected physicalIndexScanWrapper or physicalFetchFromPartialRecordWrapper, got %T", winner)
 	}
 }
+
+// TestFinalOfChildrenVisibleToSemanticEquality pins the FinalOf identity
+// fix: a finals-only pinned singleton must be visible through
+// Reference.Get — otherwise two otherwise-identical wrappers over
+// DIFFERENT pinned children both expose nil children, SemanticEquals
+// collapses them, and InsertFinal deduplicates a distinct ordered
+// alternative away.
+func TestFinalOfChildrenVisibleToSemanticEquality(t *testing.T) {
+	t.Parallel()
+
+	childA := sortedMemberOn(t, "A")
+	childB := sortedMemberOn(t, "B")
+
+	mk := func(child expressions.RelationalExpression) expressions.RelationalExpression {
+		return &physicalPredicatesFilterWrapper{
+			plan: plans.NewRecordQueryPredicatesFilterPlan(
+				plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+				[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+			),
+			innerQuant: expressions.ForEachQuantifier(expressions.FinalOf(child)),
+		}
+	}
+	w1, w2 := mk(childA), mk(childB)
+
+	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	ref.InsertFinal(w1)
+	ref.InsertFinal(w2)
+	if got := len(ref.FinalMembers()); got != 2 {
+		t.Fatalf("wrappers over DIFFERENT pinned children must not deduplicate: finals = %d, want 2", got)
+	}
+	if expressions.FinalOf(childA).Get() != childA {
+		t.Fatal("Get() must expose the pinned final of a finals-only Reference")
+	}
+}

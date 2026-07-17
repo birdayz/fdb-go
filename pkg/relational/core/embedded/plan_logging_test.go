@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -303,6 +305,16 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
+	// The sentinel only tests the UNMERGED spine while it stays unmerged:
+	// if a future change merges the nested projections, this degrades to
+	// the flat path silently — assert the shape so it fails loudly instead.
+	pr, ok := cp.physicalPlan.(*plans.RecordQueryProjectionPlan)
+	if !ok {
+		t.Fatalf("top plan is %T, want the unmerged outer projection", cp.physicalPlan)
+	}
+	if _, ok := pr.GetInner().(*plans.RecordQueryProjectionPlan); !ok {
+		t.Fatalf("inner plan is %T — the projection spine was merged and this sentinel no longer exercises the ordinal-inheritance path", pr.GetInner())
+	}
 	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
 	doubledIdx := -1
 	for i := range cols {
@@ -317,4 +329,37 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 	if got := cols[doubledIdx].TypeName; got != "BIGINT" {
 		t.Fatalf("DOUBLED type = %q, want BIGINT (metadata typing must not depend on whether the projection spine was merged)", got)
 	}
+}
+
+// TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns pins the
+// leg-relative-ordinal hazard: a QUANTIFIER-ADDRESSED read over a JOIN
+// carries an ordinal relative to its SOURCE LEG, not to the flattened
+// inner column list — inheriting by it would type d.total from an
+// unrelated leg's slot (a_md.s STRING) instead of the aggregate's BIGINT.
+// Ordinal inheritance is therefore restricted to FLAT reads; QOV reads
+// resolve by name.
+func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		&captureLogger{})
+	q := parseQuery(t, "SELECT a.s, d.total FROM a_md AS a, (SELECT SUM(v) AS total FROM b_md) AS d")
+	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	if err != nil {
+		t.Skipf("join-with-derived-aggregate not plannable in the DB-less fixture: %v", err)
+	}
+	cp, ok := p.(*cascadesPlan)
+	if !ok {
+		t.Fatalf("plan is %T, want *cascadesPlan", p)
+	}
+	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	for _, c := range cols {
+		if strings.EqualFold(c.Label, "TOTAL") || strings.EqualFold(c.Name, "TOTAL") {
+			if c.TypeName == "STRING" {
+				t.Fatalf("TOTAL typed STRING — a leg-relative ordinal indexed the flattened inner columns and inherited the other leg's slot")
+			}
+			return
+		}
+	}
+	t.Fatalf("no TOTAL column in derived metadata: %+v", cols)
 }

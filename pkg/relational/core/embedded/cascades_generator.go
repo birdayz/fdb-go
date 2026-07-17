@@ -2690,7 +2690,13 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// slot 1 as "_1" (correctly typed). Resolve by ordinal
 					// first; the name map serves lazy (unbaked) reads.
 					inherited := false
-					if fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
+					// Ordinal inheritance only for the FLAT read: a
+					// QUANTIFIER-ADDRESSED read over a JOIN carries a
+					// LEG-relative ordinal, which is not an index into the
+					// flattened inner columns — inheriting by it would type
+					// the column from an unrelated leg's slot. QOV reads use
+					// the name path below.
+					if fv.Child == nil && fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
 						if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(innerCols) {
 							if ic := innerCols[ord]; ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
 								cd.TypeName = ic.TypeName

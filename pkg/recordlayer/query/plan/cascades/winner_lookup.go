@@ -127,7 +127,40 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *Reque
 	if err != nil || pinned == nil {
 		return nil
 	}
+	// WithChildren is allowed to keep its ORIGINAL concrete plan when the
+	// new child isn't leaf-replaceable (several wrappers gate on
+	// isLeafReplaceable) — the quantifier then points at the pinned member
+	// while GetRecordQueryPlan() still executes the OLD child. A pin that
+	// did not reach the executable plan is not a pin: verify the wrapper's
+	// concrete child IS the pinned member's plan, else decline (the sort
+	// stays, which is always order-correct).
+	pinnedPE, ok := pinned.(physicalPlanExpression)
+	if !ok {
+		return nil
+	}
+	innerPE, ok := inner.(physicalPlanExpression)
+	if !ok {
+		return nil
+	}
+	if !planHasDirectChild(pinnedPE.GetRecordQueryPlan(), innerPE.GetRecordQueryPlan()) {
+		return nil
+	}
 	return pinned
+}
+
+// planHasDirectChild reports whether child is among plan's immediate
+// concrete children (pointer identity — WithChildren embeds the exact
+// plan object it relinked to).
+func planHasDirectChild(plan, child plans.RecordQueryPlan) bool {
+	if plan == nil || child == nil {
+		return false
+	}
+	for _, c := range plan.GetChildren() {
+		if c == child {
+			return true
+		}
+	}
+	return false
 }
 
 // lessWithHashTieBreak wraps a cost comparator with the deterministic

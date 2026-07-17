@@ -27,7 +27,6 @@ var rfc082KnownRed = map[string]bool{
 	"cast_string_decimal_zero_to_bigint":            true,
 	"cast_string_internal_space_to_bigint_rejected": true,
 	"cast_string_non_numeric_rejected":              true,
-	// Result-set type/name derivation tail (tracked):
 	// nested_derived_col_rename removed: the RFC-141 R4 projected-EXISTS fold's
 	// column metadata/alias-provenance unification fixed the derived-column
 	// rename so Go now matches Java cross-engine (RFC-082 lock shrinks).

@@ -195,6 +195,16 @@ func (r *Reference) Absorb(loser *Reference) {
 func (r *Reference) Get() RelationalExpression {
 	r = r.Canonical()
 	if len(r.members) == 0 {
+		// A finals-only Reference (FinalOf — a spine-pinned singleton) has
+		// no exploratory members; its identity for semantic equality and
+		// child-cost lookups is the pinned FINAL. Without this fallback two
+		// otherwise-identical wrappers over DIFFERENT pinned children both
+		// exposed nil children, so SemanticEquals collapsed them and
+		// InsertFinal deduplicated a distinct ordered alternative away —
+		// and costing treated the pinned subtree as unknown cardinality.
+		if len(r.finalMembers) > 0 {
+			return r.finalMembers[0]
+		}
 		return nil
 	}
 	return r.members[0]

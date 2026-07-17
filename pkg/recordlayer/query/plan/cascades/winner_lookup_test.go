@@ -383,3 +383,56 @@ func TestPinOrderedSpine(t *testing.T) {
 		t.Fatalf("delegator over an orderless group must decline, got %T", got)
 	}
 }
+
+// TestPinOrderedSpine_DeclinesWhenRelinkRefused pins the executable-plan
+// verification: several WithChildren impls KEEP their original concrete
+// plan when the new child isn't leaf-replaceable (isLeafReplaceable) —
+// the quantifier then points at the pinned member while
+// GetRecordQueryPlan() still executes the old child. Such a "pin" must be
+// DECLINED (nil), never yielded: dropping a sort on its strength executes
+// the unpinned child in whatever order it has.
+func TestPinOrderedSpine_DeclinesWhenRelinkRefused(t *testing.T) {
+	t.Parallel()
+
+	// An ordered member whose plan is NOT leaf-replaceable: a projection
+	// wrapper (RecordQueryProjectionPlan is outside the isLeafReplaceable
+	// set) delegating over an in-memory sort on S.
+	sorted := sortedMemberOn(t, "S")
+	sortedRef := expressions.InitialOf(sorted)
+	orderedProjection := NewPhysicalProjectionWrapper(
+		plans.NewRecordQueryProjectionPlan(
+			[]values.Value{values.NewFlatFieldValue("S", values.UnknownType)},
+			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+		),
+		expressions.ForEachQuantifier(sortedRef),
+	)
+
+	srcRef := expressions.InitialOf(orderedProjection)
+
+	wrapper := &physicalPredicatesFilterWrapper{
+		plan: plans.NewRecordQueryPredicatesFilterPlan(
+			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		),
+		innerQuant: expressions.ForEachQuantifier(srcRef),
+	}
+
+	reqS := NewRequestedOrdering(
+		[]RequestedOrderingPart{{Value: values.NewFlatFieldValue("S", values.UnknownType), SortOrder: RequestedSortOrderAscending}},
+		DistinctnessPreserveDistinctness, false)
+
+	if got := pinOrderedSpine(wrapper, reqS, nil); got != nil {
+		gotPE, _ := got.(physicalPlanExpression)
+		var childIsProjection bool
+		if gotPE != nil {
+			for _, c := range gotPE.GetRecordQueryPlan().GetChildren() {
+				if _, ok := c.(*plans.RecordQueryProjectionPlan); ok {
+					childIsProjection = true
+				}
+			}
+		}
+		if !childIsProjection {
+			t.Fatalf("pin returned a wrapper whose executable plan does NOT contain the pinned projection child — the relink was refused and the pin is a lie (%T)", got)
+		}
+	}
+}
