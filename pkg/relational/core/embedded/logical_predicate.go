@@ -2269,7 +2269,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 							// duplicate alias); the top-level dup-alias shapes
 							// (plan_visitor path) remain supported.
 							proj.ProjectedValues[i] = bv
-							if bareLeafDuplicated(projColNames(sq.projCols), sq.projAliases, i) {
+							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
 								if proj.Aliases == nil {
 									proj.Aliases = make([]string, len(proj.Projections))
 								}
@@ -6202,7 +6202,15 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 	leftNames := make(map[string]bool, len(leftProj.Projections)*2)
 	for i, col := range leftProj.Projections {
 		leftNames[strings.ToUpper(col)] = true
-		leftNames[strings.ToUpper(parseColRef(col).bare())] = true
+		// The bare form comes from the RESOLVED channel: a childless
+		// FieldValue's Field IS the bare column (the same structural truth
+		// the upgrade passes bind), never a last-dot split of the rendering
+		// — a delimited identifier containing a literal dot is one name.
+		if i < len(leftProj.ProjectedValues) {
+			if fv, ok := leftProj.ProjectedValues[i].(*values.FieldValue); ok && fv.Child == nil {
+				leftNames[strings.ToUpper(fv.Field)] = true
+			}
+		}
 		if i < len(leftProj.Aliases) && leftProj.Aliases[i] != "" {
 			leftNames[strings.ToUpper(leftProj.Aliases[i])] = true
 		}

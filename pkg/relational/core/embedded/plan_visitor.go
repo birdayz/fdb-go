@@ -665,7 +665,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 							// key (alias-pinned) so the two same-named columns
 							// do not collapse; a unique leaf keys bare.
 							proj.ProjectedValues[i] = bv
-							if bareLeafDuplicated(projColNames(sq.projCols), sq.projAliases, i) {
+							if bareLeafDuplicated(sq.projCols, sq.projAliases, i) {
 								if proj.Aliases == nil {
 									proj.Aliases = make([]string, len(proj.Projections))
 								}
@@ -1655,16 +1655,18 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 // `SELECT t1.id AS id, t2.id` → the second stays T2.ID, colliding with the
 // alias), the name model's disambiguation rule that keeps two same-named leg
 // columns from collapsing in the datum map. A UNIQUE leaf keys bare.
-func bareLeafDuplicated(projCols, projAliases []string, i int) bool {
+func bareLeafDuplicated(projCols []projCol, projAliases []string, i int) bool {
 	if i >= len(projCols) {
 		return false
 	}
-	leaf := parseColRef(projCols[i]).bare()
+	// Structured bare segments — a delimited identifier containing a literal
+	// dot is one leaf, never a last-dot split of the rendering.
+	leaf := colBareOrName(projCols[i])
 	for j, c := range projCols {
 		if j == i {
 			continue
 		}
-		other := parseColRef(c).bare()
+		other := colBareOrName(c)
 		if j < len(projAliases) && projAliases[j] != "" {
 			other = projAliases[j]
 		}
